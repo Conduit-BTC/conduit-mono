@@ -15,12 +15,12 @@ export type FreshnessChipStatus = "idle" | "updating" | "stale"
 type FreshnessChipPhase = "hidden" | "updating" | "stale" | "synced"
 
 const freshnessChipVariants = cva(
-  "inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 py-1 text-xs transition-[opacity,color,background-color,border-color] duration-150",
+  "pointer-events-none inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 py-1 text-xs transition-[opacity,color,background-color,border-color] duration-150",
   {
     variants: {
       visible: {
         true: "opacity-100",
-        false: "pointer-events-none opacity-0",
+        false: "opacity-0",
       },
       tone: {
         neutral:
@@ -63,6 +63,8 @@ export interface FreshnessChipProps extends HTMLAttributes<HTMLSpanElement> {
  * inserts or removes layout space when a refresh starts. Place it inside a
  * `relative` container with `absolute right-0 top-0` (or any overlay
  * position) so it floats over free space instead of pushing content down.
+ * The chip is pointer-transparent, so it never blocks clicks on content
+ * beneath it.
  *
  * While `status` is `updating` the chip uses the shared `--info` (blue)
  * tone with a spinner. When `status` transitions from `updating` back to
