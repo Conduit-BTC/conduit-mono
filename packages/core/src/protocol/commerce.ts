@@ -280,6 +280,7 @@ type LegacyDmSyncResult = {
 
 type CommerceTestOverrides = {
   fetchEventsFanout?: typeof fetchEventsFanout
+  fetchEventsFanoutWithDiagnostics?: typeof fetchEventsFanoutWithDiagnostics
   fetchEventsFanoutProgressive?: typeof fetchEventsFanoutProgressive
   requireNdkConnected?: typeof requireNdkConnected
   giftUnwrap?: (
@@ -501,6 +502,9 @@ async function runFetchEventsFanoutWithDiagnostics(
   filter: NDKFilter,
   options?: Parameters<typeof fetchEventsFanoutWithDiagnostics>[1]
 ): Promise<Awaited<ReturnType<typeof fetchEventsFanoutWithDiagnostics>>> {
+  if (testOverrides.fetchEventsFanoutWithDiagnostics) {
+    return await testOverrides.fetchEventsFanoutWithDiagnostics(filter, options)
+  }
   if (testOverrides.fetchEventsFanout) {
     const events = (await testOverrides.fetchEventsFanout(
       filter,
@@ -2428,24 +2432,66 @@ export async function getProductDetail(
   }
 }
 
+/** Typed reason a requested product coordinate is not authoritatively live. */
+export type ProductAvailabilityIssue =
+  | "invalid_product_reference"
+  | "lookup_unavailable"
+  | "lookup_partial"
+  | "product_missing"
+  | "listing_filtered"
+  | "cached_only"
+
+export interface ProductAvailabilityDiagnostic {
+  /** The productId exactly as requested by the caller. */
+  productId: string
+  addressId: string | null
+  /** Null only for an exact live relay match of the coordinate. */
+  issue: ProductAvailabilityIssue | null
+}
+
+export interface ProductsByIdsResult extends CommerceResult<
+  CommerceProductRecord[]
+> {
+  diagnostics: ProductAvailabilityDiagnostic[]
+}
+
 // Resolve many product listings by addressId in a single relay fanout (instead
 // of one read per id). Used to hydrate order-item name/image without hammering
-// relays with N separate reads.
+// relays with N separate reads. Every requested coordinate gets a typed
+// diagnostic so checkout can distinguish unreachable relays, partial reads,
+// cache-only confirmation, filtered listings, malformed references, and truly
+// missing listings instead of one generic failure.
 export async function getProductsByIds(
   productIds: string[],
   options: { includeMarketHidden?: boolean } = {}
-): Promise<CommerceResult<CommerceProductRecord[]>> {
-  const addresses = productIds
-    .map((id) => getProductLookupIds(id).address)
+): Promise<ProductsByIdsResult> {
+  const lookups = productIds.map((productId) => {
+    const { address, addressId } = getProductLookupIds(productId)
+    const valid = !!address && address.kind === EVENT_KINDS.PRODUCT
+    return {
+      productId,
+      address: valid ? address : null,
+      addressId: valid ? addressId : null,
+    }
+  })
+  const addresses = lookups
+    .map((lookup) => lookup.address)
     .filter(
       (address): address is { kind: number; pubkey: string; d: string } =>
-        !!address && address.kind === EVENT_KINDS.PRODUCT
+        address !== null
     )
 
   if (addresses.length === 0) {
     return {
       data: [],
-      meta: createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES),
+      meta: createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES, {
+        degraded: lookups.length > 0,
+      }),
+      diagnostics: lookups.map((lookup) => ({
+        productId: lookup.productId,
+        addressId: null,
+        issue: "invalid_product_reference",
+      })),
     }
   }
 
@@ -2466,48 +2512,101 @@ export async function getProductsByIds(
     authors
   )
 
+  // Coverage-aware live read: an all-failed fanout must stay distinct from an
+  // authoritative empty result, and a partial read must not report "missing".
+  let live: CommerceProductRecord[] = []
+  let coverage: "complete" | "partial" | "unavailable" = "complete"
   try {
-    const records = await fetchPublicProductRecords({
+    const relayUrls = await planCommerceReadRelays({
+      intent: "author_products",
       authors,
-      dTags,
-      limit: Math.max(addresses.length * 2, 20),
     })
-    const merged = mergeCachedAndLiveProductRecords({
-      cached,
-      live: records,
-      deletionTimestamps: localDeletionTimestamps,
-    })
-    await cacheProductRecords(merged)
-    const filtered = filterProductRecordsForRead(merged, {
-      includeMarketHidden: options.includeMarketHidden,
-    }).filter((record) => wanted.has(record.addressId))
-    return {
-      data: filtered,
-      meta:
-        records.length > 0
-          ? createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES)
-          : createMeta("product_detail", "local_cache", PRODUCT_CAPABILITIES, {
-              stale: filtered.length > 0,
-              degraded: filtered.length > 0,
-            }),
-    }
+    const fanout = await runFetchEventsFanoutWithDiagnostics(
+      {
+        kinds: [EVENT_KINDS.PRODUCT],
+        authors,
+        "#d": dTags,
+        limit: Math.max(addresses.length * 2, 20),
+      },
+      { relayUrls, connectTimeoutMs: 4_000, fetchTimeoutMs: 8_000 }
+    )
+    live = dedupeProductEvents(fanout.events)
+    coverage =
+      fanout.successfulRelayUrls.length === 0
+        ? "unavailable"
+        : fanout.failedRelayUrls.length > 0
+          ? "partial"
+          : "complete"
   } catch {
-    const fallback = mergeCachedAndLiveProductRecords({
-      cached,
-      live: [],
-      deletionTimestamps: localDeletionTimestamps,
-    })
-    const filtered = filterProductRecordsForRead(fallback, {
-      includeMarketHidden: options.includeMarketHidden,
-    })
-    return {
-      data: filtered,
-      meta: createMeta("product_detail", "local_cache", PRODUCT_CAPABILITIES, {
-        stale: filtered.length > 0,
-        degraded: filtered.length > 0,
-      }),
-    }
+    coverage = "unavailable"
   }
+
+  const merged = mergeCachedAndLiveProductRecords({
+    cached,
+    live,
+    deletionTimestamps: localDeletionTimestamps,
+  })
+  try {
+    await cacheProductRecords(merged)
+  } catch {
+    // A cache write failure must not break the availability read itself.
+  }
+  const filtered = filterProductRecordsForRead(merged, {
+    includeMarketHidden: options.includeMarketHidden,
+  }).filter((record) => wanted.has(record.addressId))
+
+  const liveAddressIds = new Set(live.map((record) => record.addressId))
+  const filteredAddressIds = new Set(filtered.map((record) => record.addressId))
+  const mergedAddressIds = new Set(merged.map((record) => record.addressId))
+  const diagnostics: ProductAvailabilityDiagnostic[] = lookups.map(
+    (lookup) => ({
+      productId: lookup.productId,
+      addressId: lookup.addressId,
+      issue: resolveProductAvailabilityIssue({
+        addressId: lookup.addressId,
+        coverage,
+        liveAddressIds,
+        filteredAddressIds,
+        mergedAddressIds,
+      }),
+    })
+  )
+  const degraded = diagnostics.some((diagnostic) => diagnostic.issue !== null)
+
+  return {
+    data: filtered,
+    meta:
+      live.length > 0
+        ? createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES, {
+            degraded,
+          })
+        : createMeta("product_detail", "local_cache", PRODUCT_CAPABILITIES, {
+            stale: filtered.length > 0,
+            degraded,
+          }),
+    diagnostics,
+  }
+}
+
+function resolveProductAvailabilityIssue(input: {
+  addressId: string | null
+  coverage: "complete" | "partial" | "unavailable"
+  liveAddressIds: ReadonlySet<string>
+  filteredAddressIds: ReadonlySet<string>
+  mergedAddressIds: ReadonlySet<string>
+}): ProductAvailabilityIssue | null {
+  if (!input.addressId) return "invalid_product_reference"
+  const visible = input.filteredAddressIds.has(input.addressId)
+  if (visible && input.liveAddressIds.has(input.addressId)) return null
+  if (visible) {
+    if (input.coverage === "unavailable") return "lookup_unavailable"
+    if (input.coverage === "partial") return "lookup_partial"
+    return "cached_only"
+  }
+  if (input.mergedAddressIds.has(input.addressId)) return "listing_filtered"
+  if (input.coverage === "unavailable") return "lookup_unavailable"
+  if (input.coverage === "partial") return "lookup_partial"
+  return "product_missing"
 }
 
 export async function getCachedProductDetail(

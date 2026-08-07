@@ -77,6 +77,7 @@ import {
 } from "../lib/cart-shipping-options"
 import {
   getCartAvailabilityBlockingMessage,
+  getCartAvailabilityVerificationMessage,
   getCartPublicZapPolicy,
   isCartProductAvailabilityBlocking,
   type CartProductAvailability,
@@ -1237,7 +1238,11 @@ function CheckoutPage() {
     const refreshResult = await checkoutAvailability.refresh()
     if (!refreshResult.fresh) {
       throw new Error(
-        "Current product availability could not be verified. Check your connection and try again."
+        getCartAvailabilityVerificationMessage(
+          checkoutItems,
+          refreshResult.diagnostics
+        ) ??
+          "Current product availability could not be verified. Check your connection and try again."
       )
     }
 

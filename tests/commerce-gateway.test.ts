@@ -2172,3 +2172,154 @@ describe("commerce gateway", () => {
     expect(cachedProfiles.has("missing-profile")).toBe(false)
   })
 })
+
+describe("getProductsByIds diagnostics", () => {
+  const dTag = "diagnosed-item"
+  const merchantPubkey = MERCHANT_A_PUBKEY
+  const addressId = `30402:${merchantPubkey}:${dTag}`
+
+  it("reports a null issue only for an exact live coordinate match", async () => {
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+          ? ([
+              makeProductEvent({
+                pubkey: merchantPubkey,
+                dTag,
+                id: "event-live-diagnosed",
+                createdAt: 100,
+                title: "Live Diagnosed",
+              }),
+            ] as never)
+          : [],
+    })
+
+    const result = await getProductsByIds([addressId])
+
+    expect(result.diagnostics).toEqual([
+      { productId: addressId, addressId, issue: null },
+    ])
+    expect(result.meta.degraded).toBe(false)
+  })
+
+  it("types malformed references without dropping valid coordinates", async () => {
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+          ? ([
+              makeProductEvent({
+                pubkey: merchantPubkey,
+                dTag,
+                id: "event-live-beside-invalid",
+                createdAt: 100,
+                title: "Live Beside Invalid",
+              }),
+            ] as never)
+          : [],
+    })
+
+    const result = await getProductsByIds(["not-an-address", addressId])
+
+    expect(result.data).toHaveLength(1)
+    expect(result.diagnostics).toEqual([
+      {
+        productId: "not-an-address",
+        addressId: null,
+        issue: "invalid_product_reference",
+      },
+      { productId: addressId, addressId, issue: null },
+    ])
+    expect(result.meta.degraded).toBe(true)
+  })
+
+  it("returns product_missing only for an authoritative complete read", async () => {
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () => [],
+    })
+
+    const result = await getProductsByIds([addressId])
+
+    expect(result.diagnostics[0]?.issue).toBe("product_missing")
+  })
+
+  it("keeps a partial read distinct from a missing listing", async () => {
+    __setCommerceTestOverrides({
+      fetchEventsFanoutWithDiagnostics: async () => ({
+        events: [],
+        attemptedRelayUrls: ["wss://ok.example", "wss://down.example"],
+        successfulRelayUrls: ["wss://ok.example"],
+        failedRelayUrls: ["wss://down.example"],
+      }),
+    })
+
+    const result = await getProductsByIds([addressId])
+
+    expect(result.diagnostics[0]?.issue).toBe("lookup_partial")
+    expect(result.meta.degraded).toBe(true)
+  })
+
+  it("reports lookup_unavailable and keeps cached data when every relay fails", async () => {
+    const cachedEvent = makeSignedProductEvent({
+      dTag: "diagnosed-cached",
+      createdAt: 100,
+      title: "Cached While Offline",
+    })
+    const cachedAddressId = `30402:${cachedEvent.pubkey}:diagnosed-cached`
+    await cacheSignedProductListingEvent(cachedEvent)
+    __setCommerceTestOverrides({
+      fetchEventsFanoutWithDiagnostics: async () => ({
+        events: [],
+        attemptedRelayUrls: ["wss://down.example"],
+        successfulRelayUrls: [],
+        failedRelayUrls: ["wss://down.example"],
+      }),
+    })
+
+    const result = await getProductsByIds([cachedAddressId])
+
+    expect(result.data).toHaveLength(1)
+    expect(result.diagnostics[0]?.issue).toBe("lookup_unavailable")
+    expect(result.meta.source).toBe("local_cache")
+    expect(result.meta.degraded).toBe(true)
+  })
+
+  it("marks a cache-only confirmation after a complete live read", async () => {
+    const cachedEvent = makeSignedProductEvent({
+      dTag: "diagnosed-cache-only",
+      createdAt: 100,
+      title: "Cache Only Confirmation",
+    })
+    const cachedAddressId = `30402:${cachedEvent.pubkey}:diagnosed-cache-only`
+    await cacheSignedProductListingEvent(cachedEvent)
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () => [],
+    })
+
+    const result = await getProductsByIds([cachedAddressId])
+
+    expect(result.data).toHaveLength(1)
+    expect(result.diagnostics[0]?.issue).toBe("cached_only")
+  })
+
+  it("types market-filtered listings instead of calling them missing", async () => {
+    const productEvent = makeProductEvent({
+      pubkey: "merchant",
+      dTag: "diagnosed-filtered",
+      id: "event-diagnosed-filtered",
+      createdAt: 100,
+      title: "Counterfeit goods display sample",
+    })
+    const filteredAddressId = "30402:merchant:diagnosed-filtered"
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+          ? ([productEvent] as never)
+          : [],
+    })
+
+    const result = await getProductsByIds([filteredAddressId])
+
+    expect(result.data).toHaveLength(0)
+    expect(result.diagnostics[0]?.issue).toBe("listing_filtered")
+  })
+})
