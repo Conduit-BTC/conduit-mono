@@ -190,6 +190,7 @@ export {
   type OrderGuestContact,
   type OrderAddressValidity,
   type OrderShippingZoneEligibility,
+  type OrderDeliveryRoute,
   type OrderDeliveryStatus,
   type OrderInvoiceStatus,
   type OrderPaymentStatus,

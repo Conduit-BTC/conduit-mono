@@ -395,6 +395,15 @@ export interface PublishPrivateMessageInput {
    * flag is on. Kind-14 general DMs must not set this.
    */
   validatedOrderScope?: boolean
+  /**
+   * Override the bootstrap lane gate and allowlist (tests/config seams).
+   * Defaults to config.dmBootstrapWritesEnabled and
+   * config.dmBootstrapWriteRelayUrls.
+   */
+  bootstrapRoute?: {
+    enabled?: boolean
+    relayUrls?: readonly string[]
+  }
 }
 
 export interface PublishPrivateMessageResult {
@@ -479,6 +488,8 @@ export async function publishPrivateMessage(
     rumorKind: input.rumorKind,
     declaration: recipientDeclaration,
     validatedOrder,
+    bootstrapEnabled: input.bootstrapRoute?.enabled,
+    bootstrapRelayUrls: input.bootstrapRoute?.relayUrls,
   })
   if (recipientRoute.route === "blocked") {
     throw new PrivateMessageRelayReadinessError(
@@ -498,6 +509,8 @@ export async function publishPrivateMessage(
       rumorKind: input.rumorKind,
       declaration: senderDeclaration,
       validatedOrder,
+      bootstrapEnabled: input.bootstrapRoute?.enabled,
+      bootstrapRelayUrls: input.bootstrapRoute?.relayUrls,
     })
   }
 

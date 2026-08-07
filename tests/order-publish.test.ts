@@ -63,6 +63,7 @@ describe("buyer order publishing", () => {
             wrappedToRecipient: { id: "recipient-wrap" } as never,
             wrappedToSelf: { id: "self-wrap" } as never,
             selfCopyError: null,
+            deliveryRoute: "declared_inbox" as const,
           }
         },
         cacheBuyerOrderRumorFn: async () => {
@@ -77,8 +78,13 @@ describe("buyer order publishing", () => {
     expect(captured?.signer).toBe(signer)
     expect(captured?.rumorKind).toBe(EVENT_KINDS.ORDER)
     expect(captured?.selfCopy).toBe(true)
+    expect(captured?.validatedOrderScope).toBe(true)
     expect(cached).toBe(true)
-    expect(result).toEqual({ buyerSelfCopyError: null, localCacheError: null })
+    expect(result).toEqual({
+      buyerSelfCopyError: null,
+      localCacheError: null,
+      deliveryRoute: "declared_inbox",
+    })
   })
 
   it("uses the scoped guest signer without a self-copy or durable cache", async () => {
@@ -104,6 +110,7 @@ describe("buyer order publishing", () => {
             wrappedToRecipient: { id: "recipient-wrap" } as never,
             wrappedToSelf: null,
             selfCopyError: null,
+            deliveryRoute: "conduit_bootstrap" as const,
           }
         },
         cacheBuyerOrderRumorFn: async () => {
@@ -116,6 +123,7 @@ describe("buyer order publishing", () => {
     expect(captured?.senderPubkey).toBe("guest-pubkey")
     expect(captured?.signer).toBe(guestSigner)
     expect(captured?.selfCopy).toBe(false)
+    expect(captured?.validatedOrderScope).toBe(true)
     expect(cacheAttempts).toBe(0)
   })
 

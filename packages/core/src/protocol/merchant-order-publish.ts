@@ -84,6 +84,9 @@ export async function publishMerchantOrderMessage(
     signer: ndk.signer,
     rumorKind: EVENT_KINDS.ORDER,
     selfCopy: input.delivery === "buyer_and_self",
+    // Merchant replies, invoices, and proofs belong to a validated inbound
+    // order lifecycle, so they qualify for bootstrap routing (CND-208).
+    validatedOrderScope: true,
   })
   if (selfCopyError) {
     console.warn("Merchant order self-copy publish failed", selfCopyError)

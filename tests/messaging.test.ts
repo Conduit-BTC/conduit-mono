@@ -633,6 +633,170 @@ describe("publishPrivateMessage", () => {
     expect(published).toEqual(["wrap-recipient", "wrap-sender"])
     expect(result.selfCopyError).toBe("self relay rejected")
   })
+
+  it("delivers a validated order over the bootstrap route when the recipient has no declaration", async () => {
+    const publishes: Array<{ id: string; relays: readonly string[] }> = []
+
+    const result = await publishPrivateMessage({
+      rumor: orderRumor(),
+      senderPubkey: "sender",
+      recipientPubkey: "recipient",
+      signer,
+      rumorKind: EVENT_KINDS.ORDER,
+      selfCopy: false,
+      recipientInboxRelays: [],
+      validatedOrderScope: true,
+      bootstrapRoute: {
+        enabled: true,
+        relayUrls: ["wss://bootstrap.conduit.example"],
+      },
+      giftWrapFn: (async (_rumor, recipient) =>
+        wrap(`wrap-${recipient.pubkey}`)) as never,
+      publishFn: (async (event, options) => {
+        publishes.push({
+          id: event.id,
+          relays: options.exclusiveRelayUrls ?? [],
+        })
+        return {} as never
+      }) as never,
+    })
+
+    expect(publishes).toEqual([
+      {
+        id: "wrap-recipient",
+        relays: ["wss://bootstrap.conduit.example"],
+      },
+    ])
+    expect(result.deliveryRoute).toBe("conduit_bootstrap")
+  })
+
+  it("keeps a declared inbox exclusive even when bootstrap is enabled", async () => {
+    const publishes: Array<readonly string[]> = []
+
+    const result = await publishPrivateMessage({
+      rumor: orderRumor(),
+      senderPubkey: "sender",
+      recipientPubkey: "recipient",
+      signer,
+      rumorKind: EVENT_KINDS.ORDER,
+      selfCopy: false,
+      recipientInboxRelays: ["wss://recipient.inbox.example"],
+      validatedOrderScope: true,
+      bootstrapRoute: {
+        enabled: true,
+        relayUrls: ["wss://bootstrap.conduit.example"],
+      },
+      giftWrapFn: (async (_rumor, recipient) =>
+        wrap(`wrap-${recipient.pubkey}`)) as never,
+      publishFn: (async (_event, options) => {
+        publishes.push(options.exclusiveRelayUrls ?? [])
+        return {} as never
+      }) as never,
+    })
+
+    expect(publishes).toEqual([["wss://recipient.inbox.example"]])
+    expect(result.deliveryRoute).toBe("declared_inbox")
+  })
+
+  it("never routes kind-14 direct messages through the bootstrap lane", async () => {
+    let published = false
+    let thrown: unknown
+
+    try {
+      await publishPrivateMessage({
+        rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE),
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer,
+        rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+        selfCopy: false,
+        recipientInboxRelays: [],
+        validatedOrderScope: true,
+        bootstrapRoute: {
+          enabled: true,
+          relayUrls: ["wss://bootstrap.conduit.example"],
+        },
+        giftWrapFn: (async () => wrap("unexpected")) as never,
+        publishFn: (async () => {
+          published = true
+          return {} as never
+        }) as never,
+      })
+    } catch (error) {
+      thrown = error
+    }
+
+    expect(thrown).toBeInstanceOf(PrivateMessageRelayReadinessError)
+    expect((thrown as PrivateMessageRelayReadinessError).reason).toBe(
+      "recipient_not_ready"
+    )
+    expect(published).toBe(false)
+  })
+
+  it("blocks unvalidated orders from the bootstrap lane", async () => {
+    let published = false
+    let thrown: unknown
+
+    try {
+      await publishPrivateMessage({
+        rumor: orderRumor(),
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer,
+        rumorKind: EVENT_KINDS.ORDER,
+        selfCopy: false,
+        recipientInboxRelays: [],
+        bootstrapRoute: {
+          enabled: true,
+          relayUrls: ["wss://bootstrap.conduit.example"],
+        },
+        giftWrapFn: (async () => wrap("unexpected")) as never,
+        publishFn: (async () => {
+          published = true
+          return {} as never
+        }) as never,
+      })
+    } catch (error) {
+      thrown = error
+    }
+
+    expect(thrown).toBeInstanceOf(PrivateMessageRelayReadinessError)
+    expect((thrown as PrivateMessageRelayReadinessError).reason).toBe(
+      "recipient_not_ready"
+    )
+    expect(published).toBe(false)
+  })
+
+  it("keeps bootstrap writes disabled by default for validated orders", async () => {
+    let published = false
+    let thrown: unknown
+
+    try {
+      await publishPrivateMessage({
+        rumor: orderRumor(),
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer,
+        rumorKind: EVENT_KINDS.ORDER,
+        selfCopy: false,
+        recipientInboxRelays: [],
+        validatedOrderScope: true,
+        giftWrapFn: (async () => wrap("unexpected")) as never,
+        publishFn: (async () => {
+          published = true
+          return {} as never
+        }) as never,
+      })
+    } catch (error) {
+      thrown = error
+    }
+
+    expect(thrown).toBeInstanceOf(PrivateMessageRelayReadinessError)
+    expect((thrown as PrivateMessageRelayReadinessError).reason).toBe(
+      "recipient_not_ready"
+    )
+    expect(published).toBe(false)
+  })
 })
 
 describe("detectNip44Capabilities", () => {
