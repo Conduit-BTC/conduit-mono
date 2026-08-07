@@ -11,7 +11,9 @@ import {
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
   type FormEvent,
@@ -69,14 +71,14 @@ import {
   getCategoryFacetOptions,
   normalizeFacetValues,
 } from "../../lib/facets"
+import {
+  createStorefrontFollowState,
+  isStorefrontFollowScopeEqual,
+  storefrontFollowReducer,
+} from "../../lib/storefront-follow-state"
 
 type SortOption = "newest" | "price_asc" | "price_desc"
 type CategoryFacetOption = ReturnType<typeof getCategoryFacetOptions>[number]
-type FollowOverride = {
-  merchantPubkey: string
-  viewerPubkey: string
-  value: boolean
-}
 
 function isPriceSort(sort: SortOption | undefined): boolean {
   return sort === "price_asc" || sort === "price_desc"
@@ -205,16 +207,22 @@ function StorefrontPage() {
   const profile = merchantTrust.profile
   const selectedTags = useMemo(() => search.tag ?? [], [search.tag])
   const selectedTagSet = useMemo(() => new Set(selectedTags), [selectedTags])
-  const [followState, setFollowState] = useState<
-    "idle" | "saving_follow" | "saving_unfollow"
-  >("idle")
-  const [followOverride, setFollowOverride] = useState<FollowOverride | null>(
-    null
+  const followScope = useMemo(
+    () => ({ merchantPubkey: pubkey, viewerPubkey: activeViewerPubkey }),
+    [activeViewerPubkey, pubkey]
   )
-  const [followError, setFollowError] = useState<string | null>(null)
-  const followScope = `${activeViewerPubkey ?? "anonymous"}:${pubkey}`
-  const previousFollowScopeRef = useRef(followScope)
-  const followScopeVersionRef = useRef(0)
+  const [followState, dispatchFollow] = useReducer(
+    storefrontFollowReducer,
+    followScope,
+    createStorefrontFollowState
+  )
+  const followOperationIdRef = useRef(0)
+  const followStateMatchesScope = isStorefrontFollowScopeEqual(
+    followState.scope,
+    followScope
+  )
+  const followOverride = followStateMatchesScope ? followState.override : null
+  const followError = followStateMatchesScope ? followState.error : null
 
   const merchantIdentityPending = merchantTrust.merchantNamePending
   const merchantName = merchantTrust.merchantName
@@ -275,11 +283,9 @@ function StorefrontPage() {
   )
 
   const isFollowing =
-    followOverride?.merchantPubkey === pubkey &&
-    followOverride.viewerPubkey === activeViewerPubkey
-      ? followOverride.value
-      : merchantTrust.viewerFollowsMerchant === true
-  const isFollowBusy = followState !== "idle"
+    followOverride ?? merchantTrust.viewerFollowsMerchant === true
+  const isFollowBusy =
+    followStateMatchesScope && followState.saveState !== "idle"
 
   const toggleTag = (tag: string) => {
     if (selectedTagSet.has(tag)) {
@@ -316,14 +322,8 @@ function StorefrontPage() {
     setSearchDirty(false)
   }, [search.q])
 
-  useEffect(() => {
-    if (previousFollowScopeRef.current === followScope) return
-
-    previousFollowScopeRef.current = followScope
-    followScopeVersionRef.current += 1
-    setFollowOverride(null)
-    setFollowError(null)
-    setFollowState("idle")
+  useLayoutEffect(() => {
+    dispatchFollow({ type: "scope_changed", scope: followScope })
   }, [followScope])
 
   const normalizedSearch = localSearch.trim()
@@ -384,9 +384,13 @@ function StorefrontPage() {
     if (isFollowBusy) return
 
     const nextShouldFollow = !isFollowing
-    const followScopeVersion = followScopeVersionRef.current
-    setFollowState(nextShouldFollow ? "saving_follow" : "saving_unfollow")
-    setFollowError(null)
+    const operationId = ++followOperationIdRef.current
+    dispatchFollow({
+      type: "operation_started",
+      scope: followScope,
+      operationId,
+      shouldFollow: nextShouldFollow,
+    })
     try {
       await publishContactListUpdate({
         ownerPubkey: viewerPubkey,
@@ -395,27 +399,30 @@ function StorefrontPage() {
         appId: "market",
       })
 
-      if (followScopeVersion !== followScopeVersionRef.current) return
-
-      setFollowOverride({
-        merchantPubkey: pubkey,
-        viewerPubkey,
-        value: nextShouldFollow,
+      dispatchFollow({
+        type: "publish_succeeded",
+        scope: followScope,
+        operationId,
+        shouldFollow: nextShouldFollow,
       })
       await queryClient.invalidateQueries({
         queryKey: ["merchant-trust-social", viewerPubkey, pubkey],
       })
-      if (followScopeVersion !== followScopeVersionRef.current) return
-      setFollowState("idle")
+      dispatchFollow({
+        type: "operation_settled",
+        scope: followScope,
+        operationId,
+      })
     } catch (error) {
-      if (followScopeVersion !== followScopeVersionRef.current) return
-      setFollowOverride(null)
-      setFollowError(
-        error instanceof Error
-          ? error.message
-          : "Could not update this follow list."
-      )
-      setFollowState("idle")
+      dispatchFollow({
+        type: "operation_failed",
+        scope: followScope,
+        operationId,
+        message:
+          error instanceof Error
+            ? error.message
+            : "Could not update this follow list.",
+      })
     }
   }
 
@@ -574,7 +581,7 @@ function StorefrontPage() {
                     <UserPlus className="h-4 w-4" />
                   )}
                   {isFollowBusy ? (
-                    followState === "saving_unfollow" ? (
+                    followState.saveState === "saving_unfollow" ? (
                       "Unfollowing…"
                     ) : (
                       "Following…"

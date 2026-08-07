@@ -140,9 +140,8 @@ describe("identity surface contracts", () => {
     expect(trustHook).toContain('session.mode === "signed_in"')
     expect(trustHook).not.toContain("viewerPubkey?: string | null")
     expect(store).not.toContain("merchantPubkey: pubkey,\n    viewerPubkey,")
-    expect(store).toContain(
-      "followOverride.viewerPubkey === activeViewerPubkey"
-    )
+    expect(store).toContain("storefrontFollowReducer")
+    expect(store).toContain('type: "scope_changed"')
     expect(checkout).not.toContain("viewerPubkey: signedBuyerPubkey")
     expect(marketRoot).not.toContain('root === "merchant-trust-social"')
   })

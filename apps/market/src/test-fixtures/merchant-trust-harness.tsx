@@ -13,15 +13,15 @@ export function mountMerchantTrustHarness(
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
+  const trustInput = {
+    merchantPubkey,
+    viewerPubkey: staleViewerPubkey,
+  } as Parameters<typeof useMerchantTrustContext>[0] & {
+    viewerPubkey: string
+  }
 
   function TrustProbe() {
-    const input = {
-      merchantPubkey,
-      viewerPubkey: staleViewerPubkey,
-    } as Parameters<typeof useMerchantTrustContext>[0] & {
-      viewerPubkey: string
-    }
-    const trust = useMerchantTrustContext(input)
+    const trust = useMerchantTrustContext(trustInput)
 
     return (
       <output

@@ -103,7 +103,7 @@ test("market trust ignores a remembered viewer until auth is connected", async (
   await page.goto(`${marketUrl}/products`)
 
   await page.evaluate(
-    async ({ harnessUrl, viewerPubkey }) => {
+    async ({ harnessUrl, viewerPubkey, merchantPubkey }) => {
       const container = document.createElement("div")
       container.id = "merchant-trust-harness"
       document.body.append(container)
@@ -114,11 +114,12 @@ test("market trust ignores a remembered viewer until auth is connected", async (
           merchantPubkey: string
         ) => void
       }
-      mountMerchantTrustHarness(container, viewerPubkey, viewerPubkey)
+      mountMerchantTrustHarness(container, viewerPubkey, merchantPubkey)
     },
     {
       harnessUrl: merchantTrustHarnessUrl,
       viewerPubkey: TEST_BUYER_PUBKEY,
+      merchantPubkey: TEST_MERCHANT_PUBKEY,
     }
   )
 
