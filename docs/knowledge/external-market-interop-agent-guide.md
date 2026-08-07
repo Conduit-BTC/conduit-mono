@@ -1,12 +1,12 @@
 # External Market Interop: Agent Guide
 
-Use this when touching anything related to listings/events/rendering/checkout handoff that should work with external Gamma/NIP-99 marketplaces (currently: Plebeian).
+Use this when touching anything related to listings/events/rendering/checkout handoff that should work with external NIP-99 commerce marketplaces, including implementations derived from the earlier GammaMarkets work (currently: Plebeian).
 
-Source policy: `docs/knowledge/external-market-interop-policy.md` (2026-02-10).
+Source policy: `docs/knowledge/external-market-interop-policy.md` (2026-08-07).
 
 ## Priority Order (Non-Negotiable)
 
-1. Spec correctness (Gamma/NIP-99)
+1. Spec correctness (Open Markets/NIP-99)
 2. Discovery parity (Conduit <-> external listings render + are discoverable)
 3. External discovery -> Conduit checkout (critical path)
 4. Velocity + design (do not let external quirks override spec-correct implementation)

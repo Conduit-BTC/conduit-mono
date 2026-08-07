@@ -1,7 +1,7 @@
 /**
  * Kind-30406 shipping option protocol helpers.
  *
- * GammaMarkets market-spec: https://github.com/GammaMarkets/market-spec
+ * Open Markets Specification: https://github.com/OpenMarketsFoundation/specification
  *
  * Conduit publishes one consolidated kind-30406 event with d-tag
  * "conduit-default" to represent the merchant's current shipping config.

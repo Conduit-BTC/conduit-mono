@@ -46,7 +46,7 @@ gift-wrap transport, NIP-09 deletion support, NIP-62 vanish support, and NIP-42
 auth requirements.
 
 NIP-11 should not be used to require client/application/event NIPs such as
-NIP-17, NIP-33, NIP-65, NIP-99, or GammaMarkets product semantics.
+NIP-17, NIP-33, NIP-65, NIP-99, or Open Markets product semantics.
 
 Until active probes land, current commerce compatibility remains conservative
 metadata:

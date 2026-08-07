@@ -185,7 +185,7 @@ describe("product listing event drafts", () => {
     expect(draft.tags).not.toContainEqual(["shipping_cost", "5"])
   })
 
-  it("emits Gamma stock tag when stock tracking is set", () => {
+  it("emits Open Markets stock tag when stock tracking is set", () => {
     const trackedDraft = buildProductListingEventDraft({
       product: baseProduct({ stock: 12 }),
       dTag: "tracked-stock-product",
@@ -293,7 +293,7 @@ describe("product listing event drafts", () => {
     ).toBe(false)
   })
 
-  it("emits Gamma shipping option extra cost when it matches the product currency", () => {
+  it("emits Open Markets shipping option extra cost when it matches the product currency", () => {
     const draft = buildProductListingEventDraft({
       product: baseProduct({
         price: 25_000,
@@ -646,7 +646,7 @@ describe("product listing event parsing", () => {
     expect(parsed.publicZapPolicyKnown).toBe(true)
   })
 
-  it("parses Gamma shipping option extra cost from product listings", () => {
+  it("parses Open Markets shipping option extra cost from product listings", () => {
     const parsed = parseProductEvent({
       id: "spec-event-with-shipping-extra-cost",
       pubkey: "merchant",
@@ -671,7 +671,7 @@ describe("product listing event parsing", () => {
     })
   })
 
-  it("keeps Gamma fiat shipping option extra cost in the product currency", () => {
+  it("keeps Open Markets fiat shipping option extra cost in the product currency", () => {
     const parsed = parseProductEvent({
       id: "spec-event-with-fiat-shipping-extra-cost",
       pubkey: "merchant",
@@ -715,7 +715,7 @@ describe("product listing event parsing", () => {
     expect(parsed.shippingCostSats).toBe(250)
   })
 
-  it("parses Gamma stock tags and keeps zero distinct from missing stock", () => {
+  it("parses Open Markets stock tags and keeps zero distinct from missing stock", () => {
     const zero = parseProductEvent({
       id: "zero-stock-event",
       pubkey: "merchant",

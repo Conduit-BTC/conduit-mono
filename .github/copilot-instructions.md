@@ -51,8 +51,8 @@ For Market and Merchant changes touching orders/messages:
 
 For changes touching Nostr protocol, relay behavior, NDK usage, products/listings, private messages, signer auth, NWC/payments, local cache, or commerce outbox:
 
-- Verify the PR cites `docs/knowledge/external-nostr-references.md` plus the relevant NIP or GammaMarkets `market-spec`.
-- Verify product listings remain NIP-99 + GammaMarkets `kind:30402`; flag alternate product-listing protocol terminology or schema assumptions.
+- Verify the PR cites `docs/knowledge/external-nostr-references.md` plus the relevant NIP or Open Markets specification source.
+- Verify product listings remain NIP-99 plus the Open Markets Specification for `kind:30402` commerce events; flag alternate product-listing protocol terminology or schema assumptions.
 - Verify relay behavior models partial reads, publish ACK/reject/timeout, stale/degraded state, and source disagreement where relevant.
 - Verify NIP-17 messaging uses NIP-59 seals/gift wraps and NIP-44 v2 as the current public encryption baseline; NIP-44 v3 readiness should remain visible, but v3 implementation must be source-gated by public draft/client references and explicit capability discovery.
 - Verify kind `10050` private-message relay hints are not confused with general NIP-65 `kind:10002` relay preferences when DM routing is in scope.
