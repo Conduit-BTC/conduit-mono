@@ -505,9 +505,10 @@ function MessagesPage() {
   })
 
   // General kind-14 DM inbox, cache-first, distinct from order threads.
+  // Own-inbox reads are permissive (CND-208); only sends require readiness.
   const dmsLiveQuery = useQuery({
     queryKey: ["buyer-dms-live", pubkey ?? "none"],
-    enabled: signerConnected && messagingReady,
+    enabled: signerConnected,
     queryFn: () =>
       getDirectMessageConversationList({ principalPubkey: pubkey! }),
     refetchInterval: 30_000,
@@ -825,14 +826,14 @@ function MessagesPage() {
                 pending={dmReadiness.isRefetching}
               />
             )}
-            {messagingReady && dmDecryptFailures > 0 && (
+            {dmDecryptFailures > 0 && (
               <DecryptFailureNotice
                 count={dmDecryptFailures}
                 onRetry={() => dmsLiveQuery.refetch()}
                 retrying={dmsLiveQuery.isRefetching}
               />
             )}
-            {messagingReady && (dmsLiveQuery.error || dmLiveMeta?.stale) && (
+            {(dmsLiveQuery.error || dmLiveMeta?.stale) && (
               <LiveReadNotice
                 state={
                   dmsLiveQuery.error
@@ -845,7 +846,7 @@ function MessagesPage() {
                 retrying={dmsLiveQuery.isRefetching}
               />
             )}
-            {messagingReady && (
+            {signerConnected && (
               <DecryptFailureNotice
                 count={dmLiveMeta?.legacyDecryptFailures?.length ?? 0}
                 label="Some legacy messages couldn't be decrypted."
@@ -1171,14 +1172,13 @@ function MessagesPage() {
             />
           )}
 
-          {signerConnected && messagingReady && messagesQuery.isFetching && (
+          {signerConnected && messagesQuery.isFetching && (
             <div className="text-sm text-[var(--text-secondary)]">
               Checking latest merchant conversations...
             </div>
           )}
 
           {signerConnected &&
-            messagingReady &&
             (messagesQuery.error || messagesQuery.data?.meta.stale) && (
               <LiveReadNotice
                 state={
@@ -1193,7 +1193,7 @@ function MessagesPage() {
               />
             )}
 
-          {signerConnected && messagingReady && (
+          {signerConnected && (
             <DecryptFailureNotice
               count={messagesQuery.data?.meta.decryptFailures?.length ?? 0}
               onRetry={() => void messagesQuery.refetch()}
@@ -1202,7 +1202,6 @@ function MessagesPage() {
           )}
 
           {signerConnected &&
-            messagingReady &&
             !cachedMessagesQuery.isLoading &&
             conversations.length === 0 &&
             !messagesQuery.error &&

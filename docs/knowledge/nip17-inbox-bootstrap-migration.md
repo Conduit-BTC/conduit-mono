@@ -30,7 +30,7 @@ NIP-44/NIP-59 encrypted gift wraps are preserved end to end.
 | No usable declaration, validated kind 16 order  | Local secure IN + configured compatibility relay                   | Configured Conduit bootstrap route     |
 | Discovery unavailable, valid cached declaration | Cached declared inboxes + compatibility reads                      | Cached declared inboxes                |
 | Signed empty/malformed declaration observed     | Preserve cached reads; show repair                                 | Block; do not override signed state    |
-| General kind 14 DM without declaration          | Declared reads only                                                | Block                                  |
+| General kind 14 DM without declaration          | Permissive own-inbox reads; sends stay blocked                     | Block                                  |
 | Guest checkout                                  | Merchant order leg may bootstrap                                   | No guest inbox/self-copy/reply promise |
 
 Invariants:
@@ -43,7 +43,8 @@ Invariants:
   stays strict and fails soft when the sender has no usable declaration.
 - Gift-wrap reads are permissive at the transport layer (inner kinds are not
   separable before decryption); the kind-14 strictness applies to delivery
-  writes and to the DM surfaces, which stay gated on declared readiness.
+  writes only. DM surfaces display received messages permissively and gate
+  composing/replying on declared readiness.
 - Compatibility writes use only the explicit Conduit-operated allowlist
   (`config.dmBootstrapWriteRelayUrls`); never arbitrary NIP-65, local OUT,
   commerce-priority, or public relays.

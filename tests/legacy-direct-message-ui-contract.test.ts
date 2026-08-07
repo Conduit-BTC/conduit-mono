@@ -25,24 +25,32 @@ describe("legacy direct-message UI contract", () => {
     expect(branch).not.toContain("<MessageComposer")
   })
 
-  it("gates Market inbox reads behind explicit messaging readiness", async () => {
+  it("keeps Market inbox reads permissive and gates sends on readiness", async () => {
     const source = await Bun.file("apps/market/src/routes/messages.tsx").text()
 
     expect(source).toContain("MessagingReadinessNotice,")
-    expect(source).toContain("enabled: signerConnected && messagingReady")
+    // Own-inbox reads are permissive (CND-208); no read query gates on readiness.
+    expect(source).not.toContain("enabled: signerConnected && messagingReady")
+    // Sends still require an own declaration.
+    expect(source).toContain(
+      'if (!messagingReady) throw new Error("Encrypted messaging is not enabled")'
+    )
     expect(source).toContain("<MessagingReadinessNotice")
     // Network settings owns declaration setup/repair (CND-208).
     expect(source).not.toContain("publishPrivateMessageRelayDeclaration")
     expect(source).toContain('to: "/network"')
   })
 
-  it("gates Merchant inbox reads behind explicit messaging readiness", async () => {
+  it("keeps Merchant inbox reads permissive and gates sends on readiness", async () => {
     const source = await Bun.file(
       "apps/merchant/src/routes/messages.tsx"
     ).text()
 
     expect(source).toContain("MessagingReadinessNotice,")
-    expect(source).toContain("enabled: signerConnected && messagingReady")
+    // Own-inbox reads are permissive (CND-208); no read query gates on readiness.
+    expect(source).not.toContain("enabled: signerConnected && messagingReady")
+    // Sends still require an own declaration.
+    expect(source).toContain("!messagingReady ||")
     expect(source).toContain("<MessagingReadinessNotice")
     // Network settings owns declaration setup/repair (CND-208).
     expect(source).not.toContain("publishPrivateMessageRelayDeclaration")

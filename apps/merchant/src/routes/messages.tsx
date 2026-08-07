@@ -108,9 +108,10 @@ function MessagesPage() {
     }
   }
 
+  // Own-inbox reads are permissive (CND-208); only sends require readiness.
   const liveQuery = useQuery({
     queryKey: ["merchant-dms-live", pubkey ?? "none"],
-    enabled: signerConnected && messagingReady,
+    enabled: signerConnected,
     queryFn: () =>
       getDirectMessageConversationList({ principalPubkey: pubkey! }),
     staleTime: 30_000,
@@ -207,7 +208,7 @@ function MessagesPage() {
       pubkey ?? "none",
       selected?.counterpartyPubkey ?? "none",
     ],
-    enabled: signerConnected && messagingReady && !!selected,
+    enabled: signerConnected && !!selected,
     queryFn: () =>
       getMerchantConversationList({
         principalPubkey: pubkey!,
@@ -412,24 +413,22 @@ function MessagesPage() {
         />
       )}
 
-      {signerConnected &&
-        messagingReady &&
-        (liveQuery.error || liveMeta?.stale) && (
-          <LiveReadNotice
-            state={
-              liveQuery.error
-                ? conversations.length > 0
-                  ? "cached"
-                  : "unavailable"
-                : "partial"
-            }
-            onRetry={() => void liveQuery.refetch()}
-            retrying={liveQuery.isRefetching}
-            className="xl:shrink-0"
-          />
-        )}
+      {signerConnected && (liveQuery.error || liveMeta?.stale) && (
+        <LiveReadNotice
+          state={
+            liveQuery.error
+              ? conversations.length > 0
+                ? "cached"
+                : "unavailable"
+              : "partial"
+          }
+          onRetry={() => void liveQuery.refetch()}
+          retrying={liveQuery.isRefetching}
+          className="xl:shrink-0"
+        />
+      )}
 
-      {messagingReady && (
+      {signerConnected && (
         <DecryptFailureNotice
           count={liveMeta?.legacyDecryptFailures?.length ?? 0}
           label="Some legacy messages couldn't be decrypted."
@@ -446,7 +445,6 @@ function MessagesPage() {
       )}
 
       {signerConnected &&
-        messagingReady &&
         conversations.length === 0 &&
         (cachedQuery.isLoading || liveQuery.isLoading) && (
           <div className="text-sm text-[var(--text-secondary)]">
