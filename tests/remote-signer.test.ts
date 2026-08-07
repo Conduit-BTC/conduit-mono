@@ -18,6 +18,7 @@ import {
   parseBunkerUri,
   persistRemoteSignerSession,
   readAuthRevision,
+  rollbackAndAbandonRemoteSignerConnection,
   rollbackNewRemoteSignerSession,
   readAuthSession,
   restoreRemoteSigner,
@@ -194,6 +195,31 @@ describe("remote signer parsing and storage", () => {
     expect(storage.getItem(AUTH_STORAGE_KEY)).toBeNull()
   })
 
+  it("treats an inaccessible browser storage getter as unavailable", () => {
+    const originalWindowDescriptor = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "window"
+    )
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: {
+        get localStorage() {
+          throw new Error("Storage access denied")
+        },
+      },
+    })
+
+    try {
+      expect(readAuthSession()).toBeNull()
+    } finally {
+      if (originalWindowDescriptor) {
+        Object.defineProperty(globalThis, "window", originalWindowDescriptor)
+      } else {
+        Reflect.deleteProperty(globalThis, "window")
+      }
+    }
+  })
+
   it("does not commit a stale remote session after vault persistence", async () => {
     const storage = new MemoryStorage()
     const keyVault = new MemoryKeyVault()
@@ -237,6 +263,50 @@ describe("remote signer parsing and storage", () => {
     expect(keyVault.values.has(CLIENT_KEY_ID)).toBe(false)
   })
 
+  it("preserves matching metadata and key when post-write rollback cannot read storage", async () => {
+    const backingStorage = new MemoryStorage()
+    let storageReadable = true
+    const restrictedStorage: AuthStorage = {
+      getItem(key) {
+        if (!storageReadable) throw new Error("Storage access denied")
+        return backingStorage.getItem(key)
+      },
+      setItem(key, value) {
+        backingStorage.setItem(key, value)
+      },
+      removeItem(key) {
+        backingStorage.removeItem(key)
+      },
+    }
+    const keyVault = new MemoryKeyVault()
+    let checks = 0
+
+    await expect(
+      persistRemoteSignerSession(
+        {
+          session: session(),
+          clientPrivateKey: CLIENT_PRIVATE_KEY_HEX,
+          clientKeyAlreadyPersisted: false,
+        },
+        restrictedStorage,
+        keyVault,
+        () => {
+          checks += 1
+          if (checks === 2) {
+            storageReadable = false
+            return false
+          }
+          return true
+        }
+      )
+    ).rejects.toMatchObject({
+      code: "unavailable",
+      operation: "persist session",
+    })
+    expect(backingStorage.getItem(AUTH_STORAGE_KEY)).not.toBeNull()
+    expect(keyVault.values.get(CLIENT_KEY_ID)).toBe(CLIENT_PRIVATE_KEY_HEX)
+  })
+
   it("rolls back only the losing pairing key, not winning metadata", async () => {
     const storage = new MemoryStorage()
     const keyVault = new MemoryKeyVault()
@@ -255,6 +325,32 @@ describe("remote signer parsing and storage", () => {
 
     expect(readAuthSession(storage)).toEqual(winner)
     expect(keyVault.values.has(CLIENT_KEY_ID)).toBe(false)
+  })
+
+  it("classifies a failed rollback key removal", async () => {
+    const storage = new MemoryStorage()
+    storage.setItem(AUTH_STORAGE_KEY, JSON.stringify(session()))
+
+    await expect(
+      rollbackNewRemoteSignerSession(
+        {
+          session: session(),
+          clientKeyAlreadyPersisted: false,
+        },
+        storage,
+        {
+          prepare: async () => undefined,
+          store: async () => undefined,
+          load: async () => null,
+          remove: async () => {
+            throw new Error("Vault removal failed")
+          },
+        }
+      )
+    ).rejects.toMatchObject({
+      code: "unavailable",
+      operation: "rollback session",
+    })
   })
 
   it("does not remove a shared key when a restored session loses its claim", async () => {
@@ -377,6 +473,140 @@ describe("remote signer parsing and storage", () => {
 })
 
 describe("remote signer lifecycle", () => {
+  it("rolls back and abandons a newly persisted uncommitted connection", async () => {
+    const storage = new MemoryStorage()
+    const keyVault = new MemoryKeyVault()
+    let logoutCalls = 0
+    const bunkerSigner = fakeSigner({
+      logout: async () => {
+        logoutCalls += 1
+      },
+    })
+    const connection = await pairRemoteSigner(BUNKER_URI, {
+      keyVault,
+      generateClientPrivateKey: () => CLIENT_PRIVATE_KEY,
+      createBunkerSigner: () => bunkerSigner,
+    })
+
+    expect(
+      await persistRemoteSignerSession(connection, storage, keyVault)
+    ).toBe(true)
+    expect(readAuthSession(storage)).toEqual(connection.session)
+    expect(keyVault.values.has(connection.session.clientKeyId)).toBe(true)
+
+    await rollbackAndAbandonRemoteSignerConnection(
+      connection,
+      storage,
+      keyVault
+    )
+
+    expect(readAuthSession(storage)).toBeNull()
+    expect(keyVault.values.has(connection.session.clientKeyId)).toBe(false)
+    expect(logoutCalls).toBe(1)
+    await expect(
+      connection.signer.encrypt(
+        new NDKUser({ pubkey: OTHER_PUBKEY }),
+        "payload"
+      )
+    ).rejects.toThrow("session is unavailable")
+  })
+
+  it("preserves a restored session when its uncommitted connection is abandoned", async () => {
+    const storage = new MemoryStorage()
+    const keyVault = seededKeyVault()
+    const storedSession = session()
+    storage.setItem(AUTH_STORAGE_KEY, JSON.stringify(storedSession))
+    let logoutCalls = 0
+    let closeCalls = 0
+    const bunkerSigner = fakeSigner({
+      logout: async () => {
+        logoutCalls += 1
+      },
+      close: async () => {
+        closeCalls += 1
+      },
+    })
+    const connection = await restoreRemoteSigner(storedSession, {
+      keyVault,
+      createBunkerSigner: () => bunkerSigner,
+      now: () => 20,
+    })
+
+    expect(
+      await persistRemoteSignerSession(connection, storage, keyVault)
+    ).toBe(true)
+
+    await rollbackAndAbandonRemoteSignerConnection(
+      connection,
+      storage,
+      keyVault
+    )
+
+    expect(readAuthSession(storage)).toEqual(connection.session)
+    expect(keyVault.values.get(CLIENT_KEY_ID)).toBe(CLIENT_PRIVATE_KEY_HEX)
+    expect(logoutCalls).toBe(0)
+    expect(closeCalls).toBe(1)
+    await expect(
+      connection.signer.encrypt(
+        new NDKUser({ pubkey: OTHER_PUBKEY }),
+        "payload"
+      )
+    ).rejects.toThrow("session is unavailable")
+  })
+
+  it("preserves the key and metadata when rollback storage cannot be read", async () => {
+    const backingStorage = new MemoryStorage()
+    let storageReadable = true
+    const restrictedStorage: AuthStorage = {
+      getItem(key) {
+        if (!storageReadable) throw new Error("Storage access denied")
+        return backingStorage.getItem(key)
+      },
+      setItem(key, value) {
+        backingStorage.setItem(key, value)
+      },
+      removeItem(key) {
+        backingStorage.removeItem(key)
+      },
+    }
+    const keyVault = new MemoryKeyVault()
+    let logoutCalls = 0
+    const bunkerSigner = fakeSigner({
+      logout: async () => {
+        logoutCalls += 1
+      },
+    })
+    const connection = await pairRemoteSigner(BUNKER_URI, {
+      keyVault,
+      generateClientPrivateKey: () => CLIENT_PRIVATE_KEY,
+      createBunkerSigner: () => bunkerSigner,
+    })
+
+    expect(
+      await persistRemoteSignerSession(connection, restrictedStorage, keyVault)
+    ).toBe(true)
+    storageReadable = false
+
+    await expect(
+      rollbackAndAbandonRemoteSignerConnection(
+        connection,
+        restrictedStorage,
+        keyVault
+      )
+    ).rejects.toMatchObject({
+      operation: "rollback session",
+    })
+    expect(backingStorage.getItem(AUTH_STORAGE_KEY)).not.toBeNull()
+    expect(keyVault.values.has(connection.session.clientKeyId)).toBe(true)
+    expect(logoutCalls).toBe(1)
+    await expect(
+      connection.signer.encrypt(
+        new NDKUser({ pubkey: OTHER_PUBKEY }),
+        "payload"
+      )
+    ).rejects.toThrow("session is unavailable")
+  })
+
   it("does not contact the signer when encrypted storage is unavailable", async () => {
     let signerCreated = false
     await expect(
