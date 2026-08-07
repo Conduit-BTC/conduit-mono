@@ -8,7 +8,8 @@
     "packages/*"
   ],
   "overrides": {
-    "postcss": "8.5.25"
+    "postcss": "8.5.25",
+    "undici": "7.29.0"
   },
   "scripts": {
     "seed:nsec": "bun -e 'import { nip19 } from \"@nostr-dev-kit/ndk\"; import { randomBytes } from \"node:crypto\"; console.log(nip19.nsecEncode(randomBytes(32)));'",

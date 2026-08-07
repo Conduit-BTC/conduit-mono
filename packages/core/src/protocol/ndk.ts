@@ -67,8 +67,18 @@ type EventWithSourceRelayUrls = NDKEvent & {
 
 type Listener = () => void
 
+/**
+ * Identifies the auth lifecycle that installed the shared NDK signer.
+ * Cleanup must present the same lease so an older provider cannot clear a
+ * signer installed by a newer provider during remounts or Fast Refresh.
+ */
+export type SignerLease = {
+  readonly signer: NDKSigner
+  readonly token: symbol
+}
+
 let ndkInstance: NDK | null = null
-let activeSigner: NDKSigner | undefined
+let activeSignerLease: SignerLease | null = null
 let state: NdkState = {
   status: "idle",
   connectedRelays: [],
@@ -130,7 +140,10 @@ export function getNdk(): NDK {
         fallbackRelayUrls: config.defaultRelays,
       }),
     })
-    if (activeSigner) ndkInstance.signer = activeSigner
+    if (activeSignerLease) {
+      // Relay-client resets must not silently disconnect the auth session.
+      ndkInstance.signer = activeSignerLease.signer
+    }
   }
   return ndkInstance
 }
@@ -262,6 +275,8 @@ function failVerifyWorker(worker: Worker): void {
 }
 
 export function __resetNdkTestState(): void {
+  activeSignerLease = null
+  if (ndkInstance) ndkInstance.signer = undefined
   if (verifyWorker) {
     try {
       verifyWorker.terminate()
@@ -841,11 +856,9 @@ export async function requireNdkConnected(timeoutMs = 10_000): Promise<NDK> {
       }
 
       // First attempt failed — reset the NDK instance for fresh websocket connections and retry
-      const savedSigner = activeSigner ?? ndk.signer
       ndkInstance = null
       connectPromise = null
       ndk = getNdk()
-      if (savedSigner) ndk.signer = savedSigner
 
       await connectNdk(timeoutMs * 2)
       if (generation !== ndkGeneration) {
@@ -874,21 +887,27 @@ export async function requireNdkConnected(timeoutMs = 10_000): Promise<NDK> {
   return requirePromise
 }
 
-export function setSigner(signer: NDKSigner): void {
-  activeSigner = signer
+export function setSigner(signer: NDKSigner): SignerLease {
+  const lease = Object.freeze({
+    signer,
+    token: Symbol("ndk-signer-lease"),
+  })
+  activeSignerLease = lease
   const ndk = getNdk()
   ndk.signer = signer
+  return lease
 }
 
-export function removeSigner(): void {
-  activeSigner = undefined
-  const ndk = getNdk()
-  ndk.signer = undefined
+export function removeSigner(lease: SignerLease): void {
+  if (lease !== activeSignerLease) return
+  activeSignerLease = null
+  if (ndkInstance) {
+    ndkInstance.signer = undefined
+  }
 }
 
 export function disconnectNdk(): void {
   ndkGeneration += 1
-  activeSigner = undefined
   if (ndkInstance) {
     ndkInstance.signer = undefined
     ndkInstance = null
@@ -909,8 +928,6 @@ export function refreshNdkRelaySettings(scope?: string | null): void {
     setActiveRelaySettingsScope(scope)
   }
 
-  const savedSigner = activeSigner ?? ndkInstance?.signer
-
   if (ndkInstance) {
     for (const [, relay] of ndkInstance.pool?.relays?.entries() ?? []) {
       relay.disconnect()
@@ -922,8 +939,7 @@ export function refreshNdkRelaySettings(scope?: string | null): void {
   connectPromise = null
   requirePromise = null
 
-  const ndk = getNdk()
-  if (savedSigner) ndk.signer = savedSigner
+  getNdk()
 
   setState({
     status: "idle",

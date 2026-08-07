@@ -416,6 +416,27 @@ export async function publishPrivateMessage(
     throw new Error("Private message rumor kind does not match requested kind")
   }
 
+  const senderPubkey = input.senderPubkey.trim().toLowerCase()
+  const recipientPubkey = input.recipientPubkey.trim().toLowerCase()
+  if (input.rumor.pubkey?.trim().toLowerCase() !== senderPubkey) {
+    throw new Error("Private message rumor author does not match sender")
+  }
+  const signerPubkey = (await input.signer.user()).pubkey.trim().toLowerCase()
+  if (signerPubkey !== senderPubkey) {
+    throw new Error("Private message signer does not match sender")
+  }
+  if (
+    recipientPubkey !== senderPubkey &&
+    !input.rumor.tags.some(
+      (tag) =>
+        tag[0] === "p" && tag[1]?.trim().toLowerCase() === recipientPubkey
+    )
+  ) {
+    throw new Error(
+      "Private message rumor recipient does not match delivery recipient"
+    )
+  }
+
   const giftWrapFn = input.giftWrapFn ?? giftWrap
   const selfCopy = input.selfCopy ?? true
   const refreshRelayLists = input.refreshRelayLists ?? true

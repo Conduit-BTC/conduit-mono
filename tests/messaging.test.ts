@@ -22,7 +22,9 @@ import {
   type GiftUnwrapFn,
 } from "@conduit/core"
 
-const signer = {} as NDKSigner
+const signer = {
+  user: async () => ({ pubkey: "sender" }),
+} as unknown as NDKSigner
 
 function wrap(id: string): NDKEvent {
   return { id } as unknown as NDKEvent
@@ -394,6 +396,70 @@ describe("publishPrivateMessage", () => {
     expect(kind4IsPublishable).toBe(false)
   })
 
+  it("rejects a rumor authored by a different account before wrapping", async () => {
+    let wrapped = false
+
+    await expect(
+      publishPrivateMessage({
+        rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE, { pubkey: "other" }),
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer,
+        rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+        recipientInboxRelays: ["wss://recipient.inbox.example"],
+        giftWrapFn: (async () => {
+          wrapped = true
+          return wrap("unexpected")
+        }) as never,
+      })
+    ).rejects.toThrow("rumor author does not match sender")
+    expect(wrapped).toBe(false)
+  })
+
+  it("rejects a signer principal that differs from the sender", async () => {
+    let wrapped = false
+
+    await expect(
+      publishPrivateMessage({
+        rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE),
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer: {
+          user: async () => ({ pubkey: "other" }),
+        } as unknown as NDKSigner,
+        rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+        recipientInboxRelays: ["wss://recipient.inbox.example"],
+        giftWrapFn: (async () => {
+          wrapped = true
+          return wrap("unexpected")
+        }) as never,
+      })
+    ).rejects.toThrow("signer does not match sender")
+    expect(wrapped).toBe(false)
+  })
+
+  it("rejects a rumor addressed to a different recipient", async () => {
+    let wrapped = false
+
+    await expect(
+      publishPrivateMessage({
+        rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE, {
+          tags: [["p", "someone-else"]],
+        }),
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer,
+        rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+        recipientInboxRelays: ["wss://recipient.inbox.example"],
+        giftWrapFn: (async () => {
+          wrapped = true
+          return wrap("unexpected")
+        }) as never,
+      })
+    ).rejects.toThrow("rumor recipient does not match delivery recipient")
+    expect(wrapped).toBe(false)
+  })
+
   it("throws typed recipient_not_ready before wrapping or publishing", async () => {
     let wrapped = false
     let published = false
@@ -514,10 +580,19 @@ describe("publishPrivateMessage", () => {
     const wrappedRecipients: string[] = []
 
     const result = await publishPrivateMessage({
-      rumor: orderRumor(),
+      rumor: orderRumor({
+        pubkey: "guest",
+        tags: [
+          ["p", "merchant"],
+          ["type", "message"],
+          ["order", "order-id"],
+        ],
+      }),
       senderPubkey: "guest",
       recipientPubkey: "merchant",
-      signer,
+      signer: {
+        user: async () => ({ pubkey: "guest" }),
+      } as unknown as NDKSigner,
       rumorKind: EVENT_KINDS.ORDER,
       selfCopy: false,
       resolveInboxRelays: async (pubkey) => {

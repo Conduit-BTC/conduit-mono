@@ -89,9 +89,12 @@ export async function installRejectingTestSigner(page: Page): Promise<void> {
 export async function installLockedTestSigner(page: Page): Promise<void> {
   await page.addInitScript(() => {
     let resolvePublicKey: ((pubkey: string) => void) | null = null
+    let unlockedPubkey: string | null = null
 
     window.addEventListener("conduit-test:unlock-signer", (event) => {
-      resolvePublicKey?.((event as CustomEvent<string>).detail)
+      const pubkey = (event as CustomEvent<string>).detail
+      unlockedPubkey = pubkey
+      resolvePublicKey?.(pubkey)
       resolvePublicKey = null
     })
 
@@ -99,6 +102,7 @@ export async function installLockedTestSigner(page: Page): Promise<void> {
       configurable: true,
       value: {
         getPublicKey() {
+          if (unlockedPubkey) return Promise.resolve(unlockedPubkey)
           return new Promise<string>((resolve) => {
             resolvePublicKey = resolve
           })

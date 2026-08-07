@@ -12,7 +12,8 @@ describe("Market follow session lifecycle", () => {
     expect(
       source.match(/authGenerationRef\.current !== followAuthGeneration/g)
     ).toHaveLength(2)
-    expect(source).toContain('setFollowState("idle")')
+    expect(source).toContain("storefrontFollowReducer")
+    expect(source).toContain('type: "operation_failed"')
   })
 
   it("links incomplete contact-list reads to write relay settings", () => {

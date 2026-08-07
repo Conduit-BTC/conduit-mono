@@ -11,7 +11,9 @@ import {
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
   type FormEvent,
@@ -69,6 +71,11 @@ import {
   getCategoryFacetOptions,
   normalizeFacetValues,
 } from "../../lib/facets"
+import {
+  createStorefrontFollowState,
+  isStorefrontFollowScopeEqual,
+  storefrontFollowReducer,
+} from "../../lib/storefront-follow-state"
 
 type SortOption = "newest" | "price_asc" | "price_desc"
 type CategoryFacetOption = ReturnType<typeof getCategoryFacetOptions>[number]
@@ -169,6 +176,7 @@ function StorefrontPage() {
   const { pubkey: viewerPubkey, status, authGeneration } = useAuth()
   const authGenerationRef = useRef(authGeneration)
   authGenerationRef.current = authGeneration
+  const activeViewerPubkey = status === "connected" ? viewerPubkey : null
   const shopperPricing = useShopperPricing()
   const btcUsdRate = shopperPricing.quote
   const [localSearch, setLocalSearch] = useState(search.q ?? "")
@@ -178,7 +186,7 @@ function StorefrontPage() {
   const productsQuery = useProgressiveProducts({
     scope: "storefront",
     merchantPubkey: pubkey,
-    authenticatedPubkey: status === "connected" ? viewerPubkey : null,
+    authenticatedPubkey: activeViewerPubkey,
     textQuery: search.q,
   })
   const profileRelayHints = useMemo(
@@ -195,24 +203,28 @@ function StorefrontPage() {
   const productCount = storeProducts.length
   const merchantTrust = useMerchantTrustContext({
     merchantPubkey: pubkey,
-    viewerPubkey,
     listingCount: productCount,
     profileRelayHints,
   })
   const profile = merchantTrust.profile
   const selectedTags = useMemo(() => search.tag ?? [], [search.tag])
   const selectedTagSet = useMemo(() => new Set(selectedTags), [selectedTags])
-  const [followState, setFollowState] = useState<
-    "idle" | "saving_follow" | "saving_unfollow"
-  >("idle")
-  const [followOverride, setFollowOverride] = useState<boolean | null>(null)
-  const [followError, setFollowError] = useState<string | null>(null)
-
-  useEffect(() => {
-    setFollowState("idle")
-    setFollowOverride(null)
-    setFollowError(null)
-  }, [authGeneration])
+  const followScope = useMemo(
+    () => ({ merchantPubkey: pubkey, viewerPubkey: activeViewerPubkey }),
+    [activeViewerPubkey, pubkey]
+  )
+  const [followState, dispatchFollow] = useReducer(
+    storefrontFollowReducer,
+    followScope,
+    createStorefrontFollowState
+  )
+  const followOperationIdRef = useRef(0)
+  const followStateMatchesScope = isStorefrontFollowScopeEqual(
+    followState.scope,
+    followScope
+  )
+  const followOverride = followStateMatchesScope ? followState.override : null
+  const followError = followStateMatchesScope ? followState.error : null
 
   const merchantIdentityPending = merchantTrust.merchantNamePending
   const merchantName = merchantTrust.merchantName
@@ -274,7 +286,8 @@ function StorefrontPage() {
 
   const isFollowing =
     followOverride ?? merchantTrust.viewerFollowsMerchant === true
-  const isFollowBusy = followState !== "idle"
+  const isFollowBusy =
+    followStateMatchesScope && followState.saveState !== "idle"
 
   const toggleTag = (tag: string) => {
     if (selectedTagSet.has(tag)) {
@@ -310,6 +323,10 @@ function StorefrontPage() {
     setLocalSearch(search.q ?? "")
     setSearchDirty(false)
   }, [search.q])
+
+  useLayoutEffect(() => {
+    dispatchFollow({ type: "scope_changed", scope: followScope })
+  }, [followScope])
 
   const normalizedSearch = localSearch.trim()
   const pendingSearch =
@@ -370,8 +387,13 @@ function StorefrontPage() {
 
     const nextShouldFollow = !isFollowing
     const followAuthGeneration = authGeneration
-    setFollowState(nextShouldFollow ? "saving_follow" : "saving_unfollow")
-    setFollowError(null)
+    const operationId = ++followOperationIdRef.current
+    dispatchFollow({
+      type: "operation_started",
+      scope: followScope,
+      operationId,
+      shouldFollow: nextShouldFollow,
+    })
     try {
       await publishContactListUpdate({
         ownerPubkey: viewerPubkey,
@@ -383,20 +405,31 @@ function StorefrontPage() {
       })
       if (authGenerationRef.current !== followAuthGeneration) return
 
-      setFollowOverride(nextShouldFollow)
+      dispatchFollow({
+        type: "publish_succeeded",
+        scope: followScope,
+        operationId,
+        shouldFollow: nextShouldFollow,
+      })
       await queryClient.invalidateQueries({
         queryKey: ["merchant-trust-social", viewerPubkey, pubkey],
       })
-      setFollowState("idle")
+      dispatchFollow({
+        type: "operation_settled",
+        scope: followScope,
+        operationId,
+      })
     } catch (error) {
       if (authGenerationRef.current !== followAuthGeneration) return
-      setFollowOverride(null)
-      setFollowError(
-        error instanceof Error
-          ? error.message
-          : "Could not update this follow list."
-      )
-      setFollowState("idle")
+      dispatchFollow({
+        type: "operation_failed",
+        scope: followScope,
+        operationId,
+        message:
+          error instanceof Error
+            ? error.message
+            : "Could not update this follow list.",
+      })
     }
   }
 
@@ -555,7 +588,7 @@ function StorefrontPage() {
                     <UserPlus className="h-4 w-4" />
                   )}
                   {isFollowBusy ? (
-                    followState === "saving_unfollow" ? (
+                    followState.saveState === "saving_unfollow" ? (
                       "Unfollowing…"
                     ) : (
                       "Following…"
