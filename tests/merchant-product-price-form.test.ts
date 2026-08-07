@@ -58,13 +58,13 @@ describe("merchant product price form", () => {
   it("explains fixed, included, coordinated, and digital shipping states", () => {
     expect(
       getProductShippingCostHelpText("", "physical", "USD", "fixed")
-    ).toContain("Enter 0 when shipping is included")
+    ).toContain("Optional fallback")
     expect(
       getProductShippingCostHelpText("0", "physical", "USD", "fixed")
-    ).toContain("fast checkout")
+    ).toContain("included shipping")
     expect(
       getProductShippingCostHelpText("5", "physical", "USD", "fixed")
-    ).toContain("added to the buyer total")
+    ).toContain("fallback at checkout")
     expect(
       getProductShippingCostHelpText(
         "",

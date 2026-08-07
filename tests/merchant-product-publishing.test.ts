@@ -105,15 +105,23 @@ describe("canonical product publication ordering", () => {
       productDTag: "listing",
       intent: {
         kind: "fixed_standard",
-        amount: 5,
-        currency: "USD",
-        countries: ["US"],
+        zones: [
+          {
+            amount: 5,
+            currency: "USD",
+            countries: ["US"],
+            usesProductFallback: true,
+          },
+        ],
       },
     })
 
     expect(prepared).toMatchObject({
-      shippingOptionId: `30406:${MERCHANT_PUBKEY}:listing-shipping-standard`,
-      shippingOptionDTag: "listing-shipping-standard",
+      shippingOptionId: `30406:${MERCHANT_PUBKEY}:listing-shipping-standard-us`,
+      shippingOptionDTag: "listing-shipping-standard-us",
+      shippingOptionIds: [
+        `30406:${MERCHANT_PUBKEY}:listing-shipping-standard-us`,
+      ],
       shippingCountries: ["US"],
       shippingCountryRules: [
         { code: "US", name: "US", restrictTo: [], exclude: [] },
@@ -124,7 +132,7 @@ describe("canonical product publication ordering", () => {
   it("requires a shipping ACK before caching or publishing the product", async () => {
     const calls: string[] = []
     const productEvent = event(30402)
-    const shippingEvent = event(30406)
+    const shippingEvents = [event(30406), event(30406)]
     const dependencies: CanonicalProductPublishDependencies = {
       publishShippingEvent: async () => {
         calls.push("shipping_ack")
@@ -142,7 +150,7 @@ describe("canonical product publication ordering", () => {
     await publishCanonicalProductEvents(
       {
         productEvent,
-        shippingEvent,
+        shippingEvents,
         merchantPubkey: "merchant",
         onSignedLocal: async () => {
           calls.push("product_local")
@@ -152,6 +160,7 @@ describe("canonical product publication ordering", () => {
     )
 
     expect(calls).toEqual([
+      "shipping_ack",
       "shipping_ack",
       "product_cache",
       "product_local",
@@ -179,7 +188,7 @@ describe("canonical product publication ordering", () => {
       publishCanonicalProductEvents(
         {
           productEvent: event(30402),
-          shippingEvent: event(30406),
+          shippingEvents: [event(30406)],
           merchantPubkey: "merchant",
           onSignedLocal: async () => {
             calls.push("product_local")
@@ -210,7 +219,7 @@ describe("canonical product publication ordering", () => {
     await publishCanonicalProductEvents(
       {
         productEvent: event(30402),
-        shippingEvent: null,
+        shippingEvents: [],
         merchantPubkey: "merchant",
         onSignedLocal: async () => {
           calls.push("product_local")
@@ -249,6 +258,7 @@ describe("canonical product publication ordering", () => {
       shippingCostSats: undefined,
       sourceShippingCost: undefined,
       shippingOptionId: undefined,
+      shippingOptionIds: undefined,
       shippingCountries: undefined,
       canonicalShippingResolved: false,
     })

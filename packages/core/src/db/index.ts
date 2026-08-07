@@ -82,6 +82,9 @@ export interface CachedProduct {
   }
   shippingOptionId?: string
   shippingOptionDTag?: string
+  shippingOptionIds?: string[]
+  shippingOptionDTags?: string[]
+  shippingOptionLaunchUnsupported?: boolean
   shippingCountries?: string[]
   shippingCountryRules?: Array<{
     code: string
@@ -89,6 +92,15 @@ export interface CachedProduct {
     restrictTo: string[]
     exclude: string[]
   }>
+  shippingZones?: Array<{
+    shippingOptionId: string
+    shippingOptionDTag: string
+    amount: number
+    currency: string
+    countries: string[]
+  }>
+  canonicalShippingResolved?: boolean
+  shippingOptionCreatedAt?: number
   visibility?: "public" | "private"
   stock?: number
   images: Array<{ url: string; alt?: string }>

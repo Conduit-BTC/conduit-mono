@@ -777,13 +777,19 @@ function CheckoutPage() {
         rawCheckoutItems,
         shippingOptionsIsFetching || shippingOptionsIsError
           ? []
-          : (shippingOptionsData ?? [])
+          : (shippingOptionsData ?? []),
+        {
+          country: shipping.country,
+          postalCode: shipping.postalCode,
+        }
       ),
     [
       rawCheckoutItems,
       shippingOptionsData,
       shippingOptionsIsError,
       shippingOptionsIsFetching,
+      shipping.country,
+      shipping.postalCode,
     ]
   )
   const checkoutItems = preparedFulfillment.items
@@ -847,6 +853,12 @@ function CheckoutPage() {
     hasPhysicalItemsMissingShippingZone(checkoutItems)
   const shippingOptionsAvailable =
     getCartShippingOptionsAvailable(checkoutItems)
+  const usesLegacyShippingFallback = Array.from(
+    preparedFulfillment.resolutions.values()
+  ).some((resolution) => resolution.reason === "legacy_inline")
+  const destinationHasNoZoneRate = Array.from(
+    preparedFulfillment.resolutions.values()
+  ).some((resolution) => resolution.reason === "destination_unsupported")
 
   const checkoutShippingCost = useMemo(
     () => getCheckoutShippingCost(checkoutItems, btcUsdRate),
@@ -1160,9 +1172,15 @@ function CheckoutPage() {
       case "loading":
         return "Resolving the product's fixed shipping option before direct payment is offered."
       case "missing_product_zone":
-        return "One product does not have resolved fixed shipping, so direct payment is disabled."
+        return usesLegacyShippingFallback
+          ? "Legacy product shipping is available as an order-first fallback. The merchant must confirm the final rate before payment."
+          : destinationHasNoZoneRate
+            ? "No published flat rate covers this destination. You can still send the order and coordinate shipping with the merchant."
+            : "One product does not have resolved fixed shipping, so direct payment is disabled."
       case "no_published_rule":
-        return "The referenced fixed shipping option could not be resolved. You can still send the order first."
+        return usesLegacyShippingFallback
+          ? "Legacy product shipping is available as an order-first fallback. The merchant must confirm the final rate before payment."
+          : "The referenced fixed shipping option could not be resolved. You can still send the order first."
       case "allowed":
         return currentAddressValidity.canDirectPay
           ? "The product's fixed shipping option covers this destination."
@@ -1955,6 +1973,7 @@ function CheckoutPage() {
         items: checkoutPricing.items.map((item) => ({
           productAddress: item.productId,
           quantity: item.quantity,
+          shippingOptionId: item.shippingOptionId,
         })),
         anonZapPreparation:
           checkoutMode === "anonymous_public_zap"
