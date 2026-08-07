@@ -68,17 +68,19 @@ export function buildProductDeliveryNotice(
     successfulRelayUrls,
     failedRelayUrls,
   })
-  const attemptedCount =
-    attemptedRelayUrls.length ||
-    successfulRelayUrls.length + failedRelayUrls.length
+  const totalRelayCount = mergeRelayUrls(
+    attemptedRelayUrls,
+    successfulRelayUrls,
+    failedRelayUrls
+  ).length
   const actionLabel = action === "delete" ? "Delete" : "Publish"
   const localEffect =
     action === "delete"
       ? "The listing is hidden locally by a signed tombstone."
       : "The signed listing is visible locally."
   const relaySummary =
-    attemptedCount > 0
-      ? `ACKed ${successfulRelayUrls.length} of ${getRelayCountLabel(attemptedCount)}.`
+    totalRelayCount > 0
+      ? `ACKed ${successfulRelayUrls.length} of ${getRelayCountLabel(totalRelayCount)}.`
       : "Relay delivery completed without per-relay ACK details."
   const retrySummary =
     failedRelayUrls.length > 0
