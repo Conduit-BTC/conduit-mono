@@ -806,6 +806,7 @@ async function resolveRelayUrls(
   let relayLists = new Map()
   try {
     relayLists = await resolveRelayLists([merchantPubkey, shopperPubkey], {
+      allowInsecureRelayUrlsForPubkey: merchantPubkey,
       signal,
     })
   } catch (error) {

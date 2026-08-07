@@ -734,8 +734,18 @@ describe("shopper trust evidence", () => {
       "wss://shopper-read-one.example",
       "wss://shopper-read-two.example",
     ]
-    const resolveRelayLists: ShopperTrustResolveRelayLists = async (pubkeys) =>
-      new Map(
+    const initialRelayAllowlist: Array<string | null | undefined> = []
+    const resolveRelayLists: ShopperTrustResolveRelayLists = async (
+      pubkeys,
+      options
+    ) => {
+      if (
+        pubkeys.includes(MERCHANT_PUBKEY) &&
+        pubkeys.includes(SHOPPER_PUBKEY)
+      ) {
+        initialRelayAllowlist.push(options?.allowInsecureRelayUrlsForPubkey)
+      }
+      return new Map(
         pubkeys.flatMap((pubkey) => {
           if (pubkey === MERCHANT_PUBKEY) {
             return [
@@ -761,6 +771,7 @@ describe("shopper trust evidence", () => {
           return []
         })
       )
+    }
     const reads: Array<{
       filter: NDKFilter
       relayUrls: string[]
@@ -806,6 +817,7 @@ describe("shopper trust evidence", () => {
     expect(contactsRead?.relayUrls).toHaveLength(6)
     expect(contactsRead?.relayUrls).toContain(publicRelay)
     expect(contactsRead?.relayUrls).not.toContain(merchantWriteRelays[3])
+    expect(initialRelayAllowlist).toEqual([MERCHANT_PUBKEY])
   })
 
   it("checks a reverse-follow candidate on the candidate author outbox", async () => {
