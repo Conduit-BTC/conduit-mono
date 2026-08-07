@@ -464,7 +464,7 @@ describe("general direct-message gateway", () => {
     expect(result.meta.degraded).toBe(true)
   })
 
-  it("marks an empty result degraded when the current NIP-17 lane is unavailable", async () => {
+  it("marks an empty result degraded when no inbox declaration exists", async () => {
     __setCommerceTestOverrides({
       resolveInboxRelayUrls: async () => [],
       fetchEventsFanout: async () => [],
@@ -474,10 +474,15 @@ describe("general direct-message gateway", () => {
       principalPubkey: BUYER,
     })
 
+    // Permissive reads (CND-208): the read still runs over local/compatibility
+    // relays, but a missing declaration keeps the surface degraded.
     expect(result.data).toEqual([])
-    expect(result.meta.stale).toBe(true)
+    expect(result.meta.stale).toBe(false)
     expect(result.meta.degraded).toBe(true)
+    expect(result.meta.inbox?.declarationState).toBe("not_declared")
+    expect(result.meta.inbox?.coverage).toBe("complete")
   })
+
 
   it("re-attempts only previously-failed wraps on a later read", async () => {
     const unwrapCalls: Record<string, number> = {}

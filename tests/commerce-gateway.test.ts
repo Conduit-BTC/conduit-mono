@@ -23,7 +23,7 @@ import {
   __resetRelayListTestOverrides,
   __setRelayListTestOverrides,
 } from "@conduit/core"
-import { EVENT_KINDS } from "@conduit/core"
+import { config, EVENT_KINDS } from "@conduit/core"
 import type {
   CachedOrderMessage,
   CachedProduct,
@@ -1706,7 +1706,7 @@ describe("commerce gateway", () => {
     expect(result.data[0]?.status).toBeNull()
   })
 
-  it("queries only the declared merchant inbox relays for gift-wrapped orders", async () => {
+  it("reads gift wraps from declared inbox plus compatibility relays", async () => {
     const merchantPubkey = "merchant"
     const merchantReadRelays = Array.from(
       { length: 8 },
@@ -1743,7 +1743,14 @@ describe("commerce gateway", () => {
       limit: 50,
     })
 
-    expect(seenRelayUrls).toEqual(merchantReadRelays)
+    // Permissive reads (CND-208): declared inbox relays lead the plan and the
+    // bounded compatibility read set stays present even with local settings.
+    expect(seenRelayUrls?.slice(0, merchantReadRelays.length)).toEqual(
+      merchantReadRelays
+    )
+    for (const compatibilityRelayUrl of config.commerceDmFallbackRelayUrls) {
+      expect(seenRelayUrls).toContain(compatibilityRelayUrl)
+    }
   })
 
   it("retries parsed wrapped order messages when cache persistence fails", async () => {

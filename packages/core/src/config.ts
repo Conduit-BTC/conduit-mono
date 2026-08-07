@@ -4,6 +4,7 @@ export type RelayBucketId =
   | "search_index"
   | "commerce_dm_fallback"
   | "dm_inbox_default"
+  | "dm_bootstrap_write"
   | "zap_public"
 
 export interface RelayBucketConfig {
@@ -32,6 +33,13 @@ export const CANONICAL_DM_INBOX_DEFAULT_RELAYS = [
   "wss://relay.damus.io",
   "wss://relay.nostr.net",
 ]
+/**
+ * Conduit bootstrap order routing (CND-208): explicit Conduit-operated
+ * allowlist for temporary compatibility writes of validated kind-16 order
+ * messages when a recipient has no usable kind-10050 declaration. Never
+ * extend this with arbitrary NIP-65, local OUT, or public relays.
+ */
+export const CANONICAL_DM_BOOTSTRAP_WRITE_RELAYS = ["wss://relay.conduit.market"]
 export const CANONICAL_ZAP_PUBLIC_RELAYS = [
   "wss://nos.lol",
   "wss://relay.damus.io",
@@ -83,6 +91,9 @@ export interface ConduitConfig {
   searchIndexRelayUrls: string[]
   commerceDmFallbackRelayUrls: string[]
   dmInboxDefaultRelayUrls: string[]
+  dmBootstrapWriteRelayUrls: string[]
+  /** Redeploy-controlled flag for Conduit bootstrap order writes. */
+  dmBootstrapWritesEnabled: boolean
   zapRelayUrls: string[]
   cacheApiUrl: string | null
   lightningNetwork: "mainnet" | "signet" | "testnet" | "mock"
@@ -107,6 +118,7 @@ function getViteEnv(): {
   commerceRelayUrls: string
   cacheApiUrl: string
   lightningNetwork: string
+  dmBootstrapWrites: string
   nip89RelayHint: string
   nip89MarketPubkey: string
   nip89MerchantPubkey: string
@@ -125,6 +137,7 @@ function getViteEnv(): {
       commerceRelayUrls: import.meta.env.VITE_COMMERCE_RELAY_URLS ?? "",
       cacheApiUrl: import.meta.env.VITE_CACHE_API_URL ?? "",
       lightningNetwork: import.meta.env.VITE_LIGHTNING_NETWORK ?? "",
+      dmBootstrapWrites: import.meta.env.VITE_DM_BOOTSTRAP_WRITES ?? "",
       nip89RelayHint: import.meta.env.VITE_NIP89_RELAY_HINT ?? "",
       nip89MarketPubkey: import.meta.env.VITE_NIP89_MARKET_PUBKEY ?? "",
       nip89MerchantPubkey: import.meta.env.VITE_NIP89_MERCHANT_PUBKEY ?? "",
@@ -143,6 +156,7 @@ function getViteEnv(): {
     commerceRelayUrls: "",
     cacheApiUrl: "",
     lightningNetwork: "",
+    dmBootstrapWrites: "",
     nip89RelayHint: "",
     nip89MarketPubkey: "",
     nip89MerchantPubkey: "",
@@ -323,6 +337,12 @@ const commerceDmFallbackRelayUrls = uniqueConfiguredRelayUrls(
 const dmInboxDefaultRelayUrls = uniqueConfiguredRelayUrls(
   CANONICAL_DM_INBOX_DEFAULT_RELAYS
 )
+const dmBootstrapWriteRelayUrls = uniqueConfiguredRelayUrls(
+  CANONICAL_DM_BOOTSTRAP_WRITE_RELAYS
+)
+const dmBootstrapWritesEnabled = ["1", "true", "on"].includes(
+  env.dmBootstrapWrites.trim().toLowerCase()
+)
 const zapRelayUrls = uniqueConfiguredRelayUrls(CANONICAL_ZAP_PUBLIC_RELAYS)
 const commerceRelayUrls = uniqueConfiguredRelayUrls([
   ...appWriteRelayUrls,
@@ -352,6 +372,8 @@ export const config: ConduitConfig = {
   searchIndexRelayUrls,
   commerceDmFallbackRelayUrls,
   dmInboxDefaultRelayUrls,
+  dmBootstrapWriteRelayUrls,
+  dmBootstrapWritesEnabled,
   zapRelayUrls,
   cacheApiUrl: env.cacheApiUrl.trim() || null,
   lightningNetwork: (env.lightningNetwork ||
@@ -442,6 +464,11 @@ export function getRelayBucketConfigs(
       id: "dm_inbox_default",
       label: "Default encrypted order inbox",
       relayUrls: cfg.dmInboxDefaultRelayUrls,
+    },
+    {
+      id: "dm_bootstrap_write",
+      label: "Conduit bootstrap order route",
+      relayUrls: cfg.dmBootstrapWriteRelayUrls,
     },
     {
       id: "zap_public",

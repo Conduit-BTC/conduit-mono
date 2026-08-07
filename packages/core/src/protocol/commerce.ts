@@ -20,16 +20,25 @@ import { EVENT_KINDS } from "./kinds"
 import {
   fetchEventsFanout,
   fetchEventsFanoutProgressive,
+  fetchEventsFanoutWithDiagnostics,
   getEventSourceRelayUrls,
   requireNdkConnected,
 } from "./ndk"
+import {
+  deriveInboxReadCoverage,
+  planInboxReadRelays,
+  resolveInboxDeclaration,
+  type InboxDeclarationResolution,
+  type InboxDeclarationState,
+  type InboxReadCoverage,
+  type InboxReadSource,
+} from "./private-message-routing"
 import { extractOrderSummary } from "./order-summary"
 import { parseOrderMessageRumorEvent, type ParsedOrderMessage } from "./orders"
 import {
   __resetInboxRelayCache,
   createNdkLegacyDmDecrypt,
   decryptLegacyDirectMessage,
-  fetchInboxRelayUrls,
   parseDirectMessageRumor,
   unwrapGiftWraps,
   type DecryptFailure,
@@ -88,6 +97,17 @@ export interface CommerceCapabilities {
   cursorPagination: boolean
 }
 
+/**
+ * Content-free status of the principal's NIP-17 inbox for one read (CND-208).
+ * Distinguishes "no declaration exists" from "the lookup or read degraded" so
+ * surfaces never render a false "not declared" or a false empty inbox.
+ */
+export interface PrivateInboxReadStatus {
+  declarationState: InboxDeclarationState
+  coverage: InboxReadCoverage
+  readSource: InboxReadSource
+}
+
 export interface CommerceQueryMeta {
   source: CommerceReadSource
   degraded: boolean
@@ -95,6 +115,8 @@ export interface CommerceQueryMeta {
   capabilities: CommerceCapabilities
   fetchedAt: number
   nextCursor?: string
+  /** Present on private-message reads (order/DM surfaces). */
+  inbox?: PrivateInboxReadStatus
   /**
    * Gift wraps that could not be turned into messages this read (id + coarse
    * reason only, never content). Surfaced so UIs render a retryable degraded
@@ -231,6 +253,7 @@ type RawMessageFetchResult = {
   source: CommerceReadSource
   stale: boolean
   decryptFailures: DecryptFailure[]
+  inbox?: PrivateInboxReadStatus
 }
 
 type RawDirectMessageFetchResult = {
@@ -240,12 +263,14 @@ type RawDirectMessageFetchResult = {
   stale: boolean
   decryptFailures: DecryptFailure[]
   legacyDecryptFailures: LegacyDmDecryptFailure[]
+  inbox?: PrivateInboxReadStatus
 }
 
 type PrivateInboxSyncResult = {
   orderMessages: ParsedOrderMessage[]
   directMessages: ParsedDirectMessage[]
   decryptFailures: DecryptFailure[]
+  inbox: PrivateInboxReadStatus
 }
 
 type LegacyDmSyncResult = {
@@ -467,6 +492,31 @@ async function runFetchEventsFanout(
   return (await impl(filter, options)) as NDKEvent[]
 }
 
+/**
+ * Diagnostics-aware fanout honoring the events-only test override. An
+ * events-only override cannot report per-relay failure, so its result counts
+ * as complete coverage.
+ */
+async function runFetchEventsFanoutWithDiagnostics(
+  filter: NDKFilter,
+  options?: Parameters<typeof fetchEventsFanoutWithDiagnostics>[1]
+): Promise<Awaited<ReturnType<typeof fetchEventsFanoutWithDiagnostics>>> {
+  if (testOverrides.fetchEventsFanout) {
+    const events = (await testOverrides.fetchEventsFanout(
+      filter,
+      options
+    )) as NDKEvent[]
+    const relayUrls = [...(options?.relayUrls ?? [])]
+    return {
+      events,
+      attemptedRelayUrls: relayUrls,
+      successfulRelayUrls: relayUrls,
+      failedRelayUrls: [],
+    }
+  }
+  return await fetchEventsFanoutWithDiagnostics(filter, options)
+}
+
 async function runRequireNdkConnected(): Promise<
   Awaited<ReturnType<typeof requireNdkConnected>>
 > {
@@ -508,6 +558,7 @@ function createMeta(
     nextCursor?: string
     decryptFailures?: DecryptFailure[]
     legacyDecryptFailures?: LegacyDmDecryptFailure[]
+    inbox?: PrivateInboxReadStatus
   } = {}
 ): CommerceQueryMeta {
   const plan = resolveReadPlan(planName)
@@ -527,12 +578,16 @@ function createMeta(
       (options.stale === true ||
         source !== plan.sources[0] ||
         decryptFailures !== undefined ||
-        legacyDecryptFailures !== undefined),
+        legacyDecryptFailures !== undefined ||
+        (options.inbox !== undefined &&
+          (options.inbox.coverage !== "complete" ||
+            options.inbox.declarationState !== "declared"))),
     capabilities,
     fetchedAt: now(),
     nextCursor: options.nextCursor,
     decryptFailures,
     legacyDecryptFailures,
+    inbox: options.inbox,
   }
 }
 
@@ -2685,9 +2740,11 @@ async function fetchParsedOrderMessages(
     )
     return {
       messages,
-      source: "commerce",
-      stale: false,
+      source:
+        sync.inbox.coverage === "unavailable" ? "local_cache" : "commerce",
+      stale: sync.inbox.coverage === "unavailable",
       decryptFailures: sync.decryptFailures,
+      inbox: sync.inbox,
     }
   } catch (error) {
     if (cachedById.size > 0) {
@@ -2705,48 +2762,81 @@ async function fetchParsedOrderMessages(
   }
 }
 
-/** Resolve the principal's declared NIP-17 inbox. Empty lists are not cached. */
-async function resolveInboxReadRelays(
+/**
+ * Resolve the principal's kind-10050 declaration with typed outcomes.
+ * A missing declaration never blocks reading the principal's own gift wraps;
+ * it only changes the read plan and the surfaced readiness state.
+ */
+async function resolvePrincipalInboxDeclaration(
   principalPubkey: string
-): Promise<string[]> {
+): Promise<InboxDeclarationResolution> {
   if (testOverrides.resolveInboxRelayUrls) {
-    const relays = await testOverrides.resolveInboxRelayUrls(principalPubkey)
-    const secure = relays.filter((url) => !isInsecureRelayUrl(url))
-    if (secure.length === 0) {
-      throw new Error("No NIP-17 inbox relay declaration found.")
+    try {
+      const relays = await testOverrides.resolveInboxRelayUrls(principalPubkey)
+      const secure = relays.filter((url) => !isInsecureRelayUrl(url))
+      return {
+        pubkey: principalPubkey,
+        state: secure.length > 0 ? "declared" : "not_declared",
+        relayUrls: secure,
+        stale: false,
+        fetchedAt: now(),
+      }
+    } catch {
+      return {
+        pubkey: principalPubkey,
+        state: "lookup_unavailable",
+        relayUrls: [],
+        stale: false,
+        fetchedAt: now(),
+      }
     }
-    return secure
   }
-  const secure = await fetchInboxRelayUrls(principalPubkey, {
-    fetchEvents: runFetchEventsFanout,
-    relayUrls: publicReadRelayUrls(),
+  return await resolveInboxDeclaration(principalPubkey, {
+    fetchEventsWithDiagnostics: runFetchEventsFanoutWithDiagnostics,
   })
-  if (secure.length === 0) {
-    throw new Error("No NIP-17 inbox relay declaration found.")
-  }
-  return secure
 }
 
+type InboxWrapFetchResult = {
+  wraps: NDKEvent[]
+  inbox: PrivateInboxReadStatus
+}
+
+/**
+ * Permissive inbox read (CND-208): union of declared inbox relays, locally
+ * enabled secure IN relays, and the bounded compatibility read set. All-failed
+ * reads surface as coverage "unavailable" instead of a healthy empty inbox.
+ */
 async function fetchNewInboxWraps(
   principalPubkey: string,
   limit: number
-): Promise<NDKEvent[]> {
+): Promise<InboxWrapFetchResult> {
   const filter: NDKFilter = {
     kinds: [EVENT_KINDS.GIFT_WRAP],
     "#p": [principalPubkey],
     limit,
   }
 
-  const inboxRelayUrls = await resolveInboxReadRelays(principalPubkey)
+  const declaration = await resolvePrincipalInboxDeclaration(principalPubkey)
+  const readPlan = planInboxReadRelays({
+    declaration,
+    maxRelays: DM_INBOX_READ_FANOUT,
+  })
 
-  const wrapped = await runFetchEventsFanout(filter, {
-    relayUrls: inboxRelayUrls.slice(0, DM_INBOX_READ_FANOUT),
+  const result = await runFetchEventsFanoutWithDiagnostics(filter, {
+    relayUrls: readPlan.relayUrls,
     connectTimeoutMs: 4_000,
     fetchTimeoutMs: 12_000,
   })
 
   const successful = successfulWrapIdsByPrincipal.get(principalPubkey)
-  return wrapped.filter((event) => !successful?.has(event.id))
+  return {
+    wraps: result.events.filter((event) => !successful?.has(event.id)),
+    inbox: {
+      declarationState: declaration.state,
+      coverage: deriveInboxReadCoverage(result),
+      readSource: readPlan.source,
+    },
+  }
 }
 
 async function loadCachedDirectMessages(
@@ -2988,7 +3078,7 @@ async function runPrivateMessageInboxSync(
   const candidates = new Map<string, NDKEvent>()
 
   for (const { event } of retry.values()) candidates.set(event.id, event)
-  for (const event of fetched) candidates.set(event.id, event)
+  for (const event of fetched.wraps) candidates.set(event.id, event)
   for (const event of candidates.values()) {
     retry.set(event.id, { event, failure: retry.get(event.id)?.failure })
   }
@@ -3084,6 +3174,7 @@ async function runPrivateMessageInboxSync(
     decryptFailures: Array.from(retry.values()).flatMap(({ failure }) =>
       failure ? [failure] : []
     ),
+    inbox: fetched.inbox,
   }
 }
 
@@ -3150,7 +3241,7 @@ async function fetchParsedDirectMessages(
     const current =
       currentResult.status === "fulfilled"
         ? currentResult.value
-        : { directMessages: [], decryptFailures: [] }
+        : { directMessages: [], decryptFailures: [], inbox: undefined }
     const legacy =
       legacyResult.status === "fulfilled"
         ? legacyResult.value
@@ -3175,9 +3266,11 @@ async function fetchParsedDirectMessages(
       source: "commerce",
       stale:
         currentResult.status === "rejected" ||
-        legacyResult.status === "rejected",
+        legacyResult.status === "rejected" ||
+        current.inbox?.coverage === "unavailable",
       decryptFailures: current.decryptFailures,
       legacyDecryptFailures: legacy.decryptFailures,
+      inbox: current.inbox,
     }
   } catch (error) {
     if (cachedById.size > 0) {
@@ -3403,7 +3496,11 @@ export async function getBuyerConversationList(
       "protected_conversation_list",
       result.source,
       CONVERSATION_CAPABILITIES,
-      { stale: result.stale, decryptFailures: result.decryptFailures }
+      {
+        stale: result.stale,
+        decryptFailures: result.decryptFailures,
+        inbox: result.inbox,
+      }
     ),
   }
 }
@@ -3462,7 +3559,11 @@ export async function getMerchantConversationList(
       "protected_conversation_list",
       result.source,
       CONVERSATION_CAPABILITIES,
-      { stale: result.stale, decryptFailures: result.decryptFailures }
+      {
+        stale: result.stale,
+        decryptFailures: result.decryptFailures,
+        inbox: result.inbox,
+      }
     ),
   }
 }
@@ -3515,7 +3616,11 @@ export async function getConversationDetail(
       "conversation_detail",
       result.source,
       CONVERSATION_CAPABILITIES,
-      { stale: result.stale, decryptFailures: result.decryptFailures }
+      {
+        stale: result.stale,
+        decryptFailures: result.decryptFailures,
+        inbox: result.inbox,
+      }
     ),
   }
 }
@@ -3617,6 +3722,7 @@ export async function getDirectMessageConversationList(
         stale: result.stale,
         decryptFailures: result.decryptFailures,
         legacyDecryptFailures: result.legacyDecryptFailures,
+        inbox: result.inbox,
       }
     ),
   }
@@ -3675,6 +3781,7 @@ export async function getDirectMessageThread(
         stale: result.stale,
         decryptFailures: result.decryptFailures,
         legacyDecryptFailures: result.legacyDecryptFailures,
+        inbox: result.inbox,
       }
     ),
   }

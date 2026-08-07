@@ -683,7 +683,7 @@ describe("fetchInboxRelayUrls", () => {
           throw new Error("relay unavailable")
         },
       })
-    ).rejects.toThrow("relay unavailable")
+    ).rejects.toThrow("Private-message relay lookup unavailable")
   })
 
   it("does not cache an absent declaration", async () => {
@@ -742,6 +742,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
     expect(readiness).toEqual({
       state: "ready",
       relayUrls: ["wss://inbox.example"],
+      stale: false,
     })
   })
 
@@ -755,46 +756,46 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
     expect(readiness).toEqual({ state: "not_declared" })
   })
 
-  it("rejects lookup errors instead of reporting not_declared", async () => {
+  it("reports lookup_unavailable for lookup errors instead of not_declared", async () => {
     __resetInboxRelayCache()
-    await expect(
-      inspectOwnPrivateMessageRelayReadiness("owner", {
-        relayUrls: ["wss://read.example"],
-        fetchEvents: async () => {
-          throw new Error("lookup failed")
-        },
-      })
-    ).rejects.toThrow("lookup failed")
+    const readiness = await inspectOwnPrivateMessageRelayReadiness("owner", {
+      relayUrls: ["wss://read.example"],
+      fetchEvents: async () => {
+        throw new Error("lookup failed")
+      },
+    })
+
+    expect(readiness).toEqual({ state: "lookup_unavailable" })
   })
 
-  it("rejects when every production discovery relay is unavailable", async () => {
+  it("reports lookup_unavailable when every discovery relay is unavailable", async () => {
     __resetInboxRelayCache()
-    await expect(
-      inspectOwnPrivateMessageRelayReadiness("owner", {
-        relayUrls: ["wss://read.example"],
-        fetchEventsWithDiagnostics: async () => ({
-          events: [],
-          attemptedRelayUrls: ["wss://read.example"],
-          successfulRelayUrls: [],
-          failedRelayUrls: ["wss://read.example"],
-        }),
-      })
-    ).rejects.toThrow("Private-message relay lookup unavailable")
+    const readiness = await inspectOwnPrivateMessageRelayReadiness("owner", {
+      relayUrls: ["wss://read.example"],
+      fetchEventsWithDiagnostics: async () => ({
+        events: [],
+        attemptedRelayUrls: ["wss://read.example"],
+        successfulRelayUrls: [],
+        failedRelayUrls: ["wss://read.example"],
+      }),
+    })
+
+    expect(readiness).toEqual({ state: "lookup_unavailable" })
   })
 
-  it("rejects an empty partial lookup instead of confirming absence", async () => {
+  it("reports lookup_partial for an empty partial lookup instead of absence", async () => {
     __resetInboxRelayCache()
-    await expect(
-      inspectOwnPrivateMessageRelayReadiness("owner", {
-        relayUrls: ["wss://read-a.example", "wss://read-b.example"],
-        fetchEventsWithDiagnostics: async () => ({
-          events: [],
-          attemptedRelayUrls: ["wss://read-a.example", "wss://read-b.example"],
-          successfulRelayUrls: ["wss://read-a.example"],
-          failedRelayUrls: ["wss://read-b.example"],
-        }),
-      })
-    ).rejects.toThrow("Private-message relay lookup incomplete")
+    const readiness = await inspectOwnPrivateMessageRelayReadiness("owner", {
+      relayUrls: ["wss://read-a.example", "wss://read-b.example"],
+      fetchEventsWithDiagnostics: async () => ({
+        events: [],
+        attemptedRelayUrls: ["wss://read-a.example", "wss://read-b.example"],
+        successfulRelayUrls: ["wss://read-a.example"],
+        failedRelayUrls: ["wss://read-b.example"],
+      }),
+    })
+
+    expect(readiness).toEqual({ state: "lookup_partial" })
   })
 
   it("ignores declarations signed by a different author", async () => {
@@ -815,7 +816,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
     expect(readiness).toEqual({ state: "not_declared" })
   })
 
-  it("ignores malformed declaration relay tags", async () => {
+  it("reports malformed for a signed declaration without usable relays", async () => {
     __resetInboxRelayCache()
     const readiness = await inspectOwnPrivateMessageRelayReadiness("owner", {
       relayUrls: ["wss://read.example"],
@@ -834,7 +835,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
         ] as never,
     })
 
-    expect(readiness).toEqual({ state: "not_declared" })
+    expect(readiness).toEqual({ state: "malformed" })
   })
 })
 
