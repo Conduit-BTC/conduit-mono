@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs"
-import { afterEach, describe, expect, it } from "bun:test"
+import { readFile } from "node:fs/promises"
+import { afterEach, describe, expect, it, mock } from "bun:test"
 import { NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
 import { finalizeEvent, getPublicKey, verifyEvent } from "nostr-tools/pure"
 import {
@@ -7,9 +8,14 @@ import {
   getNip07Capabilities,
   hasNip07,
   isTransientNip07ConnectError,
+  resolveFailedAuthAttempt,
   type AuthConnectOptions,
   type AuthContextValue,
 } from "../packages/core/src/context/AuthContext"
+import {
+  RemoteSignerError,
+  type RemoteSignerConnection,
+} from "../packages/core/src/protocol/remote-signer"
 
 const originalWindowDescriptor = Object.getOwnPropertyDescriptor(
   globalThis,
@@ -408,5 +414,224 @@ describe("NIP-46 AuthContext API", () => {
     expect(options.nip46Flow).toBe("nostrconnect")
     expect(uri).toBeNull()
     expect(authGeneration).toBe(0)
+  })
+
+  it("preflights the client before persistence and installs before ownership commit", async () => {
+    const source = await readFile(
+      "packages/core/src/context/AuthContext.tsx",
+      "utf8"
+    )
+    const connectStart = source.indexOf("const connectWithoutLock")
+    const connectEnd = source.indexOf(
+      "const connect = useCallback",
+      connectStart
+    )
+    const connectAttempt = source.slice(connectStart, connectEnd)
+    const prepareClient = connectAttempt.indexOf("getNdk()")
+    const persistRemote = connectAttempt.indexOf("persistRemoteSignerSession(")
+    const persistNip07 = connectAttempt.indexOf(
+      "sessionPersisted = writeAuthSession(session)"
+    )
+    const finalAuthorityFence = connectAttempt.indexOf(
+      "if (!attemptIsCurrent())",
+      persistNip07
+    )
+    const installSigner = connectAttempt.indexOf("setSigner(sessionSigner)")
+    const commitRemote = connectAttempt.indexOf(
+      "remoteConnection.current = connectedRemote"
+    )
+    const releasePendingRemote = connectAttempt.indexOf(
+      "uncommittedRemote = null",
+      commitRemote
+    )
+    const catchStart = connectAttempt.indexOf("} catch (err)")
+    const catchEnd = connectAttempt.indexOf("} finally", catchStart)
+    const catchBlock = connectAttempt.slice(catchStart, catchEnd)
+
+    expect(prepareClient).toBeGreaterThan(-1)
+    expect(persistRemote).toBeGreaterThan(prepareClient)
+    expect(persistNip07).toBeGreaterThan(prepareClient)
+    expect(finalAuthorityFence).toBeGreaterThan(persistNip07)
+    expect(installSigner).toBeGreaterThan(finalAuthorityFence)
+    expect(installSigner).toBeGreaterThan(persistRemote)
+    expect(commitRemote).toBeGreaterThan(installSigner)
+    expect(releasePendingRemote).toBeGreaterThan(installSigner)
+    expect(catchBlock).toContain("resolveFailedAuthAttempt({")
+  })
+
+  it("surfaces a cancelled attempt's failed rollback without replacing a newer signer state", async () => {
+    const cleanupFailure = new RemoteSignerError(
+      "unavailable",
+      "Vault removal failed",
+      { operation: "rollback session" }
+    )
+    const rollbackAndAbandon = mock(async () => {
+      throw cleanupFailure
+    })
+    const uncommittedRemote = {} as RemoteSignerConnection
+
+    const cancelled = await resolveFailedAuthAttempt({
+      failure: new Error("Pairing cancelled"),
+      uncommittedRemote,
+      remotePersistenceStarted: true,
+      getAttemptState: () => ({
+        attemptIsCurrent: false,
+        attemptOwnsEpoch: false,
+        replacementActive: false,
+      }),
+      rollbackAndAbandon,
+    })
+
+    expect(rollbackAndAbandon).toHaveBeenCalledTimes(1)
+    expect(cancelled.kind).toBe("cleanup-error")
+    if (cancelled.kind === "cleanup-error") {
+      expect(cancelled.reject).toBe(false)
+      expect(cancelled.message).toContain("could not erase")
+      expect(cancelled.message).toContain("Clear this site's storage")
+    }
+
+    const currentRollback = mock(async () => {
+      throw cleanupFailure
+    })
+    const current = await resolveFailedAuthAttempt({
+      failure: new Error("Signer installation failed"),
+      uncommittedRemote,
+      remotePersistenceStarted: true,
+      getAttemptState: () => ({
+        attemptOwnsEpoch: true,
+        attemptIsCurrent: true,
+        replacementActive: false,
+      }),
+      rollbackAndAbandon: currentRollback,
+    })
+    expect(currentRollback).toHaveBeenCalledTimes(1)
+    expect(current.kind).toBe("cleanup-error")
+    if (current.kind === "cleanup-error") {
+      expect(current.reject).toBe(true)
+    }
+
+    expect(
+      await resolveFailedAuthAttempt({
+        failure: cleanupFailure,
+        uncommittedRemote: null,
+        remotePersistenceStarted: true,
+        getAttemptState: () => ({
+          attemptOwnsEpoch: false,
+          attemptIsCurrent: false,
+          replacementActive: true,
+        }),
+      })
+    ).toEqual({ kind: "ignore" })
+  })
+
+  it("keeps a persistence error on the normal path after rollback succeeds", async () => {
+    const persistenceFailure = new RemoteSignerError(
+      "unavailable",
+      "Could not save signer session",
+      { operation: "persist session" }
+    )
+    const rollbackAndAbandon = mock(async () => undefined)
+    const uncommittedRemote = {} as RemoteSignerConnection
+
+    expect(
+      await resolveFailedAuthAttempt({
+        failure: persistenceFailure,
+        uncommittedRemote,
+        remotePersistenceStarted: true,
+        getAttemptState: () => ({
+          attemptOwnsEpoch: true,
+          attemptIsCurrent: true,
+          replacementActive: false,
+        }),
+        rollbackAndAbandon,
+      })
+    ).toEqual({ kind: "continue", failure: persistenceFailure })
+    expect(rollbackAndAbandon).toHaveBeenCalledTimes(1)
+  })
+
+  it("rejects a current authority failure and ignores unrelated stale failures", async () => {
+    const currentAuthorityFailure = await resolveFailedAuthAttempt({
+      failure: new Error("storage denied"),
+      uncommittedRemote: null,
+      remotePersistenceStarted: false,
+      getAttemptState: () => ({
+        attemptIsCurrent: false,
+        attemptOwnsEpoch: true,
+        replacementActive: false,
+      }),
+    })
+
+    expect(currentAuthorityFailure.kind).toBe("authority-retry")
+    if (currentAuthorityFailure.kind === "authority-retry") {
+      expect(currentAuthorityFailure.reject).toBe(true)
+    }
+    expect(
+      await resolveFailedAuthAttempt({
+        failure: new Error("stale"),
+        uncommittedRemote: null,
+        remotePersistenceStarted: false,
+        getAttemptState: () => ({
+          attemptIsCurrent: false,
+          attemptOwnsEpoch: false,
+          replacementActive: false,
+        }),
+      })
+    ).toEqual({ kind: "ignore" })
+  })
+
+  it("keeps an ordinary current failure on the normal error path", async () => {
+    const failure = new Error("Signer rejected access")
+
+    expect(
+      await resolveFailedAuthAttempt({
+        failure,
+        uncommittedRemote: null,
+        remotePersistenceStarted: false,
+        getAttemptState: () => ({
+          attemptIsCurrent: true,
+          attemptOwnsEpoch: true,
+          replacementActive: false,
+        }),
+      })
+    ).toEqual({ kind: "continue", failure })
+  })
+
+  it("rechecks replacement ownership after an asynchronous rollback failure", async () => {
+    let releaseRollback: (() => void) | undefined
+    let markRollbackStarted: (() => void) | undefined
+    const rollbackStarted = new Promise<void>((resolve) => {
+      markRollbackStarted = resolve
+    })
+    const rollbackPending = new Promise<void>((resolve) => {
+      releaseRollback = resolve
+    })
+    let state = {
+      attemptIsCurrent: true,
+      attemptOwnsEpoch: true,
+      replacementActive: false,
+    }
+    const resolution = resolveFailedAuthAttempt({
+      failure: new Error("Signer installation failed"),
+      uncommittedRemote: {} as RemoteSignerConnection,
+      remotePersistenceStarted: true,
+      getAttemptState: () => state,
+      rollbackAndAbandon: async () => {
+        markRollbackStarted?.()
+        await rollbackPending
+        throw new RemoteSignerError("unavailable", "Vault removal failed", {
+          operation: "rollback session",
+        })
+      },
+    })
+
+    await rollbackStarted
+    state = {
+      attemptIsCurrent: false,
+      attemptOwnsEpoch: false,
+      replacementActive: true,
+    }
+    releaseRollback?.()
+
+    expect(await resolution).toEqual({ kind: "ignore" })
   })
 })

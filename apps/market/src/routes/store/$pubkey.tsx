@@ -25,6 +25,7 @@ import {
   AvatarFallback,
   AvatarImage,
   Button,
+  FreshnessChip,
   Select,
   SelectContent,
   SelectItem,
@@ -774,20 +775,15 @@ function StorefrontPage() {
                 </span>
               )}
             </div>
-            <span
-              aria-hidden={
-                !(productsQuery.isHydrating && filteredProducts.length > 0)
-              }
-              className={[
-                "absolute right-0 top-0 inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-2.5 py-1 text-xs text-[var(--text-secondary)] transition-opacity duration-150",
+            <FreshnessChip
+              status={
                 productsQuery.isHydrating && filteredProducts.length > 0
-                  ? "opacity-100"
-                  : "pointer-events-none opacity-0",
-              ].join(" ")}
-            >
-              <LoaderCircle className="h-3 w-3 animate-spin text-secondary-300" />
-              Updating store
-            </span>
+                  ? "updating"
+                  : "idle"
+              }
+              updatingLabel="Updating store"
+              className="absolute right-0 top-0"
+            />
             {hasUnavailablePriceForSort && (
               <div className="mt-2 text-xs text-[var(--text-muted)]">
                 Listings without a rate-backed sats price are shown last.

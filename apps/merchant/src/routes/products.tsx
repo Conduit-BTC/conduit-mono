@@ -36,6 +36,7 @@ import {
   DialogHeader,
   DialogTitle,
   DoubleSideStatusPill,
+  FreshnessChip,
   Input,
   Label,
   ProductCard,
@@ -1055,9 +1056,7 @@ function ProductsPage() {
     return `${count} listing${count === 1 ? "" : "s"}`
   }, [merchantProducts])
 
-  const productStatusLabel = productsQuery.isFetching
-    ? "Updating listings"
-    : `${visibleProducts.length} of ${merchantProducts.length} listings`
+  const productStatusLabel = `${visibleProducts.length} of ${merchantProducts.length} listings`
   const productIsDigital = form.format === "digital"
   const productCoordinatesShipping =
     !productIsDigital && form.shippingPricingMode === "coordinate_after_order"
@@ -1295,8 +1294,13 @@ function ProductsPage() {
           </div>
         )}
 
-        <div className="mt-3 min-h-5 text-xs text-[var(--text-muted)]">
-          {productStatusLabel}
+        <div className="relative mt-3 flex min-h-[1.625rem] items-center pr-36 text-xs text-[var(--text-muted)]">
+          <span>{productStatusLabel}</span>
+          <FreshnessChip
+            status={productsQuery.isFetching ? "updating" : "idle"}
+            updatingLabel="Updating listings"
+            className="absolute right-0 top-0"
+          />
         </div>
         <SignedActionStatus
           state={

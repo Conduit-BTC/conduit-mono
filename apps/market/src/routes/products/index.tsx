@@ -6,7 +6,7 @@ import {
   useState,
 } from "react"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { ChevronDown, LoaderCircle, X } from "lucide-react"
+import { ChevronDown, X } from "lucide-react"
 import { EVENT_KINDS, normalizePubkey, pubkeyToNpub } from "@conduit/core"
 import {
   Avatar,
@@ -18,6 +18,7 @@ import {
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuTrigger,
+  FreshnessChip,
 } from "@conduit/ui"
 import { SignerSwitch } from "../../components/SignerSwitch"
 import { MerchantAvatarFallback } from "../../components/MerchantIdentity"
@@ -669,18 +670,11 @@ function ProductsPage() {
         <span>
           {filtered.length} {filtered.length === 1 ? "result" : "results"}
         </span>
-        <span
-          aria-hidden={!isUpdatingListings}
-          className={[
-            "absolute right-0 top-0 inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-2.5 py-1 text-[var(--text-secondary)] transition-opacity duration-150",
-            isUpdatingListings
-              ? "opacity-100"
-              : "pointer-events-none opacity-0",
-          ].join(" ")}
-        >
-          <LoaderCircle className="size-3 animate-spin text-secondary-300" />
-          Updating listings
-        </span>
+        <FreshnessChip
+          status={isUpdatingListings ? "updating" : "idle"}
+          updatingLabel="Updating listings"
+          className="absolute right-0 top-0"
+        />
       </div>
 
       {/* Loading */}
