@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test"
+import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import { finalizeEvent, getPublicKey } from "nostr-tools"
 
 import { db } from "../packages/core/src/db"
@@ -11,6 +12,7 @@ import {
   isOrderPaymentRunning,
   runOrderPayment,
   runOrderPrivateFallback,
+  signShopperCheckoutZapRequest,
   type OrderPaymentDependencies,
   type OrderPaymentContext,
 } from "../apps/market/src/lib/order-payment-service"
@@ -123,6 +125,54 @@ function paymentDependencies(
 
   return { claimOrderLifecyclePayment, ...overrides }
 }
+
+describe("shopper zap signing authority", () => {
+  const draft = {
+    kind: 9734,
+    createdAt: 1_800_000_000,
+    content: "",
+    tags: [
+      ["p", "a".repeat(64)],
+      ["amount", "1000"],
+      ["relays", "wss://relay.example"],
+    ],
+  }
+
+  it("returns a cryptographically valid request from the expected shopper", async () => {
+    const signer = NDKPrivateKeySigner.generate()
+    const shopper = await signer.user()
+
+    const signed = await signShopperCheckoutZapRequest(
+      draft,
+      shopper.pubkey,
+      signer
+    )
+
+    expect(signed.rawEvent.pubkey).toBe(shopper.pubkey)
+    expect(signed.id).toBe(signed.rawEvent.id)
+  })
+
+  it("rejects a checkout account mismatch before signing", async () => {
+    const signer = NDKPrivateKeySigner.generate()
+    const other = await NDKPrivateKeySigner.generate().user()
+
+    await expect(
+      signShopperCheckoutZapRequest(draft, other.pubkey, signer)
+    ).rejects.toThrow("does not match this checkout account")
+  })
+
+  it("rejects an invalid signature returned for the expected shopper", async () => {
+    const signer = NDKPrivateKeySigner.generate()
+    const shopper = await signer.user()
+
+    await expect(
+      signShopperCheckoutZapRequest(draft, shopper.pubkey, {
+        user: async () => shopper,
+        sign: async () => "0".repeat(128),
+      } as never)
+    ).rejects.toThrow("invalid public zap request")
+  })
+})
 
 describe("runOrderPayment", () => {
   it("only accepts the first private manual-wallet payment report", () => {

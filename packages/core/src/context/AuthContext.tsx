@@ -7,13 +7,26 @@ import {
   useState,
   type ReactNode,
 } from "react"
-import { NDKNip07Signer, type NDKSigner } from "@nostr-dev-kit/ndk"
+import type { NDKSigner } from "@nostr-dev-kit/ndk"
 import { CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS } from "../config"
-import { setSigner, removeSigner } from "../protocol/ndk"
+import {
+  setSigner,
+  removeSigner,
+  type SignerLease,
+} from "../protocol/ndk"
+import {
+  Nip07SessionSigner,
+  type Nip07SessionSignerError,
+} from "../protocol/nip07-signer"
+import {
+  SessionSigner,
+  SessionSignerError,
+} from "../protocol/session-signer"
 import {
   forgetAuthSession,
   forgetRemoteSignerKey,
   bumpAuthRevision,
+  claimAuthRevision,
   logoutRemoteSigner,
   pairRemoteSigner,
   pairRemoteSignerFromNostrConnect,
@@ -197,10 +210,11 @@ export async function connectNip07SignerForAuth(
   options: {
     approvalTimeoutMs?: number
     retryDelaysMs?: readonly number[]
+    onSessionInvalidated?: (error: Nip07SessionSignerError) => void
   } = {}
 ): Promise<{
-  signer: NDKNip07Signer
-  user: Awaited<ReturnType<NDKNip07Signer["user"]>>
+  signer: Nip07SessionSigner
+  user: Awaited<ReturnType<Nip07SessionSigner["user"]>>
 }> {
   const retryDelays =
     options.retryDelaysMs ??
@@ -215,7 +229,9 @@ export async function connectNip07SignerForAuth(
   let lastError: unknown
 
   for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
-    const signer = new NDKNip07Signer()
+    const signer = new Nip07SessionSigner({
+      onInvalidated: options.onSessionInvalidated,
+    })
 
     try {
       const user = await withTimeout(
@@ -273,6 +289,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const connected = useRef(false)
   const authEpoch = useRef(0)
   const remoteConnection = useRef<RemoteSignerConnection | null>(null)
+  const activeSignerLease = useRef<SignerLease | null>(null)
+  const activeSessionSigner = useRef<SessionSigner | null>(null)
   const activeSession = useRef<AuthSession | null>(null)
   const activePairing = useRef<AbortController | null>(null)
 
@@ -283,10 +301,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     connecting.current = false
     connected.current = false
     const connection = remoteConnection.current
+    const signerLease = activeSignerLease.current
+    const sessionSigner = activeSessionSigner.current
     remoteConnection.current = null
+    activeSignerLease.current = null
+    activeSessionSigner.current = null
     activeSession.current = null
+    sessionSigner?.invalidateLocal()
     connection?.signer.invalidate()
-    removeSigner()
+    if (signerLease) removeSigner(signerLease)
     setActiveSigner(null)
     setPubkey(null)
     setMethod(null)
@@ -298,6 +321,44 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setCapabilities(NO_SIGNER_CAPABILITIES)
     return connection
   }, [])
+
+  const handleSignerSessionInvalidated = useCallback(
+    (sessionError: Nip07SessionSignerError | SessionSignerError) => {
+      const invalidatedSession = activeSession.current
+      const connection = deactivateLocalSigner()
+      if (connection) void connection.bunkerSigner.close()
+      setStatus("error")
+      setError(sessionError.message)
+
+      if (
+        !invalidatedSession ||
+        (sessionError instanceof SessionSignerError &&
+          sessionError.code === "authority_changed")
+      ) {
+        return
+      }
+
+      void withBrowserAuthOperationLock(async () => {
+        if (
+          JSON.stringify(readAuthSession()) !==
+          JSON.stringify(invalidatedSession)
+        ) {
+          return
+        }
+        bumpAuthRevision()
+        forgetAuthSession()
+        if (invalidatedSession.type === "nip46") {
+          try {
+            await forgetRemoteSignerKey(invalidatedSession)
+          } catch {
+            // The signer is already invalidated locally. Existing disconnect
+            // copy explains how to clear storage if vault cleanup is blocked.
+          }
+        }
+      }).catch(() => undefined)
+    },
+    [deactivateLocalSigner]
+  )
 
   const connectWithoutLock = useCallback(async (options: AuthConnectAttemptOptions = {}) => {
     const mode = options.mode ?? "interactive"
@@ -327,6 +388,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const attemptIsCurrent = () =>
       epoch === authEpoch.current && authRevision === readAuthRevision()
     let uncommittedRemote: RemoteSignerConnection | null = null
+    let sessionPersisted = false
 
     setStatus(mode === "restore" ? "restoring" : "connecting")
     setMethod(requestedMethod)
@@ -336,7 +398,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     try {
       let session: AuthSession
-      let signer: NDKNip07Signer | RemoteSignerConnection["signer"]
+      let signer: Nip07SessionSigner | RemoteSignerConnection["signer"]
       let connectedRemote: RemoteSignerConnection | null = null
 
       if (requestedMethod === "nip07") {
@@ -347,7 +409,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         )
         if (!hasSigner) throw new Error(getMissingSignerMessage(mode))
 
-        const result = await connectNip07SignerForAuth(mode)
+        const result = await connectNip07SignerForAuth(mode, {
+          onSessionInvalidated: handleSignerSessionInvalidated,
+        })
         signer = result.signer
         session = {
           version: 1,
@@ -435,7 +499,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return
       }
 
-      authRevision = bumpAuthRevision()
+      const authClaim = claimAuthRevision()
+      if (!authClaim.persisted) {
+        if (connectedRemote) {
+          abandonRemoteConnection(connectedRemote)
+          uncommittedRemote = null
+        }
+        throw new Error(
+          "This browser could not establish exclusive signer authority. Check site storage permissions, clear the saved session if needed, and reconnect."
+        )
+      }
+      authRevision = authClaim.revision
       if (!attemptIsCurrent()) {
         if (connectedRemote) {
           abandonRemoteConnection(connectedRemote)
@@ -476,15 +550,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             "This browser could not save the remote signer session. Check site storage permissions and try again."
           )
         }
-      } else if (!writeAuthSession(session)) {
-        // NIP-07 remains usable for the current tab when storage is restricted.
+        sessionPersisted = true
+      } else {
+        sessionPersisted = writeAuthSession(session)
+        // The persisted revision remains the authority fence even when saving
+        // optional NIP-07 reconnect metadata is blocked.
       }
 
       remoteConnection.current = connectedRemote
       uncommittedRemote = null
       activeSession.current = session
-      setSigner(signer)
-      setActiveSigner(signer)
+      const boundSession = session
+      const sessionSigner = new SessionSigner(signer, {
+        expectedPubkey: pk,
+        hasAuthority: () => {
+          if (readAuthRevision() !== boundSession.authClaim) return false
+          if (!sessionPersisted) return true
+          return (
+            JSON.stringify(readAuthSession()) === JSON.stringify(boundSession)
+          )
+        },
+        onInvalidated: handleSignerSessionInvalidated,
+      })
+      activeSessionSigner.current = sessionSigner
+      activeSignerLease.current = setSigner(sessionSigner)
+      setActiveSigner(sessionSigner)
       setPubkey(pk)
       setMethod(session.type)
       setRememberedMethod(session.type)
@@ -500,7 +590,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       if (uncommittedRemote) {
         abandonRemoteConnection(uncommittedRemote)
-        uncommittedRemote = null
       }
       if (!attemptIsCurrent()) {
         if (
@@ -533,7 +622,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         connecting.current = false
       }
     }
-  }, [])
+  }, [handleSignerSessionInvalidated])
 
   const connect = useCallback(
     async (options: AuthConnectOptions = {}) => {
@@ -668,23 +757,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const stored = initialSessionRef.current
     if (!stored) return
 
-    let cancelled = false
-
-    async function reconnectIfPossible() {
-      if (cancelled) return
-
-      // Don't crash the app on auto-reconnect failure; surface state via `error`.
-      void connect({ mode: "restore" }).catch(() => {
-        if (cancelled) return
-        removeSigner()
-      })
-    }
-
-    void reconnectIfPossible()
-
-    return () => {
-      cancelled = true
-    }
+    // Don't crash the app on auto-reconnect failure; surface state via `error`.
+    void connect({ mode: "restore" }).catch(() => undefined)
   }, [connect])
 
   useEffect(
@@ -700,11 +774,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     function handleStorage(event: StorageEvent): void {
       if (
-        event.key === AUTH_REVISION_STORAGE_KEY &&
-        connecting.current
+        event.key === AUTH_REVISION_STORAGE_KEY ||
+        event.key === null
       ) {
+        if (!connected.current && !connecting.current) return
+        if (
+          event.key === AUTH_REVISION_STORAGE_KEY &&
+          event.newValue === activeSession.current?.authClaim
+        ) {
+          return
+        }
         const connection = deactivateLocalSigner()
         if (connection) void connection.bunkerSigner.close()
+        setStatus("error")
+        setError(
+          "This signer session changed in another tab. Reconnect the intended account to continue."
+        )
         return
       }
       if (event.key !== AUTH_STORAGE_KEY) return
