@@ -464,7 +464,7 @@ describe("general direct-message gateway", () => {
     expect(result.meta.degraded).toBe(true)
   })
 
-  it("marks an empty result degraded when no inbox declaration exists", async () => {
+  it("keeps a complete compatibility read healthy without a declaration", async () => {
     __setCommerceTestOverrides({
       resolveInboxRelayUrls: async () => [],
       fetchEventsFanout: async () => [],
@@ -475,14 +475,14 @@ describe("general direct-message gateway", () => {
     })
 
     // Permissive reads (CND-208): the read still runs over local/compatibility
-    // relays, but a missing declaration keeps the surface degraded.
+    // relays with complete coverage; the missing declaration is reported as
+    // typed setup state instead of degrading the data.
     expect(result.data).toEqual([])
     expect(result.meta.stale).toBe(false)
-    expect(result.meta.degraded).toBe(true)
+    expect(result.meta.degraded).toBe(false)
     expect(result.meta.inbox?.declarationState).toBe("not_declared")
     expect(result.meta.inbox?.coverage).toBe("complete")
   })
-
 
   it("re-attempts only previously-failed wraps on a later read", async () => {
     const unwrapCalls: Record<string, number> = {}

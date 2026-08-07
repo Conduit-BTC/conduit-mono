@@ -30,8 +30,10 @@ describe("legacy direct-message UI contract", () => {
 
     expect(source).toContain("MessagingReadinessNotice,")
     expect(source).toContain("enabled: signerConnected && messagingReady")
-    expect(source).toContain("publishPrivateMessageRelayDeclaration")
     expect(source).toContain("<MessagingReadinessNotice")
+    // Network settings owns declaration setup/repair (CND-208).
+    expect(source).not.toContain("publishPrivateMessageRelayDeclaration")
+    expect(source).toContain('to: "/network"')
   })
 
   it("gates Merchant inbox reads behind explicit messaging readiness", async () => {
@@ -41,7 +43,21 @@ describe("legacy direct-message UI contract", () => {
 
     expect(source).toContain("MessagingReadinessNotice,")
     expect(source).toContain("enabled: signerConnected && messagingReady")
-    expect(source).toContain("publishPrivateMessageRelayDeclaration")
     expect(source).toContain("<MessagingReadinessNotice")
+    // Network settings owns declaration setup/repair (CND-208).
+    expect(source).not.toContain("publishPrivateMessageRelayDeclaration")
+    expect(source).toContain('to: "/network"')
+  })
+
+  it("keeps declaration publishing owned by Network settings", async () => {
+    for (const routePath of [
+      "apps/market/src/routes/network.tsx",
+      "apps/merchant/src/routes/network.tsx",
+    ]) {
+      const source = await Bun.file(routePath).text()
+      expect(source).toContain("useInboxDeclaration")
+      expect(source).toContain("privateInbox")
+      expect(source).toContain("getInboxCandidateRelayUrls")
+    }
   })
 })

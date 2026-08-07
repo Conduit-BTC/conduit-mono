@@ -579,9 +579,9 @@ function createMeta(
         source !== plan.sources[0] ||
         decryptFailures !== undefined ||
         legacyDecryptFailures !== undefined ||
-        (options.inbox !== undefined &&
-          (options.inbox.coverage !== "complete" ||
-            options.inbox.declarationState !== "declared"))),
+        // Declaration setup state is reported separately via meta.inbox;
+        // only incomplete read coverage degrades the data itself.
+        (options.inbox !== undefined && options.inbox.coverage !== "complete")),
     capabilities,
     fetchedAt: now(),
     nextCursor: options.nextCursor,

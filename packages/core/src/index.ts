@@ -235,4 +235,11 @@ export {
   useRelaySettings,
   type UseRelaySettingsResult,
 } from "./hooks/useRelaySettings"
+export {
+  INBOX_DECLARATION_QUERY_KEY,
+  useInboxDeclaration,
+  type InboxDeclarationStatus,
+  type UseInboxDeclarationOptions,
+  type UseInboxDeclarationResult,
+} from "./hooks/useInboxDeclaration"
 export { useUpdateProfile } from "./hooks/useUpdateProfile"

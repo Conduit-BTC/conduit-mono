@@ -14,13 +14,12 @@ import {
   getMerchantConversationList,
   getNdk,
   getProfileName,
-  inspectOwnPrivateMessageRelayReadiness,
   markDirectMessageConversationRead,
   parseDirectMessageRumor,
   publishPrivateMessage,
-  publishPrivateMessageRelayDeclaration,
   pubkeyToNpub,
   useAuth,
+  useInboxDeclaration,
   useProfiles,
   type Profile,
 } from "@conduit/core"
@@ -41,6 +40,7 @@ import {
   SheetTitle,
   SheetTrigger,
   useOptimisticConversationMessages,
+  type MessagingReadinessState,
   type OptimisticConversationMessage,
 } from "@conduit/ui"
 import { DirectConversationListItem } from "../components/DirectConversationListItem"
@@ -85,34 +85,28 @@ function MessagesPage() {
     setSelectedId(null)
   }, [clearOptimisticMessages, pubkey])
 
-  const readinessQuery = useQuery({
-    queryKey: ["merchant-dm-readiness", pubkey ?? "none"],
-    enabled: signerConnected,
-    queryFn: () => inspectOwnPrivateMessageRelayReadiness(pubkey!),
-    staleTime: 30_000,
-  })
-  const messagingReady = readinessQuery.data?.state === "ready"
-  const enableMessagingMutation = useMutation({
-    mutationFn: async () => {
-      const ndk = getNdk()
-      if (!ndk.signer || !pubkey) throw new Error("Signer not connected")
-      await publishPrivateMessageRelayDeclaration({
-        pubkey,
-        signer: ndk.signer,
-        ndk,
-      })
-    },
-    onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: ["merchant-dm-readiness", pubkey ?? "none"],
-        }),
-        queryClient.invalidateQueries({
-          queryKey: ["merchant-dms-live", pubkey ?? "none"],
-        }),
-      ])
-    },
-  })
+  // Network settings is the only surface that publishes or repairs the
+  // NIP-17 inbox declaration; this route only reflects readiness (CND-208).
+  const dmReadiness = useInboxDeclaration(pubkey, { enabled: signerConnected })
+  const messagingReady = dmReadiness.status === "ready"
+  const readinessNoticeState: MessagingReadinessState =
+    dmReadiness.status === "malformed"
+      ? "malformed"
+      : dmReadiness.status === "lookup_partial"
+        ? "lookup_partial"
+        : dmReadiness.status === "lookup_unavailable"
+          ? "lookup_unavailable"
+          : "not_declared"
+  const readinessLookupDegraded =
+    readinessNoticeState === "lookup_partial" ||
+    readinessNoticeState === "lookup_unavailable"
+  const onReadinessAction = () => {
+    if (readinessLookupDegraded) {
+      dmReadiness.refetch()
+    } else {
+      void navigate({ to: "/network" })
+    }
+  }
 
   const liveQuery = useQuery({
     queryKey: ["merchant-dms-live", pubkey ?? "none"],
@@ -403,30 +397,17 @@ function MessagesPage() {
         </div>
       )}
 
-      {signerConnected && readinessQuery.isLoading && (
+      {signerConnected && dmReadiness.isLoading && (
         <div className="text-sm text-[var(--text-secondary)]">
           Checking encrypted messaging setup...
         </div>
       )}
 
-      {signerConnected && !readinessQuery.isLoading && !messagingReady && (
+      {signerConnected && !dmReadiness.isLoading && !messagingReady && (
         <MessagingReadinessNotice
-          state={readinessQuery.error ? "lookup_failed" : "not_declared"}
-          onAction={() => {
-            if (readinessQuery.error) {
-              void readinessQuery.refetch()
-            } else {
-              enableMessagingMutation.mutate()
-            }
-          }}
-          pending={
-            readinessQuery.isRefetching || enableMessagingMutation.isPending
-          }
-          error={
-            enableMessagingMutation.error
-              ? "Could not enable messaging. Retry when your signer and relays are available."
-              : null
-          }
+          state={readinessNoticeState}
+          onAction={onReadinessAction}
+          pending={dmReadiness.isRefetching}
           className="xl:shrink-0"
         />
       )}
