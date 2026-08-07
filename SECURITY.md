@@ -27,15 +27,15 @@ about them in public issues or pull requests.
 
 ## Reporting A Vulnerability
 
-Use one of these private channels:
+Email `contact@conduitbtc.com` with a subject beginning `Security report:`.
 
-1. [Open a private GitHub vulnerability report](https://github.com/Conduit-BTC/conduit-mono/security/advisories/new).
-2. If GitHub private reporting is unavailable, email
-   `contact@conduitbtc.com` with a subject beginning `Security report:`.
+If GitHub private vulnerability reporting is enabled for this repository, you
+may instead use the
+[private GitHub vulnerability reporting flow](https://github.com/Conduit-BTC/conduit-mono/security/advisories/new).
 
 Do not open a public issue or pull request containing vulnerability details. If
-neither private channel works, open a minimal public issue asking maintainers to
-establish contact, without including technical details.
+the email channel does not work, open a minimal public issue asking maintainers
+to establish contact, without including technical details.
 
 Please include:
 
