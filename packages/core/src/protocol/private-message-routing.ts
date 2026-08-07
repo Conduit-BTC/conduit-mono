@@ -28,17 +28,11 @@ export type InboxReadCoverage = "complete" | "partial" | "unavailable"
 
 /** Where a private-message read relay came from. */
 export type InboxReadSource =
-  | "declared"
-  | "local_in"
-  | "compatibility"
-  | "mixed"
-  | "cache"
+  "declared" | "local_in" | "compatibility" | "mixed" | "cache"
 
 /** Delivery lane for an outgoing private message. */
 export type PrivateMessageDeliveryRoute =
-  | "declared_inbox"
-  | "conduit_bootstrap"
-  | "blocked"
+  "declared_inbox" | "conduit_bootstrap" | "blocked"
 
 export interface PrivateMessageRelays {
   pubkey: string
@@ -128,7 +122,8 @@ function cacheKey(pubkey: string): string {
   return pubkey.trim().toLowerCase()
 }
 
-function secureRelayUrls(relayUrls: readonly string[]): string[] {
+/** Normalize, deduplicate, and keep only secure wss:// relay urls. */
+export function secureRelayUrls(relayUrls: readonly string[]): string[] {
   const seen = new Set<string>()
   const out: string[] = []
   for (const url of relayUrls) {
@@ -249,6 +244,9 @@ export async function resolveInboxDeclaration(
         fetchedAt: now(),
       }
     }
+    // A complete read with no event is an authoritative absence: evict any
+    // cached declaration so it cannot resurrect as a write target later.
+    declarationCache.delete(key)
     return {
       pubkey: key,
       state: "not_declared",
@@ -286,7 +284,7 @@ export async function resolveInboxDeclaration(
 export interface InboxReadPlan {
   relayUrls: string[]
   /** Per-relay provenance for diagnostics (content-free). */
-  relaySources: Record<string, Exclude<InboxReadSource, "mixed" | "cache">>
+  relaySources: Record<string, Exclude<InboxReadSource, "mixed">>
   /** Aggregate provenance of the plan. */
   source: InboxReadSource
 }
@@ -332,7 +330,7 @@ export function planInboxReadRelays(
   const orderedUrls: string[] = []
   const add = (
     urls: readonly string[],
-    source: Exclude<InboxReadSource, "mixed" | "cache">
+    source: Exclude<InboxReadSource, "mixed">
   ) => {
     for (const url of urls) {
       if (relaySources[url]) continue
@@ -341,7 +339,7 @@ export function planInboxReadRelays(
     }
   }
   add(declared, "declared")
-  add(cachedFallback, "declared")
+  add(cachedFallback, "cache")
   add(localIn, "local_in")
   add(compatibility, "compatibility")
 
@@ -351,7 +349,9 @@ export function planInboxReadRelays(
       : orderedUrls
   const usedSources = new Set(limited.map((url) => relaySources[url]))
   const source: InboxReadSource =
-    usedSources.size > 1 ? "mixed" : (limited[0] && relaySources[limited[0]]) || "compatibility"
+    usedSources.size > 1
+      ? "mixed"
+      : (limited[0] && relaySources[limited[0]]) || "compatibility"
 
   return { relayUrls: limited, relaySources, source }
 }
@@ -372,9 +372,7 @@ export interface DeliveryRouteSelection {
   relayUrls: string[]
   /** Content-free reason for a blocked route. */
   blockedReason?:
-    | "recipient_not_ready"
-    | "recipient_lookup_failed"
-    | "declaration_malformed"
+    "recipient_not_ready" | "recipient_lookup_failed" | "declaration_malformed"
 }
 
 export interface SelectDeliveryRouteInput {
@@ -424,7 +422,11 @@ export function selectPrivateMessageDeliveryRoute(
 
   const isOrderMessage = input.rumorKind === EVENT_KINDS.ORDER
   if (!isOrderMessage || !input.validatedOrder) {
-    return { route: "blocked", relayUrls: [], blockedReason: strictBlockedReason }
+    return {
+      route: "blocked",
+      relayUrls: [],
+      blockedReason: strictBlockedReason,
+    }
   }
 
   const bootstrapEnabled =
@@ -433,7 +435,11 @@ export function selectPrivateMessageDeliveryRoute(
     input.bootstrapRelayUrls ?? config.dmBootstrapWriteRelayUrls
   )
   if (!bootstrapEnabled || bootstrapRelayUrls.length === 0) {
-    return { route: "blocked", relayUrls: [], blockedReason: strictBlockedReason }
+    return {
+      route: "blocked",
+      relayUrls: [],
+      blockedReason: strictBlockedReason,
+    }
   }
 
   return { route: "conduit_bootstrap", relayUrls: bootstrapRelayUrls }

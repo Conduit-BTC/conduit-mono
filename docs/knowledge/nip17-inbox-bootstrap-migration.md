@@ -37,6 +37,13 @@ Invariants:
 
 - Secure normalized `wss://` targets only.
 - A valid current or cached kind `10050` always outranks compatibility.
+- A complete authoritative "not declared" read evicts the cached declaration;
+  a confirmed-absent declaration never resurrects as a write target.
+- The bootstrap lane is recipient-only: the non-critical sender self-copy leg
+  stays strict and fails soft when the sender has no usable declaration.
+- Gift-wrap reads are permissive at the transport layer (inner kinds are not
+  separable before decryption); the kind-14 strictness applies to delivery
+  writes and to the DM surfaces, which stay gated on declared readiness.
 - Compatibility writes use only the explicit Conduit-operated allowlist
   (`config.dmBootstrapWriteRelayUrls`); never arbitrary NIP-65, local OUT,
   commerce-priority, or public relays.

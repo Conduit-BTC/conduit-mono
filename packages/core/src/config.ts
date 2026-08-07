@@ -39,7 +39,9 @@ export const CANONICAL_DM_INBOX_DEFAULT_RELAYS = [
  * messages when a recipient has no usable kind-10050 declaration. Never
  * extend this with arbitrary NIP-65, local OUT, or public relays.
  */
-export const CANONICAL_DM_BOOTSTRAP_WRITE_RELAYS = ["wss://relay.conduit.market"]
+export const CANONICAL_DM_BOOTSTRAP_WRITE_RELAYS = [
+  "wss://relay.conduit.market",
+]
 export const CANONICAL_ZAP_PUBLIC_RELAYS = [
   "wss://nos.lol",
   "wss://relay.damus.io",

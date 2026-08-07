@@ -62,6 +62,8 @@ function SettingsPage() {
                   publishing: inboxDeclaration.publishing,
                   publishError: inboxDeclaration.publishError,
                   publishSuccess: inboxDeclaration.publishSuccess,
+                  publishConfirmationPending:
+                    inboxDeclaration.publishConfirmationPending,
                   onPublish: inboxDeclaration.publishDeclaration,
                   onRetryLookup: inboxDeclaration.refetch,
                 }

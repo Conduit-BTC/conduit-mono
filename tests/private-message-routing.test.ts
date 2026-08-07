@@ -249,6 +249,35 @@ describe("resolveInboxDeclaration", () => {
     expect(getCachedInboxDeclaration(OWNER)).toBeNull()
   })
 
+  it("evicts the cached declaration after a complete authoritative absence", async () => {
+    primeInboxDeclarationCache(OWNER, ["wss://inbox.example"], () => 0)
+
+    const absent = await resolveInboxDeclaration(OWNER, {
+      relayUrls: ["wss://read.example"],
+      freshnessMs: 1,
+      now: () => 1_000,
+      fetchEventsWithDiagnostics: diagnostics({
+        events: [],
+        successful: ["wss://read.example"],
+      }),
+    })
+    expect(absent.state).toBe("not_declared")
+    expect(getCachedInboxDeclaration(OWNER)).toBeNull()
+
+    // A later transient failure must not resurrect the evicted declaration.
+    const failed = await resolveInboxDeclaration(OWNER, {
+      relayUrls: ["wss://read.example"],
+      freshnessMs: 1,
+      now: () => 2_000,
+      fetchEventsWithDiagnostics: diagnostics({
+        successful: [],
+        failed: ["wss://read.example"],
+      }),
+    })
+    expect(failed.state).toBe("lookup_unavailable")
+    expect(failed.relayUrls).toEqual([])
+  })
+
   it("falls back to the stale cached declaration when discovery is unavailable", async () => {
     primeInboxDeclarationCache(OWNER, ["wss://inbox.example"], () => 0)
     const result = await resolveInboxDeclaration(OWNER, {
@@ -312,7 +341,7 @@ describe("planInboxReadRelays", () => {
       "wss://cached-inbox.example",
       "wss://compat.example",
     ])
-    expect(plan.relaySources["wss://cached-inbox.example"]).toBe("declared")
+    expect(plan.relaySources["wss://cached-inbox.example"]).toBe("cache")
   })
 
   it("caps the plan at maxRelays preserving priority order", () => {

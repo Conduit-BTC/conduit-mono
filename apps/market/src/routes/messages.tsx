@@ -330,9 +330,12 @@ function MessagesPage() {
     }
   }
 
+  // Order conversations read permissively (declared inbox + local IN +
+  // compatibility relays), so merchant order replies stay reachable even
+  // before the buyer publishes a kind-10050 declaration (CND-208).
   const messagesQuery = useQuery({
     queryKey: ["buyer-messages-live", pubkey ?? "none"],
-    enabled: signerConnected && messagingReady,
+    enabled: signerConnected,
     queryFn: () => fetchBuyerConversations(pubkey!),
     refetchInterval: 30_000,
     refetchIntervalInBackground: true,
@@ -471,12 +474,16 @@ function MessagesPage() {
       })
       prepareBuyerConversationRumor(rumor, pubkey)
 
+      // Reply inside an existing validated order thread: order identity and
+      // counterparty match the parsed conversation, so the bootstrap lane
+      // may carry it when the merchant has no usable declaration.
       const { selfCopyError } = await publishPrivateMessage({
         rumor,
         senderPubkey: pubkey,
         recipientPubkey: selectedConversation.merchantPubkey,
         signer: ndk.signer,
         rumorKind: EVENT_KINDS.ORDER,
+        validatedOrderScope: true,
       })
       if (selfCopyError) {
         console.warn("Buyer message self-copy publish failed", selfCopyError)

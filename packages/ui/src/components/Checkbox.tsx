@@ -1,8 +1,10 @@
 import { forwardRef, type InputHTMLAttributes } from "react"
 import { cn } from "../utils"
 
-export interface CheckboxProps
-  extends Omit<InputHTMLAttributes<HTMLInputElement>, "type" | "onChange"> {
+export interface CheckboxProps extends Omit<
+  InputHTMLAttributes<HTMLInputElement>,
+  "type" | "onChange"
+> {
   onCheckedChange?: (checked: boolean) => void
 }
 

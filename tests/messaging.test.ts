@@ -797,6 +797,80 @@ describe("publishPrivateMessage", () => {
     )
     expect(published).toBe(false)
   })
+
+  it("blocks a malformed recipient declaration instead of bootstrapping", async () => {
+    let published = false
+    let thrown: unknown
+
+    try {
+      await publishPrivateMessage({
+        rumor: orderRumor(),
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer,
+        rumorKind: EVENT_KINDS.ORDER,
+        selfCopy: false,
+        // Signed declaration with no secure relay: malformed, never
+        // downgraded to not_declared, so the bootstrap lane stays closed.
+        recipientInboxRelays: ["ws://insecure.example"],
+        validatedOrderScope: true,
+        bootstrapRoute: {
+          enabled: true,
+          relayUrls: ["wss://bootstrap.conduit.example"],
+        },
+        giftWrapFn: (async () => wrap("unexpected")) as never,
+        publishFn: (async () => {
+          published = true
+          return {} as never
+        }) as never,
+      })
+    } catch (error) {
+      thrown = error
+    }
+
+    expect(thrown).toBeInstanceOf(PrivateMessageRelayReadinessError)
+    expect((thrown as PrivateMessageRelayReadinessError).reason).toBe(
+      "recipient_declaration_malformed"
+    )
+    expect(published).toBe(false)
+  })
+
+  it("keeps the sender self-copy off the bootstrap lane", async () => {
+    const publishedExclusiveSets: string[][] = []
+
+    const result = await publishPrivateMessage({
+      rumor: orderRumor(),
+      senderPubkey: "sender",
+      recipientPubkey: "recipient",
+      signer,
+      rumorKind: EVENT_KINDS.ORDER,
+      selfCopy: true,
+      recipientInboxRelays: [],
+      senderInboxRelays: [],
+      validatedOrderScope: true,
+      bootstrapRoute: {
+        enabled: true,
+        relayUrls: ["wss://bootstrap.conduit.example"],
+      },
+      giftWrapFn: (async () => wrap("wrap")) as never,
+      publishFn: (async (_event: unknown, options: never) => {
+        publishedExclusiveSets.push(
+          (options as { exclusiveRelayUrls: string[] }).exclusiveRelayUrls
+        )
+        return {} as never
+      }) as never,
+    })
+
+    // Recipient leg bootstraps; the sender self-copy stays strict and
+    // fails soft instead of writing to the compatibility allowlist.
+    expect(result.deliveryRoute).toBe("conduit_bootstrap")
+    expect(publishedExclusiveSets).toEqual([
+      ["wss://bootstrap.conduit.example"],
+    ])
+    expect(result.selfCopyError).toBe(
+      "Sender has no usable NIP-17 inbox relay declaration."
+    )
+  })
 })
 
 describe("detectNip44Capabilities", () => {

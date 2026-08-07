@@ -36,6 +36,8 @@ export interface PrivateInboxSectionProps {
   publishing?: boolean
   publishError?: string | null
   publishSuccess?: boolean
+  /** Publish succeeded but the fresh read-back was degraded. */
+  publishConfirmationPending?: boolean
   onPublish: (relayUrls: string[]) => void
   onRetryLookup: () => void
   className?: string
@@ -47,6 +49,31 @@ function sameUrlSet(a: readonly string[], b: readonly string[]): boolean {
   return a.every((url) => bSet.has(url))
 }
 
+export interface InboxPublishGateInput {
+  status: PrivateInboxStatus
+  /** Readiness served from cache during a degraded lookup. */
+  stale: boolean
+  selectedCount: number
+  selectionChanged: boolean
+}
+
+/**
+ * Publish gate: block while loading or when the current declaration could not
+ * be read (degraded lookup, or ready served stale from cache) so a device
+ * with an out-of-date view can never overwrite a newer declaration.
+ */
+export function canPublishInboxDeclaration(
+  input: InboxPublishGateInput
+): boolean {
+  if (input.status === "loading") return false
+  if (input.status === "lookup_partial") return false
+  if (input.status === "lookup_unavailable") return false
+  if (input.status === "ready" && input.stale) return false
+  if (input.selectedCount < 1) return false
+  if (input.selectedCount > MAX_INBOX_RELAY_SELECTION) return false
+  return input.status !== "ready" || input.selectionChanged
+}
+
 export function PrivateInboxSection({
   status,
   stale = false,
@@ -56,26 +83,35 @@ export function PrivateInboxSection({
   publishing = false,
   publishError = null,
   publishSuccess = false,
+  publishConfirmationPending = false,
   onPublish,
   onRetryLookup,
   className,
 }: PrivateInboxSectionProps) {
+  // Key selection state on relay-url values, not array identity: parent
+  // re-renders pass fresh arrays every time and must not clobber an
+  // in-progress checkbox selection.
+  const declaredKey = declaredRelayUrls.join("\n")
+  const candidateKey = candidateRelayUrls.join("\n")
+
   const selectableUrls = useMemo(() => {
+    const declared = declaredKey ? declaredKey.split("\n") : []
+    const candidates = candidateKey ? candidateKey.split("\n") : []
     const seen = new Set<string>()
     const urls: string[] = []
-    for (const url of [...declaredRelayUrls, ...candidateRelayUrls]) {
+    for (const url of [...declared, ...candidates]) {
       if (seen.has(url)) continue
       seen.add(url)
       urls.push(url)
     }
     return urls
-  }, [declaredRelayUrls, candidateRelayUrls])
+  }, [declaredKey, candidateKey])
 
   const defaultSelection = useMemo(() => {
-    const base =
-      declaredRelayUrls.length > 0 ? declaredRelayUrls : selectableUrls
+    const declared = declaredKey ? declaredKey.split("\n") : []
+    const base = declared.length > 0 ? declared : selectableUrls
     return base.slice(0, MAX_INBOX_RELAY_SELECTION)
-  }, [declaredRelayUrls, selectableUrls])
+  }, [declaredKey, selectableUrls])
 
   const [selectedUrls, setSelectedUrls] = useState<string[]>(defaultSelection)
 
@@ -85,13 +121,14 @@ export function PrivateInboxSection({
 
   const lookupDegraded =
     status === "lookup_partial" || status === "lookup_unavailable"
+  const staleReady = status === "ready" && stale
   const selectionChanged = !sameUrlSet(selectedUrls, declaredRelayUrls)
-  const canPublish =
-    !lookupDegraded &&
-    status !== "loading" &&
-    selectedUrls.length > 0 &&
-    selectedUrls.length <= MAX_INBOX_RELAY_SELECTION &&
-    (status !== "ready" || selectionChanged)
+  const canPublish = canPublishInboxDeclaration({
+    status,
+    stale,
+    selectedCount: selectedUrls.length,
+    selectionChanged,
+  })
 
   function toggleUrl(url: string, checked: boolean): void {
     setSelectedUrls((current) => {
@@ -116,7 +153,7 @@ export function PrivateInboxSection({
   const description =
     status === "ready"
       ? stale
-        ? "Using your last confirmed inbox declaration. The latest lookup was degraded, so this may be out of date."
+        ? "Using your last confirmed inbox declaration. The latest lookup was degraded, so this may be out of date. Retry the lookup before publishing changes."
         : "Your signed NIP-17 inbox declaration tells other clients where to deliver orders and encrypted messages."
       : status === "malformed"
         ? "Your published declaration contains no usable relays, so senders cannot deliver to you. Publish a repaired declaration below."
@@ -152,7 +189,7 @@ export function PrivateInboxSection({
             <p className="mt-1 text-sm text-error">{lookupError}</p>
           ) : null}
         </div>
-        {lookupDegraded ? (
+        {lookupDegraded || staleReady ? (
           <Button
             type="button"
             variant="outline"
@@ -242,7 +279,11 @@ export function PrivateInboxSection({
                         : "idle"
                 }
                 awaitingSignatureMessage="Confirm the inbox declaration in your signer. It will show as ready after it is read back from relays."
-                successMessage="Inbox declaration published and confirmed."
+                successMessage={
+                  publishConfirmationPending
+                    ? "Inbox declaration published. Relay confirmation is still pending; retry the lookup to confirm."
+                    : "Inbox declaration published and confirmed."
+                }
                 errorMessage={publishError ?? undefined}
                 className="justify-end"
               />

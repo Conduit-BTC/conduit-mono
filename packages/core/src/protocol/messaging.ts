@@ -18,6 +18,7 @@ import {
   __resetInboxDeclarationCache,
   primeInboxDeclarationCache,
   resolveInboxDeclaration,
+  secureRelayUrls,
   selectPrivateMessageDeliveryRoute,
   type InboxDeclarationResolution,
   type PrivateMessageDeliveryRoute,
@@ -383,7 +384,11 @@ export interface PublishPrivateMessageInput {
    */
   recipientInboxRelays?: readonly string[]
   senderInboxRelays?: readonly string[]
-  /** Injectable kind-10050 resolver (tests); defaults to fetchInboxRelayUrls. */
+  /**
+   * Legacy string[]-or-throw kind-10050 resolver seam (tests). This seam
+   * cannot express a malformed declaration; when omitted, the typed
+   * resolveInboxDeclaration path is used instead.
+   */
   resolveInboxRelays?: (pubkey: string) => Promise<string[]>
   /** Injectable relay publisher for focused transport tests. */
   publishFn?: typeof publishWithPlanner
@@ -474,16 +479,17 @@ export async function publishPrivateMessage(
   const selfCopy = input.selfCopy ?? true
   const refreshRelayLists = input.refreshRelayLists ?? true
   const wrapParams = { rumorKind: input.rumorKind }
-  const resolveInboxRelays = input.resolveInboxRelays ?? fetchInboxRelayUrls
   const publishFn = input.publishFn ?? publishWithPlanner
 
   // NIP-17 delivery is exclusive to the recipient's declared inbox. The only
   // exception is the temporary Conduit bootstrap route for validated kind-16
   // order traffic (CND-208); a valid declaration always outranks it.
   const validatedOrder = input.validatedOrderScope ?? false
-  const recipientDeclaration = input.recipientInboxRelays
-    ? declarationFromKnownRelays(recipientPubkey, input.recipientInboxRelays)
-    : await resolveDeclarationViaSeam(input.recipientPubkey, resolveInboxRelays)
+  const recipientDeclaration = await resolveDeclarationForSend(
+    input.recipientPubkey,
+    input.recipientInboxRelays,
+    input.resolveInboxRelays
+  )
   const recipientRoute = selectPrivateMessageDeliveryRoute({
     rumorKind: input.rumorKind,
     declaration: recipientDeclaration,
@@ -502,15 +508,17 @@ export async function publishPrivateMessage(
   let senderRoute: ReturnType<typeof selectPrivateMessageDeliveryRoute> | null =
     null
   if (selfCopy) {
-    const senderDeclaration = input.senderInboxRelays
-      ? declarationFromKnownRelays(senderPubkey, input.senderInboxRelays)
-      : await resolveDeclarationViaSeam(input.senderPubkey, resolveInboxRelays)
+    const senderDeclaration = await resolveDeclarationForSend(
+      input.senderPubkey,
+      input.senderInboxRelays,
+      input.resolveInboxRelays
+    )
+    // The bootstrap lane is recipient-only: the non-critical sender self-copy
+    // stays strict and fails soft instead of writing to compatibility relays.
     senderRoute = selectPrivateMessageDeliveryRoute({
       rumorKind: input.rumorKind,
       declaration: senderDeclaration,
-      validatedOrder,
-      bootstrapEnabled: input.bootstrapRoute?.enabled,
-      bootstrapRelayUrls: input.bootstrapRoute?.relayUrls,
+      validatedOrder: false,
     })
   }
 
@@ -590,15 +598,42 @@ export async function publishPrivateMessage(
   }
 }
 
-/** Treat caller-supplied inbox relays as an authoritative declaration state. */
+/**
+ * Resolve the declaration for one send leg. Precedence: caller-known relays,
+ * then the legacy string[] seam (tests), then the typed resolver. The typed
+ * default preserves the malformed state so it can block writes.
+ */
+async function resolveDeclarationForSend(
+  pubkey: string,
+  knownRelayUrls: readonly string[] | undefined,
+  legacySeam: ((pubkey: string) => Promise<string[]>) | undefined
+): Promise<InboxDeclarationResolution> {
+  const key = pubkey.trim().toLowerCase()
+  if (knownRelayUrls) return declarationFromKnownRelays(key, knownRelayUrls)
+  if (legacySeam) return resolveDeclarationViaSeam(pubkey, legacySeam)
+  return resolveInboxDeclaration(pubkey)
+}
+
+/**
+ * Treat caller-supplied inbox relays as an authoritative declaration state.
+ * A nonempty list with no secure relay is a malformed declaration: it must
+ * block writes rather than downgrade to "not declared" and bootstrap.
+ */
 function declarationFromKnownRelays(
   pubkey: string,
   relayUrls: readonly string[]
 ): InboxDeclarationResolution {
+  const secure = secureRelayUrls(relayUrls)
+  const state =
+    secure.length > 0
+      ? "declared"
+      : relayUrls.length > 0
+        ? "malformed"
+        : "not_declared"
   return {
     pubkey,
-    state: relayUrls.length > 0 ? "declared" : "not_declared",
-    relayUrls: [...relayUrls],
+    state,
+    relayUrls: secure,
     stale: false,
     fetchedAt: Date.now(),
   }

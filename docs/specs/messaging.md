@@ -120,7 +120,10 @@ lookup_unavailable | malformed` with account-scoped freshness and
   kind-16 order-lifecycle send finds no usable recipient declaration, the write
   may use only the explicit Conduit-operated allowlist, behind an independent
   redeploy-controlled flag (default off). Kind-14 general DMs never use this
-  lane; a valid declaration always outranks it. See
+  lane; a valid declaration always outranks it. The lane is recipient-only:
+  the non-critical sender self-copy leg stays strict and fails soft. A
+  complete authoritative "not declared" lookup evicts any cached declaration
+  so a confirmed-absent declaration never resurrects as a write target. See
   `docs/specs/protocol.md` and
   `docs/knowledge/nip17-inbox-bootstrap-migration.md`.
 

@@ -5,7 +5,10 @@ import {
   type OwnPrivateMessageRelayReadiness,
 } from "../protocol/messaging"
 import { getNdk } from "../protocol/ndk"
-import { invalidateInboxDeclaration } from "../protocol/private-message-routing"
+import {
+  resolveInboxDeclaration,
+  type InboxDeclarationResolution,
+} from "../protocol/private-message-routing"
 
 /**
  * NIP-17 inbox declaration readiness + repair (CND-208).
@@ -18,6 +21,27 @@ import { invalidateInboxDeclaration } from "../protocol/private-message-routing"
  */
 
 export const INBOX_DECLARATION_QUERY_KEY = "inbox-declaration"
+
+export interface DeclarationReadBackResult {
+  /** True when a fresh lookup confirmed the declaration on relays. */
+  confirmed: boolean
+}
+
+/**
+ * Judge a post-publish read-back. A complete read that cannot find the
+ * declaration is a real failure; a degraded lookup that fell back to the
+ * primed cache means the publish succeeded but confirmation is pending.
+ */
+export function verifyDeclarationReadBack(
+  resolution: InboxDeclarationResolution
+): DeclarationReadBackResult {
+  if (resolution.state === "not_declared" || resolution.state === "malformed") {
+    throw new Error(
+      "The declaration was accepted but is not discoverable yet. Retry the readiness check."
+    )
+  }
+  return { confirmed: resolution.state === "declared" && !resolution.stale }
+}
 
 export interface UseInboxDeclarationOptions {
   enabled?: boolean
@@ -49,6 +73,8 @@ export interface UseInboxDeclarationResult {
   publishing: boolean
   publishError: string | null
   publishSuccess: boolean
+  /** True when the publish succeeded but the fresh read-back was degraded. */
+  publishConfirmationPending: boolean
   resetPublishState: () => void
 }
 
@@ -79,16 +105,14 @@ export function useInboxDeclaration(
         relayUrls,
       })
 
-      // Read back from discovery relays before reporting ready; a publish ACK
-      // alone does not prove the declaration is discoverable.
-      invalidateInboxDeclaration(pubkey)
-      const readiness = await inspectOwnPrivateMessageRelayReadiness(pubkey)
-      if (readiness.state !== "ready") {
-        throw new Error(
-          "The declaration was accepted but is not discoverable yet. Retry the readiness check."
-        )
-      }
-      return readiness
+      // Read back fresh before reporting confirmed; a publish ACK alone does
+      // not prove the declaration is discoverable. The publish primed the
+      // declaration cache, so a degraded lookup falls back to it instead of
+      // failing a publish that relays already accepted.
+      const resolution = await resolveInboxDeclaration(pubkey, {
+        freshnessMs: 0,
+      })
+      return verifyDeclarationReadBack(resolution)
     },
     onSettled: async () => {
       await queryClient.invalidateQueries({ queryKey })
@@ -131,6 +155,9 @@ export function useInboxDeclaration(
           ? "Could not publish the inbox declaration"
           : null,
     publishSuccess: publishMutation.isSuccess,
+    publishConfirmationPending: publishMutation.data
+      ? !publishMutation.data.confirmed
+      : false,
     resetPublishState: () => {
       publishMutation.reset()
     },
