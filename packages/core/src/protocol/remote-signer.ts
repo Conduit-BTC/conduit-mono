@@ -19,6 +19,10 @@ import {
   createBrowserRemoteSignerKeyVault,
   type RemoteSignerKeyVault,
 } from "./remote-signer-vault"
+import {
+  isValidSignedPublicNostrEvent,
+  type SignedPublicNostrEvent,
+} from "./signed-event"
 
 export type { RemoteSignerKeyVault } from "./remote-signer-vault"
 
@@ -439,6 +443,31 @@ export function readAuthRevision(
     return storage.getItem(AUTH_REVISION_STORAGE_KEY) ?? ""
   } catch {
     return ""
+  }
+}
+
+export interface AuthRevisionClaim {
+  revision: string
+  persisted: boolean
+}
+
+/**
+ * Acquire a fresh cross-tab authority claim and prove it was written. A caller
+ * must not treat an older readable revision as its own when setItem() fails.
+ */
+export function claimAuthRevision(
+  storage: AuthStorage | undefined = getDefaultStorage()
+): AuthRevisionClaim {
+  const revision = generateId()
+  if (!storage) return { revision, persisted: false }
+  try {
+    storage.setItem(AUTH_REVISION_STORAGE_KEY, revision)
+    return {
+      revision,
+      persisted: storage.getItem(AUTH_REVISION_STORAGE_KEY) === revision,
+    }
+  } catch {
+    return { revision, persisted: false }
   }
 }
 
@@ -1011,11 +1040,13 @@ export class NdkBunkerSignerAdapter implements NDKSigner {
         { operation: "sign event" }
       )
     }
+    const expectedContent = event.content
+    const expectedTags = event.tags.map((tag) => [...tag])
     const signed = await this.request("sign event", () =>
       this.bunkerSigner.signEvent({
         kind,
-        content: event.content,
-        tags: event.tags,
+        content: expectedContent,
+        tags: expectedTags.map((tag) => [...tag]),
         created_at: createdAt,
       })
     )
@@ -1023,20 +1054,39 @@ export class NdkBunkerSignerAdapter implements NDKSigner {
       signed.pubkey !== this.pubkey ||
       signed.kind !== kind ||
       signed.created_at !== createdAt ||
-      signed.content !== event.content ||
-      JSON.stringify(signed.tags) !== JSON.stringify(event.tags)
+      signed.content !== expectedContent ||
+      JSON.stringify(signed.tags) !== JSON.stringify(expectedTags)
     ) {
-      throw new RemoteSignerError(
-        signed.pubkey !== this.pubkey
-          ? "session_identity_mismatch"
-          : "invalid_response",
-        signed.pubkey !== this.pubkey
-          ? "The remote signer signed with a different account. Sign in again."
-          : "The remote signer returned a changed event. The signature was not accepted.",
-        { operation: "sign event" }
+      return this.rejectSignerIntegrityFailure(
+        new RemoteSignerError(
+          signed.pubkey !== this.pubkey
+            ? "session_identity_mismatch"
+            : "invalid_response",
+          signed.pubkey !== this.pubkey
+            ? "The remote signer signed with a different account. Sign in again."
+            : "The remote signer returned a changed event. The signature was not accepted.",
+          { operation: "sign event" }
+        )
+      )
+    }
+    if (!isValidSignedPublicNostrEvent(signed as SignedPublicNostrEvent)) {
+      return this.rejectSignerIntegrityFailure(
+        new RemoteSignerError(
+          "invalid_response",
+          "The remote signer returned an invalid signature. The event was not accepted.",
+          { operation: "sign event" }
+        )
       )
     }
     return signed.sig
+  }
+
+  private async rejectSignerIntegrityFailure(
+    error: RemoteSignerError
+  ): Promise<never> {
+    this.invalidated = true
+    await closeRemoteSigner(this.bunkerSigner, this.options)
+    throw error
   }
 
   async encryptionEnabled(

@@ -865,7 +865,6 @@ function CheckoutPage() {
   )
   const merchantTrust = useMerchantTrustContext({
     merchantPubkey: selectedMerchant ?? null,
-    viewerPubkey: signedBuyerPubkey,
   })
   const merchantProfile = merchantTrust.profile
   const merchantLud16 = merchantProfile?.lud16

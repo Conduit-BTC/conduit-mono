@@ -158,6 +158,41 @@ describe("telemetry policy", () => {
     )
   })
 
+  it("allows only session-scoped PostHog persistence and bounded performance capture", () => {
+    const safeErrors = validateTelemetrySourceUsage({
+      source:
+        'posthog.init("key", { capture_pageleave: true, capture_performance: { network_timing: false, web_vitals: true, web_vitals_attribution: false }, disable_persistence: false, persistence: "sessionStorage", save_campaign_params: false, save_referrer: false })',
+      relativePath: "packages/core/src/telemetry.ts",
+      allowedEventNames: new Set(),
+    })
+    const unsafeErrors = validateTelemetrySourceUsage({
+      source:
+        'posthog.init("key", { capture_performance: { network_timing: true, web_vitals_attribution: true }, disable_persistence: false, persistence: "localStorage+cookie", save_campaign_params: true, save_referrer: true })',
+      relativePath: "apps/market/src/analytics.ts",
+      allowedEventNames: new Set(),
+    })
+
+    expect(safeErrors).toEqual([])
+    expect(unsafeErrors).toContain(
+      "apps/market/src/analytics.ts has unsafe telemetry config: network timing capture must stay disabled"
+    )
+    expect(unsafeErrors).toContain(
+      "apps/market/src/analytics.ts has unsafe telemetry config: Web Vitals attribution must stay disabled"
+    )
+    expect(unsafeErrors).toContain(
+      "apps/market/src/analytics.ts has unsafe telemetry config: PostHog campaign persistence must stay disabled"
+    )
+    expect(unsafeErrors).toContain(
+      "apps/market/src/analytics.ts has unsafe telemetry config: PostHog referrer persistence must stay disabled"
+    )
+    expect(unsafeErrors).toContain(
+      "apps/market/src/analytics.ts has unsafe telemetry config: persistent PostHog identity storage is not allowed"
+    )
+    expect(unsafeErrors).toContain(
+      "apps/market/src/analytics.ts has unsafe telemetry config: PostHog persistence must be sessionStorage-only"
+    )
+  })
+
   it("rejects cookie APIs in client source", () => {
     const errors = validateTelemetrySourceUsage({
       source:

@@ -8,6 +8,7 @@ import {
   getProfileDisplayLabel,
   requireNdkConnected,
   selectLatestFollowListEvent,
+  useConduitSession,
   useProfile,
   type MerchantTrustSocialSummary,
   type Profile,
@@ -15,11 +16,7 @@ import {
 
 type ProfileState = "idle" | "loading" | "available" | "limited"
 type SocialState =
-  | "disconnected"
-  | "own_store"
-  | "loading"
-  | "available"
-  | "unavailable"
+  "disconnected" | "own_store" | "loading" | "available" | "unavailable"
 
 export type MerchantTrustContext = MerchantTrustSocialSummary & {
   merchantPubkey: string | null
@@ -33,15 +30,15 @@ export type MerchantTrustContext = MerchantTrustSocialSummary & {
 
 export function useMerchantTrustContext({
   merchantPubkey,
-  viewerPubkey,
   listingCount,
   profileRelayHints,
 }: {
   merchantPubkey: string | null | undefined
-  viewerPubkey?: string | null
   listingCount?: number
   profileRelayHints?: string[]
 }): MerchantTrustContext {
+  const session = useConduitSession()
+  const viewerPubkey = session.mode === "signed_in" ? session.pubkey : null
   const profileQuery = useProfile(merchantPubkey ?? null, {
     relayHints: profileRelayHints,
     refetchUnresolvedMs: 2_000,
