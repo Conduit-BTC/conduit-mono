@@ -1,19 +1,34 @@
 import {
   buildPaymentAttemptResultTelemetryProperties,
-  classifyNwcPaymentError,
   hasWebLN,
   recordBrowserTelemetryEvent,
   weblnSendPayment,
   type ConduitAppId,
-  type NwcDiagnostic,
-  type NwcConnection,
+  type WalletPaymentDiagnostic,
+  type WalletPaymentFeeApproval,
+  type WalletProviderId,
 } from "@conduit/core"
 import {
-  payInvoiceWithBuyerNwcSession,
-  type NwcSessionPaymentResult,
-} from "./buyer-nwc-session"
+  marketWalletPaymentCoordinator,
+  type WalletPaymentCoordinator,
+} from "./wallet-payment-coordinator"
 
-export type CheckoutPaymentRail = "nwc" | "webln"
+export type CheckoutPaymentRail = "wallet" | "webln"
+
+/**
+ * One explicit execution target for one payment attempt.
+ *
+ * A discriminated union makes implicit rail fallback unrepresentable. Callers
+ * must return to buyer review before changing this target.
+ */
+export type CheckoutPaymentTarget =
+  | {
+      type: "wallet"
+      walletId: string
+      providerId: WalletProviderId
+    }
+  | { type: "webln" }
+  | { type: "manual" }
 
 export type CheckoutInvoicePaymentResult =
   | {
@@ -26,11 +41,16 @@ export type CheckoutInvoicePaymentResult =
   | {
       status: "manual_required"
       reason: string
-      diagnostics?: NwcDiagnostic[]
+      diagnostics?: WalletPaymentDiagnostic[]
+    }
+  | {
+      status: "retryable_failure"
+      reason: string
+      diagnostics?: WalletPaymentDiagnostic[]
     }
 
 type PaymentRailDependencies = {
-  nwcSessionPayInvoice: typeof payInvoiceWithBuyerNwcSession
+  walletPaymentCoordinator: Pick<WalletPaymentCoordinator, "payInvoice">
   hasWebLN: typeof hasWebLN
   weblnSendPayment: typeof weblnSendPayment
   recordPaymentAttemptResult?: (
@@ -39,7 +59,7 @@ type PaymentRailDependencies = {
 }
 
 const defaultDependencies: PaymentRailDependencies = {
-  nwcSessionPayInvoice: payInvoiceWithBuyerNwcSession,
+  walletPaymentCoordinator: marketWalletPaymentCoordinator,
   hasWebLN,
   weblnSendPayment,
 }
@@ -58,136 +78,120 @@ function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
 }
 
-function isWeblnAmbiguousProofFailure(error: unknown): boolean {
-  return getErrorMessage(error, "").includes("did not return a payment proof")
-}
-
-function isNwcPrePublishFailure(
-  result: NwcSessionPaymentResult
-): result is Extract<
-  NwcSessionPaymentResult,
-  { status: "pre_publish_failed" }
-> {
-  return result.status === "pre_publish_failed"
-}
-
-function getNwcDiagnosticTelemetryStatus(
-  diagnostic: NwcDiagnostic
+function getWalletDiagnosticTelemetryStatus(
+  diagnostic: WalletPaymentDiagnostic
 ): "blocked" | "unavailable" | "ambiguous" {
-  if (
-    diagnostic.code === "permission_or_budget" ||
-    diagnostic.code === "invoice_amount_mismatch" ||
-    diagnostic.code === "network_mismatch"
-  ) {
-    return "blocked"
-  }
-  if (
-    diagnostic.code === "invalid_uri" ||
-    diagnostic.code === "private_relay" ||
-    diagnostic.code === "non_wss_relay" ||
-    diagnostic.code === "relay_unreachable" ||
-    diagnostic.code === "unsupported_pay_invoice"
-  ) {
-    return "unavailable"
-  }
-  return "ambiguous"
+  if (diagnostic.safeManualFallback === false) return "ambiguous"
+  return /amount|budget|permission|network|rejected/i.test(diagnostic.title)
+    ? "blocked"
+    : "unavailable"
 }
 
 export async function payCheckoutInvoice(
   input: {
     invoice: string
     amountMsats: number
-    walletConnection: NwcConnection | null
-    tryNwc: boolean
-    tryWebln?: boolean
+    /** Opaque local provider token. Never use a commerce order identifier. */
+    walletPaymentAttemptId?: string
+    paymentTarget: CheckoutPaymentTarget
+    approveFee?: WalletPaymentFeeApproval
     timeoutMs: number
     appId: ConduitAppId
     metadata?: Record<string, unknown>
   },
   dependencies: PaymentRailDependencies = defaultDependencies
 ): Promise<CheckoutInvoicePaymentResult> {
-  const failures: string[] = []
-  const diagnostics: NwcDiagnostic[] = []
   const amountSats = input.amountMsats / 1_000
   const recordPaymentAttemptResult =
     dependencies.recordPaymentAttemptResult ?? recordMarketPaymentAttemptResult
-  let attemptedAutomaticRail = false
 
-  if (input.walletConnection && input.tryNwc) {
-    attemptedAutomaticRail = true
+  if (input.paymentTarget.type === "wallet") {
+    if (!input.walletPaymentAttemptId) {
+      return {
+        status: "retryable_failure",
+        reason: "Wallet payment attempt is missing an idempotency key.",
+      }
+    }
+    const providerId = input.paymentTarget.providerId
     const startedAt = Date.now()
-    let result: NwcSessionPaymentResult | null = null
-    try {
-      result = await dependencies.nwcSessionPayInvoice(input.walletConnection, {
+    const result = await dependencies.walletPaymentCoordinator.payInvoice(
+      {
+        walletId: input.paymentTarget.walletId,
+        providerId,
+      },
+      {
         invoice: input.invoice,
         amountMsats: input.amountMsats,
+        idempotencyKey: input.walletPaymentAttemptId,
         timeoutMs: input.timeoutMs,
         appId: input.appId,
         metadata: input.metadata,
-      })
-    } catch (error) {
-      const diagnostic = classifyNwcPaymentError(error, input.walletConnection)
+        approveFee: input.approveFee,
+      }
+    )
+    if (result.status === "paid") {
       recordPaymentAttemptResult({
         amountSats,
         latencyMs: Date.now() - startedAt,
-        rail: "nwc",
-        status: getNwcDiagnosticTelemetryStatus(diagnostic),
+        rail: "wallet",
+        status: "success",
       })
-      if (!diagnostic.safeManualFallback) {
-        throw new Error(`${diagnostic.detail} ${diagnostic.action}`, {
-          cause: error,
-        })
+      return {
+        status: "paid",
+        rail: "wallet",
+        preimage: result.preimage,
+        paymentHash: result.paymentHash,
+        feeMsats: result.feeMsats,
       }
-      diagnostics.push(diagnostic)
-      failures.push(`${diagnostic.title}: ${diagnostic.action}`)
     }
 
-    if (result) {
-      if (result.status === "paid") {
-        recordPaymentAttemptResult({
-          amountSats,
-          latencyMs: Date.now() - startedAt,
-          rail: "nwc",
-          status: "success",
-        })
-        return {
-          status: "paid",
-          rail: "nwc",
-          preimage: result.preimage,
-          paymentHash: result.paymentHash,
-          feeMsats: result.feeMsats,
-        }
-      }
+    const diagnostic =
+      result.status === "declined" ? undefined : result.diagnostics?.[0]
+    const telemetryStatus =
+      result.status === "declined"
+        ? "blocked"
+        : result.status === "ambiguous"
+          ? "ambiguous"
+          : diagnostic
+            ? getWalletDiagnosticTelemetryStatus(diagnostic)
+            : result.phase === "before_publish"
+              ? "unavailable"
+              : "failure"
+    recordPaymentAttemptResult({
+      amountSats,
+      latencyMs: Date.now() - startedAt,
+      rail: "wallet",
+      status: telemetryStatus,
+    })
 
-      const diagnostic = classifyNwcPaymentError(
-        result.reason,
-        input.walletConnection
+    if (result.status === "ambiguous") {
+      throw new Error(
+        `${result.reason} Check your wallet before trying another payment path.`
       )
-      recordPaymentAttemptResult({
-        amountSats,
-        latencyMs: Date.now() - startedAt,
-        rail: "nwc",
-        status:
-          result.status === "pre_publish_failed"
-            ? "unavailable"
-            : result.status === "published_timeout"
-              ? "ambiguous"
-              : getNwcDiagnosticTelemetryStatus(diagnostic),
-      })
-
-      if (!isNwcPrePublishFailure(result) && !diagnostic.safeManualFallback) {
-        throw new Error(
-          `${result.reason} Check your wallet before trying another payment path.`
-        )
-      }
-
-      diagnostics.push(diagnostic)
-      failures.push(`${diagnostic.title}: ${diagnostic.action}`)
+    }
+    const reason = diagnostic
+      ? `${diagnostic.title}: ${diagnostic.action}`
+      : result.reason
+    return {
+      status: "retryable_failure",
+      reason,
+      diagnostics:
+        result.status === "declined" ? undefined : result.diagnostics,
     }
   }
 
-  if (input.tryWebln !== false && dependencies.hasWebLN()) {
-    attemptedAutomaticRail = true
+  if (input.paymentTarget.type === "webln") {
+    if (!dependencies.hasWebLN()) {
+      recordPaymentAttemptResult({
+        amountSats,
+        rail: "webln",
+        status: "unavailable",
+      })
+      return {
+        status: "retryable_failure",
+        reason: "The selected browser wallet is unavailable.",
+      }
+    }
     const startedAt = Date.now()
     try {
       const result = await dependencies.weblnSendPayment({
@@ -213,32 +217,23 @@ export async function payCheckoutInvoice(
         amountSats,
         latencyMs: Date.now() - startedAt,
         rail: "webln",
-        status: isWeblnAmbiguousProofFailure(error) ? "ambiguous" : "failure",
+        status: "ambiguous",
       })
-      if (isWeblnAmbiguousProofFailure(error)) {
-        throw new Error(
-          `${message} Check your wallet before trying another payment path.`,
-          { cause: error }
-        )
-      }
-      failures.push(message)
+      throw new Error(
+        `${message} Check your wallet before trying another payment path.`,
+        { cause: error }
+      )
     }
   }
 
-  if (!attemptedAutomaticRail) {
-    recordPaymentAttemptResult({
-      amountSats,
-      rail: "none",
-      status: "unavailable",
-    })
-  }
+  recordPaymentAttemptResult({
+    amountSats,
+    rail: "none",
+    status: "unavailable",
+  })
 
   return {
     status: "manual_required",
-    reason:
-      failures.length > 0
-        ? failures.join(" ")
-        : "No automatic Lightning payment rail is currently available.",
-    ...(diagnostics.length > 0 && { diagnostics }),
+    reason: "No automatic Lightning payment rail is currently available.",
   }
 }

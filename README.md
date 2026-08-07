@@ -12,7 +12,7 @@ Conduit code is MIT-licensed. Conduit trademarks, names, and logos are reserved.
 
 | App                                      | Port | Description                                                              |
 | ---------------------------------------- | ---- | ------------------------------------------------------------------------ |
-| **Market** (`apps/market`)               | 3000 | Buyer marketplace: browse products, cart, checkout, order tracking       |
+| **Market** (`apps/market`)               | 3000 | Buyer marketplace: browse, cart, checkout, orders, device-local wallets  |
 | **Merchant Portal** (`apps/merchant`)    | 3001 | Seller dashboard: product CRUD, order management, payments, DM workspace |
 | **Store Builder** (`apps/store-builder`) | 3002 | Placeholder app shell                                                    |
 
@@ -206,6 +206,12 @@ target relay(s): pubkey, `d`, `k`, `web`, and replaceable-event address.
 5. **Merchant**: Orders > send payment request or confirm payment state
 6. **Buyer**: Orders > see payment request/proof state, status updates, shipping info
 
+Market's `/wallet` route is device-owned and can be used without connecting a
+Nostr signer. It supports multiple Portable Wallets (Spark is the first
+provider) and multiple Connected Wallets (NWC is the first protocol). Wallet
+credentials remain device-local; wallet identifiers and balances are excluded
+from Conduit telemetry.
+
 ---
 
 ## Common Commands
@@ -253,11 +259,11 @@ conduit-mono/
 | Routing       | TanStack Router (file-based, type-safe)                            |
 | Server State  | TanStack Query over shared Nostr protocol helpers                  |
 | Client State  | React Context (auth only)                                          |
-| Local Storage | Dexie (IndexedDB) for orders, messages, cache                      |
+| Local Storage | Dexie (IndexedDB) for orders, messages, cache, wallet records      |
 | Forms         | react-hook-form + Zod                                              |
 | UI            | shadcn/ui + Tailwind CSS                                           |
 | Protocol      | Nostr via `@conduit/core` helpers; NDK is the current edge library |
-| Payments      | Lightning via NWC (NIP-47), WebLN, invoices, and payment proofs    |
+| Payments      | Lightning via Spark, NWC (NIP-47), WebLN, invoices, and proofs     |
 | Messaging     | NIP-17 gift-wrapped encrypted DMs                                  |
 
 ## Open Source
@@ -271,10 +277,13 @@ See [OPEN_SOURCE.md](./OPEN_SOURCE.md) for reproducible-build notes and [TRADEMA
 
 ## Protocol
 
-- **Authentication**: External signers only (NIP-07, NIP-46). No key generation or custody.
+- **Authentication**: External signers only (NIP-07, NIP-46). No Nostr account-key generation or custody.
 - **Products**: Kind 30402 replaceable events (NIP-99)
 - **Orders**: NIP-17 gift-wrapped encrypted DMs between buyer and merchant
-- **Payments**: Non-custodial Lightning payment requests, NWC/WebLN payment rails, and payment proofs. No fund custody.
+- **Payments**: Non-custodial Lightning through Portable Wallets, NWC/WebLN
+  payment rails, invoices, and payment proofs. Portable Wallet credentials are
+  a separate, isolated client-side boundary; no Conduit-operated service can
+  control funds.
 - **Profiles**: Kind 0 metadata events (NIP-01)
 
 See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for system diagrams and protocol details.

@@ -1,6 +1,7 @@
 import Dexie, { type EntityTable, type Table } from "dexie"
 import { config } from "../config"
 import type { ProductZapMessagePolicy } from "../schemas"
+import type { WalletDescriptor, WalletProviderId } from "../wallets"
 
 export interface StoredOrder {
   id: string
@@ -221,6 +222,14 @@ export interface StoredPaymentAttempt {
   updatedAt: number
 }
 
+export interface StoredWalletCredential {
+  walletId: string
+  providerId: WalletProviderId
+  credential: string
+  createdAt: number
+  updatedAt: number
+}
+
 /** How the buyer initiated payment for this order. */
 export type OrderCheckoutMode =
   | "anonymous_public_zap"
@@ -273,6 +282,21 @@ export type OrderZapReceiptStatus =
 export type OrderLifecyclePhase =
   "pending" | "in_progress" | "completed" | "failed" | "cancelled"
 
+/**
+ * The buyer-selected local payment target for this order.
+ *
+ * This is an opaque device-local routing choice. It MUST NOT be included in the
+ * merchant order, payment proof, logs, or telemetry.
+ */
+export type OrderPaymentTarget =
+  | {
+      type: "wallet"
+      walletId: string
+      providerId: WalletProviderId
+    }
+  | { type: "webln" }
+  | { type: "manual" }
+
 export interface OrderLifecycleItem {
   productId: string
   /** Local product-title snapshot for buyer order display. Public listing data. */
@@ -319,6 +343,16 @@ export interface OrderLifecycle {
   /** A public anon-zap attempt failed before invoice issuance and continued privately. */
   publicZapFallback?: boolean
   merchantLightningAddress?: string
+  /** Local-only payment routing selection. Never forwarded off device. */
+  paymentTarget?: OrderPaymentTarget
+  /**
+   * Stable opaque token for retries against the selected saved-wallet provider.
+   *
+   * This value is generated independently of `orderId`, stays device-local
+   * except when passed to the selected provider as its idempotency key, and is
+   * cleared when the buyer explicitly changes payment targets.
+   */
+  walletPaymentAttemptId?: string
 
   items: OrderLifecycleItem[]
   itemSubtotalSats: number
@@ -396,6 +430,8 @@ class ConduitDB extends Dexie {
   nip05Verifications!: EntityTable<CachedNip05Verification, "id">
   paymentAttempts!: EntityTable<StoredPaymentAttempt, "id">
   orderLifecycles!: EntityTable<OrderLifecycle, "orderId">
+  wallets!: EntityTable<WalletDescriptor, "id">
+  walletCredentials!: EntityTable<StoredWalletCredential, "walletId">
 
   constructor() {
     super("conduit")
@@ -498,6 +534,27 @@ class ConduitDB extends Dexie {
         "id, orderId, buyerPubkey, merchantPubkey, proofDeliveryStatus, createdAt",
       orderLifecycles:
         "orderId, buyerPubkey, merchantPubkey, phase, updatedAt, createdAt",
+    })
+
+    this.version(9).stores({
+      orders: "id, buyerPubkey, merchantPubkey, status, createdAt",
+      messages: "id, senderPubkey, recipientPubkey, kind, createdAt, read",
+      products: "id, pubkey, *tags, cachedAt",
+      productTombstones: "id, pubkey, addressId, eventId, deletedAt, cachedAt",
+      profiles: "pubkey, cachedAt",
+      orderMessages:
+        "id, orderId, type, senderPubkey, recipientPubkey, createdAt",
+      relayLists: "pubkey, cachedAt",
+      productSocialSummaries: "key, cachedAt",
+      nip05Verifications:
+        "id, pubkey, normalizedIdentifier, status, expiresAt, cachedAt",
+      paymentAttempts:
+        "id, orderId, buyerPubkey, merchantPubkey, proofDeliveryStatus, createdAt",
+      orderLifecycles:
+        "orderId, buyerPubkey, merchantPubkey, phase, updatedAt, createdAt",
+      wallets:
+        "id, kind, providerId, network, status, *capabilities, *defaultIntents, updatedAt, createdAt",
+      walletCredentials: "walletId, providerId, updatedAt",
     })
   }
 }

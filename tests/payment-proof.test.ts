@@ -110,7 +110,7 @@ describe("payment proof model", () => {
       preimage: "preimage",
       paymentHash: "hash",
       zapRequestId: "zap-request-id",
-      source: "nwc",
+      source: "wallet",
       proofDeliveryStatus: "pending",
     })
 
@@ -120,7 +120,7 @@ describe("payment proof model", () => {
       action: "zap",
       amountMsats: 21_000,
       zapRequestId: "zap-request-id",
-      source: "nwc",
+      source: "wallet",
       proofDeliveryStatus: "pending",
       verification: {
         state: "buyer_evidence_received",
@@ -154,6 +154,43 @@ describe("payment proof model", () => {
     expect(proof.zapRequestId).toBeUndefined()
   })
 
+  it("keeps the Portable Wallet provider out of merchant-facing proof", () => {
+    const proof = buildLightningPaymentProofMessage({
+      orderId: "order-1",
+      action: "private_checkout",
+      amount: 21,
+      amountMsats: 21_000,
+      currency: "SATS",
+      invoice: "lnbc1invoice",
+      preimage: "wallet-preimage",
+      paymentHash: "wallet-payment-hash",
+      source: "wallet",
+    })
+
+    expect(proof).toMatchObject({
+      rail: "lightning",
+      source: "wallet",
+      preimage: "wallet-preimage",
+      paymentHash: "wallet-payment-hash",
+    })
+    expect(JSON.stringify(proof)).not.toContain("spark")
+  })
+
+  it("continues to accept the legacy NWC proof source", () => {
+    const proof = buildLightningPaymentProofMessage({
+      orderId: "order-legacy",
+      action: "private_checkout",
+      amount: 21,
+      amountMsats: 21_000,
+      currency: "SATS",
+      invoice: "lnbc1legacy",
+      preimage: "legacy-preimage",
+      source: "nwc",
+    })
+
+    expect(proof.source).toBe("nwc")
+  })
+
   it("rejects Conduit-created proofs without payment evidence", () => {
     expect(() =>
       buildLightningPaymentProofMessage({
@@ -162,7 +199,7 @@ describe("payment proof model", () => {
         amount: 21,
         amountMsats: 21_000,
         currency: "SATS",
-        source: "nwc",
+        source: "wallet",
       } as never)
     ).toThrow()
   })
@@ -177,7 +214,7 @@ describe("payment proof model", () => {
         currency: "SATS",
         invoice: "lnbc1invoice",
         preimage: "preimage",
-        source: "nwc",
+        source: "wallet",
       })
     ).toThrow("Public zap proofs must include the zap request id.")
   })
