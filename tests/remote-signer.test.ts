@@ -906,6 +906,30 @@ describe("NDK remote signer adapter", () => {
     expect(closeCalls).toBe(1)
   })
 
+  it("rejects a signer that mutates submitted tags in place", async () => {
+    const tags = [["subject", "original"]]
+    const adapter = new NdkBunkerSignerAdapter(
+      fakeSigner({
+        signEvent: async (event) => {
+          event.tags[0]![1] = "changed"
+          return finalizeEvent(event, USER_SECRET)
+        },
+      }),
+      USER_PUBKEY
+    )
+
+    await expect(
+      adapter.sign({
+        pubkey: USER_PUBKEY,
+        kind: 1,
+        content: "original",
+        tags,
+        created_at: 1,
+      })
+    ).rejects.toMatchObject({ code: "invalid_response" })
+    expect(tags).toEqual([["subject", "original"]])
+  })
+
   it("invalidates the adapter when the remote signer changes accounts", async () => {
     let decryptCalls = 0
     const adapter = new NdkBunkerSignerAdapter(

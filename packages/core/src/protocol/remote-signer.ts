@@ -1040,11 +1040,13 @@ export class NdkBunkerSignerAdapter implements NDKSigner {
         { operation: "sign event" }
       )
     }
+    const expectedContent = event.content
+    const expectedTags = event.tags.map((tag) => [...tag])
     const signed = await this.request("sign event", () =>
       this.bunkerSigner.signEvent({
         kind,
-        content: event.content,
-        tags: event.tags,
+        content: expectedContent,
+        tags: expectedTags.map((tag) => [...tag]),
         created_at: createdAt,
       })
     )
@@ -1052,8 +1054,8 @@ export class NdkBunkerSignerAdapter implements NDKSigner {
       signed.pubkey !== this.pubkey ||
       signed.kind !== kind ||
       signed.created_at !== createdAt ||
-      signed.content !== event.content ||
-      JSON.stringify(signed.tags) !== JSON.stringify(event.tags)
+      signed.content !== expectedContent ||
+      JSON.stringify(signed.tags) !== JSON.stringify(expectedTags)
     ) {
       return this.rejectSignerIntegrityFailure(
         new RemoteSignerError(
