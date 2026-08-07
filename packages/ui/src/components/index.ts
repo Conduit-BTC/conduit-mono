@@ -61,7 +61,6 @@ export {
 export { LiveReadNotice, type LiveReadNoticeProps } from "./LiveReadNotice"
 export {
   FreshnessChip,
-  freshnessChipVariants,
   type FreshnessChipProps,
   type FreshnessChipStatus,
 } from "./FreshnessChip"

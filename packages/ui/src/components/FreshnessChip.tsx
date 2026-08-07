@@ -98,12 +98,16 @@ function FreshnessChip({
     status === "idle" ? "hidden" : status
   )
   const prevStatus = useRef(status)
+  const lastActivePhase = useRef<Exclude<FreshnessChipPhase, "hidden">>(
+    status === "idle" ? "updating" : status
+  )
 
   useEffect(() => {
     const prev = prevStatus.current
     prevStatus.current = status
 
     if (status !== "idle") {
+      lastActivePhase.current = status
       setPhase(status)
       return
     }
@@ -111,16 +115,11 @@ function FreshnessChip({
       setPhase("hidden")
       return
     }
+    lastActivePhase.current = "synced"
     setPhase("synced")
     const timer = setTimeout(() => setPhase("hidden"), syncedDurationMs)
     return () => clearTimeout(timer)
   }, [status, syncedDurationMs])
-
-  const lastActivePhase =
-    useRef<Exclude<FreshnessChipPhase, "hidden">>("updating")
-  if (phase !== "hidden") {
-    lastActivePhase.current = phase
-  }
 
   const visible = phase !== "hidden"
   const displayPhase = phase === "hidden" ? lastActivePhase.current : phase
@@ -142,14 +141,14 @@ function FreshnessChip({
       {...props}
     >
       {displayPhase === "updating" && (
-        <LoaderCircle aria-hidden="true" className="h-3 w-3 animate-spin" />
+        <LoaderCircle aria-hidden="true" className="size-3 animate-spin" />
       )}
       {displayPhase === "synced" && (
-        <Check aria-hidden="true" className="h-3 w-3" />
+        <Check aria-hidden="true" className="size-3" />
       )}
       {label}
     </span>
   )
 }
 
-export { FreshnessChip, freshnessChipVariants }
+export { FreshnessChip }
