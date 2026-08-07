@@ -479,6 +479,24 @@ For NIP-17 buyer/merchant communication, Conduit should:
 - warn when DM support exists without auth support
 - limit DM usage on weaker relays when policy requires stronger access control
 
+#### Temporary bootstrap role (CND-208)
+
+While users migrate to valid kind `10050` declarations, the Conduit-operated
+relay additionally serves two bounded roles:
+
+- **Compatibility reads.** It is part of the bounded compatibility read set
+  that clients union with declared inboxes and locally enabled secure IN
+  relays when reading their own gift wraps.
+- **Bootstrap order writes.** Behind an independent redeploy-controlled flag,
+  validated kind-16 order gift wraps may be written to the explicit
+  Conduit-operated allowlist when the recipient has no usable declaration.
+
+Both roles preserve NIP-44/NIP-59 encryption; the relay sees only gift wraps.
+This is a migration exception, not NIP-17 routing, and its removal gate lives
+in `docs/knowledge/nip17-inbox-bootstrap-migration.md`. The bootstrap
+allowlist is never widened to arbitrary NIP-65, local OUT, commerce-priority,
+or public relays.
+
 ---
 
 ## Conflict and Fallback Rules

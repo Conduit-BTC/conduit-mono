@@ -36,6 +36,10 @@ Fields:
 - Gates: `addressValidity`, `shippingZoneEligibility` (distinct; see below).
 - Progress: `orderDeliveryStatus`, `invoiceStatus`, `paymentStatus`,
   `proofDeliveryStatus`, `zapReceiptStatus`.
+- Route provenance: `orderDeliveryRoute`
+  (`declared_inbox` | `conduit_bootstrap`) records which write lane carried the
+  order leg (see the temporary bootstrap exception in
+  `docs/specs/protocol.md`).
 - Evidence: `invoice`, `paymentHash`, `preimage`, `feeMsats`, `zapRequestId`,
   `zapReceiptId`.
 - Meta: coarse `phase` (for list filtering), `lastError`, `deliveryNotice`,
@@ -51,7 +55,10 @@ Repository helpers: `createOrderLifecycle`, `getOrderLifecycle`,
    to `/orders?order=<orderId>`. Anonymous public-zap preparation begins only
    after that durable checkpoint. Signer, authorization, pricing-attestation,
    or public-invoice failure can suppress the public receipt but cannot prevent
-   order delivery or an ordinary private invoice.
+   order delivery or an ordinary private invoice. Delivery semantics are
+   bounded: "sent" means at least one relay in the selected write lane
+   acknowledged the event. Relay ACK is not recipient receipt or read, and a
+   zero-ACK publish must fail the send rather than become `sent`/delivered.
 2. Fast-zap hands payment to a route-independent service
    (`order-payment-service`) that, outside React, requests the invoice, pays via
    NWC/WebLN, publishes the proof, and writes each transition to the lifecycle

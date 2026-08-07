@@ -235,13 +235,39 @@ Buyer-merchant communication is sent as NIP-17 encrypted messages:
 The kind `16` payload is never published directly. It is encrypted and delivered through NIP-17 wrapping. Kind `14` general DMs remain separate from order-linked kind `16` conversations in product state.
 
 NIP-17 transport routing is exclusive to kind `10050` declarations. Gift-wrap
-reads use only the principal's declared secure-message relays. Each gift-wrap
-write, including a sender self-copy, uses only that wrap recipient's declared
-secure-message relays. NIP-65, configured relay lists, commerce priority, and
-general relay defaults are not fallback routes. An absent, malformed,
-stale-unusable, or unavailable declaration means the principal or recipient is
-not ready for secure messaging and must produce an explicit degraded state; the
-client must not attempt fallback delivery or represent the read as complete.
+writes, including a sender self-copy, target only that wrap recipient's
+declared secure-message relays. NIP-65, configured relay lists, commerce
+priority, and general relay defaults are not write fallback routes. A signed
+empty or malformed declaration means the principal or recipient is not ready
+for secure messaging and must produce an explicit degraded state; the client
+must not override that signed state or represent a failed lookup as "not
+declared".
+
+Gift-wrap reads are permissive: the principal reads the union of their valid
+declared inboxes, their locally enabled secure IN relays, and a bounded
+Conduit-operated compatibility read set. Read results carry coverage
+(`complete | partial | unavailable`) and source provenance; an all-failed read
+must never be reported as an authoritative empty inbox.
+
+### Temporary exception: Conduit bootstrap order routing (CND-208)
+
+A named, bounded, Conduit-owned exception exists while users migrate to valid
+kind `10050` declarations. It is not NIP-17-conformant routing and must not be
+presented as an extension of NIP-17. NIP-44/NIP-59 encryption is preserved.
+
+- Scope: validated kind `16` order-lifecycle messages only. Kind `14` general
+  DMs never use this lane.
+- Writes: only when the recipient has no usable declaration, and only to the
+  explicit Conduit-operated allowlist (`config.dmBootstrapWriteRelayUrls`).
+  Arbitrary NIP-65, local OUT, commerce-priority, or public relays are never
+  compatibility write targets.
+- A valid current or cached kind `10050` declaration always outranks the
+  bootstrap lane; a newly observed valid declaration returns subsequent writes
+  to the declared route.
+- The lane ships behind an independent redeploy-controlled flag
+  (`VITE_DM_BOOTSTRAP_WRITES`), default off.
+- Rationale, owner, evidence, and the removal checklist live in
+  `docs/knowledge/nip17-inbox-bootstrap-migration.md`.
 
 Current private-message code may continue to interoperate with NIP-44 v2, which is the current public NIP-44 encryption version. Any newer encryption-version work must be source-gated until public draft/client references and capabilities are explicit.
 
