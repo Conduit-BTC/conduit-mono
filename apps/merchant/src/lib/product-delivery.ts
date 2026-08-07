@@ -139,6 +139,23 @@ export function buildLocalProductRetryNotice(
   }
 }
 
+export function buildQueuedProductDeletionNotice(
+  state: "delivering" | "retry_needed"
+): ProductDeliveryNotice {
+  const retryNeeded = state === "retry_needed"
+  return {
+    action: "delete",
+    state,
+    title: retryNeeded ? "Delete needs local retry" : "Restoring signed delete",
+    detail: retryNeeded
+      ? "The signed deletion is saved, but its local tombstone could not be confirmed. Use Retry delivery to restore it before contacting relays."
+      : "The signed deletion is saved. Confirming its local tombstone before contacting relays.",
+    attemptedRelayUrls: [],
+    successfulRelayUrls: [],
+    failedRelayUrls: [],
+  }
+}
+
 export function getProductDeliveryNoticeVariant(
   state: ProductDeliveryNotice["state"]
 ): "success" | "warning" | "error" | "info" {

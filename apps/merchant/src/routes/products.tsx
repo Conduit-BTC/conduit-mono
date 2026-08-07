@@ -81,6 +81,7 @@ import {
   buildLocalProductDeliveryNotice,
   buildLocalProductRetryNotice,
   buildProductDeliveryNotice,
+  buildQueuedProductDeletionNotice,
   formatProductRelayUrls,
   getProductDeliveryNoticeVariant,
   type ProductDeliveryNotice,
@@ -926,7 +927,9 @@ function ProductsPage() {
     onMutate: (payload) => {
       if (!payload.deliveryJobId) setProductDeliveryRetry(null)
       setProductDeliveryNotice(
-        payload.deliveryJobId ? buildLocalProductDeliveryNotice("delete") : null
+        payload.deliveryJobId
+          ? buildQueuedProductDeletionNotice("delivering")
+          : null
       )
     },
     onSuccess: async (data, variables) => {
@@ -965,6 +968,11 @@ function ProductsPage() {
         setProductDeliveryNotice(
           variables.previousNotice ?? buildLocalProductRetryNotice("delete")
         )
+      } else if (variables.deliveryJobId) {
+        setProductDeliveryNotice(
+          variables.previousNotice ??
+            buildQueuedProductDeletionNotice("retry_needed")
+        )
       } else {
         setProductDeliveryNotice((current) =>
           current?.action === "delete" && current.state === "delivering"
@@ -1001,7 +1009,7 @@ function ProductsPage() {
     setProductDeliveryNotice((current) => {
       if (current?.action === "publish") return current
       return job.deliveryAttemptCount === 0
-        ? buildLocalProductRetryNotice("delete")
+        ? buildQueuedProductDeletionNotice("retry_needed")
         : buildProductDeliveryNotice(
             "delete",
             productDeletionJobToPublishResult(job)
@@ -1389,7 +1397,7 @@ function ProductsPage() {
                 : "idle"
           }
           awaitingSignatureMessage="Confirm the deletion event in your signer. The listing will hide locally while relay delivery runs."
-          publishingMessage="The signed tombstone is active locally. Delivering it to relays."
+          publishingMessage="The signed deletion is saved. Confirming its local tombstone before relay delivery."
           errorMessage={getPublishErrorMessage(deleteMutation.error, "delete")}
           className="mt-2"
         />
