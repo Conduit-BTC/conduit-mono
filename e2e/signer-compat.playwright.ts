@@ -94,6 +94,30 @@ test("market getRelays failure does not block signer connect", async ({
     .toBe(TEST_BUYER_PUBKEY)
 })
 
+test("market signer authority storage failure remains retryable", async ({
+  page,
+}) => {
+  await installTestSigner(page, TEST_BUYER_PUBKEY, { rememberAuth: false })
+  await page.addInitScript(() => {
+    const setItem = Storage.prototype.setItem
+    Storage.prototype.setItem = function (key: string, value: string): void {
+      if (key === "conduit:auth:revision") return
+      setItem.call(this, key, value)
+    }
+  })
+  await openMarketSignerDialog(page)
+
+  const connectButton = page.getByRole("button", {
+    name: /Connect Extension \(NIP-07\)/i,
+  })
+  await connectButton.click()
+
+  await expect(
+    page.getByText(/could not establish exclusive signer authority/i)
+  ).toBeVisible({ timeout: 10_000 })
+  await expect(connectButton).toBeEnabled()
+})
+
 test("merchant locked signer shows waiting state then connects after unlock", async ({
   page,
 }) => {

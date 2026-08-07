@@ -30,6 +30,10 @@ import {
   assertSafeReplaceablePublish,
   type ReplaceablePublishSafetyOptions,
 } from "./replaceable-safety"
+import {
+  isValidSignedPublicNostrEvent,
+  type SignedPublicNostrEvent,
+} from "./signed-event"
 
 const STANDARD_PUBLISH_TIMEOUT_MS = 5_000
 const CRITICAL_PUBLISH_TIMEOUT_MS = 10_000
@@ -91,6 +95,28 @@ export class RelayPublishDiagnosticsError extends Error {
     this.name = "RelayPublishDiagnosticsError"
     this.diagnostics = diagnostics
     this.cause = cause
+  }
+}
+
+function assertValidSignedPublish(
+  event: NDKEvent,
+  input: PublishWithPlannerInput
+): void {
+  let rawEvent: SignedPublicNostrEvent
+  try {
+    rawEvent = event.rawEvent() as SignedPublicNostrEvent
+  } catch {
+    throw new Error("Refusing to publish an invalid signed Nostr event.")
+  }
+  if (!isValidSignedPublicNostrEvent(rawEvent)) {
+    throw new Error("Refusing to publish an invalid signed Nostr event.")
+  }
+  if (input.intent !== "author_event") return
+  const expectedAuthor = input.authorPubkey?.trim().toLowerCase()
+  if (!expectedAuthor || rawEvent.pubkey.toLowerCase() !== expectedAuthor) {
+    throw new Error(
+      "Refusing to publish an event signed by a different account."
+    )
   }
 }
 
@@ -496,6 +522,7 @@ export async function publishWithPlanner(
     assertSafeNip65RelayTags(event.tags ?? [])
   }
   assertSafeReplaceablePublish(event, input.replaceableSafety)
+  assertValidSignedPublish(event, input)
 
   const basePlan = input.exclusiveRelayUrls
     ? await planPublishRelays(input)
