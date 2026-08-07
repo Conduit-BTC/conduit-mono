@@ -191,6 +191,18 @@ bun run --filter @conduit/merchant dev --host 0.0.0.0 --port 7001
 
 ## Code Style
 
+### Implementation Minimalism
+
+- Check dependency documentation, types, and repository usage before concluding that custom code
+  or another package is required.
+- Build the smallest working end-to-end change first. Add later capabilities without destabilizing
+  verified behavior.
+- Keep components modular. Separate concerns only where the boundary is clear and useful.
+- Do not introduce a known temporary architecture unless requirements make the tradeoff necessary
+  and the replacement path is explicit.
+- Preserve backward compatibility when the product, API contract, or migration requirements
+  require it. Remove obsolete paths otherwise.
+
 - **TypeScript strict mode** - All code must pass strict type checking
 - **Double quotes** for strings
 - **2-space indentation**

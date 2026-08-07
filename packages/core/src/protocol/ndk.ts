@@ -888,13 +888,13 @@ export async function requireNdkConnected(timeoutMs = 10_000): Promise<NDK> {
 }
 
 export function setSigner(signer: NDKSigner): SignerLease {
+  const ndk = getNdk()
   const lease = Object.freeze({
     signer,
     token: Symbol("ndk-signer-lease"),
   })
-  activeSignerLease = lease
-  const ndk = getNdk()
   ndk.signer = signer
+  activeSignerLease = lease
   return lease
 }
 
