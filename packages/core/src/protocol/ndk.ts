@@ -104,7 +104,10 @@ function uniqueRelayUrls(urls: readonly string[]): string[] {
   return Array.from(new Set(urls.map((url) => url.trim()).filter(Boolean)))
 }
 
-function attachEventSourceRelayUrl(event: NDKEvent, relayUrl: string): void {
+export function attachEventSourceRelayUrl(
+  event: NDKEvent,
+  relayUrl: string
+): void {
   const eventWithSources = event as EventWithSourceRelayUrls
   const next = uniqueRelayUrls([
     ...(eventWithSources[EVENT_SOURCE_RELAY_URLS] ?? []),
@@ -122,6 +125,15 @@ export function getEventSourceRelayUrls(event: NDKEvent): string[] {
   return [
     ...((event as EventWithSourceRelayUrls)[EVENT_SOURCE_RELAY_URLS] ?? []),
   ]
+}
+
+export function mergeEventSourceRelayUrls(
+  target: NDKEvent,
+  source: NDKEvent
+): void {
+  for (const relayUrl of getEventSourceRelayUrls(source)) {
+    attachEventSourceRelayUrl(target, relayUrl)
+  }
 }
 
 export function subscribeNdkState(listener: Listener): () => void {

@@ -213,6 +213,18 @@ const deletionEvent = {
 }
 ```
 
+Before delivery, Merchant persists the exact signed deletion and an immutable,
+deterministic target plan containing the merchant's configured and NIP-65 write
+relays, every validated source relay observed for the product, and the canonical
+Conduit commerce relay. Per-relay ACK, rejection, timeout, and retry state is
+durable across route changes, reloads, and browser restarts. Retries publish the
+same signed event and only revisit targets that have not acknowledged it.
+
+Legacy products may be deleted by a valid exact event ID when trustworthy
+address metadata is unavailable. Merchant may emit an address-only target when
+the full same-author coordinate is trustworthy, but it must refuse to sign when
+neither target is valid.
+
 ## Order States
 
 ```text

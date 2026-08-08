@@ -30,6 +30,7 @@ import type {
   CachedProductTombstone,
   CachedProfile,
 } from "@conduit/core"
+import { attachEventSourceRelayUrl } from "@conduit/core/protocol/ndk"
 
 const FIXED_NOW = 1_700_000_000_000
 const MERCHANT_A_SECRET = new Uint8Array(32).fill(1)
@@ -446,13 +447,15 @@ describe("commerce gateway", () => {
   })
 
   it("keeps merchant storefront reads deletion-aware", async () => {
-    const merchantPubkey = "merchant"
-    const productEvent = makeProductEvent({
-      pubkey: merchantPubkey,
+    const productEvent = makeSignedProductEvent({
       dTag: "deleted-item",
-      id: "event-1",
       createdAt: 100,
       title: "Deleted Item",
+    })
+    const merchantPubkey = productEvent.pubkey
+    const deletionEvent = makeSignedDeletionEvent({
+      createdAt: 101,
+      tags: [["a", `30402:${merchantPubkey}:deleted-item`]],
     })
 
     __setCommerceTestOverrides({
@@ -462,15 +465,7 @@ describe("commerce gateway", () => {
         }
 
         if (filter.kinds?.includes(EVENT_KINDS.DELETION)) {
-          return [
-            {
-              id: "delete-1",
-              pubkey: merchantPubkey,
-              created_at: 101,
-              content: "",
-              tags: [["a", `30402:${merchantPubkey}:deleted-item`]],
-            } as never,
-          ]
+          return [deletionEvent as never]
         }
 
         return []
@@ -526,6 +521,37 @@ describe("commerce gateway", () => {
     ).toBe(true)
   })
 
+  it("keeps the broad deletion fallback for Merchant storefront reads", async () => {
+    const merchantPubkey = "merchant"
+    const productEvent = makeProductEvent({
+      pubkey: merchantPubkey,
+      dTag: "fallback-item",
+      id: "event-fallback",
+      createdAt: 100,
+      title: "Fallback Item",
+    })
+    const deletionFilters: Array<Record<string, unknown>> = []
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          return [productEvent as never]
+        }
+        if (filter.kinds?.includes(EVENT_KINDS.DELETION)) {
+          deletionFilters.push(filter as Record<string, unknown>)
+        }
+        return []
+      },
+    })
+
+    await getMerchantStorefront({ merchantPubkey, limit: 10 })
+
+    expect(deletionFilters).toHaveLength(3)
+    expect(
+      deletionFilters.some((filter) => !("#e" in filter) && !("#a" in filter))
+    ).toBe(true)
+  })
+
   it("does not let an empty merchant live read blank cached products", async () => {
     cachedProducts.push({
       id: "30402:merchant:cached-item",
@@ -559,10 +585,12 @@ describe("commerce gateway", () => {
   })
 
   it("removes cached merchant products when deletion truth targets the address", async () => {
-    const merchantPubkey = "merchant"
+    const merchantPubkey = MERCHANT_A_PUBKEY
+    const dTag = "deleted-cached-item"
     cachedProducts.push({
-      id: `30402:${merchantPubkey}:deleted-cached-item`,
+      id: `30402:${merchantPubkey}:${dTag}`,
       pubkey: merchantPubkey,
+      dTag,
       title: "Deleted Cached Item",
       summary: "cached summary",
       price: 25,
@@ -580,13 +608,10 @@ describe("commerce gateway", () => {
       fetchEventsFanout: async (filter) => {
         if (filter.kinds?.includes(EVENT_KINDS.DELETION)) {
           return [
-            {
-              id: "delete-cached-1",
-              pubkey: merchantPubkey,
-              created_at: 101,
-              content: "",
-              tags: [["a", `30402:${merchantPubkey}:deleted-cached-item`]],
-            } as never,
+            makeSignedDeletionEvent({
+              createdAt: 101,
+              tags: [["a", `30402:${merchantPubkey}:${dTag}`]],
+            }) as never,
           ]
         }
 
@@ -597,6 +622,78 @@ describe("commerce gateway", () => {
     const result = await getMerchantStorefront({ merchantPubkey, limit: 10 })
 
     expect(result.data).toHaveLength(0)
+  })
+
+  it("keeps legacy cache rows exact-event-only when address metadata is missing or malformed", async () => {
+    const merchantPubkey = MERCHANT_A_PUBKEY
+    const missingAddress = `30402:${merchantPubkey}:legacy-missing-d`
+    const malformedAddress = `30402:${merchantPubkey}:legacy-malformed-d`
+    const exactAddress = `30402:${merchantPubkey}:legacy-exact-event`
+    const exactEventId = "33".repeat(32)
+    const makeLegacyRow = (
+      id: string,
+      eventId: string,
+      title: string,
+      dTag?: string
+    ): CachedProduct => ({
+      id,
+      pubkey: merchantPubkey,
+      ...(dTag === undefined ? {} : { dTag }),
+      title,
+      summary: "legacy cached product",
+      price: 25,
+      currency: "USD",
+      type: "simple",
+      visibility: "public",
+      images: [{ url: "https://example.com/legacy-cached-item.png" }],
+      tags: ["cached"],
+      eventId,
+      eventCreatedAt: id === exactAddress ? 200 : 100,
+      createdAt: 100_000,
+      updatedAt: 100_000,
+      cachedAt: FIXED_NOW - 1_000,
+    })
+
+    cachedProducts.push(
+      makeLegacyRow(
+        missingAddress,
+        "11".repeat(32),
+        "Missing address metadata"
+      ),
+      makeLegacyRow(
+        malformedAddress,
+        "22".repeat(32),
+        "Malformed address metadata",
+        "different-coordinate"
+      ),
+      makeLegacyRow(
+        exactAddress,
+        exactEventId,
+        "Exact-event legacy product",
+        ""
+      )
+    )
+
+    await cacheSignedProductDeletionEvent(
+      makeSignedDeletionEvent({
+        createdAt: 101,
+        tags: [
+          ["a", missingAddress],
+          ["a", malformedAddress],
+          ["e", exactEventId],
+        ],
+      })
+    )
+
+    const result = await getCachedMerchantStorefront({
+      merchantPubkey,
+      limit: 10,
+      includeMarketHidden: true,
+    })
+
+    expect(result.data.map((record) => record.addressId).sort()).toEqual(
+      [missingAddress, malformedAddress].sort()
+    )
   })
 
   it("materializes signed product publishes in the local cache before relay readback", async () => {
@@ -769,6 +866,7 @@ describe("commerce gateway", () => {
     cachedProducts.push({
       id: addressId,
       pubkey: merchantPubkey,
+      dTag: "locally-deleted-item",
       title: "Locally Deleted Item",
       summary: "cached summary",
       price: 25,
@@ -829,6 +927,50 @@ describe("commerce gateway", () => {
     const result = await getProductDetail({ productId: addressId })
 
     expect(result.data).toBeNull()
+  })
+
+  it("uses cached source provenance when resolving exact-event detail deletions", async () => {
+    const cachedSourceRelayUrl = "wss://cached-exact-source.example"
+    const liveSourceRelayUrl = "wss://live-exact-source.example"
+    const cachedProduct = makeSignedProductEvent({
+      dTag: "exact-source-detail",
+      createdAt: 100,
+      title: "Exact source detail",
+    })
+    attachEventSourceRelayUrl(cachedProduct, cachedSourceRelayUrl)
+    await cacheSignedProductListingEvent(cachedProduct)
+
+    const liveProduct = new NDKEvent(undefined, cachedProduct.rawEvent())
+    attachEventSourceRelayUrl(liveProduct, liveSourceRelayUrl)
+    const deletion = makeSignedDeletionEvent({
+      createdAt: 90,
+      tags: [["e", cachedProduct.id]],
+    })
+    const deletionRelayAttempts: string[][] = []
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter, options) => {
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          return [liveProduct] as never
+        }
+        if (filter.kinds?.includes(EVENT_KINDS.DELETION)) {
+          const relayUrls = options?.relayUrls ?? []
+          deletionRelayAttempts.push([...relayUrls])
+          return relayUrls.includes(cachedSourceRelayUrl)
+            ? ([deletion] as never)
+            : []
+        }
+        return []
+      },
+    })
+
+    const result = await getProductDetail({ productId: cachedProduct.id })
+
+    expect(result.data).toBeNull()
+    expect(
+      deletionRelayAttempts.some((relayUrls) =>
+        relayUrls.includes(cachedSourceRelayUrl)
+      )
+    ).toBe(true)
   })
 
   it("suppresses deleted products from batched live reads", async () => {
@@ -2063,6 +2205,55 @@ describe("commerce gateway", () => {
     expect(fetchCalls).toBeGreaterThan(1)
     expect(maxActiveFetches).toBeLessThanOrEqual(2)
     expect(result.data.length).toBeGreaterThan(0)
+  })
+
+  it("bounds and parallelizes broad deletion-frontier discovery", async () => {
+    const authorPubkeys = Array.from(
+      { length: 129 },
+      (_, index) => `merchant-${index}`
+    )
+    const productEvents = authorPubkeys.map((pubkey, index) =>
+      makeProductEvent({
+        pubkey,
+        dTag: `deletion-item-${index}`,
+        id: `deletion-event-${index}`,
+        createdAt: 100 + index,
+        title: `Deletion Item ${index}`,
+      })
+    )
+    let activeDeletionFetches = 0
+    let maxActiveDeletionFetches = 0
+    let deletionFetchCalls = 0
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          return productEvents as never
+        }
+        if (!filter.kinds?.includes(EVENT_KINDS.DELETION)) return []
+
+        deletionFetchCalls += 1
+        activeDeletionFetches += 1
+        maxActiveDeletionFetches = Math.max(
+          maxActiveDeletionFetches,
+          activeDeletionFetches
+        )
+        await new Promise((resolve) => setTimeout(resolve, 1))
+        activeDeletionFetches -= 1
+        return []
+      },
+    })
+
+    const result = await getMarketplaceProducts({
+      authorPubkeys,
+      readPolicy: { maxRelays: 1 },
+      sort: "newest",
+    })
+
+    expect(deletionFetchCalls).toBe(6)
+    expect(maxActiveDeletionFetches).toBeGreaterThan(1)
+    expect(maxActiveDeletionFetches).toBeLessThanOrEqual(4)
+    expect(result.data).toHaveLength(129)
   })
 
   it("emits profile progress before the full profile result settles", async () => {

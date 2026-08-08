@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { NDKEvent } from "@nostr-dev-kit/ndk"
+import { NDKEvent, NDKPublishError, type NDKRelay } from "@nostr-dev-kit/ndk"
 import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
   __resetRelayListTestOverrides,
@@ -10,6 +10,7 @@ import {
   deriveRelayOutcomes,
   EVENT_KINDS,
   planPublishRelays,
+  publishSignedEventToRelay,
   publishWithPlanner,
   type RelayList,
 } from "@conduit/core"
@@ -43,6 +44,15 @@ function signedTestEvent(input: {
   )
   event.publish = input.publish as never
   return event
+}
+
+function ndkPublishFailure(relayUrl: string, reason: string): NDKPublishError {
+  const relay = { url: `${relayUrl}/` } as NDKRelay
+  return new NDKPublishError(
+    "Not enough relays received the event",
+    new Map([[relay, new Error(reason)]]),
+    new Set()
+  )
 }
 
 function relayList(
@@ -458,6 +468,107 @@ describe("planPublishRelays", () => {
     ).rejects.toThrow("required exclusive relay set")
 
     expect(attempts).toEqual([[`${exclusiveRelay}/`], [`${exclusiveRelay}/`]])
+  })
+
+  it("returns a structured ACK for one exact durable relay target", async () => {
+    const relayUrl = "wss://durable-delete.example"
+    const event = signedTestEvent({
+      kind: EVENT_KINDS.DELETION,
+      tags: [["e", "a".repeat(64)]],
+      content: "",
+      publish: async () => new Set([{ url: `${relayUrl}/` }]),
+    })
+
+    await expect(
+      publishSignedEventToRelay({
+        event,
+        relayUrl,
+        authorPubkey: AUTHOR_PUBKEY,
+      })
+    ).resolves.toBe("acked")
+  })
+
+  it("returns a structured timeout without fallback fanout", async () => {
+    const relayUrl = "wss://durable-timeout.example"
+    let attempts = 0
+    const event = signedTestEvent({
+      kind: EVENT_KINDS.DELETION,
+      tags: [["e", "a".repeat(64)]],
+      content: "",
+      publish: async () => {
+        attempts += 1
+        throw new Error("connection closed")
+      },
+    })
+
+    await expect(
+      publishSignedEventToRelay({
+        event,
+        relayUrl,
+        authorPubkey: AUTHOR_PUBKEY,
+      })
+    ).resolves.toBe("timed_out")
+    expect(attempts).toBe(1)
+  })
+
+  it("classifies an NDK relay-set timeout as retryable, not rejected", async () => {
+    const relayUrl = "wss://durable-ndk-timeout.example"
+    const event = signedTestEvent({
+      kind: EVENT_KINDS.DELETION,
+      tags: [["e", "a".repeat(64)]],
+      content: "",
+      publish: async () => {
+        throw ndkPublishFailure(relayUrl, "Publish timeout after 10000ms")
+      },
+    })
+
+    await expect(
+      publishSignedEventToRelay({
+        event,
+        relayUrl,
+        authorPubkey: AUTHOR_PUBKEY,
+      })
+    ).resolves.toBe("timed_out")
+  })
+
+  it("classifies a NIP-01 OK-false reason as an explicit rejection", async () => {
+    const relayUrl = "wss://durable-reject.example"
+    const event = signedTestEvent({
+      kind: EVENT_KINDS.DELETION,
+      tags: [["e", "a".repeat(64)]],
+      content: "",
+      publish: async () => {
+        throw ndkPublishFailure(relayUrl, "blocked: deletion denied")
+      },
+    })
+
+    await expect(
+      publishSignedEventToRelay({
+        event,
+        relayUrl,
+        authorPubkey: AUTHOR_PUBKEY,
+      })
+    ).resolves.toBe("rejected")
+  })
+
+  it("treats a NIP-01 duplicate response as an idempotent acknowledgement", async () => {
+    const relayUrl = "wss://durable-duplicate.example"
+    const event = signedTestEvent({
+      kind: EVENT_KINDS.DELETION,
+      tags: [["e", "a".repeat(64)]],
+      content: "",
+      publish: async () => {
+        throw ndkPublishFailure(relayUrl, "duplicate: already have this event")
+      },
+    })
+
+    await expect(
+      publishSignedEventToRelay({
+        event,
+        relayUrl,
+        authorPubkey: AUTHOR_PUBKEY,
+      })
+    ).resolves.toBe("acked")
   })
 
   it("retries non-NIP-65 author events on public fallback relays when configured writes fail", async () => {

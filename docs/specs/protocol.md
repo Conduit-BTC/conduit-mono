@@ -161,6 +161,20 @@ Product listings are addressable events:
 
 Implementations must not dedupe only by `d` tag because different merchants can publish the same `d` value. Product identity, cart references, order item tags, and cache records should preserve the full addressable coordinate.
 
+### Product Deletion Frontier
+
+Validated kind `5` evidence is resolved before selecting the winning kind
+`30402` version. An author-scoped `e` tag removes its exact event ID regardless
+of relative timestamps. An author-scoped full `a` coordinate removes versions
+whose `created_at` is less than or equal to the deletion event timestamp; a
+genuinely newer version remains eligible. Missing or malformed legacy address
+metadata never authorizes an inferred or broader coordinate deletion.
+
+Local and remotely observed signed tombstones are durable, monotonic evidence
+shared by catalog, storefront, detail, batch, progressive, and cache reads.
+Relay omission does not revoke evidence. Progressive callbacks expose resolved
+frontier snapshots so a later tombstone can retract an earlier product.
+
 ## Product Zap Policy Tags
 
 Conduit-generated kind `30402` product listings include explicit checkout zap
