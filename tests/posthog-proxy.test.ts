@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 
 import {
   handlePostHogProxyRequest,
+  isSanitizedTelemetryRoutePath,
   rebuildPostHogIngestPayload,
   workerAllowedEventNames,
   workerLabelPropertyNames,
@@ -9,7 +10,9 @@ import {
 import {
   browserTelemetryEventNames,
   browserTelemetryPropertyNames,
+  sanitizeTelemetryPath,
 } from "../packages/core/src/telemetry"
+import { pubkeyToNpub } from "../packages/core/src/utils"
 
 const PROJECT_TOKEN = "phc_workerTestProjectToken0001"
 
@@ -326,6 +329,51 @@ describe("PostHog reverse proxy", () => {
     )
     expect(sessionIdV4.ok).toBe(true)
     if (sessionIdV4.ok) expect(sessionIdV4.events).toHaveLength(0)
+  })
+
+  it("accepts only sanitized route classes for path and URL properties", () => {
+    for (const rawPath of [
+      "/orders/12345",
+      "/products/nostr-mug-blue",
+      "/u/npub-or-nip05",
+      "/checkout/step-2",
+      "/store/not-an-npub",
+      "/random/deep/path",
+    ]) {
+      expect(isSanitizedTelemetryRoutePath(rawPath)).toBe(false)
+      expect(
+        isSanitizedTelemetryRoutePath(sanitizeTelemetryPath(rawPath))
+      ).toBe(true)
+
+      const rawPathEvent = rebuildPostHogIngestPayload(
+        encode(makeEvent({}, { page_path: rawPath }))
+      )
+      expect(rawPathEvent.ok).toBe(true)
+      if (rawPathEvent.ok) expect(rawPathEvent.events).toHaveLength(0)
+
+      const rawUrlEvent = rebuildPostHogIngestPayload(
+        encode(
+          makeEvent(
+            {},
+            {
+              page_path: "/orders",
+              page_url: `https://shop.conduit.market${rawPath}`,
+            }
+          )
+        )
+      )
+      expect(rawUrlEvent.ok).toBe(true)
+      if (rawUrlEvent.ok) expect(rawUrlEvent.events).toHaveLength(0)
+    }
+
+    const merchantNpub = pubkeyToNpub("f".repeat(64))
+    const storefrontPath = sanitizeTelemetryPath(`/store/${merchantNpub}`)
+    expect(storefrontPath).toBe(`/store/${merchantNpub}`)
+    expect(isSanitizedTelemetryRoutePath(storefrontPath)).toBe(true)
+    expect(isSanitizedTelemetryRoutePath("/")).toBe(true)
+    expect(isSanitizedTelemetryRoutePath("/:param")).toBe(true)
+    expect(isSanitizedTelemetryRoutePath("/wallet/:param")).toBe(true)
+    expect(isSanitizedTelemetryRoutePath("/orders/:param")).toBe(false)
   })
 
   it("stays in sync with the @conduit/core telemetry allowlists", () => {
