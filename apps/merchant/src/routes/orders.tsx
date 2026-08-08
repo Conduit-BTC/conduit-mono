@@ -45,6 +45,7 @@ import {
   Input,
   Label,
   OrderMessagesWidget,
+  RefreshChip,
   Select,
   SelectContent,
   SelectItem,
@@ -104,11 +105,9 @@ import {
 } from "../lib/productStock"
 import {
   Check,
-  CheckCircle2,
   ChevronRight,
   Copy,
   MessageCircle,
-  RotateCw,
   Search,
   ShoppingBag,
 } from "lucide-react"
@@ -440,13 +439,7 @@ function OrdersPage() {
     new PendingProductStockDeliveryStore()
   )
   const [weblnAvailable, setWeblnAvailable] = useState(false)
-  const [refreshButtonState, setRefreshButtonState] = useState<
-    "idle" | "refreshing" | "done"
-  >("idle")
   const selectedOrderResetRef = useRef<string | null>(null)
-  const refreshResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null
-  )
   const signerConnected = status === "connected" && !!pubkey
   const invoiceAmountNumber = useMemo(() => {
     const amount = Number(invoiceAmount)
@@ -503,39 +496,8 @@ function OrdersPage() {
   const isOrdersFetching = ordersQuery.isFetching
   const refetchOrders = ordersQuery.refetch
 
-  useEffect(() => {
-    if (isOrdersFetching) {
-      if (refreshResetTimerRef.current) {
-        clearTimeout(refreshResetTimerRef.current)
-        refreshResetTimerRef.current = null
-      }
-      setRefreshButtonState("refreshing")
-      return
-    }
-
-    if (refreshButtonState === "refreshing") {
-      setRefreshButtonState("done")
-      refreshResetTimerRef.current = setTimeout(() => {
-        setRefreshButtonState("idle")
-        refreshResetTimerRef.current = null
-      }, 900)
-    }
-  }, [isOrdersFetching, refreshButtonState])
-
-  useEffect(() => {
-    return () => {
-      if (refreshResetTimerRef.current)
-        clearTimeout(refreshResetTimerRef.current)
-    }
-  }, [])
-
   const handleRefresh = useCallback(() => {
     if (!signerConnected) return
-    if (refreshResetTimerRef.current) {
-      clearTimeout(refreshResetTimerRef.current)
-      refreshResetTimerRef.current = null
-    }
-    setRefreshButtonState("refreshing")
     void refetchOrders()
   }, [refetchOrders, signerConnected])
 
@@ -1475,61 +1437,11 @@ function OrdersPage() {
             share shipping details.
           </p>
           <div className="mt-3">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={!signerConnected || isOrdersFetching}
-              onClick={handleRefresh}
-            >
-              <span className="inline-flex items-center gap-1">
-                <span
-                  className={`inline-flex h-4 w-4 items-center justify-center transition-colors duration-200 ${
-                    refreshButtonState === "refreshing"
-                      ? "animate-pulse text-[var(--secondary-500)]"
-                      : refreshButtonState === "done"
-                        ? "text-[var(--success)]"
-                        : "text-[var(--text-secondary)]"
-                  }`}
-                >
-                  {refreshButtonState === "done" ? (
-                    <CheckCircle2 className="h-3.5 w-3.5" />
-                  ) : (
-                    <RotateCw
-                      className={`h-3.5 w-3.5 ${refreshButtonState === "refreshing" ? "animate-spin" : ""}`}
-                    />
-                  )}
-                </span>
-                <span className="relative inline-flex h-4 min-w-[7rem] items-center justify-center">
-                  <span
-                    className={`absolute transition-opacity duration-200 ${
-                      refreshButtonState === "idle"
-                        ? "opacity-100 text-[var(--text-primary)]"
-                        : "opacity-0"
-                    }`}
-                  >
-                    Refresh
-                  </span>
-                  <span
-                    className={`absolute transition-opacity duration-200 ${
-                      refreshButtonState === "refreshing"
-                        ? "animate-pulse opacity-100 text-[var(--secondary-500)]"
-                        : "opacity-0"
-                    }`}
-                  >
-                    Refreshing...
-                  </span>
-                  <span
-                    className={`absolute transition-opacity duration-200 ${
-                      refreshButtonState === "done"
-                        ? "opacity-100 text-[var(--success)]"
-                        : "opacity-0"
-                    }`}
-                  >
-                    Updated
-                  </span>
-                </span>
-              </span>
-            </Button>
+            <RefreshChip
+              refreshing={isOrdersFetching}
+              onRefresh={handleRefresh}
+              disabled={!signerConnected}
+            />
           </div>
         </div>
       </div>

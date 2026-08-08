@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import {
   type CommerceProductRecord,
@@ -94,6 +94,7 @@ export interface ProgressiveProductsResult {
   isHydrating: boolean
   isShowingCache: boolean
   error: unknown
+  refetch: () => void
 }
 
 type ProductAccumulatorState = {
@@ -375,6 +376,15 @@ export function useProgressiveProducts(
     [firstDegreeAuthors, input.merchantPubkey, input.scope]
   )
   const catalogAuthorKey = catalogAuthorPubkeys?.join(",") ?? "no-authors"
+  // Versioning the discovery key with the refresh nonce resets the product
+  // accumulator and progressive-read state through the existing key-change
+  // machinery, so a manual refresh rebuilds the list from a fresh relay pass
+  // and listings deleted since the last pass drop out of the view.
+  // Perspective reads carry the previous products across key changes to keep
+  // the grid stable, so the stream effect additionally marks manual-refresh
+  // passes via this ref and replaces the accumulator when the pass completes.
+  const [refreshNonce, setRefreshNonce] = useState(0)
+  const pendingRefreshPassRef = useRef(false)
   const discoveryKey = useMemo(
     () =>
       JSON.stringify([
@@ -383,8 +393,9 @@ export function useProgressiveProducts(
           "network"
         ),
         catalogAuthorKey,
+        refreshNonce,
       ]),
-    [catalogAuthorKey, input]
+    [catalogAuthorKey, input, refreshNonce]
   )
   const marketplaceTags = input.scope === "marketplace" ? input.tags : undefined
   const inputTagsKey =
@@ -536,6 +547,8 @@ export function useProgressiveProducts(
     let flushHandle: number | null = null
     let pendingResult: CommerceResult<CommerceProductRecord[]> | null = null
     const completionRead = perspectiveMarketplaceRead
+    const isRefreshPass = pendingRefreshPassRef.current
+    pendingRefreshPassRef.current = false
     setProgressiveRead((current) => ({
       key: discoveryKey,
       isFetching: true,
@@ -555,10 +568,18 @@ export function useProgressiveProducts(
       isFetching: boolean
     ) => {
       const incoming = toProducts(result)
-      if (incoming.length > 0) {
+      // A manual refresh replaces the accumulated view when the pass
+      // completes. Every progressive callback carries the full cumulative
+      // set for this pass, so the completed result alone is the fresh view
+      // and carried or cache-seeded listings deleted since the last pass
+      // drop out.
+      const replaceAccumulated = isRefreshPass && !isFetching
+      if (incoming.length > 0 || replaceAccumulated) {
         setProductAccumulator((current) => {
           const products = mergeProducts(
-            current.key === discoveryKey ? current.products : [],
+            !replaceAccumulated && current.key === discoveryKey
+              ? current.products
+              : [],
             incoming
           )
           return nextProductAccumulatorState(current, {
@@ -678,6 +699,25 @@ export function useProgressiveProducts(
     streamsNetwork,
   ])
 
+  const refetchCached = cachedQuery.refetch
+  const refetchFirstNetwork = firstNetworkQuery.refetch
+  const refetch = useCallback(() => {
+    if (!queryEnabled || !catalogReady) return
+    if (streamsNetwork) {
+      pendingRefreshPassRef.current = true
+      setRefreshNonce((nonce) => nonce + 1)
+    } else {
+      void refetchFirstNetwork()
+    }
+    void refetchCached()
+  }, [
+    catalogReady,
+    queryEnabled,
+    refetchCached,
+    refetchFirstNetwork,
+    streamsNetwork,
+  ])
+
   const products =
     accumulatedProducts.length > 0
       ? accumulatedProducts
@@ -746,6 +786,7 @@ export function useProgressiveProducts(
       (progressiveRead.key === discoveryKey ? progressiveRead.error : null) ??
       firstDegreeQuery.error ??
       cachedQuery.error,
+    refetch,
   }
 }
 
@@ -759,6 +800,7 @@ export function useProgressiveProductDetail(productId: string): {
   isHydrating: boolean
   isShowingCache: boolean
   error: unknown
+  refetch: () => void
 } {
   const cachedQuery = useQuery({
     queryKey: ["progressive-product", "cache", productId],
@@ -790,6 +832,12 @@ export function useProgressiveProductDetail(productId: string): {
     product && active?.data?.sourceRelayUrls?.length
       ? { [product.pubkey]: active.data.sourceRelayUrls }
       : {}
+  const refetchCachedDetail = cachedQuery.refetch
+  const refetchNetworkDetail = networkQuery.refetch
+  const refetch = useCallback(() => {
+    void refetchCachedDetail()
+    void refetchNetworkDetail()
+  }, [refetchCachedDetail, refetchNetworkDetail])
 
   return {
     product,
@@ -806,6 +854,7 @@ export function useProgressiveProductDetail(productId: string): {
     isHydrating: networkQuery.isFetching,
     isShowingCache: active === cachedQuery.data && !!product,
     error: networkQuery.error ?? cachedQuery.error,
+    refetch,
   }
 }
 

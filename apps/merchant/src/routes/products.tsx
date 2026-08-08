@@ -36,10 +36,10 @@ import {
   DialogHeader,
   DialogTitle,
   DoubleSideStatusPill,
-  FreshnessChip,
   Input,
   Label,
   ProductCard,
+  RefreshChip,
   Select,
   SelectContent,
   SelectItem,
@@ -1294,12 +1294,13 @@ function ProductsPage() {
           </div>
         )}
 
-        <div className="relative mt-3 flex min-h-[1.625rem] items-center pr-36 text-xs text-[var(--text-muted)]">
+        <div className="relative mt-3 flex min-h-8 items-center pr-44 text-xs text-[var(--text-muted)]">
           <span>{productStatusLabel}</span>
-          <FreshnessChip
-            status={productsQuery.isFetching ? "updating" : "idle"}
-            updatingLabel="Updating listings"
-            className="absolute right-0 top-0"
+          <RefreshChip
+            refreshing={productsQuery.isFetching}
+            onRefresh={() => void productsQuery.refetch()}
+            refreshingLabel="Updating listings..."
+            className="absolute right-0 top-1/2 -translate-y-1/2"
           />
         </div>
         <SignedActionStatus

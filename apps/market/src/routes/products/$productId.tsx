@@ -17,8 +17,7 @@ import {
   AvatarImage,
   Badge,
   Button,
-  FreshnessChip,
-  type FreshnessChipStatus,
+  RefreshChip,
 } from "@conduit/ui"
 import { CopyButton } from "../../components/CopyButton"
 import {
@@ -244,13 +243,9 @@ function ProductPage() {
     cart.addItem(createCartItemFromProduct(product), quantity)
   }
 
-  const productFreshness: FreshnessChipStatus = product
-    ? productQuery.isHydrating
-      ? "updating"
-      : productQuery.meta?.stale
-        ? "stale"
-        : "idle"
-    : "idle"
+  const productRefreshing = !!product && productQuery.isHydrating
+  const productStale =
+    !!product && !productQuery.isHydrating && !!productQuery.meta?.stale
 
   return (
     <div className="min-w-0 max-w-full space-y-8 overflow-x-hidden">
@@ -285,11 +280,13 @@ function ProductPage() {
             {product?.title ?? "Product"}
           </span>
         </div>
-        <div className="relative min-h-[1.625rem] sm:absolute sm:right-0 sm:top-1/2 sm:min-h-0 sm:-translate-y-1/2">
-          <FreshnessChip
-            status={productFreshness}
-            updatingLabel="Updating listing"
-            staleLabel="Listing may be out of date"
+        <div className="relative min-h-8 sm:absolute sm:right-0 sm:top-1/2 sm:min-h-0 sm:-translate-y-1/2">
+          <RefreshChip
+            refreshing={productRefreshing}
+            onRefresh={productQuery.refetch}
+            stale={productStale}
+            staleLabel="May be out of date"
+            refreshingLabel="Updating listing..."
             className="absolute right-0 top-0 sm:static"
           />
         </div>
