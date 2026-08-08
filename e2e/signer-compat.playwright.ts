@@ -153,6 +153,133 @@ test("market signer authority storage failure remains retryable", async ({
   await expect(connectButton).toBeEnabled()
 })
 
+test("market signer authority read failure remains retryable", async ({
+  page,
+}) => {
+  await installTestSigner(page, TEST_BUYER_PUBKEY, { rememberAuth: false })
+  await page.addInitScript(() => {
+    const getItem = Storage.prototype.getItem
+    const setItem = Storage.prototype.setItem
+    let claimed = false
+    let claimedRevisionReads = 0
+    let failOnce = true
+    let blocked = false
+
+    Storage.prototype.setItem = function (key: string, value: string): void {
+      setItem.call(this, key, value)
+      if (key === "conduit:auth:revision" && failOnce) {
+        claimed = true
+        claimedRevisionReads = 0
+      }
+    }
+    Storage.prototype.getItem = function (key: string): string | null {
+      if (blocked) throw new Error("Storage access denied")
+      if (claimed && key === "conduit:auth:revision") {
+        claimedRevisionReads += 1
+        if (claimedRevisionReads > 1) {
+          blocked = true
+          throw new Error("Storage access denied")
+        }
+      }
+      return getItem.call(this, key)
+    }
+    ;(
+      window as Window &
+        typeof globalThis & {
+          restoreSignerSetupStorage: () => void
+        }
+    ).restoreSignerSetupStorage = () => {
+      blocked = false
+      claimed = false
+      failOnce = false
+    }
+  })
+  await openMarketSignerDialog(page)
+
+  const connectButton = page.getByRole("button", {
+    name: /Connect Extension \(NIP-07\)/i,
+  })
+  await connectButton.click()
+
+  await expect(page.getByRole("dialog")).toBeVisible({ timeout: 10_000 })
+  await expect(
+    page.getByText(/lost signer authority or could not read site storage/i)
+  ).toBeVisible()
+  await expect(connectButton).toBeEnabled()
+  await page.evaluate(() => {
+    ;(
+      window as Window &
+        typeof globalThis & {
+          restoreSignerSetupStorage: () => void
+        }
+    ).restoreSignerSetupStorage()
+  })
+  await connectButton.click()
+  await expect
+    .poll(() => storedAuthPubkey(page), {
+      timeout: 10_000,
+    })
+    .toBe(TEST_BUYER_PUBKEY)
+})
+
+test("market does not publish a NIP-07 signer after a late authority read failure", async ({
+  page,
+}) => {
+  await installTestSigner(page, TEST_BUYER_PUBKEY, { rememberAuth: false })
+  await page.addInitScript(() => {
+    const getItem = Storage.prototype.getItem
+    const setItem = Storage.prototype.setItem
+    let blocked = false
+    let failOnce = true
+
+    Storage.prototype.setItem = function (key: string, value: string): void {
+      setItem.call(this, key, value)
+      if (key === "conduit:auth" && failOnce) {
+        blocked = true
+      }
+    }
+    Storage.prototype.getItem = function (key: string): string | null {
+      if (blocked) throw new Error("Storage access denied")
+      return getItem.call(this, key)
+    }
+    ;(
+      window as Window &
+        typeof globalThis & {
+          restoreSignerSetupStorage: () => void
+        }
+    ).restoreSignerSetupStorage = () => {
+      blocked = false
+      failOnce = false
+    }
+  })
+  await openMarketSignerDialog(page)
+
+  await connectFromMarketDialog(page)
+  await expect(page.getByRole("dialog")).toBeVisible({ timeout: 10_000 })
+  await expect(
+    page.getByText(/lost signer authority or could not read site storage/i)
+  ).toBeVisible()
+  await page.evaluate(() => {
+    ;(
+      window as Window &
+        typeof globalThis & {
+          restoreSignerSetupStorage: () => void
+        }
+    ).restoreSignerSetupStorage()
+  })
+
+  const reconnectButton = page.getByRole("button", {
+    name: /Connect Extension \(NIP-07\)/i,
+  })
+  await expect(reconnectButton).toBeEnabled()
+  await connectFromMarketDialog(page)
+  await expect
+    .poll(() => storedAuthPubkey(page), {
+      timeout: 10_000,
+    })
+    .toBe(TEST_BUYER_PUBKEY)
+})
+
 test("merchant locked signer shows waiting state then connects after unlock", async ({
   page,
 }) => {

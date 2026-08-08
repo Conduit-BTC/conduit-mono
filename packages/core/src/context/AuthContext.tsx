@@ -10,6 +10,7 @@ import {
 import type { NDKSigner } from "@nostr-dev-kit/ndk"
 import { CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS } from "../config"
 import {
+  getNdk,
   setSigner,
   removeSigner,
   type SignerLease,
@@ -23,6 +24,7 @@ import {
   SessionSignerError,
 } from "../protocol/session-signer"
 import {
+  abandonRemoteSignerConnection,
   forgetAuthSession,
   forgetRemoteSignerKey,
   bumpAuthRevision,
@@ -34,11 +36,10 @@ import {
   readAuthSession,
   readAuthRevision,
   restoreRemoteSigner,
-  rollbackNewRemoteSignerSession,
+  rollbackAndAbandonRemoteSignerConnection,
   writeAuthSession,
   type AuthSession,
   type RemoteSignerConnection,
-  RemoteSignerError,
   AUTH_REVISION_STORAGE_KEY,
   AUTH_STORAGE_KEY,
 } from "../protocol/remote-signer"
@@ -101,6 +102,10 @@ const NO_SIGNER_CAPABILITIES: AuthSignerCapabilities = {
   nip44: false,
   nip04: false,
 }
+const SIGNER_AUTHORITY_RETRY_MESSAGE =
+  "This browser lost signer authority or could not read site storage. Check site storage permissions and reconnect."
+const REMOTE_SIGNER_CLEANUP_MESSAGE =
+  "This browser could not erase a stale remote signer connection. Clear this site's storage before reconnecting."
 
 export function hasNip07(): boolean {
   return (
@@ -255,13 +260,81 @@ export async function connectNip07SignerForAuth(
   throw normalizeSignerConnectError(lastError, mode)
 }
 
-function abandonRemoteConnection(connection: RemoteSignerConnection): void {
-  connection.signer.invalidate()
-  if (connection.clientKeyAlreadyPersisted) {
-    void connection.bunkerSigner.close()
-    return
+export type FailedAuthAttemptResolution =
+  | { kind: "continue"; failure: unknown }
+  | { kind: "ignore" }
+  | {
+      kind: "authority-retry"
+      message: string
+      reject: boolean
+    }
+  | {
+      kind: "cleanup-error"
+      message: string
+      reject: boolean
+    }
+
+export async function resolveFailedAuthAttempt(options: {
+  failure: unknown
+  uncommittedRemote: RemoteSignerConnection | null
+  remotePersistenceStarted: boolean
+  getAttemptState: () => {
+    attemptIsCurrent: boolean
+    attemptOwnsEpoch: boolean
+    replacementActive: boolean
   }
-  void logoutRemoteSigner(connection.bunkerSigner)
+  rollbackAndAbandon?: (
+    connection: RemoteSignerConnection
+  ) => Promise<void>
+  abandon?: (connection: RemoteSignerConnection) => void
+}): Promise<FailedAuthAttemptResolution> {
+  let failure = options.failure
+  let cleanupFailed = false
+
+  if (options.uncommittedRemote) {
+    if (options.remotePersistenceStarted) {
+      try {
+        await (
+          options.rollbackAndAbandon ??
+          rollbackAndAbandonRemoteSignerConnection
+        )(options.uncommittedRemote)
+      } catch (cleanupError) {
+        failure = cleanupError
+        cleanupFailed = true
+      }
+    } else {
+      const abandon = options.abandon ?? abandonRemoteSignerConnection
+      abandon(options.uncommittedRemote)
+    }
+  }
+
+  const attemptState = options.getAttemptState()
+  if (cleanupFailed) {
+    if (
+      attemptState.attemptOwnsEpoch ||
+      !attemptState.replacementActive
+    ) {
+      return {
+        kind: "cleanup-error",
+        message: REMOTE_SIGNER_CLEANUP_MESSAGE,
+        reject: attemptState.attemptOwnsEpoch,
+      }
+    }
+    return { kind: "ignore" }
+  }
+
+  if (!attemptState.attemptIsCurrent) {
+    if (attemptState.attemptOwnsEpoch) {
+      return {
+        kind: "authority-retry",
+        message: SIGNER_AUTHORITY_RETRY_MESSAGE,
+        reject: true,
+      }
+    }
+    return { kind: "ignore" }
+  }
+
+  return { kind: "continue", failure }
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -385,9 +458,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const epoch = authEpoch.current + 1
     authEpoch.current = epoch
     let authRevision = readAuthRevision()
+    const attemptOwnsEpoch = () => epoch === authEpoch.current
     const attemptIsCurrent = () =>
-      epoch === authEpoch.current && authRevision === readAuthRevision()
+      attemptOwnsEpoch() && authRevision === readAuthRevision()
     let uncommittedRemote: RemoteSignerConnection | null = null
+    let remotePersistenceStarted = false
     let sessionPersisted = false
 
     setStatus(mode === "restore" ? "restoring" : "connecting")
@@ -481,28 +556,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       const pk = session.userPubkey
       if (!attemptIsCurrent()) {
-        if (connectedRemote) {
-          abandonRemoteConnection(connectedRemote)
-          uncommittedRemote = null
-        }
-        return
+        throw new Error(SIGNER_AUTHORITY_RETRY_MESSAGE)
       }
 
       if (
         mode === "restore" &&
         JSON.stringify(readAuthSession()) !== JSON.stringify(storedSession)
       ) {
-        if (connectedRemote) {
-          abandonRemoteConnection(connectedRemote)
-          uncommittedRemote = null
-        }
-        return
+        throw new Error(SIGNER_AUTHORITY_RETRY_MESSAGE)
       }
 
       const authClaim = claimAuthRevision()
       if (!authClaim.persisted) {
         if (connectedRemote) {
-          abandonRemoteConnection(connectedRemote)
+          abandonRemoteSignerConnection(connectedRemote)
           uncommittedRemote = null
         }
         throw new Error(
@@ -511,18 +578,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       authRevision = authClaim.revision
       if (!attemptIsCurrent()) {
-        if (connectedRemote) {
-          abandonRemoteConnection(connectedRemote)
-          uncommittedRemote = null
-        }
-        return
+        throw new Error(SIGNER_AUTHORITY_RETRY_MESSAGE)
       }
       session = { ...session, authClaim: authRevision }
       if (connectedRemote && session.type === "nip46") {
         connectedRemote.session = session
       }
 
+      // Initialize the shared client before persistence without exposing the
+      // uncommitted signer to background work.
+      getNdk()
+
       if (session.type === "nip46") {
+        remotePersistenceStarted = true
         const persisted = connectedRemote
           ? await persistRemoteSignerSession(
               connectedRemote,
@@ -532,18 +600,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             )
           : false
         if (!attemptIsCurrent()) {
-          if (connectedRemote) {
-            if (persisted) {
-              await rollbackNewRemoteSignerSession(connectedRemote)
-            }
-            abandonRemoteConnection(connectedRemote)
-            uncommittedRemote = null
-          }
-          return
+          throw new Error(SIGNER_AUTHORITY_RETRY_MESSAGE)
         }
         if (!persisted || !connectedRemote) {
           if (connectedRemote) {
-            abandonRemoteConnection(connectedRemote)
+            abandonRemoteSignerConnection(connectedRemote)
             uncommittedRemote = null
           }
           throw new Error(
@@ -557,9 +618,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // optional NIP-07 reconnect metadata is blocked.
       }
 
-      remoteConnection.current = connectedRemote
-      uncommittedRemote = null
-      activeSession.current = session
+      if (!attemptIsCurrent()) {
+        throw new Error(SIGNER_AUTHORITY_RETRY_MESSAGE)
+      }
+
       const boundSession = session
       const sessionSigner = new SessionSigner(signer, {
         expectedPubkey: pk,
@@ -572,9 +634,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         },
         onInvalidated: handleSignerSessionInvalidated,
       })
+      const signerLease = setSigner(sessionSigner)
+      activeSignerLease.current = signerLease
       activeSessionSigner.current = sessionSigner
-      activeSignerLease.current = setSigner(sessionSigner)
       setActiveSigner(sessionSigner)
+      remoteConnection.current = connectedRemote
+      uncommittedRemote = null
+      activeSession.current = session
       setPubkey(pk)
       setMethod(session.type)
       setRememberedMethod(session.type)
@@ -588,27 +654,43 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setAuthUrl(null)
       setNostrConnectUri(null)
     } catch (err) {
-      if (uncommittedRemote) {
-        abandonRemoteConnection(uncommittedRemote)
-      }
-      if (!attemptIsCurrent()) {
-        if (
-          err instanceof RemoteSignerError &&
-          (err.operation === "rollback session" ||
-            err.operation === "persist session")
-        ) {
-          setStatus("error")
-          setError(
-            "This browser could not erase a stale remote signer connection. Clear this site's storage before reconnecting."
-          )
+      const resolution = await resolveFailedAuthAttempt({
+        failure: err,
+        uncommittedRemote,
+        remotePersistenceStarted,
+        getAttemptState: () => {
+          const ownsEpoch = attemptOwnsEpoch()
+          return {
+            attemptIsCurrent:
+              ownsEpoch && authRevision === readAuthRevision(),
+            attemptOwnsEpoch: ownsEpoch,
+            replacementActive:
+              !ownsEpoch &&
+              (connecting.current ||
+                connected.current ||
+                activePairing.current !== null),
+          }
+        },
+      })
+      if (resolution.kind === "ignore") return
+      if (
+        resolution.kind === "authority-retry" ||
+        resolution.kind === "cleanup-error"
+      ) {
+        setStatus("error")
+        setError(resolution.message)
+        setNostrConnectUri(null)
+        if (resolution.reject) {
+          throw new Error(resolution.message, { cause: err })
         }
         return
       }
+      const failure = resolution.failure
       const normalizedError =
         requestedMethod === "nip07"
-          ? normalizeSignerConnectError(err, mode)
-          : err instanceof Error
-            ? err
+          ? normalizeSignerConnectError(failure, mode)
+          : failure instanceof Error
+            ? failure
             : new Error("Failed to connect remote signer")
       const msg = normalizedError.message
       setStatus("error")
@@ -616,7 +698,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setNostrConnectUri(null)
       throw normalizedError
     } finally {
-      if (attemptIsCurrent()) {
+      if (attemptOwnsEpoch()) {
         activePairing.current = null
         setNostrConnectUri(null)
         connecting.current = false
