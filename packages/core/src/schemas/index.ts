@@ -39,7 +39,9 @@ export const productSchema = z.object({
   /** Addressable kind-30406 shipping option reference attached by the merchant. */
   shippingOptionId: z.string().optional(),
   shippingOptionDTag: z.string().optional(),
-  /** Product-level snapshot of the referenced shipping option for checkout. */
+  /** True when the product reference uses a launch-unsupported Gamma shape. */
+  shippingOptionLaunchUnsupported: z.boolean().optional(),
+  /** Read-side shipping details. Canonical checkout requires explicit resolution. */
   shippingCountries: z.array(z.string()).optional(),
   shippingCountryRules: z
     .array(
@@ -51,6 +53,8 @@ export const productSchema = z.object({
       })
     )
     .optional(),
+  canonicalShippingResolved: z.boolean().optional(),
+  shippingOptionCreatedAt: z.number().int().min(0).optional(),
   visibility: z.enum(["public", "private"]).default("public"),
   stock: z.number().int().min(0).optional(),
   images: z

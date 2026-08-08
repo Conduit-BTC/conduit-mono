@@ -1,13 +1,17 @@
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
+  buildFixedShippingOptionEventDraft,
   buildProductListingEventDraft,
   cacheSignedProductListingEvent,
   EVENT_KINDS,
+  getProductShippingOptionAddress,
+  getProductShippingOptionDTag,
   isValidSignedPublicNostrEvent,
   publishWithPlanner,
   requireNdkConnected,
   RelayPublishDiagnosticsError,
   type ProductSchema,
+  type ProductFulfillmentIntent,
   type PublishWithPlannerResult,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
@@ -83,11 +87,108 @@ export async function deliverSignedProductEvent(
   }
 }
 
+export type CanonicalProductPublishDependencies = {
+  publishShippingEvent: (
+    event: NDKEvent,
+    merchantPubkey: string
+  ) => Promise<PublishWithPlannerResult>
+  cacheProductEvent: (event: NDKEvent) => Promise<void>
+  deliverProductEvent: typeof deliverSignedProductEvent
+}
+
+const canonicalProductPublishDependencies: CanonicalProductPublishDependencies =
+  {
+    publishShippingEvent: (event, merchantPubkey) =>
+      publishWithPlanner(event, {
+        intent: "author_event",
+        authorPubkey: merchantPubkey,
+        authenticatedPubkey: merchantPubkey,
+        deliveryMode: "critical",
+      }),
+    cacheProductEvent: async (event) => {
+      await cacheSignedProductListingEvent(event)
+    },
+    deliverProductEvent: deliverSignedProductEvent,
+  }
+
+export function applyProductFulfillmentIntentForPublication(input: {
+  product: ProductSchema
+  merchantPubkey: string
+  productDTag: string
+  intent: ProductFulfillmentIntent
+}): ProductSchema {
+  if (input.intent.kind !== "fixed_standard") {
+    return {
+      ...input.product,
+      shippingCostSats: undefined,
+      sourceShippingCost: undefined,
+      shippingOptionId: undefined,
+      shippingOptionDTag: undefined,
+      shippingOptionLaunchUnsupported: undefined,
+      shippingCountries: undefined,
+      shippingCountryRules: undefined,
+      canonicalShippingResolved: false,
+      shippingOptionCreatedAt: undefined,
+    }
+  }
+
+  return {
+    ...input.product,
+    shippingOptionId: getProductShippingOptionAddress(
+      input.merchantPubkey,
+      input.productDTag
+    ),
+    shippingOptionDTag: getProductShippingOptionDTag(input.productDTag),
+    shippingOptionLaunchUnsupported: undefined,
+    shippingCountries: [...input.intent.countries],
+    shippingCountryRules: input.intent.countries.map((code) => ({
+      code,
+      name: code,
+      restrictTo: [],
+      exclude: [],
+    })),
+  }
+}
+
+export async function publishCanonicalProductEvents(
+  input: {
+    productEvent: NDKEvent
+    shippingEvent: NDKEvent | null
+    merchantPubkey: string
+    onSignedLocal: (event: NDKEvent) => Promise<void>
+  },
+  dependencies: CanonicalProductPublishDependencies = canonicalProductPublishDependencies
+): Promise<PublishWithPlannerResult> {
+  if (input.shippingEvent) {
+    const shippingResult = await dependencies.publishShippingEvent(
+      input.shippingEvent,
+      input.merchantPubkey
+    )
+    if (shippingResult.successfulRelayUrls.length === 0) {
+      throw new Error(
+        "Fixed shipping was not acknowledged by a relay. Product publication was stopped."
+      )
+    }
+  }
+
+  await dependencies.cacheProductEvent(input.productEvent)
+  try {
+    await input.onSignedLocal(input.productEvent)
+    return await dependencies.deliverProductEvent(
+      input.productEvent,
+      input.merchantPubkey
+    )
+  } catch (error) {
+    throw asSignedProductDeliveryError(error)
+  }
+}
+
 export async function signAndPublishProductListing(input: {
   merchantPubkey: string
   product: ProductSchema
   dTag: string
   previousEventCreatedAt?: number
+  fulfillmentIntent: ProductFulfillmentIntent
   onSignedLocal: (event: NDKEvent) => Promise<void>
 }): Promise<PublishWithPlannerResult> {
   const ndk = await requireNdkConnected()
@@ -101,26 +202,48 @@ export async function signAndPublishProductListing(input: {
   }
 
   const now = Date.now()
-  const event = new NDKEvent(ndk)
-  const draft = buildProductListingEventDraft({
+  const canonicalProduct = applyProductFulfillmentIntentForPublication({
     product: input.product,
+    merchantPubkey: signerPubkey,
+    productDTag: input.dTag,
+    intent: input.fulfillmentIntent,
+  })
+  const productEvent = new NDKEvent(ndk)
+  const draft = buildProductListingEventDraft({
+    product: canonicalProduct,
     dTag: input.dTag,
     clientAppId: "merchant",
   })
-  event.kind = draft.kind
-  event.created_at = Math.max(
+  const eventCreatedAt = Math.max(
     Math.floor(now / 1000),
     (input.previousEventCreatedAt ?? -1) + 1
   )
-  event.content = draft.content
-  event.tags = draft.tags
+  productEvent.kind = draft.kind
+  productEvent.created_at = eventCreatedAt
+  productEvent.content = draft.content
+  productEvent.tags = draft.tags
 
-  await event.sign(ndk.signer)
-  await cacheSignedProductListingEvent(event)
-  try {
-    await input.onSignedLocal(event)
-    return await deliverSignedProductEvent(event, signerPubkey)
-  } catch (error) {
-    throw asSignedProductDeliveryError(error)
+  const shippingEvent =
+    input.fulfillmentIntent.kind === "fixed_standard" ? new NDKEvent(ndk) : null
+  if (shippingEvent && input.fulfillmentIntent.kind === "fixed_standard") {
+    const shippingDraft = buildFixedShippingOptionEventDraft({
+      productDTag: input.dTag,
+      intent: input.fulfillmentIntent,
+      clientAppId: "merchant",
+    })
+    shippingEvent.kind = shippingDraft.kind
+    shippingEvent.created_at = eventCreatedAt
+    shippingEvent.content = shippingDraft.content
+    shippingEvent.tags = shippingDraft.tags
   }
+
+  if (shippingEvent) await shippingEvent.sign(ndk.signer)
+  await productEvent.sign(ndk.signer)
+
+  return publishCanonicalProductEvents({
+    productEvent,
+    shippingEvent,
+    merchantPubkey: signerPubkey,
+    onSignedLocal: input.onSignedLocal,
+  })
 }

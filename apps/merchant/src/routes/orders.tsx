@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   buildOrderStatusTimeline,
   canMockInvoice,
+  compileProductFulfillmentIntent,
+  CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG,
   convertCommerceAmountToSats,
   decodeLightningInvoiceAmount,
   formatNpub,
@@ -15,6 +17,7 @@ import {
   getProductDetail,
   getProductImageCandidates,
   getProductsByIds,
+  getShippingOptionsByCoordinates,
   hasWebLN,
   isInvoiceCompatibleWithCurrentNetwork,
   isMerchantOrderPaid,
@@ -24,12 +27,15 @@ import {
   nwcMakeInvoice,
   publishMerchantOrderMessage,
   pubkeyToNpub,
+  resolveProductFulfillment,
   weblnMakeInvoice,
   type MerchantConversationSummary,
   type MerchantOrderAction,
   type MerchantOrderState,
   type KnownOrderStatus,
   type Profile,
+  type ProductFulfillmentIntent,
+  type ProductSchema,
   type SignedPublicNostrEvent,
   useAuth,
   useProfiles,
@@ -117,6 +123,63 @@ import { useMerchantPaymentAutomation } from "../hooks/useMerchantPaymentAutomat
 import { OrderStockPanel } from "../components/OrderStockPanel"
 
 type OrdersSearch = { order?: string; queue?: OrderQueueTab }
+
+async function resolveStockUpdateFulfillmentIntent(
+  product: ProductSchema
+): Promise<ProductFulfillmentIntent> {
+  if (product.format === "digital") return { kind: "digital" }
+
+  const legacyShippingAmount =
+    product.sourceShippingCost?.amount ?? product.shippingCostSats
+  if (
+    typeof legacyShippingAmount === "number" &&
+    (!product.shippingOptionId ||
+      product.shippingOptionDTag === CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG)
+  ) {
+    const destinations = product.shippingCountryRules?.length
+      ? product.shippingCountryRules
+      : (product.shippingCountries ?? []).map((code) => ({
+          code,
+          name: code,
+          restrictTo: [],
+          exclude: [],
+        }))
+    return compileProductFulfillmentIntent({
+      format: "physical",
+      shippingPricingMode: "fixed",
+      amount: legacyShippingAmount,
+      currency:
+        product.sourceShippingCost?.normalizedCurrency ??
+        product.sourceShippingCost?.currency ??
+        "SATS",
+      destinations,
+    })
+  }
+
+  if (product.shippingOptionId) {
+    const shippingOptions = await getShippingOptionsByCoordinates([
+      product.shippingOptionId,
+    ])
+    const prepared = resolveProductFulfillment(product, shippingOptions)
+    if (
+      prepared.intent !== "fixed_standard" ||
+      prepared.status !== "ready" ||
+      !prepared.option
+    ) {
+      throw new Error(
+        "Could not verify this listing's fixed shipping option. Review the listing before updating stock."
+      )
+    }
+    return {
+      kind: "fixed_standard",
+      amount: prepared.option.price,
+      currency: prepared.option.currency,
+      countries: [...prepared.option.countries],
+    }
+  }
+
+  return { kind: "coordinate_after_order" }
+}
 
 type StockDeliveryState = {
   orderId: string
@@ -1040,6 +1103,9 @@ function OrdersPage() {
         throw new Error("The listing stock is already zero.")
       }
 
+      const fulfillmentIntent = await resolveStockUpdateFulfillmentIntent(
+        record.product
+      )
       let signedEvent: SignedPublicNostrEvent | null = null
       const delivery = await signAndPublishProductListing({
         merchantPubkey: pubkey,
@@ -1050,6 +1116,7 @@ function OrdersPage() {
         },
         dTag: record.dTag,
         previousEventCreatedAt: record.eventCreatedAt,
+        fulfillmentIntent,
         onSignedLocal: async (event) => {
           const rawEvent = event.rawEvent() as SignedPublicNostrEvent
           signedEvent = rawEvent

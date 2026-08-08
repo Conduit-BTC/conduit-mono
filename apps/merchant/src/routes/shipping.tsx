@@ -1,14 +1,8 @@
 import { useEffect, useMemo, useState } from "react"
-import { AlertCircle, Loader2 } from "lucide-react"
+import { AlertCircle } from "lucide-react"
 import { createFileRoute } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
-import {
-  buildShippingPublishResultTelemetryProperties,
-  getShippingOptions,
-  publishShippingOptions,
-  recordBrowserTelemetryEvent,
-  useAuth,
-} from "@conduit/core"
+import { getShippingOptions, useAuth } from "@conduit/core"
 import { Badge, Button, SignedActionStatus } from "@conduit/ui"
 import { ShippingDestinationsEditor } from "../components/ShippingDestinationsEditor"
 import { requireAuth } from "../lib/auth"
@@ -55,7 +49,6 @@ function buildSummary(countries: ShippingCountryConfig[]): string {
 
 type SaveState =
   | { status: "idle" }
-  | { status: "saving" }
   | { status: "saved" }
   | { status: "error"; message: string }
 
@@ -88,8 +81,6 @@ function ShippingPage() {
       serializeShippingConfig(lastSavedConfig),
     [config, lastSavedConfig]
   )
-  const isSaving = saveState.status === "saving"
-
   useEffect(() => {
     const storedConfig = loadShippingConfig(pubkey)
     setConfig(storedConfig)
@@ -97,39 +88,15 @@ function ShippingPage() {
     setSaveState({ status: "idle" })
   }, [pubkey])
 
-  async function handleSave(e: React.FormEvent) {
+  function handleSave(e: React.FormEvent) {
     e.preventDefault()
-    if (!hasUnsavedChanges || isSaving) return
-
-    setSaveState({ status: "saving" })
-    const startedAt = Date.now()
-    const eventFamily = config.countries.length === 0 ? "clear" : "publish"
+    if (!hasUnsavedChanges) return
 
     try {
-      await publishShippingOptions(config, "merchant")
       saveShippingConfig(config, pubkey)
       setLastSavedConfig(config)
       setSaveState({ status: "saved" })
-      recordBrowserTelemetryEvent({
-        app: "merchant",
-        eventName: "shipping_publish_result",
-        properties: buildShippingPublishResultTelemetryProperties({
-          eventFamily,
-          latencyMs: Date.now() - startedAt,
-          status: "success",
-        }),
-      })
     } catch (err: unknown) {
-      recordBrowserTelemetryEvent({
-        app: "merchant",
-        eventName: "shipping_publish_result",
-        properties: buildShippingPublishResultTelemetryProperties({
-          eventFamily,
-          latencyMs: Date.now() - startedAt,
-          status: "failure",
-        }),
-      })
-      console.warn("[shipping] Failed to publish kind-30406:", err)
       setSaveState({ status: "error", message: getErrorMessage(err) })
     }
   }
@@ -171,14 +138,14 @@ function ShippingPage() {
                     ) : null}
                     {remoteShippingQuery.isFetching && (
                       <Badge variant="outline">
-                        Checking published settings
+                        Checking legacy published settings
                       </Badge>
                     )}
                   </div>
                 )}
                 <p className="mt-4 max-w-2xl text-pretty text-base leading-7 text-[var(--text-secondary)]">
-                  Define where you ship. Buyers outside your configured
-                  destinations will not see your products as available.
+                  Save destination presets for product authoring. Each fixed
+                  product publishes its own priced shipping option.
                 </p>
               </div>
 
@@ -204,7 +171,8 @@ function ShippingPage() {
                     DESTINATIONS
                   </div>
                   <div className="mt-1 text-[1rem] text-[var(--text-secondary)]">
-                    Countries you ship to, with optional postal restrictions
+                    Countries you ship to. Postal restrictions require
+                    order-first coordination.
                   </div>
                 </div>
 
@@ -234,28 +202,21 @@ function ShippingPage() {
               </section>
 
               <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center">
-                <Button
-                  type="submit"
-                  disabled={!pubkey || !hasUnsavedChanges || isSaving}
-                >
-                  {isSaving && <Loader2 className="h-4 w-4 animate-spin" />}
-                  {isSaving ? "Waiting for signer..." : "Save changes"}
+                <Button type="submit" disabled={!pubkey || !hasUnsavedChanges}>
+                  Save changes
                 </Button>
                 <SignedActionStatus
                   state={
-                    isSaving
-                      ? "awaiting_signature"
-                      : saveState.status === "error"
-                        ? "error"
-                        : hasUnsavedChanges
-                          ? "dirty"
-                          : saveState.status === "saved"
-                            ? "success"
-                            : "idle"
+                    saveState.status === "error"
+                      ? "error"
+                      : hasUnsavedChanges
+                        ? "dirty"
+                        : saveState.status === "saved"
+                          ? "success"
+                          : "idle"
                   }
-                  dirtyMessage="Save changes to publish your shipping settings."
-                  awaitingSignatureMessage="Confirm the shipping update in your signer. It will show as saved after signing and relay publish finish."
-                  successMessage="Signed and saved."
+                  dirtyMessage="Save changes to update your product shipping preset."
+                  successMessage="Preset saved on this device."
                   errorMessage={
                     saveState.status === "error" ? saveState.message : undefined
                   }

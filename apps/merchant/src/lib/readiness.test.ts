@@ -199,6 +199,7 @@ test("maps published shipping options back into readiness config", () => {
   expect(
     shippingOptionToConfig({
       id: "30406:merchant:conduit-default",
+      eventId: "shipping-event",
       pubkey: "merchant",
       dTag: "conduit-default",
       title: "Standard Shipping",
@@ -215,6 +216,7 @@ test("maps published shipping options back into readiness config", () => {
       ],
       service: "standard",
       createdAt: 1,
+      launchUnsupportedTags: [],
     })
   ).toEqual({
     countries: [
@@ -230,6 +232,7 @@ test("maps published shipping options back into readiness config", () => {
 
 test("selects the Conduit default shipping option before other published options", () => {
   const customOption = {
+    eventId: "custom-zone-event",
     id: "30406:merchant:custom-zone",
     pubkey: "merchant",
     dTag: "custom-zone",
@@ -247,6 +250,7 @@ test("selects the Conduit default shipping option before other published options
     ],
     service: "standard",
     createdAt: 2,
+    launchUnsupportedTags: [],
   } satisfies ParsedShippingOption
   const conduitOption = {
     ...customOption,
