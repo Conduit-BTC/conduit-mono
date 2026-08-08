@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, it, mock } from "bun:test"
+import { readFileSync } from "node:fs"
 import { readFile } from "node:fs/promises"
+import { afterEach, describe, expect, it, mock } from "bun:test"
 import { NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
 import { finalizeEvent, getPublicKey, verifyEvent } from "nostr-tools/pure"
 import {
@@ -373,6 +374,34 @@ describe("NIP-07 availability", () => {
   })
 })
 
+describe("restore attempt isolation", () => {
+  const source = readFileSync(
+    new URL("../packages/core/src/context/AuthContext.tsx", import.meta.url),
+    "utf8"
+  )
+
+  it("never clears the global signer when a restore attempt fails", () => {
+    expect(source).toContain(
+      'void connect({ mode: "restore" }).catch(() => undefined)'
+    )
+    const removeSignerCalls = source.match(/removeSigner\(signerLease\)/g) ?? []
+    expect(removeSignerCalls).toHaveLength(1)
+    expect(source).toContain("if (signerLease) removeSigner(signerLease)")
+  })
+
+  it("returns silently when a queued restore finds an already connected session", () => {
+    expect(source).toContain('if (mode === "restore") return')
+  })
+
+  it("always releases the connecting flag claimed by an attempt", () => {
+    const finallyBlock = source.slice(source.indexOf("} finally {"))
+    const releaseIndex = finallyBlock.indexOf("connecting.current = false")
+    const fenceIndex = finallyBlock.indexOf("if (attemptIsCurrent())")
+    expect(releaseIndex).toBeGreaterThan(-1)
+    expect(releaseIndex).toBeLessThan(fenceIndex)
+  })
+})
+
 describe("NIP-46 AuthContext API", () => {
   it("exposes the client-initiated flow discriminator and ephemeral URI", () => {
     const options = {
@@ -380,9 +409,11 @@ describe("NIP-46 AuthContext API", () => {
       nip46Flow: "nostrconnect",
     } satisfies AuthConnectOptions
     const uri: AuthContextValue["nostrConnectUri"] = null
+    const authGeneration: AuthContextValue["authGeneration"] = 0
 
     expect(options.nip46Flow).toBe("nostrconnect")
     expect(uri).toBeNull()
+    expect(authGeneration).toBe(0)
   })
 
   it("preflights the client before persistence and installs before ownership commit", async () => {

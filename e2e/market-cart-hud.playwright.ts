@@ -1,0 +1,265 @@
+import { expect, test } from "@playwright/test"
+
+const MERCHANT_A = "1".repeat(64)
+const MERCHANT_B = "2".repeat(64)
+const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
+
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(
+    ({ merchantA, merchantB }) => {
+      localStorage.setItem(
+        "conduit:cart",
+        JSON.stringify({
+          version: 2,
+          items: [
+            {
+              productId: `30402:${merchantA}:notebook`,
+              merchantPubkey: merchantA,
+              merchantAddedAt: 100,
+              title: "Field Notebook",
+              price: 1_200,
+              currency: "SATS",
+              priceSats: 1_200,
+              format: "digital",
+              quantity: 2,
+            },
+            {
+              productId: `30402:${merchantB}:lamp`,
+              merchantPubkey: merchantB,
+              merchantAddedAt: 200,
+              title: "Reading Lamp",
+              price: 3_400,
+              currency: "SATS",
+              priceSats: 3_400,
+              format: "digital",
+              quantity: 1,
+            },
+          ],
+        })
+      )
+    },
+    { merchantA: MERCHANT_A, merchantB: MERCHANT_B }
+  )
+})
+
+for (const viewport of [
+  { name: "mobile", width: 390, height: 844 },
+  { name: "desktop", width: 1_440, height: 900 },
+]) {
+  test(`market cart HUD is contained and route-aware on ${viewport.name}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize(viewport)
+    await page.goto(`${marketUrl}/products`)
+    const hud = page.getByRole("region", { name: "Cart inventory" })
+    await expect(hud).toBeVisible()
+    await expect(hud.getByRole("tab")).toHaveCount(2)
+    const cartSelector = hud.getByRole("tablist", { name: "Store carts" })
+    expect(
+      await cartSelector.evaluate((element) => ({
+        borderWidth: getComputedStyle(element).borderWidth,
+        maskImage: getComputedStyle(element).maskImage.toString(),
+      }))
+    ).toEqual({
+      borderWidth: "0px",
+      maskImage: expect.stringContaining("linear-gradient"),
+    })
+    const selectedCart = hud.getByRole("tab", { selected: true })
+    const selectedItemCount = selectedCart.getByLabel("1 cart item")
+    await expect(selectedItemCount).toHaveText("1")
+    await expect(selectedCart).toContainText("3,400")
+    await expect(hud.getByText("Reading Lamp")).toBeVisible()
+    const merchantLink = hud.getByRole("link", { name: /Open .* store/ })
+    await expect(merchantLink).toBeVisible()
+    await expect(merchantLink).toHaveAttribute("href", `/store/${MERCHANT_B}`)
+    const productRail = hud.getByRole("region", { name: "Cart products" })
+    await expect(productRail).toBeVisible()
+    expect(
+      await productRail.evaluate((element) =>
+        getComputedStyle(element).maskImage.toString()
+      )
+    ).toContain("linear-gradient")
+    await expect(
+      hud.getByRole("link", { name: /Continue to checkout/ })
+    ).toBeVisible()
+
+    expect(
+      await page.evaluate(() => ({
+        clientWidth: document.documentElement.clientWidth,
+        scrollWidth: document.documentElement.scrollWidth,
+        hudHeight: getComputedStyle(document.documentElement).getPropertyValue(
+          "--market-hud-height"
+        ),
+      }))
+    ).toEqual({
+      clientWidth: viewport.width,
+      scrollWidth: viewport.width,
+      hudHeight: expect.stringMatching(/^[1-9]\d*px$/),
+    })
+
+    const legalFooter = page.locator("footer").filter({
+      has: page.getByRole("navigation", { name: "Legal links" }),
+    })
+    const footerLayout = await legalFooter.evaluate((footer) => ({
+      height: Math.ceil(footer.getBoundingClientRect().height),
+      offset: getComputedStyle(document.documentElement).getPropertyValue(
+        "--market-fixed-footer-height"
+      ),
+      position: getComputedStyle(footer).position,
+      scrollPaddingBottom: getComputedStyle(document.documentElement)
+        .scrollPaddingBottom,
+    }))
+    expect(footerLayout.scrollPaddingBottom).not.toBe("auto")
+
+    if (viewport.name === "desktop") {
+      const hudBox = await hud.boundingBox()
+      const footerBox = await legalFooter.boundingBox()
+      expect(footerLayout.position).toBe("fixed")
+      expect(footerLayout.offset).toBe(`${footerLayout.height}px`)
+      expect(hudBox).not.toBeNull()
+      expect(footerBox).not.toBeNull()
+      expect(hudBox!.y + hudBox!.height).toBeLessThanOrEqual(footerBox!.y)
+    } else {
+      expect(footerLayout.position).not.toBe("fixed")
+      expect(footerLayout.offset).toBe("0px")
+    }
+
+    const toggle = hud.locator("button[aria-expanded]")
+    await toggle.click()
+    await expect(toggle).toHaveAttribute("aria-expanded", "false")
+    await expect(hud.locator("[inert]")).toHaveAttribute("aria-hidden", "true")
+    await expect(selectedItemCount).toHaveText("1")
+    await expect(selectedCart).not.toContainText("3,400")
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth)
+    ).toBe(viewport.width)
+
+    await page.goto(`${marketUrl}/cart`)
+    await expect(
+      page.getByRole("region", { name: "Cart inventory" })
+    ).toHaveCount(0)
+  })
+}
+
+test("market cart HUD browsing never contacts a merchant-controlled LNURL endpoint", async ({
+  page,
+}) => {
+  const lnurlRequests: string[] = []
+  page.on("request", (request) => {
+    const url = request.url()
+    if (url.includes("/.well-known/lnurlp/") || url.includes("lnurl.test")) {
+      lnurlRequests.push(url)
+    }
+  })
+
+  await page.goto(`${marketUrl}/products`)
+  // Let the app open its Dexie database so the seed cannot create an empty one.
+  await expect(
+    page.getByRole("region", { name: "Cart inventory" })
+  ).toBeVisible()
+  await page.evaluate((merchantPubkey) => {
+    return new Promise<void>((resolve, reject) => {
+      const request = indexedDB.open("conduit")
+      request.onerror = () => reject(request.error)
+      request.onsuccess = () => {
+        const database = request.result
+        const transaction = database.transaction("profiles", "readwrite")
+        transaction.objectStore("profiles").put({
+          pubkey: merchantPubkey,
+          name: "Lamp Merchant",
+          displayName: "Lamp Merchant",
+          lud16: "payments@lnurl.test",
+          cachedAt: Date.now(),
+        })
+        transaction.oncomplete = () => resolve()
+        transaction.onerror = () => reject(transaction.error)
+        transaction.onabort = () => reject(transaction.error)
+      }
+    })
+  }, MERCHANT_B)
+
+  await page.goto(`${marketUrl}/products`)
+  const hud = page.getByRole("region", { name: "Cart inventory" })
+  // The seeded profile is resolved, so the HUD held the merchant lightning
+  // address and every other input a browse-time probe would have needed.
+  await expect(
+    hud.getByRole("link", { name: "Open Lamp Merchant store" })
+  ).toBeVisible()
+  expect(
+    await page.evaluate(() => {
+      return new Promise<string | undefined>((resolve, reject) => {
+        const request = indexedDB.open("conduit")
+        request.onerror = () => reject(request.error)
+        request.onsuccess = () => {
+          const read = request.result
+            .transaction("profiles", "readonly")
+            .objectStore("profiles")
+            .getAll()
+          read.onerror = () => reject(read.error)
+          read.onsuccess = () =>
+            resolve(
+              (read.result as Array<{ lud16?: string }>).find(
+                (row) => row.lud16
+              )?.lud16
+            )
+        }
+      })
+    })
+  ).toBe("payments@lnurl.test")
+
+  await page.goto(`${marketUrl}/store/${MERCHANT_B}`)
+  await expect(
+    page.getByRole("region", { name: "Cart inventory" })
+  ).toBeVisible()
+
+  expect(lnurlRequests).toEqual([])
+})
+
+test("market cart HUD does not present a partial total", async ({ page }) => {
+  await page.addInitScript(
+    ({ merchant }) => {
+      localStorage.setItem(
+        "conduit:cart",
+        JSON.stringify({
+          version: 2,
+          items: [
+            {
+              productId: "priced",
+              merchantPubkey: merchant,
+              title: "Priced item",
+              price: 1_200,
+              priceSats: 1_200,
+              currency: "SATS",
+              format: "digital",
+              quantity: 1,
+            },
+            {
+              productId: "unpriced",
+              merchantPubkey: merchant,
+              title: "Unpriced item",
+              price: 10,
+              currency: "UNSUPPORTED",
+              format: "digital",
+              quantity: 1,
+            },
+          ],
+        })
+      )
+    },
+    { merchant: MERCHANT_A }
+  )
+  await page.goto(`${marketUrl}/products`)
+  const hud = page.getByRole("region", { name: "Cart inventory" })
+  await expect(hud).toContainText("Total unavailable")
+  await expect(hud).not.toContainText("1,200 sats")
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const stored = JSON.parse(localStorage.getItem("conduit:cart") ?? "{}")
+        return stored.items?.map(
+          (item: { productId: string }) => item.productId
+        )
+      })
+    )
+    .toEqual([`30402:${MERCHANT_A}:priced`, `30402:${MERCHANT_A}:unpriced`])
+})

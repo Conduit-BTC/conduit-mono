@@ -2,6 +2,7 @@ import { useMemo } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { getProductsByIds } from "@conduit/core"
 import {
+  getCartItemKey,
   getCartProductAvailability,
   isCartAvailabilityReadFresh,
   isCartProductAvailabilityBlocking,
@@ -35,8 +36,12 @@ export function useCartProductAvailability(items: CartItem[]) {
     () => getRefreshedAvailability(items, query.data?.data),
     [items, query.data?.data]
   )
-  const availabilityByProductId = useMemo(
-    () => new Map(availability.map((entry) => [entry.productId, entry])),
+  const products = useMemo(
+    () => query.data?.data.map((record) => record.product) ?? [],
+    [query.data?.data]
+  )
+  const availabilityByItemKey = useMemo(
+    () => new Map(availability.map((entry) => [getCartItemKey(entry), entry])),
     [availability]
   )
   const hasInsufficientStockItems = availability.some(
@@ -45,8 +50,12 @@ export function useCartProductAvailability(items: CartItem[]) {
   const hasUnavailableItems = availability.some(
     isCartProductAvailabilityBlocking
   )
+  const isFresh = isCartAvailabilityReadFresh(availability, query.data?.meta)
   async function refresh(): Promise<{
     availability: CartProductAvailability[]
+    products: Awaited<
+      ReturnType<typeof getProductsByIds>
+    >["data"][number]["product"][]
     fresh: boolean
   }> {
     const result = await query.refetch()
@@ -58,6 +67,7 @@ export function useCartProductAvailability(items: CartItem[]) {
 
     return {
       availability: refreshedAvailability,
+      products: commerceResult?.data.map((record) => record.product) ?? [],
       fresh: isCartAvailabilityReadFresh(
         refreshedAvailability,
         commerceResult?.meta
@@ -66,9 +76,11 @@ export function useCartProductAvailability(items: CartItem[]) {
   }
 
   return {
-    availabilityByProductId,
+    availabilityByItemKey,
+    products,
     hasInsufficientStockItems,
     hasUnavailableItems,
+    isFresh,
     isChecking: query.isLoading || query.isFetching,
     refresh,
   }

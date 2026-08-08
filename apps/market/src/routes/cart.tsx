@@ -57,12 +57,15 @@ import { useCartProductAvailability } from "../hooks/useCartProductAvailability"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import { buildCheckoutPricingIntent } from "../lib/checkout-payment"
 import {
-  createCartItemFromProduct,
+  cartItemInputFromProduct,
   getCartCostSummary,
+  getCartItemIdentity,
+  getCartItemKey,
   getCartItemStockForAvailability,
   getProductAddAvailability,
   groupCartItems,
   isCartProductAvailabilityBlocking,
+  selectCartItemQuantity,
   type CartProductAvailability,
   type MerchantCartGroup,
 } from "../lib/cart-model"
@@ -528,7 +531,7 @@ function CartLineItem({
 
 function MerchantCartCard({
   group,
-  availabilityByProductId,
+  availabilityByItemKey,
   availabilityChecking,
   expanded,
   forceExpanded,
@@ -542,7 +545,7 @@ function MerchantCartCard({
   onRemove,
 }: {
   group: MerchantCartGroup
-  availabilityByProductId: ReadonlyMap<string, CartProductAvailability>
+  availabilityByItemKey: ReadonlyMap<string, CartProductAvailability>
   availabilityChecking: boolean
   expanded: boolean
   forceExpanded: boolean
@@ -558,11 +561,12 @@ function MerchantCartCard({
   const { data: profile } = useProfile(group.merchantPubkey)
   const summary = getCartSummaryPrice(group.items, btcUsdRate, formatPrice)
   const hasSoldOutItems = group.items.some(
-    (item) => availabilityByProductId.get(item.productId)?.status === "sold_out"
+    (item) =>
+      availabilityByItemKey.get(getCartItemKey(item))?.status === "sold_out"
   )
   const hasInsufficientStockItems = group.items.some(
     (item) =>
-      availabilityByProductId.get(item.productId)?.status ===
+      availabilityByItemKey.get(getCartItemKey(item))?.status ===
       "insufficient_stock"
   )
   const hasUnavailableItems = hasSoldOutItems || hasInsufficientStockItems
@@ -654,9 +658,9 @@ function MerchantCartCard({
             <div className="divide-y divide-[var(--border)]">
               {group.items.map((item) => (
                 <CartLineItem
-                  key={item.productId}
+                  key={getCartItemKey(item)}
                   item={item}
-                  availability={availabilityByProductId.get(item.productId)}
+                  availability={availabilityByItemKey.get(getCartItemKey(item))}
                   formatPrice={formatPrice}
                   onIncrement={() => onIncrement(item)}
                   onDecrement={() => onDecrement(item)}
@@ -721,7 +725,7 @@ function CartPage() {
     if (
       group?.items.some((item) =>
         isCartProductAvailabilityBlocking(
-          cartAvailability.availabilityByProductId.get(item.productId)
+          cartAvailability.availabilityByItemKey.get(getCartItemKey(item))
         )
       )
     ) {
@@ -974,9 +978,7 @@ function CartPage() {
               <MerchantCartCard
                 key={group.merchantPubkey}
                 group={group}
-                availabilityByProductId={
-                  cartAvailability.availabilityByProductId
-                }
+                availabilityByItemKey={cartAvailability.availabilityByItemKey}
                 availabilityChecking={cartAvailability.isChecking}
                 expanded={expanded}
                 forceExpanded={forceExpanded}
@@ -1015,8 +1017,8 @@ function CartPage() {
                       publicZapPolicyKnown: item.publicZapPolicyKnown,
                       stock: getCartItemStockForAvailability(
                         item,
-                        cartAvailability.availabilityByProductId.get(
-                          item.productId
+                        cartAvailability.availabilityByItemKey.get(
+                          getCartItemKey(item)
                         )
                       ),
                     },
@@ -1024,13 +1026,14 @@ function CartPage() {
                   )
                 }
                 onDecrement={(item) => {
+                  const identity = getCartItemIdentity(item)
                   if (item.quantity <= 1) {
-                    cart.removeItem(item.productId)
+                    cart.removeItem(identity)
                     return
                   }
-                  cart.setQuantity(item.productId, item.quantity - 1)
+                  cart.setQuantity(identity, item.quantity - 1)
                 }}
-                onRemove={(item) => cart.removeItem(item.productId)}
+                onRemove={(item) => cart.removeItem(getCartItemIdentity(item))}
               />
             )
           })}
@@ -1091,9 +1094,10 @@ function CartPage() {
               )}
 
               {relatedProducts.map((product) => {
-                const cartQuantity =
-                  cart.items.find((item) => item.productId === product.id)
-                    ?.quantity ?? 0
+                const cartQuantity = selectCartItemQuantity(cart.items, {
+                  merchantPubkey: product.pubkey,
+                  productId: product.id,
+                })
 
                 return (
                   <RelatedProductRow
@@ -1102,7 +1106,7 @@ function CartPage() {
                     formatPrice={shopperPricing.formatPrice}
                     cartQuantity={cartQuantity}
                     onAdd={() =>
-                      cart.addItem(createCartItemFromProduct(product))
+                      cart.addItem(cartItemInputFromProduct(product))
                     }
                   />
                 )

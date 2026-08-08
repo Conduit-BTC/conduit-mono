@@ -1,9 +1,11 @@
 import { describe, expect, it } from "bun:test"
 import {
   addCartItem,
+  cartItemInputFromProduct,
+  cartItemsMatchCurrentProducts,
   clearMerchantCart,
-  createCartItemFromProduct,
   getCartAvailabilityBlockingMessage,
+  getCartItemKey,
   getCartItemStockForAvailability,
   getCartProductAvailability,
   getCartCostSummary,
@@ -13,7 +15,10 @@ import {
   groupCartItems,
   isCartAvailabilityReadFresh,
   isCartProductAvailabilityBlocking,
+  parsePersistedCart,
   removeCartItem,
+  selectCartItem,
+  selectCartItemQuantity,
   setCartItemQuantity,
   type CartItem,
 } from "../apps/market/src/lib/cart-model"
@@ -144,6 +149,158 @@ describe("cart model", () => {
     ])
   })
 
+  it("keeps equal product identifiers from different merchants separate", () => {
+    const merchantA = item({
+      productId: "shared-product",
+      merchantPubkey: "merchant-a",
+      title: "Merchant A",
+    })
+    const merchantB = item({
+      productId: "shared-product",
+      merchantPubkey: "merchant-b",
+      title: "Merchant B",
+    })
+
+    const items = addCartItem(addCartItem([], merchantA, 1), merchantB, 2)
+    expect(items).toHaveLength(2)
+    expect(
+      selectCartItemQuantity(items, {
+        merchantPubkey: "merchant-a",
+        productId: "shared-product",
+      })
+    ).toBe(1)
+    expect(
+      selectCartItemQuantity(items, {
+        merchantPubkey: "merchant-b",
+        productId: "shared-product",
+      })
+    ).toBe(2)
+    expect(getCartItemKey(merchantA)).not.toBe(getCartItemKey(merchantB))
+  })
+
+  it("mutates only the selected merchant-scoped line", () => {
+    const items = [
+      item({ productId: "shared", merchantPubkey: "merchant-a" }),
+      item({ productId: "shared", merchantPubkey: "merchant-b", quantity: 2 }),
+    ]
+    const merchantB = { merchantPubkey: "merchant-b", productId: "shared" }
+    const updated = setCartItemQuantity(items, merchantB, 5)
+
+    expect(selectCartItem(updated, merchantB)?.quantity).toBe(5)
+    expect(
+      selectCartItem(updated, {
+        merchantPubkey: "merchant-a",
+        productId: "shared",
+      })?.quantity
+    ).toBe(1)
+    expect(removeCartItem(updated, merchantB)).toMatchObject([
+      { merchantPubkey: "merchant-a", productId: "shared" },
+    ])
+  })
+
+  it("migrates legacy storage and preserves cross-merchant collisions", () => {
+    const parsed = parsePersistedCart({
+      items: [
+        item({
+          productId: "legacy-d-tag",
+          merchantPubkey: "merchant-a",
+          priceSats: 1_000,
+          sourcePrice: {
+            amount: 10,
+            currency: "USD",
+            normalizedCurrency: "USD",
+          },
+        }),
+        item({
+          productId: "legacy-d-tag",
+          merchantPubkey: "merchant-b",
+          quantity: 2,
+        }),
+      ],
+    })
+
+    expect(parsed.supported).toBe(true)
+    expect(parsed.writable).toBe(true)
+    expect(parsed.shouldPersist).toBe(true)
+    expect(parsed.state.items).toHaveLength(2)
+    expect(parsed.state.items.map((entry) => entry.productId)).toEqual([
+      "30402:merchant-a:legacy-d-tag",
+      "30402:merchant-b:legacy-d-tag",
+    ])
+    expect(parsed.state.items[0]?.sourcePrice).toEqual({
+      amount: 10,
+      currency: "USD",
+      normalizedCurrency: "USD",
+    })
+  })
+
+  it("deduplicates only exact identities using the latest snapshot", () => {
+    const parsed = parsePersistedCart({
+      version: 2,
+      items: [
+        item({
+          productId: "30402:merchant-a:shared",
+          merchantPubkey: "merchant-a",
+          merchantAddedAt: 20,
+          title: "Old title",
+          quantity: 2,
+        }),
+        item({
+          productId: "30402:merchant-a:shared",
+          merchantPubkey: "merchant-a",
+          merchantAddedAt: 10,
+          title: "Current title",
+          quantity: 3,
+        }),
+      ],
+    })
+
+    expect(parsed.shouldPersist).toBe(false)
+    expect(parsed.state.items).toMatchObject([
+      { title: "Current title", quantity: 5, merchantAddedAt: 10 },
+    ])
+  })
+
+  it("drops malformed and merchant-mismatched coordinate rows", () => {
+    const parsed = parsePersistedCart({
+      version: 2,
+      items: [
+        item({
+          productId: "30402:merchant-a:product-a",
+          merchantPubkey: "merchant-b",
+        }),
+        item({ quantity: Number.NaN }),
+        item({ productId: "valid-legacy", quantity: 2.8 }),
+      ],
+    })
+
+    expect(parsed.shouldPersist).toBe(true)
+    expect(parsed.state.items).toMatchObject([
+      { productId: "30402:merchant-a:valid-legacy", quantity: 2 },
+    ])
+  })
+
+  it("fails closed for malformed and unknown future storage versions", () => {
+    expect(parsePersistedCart(null)).toEqual({
+      state: { items: [] },
+      shouldPersist: false,
+      supported: false,
+      writable: true,
+    })
+    expect(parsePersistedCart({ version: 3, items: [item()] })).toEqual({
+      state: { items: [] },
+      shouldPersist: false,
+      supported: false,
+      writable: false,
+    })
+    expect(parsePersistedCart({ version: 3, entries: [item()] })).toEqual({
+      state: { items: [] },
+      shouldPersist: false,
+      supported: false,
+      writable: false,
+    })
+  })
+
   it("does not add a product whose stock snapshot is sold out", () => {
     const items = addCartItem([], item({ stock: 0, quantity: 0 }), 1)
 
@@ -170,12 +327,53 @@ describe("cart model", () => {
       updatedAt: 2,
     }
 
-    expect(createCartItemFromProduct(product)).toMatchObject({
+    expect(cartItemInputFromProduct(product)).toMatchObject({
       productId: product.id,
       merchantPubkey: product.pubkey,
       title: product.title,
       stock: 0,
     })
+  })
+
+  it("requires current product price and fulfillment terms before ordering", () => {
+    const cartItem = item({
+      price: 2_500,
+      priceSats: 2_500,
+      format: "digital",
+      publicZapEnabled: true,
+      zapMessagePolicy: "generic_only",
+      publicZapPolicyKnown: true,
+    })
+    const product: Product = {
+      id: cartItem.productId,
+      pubkey: cartItem.merchantPubkey,
+      title: cartItem.title,
+      price: 2_500,
+      priceSats: 2_500,
+      currency: "SATS",
+      type: "simple",
+      format: "digital",
+      visibility: "public",
+      images: [],
+      tags: [],
+      publicZapEnabled: true,
+      zapMessagePolicy: "generic_only",
+      publicZapPolicyKnown: true,
+      createdAt: 1,
+      updatedAt: 2,
+    }
+
+    expect(cartItemsMatchCurrentProducts([cartItem], [product])).toBe(true)
+    expect(
+      cartItemsMatchCurrentProducts([cartItem], [{ ...product, price: 3_000 }])
+    ).toBe(false)
+    expect(
+      cartItemsMatchCurrentProducts(
+        [cartItem],
+        [{ ...product, format: "physical" }]
+      )
+    ).toBe(false)
+    expect(cartItemsMatchCurrentProducts([cartItem], [])).toBe(false)
   })
 
   it("flags an existing cart item when refreshed product stock reaches zero", () => {
@@ -202,6 +400,7 @@ describe("cart model", () => {
     expect(getCartProductAvailability(cartItems, [refreshedProduct])).toEqual([
       {
         productId: cartItems[0]!.productId,
+        merchantPubkey: cartItems[0]!.merchantPubkey,
         status: "sold_out",
         stock: 0,
         refreshed: true,
@@ -238,6 +437,7 @@ describe("cart model", () => {
     expect(getCartProductAvailability(cartItems, [refreshedProduct])).toEqual([
       {
         productId: cartItems[0]!.productId,
+        merchantPubkey: cartItems[0]!.merchantPubkey,
         status: "insufficient_stock",
         stock: 1,
         refreshed: true,
@@ -263,7 +463,7 @@ describe("cart model", () => {
         cartItems,
         new Map(
           getCartProductAvailability(cartItems, [refreshedProduct]).map(
-            (entry) => [entry.productId, entry]
+            (entry) => [getCartItemKey(entry), entry]
           )
         )
       )
@@ -299,6 +499,7 @@ describe("cart model", () => {
     expect(availability).toEqual([
       {
         productId: cartItems[0]!.productId,
+        merchantPubkey: cartItems[0]!.merchantPubkey,
         status: "untracked",
         stock: undefined,
         refreshed: true,
@@ -377,6 +578,52 @@ describe("cart model", () => {
     ).toBe(false)
   })
 
+  it("keeps refreshed availability merchant-scoped for legacy identifiers", () => {
+    const cartItems = [
+      item({ productId: "shared", merchantPubkey: "merchant-a", stock: 1 }),
+      item({ productId: "shared", merchantPubkey: "merchant-b", stock: 1 }),
+    ]
+    const refreshedProduct: Product = {
+      id: "shared",
+      pubkey: "merchant-b",
+      title: "Merchant B item",
+      price: 1_000,
+      currency: "SATS",
+      type: "simple",
+      format: "physical",
+      visibility: "public",
+      stock: 0,
+      images: [],
+      tags: [],
+      publicZapEnabled: true,
+      zapMessagePolicy: "generic_only",
+      publicZapPolicyKnown: true,
+      createdAt: 1,
+      updatedAt: 2,
+    }
+
+    const availability = getCartProductAvailability(cartItems, [
+      refreshedProduct,
+    ])
+    expect(availability).toMatchObject([
+      { merchantPubkey: "merchant-a", status: "available", refreshed: false },
+      { merchantPubkey: "merchant-b", status: "sold_out", refreshed: true },
+    ])
+  })
+
+  it("preserves stock through persisted cart parsing", () => {
+    expect(
+      parsePersistedCart({ version: 2, items: [item({ stock: 7 })] }).state
+        .items[0]
+    ).toMatchObject({ stock: 7 })
+  })
+
+  it("does not add beyond finite tracked stock", () => {
+    const current = [item({ stock: 2, quantity: 2 })]
+    expect(addCartItem(current, item({ stock: 2 }), 1)).toBe(current)
+    expect(addCartItem([], item({ stock: 2 }), 3)).toEqual([])
+  })
+
   it("sets quantities, removes products, and clears one merchant", () => {
     const items = [
       item({ productId: "30402:merchant-a:product-a", merchantPubkey: "a" }),
@@ -384,9 +631,18 @@ describe("cart model", () => {
     ]
 
     expect(
-      setCartItemQuantity(items, "30402:merchant-a:product-a", 4)[0]?.quantity
+      setCartItemQuantity(
+        items,
+        { merchantPubkey: "a", productId: "30402:merchant-a:product-a" },
+        4
+      )[0]?.quantity
     ).toBe(4)
-    expect(removeCartItem(items, "30402:merchant-a:product-a")).toHaveLength(1)
+    expect(
+      removeCartItem(items, {
+        merchantPubkey: "a",
+        productId: "30402:merchant-a:product-a",
+      })
+    ).toHaveLength(1)
     expect(clearMerchantCart(items, "a")).toMatchObject([
       { productId: "30402:merchant-b:product-b" },
     ])

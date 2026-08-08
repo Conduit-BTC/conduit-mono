@@ -12,6 +12,17 @@ import {
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
+const ndkModuleUrl = `/@fs${process.cwd()}/packages/core/src/protocol/ndk.ts`
+
+async function hasActiveNdkSigner(page: Page): Promise<boolean> {
+  return page.evaluate(async (url) => {
+    const module = (await import(/* @vite-ignore */ url)) as {
+      getNdk: () => { signer?: unknown }
+    }
+    return !!module.getNdk().signer
+  }, ndkModuleUrl)
+}
+
 const merchantTrustHarnessUrl = "/src/test-fixtures/merchant-trust-harness.tsx"
 
 async function openMarketSignerDialog(page: Page): Promise<void> {
@@ -331,4 +342,19 @@ test("merchant remembered auth falls back to explicit retry when signer needs ac
   await expect(
     page.getByRole("heading", { name: "Merchant Portal" })
   ).toBeVisible({ timeout: 10_000 })
+})
+
+test("market restored session keeps a usable signer attached", async ({
+  page,
+}) => {
+  await installTestSigner(page, TEST_BUYER_PUBKEY)
+  await page.goto(`${marketUrl}/products`)
+
+  await expect(page.getByLabel("Open account menu")).toBeVisible({
+    timeout: 15_000,
+  })
+
+  await expect
+    .poll(() => hasActiveNdkSigner(page), { timeout: 10_000 })
+    .toBe(true)
 })

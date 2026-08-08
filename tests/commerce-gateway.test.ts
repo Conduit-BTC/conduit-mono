@@ -728,6 +728,42 @@ describe("commerce gateway", () => {
     expect(cachedProducts[0]?.eventId).toBe(localProduct.id)
   })
 
+  it("marks a mixed live and cached product batch as stale", async () => {
+    const liveProduct = makeSignedProductEvent({
+      secretKey: MERCHANT_A_SECRET,
+      dTag: "live-batch-item",
+      createdAt: 102,
+      title: "Live Batch Item",
+      stock: 4,
+    })
+    const cachedProduct = makeSignedProductEvent({
+      secretKey: MERCHANT_B_SECRET,
+      dTag: "cached-batch-item",
+      createdAt: 101,
+      title: "Cached Batch Item",
+      stock: 3,
+    })
+    await cacheSignedProductListingEvent(liveProduct)
+    await cacheSignedProductListingEvent(cachedProduct)
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+          ? ([liveProduct.rawEvent()] as never)
+          : [],
+    })
+
+    const result = await getProductsByIds([
+      `30402:${liveProduct.pubkey}:live-batch-item`,
+      `30402:${cachedProduct.pubkey}:cached-batch-item`,
+    ])
+
+    expect(result.data).toHaveLength(2)
+    expect(result.meta.source).toBe("local_cache")
+    expect(result.meta.stale).toBe(true)
+    expect(result.meta.degraded).toBe(true)
+  })
+
   it("uses the lower event id to resolve same-timestamp product versions", async () => {
     const dTag = "same-second-edit"
     const versions = [

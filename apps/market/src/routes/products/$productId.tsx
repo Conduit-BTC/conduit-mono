@@ -38,11 +38,9 @@ import {
   useProgressiveProductDetail,
   useProgressiveProducts,
 } from "../../hooks/useProgressiveProducts"
-import {
-  createCartItemFromProduct,
-  getProductAddAvailability,
-} from "../../lib/cart-model"
+import { getProductAddAvailability } from "../../lib/cart-model"
 import { getProductDisplaySummary } from "../../lib/productDisplaySummary"
+import { cartItemInputFromProduct, selectCartItem } from "../../lib/cart-model"
 
 export const Route = createFileRoute("/products/$productId")({
   component: ProductPage,
@@ -119,7 +117,10 @@ function ProductPage() {
     : ""
   const merchantNip05 = getProfileNip05(merchantProfile.data)
   const cartItem = product
-    ? cart.items.find((item) => item.productId === product.id)
+    ? selectCartItem(cart.items, {
+        merchantPubkey: product.pubkey,
+        productId: product.id,
+      })
     : null
   const cartQuantity = cartItem?.quantity ?? 0
   const productAddAvailability = getProductAddAvailability(
@@ -241,7 +242,7 @@ function ProductPage() {
   function addProductToCart(): void {
     if (!product || !productAddAvailability.canAdd) return
     recordProductDetailAction("add_to_cart")
-    cart.addItem(createCartItemFromProduct(product), quantity)
+    cart.addItem(cartItemInputFromProduct(product), quantity)
   }
 
   const productFreshness: FreshnessChipStatus = product
@@ -797,8 +798,13 @@ function ProductPage() {
             {relatedProducts.length > 0 && (
               <ul className="grid auto-rows-fr list-none grid-cols-2 gap-3 p-0 md:grid-cols-3 lg:grid-cols-4">
                 {relatedProducts.map((relatedProduct, index) => {
-                  const relatedCartItem = cart.items.find(
-                    (item) => item.productId === relatedProduct.id
+                  const relatedIdentity = {
+                    merchantPubkey: relatedProduct.pubkey,
+                    productId: relatedProduct.id,
+                  }
+                  const relatedCartItem = selectCartItem(
+                    cart.items,
+                    relatedIdentity
                   )
                   const relatedCartQuantity = relatedCartItem?.quantity ?? 0
 
@@ -814,24 +820,24 @@ function ProductPage() {
                         cartQuantity={relatedCartQuantity}
                         onAddToCart={() =>
                           cart.addItem(
-                            createCartItemFromProduct(relatedProduct),
+                            cartItemInputFromProduct(relatedProduct),
                             1
                           )
                         }
                         onIncrement={() =>
                           cart.addItem(
-                            createCartItemFromProduct(relatedProduct),
+                            cartItemInputFromProduct(relatedProduct),
                             1
                           )
                         }
                         onDecrement={() => {
                           if (!relatedCartItem) return
                           if (relatedCartItem.quantity <= 1) {
-                            cart.removeItem(relatedProduct.id)
+                            cart.removeItem(relatedIdentity)
                             return
                           }
                           cart.setQuantity(
-                            relatedProduct.id,
+                            relatedIdentity,
                             relatedCartItem.quantity - 1
                           )
                         }}
