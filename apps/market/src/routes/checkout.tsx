@@ -979,7 +979,9 @@ function CheckoutPage() {
           undefined,
           initialIdentity
         )
-      : { value: DEFAULT_CHECKOUT_SHIPPING, hasActiveDraft: false }
+      : pendingDraftOwner
+        ? { value: DEFAULT_CHECKOUT_SHIPPING, hasActiveDraft: false }
+        : readCheckoutShippingInitialization(null, undefined, undefined, null)
   }
   const presetMaySeedShippingRef = useRef(
     !initialShippingRef.current.hasActiveDraft

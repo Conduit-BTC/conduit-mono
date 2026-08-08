@@ -255,6 +255,25 @@ describe("Market shopper preset integration", () => {
     expect(logoutStorage.length).toBe(0)
   })
 
+  it("recovers a guest draft on reload and defers restore-pending drafts", async () => {
+    const guestStorage = memoryStorage()
+    const guestDraft = { ...DEFAULT_CHECKOUT_SHIPPING, street: "Guest draft" }
+    writeCheckoutShippingSession(guestDraft, guestStorage, 1_000, null)
+    expect(
+      readCheckoutShippingInitialization(null, guestStorage, 1_001, null)
+    ).toEqual({ value: guestDraft, hasActiveDraft: true })
+
+    // Checkout must initialize a real guest from the stored guest draft.
+    // Only a pending signed-in session restore may defer that read, because
+    // a null-owner read deletes an owner-bound draft before recovery runs.
+    const source = await Bun.file("apps/market/src/routes/checkout.tsx").text()
+    expect(source).toContain(
+      ": pendingDraftOwner\n" +
+        "        ? { value: DEFAULT_CHECKOUT_SHIPPING, hasActiveDraft: false }\n" +
+        "        : readCheckoutShippingInitialization(null, undefined, undefined, null)"
+    )
+  })
+
   it("uses country and postal code for local shipping compatibility", () => {
     const restricted = cartItem("restricted", {
       shippingCountries: ["US"],
