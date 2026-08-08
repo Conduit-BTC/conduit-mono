@@ -376,6 +376,11 @@ export function useProgressiveProducts(
     [firstDegreeAuthors, input.merchantPubkey, input.scope]
   )
   const catalogAuthorKey = catalogAuthorPubkeys?.join(",") ?? "no-authors"
+  // Versioning the discovery key with the refresh nonce resets the product
+  // accumulator and progressive-read state through the existing key-change
+  // machinery, so a manual refresh rebuilds the list from a fresh relay pass
+  // and listings deleted since the last pass drop out of the view.
+  const [refreshNonce, setRefreshNonce] = useState(0)
   const discoveryKey = useMemo(
     () =>
       JSON.stringify([
@@ -384,8 +389,9 @@ export function useProgressiveProducts(
           "network"
         ),
         catalogAuthorKey,
+        refreshNonce,
       ]),
-    [catalogAuthorKey, input]
+    [catalogAuthorKey, input, refreshNonce]
   )
   const marketplaceTags = input.scope === "marketplace" ? input.tags : undefined
   const inputTagsKey =
@@ -405,7 +411,6 @@ export function useProgressiveProducts(
     meta: null,
     error: null,
   })
-  const [refreshNonce, setRefreshNonce] = useState(0)
 
   useEffect(() => {
     if (
@@ -677,7 +682,6 @@ export function useProgressiveProducts(
     marketplaceTags,
     perspectiveMarketplaceRead,
     authenticatedPubkey,
-    refreshNonce,
     streamsNetwork,
   ])
 
