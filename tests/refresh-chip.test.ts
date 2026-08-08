@@ -31,7 +31,7 @@ describe("RefreshChip", () => {
     expect(visibleLabelMarkup(markup, "Updated")).toContain("opacity-0")
   })
 
-  it("disables itself and animates while a refresh runs", () => {
+  it("stays fully opaque and spins while a refresh runs", () => {
     const markup = renderToStaticMarkup(
       createElement(RefreshChip, {
         refreshing: true,
@@ -40,8 +40,12 @@ describe("RefreshChip", () => {
       })
     )
 
-    expect(markup).toContain(String.raw`disabled=""`)
+    // Not disabled: the Button's disabled:opacity-50 fade must not apply
+    // while refreshing. The chip reports busy state and ignores clicks.
+    expect(markup).not.toContain('disabled=""')
+    expect(markup).toContain('aria-busy="true"')
     expect(markup).toContain("animate-spin")
+    expect(markup).not.toContain("animate-pulse")
     expect(visibleLabelMarkup(markup, "Updating listings...")).toContain(
       "opacity-100"
     )

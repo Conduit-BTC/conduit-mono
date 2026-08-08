@@ -38,7 +38,8 @@ export interface RefreshChipProps extends Omit<
  * phase changes never move surrounding content.
  *
  * The phase machine follows the `refreshing` prop. While `refreshing` is
- * true the chip shows the refreshing label and disables itself. When
+ * true the chip shows the refreshing label, reports `aria-busy`, and
+ * ignores further clicks while staying fully opaque. When
  * `refreshing` transitions back to false, the chip flashes `doneLabel` for
  * `doneDurationMs` before returning to idle. When `stale` is set and the
  * chip is idle, the idle label swaps to `staleLabel` with a warning tone so
@@ -91,13 +92,19 @@ function RefreshChip({
     ? "text-[var(--warning)]"
     : "text-[var(--text-primary)]"
 
+  const refreshingPhase = phase === "refreshing"
+
   return (
     <Button
       type="button"
       variant="outline"
       size="sm"
-      disabled={disabled || phase === "refreshing"}
-      onClick={onRefresh}
+      disabled={disabled}
+      aria-busy={refreshingPhase}
+      onClick={() => {
+        if (refreshingPhase) return
+        onRefresh()
+      }}
       className={cn("shrink-0", className)}
       {...props}
     >
@@ -106,8 +113,8 @@ function RefreshChip({
           aria-hidden="true"
           className={cn(
             "inline-flex h-4 w-4 items-center justify-center transition-colors duration-200",
-            phase === "refreshing"
-              ? "animate-pulse text-[var(--secondary-500)]"
+            refreshingPhase
+              ? "text-[var(--secondary-500)]"
               : phase === "done"
                 ? "text-[var(--success)]"
                 : stale
@@ -119,10 +126,7 @@ function RefreshChip({
             <CheckCircle2 className="h-3.5 w-3.5" />
           ) : (
             <RotateCw
-              className={cn(
-                "h-3.5 w-3.5",
-                phase === "refreshing" && "animate-spin"
-              )}
+              className={cn("h-3.5 w-3.5", refreshingPhase && "animate-spin")}
             />
           )}
         </span>
@@ -144,8 +148,8 @@ function RefreshChip({
           <span
             className={cn(
               "absolute whitespace-nowrap transition-opacity duration-200",
-              phase === "refreshing"
-                ? "animate-pulse opacity-100 text-[var(--secondary-500)]"
+              refreshingPhase
+                ? "opacity-100 text-[var(--secondary-500)]"
                 : "opacity-0"
             )}
           >
