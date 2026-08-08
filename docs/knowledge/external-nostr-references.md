@@ -2,7 +2,7 @@
 
 This document is a curated set of external references we rely on for protocol details, implementation patterns, and interoperability.
 
-Last reviewed: 2026-06-14
+Last reviewed: 2026-08-07
 
 ## Agent Preflight
 
@@ -17,7 +17,7 @@ Use this file before changing any Nostr-sensitive code or docs:
 Before implementation:
 
 1. Read the relevant repo contract in `docs/specs/*` or `docs/ARCHITECTURE.md`.
-2. Read the relevant public NIP or GammaMarkets source below.
+2. Read the relevant public NIP or Open Markets source below.
 3. State the public source in the PR under `Source docs/specs`.
 4. Keep protocol construction and relay planning in `@conduit/core` unless the PR explains why route-local behavior is unavoidable.
 5. If a public protocol source and a repo doc disagree, stop and update the repo doc before coding.
@@ -34,7 +34,24 @@ Guidance:
 
 - Prefer Nostrbook for fast, accurate extraction of NIP requirements during implementation.
 - When behavior is disputed, treat the official NIPs repo as the final arbiter.
-- Do not treat library examples, blog posts, or external app behavior as authoritative over NIPs or GammaMarkets `market-spec`.
+- Do not treat library examples, blog posts, external app behavior, or unmerged proposals as authoritative over NIPs or the normative Open Markets specification.
+
+## Open Markets Specification (Commerce)
+
+- Repository and active specification home:
+  - https://github.com/OpenMarketsFoundation/specification
+- Current default-branch specification document:
+  - https://github.com/OpenMarketsFoundation/specification/blob/main/README.md
+- Maintained Conduit implementation note:
+  - [open-markets-specification-notes.md](./open-markets-specification-notes.md)
+
+Source boundary:
+
+- Treat specification content on the repository's default branch as the active commerce source.
+- Distinguish normative specification text and accepted pillars from proposals. A proposal does not change Conduit protocol behavior until it is accepted into the normative specification and the implementation verifies the final stable source.
+- [Open Markets PR #1](https://github.com/OpenMarketsFoundation/specification/pull/1) proposes stable `SPEC.md` and pillar navigation but remains unmerged as of this review. Do not cite its branch-only paths as canonical links.
+- [Open Markets PR #13](https://github.com/OpenMarketsFoundation/specification/pull/13) is a stacked draft proposal for versioned destination constraints. It is experimental, does not modify the current normative specification, and must not be implemented or cited as settled behavior.
+- After PR #1 merges, reverify the repository root, `SPEC.md`, `pillars/items.md`, and `pillars/delivery.md` on the default branch before updating stable links.
 
 ## Current Conduit Protocol Map
 
@@ -46,7 +63,7 @@ Guidance:
 
 ### Products and commerce listings
 
-- Conduit product listings are NIP-99 + GammaMarkets `market-spec` `kind:30402` events.
+- Conduit product listings are NIP-99 plus the Open Markets Specification for `kind:30402` commerce events, derived from the earlier GammaMarkets `market-spec` work.
 - Do not introduce alternate product-listing protocol terminology, schemas, or assumptions for commerce listings.
 - Public product event `content` should follow the relevant public spec. Do not publish Conduit-internal JSON in public event content unless that NIP or market spec explicitly defines that JSON content.
 - Be liberal in what Conduit parses for interoperability, but conservative and spec-aligned in what it emits.
@@ -88,21 +105,21 @@ Guidance:
 - Nostr WS Inspector (Chrome extension, debugging relays)
   - https://chromewebstore.google.com/detail/nostr-ws-inspector/pchfingijipdcdimblhpahbolijmblmn
 
-## De-commerce Interop: GammaMarkets Market Spec
+## Historical Interop: GammaMarkets Market Spec
 
-- Market spec repo (interoperability baseline for de-commerce apps)
+- Earlier market spec repository:
   - https://github.com/GammaMarkets/market-spec
+- Historical specification text:
+  - https://github.com/GammaMarkets/market-spec/blob/main/spec.md
+- Compatibility note:
+  - [gamma-market-spec-notes.md](./gamma-market-spec-notes.md)
 
 Notes:
 
-- This repo is referenced by NIP-99 and is effectively the cross-app compatibility contract for de-commerce.
-- We can propose and land changes (with rough consensus), but must preserve interoperability.
-- Prefer backwards-compatible evolution. Breaking changes should be treated as exceptional and will be scrutinized heavily.
-
-Additional guidance:
-
-- Treat `spec.md` as the canonical normative text. The README provides high-level intent and links.
-- External implementations (e.g. Plebeian) are compatibility targets, not authorities.
+- GammaMarkets is the origin of the commerce work now maintained by the Open Markets Foundation. It is not the active governing specification.
+- Keep Gamma links where they substantiate historical provenance or deployed legacy/interoperability behavior.
+- External implementations such as Plebeian remain compatibility targets, not authorities.
+- Prefer backwards-compatible evolution. Treat breaking changes as exceptional and require explicit protocol review and migration planning.
 
 ## External Markets (Compatibility Targets)
 

@@ -3,7 +3,7 @@
 **Status:** Active
 **Owner:** Protocol / Market Lead
 **Applies to:** Conduit Market, Merchant Portal, Store Builder, shared protocol utilities
-**Last updated:** 2026-07-10
+**Last updated:** 2026-08-07
 **Decision rule:** Spec-first. External implementations inform compatibility, not correctness.
 
 ## External Codebase References (Expandable)
@@ -11,7 +11,7 @@
 ### Plebeian Market (Primary reference for now)
 
 - Repo: https://github.com/PlebeianApp/market
-- Notes: Gamma Markets / NIP-99 compliant (per partner claims); used to catch practical interoperability footguns.
+- Notes: Gamma Markets / NIP-99 compliant (per partner claims); retained as a deployed compatibility target for the earlier specification lineage.
 
 ### Additional external markets
 
@@ -19,7 +19,7 @@
 
 ## Purpose
 
-Define the bounds of interoperability between Conduit and external Gamma/NIP-99 marketplaces, starting with Plebeian, while preserving:
+Define the bounds of interoperability between Conduit and external NIP-99 commerce marketplaces, including implementations derived from the earlier GammaMarkets work, starting with Plebeian, while preserving:
 
 - protocol correctness
 - Conduit merchant checkout requirements
@@ -29,11 +29,11 @@ Define the bounds of interoperability between Conduit and external Gamma/NIP-99 
 ## Non-Negotiable Priority Order
 
 1. Protocol correctness
-   - Implement Gamma Markets / NIP-99 as specified.
+   - Implement the Open Markets Specification and NIP-99 as specified.
    - Do not treat any external codebase as spec authority.
 2. Network interoperability
-   - Conduit-created listings render and are discoverable in external Gamma/NIP-99 markets.
-   - External Gamma/NIP-99 listings render and are discoverable in Conduit.
+   - Conduit-created listings render and are discoverable in compatible Open Markets/NIP-99 markets.
+   - Compatible Open Markets/NIP-99 listings render and are discoverable in Conduit.
 3. Conduit merchant checkout
    - Enable external discovery -> checkout with Conduit merchants wherever feasible.
 4. Velocity and design quality
@@ -82,7 +82,8 @@ Define the bounds of interoperability between Conduit and external Gamma/NIP-99 
 
 ### Spec-first, then compatibility
 
-- Gamma/NIP-99 spec is the source of truth.
+- The Open Markets Specification and NIP-99 are the active sources of truth.
+- Earlier GammaMarkets behavior remains relevant only where it documents deployed compatibility.
 - Plebeian’s implementation is a compatibility target and a pragmatic reference, not an authority.
 
 ### No silent coupling
@@ -122,7 +123,7 @@ Then Conduit:
 
 Agents and reviewers must:
 
-- verify spec compliance first (Gamma/NIP-99)
+- verify Open Markets/NIP-99 compliance first
 - check Plebeian codebase conventions to avoid obvious incompatibilities
 - avoid "copy-the-app" decisions without spec justification
 - surface interoperability risks early with minimal patches and clear notes
@@ -170,7 +171,7 @@ Add short entries here as they arise:
 - Action: adapter / escalate / ignore (with reason)
 
 - **[2026-07-08]** Partial JSON listing content display fallback
-- Spec expectation: NIP-99/Gamma product listing `content` is human-readable Markdown description; structured metadata belongs in tags.
+- Spec expectation: Open Markets/NIP-99 product listing `content` is human-readable Markdown description; structured metadata belongs in tags.
 - Observed behavior: Some relayed listings use JSON object content with fields such as `title` and `description`, but do not match Conduit's legacy product schema.
 - Conduit behavior: Continue parsing full legacy Conduit JSON listings, but for partial JSON content only project safe display fields (`title`, `summary`/`description`) and never render the raw JSON object as product copy.
 - Risk: Level 1 rendering mismatch.
@@ -184,7 +185,7 @@ Add short entries here as they arise:
 - Action: adapter.
 
 - **[2026-07-09]** Product description Markdown rendering
-- Spec expectation: NIP-99/Gamma product listing `content` is human-readable Markdown description text; authoritative commerce fields such as price remain in structured tags or related commerce events.
+- Spec expectation: Open Markets/NIP-99 product listing `content` is human-readable Markdown description text; authoritative commerce fields such as price remain in structured tags or related commerce events.
 - Observed behavior: External listings may include price, category, attribution, links, or other generated display copy in Markdown even when structured tags are present.
 - Conduit behavior: Render product descriptions through a constrained Markdown renderer for display only. Do not infer checkout price, shipping, stock, payment, merchant identity, or order state from Markdown text.
 - Risk: Level 1 rendering mismatch.
