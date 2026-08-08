@@ -115,7 +115,26 @@ const uuidV7Pattern =
 const eventUuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const labelValuePattern = /^[a-z0-9_:-]{1,64}$/
-const pagePathPattern = /^\/[a-zA-Z0-9_/:.-]{0,127}$/
+
+/**
+ * Route classes `sanitizeTelemetryPath` in `packages/core/src/telemetry.ts`
+ * can emit. Sections that sanitize to a dedicated class (`/products`,
+ * `/store`, `/u`, `/orders`) are matched explicitly below, so this set holds
+ * only the static sections that keep a generic `/:param` suffix class.
+ */
+const sanitizedStaticRouteSegments = new Set([
+  "about",
+  "cart",
+  "checkout",
+  "messages",
+  "network",
+  "payments",
+  "profile",
+  "shipping",
+  "wallet",
+])
+const storeNpubPathPattern =
+  /^\/store\/npub1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}$/
 
 export interface PostHogProxyEnv {
   POSTHOG_PROJECT_TOKEN?: string
@@ -439,8 +458,31 @@ function isBoundedNumber(value: unknown, max: number): value is number {
   )
 }
 
+/**
+ * Accept only the closed set of sanitized route classes the browser
+ * sanitizer emits. Raw high-cardinality routes such as `/orders/12345`
+ * must stay redacted and are rejected whole.
+ */
+export function isSanitizedTelemetryRoutePath(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 128) return false
+  if (
+    value === "/" ||
+    value === "/:param" ||
+    value === "/products" ||
+    value === "/products/:productId" ||
+    value === "/store/:pubkey" ||
+    value === "/u/:profileRef" ||
+    value === "/orders"
+  ) {
+    return true
+  }
+  if (storeNpubPathPattern.test(value)) return true
+  const match = /^\/([a-z]+)(\/:param)?$/.exec(value)
+  return match !== null && sanitizedStaticRouteSegments.has(match[1] ?? "")
+}
+
 function isSanitizedPagePath(value: unknown): value is string {
-  return typeof value === "string" && pagePathPattern.test(value)
+  return isSanitizedTelemetryRoutePath(value)
 }
 
 function isSanitizedPageUrl(value: unknown): value is string {
@@ -456,7 +498,7 @@ function isSanitizedPageUrl(value: unknown): value is string {
     return false
   }
   if (url.username || url.password) return false
-  if (url.pathname !== "/" && !pagePathPattern.test(url.pathname)) return false
+  if (!isSanitizedTelemetryRoutePath(url.pathname)) return false
 
   const hostname = url.hostname.toLowerCase()
   return (
