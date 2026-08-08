@@ -32,6 +32,7 @@ import {
   type Profile,
   type SignedPublicNostrEvent,
   useAuth,
+  useConduitSession,
   useInboxDeclaration,
   useProfiles,
 } from "@conduit/core"
@@ -402,6 +403,7 @@ function OrderItemsCard({
 
 function OrdersPage() {
   const { pubkey, status } = useAuth()
+  const session = useConduitSession()
   const navigate = useNavigate()
   const { order: selectedFromUrl, queue: queueFromUrl } = Route.useSearch()
   const selectedQueueFromUrl = queueFromUrl ?? "all"
@@ -490,7 +492,8 @@ function OrdersPage() {
   // Orders reads stay permissive without a NIP-17 declaration (CND-208);
   // this banner only reports readiness and links to Network for repair.
   const inboxReadiness = useInboxDeclaration(pubkey, {
-    enabled: signerConnected,
+    enabled: signerConnected && session.relaySettingsReady,
+    relayScope: session.relayScope,
   })
 
   const ordersQuery = useQuery({

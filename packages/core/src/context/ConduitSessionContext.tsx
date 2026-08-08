@@ -4,6 +4,7 @@ import {
   useEffect,
   useMemo,
   useRef,
+  useState,
   type ReactNode,
 } from "react"
 import type { ConduitAppId } from "../protocol/nip89"
@@ -28,6 +29,7 @@ import { useAuth } from "./AuthContext"
 
 export interface ConduitSessionContextValue extends ConduitSession {
   identityReady: boolean
+  relaySettingsReady: boolean
 }
 
 export interface ConduitSessionProviderProps {
@@ -67,28 +69,41 @@ export function ConduitSessionProvider({
     hasProfileName(profileQuery.data) ||
     (!profileQuery.isLoading && !profileQuery.isFetching)
 
-  useRelaySettings(session.relayScope, {
+  const relaySettings = useRelaySettings(session.relayScope, {
     pubkey: session.pubkey,
     enabled: session.mode === "signed_in" && !!session.relayScope,
   })
+  const [activatedRelayScope, setActivatedRelayScope] = useState<string | null>(
+    null
+  )
+  const relaySettingsReady =
+    identityReady &&
+    activatedRelayScope === session.relayScope &&
+    !relaySettings.isLoadingPublishedRelayList
 
   const activeScopeRef = useRef<string | null>(null)
 
   useEffect(() => {
-    activeScopeRef.current = session.relayScope
-
     if (!session.relayScope) {
+      activeScopeRef.current = null
+      setActivatedRelayScope(null)
       setActiveRelaySettingsScope(null)
       disconnectNdk()
       return
     }
 
-    if (!identityReady) return
+    if (!identityReady) {
+      activeScopeRef.current = null
+      setActivatedRelayScope(null)
+      return
+    }
 
     if (getActiveRelaySettingsScope() !== session.relayScope) {
       refreshNdkRelaySettings(session.relayScope)
     }
 
+    activeScopeRef.current = session.relayScope
+    setActivatedRelayScope(session.relayScope)
     void connectNdk()
   }, [identityReady, session.relayScope])
 
@@ -101,8 +116,8 @@ export function ConduitSessionProvider({
   }, [])
 
   const value = useMemo<ConduitSessionContextValue>(
-    () => ({ ...session, identityReady }),
-    [identityReady, session]
+    () => ({ ...session, identityReady, relaySettingsReady }),
+    [identityReady, relaySettingsReady, session]
   )
 
   return (

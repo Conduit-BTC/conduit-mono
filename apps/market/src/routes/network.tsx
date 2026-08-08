@@ -23,7 +23,10 @@ function SettingsPage() {
     pubkey,
     bootstrapRelayList: false,
   })
-  const inboxDeclaration = useInboxDeclaration(pubkey)
+  const inboxDeclaration = useInboxDeclaration(pubkey, {
+    enabled: session.relaySettingsReady,
+    relayScope: session.relayScope,
+  })
 
   return (
     <div className="mx-auto max-w-[54rem] py-2 sm:py-6">

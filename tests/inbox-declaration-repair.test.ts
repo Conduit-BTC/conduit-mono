@@ -26,6 +26,40 @@ describe("verifyDeclarationReadBack", () => {
     })
   })
 
+  it("confirms only the declaration event and relay set that was published", () => {
+    const expected = {
+      eventId: "new-declaration",
+      relayUrls: ["wss://inbox-a.example", "wss://inbox-b.example"],
+    }
+    expect(
+      verifyDeclarationReadBack(
+        resolution({
+          eventId: "new-declaration",
+          relayUrls: ["wss://inbox-b.example/", "wss://inbox-a.example"],
+        }),
+        expected
+      )
+    ).toEqual({ confirmed: true })
+    expect(
+      verifyDeclarationReadBack(
+        resolution({
+          eventId: "older-declaration",
+          relayUrls: ["wss://inbox-a.example", "wss://inbox-b.example"],
+        }),
+        expected
+      )
+    ).toEqual({ confirmed: false })
+    expect(
+      verifyDeclarationReadBack(
+        resolution({
+          eventId: "new-declaration",
+          relayUrls: ["wss://inbox-a.example"],
+        }),
+        expected
+      )
+    ).toEqual({ confirmed: false })
+  })
+
   it("reports pending confirmation for a degraded read-back", () => {
     expect(verifyDeclarationReadBack(resolution({ stale: true }))).toEqual({
       confirmed: false,

@@ -68,4 +68,34 @@ describe("legacy direct-message UI contract", () => {
       expect(source).toContain("getInboxCandidateRelayUrls")
     }
   })
+
+  it("waits for first-login relay import before deciding inbox readiness", async () => {
+    for (const routePath of [
+      "apps/market/src/routes/messages.tsx",
+      "apps/market/src/routes/network.tsx",
+      "apps/merchant/src/routes/messages.tsx",
+      "apps/merchant/src/routes/network.tsx",
+      "apps/merchant/src/routes/orders.tsx",
+    ]) {
+      const source = await Bun.file(routePath).text()
+      expect(source).toContain("session.relaySettingsReady")
+      expect(source).toContain("relayScope: session.relayScope")
+    }
+
+    const hookSource = await Bun.file(
+      "packages/core/src/hooks/useInboxDeclaration.ts"
+    ).text()
+    expect(hookSource).toContain("subscribeRelaySettingsChanges")
+    expect(hookSource).toContain("invalidateInboxDeclaration(pubkey)")
+    expect(hookSource).toContain("queryClient.invalidateQueries({ queryKey })")
+
+    const relaySettingsSource = await Bun.file(
+      "packages/core/src/hooks/useRelaySettings.ts"
+    ).text()
+    expect(relaySettingsSource).toContain("relaySettingsContextKey")
+    expect(relaySettingsSource).toContain("currentContextKeyRef.current")
+    expect(relaySettingsSource).toContain(
+      "currentContextKeyRef.current !== operationContextKey"
+    )
+  })
 })

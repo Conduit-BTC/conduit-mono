@@ -1,3 +1,4 @@
+import { useEffect, useMemo } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   inspectOwnPrivateMessageRelayReadiness,
@@ -6,18 +7,21 @@ import {
 } from "../protocol/messaging"
 import { getNdk } from "../protocol/ndk"
 import {
+  invalidateInboxDeclaration,
   resolveInboxDeclaration,
+  secureRelayUrls,
   type InboxDeclarationResolution,
 } from "../protocol/private-message-routing"
+import { subscribeRelaySettingsChanges } from "../protocol/relay-settings"
 
 /**
  * NIP-17 inbox declaration readiness + repair (CND-208).
  *
  * Network settings is the only surface that publishes or repairs the
  * kind-10050 declaration. Publishing is always an explicit, signed action:
- * this hook never signs without a caller-triggered mutation. After a publish
- * the declaration cache is invalidated and the declaration is read back from
- * discovery relays before the account is reported ready.
+ * this hook never signs without a caller-triggered mutation. After a publish,
+ * the exact signed event is read back from discovery relays before the account
+ * is reported ready.
  */
 
 export const INBOX_DECLARATION_QUERY_KEY = "inbox-declaration"
@@ -27,24 +31,46 @@ export interface DeclarationReadBackResult {
   confirmed: boolean
 }
 
+export interface ExpectedInboxDeclaration {
+  eventId: string
+  relayUrls: readonly string[]
+}
+
 /**
  * Judge a post-publish read-back. A complete read that cannot find the
  * declaration is a real failure; a degraded lookup that fell back to the
  * primed cache means the publish succeeded but confirmation is pending.
  */
 export function verifyDeclarationReadBack(
-  resolution: InboxDeclarationResolution
+  resolution: InboxDeclarationResolution,
+  expected?: ExpectedInboxDeclaration
 ): DeclarationReadBackResult {
   if (resolution.state === "not_declared" || resolution.state === "malformed") {
     throw new Error(
       "The declaration was accepted but is not discoverable yet. Retry the readiness check."
     )
   }
-  return { confirmed: resolution.state === "declared" && !resolution.stale }
+  if (resolution.state !== "declared" || resolution.stale) {
+    return { confirmed: false }
+  }
+  if (!expected) return { confirmed: true }
+
+  const actualRelays = [...secureRelayUrls(resolution.relayUrls)].sort()
+  const expectedRelays = [...secureRelayUrls(expected.relayUrls)].sort()
+  return {
+    confirmed:
+      resolution.eventId === expected.eventId &&
+      actualRelays.length === expectedRelays.length &&
+      actualRelays.every(
+        (relayUrl, index) => relayUrl === expectedRelays[index]
+      ),
+  }
 }
 
 export interface UseInboxDeclarationOptions {
   enabled?: boolean
+  /** Account relay-settings scope used to refresh discovery after relay import. */
+  relayScope?: string | null
 }
 
 export type InboxDeclarationStatus =
@@ -83,7 +109,10 @@ export function useInboxDeclaration(
   options: UseInboxDeclarationOptions = {}
 ): UseInboxDeclarationResult {
   const queryClient = useQueryClient()
-  const queryKey = [INBOX_DECLARATION_QUERY_KEY, pubkey ?? "none"]
+  const queryKey = useMemo(
+    () => [INBOX_DECLARATION_QUERY_KEY, pubkey ?? "none"],
+    [pubkey]
+  )
 
   const readinessQuery = useQuery({
     queryKey,
@@ -92,13 +121,23 @@ export function useInboxDeclaration(
     staleTime: 30_000,
   })
 
+  useEffect(() => {
+    if (!pubkey || !(options.enabled ?? true)) return
+    const relayScope = options.relayScope?.trim() || null
+    return subscribeRelaySettingsChanges((changedScope) => {
+      if (changedScope !== relayScope) return
+      invalidateInboxDeclaration(pubkey)
+      void queryClient.invalidateQueries({ queryKey })
+    })
+  }, [options.enabled, options.relayScope, pubkey, queryClient, queryKey])
+
   const publishMutation = useMutation({
     mutationFn: async (relayUrls: readonly string[]) => {
       if (!pubkey) throw new Error("Signer not connected")
       const ndk = getNdk()
       if (!ndk.signer) throw new Error("Signer not connected")
 
-      await publishPrivateMessageRelayDeclaration({
+      const publishedEvent = await publishPrivateMessageRelayDeclaration({
         pubkey,
         signer: ndk.signer,
         ndk,
@@ -112,7 +151,10 @@ export function useInboxDeclaration(
       const resolution = await resolveInboxDeclaration(pubkey, {
         freshnessMs: 0,
       })
-      return verifyDeclarationReadBack(resolution)
+      return verifyDeclarationReadBack(resolution, {
+        eventId: publishedEvent.id,
+        relayUrls,
+      })
     },
     onSettled: async () => {
       await queryClient.invalidateQueries({ queryKey })

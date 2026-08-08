@@ -19,6 +19,7 @@ import {
   publishPrivateMessage,
   pubkeyToNpub,
   useAuth,
+  useConduitSession,
   useInboxDeclaration,
   useProfiles,
   type Profile,
@@ -67,6 +68,7 @@ type OptimisticDirectMessageSend = {
 
 function MessagesPage() {
   const { pubkey, status } = useAuth()
+  const session = useConduitSession()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const signerConnected = status === "connected" && !!pubkey
@@ -87,7 +89,10 @@ function MessagesPage() {
 
   // Network settings is the only surface that publishes or repairs the
   // NIP-17 inbox declaration; this route only reflects readiness (CND-208).
-  const dmReadiness = useInboxDeclaration(pubkey, { enabled: signerConnected })
+  const dmReadiness = useInboxDeclaration(pubkey, {
+    enabled: signerConnected && session.relaySettingsReady,
+    relayScope: session.relayScope,
+  })
   const messagingReady = dmReadiness.status === "ready"
   const readinessNoticeState: MessagingReadinessState =
     dmReadiness.status === "malformed"

@@ -70,6 +70,8 @@ export interface InboxDeclarationResolution {
   /** True when served from cache past its freshness window. */
   stale: boolean
   fetchedAt: number
+  /** Signed event identity when a declaration was resolved or primed. */
+  eventId?: string
 }
 
 export interface ResolveInboxDeclarationOptions {
@@ -100,7 +102,8 @@ export function invalidateInboxDeclaration(pubkey: string): void {
 export function primeInboxDeclarationCache(
   pubkey: string,
   relayUrls: readonly string[],
-  now: () => number = Date.now
+  now: () => number = Date.now,
+  eventId?: string
 ): void {
   declarationCache.set(cacheKey(pubkey), {
     pubkey: cacheKey(pubkey),
@@ -108,6 +111,7 @@ export function primeInboxDeclarationCache(
     relayUrls: [...relayUrls],
     stale: false,
     fetchedAt: now(),
+    eventId,
   })
 }
 
@@ -276,6 +280,7 @@ export async function resolveInboxDeclaration(
     relayUrls: secure,
     stale: false,
     fetchedAt: now(),
+    eventId: newest.id,
   }
   declarationCache.set(key, resolution)
   return resolution

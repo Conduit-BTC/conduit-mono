@@ -901,6 +901,6 @@ export async function publishPrivateMessageRelayDeclaration(
     deliveryMode: "critical",
   })
 
-  primeInboxDeclarationCache(input.pubkey, relayUrls)
+  primeInboxDeclarationCache(input.pubkey, relayUrls, Date.now, event.id)
   return event
 }
