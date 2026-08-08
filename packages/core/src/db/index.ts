@@ -203,6 +203,48 @@ export interface CachedNip05Verification {
   cachedAt: number
 }
 
+export type CachedShopperTrustSignalState =
+  "available" | "partial" | "stale" | "unavailable"
+
+export interface CachedShopperTrustCoverage {
+  attemptedRelays: number
+  responsiveRelays: number
+  transportComplete: boolean
+  completeForPlan: boolean
+  truncated: boolean
+}
+
+export interface CachedShopperTrustSignal<T> {
+  state: CachedShopperTrustSignalState
+  value: T | null
+  observedAt?: number
+  coverage: CachedShopperTrustCoverage
+}
+
+/**
+ * Aggregate public evidence for one merchant/shopper pair.
+ *
+ * Raw follow graphs, report content, zap comments, invoices, descriptions,
+ * and other event payloads must never be stored in this projection.
+ */
+export interface CachedShopperTrustSnapshot {
+  id: string
+  merchantPubkey: string
+  shopperPubkey: string
+  oldestEvent: CachedShopperTrustSignal<{ timestamp: number | null }>
+  followersObserved: CachedShopperTrustSignal<{ count: number }>
+  followsInCommon: CachedShopperTrustSignal<{ count: number }>
+  zapsSent: CachedShopperTrustSignal<{ count: number }>
+  zapsReceived: CachedShopperTrustSignal<{ count: number }>
+  reportsFromNetwork: CachedShopperTrustSignal<{
+    count: number
+    reporterCount: number
+    byType: Record<string, number>
+  }>
+  degraded: boolean
+  cachedAt: number
+}
+
 export interface StoredPaymentAttempt {
   id: string
   orderId: string
@@ -394,6 +436,7 @@ class ConduitDB extends Dexie {
   relayLists!: EntityTable<CachedRelayList, "pubkey">
   productSocialSummaries!: EntityTable<CachedProductSocialSummary, "key">
   nip05Verifications!: EntityTable<CachedNip05Verification, "id">
+  shopperTrustSnapshots!: EntityTable<CachedShopperTrustSnapshot, "id">
   paymentAttempts!: EntityTable<StoredPaymentAttempt, "id">
   orderLifecycles!: EntityTable<OrderLifecycle, "orderId">
 
@@ -499,6 +542,25 @@ class ConduitDB extends Dexie {
       orderLifecycles:
         "orderId, buyerPubkey, merchantPubkey, phase, updatedAt, createdAt",
     })
+
+    this.version(9).stores({
+      orders: "id, buyerPubkey, merchantPubkey, status, createdAt",
+      messages: "id, senderPubkey, recipientPubkey, kind, createdAt, read",
+      products: "id, pubkey, *tags, cachedAt",
+      productTombstones: "id, pubkey, addressId, eventId, deletedAt, cachedAt",
+      profiles: "pubkey, cachedAt",
+      orderMessages:
+        "id, orderId, type, senderPubkey, recipientPubkey, createdAt",
+      relayLists: "pubkey, cachedAt",
+      productSocialSummaries: "key, cachedAt",
+      nip05Verifications:
+        "id, pubkey, normalizedIdentifier, status, expiresAt, cachedAt",
+      shopperTrustSnapshots: "id, merchantPubkey, shopperPubkey, cachedAt",
+      paymentAttempts:
+        "id, orderId, buyerPubkey, merchantPubkey, proofDeliveryStatus, createdAt",
+      orderLifecycles:
+        "orderId, buyerPubkey, merchantPubkey, phase, updatedAt, createdAt",
+    })
   }
 }
 
@@ -540,6 +602,7 @@ export async function ensureCommerceCacheScope(): Promise<void> {
     db.relayLists.clear(),
     db.productSocialSummaries.clear(),
     db.nip05Verifications.clear(),
+    db.shopperTrustSnapshots.clear(),
   ])
 
   window.localStorage.setItem(CACHE_SCOPE_KEY, nextScope)
@@ -620,6 +683,12 @@ export async function pruneCommerceCaches(): Promise<void> {
     }),
     pruneTableByCachedAt(db.nip05Verifications, {
       estimatedRowBytes: 300,
+      highWaterBytes: FALLBACK_CACHE_PRUNE_HIGH_WATER_BYTES,
+      targetBytes: FALLBACK_CACHE_PRUNE_TARGET_BYTES,
+      freshMs: CACHE_PRUNE_FRESH_MS,
+    }),
+    pruneTableByCachedAt(db.shopperTrustSnapshots, {
+      estimatedRowBytes: 900,
       highWaterBytes: FALLBACK_CACHE_PRUNE_HIGH_WATER_BYTES,
       targetBytes: FALLBACK_CACHE_PRUNE_TARGET_BYTES,
       freshMs: CACHE_PRUNE_FRESH_MS,

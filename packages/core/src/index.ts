@@ -179,6 +179,10 @@ export {
   type CachedProfile,
   type CachedOrderMessage,
   type CachedNip05Verification,
+  type CachedShopperTrustCoverage,
+  type CachedShopperTrustSignal,
+  type CachedShopperTrustSignalState,
+  type CachedShopperTrustSnapshot,
   type StoredPaymentAttempt,
   type OrderLifecycle,
   type OrderLifecycleItem,
@@ -230,6 +234,11 @@ export {
   type UseProfilesOptions,
   type UseProfilesResult,
 } from "./hooks/useProfiles"
+export {
+  useShopperTrustEvidence,
+  type UseShopperTrustEvidenceOptions,
+  type UseShopperTrustEvidenceResult,
+} from "./hooks/useShopperTrustEvidence"
 export {
   useRelaySettings,
   type UseRelaySettingsResult,

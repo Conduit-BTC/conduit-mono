@@ -56,6 +56,8 @@ export type RelayReadIntent =
   | "product_reviews"
   /** A profile's recent social feed (kind 1 / kind 6 / kind 30023, etc.). */
   | "profile_social_feed"
+  /** Bounded public evidence for the selected incoming-order shopper. */
+  | "shopper_trust"
   /** Generic kind-fanout that has no author hint. */
   | "general"
 
@@ -282,6 +284,7 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
       case "product_comments_preview":
       case "product_reviews":
       case "profile_social_feed":
+      case "shopper_trust":
       case "profiles":
       case "relay_lists":
       case "general":

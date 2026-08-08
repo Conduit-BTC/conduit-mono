@@ -52,6 +52,8 @@ export interface RelayListLookupOptions {
   allowInsecureRelayUrlsForPubkey?: string | null
   /** Override `Date.now()` (test seam). */
   now?: () => number
+  /** Cancel obsolete network work, such as after changing the selected order. */
+  signal?: AbortSignal
 }
 
 interface RelayListTestOverrides {
@@ -240,31 +242,46 @@ function filterLookupRelayList(
  * Pick the most recent NIP-65 event for the requested pubkey.
  *
  * Multiple relays may serve different revisions of the kind-10002
- * replaceable event; we keep the one with the highest `created_at`.
+ * replaceable event. Per NIP-01, the highest `created_at` wins; equal
+ * timestamps resolve to the event with the lowest id.
  */
 export function pickLatestRelayListEvent<
-  T extends Pick<NDKEvent, "pubkey" | "created_at">,
+  T extends Pick<NDKEvent, "id" | "pubkey" | "created_at">,
 >(events: readonly T[], pubkey: string): T | undefined {
   let latest: T | undefined
   for (const event of events) {
     if (event.pubkey !== pubkey) continue
     const candidateTs = event.created_at ?? 0
-    const currentTs = latest?.created_at ?? -1
-    if (candidateTs > currentTs) latest = event
+    if (
+      !latest ||
+      candidateTs > (latest.created_at ?? 0) ||
+      (candidateTs === (latest.created_at ?? 0) && event.id < latest.id)
+    ) {
+      latest = event
+    }
   }
   return latest
 }
 
 async function runFetch(
   filter: NDKFilter,
-  relayUrls: readonly string[]
+  relayUrls: readonly string[],
+  signal?: AbortSignal
 ): Promise<NDKEvent[]> {
   const impl = testOverrides.fetchEventsFanout ?? fetchEventsFanout
   return (await impl(filter, {
     relayUrls: relayUrls.length > 0 ? [...relayUrls] : undefined,
     connectTimeoutMs: RELAY_LIST_CONNECT_TIMEOUT_MS,
     fetchTimeoutMs: RELAY_LIST_FETCH_TIMEOUT_MS,
+    signal,
   })) as NDKEvent[]
+}
+
+function throwIfLookupAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return
+  const error = new Error("The operation was aborted.")
+  error.name = "AbortError"
+  throw error
 }
 
 /**
@@ -277,8 +294,10 @@ export async function getRelayList(
   opts: RelayListLookupOptions = {}
 ): Promise<RelayList | undefined> {
   if (!pubkey) return undefined
+  throwIfLookupAborted(opts.signal)
 
   const cached = opts.skipCache ? undefined : await loadCached(pubkey)
+  throwIfLookupAborted(opts.signal)
   if (cached && now(opts) - cached.cachedAt < RELAY_LIST_CACHE_TTL_MS) {
     return filterLookupRelayList(cached, opts)
   }
@@ -291,16 +310,21 @@ export async function getRelayList(
   try {
     const events = await runFetch(
       { kinds: [EVENT_KINDS.RELAY_LIST], authors: [pubkey], limit: 5 },
-      relayUrls
+      relayUrls,
+      opts.signal
     )
+    throwIfLookupAborted(opts.signal)
     const latest = pickLatestRelayListEvent(events, pubkey)
     if (!latest) {
       return filterLookupRelayList(cached, opts)
     }
     const list = parseRelayListEvent(latest, { cachedAt: now(opts) })
+    throwIfLookupAborted(opts.signal)
     await putCached(list)
+    throwIfLookupAborted(opts.signal)
     return filterLookupRelayList(list, opts)
-  } catch {
+  } catch (error) {
+    if (opts.signal?.aborted) throw error
     return filterLookupRelayList(cached, opts)
   }
 }
@@ -313,6 +337,7 @@ export async function getRelayLists(
   pubkeys: readonly string[],
   opts: RelayListLookupOptions = {}
 ): Promise<Map<string, RelayList>> {
+  throwIfLookupAborted(opts.signal)
   const out = new Map<string, RelayList>()
   const unique = Array.from(
     new Set(pubkeys.map((pubkey) => pubkey.trim()).filter(Boolean))
@@ -324,6 +349,7 @@ export async function getRelayLists(
   if (!opts.skipCache) {
     for (const pubkey of unique) {
       const cached = await loadCached(pubkey)
+      throwIfLookupAborted(opts.signal)
       if (cached && now(opts) - cached.cachedAt < RELAY_LIST_CACHE_TTL_MS) {
         out.set(pubkey, filterRelayListForContext(cached, opts))
       } else {
@@ -349,17 +375,22 @@ export async function getRelayLists(
         authors: missing,
         limit: Math.max(missing.length * 2, 10),
       },
-      relayUrls
+      relayUrls,
+      opts.signal
     )
+    throwIfLookupAborted(opts.signal)
 
     for (const pubkey of missing) {
       const latest = pickLatestRelayListEvent(events, pubkey)
       if (!latest) continue
       const list = parseRelayListEvent(latest, { cachedAt: now(opts) })
+      throwIfLookupAborted(opts.signal)
       await putCached(list)
+      throwIfLookupAborted(opts.signal)
       out.set(pubkey, filterRelayListForContext(list, opts))
     }
-  } catch {
+  } catch (error) {
+    if (opts.signal?.aborted) throw error
     // best-effort; cached entries already merged above
   }
 

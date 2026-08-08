@@ -134,6 +134,26 @@ describe("pickLatestRelayListEvent", () => {
     expect(latest?.id).toBe("new")
   })
 
+  it("returns the lowest event id when created_at values are equal", () => {
+    const higherId = makeRelayListEvent({
+      pubkey: "alice",
+      id: "ff",
+      created_at: 2,
+    })
+    const lowerId = makeRelayListEvent({
+      pubkey: "alice",
+      id: "00",
+      created_at: 2,
+    })
+
+    expect(pickLatestRelayListEvent([higherId, lowerId], "alice")?.id).toBe(
+      "00"
+    )
+    expect(pickLatestRelayListEvent([lowerId, higherId], "alice")?.id).toBe(
+      "00"
+    )
+  })
+
   it("returns undefined when no events match the pubkey", () => {
     expect(pickLatestRelayListEvent([], "alice")).toBeUndefined()
   })
