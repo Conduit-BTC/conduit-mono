@@ -1244,6 +1244,28 @@ export function getGeneralReadRelayUrls(
   return withRelayFallback(relayUrls, options.fallbackRelayUrls)
 }
 
+/**
+ * Relays eligible as NIP-17 inbox declaration targets (CND-208): the user's
+ * enabled, reachable IN relays, secure wss:// only. Local IN state is not
+ * itself a declaration; these are only candidates for an explicit signed
+ * kind-10050 publish from Network settings.
+ */
+export function getInboxCandidateRelayUrls(
+  entries: readonly RelaySettingsEntry[]
+): string[] {
+  const candidates: string[] = []
+  const seen = new Set<string>()
+  for (const entry of entries) {
+    if (!hasFreshOrSeededRead(entry)) continue
+    const normalized = tryNormalizeRelayUrl(entry.url)
+    if (!normalized.ok || !normalized.url.startsWith("wss://")) continue
+    if (seen.has(normalized.url)) continue
+    seen.add(normalized.url)
+    candidates.push(normalized.url)
+  }
+  return candidates
+}
+
 export function getGeneralWriteRelayUrls(
   options: RelayPlanOptions = {}
 ): string[] {

@@ -6,6 +6,7 @@ import {
   getNdk,
   parseOrderMessageRumorEvent,
   publishPrivateMessage,
+  type OrderDeliveryRoute,
 } from "@conduit/core"
 
 /**
@@ -20,6 +21,8 @@ import {
 export type BuyerMessageDeliveryResult = {
   buyerSelfCopyError: string | null
   localCacheError: string | null
+  /** Write lane that delivered the merchant leg (CND-208). */
+  deliveryRoute: OrderDeliveryRoute
 }
 
 export type BuyerOrderSigningIdentity =
@@ -141,13 +144,18 @@ export async function publishBuyerOrderMessage(
   prepareBuyerRumor(rumor, buyerIdentity.pubkey)
 
   const publish = dependencies.publishPrivateMessageFn ?? publishPrivateMessage
-  const { selfCopyError: buyerSelfCopyError } = await publish({
+  const { selfCopyError: buyerSelfCopyError, deliveryRoute } = await publish({
     rumor,
     senderPubkey: buyerIdentity.pubkey,
     recipientPubkey: merchantPubkey,
     signer: buyerIdentity.signer,
     rumorKind: EVENT_KINDS.ORDER,
     selfCopy: buyerIdentity.kind !== "guest_ephemeral",
+    // Checkout-created kind-16 orders are locally validated, so the merchant
+    // leg may use the bounded Conduit bootstrap route when the merchant has
+    // no usable NIP-17 declaration (CND-208). Guest orders gain no reply
+    // promise from this.
+    validatedOrderScope: true,
   })
 
   const localCacheError =
@@ -156,7 +164,7 @@ export async function publishBuyerOrderMessage(
       : await (dependencies.cacheBuyerOrderRumorFn ?? cacheBuyerOrderRumor)(
           rumor
         )
-  return { buyerSelfCopyError, localCacheError }
+  return { buyerSelfCopyError, localCacheError, deliveryRoute }
 }
 
 /** Build the kind-16 payment-proof rumor for an order. */

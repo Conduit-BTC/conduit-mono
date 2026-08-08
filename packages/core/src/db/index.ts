@@ -253,6 +253,13 @@ export type OrderShippingZoneEligibility =
 
 export type OrderDeliveryStatus = "not_started" | "pending" | "sent" | "failed"
 
+/**
+ * Which write lane delivered the kind-16 order message (CND-208):
+ * the recipient's declared NIP-17 inbox, or the temporary Conduit
+ * bootstrap route used only while no usable declaration exists.
+ */
+export type OrderDeliveryRoute = "declared_inbox" | "conduit_bootstrap"
+
 export type OrderInvoiceStatus =
   "not_requested" | "requesting" | "received" | "manual_required" | "failed"
 
@@ -356,6 +363,8 @@ export interface OrderLifecycle {
   shippingZoneEligibility: OrderShippingZoneEligibility
 
   orderDeliveryStatus: OrderDeliveryStatus
+  /** Write-lane provenance for the delivered order message (CND-208). */
+  orderDeliveryRoute?: OrderDeliveryRoute
   invoiceStatus: OrderInvoiceStatus
   paymentStatus: OrderPaymentStatus
   proofDeliveryStatus: OrderProofDeliveryStatus

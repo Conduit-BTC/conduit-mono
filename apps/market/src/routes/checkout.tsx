@@ -77,6 +77,7 @@ import {
 } from "../lib/cart-shipping-options"
 import {
   getCartAvailabilityBlockingMessage,
+  getCartAvailabilityVerificationMessage,
   getCartPublicZapPolicy,
   isCartProductAvailabilityBlocking,
   type CartProductAvailability,
@@ -1237,7 +1238,11 @@ function CheckoutPage() {
     const refreshResult = await checkoutAvailability.refresh()
     if (!refreshResult.fresh) {
       throw new Error(
-        "Current product availability could not be verified. Check your connection and try again."
+        getCartAvailabilityVerificationMessage(
+          checkoutItems,
+          refreshResult.diagnostics
+        ) ??
+          "Current product availability could not be verified. Check your connection and try again."
       )
     }
 
@@ -1577,6 +1582,7 @@ function CheckoutPage() {
         addressValidity: addressValidity.status as OrderAddressValidity,
         shippingZoneEligibility,
         orderDeliveryStatus: "sent",
+        orderDeliveryRoute: delivery.deliveryRoute,
         invoiceStatus: "not_requested",
         paymentStatus: "not_started",
         proofDeliveryStatus: "not_started",
@@ -1897,6 +1903,7 @@ function CheckoutPage() {
         addressValidity: addressValidity.status as OrderAddressValidity,
         shippingZoneEligibility,
         orderDeliveryStatus: "sent",
+        orderDeliveryRoute: orderDelivery.deliveryRoute,
         invoiceStatus: "not_requested",
         paymentStatus: "not_started",
         proofDeliveryStatus: "not_started",

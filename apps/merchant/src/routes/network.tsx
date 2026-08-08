@@ -1,5 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router"
-import { useAuth, useConduitSession, useRelaySettings } from "@conduit/core"
+import {
+  getInboxCandidateRelayUrls,
+  useAuth,
+  useConduitSession,
+  useInboxDeclaration,
+  useRelaySettings,
+} from "@conduit/core"
 import { RelaySettingsPanel } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
 
@@ -16,6 +22,10 @@ function NetworkPage() {
   const relaySettings = useRelaySettings(session.relayScope, {
     pubkey,
     bootstrapRelayList: false,
+  })
+  const inboxDeclaration = useInboxDeclaration(pubkey, {
+    enabled: session.relaySettingsReady,
+    relayScope: session.relayScope,
   })
 
   return (
@@ -42,6 +52,26 @@ function NetworkPage() {
           onReset={relaySettings.resetRelaySettings}
           onPublishRelayList={
             pubkey ? relaySettings.publishRelayList : undefined
+          }
+          privateInbox={
+            pubkey
+              ? {
+                  status: inboxDeclaration.status,
+                  stale: inboxDeclaration.stale,
+                  declaredRelayUrls: inboxDeclaration.declaredRelayUrls,
+                  candidateRelayUrls: getInboxCandidateRelayUrls(
+                    relaySettings.settings.entries
+                  ),
+                  lookupError: inboxDeclaration.error,
+                  publishing: inboxDeclaration.publishing,
+                  publishError: inboxDeclaration.publishError,
+                  publishSuccess: inboxDeclaration.publishSuccess,
+                  publishConfirmationPending:
+                    inboxDeclaration.publishConfirmationPending,
+                  onPublish: inboxDeclaration.publishDeclaration,
+                  onRetryLookup: inboxDeclaration.refetch,
+                }
+              : undefined
           }
         />
       </div>

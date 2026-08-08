@@ -1,13 +1,64 @@
-import { MessageCircleMore, RefreshCw } from "lucide-react"
+import { MessageCircleMore, RefreshCw, Settings2 } from "lucide-react"
 import { cn } from "../utils"
 import { Button } from "./Button"
 
+/**
+ * Typed NIP-17 inbox readiness states (CND-208).
+ * - not_declared: no kind-10050 declaration exists; setup happens in Network.
+ * - malformed: a signed declaration exists but has no usable relays; repair
+ *   happens in Network and is never automatic.
+ * - lookup_partial / lookup_unavailable / lookup_failed: the declaration
+ *   lookup degraded; this is retryable and never means "missing".
+ */
+export type MessagingReadinessState =
+  | "not_declared"
+  | "malformed"
+  | "lookup_failed"
+  | "lookup_partial"
+  | "lookup_unavailable"
+
 export interface MessagingReadinessNoticeProps {
-  state: "not_declared" | "lookup_failed"
+  state: MessagingReadinessState
   onAction: () => void
   pending?: boolean
   error?: string | null
   className?: string
+}
+
+const COPY: Record<
+  MessagingReadinessState,
+  { title: string; body: string; actionLabel: string; setup: boolean }
+> = {
+  not_declared: {
+    title: "Finish private inbox setup",
+    body: "Choose your encrypted inbox relays in Network settings so orders and messages can reach this identity.",
+    actionLabel: "Open Network settings",
+    setup: true,
+  },
+  malformed: {
+    title: "Repair your private inbox declaration",
+    body: "Your published inbox relay declaration contains no usable relays. Repair it from Network settings.",
+    actionLabel: "Open Network settings",
+    setup: true,
+  },
+  lookup_failed: {
+    title: "Messaging setup could not be checked",
+    body: "Retry the inbox relay lookup when your relay connection recovers.",
+    actionLabel: "Retry",
+    setup: false,
+  },
+  lookup_partial: {
+    title: "Messaging setup only partially checked",
+    body: "Some relays did not respond, so your inbox declaration could not be fully confirmed. Retry to complete the check.",
+    actionLabel: "Retry",
+    setup: false,
+  },
+  lookup_unavailable: {
+    title: "Messaging setup could not be checked",
+    body: "No relay responded to the inbox declaration lookup. This does not mean your setup is missing - retry when your connection recovers.",
+    actionLabel: "Retry",
+    setup: false,
+  },
 }
 
 export function MessagingReadinessNotice({
@@ -17,7 +68,7 @@ export function MessagingReadinessNotice({
   error,
   className,
 }: MessagingReadinessNoticeProps) {
-  const lookupFailed = state === "lookup_failed"
+  const copy = COPY[state]
 
   return (
     <div
@@ -30,15 +81,9 @@ export function MessagingReadinessNotice({
         <MessageCircleMore className="mt-0.5 size-4 shrink-0 text-[var(--warning)]" />
         <div>
           <div className="font-medium text-[var(--text-primary)]">
-            {lookupFailed
-              ? "Messaging setup could not be checked"
-              : "Enable encrypted messaging"}
+            {copy.title}
           </div>
-          <div className="mt-1 text-[var(--text-secondary)]">
-            {lookupFailed
-              ? "Retry the inbox relay lookup when your relay connection recovers."
-              : "Publish your private inbox relay declaration so messages can be delivered to this identity."}
-          </div>
+          <div className="mt-1 text-[var(--text-secondary)]">{copy.body}</div>
           {error ? <div className="mt-1 text-error">{error}</div> : null}
         </div>
       </div>
@@ -49,8 +94,14 @@ export function MessagingReadinessNotice({
         onClick={onAction}
         disabled={pending}
       >
-        <RefreshCw className={cn("mr-1 size-3.5", pending && "animate-spin")} />
-        {lookupFailed ? "Retry" : "Enable messaging"}
+        {copy.setup ? (
+          <Settings2 className="mr-1 size-3.5" />
+        ) : (
+          <RefreshCw
+            className={cn("mr-1 size-3.5", pending && "animate-spin")}
+          />
+        )}
+        {copy.actionLabel}
       </Button>
     </div>
   )

@@ -23,6 +23,7 @@ import {
   getConversationPreview,
   getConversationMessageDisplayContent,
   useOptimisticConversationMessages,
+  type MessagingReadinessState,
   type OrderAmountFormatter,
   type OptimisticConversationMessage,
 } from "@conduit/ui"
@@ -40,13 +41,13 @@ import {
   formatPubkey,
   markDirectMessageConversationRead,
   normalizePubkey,
-  inspectOwnPrivateMessageRelayReadiness,
   parseDirectMessageRumor,
   parseOrderMessageRumorEvent,
   publishPrivateMessage,
-  publishPrivateMessageRelayDeclaration,
   pubkeyToNpub,
   useAuth,
+  useConduitSession,
+  useInboxDeclaration,
   useProfile,
   useProfiles,
 } from "@conduit/core"
@@ -279,6 +280,7 @@ function MessagesPage() {
       { settledSatsAreAuthoritative: true }
     )
   const { pubkey, status } = useAuth()
+  const session = useConduitSession()
   const queryClient = useQueryClient()
   const search = Route.useSearch()
   const navigate = useNavigate({ from: Route.fullPath })
@@ -307,38 +309,38 @@ function MessagesPage() {
 
   const activeTab = search.tab ?? "merchants"
 
-  const dmReadinessQuery = useQuery({
-    queryKey: ["buyer-dm-readiness", pubkey ?? "none"],
-    enabled: signerConnected,
-    queryFn: () => inspectOwnPrivateMessageRelayReadiness(pubkey!),
-    staleTime: 30_000,
+  // Network settings is the only surface that publishes or repairs the
+  // NIP-17 inbox declaration; this route only reflects readiness (CND-208).
+  const dmReadiness = useInboxDeclaration(pubkey, {
+    enabled: signerConnected && session.relaySettingsReady,
+    relayScope: session.relayScope,
   })
-  const messagingReady = dmReadinessQuery.data?.state === "ready"
-  const enableMessagingMutation = useMutation({
-    mutationFn: async () => {
-      const ndk = getNdk()
-      if (!ndk.signer || !pubkey) throw new Error("Signer not connected")
-      await publishPrivateMessageRelayDeclaration({
-        pubkey,
-        signer: ndk.signer,
-        ndk,
-      })
-    },
-    onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: ["buyer-dm-readiness", pubkey ?? "none"],
-        }),
-        queryClient.invalidateQueries({
-          queryKey: ["buyer-dms-live", pubkey ?? "none"],
-        }),
-      ])
-    },
-  })
+  const messagingReady = dmReadiness.status === "ready"
+  const readinessNoticeState: MessagingReadinessState =
+    dmReadiness.status === "malformed"
+      ? "malformed"
+      : dmReadiness.status === "lookup_partial"
+        ? "lookup_partial"
+        : dmReadiness.status === "lookup_unavailable"
+          ? "lookup_unavailable"
+          : "not_declared"
+  const readinessLookupDegraded =
+    readinessNoticeState === "lookup_partial" ||
+    readinessNoticeState === "lookup_unavailable"
+  const onReadinessAction = () => {
+    if (readinessLookupDegraded) {
+      dmReadiness.refetch()
+    } else {
+      void navigate({ to: "/network" })
+    }
+  }
 
+  // Order conversations read permissively (declared inbox + local IN +
+  // compatibility relays), so merchant order replies stay reachable even
+  // before the buyer publishes a kind-10050 declaration (CND-208).
   const messagesQuery = useQuery({
     queryKey: ["buyer-messages-live", pubkey ?? "none"],
-    enabled: signerConnected && messagingReady,
+    enabled: signerConnected,
     queryFn: () => fetchBuyerConversations(pubkey!),
     refetchInterval: 30_000,
     refetchIntervalInBackground: true,
@@ -477,12 +479,16 @@ function MessagesPage() {
       })
       prepareBuyerConversationRumor(rumor, pubkey)
 
+      // Reply inside an existing validated order thread: order identity and
+      // counterparty match the parsed conversation, so the bootstrap lane
+      // may carry it when the merchant has no usable declaration.
       const { selfCopyError } = await publishPrivateMessage({
         rumor,
         senderPubkey: pubkey,
         recipientPubkey: selectedConversation.merchantPubkey,
         signer: ndk.signer,
         rumorKind: EVENT_KINDS.ORDER,
+        validatedOrderScope: true,
       })
       if (selfCopyError) {
         console.warn("Buyer message self-copy publish failed", selfCopyError)
@@ -504,9 +510,10 @@ function MessagesPage() {
   })
 
   // General kind-14 DM inbox, cache-first, distinct from order threads.
+  // Own-inbox reads are permissive (CND-208); only sends require readiness.
   const dmsLiveQuery = useQuery({
     queryKey: ["buyer-dms-live", pubkey ?? "none"],
-    enabled: signerConnected && messagingReady,
+    enabled: signerConnected,
     queryFn: () =>
       getDirectMessageConversationList({ principalPubkey: pubkey! }),
     refetchInterval: 30_000,
@@ -801,7 +808,7 @@ function MessagesPage() {
               General direct messages are tied to your signer identity.
             </p>
           </section>
-        ) : dmReadinessQuery.isLoading &&
+        ) : dmReadiness.isLoading &&
           dmConversations.length === 0 &&
           !selectedDmPubkey ? (
           <div className="text-sm text-[var(--text-secondary)]">
@@ -811,56 +818,27 @@ function MessagesPage() {
           dmConversations.length === 0 &&
           !selectedDmPubkey ? (
           <MessagingReadinessNotice
-            state={dmReadinessQuery.error ? "lookup_failed" : "not_declared"}
-            onAction={() => {
-              if (dmReadinessQuery.error) {
-                void dmReadinessQuery.refetch()
-              } else {
-                enableMessagingMutation.mutate()
-              }
-            }}
-            pending={
-              dmReadinessQuery.isRefetching || enableMessagingMutation.isPending
-            }
-            error={
-              enableMessagingMutation.error
-                ? "Could not enable messaging. Retry when your signer and relays are available."
-                : null
-            }
+            state={readinessNoticeState}
+            onAction={onReadinessAction}
+            pending={dmReadiness.isRefetching}
           />
         ) : (
           <>
             {!messagingReady && (
               <MessagingReadinessNotice
-                state={
-                  dmReadinessQuery.error ? "lookup_failed" : "not_declared"
-                }
-                onAction={() => {
-                  if (dmReadinessQuery.error) {
-                    void dmReadinessQuery.refetch()
-                  } else {
-                    enableMessagingMutation.mutate()
-                  }
-                }}
-                pending={
-                  dmReadinessQuery.isRefetching ||
-                  enableMessagingMutation.isPending
-                }
-                error={
-                  enableMessagingMutation.error
-                    ? "Could not enable messaging. Retry when your signer and relays are available."
-                    : null
-                }
+                state={readinessNoticeState}
+                onAction={onReadinessAction}
+                pending={dmReadiness.isRefetching}
               />
             )}
-            {messagingReady && dmDecryptFailures > 0 && (
+            {dmDecryptFailures > 0 && (
               <DecryptFailureNotice
                 count={dmDecryptFailures}
                 onRetry={() => dmsLiveQuery.refetch()}
                 retrying={dmsLiveQuery.isRefetching}
               />
             )}
-            {messagingReady && (dmsLiveQuery.error || dmLiveMeta?.stale) && (
+            {(dmsLiveQuery.error || dmLiveMeta?.stale) && (
               <LiveReadNotice
                 state={
                   dmsLiveQuery.error
@@ -873,7 +851,7 @@ function MessagesPage() {
                 retrying={dmsLiveQuery.isRefetching}
               />
             )}
-            {messagingReady && (
+            {signerConnected && (
               <DecryptFailureNotice
                 count={dmLiveMeta?.legacyDecryptFailures?.length ?? 0}
                 label="Some legacy messages couldn't be decrypted."
@@ -1185,46 +1163,27 @@ function MessagesPage() {
             </section>
           )}
 
-          {signerConnected && dmReadinessQuery.isLoading && (
+          {signerConnected && dmReadiness.isLoading && (
             <div className="text-sm text-[var(--text-secondary)]">
               Checking encrypted messaging setup...
             </div>
           )}
 
-          {signerConnected &&
-            !dmReadinessQuery.isLoading &&
-            !messagingReady && (
-              <MessagingReadinessNotice
-                state={
-                  dmReadinessQuery.error ? "lookup_failed" : "not_declared"
-                }
-                onAction={() => {
-                  if (dmReadinessQuery.error) {
-                    void dmReadinessQuery.refetch()
-                  } else {
-                    enableMessagingMutation.mutate()
-                  }
-                }}
-                pending={
-                  dmReadinessQuery.isRefetching ||
-                  enableMessagingMutation.isPending
-                }
-                error={
-                  enableMessagingMutation.error
-                    ? "Could not enable messaging. Retry when your signer and relays are available."
-                    : null
-                }
-              />
-            )}
+          {signerConnected && !dmReadiness.isLoading && !messagingReady && (
+            <MessagingReadinessNotice
+              state={readinessNoticeState}
+              onAction={onReadinessAction}
+              pending={dmReadiness.isRefetching}
+            />
+          )}
 
-          {signerConnected && messagingReady && messagesQuery.isFetching && (
+          {signerConnected && messagesQuery.isFetching && (
             <div className="text-sm text-[var(--text-secondary)]">
               Checking latest merchant conversations...
             </div>
           )}
 
           {signerConnected &&
-            messagingReady &&
             (messagesQuery.error || messagesQuery.data?.meta.stale) && (
               <LiveReadNotice
                 state={
@@ -1239,7 +1198,7 @@ function MessagesPage() {
               />
             )}
 
-          {signerConnected && messagingReady && (
+          {signerConnected && (
             <DecryptFailureNotice
               count={messagesQuery.data?.meta.decryptFailures?.length ?? 0}
               onRetry={() => void messagesQuery.refetch()}
@@ -1248,7 +1207,6 @@ function MessagesPage() {
           )}
 
           {signerConnected &&
-            messagingReady &&
             !cachedMessagesQuery.isLoading &&
             conversations.length === 0 &&
             !messagesQuery.error &&

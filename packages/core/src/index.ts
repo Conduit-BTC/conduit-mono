@@ -153,6 +153,7 @@ export {
   CANONICAL_COMMERCE_DM_FALLBACK_RELAYS,
   CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS,
   CANONICAL_DEFAULT_RELAYS,
+  CANONICAL_DM_BOOTSTRAP_WRITE_RELAYS,
   CANONICAL_DM_INBOX_DEFAULT_RELAYS,
   CANONICAL_SEARCH_INDEX_RELAYS,
   CANONICAL_ZAP_PUBLIC_RELAYS,
@@ -189,6 +190,7 @@ export {
   type OrderGuestContact,
   type OrderAddressValidity,
   type OrderShippingZoneEligibility,
+  type OrderDeliveryRoute,
   type OrderDeliveryStatus,
   type OrderInvoiceStatus,
   type OrderPaymentStatus,
@@ -234,4 +236,11 @@ export {
   useRelaySettings,
   type UseRelaySettingsResult,
 } from "./hooks/useRelaySettings"
+export {
+  INBOX_DECLARATION_QUERY_KEY,
+  useInboxDeclaration,
+  type InboxDeclarationStatus,
+  type UseInboxDeclarationOptions,
+  type UseInboxDeclarationResult,
+} from "./hooks/useInboxDeclaration"
 export { useUpdateProfile } from "./hooks/useUpdateProfile"

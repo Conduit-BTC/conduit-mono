@@ -5,6 +5,7 @@ import { getNdk } from "./ndk"
 import { appendConduitClientTag } from "./nip89"
 import { parseOrderMessageRumorEvent } from "./orders"
 import { publishPrivateMessage } from "./messaging"
+import type { PrivateMessageDeliveryRoute } from "./private-message-routing"
 
 export type MerchantOrderDelivery = "buyer_and_self" | "self_only"
 
@@ -56,9 +57,14 @@ function prepareMerchantRumor(rumor: NDKEvent, merchantPubkey: string): void {
   if (!rumor.id) rumor.id = rumor.getEventHash()
 }
 
+export interface PublishMerchantOrderMessageResult {
+  /** Lane used for the critical recipient leg (route-lane provenance). */
+  deliveryRoute: Exclude<PrivateMessageDeliveryRoute, "blocked">
+}
+
 export async function publishMerchantOrderMessage(
   input: PublishMerchantOrderMessageInput
-): Promise<void> {
+): Promise<PublishMerchantOrderMessageResult> {
   const ndk = getNdk()
   if (!ndk.signer) throw new Error("Signer not connected")
 
@@ -77,13 +83,16 @@ export async function publishMerchantOrderMessage(
 
   const recipientPubkey =
     input.delivery === "self_only" ? input.merchantPubkey : input.buyerPubkey
-  const { selfCopyError } = await publishPrivateMessage({
+  const { selfCopyError, deliveryRoute } = await publishPrivateMessage({
     rumor,
     senderPubkey: input.merchantPubkey,
     recipientPubkey,
     signer: ndk.signer,
     rumorKind: EVENT_KINDS.ORDER,
     selfCopy: input.delivery === "buyer_and_self",
+    // Merchant replies, invoices, and proofs belong to a validated inbound
+    // order lifecycle, so they qualify for bootstrap routing (CND-208).
+    validatedOrderScope: true,
   })
   if (selfCopyError) {
     console.warn("Merchant order self-copy publish failed", selfCopyError)
@@ -91,4 +100,5 @@ export async function publishMerchantOrderMessage(
 
   const parsed = parseOrderMessageRumorEvent(rumor)
   await cacheParsedOrderMessage(parsed)
+  return { deliveryRoute }
 }
