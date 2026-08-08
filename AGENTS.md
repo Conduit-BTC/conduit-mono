@@ -209,6 +209,22 @@ bun run --filter @conduit/merchant dev --host 0.0.0.0 --port 7001
 - **async/await** over .then() chains
 - **Explicit error handling** - No swallowed errors
 
+### Implementation Minimalism
+
+- Before adding code, check for an existing implementation, `@conduit/core` helper, `@conduit/ui`
+  primitive, standard-library or browser capability, and already-installed dependency.
+- Prefer the smallest correct diff, but preserve required tests, validation, failure-state handling,
+  accessibility, privacy-safe observability, documentation, and public-repo conventions.
+- Follow the existing ownership direction (`core → ui → apps`). Moving protocol or shared UI logic
+  into an app route to touch fewer files is not a simplification.
+- A native control is only simpler when it meets the shared design-system, keyboard, focus, and
+  accessibility requirements; do not bypass an existing `@conduit/ui` primitive.
+- Never simplify away Nostr interoperability, signer boundaries, relay partial-failure handling,
+  payment safety, privacy constraints, or content-free diagnostics.
+- Maintainers can request the read-only simplicity review by commenting exactly
+  `/agent simplify` on a pull request or manually dispatching `Agent Simplify Review`. It
+  complements, and never replaces, correctness and security review.
+
 ### UI Component Rules
 
 - Use shadcn-style primitives through `@conduit/ui` before adding app-local controls.
