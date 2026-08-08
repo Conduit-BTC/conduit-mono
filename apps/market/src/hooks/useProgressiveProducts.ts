@@ -704,6 +704,7 @@ export function useProgressiveProducts(
   const refetch = useCallback(() => {
     if (!queryEnabled || !catalogReady) return
     if (streamsNetwork) {
+      pendingRefreshPassRef.current = true
       setRefreshNonce((nonce) => nonce + 1)
     } else {
       void refetchFirstNetwork()
