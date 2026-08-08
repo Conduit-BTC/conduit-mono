@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import {
   type CommerceProductRecord,
@@ -94,6 +94,7 @@ export interface ProgressiveProductsResult {
   isHydrating: boolean
   isShowingCache: boolean
   error: unknown
+  refetch: () => void
 }
 
 type ProductAccumulatorState = {
@@ -404,6 +405,7 @@ export function useProgressiveProducts(
     meta: null,
     error: null,
   })
+  const [refreshNonce, setRefreshNonce] = useState(0)
 
   useEffect(() => {
     if (
@@ -675,6 +677,25 @@ export function useProgressiveProducts(
     marketplaceTags,
     perspectiveMarketplaceRead,
     authenticatedPubkey,
+    refreshNonce,
+    streamsNetwork,
+  ])
+
+  const refetchCached = cachedQuery.refetch
+  const refetchFirstNetwork = firstNetworkQuery.refetch
+  const refetch = useCallback(() => {
+    if (!queryEnabled || !catalogReady) return
+    if (streamsNetwork) {
+      setRefreshNonce((nonce) => nonce + 1)
+    } else {
+      void refetchFirstNetwork()
+    }
+    void refetchCached()
+  }, [
+    catalogReady,
+    queryEnabled,
+    refetchCached,
+    refetchFirstNetwork,
     streamsNetwork,
   ])
 
@@ -746,6 +767,7 @@ export function useProgressiveProducts(
       (progressiveRead.key === discoveryKey ? progressiveRead.error : null) ??
       firstDegreeQuery.error ??
       cachedQuery.error,
+    refetch,
   }
 }
 
@@ -759,6 +781,7 @@ export function useProgressiveProductDetail(productId: string): {
   isHydrating: boolean
   isShowingCache: boolean
   error: unknown
+  refetch: () => void
 } {
   const cachedQuery = useQuery({
     queryKey: ["progressive-product", "cache", productId],
@@ -790,6 +813,12 @@ export function useProgressiveProductDetail(productId: string): {
     product && active?.data?.sourceRelayUrls?.length
       ? { [product.pubkey]: active.data.sourceRelayUrls }
       : {}
+  const refetchCachedDetail = cachedQuery.refetch
+  const refetchNetworkDetail = networkQuery.refetch
+  const refetch = useCallback(() => {
+    void refetchCachedDetail()
+    void refetchNetworkDetail()
+  }, [refetchCachedDetail, refetchNetworkDetail])
 
   return {
     product,
@@ -806,6 +835,7 @@ export function useProgressiveProductDetail(productId: string): {
     isHydrating: networkQuery.isFetching,
     isShowingCache: active === cachedQuery.data && !!product,
     error: networkQuery.error ?? cachedQuery.error,
+    refetch,
   }
 }
 

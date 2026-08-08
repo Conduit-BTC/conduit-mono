@@ -18,7 +18,7 @@ import {
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuTrigger,
-  FreshnessChip,
+  RefreshChip,
 } from "@conduit/ui"
 import { SignerSwitch } from "../../components/SignerSwitch"
 import { MerchantAvatarFallback } from "../../components/MerchantIdentity"
@@ -666,14 +666,15 @@ function ProductsPage() {
         </div>
       )}
 
-      <div className="relative flex min-h-[1.625rem] items-center pr-36 text-xs text-[var(--text-muted)]">
+      <div className="relative flex min-h-8 items-center pr-44 text-xs text-[var(--text-muted)]">
         <span>
           {filtered.length} {filtered.length === 1 ? "result" : "results"}
         </span>
-        <FreshnessChip
-          status={isUpdatingListings ? "updating" : "idle"}
-          updatingLabel="Updating listings"
-          className="absolute right-0 top-0"
+        <RefreshChip
+          refreshing={isUpdatingListings}
+          onRefresh={productsQuery.refetch}
+          refreshingLabel="Updating listings..."
+          className="absolute right-0 top-1/2 -translate-y-1/2"
         />
       </div>
 
