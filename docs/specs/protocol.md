@@ -7,6 +7,7 @@ References:
 - NIP-17 message wrapping (gift wrap + seal): `docs/specs/market.md`, `docs/ARCHITECTURE.md`
 - NIP-99 classified listing events and GammaMarkets `market-spec` product listings
 - One-way checkout architecture note: `docs/knowledge/one-way-checkout-multi-rail-payments.md`
+- Encrypted shopper settings: `docs/specs/shopper-presets.md`
 - External protocol references: `docs/knowledge/external-nostr-references.md`
 
 Non-goals for the current client repository:
@@ -146,10 +147,32 @@ This exception is constrained as follows:
 | `9735`  | Zap receipt                  | relay/wallet | NIP-57                                                   |
 | `10002` | Relay list                   | both         | NIP-65 relay hints                                       |
 | `10050` | Private message relays       | both         | NIP-17 secure-message relay declarations                 |
+| `30078` | Application-specific data    | buyer        | NIP-78 password-encrypted shopper presets                |
 | `30402` | Product listing              | merchant     | NIP-99 + GammaMarkets market-spec                        |
 | `30406` | Shipping option              | merchant     | Conduit commerce extension                               |
 | `31989` | Application recommendation   | both         | NIP-89                                                   |
 | `31990` | Application handler metadata | app/operator | NIP-89                                                   |
+
+## Shopper Presets: NIP-78
+
+Shopper presets use the stable address
+`30078:<shopper_pubkey>:conduit/shopper-presets`. Public tags contain only the
+`d` tag and optional client provenance. Event content is a strict, bounded
+`nostr-shopper-presets` envelope that uses fixed Argon2id parameters and
+XChaCha20-Poly1305.
+
+The client derives the encryption key from the shopper password and encrypts or
+decrypts the complete preset locally. The active external signer only confirms
+the event author and signs an event that already contains ciphertext. It must
+not receive the password, derived key, shipping/contact plaintext, or decrypted
+document. Shopper presets do not use signer NIP-44 encryption.
+
+Reads verify the event before envelope parsing and apply NIP-01 addressable-event
+ordering. One successful relay or one verified matching event makes a bounded
+fanout read usable; failed relays do not discard valid results. Writes require a
+fresh usable read and verify that the signed replacement wins on an
+acknowledging relay. See `docs/specs/shopper-presets.md` for the full envelope,
+schema, unlock, and privacy contract.
 
 ## Product Identity
 

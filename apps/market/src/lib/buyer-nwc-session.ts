@@ -32,17 +32,9 @@ export type NwcSessionStatus =
 
 export type NwcSessionPaymentPhase = "before_publish" | "after_publish"
 export type NwcSessionBalanceStatus =
-  | "unchecked"
-  | "checking"
-  | "available"
-  | "unavailable"
-  | "error"
+  "unchecked" | "checking" | "available" | "unavailable" | "error"
 export type NwcSessionBudgetStatus =
-  | "unchecked"
-  | "checking"
-  | "available"
-  | "unavailable"
-  | "error"
+  "unchecked" | "checking" | "available" | "unavailable" | "error"
 
 export interface NwcSessionBalanceState {
   status: NwcSessionBalanceStatus
@@ -97,6 +89,8 @@ export type NwcSessionPaymentResult =
       status: "wallet_error"
       phase: "after_publish"
       reason: string
+      /** NIP-47 error code when the wallet supplied one. */
+      errorCode: string | null
     }
 
 export interface NwcSessionPayInvoiceInput {
@@ -293,6 +287,7 @@ export class BuyerNwcSession {
           status: "wallet_error",
           phase: "after_publish",
           reason: getNip47WalletErrorMessage(error, reason),
+          errorCode: getNip47ErrorCode(error),
         }
       }
 

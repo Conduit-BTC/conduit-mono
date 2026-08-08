@@ -42,6 +42,9 @@ export const EVENT_KINDS = {
   /** NIP-89: Application handler metadata */
   APPLICATION_HANDLER: 31990,
 
+  /** NIP-78: Arbitrary custom app data (addressable) */
+  APPLICATION_DATA: 30078,
+
   /** NIP-99: Marketplace product listing (addressable) */
   PRODUCT: 30402,
 

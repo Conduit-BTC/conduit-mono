@@ -20,6 +20,7 @@ import bricolageMediumUrl from "../../../packages/ui/src/assets/fonts/BricolageG
 import bricolageRegularUrl from "../../../packages/ui/src/assets/fonts/BricolageGrotesque-Regular.ttf?url"
 import bricolageSemiBoldUrl from "../../../packages/ui/src/assets/fonts/BricolageGrotesque-SemiBold.ttf?url"
 import { routeTree } from "./routeTree.gen"
+import { ShopperPresetsProvider } from "./hooks/useShopperPresets"
 import { pruneExpiredCheckoutShippingSession } from "./lib/checkout-session"
 import { pruneExpiredSessionGuestOrderSigningIdentities } from "./lib/guest-order-identity"
 import "@conduit/ui/styles/site.css"
@@ -111,8 +112,10 @@ createRoot(document.getElementById("root")!).render(
       <AuthProvider>
         <ConduitSessionProvider appId="market">
           <MarketAuthQueryBoundary>
-            <MarketPricingWarmup />
-            <RouterProvider router={router} />
+            <ShopperPresetsProvider>
+              <MarketPricingWarmup />
+              <RouterProvider router={router} />
+            </ShopperPresetsProvider>
           </MarketAuthQueryBoundary>
         </ConduitSessionProvider>
       </AuthProvider>

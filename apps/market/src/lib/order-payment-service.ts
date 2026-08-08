@@ -38,7 +38,10 @@ import {
   publishBuyerOrderMessage,
   type BuyerOrderSigningIdentity,
 } from "./order-publish"
-import { payCheckoutInvoice } from "./payment-rails"
+import {
+  isAmbiguousCheckoutPaymentError,
+  payCheckoutInvoice,
+} from "./payment-rails"
 import { savePaymentAttempt, updatePaymentAttempt } from "./payment-attempts"
 
 export function getLifecyclePaymentProofAction(
@@ -241,6 +244,7 @@ export interface OrderPaymentContext {
   walletConnection: NwcConnection | null
   tryNwc: boolean
   tryWebln?: boolean
+  preferredAutomaticRail?: "nwc" | "webln"
   formatSatsAmount?: (sats: number) => string
 }
 
@@ -325,10 +329,7 @@ function requirePreparedAnonZap(
 }
 
 function isAmbiguousPaymentError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false
-  return /Check your wallet before trying another payment path\./i.test(
-    error.message
-  )
+  return isAmbiguousCheckoutPaymentError(error)
 }
 
 type Listener = (state: OrderPaymentRuntimeState) => void
@@ -955,6 +956,7 @@ export async function runOrderPayment(
         walletConnection: ctx.walletConnection,
         tryNwc: ctx.tryNwc,
         tryWebln: ctx.tryWebln,
+        preferredAutomaticRail: ctx.preferredAutomaticRail,
         timeoutMs: 60_000,
         appId: "market",
         metadata: {

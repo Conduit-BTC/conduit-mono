@@ -65,6 +65,7 @@ import {
 } from "../lib/orderConversations"
 import { fetchStoreProducts } from "../lib/storeProducts"
 import { useShopperPricing } from "../hooks/useShopperPricing"
+import { useShopperPresets } from "../hooks/useShopperPresets"
 import { useWallet } from "../hooks/useWallet"
 import {
   buildOrderTimeline,
@@ -89,6 +90,7 @@ import {
   subscribeOrderPayment,
   type OrderPaymentContext,
 } from "../lib/order-payment-service"
+import { getPreferredPaymentRailAttempts } from "../lib/payment-rails"
 
 type PriceFormatter = (price: CommercePriceLike) => ShopperPriceDisplay
 import {
@@ -589,8 +591,8 @@ function ExternalWalletPanel({
       </h2>
       <p className="mt-1 text-sm text-[var(--text-secondary)]">
         {autoDetectReceipt
-          ? "Scan or copy this invoice and pay it once. Conduit will match the public Lightning receipt and notify the merchant automatically."
-          : "No automatic wallet was available. Scan or copy this invoice and pay it in your wallet. After the wallet confirms payment, report it to the merchant for verification."}
+          ? "Check your wallet first if an automatic payment was already attempted. Otherwise scan or copy this invoice and pay it once. Conduit will match the public Lightning receipt and notify the merchant automatically."
+          : "Automatic payment did not complete. Check your wallet first, then pay this same invoice once and report it to the merchant for verification. This invoice can only settle once, so paying it again is safe if nothing was sent."}
       </p>
       {guestSession && (
         <p className="mt-3 rounded-xl border border-warning/30 bg-warning/10 p-3 text-xs leading-5 text-warning">
@@ -662,6 +664,7 @@ function OrderDetail({
   const { vm, headerStatus } = row
   const wallet = useWallet()
   const shopperPricing = useShopperPricing()
+  const shopperPresets = useShopperPresets()
   const formatSats = (sats: number) =>
     shopperPricing.formatSatsAmount(sats).primary
   const { data: profile } = useProfile(row.merchantPubkey, {
@@ -701,6 +704,10 @@ function OrderDetail({
     const lc = row.lifecycle
     if (!lc) return null
     if (!lc.merchantLightningAddress) return null
+    const preferredPaymentAttempts = getPreferredPaymentRailAttempts(
+      shopperPresets.preset.preferredRail,
+      { nwc: canTryNwc, webln: !guestIdentity }
+    )
     return {
       orderId: vm.orderId,
       buyerPubkey,
@@ -716,8 +723,9 @@ function OrderDetail({
         quantity: item.quantity,
       })),
       walletConnection: wallet.connection,
-      tryNwc: canTryNwc,
-      tryWebln: !guestIdentity,
+      tryNwc: preferredPaymentAttempts.tryNwc,
+      tryWebln: preferredPaymentAttempts.tryWebln,
+      preferredAutomaticRail: preferredPaymentAttempts.preferredAutomaticRail,
       formatSatsAmount: formatSats,
     }
   }

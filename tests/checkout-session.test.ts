@@ -111,4 +111,22 @@ describe("checkout shipping session", () => {
     ).toBe(true)
     expect(storage.length).toBe(0)
   })
+
+  it("preserves an active identity-scoped draft during global pruning", () => {
+    const storage = fakeStorage()
+    const updatedAt = 1_700_000_000_000
+    writeCheckoutShippingSession(
+      { ...DEFAULT_CHECKOUT_SHIPPING, street: "123 Private Street" },
+      storage,
+      updatedAt,
+      "buyer-a"
+    )
+
+    expect(pruneExpiredCheckoutShippingSession(storage, updatedAt + 1)).toBe(
+      false
+    )
+    expect(
+      readCheckoutShippingSession(storage, updatedAt + 1, "buyer-a").street
+    ).toBe("123 Private Street")
+  })
 })

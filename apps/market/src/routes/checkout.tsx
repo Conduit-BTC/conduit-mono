@@ -14,6 +14,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
+  AUTH_STORAGE_KEY,
   EVENT_KINDS,
   SHIPPING_COUNTRIES,
   appendConduitClientTag,
@@ -27,6 +28,7 @@ import {
   getShippingOptions,
   normalizePubkey,
   pubkeyToNpub,
+  readAuthSession,
   recordBrowserTelemetryEvent,
   validateAddressConsistency,
   useAuth,
@@ -64,6 +66,8 @@ import { type CartItem, useCart } from "../hooks/useCart"
 import { useCartProductAvailability } from "../hooks/useCartProductAvailability"
 import { useMerchantTrustContext } from "../hooks/useMerchantTrustContext"
 import { useShopperPricing } from "../hooks/useShopperPricing"
+import { useShopperPresets } from "../hooks/useShopperPresets"
+import { getPreferredPaymentRailAttempts } from "../lib/payment-rails"
 import {
   useWallet,
   type WalletBalanceState,
@@ -106,7 +110,10 @@ import {
 } from "../lib/checkout-validation"
 import {
   clearCheckoutShippingSession,
-  readCheckoutShippingSession,
+  DEFAULT_CHECKOUT_SHIPPING,
+  getIdentityBoundShippingPreset,
+  getShippingFormFromPreset,
+  readCheckoutShippingInitialization,
   writeCheckoutShippingSession,
 } from "../lib/checkout-session"
 import {
@@ -671,12 +678,42 @@ function CheckoutPage() {
   const search = Route.useSearch()
   const navigate = useNavigate()
   const shopperPricing = useShopperPricing()
+  const shopperPresets = useShopperPresets()
   const btcUsdRateQuery = shopperPricing.rateQuery
   const wallet = useWallet({ refreshBalance: true })
 
   const [step, setStep] = useState<CheckoutStep>("shipping")
-  const [shipping, setShipping] = useState<ShippingFormState>(() =>
-    readCheckoutShippingSession()
+  const initialShippingRef = useRef<ReturnType<
+    typeof readCheckoutShippingInitialization
+  > | null>(null)
+  const initialIdentity = authStatus === "connected" ? pubkey : null
+  const pendingDraftOwner = initialIdentity
+    ? null
+    : (readAuthSession()?.userPubkey ?? null)
+  if (!initialShippingRef.current) {
+    initialShippingRef.current = initialIdentity
+      ? readCheckoutShippingInitialization(
+          getIdentityBoundShippingPreset(
+            initialIdentity,
+            shopperPresets.presetOwnerPubkey,
+            shopperPresets.preset.shipping
+          ),
+          undefined,
+          undefined,
+          initialIdentity
+        )
+      : pendingDraftOwner
+        ? { value: DEFAULT_CHECKOUT_SHIPPING, hasActiveDraft: false }
+        : readCheckoutShippingInitialization(null, undefined, undefined, null)
+  }
+  const presetMaySeedShippingRef = useRef(
+    !initialShippingRef.current.hasActiveDraft
+  )
+  const shippingEditedRef = useRef(initialShippingRef.current.hasActiveDraft)
+  const presetIdentityRef = useRef(initialIdentity)
+  const pendingDraftOwnerRef = useRef(pendingDraftOwner)
+  const [shipping, setShipping] = useState<ShippingFormState>(
+    initialShippingRef.current.value
   )
   const [note, setNote] = useState("")
   const [error, setError] = useState<string | null>(null)
@@ -712,6 +749,7 @@ function CheckoutPage() {
   const [pricingRefreshFailedAt, setPricingRefreshFailedAt] = useState<
     number | null
   >(null)
+  const [authStorageRevision, setAuthStorageRevision] = useState(0)
   const btcUsdRate = btcUsdRateQuery.data ?? null
   const refetchBtcUsdRate = btcUsdRateQuery.refetch
   const btcUsdRateIsFetching = btcUsdRateQuery.isFetching
@@ -719,6 +757,103 @@ function CheckoutPage() {
   const signedBuyerPubkey = signerConnected ? pubkey : null
   const authPending = authStatus === "restoring" || authStatus === "connecting"
   const isGuestCheckout = !signerConnected && !authPending
+
+  useEffect(() => {
+    const handleAuthStorage = (event: StorageEvent): void => {
+      if (event.key === AUTH_STORAGE_KEY) {
+        setAuthStorageRevision((revision) => revision + 1)
+      }
+    }
+    window.addEventListener("storage", handleAuthStorage)
+    return () => window.removeEventListener("storage", handleAuthStorage)
+  }, [])
+
+  useEffect(() => {
+    if (authPending) return
+    const recoveryOwner = pendingDraftOwnerRef.current
+    if (recoveryOwner) {
+      if (
+        !signedBuyerPubkey &&
+        authStatus === "disconnected" &&
+        readAuthSession()?.userPubkey === recoveryOwner
+      ) {
+        return
+      }
+      pendingDraftOwnerRef.current = null
+      if (signedBuyerPubkey === recoveryOwner) {
+        presetIdentityRef.current = signedBuyerPubkey
+        const preset = getIdentityBoundShippingPreset(
+          signedBuyerPubkey,
+          shopperPresets.presetOwnerPubkey,
+          shopperPresets.preset.shipping
+        )
+        const recovered = readCheckoutShippingInitialization(
+          preset,
+          undefined,
+          undefined,
+          signedBuyerPubkey
+        )
+        shippingEditedRef.current = recovered.hasActiveDraft
+        presetMaySeedShippingRef.current = !recovered.hasActiveDraft && !preset
+        if (JSON.stringify(shipping) !== JSON.stringify(recovered.value)) {
+          setShipping(recovered.value)
+        }
+        return
+      }
+      clearCheckoutShippingSession()
+    }
+    if (presetIdentityRef.current === signedBuyerPubkey) return
+    presetIdentityRef.current = signedBuyerPubkey
+    shippingEditedRef.current = false
+    clearCheckoutShippingSession()
+    const preset = getIdentityBoundShippingPreset(
+      signedBuyerPubkey,
+      shopperPresets.presetOwnerPubkey,
+      shopperPresets.preset.shipping
+    )
+    presetMaySeedShippingRef.current = !preset
+    const next = preset
+      ? getShippingFormFromPreset(preset)
+      : DEFAULT_CHECKOUT_SHIPPING
+    if (JSON.stringify(shipping) === JSON.stringify(next)) return
+    setShipping(next)
+    if (preset) {
+      writeCheckoutShippingSession(
+        next,
+        undefined,
+        undefined,
+        signedBuyerPubkey
+      )
+    }
+  }, [
+    shipping,
+    shopperPresets.preset.shipping,
+    shopperPresets.presetOwnerPubkey,
+    authStorageRevision,
+    authStatus,
+    authPending,
+    signedBuyerPubkey,
+  ])
+
+  useEffect(() => {
+    if (!presetMaySeedShippingRef.current) return
+    const preset = getIdentityBoundShippingPreset(
+      signedBuyerPubkey,
+      shopperPresets.presetOwnerPubkey,
+      shopperPresets.preset.shipping
+    )
+    if (!preset) return
+    presetMaySeedShippingRef.current = false
+    const next = getShippingFormFromPreset(preset)
+    if (JSON.stringify(shipping) === JSON.stringify(next)) return
+    setShipping(next)
+    writeCheckoutShippingSession(next, undefined, undefined, signedBuyerPubkey)
+  }, [
+    shipping,
+    shopperPresets.preset.shipping,
+    shopperPresets.presetOwnerPubkey,
+    signedBuyerPubkey,
+  ])
 
   // LNURL probe state
   const [lnurlPayAvailable, setLnurlPayAvailable] = useState(false)
@@ -1258,13 +1393,15 @@ function CheckoutPage() {
     field: K,
     value: ShippingFormState[K]
   ): void {
+    presetMaySeedShippingRef.current = false
+    shippingEditedRef.current = true
     const normalizedValue =
       field === "phone"
         ? (sanitizeShippingPhoneInput(String(value)) as ShippingFormState[K])
         : value
     const next = { ...shipping, [field]: normalizedValue }
     setShipping(next)
-    writeCheckoutShippingSession(next)
+    writeCheckoutShippingSession(next, undefined, undefined, signedBuyerPubkey)
     setShippingErrors(validateCheckoutDetails(next))
     if (isValidationField(field)) {
       markShippingFieldTouched(field)
@@ -1921,6 +2058,13 @@ function CheckoutPage() {
       // Fire-and-forget: the service continues after we navigate away. With no
       // automatic rail it stops at manual_required and the external-wallet QR
       // appears on Orders (CND-120).
+      const preferredPaymentAttempts = getPreferredPaymentRailAttempts(
+        shopperPresets.preset.preferredRail,
+        {
+          nwc: !guestIdentity && shouldTrySavedNwcWallet,
+          webln: !guestIdentity,
+        }
+      )
       const serviceCtx: OrderPaymentContext = {
         orderId,
         buyerPubkey,
@@ -1947,8 +2091,9 @@ function CheckoutPage() {
               }
             : undefined,
         walletConnection: guestIdentity ? null : wallet.connection,
-        tryNwc: !guestIdentity && shouldTrySavedNwcWallet,
-        tryWebln: !guestIdentity,
+        tryNwc: preferredPaymentAttempts.tryNwc,
+        tryWebln: preferredPaymentAttempts.tryWebln,
+        preferredAutomaticRail: preferredPaymentAttempts.preferredAutomaticRail,
         formatSatsAmount: (sats) =>
           shopperPricing.formatSatsAmount(sats).primary,
       }

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useSyncExternalStore } from "react"
+import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react"
 import {
   DEFAULT_SHOPPER_PRICE_PREFERENCE,
   normalizeShopperPricePreference,
@@ -6,8 +6,11 @@ import {
   type ShopperDisplayCurrency,
   type ShopperPricePreference,
 } from "@conduit/core"
-
-const STORAGE_KEY_PREFIX = "conduit:market-price-preference:v1"
+import {
+  LEGACY_PRICE_PREFERENCE_STORAGE_KEY_PREFIX,
+  getLegacyPricePreferenceStorageKey,
+} from "../lib/shopper-presets-store"
+import { useShopperPresets } from "./useShopperPresets"
 
 type Listener = () => void
 type PreferenceStorage = Pick<Storage, "getItem" | "setItem">
@@ -17,7 +20,7 @@ const listenersByPubkey = new Map<string, Set<Listener>>()
 let storageListenerCount = 0
 
 export function getShopperPricePreferenceStorageKey(pubkey: string): string {
-  return `${STORAGE_KEY_PREFIX}:${pubkey}`
+  return getLegacyPricePreferenceStorageKey(pubkey)
 }
 
 export function loadShopperPricePreference(
@@ -56,7 +59,6 @@ function readPreference(pubkey: string | null): ShopperPricePreference {
   if (cached) return cached
 
   const preference = loadShopperPricePreference(pubkey, window.localStorage)
-
   cachedPreferences.set(pubkey, preference)
   return preference
 }
@@ -81,9 +83,13 @@ function writePreference(
 
 function onStorage(event: StorageEvent): void {
   if (event.storageArea !== window.localStorage || !event.key) return
-  if (!event.key.startsWith(`${STORAGE_KEY_PREFIX}:`)) return
+  if (!event.key.startsWith(`${LEGACY_PRICE_PREFERENCE_STORAGE_KEY_PREFIX}:`)) {
+    return
+  }
 
-  const pubkey = event.key.slice(STORAGE_KEY_PREFIX.length + 1)
+  const pubkey = event.key.slice(
+    LEGACY_PRICE_PREFERENCE_STORAGE_KEY_PREFIX.length + 1
+  )
   if (!pubkey) return
   cachedPreferences.delete(pubkey)
   notify(pubkey)
@@ -118,6 +124,7 @@ export function __resetShopperPricePreferenceForTests(): void {
 
 export function useShopperPricePreference() {
   const { pubkey, status } = useAuth()
+  const { preset, unlockState, updateLocal } = useShopperPresets()
   const identityPubkey = status === "connected" ? pubkey : null
   const subscribeToIdentity = useCallback(
     (listener: Listener) => subscribe(identityPubkey, listener),
@@ -127,38 +134,57 @@ export function useShopperPricePreference() {
     () => readPreference(identityPubkey),
     [identityPubkey]
   )
-  const preference = useSyncExternalStore(
+  const localPreference = useSyncExternalStore(
     subscribeToIdentity,
     getSnapshot,
     () => DEFAULT_SHOPPER_PRICE_PREFERENCE
   )
+  const preference =
+    identityPubkey && unlockState === "unlocked"
+      ? preset.display
+      : localPreference
+
+  useEffect(() => {
+    if (!identityPubkey || unlockState !== "unlocked") return
+    if (
+      localPreference.currency === preset.display.currency &&
+      localPreference.bitcoinUnit === preset.display.bitcoinUnit
+    ) {
+      return
+    }
+    writePreference(identityPubkey, preset.display)
+  }, [identityPubkey, localPreference, preset.display, unlockState])
+
+  const applyPreference = useCallback(
+    (next: ShopperPricePreference) => {
+      if (!identityPubkey) return
+      const normalized = normalizeShopperPricePreference(next)
+      writePreference(identityPubkey, normalized)
+      updateLocal({ ...preset, display: normalized })
+    },
+    [identityPubkey, preset, updateLocal]
+  )
 
   const setPreference = useCallback(
     (next: ShopperPricePreference) => {
-      if (!identityPubkey) return
-      writePreference(identityPubkey, next)
+      applyPreference(next)
     },
-    [identityPubkey]
+    [applyPreference]
   )
   const setCurrency = useCallback(
     (currency: ShopperDisplayCurrency) => {
-      if (!identityPubkey) return
-      writePreference(identityPubkey, {
-        ...readPreference(identityPubkey),
-        currency,
-      })
+      applyPreference({ ...preference, currency })
     },
-    [identityPubkey]
+    [applyPreference, preference]
   )
   const setSatsStandard = useCallback(
     (enabled: boolean) => {
-      if (!identityPubkey) return
-      writePreference(identityPubkey, {
-        ...readPreference(identityPubkey),
+      applyPreference({
+        ...preference,
         bitcoinUnit: enabled ? "sats" : "bitcoin",
       })
     },
-    [identityPubkey]
+    [applyPreference, preference]
   )
 
   return useMemo(

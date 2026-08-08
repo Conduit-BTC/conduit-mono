@@ -233,8 +233,10 @@ Emitted once for each automatic NWC or WebLN payment attempt, plus an
 `unavailable` result with `rail=none` when no automatic rail can run. It records
 only the automatic mode, rail enum, bounded outcome (`success`, `failure`,
 `blocked`, `unavailable`, or `ambiguous`), latency bucket, and amount bucket.
-`ambiguous` means a request may have moved funds without returning sufficient
-proof and must not be collapsed into a safe retry. It must not include invoices,
+`ambiguous` means the outcome could not be proven, so it must not be collapsed
+into a safe retry. It covers both a wallet that likely paid without returning
+proof and an ordinary wallet decline after the invoice reached the wallet, so
+the bucket measures unprovable outcomes rather than suspected fund movement. It must not include invoices,
 payment hashes, preimages, wallet connection data, provider errors, order data,
 or exact amounts.
 

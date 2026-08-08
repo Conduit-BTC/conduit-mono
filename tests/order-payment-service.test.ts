@@ -16,6 +16,7 @@ import {
   type OrderPaymentDependencies,
   type OrderPaymentContext,
 } from "../apps/market/src/lib/order-payment-service"
+import { AMBIGUOUS_PAYMENT_WARNING } from "../apps/market/src/lib/payment-rails"
 import type { OrderLifecycle } from "../packages/core/src/db"
 import {
   bolt11PaymentHashField,
@@ -874,7 +875,7 @@ describe("runOrderPayment", () => {
           },
           payCheckoutInvoice: async () => {
             throw new Error(
-              "Payment confirmation was interrupted. Check your wallet before trying another payment path."
+              `Payment confirmation was interrupted. ${AMBIGUOUS_PAYMENT_WARNING}`
             )
           },
         })

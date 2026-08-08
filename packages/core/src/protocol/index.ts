@@ -35,6 +35,7 @@ export * from "./social-hydrator"
 export * from "./session"
 export * from "./session-signer"
 export * from "./shipping"
+export * from "./shopper-presets"
 export {
   getNdk,
   connectNdk,

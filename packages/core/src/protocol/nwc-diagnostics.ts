@@ -145,6 +145,68 @@ function getNwcRelayUnreachableDiagnostic(
   }
 }
 
+/**
+ * NIP-47 error codes whose documented meaning is that the wallet service
+ * refused the request instead of attempting the payment.
+ *
+ * This trusts the shopper's own wallet to report the code correctly; NIP-47
+ * does not guarantee the refusal precedes an attempt. `PAYMENT_FAILED`,
+ * `INTERNAL` and `OTHER` are excluded because NIP-47 documents
+ * `PAYMENT_FAILED` as also covering a timeout, so the payment may still be in
+ * flight. Any other or missing code is treated the same way.
+ */
+export const NWC_WALLET_REFUSAL_ERROR_CODES = [
+  "INSUFFICIENT_BALANCE",
+  "NOT_IMPLEMENTED",
+  "QUOTA_EXCEEDED",
+  "RATE_LIMITED",
+  "RESTRICTED",
+  "UNAUTHORIZED",
+  "UNSUPPORTED_ENCRYPTION",
+] as const
+
+export type NwcWalletRefusalErrorCode =
+  (typeof NWC_WALLET_REFUSAL_ERROR_CODES)[number]
+
+/**
+ * Diagnostic codes that only occur before Conduit asks the wallet to pay, so
+ * the invoice is provably untouched and another rail may take it.
+ */
+const NWC_PRE_PUBLISH_DIAGNOSTIC_CODES: readonly NwcDiagnosticCode[] = [
+  "invalid_uri",
+  "private_relay",
+  "non_wss_relay",
+  "relay_unreachable",
+  "unsupported_pay_invoice",
+  "invoice_amount_mismatch",
+  "network_mismatch",
+]
+
+export function isNwcPrePublishDiagnosticCode(
+  code: NwcDiagnosticCode
+): boolean {
+  return NWC_PRE_PUBLISH_DIAGNOSTIC_CODES.includes(code)
+}
+
+/**
+ * True only for a NIP-47 error code reported as a refusal. Matching is exact:
+ * NIP-47 defines these as uppercase literals, and a wallet that does not follow
+ * the spec must not earn the permissive branch.
+ */
+export function isNwcWalletRefusalErrorCode(
+  code: string | null | undefined
+): code is NwcWalletRefusalErrorCode {
+  if (!code) return false
+  return (NWC_WALLET_REFUSAL_ERROR_CODES as readonly string[]).includes(code)
+}
+
+/** Read a NIP-47 error code off a thrown wallet error, if it carries one. */
+export function getNwcErrorCode(error: unknown): string | null {
+  if (!error || typeof error !== "object") return null
+  const code = (error as { code?: unknown }).code
+  return typeof code === "string" ? code : null
+}
+
 export function classifyNwcPaymentError(
   error: unknown,
   connection?: NwcConnection | null
