@@ -5,6 +5,7 @@ import {
   EVENT_KINDS,
   getCachedInboxDeclaration,
   invalidateInboxDeclaration,
+  planCompatibilityOrderRelays,
   planInboxReadRelays,
   primeInboxDeclarationCache,
   resolveInboxDeclaration,
@@ -326,6 +327,37 @@ describe("planInboxReadRelays", () => {
     expect(plan.relayUrls).toContain("wss://local.example")
   })
 
+  it("reserves approved compatibility write targets inside a capped read plan", () => {
+    const plan = planInboxReadRelays({
+      declaration: resolution({ state: "not_declared", relayUrls: [] }),
+      localReadRelayUrls: [
+        "wss://local-one.example",
+        "wss://local-two.example",
+        "wss://local-three.example",
+      ],
+      compatibilityRelayUrls: [
+        "wss://conduit.example",
+        "wss://inbox.example",
+        "wss://interop.example",
+        "wss://public.example",
+      ],
+      requiredCompatibilityRelayUrls: [
+        "wss://conduit.example",
+        "wss://inbox.example",
+        "wss://interop.example",
+        "wss://not-in-read-set.example",
+      ],
+      maxRelays: 4,
+    })
+
+    expect(plan.relayUrls).toEqual([
+      "wss://conduit.example",
+      "wss://inbox.example",
+      "wss://interop.example",
+      "wss://local-one.example",
+    ])
+  })
+
   it("uses the cached declared relays when discovery degraded", () => {
     primeInboxDeclarationCache(OWNER, ["wss://cached-inbox.example"], () => 0)
     const plan = planInboxReadRelays({
@@ -393,39 +425,72 @@ describe("deriveInboxReadCoverage", () => {
 })
 
 describe("selectPrivateMessageDeliveryRoute", () => {
-  it("always prefers a valid declaration over bootstrap", () => {
+  it("always prefers a valid declaration over compatibility", () => {
     const selection = selectPrivateMessageDeliveryRoute({
       rumorKind: EVENT_KINDS.ORDER,
       declaration: resolution({ relayUrls: ["wss://inbox.example"] }),
       validatedOrder: true,
-      bootstrapEnabled: true,
-      bootstrapRelayUrls: ["wss://bootstrap.example"],
+      compatibilityEnabled: true,
+      compatibilityRelayUrls: ["wss://compatibility.example"],
     })
 
     expect(selection.route).toBe("declared_inbox")
     expect(selection.relayUrls).toEqual(["wss://inbox.example"])
   })
 
-  it("routes a validated order to the bootstrap allowlist when enabled", () => {
+  it("routes a validated order to a bounded compatibility plan when enabled", () => {
     const selection = selectPrivateMessageDeliveryRoute({
       rumorKind: EVENT_KINDS.ORDER,
       declaration: resolution({ state: "not_declared", relayUrls: [] }),
       validatedOrder: true,
-      bootstrapEnabled: true,
-      bootstrapRelayUrls: ["wss://bootstrap.example"],
+      compatibilityEnabled: true,
+      compatibilityRelayUrls: [
+        "wss://one.example",
+        "wss://two.example",
+        "wss://three.example",
+        "wss://four.example",
+      ],
     })
 
-    expect(selection.route).toBe("conduit_bootstrap")
-    expect(selection.relayUrls).toEqual(["wss://bootstrap.example"])
+    expect(selection.route).toBe("compatibility_order")
+    expect(selection.relayUrls).toEqual([
+      "wss://one.example",
+      "wss://two.example",
+      "wss://three.example",
+    ])
   })
 
-  it("blocks bootstrap when the redeploy-controlled flag is off", () => {
+  it("caps an oversized declared inbox without adding compatibility targets", () => {
+    const selection = selectPrivateMessageDeliveryRoute({
+      rumorKind: EVENT_KINDS.ORDER,
+      declaration: resolution({
+        relayUrls: [
+          "wss://declared-one.example",
+          "wss://declared-two.example",
+          "wss://declared-three.example",
+          "wss://declared-four.example",
+        ],
+      }),
+      validatedOrder: true,
+      compatibilityEnabled: true,
+      compatibilityRelayUrls: ["wss://compatibility.example"],
+    })
+
+    expect(selection.relayUrls).toEqual([
+      "wss://declared-one.example",
+      "wss://declared-two.example",
+      "wss://declared-three.example",
+    ])
+    expect(selection.truncated).toBe(true)
+  })
+
+  it("blocks compatibility when the deployment-profile flag is off", () => {
     const selection = selectPrivateMessageDeliveryRoute({
       rumorKind: EVENT_KINDS.ORDER,
       declaration: resolution({ state: "not_declared", relayUrls: [] }),
       validatedOrder: true,
-      bootstrapEnabled: false,
-      bootstrapRelayUrls: ["wss://bootstrap.example"],
+      compatibilityEnabled: false,
+      compatibilityRelayUrls: ["wss://compatibility.example"],
     })
 
     expect(selection.route).toBe("blocked")
@@ -437,21 +502,21 @@ describe("selectPrivateMessageDeliveryRoute", () => {
       rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
       declaration: resolution({ state: "not_declared", relayUrls: [] }),
       validatedOrder: false,
-      bootstrapEnabled: true,
-      bootstrapRelayUrls: ["wss://bootstrap.example"],
+      compatibilityEnabled: true,
+      compatibilityRelayUrls: ["wss://compatibility.example"],
     })
 
     expect(selection.route).toBe("blocked")
     expect(selection.blockedReason).toBe("recipient_not_ready")
   })
 
-  it("blocks unvalidated kind-16 orders from the bootstrap lane", () => {
+  it("blocks unvalidated kind-16 orders from the compatibility lane", () => {
     const selection = selectPrivateMessageDeliveryRoute({
       rumorKind: EVENT_KINDS.ORDER,
       declaration: resolution({ state: "not_declared", relayUrls: [] }),
       validatedOrder: false,
-      bootstrapEnabled: true,
-      bootstrapRelayUrls: ["wss://bootstrap.example"],
+      compatibilityEnabled: true,
+      compatibilityRelayUrls: ["wss://compatibility.example"],
     })
 
     expect(selection.route).toBe("blocked")
@@ -462,35 +527,86 @@ describe("selectPrivateMessageDeliveryRoute", () => {
       rumorKind: EVENT_KINDS.ORDER,
       declaration: resolution({ state: "malformed", relayUrls: [] }),
       validatedOrder: true,
-      bootstrapEnabled: true,
-      bootstrapRelayUrls: ["wss://bootstrap.example"],
+      compatibilityEnabled: true,
+      compatibilityRelayUrls: ["wss://compatibility.example"],
     })
 
     expect(selection.route).toBe("blocked")
     expect(selection.blockedReason).toBe("declaration_malformed")
   })
 
-  it("maps lookup failure to recipient_lookup_failed when bootstrap is off", () => {
+  it("maps lookup failure to recipient_lookup_failed when compatibility is off", () => {
     const selection = selectPrivateMessageDeliveryRoute({
       rumorKind: EVENT_KINDS.ORDER,
       declaration: resolution({ state: "lookup_unavailable", relayUrls: [] }),
       validatedOrder: true,
-      bootstrapEnabled: false,
+      compatibilityEnabled: false,
     })
 
     expect(selection.route).toBe("blocked")
     expect(selection.blockedReason).toBe("recipient_lookup_failed")
   })
 
-  it("drops insecure bootstrap relay urls", () => {
+  it("drops insecure compatibility relay urls", () => {
     const selection = selectPrivateMessageDeliveryRoute({
       rumorKind: EVENT_KINDS.ORDER,
       declaration: resolution({ state: "not_declared", relayUrls: [] }),
       validatedOrder: true,
-      bootstrapEnabled: true,
-      bootstrapRelayUrls: ["ws://insecure.example"],
+      compatibilityEnabled: true,
+      compatibilityRelayUrls: ["ws://insecure.example"],
     })
 
     expect(selection.route).toBe("blocked")
+  })
+})
+
+describe("planCompatibilityOrderRelays", () => {
+  it("normalizes, deduplicates, and caps the approved pool", () => {
+    const plan = planCompatibilityOrderRelays({
+      approvedRelayUrls: [
+        "WSS://One.Example/",
+        "wss://one.example",
+        "wss://two.example",
+        "ws://insecure.example",
+        "wss://three.example",
+        "wss://four.example",
+      ],
+      recipientReadRelayUrls: [],
+      maxRelays: 3,
+    })
+
+    expect(plan.relayUrls).toEqual([
+      "wss://one.example",
+      "wss://two.example",
+      "wss://three.example",
+    ])
+  })
+
+  it("lets signed recipient read evidence reorder but never widen the approved pool", () => {
+    const plan = planCompatibilityOrderRelays({
+      approvedRelayUrls: [
+        "wss://one.example",
+        "wss://two.example",
+        "wss://three.example",
+      ],
+      recipientReadRelayUrls: [
+        "wss://arbitrary.example",
+        "wss://three.example/",
+        "wss://one.example",
+      ],
+      maxRelays: 3,
+    })
+
+    expect(plan.relayUrls).toEqual([
+      "wss://three.example",
+      "wss://one.example",
+      "wss://two.example",
+    ])
+    expect(plan.relayUrls).not.toContain("wss://arbitrary.example")
+    expect(plan.relaySources).toEqual({
+      "wss://three.example": "recipient_nip65",
+      "wss://one.example": "recipient_nip65",
+      "wss://two.example": "compatibility_registry",
+    })
   })
 })

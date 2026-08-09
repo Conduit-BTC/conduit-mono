@@ -6,7 +6,7 @@ import {
   CANONICAL_COMMERCE_DM_FALLBACK_RELAYS,
   CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS,
   CANONICAL_DEFAULT_RELAYS,
-  CANONICAL_DM_BOOTSTRAP_WRITE_RELAYS,
+  CANONICAL_DM_COMPATIBILITY_ORDER_RELAYS,
   CANONICAL_DM_INBOX_DEFAULT_RELAYS,
   CANONICAL_SEARCH_INDEX_RELAYS,
   CANONICAL_ZAP_PUBLIC_RELAYS,
@@ -175,17 +175,22 @@ describe("relay settings protocol helpers", () => {
       CANONICAL_DM_INBOX_DEFAULT_RELAYS
     )
     expect(config.zapRelayUrls).toEqual(CANONICAL_ZAP_PUBLIC_RELAYS)
-    expect(config.dmBootstrapWriteRelayUrls).toEqual(
-      CANONICAL_DM_BOOTSTRAP_WRITE_RELAYS
+    expect(config.dmCompatibilityOrderRelayUrls).toEqual(
+      CANONICAL_DM_COMPATIBILITY_ORDER_RELAYS
     )
-    expect(config.dmBootstrapWritesEnabled).toBe(false)
+    expect(
+      config.dmCompatibilityOrderRelayUrls.every((url) =>
+        config.commerceDmFallbackRelayUrls.includes(url)
+      )
+    ).toBe(true)
+    expect(config.dmCompatibilityOrderRoutingEnabled).toBe(false)
     expect(getRelayBucketConfigs().map((bucket) => bucket.id)).toEqual([
       "app_backplane",
       "core_public_fallback",
       "search_index",
       "commerce_dm_fallback",
       "dm_inbox_default",
-      "dm_bootstrap_write",
+      "dm_compatibility_order",
       "zap_public",
     ])
     expect(config.commerceRelayUrls).toContain("wss://relay.conduit.market")

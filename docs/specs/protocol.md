@@ -263,7 +263,7 @@ Conduit-operated compatibility read set. Read results carry coverage
 (`complete | partial | unavailable`) and source provenance; an all-failed read
 must never be reported as an authoritative empty inbox.
 
-### Temporary exception: Conduit bootstrap order routing (CND-208)
+### Temporary exception: validated-order compatibility routing (CND-208)
 
 A named, bounded, Conduit-owned exception exists while users migrate to valid
 kind `10050` declarations. It is not NIP-17-conformant routing and must not be
@@ -271,15 +271,25 @@ presented as an extension of NIP-17. NIP-44/NIP-59 encryption is preserved.
 
 - Scope: validated kind `16` order-lifecycle messages only. Kind `14` general
   DMs never use this lane.
-- Writes: only when the recipient has no usable declaration, and only to the
-  explicit Conduit-operated allowlist (`config.dmBootstrapWriteRelayUrls`).
-  Arbitrary NIP-65, local OUT, commerce-priority, or public relays are never
+- Writes: only when the recipient has no usable declaration. Eligible relays
+  are the secure intersection of the operator-approved compatibility-write
+  registry and relays Conduit inbox readers poll. Recipient NIP-65 read relays
+  may reorder matching eligible entries but can never add a relay. The stable
+  result is normalized, deduplicated, and capped at three.
+- Arbitrary NIP-65, local IN/OUT, product provenance, NIP-89 hints,
+  commerce-priority, wrapper sources, and other public relays are never
   compatibility write targets.
 - A valid current or cached kind `10050` declaration always outranks the
-  bootstrap lane; a newly observed valid declaration returns subsequent writes
+  compatibility lane; a newly observed valid declaration returns subsequent writes
   to the declared route.
-- The lane ships behind an independent redeploy-controlled flag
-  (`VITE_DM_BOOTSTRAP_WRITES`), default off.
+- The same recipient gift wrap is attempted on every planned target. One ACK is
+  successful delivery with partial diagnostics and retry state for non-ACKed
+  targets; zero ACKs is an explicit failure. ACK means relay acceptance, not
+  recipient pickup.
+- The lane requires a one-use validated-order scope bound to rumor id, order
+  id, sender, and recipient. A caller boolean cannot authorize it.
+- The lane ships through the repo-owned deployment profile. Preview enables it
+  for review; production and staging remain independently false by default.
 - Rationale, owner, evidence, and the removal checklist live in
   `docs/knowledge/nip17-inbox-bootstrap-migration.md`.
 

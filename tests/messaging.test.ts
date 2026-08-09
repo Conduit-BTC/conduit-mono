@@ -8,6 +8,7 @@ import {
   __resetInboxRelayCache,
   buildDirectMessageRumor,
   classifyPrivateMessageKind,
+  createValidatedOrderRouteScope,
   decryptLegacyDirectMessage,
   detectNip44Capabilities,
   EVENT_KINDS,
@@ -18,6 +19,7 @@ import {
   PrivateMessageRelayReadinessError,
   publishPrivateMessage,
   publishPrivateMessageRelayDeclaration,
+  RelayPublishDiagnosticsError,
   unwrapGiftWrap,
   type GiftUnwrapFn,
 } from "@conduit/core"
@@ -52,6 +54,18 @@ function orderRumor(overrides: Partial<NDKEvent> = {}): NDKEvent {
     content: JSON.stringify({ note: "Order update" }),
     ...overrides,
   })
+}
+
+function validatedOrderInput(order = orderRumor()) {
+  return {
+    rumor: order,
+    validatedOrderScope: createValidatedOrderRouteScope({
+      rumor: order,
+      orderId: "order-id",
+      senderPubkey: "sender",
+      recipientPubkey: "recipient",
+    }),
+  }
 }
 
 describe("classifyPrivateMessageKind", () => {
@@ -634,21 +648,20 @@ describe("publishPrivateMessage", () => {
     expect(result.selfCopyError).toBe("self relay rejected")
   })
 
-  it("delivers a validated order over the bootstrap route when the recipient has no declaration", async () => {
+  it("delivers a validated order over the compatibility route when the recipient has no declaration", async () => {
     const publishes: Array<{ id: string; relays: readonly string[] }> = []
 
     const result = await publishPrivateMessage({
-      rumor: orderRumor(),
+      ...validatedOrderInput(),
       senderPubkey: "sender",
       recipientPubkey: "recipient",
       signer,
       rumorKind: EVENT_KINDS.ORDER,
       selfCopy: false,
       recipientInboxRelays: [],
-      validatedOrderScope: true,
-      bootstrapRoute: {
+      compatibilityOrderRoute: {
         enabled: true,
-        relayUrls: ["wss://bootstrap.conduit.example"],
+        relayUrls: ["wss://compatibility.conduit.example"],
       },
       giftWrapFn: (async (_rumor, recipient) =>
         wrap(`wrap-${recipient.pubkey}`)) as never,
@@ -664,27 +677,129 @@ describe("publishPrivateMessage", () => {
     expect(publishes).toEqual([
       {
         id: "wrap-recipient",
-        relays: ["wss://bootstrap.conduit.example"],
+        relays: ["wss://compatibility.conduit.example"],
       },
     ])
-    expect(result.deliveryRoute).toBe("conduit_bootstrap")
+    expect(result.deliveryRoute).toBe("compatibility_order")
   })
 
-  it("keeps a declared inbox exclusive even when bootstrap is enabled", async () => {
+  it("accepts one compatibility ACK, surfaces partial delivery, and keeps NIP-65 bounded", async () => {
+    const result = await publishPrivateMessage({
+      ...validatedOrderInput(),
+      senderPubkey: "sender",
+      recipientPubkey: "recipient",
+      signer,
+      rumorKind: EVENT_KINDS.ORDER,
+      selfCopy: false,
+      recipientInboxRelays: [],
+      compatibilityOrderRoute: {
+        enabled: true,
+        relayUrls: [
+          "wss://conduit.example",
+          "wss://inbox.example",
+          "wss://interop.example",
+        ],
+      },
+      resolveCompatibilityRecipientReadRelays: async () => [
+        "wss://arbitrary.example",
+        "wss://inbox.example/",
+      ],
+      giftWrapFn: (async () => wrap("recipient-wrap")) as never,
+      publishFn: (async (_event, options) => {
+        const relayUrls = [...(options.exclusiveRelayUrls ?? [])]
+        expect(relayUrls).toEqual([
+          "wss://inbox.example",
+          "wss://conduit.example",
+          "wss://interop.example",
+        ])
+        return {
+          plan: {
+            intent: "recipient_event",
+            primaryRelayUrls: relayUrls,
+            broadcastRelayUrls: [],
+            parkedRelayUrls: [],
+          },
+          attemptedRelayUrls: relayUrls,
+          successfulRelayUrls: ["wss://inbox.example"],
+          failedRelayUrls: ["wss://conduit.example", "wss://interop.example"],
+          relayFailureMessages: {
+            "wss://conduit.example": "No acknowledgement before timeout",
+            "wss://interop.example": "rate-limited: retry later",
+          },
+        }
+      }) as never,
+    })
+
+    expect(result.deliveryStatus).toBe("partial_success")
+    expect(result.recipientDelivery.successfulRelayUrls).toEqual([
+      "wss://inbox.example",
+    ])
+    expect(result.deliveryRelaySources).toEqual({
+      "wss://inbox.example": "recipient_nip65",
+      "wss://conduit.example": "compatibility_registry",
+      "wss://interop.example": "compatibility_registry",
+    })
+    expect(JSON.stringify(result.deliveryRelaySources)).not.toContain(
+      "Order update"
+    )
+  })
+
+  it("fails explicitly when every compatibility relay fails", async () => {
+    const diagnostics = {
+      plan: {
+        intent: "recipient_event" as const,
+        primaryRelayUrls: ["wss://one.example", "wss://two.example"],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      },
+      attemptedRelayUrls: ["wss://one.example", "wss://two.example"],
+      successfulRelayUrls: [],
+      failedRelayUrls: ["wss://one.example", "wss://two.example"],
+      relayFailureMessages: {
+        "wss://one.example": "No acknowledgement before timeout",
+        "wss://two.example": "No acknowledgement before timeout",
+      },
+    }
+
+    await expect(
+      publishPrivateMessage({
+        ...validatedOrderInput(),
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer,
+        rumorKind: EVENT_KINDS.ORDER,
+        selfCopy: false,
+        recipientInboxRelays: [],
+        compatibilityOrderRoute: {
+          enabled: true,
+          relayUrls: ["wss://one.example", "wss://two.example"],
+        },
+        giftWrapFn: (async () => wrap("recipient-wrap")) as never,
+        publishFn: (async () => {
+          throw new RelayPublishDiagnosticsError(
+            "No compatibility relay ACKed the order.",
+            diagnostics,
+            new Error("relay delivery failed")
+          )
+        }) as never,
+      })
+    ).rejects.toBeInstanceOf(RelayPublishDiagnosticsError)
+  })
+
+  it("keeps a declared inbox exclusive even when compatibility is enabled", async () => {
     const publishes: Array<readonly string[]> = []
 
     const result = await publishPrivateMessage({
-      rumor: orderRumor(),
+      ...validatedOrderInput(),
       senderPubkey: "sender",
       recipientPubkey: "recipient",
       signer,
       rumorKind: EVENT_KINDS.ORDER,
       selfCopy: false,
       recipientInboxRelays: ["wss://recipient.inbox.example"],
-      validatedOrderScope: true,
-      bootstrapRoute: {
+      compatibilityOrderRoute: {
         enabled: true,
-        relayUrls: ["wss://bootstrap.conduit.example"],
+        relayUrls: ["wss://compatibility.conduit.example"],
       },
       giftWrapFn: (async (_rumor, recipient) =>
         wrap(`wrap-${recipient.pubkey}`)) as never,
@@ -698,7 +813,7 @@ describe("publishPrivateMessage", () => {
     expect(result.deliveryRoute).toBe("declared_inbox")
   })
 
-  it("never routes kind-14 direct messages through the bootstrap lane", async () => {
+  it("never routes kind-14 direct messages through the compatibility lane", async () => {
     let published = false
     let thrown: unknown
 
@@ -711,10 +826,10 @@ describe("publishPrivateMessage", () => {
         rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
         selfCopy: false,
         recipientInboxRelays: [],
-        validatedOrderScope: true,
-        bootstrapRoute: {
+        validatedOrderScope: {} as never,
+        compatibilityOrderRoute: {
           enabled: true,
-          relayUrls: ["wss://bootstrap.conduit.example"],
+          relayUrls: ["wss://compatibility.conduit.example"],
         },
         giftWrapFn: (async () => wrap("unexpected")) as never,
         publishFn: (async () => {
@@ -733,7 +848,7 @@ describe("publishPrivateMessage", () => {
     expect(published).toBe(false)
   })
 
-  it("blocks unvalidated orders from the bootstrap lane", async () => {
+  it("blocks unvalidated orders from the compatibility lane", async () => {
     let published = false
     let thrown: unknown
 
@@ -746,9 +861,9 @@ describe("publishPrivateMessage", () => {
         rumorKind: EVENT_KINDS.ORDER,
         selfCopy: false,
         recipientInboxRelays: [],
-        bootstrapRoute: {
+        compatibilityOrderRoute: {
           enabled: true,
-          relayUrls: ["wss://bootstrap.conduit.example"],
+          relayUrls: ["wss://compatibility.conduit.example"],
         },
         giftWrapFn: (async () => wrap("unexpected")) as never,
         publishFn: (async () => {
@@ -767,20 +882,19 @@ describe("publishPrivateMessage", () => {
     expect(published).toBe(false)
   })
 
-  it("keeps bootstrap writes disabled by default for validated orders", async () => {
+  it("keeps compatibility writes disabled by default for validated orders", async () => {
     let published = false
     let thrown: unknown
 
     try {
       await publishPrivateMessage({
-        rumor: orderRumor(),
+        ...validatedOrderInput(),
         senderPubkey: "sender",
         recipientPubkey: "recipient",
         signer,
         rumorKind: EVENT_KINDS.ORDER,
         selfCopy: false,
         recipientInboxRelays: [],
-        validatedOrderScope: true,
         giftWrapFn: (async () => wrap("unexpected")) as never,
         publishFn: (async () => {
           published = true
@@ -798,25 +912,24 @@ describe("publishPrivateMessage", () => {
     expect(published).toBe(false)
   })
 
-  it("blocks a malformed recipient declaration instead of bootstrapping", async () => {
+  it("blocks a malformed recipient declaration instead of using compatibility", async () => {
     let published = false
     let thrown: unknown
 
     try {
       await publishPrivateMessage({
-        rumor: orderRumor(),
+        ...validatedOrderInput(),
         senderPubkey: "sender",
         recipientPubkey: "recipient",
         signer,
         rumorKind: EVENT_KINDS.ORDER,
         selfCopy: false,
         // Signed declaration with no secure relay: malformed, never
-        // downgraded to not_declared, so the bootstrap lane stays closed.
+        // downgraded to not_declared, so the compatibility lane stays closed.
         recipientInboxRelays: ["ws://insecure.example"],
-        validatedOrderScope: true,
-        bootstrapRoute: {
+        compatibilityOrderRoute: {
           enabled: true,
-          relayUrls: ["wss://bootstrap.conduit.example"],
+          relayUrls: ["wss://compatibility.conduit.example"],
         },
         giftWrapFn: (async () => wrap("unexpected")) as never,
         publishFn: (async () => {
@@ -835,11 +948,11 @@ describe("publishPrivateMessage", () => {
     expect(published).toBe(false)
   })
 
-  it("keeps the sender self-copy off the bootstrap lane", async () => {
+  it("keeps the sender self-copy off the compatibility lane", async () => {
     const publishedExclusiveSets: string[][] = []
 
     const result = await publishPrivateMessage({
-      rumor: orderRumor(),
+      ...validatedOrderInput(),
       senderPubkey: "sender",
       recipientPubkey: "recipient",
       signer,
@@ -847,10 +960,9 @@ describe("publishPrivateMessage", () => {
       selfCopy: true,
       recipientInboxRelays: [],
       senderInboxRelays: [],
-      validatedOrderScope: true,
-      bootstrapRoute: {
+      compatibilityOrderRoute: {
         enabled: true,
-        relayUrls: ["wss://bootstrap.conduit.example"],
+        relayUrls: ["wss://compatibility.conduit.example"],
       },
       giftWrapFn: (async () => wrap("wrap")) as never,
       publishFn: (async (_event: unknown, options: never) => {
@@ -861,11 +973,11 @@ describe("publishPrivateMessage", () => {
       }) as never,
     })
 
-    // Recipient leg bootstraps; the sender self-copy stays strict and
+    // Recipient leg uses compatibility; the sender self-copy stays strict and
     // fails soft instead of writing to the compatibility allowlist.
-    expect(result.deliveryRoute).toBe("conduit_bootstrap")
+    expect(result.deliveryRoute).toBe("compatibility_order")
     expect(publishedExclusiveSets).toEqual([
-      ["wss://bootstrap.conduit.example"],
+      ["wss://compatibility.conduit.example"],
     ])
     expect(result.selfCopyError).toBe(
       "Sender has no usable NIP-17 inbox relay declaration."

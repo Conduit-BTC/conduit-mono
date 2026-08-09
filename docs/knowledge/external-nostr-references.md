@@ -68,7 +68,7 @@ Guidance:
 - NIP-44 v3 readiness is an intentional Conduit planning track because the ecosystem is moving in that direction and clients are experimenting. Do not remove v3 planning just because the official NIP still defines v2.
 - Treat NIP-44 v3 implementation as source-gated: before code uses it, link the public draft/client references from this file or the relevant repo spec, keep v2 fallback, and require explicit capability detection.
 - NIP-17 uses kind `10050` private-message relay lists for recipient inbox relays. Do not substitute general NIP-65 relay lists as the only DM routing model once kind `10050` support is in scope.
-- A temporary, bounded Conduit exception (bootstrap order routing for validated kind-16 order traffic during declaration migration) is documented in `docs/knowledge/nip17-inbox-bootstrap-migration.md`. It is not NIP-17 routing; do not widen it or present it as protocol behavior.
+- A temporary, bounded Conduit exception (validated-order compatibility routing for kind-16 traffic during declaration migration) is documented in `docs/knowledge/nip17-inbox-bootstrap-migration.md`. It is not NIP-17 routing; do not widen it or present it as protocol behavior.
 - A sender copy should be wrapped separately when local encrypted recovery is required.
 - Do not add NIP-04 sending. Legacy read-only recovery must stay narrow and explicitly documented.
 - Logs, telemetry, analytics, PR evidence, and diagnostics must not include plaintext, ciphertext, invoices, order contents, addresses, phone/email, signer secrets, NWC URIs, or message bodies.

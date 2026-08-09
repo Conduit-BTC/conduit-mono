@@ -4,7 +4,10 @@ import { EVENT_KINDS } from "./kinds"
 import { getNdk } from "./ndk"
 import { appendConduitClientTag } from "./nip89"
 import { parseOrderMessageRumorEvent } from "./orders"
-import { publishPrivateMessage } from "./messaging"
+import {
+  createValidatedOrderRouteScope,
+  publishPrivateMessage,
+} from "./messaging"
 import type { PrivateMessageDeliveryRoute } from "./private-message-routing"
 
 export type MerchantOrderDelivery = "buyer_and_self" | "self_only"
@@ -91,8 +94,13 @@ export async function publishMerchantOrderMessage(
     rumorKind: EVENT_KINDS.ORDER,
     selfCopy: input.delivery === "buyer_and_self",
     // Merchant replies, invoices, and proofs belong to a validated inbound
-    // order lifecycle, so they qualify for bootstrap routing (CND-208).
-    validatedOrderScope: true,
+    // order lifecycle, so they qualify for compatibility routing (CND-208).
+    validatedOrderScope: createValidatedOrderRouteScope({
+      rumor,
+      orderId: input.orderId,
+      senderPubkey: input.merchantPubkey,
+      recipientPubkey,
+    }),
   })
   if (selfCopyError) {
     console.warn("Merchant order self-copy publish failed", selfCopyError)

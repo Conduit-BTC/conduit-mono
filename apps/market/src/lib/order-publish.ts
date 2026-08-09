@@ -3,10 +3,12 @@ import {
   EVENT_KINDS,
   appendConduitClientTag,
   cacheParsedOrderMessage,
+  createValidatedOrderRouteScope,
   getNdk,
   parseOrderMessageRumorEvent,
   publishPrivateMessage,
   type OrderDeliveryRoute,
+  type OrderRelayDeliveryRecord,
 } from "@conduit/core"
 
 /**
@@ -23,6 +25,8 @@ export type BuyerMessageDeliveryResult = {
   localCacheError: string | null
   /** Write lane that delivered the merchant leg (CND-208). */
   deliveryRoute: OrderDeliveryRoute
+  /** Exact encrypted recipient wrap + per-relay outcomes for bounded retry. */
+  orderRelayDelivery?: OrderRelayDeliveryRecord
 }
 
 export type BuyerOrderSigningIdentity =
@@ -144,7 +148,11 @@ export async function publishBuyerOrderMessage(
   prepareBuyerRumor(rumor, buyerIdentity.pubkey)
 
   const publish = dependencies.publishPrivateMessageFn ?? publishPrivateMessage
-  const { selfCopyError: buyerSelfCopyError, deliveryRoute } = await publish({
+  const {
+    selfCopyError: buyerSelfCopyError,
+    deliveryRoute,
+    orderRelayDelivery,
+  } = await publish({
     rumor,
     senderPubkey: buyerIdentity.pubkey,
     recipientPubkey: merchantPubkey,
@@ -152,10 +160,15 @@ export async function publishBuyerOrderMessage(
     rumorKind: EVENT_KINDS.ORDER,
     selfCopy: buyerIdentity.kind !== "guest_ephemeral",
     // Checkout-created kind-16 orders are locally validated, so the merchant
-    // leg may use the bounded Conduit bootstrap route when the merchant has
+    // leg may use the bounded compatibility route when the merchant has
     // no usable NIP-17 declaration (CND-208). Guest orders gain no reply
     // promise from this.
-    validatedOrderScope: true,
+    validatedOrderScope: createValidatedOrderRouteScope({
+      rumor,
+      orderId: rumor.tags.find((tag) => tag[0] === "order")?.[1] ?? "",
+      senderPubkey: buyerIdentity.pubkey,
+      recipientPubkey: merchantPubkey,
+    }),
   })
 
   const localCacheError =
@@ -164,7 +177,12 @@ export async function publishBuyerOrderMessage(
       : await (dependencies.cacheBuyerOrderRumorFn ?? cacheBuyerOrderRumor)(
           rumor
         )
-  return { buyerSelfCopyError, localCacheError, deliveryRoute }
+  return {
+    buyerSelfCopyError,
+    localCacheError,
+    deliveryRoute,
+    ...(orderRelayDelivery ? { orderRelayDelivery } : {}),
+  }
 }
 
 /** Build the kind-16 payment-proof rumor for an order. */

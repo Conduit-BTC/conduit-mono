@@ -19,7 +19,7 @@ Orders link there and never publish declarations themselves.
 
 ## The temporary exception
 
-**Conduit bootstrap order routing** is a named, bounded, Conduit-owned lane for
+**Validated-order compatibility routing** is a named, bounded, operator-curated lane for
 validated kind-16 order-lifecycle traffic during migration. It is not
 NIP-17-conformant routing and must not be presented as an extension of NIP-17.
 NIP-44/NIP-59 encrypted gift wraps are preserved end to end.
@@ -27,11 +27,11 @@ NIP-44/NIP-59 encrypted gift wraps are preserved end to end.
 | State                                           | Reads                                                              | Writes                                 |
 | ----------------------------------------------- | ------------------------------------------------------------------ | -------------------------------------- |
 | Valid kind 10050                                | Declared inboxes + local secure IN + bounded compatibility overlap | Declared inboxes only                  |
-| No usable declaration, validated kind 16 order  | Local secure IN + configured compatibility relay                   | Configured Conduit bootstrap route     |
+| No usable declaration, validated kind 16 order  | Local secure IN + configured compatibility relays                  | Bounded compatibility order plan       |
 | Discovery unavailable, valid cached declaration | Cached declared inboxes + compatibility reads                      | Cached declared inboxes                |
 | Signed empty/malformed declaration observed     | Preserve cached reads; show repair                                 | Block; do not override signed state    |
 | General kind 14 DM without declaration          | Permissive own-inbox reads; sends stay blocked                     | Block                                  |
-| Guest checkout                                  | Merchant order leg may bootstrap                                   | No guest inbox/self-copy/reply promise |
+| Guest checkout                                  | Merchant order leg may use compatibility                           | No guest inbox/self-copy/reply promise |
 
 Invariants:
 
@@ -39,19 +39,31 @@ Invariants:
 - A valid current or cached kind `10050` always outranks compatibility.
 - A complete authoritative "not declared" read evicts the cached declaration;
   a confirmed-absent declaration never resurrects as a write target.
-- The bootstrap lane is recipient-only: the non-critical sender self-copy leg
+- The compatibility lane is recipient-only: the non-critical sender self-copy leg
   stays strict and fails soft when the sender has no usable declaration.
 - Gift-wrap reads are permissive at the transport layer (inner kinds are not
   separable before decryption); the kind-14 strictness applies to delivery
   writes only. DM surfaces display received messages permissively and gate
   composing/replying on declared readiness.
-- Compatibility writes use only the explicit Conduit-operated allowlist
-  (`config.dmBootstrapWriteRelayUrls`); never arbitrary NIP-65, local OUT,
-  commerce-priority, or public relays.
-- Compatibility requires a validated kind-16 order lifecycle
-  (`validatedOrderScope`); kind 14 stays strict-only.
-- Relay ACK is relay acceptance, not recipient receipt/read; zero ACK never
-  becomes sent/delivered.
+- Compatibility eligibility is the secure normalized intersection of
+  `config.dmCompatibilityOrderRelayUrls` and the bounded compatibility inbox
+  read set. Eligible write targets are reserved ahead of optional local/public
+  read sources inside the read fanout, so Conduit clients poll every target.
+- Recipient signed NIP-65 read relays may move matching eligible relays to the
+  front. They never add a relay. Remaining entries keep registry order; URLs
+  are normalized/deduplicated and the result is capped at three.
+- Arbitrary NIP-65, local IN/OUT, product source/provenance, NIP-89 and `p`-tag
+  hints, wrapper sources, commerce-priority, and other public relays are
+  explicitly ineligible.
+- Compatibility requires a one-use validated kind-16 order scope bound to the
+  rumor id, order id, sender, and recipient; kind 14 stays strict-only.
+- The same signed recipient wrap is attempted on the whole plan. Relay ACK is
+  relay acceptance, not recipient receipt/read. At least one ACK is successful
+  delivery; failed targets remain content-free retry state. Zero ACKs is an
+  explicit failure and never becomes sent/delivered.
+- Declared kind `10050` delivery remains exclusive but is capped at the first
+  three secure normalized tags, preserving signed tag order and surfacing
+  truncation instead of allowing an unbounded recipient-controlled fanout.
 - No automatic signer prompt; no NIP-04 sending.
 - Diagnostics and telemetry stay identifier-free and content-free.
 
@@ -60,14 +72,34 @@ Invariants:
 - Typed routing model, declaration cache, read planning, route selection:
   `packages/core/src/protocol/private-message-routing.ts`
 - Send-side gating and lane provenance: `packages/core/src/protocol/messaging.ts`
-  (`publishPrivateMessage`, `validatedOrderScope`, `deliveryRoute`)
+  (`publishPrivateMessage`, `ValidatedOrderRouteScope`, `deliveryRoute`)
 - Permissive inbox reads with coverage/source meta:
   `packages/core/src/protocol/commerce.ts` (`meta.inbox`)
 - Network-owned readiness/repair: `packages/core/src/hooks/useInboxDeclaration.ts`,
   `packages/ui/src/components/PrivateInboxSection.tsx`, both `network.tsx` routes
 - Order provenance: `orderLifecycles.orderDeliveryRoute`
-  (`declared_inbox` | `conduit_bootstrap`)
-- Flag: `VITE_DM_BOOTSTRAP_WRITES` (redeploy-controlled, default off)
+  (`declared_inbox` | `compatibility_order`), with the exact encrypted wrap and
+  per-relay outcomes in `orderLifecycles.orderRelayDelivery`
+- Public build policy: `deploy/pages-profiles.json`. Preview enables the lane;
+  production and staging are independently false by default. Vite compiles the
+  legacy `VITE_DM_BOOTSTRAP_WRITES` input from that profile rather than trusting
+  a Cloudflare dashboard override.
+- QA manifest: `/.well-known/conduit-deployment.json` exposes only app/profile,
+  source commit/branch, build time, public feature values, and their SHA-256
+  digest.
+
+## Delivery examples
+
+- Valid kind `10050`: `declared_inbox -> [declared-a, declared-b]`. No
+  compatibility relay is added.
+- No declaration, recipient NIP-65 reads one approved relay:
+  `compatibility_order -> [approved-recipient-match, conduit, approved-inbox]`
+  (maximum three). An arbitrary NIP-65 relay is ignored.
+- Partial outage: the same wrap is attempted on all three; one ACK plus two
+  timeout/reject outcomes is successful and the two non-ACKed entries remain
+  retryable for the active signed-in buyer.
+- Complete failure: zero ACKs throws delivery diagnostics and checkout cannot
+  move to payment or claim the order was sent.
 
 ## Removal gate
 

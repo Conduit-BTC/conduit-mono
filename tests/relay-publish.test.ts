@@ -399,46 +399,27 @@ describe("planPublishRelays", () => {
     expect(result.failedRelayUrls).toEqual([broadcastRelay])
   })
 
-  it("adds extraRelayUrls (e.g. kind-10050 inbox relays) to the delivery targets", async () => {
-    const primaryRelay = "wss://planned.example"
-    const inboxRelay = "wss://inbox-10050.example"
-    let attempted: string[] = []
+  it("refuses to publish a gift wrap without an exclusive private-message plan", async () => {
+    let attempted = false
     const fakeEvent = signedTestEvent({
       kind: EVENT_KINDS.GIFT_WRAP,
-      publish: async (relaySet: unknown) => {
-        attempted = [
-          ...((relaySet as { relayUrls?: Set<string> | string[] }).relayUrls ??
-            []),
-        ]
-        return new Set(attempted.map((url) => ({ url })))
+      publish: async () => {
+        attempted = true
+        return new Set()
       },
     })
 
-    __setRelayPublishTestOverrides({
-      planPublishRelays: async () => ({
+    await expect(
+      publishWithPlanner(fakeEvent, {
         intent: "recipient_event",
-        primaryRelayUrls: [primaryRelay],
-        broadcastRelayUrls: [],
-        parkedRelayUrls: [],
-      }),
-    })
-
-    await publishWithPlanner(fakeEvent, {
-      intent: "recipient_event",
-      authorPubkey: "alice",
-      recipientPubkeys: ["bob"],
-      extraRelayUrls: [inboxRelay, "ws://insecure.example"],
-    })
-
-    expect(fakeEvent.ndk).toBeDefined()
-    expect(attempted.some((url) => url.includes("planned.example"))).toBe(true)
-    expect(attempted.some((url) => url.includes("inbox-10050.example"))).toBe(
-      true
+        authorPubkey: "alice",
+        recipientPubkeys: ["bob"],
+        extraRelayUrls: ["wss://inbox-10050.example"],
+      })
+    ).rejects.toThrow(
+      "Gift wraps require an exclusive private-message relay plan"
     )
-    // insecure hints are dropped
-    expect(attempted.some((url) => url.includes("insecure.example"))).toBe(
-      false
-    )
+    expect(attempted).toBe(false)
   })
 
   it("never leaves the exclusive relay set after every declared relay rejects", async () => {

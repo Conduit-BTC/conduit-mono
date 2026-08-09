@@ -35,7 +35,22 @@ function orderRumor(overrides: Record<string, unknown> = {}) {
     kind: EVENT_KINDS.ORDER,
     pubkey: "",
     created_at: 100,
-    content: "{}",
+    content: JSON.stringify({
+      id: "guest-order",
+      merchantPubkey: "merchant-pubkey",
+      buyerPubkey: "buyer-pubkey",
+      items: [
+        {
+          productId: "product-id",
+          quantity: 1,
+          priceAtPurchase: 1,
+          currency: "SATS",
+        },
+      ],
+      subtotal: 1,
+      currency: "SATS",
+      createdAt: 100_000,
+    }),
     tags: [
       ["p", "merchant-pubkey"],
       ["type", "order"],
@@ -78,7 +93,12 @@ describe("buyer order publishing", () => {
     expect(captured?.signer).toBe(signer)
     expect(captured?.rumorKind).toBe(EVENT_KINDS.ORDER)
     expect(captured?.selfCopy).toBe(true)
-    expect(captured?.validatedOrderScope).toBe(true)
+    expect(captured?.validatedOrderScope).toMatchObject({
+      rumorId: "order-rumor",
+      orderId: "guest-order",
+      senderPubkey: "buyer-pubkey",
+      recipientPubkey: "merchant-pubkey",
+    })
     expect(cached).toBe(true)
     expect(result).toEqual({
       buyerSelfCopyError: null,
@@ -110,7 +130,7 @@ describe("buyer order publishing", () => {
             wrappedToRecipient: { id: "recipient-wrap" } as never,
             wrappedToSelf: null,
             selfCopyError: null,
-            deliveryRoute: "conduit_bootstrap" as const,
+            deliveryRoute: "compatibility_order" as const,
           }
         },
         cacheBuyerOrderRumorFn: async () => {
@@ -123,7 +143,12 @@ describe("buyer order publishing", () => {
     expect(captured?.senderPubkey).toBe("guest-pubkey")
     expect(captured?.signer).toBe(guestSigner)
     expect(captured?.selfCopy).toBe(false)
-    expect(captured?.validatedOrderScope).toBe(true)
+    expect(captured?.validatedOrderScope).toMatchObject({
+      rumorId: "order-rumor",
+      orderId: "guest-order",
+      senderPubkey: "guest-pubkey",
+      recipientPubkey: "merchant-pubkey",
+    })
     expect(cacheAttempts).toBe(0)
   })
 

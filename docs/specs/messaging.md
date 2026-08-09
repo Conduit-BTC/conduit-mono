@@ -97,8 +97,8 @@ The boundary provides:
   public draft/client references and recipient capability detection are in place.
   NWC/NIP-47 wallet traffic stays on its wallet-supported version regardless.
 - **Secure-message relays (kind `10050`).** Each gift-wrap write uses only the
-  wrap recipient's declared kind-10050 relays, except the bounded Conduit
-  bootstrap order lane below. NIP-65, configured relay lists, commerce
+  wrap recipient's declared kind-10050 relays, except the bounded validated
+  order compatibility lane below. NIP-65, configured relay lists, commerce
   priority, and general relay defaults are not secure-message write fallbacks.
   A signed empty or malformed declaration is an explicit readiness/degraded
   state that the client never overrides.
@@ -116,11 +116,13 @@ lookup_unavailable | malformed` with account-scoped freshness and
   suppress compatibility reads. Wraps are deduplicated by outer wrapper and
   inner rumor ids, and found or cached messages stay visible under partial
   failure.
-- **Conduit bootstrap order routing (temporary, CND-208).** When a validated
+- **Validated-order compatibility routing (temporary, CND-208).** When a validated
   kind-16 order-lifecycle send finds no usable recipient declaration, the write
-  may use only the explicit Conduit-operated allowlist, behind an independent
-  redeploy-controlled flag (default off). Kind-14 general DMs never use this
-  lane; a valid declaration always outranks it. The lane is recipient-only:
+  may use a maximum of three relays from the explicit private-inbox
+  compatibility registry. A signed recipient NIP-65 read list may rank matches
+  inside that registry but cannot widen it. Kind-14 general DMs never use this
+  lane; a valid declaration always outranks it. A one-use order scope binds the
+  rumor, order, sender, and recipient. The lane is recipient-only:
   the non-critical sender self-copy leg stays strict and fails soft. A
   complete authoritative "not declared" lookup evicts any cached declaration
   so a confirmed-absent declaration never resurrects as a write target. See
@@ -188,8 +190,9 @@ follows `docs/specs/privacy-observability.md`.
 - Map decrypt/unwrap failure into a visible degraded state; retry targets only
   failed wrap ids.
 - Resolve NIP-17 writes exclusively through the recipient kind-10050
-  declaration; only validated kind-16 order sends may use the flagged bootstrap
-  allowlist, and kind-14 is excluded from it.
+  declaration; only validated kind-16 order sends may use the flagged bounded
+  compatibility plan, and kind-14 is excluded from it. One relay ACK is a
+  successful partial delivery; zero ACKs is an explicit failure.
 - Declaration discovery separates `not_declared` from `lookup_partial` /
   `lookup_unavailable` / `malformed`; permissive reads keep cached and partial
   results visible with coverage and source provenance.

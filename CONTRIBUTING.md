@@ -159,6 +159,14 @@ the `bug` and `user-reported` labels. Maintainers should triage these by:
   - `BUN_VERSION=1.3.5`
   - `NODE_VERSION=20`
 - Without those vars, Cloudflare can fall back to `npm install`, which breaks Bun workspace installs.
+- Public frontend behavior comes from `deploy/pages-profiles.json`, not Pages
+  dashboard `VITE_*` feature toggles. A Pages Git build derives `preview` from a
+  non-`main` `CF_PAGES_BRANCH` and `production` from `main`; an unknown or
+  incomplete profile fails during Vite config loading.
+- Cloudflare may rebuild the Git commit, but it cannot independently resolve
+  managed public feature state. CI builds the same explicit profile and checks
+  each emitted `/.well-known/conduit-deployment.json` for the expected profile,
+  source commit, feature value, and public-config digest.
 
 ### Required checks before merge
 

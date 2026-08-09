@@ -45,6 +45,8 @@
     "dev:mock": "bun run dev:market:mock & bun run dev:merchant:mock",
     "dev:store-builder": "bun run --filter @conduit/store-builder dev",
     "build": "bun run --filter @conduit/core build && bun run --filter @conduit/ui build && bun run --filter './apps/*' build",
+    "build:preview": "CONDUIT_DEPLOYMENT_PROFILE=preview bun run build && bun scripts/ci/verify_deployment_artifacts.ts preview",
+    "build:production": "CONDUIT_DEPLOYMENT_PROFILE=production bun run build && bun scripts/ci/verify_deployment_artifacts.ts production",
     "build:packages": "bun run --filter @conduit/core build && bun run --filter @conduit/ui build",
     "typecheck": "bun run --filter '*' typecheck",
     "lint": "bun run --filter '*' lint",

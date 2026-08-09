@@ -34,6 +34,7 @@ import {
   buildDirectMessageRumor,
   cacheParsedDirectMessage,
   cacheParsedOrderMessage,
+  createValidatedOrderRouteScope,
   formatNpub,
   getCachedDirectMessageConversationList,
   getDirectMessageConversationList,
@@ -480,7 +481,7 @@ function MessagesPage() {
       prepareBuyerConversationRumor(rumor, pubkey)
 
       // Reply inside an existing validated order thread: order identity and
-      // counterparty match the parsed conversation, so the bootstrap lane
+      // counterparty match the parsed conversation, so the compatibility lane
       // may carry it when the merchant has no usable declaration.
       const { selfCopyError } = await publishPrivateMessage({
         rumor,
@@ -488,7 +489,12 @@ function MessagesPage() {
         recipientPubkey: selectedConversation.merchantPubkey,
         signer: ndk.signer,
         rumorKind: EVENT_KINDS.ORDER,
-        validatedOrderScope: true,
+        validatedOrderScope: createValidatedOrderRouteScope({
+          rumor,
+          orderId: selectedConversation.orderId,
+          senderPubkey: pubkey,
+          recipientPubkey: selectedConversation.merchantPubkey,
+        }),
       })
       if (selfCopyError) {
         console.warn("Buyer message self-copy publish failed", selfCopyError)

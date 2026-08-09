@@ -87,9 +87,10 @@ export function useRelaySettings(
     pubkey,
     scope?.trim() || null,
   ])
-  const initializedContextKeyRef = useRef(relaySettingsContextKey)
   const currentContextKeyRef = useRef(relaySettingsContextKey)
-  currentContextKeyRef.current = relaySettingsContextKey
+  const [initializedContextKey, setInitializedContextKey] = useState(
+    relaySettingsContextKey
+  )
   const [settings, setSettings] = useState<RelaySettingsState>(() =>
     loadRelaySettings(scope)
   )
@@ -110,7 +111,8 @@ export function useRelaySettings(
   const [publishError, setPublishError] = useState<string | null>(null)
 
   useEffect(() => {
-    initializedContextKeyRef.current = relaySettingsContextKey
+    currentContextKeyRef.current = relaySettingsContextKey
+    setInitializedContextKey(relaySettingsContextKey)
     setScanningUrls([])
     setError(null)
     if (!enabled) {
@@ -492,7 +494,7 @@ export function useRelaySettings(
     error,
     isLoadingPublishedRelayList:
       isLoadingPublishedRelayList ||
-      initializedContextKeyRef.current !== relaySettingsContextKey,
+      initializedContextKey !== relaySettingsContextKey,
     publishedRelayListUpdatedAt,
     publishingRelayList,
     publishError,

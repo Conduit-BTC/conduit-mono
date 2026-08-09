@@ -10,8 +10,8 @@ import { getGeneralReadRelayUrls, tryNormalizeRelayUrl } from "./relay-settings"
  *
  * Canonical behavior stays NIP-17: a valid kind-10050 declaration is the
  * preferred and eventual exclusive delivery route. This module adds the typed
- * declaration/readiness model plus the named temporary exception "Conduit
- * bootstrap order routing" for validated kind-16 order traffic during
+ * declaration/readiness model plus the named temporary validated-order
+ * compatibility route for kind-16 order traffic during
  * migration. See docs/knowledge/nip17-inbox-bootstrap-migration.md.
  */
 
@@ -32,7 +32,19 @@ export type InboxReadSource =
 
 /** Delivery lane for an outgoing private message. */
 export type PrivateMessageDeliveryRoute =
-  "declared_inbox" | "conduit_bootstrap" | "blocked"
+  "declared_inbox" | "compatibility_order" | "blocked"
+
+export type CompatibilityOrderRelaySource =
+  "recipient_nip65" | "compatibility_registry"
+
+export interface CompatibilityOrderRelayPlan {
+  relayUrls: string[]
+  relaySources: Record<string, CompatibilityOrderRelaySource>
+  truncated: boolean
+}
+
+export const MAX_COMPATIBILITY_ORDER_RELAYS = 3
+export const MAX_DECLARED_INBOX_WRITE_RELAYS = 3
 
 export interface PrivateMessageRelays {
   pubkey: string
@@ -300,6 +312,11 @@ export interface PlanInboxReadRelaysInput {
   localReadRelayUrls?: readonly string[]
   /** Bounded compatibility reads; defaults to config.commerceDmFallbackRelayUrls. */
   compatibilityRelayUrls?: readonly string[]
+  /**
+   * Compatibility write targets Conduit must also poll. Defaults to the
+   * operator-approved order registry and may only select from the read set.
+   */
+  requiredCompatibilityRelayUrls?: readonly string[]
   maxRelays?: number
 }
 
@@ -330,6 +347,14 @@ export function planInboxReadRelays(
   const compatibility = secureRelayUrls(
     input.compatibilityRelayUrls ?? config.commerceDmFallbackRelayUrls
   )
+  const compatibilitySet = new Set(compatibility)
+  const requiredCompatibility = secureRelayUrls(
+    input.requiredCompatibilityRelayUrls ?? config.dmCompatibilityOrderRelayUrls
+  ).filter((url) => compatibilitySet.has(url))
+  const requiredCompatibilitySet = new Set(requiredCompatibility)
+  const remainingCompatibility = compatibility.filter(
+    (url) => !requiredCompatibilitySet.has(url)
+  )
 
   const relaySources: InboxReadPlan["relaySources"] = {}
   const orderedUrls: string[] = []
@@ -345,8 +370,12 @@ export function planInboxReadRelays(
   }
   add(declared, "declared")
   add(cachedFallback, "cache")
+  // Reserve the write/read overlap before optional local and public
+  // compatibility sources so a large local IN list cannot make an order
+  // unreadable in Conduit after a compatibility delivery.
+  add(requiredCompatibility, "compatibility")
   add(localIn, "local_in")
-  add(compatibility, "compatibility")
+  add(remainingCompatibility, "compatibility")
 
   const limited =
     input.maxRelays && input.maxRelays > 0
@@ -375,6 +404,9 @@ export interface DeliveryRouteSelection {
   route: PrivateMessageDeliveryRoute
   /** Exclusive write targets for the selected route; empty when blocked. */
   relayUrls: string[]
+  /** Content-free per-target routing evidence. */
+  relaySources: Record<string, "declared" | CompatibilityOrderRelaySource>
+  truncated: boolean
   /** Content-free reason for a blocked route. */
   blockedReason?:
     "recipient_not_ready" | "recipient_lookup_failed" | "declaration_malformed"
@@ -389,10 +421,53 @@ export interface SelectDeliveryRouteInput {
    * and counterparty. General kind-14 DMs must pass false.
    */
   validatedOrder: boolean
-  /** Redeploy-controlled bootstrap flag; defaults to config. */
-  bootstrapEnabled?: boolean
-  /** Conduit-operated bootstrap allowlist; defaults to config. */
-  bootstrapRelayUrls?: readonly string[]
+  /** Deployment-profile-controlled compatibility flag; defaults to config. */
+  compatibilityEnabled?: boolean
+  /** Operator-approved compatibility registry; defaults to config. */
+  compatibilityRelayUrls?: readonly string[]
+  /** Signed recipient NIP-65 read relays may rank, but never widen, the pool. */
+  recipientReadRelayUrls?: readonly string[]
+  maxCompatibilityRelays?: number
+}
+
+/**
+ * Build the non-standard compatibility lane used only for validated orders.
+ * The operator-approved registry is the complete eligibility boundary. Signed
+ * recipient NIP-65 read evidence can only move matching entries to the front;
+ * arbitrary NIP-65 relays never become private-message write targets.
+ */
+export function planCompatibilityOrderRelays(input: {
+  approvedRelayUrls: readonly string[]
+  recipientReadRelayUrls?: readonly string[]
+  maxRelays?: number
+}): CompatibilityOrderRelayPlan {
+  const approved = secureRelayUrls(input.approvedRelayUrls)
+  const approvedSet = new Set(approved)
+  const recipientMatches = secureRelayUrls(
+    input.recipientReadRelayUrls ?? []
+  ).filter((url) => approvedSet.has(url))
+  const recipientMatchSet = new Set(recipientMatches)
+  const ordered = [
+    ...recipientMatches,
+    ...approved.filter((url) => !recipientMatchSet.has(url)),
+  ]
+  const maxRelays = Math.max(
+    0,
+    Math.floor(input.maxRelays ?? MAX_COMPATIBILITY_ORDER_RELAYS)
+  )
+  const relayUrls = ordered.slice(0, maxRelays)
+  const relaySources = Object.fromEntries(
+    relayUrls.map((url) => [
+      url,
+      recipientMatchSet.has(url) ? "recipient_nip65" : "compatibility_registry",
+    ])
+  ) as Record<string, CompatibilityOrderRelaySource>
+
+  return {
+    relayUrls,
+    relaySources,
+    truncated: ordered.length > relayUrls.length,
+  }
 }
 
 /**
@@ -400,7 +475,7 @@ export interface SelectDeliveryRouteInput {
  *
  * Invariants (docs/knowledge/nip17-inbox-bootstrap-migration.md):
  * - A valid current or cached declaration always outranks compatibility.
- * - Bootstrap writes use only the explicit Conduit-operated allowlist and
+ * - Compatibility writes use only the explicit operator-approved registry and
  *   only for validated kind-16 order traffic while the flag is enabled.
  * - Kind-14 general DMs never use compatibility delivery.
  * - Signed malformed declarations block writes; repair happens in Network.
@@ -410,12 +485,26 @@ export function selectPrivateMessageDeliveryRoute(
 ): DeliveryRouteSelection {
   const declaration = input.declaration
   if (declaration.state === "declared") {
-    return { route: "declared_inbox", relayUrls: [...declaration.relayUrls] }
+    const declaredRelayUrls = secureRelayUrls(declaration.relayUrls)
+    const relayUrls = declaredRelayUrls.slice(
+      0,
+      MAX_DECLARED_INBOX_WRITE_RELAYS
+    )
+    return {
+      route: "declared_inbox",
+      relayUrls,
+      relaySources: Object.fromEntries(
+        relayUrls.map((url) => [url, "declared"])
+      ),
+      truncated: declaredRelayUrls.length > relayUrls.length,
+    }
   }
   if (declaration.state === "malformed") {
     return {
       route: "blocked",
       relayUrls: [],
+      relaySources: {},
+      truncated: false,
       blockedReason: "declaration_malformed",
     }
   }
@@ -430,22 +519,34 @@ export function selectPrivateMessageDeliveryRoute(
     return {
       route: "blocked",
       relayUrls: [],
+      relaySources: {},
+      truncated: false,
       blockedReason: strictBlockedReason,
     }
   }
 
-  const bootstrapEnabled =
-    input.bootstrapEnabled ?? config.dmBootstrapWritesEnabled
-  const bootstrapRelayUrls = secureRelayUrls(
-    input.bootstrapRelayUrls ?? config.dmBootstrapWriteRelayUrls
-  )
-  if (!bootstrapEnabled || bootstrapRelayUrls.length === 0) {
+  const compatibilityEnabled =
+    input.compatibilityEnabled ?? config.dmCompatibilityOrderRoutingEnabled
+  const compatibilityPlan = planCompatibilityOrderRelays({
+    approvedRelayUrls:
+      input.compatibilityRelayUrls ?? config.dmCompatibilityOrderRelayUrls,
+    recipientReadRelayUrls: input.recipientReadRelayUrls,
+    maxRelays: input.maxCompatibilityRelays,
+  })
+  if (!compatibilityEnabled || compatibilityPlan.relayUrls.length === 0) {
     return {
       route: "blocked",
       relayUrls: [],
+      relaySources: {},
+      truncated: false,
       blockedReason: strictBlockedReason,
     }
   }
 
-  return { route: "conduit_bootstrap", relayUrls: bootstrapRelayUrls }
+  return {
+    route: "compatibility_order",
+    relayUrls: compatibilityPlan.relayUrls,
+    relaySources: compatibilityPlan.relaySources,
+    truncated: compatibilityPlan.truncated,
+  }
 }
