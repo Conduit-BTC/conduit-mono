@@ -34,6 +34,8 @@ Reviewers may request a durable contract update when the behavior has broad or l
   named, bounded protocol-migration exceptions
 - `docs/knowledge/product-deletion-convergence.md`: durable NIP-09 evidence,
   source-aware delivery, retry, and cross-surface product resolution
+- `docs/knowledge/product-legal-documents.md`: official-host scope, shared legal
+  source, versioning, release, and public-route isolation
 
 ### Active Compatibility Exceptions
 

@@ -26,6 +26,7 @@ interface ImportMetaEnv {
   readonly VITE_BUILD_TIME?: string
   readonly VITE_SOURCE_URL?: string
   readonly VITE_RELEASE_CHANNEL?: string
+  readonly VITE_DEPLOYMENT_PROFILE?: string
   readonly [key: string]: string | undefined
 }
 

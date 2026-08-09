@@ -189,6 +189,10 @@ const DEFAULT_PLAUSIBLE_SCRIPT_SRC = "https://plausible.io/js/script.js"
 const DEFAULT_POSTHOG_HOST = "https://e.conduit.market"
 const DEFAULT_POSTHOG_UI_HOST = "https://us.posthog.com"
 const POSTHOG_ANONYMOUS_DISTINCT_ID = "conduit-browser-telemetry"
+const OFFICIAL_PRODUCT_TELEMETRY_HOSTS = new Set([
+  "shop.conduit.market",
+  "sell.conduit.market",
+])
 const postHogTelemetryEventNames = [
   "$pageleave",
   "$pageview",
@@ -312,6 +316,26 @@ export function resolveBrowserTelemetryConfig(
             host: clean(env.VITE_POSTHOG_HOST) ?? DEFAULT_POSTHOG_HOST,
           }
         : null,
+  }
+}
+
+export function constrainOfficialBrowserTelemetryConfig(
+  config: BrowserTelemetryConfig,
+  hostname: string
+): BrowserTelemetryConfig {
+  if (!OFFICIAL_PRODUCT_TELEMETRY_HOSTS.has(hostname.trim().toLowerCase())) {
+    return config
+  }
+
+  return {
+    ...config,
+    plausible: null,
+    posthog: config.posthog
+      ? {
+          ...config.posthog,
+          host: DEFAULT_POSTHOG_HOST,
+        }
+      : null,
   }
 }
 
@@ -700,7 +724,10 @@ function recordBrowserTelemetryEventUnsafe(input: TelemetryEventInput): void {
   if (typeof window === "undefined" || typeof document === "undefined") return
   if (!isBrowserTelemetryEventName(input.eventName)) return
 
-  const config = resolveBrowserTelemetryConfig(input.app)
+  const config = constrainOfficialBrowserTelemetryConfig(
+    resolveBrowserTelemetryConfig(input.app),
+    window.location.hostname
+  )
   if (!config.enabled) return
   if (!isTelemetryAllowedForCurrentHost(config)) return
   if (isGlobalPrivacyControlEnabled()) return
@@ -751,7 +778,10 @@ function recordBrowserTelemetryPageViewUnsafe(
 ): void {
   if (typeof window === "undefined" || typeof document === "undefined") return
 
-  const config = resolveBrowserTelemetryConfig(input.app)
+  const config = constrainOfficialBrowserTelemetryConfig(
+    resolveBrowserTelemetryConfig(input.app),
+    window.location.hostname
+  )
   if (!config.enabled) return
   if (!isTelemetryAllowedForCurrentHost(config)) return
   if (isGlobalPrivacyControlEnabled()) return

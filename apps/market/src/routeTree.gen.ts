@@ -16,7 +16,9 @@ import { Route as CheckoutRouteImport } from './routes/checkout'
 import { Route as MessagesRouteImport } from './routes/messages'
 import { Route as NetworkRouteImport } from './routes/network'
 import { Route as OrdersRouteImport } from './routes/orders'
+import { Route as PrivacyPolicyRouteImport } from './routes/privacy-policy'
 import { Route as ProfileRouteImport } from './routes/profile'
+import { Route as TermsOfServiceRouteImport } from './routes/terms-of-service'
 import { Route as WalletRouteImport } from './routes/wallet'
 import { Route as ZapoutsRouteImport } from './routes/zapouts'
 import { Route as ProductsIndexRouteImport } from './routes/products/index'
@@ -59,9 +61,19 @@ const OrdersRoute = OrdersRouteImport.update({
   path: '/orders',
   getParentRoute: () => rootRouteImport,
 } as any)
+const PrivacyPolicyRoute = PrivacyPolicyRouteImport.update({
+  id: '/privacy-policy',
+  path: '/privacy-policy',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ProfileRoute = ProfileRouteImport.update({
   id: '/profile',
   path: '/profile',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const TermsOfServiceRoute = TermsOfServiceRouteImport.update({
+  id: '/terms-of-service',
+  path: '/terms-of-service',
   getParentRoute: () => rootRouteImport,
 } as any)
 const WalletRoute = WalletRouteImport.update({
@@ -103,7 +115,9 @@ export interface FileRoutesByFullPath {
   '/messages': typeof MessagesRoute
   '/network': typeof NetworkRoute
   '/orders': typeof OrdersRoute
+  '/privacy-policy': typeof PrivacyPolicyRoute
   '/profile': typeof ProfileRoute
+  '/terms-of-service': typeof TermsOfServiceRoute
   '/wallet': typeof WalletRoute
   '/zapouts': typeof ZapoutsRoute
   '/products/$productId': typeof ProductsProductIdRoute
@@ -119,7 +133,9 @@ export interface FileRoutesByTo {
   '/messages': typeof MessagesRoute
   '/network': typeof NetworkRoute
   '/orders': typeof OrdersRoute
+  '/privacy-policy': typeof PrivacyPolicyRoute
   '/profile': typeof ProfileRoute
+  '/terms-of-service': typeof TermsOfServiceRoute
   '/wallet': typeof WalletRoute
   '/zapouts': typeof ZapoutsRoute
   '/products/$productId': typeof ProductsProductIdRoute
@@ -136,7 +152,9 @@ export interface FileRoutesById {
   '/messages': typeof MessagesRoute
   '/network': typeof NetworkRoute
   '/orders': typeof OrdersRoute
+  '/privacy-policy': typeof PrivacyPolicyRoute
   '/profile': typeof ProfileRoute
+  '/terms-of-service': typeof TermsOfServiceRoute
   '/wallet': typeof WalletRoute
   '/zapouts': typeof ZapoutsRoute
   '/products/$productId': typeof ProductsProductIdRoute
@@ -154,7 +172,9 @@ export interface FileRouteTypes {
     | '/messages'
     | '/network'
     | '/orders'
+    | '/privacy-policy'
     | '/profile'
+    | '/terms-of-service'
     | '/wallet'
     | '/zapouts'
     | '/products/$productId'
@@ -170,7 +190,9 @@ export interface FileRouteTypes {
     | '/messages'
     | '/network'
     | '/orders'
+    | '/privacy-policy'
     | '/profile'
+    | '/terms-of-service'
     | '/wallet'
     | '/zapouts'
     | '/products/$productId'
@@ -186,7 +208,9 @@ export interface FileRouteTypes {
     | '/messages'
     | '/network'
     | '/orders'
+    | '/privacy-policy'
     | '/profile'
+    | '/terms-of-service'
     | '/wallet'
     | '/zapouts'
     | '/products/$productId'
@@ -203,7 +227,9 @@ export interface RootRouteChildren {
   MessagesRoute: typeof MessagesRoute
   NetworkRoute: typeof NetworkRoute
   OrdersRoute: typeof OrdersRoute
+  PrivacyPolicyRoute: typeof PrivacyPolicyRoute
   ProfileRoute: typeof ProfileRoute
+  TermsOfServiceRoute: typeof TermsOfServiceRoute
   WalletRoute: typeof WalletRoute
   ZapoutsRoute: typeof ZapoutsRoute
   ProductsProductIdRoute: typeof ProductsProductIdRoute
@@ -263,11 +289,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof OrdersRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/privacy-policy': {
+      id: '/privacy-policy'
+      path: '/privacy-policy'
+      fullPath: '/privacy-policy'
+      preLoaderRoute: typeof PrivacyPolicyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/profile': {
       id: '/profile'
       path: '/profile'
       fullPath: '/profile'
       preLoaderRoute: typeof ProfileRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/terms-of-service': {
+      id: '/terms-of-service'
+      path: '/terms-of-service'
+      fullPath: '/terms-of-service'
+      preLoaderRoute: typeof TermsOfServiceRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/wallet': {
@@ -323,7 +363,9 @@ const rootRouteChildren: RootRouteChildren = {
   MessagesRoute: MessagesRoute,
   NetworkRoute: NetworkRoute,
   OrdersRoute: OrdersRoute,
+  PrivacyPolicyRoute: PrivacyPolicyRoute,
   ProfileRoute: ProfileRoute,
+  TermsOfServiceRoute: TermsOfServiceRoute,
   WalletRoute: WalletRoute,
   ZapoutsRoute: ZapoutsRoute,
   ProductsProductIdRoute: ProductsProductIdRoute,

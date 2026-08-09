@@ -50,7 +50,9 @@ describe("remote signer UI", () => {
     expect(markup).toContain("Connection URL")
     expect(markup).toContain("Bunker URL")
     expect(markup).toContain("Create connection")
-    expect(markup).toContain("Conduit never stores or recovers your keys.")
+    expect(markup).toContain(
+      "Conduit does not custody or recover your durable Nostr account key."
+    )
   })
 
   it("offers only the remote signer connection on mobile", () => {
