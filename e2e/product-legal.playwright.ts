@@ -277,6 +277,39 @@ for (const legalCase of legalCases) {
   })
 }
 
+for (const legalCase of legalCases) {
+  test(`${legalCase.app} ${legalCase.path}/ keeps the legal startup boundary`, async ({
+    context,
+    page,
+  }) => {
+    const externalWebSockets: string[] = []
+    page.on("websocket", (socket) => {
+      const socketUrl = new URL(socket.url())
+      const allowedHmrHosts = new Set([
+        new URL(legalCase.officialOrigin).hostname,
+        new URL(legalCase.localOrigin).hostname,
+      ])
+      if (!allowedHmrHosts.has(socketUrl.hostname)) {
+        externalWebSockets.push(socket.url())
+      }
+    })
+    await installLegalIsolationProbe(page, "signed_out")
+    await mapOfficialOriginToLocal(
+      context,
+      legalCase.officialOrigin,
+      legalCase.localOrigin
+    )
+
+    await page.goto(`${legalCase.officialOrigin}${legalCase.path}/`)
+    await assertIsolatedLegalLoad(
+      page,
+      legalCase.title,
+      legalCase.canonical,
+      externalWebSockets
+    )
+  })
+}
+
 for (const authFixture of ["restoring", "signed_in"] as const) {
   for (const path of ["/privacy-policy", "/terms-of-service"] as const) {
     test(`merchant ${path} bypasses ${authFixture} signer state`, async ({

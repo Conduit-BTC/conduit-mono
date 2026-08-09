@@ -90,15 +90,16 @@ describe("shared Product legal documents", () => {
     expect(privacy).toContain(`href="${PRODUCT_TERMS_CANONICAL_URL}"`)
   })
 
-  it("keeps the legal and official-host allowlists exact", () => {
+  it("matches router-normalized legal paths and exact official hosts", () => {
     expect(isProductLegalPath("/privacy-policy")).toBe(true)
     expect(isProductLegalPath("/terms-of-service")).toBe(true)
+    expect(isProductLegalPath("/privacy-policy/")).toBe(true)
+    expect(isProductLegalPath("/terms-of-service///")).toBe(true)
     for (const lookalike of [
-      "/privacy-policy/",
-      "/terms-of-service/",
       "/privacy-policy/anything",
       "/products/privacy-policy",
       "/Privacy-Policy",
+      "/privacy-policy?source=other",
       "/",
     ]) {
       expect(isProductLegalPath(lookalike)).toBe(false)

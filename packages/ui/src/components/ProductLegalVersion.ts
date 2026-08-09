@@ -38,7 +38,13 @@ export const PRODUCT_LEGAL_VERSION_HISTORY = Object.freeze([
 ])
 
 export function isProductLegalPath(pathname: string): boolean {
-  return PRODUCT_LEGAL_PATHS.has(pathname)
+  // TanStack Router's default `trailingSlash: "never"` treats trailing-slash
+  // variants as the same route. Match that behavior before app startup so a
+  // direct legal load cannot boot product providers while the router still
+  // renders a legal document.
+  const routerPathname =
+    pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname
+  return PRODUCT_LEGAL_PATHS.has(routerPathname)
 }
 
 export function isOfficialProductHostname(hostname: string): boolean {
