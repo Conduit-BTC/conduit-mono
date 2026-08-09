@@ -37,7 +37,10 @@ NIP-42 is used only for an explicitly protected relay operation. The first
 protected operation is the active principal reading their own `kind:1059` gift
 wraps with filters constrained to `#p` equal to the active account pubkey.
 Product, profile, declaration, relay-list, and other public reads remain
-anonymous and must not trigger a signer prompt.
+free of NIP-42 account proof and must not trigger a signer prompt. This is not
+network anonymity: each queried relay sees the request filters, and relays,
+hosts, and transport providers may observe ordinary connection metadata such as
+source IP, destination, timing, and traffic volume.
 
 The protected-read executor owns plain Nostr request/event contracts,
 WebSockets, subscription lifecycles, authentication, reconnects, validation,
@@ -48,17 +51,21 @@ existing signer and gift-wrap/unwrap work; protected reads must not deepen its
 relay ownership.
 
 Authenticated connections are isolated by normalized relay URL and a random,
-process-local account-session scope. They are never shared with anonymous reads
+process-local account-session scope. They are never shared with public reads
 or another account, and are closed on logout, account/signer change, relay
 removal/read disable, settings-scope change, auth failure, and reconnect.
 
-For each connection, the client accepts the current relay `AUTH` challenge,
+When a protected connection has a current relay `AUTH` challenge, the client
 creates kind `22242` with empty content, current time, and exact `relay` and
 `challenge` tags, waits for the matching positive `OK`, then retries the
-protected `REQ` with a new subscription id. Challenge-before-request and
-challenge-plus-`auth-required:`-close are both supported. Negative/missing
-`OK`, signer failure, `restricted:` close, repeated challenges, reconnects, and
-timeouts have bounded typed outcomes rather than becoming EOSE or empty data.
+protected `REQ` with a new subscription id. Under the current client-first
+`when_challenged` policy, a connection with no challenge receives an initial
+protected `REQ` and may complete without NIP-42 when the relay permits it.
+Challenge-before-request and challenge-plus-`auth-required:`-close are both
+supported. Negative/missing `OK`, signer failure, `restricted:` close, repeated
+challenges, reconnects, and timeouts have bounded typed outcomes rather than
+becoming EOSE or empty data. Client support does not prove that a relay requires
+or correctly enforces recipient authentication.
 
 Across relays, valid results survive another relay's auth failure and coverage
 is `partial`. All auth/unavailable failures are `unavailable`, never empty.

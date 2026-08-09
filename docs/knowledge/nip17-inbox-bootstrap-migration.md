@@ -22,10 +22,12 @@ Orders link there and never publish declarations themselves.
 The principal's own compatibility/declared inbox read is an explicitly
 protected operation when the client is signed in. It uses the NDK-neutral
 NIP-42 executor and only `kind:1059`, `#p: [<active account>]` filters. Public
-declaration discovery and other public relay reads remain anonymous. NIP-07 and
-NIP-46 account sessions are eligible; guest checkout has no inbox auth,
-self-copy, or reply fallback. The exact contract is in
-`docs/knowledge/nip42-protected-read-rollout.md`.
+declaration discovery and other public relay reads carry no NIP-42 account proof
+and never prompt a signer. That is not network anonymity: queried relays still
+see request filters, and relays, hosts, and transport providers may observe
+ordinary connection metadata. NIP-07 and NIP-46 account sessions are eligible;
+guest checkout has no inbox auth, self-copy, or reply fallback. The exact
+contract is in `docs/knowledge/nip42-protected-read-rollout.md`.
 
 ## The temporary exception
 

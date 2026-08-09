@@ -124,10 +124,12 @@ lookup_unavailable | malformed` with account-scoped freshness and
   own `kind:1059`, `#p`-scoped filters through the NDK-neutral protected relay
   executor. The explicit account/session authorization boundary accepts only
   the active NIP-07 or NIP-46 signer; guest and anonymous sessions are rejected
-  before connecting or signing. Public reads remain anonymous. Authentication
-  challenge/OK/retry state and per-relay failures are preserved as typed
-  observations without putting challenge or account identifiers in logs or
-  telemetry. NDK remains only at the existing signer and gift-unwrap edges.
+  before connecting or signing. Public reads carry no NIP-42 account proof and
+  never prompt a signer, but queried relays still see request filters and
+  ordinary connection metadata. Authentication challenge/OK/retry state and
+  per-relay failures are preserved as typed observations without putting
+  challenge or account identifiers in logs or telemetry. NDK remains only at
+  the existing signer and gift-unwrap edges.
 - **Validated-order compatibility routing (temporary, CND-208).** When a validated
   kind-16 order-lifecycle send finds no usable recipient declaration, the write
   may use a maximum of three relays from the explicit private-inbox
@@ -233,9 +235,10 @@ authentication or recipient enforcement.
 - No message text or encrypted payload reaches any telemetry/log path.
 - Slow/missing relay readback still leaves cached conversations understandable.
 - Public reads never call the auth signer; protected reads accept NIP-07 and
-  NIP-46, reject guest/cross-recipient filters before connection, authenticate
-  against the current connection challenge, wait for the matching `OK`, and
-  retry with a new subscription id.
+  NIP-46 and reject guest/cross-recipient filters before connection. When a
+  current challenge exists, they authenticate, wait for the matching `OK`, and
+  retry with a new subscription id. Under `when_challenged`, a relay that sends
+  no challenge may complete the initial protected request without NIP-42.
 - Deterministic relay tests cover challenge timing, negative/unrelated/missing
   `OK`, signer failures, reconnect, bounded challenge loops, `restricted:`
   responses, multi-relay partial success, account isolation, cleanup, and the

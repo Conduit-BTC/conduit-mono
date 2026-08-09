@@ -84,10 +84,13 @@ CREATE INDEX idx_products_created ON events (created_at DESC)
 
 For Conduit-operated protected messaging behavior, the relay contract is
 recipient-scoped rather than a blanket requirement that every relay read be
-authenticated:
+authenticated. These bullets describe the target enforced relay behavior; the
+client-first `when_challenged` policy can still complete against a
+non-challenging relay until operator rollout enables enforcement:
 
 - public product, profile, declaration, relay-list, and other public reads stay
-  available without NIP-42 prompts;
+  available without NIP-42 prompts, but relays still see the request filters
+  sent to them and connection metadata;
 - a protected inbox `REQ` contains only `kind:1059` filters and exactly one
   `#p` recipient equal to the authenticated client pubkey;
 - mixed-kind, missing-recipient, malformed, or cross-recipient filters are
@@ -110,13 +113,14 @@ authenticated:
   delivery outage.
 
 The client contract is intentionally challenge-capable before relay enforcement
-is enabled, so rollout is client-first and older anonymous-compatible inbox
-relays continue to work during migration. A canary first sends challenges
-without denying anonymous-compatible reads; recipient enforcement begins only
-after deployed Market and Merchant clients demonstrate authentication. It is
-then enabled one inbox relay at a time. Rollback disables relay enforcement without
-removing the client's protected executor or weakening its account isolation.
-Production relay configuration/deployment is outside this repository change.
+is enabled, so rollout is client-first and older pre-authentication-compatible
+inbox relays continue to work during migration. A canary first sends challenges
+without denying pre-authentication-compatible reads; recipient enforcement
+begins only after deployed Market and Merchant clients demonstrate
+authentication. It is then enabled one inbox relay at a time. Rollback disables
+relay enforcement without removing the client's protected executor or weakening
+its account isolation. Production relay configuration/deployment is outside this
+repository change.
 
 See `docs/knowledge/nip42-protected-read-rollout.md` for the exact client state
 machine, typed outcomes, deterministic validation matrix, rollout, and
@@ -125,12 +129,14 @@ rollback.
 ## Privacy
 
 NIP-17 relays receive encrypted gift wraps rather than plaintext message
-contents, but they can retain or copy ciphertext and observe outer recipient
-tags, event size, timing, traffic volume, connection behavior, direct-connection
-IP addresses, and—when NIP-42 is used—authentication pubkeys and request
-filters. Operational metrics should remain aggregated and should avoid
-behavioral profiling. Do not claim that encryption eliminates relay or network
-metadata.
+contents, but they can retain or copy ciphertext and observe every request
+filter sent to them—including the recipient `#p` filter—plus outer recipient
+tags, event size, timing, traffic volume, connection behavior, and
+direct-connection IP addresses. When NIP-42 is used, the relay additionally
+receives the authentication pubkey and signed kind `22242` auth event.
+Operational metrics should remain aggregated and should avoid behavioral
+profiling. Do not claim that encryption or absence of NIP-42 account proof
+eliminates relay or network metadata.
 
 For private or restricted messaging behavior, Conduit should prefer relays that
 demonstrate NIP-42 authentication support. Advertisement is weaker evidence and

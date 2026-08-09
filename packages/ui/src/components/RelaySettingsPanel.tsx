@@ -251,7 +251,7 @@ function getAuthEvidenceMeta(
       return {
         label: "Auth untested",
         description:
-          "Conduit has no successful runtime NIP-42 evidence for this relay. Public reads can remain anonymous, but protected-read access is unknown.",
+          "Conduit has no successful runtime NIP-42 evidence for this relay. Public reads do not require NIP-42 account proof, but relays still see request filters and connection metadata. Protected-read access is unknown.",
         active: false,
         warning: false,
       }

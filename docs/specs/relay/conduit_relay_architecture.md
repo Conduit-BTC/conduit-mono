@@ -509,14 +509,16 @@ private-inbox-compatible relays serves two roles:
   relays from the operator-approved registry when the recipient has no usable
   declaration.
 
-Both roles preserve NIP-44/NIP-59 encryption. A selected relay receives the
-encrypted gift wrap and can observe its outer recipient tag, event size, timing,
-traffic volume, connection behavior, direct-connection IP address, and—when
-NIP-42 is used—authentication pubkey and request filters. No fixed retention,
-automatic deletion, no-logging behavior, or complete metadata privacy is
-assumed. This is a migration exception, not NIP-17 routing, and its removal gate
-lives in `docs/knowledge/nip17-inbox-bootstrap-migration.md`. Eligibility is the
-secure intersection of the write registry and the compatibility read set.
+Both roles preserve NIP-44/NIP-59 encryption. A selected relay can observe every
+request filter sent to it—including the recipient `#p` filter—plus the encrypted
+gift wrap, its outer recipient tag, event size, timing, traffic volume,
+connection behavior, and direct-connection IP address. When NIP-42 is used, the
+relay additionally receives the authentication pubkey and signed kind `22242`
+auth event. No fixed retention, automatic deletion, no-logging behavior, or
+complete metadata privacy is assumed. This is a migration exception, not
+NIP-17 routing, and its removal gate lives in
+`docs/knowledge/nip17-inbox-bootstrap-migration.md`. Eligibility is the secure
+intersection of the write registry and the compatibility read set.
 Recipient NIP-65 read evidence may only reorder that intersection; it never
 widens it to arbitrary NIP-65, local IN/OUT, commerce-priority, source, hint,
 or other public relays. One ACK succeeds; other failures remain retryable.
@@ -548,17 +550,23 @@ Conduit should prefer auth-capable relays for private or restricted messaging be
 ### Authentication
 
 NIP-42 support is a capability signal and is the authorization mechanism for
-Conduit-controlled protected inbox reads. The first protected operation is a
-signed-in principal reading only `kind:1059` filters whose `#p` equals their
-active account pubkey. The relay must validate a fresh connection-bound kind
-`22242` event and return a matching positive `OK` before serving that request.
-Mixed-kind, missing-recipient, malformed, or cross-recipient filters are
-rejected.
+the target Conduit-controlled protected inbox relay contract. The first
+protected operation is a signed-in principal reading only `kind:1059` filters
+whose `#p` equals their active account pubkey. An enforcing relay must validate
+a fresh connection-bound kind `22242` event and return a matching positive `OK`
+before serving that request. During client-first rollout, the current
+`when_challenged` client may issue and complete an initial protected request
+without NIP-42 when a relay does not challenge. Client support, NIP-11
+advertising, or a prior successful auth does not prove current recipient
+enforcement. Mixed-kind, missing-recipient, malformed, or cross-recipient
+filters are rejected by the client.
 
 This authorization is explicit and narrow. Public products, profiles,
-declarations, relay lists, and other public reads remain anonymous and must not
-prompt a signer. Only NIP-07 and NIP-46 account sessions are eligible. Guest or
-anonymous sessions have no protected-read fallback.
+declarations, relay lists, and other public reads carry no NIP-42 account proof
+and must not prompt a signer. This is not network anonymity: queried relays still
+see request filters, and relays, hosts, and transport providers may observe
+ordinary connection metadata. Only NIP-07 and NIP-46 account sessions are
+eligible. Guest or unsigned sessions have no protected-read fallback.
 
 Authentication failure is a typed availability/authorization outcome, not EOSE
 and not an empty inbox. One successful relay plus one failed relay is partial;
@@ -591,9 +599,9 @@ This executor must not import NDK.
 NDK is retained only at named edges that still adapt the active external signer
 or unwrap gift wraps. An authenticated connection is keyed by normalized relay
 URL plus a random process-local account-session scope, never shared with public
-reads or another account, and closed on logout/switch, signer changes, relay
-removal/read disable, settings-scope change, auth failure, lease replacement,
-and reconnect.
+read connections or another account, and closed on logout/switch, signer
+changes, relay removal/read disable, settings-scope change, auth failure, lease
+replacement, and reconnect.
 Residual NDK public-read and cryptography debt is migrated only in later
 bounded strangler slices; this slice must not add NDK relay ownership.
 

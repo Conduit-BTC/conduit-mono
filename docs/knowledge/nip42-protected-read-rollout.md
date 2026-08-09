@@ -13,10 +13,14 @@ to `kind:1059` and has exactly one recipient constraint,
 cross-recipient filter is rejected before opening a protected connection or
 asking a signer to sign.
 
-All other relay reads remain anonymous. Product, profile, relay-list,
-declaration, public metadata, and other public reads must not cause NIP-07 or
-NIP-46 prompts merely because a relay advertises NIP-42 or sends an unsolicited
-challenge.
+All other relay reads remain free of NIP-42 account proof. Product, profile,
+relay-list, declaration, public metadata, and other public reads must not cause
+NIP-07 or NIP-46 prompts merely because a relay advertises NIP-42 or sends an
+unsolicited challenge. This is not network anonymity: each queried relay still
+sees the request filters, and relays, hosts, and transport providers may observe
+ordinary connection metadata such as source IP, destination, timing, and
+traffic volume. A provider that terminates the WebSocket or TLS path may also
+process relay payloads.
 
 The executor boundary is NDK-neutral:
 
@@ -35,16 +39,16 @@ The executor boundary is NDK-neutral:
 The repository-wide transport scan produced this migration inventory. Test and
 development fixtures are grouped because they do not own production traffic.
 
-| Path                                                                                        | Transport                                    | Direction            | Protected data                             | NDK ownership                             | Auth before this slice                                                           | Migration action                                                      |
-| ------------------------------------------------------------------------------------------- | -------------------------------------------- | -------------------- | ------------------------------------------ | ----------------------------------------- | -------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `packages/core/src/protocol/relay-executor.ts`                                              | Conduit WebSocket                            | read                 | recipient-scoped kind `1059`               | none                                      | new full NIP-42 state machine                                                    | owned protected-read substrate                                        |
-| `packages/core/src/protocol/ndk.ts`                                                         | NDK client plus legacy raw WebSocket fanout  | mostly read          | historically included inbox wraps          | mixed                                     | no shared auth policy; raw fanout ignored `AUTH`/`OK`                            | kind `1059` removed; retain as named legacy public adapter debt       |
-| `packages/core/src/protocol/commerce.ts` and `private-message-routing.ts`                   | read-service composition over both executors | read                 | inbox wraps, decrypted cache, declarations | NDK envelope types remain                 | declaration/public reads anonymous; protected path previously used legacy fanout | protected wraps use the new executor; declarations stay legacy/public |
-| `packages/core/src/protocol/messaging.ts`                                                   | NDK gift wrap/unwrap and publish edges       | read/write envelope  | encrypted orders and messages              | allowed temporary envelope edge           | signer/session checks, not relay-read auth                                       | retain; migrate only with a separate plain cryptography contract      |
-| `nip07-signer.ts`, `remote-signer.ts`, `session-signer.ts`, and `ndk-nostr-event-signer.ts` | external signer adapters                     | sign/encrypt/decrypt | account-authorized operations              | allowed temporary signer edge             | account/revision fencing                                                         | adapt to the plain signer contract; no relay ownership                |
-| `relay-publish.ts`, `merchant-order-publish.ts`, and declaration repair writes              | NDK relay publish/set                        | write                | encrypted/public commerce events           | prohibited long-term core relay ownership | publish ACK/reject handling, no protected-read auth                              | explicit residual write-adapter debt; unchanged here                  |
-| `follows.ts` and Market merchant-trust hydration                                            | direct NDK public fetches                    | read                 | no                                         | legacy adapter debt                       | anonymous                                                                        | leave anonymous; later executor slice                                 |
-| `scripts/dev`, `scripts/smoke`, `tests`, and `e2e` relay fixtures                           | local/mock WebSockets and NDK test objects   | test/dev             | synthetic only                             | fixture-specific                          | mixed                                                                            | deterministic NIP-42 fixture added; no production authority           |
+| Path                                                                                        | Transport                                    | Direction            | Protected data                             | NDK ownership                             | Auth before this slice                                              | Migration action                                                      |
+| ------------------------------------------------------------------------------------------- | -------------------------------------------- | -------------------- | ------------------------------------------ | ----------------------------------------- | ------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `packages/core/src/protocol/relay-executor.ts`                                              | Conduit WebSocket                            | read                 | recipient-scoped kind `1059`               | none                                      | new full NIP-42 state machine                                       | owned protected-read substrate                                        |
+| `packages/core/src/protocol/ndk.ts`                                                         | NDK client plus legacy raw WebSocket fanout  | mostly read          | historically included inbox wraps          | mixed                                     | no shared auth policy; raw fanout ignored `AUTH`/`OK`               | kind `1059` removed; retain as named legacy public adapter debt       |
+| `packages/core/src/protocol/commerce.ts` and `private-message-routing.ts`                   | read-service composition over both executors | read                 | inbox wraps, decrypted cache, declarations | NDK envelope types remain                 | public reads had no NIP-42 proof; protected path used legacy fanout | protected wraps use the new executor; declarations stay legacy/public |
+| `packages/core/src/protocol/messaging.ts`                                                   | NDK gift wrap/unwrap and publish edges       | read/write envelope  | encrypted orders and messages              | allowed temporary envelope edge           | signer/session checks, not relay-read auth                          | retain; migrate only with a separate plain cryptography contract      |
+| `nip07-signer.ts`, `remote-signer.ts`, `session-signer.ts`, and `ndk-nostr-event-signer.ts` | external signer adapters                     | sign/encrypt/decrypt | account-authorized operations              | allowed temporary signer edge             | account/revision fencing                                            | adapt to the plain signer contract; no relay ownership                |
+| `relay-publish.ts`, `merchant-order-publish.ts`, and declaration repair writes              | NDK relay publish/set                        | write                | encrypted/public commerce events           | prohibited long-term core relay ownership | publish ACK/reject handling, no protected-read auth                 | explicit residual write-adapter debt; unchanged here                  |
+| `follows.ts` and Market merchant-trust hydration                                            | direct NDK public fetches                    | read                 | no                                         | legacy adapter debt                       | no NIP-42 account proof                                             | preserve no-signer behavior; later executor slice                     |
+| `scripts/dev`, `scripts/smoke`, `tests`, and `e2e` relay fixtures                           | local/mock WebSockets and NDK test objects   | test/dev             | synthetic only                             | fixture-specific                          | mixed                                                               | deterministic NIP-42 fixture added; no production authority           |
 
 Nostrify was evaluated as the preferred replaceable substrate. The current
 public `NRelay1.req()` stream exposes `EVENT`, `EOSE`, and `CLOSED` and accepts an
@@ -68,7 +72,7 @@ caller-supplied arbitrary keys are ineligible. There is no guest fallback.
 Authenticated connections are isolated by both normalized relay URL and a
 random, process-local account-session scope. The scope must not be derived from
 or persisted as a pubkey. An authenticated connection must never be reused by a
-different account or an anonymous request.
+different account or a public request.
 
 Close and discard the authenticated connection, its challenge, pending auth,
 and subscriptions when any of these occurs:
@@ -142,8 +146,12 @@ and `protocol_invalid`.
 
 Diagnostic and telemetry records must not contain challenges, auth events,
 signatures, pubkeys, full filters, event contents, ciphertext, invoices,
-addresses, message bodies, signer connection strings, or NWC URIs. Challenges,
-auth events, and authenticated sockets are process-local and never persisted.
+addresses, message bodies, signer connection strings, or NWC URIs. The Conduit
+client keeps challenge, auth-event, authenticated-socket, and runtime-evidence
+state in memory and does not persist it. The auth signing request is still sent
+to the selected external signer, and the signed auth event is sent to the
+selected relay; those signers and relays may retain records under their own
+policies.
 
 Multi-relay results follow these rules:
 
@@ -186,8 +194,9 @@ A Conduit-operated protected inbox relay should:
    filters with a stable `CLOSED` reason such as `restricted:`.
 5. Require fresh authentication after reconnect. A prior connection's auth or
    challenge is never transferable.
-6. Keep public event reads anonymous unless a separately reviewed policy says
-   otherwise.
+6. Keep public event reads free of NIP-42 account proof and signer prompts unless
+   a separately reviewed policy says otherwise. This does not make the relay
+   connection network-anonymous.
 7. Rate-limit without logging content, ciphertext, auth events, challenges,
    full filters, or stable cross-service behavioral profiles.
 8. Continue accepting legitimate encrypted order/message writes from buyers,
@@ -198,22 +207,24 @@ A Conduit-operated protected inbox relay should:
    commerce writes so a burst of rejected auth attempts cannot create a global
    checkout, order-delivery, or marketplace outage.
 
-NIP-42 reduces unauthorized relay reads; it does not conceal the direct
-connection IP address, authenticated pubkey, recipient tag, request timing,
-event size, traffic volume, or the fact that an inbox was queried. NIP-44 and
-NIP-59 protect message contents but do not remove this relay-visible metadata.
+When a relay actually enforces the recipient-scoped policy, NIP-42 reduces
+unauthorized relay reads; it does not conceal the direct-connection IP address,
+authenticated pubkey, recipient tag, request timing, event size, traffic
+volume, or the fact that an inbox was queried. NIP-44 and NIP-59 protect message
+contents but do not remove this relay-visible metadata.
 
 ## Client-first rollout and rollback
 
 Rollout order is intentionally client-first:
 
 1. Ship the NDK-neutral client executor and explicit protected inbox-read path
-   while all existing public reads remain anonymous.
+   while all existing public reads remain free of NIP-42 account proof and
+   signer prompts.
 2. Validate the deterministic client matrix and runtime behavior against a
    local scripted relay before changing hosted relay policy.
 3. Enable a challenge-only, non-denying phase on a non-production or canary
-   relay. Continue serving anonymous-compatible inbox reads while observing
-   only aggregate, content-free outcomes.
+   relay. Continue serving pre-authentication-compatible inbox reads while
+   observing only aggregate, content-free outcomes.
 4. Confirm the deployed Market and Merchant clients authenticate successfully
    with NIP-07 and NIP-46, retry with a new subscription id, reconnect with a
    fresh challenge, preserve cache during failures, and isolate account
@@ -228,8 +239,8 @@ Rollout order is intentionally client-first:
 
 Rollback disables relay-side enforcement for the affected relay while leaving
 the challenge-capable client executor deployed. Rollback must not broaden
-filters, reuse authenticated connections anonymously, clear cached messages, or
-restore NDK ownership of protected-read transport. Production relay
+filters, reuse authenticated connections for public reads, clear cached
+messages, or restore NDK ownership of protected-read transport. Production relay
 configuration and deployment are outside this client change.
 
 ## Deterministic validation matrix
@@ -239,7 +250,7 @@ fake signer; this list does not claim that validation has already run.
 
 |   # | Case                                                           | Required result                                              |
 | --: | -------------------------------------------------------------- | ------------------------------------------------------------ |
-|   1 | Public read, no challenge                                      | Anonymous `REQ`; signer is never called                      |
+|   1 | Public read, no challenge                                      | `REQ` has no NIP-42 account proof; signer is not called      |
 |   2 | Public read receives unsolicited challenge                     | No auth prompt or `AUTH` event                               |
 |   3 | Protected read, challenge before `REQ`                         | Authenticate before protected subscription                   |
 |   4 | Protected `REQ`, then challenge and `auth-required:` close     | Authenticate and retry with a new id                         |
@@ -266,8 +277,8 @@ fake signer; this list does not claim that validation has already run.
 |  25 | Two account sessions use the same relay                        | No authenticated socket, challenge, or auth reuse            |
 |  26 | Logout, switch, signer removal, relay removal, or lease change | Relevant authenticated sockets close                         |
 |  27 | Guest attempts protected read                                  | Rejected before connect/sign; no fallback                    |
-|  28 | Diagnostics and evidence persistence                           | Content-free; challenges/auth/session evidence not persisted |
-|  29 | Public product/profile/relay-list/declaration reads            | Existing anonymous behavior and fixtures remain unchanged    |
+|  28 | Diagnostics and evidence persistence                           | Client persists no challenge/auth/session evidence           |
+|  29 | Public product/profile/relay-list/declaration reads            | No-NIP-42 behavior and fixtures remain unchanged             |
 |  30 | Existing NIP-17 order delivery and retry behavior              | #253-sensitive delivery/declaration regressions remain green |
 |  31 | Executor contracts and scripted relay fixture                  | Plain objects only; no NDK import or NDK-owned connection    |
 |  32 | Protected inbox service import boundary                        | Service depends on executor/plain signer, not NDK transport  |
