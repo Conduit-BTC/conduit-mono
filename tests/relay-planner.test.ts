@@ -356,6 +356,38 @@ describe("planRelayWrites", () => {
     expect(plan.broadcastRelayUrls).toEqual([])
   })
 
+  it("author_event includes the author's current NIP-65 write relays", () => {
+    const state = settings([
+      entry("wss://configured.example.com", {
+        section: "commerce",
+        writeEnabled: true,
+      }),
+    ])
+    const lists = new Map<string, RelayList>([
+      [
+        "alice",
+        relayList(
+          "alice",
+          ["wss://alice-read.example.com"],
+          ["wss://alice-write.example.com"]
+        ),
+      ],
+    ])
+
+    const plan = planRelayWrites({
+      intent: "author_event",
+      authorPubkey: "alice",
+      authenticatedPubkey: "alice",
+      relayLists: lists,
+      settings: state,
+    })
+
+    expect(plan.primaryRelayUrls).toEqual([
+      "wss://alice-write.example.com",
+      "wss://configured.example.com",
+    ])
+  })
+
   it("recipient_event prefers recipient read relays as primary and seeds broadcast on user outbox", () => {
     const state = settings([
       entry("wss://outbox.example.com", {

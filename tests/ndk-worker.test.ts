@@ -269,6 +269,21 @@ describe("NDK relay worker verification fallback", () => {
 
   it("rejects signed events with non-canonical NIP-01 fields", async () => {
     const secret = Uint8Array.from([...new Uint8Array(31), 1])
+    const canonical = finalizeEvent(
+      {
+        kind: EVENT_KINDS.ZAP_REQUEST,
+        created_at: 10,
+        tags: [],
+        content: "canonical signature case",
+      },
+      secret
+    )
+    const uppercaseSignature = {
+      ...canonical,
+      sig: canonical.sig.replace(/[a-f]/g, (character) =>
+        character.toUpperCase()
+      ),
+    }
     const fractionalTimestamp = finalizeEvent(
       {
         kind: EVENT_KINDS.ZAP_REQUEST,
@@ -304,6 +319,7 @@ describe("NDK relay worker verification fallback", () => {
     })
 
     const result = await verifySignedPublicNostrEvents([
+      uppercaseSignature,
       fractionalTimestamp,
       outOfRangeKind,
       emptyTag,
@@ -581,6 +597,54 @@ describe("NDK relay worker verification fallback", () => {
         eventCount: 1,
       },
     ])
+  })
+
+  it("applies relay limits after ordering valid events newest first", async () => {
+    const secret = Uint8Array.from([...new Uint8Array(31), 1])
+    const olderEvent = finalizeEvent(
+      {
+        kind: EVENT_KINDS.PROFILE,
+        created_at: 10,
+        tags: [],
+        content: JSON.stringify({ name: "older profile" }),
+      },
+      secret
+    )
+    const newerEvent = finalizeEvent(
+      {
+        kind: EVENT_KINDS.PROFILE,
+        created_at: 11,
+        tags: [],
+        content: JSON.stringify({ name: "newer profile" }),
+      },
+      secret
+    )
+
+    Object.defineProperty(globalThis, "WebSocket", {
+      configurable: true,
+      writable: true,
+      value: sequencedRelayWebSocket([olderEvent, newerEvent]),
+    })
+    Object.defineProperty(globalThis, "Worker", {
+      configurable: true,
+      writable: true,
+      value: undefined,
+    })
+
+    const result = await fetchEventsFanoutDetailed(
+      { kinds: [EVENT_KINDS.PROFILE], limit: 1 },
+      {
+        relayUrls: ["wss://out-of-order.example"],
+        connectTimeoutMs: 50,
+        fetchTimeoutMs: 50,
+      }
+    )
+
+    expect(result.events.map((event) => event.id)).toEqual([newerEvent.id])
+    expect(result.relays[0]).toMatchObject({
+      status: "success",
+      eventCount: 1,
+    })
   })
 
   it("ignores valid non-matching frames before enforcing the requested limit", async () => {

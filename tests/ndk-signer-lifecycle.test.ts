@@ -11,6 +11,19 @@ import {
 } from "../packages/core/src/protocol/ndk"
 
 const originalNdkConnect = NDK.prototype.connect
+const originalWindowDescriptor = Object.getOwnPropertyDescriptor(
+  globalThis,
+  "window"
+)
+
+function restoreWindow(): void {
+  if (originalWindowDescriptor) {
+    Object.defineProperty(globalThis, "window", originalWindowDescriptor)
+    return
+  }
+
+  Reflect.deleteProperty(globalThis, "window")
+}
 
 function fakeSigner(pubkey: string): NDKSigner {
   return {
@@ -24,6 +37,7 @@ describe("NDK signer lifecycle", () => {
     NDK.prototype.connect = originalNdkConnect
     __resetNdkTestState()
     disconnectNdk()
+    restoreWindow()
   })
 
   it("keeps the connected signer across a relay-client reset", () => {
@@ -86,6 +100,27 @@ describe("NDK signer lifecycle", () => {
     getNdk().signer = divergentSigner
 
     removeSigner(activeLease)
+
+    expect(getNdk().signer).toBeUndefined()
+  })
+
+  it("does not retain a signer when NDK initialization fails", () => {
+    const activeSigner = fakeSigner("a".repeat(64))
+
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: {
+        localStorage: {
+          getItem() {
+            throw new Error("Storage access denied")
+          },
+        },
+      },
+    })
+
+    expect(() => setSigner(activeSigner)).toThrow("Storage access denied")
+
+    restoreWindow()
 
     expect(getNdk().signer).toBeUndefined()
   })

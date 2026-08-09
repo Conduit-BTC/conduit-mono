@@ -127,6 +127,7 @@ bun run dev:merchant:mainnet
 | `VITE_BUILD_TIME`              | current build time         | Build timestamp surfaced on About pages                  |
 | `VITE_SOURCE_URL`              | GitHub repository URL      | Source repository link surfaced on About pages           |
 | `VITE_RELEASE_CHANNEL`         | local/preview/prod         | Release channel surfaced on About pages                  |
+| `VITE_DM_BOOTSTRAP_WRITES`     | profile-controlled         | Legacy compiled input for validated-order compatibility  |
 
 When telemetry is enabled, `VITE_TELEMETRY_ALLOWED_HOSTS` must list every
 permitted hostname. A `*.` prefix allows exactly one preview subdomain label;
@@ -142,6 +143,16 @@ wss://relay.nostr.net
 ```
 
 Browser builds print a relay map in DevTools showing the code defaults, raw/normalized relay env vars, and the final resolved relay lists. Conduit-hosted deploys should leave relay env vars empty so reviewers can compare the open-source code defaults with the deployed behavior.
+
+Public deployment behavior is repo-owned in `deploy/pages-profiles.json`.
+Cloudflare Pages selects `preview` for non-`main` branches and `production` for
+`main`; CI selects the same profile explicitly. Preview enables validated-order
+compatibility routing so the feature is reviewable. Production and the signet
+`staging` profile remain independently disabled by default. Dashboard values
+cannot override that managed flag. Every app emits
+`/.well-known/conduit-deployment.json` with its profile, source commit, build
+time, public feature flags, and public-config digest; the manifest is a strict
+non-secret allowlist.
 
 PostHog telemetry uses memory-only SDK state, one static browser-service
 distinct ID, and disabled person-profile processing. The project must discard

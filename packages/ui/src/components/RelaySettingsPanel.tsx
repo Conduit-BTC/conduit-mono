@@ -21,6 +21,10 @@ import {
 } from "react"
 import { Button } from "./Button"
 import { Input } from "./Input"
+import {
+  PrivateInboxSection,
+  type PrivateInboxSectionProps,
+} from "./PrivateInboxSection"
 import { SignedActionStatus } from "./SignedActionStatus"
 import { StatusPill } from "./StatusPill"
 import { cn } from "../utils"
@@ -78,6 +82,8 @@ export interface RelaySettingsPanelProps {
   onReorderCommerceRelay?: (sourceUrl: string, targetUrl: string) => void
   onReset?: () => void
   onPublishRelayList?: () => void | Promise<void>
+  /** NIP-17 private inbox declaration status and repair (CND-208). */
+  privateInbox?: Omit<PrivateInboxSectionProps, "className">
   className?: string
 }
 
@@ -651,6 +657,7 @@ export function RelaySettingsPanel({
   onReorderCommerceRelay,
   onReset,
   onPublishRelayList,
+  privateInbox,
   className,
 }: RelaySettingsPanelProps) {
   const [newRelayUrl, setNewRelayUrl] = useState("")
@@ -799,6 +806,8 @@ export function RelaySettingsPanel({
           onToggleRead={onToggleRead}
           onToggleWrite={onToggleWrite}
         />
+
+        {privateInbox ? <PrivateInboxSection {...privateInbox} /> : null}
 
         <form
           onSubmit={(event) => void handleAddRelay(event)}

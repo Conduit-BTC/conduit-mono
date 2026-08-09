@@ -1,8 +1,11 @@
 import { describe, expect, it } from "bun:test"
 import type { NDKFilter } from "@nostr-dev-kit/ndk"
 import {
+  db,
   EVENT_KINDS,
   getShopperTrustEvidence,
+  shopperTrustSnapshotIsExpired,
+  SHOPPER_TRUST_SNAPSHOT_RETENTION_MS,
   SHOPPER_TRUST_CACHE_FRESH_MS,
   SHOPPER_TRUST_DEGRADED_CACHE_RETRY_MS,
   type CachedShopperTrustSnapshot,
@@ -58,12 +61,16 @@ function zapReceipt({
   createdAt,
   invoiceDescription,
   providerSecret = PROVIDER_SECRET,
+  requestRelayUrls = ["wss://relay.example"],
+  receiptReferenceTags = [],
 }: {
   senderSecret: Uint8Array
   recipientPubkey: string
   createdAt: number
   invoiceDescription?: string
   providerSecret?: Uint8Array
+  requestRelayUrls?: string[] | null
+  receiptReferenceTags?: string[][]
 }): Event {
   const request = signedEvent(senderSecret, {
     kind: EVENT_KINDS.ZAP_REQUEST,
@@ -71,7 +78,7 @@ function zapReceipt({
     tags: [
       ["p", recipientPubkey],
       ["amount", "21000"],
-      ["relays", "wss://relay.example"],
+      ...(requestRelayUrls ? [["relays", ...requestRelayUrls]] : []),
     ],
     content: "fixture zap comment that must never be cached",
   })
@@ -93,6 +100,7 @@ function zapReceipt({
       ["P", request.pubkey],
       ["bolt11", invoice],
       ["description", description],
+      ...receiptReferenceTags,
     ],
   })
 }
@@ -149,7 +157,41 @@ function createCache(
 }
 
 describe("shopper trust evidence", () => {
+  it("registers the combined post-v9 cache and deletion stores", () => {
+    expect(db.verno).toBe(10)
+    expect(db.tables.map(({ name }) => name)).toEqual(
+      expect.arrayContaining(["shopperTrustSnapshots", "productDeletionOutbox"])
+    )
+  })
+
+  it("keeps both divergent version-9 stores in the upgrade history", async () => {
+    const source = await Bun.file("packages/core/src/db/index.ts").text()
+    const version9 = source.slice(
+      source.indexOf("this.version(9).stores"),
+      source.indexOf("this.version(10).stores")
+    )
+
+    expect(version9).toContain("shopperTrustSnapshots:")
+    expect(version9).toContain("productDeletionOutbox:")
+  })
+
+  it("bounds persisted shopper trust snapshots by age", () => {
+    expect(
+      shopperTrustSnapshotIsExpired(
+        NOW_MS - SHOPPER_TRUST_SNAPSHOT_RETENTION_MS - 1,
+        NOW_MS
+      )
+    ).toBe(true)
+    expect(
+      shopperTrustSnapshotIsExpired(
+        NOW_MS - SHOPPER_TRUST_SNAPSHOT_RETENTION_MS,
+        NOW_MS
+      )
+    ).toBe(false)
+  })
+
   it("assembles bounded standard signals without producing a score or retaining raw content", async () => {
+    const cache = createCache()
     const merchantContacts = signedEvent(MERCHANT_SECRET, {
       kind: EVENT_KINDS.CONTACT_LIST,
       createdAt: NOW_SECONDS - 100,
@@ -291,7 +333,7 @@ describe("shopper trust evidence", () => {
         shopperPubkey: SHOPPER_PUBKEY,
       },
       {
-        cache: createCache(),
+        cache,
         fetchEvents,
         now: () => NOW_MS,
         relayUrls: ["wss://relay.example"],
@@ -327,6 +369,13 @@ describe("shopper trust evidence", () => {
     expect(serialized).not.toContain("public activity content")
     expect(serialized.toLowerCase()).not.toContain("score")
     expect(serialized.toLowerCase()).not.toContain("trusted")
+
+    const serializedCache = JSON.stringify([...cache.rows.values()])
+    expect(serializedCache).not.toContain("report allegation")
+    expect(serializedCache).not.toContain("fixture zap comment")
+    expect(serializedCache).not.toContain("public activity content")
+    expect(serializedCache).not.toContain("impersonation")
+    expect(serializedCache).not.toContain("spam")
   })
 
   it("emits stale cached evidence first and preserves it when relay refreshes fail", async () => {
@@ -454,6 +503,103 @@ describe("shopper trust evidence", () => {
     })
     expect(refreshed.oldestEvent.state).toBe("partial")
     expect(refreshed.oldestEvent.source).toBe("cache")
+  })
+
+  it("retains stronger cached counts when a bounded refresh returns fewer observations", async () => {
+    const completeCoverage = {
+      attemptedRelays: 2,
+      responsiveRelays: 2,
+      transportComplete: true,
+      completeForPlan: true,
+      truncated: false,
+    }
+    const cache = createCache([
+      {
+        id: `v2:${MERCHANT_PUBKEY}:${SHOPPER_PUBKEY}`,
+        merchantPubkey: MERCHANT_PUBKEY,
+        shopperPubkey: SHOPPER_PUBKEY,
+        oldestEvent: {
+          state: "available",
+          value: { timestamp: null },
+          coverage: completeCoverage,
+        },
+        followersObserved: {
+          state: "available",
+          value: { count: 8 },
+          coverage: completeCoverage,
+        },
+        followsInCommon: {
+          state: "available",
+          value: { count: 4 },
+          coverage: completeCoverage,
+        },
+        zapsSent: {
+          state: "partial",
+          value: { count: 3 },
+          coverage: completeCoverage,
+        },
+        zapsReceived: {
+          state: "partial",
+          value: { count: 5 },
+          coverage: completeCoverage,
+        },
+        reportsFromNetwork: {
+          state: "available",
+          value: { count: 2, reporterCount: 2 },
+          coverage: completeCoverage,
+        },
+        degraded: true,
+        cachedAt: NOW_MS,
+      },
+    ])
+    const boundedEmptyRead: ShopperTrustFetchEvents = async () => ({
+      events: [],
+      relays: [
+        {
+          relayUrl: "wss://one.example",
+          status: "success",
+          eventCount: 0,
+        },
+        {
+          relayUrl: "wss://two.example",
+          status: "success",
+          eventCount: 0,
+        },
+      ],
+    })
+
+    const refreshed = await getShopperTrustEvidence(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        shopperPubkey: SHOPPER_PUBKEY,
+      },
+      {
+        cache,
+        fetchEvents: boundedEmptyRead,
+        now: () => NOW_MS + SHOPPER_TRUST_CACHE_FRESH_MS + 1,
+        relayUrls: ["wss://one.example", "wss://two.example"],
+      }
+    )
+
+    expect(refreshed.followersObserved.value).toEqual({ count: 8 })
+    expect(refreshed.followsInCommon.value).toEqual({ count: 4 })
+    expect(refreshed.zapsSent.value).toEqual({ count: 3 })
+    expect(refreshed.zapsReceived.value).toEqual({ count: 5 })
+    expect(refreshed.reportsFromNetwork.value).toEqual({
+      count: 2,
+      reporterCount: 2,
+      byType: {},
+    })
+    for (const signal of [
+      refreshed.followersObserved,
+      refreshed.followsInCommon,
+      refreshed.zapsSent,
+      refreshed.zapsReceived,
+      refreshed.reportsFromNetwork,
+    ]) {
+      expect(signal.state).toBe("stale")
+      expect(signal.source).toBe("cache")
+    }
   })
 
   it("distinguishes a completed zero observation from partial and unavailable reads", async () => {
@@ -820,6 +966,46 @@ describe("shopper trust evidence", () => {
     expect(initialRelayAllowlist).toEqual([MERCHANT_PUBKEY])
   })
 
+  it("marks observations partial when NIP-65 routing falls back to stale hints", async () => {
+    const staleRelay = "wss://stale-hint.example"
+    const resolveRelayLists: ShopperTrustResolveRelayLists = async (pubkeys) =>
+      new Map(
+        pubkeys.map((pubkey) => [
+          pubkey,
+          {
+            ...relayList(pubkey, { writeRelayUrls: [staleRelay] }),
+            lookupState: "stale-cache" as const,
+          },
+        ])
+      )
+
+    const evidence = await getShopperTrustEvidence(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        shopperPubkey: SHOPPER_PUBKEY,
+      },
+      {
+        baseRelayUrls: ["wss://public.example"],
+        cache: createCache(),
+        fetchEvents: async (_filter, options) => ({
+          events: [],
+          relays: (options?.relayUrls ?? []).map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: 0,
+          })),
+        }),
+        now: () => NOW_MS,
+        resolveRelayLists,
+      }
+    )
+
+    expect(evidence.oldestEvent.state).toBe("partial")
+    expect(evidence.followersObserved.state).toBe("partial")
+    expect(evidence.followsInCommon.state).toBe("partial")
+    expect(evidence.oldestEvent.coverage.truncated).toBe(true)
+  })
+
   it("checks a reverse-follow candidate on the candidate author outbox", async () => {
     const candidateWriteRelay = "wss://candidate-write.example"
     const candidateFollow = signedEvent(CURRENT_FOLLOWER_SECRET, {
@@ -889,7 +1075,7 @@ describe("shopper trust evidence", () => {
     expect(evidence.followersObserved.value).toEqual({ count: 0 })
   })
 
-  it("keeps structurally qualified observations on the normal cache window", async () => {
+  it("retries partial observations on the short cache window", async () => {
     const cache = createCache()
     await getShopperTrustEvidence(
       {
@@ -921,9 +1107,44 @@ describe("shopper trust evidence", () => {
       }
     )
 
-    expect(fetchCount).toBe(0)
-    expect(evidence.source).toBe("cache")
+    expect(fetchCount).toBeGreaterThan(0)
     expect(evidence.degraded).toBe(true)
+  })
+
+  it("forces an explicit refresh even while a cached snapshot is fresh", async () => {
+    const cache = createCache()
+    await getShopperTrustEvidence(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        shopperPubkey: SHOPPER_PUBKEY,
+      },
+      {
+        cache,
+        fetchEvents: async () => successfulRead(),
+        now: () => NOW_MS,
+        relayUrls: ["wss://relay.example"],
+      }
+    )
+
+    let fetchCount = 0
+    await getShopperTrustEvidence(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        shopperPubkey: SHOPPER_PUBKEY,
+      },
+      {
+        cache,
+        fetchEvents: async () => {
+          fetchCount += 1
+          return successfulRead()
+        },
+        forceRefresh: true,
+        now: () => NOW_MS + 1,
+        relayUrls: ["wss://relay.example"],
+      }
+    )
+
+    expect(fetchCount).toBeGreaterThan(0)
   })
 
   it("retries transport-degraded cache rows after the short retry window", async () => {
@@ -1038,6 +1259,27 @@ describe("shopper trust evidence", () => {
       createdAt: NOW_SECONDS - 10,
       invoiceDescription: "{}",
     })
+    const missingRelayTag = zapReceipt({
+      senderSecret: MUTUAL_SECRET,
+      recipientPubkey: SHOPPER_PUBKEY,
+      createdAt: NOW_SECONDS - 5,
+      requestRelayUrls: null,
+    })
+    const duplicateEventReference = zapReceipt({
+      senderSecret: MUTUAL_SECRET,
+      recipientPubkey: SHOPPER_PUBKEY,
+      createdAt: NOW_SECONDS - 4,
+      receiptReferenceTags: [
+        ["e", "0".repeat(64)],
+        ["e", "1".repeat(64)],
+      ],
+    })
+    const malformedCoordinate = zapReceipt({
+      senderSecret: MUTUAL_SECRET,
+      recipientPubkey: SHOPPER_PUBKEY,
+      createdAt: NOW_SECONDS - 3,
+      receiptReferenceTags: [["a", "not-an-event-coordinate"]],
+    })
 
     const evidence = await getShopperTrustEvidence(
       {
@@ -1049,7 +1291,13 @@ describe("shopper trust evidence", () => {
         fetchEvents: async (filter) =>
           filterHasKind(filter, EVENT_KINDS.ZAP_RECEIPT) &&
           filter["#p"]?.includes(SHOPPER_PUBKEY)
-            ? successfulRead([valid, malformed])
+            ? successfulRead([
+                valid,
+                malformed,
+                missingRelayTag,
+                duplicateEventReference,
+                malformedCoordinate,
+              ])
             : successfulRead(),
         now: () => NOW_MS,
         relayUrls: ["wss://relay.example"],

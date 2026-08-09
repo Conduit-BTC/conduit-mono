@@ -50,6 +50,19 @@ Complete this section when the PR touches protocol/app logic, infra/relay behavi
 - [ ] New protocol construction, `giftWrap`, publish, unwrap/decrypt, relay planning, or event parsing lives in `@conduit/core`, or the PR explains why route-local code is unavoidable
 - [ ] Diagnostics/logs/telemetry remain content-free: no plaintext, ciphertext, invoices, order contents, addresses, signer secrets, NWC URIs, or message bodies
 
+## Decentralized Network Product Review
+
+Complete when relay, cache, discovery, capability, interoperability, or
+convergence state can block, degrade, retry, or change a user action.
+
+- [ ] `docs/knowledge/decentralized-network-product-posture.md` was checked
+- [ ] Requirements are classified as safety/payment, data integrity, discovery/capability, or ecosystem migration
+- [ ] Required positive evidence and stronger negative/revocation evidence are stated separately
+- [ ] Empty, partial, unavailable, stale, conflicting, malformed, and absent-within-scope states remain distinguishable where the decision depends on them
+- [ ] The PR identifies any previously working cohort that becomes blocked and explains why the gate is necessary
+- [ ] Partial-network counterexamples cover the user outcome, not only helper return values
+- [ ] Any compatibility exception is named, bounded, rollout-controlled, privacy-safe, measurable, repairable, and linked from the active-exception index with an explicit removal gate
+
 ## Public Context Review
 
 Reviewer decision:

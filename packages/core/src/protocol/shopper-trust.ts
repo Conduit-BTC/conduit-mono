@@ -8,6 +8,7 @@
 import type { NDKFilter } from "@nostr-dev-kit/ndk"
 import {
   db,
+  pruneShopperTrustSnapshots,
   type CachedShopperTrustSignal,
   type CachedShopperTrustSnapshot,
 } from "../db"
@@ -26,6 +27,7 @@ import {
 } from "./ndk"
 import { getRelayLists } from "./relay-list"
 import { planRelayReads } from "./relay-planner"
+import { tryNormalizeRelayUrl } from "./relay-settings"
 import type { SignedPublicNostrEvent } from "./signed-event"
 
 const HEX_PUBKEY = /^[0-9a-f]{64}$/i
@@ -133,6 +135,8 @@ export interface GetShopperTrustEvidenceOptions {
   baseRelayUrls?: readonly string[]
   /** Cancel obsolete reads when the selected order changes. */
   signal?: AbortSignal
+  /** Bypass aggregate freshness for an explicit user or relay-scope refresh. */
+  forceRefresh?: boolean
 }
 
 type ReadResult = {
@@ -195,7 +199,10 @@ function defaultCache(): ShopperTrustEvidenceCache | null {
 
   return {
     get: (id) => db.shopperTrustSnapshots.get(id),
-    put: (row) => db.shopperTrustSnapshots.put(row).then(() => undefined),
+    put: async (row) => {
+      await db.shopperTrustSnapshots.put(row)
+      await pruneShopperTrustSnapshots(row.cachedAt)
+    },
   }
 }
 
@@ -467,6 +474,32 @@ function preferNetwork<T>(
   }
 }
 
+function preferBoundedCount<T>(
+  network: ShopperTrustSignal<T>,
+  cached: ShopperTrustSignal<T> | undefined,
+  count: (value: T) => number
+): ShopperTrustSignal<T> {
+  const preferred = preferNetwork(network, cached)
+  if (
+    network.state === "unavailable" ||
+    !network.value ||
+    !cached?.value ||
+    count(network.value) >= count(cached.value)
+  ) {
+    return preferred
+  }
+
+  // A bounded or partially responsive relay scan cannot prove that stronger
+  // previously observed evidence disappeared. Retain the prior aggregate and
+  // mark it stale while carrying the current scan's coverage diagnostics.
+  return {
+    ...cached,
+    state: "stale",
+    source: "cache",
+    coverage: network.coverage,
+  }
+}
+
 function preferOldestEventTimestamp(
   network: ShopperTrustEvidence["oldestEvent"],
   cached: ShopperTrustEvidence["oldestEvent"] | undefined
@@ -551,7 +584,15 @@ function rowToEvidence(
     followsInCommon: cacheSignal(row.followsInCommon, stale),
     zapsSent: cacheSignal(row.zapsSent, stale),
     zapsReceived: cacheSignal(row.zapsReceived, stale),
-    reportsFromNetwork: cacheSignal(row.reportsFromNetwork, stale),
+    reportsFromNetwork: cacheSignal(
+      {
+        ...row.reportsFromNetwork,
+        value: row.reportsFromNetwork.value
+          ? { ...row.reportsFromNetwork.value, byType: {} }
+          : null,
+      },
+      stale
+    ),
     refreshedAt: row.cachedAt,
   })
 }
@@ -580,7 +621,15 @@ function evidenceToRow(
     followsInCommon: signalToCache(evidence.followsInCommon),
     zapsSent: signalToCache(evidence.zapsSent),
     zapsReceived: signalToCache(evidence.zapsReceived),
-    reportsFromNetwork: signalToCache(evidence.reportsFromNetwork),
+    reportsFromNetwork: {
+      ...signalToCache(evidence.reportsFromNetwork),
+      value: evidence.reportsFromNetwork.value
+        ? {
+            count: evidence.reportsFromNetwork.value.count,
+            reporterCount: evidence.reportsFromNetwork.value.reporterCount,
+          }
+        : null,
+    },
     degraded: evidence.degraded,
     cachedAt,
   }
@@ -613,6 +662,19 @@ function eventTagsPubkey(
   return getFollowListPubkeySet(event).has(pubkey)
 }
 
+function isValidEventCoordinate(value: string): boolean {
+  const match = /^(\d+):([0-9a-f]{64}):(.*)$/.exec(value)
+  if (!match) return false
+  const kind = Number(match[1])
+  return (
+    Number.isSafeInteger(kind) &&
+    (kind === 0 ||
+      kind === 3 ||
+      (kind >= 10_000 && kind < 20_000) ||
+      (kind >= 30_000 && kind < 40_000))
+  )
+}
+
 function parseZapCandidate(
   event: SignedPublicNostrEvent,
   nowSeconds: number
@@ -629,11 +691,19 @@ function parseZapCandidate(
 
   const recipientTags = event.tags.filter(([name]) => name === "p")
   const senderTags = event.tags.filter(([name]) => name === "P")
+  const eventReferenceTags = event.tags.filter(([name]) => name === "e")
+  const coordinateTags = event.tags.filter(([name]) => name === "a")
   const descriptions = event.tags.filter(([name]) => name === "description")
   const invoices = event.tags.filter(([name]) => name === "bolt11")
   if (
     recipientTags.length !== 1 ||
     senderTags.length > 1 ||
+    eventReferenceTags.length > 1 ||
+    coordinateTags.length > 1 ||
+    (eventReferenceTags.length === 1 &&
+      !/^[0-9a-f]{64}$/.test(eventReferenceTags[0]?.[1] ?? "")) ||
+    (coordinateTags.length === 1 &&
+      !isValidEventCoordinate(coordinateTags[0]?.[1] ?? "")) ||
     descriptions.length !== 1 ||
     invoices.length !== 1
   ) {
@@ -665,6 +735,7 @@ function parseZapCandidate(
   }
 
   const requestRecipientTags = request.tags.filter(([name]) => name === "p")
+  const requestRelayTags = request.tags.filter(([name]) => name === "relays")
   const requestRecipientPubkey = normalizePubkey(
     requestRecipientTags[0]?.[1] ?? ""
   )
@@ -673,6 +744,10 @@ function parseZapCandidate(
     senderTags.length === 1 ? normalizePubkey(senderTags[0]?.[1] ?? "") : null
   if (
     requestRecipientTags.length !== 1 ||
+    requestRelayTags.length !== 1 ||
+    !requestRelayTags[0]
+      ?.slice(1)
+      .some((relayUrl) => tryNormalizeRelayUrl(relayUrl).ok) ||
     !requestRecipientPubkey ||
     requestRecipientPubkey !== recipientPubkey ||
     !senderPubkey ||
@@ -802,8 +877,9 @@ async function resolveRelayUrls(
   resolveRelayLists: ShopperTrustResolveRelayLists,
   baseRelayUrlsOverride?: readonly string[],
   signal?: AbortSignal
-): Promise<string[]> {
+): Promise<{ relayUrls: string[]; completeRelayHints: boolean }> {
   let relayLists = new Map()
+  let lookupFailed = false
   try {
     relayLists = await resolveRelayLists([merchantPubkey, shopperPubkey], {
       allowInsecureRelayUrlsForPubkey: merchantPubkey,
@@ -811,6 +887,7 @@ async function resolveRelayUrls(
     })
   } catch (error) {
     if (signal?.aborted || isTrustAbortError(error)) throw error
+    lookupFailed = true
     // Cached NIP-65 hints improve coverage but are not required to plan.
   }
 
@@ -827,15 +904,22 @@ async function resolveRelayUrls(
   // Keep the cap fair across the shopper outbox/inbox, merchant outbox, and
   // public fallback. A long merchant relay list must not crowd every shopper
   // or public relay out of the plan.
-  return interleaveRelayGroups(
-    [
-      shopperRelays?.writeRelayUrls ?? [],
-      shopperRelays?.readRelayUrls ?? [],
-      merchantRelays?.writeRelayUrls ?? [],
-      baseRelayUrls,
-    ],
-    SHOPPER_TRUST_RELAY_CAP
-  )
+  return {
+    relayUrls: interleaveRelayGroups(
+      [
+        shopperRelays?.writeRelayUrls ?? [],
+        shopperRelays?.readRelayUrls ?? [],
+        merchantRelays?.writeRelayUrls ?? [],
+        baseRelayUrls,
+      ],
+      SHOPPER_TRUST_RELAY_CAP
+    ),
+    completeRelayHints:
+      !lookupFailed &&
+      ![merchantRelays, shopperRelays].some(
+        (list) => list?.lookupState === "stale-cache"
+      ),
+  }
 }
 
 async function resolveAuthorReadRelayPlan(
@@ -851,7 +935,11 @@ async function resolveAuthorReadRelayPlan(
     }
   }
 
-  let relayLists = new Map<string, { writeRelayUrls: string[] }>()
+  let relayLists = new Map<
+    string,
+    { writeRelayUrls: string[]; lookupState?: string }
+  >()
+  let lookupFailed = false
   try {
     relayLists = await resolveRelayLists(authors, {
       relayUrls: fallbackRelayUrls,
@@ -859,6 +947,7 @@ async function resolveAuthorReadRelayPlan(
     })
   } catch (error) {
     if (signal?.aborted || isTrustAbortError(error)) throw error
+    lookupFailed = true
     // Missing NIP-65 data degrades the observation to the bounded fallback.
   }
 
@@ -870,11 +959,17 @@ async function resolveAuthorReadRelayPlan(
     AUTHOR_HINT_RELAY_CAP
   )
   const selectedHintSet = new Set(selectedHints)
-  const completeAuthorHints = authorHintGroups.every(
-    (relayUrls) =>
-      relayUrls.length > 0 &&
-      relayUrls.some((relayUrl) => selectedHintSet.has(relayUrl))
-  )
+  const completeAuthorHints =
+    !lookupFailed &&
+    authors.every((author, index) => {
+      const list = relayLists.get(author)
+      const relayUrls = authorHintGroups[index] ?? []
+      return (
+        list?.lookupState !== "stale-cache" &&
+        relayUrls.length > 0 &&
+        relayUrls.some((relayUrl) => selectedHintSet.has(relayUrl))
+      )
+    })
 
   return {
     relayUrls: interleaveRelayGroups(
@@ -921,8 +1016,10 @@ function cachedSnapshotNeedsShortRetry(
 
   return signals.some(
     (signal) =>
+      signal.state === "partial" ||
       signal.state === "unavailable" ||
       signal.state === "stale" ||
+      signal.coverage.truncated ||
       !(signal.coverage.transportComplete ?? signal.coverage.completeForPlan)
   )
 }
@@ -961,18 +1058,21 @@ export async function getShopperTrustEvidence(
     throwIfTrustAborted(signal)
     options.onProgress?.(cachedEvidence)
   }
-  if (cacheIsFresh && cachedEvidence) return cachedEvidence
+  if (cacheIsFresh && cachedEvidence && !options.forceRefresh) {
+    return cachedEvidence
+  }
 
   const resolveRelayLists = options.resolveRelayLists ?? getRelayLists
-  const relayUrls =
-    options.relayUrls ??
-    (await resolveRelayUrls(
-      merchantPubkey,
-      shopperPubkey,
-      resolveRelayLists,
-      options.baseRelayUrls,
-      signal
-    ))
+  const initialRelayPlan = options.relayUrls
+    ? { relayUrls: options.relayUrls, completeRelayHints: true }
+    : await resolveRelayUrls(
+        merchantPubkey,
+        shopperPubkey,
+        resolveRelayLists,
+        options.baseRelayUrls,
+        signal
+      )
+  const { relayUrls } = initialRelayPlan
   throwIfTrustAborted(signal)
   const fetchEvents = options.fetchEvents ?? fetchEventsFanoutDetailed
 
@@ -1006,7 +1106,7 @@ export async function getShopperTrustEvidence(
         limit: CONTACT_LIST_LIMIT,
       },
       relayUrls,
-      false,
+      !initialRelayPlan.completeRelayHints,
       signal
     ),
     safeRead(
@@ -1017,7 +1117,7 @@ export async function getShopperTrustEvidence(
         limit: ACCOUNT_ACTIVITY_LIMIT,
       },
       relayUrls,
-      false,
+      !initialRelayPlan.completeRelayHints,
       signal
     ),
     safeRead(
@@ -1028,7 +1128,7 @@ export async function getShopperTrustEvidence(
         limit: FOLLOWER_CANDIDATE_LIMIT,
       },
       relayUrls,
-      false,
+      !initialRelayPlan.completeRelayHints,
       signal
     ),
     safeRead(
@@ -1039,7 +1139,7 @@ export async function getShopperTrustEvidence(
         limit: ZAP_RECEIPT_LIMIT,
       },
       relayUrls,
-      false,
+      !initialRelayPlan.completeRelayHints,
       signal
     ),
     safeRead(
@@ -1050,7 +1150,7 @@ export async function getShopperTrustEvidence(
         limit: ZAP_RECEIPT_LIMIT,
       },
       relayUrls,
-      false,
+      !initialRelayPlan.completeRelayHints,
       signal
     ),
   ])
@@ -1123,7 +1223,9 @@ export async function getShopperTrustEvidence(
       )
     : {
         ...followerCandidatesRead.coverage,
-        truncated: followerCandidatesTruncated,
+        truncated:
+          followerCandidatesRead.coverage.truncated ||
+          followerCandidatesTruncated,
       }
   const confirmedLatest = confirmedFollowersRead
     ? latestEventsByAuthor(
@@ -1338,22 +1440,30 @@ export async function getShopperTrustEvidence(
       networkOldestEvent,
       cachedEvidence?.oldestEvent
     ),
-    followersObserved: preferNetwork(
+    followersObserved: preferBoundedCount(
       networkFollowers,
-      cachedEvidence?.followersObserved
+      cachedEvidence?.followersObserved,
+      ({ count }) => count
     ),
-    followsInCommon: preferNetwork(
+    followsInCommon: preferBoundedCount(
       networkCommon,
-      cachedEvidence?.followsInCommon
+      cachedEvidence?.followsInCommon,
+      ({ count }) => count
     ),
-    zapsSent: preferNetwork(networkZapsSent, cachedEvidence?.zapsSent),
-    zapsReceived: preferNetwork(
+    zapsSent: preferBoundedCount(
+      networkZapsSent,
+      cachedEvidence?.zapsSent,
+      ({ count }) => count
+    ),
+    zapsReceived: preferBoundedCount(
       networkZapsReceived,
-      cachedEvidence?.zapsReceived
+      cachedEvidence?.zapsReceived,
+      ({ count }) => count
     ),
-    reportsFromNetwork: preferNetwork(
+    reportsFromNetwork: preferBoundedCount(
       networkReports,
-      cachedEvidence?.reportsFromNetwork
+      cachedEvidence?.reportsFromNetwork,
+      ({ count }) => count
     ),
     refreshedAt: now,
   })

@@ -13,6 +13,7 @@ import {
   ConduitSessionProvider,
   pruneCommerceCaches,
   pruneExpiredGuestOrderData,
+  resumePendingOrderRelayDeliveries,
   useBtcUsdRate,
   useConduitSession,
 } from "@conduit/core"
@@ -76,6 +77,34 @@ function MarketAuthQueryBoundary({ children }: { children: ReactNode }) {
       },
     })
   }, [identity, queryClient])
+
+  useEffect(() => {
+    if (session.mode !== "signed_in" || !session.pubkey) return
+    const buyerPubkey = session.pubkey
+    let active = false
+    const resume = () => {
+      if (active) return
+      active = true
+      void resumePendingOrderRelayDeliveries(buyerPubkey).finally(() => {
+        active = false
+      })
+    }
+    const resumeWhenVisible = () => {
+      if (document.visibilityState === "visible") resume()
+    }
+
+    resume()
+    const interval = window.setInterval(resumeWhenVisible, 60_000)
+    window.addEventListener("online", resume)
+    window.addEventListener("focus", resume)
+    document.addEventListener("visibilitychange", resumeWhenVisible)
+    return () => {
+      window.clearInterval(interval)
+      window.removeEventListener("online", resume)
+      window.removeEventListener("focus", resume)
+      document.removeEventListener("visibilitychange", resumeWhenVisible)
+    }
+  }, [session.mode, session.pubkey])
 
   return <>{children}</>
 }

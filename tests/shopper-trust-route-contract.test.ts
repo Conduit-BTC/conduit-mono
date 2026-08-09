@@ -7,14 +7,15 @@ describe("merchant shopper trust route contract", () => {
     expect(source).toContain("useShopperTrustEvidence(")
     expect(source).toContain("selected && !isGuestOrder")
     expect(source).toContain("shopperPubkey: selectedShopperPubkey")
-    expect(source).toContain(
-      "enabled: signerConnected && !isOrdersInitialHydration"
-    )
+    expect(source).toContain("session.relaySettingsReady &&")
     expect(source).toContain(
       "signerConnected && !isOrdersInitialHydration && buyerPubkeys.length > 0"
     )
     expect(source).toContain("<ShopperTrustCard")
     expect(source).toContain("evidence={shopperTrustQuery.evidence}")
+    expect(source).toContain("profileState={selectedBuyerProfileState}")
+    expect(source).toContain("onRefresh={shopperTrustQuery.refetch}")
+    expect(source).toContain("relayScope: session.relayScope")
 
     const trustCardPosition = source.indexOf("<ShopperTrustCard")
     const shippingPosition = source.indexOf(
@@ -40,7 +41,7 @@ describe("merchant shopper trust route contract", () => {
       "packages/core/src/hooks/useShopperTrustEvidence.ts"
     ).text()
 
-    expect(source).toContain("queryFn: ({ signal }) =>")
+    expect(source).toContain("queryFn: async ({ signal }) =>")
     expect(source).toContain("signal,")
     expect(source).toContain("if (signal.aborted) return")
   })

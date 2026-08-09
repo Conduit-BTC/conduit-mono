@@ -32,6 +32,8 @@ import {
   type Profile,
   type SignedPublicNostrEvent,
   useAuth,
+  useConduitSession,
+  useInboxDeclaration,
   useNip05Verification,
   useProfiles,
   useShopperTrustEvidence,
@@ -46,6 +48,7 @@ import {
   Button,
   Input,
   Label,
+  MessagingReadinessNotice,
   OrderMessagesWidget,
   Select,
   SelectContent,
@@ -402,6 +405,7 @@ function OrderItemsCard({
 
 function OrdersPage() {
   const { pubkey, status } = useAuth()
+  const session = useConduitSession()
   const navigate = useNavigate()
   const { order: selectedFromUrl, queue: queueFromUrl } = Route.useSearch()
   const selectedQueueFromUrl = queueFromUrl ?? "all"
@@ -486,6 +490,13 @@ function OrdersPage() {
   }, [])
 
   const nwc = useMerchantPaymentAutomation()
+
+  // Orders reads stay permissive without a NIP-17 declaration (CND-208);
+  // this banner only reports readiness and links to Network for repair.
+  const inboxReadiness = useInboxDeclaration(pubkey, {
+    enabled: signerConnected && session.relaySettingsReady,
+    relayScope: session.relayScope,
+  })
 
   const ordersQuery = useQuery({
     queryKey: ["merchant-order-messages-live", pubkey ?? "none"],
@@ -934,7 +945,11 @@ function OrdersPage() {
         }
       : null,
     {
-      enabled: signerConnected && !isOrdersInitialHydration,
+      enabled:
+        signerConnected &&
+        session.relaySettingsReady &&
+        !isOrdersInitialHydration,
+      relayScope: session.relayScope,
     }
   )
   const selectedBuyerNip05 = selectedBuyerProfile?.nip05?.trim()
@@ -946,11 +961,13 @@ function OrdersPage() {
         signerConnected && !isOrdersInitialHydration && !!selectedBuyerNip05,
     }
   )
-  const selectedBuyerProfileSettled =
-    !selectedShopperPubkey ||
-    (!isOrdersInitialHydration &&
-      (!buyerProfilesQuery.unresolvedPubkeys.includes(selectedShopperPubkey) ||
-        buyerProfilesQuery.lookupSettled))
+  const selectedBuyerProfileState = !selectedShopperPubkey
+    ? "unavailable"
+    : buyerProfilesQuery.hasProfile(selectedShopperPubkey)
+      ? "loaded"
+      : isOrdersInitialHydration || !buyerProfilesQuery.lookupSettled
+        ? "loading"
+        : "unavailable"
   const selectedBuyerName = selected
     ? getMerchantBuyerDisplayName(selected, selectedBuyerProfile)
     : null
@@ -1598,6 +1615,33 @@ function OrdersPage() {
         </div>
       )}
 
+      {signerConnected &&
+        !inboxReadiness.isLoading &&
+        inboxReadiness.status !== "ready" && (
+          <MessagingReadinessNotice
+            state={
+              inboxReadiness.status === "malformed"
+                ? "malformed"
+                : inboxReadiness.status === "lookup_partial"
+                  ? "lookup_partial"
+                  : inboxReadiness.status === "lookup_unavailable"
+                    ? "lookup_unavailable"
+                    : "not_declared"
+            }
+            onAction={() => {
+              if (
+                inboxReadiness.status === "lookup_partial" ||
+                inboxReadiness.status === "lookup_unavailable"
+              ) {
+                inboxReadiness.refetch()
+              } else {
+                void navigate({ to: "/network" })
+              }
+            }}
+            pending={inboxReadiness.isRefetching}
+          />
+        )}
+
       {signerConnected && ordersQuery.error && (
         <div className="rounded-md border border-error/30 bg-error/10 p-4 text-sm text-error">
           Failed to load orders:{" "}
@@ -2211,11 +2255,12 @@ function OrdersPage() {
                       <ShopperTrustCard
                         shopperPubkey={selected.buyerPubkey}
                         profile={selectedBuyerProfile}
-                        profileSettled={selectedBuyerProfileSettled}
+                        profileState={selectedBuyerProfileState}
                         evidence={shopperTrustQuery.evidence}
                         isHydrating={
                           shopperTrustQuery.isHydrating ||
-                          isOrdersInitialHydration
+                          isOrdersInitialHydration ||
+                          !session.relaySettingsReady
                         }
                         nip05Status={
                           selectedBuyerNip05 && isOrdersInitialHydration
@@ -2230,6 +2275,7 @@ function OrdersPage() {
                         messageLabel={
                           buyerInboxKnown ? "Message" : "Order history"
                         }
+                        onRefresh={shopperTrustQuery.refetch}
                         onOpenMessages={() => setMessagesOpen(true)}
                       />
                     )}

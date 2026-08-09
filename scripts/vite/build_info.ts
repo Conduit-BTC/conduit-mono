@@ -1,16 +1,30 @@
 import { execFileSync } from "node:child_process"
 import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
+import type { Plugin } from "vite"
+import {
+  createPublicDeploymentManifest,
+  resolveDeploymentProfile,
+} from "./deployment_profile.ts"
 
 type PackageJson = {
+  name?: string
   version?: string
 }
 
-function readPackageVersion(appDir: string): string {
-  const packageJson = JSON.parse(
+function readPackageJson(appDir: string): PackageJson {
+  return JSON.parse(
     readFileSync(resolve(appDir, "package.json"), "utf8")
   ) as PackageJson
+}
+
+function readPackageVersion(appDir: string): string {
+  const packageJson = readPackageJson(appDir)
   return packageJson.version?.trim() || "0.0.0"
+}
+
+function readAppId(appDir: string): string {
+  return readPackageJson(appDir).name?.replace(/^@conduit\//, "") || "unknown"
 }
 
 function readGitValue(args: string[]): string {
@@ -55,32 +69,66 @@ function getSourceUrl(): string {
   )
 }
 
-function getReleaseChannel(branchName: string): string {
-  const configuredChannel = process.env.VITE_RELEASE_CHANNEL?.trim()
-  if (configuredChannel) {
-    return configuredChannel
-  }
-  if (process.env.CF_PAGES === "1") {
-    return branchName === "main" ? "production" : "preview"
-  }
-  return process.env.NODE_ENV === "production" ? "production" : "local"
-}
-
-export function defineConduitBuildEnv(appDir: string) {
+export function createConduitBuildContract(appDir: string): {
+  define: Record<string, string>
+  deploymentManifestPlugin: Plugin
+} {
   const branchName = getBranchName()
   const buildTime =
     process.env.VITE_BUILD_TIME?.trim() || new Date().toISOString()
+  const commitSha = getCommitSha()
+  const sourceUrl = getSourceUrl()
+  const profile = resolveDeploymentProfile()
+  const app = readAppId(appDir)
+  const deploymentManifest = createPublicDeploymentManifest({
+    app,
+    profile,
+    commitSha,
+    branch: branchName,
+    buildTime,
+    sourceUrl,
+  })
 
-  return {
+  const define = {
     "import.meta.env.VITE_APP_VERSION": JSON.stringify(
       readPackageVersion(appDir)
     ),
-    "import.meta.env.VITE_BUILD_COMMIT": JSON.stringify(getCommitSha()),
+    "import.meta.env.VITE_BUILD_COMMIT": JSON.stringify(commitSha),
     "import.meta.env.VITE_BUILD_BRANCH": JSON.stringify(branchName),
     "import.meta.env.VITE_BUILD_TIME": JSON.stringify(buildTime),
-    "import.meta.env.VITE_SOURCE_URL": JSON.stringify(getSourceUrl()),
+    "import.meta.env.VITE_SOURCE_URL": JSON.stringify(sourceUrl),
     "import.meta.env.VITE_RELEASE_CHANNEL": JSON.stringify(
-      getReleaseChannel(branchName)
+      profile.releaseChannel
+    ),
+    "import.meta.env.VITE_DEPLOYMENT_PROFILE": JSON.stringify(profile.name),
+    "import.meta.env.VITE_PUBLIC_CONFIG_DIGEST": JSON.stringify(
+      profile.configDigest
+    ),
+    "import.meta.env.VITE_DM_BOOTSTRAP_WRITES": JSON.stringify(
+      profile.publicFeatures.dmCompatibilityOrderRoutingEnabled
+        ? "true"
+        : "false"
+    ),
+    "import.meta.env.VITE_LIGHTNING_NETWORK": JSON.stringify(
+      profile.lightningNetwork
     ),
   }
+
+  const deploymentManifestPlugin: Plugin = {
+    name: "conduit-deployment-manifest",
+    apply: "build",
+    generateBundle() {
+      this.emitFile({
+        type: "asset",
+        fileName: ".well-known/conduit-deployment.json",
+        source: `${JSON.stringify(deploymentManifest, null, 2)}\n`,
+      })
+    },
+  }
+
+  return { define, deploymentManifestPlugin }
+}
+
+export function defineConduitBuildEnv(appDir: string): Record<string, string> {
+  return createConduitBuildContract(appDir).define
 }

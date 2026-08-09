@@ -13,23 +13,33 @@ import {
   type CachedProfile,
   type StoredMessage,
 } from "../db"
-import { config } from "../config"
+import { CANONICAL_APP_BACKPLANE_RELAYS, config } from "../config"
 import { compareCommercePrices } from "../pricing"
 import type { Product, Profile } from "../types"
 import { EVENT_KINDS } from "./kinds"
 import {
   fetchEventsFanout,
   fetchEventsFanoutProgressive,
+  fetchEventsFanoutWithDiagnostics,
   getEventSourceRelayUrls,
+  mergeEventSourceRelayUrls,
   requireNdkConnected,
 } from "./ndk"
+import {
+  deriveInboxReadCoverage,
+  planInboxReadRelays,
+  resolveInboxDeclaration,
+  type InboxDeclarationResolution,
+  type InboxDeclarationState,
+  type InboxReadCoverage,
+  type InboxReadSource,
+} from "./private-message-routing"
 import { extractOrderSummary } from "./order-summary"
 import { parseOrderMessageRumorEvent, type ParsedOrderMessage } from "./orders"
 import {
   __resetInboxRelayCache,
   createNdkLegacyDmDecrypt,
   decryptLegacyDirectMessage,
-  fetchInboxRelayUrls,
   parseDirectMessageRumor,
   unwrapGiftWraps,
   type DecryptFailure,
@@ -52,6 +62,14 @@ import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
 } from "./signed-event"
+import {
+  isProductDeletedByNip09,
+  parseProductAddressCoordinate,
+  productDeletionAddressKey,
+  productDeletionEventKey as scopedProductDeletionEventKey,
+  validateProductDeletionEvent,
+  type ProductDeletionEvidence,
+} from "./product-deletion"
 import {
   getCommerceReadRelayUrls,
   getGeneralReadRelayUrls,
@@ -88,6 +106,17 @@ export interface CommerceCapabilities {
   cursorPagination: boolean
 }
 
+/**
+ * Content-free status of the principal's NIP-17 inbox for one read (CND-208).
+ * Distinguishes "no declaration exists" from "the lookup or read degraded" so
+ * surfaces never render a false "not declared" or a false empty inbox.
+ */
+export interface PrivateInboxReadStatus {
+  declarationState: InboxDeclarationState
+  coverage: InboxReadCoverage
+  readSource: InboxReadSource
+}
+
 export interface CommerceQueryMeta {
   source: CommerceReadSource
   degraded: boolean
@@ -95,6 +124,8 @@ export interface CommerceQueryMeta {
   capabilities: CommerceCapabilities
   fetchedAt: number
   nextCursor?: string
+  /** Present on private-message reads (order/DM surfaces). */
+  inbox?: PrivateInboxReadStatus
   /**
    * Gift wraps that could not be turned into messages this read (id + coarse
    * reason only, never content). Surfaced so UIs render a retryable degraded
@@ -231,6 +262,7 @@ type RawMessageFetchResult = {
   source: CommerceReadSource
   stale: boolean
   decryptFailures: DecryptFailure[]
+  inbox?: PrivateInboxReadStatus
 }
 
 type RawDirectMessageFetchResult = {
@@ -240,12 +272,14 @@ type RawDirectMessageFetchResult = {
   stale: boolean
   decryptFailures: DecryptFailure[]
   legacyDecryptFailures: LegacyDmDecryptFailure[]
+  inbox?: PrivateInboxReadStatus
 }
 
 type PrivateInboxSyncResult = {
   orderMessages: ParsedOrderMessage[]
   directMessages: ParsedDirectMessage[]
   decryptFailures: DecryptFailure[]
+  inbox: PrivateInboxReadStatus
 }
 
 type LegacyDmSyncResult = {
@@ -255,6 +289,7 @@ type LegacyDmSyncResult = {
 
 type CommerceTestOverrides = {
   fetchEventsFanout?: typeof fetchEventsFanout
+  fetchEventsFanoutWithDiagnostics?: typeof fetchEventsFanoutWithDiagnostics
   fetchEventsFanoutProgressive?: typeof fetchEventsFanoutProgressive
   requireNdkConnected?: typeof requireNdkConnected
   giftUnwrap?: (
@@ -326,6 +361,7 @@ const READ_PLANS: Record<CommerceReadPlanName, CommerceReadSource[]> = {
 }
 
 let testOverrides: CommerceTestOverrides = {}
+const volatileProductTombstones = new Map<string, CachedProductTombstone>()
 const successfulWrapIdsByPrincipal = new Map<string, Set<string>>()
 const retryWrapsByPrincipal = new Map<
   string,
@@ -368,7 +404,12 @@ function commerceReadRelayUrls(): string[] {
  * fanout includes the author's write/read relays alongside user settings.
  * Falls back to the legacy URL accessors if planning yields nothing.
  */
-async function planCommerceReadRelays(input: {
+type CommerceReadRelayPlan = {
+  relayUrls: string[]
+  parkedRelayUrls: string[]
+}
+
+async function planCommerceReadRelayPlan(input: {
   intent: RelayReadIntent
   authors?: readonly string[]
   recipients?: readonly string[]
@@ -376,7 +417,7 @@ async function planCommerceReadRelays(input: {
   maxRelays?: number
   relayHintMode?: "auto" | "skip" | "force"
   extraRelayUrls?: readonly string[]
-}): Promise<string[]> {
+}): Promise<CommerceReadRelayPlan> {
   const hintPubkeys = Array.from(
     new Set(
       [...(input.authors ?? []), ...(input.recipients ?? [])]
@@ -447,16 +488,29 @@ async function planCommerceReadRelays(input: {
       ? plannedRelayUrls
       : plannedRelayUrls.slice(0, input.maxRelays)
 
-  if (expandedRelayUrls.length > 0) return expandedRelayUrls
+  if (expandedRelayUrls.length > 0) {
+    return {
+      relayUrls: expandedRelayUrls,
+      parkedRelayUrls: plan.parkedRelayUrls.filter(
+        (relayUrl) => !expandedRelayUrls.includes(relayUrl)
+      ),
+    }
+  }
 
   // Defensive fallback: legacy resolution paths.
   switch (input.intent) {
     case "commerce_products":
     case "author_products":
-      return commerceReadRelayUrls()
+      return { relayUrls: commerceReadRelayUrls(), parkedRelayUrls: [] }
     default:
-      return publicReadRelayUrls()
+      return { relayUrls: publicReadRelayUrls(), parkedRelayUrls: [] }
   }
+}
+
+async function planCommerceReadRelays(
+  input: Parameters<typeof planCommerceReadRelayPlan>[0]
+): Promise<string[]> {
+  return (await planCommerceReadRelayPlan(input)).relayUrls
 }
 
 async function runFetchEventsFanout(
@@ -465,6 +519,34 @@ async function runFetchEventsFanout(
 ): Promise<NDKEvent[]> {
   const impl = testOverrides.fetchEventsFanout ?? fetchEventsFanout
   return (await impl(filter, options)) as NDKEvent[]
+}
+
+/**
+ * Diagnostics-aware fanout honoring the events-only test override. An
+ * events-only override cannot report per-relay failure, so its result counts
+ * as complete coverage.
+ */
+async function runFetchEventsFanoutWithDiagnostics(
+  filter: NDKFilter,
+  options?: Parameters<typeof fetchEventsFanoutWithDiagnostics>[1]
+): Promise<Awaited<ReturnType<typeof fetchEventsFanoutWithDiagnostics>>> {
+  if (testOverrides.fetchEventsFanoutWithDiagnostics) {
+    return await testOverrides.fetchEventsFanoutWithDiagnostics(filter, options)
+  }
+  if (testOverrides.fetchEventsFanout) {
+    const events = (await testOverrides.fetchEventsFanout(
+      filter,
+      options
+    )) as NDKEvent[]
+    const relayUrls = [...(options?.relayUrls ?? [])]
+    return {
+      events,
+      attemptedRelayUrls: relayUrls,
+      successfulRelayUrls: relayUrls,
+      failedRelayUrls: [],
+    }
+  }
+  return await fetchEventsFanoutWithDiagnostics(filter, options)
 }
 
 async function runRequireNdkConnected(): Promise<
@@ -489,6 +571,7 @@ export function __setCommerceTestOverrides(
 
 export function __resetCommerceTestOverrides(): void {
   testOverrides = {}
+  volatileProductTombstones.clear()
   successfulWrapIdsByPrincipal.clear()
   retryWrapsByPrincipal.clear()
   inboxSyncPromises.clear()
@@ -508,6 +591,7 @@ function createMeta(
     nextCursor?: string
     decryptFailures?: DecryptFailure[]
     legacyDecryptFailures?: LegacyDmDecryptFailure[]
+    inbox?: PrivateInboxReadStatus
   } = {}
 ): CommerceQueryMeta {
   const plan = resolveReadPlan(planName)
@@ -527,12 +611,16 @@ function createMeta(
       (options.stale === true ||
         source !== plan.sources[0] ||
         decryptFailures !== undefined ||
-        legacyDecryptFailures !== undefined),
+        legacyDecryptFailures !== undefined ||
+        // Declaration setup state is reported separately via meta.inbox;
+        // only incomplete read coverage degrades the data itself.
+        (options.inbox !== undefined && options.inbox.coverage !== "complete")),
     capabilities,
     fetchedAt: now(),
     nextCursor: options.nextCursor,
     decryptFailures,
     legacyDecryptFailures,
+    inbox: options.inbox,
   }
 }
 
@@ -572,9 +660,37 @@ function chunkStrings(values: readonly string[], size: number): string[][] {
   return chunks
 }
 
+async function mapWithConcurrency<T, R>(
+  values: readonly T[],
+  concurrency: number,
+  worker: (value: T, index: number) => Promise<R>
+): Promise<R[]> {
+  if (values.length === 0) return []
+
+  const results = new Array<R>(values.length)
+  let nextIndex = 0
+  const workerCount = Math.min(Math.max(1, concurrency), values.length)
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < values.length) {
+        const index = nextIndex
+        nextIndex += 1
+        results[index] = await worker(values[index], index)
+      }
+    })
+  )
+  return results
+}
+
 function putMergedEvent(merged: Map<string, NDKEvent>, event: NDKEvent): void {
   const fallbackId = `${event.pubkey}:${event.kind}:${event.created_at ?? 0}`
-  merged.set(event.id || fallbackId, event)
+  const key = event.id || fallbackId
+  const existing = merged.get(key)
+  if (existing) {
+    mergeEventSourceRelayUrls(existing, event)
+    return
+  }
+  merged.set(key, event)
 }
 
 async function streamProductRecordChunks(input: {
@@ -583,6 +699,7 @@ async function streamProductRecordChunks(input: {
   relayUrls: string[]
   readPolicy?: CommerceReadPolicy
   merged: Map<string, NDKEvent>
+  deletionTimestamps?: DeletionTimestamps
   onRecords: (records: CommerceProductRecord[], relayUrl: string) => void
 }): Promise<void> {
   if (input.relayUrls.length === 0) return
@@ -617,7 +734,10 @@ async function streamProductRecordChunks(input: {
               putMergedEvent(input.merged, event)
             }
             input.onRecords(
-              dedupeProductEvents(Array.from(input.merged.values())),
+              dedupeProductEvents(
+                Array.from(input.merged.values()),
+                input.deletionTimestamps
+              ),
               relayUrl
             )
           }
@@ -772,6 +892,7 @@ function toCachedProduct(record: CommerceProductRecord) {
     location: product.location,
     eventId: record.eventId,
     eventCreatedAt: record.eventCreatedAt,
+    dTag: record.dTag ?? undefined,
     createdAt: product.createdAt,
     updatedAt: product.updatedAt,
     sourceRelayUrls: record.sourceRelayUrls,
@@ -820,9 +941,16 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
     updatedAt: row.updatedAt ?? row.cachedAt,
   }
 
-  const dTag = product.id.startsWith("30402:")
-    ? product.id.split(":").slice(2).join(":")
-    : null
+  // Cache rows written before the signed d-tag was stored are intentionally
+  // treated as exact-event-only legacy records. Reconstructing a coordinate
+  // from a display/cache id could broaden a deletion beyond signed metadata.
+  const cachedAddress = parseProductAddressCoordinate(row.id)
+  const dTag =
+    typeof row.dTag === "string" &&
+    cachedAddress?.authorPubkey === row.pubkey.toLowerCase() &&
+    cachedAddress.dTag === row.dTag
+      ? row.dTag
+      : null
   return withListingSafety({
     product,
     eventId: row.eventId ?? product.id,
@@ -916,9 +1044,31 @@ function selectCachedProductUpdates(
 
   for (const row of rows) {
     const existing = selected.get(row.id)
-    if (!existing || shouldReplaceCachedProduct(existing, row)) {
+    if (!existing) {
       selected.set(row.id, row)
       changed.set(row.id, row)
+      continue
+    }
+    const candidateWins = shouldReplaceCachedProduct(existing, row)
+    const winner = candidateWins ? row : existing
+    const sourceRelayUrls = uniqueStrings([
+      ...(existing.sourceRelayUrls ?? []),
+      ...(row.sourceRelayUrls ?? []),
+    ])
+    const merged = {
+      ...winner,
+      sourceRelayUrls,
+      dTag: winner.dTag ?? existing.dTag ?? row.dTag,
+      cachedAt: Math.max(existing.cachedAt, row.cachedAt),
+    }
+    if (
+      candidateWins ||
+      sourceRelayUrls.length !== (existing.sourceRelayUrls?.length ?? 0) ||
+      merged.dTag !== existing.dTag ||
+      merged.cachedAt !== existing.cachedAt
+    ) {
+      selected.set(row.id, merged)
+      changed.set(row.id, merged)
     }
   }
 
@@ -958,26 +1108,9 @@ function productTombstoneIdForEvent(pubkey: string, eventId: string): string {
   return `e:${pubkey}:${eventId}`
 }
 
-function productDeletionEventKey(pubkey: string, eventId: string): string {
-  return `${pubkey}:${eventId}`
-}
-
-function parseProductAddressTag(
-  value: string,
-  authorPubkey: string
-): { addressId: string; pubkey: string } | null {
-  const [kind, pubkey, ...dParts] = value.split(":")
-  const dTag = dParts.join(":")
-  if (kind !== String(EVENT_KINDS.PRODUCT) || !pubkey || !dTag) return null
-  if (pubkey !== authorPubkey) return null
-  return {
-    addressId: `${EVENT_KINDS.PRODUCT}:${pubkey}:${dTag}`,
-    pubkey,
-  }
-}
-
 function tombstonesFromDeletionEvent(
-  event: NDKEvent
+  event: NDKEvent,
+  options: { observedLocally: boolean }
 ): CachedProductTombstone[] {
   if (!event.pubkey) throw new Error("Deletion event pubkey is required")
   if (!event.id) throw new Error("Deletion event id is required")
@@ -985,34 +1118,33 @@ function tombstonesFromDeletionEvent(
   const deletedAt = toEventCreatedAtSeconds(event)
   const rows = new Map<string, CachedProductTombstone>()
   const cachedAt = now()
+  const sourceRelayUrls = getEventSourceRelayUrls(event)
+  const validated = validateProductDeletionEvent(
+    event.rawEvent() as SignedPublicNostrEvent
+  )
+  if (!validated) {
+    throw new Error("Expected a valid signed product deletion event")
+  }
+  const { evidence, signedEvent } = validated
 
-  for (const tag of event.tags ?? []) {
-    const [tagName, tagValue] = tag
-    if (!tagValue) continue
-
-    if (tagName === "a") {
-      const address = parseProductAddressTag(tagValue, event.pubkey)
-      if (!address) continue
-      rows.set(productTombstoneIdForAddress(address.addressId), {
-        id: productTombstoneIdForAddress(address.addressId),
-        pubkey: address.pubkey,
-        addressId: address.addressId,
-        deletedAt,
-        deletionEventId: event.id,
-        cachedAt,
-      })
-    }
-
-    if (tagName === "e") {
-      rows.set(productTombstoneIdForEvent(event.pubkey, tagValue), {
-        id: productTombstoneIdForEvent(event.pubkey, tagValue),
-        pubkey: event.pubkey,
-        eventId: tagValue,
-        deletedAt,
-        deletionEventId: event.id,
-        cachedAt,
-      })
-    }
+  for (const item of evidence) {
+    const id =
+      item.target === "event"
+        ? productTombstoneIdForEvent(item.authorPubkey, item.eventId)
+        : productTombstoneIdForAddress(item.addressId)
+    rows.set(id, {
+      id,
+      pubkey: item.authorPubkey,
+      ...(item.target === "event"
+        ? { eventId: item.eventId }
+        : { addressId: item.addressId }),
+      deletedAt,
+      deletionEventId: event.id,
+      signedEvent,
+      sourceRelayUrls,
+      observedLocally: options.observedLocally,
+      cachedAt,
+    })
   }
 
   return Array.from(rows.values())
@@ -1060,9 +1192,35 @@ function selectCachedProductTombstoneUpdates(
 
   for (const row of rows) {
     const existing = selected.get(row.id)
-    if (!existing || row.deletedAt >= existing.deletedAt) {
+    if (!existing) {
       selected.set(row.id, row)
       changed.set(row.id, row)
+      continue
+    }
+
+    const candidateWins =
+      row.deletedAt > existing.deletedAt ||
+      (row.deletedAt === existing.deletedAt &&
+        row.deletionEventId <= existing.deletionEventId)
+    const winner = candidateWins ? row : existing
+    const sourceRelayUrls = uniqueStrings([
+      ...(existing.sourceRelayUrls ?? []),
+      ...(row.sourceRelayUrls ?? []),
+    ])
+    const merged: CachedProductTombstone = {
+      ...winner,
+      sourceRelayUrls,
+      observedLocally:
+        existing.observedLocally === true || row.observedLocally === true,
+      cachedAt: Math.max(existing.cachedAt, row.cachedAt),
+    }
+    if (
+      candidateWins ||
+      sourceRelayUrls.length !== (existing.sourceRelayUrls?.length ?? 0) ||
+      merged.observedLocally !== existing.observedLocally
+    ) {
+      selected.set(row.id, merged)
+      changed.set(row.id, merged)
     }
   }
 
@@ -1096,22 +1254,71 @@ async function storeCachedProductTombstones(
   })
 }
 
+function rememberVolatileProductTombstones(
+  rows: readonly CachedProductTombstone[]
+): void {
+  const updates = selectCachedProductTombstoneUpdates(
+    [...rows],
+    Array.from(volatileProductTombstones.values())
+  )
+  for (const row of updates) {
+    volatileProductTombstones.set(row.id, row)
+  }
+}
+
+async function flushVolatileProductTombstones(): Promise<boolean> {
+  const pendingRows = Array.from(volatileProductTombstones.values())
+  if (pendingRows.length === 0) return true
+
+  try {
+    await storeCachedProductTombstones(pendingRows)
+  } catch {
+    return false
+  }
+
+  for (const row of pendingRows) {
+    // A concurrent read may have observed newer evidence for the same target
+    // while persistence was in flight. Only clear the exact row we flushed.
+    if (volatileProductTombstones.get(row.id) === row) {
+      volatileProductTombstones.delete(row.id)
+    }
+  }
+  return true
+}
+
 function deletionTimestampsFromTombstones(
   tombstones: readonly CachedProductTombstone[]
 ): DeletionTimestamps {
-  const byEventId = new Map<string, number>()
-  const byAddressId = new Map<string, number>()
+  const byEventId = new Map<string, ProductDeletionEvidence>()
+  const byAddressId = new Map<string, ProductDeletionEvidence>()
 
   for (const tombstone of tombstones) {
     if (tombstone.eventId) {
-      setLatestTimestamp(
-        byEventId,
-        productDeletionEventKey(tombstone.pubkey, tombstone.eventId),
-        tombstone.deletedAt
+      const key = scopedProductDeletionEventKey(
+        tombstone.pubkey,
+        tombstone.eventId
       )
+      if (key) {
+        setLatestDeletionEvidence(byEventId, key, {
+          target: "event",
+          deletionEventId: tombstone.deletionEventId,
+          authorPubkey: tombstone.pubkey,
+          deletedAt: tombstone.deletedAt,
+          eventId: tombstone.eventId,
+        })
+      }
     }
     if (tombstone.addressId) {
-      setLatestTimestamp(byAddressId, tombstone.addressId, tombstone.deletedAt)
+      const key = productDeletionAddressKey(tombstone.addressId)
+      if (key) {
+        setLatestDeletionEvidence(byAddressId, key, {
+          target: "address",
+          deletionEventId: tombstone.deletionEventId,
+          authorPubkey: tombstone.pubkey,
+          deletedAt: tombstone.deletedAt,
+          addressId: tombstone.addressId,
+        })
+      }
     }
   }
 
@@ -1119,30 +1326,62 @@ function deletionTimestampsFromTombstones(
 }
 
 function mergeDeletionTimestamps(
-  ...inputs: readonly DeletionTimestamps[]
+  ...frontiers: readonly DeletionTimestamps[]
 ): DeletionTimestamps {
-  const byEventId = new Map<string, number>()
-  const byAddressId = new Map<string, number>()
+  const byEventId = new Map<string, ProductDeletionEvidence>()
+  const byAddressId = new Map<string, ProductDeletionEvidence>()
 
-  for (const input of inputs) {
-    for (const [eventId, deletedAt] of input.byEventId) {
-      setLatestTimestamp(byEventId, eventId, deletedAt)
+  for (const frontier of frontiers) {
+    for (const [key, evidence] of frontier.byEventId) {
+      setLatestDeletionEvidence(byEventId, key, evidence)
     }
-    for (const [addressId, deletedAt] of input.byAddressId) {
-      setLatestTimestamp(byAddressId, addressId, deletedAt)
+    for (const [key, evidence] of frontier.byAddressId) {
+      setLatestDeletionEvidence(byAddressId, key, evidence)
     }
   }
 
   return { byEventId, byAddressId }
 }
 
+async function mergeObservedDeletionTimestampsWithLocal(
+  observed: DeletionTimestamps,
+  authors: readonly string[]
+): Promise<DeletionTimestamps> {
+  try {
+    return mergeDeletionTimestamps(
+      await getLocalProductDeletionTimestamps(undefined, authors),
+      observed
+    )
+  } catch {
+    // If the local database is unavailable after relay validation, the
+    // in-memory frontier is still authoritative for this read.
+    return observed
+  }
+}
+
 async function getLocalProductDeletionTimestamps(
   merchantPubkey?: string,
   authorPubkeys?: readonly string[]
 ): Promise<DeletionTimestamps> {
-  return deletionTimestampsFromTombstones(
-    await loadCachedProductTombstones(merchantPubkey, authorPubkeys)
+  const authorSet =
+    authorPubkeys && authorPubkeys.length > 0
+      ? new Set(authorPubkeys)
+      : undefined
+  const volatileRows = Array.from(volatileProductTombstones.values()).filter(
+    (row) =>
+      (!merchantPubkey || row.pubkey === merchantPubkey) &&
+      (!authorSet || authorSet.has(row.pubkey))
   )
+  let persistedRows: CachedProductTombstone[] = []
+  try {
+    persistedRows = await loadCachedProductTombstones(
+      merchantPubkey,
+      authorPubkeys
+    )
+  } catch (error) {
+    if (volatileRows.length === 0) throw error
+  }
+  return deletionTimestampsFromTombstones([...persistedRows, ...volatileRows])
 }
 
 function filterDeletedProductRecords(
@@ -1176,16 +1415,9 @@ export async function cacheSignedProductListingEvent(
 export async function cacheSignedProductDeletionEvent(
   event: NDKEvent
 ): Promise<CachedProductTombstone[]> {
-  if (
-    event.kind !== EVENT_KINDS.DELETION ||
-    !event.id ||
-    !event.sig ||
-    !isValidSignedPublicNostrEvent(event.rawEvent() as SignedPublicNostrEvent)
-  ) {
-    throw new Error("Expected a valid signed product deletion event")
-  }
-
-  const tombstones = tombstonesFromDeletionEvent(event)
+  const tombstones = tombstonesFromDeletionEvent(event, {
+    observedLocally: true,
+  })
   if (tombstones.length === 0) {
     throw new Error("Deletion event does not contain a valid product target")
   }
@@ -1420,130 +1652,224 @@ export async function cacheParsedOrderMessage(
 }
 
 type DeletionTimestamps = {
-  byEventId: Map<string, number>
-  byAddressId: Map<string, number>
+  byEventId: Map<string, ProductDeletionEvidence>
+  byAddressId: Map<string, ProductDeletionEvidence>
 }
 
-function setLatestTimestamp(
-  map: Map<string, number>,
+function setLatestDeletionEvidence(
+  map: Map<string, ProductDeletionEvidence>,
   key: string,
-  value: number
+  value: ProductDeletionEvidence
 ): void {
-  const existing = map.get(key) ?? -1
-  if (value >= existing) map.set(key, value)
-}
-
-function collectProductAddresses(events: NDKEvent[]): string[] {
-  const addresses = new Set<string>()
-  for (const event of events) {
-    const dTag = getTagValue(event.tags ?? [], "d")
-    if (!dTag) continue
-    addresses.add(`30402:${event.pubkey}:${dTag}`)
+  const existing = map.get(key)
+  if (
+    !existing ||
+    value.deletedAt > existing.deletedAt ||
+    (value.deletedAt === existing.deletedAt &&
+      value.deletionEventId <= existing.deletionEventId)
+  ) {
+    map.set(key, value)
   }
-  return Array.from(addresses)
 }
 
-async function fetchDeletionTimestamps(
-  merchantPubkey: string,
-  productEventIds: string[],
-  productAddresses: string[],
+type ProductDeletionCandidate = {
+  pubkey: string
+  eventId?: string
+  addressId?: string
+  sourceRelayUrls?: readonly string[]
+}
+
+function deletionCandidateFromEvent(event: NDKEvent): ProductDeletionCandidate {
+  const dTag = getTagValue(event.tags ?? [], "d")
+  return {
+    pubkey: event.pubkey,
+    eventId: event.id || undefined,
+    addressId: dTag
+      ? `${EVENT_KINDS.PRODUCT}:${event.pubkey}:${dTag}`
+      : undefined,
+    sourceRelayUrls: getEventSourceRelayUrls(event),
+  }
+}
+
+function deletionCandidateFromRecord(
+  record: CommerceProductRecord
+): ProductDeletionCandidate {
+  return {
+    pubkey: record.product.pubkey,
+    eventId: record.eventId || undefined,
+    // Only new cache rows retain the signed d tag. Legacy rows are resolved by
+    // exact event id and never by a coordinate reconstructed from product.id.
+    addressId: record.dTag ? record.addressId : undefined,
+    sourceRelayUrls: record.sourceRelayUrls,
+  }
+}
+
+async function fetchProductDeletionTimestamps(
+  candidates: readonly ProductDeletionCandidate[],
   options: {
     readPolicy?: CommerceReadPolicy
     fallbackWhenEmpty?: boolean
     authenticatedPubkey?: string | null
+    fetchEvents?: typeof runFetchEventsFanout
+    onSkippedRelayUrls?: (relayUrls: readonly string[]) => void
   } = {}
 ): Promise<DeletionTimestamps> {
-  const byEventId = new Map<string, number>()
-  const byAddressId = new Map<string, number>()
+  const authors = uniqueStrings(candidates.map((candidate) => candidate.pubkey))
+  if (authors.length === 0) {
+    return await getLocalProductDeletionTimestamps()
+  }
+  const authorChunks = chunkStrings(authors, PRODUCT_AUTHOR_CHUNK_SIZE)
+  const deletionEventBatches = await mapWithConcurrency(
+    authorChunks,
+    PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
+    async (authorChunk) => {
+      const authorSet = new Set(authorChunk)
+      const chunkCandidates = candidates.filter((candidate) =>
+        authorSet.has(candidate.pubkey)
+      )
+      const productEventIds = uniqueStrings(
+        chunkCandidates.map((candidate) => candidate.eventId)
+      )
+      const productAddresses = uniqueStrings(
+        chunkCandidates.map((candidate) => candidate.addressId)
+      )
+      const sourceRelayUrls = uniqueStrings(
+        chunkCandidates.flatMap((candidate) => candidate.sourceRelayUrls ?? [])
+      ).filter((relayUrl) => !isInsecureRelayUrl(relayUrl))
+      const filters: NDKFilter[] = [
+        ...chunkStrings(productEventIds, 200).map((eventIdChunk) => ({
+          kinds: [EVENT_KINDS.DELETION],
+          authors: authorChunk,
+          "#e": eventIdChunk,
+          limit: 300,
+        })),
+        ...chunkStrings(productAddresses, 200).map((addressChunk) => ({
+          kinds: [EVENT_KINDS.DELETION],
+          authors: authorChunk,
+          "#a": addressChunk,
+          limit: 300,
+        })),
+      ]
 
-  const filters: NDKFilter[] = []
-  if (productEventIds.length > 0) {
-    filters.push({
-      kinds: [EVENT_KINDS.DELETION],
-      authors: [merchantPubkey],
-      "#e": productEventIds,
-      limit: 300,
-    })
-  }
-  if (productAddresses.length > 0) {
-    filters.push({
-      kinds: [EVENT_KINDS.DELETION],
-      authors: [merchantPubkey],
-      "#a": productAddresses,
-      limit: 300,
-    })
-  }
-
-  const deletionEvents: NDKEvent[] = []
-  const deletionRelayUrls = await planCommerceReadRelays({
-    intent: "author_products",
-    authors: [merchantPubkey],
-    authenticatedPubkey: options.authenticatedPubkey,
-    maxRelays: options.readPolicy?.maxRelays,
-  })
-  const fanoutOptions = {
-    relayUrls: deletionRelayUrls,
-    connectTimeoutMs: options.readPolicy?.connectTimeoutMs ?? 4_000,
-    fetchTimeoutMs: options.readPolicy?.fetchTimeoutMs ?? 10_000,
-  }
-  for (const filter of filters) {
-    const fetched = await runFetchEventsFanout(filter, fanoutOptions)
-    deletionEvents.push(...fetched)
-  }
-
-  if (deletionEvents.length === 0 && options.fallbackWhenEmpty !== false) {
-    const fallback = await runFetchEventsFanout(
-      {
-        kinds: [EVENT_KINDS.DELETION],
-        authors: [merchantPubkey],
-        limit: 300,
-      },
-      fanoutOptions
-    )
-    deletionEvents.push(...fallback)
-  }
-
-  for (const deletion of deletionEvents) {
-    const deletedAt = toEventCreatedAtSeconds(deletion)
-    for (const tag of deletion.tags ?? []) {
-      const tagName = tag[0]
-      const tagValue = tag[1]
-      if (!tagValue) continue
-      if (tagName === "e") {
-        setLatestTimestamp(
-          byEventId,
-          productDeletionEventKey(deletion.pubkey, tagValue),
-          deletedAt
+      const deletionRelayPlan = await planCommerceReadRelayPlan({
+        intent: "author_products",
+        authors: authorChunk,
+        authenticatedPubkey: options.authenticatedPubkey,
+        maxRelays: options.readPolicy?.maxRelays,
+      })
+      const preferredDeletionRelayUrls = uniqueStrings([
+        ...sourceRelayUrls,
+        ...CANONICAL_APP_BACKPLANE_RELAYS,
+        ...deletionRelayPlan.relayUrls,
+      ])
+      options.onSkippedRelayUrls?.(
+        deletionRelayPlan.parkedRelayUrls.filter(
+          (relayUrl) => !preferredDeletionRelayUrls.includes(relayUrl)
         )
+      )
+      const configuredRelayBatchSize = options.readPolicy?.maxRelays
+      const relayBatchSize =
+        configuredRelayBatchSize && configuredRelayBatchSize > 0
+          ? configuredRelayBatchSize
+          : Math.max(preferredDeletionRelayUrls.length, 1)
+      const deletionRelayBatches = chunkStrings(
+        preferredDeletionRelayUrls,
+        relayBatchSize
+      )
+      const fetchDeletionFilter = async (
+        filter: NDKFilter
+      ): Promise<NDKEvent[]> =>
+        (
+          await mapWithConcurrency(
+            deletionRelayBatches,
+            PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
+            async (relayUrls) =>
+              await (options.fetchEvents ?? runFetchEventsFanout)(filter, {
+                relayUrls,
+                connectTimeoutMs: options.readPolicy?.connectTimeoutMs ?? 4_000,
+                fetchTimeoutMs: options.readPolicy?.fetchTimeoutMs ?? 10_000,
+              })
+          )
+        ).flat()
+      const filterBatches = await mapWithConcurrency(
+        filters,
+        PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
+        fetchDeletionFilter
+      )
+      const chunkEvents = filterBatches.flat()
+
+      if (chunkEvents.length > 0 || options.fallbackWhenEmpty !== true) {
+        return chunkEvents
       }
-      if (tagName === "a") {
-        const address = parseProductAddressTag(tagValue, deletion.pubkey)
-        if (address) {
-          setLatestTimestamp(byAddressId, address.addressId, deletedAt)
-        }
-      }
+      return await fetchDeletionFilter({
+        kinds: [EVENT_KINDS.DELETION],
+        authors: authorChunk,
+        limit: 300,
+      })
+    }
+  )
+  const deletionEventsById = new Map<string, NDKEvent>()
+  for (const deletionEvent of deletionEventBatches.flat()) {
+    putMergedEvent(deletionEventsById, deletionEvent)
+  }
+  const deletionEvents = Array.from(deletionEventsById.values())
+
+  const observedTombstones: CachedProductTombstone[] = []
+  for (const deletion of deletionEvents) {
+    try {
+      observedTombstones.push(
+        ...tombstonesFromDeletionEvent(deletion, { observedLocally: false })
+      )
+    } catch {
+      // Relay data is untrusted. Invalid signatures and malformed targets
+      // never become durable deletion evidence.
     }
   }
+  const observedDeletionTimestamps =
+    deletionTimestampsFromTombstones(observedTombstones)
+  rememberVolatileProductTombstones(observedTombstones)
+  if (!(await flushVolatileProductTombstones())) {
+    // The current read must still honor deletion evidence that was already
+    // cryptographically validated. The volatile frontier is monotonic and is
+    // retried on later reads; returning stale cache here would resurrect the
+    // observed product.
+  }
 
-  return { byEventId, byAddressId }
+  // Persisted evidence is monotonic: an empty later relay response cannot
+  // revoke a deletion that was already observed and validated.
+  return await mergeObservedDeletionTimestampsWithLocal(
+    observedDeletionTimestamps,
+    authors
+  )
 }
 
 function isDeletedByNip09(
   event: Pick<NDKEvent, "id" | "pubkey" | "created_at">,
-  addressId: string,
+  addressId: string | null,
   deletionTimestamps: DeletionTimestamps
 ): boolean {
   const createdAt = toEventCreatedAtSeconds(event)
-  if (event.id) {
-    const deletedAt =
-      deletionTimestamps.byEventId.get(
-        productDeletionEventKey(event.pubkey, event.id)
-      ) ?? -1
-    if (deletedAt >= createdAt) return true
-  }
-
-  const deletedAtAddress = deletionTimestamps.byAddressId.get(addressId) ?? -1
-  return deletedAtAddress >= createdAt
+  const eventKey = event.id
+    ? scopedProductDeletionEventKey(event.pubkey, event.id)
+    : null
+  const addressKey = addressId ? productDeletionAddressKey(addressId) : null
+  const evidence = [
+    ...(eventKey && deletionTimestamps.byEventId.get(eventKey)
+      ? [deletionTimestamps.byEventId.get(eventKey)!]
+      : []),
+    ...(addressKey && deletionTimestamps.byAddressId.get(addressKey)
+      ? [deletionTimestamps.byAddressId.get(addressKey)!]
+      : []),
+  ]
+  return isProductDeletedByNip09(
+    {
+      authorPubkey: event.pubkey,
+      eventId: event.id,
+      addressId,
+      createdAt,
+    },
+    evidence
+  )
 }
 
 const MAX_PRODUCT_PARSE_CACHE = 5000
@@ -1588,7 +1914,7 @@ function dedupeProductEvents(
 
       if (
         deletionTimestamps &&
-        isDeletedByNip09(event, addressId, deletionTimestamps)
+        isDeletedByNip09(event, dTag ? addressId : null, deletionTimestamps)
       ) {
         continue
       }
@@ -1604,9 +1930,9 @@ function dedupeProductEvents(
       }
 
       const existing = byAddress.get(addressId)
-      if (!existing || shouldReplaceProductRecord(existing, candidate)) {
-        byAddress.set(addressId, candidate)
-      }
+      if (!existing) byAddress.set(addressId, candidate)
+      else
+        byAddress.set(addressId, mergeProductRecordSources(existing, candidate))
     } catch {
       // ignore malformed product events
     }
@@ -1619,15 +1945,15 @@ function isRecordDeletedByNip09(
   record: CommerceProductRecord,
   deletionTimestamps: DeletionTimestamps
 ): boolean {
-  const deletedByEvent =
-    deletionTimestamps.byEventId.get(
-      productDeletionEventKey(record.product.pubkey, record.eventId)
-    ) ?? -1
-  if (deletedByEvent >= record.eventCreatedAt) return true
-
-  const deletedByAddress =
-    deletionTimestamps.byAddressId.get(record.addressId) ?? -1
-  return deletedByAddress >= record.eventCreatedAt
+  return isDeletedByNip09(
+    {
+      id: record.eventId,
+      pubkey: record.product.pubkey,
+      created_at: record.eventCreatedAt,
+    },
+    record.dTag ? record.addressId : null,
+    deletionTimestamps
+  )
 }
 
 function shouldReplaceProductRecord(
@@ -1645,6 +1971,22 @@ function shouldReplaceProductRecord(
   return candidate.eventId <= existing.eventId
 }
 
+function mergeProductRecordSources(
+  existing: CommerceProductRecord,
+  candidate: CommerceProductRecord
+): CommerceProductRecord {
+  const winner = shouldReplaceProductRecord(existing, candidate)
+    ? candidate
+    : existing
+  return {
+    ...winner,
+    sourceRelayUrls: uniqueStrings([
+      ...(existing.sourceRelayUrls ?? []),
+      ...(candidate.sourceRelayUrls ?? []),
+    ]),
+  }
+}
+
 function mergeCachedAndLiveProductRecords(input: {
   cached: CommerceProductRecord[]
   live: CommerceProductRecord[]
@@ -1660,9 +2002,12 @@ function mergeCachedAndLiveProductRecords(input: {
   for (const record of input.live) {
     if (isRecordDeletedByNip09(record, input.deletionTimestamps)) continue
     const existing = byAddress.get(record.addressId)
-    if (!existing || shouldReplaceProductRecord(existing, record)) {
-      byAddress.set(record.addressId, record)
-    }
+    if (!existing) byAddress.set(record.addressId, record)
+    else
+      byAddress.set(
+        record.addressId,
+        mergeProductRecordSources(existing, record)
+      )
   }
 
   return Array.from(byAddress.values())
@@ -1672,6 +2017,9 @@ async function fetchPublicProductRecords(query: {
   authors?: string[]
   ids?: string[]
   dTags?: string[]
+  deletionCandidates?: CommerceProductRecord[]
+  deletionReadPolicy?: CommerceReadPolicy
+  deletionFallbackWhenEmpty?: boolean
   authenticatedPubkey?: string | null
   limit?: number
   readPolicy?: CommerceReadPolicy
@@ -1701,7 +2049,18 @@ async function fetchPublicProductRecords(query: {
     fetchTimeoutMs: query.readPolicy?.fetchTimeoutMs ?? 8_000,
   })
 
-  return dedupeProductEvents(events)
+  const deletionTimestamps = await fetchProductDeletionTimestamps(
+    [
+      ...events.map(deletionCandidateFromEvent),
+      ...(query.deletionCandidates ?? []).map(deletionCandidateFromRecord),
+    ],
+    {
+      readPolicy: query.deletionReadPolicy ?? query.readPolicy,
+      fallbackWhenEmpty: query.deletionFallbackWhenEmpty,
+      authenticatedPubkey: query.authenticatedPubkey,
+    }
+  )
+  return dedupeProductEvents(events, deletionTimestamps)
 }
 
 async function fetchPublicProductRecordsProgressive(
@@ -1709,6 +2068,7 @@ async function fetchPublicProductRecordsProgressive(
     authors?: string[]
     ids?: string[]
     dTags?: string[]
+    deletionCandidates?: CommerceProductRecord[]
     authenticatedPubkey?: string | null
     limit?: number
     readPolicy?: CommerceReadPolicy
@@ -1744,6 +2104,10 @@ async function fetchPublicProductRecordsProgressive(
     relayHintMode: "skip",
   })
   const merged = new Map<string, NDKEvent>()
+  const initialDeletionTimestamps = await getLocalProductDeletionTimestamps(
+    undefined,
+    query.authors
+  )
   const shouldExpandRelayHints =
     query.authors && query.authors.length > BROAD_AUTHOR_HINT_LIMIT
   const expandedRelayUrlsPromise = shouldExpandRelayHints
@@ -1762,6 +2126,7 @@ async function fetchPublicProductRecordsProgressive(
     relayUrls,
     readPolicy: query.readPolicy,
     merged,
+    deletionTimestamps: initialDeletionTimestamps,
     onRecords,
   })
 
@@ -1775,10 +2140,23 @@ async function fetchPublicProductRecordsProgressive(
     relayUrls: expansionRelayUrls,
     readPolicy: query.readPolicy,
     merged,
+    deletionTimestamps: initialDeletionTimestamps,
     onRecords,
   })
 
-  return dedupeProductEvents(Array.from(merged.values()))
+  const mergedEvents = Array.from(merged.values())
+  const deletionTimestamps = await fetchProductDeletionTimestamps(
+    [
+      ...mergedEvents.map(deletionCandidateFromEvent),
+      ...(query.deletionCandidates ?? []).map(deletionCandidateFromRecord),
+    ],
+    {
+      readPolicy: query.readPolicy,
+      authenticatedPubkey: query.authenticatedPubkey,
+    }
+  )
+  const resolved = dedupeProductEvents(mergedEvents, deletionTimestamps)
+  return resolved
 }
 
 function applyProductLimit(
@@ -1861,23 +2239,30 @@ export async function getMarketplaceProducts(
     const authorPubkeys = query.merchantPubkey
       ? [query.merchantPubkey]
       : query.authorPubkeys
+    const cached = await getCachedProductRecords(
+      query.merchantPubkey,
+      { includeStale: true, includeMarketHidden: true },
+      query.authorPubkeys
+    )
     const fetchedRecords = await fetchPublicProductRecords({
       authors:
         authorPubkeys && authorPubkeys.length > 0
           ? uniqueStrings(authorPubkeys)
           : undefined,
       authenticatedPubkey: query.authenticatedPubkey,
+      deletionCandidates: cached,
       limit: query.limit,
       readPolicy: query.readPolicy,
     })
-    const localDeletionTimestamps = await getLocalProductDeletionTimestamps(
+    const deletionTimestamps = await getLocalProductDeletionTimestamps(
       query.merchantPubkey,
       query.authorPubkeys
     )
-    const records = filterDeletedProductRecords(
-      fetchedRecords,
-      localDeletionTimestamps
-    )
+    const records = mergeCachedAndLiveProductRecords({
+      cached,
+      live: fetchedRecords,
+      deletionTimestamps,
+    })
     await cacheProductRecords(records)
 
     const filtered = applyProductLimit(
@@ -1949,15 +2334,21 @@ export async function getMarketplaceProductsProgressive(
     ? [query.merchantPubkey]
     : query.authorPubkeys
   const limit = query.limit
+  const cached = await getCachedProductRecords(
+    query.merchantPubkey,
+    { includeStale: true, includeMarketHidden: true },
+    query.authorPubkeys
+  )
   const localDeletionTimestamps = await getLocalProductDeletionTimestamps(
     query.merchantPubkey,
     query.authorPubkeys
   )
   const toResult = (records: CommerceProductRecord[]) => {
-    const filteredRecords = filterDeletedProductRecords(
-      records,
-      localDeletionTimestamps
-    )
+    const filteredRecords = mergeCachedAndLiveProductRecords({
+      cached,
+      live: records,
+      deletionTimestamps: localDeletionTimestamps,
+    })
     return {
       data: applyProductLimit(
         sortProducts(
@@ -1979,6 +2370,7 @@ export async function getMarketplaceProductsProgressive(
           ? uniqueStrings(authorPubkeys)
           : undefined,
       authenticatedPubkey: query.authenticatedPubkey,
+      deletionCandidates: cached,
       limit,
       readPolicy: query.readPolicy,
     },
@@ -1987,11 +2379,28 @@ export async function getMarketplaceProductsProgressive(
     }
   )
 
-  const records = filterDeletedProductRecords(
-    fetchedRecords,
-    localDeletionTimestamps
+  const currentDeletionTimestamps = await getLocalProductDeletionTimestamps(
+    query.merchantPubkey,
+    query.authorPubkeys
   )
-  const result = toResult(records)
+  const records = mergeCachedAndLiveProductRecords({
+    cached,
+    live: fetchedRecords,
+    deletionTimestamps: currentDeletionTimestamps,
+  })
+  const result = {
+    ...toResult([]),
+    data: applyProductLimit(
+      sortProducts(
+        filterProductRecordsForRead(records).filter((record) =>
+          productMatchesQuery(record, query)
+        ),
+        query.sort
+      ),
+      limit
+    ),
+  }
+  onProgress(result, "deletion-frontier")
   await cacheProductRecords(records)
   return result
 }
@@ -2055,45 +2464,21 @@ export async function getMerchantStorefront(
   })
 
   try {
-    const relayUrls = await planCommerceReadRelays({
-      intent: "author_products",
+    const liveRecords = await fetchPublicProductRecords({
       authors: [query.merchantPubkey],
       authenticatedPubkey: query.authenticatedPubkey,
+      limit: query.limit,
+      readPolicy: query.readPolicy,
+      deletionCandidates: cached,
+      deletionReadPolicy: query.deletionReadPolicy,
+      // Merchant reads preserve the pre-existing broad kind-5 fallback unless
+      // a latency-sensitive caller (such as Market storefront hydration)
+      // explicitly opts out.
+      deletionFallbackWhenEmpty: query.deletionFallbackWhenEmpty !== false,
     })
-    const productFilter: NDKFilter = {
-      kinds: [EVENT_KINDS.PRODUCT],
-      authors: [query.merchantPubkey],
-    }
-    if (query.limit !== undefined) productFilter.limit = query.limit
-
-    const rawEvents = await runFetchEventsFanout(productFilter, {
-      relayUrls,
-      connectTimeoutMs: query.readPolicy?.connectTimeoutMs ?? 4_000,
-      fetchTimeoutMs: query.readPolicy?.fetchTimeoutMs ?? 10_000,
-    })
-
-    const relayDeletionTimestamps = await fetchDeletionTimestamps(
-      query.merchantPubkey,
-      rawEvents.map((event) => event.id).filter(Boolean) as string[],
-      uniqueStrings([
-        ...collectProductAddresses(rawEvents),
-        ...cached.map((record) => record.addressId),
-      ]),
-      {
-        readPolicy: query.deletionReadPolicy,
-        fallbackWhenEmpty: query.deletionFallbackWhenEmpty,
-        authenticatedPubkey: query.authenticatedPubkey,
-      }
-    )
-    const localDeletionTimestamps = await getLocalProductDeletionTimestamps(
+    const deletionTimestamps = await getLocalProductDeletionTimestamps(
       query.merchantPubkey
     )
-    const deletionTimestamps = mergeDeletionTimestamps(
-      relayDeletionTimestamps,
-      localDeletionTimestamps
-    )
-
-    const liveRecords = dedupeProductEvents(rawEvents, deletionTimestamps)
     const mergedRecords = mergeCachedAndLiveProductRecords({
       cached,
       live: liveRecords,
@@ -2260,6 +2645,7 @@ export async function getProductDetail(
       const direct = await fetchPublicProductRecords({
         authors: [address.pubkey],
         dTags: [address.d],
+        deletionCandidates: cached,
         limit: 10,
       })
       const localDeletionTimestamps = await getLocalProductDeletionTimestamps(
@@ -2303,8 +2689,18 @@ export async function getProductDetail(
     }
 
     if (/^[0-9a-f]{64}$/i.test(decodedId)) {
+      const cached = (
+        await getCachedProductRecords(undefined, {
+          includeStale: true,
+          includeMarketHidden: query.includeMarketHidden,
+        })
+      ).filter(
+        (record) =>
+          record.eventId === decodedId || record.product.id === decodedId
+      )
       const records = await fetchPublicProductRecords({
         ids: [decodedId],
+        deletionCandidates: cached,
         limit: 1,
       })
       await cacheProductRecords(records)
@@ -2373,24 +2769,99 @@ export async function getProductDetail(
   }
 }
 
+/** Typed reason a requested product coordinate is not authoritatively live. */
+export type ProductAvailabilityIssue =
+  | "invalid_product_reference"
+  | "lookup_unavailable"
+  | "lookup_partial"
+  | "product_missing"
+  | "listing_filtered"
+  | "cached_only"
+
+export interface ProductAvailabilityDiagnostic {
+  /** The productId exactly as requested by the caller. */
+  productId: string
+  addressId: string | null
+  /** Null only when a selected version has adequate positive live evidence. */
+  issue: ProductAvailabilityIssue | null
+  /** Relay coverage is evidence, not a claim of global Nostr completeness. */
+  coverage?: {
+    listing: ProductAvailabilityCoverage
+    deletion: ProductAvailabilityCoverage
+  }
+}
+
+export interface ProductsByIdsResult extends CommerceResult<
+  CommerceProductRecord[]
+> {
+  diagnostics: ProductAvailabilityDiagnostic[]
+}
+
+export type ProductAvailabilityCoverage = "complete" | "partial" | "unavailable"
+
+function productAvailabilityCoverageFromFanout(
+  result: Awaited<ReturnType<typeof fetchEventsFanoutWithDiagnostics>>,
+  expectedRelayUrls: readonly string[] = []
+): ProductAvailabilityCoverage {
+  if (result.successfulRelayUrls.length === 0) return "unavailable"
+  const attempted = new Set(result.attemptedRelayUrls)
+  if (
+    result.failedRelayUrls.length > 0 ||
+    expectedRelayUrls.some((relayUrl) => !attempted.has(relayUrl))
+  ) {
+    return "partial"
+  }
+  return "complete"
+}
+
+function mergeProductAvailabilityCoverage(
+  current: ProductAvailabilityCoverage,
+  next: ProductAvailabilityCoverage
+): ProductAvailabilityCoverage {
+  if (current === "unavailable" || next === "unavailable") {
+    return "unavailable"
+  }
+  if (current === "partial" || next === "partial") return "partial"
+  return "complete"
+}
+
 // Resolve many product listings by addressId in a single relay fanout (instead
 // of one read per id). Used to hydrate order-item name/image without hammering
-// relays with N separate reads.
+// relays with N separate reads. Every requested coordinate gets a typed
+// diagnostic so checkout can distinguish unreachable relays, partial reads,
+// cache-only confirmation, filtered listings, malformed references, and truly
+// missing listings instead of one generic failure.
 export async function getProductsByIds(
   productIds: string[],
   options: { includeMarketHidden?: boolean } = {}
-): Promise<CommerceResult<CommerceProductRecord[]>> {
-  const addresses = productIds
-    .map((id) => getProductLookupIds(id).address)
+): Promise<ProductsByIdsResult> {
+  const lookups = productIds.map((productId) => {
+    const { address, addressId } = getProductLookupIds(productId)
+    const valid = !!address && address.kind === EVENT_KINDS.PRODUCT
+    return {
+      productId,
+      address: valid ? address : null,
+      addressId: valid ? addressId : null,
+    }
+  })
+  const addresses = lookups
+    .map((lookup) => lookup.address)
     .filter(
       (address): address is { kind: number; pubkey: string; d: string } =>
-        !!address && address.kind === EVENT_KINDS.PRODUCT
+        address !== null
     )
 
   if (addresses.length === 0) {
     return {
       data: [],
-      meta: createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES),
+      meta: createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES, {
+        degraded: lookups.length > 0,
+      }),
+      diagnostics: lookups.map((lookup) => ({
+        productId: lookup.productId,
+        addressId: null,
+        issue: "invalid_product_reference",
+      })),
     }
   }
 
@@ -2406,53 +2877,185 @@ export async function getProductsByIds(
       authors
     )
   ).filter((record) => wanted.has(record.addressId))
-  const localDeletionTimestamps = await getLocalProductDeletionTimestamps(
+  // Checkout needs positive live evidence for the selected listing version.
+  // Deletion reads preserve monotonic known evidence, but incomplete deletion
+  // discovery alone is not a global absence proof and must not veto checkout.
+  let live: CommerceProductRecord[]
+  let listingCoverage: ProductAvailabilityCoverage = "unavailable"
+  let deletionCoverage: ProductAvailabilityCoverage = "complete"
+  let deletionTimestamps = await getLocalProductDeletionTimestamps(
     undefined,
     authors
   )
-
+  let productEvents: NDKEvent[] = []
   try {
-    const records = await fetchPublicProductRecords({
+    const relayPlan = await planCommerceReadRelayPlan({
+      intent: "author_products",
       authors,
-      dTags,
-      limit: Math.max(addresses.length * 2, 20),
     })
-    const merged = mergeCachedAndLiveProductRecords({
-      cached,
-      live: records,
-      deletionTimestamps: localDeletionTimestamps,
-    })
-    await cacheProductRecords(merged)
-    const filtered = filterProductRecordsForRead(merged, {
-      includeMarketHidden: options.includeMarketHidden,
-    }).filter((record) => wanted.has(record.addressId))
-    return {
-      data: filtered,
-      meta:
-        records.length > 0
-          ? createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES)
-          : createMeta("product_detail", "local_cache", PRODUCT_CAPABILITIES, {
-              stale: filtered.length > 0,
-              degraded: filtered.length > 0,
-            }),
-    }
+    const productResult = await runFetchEventsFanoutWithDiagnostics(
+      {
+        kinds: [EVENT_KINDS.PRODUCT],
+        authors,
+        "#d": dTags,
+        limit: Math.max(addresses.length * 2, 20),
+      },
+      {
+        relayUrls: relayPlan.relayUrls,
+        connectTimeoutMs: 4_000,
+        fetchTimeoutMs: 8_000,
+      }
+    )
+    productEvents = productResult.events
+    listingCoverage = productAvailabilityCoverageFromFanout(
+      productResult,
+      uniqueStrings([...relayPlan.relayUrls, ...relayPlan.parkedRelayUrls])
+    )
   } catch {
-    const fallback = mergeCachedAndLiveProductRecords({
-      cached,
-      live: [],
-      deletionTimestamps: localDeletionTimestamps,
-    })
-    const filtered = filterProductRecordsForRead(fallback, {
-      includeMarketHidden: options.includeMarketHidden,
-    })
-    return {
-      data: filtered,
-      meta: createMeta("product_detail", "local_cache", PRODUCT_CAPABILITIES, {
-        stale: filtered.length > 0,
-        degraded: filtered.length > 0,
-      }),
+    listingCoverage = "unavailable"
+  }
+
+  if (productEvents.length > 0 || cached.length > 0) {
+    let deletionReadAttempted = false
+    let deletionPlanSkippedRelay = false
+    const fetchDeletionEventsWithCoverage: typeof runFetchEventsFanout = async (
+      filter,
+      fetchOptions
+    ) => {
+      const result = await runFetchEventsFanoutWithDiagnostics(
+        filter,
+        fetchOptions
+      )
+      const nextCoverage = productAvailabilityCoverageFromFanout(
+        result,
+        fetchOptions?.relayUrls
+      )
+      deletionCoverage = deletionReadAttempted
+        ? mergeProductAvailabilityCoverage(deletionCoverage, nextCoverage)
+        : nextCoverage
+      deletionReadAttempted = true
+      return result.events
+    }
+    try {
+      deletionTimestamps = await fetchProductDeletionTimestamps(
+        [
+          ...productEvents.map(deletionCandidateFromEvent),
+          ...cached.map(deletionCandidateFromRecord),
+        ],
+        {
+          fetchEvents: fetchDeletionEventsWithCoverage,
+          onSkippedRelayUrls: (relayUrls) => {
+            deletionPlanSkippedRelay ||= relayUrls.length > 0
+          },
+        }
+      )
+      if (!deletionReadAttempted) deletionCoverage = "unavailable"
+      else if (deletionPlanSkippedRelay) {
+        deletionCoverage = mergeProductAvailabilityCoverage(
+          deletionCoverage,
+          "partial"
+        )
+      }
+    } catch {
+      deletionCoverage = "unavailable"
     }
   }
+
+  try {
+    live = dedupeProductEvents(productEvents, deletionTimestamps)
+  } catch {
+    live = []
+  }
+
+  const merged = mergeCachedAndLiveProductRecords({
+    cached,
+    live,
+    deletionTimestamps,
+  })
+  try {
+    await cacheProductRecords(merged)
+  } catch {
+    // A cache write failure must not break the availability read itself.
+  }
+  const filtered = filterProductRecordsForRead(merged, {
+    includeMarketHidden: options.includeMarketHidden,
+  }).filter((record) => wanted.has(record.addressId))
+
+  const liveByAddress = new Map(
+    live.map((record) => [record.addressId, record] as const)
+  )
+  const filteredByAddress = new Map(
+    filtered.map((record) => [record.addressId, record] as const)
+  )
+  const mergedAddressIds = new Set(merged.map((record) => record.addressId))
+  const diagnostics: ProductAvailabilityDiagnostic[] = lookups.map(
+    (lookup) => ({
+      productId: lookup.productId,
+      addressId: lookup.addressId,
+      issue: resolveProductAvailabilityIssue({
+        addressId: lookup.addressId,
+        listingCoverage,
+        liveByAddress,
+        filteredByAddress,
+        mergedAddressIds,
+      }),
+      ...(lookup.addressId
+        ? {
+            coverage: {
+              listing: listingCoverage,
+              deletion: deletionCoverage,
+            },
+          }
+        : {}),
+    })
+  )
+  const degraded =
+    listingCoverage !== "complete" ||
+    deletionCoverage !== "complete" ||
+    diagnostics.some((diagnostic) => diagnostic.issue !== null)
+  const hasCacheOnlySelection = filtered.some(
+    (record) => liveByAddress.get(record.addressId)?.eventId !== record.eventId
+  )
+  const source =
+    listingCoverage === "unavailable" || hasCacheOnlySelection
+      ? "local_cache"
+      : "commerce"
+
+  return {
+    data: filtered,
+    meta: createMeta("product_detail", source, PRODUCT_CAPABILITIES, {
+      stale: source === "local_cache" && filtered.length > 0,
+      degraded,
+    }),
+    diagnostics,
+  }
+}
+
+function resolveProductAvailabilityIssue(input: {
+  addressId: string | null
+  listingCoverage: ProductAvailabilityCoverage
+  liveByAddress: ReadonlyMap<string, CommerceProductRecord>
+  filteredByAddress: ReadonlyMap<string, CommerceProductRecord>
+  mergedAddressIds: ReadonlySet<string>
+}): ProductAvailabilityIssue | null {
+  if (!input.addressId) return "invalid_product_reference"
+  const selected = input.filteredByAddress.get(input.addressId)
+  if (selected) {
+    const live = input.liveByAddress.get(input.addressId)
+    if (
+      input.listingCoverage !== "unavailable" &&
+      live?.eventId === selected.eventId
+    ) {
+      return null
+    }
+    if (input.listingCoverage === "unavailable") return "lookup_unavailable"
+    if (input.listingCoverage === "partial") return "lookup_partial"
+    return "cached_only"
+  }
+  if (input.listingCoverage === "unavailable") return "lookup_unavailable"
+  if (input.listingCoverage === "partial") return "lookup_partial"
+  if (input.mergedAddressIds.has(input.addressId)) return "listing_filtered"
+  return "product_missing"
 }
 
 export async function getCachedProductDetail(
@@ -2685,9 +3288,11 @@ async function fetchParsedOrderMessages(
     )
     return {
       messages,
-      source: "commerce",
-      stale: false,
+      source:
+        sync.inbox.coverage === "unavailable" ? "local_cache" : "commerce",
+      stale: sync.inbox.coverage === "unavailable",
       decryptFailures: sync.decryptFailures,
+      inbox: sync.inbox,
     }
   } catch (error) {
     if (cachedById.size > 0) {
@@ -2705,48 +3310,81 @@ async function fetchParsedOrderMessages(
   }
 }
 
-/** Resolve the principal's declared NIP-17 inbox. Empty lists are not cached. */
-async function resolveInboxReadRelays(
+/**
+ * Resolve the principal's kind-10050 declaration with typed outcomes.
+ * A missing declaration never blocks reading the principal's own gift wraps;
+ * it only changes the read plan and the surfaced readiness state.
+ */
+async function resolvePrincipalInboxDeclaration(
   principalPubkey: string
-): Promise<string[]> {
+): Promise<InboxDeclarationResolution> {
   if (testOverrides.resolveInboxRelayUrls) {
-    const relays = await testOverrides.resolveInboxRelayUrls(principalPubkey)
-    const secure = relays.filter((url) => !isInsecureRelayUrl(url))
-    if (secure.length === 0) {
-      throw new Error("No NIP-17 inbox relay declaration found.")
+    try {
+      const relays = await testOverrides.resolveInboxRelayUrls(principalPubkey)
+      const secure = relays.filter((url) => !isInsecureRelayUrl(url))
+      return {
+        pubkey: principalPubkey,
+        state: secure.length > 0 ? "declared" : "not_declared",
+        relayUrls: secure,
+        stale: false,
+        fetchedAt: now(),
+      }
+    } catch {
+      return {
+        pubkey: principalPubkey,
+        state: "lookup_unavailable",
+        relayUrls: [],
+        stale: false,
+        fetchedAt: now(),
+      }
     }
-    return secure
   }
-  const secure = await fetchInboxRelayUrls(principalPubkey, {
-    fetchEvents: runFetchEventsFanout,
-    relayUrls: publicReadRelayUrls(),
+  return await resolveInboxDeclaration(principalPubkey, {
+    fetchEventsWithDiagnostics: runFetchEventsFanoutWithDiagnostics,
   })
-  if (secure.length === 0) {
-    throw new Error("No NIP-17 inbox relay declaration found.")
-  }
-  return secure
 }
 
+type InboxWrapFetchResult = {
+  wraps: NDKEvent[]
+  inbox: PrivateInboxReadStatus
+}
+
+/**
+ * Permissive inbox read (CND-208): union of declared inbox relays, locally
+ * enabled secure IN relays, and the bounded compatibility read set. All-failed
+ * reads surface as coverage "unavailable" instead of a healthy empty inbox.
+ */
 async function fetchNewInboxWraps(
   principalPubkey: string,
   limit: number
-): Promise<NDKEvent[]> {
+): Promise<InboxWrapFetchResult> {
   const filter: NDKFilter = {
     kinds: [EVENT_KINDS.GIFT_WRAP],
     "#p": [principalPubkey],
     limit,
   }
 
-  const inboxRelayUrls = await resolveInboxReadRelays(principalPubkey)
+  const declaration = await resolvePrincipalInboxDeclaration(principalPubkey)
+  const readPlan = planInboxReadRelays({
+    declaration,
+    maxRelays: DM_INBOX_READ_FANOUT,
+  })
 
-  const wrapped = await runFetchEventsFanout(filter, {
-    relayUrls: inboxRelayUrls.slice(0, DM_INBOX_READ_FANOUT),
+  const result = await runFetchEventsFanoutWithDiagnostics(filter, {
+    relayUrls: readPlan.relayUrls,
     connectTimeoutMs: 4_000,
     fetchTimeoutMs: 12_000,
   })
 
   const successful = successfulWrapIdsByPrincipal.get(principalPubkey)
-  return wrapped.filter((event) => !successful?.has(event.id))
+  return {
+    wraps: result.events.filter((event) => !successful?.has(event.id)),
+    inbox: {
+      declarationState: declaration.state,
+      coverage: deriveInboxReadCoverage(result),
+      readSource: readPlan.source,
+    },
+  }
 }
 
 async function loadCachedDirectMessages(
@@ -2988,7 +3626,7 @@ async function runPrivateMessageInboxSync(
   const candidates = new Map<string, NDKEvent>()
 
   for (const { event } of retry.values()) candidates.set(event.id, event)
-  for (const event of fetched) candidates.set(event.id, event)
+  for (const event of fetched.wraps) candidates.set(event.id, event)
   for (const event of candidates.values()) {
     retry.set(event.id, { event, failure: retry.get(event.id)?.failure })
   }
@@ -3084,6 +3722,7 @@ async function runPrivateMessageInboxSync(
     decryptFailures: Array.from(retry.values()).flatMap(({ failure }) =>
       failure ? [failure] : []
     ),
+    inbox: fetched.inbox,
   }
 }
 
@@ -3150,7 +3789,7 @@ async function fetchParsedDirectMessages(
     const current =
       currentResult.status === "fulfilled"
         ? currentResult.value
-        : { directMessages: [], decryptFailures: [] }
+        : { directMessages: [], decryptFailures: [], inbox: undefined }
     const legacy =
       legacyResult.status === "fulfilled"
         ? legacyResult.value
@@ -3175,9 +3814,11 @@ async function fetchParsedDirectMessages(
       source: "commerce",
       stale:
         currentResult.status === "rejected" ||
-        legacyResult.status === "rejected",
+        legacyResult.status === "rejected" ||
+        current.inbox?.coverage === "unavailable",
       decryptFailures: current.decryptFailures,
       legacyDecryptFailures: legacy.decryptFailures,
+      inbox: current.inbox,
     }
   } catch (error) {
     if (cachedById.size > 0) {
@@ -3403,7 +4044,11 @@ export async function getBuyerConversationList(
       "protected_conversation_list",
       result.source,
       CONVERSATION_CAPABILITIES,
-      { stale: result.stale, decryptFailures: result.decryptFailures }
+      {
+        stale: result.stale,
+        decryptFailures: result.decryptFailures,
+        inbox: result.inbox,
+      }
     ),
   }
 }
@@ -3462,7 +4107,11 @@ export async function getMerchantConversationList(
       "protected_conversation_list",
       result.source,
       CONVERSATION_CAPABILITIES,
-      { stale: result.stale, decryptFailures: result.decryptFailures }
+      {
+        stale: result.stale,
+        decryptFailures: result.decryptFailures,
+        inbox: result.inbox,
+      }
     ),
   }
 }
@@ -3515,7 +4164,11 @@ export async function getConversationDetail(
       "conversation_detail",
       result.source,
       CONVERSATION_CAPABILITIES,
-      { stale: result.stale, decryptFailures: result.decryptFailures }
+      {
+        stale: result.stale,
+        decryptFailures: result.decryptFailures,
+        inbox: result.inbox,
+      }
     ),
   }
 }
@@ -3617,6 +4270,7 @@ export async function getDirectMessageConversationList(
         stale: result.stale,
         decryptFailures: result.decryptFailures,
         legacyDecryptFailures: result.legacyDecryptFailures,
+        inbox: result.inbox,
       }
     ),
   }
@@ -3675,6 +4329,7 @@ export async function getDirectMessageThread(
         stale: result.stale,
         decryptFailures: result.decryptFailures,
         legacyDecryptFailures: result.legacyDecryptFailures,
+        inbox: result.inbox,
       }
     ),
   }

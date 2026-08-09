@@ -16,7 +16,7 @@ type StatusTone = NonNullable<StatusPillProps["variant"]>
 export interface ShopperTrustCardProps {
   shopperPubkey: string
   profile?: Profile
-  profileSettled: boolean
+  profileState: "loading" | "loaded" | "unavailable"
   evidence?: ShopperTrustEvidence
   isHydrating: boolean
   nip05Status: Nip05TrustStatus
@@ -26,6 +26,7 @@ export interface ShopperTrustCardProps {
   }
   messageCount: number
   messageLabel: string
+  onRefresh: () => void
   onOpenMessages: () => void
 }
 
@@ -103,7 +104,7 @@ function SignalRow({ label, value }: { label: string; value: SignalValue }) {
         {label}
       </dt>
       <dd className="min-w-0 text-right text-xs font-medium leading-5 text-[var(--text-primary)]">
-        <span className="block">{value.primary}</span>
+        <span className="block tabular-nums">{value.primary}</span>
         {value.qualifiers?.map((qualifier) => (
           <span
             key={qualifier}
@@ -119,11 +120,14 @@ function SignalRow({ label, value }: { label: string; value: SignalValue }) {
 
 function nip05Display(
   profile: Profile | undefined,
-  profileSettled: boolean,
+  profileState: ShopperTrustCardProps["profileState"],
   status: Nip05TrustStatus
 ): string {
   const identifier = profile?.nip05?.trim()
-  if (!profileSettled && !identifier) return "Profile loading"
+  if (profileState === "loading" && !identifier) return "Profile loading"
+  if (profileState === "unavailable" && !identifier) {
+    return "Profile unavailable; NIP-05 not checked"
+  }
 
   switch (status) {
     case "valid":
@@ -139,20 +143,21 @@ function nip05Display(
         ? `${identifier} · NIP-05 status unavailable`
         : "NIP-05 status unavailable"
     case "absent":
-      return "No NIP-05 identifier"
+      return "No NIP-05 identifier in observed profile"
   }
 }
 
 export function ShopperTrustCard({
   shopperPubkey,
   profile,
-  profileSettled,
+  profileState,
   evidence,
   isHydrating,
   nip05Status,
   statusDisplay,
   messageCount,
   messageLabel,
+  onRefresh,
   onOpenMessages,
 }: ShopperTrustCardProps) {
   const buyerName = getProfileName(profile) || formatNpub(shopperPubkey, 8)
@@ -191,6 +196,19 @@ export function ShopperTrustCard({
       return `${count.toLocaleString()} ${pluralize(count, "report")} from ${reporterCount.toLocaleString()} ${pluralize(reporterCount, "profile")} in your network`
     }
   )
+  const evidenceSignals = evidence
+    ? [
+        evidence.oldestEvent,
+        evidence.followersObserved,
+        evidence.followsInCommon,
+        evidence.zapsSent,
+        evidence.zapsReceived,
+        evidence.reportsFromNetwork,
+      ]
+    : []
+  const observationsUnavailable =
+    evidenceSignals.length === 0 ||
+    evidenceSignals.every(({ state }) => state === "unavailable")
   const titleId = useId()
 
   return (
@@ -201,7 +219,7 @@ export function ShopperTrustCard({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3
           id={titleId}
-          className="text-sm font-semibold text-[var(--text-primary)]"
+          className="text-balance text-sm font-semibold text-[var(--text-primary)]"
         >
           Buyer context
         </h3>
@@ -214,7 +232,12 @@ export function ShopperTrustCard({
       </div>
 
       <div className="mt-4 flex min-w-0 items-center gap-3">
-        <BuyerAvatar name={buyerName} picture={profile?.picture} size="md" />
+        <BuyerAvatar
+          name={buyerName}
+          picture={profile?.picture}
+          size="md"
+          decorative
+        />
         <div className="min-w-0 flex-1">
           <a
             href={getProfileUrl(shopperPubkey)}
@@ -228,7 +251,7 @@ export function ShopperTrustCard({
             {formatNpub(shopperPubkey, 8)}
           </p>
           <p className="mt-1 text-xs text-[var(--text-secondary)]">
-            {nip05Display(profile, profileSettled, nip05Status)}
+            {nip05Display(profile, profileState, nip05Status)}
           </p>
         </div>
       </div>
@@ -251,14 +274,18 @@ export function ShopperTrustCard({
       <p className="sr-only" aria-live="polite" aria-atomic="true">
         {isHydrating
           ? "Buyer context is updating"
-          : "Buyer context is up to date"}
+          : observationsUnavailable
+            ? "Buyer context observations unavailable"
+            : evidence?.degraded
+              ? "Buyer context observations loaded with partial or stale coverage"
+              : "Buyer context observations loaded"}
       </p>
 
       <details className="mt-3 text-xs text-[var(--text-secondary)]">
         <summary className="cursor-pointer rounded-sm py-1 font-medium text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500">
           About these observations
         </summary>
-        <p className="mt-2 leading-5">
+        <p className="mt-2 text-pretty leading-5">
           These are bounded observations from the relays Conduit checked. They
           can be incomplete or stale. Event timestamps are author-provided and
           can be backdated. They are not proof of account creation or account
@@ -268,15 +295,28 @@ export function ShopperTrustCard({
         </p>
       </details>
 
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        className="mt-4 w-full"
-        onClick={onOpenMessages}
-      >
-        {messageLabel} ({messageCount.toLocaleString()})
-      </Button>
+      <div className="mt-4 grid gap-2">
+        {observationsUnavailable && !isHydrating && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="w-full"
+            onClick={onRefresh}
+          >
+            Retry observations
+          </Button>
+        )}
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="w-full"
+          onClick={onOpenMessages}
+        >
+          {messageLabel} ({messageCount.toLocaleString()})
+        </Button>
+      </div>
     </section>
   )
 }

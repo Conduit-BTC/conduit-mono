@@ -4,6 +4,7 @@ import {
   buildLocalProductDeliveryNotice,
   buildLocalProductRetryNotice,
   buildProductDeliveryNotice,
+  buildQueuedProductDeletionNotice,
   formatProductRelayUrls,
 } from "../apps/merchant/src/lib/product-delivery"
 
@@ -106,6 +107,19 @@ describe("merchant product delivery notices", () => {
     expect(notice.state).toBe("retry_needed")
     expect(notice.detail).toContain("remains visible locally")
     expect(notice.successfulRelayUrls).toEqual([])
+  })
+
+  it("does not claim a queued deletion is hidden before restoring local evidence", () => {
+    const pending = buildQueuedProductDeletionNotice("retry_needed")
+    const restoring = buildQueuedProductDeletionNotice("delivering")
+
+    expect(pending.state).toBe("retry_needed")
+    expect(pending.detail).toContain("local tombstone could not be confirmed")
+    expect(pending.detail).toContain("before contacting relays")
+    expect(pending.detail).not.toContain("hidden locally")
+    expect(restoring.state).toBe("delivering")
+    expect(restoring.detail).toContain("Confirming its local tombstone")
+    expect(restoring.detail).not.toContain("active locally")
   })
 
   it("caps the visible relay list", () => {

@@ -45,6 +45,7 @@ describe("parseRelayListEvent", () => {
       cachedAt: 1,
     })
     expect(list.pubkey).toBe("alice")
+    expect(list.eventId).toBeDefined()
     expect(list.readRelayUrls).toContain("wss://relay.example.com")
     expect(list.readRelayUrls).toContain("wss://read.example.com")
     expect(list.readRelayUrls).not.toContain("wss://write.example.com")
@@ -215,6 +216,143 @@ describe("getRelayList / getRelayLists cache behavior", () => {
     const list = await getRelayList("alice")
     expect(fetchCalls.length).toBe(1)
     expect(list?.readRelayUrls).toEqual(["wss://relay-alice.example.com"])
+  })
+
+  it("does not regress a newer cached replaceable event on a narrower refresh", async () => {
+    cache.set("alice", {
+      pubkey: "alice",
+      readRelayUrls: ["wss://newer-cached.example.com"],
+      writeRelayUrls: [],
+      eventCreatedAt: 200,
+      eventId: "00",
+      cachedAt: FIXED_NOW - RELAY_LIST_CACHE_TTL_MS - 1,
+    })
+    __setRelayListTestOverrides({
+      fetchEventsFanout: async () =>
+        [
+          makeRelayListEvent({
+            pubkey: "alice",
+            id: "11",
+            created_at: 100,
+            tags: [["r", "wss://older-network.example.com"]],
+          }),
+        ] as unknown as NDKEvent[],
+    })
+
+    const list = await getRelayList("alice")
+
+    expect(list?.readRelayUrls).toEqual(["wss://newer-cached.example.com"])
+    expect(cache.get("alice")?.eventCreatedAt).toBe(200)
+  })
+
+  it("converges equal-timestamp observations on the lower event id across reads", async () => {
+    cache.set("alice", {
+      pubkey: "alice",
+      readRelayUrls: ["wss://higher-id.example.com"],
+      writeRelayUrls: [],
+      eventCreatedAt: 200,
+      eventId: "ff",
+      cachedAt: FIXED_NOW - RELAY_LIST_CACHE_TTL_MS - 1,
+    })
+    __setRelayListTestOverrides({
+      fetchEventsFanout: async () =>
+        [
+          makeRelayListEvent({
+            pubkey: "alice",
+            id: "00",
+            created_at: 200,
+            tags: [["r", "wss://lower-id.example.com"]],
+          }),
+        ] as unknown as NDKEvent[],
+    })
+
+    const list = await getRelayList("alice")
+
+    expect(list?.readRelayUrls).toEqual(["wss://lower-id.example.com"])
+    expect(cache.get("alice")?.eventId).toBe("00")
+  })
+
+  it("retains the lower cached id when an equal-timestamp higher id arrives", async () => {
+    cache.set("alice", {
+      pubkey: "alice",
+      readRelayUrls: ["wss://lower-id.example.com"],
+      writeRelayUrls: [],
+      eventCreatedAt: 200,
+      eventId: "00",
+      cachedAt: FIXED_NOW - RELAY_LIST_CACHE_TTL_MS - 1,
+    })
+    __setRelayListTestOverrides({
+      fetchEventsFanout: async () =>
+        [
+          makeRelayListEvent({
+            pubkey: "alice",
+            id: "ff",
+            created_at: 200,
+            tags: [["r", "wss://higher-id.example.com"]],
+          }),
+        ] as unknown as NDKEvent[],
+    })
+
+    const list = await getRelayList("alice")
+
+    expect(list?.readRelayUrls).toEqual(["wss://lower-id.example.com"])
+    expect(cache.get("alice")?.eventId).toBe("00")
+  })
+
+  it("forces a single refresh without letting skipCache regress the retained winner", async () => {
+    cache.set("alice", {
+      pubkey: "alice",
+      readRelayUrls: ["wss://retained.example.com"],
+      writeRelayUrls: [],
+      eventCreatedAt: 200,
+      eventId: "00",
+      cachedAt: FIXED_NOW - 1_000,
+    })
+    __setRelayListTestOverrides({
+      fetchEventsFanout: async () =>
+        [
+          makeRelayListEvent({
+            pubkey: "alice",
+            id: "ff",
+            created_at: 100,
+            tags: [["r", "wss://regressed.example.com"]],
+          }),
+        ] as unknown as NDKEvent[],
+    })
+
+    const list = await getRelayList("alice", { skipCache: true })
+
+    expect(list?.readRelayUrls).toEqual(["wss://retained.example.com"])
+    expect(cache.get("alice")?.eventCreatedAt).toBe(200)
+  })
+
+  it("forces batched refreshes without regressing retained winners", async () => {
+    cache.set("alice", {
+      pubkey: "alice",
+      readRelayUrls: ["wss://retained.example.com"],
+      writeRelayUrls: [],
+      eventCreatedAt: 200,
+      eventId: "00",
+      cachedAt: FIXED_NOW - 1_000,
+    })
+    __setRelayListTestOverrides({
+      fetchEventsFanout: async () =>
+        [
+          makeRelayListEvent({
+            pubkey: "alice",
+            id: "ff",
+            created_at: 100,
+            tags: [["r", "wss://regressed.example.com"]],
+          }),
+        ] as unknown as NDKEvent[],
+    })
+
+    const lists = await getRelayLists(["alice"], { skipCache: true })
+
+    expect(lists.get("alice")?.readRelayUrls).toEqual([
+      "wss://retained.example.com",
+    ])
+    expect(cache.get("alice")?.eventCreatedAt).toBe(200)
   })
 
   it("returns existing cached entry when network fetch fails", async () => {

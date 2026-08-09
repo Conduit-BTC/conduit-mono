@@ -73,12 +73,13 @@ function renderNip05State(
     <ShopperTrustCard
       shopperPubkey={shopperPubkey}
       profile={{ pubkey: shopperPubkey, nip05 }}
-      profileSettled
+      profileState="loaded"
       isHydrating={false}
       nip05Status={nip05Status}
       statusDisplay={{ label: "Pending", tone: "warning" }}
       messageCount={0}
       messageLabel="Message buyer"
+      onRefresh={() => undefined}
       onOpenMessages={() => undefined}
     />
   )
@@ -95,19 +96,22 @@ describe("ShopperTrustCard", () => {
           picture: "https://example.com/alice.png",
           nip05: "alice@example.com",
         }}
-        profileSettled
+        profileState="loaded"
         evidence={fullEvidence()}
         isHydrating={false}
         nip05Status="valid"
         statusDisplay={{ label: "Payment Proof Received", tone: "success" }}
         messageCount={4}
         messageLabel="Messages"
+        onRefresh={() => undefined}
         onOpenMessages={() => undefined}
       />
     )
 
     expect(html).toContain("Buyer context")
+    expect(html).toContain("Buyer context observations loaded")
     expect(html).toContain("Alice Buyer")
+    expect(html).toContain('alt=""')
     expect(html).toContain('target="_blank"')
     expect(html).toContain('rel="noopener noreferrer"')
     expect(html).toContain("alice@example.com")
@@ -137,12 +141,13 @@ describe("ShopperTrustCard", () => {
       <ShopperTrustCard
         shopperPubkey={shopperPubkey}
         profile={{ pubkey: shopperPubkey }}
-        profileSettled={false}
+        profileState="loading"
         isHydrating
         nip05Status="absent"
         statusDisplay={{ label: "Pending", tone: "warning" }}
         messageCount={0}
         messageLabel="Message buyer"
+        onRefresh={() => undefined}
         onOpenMessages={() => undefined}
       />
     )
@@ -154,6 +159,37 @@ describe("ShopperTrustCard", () => {
     expect(html).toContain('aria-live="polite"')
     expect(html).toContain("Buyer context is updating")
     expect(html).toContain("Message buyer")
+  })
+
+  it("announces unavailable observations without claiming freshness", () => {
+    const evidence = fullEvidence()
+    evidence.oldestEvent = unavailableSignal()
+    evidence.followersObserved = unavailableSignal()
+    evidence.followsInCommon = unavailableSignal()
+    evidence.zapsSent = unavailableSignal()
+    evidence.zapsReceived = unavailableSignal()
+    evidence.reportsFromNetwork = unavailableSignal()
+    evidence.source = "none"
+    evidence.degraded = true
+    const html = renderToStaticMarkup(
+      <ShopperTrustCard
+        shopperPubkey={shopperPubkey}
+        profile={{ pubkey: shopperPubkey }}
+        profileState="loaded"
+        evidence={evidence}
+        isHydrating={false}
+        nip05Status="absent"
+        statusDisplay={{ label: "Pending", tone: "warning" }}
+        messageCount={0}
+        messageLabel="Message buyer"
+        onRefresh={() => undefined}
+        onOpenMessages={() => undefined}
+      />
+    )
+
+    expect(html).toContain("Buyer context observations unavailable")
+    expect(html).toContain("Retry observations")
+    expect(html).not.toContain("Buyer context is up to date")
   })
 
   it("qualifies partial and stale observations without overstating missing evidence", () => {
@@ -176,13 +212,14 @@ describe("ShopperTrustCard", () => {
           displayName: "Alice Buyer",
           nip05: "alice@example.com",
         }}
-        profileSettled
+        profileState="loaded"
         evidence={evidence}
         isHydrating={false}
         nip05Status="invalid"
         statusDisplay={{ label: "Review", tone: "neutral" }}
         messageCount={1}
         messageLabel="Message buyer"
+        onRefresh={() => undefined}
         onOpenMessages={() => undefined}
       />
     )
@@ -217,6 +254,28 @@ describe("ShopperTrustCard", () => {
     expect(renderNip05State("unknown", "alice@example.com")).toContain(
       "alice@example.com · NIP-05 status unavailable"
     )
-    expect(renderNip05State("absent")).toContain("No NIP-05 identifier")
+    expect(renderNip05State("absent")).toContain(
+      "No NIP-05 identifier in observed profile"
+    )
+  })
+
+  it("does not claim NIP-05 absence when profile lookup is unavailable", () => {
+    const html = renderToStaticMarkup(
+      <ShopperTrustCard
+        shopperPubkey={shopperPubkey}
+        profile={{ pubkey: shopperPubkey }}
+        profileState="unavailable"
+        isHydrating={false}
+        nip05Status="absent"
+        statusDisplay={{ label: "Pending", tone: "warning" }}
+        messageCount={0}
+        messageLabel="Message buyer"
+        onRefresh={() => undefined}
+        onOpenMessages={() => undefined}
+      />
+    )
+
+    expect(html).toContain("Profile unavailable; NIP-05 not checked")
+    expect(html).not.toContain("No NIP-05 identifier in observed profile")
   })
 })

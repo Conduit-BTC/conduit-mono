@@ -327,8 +327,8 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
 /**
  * Resolve a write plan.
  *
- * - `author_event`: primary = user's write relays (commerce + public).
- *   Broadcast empty by default.
+ * - `author_event`: primary = author's NIP-65 write relays plus the user's
+ *   enabled write relays (commerce + public). Broadcast empty by default.
  * - `recipient_event`: primary = union of each recipient's read relays
  *   (from cached NIP-65). If a recipient has no cached list, we fall back
  *   to shared app/public recipient relays instead of sender-only outbox
@@ -357,7 +357,12 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
         )
 
   if (input.intent === "author_event") {
-    const ordered = dedupeOrdered(userWriteRelays)
+    const authorWriteHints = hintReadRelaysForAuthors(
+      input.authorPubkey ? [input.authorPubkey] : [],
+      input.relayLists,
+      input.authenticatedPubkey
+    )
+    const ordered = dedupeOrdered([...authorWriteHints, ...userWriteRelays])
     const { kept, parked } = applyHealthFilter(
       ordered,
       input.skipHealthFilter,

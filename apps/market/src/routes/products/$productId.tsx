@@ -1,10 +1,4 @@
-import {
-  ChevronDown,
-  LoaderCircle,
-  SearchX,
-  ShoppingCart,
-  Store,
-} from "lucide-react"
+import { ChevronDown, SearchX, ShoppingCart, Store } from "lucide-react"
 import { createFileRoute, Link } from "@tanstack/react-router"
 import {
   buildProductDetailActionTelemetryProperties,
@@ -17,7 +11,15 @@ import {
   type ProductDetailTelemetryAction,
 } from "@conduit/core"
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { Avatar, AvatarFallback, AvatarImage, Badge, Button } from "@conduit/ui"
+import {
+  Avatar,
+  AvatarFallback,
+  AvatarImage,
+  Badge,
+  Button,
+  FreshnessChip,
+  type FreshnessChipStatus,
+} from "@conduit/ui"
 import { CopyButton } from "../../components/CopyButton"
 import {
   MerchantAvatarFallback,
@@ -242,10 +244,18 @@ function ProductPage() {
     cart.addItem(createCartItemFromProduct(product), quantity)
   }
 
+  const productFreshness: FreshnessChipStatus = product
+    ? productQuery.isHydrating
+      ? "updating"
+      : productQuery.meta?.stale
+        ? "stale"
+        : "idle"
+    : "idle"
+
   return (
     <div className="min-w-0 max-w-full space-y-8 overflow-x-hidden">
-      <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-[var(--text-secondary)]">
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
+      <div className="relative grid min-h-7 gap-2 text-sm text-[var(--text-secondary)] sm:block">
+        <div className="flex min-w-0 flex-wrap items-center gap-2 sm:pr-48">
           <Link
             to="/products"
             className="transition-colors hover:text-[var(--text-primary)]"
@@ -274,6 +284,14 @@ function ProductPage() {
           <span className="min-w-0 break-words text-[var(--text-primary)]">
             {product?.title ?? "Product"}
           </span>
+        </div>
+        <div className="relative min-h-[1.625rem] sm:absolute sm:right-0 sm:top-1/2 sm:min-h-0 sm:-translate-y-1/2">
+          <FreshnessChip
+            status={productFreshness}
+            updatingLabel="Updating listing"
+            staleLabel="Listing may be out of date"
+            className="absolute right-0 top-0 sm:static"
+          />
         </div>
       </div>
 
@@ -307,21 +325,6 @@ function ProductPage() {
           {productQuery.error instanceof Error
             ? productQuery.error.message
             : "Unknown error"}
-        </div>
-      )}
-
-      {product && (productQuery.isHydrating || productQuery.meta?.stale) && (
-        <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
-          {productQuery.isHydrating ? (
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-2.5 py-1 text-[var(--text-secondary)]">
-              <LoaderCircle className="h-3 w-3 animate-spin text-secondary-300" />
-              Updating listing
-            </span>
-          ) : (
-            <span className="inline-flex items-center rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-2.5 py-1 text-[var(--text-secondary)]">
-              Listing may be out of date
-            </span>
-          )}
         </div>
       )}
 

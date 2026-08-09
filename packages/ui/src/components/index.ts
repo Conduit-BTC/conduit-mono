@@ -60,8 +60,14 @@ export {
 } from "./LegacyDirectMessageNotice"
 export { LiveReadNotice, type LiveReadNoticeProps } from "./LiveReadNotice"
 export {
+  FreshnessChip,
+  type FreshnessChipProps,
+  type FreshnessChipStatus,
+} from "./FreshnessChip"
+export {
   MessagingReadinessNotice,
   type MessagingReadinessNoticeProps,
+  type MessagingReadinessState,
 } from "./MessagingReadinessNotice"
 export { Label } from "./Label"
 export {
@@ -110,6 +116,13 @@ export {
   type RelaySettingsPanelProps,
   type RelaySettingsPanelState,
 } from "./RelaySettingsPanel"
+export {
+  MAX_INBOX_RELAY_SELECTION,
+  PrivateInboxSection,
+  type PrivateInboxSectionProps,
+  type PrivateInboxStatus,
+} from "./PrivateInboxSection"
+export { Checkbox, type CheckboxProps } from "./Checkbox"
 export {
   ProductCard,
   ProductCardSkeleton,

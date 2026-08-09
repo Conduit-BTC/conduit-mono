@@ -3,8 +3,13 @@ import { createRoot } from "react-dom/client"
 import { RouterProvider, createRouter } from "@tanstack/react-router"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { ReactQueryDevtools } from "@tanstack/react-query-devtools"
-import { AuthProvider, ConduitSessionProvider } from "@conduit/core"
+import {
+  AuthProvider,
+  ConduitSessionProvider,
+  pruneShopperTrustSnapshots,
+} from "@conduit/core"
 import { routeTree } from "./routeTree.gen"
+import { startProductDeletionDeliveryWorker } from "./lib/product-deletion-delivery"
 import "@conduit/ui/styles/site.css"
 import "./styles/index.css"
 
@@ -19,6 +24,9 @@ declare module "@tanstack/react-router" {
     router: typeof router
   }
 }
+
+startProductDeletionDeliveryWorker()
+void pruneShopperTrustSnapshots()
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

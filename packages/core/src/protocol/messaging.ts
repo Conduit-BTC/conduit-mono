@@ -6,6 +6,7 @@ import {
   type NDKSigner,
 } from "@nostr-dev-kit/ndk"
 import { config, type ConduitConfig } from "../config"
+import type { OrderRelayDeliveryRecord, OrderRelayDeliveryStatus } from "../db"
 import { EVENT_KINDS } from "./kinds"
 import {
   fetchEventsFanout,
@@ -14,13 +15,28 @@ import {
 } from "./ndk"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 import { parseOrderMessageRumorEvent } from "./orders"
+import {
+  __resetInboxDeclarationCache,
+  primeInboxDeclarationCache,
+  resolveInboxDeclaration,
+  secureRelayUrls,
+  selectPrivateMessageDeliveryRoute,
+  type DeliveryRouteSelection,
+  type InboxDeclarationResolution,
+  type PrivateMessageDeliveryRoute,
+  type ResolveInboxDeclarationOptions,
+} from "./private-message-routing"
 import { publishWithPlanner } from "./relay-publish"
-import { isInsecureRelayUrl } from "./relay-list"
+import { getRelayLists, isInsecureRelayUrl } from "./relay-list"
 import { getGeneralReadRelayUrls, tryNormalizeRelayUrl } from "./relay-settings"
 import {
   withTransientNip07Retry,
   type TransientNip07RetryOptions,
 } from "./signing-retry"
+import {
+  isValidSignedPublicNostrEvent,
+  type SignedPublicNostrEvent,
+} from "./signed-event"
 
 /**
  * Shared private-message boundary (CND-57). Centralizes NIP-17 gift-wrap build,
@@ -33,6 +49,54 @@ import {
  */
 
 export type PrivateMessageCategory = "order" | "direct"
+
+export interface ValidatedOrderRouteScope {
+  readonly rumorId: string
+  readonly orderId: string
+  readonly senderPubkey: string
+  readonly recipientPubkey: string
+}
+
+const validatedOrderRouteScopes = new WeakSet<ValidatedOrderRouteScope>()
+
+/**
+ * Issue a one-use compatibility-routing capability bound to one validated
+ * kind-16 rumor, order id, sender, and recipient. Relay URLs are deliberately
+ * absent: validation can authorize the lane but cannot widen its relay pool.
+ */
+export function createValidatedOrderRouteScope(input: {
+  rumor: NDKEvent
+  orderId: string
+  senderPubkey: string
+  recipientPubkey: string
+}): ValidatedOrderRouteScope {
+  const orderId = input.orderId.trim()
+  const senderPubkey = input.senderPubkey.trim().toLowerCase()
+  const recipientPubkey = input.recipientPubkey.trim().toLowerCase()
+  const rumorOrderId = input.rumor.tags.find((tag) => tag[0] === "order")?.[1]
+  const rumorRecipient = input.rumor.tags
+    .find((tag) => tag[0] === "p")?.[1]
+    ?.trim()
+    .toLowerCase()
+  if (
+    input.rumor.kind !== EVENT_KINDS.ORDER ||
+    !input.rumor.id ||
+    input.rumor.pubkey?.trim().toLowerCase() !== senderPubkey ||
+    rumorRecipient !== recipientPubkey ||
+    rumorOrderId !== orderId ||
+    classifyLegacyOrderRumor(input.rumor) !== "ok"
+  ) {
+    throw new Error("Cannot authorize compatibility routing for this rumor.")
+  }
+  const scope = Object.freeze({
+    rumorId: input.rumor.id,
+    orderId,
+    senderPubkey,
+    recipientPubkey,
+  })
+  validatedOrderRouteScopes.add(scope)
+  return scope
+}
 
 /** Coarse, content-free decrypt-failure reason (docs/specs/messaging.md). */
 export type DecryptFailureReason =
@@ -374,10 +438,36 @@ export interface PublishPrivateMessageInput {
    */
   recipientInboxRelays?: readonly string[]
   senderInboxRelays?: readonly string[]
-  /** Injectable kind-10050 resolver (tests); defaults to fetchInboxRelayUrls. */
+  /**
+   * Legacy string[]-or-throw kind-10050 resolver seam (tests). This seam
+   * cannot express a malformed declaration; when omitted, the typed
+   * resolveInboxDeclaration path is used instead.
+   */
   resolveInboxRelays?: (pubkey: string) => Promise<string[]>
   /** Injectable relay publisher for focused transport tests. */
   publishFn?: typeof publishWithPlanner
+  /**
+   * One-use capability for a validated kind-16 order lifecycle send (locally created
+   * checkout/order or a validated inbound order with matching order identity
+   * and counterparty). Enables the temporary compatibility order route
+   * when the recipient has no usable declaration and the redeploy-controlled
+   * flag is on. Kind-14 general DMs must not set this.
+   */
+  validatedOrderScope?: ValidatedOrderRouteScope
+  /**
+   * Override the compatibility lane gate and registry (tests/config seams).
+   * Defaults to the repo-controlled deployment profile and
+   * config.dmCompatibilityOrderRelayUrls.
+   */
+  compatibilityOrderRoute?: {
+    enabled?: boolean
+    relayUrls?: readonly string[]
+    maxRelays?: number
+  }
+  /** Test seam for recipient-specific, signed NIP-65 read evidence. */
+  resolveCompatibilityRecipientReadRelays?: (
+    pubkey: string
+  ) => Promise<readonly string[]>
 }
 
 export interface PublishPrivateMessageResult {
@@ -385,20 +475,36 @@ export interface PublishPrivateMessageResult {
   wrappedToSelf: NDKEvent | null
   /** Non-null when the non-critical self-copy leg needs retry. */
   selfCopyError: string | null
+  /** Lane used for the critical recipient leg. */
+  deliveryRoute: Exclude<PrivateMessageDeliveryRoute, "blocked">
+  /** Full per-relay result for the critical recipient leg. */
+  recipientDelivery: Awaited<ReturnType<typeof publishWithPlanner>>
+  deliveryStatus: "full_success" | "partial_success"
+  deliveryRelaySources: DeliveryRouteSelection["relaySources"]
+  deliveryPlanTruncated: boolean
+  /** Present for a real signed kind-16 recipient wrap; content-safe and local. */
+  orderRelayDelivery?: OrderRelayDeliveryRecord
 }
 
+const ORDER_RELAY_RETRY_RETENTION_MS = 24 * 60 * 60 * 1_000
+
 export type PrivateMessageRelayReadinessReason =
-  "recipient_not_ready" | "recipient_lookup_failed"
+  | "recipient_not_ready"
+  | "recipient_lookup_failed"
+  | "recipient_declaration_malformed"
+
+const READINESS_MESSAGES: Record<PrivateMessageRelayReadinessReason, string> = {
+  recipient_not_ready: "Recipient has not declared NIP-17 inbox relays.",
+  recipient_lookup_failed: "Recipient inbox relay discovery failed.",
+  recipient_declaration_malformed:
+    "Recipient inbox relay declaration is unusable.",
+}
 
 export class PrivateMessageRelayReadinessError extends Error {
   readonly reason: PrivateMessageRelayReadinessReason
 
   constructor(reason: PrivateMessageRelayReadinessReason) {
-    super(
-      reason === "recipient_not_ready"
-        ? "Recipient has not declared NIP-17 inbox relays."
-        : "Recipient inbox relay discovery failed."
-    )
+    super(READINESS_MESSAGES[reason])
     this.name = "PrivateMessageRelayReadinessError"
     this.reason = reason
   }
@@ -441,25 +547,62 @@ export async function publishPrivateMessage(
   const selfCopy = input.selfCopy ?? true
   const refreshRelayLists = input.refreshRelayLists ?? true
   const wrapParams = { rumorKind: input.rumorKind }
-  const resolveInboxRelays = input.resolveInboxRelays ?? fetchInboxRelayUrls
   const publishFn = input.publishFn ?? publishWithPlanner
 
-  // NIP-17 requires exclusive delivery to the recipient's declared inbox.
-  let recipientInboxRelays: readonly string[]
-  try {
-    recipientInboxRelays =
-      input.recipientInboxRelays ??
-      (await resolveInboxRelays(input.recipientPubkey))
-  } catch {
-    throw new PrivateMessageRelayReadinessError("recipient_lookup_failed")
+  // NIP-17 delivery is exclusive to the recipient's declared inbox. The only
+  // exception is the temporary compatibility route for validated kind-16
+  // order traffic (CND-208); a valid declaration always outranks it.
+  const validatedOrder = consumeValidatedOrderRouteScope({
+    scope: input.validatedOrderScope,
+    rumor: input.rumor,
+    senderPubkey,
+    recipientPubkey,
+  })
+  const recipientDeclaration = await resolveDeclarationForSend(
+    input.recipientPubkey,
+    input.recipientInboxRelays,
+    input.resolveInboxRelays
+  )
+  const compatibilityRecipientReadRelays =
+    validatedOrder && recipientDeclaration.state !== "declared"
+      ? await resolveCompatibilityRecipientReadRelays(
+          input.recipientPubkey,
+          input.resolveCompatibilityRecipientReadRelays
+        )
+      : []
+  const recipientRoute = selectPrivateMessageDeliveryRoute({
+    rumorKind: input.rumorKind,
+    declaration: recipientDeclaration,
+    validatedOrder,
+    compatibilityEnabled: input.compatibilityOrderRoute?.enabled,
+    compatibilityRelayUrls: input.compatibilityOrderRoute?.relayUrls,
+    recipientReadRelayUrls: compatibilityRecipientReadRelays,
+    maxCompatibilityRelays: input.compatibilityOrderRoute?.maxRelays,
+  })
+  if (recipientRoute.route === "blocked") {
+    throw new PrivateMessageRelayReadinessError(
+      recipientRoute.blockedReason === "declaration_malformed"
+        ? "recipient_declaration_malformed"
+        : (recipientRoute.blockedReason ?? "recipient_not_ready")
+    )
   }
-  if (recipientInboxRelays.length === 0) {
-    throw new PrivateMessageRelayReadinessError("recipient_not_ready")
+
+  let senderRoute: ReturnType<typeof selectPrivateMessageDeliveryRoute> | null =
+    null
+  if (selfCopy) {
+    const senderDeclaration = await resolveDeclarationForSend(
+      input.senderPubkey,
+      input.senderInboxRelays,
+      input.resolveInboxRelays
+    )
+    // The compatibility lane is recipient-only: the non-critical sender self-copy
+    // stays strict and fails soft instead of writing to compatibility relays.
+    senderRoute = selectPrivateMessageDeliveryRoute({
+      rumorKind: input.rumorKind,
+      declaration: senderDeclaration,
+      validatedOrder: false,
+    })
   }
-  const senderInboxRelays = selfCopy
-    ? (input.senderInboxRelays ??
-      (await resolveInboxRelays(input.senderPubkey).catch(() => [])))
-    : []
 
   // NDK's giftWrap builds and encrypts the seal from rumor.ndk. Attach the
   // shared instance before wrapping; attaching only at publish time is too late.
@@ -498,34 +641,224 @@ export async function publishPrivateMessage(
     }
   }
 
-  await publishFn(wrappedToRecipient, {
+  const recipientDelivery = await publishFn(wrappedToRecipient, {
     intent: "recipient_event",
     authorPubkey: input.senderPubkey,
     authenticatedPubkey: input.senderPubkey,
     recipientPubkeys: [input.recipientPubkey],
-    exclusiveRelayUrls: recipientInboxRelays,
+    exclusiveRelayUrls: recipientRoute.relayUrls,
     refreshRelayLists,
     deliveryMode: "critical",
   })
+  if (
+    Array.isArray(recipientDelivery.successfulRelayUrls) &&
+    recipientDelivery.successfulRelayUrls.length === 0
+  ) {
+    throw new Error("Recipient delivery completed without a relay ACK.")
+  }
+  const deliveryStatus =
+    Array.isArray(recipientDelivery.failedRelayUrls) &&
+    recipientDelivery.failedRelayUrls.length > 0
+      ? "partial_success"
+      : "full_success"
+  const orderRelayDelivery =
+    input.rumorKind === EVENT_KINDS.ORDER
+      ? buildOrderRelayDeliveryRecord({
+          wrappedToRecipient,
+          recipientRoute,
+          recipientDelivery,
+        })
+      : undefined
 
   if (wrappedToSelf) {
-    try {
-      await publishFn(wrappedToSelf, {
-        intent: "recipient_event",
-        authorPubkey: input.senderPubkey,
-        authenticatedPubkey: input.senderPubkey,
-        recipientPubkeys: [input.senderPubkey],
-        exclusiveRelayUrls: senderInboxRelays,
-        refreshRelayLists,
-        deliveryMode: "critical",
-      })
-    } catch (error) {
-      selfCopyError =
-        error instanceof Error ? error.message : "Self-copy publish failed"
+    if (!senderRoute || senderRoute.route === "blocked") {
+      selfCopyError = "Sender has no usable NIP-17 inbox relay declaration."
+    } else {
+      try {
+        await publishFn(wrappedToSelf, {
+          intent: "recipient_event",
+          authorPubkey: input.senderPubkey,
+          authenticatedPubkey: input.senderPubkey,
+          recipientPubkeys: [input.senderPubkey],
+          exclusiveRelayUrls: senderRoute.relayUrls,
+          refreshRelayLists,
+          deliveryMode: "critical",
+        })
+      } catch (error) {
+        selfCopyError =
+          error instanceof Error ? error.message : "Self-copy publish failed"
+      }
     }
   }
 
-  return { wrappedToRecipient, wrappedToSelf, selfCopyError }
+  return {
+    wrappedToRecipient,
+    wrappedToSelf,
+    selfCopyError,
+    deliveryRoute: recipientRoute.route,
+    recipientDelivery,
+    deliveryStatus,
+    deliveryRelaySources: recipientRoute.relaySources,
+    deliveryPlanTruncated: recipientRoute.truncated,
+    orderRelayDelivery,
+  }
+}
+
+function consumeValidatedOrderRouteScope(input: {
+  scope: ValidatedOrderRouteScope | undefined
+  rumor: NDKEvent
+  senderPubkey: string
+  recipientPubkey: string
+}): boolean {
+  const scope = input.scope
+  if (!scope || !validatedOrderRouteScopes.has(scope)) return false
+  validatedOrderRouteScopes.delete(scope)
+  const rumorOrderId = input.rumor.tags.find((tag) => tag[0] === "order")?.[1]
+  return (
+    input.rumor.kind === EVENT_KINDS.ORDER &&
+    scope.rumorId === input.rumor.id &&
+    scope.orderId === rumorOrderId &&
+    scope.senderPubkey === input.senderPubkey &&
+    scope.recipientPubkey === input.recipientPubkey
+  )
+}
+
+function buildOrderRelayDeliveryRecord(input: {
+  wrappedToRecipient: NDKEvent
+  recipientRoute: DeliveryRouteSelection
+  recipientDelivery: Awaited<ReturnType<typeof publishWithPlanner>>
+}): OrderRelayDeliveryRecord | undefined {
+  const route = input.recipientRoute.route
+  if (route === "blocked") return undefined
+  let signedRecipientWrap: SignedPublicNostrEvent
+  try {
+    signedRecipientWrap =
+      input.wrappedToRecipient.rawEvent() as SignedPublicNostrEvent
+  } catch {
+    return undefined
+  }
+  if (!isValidSignedPublicNostrEvent(signedRecipientWrap)) return undefined
+
+  const now = Date.now()
+  const successful = new Set(input.recipientDelivery.successfulRelayUrls ?? [])
+  const failures = input.recipientDelivery.relayFailureMessages ?? {}
+  const relayDelivery = input.recipientRoute.relayUrls.map((relayUrl) => {
+    const acked = successful.has(relayUrl)
+    const rejected =
+      /^(?:pow|blocked|rate-limited|invalid|restricted|mute|error):/i.test(
+        failures[relayUrl]?.trim() ?? ""
+      )
+    const status: OrderRelayDeliveryStatus = acked
+      ? "acked"
+      : rejected
+        ? "rejected"
+        : "timed_out"
+    return {
+      relayUrl,
+      source: input.recipientRoute.relaySources[relayUrl] ?? "declared",
+      status,
+      attemptCount: 1,
+      lastAttemptAt: now,
+      ...(acked ? { acknowledgedAt: now } : {}),
+      ...(rejected ? { rejectedAt: now } : {}),
+      ...(!acked && !rejected ? { timedOutAt: now } : {}),
+    }
+  })
+
+  return {
+    signedRecipientWrap,
+    route,
+    relayDelivery,
+    deliveryAttemptCount: 1,
+    retryCount: 0,
+    nextRetryAt: relayDelivery.every((delivery) => delivery.status === "acked")
+      ? undefined
+      : now + 15_000,
+    createdAt: now,
+    updatedAt: now,
+    expiresAt: now + ORDER_RELAY_RETRY_RETENTION_MS,
+  }
+}
+
+async function resolveCompatibilityRecipientReadRelays(
+  pubkey: string,
+  seam?: (pubkey: string) => Promise<readonly string[]>
+): Promise<readonly string[]> {
+  if (seam) return await seam(pubkey)
+  try {
+    const lists = await getRelayLists([pubkey], { cacheOnly: true })
+    return lists.get(pubkey.trim())?.readRelayUrls ?? []
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Resolve the declaration for one send leg. Precedence: caller-known relays,
+ * then the legacy string[] seam (tests), then the typed resolver. The typed
+ * default preserves the malformed state so it can block writes.
+ */
+async function resolveDeclarationForSend(
+  pubkey: string,
+  knownRelayUrls: readonly string[] | undefined,
+  legacySeam: ((pubkey: string) => Promise<string[]>) | undefined
+): Promise<InboxDeclarationResolution> {
+  const key = pubkey.trim().toLowerCase()
+  if (knownRelayUrls) return declarationFromKnownRelays(key, knownRelayUrls)
+  if (legacySeam) return resolveDeclarationViaSeam(pubkey, legacySeam)
+  return resolveInboxDeclaration(pubkey)
+}
+
+/**
+ * Treat caller-supplied inbox relays as an authoritative declaration state.
+ * A nonempty list with no secure relay is a malformed declaration: it must
+ * block writes rather than downgrade to "not declared" and compatibility.
+ */
+function declarationFromKnownRelays(
+  pubkey: string,
+  relayUrls: readonly string[]
+): InboxDeclarationResolution {
+  const secure = secureRelayUrls(relayUrls)
+  const state =
+    secure.length > 0
+      ? "declared"
+      : relayUrls.length > 0
+        ? "malformed"
+        : "not_declared"
+  return {
+    pubkey,
+    state,
+    relayUrls: secure,
+    stale: false,
+    fetchedAt: Date.now(),
+  }
+}
+
+/**
+ * Adapt the legacy string[]-or-throw inbox resolver seam into the typed
+ * declaration model. A thrown "incomplete" lookup maps to lookup_partial;
+ * any other failure maps to lookup_unavailable.
+ */
+async function resolveDeclarationViaSeam(
+  pubkey: string,
+  resolveInboxRelays: (pubkey: string) => Promise<string[]>
+): Promise<InboxDeclarationResolution> {
+  const key = pubkey.trim().toLowerCase()
+  try {
+    const relayUrls = await resolveInboxRelays(pubkey)
+    return declarationFromKnownRelays(key, relayUrls)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : ""
+    return {
+      pubkey: key,
+      state: message.includes("incomplete")
+        ? "lookup_partial"
+        : "lookup_unavailable",
+      relayUrls: [],
+      stale: false,
+      fetchedAt: Date.now(),
+    }
+  }
 }
 
 export type Nip44Version = "v2" | "v3"
@@ -579,36 +912,6 @@ export function detectNip44Capabilities(
   }
 }
 
-export interface PrivateMessageRelays {
-  pubkey: string
-  relayUrls: string[]
-}
-
-/**
- * Parse a kind-10050 private-message relay list into recipient inbox relays.
- * An absent or unusable declaration means the recipient is not NIP-17 ready;
- * general relay lists and configured relays are not delivery fallbacks.
- */
-export function parsePrivateMessageRelays(event: {
-  kind?: number
-  pubkey?: string
-  tags?: string[][]
-}): PrivateMessageRelays | null {
-  if (event.kind !== EVENT_KINDS.PRIVATE_MESSAGE_RELAYS) return null
-  const seen = new Set<string>()
-  const relayUrls: string[] = []
-  for (const tag of event.tags ?? []) {
-    if (tag[0] !== "relay" || typeof tag[1] !== "string") continue
-    const url = tag[1].trim()
-    if (!url || seen.has(url)) continue
-    seen.add(url)
-    relayUrls.push(url)
-  }
-  return { pubkey: event.pubkey ?? "", relayUrls }
-}
-
-const inboxRelayCache = new Map<string, string[]>()
-
 export interface FetchInboxRelayOptions {
   fetchEvents?: typeof fetchEventsFanout
   fetchEventsWithDiagnostics?: typeof fetchEventsFanoutWithDiagnostics
@@ -616,79 +919,104 @@ export interface FetchInboxRelayOptions {
 }
 
 export type OwnPrivateMessageRelayReadiness =
-  { state: "ready"; relayUrls: string[] } | { state: "not_declared" }
+  | { state: "ready"; relayUrls: string[]; stale: boolean }
+  | { state: "not_declared" }
+  | { state: "malformed" }
+  | { state: "lookup_partial" }
+  | { state: "lookup_unavailable" }
 
 /** Reset the kind-10050 inbox-relay cache (tests). */
 export function __resetInboxRelayCache(): void {
-  inboxRelayCache.clear()
+  __resetInboxDeclarationCache()
+}
+
+/**
+ * Adapt the legacy events-only fetch seam (tests) into the diagnostics shape.
+ * An events-only fetch cannot report per-relay failure, so it counts as
+ * complete coverage - matching the pre-CND-208 behavior of that seam.
+ */
+function adaptFetchEventsToDiagnostics(
+  fetchEvents: typeof fetchEventsFanout
+): typeof fetchEventsFanoutWithDiagnostics {
+  return async (filter, options) => {
+    const events = await fetchEvents(filter, options)
+    const relayUrls = [...(options?.relayUrls ?? [])]
+    return {
+      events,
+      attemptedRelayUrls: relayUrls,
+      successfulRelayUrls: relayUrls.length > 0 ? relayUrls : ["fetch-events"],
+      failedRelayUrls: [],
+    }
+  }
+}
+
+function toDeclarationOptions(
+  options: FetchInboxRelayOptions
+): ResolveInboxDeclarationOptions {
+  return {
+    fetchEventsWithDiagnostics: options.fetchEvents
+      ? adaptFetchEventsToDiagnostics(options.fetchEvents)
+      : options.fetchEventsWithDiagnostics,
+    relayUrls: options.relayUrls,
+  }
 }
 
 /**
  * Resolve a pubkey's kind-10050 private-message inbox relays. Positive results
- * are cached; absent declarations and lookup errors remain retryable.
+ * are cached with bounded freshness; absent declarations and lookup errors
+ * remain retryable. Legacy error-throwing wrapper over
+ * resolveInboxDeclaration for the send path.
  */
 export async function fetchInboxRelayUrls(
   pubkey: string,
   options: FetchInboxRelayOptions = {}
 ): Promise<string[]> {
-  const cached = inboxRelayCache.get(pubkey)
-  if (cached) return cached
-  const filter = {
-    kinds: [EVENT_KINDS.PRIVATE_MESSAGE_RELAYS],
-    authors: [pubkey],
-    limit: 1,
-  }
-  const fetchOptions = {
-    relayUrls: options.relayUrls ?? getGeneralReadRelayUrls({}),
-    connectTimeoutMs: 3_000,
-    fetchTimeoutMs: 6_000,
-  }
-  let events: NDKEvent[]
-  let lookupHadFailures = false
-  if (options.fetchEvents) {
-    events = await options.fetchEvents(filter, fetchOptions)
-  } else {
-    const result = await (
-      options.fetchEventsWithDiagnostics ?? fetchEventsFanoutWithDiagnostics
-    )(filter, fetchOptions)
-    if (result.successfulRelayUrls.length === 0) {
+  const resolution = await resolveInboxDeclaration(
+    pubkey,
+    toDeclarationOptions(options)
+  )
+  switch (resolution.state) {
+    case "declared":
+      return resolution.relayUrls
+    case "not_declared":
+    case "malformed":
+      return []
+    case "lookup_unavailable":
       throw new Error("Private-message relay lookup unavailable")
-    }
-    lookupHadFailures = result.failedRelayUrls.length > 0
-    events = result.events
+    case "lookup_partial":
+      throw new Error("Private-message relay lookup incomplete")
   }
-  let relayUrls: string[] = []
-  let newest = -1
-  for (const event of events) {
-    const parsed = parsePrivateMessageRelays(event)
-    if (parsed?.pubkey === pubkey && (event.created_at ?? 0) > newest) {
-      relayUrls = parsed.relayUrls
-      newest = event.created_at ?? 0
-    }
-  }
-  const secure = relayUrls.flatMap((url) => {
-    const normalized = tryNormalizeRelayUrl(url)
-    return normalized.ok && !isInsecureRelayUrl(normalized.url)
-      ? [normalized.url]
-      : []
-  })
-  if (secure.length > 0) {
-    inboxRelayCache.set(pubkey, secure)
-  } else if (lookupHadFailures) {
-    throw new Error("Private-message relay lookup incomplete")
-  }
-  return secure
 }
 
-/** Inspect the principal's kind-10050 declaration without masking lookup errors. */
+/**
+ * Inspect the principal's kind-10050 declaration with typed, retryable
+ * outcomes. Lookup failure is distinct from a complete "not declared";
+ * a signed-but-unusable declaration is "malformed" (repair in Network).
+ */
 export async function inspectOwnPrivateMessageRelayReadiness(
   pubkey: string,
   options: FetchInboxRelayOptions = {}
 ): Promise<OwnPrivateMessageRelayReadiness> {
-  const relayUrls = await fetchInboxRelayUrls(pubkey, options)
-  return relayUrls.length > 0
-    ? { state: "ready", relayUrls }
-    : { state: "not_declared" }
+  const resolution = await resolveInboxDeclaration(
+    pubkey,
+    toDeclarationOptions(options)
+  )
+  switch (resolution.state) {
+    case "declared":
+      return {
+        state: "ready",
+        relayUrls: resolution.relayUrls,
+        stale: resolution.stale,
+      }
+    case "not_declared":
+      return { state: "not_declared" }
+    case "malformed":
+      return { state: "malformed" }
+    case "lookup_partial":
+      return { state: "lookup_partial" }
+    case "lookup_unavailable":
+      return { state: "lookup_unavailable" }
+  }
 }
 
 export interface PublishPrivateMessageRelayDeclarationInput {
@@ -768,6 +1096,6 @@ export async function publishPrivateMessageRelayDeclaration(
     deliveryMode: "critical",
   })
 
-  inboxRelayCache.set(input.pubkey, relayUrls)
+  primeInboxDeclarationCache(input.pubkey, relayUrls, Date.now, event.id)
   return event
 }

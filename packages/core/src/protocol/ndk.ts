@@ -122,7 +122,10 @@ function uniqueRelayUrls(urls: readonly string[]): string[] {
   return Array.from(new Set(urls.map((url) => url.trim()).filter(Boolean)))
 }
 
-function attachEventSourceRelayUrl(event: NDKEvent, relayUrl: string): void {
+export function attachEventSourceRelayUrl(
+  event: NDKEvent,
+  relayUrl: string
+): void {
   const eventWithSources = event as EventWithSourceRelayUrls
   const next = uniqueRelayUrls([
     ...(eventWithSources[EVENT_SOURCE_RELAY_URLS] ?? []),
@@ -140,6 +143,15 @@ export function getEventSourceRelayUrls(event: NDKEvent): string[] {
   return [
     ...((event as EventWithSourceRelayUrls)[EVENT_SOURCE_RELAY_URLS] ?? []),
   ]
+}
+
+export function mergeEventSourceRelayUrls(
+  target: NDKEvent,
+  source: NDKEvent
+): void {
+  for (const relayUrl of getEventSourceRelayUrls(source)) {
+    attachEventSourceRelayUrl(target, relayUrl)
+  }
 }
 
 export function subscribeNdkState(listener: Listener): () => void {
@@ -251,8 +263,8 @@ type RawNostrEvent = {
   sig: string
 }
 
-const HEX_64 = /^[0-9a-f]{64}$/i
-const HEX_128 = /^[0-9a-f]{128}$/i
+const HEX_64 = /^[0-9a-f]{64}$/
+const HEX_128 = /^[0-9a-f]{128}$/
 
 function isCanonicalSignedPublicNostrEvent(
   event: RawNostrEvent
@@ -965,14 +977,20 @@ async function fetchEventsFromRelay(
       signal
     )
     throwIfAborted(signal)
+    const orderedEvents = [...events].sort((left, right) => {
+      if (left.created_at !== right.created_at) {
+        return right.created_at - left.created_at
+      }
+      return left.id.localeCompare(right.id)
+    })
     // Main thread: cheap sha256 id-check + verified-id cache. Anything not
     // already cache-verified is batched to the worker for schnorr.
-    const accepted = new Array<boolean>(events.length).fill(false)
+    const accepted = new Array<boolean>(orderedEvents.length).fill(false)
     const schnorrItems: SchnorrItem[] = []
     const schnorrIndex: number[] = []
     let verificationTruncated = false
-    for (let i = 0; i < events.length; i++) {
-      const raw = events[i]
+    for (let i = 0; i < orderedEvents.length; i++) {
+      const raw = orderedEvents[i]
       const state = checkEventId(raw)
       if (state === "invalid") continue
       if (state === "cached") {
@@ -996,14 +1014,14 @@ async function fetchEventsFromRelay(
       if (verifiedEventProofs.size >= MAX_VERIFIED_PROOF_CACHE) {
         verifiedEventProofs.clear()
       }
-      verifiedEventProofs.add(verificationProofKey(events[i]))
+      verifiedEventProofs.add(verificationProofKey(orderedEvents[i]))
     }
 
     const eventLimit = requestedEventLimit(filter)
     const verified: NDKEvent[] = []
-    for (let i = 0; i < events.length; i++) {
+    for (let i = 0; i < orderedEvents.length; i++) {
       if (!accepted[i]) continue
-      const event = new NDKEvent(undefined, events[i])
+      const event = new NDKEvent(undefined, orderedEvents[i])
       attachEventSourceRelayUrl(event, relayUrl)
       verified.push(event)
       if (eventLimit !== null && verified.length >= eventLimit) break
@@ -1316,13 +1334,13 @@ export async function requireNdkConnected(timeoutMs = 10_000): Promise<NDK> {
 }
 
 export function setSigner(signer: NDKSigner): SignerLease {
+  const ndk = getNdk()
   const lease = Object.freeze({
     signer,
     token: Symbol("ndk-signer-lease"),
   })
-  activeSignerLease = lease
-  const ndk = getNdk()
   ndk.signer = signer
+  activeSignerLease = lease
   return lease
 }
 

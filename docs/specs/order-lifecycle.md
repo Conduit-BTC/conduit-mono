@@ -36,6 +36,13 @@ Fields:
 - Gates: `addressValidity`, `shippingZoneEligibility` (distinct; see below).
 - Progress: `orderDeliveryStatus`, `invoiceStatus`, `paymentStatus`,
   `proofDeliveryStatus`, `zapReceiptStatus`.
+- Route provenance: `orderDeliveryRoute`
+  (`declared_inbox` | `compatibility_order`) records which write lane carried the
+  order leg (see the temporary compatibility exception in
+  `docs/specs/protocol.md`).
+- Relay delivery: `orderRelayDelivery` stores the exact signed encrypted
+  recipient wrap and content-free per-relay ACK/reject/timeout state. It never
+  stores the rumor plaintext, signer material, or relay failure strings.
 - Evidence: `invoice`, `paymentHash`, `preimage`, `feeMsats`, `zapRequestId`,
   `zapReceiptId`.
 - Meta: coarse `phase` (for list filtering), `lastError`, `deliveryNotice`,
@@ -51,7 +58,14 @@ Repository helpers: `createOrderLifecycle`, `getOrderLifecycle`,
    to `/orders?order=<orderId>`. Anonymous public-zap preparation begins only
    after that durable checkpoint. Signer, authorization, pricing-attestation,
    or public-invoice failure can suppress the public receipt but cannot prevent
-   order delivery or an ordinary private invoice.
+   order delivery or an ordinary private invoice. Delivery semantics are
+   bounded: "sent" means at least one relay in the selected write lane
+   acknowledged the event. Relay ACK is not recipient receipt or read, and a
+   zero-ACK publish must fail the send rather than become `sent`/delivered.
+   A partial compatibility success remains `sent`; signed-in recovery retries
+   only non-ACKed targets with the exact same wrap. ACK state is monotonic,
+   concurrent workers use a lease, account switches cannot replay another
+   buyer's order, and guest wraps are not resumed in the background.
 2. Fast-zap hands payment to a route-independent service
    (`order-payment-service`) that, outside React, requests the invoice, pays via
    NWC/WebLN, publishes the proof, and writes each transition to the lifecycle
