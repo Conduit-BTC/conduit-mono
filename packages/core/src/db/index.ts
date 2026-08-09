@@ -306,6 +306,46 @@ export type OrderShippingZoneEligibility =
 
 export type OrderDeliveryStatus = "not_started" | "pending" | "sent" | "failed"
 
+/**
+ * Which write lane delivered the kind-16 order message (CND-208):
+ * the recipient's declared NIP-17 inbox, or the temporary bounded
+ * compatibility route used only while no usable declaration exists.
+ */
+export type OrderDeliveryRoute = "declared_inbox" | "compatibility_order"
+
+export type OrderRelayDeliveryStatus =
+  "pending" | "acked" | "rejected" | "timed_out"
+
+export interface OrderRelayDelivery {
+  relayUrl: string
+  source: "declared" | "recipient_nip65" | "compatibility_registry"
+  status: OrderRelayDeliveryStatus
+  attemptCount: number
+  lastAttemptAt?: number
+  acknowledgedAt?: number
+  rejectedAt?: number
+  timedOutAt?: number
+}
+
+/**
+ * Content-safe retry state for the exact signed recipient gift wrap. The
+ * encrypted wrap may be replayed to failed targets without retaining rumor
+ * plaintext, signer material, or relay failure strings.
+ */
+export interface OrderRelayDeliveryRecord {
+  signedRecipientWrap: SignedPublicNostrEvent
+  route: OrderDeliveryRoute
+  relayDelivery: OrderRelayDelivery[]
+  deliveryAttemptCount: number
+  retryCount: number
+  nextRetryAt?: number
+  deliveryLeaseOwner?: string
+  deliveryLeaseExpiresAt?: number
+  createdAt: number
+  updatedAt: number
+  expiresAt: number
+}
+
 export type OrderInvoiceStatus =
   "not_requested" | "requesting" | "received" | "manual_required" | "failed"
 
@@ -409,6 +449,10 @@ export interface OrderLifecycle {
   shippingZoneEligibility: OrderShippingZoneEligibility
 
   orderDeliveryStatus: OrderDeliveryStatus
+  /** Write-lane provenance for the delivered order message (CND-208). */
+  orderDeliveryRoute?: OrderDeliveryRoute
+  /** Exact encrypted wrap + per-relay ACK state for bounded retry. */
+  orderRelayDelivery?: OrderRelayDeliveryRecord
   invoiceStatus: OrderInvoiceStatus
   paymentStatus: OrderPaymentStatus
   proofDeliveryStatus: OrderProofDeliveryStatus

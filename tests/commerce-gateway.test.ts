@@ -20,10 +20,12 @@ import {
   getProductDetail,
   getProductsByIds,
   getProfiles,
+  __resetRelayHealth,
   __resetRelayListTestOverrides,
   __setRelayListTestOverrides,
+  recordRelayFailure,
 } from "@conduit/core"
-import { EVENT_KINDS } from "@conduit/core"
+import { config, EVENT_KINDS } from "@conduit/core"
 import type {
   CachedOrderMessage,
   CachedProduct,
@@ -150,6 +152,7 @@ function makeSignedDeletionEvent(params: {
 
 beforeEach(async () => {
   __resetCommerceTestOverrides()
+  __resetRelayHealth()
   __resetRelayListTestOverrides()
   cachedProducts = []
   cachedProductTombstones = []
@@ -216,6 +219,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   __resetCommerceTestOverrides()
+  __resetRelayHealth()
   __resetRelayListTestOverrides()
   cachedProducts = []
   cachedProductTombstones = []
@@ -918,10 +922,23 @@ describe("commerce gateway", () => {
       })
     )
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
-        filter.kinds?.includes(EVENT_KINDS.PRODUCT)
-          ? ([staleProduct] as never)
-          : [],
+      fetchEventsFanout: async () => [],
+      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        return filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+          ? {
+              events: [staleProduct],
+              attemptedRelayUrls: relayUrls,
+              successfulRelayUrls: relayUrls,
+              failedRelayUrls: [],
+            }
+          : {
+              events: [],
+              attemptedRelayUrls: relayUrls,
+              successfulRelayUrls: [],
+              failedRelayUrls: relayUrls,
+            }
+      },
     })
 
     const result = await getProductDetail({ productId: addressId })
@@ -1001,6 +1018,7 @@ describe("commerce gateway", () => {
 
     expect(result.meta.source).toBe("commerce")
     expect(result.data).toHaveLength(0)
+    expect(result.diagnostics[0]?.issue).not.toBeNull()
   })
 
   it("keeps market-hidden products out of batched Market reads", async () => {
@@ -1848,7 +1866,7 @@ describe("commerce gateway", () => {
     expect(result.data[0]?.status).toBeNull()
   })
 
-  it("queries only the declared merchant inbox relays for gift-wrapped orders", async () => {
+  it("reads gift wraps from declared inbox plus compatibility relays", async () => {
     const merchantPubkey = "merchant"
     const merchantReadRelays = Array.from(
       { length: 8 },
@@ -1885,7 +1903,14 @@ describe("commerce gateway", () => {
       limit: 50,
     })
 
-    expect(seenRelayUrls).toEqual(merchantReadRelays)
+    // Permissive reads (CND-208): declared inbox relays lead the plan and the
+    // bounded compatibility read set stays present even with local settings.
+    expect(seenRelayUrls?.slice(0, merchantReadRelays.length)).toEqual(
+      merchantReadRelays
+    )
+    for (const compatibilityRelayUrl of config.commerceDmFallbackRelayUrls) {
+      expect(seenRelayUrls).toContain(compatibilityRelayUrl)
+    }
   })
 
   it("retries parsed wrapped order messages when cache persistence fails", async () => {
@@ -2354,5 +2379,426 @@ describe("commerce gateway", () => {
       pubkey: "missing-profile",
     })
     expect(cachedProfiles.has("missing-profile")).toBe(false)
+  })
+})
+
+describe("getProductsByIds diagnostics", () => {
+  const dTag = "diagnosed-item"
+  const merchantPubkey = MERCHANT_A_PUBKEY
+  const addressId = `30402:${merchantPubkey}:${dTag}`
+
+  it("reports a null issue only for an exact live coordinate match", async () => {
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+          ? ([
+              makeProductEvent({
+                pubkey: merchantPubkey,
+                dTag,
+                id: "event-live-diagnosed",
+                createdAt: 100,
+                title: "Live Diagnosed",
+              }),
+            ] as never)
+          : [],
+    })
+
+    const result = await getProductsByIds([addressId])
+
+    expect(result.diagnostics).toEqual([
+      {
+        productId: addressId,
+        addressId,
+        issue: null,
+        coverage: { listing: "complete", deletion: "complete" },
+      },
+    ])
+    expect(result.meta.degraded).toBe(false)
+  })
+
+  it("types malformed references without dropping valid coordinates", async () => {
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+          ? ([
+              makeProductEvent({
+                pubkey: merchantPubkey,
+                dTag,
+                id: "event-live-beside-invalid",
+                createdAt: 100,
+                title: "Live Beside Invalid",
+              }),
+            ] as never)
+          : [],
+    })
+
+    const result = await getProductsByIds(["not-an-address", addressId])
+
+    expect(result.data).toHaveLength(1)
+    expect(result.diagnostics).toEqual([
+      {
+        productId: "not-an-address",
+        addressId: null,
+        issue: "invalid_product_reference",
+      },
+      {
+        productId: addressId,
+        addressId,
+        issue: null,
+        coverage: { listing: "complete", deletion: "complete" },
+      },
+    ])
+    expect(result.meta.degraded).toBe(true)
+  })
+
+  it("returns product_missing only for an authoritative complete read", async () => {
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () => [],
+    })
+
+    const result = await getProductsByIds([addressId])
+
+    expect(result.diagnostics[0]?.issue).toBe("product_missing")
+  })
+
+  it("keeps a partial read distinct from a missing listing", async () => {
+    __setCommerceTestOverrides({
+      fetchEventsFanoutWithDiagnostics: async () => ({
+        events: [],
+        attemptedRelayUrls: ["wss://ok.example", "wss://down.example"],
+        successfulRelayUrls: ["wss://ok.example"],
+        failedRelayUrls: ["wss://down.example"],
+      }),
+    })
+
+    const result = await getProductsByIds([addressId])
+
+    expect(result.diagnostics[0]?.issue).toBe("lookup_partial")
+    expect(result.meta.degraded).toBe(true)
+  })
+
+  it("authorizes an exact live listing while surfacing partial coverage", async () => {
+    const liveEvent = makeSignedProductEvent({
+      dTag: "diagnosed-partial-live",
+      createdAt: 100,
+      title: "Partial Live",
+    })
+    const liveAddressId = `30402:${liveEvent.pubkey}:diagnosed-partial-live`
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () => [],
+      fetchEventsFanoutWithDiagnostics: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+          ? {
+              events: [liveEvent],
+              attemptedRelayUrls: ["wss://ok.example", "wss://down.example"],
+              successfulRelayUrls: ["wss://ok.example"],
+              failedRelayUrls: ["wss://down.example"],
+            }
+          : {
+              events: [],
+              attemptedRelayUrls: ["wss://ok.example"],
+              successfulRelayUrls: ["wss://ok.example"],
+              failedRelayUrls: [],
+            },
+    })
+
+    const result = await getProductsByIds([liveAddressId])
+
+    expect(result.data[0]?.eventId).toBe(liveEvent.id)
+    expect(result.diagnostics[0]).toMatchObject({
+      issue: null,
+      coverage: { listing: "partial" },
+    })
+    expect(result.meta.degraded).toBe(true)
+  })
+
+  it("surfaces a parked author relay without vetoing exact live evidence", async () => {
+    const parkedRelayUrl = "wss://parked-author-hint.example"
+    const liveEvent = makeSignedProductEvent({
+      dTag: "diagnosed-parked-hint",
+      createdAt: 100,
+      title: "Parked Author Hint",
+    })
+    const liveAddressId = `30402:${liveEvent.pubkey}:diagnosed-parked-hint`
+    const healthNow = Date.now()
+    recordRelayFailure(parkedRelayUrl, healthNow)
+    recordRelayFailure(parkedRelayUrl, healthNow)
+    __setRelayListTestOverrides({
+      now: () => FIXED_NOW,
+      loadCached: async (pubkey) =>
+        pubkey === liveEvent.pubkey
+          ? {
+              pubkey,
+              readRelayUrls: [],
+              writeRelayUrls: [parkedRelayUrl],
+              eventCreatedAt: 1,
+              cachedAt: FIXED_NOW,
+            }
+          : undefined,
+    })
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () => [],
+      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        expect(relayUrls).not.toContain(parkedRelayUrl)
+        return {
+          events: filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+            ? [liveEvent]
+            : [],
+          attemptedRelayUrls: relayUrls,
+          successfulRelayUrls: relayUrls,
+          failedRelayUrls: [],
+        }
+      },
+    })
+
+    const result = await getProductsByIds([liveAddressId])
+
+    expect(result.data[0]?.eventId).toBe(liveEvent.id)
+    expect(result.diagnostics[0]).toMatchObject({
+      issue: null,
+      coverage: { listing: "partial", deletion: "partial" },
+    })
+    expect(result.meta.source).toBe("commerce")
+    expect(result.meta.degraded).toBe(true)
+  })
+
+  it("does not certify a newer cached version from an older live address match", async () => {
+    const dTag = "diagnosed-newer-cache"
+    const olderLiveEvent = makeSignedProductEvent({
+      dTag,
+      createdAt: 100,
+      title: "Older Live",
+    })
+    const newerCachedEvent = makeSignedProductEvent({
+      dTag,
+      createdAt: 200,
+      title: "Newer Cached",
+    })
+    const cachedAddressId = `30402:${newerCachedEvent.pubkey}:${dTag}`
+    await cacheSignedProductListingEvent(newerCachedEvent)
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+          ? ([olderLiveEvent] as never)
+          : [],
+    })
+
+    const result = await getProductsByIds([cachedAddressId])
+
+    expect(result.data[0]?.eventId).toBe(newerCachedEvent.id)
+    expect(result.diagnostics[0]?.issue).toBe("cached_only")
+    expect(result.meta.source).toBe("local_cache")
+    expect(result.meta.degraded).toBe(true)
+  })
+
+  it("honors a remote deletion when batch lookup is the first observer", async () => {
+    const productEvent = makeSignedProductEvent({
+      dTag: "diagnosed-remotely-deleted",
+      createdAt: 100,
+      title: "Remotely Deleted",
+    })
+    const deletedAddressId = `30402:${productEvent.pubkey}:diagnosed-remotely-deleted`
+    const deletionEvent = makeSignedDeletionEvent({
+      createdAt: 101,
+      tags: [["a", deletedAddressId]],
+    })
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          return [productEvent as never]
+        }
+        if (filter.kinds?.includes(EVENT_KINDS.DELETION)) {
+          return [deletionEvent as never]
+        }
+        return []
+      },
+    })
+
+    const result = await getProductsByIds([deletedAddressId])
+
+    expect(result.data).toHaveLength(0)
+    expect(result.diagnostics[0]?.issue).not.toBeNull()
+    expect(result.diagnostics[0]?.coverage?.deletion).toBe("complete")
+  })
+
+  it("allows a current live listing when one deletion relay is unavailable", async () => {
+    const liveEvent = makeSignedProductEvent({
+      dTag: "diagnosed-deletion-partial",
+      createdAt: 100,
+      title: "Deletion Coverage Partial",
+    })
+    const liveAddressId = `30402:${liveEvent.pubkey}:diagnosed-deletion-partial`
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () => [],
+      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          return {
+            events: [liveEvent],
+            attemptedRelayUrls: relayUrls,
+            successfulRelayUrls: relayUrls,
+            failedRelayUrls: [],
+          }
+        }
+        return {
+          events: [],
+          attemptedRelayUrls: [...relayUrls, "wss://unavailable.example"],
+          successfulRelayUrls: relayUrls,
+          failedRelayUrls: ["wss://unavailable.example"],
+        }
+      },
+    })
+
+    const result = await getProductsByIds([liveAddressId])
+
+    expect(result.data[0]?.eventId).toBe(liveEvent.id)
+    expect(result.diagnostics[0]).toMatchObject({
+      issue: null,
+      coverage: { listing: "complete", deletion: "partial" },
+    })
+    expect(result.meta.source).toBe("commerce")
+    expect(result.meta.degraded).toBe(true)
+  })
+
+  it("allows positive live evidence when deletion discovery is unavailable", async () => {
+    const liveEvent = makeSignedProductEvent({
+      dTag: "diagnosed-deletion-unavailable",
+      createdAt: 100,
+      title: "Deletion Discovery Unavailable",
+    })
+    const liveAddressId = `30402:${liveEvent.pubkey}:diagnosed-deletion-unavailable`
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () => [],
+      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        return filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+          ? {
+              events: [liveEvent],
+              attemptedRelayUrls: relayUrls,
+              successfulRelayUrls: relayUrls,
+              failedRelayUrls: [],
+            }
+          : {
+              events: [],
+              attemptedRelayUrls: relayUrls,
+              successfulRelayUrls: [],
+              failedRelayUrls: relayUrls,
+            }
+      },
+    })
+
+    const result = await getProductsByIds([liveAddressId])
+
+    expect(result.data[0]?.eventId).toBe(liveEvent.id)
+    expect(result.diagnostics[0]).toMatchObject({
+      issue: null,
+      coverage: { listing: "complete", deletion: "unavailable" },
+    })
+    expect(result.meta.source).toBe("commerce")
+    expect(result.meta.degraded).toBe(true)
+  })
+
+  it("blocks cached-only terms when live listing reads are degraded", async () => {
+    const cachedEvent = makeSignedProductEvent({
+      dTag: "diagnosed-cached-partial",
+      createdAt: 100,
+      title: "Cached During Partial Read",
+    })
+    const cachedAddressId = `30402:${cachedEvent.pubkey}:diagnosed-cached-partial`
+    await cacheSignedProductListingEvent(cachedEvent)
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () => [],
+      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        return filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+          ? {
+              events: [],
+              attemptedRelayUrls: [...relayUrls, "wss://unavailable.example"],
+              successfulRelayUrls: relayUrls,
+              failedRelayUrls: ["wss://unavailable.example"],
+            }
+          : {
+              events: [],
+              attemptedRelayUrls: relayUrls,
+              successfulRelayUrls: relayUrls,
+              failedRelayUrls: [],
+            }
+      },
+    })
+
+    const result = await getProductsByIds([cachedAddressId])
+
+    expect(result.data[0]?.eventId).toBe(cachedEvent.id)
+    expect(result.diagnostics[0]).toMatchObject({
+      issue: "lookup_partial",
+      coverage: { listing: "partial" },
+    })
+    expect(result.meta.source).toBe("local_cache")
+  })
+
+  it("reports lookup_unavailable and keeps cached data when every relay fails", async () => {
+    const cachedEvent = makeSignedProductEvent({
+      dTag: "diagnosed-cached",
+      createdAt: 100,
+      title: "Cached While Offline",
+    })
+    const cachedAddressId = `30402:${cachedEvent.pubkey}:diagnosed-cached`
+    await cacheSignedProductListingEvent(cachedEvent)
+    __setCommerceTestOverrides({
+      fetchEventsFanoutWithDiagnostics: async () => ({
+        events: [],
+        attemptedRelayUrls: ["wss://down.example"],
+        successfulRelayUrls: [],
+        failedRelayUrls: ["wss://down.example"],
+      }),
+    })
+
+    const result = await getProductsByIds([cachedAddressId])
+
+    expect(result.data).toHaveLength(1)
+    expect(result.diagnostics[0]?.issue).toBe("lookup_unavailable")
+    expect(result.meta.source).toBe("local_cache")
+    expect(result.meta.degraded).toBe(true)
+  })
+
+  it("marks a cache-only confirmation after a complete live read", async () => {
+    const cachedEvent = makeSignedProductEvent({
+      dTag: "diagnosed-cache-only",
+      createdAt: 100,
+      title: "Cache Only Confirmation",
+    })
+    const cachedAddressId = `30402:${cachedEvent.pubkey}:diagnosed-cache-only`
+    await cacheSignedProductListingEvent(cachedEvent)
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () => [],
+    })
+
+    const result = await getProductsByIds([cachedAddressId])
+
+    expect(result.data).toHaveLength(1)
+    expect(result.diagnostics[0]?.issue).toBe("cached_only")
+  })
+
+  it("types market-filtered listings instead of calling them missing", async () => {
+    const productEvent = makeProductEvent({
+      pubkey: "merchant",
+      dTag: "diagnosed-filtered",
+      id: "event-diagnosed-filtered",
+      createdAt: 100,
+      title: "Counterfeit goods display sample",
+    })
+    const filteredAddressId = "30402:merchant:diagnosed-filtered"
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+          ? ([productEvent] as never)
+          : [],
+    })
+
+    const result = await getProductsByIds([filteredAddressId])
+
+    expect(result.data).toHaveLength(0)
+    expect(result.diagnostics[0]?.issue).toBe("listing_filtered")
   })
 })

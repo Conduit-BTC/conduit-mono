@@ -20,17 +20,26 @@ import { EVENT_KINDS } from "./kinds"
 import {
   fetchEventsFanout,
   fetchEventsFanoutProgressive,
+  fetchEventsFanoutWithDiagnostics,
   getEventSourceRelayUrls,
   mergeEventSourceRelayUrls,
   requireNdkConnected,
 } from "./ndk"
+import {
+  deriveInboxReadCoverage,
+  planInboxReadRelays,
+  resolveInboxDeclaration,
+  type InboxDeclarationResolution,
+  type InboxDeclarationState,
+  type InboxReadCoverage,
+  type InboxReadSource,
+} from "./private-message-routing"
 import { extractOrderSummary } from "./order-summary"
 import { parseOrderMessageRumorEvent, type ParsedOrderMessage } from "./orders"
 import {
   __resetInboxRelayCache,
   createNdkLegacyDmDecrypt,
   decryptLegacyDirectMessage,
-  fetchInboxRelayUrls,
   parseDirectMessageRumor,
   unwrapGiftWraps,
   type DecryptFailure,
@@ -97,6 +106,17 @@ export interface CommerceCapabilities {
   cursorPagination: boolean
 }
 
+/**
+ * Content-free status of the principal's NIP-17 inbox for one read (CND-208).
+ * Distinguishes "no declaration exists" from "the lookup or read degraded" so
+ * surfaces never render a false "not declared" or a false empty inbox.
+ */
+export interface PrivateInboxReadStatus {
+  declarationState: InboxDeclarationState
+  coverage: InboxReadCoverage
+  readSource: InboxReadSource
+}
+
 export interface CommerceQueryMeta {
   source: CommerceReadSource
   degraded: boolean
@@ -104,6 +124,8 @@ export interface CommerceQueryMeta {
   capabilities: CommerceCapabilities
   fetchedAt: number
   nextCursor?: string
+  /** Present on private-message reads (order/DM surfaces). */
+  inbox?: PrivateInboxReadStatus
   /**
    * Gift wraps that could not be turned into messages this read (id + coarse
    * reason only, never content). Surfaced so UIs render a retryable degraded
@@ -240,6 +262,7 @@ type RawMessageFetchResult = {
   source: CommerceReadSource
   stale: boolean
   decryptFailures: DecryptFailure[]
+  inbox?: PrivateInboxReadStatus
 }
 
 type RawDirectMessageFetchResult = {
@@ -249,12 +272,14 @@ type RawDirectMessageFetchResult = {
   stale: boolean
   decryptFailures: DecryptFailure[]
   legacyDecryptFailures: LegacyDmDecryptFailure[]
+  inbox?: PrivateInboxReadStatus
 }
 
 type PrivateInboxSyncResult = {
   orderMessages: ParsedOrderMessage[]
   directMessages: ParsedDirectMessage[]
   decryptFailures: DecryptFailure[]
+  inbox: PrivateInboxReadStatus
 }
 
 type LegacyDmSyncResult = {
@@ -264,6 +289,7 @@ type LegacyDmSyncResult = {
 
 type CommerceTestOverrides = {
   fetchEventsFanout?: typeof fetchEventsFanout
+  fetchEventsFanoutWithDiagnostics?: typeof fetchEventsFanoutWithDiagnostics
   fetchEventsFanoutProgressive?: typeof fetchEventsFanoutProgressive
   requireNdkConnected?: typeof requireNdkConnected
   giftUnwrap?: (
@@ -378,7 +404,12 @@ function commerceReadRelayUrls(): string[] {
  * fanout includes the author's write/read relays alongside user settings.
  * Falls back to the legacy URL accessors if planning yields nothing.
  */
-async function planCommerceReadRelays(input: {
+type CommerceReadRelayPlan = {
+  relayUrls: string[]
+  parkedRelayUrls: string[]
+}
+
+async function planCommerceReadRelayPlan(input: {
   intent: RelayReadIntent
   authors?: readonly string[]
   recipients?: readonly string[]
@@ -386,7 +417,7 @@ async function planCommerceReadRelays(input: {
   maxRelays?: number
   relayHintMode?: "auto" | "skip" | "force"
   extraRelayUrls?: readonly string[]
-}): Promise<string[]> {
+}): Promise<CommerceReadRelayPlan> {
   const hintPubkeys = Array.from(
     new Set(
       [...(input.authors ?? []), ...(input.recipients ?? [])]
@@ -457,16 +488,29 @@ async function planCommerceReadRelays(input: {
       ? plannedRelayUrls
       : plannedRelayUrls.slice(0, input.maxRelays)
 
-  if (expandedRelayUrls.length > 0) return expandedRelayUrls
+  if (expandedRelayUrls.length > 0) {
+    return {
+      relayUrls: expandedRelayUrls,
+      parkedRelayUrls: plan.parkedRelayUrls.filter(
+        (relayUrl) => !expandedRelayUrls.includes(relayUrl)
+      ),
+    }
+  }
 
   // Defensive fallback: legacy resolution paths.
   switch (input.intent) {
     case "commerce_products":
     case "author_products":
-      return commerceReadRelayUrls()
+      return { relayUrls: commerceReadRelayUrls(), parkedRelayUrls: [] }
     default:
-      return publicReadRelayUrls()
+      return { relayUrls: publicReadRelayUrls(), parkedRelayUrls: [] }
   }
+}
+
+async function planCommerceReadRelays(
+  input: Parameters<typeof planCommerceReadRelayPlan>[0]
+): Promise<string[]> {
+  return (await planCommerceReadRelayPlan(input)).relayUrls
 }
 
 async function runFetchEventsFanout(
@@ -475,6 +519,34 @@ async function runFetchEventsFanout(
 ): Promise<NDKEvent[]> {
   const impl = testOverrides.fetchEventsFanout ?? fetchEventsFanout
   return (await impl(filter, options)) as NDKEvent[]
+}
+
+/**
+ * Diagnostics-aware fanout honoring the events-only test override. An
+ * events-only override cannot report per-relay failure, so its result counts
+ * as complete coverage.
+ */
+async function runFetchEventsFanoutWithDiagnostics(
+  filter: NDKFilter,
+  options?: Parameters<typeof fetchEventsFanoutWithDiagnostics>[1]
+): Promise<Awaited<ReturnType<typeof fetchEventsFanoutWithDiagnostics>>> {
+  if (testOverrides.fetchEventsFanoutWithDiagnostics) {
+    return await testOverrides.fetchEventsFanoutWithDiagnostics(filter, options)
+  }
+  if (testOverrides.fetchEventsFanout) {
+    const events = (await testOverrides.fetchEventsFanout(
+      filter,
+      options
+    )) as NDKEvent[]
+    const relayUrls = [...(options?.relayUrls ?? [])]
+    return {
+      events,
+      attemptedRelayUrls: relayUrls,
+      successfulRelayUrls: relayUrls,
+      failedRelayUrls: [],
+    }
+  }
+  return await fetchEventsFanoutWithDiagnostics(filter, options)
 }
 
 async function runRequireNdkConnected(): Promise<
@@ -519,6 +591,7 @@ function createMeta(
     nextCursor?: string
     decryptFailures?: DecryptFailure[]
     legacyDecryptFailures?: LegacyDmDecryptFailure[]
+    inbox?: PrivateInboxReadStatus
   } = {}
 ): CommerceQueryMeta {
   const plan = resolveReadPlan(planName)
@@ -538,12 +611,16 @@ function createMeta(
       (options.stale === true ||
         source !== plan.sources[0] ||
         decryptFailures !== undefined ||
-        legacyDecryptFailures !== undefined),
+        legacyDecryptFailures !== undefined ||
+        // Declaration setup state is reported separately via meta.inbox;
+        // only incomplete read coverage degrades the data itself.
+        (options.inbox !== undefined && options.inbox.coverage !== "complete")),
     capabilities,
     fetchedAt: now(),
     nextCursor: options.nextCursor,
     decryptFailures,
     legacyDecryptFailures,
+    inbox: options.inbox,
   }
 }
 
@@ -1633,6 +1710,8 @@ async function fetchProductDeletionTimestamps(
     readPolicy?: CommerceReadPolicy
     fallbackWhenEmpty?: boolean
     authenticatedPubkey?: string | null
+    fetchEvents?: typeof runFetchEventsFanout
+    onSkippedRelayUrls?: (relayUrls: readonly string[]) => void
   } = {}
 ): Promise<DeletionTimestamps> {
   const authors = uniqueStrings(candidates.map((candidate) => candidate.pubkey))
@@ -1672,7 +1751,7 @@ async function fetchProductDeletionTimestamps(
         })),
       ]
 
-      const plannedDeletionRelayUrls = await planCommerceReadRelays({
+      const deletionRelayPlan = await planCommerceReadRelayPlan({
         intent: "author_products",
         authors: authorChunk,
         authenticatedPubkey: options.authenticatedPubkey,
@@ -1681,8 +1760,13 @@ async function fetchProductDeletionTimestamps(
       const preferredDeletionRelayUrls = uniqueStrings([
         ...sourceRelayUrls,
         ...CANONICAL_APP_BACKPLANE_RELAYS,
-        ...plannedDeletionRelayUrls,
+        ...deletionRelayPlan.relayUrls,
       ])
+      options.onSkippedRelayUrls?.(
+        deletionRelayPlan.parkedRelayUrls.filter(
+          (relayUrl) => !preferredDeletionRelayUrls.includes(relayUrl)
+        )
+      )
       const configuredRelayBatchSize = options.readPolicy?.maxRelays
       const relayBatchSize =
         configuredRelayBatchSize && configuredRelayBatchSize > 0
@@ -1700,7 +1784,7 @@ async function fetchProductDeletionTimestamps(
             deletionRelayBatches,
             PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
             async (relayUrls) =>
-              await runFetchEventsFanout(filter, {
+              await (options.fetchEvents ?? runFetchEventsFanout)(filter, {
                 relayUrls,
                 connectTimeoutMs: options.readPolicy?.connectTimeoutMs ?? 4_000,
                 fetchTimeoutMs: options.readPolicy?.fetchTimeoutMs ?? 10_000,
@@ -2685,24 +2769,99 @@ export async function getProductDetail(
   }
 }
 
+/** Typed reason a requested product coordinate is not authoritatively live. */
+export type ProductAvailabilityIssue =
+  | "invalid_product_reference"
+  | "lookup_unavailable"
+  | "lookup_partial"
+  | "product_missing"
+  | "listing_filtered"
+  | "cached_only"
+
+export interface ProductAvailabilityDiagnostic {
+  /** The productId exactly as requested by the caller. */
+  productId: string
+  addressId: string | null
+  /** Null only when a selected version has adequate positive live evidence. */
+  issue: ProductAvailabilityIssue | null
+  /** Relay coverage is evidence, not a claim of global Nostr completeness. */
+  coverage?: {
+    listing: ProductAvailabilityCoverage
+    deletion: ProductAvailabilityCoverage
+  }
+}
+
+export interface ProductsByIdsResult extends CommerceResult<
+  CommerceProductRecord[]
+> {
+  diagnostics: ProductAvailabilityDiagnostic[]
+}
+
+export type ProductAvailabilityCoverage = "complete" | "partial" | "unavailable"
+
+function productAvailabilityCoverageFromFanout(
+  result: Awaited<ReturnType<typeof fetchEventsFanoutWithDiagnostics>>,
+  expectedRelayUrls: readonly string[] = []
+): ProductAvailabilityCoverage {
+  if (result.successfulRelayUrls.length === 0) return "unavailable"
+  const attempted = new Set(result.attemptedRelayUrls)
+  if (
+    result.failedRelayUrls.length > 0 ||
+    expectedRelayUrls.some((relayUrl) => !attempted.has(relayUrl))
+  ) {
+    return "partial"
+  }
+  return "complete"
+}
+
+function mergeProductAvailabilityCoverage(
+  current: ProductAvailabilityCoverage,
+  next: ProductAvailabilityCoverage
+): ProductAvailabilityCoverage {
+  if (current === "unavailable" || next === "unavailable") {
+    return "unavailable"
+  }
+  if (current === "partial" || next === "partial") return "partial"
+  return "complete"
+}
+
 // Resolve many product listings by addressId in a single relay fanout (instead
 // of one read per id). Used to hydrate order-item name/image without hammering
-// relays with N separate reads.
+// relays with N separate reads. Every requested coordinate gets a typed
+// diagnostic so checkout can distinguish unreachable relays, partial reads,
+// cache-only confirmation, filtered listings, malformed references, and truly
+// missing listings instead of one generic failure.
 export async function getProductsByIds(
   productIds: string[],
   options: { includeMarketHidden?: boolean } = {}
-): Promise<CommerceResult<CommerceProductRecord[]>> {
-  const addresses = productIds
-    .map((id) => getProductLookupIds(id).address)
+): Promise<ProductsByIdsResult> {
+  const lookups = productIds.map((productId) => {
+    const { address, addressId } = getProductLookupIds(productId)
+    const valid = !!address && address.kind === EVENT_KINDS.PRODUCT
+    return {
+      productId,
+      address: valid ? address : null,
+      addressId: valid ? addressId : null,
+    }
+  })
+  const addresses = lookups
+    .map((lookup) => lookup.address)
     .filter(
       (address): address is { kind: number; pubkey: string; d: string } =>
-        !!address && address.kind === EVENT_KINDS.PRODUCT
+        address !== null
     )
 
   if (addresses.length === 0) {
     return {
       data: [],
-      meta: createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES),
+      meta: createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES, {
+        degraded: lookups.length > 0,
+      }),
+      diagnostics: lookups.map((lookup) => ({
+        productId: lookup.productId,
+        addressId: null,
+        issue: "invalid_product_reference",
+      })),
     }
   }
 
@@ -2718,57 +2877,185 @@ export async function getProductsByIds(
       authors
     )
   ).filter((record) => wanted.has(record.addressId))
+  // Checkout needs positive live evidence for the selected listing version.
+  // Deletion reads preserve monotonic known evidence, but incomplete deletion
+  // discovery alone is not a global absence proof and must not veto checkout.
+  let live: CommerceProductRecord[]
+  let listingCoverage: ProductAvailabilityCoverage = "unavailable"
+  let deletionCoverage: ProductAvailabilityCoverage = "complete"
+  let deletionTimestamps = await getLocalProductDeletionTimestamps(
+    undefined,
+    authors
+  )
+  let productEvents: NDKEvent[] = []
   try {
-    const records = await fetchPublicProductRecords({
+    const relayPlan = await planCommerceReadRelayPlan({
+      intent: "author_products",
       authors,
-      dTags,
-      deletionCandidates: cached,
-      limit: Math.max(addresses.length * 2, 20),
     })
-    const localDeletionTimestamps = await getLocalProductDeletionTimestamps(
-      undefined,
-      authors
+    const productResult = await runFetchEventsFanoutWithDiagnostics(
+      {
+        kinds: [EVENT_KINDS.PRODUCT],
+        authors,
+        "#d": dTags,
+        limit: Math.max(addresses.length * 2, 20),
+      },
+      {
+        relayUrls: relayPlan.relayUrls,
+        connectTimeoutMs: 4_000,
+        fetchTimeoutMs: 8_000,
+      }
     )
-    const merged = mergeCachedAndLiveProductRecords({
-      cached,
-      live: records,
-      deletionTimestamps: localDeletionTimestamps,
-    })
-    await cacheProductRecords(merged)
-    const filtered = filterProductRecordsForRead(merged, {
-      includeMarketHidden: options.includeMarketHidden,
-    }).filter((record) => wanted.has(record.addressId))
-    return {
-      data: filtered,
-      meta:
-        records.length > 0 || filtered.length === 0
-          ? createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES)
-          : createMeta("product_detail", "local_cache", PRODUCT_CAPABILITIES, {
-              stale: filtered.length > 0,
-              degraded: filtered.length > 0,
-            }),
-    }
+    productEvents = productResult.events
+    listingCoverage = productAvailabilityCoverageFromFanout(
+      productResult,
+      uniqueStrings([...relayPlan.relayUrls, ...relayPlan.parkedRelayUrls])
+    )
   } catch {
-    const localDeletionTimestamps = await getLocalProductDeletionTimestamps(
-      undefined,
-      authors
-    )
-    const fallback = mergeCachedAndLiveProductRecords({
-      cached,
-      live: [],
-      deletionTimestamps: localDeletionTimestamps,
-    })
-    const filtered = filterProductRecordsForRead(fallback, {
-      includeMarketHidden: options.includeMarketHidden,
-    })
-    return {
-      data: filtered,
-      meta: createMeta("product_detail", "local_cache", PRODUCT_CAPABILITIES, {
-        stale: filtered.length > 0,
-        degraded: filtered.length > 0,
-      }),
+    listingCoverage = "unavailable"
+  }
+
+  if (productEvents.length > 0 || cached.length > 0) {
+    let deletionReadAttempted = false
+    let deletionPlanSkippedRelay = false
+    const fetchDeletionEventsWithCoverage: typeof runFetchEventsFanout = async (
+      filter,
+      fetchOptions
+    ) => {
+      const result = await runFetchEventsFanoutWithDiagnostics(
+        filter,
+        fetchOptions
+      )
+      const nextCoverage = productAvailabilityCoverageFromFanout(
+        result,
+        fetchOptions?.relayUrls
+      )
+      deletionCoverage = deletionReadAttempted
+        ? mergeProductAvailabilityCoverage(deletionCoverage, nextCoverage)
+        : nextCoverage
+      deletionReadAttempted = true
+      return result.events
+    }
+    try {
+      deletionTimestamps = await fetchProductDeletionTimestamps(
+        [
+          ...productEvents.map(deletionCandidateFromEvent),
+          ...cached.map(deletionCandidateFromRecord),
+        ],
+        {
+          fetchEvents: fetchDeletionEventsWithCoverage,
+          onSkippedRelayUrls: (relayUrls) => {
+            deletionPlanSkippedRelay ||= relayUrls.length > 0
+          },
+        }
+      )
+      if (!deletionReadAttempted) deletionCoverage = "unavailable"
+      else if (deletionPlanSkippedRelay) {
+        deletionCoverage = mergeProductAvailabilityCoverage(
+          deletionCoverage,
+          "partial"
+        )
+      }
+    } catch {
+      deletionCoverage = "unavailable"
     }
   }
+
+  try {
+    live = dedupeProductEvents(productEvents, deletionTimestamps)
+  } catch {
+    live = []
+  }
+
+  const merged = mergeCachedAndLiveProductRecords({
+    cached,
+    live,
+    deletionTimestamps,
+  })
+  try {
+    await cacheProductRecords(merged)
+  } catch {
+    // A cache write failure must not break the availability read itself.
+  }
+  const filtered = filterProductRecordsForRead(merged, {
+    includeMarketHidden: options.includeMarketHidden,
+  }).filter((record) => wanted.has(record.addressId))
+
+  const liveByAddress = new Map(
+    live.map((record) => [record.addressId, record] as const)
+  )
+  const filteredByAddress = new Map(
+    filtered.map((record) => [record.addressId, record] as const)
+  )
+  const mergedAddressIds = new Set(merged.map((record) => record.addressId))
+  const diagnostics: ProductAvailabilityDiagnostic[] = lookups.map(
+    (lookup) => ({
+      productId: lookup.productId,
+      addressId: lookup.addressId,
+      issue: resolveProductAvailabilityIssue({
+        addressId: lookup.addressId,
+        listingCoverage,
+        liveByAddress,
+        filteredByAddress,
+        mergedAddressIds,
+      }),
+      ...(lookup.addressId
+        ? {
+            coverage: {
+              listing: listingCoverage,
+              deletion: deletionCoverage,
+            },
+          }
+        : {}),
+    })
+  )
+  const degraded =
+    listingCoverage !== "complete" ||
+    deletionCoverage !== "complete" ||
+    diagnostics.some((diagnostic) => diagnostic.issue !== null)
+  const hasCacheOnlySelection = filtered.some(
+    (record) => liveByAddress.get(record.addressId)?.eventId !== record.eventId
+  )
+  const source =
+    listingCoverage === "unavailable" || hasCacheOnlySelection
+      ? "local_cache"
+      : "commerce"
+
+  return {
+    data: filtered,
+    meta: createMeta("product_detail", source, PRODUCT_CAPABILITIES, {
+      stale: source === "local_cache" && filtered.length > 0,
+      degraded,
+    }),
+    diagnostics,
+  }
+}
+
+function resolveProductAvailabilityIssue(input: {
+  addressId: string | null
+  listingCoverage: ProductAvailabilityCoverage
+  liveByAddress: ReadonlyMap<string, CommerceProductRecord>
+  filteredByAddress: ReadonlyMap<string, CommerceProductRecord>
+  mergedAddressIds: ReadonlySet<string>
+}): ProductAvailabilityIssue | null {
+  if (!input.addressId) return "invalid_product_reference"
+  const selected = input.filteredByAddress.get(input.addressId)
+  if (selected) {
+    const live = input.liveByAddress.get(input.addressId)
+    if (
+      input.listingCoverage !== "unavailable" &&
+      live?.eventId === selected.eventId
+    ) {
+      return null
+    }
+    if (input.listingCoverage === "unavailable") return "lookup_unavailable"
+    if (input.listingCoverage === "partial") return "lookup_partial"
+    return "cached_only"
+  }
+  if (input.listingCoverage === "unavailable") return "lookup_unavailable"
+  if (input.listingCoverage === "partial") return "lookup_partial"
+  if (input.mergedAddressIds.has(input.addressId)) return "listing_filtered"
+  return "product_missing"
 }
 
 export async function getCachedProductDetail(
@@ -3001,9 +3288,11 @@ async function fetchParsedOrderMessages(
     )
     return {
       messages,
-      source: "commerce",
-      stale: false,
+      source:
+        sync.inbox.coverage === "unavailable" ? "local_cache" : "commerce",
+      stale: sync.inbox.coverage === "unavailable",
       decryptFailures: sync.decryptFailures,
+      inbox: sync.inbox,
     }
   } catch (error) {
     if (cachedById.size > 0) {
@@ -3021,48 +3310,81 @@ async function fetchParsedOrderMessages(
   }
 }
 
-/** Resolve the principal's declared NIP-17 inbox. Empty lists are not cached. */
-async function resolveInboxReadRelays(
+/**
+ * Resolve the principal's kind-10050 declaration with typed outcomes.
+ * A missing declaration never blocks reading the principal's own gift wraps;
+ * it only changes the read plan and the surfaced readiness state.
+ */
+async function resolvePrincipalInboxDeclaration(
   principalPubkey: string
-): Promise<string[]> {
+): Promise<InboxDeclarationResolution> {
   if (testOverrides.resolveInboxRelayUrls) {
-    const relays = await testOverrides.resolveInboxRelayUrls(principalPubkey)
-    const secure = relays.filter((url) => !isInsecureRelayUrl(url))
-    if (secure.length === 0) {
-      throw new Error("No NIP-17 inbox relay declaration found.")
+    try {
+      const relays = await testOverrides.resolveInboxRelayUrls(principalPubkey)
+      const secure = relays.filter((url) => !isInsecureRelayUrl(url))
+      return {
+        pubkey: principalPubkey,
+        state: secure.length > 0 ? "declared" : "not_declared",
+        relayUrls: secure,
+        stale: false,
+        fetchedAt: now(),
+      }
+    } catch {
+      return {
+        pubkey: principalPubkey,
+        state: "lookup_unavailable",
+        relayUrls: [],
+        stale: false,
+        fetchedAt: now(),
+      }
     }
-    return secure
   }
-  const secure = await fetchInboxRelayUrls(principalPubkey, {
-    fetchEvents: runFetchEventsFanout,
-    relayUrls: publicReadRelayUrls(),
+  return await resolveInboxDeclaration(principalPubkey, {
+    fetchEventsWithDiagnostics: runFetchEventsFanoutWithDiagnostics,
   })
-  if (secure.length === 0) {
-    throw new Error("No NIP-17 inbox relay declaration found.")
-  }
-  return secure
 }
 
+type InboxWrapFetchResult = {
+  wraps: NDKEvent[]
+  inbox: PrivateInboxReadStatus
+}
+
+/**
+ * Permissive inbox read (CND-208): union of declared inbox relays, locally
+ * enabled secure IN relays, and the bounded compatibility read set. All-failed
+ * reads surface as coverage "unavailable" instead of a healthy empty inbox.
+ */
 async function fetchNewInboxWraps(
   principalPubkey: string,
   limit: number
-): Promise<NDKEvent[]> {
+): Promise<InboxWrapFetchResult> {
   const filter: NDKFilter = {
     kinds: [EVENT_KINDS.GIFT_WRAP],
     "#p": [principalPubkey],
     limit,
   }
 
-  const inboxRelayUrls = await resolveInboxReadRelays(principalPubkey)
+  const declaration = await resolvePrincipalInboxDeclaration(principalPubkey)
+  const readPlan = planInboxReadRelays({
+    declaration,
+    maxRelays: DM_INBOX_READ_FANOUT,
+  })
 
-  const wrapped = await runFetchEventsFanout(filter, {
-    relayUrls: inboxRelayUrls.slice(0, DM_INBOX_READ_FANOUT),
+  const result = await runFetchEventsFanoutWithDiagnostics(filter, {
+    relayUrls: readPlan.relayUrls,
     connectTimeoutMs: 4_000,
     fetchTimeoutMs: 12_000,
   })
 
   const successful = successfulWrapIdsByPrincipal.get(principalPubkey)
-  return wrapped.filter((event) => !successful?.has(event.id))
+  return {
+    wraps: result.events.filter((event) => !successful?.has(event.id)),
+    inbox: {
+      declarationState: declaration.state,
+      coverage: deriveInboxReadCoverage(result),
+      readSource: readPlan.source,
+    },
+  }
 }
 
 async function loadCachedDirectMessages(
@@ -3304,7 +3626,7 @@ async function runPrivateMessageInboxSync(
   const candidates = new Map<string, NDKEvent>()
 
   for (const { event } of retry.values()) candidates.set(event.id, event)
-  for (const event of fetched) candidates.set(event.id, event)
+  for (const event of fetched.wraps) candidates.set(event.id, event)
   for (const event of candidates.values()) {
     retry.set(event.id, { event, failure: retry.get(event.id)?.failure })
   }
@@ -3400,6 +3722,7 @@ async function runPrivateMessageInboxSync(
     decryptFailures: Array.from(retry.values()).flatMap(({ failure }) =>
       failure ? [failure] : []
     ),
+    inbox: fetched.inbox,
   }
 }
 
@@ -3466,7 +3789,7 @@ async function fetchParsedDirectMessages(
     const current =
       currentResult.status === "fulfilled"
         ? currentResult.value
-        : { directMessages: [], decryptFailures: [] }
+        : { directMessages: [], decryptFailures: [], inbox: undefined }
     const legacy =
       legacyResult.status === "fulfilled"
         ? legacyResult.value
@@ -3491,9 +3814,11 @@ async function fetchParsedDirectMessages(
       source: "commerce",
       stale:
         currentResult.status === "rejected" ||
-        legacyResult.status === "rejected",
+        legacyResult.status === "rejected" ||
+        current.inbox?.coverage === "unavailable",
       decryptFailures: current.decryptFailures,
       legacyDecryptFailures: legacy.decryptFailures,
+      inbox: current.inbox,
     }
   } catch (error) {
     if (cachedById.size > 0) {
@@ -3719,7 +4044,11 @@ export async function getBuyerConversationList(
       "protected_conversation_list",
       result.source,
       CONVERSATION_CAPABILITIES,
-      { stale: result.stale, decryptFailures: result.decryptFailures }
+      {
+        stale: result.stale,
+        decryptFailures: result.decryptFailures,
+        inbox: result.inbox,
+      }
     ),
   }
 }
@@ -3778,7 +4107,11 @@ export async function getMerchantConversationList(
       "protected_conversation_list",
       result.source,
       CONVERSATION_CAPABILITIES,
-      { stale: result.stale, decryptFailures: result.decryptFailures }
+      {
+        stale: result.stale,
+        decryptFailures: result.decryptFailures,
+        inbox: result.inbox,
+      }
     ),
   }
 }
@@ -3831,7 +4164,11 @@ export async function getConversationDetail(
       "conversation_detail",
       result.source,
       CONVERSATION_CAPABILITIES,
-      { stale: result.stale, decryptFailures: result.decryptFailures }
+      {
+        stale: result.stale,
+        decryptFailures: result.decryptFailures,
+        inbox: result.inbox,
+      }
     ),
   }
 }
@@ -3933,6 +4270,7 @@ export async function getDirectMessageConversationList(
         stale: result.stale,
         decryptFailures: result.decryptFailures,
         legacyDecryptFailures: result.legacyDecryptFailures,
+        inbox: result.inbox,
       }
     ),
   }
@@ -3991,6 +4329,7 @@ export async function getDirectMessageThread(
         stale: result.stale,
         decryptFailures: result.decryptFailures,
         legacyDecryptFailures: result.legacyDecryptFailures,
+        inbox: result.inbox,
       }
     ),
   }

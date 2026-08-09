@@ -1,6 +1,9 @@
 import { useMemo } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { getProductsByIds } from "@conduit/core"
+import {
+  getProductsByIds,
+  type ProductAvailabilityDiagnostic,
+} from "@conduit/core"
 import {
   getCartProductAvailability,
   isCartAvailabilityReadFresh,
@@ -48,6 +51,7 @@ export function useCartProductAvailability(items: CartItem[]) {
   async function refresh(): Promise<{
     availability: CartProductAvailability[]
     fresh: boolean
+    diagnostics: ProductAvailabilityDiagnostic[]
   }> {
     const result = await query.refetch()
     const commerceResult = result.isSuccess ? result.data : undefined
@@ -55,13 +59,16 @@ export function useCartProductAvailability(items: CartItem[]) {
       items,
       commerceResult?.data
     )
+    const diagnostics = commerceResult?.diagnostics ?? []
 
     return {
       availability: refreshedAvailability,
       fresh: isCartAvailabilityReadFresh(
         refreshedAvailability,
-        commerceResult?.meta
+        commerceResult?.meta,
+        diagnostics
       ),
+      diagnostics,
     }
   }
 

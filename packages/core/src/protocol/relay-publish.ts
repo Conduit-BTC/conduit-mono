@@ -589,6 +589,14 @@ export async function publishWithPlanner(
   event: NDKEvent,
   input: PublishWithPlannerInput
 ): Promise<PublishWithPlannerResult> {
+  if (
+    event.kind === EVENT_KINDS.GIFT_WRAP &&
+    input.exclusiveRelayUrls === undefined
+  ) {
+    throw new Error(
+      "Gift wraps require an exclusive private-message relay plan."
+    )
+  }
   if (event.kind === EVENT_KINDS.RELAY_LIST) {
     assertSafeNip65RelayTags(event.tags ?? [])
   }

@@ -96,13 +96,38 @@ The boundary provides:
   can be negotiated later, but v3 is **source-gated OFF** as a send default until
   public draft/client references and recipient capability detection are in place.
   NWC/NIP-47 wallet traffic stays on its wallet-supported version regardless.
-- **Secure-message relays (kind `10050`).** NIP-17 gift-wrap reads use only the
-  principal's declared kind-10050 relays, and each gift-wrap write uses only the
-  wrap recipient's declared kind-10050 relays. NIP-65, configured relay lists,
-  commerce priority, and general relay defaults are not secure-message
-  fallbacks. An absent, malformed, stale-unusable, or unavailable declaration is
-  an explicit readiness/degraded state; the client does not attempt delivery or
-  imply that the secure inbox is complete.
+- **Secure-message relays (kind `10050`).** Each gift-wrap write uses only the
+  wrap recipient's declared kind-10050 relays, except the bounded validated
+  order compatibility lane below. NIP-65, configured relay lists, commerce
+  priority, and general relay defaults are not secure-message write fallbacks.
+  A signed empty or malformed declaration is an explicit readiness/degraded
+  state that the client never overrides.
+- **Typed routing states (`protocol/private-message-routing.ts`).** Declaration
+  discovery resolves to `declared | not_declared | lookup_partial |
+lookup_unavailable | malformed` with account-scoped freshness and
+  deterministic newest-event selection. Reads report coverage
+  (`complete | partial | unavailable`) and source
+  (`declared | local_in | compatibility | mixed | cache`). An all-failed lookup
+  must never collapse into `not_declared`, and a partial empty read stays
+  `partial`.
+- **Permissive inbox reads.** The principal's gift-wrap read plan is the union
+  of their valid declared inboxes, their locally enabled secure IN relays, and
+  the bounded Conduit compatibility read set. Nonempty local settings do not
+  suppress compatibility reads. Wraps are deduplicated by outer wrapper and
+  inner rumor ids, and found or cached messages stay visible under partial
+  failure.
+- **Validated-order compatibility routing (temporary, CND-208).** When a validated
+  kind-16 order-lifecycle send finds no usable recipient declaration, the write
+  may use a maximum of three relays from the explicit private-inbox
+  compatibility registry. A signed recipient NIP-65 read list may rank matches
+  inside that registry but cannot widen it. Kind-14 general DMs never use this
+  lane; a valid declaration always outranks it. A one-use order scope binds the
+  rumor, order, sender, and recipient. The lane is recipient-only:
+  the non-critical sender self-copy leg stays strict and fails soft. A
+  complete authoritative "not declared" lookup evicts any cached declaration
+  so a confirmed-absent declaration never resurrects as a write target. See
+  `docs/specs/protocol.md` and
+  `docs/knowledge/nip17-inbox-bootstrap-migration.md`.
 
 ## Legacy NIP-04 read lane
 
@@ -138,7 +163,10 @@ Messaging surfaces must render explicit states, never silent gaps:
   (surfaced from the query `meta`, not inferred).
 - **Not ready / relay unavailable** when the required principal or recipient
   kind-10050 declaration is absent or its declared relays are unusable. Do not
-  hide this state behind NIP-65 or configured-relay fallback.
+  hide this state behind NIP-65 or configured-relay fallback. Distinguish
+  lookup failure (`lookup_partial` / `lookup_unavailable`, retryable) from a
+  complete `not_declared` result; setup and repair are owned by the Network
+  surface, and Messages/Orders link there instead of publishing declarations.
 - **Decrypt failed** when one or more gift wraps could not be unwrapped: show a
   visible, retryable degraded affordance that reports how many messages need
   retry. Retry re-attempts only the failed wrap ids (transient signer/timeout
@@ -161,9 +189,13 @@ follows `docs/specs/privacy-observability.md`.
 - Classify kind-14 general vs kind-16 order-linked from unwrapped rumors.
 - Map decrypt/unwrap failure into a visible degraded state; retry targets only
   failed wrap ids.
-- Resolve NIP-17 reads and writes exclusively through the applicable principal or
-  recipient kind-10050 declaration; missing or unavailable declarations degrade
-  visibly without NIP-65/config fallback.
+- Resolve NIP-17 writes exclusively through the recipient kind-10050
+  declaration; only validated kind-16 order sends may use the flagged bounded
+  compatibility plan, and kind-14 is excluded from it. One relay ACK is a
+  successful partial delivery; zero ACKs is an explicit failure.
+- Declaration discovery separates `not_declared` from `lookup_partial` /
+  `lookup_unavailable` / `malformed`; permissive reads keep cached and partial
+  results visible with coverage and source provenance.
 - Capability detection reports v2 as default and keeps v3 gated off.
 - Send helper emits the correct rumor kind and tags for each conversation type.
 - Legacy kind-4 events are read-only, never published, and remain in
