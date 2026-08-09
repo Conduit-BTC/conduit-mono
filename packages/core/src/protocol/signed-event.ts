@@ -41,7 +41,7 @@ export function isValidSignedPublicNostrEvent(
       !HEX_64.test(event.pubkey) ||
       !/^[0-9a-f]{128}$/i.test(event.sig) ||
       !Number.isSafeInteger(event.created_at) ||
-      event.created_at <= 0 ||
+      event.created_at < 0 ||
       !Number.isSafeInteger(event.kind) ||
       typeof event.content !== "string" ||
       !Array.isArray(event.tags) ||

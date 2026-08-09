@@ -29,6 +29,11 @@ import {
 } from "../lib/productCatalogRead"
 import { getDefaultMarketPerspectiveFollowPubkeys } from "../lib/defaultMarketPerspective"
 import { getProductSourceRelayHintsByPubkey } from "../lib/clientHydration"
+import {
+  hasAuthoritativeProductFrontier,
+  replaceProgressiveProductFrontier,
+  selectProgressiveProductFrontier,
+} from "../lib/progressiveProductFrontier"
 
 // Keep the live fanout narrow: 32 relays x fast+completion passes opens far
 // more sockets than the catalog needs and floods the browser with connection
@@ -404,6 +409,9 @@ export function useProgressiveProducts(
     meta: null,
     error: null,
   })
+  const hasAuthoritativeProgressiveSnapshot =
+    progressiveRead.key === discoveryKey &&
+    progressiveRead.latestResult !== undefined
 
   useEffect(() => {
     if (
@@ -498,7 +506,13 @@ export function useProgressiveProducts(
   }, [catalogSource, discoveryKey, perspectiveMarketplaceRead])
 
   useEffect(() => {
-    if (cachedProducts.length === 0) return
+    if (
+      cachedProducts.length === 0 ||
+      hasNetworkResult ||
+      hasAuthoritativeProgressiveSnapshot
+    ) {
+      return
+    }
     setProductAccumulator((current) => {
       const products = mergeProducts(
         current.key === discoveryKey ? current.products : [],
@@ -510,12 +524,18 @@ export function useProgressiveProducts(
         products,
       })
     })
-  }, [cachedProducts, catalogSource, discoveryKey])
+  }, [
+    cachedProducts,
+    catalogSource,
+    discoveryKey,
+    hasAuthoritativeProgressiveSnapshot,
+    hasNetworkResult,
+  ])
 
   useEffect(() => {
-    if (mergedNetworkProducts.length === 0) return
+    if (!hasNetworkResult) return
     setProductAccumulator((current) => {
-      const products = mergeProducts(
+      const products = replaceProgressiveProductFrontier(
         current.key === discoveryKey ? current.products : [],
         mergedNetworkProducts
       )
@@ -525,7 +545,7 @@ export function useProgressiveProducts(
         products,
       })
     })
-  }, [mergedNetworkProducts, catalogSource, discoveryKey])
+  }, [mergedNetworkProducts, catalogSource, discoveryKey, hasNetworkResult])
 
   useEffect(() => {
     if (!streamsNetwork || !catalogReady || input.scope !== "marketplace") {
@@ -546,39 +566,32 @@ export function useProgressiveProducts(
         current.key === discoveryKey ? current.latestResult : undefined,
     }))
 
-    // Every progressive callback delivers the full cumulative product set, so
-    // applying the latest one is equivalent to merging each delta. Coalescing
-    // to a single merge + sort + render per frame keeps the main thread free
-    // while dozens of relay callbacks land during a network pass.
+    // Every progressive callback is an authoritative cumulative frontier.
+    // Replace the previous snapshot so a later tombstone can retract a product
+    // that an earlier relay callback already emitted.
     const applyResult = (
       result: CommerceResult<CommerceProductRecord[]>,
       isFetching: boolean
     ) => {
       const incoming = toProducts(result)
-      if (incoming.length > 0) {
-        setProductAccumulator((current) => {
-          const products = mergeProducts(
+      setProductAccumulator((current) =>
+        nextProductAccumulatorState(current, {
+          key: discoveryKey,
+          catalogSource,
+          products: replaceProgressiveProductFrontier(
             current.key === discoveryKey ? current.products : [],
             incoming
-          )
-          return nextProductAccumulatorState(current, {
-            key: discoveryKey,
-            catalogSource,
-            products,
-          })
+          ),
         })
-      }
-      setProgressiveRead((current) => ({
+      )
+      setProgressiveRead({
         key: discoveryKey,
         isFetching,
-        count: Math.max(
-          current.key === discoveryKey ? current.count : 0,
-          result.data.length
-        ),
+        count: result.data.length,
         meta: result.meta,
         error: null,
         latestResult: result,
-      }))
+      })
     }
 
     const flushProgress = () => {
@@ -678,12 +691,16 @@ export function useProgressiveProducts(
     streamsNetwork,
   ])
 
-  const products =
-    accumulatedProducts.length > 0
-      ? accumulatedProducts
-      : mergedNetworkProducts.length > 0
-        ? mergedNetworkProducts
-        : cachedProducts
+  const hasAuthoritativeFrontier = hasAuthoritativeProductFrontier({
+    hasProgressiveSnapshot: hasAuthoritativeProgressiveSnapshot,
+    hasCompletedNetworkResult: hasNetworkResult,
+  })
+  const products = selectProgressiveProductFrontier({
+    hasAuthoritativeSnapshot: hasAuthoritativeFrontier,
+    progressiveProducts: accumulatedProducts,
+    networkProducts: mergedNetworkProducts,
+    cachedProducts,
+  })
   const cachedCount = cachedQuery.data?.data.length ?? 0
   const isResolvingPerspectiveGraph =
     perspectiveMarketplaceRead && !catalogReady

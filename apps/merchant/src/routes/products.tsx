@@ -8,6 +8,7 @@ import {
   SHIPPING_COUNTRIES,
   SUPPORTED_PRODUCT_PRICE_CURRENCIES,
   appendConduitClientTag,
+  buildProductDeletionTarget,
   buildProductPublishResultTelemetryProperties,
   cacheSignedProductDeletionEvent,
   canonicalizeProductPrice,
@@ -22,6 +23,7 @@ import {
   type CommerceResult,
   type ListingSafetyEvaluation,
   type ProductSchema,
+  type ProductDeletionDeliveryJob,
   type ProductZapMessagePolicy,
   type PublishWithPlannerResult,
   useAuth,
@@ -80,6 +82,7 @@ import {
   buildLocalProductDeliveryNotice,
   buildLocalProductRetryNotice,
   buildProductDeliveryNotice,
+  buildQueuedProductDeletionNotice,
   formatProductRelayUrls,
   getProductDeliveryNoticeVariant,
   type ProductDeliveryNotice,
@@ -90,6 +93,13 @@ import {
   loadShippingConfig,
   type ShippingConfig,
 } from "../lib/readiness"
+import {
+  deliverQueuedProductDeletion,
+  getPendingProductDeletionJobs,
+  persistSignedProductDeletion,
+  planCurrentProductDeletionWriteRelays,
+  productDeletionJobToPublishResult,
+} from "../lib/product-deletion-delivery"
 import {
   deliverSignedProductEvent,
   getRelayPublishDiagnosticsError,
@@ -114,6 +124,7 @@ type MerchantProduct = {
   addressId: string
   dTag: string | null
   eventCreatedAt: number
+  sourceRelayUrls: string[]
   product: ProductSchema
   safety: ListingSafetyEvaluation
 }
@@ -130,8 +141,8 @@ type ProductPublishMutationPayload = {
 }
 
 type ProductDeleteMutationPayload = {
-  product: MerchantProduct
-  signedEvent?: NDKEvent
+  product?: MerchantProduct
+  deliveryJobId?: string
   previousNotice?: ProductDeliveryNotice
 }
 
@@ -514,6 +525,7 @@ async function fetchMerchantProducts(
       addressId: record.addressId,
       dTag: record.dTag,
       eventCreatedAt: record.eventCreatedAt,
+      sourceRelayUrls: record.sourceRelayUrls ?? [],
       product: record.product,
       safety: record.safety ?? evaluateListingSafety(record.product),
     })),
@@ -535,6 +547,7 @@ async function fetchCachedMerchantProducts(
       addressId: record.addressId,
       dTag: record.dTag,
       eventCreatedAt: record.eventCreatedAt,
+      sourceRelayUrls: record.sourceRelayUrls ?? [],
       product: record.product,
       safety: record.safety ?? evaluateListingSafety(record.product),
     })),
@@ -649,8 +662,8 @@ async function publishProduct(
 async function deleteProduct(
   merchantPubkey: string,
   product: MerchantProduct,
-  onSignedLocal: (event: NDKEvent) => Promise<void>
-): Promise<PublishWithPlannerResult> {
+  onSignedLocal: (event: NDKEvent, deliveryJobId: string) => Promise<void>
+): Promise<{ delivery: PublishWithPlannerResult; deliveryJobId: string }> {
   const ndk = await requireNdkConnected()
   if (!ndk.signer) throw new Error("Signer not connected")
   const signerPubkey = (await ndk.signer.user()).pubkey
@@ -662,26 +675,37 @@ async function deleteProduct(
       "Product pubkey mismatch; refusing to publish deletion event"
     )
   }
+  const target = buildProductDeletionTarget({
+    authorPubkey: merchantPubkey,
+    eventId: product.eventId,
+    addressId: product.dTag ? product.addressId : null,
+  })
+  const currentWriteRelayUrls =
+    await planCurrentProductDeletionWriteRelays(merchantPubkey)
 
   const deletion = new NDKEvent(ndk)
   deletion.kind = EVENT_KINDS.DELETION
   deletion.created_at = Math.floor(Date.now() / 1000)
   const tags: string[][] = [
-    ["e", product.eventId],
-    ["k", String(EVENT_KINDS.PRODUCT)],
+    ...target.tags.map((tag) => [...tag]),
     ["p", product.product.pubkey],
   ]
-  if (product.dTag) {
-    tags.push(["a", `30402:${product.product.pubkey}:${product.dTag}`])
-  }
   deletion.tags = appendConduitClientTag(tags, "merchant")
   deletion.content = ""
 
   await deletion.sign(ndk.signer)
+  const deliveryJob = await persistSignedProductDeletion({
+    signedEvent: deletion.rawEvent(),
+    currentWriteRelayUrls,
+    sourceRelayUrls: product.sourceRelayUrls,
+  })
   await cacheSignedProductDeletionEvent(deletion)
   try {
-    await onSignedLocal(deletion)
-    return await deliverSignedProductEvent(deletion, merchantPubkey)
+    await onSignedLocal(deletion, deliveryJob.id)
+    return {
+      delivery: await deliverQueuedProductDeletion(deliveryJob.id),
+      deliveryJobId: deliveryJob.id,
+    }
   } catch (error) {
     throw error instanceof SignedProductDeliveryError
       ? error
@@ -722,6 +746,16 @@ function ProductsPage() {
     queryFn: () => fetchCachedMerchantProducts(pubkey!),
     staleTime: 5_000,
   })
+  const pendingDeletionJobsQuery = useQuery({
+    queryKey: ["merchant-product-deletion-jobs", pubkey ?? "none"],
+    enabled: !!pubkey,
+    queryFn: () => getPendingProductDeletionJobs(pubkey!),
+    refetchInterval: 5_000,
+  })
+  const pendingDeletionJobs = useMemo<ProductDeletionDeliveryJob[]>(
+    () => pendingDeletionJobsQuery.data ?? [],
+    [pendingDeletionJobsQuery.data]
+  )
   const merchantProducts = useMemo(
     () => productsQuery.data?.data ?? cachedProductsQuery.data?.data ?? [],
     [cachedProductsQuery.data?.data, productsQuery.data?.data]
@@ -736,6 +770,9 @@ function ProductsPage() {
       }),
       queryClient.invalidateQueries({
         queryKey: ["merchant-products-live", pubkey ?? "none"],
+      }),
+      queryClient.invalidateQueries({
+        queryKey: ["merchant-product-deletion-jobs", pubkey ?? "none"],
       }),
     ])
   }
@@ -867,38 +904,51 @@ function ProductsPage() {
 
   const deleteMutation = useMutation({
     mutationFn: async (payload: ProductDeleteMutationPayload) => {
-      if (payload.signedEvent) {
-        return deliverSignedProductEvent(payload.signedEvent, pubkey!)
+      if (payload.deliveryJobId) {
+        return {
+          delivery: await deliverQueuedProductDeletion(payload.deliveryJobId),
+          deliveryJobId: payload.deliveryJobId,
+        }
       }
+      if (!payload.product)
+        throw new Error("Product deletion target is missing")
 
-      return deleteProduct(pubkey!, payload.product, async (event) => {
-        setProductDeliveryRetry({
-          action: "delete",
-          payload: { ...payload, signedEvent: event },
-        })
-        await showLocalProductProjection("delete", pubkey!)
-      })
+      return deleteProduct(
+        pubkey!,
+        payload.product,
+        async (_event, deliveryJobId) => {
+          setProductDeliveryRetry({
+            action: "delete",
+            payload: { ...payload, deliveryJobId },
+          })
+          await showLocalProductProjection("delete", pubkey!)
+        }
+      )
     },
     onMutate: (payload) => {
-      if (!payload.signedEvent) setProductDeliveryRetry(null)
+      if (!payload.deliveryJobId) setProductDeliveryRetry(null)
       setProductDeliveryNotice(
-        payload.signedEvent ? buildLocalProductDeliveryNotice("delete") : null
+        payload.deliveryJobId
+          ? buildQueuedProductDeletionNotice("delivering")
+          : null
       )
     },
     onSuccess: async (data, variables) => {
       const { product } = variables
-      const draftCleared = productDraftStoreRef.current.clear(
-        getProductDraftTarget(product.product.pubkey, product)
-      )
-      if (activeProductDraftTarget?.productAddressId === product.addressId) {
-        setEditing(null)
-        setActiveProductDraftTarget(null)
-        setForm(createEmptyProductForm(hasPresetShippingZone))
-        setDraftStorageAvailable(draftCleared)
+      if (product) {
+        const draftCleared = productDraftStoreRef.current.clear(
+          getProductDraftTarget(product.product.pubkey, product)
+        )
+        if (activeProductDraftTarget?.productAddressId === product.addressId) {
+          setEditing(null)
+          setActiveProductDraftTarget(null)
+          setForm(createEmptyProductForm(hasPresetShippingZone))
+          setDraftStorageAvailable(draftCleared)
+        }
       }
       const notice = buildProductDeliveryNotice(
         "delete",
-        data,
+        data.delivery,
         variables.previousNotice
       )
       setProductDeliveryNotice(notice)
@@ -919,6 +969,11 @@ function ProductsPage() {
         setProductDeliveryNotice(
           variables.previousNotice ?? buildLocalProductRetryNotice("delete")
         )
+      } else if (variables.deliveryJobId) {
+        setProductDeliveryNotice(
+          variables.previousNotice ??
+            buildQueuedProductDeletionNotice("retry_needed")
+        )
       } else {
         setProductDeliveryNotice((current) =>
           current?.action === "delete" && current.state === "delivering"
@@ -930,6 +985,39 @@ function ProductsPage() {
     },
   })
 
+  useEffect(() => {
+    if (deleteMutation.isPending) return
+    const job = pendingDeletionJobs.at(-1)
+    if (!job) {
+      setProductDeliveryRetry((current) =>
+        current?.action === "delete" ? null : current
+      )
+      setProductDeliveryNotice((current) =>
+        current?.action === "delete" &&
+        (current.state === "partial" ||
+          current.state === "retry_needed" ||
+          current.state === "delivering")
+          ? null
+          : current
+      )
+      return
+    }
+
+    setProductDeliveryRetry({
+      action: "delete",
+      payload: { deliveryJobId: job.id },
+    })
+    setProductDeliveryNotice((current) => {
+      if (current?.action === "publish") return current
+      return job.deliveryAttemptCount === 0
+        ? buildQueuedProductDeletionNotice("retry_needed")
+        : buildProductDeliveryNotice(
+            "delete",
+            productDeletionJobToPublishResult(job)
+          )
+    })
+  }, [deleteMutation.isPending, pendingDeletionJobs])
+
   const productDeliveryCanRetry =
     (productDeliveryNotice?.state === "partial" ||
       productDeliveryNotice?.state === "retry_needed") &&
@@ -937,7 +1025,7 @@ function ProductsPage() {
 
   function retryProductDelivery(): void {
     if (productDeliveryRetry?.action === "delete") {
-      if (productDeliveryRetry.payload.signedEvent) {
+      if (productDeliveryRetry.payload.deliveryJobId) {
         deleteMutation.mutate({
           ...productDeliveryRetry.payload,
           previousNotice: productDeliveryNotice ?? undefined,
@@ -1313,7 +1401,7 @@ function ProductsPage() {
                 : "idle"
           }
           awaitingSignatureMessage="Confirm the deletion event in your signer. The listing will hide locally while relay delivery runs."
-          publishingMessage="The signed tombstone is active locally. Delivering it to relays."
+          publishingMessage="The signed deletion is saved. Confirming its local tombstone before relay delivery."
           errorMessage={getPublishErrorMessage(deleteMutation.error, "delete")}
           className="mt-2"
         />

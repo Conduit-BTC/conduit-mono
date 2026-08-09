@@ -1,6 +1,7 @@
 import Dexie, { type EntityTable, type Table } from "dexie"
 import { config } from "../config"
 import type { ProductZapMessagePolicy } from "../schemas"
+import type { SignedPublicNostrEvent } from "../protocol/signed-event"
 
 export interface StoredOrder {
   id: string
@@ -62,6 +63,7 @@ export interface StoredMessage {
 export interface CachedProduct {
   id: string
   pubkey: string
+  dTag?: string
   title: string
   summary?: string
   price: number
@@ -112,7 +114,58 @@ export interface CachedProductTombstone {
   eventId?: string
   deletedAt: number
   deletionEventId: string
+  signedEvent?: SignedPublicNostrEvent
+  sourceRelayUrls?: string[]
+  observedLocally?: boolean
   cachedAt: number
+}
+
+export type ProductDeletionRelayRole = "author_write" | "source" | "conduit"
+
+export type ProductDeletionRelayDeliveryStatus =
+  "pending" | "acked" | "rejected" | "timed_out"
+
+export type ProductDeletionDeliveryState = "pending" | "partial" | "delivered"
+
+export interface ProductDeletionRelayTarget {
+  relayUrl: string
+  roles: ProductDeletionRelayRole[]
+}
+
+export interface ProductDeletionRelayDelivery {
+  relayUrl: string
+  status: ProductDeletionRelayDeliveryStatus
+  attemptCount: number
+  lastAttemptAt?: number
+  acknowledgedAt?: number
+  rejectedAt?: number
+  timedOutAt?: number
+}
+
+/**
+ * Durable delivery state for one exact, already-signed NIP-09 deletion event.
+ *
+ * `relayPlan` is immutable after creation. Delivery attempts update only the
+ * corresponding `relayDelivery` entry, allowing startup/background workers to
+ * retry the same event without asking the signer to sign again.
+ */
+export interface ProductDeletionDeliveryJob {
+  /** The signed deletion event id. */
+  id: string
+  signedEvent: SignedPublicNostrEvent
+  relayPlan: ProductDeletionRelayTarget[]
+  relayDelivery: ProductDeletionRelayDelivery[]
+  state: ProductDeletionDeliveryState
+  deliveryAttemptCount: number
+  retryCount: number
+  lastAttemptAt?: number
+  nextRetryAt?: number
+  /** Opaque local worker claim used to avoid duplicate cross-tab delivery. */
+  deliveryLeaseOwner?: string
+  /** Millisecond deadline after which another worker may recover the job. */
+  deliveryLeaseExpiresAt?: number
+  createdAt: number
+  updatedAt: number
 }
 
 export interface CachedProfile {
@@ -396,6 +449,7 @@ class ConduitDB extends Dexie {
   nip05Verifications!: EntityTable<CachedNip05Verification, "id">
   paymentAttempts!: EntityTable<StoredPaymentAttempt, "id">
   orderLifecycles!: EntityTable<OrderLifecycle, "orderId">
+  productDeletionOutbox!: EntityTable<ProductDeletionDeliveryJob, "id">
 
   constructor() {
     super("conduit")
@@ -499,6 +553,26 @@ class ConduitDB extends Dexie {
       orderLifecycles:
         "orderId, buyerPubkey, merchantPubkey, phase, updatedAt, createdAt",
     })
+
+    this.version(9).stores({
+      orders: "id, buyerPubkey, merchantPubkey, status, createdAt",
+      messages: "id, senderPubkey, recipientPubkey, kind, createdAt, read",
+      products: "id, pubkey, *tags, cachedAt",
+      productTombstones: "id, pubkey, addressId, eventId, deletedAt, cachedAt",
+      profiles: "pubkey, cachedAt",
+      orderMessages:
+        "id, orderId, type, senderPubkey, recipientPubkey, createdAt",
+      relayLists: "pubkey, cachedAt",
+      productSocialSummaries: "key, cachedAt",
+      nip05Verifications:
+        "id, pubkey, normalizedIdentifier, status, expiresAt, cachedAt",
+      paymentAttempts:
+        "id, orderId, buyerPubkey, merchantPubkey, proofDeliveryStatus, createdAt",
+      orderLifecycles:
+        "orderId, buyerPubkey, merchantPubkey, phase, updatedAt, createdAt",
+      productDeletionOutbox:
+        "id, state, nextRetryAt, deliveryLeaseExpiresAt, updatedAt, createdAt",
+    })
   }
 }
 
@@ -534,7 +608,9 @@ export async function ensureCommerceCacheScope(): Promise<void> {
 
   await Promise.all([
     db.products.clear(),
-    db.productTombstones.clear(),
+    // Signed tombstones are monotonic protocol evidence, not a relay-scoped
+    // cache. Keep them across relay/config scope changes so a later omission
+    // cannot resurrect a product that was already observed as deleted.
     db.profiles.clear(),
     db.orderMessages.clear(),
     db.relayLists.clear(),
