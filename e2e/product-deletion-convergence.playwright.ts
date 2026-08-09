@@ -489,7 +489,7 @@ async function readDatabaseMigrationState(page: Page): Promise<{
   )
 }
 
-test("Merchant upgrades v8 cache data to the durable v9 deletion outbox", async ({
+test("Merchant upgrades v8 cache data to the durable v10 cache stores", async ({
   page,
 }) => {
   await page.route(
@@ -512,11 +512,16 @@ test("Merchant upgrades v8 cache data to the durable v9 deletion outbox", async 
         return {
           nativeVersion: state.nativeVersion,
           hasOutbox: state.stores.includes("productDeletionOutbox"),
+          hasShopperTrust: state.stores.includes("shopperTrustSnapshots"),
         }
       },
       { timeout: 20_000 }
     )
-    .toEqual({ nativeVersion: 90, hasOutbox: true })
+    .toEqual({
+      nativeVersion: 100,
+      hasOutbox: true,
+      hasShopperTrust: true,
+    })
 
   const migrated = await readDatabaseMigrationState(page)
   expect(migrated.product).toEqual(fixture.product)
