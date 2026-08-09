@@ -15,6 +15,8 @@ import {
   RemoteSignerError,
   type RemoteSignerConnection,
 } from "../packages/core/src/protocol/remote-signer"
+import { createProtectedReadSessionLifecycle } from "../packages/core/src/protocol/protected-read-session-lifecycle"
+import type { NostrEventSigner } from "../packages/core/src/protocol/nostr-event-signer"
 
 const originalWindowDescriptor = Object.getOwnPropertyDescriptor(
   globalThis,
@@ -374,6 +376,65 @@ describe("NIP-07 availability", () => {
 })
 
 describe("NIP-46 AuthContext API", () => {
+  it("replaces and clears the exact protected-read session lease idempotently", () => {
+    const installed: string[] = []
+    const removed: string[] = []
+    let sequence = 0
+    const lifecycle = createProtectedReadSessionLifecycle({
+      install: (_signer, expectedPubkey) => {
+        sequence += 1
+        const lease = {
+          sessionScope: `scope-${sequence}`,
+          expectedPubkey,
+        }
+        installed.push(`${lease.sessionScope}:${expectedPubkey}`)
+        return lease
+      },
+      remove: (lease) => {
+        removed.push(`${lease.sessionScope}:${lease.expectedPubkey}`)
+      },
+    })
+    const signer = {
+      authMethod: "nip07",
+      getPublicKey: async () => ACCOUNT_A_PUBKEY,
+      signEvent: async () => {
+        throw new Error("not used")
+      },
+    } satisfies NostrEventSigner
+
+    const first = lifecycle.activate(signer, ACCOUNT_A_PUBKEY, () => true)
+    const second = lifecycle.activate(signer, ACCOUNT_B_PUBKEY, () => true)
+    expect(lifecycle.currentLease()).toBe(second)
+    expect(installed).toEqual([
+      `scope-1:${ACCOUNT_A_PUBKEY}`,
+      `scope-2:${ACCOUNT_B_PUBKEY}`,
+    ])
+    expect(removed).toEqual([`${first.sessionScope}:${ACCOUNT_A_PUBKEY}`])
+
+    lifecycle.deactivate()
+    lifecycle.deactivate()
+    expect(lifecycle.currentLease()).toBeNull()
+    expect(removed).toEqual([
+      `${first.sessionScope}:${ACCOUNT_A_PUBKEY}`,
+      `${second.sessionScope}:${ACCOUNT_B_PUBKEY}`,
+    ])
+  })
+
+  it("routes AuthProvider connect, disconnect, storage switch, and unmount through the lease lifecycle", async () => {
+    const source = await readFile(
+      "packages/core/src/context/AuthContext.tsx",
+      "utf8"
+    )
+
+    expect(source).toContain("createProtectedReadSessionLifecycle()")
+    expect(source).toContain("protectedReadSessionLifecycle.current.activate(")
+    expect(source).toContain(
+      "protectedReadSessionLifecycle.current.deactivate()"
+    )
+    expect(source).not.toContain("installProtectedReadSigner(")
+    expect(source).not.toContain("removeProtectedReadSigner(")
+  })
+
   it("exposes the client-initiated flow discriminator and ephemeral URI", () => {
     const options = {
       method: "nip46",

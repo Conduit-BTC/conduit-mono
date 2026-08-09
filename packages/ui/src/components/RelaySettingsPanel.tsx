@@ -66,8 +66,20 @@ export interface RelaySettingsPanelState {
   entries: RelaySettingsPanelEntry[]
 }
 
+export type RelayAuthEvidenceState =
+  | "untested"
+  | "advertised"
+  | "challenge_observed"
+  | "succeeded"
+  | "rejected"
+  | "unavailable"
+
 export interface RelaySettingsPanelProps {
   settings: RelaySettingsPanelState
+  /** Runtime NIP-42 evidence. NIP-11 metadata alone is only "advertised". */
+  authEvidenceByUrl?: Readonly<
+    Record<string, RelayAuthEvidenceState | undefined>
+  >
   scanningUrls?: readonly string[]
   error?: string | null
   isLoadingPublishedRelayList?: boolean
@@ -107,7 +119,7 @@ const sectionMeta: Record<
     surfaceClassName:
       "bg-[color-mix(in_srgb,var(--primary-500)_1%,transparent)]",
     empty:
-      "No verified commerce relays yet. Add a relay and Conduit will verify whether it belongs here.",
+      "No commerce relay metadata matches yet. Add a relay and Conduit will inspect its advertised capabilities.",
   },
   public: {
     label: "Public Relays",
@@ -142,7 +154,7 @@ function sortSectionEntries(
 function getRelayStatusLabel(entry: RelaySettingsPanelEntry): string {
   if (entry.warnings.unreachable) return "Unreachable"
   if (entry.warnings.staleRelayInfo) return "Needs verification"
-  if (entry.capabilities.nip11) return "Verified"
+  if (entry.capabilities.nip11) return "Metadata available"
   return "Not scanned"
 }
 
@@ -167,18 +179,83 @@ function getRelayCompatibilityText(entry: RelaySettingsPanelEntry): string {
     return "Compatibility unknown because Conduit could not reach this relay."
   }
   if (entry.capabilities.commerce) {
-    return "Commerce compatible. Conduit can prioritize this relay for products, stock, orders, and merchant messages."
+    return "Commerce capabilities are advertised or profiled. Protected-read access is reported separately from relay metadata."
   }
   if (entry.warnings.commercePartialSupport) {
     return "Commerce signals detected, but Conduit keeps this relay public until listing, protected-message, cleanup, and auth checks are complete."
   }
   if (entry.capabilities.nip11) {
-    return "Public relay verified. Conduit can use it for general Nostr reads or writes when enabled."
+    return "Public relay metadata is available. Conduit can use it for general Nostr reads or writes when enabled; metadata does not prove protected-read access."
   }
   if (entry.warnings.staleRelayInfo) {
     return "Compatibility has not been freshly verified. Refresh this relay to update detected capabilities."
   }
   return "Compatibility has not been scanned yet."
+}
+
+function getAuthEvidenceMeta(
+  entry: RelaySettingsPanelEntry,
+  evidence: RelayAuthEvidenceState | undefined
+): {
+  label: string
+  description: string
+  active: boolean
+  warning: boolean
+} {
+  const resolved =
+    evidence ?? (entry.capabilities.auth ? "advertised" : "untested")
+
+  switch (resolved) {
+    case "succeeded":
+      return {
+        label: "Auth succeeded",
+        description:
+          "This session received a matching relay acknowledgement for NIP-42 authentication. A later connection may require a new challenge and signature.",
+        active: true,
+        warning: false,
+      }
+    case "challenge_observed":
+      return {
+        label: "Auth challenge observed",
+        description:
+          "This relay requested NIP-42 authentication, but Conduit has not observed a successful acknowledgement for this session yet.",
+        active: false,
+        warning: false,
+      }
+    case "rejected":
+      return {
+        label: "Auth rejected",
+        description:
+          "The relay rejected this session's NIP-42 authentication. Protected reads are unavailable until a retry succeeds.",
+        active: false,
+        warning: true,
+      }
+    case "unavailable":
+      return {
+        label: "Auth unavailable",
+        description:
+          "Conduit could not complete NIP-42 authentication with this relay. Protected reads are unavailable until a retry succeeds.",
+        active: false,
+        warning: true,
+      }
+    case "advertised":
+      return {
+        label: "Auth advertised",
+        description:
+          "The relay's NIP-11 metadata advertises NIP-42. This has not been confirmed by a successful authenticated read in this session.",
+        active: false,
+        warning: false,
+      }
+    case "untested":
+    default:
+      return {
+        label: "Auth untested",
+        description:
+          "Conduit has no successful runtime NIP-42 evidence for this relay. Public reads can remain anonymous, but protected-read access is unknown.",
+        active: false,
+        warning: false,
+      }
+  }
 }
 
 function hasProtectedMessageCapability(
@@ -299,6 +376,7 @@ function CapabilityIcon({
 
 function RelayRow({
   entry,
+  authEvidence,
   section,
   scanning,
   draggedUrl,
@@ -311,6 +389,7 @@ function RelayRow({
   onToggleWrite,
 }: {
   entry: RelaySettingsPanelEntry
+  authEvidence?: RelayAuthEvidenceState
   section: RelaySettingsSection
   scanning: boolean
   draggedUrl: string | null
@@ -331,6 +410,7 @@ function RelayRow({
   const sourceMeta = getRelaySourceMeta(entry)
   const supportsProtectedMessages = hasProtectedMessageCapability(entry)
   const supportsCleanup = hasCleanupCapability(entry)
+  const authEvidenceMeta = getAuthEvidenceMeta(entry, authEvidence)
 
   function handleDragStart(event: DragEvent<HTMLDivElement>): void {
     if (!draggable) return
@@ -395,7 +475,7 @@ function RelayRow({
               <CapabilityTooltip
                 label={
                   entry.capabilities.commerce
-                    ? "Commerce compatible"
+                    ? "Commerce signals"
                     : "Public relay"
                 }
                 description={compatibilityText}
@@ -406,7 +486,7 @@ function RelayRow({
                   className="cursor-default py-0.5 text-[0.68rem]"
                 >
                   {entry.capabilities.commerce
-                    ? "Commerce compatible"
+                    ? "Commerce signals"
                     : "Public relay"}
                 </StatusPill>
               </CapabilityTooltip>
@@ -473,23 +553,11 @@ function RelayRow({
             }
           />
           <CapabilityIcon
-            active={entry.capabilities.auth || entry.warnings.dmWithoutAuth}
+            active={authEvidenceMeta.active}
             icon={LockKeyhole}
-            label={
-              entry.warnings.dmWithoutAuth
-                ? "Protected messages without auth"
-                : entry.capabilities.auth
-                  ? "Auth supported"
-                  : "Auth not advertised"
-            }
-            description={
-              entry.warnings.dmWithoutAuth
-                ? `This relay has protected-message transport but does not advertise or require NIP-42 auth. Message content remains encrypted, but relay access controls may be weaker, so Conduit may limit protected messaging use here. ${compatibilityText}`
-                : entry.capabilities.auth
-                  ? `This relay advertises or requires NIP-42 authentication. Conduit can authenticate when a relay requires signed access for protected reads or writes. ${compatibilityText}`
-                  : `This relay does not advertise NIP-42 authentication. Conduit can still use it for public reads or writes, but should avoid it for protected messaging paths. ${compatibilityText}`
-            }
-            warning={entry.warnings.dmWithoutAuth}
+            label={authEvidenceMeta.label}
+            description={`${authEvidenceMeta.description} ${compatibilityText}`}
+            warning={authEvidenceMeta.warning || entry.warnings.dmWithoutAuth}
           />
           <CapabilityIcon
             active={supportsCleanup}
@@ -561,6 +629,7 @@ function RelayRow({
 function RelaySection({
   section,
   entries,
+  authEvidenceByUrl,
   scanningUrls,
   draggedUrl,
   onDragStart,
@@ -573,6 +642,9 @@ function RelaySection({
 }: {
   section: RelaySettingsSection
   entries: RelaySettingsPanelEntry[]
+  authEvidenceByUrl?: Readonly<
+    Record<string, RelayAuthEvidenceState | undefined>
+  >
   scanningUrls: readonly string[]
   draggedUrl: string | null
   onDragStart: (url: string) => void
@@ -619,6 +691,7 @@ function RelaySection({
             <RelayRow
               key={entry.url}
               entry={entry}
+              authEvidence={authEvidenceByUrl?.[entry.url]}
               section={section}
               scanning={scanningUrls.includes(entry.url)}
               draggedUrl={draggedUrl}
@@ -643,6 +716,7 @@ function RelaySection({
 
 export function RelaySettingsPanel({
   settings,
+  authEvidenceByUrl,
   scanningUrls = [],
   error,
   isLoadingPublishedRelayList = false,
@@ -762,6 +836,7 @@ export function RelaySettingsPanel({
         <RelaySection
           section="commerce"
           entries={commerceEntries}
+          authEvidenceByUrl={authEvidenceByUrl}
           scanningUrls={scanningUrls}
           draggedUrl={draggedUrl}
           onDragStart={setDraggedUrl}
@@ -796,6 +871,7 @@ export function RelaySettingsPanel({
         <RelaySection
           section="public"
           entries={publicEntries}
+          authEvidenceByUrl={authEvidenceByUrl}
           scanningUrls={scanningUrls}
           draggedUrl={draggedUrl}
           onDragStart={setDraggedUrl}
@@ -837,7 +913,8 @@ export function RelaySettingsPanel({
             </Button>
           </div>
           <p className="mt-3 text-sm leading-6 text-[var(--text-muted)]">
-            Conduit automatically categorizes relays based on supported NIPs.
+            Conduit categorizes relays from advertised NIP metadata and bounded
+            runtime observations. Neither alone guarantees protected access.
           </p>
           {error ? (
             <div className="mt-3 rounded-xl border border-error/30 bg-error/10 px-3 py-2 text-sm text-error">

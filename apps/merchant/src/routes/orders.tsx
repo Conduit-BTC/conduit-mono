@@ -6,6 +6,7 @@ import {
   canMockInvoice,
   convertCommerceAmountToSats,
   decodeLightningInvoiceAmount,
+  deriveProtectedReadPresentationState,
   formatNpub,
   getCachedMerchantConversationList,
   getCurrencyAmountStep,
@@ -46,6 +47,7 @@ import {
   Button,
   Input,
   Label,
+  LiveReadNotice,
   MessagingReadinessNotice,
   OrderMessagesWidget,
   Select,
@@ -551,9 +553,21 @@ function OrdersPage() {
   }, [refetchOrders, signerConnected])
 
   const conversations = useMemo(
-    () => ordersQuery.data?.data ?? cachedOrdersQuery.data?.data ?? [],
+    () =>
+      ordersQuery.data?.data.length
+        ? ordersQuery.data.data
+        : (cachedOrdersQuery.data?.data ?? ordersQuery.data?.data ?? []),
     [cachedOrdersQuery.data, ordersQuery.data]
   )
+  const ordersMeta = ordersQuery.data?.meta
+  const protectedOrdersReadState = deriveProtectedReadPresentationState({
+    visibleCount: conversations.length,
+    pending: ordersQuery.isLoading,
+    error: ordersQuery.error,
+    meta: ordersMeta,
+  })
+  const protectedOrderCountsUnavailable =
+    conversations.length === 0 && protectedOrdersReadState !== "complete"
   const buyerPubkeys = useMemo(
     () =>
       Array.from(
@@ -1551,7 +1565,7 @@ function OrdersPage() {
             Open threads
           </div>
           <div className="mt-2 text-2xl font-semibold text-[var(--text-primary)] md:mt-3 md:text-3xl">
-            {conversations.length}
+            {protectedOrderCountsUnavailable ? "—" : conversations.length}
           </div>
         </div>
         <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-3 md:p-4">
@@ -1559,7 +1573,7 @@ function OrdersPage() {
             Awaiting invoice
           </div>
           <div className="mt-2 text-2xl font-semibold text-[var(--text-primary)] md:mt-3 md:text-3xl">
-            {awaitingInvoiceCount}
+            {protectedOrderCountsUnavailable ? "—" : awaitingInvoiceCount}
           </div>
         </div>
         <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-3 md:p-4">
@@ -1567,7 +1581,7 @@ function OrdersPage() {
             Active fulfillment
           </div>
           <div className="mt-2 text-2xl font-semibold text-[var(--text-primary)] md:mt-3 md:text-3xl">
-            {activeFulfillmentCount}
+            {protectedOrderCountsUnavailable ? "—" : activeFulfillmentCount}
           </div>
         </div>
       </div>
@@ -1605,18 +1619,20 @@ function OrdersPage() {
           />
         )}
 
-      {signerConnected && ordersQuery.error && (
-        <div className="rounded-md border border-error/30 bg-error/10 p-4 text-sm text-error">
-          Failed to load orders:{" "}
-          {ordersQuery.error instanceof Error
-            ? ordersQuery.error.message
-            : "Unknown error"}
-        </div>
-      )}
+      {signerConnected &&
+        protectedOrdersReadState !== "complete" &&
+        protectedOrdersReadState !== "pending" && (
+          <LiveReadNotice
+            state={protectedOrdersReadState}
+            onRetry={() => void ordersQuery.refetch()}
+            retrying={ordersQuery.isRefetching}
+          />
+        )}
 
       {signerConnected &&
         !cachedOrdersQuery.isLoading &&
-        conversations.length === 0 && (
+        conversations.length === 0 &&
+        protectedOrdersReadState === "complete" && (
           <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
             No orders yet. Place an order from the Market app targeting this
             merchant pubkey.

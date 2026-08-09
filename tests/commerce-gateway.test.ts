@@ -1449,6 +1449,7 @@ describe("commerce gateway", () => {
     )
 
     __setCommerceTestOverrides({
+      allowMissingProtectedReadAuthorization: true,
       requireNdkConnected: async () => ({ signer: undefined }) as never,
     })
 
@@ -1684,6 +1685,7 @@ describe("commerce gateway", () => {
     })
 
     __setCommerceTestOverrides({
+      allowMissingProtectedReadAuthorization: true,
       requireNdkConnected: async () => ({ signer: undefined }) as never,
     })
 
@@ -1739,6 +1741,7 @@ describe("commerce gateway", () => {
     }
 
     __setCommerceTestOverrides({
+      allowMissingProtectedReadAuthorization: true,
       requireNdkConnected: async () => ({ signer: {} }) as never,
       fetchEventsFanout: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
@@ -1802,6 +1805,7 @@ describe("commerce gateway", () => {
     }
 
     __setCommerceTestOverrides({
+      allowMissingProtectedReadAuthorization: true,
       requireNdkConnected: async () => ({ signer: {} }) as never,
       fetchEventsFanout: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
@@ -1848,6 +1852,7 @@ describe("commerce gateway", () => {
     }
 
     __setCommerceTestOverrides({
+      allowMissingProtectedReadAuthorization: true,
       requireNdkConnected: async () => ({ signer: {} }) as never,
       fetchEventsFanout: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
@@ -1888,6 +1893,7 @@ describe("commerce gateway", () => {
           : undefined,
     })
     __setCommerceTestOverrides({
+      allowMissingProtectedReadAuthorization: true,
       requireNdkConnected: async () => ({ signer: {} }) as never,
       resolveInboxRelayUrls: async () => merchantReadRelays,
       fetchEventsFanout: async (filter, options) => {
@@ -1955,6 +1961,7 @@ describe("commerce gateway", () => {
     }
 
     __setCommerceTestOverrides({
+      allowMissingProtectedReadAuthorization: true,
       requireNdkConnected: async () => ({ signer: {} }) as never,
       fetchEventsFanout: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)

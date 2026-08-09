@@ -19,6 +19,14 @@ A valid kind `10050` declaration is the preferred and eventual exclusive
 delivery route. Network settings own declaration setup and repair; Messages and
 Orders link there and never publish declarations themselves.
 
+The principal's own compatibility/declared inbox read is an explicitly
+protected operation when the client is signed in. It uses the NDK-neutral
+NIP-42 executor and only `kind:1059`, `#p: [<active account>]` filters. Public
+declaration discovery and other public relay reads remain anonymous. NIP-07 and
+NIP-46 account sessions are eligible; guest checkout has no inbox auth,
+self-copy, or reply fallback. The exact contract is in
+`docs/knowledge/nip42-protected-read-rollout.md`.
+
 ## The temporary exception
 
 **Validated-order compatibility routing** is a named, bounded, operator-curated lane for
@@ -52,6 +60,10 @@ Invariants:
   separable before decryption); the kind-14 strictness applies to delivery
   writes only. DM surfaces display received messages permissively and gate
   composing/replying on declared readiness.
+- Protected read filters remain recipient-strict: every outer filter is limited
+  to kind `1059` and the active principal's `#p`. Permissive here means the
+  client reads that principal's wraps across the bounded source union, not that
+  it may request another recipient or broader event kinds.
 - Compatibility eligibility is the secure normalized intersection of
   `config.dmCompatibilityOrderRelayUrls` and the bounded compatibility inbox
   read set. Eligible write targets are reserved ahead of optional local/public
@@ -71,8 +83,14 @@ Invariants:
 - Declared kind `10050` delivery remains exclusive but is capped at the first
   three secure normalized tags, preserving signed tag order and surfacing
   truncation instead of allowing an unbounded recipient-controlled fanout.
-- No automatic signer prompt; no NIP-04 sending.
+- Capability scans and public reads never prompt a signer. An explicit
+  signed-in protected inbox read may answer a relay challenge through the
+  active NIP-07 or NIP-46 signer. There is no guest auth and no NIP-04 sending.
 - Diagnostics and telemetry stay identifier-free and content-free.
+- A successful relay result plus an auth/transport failure is partial. All
+  failures are unavailable, not empty. Cached messages remain visible as
+  stale/degraded; only successful EOSE from every required relay in the bounded
+  plan authorizes a terminal empty state.
 
 ## Known doctrine gaps in the preview implementation
 
@@ -93,6 +111,9 @@ implementation already satisfies every rule in
 - Owner readback does not yet prove that an unrelated sender can discover the
   repaired declaration across the bounded shared discovery plan.
 - The removal metrics below are not implemented.
+- Relay-side recipient auth enforcement is client-first rollout work and is not
+  implied by this document. NIP-11 advertisement alone is not proof that a
+  relay has challenged, accepted auth, or enforced `#p` authorization.
 
 These gaps keep the compatibility lane out of production. Correcting them must
 not widen compatibility to general DMs, arbitrary relays, plaintext delivery,
@@ -106,6 +127,10 @@ or unvalidated sender/recipient relationships.
   (`publishPrivateMessage`, `ValidatedOrderRouteScope`, `deliveryRoute`)
 - Permissive inbox reads with coverage/source meta:
   `packages/core/src/protocol/commerce.ts` (`meta.inbox`)
+- Protected relay execution, signer edge, and auth evidence:
+  `packages/core/src/protocol/` (the NDK-neutral executor and explicit
+  protected-inbox composition boundary). NDK remains only at named signer and
+  gift-unwrap edges; exact file names follow the implementation slice.
 - Network-owned readiness/repair: `packages/core/src/hooks/useInboxDeclaration.ts`,
   `packages/ui/src/components/PrivateInboxSection.tsx`, both `network.tsx` routes
 - Order provenance: `orderLifecycles.orderDeliveryRoute`

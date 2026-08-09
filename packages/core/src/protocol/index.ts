@@ -38,6 +38,16 @@ export * from "./signing-retry"
 export * from "./social-hydrator"
 export * from "./session"
 export * from "./session-signer"
+export * from "./nostr-event-signer"
+export type {
+  ProtectedReadAuthorization,
+  ProtectedReadAuthPolicy,
+  ProtectedReadOperation,
+} from "./protected-read-authorization"
+export * from "./protected-read-session-lifecycle"
+export * from "./relay-executor"
+export * from "./protected-inbox-read"
+export * from "./protected-read-state"
 export * from "./shipping"
 export {
   getNdk,

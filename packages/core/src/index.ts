@@ -243,6 +243,7 @@ export {
   type UseProfilesResult,
 } from "./hooks/useProfiles"
 export {
+  prepareRelaySettingsContextPresentation,
   useRelaySettings,
   type UseRelaySettingsResult,
 } from "./hooks/useRelaySettings"

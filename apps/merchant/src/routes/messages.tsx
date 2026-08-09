@@ -6,6 +6,7 @@ import { Search } from "lucide-react"
 import {
   buildDirectMessageRumor,
   cacheParsedDirectMessage,
+  deriveProtectedReadPresentationState,
   EVENT_KINDS,
   formatNpub,
   getCachedDirectMessageConversationList,
@@ -132,10 +133,19 @@ function MessagesPage() {
   })
 
   const conversations = useMemo(
-    () => liveQuery.data?.data ?? cachedQuery.data?.data ?? [],
+    () =>
+      liveQuery.data?.data.length
+        ? liveQuery.data.data
+        : (cachedQuery.data?.data ?? liveQuery.data?.data ?? []),
     [cachedQuery.data, liveQuery.data]
   )
   const liveMeta = liveQuery.data?.meta
+  const protectedMessagesReadState = deriveProtectedReadPresentationState({
+    visibleCount: conversations.length,
+    pending: liveQuery.isLoading,
+    error: liveQuery.error,
+    meta: liveMeta,
+  })
 
   const counterpartyPubkeys = useMemo(
     () =>
@@ -235,10 +245,17 @@ function MessagesPage() {
         limit: 3,
       }),
   })
-  const relatedOrders =
-    relatedOrdersLiveQuery.data?.data ??
-    relatedOrdersCacheQuery.data?.data ??
-    []
+  const relatedOrders = relatedOrdersLiveQuery.data?.data.length
+    ? relatedOrdersLiveQuery.data.data
+    : (relatedOrdersCacheQuery.data?.data ??
+      relatedOrdersLiveQuery.data?.data ??
+      [])
+  const relatedOrdersReadState = deriveProtectedReadPresentationState({
+    visibleCount: relatedOrders.length,
+    pending: relatedOrdersLiveQuery.isLoading,
+    error: relatedOrdersLiveQuery.error,
+    meta: relatedOrdersLiveQuery.data?.meta,
+  })
 
   useEffect(() => {
     if (!pubkey || !selected?.unreadFromCounterparty) return
@@ -380,7 +397,8 @@ function MessagesPage() {
     messagingReady &&
     !cachedQuery.isLoading &&
     !liveQuery.isLoading &&
-    conversations.length === 0
+    conversations.length === 0 &&
+    protectedMessagesReadState === "complete"
 
   return (
     <div className="min-w-0 max-w-full space-y-6 xl:flex xl:h-[calc(100vh-8.5rem)] xl:flex-col xl:overflow-hidden">
@@ -418,20 +436,16 @@ function MessagesPage() {
         />
       )}
 
-      {signerConnected && (liveQuery.error || liveMeta?.stale) && (
-        <LiveReadNotice
-          state={
-            liveQuery.error
-              ? conversations.length > 0
-                ? "cached"
-                : "unavailable"
-              : "partial"
-          }
-          onRetry={() => void liveQuery.refetch()}
-          retrying={liveQuery.isRefetching}
-          className="xl:shrink-0"
-        />
-      )}
+      {signerConnected &&
+        protectedMessagesReadState !== "complete" &&
+        protectedMessagesReadState !== "pending" && (
+          <LiveReadNotice
+            state={protectedMessagesReadState}
+            onRetry={() => void liveQuery.refetch()}
+            retrying={liveQuery.isRefetching}
+            className="xl:shrink-0"
+          />
+        )}
 
       {signerConnected && (
         <DecryptFailureNotice
@@ -457,7 +471,7 @@ function MessagesPage() {
           </div>
         )}
 
-      {showEmpty && !liveQuery.error && !liveMeta?.degraded && (
+      {showEmpty && (
         <>
           <DecryptFailureNotice
             count={liveMeta?.decryptFailures?.length ?? 0}
@@ -658,9 +672,11 @@ function MessagesPage() {
                         })
                       }}
                     />
-                  ) : relatedOrdersLiveQuery.error ? (
+                  ) : relatedOrdersReadState !== "complete" &&
+                    relatedOrdersReadState !== "pending" ? (
                     <div className="text-xs text-[var(--text-secondary)]">
-                      Related order context is unavailable.
+                      Related order context is {relatedOrdersReadState}. Retry
+                      before relying on an empty result.
                     </div>
                   ) : (
                     <div className="text-xs text-[var(--text-secondary)]">
@@ -680,7 +696,11 @@ function MessagesPage() {
                   {threadMessages.length === 0 &&
                   optimisticThreadMessages.length === 0 ? (
                     <div className="text-sm text-[var(--text-secondary)]">
-                      No messages in this conversation yet.
+                      {protectedMessagesReadState === "pending"
+                        ? "Loading message history…"
+                        : protectedMessagesReadState === "complete"
+                          ? "No messages in this conversation yet."
+                          : "Message history is unavailable. Retry before relying on an empty thread."}
                     </div>
                   ) : (
                     <>

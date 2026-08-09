@@ -35,6 +35,7 @@ import {
   cacheParsedDirectMessage,
   cacheParsedOrderMessage,
   createValidatedOrderRouteScope,
+  deriveProtectedReadPresentationState,
   formatNpub,
   getCachedDirectMessageConversationList,
   getDirectMessageConversationList,
@@ -354,9 +355,18 @@ function MessagesPage() {
   })
 
   const conversations = useMemo(
-    () => messagesQuery.data?.data ?? cachedMessagesQuery.data?.data ?? [],
+    () =>
+      messagesQuery.data?.data.length
+        ? messagesQuery.data.data
+        : (cachedMessagesQuery.data?.data ?? messagesQuery.data?.data ?? []),
     [cachedMessagesQuery.data, messagesQuery.data]
   )
+  const merchantThreadsReadState = deriveProtectedReadPresentationState({
+    visibleCount: conversations.length,
+    pending: messagesQuery.isLoading,
+    error: messagesQuery.error,
+    meta: messagesQuery.data?.meta,
+  })
   const merchantPubkeys = useMemo(
     () =>
       Array.from(
@@ -534,7 +544,10 @@ function MessagesPage() {
   })
 
   const dmConversations = useMemo(
-    () => dmsLiveQuery.data?.data ?? dmsCacheQuery.data?.data ?? [],
+    () =>
+      dmsLiveQuery.data?.data.length
+        ? dmsLiveQuery.data.data
+        : (dmsCacheQuery.data?.data ?? dmsLiveQuery.data?.data ?? []),
     [dmsCacheQuery.data, dmsLiveQuery.data]
   )
   const dmCounterpartyPubkeys = useMemo(
@@ -570,6 +583,12 @@ function MessagesPage() {
     })
   }, [dmConversations, dmProfilesQuery.data, dmSearch])
   const dmLiveMeta = dmsLiveQuery.data?.meta
+  const directMessagesReadState = deriveProtectedReadPresentationState({
+    visibleCount: dmConversations.length,
+    pending: dmsLiveQuery.isLoading,
+    error: dmsLiveQuery.error,
+    meta: dmLiveMeta,
+  })
   const dmDecryptFailures = dmLiveMeta?.decryptFailures?.length ?? 0
 
   // Scaffold a compose view when arriving via ?merchant=<pubkey>.
@@ -844,19 +863,14 @@ function MessagesPage() {
                 retrying={dmsLiveQuery.isRefetching}
               />
             )}
-            {(dmsLiveQuery.error || dmLiveMeta?.stale) && (
-              <LiveReadNotice
-                state={
-                  dmsLiveQuery.error
-                    ? dmConversations.length > 0
-                      ? "cached"
-                      : "unavailable"
-                    : "partial"
-                }
-                onRetry={() => void dmsLiveQuery.refetch()}
-                retrying={dmsLiveQuery.isRefetching}
-              />
-            )}
+            {directMessagesReadState !== "complete" &&
+              directMessagesReadState !== "pending" && (
+                <LiveReadNotice
+                  state={directMessagesReadState}
+                  onRetry={() => void dmsLiveQuery.refetch()}
+                  retrying={dmsLiveQuery.isRefetching}
+                />
+              )}
             {signerConnected && (
               <DecryptFailureNotice
                 count={dmLiveMeta?.legacyDecryptFailures?.length ?? 0}
@@ -882,8 +896,7 @@ function MessagesPage() {
             ) : dmConversations.length === 0 &&
               !selectedDmPubkey &&
               messagingReady &&
-              !dmsLiveQuery.error &&
-              !dmLiveMeta?.stale ? (
+              directMessagesReadState === "complete" ? (
               <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-8 text-center">
                 <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-300">
                   <MessageCircleMore className="h-7 w-7" />
@@ -1100,7 +1113,11 @@ function MessagesPage() {
                           </>
                         ) : (
                           <div className="flex h-full min-h-[160px] items-center justify-center text-center text-sm text-[var(--text-secondary)]">
-                            No messages yet. Say hello.
+                            {directMessagesReadState === "pending"
+                              ? "Loading message history…"
+                              : directMessagesReadState === "complete"
+                                ? "No messages yet. Say hello."
+                                : "Message history is unavailable. Retry the protected read before relying on an empty thread."}
                           </div>
                         )}
                       </div>
@@ -1190,15 +1207,10 @@ function MessagesPage() {
           )}
 
           {signerConnected &&
-            (messagesQuery.error || messagesQuery.data?.meta.stale) && (
+            merchantThreadsReadState !== "complete" &&
+            merchantThreadsReadState !== "pending" && (
               <LiveReadNotice
-                state={
-                  messagesQuery.error
-                    ? conversations.length > 0
-                      ? "cached"
-                      : "unavailable"
-                    : "partial"
-                }
+                state={merchantThreadsReadState}
                 onRetry={() => void messagesQuery.refetch()}
                 retrying={messagesQuery.isRefetching}
               />
@@ -1215,8 +1227,7 @@ function MessagesPage() {
           {signerConnected &&
             !cachedMessagesQuery.isLoading &&
             conversations.length === 0 &&
-            !messagesQuery.error &&
-            !messagesQuery.data?.meta.stale && (
+            merchantThreadsReadState === "complete" && (
               <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-8 text-center">
                 <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-300">
                   <Store className="h-7 w-7" />

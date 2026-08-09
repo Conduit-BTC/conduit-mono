@@ -2,6 +2,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import {
   db,
+  deriveProtectedReadPresentationState,
   getCachedMerchantConversationList,
   getCachedMerchantStorefront,
   getMerchantConversationList,
@@ -21,7 +22,7 @@ import {
   type LucideIcon,
 } from "lucide-react"
 import { useCallback, useMemo, useState, type ComponentType } from "react"
-import { Button, StatusPill } from "@conduit/ui"
+import { Button, LiveReadNotice, StatusPill } from "@conduit/ui"
 import {
   DashboardCharts,
   type DashboardChartDataByCard,
@@ -136,7 +137,7 @@ function StatCard({
   search,
 }: {
   label: string
-  value: number
+  value: number | null
   icon: LucideIcon
   to: "/products" | "/orders"
   search?: { queue?: OrderQueueTab }
@@ -153,7 +154,7 @@ function StatCard({
             {label}
           </div>
           <div className="mt-3 text-3xl font-semibold tracking-tight text-[var(--text-primary)] tabular-nums">
-            {value}
+            {value ?? "—"}
           </div>
         </div>
         <span className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)]">
@@ -275,7 +276,8 @@ function MerchantReadinessPanel({
 }
 
 function DashboardPage() {
-  const { pubkey, error } = useAuth()
+  const { pubkey, status, error } = useAuth()
+  const signerConnected = status === "connected" && !!pubkey
   const navigate = useNavigate()
   const readiness = useMerchantReadinessState()
   const [chartRanges, setChartRanges] = useState<DashboardChartRanges>(() => ({
@@ -286,38 +288,52 @@ function DashboardPage() {
   }))
   const statsQuery = useQuery({
     queryKey: ["merchant-dashboard-live", pubkey ?? "none"],
-    enabled: !!pubkey,
+    enabled: signerConnected,
     queryFn: () => fetchDashboardStats(pubkey!),
     refetchInterval: 30_000,
   })
   const cachedStatsQuery = useQuery({
     queryKey: ["merchant-dashboard", pubkey ?? "none"],
-    enabled: !!pubkey,
+    enabled: signerConnected,
     queryFn: () => fetchCachedDashboardStats(pubkey!),
     staleTime: 5_000,
   })
   const conversationsQuery = useQuery({
     queryKey: ["merchant-conversations-live", pubkey ?? "none"],
-    enabled: !!pubkey,
+    enabled: signerConnected,
     queryFn: () => getMerchantConversationList({ principalPubkey: pubkey! }),
     refetchInterval: 30_000,
   })
   const cachedConversationsQuery = useQuery({
     queryKey: ["merchant-conversations", pubkey ?? "none"],
-    enabled: !!pubkey,
+    enabled: signerConnected,
     queryFn: () =>
       getCachedMerchantConversationList({ principalPubkey: pubkey! }),
     staleTime: 5_000,
   })
   const btcRateQuery = useBtcUsdRate()
-  const stats = statsQuery.data ?? cachedStatsQuery.data
-  const allConversations = useMemo(
-    () =>
-      conversationsQuery.data?.data ??
-      cachedConversationsQuery.data?.data ??
-      [],
-    [conversationsQuery.data, cachedConversationsQuery.data]
-  )
+  const stats = signerConnected
+    ? (statsQuery.data ?? cachedStatsQuery.data)
+    : undefined
+  const allConversations = useMemo(() => {
+    if (!signerConnected) return []
+    return conversationsQuery.data?.data.length
+      ? conversationsQuery.data.data
+      : (cachedConversationsQuery.data?.data ??
+          conversationsQuery.data?.data ??
+          [])
+  }, [signerConnected, conversationsQuery.data, cachedConversationsQuery.data])
+  const conversationsMeta = conversationsQuery.data?.meta
+  const protectedConversationsReadState = deriveProtectedReadPresentationState({
+    visibleCount: allConversations.length,
+    pending: signerConnected && conversationsQuery.isLoading,
+    error: conversationsQuery.error,
+    meta: conversationsMeta,
+  })
+  const conversationReadUncertain =
+    signerConnected &&
+    allConversations.length === 0 &&
+    protectedConversationsReadState !== "complete"
   const latestConversations = useMemo(
     () => allConversations.slice(0, 5),
     [allConversations]
@@ -374,7 +390,7 @@ function DashboardPage() {
     [latestConversations]
   )
   const buyerProfilesQuery = useProfiles(buyerPubkeys, {
-    enabled: !!pubkey && buyerPubkeys.length > 0,
+    enabled: signerConnected && buyerPubkeys.length > 0,
   })
 
   return (
@@ -395,46 +411,59 @@ function DashboardPage() {
         </div>
       )}
 
-      {!pubkey && (
+      {!signerConnected && (
         <div className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5 text-sm text-[var(--text-secondary)]">
-          Connect your signer to manage listings and orders from this merchant
-          workspace.
+          {status === "restoring"
+            ? "Restoring your signer before loading this merchant workspace…"
+            : "Connect your signer to manage listings and orders from this merchant workspace."}
         </div>
       )}
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <StatCard
           label="Listings"
-          value={stats?.listings ?? 0}
+          value={signerConnected ? (stats?.listings ?? 0) : null}
           icon={Package}
           to="/products"
         />
         <StatCard
           label="Open orders"
-          value={stats?.openOrders ?? 0}
+          value={
+            !signerConnected || conversationReadUncertain
+              ? null
+              : (stats?.openOrders ?? 0)
+          }
           icon={ShoppingBag}
           to="/orders"
           search={{}}
         />
         <StatCard
           label="Awaiting payment verification"
-          value={queueCounts.verifyPayment}
+          value={
+            !signerConnected || conversationReadUncertain
+              ? null
+              : queueCounts.verifyPayment
+          }
           icon={Wallet}
           to="/orders"
           search={{ queue: "verify_payment" }}
         />
         <StatCard
           label="Awaiting fulfillment"
-          value={queueCounts.paidFulfill}
+          value={
+            !signerConnected || conversationReadUncertain
+              ? null
+              : queueCounts.paidFulfill
+          }
           icon={Truck}
           to="/orders"
           search={{ queue: "paid_fulfill" }}
         />
       </div>
 
-      {pubkey && <MerchantReadinessPanel readiness={readiness} />}
+      {signerConnected && <MerchantReadinessPanel readiness={readiness} />}
 
-      {pubkey && allConversations.length > 0 && (
+      {signerConnected && allConversations.length > 0 && (
         <DashboardCharts
           data={chartData}
           ranges={chartRanges}
@@ -502,7 +531,18 @@ function DashboardPage() {
           </div>
 
           <div className="mt-4 space-y-2">
-            {conversationsQuery.isLoading &&
+            {signerConnected &&
+              protectedConversationsReadState !== "complete" &&
+              protectedConversationsReadState !== "pending" && (
+                <LiveReadNotice
+                  state={protectedConversationsReadState}
+                  onRetry={() => void conversationsQuery.refetch()}
+                  retrying={conversationsQuery.isRefetching}
+                />
+              )}
+
+            {signerConnected &&
+              conversationsQuery.isLoading &&
               cachedConversationsQuery.isLoading && (
                 <div className="text-sm text-[var(--text-secondary)]">
                   Checking cached dashboard state…
@@ -510,7 +550,8 @@ function DashboardPage() {
               )}
 
             {!cachedConversationsQuery.isLoading &&
-              latestConversations.length === 0 && (
+              latestConversations.length === 0 &&
+              !conversationReadUncertain && (
                 <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 text-sm text-[var(--text-secondary)]">
                   No buyer orders cached yet. Once Market sends an order to this
                   merchant, it will appear here and in Orders.

@@ -108,6 +108,10 @@ export function MerchantPaymentAutomationProvider({
       ),
     [conversationsQuery.data]
   )
+  const conversationReadUnavailable =
+    !!conversationsQuery.error ||
+    (conversationsQuery.data?.meta.degraded === true &&
+      conversationsQuery.data.data.length === 0)
   const runKey = candidates
     .map((candidate) => `${candidate.orderId}:${candidate.evidenceMessageId}`)
     .sort()
@@ -118,12 +122,24 @@ export function MerchantPaymentAutomationProvider({
     setRun({ status: "idle", checked: 0, verified: 0 })
   }, [addressStatus, nwc.connection])
 
+  useEffect(() => {
+    if (!conversationReadUnavailable || conversationsQuery.isFetching) return
+    setRun({
+      status: "error",
+      checked: 0,
+      verified: 0,
+      message:
+        "Protected order updates are unavailable. Retry before checking pending invoices.",
+    })
+  }, [conversationReadUnavailable, conversationsQuery.isFetching])
+
   const verifyCandidates = useCallback(async () => {
     if (
       !pubkey ||
       !signerConnected ||
       !nwc.connection ||
       !canVerifyPayments ||
+      conversationReadUnavailable ||
       runningRef.current
     ) {
       return
@@ -229,6 +245,7 @@ export function MerchantPaymentAutomationProvider({
   }, [
     canVerifyPayments,
     candidates,
+    conversationReadUnavailable,
     nwc.connection,
     pubkey,
     queryClient,
@@ -238,6 +255,7 @@ export function MerchantPaymentAutomationProvider({
   useEffect(() => {
     if (
       !runKey ||
+      conversationReadUnavailable ||
       !signerConnected ||
       !canVerifyPayments ||
       conversationsQuery.isFetching
@@ -250,6 +268,7 @@ export function MerchantPaymentAutomationProvider({
     void verifyCandidates()
   }, [
     canVerifyPayments,
+    conversationReadUnavailable,
     connectionKey,
     conversationsQuery.isFetching,
     runKey,
