@@ -179,7 +179,11 @@ function isRelayUrl(value: unknown): value is string {
 
 function getDefaultStorage(): AuthStorage | undefined {
   if (typeof window === "undefined") return undefined
-  return window.localStorage
+  try {
+    return window.localStorage
+  } catch {
+    return undefined
+  }
 }
 
 export function parseBunkerUri(uri: string): BunkerPointer {
@@ -328,6 +332,28 @@ export async function prepareRemoteSignerSessionStorage(
   }
 }
 
+function readAuthSessionForCleanup(
+  storage: AuthStorage | undefined,
+  operation: "persist session" | "rollback session"
+): AuthSession | null {
+  if (!storage) {
+    throw new RemoteSignerError(
+      "unavailable",
+      "The browser could not verify the remote signer session before cleanup.",
+      { operation }
+    )
+  }
+  try {
+    return parseAuthSession(storage.getItem(AUTH_STORAGE_KEY))
+  } catch (cause) {
+    throw new RemoteSignerError(
+      "unavailable",
+      "The browser could not verify the remote signer session before cleanup.",
+      { cause, operation }
+    )
+  }
+}
+
 export async function persistRemoteSignerSession(
   connection: Pick<
     RemoteSignerConnection,
@@ -349,7 +375,7 @@ export async function persistRemoteSignerSession(
     }
   }
   const rollbackOwnedMetadata = (): void => {
-    const current = readAuthSession(storage)
+    const current = readAuthSessionForCleanup(storage, "persist session")
     if (JSON.stringify(current) !== JSON.stringify(connection.session)) return
     if (!forgetAuthSession(storage)) {
       throw new RemoteSignerError(
@@ -403,7 +429,7 @@ export async function rollbackNewRemoteSignerSession(
   keyVault: RemoteSignerKeyVault = getDefaultKeyVault()
 ): Promise<void> {
   if (connection.clientKeyAlreadyPersisted) return
-  const current = readAuthSession(storage)
+  const current = readAuthSessionForCleanup(storage, "rollback session")
   if (JSON.stringify(current) === JSON.stringify(connection.session)) {
     if (!forgetAuthSession(storage)) {
       throw new RemoteSignerError(
@@ -413,7 +439,38 @@ export async function rollbackNewRemoteSignerSession(
       )
     }
   }
-  await forgetRemoteSignerKey(connection.session, keyVault)
+  try {
+    await forgetRemoteSignerKey(connection.session, keyVault)
+  } catch (cause) {
+    throw new RemoteSignerError(
+      "unavailable",
+      "The browser could not safely roll back the remote signer connection key.",
+      { cause, operation: "rollback session" }
+    )
+  }
+}
+
+export function abandonRemoteSignerConnection(
+  connection: RemoteSignerConnection
+): void {
+  connection.signer.invalidate()
+  if (connection.clientKeyAlreadyPersisted) {
+    void closeRemoteSigner(connection.bunkerSigner)
+    return
+  }
+  void logoutRemoteSigner(connection.bunkerSigner)
+}
+
+export async function rollbackAndAbandonRemoteSignerConnection(
+  connection: RemoteSignerConnection,
+  storage?: AuthStorage,
+  keyVault?: RemoteSignerKeyVault
+): Promise<void> {
+  try {
+    await rollbackNewRemoteSignerSession(connection, storage, keyVault)
+  } finally {
+    abandonRemoteSignerConnection(connection)
+  }
 }
 
 export async function forgetRemoteSignerKey(
