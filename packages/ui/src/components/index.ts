@@ -182,8 +182,11 @@ export {
   PRODUCT_TERMS_PATH,
   WEBSITE_PRIVACY_URL,
   WEBSITE_TERMS_URL,
+  getProductLegalHostMode,
+  isConduitProductLegalPreviewHostname,
   isOfficialProductHostname,
   isProductLegalPath,
+  type ProductLegalHostMode,
 } from "./ProductLegalVersion"
 export {
   ProductLegalPageLayout,

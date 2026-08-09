@@ -31,10 +31,18 @@ Do not edit an archived version in place or allow a merge alone to imply a new
 effective version.
 
 The legal prose is excluded from the repository's MIT grant. Forks and other
-hosts must provide documents appropriate to their operator. At runtime, hosts
-other than the two official Product origins show a neutral operator notice
-instead of representing that Conduit operates the deployment or that the
-official Product terms govern it.
+hosts must provide documents appropriate to their operator. At runtime, unknown
+hosts show a neutral operator notice instead of representing that Conduit
+operates the deployment or that the official Product terms govern it.
+
+Conduit-controlled Cloudflare branch previews are a narrow review exception.
+The client requires both the checked-in `preview` deployment profile and a
+known, single-label Conduit Pages project hostname before rendering the exact
+shared documents with a conspicuous review-only banner and `noindex` metadata.
+The banner states that the preview is not an official Product App host and that
+displaying the text there does not extend the documents' official-host scope.
+Arbitrary `pages.dev` hosts, nested/lookalike hostnames, and non-preview builds
+continue to receive the neutral operator notice.
 
 ## Public Route Isolation
 

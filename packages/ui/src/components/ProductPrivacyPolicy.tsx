@@ -6,13 +6,16 @@ import {
 
 export function ProductPrivacyPolicy({
   deploymentHostname,
+  deploymentProfile,
 }: {
   deploymentHostname?: string
+  deploymentProfile?: string
 } = {}) {
   return (
     <ProductLegalPageLayout
       documentKind="privacy"
       deploymentHostname={deploymentHostname}
+      deploymentProfile={deploymentProfile}
       scopeNotice={<ProductPrivacyScopeNoticeVersion />}
     >
       <ProductPrivacyPolicyVersion />

@@ -27,6 +27,15 @@ const OFFICIAL_PRODUCT_HOSTS = new Set<string>([
   "sell.conduit.market",
 ])
 
+const CONDUIT_PRODUCT_PREVIEW_PROJECT_HOSTS = new Set<string>([
+  "conduit-market-coo.pages.dev",
+  "conduit-merchant-33n.pages.dev",
+  "conduit-market-signet.pages.dev",
+  "conduit-merchant-signet.pages.dev",
+])
+
+export type ProductLegalHostMode = "official" | "review-preview" | "independent"
+
 export const PRODUCT_LEGAL_VERSION_HISTORY = Object.freeze([
   Object.freeze({
     version: PRODUCT_LEGAL_VERSION,
@@ -49,4 +58,37 @@ export function isProductLegalPath(pathname: string): boolean {
 
 export function isOfficialProductHostname(hostname: string): boolean {
   return OFFICIAL_PRODUCT_HOSTS.has(hostname.trim().toLowerCase())
+}
+
+export function isConduitProductLegalPreviewHostname(
+  hostname: string
+): boolean {
+  const normalizedHostname = hostname.trim().toLowerCase()
+
+  for (const projectHostname of CONDUIT_PRODUCT_PREVIEW_PROJECT_HOSTS) {
+    if (normalizedHostname === projectHostname) return true
+    if (!normalizedHostname.endsWith(`.${projectHostname}`)) continue
+
+    const deploymentLabel = normalizedHostname.slice(
+      0,
+      -(projectHostname.length + 1)
+    )
+    if (deploymentLabel && !deploymentLabel.includes(".")) return true
+  }
+
+  return false
+}
+
+export function getProductLegalHostMode(
+  hostname: string,
+  deploymentProfile: string
+): ProductLegalHostMode {
+  if (isOfficialProductHostname(hostname)) return "official"
+  if (
+    deploymentProfile.trim().toLowerCase() === "preview" &&
+    isConduitProductLegalPreviewHostname(hostname)
+  ) {
+    return "review-preview"
+  }
+  return "independent"
 }

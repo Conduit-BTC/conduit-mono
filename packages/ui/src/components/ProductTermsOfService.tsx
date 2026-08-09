@@ -6,13 +6,16 @@ import {
 
 export function ProductTermsOfService({
   deploymentHostname,
+  deploymentProfile,
 }: {
   deploymentHostname?: string
+  deploymentProfile?: string
 } = {}) {
   return (
     <ProductLegalPageLayout
       documentKind="terms"
       deploymentHostname={deploymentHostname}
+      deploymentProfile={deploymentProfile}
       scopeNotice={<ProductTermsScopeNoticeVersion />}
     >
       <ProductTermsOfServiceVersion />

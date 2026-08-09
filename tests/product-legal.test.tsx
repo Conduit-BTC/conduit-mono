@@ -12,6 +12,8 @@ import {
   ProductTermsOfService,
   WEBSITE_PRIVACY_URL,
   WEBSITE_TERMS_URL,
+  getProductLegalHostMode,
+  isConduitProductLegalPreviewHostname,
   isOfficialProductHostname,
   isProductLegalPath,
 } from "../packages/ui/src/components"
@@ -88,6 +90,32 @@ describe("shared Product legal documents", () => {
     expect(privacy).not.toContain("1. Who We Are")
     expect(privacy).toContain(`href="${PRODUCT_PRIVACY_CANONICAL_URL}"`)
     expect(privacy).toContain(`href="${PRODUCT_TERMS_CANONICAL_URL}"`)
+
+    const forkPreview = renderToStaticMarkup(
+      <ProductTermsOfService
+        deploymentHostname="feature.some-fork.pages.dev"
+        deploymentProfile="preview"
+      />
+    )
+    expect(forkPreview).toContain("This host needs its own legal documents")
+    expect(forkPreview).not.toContain(PRODUCT_LEGAL_VERSION)
+  })
+
+  it("renders the documents for Conduit-controlled preview builds without extending their scope", () => {
+    const privacy = renderToStaticMarkup(
+      <ProductPrivacyPolicy
+        deploymentHostname="feat-product-legal-pages.conduit-market-coo.pages.dev"
+        deploymentProfile="preview"
+      />
+    )
+
+    expect(privacy).toContain("Review preview")
+    expect(privacy).toContain(PRODUCT_LEGAL_VERSION)
+    expect(privacy).toContain("1. Who We Are")
+    expect(privacy).toContain("shop.conduit.market")
+    expect(privacy).toContain("sell.conduit.market")
+    expect(privacy).toContain("does not make these documents applicable")
+    expect(privacy).not.toContain("This host needs its own legal documents")
   })
 
   it("matches router-normalized legal paths and exact official hosts", () => {
@@ -110,6 +138,43 @@ describe("shared Product legal documents", () => {
     expect(isOfficialProductHostname("preview.shop.conduit.market")).toBe(false)
     expect(isOfficialProductHostname("conduit.market")).toBe(false)
     expect(isOfficialProductHostname("shop.conduit.market.example")).toBe(false)
+
+    expect(
+      isConduitProductLegalPreviewHostname(
+        "feat-product-legal-pages.conduit-market-coo.pages.dev"
+      )
+    ).toBe(true)
+    expect(
+      isConduitProductLegalPreviewHostname(
+        "abc123.conduit-merchant-33n.pages.dev"
+      )
+    ).toBe(true)
+    expect(
+      isConduitProductLegalPreviewHostname(
+        "nested.preview.conduit-market-coo.pages.dev"
+      )
+    ).toBe(false)
+    expect(
+      isConduitProductLegalPreviewHostname(
+        "preview.conduit-market-coo.pages.dev.evil.example"
+      )
+    ).toBe(false)
+
+    expect(
+      getProductLegalHostMode(
+        "feat-product-legal-pages.conduit-market-coo.pages.dev",
+        "preview"
+      )
+    ).toBe("review-preview")
+    expect(
+      getProductLegalHostMode(
+        "feat-product-legal-pages.conduit-market-coo.pages.dev",
+        "production"
+      )
+    ).toBe("independent")
+    expect(getProductLegalHostMode("shop.conduit.market", "unknown")).toBe(
+      "official"
+    )
   })
 
   it("pins dates and the immutable archive to the released version", async () => {

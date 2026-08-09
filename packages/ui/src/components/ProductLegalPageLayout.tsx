@@ -1,4 +1,5 @@
 import { useEffect, type ReactNode } from "react"
+
 import {
   PRODUCT_LEGAL_EFFECTIVE_DATE,
   PRODUCT_LEGAL_EFFECTIVE_DATE_LABEL,
@@ -11,7 +12,7 @@ import {
   PRODUCT_TERMS_PATH,
   WEBSITE_PRIVACY_URL,
   WEBSITE_TERMS_URL,
-  isOfficialProductHostname,
+  getProductLegalHostMode,
 } from "./ProductLegalVersion"
 
 export type ProductLegalDocumentKind = "privacy" | "terms"
@@ -21,6 +22,7 @@ export interface ProductLegalPageLayoutProps {
   documentKind: ProductLegalDocumentKind
   scopeNotice: ReactNode
   deploymentHostname?: string
+  deploymentProfile?: string
 }
 
 const linkClassName =
@@ -56,9 +58,11 @@ export function ProductLegalPageLayout({
   documentKind,
   scopeNotice,
   deploymentHostname,
+  deploymentProfile = import.meta.env.VITE_DEPLOYMENT_PROFILE ?? "unknown",
 }: ProductLegalPageLayoutProps) {
   const hostname = getRuntimeHostname(deploymentHostname)
-  const officialDeployment = isOfficialProductHostname(hostname)
+  const hostMode = getProductLegalHostMode(hostname, deploymentProfile)
+  const reviewPreview = hostMode === "review-preview"
   const isPrivacy = documentKind === "privacy"
   const title = isPrivacy
     ? "Product Privacy Policy | Conduit"
@@ -73,7 +77,7 @@ export function ProductLegalPageLayout({
   useEffect(() => {
     if (typeof document === "undefined") return
 
-    if (!officialDeployment) {
+    if (hostMode === "independent") {
       const neutralTitle = "Legal notice | Product deployment"
       const neutralDescription =
         "This deployment must provide its own privacy notice and terms."
@@ -103,7 +107,8 @@ export function ProductLegalPageLayout({
       return
     }
 
-    document.title = title
+    const renderedTitle = reviewPreview ? `Review preview: ${title}` : title
+    document.title = renderedTitle
     upsertMetadata('meta[name="description"]', {
       name: "description",
       content: description,
@@ -114,7 +119,7 @@ export function ProductLegalPageLayout({
     })
     upsertMetadata('meta[property="og:title"]', {
       property: "og:title",
-      content: title,
+      content: renderedTitle,
     })
     upsertMetadata('meta[property="og:description"]', {
       property: "og:description",
@@ -126,15 +131,26 @@ export function ProductLegalPageLayout({
     })
     upsertMetadata('meta[name="twitter:title"]', {
       name: "twitter:title",
-      content: title,
+      content: renderedTitle,
     })
     upsertMetadata('meta[name="twitter:description"]', {
       name: "twitter:description",
       content: description,
     })
-  }, [canonicalUrl, description, officialDeployment, title])
+    if (reviewPreview) {
+      upsertMetadata('meta[data-conduit-product-legal-preview="true"]', {
+        name: "robots",
+        content: "noindex, nofollow",
+        "data-conduit-product-legal-preview": "true",
+      })
+    } else {
+      document.head
+        .querySelector('meta[data-conduit-product-legal-preview="true"]')
+        ?.remove()
+    }
+  }, [canonicalUrl, description, hostMode, reviewPreview, title])
 
-  if (!officialDeployment) {
+  if (hostMode === "independent") {
     return <UnofficialHostLegalNotice hostname={hostname} />
   }
 
@@ -160,6 +176,7 @@ export function ProductLegalPageLayout({
       </header>
 
       <main className="mx-auto w-full max-w-5xl px-4 py-10 sm:px-6 sm:py-14 lg:px-8">
+        {reviewPreview && <ProductLegalReviewPreviewNotice />}
         <article aria-labelledby="product-legal-title">
           <header className="border-b border-[var(--border)] pb-8">
             <p className="text-sm font-semibold text-primary-500">Legal</p>
@@ -262,6 +279,23 @@ export function ProductLegalPageLayout({
         </article>
       </main>
     </div>
+  )
+}
+
+function ProductLegalReviewPreviewNotice() {
+  return (
+    <aside
+      aria-label="Legal document review preview"
+      className="mb-8 rounded-2xl border border-dashed border-primary-500/60 bg-[var(--surface-elevated)] p-5 shadow-sm"
+    >
+      <p className="text-sm font-semibold text-primary-500">Review preview</p>
+      <p className="mt-2 text-pretty text-sm leading-6 text-[var(--text-secondary)]">
+        This Conduit-controlled deployment preview shows the exact Product legal
+        version proposed for Shop and Sell. This is not an official Product App
+        host. Displaying the text here does not make these documents applicable
+        to this preview or change the official-host scope stated below.
+      </p>
+    </aside>
   )
 }
 
