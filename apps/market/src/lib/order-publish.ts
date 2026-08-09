@@ -118,7 +118,8 @@ async function cacheBuyerOrderRumor(rumor: NDKEvent): Promise<string | null> {
 /**
  * Translate a delivery result into a buyer-facing notice when a non-critical
  * leg (local cache or buyer self-copy) needs retry. The merchant copy is always
- * critical and throws on failure, so reaching here means the merchant has it.
+ * critical and throws on failure, so reaching here means at least one intended
+ * delivery relay accepted the merchant leg for pickup.
  */
 export function getDeliveryNotice(
   delivery: BuyerMessageDeliveryResult,
