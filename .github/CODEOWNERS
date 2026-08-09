@@ -8,3 +8,9 @@ apps/*/package.json @dylangolow @ericfj2140
 packages/*/package.json @dylangolow @ericfj2140
 .env.example @dylangolow @ericfj2140
 apps/*/.env.production @dylangolow @ericfj2140
+packages/ui/src/components/ProductLegal*.tsx @dylangolow @ericfj2140
+packages/ui/src/components/ProductLegalVersion.ts @dylangolow @ericfj2140
+packages/ui/src/components/ProductPrivacyPolicy.tsx @dylangolow @ericfj2140
+packages/ui/src/components/ProductTermsOfService.tsx @dylangolow @ericfj2140
+packages/ui/src/legal/** @dylangolow @ericfj2140
+LICENSE @dylangolow @ericfj2140

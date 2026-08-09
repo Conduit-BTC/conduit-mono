@@ -24,6 +24,7 @@ export {
   applyPlausibleInitOptions,
   buildTelemetryEventPageContext,
   buildTelemetryPageUrl,
+  constrainOfficialBrowserTelemetryConfig,
   getTelemetryAmountBucket,
   getTelemetryCountBucket,
   getConduitPostHogConfig,

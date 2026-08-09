@@ -134,6 +134,8 @@ function relayList(
     writeRelayUrls,
     eventCreatedAt: NOW_SECONDS - 1,
     cachedAt: NOW_MS,
+    lookupState: "network" as
+      "network" | "fresh-cache" | "stale-cache" | undefined,
   }
 }
 
@@ -1004,6 +1006,77 @@ describe("shopper trust evidence", () => {
     expect(evidence.followersObserved.state).toBe("partial")
     expect(evidence.followsInCommon.state).toBe("partial")
     expect(evidence.oldestEvent.coverage.truncated).toBe(true)
+  })
+
+  it("qualifies observations unless required NIP-65 relay roles are present", async () => {
+    const publicRelay = "wss://public.example"
+    const readWithRelayLists = async (
+      relayLists: Map<string, ReturnType<typeof relayList>>
+    ) =>
+      await getShopperTrustEvidence(
+        {
+          merchantPubkey: MERCHANT_PUBKEY,
+          shopperPubkey: SHOPPER_PUBKEY,
+        },
+        {
+          baseRelayUrls: [publicRelay],
+          cache: createCache(),
+          fetchEvents: async (_filter, options) => ({
+            events: [],
+            relays: (options?.relayUrls ?? []).map((relayUrl) => ({
+              relayUrl,
+              status: "success" as const,
+              eventCount: 0,
+            })),
+          }),
+          now: () => NOW_MS,
+          resolveRelayLists: async () => relayLists,
+        }
+      )
+
+    const completeMerchant = relayList(MERCHANT_PUBKEY, {
+      writeRelayUrls: ["wss://merchant.example"],
+    })
+    const completeShopper = relayList(SHOPPER_PUBKEY, {
+      readRelayUrls: ["wss://shopper-read.example"],
+      writeRelayUrls: ["wss://shopper-write.example"],
+    })
+    const incompleteCases = [
+      new Map(),
+      new Map([[MERCHANT_PUBKEY, completeMerchant]]),
+      new Map([[SHOPPER_PUBKEY, completeShopper]]),
+      new Map([
+        [MERCHANT_PUBKEY, relayList(MERCHANT_PUBKEY, {})],
+        [SHOPPER_PUBKEY, relayList(SHOPPER_PUBKEY, {})],
+      ]),
+      new Map([
+        [MERCHANT_PUBKEY, { ...completeMerchant, lookupState: undefined }],
+        [SHOPPER_PUBKEY, completeShopper],
+      ]),
+    ]
+
+    for (const relayLists of incompleteCases) {
+      const evidence = await readWithRelayLists(relayLists)
+      expect(evidence.oldestEvent.state).toBe("partial")
+      expect(evidence.followersObserved.state).toBe("partial")
+      expect(evidence.followsInCommon.state).toBe("partial")
+      expect(evidence.oldestEvent.coverage.attemptedRelays).toBeGreaterThan(0)
+      expect(evidence.oldestEvent.coverage.responsiveRelays).toBe(
+        evidence.oldestEvent.coverage.attemptedRelays
+      )
+      expect(evidence.oldestEvent.coverage.truncated).toBe(true)
+    }
+
+    const completeEvidence = await readWithRelayLists(
+      new Map([
+        [MERCHANT_PUBKEY, completeMerchant],
+        [SHOPPER_PUBKEY, completeShopper],
+      ])
+    )
+    expect(completeEvidence.oldestEvent.state).toBe("available")
+    expect(completeEvidence.followersObserved.state).toBe("available")
+    expect(completeEvidence.followsInCommon.state).toBe("available")
+    expect(completeEvidence.oldestEvent.coverage.truncated).toBe(false)
   })
 
   it("checks a reverse-follow candidate on the candidate author outbox", async () => {

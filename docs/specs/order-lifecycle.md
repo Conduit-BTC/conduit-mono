@@ -292,8 +292,11 @@ eligibility remains a separate fulfillment gate.
 ## Privacy
 
 Sensitive fields (invoice, preimage, NWC URI, order contents, shipping address,
-contact note, message content) stay on the user's device or relays and are
-excluded from telemetry, per `docs/specs/privacy-observability.md`.
+contact note, message content) are excluded from telemetry, per
+`docs/specs/privacy-observability.md`. They may be processed by the user's
+browser, counterparties, relays, signers, wallets, LNURL/payment providers, and
+other services the user or merchant selects; do not describe them as remaining
+only on devices or relays.
 
 Guest checkout is narrower: phone/email and fulfillment details are delivered
 inside the merchant's encrypted order copy, removed from the checkout form after

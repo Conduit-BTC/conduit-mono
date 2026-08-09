@@ -900,6 +900,11 @@ async function resolveRelayUrls(
     }).relayUrls
   const merchantRelays = relayLists.get(merchantPubkey)
   const shopperRelays = relayLists.get(shopperPubkey)
+  const requiredRelayHints = [merchantRelays, shopperRelays]
+  const hasRequiredRelayHints =
+    (merchantRelays?.writeRelayUrls.length ?? 0) > 0 &&
+    (shopperRelays?.writeRelayUrls.length ?? 0) > 0 &&
+    (shopperRelays?.readRelayUrls.length ?? 0) > 0
 
   // Keep the cap fair across the shopper outbox/inbox, merchant outbox, and
   // public fallback. A long merchant relay list must not crowd every shopper
@@ -916,8 +921,10 @@ async function resolveRelayUrls(
     ),
     completeRelayHints:
       !lookupFailed &&
-      ![merchantRelays, shopperRelays].some(
-        (list) => list?.lookupState === "stale-cache"
+      hasRequiredRelayHints &&
+      requiredRelayHints.every(
+        (list) =>
+          list?.lookupState === "network" || list?.lookupState === "fresh-cache"
       ),
   }
 }

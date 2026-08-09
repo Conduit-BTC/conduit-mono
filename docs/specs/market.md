@@ -159,6 +159,8 @@ This messaging flow requires a signed-in buyer identity. It does not apply to
 | `/store/$pubkey`       | Merchant storefront                 |
 | `/u/$profileRef`       | Profile reference view              |
 | `/about`               | App/source/provenance surface       |
+| `/privacy-policy`      | Public Product Privacy Policy       |
+| `/terms-of-service`    | Public Product Terms of Service     |
 
 Do not document `/orders/$orderId` unless that route exists again.
 
@@ -361,6 +363,8 @@ Do not use retired Conduit relay hosts in active Market docs or examples.
 ## Privacy Constraints
 
 - No behavioral tracking or profiling
-- No message content inspection
-- No cross-session correlation
+- No message, order, address, invoice, signer, or wallet-secret content in
+  telemetry, logs, or Conduit-operated Product servers
+- No persistent visitor/account identity or cross-session viewer correlation in
+  Product telemetry
 - System and reliability metrics only, constrained by `docs/specs/privacy-observability.md`

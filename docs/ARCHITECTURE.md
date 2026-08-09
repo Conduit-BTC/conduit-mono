@@ -38,13 +38,15 @@ interaction primitives belong in `@conduit/ui`. Apps may depend on both.
 
 ## Public Domains
 
-| Domain                   | Purpose                  |
-| ------------------------ | ------------------------ |
-| `conduit.market`         | Marketing / landing page |
-| `shop.conduit.market`    | Market app               |
-| `sell.conduit.market`    | Merchant Portal          |
-| `build.conduit.market`   | Store Builder app shell  |
-| `blossom.conduit.market` | Blossom media hosting    |
+| Domain                   | Purpose                      |
+| ------------------------ | ---------------------------- |
+| `conduit.market`         | Marketing / landing page     |
+| `shop.conduit.market`    | Market app                   |
+| `sell.conduit.market`    | Merchant Portal              |
+| `build.conduit.market`   | Store Builder app shell      |
+| `blossom.conduit.market` | Blossom media hosting        |
+| `relay.conduit.market`   | Conduit-operated Nostr relay |
+| `e.conduit.market`       | Product telemetry proxy      |
 
 The canonical relay reset list is code-owned in `packages/core/src/config.ts` and currently starts with `wss://relay.conduit.market`. Retired Conduit relay hosts should not appear in active docs or examples.
 
@@ -69,6 +71,8 @@ apps/market/src/routes/
 ├── wallet.tsx
 ├── profile.tsx
 ├── about.tsx
+├── privacy-policy.tsx
+├── terms-of-service.tsx
 ├── store/
 │   └── $pubkey.tsx
 └── u/
@@ -87,7 +91,9 @@ apps/merchant/src/routes/
 ├── payments.tsx
 ├── shipping.tsx
 ├── network.tsx
-└── about.tsx
+├── about.tsx
+├── privacy-policy.tsx
+└── terms-of-service.tsx
 ```
 
 ### Store Builder
@@ -99,6 +105,17 @@ apps/store-builder/src/routes/
 ```
 
 Do not document Store Builder behavior beyond implemented routes and shared app infrastructure.
+
+### Product Legal Boot Boundary
+
+`/privacy-policy` and `/terms-of-service` are the exact public legal routes in
+both Market and Merchant. Each app detects those paths in its entry point before
+starting product providers or workers, and its root route dispatches to a bare
+legal outlet before auth or telemetry hooks. Direct legal loads therefore do
+not restore a signer, start a Conduit session or Nostr connection, prune product
+caches, run delivery workers, warm prices, evaluate merchant readiness, start
+payment automation, or emit Product telemetry. Product legal links use ordinary
+anchors so navigation re-enters that boot boundary.
 
 ---
 
@@ -124,11 +141,14 @@ Do not document Store Builder behavior beyond implemented routes and shared app 
 | `31989` | Application recommendation   | NIP-89                            |
 | `31990` | Application handler metadata | NIP-89                            |
 
-Market and Merchant user authentication is external-signer-only. The repo policy
-allows NIP-07 and NIP-46 style external signers. The only approved server-side
-private-key exception is the Anon Conduit Shopper public zap signer described in
-`docs/specs/protocol.md`; it is limited to authenticated, merchant-authorized
-public zap request signing and does not authorize user key custody.
+Market and Merchant durable account authentication is external-signer-only. The
+repo policy allows NIP-07 and NIP-46 external signers. Guest checkout may create
+a temporary order-scoped browser key, and an NIP-46 connection may use an
+encrypted browser-local client key; neither is a Conduit-custodied user account
+key. The only approved server-side private-key exception is the Anon Conduit
+Shopper public zap signer described in `docs/specs/protocol.md`; it is limited
+to authenticated, merchant-authorized public zap request signing and does not
+authorize user key custody.
 
 ### Product Discovery
 
@@ -195,7 +215,13 @@ Cache data is evidence for fast paint and recovery. It should not be presented a
 
 ### localStorage
 
-localStorage is used for small local preferences and cart state. Sensitive order/message/payment contents should stay in the encrypted message flow or local IndexedDB records designed for that purpose.
+localStorage is used for small local preferences, cart state, selected public
+key/signer method, relay settings, and scoped wallet configuration. IndexedDB
+stores local order/message/payment records and caches. Guest checkout and remote
+signer flows also use bounded session or encrypted browser-local storage as
+described in `docs/specs/protocol.md`. Sensitive contents must remain excluded
+from telemetry and diagnostics even when the browser, a counterparty, a signer,
+a wallet, a relay, or another user-selected provider processes them.
 
 ---
 

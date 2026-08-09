@@ -9,6 +9,7 @@ import {
   buildShippingPublishResultTelemetryProperties,
   buildTelemetryEventPageContext,
   buildTelemetryPageUrl,
+  constrainOfficialBrowserTelemetryConfig,
   getConduitPostHogConfig,
   getTelemetryAmountBucket,
   getTelemetryCountBucket,
@@ -85,6 +86,29 @@ describe("browser telemetry", () => {
       key: "ph_project_key",
       host: "https://e.conduit.market",
     })
+  })
+
+  it("pins official Product telemetry to the Conduit PostHog proxy", () => {
+    const configured = resolveBrowserTelemetryConfig("market", {
+      VITE_ENABLE_TELEMETRY: "true",
+      VITE_PLAUSIBLE_SRC: "https://analytics.example/script.js",
+      VITE_POSTHOG_KEY: "ph_project_key",
+      VITE_POSTHOG_HOST: "https://us.i.posthog.com",
+    })
+
+    const official = constrainOfficialBrowserTelemetryConfig(
+      configured,
+      "SHOP.CONDUIT.MARKET"
+    )
+    expect(official.plausible).toBeNull()
+    expect(official.posthog).toEqual({
+      key: "ph_project_key",
+      host: "https://e.conduit.market",
+    })
+
+    expect(
+      constrainOfficialBrowserTelemetryConfig(configured, "preview.example")
+    ).toBe(configured)
   })
 
   it("redacts dynamic route identifiers from pageview paths", () => {
@@ -222,15 +246,15 @@ describe("browser telemetry", () => {
     } as unknown as Document
     const fakeWindow = {
       location: {
-        hostname: "shop.conduit.market",
-        origin: "https://shop.conduit.market",
+        hostname: "preview.example",
+        origin: "https://preview.example",
         pathname: "/products/demo",
       },
     } as unknown as Window
 
     try {
       process.env.VITE_ENABLE_TELEMETRY = "true"
-      process.env.VITE_TELEMETRY_ALLOWED_HOSTS = "shop.conduit.market"
+      process.env.VITE_TELEMETRY_ALLOWED_HOSTS = "preview.example"
       process.env.VITE_PLAUSIBLE_SRC =
         "https://plausible.io/js/pa-example-market.js"
       replaceGlobalProperty("document", fakeDocument)
@@ -281,8 +305,8 @@ describe("browser telemetry", () => {
     } as unknown as Document
     const fakeWindow = {
       location: {
-        hostname: "shop.conduit.market",
-        origin: "https://shop.conduit.market",
+        hostname: "preview.example",
+        origin: "https://preview.example",
         pathname: "/checkout",
       },
       plausible: () => {
@@ -292,7 +316,7 @@ describe("browser telemetry", () => {
 
     try {
       process.env.VITE_ENABLE_TELEMETRY = "true"
-      process.env.VITE_TELEMETRY_ALLOWED_HOSTS = "shop.conduit.market"
+      process.env.VITE_TELEMETRY_ALLOWED_HOSTS = "preview.example"
       process.env.VITE_PLAUSIBLE_SRC = "https://plausible.io/js/test.js"
       delete process.env.VITE_POSTHOG_KEY
       replaceGlobalProperty("document", fakeDocument)
@@ -446,8 +470,8 @@ describe("browser telemetry", () => {
     } as unknown as Document
     const fakeWindow = {
       location: {
-        hostname: "shop.conduit.market",
-        origin: "https://shop.conduit.market",
+        hostname: "preview.example",
+        origin: "https://preview.example",
         pathname: "/products/first",
       },
       plausible,
@@ -455,7 +479,7 @@ describe("browser telemetry", () => {
 
     try {
       process.env.VITE_ENABLE_TELEMETRY = "true"
-      process.env.VITE_TELEMETRY_ALLOWED_HOSTS = "shop.conduit.market"
+      process.env.VITE_TELEMETRY_ALLOWED_HOSTS = "preview.example"
       process.env.VITE_PLAUSIBLE_SRC = "https://plausible.io/js/test.js"
       delete process.env.VITE_POSTHOG_KEY
       replaceGlobalProperty("document", fakeDocument)
@@ -476,8 +500,8 @@ describe("browser telemetry", () => {
       })
 
       expect(pageUrls).toEqual([
-        "https://shop.conduit.market/products/:productId",
-        "https://shop.conduit.market/products/:productId",
+        "https://preview.example/products/:productId",
+        "https://preview.example/products/:productId",
       ])
     } finally {
       restoreProcessEnvValue("VITE_ENABLE_TELEMETRY", previousEnableTelemetry)

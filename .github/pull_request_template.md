@@ -33,7 +33,7 @@
 
 - [ ] User auth remains external signer only (NIP-07/NIP-46)
 - [ ] No key custody introduced outside approved, documented service-signer exceptions
-- [ ] No message content inspection introduced
+- [ ] No plaintext message content added to telemetry, logs, or Conduit-operated servers
 - [ ] No behavioral tracking/profiling introduced
 - [ ] Payment flow remains non-custodial
 - [ ] Shared package dependency boundaries preserved
