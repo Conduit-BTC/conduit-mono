@@ -2,7 +2,7 @@
 
 This document is a curated set of external references we rely on for protocol details, implementation patterns, and interoperability.
 
-Last reviewed: 2026-06-14
+Last reviewed: 2026-08-09
 
 ## Agent Preflight
 
@@ -16,11 +16,13 @@ Use this file before changing any Nostr-sensitive code or docs:
 
 Before implementation:
 
-1. Read the relevant repo contract in `docs/specs/*` or `docs/ARCHITECTURE.md`.
-2. Read the relevant public NIP or GammaMarkets source below.
-3. State the public source in the PR under `Source docs/specs`.
-4. Keep protocol construction and relay planning in `@conduit/core` unless the PR explains why route-local behavior is unavoidable.
-5. If a public protocol source and a repo doc disagree, stop and update the repo doc before coding.
+1. Read `docs/knowledge/decentralized-network-product-posture.md` and classify
+   any proposed hard gate or compatibility behavior.
+2. Read the relevant repo contract in `docs/specs/*` or `docs/ARCHITECTURE.md`.
+3. Read the relevant public NIP or GammaMarkets source below.
+4. State the public source in the PR under `Source docs/specs`.
+5. Keep protocol construction and relay planning in `@conduit/core` unless the PR explains why route-local behavior is unavoidable.
+6. If a public protocol source and a repo doc disagree, stop and update the repo doc before coding.
 
 ## Nostr NIPs (Protocol Specs)
 
@@ -35,6 +37,9 @@ Guidance:
 - Prefer Nostrbook for fast, accurate extraction of NIP requirements during implementation.
 - When behavior is disputed, treat the official NIPs repo as the final arbiter.
 - Do not treat library examples, blog posts, or external app behavior as authoritative over NIPs or GammaMarkets `market-spec`.
+- Protocol sources arbitrate event meaning and canonical emission. They do not,
+  by themselves, prove that ecosystem adoption is sufficient to make unevenly
+  adopted or incompletely discoverable metadata a product availability gate.
 
 ## Current Conduit Protocol Map
 

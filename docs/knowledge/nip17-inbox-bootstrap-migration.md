@@ -1,6 +1,8 @@
 # NIP-17 Inbox Bootstrap Migration (CND-208)
 
-Status: active migration exception. Owner: Conduit maintainers. Started: 2026-08.
+Status: active migration exception; preview enabled, production and staging
+disabled. Owner: Conduit maintainers. Started: 2026-08. Next review: 2026-09-09
+and before any production activation.
 
 ## Why this exists
 
@@ -24,21 +26,26 @@ validated kind-16 order-lifecycle traffic during migration. It is not
 NIP-17-conformant routing and must not be presented as an extension of NIP-17.
 NIP-44/NIP-59 encrypted gift wraps are preserved end to end.
 
-| State                                           | Reads                                                              | Writes                                 |
-| ----------------------------------------------- | ------------------------------------------------------------------ | -------------------------------------- |
-| Valid kind 10050                                | Declared inboxes + local secure IN + bounded compatibility overlap | Declared inboxes only                  |
-| No usable declaration, validated kind 16 order  | Local secure IN + configured compatibility relays                  | Bounded compatibility order plan       |
-| Discovery unavailable, valid cached declaration | Cached declared inboxes + compatibility reads                      | Cached declared inboxes                |
-| Signed empty/malformed declaration observed     | Preserve cached reads; show repair                                 | Block; do not override signed state    |
-| General kind 14 DM without declaration          | Permissive own-inbox reads; sends stay blocked                     | Block                                  |
-| Guest checkout                                  | Merchant order leg may use compatibility                           | No guest inbox/self-copy/reply promise |
+| State                                           | Reads                                                              | Writes                                  |
+| ----------------------------------------------- | ------------------------------------------------------------------ | --------------------------------------- |
+| Valid kind 10050                                | Declared inboxes + local secure IN + bounded compatibility overlap | Declared inboxes only                   |
+| No usable declaration, validated kind 16 order  | Local secure IN + configured compatibility relays                  | Bounded compatibility order plan        |
+| Discovery unavailable, valid cached declaration | Cached declared inboxes + compatibility reads                      | Cached declared inboxes                 |
+| Valid signed empty declaration observed         | Preserve cached reads; show explicit no-inbox state                | Block; do not override signed state     |
+| Malformed declaration observed                  | Preserve cached reads; show repair and ambiguity                   | Currently blocked pending safety review |
+| General kind 14 DM without declaration          | Permissive own-inbox reads; sends stay blocked                     | Block                                   |
+| Guest checkout                                  | Merchant order leg may use compatibility                           | No guest inbox/self-copy/reply promise  |
 
 Invariants:
 
 - Secure normalized `wss://` targets only.
-- A valid current or cached kind `10050` always outranks compatibility.
-- A complete authoritative "not declared" read evicts the cached declaration;
-  a confirmed-absent declaration never resurrects as a write target.
+- A valid current or retained cached kind `10050` outranks compatibility unless
+  stronger valid signed evidence supersedes it, including a newer signed empty
+  replacement.
+- A bounded discovery plan that completes without an event currently returns
+  `not_declared` for route selection. This is scoped observation, not proof of
+  global Nostr absence. Relay omission must not be described as a signed opt-out
+  or revocation.
 - The compatibility lane is recipient-only: the non-critical sender self-copy leg
   stays strict and fails soft when the sender has no usable declaration.
 - Gift-wrap reads are permissive at the transport layer (inner kinds are not
@@ -66,6 +73,30 @@ Invariants:
   truncation instead of allowing an unbounded recipient-controlled fanout.
 - No automatic signer prompt; no NIP-04 sending.
 - Diagnostics and telemetry stay identifier-free and content-free.
+
+## Known doctrine gaps in the preview implementation
+
+This exception documents current behavior; it is not evidence that the preview
+implementation already satisfies every rule in
+`docs/knowledge/decentralized-network-product-posture.md`.
+
+- A bounded complete-but-empty lookup currently evicts the process-local cached
+  declaration and the protected messaging contract calls that result
+  authoritative absence. The observation is scoped, and omission must not erase
+  previously validated signed evidence. The implementation and protected
+  contract need an explicit follow-up change.
+- Declaration evidence is held in memory, so it does not survive restart and is
+  discarded on some relay-settings changes.
+- Valid signed empty state and an unparseable declaration share a route today.
+  They need distinct evidence states. Blocking malformed recipient routing may
+  remain the privacy-safe decision, but it must not be described as user opt-out.
+- Owner readback does not yet prove that an unrelated sender can discover the
+  repaired declaration across the bounded shared discovery plan.
+- The removal metrics below are not implemented.
+
+These gaps keep the compatibility lane out of production. Correcting them must
+not widen compatibility to general DMs, arbitrary relays, plaintext delivery,
+or unvalidated sender/recipient relationships.
 
 ## Implementation map
 
@@ -111,9 +142,11 @@ The lane is removed by an explicit maintainer PR (no silent expiry) after:
 - Zero declaration-related missing-order incidents across two supported
   releases.
 
-Track aggregate declared-ready rate, route lane, ACK outcome, read
-source/coverage, and missing-order incident count. No identifiers or message
-content in any of these aggregates.
+Required aggregate measurements are declared-ready rate, route lane, ACK
+outcome, read source/coverage, and missing-order incident count. They are not
+yet implemented, so the removal gate is not measurable and the lane must not be
+activated in production on the strength of this document alone. No identifiers
+or message content may enter these aggregates.
 
 ## Public references
 

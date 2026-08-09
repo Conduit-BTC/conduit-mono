@@ -251,7 +251,7 @@ export function PrivateInboxSection({
                 Publishing signs a NIP-17 inbox declaration (kind 10050) with{" "}
                 {selectedUrls.length} relay{" "}
                 {selectedUrls.length === 1 ? "tag" : "tags"}. It replaces your
-                previous declaration everywhere.
+                previous declaration on relays that accept this publish.
               </div>
               <div className="flex justify-end">
                 <Button
