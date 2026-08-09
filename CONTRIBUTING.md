@@ -274,16 +274,22 @@ These are non-negotiable across all code:
 
 ### Authentication
 
-- External signers only (NIP-07, NIP-46)
-- **Never** generate, store, or manage private keys in app code
+- Durable account signing uses external signers only (NIP-07, NIP-46)
+- Do not generate, store, or manage a user's durable Nostr account private key.
+  The reviewed exceptions are a temporary order-scoped guest checkout key and
+  an encrypted browser-local NIP-46 client connection key; neither may become a
+  Conduit-custodied account key.
 - Identity = pubkey only
 
 ### Privacy
 
-- **No** behavioral tracking or profiling
-- **No** message content inspection
-- System metrics only (relay success rates, load times)
-- All user data stays on the user's device or their relays
+- **No** behavioral tracking or person profiling
+- **No** message-content collection by product telemetry
+- Explicit, privacy-constrained operational events only; see
+  `docs/analytics/events.md`
+- Treat browsers, counterparties, relays, wallets, signers, merchant-selected
+  services, and Conduit-operated supporting endpoints as distinct data
+  boundaries. Do not claim all data stays on one device or only on relays.
 
 ### Payments
 

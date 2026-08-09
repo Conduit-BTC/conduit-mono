@@ -5,7 +5,19 @@ This repository is intended to be public, inspectable, and rebuildable from sour
 ## Licensing Posture
 
 - Code and redistributable bundled assets in this repository are MIT-licensed unless noted otherwise.
+- Released Product Privacy Policy and Product Terms prose under
+  `packages/ui/src/legal/versions/` is not licensed under MIT. See the Legal
+  Content and Trademarks Exception in [LICENSE](./LICENSE).
 - Conduit trademarks and logos are reserved under the trademark policy in [TRADEMARKS.md](./TRADEMARKS.md).
+
+Forks may reuse the surrounding software under MIT, but must provide notices and
+terms appropriate to their own operator. The official Product documents apply
+only to `shop.conduit.market` and `sell.conduit.market`.
+
+Released files in `packages/ui/src/legal/versions/` are append-only. Community
+wording changes are proposals until a maintainer publishes a new version with an
+explicit effective date; editing an archived version does not revise the terms
+that were released under that identifier.
 
 ## Reproducible Build Goal
 

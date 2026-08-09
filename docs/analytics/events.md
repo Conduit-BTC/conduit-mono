@@ -1,6 +1,6 @@
 # Telemetry Event Allowlist
 
-Conduit telemetry is privacy-safe operational telemetry only. Product clients
+Conduit telemetry is privacy-constrained operational telemetry only. Product clients
 must remain useful without telemetry, and telemetry must stay disabled unless a
 deployment explicitly enables it.
 
@@ -68,6 +68,16 @@ visitors. Do not enable PostHog's server-hashed cookieless mode for Conduit
 events because it requires raw IP, host, and user-agent inputs that this
 telemetry policy excludes.
 
+## Product Legal Route Exclusion
+
+Direct loads of `/privacy-policy` and `/terms-of-service` in Market and Merchant
+must bypass product telemetry completely. They also bypass signer restoration,
+Conduit sessions, Nostr connections, cache pruning, deletion-delivery workers,
+BTC price warmups, merchant readiness, and payment automation. Keep the exact
+legal-path allowlist in `@conduit/ui`; do not classify these routes for pageview
+or error telemetry. Links into and between Product legal pages use ordinary
+full-document anchors so a navigation rebuilds the correct provider boundary.
+
 Do not include active user, signer, buyer, wallet, or session pubkeys/npubs,
 invoices, order contents, product titles, addresses, message contents, IPs,
 fingerprints, signer connection strings, NWC URIs, raw URLs, raw paths, query
@@ -107,6 +117,12 @@ origins. It must not forward cookies, browser user-agent, `CF-Connecting-IP`,
 `X-Forwarded-For`, or other identity headers, and it must not cache or log
 request payloads. It must reject ingest bodies larger than 1 MiB before
 forwarding them upstream.
+
+The official Shop and Sell hosts disable the legacy Plausible integration and
+pin PostHog ingestion to `e.conduit.market`; build-time provider overrides do
+not widen that official-host boundary. Nonofficial and local test hosts may use
+the legacy provider configuration only within their explicit telemetry host
+allowlist.
 
 ## Events
 

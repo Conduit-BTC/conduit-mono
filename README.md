@@ -1,6 +1,6 @@
 # Conduit
 
-Decentralized commerce platform built on [Nostr](https://nostr.com). Merchants and buyers transact directly over the protocol — no platform custody of funds or user data.
+Decentralized commerce platform built on [Nostr](https://nostr.com). Merchants and buyers transact directly over the protocol without Conduit custody of funds. Private commerce data is encrypted and processed by users' browsers, counterparties, and services they choose as described in the Product Privacy Policy.
 
 **[conduit.market](https://conduit.market)**
 
@@ -10,11 +10,11 @@ Conduit code is MIT-licensed. Conduit trademarks, names, and logos are reserved.
 
 ## Apps
 
-| App                                      | Port | Description                                                              |
-| ---------------------------------------- | ---- | ------------------------------------------------------------------------ |
-| **Market** (`apps/market`)               | 3000 | Buyer marketplace: browse products, cart, checkout, order tracking       |
-| **Merchant Portal** (`apps/merchant`)    | 3001 | Seller dashboard: product CRUD, order management, payments, DM workspace |
-| **Store Builder** (`apps/store-builder`) | 3002 | Placeholder app shell                                                    |
+| App                                                  | Port | Description                                                              |
+| ---------------------------------------------------- | ---- | ------------------------------------------------------------------------ |
+| **Market / Conduit Shop** (`apps/market`)            | 3000 | Buyer marketplace at `shop.conduit.market`: browse, checkout, and orders |
+| **Merchant Portal / Conduit Sell** (`apps/merchant`) | 3001 | Seller app at `sell.conduit.market`: listings, orders, payments, and DMs |
+| **Store Builder** (`apps/store-builder`)             | 3002 | Placeholder app shell                                                    |
 
 ## Shared Packages
 
@@ -112,12 +112,12 @@ bun run dev:merchant:mainnet
 | `VITE_LIGHTNING_NETWORK`       | `mainnet`                  | `mainnet`, `signet`, `testnet`, or `mock`                |
 | `VITE_BLOSSOM_SERVER_URL`      | —                          | Blossom media server for product images                  |
 | `VITE_CACHE_API_URL`           | —                          | Optional cache/acceleration API endpoint                 |
-| `VITE_ENABLE_TELEMETRY`        | `false`                    | Enables privacy-filtered Plausible/PostHog telemetry     |
+| `VITE_ENABLE_TELEMETRY`        | `false`                    | Enables privacy-filtered telemetry                       |
 | `VITE_TELEMETRY_ALLOWED_HOSTS` | —                          | Required comma-separated telemetry host allowlist        |
-| `VITE_PLAUSIBLE_DOMAIN`        | —                          | Optional legacy Plausible site domain                    |
-| `VITE_PLAUSIBLE_SRC`           | —                          | Optional deploy-time Plausible script URL                |
+| `VITE_PLAUSIBLE_DOMAIN`        | —                          | Legacy nonofficial/dev Plausible site domain             |
+| `VITE_PLAUSIBLE_SRC`           | —                          | Legacy nonofficial/dev Plausible script URL              |
 | `VITE_POSTHOG_KEY`             | —                          | Optional deploy-time PostHog browser project key         |
-| `VITE_POSTHOG_HOST`            | `https://e.conduit.market` | Optional first-party PostHog proxy host                  |
+| `VITE_POSTHOG_HOST`            | `https://e.conduit.market` | Nonofficial/dev override; official hosts pin the proxy   |
 | `VITE_NIP89_RELAY_HINT`        | `VITE_RELAY_URL`           | Relay hint for Conduit NIP-89 handler metadata           |
 | `VITE_NIP89_MARKET_PUBKEY`     | —                          | Official Conduit Market handler pubkey                   |
 | `VITE_NIP89_MERCHANT_PUBKEY`   | —                          | Official Conduit Merchant Portal handler pubkey          |
@@ -154,7 +154,7 @@ cannot override that managed flag. Every app emits
 time, public feature flags, and public-config digest; the manifest is a strict
 non-secret allowlist.
 
-PostHog telemetry uses memory-only SDK state, one static browser-service
+PostHog telemetry uses sessionStorage-only SDK state, one static browser-service
 distinct ID, and disabled person-profile processing. The project must discard
 IP data. Do not enable PostHog's server-hashed cookieless mode for these events:
 it requires raw IP, host, and user-agent inputs that Conduit's privacy filter
@@ -274,6 +274,8 @@ conduit-mono/
 ## Open Source
 
 - Code and redistributable bundled assets in this repository are MIT-licensed.
+- Released legal prose under `packages/ui/src/legal/versions/` is excluded from
+  the MIT grant so a fork cannot present modified terms as Conduit-approved.
 - Conduit names, logos, and branded app identities are not granted under the MIT license.
 - Forks are welcome, but they must not imply official Conduit operation or endorsement.
 - Public client builds should remain rebuildable from the public repository without private production assets.
@@ -282,7 +284,10 @@ See [OPEN_SOURCE.md](./OPEN_SOURCE.md) for reproducible-build notes and [TRADEMA
 
 ## Protocol
 
-- **Authentication**: External signers only (NIP-07, NIP-46). No key generation or custody.
+- **Authentication**: Durable Nostr account keys remain in external NIP-07 or
+  NIP-46 signers. Guest checkout may create a temporary order-scoped browser
+  key, and NIP-46 connections may use an encrypted browser-local client key;
+  neither is a Conduit-custodied account key.
 - **Products**: Kind 30402 replaceable events (NIP-99)
 - **Orders**: NIP-17 gift-wrapped encrypted DMs between buyer and merchant
 - **Payments**: Non-custodial Lightning payment requests, NWC/WebLN payment rails, and payment proofs. No fund custody.
@@ -303,10 +308,15 @@ See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for system diagrams and protocol det
 ## Links
 
 - [conduit.market](https://conduit.market)
+- [Conduit Shop Product Privacy Policy](https://shop.conduit.market/privacy-policy)
+- [Conduit Shop Product Terms of Service](https://shop.conduit.market/terms-of-service)
+- [Conduit Sell Product Privacy Policy](https://sell.conduit.market/privacy-policy)
+- [Conduit Sell Product Terms of Service](https://sell.conduit.market/terms-of-service)
 - [Nostr profile](https://njump.me/nprofile1qqsfmys8030rttmk77cumprnsqqt0whmg0fqkz3xcx8798ag8rf8z3sad6jak)
 
 ## License
 
-MIT for code and redistributable bundled assets in this repository.
+MIT for code and redistributable bundled assets in this repository, except for
+the released legal prose identified in [LICENSE](./LICENSE).
 
 Conduit trademarks and logos are reserved and are not licensed under MIT. See [TRADEMARKS.md](./TRADEMARKS.md).

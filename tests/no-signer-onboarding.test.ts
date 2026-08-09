@@ -36,7 +36,7 @@ describe("no-signer onboarding", () => {
     expect(sharedSigner).toContain("Connect Extension (NIP-07)")
     expect(sharedSigner).toContain("Connect Signer (NIP-46)")
     expect(sharedSigner).toContain(
-      "Conduit never stores or recovers your keys."
+      "Conduit does not custody or recover your durable Nostr account key."
     )
     expect(merchantRoot).toContain("UNLOCK YOUR COMMAND CENTER")
     expect(merchantRoot).toContain(

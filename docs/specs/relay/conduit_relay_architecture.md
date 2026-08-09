@@ -492,9 +492,13 @@ private-inbox-compatible relays serves two roles:
   relays from the operator-approved registry when the recipient has no usable
   declaration.
 
-Both roles preserve NIP-44/NIP-59 encryption; the relay sees only gift wraps.
-This is a migration exception, not NIP-17 routing, and its removal gate lives
-in `docs/knowledge/nip17-inbox-bootstrap-migration.md`. Eligibility is the
+Both roles preserve NIP-44/NIP-59 encryption. A selected relay receives the
+encrypted gift wrap and can observe its outer recipient tag, event size, timing,
+traffic volume, connection behavior, direct-connection IP address, and—when
+NIP-42 is used—authentication pubkey and request filters. No fixed retention,
+automatic deletion, no-logging behavior, or complete metadata privacy is
+assumed. This is a migration exception, not NIP-17 routing, and its removal gate
+lives in `docs/knowledge/nip17-inbox-bootstrap-migration.md`. Eligibility is the
 secure intersection of the write registry and the compatibility read set.
 Recipient NIP-65 read evidence may only reorder that intersection; it never
 widens it to arbitrary NIP-65, local IN/OUT, commerce-priority, source, hint,

@@ -80,10 +80,11 @@ The boundary provides:
 - **Wrap + publish.** A single primitive builds the rumor (kind 14 or 16),
   gift-wraps it to the recipient and a sender self-copy, publishes via the shared
   secure-message relay planner, and writes the local cache. The recipient wrap is
-  published exclusively to the recipient's declared kind-10050 relays; the
-  sender self-copy is published exclusively to the principal's declared
-  kind-10050 relays. Order sends and general-DM sends use the same primitive with
-  a different rumor kind.
+  published to the recipient's authoritative declared kind-10050 relays, except
+  for the gated validated-kind-16 compatibility lane below. The sender self-copy
+  remains declaration-only. Kind-14 general DMs never use compatibility writes.
+  Order sends and general-DM sends use the same primitive with a different rumor
+  kind.
 - **Unwrap + classify.** Each inbound gift wrap resolves to one of:
   - `ok` with the decrypted rumor and a `category` of `order` (kind 16) or
     `direct` (kind 14);

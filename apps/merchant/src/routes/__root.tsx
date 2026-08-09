@@ -22,6 +22,7 @@ import {
   NotFoundPage,
   SignerAuthUrlNotice,
   SignerConnectPanel,
+  isProductLegalPath,
   isMobileSignerEnvironment,
 } from "@conduit/ui"
 import {
@@ -68,11 +69,18 @@ function RootShell({ children }: { children: ReactNode }) {
 }
 
 function RootLayout() {
-  const { authUrl, dismissAuthUrl, pubkey, method, status } = useAuth()
-  const [authFallbackReady, setAuthFallbackReady] = useState(false)
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
   })
+
+  if (isProductLegalPath(pathname)) return <Outlet />
+
+  return <MerchantProductRoot pathname={pathname} />
+}
+
+function MerchantProductRoot({ pathname }: { pathname: string }) {
+  const { authUrl, dismissAuthUrl, pubkey, method, status } = useAuth()
+  const [authFallbackReady, setAuthFallbackReady] = useState(false)
   const appLoadTelemetrySentRef = useRef(false)
   const previousAuthStatusRef = useRef(status)
   const previousAuthMethodRef = useRef(method)
@@ -235,6 +243,26 @@ function AuthRestoring({ method }: { method: "nip07" | "nip46" | null }) {
 }
 
 function RootErrorComponent({ error }: ErrorComponentProps) {
+  const pathname = useRouterState({
+    select: (state) => state.location.pathname,
+  })
+
+  if (isProductLegalPath(pathname)) {
+    return (
+      <div className="min-h-dvh bg-[var(--background)] px-4 py-12 text-[var(--text-primary)]">
+        <ErrorPage
+          title="This legal page could not be displayed"
+          message="Reload the page. If the problem continues, use the canonical Shop legal URL."
+          showReload
+        />
+      </div>
+    )
+  }
+
+  return <MerchantProductRootError error={error} />
+}
+
+function MerchantProductRootError({ error }: { error: Error }) {
   const { pubkey, status } = useAuth()
   const signerConnected = status === "connected" && !!pubkey
 
@@ -273,7 +301,8 @@ function ReportBugAction() {
       <a
         href={bugReportUrl}
         target="_blank"
-        rel="noreferrer"
+        rel="noopener noreferrer"
+        referrerPolicy="no-referrer"
         className="font-medium text-primary-500 underline underline-offset-4 hover:text-primary-600"
       >
         Report a Bug
@@ -381,6 +410,23 @@ function ConnectGate() {
           onForget={disconnect}
         />
       </main>
+      <nav
+        aria-label="Product legal documents"
+        className="flex items-center justify-center gap-4 text-sm text-[var(--text-secondary)]"
+      >
+        <a
+          href="/terms-of-service"
+          className="rounded-sm underline underline-offset-4 hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        >
+          Terms
+        </a>
+        <a
+          href="/privacy-policy"
+          className="rounded-sm underline underline-offset-4 hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        >
+          Privacy
+        </a>
+      </nav>
       {SHOW_DEVTOOLS && <TanStackRouterDevtools />}
     </div>
   )

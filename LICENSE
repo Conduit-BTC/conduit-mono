@@ -19,3 +19,17 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+Legal Content and Trademarks Exception
+
+The Product Privacy Policy and Product Terms of Service text in
+packages/ui/src/legal/versions/ is not licensed under the MIT License above.
+Copyright (c) 2026 Conduit Hodlings Inc. All rights reserved. You may reproduce
+and redistribute those unmodified files for source review, archival, and
+reference to the official Conduit Product Apps. No permission is granted to
+modify that text or present it as governing another deployment. Forks and
+independently operated deployments must provide their own legal documents and
+must not imply that Conduit Hodlings Inc operates, sponsors, or endorses them.
+
+Conduit names, logos, marks, product names, and branded application identities
+are not licensed under the MIT License. No trademark rights are granted.
