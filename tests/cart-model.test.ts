@@ -325,7 +325,7 @@ describe("cart model", () => {
     })
   })
 
-  it("requires a fresh complete commerce read before checkout can proceed", () => {
+  it("requires typed positive live evidence before checkout can proceed", () => {
     const cartItems = [item({ stock: 2 })]
     const refreshedProduct: Product = {
       id: cartItems[0]!.productId,
@@ -369,6 +369,40 @@ describe("cart model", () => {
         ...freshMeta,
         degraded: true,
       })
+    ).toBe(false)
+    expect(
+      isCartAvailabilityReadFresh(
+        refreshedAvailability,
+        { ...freshMeta, degraded: true },
+        [
+          {
+            productId: cartItems[0]!.productId,
+            addressId: cartItems[0]!.productId,
+            issue: null,
+            coverage: { listing: "complete", deletion: "partial" },
+          },
+        ]
+      )
+    ).toBe(true)
+    expect(
+      isCartAvailabilityReadFresh(
+        [
+          ...refreshedAvailability,
+          {
+            ...refreshedAvailability[0]!,
+            productId: "30402:merchant:missing-live-evidence",
+          },
+        ],
+        { ...freshMeta, degraded: true },
+        [
+          {
+            productId: cartItems[0]!.productId,
+            addressId: cartItems[0]!.productId,
+            issue: null,
+            coverage: { listing: "complete", deletion: "partial" },
+          },
+        ]
+      )
     ).toBe(false)
     expect(
       isCartAvailabilityReadFresh(

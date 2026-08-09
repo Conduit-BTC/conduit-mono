@@ -60,6 +60,11 @@ export {
 } from "./LegacyDirectMessageNotice"
 export { LiveReadNotice, type LiveReadNoticeProps } from "./LiveReadNotice"
 export {
+  FreshnessChip,
+  type FreshnessChipProps,
+  type FreshnessChipStatus,
+} from "./FreshnessChip"
+export {
   MessagingReadinessNotice,
   type MessagingReadinessNoticeProps,
   type MessagingReadinessState,

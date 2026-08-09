@@ -59,14 +59,16 @@ export function useCartProductAvailability(items: CartItem[]) {
       items,
       commerceResult?.data
     )
+    const diagnostics = commerceResult?.diagnostics ?? []
 
     return {
       availability: refreshedAvailability,
       fresh: isCartAvailabilityReadFresh(
         refreshedAvailability,
-        commerceResult?.meta
+        commerceResult?.meta,
+        diagnostics
       ),
-      diagnostics: commerceResult?.diagnostics ?? [],
+      diagnostics,
     }
   }
 

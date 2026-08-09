@@ -293,14 +293,35 @@ export function getCartAvailabilityVerificationMessage(
 
 export function isCartAvailabilityReadFresh(
   availability: CartProductAvailability[],
-  meta: CartAvailabilityReadMeta | undefined
+  meta: CartAvailabilityReadMeta | undefined,
+  diagnostics?: readonly ProductAvailabilityDiagnostic[]
 ): boolean {
+  const positiveLiveProductIds = new Set(
+    diagnostics
+      ?.filter(
+        (diagnostic) =>
+          diagnostic.issue === null &&
+          diagnostic.coverage !== undefined &&
+          diagnostic.coverage.listing !== "unavailable"
+      )
+      .map((diagnostic) => diagnostic.productId) ?? []
+  )
+  const typedLiveEvidence =
+    diagnostics !== undefined &&
+    diagnostics.length > 0 &&
+    diagnostics.every(
+      (diagnostic) =>
+        diagnostic.issue === null &&
+        diagnostic.coverage !== undefined &&
+        diagnostic.coverage.listing !== "unavailable"
+    ) &&
+    availability.every((entry) => positiveLiveProductIds.has(entry.productId))
   return (
     availability.length > 0 &&
     !!meta &&
     meta.source !== "local_cache" &&
     !meta.stale &&
-    !meta.degraded &&
+    (!meta.degraded || typedLiveEvidence) &&
     availability.every((entry) => entry.refreshed)
   )
 }

@@ -139,7 +139,7 @@ describe("resolveInboxDeclaration", () => {
       }),
     })
 
-    expect(result.relayUrls).toEqual(["wss://tie-b.example"])
+    expect(result.relayUrls).toEqual(["wss://tie-a.example"])
   })
 
   it("ignores declarations signed by other authors", async () => {

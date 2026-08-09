@@ -26,6 +26,11 @@ Public PRs should identify the existing implementation context they checked and 
 
 Reviewers may request a durable contract update when the behavior has broad or long-lived public implications, but should not block an otherwise complete change solely because it lacks spec churn.
 
+### Shared Protocol Boundaries
+
+- `docs/knowledge/product-deletion-convergence.md`: durable NIP-09 evidence,
+  source-aware delivery, retry, and cross-surface product resolution
+
 ## Where To Put New Docs
 
 - Add new architecture-level material to `docs/ARCHITECTURE.md` only with explicit approval.

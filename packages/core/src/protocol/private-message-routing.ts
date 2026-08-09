@@ -164,7 +164,7 @@ function newestDeclarationEvent(
     const candidateAt = event.created_at ?? 0
     if (
       candidateAt > newestAt ||
-      (candidateAt === newestAt && (event.id ?? "") > (newest.id ?? ""))
+      (candidateAt === newestAt && (event.id ?? "") < (newest.id ?? ""))
     ) {
       newest = event
     }
