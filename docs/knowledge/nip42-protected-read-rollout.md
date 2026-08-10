@@ -47,7 +47,7 @@ development fixtures are grouped because they do not own production traffic.
 | `packages/core/src/protocol/messaging.ts`                                                   | NDK gift wrap/unwrap and publish edges       | read/write envelope  | encrypted orders and messages              | allowed temporary envelope edge           | signer/session checks, not relay-read auth                          | retain; migrate only with a separate plain cryptography contract      |
 | `nip07-signer.ts`, `remote-signer.ts`, `session-signer.ts`, and `ndk-nostr-event-signer.ts` | external signer adapters                     | sign/encrypt/decrypt | account-authorized operations              | allowed temporary signer edge             | account/revision fencing                                            | adapt to the plain signer contract; no relay ownership                |
 | `relay-publish.ts`, `merchant-order-publish.ts`, and declaration repair writes              | NDK relay publish/set                        | write                | encrypted/public commerce events           | prohibited long-term core relay ownership | publish ACK/reject handling, no protected-read auth                 | explicit residual write-adapter debt; unchanged here                  |
-| `follows.ts` and Market merchant-trust hydration                                            | direct NDK public fetches                    | read                 | no                                         | legacy adapter debt                       | no NIP-42 account proof                                             | preserve no-signer behavior; later executor slice                     |
+| `follows.ts`, Market merchant-trust hydration, and `shopper-trust.ts`                       | direct NDK public fetches                    | read                 | no                                         | legacy adapter debt                       | no NIP-42 account proof                                             | preserve no-signer behavior; later executor slice                     |
 | `scripts/dev`, `scripts/smoke`, `tests`, and `e2e` relay fixtures                           | local/mock WebSockets and NDK test objects   | test/dev             | synthetic only                             | fixture-specific                          | mixed                                                               | deterministic NIP-42 fixture added; no production authority           |
 
 Nostrify was evaluated as the preferred replaceable substrate. The current
@@ -248,41 +248,41 @@ configuration and deployment are outside this client change.
 The implementation is expected to cover these cases with a scripted relay and
 fake signer; this list does not claim that validation has already run.
 
-|   # | Case                                                           | Required result                                              |
-| --: | -------------------------------------------------------------- | ------------------------------------------------------------ |
-|   1 | Public read, no challenge                                      | `REQ` has no NIP-42 account proof; signer is not called      |
-|   2 | Public read receives unsolicited challenge                     | No auth prompt or `AUTH` event                               |
-|   3 | Protected read, challenge before `REQ`                         | Authenticate before protected subscription                   |
-|   4 | Protected `REQ`, then challenge and `auth-required:` close     | Authenticate and retry with a new id                         |
-|   5 | Matching positive auth `OK`                                    | Protected retry proceeds                                     |
-|   6 | Matching negative auth `OK`                                    | Typed rejection and connection close                         |
-|   7 | Unrelated `OK` before matching `OK`                            | Unrelated frame cannot authorize                             |
-|   8 | Auth `OK` timeout                                              | Typed auth timeout, never empty                              |
-|   9 | NIP-07 signer rejection                                        | Typed signer rejection, never guest fallback                 |
-|  10 | NIP-46 unavailable/timeout                                     | Typed signer unavailable/timeout                             |
-|  11 | Signed pubkey differs from active account                      | Fail closed with session identity mismatch                   |
-|  12 | Signed auth event mutates required fields                      | Protocol-invalid failure; no send                            |
-|  13 | Valid auth draft shape                                         | Kind, empty content, exact tags, and fresh time              |
-|  14 | Retry subscription id                                          | Differs from the pre-auth id                                 |
-|  15 | Repeated/new challenges exceed bound                           | Typed bounded failure and socket close                       |
-|  16 | Reconnect after prior success                                  | New connection authenticates with new challenge              |
-|  17 | `restricted:` after auth success                               | Typed subscription rejection, not empty                      |
-|  18 | `auth-required:` without a challenge                           | Typed protocol/auth unavailable failure                      |
-|  19 | Invalid event id/signature from relay                          | Event rejected with source-aware observation                 |
-|  20 | Malformed/unknown relay frames                                 | Bounded protocol observation; no crash or authorization      |
-|  21 | One relay succeeds and one auth fails                          | Events preserved; overall coverage is partial                |
-|  22 | Every relay auth attempt fails                                 | Overall coverage unavailable, not empty                      |
-|  23 | Every required relay reaches EOSE with zero events             | Complete empty result                                        |
-|  24 | Cached messages plus degraded refresh                          | Cache remains visible as stale/degraded                      |
-|  25 | Two account sessions use the same relay                        | No authenticated socket, challenge, or auth reuse            |
-|  26 | Logout, switch, signer removal, relay removal, or lease change | Relevant authenticated sockets close                         |
-|  27 | Guest attempts protected read                                  | Rejected before connect/sign; no fallback                    |
-|  28 | Diagnostics and evidence persistence                           | Client persists no challenge/auth/session evidence           |
-|  29 | Public product/profile/relay-list/declaration reads            | No-NIP-42 behavior and fixtures remain unchanged             |
-|  30 | Existing NIP-17 order delivery and retry behavior              | #253-sensitive delivery/declaration regressions remain green |
-|  31 | Executor contracts and scripted relay fixture                  | Plain objects only; no NDK import or NDK-owned connection    |
-|  32 | Protected inbox service import boundary                        | Service depends on executor/plain signer, not NDK transport  |
-|  33 | NIP-11-only auth claim in both apps                            | Advertised/untested only; never succeeded or verified        |
+|   # | Case                                                              | Required result                                              |
+| --: | ----------------------------------------------------------------- | ------------------------------------------------------------ |
+|   1 | Public read, no challenge                                         | `REQ` has no NIP-42 account proof; signer is not called      |
+|   2 | Public read receives unsolicited challenge                        | No auth prompt or `AUTH` event                               |
+|   3 | Protected read, challenge before `REQ`                            | Authenticate before protected subscription                   |
+|   4 | Protected `REQ`, then challenge and `auth-required:` close        | Authenticate and retry with a new id                         |
+|   5 | Matching positive auth `OK`                                       | Protected retry proceeds                                     |
+|   6 | Matching negative auth `OK`                                       | Typed rejection and connection close                         |
+|   7 | Unrelated `OK` before matching `OK`                               | Unrelated frame cannot authorize                             |
+|   8 | Auth `OK` timeout                                                 | Typed auth timeout, never empty                              |
+|   9 | NIP-07 signer rejection                                           | Typed signer rejection, never guest fallback                 |
+|  10 | NIP-46 unavailable/timeout                                        | Typed signer unavailable/timeout                             |
+|  11 | Signed pubkey differs from active account                         | Fail closed with session identity mismatch                   |
+|  12 | Signed auth event mutates required fields                         | Protocol-invalid failure; no send                            |
+|  13 | Valid auth draft shape                                            | Kind, empty content, exact tags, and fresh time              |
+|  14 | Retry subscription id                                             | Differs from the pre-auth id                                 |
+|  15 | Repeated/new challenges exceed bound                              | Typed bounded failure and socket close                       |
+|  16 | Reconnect after prior success                                     | New connection authenticates with new challenge              |
+|  17 | `restricted:` after auth success                                  | Typed subscription rejection, not empty                      |
+|  18 | `auth-required:` without a challenge                              | Typed protocol/auth unavailable failure                      |
+|  19 | Invalid event id/signature from relay                             | Event rejected with source-aware observation                 |
+|  20 | Malformed/unknown relay frames                                    | Bounded protocol observation; no crash or authorization      |
+|  21 | One relay succeeds and one auth fails                             | Events preserved; overall coverage is partial                |
+|  22 | Every relay auth attempt fails                                    | Overall coverage unavailable, not empty                      |
+|  23 | Every required relay reaches EOSE with zero events                | Complete empty result                                        |
+|  24 | Cached messages plus degraded refresh                             | Cache remains visible as stale/degraded                      |
+|  25 | Two account sessions use the same relay                           | No authenticated socket, challenge, or auth reuse            |
+|  26 | Logout, switch, signer removal, relay removal, or lease change    | Relevant authenticated sockets close                         |
+|  27 | Guest attempts protected read                                     | Rejected before connect/sign; no fallback                    |
+|  28 | Diagnostics and evidence persistence                              | Client persists no challenge/auth/session evidence           |
+|  29 | Public product/profile/relay-list/declaration/shopper-trust reads | No-NIP-42 behavior and fixtures remain unchanged             |
+|  30 | Existing NIP-17 order delivery and retry behavior                 | #253-sensitive delivery/declaration regressions remain green |
+|  31 | Executor contracts and scripted relay fixture                     | Plain objects only; no NDK import or NDK-owned connection    |
+|  32 | Protected inbox service import boundary                           | Service depends on executor/plain signer, not NDK transport  |
+|  33 | NIP-11-only auth claim in both apps                               | Advertised/untested only; never succeeded or verified        |
 
 ## Residual debt
 
