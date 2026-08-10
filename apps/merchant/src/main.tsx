@@ -3,7 +3,11 @@ import { createRoot } from "react-dom/client"
 import { RouterProvider, createRouter } from "@tanstack/react-router"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { ReactQueryDevtools } from "@tanstack/react-query-devtools"
-import { AuthProvider, ConduitSessionProvider } from "@conduit/core"
+import {
+  AuthProvider,
+  ConduitSessionProvider,
+  pruneShopperTrustSnapshots,
+} from "@conduit/core"
 import { isProductLegalPath } from "@conduit/ui"
 import { routeTree } from "./routeTree.gen"
 import { startProductDeletionDeliveryWorker } from "./lib/product-deletion-delivery"
@@ -33,6 +37,7 @@ if (isProductLegalEntry) {
   )
 } else {
   startProductDeletionDeliveryWorker()
+  void pruneShopperTrustSnapshots()
 
   root.render(
     <StrictMode>

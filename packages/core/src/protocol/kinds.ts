@@ -30,6 +30,9 @@ export const EVENT_KINDS = {
   /** NIP-57: Zap receipt */
   ZAP_RECEIPT: 9735,
 
+  /** NIP-56: Report */
+  REPORT: 1984,
+
   /** NIP-65: Relay list metadata */
   RELAY_LIST: 10002,
 

@@ -275,6 +275,39 @@ describe("planRelayReads", () => {
     })
     expect(plan.relayUrls).toEqual(["wss://shared.example.com"])
   })
+
+  it("plans shopper trust from merchant and shopper NIP-65 hints before public relays", () => {
+    const state = settings([entry("wss://public.example.com")])
+    const lists = new Map<string, RelayList>([
+      [
+        "merchant",
+        relayList("merchant", [], ["wss://merchant-write.example.com"]),
+      ],
+      [
+        "shopper",
+        relayList(
+          "shopper",
+          ["wss://shopper-read.example.com"],
+          ["wss://shopper-write.example.com"]
+        ),
+      ],
+    ])
+
+    const plan = planRelayReads({
+      intent: "shopper_trust",
+      authors: ["merchant", "shopper"],
+      recipients: ["shopper"],
+      relayLists: lists,
+      settings: state,
+    })
+
+    expect(plan.relayUrls.slice(0, 3)).toEqual([
+      "wss://merchant-write.example.com",
+      "wss://shopper-write.example.com",
+      "wss://shopper-read.example.com",
+    ])
+    expect(plan.relayUrls).toContain("wss://public.example.com")
+  })
 })
 
 describe("planRelayWrites", () => {

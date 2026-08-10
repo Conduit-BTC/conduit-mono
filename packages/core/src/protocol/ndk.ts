@@ -8,6 +8,7 @@ import { schnorr } from "@noble/curves/secp256k1.js"
 import { hexToBytes } from "@noble/curves/utils.js"
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
+import { matchFilter, validateEvent, type Filter } from "nostr-tools"
 import { config } from "../config"
 import {
   getGeneralReadRelayUrls,
@@ -18,6 +19,7 @@ import {
   recordRelayFailure,
   recordRelaySuccess,
 } from "./relay-health"
+import type { SignedPublicNostrEvent } from "./signed-event"
 
 export type NdkConnectionState = "idle" | "connecting" | "connected" | "error"
 
@@ -33,6 +35,7 @@ export interface FetchEventsFanoutOptions {
   fetchTimeoutMs?: number
   skipHealthFilter?: boolean
   reuseRelayConnections?: boolean
+  signal?: AbortSignal
 }
 
 export interface FetchEventsFanoutProgress {
@@ -50,6 +53,21 @@ export interface FetchEventsRelayStatus {
 export interface FetchEventsFanoutResult {
   events: NDKEvent[]
   relays: FetchEventsRelayStatus[]
+  /**
+   * True only when every returned event completed id and Schnorr verification
+   * through this module's bounded worker-backed pipeline.
+   */
+  eventsVerified?: boolean
+}
+
+export interface VerifySignedPublicNostrEventsOptions {
+  signal?: AbortSignal
+  maxEvents?: number
+}
+
+export interface VerifySignedPublicNostrEventsResult {
+  events: SignedPublicNostrEvent[]
+  truncated: boolean
 }
 
 export interface FetchEventsFanoutDiagnosticsResult {
@@ -161,21 +179,75 @@ export function getNdk(): NDK {
 }
 
 const MAX_CONCURRENT_RELAY_READS = 8
+const MAX_QUEUED_RELAY_READS = 128
 let activeRelayReads = 0
-const relayReadWaiters: Array<() => void> = []
+type RelayReadWaiter = {
+  resolve: () => void
+  reject: (reason: unknown) => void
+  signal?: AbortSignal
+  onAbort?: () => void
+}
+const relayReadWaiters: RelayReadWaiter[] = []
 
-function acquireRelayReadSlot(): Promise<void> {
+function abortError(): Error {
+  const error = new Error("The operation was aborted.")
+  error.name = "AbortError"
+  return error
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw abortError()
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    (error instanceof Error && error.name === "AbortError") ||
+    (typeof DOMException !== "undefined" &&
+      error instanceof DOMException &&
+      error.name === "AbortError")
+  )
+}
+
+function acquireRelayReadSlot(signal?: AbortSignal): Promise<void> {
+  try {
+    throwIfAborted(signal)
+  } catch (error) {
+    return Promise.reject(error)
+  }
+
   if (activeRelayReads < MAX_CONCURRENT_RELAY_READS) {
     activeRelayReads += 1
     return Promise.resolve()
   }
-  return new Promise<void>((resolve) => relayReadWaiters.push(resolve))
+  if (relayReadWaiters.length >= MAX_QUEUED_RELAY_READS) {
+    return Promise.reject(new Error("Relay read queue is at capacity."))
+  }
+
+  return new Promise<void>((resolve, reject) => {
+    const waiter: RelayReadWaiter = { resolve, reject, signal }
+    if (signal) {
+      waiter.onAbort = () => {
+        const index = relayReadWaiters.indexOf(waiter)
+        if (index >= 0) relayReadWaiters.splice(index, 1)
+        reject(abortError())
+      }
+      signal.addEventListener("abort", waiter.onAbort, { once: true })
+    }
+    relayReadWaiters.push(waiter)
+  })
 }
 
 function releaseRelayReadSlot(): void {
-  const next = relayReadWaiters.shift()
-  if (next) {
-    next()
+  while (relayReadWaiters.length > 0) {
+    const next = relayReadWaiters.shift()!
+    if (next.signal && next.onAbort) {
+      next.signal.removeEventListener("abort", next.onAbort)
+    }
+    if (next.signal?.aborted) {
+      next.reject(abortError())
+      continue
+    }
+    next.resolve()
     return
   }
   activeRelayReads = Math.max(0, activeRelayReads - 1)
@@ -189,6 +261,40 @@ type RawNostrEvent = {
   tags: string[][]
   content: string
   sig: string
+}
+
+const HEX_64 = /^[0-9a-f]{64}$/
+const HEX_128 = /^[0-9a-f]{128}$/
+
+function isCanonicalSignedPublicNostrEvent(
+  event: RawNostrEvent
+): event is SignedPublicNostrEvent {
+  return (
+    HEX_64.test(event.id) &&
+    HEX_64.test(event.pubkey) &&
+    HEX_128.test(event.sig) &&
+    Number.isSafeInteger(event.created_at) &&
+    event.created_at > 0 &&
+    Number.isSafeInteger(event.kind) &&
+    event.kind >= 0 &&
+    event.kind <= 65_535 &&
+    typeof event.content === "string" &&
+    Array.isArray(event.tags) &&
+    event.tags.every(
+      (tag) =>
+        Array.isArray(tag) &&
+        tag.length > 0 &&
+        tag.every((value) => typeof value === "string")
+    )
+  )
+}
+
+function requestedEventLimit(filter: NDKFilter): number | null {
+  return typeof filter.limit === "number" &&
+    Number.isSafeInteger(filter.limit) &&
+    filter.limit > 0
+    ? filter.limit
+    : null
 }
 
 let relayReadSubCounter = 0
@@ -206,14 +312,25 @@ function computeEventId(event: RawNostrEvent): string {
 }
 
 // Schnorr verification (~1-2ms) dominates read cost, and the same event arrives
-// from many relays. Cache verified ids so the expensive check runs once per
-// unique event, not once per relay copy. The id is always recomputed from
-// content (cheap sha256), so a forged event reusing a known id can't skip it -
-// a matching id guarantees identical signed content.
-const MAX_VERIFIED_ID_CACHE = 20000
-const verifiedEventIds = new Set<string>()
+// from many relays. Cache the id+signature proof so the expensive check runs
+// once per exact signed event, not once per relay copy. Event ids do not bind
+// the signature itself, so caching by id alone would let a later invalid
+// signature reuse an otherwise valid event id.
+const MAX_VERIFIED_PROOF_CACHE = 20000
+const verifiedEventProofs = new Set<string>()
+const MAX_RAW_RELAY_EVENT_FRAMES = 5000
+const MIN_RAW_RELAY_EVENT_FRAMES = 256
+const MAX_RELAY_MESSAGE_CHARS = 512 * 1024
+const MAX_RELAY_SUBSCRIPTION_CHARS = 8 * 1024 * 1024
+const MAX_RELAY_CONNECTION_FRAMES = 10_000
+const MAX_RELAY_CONNECTION_CHARS = 16 * 1024 * 1024
+const MAX_SIGNATURES_PER_RELAY_READ = 512
 
 type SchnorrItem = { sig: string; id: string; pubkey: string }
+
+function verificationProofKey(event: RawNostrEvent): string {
+  return `${event.id}:${event.sig}`
+}
 
 // Cheap main-thread check: valid shape + id binds to content. Returns the
 // verified-cache state so callers know whether schnorr still needs to run.
@@ -221,15 +338,11 @@ function checkEventId(
   event: RawNostrEvent
 ): "cached" | "needs-schnorr" | "invalid" {
   try {
-    if (
-      typeof event?.id !== "string" ||
-      typeof event.sig !== "string" ||
-      typeof event.pubkey !== "string"
-    ) {
-      return "invalid"
-    }
+    if (!isCanonicalSignedPublicNostrEvent(event)) return "invalid"
     if (computeEventId(event) !== event.id) return "invalid"
-    return verifiedEventIds.has(event.id) ? "cached" : "needs-schnorr"
+    return verifiedEventProofs.has(verificationProofKey(event))
+      ? "cached"
+      : "needs-schnorr"
   } catch {
     return "invalid"
   }
@@ -249,32 +362,129 @@ function verifySchnorrSync(items: SchnorrItem[]): boolean[] {
   })
 }
 
+async function verifySchnorrChunked(
+  items: SchnorrItem[],
+  signal?: AbortSignal
+): Promise<boolean[]> {
+  const valid: boolean[] = []
+  const chunkSize = 16
+  for (let index = 0; index < items.length; index += chunkSize) {
+    throwIfAborted(signal)
+    valid.push(...verifySchnorrSync(items.slice(index, index + chunkSize)))
+    if (index + chunkSize < items.length) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    }
+  }
+  throwIfAborted(signal)
+  return valid
+}
+
 // Offload schnorr verification to a worker so the crypto never blocks the main
-// thread. Falls back to sync verification when Workers are unavailable (SSR,
-// tests) or the worker fails.
+// thread. When Workers are unavailable (SSR/tests), verify in bounded chunks
+// with cancellation points. Active worker failures reject their batches.
 let verifyWorker: Worker | null | undefined
 let verifyReqId = 0
+const DEFAULT_VERIFY_WORKER_TIMEOUT_MS = 8_000
+let verifyWorkerTimeoutMs = DEFAULT_VERIFY_WORKER_TIMEOUT_MS
 type PendingVerifyBatch = {
   items: SchnorrItem[]
   resolve: (valid: boolean[]) => void
+  reject: (reason: unknown) => void
   timer: ReturnType<typeof setTimeout>
+  signal?: AbortSignal
+  onAbort?: () => void
 }
 const pendingVerify = new Map<number, PendingVerifyBatch>()
+let verifyWorkerRestartScheduled = false
 
-function resolvePendingVerifyBatch(
-  reqId: number,
-  valid: boolean[] | undefined
-): void {
+function clearPendingVerifyBatch(
+  reqId: number
+): PendingVerifyBatch | undefined {
   const pending = pendingVerify.get(reqId)
-  if (!pending) return
+  if (!pending) return undefined
 
   pendingVerify.delete(reqId)
   clearTimeout(pending.timer)
-  pending.resolve(valid ?? verifySchnorrSync(pending.items))
+  if (pending.signal && pending.onAbort) {
+    pending.signal.removeEventListener("abort", pending.onAbort)
+  }
+  return pending
+}
+
+function resolvePendingVerifyBatch(reqId: number, valid: boolean[]): void {
+  const pending = clearPendingVerifyBatch(reqId)
+  if (!pending) return
+
+  if (pending.signal?.aborted) {
+    pending.reject(abortError())
+    return
+  }
+  pending.resolve(valid)
+}
+
+function rejectPendingVerifyBatch(reqId: number, reason: unknown): void {
+  clearPendingVerifyBatch(reqId)?.reject(reason)
+}
+
+function scheduleVerifyWorkerRestart(): void {
+  if (verifyWorkerRestartScheduled || !verifyWorker) return
+  verifyWorkerRestartScheduled = true
+
+  queueMicrotask(() => {
+    verifyWorkerRestartScheduled = false
+    const worker = verifyWorker
+    if (worker) {
+      verifyWorker = undefined
+      worker.onmessage = null
+      worker.onerror = null
+      try {
+        worker.terminate()
+      } catch {
+        // ignore teardown errors
+      }
+    }
+
+    if (pendingVerify.size === 0) return
+    const replacement = getVerifyWorker()
+    if (!replacement) {
+      for (const reqId of [...pendingVerify.keys()]) {
+        rejectPendingVerifyBatch(
+          reqId,
+          new Error("Signature verification worker is unavailable.")
+        )
+      }
+      return
+    }
+
+    for (const [reqId, pending] of [...pendingVerify.entries()]) {
+      if (pending.signal?.aborted) {
+        clearPendingVerifyBatch(reqId)?.reject(abortError())
+        continue
+      }
+      try {
+        replacement.postMessage({ reqId, items: pending.items })
+      } catch {
+        failVerifyWorker(replacement)
+        break
+      }
+    }
+  })
+}
+
+function cancelPendingVerifyBatch(reqId: number): void {
+  const pending = clearPendingVerifyBatch(reqId)
+  if (!pending) return
+  pending.reject(abortError())
+  // A Web Worker cannot remove an already-posted message from its queue.
+  // Restarting clears stale crypto work; non-cancelled batches are re-posted.
+  scheduleVerifyWorkerRestart()
 }
 
 function failVerifyWorker(worker: Worker): void {
-  if (verifyWorker === worker) verifyWorker = null
+  if (verifyWorker !== worker) return
+  verifyWorker = null
+  worker.onmessage = null
+  worker.onerror = null
   try {
     worker.terminate()
   } catch {
@@ -282,14 +492,23 @@ function failVerifyWorker(worker: Worker): void {
   }
 
   for (const reqId of [...pendingVerify.keys()]) {
-    resolvePendingVerifyBatch(reqId, undefined)
+    rejectPendingVerifyBatch(
+      reqId,
+      new Error("Signature verification worker failed.")
+    )
   }
+}
+
+export function __setNdkVerifyTimeoutMsForTests(timeoutMs: number): void {
+  verifyWorkerTimeoutMs = Math.max(1, Math.floor(timeoutMs))
 }
 
 export function __resetNdkTestState(): void {
   activeSignerLease = null
   if (ndkInstance) ndkInstance.signer = undefined
   if (verifyWorker) {
+    verifyWorker.onmessage = null
+    verifyWorker.onerror = null
     try {
       verifyWorker.terminate()
     } catch {
@@ -297,10 +516,19 @@ export function __resetNdkTestState(): void {
     }
   }
   verifyWorker = undefined
+  verifyWorkerRestartScheduled = false
+  verifyWorkerTimeoutMs = DEFAULT_VERIFY_WORKER_TIMEOUT_MS
   for (const reqId of [...pendingVerify.keys()]) {
-    resolvePendingVerifyBatch(reqId, undefined)
+    clearPendingVerifyBatch(reqId)?.reject(abortError())
   }
-  verifiedEventIds.clear()
+  verifiedEventProofs.clear()
+  for (const waiter of relayReadWaiters.splice(0)) {
+    if (waiter.signal && waiter.onAbort) {
+      waiter.signal.removeEventListener("abort", waiter.onAbort)
+    }
+    waiter.reject(abortError())
+  }
+  activeRelayReads = 0
 }
 
 function getVerifyWorker(): Worker | null {
@@ -328,16 +556,40 @@ function getVerifyWorker(): Worker | null {
   return verifyWorker
 }
 
-function verifySchnorrBatch(items: SchnorrItem[]): Promise<boolean[]> {
+function verifySchnorrBatch(
+  items: SchnorrItem[],
+  signal?: AbortSignal
+): Promise<boolean[]> {
+  throwIfAborted(signal)
   if (items.length === 0) return Promise.resolve([])
   const worker = getVerifyWorker()
-  if (!worker) return Promise.resolve(verifySchnorrSync(items))
-  return new Promise((resolve) => {
+  if (!worker) return verifySchnorrChunked(items, signal)
+  if (pendingVerify.size >= MAX_CONCURRENT_RELAY_READS) {
+    return Promise.reject(
+      new Error("Signature verification queue is at capacity.")
+    )
+  }
+  return new Promise((resolve, reject) => {
     const reqId = (verifyReqId += 1)
     const timer = setTimeout(() => {
-      resolvePendingVerifyBatch(reqId, undefined)
-    }, 8_000)
-    pendingVerify.set(reqId, { items, resolve, timer })
+      rejectPendingVerifyBatch(
+        reqId,
+        new Error("Signature verification worker timed out.")
+      )
+      scheduleVerifyWorkerRestart()
+    }, verifyWorkerTimeoutMs)
+    const pending: PendingVerifyBatch = {
+      items,
+      resolve,
+      reject,
+      timer,
+      signal,
+    }
+    if (signal) {
+      pending.onAbort = () => cancelPendingVerifyBatch(reqId)
+      signal.addEventListener("abort", pending.onAbort, { once: true })
+    }
+    pendingVerify.set(reqId, pending)
     try {
       worker.postMessage({ reqId, items })
     } catch {
@@ -346,13 +598,72 @@ function verifySchnorrBatch(items: SchnorrItem[]): Promise<boolean[]> {
   })
 }
 
+/**
+ * Verify a bounded collection of already-parsed public events without running
+ * Schnorr work on the browser's main thread. This is used for signed events
+ * embedded inside other protocol payloads and for injectable fetch seams that
+ * cannot attest to the fanout reader's verification pipeline.
+ */
+export async function verifySignedPublicNostrEvents(
+  events: readonly SignedPublicNostrEvent[],
+  options: VerifySignedPublicNostrEventsOptions = {}
+): Promise<VerifySignedPublicNostrEventsResult> {
+  throwIfAborted(options.signal)
+  const requestedMax =
+    options.maxEvents === undefined
+      ? MAX_SIGNATURES_PER_RELAY_READ
+      : Math.floor(options.maxEvents)
+  const maxEvents = Number.isFinite(requestedMax)
+    ? Math.max(0, Math.min(MAX_SIGNATURES_PER_RELAY_READ, requestedMax))
+    : 0
+  const boundedEvents = events.slice(0, maxEvents)
+  const accepted = new Array<boolean>(boundedEvents.length).fill(false)
+  const schnorrItems: SchnorrItem[] = []
+  const schnorrIndexes: number[] = []
+
+  for (let index = 0; index < boundedEvents.length; index += 1) {
+    throwIfAborted(options.signal)
+    const event = boundedEvents[index]
+    if (!validateEvent(event)) continue
+    const state = checkEventId(event)
+    if (state === "invalid") continue
+    if (state === "cached") {
+      accepted[index] = true
+      continue
+    }
+    schnorrItems.push({
+      sig: event.sig,
+      id: event.id,
+      pubkey: event.pubkey,
+    })
+    schnorrIndexes.push(index)
+  }
+
+  const schnorrValid = await verifySchnorrBatch(schnorrItems, options.signal)
+  throwIfAborted(options.signal)
+  for (let index = 0; index < schnorrIndexes.length; index += 1) {
+    if (!schnorrValid[index]) continue
+    const eventIndex = schnorrIndexes[index]
+    accepted[eventIndex] = true
+    if (verifiedEventProofs.size >= MAX_VERIFIED_PROOF_CACHE) {
+      verifiedEventProofs.clear()
+    }
+    verifiedEventProofs.add(verificationProofKey(boundedEvents[eventIndex]))
+  }
+
+  return {
+    events: boundedEvents.filter((_, index) => accepted[index]),
+    truncated: events.length > boundedEvents.length,
+  }
+}
+
 // One shared WebSocket per relay, with REQs multiplexed by subId across
 // concurrent reads. Explicit CLOSE per sub; the socket stays warm and idle-closes
 // once no reads are using it. No auto-reconnect, so failing relays are attempted
 // once (not re-hammered by every concurrent read) and freed deterministically.
 type RelaySubEnd = "eose" | "closed" | "drop"
 type RelaySub = {
-  onEvent: (raw: RawNostrEvent) => void
+  onEvent: (raw: RawNostrEvent, frameChars: number) => void
   end: (reason: RelaySubEnd) => void
 }
 type RelayConnection = {
@@ -362,6 +673,8 @@ type RelayConnection = {
   isOpen: boolean
   closed: boolean
   subs: Map<string, RelaySub>
+  inboundFrames: number
+  inboundChars: number
   idleTimer?: ReturnType<typeof setTimeout>
 }
 
@@ -410,6 +723,8 @@ function getRelayConnection(
     isOpen: false,
     closed: false,
     subs: new Map(),
+    inboundFrames: 0,
+    inboundChars: 0,
   }
 
   conn.ready = new Promise<void>((resolve, reject) => {
@@ -436,10 +751,30 @@ function getRelayConnection(
       dropRelayConnection(conn, connections)
     }
     ws.onmessage = (message) => {
+      if (conn.closed) return
+      if (
+        typeof message.data !== "string" ||
+        message.data.length > MAX_RELAY_MESSAGE_CHARS
+      ) {
+        // Treat oversized/unexpected relay frames as a transport failure so
+        // affected reads cannot be reported as a complete empty observation.
+        dropRelayConnection(conn, connections)
+        return
+      }
+      conn.inboundFrames += 1
+      conn.inboundChars += message.data.length
+      if (
+        conn.inboundFrames > MAX_RELAY_CONNECTION_FRAMES ||
+        conn.inboundChars > MAX_RELAY_CONNECTION_CHARS
+      ) {
+        // Budget all inbound traffic, including malformed JSON, NOTICE/AUTH,
+        // and events for unknown subscriptions, before parsing.
+        dropRelayConnection(conn, connections)
+        return
+      }
       let parsed: unknown
       try {
-        parsed =
-          typeof message.data === "string" ? JSON.parse(message.data) : null
+        parsed = JSON.parse(message.data)
       } catch {
         return
       }
@@ -449,7 +784,7 @@ function getRelayConnection(
       const handler = conn.subs.get(sub)
       if (!handler) return
       if (type === "EVENT" && parsed[2]) {
-        handler.onEvent(parsed[2] as RawNostrEvent)
+        handler.onEvent(parsed[2] as RawNostrEvent, message.data.length)
       } else if (type === "EOSE") {
         handler.end("eose")
       } else if (type === "CLOSED") {
@@ -483,26 +818,51 @@ function readRelayEvents(
   filter: NDKFilter,
   connectTimeoutMs: number,
   fetchTimeoutMs: number,
-  connections: Map<string, RelayConnection>
-): Promise<{ events: RawNostrEvent[]; complete: boolean }> {
-  return new Promise((resolve) => {
+  connections: Map<string, RelayConnection>,
+  signal?: AbortSignal
+): Promise<{
+  events: RawNostrEvent[]
+  complete: boolean
+  truncated: boolean
+}> {
+  try {
+    throwIfAborted(signal)
+  } catch (error) {
+    return Promise.reject(error)
+  }
+
+  return new Promise((resolve, reject) => {
     const conn = getRelayConnection(relayUrl, connections)
     if (conn.idleTimer) {
       clearTimeout(conn.idleTimer)
       conn.idleTimer = undefined
     }
+    if (conn.subs.size === 0) {
+      conn.inboundFrames = 0
+      conn.inboundChars = 0
+    }
 
     const subId = `cnd-${(relayReadSubCounter += 1)}`
     const events: RawNostrEvent[] = []
+    const eventLimit = requestedEventLimit(filter)
+    const rawFrameLimit =
+      eventLimit === null
+        ? MAX_RAW_RELAY_EVENT_FRAMES
+        : Math.min(
+            MAX_RAW_RELAY_EVENT_FRAMES,
+            Math.max(MIN_RAW_RELAY_EVENT_FRAMES, eventLimit * 4)
+          )
+    let rawFrameCount = 0
+    let rawFrameChars = 0
     let settled = false
     let connectTimer: ReturnType<typeof setTimeout> | undefined
     let fetchTimer: ReturnType<typeof setTimeout> | undefined
+    let onAbort: (() => void) | undefined
 
-    const finish = (complete: boolean) => {
-      if (settled) return
-      settled = true
+    const cleanup = () => {
       if (connectTimer) clearTimeout(connectTimer)
       if (fetchTimer) clearTimeout(fetchTimer)
+      if (signal && onAbort) signal.removeEventListener("abort", onAbort)
       conn.subs.delete(subId)
       if (!conn.closed && conn.ws.readyState === WebSocket.OPEN) {
         try {
@@ -512,17 +872,62 @@ function readRelayEvents(
         }
       }
       if (!conn.closed && conn.subs.size === 0) {
+        conn.inboundFrames = 0
+        conn.inboundChars = 0
         scheduleRelayConnectionIdleClose(conn, connections)
       }
-      resolve({ events, complete })
+    }
+
+    const finish = (complete: boolean, truncated = false) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolve({ events, complete, truncated })
     }
 
     conn.subs.set(subId, {
-      onEvent: (raw) => {
-        events.push(raw)
+      onEvent: (raw, frameChars) => {
+        rawFrameCount += 1
+        rawFrameChars += frameChars
+        if (rawFrameChars > MAX_RELAY_SUBSCRIPTION_CHARS) {
+          finish(false, true)
+          return
+        }
+        try {
+          if (
+            validateEvent(raw) &&
+            matchFilter(filter as Filter, raw) &&
+            (eventLimit === null || events.length < rawFrameLimit)
+          ) {
+            events.push(raw)
+          }
+        } catch {
+          // Ignore malformed or locally non-matching relay frames.
+        }
+
+        // A separate raw-frame guard bounds invalid, non-matching, and
+        // unverified floods. Saturating it is truncation, never a complete
+        // EOSE read.
+        if (rawFrameCount >= rawFrameLimit) {
+          finish(false, true)
+        }
       },
       end: (reason) => finish(reason === "eose"),
     })
+
+    if (signal) {
+      onAbort = () => {
+        if (settled) return
+        settled = true
+        cleanup()
+        reject(abortError())
+      }
+      if (signal.aborted) {
+        onAbort()
+        return
+      }
+      signal.addEventListener("abort", onAbort, { once: true })
+    }
 
     connectTimer = setTimeout(() => finish(false), connectTimeoutMs)
 
@@ -553,71 +958,90 @@ async function fetchEventsFromRelay(
   filter: NDKFilter,
   connectTimeoutMs: number,
   fetchTimeoutMs: number,
-  connections: Map<string, RelayConnection>
+  connections: Map<string, RelayConnection>,
+  signal?: AbortSignal
 ): Promise<{
   relayUrl: string
   events: NDKEvent[]
   status: FetchEventsRelayStatus["status"]
 }> {
-  await acquireRelayReadSlot()
+  await acquireRelayReadSlot(signal)
   try {
-    const { events, complete } = await readRelayEvents(
+    throwIfAborted(signal)
+    const { events, complete, truncated } = await readRelayEvents(
       relayUrl,
       filter,
       connectTimeoutMs,
       fetchTimeoutMs,
-      connections
+      connections,
+      signal
     )
-    const status: FetchEventsRelayStatus["status"] = complete
-      ? "success"
-      : events.length > 0
-        ? "partial"
-        : "failed"
-
-    if (status === "failed") {
-      recordRelayFailure(relayUrl)
-      return { relayUrl, events: [], status }
-    }
-
-    if (status === "success") recordRelaySuccess(relayUrl)
-    else recordRelayFailure(relayUrl)
-
+    throwIfAborted(signal)
+    const orderedEvents = [...events].sort((left, right) => {
+      if (left.created_at !== right.created_at) {
+        return right.created_at - left.created_at
+      }
+      return left.id.localeCompare(right.id)
+    })
     // Main thread: cheap sha256 id-check + verified-id cache. Anything not
     // already cache-verified is batched to the worker for schnorr.
-    const accepted = new Array<boolean>(events.length).fill(false)
+    const accepted = new Array<boolean>(orderedEvents.length).fill(false)
     const schnorrItems: SchnorrItem[] = []
     const schnorrIndex: number[] = []
-    for (let i = 0; i < events.length; i++) {
-      const raw = events[i]
+    let verificationTruncated = false
+    for (let i = 0; i < orderedEvents.length; i++) {
+      const raw = orderedEvents[i]
       const state = checkEventId(raw)
       if (state === "invalid") continue
       if (state === "cached") {
         accepted[i] = true
         continue
       }
+      if (schnorrItems.length >= MAX_SIGNATURES_PER_RELAY_READ) {
+        verificationTruncated = true
+        continue
+      }
       schnorrItems.push({ sig: raw.sig, id: raw.id, pubkey: raw.pubkey })
       schnorrIndex.push(i)
     }
 
-    const schnorrValid = await verifySchnorrBatch(schnorrItems)
+    const schnorrValid = await verifySchnorrBatch(schnorrItems, signal)
+    throwIfAborted(signal)
     for (let j = 0; j < schnorrIndex.length; j++) {
       if (!schnorrValid[j]) continue
       const i = schnorrIndex[j]
       accepted[i] = true
-      if (verifiedEventIds.size >= MAX_VERIFIED_ID_CACHE)
-        verifiedEventIds.clear()
-      verifiedEventIds.add(events[i].id)
+      if (verifiedEventProofs.size >= MAX_VERIFIED_PROOF_CACHE) {
+        verifiedEventProofs.clear()
+      }
+      verifiedEventProofs.add(verificationProofKey(orderedEvents[i]))
     }
 
+    const eventLimit = requestedEventLimit(filter)
     const verified: NDKEvent[] = []
-    for (let i = 0; i < events.length; i++) {
+    for (let i = 0; i < orderedEvents.length; i++) {
       if (!accepted[i]) continue
-      const event = new NDKEvent(undefined, events[i])
+      const event = new NDKEvent(undefined, orderedEvents[i])
       attachEventSourceRelayUrl(event, relayUrl)
       verified.push(event)
+      if (eventLimit !== null && verified.length >= eventLimit) break
     }
+
+    const status: FetchEventsRelayStatus["status"] =
+      truncated || verificationTruncated
+        ? "partial"
+        : complete
+          ? "success"
+          : verified.length > 0
+            ? "partial"
+            : "failed"
+
+    if (status === "success") recordRelaySuccess(relayUrl)
+    else recordRelayFailure(relayUrl)
+
     return { relayUrl, events: verified, status }
-  } catch {
+  } catch (error) {
+    if (signal?.aborted || isAbortError(error)) throw error
     recordRelayFailure(relayUrl)
     return { relayUrl, events: [], status: "failed" }
   } finally {
@@ -686,9 +1110,12 @@ export async function fetchEventsFanoutDetailed(
   filter: NDKFilter,
   options: FetchEventsFanoutOptions = {}
 ): Promise<FetchEventsFanoutResult> {
+  throwIfAborted(options.signal)
   const relayUrls = resolveFanoutRelayUrls(options)
 
-  if (relayUrls.length === 0) return { events: [], relays: [] }
+  if (relayUrls.length === 0) {
+    return { events: [], relays: [], eventsVerified: true }
+  }
 
   const connectTimeoutMs = options.connectTimeoutMs ?? 4_000
   const fetchTimeoutMs = options.fetchTimeoutMs ?? 8_000
@@ -705,10 +1132,12 @@ export async function fetchEventsFanoutDetailed(
           filter,
           connectTimeoutMs,
           fetchTimeoutMs,
-          connections
+          connections,
+          options.signal
         )
       )
     )
+    throwIfAborted(options.signal)
 
     const merged = new Map<string, NDKEvent>()
     for (const result of perRelayResults) {
@@ -722,6 +1151,7 @@ export async function fetchEventsFanoutDetailed(
         status: result.status,
         eventCount: result.events.length,
       })),
+      eventsVerified: true,
     }
   } finally {
     if (connections !== relayConnections) closeRelayConnections(connections)
@@ -751,6 +1181,7 @@ export async function fetchEventsFanoutProgressive(
   options: FetchEventsFanoutOptions = {},
   onProgress: (progress: FetchEventsFanoutProgress) => void | Promise<void>
 ): Promise<NDKEvent[]> {
+  throwIfAborted(options.signal)
   const relayUrls = resolveFanoutRelayUrls(options)
   if (relayUrls.length === 0) return []
 
@@ -770,8 +1201,10 @@ export async function fetchEventsFanoutProgressive(
           filter,
           connectTimeoutMs,
           fetchTimeoutMs,
-          connections
+          connections,
+          options.signal
         )
+        throwIfAborted(options.signal)
         mergeEventsInto(merged, result.events)
         await onProgress({
           relayUrl,
@@ -781,6 +1214,7 @@ export async function fetchEventsFanoutProgressive(
       })
     )
 
+    throwIfAborted(options.signal)
     return Array.from(merged.values())
   } finally {
     if (connections !== relayConnections) closeRelayConnections(connections)
