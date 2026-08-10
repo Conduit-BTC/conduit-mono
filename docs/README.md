@@ -37,6 +37,11 @@ Reviewers may request a durable contract update when the behavior has broad or l
 - `docs/knowledge/product-legal-documents.md`: official-host scope, shared legal
   source, versioning, release, and public-route isolation
 
+### QA Runbooks
+
+- `docs/knowledge/mobile-safari-qa-baseline.md`: repeatable mobile browser and
+  physical-device matrix for Market, Merchant, Wallet, and booth flows
+
 ### Active Compatibility Exceptions
 
 - `docs/knowledge/nip17-inbox-bootstrap-migration.md`: temporary validated-order

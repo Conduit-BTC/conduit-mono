@@ -358,7 +358,7 @@ function RemoteSignerConnect({
                 readOnly
                 aria-label="Nostr Connect connection URL"
                 spellCheck={false}
-                className="min-h-24 resize-none break-all font-mono text-xs"
+                className="min-h-24 resize-none break-all font-mono text-base"
               />
               <div className="grid gap-2 sm:grid-cols-2">
                 <Button asChild className="w-full">
@@ -412,7 +412,7 @@ function RemoteSignerConnect({
             autoCorrect="off"
             spellCheck={false}
             disabled={connectDisabled}
-            className="min-h-20 resize-none break-all font-mono text-xs"
+            className="min-h-20 resize-none break-all font-mono text-base"
           />
           <Button
             type="button"
@@ -539,13 +539,13 @@ function RemoteSignerSetupGuide() {
         Clave, then paste it in the Bunker URL tab.
       </p>
       <div className="mt-4 flex flex-wrap gap-2">
-        <Button asChild variant="outline" size="sm">
+        <Button asChild variant="outline" size="sm" className="h-11">
           <a href={AMBER_URL} target="_blank" rel="noopener noreferrer">
             Amber
             <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
           </a>
         </Button>
-        <Button asChild variant="outline" size="sm">
+        <Button asChild variant="outline" size="sm" className="h-11">
           <a href={CLAVE_URL} target="_blank" rel="noopener noreferrer">
             Clave
             <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />

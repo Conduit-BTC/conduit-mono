@@ -56,6 +56,8 @@
     "smoke:anon-zap-provider": "bun scripts/smoke/anon_zap_provider.ts",
     "test": "bun test",
     "test:e2e": "playwright test",
+    "test:e2e:mobile": "playwright test e2e/mobile-safari-baseline.playwright.ts --project=mobile-chromium --project=mobile-webkit",
+    "test:e2e:webkit": "playwright test e2e/mobile-safari-baseline.playwright.ts --project=mobile-webkit",
     "clean": "rm -rf node_modules apps/*/node_modules packages/*/node_modules"
   },
   "dependencies": {

@@ -12,6 +12,7 @@ import {
   getOrderPublicZapSigner,
   listOrderLifecycles,
   normalizeLightningInvoice,
+  ORDER_PAYMENT_INTERRUPTED_BEFORE_WALLET_ERROR,
   pruneExpiredGuestOrderData,
   pubkeyToNpub,
   useAuth,
@@ -80,6 +81,7 @@ import {
 } from "../lib/anon-zap-signer"
 import {
   canObserveOrderPublicZapReceipt,
+  getOrderPaymentState,
   observeOrderPublicZapReceipt,
   resendOrderProof,
   runOrderPrivateFallback,
@@ -88,6 +90,7 @@ import {
   subscribeOrderPayment,
   type OrderPaymentContext,
 } from "../lib/order-payment-service"
+import { reconcileOrderPaymentForDisplay } from "../lib/order-payment-recovery"
 
 type PriceFormatter = (price: CommercePriceLike) => ShopperPriceDisplay
 import {
@@ -775,6 +778,8 @@ function OrderDetail({
   }
 
   const showRetryPayment = vm.paymentStatus === "failed"
+  const recoveredBeforeWallet =
+    row.lifecycle?.lastError === ORDER_PAYMENT_INTERRUPTED_BEFORE_WALLET_ERROR
   const showAnonPaymentRecovery =
     showRetryPayment &&
     vm.publicZapSigner === "anon" &&
@@ -953,12 +958,14 @@ function OrderDetail({
           <div className="flex flex-wrap items-center gap-3">
             {showRetryPayment && (
               <Button
-                className="h-10 px-4 text-sm"
+                className="h-11 px-4 text-sm"
                 disabled={busy || !buildServiceCtx()}
                 onClick={() => void withBusy(retryPayment)}
               >
                 <RotateCw className="h-4 w-4" />
-                Try payment again
+                {recoveredBeforeWallet
+                  ? "Continue payment"
+                  : "Try payment again"}
               </Button>
             )}
             {showAnonPaymentRecovery && (
@@ -994,9 +1001,11 @@ function OrderDetail({
                   : showRetryPayment && !buildServiceCtx()
                     ? "This order did not keep a checkout-time Lightning target, so retry is unavailable from Orders. Message the merchant before attempting another payment path."
                     : showRetryPayment
-                      ? showAnonPaymentRecovery
-                        ? "This older anonymous zap attempt failed before automatic fallback was available. No funds moved; retry it or continue with a private invoice."
-                        : "No funds moved. You can retry payment for this order."
+                      ? recoveredBeforeWallet
+                        ? "Conduit closed before the invoice reached a wallet. Continuing reuses this order; no funds moved."
+                        : showAnonPaymentRecovery
+                          ? "This older anonymous zap attempt failed before automatic fallback was available. No funds moved; retry it or continue with a private invoice."
+                          : "No funds moved. You can retry payment for this order."
                       : "Payment went through; the receipt didn't reach the merchant."}
             </span>
             {recoveryError && (
@@ -1292,12 +1301,17 @@ function OrdersPage() {
     ],
     enabled: !!activeBuyerPubkey,
     queryFn: async () => {
-      if (signerConnected) return listOrderLifecycles(activeBuyerPubkey!)
+      if (signerConnected) {
+        const rows = await listOrderLifecycles(activeBuyerPubkey!)
+        return Promise.all(
+          rows.map((lifecycle) => reconcileOrderPaymentForDisplay(lifecycle))
+        )
+      }
       if (!selectedFromUrl || !guestIdentity) return []
       const lifecycle = await db.orderLifecycles.get(selectedFromUrl)
       if (!lifecycle || lifecycle.buyerPubkey !== guestIdentity.pubkey)
         return []
-      return [lifecycle]
+      return [await reconcileOrderPaymentForDisplay(lifecycle)]
     },
     refetchInterval: 30_000,
   })
@@ -1353,6 +1367,22 @@ function OrdersPage() {
     refetchAll()
   }, [activeBuyerPubkey, refetchAll])
 
+  useEffect(() => {
+    const refetchAfterResume = () => {
+      if (document.visibilityState === "hidden") return
+      refetchAll()
+    }
+
+    window.addEventListener("focus", refetchAfterResume)
+    window.addEventListener("online", refetchAfterResume)
+    document.addEventListener("visibilitychange", refetchAfterResume)
+    return () => {
+      window.removeEventListener("focus", refetchAfterResume)
+      window.removeEventListener("online", refetchAfterResume)
+      document.removeEventListener("visibilitychange", refetchAfterResume)
+    }
+  }, [refetchAll])
+
   const conversations = useMemo(
     () => messagesQuery.data?.data ?? cachedMessagesQuery.data?.data ?? [],
     [cachedMessagesQuery.data, messagesQuery.data]
@@ -1362,6 +1392,28 @@ function OrdersPage() {
     () => lifecyclesQuery.data ?? [],
     [lifecyclesQuery.data]
   )
+  const refetchLifecycles = lifecyclesQuery.refetch
+
+  useEffect(() => {
+    const now = Date.now()
+    const nextLeaseExpiry = lifecycles.reduce<number | null>(
+      (earliest, lifecycle) => {
+        const expiresAt = lifecycle.paymentClaimLeaseExpiresAt
+        if (typeof expiresAt !== "number" || expiresAt <= now) return earliest
+        return earliest === null ? expiresAt : Math.min(earliest, expiresAt)
+      },
+      null
+    )
+    if (nextLeaseExpiry === null) return
+
+    const timer = window.setTimeout(
+      () => {
+        void refetchLifecycles()
+      },
+      Math.max(0, nextLeaseExpiry - Date.now() + 50)
+    )
+    return () => window.clearTimeout(timer)
+  }, [lifecycles, refetchLifecycles])
 
   useEffect(() => {
     const resumeReceiptObservers = () => {
@@ -1495,14 +1547,16 @@ function OrdersPage() {
   })
   useEffect(() => {
     if (!selected?.orderId) return
-    const unsub = subscribeOrderPayment(selected.orderId, () => {
-      void lifecyclesQuery.refetch()
+    const refreshPaymentState = () => {
+      void refetchLifecycles()
       void queryClient.invalidateQueries({
         queryKey: ["buyer-payment-attempt", selected.orderId],
       })
-    })
+    }
+    const unsub = subscribeOrderPayment(selected.orderId, refreshPaymentState)
+    if (getOrderPaymentState(selected.orderId)) refreshPaymentState()
     return unsub
-  }, [lifecyclesQuery, queryClient, selected?.orderId])
+  }, [queryClient, refetchLifecycles, selected?.orderId])
 
   const selectedRow = useMemo<OrderRow | null>(() => {
     if (!selected) return null
@@ -1725,7 +1779,7 @@ function SearchBox({
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder="Search orders"
-        className="h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] pl-9 pr-3 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-primary-500 focus:ring-2 focus:ring-primary-500/30"
+        className="h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] pl-9 pr-3 text-base text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-primary-500 focus:ring-2 focus:ring-primary-500/30"
       />
     </div>
   )
