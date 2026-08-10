@@ -42,9 +42,11 @@ export * from "./session-signer"
 export * from "./nostr-event-signer"
 export type {
   ProtectedReadAuthorization,
+  ProtectedReadAuthenticationSuppression,
   ProtectedReadAuthPolicy,
   ProtectedReadOperation,
 } from "./protected-read-authorization"
+export { clearProtectedReadAuthenticationSuppression } from "./protected-read-authorization"
 export * from "./protected-read-session-lifecycle"
 export * from "./relay-executor"
 export * from "./protected-inbox-read"

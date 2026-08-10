@@ -157,7 +157,8 @@ Multi-relay results follow these rules:
 
 - valid events from successful relays remain usable when another relay fails;
 - any mixture of usable relay results and failed/incomplete relays is
-  `partial`, with source provenance retained;
+  `partial`; the executor retains content-free, relay-indexed source outcomes,
+  while durable per-event relay provenance remains follow-up work;
 - all auth failures or all unavailable relays are `unavailable`, never empty;
 - zero events is an authoritative empty read only after every required relay
   attempt for that bounded plan completes successfully with `EOSE` and no

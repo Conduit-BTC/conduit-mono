@@ -37,6 +37,15 @@ import {
 
 export type RelayAuthDisplayEvidence = RelayAuthEvidenceState | "advertised"
 
+export function resolveRelayAuthDisplayEvidence(
+  runtime: RelayAuthEvidenceState | undefined,
+  advertised: boolean
+): RelayAuthDisplayEvidence {
+  if (runtime && runtime !== "untested") return runtime
+  if (advertised) return "advertised"
+  return runtime ?? "untested"
+}
+
 export interface UseRelaySettingsOptions {
   pubkey?: string | null
   enabled?: boolean
@@ -164,8 +173,7 @@ export function useRelaySettings(
         const advertised =
           entry.observations?.auth.status === "advertised" ||
           entry.capabilities.auth
-        const state: RelayAuthDisplayEvidence =
-          runtime ?? (advertised ? "advertised" : "untested")
+        const state = resolveRelayAuthDisplayEvidence(runtime, advertised)
         return [entry.url, state] as const
       })
     )

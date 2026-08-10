@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   appendConduitClientTag,
+  clearProtectedReadAuthenticationSuppression,
   db,
   deriveProtectedReadPresentationState,
   EVENT_KINDS,
@@ -1309,9 +1310,12 @@ function OrdersPage() {
 
   const isFetching = messagesQuery.isFetching || lifecyclesQuery.isFetching
   const refetchAll = useCallback(() => {
-    if (signerConnected) void messagesQuery.refetch()
+    if (signerConnected && activeBuyerPubkey) {
+      clearProtectedReadAuthenticationSuppression(activeBuyerPubkey)
+      void messagesQuery.refetch()
+    }
     void lifecyclesQuery.refetch()
-  }, [lifecyclesQuery, messagesQuery, signerConnected])
+  }, [activeBuyerPubkey, lifecyclesQuery, messagesQuery, signerConnected])
 
   useEffect(() => {
     if (isFetching) {
@@ -1582,7 +1586,7 @@ function OrdersPage() {
         protectedOrdersReadState !== "pending" && (
           <LiveReadNotice
             state={protectedOrdersReadState}
-            onRetry={() => void messagesQuery.refetch()}
+            onRetry={refetchAll}
             retrying={messagesQuery.isRefetching}
           />
         )}
@@ -1590,7 +1594,7 @@ function OrdersPage() {
       {signerConnected && (
         <DecryptFailureNotice
           count={messagesMeta?.decryptFailures?.length ?? 0}
-          onRetry={() => void messagesQuery.refetch()}
+          onRetry={refetchAll}
           retrying={messagesQuery.isRefetching}
         />
       )}

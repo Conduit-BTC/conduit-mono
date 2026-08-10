@@ -34,6 +34,7 @@ import {
   buildDirectMessageRumor,
   cacheParsedDirectMessage,
   cacheParsedOrderMessage,
+  clearProtectedReadAuthenticationSuppression,
   createValidatedOrderRouteScope,
   deriveProtectedReadPresentationState,
   formatNpub,
@@ -67,6 +68,7 @@ import {
   type BuyerConversation,
 } from "../lib/orderConversations"
 import { getAutomaticMerchantThreadId } from "../lib/message-route-state"
+import { getDirectMessageSearchEmptyCopy } from "../lib/protected-read-copy"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 
@@ -354,6 +356,11 @@ function MessagesPage() {
     queryFn: () => fetchCachedBuyerConversations(pubkey!),
     staleTime: 5_000,
   })
+  const retryMerchantThreadsRead = () => {
+    if (!pubkey) return
+    clearProtectedReadAuthenticationSuppression(pubkey)
+    void messagesQuery.refetch()
+  }
 
   const conversations = useMemo(
     () =>
@@ -544,6 +551,11 @@ function MessagesPage() {
       getCachedDirectMessageConversationList({ principalPubkey: pubkey! }),
     staleTime: 5_000,
   })
+  const retryDirectMessagesRead = () => {
+    if (!pubkey) return
+    clearProtectedReadAuthenticationSuppression(pubkey)
+    void dmsLiveQuery.refetch()
+  }
 
   const dmConversations = useMemo(
     () =>
@@ -592,6 +604,11 @@ function MessagesPage() {
     error: dmsLiveQuery.error,
     meta: dmLiveMeta,
   })
+  const directMessageListPending =
+    directMessagesReadState === "pending" && dmConversations.length === 0
+  const directMessageSearchEmptyCopy = getDirectMessageSearchEmptyCopy(
+    directMessagesReadState
+  )
   const dmDecryptFailures = dmLiveMeta?.decryptFailures?.length ?? 0
 
   // Scaffold a compose view when arriving via ?merchant=<pubkey>.
@@ -862,7 +879,7 @@ function MessagesPage() {
             {dmDecryptFailures > 0 && (
               <DecryptFailureNotice
                 count={dmDecryptFailures}
-                onRetry={() => dmsLiveQuery.refetch()}
+                onRetry={retryDirectMessagesRead}
                 retrying={dmsLiveQuery.isRefetching}
               />
             )}
@@ -870,7 +887,7 @@ function MessagesPage() {
               directMessagesReadState !== "pending" && (
                 <LiveReadNotice
                   state={directMessagesReadState}
-                  onRetry={() => void dmsLiveQuery.refetch()}
+                  onRetry={retryDirectMessagesRead}
                   retrying={dmsLiveQuery.isRefetching}
                 />
               )}
@@ -882,17 +899,14 @@ function MessagesPage() {
                   dmLiveMeta?.legacyDecryptFailures?.some(
                     (failure) => failure.retryable
                   )
-                    ? () => void dmsLiveQuery.refetch()
+                    ? retryDirectMessagesRead
                     : undefined
                 }
                 retrying={dmsLiveQuery.isRefetching}
               />
             )}
 
-            {dmsCacheQuery.isLoading &&
-            dmsLiveQuery.isLoading &&
-            dmConversations.length === 0 &&
-            !selectedDmPubkey ? (
+            {directMessageListPending && !selectedDmPubkey ? (
               <div className="text-sm text-[var(--text-secondary)]">
                 Loading your inbox…
               </div>
@@ -944,7 +958,7 @@ function MessagesPage() {
                       ))
                     ) : (
                       <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
-                        No conversations match your search.
+                        {directMessageSearchEmptyCopy}
                       </div>
                     )}
                   </div>
@@ -996,7 +1010,7 @@ function MessagesPage() {
                         </ConversationCardScroller>
                       ) : (
                         <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
-                          No conversations match your search.
+                          {directMessageSearchEmptyCopy}
                         </div>
                       )}
                     </section>
@@ -1016,7 +1030,7 @@ function MessagesPage() {
                       <div className="mt-4 space-y-2">
                         {filteredDmConversations.length === 0 && (
                           <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
-                            No conversations match your search.
+                            {directMessageSearchEmptyCopy}
                           </div>
                         )}
                         {filteredDmConversations.map((conversation) => (
@@ -1214,7 +1228,7 @@ function MessagesPage() {
             merchantThreadsReadState !== "pending" && (
               <LiveReadNotice
                 state={merchantThreadsReadState}
-                onRetry={() => void messagesQuery.refetch()}
+                onRetry={retryMerchantThreadsRead}
                 retrying={messagesQuery.isRefetching}
               />
             )}
@@ -1222,7 +1236,7 @@ function MessagesPage() {
           {signerConnected && (
             <DecryptFailureNotice
               count={messagesQuery.data?.meta.decryptFailures?.length ?? 0}
-              onRetry={() => void messagesQuery.refetch()}
+              onRetry={retryMerchantThreadsRead}
               retrying={messagesQuery.isRefetching}
             />
           )}

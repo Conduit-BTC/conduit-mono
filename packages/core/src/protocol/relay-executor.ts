@@ -1,8 +1,10 @@
 import { isValidSignedPublicNostrEvent } from "./signed-event"
 import {
   assertProtectedReadAuthorization,
+  getProtectedReadAuthenticationSuppression,
   getProtectedReadAuthorization,
   hasProtectedReadAuthority,
+  suppressProtectedReadAuthentication,
   subscribeProtectedReadSignerRevocation,
   type ProtectedReadAuthorization,
 } from "./protected-read-authorization"
@@ -656,13 +658,32 @@ class RelayConnection {
       }
     } else {
       let cancellation: RelayAuthError | null = null
+      let resolveCancellation!: (error: RelayAuthError) => void
+      const cancellationPromise = new Promise<RelayAuthError>((resolve) => {
+        resolveCancellation = resolve
+      })
       let timeout: ReturnType<typeof setTimeout> | undefined
       const throwIfCancelled = () => {
         if (cancellation) throw cancellation
       }
       this.cancelAuthAttempt = (error) => {
-        if (cancellation) return
+        if (cancellation) {
+          // Abort/supersession keeps the signer slot serialized, but the
+          // original auth deadline must still be able to detach a signer that
+          // never settles and establish the normal timeout suppression gate.
+          if (error.code === "authentication_timed_out") {
+            resolveCancellation(error)
+          }
+          return
+        }
         cancellation = error
+        if (error.code === "authentication_timed_out") {
+          // A timeout suppresses additional background prompts until an
+          // explicit retry. Other cancellations must keep holding the signer
+          // queue until the external signer settles, or a second query could
+          // open a concurrent wallet prompt.
+          resolveCancellation(error)
+        }
         this.pendingAuth?.reject(error)
         this.pendingAuth = null
       }
@@ -670,6 +691,16 @@ class RelayConnection {
         authorization.sessionScope,
         async () => {
           throwIfCancelled()
+          const suppressed =
+            getProtectedReadAuthenticationSuppression(authorization)
+          if (suppressed) {
+            suppressProtectedReadAuthentication(
+              authorization,
+              this.url,
+              suppressed
+            )
+            throw new RelayAuthError(suppressed)
+          }
           assertProtectedReadAuthorization(
             authorization,
             authorization.expectedPubkey
@@ -681,6 +712,16 @@ class RelayConnection {
             throw new RelayAuthError("authority_changed")
           }
           throwIfCancelled()
+          const suppressionAfterIdentity =
+            getProtectedReadAuthenticationSuppression(authorization)
+          if (suppressionAfterIdentity) {
+            suppressProtectedReadAuthentication(
+              authorization,
+              this.url,
+              suppressionAfterIdentity
+            )
+            throw new RelayAuthError(suppressionAfterIdentity)
+          }
           const draft: UnsignedNostrEvent = {
             kind: 22_242,
             pubkey: authorization.expectedPubkey,
@@ -693,13 +734,37 @@ class RelayConnection {
           }
           let signed: SignedNostrEvent
           try {
-            signed = await authorization.signer.signEvent(draft)
+            const signerResult = await Promise.race([
+              authorization.signer.signEvent(draft).then((event) => ({
+                status: "signed" as const,
+                event,
+              })),
+              cancellationPromise.then((error) => ({
+                status: "cancelled" as const,
+                error,
+              })),
+            ])
+            if (signerResult.status === "cancelled") {
+              throw signerResult.error
+            }
+            signed = signerResult.event
           } catch (error) {
+            if (error instanceof RelayAuthError) throw error
             if (error instanceof NostrSignerError) {
               switch (error.code) {
                 case "authorization_denied":
+                  suppressProtectedReadAuthentication(
+                    authorization,
+                    this.url,
+                    "signer_authorization_denied"
+                  )
                   throw new RelayAuthError("signer_authorization_denied")
                 case "timeout":
+                  suppressProtectedReadAuthentication(
+                    authorization,
+                    this.url,
+                    "authentication_timed_out"
+                  )
                   throw new RelayAuthError("authentication_timed_out")
                 case "authority_changed":
                   throw new RelayAuthError("authority_changed")
@@ -752,6 +817,11 @@ class RelayConnection {
         new Promise<never>((_, reject) => {
           timeout = setTimeout(() => {
             const error = new RelayAuthError("authentication_timed_out")
+            suppressProtectedReadAuthentication(
+              authorization,
+              this.url,
+              "authentication_timed_out"
+            )
             this.cancelAuthAttempt?.(error)
             reject(error)
           }, timeoutMs)
@@ -1154,6 +1224,27 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
         failure: "aborted",
       }
     }
+    if (authorization) {
+      const suppressed = getProtectedReadAuthenticationSuppression(
+        authorization,
+        relayUrl
+      )
+      if (suppressed) {
+        const auth = authOutcomeForFailure(suppressed)
+        this.recordEvidence(authorization.sessionScope, relayUrl, auth)
+        observe({ type: "auth", relayIndex, state: auth })
+        return {
+          relayIndex,
+          status: "failed",
+          auth,
+          eventCount: 0,
+          duplicateCount: 0,
+          malformedCount: 0,
+          unusableCount: 0,
+          failure: suppressed,
+        }
+      }
+    }
     let connection: RelayConnection
     try {
       connection = await this.getConnection(
@@ -1267,7 +1358,7 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
         })
         if (
           failure &&
-          [
+          ([
             "transport_unavailable",
             "authentication_required",
             "missing_challenge",
@@ -1282,7 +1373,8 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
             "subscription_rejected",
             "protocol_invalid",
             "protocol_limit_exceeded",
-          ].includes(failure)
+          ].includes(failure) ||
+            (failure === "query_timed_out" && authorization))
         ) {
           this.discardConnection(relayUrl, authorization)
         }
@@ -1338,6 +1430,20 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
           finish("missing_challenge")
           return
         }
+        const suppressed =
+          getProtectedReadAuthenticationSuppression(authorization)
+        if (suppressed) {
+          suppressProtectedReadAuthentication(
+            authorization,
+            relayUrl,
+            suppressed
+          )
+          auth = authOutcomeForFailure(suppressed)
+          this.recordEvidence(authorization.sessionScope, relayUrl, auth)
+          observe({ type: "auth", relayIndex, state: auth })
+          finish(suppressed)
+          return
+        }
         if (authAttempts >= maxAuthAttempts) {
           auth = "challenge_replayed"
           finish("challenge_loop")
@@ -1376,6 +1482,16 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
             if (failure === "challenge_superseded") {
               retrySupersedingChallenge = true
               return
+            }
+            if (
+              failure === "signer_authorization_denied" ||
+              failure === "authentication_timed_out"
+            ) {
+              suppressProtectedReadAuthentication(
+                authorization,
+                relayUrl,
+                failure
+              )
             }
             auth = authOutcomeForFailure(failure)
             this.recordEvidence(authorization.sessionScope, relayUrl, auth)

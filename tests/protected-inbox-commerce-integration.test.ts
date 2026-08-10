@@ -74,16 +74,22 @@ function orderRumor(recipient: string) {
   }
 }
 
+let signCalls = 0
+
 function signer(privateKey: Uint8Array): NostrEventSigner {
   const pubkey = getPublicKey(privateKey)
   return {
     authMethod: "nip07",
     getPublicKey: async () => pubkey,
-    signEvent: async (event) => finalizeEvent(event, privateKey),
+    signEvent: async (event) => {
+      signCalls += 1
+      return finalizeEvent(event, privateKey)
+    },
   }
 }
 
 let rejectAuthentication = false
+let challengeAuthentication = true
 const sockets: CommerceProtectedRelaySocket[] = []
 
 class CommerceProtectedRelaySocket {
@@ -105,7 +111,11 @@ class CommerceProtectedRelaySocket {
     queueMicrotask(() => {
       this.readyState = CommerceProtectedRelaySocket.OPEN
       this.onopen?.(new Event("open"))
-      queueMicrotask(() => this.relay(["AUTH", `challenge-${sockets.length}`]))
+      if (challengeAuthentication) {
+        queueMicrotask(() =>
+          this.relay(["AUTH", `challenge-${sockets.length}`])
+        )
+      }
     })
   }
 
@@ -213,6 +223,8 @@ const originalWebSocket = globalThis.WebSocket
 
 beforeEach(() => {
   rejectAuthentication = false
+  challengeAuthentication = true
+  signCalls = 0
   sockets.splice(0)
   __resetCommerceTestOverrides()
   __resetProtectedReadSigner()
@@ -236,6 +248,48 @@ afterEach(() => {
 })
 
 describe("Market and Merchant protected inbox integration", () => {
+  it("keeps both account roles working on relays that do not challenge", async () => {
+    challengeAuthentication = false
+    __setCommerceTestOverrides({
+      requireNdkConnected: async () => ({ signer: {} }) as never,
+      resolveInboxRelayUrls: async () => [RELAY_URL],
+      getCachedOrderMessages: async () => [],
+      putCachedOrderMessages: async () => undefined,
+      getCachedDirectMessages: async () => [],
+      putCachedDirectMessages: async () => undefined,
+      giftUnwrap: async (event) => {
+        const recipient = event.tags.find((tag) => tag[0] === "p")?.[1]
+        return recipient ? (orderRumor(recipient) as never) : null
+      },
+    })
+
+    installProtectedReadSigner(signer(MERCHANT_KEY), MERCHANT, () => true)
+    const merchantResult = await getMerchantConversationList({
+      principalPubkey: MERCHANT,
+    })
+    installProtectedReadSigner(signer(BUYER_KEY), BUYER, () => true)
+    const buyerResult = await getBuyerConversationList({
+      principalPubkey: BUYER,
+    })
+
+    for (const result of [merchantResult, buyerResult]) {
+      expect(result.data).toHaveLength(1)
+      expect(result.meta.inbox?.coverage).toBe("complete")
+      expect(result.meta.inbox?.authentication?.state).toBe("not_challenged")
+    }
+    expect(signCalls).toBe(0)
+    expect(
+      sockets
+        .flatMap((socket) => socket.sent)
+        .some((frame) => frame[0] === "AUTH")
+    ).toBe(false)
+    const requestFrames = sockets
+      .flatMap((socket) => socket.sent)
+      .filter((frame) => frame[0] === "REQ")
+    expect(requestFrames).toHaveLength(sockets.length)
+    expect(requestFrames.length).toBeGreaterThanOrEqual(2)
+  })
+
   it("authenticates the actual shared kind-1059 path for both account roles", async () => {
     const persistedRows: CachedOrderMessage[] = []
     __setCommerceTestOverrides({

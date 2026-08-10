@@ -257,6 +257,7 @@ export {
 } from "./hooks/useShopperTrustEvidence"
 export {
   prepareRelaySettingsContextPresentation,
+  resolveRelayAuthDisplayEvidence,
   useRelaySettings,
   type UseRelaySettingsResult,
 } from "./hooks/useRelaySettings"

@@ -2,6 +2,8 @@ import type { NostrEventSigner } from "./nostr-event-signer"
 
 export type ProtectedReadOperation = "private_inbox_read"
 export type ProtectedReadAuthPolicy = "required" | "when_challenged"
+export type ProtectedReadAuthenticationSuppression =
+  "signer_authorization_denied" | "authentication_timed_out"
 
 const AUTHORIZATION_BRAND: unique symbol = Symbol(
   "protected-read-authorization"
@@ -12,6 +14,10 @@ type ActiveSignerLease = {
   readonly expectedPubkey: string
   readonly signer: NostrEventSigner
   readonly hasAuthority: () => boolean
+  authenticationSuppression: {
+    reason: ProtectedReadAuthenticationSuppression
+    challengedRelayUrls: Set<string>
+  } | null
   active: boolean
 }
 
@@ -90,6 +96,7 @@ export function installProtectedReadSigner(
     expectedPubkey: normalizePubkey(expectedPubkey),
     signer,
     hasAuthority,
+    authenticationSuppression: null,
     active: true,
   }
   activeLease = lease
@@ -171,6 +178,83 @@ export function hasProtectedReadAuthority(
   } catch {
     return false
   }
+}
+
+/**
+ * Denial and timeout suppress further background auth prompts for this exact
+ * account session. Reads may still use relays that do not challenge.
+ */
+export function suppressProtectedReadAuthentication(
+  authorization: ProtectedReadAuthorization,
+  relayUrl: string,
+  reason: ProtectedReadAuthenticationSuppression
+): boolean {
+  const lease = authorization[AUTHORIZATION_BRAND]
+  if (
+    lease !== activeLease ||
+    !lease.active ||
+    !hasCurrentLeaseAuthority(lease) ||
+    authorization.sessionScope !== lease.sessionScope ||
+    authorization.expectedPubkey !== lease.expectedPubkey ||
+    authorization.signer !== lease.signer
+  ) {
+    return false
+  }
+  if (!lease.authenticationSuppression) {
+    lease.authenticationSuppression = {
+      reason,
+      challengedRelayUrls: new Set(),
+    }
+  }
+  lease.authenticationSuppression.challengedRelayUrls.add(relayUrl)
+  return true
+}
+
+export function getProtectedReadAuthenticationSuppression(
+  authorization: ProtectedReadAuthorization,
+  relayUrl?: string
+): ProtectedReadAuthenticationSuppression | null {
+  const lease = authorization[AUTHORIZATION_BRAND]
+  if (
+    lease !== activeLease ||
+    !lease.active ||
+    !hasCurrentLeaseAuthority(lease) ||
+    authorization.sessionScope !== lease.sessionScope ||
+    authorization.expectedPubkey !== lease.expectedPubkey ||
+    authorization.signer !== lease.signer
+  ) {
+    return null
+  }
+  const suppression = lease.authenticationSuppression
+  if (
+    !suppression ||
+    (relayUrl !== undefined && !suppression.challengedRelayUrls.has(relayUrl))
+  ) {
+    return null
+  }
+  return suppression.reason
+}
+
+/** Explicit user retry hook; never clears another account's session. */
+export function clearProtectedReadAuthenticationSuppression(
+  expectedPubkey: string
+): boolean {
+  let normalized: string
+  try {
+    normalized = normalizePubkey(expectedPubkey)
+  } catch {
+    return false
+  }
+  const lease = activeLease
+  if (
+    !lease?.active ||
+    lease.expectedPubkey !== normalized ||
+    !hasCurrentLeaseAuthority(lease)
+  ) {
+    return false
+  }
+  lease.authenticationSuppression = null
+  return true
 }
 
 export function subscribeProtectedReadSignerRevocation(

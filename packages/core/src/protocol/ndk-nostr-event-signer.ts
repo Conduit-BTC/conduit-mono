@@ -7,17 +7,52 @@ import {
   type UnsignedNostrEvent,
 } from "./nostr-event-signer"
 import { isValidSignedPublicNostrEvent } from "./signed-event"
+import { isTransientNip07BridgeError } from "./signing-retry"
 
 function normalizePubkey(value: string): string {
   return value.trim().toLowerCase()
 }
 
 function classifySignerError(error: unknown): NostrSignerError {
-  const code =
-    error && typeof error === "object" && "code" in error
-      ? String(error.code)
-      : ""
-  if (code === "rejected" || code === "authorization_denied") {
+  const record =
+    error && typeof error === "object"
+      ? (error as Record<string, unknown>)
+      : undefined
+  const code = String(record?.code ?? "")
+    .trim()
+    .toLowerCase()
+  const name = String(record?.name ?? "")
+    .trim()
+    .toLowerCase()
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : typeof record?.message === "string"
+          ? record.message
+          : ""
+  if (isTransientNip07BridgeError(new Error(message))) {
+    return new NostrSignerError("unavailable")
+  }
+  if (
+    [
+      "4001",
+      "action_rejected",
+      "authorization_denied",
+      "declined",
+      "denied",
+      "not_allowed",
+      "permission_denied",
+      "permission_rejected",
+      "rejected",
+      "request_rejected",
+      "user_cancelled",
+      "user_denied",
+      "user_rejected",
+    ].includes(code) ||
+    name === "notallowederror"
+  ) {
     return new NostrSignerError("authorization_denied")
   }
   if (code === "timeout") return new NostrSignerError("timeout")
@@ -31,7 +66,11 @@ function classifySignerError(error: unknown): NostrSignerError {
   if (code === "invalid_response") {
     return new NostrSignerError("invalid_response")
   }
-  if (error instanceof Error && /reject|denied|cancel/i.test(error.message)) {
+  if (
+    /(?:user|request|permission|authorization).{0,80}(?:reject(?:ed|ion)?|den(?:ied|ial)|declin(?:ed|e)|cancel(?:led|ed))|(?:reject(?:ed|ion)?|den(?:ied|ial)|declin(?:ed|e)|cancel(?:led|ed)).{0,80}(?:by|from)\s+(?:the\s+)?(?:user|signer|extension)/i.test(
+      message
+    )
+  ) {
     return new NostrSignerError("authorization_denied")
   }
   return new NostrSignerError("unavailable")

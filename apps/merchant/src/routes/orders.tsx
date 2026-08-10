@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   buildOrderStatusTimeline,
   canMockInvoice,
+  clearProtectedReadAuthenticationSuppression,
   convertCommerceAmountToSats,
   decodeLightningInvoiceAmount,
   deriveProtectedReadPresentationState,
@@ -547,14 +548,15 @@ function OrdersPage() {
   }, [])
 
   const handleRefresh = useCallback(() => {
-    if (!signerConnected) return
+    if (!signerConnected || !pubkey) return
     if (refreshResetTimerRef.current) {
       clearTimeout(refreshResetTimerRef.current)
       refreshResetTimerRef.current = null
     }
     setRefreshButtonState("refreshing")
+    clearProtectedReadAuthenticationSuppression(pubkey)
     void refetchOrders()
-  }, [refetchOrders, signerConnected])
+  }, [pubkey, refetchOrders, signerConnected])
 
   const conversations = useMemo(
     () =>
@@ -1663,7 +1665,7 @@ function OrdersPage() {
         protectedOrdersReadState !== "pending" && (
           <LiveReadNotice
             state={protectedOrdersReadState}
-            onRetry={() => void ordersQuery.refetch()}
+            onRetry={handleRefresh}
             retrying={ordersQuery.isRefetching}
           />
         )}

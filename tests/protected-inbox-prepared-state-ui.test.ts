@@ -3,6 +3,7 @@ import {
   deriveProtectedReadPresentationState,
   selectProtectedReadRows,
 } from "@conduit/core"
+import { getDirectMessageSearchEmptyCopy } from "../apps/market/src/lib/protected-read-copy"
 
 async function source(path: string): Promise<string> {
   return Bun.file(path).text()
@@ -18,6 +19,28 @@ describe("protected inbox prepared state", () => {
     expect(selectProtectedReadRows(liveRows, cachedRows)).toBe(liveRows)
     expect(selectProtectedReadRows(liveEmpty, cachedRows)).toBe(liveEmpty)
     expect(selectProtectedReadRows(undefined, undefined)).toEqual([])
+  })
+
+  it("keeps a settled empty cache pending while the live read is staggered", () => {
+    const rows = selectProtectedReadRows<{ id: string }>(undefined, [])
+    expect(
+      deriveProtectedReadPresentationState({
+        visibleCount: rows.length,
+        pending: true,
+      })
+    ).toBe("pending")
+  })
+
+  it("never presents incomplete direct-message results as no matches", () => {
+    expect(getDirectMessageSearchEmptyCopy("pending")).toBe(
+      "Loading conversations…"
+    )
+    expect(getDirectMessageSearchEmptyCopy("complete")).toBe(
+      "No conversations match your search."
+    )
+    for (const state of ["cached", "partial", "unavailable"] as const) {
+      expect(getDirectMessageSearchEmptyCopy(state)).toContain("incomplete")
+    }
   })
 
   it("distinguishes pending, authoritative empty, partial, unavailable, and cache", () => {
@@ -98,6 +121,19 @@ describe("protected inbox prepared state", () => {
     )
     expect(sources[4].match(/enabled: signerConnected/g)?.length).toBe(5)
     expect(sources[4]).toContain("if (!signerConnected) return []")
+    expect(sources[0]).toContain("directMessageListPending")
+    expect(sources[0].match(/\{directMessageSearchEmptyCopy\}/g)?.length).toBe(
+      3
+    )
+    expect(sources[0]).toContain('directMessagesReadState === "complete"')
+    expect(sources[0]).not.toContain(
+      "dmsCacheQuery.isLoading &&\n            dmsLiveQuery.isLoading"
+    )
+    expect(sources[2]).toContain('relatedOrdersReadState === "pending"')
+    expect(sources[2]).toContain('relatedOrdersReadState === "complete"')
+    expect(sources[2]).not.toContain(
+      "relatedOrdersLiveQuery.isLoading &&\n                  relatedOrdersCacheQuery.isLoading"
+    )
   })
 
   it("passes current-session authentication evidence in both network routes", async () => {

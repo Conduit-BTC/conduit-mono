@@ -1,6 +1,7 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import {
+  clearProtectedReadAuthenticationSuppression,
   db,
   deriveProtectedReadPresentationState,
   getCachedMerchantConversationList,
@@ -312,6 +313,11 @@ function DashboardPage() {
       getCachedMerchantConversationList({ principalPubkey: pubkey! }),
     staleTime: 5_000,
   })
+  const retryConversationsRead = () => {
+    if (!pubkey) return
+    clearProtectedReadAuthenticationSuppression(pubkey)
+    void conversationsQuery.refetch()
+  }
   const btcRateQuery = useBtcUsdRate()
   const stats = signerConnected
     ? (statsQuery.data ?? cachedStatsQuery.data)
@@ -536,7 +542,7 @@ function DashboardPage() {
               protectedConversationsReadState !== "pending" && (
                 <LiveReadNotice
                   state={protectedConversationsReadState}
-                  onRetry={() => void conversationsQuery.refetch()}
+                  onRetry={retryConversationsRead}
                   retrying={conversationsQuery.isRefetching}
                 />
               )}

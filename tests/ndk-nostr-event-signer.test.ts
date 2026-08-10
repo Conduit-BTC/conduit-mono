@@ -79,25 +79,46 @@ describe("NDK external-signer edge adapter", () => {
     expect(signCalls).toBe(0)
   })
 
-  it("maps signer rejection to a stable authorization-denied failure", async () => {
-    const ndkSigner = {
-      sign: async () => {
-        throw Object.assign(new Error("User rejected request"), {
-          code: "rejected",
-        })
-      },
-    } as unknown as NDKSigner
-    const signer = createNdkNostrEventSigner(ndkSigner, PUBKEY, "nip07")
-
-    await expect(
-      signer.signEvent({
-        kind: 22_242,
-        pubkey: PUBKEY,
-        created_at: 1_700_000_000,
-        tags: [],
-        content: "",
+  it("maps common signer rejection shapes without misclassifying bridge failures", async () => {
+    const draft = {
+      kind: 22_242,
+      pubkey: PUBKEY,
+      created_at: 1_700_000_000,
+      tags: [],
+      content: "",
+    }
+    for (const rejection of [
+      "User rejected request",
+      { message: "User denied request" },
+      { code: "ACTION_REJECTED" },
+      { code: "declined" },
+      { code: 4001, message: "Request rejected by user" },
+    ]) {
+      const ndkSigner = {
+        sign: async () => {
+          throw rejection
+        },
+      } as unknown as NDKSigner
+      const signer = createNdkNostrEventSigner(ndkSigner, PUBKEY, "nip07")
+      await expect(signer.signEvent(draft)).rejects.toMatchObject({
+        code: "authorization_denied",
       })
-    ).rejects.toMatchObject({ code: "authorization_denied" })
+    }
+
+    const transientSigner = createNdkNostrEventSigner(
+      {
+        sign: async () => {
+          throw new Error(
+            "Connection cancelled because extension context invalidated"
+          )
+        },
+      } as unknown as NDKSigner,
+      PUBKEY,
+      "nip07"
+    )
+    await expect(transientSigner.signEvent(draft)).rejects.toMatchObject({
+      code: "unavailable",
+    })
   })
 
   it("completes a kind-22242 signature through the NIP-07 session fence", async () => {

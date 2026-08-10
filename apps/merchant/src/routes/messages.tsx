@@ -6,6 +6,7 @@ import { Search } from "lucide-react"
 import {
   buildDirectMessageRumor,
   cacheParsedDirectMessage,
+  clearProtectedReadAuthenticationSuppression,
   deriveProtectedReadPresentationState,
   EVENT_KINDS,
   formatNpub,
@@ -27,6 +28,7 @@ import {
   type Profile,
 } from "@conduit/core"
 import {
+  Button,
   ConversationCardScroller,
   ConversationMessageBubble,
   DecryptFailureNotice,
@@ -132,6 +134,11 @@ function MessagesPage() {
       getCachedDirectMessageConversationList({ principalPubkey: pubkey! }),
     staleTime: 5_000,
   })
+  const retryMessagesRead = () => {
+    if (!pubkey) return
+    clearProtectedReadAuthenticationSuppression(pubkey)
+    void liveQuery.refetch()
+  }
 
   const conversations = useMemo(
     () => selectProtectedReadRows(liveQuery.data?.data, cachedQuery.data?.data),
@@ -243,6 +250,11 @@ function MessagesPage() {
         limit: 3,
       }),
   })
+  const retryRelatedOrdersRead = () => {
+    if (!pubkey) return
+    clearProtectedReadAuthenticationSuppression(pubkey)
+    void relatedOrdersLiveQuery.refetch()
+  }
   const relatedOrders = selectProtectedReadRows(
     relatedOrdersLiveQuery.data?.data,
     relatedOrdersCacheQuery.data?.data
@@ -438,7 +450,7 @@ function MessagesPage() {
         protectedMessagesReadState !== "pending" && (
           <LiveReadNotice
             state={protectedMessagesReadState}
-            onRetry={() => void liveQuery.refetch()}
+            onRetry={retryMessagesRead}
             retrying={liveQuery.isRefetching}
             className="xl:shrink-0"
           />
@@ -452,7 +464,7 @@ function MessagesPage() {
             liveMeta?.legacyDecryptFailures?.some(
               (failure) => failure.retryable
             )
-              ? () => void liveQuery.refetch()
+              ? retryMessagesRead
               : undefined
           }
           retrying={liveQuery.isRefetching}
@@ -472,7 +484,7 @@ function MessagesPage() {
         <>
           <DecryptFailureNotice
             count={liveMeta?.decryptFailures?.length ?? 0}
-            onRetry={() => void liveQuery.refetch()}
+            onRetry={retryMessagesRead}
             retrying={liveQuery.isRefetching}
             className="xl:shrink-0"
           />
@@ -650,12 +662,7 @@ function MessagesPage() {
                   <div className="mb-2 text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">
                     Related orders
                   </div>
-                  {relatedOrdersLiveQuery.isLoading &&
-                  relatedOrdersCacheQuery.isLoading ? (
-                    <div className="text-xs text-[var(--text-secondary)]">
-                      Loading related orders...
-                    </div>
-                  ) : relatedOrders.length > 0 ? (
+                  {relatedOrders.length > 0 ? (
                     <OrderCardScroller
                       conversations={relatedOrders}
                       buyerName={() => selectedName ?? "Buyer"}
@@ -669,22 +676,36 @@ function MessagesPage() {
                         })
                       }}
                     />
-                  ) : relatedOrdersReadState !== "complete" &&
-                    relatedOrdersReadState !== "pending" ? (
+                  ) : relatedOrdersReadState === "pending" ? (
                     <div className="text-xs text-[var(--text-secondary)]">
-                      Related order context is {relatedOrdersReadState}. Retry
-                      before relying on an empty result.
+                      Loading related orders...
                     </div>
-                  ) : (
+                  ) : relatedOrdersReadState === "complete" ? (
                     <div className="text-xs text-[var(--text-secondary)]">
                       No related orders found.
+                    </div>
+                  ) : (
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--text-secondary)]">
+                      <span>
+                        Related order context is {relatedOrdersReadState}. Retry
+                        before relying on an empty result.
+                      </span>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={retryRelatedOrdersRead}
+                        disabled={relatedOrdersLiveQuery.isRefetching}
+                      >
+                        Retry
+                      </Button>
                     </div>
                   )}
                 </div>
 
                 <DecryptFailureNotice
                   count={liveMeta?.decryptFailures?.length ?? 0}
-                  onRetry={() => void liveQuery.refetch()}
+                  onRetry={retryMessagesRead}
                   retrying={liveQuery.isRefetching}
                   className="mb-3 xl:shrink-0"
                 />

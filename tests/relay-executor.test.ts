@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { getPublicKey, finalizeEvent, verifyEvent } from "nostr-tools"
 import {
   __resetProtectedReadSigner,
+  clearProtectedReadAuthenticationSuppression,
   getProtectedReadAuthorization,
   installProtectedReadSigner,
   removeProtectedReadSigner,
@@ -455,6 +456,39 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
     })
   })
 
+  it("discards an authenticated socket after protected query timeout", async () => {
+    let signCalls = 0
+    const harness = new FakeRelayHarness().at("wss://protected.example", {
+      onOpen: (socket) => socket.relay(["AUTH", "query-timeout"]),
+      onSend: (socket, frame) => {
+        if (frame[0] === "AUTH") respondToAuth(socket, frame)
+      },
+    })
+    const executor = createExecutor(harness)
+    const { authorization } = authorize(
+      createSigner(PRIVATE_KEY_A, { onSign: () => signCalls++ })
+    )
+
+    const first = await executor.query(protectedRequest(), {
+      authorization,
+      queryTimeoutMs: 10,
+    })
+    expect(source(first)).toMatchObject({
+      auth: "succeeded",
+      failure: "query_timed_out",
+    })
+    expect(harness.sockets[0]?.closed).toBe(true)
+
+    const second = await executor.query(protectedRequest(), {
+      authorization,
+      queryTimeoutMs: 10,
+    })
+    expect(source(second).failure).toBe("query_timed_out")
+    expect(harness.sockets).toHaveLength(2)
+    expect(harness.sockets[1]?.closed).toBe(true)
+    expect(signCalls).toBe(2)
+  })
+
   it("distinguishes connection timeout from authentication timeout", async () => {
     const harness = new FakeRelayHarness().at("wss://protected.example", {
       autoOpen: false,
@@ -485,25 +519,187 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
     ).toBe(false)
   })
 
-  it("classifies external signer denial without retrying the REQ", async () => {
-    const harness = new FakeRelayHarness().at("wss://protected.example", {
-      onOpen: (socket) => socket.relay(["AUTH", "denied"]),
-    })
+  it("suppresses repeated signer prompts after denial until explicit retry", async () => {
+    let signCalls = 0
+    const legacyWrap = giftWrap("legacy relay fallback")
+    const harness = new FakeRelayHarness()
+      .at("wss://protected.example", {
+        onOpen: (socket) => socket.relay(["AUTH", "denied"]),
+      })
+      .at("wss://legacy.example", {
+        onSend: (socket, frame) => {
+          if (frame[0] !== "REQ") return
+          socket.relay(["EVENT", frame[1], legacyWrap])
+          socket.relay(["EOSE", frame[1]])
+        },
+      })
     const executor = createExecutor(harness)
     const { authorization } = authorize(
       createSigner(PRIVATE_KEY_A, {
+        onSign: () => signCalls++,
         failure: new NostrSignerError("authorization_denied"),
       })
     )
 
-    const result = await executor.query(protectedRequest(), { authorization })
+    const first = await executor.query(protectedRequest(), { authorization })
 
-    expect(source(result)).toMatchObject({
+    expect(source(first)).toMatchObject({
       auth: "signer_authorization_denied",
       failure: "signer_authorization_denied",
     })
+    expect(signCalls).toBe(1)
     expect(
       harness.sockets[0]?.sent.filter((frame) => frame[0] === "REQ")
+    ).toHaveLength(0)
+
+    const second = await executor.query(protectedRequest(), { authorization })
+    expect(source(second).failure).toBe("signer_authorization_denied")
+    expect(signCalls).toBe(1)
+    expect(harness.sockets).toHaveLength(1)
+
+    const legacyFallback = await executor.query(
+      protectedRequest(PUBKEY_A, ["wss://legacy.example"]),
+      { authorization }
+    )
+    expect(legacyFallback.status).toBe("success")
+    expect(legacyFallback.events.map((event) => event.id)).toEqual([
+      legacyWrap.id,
+    ])
+    expect(source(legacyFallback).auth).toBe("not_challenged")
+    expect(signCalls).toBe(1)
+
+    expect(clearProtectedReadAuthenticationSuppression(PUBKEY_A)).toBe(true)
+    const explicitRetry = await executor.query(protectedRequest(), {
+      authorization,
+    })
+    expect(source(explicitRetry).failure).toBe("signer_authorization_denied")
+    expect(signCalls).toBe(2)
+    expect(
+      harness.sockets.filter((socket) =>
+        socket.url.includes("protected.example")
+      )
+    ).toHaveLength(2)
+  })
+
+  it("serializes concurrent relay prompts and stops after the first denial", async () => {
+    let signCalls = 0
+    const firstRelayUrl = "wss://one.example"
+    const secondRelayUrl = "wss://two.example"
+    const relayUrls = [firstRelayUrl, secondRelayUrl]
+    const harness = new FakeRelayHarness()
+      .at(firstRelayUrl, {
+        onOpen: (socket) => socket.relay(["AUTH", "one-denied"]),
+      })
+      .at(secondRelayUrl, {
+        onOpen: (socket) => socket.relay(["AUTH", "two-denied"]),
+      })
+    const executor = createExecutor(harness)
+    const { authorization } = authorize(
+      createSigner(PRIVATE_KEY_A, {
+        onSign: () => signCalls++,
+        failure: new NostrSignerError("authorization_denied"),
+      })
+    )
+
+    const result = await executor.query(protectedRequest(PUBKEY_A, relayUrls), {
+      authorization,
+    })
+
+    expect(result.relays).toHaveLength(2)
+    expect(result.relays.every((relay) => relay.status === "failed")).toBe(true)
+    expect(
+      result.relays.every(
+        (relay) => relay.failure === "signer_authorization_denied"
+      )
+    ).toBe(true)
+    expect(signCalls).toBe(1)
+  })
+
+  it("suppresses repeated signer prompts after auth OK timeout", async () => {
+    let signCalls = 0
+    const harness = new FakeRelayHarness().at("wss://protected.example", {
+      onOpen: (socket) => socket.relay(["AUTH", "auth-ok-timeout"]),
+    })
+    const executor = createExecutor(harness)
+    const { authorization } = authorize(
+      createSigner(PRIVATE_KEY_A, {
+        onSign: () => signCalls++,
+      })
+    )
+
+    const first = await executor.query(protectedRequest(), {
+      authorization,
+      authTimeoutMs: 10,
+    })
+    expect(source(first).failure).toBe("authentication_timed_out")
+    expect(signCalls).toBe(1)
+    expect(
+      harness.sockets[0]?.sent.filter((frame) => frame[0] === "AUTH")
+    ).toHaveLength(1)
+
+    const second = await executor.query(protectedRequest(), { authorization })
+    expect(source(second).failure).toBe("authentication_timed_out")
+    expect(signCalls).toBe(1)
+    expect(harness.sockets).toHaveLength(1)
+  })
+
+  it("keeps explicit retry cleared after a timed-out signer resolves late", async () => {
+    let signCalls = 0
+    let releaseFirstSign!: () => void
+    const firstSignPending = new Promise<void>((resolve) => {
+      releaseFirstSign = resolve
+    })
+    const delayedSigner: NostrEventSigner = {
+      authMethod: "nip07",
+      getPublicKey: async () => PUBKEY_A,
+      signEvent: async (event) => {
+        signCalls += 1
+        if (signCalls === 1) await firstSignPending
+        return finalizeEvent(event, PRIVATE_KEY_A)
+      },
+    }
+    const harness = new FakeRelayHarness().at("wss://protected.example", {
+      onOpen: (socket) => socket.relay(["AUTH", "delayed-signer"]),
+      onSend: (socket, frame) => {
+        if (frame[0] === "AUTH") respondToAuth(socket, frame)
+        if (frame[0] === "REQ") socket.relay(["EOSE", frame[1]])
+      },
+    })
+    const executor = createExecutor(harness)
+    const { authorization } = authorize(delayedSigner)
+
+    const first = await executor.query(protectedRequest(), {
+      authorization,
+      authTimeoutMs: 10,
+    })
+    expect(source(first).failure).toBe("authentication_timed_out")
+    expect(signCalls).toBe(1)
+
+    expect(clearProtectedReadAuthenticationSuppression(PUBKEY_A)).toBe(true)
+    const retry = executor.query(protectedRequest(), {
+      authorization,
+      authTimeoutMs: 1_000,
+    })
+
+    const result = await retry
+    expect(result.status).toBe("success")
+    expect(source(result)).toMatchObject({
+      status: "success",
+      auth: "succeeded",
+    })
+    expect(signCalls).toBe(2)
+    expect(
+      harness.sockets[0]?.sent.filter((frame) => frame[0] === "AUTH")
+    ).toHaveLength(0)
+    expect(
+      harness.sockets[1]?.sent.filter((frame) => frame[0] === "AUTH")
+    ).toHaveLength(1)
+
+    releaseFirstSign()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(
+      harness.sockets[0]?.sent.filter((frame) => frame[0] === "AUTH")
     ).toHaveLength(0)
   })
 
@@ -694,6 +890,85 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
         .flatMap((socket) => socket.sent)
         .filter((frame) => frame[0] === "AUTH")
     ).toHaveLength(1)
+  })
+
+  it("keeps an aborted signer serialized until timeout, then recovers on retry", async () => {
+    let releaseFirstSignature!: () => void
+    const firstSignature = new Promise<void>((resolve) => {
+      releaseFirstSignature = resolve
+    })
+    let signCalls = 0
+    const slowFirstSigner: NostrEventSigner = {
+      authMethod: "nip07",
+      getPublicKey: async () => PUBKEY_A,
+      signEvent: async (event) => {
+        signCalls += 1
+        if (signCalls === 1) await firstSignature
+        return finalizeEvent(event, PRIVATE_KEY_A)
+      },
+    }
+    const challengeAndComplete: FakeRelayBehavior = {
+      onOpen: (socket) => socket.relay(["AUTH", "abort-serialized"]),
+      onSend: (socket, frame) => {
+        if (frame[0] === "AUTH") respondToAuth(socket, frame)
+        if (frame[0] === "REQ") socket.relay(["EOSE", frame[1]])
+      },
+    }
+    const harness = new FakeRelayHarness()
+      .at("wss://a.example", challengeAndComplete)
+      .at("wss://b.example", challengeAndComplete)
+      .at("wss://c.example", challengeAndComplete)
+    const executor = createExecutor(harness)
+    const { authorization } = authorize(slowFirstSigner)
+    const abortController = new AbortController()
+
+    const firstQuery = executor.query(
+      protectedRequest(PUBKEY_A, ["wss://a.example"]),
+      {
+        authorization,
+        signal: abortController.signal,
+        authTimeoutMs: 20,
+      }
+    )
+    for (let step = 0; step < 10 && signCalls === 0; step += 1) {
+      await Promise.resolve()
+    }
+    expect(signCalls).toBe(1)
+
+    const secondQuery = executor.query(
+      protectedRequest(PUBKEY_A, ["wss://b.example"]),
+      { authorization, authTimeoutMs: 1_000 }
+    )
+    abortController.abort()
+    expect((await firstQuery).status).toBe("aborted")
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(signCalls).toBe(1)
+
+    const backgroundResult = await secondQuery
+    expect(source(backgroundResult).failure).toBe("authentication_timed_out")
+    expect(signCalls).toBe(1)
+
+    expect(clearProtectedReadAuthenticationSuppression(PUBKEY_A)).toBe(true)
+    const explicitRetry = await executor.query(
+      protectedRequest(PUBKEY_A, ["wss://c.example"]),
+      { authorization, authTimeoutMs: 1_000 }
+    )
+    expect(explicitRetry.status).toBe("success")
+    expect(signCalls).toBe(2)
+    expect(
+      harness.sockets[0]?.sent.filter((frame) => frame[0] === "AUTH")
+    ).toHaveLength(0)
+    expect(
+      harness.sockets[2]?.sent.filter((frame) => frame[0] === "AUTH")
+    ).toHaveLength(1)
+
+    releaseFirstSignature()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(
+      harness.sockets[0]?.sent.filter((frame) => frame[0] === "AUTH")
+    ).toHaveLength(0)
   })
 
   it("serializes relay challenges and drops timed-out queued signer prompts", async () => {

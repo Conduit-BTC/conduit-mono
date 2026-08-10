@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server"
 import {
   prepareRelaySettingsContextPresentation,
   RELAY_SETTINGS_STORAGE_VERSION,
+  resolveRelayAuthDisplayEvidence,
 } from "@conduit/core"
 import {
   RelaySettingsPanel,
@@ -19,6 +20,21 @@ const evidence: readonly RelayAuthEvidenceState[] = [
 ]
 
 describe("relay authentication evidence", () => {
+  it("keeps advertised metadata until stronger runtime evidence exists", () => {
+    expect(resolveRelayAuthDisplayEvidence(undefined, true)).toBe("advertised")
+    expect(resolveRelayAuthDisplayEvidence("untested", true)).toBe("advertised")
+    expect(resolveRelayAuthDisplayEvidence(undefined, false)).toBe("untested")
+
+    for (const state of [
+      "challenge_observed",
+      "succeeded",
+      "rejected",
+      "unavailable",
+    ] as const) {
+      expect(resolveRelayAuthDisplayEvidence(state, true)).toBe(state)
+    }
+  })
+
   it("masks the previous account's relay settings before the new scope initializes", () => {
     const previousSettings = {
       version: RELAY_SETTINGS_STORAGE_VERSION,

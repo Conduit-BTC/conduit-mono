@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react"
 import {
+  clearProtectedReadAuthenticationSuppression,
   getMerchantConversationList,
   nwcGetInfo,
   nwcLookupInvoice,
@@ -279,9 +280,10 @@ export function MerchantPaymentAutomationProvider({
   const retry = useCallback(() => {
     attemptedRunsRef.current.clear()
     setRun({ status: "idle", checked: 0, verified: 0 })
+    if (pubkey) clearProtectedReadAuthenticationSuppression(pubkey)
     void infoQuery.refetch()
     void conversationsQuery.refetch()
-  }, [conversationsQuery, infoQuery])
+  }, [conversationsQuery, infoQuery, pubkey])
 
   const value = useMemo<MerchantPaymentAutomationState>(
     () => ({
