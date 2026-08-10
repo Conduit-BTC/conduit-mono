@@ -1459,10 +1459,12 @@ describe("commerce gateway", () => {
 
     expect(detail.data?.eventId).toBe(localProduct.id)
     expect(detail.data?.product.stock).toBe(0)
-    expect(detail.meta.stale).toBe(false)
-    expect(detail.meta.degraded).toBe(false)
+    expect(detail.meta.stale).toBe(true)
+    expect(detail.meta.degraded).toBe(true)
     expect(batch.data[0]?.eventId).toBe(localProduct.id)
     expect(batch.data[0]?.product.stock).toBe(0)
+    expect(batch.meta.stale).toBe(true)
+    expect(batch.meta.degraded).toBe(true)
     expect(cachedProducts[0]?.eventId).toBe(localProduct.id)
   })
 
@@ -3350,6 +3352,7 @@ describe("getProductsByIds diagnostics", () => {
     expect(result.data[0]?.eventId).toBe(newerCachedEvent.id)
     expect(result.diagnostics[0]?.issue).toBe("cached_only")
     expect(result.meta.source).toBe("local_cache")
+    expect(result.meta.stale).toBe(true)
     expect(result.meta.degraded).toBe(true)
   })
 

@@ -3280,9 +3280,16 @@ export async function getProductDetail(
         query.includeMarketHidden
       )
       if (record) {
-        const hasLiveDirectTarget = directVisible.some(
+        const selectedDirectTarget = merged.find(
           (candidate) => candidate.addressId === addressId
         )
+        const hasLiveDirectTarget =
+          !!selectedDirectTarget &&
+          directVisible.some(
+            (candidate) =>
+              candidate.addressId === addressId &&
+              candidate.eventId === selectedDirectTarget.eventId
+          )
         const hasCompleteGroupCoverage =
           record.product.type === "simple"
             ? true
@@ -3875,7 +3882,8 @@ export async function getProductsByIds(
   const completeLiveRead =
     hasCompleteLiveDirectCoverage &&
     hasCompleteLiveVariationCoverage &&
-    listingCoverage === "complete"
+    listingCoverage === "complete" &&
+    !hasCacheOnlySelection
   const meta = createMeta("product_detail", source, PRODUCT_CAPABILITIES, {
     stale: !completeLiveRead,
     degraded,
