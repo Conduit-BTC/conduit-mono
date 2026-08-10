@@ -31,6 +31,8 @@ export function ProductVariationSelector({
   const model = getProductVariationSelectorModel(family, selectedProduct)
   if (!model) return null
 
+  // Product cards and rows are clickable, so selector interaction must stay
+  // inside the control until the shopper makes an explicit variation choice.
   return (
     <div
       className={cn("space-y-2", className)}

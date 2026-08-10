@@ -868,6 +868,8 @@ function ProductsPage() {
     productsQuery.data?.meta ?? cachedProductsQuery.data?.meta
   const merchantProducts = useMemo<MerchantProductFamily[]>(
     () =>
+      // Group at the read boundary so edit and delete always operate on the
+      // same complete variation family shown to the merchant.
       groupProductVariationRecords(merchantProductRecords).map((family) => {
         const variationForm = getProductVariationFormState(
           family.root,
