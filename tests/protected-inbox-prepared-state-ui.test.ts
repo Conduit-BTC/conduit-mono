@@ -1,11 +1,25 @@
 import { describe, expect, it } from "bun:test"
-import { deriveProtectedReadPresentationState } from "@conduit/core"
+import {
+  deriveProtectedReadPresentationState,
+  selectProtectedReadRows,
+} from "@conduit/core"
 
 async function source(path: string): Promise<string> {
   return Bun.file(path).text()
 }
 
 describe("protected inbox prepared state", () => {
+  it("uses route-local cache only until the live result resolves", () => {
+    const cachedRows = [{ id: "cached" }]
+    const liveRows = [{ id: "live" }]
+    const liveEmpty: typeof liveRows = []
+
+    expect(selectProtectedReadRows(undefined, cachedRows)).toBe(cachedRows)
+    expect(selectProtectedReadRows(liveRows, cachedRows)).toBe(liveRows)
+    expect(selectProtectedReadRows(liveEmpty, cachedRows)).toBe(liveEmpty)
+    expect(selectProtectedReadRows(undefined, undefined)).toEqual([])
+  })
+
   it("distinguishes pending, authoritative empty, partial, unavailable, and cache", () => {
     expect(
       deriveProtectedReadPresentationState({
@@ -65,9 +79,14 @@ describe("protected inbox prepared state", () => {
       ].map(source)
     )
 
-    for (const text of sources) {
+    const expectedSelectorCounts = [2, 1, 2, 1, 1]
+    for (const [index, text] of sources.entries()) {
       expect(text).toContain("deriveProtectedReadPresentationState")
       expect(text).toContain("pending:")
+      expect(text.match(/selectProtectedReadRows\(/g)?.length).toBe(
+        expectedSelectorCounts[index]
+      )
+      expect(text).not.toMatch(/data\?\.data\.length\s*\?/)
     }
     expect(sources[3]).toContain("protectedOrderCountsUnavailable")
     expect(sources[3]).toContain(

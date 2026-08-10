@@ -16,6 +16,18 @@ export interface ProtectedReadPresentationInput {
 }
 
 /**
+ * Keep the rows from a completed live read paired with that read's metadata.
+ * Protected live APIs already merge their cache before returning, so the
+ * route-local cache is only a fallback while the live result is still absent.
+ */
+export function selectProtectedReadRows<T>(
+  liveRows: T[] | undefined,
+  cachedRows: T[] | undefined
+): T[] {
+  return liveRows ?? cachedRows ?? []
+}
+
+/**
  * Convert distributed inbox coverage into the four states UI surfaces need.
  * In particular, a non-throwing all-relay auth outage is unavailable, never an
  * authoritative empty or merely partial result.

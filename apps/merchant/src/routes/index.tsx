@@ -7,6 +7,7 @@ import {
   getCachedMerchantStorefront,
   getMerchantConversationList,
   getMerchantStorefront,
+  selectProtectedReadRows,
   useAuth,
   useProfiles,
   type ParsedOrderMessage,
@@ -317,11 +318,10 @@ function DashboardPage() {
     : undefined
   const allConversations = useMemo(() => {
     if (!signerConnected) return []
-    return conversationsQuery.data?.data.length
-      ? conversationsQuery.data.data
-      : (cachedConversationsQuery.data?.data ??
-          conversationsQuery.data?.data ??
-          [])
+    return selectProtectedReadRows(
+      conversationsQuery.data?.data,
+      cachedConversationsQuery.data?.data
+    )
   }, [signerConnected, conversationsQuery.data, cachedConversationsQuery.data])
   const conversationsMeta = conversationsQuery.data?.meta
   const protectedConversationsReadState = deriveProtectedReadPresentationState({

@@ -19,6 +19,7 @@ import {
   parseDirectMessageRumor,
   publishPrivateMessage,
   pubkeyToNpub,
+  selectProtectedReadRows,
   useAuth,
   useConduitSession,
   useInboxDeclaration,
@@ -133,10 +134,7 @@ function MessagesPage() {
   })
 
   const conversations = useMemo(
-    () =>
-      liveQuery.data?.data.length
-        ? liveQuery.data.data
-        : (cachedQuery.data?.data ?? liveQuery.data?.data ?? []),
+    () => selectProtectedReadRows(liveQuery.data?.data, cachedQuery.data?.data),
     [cachedQuery.data, liveQuery.data]
   )
   const liveMeta = liveQuery.data?.meta
@@ -245,11 +243,10 @@ function MessagesPage() {
         limit: 3,
       }),
   })
-  const relatedOrders = relatedOrdersLiveQuery.data?.data.length
-    ? relatedOrdersLiveQuery.data.data
-    : (relatedOrdersCacheQuery.data?.data ??
-      relatedOrdersLiveQuery.data?.data ??
-      [])
+  const relatedOrders = selectProtectedReadRows(
+    relatedOrdersLiveQuery.data?.data,
+    relatedOrdersCacheQuery.data?.data
+  )
   const relatedOrdersReadState = deriveProtectedReadPresentationState({
     visibleCount: relatedOrders.length,
     pending: relatedOrdersLiveQuery.isLoading,

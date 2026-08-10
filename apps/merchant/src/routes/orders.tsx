@@ -25,6 +25,7 @@ import {
   nwcMakeInvoice,
   publishMerchantOrderMessage,
   pubkeyToNpub,
+  selectProtectedReadRows,
   weblnMakeInvoice,
   type MerchantConversationSummary,
   type MerchantOrderAction,
@@ -557,9 +558,10 @@ function OrdersPage() {
 
   const conversations = useMemo(
     () =>
-      ordersQuery.data?.data.length
-        ? ordersQuery.data.data
-        : (cachedOrdersQuery.data?.data ?? ordersQuery.data?.data ?? []),
+      selectProtectedReadRows(
+        ordersQuery.data?.data,
+        cachedOrdersQuery.data?.data
+      ),
     [cachedOrdersQuery.data, ordersQuery.data]
   )
   const ordersMeta = ordersQuery.data?.meta

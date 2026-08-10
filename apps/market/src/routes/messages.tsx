@@ -47,6 +47,7 @@ import {
   parseOrderMessageRumorEvent,
   publishPrivateMessage,
   pubkeyToNpub,
+  selectProtectedReadRows,
   useAuth,
   useConduitSession,
   useInboxDeclaration,
@@ -356,9 +357,10 @@ function MessagesPage() {
 
   const conversations = useMemo(
     () =>
-      messagesQuery.data?.data.length
-        ? messagesQuery.data.data
-        : (cachedMessagesQuery.data?.data ?? messagesQuery.data?.data ?? []),
+      selectProtectedReadRows(
+        messagesQuery.data?.data,
+        cachedMessagesQuery.data?.data
+      ),
     [cachedMessagesQuery.data, messagesQuery.data]
   )
   const merchantThreadsReadState = deriveProtectedReadPresentationState({
@@ -545,9 +547,10 @@ function MessagesPage() {
 
   const dmConversations = useMemo(
     () =>
-      dmsLiveQuery.data?.data.length
-        ? dmsLiveQuery.data.data
-        : (dmsCacheQuery.data?.data ?? dmsLiveQuery.data?.data ?? []),
+      selectProtectedReadRows(
+        dmsLiveQuery.data?.data,
+        dmsCacheQuery.data?.data
+      ),
     [dmsCacheQuery.data, dmsLiveQuery.data]
   )
   const dmCounterpartyPubkeys = useMemo(

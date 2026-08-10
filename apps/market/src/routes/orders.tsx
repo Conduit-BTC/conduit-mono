@@ -14,6 +14,7 @@ import {
   normalizeLightningInvoice,
   pruneExpiredGuestOrderData,
   pubkeyToNpub,
+  selectProtectedReadRows,
   useAuth,
   useProfile,
   useProfiles,
@@ -1345,7 +1346,11 @@ function OrdersPage() {
   }, [activeBuyerPubkey, refetchAll])
 
   const conversations = useMemo(
-    () => messagesQuery.data?.data ?? cachedMessagesQuery.data?.data ?? [],
+    () =>
+      selectProtectedReadRows(
+        messagesQuery.data?.data,
+        cachedMessagesQuery.data?.data
+      ),
     [cachedMessagesQuery.data, messagesQuery.data]
   )
   const messagesMeta = messagesQuery.data?.meta
