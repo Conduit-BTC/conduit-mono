@@ -6,6 +6,7 @@ import {
   isMerchantOrderAccepted,
   isMerchantOrderPaid,
   orderFlowFromCheckoutMode,
+  parseZapRequestContent,
   type BuyerConversationSummary,
   type OrderFlow,
   type OrderAddressValidity,
@@ -58,6 +59,14 @@ export interface OrderViewModel {
   flow: OrderFlow
   publicZapSigner: OrderPublicZapSigner | null
   publicZapFallback: boolean
+  /** Exact public zap content saved with the local lifecycle. */
+  zapContent: string | null
+  /** Shopper-authored note, separated from its protocol product reference. */
+  publicZapNote: string | null
+  /** Validated kind-30402 address referenced by the public zap. */
+  publicZapProductAddress: string | null
+  /** Canonical encoded product reference safe to pass to the product route. */
+  publicZapProductNaddr: string | null
   createdAt: number
   updatedAt: number
 
@@ -310,6 +319,21 @@ export function buildOrderViewModel(
           invoiceStatus === "received" || invoiceStatus === "manual_required",
       })
 
+  const publicZapSigner = lifecycle
+    ? (lifecycle.publicZapSigner ??
+      getOrderPublicZapSigner(lifecycle.checkoutMode))
+    : null
+  const zapContent = lifecycle?.zapContent ?? null
+  const candidateProductAddress =
+    publicZapSigner === "shopper" ? (lifecycle?.zapTargetAddress ?? null) : null
+  let parsedZapContent: ReturnType<typeof parseZapRequestContent> | null = null
+  if (publicZapSigner === "shopper" && zapContent !== null) {
+    parsedZapContent = parseZapRequestContent(
+      zapContent,
+      candidateProductAddress
+    )
+  }
+
   return {
     orderId: input.orderId,
     merchantPubkey,
@@ -317,8 +341,12 @@ export function buildOrderViewModel(
       lifecycle?.buyerIdentityKind ?? summary?.buyerIdentityKind ?? null,
     checkoutMode: lifecycle?.checkoutMode ?? null,
     flow,
-    publicZapSigner: lifecycle?.publicZapSigner ?? null,
+    publicZapSigner,
     publicZapFallback: lifecycle?.publicZapFallback === true,
+    zapContent,
+    publicZapNote: parsedZapContent?.note || null,
+    publicZapProductAddress: parsedZapContent?.productAddress ?? null,
+    publicZapProductNaddr: parsedZapContent?.productNaddr ?? null,
     createdAt: lifecycle?.createdAt ?? conversation?.latestAt ?? Date.now(),
     updatedAt: lifecycle?.updatedAt ?? conversation?.latestAt ?? Date.now(),
     items,

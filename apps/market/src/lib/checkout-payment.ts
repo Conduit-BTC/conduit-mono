@@ -4,9 +4,12 @@ import {
   appendConduitClientTag,
   appendOmfZapoutMarker,
   buildAnonZapCheckoutContent,
+  buildProductZapTargetTags,
+  buildZapRequestContent as buildProtocolZapRequestContent,
   fetchLnurlInvoice,
   fetchZapInvoice,
   getPriceSats,
+  getProductZapNaddr,
   getShippingDestinationEligibility,
   getShippingCostSats,
   isBtcLikeCurrency,
@@ -978,11 +981,61 @@ export function isPublicZapContentEditable(
 }
 
 export function sanitizePublicZapContent(content: string): string {
-  return content
-    .replace(/[\r\n\t]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 280)
+  return buildProtocolZapRequestContent({ note: content })
+}
+
+/**
+ * Bound the editable draft by Unicode code points without trimming boundary
+ * whitespace while the shopper is typing. Final wire normalization happens in
+ * `buildZapRequestContent` immediately before the durable snapshot is created.
+ */
+export function truncatePublicZapNoteDraft(
+  content: string,
+  maxCodePoints: number
+): string {
+  if (!Number.isSafeInteger(maxCodePoints) || maxCodePoints < 0) {
+    throw new Error("Zap note code point limit is invalid.")
+  }
+  return Array.from(content.replace(/\r\n?/g, "\n").replace(/\t/g, " "))
+    .slice(0, maxCodePoints)
+    .join("")
+}
+
+/**
+ * Product targeting is an explicit shopper action. Generic, anonymous,
+ * private, and multi-product checkout paths keep their existing privacy shape.
+ */
+export function getCheckoutZapTargetAddress(params: {
+  items: Array<Pick<CartItem, "productId">>
+  mode: CheckoutZapMode
+  policy: "generic_only" | "custom"
+  contentEdited: boolean
+  content: string
+}): string | undefined {
+  if (
+    params.mode !== "public_zap_as_shopper" ||
+    params.policy !== "custom" ||
+    !params.contentEdited ||
+    sanitizePublicZapContent(params.content).length === 0
+  ) {
+    return undefined
+  }
+
+  const productAddresses = Array.from(
+    new Set(params.items.map((item) => item.productId))
+  )
+  if (productAddresses.length !== 1) return undefined
+
+  const productAddress = productAddresses[0]
+  try {
+    getProductZapNaddr(productAddress)
+    return productAddress
+  } catch {
+    // Product discovery also supports legacy/external listings without a
+    // representable d-tag coordinate. Keep their public note and payment flow,
+    // but omit the optional product target rather than blocking checkout.
+    return undefined
+  }
 }
 
 export function getCheckoutZapVisibility(
@@ -1009,10 +1062,14 @@ export function isCheckoutPublicZapMode(
 
 export function buildZapRequestContent(
   visibility: CheckoutZapVisibility,
-  content: string
+  content: string,
+  zapTargetAddress?: string
 ): string {
   if (visibility === "private_checkout") return ""
-  return sanitizePublicZapContent(content)
+  return buildProtocolZapRequestContent({
+    note: content,
+    productAddress: zapTargetAddress,
+  })
 }
 
 export function getLnurlReadyForCheckoutPayment(params: {
@@ -1089,6 +1146,7 @@ export async function requestCheckoutLnurlInvoice(
     lnurlNostrPubkey?: string
     recipientPubkey: string
     zapContent: string
+    zapTargetAddress?: string
     explicitRelayUrls: readonly string[]
     zapRelayUrls: readonly string[]
     nowSeconds?: number
@@ -1110,16 +1168,35 @@ export async function requestCheckoutLnurlInvoice(
   const zapRelayUrls = Array.from(
     new Set([...params.explicitRelayUrls, ...params.zapRelayUrls])
   )
+  const zapTargetTags = params.zapTargetAddress
+    ? buildProductZapTargetTags(params.zapTargetAddress)
+    : []
+  const zapTargetPubkey = zapTargetTags
+    .find((tag) => tag[0] === "a")?.[1]
+    ?.split(":")[1]
+  if (
+    zapTargetPubkey &&
+    zapTargetPubkey !== params.recipientPubkey.toLowerCase()
+  ) {
+    throw new Error(
+      "Product zap target does not belong to the payment recipient. No invoice was requested."
+    )
+  }
   const draft: CheckoutZapRequestDraft = {
     kind: EVENT_KINDS.ZAP_REQUEST,
     createdAt: params.nowSeconds ?? Math.floor(Date.now() / 1000),
-    content: buildZapRequestContent(params.visibility, params.zapContent),
+    content: buildZapRequestContent(
+      params.visibility,
+      params.zapContent,
+      params.zapTargetAddress
+    ),
     tags: appendConduitClientTag(
       appendOmfZapoutMarker([
         ["p", params.recipientPubkey],
         ["amount", String(params.amountMsats)],
         ["lnurl", params.lnurl],
         ["relays", ...zapRelayUrls],
+        ...zapTargetTags,
       ]),
       "market"
     ),

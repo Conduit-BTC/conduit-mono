@@ -124,6 +124,7 @@ export type OrderPaymentClaimInput = {
   merchantLightningAddress: string | null
   checkoutMode: OrderCheckoutMode
   zapContent: string
+  zapTargetAddress?: string
   totalSats: number
   totalMsats: number
   items: Array<{ productAddress: string; quantity: number }>
@@ -176,6 +177,7 @@ function paymentClaimMatchesLifecycle(
       input.merchantLightningAddress &&
     checkoutModesMatchForPayment(lifecycle, input.checkoutMode) &&
     (lifecycle.zapContent ?? "") === input.zapContent &&
+    (lifecycle.zapTargetAddress ?? null) === (input.zapTargetAddress ?? null) &&
     lifecycle.totalSats === input.totalSats &&
     lifecycle.totalMsats === input.totalMsats &&
     canonicalPaymentItems(

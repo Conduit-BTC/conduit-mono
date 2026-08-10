@@ -11,6 +11,11 @@ import {
   verifyOmfZapoutReceiptAuthority,
 } from "../packages/core/src/protocol/lightning"
 import {
+  buildProductZapTargetTags,
+  buildZapRequestContent,
+  getProductZapNaddr,
+} from "../packages/core/src/protocol/zap-content"
+import {
   bolt11DescriptionHashField,
   bolt11PaymentHashField,
   makeBolt11Fixture,
@@ -25,19 +30,21 @@ const PAY_REQUEST_URL =
   "https://wallet.conduit.market/.well-known/lnurlp/merchant"
 const LNURL = encodeLnurl(PAY_REQUEST_URL)
 const HISTORIC_CREATED_AT = 1_765_000_000
+const PRODUCT_ADDRESS = `30402:${RECIPIENT_PUBKEY}:sick-shirt`
 
 type ZapReceiptInput = Parameters<typeof parseOmfZapoutReceipt>[0]
 
 function zapRequest(
   tags: string[][] = [],
   lnurl = LNURL,
-  createdAt = HISTORIC_CREATED_AT
+  createdAt = HISTORIC_CREATED_AT,
+  content = "Paid publicly\nfrom checkout."
 ) {
   return finalizeEvent(
     {
       created_at: createdAt,
       kind: 9734,
-      content: "Paid publicly\nfrom checkout.",
+      content,
       tags: [
         ["p", RECIPIENT_PUBKEY],
         ["amount", "42000"],
@@ -141,9 +148,224 @@ describe("parseOmfZapoutReceipt", () => {
       senderPubkey: SENDER_PUBKEY,
       recipientPubkey: RECIPIENT_PUBKEY,
       amountMsats: 42_000,
+      zapRequestContent: "Paid publicly\nfrom checkout.",
+      note: "Paid publicly\nfrom checkout.",
       comment: "Paid publicly from checkout.",
+      productAddress: null,
+      productNaddr: null,
       sourceRelayUrls: [],
     })
+  })
+
+  it("separates a shopper note and matching product naddr from the exact signed request", () => {
+    const content = buildZapRequestContent({
+      note: "sick shirt 🔥",
+      productAddress: PRODUCT_ADDRESS,
+    })
+    const request = zapRequest(
+      [
+        [...OMF_ZAPOUT_MARKER_TAG],
+        ...buildProductZapTargetTags(PRODUCT_ADDRESS),
+      ],
+      LNURL,
+      HISTORIC_CREATED_AT,
+      content
+    )
+    const description = JSON.stringify(request)
+    const receipt = zapReceipt(description, {
+      tags: [
+        ["p", RECIPIENT_PUBKEY],
+        ["P", SENDER_PUBKEY],
+        ["amount", "42000"],
+        ["a", PRODUCT_ADDRESS],
+        ["bolt11", boundInvoice(description)],
+        ["description", description],
+      ],
+    })
+
+    expect(receipt.content).toBe("")
+    expect(parseOmfZapoutReceipt(receipt as ZapReceiptInput)).toMatchObject({
+      zapRequestContent: content,
+      note: "sick shirt 🔥",
+      comment: "sick shirt 🔥",
+      productAddress: PRODUCT_ADDRESS,
+      productNaddr: getProductZapNaddr(PRODUCT_ADDRESS),
+    })
+  })
+
+  it("ignores nonempty signed outer receipt content when deriving the zap note", () => {
+    const request = zapRequest([[...OMF_ZAPOUT_MARKER_TAG]])
+    const receipt = zapReceipt(JSON.stringify(request), {
+      content: "outer receipt content is not the zap note",
+    })
+
+    expect(parseOmfZapoutReceipt(receipt as ZapReceiptInput)).toMatchObject({
+      zapRequestContent: "Paid publicly\nfrom checkout.",
+      note: "Paid publicly\nfrom checkout.",
+      comment: "Paid publicly from checkout.",
+    })
+  })
+
+  it("requires request and receipt a tags to agree", () => {
+    const content = buildZapRequestContent({
+      note: "sick shirt 🔥",
+      productAddress: PRODUCT_ADDRESS,
+    })
+    const request = zapRequest(
+      [
+        [...OMF_ZAPOUT_MARKER_TAG],
+        ...buildProductZapTargetTags(PRODUCT_ADDRESS),
+      ],
+      LNURL,
+      HISTORIC_CREATED_AT,
+      content
+    )
+    const description = JSON.stringify(request)
+    const baseTags = [
+      ["p", RECIPIENT_PUBKEY],
+      ["P", SENDER_PUBKEY],
+      ["amount", "42000"],
+      ["bolt11", boundInvoice(description)],
+      ["description", description],
+    ]
+
+    const missingAddress = zapReceipt(description, { tags: baseTags })
+    const mismatchedAddress = zapReceipt(description, {
+      tags: [...baseTags, ["a", `30402:${RECIPIENT_PUBKEY}:different-shirt`]],
+    })
+    const duplicateAddress = zapReceipt(description, {
+      tags: [...baseTags, ["a", PRODUCT_ADDRESS], ["a", PRODUCT_ADDRESS]],
+    })
+
+    expect(parseOmfZapoutReceipt(missingAddress as ZapReceiptInput)).toBeNull()
+    expect(
+      parseOmfZapoutReceipt(mismatchedAddress as ZapReceiptInput)
+    ).toBeNull()
+    expect(
+      parseOmfZapoutReceipt(duplicateAddress as ZapReceiptInput)
+    ).toBeNull()
+  })
+
+  it("allows an absent request k tag but rejects mismatched or duplicate values", () => {
+    const content = buildZapRequestContent({
+      note: "sick shirt 🔥",
+      productAddress: PRODUCT_ADDRESS,
+    })
+    const parseWithKindTags = (kindTags: string[][]) => {
+      const request = zapRequest(
+        [[...OMF_ZAPOUT_MARKER_TAG], ["a", PRODUCT_ADDRESS], ...kindTags],
+        LNURL,
+        HISTORIC_CREATED_AT,
+        content
+      )
+      const description = JSON.stringify(request)
+      return parseOmfZapoutReceipt(
+        zapReceipt(description, {
+          tags: [
+            ["p", RECIPIENT_PUBKEY],
+            ["P", SENDER_PUBKEY],
+            ["amount", "42000"],
+            ["a", PRODUCT_ADDRESS],
+            ["bolt11", boundInvoice(description)],
+            ["description", description],
+          ],
+        }) as ZapReceiptInput
+      )
+    }
+
+    expect(parseWithKindTags([])).toMatchObject({
+      productAddress: PRODUCT_ADDRESS,
+    })
+    expect(parseWithKindTags([["k", "1"]])).toBeNull()
+    expect(
+      parseWithKindTags([
+        ["k", "30402"],
+        ["k", "30402"],
+      ])
+    ).toBeNull()
+  })
+
+  it("does not associate an naddr suffix that mismatches the agreed a tag", () => {
+    const otherProductAddress = `30402:${RECIPIENT_PUBKEY}:different-shirt`
+    const content = buildZapRequestContent({
+      note: "sick shirt 🔥",
+      productAddress: otherProductAddress,
+    })
+    const request = zapRequest(
+      [
+        [...OMF_ZAPOUT_MARKER_TAG],
+        ...buildProductZapTargetTags(PRODUCT_ADDRESS),
+      ],
+      LNURL,
+      HISTORIC_CREATED_AT,
+      content
+    )
+    const description = JSON.stringify(request)
+    const receipt = zapReceipt(description, {
+      tags: [
+        ["p", RECIPIENT_PUBKEY],
+        ["P", SENDER_PUBKEY],
+        ["amount", "42000"],
+        ["a", PRODUCT_ADDRESS],
+        ["bolt11", boundInvoice(description)],
+        ["description", description],
+      ],
+    })
+    const parsed = parseOmfZapoutReceipt(receipt as ZapReceiptInput)
+
+    expect(parsed).not.toBeNull()
+    expect(parsed?.zapRequestContent).toBe(content)
+    expect(parsed?.note).toBe(content)
+    expect(parsed?.productAddress).toBeNull()
+    expect(parsed?.productNaddr).toBeNull()
+  })
+
+  it("rejects a product target whose author is not the zap recipient", () => {
+    const otherMerchant = "3".repeat(64)
+    const otherMerchantProduct = `30402:${otherMerchant}:sick-shirt`
+    const content = buildZapRequestContent({
+      note: "sick shirt 🔥",
+      productAddress: otherMerchantProduct,
+    })
+    const request = zapRequest(
+      [
+        [...OMF_ZAPOUT_MARKER_TAG],
+        ...buildProductZapTargetTags(otherMerchantProduct),
+      ],
+      LNURL,
+      HISTORIC_CREATED_AT,
+      content
+    )
+    const description = JSON.stringify(request)
+    const receipt = zapReceipt(description, {
+      tags: [
+        ["p", RECIPIENT_PUBKEY],
+        ["P", SENDER_PUBKEY],
+        ["amount", "42000"],
+        ["a", otherMerchantProduct],
+        ["bolt11", boundInvoice(description)],
+        ["description", description],
+      ],
+    })
+
+    expect(parseOmfZapoutReceipt(receipt as ZapReceiptInput)).toBeNull()
+  })
+
+  it("keeps exact signed request content while bounding the displayed note", () => {
+    const content = "🔥".repeat(281)
+    const request = zapRequest(
+      [[...OMF_ZAPOUT_MARKER_TAG]],
+      LNURL,
+      HISTORIC_CREATED_AT,
+      content
+    )
+    const parsed = parseOmfZapoutReceipt(
+      zapReceipt(JSON.stringify(request)) as ZapReceiptInput
+    )
+
+    expect(parsed?.zapRequestContent).toBe(content)
+    expect(parsed?.note).toBe("🔥".repeat(280))
+    expect(parsed?.comment).toBe("🔥".repeat(280))
   })
 
   it("ignores unmarked zap receipts", () => {

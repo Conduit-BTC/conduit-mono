@@ -230,6 +230,7 @@ export interface OrderPaymentContext {
   merchantLud16: string | null
   zapMode: CheckoutZapMode
   zapContent: string
+  zapTargetAddress?: string
   totalSats: number
   totalMsats: number
   items: Array<{ productAddress: string; quantity: number }>
@@ -342,6 +343,13 @@ const privateFallbackTransitions = new Set<string>()
 const receiptObservers = new Set<string>()
 const receiptRescanTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
+export type OrderReceiptObserverDependencies = Readonly<{
+  waitForZapReceipt: typeof waitForZapReceipt
+}>
+
+const defaultOrderReceiptObserverDependencies: OrderReceiptObserverDependencies =
+  { waitForZapReceipt }
+
 export function canSubmitExternalPaymentReport(
   lifecycle: OrderLifecycle | null | undefined
 ): lifecycle is OrderLifecycle {
@@ -427,7 +435,8 @@ function hasPublicReceiptContext(
   const publicZapSigner =
     lifecycle.publicZapSigner ?? getOrderPublicZapSigner(lifecycle.checkoutMode)
   return (
-    publicZapSigner === "anon" &&
+    (publicZapSigner === "anon" || publicZapSigner === "shopper") &&
+    lifecycle.publicZapFallback !== true &&
     !!lifecycle.invoice &&
     !!lifecycle.zapRequestId &&
     Number.isSafeInteger(lifecycle.zapRequestCreatedAt) &&
@@ -447,6 +456,7 @@ export function canObserveOrderPublicZapReceipt(
 ): boolean {
   if (!hasPublicReceiptContext(lifecycle)) return false
   if (isGuestOrderDataExpired(lifecycle, nowMs)) return false
+  if (lifecycle.paymentStatus === "paying") return false
   if (
     lifecycle.zapReceiptStatus === "observed" &&
     lifecycle.proofDeliveryStatus === "sent"
@@ -517,7 +527,8 @@ async function deliverReceiptLinkedProof(
 
 export async function observeOrderPublicZapReceipt(
   orderId: string,
-  buyerIdentity?: BuyerOrderSigningIdentity
+  buyerIdentity?: BuyerOrderSigningIdentity,
+  dependencyOverrides: Partial<OrderReceiptObserverDependencies> = {}
 ): Promise<void> {
   if (receiptObservers.has(orderId)) return
   receiptObservers.add(orderId)
@@ -549,7 +560,10 @@ export async function observeOrderPublicZapReceipt(
           lifecycle.zapReceiptObservationDeadline - nowMs
         )
       : 0
-    const receipt = await waitForZapReceipt({
+    const receipt = await (
+      dependencyOverrides.waitForZapReceipt ??
+      defaultOrderReceiptObserverDependencies.waitForZapReceipt
+    )({
       zapRequestId: lifecycle.zapRequestId,
       requestCreatedAt: lifecycle.zapRequestCreatedAt,
       recipientPubkey: lifecycle.merchantPubkey,
@@ -673,6 +687,7 @@ export async function runOrderPayment(
       merchantLightningAddress: ctx.merchantLud16,
       checkoutMode: ctx.zapMode,
       zapContent: ctx.zapContent,
+      zapTargetAddress: ctx.zapTargetAddress,
       totalSats: ctx.totalSats,
       totalMsats: ctx.totalMsats,
       items: ctx.items,
@@ -700,6 +715,7 @@ export async function runOrderPayment(
       merchantPubkey: lifecycle.merchantPubkey,
       merchantLud16: lifecycle.merchantLightningAddress ?? null,
       zapContent: lifecycle.zapContent ?? "",
+      zapTargetAddress: lifecycle.zapTargetAddress,
       totalSats: lifecycle.totalSats,
       totalMsats: lifecycle.totalMsats,
       items: lifecycle.items.map((item) => ({
@@ -824,6 +840,7 @@ export async function runOrderPayment(
             lnurlNostrPubkey: providerReceiptPubkey ?? undefined,
             recipientPubkey: ctx.merchantPubkey,
             zapContent: ctx.zapContent,
+            zapTargetAddress: ctx.zapTargetAddress,
             // Receipt relays are an explicit public payment policy. The shared
             // NDK compatibility context intentionally has no ambient pool.
             explicitRelayUrls: [],
@@ -896,6 +913,7 @@ export async function runOrderPayment(
           publicZapSigner: undefined,
           publicZapFallback: true,
           zapContent: "",
+          zapTargetAddress: undefined,
           zapReceiptStatus: "not_applicable",
           zapRequestId: undefined,
           zapRequestCreatedAt: undefined,
@@ -1156,6 +1174,7 @@ export async function runOrderPrivateFallback(
       publicZapSigner: undefined,
       publicZapFallback: true,
       zapContent: "",
+      zapTargetAddress: undefined,
       invoiceStatus: "not_requested",
       paymentStatus: "not_started",
       proofDeliveryStatus: "not_started",
@@ -1186,6 +1205,7 @@ export async function runOrderPrivateFallback(
       ...ctx,
       zapMode: "private_checkout",
       zapContent: "",
+      zapTargetAddress: undefined,
     },
     dependencyOverrides
   )

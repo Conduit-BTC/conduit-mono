@@ -215,4 +215,104 @@ describe("strict zap receipt validation", () => {
       ).toBe(false)
     }
   })
+
+  it("requires product a tags to agree and target the zap recipient", () => {
+    const productAddress = `30402:${MERCHANT_PUBKEY}:sick-shirt`
+    const request = zapRequest({
+      tags: [...zapRequest().tags, ["a", productAddress], ["k", "30402"]],
+    })
+    const expectedInvoice = boundInvoice(JSON.stringify(request))
+    const overrides = {
+      zapRequestId: request.id,
+      expectedInvoice,
+    }
+
+    expect(
+      validate(
+        zapReceipt({
+          request,
+          invoice: expectedInvoice,
+          extraTags: [["a", productAddress]],
+        }),
+        overrides
+      )
+    ).toBe(true)
+
+    const requestWithoutKind = zapRequest({
+      tags: [...zapRequest().tags, ["a", productAddress]],
+    })
+    const invoiceWithoutKind = boundInvoice(JSON.stringify(requestWithoutKind))
+    expect(
+      validate(
+        zapReceipt({
+          request: requestWithoutKind,
+          invoice: invoiceWithoutKind,
+          extraTags: [["a", productAddress]],
+        }),
+        {
+          zapRequestId: requestWithoutKind.id,
+          expectedInvoice: invoiceWithoutKind,
+        }
+      )
+    ).toBe(true)
+
+    for (const invalidKindTags of [
+      [["k", "1"]],
+      [
+        ["k", "30402"],
+        ["k", "30402"],
+      ],
+    ]) {
+      const invalidRequest = zapRequest({
+        tags: [...zapRequest().tags, ["a", productAddress], ...invalidKindTags],
+      })
+      const invalidInvoice = boundInvoice(JSON.stringify(invalidRequest))
+      expect(
+        validate(
+          zapReceipt({
+            request: invalidRequest,
+            invoice: invalidInvoice,
+            extraTags: [["a", productAddress]],
+          }),
+          {
+            zapRequestId: invalidRequest.id,
+            expectedInvoice: invalidInvoice,
+          }
+        )
+      ).toBe(false)
+    }
+
+    expect(
+      validate(zapReceipt({ request, invoice: expectedInvoice }), overrides)
+    ).toBe(false)
+    expect(
+      validate(
+        zapReceipt({
+          request,
+          invoice: expectedInvoice,
+          extraTags: [["a", `30402:${MERCHANT_PUBKEY}:different-shirt`]],
+        }),
+        overrides
+      )
+    ).toBe(false)
+
+    const otherMerchantAddress = `30402:${getPublicKey(OTHER_PROVIDER_SECRET)}:sick-shirt`
+    const wrongAuthorRequest = zapRequest({
+      tags: [...zapRequest().tags, ["a", otherMerchantAddress], ["k", "30402"]],
+    })
+    const wrongAuthorInvoice = boundInvoice(JSON.stringify(wrongAuthorRequest))
+    expect(
+      validate(
+        zapReceipt({
+          request: wrongAuthorRequest,
+          invoice: wrongAuthorInvoice,
+          extraTags: [["a", otherMerchantAddress]],
+        }),
+        {
+          zapRequestId: wrongAuthorRequest.id,
+          expectedInvoice: wrongAuthorInvoice,
+        }
+      )
+    ).toBe(false)
+  })
 })

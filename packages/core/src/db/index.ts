@@ -594,9 +594,20 @@ export interface OrderLifecycle {
   /**
    * Zap-request comment captured at checkout, replayed verbatim when a
    * route-independent payment retry re-requests the invoice (CND-122). Public
-   * zap metadata, not PII; stays local and is not forwarded to telemetry.
+   * by intent but untrusted and potentially sensitive free text; stays local
+   * except for the signed kind-9734 request and is never logged or forwarded
+   * to telemetry.
    */
   zapContent?: string
+
+  /**
+   * Canonical NIP-01 addressable product coordinate targeted by the public zap
+   * request (the `kind:pubkey:d-tag` shape formerly specified by NIP-33).
+   * Present only for an explicitly shopper-authored, single-product zap.
+   * Stored locally for exact retry and sent only in the signed kind-9734
+   * request; never forwarded to telemetry.
+   */
+  zapTargetAddress?: string
 
   /** Local-only address + contact snapshot. Never sent to telemetry. */
   shippingAddress?: {
