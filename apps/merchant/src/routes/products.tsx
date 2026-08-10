@@ -771,7 +771,9 @@ async function deleteProduct(
     throw new Error("Active signer does not match current merchant pubkey")
   }
   const familyRecords = [product, ...product.variations]
-  if (familyRecords.some((record) => record.product.pubkey !== merchantPubkey)) {
+  if (
+    familyRecords.some((record) => record.product.pubkey !== merchantPubkey)
+  ) {
     throw new Error(
       "Product pubkey mismatch; refusing to publish deletion event"
     )
