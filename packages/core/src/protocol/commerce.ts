@@ -579,10 +579,24 @@ async function runFetchEventsFanoutWithDiagnostics(
   return await fetchEventsFanoutWithDiagnostics(filter, options)
 }
 
+function isBoundedFanoutSaturated(
+  filter: NDKFilter,
+  events: readonly NDKEvent[],
+  relayEventCounts: readonly number[] = []
+): boolean {
+  const limit = filter.limit
+  return (
+    typeof limit === "number" &&
+    limit > 0 &&
+    (events.length >= limit ||
+      relayEventCounts.some((eventCount) => eventCount >= limit))
+  )
+}
+
 async function runFetchEventsFanoutDetailed(
   filter: NDKFilter,
   options?: Parameters<typeof fetchEventsFanoutDetailed>[1]
-): Promise<{ events: NDKEvent[]; degraded: boolean }> {
+): Promise<{ events: NDKEvent[]; degraded: boolean; capped: boolean }> {
   if (testOverrides.fetchEventsFanoutDetailed) {
     const result = await testOverrides.fetchEventsFanoutDetailed(
       filter,
@@ -593,6 +607,11 @@ async function runFetchEventsFanoutDetailed(
       degraded:
         result.relays.length === 0 ||
         result.relays.some((relay) => relay.status !== "success"),
+      capped: isBoundedFanoutSaturated(
+        filter,
+        result.events,
+        result.relays.map((relay) => relay.eventCount)
+      ),
     }
   }
 
@@ -606,18 +625,21 @@ async function runFetchEventsFanoutDetailed(
       degraded:
         result.successfulRelayUrls.length === 0 ||
         result.failedRelayUrls.length > 0,
+      capped: isBoundedFanoutSaturated(filter, result.events),
     }
   }
 
   // Most gateway tests replace the older event-only seam. Preserve that
   // deterministic contract while production reads use per-relay completion.
   if (testOverrides.fetchEventsFanout) {
+    const events = (await testOverrides.fetchEventsFanout(
+      filter,
+      options
+    )) as NDKEvent[]
     return {
-      events: (await testOverrides.fetchEventsFanout(
-        filter,
-        options
-      )) as NDKEvent[],
+      events,
       degraded: false,
+      capped: isBoundedFanoutSaturated(filter, events),
     }
   }
 
@@ -627,6 +649,11 @@ async function runFetchEventsFanoutDetailed(
     degraded:
       result.relays.length === 0 ||
       result.relays.some((relay) => relay.status !== "success"),
+    capped: isBoundedFanoutSaturated(
+      filter,
+      result.events,
+      result.relays.map((relay) => relay.eventCount)
+    ),
   }
 }
 
@@ -785,10 +812,10 @@ async function streamProductRecordChunks(input: {
   merged: Map<string, NDKEvent>
   deletionTimestamps?: DeletionTimestamps
   onRecords: (records: CommerceProductRecord[], relayUrl: string) => void
-  onTransportStatus?: (degraded: boolean) => void
+  onTransportStatus?: (degraded: boolean, capped: boolean) => void
 }): Promise<void> {
   if (input.relayUrls.length === 0) {
-    input.onTransportStatus?.(true)
+    input.onTransportStatus?.(true, false)
     return
   }
 
@@ -817,9 +844,12 @@ async function streamProductRecordChunks(input: {
             connectTimeoutMs: input.readPolicy?.connectTimeoutMs ?? 4_000,
             fetchTimeoutMs: input.readPolicy?.fetchTimeoutMs ?? 8_000,
           },
-          ({ mergedEvents, relayUrl, status }) => {
+          ({ events, mergedEvents, relayUrl, status }) => {
             if (status) {
-              input.onTransportStatus?.(status !== "success")
+              input.onTransportStatus?.(
+                status !== "success",
+                isBoundedFanoutSaturated(chunkFilter, events)
+              )
             }
             for (const event of mergedEvents) {
               putMergedEvent(input.merged, event)
@@ -836,6 +866,10 @@ async function streamProductRecordChunks(input: {
         for (const event of events) {
           putMergedEvent(input.merged, event)
         }
+        input.onTransportStatus?.(
+          false,
+          isBoundedFanoutSaturated(chunkFilter, events)
+        )
       }
     })
   )
@@ -2312,7 +2346,7 @@ async function fetchPublicProductRecords(query: {
   authenticatedPubkey?: string | null
   limit?: number
   readPolicy?: CommerceReadPolicy
-  onTransportStatus?: (degraded: boolean) => void
+  onTransportStatus?: (degraded: boolean, capped: boolean) => void
 }): Promise<CommerceProductRecord[]> {
   const filter: NDKFilter = {
     kinds: [EVENT_KINDS.PRODUCT],
@@ -2339,7 +2373,7 @@ async function fetchPublicProductRecords(query: {
     connectTimeoutMs: query.readPolicy?.connectTimeoutMs ?? 4_000,
     fetchTimeoutMs: query.readPolicy?.fetchTimeoutMs ?? 8_000,
   })
-  query.onTransportStatus?.(result.degraded)
+  query.onTransportStatus?.(result.degraded, result.capped)
 
   const deletionTimestamps = await fetchProductDeletionTimestamps(
     [
@@ -2365,7 +2399,7 @@ async function fetchPublicProductRecordsProgressive(
     authenticatedPubkey?: string | null
     limit?: number
     readPolicy?: CommerceReadPolicy
-    onTransportStatus?: (degraded: boolean) => void
+    onTransportStatus?: (degraded: boolean, capped: boolean) => void
   },
   onRecords: (records: CommerceProductRecord[], relayUrl: string) => void
 ): Promise<CommerceProductRecord[]> {
@@ -2563,6 +2597,7 @@ export async function getMarketplaceProducts(
     )
     const rawEventLimit = getProductRawEventLimit(query.limit)
     let transportDegraded = false
+    let readCapped = false
     const fetchedRecords = await fetchPublicProductRecords({
       authors:
         authorPubkeys && authorPubkeys.length > 0
@@ -2572,8 +2607,9 @@ export async function getMarketplaceProducts(
       deletionCandidates: cached,
       limit: rawEventLimit,
       readPolicy: query.readPolicy,
-      onTransportStatus: (degraded) => {
+      onTransportStatus: (degraded, capped) => {
         transportDegraded ||= degraded
+        readCapped ||= capped
       },
     })
     const deletionTimestamps = await getLocalProductDeletionTimestamps(
@@ -2602,8 +2638,11 @@ export async function getMarketplaceProducts(
       "public",
       PRODUCT_CAPABILITIES,
       {
-        capped: fetchedRecords.length >= rawEventLimit,
-        degraded: transportDegraded || fetchedRecords.length >= rawEventLimit,
+        capped: readCapped || fetchedRecords.length >= rawEventLimit,
+        degraded:
+          transportDegraded ||
+          readCapped ||
+          fetchedRecords.length >= rawEventLimit,
       }
     )
     return { data: withProductFamilyReadEvidence(filtered, meta), meta }
@@ -2667,13 +2706,14 @@ export async function getMarketplaceProductsProgressive(
   )
   const rawEventLimit = getProductRawEventLimit(limit)
   let transportDegraded = false
+  let readCapped = false
   const localDeletionTimestamps = await getLocalProductDeletionTimestamps(
     query.merchantPubkey,
     query.authorPubkeys
   )
   const toResult = (
     records: CommerceProductRecord[],
-    options: { degraded?: boolean } = {}
+    options: { degraded?: boolean; capped?: boolean } = {}
   ) => {
     const filteredRecords = mergeCachedAndLiveProductRecords({
       cached,
@@ -2694,8 +2734,10 @@ export async function getMarketplaceProductsProgressive(
       "public",
       PRODUCT_CAPABILITIES,
       {
-        capped: records.length >= rawEventLimit,
-        degraded: options.degraded ?? records.length >= rawEventLimit,
+        capped:
+          (options.capped ?? readCapped) || records.length >= rawEventLimit,
+        degraded:
+          (options.degraded ?? readCapped) || records.length >= rawEventLimit,
       }
     )
     return { data: withProductFamilyReadEvidence(data, meta), meta }
@@ -2711,14 +2753,18 @@ export async function getMarketplaceProductsProgressive(
       deletionCandidates: cached,
       limit: rawEventLimit,
       readPolicy: query.readPolicy,
-      onTransportStatus: (degraded) => {
+      onTransportStatus: (degraded, capped) => {
         transportDegraded ||= degraded
+        readCapped ||= capped
       },
     },
     (records, relayUrl) => {
       // Until every planned relay settles, the progressive snapshot is
       // intentionally incomplete even if the first relay succeeded.
-      onProgress(toResult(records, { degraded: true }), relayUrl)
+      onProgress(
+        toResult(records, { degraded: true, capped: readCapped }),
+        relayUrl
+      )
     }
   )
 
@@ -2732,7 +2778,9 @@ export async function getMarketplaceProductsProgressive(
     deletionTimestamps: currentDeletionTimestamps,
   })
   const result = toResult(records, {
-    degraded: transportDegraded || fetchedRecords.length >= rawEventLimit,
+    degraded:
+      transportDegraded || readCapped || fetchedRecords.length >= rawEventLimit,
+    capped: readCapped || fetchedRecords.length >= rawEventLimit,
   })
   onProgress(result, "deletion-frontier")
   await cacheProductRecords(records)
@@ -2797,6 +2845,7 @@ export async function getMerchantStorefront(
 
   try {
     let transportDegraded = false
+    let readCapped = false
     const rawEventLimit = getProductRawEventLimit(query.limit)
     const liveRecords = await fetchPublicProductRecords({
       authors: [query.merchantPubkey],
@@ -2809,8 +2858,9 @@ export async function getMerchantStorefront(
       // a latency-sensitive caller (such as Market storefront hydration)
       // explicitly opts out.
       deletionFallbackWhenEmpty: query.deletionFallbackWhenEmpty !== false,
-      onTransportStatus: (degraded) => {
+      onTransportStatus: (degraded, capped) => {
         transportDegraded ||= degraded
+        readCapped ||= capped
       },
     })
     const deletionTimestamps = await getLocalProductDeletionTimestamps(
@@ -2849,8 +2899,11 @@ export async function getMerchantStorefront(
             { stale: true, degraded: true }
           )
         : createMeta("merchant_storefront", "commerce", PRODUCT_CAPABILITIES, {
-            capped: liveRecords.length >= rawEventLimit,
-            degraded: transportDegraded || liveRecords.length >= rawEventLimit,
+            capped: readCapped || liveRecords.length >= rawEventLimit,
+            degraded:
+              transportDegraded ||
+              readCapped ||
+              liveRecords.length >= rawEventLimit,
           })
     return {
       data: withProductFamilyReadEvidence(filtered, meta),
@@ -3054,14 +3107,16 @@ async function fetchVariationGroupRecords(
   }
 
   let transportDegraded = false
+  let readCapped = false
   const [parents, variations] = await Promise.all([
     target.product.type === "variation"
       ? fetchPublicProductRecords({
           authors: [parsedParent.pubkey],
           dTags: [parsedParent.d],
           limit: 10,
-          onTransportStatus: (degraded) => {
+          onTransportStatus: (degraded, capped) => {
             transportDegraded ||= degraded
+            readCapped ||= capped
           },
         })
       : Promise.resolve([]),
@@ -3069,12 +3124,14 @@ async function fetchVariationGroupRecords(
       authors: [parsedParent.pubkey],
       parentAddresses: [parentAddress],
       limit: PRODUCT_VARIATION_EVENT_LIMIT,
-      onTransportStatus: (degraded) => {
+      onTransportStatus: (degraded, capped) => {
         transportDegraded ||= degraded
+        readCapped ||= capped
       },
     }),
   ])
-  const capped = variations.length >= PRODUCT_VARIATION_EVENT_LIMIT
+  const capped =
+    readCapped || variations.length >= PRODUCT_VARIATION_EVENT_LIMIT
   return {
     records: [...parents, ...variations],
     degraded: transportDegraded || capped,
@@ -3101,6 +3158,20 @@ function isProductRecordInFamily(
   )
 }
 
+function selectLatestProductRecordsByAddress(
+  records: readonly CommerceProductRecord[]
+): Map<string, CommerceProductRecord> {
+  const selected = new Map<string, CommerceProductRecord>()
+  for (const record of records) {
+    const existing = selected.get(record.addressId)
+    selected.set(
+      record.addressId,
+      existing ? mergeProductRecordSources(existing, record) : record
+    )
+  }
+  return selected
+}
+
 function hasCompleteLiveVariationGroupCoverage(input: {
   target: CommerceProductRecord
   groupRead: {
@@ -3116,22 +3187,28 @@ function hasCompleteLiveVariationGroupCoverage(input: {
   const parentAddress = getVariationParentAddress(input.target)
   if (!parentAddress) return false
 
-  const liveAddressIds = new Set(
-    [...input.directRecords, ...input.groupRead.records].map(
-      (record) => record.addressId
-    )
-  )
+  const liveByAddress = selectLatestProductRecordsByAddress([
+    ...input.directRecords,
+    ...input.groupRead.records,
+  ])
+  const selectedByAddress = selectLatestProductRecordsByAddress([
+    ...input.knownRecords,
+    ...input.directRecords,
+    ...input.groupRead.records,
+  ])
   const knownFamilyAddressIds = new Set(
-    input.knownRecords
+    Array.from(selectedByAddress.values())
       .filter((record) => isProductRecordInFamily(record, parentAddress))
       .map((record) => record.addressId)
   )
   knownFamilyAddressIds.add(input.target.addressId)
   knownFamilyAddressIds.add(parentAddress)
 
-  return Array.from(knownFamilyAddressIds).every((addressId) =>
-    liveAddressIds.has(addressId)
-  )
+  return Array.from(knownFamilyAddressIds).every((addressId) => {
+    const selected = selectedByAddress.get(addressId)
+    const live = liveByAddress.get(addressId)
+    return !!selected && !!live && selected.eventId === live.eventId
+  })
 }
 
 export async function getProductDetail(
@@ -3146,13 +3223,15 @@ export async function getProductDetail(
         includeMarketHidden: true,
       })
       let directReadDegraded = false
+      let directReadCapped = false
       const direct = await fetchPublicProductRecords({
         authors: [address.pubkey],
         dTags: [address.d],
         deletionCandidates: cached,
         limit: 10,
-        onTransportStatus: (degraded) => {
+        onTransportStatus: (degraded, capped) => {
           directReadDegraded ||= degraded
+          directReadCapped ||= capped
         },
       })
       const localDeletionTimestamps = await getLocalProductDeletionTimestamps(
@@ -3220,7 +3299,7 @@ export async function getProductDetail(
         const completeLiveRead =
           hasLiveDirectTarget &&
           !directReadDegraded &&
-          directVisible.length < 10 &&
+          !directReadCapped &&
           hasCompleteGroupCoverage
         const hasLiveEvidence =
           directVisible.length > 0 || groupVisible.length > 0
@@ -3228,7 +3307,7 @@ export async function getProductDetail(
           ? createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES, {
               stale: !completeLiveRead,
               degraded: !completeLiveRead,
-              capped: groupRead.capped || directVisible.length >= 10,
+              capped: groupRead.capped || directReadCapped,
             })
           : createMeta("product_detail", "local_cache", PRODUCT_CAPABILITIES, {
               stale: true,
@@ -3270,12 +3349,14 @@ export async function getProductDetail(
           record.eventId === decodedId || record.product.id === decodedId
       )
       let directReadDegraded = false
+      let directReadCapped = false
       const records = await fetchPublicProductRecords({
         ids: [decodedId],
         deletionCandidates: cached,
         limit: 1,
-        onTransportStatus: (degraded) => {
+        onTransportStatus: (degraded, capped) => {
           directReadDegraded ||= degraded
+          directReadCapped ||= capped
         },
       })
       const target = records[0] ?? null
@@ -3308,9 +3389,10 @@ export async function getProductDetail(
         "public",
         PRODUCT_CAPABILITIES,
         {
-          stale: directReadDegraded || groupRead.degraded,
-          degraded: directReadDegraded || groupRead.degraded,
-          capped: groupRead.capped,
+          stale: directReadDegraded || directReadCapped || groupRead.degraded,
+          degraded:
+            directReadDegraded || directReadCapped || groupRead.degraded,
+          capped: directReadCapped || groupRead.capped,
         }
       )
       return {
@@ -3426,6 +3508,20 @@ function mergeProductAvailabilityCoverage(
   return "complete"
 }
 
+function aggregateProductAvailabilityCoverage(
+  coverages: readonly ProductAvailabilityCoverage[]
+): ProductAvailabilityCoverage {
+  if (
+    coverages.length === 0 ||
+    coverages.every((value) => value === "unavailable")
+  ) {
+    return "unavailable"
+  }
+  return coverages.every((value) => value === "complete")
+    ? "complete"
+    : "partial"
+}
+
 // Resolve many product listings by addressId in a single relay fanout (instead
 // of one read per id). Used to hydrate order-item name/image without hammering
 // relays with N separate reads. Every requested coordinate gets a typed
@@ -3487,72 +3583,73 @@ export async function getProductsByIds(
     undefined,
     authors
   )
-  let productEvents: NDKEvent[] = []
   const dTagsByAuthor = new Map<string, string[]>()
   for (const address of addresses) {
     const authorDTags = dTagsByAuthor.get(address.pubkey) ?? []
     authorDTags.push(address.d)
     dTagsByAuthor.set(address.pubkey, authorDTags)
   }
+  const directReadEntries = Array.from(dTagsByAuthor.entries())
   const directReads = await Promise.allSettled(
-    Array.from(dTagsByAuthor.entries()).map(
-      async ([author, authorDTags]) => {
-        const relayPlan = await planCommerceReadRelayPlan({
-          intent: "author_products",
+    directReadEntries.map(async ([author, authorDTags]) => {
+      const relayPlan = await planCommerceReadRelayPlan({
+        intent: "author_products",
+        authors: [author],
+      })
+      const result = await runFetchEventsFanoutWithDiagnostics(
+        {
+          kinds: [EVENT_KINDS.PRODUCT],
           authors: [author],
-        })
-        const result = await runFetchEventsFanoutWithDiagnostics(
-          {
-            kinds: [EVENT_KINDS.PRODUCT],
-            authors: [author],
-            "#d": uniqueStrings(authorDTags),
-          },
-          {
-            relayUrls: relayPlan.relayUrls,
-            connectTimeoutMs: 4_000,
-            fetchTimeoutMs: 8_000,
-          }
-        )
-        return {
-          events: result.events,
-          coverage: productAvailabilityCoverageFromFanout(
-            result,
-            uniqueStrings([
-              ...relayPlan.relayUrls,
-              ...relayPlan.parkedRelayUrls,
-            ])
-          ),
+          "#d": uniqueStrings(authorDTags),
+        },
+        {
+          relayUrls: relayPlan.relayUrls,
+          connectTimeoutMs: 4_000,
+          fetchTimeoutMs: 8_000,
         }
+      )
+      return {
+        events: result.events,
+        coverage: productAvailabilityCoverageFromFanout(
+          result,
+          uniqueStrings([...relayPlan.relayUrls, ...relayPlan.parkedRelayUrls])
+        ),
       }
-    )
+    })
   )
   const fulfilledDirectReads = directReads.flatMap((result) =>
     result.status === "fulfilled" ? [result.value] : []
   )
-  productEvents = fulfilledDirectReads.flatMap((result) => result.events)
-  const availableDirectReads = fulfilledDirectReads.filter(
-    (result) => result.coverage !== "unavailable"
-  )
-  if (availableDirectReads.length > 0) {
-    listingCoverage = availableDirectReads.reduce<ProductAvailabilityCoverage>(
-      (coverage, result) =>
-        mergeProductAvailabilityCoverage(coverage, result.coverage),
-      "complete"
+  const productEvents = fulfilledDirectReads.flatMap((result) => result.events)
+  const listingCoverageByAuthor = new Map<string, ProductAvailabilityCoverage>(
+    directReads.map(
+      (result, index) =>
+        [
+          directReadEntries[index]![0],
+          result.status === "fulfilled" ? result.value.coverage : "unavailable",
+        ] as const
     )
-    if (availableDirectReads.length !== directReads.length) {
-      listingCoverage = mergeProductAvailabilityCoverage(
-        listingCoverage,
-        "partial"
-      )
-    }
-  }
+  )
+  const listingCoverageByAddress = new Map<string, ProductAvailabilityCoverage>(
+    addresses.map(
+      (address) =>
+        [
+          `${address.kind}:${address.pubkey}:${address.d}`,
+          listingCoverageByAuthor.get(address.pubkey) ?? "unavailable",
+        ] as const
+    )
+  )
+  listingCoverage = aggregateProductAvailabilityCoverage(
+    Array.from(listingCoverageByAddress.values())
+  )
 
-  let directRecords: CommerceProductRecord[] = []
-  try {
-    directRecords = dedupeProductEvents(productEvents)
-  } catch {
-    directRecords = []
-  }
+  const directRecords = (() => {
+    try {
+      return dedupeProductEvents(productEvents)
+    } catch {
+      return []
+    }
+  })()
   const locallyVisibleDirectRecords = filterDeletedProductRecords(
     directRecords,
     deletionTimestamps
@@ -3563,11 +3660,18 @@ export async function getProductsByIds(
     deletionTimestamps,
   }).filter((record) => wanted.has(record.addressId))
   const groupTargetsByParent = new Map<string, CommerceProductRecord>()
+  const groupRequestedAddressesByParent = new Map<string, Set<string>>()
   for (const target of directTargetCandidates) {
     if (target.product.type === "simple") continue
     const parentAddress = getVariationParentAddress(target)
-    if (parentAddress && !groupTargetsByParent.has(parentAddress)) {
-      groupTargetsByParent.set(parentAddress, target)
+    if (parentAddress) {
+      const requestedAddresses =
+        groupRequestedAddressesByParent.get(parentAddress) ?? new Set<string>()
+      requestedAddresses.add(target.addressId)
+      groupRequestedAddressesByParent.set(parentAddress, requestedAddresses)
+      if (!groupTargetsByParent.has(parentAddress)) {
+        groupTargetsByParent.set(parentAddress, target)
+      }
     }
   }
   const groupTargets = Array.from(groupTargetsByParent.values())
@@ -3655,7 +3759,7 @@ export async function getProductsByIds(
     [...cachedByAuthors, ...directTargets],
     deletionTimestamps
   )
-  const hasCompleteLiveVariationCoverage = groupFetches.every(
+  const completeVariationCoverageByGroup = groupFetches.map(
     (result, index) =>
       result.status === "fulfilled" &&
       hasCompleteLiveVariationGroupCoverage({
@@ -3671,12 +3775,31 @@ export async function getProductsByIds(
         directRecords: liveDirectRecords,
       })
   )
-  if (!hasCompleteLiveVariationCoverage) {
-    listingCoverage = mergeProductAvailabilityCoverage(
-      listingCoverage,
-      "partial"
-    )
+  const hasCompleteLiveVariationCoverage =
+    completeVariationCoverageByGroup.every(Boolean)
+  for (
+    let index = 0;
+    index < completeVariationCoverageByGroup.length;
+    index++
+  ) {
+    if (completeVariationCoverageByGroup[index]) continue
+    const parentAddress = getVariationParentAddress(groupTargets[index]!)
+    if (!parentAddress) continue
+    for (const addressId of groupRequestedAddressesByParent.get(
+      parentAddress
+    ) ?? []) {
+      listingCoverageByAddress.set(
+        addressId,
+        mergeProductAvailabilityCoverage(
+          listingCoverageByAddress.get(addressId) ?? "unavailable",
+          "partial"
+        )
+      )
+    }
   }
+  listingCoverage = aggregateProductAvailabilityCoverage(
+    Array.from(listingCoverageByAddress.values())
+  )
   const groupReadCapped = groupFetches.some(
     (result) => result.status === "fulfilled" && result.value.capped
   )
@@ -3713,13 +3836,16 @@ export async function getProductsByIds(
     filtered.map((record) => [record.addressId, record] as const)
   )
   const mergedAddressIds = new Set(merged.map((record) => record.addressId))
-  const diagnostics: ProductAvailabilityDiagnostic[] = lookups.map(
-    (lookup) => ({
+  const diagnostics: ProductAvailabilityDiagnostic[] = lookups.map((lookup) => {
+    const lookupListingCoverage = lookup.addressId
+      ? (listingCoverageByAddress.get(lookup.addressId) ?? "unavailable")
+      : listingCoverage
+    return {
       productId: lookup.productId,
       addressId: lookup.addressId,
       issue: resolveProductAvailabilityIssue({
         addressId: lookup.addressId,
-        listingCoverage,
+        listingCoverage: lookupListingCoverage,
         liveByAddress,
         filteredByAddress,
         mergedAddressIds,
@@ -3727,13 +3853,13 @@ export async function getProductsByIds(
       ...(lookup.addressId
         ? {
             coverage: {
-              listing: listingCoverage,
+              listing: lookupListingCoverage,
               deletion: deletionCoverage,
             },
           }
         : {}),
-    })
-  )
+    }
+  })
   const degraded =
     listingCoverage !== "complete" ||
     deletionCoverage !== "complete" ||
