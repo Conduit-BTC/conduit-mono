@@ -24,7 +24,7 @@ import {
   getTelemetryCountBucket,
   hasWebLN,
   getNdk,
-  getShippingOptions,
+  getShippingOptionsByCoordinates,
   normalizePubkey,
   pubkeyToNpub,
   recordBrowserTelemetryEvent,
@@ -71,9 +71,10 @@ import {
 } from "../hooks/useWallet"
 import {
   getCartShippingDestinationEligibility,
+  getCartShippingOptionCoordinates,
   getCartShippingOptionsAvailable,
-  hasPhysicalItemsMissingShippingSnapshot,
   hasPhysicalItemsMissingShippingZone,
+  prepareCartFulfillment,
 } from "../lib/cart-shipping-options"
 import {
   getCartAvailabilityBlockingMessage,
@@ -733,10 +734,60 @@ function CheckoutPage() {
       ? cart.items[0]?.merchantPubkey
       : undefined)
 
-  const checkoutItems = useMemo(() => {
+  const rawCheckoutItems = useMemo(() => {
     if (!selectedMerchant) return []
     return cart.items.filter((item) => item.merchantPubkey === selectedMerchant)
   }, [cart.items, selectedMerchant])
+
+  const isAllDigital = useMemo(
+    () =>
+      rawCheckoutItems.length > 0 &&
+      rawCheckoutItems.every((item) => item.format === "digital"),
+    [rawCheckoutItems]
+  )
+  const shippingOptionCoordinates = useMemo(
+    () => getCartShippingOptionCoordinates(rawCheckoutItems),
+    [rawCheckoutItems]
+  )
+  const shippingRevisionKey = rawCheckoutItems
+    .map((item) => `${item.productId}:${item.productUpdatedAt ?? 0}`)
+    .sort()
+    .join("|")
+  const {
+    data: shippingOptionsData,
+    isFetching: shippingOptionsIsFetching,
+    isError: shippingOptionsIsError,
+  } = useQuery({
+    queryKey: [
+      "canonicalShippingOptions",
+      selectedMerchant,
+      shippingOptionCoordinates,
+      shippingRevisionKey,
+    ],
+    queryFn: () => getShippingOptionsByCoordinates(shippingOptionCoordinates),
+    enabled:
+      !!selectedMerchant &&
+      !isAllDigital &&
+      shippingOptionCoordinates.length > 0,
+    staleTime: 0,
+    refetchOnMount: "always",
+  })
+  const preparedFulfillment = useMemo(
+    () =>
+      prepareCartFulfillment(
+        rawCheckoutItems,
+        shippingOptionsIsFetching || shippingOptionsIsError
+          ? []
+          : (shippingOptionsData ?? [])
+      ),
+    [
+      rawCheckoutItems,
+      shippingOptionsData,
+      shippingOptionsIsError,
+      shippingOptionsIsFetching,
+    ]
+  )
+  const checkoutItems = preparedFulfillment.items
   const checkoutAvailability = useCartProductAvailability(checkoutItems)
   const checkoutAvailabilityMessage = useMemo(
     () =>
@@ -783,13 +834,6 @@ function CheckoutPage() {
     ? "Anon Conduit Shopper signing is not configured yet."
     : "Use a fixed item-count message without identifying the shopper."
 
-  // True when every item in the cart is a digital product (no shipping needed)
-  const isAllDigital = useMemo(
-    () =>
-      checkoutItems.length > 0 &&
-      checkoutItems.every((item) => item.format === "digital"),
-    [checkoutItems]
-  )
   const requiresCheckoutDetailsStep = !isAllDigital || isGuestCheckout
   const liveShippingErrors = useMemo(() => {
     if (isAllDigital) {
@@ -802,30 +846,8 @@ function CheckoutPage() {
 
   const physicalItemsMissingShippingZone =
     hasPhysicalItemsMissingShippingZone(checkoutItems)
-  const physicalItemsMissingShippingSnapshot =
-    hasPhysicalItemsMissingShippingSnapshot(checkoutItems)
-  const hasCompleteCartShippingSnapshot =
-    !isAllDigital &&
-    checkoutItems.length > 0 &&
-    !physicalItemsMissingShippingSnapshot
-
-  // Fetch merchant's published shipping zones (kind-30406)
-  const { data: shippingOptionsData, isLoading: shippingOptionsIsLoading } =
-    useQuery({
-      queryKey: ["shippingOptions", selectedMerchant],
-      queryFn: () => getShippingOptions(selectedMerchant!),
-      enabled:
-        !!selectedMerchant &&
-        !isAllDigital &&
-        !physicalItemsMissingShippingZone &&
-        !hasCompleteCartShippingSnapshot,
-      staleTime: 5 * 60 * 1000,
-    })
-  const merchantShippingOptions = shippingOptionsData ?? []
-  const shippingOptionsAvailable = getCartShippingOptionsAvailable(
-    checkoutItems,
-    merchantShippingOptions
-  )
+  const shippingOptionsAvailable =
+    getCartShippingOptionsAvailable(checkoutItems)
 
   const checkoutShippingCost = useMemo(
     () => getCheckoutShippingCost(checkoutItems, btcUsdRate),
@@ -1025,14 +1047,13 @@ function CheckoutPage() {
           country: shipping.country,
           postalCode: shipping.postalCode,
         },
-        checkoutItems,
-        merchantShippingOptions
+        checkoutItems
       )
 
   const shippingCheckoutState: ShippingCheckoutState = getShippingCheckoutState(
     {
       isAllDigital,
-      shippingLookupPending: shippingOptionsIsLoading,
+      shippingLookupPending: shippingOptionsIsFetching,
       physicalItemsMissingShippingZone,
       shippingOptionsAvailable,
       destinationEligibility,
@@ -1138,15 +1159,15 @@ function CheckoutPage() {
       case "not_required":
         return "This cart does not require shipping."
       case "loading":
-        return "Checking merchant shipping rules before direct payment is offered."
+        return "Resolving the product's fixed shipping option before direct payment is offered."
       case "missing_product_zone":
-        return "One product is missing product-level shipping-zone data, so direct payment is disabled."
+        return "One product does not have resolved fixed shipping, so direct payment is disabled."
       case "no_published_rule":
-        return "No published merchant shipping rule was found yet. You can still send the order first."
+        return "The referenced fixed shipping option could not be resolved. You can still send the order first."
       case "allowed":
         return currentAddressValidity.canDirectPay
-          ? "Merchant shipping zone covers this destination."
-          : "Merchant shipping zone may cover this destination, but address validity still needs attention."
+          ? "The product's fixed shipping option covers this destination."
+          : "Fixed shipping may cover this destination, but address validity still needs attention."
       case "country_unsupported":
         return "Zap out is unavailable for this destination. You can still send the order first."
       case "postal_restricted":
@@ -2644,7 +2665,7 @@ function CheckoutPage() {
                           )}
                           <div>
                             <div className="font-medium text-[var(--text-primary)]">
-                              Merchant shipping zone
+                              Fixed shipping
                             </div>
                             <div>{shippingStatusMessage}</div>
                           </div>
