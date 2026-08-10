@@ -13,7 +13,7 @@ import { fetchEventsFanoutDetailed } from "@conduit/core/protocol/ndk"
 import { parseProductEvent } from "@conduit/core/protocol/products"
 import {
   parseShippingOptionAddress,
-  parseShippingOptionEvent,
+  selectLatestShippingOptions,
 } from "@conduit/core/protocol/shipping"
 import {
   createAnonZapProviderAttestation,
@@ -172,7 +172,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function getRequiredPricingCurrencies(
   intent: { merchantPubkey: string; items: Array<{ productAddress: string }> },
   productEvents: SignedPublicNostrEvent[],
-  shippingEvents: SignedPublicNostrEvent[]
+  shippingEvents: SignedPublicNostrEvent[],
+  deletionEvents: SignedPublicNostrEvent[]
 ): string[] {
   const currencies = new Set<string>()
   const validProducts = productEvents.filter(
@@ -204,9 +205,22 @@ function getRequiredPricingCurrencies(
       }
     }
   }
-  for (const event of shippingEvents) {
-    const option = parseShippingOptionEvent(event)
-    if (option && option.price > 0 && isFiatCurrencyCode(option.currency)) {
+  const activeShippingOptions = selectLatestShippingOptions(
+    shippingEvents.filter(
+      (event) =>
+        event.kind === 30406 &&
+        event.pubkey === intent.merchantPubkey &&
+        isValidSignedPublicNostrEvent(event)
+    ),
+    deletionEvents.filter(
+      (event) =>
+        event.kind === 5 &&
+        event.pubkey === intent.merchantPubkey &&
+        isValidSignedPublicNostrEvent(event)
+    )
+  )
+  for (const option of activeShippingOptions) {
+    if (option.price > 0 && isFiatCurrencyCode(option.currency)) {
       currencies.add(option.currency)
     }
   }
@@ -1118,7 +1132,8 @@ export async function authorizeAnonZapRequest(
     const requiredPricingCurrencies = getRequiredPricingCurrencies(
       intent,
       productEvents,
-      shippingEvents
+      shippingEvents,
+      deletionEvents
     )
     const pricingRate =
       requiredPricingCurrencies.length > 0

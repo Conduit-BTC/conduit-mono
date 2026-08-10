@@ -197,6 +197,58 @@ export function parseShippingOptionAddress(
   }
 }
 
+export interface ShippingOptionDeletionEventDraft {
+  kind: typeof EVENT_KINDS.DELETION
+  content: string
+  tags: string[][]
+}
+
+/**
+ * Build a canonical NIP-09 withdrawal for one shipping-option coordinate.
+ *
+ * The address tag is mandatory even when the exact event id is known. Relays
+ * may suppress an exact-id-deleted replaceable event, so bounded readers cannot
+ * otherwise map that unseen event id back to its kind-30406 coordinate.
+ */
+export function buildShippingOptionDeletionEventDraft(input: {
+  merchantPubkey: string
+  coordinate: string
+  eventId?: string | null
+  clientAppId?: ConduitAppId
+}): ShippingOptionDeletionEventDraft {
+  const merchantPubkey = input.merchantPubkey.trim().toLowerCase()
+  if (!/^[0-9a-f]{64}$/.test(merchantPubkey)) {
+    throw new Error("Shipping deletion merchant pubkey is invalid")
+  }
+
+  const address = parseShippingOptionAddress(input.coordinate)
+  if (!address || address.pubkey.toLowerCase() !== merchantPubkey) {
+    throw new Error(
+      "Shipping deletion requires a same-author kind-30406 coordinate"
+    )
+  }
+
+  const eventId = input.eventId?.trim().toLowerCase()
+  if (input.eventId != null && !/^[0-9a-f]{64}$/.test(eventId ?? "")) {
+    throw new Error("Shipping deletion event id is invalid")
+  }
+
+  let tags: string[][] = [
+    ...(eventId ? [["e", eventId]] : []),
+    ["a", getShippingOptionAddress(merchantPubkey, address.dTag)],
+    ["k", String(EVENT_KINDS.SHIPPING_OPTION)],
+  ]
+  if (input.clientAppId) {
+    tags = appendConduitClientTag(tags, input.clientAppId)
+  }
+
+  return {
+    kind: EVENT_KINDS.DELETION,
+    content: "",
+    tags,
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------

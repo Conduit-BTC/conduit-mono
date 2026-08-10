@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 import {
   buildFixedShippingOptionEventDraft,
   buildProductListingEventDraft,
+  buildShippingOptionDeletionEventDraft,
   buildShippingOptionReadBatches,
   compileProductFulfillmentIntent,
   getProductShippingOptionAddress,
@@ -409,6 +410,57 @@ describe("canonical fixed product shipping", () => {
         ]
       )
     ).toHaveLength(1)
+  })
+
+  it("keeps an omitted exact-id-deleted revision withdrawn by canonical address provenance", () => {
+    const older = {
+      id: "1".repeat(64),
+      pubkey: MERCHANT,
+      created_at: 1,
+      tags: [
+        ["d", `${PRODUCT_D_TAG}-shipping-standard`],
+        ["title", "Standard Shipping"],
+        ["price", "4", "USD"],
+        ["country", "US"],
+        ["service", "standard"],
+      ],
+    }
+    const deletedLatestEventId = "2".repeat(64)
+    const deletion = buildShippingOptionDeletionEventDraft({
+      merchantPubkey: MERCHANT,
+      coordinate: SHIPPING_COORDINATE,
+      eventId: deletedLatestEventId,
+    })
+
+    expect(deletion).toEqual({
+      kind: 5,
+      content: "",
+      tags: [
+        ["e", deletedLatestEventId],
+        ["a", SHIPPING_COORDINATE],
+        ["k", "30406"],
+      ],
+    })
+    expect(
+      selectLatestShippingOptions(
+        [older],
+        [
+          {
+            id: "3".repeat(64),
+            pubkey: MERCHANT,
+            created_at: 3,
+            tags: deletion.tags,
+          },
+        ]
+      )
+    ).toEqual([])
+    expect(() =>
+      buildShippingOptionDeletionEventDraft({
+        merchantPubkey: OTHER_MERCHANT,
+        coordinate: SHIPPING_COORDINATE,
+        eventId: deletedLatestEventId,
+      })
+    ).toThrow("same-author kind-30406 coordinate")
   })
 
   it("batches exact shipping reads below the relay result limit", () => {
