@@ -579,6 +579,11 @@ async function runFetchEventsFanoutWithDiagnostics(
   return await fetchEventsFanoutWithDiagnostics(filter, options)
 }
 
+/**
+ * Detect saturation before event deduplication. Multiple revisions can fill an
+ * individual relay response even when the merged event set stays below the
+ * limit, so callers must not certify that bounded read as complete or fresh.
+ */
 function isBoundedFanoutSaturated(
   filter: NDKFilter,
   events: readonly NDKEvent[],
