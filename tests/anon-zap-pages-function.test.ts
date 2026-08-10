@@ -4,6 +4,7 @@ import type {
   BtcUsdRateQuote,
   SignedPublicNostrEvent,
 } from "@conduit/core"
+import { buildShippingOptionDeletionEventDraft } from "@conduit/core"
 import { fetchTrustedPricingRateQuote } from "@conduit/core/pricing/trusted-rate-provider"
 import { finalizeEvent, getPublicKey } from "nostr-tools"
 
@@ -69,11 +70,12 @@ function signMerchantEvent(input: {
   kind: number
   tags?: string[][]
   content?: string
+  createdAt?: number
 }): SignedPublicNostrEvent {
   return finalizeEvent(
     {
       kind: input.kind,
-      created_at: NOW_SECONDS - 60,
+      created_at: input.createdAt ?? NOW_SECONDS - 60,
       tags: input.tags ?? [],
       content: input.content ?? "",
     },
@@ -131,6 +133,7 @@ function shippingEvent(
     price?: number
     currency?: string
     omitService?: boolean
+    createdAt?: number
   } = {}
 ): SignedPublicNostrEvent {
   return signMerchantEvent({
@@ -142,6 +145,7 @@ function shippingEvent(
       ["country", "US"],
       ...(overrides.omitService ? [] : [["service", "standard"]]),
     ],
+    createdAt: overrides.createdAt,
   })
 }
 
@@ -272,14 +276,12 @@ function createDependencies(
       }
       if (filter.kinds.includes(0)) events = [profileEvent()]
       if (filter.kinds.includes(5) && options.shippingDeletion) {
-        const target = options.shippingDeletion.tags.find(
-          (tag) => tag[0] === "a" || tag[0] === "e"
+        const matchesFilter = options.shippingDeletion.tags.some(
+          (tag) =>
+            (tag[0] === "a" && filter["#a"]?.includes(tag[1]!)) ||
+            (tag[0] === "e" && filter["#e"]?.includes(tag[1]!))
         )
-        if (
-          target &&
-          (filter["#a"]?.includes(target[1]!) ||
-            filter["#e"]?.includes(target[1]!))
-        ) {
+        if (matchesFilter) {
           events = [options.shippingDeletion]
         }
       }
@@ -1203,6 +1205,75 @@ describe("Anon zap Pages proxy", () => {
     expect(response.status).toBe(403)
     await expect(response.json()).resolves.toEqual({
       error: "Checkout product requires merchant-coordinated shipping.",
+    })
+  })
+
+  it("does not resurrect an older option when the exact-id-deleted latest revision is omitted", async () => {
+    const shippingCoordinate = `30406:${MERCHANT_PUBKEY}:${PRODUCT_D_TAG}-shipping-standard`
+    const visibleOlder = shippingEvent({
+      price: 4,
+      currency: "USD",
+      createdAt: NOW_SECONDS - 120,
+    })
+    const omittedLatest = shippingEvent({
+      price: 5,
+      currency: "USD",
+    })
+    const deletionDraft = buildShippingOptionDeletionEventDraft({
+      merchantPubkey: MERCHANT_PUBKEY,
+      coordinate: shippingCoordinate,
+      eventId: omittedLatest.id,
+    })
+    const shippingDeletion = signMerchantEvent({
+      kind: deletionDraft.kind,
+      tags: deletionDraft.tags,
+      content: deletionDraft.content,
+      createdAt: NOW_SECONDS - 30,
+    })
+    const publicEventFilters: unknown[] = []
+    const pricingRateCalls: string[][] = []
+
+    const response = await authorizeAnonZapRequest(
+      post(
+        "https://shop.conduit.market/api/anon-zap-authorize",
+        checkoutIntent()
+      ),
+      env(),
+      createDependencies({
+        product: productEvent({
+          price: 10,
+          currency: "SATS",
+          canonicalShipping: true,
+        }),
+        shippingOption: visibleOlder,
+        shippingDeletion,
+        publicEventFilters,
+        pricingRateCalls,
+      })
+    )
+
+    expect(response.status).toBe(403)
+    await expect(response.json()).resolves.toEqual({
+      error: "Checkout product requires merchant-coordinated shipping.",
+    })
+    expect(pricingRateCalls).toEqual([])
+    expect(publicEventFilters).toContainEqual({
+      kinds: [5],
+      authors: [MERCHANT_PUBKEY],
+      "#a": [shippingCoordinate],
+      limit: 300,
+    })
+    expect(publicEventFilters).toContainEqual({
+      kinds: [5],
+      authors: [MERCHANT_PUBKEY],
+      "#e": [visibleOlder.id],
+      limit: 300,
+    })
+    expect(publicEventFilters).not.toContainEqual({
+      kinds: [5],
+      authors: [MERCHANT_PUBKEY],
+      "#e": [omittedLatest.id],
+      limit: 300,
     })
   })
 

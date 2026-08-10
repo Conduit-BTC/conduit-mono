@@ -68,6 +68,24 @@ Publishing the fixed option without an acknowledgement fails the product write.
 If the option is acknowledged but the product delivery fails, retry may deliver
 the already-signed product event without creating another option identity.
 
+### Canonical withdrawal
+
+A canonical withdrawal of a product-scoped shipping option is a same-author
+NIP-09 kind `5` event containing:
+
+```text
+["a", "30406:<merchant-pubkey>:<product-d>-shipping-standard"]
+["k", "30406"]
+```
+
+The withdrawal may additionally carry `["e", "<shipping-event-id>"]`, but the
+address tag is mandatory. An exact-id-only tombstone is not a canonical
+shipping withdrawal: once a relay suppresses the targeted replaceable event, a
+bounded reader cannot recover its coordinate and cannot prove that an older
+event returned for that coordinate remains active. Address provenance lets
+Market keep the coordinate withdrawn even when the latest `30406` itself is no
+longer visible.
+
 ## Resolution and prepared state
 
 Market resolves only the exact coordinate referenced by each product. It does
