@@ -212,6 +212,25 @@ function getShippingCountryName(code: string, fallback?: string): string {
 function productShippingConfigFromProduct(
   product: ProductSchema
 ): ShippingConfig {
+  if (product.shippingZones && product.shippingZones.length > 0) {
+    return {
+      countries: product.shippingZones
+        .flatMap((zone) =>
+          zone.countries.map((code) => ({
+            code: code.trim().toUpperCase(),
+            name: getShippingCountryName(code),
+            restrictTo: [],
+            exclude: [],
+            rate: {
+              amount: zone.amount,
+              currency: zone.currency,
+            },
+          }))
+        )
+        .sort((a, b) => a.code.localeCompare(b.code)),
+    }
+  }
+
   if (product.shippingCountryRules && product.shippingCountryRules.length > 0) {
     return {
       countries: product.shippingCountryRules.map((rule) => ({
@@ -249,11 +268,13 @@ function productToForm(
     format: product.format,
     shippingPricingMode: getProductShippingPricingMode(product),
     shippingCost:
-      typeof sourceShippingCost?.amount === "number"
-        ? formatProductAmountInput(sourceShippingCost.amount)
-        : typeof product.shippingCostSats === "number"
-          ? formatProductAmountInput(product.shippingCostSats)
-          : "",
+      (product.shippingZones?.length ?? 0) > 0
+        ? ""
+        : typeof sourceShippingCost?.amount === "number"
+          ? formatProductAmountInput(sourceShippingCost.amount)
+          : typeof product.shippingCostSats === "number"
+            ? formatProductAmountInput(product.shippingCostSats)
+            : "",
     usePresetShippingZone: isProductUsingPresetShippingZone(
       product,
       presetAvailable
@@ -282,7 +303,9 @@ function buildShippingMetadata(
     format: form.format,
     shippingPricingMode: form.shippingPricingMode,
     amount:
-      form.format === "physical" && form.shippingPricingMode === "fixed"
+      form.format === "physical" &&
+      form.shippingPricingMode === "fixed" &&
+      form.shippingCost.trim()
         ? parsePlainDecimalAmount(form.shippingCost, "Shipping")
         : undefined,
     currency: form.currency,
@@ -523,7 +546,11 @@ async function fetchMerchantProducts(
   })
   const shippingOptions = await getShippingOptionsByCoordinates(
     result.data.flatMap((record) =>
-      record.product.shippingOptionId ? [record.product.shippingOptionId] : []
+      record.product.shippingOptionIds?.length
+        ? record.product.shippingOptionIds
+        : record.product.shippingOptionId
+          ? [record.product.shippingOptionId]
+          : []
     )
   )
   return {
@@ -1725,7 +1752,8 @@ function ProductsPage() {
 
               <div className="grid gap-1.5">
                 <Label htmlFor="product-shipping">
-                  Shipping ({getProductShippingCurrencyLabel(form.currency)})
+                  Fallback shipping (
+                  {getProductShippingCurrencyLabel(form.currency)})
                 </Label>
                 <Input
                   id="product-shipping"
@@ -1749,7 +1777,7 @@ function ProductsPage() {
                       ? "Not required"
                       : productCoordinatesShipping
                         ? "Set after order"
-                        : "0 or fixed amount"
+                        : "Optional product fallback"
                   }
                 />
               </div>
@@ -1924,6 +1952,7 @@ function ProductsPage() {
                     <ShippingDestinationsEditor
                       compact
                       config={form.customShippingConfig}
+                      defaultCurrency={form.currency}
                       emptyText="No custom destinations added yet."
                       onChange={(customShippingConfig) =>
                         setForm((prev) => ({

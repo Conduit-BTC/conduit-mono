@@ -36,6 +36,8 @@ export type CartItem = {
   }
   shippingOptionId?: string
   shippingOptionDTag?: string
+  shippingOptionIds?: string[]
+  shippingOptionDTags?: string[]
   shippingOptionLaunchUnsupported?: boolean
   shippingCountries?: string[]
   shippingCountryRules?: Array<{
@@ -147,6 +149,8 @@ export function createCartItemFromProduct(
     sourceShippingCost: product.sourceShippingCost,
     shippingOptionId: product.shippingOptionId,
     shippingOptionDTag: product.shippingOptionDTag,
+    shippingOptionIds: product.shippingOptionIds,
+    shippingOptionDTags: product.shippingOptionDTags,
     shippingOptionLaunchUnsupported: product.shippingOptionLaunchUnsupported,
     shippingCountries: product.shippingCountries,
     shippingCountryRules: product.shippingCountryRules,

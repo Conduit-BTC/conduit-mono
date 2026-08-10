@@ -1,11 +1,11 @@
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
-  buildFixedShippingOptionEventDraft,
+  buildFixedShippingOptionEventDrafts,
   buildProductListingEventDraft,
   cacheSignedProductListingEvent,
   EVENT_KINDS,
-  getProductShippingOptionAddress,
-  getProductShippingOptionDTag,
+  getProductShippingZoneAddress,
+  getProductShippingZoneDTag,
   isValidSignedPublicNostrEvent,
   publishWithPlanner,
   requireNdkConnected,
@@ -124,6 +124,8 @@ export function applyProductFulfillmentIntentForPublication(input: {
       sourceShippingCost: undefined,
       shippingOptionId: undefined,
       shippingOptionDTag: undefined,
+      shippingOptionIds: undefined,
+      shippingOptionDTags: undefined,
       shippingOptionLaunchUnsupported: undefined,
       shippingCountries: undefined,
       shippingCountryRules: undefined,
@@ -132,16 +134,29 @@ export function applyProductFulfillmentIntentForPublication(input: {
     }
   }
 
+  const shippingOptionIds = input.intent.zones.map((zone) =>
+    getProductShippingZoneAddress(
+      input.merchantPubkey,
+      input.productDTag,
+      zone.countries
+    )
+  )
+  const shippingOptionDTags = input.intent.zones.map((zone) =>
+    getProductShippingZoneDTag(input.productDTag, zone.countries)
+  )
+  const countries = Array.from(
+    new Set(input.intent.zones.flatMap((zone) => zone.countries))
+  ).sort()
+
   return {
     ...input.product,
-    shippingOptionId: getProductShippingOptionAddress(
-      input.merchantPubkey,
-      input.productDTag
-    ),
-    shippingOptionDTag: getProductShippingOptionDTag(input.productDTag),
+    shippingOptionId: shippingOptionIds[0],
+    shippingOptionDTag: shippingOptionDTags[0],
+    shippingOptionIds,
+    shippingOptionDTags,
     shippingOptionLaunchUnsupported: undefined,
-    shippingCountries: [...input.intent.countries],
-    shippingCountryRules: input.intent.countries.map((code) => ({
+    shippingCountries: countries,
+    shippingCountryRules: countries.map((code) => ({
       code,
       name: code,
       restrictTo: [],
@@ -153,15 +168,15 @@ export function applyProductFulfillmentIntentForPublication(input: {
 export async function publishCanonicalProductEvents(
   input: {
     productEvent: NDKEvent
-    shippingEvent: NDKEvent | null
+    shippingEvents: NDKEvent[]
     merchantPubkey: string
     onSignedLocal: (event: NDKEvent) => Promise<void>
   },
   dependencies: CanonicalProductPublishDependencies = canonicalProductPublishDependencies
 ): Promise<PublishWithPlannerResult> {
-  if (input.shippingEvent) {
+  for (const shippingEvent of input.shippingEvents) {
     const shippingResult = await dependencies.publishShippingEvent(
-      input.shippingEvent,
+      shippingEvent,
       input.merchantPubkey
     )
     if (shippingResult.successfulRelayUrls.length === 0) {
@@ -223,26 +238,30 @@ export async function signAndPublishProductListing(input: {
   productEvent.content = draft.content
   productEvent.tags = draft.tags
 
-  const shippingEvent =
-    input.fulfillmentIntent.kind === "fixed_standard" ? new NDKEvent(ndk) : null
-  if (shippingEvent && input.fulfillmentIntent.kind === "fixed_standard") {
-    const shippingDraft = buildFixedShippingOptionEventDraft({
-      productDTag: input.dTag,
-      intent: input.fulfillmentIntent,
-      clientAppId: "merchant",
-    })
-    shippingEvent.kind = shippingDraft.kind
-    shippingEvent.created_at = eventCreatedAt
-    shippingEvent.content = shippingDraft.content
-    shippingEvent.tags = shippingDraft.tags
-  }
+  const shippingEvents =
+    input.fulfillmentIntent.kind === "fixed_standard"
+      ? buildFixedShippingOptionEventDrafts({
+          productDTag: input.dTag,
+          intent: input.fulfillmentIntent,
+          clientAppId: "merchant",
+        }).map((shippingDraft) => {
+          const shippingEvent = new NDKEvent(ndk)
+          shippingEvent.kind = shippingDraft.kind
+          shippingEvent.created_at = eventCreatedAt
+          shippingEvent.content = shippingDraft.content
+          shippingEvent.tags = shippingDraft.tags
+          return shippingEvent
+        })
+      : []
 
-  if (shippingEvent) await shippingEvent.sign(ndk.signer)
+  for (const shippingEvent of shippingEvents) {
+    await shippingEvent.sign(ndk.signer)
+  }
   await productEvent.sign(ndk.signer)
 
   return publishCanonicalProductEvents({
     productEvent,
-    shippingEvent,
+    shippingEvents,
     merchantPubkey: signerPubkey,
     onSignedLocal: input.onSignedLocal,
   })

@@ -194,6 +194,11 @@ export interface ShippingCountryConfig {
   restrictTo: string[]
   /** Postal code / prefix patterns that are excluded */
   exclude: string[]
+  /** Optional flat checkout rate for this country/zone. */
+  rate?: {
+    amount: number
+    currency: string
+  }
 }
 
 export interface ShippingConfig {
@@ -230,6 +235,7 @@ function normalizeShippingConfig(value: unknown): ShippingConfig {
           name?: unknown
           restrictTo?: unknown
           exclude?: unknown
+          rate?: unknown
         }
         if (typeof maybeCountry.code !== "string") return []
         const code = maybeCountry.code.trim().toUpperCase()
@@ -244,6 +250,27 @@ function normalizeShippingConfig(value: unknown): ShippingConfig {
                 : (country?.name ?? code),
             restrictTo: toStringArray(maybeCountry.restrictTo),
             exclude: toStringArray(maybeCountry.exclude),
+            rate:
+              maybeCountry.rate &&
+              typeof maybeCountry.rate === "object" &&
+              typeof (maybeCountry.rate as { amount?: unknown }).amount ===
+                "number" &&
+              Number.isFinite(
+                (maybeCountry.rate as { amount: number }).amount
+              ) &&
+              (maybeCountry.rate as { amount: number }).amount >= 0 &&
+              typeof (maybeCountry.rate as { currency?: unknown }).currency ===
+                "string" &&
+              (maybeCountry.rate as { currency: string }).currency.trim()
+                ? {
+                    amount: (maybeCountry.rate as { amount: number }).amount,
+                    currency: (
+                      maybeCountry.rate as { currency: string }
+                    ).currency
+                      .trim()
+                      .toUpperCase(),
+                  }
+                : undefined,
           },
         ]
       }
@@ -309,8 +336,40 @@ export function shippingOptionToConfig(
         name: country?.name ?? rule.name,
         restrictTo: rule.restrictTo,
         exclude: rule.exclude,
+        rate: {
+          amount: option.price,
+          currency: option.currency,
+        },
       }
     }),
+  }
+}
+
+export function shippingOptionsToConfig(
+  options: readonly ParsedShippingOption[]
+): ShippingConfig {
+  const countries = new Map<string, ShippingCountryConfig>()
+  for (const option of options) {
+    for (const country of shippingOptionToConfig(option).countries) {
+      const existing = countries.get(country.code)
+      if (
+        existing &&
+        (existing.rate?.amount !== country.rate?.amount ||
+          existing.rate?.currency !== country.rate?.currency)
+      ) {
+        countries.set(country.code, {
+          ...country,
+          rate: undefined,
+        })
+      } else if (!existing) {
+        countries.set(country.code, country)
+      }
+    }
+  }
+  return {
+    countries: Array.from(countries.values()).sort((a, b) =>
+      a.code.localeCompare(b.code)
+    ),
   }
 }
 

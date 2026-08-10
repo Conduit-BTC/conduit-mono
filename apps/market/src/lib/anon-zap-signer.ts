@@ -32,7 +32,11 @@ export type AnonZapSignerOptions = {
 
 export type AnonZapCheckoutAuthorizationContext = {
   merchantPubkey: string
-  items: Array<{ productAddress: string; quantity: number }>
+  items: Array<{
+    productAddress: string
+    quantity: number
+    shippingOptionId?: string
+  }>
 }
 
 export type AuthorizedAnonZapCheckoutClient = {
@@ -334,7 +338,7 @@ function validateServerDraft(
     throw new Error("Anon zap authorization pricing is invalid.")
   }
   const expectedItems = new Map(
-    context.items.map((item) => [item.productAddress, item.quantity])
+    context.items.map((item) => [item.productAddress, item])
   )
   let itemSubtotalSats = 0
   let shippingCostSats = 0
@@ -342,10 +346,12 @@ function validateServerDraft(
     if (!isRecord(item)) {
       throw new Error("Anon zap authorization pricing is invalid.")
     }
-    const expectedQuantity = expectedItems.get(item.productAddress)
+    const expectedItem = expectedItems.get(item.productAddress)
     if (
       typeof item.productAddress !== "string" ||
-      expectedQuantity !== item.quantity ||
+      expectedItem?.quantity !== item.quantity ||
+      (expectedItem?.shippingOptionId !== undefined &&
+        expectedItem.shippingOptionId !== item.shippingOptionId) ||
       (item.format !== "physical" && item.format !== "digital") ||
       !Number.isSafeInteger(item.unitPriceSats) ||
       item.unitPriceSats < 1 ||
@@ -355,7 +361,7 @@ function validateServerDraft(
       (item.shippingOptionId !== undefined &&
         (typeof item.shippingOptionId !== "string" ||
           !item.shippingOptionId.trim() ||
-          item.shippingOptionId.length > 200)) ||
+          item.shippingOptionId.length > 1_024)) ||
       !isValidAuthorizedShippingCountryRules(
         item.shippingCountryRules,
         item.format

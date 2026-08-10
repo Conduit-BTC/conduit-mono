@@ -1,8 +1,8 @@
 import {
   canonicalizeProductTags,
   CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG,
-  getProductShippingOptionAddress,
-  getProductShippingOptionDTag,
+  getProductShippingZoneAddress,
+  getProductShippingZoneDTag,
   type ProductFulfillmentIntent,
   type ProductSchema,
   type ProductZapMessagePolicy,
@@ -78,20 +78,29 @@ export function buildProductShippingMetadata(
   ProductSchema,
   | "shippingOptionId"
   | "shippingOptionDTag"
+  | "shippingOptionIds"
+  | "shippingOptionDTags"
   | "shippingCountries"
   | "shippingCountryRules"
 > {
   if (intent.kind !== "fixed_standard") return {}
-  const shippingOptionDTag = getProductShippingOptionDTag(productDTag)
+  const shippingOptionIds = intent.zones.map((zone) =>
+    getProductShippingZoneAddress(merchantPubkey, productDTag, zone.countries)
+  )
+  const shippingOptionDTags = intent.zones.map((zone) =>
+    getProductShippingZoneDTag(productDTag, zone.countries)
+  )
+  const countries = Array.from(
+    new Set(intent.zones.flatMap((zone) => zone.countries))
+  ).sort()
 
   return {
-    shippingOptionId: getProductShippingOptionAddress(
-      merchantPubkey,
-      productDTag
-    ),
-    shippingOptionDTag,
-    shippingCountries: [...intent.countries],
-    shippingCountryRules: intent.countries.map((code) => ({
+    shippingOptionId: shippingOptionIds[0],
+    shippingOptionDTag: shippingOptionDTags[0],
+    shippingOptionIds,
+    shippingOptionDTags,
+    shippingCountries: countries,
+    shippingCountryRules: countries.map((code) => ({
       code,
       name: code,
       restrictTo: [],
@@ -297,14 +306,6 @@ export function validateProductPublishForm(
     )
   }
 
-  if (hasFixedShipping && !shippingCostInput) {
-    addError(
-      errors,
-      "shippingCost",
-      "Enter 0 for included shipping or a fixed amount, or choose coordinate shipping after the order."
-    )
-  }
-
   if (shippingCostInput) {
     try {
       normalizePublishableProductShippingCost(
@@ -320,11 +321,16 @@ export function validateProductPublishForm(
           : "Shipping must be a non-negative amount."
       )
     }
+  }
 
+  if (hasFixedShipping) {
     const hasShippingZone = form.usePresetShippingZone
       ? options.hasPresetShippingZone
       : isShippingComplete(form.customShippingConfig)
-    if (!hasShippingZone) {
+    const selectedShippingConfig = form.usePresetShippingZone
+      ? options.presetShippingConfig
+      : form.customShippingConfig
+    if (!hasShippingZone || !selectedShippingConfig) {
       addError(
         errors,
         "shippingZone",
@@ -333,11 +339,8 @@ export function validateProductPublishForm(
           : "Add at least one custom shipping destination before publishing a physical product with a fixed shipping cost."
       )
     } else {
-      const selectedShippingConfig = form.usePresetShippingZone
-        ? options.presetShippingConfig
-        : form.customShippingConfig
       if (
-        selectedShippingConfig?.countries.some(
+        selectedShippingConfig.countries.some(
           (country) =>
             country.restrictTo.length > 0 || country.exclude.length > 0
         )
@@ -346,6 +349,35 @@ export function validateProductPublishForm(
           errors,
           "shippingZone",
           "Fixed checkout supports country destinations only. Remove postal restrictions or coordinate shipping after the order."
+        )
+      }
+      const invalidRate = selectedShippingConfig.countries.find((country) => {
+        if (!country.rate) return false
+        if (country.rate.currency.trim().toUpperCase() !== currency) {
+          return true
+        }
+        try {
+          normalizePublishableProductShippingCost(country.rate.amount, currency)
+          return false
+        } catch {
+          return true
+        }
+      })
+      if (invalidRate) {
+        addError(
+          errors,
+          "shippingZone",
+          `The ${invalidRate.code} zone rate must be non-negative, use ${currency}, and fit its supported precision.`
+        )
+      }
+      const missingRate = selectedShippingConfig.countries.find(
+        (country) => !country.rate
+      )
+      if (missingRate && !shippingCostInput) {
+        addError(
+          errors,
+          "shippingCost",
+          `Add a rate for ${missingRate.code}, or enter a product fallback shipping amount.`
         )
       }
     }

@@ -12,7 +12,7 @@ import {
   saveShippingConfig,
   isShippingComplete,
   serializeShippingConfig,
-  shippingOptionToConfig,
+  shippingOptionsToConfig,
   selectConduitShippingOption,
   shouldHydrateShippingConfig,
   type ShippingConfig,
@@ -41,6 +41,11 @@ function buildSummary(countries: ShippingCountryConfig[]): string {
       }
       if (c.exclude.length > 0) {
         parts.push(`excluding ${c.exclude.join(", ")}`)
+      }
+      if (c.rate) {
+        parts.push(`at ${c.rate.amount} ${c.rate.currency}`)
+      } else {
+        parts.push("using the product fallback rate")
       }
       return parts.join(" ")
     })
@@ -106,7 +111,7 @@ function ShippingPage() {
     const latest = selectConduitShippingOption(remoteShippingQuery.data)
     if (!latest) return
 
-    const remoteConfig = shippingOptionToConfig(latest)
+    const remoteConfig = shippingOptionsToConfig([latest])
     const storedConfigRaw = getStoredShippingConfigRaw(pubkey)
     if (!shouldHydrateShippingConfig(storedConfigRaw, remoteConfig)) return
 
@@ -144,8 +149,8 @@ function ShippingPage() {
                   </div>
                 )}
                 <p className="mt-4 max-w-2xl text-pretty text-base leading-7 text-[var(--text-secondary)]">
-                  Save destination presets for product authoring. Each fixed
-                  product publishes its own priced shipping option.
+                  Save destination and flat-rate presets for product authoring.
+                  Each fixed product publishes one priced option per rate zone.
                 </p>
               </div>
 
@@ -171,8 +176,8 @@ function ShippingPage() {
                     DESTINATIONS
                   </div>
                   <div className="mt-1 text-[1rem] text-[var(--text-secondary)]">
-                    Countries you ship to. Postal restrictions require
-                    order-first coordination.
+                    Countries you ship to and their flat checkout rates. Postal
+                    restrictions require order-first coordination.
                   </div>
                 </div>
 
