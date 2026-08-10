@@ -1627,6 +1627,35 @@ describe("commerce gateway", () => {
     ).toBe(true)
   })
 
+  it("treats a successful exact event-id detail read as complete", async () => {
+    const product = makeSignedProductEvent({
+      dTag: "exact-event-detail",
+      createdAt: 100,
+      title: "Exact event detail",
+    })
+    let productFilter: Record<string, unknown> | null = null
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          productFilter = filter as Record<string, unknown>
+          return [product] as never
+        }
+        return []
+      },
+    })
+
+    const result = await getProductDetail({ productId: product.id })
+
+    expect(productFilter).toMatchObject({ ids: [product.id] })
+    expect(productFilter).not.toHaveProperty("limit")
+    expect(result.data?.eventId).toBe(product.id)
+    expect(result.meta).toMatchObject({
+      stale: false,
+      degraded: false,
+      capped: false,
+    })
+  })
+
   it("suppresses direct product detail with a relay deletion event", async () => {
     const dTag = "relay-deleted-detail"
     const staleProduct = makeSignedProductEvent({

@@ -3353,7 +3353,6 @@ export async function getProductDetail(
       const records = await fetchPublicProductRecords({
         ids: [decodedId],
         deletionCandidates: cached,
-        limit: 1,
         onTransportStatus: (degraded, capped) => {
           directReadDegraded ||= degraded
           directReadCapped ||= capped
