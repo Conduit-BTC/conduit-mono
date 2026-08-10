@@ -36,6 +36,7 @@ export * from "./replaceable-safety"
 export * from "./remote-signer"
 export * from "./signing-retry"
 export * from "./social-hydrator"
+export * from "./shopper-trust"
 export * from "./session"
 export * from "./session-signer"
 export * from "./nostr-event-signer"
@@ -56,11 +57,13 @@ export {
   fetchEventsFanout,
   fetchEventsFanoutDetailed,
   fetchEventsFanoutProgressive,
+  verifySignedPublicNostrEvents,
   disconnectNdk,
   refreshNdkRelaySettings,
   setSigner,
   removeSigner,
   __resetNdkTestState,
+  __setNdkVerifyTimeoutMsForTests,
   subscribeNdkState,
   getNdkState,
   type NdkConnectionState,
@@ -68,4 +71,6 @@ export {
   type SignerLease,
   type FetchEventsFanoutResult,
   type FetchEventsRelayStatus,
+  type VerifySignedPublicNostrEventsOptions,
+  type VerifySignedPublicNostrEventsResult,
 } from "./ndk"

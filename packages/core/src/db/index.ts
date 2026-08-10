@@ -210,6 +210,8 @@ export interface CachedRelayList {
   writeRelayUrls: string[]
   /** `created_at` of the kind-10002 event in seconds. */
   eventCreatedAt: number
+  /** Event id used to resolve equal-timestamp replaceable events per NIP-01. */
+  eventId?: string
   /** Relays the kind-10002 event was observed on, if known. */
   sourceRelayUrls?: string[]
   /** Local cache time in milliseconds. */
@@ -253,6 +255,47 @@ export interface CachedNip05Verification {
   reason?: string
   checkedAt: number
   expiresAt: number
+  cachedAt: number
+}
+
+export type CachedShopperTrustSignalState =
+  "available" | "partial" | "stale" | "unavailable"
+
+export interface CachedShopperTrustCoverage {
+  attemptedRelays: number
+  responsiveRelays: number
+  transportComplete: boolean
+  completeForPlan: boolean
+  truncated: boolean
+}
+
+export interface CachedShopperTrustSignal<T> {
+  state: CachedShopperTrustSignalState
+  value: T | null
+  observedAt?: number
+  coverage: CachedShopperTrustCoverage
+}
+
+/**
+ * Aggregate public evidence for one merchant/shopper pair.
+ *
+ * Raw follow graphs, report content, zap comments, invoices, descriptions,
+ * and other event payloads must never be stored in this projection.
+ */
+export interface CachedShopperTrustSnapshot {
+  id: string
+  merchantPubkey: string
+  shopperPubkey: string
+  oldestEvent: CachedShopperTrustSignal<{ timestamp: number | null }>
+  followersObserved: CachedShopperTrustSignal<{ count: number }>
+  followsInCommon: CachedShopperTrustSignal<{ count: number }>
+  zapsSent: CachedShopperTrustSignal<{ count: number }>
+  zapsReceived: CachedShopperTrustSignal<{ count: number }>
+  reportsFromNetwork: CachedShopperTrustSignal<{
+    count: number
+    reporterCount: number
+  }>
+  degraded: boolean
   cachedAt: number
 }
 
@@ -491,6 +534,7 @@ class ConduitDB extends Dexie {
   relayLists!: EntityTable<CachedRelayList, "pubkey">
   productSocialSummaries!: EntityTable<CachedProductSocialSummary, "key">
   nip05Verifications!: EntityTable<CachedNip05Verification, "id">
+  shopperTrustSnapshots!: EntityTable<CachedShopperTrustSnapshot, "id">
   paymentAttempts!: EntityTable<StoredPaymentAttempt, "id">
   orderLifecycles!: EntityTable<OrderLifecycle, "orderId">
   productDeletionOutbox!: EntityTable<ProductDeletionDeliveryJob, "id">
@@ -614,6 +658,16 @@ class ConduitDB extends Dexie {
         "id, orderId, buyerPubkey, merchantPubkey, proofDeliveryStatus, createdAt",
       orderLifecycles:
         "orderId, buyerPubkey, merchantPubkey, phase, updatedAt, createdAt",
+      // Version 9 shipped independently on main and the shopper-trust preview.
+      // Keep the union here so Dexie does not delete either lineage's store
+      // before version 10 converges both schemas.
+      shopperTrustSnapshots: "id, merchantPubkey, shopperPubkey, cachedAt",
+      productDeletionOutbox:
+        "id, state, nextRetryAt, deliveryLeaseExpiresAt, updatedAt, createdAt",
+    })
+
+    this.version(10).stores({
+      shopperTrustSnapshots: "id, merchantPubkey, shopperPubkey, cachedAt",
       productDeletionOutbox:
         "id, state, nextRetryAt, deliveryLeaseExpiresAt, updatedAt, createdAt",
     })
@@ -627,6 +681,8 @@ const FALLBACK_CACHE_PRUNE_HIGH_WATER_BYTES = 35 * 1024 * 1024
 const FALLBACK_CACHE_PRUNE_TARGET_BYTES = 24 * 1024 * 1024
 const CACHE_PRUNE_FRESH_MS = 24 * 60 * 60 * 1_000
 const STORAGE_PRESSURE_HIGH_WATER_RATIO = 0.7
+export const SHOPPER_TRUST_SNAPSHOT_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000
+export const SHOPPER_TRUST_SNAPSHOT_MAX_ROWS = 500
 
 function getCommerceCacheScope(): string {
   return JSON.stringify({
@@ -660,6 +716,7 @@ export async function ensureCommerceCacheScope(): Promise<void> {
     db.relayLists.clear(),
     db.productSocialSummaries.clear(),
     db.nip05Verifications.clear(),
+    db.shopperTrustSnapshots.clear(),
   ])
 
   window.localStorage.setItem(CACHE_SCOPE_KEY, nextScope)
@@ -697,8 +754,39 @@ async function pruneTableByCachedAt(
   await table.bulkDelete(staleRows)
 }
 
+export function shopperTrustSnapshotIsExpired(
+  cachedAt: number,
+  now = Date.now()
+): boolean {
+  return now - cachedAt > SHOPPER_TRUST_SNAPSHOT_RETENTION_MS
+}
+
+/**
+ * Pairwise trust projections are privacy-sensitive convenience data. Enforce
+ * a hard age and count bound independently of browser storage pressure.
+ */
+export async function pruneShopperTrustSnapshots(
+  now = Date.now()
+): Promise<void> {
+  if (typeof window === "undefined") return
+
+  const staleBefore = now - SHOPPER_TRUST_SNAPSHOT_RETENTION_MS
+  await db.shopperTrustSnapshots.where("cachedAt").below(staleBefore).delete()
+
+  const count = await db.shopperTrustSnapshots.count()
+  const overflow = count - SHOPPER_TRUST_SNAPSHOT_MAX_ROWS
+  if (overflow <= 0) return
+  const oldestKeys = await db.shopperTrustSnapshots
+    .orderBy("cachedAt")
+    .limit(overflow)
+    .primaryKeys()
+  await db.shopperTrustSnapshots.bulkDelete(oldestKeys)
+}
+
 export async function pruneCommerceCaches(): Promise<void> {
   if (typeof window === "undefined") return
+
+  await pruneShopperTrustSnapshots()
 
   const storageEstimate =
     typeof navigator !== "undefined" && navigator.storage?.estimate

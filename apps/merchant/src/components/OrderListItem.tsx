@@ -11,10 +11,12 @@ export function BuyerAvatar({
   name,
   picture,
   size = "md",
+  decorative = false,
 }: {
   name: string
   picture?: string
   size?: "sm" | "md"
+  decorative?: boolean
 }) {
   const dim = size === "sm" ? "h-9 w-9" : "h-11 w-11"
   return (
@@ -22,9 +24,16 @@ export function BuyerAvatar({
       className={`${dim} flex shrink-0 items-center justify-center overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]`}
     >
       {picture ? (
-        <img src={picture} alt={name} className="h-full w-full object-cover" />
+        <img
+          src={picture}
+          alt={decorative ? "" : name}
+          className="h-full w-full object-cover"
+        />
       ) : (
-        <UserRound className="h-1/2 w-1/2 text-[var(--text-muted)]" />
+        <UserRound
+          className="h-1/2 w-1/2 text-[var(--text-muted)]"
+          aria-hidden="true"
+        />
       )}
     </div>
   )

@@ -61,8 +61,19 @@ describe("Product legal routing contract", () => {
 
     const merchantElse = merchantMain.slice(merchantMain.indexOf("} else {"))
     expect(merchantElse).toContain("startProductDeletionDeliveryWorker")
+    expect(merchantElse).toContain("void pruneShopperTrustSnapshots()")
     expect(merchantElse).toContain("<AuthProvider>")
     expect(merchantElse).toContain("<ConduitSessionProvider")
+    const merchantBeforeElse = merchantMain.slice(
+      0,
+      merchantMain.indexOf("} else {")
+    )
+    expect(merchantBeforeElse).not.toContain(
+      "startProductDeletionDeliveryWorker()"
+    )
+    expect(merchantBeforeElse).not.toContain(
+      "void pruneShopperTrustSnapshots()"
+    )
   })
 
   it("keeps telemetry and authenticated shells behind path-only root dispatch", async () => {
