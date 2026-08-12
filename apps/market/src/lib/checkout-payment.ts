@@ -49,6 +49,8 @@ export type CheckoutPaymentStage =
 
 export type CheckoutPricingItem = {
   productId: string
+  familyProductId?: string
+  selectedSpecifications?: CartItem["selectedSpecifications"]
   title?: string
   format: "physical" | "digital"
   quantity: number
@@ -257,6 +259,10 @@ export function buildCheckoutPricingIntent(
     itemSubtotalSats += itemSats * item.quantity
     pricedItems.push({
       productId: item.productId,
+      familyProductId: item.familyProductId,
+      selectedSpecifications: item.selectedSpecifications?.map(
+        (specification) => ({ ...specification })
+      ),
       title: item.title,
       format: item.format ?? "physical",
       quantity: item.quantity,
