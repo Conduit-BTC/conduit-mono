@@ -767,7 +767,7 @@ test.use({
   screenshot: "off",
 })
 
-test("organizer offer off publishes an empty catalog and permits merchant booth handoff", async ({
+test("organizer offer off publishes an empty catalog and permits booth handoff", async ({
   page,
 }) => {
   test.setTimeout(180_000)
