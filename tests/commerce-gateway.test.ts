@@ -136,6 +136,8 @@ function makeSignedProductEvent(params: {
   createdAt: number
   title: string
   stock?: number
+  contentPrice?: number
+  tagPrice?: number
 }): NDKEvent {
   const secretKey = params.secretKey ?? MERCHANT_A_SECRET
   const pubkey = getPublicKey(secretKey)
@@ -147,7 +149,7 @@ function makeSignedProductEvent(params: {
         id: `30402:${pubkey}:${params.dTag}`,
         pubkey,
         title: params.title,
-        price: 25,
+        price: params.contentPrice ?? 25,
         currency: "USD",
         type: "simple",
         visibility: "public",
@@ -162,7 +164,7 @@ function makeSignedProductEvent(params: {
       tags: [
         ["d", params.dTag],
         ["title", params.title],
-        ["price", "25", "USD"],
+        ["price", String(params.tagPrice ?? 25), "USD"],
         ["t", "test"],
         ...(typeof params.stock === "number"
           ? [["stock", String(params.stock)]]
@@ -1420,6 +1422,34 @@ describe("commerce gateway", () => {
       `30402:${merchantPubkey}:signed-local-item`
     )
     expect(result.data[0]?.product.title).toBe("Signed Local Item")
+  })
+
+  it("retains conflicting signed price evidence across the product cache round trip", async () => {
+    const signedProduct = makeSignedProductEvent({
+      dTag: "conflicting-price-cache",
+      createdAt: 100,
+      title: "Conflicting Price Cache",
+      contentPrice: 25,
+      tagPrice: 30,
+    })
+    await cacheSignedProductListingEvent(signedProduct)
+
+    expect(cachedProducts).toHaveLength(1)
+    expect(cachedProducts[0]).toMatchObject({
+      price: 30,
+      currency: "USD",
+      priceEvidenceMalformed: true,
+    })
+    const result = await getCachedMerchantStorefront({
+      merchantPubkey: signedProduct.pubkey,
+      limit: 10,
+      includeMarketHidden: true,
+    })
+    expect(result.data[0]?.product).toMatchObject({
+      price: 30,
+      currency: "USD",
+      priceEvidenceMalformed: true,
+    })
   })
 
   it("refuses to project an invalid product signature as local truth", async () => {

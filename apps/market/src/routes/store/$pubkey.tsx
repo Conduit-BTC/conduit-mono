@@ -46,10 +46,8 @@ import {
 } from "@conduit/core"
 import { SignerSwitch } from "../../components/SignerSwitch"
 import { RichProfileText } from "../../components/RichProfileText"
-import {
-  ProductGridCard,
-  ProductGridCardSkeleton,
-} from "../../components/ProductGridCard"
+import { ProductGridCardSkeleton } from "../../components/ProductGridCard"
+import { ResolvedProductGridCard } from "../../components/ResolvedProductGridCard"
 import { CopyButton } from "../../components/CopyButton"
 import {
   MerchantAvatarFallback,
@@ -59,7 +57,6 @@ import {
 import { MerchantTrustSummary } from "../../components/MerchantTrustSummary"
 import { ProfileBanner } from "../../components/ProfileBanner"
 import { useShopperPricing } from "../../hooks/useShopperPricing"
-import { useCart } from "../../hooks/useCart"
 import { useMerchantTrustContext } from "../../hooks/useMerchantTrustContext"
 import { useProgressiveProducts } from "../../hooks/useProgressiveProducts"
 import {
@@ -73,7 +70,6 @@ import {
   isStorefrontFollowScopeEqual,
   storefrontFollowReducer,
 } from "../../lib/storefront-follow-state"
-import { cartItemInputFromProductSelection } from "../../lib/productVariations"
 import {
   hasUnavailablePriceForBrowseSort,
   sortBrowseProducts,
@@ -146,7 +142,6 @@ function StorefrontPage() {
   const search = Route.useSearch()
   const navigate = Route.useNavigate()
   const queryClient = useQueryClient()
-  const cart = useCart()
   const { pubkey: viewerPubkey, status } = useAuth()
   const activeViewerPubkey = status === "connected" ? viewerPubkey : null
   const shopperPricing = useShopperPricing()
@@ -842,7 +837,7 @@ function StorefrontPage() {
             <ul className="mt-4 grid min-w-0 max-w-full items-start list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
               {filteredProducts.map((product, index) => (
                 <li key={product.id}>
-                  <ProductGridCard
+                  <ResolvedProductGridCard
                     product={product}
                     family={productsQuery.familiesByProductId[product.id]}
                     familyHydrating={productsQuery.isHydrating}
@@ -851,45 +846,6 @@ function StorefrontPage() {
                     imageLoading={index < 4 ? "eager" : "lazy"}
                     btcUsdRate={btcUsdRate}
                     pricePreference={shopperPricing.preference}
-                    getCartQuantity={(selectedProduct) =>
-                      cart.items.find(
-                        (item) =>
-                          item.merchantPubkey === selectedProduct.pubkey &&
-                          item.productId === selectedProduct.id
-                      )?.quantity ?? 0
-                    }
-                    onAddToCart={(selectedProduct) =>
-                      cart.addItem(
-                        cartItemInputFromProductSelection(
-                          product,
-                          selectedProduct
-                        )
-                      )
-                    }
-                    onIncrement={(selectedProduct) =>
-                      cart.addItem(
-                        cartItemInputFromProductSelection(
-                          product,
-                          selectedProduct
-                        )
-                      )
-                    }
-                    onDecrement={(selectedProduct) => {
-                      const existing = cart.items.find(
-                        (item) =>
-                          item.merchantPubkey === selectedProduct.pubkey &&
-                          item.productId === selectedProduct.id
-                      )
-                      if (!existing) return
-                      if (existing.quantity <= 1) {
-                        cart.removeItem(selectedProduct.id)
-                        return
-                      }
-                      cart.setQuantity(
-                        selectedProduct.id,
-                        existing.quantity - 1
-                      )
-                    }}
                   />
                 </li>
               ))}

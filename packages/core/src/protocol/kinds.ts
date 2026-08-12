@@ -48,8 +48,17 @@ export const EVENT_KINDS = {
   /** NIP-99: Marketplace product listing (addressable) */
   PRODUCT: 30402,
 
+  /** Open Markets: Product collection (addressable) */
+  PRODUCT_COLLECTION: 30405,
+
   /** Shipping option for a product */
   SHIPPING_OPTION: 30406,
+
+  /** NIP-52: Date-based calendar event (addressable) */
+  CALENDAR_DATE: 31922,
+
+  /** NIP-52: Time-based calendar event (addressable) */
+  CALENDAR_TIME: 31923,
 
   /** NIP-04: Legacy encrypted DM */
   DM_LEGACY: 4,

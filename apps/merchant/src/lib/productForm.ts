@@ -5,6 +5,7 @@ import {
   normalizePublicMediaUrl,
   type ProductSchema,
   type ProductZapMessagePolicy,
+  type EventMarketHandoffMode,
 } from "@conduit/core"
 import type { ShippingConfig } from "./readiness"
 import { isShippingComplete } from "./readiness"
@@ -27,6 +28,21 @@ export const RECOMMENDED_MAX_PRODUCT_TAG_COUNT = 12
 export const MAX_PRODUCT_TAG_COUNT = 24
 export const MAX_PRODUCT_TAG_LENGTH = 40
 
+export type ProductFulfillmentIntent = "digital" | "ship" | "local_pickup"
+
+export function canUseZeroProductPrice(input: {
+  fulfillment: unknown
+  handoffMode: unknown
+  evidenceVerified: boolean
+}): boolean {
+  return (
+    input.evidenceVerified &&
+    input.fulfillment === "local_pickup" &&
+    (input.handoffMode === "merchant_handoff" ||
+      input.handoffMode === "organizer_handoff")
+  )
+}
+
 export interface ProductPublishFormValues {
   title: string
   price: string
@@ -45,15 +61,25 @@ export interface ProductPublishFormValues {
 export interface MerchantProductFormValues extends ProductPublishFormValues {
   summary: string
   variations: ProductVariationFormState
+  fulfillment: ProductFulfillmentIntent
+  eventMarketReference: string
+  eventHandoffMode: EventMarketHandoffMode
+  merchantPickupTitle: string
+  merchantPickupLocation: string
+  merchantPickupGeohash: string
+  merchantPickupCountry: string
   publicZapEnabled: boolean
   zapMessagePolicy: ProductZapMessagePolicy
 }
 
 export function isProductUsingPresetShippingZone(
-  product: Pick<ProductSchema, "shippingOptionId">,
+  product: Pick<ProductSchema, "pubkey" | "shippingOptionId">,
   presetAvailable: boolean
 ): boolean {
-  return presetAvailable && !!product.shippingOptionId
+  return (
+    presetAvailable &&
+    product.shippingOptionId === getShippingOptionAddress(product.pubkey)
+  )
 }
 
 export function buildProductShippingMetadata(
@@ -92,7 +118,9 @@ export function reconcileProductFormShippingPreset(
 ): MerchantProductFormValues {
   if (
     form.usePresetShippingZone &&
-    (!hasPresetShippingZone || form.format === "digital")
+    (!hasPresetShippingZone ||
+      form.format === "digital" ||
+      form.fulfillment !== "ship")
   ) {
     return { ...form, usePresetShippingZone: false }
   }
@@ -225,7 +253,7 @@ function firstError(
 
 export function validateProductPublishForm(
   form: ProductPublishFormValues,
-  options: { hasPresetShippingZone: boolean }
+  options: { hasPresetShippingZone: boolean; allowZeroPrice?: boolean }
 ): ProductPublishFormValidation {
   const errors: Partial<Record<ProductPublishFormField, string>> = {}
   const title = form.title.trim()
@@ -243,7 +271,8 @@ export function validateProductPublishForm(
   try {
     normalizePublishableProductPrice(
       parsePlainDecimalAmount(form.price, "Price"),
-      currency
+      currency,
+      { allowZero: options.allowZeroPrice }
     )
   } catch (error) {
     addError(

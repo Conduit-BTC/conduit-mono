@@ -36,10 +36,7 @@ export type WalletConnectionStatus =
   | "error"
 
 export type NwcReachability =
-  | "unchecked"
-  | "checking"
-  | "reachable"
-  | "unreachable"
+  "unchecked" | "checking" | "reachable" | "unreachable"
 
 export interface WalletState {
   status: WalletConnectionStatus
@@ -75,6 +72,8 @@ export interface UseWalletReturn extends WalletState {
 
 export interface UseWalletOptions {
   refreshBalance?: boolean
+  /** Keep stored wallet state dormant when the current workflow cannot pay. */
+  enabled?: boolean
 }
 
 function readStoredConnection(): NwcConnection | null {
@@ -281,6 +280,7 @@ function getStateFromSessionSnapshot(
 }
 
 export function useWallet(options: UseWalletOptions = {}): UseWalletReturn {
+  const enabled = options.enabled !== false
   const [state, setState] = useState<Omit<WalletState, "unavailableReason">>({
     status: "disconnected",
     connection: null,
@@ -325,6 +325,7 @@ export function useWallet(options: UseWalletOptions = {}): UseWalletReturn {
   }, [state.connection])
 
   useEffect(() => {
+    if (!enabled) return
     if (
       !state.connection ||
       (state.status !== "unreachable" && state.status !== "error")
@@ -339,10 +340,11 @@ export function useWallet(options: UseWalletOptions = {}): UseWalletReturn {
     }, WALLET_RETRY_POLL_MS)
 
     return () => window.clearInterval(intervalId)
-  }, [retry, state.connection, state.status])
+  }, [enabled, retry, state.connection, state.status])
 
   // Probe an existing stored connection on mount
   useEffect(() => {
+    if (!enabled) return
     const stored = readStoredConnection()
     if (!stored) return
 
@@ -391,7 +393,7 @@ export function useWallet(options: UseWalletOptions = {}): UseWalletReturn {
         }))
         console.warn("Failed to warm NWC wallet session", error)
       })
-  }, [])
+  }, [enabled])
 
   // Recompute status when info or error changes
   const connection = state.connection
@@ -514,6 +516,7 @@ export function useWallet(options: UseWalletOptions = {}): UseWalletReturn {
   useEffect(() => {
     if (
       !options.refreshBalance ||
+      !enabled ||
       !connection ||
       !info?.methods.some(
         (method) => method === "get_balance" || method === "get_budget"
@@ -529,6 +532,7 @@ export function useWallet(options: UseWalletOptions = {}): UseWalletReturn {
     })
   }, [
     connection,
+    enabled,
     info,
     options.refreshBalance,
     refreshBalance,

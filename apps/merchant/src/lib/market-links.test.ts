@@ -1,5 +1,6 @@
 import { pubkeyToNpub } from "@conduit/core"
 import {
+  getEventMarketUrl,
   getProfileUrl,
   getStorefrontUrl,
   inferMarketOrigin,
@@ -22,4 +23,10 @@ test("builds storefront and profile links on the Market app", () => {
     `https://shop.conduit.market/store/${npub}`
   )
   expect(getProfileUrl(pubkey)).toBe(`https://shop.conduit.market/u/${npub}`)
+})
+
+test("builds canonical event catalog links on the Market app", () => {
+  expect(getEventMarketUrl("naddr1eventcatalog")).toBe(
+    "https://shop.conduit.market/events/naddr1eventcatalog"
+  )
 })

@@ -3,6 +3,7 @@ import {
   ChevronDown,
   Check,
   Copy,
+  MapPin,
   ReceiptText,
   RefreshCw,
   ShoppingCart,
@@ -27,8 +28,10 @@ import {
   useProfile,
   type BtcUsdRateQuote,
   type CommercePriceLike,
+  type PricingRateInput,
   type Product,
   type ShopperPriceDisplay,
+  type ShopperPriceDisplayOptions,
 } from "@conduit/core"
 import {
   Avatar,
@@ -56,14 +59,17 @@ import {
 import { ProductVariationSelector } from "../components/ProductVariationSelector"
 import { type CartItem, useCart } from "../hooks/useCart"
 import { useCartProductAvailability } from "../hooks/useCartProductAvailability"
+import { useProductCartFulfillment } from "../hooks/useProductCartFulfillment"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import { buildCheckoutPricingIntent } from "../lib/checkout-payment"
 import {
   getCartCostSummary,
   getCartItemStockForAvailability,
+  getMixedFulfillmentBlockingMessage,
   getProductAddAvailability,
   groupCartItems,
   isCartProductAvailabilityBlocking,
+  isSameCartFulfillment,
   type CartProductAvailability,
   type MerchantCartGroup,
 } from "../lib/cart-model"
@@ -74,8 +80,15 @@ import {
   getProductSelectionImages,
   type MarketProductFamily,
 } from "../lib/productVariations"
+import {
+  getPickupHandoffPrivacyCopy,
+  getPickupHandoffSummary,
+} from "../lib/pickup-handoff"
 
-type PriceFormatter = (price: CommercePriceLike) => ShopperPriceDisplay
+type PriceFormatter = (
+  price: CommercePriceLike,
+  options?: ShopperPriceDisplayOptions
+) => ShopperPriceDisplay
 
 type CartSearch = {
   merchant?: string
@@ -141,11 +154,14 @@ function getCartSummaryPrice(
     }
   }
 
-  const display = formatPrice({
-    price: pricing.totalSats,
-    currency: "SATS",
-    priceSats: pricing.totalSats,
-  })
+  const display = formatPrice(
+    {
+      price: pricing.totalSats,
+      currency: "SATS",
+      priceSats: pricing.totalSats,
+    },
+    { allowZero: !pricing.paymentRequired }
+  )
 
   return {
     ...display,
@@ -307,15 +323,14 @@ function MerchantIdentity({
 function RelatedProductRow({
   suggestion,
   formatPrice,
-  getCartQuantity,
-  onAdd,
+  btcUsdRate,
 }: {
   suggestion: SuggestedProduct
   formatPrice: PriceFormatter
-  getCartQuantity: (product: Product) => number
-  onAdd: (product: Product) => void
+  btcUsdRate: PricingRateInput
 }) {
   const { product, family } = suggestion
+  const cart = useCart()
   const defaultSelection = useMemo(
     () => getDefaultProductSelection(product, family),
     [family, product]
@@ -329,10 +344,44 @@ function RelatedProductRow({
     family,
     selectedProductId
   )
+  const fulfillment = useProductCartFulfillment(selectedProduct, btcUsdRate)
+  const resolution = fulfillment.resolution
+  const relatedPickupHandoff =
+    resolution?.status === "pickup"
+      ? getPickupHandoffSummary(resolution.fulfillment)
+      : null
+  const cartCandidate = resolution
+    ? resolution.status === "pickup"
+      ? cartItemInputFromProductSelection(
+          product,
+          resolution.product,
+          resolution.fulfillment
+        )
+      : resolution.status === "standard"
+        ? cartItemInputFromProductSelection(product, resolution.product, {
+            type: resolution.type,
+          })
+        : null
+    : null
+  const existing = cart.items.find(
+    (item) => item.productId === selectedProduct.id
+  )
+  const sameFulfillment =
+    !!existing &&
+    !!cartCandidate &&
+    isSameCartFulfillment(existing, cartCandidate)
+  const existingFulfillmentConflict = !!existing && !sameFulfillment
+  const cartQuantity = sameFulfillment ? existing.quantity : 0
+  const fulfillmentBlocked =
+    fulfillment.isChecking ||
+    resolution?.status === "blocked" ||
+    !cartCandidate ||
+    existingFulfillmentConflict
   const images = getProductSelectionImages(product, selectedProduct)
   const imageUrl = images[0]?.url
-  const price = formatPrice(selectedProduct)
-  const cartQuantity = getCartQuantity(selectedProduct)
+  const price = formatPrice(selectedProduct, {
+    allowZero: resolution?.status === "pickup",
+  })
   const { data: profile } = useProfile(product.pubkey)
   const merchantName = getProfileName(profile)
   const merchantLabel = merchantName ?? formatNpub(product.pubkey, 6)
@@ -422,21 +471,57 @@ function RelatedProductRow({
           size="sm"
           variant={cartQuantity > 0 ? "muted" : "outline"}
           className="mt-3 h-9 px-3 text-sm"
-          disabled={soldOut || atStockLimit}
+          disabled={soldOut || atStockLimit || fulfillmentBlocked}
           onClick={() => {
-            if (!addAvailability.canAdd) return
-            onAdd(selectedProduct)
+            if (
+              !addAvailability.canAdd ||
+              fulfillmentBlocked ||
+              !cartCandidate
+            ) {
+              return
+            }
+            cart.addItem(cartCandidate)
           }}
         >
           <CartIcon className="h-4 w-4" />
           {soldOut
             ? "Sold out"
-            : atStockLimit
-              ? "Stock limit reached"
-              : cartQuantity > 0
-                ? `In cart (${cartQuantity})`
-                : "Add"}
+            : fulfillment.isChecking
+              ? "Checking pickup"
+              : fulfillmentBlocked
+                ? "Review event"
+                : atStockLimit
+                  ? "Stock limit reached"
+                  : cartQuantity > 0
+                    ? `In cart (${cartQuantity})`
+                    : "Add"}
         </Button>
+        {existingFulfillmentConflict ||
+        fulfillment.isChecking ||
+        resolution?.status === "blocked" ||
+        resolution?.status === "pickup" ? (
+          <div className="mt-2 text-xs leading-5 text-[var(--text-muted)]">
+            {existingFulfillmentConflict
+              ? "This listing is already in your cart with different fulfillment. Remove that line before adding it here."
+              : fulfillment.isChecking
+                ? "Checking signed event pickup."
+                : resolution?.status === "blocked"
+                  ? resolution.reason
+                  : relatedPickupHandoff
+                    ? `${relatedPickupHandoff.label} · signed by ${formatNpub(relatedPickupHandoff.handlerPubkey, 8)} · no delivery address required.`
+                    : "Signed event pickup · no delivery address required."}{" "}
+            {(resolution?.status === "blocked" ||
+              resolution?.status === "pickup") && (
+              <Link
+                to="/events/$collectionRef"
+                params={{ collectionRef: resolution.canonicalNaddr }}
+                className="font-medium text-secondary-400 hover:text-secondary-300"
+              >
+                View event catalog
+              </Link>
+            )}
+          </div>
+        ) : null}
       </div>
     </div>
   )
@@ -446,6 +531,7 @@ function CartLineItem({
   item,
   availability,
   formatPrice,
+  allowZeroPrice,
   onIncrement,
   onDecrement,
   onRemove,
@@ -453,6 +539,7 @@ function CartLineItem({
   item: CartItem
   availability?: CartProductAvailability
   formatPrice: PriceFormatter
+  allowZeroPrice: boolean
   onIncrement: () => void
   onDecrement: () => void
   onRemove: () => void
@@ -464,21 +551,30 @@ function CartLineItem({
     isCartProductAvailabilityBlocking(availability) ||
     (typeof availability?.stock === "number" &&
       item.quantity >= availability.stock)
-  const linePrice = formatPrice({
-    price: item.price * item.quantity,
-    currency: item.currency,
-    priceSats:
-      typeof item.priceSats === "number"
-        ? item.priceSats * item.quantity
+  const pickup =
+    item.fulfillment?.type === "pickup" ? item.fulfillment : undefined
+  const zeroPriceOptions = {
+    allowZero: allowZeroPrice && pickup !== undefined,
+  }
+  const linePrice = formatPrice(
+    {
+      price: item.price * item.quantity,
+      currency: item.currency,
+      priceSats:
+        typeof item.priceSats === "number"
+          ? item.priceSats * item.quantity
+          : undefined,
+      sourcePrice: item.sourcePrice
+        ? {
+            ...item.sourcePrice,
+            amount: item.sourcePrice.amount * item.quantity,
+          }
         : undefined,
-    sourcePrice: item.sourcePrice
-      ? {
-          ...item.sourcePrice,
-          amount: item.sourcePrice.amount * item.quantity,
-        }
-      : undefined,
-  })
-  const unitPrice = formatPrice(item)
+    },
+    zeroPriceOptions
+  )
+  const unitPrice = formatPrice(item, zeroPriceOptions)
+  const pickupHandoff = pickup ? getPickupHandoffSummary(pickup) : null
 
   return (
     <div
@@ -530,6 +626,30 @@ function CartLineItem({
         <div className="mt-2 text-sm text-[var(--text-secondary)]">
           Qty {item.quantity}
         </div>
+        {pickup ? (
+          <div className="mt-2 flex items-start gap-2 text-xs leading-5 text-[var(--text-secondary)]">
+            <MapPin className="mt-0.5 h-3.5 w-3.5 shrink-0 text-secondary-400" />
+            <div>
+              {pickupHandoff ? (
+                <div className="font-medium text-[var(--text-primary)]">
+                  {pickupHandoff.label} · signed by{" "}
+                  {formatNpub(pickupHandoff.handlerPubkey, 8)}
+                </div>
+              ) : null}
+              <div>
+                {pickup.option.title}
+                {pickup.option.location || pickup.option.geohash
+                  ? ` · ${pickup.option.location ?? pickup.option.geohash}`
+                  : " · public location pending"}
+              </div>
+              {pickupHandoff ? (
+                <p className="mt-1">
+                  {getPickupHandoffPrivacyCopy(pickupHandoff)}
+                </p>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
 
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <button
@@ -611,6 +731,8 @@ function MerchantCartCard({
 }) {
   const { data: profile } = useProfile(group.merchantPubkey)
   const summary = getCartSummaryPrice(group.items, btcUsdRate, formatPrice)
+  const pricing = buildCheckoutPricingIntent(group.items, btcUsdRate)
+  const allowZeroPrice = pricing.status === "ok" && !pricing.paymentRequired
   const hasSoldOutItems = group.items.some(
     (item) => availabilityByProductId.get(item.productId)?.status === "sold_out"
   )
@@ -620,19 +742,27 @@ function MerchantCartCard({
       "insufficient_stock"
   )
   const hasUnavailableItems = hasSoldOutItems || hasInsufficientStockItems
+  const mixedFulfillmentMessage = getMixedFulfillmentBlockingMessage(
+    group.items
+  )
   const canZapOut =
-    !hasUnavailableItems && Boolean(profile?.lud16) && summary.canZapOut
+    !hasUnavailableItems &&
+    !mixedFulfillmentMessage &&
+    Boolean(profile?.lud16) &&
+    summary.canZapOut
   const primaryActionLabel = availabilityChecking
     ? "Checking stock"
-    : hasSoldOutItems && hasInsufficientStockItems
-      ? "Update cart items"
-      : hasSoldOutItems
-        ? "Remove sold-out items"
-        : hasInsufficientStockItems
-          ? "Reduce item quantity"
-          : canZapOut
-            ? "Zap out"
-            : "Order"
+    : mixedFulfillmentMessage
+      ? "Separate fulfillment"
+      : hasSoldOutItems && hasInsufficientStockItems
+        ? "Update cart items"
+        : hasSoldOutItems
+          ? "Remove sold-out items"
+          : hasInsufficientStockItems
+            ? "Reduce item quantity"
+            : canZapOut
+              ? "Zap out"
+              : "Order"
   const reviewItemsLabel = `${expanded ? "Hide" : "Review"} ${group.totalItems} item${group.totalItems === 1 ? "" : "s"}`
   const detailsId = `cart-group-${group.merchantPubkey}`
 
@@ -671,7 +801,11 @@ function MerchantCartCard({
           <div className="flex w-full flex-col gap-2 sm:flex-row sm:flex-wrap lg:w-auto lg:justify-end">
             <Button
               className="h-11 px-5 text-sm"
-              disabled={availabilityChecking || hasUnavailableItems}
+              disabled={
+                availabilityChecking ||
+                hasUnavailableItems ||
+                mixedFulfillmentMessage !== null
+              }
               onClick={onCheckout}
             >
               {canZapOut ? (
@@ -703,6 +837,16 @@ function MerchantCartCard({
           </div>
         </div>
 
+        {mixedFulfillmentMessage ? (
+          <div
+            role="alert"
+            className="mt-5 flex items-start gap-2 rounded-xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] p-4 text-sm leading-6 text-[var(--text-secondary)]"
+          >
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--warning)]" />
+            {mixedFulfillmentMessage}
+          </div>
+        ) : null}
+
         {expanded && (
           <div id={detailsId} className="mt-5 border-t border-[var(--border)]">
             <div className="divide-y divide-[var(--border)]">
@@ -712,6 +856,7 @@ function MerchantCartCard({
                   item={item}
                   availability={availabilityByProductId.get(item.productId)}
                   formatPrice={formatPrice}
+                  allowZeroPrice={allowZeroPrice}
                   onIncrement={() => onIncrement(item)}
                   onDecrement={() => onDecrement(item)}
                   onRemove={() => onRemove(item)}
@@ -794,6 +939,7 @@ function CartPage() {
     ) {
       return
     }
+    if (group && getMixedFulfillmentBlockingMessage(group.items)) return
     recordBrowserTelemetryEvent({
       app: "market",
       eventName: "checkout_initiated",
@@ -1069,6 +1215,7 @@ function CartPage() {
                       image: item.image,
                       tags: item.tags,
                       format: item.format,
+                      fulfillment: item.fulfillment,
                       shippingCostSats: item.shippingCostSats,
                       shippingOptionId: item.shippingOptionId,
                       shippingOptionDTag: item.shippingOptionDTag,
@@ -1161,19 +1308,7 @@ function CartPage() {
                     key={product.id}
                     suggestion={suggestion}
                     formatPrice={shopperPricing.formatPrice}
-                    getCartQuantity={(selectedProduct) =>
-                      cart.items.find(
-                        (item) => item.productId === selectedProduct.id
-                      )?.quantity ?? 0
-                    }
-                    onAdd={(selectedProduct) =>
-                      cart.addItem(
-                        cartItemInputFromProductSelection(
-                          product,
-                          selectedProduct
-                        )
-                      )
-                    }
+                    btcUsdRate={shopperPricing.quote}
                   />
                 )
               })}

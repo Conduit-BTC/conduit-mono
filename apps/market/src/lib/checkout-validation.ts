@@ -176,6 +176,23 @@ function appendRequiredGuestContactErrors(
   return next
 }
 
+function appendRequiredGuestPickupContactError(
+  errors: ShippingValidationError[],
+  shipping: ShippingFormState
+): ShippingValidationError[] {
+  const next = [...errors]
+  if (
+    shipping.phone.trim().length === 0 &&
+    shipping.email.trim().length === 0
+  ) {
+    next.push({
+      field: "email",
+      message: "Email or phone is required for guest pickup recovery",
+    })
+  }
+  return next
+}
+
 export function validateGuestContactFields(
   shipping: ShippingFormState
 ): ShippingValidationError[] {
@@ -190,6 +207,21 @@ export function validateGuestShippingFields(
 ): ShippingValidationError[] {
   return appendRequiredGuestContactErrors(
     validateShippingFields(shipping),
+    shipping
+  )
+}
+
+export function validatePickupContactFields(
+  shipping: ShippingFormState
+): ShippingValidationError[] {
+  return validateContactFields(shipping)
+}
+
+export function validateGuestPickupContactFields(
+  shipping: ShippingFormState
+): ShippingValidationError[] {
+  return appendRequiredGuestPickupContactError(
+    validateContactFields(shipping),
     shipping
   )
 }

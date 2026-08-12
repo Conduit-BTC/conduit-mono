@@ -78,6 +78,13 @@ function form(
     variations: createEmptyProductVariationForm(),
     currency: "USD",
     format: "physical",
+    fulfillment: "ship",
+    eventMarketReference: "",
+    eventHandoffMode: "merchant_handoff",
+    merchantPickupTitle: "Merchant booth pickup",
+    merchantPickupLocation: "",
+    merchantPickupGeohash: "",
+    merchantPickupCountry: "US",
     shippingPricingMode: "fixed",
     shippingCost: "5",
     usePresetShippingZone: false,
@@ -155,6 +162,86 @@ describe("merchant product drafts", () => {
     expect(loadProductDraft(draftTarget, storage).draft?.variations).toEqual(
       variations
     )
+  })
+
+  it("round-trips an exact local-pickup catalog reference", () => {
+    const storage = new MemoryStorage()
+    const draftTarget = target()
+    const reference = `30405:${"b".repeat(64)}:community-market`
+    const values = form({
+      format: "physical",
+      fulfillment: "local_pickup",
+      eventMarketReference: reference,
+    })
+
+    expect(saveProductDraft(draftTarget, values, storage)).toBe(true)
+    expect(loadProductDraft(draftTarget, storage).draft).toMatchObject({
+      fulfillment: "local_pickup",
+      eventMarketReference: reference,
+      eventHandoffMode: "merchant_handoff",
+    })
+  })
+
+  it("migrates pre-handoff local-pickup drafts without opting into organizer sharing", () => {
+    const storage = new MemoryStorage()
+    const draftTarget = target()
+    const storageKey = getProductDraftStorageKey(draftTarget)
+    if (!storageKey) throw new Error("Expected a product draft storage key")
+    const storedForm: Record<string, unknown> = {
+      ...form({
+        fulfillment: "local_pickup",
+        eventMarketReference: `30405:${"b".repeat(64)}:community-market`,
+      }),
+    }
+    delete storedForm.eventHandoffMode
+    delete storedForm.merchantPickupTitle
+    delete storedForm.merchantPickupLocation
+    delete storedForm.merchantPickupGeohash
+    delete storedForm.merchantPickupCountry
+
+    storage.setItem(
+      storageKey,
+      JSON.stringify({
+        version: 4,
+        baseEventId: null,
+        savedAt: Date.now(),
+        form: storedForm,
+      })
+    )
+
+    expect(loadProductDraft(draftTarget, storage).draft).toMatchObject({
+      fulfillment: "local_pickup",
+      eventHandoffMode: "merchant_handoff",
+      merchantPickupTitle: "Merchant booth pickup",
+    })
+  })
+
+  it("does not infer local pickup while migrating a legacy physical draft", () => {
+    const storage = new MemoryStorage()
+    const draftTarget = target()
+    const storageKey = getProductDraftStorageKey(draftTarget)
+    if (!storageKey) throw new Error("Expected a product draft storage key")
+    const storedForm = form({
+      format: "physical",
+      fulfillment: "local_pickup",
+      eventMarketReference: `30405:${"b".repeat(64)}:community-market`,
+    })
+
+    storage.setItem(
+      storageKey,
+      JSON.stringify({
+        version: 3,
+        baseEventId: null,
+        savedAt: Date.now(),
+        form: storedForm,
+      })
+    )
+
+    expect(loadProductDraft(draftTarget, storage).draft).toMatchObject({
+      format: "physical",
+      fulfillment: "ship",
+      eventMarketReference: "",
+    })
   })
 
   it("migrates legacy blank shipping drafts to explicit coordination", () => {

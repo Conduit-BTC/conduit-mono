@@ -101,15 +101,17 @@ describe("Market wallet route contracts", () => {
     expect(content).not.toContain("refreshBalance: true")
   })
 
-  it("opts checkout into wallet readiness reads for zap out", async () => {
+  it("gates checkout wallet readiness reads on a required payment", async () => {
     const content = await readFile(
       "apps/market/src/routes/checkout.tsx",
       "utf8"
     )
 
-    expect(content).toContain(
-      "const wallet = useWallet({ refreshBalance: true })"
-    )
+    expect(content).toContain("const paymentPathEnabled =")
+    expect(content).toContain("enabled: paymentPathEnabled")
+    expect(content).toContain("refreshBalance: paymentPathEnabled")
+    expect(content).toContain("if (!paymentPathEnabled)")
+    expect(content).toContain("verifiedZeroCostPickup")
     expect(content).toContain("Wallet balance")
     expect(content).toContain("getKnownWalletPaymentConstraint")
     expect(content).toContain("Automatic wallet payment will be skipped")

@@ -33,3 +33,7 @@ export function getStorefrontUrl(pubkey: string): string {
 export function getProfileUrl(pubkey: string): string {
   return `${inferMarketOrigin()}/u/${encodeURIComponent(pubkeyToNpub(pubkey))}`
 }
+
+export function getEventMarketUrl(naddr: string): string {
+  return `${inferMarketOrigin()}/events/${encodeURIComponent(naddr.trim())}`
+}

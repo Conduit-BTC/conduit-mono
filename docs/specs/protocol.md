@@ -6,6 +6,8 @@ References:
 
 - NIP-17 message wrapping (gift wrap + seal): `docs/specs/market.md`, `docs/ARCHITECTURE.md`
 - NIP-99 classified listing events and GammaMarkets `market-spec` product listings
+- NIP-52 calendar events plus Open Markets / Gamma product collections and
+  pickup options, as bounded by `docs/specs/event-markets.md`
 - One-way checkout architecture note: `docs/knowledge/one-way-checkout-multi-rail-payments.md`
 - External protocol references: `docs/knowledge/external-nostr-references.md`
 
@@ -56,8 +58,10 @@ The exception is constrained as follows:
   inbox, poll for merchant replies, or cache the decrypted order payload as
   durable order history.
 - Merchant clients must treat `buyerIdentityKind: "guest_ephemeral"` as
-  outbound-only and use the required structured phone/email fields for
-  invoices, fulfillment updates, and other follow-up.
+  outbound-only and use the structured recovery channel required by the exact
+  checkout flow for invoices, fulfillment updates, and other follow-up. Pickup
+  requires at least one of email or phone; shipping retains its stricter
+  address/contact contract.
 - Same-session recovery means local invoice/payment-report continuity only. It
   does not promise merchant status recovery, a private conversation, or durable
   order history.
@@ -149,7 +153,10 @@ This exception is constrained as follows:
 | `10002` | Relay list                   | both         | NIP-65 relay hints                                       |
 | `10050` | Private message relays       | both         | NIP-17 secure-message relay declarations                 |
 | `30402` | Product listing              | merchant     | NIP-99 + GammaMarkets market-spec                        |
-| `30406` | Shipping option              | merchant     | Conduit commerce extension                               |
+| `30405` | Product collection           | organizer    | Open Markets / Gamma market-spec                         |
+| `30406` | Shipping or pickup option    | both         | Open Markets / Gamma market-spec                         |
+| `31922` | Date-based calendar event    | organizer    | NIP-52                                                   |
+| `31923` | Time-based calendar event    | organizer    | NIP-52                                                   |
 | `31989` | Application recommendation   | both         | NIP-89                                                   |
 | `31990` | Application handler metadata | app/operator | NIP-89                                                   |
 
@@ -162,6 +169,18 @@ Product listings are addressable events:
 ```
 
 Implementations must not dedupe only by `d` tag because different merchants can publish the same `d` value. Product identity, cart references, order item tags, and cache records should preserve the full addressable coordinate.
+
+Product parsers preserve repeated Open Markets `shipping_option` and kind-30405
+collection references. A current app workflow may select one fulfillment mode,
+but that UI limit must not discard protocol evidence received from other
+clients.
+
+## Event Markets And Local Pickup
+
+The event-market protocol graph, organizer authority, `naddr` import, publish
+ordering, failure states, and pickup checkout snapshot are defined in
+`docs/specs/event-markets.md`. Implementations must not apply experimental
+shipped-destination predicates to fixed-location pickup.
 
 ### Product Deletion Frontier
 
@@ -414,14 +433,17 @@ Required tags for all message types:
 
 Standard message types:
 
-| `type`            | Direction         | Meaning                            |
-| ----------------- | ----------------- | ---------------------------------- |
-| `order`           | buyer -> merchant | Initial order intent and details   |
-| `payment_request` | merchant -> buyer | Invoice or payment request payload |
-| `payment_proof`   | buyer -> merchant | Buyer payment evidence             |
-| `status_update`   | merchant -> buyer | Order state transition             |
-| `shipping_update` | merchant -> buyer | Tracking or shipping update        |
-| `receipt`         | merchant -> buyer | Final confirmation/receipt         |
+| `type`                             | Direction             | Meaning                                 |
+| ---------------------------------- | --------------------- | --------------------------------------- |
+| `order`                            | buyer -> merchant     | Initial order intent and details        |
+| `payment_request`                  | merchant -> buyer     | Invoice or payment request payload      |
+| `payment_proof`                    | buyer -> merchant     | Buyer payment evidence                  |
+| `status_update`                    | merchant -> buyer     | Order state transition                  |
+| `shipping_update`                  | merchant -> buyer     | Tracking or shipping update             |
+| `receipt`                          | merchant -> buyer     | Final confirmation/receipt              |
+| `organizer_fulfillment_receipt`    | merchant -> organizer | Minimal ready-for-pickup delegation     |
+| `organizer_fulfillment_revocation` | merchant -> organizer | Revoke one ready receipt before handoff |
+| `organizer_handoff_ack`            | organizer -> merchant | Scoped physical-handoff acknowledgement |
 
 ### `order`
 
@@ -526,6 +548,73 @@ Content:
 
 - legacy JSON payload defined by the shared Conduit schema, including any
   optional receipt details
+
+### `organizer_fulfillment_receipt`
+
+This is a Conduit private-commerce extension for the organizer-handoff mode in
+`docs/specs/event-markets.md`; it is not presented as Gamma order-message wire
+compatibility. It is a separate rumor from the buyer's order, not a group copy
+of that order.
+
+Tags:
+
+- `["p", organizer_pubkey]`
+- `["type", "organizer_fulfillment_receipt"]`
+- `["claim", opaque_claim_ref]`
+
+Content is strict versioned JSON containing only the opaque claim reference,
+merchant and organizer identities, exact calendar/collection/pickup/product
+coordinates and signed revisions, quantities, an empty reserved option list,
+`ready_for_pickup`, and issuance time. Non-empty options remain invalid until
+cart selections can be bound to an exact signed product revision. The full
+claim is a domain-separated SHA-256 value derived from private order context; clients
+show the same 12-hex-character code to the buyer and organizer without exposing
+the order id. Buyer identity/contact, address, notes, invoices, proofs, payment
+hashes, preimages, providers, wallet material, and unrelated order fields are
+invalid.
+
+The merchant constructs it only for a current exact organizer-handoff snapshot
+after merchant-confirmed payment, or for a zero-cost order. The organizer
+recipient must have a usable kind-10050 inbox. The rumor remains unsigned under
+NIP-59; the exact signed recipient and sender-copy gift wraps plus their
+content-free delivery descriptor are persisted before first relay I/O. Zero ACK
+and partial delivery remain retryable without publishing another buyer order.
+
+### `organizer_fulfillment_revocation`
+
+Tags:
+
+- `["p", organizer_pubkey]`
+- `["type", "organizer_fulfillment_revocation"]`
+- `["claim", opaque_claim_ref]`
+- `["e", ready_receipt_rumor_event_id]`
+
+Content repeats the strict version, claim, ready-receipt identity, exact graph,
+merchant, and organizer, and carries only `revoked` plus issuance time. It has
+no reason or note. Only the original merchant may revoke before a valid handoff
+acknowledgement; conflicting same-frontier evidence fails closed.
+
+### `organizer_handoff_ack`
+
+Tags:
+
+- `["p", merchant_pubkey]`
+- `["type", "organizer_handoff_ack"]`
+- `["claim", opaque_claim_ref]`
+- `["e", ready_receipt_rumor_event_id]`
+
+Content is strict versioned JSON containing only the exact receipt reference,
+claim reference, merchant and organizer identities, `handed_out`, and issuance
+time. The organizer must be the receipt recipient and pickup author; the
+merchant must be the original receipt author. This acknowledgement does not
+authorize or encode paid, refund, cancellation, price, inventory, shipping, or
+ordinary order-status transitions. Only the merchant may subsequently publish
+the normal completion status to the buyer.
+
+These three message types use strict kind-10050 routing. They do not enter the
+bounded legacy kind-16 secure-message relay compatibility lane.
+The distinct `claim` tag prevents this redacted organizer workflow from being
+grouped into the buyer-to-merchant order conversation.
 
 ## Payment Metadata
 

@@ -81,7 +81,11 @@ describe("checkout completion navigation contracts", () => {
       "apps/market/src/routes/checkout.tsx"
     ).text()
 
-    expect(checkoutRoute).toContain("{isGuestCheckout && !fastEligible && (")
+    expect(checkoutRoute).toContain("{isGuestCheckout &&")
+    expect(checkoutRoute).toContain("!fastEligible &&")
+    expect(checkoutRoute).toContain("verifiedZeroCostPickup ? (")
+    expect(checkoutRoute).toContain("onClick={placeOrder}")
+    expect(checkoutRoute).toContain('"Send order"')
     expect(checkoutRoute).toContain("Connect signer to send order")
     expect(checkoutRoute).toContain("<SignerSwitch")
   })
@@ -99,7 +103,9 @@ describe("checkout completion navigation contracts", () => {
     )
     expect(ordersRoute).toContain("Closing it ends")
     expect(ordersRoute).toContain("local access to this guest order")
-    expect(ordersRoute).toContain("merchant will follow up")
+    expect(ordersRoute).toContain(
+      "merchant can use the private recovery contact"
+    )
     expect(ordersRoute).toContain("disabled={!activeBuyerPubkey || isFetching}")
   })
 })

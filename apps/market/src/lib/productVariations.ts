@@ -5,7 +5,11 @@ import {
   type PreparedProductFamily,
   type Product,
 } from "@conduit/core"
-import { createCartItemFromProduct, type CartItem } from "./cart-model"
+import {
+  createCartItemFromProduct,
+  type CartItem,
+  type CartItemFulfillment,
+} from "./cart-model"
 
 export type MarketProductFamily = PreparedProductFamily<CommerceProductRecord>
 
@@ -185,10 +189,11 @@ export function getProductSelectionImages(
 
 export function cartItemInputFromProductSelection(
   product: Product,
-  selectedProduct: Product
+  selectedProduct: Product,
+  fulfillment?: CartItemFulfillment
 ): Omit<CartItem, "quantity"> {
   return {
-    ...createCartItemFromProduct(selectedProduct),
+    ...createCartItemFromProduct(selectedProduct, fulfillment),
     familyProductId:
       selectedProduct.type === "variation" ? product.id : undefined,
     selectedSpecifications:

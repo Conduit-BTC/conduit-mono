@@ -20,7 +20,16 @@ describe("Market product grid layout", () => {
 
     for (const [file, expectedGridClass] of expectedGridClasses) {
       const content = await readFile(file, "utf8")
-      expect(content).toContain(expectedGridClass)
+      if (file.endsWith("routes/products/index.tsx")) {
+        const cardSource = await readFile(
+          "apps/market/src/components/ProductGridCard.tsx",
+          "utf8"
+        )
+        expect(content).toContain("PRODUCT_GRID_CLASS_NAME")
+        expect(cardSource).toContain(expectedGridClass)
+      } else {
+        expect(content).toContain(expectedGridClass)
+      }
       expect(content).not.toContain("auto-rows-fr")
       expect(content).not.toContain("auto-fit")
       expect(content).not.toContain(

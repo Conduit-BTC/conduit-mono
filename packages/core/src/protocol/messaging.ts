@@ -37,7 +37,11 @@ import {
   type PrivateMessageDeliveryRoute,
   type ResolveInboxDeclarationOptions,
 } from "./private-message-routing"
-import { publishWithPlanner } from "./relay-publish"
+import {
+  publishWithPlanner,
+  RelayPublishDiagnosticsError,
+  type PublishWithPlannerResult,
+} from "./relay-publish"
 import { getRelayLists, isInsecureRelayUrl } from "./relay-list"
 import { tryNormalizeRelayUrl } from "./relay-settings"
 import {
@@ -151,6 +155,14 @@ const LEGACY_ORDER_MESSAGE_TYPES = new Set([
   "receipt",
   "message",
   "payment_proof",
+  "organizer_fulfillment_receipt",
+  "organizer_fulfillment_revocation",
+  "organizer_handoff_ack",
+])
+const EVENT_MARKET_PRIVATE_MESSAGE_TYPES = new Set([
+  "organizer_fulfillment_receipt",
+  "organizer_fulfillment_revocation",
+  "organizer_handoff_ack",
 ])
 
 function classifyLegacyOrderRumor(
@@ -159,12 +171,19 @@ function classifyLegacyOrderRumor(
   const tags = rumor.tags ?? []
   const type = tags.find((tag) => tag[0] === "type")?.[1]
   const orderId = tags.find((tag) => tag[0] === "order")?.[1]
+  const claimRef = tags.find((tag) => tag[0] === "claim")?.[1]
   const recipient = tags.find((tag) => tag[0] === "p")?.[1]
 
   // Kind 16 is also NIP-18 generic repost. Only a positively identified
   // Conduit legacy commerce envelope enters the order parser.
-  if (!type && !orderId) return "ignored"
-  if (!type || !orderId || !recipient) return "malformed"
+  if (!type && !orderId && !claimRef) return "ignored"
+  if (
+    !type ||
+    !recipient ||
+    (EVENT_MARKET_PRIVATE_MESSAGE_TYPES.has(type) ? !claimRef : !orderId)
+  ) {
+    return "malformed"
+  }
   if (!LEGACY_ORDER_MESSAGE_TYPES.has(type)) return "ignored"
   try {
     const content = JSON.parse(rumor.content) as unknown
@@ -444,6 +463,11 @@ export interface PublishPrivateMessageInput {
   retry?: TransientNip07RetryOptions
   giftWrapFn?: typeof giftWrap
   /**
+   * Durable exact-retry seam. Runs after wrapping and before the first relay
+   * write; callers may persist the signed ciphertext wraps, never plaintext.
+   */
+  onWrapped?: (prepared: PreparedPrivateMessageWraps) => void | Promise<void>
+  /**
    * Recipient/sender kind-10050 inbox relays. NIP-17 delivery is exclusive to
    * these declarations; an empty recipient list means the peer is not ready.
    */
@@ -485,9 +509,19 @@ export interface PublishPrivateMessageInput {
   ) => Promise<readonly string[]>
 }
 
+export interface PreparedPrivateMessageWraps {
+  rumorId: string
+  wrappedToRecipient: NDKEvent
+  wrappedToSelf: NDKEvent | null
+}
+
 export interface PublishPrivateMessageResult {
   wrappedToRecipient: NDKEvent
   wrappedToSelf: NDKEvent | null
+  /** Exact content-free planner result for the self-copy leg, when attempted. */
+  selfDelivery: PublishWithPlannerResult | null
+  /** Exact ACK completeness for the attempted self-copy leg. */
+  selfDeliveryStatus: PrivateMessageSelfDeliveryStatus | null
   /** Non-null when the non-critical self-copy leg needs retry. */
   selfCopyError: string | null
   /** Lane used for the critical recipient leg. */
@@ -499,6 +533,45 @@ export interface PublishPrivateMessageResult {
   deliveryPlanTruncated: boolean
   /** Present for a real signed kind-16 recipient wrap; content-safe and local. */
   orderRelayDelivery?: OrderRelayDeliveryRecord
+}
+
+export type PrivateMessageSelfDeliveryStatus =
+  "zero_success" | "partial_success" | "full_success"
+
+export function summarizePrivateMessageSelfDelivery(
+  delivery: PublishWithPlannerResult
+): {
+  status: PrivateMessageSelfDeliveryStatus
+  error: string | null
+} {
+  if (
+    Array.isArray(delivery.successfulRelayUrls) &&
+    delivery.successfulRelayUrls.length === 0
+  ) {
+    return {
+      status: "zero_success",
+      error: "Sender self-copy received no relay ACK.",
+    }
+  }
+  if (
+    Array.isArray(delivery.failedRelayUrls) &&
+    delivery.failedRelayUrls.length > 0
+  ) {
+    return {
+      status: "partial_success",
+      error: "Sender self-copy reached only part of its inbox relay set.",
+    }
+  }
+  return { status: "full_success", error: null }
+}
+
+function recoverPartialRelayPublishDiagnostics(
+  error: unknown
+): PublishWithPlannerResult | null {
+  return error instanceof RelayPublishDiagnosticsError &&
+    error.diagnostics.successfulRelayUrls.length > 0
+    ? error.diagnostics
+    : null
 }
 
 const ORDER_RELAY_RETRY_RETENTION_MS = 24 * 60 * 60 * 1_000
@@ -670,6 +743,8 @@ export async function publishPrivateMessage(
   // The self-copy is a non-critical local-recovery leg: a signer failure while
   // wrapping it must never block the critical recipient delivery below.
   let selfCopyError: string | null = null
+  let selfDelivery: PublishWithPlannerResult | null = null
+  let selfDeliveryStatus: PrivateMessageSelfDeliveryStatus | null = null
   let wrappedToSelf: NDKEvent | null = null
   if (selfCopy) {
     try {
@@ -689,15 +764,28 @@ export async function publishPrivateMessage(
     }
   }
 
-  const recipientDelivery = await publishFn(wrappedToRecipient, {
-    intent: "recipient_event",
-    authorPubkey: input.senderPubkey,
-    authenticatedPubkey: input.senderPubkey,
-    recipientPubkeys: [input.recipientPubkey],
-    exclusiveRelayUrls: recipientRoute.relayUrls,
-    refreshRelayLists,
-    deliveryMode: "critical",
+  await input.onWrapped?.({
+    rumorId: input.rumor.id,
+    wrappedToRecipient,
+    wrappedToSelf,
   })
+
+  let recipientDelivery: PublishWithPlannerResult
+  try {
+    recipientDelivery = await publishFn(wrappedToRecipient, {
+      intent: "recipient_event",
+      authorPubkey: input.senderPubkey,
+      authenticatedPubkey: input.senderPubkey,
+      recipientPubkeys: [input.recipientPubkey],
+      exclusiveRelayUrls: recipientRoute.relayUrls,
+      refreshRelayLists,
+      deliveryMode: "critical",
+    })
+  } catch (error) {
+    const partial = recoverPartialRelayPublishDiagnostics(error)
+    if (!partial) throw error
+    recipientDelivery = partial
+  }
   if (
     Array.isArray(recipientDelivery.successfulRelayUrls) &&
     recipientDelivery.successfulRelayUrls.length === 0
@@ -723,15 +811,24 @@ export async function publishPrivateMessage(
       selfCopyError = "Sender has no usable NIP-17 inbox relay declaration."
     } else {
       try {
-        await publishFn(wrappedToSelf, {
-          intent: "recipient_event",
-          authorPubkey: input.senderPubkey,
-          authenticatedPubkey: input.senderPubkey,
-          recipientPubkeys: [input.senderPubkey],
-          exclusiveRelayUrls: senderRoute.relayUrls,
-          refreshRelayLists,
-          deliveryMode: "critical",
-        })
+        try {
+          selfDelivery = await publishFn(wrappedToSelf, {
+            intent: "recipient_event",
+            authorPubkey: input.senderPubkey,
+            authenticatedPubkey: input.senderPubkey,
+            recipientPubkeys: [input.senderPubkey],
+            exclusiveRelayUrls: senderRoute.relayUrls,
+            refreshRelayLists,
+            deliveryMode: "critical",
+          })
+        } catch (error) {
+          const partial = recoverPartialRelayPublishDiagnostics(error)
+          if (!partial) throw error
+          selfDelivery = partial
+        }
+        const summary = summarizePrivateMessageSelfDelivery(selfDelivery)
+        selfDeliveryStatus = summary.status
+        selfCopyError = summary.error
       } catch (error) {
         selfCopyError =
           error instanceof Error ? error.message : "Self-copy publish failed"
@@ -742,6 +839,8 @@ export async function publishPrivateMessage(
   return {
     wrappedToRecipient,
     wrappedToSelf,
+    selfDelivery,
+    selfDeliveryStatus,
     selfCopyError,
     deliveryRoute: recipientRoute.route,
     recipientDelivery,

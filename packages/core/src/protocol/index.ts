@@ -43,6 +43,10 @@ export * from "./shopper-trust"
 export * from "./session"
 export * from "./session-signer"
 export * from "./shipping"
+export * from "./event-market"
+export * from "./event-market-fulfillment"
+export * from "./event-market-handoff"
+export * from "./event-market-merchandise"
 export {
   getNdk,
   fetchEventsFanout,

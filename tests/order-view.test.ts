@@ -1,5 +1,9 @@
 import { describe, expect, it } from "bun:test"
-import type { KnownOrderStatus, OrderLifecycle } from "@conduit/core"
+import type {
+  KnownOrderStatus,
+  OrderLifecycle,
+  OrderPickupFulfillmentSchema,
+} from "@conduit/core"
 import {
   buildOrderTimeline,
   buildOrderViewModel,
@@ -7,6 +11,7 @@ import {
   deriveOrderHeaderStatus,
   getOrderFilterPhase,
   getOrderPaymentMethodLabel,
+  isZeroCostPickupOrder,
   type OrderViewModel,
 } from "../apps/market/src/lib/order-view"
 
@@ -71,6 +76,91 @@ function vmWithMerchantStatus(status: KnownOrderStatus): OrderViewModel {
         payload: { status },
       } as never,
     ],
+  })
+}
+
+function zeroPickupFulfillment(
+  sourceCurrency = "SAT"
+): OrderPickupFulfillmentSchema {
+  const organizer = "1".repeat(64)
+  const merchant = "2".repeat(64)
+  return {
+    type: "pickup",
+    organizerPubkey: organizer,
+    handoffMode: "organizer_handoff",
+    handlerPubkey: organizer,
+    product: {
+      coordinate: `30402:${merchant}:free-sticker`,
+      eventId: "a".repeat(64),
+      createdAt: 1_700_000_000_000,
+      merchantPubkey: merchant,
+    },
+    calendar: {
+      coordinate: `31923:${organizer}:market-day`,
+      eventId: "b".repeat(64),
+      createdAt: 1_700_000_001_000,
+    },
+    collection: {
+      coordinate: `30405:${organizer}:market-catalog`,
+      eventId: "c".repeat(64),
+      createdAt: 1_700_000_002_000,
+    },
+    option: {
+      coordinate: `30406:${organizer}:market-pickup`,
+      eventId: "d".repeat(64),
+      createdAt: 1_700_000_003_000,
+      title: "Event pickup",
+      location: "Public market hall",
+    },
+    costSats: 0,
+    sourceCost: {
+      amount: 0,
+      currency: sourceCurrency,
+      normalizedCurrency: sourceCurrency,
+    },
+  }
+}
+
+function zeroPickupVm(
+  overrides: Partial<OrderLifecycle> = {},
+  productSourceCurrency = "SATS",
+  pickupSourceCurrency = "SAT"
+): OrderViewModel {
+  return vmFromLifecycle({
+    checkoutMode: "pay_later",
+    items: [
+      {
+        productId: zeroPickupFulfillment().product.coordinate,
+        title: "Free sticker",
+        format: "physical",
+        quantity: 1,
+        priceAtPurchase: 0,
+        currency: "SATS",
+        sourcePrice: {
+          amount: 0,
+          currency: productSourceCurrency,
+          normalizedCurrency: productSourceCurrency,
+        },
+        shippingCostSats: 0,
+        sourceShippingCost: {
+          amount: 0,
+          currency: pickupSourceCurrency,
+          normalizedCurrency: pickupSourceCurrency,
+        },
+        fulfillment: zeroPickupFulfillment(pickupSourceCurrency),
+      },
+    ],
+    itemSubtotalSats: 0,
+    shippingCostSats: 0,
+    totalSats: 0,
+    totalMsats: 0,
+    addressValidity: "not_required",
+    shippingZoneEligibility: "not_required",
+    invoiceStatus: "not_requested",
+    paymentStatus: "not_started",
+    proofDeliveryStatus: "not_started",
+    zapReceiptStatus: "not_applicable",
+    ...overrides,
   })
 }
 
@@ -198,6 +288,91 @@ describe("buildOrderViewModel", () => {
     expect(vm.orderDeliveryStatus).toBe("sent")
     expect(vm.paymentStatus).toBe("not_started")
     expect(vm.items[0].displayTitle).toBe("Sticker Pack")
+  })
+
+  it("preserves checkout snapshot parity for a zero pickup cost in any currency", () => {
+    const vm = zeroPickupVm({}, "SATS", "USD")
+
+    expect(vm.items[0]).toMatchObject({
+      shippingCostSats: 0,
+      sourceShippingCost: {
+        amount: 0,
+        currency: "USD",
+        normalizedCurrency: "USD",
+      },
+      fulfillment: {
+        type: "pickup",
+        costSats: 0,
+        sourceCost: {
+          amount: 0,
+          currency: "USD",
+          normalizedCurrency: "USD",
+        },
+      },
+    })
+    expect(isZeroCostPickupOrder(vm)).toBe(true)
+    expect(getOrderPaymentMethodLabel(vm)).toBe("No payment required")
+  })
+
+  it("recognizes only an exact all-pickup zero lifecycle as payment-free", () => {
+    const pickup = zeroPickupVm()
+    expect(isZeroCostPickupOrder(pickup)).toBe(true)
+    expect(pickup.requiresPickup).toBe(true)
+    expect(pickup.requiresShipping).toBe(false)
+    expect(getOrderPaymentMethodLabel(pickup)).toBe("No payment required")
+    expect(isZeroCostPickupOrder(zeroPickupVm({}, "BTC"))).toBe(true)
+    expect(isZeroCostPickupOrder(zeroPickupVm({}, "MSATS"))).toBe(true)
+    expect(isZeroCostPickupOrder(zeroPickupVm({}, "SATS", "USD"))).toBe(true)
+    expect(isZeroCostPickupOrder(zeroPickupVm({}, "SATS", "POINTS"))).toBe(true)
+
+    const genericZero = vmFromLifecycle({
+      checkoutMode: "pay_later",
+      items: [
+        {
+          productId: "30402:merchant:unverified-zero",
+          format: "physical",
+          quantity: 1,
+          priceAtPurchase: 0,
+          currency: "SATS",
+        },
+      ],
+      itemSubtotalSats: 0,
+      totalSats: 0,
+      totalMsats: 0,
+      invoiceStatus: "not_requested",
+      paymentStatus: "not_started",
+      proofDeliveryStatus: "not_started",
+    })
+    expect(isZeroCostPickupOrder(genericZero)).toBe(false)
+    expect(getOrderPaymentMethodLabel(genericZero)).toBe("Pay later")
+
+    const missingCanonicalSource = zeroPickupVm()
+    delete missingCanonicalSource.items[0]!.sourcePrice
+    expect(isZeroCostPickupOrder(missingCanonicalSource)).toBe(false)
+
+    const legacyHandoff = zeroPickupVm()
+    const legacyFulfillment = legacyHandoff.items[0]!.fulfillment
+    if (legacyFulfillment?.type !== "pickup") {
+      throw new Error("Expected pickup fixture")
+    }
+    delete legacyFulfillment.handoffMode
+    delete legacyFulfillment.handlerPubkey
+    expect(isZeroCostPickupOrder(legacyHandoff)).toBe(false)
+
+    const missingOuterPickupCost = zeroPickupVm()
+    delete missingOuterPickupCost.items[0]!.sourceShippingCost
+    expect(isZeroCostPickupOrder(missingOuterPickupCost)).toBe(false)
+
+    const conflictingOuterPickupCost = zeroPickupVm()
+    conflictingOuterPickupCost.items[0]!.sourceShippingCost!.currency = "USD"
+    expect(isZeroCostPickupOrder(conflictingOuterPickupCost)).toBe(false)
+
+    const positivePickupCost = zeroPickupVm()
+    positivePickupCost.items[0]!.shippingCostSats = 1
+    expect(isZeroCostPickupOrder(positivePickupCost)).toBe(false)
+
+    expect(isZeroCostPickupOrder(zeroPickupVm({}, "USD"))).toBe(false)
+    expect(isZeroCostPickupOrder(zeroPickupVm({}, "POINTS"))).toBe(false)
   })
 })
 
@@ -377,6 +552,27 @@ describe("buildOrderTimeline", () => {
       "payment",
       "receipt",
     ])
+  })
+
+  it("removes invoice, payment, and proof rows from a free pickup order", () => {
+    const vm = zeroPickupVm({
+      buyerIdentityKind: "guest_ephemeral",
+      paymentStatus: "failed",
+      proofDeliveryStatus: "failed",
+    })
+
+    expect(vm.actionNeeded).toBe(false)
+    expect(buildOrderTimeline(vm).map((row) => row.key)).toEqual([
+      "order_sent",
+      "merchant_confirmation",
+      "fulfillment",
+      "complete",
+    ])
+    expect(deriveOrderHeaderStatus(vm)).toMatchObject({
+      primaryLabel: "Pending",
+      detailLabel: "Awaiting merchant",
+      actionNeeded: false,
+    })
   })
 })
 

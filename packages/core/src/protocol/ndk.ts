@@ -69,6 +69,8 @@ export interface FetchEventsFanoutDiagnosticsResult {
   attemptedRelayUrls: string[]
   successfulRelayUrls: string[]
   failedRelayUrls: string[]
+  /** Relays whose response reached the filter limit and may be truncated. */
+  cappedRelayUrls?: string[]
 }
 
 const EVENT_SOURCE_RELAY_URLS = "__conduitSourceRelayUrls"
@@ -158,6 +160,9 @@ function disconnectNdkPools(ndk: NDK): void {
 }
 
 const MAX_CONCURRENT_RELAY_READS = 8
+// Keep one relay-read slot able to finish without joining a saturated worker
+// queue; otherwise all eight slots can wait on the same verifier indefinitely.
+const MAX_PENDING_VERIFY_WORKER_BATCHES = MAX_CONCURRENT_RELAY_READS - 1
 const MAX_QUEUED_RELAY_READS = 128
 let activeRelayReads = 0
 type RelayReadWaiter = {
@@ -405,6 +410,21 @@ function rejectPendingVerifyBatch(reqId: number, reason: unknown): void {
   clearPendingVerifyBatch(reqId)?.reject(reason)
 }
 
+function recoverTimedOutVerifyBatch(reqId: number): void {
+  const pending = clearPendingVerifyBatch(reqId)
+  if (!pending) return
+
+  // A cold or temporarily stalled worker is a local liveness failure, not
+  // evidence that an EOSE-complete relay read failed. Restart the worker for
+  // future batches and verify this already-bounded batch cooperatively with
+  // the same Schnorr implementation. Invalid signatures still fail closed.
+  scheduleVerifyWorkerRestart()
+  void verifySchnorrChunked(pending.items, pending.signal).then(
+    pending.resolve,
+    pending.reject
+  )
+}
+
 function scheduleVerifyWorkerRestart(): void {
   if (verifyWorkerRestartScheduled || !verifyWorker) return
   verifyWorkerRestartScheduled = true
@@ -543,19 +563,16 @@ function verifySchnorrBatch(
   if (items.length === 0) return Promise.resolve([])
   const worker = getVerifyWorker()
   if (!worker) return verifySchnorrChunked(items, signal)
-  if (pendingVerify.size >= MAX_CONCURRENT_RELAY_READS) {
-    return Promise.reject(
-      new Error("Signature verification queue is at capacity.")
-    )
+  if (pendingVerify.size >= MAX_PENDING_VERIFY_WORKER_BATCHES) {
+    // Local worker backpressure must not turn an EOSE-complete relay read into
+    // false "unavailable" coverage. Verify this bounded batch cooperatively on
+    // the main thread while the already-posted worker batches finish.
+    return verifySchnorrChunked(items, signal)
   }
   return new Promise((resolve, reject) => {
     const reqId = (verifyReqId += 1)
     const timer = setTimeout(() => {
-      rejectPendingVerifyBatch(
-        reqId,
-        new Error("Signature verification worker timed out.")
-      )
-      scheduleVerifyWorkerRestart()
+      recoverTimedOutVerifyBatch(reqId)
     }, verifyWorkerTimeoutMs)
     const pending: PendingVerifyBatch = {
       items,
@@ -1155,6 +1172,7 @@ export async function fetchEventsFanoutWithDiagnostics(
   options: FetchEventsFanoutOptions = {}
 ): Promise<FetchEventsFanoutDiagnosticsResult> {
   const result = await fetchEventsFanoutDetailed(filter, options)
+  const limit = requestedEventLimit(filter)
 
   return {
     events: result.events,
@@ -1165,6 +1183,15 @@ export async function fetchEventsFanoutWithDiagnostics(
     failedRelayUrls: result.relays
       .filter(({ status }) => status !== "success")
       .map(({ relayUrl }) => relayUrl),
+    cappedRelayUrls:
+      limit === null
+        ? []
+        : result.relays
+            .filter(
+              ({ status, eventCount }) =>
+                status !== "failed" && eventCount >= limit
+            )
+            .map(({ relayUrl }) => relayUrl),
   }
 }
 

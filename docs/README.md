@@ -28,6 +28,9 @@ Reviewers may request a durable contract update when the behavior has broad or l
 
 ### Shared Protocol Boundaries
 
+- `docs/specs/event-markets.md`: organizer-authored calendar/collection,
+  merchant- or organizer-operated pickup, private handoff receipts, catalog
+  membership, and checkout provenance contract
 - `docs/knowledge/decentralized-network-product-posture.md`: product decisions
   under partial, delayed, divergent, and unevenly adopted network state
 - `docs/knowledge/compatibility-exception-template.md`: required governance for
@@ -42,6 +45,9 @@ Reviewers may request a durable contract update when the behavior has broad or l
 - `docs/knowledge/nip17-inbox-bootstrap-migration.md`: temporary validated-order
   compatibility routing while users migrate to discoverable NIP-17 inbox
   declarations
+- `docs/knowledge/event-market-collection-extension.md`: bounded preview writer
+  for event-backed and initially empty Open Markets collections while the
+  upstream clarification is under review
 
 ## Where To Put New Docs
 

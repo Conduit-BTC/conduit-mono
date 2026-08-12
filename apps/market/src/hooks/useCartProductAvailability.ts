@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query"
 import {
   getProductsByIds,
   type ProductAvailabilityDiagnostic,
+  type Product,
 } from "@conduit/core"
 import {
   getCartProductAvailability,
@@ -52,6 +53,7 @@ export function useCartProductAvailability(items: CartItem[]) {
     availability: CartProductAvailability[]
     fresh: boolean
     diagnostics: ProductAvailabilityDiagnostic[]
+    products: Product[]
   }> {
     const result = await query.refetch()
     const commerceResult = result.isSuccess ? result.data : undefined
@@ -69,11 +71,13 @@ export function useCartProductAvailability(items: CartItem[]) {
         diagnostics
       ),
       diagnostics,
+      products: commerceResult?.data.map((record) => record.product) ?? [],
     }
   }
 
   return {
     availabilityByProductId,
+    products: query.data?.data.map((record) => record.product) ?? [],
     hasInsufficientStockItems,
     hasUnavailableItems,
     isChecking: query.isLoading || query.isFetching,

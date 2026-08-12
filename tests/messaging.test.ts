@@ -682,6 +682,125 @@ describe("publishPrivateMessage", () => {
       },
     ])
     expect(result.selfCopyError).toBeNull()
+    expect(result.selfDeliveryStatus).toBe("full_success")
+    expect(result.selfDelivery).toEqual({})
+  })
+
+  it("reports exact zero, partial, and full self-copy delivery diagnostics", async () => {
+    const cases = [
+      {
+        successfulRelayUrls: [] as string[],
+        failedRelayUrls: ["wss://sender.inbox.example"],
+        status: "zero_success",
+        error: "Sender self-copy received no relay ACK.",
+      },
+      {
+        successfulRelayUrls: ["wss://sender-a.inbox.example"],
+        failedRelayUrls: ["wss://sender-b.inbox.example"],
+        status: "partial_success",
+        error: "Sender self-copy reached only part of its inbox relay set.",
+      },
+      {
+        successfulRelayUrls: ["wss://sender.inbox.example"],
+        failedRelayUrls: [] as string[],
+        status: "full_success",
+        error: null,
+      },
+    ] as const
+
+    for (const testCase of cases) {
+      const result = await publishPrivateMessage({
+        rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE),
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer,
+        rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+        recipientInboxRelays: ["wss://recipient.inbox.example"],
+        senderInboxRelays: [
+          "wss://sender-a.inbox.example",
+          "wss://sender-b.inbox.example",
+        ],
+        giftWrapFn: (async (_rumor, recipient) =>
+          wrap(`wrap-${recipient.pubkey}`)) as never,
+        publishFn: (async (event) => {
+          if (event.id === "wrap-recipient") {
+            return {
+              successfulRelayUrls: ["wss://recipient.inbox.example"],
+              failedRelayUrls: [],
+            } as never
+          }
+          return {
+            successfulRelayUrls: testCase.successfulRelayUrls,
+            failedRelayUrls: testCase.failedRelayUrls,
+          } as never
+        }) as never,
+      })
+
+      expect(result.selfDelivery?.successfulRelayUrls).toEqual(
+        testCase.successfulRelayUrls
+      )
+      expect(result.selfDeliveryStatus).toBe(testCase.status)
+      expect(result.selfCopyError).toBe(testCase.error)
+    }
+  })
+
+  it("preserves recipient and self ACKs when the relay planner throws partial diagnostics", async () => {
+    const result = await publishPrivateMessage({
+      rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE),
+      senderPubkey: "sender",
+      recipientPubkey: "recipient",
+      signer,
+      rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+      recipientInboxRelays: [
+        "wss://recipient-a.inbox.example",
+        "wss://recipient-b.inbox.example",
+      ],
+      senderInboxRelays: [
+        "wss://sender-a.inbox.example",
+        "wss://sender-b.inbox.example",
+      ],
+      giftWrapFn: (async (_rumor, recipient) =>
+        wrap(`wrap-${recipient.pubkey}`)) as never,
+      publishFn: (async (_event, options) => {
+        const attemptedRelayUrls = [...(options.exclusiveRelayUrls ?? [])]
+        const diagnostics = {
+          plan: {
+            intent: "recipient_event" as const,
+            primaryRelayUrls: attemptedRelayUrls,
+            broadcastRelayUrls: [],
+            parkedRelayUrls: [],
+          },
+          attemptedRelayUrls,
+          successfulRelayUrls: attemptedRelayUrls.slice(0, 1),
+          failedRelayUrls: attemptedRelayUrls.slice(1),
+          relayFailureMessages: Object.fromEntries(
+            attemptedRelayUrls
+              .slice(1)
+              .map((relayUrl) => [
+                relayUrl,
+                "No acknowledgement before timeout",
+              ])
+          ),
+        }
+        throw new RelayPublishDiagnosticsError(
+          "Some relays did not acknowledge the wrap.",
+          diagnostics,
+          new Error("partial relay delivery")
+        )
+      }) as never,
+    })
+
+    expect(result.deliveryStatus).toBe("partial_success")
+    expect(result.recipientDelivery.successfulRelayUrls).toEqual([
+      "wss://recipient-a.inbox.example",
+    ])
+    expect(result.selfDeliveryStatus).toBe("partial_success")
+    expect(result.selfDelivery?.successfulRelayUrls).toEqual([
+      "wss://sender-a.inbox.example",
+    ])
+    expect(result.selfCopyError).toBe(
+      "Sender self-copy reached only part of its inbox relay set."
+    )
   })
 
   it("attaches an NDK instance before the real gift-wrap encryption path", async () => {
@@ -747,6 +866,8 @@ describe("publishPrivateMessage", () => {
     expect(resolved).toEqual(["merchant"])
     expect(wrappedRecipients).toEqual(["merchant"])
     expect(result.wrappedToSelf).toBeNull()
+    expect(result.selfDelivery).toBeNull()
+    expect(result.selfDeliveryStatus).toBeNull()
   })
 
   it("keeps recipient delivery successful when self-copy publish fails", async () => {

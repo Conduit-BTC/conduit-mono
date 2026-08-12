@@ -31,13 +31,18 @@ import {
   deriveInboxReadCoverage,
   planInboxReadRelays,
   resolveInboxDeclaration,
+  secureRelayUrls,
   type InboxDeclarationResolution,
   type InboxDeclarationState,
   type InboxReadCoverage,
   type InboxReadSource,
 } from "./private-message-routing"
 import { extractOrderSummary } from "./order-summary"
-import { parseOrderMessageRumorEvent, type ParsedOrderMessage } from "./orders"
+import {
+  parseOrderMessageRumorEvent,
+  type ParsedEventMarketPrivateMessage,
+  type ParsedOrderMessage,
+} from "./orders"
 import {
   __resetInboxRelayCache,
   createNdkLegacyDmDecrypt,
@@ -594,11 +599,14 @@ async function runFetchEventsFanoutWithDiagnostics(
       options
     )) as NDKEvent[]
     const relayUrls = [...(options?.relayUrls ?? [])]
+    const limit = filter.limit
     return {
       events,
       attemptedRelayUrls: relayUrls,
       successfulRelayUrls: relayUrls,
       failedRelayUrls: [],
+      cappedRelayUrls:
+        typeof limit === "number" && events.length >= limit ? relayUrls : [],
     }
   }
   return await fetchEventsFanoutWithDiagnostics(filter, options)
@@ -1194,6 +1202,7 @@ function toCachedProduct(record: CommerceProductRecord) {
     currency: product.currency,
     priceSats: product.priceSats,
     sourcePrice: product.sourcePrice,
+    priceEvidenceMalformed: product.priceEvidenceMalformed,
     type: product.type,
     parentProductId: product.parentProductId,
     specifications: product.specifications,
@@ -1202,6 +1211,8 @@ function toCachedProduct(record: CommerceProductRecord) {
     sourceShippingCost: product.sourceShippingCost,
     shippingOptionId: product.shippingOptionId,
     shippingOptionDTag: product.shippingOptionDTag,
+    shippingOptionRefs: product.shippingOptionRefs,
+    collectionRefs: product.collectionRefs,
     shippingCountries: product.shippingCountries,
     shippingCountryRules: product.shippingCountryRules,
     visibility: product.visibility,
@@ -1243,6 +1254,7 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
     currency: row.currency,
     priceSats: row.priceSats,
     sourcePrice: row.sourcePrice,
+    priceEvidenceMalformed: row.priceEvidenceMalformed,
     type: row.type ?? "simple",
     parentProductId: row.parentProductId,
     specifications: row.specifications ?? [],
@@ -1251,6 +1263,8 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
     sourceShippingCost: row.sourceShippingCost,
     shippingOptionId: row.shippingOptionId,
     shippingOptionDTag: row.shippingOptionDTag,
+    shippingOptionRefs: row.shippingOptionRefs,
+    collectionRefs: row.collectionRefs,
     shippingCountries: row.shippingCountries,
     shippingCountryRules: row.shippingCountryRules,
     visibility: row.visibility ?? "public",
@@ -4415,6 +4429,91 @@ async function fetchParsedOrderMessages(
   }
 }
 
+/** Handoff traffic reads declared kind-10050 relays only, never CND-208. */
+async function fetchEventMarketPrivateMessagesStrict(
+  principalPubkey: string
+): Promise<EventMarketPrivateMessageListResult> {
+  const ndk = await runRequireNdkConnected()
+  const signer = ndk.signer
+  if (!signer) {
+    throw new Error("Connect your Nostr signer to view event handoffs.")
+  }
+  const declaration = await resolvePrincipalInboxDeclaration(principalPubkey)
+  const relayUrls = secureRelayUrls(
+    declaration.state === "declared" ? declaration.relayUrls : []
+  )
+  if (relayUrls.length === 0) {
+    return {
+      messages: [],
+      stale:
+        declaration.state === "lookup_partial" ||
+        declaration.state === "lookup_unavailable" ||
+        declaration.stale,
+      decryptFailures: [],
+      inbox: {
+        declarationState: declaration.state,
+        coverage: "unavailable",
+        readSource: "declared",
+      },
+    }
+  }
+
+  const result = await runFetchEventsFanoutWithDiagnostics(
+    {
+      kinds: [EVENT_KINDS.GIFT_WRAP],
+      "#p": [principalPubkey],
+      limit: 400,
+    },
+    {
+      relayUrls,
+      connectTimeoutMs: 4_000,
+      fetchTimeoutMs: 12_000,
+    }
+  )
+  const wraps = result.events.filter((event) => {
+    const recipients = event.tags.filter(
+      (tag) => tag[0] === "p" && typeof tag[1] === "string"
+    )
+    return (
+      recipients.length === 1 &&
+      recipients[0]![1]!.toLowerCase() === principalPubkey.toLowerCase()
+    )
+  })
+  const outcomes = await unwrapGiftWraps(wraps, signer, unwrapOptions())
+  const messages: ParsedEventMarketPrivateMessage[] = []
+  const decryptFailures: DecryptFailure[] = []
+  for (const outcome of outcomes) {
+    if (outcome.status === "decrypt_failed") {
+      decryptFailures.push({ wrapId: outcome.wrapId, reason: outcome.reason })
+      continue
+    }
+    if (outcome.status !== "ok" || outcome.category !== "order") continue
+    try {
+      const message = parseOrderMessageRumorEvent(outcome.rumor)
+      if (
+        message.type === "organizer_fulfillment_receipt" ||
+        message.type === "organizer_fulfillment_revocation" ||
+        message.type === "organizer_handoff_ack"
+      ) {
+        messages.push(message)
+      }
+    } catch {
+      decryptFailures.push({ wrapId: outcome.wrapId, reason: "malformed" })
+    }
+  }
+  const coverage = deriveInboxReadCoverage(result)
+  return {
+    messages: messages.sort((left, right) => left.createdAt - right.createdAt),
+    stale: declaration.stale || coverage === "unavailable",
+    decryptFailures,
+    inbox: {
+      declarationState: declaration.state,
+      coverage,
+      readSource: "declared",
+    },
+  }
+}
+
 /**
  * Resolve the principal's kind-10050 declaration with typed outcomes.
  * A missing declaration never blocks reading the principal's own gift wraps;
@@ -5278,6 +5377,23 @@ export async function getConversationDetail(
       }
     ),
   }
+}
+
+export interface EventMarketPrivateMessageListResult {
+  messages: ParsedEventMarketPrivateMessage[]
+  stale: boolean
+  decryptFailures: DecryptFailure[]
+  inbox?: PrivateInboxReadStatus
+}
+
+/**
+ * Read the account-scoped private event-handoff stream without projecting it
+ * into an ordinary buyer/merchant order conversation.
+ */
+export async function getEventMarketPrivateMessageList(
+  principalPubkey: string
+): Promise<EventMarketPrivateMessageListResult> {
+  return await fetchEventMarketPrivateMessagesStrict(principalPubkey)
 }
 
 // --- General direct messages (kind 14), threaded by counterparty pubkey ---

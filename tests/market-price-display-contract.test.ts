@@ -53,7 +53,7 @@ describe("Market shopper price display contract", () => {
     )
     const placeOrder = checkout.indexOf("async function placeOrder")
     const freshPricing = checkout.indexOf(
-      "await getFreshPricingIntent()",
+      "await getFreshPricingIntent(freshCheckoutItems)",
       placeOrder
     )
     const orderEvent = checkout.indexOf("new NDKEvent(ndk)", placeOrder)

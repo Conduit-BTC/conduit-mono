@@ -1720,6 +1720,79 @@ describe("checkout payment helpers", () => {
 // ─── payment proof payload ──────────────────────────────────────────────────
 
 describe("order payload schema", () => {
+  function pickupOrder(
+    buyerIdentityKind: "signed_in" | "guest_ephemeral",
+    guestContact?: { email?: string; phone?: string }
+  ) {
+    const organizer = "c".repeat(64)
+    const merchant = "d".repeat(64)
+    const pickupCoordinate = `30406:${organizer}:event-pickup`
+    return {
+      id: `pickup-${buyerIdentityKind}`,
+      merchantPubkey: merchant,
+      buyerPubkey: "b".repeat(64),
+      buyerIdentityKind,
+      items: [
+        {
+          productId: `30402:${merchant}:coffee`,
+          format: "physical" as const,
+          fulfillment: {
+            type: "pickup" as const,
+            organizerPubkey: organizer,
+            product: {
+              coordinate: `30402:${merchant}:coffee`,
+              merchantPubkey: merchant,
+              eventId: "1".repeat(64),
+              createdAt: 100,
+            },
+            calendar: {
+              coordinate: `31923:${organizer}:market-day`,
+              eventId: "2".repeat(64),
+              createdAt: 101,
+            },
+            collection: {
+              coordinate: `30405:${organizer}:market-day`,
+              eventId: "3".repeat(64),
+              createdAt: 102,
+            },
+            option: {
+              coordinate: pickupCoordinate,
+              eventId: "4".repeat(64),
+              createdAt: 103,
+              title: "Organizer table",
+              location: "Public hall",
+            },
+            handoffMode: "organizer_handoff" as const,
+            handlerPubkey: organizer,
+            costSats: 0,
+            sourceCost: {
+              amount: 0,
+              currency: "SATS",
+              normalizedCurrency: "SATS",
+            },
+          },
+          quantity: 1,
+          priceAtPurchase: 1_000,
+          currency: "SATS",
+          shippingOptionId: pickupCoordinate,
+          shippingOptionDTag: "event-pickup",
+          shippingCostSats: 0,
+          sourceShippingCost: {
+            amount: 0,
+            currency: "SATS",
+            normalizedCurrency: "SATS",
+          },
+        },
+      ],
+      subtotal: 1_000,
+      currency: "SATS",
+      shippingCostSats: 0,
+      shippingCostStatus: "included" as const,
+      guestContact,
+      createdAt: 1_700_000_000_000,
+    }
+  }
+
   it("preserves item fulfillment format and defaults legacy items to physical", () => {
     const baseOrder = {
       id: "order-format",
@@ -1837,7 +1910,31 @@ describe("order payload schema", () => {
         currency: "SATS",
         createdAt: 1_700_000_000_000,
       })
-    ).toThrow("Guest orders require phone and email contact.")
+    ).toThrow("Guest orders require a recovery contact.")
+  })
+
+  it("allows signed-in pickup without contact or an address", () => {
+    const parsed = orderSchema.parse(pickupOrder("signed_in"))
+
+    expect(parsed.guestContact).toBeUndefined()
+    expect(parsed.shippingAddress).toBeUndefined()
+    expect(parsed.items[0]?.fulfillment?.type).toBe("pickup")
+  })
+
+  it("requires only one merchant recovery method for guest pickup", () => {
+    const emailOnly = orderSchema.parse(
+      pickupOrder("guest_ephemeral", { email: "alice@example.com" })
+    )
+    const phoneOnly = orderSchema.parse(
+      pickupOrder("guest_ephemeral", { phone: "+18005551234" })
+    )
+
+    expect(emailOnly.guestContact).toEqual({ email: "alice@example.com" })
+    expect(phoneOnly.guestContact).toEqual({ phone: "+18005551234" })
+    expect(emailOnly.shippingAddress).toBeUndefined()
+    expect(() => orderSchema.parse(pickupOrder("guest_ephemeral"))).toThrow(
+      "Guest orders require a recovery contact."
+    )
   })
 
   it("keeps guest contact metadata out of signed-in orders", () => {
