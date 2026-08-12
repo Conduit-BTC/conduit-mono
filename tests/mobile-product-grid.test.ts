@@ -44,6 +44,6 @@ describe("Market product grid layout", () => {
       "utf8"
     )
 
-    expect(content).toContain('className="h-auto"')
+    expect(content).toContain('className={className ?? "h-auto"}')
   })
 })

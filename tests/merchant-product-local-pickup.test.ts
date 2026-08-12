@@ -413,7 +413,7 @@ describe("merchant product local-pickup workflow", () => {
     )
     const normalization = publish.indexOf("allowZero: zeroPriceAuthorized")
     const boothPublish = publish.indexOf("await ensureMerchantBoothPickup")
-    const signing = publish.indexOf("return signAndPublishProductListing")
+    const signing = publish.indexOf("return signAndPublishProductWriteBundle")
 
     expect(publish).toContain("allowZeroPrice:")
     expect(publish).toContain('form.fulfillment === "local_pickup"')

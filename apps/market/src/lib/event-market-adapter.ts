@@ -8,6 +8,8 @@ import {
   resolveEventMarketProductParticipation,
   type EventMarketResolution,
   type EventMarketResolutionState,
+  type CommerceProductRecord,
+  type PreparedProductFamily,
   type PricingRateInput,
   type Product,
 } from "@conduit/core"
@@ -21,8 +23,11 @@ const EVENT_COLLECTION_KIND = 30405
 
 export type EventCatalogProduct = {
   product: Product
+  family?: PreparedProductFamily<CommerceProductRecord>
   participation: ReturnType<typeof resolveEventMarketProductParticipation>
   pickupFulfillment: CartPickupFulfillment | null
+  /** Exact child snapshots only; parent acceptance never authorizes a child. */
+  familyPickupFulfillments?: Record<string, CartPickupFulfillment | null>
 }
 
 export type EventCatalog = {
@@ -180,6 +185,24 @@ export function buildPickupFulfillmentSnapshot(
   }
 }
 
+export function buildEventCatalogFamilyPickupFulfillments(
+  family: PreparedProductFamily<CommerceProductRecord>,
+  resolution: EventMarketResolution,
+  rateInput: PricingRateInput = null
+): Record<string, CartPickupFulfillment | null> {
+  return Object.fromEntries(
+    family.children.map((child) => [
+      child.product.id,
+      buildPickupFulfillmentSnapshot(
+        child.product,
+        resolution,
+        child,
+        rateInput
+      ),
+    ])
+  )
+}
+
 function productReadIsLive(
   result: Awaited<ReturnType<typeof getProductsByIds>>,
   productCoordinate: string
@@ -195,6 +218,80 @@ function productReadIsLive(
   )
 }
 
+export function projectEventCatalogProducts({
+  requested,
+  records,
+  liveCoordinates,
+  resolution,
+  rateInput = null,
+}: {
+  requested: readonly string[]
+  records: readonly CommerceProductRecord[]
+  liveCoordinates: ReadonlySet<string>
+  resolution: EventMarketResolution
+  rateInput?: PricingRateInput
+}): EventCatalogProduct[] {
+  const recordsByCoordinate = new Map(
+    records.map((record) => [record.product.id, record])
+  )
+  const familyPickupFulfillmentsByParent = new Map<
+    string,
+    Record<string, CartPickupFulfillment | null>
+  >()
+  const foldedChildCoordinates = new Set<string>()
+
+  for (const coordinate of requested) {
+    const record = recordsByCoordinate.get(coordinate)
+    if (!record?.family || !liveCoordinates.has(coordinate)) continue
+
+    const familyPickupFulfillments = buildEventCatalogFamilyPickupFulfillments(
+      record.family,
+      resolution,
+      rateInput
+    )
+    familyPickupFulfillmentsByParent.set(coordinate, familyPickupFulfillments)
+    for (const child of record.family.children) {
+      if (
+        liveCoordinates.has(child.product.id) &&
+        familyPickupFulfillments[child.product.id]
+      ) {
+        foldedChildCoordinates.add(child.product.id)
+      }
+    }
+  }
+
+  return requested.flatMap<EventCatalogProduct>((coordinate) => {
+    const record = recordsByCoordinate.get(coordinate)
+    if (
+      !record ||
+      !liveCoordinates.has(coordinate) ||
+      foldedChildCoordinates.has(coordinate)
+    ) {
+      return []
+    }
+
+    const { product } = record
+    return [
+      {
+        product,
+        family: record.family,
+        participation: resolveEventMarketProductParticipation(
+          product,
+          resolution
+        ),
+        pickupFulfillment: buildPickupFulfillmentSnapshot(
+          product,
+          resolution,
+          record,
+          rateInput
+        ),
+        familyPickupFulfillments:
+          familyPickupFulfillmentsByParent.get(coordinate),
+      },
+    ]
+  })
+}
+
 async function hydrateAcceptedProducts(
   resolution: EventMarketResolution,
   rateInput: PricingRateInput
@@ -208,29 +305,24 @@ async function hydrateAcceptedProducts(
   const recordsByCoordinate = new Map(
     result.data.map((record) => [record.product.id, record])
   )
-  const products: EventCatalogProduct[] = []
-  for (const coordinate of requested) {
-    const record = recordsByCoordinate.get(coordinate)
-    if (!record || !productReadIsLive(result, coordinate)) continue
-    const product = record.product
-
-    const participation = resolveEventMarketProductParticipation(
-      product,
-      resolution
-    )
-    const pickupFulfillment = buildPickupFulfillmentSnapshot(
-      product,
-      resolution,
-      record,
-      rateInput
-    )
-    products.push({ product, participation, pickupFulfillment })
-  }
+  const liveCoordinates = new Set(
+    requested.filter((coordinate) => {
+      const record = recordsByCoordinate.get(coordinate)
+      return !!record && productReadIsLive(result, coordinate)
+    })
+  )
+  const products = projectEventCatalogProducts({
+    requested,
+    records: result.data,
+    liveCoordinates,
+    resolution,
+    rateInput,
+  })
 
   return {
     products,
     productReadState:
-      products.length === requested.length
+      liveCoordinates.size === requested.length
         ? "ready"
         : result.meta.source === "local_cache" || result.meta.stale
           ? "unavailable"

@@ -1,14 +1,18 @@
 import { describe, expect, it } from "bun:test"
 import {
   resolveEventMarketProductParticipation,
+  prepareProductCatalog,
+  type CommerceProductRecord,
   type EventMarketResolution,
   type Product,
 } from "@conduit/core"
 import {
   buildPickupFulfillmentSnapshot,
+  buildEventCatalogFamilyPickupFulfillments,
   getCartEventFulfillmentBlock,
   getProductEventMarketCandidates,
   pickupItemMatchesCanonicalSnapshot,
+  projectEventCatalogProducts,
   resolveProductCartFulfillment,
   type EventCatalog,
   type PickupFreshnessItem,
@@ -188,6 +192,174 @@ function clonePickupItem(
 }
 
 describe("Market event adapter", () => {
+  it("folds exact accepted children into a requested parent family without reordering atomic children", () => {
+    const parent = product({ type: "variable" })
+    const childCoordinates = [
+      `30402:${merchant}:coffee-small`,
+      `30402:${merchant}:coffee-large`,
+    ]
+    const children = childCoordinates.map((id, index) =>
+      product({
+        id,
+        title: index === 0 ? "Coffee - Small" : "Coffee - Large",
+        type: "variation",
+        parentProductId: parent.id,
+        specifications: [
+          { key: "size", value: index === 0 ? "Small" : "Large" },
+        ],
+        createdAt: 104_000 + index * 1_000,
+        updatedAt: 104_000 + index * 1_000,
+      })
+    )
+    const records: CommerceProductRecord[] = [parent, ...children].map(
+      (candidate, index) => ({
+        product: candidate,
+        addressId: candidate.id,
+        eventId: String(4 + index).repeat(64),
+        eventCreatedAt: candidate.createdAt / 1_000,
+        dTag: candidate.id.split(":").at(-1) ?? null,
+      })
+    )
+    const prepared = prepareProductCatalog(records, {
+      source: "commerce",
+      fetchedAt: 107_000,
+      stale: false,
+      degraded: false,
+      capped: false,
+    }).items[0]
+    if (prepared?.kind !== "family") throw new Error("Expected family")
+
+    const requested = [childCoordinates[1]!, parent.id, childCoordinates[0]!]
+    const resolution: EventMarketResolution = {
+      ...market(),
+      collection: {
+        ...market().collection!,
+        productCoordinates: requested,
+      },
+      organizerProductCoordinates: requested,
+      acceptedProductCoordinates: requested,
+      participationRequests: requested.map((productCoordinate) => ({
+        productCoordinate,
+        merchantPubkey: merchant,
+      })),
+    }
+    const parentRecord = {
+      ...prepared.family.parent,
+      family: prepared.family,
+    }
+    const projectionRecords = [parentRecord, ...prepared.family.children]
+
+    const folded = projectEventCatalogProducts({
+      requested,
+      records: projectionRecords,
+      liveCoordinates: new Set(requested),
+      resolution,
+    })
+    expect(folded.map((entry) => entry.product.id)).toEqual([parent.id])
+    expect(
+      Object.values(folded[0]!.familyPickupFulfillments ?? {}).filter(Boolean)
+    ).toHaveLength(2)
+
+    const atomicRequested = [childCoordinates[1]!, childCoordinates[0]!]
+    const atomicResolution: EventMarketResolution = {
+      ...resolution,
+      collection: {
+        ...resolution.collection!,
+        productCoordinates: atomicRequested,
+      },
+      organizerProductCoordinates: atomicRequested,
+      acceptedProductCoordinates: atomicRequested,
+      participationRequests: atomicRequested.map((productCoordinate) => ({
+        productCoordinate,
+        merchantPubkey: merchant,
+      })),
+    }
+    const atomic = projectEventCatalogProducts({
+      requested: atomicRequested,
+      records: [...prepared.family.children].reverse(),
+      liveCoordinates: new Set(atomicRequested),
+      resolution: atomicResolution,
+    })
+    expect(atomic.map((entry) => entry.product.id)).toEqual(atomicRequested)
+    expect(atomic.every((entry) => entry.family === undefined)).toBe(true)
+  })
+
+  it("requires exact current child acceptance for family pickup snapshots", () => {
+    const parent = product({ type: "variable" })
+    const childCoordinate = `30402:${merchant}:coffee-large`
+    const child = product({
+      id: childCoordinate,
+      title: "Coffee — Large",
+      type: "variation",
+      parentProductId: parent.id,
+      specifications: [{ key: "size", value: "Large" }],
+      createdAt: 104_000,
+      updatedAt: 104_000,
+    })
+    const records: CommerceProductRecord[] = [parent, child].map(
+      (candidate, index) => ({
+        product: candidate,
+        addressId: candidate.id,
+        eventId: String(4 + index).repeat(64),
+        eventCreatedAt: candidate.createdAt / 1_000,
+        dTag: candidate.id.split(":").at(-1) ?? null,
+      })
+    )
+    const prepared = prepareProductCatalog(records, {
+      source: "commerce",
+      fetchedAt: 105_000,
+      stale: false,
+      degraded: false,
+      capped: false,
+    }).items[0]
+    if (prepared?.kind !== "family") throw new Error("Expected family")
+
+    const parentOnly = market()
+    expect(
+      buildEventCatalogFamilyPickupFulfillments(prepared.family, parentOnly)[
+        childCoordinate
+      ]
+    ).toBeNull()
+
+    const childAccepted: EventMarketResolution = {
+      ...parentOnly,
+      collection: {
+        ...parentOnly.collection!,
+        productCoordinates: [productCoordinate, childCoordinate],
+      },
+      organizerProductCoordinates: [productCoordinate, childCoordinate],
+      acceptedProductCoordinates: [productCoordinate, childCoordinate],
+      participationRequests: [
+        ...parentOnly.participationRequests,
+        { productCoordinate: childCoordinate, merchantPubkey: merchant },
+      ],
+    }
+    const exact = buildEventCatalogFamilyPickupFulfillments(
+      prepared.family,
+      childAccepted
+    )[childCoordinate]
+    expect(exact).toMatchObject({
+      product: {
+        coordinate: childCoordinate,
+        eventId: "5".repeat(64),
+        createdAt: 104_000,
+      },
+    })
+
+    const staleChild = {
+      ...prepared.family,
+      children: prepared.family.children.map((record) => ({
+        ...record,
+        eventCreatedAt: record.eventCreatedAt - 1,
+      })),
+    }
+    expect(
+      buildEventCatalogFamilyPickupFulfillments(staleChild, childAccepted)[
+        childCoordinate
+      ]
+    ).toBeNull()
+  })
+
   it("preserves exact author, product, event, collection, and pickup revisions", () => {
     const snapshot = buildPickupFulfillmentSnapshot(
       product(),

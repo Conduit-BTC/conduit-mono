@@ -37,10 +37,44 @@ describe("generic Market event fulfillment", () => {
       "cart.addItem(createCartItemFromProduct(product), quantity)"
     )
 
-    expect(cart).toContain("useProductCartFulfillment(product, btcUsdRate)")
+    expect(cart).toContain(
+      "useProductCartFulfillment(selectedProduct, btcUsdRate)"
+    )
     expect(cart).toContain("fulfillmentBlocked")
     expect(cart).toContain("View event catalog")
     expect(cart).not.toContain("createCartItemFromProduct(product))")
+  })
+
+  it("resolves and mutates the selected signed child across product grids", async () => {
+    const [products, store, detail, resolvedCard, variations] =
+      await Promise.all([
+        Bun.file("apps/market/src/routes/products/index.tsx").text(),
+        Bun.file("apps/market/src/routes/store/$pubkey.tsx").text(),
+        Bun.file("apps/market/src/routes/products/$productId.tsx").text(),
+        Bun.file(
+          "apps/market/src/components/ResolvedProductGridCard.tsx"
+        ).text(),
+        Bun.file("apps/market/src/lib/productVariations.ts").text(),
+      ])
+
+    for (const route of [products, store, detail]) {
+      expect(route).toContain("<ResolvedProductGridCard")
+      expect(route).toContain("family={")
+    }
+    expect(resolvedCard).toContain(
+      "useProductCartFulfillment(selectedProduct, btcUsdRate)"
+    )
+    expect(resolvedCard).toContain("cartItemInputFromProductSelection(")
+    expect(resolvedCard).toContain("item.productId === selectedProduct.id")
+    expect(resolvedCard).toContain("cart.removeItem(selectedProduct.id)")
+    expect(resolvedCard).toContain("selectedProductId={selectedProduct.id}")
+    expect(variations).toContain("familyProductId:")
+    expect(variations).toContain("selectedSpecifications:")
+
+    const card = await Bun.file(
+      "apps/market/src/components/ProductGridCard.tsx"
+    ).text()
+    expect(card.match(/\{ allowZero: allowZeroPrice \}/g)).toHaveLength(2)
   })
 
   it("re-resolves event pickup before checkout actions", async () => {

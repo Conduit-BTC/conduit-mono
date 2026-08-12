@@ -30,6 +30,8 @@ export type ProductGridCardProps = {
   family?: MarketProductFamily
   familyHydrating?: boolean
   className?: string
+  selectedProductId?: string
+  onSelectedProductChange?: (product: Product) => void
   merchantName?: string
   merchantNamePending?: boolean
   imageLoading?: "eager" | "lazy"
@@ -54,6 +56,8 @@ export function ProductGridCard({
   family,
   familyHydrating = false,
   className,
+  selectedProductId: controlledSelectedProductId,
+  onSelectedProductChange,
   merchantName: merchantNameOverride,
   merchantNamePending: merchantNamePendingOverride,
   imageLoading = "lazy",
@@ -75,9 +79,11 @@ export function ProductGridCard({
     () => getDefaultProductSelection(product, family),
     [family, product]
   )
-  const [selectedProductId, setSelectedProductId] = useState(
+  const [internalSelectedProductId, setInternalSelectedProductId] = useState(
     defaultSelection.id
   )
+  const selectedProductId =
+    controlledSelectedProductId ?? internalSelectedProductId
   const selectedProduct = getProductSelection(
     product,
     family,
@@ -91,8 +97,10 @@ export function ProductGridCard({
     getCartQuantity?.(selectedProduct) ?? cartQuantity
 
   useEffect(() => {
-    setSelectedProductId(defaultSelection.id)
-  }, [defaultSelection.id])
+    if (controlledSelectedProductId === undefined) {
+      setInternalSelectedProductId(defaultSelection.id)
+    }
+  }, [controlledSelectedProductId, defaultSelection.id])
 
   const merchantNamePending =
     merchantNamePendingOverride ?? !merchantNameOverride
@@ -110,7 +118,8 @@ export function ProductGridCard({
     ? getShopperPriceDisplay(
         summaryMinimum,
         pricePreference,
-        typeof btcUsdRate === "object" ? btcUsdRate : null
+        typeof btcUsdRate === "object" ? btcUsdRate : null,
+        { allowZero: allowZeroPrice }
       )
     : selectedPriceDisplay
   const primary =
@@ -143,7 +152,10 @@ export function ProductGridCard({
           <ProductVariationSelector
             family={family!}
             selectedProduct={selectedProduct}
-            onSelect={(variation) => setSelectedProductId(variation.id)}
+            onSelect={(variation) => {
+              setInternalSelectedProductId(variation.id)
+              onSelectedProductChange?.(variation)
+            }}
             compact
           />
         ) : showVariationSkeleton ? (

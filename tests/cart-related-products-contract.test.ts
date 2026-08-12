@@ -11,13 +11,21 @@ describe("cart related-product stock guard", () => {
     expect(source).toContain(
       "disabled={soldOut || atStockLimit || fulfillmentBlocked}"
     )
-    expect(source).toContain("if (!addAvailability.canAdd) return")
-    expect(source).toContain("onAdd(selectedProduct)")
-    expect(source).toContain("cartItemInputFromProductSelection(")
-    expect(source).toContain("<ProductVariationSelector")
-    expect(source).toContain("familyProductId")
     expect(source).toMatch(
       /if\s*\(\s*!addAvailability\.canAdd\s*\|\|\s*fulfillmentBlocked/
     )
+    expect(source).toContain("cart.addItem(cartCandidate)")
+    expect(source).toContain(
+      "useProductCartFulfillment(selectedProduct, btcUsdRate)"
+    )
+    expect(source).toContain("cartItemInputFromProductSelection(")
+    expect(source).toContain("<ProductVariationSelector")
+
+    const variations = await readFile(
+      "apps/market/src/lib/productVariations.ts",
+      "utf8"
+    )
+    expect(variations).toContain("familyProductId:")
+    expect(variations).toContain("selectedSpecifications:")
   })
 })

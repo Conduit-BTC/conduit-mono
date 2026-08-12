@@ -14,7 +14,7 @@ describe("Market event product layout", () => {
 
     expect(card).toContain("export const PRODUCT_GRID_CLASS_NAME")
     expect(card).toContain(
-      "grid auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4"
+      "grid items-start list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4"
     )
     expect(products.match(/className={PRODUCT_GRID_CLASS_NAME}/g)?.length).toBe(
       2
@@ -31,7 +31,7 @@ describe("Market event product layout", () => {
       source("apps/market/src/routes/events/$collectionRef.tsx"),
     ])
 
-    expect(card).toContain("className={className}")
+    expect(card).toContain('className={className ?? "h-auto"}')
     expect(event).toContain('className="h-auto"')
     expect(event).toContain('<details className="group/pickup')
     expect(event).toContain("[&::-webkit-details-marker]:hidden")

@@ -11,8 +11,14 @@ import {
   ShieldCheck,
 } from "lucide-react"
 import { createFileRoute } from "@tanstack/react-router"
-import { useMemo, useState } from "react"
-import { formatNpub, useConduitSession, useProfile } from "@conduit/core"
+import { useEffect, useMemo, useState } from "react"
+import {
+  formatNpub,
+  prepareProductCatalog,
+  useConduitSession,
+  useProfile,
+  type Product,
+} from "@conduit/core"
 import { Avatar, AvatarFallback, AvatarImage, Badge, Button } from "@conduit/ui"
 import { CopyButton } from "../../components/CopyButton"
 import {
@@ -30,10 +36,12 @@ import { useCart } from "../../hooks/useCart"
 import { useEventMarket } from "../../hooks/useEventMarket"
 import { useMerchantIdentities } from "../../hooks/useMerchantIdentities"
 import { useShopperPricing } from "../../hooks/useShopperPricing"
+import { isSameCartFulfillment } from "../../lib/cart-model"
 import {
-  createCartItemFromProduct,
-  isSameCartFulfillment,
-} from "../../lib/cart-model"
+  cartItemInputFromProductSelection,
+  getDefaultProductSelection,
+  getProductSelection,
+} from "../../lib/productVariations"
 import { getEventCatalogCartAction } from "../../lib/event-market-cart-action"
 import type { EventCatalog } from "../../lib/event-market-adapter"
 import {
@@ -49,6 +57,172 @@ type CatalogStateCopy = {
   title: string
   message: string
   variant: "secondary" | "warning" | "destructive"
+}
+
+function EventCatalogProductCard({
+  entry,
+  catalog,
+  purchaseReady,
+  identity,
+  imageLoading,
+  btcUsdRate,
+  pricePreference,
+  onCartNotice,
+}: {
+  entry: EventCatalog["products"][number]
+  catalog: EventCatalog
+  purchaseReady: boolean
+  identity: ReturnType<ReturnType<typeof useMerchantIdentities>["getIdentity"]>
+  imageLoading: "eager" | "lazy"
+  btcUsdRate: ReturnType<typeof useShopperPricing>["quote"]
+  pricePreference: ReturnType<typeof useShopperPricing>["preference"]
+  onCartNotice: (message: string) => void
+}) {
+  const cart = useCart()
+  const { product } = entry
+  const authorizedFamily = useMemo(() => {
+    if (!entry.family) return undefined
+    const authorizedChildren = entry.family.children.filter(
+      (child) => entry.familyPickupFulfillments?.[child.product.id]
+    )
+    const prepared = prepareProductCatalog(
+      [entry.family.parent, ...authorizedChildren],
+      entry.family.readEvidence
+    ).items[0]
+    return prepared?.kind === "family" ? prepared.family : undefined
+  }, [entry.family, entry.familyPickupFulfillments])
+  const family = authorizedFamily
+  const defaultSelection = useMemo(
+    () => getDefaultProductSelection(product, family),
+    [family, product]
+  )
+  const [selectedProductId, setSelectedProductId] = useState(
+    defaultSelection.id
+  )
+  const selectedProduct = getProductSelection(
+    product,
+    family,
+    selectedProductId
+  )
+  const pickupFulfillment =
+    selectedProduct.id === product.id && product.type !== "variable"
+      ? entry.pickupFulfillment
+      : (entry.familyPickupFulfillments?.[selectedProduct.id] ?? null)
+  const handoff = pickupFulfillment
+    ? getPickupHandoffSummary(pickupFulfillment)
+    : null
+  const candidate = pickupFulfillment
+    ? cartItemInputFromProductSelection(
+        product,
+        selectedProduct,
+        pickupFulfillment
+      )
+    : null
+  const existing = cart.items.find(
+    (item) => item.productId === selectedProduct.id
+  )
+  const sameFulfillment =
+    !!existing && !!candidate
+      ? isSameCartFulfillment(existing, candidate)
+      : false
+  const cartQuantity = sameFulfillment ? (existing?.quantity ?? 0) : 0
+  const cartAction = getEventCatalogCartAction({
+    state: catalog.state,
+    purchaseReady,
+    hasPickupFulfillment: pickupFulfillment !== null,
+  })
+  const canAdd = cartAction.enabled
+
+  useEffect(() => {
+    setSelectedProductId(defaultSelection.id)
+  }, [defaultSelection.id])
+
+  const add = (selection: Product) => {
+    if (selection.id !== selectedProduct.id || !canAdd || !candidate) return
+    if (existing && !sameFulfillment) {
+      onCartNotice(
+        "This product is already in your cart with different fulfillment. Remove that line before adding event pickup."
+      )
+      return
+    }
+    cart.addItem(candidate, 1)
+    onCartNotice(
+      `${product.title} was added for ${handoff?.label.toLowerCase() ?? "signed event pickup"}.`
+    )
+  }
+
+  const decrement = (selection: Product) => {
+    if (selection.id !== selectedProduct.id || !existing || !sameFulfillment) {
+      return
+    }
+    if (existing.quantity <= 1) {
+      cart.removeItem(selectedProduct.id)
+      return
+    }
+    cart.setQuantity(selectedProduct.id, existing.quantity - 1)
+  }
+
+  return (
+    <>
+      <ProductGridCard
+        product={product}
+        family={family}
+        className="h-auto"
+        selectedProductId={selectedProduct.id}
+        onSelectedProductChange={(selection) =>
+          setSelectedProductId(selection.id)
+        }
+        merchantName={identity.displayName}
+        merchantNamePending={identity.status === "pending"}
+        imageLoading={imageLoading}
+        btcUsdRate={btcUsdRate}
+        pricePreference={pricePreference}
+        allowZeroPrice={pickupFulfillment !== null}
+        cartQuantity={cartQuantity}
+        onProductActivate={null}
+        onAddToCart={add}
+        onIncrement={canAdd ? add : undefined}
+        onDecrement={canAdd ? decrement : undefined}
+        cartActionDisabled={!cartAction.enabled}
+        cartActionDisabledLabel={cartAction.disabledLabel ?? undefined}
+      />
+      {!pickupFulfillment ? (
+        <div className="rounded-lg border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] px-3 py-2 text-xs leading-5 text-[var(--text-secondary)]">
+          Organizer accepted; this selected product or option has no current
+          exact merchant pickup link. Checkout is disabled.
+        </div>
+      ) : handoff ? (
+        <details className="group/pickup rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] text-xs leading-5 text-[var(--text-secondary)]">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-lg px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] [&::-webkit-details-marker]:hidden">
+            <span className="min-w-0">
+              <span className="block font-medium text-[var(--text-primary)]">
+                {handoff.label}
+              </span>
+              <span className="block truncate font-mono">
+                Signed by {formatNpub(handoff.handlerPubkey, 10)}
+              </span>
+            </span>
+            <span className="flex shrink-0 items-center gap-1 font-medium text-[var(--text-primary)]">
+              Details
+              <ChevronDown
+                className="h-3.5 w-3.5 transition-transform duration-200 group-open/pickup:rotate-180"
+                aria-hidden="true"
+              />
+            </span>
+          </summary>
+          <div className="border-t border-[var(--border)] px-3 py-2">
+            <p>{getPickupHandoffPrivacyCopy(handoff)}</p>
+            <div className="mt-2 flex justify-end">
+              <CopyButton
+                value={handoff.handlerPubkey}
+                label="Copy pickup handler npub"
+              />
+            </div>
+          </div>
+        </details>
+      ) : null}
+    </>
+  )
 }
 
 export function getEventCatalogStateCopy(
@@ -231,7 +405,6 @@ function StatePanel({
 function EventCatalogPage() {
   const { collectionRef } = Route.useParams()
   const shopperPricing = useShopperPricing()
-  const cart = useCart()
   const session = useConduitSession()
   const [cartNotice, setCartNotice] = useState<string | null>(null)
   const query = useEventMarket(collectionRef, shopperPricing.quote)
@@ -542,112 +715,21 @@ function EventCatalogPage() {
         ) : (
           <ul className={`mt-6 ${PRODUCT_GRID_CLASS_NAME}`}>
             {catalog.products.map((entry, index) => {
-              const { product, pickupFulfillment } = entry
-              const handoff = pickupFulfillment
-                ? getPickupHandoffSummary(pickupFulfillment)
-                : null
+              const { product } = entry
               const identity = merchantIdentities.getIdentity(product.pubkey)
-              const existing = cart.items.find(
-                (item) => item.productId === product.id
-              )
-              const candidate = pickupFulfillment
-                ? createCartItemFromProduct(product, pickupFulfillment)
-                : null
-              const sameFulfillment =
-                !!existing && !!candidate
-                  ? isSameCartFulfillment(existing, candidate)
-                  : false
-              const cartQuantity = sameFulfillment
-                ? (existing?.quantity ?? 0)
-                : 0
-              const cartAction = getEventCatalogCartAction({
-                state: catalog.state,
-                purchaseReady: !archived && catalog.purchaseReady,
-                hasPickupFulfillment: pickupFulfillment !== null,
-              })
-              const canAdd = cartAction.enabled
-
-              const add = () => {
-                if (!canAdd) return
-                if (!candidate) return
-                if (existing && !sameFulfillment) {
-                  setCartNotice(
-                    "This product is already in your cart with different fulfillment. Remove that line before adding event pickup."
-                  )
-                  return
-                }
-                cart.addItem(candidate, 1)
-                setCartNotice(
-                  `${product.title} was added for ${handoff?.label.toLowerCase() ?? "signed event pickup"}.`
-                )
-              }
 
               return (
                 <li key={product.id} className="min-w-0 space-y-2">
-                  <ProductGridCard
-                    product={product}
-                    className="h-auto"
-                    merchantName={identity.displayName}
-                    merchantNamePending={identity.status === "pending"}
+                  <EventCatalogProductCard
+                    entry={entry}
+                    catalog={catalog}
+                    purchaseReady={!archived && catalog.purchaseReady}
+                    identity={identity}
                     imageLoading={index < 3 ? "eager" : "lazy"}
                     btcUsdRate={shopperPricing.quote}
                     pricePreference={shopperPricing.preference}
-                    allowZeroPrice={pickupFulfillment !== null}
-                    cartQuantity={cartQuantity}
-                    onProductActivate={null}
-                    onAddToCart={add}
-                    onIncrement={canAdd ? add : undefined}
-                    onDecrement={
-                      canAdd && existing && sameFulfillment
-                        ? () => {
-                            if (existing.quantity <= 1) {
-                              cart.removeItem(product.id)
-                              return
-                            }
-                            cart.setQuantity(product.id, existing.quantity - 1)
-                          }
-                        : undefined
-                    }
-                    cartActionDisabled={!cartAction.enabled}
-                    cartActionDisabledLabel={
-                      cartAction.disabledLabel ?? undefined
-                    }
+                    onCartNotice={setCartNotice}
                   />
-                  {!pickupFulfillment ? (
-                    <div className="rounded-lg border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] px-3 py-2 text-xs leading-5 text-[var(--text-secondary)]">
-                      Organizer accepted; merchant pickup link is missing or no
-                      longer exact. Checkout is disabled.
-                    </div>
-                  ) : handoff ? (
-                    <details className="group/pickup rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] text-xs leading-5 text-[var(--text-secondary)]">
-                      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-lg px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] [&::-webkit-details-marker]:hidden">
-                        <span className="min-w-0">
-                          <span className="block font-medium text-[var(--text-primary)]">
-                            {handoff.label}
-                          </span>
-                          <span className="block truncate font-mono">
-                            Signed by {formatNpub(handoff.handlerPubkey, 10)}
-                          </span>
-                        </span>
-                        <span className="flex shrink-0 items-center gap-1 font-medium text-[var(--text-primary)]">
-                          Details
-                          <ChevronDown
-                            className="h-3.5 w-3.5 transition-transform duration-200 group-open/pickup:rotate-180"
-                            aria-hidden="true"
-                          />
-                        </span>
-                      </summary>
-                      <div className="border-t border-[var(--border)] px-3 py-2">
-                        <p>{getPickupHandoffPrivacyCopy(handoff)}</p>
-                        <div className="mt-2 flex justify-end">
-                          <CopyButton
-                            value={handoff.handlerPubkey}
-                            label="Copy pickup handler npub"
-                          />
-                        </div>
-                      </div>
-                    </details>
-                  ) : null}
                 </li>
               )
             })}

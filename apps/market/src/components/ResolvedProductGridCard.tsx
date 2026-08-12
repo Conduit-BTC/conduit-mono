@@ -1,11 +1,14 @@
+import { useEffect, useMemo, useState } from "react"
 import { Link } from "@tanstack/react-router"
 import { formatNpub } from "@conduit/core"
 import { useCart } from "../hooks/useCart"
 import { useProductCartFulfillment } from "../hooks/useProductCartFulfillment"
+import { isSameCartFulfillment } from "../lib/cart-model"
 import {
-  createCartItemFromProduct,
-  isSameCartFulfillment,
-} from "../lib/cart-model"
+  cartItemInputFromProductSelection,
+  getDefaultProductSelection,
+  getProductSelection,
+} from "../lib/productVariations"
 import {
   getPickupHandoffPrivacyCopy,
   getPickupHandoffSummary,
@@ -20,15 +23,30 @@ type ResolvedProductGridCardProps = Omit<
   | "onAddToCart"
   | "onDecrement"
   | "onIncrement"
+  | "onSelectedProductChange"
+  | "selectedProductId"
 >
 
 export function ResolvedProductGridCard({
   product,
+  family,
   btcUsdRate = null,
   ...props
 }: ResolvedProductGridCardProps) {
   const cart = useCart()
-  const fulfillment = useProductCartFulfillment(product, btcUsdRate)
+  const defaultSelection = useMemo(
+    () => getDefaultProductSelection(product, family),
+    [family, product]
+  )
+  const [selectedProductId, setSelectedProductId] = useState(
+    defaultSelection.id
+  )
+  const selectedProduct = getProductSelection(
+    product,
+    family,
+    selectedProductId
+  )
+  const fulfillment = useProductCartFulfillment(selectedProduct, btcUsdRate)
   const resolution = fulfillment.resolution
   const candidate =
     resolution?.status === "pickup" || resolution?.status === "blocked"
@@ -36,14 +54,20 @@ export function ResolvedProductGridCard({
       : fulfillment.candidateNaddr
   const cartCandidate = resolution
     ? resolution.status === "pickup"
-      ? createCartItemFromProduct(resolution.product, resolution.fulfillment)
+      ? cartItemInputFromProductSelection(
+          product,
+          resolution.product,
+          resolution.fulfillment
+        )
       : resolution.status === "standard"
-        ? createCartItemFromProduct(resolution.product, {
+        ? cartItemInputFromProductSelection(product, resolution.product, {
             type: resolution.type,
           })
         : null
     : null
-  const existing = cart.items.find((item) => item.productId === product.id)
+  const existing = cart.items.find(
+    (item) => item.productId === selectedProduct.id
+  )
   const sameFulfillment =
     !!existing &&
     !!cartCandidate &&
@@ -65,17 +89,23 @@ export function ResolvedProductGridCard({
       ? "Review cart"
       : "View event"
 
-  const add = () => {
+  useEffect(() => {
+    setSelectedProductId(defaultSelection.id)
+  }, [defaultSelection.id])
+
+  const add = (selection = selectedProduct) => {
+    if (selection.id !== selectedProduct.id) return
     if (blocked || !cartCandidate) return
     cart.addItem(cartCandidate, 1)
   }
-  const decrement = () => {
+  const decrement = (selection = selectedProduct) => {
+    if (selection.id !== selectedProduct.id) return
     if (!existing || !sameFulfillment) return
     if (existing.quantity <= 1) {
-      cart.removeItem(product.id)
+      cart.removeItem(selectedProduct.id)
       return
     }
-    cart.setQuantity(product.id, existing.quantity - 1)
+    cart.setQuantity(selectedProduct.id, existing.quantity - 1)
   }
 
   const notice = fulfillment.isChecking
@@ -93,7 +123,12 @@ export function ResolvedProductGridCard({
       <ProductGridCard
         {...props}
         product={product}
+        family={family}
         btcUsdRate={btcUsdRate}
+        selectedProductId={selectedProduct.id}
+        onSelectedProductChange={(selection) =>
+          setSelectedProductId(selection.id)
+        }
         allowZeroPrice={resolution?.status === "pickup"}
         cartQuantity={cartQuantity}
         onAddToCart={add}

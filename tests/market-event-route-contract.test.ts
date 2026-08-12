@@ -42,7 +42,8 @@ describe("Market event catalog route", () => {
     expect(route).toContain("Event relays are unavailable")
     expect(route).toContain("Event catalog removed")
     expect(route).toContain("Conflicting event evidence")
-    expect(route).toContain("merchant pickup link is missing")
+    expect(route).toContain("no current")
+    expect(route).toContain("exact merchant pickup link")
     expect(route).toContain("Checkout is disabled")
   })
 
@@ -53,8 +54,24 @@ describe("Market event catalog route", () => {
 
     expect(route).toContain("const candidate = pickupFulfillment")
     expect(route).toContain("pickupFulfillment !== null")
-    expect(route).toContain("if (!candidate) return")
+    expect(route).toContain("!canAdd || !candidate")
     expect(route).not.toContain("pickupFulfillment ?? undefined")
+  })
+
+  it("keeps variable parent acceptance separate from exact child authority", async () => {
+    const [route, adapter] = await Promise.all([
+      Bun.file("apps/market/src/routes/events/$collectionRef.tsx").text(),
+      Bun.file("apps/market/src/lib/event-market-adapter.ts").text(),
+    ])
+
+    expect(adapter).toContain("buildEventCatalogFamilyPickupFulfillments")
+    expect(adapter).toContain("buildPickupFulfillmentSnapshot(")
+    expect(route).toContain("entry.familyPickupFulfillments?.[")
+    expect(route).toContain("authorizedChildren")
+    expect(route).toContain("prepareProductCatalog(")
+    expect(route).toContain("selectedProduct.id === product.id")
+    expect(route).toContain('product.type !== "variable"')
+    expect(route).toContain("cartItemInputFromProductSelection(")
   })
 
   it("keeps automatic payment retries behind pickup freshness checks", async () => {

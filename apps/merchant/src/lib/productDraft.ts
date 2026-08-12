@@ -132,8 +132,12 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
           : null
     if (!shippingPricingMode) return null
 
+    // Version 4 existed independently on main (product variations) and on the
+    // event-market branch. Distinguish the event-market shape by its explicit
+    // fulfillment field, but never trust those fields on older versions.
     const hasEventMarketDraftFields =
-      candidate.version >= 5 || typeof form.fulfillment === "string"
+      candidate.version >= 5 ||
+      (candidate.version === 4 && typeof form.fulfillment === "string")
     const fulfillment = hasEventMarketDraftFields
       ? form.fulfillment === "digital" ||
         form.fulfillment === "ship" ||
@@ -150,7 +154,7 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
       : ""
     if (!fulfillment || eventMarketReference === null) return null
     const eventHandoffMode =
-      candidate.version === PRODUCT_DRAFT_VERSION
+      candidate.version >= 5
         ? form.eventHandoffMode === "merchant_handoff" ||
           form.eventHandoffMode === "organizer_handoff"
           ? form.eventHandoffMode
@@ -166,7 +170,7 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
     ] as const
     if (
       !eventHandoffMode ||
-      (candidate.version === PRODUCT_DRAFT_VERSION &&
+      (candidate.version >= 5 &&
         merchantPickupFields.some(
           (field) =>
             form[field] !== undefined && typeof form[field] !== "string"
@@ -190,7 +194,8 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
       candidate.version >= 3 && typeof form.stock === "string" ? form.stock : ""
     if (!/^\d*$/.test(stock)) return null
     const variations =
-      candidate.version === PRODUCT_DRAFT_VERSION || form.variations !== undefined
+      candidate.version === PRODUCT_DRAFT_VERSION ||
+      form.variations !== undefined
         ? parseProductVariationFormState(form.variations)
         : createEmptyProductVariationForm()
     if (!variations) return null
@@ -211,8 +216,7 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
         eventMarketReference,
         eventHandoffMode,
         merchantPickupTitle:
-          candidate.version >= 5 &&
-          typeof form.merchantPickupTitle === "string"
+          candidate.version >= 5 && typeof form.merchantPickupTitle === "string"
             ? (form.merchantPickupTitle as string)
             : "Merchant booth pickup",
         merchantPickupLocation:

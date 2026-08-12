@@ -18,6 +18,7 @@ import {
 } from "../apps/merchant/src/lib/productVariations"
 
 const MERCHANT_PUBKEY = "a".repeat(64)
+const ORGANIZER_PUBKEY = "b".repeat(64)
 const NOW = 1_800_000_000_000
 
 function baseProduct(overrides: Partial<ProductSchema> = {}): ProductSchema {
@@ -175,6 +176,118 @@ describe("merchant product variation planning", () => {
       { key: "size", value: "M" },
     ])
     expect(editedPlan.publish[0]?.product.price).toBe(30)
+  })
+
+  it("replaces event pickup evidence on every inherited child transition", () => {
+    const standardShipping = `30406:${MERCHANT_PUBKEY}:standard`
+    const firstCollection = `30405:${ORGANIZER_PUBKEY}:summer-market`
+    const organizerPickup = `30406:${ORGANIZER_PUBKEY}:summer-pickup`
+    const secondCollection = `30405:${ORGANIZER_PUBKEY}:autumn-market`
+    const merchantPickup = `30406:${MERCHANT_PUBKEY}:autumn-booth`
+    const initial = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct({
+        shippingOptionId: standardShipping,
+        shippingOptionDTag: "standard",
+        shippingOptionRefs: [{ coordinate: standardShipping }],
+        collectionRefs: undefined,
+      }),
+      variations: sizeVariationForm("S, M"),
+      currency: "USD",
+      now: NOW,
+    })
+    const shippingFamily = toFamily(initial)
+    const shippingForm = getProductVariationFormState(
+      shippingFamily.root,
+      shippingFamily.variations
+    )
+
+    const organizerPickupPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct({
+        shippingCostSats: undefined,
+        shippingCountries: undefined,
+        shippingOptionId: organizerPickup,
+        shippingOptionDTag: "summer-pickup",
+        shippingOptionRefs: [{ coordinate: organizerPickup }],
+        collectionRefs: [firstCollection],
+      }),
+      variations: shippingForm.state,
+      currency: "USD",
+      existing: shippingFamily,
+      now: NOW + 60_000,
+    })
+
+    for (const child of organizerPickupPlan.desired.slice(1)) {
+      expect(child.product.collectionRefs).toEqual([firstCollection])
+      expect(child.product.shippingOptionRefs).toEqual([
+        { coordinate: organizerPickup },
+      ])
+      expect(child.product.shippingOptionId).toBe(organizerPickup)
+      expect(child.product.shippingOptionRefs).not.toContainEqual({
+        coordinate: standardShipping,
+      })
+    }
+
+    const organizerPickupFamily = toFamily(organizerPickupPlan)
+    const pickupForm = getProductVariationFormState(
+      organizerPickupFamily.root,
+      organizerPickupFamily.variations
+    )
+    const merchantPickupPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct({
+        shippingCostSats: undefined,
+        shippingCountries: undefined,
+        shippingOptionId: merchantPickup,
+        shippingOptionDTag: "autumn-booth",
+        shippingOptionRefs: [{ coordinate: merchantPickup }],
+        collectionRefs: [secondCollection],
+      }),
+      variations: pickupForm.state,
+      currency: "USD",
+      existing: organizerPickupFamily,
+      now: NOW + 120_000,
+    })
+
+    for (const child of merchantPickupPlan.desired.slice(1)) {
+      expect(child.product.collectionRefs).toEqual([secondCollection])
+      expect(child.product.shippingOptionRefs).toEqual([
+        { coordinate: merchantPickup },
+      ])
+      expect(child.product.shippingOptionId).toBe(merchantPickup)
+      expect(child.product.collectionRefs).not.toContain(firstCollection)
+      expect(child.product.shippingOptionRefs).not.toContainEqual({
+        coordinate: organizerPickup,
+      })
+    }
+
+    const merchantPickupFamily = toFamily(merchantPickupPlan)
+    const merchantPickupForm = getProductVariationFormState(
+      merchantPickupFamily.root,
+      merchantPickupFamily.variations
+    )
+    const coordinatedShippingPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct({
+        shippingCostSats: undefined,
+        shippingCountries: undefined,
+        shippingOptionId: undefined,
+        shippingOptionDTag: undefined,
+        shippingOptionRefs: undefined,
+        collectionRefs: undefined,
+      }),
+      variations: merchantPickupForm.state,
+      currency: "USD",
+      existing: merchantPickupFamily,
+      now: NOW + 180_000,
+    })
+
+    for (const child of coordinatedShippingPlan.desired.slice(1)) {
+      expect(child.product.collectionRefs).toBeUndefined()
+      expect(child.product.shippingOptionRefs).toBeUndefined()
+      expect(child.product.shippingOptionId).toBeUndefined()
+    }
   })
 
   it("round-trips sparse imported custom child fields without rewriting them", () => {
