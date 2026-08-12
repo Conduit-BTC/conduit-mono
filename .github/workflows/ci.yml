@@ -279,6 +279,11 @@ jobs:
         run: |
           echo "Preview link comments are skipped for fork PRs because GitHub provides a read-only token and Cloudflare Pages does not publish same-repository preview checks for fork heads."
 
+      - uses: actions/checkout@v7
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        with:
+          persist-credentials: false
+
       - name: Post mainnet preview links
         if: github.event.pull_request.head.repo.full_name == github.repository
         id: preview-links
@@ -287,7 +292,9 @@ jobs:
           EXPECTED_PUBLIC_CONFIG_DIGEST: ${{ needs.build-mainnet.outputs.public-config-digest }}
         with:
           script: |
-            const branch = context.payload.pull_request.head.ref;
+            const { waitForProjectRows } = await import(
+              `${process.env.GITHUB_WORKSPACE}/scripts/ci/preview_links.mjs`
+            );
             const headSha = context.payload.pull_request.head.sha;
             const shortSha = headSha.slice(0, 7);
             const prBody = context.payload.pull_request.body || "";
@@ -302,50 +309,16 @@ jobs:
               throw new Error("The validated build did not expose a public config digest.");
             }
 
-            // Cloudflare branch slug: lowercase, non-alnum to dash, collapse, trim, max 28 chars
-            const slug = branch
-              .toLowerCase()
-              .replace(/[^a-z0-9]/g, "-")
-              .replace(/-+/g, "-")
-              .replace(/^-|-$/g, "")
-              .slice(0, 28);
-
             const PROJECTS = {
               market: {
-                domain: "conduit-market-coo",
+                label: "Market",
                 project: "conduit-market",
               },
               merchant: {
-                domain: "conduit-merchant-33n",
+                label: "Merchant",
                 project: "conduit-merchant",
               },
             };
-
-            const CF_USERS = new Set([
-              "cloudflare-workers-and-pages",
-              "cloudflare-workers-and-pages[bot]",
-              "cloudflare-pages[bot]",
-            ]);
-
-            function extractUrlsFromCommentBody(body) {
-              let commitUrl = null;
-              let branchUrl = null;
-
-              for (const line of body.split("\n")) {
-                const href = line.match(/href=['"]([^'"]+)['"]/i)?.[1] || null;
-                const lower = line.toLowerCase();
-                if (!href) continue;
-                if (!branchUrl && lower.includes("branch preview url")) {
-                  branchUrl = href;
-                  continue;
-                }
-                if (!commitUrl && lower.includes("preview url") && !lower.includes("branch preview url")) {
-                  commitUrl = href;
-                }
-              }
-
-              return { commitUrl, branchUrl };
-            }
 
             async function listIssueComments() {
               return github.paginate(github.rest.issues.listComments, {
@@ -356,46 +329,11 @@ jobs:
               });
             }
 
-            function resolveProjectUrls(comments, projectName) {
-              const candidates = comments
-                .filter((comment) => {
-                  const body = comment.body || "";
-                  return (
-                    CF_USERS.has(comment.user?.login || "")
-                    && body.includes(`Deploying ${projectName}`)
-                    && (
-                      body.includes(`<code>${headSha}</code>`)
-                      || body.includes(`<code>${shortSha}</code>`)
-                      || body.includes(shortSha)
-                    )
-                  );
-                })
-                .reverse();
-
-              for (const comment of candidates) {
-                const parsed = extractUrlsFromCommentBody(comment.body || "");
-                if (parsed.commitUrl || parsed.branchUrl) {
-                  return parsed;
-                }
-              }
-
-              return { commitUrl: null, branchUrl: null };
-            }
-
-            const comments = await listIssueComments();
-            const rows = [];
-
-            for (const app of ["market", "merchant"]) {
-              const project = PROJECTS[app];
-              const urls = resolveProjectUrls(comments, project.project);
-
-              rows.push({
-                app,
-                label: app.charAt(0).toUpperCase() + app.slice(1),
-                branchUrl: urls.branchUrl || `https://${slug}.${project.domain}.pages.dev`,
-                commitUrl: urls.commitUrl || null,
-              });
-            }
+            const { comments, rows } = await waitForProjectRows({
+              listComments: listIssueComments,
+              projects: PROJECTS,
+              headSha,
+            });
 
             async function verifyDeployedPreview(row) {
               const manifestUrl = new URL("/.well-known/conduit-deployment.json", row.branchUrl);
@@ -449,7 +387,7 @@ jobs:
             core.info(
               commitPreviewEnabled
                 ? "Posting mainnet preview links with available Cloudflare comment URLs; missing commit URLs remain pending."
-                : "Posting deterministic mainnet branch preview URLs; commit preview links hidden by PR setting."
+                : "Posting verified Cloudflare branch preview URLs; commit preview links hidden by PR setting."
             );
 
             const branchTable = [
