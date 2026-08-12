@@ -38,14 +38,14 @@ may be reported as "Playwright WebKit passed"; it must never be shortened to
 Select devices at run time, then record exact versions in the run log. Do not
 silently substitute a simulator or a desktop browser for a physical device.
 
-| Lane                  | Required version policy                                                                      | 2026-08-10 baseline snapshot                                             |
-| --------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| iPhone current        | Physical iPhone on the current stable iOS release, normal Safari                             | iOS 26.6, released 2026-07-27 ([Apple release notes][ios-current])       |
-| iPhone previous       | Physical iPhone on the previous Apple-supported iOS branch, normal Safari                    | iOS 18.7.9, released 2026-05-11 ([Apple release notes][ios-previous])    |
-| Optional older iPhone | The oldest iPhone/iOS combination still expected at the booth                                | Record as an additional lane; it does not replace either required iPhone |
-| Android               | Physical Android phone on current stable Chrome and current Android System WebView           | Record model, Android, Chrome, and WebView versions                      |
-| Desktop               | Current stable desktop Chrome; add current macOS Safari as a supporting check when available | Record operating system and full browser versions                        |
-| Automation            | Repository-pinned Playwright WebKit and Chromium builds                                      | Record Playwright version and project names from the tested commit       |
+| Lane                  | Required version policy                                                                        | 2026-08-10 baseline snapshot                                             |
+| --------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| iPhone current        | Physical iPhone on the current stable iOS release, normal Safari                               | iOS 26.6, released 2026-07-27 ([Apple release notes][ios-current])       |
+| iPhone previous       | Physical iPhone on the previous Apple-supported iOS branch, normal Safari                      | iOS 18.7.9, released 2026-05-11 ([Apple release notes][ios-previous])    |
+| Optional older iPhone | The oldest iPhone/iOS combination still expected at the booth                                  | Record as an additional lane; it does not replace either required iPhone |
+| Android               | Physical Android phone on current stable Chrome and current Android System WebView             | Record model, Android, Chrome, and WebView versions                      |
+| Desktop               | Current stable desktop Chrome at 1024x768 and 1440x900; add current macOS Safari as supporting | Record operating system, browser version, and both tested viewport sizes |
+| Automation            | Repository-pinned Playwright WebKit and Chromium builds                                        | Record Playwright version and project names from the tested commit       |
 
 Recheck the linked vendor release pages on the day of a run. If the current or
 previous supported branch changes, update the selected devices in the run log;
@@ -67,22 +67,22 @@ passes only when its observable condition is met in every required (`M`) lane.
 Automated (`A`) and supporting (`S`) lanes add confidence but do not replace a
 required real-device result.
 
-| ID    | Priority | Observable pass condition                                                                                                                                                                                                                                       |
-| ----- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| P1-01 | P1       | At the narrowest supported portrait width and in landscape, no primary content or action is clipped, covered by browser chrome, or the cause of page-level horizontal scrolling.                                                                                |
-| P1-02 | P1       | Primary navigation, dialog close, signer choices, checkout controls, and retry actions work by touch without hover; adjacent targets do not cause accidental activation and primary targets provide a 44-by-44 CSS-pixel touch area.                            |
-| P1-03 | P1       | Focusing, typing, selecting, and dismissing the software keyboard keeps the active field, its label/error, and the next action reachable; the page does not involuntarily zoom and entered checkout data is preserved.                                          |
-| P1-04 | P1       | Internal links plus browser Back, Forward, and refresh return to a usable route without blank content, lost navigation, duplicate submission, or a trapped modal.                                                                                               |
-| P1-05 | P1       | NIP-46 setup presents a usable connection path; Clave handoff and return work on iPhone, Amber handoff and return work on Android, and cancel/reject returns to a recoverable signer screen without exposing connection material.                               |
-| P1-06 | P1       | After signer connection, refresh and same-browser foreground resume restore or clearly reconnect the supported authentication session; disconnect removes access cleanly. Guest state follows its documented same-browser lifetime.                             |
-| P1-07 | P1       | A clean browser session can complete guest checkout without a signer: fields validate, order submission is single-shot, navigation reaches a clear result, and refresh does not create a second order.                                                          |
-| P1-08 | P1       | With the zap-out booth fixture loaded, initiating zap-out and invoking the existing confirm/handoff action takes no more than two Conduit taps; cancel, signer rejection, or return from the wallet leaves a clear retry path and no duplicate payment attempt. |
-| P1-09 | P1       | A submitted guest order appears once in Merchant and its receipt/status is readable. The merchant explicitly chooses the proposed `Update to N` action, approves it with the merchant signer, and confirms available stock reaches N after one signed update.   |
-| P1-10 | P1       | If the anonymous zap signer is unavailable or rejects before payment starts, checkout offers the private-invoice fallback once without looping. After a payment handoff begins, recovery never creates a second invoice automatically.                          |
-| P1-11 | P1       | On venue-like WiFi, one logical relay endpoint does not accumulate parallel WebSocket connections; a disconnect/reconnect recovers without a stalled checkout or duplicated order. Record iCloud Private Relay state without recording endpoint names.          |
-| P1-12 | P1       | After the app is backgrounded for 30–60 seconds mid-checkout, foreground resume preserves entered fields and the current order/payment state or presents a safe retry. It never silently restarts payment or duplicates an order.                               |
-| P2-01 | P2       | Rotating the device, resizing the visual viewport, and returning from another app do not leave fixed UI, scroll position, or focus in an unusable state.                                                                                                        |
-| P2-02 | P2       | Offline, timeout, signer rejection, and invalid-form states use readable, non-sensitive messages and leave an obvious retry, edit, or cancel action. Repeating that action is idempotent where money or orders are involved.                                    |
+| ID    | Priority | Observable pass condition                                                                                                                                                                                                                                                     |
+| ----- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| P1-01 | P1       | At the narrowest supported portrait width and in landscape, no primary content or action is clipped, covered by browser chrome, or the cause of page-level horizontal scrolling.                                                                                              |
+| P1-02 | P1       | Primary navigation, dialog close, signer choices, checkout controls, and retry actions work by touch without hover; adjacent targets do not cause accidental activation and primary targets provide a 44-by-44 CSS-pixel touch area.                                          |
+| P1-03 | P1       | Focusing, typing, selecting, and dismissing the software keyboard keeps the active field, its label/error, and the next action reachable; the page does not involuntarily zoom and entered checkout data is preserved.                                                        |
+| P1-04 | P1       | Internal links plus browser Back, Forward, and refresh return to a usable route without blank content, lost navigation, duplicate submission, or a trapped modal.                                                                                                             |
+| P1-05 | P1       | NIP-46 setup presents a usable connection path; Clave handoff and return work on iPhone, Amber handoff and return work on Android, and cancel/reject returns to a recoverable signer screen without exposing connection material.                                             |
+| P1-06 | P1       | After signer connection, refresh and same-browser foreground resume restore or clearly reconnect the supported authentication session; disconnect removes access cleanly. Guest state follows its documented same-browser lifetime.                                           |
+| P1-07 | P1       | A clean browser session can complete guest checkout without a signer: fields validate, order submission is single-shot, navigation reaches a clear result, and refresh does not create a second order.                                                                        |
+| P1-08 | P1       | With the zap-out booth fixture loaded, initiating zap-out and invoking the existing confirm/handoff action takes no more than two Conduit taps; cancel, signer rejection, or return from the wallet leaves a clear retry path and no duplicate payment attempt.               |
+| P1-09 | P1       | A submitted guest order appears once in Merchant and its receipt/status is readable. The merchant explicitly chooses the proposed `Update to N` action, approves it with the merchant signer, and confirms available stock reaches N after one signed update.                 |
+| P1-10 | P1       | If the anonymous zap signer is unavailable or rejects before payment starts, checkout offers the private-invoice fallback once without looping and that fallback payment can complete. After a payment handoff begins, recovery never creates a second invoice automatically. |
+| P1-11 | P1       | On venue-like WiFi, one logical relay endpoint does not accumulate parallel WebSocket connections; a disconnect/reconnect recovers without a stalled checkout or duplicated order. Record iCloud Private Relay state without recording endpoint names.                        |
+| P1-12 | P1       | After the app is backgrounded for 30–60 seconds mid-checkout, foreground resume preserves entered fields and the current order/payment state or presents a safe retry. It never silently restarts payment or duplicates an order.                                             |
+| P2-01 | P2       | Rotating the device, resizing the visual viewport, and returning from another app do not leave fixed UI, scroll position, or focus in an unusable state.                                                                                                                      |
+| P2-02 | P2       | Offline, timeout, signer rejection, and invalid-form states use readable, non-sensitive messages and leave an obvious retry, edit, or cancel action. Repeating that action is idempotent where money or orders are involved.                                                  |
 
 ## Device and automation matrix
 
@@ -140,8 +140,14 @@ checks to report an artificial pass.
       confirm the device has sufficient battery and a stable clock.
 - [ ] Create or select synthetic test inventory, record starting available stock,
       and ensure at least two units remain so a single decrement is observable.
-- [ ] Prepare the synthetic zap-out booth fixture and record its non-sensitive
-      label. Do not describe it as a user-facing preset.
+- [ ] Prepare the synthetic zap-out booth fixture through the normal product and
+      wallet UI: select a published synthetic product with at least two units of
+      stock, confirm the merchant has enabled direct Lightning payment, connect
+      the approved test wallet, add one item, and fill checkout with synthetic
+      contact data until `Zap out` is enabled. Record only a non-sensitive
+      fixture label. This ready checkout state is the fixture boundary and the
+      next Conduit interaction starts the two-tap count; do not describe it as a
+      user-facing preset.
 - [ ] Configure screen capture with synthetic data. Exclude QR codes, connection
       URIs, invoices, notifications, and browser/developer-tool views containing
       endpoints.
@@ -204,8 +210,10 @@ bunx playwright test e2e/mobile-safari-baseline.playwright.ts \
 
 ### 6. Desktop and Merchant completion
 
-- [ ] In current desktop Chrome, repeat the navigation, refresh/session, guest
-      checkout, invalid-form, offline/error, and duplicate-submit regression checks.
+- [ ] In current desktop Chrome, set the viewport to 1024x768 and then 1440x900.
+      At both breakpoints, repeat navigation, refresh/session, guest checkout,
+      invalid-form, offline/error, and duplicate-submit regression checks; confirm
+      primary content and actions remain visible without horizontal page scroll.
 - [ ] Choose exactly one of the submitted synthetic guest orders as the Merchant
       receipt/stock target. In Merchant, confirm one readable receipt/status. Review the proposed inventory
       change, choose the exact `Update to N` action once, explicitly approve the
@@ -223,9 +231,12 @@ bunx playwright test e2e/mobile-safari-baseline.playwright.ts \
    signer request before payment handoff.
 2. Confirm the private-invoice fallback is offered once and the user can cancel or
    continue without a loop.
-3. Retry the initiating action. Confirm it does not create duplicate order or
-   payment state.
-4. Separately interrupt connectivity only after a payment handoff begins. Confirm
+3. Continue through the offered private-invoice path and complete the approved
+   test payment. Confirm one paid order and one proof/receipt state, with no
+   duplicate invoice, order, or payment attempt.
+4. Repeat the drill with a cancellation before payment. Retry the initiating
+   action and confirm it does not create duplicate order or payment state.
+5. Separately interrupt connectivity only after a payment handoff begins. Confirm
    the UI resumes/rechecks the existing attempt and never creates a second invoice
    automatically.
 

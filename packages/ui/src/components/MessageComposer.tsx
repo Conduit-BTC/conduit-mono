@@ -14,24 +14,6 @@ export interface MessageComposerProps {
   className?: string
 }
 
-export interface MessageComposerKeyInput {
-  key: string
-  shiftKey: boolean
-  isComposing: boolean
-  keyCode: number
-}
-
-export function shouldSendMessageOnKeyDown(
-  input: MessageComposerKeyInput
-): boolean {
-  return (
-    !input.isComposing &&
-    input.keyCode !== 229 &&
-    input.key === "Enter" &&
-    !input.shiftKey
-  )
-}
-
 /**
  * Shared message input: a growable textarea plus a send button. Enter sends,
  * Shift+Enter inserts a newline. Presentational — the caller owns the mutation.
@@ -48,14 +30,7 @@ export function MessageComposer({
   const canSend = !disabled && !sending && value.trim().length > 0
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (
-      shouldSendMessageOnKeyDown({
-        key: event.key,
-        shiftKey: event.shiftKey,
-        isComposing: event.nativeEvent.isComposing,
-        keyCode: event.nativeEvent.keyCode,
-      })
-    ) {
+    if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault()
       if (canSend) onSend()
     }

@@ -44,12 +44,7 @@ export {
   getConversationMessageDisplayContent,
   type ConversationMessageBubbleProps,
 } from "./ConversationMessageBubble"
-export {
-  MessageComposer,
-  shouldSendMessageOnKeyDown,
-  type MessageComposerKeyInput,
-  type MessageComposerProps,
-} from "./MessageComposer"
+export { MessageComposer, type MessageComposerProps } from "./MessageComposer"
 export { SearchInput, type SearchInputProps } from "./SearchInput"
 export {
   ConversationCardScroller,

@@ -70,6 +70,9 @@ export async function reconcileOrderPaymentForDisplay(
     )
     return result.lifecycle ?? lifecycle
   } catch {
+    console.warn(
+      "Payment recovery reconciliation failed; retrying on the next refresh."
+    )
     return lifecycle
   }
 }

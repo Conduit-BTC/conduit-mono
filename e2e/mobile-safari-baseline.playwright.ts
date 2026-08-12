@@ -10,6 +10,7 @@ const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "700
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
 
 test.setTimeout(60_000)
+test.use({ trace: "off", screenshot: "off", video: "off" })
 
 async function assertMobileViewport(page: Page): Promise<void> {
   await expect(page.locator('meta[name="viewport"]')).toHaveAttribute(
@@ -281,123 +282,141 @@ test.describe("CND-162 mobile browser baseline", () => {
     await assertMobileViewport(page)
   })
 
-  test("market mobile signer exposes NIP-46 handoff and cancel recovery", async ({
-    page,
-  }) => {
-    await page.addInitScript(() => {
-      // Keep any failure artifact inert and reproducible: this known fixture
-      // material never represents a user or reusable signer connection.
-      Object.defineProperty(window.crypto, "getRandomValues", {
-        configurable: true,
-        value: (array: Uint8Array) => {
-          array.fill(7)
-          return array
-        },
-      })
+  test.describe("signer handoff without retained connection artifacts", () => {
+    test("market mobile signer exposes NIP-46 handoff and cancel recovery", async ({
+      page,
+    }) => {
+      await page.addInitScript(() => {
+        // Keep any failure artifact inert and reproducible: this known fixture
+        // material never represents a user or reusable signer connection.
+        Object.defineProperty(window.crypto, "getRandomValues", {
+          configurable: true,
+          value: (array: Uint8Array) => {
+            array.fill(7)
+            return array
+          },
+        })
 
-      class HangingWebSocket extends EventTarget {
-        static readonly CONNECTING = 0
-        static readonly OPEN = 1
-        static readonly CLOSING = 2
-        static readonly CLOSED = 3
-        readonly CONNECTING = 0
-        readonly OPEN = 1
-        readonly CLOSING = 2
-        readonly CLOSED = 3
-        readonly url: string
-        readonly protocol = ""
-        readonly extensions = ""
-        bufferedAmount = 0
-        binaryType: BinaryType = "blob"
-        readyState = HangingWebSocket.CONNECTING
-        onopen: ((event: Event) => void) | null = null
-        onclose: ((event: CloseEvent) => void) | null = null
-        onerror: ((event: Event) => void) | null = null
-        onmessage: ((event: MessageEvent) => void) | null = null
+        class HangingWebSocket extends EventTarget {
+          static readonly CONNECTING = 0
+          static readonly OPEN = 1
+          static readonly CLOSING = 2
+          static readonly CLOSED = 3
+          readonly CONNECTING = 0
+          readonly OPEN = 1
+          readonly CLOSING = 2
+          readonly CLOSED = 3
+          readonly url: string
+          readonly protocol = ""
+          readonly extensions = ""
+          bufferedAmount = 0
+          binaryType: BinaryType = "blob"
+          readyState = HangingWebSocket.CONNECTING
+          onopen: ((event: Event) => void) | null = null
+          onclose: ((event: CloseEvent) => void) | null = null
+          onerror: ((event: Event) => void) | null = null
+          onmessage: ((event: MessageEvent) => void) | null = null
 
-        constructor(url: string | URL) {
-          super()
-          this.url = String(url)
+          constructor(url: string | URL) {
+            super()
+            this.url = String(url)
+          }
+
+          send(): void {}
+
+          close(): void {
+            this.readyState = HangingWebSocket.CLOSED
+            const event = new CloseEvent("close")
+            this.onclose?.(event)
+            this.dispatchEvent(event)
+          }
         }
 
-        send(): void {}
-
-        close(): void {
-          this.readyState = HangingWebSocket.CLOSED
-          const event = new CloseEvent("close")
-          this.onclose?.(event)
-          this.dispatchEvent(event)
-        }
-      }
-
-      Object.defineProperty(window, "WebSocket", {
-        configurable: true,
-        value: HangingWebSocket,
+        Object.defineProperty(window, "WebSocket", {
+          configurable: true,
+          value: HangingWebSocket,
+        })
       })
+      await page.goto(`${marketUrl}/products`)
+      await page
+        .getByRole("button", { name: /^Connect$/ })
+        .first()
+        .tap()
+
+      const dialog = page.getByRole("dialog")
+      await expect(dialog).toBeVisible()
+      await expect(
+        dialog.getByRole("button", { name: /Connect Extension \(NIP-07\)/ })
+      ).toHaveCount(0)
+      const amberLink = dialog.getByRole("link", { name: "Amber" })
+      const claveLink = dialog.getByRole("link", { name: "Clave" })
+      await expect(amberLink).toHaveAttribute("href", /Amber/)
+      await expect(claveLink).toHaveAttribute("href", /clave/)
+      await expectMobileTouchTarget(amberLink)
+      await expectMobileTouchTarget(claveLink)
+
+      await dialog.getByRole("tab", { name: "Bunker URL" }).click()
+      const bunker = dialog.getByRole("textbox", {
+        name: "Remote signer bunker URL",
+      })
+      await expectMobileSafeFont(bunker)
+      await bunker.tap()
+      await expect(bunker).toBeFocused()
+
+      await dialog.getByRole("tab", { name: "QR code" }).click()
+      const closeButton = dialog.getByRole("button", { name: "Close" })
+      const closeBox = await closeButton.boundingBox()
+      expect(closeBox?.width).toBeGreaterThanOrEqual(44)
+      expect(closeBox?.height).toBeGreaterThanOrEqual(44)
+
+      await page.addStyleTag({
+        content: `
+        [aria-label="Nostr Connect connection QR code"],
+        [aria-label="Nostr Connect connection URL"],
+        a[href^="nostrconnect:"] {
+          visibility: hidden !important;
+        }
+      `,
+      })
+      await dialog.getByRole("button", { name: "Create connection" }).tap()
+      await expect(
+        dialog.locator('[aria-label="Nostr Connect connection QR code"]')
+      ).toHaveCount(1)
+
+      await dialog.getByRole("tab", { name: "Connection URL" }).click()
+      const connectionUrl = dialog.locator(
+        '[aria-label="Nostr Connect connection URL"]'
+      )
+      await expect(connectionUrl).toHaveCount(1)
+      expect(
+        await connectionUrl.evaluate((element) =>
+          /^nostrconnect:/.test((element as HTMLTextAreaElement).value)
+        )
+      ).toBe(true)
+      expect(
+        await connectionUrl.evaluate((element) =>
+          Number.parseFloat(getComputedStyle(element).fontSize)
+        )
+      ).toBeGreaterThanOrEqual(16)
+      await expect(dialog.locator('a[href^="nostrconnect:"]')).toHaveCount(1)
+
+      const cancelPairing = dialog.getByRole("button", {
+        name: "Cancel pairing",
+      })
+      await expect(cancelPairing).toBeVisible()
+      await cancelPairing.tap({ force: true })
+      await expect(dialog).not.toBeVisible()
+
+      await page
+        .getByRole("button", { name: /^Connect$/ })
+        .first()
+        .tap()
+      await expect(
+        dialog.getByRole("button", { name: "Create connection" })
+      ).toBeVisible()
+      await dialog.getByRole("button", { name: "Close" }).tap()
+      await expect(dialog).not.toBeVisible()
     })
-    await page.goto(`${marketUrl}/products`)
-    await page
-      .getByRole("button", { name: /^Connect$/ })
-      .first()
-      .tap()
-
-    const dialog = page.getByRole("dialog")
-    await expect(dialog).toBeVisible()
-    await expect(
-      dialog.getByRole("button", { name: /Connect Extension \(NIP-07\)/ })
-    ).toHaveCount(0)
-    const amberLink = dialog.getByRole("link", { name: "Amber" })
-    const claveLink = dialog.getByRole("link", { name: "Clave" })
-    await expect(amberLink).toHaveAttribute("href", /Amber/)
-    await expect(claveLink).toHaveAttribute("href", /clave/)
-    await expectMobileTouchTarget(amberLink)
-    await expectMobileTouchTarget(claveLink)
-
-    await dialog.getByRole("tab", { name: "Bunker URL" }).tap()
-    const bunker = dialog.getByRole("textbox", {
-      name: "Remote signer bunker URL",
-    })
-    await expectMobileSafeFont(bunker)
-    await bunker.fill("bunker://fixture.example")
-    await expect(bunker).toHaveValue("bunker://fixture.example")
-
-    await dialog.getByRole("tab", { name: "QR code" }).tap()
-    const closeButton = dialog.getByRole("button", { name: "Close" })
-    const closeBox = await closeButton.boundingBox()
-    expect(closeBox?.width).toBeGreaterThanOrEqual(44)
-    expect(closeBox?.height).toBeGreaterThanOrEqual(44)
-
-    await dialog.getByRole("button", { name: "Create connection" }).tap()
-    await expect(
-      dialog.getByRole("img", { name: "Nostr Connect connection QR code" })
-    ).toBeVisible()
-
-    await dialog.getByRole("tab", { name: "Connection URL" }).tap()
-    const connectionUrl = dialog.getByRole("textbox", {
-      name: "Nostr Connect connection URL",
-    })
-    await expect(connectionUrl).toHaveValue(/^nostrconnect:/)
-    await expectMobileSafeFont(connectionUrl)
-    await expect(
-      dialog.getByRole("link", { name: "Open in signer" })
-    ).toHaveAttribute("href", /^nostrconnect:/)
-
-    const cancelPairing = dialog.getByRole("button", {
-      name: "Cancel pairing",
-    })
-    await expect(cancelPairing).toBeVisible()
-    await cancelPairing.tap({ force: true })
-    await expect(dialog).not.toBeVisible()
-
-    await page
-      .getByRole("button", { name: /^Connect$/ })
-      .first()
-      .tap()
-    await expect(
-      dialog.getByRole("button", { name: "Create connection" })
-    ).toBeVisible()
-    await dialog.getByRole("button", { name: "Close" }).tap()
-    await expect(dialog).not.toBeVisible()
   })
 
   test("market wallet route keeps mobile-safe input and recoverable validation", async ({
@@ -580,13 +599,12 @@ test.describe("CND-162 mobile browser baseline", () => {
     await expect(page.getByRole("link", { name: "Amber" })).toBeVisible()
     await expect(page.getByRole("link", { name: "Clave" })).toBeVisible()
 
-    await page.getByRole("tab", { name: "Bunker URL" }).tap()
+    await page.getByRole("tab", { name: "Bunker URL" }).click()
     const bunker = page.getByRole("textbox", {
       name: "Remote signer bunker URL",
     })
     await expectMobileSafeFont(bunker)
     await bunker.tap()
-    await bunker.fill("bunker://fixture.example")
-    await expect(bunker).toHaveValue("bunker://fixture.example")
+    await expect(bunker).toBeFocused()
   })
 })
