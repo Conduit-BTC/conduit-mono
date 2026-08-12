@@ -67,6 +67,7 @@ import {
 import { requireAuth } from "../lib/auth"
 import { OrderCardScroller } from "../components/OrderCardScroller"
 import { BuyerAvatar, OrderListItem } from "../components/OrderListItem"
+import { OrderItemsCard } from "../components/OrderItemsCard"
 import { ShopperTrustCard } from "../components/ShopperTrustCard"
 import {
   getMerchantBuyerDisplayName,
@@ -89,6 +90,7 @@ import {
   runExclusiveOrderAction,
 } from "../lib/order-action-view"
 import { prepareShippingUpdate } from "../lib/shipping-update"
+import { formatMerchantOrderAmount } from "../lib/order-summary-display"
 import {
   buildLocalProductDeliveryNotice,
   buildLocalProductRetryNotice,
@@ -115,7 +117,6 @@ import {
   MessageCircle,
   RotateCw,
   Search,
-  ShoppingBag,
 } from "lucide-react"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { useMerchantPaymentAutomation } from "../hooks/useMerchantPaymentAutomation"
@@ -174,12 +175,6 @@ function normalizeInvoiceCurrencyChoice(
 
 const panelCard =
   "rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5"
-
-function formatSummaryAmount(amount: number, currency: string): string {
-  if (currency.trim().toUpperCase() === "SATS")
-    return `${amount.toLocaleString()} sats`
-  return `${amount.toLocaleString()} ${currency.trim().toUpperCase()}`
-}
 
 function CopyInline({ value, label }: { value: string; label: string }) {
   const [copied, setCopied] = useState(false)
@@ -324,81 +319,6 @@ function MobileOrdersScroller({
           onSelect={(conversation) => onSelect(conversation.id)}
         />
       )}
-    </section>
-  )
-}
-
-function OrderItemsCard({
-  items,
-  productLookup,
-  subtotal,
-  currency,
-}: {
-  items: Array<{
-    productId: string
-    title?: string
-    quantity: number
-    priceAtPurchase: number
-    currency: string
-  }>
-  productLookup: Map<
-    string,
-    {
-      title: string
-      imageUrl?: string
-      format: "physical" | "digital"
-    }
-  >
-  subtotal: number
-  currency: string
-}) {
-  return (
-    <section className={panelCard}>
-      <h3 className="flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
-        <ShoppingBag className="h-4 w-4" />
-        Items
-      </h3>
-      <div className="mt-3 space-y-3">
-        {items.map((item) => {
-          const match = productLookup.get(item.productId)
-          const image = match?.imageUrl
-          const title = item.title || match?.title || "Product"
-          return (
-            <div
-              key={item.productId}
-              className="flex items-start justify-between gap-3 text-sm"
-            >
-              <div className="flex min-w-0 items-start gap-3">
-                <div className="h-12 w-12 shrink-0 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)]">
-                  {image ? (
-                    <img
-                      src={image}
-                      alt={title}
-                      loading="lazy"
-                      className="h-full w-full object-cover"
-                    />
-                  ) : null}
-                </div>
-                <div className="min-w-0">
-                  <div className="text-[var(--text-primary)]">{title}</div>
-                  <div className="mt-0.5 text-xs text-[var(--text-secondary)]">
-                    Qty {item.quantity}
-                  </div>
-                </div>
-              </div>
-              <div className="shrink-0 text-right text-[var(--text-secondary)]">
-                {formatSummaryAmount(item.priceAtPurchase, item.currency)}
-              </div>
-            </div>
-          )
-        })}
-      </div>
-      <div className="mt-4 flex items-center justify-between border-t border-[var(--border)] pt-4 text-sm">
-        <span className="font-medium text-[var(--text-secondary)]">Total</span>
-        <span className="text-base font-semibold text-[var(--text-primary)]">
-          {formatSummaryAmount(subtotal, currency)}
-        </span>
-      </div>
     </section>
   )
 }
@@ -1749,7 +1669,10 @@ function OrdersPage() {
                   <OrderItemsCard
                     items={orderSummary.items}
                     productLookup={productLookup}
-                    subtotal={orderSummary.subtotal}
+                    itemSubtotal={orderSummary.itemSubtotal}
+                    shippingCostSats={orderSummary.shippingCostSats}
+                    shippingCostStatus={orderSummary.shippingCostStatus}
+                    total={orderSummary.subtotal}
                     currency={orderSummary.currency}
                   />
                 </div>
@@ -2206,7 +2129,10 @@ function OrdersPage() {
                       <OrderItemsCard
                         items={orderSummary.items}
                         productLookup={productLookup}
-                        subtotal={orderSummary.subtotal}
+                        itemSubtotal={orderSummary.itemSubtotal}
+                        shippingCostSats={orderSummary.shippingCostSats}
+                        shippingCostStatus={orderSummary.shippingCostStatus}
+                        total={orderSummary.subtotal}
                         currency={orderSummary.currency}
                       />
                     </div>
@@ -2400,7 +2326,7 @@ function OrdersPage() {
                           </DetailRow>
                           <DetailRow label="Total">
                             <span>
-                              {formatSummaryAmount(
+                              {formatMerchantOrderAmount(
                                 orderSummary.subtotal,
                                 orderSummary.currency
                               )}
