@@ -5,6 +5,8 @@ import {
   NDKUser,
   type NDKSigner,
 } from "@nostr-dev-kit/ndk"
+import { sha256 } from "@noble/hashes/sha2.js"
+import { bytesToHex } from "@noble/hashes/utils.js"
 import { config, type ConduitConfig } from "../config"
 import type { OrderRelayDeliveryRecord, OrderRelayDeliveryStatus } from "../db"
 import { EVENT_KINDS } from "./kinds"
@@ -14,7 +16,11 @@ import {
   getNdk,
 } from "./ndk"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
-import { parseOrderMessageRumorEvent } from "./orders"
+import {
+  parseCachedOrderMessage,
+  parseOrderMessageRumorEvent,
+  type ParsedOrderMessage,
+} from "./orders"
 import {
   __resetInboxDeclarationCache,
   primeInboxDeclarationCache,
@@ -59,6 +65,105 @@ export interface ValidatedOrderRouteScope {
 
 const validatedOrderRouteScopes = new WeakSet<ValidatedOrderRouteScope>()
 
+export interface ValidatedOrderSelfRecordRouteScope {
+  readonly rumorId: string
+  readonly orderId: string
+  readonly senderPubkey: string
+  readonly recipientPubkey: string
+  readonly counterpartyPubkey: string
+  readonly anchorEventId: string
+}
+
+const validatedOrderSelfRecordRouteScopes = new WeakMap<
+  ValidatedOrderSelfRecordRouteScope,
+  {
+    rumorFingerprint: string
+    anchor: ValidatedInboundOrderLifecycleAnchor
+  }
+>()
+
+const MERCHANT_ORDER_SELF_RECORD_TYPES = new Set([
+  "status_update",
+  "shipping_update",
+  "receipt",
+])
+
+type ParsedOrderAnchor = Extract<ParsedOrderMessage, { type: "order" }>
+
+export interface ValidatedInboundOrderLifecycleAnchor {
+  readonly eventId: string
+  readonly orderId: string
+  readonly buyerPubkey: string
+  readonly merchantPubkey: string
+}
+
+const validatedInboundOrderLifecycleAnchors =
+  new WeakSet<ValidatedInboundOrderLifecycleAnchor>()
+
+/**
+ * Bind a self-record authorization to an already parsed inbound order.
+ * The cache/read boundary remains responsible for supplying authentic parsed
+ * messages; arbitrary outbound order identifiers are not sufficient.
+ */
+export function createValidatedInboundOrderLifecycleAnchor(input: {
+  order: ParsedOrderAnchor
+  orderId: string
+  buyerPubkey: string
+  merchantPubkey: string
+}): ValidatedInboundOrderLifecycleAnchor {
+  const orderId = input.orderId.trim()
+  const buyerPubkey = input.buyerPubkey.trim().toLowerCase()
+  const merchantPubkey = input.merchantPubkey.trim().toLowerCase()
+  let order: ParsedOrderMessage
+  try {
+    order = parseCachedOrderMessage(input.order)
+  } catch {
+    throw new Error(
+      "Cannot authorize a self-record without a matching inbound order."
+    )
+  }
+  if (
+    order.type !== "order" ||
+    !order.id ||
+    !orderId ||
+    !buyerPubkey ||
+    !merchantPubkey ||
+    buyerPubkey === merchantPubkey ||
+    order.orderId !== orderId ||
+    order.senderPubkey.trim().toLowerCase() !== buyerPubkey ||
+    order.recipientPubkey.trim().toLowerCase() !== merchantPubkey ||
+    order.payload.id !== orderId ||
+    order.payload.buyerPubkey.trim().toLowerCase() !== buyerPubkey ||
+    order.payload.merchantPubkey.trim().toLowerCase() !== merchantPubkey
+  ) {
+    throw new Error(
+      "Cannot authorize a self-record without a matching inbound order."
+    )
+  }
+  const anchor = Object.freeze({
+    eventId: order.id,
+    orderId,
+    buyerPubkey,
+    merchantPubkey,
+  })
+  validatedInboundOrderLifecycleAnchors.add(anchor)
+  return anchor
+}
+
+function isMatchingInboundOrderLifecycleAnchor(input: {
+  anchor: ValidatedInboundOrderLifecycleAnchor
+  orderId: string
+  senderPubkey: string
+  counterpartyPubkey: string
+}): boolean {
+  return (
+    validatedInboundOrderLifecycleAnchors.has(input.anchor) &&
+    input.anchor.orderId === input.orderId &&
+    input.anchor.merchantPubkey === input.senderPubkey &&
+    input.anchor.buyerPubkey === input.counterpartyPubkey
+  )
+}
+
 /**
  * Issue a one-use compatibility-routing capability bound to one validated
  * kind-16 rumor, order id, sender, and recipient. Relay URLs are deliberately
@@ -95,6 +200,126 @@ export function createValidatedOrderRouteScope(input: {
     recipientPubkey,
   })
   validatedOrderRouteScopes.add(scope)
+  return scope
+}
+
+function hasSenderSelfRecordContentBinding(input: {
+  rumor: NDKEvent
+  orderId: string
+  senderPubkey: string
+  counterpartyPubkey: string
+}): boolean {
+  try {
+    const content = JSON.parse(input.rumor.content) as unknown
+    if (!content || typeof content !== "object" || Array.isArray(content)) {
+      return false
+    }
+    const record = content as Record<string, unknown>
+    return (
+      record.orderId === input.orderId &&
+      typeof record.merchantPubkey === "string" &&
+      record.merchantPubkey.trim().toLowerCase() === input.senderPubkey &&
+      typeof record.buyerPubkey === "string" &&
+      record.buyerPubkey.trim().toLowerCase() === input.counterpartyPubkey
+    )
+  } catch {
+    return false
+  }
+}
+
+function isValidatedOrderSelfRecordRumor(input: {
+  rumor: NDKEvent
+  orderId: string
+  senderPubkey: string
+  recipientPubkey: string
+  counterpartyPubkey: string
+  anchor: ValidatedInboundOrderLifecycleAnchor
+}): boolean {
+  const rumorOrderId = input.rumor.tags.find((tag) => tag[0] === "order")?.[1]
+  const rumorCounterparty = input.rumor.tags
+    .find((tag) => tag[0] === "p")?.[1]
+    ?.trim()
+    .toLowerCase()
+  const rumorType = input.rumor.tags.find((tag) => tag[0] === "type")?.[1]
+  return (
+    input.rumor.kind === EVENT_KINDS.ORDER &&
+    !!input.rumor.id &&
+    !!input.orderId &&
+    !!input.senderPubkey &&
+    !!input.counterpartyPubkey &&
+    input.recipientPubkey === input.senderPubkey &&
+    input.counterpartyPubkey !== input.senderPubkey &&
+    input.rumor.pubkey?.trim().toLowerCase() === input.senderPubkey &&
+    rumorCounterparty === input.counterpartyPubkey &&
+    rumorOrderId === input.orderId &&
+    !!rumorType &&
+    MERCHANT_ORDER_SELF_RECORD_TYPES.has(rumorType) &&
+    isMatchingInboundOrderLifecycleAnchor({
+      anchor: input.anchor,
+      orderId: input.orderId,
+      senderPubkey: input.senderPubkey,
+      counterpartyPubkey: input.counterpartyPubkey,
+    }) &&
+    classifyLegacyOrderRumor(input.rumor) === "ok" &&
+    hasSenderSelfRecordContentBinding(input)
+  )
+}
+
+function getOrderRumorFingerprint(rumor: NDKEvent): string {
+  const serialized = JSON.stringify([
+    rumor.id,
+    rumor.kind,
+    rumor.pubkey,
+    rumor.created_at,
+    rumor.tags,
+    rumor.content,
+  ])
+  return bytesToHex(sha256(new TextEncoder().encode(serialized)))
+}
+
+/**
+ * Issue a one-use compatibility-routing capability for a merchant-authored
+ * order record whose encrypted outer recipient is the sender while the inner
+ * `p` tag remains bound to the buyer counterparty for order projection.
+ */
+export function createValidatedOrderSelfRecordRouteScope(input: {
+  rumor: NDKEvent
+  orderId: string
+  senderPubkey: string
+  recipientPubkey: string
+  counterpartyPubkey: string
+  anchor: ValidatedInboundOrderLifecycleAnchor
+}): ValidatedOrderSelfRecordRouteScope {
+  const orderId = input.orderId.trim()
+  const senderPubkey = input.senderPubkey.trim().toLowerCase()
+  const recipientPubkey = input.recipientPubkey.trim().toLowerCase()
+  const counterpartyPubkey = input.counterpartyPubkey.trim().toLowerCase()
+  if (
+    !isValidatedOrderSelfRecordRumor({
+      rumor: input.rumor,
+      orderId,
+      senderPubkey,
+      recipientPubkey,
+      counterpartyPubkey,
+      anchor: input.anchor,
+    })
+  ) {
+    throw new Error(
+      "Cannot authorize sender self-record compatibility routing for this rumor."
+    )
+  }
+  const scope = Object.freeze({
+    rumorId: input.rumor.id,
+    orderId,
+    senderPubkey,
+    recipientPubkey,
+    counterpartyPubkey,
+    anchorEventId: input.anchor.eventId,
+  })
+  validatedOrderSelfRecordRouteScopes.set(scope, {
+    rumorFingerprint: getOrderRumorFingerprint(input.rumor),
+    anchor: input.anchor,
+  })
   return scope
 }
 
@@ -455,6 +680,12 @@ export interface PublishPrivateMessageInput {
    */
   validatedOrderScope?: ValidatedOrderRouteScope
   /**
+   * One-use capability for a validated merchant order record encrypted back to
+   * the sender. The outer recipient must equal the sender while the rumor `p`
+   * tag and content remain bound to the buyer counterparty.
+   */
+  validatedOrderSelfRecordScope?: ValidatedOrderSelfRecordRouteScope
+  /**
    * Override the compatibility lane gate and registry (tests/config seams).
    * Defaults to the repo-controlled deployment profile and
    * config.dmCompatibilityOrderRelayUrls.
@@ -552,12 +783,22 @@ export async function publishPrivateMessage(
   // NIP-17 delivery is exclusive to the recipient's declared inbox. The only
   // exception is the temporary compatibility route for validated kind-16
   // order traffic (CND-208); a valid declaration always outranks it.
-  const validatedOrder = consumeValidatedOrderRouteScope({
-    scope: input.validatedOrderScope,
-    rumor: input.rumor,
-    senderPubkey,
-    recipientPubkey,
-  })
+  if (input.validatedOrderScope && input.validatedOrderSelfRecordScope) {
+    throw new Error("Private message cannot use multiple order routing scopes")
+  }
+  const validatedOrder = input.validatedOrderSelfRecordScope
+    ? consumeValidatedOrderSelfRecordRouteScope({
+        scope: input.validatedOrderSelfRecordScope,
+        rumor: input.rumor,
+        senderPubkey,
+        recipientPubkey,
+      })
+    : consumeValidatedOrderRouteScope({
+        scope: input.validatedOrderScope,
+        rumor: input.rumor,
+        senderPubkey,
+        recipientPubkey,
+      })
   const recipientDeclaration = await resolveDeclarationForSend(
     input.recipientPubkey,
     input.recipientInboxRelays,
@@ -720,6 +961,32 @@ function consumeValidatedOrderRouteScope(input: {
     scope.orderId === rumorOrderId &&
     scope.senderPubkey === input.senderPubkey &&
     scope.recipientPubkey === input.recipientPubkey
+  )
+}
+
+function consumeValidatedOrderSelfRecordRouteScope(input: {
+  scope: ValidatedOrderSelfRecordRouteScope
+  rumor: NDKEvent
+  senderPubkey: string
+  recipientPubkey: string
+}): boolean {
+  const scope = input.scope
+  const registration = validatedOrderSelfRecordRouteScopes.get(scope)
+  if (!registration) return false
+  validatedOrderSelfRecordRouteScopes.delete(scope)
+  return (
+    registration.rumorFingerprint === getOrderRumorFingerprint(input.rumor) &&
+    scope.rumorId === input.rumor.id &&
+    scope.senderPubkey === input.senderPubkey &&
+    scope.recipientPubkey === input.recipientPubkey &&
+    isValidatedOrderSelfRecordRumor({
+      rumor: input.rumor,
+      orderId: scope.orderId,
+      senderPubkey: input.senderPubkey,
+      recipientPubkey: input.recipientPubkey,
+      counterpartyPubkey: scope.counterpartyPubkey,
+      anchor: registration.anchor,
+    })
   )
 }
 

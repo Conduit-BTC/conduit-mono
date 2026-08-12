@@ -45,6 +45,11 @@ type ParsedOrderMessageBase = {
   orderId: string
   type: OrderMessageTypeSchema
   createdAt: number
+  /**
+   * Authenticated millisecond ordering hint from Conduit-authored content.
+   * Accepted only when it falls inside the rumor's Nostr event second.
+   */
+  authoredAt?: number
   senderPubkey: string
   recipientPubkey: string
   rawContent: string
@@ -76,6 +81,85 @@ export type ParsedOrderMessage =
       type: "payment_proof"
       payload: PaymentProofMessageSchema
     })
+
+const cachedOrderMessageBaseSchema = z
+  .object({
+    id: z.string().min(1),
+    orderId: z.string().min(1),
+    type: orderMessageTypeSchema,
+    createdAt: z.number().finite(),
+    authoredAt: z.number().int().finite().optional(),
+    senderPubkey: z.string().min(1),
+    recipientPubkey: z.string(),
+    rawContent: z.string(),
+  })
+  .superRefine((message, ctx) => {
+    if (
+      message.authoredAt !== undefined &&
+      (message.authoredAt < message.createdAt ||
+        message.authoredAt >= message.createdAt + 1000)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["authoredAt"],
+        message: "authoredAt must fall inside the authoritative event second",
+      })
+    }
+  })
+
+/**
+ * Revalidate the typed representation stored in IndexedDB. Cache contents are
+ * a performance hint, not a protocol trust boundary; callers must still bind
+ * the parsed fields to the cache-row envelope before using lifecycle ids.
+ */
+export function parseCachedOrderMessage(input: unknown): ParsedOrderMessage {
+  const base = cachedOrderMessageBaseSchema.parse(input)
+  const payload =
+    input && typeof input === "object" && !Array.isArray(input)
+      ? (input as Record<string, unknown>).payload
+      : undefined
+
+  switch (base.type) {
+    case "order":
+      return { ...base, type: base.type, payload: orderSchema.parse(payload) }
+    case "payment_request":
+      return {
+        ...base,
+        type: base.type,
+        payload: paymentRequestMessageSchema.parse(payload),
+      }
+    case "status_update":
+      return {
+        ...base,
+        type: base.type,
+        payload: statusUpdateMessageSchema.parse(payload),
+      }
+    case "shipping_update":
+      return {
+        ...base,
+        type: base.type,
+        payload: shippingUpdateMessageSchema.parse(payload),
+      }
+    case "receipt":
+      return {
+        ...base,
+        type: base.type,
+        payload: receiptMessageSchema.parse(payload),
+      }
+    case "message":
+      return {
+        ...base,
+        type: base.type,
+        payload: conversationMessageSchema.parse(payload),
+      }
+    case "payment_proof":
+      return {
+        ...base,
+        type: base.type,
+        payload: paymentProofMessageSchema.parse(payload),
+      }
+  }
+}
 
 const lightningPaymentProofInputSchema = z
   .object({
@@ -229,13 +313,24 @@ export function isPaymentProofEvidenceMessage(
 function messageBase<TType extends OrderMessageTypeSchema>(
   event: OrderRumorEvent,
   type: TType,
-  orderId: string
+  orderId: string,
+  json: Record<string, unknown> | null
 ): ParsedOrderMessageBase & { type: TType } {
+  const createdAt = (event.created_at ?? 0) * 1000
+  const contentCreatedAt = getNumber(json?.createdAt)
+  const authoredAt =
+    contentCreatedAt !== undefined &&
+    Number.isInteger(contentCreatedAt) &&
+    contentCreatedAt >= createdAt &&
+    contentCreatedAt < createdAt + 1000
+      ? contentCreatedAt
+      : undefined
   return {
     id: event.id,
     orderId,
     type,
-    createdAt: (event.created_at ?? 0) * 1000,
+    createdAt,
+    ...(authoredAt !== undefined ? { authoredAt } : {}),
     senderPubkey: event.pubkey,
     recipientPubkey: getTagValue(event.tags ?? [], "p") ?? "",
     rawContent: event.content ?? "",
@@ -260,7 +355,7 @@ export function parseOrderMessageRumorEvent(
   if (type === "order") {
     const payload = parseOrderRumorEvent(event)
     const orderId = getTagValue(event.tags ?? [], "order") ?? payload.id
-    return { ...messageBase(event, type, orderId), payload }
+    return { ...messageBase(event, type, orderId, json), payload }
   }
 
   const orderId =
@@ -278,7 +373,7 @@ export function parseOrderMessageRumorEvent(
         getTagValue(event.tags ?? [], "currency") ?? getString(json?.currency),
       note: getString(json?.note),
     })
-    return { ...messageBase(event, type, orderId), payload }
+    return { ...messageBase(event, type, orderId, json), payload }
   }
 
   if (type === "status_update") {
@@ -286,8 +381,10 @@ export function parseOrderMessageRumorEvent(
       status:
         getTagValue(event.tags ?? [], "status") ?? getString(json?.status),
       note: getString(json?.note),
+      reopens:
+        getTagValue(event.tags ?? [], "reopens") ?? getString(json?.reopens),
     })
-    return { ...messageBase(event, type, orderId), payload }
+    return { ...messageBase(event, type, orderId, json), payload }
   }
 
   if (type === "shipping_update") {
@@ -300,7 +397,7 @@ export function parseOrderMessageRumorEvent(
       trackingUrl: getString(json?.trackingUrl),
       note: getString(json?.note),
     })
-    return { ...messageBase(event, type, orderId), payload }
+    return { ...messageBase(event, type, orderId, json), payload }
   }
 
   if (type === "receipt") {
@@ -309,14 +406,14 @@ export function parseOrderMessageRumorEvent(
         getString(json?.note) ??
         (json ? undefined : event.content.trim() || undefined),
     })
-    return { ...messageBase(event, type, orderId), payload }
+    return { ...messageBase(event, type, orderId, json), payload }
   }
 
   if (type === "message") {
     const payload = conversationMessageSchema.parse({
       note: getString(json?.note) ?? event.content.trim(),
     })
-    return { ...messageBase(event, type, orderId), payload }
+    return { ...messageBase(event, type, orderId, json), payload }
   }
 
   if (type === "payment_proof") {
@@ -342,11 +439,11 @@ export function parseOrderMessageRumorEvent(
       verification: normalizePaymentProofVerification(json?.verification),
       note: getString(json?.note),
     })
-    return { ...messageBase(event, type, orderId), payload }
+    return { ...messageBase(event, type, orderId, json), payload }
   }
 
   return {
-    ...messageBase(event, type, orderId),
+    ...messageBase(event, type, orderId, json),
     payload: json ?? { raw: event.content.trim() },
   }
 }

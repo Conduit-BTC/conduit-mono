@@ -100,13 +100,19 @@ function invoiceOnlyConversation(orderId: string): MerchantConversationSummary {
 
 describe("merchant NWC payment verification", () => {
   it("requires exact order invoices and rejects replay across orders", () => {
-    expect(getMerchantPaymentVerificationCandidates([conversation()])).toEqual([
+    const matchingConversation = conversation()
+    const candidates = getMerchantPaymentVerificationCandidates([
+      matchingConversation,
+    ])
+    expect(candidates).toEqual([
       expect.objectContaining({
         orderId: "order-1",
         invoice,
         expectedAmountMsats: 100_000,
+        inboundOrder: matchingConversation.messages[0],
       }),
     ])
+    expect(candidates[0]?.inboundOrder.type).toBe("order")
 
     expect(
       getMerchantPaymentVerificationCandidates([

@@ -2,6 +2,7 @@ import {
   decodeLightningInvoiceAmount,
   type MerchantConversationSummary,
   type NwcLookupInvoiceResult,
+  type ParsedOrderMessage,
 } from "@conduit/core"
 import {
   getMerchantConversationCommunication,
@@ -14,6 +15,7 @@ export type MerchantNwcAddressStatus =
 export interface MerchantPaymentVerificationCandidate {
   orderId: string
   buyerPubkey: string
+  inboundOrder: Extract<ParsedOrderMessage, { type: "order" }>
   evidenceMessageId: string
   invoice: string
   paymentHash?: string
@@ -105,6 +107,7 @@ function findCandidate(
   return {
     orderId: conversation.orderId,
     buyerPubkey: conversation.buyerPubkey,
+    inboundOrder: order,
     evidenceMessageId: evidence.id,
     invoice,
     paymentHash: evidence.payload.paymentHash?.trim() || undefined,

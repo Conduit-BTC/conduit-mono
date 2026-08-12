@@ -30,6 +30,10 @@ function getDeliveryStateLabel(state: ProductDeliveryNotice["state"]): string {
   return "Retry needed"
 }
 
+function getInventorySyncDetail(detail: string): string {
+  return detail.replaceAll("Retry delivery", "Retry listing sync")
+}
+
 export function OrderStockPanel({
   adjustments,
   delivery,
@@ -54,11 +58,11 @@ export function OrderStockPanel({
           id="order-stock-heading"
           className="text-sm font-semibold text-[var(--text-primary)]"
         >
-          Inventory
+          Inventory sync
         </h4>
         <p className="mt-1 text-pretty text-xs leading-5 text-[var(--text-secondary)]">
-          Order quantities do not change public listings until you approve and
-          sign each update.
+          Optional and separate from fulfillment. Public listings change only
+          after you approve and sign each update.
         </p>
       </div>
 
@@ -79,7 +83,9 @@ export function OrderStockPanel({
               {delivery.adjustment.title}
             </span>
           </div>
-          <p className="mt-2">{delivery.notice.detail}</p>
+          <p className="mt-2">
+            {getInventorySyncDetail(delivery.notice.detail)}
+          </p>
           <div className="mt-3 flex flex-wrap gap-2">
             {deliveryNeedsAttention && (
               <Button
@@ -89,7 +95,7 @@ export function OrderStockPanel({
                 disabled={pending}
                 onClick={onRetry}
               >
-                Retry delivery
+                Retry listing sync
               </Button>
             )}
             <Button

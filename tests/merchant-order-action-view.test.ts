@@ -2,6 +2,8 @@ import { describe, expect, it } from "bun:test"
 import { getMerchantOrderActions } from "@conduit/core"
 import {
   buildMerchantOrderActionView,
+  getMerchantOrderActionErrorMessage,
+  getMerchantOrderActionLabel,
   getMerchantOrderCancellationCopy,
   isMerchantOrderActionSurfacePending,
   runExclusiveOrderAction,
@@ -116,5 +118,32 @@ describe("merchant order action presentation", () => {
     releaseFirst?.()
     await expect(first).resolves.toBe("published")
     expect(lock.current).toBe(false)
+  })
+
+  it("uses recording language when a guest cannot receive the update", () => {
+    const action = getMerchantOrderActions({
+      status: "accepted",
+      accepted: true,
+      buyerReplyable: false,
+    }).find((candidate) => candidate.action === "confirm_payment")
+
+    expect(action).toBeDefined()
+    expect(getMerchantOrderActionLabel(action!, false)).toBe(
+      "Record payment received"
+    )
+    expect(getMerchantOrderActionLabel(action!, true)).toBe(action!.label)
+  })
+
+  it("replaces protocol failures with a recoverable merchant message", () => {
+    expect(
+      getMerchantOrderActionErrorMessage(
+        new Error("Cannot authorize compatibility routing for this rumor.")
+      )
+    ).toBe(
+      "Couldn’t confirm whether this order update was saved. Check your connection, then refresh before trying again."
+    )
+    expect(
+      getMerchantOrderActionErrorMessage(new Error("Tracking code is required"))
+    ).toBe("Tracking code is required")
   })
 })

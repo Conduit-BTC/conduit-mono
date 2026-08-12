@@ -40,7 +40,8 @@ describe("merchant order stock UI", () => {
       />
     )
 
-    expect(markup).toContain("Inventory")
+    expect(markup).toContain("Inventory sync")
+    expect(markup).toContain("Optional and separate from fulfillment")
     expect(markup).toContain("Mark 2 ×")
     expect(markup).toContain("Pocket Relay")
     expect(markup).toContain("sold. Update stock")
@@ -101,7 +102,8 @@ describe("merchant order stock UI", () => {
     )
 
     expect(markup).toContain("Retry needed")
-    expect(markup).toContain("Retry delivery")
+    expect(markup).toContain("Retry listing sync")
+    expect(markup).not.toContain("Retry delivery")
     expect(markup).toContain("Hide for now")
   })
 })
