@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import {
+  formatGroupedProductOptionValue,
   prepareProductCatalog,
   type CommerceProductRecord,
   type PreparedProductFamily,
@@ -10,6 +11,7 @@ import {
   getDefaultProductSelection,
   getProductSelection,
   getProductSelectionImages,
+  getProductSelectionForAxisValue,
   getProductVariationSelectorModel,
 } from "../apps/market/src/lib/productVariations"
 
@@ -93,6 +95,83 @@ describe("product variation selection", () => {
     ])
     expect(model?.axes[0]?.options[0]?.soldOut).toBe(true)
     expect(selected.specifications).toEqual([{ key: "size", value: "L" }])
+  })
+
+  it("presents qualified size alternatives in accessible Men and Women groups", () => {
+    const menFive = sizeVariation(
+      formatGroupedProductOptionValue("Men", "5"),
+      3
+    )
+    const menFiveAndAHalf = sizeVariation(
+      formatGroupedProductOptionValue("Men", "5.5"),
+      2
+    )
+    const womenFour = sizeVariation(
+      formatGroupedProductOptionValue("Women", "4"),
+      4
+    )
+    const womenFiveAndAHalf = sizeVariation(
+      formatGroupedProductOptionValue("Women", "5.5"),
+      1
+    )
+    const parent = product({ type: "variable" })
+    const prepared = family(parent, [
+      womenFiveAndAHalf,
+      menFive,
+      womenFour,
+      menFiveAndAHalf,
+    ])
+    const model = getProductVariationSelectorModel(prepared, menFive)
+
+    expect(model?.axes[0]?.selectedValue).toBe("Men · 5")
+    expect(model?.axes[0]?.selectedLabel).toBe("Men · 5")
+    expect(
+      model?.axes[0]?.optionGroups?.map((group) => ({
+        label: group.label,
+        options: group.options.map((option) => ({
+          label: option.label,
+          value: option.value,
+        })),
+      }))
+    ).toEqual([
+      {
+        label: "Men",
+        options: [
+          { label: "5", value: "Men · 5" },
+          { label: "5.5", value: "Men · 5.5" },
+        ],
+      },
+      {
+        label: "Women",
+        options: [
+          { label: "4", value: "Women · 4" },
+          { label: "5.5", value: "Women · 5.5" },
+        ],
+      },
+    ])
+
+    expect(
+      getProductSelectionForAxisValue(prepared, menFive, "size", "Women · 4")
+        ?.id
+    ).toBe(womenFour.id)
+  })
+
+  it("keeps full labels when grouped and ordinary values are mixed", () => {
+    const parent = product({ type: "variable" })
+    const prepared = family(parent, [
+      sizeVariation("XL", 2),
+      sizeVariation(formatGroupedProductOptionValue("Premium", "XL"), 1),
+    ])
+    const model = getProductVariationSelectorModel(
+      prepared,
+      prepared.children[0]!.product
+    )
+
+    expect(model?.axes[0]?.optionGroups).toBeNull()
+    expect(model?.axes[0]?.options.map((option) => option.label)).toEqual([
+      "XL",
+      "Premium · XL",
+    ])
   })
 
   it("keeps child identity and human-readable specifications in the cart", () => {

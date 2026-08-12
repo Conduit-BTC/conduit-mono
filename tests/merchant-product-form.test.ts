@@ -22,6 +22,7 @@ import {
   createProductVariationAxis,
   createEmptyProductVariationForm,
   generateProductVariationRows,
+  groupProductVariationAxesAsAlternatives,
 } from "../apps/merchant/src/lib/productVariations"
 
 function form(
@@ -203,6 +204,37 @@ describe("merchant product form validation", () => {
     expect(missingOptions.canPublish).toBe(false)
     expect(missingOptions.errors.variations).toContain("at least one")
     expect(validOptions.canPublish).toBe(true)
+  })
+
+  it("publishes Men and Women size lists as 23 alternatives instead of 132 pairs", () => {
+    const ungroupedVariations = {
+      ...createEmptyProductVariationForm(),
+      enabled: true,
+      axes: [
+        createProductVariationAxis(
+          "US Size Men",
+          "5, 5.5, 6.5, 7, 8, 8.5, 9.5, 10, 11, 12, 12.5, 13.5",
+          0
+        ),
+        createProductVariationAxis(
+          "US Size Women",
+          "4, 5.5, 6.5, 7, 8, 8.5, 9.5, 10, 11, 11.5, 12.5",
+          1
+        ),
+      ],
+    }
+    const ungrouped = validate(form({ variations: ungroupedVariations }))
+    const groupedVariations = generateProductVariationRows(
+      groupProductVariationAxesAsAlternatives(ungroupedVariations)
+    )
+    const grouped = validate(form({ variations: groupedVariations }))
+
+    expect(ungrouped.canPublish).toBe(false)
+    expect(ungrouped.errors.variations).toBe(
+      "This setup creates 132 variations. The limit is 64. Group mutually exclusive lists or reduce the options."
+    )
+    expect(groupedVariations.rows).toHaveLength(23)
+    expect(grouped.canPublish).toBe(true)
   })
 
   it("canonicalizes and dedupes tags case-insensitively", () => {

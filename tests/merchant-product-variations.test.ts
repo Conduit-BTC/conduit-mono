@@ -5,10 +5,13 @@ import {
   createEmptyProductVariationForm,
   createProductVariationAxis,
   generateProductVariationRows,
+  getMissingProductVariationRowCount,
+  getProductVariationAlternativeSuggestion,
   getProductVariationCartesianCount,
   getProductVariationCombinations,
   getProductVariationFormError,
   getProductVariationFormState,
+  groupProductVariationAxesAsAlternatives,
   groupProductVariationRecords,
   removeProductVariationRow,
   updateProductVariationOverride,
@@ -333,5 +336,183 @@ describe("merchant product variation planning", () => {
 
     expect(getProductVariationCartesianCount(state)).toBe(75)
     expect(generateProductVariationRows(state).rows).toEqual([])
+  })
+
+  it("groups Men and Women size lists into 23 alternatives", () => {
+    const state: ProductVariationFormState = {
+      ...createEmptyProductVariationForm(),
+      enabled: true,
+      axes: [
+        createProductVariationAxis(
+          "US Size Men",
+          "5, 5.5, 6.5, 7, 8, 8.5, 9.5, 10, 11, 12, 12.5, 13.5",
+          0
+        ),
+        createProductVariationAxis(
+          "US Size Women",
+          "4, 5.5, 6.5, 7, 8, 8.5, 9.5, 10, 11, 11.5, 12.5",
+          1
+        ),
+      ],
+    }
+
+    expect(getProductVariationAlternativeSuggestion(state)).toEqual({
+      axisIds: ["axis-us-size-men-0", "axis-us-size-women-1"],
+      axisKey: "US Size",
+      groups: [
+        {
+          axisId: "axis-us-size-men-0",
+          label: "Men",
+          values: [
+            "5",
+            "5.5",
+            "6.5",
+            "7",
+            "8",
+            "8.5",
+            "9.5",
+            "10",
+            "11",
+            "12",
+            "12.5",
+            "13.5",
+          ],
+        },
+        {
+          axisId: "axis-us-size-women-1",
+          label: "Women",
+          values: [
+            "4",
+            "5.5",
+            "6.5",
+            "7",
+            "8",
+            "8.5",
+            "9.5",
+            "10",
+            "11",
+            "11.5",
+            "12.5",
+          ],
+        },
+      ],
+      choiceCount: 23,
+      currentVariationCount: 132,
+      resultingVariationCount: 23,
+      canGroup: true,
+    })
+
+    const grouped = groupProductVariationAxesAsAlternatives(state)
+    const generated = generateProductVariationRows(grouped)
+    expect(grouped.axes).toHaveLength(1)
+    expect(grouped.axes[0]?.key).toBe("US Size")
+    expect(getProductVariationCartesianCount(grouped)).toBe(23)
+    expect(generated.rows).toHaveLength(23)
+    expect(getProductVariationFormError(generated, "USD")).toBeNull()
+    expect(generated.rows.map((row) => row.specifications[0]?.value)).toContain(
+      "Men · 5.5"
+    )
+    expect(generated.rows.map((row) => row.specifications[0]?.value)).toContain(
+      "Women · 5.5"
+    )
+
+    const plan = buildProductFamilyChangePlan({
+      parentDTag: "grouped-shoes",
+      baseProduct: baseProduct({ title: "Grouped Shoes" }),
+      variations: generated,
+      currency: "USD",
+      now: NOW,
+    })
+    expect(plan.desired).toHaveLength(24)
+  })
+
+  it("adds alternative sizes before combining them with other axes", () => {
+    const state: ProductVariationFormState = {
+      ...createEmptyProductVariationForm(),
+      enabled: true,
+      axes: [
+        createProductVariationAxis("US Size Men", "5, 6", 0),
+        createProductVariationAxis("US Size Women", "7, 8, 9", 1),
+        createProductVariationAxis("color", "Orange, Black", 2),
+      ],
+    }
+
+    const suggestion = getProductVariationAlternativeSuggestion(state)
+    expect(suggestion).toMatchObject({
+      choiceCount: 5,
+      currentVariationCount: 12,
+      resultingVariationCount: 10,
+    })
+
+    const generated = generateProductVariationRows(
+      groupProductVariationAxesAsAlternatives(state)
+    )
+    expect(generated.rows).toHaveLength(10)
+    expect(generated.rows.every((row) => row.specifications.length === 2)).toBe(
+      true
+    )
+  })
+
+  it("surfaces the real generation limit before the empty-row error", () => {
+    const state: ProductVariationFormState = {
+      ...createEmptyProductVariationForm(),
+      enabled: true,
+      axes: [
+        createProductVariationAxis(
+          "size",
+          Array.from({ length: 23 }, (_, index) => `Size ${index + 1}`).join(
+            ", "
+          ),
+          0
+        ),
+        createProductVariationAxis("color", "Orange, Black, White", 1),
+      ],
+    }
+
+    expect(getProductVariationCartesianCount(state)).toBe(69)
+    expect(getMissingProductVariationRowCount(state)).toBeNull()
+    expect(getProductVariationFormError(state, "USD")).toBe(
+      "This setup creates 69 variations. The limit is 64. Group mutually exclusive lists or reduce the options."
+    )
+  })
+
+  it("does not infer that every pair of size axes is mutually exclusive", () => {
+    const state: ProductVariationFormState = {
+      ...createEmptyProductVariationForm(),
+      enabled: true,
+      axes: [
+        createProductVariationAxis("Waist Size", "28, 30, 32", 0),
+        createProductVariationAxis("Inseam Size", "30, 32, 34", 1),
+      ],
+    }
+
+    expect(getProductVariationCartesianCount(state)).toBe(9)
+    expect(getProductVariationAlternativeSuggestion(state)).toBeNull()
+    expect(groupProductVariationAxesAsAlternatives(state)).toBe(state)
+  })
+
+  it("does not collapse more alternatives than one axis can publish", () => {
+    const state: ProductVariationFormState = {
+      ...createEmptyProductVariationForm(),
+      enabled: true,
+      axes: [
+        createProductVariationAxis(
+          "US Size Men",
+          Array.from({ length: 40 }, (_, index) => `M${index + 1}`).join(", "),
+          0
+        ),
+        createProductVariationAxis(
+          "US Size Women",
+          Array.from({ length: 40 }, (_, index) => `W${index + 1}`).join(", "),
+          1
+        ),
+      ],
+    }
+
+    expect(getProductVariationAlternativeSuggestion(state)).toMatchObject({
+      choiceCount: 80,
+      canGroup: false,
+    })
+    expect(groupProductVariationAxesAsAlternatives(state)).toBe(state)
   })
 })

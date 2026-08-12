@@ -1,6 +1,8 @@
 import {
   buildProductListingEventDraft,
   canonicalizeProductPrice,
+  formatGroupedProductOptionValue,
+  parseGroupedProductOptionValue,
   type ProductImage,
   type ProductSchema,
 } from "@conduit/core"
@@ -16,8 +18,8 @@ import {
 } from "./productStock"
 
 export const MAX_PRODUCT_VARIATION_AXES = 3
-export const MAX_PRODUCT_VARIATION_AXIS_VALUES = 12
 export const MAX_PRODUCT_VARIATION_COUNT = 64
+export const MAX_PRODUCT_VARIATION_AXIS_VALUES = MAX_PRODUCT_VARIATION_COUNT
 export const MAX_PRODUCT_VARIATION_VALUE_LENGTH = 40
 
 export interface ProductVariationAxis {
@@ -74,6 +76,22 @@ export interface ProductVariationFormResult {
   state: ProductVariationFormState
   supported: boolean
   reason?: string
+}
+
+export interface ProductVariationAlternativeGroup {
+  axisId: string
+  label: string
+  values: string[]
+}
+
+export interface ProductVariationAlternativeSuggestion {
+  axisIds: string[]
+  axisKey: string
+  groups: ProductVariationAlternativeGroup[]
+  choiceCount: number
+  currentVariationCount: number
+  resultingVariationCount: number
+  canGroup: boolean
 }
 
 export interface ProductFamilyPublishTarget<
@@ -151,6 +169,149 @@ function parseVariationAxis(input: string): ParsedVariationAxis {
   }
 
   return { values, duplicates, tooLong }
+}
+
+function getAxisNameTokens(value: string): string[] {
+  return value
+    .trim()
+    .split(/[^a-z0-9]+/i)
+    .filter((token) => token && token.toLowerCase() !== "s")
+}
+
+function normalizeAxisNameToken(value: string): string {
+  const normalized = normalizePart(value)
+  return normalized === "sizes" ? "size" : normalized
+}
+
+export function isProductVariationSizeAxisKey(value: string): boolean {
+  return getAxisNameTokens(value).some(
+    (token) => normalizeAxisNameToken(token) === "size"
+  )
+}
+
+export function isProductVariationGroupedSizeAxis(
+  axis: ProductVariationAxis
+): boolean {
+  if (!isProductVariationSizeAxisKey(axis.key)) return false
+  const values = parseVariationAxis(axis.values).values
+  return (
+    values.length > 0 &&
+    values.every((value) => parseGroupedProductOptionValue(value) !== null)
+  )
+}
+
+function getSizeAudienceGroupLabel(tokens: string[]): string | null {
+  const identity = tokens.map(normalizePart).join("")
+  if (["men", "mens", "male"].includes(identity)) return "Men"
+  if (["women", "womens", "female"].includes(identity)) return "Women"
+  return null
+}
+
+function getAlternativeSizeAxisSuggestion(
+  state: ProductVariationFormState
+): ProductVariationAlternativeSuggestion | null {
+  if (state.rows.length > 0) return null
+
+  const candidates: Array<{
+    axis: ProductVariationAxis
+    parsed: ParsedVariationAxis
+  }> = []
+  for (const axis of state.axes) {
+    const parsed = parseVariationAxis(axis.values)
+    if (
+      isProductVariationSizeAxisKey(axis.key) &&
+      parsed.values.length > 0 &&
+      parsed.duplicates.length === 0 &&
+      parsed.tooLong.length === 0
+    ) {
+      candidates.push({ axis, parsed })
+    }
+  }
+  if (candidates.length !== 2) return null
+
+  const tokenSets = candidates.map(
+    ({ axis }) =>
+      new Set(getAxisNameTokens(axis.key).map(normalizeAxisNameToken))
+  )
+  const sharedTokens = getAxisNameTokens(candidates[0]!.axis.key).filter(
+    (token) =>
+      tokenSets.every((tokens) => tokens.has(normalizeAxisNameToken(token)))
+  )
+  const sharedIdentities = new Set(sharedTokens.map(normalizeAxisNameToken))
+  const groups: ProductVariationAlternativeGroup[] = []
+  for (const { axis, parsed } of candidates) {
+    const label = getSizeAudienceGroupLabel(
+      getAxisNameTokens(axis.key).filter(
+        (token) => !sharedIdentities.has(normalizeAxisNameToken(token))
+      )
+    )
+    if (!label) return null
+    groups.push({ axisId: axis.id, label, values: parsed.values })
+  }
+  if (new Set(groups.map(({ label }) => label)).size !== groups.length) {
+    return null
+  }
+
+  const qualifiedValues = groups.flatMap(({ label, values }) =>
+    values.map((value) => formatGroupedProductOptionValue(label, value))
+  )
+  if (
+    qualifiedValues.some(
+      (value) => value.length > MAX_PRODUCT_VARIATION_VALUE_LENGTH
+    )
+  ) {
+    return null
+  }
+
+  const choiceCount = qualifiedValues.length
+  const candidateIds = new Set(groups.map(({ axisId }) => axisId))
+  let resultingVariationCount = choiceCount
+  for (const axis of state.axes) {
+    if (candidateIds.has(axis.id)) continue
+    const valueCount = parseVariationAxis(axis.values).values.length
+    if (valueCount > 0) resultingVariationCount *= valueCount
+  }
+
+  return {
+    axisIds: groups.map(({ axisId }) => axisId),
+    axisKey: sharedTokens.join(" ").trim() || "Size",
+    groups,
+    choiceCount,
+    currentVariationCount: getProductVariationCartesianCount(state),
+    resultingVariationCount,
+    canGroup: choiceCount <= MAX_PRODUCT_VARIATION_AXIS_VALUES,
+  }
+}
+
+export function getProductVariationAlternativeSuggestion(
+  state: ProductVariationFormState
+): ProductVariationAlternativeSuggestion | null {
+  return getAlternativeSizeAxisSuggestion(state)
+}
+
+export function groupProductVariationAxesAsAlternatives(
+  state: ProductVariationFormState
+): ProductVariationFormState {
+  const suggestion = getAlternativeSizeAxisSuggestion(state)
+  if (!suggestion || !suggestion.canGroup) return state
+
+  const axisIds = new Set(suggestion.axisIds)
+  const firstAxisIndex = state.axes.findIndex((axis) => axisIds.has(axis.id))
+  const firstAxis = state.axes[firstAxisIndex]
+  if (!firstAxis) return state
+
+  const groupedAxis: ProductVariationAxis = {
+    id: firstAxis.id,
+    key: suggestion.axisKey,
+    values: suggestion.groups
+      .flatMap(({ label, values }) =>
+        values.map((value) => formatGroupedProductOptionValue(label, value))
+      )
+      .join(", "),
+  }
+  const axes = state.axes.filter((axis) => !axisIds.has(axis.id))
+  axes.splice(firstAxisIndex, 0, groupedAxis)
+  return { ...state, axes }
 }
 
 function getCombinationIdentity(
@@ -371,6 +532,33 @@ export function getProductVariationCartesianCount(
   return counts.reduce((total, count) => total * count, 1)
 }
 
+export function getMissingProductVariationRowCount(
+  state: ProductVariationFormState
+): number | null {
+  const cartesianCount = getProductVariationCartesianCount(state)
+  if (cartesianCount > MAX_PRODUCT_VARIATION_COUNT) return null
+  if (cartesianCount === 0) return 0
+
+  const existingIdentities = new Set(
+    state.rows.map((row) => getCombinationIdentity(row.specifications))
+  )
+  return buildAxisCombinations(state.axes).filter(
+    (specifications) =>
+      !existingIdentities.has(getCombinationIdentity(specifications))
+  ).length
+}
+
+export function getProductVariationGenerationLimitMessage(
+  state: ProductVariationFormState
+): string | null {
+  const cartesianCount = getProductVariationCartesianCount(state)
+  if (cartesianCount <= MAX_PRODUCT_VARIATION_COUNT) return null
+
+  return state.rows.length === 0
+    ? `This setup creates ${cartesianCount} variations. The limit is ${MAX_PRODUCT_VARIATION_COUNT}. Group mutually exclusive lists or reduce the options.`
+    : `These options define ${cartesianCount} possible combinations. Automatic generation is limited to ${MAX_PRODUCT_VARIATION_COUNT}; keep the existing explicit rows or reduce the options.`
+}
+
 export function generateProductVariationRows(
   state: ProductVariationFormState
 ): ProductVariationFormState {
@@ -551,8 +739,13 @@ export function getProductVariationFormError(
     }
   }
 
+  const generationLimitMessage =
+    getProductVariationGenerationLimitMessage(state)
+  if (generationLimitMessage && state.rows.length === 0) {
+    return generationLimitMessage
+  }
   if (state.rows.length === 0) {
-    return "Generate or add at least one variation row."
+    return "Generate at least one variation row."
   }
   if (state.rows.length > MAX_PRODUCT_VARIATION_COUNT) {
     return `Keep the variation count to ${MAX_PRODUCT_VARIATION_COUNT} or fewer.`

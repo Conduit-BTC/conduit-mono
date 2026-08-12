@@ -118,11 +118,16 @@ import {
   buildProductFamilyChangePlan,
   createEmptyProductVariationForm,
   generateProductVariationRows,
+  getMissingProductVariationRowCount,
+  getProductVariationAlternativeSuggestion,
   getProductVariationCartesianCount,
   getProductVariationCombinations,
+  getProductVariationGenerationLimitMessage,
   getProductVariationFormState,
+  groupProductVariationAxesAsAlternatives,
   groupProductVariationRecords,
-  MAX_PRODUCT_VARIATION_COUNT,
+  isProductVariationGroupedSizeAxis,
+  isProductVariationSizeAxisKey,
   reconcileProductVariationForm,
   removeProductVariationAxis,
   removeProductVariationRow,
@@ -1316,10 +1321,34 @@ function ProductsPage() {
     () => getProductVariationCartesianCount(form.variations),
     [form.variations]
   )
-  const productVariationGenerationMessage =
-    productVariationCartesianCount > MAX_PRODUCT_VARIATION_COUNT
-      ? `These axes define ${productVariationCartesianCount} combinations. Reduce the values to generate at most ${MAX_PRODUCT_VARIATION_COUNT}, or keep the existing sparse rows.`
-      : null
+  const productVariationMissingRowCount = useMemo(
+    () => getMissingProductVariationRowCount(form.variations),
+    [form.variations]
+  )
+  const productVariationAlternativeSuggestion = useMemo(
+    () => getProductVariationAlternativeSuggestion(form.variations),
+    [form.variations]
+  )
+  const productVariationGenerationMessage = useMemo(
+    () => getProductVariationGenerationLimitMessage(form.variations),
+    [form.variations]
+  )
+  const groupProductSizeAlternatives = () => {
+    const groupedAxisId = productVariationAlternativeSuggestion?.axisIds[0]
+    if (!groupedAxisId || !productVariationAlternativeSuggestion.canGroup) {
+      return
+    }
+
+    setForm((previous) => ({
+      ...previous,
+      variations: groupProductVariationAxesAsAlternatives(previous.variations),
+    }))
+    window.requestAnimationFrame(() => {
+      document
+        .getElementById(`product-variation-values-${groupedAxisId}`)
+        ?.focus()
+    })
+  }
   const productIsDigital = form.format === "digital"
   const productCoordinatesShipping =
     !productIsDigital && form.shippingPricingMode === "coordinate_after_order"
@@ -2208,13 +2237,15 @@ function ProductsPage() {
                           Option axes
                         </div>
                         <p className="mt-1 text-xs text-[var(--text-muted)]">
-                          Size and color are presets. Axis names remain generic
-                          protocol specifications.
+                          Values within one axis are alternatives. Separate axes
+                          combine with each other, such as size × color.
                         </p>
                       </div>
                       <div className="flex flex-wrap gap-2">
                         {!form.variations.axes.some(
-                          (axis) => axis.key.trim().toLowerCase() === "size"
+                          (axis) =>
+                            axis.key.trim().toLowerCase() === "size" ||
+                            isProductVariationGroupedSizeAxis(axis)
                         ) ? (
                           <Button
                             type="button"
@@ -2311,7 +2342,7 @@ function ProductsPage() {
                             }
                             aria-describedby="product-variations-help"
                             placeholder={
-                              axis.key.trim().toLowerCase() === "size"
+                              isProductVariationSizeAxisKey(axis.key)
                                 ? "S, M, L, XL"
                                 : "Personal, Business"
                             }
@@ -2332,6 +2363,9 @@ function ProductsPage() {
                           type="button"
                           size="sm"
                           variant="outline"
+                          aria-label={`Remove ${
+                            axis.key.trim() || `option ${index + 1}`
+                          }`}
                           onClick={() =>
                             setForm((previous) => ({
                               ...previous,
@@ -2347,11 +2381,86 @@ function ProductsPage() {
                       </div>
                     ))}
 
+                    {productVariationAlternativeSuggestion && (
+                      <div className="grid gap-3 rounded-xl border border-secondary-500/40 bg-secondary-500/10 p-3 text-sm">
+                        <div>
+                          <div className="text-balance font-medium text-[var(--text-primary)]">
+                            Group Men’s and Women’s size choices
+                          </div>
+                          <p
+                            role="status"
+                            aria-live="polite"
+                            aria-atomic="true"
+                            className="mt-1 text-pretty text-xs leading-5 text-[var(--text-secondary)]"
+                          >
+                            Group them when shoppers choose one{" "}
+                            {productVariationAlternativeSuggestion.groups
+                              .map(({ label }) => label)
+                              .join(" or ")}{" "}
+                            size, not one of each. This changes{" "}
+                            <span className="tabular-nums">
+                              {
+                                productVariationAlternativeSuggestion.currentVariationCount
+                              }
+                            </span>{" "}
+                            combinations to{" "}
+                            <span className="tabular-nums">
+                              {
+                                productVariationAlternativeSuggestion.choiceCount
+                              }
+                            </span>{" "}
+                            size choices
+                            {productVariationAlternativeSuggestion.resultingVariationCount !==
+                            productVariationAlternativeSuggestion.choiceCount
+                              ? ` and ${productVariationAlternativeSuggestion.resultingVariationCount} final variations with the other options`
+                              : ""}
+                            . Each choice becomes its own variation and
+                            inventory row.
+                          </p>
+                          {!productVariationAlternativeSuggestion.canGroup && (
+                            <p className="mt-1 text-pretty text-xs leading-5 text-error">
+                              A grouped size list can contain at most 64
+                              choices. Reduce these lists before grouping them.
+                            </p>
+                          )}
+                          {productVariationAlternativeSuggestion.canGroup &&
+                            productVariationAlternativeSuggestion.resultingVariationCount >
+                              64 && (
+                              <p className="mt-1 text-pretty text-xs leading-5 text-warning">
+                                Grouping is safe, but the other options still
+                                bring the final count above the 64-variation
+                                limit.
+                              </p>
+                            )}
+                        </div>
+                        <div>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="secondary"
+                            disabled={
+                              !productVariationAlternativeSuggestion.canGroup
+                            }
+                            onClick={groupProductSizeAlternatives}
+                          >
+                            Group as{" "}
+                            {productVariationAlternativeSuggestion.choiceCount}{" "}
+                            size choices
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+
                     <div>
                       <Button
                         type="button"
                         size="sm"
-                        disabled={!!productVariationGenerationMessage}
+                        aria-describedby="product-variations-help"
+                        disabled={
+                          !!productVariationGenerationMessage ||
+                          productVariationMissingRowCount === null ||
+                          productVariationMissingRowCount === 0
+                        }
                         onClick={() =>
                           setForm((previous) => ({
                             ...previous,
@@ -2361,13 +2470,32 @@ function ProductsPage() {
                           }))
                         }
                       >
-                        Generate combinations
+                        {productVariationCartesianCount === 0
+                          ? "Add option values first"
+                          : productVariationMissingRowCount === null
+                            ? "Automatic generation unavailable"
+                            : form.variations.rows.length === 0
+                              ? `Generate ${productVariationCartesianCount} variation${
+                                  productVariationCartesianCount === 1
+                                    ? ""
+                                    : "s"
+                                }`
+                              : productVariationMissingRowCount === 0
+                                ? "All variations generated"
+                                : `Restore ${productVariationMissingRowCount} missing variation${
+                                    productVariationMissingRowCount === 1
+                                      ? ""
+                                      : "s"
+                                  }`}
                       </Button>
                     </div>
                   </div>
 
                   <div
                     id="product-variations-help"
+                    role="status"
+                    aria-live="polite"
+                    aria-atomic="true"
                     className={cn(
                       "text-xs leading-5",
                       productFormValidation.errors.variations

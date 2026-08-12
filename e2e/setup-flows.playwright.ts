@@ -274,7 +274,7 @@ test("merchant product options support generic three-axis sparse rows", async ({
   await axisNames.nth(2).fill("theme")
   await axisValues.nth(2).fill("Light, Dark")
 
-  await page.getByRole("button", { name: "Generate combinations" }).click()
+  await page.getByRole("button", { name: "Generate 8 variations" }).click()
   await expect(page.getByRole("button", { name: "Remove row" })).toHaveCount(8)
   await expect(page.getByText('13" / Personal / Light')).toBeVisible()
 
@@ -312,6 +312,57 @@ test("merchant product options support generic three-axis sparse rows", async ({
   await expect(page.getByLabel("Child title").first()).toHaveValue(
     "Studio License"
   )
+})
+
+test("merchant groups Men and Women size lists into 23 alternatives", async ({
+  page,
+}) => {
+  await installTestSigner(page, TEST_MERCHANT_PUBKEY)
+  await page.goto(`${merchantUrl}/products`)
+  await page.getByRole("button", { name: "Add product" }).first().click()
+
+  await page
+    .getByRole("checkbox", { name: /This product has variations/ })
+    .check()
+
+  const axisNames = page.getByLabel("Axis name")
+  const axisValues = page.getByLabel("Values")
+  await axisNames.nth(0).fill("US Size Men")
+  await axisValues
+    .nth(0)
+    .fill("5, 5.5, 6.5, 7, 8, 8.5, 9.5, 10, 11, 12, 12.5, 13.5")
+
+  await page.getByRole("button", { name: "Add size" }).click()
+  await axisNames.nth(1).fill("US Size Women")
+  await axisValues
+    .nth(1)
+    .fill("4, 5.5, 6.5, 7, 8, 8.5, 9.5, 10, 11, 11.5, 12.5")
+
+  await expect(
+    page.getByText("Group Men’s and Women’s size choices")
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Group as 23 size choices" })
+  ).toBeVisible()
+  await expect(
+    page.getByText(
+      /This setup creates 132 variations\. The limit is 64\. Group mutually exclusive lists/
+    )
+  ).toBeVisible()
+
+  await page.getByRole("button", { name: "Group as 23 size choices" }).click()
+  await expect(axisNames).toHaveCount(1)
+  await expect(axisValues.first()).toBeFocused()
+  await expect(axisNames.first()).toHaveValue("US Size")
+  await expect(axisValues.first()).toHaveValue(/Men · 5/)
+  await expect(axisValues.first()).toHaveValue(/Women · 4/)
+
+  await page.getByRole("button", { name: "Generate 23 variations" }).click()
+  await expect(page.getByRole("button", { name: "Remove row" })).toHaveCount(23)
+  await expect(page.getByText("Men · 5", { exact: true }).first()).toBeVisible()
+  await expect(
+    page.getByText("Women · 4", { exact: true }).first()
+  ).toBeVisible()
 })
 
 test("merchant product drafts survive safe dialog dismissal", async ({

@@ -1,4 +1,5 @@
 import {
+  parseGroupedProductOptionValue,
   resolvePurchasableSelection,
   type CommerceProductRecord,
   type PreparedProductFamily,
@@ -11,15 +12,23 @@ export type MarketProductFamily = PreparedProductFamily<CommerceProductRecord>
 export interface ProductVariationAxisOption {
   value: string
   label: string
+  group?: string
   soldOut: boolean
   disabled: boolean
+}
+
+export interface ProductVariationAxisOptionGroup {
+  label: string
+  options: ProductVariationAxisOption[]
 }
 
 export interface ProductVariationAxisModel {
   key: string
   label: string
   selectedValue: string
+  selectedLabel: string
   options: ProductVariationAxisOption[]
+  optionGroups: ProductVariationAxisOptionGroup[] | null
 }
 
 export interface ProductVariationSelectorModel {
@@ -42,6 +51,58 @@ function titleCase(value: string): string {
     .trim()
     .replace(/[_-]+/g, " ")
     .replace(/\b\w/g, (character) => character.toUpperCase())
+}
+
+function isSizeAxis(value: string): boolean {
+  return value
+    .trim()
+    .split(/[^a-z0-9]+/i)
+    .some((part) => ["size", "sizes"].includes(part.toLowerCase()))
+}
+
+function compareProductOptionValues(
+  axisKey: string,
+  left: string,
+  right: string
+): number {
+  const leftGrouped = parseGroupedProductOptionValue(left)
+  const rightGrouped = parseGroupedProductOptionValue(right)
+  const groupOrder = PRESENTATION_COLLATOR.compare(
+    leftGrouped?.group ?? "",
+    rightGrouped?.group ?? ""
+  )
+  if (groupOrder !== 0) return groupOrder
+
+  const leftValue = leftGrouped?.value ?? left
+  const rightValue = rightGrouped?.value ?? right
+  if (!isSizeAxis(axisKey)) {
+    return PRESENTATION_COLLATOR.compare(leftValue, rightValue)
+  }
+  return (
+    (SIZE_PRESENTATION_ORDER.get(leftValue.trim().toLowerCase()) ??
+      Number.MAX_SAFE_INTEGER) -
+      (SIZE_PRESENTATION_ORDER.get(rightValue.trim().toLowerCase()) ??
+        Number.MAX_SAFE_INTEGER) ||
+    PRESENTATION_COLLATOR.compare(leftValue, rightValue)
+  )
+}
+
+function getProductOptionGroups(
+  options: ProductVariationAxisOption[]
+): ProductVariationAxisOptionGroup[] | null {
+  if (options.length === 0 || options.some((option) => !option.group)) {
+    return null
+  }
+
+  const groups = new Map<string, ProductVariationAxisOption[]>()
+  for (const option of options) {
+    const label = option.group!
+    groups.set(label, [...(groups.get(label) ?? []), option])
+  }
+  return Array.from(groups, ([label, groupOptions]) => ({
+    label,
+    options: groupOptions,
+  }))
 }
 
 function getSpecificationValue(product: Product, key: string): string {
@@ -103,22 +164,21 @@ export function getProductVariationSelectorModel(
   return {
     axes: family.axes.map((axis) => {
       const selectedValue = getSpecificationValue(selectedProduct, axis.key)
+      const selectedLabel = selectedValue
       const otherSelections = selectedProduct.specifications.filter(
         (specification) => specification.key.trim().toLowerCase() !== axis.key
       )
-      const presentationValues = [...axis.values].sort((left, right) => {
-        if (axis.key !== "size") {
-          return PRESENTATION_COLLATOR.compare(left, right)
-        }
-        return (
-          (SIZE_PRESENTATION_ORDER.get(left.trim().toLowerCase()) ??
-            Number.MAX_SAFE_INTEGER) -
-            (SIZE_PRESENTATION_ORDER.get(right.trim().toLowerCase()) ??
-              Number.MAX_SAFE_INTEGER) ||
-          PRESENTATION_COLLATOR.compare(left, right)
-        )
-      })
+      const presentationValues = [...axis.values].sort((left, right) =>
+        compareProductOptionValues(axis.key, left, right)
+      )
+      const groupedPresentationValues = isSizeAxis(axis.key)
+        ? presentationValues.map(parseGroupedProductOptionValue)
+        : []
+      const presentAsGroups =
+        groupedPresentationValues.length > 0 &&
+        groupedPresentationValues.every((value) => value !== null)
       const options = presentationValues.map((value) => {
+        const groupedValue = parseGroupedProductOptionValue(value)
         const compatible = family.children.filter((child) => {
           const hasValue =
             getSpecificationValue(child.product, axis.key).toLowerCase() ===
@@ -134,7 +194,10 @@ export function getProductVariationSelectorModel(
         })
         return {
           value,
-          label: value,
+          label: presentAsGroups && groupedValue ? groupedValue.value : value,
+          ...(presentAsGroups && groupedValue
+            ? { group: groupedValue.group }
+            : {}),
           soldOut:
             compatible.length > 0 &&
             compatible.every((child) => child.product.stock === 0),
@@ -146,7 +209,9 @@ export function getProductVariationSelectorModel(
         key: axis.key,
         label: titleCase(axis.label),
         selectedValue,
+        selectedLabel,
         options,
+        optionGroups: getProductOptionGroups(options),
       }
     }),
   }

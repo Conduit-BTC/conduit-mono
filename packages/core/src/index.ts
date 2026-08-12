@@ -10,6 +10,7 @@ export * from "./schemas"
 
 // Utils
 export * from "./utils"
+export * from "./product-option-groups"
 
 // Build provenance
 export {
