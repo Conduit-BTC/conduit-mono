@@ -2,10 +2,51 @@ import { describe, expect, it } from "bun:test"
 import {
   buildNip01ProfileContent,
   buildNip01ProfilePublishContent,
+  parseProfileEvent,
   shouldEnforceNip01ProfileMinimumFields,
 } from "@conduit/core"
 
 describe("profile publish content", () => {
+  it("drops unsafe or malformed media from untrusted kind-0 content", () => {
+    const profile = parseProfileEvent({
+      pubkey: "a".repeat(64),
+      content: JSON.stringify({
+        name: "Mallory",
+        picture: "http://127.0.0.1/avatar.png",
+        banner: "https://cdn.example.com/banner.png",
+        about: { unexpected: true },
+      }),
+    })
+
+    expect(profile).toEqual({
+      pubkey: "a".repeat(64),
+      name: "Mallory",
+      displayName: undefined,
+      about: undefined,
+      picture: undefined,
+      banner: "https://cdn.example.com/banner.png",
+      nip05: undefined,
+      lud16: undefined,
+      website: undefined,
+    })
+  })
+
+  it("handles non-object kind-0 JSON as an empty profile", () => {
+    expect(
+      parseProfileEvent({ pubkey: "a".repeat(64), content: "null" })
+    ).toEqual({
+      pubkey: "a".repeat(64),
+      name: undefined,
+      displayName: undefined,
+      about: undefined,
+      picture: undefined,
+      banner: undefined,
+      nip05: undefined,
+      lud16: undefined,
+      website: undefined,
+    })
+  })
+
   it("omits cleared profile fields from the NIP-01 content", () => {
     expect(
       buildNip01ProfileContent({

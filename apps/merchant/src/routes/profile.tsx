@@ -10,6 +10,7 @@ import {
 } from "lucide-react"
 import { createFileRoute } from "@tanstack/react-router"
 import {
+  normalizePublicMediaUrl,
   pubkeyToNpub,
   useAuth,
   useProfile,
@@ -76,6 +77,8 @@ function ProfilePage() {
   }, [profileQuery.data])
 
   const profileData = profileQuery.data
+  const profileBannerUrl = normalizePublicMediaUrl(profileData?.banner)
+  const formBannerUrl = normalizePublicMediaUrl(form.banner)
   const complete = isProfileComplete(profileData)
   const displayName = profileData?.displayName || profileData?.name
   const npub = pubkey ? pubkeyToNpub(pubkey) : ""
@@ -211,13 +214,14 @@ function ProfilePage() {
 
                 <div className="overflow-hidden rounded-[2rem] border border-[var(--border)] bg-[color-mix(in_srgb,var(--primary-500)_1%,transparent)] shadow-[var(--shadow-glass-inset)]">
                   {/* Banner */}
-                  {profileData?.banner ? (
+                  {profileBannerUrl ? (
                     <div className="h-32 w-full overflow-hidden sm:h-44">
                       <img
-                        src={profileData.banner}
+                        src={profileBannerUrl}
                         alt=""
                         className="h-full w-full object-cover"
                         aria-hidden="true"
+                        referrerPolicy="no-referrer"
                       />
                     </div>
                   ) : (
@@ -598,13 +602,14 @@ function ProfilePage() {
                           Preview
                         </div>
                         <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)]">
-                          {form.banner ? (
+                          {formBannerUrl ? (
                             <div className="h-24 w-full overflow-hidden">
                               <img
-                                src={form.banner}
+                                src={formBannerUrl}
                                 alt=""
                                 className="h-full w-full object-cover"
                                 aria-hidden="true"
+                                referrerPolicy="no-referrer"
                               />
                             </div>
                           ) : (

@@ -139,4 +139,20 @@ describe("product variation selection", () => {
 
     expect(getProductSelectionImages(parent, medium)).toEqual([])
   })
+
+  it("filters non-public selection images before rendering or cart persistence", () => {
+    const medium = {
+      ...sizeVariation("M", 5),
+      images: [{ url: "http://127.0.0.1/variation.png" }],
+    }
+    const parent = product({
+      type: "variable",
+      images: [{ url: "https://localhost/parent.png" }],
+    })
+
+    expect(getProductSelectionImages(parent, medium)).toEqual([])
+    expect(cartItemInputFromProductSelection(parent, medium).image).toBe(
+      undefined
+    )
+  })
 })

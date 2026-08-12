@@ -1,6 +1,7 @@
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import type { Profile } from "../types"
 import { db } from "../db"
+import { normalizePublicMediaUrl } from "../network-target-safety"
 import { EVENT_KINDS } from "./kinds"
 import { getProfiles } from "./commerce"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
@@ -59,21 +60,27 @@ export function parseProfileEvent(
 ): Profile {
   let raw: RawProfileContent = {}
   try {
-    raw = JSON.parse(event.content || "{}") as RawProfileContent
+    const parsed = JSON.parse(event.content || "{}") as unknown
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      raw = parsed as RawProfileContent
+    }
   } catch {
     // malformed content — return bare profile
   }
 
+  const stringValue = (value: unknown): string | undefined =>
+    typeof value === "string" ? value : undefined
+
   return {
     pubkey: event.pubkey,
-    name: raw.name,
-    displayName: raw.display_name ?? raw.displayName,
-    about: raw.about,
-    picture: raw.picture,
-    banner: raw.banner,
-    nip05: raw.nip05,
-    lud16: raw.lud16,
-    website: raw.website,
+    name: stringValue(raw.name),
+    displayName: stringValue(raw.display_name ?? raw.displayName),
+    about: stringValue(raw.about),
+    picture: normalizePublicMediaUrl(raw.picture) ?? undefined,
+    banner: normalizePublicMediaUrl(raw.banner) ?? undefined,
+    nip05: stringValue(raw.nip05),
+    lud16: stringValue(raw.lud16),
+    website: stringValue(raw.website),
   }
 }
 
@@ -134,6 +141,18 @@ export async function publishProfile(
   profile: Omit<Profile, "pubkey">,
   appId: ConduitAppId
 ): Promise<Profile> {
+  const validatedProfile = { ...profile }
+  for (const field of ["picture", "banner"] as const) {
+    const value = profile[field]
+    if (!value?.trim()) continue
+    const safeUrl = normalizePublicMediaUrl(value)
+    if (!safeUrl) {
+      throw new Error(
+        `Profile ${field} URL must use a public http or https destination`
+      )
+    }
+    validatedProfile[field] = safeUrl
+  }
   const ndk = await requireNdkConnected()
   if (!ndk.signer) throw new Error("Signer not connected")
 
@@ -144,7 +163,10 @@ export async function publishProfile(
   })
 
   // Build NIP-01 snake_case content, merging partial edits onto loaded context.
-  const content = buildNip01ProfilePublishContent({ profile, latestProfile })
+  const content = buildNip01ProfilePublishContent({
+    profile: validatedProfile,
+    latestProfile,
+  })
   const event = new NDKEvent(ndk)
   event.kind = EVENT_KINDS.PROFILE
   event.created_at = Math.floor(Date.now() / 1000)

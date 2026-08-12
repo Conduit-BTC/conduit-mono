@@ -26,6 +26,7 @@ import {
   getNdk,
   getShippingOptions,
   normalizePubkey,
+  normalizePublicMediaUrl,
   pubkeyToNpub,
   recordBrowserTelemetryEvent,
   validateAddressConsistency,
@@ -563,6 +564,7 @@ function OrderSummary({
                 }
               : undefined,
           })
+          const imageUrl = normalizePublicMediaUrl(item.image)
           return (
             <div
               key={item.productId}
@@ -572,12 +574,13 @@ function OrderSummary({
             >
               <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--background)]">
                 <img
-                  src={item.image ?? "/images/placeholders/product.png"}
+                  src={imageUrl ?? "/images/placeholders/product.png"}
                   alt={item.title}
                   className={`aspect-square h-full w-full object-cover ${
                     soldOut ? "grayscale opacity-60" : ""
                   }`}
                   loading="lazy"
+                  referrerPolicy="no-referrer"
                   onError={(e) => {
                     ;(e.currentTarget as HTMLImageElement).src =
                       "/images/placeholders/product.png"

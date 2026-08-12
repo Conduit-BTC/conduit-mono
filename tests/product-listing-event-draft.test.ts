@@ -52,6 +52,43 @@ function expectTag(tags: string[][], expected: string[]): void {
 }
 
 describe("product listing event drafts", () => {
+  it("drops non-public image destinations from legacy and tag listings", () => {
+    const legacy = parseProductEvent({
+      id: "legacy-image-safety",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: JSON.stringify(
+        baseProduct({
+          images: [
+            { url: "http://2130706433/camera.jpg" },
+            { url: "https://cdn.example.com/product.png", alt: "Product" },
+          ],
+        })
+      ),
+      tags: [["d", "legacy-image-safety"]],
+    })
+    const tagged = parseProductEvent({
+      id: "tag-image-safety",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: "Product description",
+      tags: [
+        ["d", "tag-image-safety"],
+        ["title", "Tagged product"],
+        ["price", "10", "USD"],
+        ["image", "https://169.254.169.254/latest/meta-data"],
+        ["image", "https://images.example.com/product.png"],
+      ],
+    })
+
+    expect(legacy.images).toEqual([
+      { url: "https://cdn.example.com/product.png", alt: "Product" },
+    ])
+    expect(tagged.images).toEqual([
+      { url: "https://images.example.com/product.png" },
+    ])
+  })
+
   it("canonicalizes product tags in first-seen order", () => {
     expect(
       canonicalizeProductTags([

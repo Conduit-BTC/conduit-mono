@@ -409,6 +409,8 @@ describe("getRelayList / getRelayLists cache behavior", () => {
             pubkey: "alice",
             tags: [
               ["r", "ws://artshop:4848"],
+              ["r", "wss://127.0.0.1:4848"],
+              ["r", "wss://192.168.1.10:4848"],
               ["r", "wss://relay-alice.example.com"],
             ],
           }),
@@ -420,6 +422,8 @@ describe("getRelayList / getRelayLists cache behavior", () => {
     expect(list?.readRelayUrls).toEqual(["wss://relay-alice.example.com"])
     expect(cache.get("alice")?.readRelayUrls).toEqual([
       "ws://artshop:4848",
+      "wss://127.0.0.1:4848",
+      "wss://192.168.1.10:4848",
       "wss://relay-alice.example.com",
     ])
   })
@@ -433,6 +437,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
             pubkey: "alice",
             tags: [
               ["r", "ws://artshop:4848"],
+              ["r", "wss://127.0.0.1:4848"],
               ["r", "wss://relay-alice.example.com"],
             ],
           }),
@@ -445,6 +450,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
     })
     expect(list?.readRelayUrls).toEqual([
       "ws://artshop:4848",
+      "wss://127.0.0.1:4848",
       "wss://relay-alice.example.com",
     ])
   })

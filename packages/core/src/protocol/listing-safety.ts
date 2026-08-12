@@ -1,4 +1,5 @@
 import type { Product } from "../types"
+import { normalizePublicMediaUrl } from "../network-target-safety"
 
 export type ListingSafetyState =
   "active" | "hidden" | "flagged" | "blocked" | "unsupported" | "pending_review"
@@ -522,13 +523,7 @@ const STATE_RANK: Record<ListingSafetyState, number> = {
 }
 
 function isValidMarketImageUrl(url: string | undefined): boolean {
-  if (!url) return false
-  try {
-    const parsed = new URL(url)
-    return parsed.protocol === "http:" || parsed.protocol === "https:"
-  } catch {
-    return false
-  }
+  return normalizePublicMediaUrl(url) !== null
 }
 
 export function hasMarketVisibleListingImage(

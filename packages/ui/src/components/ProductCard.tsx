@@ -1,5 +1,6 @@
 import { Check, ImageOff, ShoppingCart } from "lucide-react"
 import { type ReactNode, useEffect, useRef, useState } from "react"
+import { normalizePublicMediaUrl } from "@conduit/core"
 import { Badge } from "./Badge"
 import { Button } from "./Button"
 import { cn } from "../utils"
@@ -51,20 +52,19 @@ export function ProductCard({
   className,
 }: ProductCardProps) {
   const [imageFailed, setImageFailed] = useState(false)
-  const [imageIndex, setImageIndex] = useState(0)
   const [imageLoaded, setImageLoaded] = useState(false)
-  const activeImage = images[imageIndex]
-  const imageKey = images.map((image) => image.url).join("|")
+  const firstImage = images[0]
+  const firstImageUrl = normalizePublicMediaUrl(firstImage?.url)
+  const activeImage =
+    firstImage && firstImageUrl
+      ? { ...firstImage, url: firstImageUrl }
+      : undefined
+  const imageKey = activeImage?.url ?? ""
 
   useEffect(() => {
     setImageFailed(false)
-    setImageIndex(0)
     setImageLoaded(false)
   }, [imageKey, title])
-
-  useEffect(() => {
-    setImageLoaded(false)
-  }, [activeImage?.url])
 
   const merchantNameContent = merchantNamePending ? (
     <span className="inline-block max-w-full animate-pulse truncate leading-5">
@@ -115,12 +115,9 @@ export function ProductCard({
               )}
               decoding="async"
               loading={imageLoading}
+              referrerPolicy="no-referrer"
               onLoad={() => setImageLoaded(true)}
               onError={() => {
-                if (imageIndex < images.length - 1) {
-                  setImageIndex((current) => current + 1)
-                  return
-                }
                 setImageFailed(true)
                 onInvalidImage?.()
               }}

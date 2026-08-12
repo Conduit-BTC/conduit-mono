@@ -4,6 +4,57 @@ import { getProductPriceDisplay, getShopperPriceDisplay } from "@conduit/core"
 import { ProductCard, ProductCartAction } from "@conduit/ui"
 
 describe("ProductCard", () => {
+  it("loads only the first public candidate and does not preload a fallback chain", () => {
+    const html = renderToStaticMarkup(
+      <ProductCard
+        title="Public Image Product"
+        merchantName="Alice Store"
+        images={[
+          { url: "https://cdn.example.com/primary.png" },
+          { url: "https://beacon.example.com/fallback.png" },
+        ]}
+        primaryPrice="25 sats"
+      />
+    )
+
+    expect(html).toContain("https://cdn.example.com/primary.png")
+    expect(html).not.toContain("https://beacon.example.com/fallback.png")
+    expect(html).toContain('referrerPolicy="no-referrer"')
+  })
+
+  it("does not render a non-public image destination passed at the UI boundary", () => {
+    const html = renderToStaticMarkup(
+      <ProductCard
+        title="Unsafe Image Product"
+        merchantName="Mallory Store"
+        images={[{ url: "http://127.0.0.1/private.png" }]}
+        primaryPrice="25 sats"
+      />
+    )
+
+    expect(html).toContain("Image unavailable")
+    expect(html).not.toContain("127.0.0.1")
+    expect(html).not.toContain("<img")
+  })
+
+  it("does not skip an unsafe first candidate to request a later author URL", () => {
+    const html = renderToStaticMarkup(
+      <ProductCard
+        title="Unsafe First Image Product"
+        merchantName="Mallory Store"
+        images={[
+          { url: "http://127.0.0.1/private.png" },
+          { url: "https://beacon.example.com/fallback.png" },
+        ]}
+        primaryPrice="25 sats"
+      />
+    )
+
+    expect(html).toContain("Image unavailable")
+    expect(html).not.toContain("127.0.0.1")
+    expect(html).not.toContain("beacon.example.com")
+  })
+
   it("renders a stable card when no product image is available", () => {
     const html = renderToStaticMarkup(
       <ProductCard

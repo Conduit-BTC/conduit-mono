@@ -135,6 +135,44 @@ describe("order relay delivery retry", () => {
     ).toBe(1)
   })
 
+  it("never replays persisted remote delivery targets on private networks", async () => {
+    const unsafe = lifecycle()
+    unsafe.orderRelayDelivery!.relayDelivery = [
+      {
+        relayUrl: "wss://127.0.0.1:8080/inbox",
+        source: "declared",
+        status: "timed_out",
+        attemptCount: 1,
+      },
+      {
+        relayUrl: "wss://192.168.1.10/inbox",
+        source: "recipient_nip65",
+        status: "timed_out",
+        attemptCount: 1,
+      },
+      {
+        relayUrl: "wss://retry.example/inbox",
+        source: "declared",
+        status: "timed_out",
+        attemptCount: 1,
+      },
+    ]
+    const store = repository(unsafe)
+    const attempts: string[] = []
+
+    await retryOrderRelayDelivery("order-id", "buyer", {
+      repository: store.repository,
+      leaseOwner: "worker",
+      now: () => 100,
+      publisher: async ({ relayUrl }) => {
+        attempts.push(relayUrl)
+        return "acked"
+      },
+    })
+
+    expect(attempts).toEqual(["wss://retry.example/inbox"])
+  })
+
   it("refuses background replay for a guest or different active account", async () => {
     for (const candidate of [
       lifecycle({ buyerIdentityKind: "guest_ephemeral" }),

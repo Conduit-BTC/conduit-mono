@@ -1,9 +1,11 @@
+import { normalizePublicMediaUrl } from "@conduit/core"
+
 type ProfileBannerProps = {
   src?: string
 }
 
 export function ProfileBanner({ src }: ProfileBannerProps) {
-  const bannerSrc = src?.trim()
+  const bannerSrc = normalizePublicMediaUrl(src)
 
   return (
     <div
@@ -17,6 +19,7 @@ export function ProfileBanner({ src }: ProfileBannerProps) {
           alt=""
           aria-hidden="true"
           decoding="async"
+          referrerPolicy="no-referrer"
           className="absolute inset-0 h-full w-full object-cover object-center"
           onError={(event) => {
             event.currentTarget.hidden = true

@@ -1007,6 +1007,44 @@ describe("commerce gateway", () => {
     expect(result.data[0]?.product.title).toBe("Cached Item")
   })
 
+  it("sanitizes legacy cached product and profile media before returning it", async () => {
+    cachedProducts.push({
+      id: "30402:merchant:cached-image-safety",
+      pubkey: "merchant",
+      title: "Cached Image Safety",
+      price: 25,
+      currency: "USD",
+      type: "simple",
+      visibility: "public",
+      images: [
+        { url: "https://192.168.1.5/private.png" },
+        { url: "https://cdn.example.com/public.png" },
+      ],
+      tags: ["cached"],
+      createdAt: FIXED_NOW - 5_000,
+      updatedAt: FIXED_NOW - 5_000,
+      cachedAt: FIXED_NOW - 1_000,
+    })
+    cachedProfiles.set("merchant", {
+      pubkey: "merchant",
+      name: "Cached Merchant",
+      picture: "http://127.0.0.1/avatar.png",
+      banner: "https://cdn.example.com/banner.png",
+      cachedAt: FIXED_NOW - 1_000,
+    })
+
+    const products = await getCachedMarketplaceProducts()
+    const profiles = await getProfiles({ pubkeys: ["merchant"] })
+
+    expect(products.data[0]?.product.images).toEqual([
+      { url: "https://cdn.example.com/public.png" },
+    ])
+    expect(profiles.data.merchant?.picture).toBeUndefined()
+    expect(profiles.data.merchant?.banner).toBe(
+      "https://cdn.example.com/banner.png"
+    )
+  })
+
   it("normalizes JSON-shaped summaries restored from the product cache", async () => {
     cachedProducts.push({
       id: "30402:merchant:cached-json-summary",

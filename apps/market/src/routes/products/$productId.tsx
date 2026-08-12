@@ -439,6 +439,7 @@ function ProductPage() {
                     <img
                       src={image.url}
                       alt={image.alt ?? product.title}
+                      referrerPolicy="no-referrer"
                       className={`h-full w-full object-cover ${
                         productSoldOut ? "grayscale opacity-55" : ""
                       }`}
@@ -453,6 +454,7 @@ function ProductPage() {
                 <img
                   src={selectedImage?.url}
                   alt={selectedImage?.alt ?? product.title}
+                  referrerPolicy="no-referrer"
                   className={`block h-full max-h-full w-full min-w-0 max-w-full object-contain ${
                     productSoldOut ? "grayscale opacity-55" : ""
                   }`}
@@ -475,6 +477,7 @@ function ProductPage() {
                       <img
                         src={image.url}
                         alt={image.alt ?? product.title}
+                        referrerPolicy="no-referrer"
                         className={`h-full w-full object-cover ${
                           productSoldOut ? "grayscale opacity-55" : ""
                         }`}

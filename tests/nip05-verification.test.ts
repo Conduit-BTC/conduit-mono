@@ -135,27 +135,16 @@ describe("NIP-05 verification", () => {
     expect(result.reason).toBe("network_error")
   })
 
-  it("tries a www host only when the claimed domain signals a redirect", async () => {
+  it("rejects redirects at fetch and does not probe a www fallback", async () => {
     const calls: Array<{
       url: string
-      mode?: RequestMode
       redirect?: RequestRedirect
     }> = []
     const fetcher: typeof fetch = async (url, init) => {
       const call: (typeof calls)[number] = { url: String(url) }
-      if (init?.mode) call.mode = init.mode
       if (init?.redirect) call.redirect = init.redirect
       calls.push(call)
-
-      if (String(url).startsWith("https://www.example.com")) {
-        return new Response(JSON.stringify({ names: { alice: ALICE_PUBKEY } }))
-      }
-
-      if (init?.redirect === "manual") {
-        return new Response(null, { status: 307 })
-      }
-
-      throw new Error("cors redirect")
+      throw new TypeError("redirect mode is error")
     }
 
     const result = await getNip05Verification(
@@ -172,96 +161,8 @@ describe("NIP-05 verification", () => {
     expect(calls).toEqual([
       {
         url: "https://example.com/.well-known/nostr.json?name=alice",
+        redirect: "error",
       },
-      {
-        url: "https://example.com/.well-known/nostr.json?name=alice",
-        redirect: "manual",
-      },
-      {
-        url: "https://www.example.com/.well-known/nostr.json?name=alice",
-      },
-    ])
-    expect(result.status).toBe("valid")
-  })
-
-  it("keeps ordinary network failures unknown even after probing www", async () => {
-    const calls: Array<{
-      url: string
-      mode?: RequestMode
-      redirect?: RequestRedirect
-    }> = []
-    const fetcher: typeof fetch = async (url, init) => {
-      const call: (typeof calls)[number] = { url: String(url) }
-      if (init?.mode) call.mode = init.mode
-      if (init?.redirect) call.redirect = init.redirect
-      calls.push(call)
-      throw new Error("offline")
-    }
-
-    const result = await getNip05Verification(
-      {
-        pubkey: ALICE_PUBKEY,
-        nip05: "alice@example.com",
-      },
-      {
-        fetcher,
-        now: () => 1_000,
-      }
-    )
-
-    expect(calls).toEqual([
-      {
-        url: "https://example.com/.well-known/nostr.json?name=alice",
-      },
-      {
-        url: "https://example.com/.well-known/nostr.json?name=alice",
-        redirect: "manual",
-      },
-      {
-        url: "https://example.com/.well-known/nostr.json?name=alice",
-        mode: "no-cors",
-        redirect: "manual",
-      },
-      {
-        url: "https://www.example.com/.well-known/nostr.json?name=alice",
-      },
-    ])
-    expect(result.status).toBe("unknown")
-    expect(result.reason).toBe("network_error")
-  })
-
-  it("does not mark a www mismatch invalid without a redirect signal", async () => {
-    const calls: string[] = []
-    const fetcher: typeof fetch = async (url, init) => {
-      calls.push(String(url))
-
-      if (String(url).startsWith("https://www.example.com")) {
-        return new Response(JSON.stringify({ names: { alice: BOB_PUBKEY } }))
-      }
-
-      if (init?.redirect === "manual") {
-        throw new Error("opaque failure")
-      }
-
-      throw new Error("cors")
-    }
-
-    const result = await getNip05Verification(
-      {
-        pubkey: ALICE_PUBKEY,
-        nip05: "alice@example.com",
-      },
-      {
-        fetcher,
-        now: () => 1_000,
-      }
-    )
-
-    expect(calls).toEqual([
-      "https://example.com/.well-known/nostr.json?name=alice",
-      "https://example.com/.well-known/nostr.json?name=alice",
-      "https://example.com/.well-known/nostr.json?name=alice",
-      "https://www.example.com/.well-known/nostr.json?name=alice",
     ])
     expect(result.status).toBe("unknown")
     expect(result.reason).toBe("network_error")
@@ -334,5 +235,29 @@ describe("NIP-05 verification", () => {
     expect(result.reason).toBe("malformed_identifier")
     expect(result.source).toBe("syntax")
     expect(fetchCount).toBe(0)
+  })
+
+  it("rejects non-public verification hosts before network lookup", async () => {
+    for (const nip05 of [
+      "alice@127.0.0.1",
+      "alice@192.168.1.5",
+      "alice@foo.localhost",
+    ]) {
+      let fetchCount = 0
+      const result = await getNip05Verification(
+        { pubkey: ALICE_PUBKEY, nip05 },
+        {
+          fetcher: async () => {
+            fetchCount += 1
+            return new Response("{}")
+          },
+          now: () => 1_000,
+        }
+      )
+
+      expect(result.status).toBe("invalid")
+      expect(result.reason).toBe("malformed_identifier")
+      expect(fetchCount).toBe(0)
+    }
   })
 })

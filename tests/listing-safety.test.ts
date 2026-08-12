@@ -229,6 +229,21 @@ describe("listing safety", () => {
         product({ images: [{ url: "ftp://x.test" }] })
       )
     ).toBe(false)
+    expect(
+      hasMarketVisibleListingImage(
+        product({ images: [{ url: "http://127.0.0.1/camera.jpg" }] })
+      )
+    ).toBe(false)
+    expect(
+      hasMarketVisibleListingImage(
+        product({ images: [{ url: "https://192.168.1.1/status.png" }] })
+      )
+    ).toBe(false)
+    expect(
+      hasMarketVisibleListingImage(
+        product({ images: [{ url: "http://cdn.example.com/item.png" }] })
+      )
+    ).toBe(true)
     expect(hasMarketVisibleListingImage(product())).toBe(true)
   })
 })

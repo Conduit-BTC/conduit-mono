@@ -1,5 +1,6 @@
 import { ChevronDown, LogOut, RadioTower, UserRound } from "lucide-react"
 import { type ReactNode, useState } from "react"
+import { normalizePublicMediaUrl } from "@conduit/core"
 import { Avatar, AvatarFallback, AvatarImage } from "./Avatar"
 import { Button } from "./Button"
 import {
@@ -47,6 +48,7 @@ export function AccountMenu({
 }: AccountMenuProps) {
   const [disconnectOpen, setDisconnectOpen] = useState(false)
   const isPanel = variant === "panel"
+  const safeAvatarUrl = normalizePublicMediaUrl(avatarUrl)
 
   return (
     <>
@@ -61,7 +63,10 @@ export function AccountMenu({
               )}
             >
               <Avatar className="h-8 w-8 border border-[var(--border)]">
-                <AvatarImage src={avatarUrl ?? undefined} alt={displayName} />
+                <AvatarImage
+                  src={safeAvatarUrl ?? undefined}
+                  alt={displayName}
+                />
                 <AvatarFallback className="bg-transparent p-0">
                   {fallback ?? displayName[0]?.toUpperCase() ?? "?"}
                 </AvatarFallback>
@@ -82,11 +87,12 @@ export function AccountMenu({
               size="sm"
               className={cn("gap-2 text-xs", className)}
             >
-              {avatarUrl ? (
+              {safeAvatarUrl ? (
                 <img
-                  src={avatarUrl}
+                  src={safeAvatarUrl}
                   alt=""
                   className="h-5 w-5 rounded-full object-cover"
+                  referrerPolicy="no-referrer"
                 />
               ) : null}
               {displayName}

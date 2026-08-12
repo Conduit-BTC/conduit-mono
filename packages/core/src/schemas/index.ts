@@ -1,4 +1,12 @@
 import { z } from "zod"
+import { normalizePublicMediaUrl } from "../network-target-safety"
+
+const publicMediaUrlSchema = z
+  .string()
+  .refine(
+    (value) => normalizePublicMediaUrl(value) !== null,
+    "URL must use a public http or https destination"
+  )
 
 /**
  * Product schema for validation
@@ -69,10 +77,11 @@ export const productSchema = z.object({
   images: z
     .array(
       z.object({
-        url: z.string().url(),
+        url: publicMediaUrlSchema,
         alt: z.string().optional(),
       })
     )
+    .max(12)
     .default([]),
   tags: z.array(z.string()).default([]),
   publicZapEnabled: z.boolean().default(true),
@@ -93,8 +102,8 @@ export const profileSchema = z.object({
   name: z.string().optional(),
   displayName: z.string().optional(),
   about: z.string().optional(),
-  picture: z.string().url().optional(),
-  banner: z.string().url().optional(),
+  picture: publicMediaUrlSchema.optional(),
+  banner: publicMediaUrlSchema.optional(),
   nip05: z.string().optional(),
   lud16: z.string().optional(),
   website: z.string().url().optional(),
@@ -109,8 +118,8 @@ export const profileFormSchema = z.object({
   name: z.string().max(50).optional().or(z.literal("")),
   displayName: z.string().max(100).optional().or(z.literal("")),
   about: z.string().max(500).optional().or(z.literal("")),
-  picture: z.string().url().optional().or(z.literal("")),
-  banner: z.string().url().optional().or(z.literal("")),
+  picture: publicMediaUrlSchema.optional().or(z.literal("")),
+  banner: publicMediaUrlSchema.optional().or(z.literal("")),
   nip05: z.string().max(100).optional().or(z.literal("")),
   lud16: z.string().max(100).optional().or(z.literal("")),
   website: z.string().url().optional().or(z.literal("")),

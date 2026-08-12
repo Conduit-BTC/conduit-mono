@@ -58,4 +58,25 @@ describe("profile merge", () => {
     expect(merged.merchant?.picture).toBe("https://example.com/avatar.png")
     expect(merged.merchant?.about).toBe("Updated bio")
   })
+
+  it("does not preserve unsafe media while merging profile caches", () => {
+    const merged = mergeRicherProfiles(
+      {
+        merchant: {
+          pubkey: "merchant",
+          displayName: "Loaded Merchant",
+          picture: "http://127.0.0.1/avatar.png",
+        },
+      },
+      {
+        merchant: {
+          pubkey: "merchant",
+          banner: "https://cdn.example.com/banner.png",
+        },
+      }
+    )
+
+    expect(merged.merchant?.picture).toBeUndefined()
+    expect(merged.merchant?.banner).toBe("https://cdn.example.com/banner.png")
+  })
 })

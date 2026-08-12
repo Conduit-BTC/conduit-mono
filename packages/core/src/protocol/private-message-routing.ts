@@ -1,5 +1,6 @@
 import type { NDKEvent } from "@nostr-dev-kit/ndk"
 import { config } from "../config"
+import { normalizePublicWebSocketUrl } from "../network-target-safety"
 import {
   applyInboxDeclarationEvidenceMerge,
   cloneInboxDeclarationEvidenceRecord,
@@ -19,6 +20,7 @@ import {
   getGeneralReadRelayUrls,
   getGeneralWriteRelayUrls,
   normalizeSecureRelayUrls as secureRelayUrls,
+  tryNormalizeRelayUrl,
 } from "./relay-settings"
 import {
   isValidSignedPublicNostrEvent,
@@ -148,6 +150,8 @@ export interface ResolveInboxDeclarationOptions {
   evidenceRepository?: InboxDeclarationEvidenceRepository
   /** Sources whose exact-event readback proves cross-client distribution. */
   sharedConfirmationRelayUrls?: readonly string[]
+  /** Preserve local/private WSS only while inspecting this authenticated owner. */
+  allowLocalRelayUrlsForPubkey?: string | null
 }
 
 /** Positive declarations stay fresh for this long before a re-fetch. */
@@ -551,20 +555,76 @@ function cacheKey(pubkey: string): string {
   return pubkey.trim().toLowerCase()
 }
 
+function allowsLocalRelayUrls(
+  pubkey: string,
+  allowLocalRelayUrlsForPubkey: string | null | undefined
+): boolean {
+  const allowedOwner = cacheKey(allowLocalRelayUrlsForPubkey ?? "")
+  return !!allowedOwner && allowedOwner === pubkey
+}
+
+export function publicRelayHintUrls(relayUrls: readonly string[]): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const raw of relayUrls) {
+    const normalized = tryNormalizeRelayUrl(raw)
+    if (!normalized.ok || !normalizePublicWebSocketUrl(normalized.url)) continue
+    if (seen.has(normalized.url)) continue
+    seen.add(normalized.url)
+    out.push(normalized.url)
+  }
+  return out
+}
+
+function declarationForContext(
+  declaration: InboxDeclarationResolution,
+  allowLocalRelayUrls: boolean
+): InboxDeclarationResolution {
+  const projectRelayUrls = allowLocalRelayUrls
+    ? secureRelayUrls
+    : publicRelayHintUrls
+  const projected = {
+    ...declaration,
+    relayUrls: projectRelayUrls(declaration.relayUrls),
+    retainedReadRelayUrls: projectRelayUrls(
+      declaration.retainedReadRelayUrls ?? []
+    ),
+    sourceRelayUrls: projectRelayUrls(declaration.sourceRelayUrls ?? []),
+    sharedSourceRelayUrls: publicRelayHintUrls(
+      declaration.sharedSourceRelayUrls ?? []
+    ),
+    pendingRelayUrls: projectRelayUrls(declaration.pendingRelayUrls ?? []),
+    pendingPublishRelayUrls: projectRelayUrls(
+      declaration.pendingPublishRelayUrls ?? []
+    ),
+  }
+  if (declaration.state !== "declared") return projected
+
+  const relayUrls = projected.relayUrls
+  if (relayUrls.length === 0) {
+    return { ...projected, state: "malformed", relayUrls: [] }
+  }
+  return projected
+}
+
 /** Stable shared relays used to make declarations discoverable cross-client. */
 export function sharedInboxDiscoveryRelayUrls(): string[] {
-  return secureRelayUrls(config.commerceDmFallbackRelayUrls).slice(
+  return publicRelayHintUrls(config.commerceDmFallbackRelayUrls).slice(
     0,
     MAX_SHARED_INBOX_DISCOVERY_RELAYS
   )
 }
 
-/** Default peer discovery: shared relays first, then local secure reads. */
-export function inboxDiscoveryRelayUrls(): string[] {
+function inboxDiscoveryRelayCandidates(): string[] {
   return secureRelayUrls([
     ...sharedInboxDiscoveryRelayUrls(),
     ...getGeneralReadRelayUrls({ fallbackRelayUrls: [] }),
   ]).slice(0, MAX_INBOX_DISCOVERY_RELAYS)
+}
+
+/** Default peer discovery: shared relays first, then local secure reads. */
+export function inboxDiscoveryRelayUrls(): string[] {
+  return publicRelayHintUrls(inboxDiscoveryRelayCandidates())
 }
 
 /** Publish distribution: reserve shared relays before owner-local OUT relays. */
@@ -805,6 +865,10 @@ export async function resolveInboxDeclaration(
   const key = cacheKey(pubkey)
   const now = options.now ?? Date.now
   const freshnessMs = options.freshnessMs ?? INBOX_DECLARATION_FRESHNESS_MS
+  const allowLocal = allowsLocalRelayUrls(
+    key,
+    options.allowLocalRelayUrlsForPubkey
+  )
   const fetchedAt = now()
   const repository = options.evidenceRepository
   const canonicalSharedRelayUrlSet = new Set(sharedInboxDiscoveryRelayUrls())
@@ -892,15 +956,18 @@ export async function resolveInboxDeclaration(
     !cached.stale &&
     fetchedAt - currentEvidenceWasObservedAt(cached) < freshnessMs
   ) {
-    return { ...cached, stale: false }
+    return declarationForContext({ ...cached, stale: false }, allowLocal)
   }
 
   const fetchWithDiagnostics =
     options.fetchEventsWithDiagnostics ?? fetchEventsFanoutWithDiagnostics
-  const relayUrls =
+  const relayCandidates =
     options.relayUrls && options.relayUrls.length > 0
       ? secureRelayUrls(options.relayUrls)
-      : inboxDiscoveryRelayUrls()
+      : inboxDiscoveryRelayCandidates()
+  const relayUrls = allowLocal
+    ? secureRelayUrls(relayCandidates)
+    : publicRelayHintUrls(relayCandidates)
 
   let result: Awaited<ReturnType<typeof fetchEventsFanoutWithDiagnostics>>
   try {
@@ -946,7 +1013,7 @@ export async function resolveInboxDeclaration(
       repository,
       now
     )
-    if (fallback) return fallback
+    if (fallback) return declarationForContext(fallback, allowLocal)
     return {
       pubkey: key,
       state: "lookup_unavailable",
@@ -971,7 +1038,7 @@ export async function resolveInboxDeclaration(
         repository,
         now
       )
-      if (fallback) return fallback
+      if (fallback) return declarationForContext(fallback, allowLocal)
       return {
         pubkey: key,
         state: "lookup_partial",
@@ -991,7 +1058,7 @@ export async function resolveInboxDeclaration(
       repository,
       now
     )
-    if (fallback) return fallback
+    if (fallback) return declarationForContext(fallback, allowLocal)
     return {
       pubkey: key,
       state: "not_observed",
@@ -1026,7 +1093,7 @@ export async function resolveInboxDeclaration(
       repository,
       now
     )
-    if (fallback) return fallback
+    if (fallback) return declarationForContext(fallback, allowLocal)
     return {
       pubkey: key,
       state: "lookup_partial",
@@ -1089,7 +1156,7 @@ export async function resolveInboxDeclaration(
     },
     now
   )
-  return resolution
+  return declarationForContext(resolution, allowLocal)
 }
 
 export interface InboxReadPlan {

@@ -20,6 +20,7 @@ import {
   getMerchantStorefront,
   getProfileName,
   getTelemetryCountBucket,
+  normalizePublicMediaUrl,
   normalizePubkey,
   pubkeyToNpub,
   recordBrowserTelemetryEvent,
@@ -373,6 +374,7 @@ function RelatedProductRow({
           width={80}
           height={80}
           loading="lazy"
+          referrerPolicy="no-referrer"
           onError={() => setImageFailed(true)}
         />
       </Link>
@@ -455,6 +457,7 @@ function CartLineItem({
   onDecrement: () => void
   onRemove: () => void
 }) {
+  const imageUrl = normalizePublicMediaUrl(item.image)
   const soldOut = availability?.status === "sold_out"
   const insufficientStock = availability?.status === "insufficient_stock"
   const incrementDisabled =
@@ -484,14 +487,15 @@ function CartLineItem({
       }`}
     >
       <div className="size-[88px] overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--background)] sm:size-28">
-        {item.image && (
+        {imageUrl && (
           <img
-            src={item.image}
+            src={imageUrl}
             alt={item.title}
             className={`h-full w-full object-cover ${
               soldOut ? "grayscale opacity-60" : ""
             }`}
             loading="lazy"
+            referrerPolicy="no-referrer"
             onError={(event) => {
               event.currentTarget.style.display = "none"
             }}

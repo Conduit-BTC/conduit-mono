@@ -1,6 +1,7 @@
 import {
   formatNpub,
   getProfileName,
+  normalizePublicMediaUrl,
   type CommerceProductRecord,
   type PreparedProductFamily,
   type PricingRateInput,
@@ -99,7 +100,7 @@ export function getMerchantIdentityView(
 ): MerchantIdentityView {
   const profileName = getProfileName(profile)
   const fallbackName = getPendingMerchantName(pubkey)
-  const picture = profile?.picture?.trim()
+  const picture = normalizePublicMediaUrl(profile?.picture)
 
   return {
     pubkey,

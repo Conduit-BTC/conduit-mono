@@ -1,4 +1,5 @@
 import { db, type CachedNip05Verification } from "../db"
+import { isPublicNetworkHostname } from "../network-target-safety"
 
 export type Nip05VerificationStatus = "valid" | "invalid" | "unknown"
 
@@ -83,10 +84,18 @@ export function parseNip05Identifier(
   if (!domain.includes(".") || /[/:]/.test(domain)) return null
   if (!NIP05_LOCAL_PART_PATTERN.test(name)) return null
 
+  let canonicalDomain: string
+  try {
+    canonicalDomain = new URL(`https://${domain}`).hostname
+  } catch {
+    return null
+  }
+  if (!isPublicNetworkHostname(canonicalDomain)) return null
+
   return {
     name,
-    domain,
-    normalizedIdentifier: `${name}@${domain}`,
+    domain: canonicalDomain,
+    normalizedIdentifier: `${name}@${canonicalDomain}`,
   }
 }
 
@@ -191,45 +200,6 @@ function makeNip05Url(domain: string, name: string): string {
   return `https://${domain}/.well-known/nostr.json?name=${encodeURIComponent(name)}`
 }
 
-function isRedirectResponse(response: Response): boolean {
-  return (
-    response.type === "opaqueredirect" ||
-    (response.status >= 300 && response.status < 400)
-  )
-}
-
-function getWwwRedirectFallbackDomain(domain: string): string | null {
-  if (domain.startsWith("www.")) return null
-  return `www.${domain}`
-}
-
-async function hasRedirectSignal(
-  fetcher: typeof fetch,
-  url: string
-): Promise<boolean> {
-  try {
-    const response = await fetcher(url, {
-      headers: { accept: "application/json" },
-      redirect: "manual",
-    })
-    return isRedirectResponse(response)
-  } catch {
-    // Browser CORS can hide redirect responses before JavaScript can inspect
-    // them. A no-cors manual request still exposes the opaque response type,
-    // which lets us distinguish redirects without reading private headers.
-  }
-
-  try {
-    const response = await fetcher(url, {
-      redirect: "manual",
-      mode: "no-cors",
-    })
-    return isRedirectResponse(response)
-  } catch {
-    return false
-  }
-}
-
 async function verifyNip05Url(
   input: {
     url: string
@@ -243,6 +213,7 @@ async function verifyNip05Url(
 ): Promise<Nip05VerificationResult> {
   const response = await fetcher(input.url, {
     headers: { accept: "application/json" },
+    redirect: "error",
   })
 
   if (!response.ok) {
@@ -361,52 +332,14 @@ export async function getNip05Verification(
       checkedAt
     )
   } catch {
-    const fallbackDomain = getWwwRedirectFallbackDomain(parsed.domain)
-    if (fallbackDomain) {
-      const redirectConfirmed = await hasRedirectSignal(fetcher, url)
-      try {
-        const fallbackResult = await verifyNip05Url(
-          {
-            url: makeNip05Url(fallbackDomain, parsed.name),
-            pubkey,
-            nip05: input.nip05.trim(),
-            normalizedIdentifier: parsed.normalizedIdentifier,
-            name: parsed.name,
-          },
-          fetcher,
-          checkedAt
-        )
-        result =
-          redirectConfirmed || fallbackResult.status === "valid"
-            ? fallbackResult
-            : makeNetworkUnknownResult(
-                {
-                  pubkey,
-                  nip05: input.nip05.trim(),
-                  normalizedIdentifier: parsed.normalizedIdentifier,
-                },
-                checkedAt
-              )
-      } catch {
-        result = makeNetworkUnknownResult(
-          {
-            pubkey,
-            nip05: input.nip05.trim(),
-            normalizedIdentifier: parsed.normalizedIdentifier,
-          },
-          checkedAt
-        )
-      }
-    } else {
-      result = makeNetworkUnknownResult(
-        {
-          pubkey,
-          nip05: input.nip05.trim(),
-          normalizedIdentifier: parsed.normalizedIdentifier,
-        },
-        checkedAt
-      )
-    }
+    result = makeNetworkUnknownResult(
+      {
+        pubkey,
+        nip05: input.nip05.trim(),
+        normalizedIdentifier: parsed.normalizedIdentifier,
+      },
+      checkedAt
+    )
   }
 
   try {

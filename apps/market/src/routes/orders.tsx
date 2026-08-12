@@ -8,9 +8,11 @@ import {
   formatNpub,
   formatPubkey,
   getNdk,
+  getProductImageCandidates,
   getOrderPublicZapSigner,
   listOrderLifecycles,
   normalizeLightningInvoice,
+  normalizePublicMediaUrl,
   pruneExpiredGuestOrderData,
   pubkeyToNpub,
   useAuth,
@@ -210,12 +212,14 @@ function MerchantAvatar({
   name: string
   picture?: string
 }) {
+  const pictureUrl = normalizePublicMediaUrl(picture)
   return (
     <div className="h-11 w-11 shrink-0 overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]">
-      {picture ? (
+      {pictureUrl ? (
         <img
-          src={picture}
+          src={pictureUrl}
           alt={name || formatNpub(pubkey, 8)}
+          referrerPolicy="no-referrer"
           className="h-full w-full object-cover"
         />
       ) : (
@@ -470,7 +474,9 @@ function OrderItemsSection({
       <div className="mt-3 space-y-3">
         {vm.items.map((item, index) => {
           const product = productsById.get(item.productId)
-          const image = product?.images[0]
+          const image = product
+            ? getProductImageCandidates(product)[0]
+            : undefined
           const price = formatPrice({
             price: item.priceAtPurchase,
             currency: item.currency,
@@ -490,6 +496,7 @@ function OrderItemsSection({
                       src={image.url}
                       alt={image.alt ?? product?.title ?? item.displayTitle}
                       loading="lazy"
+                      referrerPolicy="no-referrer"
                       className="h-full w-full object-cover"
                     />
                   ) : null}

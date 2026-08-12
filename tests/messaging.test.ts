@@ -1049,9 +1049,9 @@ describe("publishPrivateMessage", () => {
         signer,
         rumorKind: EVENT_KINDS.ORDER,
         selfCopy: false,
-        // Signed declaration with no secure relay: malformed, never
+        // Signed declaration with no public relay: malformed, never
         // downgraded to not_observed, so the compatibility lane stays closed.
-        recipientInboxRelays: ["ws://insecure.example"],
+        recipientInboxRelays: ["ws://insecure.example", "wss://127.0.0.1:8080"],
         compatibilityOrderRoute: {
           enabled: true,
           relayUrls: ["wss://compatibility.conduit.example"],

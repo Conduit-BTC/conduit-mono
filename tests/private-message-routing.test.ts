@@ -87,7 +87,12 @@ describe("resolveInboxDeclaration", () => {
         events: [
           declarationEvent({
             createdAt: 100,
-            relays: ["wss://inbox.example", "ws://insecure.example"],
+            relays: [
+              "wss://inbox.example",
+              "ws://insecure.example",
+              "wss://127.0.0.1:8080",
+              "wss://10.0.0.5/inbox",
+            ],
           }),
         ],
         successful: ["wss://read.example"],
@@ -97,6 +102,57 @@ describe("resolveInboxDeclaration", () => {
     expect(result.state).toBe("declared")
     expect(result.relayUrls).toEqual(["wss://inbox.example"])
     expect(result.stale).toBe(false)
+  })
+
+  it("preserves an authenticated owner's intentional local inbox relay", async () => {
+    const result = await resolveForTest({
+      allowLocalRelayUrlsForPubkey: OWNER,
+      relayUrls: ["wss://read.example"],
+      fetchEventsWithDiagnostics: diagnostics({
+        events: [
+          declarationEvent({
+            createdAt: 100,
+            relays: ["wss://127.0.0.1:8080", "wss://inbox.example"],
+          }),
+        ],
+        successful: ["wss://read.example"],
+      }),
+    })
+
+    expect(result.state).toBe("declared")
+    expect(result.relayUrls).toEqual([
+      "wss://127.0.0.1:8080",
+      "wss://inbox.example",
+    ])
+  })
+
+  it("does not leak an owner's local-relay cache allowance into remote use", async () => {
+    const ownerResult = await resolveForTest({
+      allowLocalRelayUrlsForPubkey: OWNER,
+      relayUrls: ["wss://read.example"],
+      fetchEventsWithDiagnostics: diagnostics({
+        events: [
+          declarationEvent({
+            createdAt: 100,
+            relays: ["wss://127.0.0.1:8080", "wss://inbox.example"],
+          }),
+        ],
+        successful: ["wss://read.example"],
+      }),
+    })
+
+    const remoteResult = await resolveForTest({
+      fetchEventsWithDiagnostics: async () => {
+        throw new Error("fresh cache should avoid a second lookup")
+      },
+    })
+
+    expect(ownerResult.relayUrls).toEqual([
+      "wss://127.0.0.1:8080",
+      "wss://inbox.example",
+    ])
+    expect(remoteResult.state).toBe("declared")
+    expect(remoteResult.relayUrls).toEqual(["wss://inbox.example"])
   })
 
   it("never reports not_observed when every discovery relay failed", async () => {
@@ -738,7 +794,9 @@ describe("resolveInboxDeclaration", () => {
   it("serves a fresh cached declaration without refetching", async () => {
     let fetches = 0
     const fetch = diagnostics({
-      events: [declarationEvent({ createdAt: 100, relays: ["wss://a"] })],
+      events: [
+        declarationEvent({ createdAt: 100, relays: ["wss://a.example"] }),
+      ],
       successful: ["wss://read.example"],
     })
     const counting: typeof fetch = async () => {
@@ -855,7 +913,10 @@ describe("resolveInboxDeclaration", () => {
       fetches += 1
       return {
         events: [
-          declarationEvent({ createdAt: 100, relays: ["wss://a"] }),
+          declarationEvent({
+            createdAt: 100,
+            relays: ["wss://a.example"],
+          }),
         ] as never,
         attemptedRelayUrls: ["wss://read.example"],
         successfulRelayUrls: ["wss://read.example"],

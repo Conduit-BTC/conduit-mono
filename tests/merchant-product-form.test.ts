@@ -288,6 +288,17 @@ describe("merchant product form validation", () => {
     expect(httpImage.errors.imageUrl).toBe("Image URL must start with https://")
   })
 
+  it("blocks private-network image destinations", () => {
+    const privateImage = validate(
+      form({ imageUrl: "https://192.168.1.20/item.png" })
+    )
+
+    expect(privateImage.canPublish).toBe(false)
+    expect(privateImage.errors.imageUrl).toBe(
+      "Image URL must use a public network destination."
+    )
+  })
+
   it("rejects exponent and signed amount syntax", () => {
     const exponentPrice = validate(form({ price: "1e3" }))
     const exponentShipping = validate(

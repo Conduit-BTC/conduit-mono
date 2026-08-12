@@ -26,6 +26,7 @@ import {
   __resetInboxDeclarationCache,
   inboxDeclarationPublishRelayUrls,
   primeInboxDeclarationEvidence,
+  publicRelayHintUrls,
   readRetainedInboxDeclaration,
   resolveInboxDeclaration,
   secureRelayUrls,
@@ -639,7 +640,8 @@ export async function publishPrivateMessage(
     const senderDeclaration = await resolveDeclarationForSend(
       input.senderPubkey,
       input.senderInboxRelays,
-      input.resolveInboxRelays
+      input.resolveInboxRelays,
+      true
     )
     // The compatibility lane is recipient-only: the non-critical sender self-copy
     // stays strict and fails soft instead of writing to compatibility relays.
@@ -847,12 +849,19 @@ async function resolveCompatibilityRecipientReadRelays(
 async function resolveDeclarationForSend(
   pubkey: string,
   knownRelayUrls: readonly string[] | undefined,
-  legacySeam: ((pubkey: string) => Promise<string[]>) | undefined
+  legacySeam: ((pubkey: string) => Promise<string[]>) | undefined,
+  allowLocalRelayUrls = false
 ): Promise<InboxDeclarationResolution> {
   const key = pubkey.trim().toLowerCase()
-  if (knownRelayUrls) return declarationFromKnownRelays(key, knownRelayUrls)
-  if (legacySeam) return resolveDeclarationViaSeam(pubkey, legacySeam)
-  return resolveInboxDeclaration(pubkey)
+  if (knownRelayUrls) {
+    return declarationFromKnownRelays(key, knownRelayUrls, allowLocalRelayUrls)
+  }
+  if (legacySeam) {
+    return resolveDeclarationViaSeam(pubkey, legacySeam, allowLocalRelayUrls)
+  }
+  return resolveInboxDeclaration(pubkey, {
+    allowLocalRelayUrlsForPubkey: allowLocalRelayUrls ? pubkey : null,
+  })
 }
 
 /**
@@ -862,9 +871,12 @@ async function resolveDeclarationForSend(
  */
 function declarationFromKnownRelays(
   pubkey: string,
-  relayUrls: readonly string[]
+  relayUrls: readonly string[],
+  allowLocalRelayUrls: boolean
 ): InboxDeclarationResolution {
-  const secure = secureRelayUrls(relayUrls)
+  const secure = allowLocalRelayUrls
+    ? secureRelayUrls(relayUrls)
+    : publicRelayHintUrls(relayUrls)
   const state =
     secure.length > 0
       ? "declared"
@@ -887,12 +899,13 @@ function declarationFromKnownRelays(
  */
 async function resolveDeclarationViaSeam(
   pubkey: string,
-  resolveInboxRelays: (pubkey: string) => Promise<string[]>
+  resolveInboxRelays: (pubkey: string) => Promise<string[]>,
+  allowLocalRelayUrls: boolean
 ): Promise<InboxDeclarationResolution> {
   const key = pubkey.trim().toLowerCase()
   try {
     const relayUrls = await resolveInboxRelays(pubkey)
-    return declarationFromKnownRelays(key, relayUrls)
+    return declarationFromKnownRelays(key, relayUrls, allowLocalRelayUrls)
   } catch (error) {
     const message = error instanceof Error ? error.message : ""
     return {
@@ -1182,6 +1195,9 @@ export async function inspectOwnPrivateMessageRelayReadiness(
     relayUrls: readPlanRelayUrls,
     sharedConfirmationRelayUrls: sharedPlanRelayUrls,
     freshnessMs: 0,
+    // The signed relay set is rendered for its authenticated owner, so an
+    // intentional local relay remains visible without becoming a peer target.
+    allowLocalRelayUrlsForPubkey: pubkey,
   })
   const distributionRepairable = Boolean(
     resolution.stale &&

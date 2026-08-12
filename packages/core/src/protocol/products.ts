@@ -11,10 +11,11 @@ import {
   type ProductSchema,
   type ProductZapMessagePolicy,
 } from "../schemas"
+import { normalizePublicMediaUrl } from "../network-target-safety"
 import { EVENT_KINDS } from "./kinds"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 
-const PRODUCT_IMAGE_URL_PATTERN = /^https?:\/\//i
+export const MAX_PRODUCT_IMAGE_CANDIDATES = 12
 const PRODUCT_JSON_DISPLAY_PROJECTION_MAX_DEPTH = 3
 const PRODUCT_TITLE_MAX_LENGTH = 200
 const PRODUCT_SUMMARY_MAX_LENGTH = 5000
@@ -317,7 +318,7 @@ export function buildProductListingEventDraft({
       tags.push(["shipping_exclude", rule.code, ...rule.exclude])
     }
   }
-  for (const image of product.images) {
+  for (const image of getProductImageCandidates(product)) {
     tags.push(["image", image.url])
   }
   for (const tag of canonicalizeProductTags(product.tags)) {
@@ -338,9 +339,23 @@ export function buildProductListingEventDraft({
 export function getProductImageCandidates(
   product: Pick<ProductSchema, "images">
 ): Array<{ url: string; alt?: string }> {
-  return product.images.filter((image) =>
-    PRODUCT_IMAGE_URL_PATTERN.test(image.url)
-  )
+  const candidates: Array<{ url: string; alt?: string }> = []
+  const seen = new Set<string>()
+
+  for (const image of Array.isArray(product.images) ? product.images : []) {
+    if (!image || typeof image !== "object") continue
+    const url = normalizePublicMediaUrl(image.url)
+    if (!url || seen.has(url)) continue
+
+    seen.add(url)
+    candidates.push({
+      url,
+      ...(typeof image.alt === "string" && image.alt ? { alt: image.alt } : {}),
+    })
+    if (candidates.length >= MAX_PRODUCT_IMAGE_CANDIDATES) break
+  }
+
+  return candidates
 }
 
 export function hasMarketVisibleProductImage(
@@ -904,6 +919,9 @@ export function parseProductEvent(
       event.tags,
       candidate.type ?? "simple"
     )
+    candidate.images = getProductImageCandidates({
+      images: Array.isArray(parsed.images) ? parsed.images : [],
+    })
 
     const pricedCandidate =
       typeof candidate.price === "number"
@@ -959,9 +977,9 @@ export function parseProductEvent(
     productTypeTag.format === "digital" ? "digital" : "physical"
   const parentProductId = parseVariationParentProductId(event.tags, type)
 
-  const images = getTagValues(event.tags, "image")
-    .filter((url) => url.startsWith("http://") || url.startsWith("https://"))
-    .map((url) => ({ url }))
+  const images = getProductImageCandidates({
+    images: getTagValues(event.tags, "image").map((url) => ({ url })),
+  })
 
   const tags = canonicalizeProductTags(getTagValues(event.tags, "t"))
   const summaryContext: ProductSummaryCleanupContext = {

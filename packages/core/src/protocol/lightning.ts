@@ -3,6 +3,7 @@ import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
 
 import { config } from "../config"
+import { normalizePublicHttpsUrl } from "../network-target-safety"
 import {
   isSatsLikeCurrency,
   isUsdCurrencyCode,
@@ -76,17 +77,11 @@ async function readResponseTextWithLimit(
 
 export function normalizeSafeLnurlPayRequestUrl(raw: string): string | null {
   try {
-    if (!raw || raw !== raw.trim() || raw.length > 4_096) return null
-    const url = new URL(raw)
+    const publicUrl = normalizePublicHttpsUrl(raw)
+    if (!publicUrl) return null
+    const url = new URL(publicUrl)
     const hostname = url.hostname.toLowerCase().replace(/\.$/, "")
     const labels = hostname.split(".")
-    const isLocalName =
-      hostname === "localhost" ||
-      hostname.endsWith(".localhost") ||
-      hostname.endsWith(".local") ||
-      hostname.endsWith(".internal") ||
-      hostname.endsWith(".home") ||
-      hostname.endsWith(".lan")
     const isIpLiteral =
       hostname.startsWith("[") || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname)
     const hasValidDnsName =
@@ -98,16 +93,7 @@ export function normalizeSafeLnurlPayRequestUrl(raw: string): string | null {
           /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label)
       )
 
-    if (
-      url.protocol !== "https:" ||
-      url.username ||
-      url.password ||
-      url.hash ||
-      (url.port && url.port !== "443") ||
-      isLocalName ||
-      isIpLiteral ||
-      !hasValidDnsName
-    ) {
+    if ((url.port && url.port !== "443") || isIpLiteral || !hasValidDnsName) {
       return null
     }
 
@@ -373,7 +359,11 @@ export async function fetchLnurlInvoice(
   amountMsats: number,
   options: FetchLnurlInvoiceOptions = {}
 ): Promise<FetchZapInvoiceResult> {
-  const url = new URL(lnurlCallback)
+  const safeCallback = normalizeSafeLnurlPayRequestUrl(lnurlCallback)
+  if (!safeCallback) {
+    throw new Error("Unsafe LNURL-pay callback URL")
+  }
+  const url = new URL(safeCallback)
   url.searchParams.set("amount", String(amountMsats))
   url.searchParams.delete("nostr")
   url.searchParams.delete("lnurl")
@@ -384,10 +374,27 @@ export async function fetchLnurlInvoice(
   let data: Record<string, unknown>
   try {
     const res = await fetch(url.toString(), {
+      headers: { accept: "application/json" },
+      redirect: "error",
       signal: AbortSignal.timeout(15_000),
     })
     if (!res.ok) throw new Error(`LNURL callback returned ${res.status}`)
-    data = (await res.json()) as Record<string, unknown>
+    const contentLength = Number(res.headers?.get("content-length") ?? "0")
+    if (
+      Number.isFinite(contentLength) &&
+      contentLength > MAX_LNURL_METADATA_RESPONSE_BYTES
+    ) {
+      throw new Error("LNURL callback response is too large")
+    }
+    if (typeof res.text === "function") {
+      const body = await readResponseTextWithLimit(
+        res,
+        MAX_LNURL_METADATA_RESPONSE_BYTES
+      )
+      data = JSON.parse(body) as Record<string, unknown>
+    } else {
+      data = (await res.json()) as Record<string, unknown>
+    }
   } catch (e) {
     throw new Error(
       `Failed to fetch LNURL invoice: ${e instanceof Error ? e.message : "network error"}`,

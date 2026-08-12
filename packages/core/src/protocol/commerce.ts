@@ -16,6 +16,7 @@ import {
 import { CANONICAL_APP_BACKPLANE_RELAYS, config } from "../config"
 import { compareCommercePrices } from "../pricing"
 import type { Product, Profile } from "../types"
+import { normalizePublicMediaUrl } from "../network-target-safety"
 import { EVENT_KINDS } from "./kinds"
 import {
   fetchEventsFanout,
@@ -60,6 +61,7 @@ import {
 } from "./product-family"
 import {
   canonicalizeProductTags,
+  getProductImageCandidates,
   normalizeProductSummaryForDisplay,
   parseProductEvent,
 } from "./products"
@@ -962,13 +964,7 @@ function sortProducts(
 }
 
 function isValidProductImageUrl(url: string | undefined): boolean {
-  if (!url) return false
-  try {
-    const parsed = new URL(url)
-    return parsed.protocol === "http:" || parsed.protocol === "https:"
-  } catch {
-    return false
-  }
+  return normalizePublicMediaUrl(url) !== null
 }
 
 export function hasMarketProductImage(
@@ -1188,7 +1184,7 @@ function toCachedProduct(record: CommerceProductRecord) {
     shippingCountryRules: product.shippingCountryRules,
     visibility: product.visibility,
     stock: product.stock,
-    images: product.images,
+    images: getProductImageCandidates(product),
     tags: canonicalizeProductTags(product.tags),
     publicZapEnabled: product.publicZapEnabled,
     zapMessagePolicy: product.zapMessagePolicy,
@@ -1237,7 +1233,7 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
     shippingCountryRules: row.shippingCountryRules,
     visibility: row.visibility ?? "public",
     stock: row.stock,
-    images: row.images ?? [],
+    images: getProductImageCandidates({ images: row.images ?? [] }),
     tags,
     publicZapEnabled: row.publicZapEnabled ?? true,
     zapMessagePolicy,
@@ -1810,16 +1806,18 @@ function hasProfileContent(
 }
 
 function cachedProfileToProfile(row: CachedProfile): Profile {
+  const text = (value: unknown): string | undefined =>
+    typeof value === "string" ? value : undefined
   return {
     pubkey: row.pubkey,
-    name: row.name,
-    displayName: row.displayName,
-    about: row.about,
-    picture: row.picture,
-    banner: row.banner,
-    nip05: row.nip05,
-    lud16: row.lud16,
-    website: row.website,
+    name: text(row.name),
+    displayName: text(row.displayName),
+    about: text(row.about),
+    picture: normalizePublicMediaUrl(row.picture) ?? undefined,
+    banner: normalizePublicMediaUrl(row.banner) ?? undefined,
+    nip05: text(row.nip05),
+    lud16: text(row.lud16),
+    website: text(row.website),
   }
 }
 
@@ -1848,8 +1846,14 @@ function mergeProfileData(
     name: mergeProfileField(current.name, incoming.name),
     displayName: mergeProfileField(current.displayName, incoming.displayName),
     about: mergeProfileField(current.about, incoming.about),
-    picture: mergeProfileField(current.picture, incoming.picture),
-    banner: mergeProfileField(current.banner, incoming.banner),
+    picture: mergeProfileField(
+      normalizePublicMediaUrl(current.picture) ?? undefined,
+      normalizePublicMediaUrl(incoming.picture) ?? undefined
+    ),
+    banner: mergeProfileField(
+      normalizePublicMediaUrl(current.banner) ?? undefined,
+      normalizePublicMediaUrl(incoming.banner) ?? undefined
+    ),
     nip05: mergeProfileField(current.nip05, incoming.nip05),
     lud16: mergeProfileField(current.lud16, incoming.lud16),
     website: mergeProfileField(current.website, incoming.website),
@@ -4245,6 +4249,7 @@ async function resolvePrincipalInboxDeclaration(
   }
   return await resolveInboxDeclaration(principalPubkey, {
     fetchEventsWithDiagnostics: runFetchEventsFanoutWithDiagnostics,
+    allowLocalRelayUrlsForPubkey: principalPubkey,
   })
 }
 

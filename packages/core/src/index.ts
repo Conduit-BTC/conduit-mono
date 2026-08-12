@@ -10,6 +10,7 @@ export * from "./schemas"
 
 // Utils
 export * from "./utils"
+export * from "./network-target-safety"
 
 // Build provenance
 export {

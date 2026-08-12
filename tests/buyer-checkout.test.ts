@@ -2607,8 +2607,10 @@ describe("fetchZapInvoice", () => {
 
   it("requests a plain LNURL invoice without public zap metadata", async () => {
     let capturedUrl = ""
-    globalThis.fetch = mock(async (url: string | URL | Request) => {
+    let capturedInit: RequestInit | undefined
+    globalThis.fetch = mock(async (url: string | URL | Request, init) => {
       capturedUrl = url.toString()
+      capturedInit = init
       return { ok: true, status: 200, json: async () => ({ pr: FAKE_INVOICE }) }
     }) as unknown as typeof fetch
 
@@ -2617,6 +2619,25 @@ describe("fetchZapInvoice", () => {
     expect(capturedUrl).toContain("amount=50000")
     expect(capturedUrl).not.toContain("nostr=")
     expect(capturedUrl).not.toContain("lnurl=")
+    expect(capturedInit?.redirect).toBe("error")
+  })
+
+  it("rejects a non-public LNURL callback before requesting it", async () => {
+    let fetchCount = 0
+    globalThis.fetch = mock(async () => {
+      fetchCount += 1
+      return { ok: true, status: 200, json: async () => ({ pr: FAKE_INVOICE }) }
+    }) as unknown as typeof fetch
+
+    for (const callback of [
+      "https://127.0.0.1/cb",
+      "https://wallet.home.arpa/cb",
+    ]) {
+      await expect(fetchLnurlInvoice(callback, 50_000)).rejects.toThrow(
+        /Unsafe LNURL-pay callback URL/
+      )
+    }
+    expect(fetchCount).toBe(0)
   })
 
   it("strips pre-existing NIP-57 params from plain LNURL invoice callbacks", async () => {

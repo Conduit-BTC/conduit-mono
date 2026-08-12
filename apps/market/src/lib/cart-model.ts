@@ -1,5 +1,6 @@
 import {
   getPriceSats,
+  getProductImageCandidates,
   getShippingCostSats,
   resolveCartShippingCost,
   type CommerceQueryMeta,
@@ -143,7 +144,7 @@ export function createCartItemFromProduct(
     currency: product.currency,
     priceSats: product.priceSats,
     sourcePrice: product.sourcePrice,
-    image: product.images[0]?.url,
+    image: getProductImageCandidates(product)[0]?.url,
     tags: product.tags,
     format: product.format,
     shippingCostSats: product.shippingCostSats,
