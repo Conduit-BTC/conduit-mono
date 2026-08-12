@@ -22,6 +22,8 @@ export interface ProductCardProps {
   imageLoading?: "eager" | "lazy"
   cartQuantity?: number
   soldOut?: boolean
+  /** Optional product controls rendered between identity and price. */
+  options?: ReactNode
   action?: ReactNode
   onActivate?: () => void
   onMerchantActivate?: () => void
@@ -41,6 +43,7 @@ export function ProductCard({
   imageLoading = "lazy",
   cartQuantity = 0,
   soldOut = false,
+  options,
   action,
   onActivate,
   onMerchantActivate,
@@ -168,6 +171,8 @@ export function ProductCard({
             </div>
           )}
         </div>
+
+        {options ? <div className="pt-3">{options}</div> : null}
 
         <div className="mt-auto flex items-end justify-between gap-2 pt-3">
           <div className="min-w-0">
@@ -317,7 +322,7 @@ export function ProductCartAction({
 
 export function ProductCardSkeleton() {
   return (
-    <div className="flex h-full animate-pulse flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-md)]">
+    <div className="flex animate-pulse flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-md)]">
       <div className="aspect-[4/3] bg-[var(--surface-elevated)]" />
       <div className="flex flex-1 flex-col p-3">
         <div className="min-h-[3.25rem] space-y-1.5">

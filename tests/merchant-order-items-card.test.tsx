@@ -65,6 +65,37 @@ describe("merchant order items card", () => {
     expect(markup).toContain("<dt>Shipping</dt>")
   })
 
+  it("preserves the selected variation details from the signed order snapshot", () => {
+    const markup = renderToStaticMarkup(
+      <OrderItemsCard
+        items={[
+          {
+            productId: "shirt-blue-large",
+            familyProductId: "shirt",
+            selectedSpecifications: [
+              { key: "Color", value: "Blue" },
+              { key: "Size", value: "Large" },
+            ],
+            title: "Market Shirt",
+            format: "physical",
+            quantity: 1,
+            priceAtPurchase: 12_000,
+            currency: "SATS",
+          },
+        ]}
+        productLookup={productLookup}
+        itemSubtotal={12_000}
+        shippingCostSats={0}
+        shippingCostStatus="included"
+        total={12_000}
+        currency="SATS"
+      />
+    )
+
+    expect(markup).toContain("Market Shirt")
+    expect(markup).toContain("Color: Blue · Size: Large")
+  })
+
   it("labels a legacy order without shipping metadata instead of inferring zero", () => {
     const markup = renderToStaticMarkup(
       <OrderItemsCard

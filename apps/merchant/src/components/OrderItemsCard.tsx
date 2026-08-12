@@ -179,6 +179,8 @@ export function OrderItemsCard({
   const keyedItems = items.map((item) => {
     const keyBase = JSON.stringify([
       item.productId,
+      item.familyProductId,
+      item.selectedSpecifications,
       item.title,
       item.format,
       item.quantity,
@@ -232,6 +234,16 @@ export function OrderItemsCard({
                 <div className="line-clamp-2 text-pretty text-[var(--text-primary)]">
                   {title}
                 </div>
+                {(item.selectedSpecifications?.length ?? 0) > 0 ? (
+                  <div className="mt-0.5 text-xs text-[var(--text-secondary)]">
+                    {item.selectedSpecifications
+                      ?.map(
+                        (specification) =>
+                          `${specification.key}: ${specification.value}`
+                      )
+                      .join(" · ")}
+                  </div>
+                ) : null}
                 <div className="mt-1 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 tabular-nums">
                   <span className="text-xs text-[var(--text-secondary)]">
                     {formatMerchantOrderAmount(

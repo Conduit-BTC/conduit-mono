@@ -9,6 +9,8 @@ export type OrderSummary = {
   buyerIdentityKind: "signed_in" | "guest_ephemeral" | null
   items: Array<{
     productId: string
+    familyProductId?: string
+    selectedSpecifications?: Array<{ key: string; value: string }>
     title?: string
     format: "physical" | "digital"
     quantity: number
@@ -179,6 +181,10 @@ export function extractOrderSummary(
     firstOrder?.type === "order"
       ? firstOrder.payload.items.map((item) => ({
           productId: item.productId,
+          familyProductId: item.familyProductId,
+          selectedSpecifications: item.selectedSpecifications?.map(
+            (specification) => ({ ...specification })
+          ),
           title: item.title,
           format: item.format,
           quantity: item.quantity,

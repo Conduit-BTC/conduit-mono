@@ -205,6 +205,24 @@ describe("listing safety", () => {
     )
   })
 
+  it("allows non-simple listings only after commerce prepares a valid group", () => {
+    const variable = evaluateListingSafety(
+      product({ type: "variable", images: [] }),
+      undefined,
+      { variationGroupRole: "parent", hasGroupImage: true }
+    )
+    const variation = evaluateListingSafety(
+      product({ type: "variation" }),
+      undefined,
+      { variationGroupRole: "variation" }
+    )
+
+    expect(variable.state).toBe("active")
+    expect(variable.marketVisible).toBe(true)
+    expect(variation.state).toBe("active")
+    expect(variation.purchasable).toBe(true)
+  })
+
   it("validates market image URLs", () => {
     expect(
       hasMarketVisibleListingImage(

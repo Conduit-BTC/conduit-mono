@@ -2,6 +2,7 @@ import {
   EVENT_KINDS,
   isValidSignedPublicNostrEvent,
   type CommerceProductRecord,
+  type ProductFamilyInventorySummary,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
 
@@ -261,6 +262,23 @@ export function getProductStockDisplay(
   return { label: `${stock} in stock`, variant: "success" }
 }
 
+export function getProductFamilyStockDisplay(
+  summary: ProductFamilyInventorySummary
+): ProductStockDisplay {
+  if (summary.availability === "unavailable") {
+    return { label: "No purchasable variants", variant: "error" }
+  }
+  if (summary.tracking === "untracked") {
+    return { label: "Stock not tracked", variant: "neutral" }
+  }
+  if (summary.tracking === "partial") {
+    return summary.availability === "sold_out"
+      ? { label: "Sold out", variant: "error" }
+      : { label: "Partially tracked", variant: "warning" }
+  }
+  return getProductStockDisplay(summary.totalStock)
+}
+
 export function getOrderStockDecisionKey(
   orderId: string,
   productAddressId: string
@@ -282,7 +300,12 @@ export function buildOrderStockAdjustments(input: {
   const recordsByLookupId = new Map<string, CommerceProductRecord>()
   for (const record of input.productRecords) {
     if (record.product.pubkey !== merchantPubkey) continue
-    if (record.product.type !== "simple") continue
+    if (
+      record.product.type !== "simple" &&
+      record.product.type !== "variation"
+    ) {
+      continue
+    }
     if (!record.dTag) continue
     if (
       typeof record.product.stock !== "number" ||

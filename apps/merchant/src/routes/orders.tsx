@@ -7,12 +7,12 @@ import {
   convertCommerceAmountToSats,
   decodeLightningInvoiceAmount,
   formatNpub,
+  getAtomicProductDetail,
   getCachedMerchantConversationList,
   getCurrencyAmountStep,
   getLightningNetworkMismatchMessage,
   getMerchantConversationList,
   getMerchantOrderActions,
-  getProductDetail,
   getProductImageCandidates,
   getProductsByIds,
   hasWebLN,
@@ -958,7 +958,7 @@ function OrdersPage() {
         }
       }
 
-      const latest = await getProductDetail({
+      const latest = await getAtomicProductDetail({
         productId: payload.adjustment.addressId,
         includeMarketHidden: true,
       })
@@ -974,9 +974,12 @@ function OrdersPage() {
           "The current merchant listing could not be verified. Refresh orders and try again."
         )
       }
-      if (record.product.type !== "simple") {
+      if (
+        record.product.type !== "simple" &&
+        record.product.type !== "variation"
+      ) {
         throw new Error(
-          "Automatic stock updates are not available for variable listings yet."
+          "Automatic stock updates require a purchasable product listing."
         )
       }
       if (record.eventId !== payload.adjustment.sourceEventId) {

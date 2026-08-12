@@ -32,17 +32,20 @@ import {
   ProductGridCard,
   ProductGridCardSkeleton,
 } from "../../components/ProductGridCard"
+import { ProductVariationSelector } from "../../components/ProductVariationSelector"
 import { useShopperPricing } from "../../hooks/useShopperPricing"
 import { useCart } from "../../hooks/useCart"
 import {
   useProgressiveProductDetail,
   useProgressiveProducts,
 } from "../../hooks/useProgressiveProducts"
-import {
-  createCartItemFromProduct,
-  getProductAddAvailability,
-} from "../../lib/cart-model"
+import { getProductAddAvailability } from "../../lib/cart-model"
 import { getProductDisplaySummary } from "../../lib/productDisplaySummary"
+import {
+  cartItemInputFromProductSelection,
+  getProductSelection,
+  getProductSelectionImages,
+} from "../../lib/productVariations"
 
 export const Route = createFileRoute("/products/$productId")({
   component: ProductPage,
@@ -60,6 +63,7 @@ function ProductPage() {
   const cart = useCart()
   const { productId } = Route.useParams()
   const [selectedImageIndex, setSelectedImageIndex] = useState(0)
+  const [selectedProductId, setSelectedProductId] = useState("")
   const [quantity, setQuantity] = useState(1)
   const [showAllTags, setShowAllTags] = useState(false)
   const [showFullDescription, setShowFullDescription] = useState(false)
@@ -74,13 +78,21 @@ function ProductPage() {
 
   const productQuery = useProgressiveProductDetail(productId)
   const product = productQuery.product
+  const family = productQuery.family ?? undefined
+  const routeProductSelection = useMemo(
+    () => (product ? getProductSelection(product, family, productId) : null),
+    [family, product, productId]
+  )
+  const selectedProduct = product
+    ? getProductSelection(product, family, selectedProductId)
+    : null
   const listingSafety = productQuery.listingSafety
   const listingSafetyDisplay = listingSafety
     ? getListingSafetyDisplay(listingSafety)
     : null
   const productUnavailable =
     !!product && !!listingSafety && !productQuery.isMarketVisible
-  const productSoldOut = product?.stock === 0
+  const productSoldOut = selectedProduct?.stock === 0
 
   const merchantProfile = useProfile(product?.pubkey, {
     relayHints: product
@@ -106,7 +118,10 @@ function ProductPage() {
     [product, relatedProductsQuery.products]
   )
 
-  const images = product?.images ?? []
+  const images =
+    product && selectedProduct
+      ? getProductSelectionImages(product, selectedProduct)
+      : []
   const hasMultipleImages = images.length > 1
   const selectedImage = images[selectedImageIndex] ?? images[0]
   const merchantProfileName = getProfileName(merchantProfile.data)
@@ -118,16 +133,22 @@ function ProductPage() {
       })
     : ""
   const merchantNip05 = getProfileNip05(merchantProfile.data)
-  const cartItem = product
-    ? cart.items.find((item) => item.productId === product.id)
+  const cartItem = selectedProduct
+    ? cart.items.find(
+        (item) =>
+          item.merchantPubkey === selectedProduct.pubkey &&
+          item.productId === selectedProduct.id
+      )
     : null
   const cartQuantity = cartItem?.quantity ?? 0
   const productAddAvailability = getProductAddAvailability(
-    product?.stock,
+    selectedProduct?.stock,
     cartQuantity,
     quantity
   )
-  const priceDisplay = product ? shopperPricing.formatPrice(product) : null
+  const priceDisplay = selectedProduct
+    ? shopperPricing.formatPrice(selectedProduct)
+    : null
   const updatedLabel = product
     ? new Intl.DateTimeFormat("en-US", {
         month: "short",
@@ -146,8 +167,15 @@ function ProductPage() {
   }, [product, showAllTags])
 
   useEffect(() => {
+    setSelectedProductId(routeProductSelection?.id ?? "")
+  }, [product?.id, routeProductSelection?.id])
+
+  useEffect(() => {
     setSelectedImageIndex(0)
     setQuantity(1)
+  }, [selectedProduct?.id])
+
+  useEffect(() => {
     setShowAllTags(false)
     setShowFullDescription(false)
   }, [product?.id])
@@ -227,21 +255,25 @@ function ProductPage() {
   function recordProductDetailAction(
     action: ProductDetailTelemetryAction
   ): void {
-    if (!product) return
+    if (!selectedProduct) return
     recordBrowserTelemetryEvent({
       app: "market",
       eventName: "product_detail_action",
       properties: buildProductDetailActionTelemetryProperties({
         action,
-        productType: product.format === "digital" ? "digital" : "physical",
+        productType:
+          selectedProduct.format === "digital" ? "digital" : "physical",
       }),
     })
   }
 
   function addProductToCart(): void {
-    if (!product || !productAddAvailability.canAdd) return
+    if (!product || !selectedProduct || !productAddAvailability.canAdd) return
     recordProductDetailAction("add_to_cart")
-    cart.addItem(createCartItemFromProduct(product), quantity)
+    cart.addItem(
+      cartItemInputFromProductSelection(product, selectedProduct),
+      quantity
+    )
   }
 
   const productFreshness: FreshnessChipStatus = product
@@ -534,6 +566,14 @@ function ProductPage() {
                   ) : null}
                 </div>
 
+                {family && selectedProduct ? (
+                  <ProductVariationSelector
+                    family={family}
+                    selectedProduct={selectedProduct}
+                    onSelect={(variation) => setSelectedProductId(variation.id)}
+                  />
+                ) : null}
+
                 <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
                   <div className="text-2xl font-bold text-secondary-400">
                     {priceDisplay?.primary}
@@ -554,7 +594,7 @@ function ProductPage() {
                   </div>
                 </div>
 
-                {typeof product.stock === "number" && (
+                {typeof selectedProduct?.stock === "number" && (
                   <div
                     role="status"
                     className={`rounded-xl border px-4 py-3 text-sm ${
@@ -565,7 +605,7 @@ function ProductPage() {
                   >
                     {productSoldOut
                       ? "Sold out. This listing remains visible, but it cannot be added to your cart."
-                      : `${product.stock} available`}
+                      : `${selectedProduct.stock} available`}
                   </div>
                 )}
 
@@ -777,9 +817,9 @@ function ProductPage() {
             </div>
 
             {relatedProductsQuery.isInitialLoading && (
-              <ul className="grid auto-rows-fr list-none grid-cols-2 gap-3 p-0 md:grid-cols-3 lg:grid-cols-4">
+              <ul className="grid items-start list-none grid-cols-2 gap-3 p-0 md:grid-cols-3 lg:grid-cols-4">
                 {Array.from({ length: 4 }).map((_, index) => (
-                  <li key={index} className="h-full">
+                  <li key={index}>
                     <ProductGridCardSkeleton />
                   </li>
                 ))}
@@ -795,43 +835,61 @@ function ProductPage() {
               )}
 
             {relatedProducts.length > 0 && (
-              <ul className="grid auto-rows-fr list-none grid-cols-2 gap-3 p-0 md:grid-cols-3 lg:grid-cols-4">
+              <ul className="grid items-start list-none grid-cols-2 gap-3 p-0 md:grid-cols-3 lg:grid-cols-4">
                 {relatedProducts.map((relatedProduct, index) => {
-                  const relatedCartItem = cart.items.find(
-                    (item) => item.productId === relatedProduct.id
-                  )
-                  const relatedCartQuantity = relatedCartItem?.quantity ?? 0
-
                   return (
-                    <li key={relatedProduct.id} className="h-full">
+                    <li key={relatedProduct.id}>
                       <ProductGridCard
                         product={relatedProduct}
+                        family={
+                          relatedProductsQuery.familiesByProductId[
+                            relatedProduct.id
+                          ]
+                        }
+                        familyHydrating={relatedProductsQuery.isHydrating}
                         merchantName={merchantName}
                         merchantNamePending={merchantIdentityPending}
                         imageLoading={index < 4 ? "eager" : "lazy"}
                         btcUsdRate={shopperPricing.quote}
                         pricePreference={shopperPricing.preference}
-                        cartQuantity={relatedCartQuantity}
-                        onAddToCart={() =>
+                        getCartQuantity={(relatedSelection) =>
+                          cart.items.find(
+                            (item) =>
+                              item.merchantPubkey === relatedSelection.pubkey &&
+                              item.productId === relatedSelection.id
+                          )?.quantity ?? 0
+                        }
+                        onAddToCart={(relatedSelection) =>
                           cart.addItem(
-                            createCartItemFromProduct(relatedProduct),
+                            cartItemInputFromProductSelection(
+                              relatedProduct,
+                              relatedSelection
+                            ),
                             1
                           )
                         }
-                        onIncrement={() =>
+                        onIncrement={(relatedSelection) =>
                           cart.addItem(
-                            createCartItemFromProduct(relatedProduct),
+                            cartItemInputFromProductSelection(
+                              relatedProduct,
+                              relatedSelection
+                            ),
                             1
                           )
                         }
-                        onDecrement={() => {
+                        onDecrement={(relatedSelection) => {
+                          const relatedCartItem = cart.items.find(
+                            (item) =>
+                              item.merchantPubkey === relatedSelection.pubkey &&
+                              item.productId === relatedSelection.id
+                          )
                           if (!relatedCartItem) return
                           if (relatedCartItem.quantity <= 1) {
-                            cart.removeItem(relatedProduct.id)
+                            cart.removeItem(relatedSelection.id)
                             return
                           }
                           cart.setQuantity(
-                            relatedProduct.id,
+                            relatedSelection.id,
                             relatedCartItem.quantity - 1
                           )
                         }}
