@@ -489,7 +489,7 @@ async function readDatabaseMigrationState(page: Page): Promise<{
   )
 }
 
-test("Merchant upgrades v8 cache data to the durable v10 cache stores", async ({
+test("Merchant upgrades v8 cache data to the durable v11 cache stores", async ({
   page,
 }) => {
   await page.route(
@@ -518,7 +518,7 @@ test("Merchant upgrades v8 cache data to the durable v10 cache stores", async ({
       { timeout: 20_000 }
     )
     .toEqual({
-      nativeVersion: 100,
+      nativeVersion: 110,
       hasOutbox: true,
       hasShopperTrust: true,
     })
