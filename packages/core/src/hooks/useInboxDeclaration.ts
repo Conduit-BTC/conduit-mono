@@ -3,13 +3,17 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   inspectOwnPrivateMessageRelayReadiness,
   publishPrivateMessageRelayDeclaration,
+  redistributePrivateMessageRelayDeclaration,
   type OwnPrivateMessageRelayReadiness,
 } from "../protocol/messaging"
 import { getNdk } from "../protocol/ndk"
 import {
+  getCachedInboxDeclarationEvidence,
   invalidateInboxDeclaration,
+  MAX_DECLARED_INBOX_WRITE_RELAYS,
   resolveInboxDeclaration,
   secureRelayUrls,
+  sharedInboxDiscoveryRelayUrls,
   type InboxDeclarationResolution,
 } from "../protocol/private-message-routing"
 import { subscribeRelaySettingsChanges } from "../protocol/relay-settings"
@@ -45,21 +49,33 @@ export function verifyDeclarationReadBack(
   resolution: InboxDeclarationResolution,
   expected?: ExpectedInboxDeclaration
 ): DeclarationReadBackResult {
-  if (resolution.state === "not_declared" || resolution.state === "malformed") {
+  if (
+    resolution.state === "not_observed" ||
+    resolution.state === "signed_empty" ||
+    resolution.state === "malformed"
+  ) {
     throw new Error(
       "The declaration was accepted but is not discoverable yet. Retry the readiness check."
     )
   }
-  if (resolution.state !== "declared" || resolution.stale) {
+  if (resolution.state !== "declared") {
     return { confirmed: false }
   }
-  if (!expected) return { confirmed: true }
+  if (!expected) return { confirmed: !resolution.stale }
 
   const actualRelays = [...secureRelayUrls(resolution.relayUrls)].sort()
   const expectedRelays = [...secureRelayUrls(expected.relayUrls)].sort()
+  const successfulSources = new Set(
+    secureRelayUrls(resolution.observation?.successfulRelayUrls ?? [])
+  )
+  const exactSourceObservedThisRun = secureRelayUrls(
+    resolution.observation?.eventSourceRelayUrls ?? []
+  ).some((relayUrl) => successfulSources.has(relayUrl))
   return {
     confirmed:
       resolution.eventId === expected.eventId &&
+      resolution.observation?.eventId === expected.eventId &&
+      exactSourceObservedThisRun &&
       actualRelays.length === expectedRelays.length &&
       actualRelays.every(
         (relayUrl, index) => relayUrl === expectedRelays[index]
@@ -76,7 +92,8 @@ export interface UseInboxDeclarationOptions {
 export type InboxDeclarationStatus =
   | "loading"
   | "ready"
-  | "not_declared"
+  | "not_observed"
+  | "signed_empty"
   | "malformed"
   | "lookup_partial"
   | "lookup_unavailable"
@@ -87,14 +104,18 @@ export interface UseInboxDeclarationResult {
   status: InboxDeclarationStatus
   /** Relays in the current declaration; empty unless status is ready. */
   declaredRelayUrls: string[]
+  /** Last usable declaration retained only as recovery evidence. */
+  retainedRelayUrls: string[]
   /** True when readiness comes from a cached declaration during a degraded lookup. */
   stale: boolean
+  /** A complete shared lookup permits an explicit redistribution/repair. */
+  distributionRepairable: boolean
   isLoading: boolean
   isRefetching: boolean
   /** Non-null when the readiness lookup itself rejected (signer/transport). */
   error: string | null
   refetch: () => void
-  /** Sign and publish an exact declaration for the selected relays. */
+  /** Publish a selected repair or redistribute the exact retained event. */
   publishDeclaration: (relayUrls: readonly string[]) => void
   publishing: boolean
   publishError: string | null
@@ -137,12 +158,45 @@ export function useInboxDeclaration(
       const ndk = getNdk()
       if (!ndk.signer) throw new Error("Signer not connected")
 
-      const publishedEvent = await publishPrivateMessageRelayDeclaration({
-        pubkey,
-        signer: ndk.signer,
-        ndk,
-        relayUrls,
-      })
+      let expectedRelayUrls = [...relayUrls]
+      let publishedEvent: Awaited<
+        ReturnType<typeof publishPrivateMessageRelayDeclaration>
+      >
+      const readiness = readinessQuery.data
+      if (readiness?.state === "ready" && readiness.distributionRepairable) {
+        const evidence = getCachedInboxDeclarationEvidence(pubkey)
+        if (!evidence || evidence.current.state !== "declared") {
+          throw new Error(
+            "The retained declaration is unavailable. Retry the readiness check."
+          )
+        }
+        const effectiveRelays = secureRelayUrls(
+          evidence.current.secureRelayUrls
+        ).slice(0, MAX_DECLARED_INBOX_WRITE_RELAYS)
+        const selected = [...secureRelayUrls(relayUrls)].sort()
+        const effective = [...effectiveRelays].sort()
+        if (
+          selected.length !== effective.length ||
+          selected.some((relayUrl, index) => relayUrl !== effective[index])
+        ) {
+          throw new Error(
+            "Redistribution must preserve the retained declaration relay set"
+          )
+        }
+        publishedEvent = await redistributePrivateMessageRelayDeclaration({
+          pubkey,
+          signedEvent: evidence.current.signedEvent,
+          ndk,
+        })
+        expectedRelayUrls = [...evidence.current.secureRelayUrls]
+      } else {
+        publishedEvent = await publishPrivateMessageRelayDeclaration({
+          pubkey,
+          signer: ndk.signer,
+          ndk,
+          relayUrls,
+        })
+      }
 
       // Read back fresh before reporting confirmed; a publish ACK alone does
       // not prove the declaration is discoverable. The publish primed the
@@ -150,10 +204,11 @@ export function useInboxDeclaration(
       // failing a publish that relays already accepted.
       const resolution = await resolveInboxDeclaration(pubkey, {
         freshnessMs: 0,
+        relayUrls: sharedInboxDiscoveryRelayUrls(),
       })
       return verifyDeclarationReadBack(resolution, {
         eventId: publishedEvent.id,
-        relayUrls,
+        relayUrls: expectedRelayUrls,
       })
     },
     onSettled: async () => {
@@ -174,7 +229,22 @@ export function useInboxDeclaration(
     readiness,
     status,
     declaredRelayUrls: readiness?.state === "ready" ? readiness.relayUrls : [],
-    stale: readiness?.state === "ready" && readiness.stale,
+    retainedRelayUrls:
+      readiness?.state === "signed_empty" || readiness?.state === "malformed"
+        ? readiness.retainedRelayUrls
+        : [],
+    stale:
+      readiness?.state === "ready" ||
+      readiness?.state === "signed_empty" ||
+      readiness?.state === "malformed"
+        ? readiness.stale
+        : false,
+    distributionRepairable:
+      readiness?.state === "ready" ||
+      readiness?.state === "signed_empty" ||
+      readiness?.state === "malformed"
+        ? readiness.distributionRepairable
+        : false,
     isLoading: readinessQuery.isLoading,
     isRefetching: readinessQuery.isRefetching,
     error:

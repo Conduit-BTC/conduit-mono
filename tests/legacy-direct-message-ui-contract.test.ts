@@ -65,7 +65,7 @@ describe("legacy direct-message UI contract", () => {
       const source = await Bun.file(routePath).text()
       expect(source).toContain("useInboxDeclaration")
       expect(source).toContain("privateInbox")
-      expect(source).toContain("getInboxCandidateRelayUrls")
+      expect(source).toContain("getInboxRelayCandidates")
     }
   })
 

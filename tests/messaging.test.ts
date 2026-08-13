@@ -4,25 +4,54 @@ import {
   NDKPrivateKeySigner,
   type NDKSigner,
 } from "@nostr-dev-kit/ndk"
+import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
   __resetInboxRelayCache,
   buildDirectMessageRumor,
   classifyPrivateMessageKind,
+  createInMemoryInboxDeclarationEvidenceRepository,
   createValidatedOrderRouteScope,
   decryptLegacyDirectMessage,
   detectNip44Capabilities,
   EVENT_KINDS,
   fetchInboxRelayUrls,
   inspectOwnPrivateMessageRelayReadiness,
+  mergeInboxDeclarationEvidence,
   parseDirectMessageRumor,
   parsePrivateMessageRelays,
+  planInboxReadRelays,
   PrivateMessageRelayReadinessError,
   publishPrivateMessage,
   publishPrivateMessageRelayDeclaration,
+  redistributePrivateMessageRelayDeclaration,
   RelayPublishDiagnosticsError,
+  resolveInboxDeclaration,
+  selectPrivateMessageDeliveryRoute,
   unwrapGiftWrap,
   type GiftUnwrapFn,
 } from "@conduit/core"
+
+const INBOX_OWNER_SECRET = new Uint8Array(32).fill(11)
+const INBOX_PEER_SECRET = new Uint8Array(32).fill(12)
+const INBOX_OTHER_SECRET = new Uint8Array(32).fill(13)
+const INBOX_OWNER = getPublicKey(INBOX_OWNER_SECRET)
+const INBOX_PEER = getPublicKey(INBOX_PEER_SECRET)
+
+function signedInboxDeclaration(
+  secretKey: Uint8Array,
+  relayUrls: readonly string[],
+  createdAt = 100
+) {
+  return finalizeEvent(
+    {
+      kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
+      created_at: createdAt,
+      tags: relayUrls.map((relayUrl) => ["relay", relayUrl]),
+      content: "",
+    },
+    secretKey
+  )
+}
 
 const signer = {
   user: async () => ({ pubkey: "sender" }),
@@ -925,7 +954,7 @@ describe("publishPrivateMessage", () => {
         rumorKind: EVENT_KINDS.ORDER,
         selfCopy: false,
         // Signed declaration with no secure relay: malformed, never
-        // downgraded to not_declared, so the compatibility lane stays closed.
+        // downgraded to not_observed, so the compatibility lane stays closed.
         recipientInboxRelays: ["ws://insecure.example"],
         compatibilityOrderRoute: {
           enabled: true,
@@ -946,6 +975,37 @@ describe("publishPrivateMessage", () => {
       "recipient_declaration_malformed"
     )
     expect(published).toBe(false)
+  })
+
+  it("reports a signed empty recipient distinctly while keeping compatibility closed", async () => {
+    let thrown: unknown
+    try {
+      await publishPrivateMessage({
+        ...validatedOrderInput(),
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer,
+        rumorKind: EVENT_KINDS.ORDER,
+        selfCopy: false,
+        resolveInboxRelays: async () => {
+          const error = new Error("signed empty") as Error & {
+            declarationState?: string
+          }
+          error.declarationState = "signed_empty"
+          throw error
+        },
+        giftWrapFn: (async () => wrap("unexpected")) as never,
+      })
+    } catch (error) {
+      thrown = error
+    }
+
+    // The legacy seam cannot authenticate signed-empty provenance, so this
+    // assertion exercises the public typed reason through the route selector.
+    expect(thrown).toBeInstanceOf(PrivateMessageRelayReadinessError)
+    expect((thrown as PrivateMessageRelayReadinessError).reason).toBe(
+      "recipient_lookup_failed"
+    )
   })
 
   it("keeps the sender self-copy off the compatibility lane", async () => {
@@ -1004,21 +1064,15 @@ describe("detectNip44Capabilities", () => {
 describe("fetchInboxRelayUrls", () => {
   it("resolves and filters a peer's kind-10050 inbox relays", async () => {
     __resetInboxRelayCache()
-    const relays = await fetchInboxRelayUrls("peer", {
+    const relays = await fetchInboxRelayUrls(INBOX_PEER, {
       relayUrls: ["wss://read.example"],
+      evidenceRepository: createInMemoryInboxDeclarationEvidenceRepository(),
       fetchEvents: async () =>
         [
-          {
-            id: "10050",
-            kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
-            pubkey: "peer",
-            created_at: 100,
-            content: "",
-            tags: [
-              ["relay", "wss://inbox.example"],
-              ["relay", "ws://insecure.example"],
-            ],
-          },
+          signedInboxDeclaration(INBOX_PEER_SECRET, [
+            "wss://inbox.example",
+            "ws://insecure.example",
+          ]),
         ] as never,
     })
     expect(relays).toEqual(["wss://inbox.example"])
@@ -1038,6 +1092,8 @@ describe("fetchInboxRelayUrls", () => {
 
   it("does not cache an absent declaration", async () => {
     __resetInboxRelayCache()
+    const evidenceRepository =
+      createInMemoryInboxDeclarationEvidenceRepository()
     let fetches = 0
     const fetchEvents = async () => {
       fetches += 1
@@ -1045,28 +1101,27 @@ describe("fetchInboxRelayUrls", () => {
         fetches === 1
           ? []
           : [
-              {
-                id: "10050-later",
-                kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
-                pubkey: "peer-3",
-                created_at: 101,
-                content: "",
-                tags: [["relay", "wss://later.example"]],
-              },
+              signedInboxDeclaration(
+                INBOX_PEER_SECRET,
+                ["wss://later.example"],
+                101
+              ),
             ]
       ) as never
     }
 
     expect(
-      await fetchInboxRelayUrls("peer-3", {
+      await fetchInboxRelayUrls(INBOX_PEER, {
         relayUrls: ["wss://read.example"],
         fetchEvents,
+        evidenceRepository,
       })
     ).toEqual([])
     expect(
-      await fetchInboxRelayUrls("peer-3", {
+      await fetchInboxRelayUrls(INBOX_PEER, {
         relayUrls: ["wss://read.example"],
         fetchEvents,
+        evidenceRepository,
       })
     ).toEqual(["wss://later.example"])
     expect(fetches).toBe(2)
@@ -1076,37 +1131,153 @@ describe("fetchInboxRelayUrls", () => {
 describe("inspectOwnPrivateMessageRelayReadiness", () => {
   it("reports ready with the declared secure relays", async () => {
     __resetInboxRelayCache()
-    const readiness = await inspectOwnPrivateMessageRelayReadiness("owner", {
-      relayUrls: ["wss://read.example"],
-      fetchEvents: async () =>
-        [
-          {
-            kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
-            pubkey: "owner",
-            created_at: 100,
-            tags: [["relay", "wss://inbox.example"]],
-          },
-        ] as never,
-    })
+    const readiness = await inspectOwnPrivateMessageRelayReadiness(
+      INBOX_OWNER,
+      {
+        relayUrls: ["wss://read.example"],
+        evidenceRepository: createInMemoryInboxDeclarationEvidenceRepository(),
+        fetchEvents: async () =>
+          [
+            signedInboxDeclaration(INBOX_OWNER_SECRET, ["wss://inbox.example"]),
+          ] as never,
+      }
+    )
 
     expect(readiness).toEqual({
       state: "ready",
       relayUrls: ["wss://inbox.example"],
       stale: false,
+      distributionRepairable: false,
     })
   })
 
-  it("reports not_declared when no usable declaration exists", async () => {
+  it("makes a retained declaration repairable after complete shared non-observation", async () => {
+    __resetInboxRelayCache()
+    const evidenceRepository =
+      createInMemoryInboxDeclarationEvidenceRepository()
+    const declaration = signedInboxDeclaration(INBOX_OWNER_SECRET, [
+      "wss://inbox.example",
+    ])
+    await mergeInboxDeclarationEvidence(
+      {
+        pubkey: INBOX_OWNER,
+        signedEvent: declaration,
+        sourceRelayUrls: ["wss://owner-local.example"],
+        observedAt: 1_000,
+        completeObservedAt: 1_000,
+      },
+      evidenceRepository
+    )
+
+    const readiness = await inspectOwnPrivateMessageRelayReadiness(
+      INBOX_OWNER,
+      {
+        relayUrls: ["wss://shared.example"],
+        evidenceRepository,
+        fetchEventsWithDiagnostics: async () => ({
+          events: [],
+          attemptedRelayUrls: ["wss://shared.example"],
+          successfulRelayUrls: ["wss://shared.example"],
+          failedRelayUrls: [],
+        }),
+      }
+    )
+
+    expect(readiness).toEqual({
+      state: "ready",
+      relayUrls: ["wss://inbox.example"],
+      stale: true,
+      distributionRepairable: true,
+    })
+  })
+
+  it("keeps stale signed blockers retry-only and exposes retained recovery relays", async () => {
+    __resetInboxRelayCache()
+    const evidenceRepository =
+      createInMemoryInboxDeclarationEvidenceRepository()
+    const declared = signedInboxDeclaration(
+      INBOX_OWNER_SECRET,
+      ["wss://usable.example"],
+      100
+    )
+    const blocker = signedInboxDeclaration(INBOX_OWNER_SECRET, [], 200)
+    await mergeInboxDeclarationEvidence(
+      { pubkey: INBOX_OWNER, signedEvent: declared },
+      evidenceRepository
+    )
+    await mergeInboxDeclarationEvidence(
+      { pubkey: INBOX_OWNER, signedEvent: blocker },
+      evidenceRepository
+    )
+
+    const readiness = await inspectOwnPrivateMessageRelayReadiness(
+      INBOX_OWNER,
+      {
+        relayUrls: ["wss://shared-a.example", "wss://shared-b.example"],
+        evidenceRepository,
+        fetchEventsWithDiagnostics: async () => ({
+          events: [],
+          attemptedRelayUrls: [
+            "wss://shared-a.example",
+            "wss://shared-b.example",
+          ],
+          successfulRelayUrls: ["wss://shared-a.example"],
+          failedRelayUrls: ["wss://shared-b.example"],
+        }),
+      }
+    )
+
+    expect(readiness).toEqual({
+      state: "signed_empty",
+      stale: true,
+      distributionRepairable: false,
+      retainedRelayUrls: ["wss://usable.example"],
+    })
+  })
+
+  it("does not repair a retained signed blocker from a complete empty view", async () => {
+    __resetInboxRelayCache()
+    const evidenceRepository =
+      createInMemoryInboxDeclarationEvidenceRepository()
+    const blocker = signedInboxDeclaration(INBOX_OWNER_SECRET, [], 200)
+    await mergeInboxDeclarationEvidence(
+      { pubkey: INBOX_OWNER, signedEvent: blocker },
+      evidenceRepository
+    )
+
+    const readiness = await inspectOwnPrivateMessageRelayReadiness(
+      INBOX_OWNER,
+      {
+        relayUrls: ["wss://shared.example"],
+        evidenceRepository,
+        fetchEventsWithDiagnostics: async () => ({
+          events: [],
+          attemptedRelayUrls: ["wss://shared.example"],
+          successfulRelayUrls: ["wss://shared.example"],
+          failedRelayUrls: [],
+        }),
+      }
+    )
+
+    expect(readiness).toEqual({
+      state: "signed_empty",
+      stale: true,
+      distributionRepairable: false,
+      retainedRelayUrls: [],
+    })
+  })
+
+  it("reports not_observed when no declaration is observed", async () => {
     __resetInboxRelayCache()
     const readiness = await inspectOwnPrivateMessageRelayReadiness("owner", {
       relayUrls: ["wss://read.example"],
       fetchEvents: async () => [] as never,
     })
 
-    expect(readiness).toEqual({ state: "not_declared" })
+    expect(readiness).toEqual({ state: "not_observed" })
   })
 
-  it("reports lookup_unavailable for lookup errors instead of not_declared", async () => {
+  it("reports lookup_unavailable for lookup errors instead of not_observed", async () => {
     __resetInboxRelayCache()
     const readiness = await inspectOwnPrivateMessageRelayReadiness("owner", {
       relayUrls: ["wss://read.example"],
@@ -1150,42 +1321,67 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
 
   it("ignores declarations signed by a different author", async () => {
     __resetInboxRelayCache()
-    const readiness = await inspectOwnPrivateMessageRelayReadiness("owner", {
-      relayUrls: ["wss://read.example"],
-      fetchEvents: async () =>
-        [
-          {
-            kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
-            pubkey: "attacker",
-            created_at: 100,
-            tags: [["relay", "wss://attacker.example"]],
-          },
-        ] as never,
-    })
+    const readiness = await inspectOwnPrivateMessageRelayReadiness(
+      INBOX_OWNER,
+      {
+        relayUrls: ["wss://read.example"],
+        evidenceRepository: createInMemoryInboxDeclarationEvidenceRepository(),
+        fetchEvents: async () =>
+          [
+            signedInboxDeclaration(INBOX_OTHER_SECRET, [
+              "wss://attacker.example",
+            ]),
+          ] as never,
+      }
+    )
 
-    expect(readiness).toEqual({ state: "not_declared" })
+    expect(readiness).toEqual({ state: "not_observed" })
   })
 
   it("reports malformed for a signed declaration without usable relays", async () => {
     __resetInboxRelayCache()
-    const readiness = await inspectOwnPrivateMessageRelayReadiness("owner", {
-      relayUrls: ["wss://read.example"],
-      fetchEvents: async () =>
-        [
-          {
-            kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
-            pubkey: "owner",
-            created_at: 100,
-            tags: [
-              ["relay", "://invalid"],
-              ["relay", "ftp://inbox.example"],
-              ["relay", "ws://insecure.example"],
-            ],
-          },
-        ] as never,
-    })
+    const readiness = await inspectOwnPrivateMessageRelayReadiness(
+      INBOX_OWNER,
+      {
+        relayUrls: ["wss://read.example"],
+        evidenceRepository: createInMemoryInboxDeclarationEvidenceRepository(),
+        fetchEvents: async () =>
+          [
+            signedInboxDeclaration(INBOX_OWNER_SECRET, [
+              "://invalid",
+              "ftp://inbox.example",
+              "ws://insecure.example",
+            ]),
+          ] as never,
+      }
+    )
 
-    expect(readiness).toEqual({ state: "malformed" })
+    expect(readiness).toEqual({
+      state: "malformed",
+      stale: false,
+      distributionRepairable: false,
+      retainedRelayUrls: [],
+    })
+  })
+
+  it("reports a cryptographically valid empty declaration distinctly", async () => {
+    __resetInboxRelayCache()
+    const readiness = await inspectOwnPrivateMessageRelayReadiness(
+      INBOX_OWNER,
+      {
+        relayUrls: ["wss://read.example"],
+        evidenceRepository: createInMemoryInboxDeclarationEvidenceRepository(),
+        fetchEvents: async () =>
+          [signedInboxDeclaration(INBOX_OWNER_SECRET, [])] as never,
+      }
+    )
+
+    expect(readiness).toEqual({
+      state: "signed_empty",
+      stale: false,
+      distributionRepairable: false,
+      retainedRelayUrls: [],
+    })
   })
 })
 
@@ -1197,28 +1393,35 @@ describe("publishPrivateMessageRelayDeclaration", () => {
     let publishOptions: Record<string, unknown> | undefined
 
     const event = await publishPrivateMessageRelayDeclaration({
-      pubkey: "owner",
+      pubkey: INBOX_OWNER,
       signer,
       createdAt: 1234,
+      evidenceRepository: createInMemoryInboxDeclarationEvidenceRepository(),
       relayConfig: {
         dmInboxDefaultRelayUrls: [
           "wss://inbox-a.example/",
           "wss://inbox-b.example",
         ],
       },
-      getSignerPubkey: async () => "owner",
+      getSignerPubkey: async () => INBOX_OWNER,
       signFn: async (unsignedEvent) => {
         calls.push("sign")
         expect(unsignedEvent.kind).toBe(EVENT_KINDS.PRIVATE_MESSAGE_RELAYS)
-        expect(unsignedEvent.pubkey).toBe("owner")
+        expect(unsignedEvent.pubkey).toBe(INBOX_OWNER)
         expect(unsignedEvent.created_at).toBe(1234)
         expect(unsignedEvent.tags).toEqual([
           ["relay", "wss://inbox-a.example"],
           ["relay", "wss://inbox-b.example"],
         ])
         expect(unsignedEvent.content).toBe("")
-        unsignedEvent.id = "signed-10050"
-        unsignedEvent.sig = "signature"
+        const signed = signedInboxDeclaration(
+          INBOX_OWNER_SECRET,
+          ["wss://inbox-a.example", "wss://inbox-b.example"],
+          1234
+        )
+        unsignedEvent.id = signed.id
+        unsignedEvent.pubkey = signed.pubkey
+        unsignedEvent.sig = signed.sig
         return unsignedEvent.sig
       },
       getDiscoveryRelayUrls: () => [
@@ -1236,25 +1439,142 @@ describe("publishPrivateMessageRelayDeclaration", () => {
     expect(calls).toEqual(["sign", "publish"])
     expect(event).toBe(publishedEvent)
     expect(event.ndk).toBeDefined()
-    expect(event.id).toBe("signed-10050")
+    expect(event.id).toMatch(/^[0-9a-f]{64}$/)
     expect(publishOptions).toEqual({
       intent: "author_event",
-      authorPubkey: "owner",
-      authenticatedPubkey: "owner",
+      authorPubkey: INBOX_OWNER,
+      authenticatedPubkey: INBOX_OWNER,
       exclusiveRelayUrls: ["wss://read-a.example", "wss://read-b.example"],
       deliveryMode: "critical",
     })
 
     let fetched = false
     expect(
-      await fetchInboxRelayUrls("owner", {
+      await fetchInboxRelayUrls(INBOX_OWNER, {
         fetchEvents: async () => {
           fetched = true
           return [] as never
         },
       })
     ).toEqual(["wss://inbox-a.example", "wss://inbox-b.example"])
-    expect(fetched).toBe(false)
+    // A memory prime is useful fallback evidence, but it is not cross-client
+    // discovery proof; the next lookup must still perform relay read-back.
+    expect(fetched).toBe(true)
+  })
+
+  it("rejects invalid signed output before the publish boundary", async () => {
+    let published = false
+    await expect(
+      publishPrivateMessageRelayDeclaration({
+        pubkey: INBOX_OWNER,
+        signer,
+        relayUrls: ["wss://inbox.example"],
+        getSignerPubkey: async () => INBOX_OWNER,
+        signFn: async (event) => {
+          event.id = "not-a-valid-id"
+          event.sig = "not-a-valid-signature"
+          return event.sig
+        },
+        getDiscoveryRelayUrls: () => ["wss://shared.example"],
+        publishFn: (async () => {
+          published = true
+          return {} as never
+        }) as never,
+      })
+    ).rejects.toThrow("signer returned an invalid event")
+    expect(published).toBe(false)
+  })
+
+  it("redistributes the exact retained event without signing a replacement", async () => {
+    const retained = signedInboxDeclaration(
+      INBOX_OWNER_SECRET,
+      [
+        "wss://inbox-a.example",
+        "wss://inbox-b.example",
+        "wss://inbox-c.example",
+        "wss://inbox-d.example",
+      ],
+      1234
+    )
+    let published: NDKEvent | undefined
+    const event = await redistributePrivateMessageRelayDeclaration({
+      pubkey: INBOX_OWNER,
+      signedEvent: retained,
+      getDiscoveryRelayUrls: () => ["wss://shared.example"],
+      publishFn: (async (candidate, options) => {
+        published = candidate
+        expect(options.exclusiveRelayUrls).toEqual(["wss://shared.example"])
+        return {} as never
+      }) as never,
+    })
+
+    expect(event).toBe(published)
+    expect(JSON.parse(JSON.stringify(event.rawEvent()))).toEqual(
+      JSON.parse(JSON.stringify(retained))
+    )
+    expect(event.created_at).toBe(1234)
+    expect(event.id).toBe(retained.id)
+  })
+
+  it("carries owner repair through unrelated sender discovery and strict recipient reads", async () => {
+    __resetInboxRelayCache()
+    const ownerRepository = createInMemoryInboxDeclarationEvidenceRepository()
+    let distributed: NDKEvent | undefined
+    await publishPrivateMessageRelayDeclaration({
+      pubkey: INBOX_OWNER,
+      signer,
+      relayUrls: ["wss://recipient-inbox.example"],
+      createdAt: 2_000,
+      evidenceRepository: ownerRepository,
+      getSignerPubkey: async () => INBOX_OWNER,
+      signFn: async (event) => {
+        const signed = signedInboxDeclaration(
+          INBOX_OWNER_SECRET,
+          ["wss://recipient-inbox.example"],
+          2_000
+        )
+        event.id = signed.id
+        event.pubkey = signed.pubkey
+        event.sig = signed.sig
+        return signed.sig
+      },
+      getDiscoveryRelayUrls: () => ["wss://shared-discovery.example"],
+      publishFn: (async (event) => {
+        distributed = event
+        return {} as never
+      }) as never,
+    })
+
+    __resetInboxRelayCache()
+    const senderRepository = createInMemoryInboxDeclarationEvidenceRepository()
+    const senderView = await resolveInboxDeclaration(INBOX_OWNER, {
+      relayUrls: ["wss://shared-discovery.example"],
+      evidenceRepository: senderRepository,
+      fetchEventsWithDiagnostics: async () => ({
+        events: [distributed!] as never,
+        attemptedRelayUrls: ["wss://shared-discovery.example"],
+        successfulRelayUrls: ["wss://shared-discovery.example"],
+        failedRelayUrls: [],
+      }),
+    })
+    const delivery = selectPrivateMessageDeliveryRoute({
+      rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+      declaration: senderView,
+      validatedOrder: false,
+      compatibilityEnabled: true,
+      compatibilityRelayUrls: ["wss://compatibility.example"],
+    })
+    const recipientRead = planInboxReadRelays({
+      declaration: senderView,
+      localReadRelayUrls: [],
+      compatibilityRelayUrls: [],
+    })
+
+    expect(senderView.state).toBe("declared")
+    expect(delivery.route).toBe("declared_inbox")
+    expect(delivery.relayUrls).toEqual(["wss://recipient-inbox.example"])
+    expect(delivery.relayUrls).not.toContain("wss://compatibility.example")
+    expect(recipientRead.relayUrls).toEqual(["wss://recipient-inbox.example"])
   })
 
   it("rejects a signer pubkey mismatch before signing or publishing", async () => {

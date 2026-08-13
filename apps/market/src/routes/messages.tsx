@@ -318,13 +318,15 @@ function MessagesPage() {
   })
   const messagingReady = dmReadiness.status === "ready"
   const readinessNoticeState: MessagingReadinessState =
-    dmReadiness.status === "malformed"
-      ? "malformed"
-      : dmReadiness.status === "lookup_partial"
-        ? "lookup_partial"
-        : dmReadiness.status === "lookup_unavailable"
-          ? "lookup_unavailable"
-          : "not_declared"
+    dmReadiness.status === "signed_empty"
+      ? "signed_empty"
+      : dmReadiness.status === "malformed"
+        ? "malformed"
+        : dmReadiness.status === "lookup_partial"
+          ? "lookup_partial"
+          : dmReadiness.status === "lookup_unavailable"
+            ? "lookup_unavailable"
+            : "not_observed"
   const readinessLookupDegraded =
     readinessNoticeState === "lookup_partial" ||
     readinessNoticeState === "lookup_unavailable"

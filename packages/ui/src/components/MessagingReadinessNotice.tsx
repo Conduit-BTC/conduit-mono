@@ -4,14 +4,18 @@ import { Button } from "./Button"
 
 /**
  * Typed NIP-17 inbox readiness states (CND-208).
- * - not_declared: no kind-10050 declaration exists; setup happens in Network.
- * - malformed: a signed declaration exists but has no usable relays; repair
- *   happens in Network and is never automatic.
+ * - not_observed: no kind-10050 declaration was observed on the bounded
+ *   discovery set; setup happens in Network.
+ * - signed_empty: the current signed declaration intentionally lists no
+ *   relays; restore it from Network settings.
+ * - malformed: a signed declaration has relay tags but none are usable;
+ *   repair happens in Network and is never automatic.
  * - lookup_partial / lookup_unavailable / lookup_failed: the declaration
  *   lookup degraded; this is retryable and never means "missing".
  */
 export type MessagingReadinessState =
-  | "not_declared"
+  | "not_observed"
+  | "signed_empty"
   | "malformed"
   | "lookup_failed"
   | "lookup_partial"
@@ -29,9 +33,15 @@ const COPY: Record<
   MessagingReadinessState,
   { title: string; body: string; actionLabel: string; setup: boolean }
 > = {
-  not_declared: {
+  not_observed: {
     title: "Finish private inbox setup",
-    body: "Choose your encrypted inbox relays in Network settings so orders and messages can reach this identity.",
+    body: "No encrypted inbox declaration was found on the shared discovery relays. Choose inbox relays in Network settings so orders and messages can reach this identity.",
+    actionLabel: "Open Network settings",
+    setup: true,
+  },
+  signed_empty: {
+    title: "Restore your private inbox declaration",
+    body: "Your current signed inbox declaration lists no relays. Choose inbox relays in Network settings to receive new encrypted messages.",
     actionLabel: "Open Network settings",
     setup: true,
   },

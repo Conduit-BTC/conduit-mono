@@ -223,6 +223,84 @@ export interface CachedRelayList {
   cachedAt: number
 }
 
+/** A validated, lowercase 32-byte Nostr public key. */
+declare const normalizedInboxDeclarationPubkeyBrand: unique symbol
+export type NormalizedInboxDeclarationPubkey = string & {
+  readonly [normalizedInboxDeclarationPubkeyBrand]: true
+}
+
+export type InboxDeclarationEvidenceState =
+  "declared" | "signed_empty" | "malformed"
+
+export type InboxDeclarationLookupCoverage =
+  "complete" | "partial" | "unavailable"
+
+/**
+ * Most recent bounded declaration lookup for this account. This is stored
+ * independently from the signed frontier so an incomplete or conflicting
+ * observation cannot disappear after a process restart.
+ */
+export interface InboxDeclarationLookupEvidence {
+  observedAt: number
+  coverage: InboxDeclarationLookupCoverage
+  /** True when the lookup returned an event, including unusable evidence. */
+  hadEvent: boolean
+  /** Valid signed event selected by that lookup, when one was available. */
+  eventId?: string
+}
+
+interface InboxDeclarationEventEvidenceBase {
+  state: InboxDeclarationEvidenceState
+  /** Exact, signature-validated kind-10050 event observed from the network. */
+  signedEvent: SignedPublicNostrEvent
+  /** Secure normalized relay tags, preserving their signed event order. */
+  secureRelayUrls: string[]
+  /** Secure normalized relays on which this exact event was observed. */
+  sourceRelayUrls: string[]
+  /** Most recent local observation time in milliseconds. */
+  observedAt: number
+  /**
+   * Most recent time a bounded discovery plan completed while this exact
+   * event was the winning observed frontier. Partial reads never advance it.
+   */
+  completeObservedAt?: number
+}
+
+export interface DeclaredInboxDeclarationEventEvidence extends InboxDeclarationEventEvidenceBase {
+  state: "declared"
+}
+
+export interface SignedEmptyInboxDeclarationEventEvidence extends InboxDeclarationEventEvidenceBase {
+  state: "signed_empty"
+  secureRelayUrls: []
+}
+
+export interface MalformedInboxDeclarationEventEvidence extends InboxDeclarationEventEvidenceBase {
+  state: "malformed"
+  secureRelayUrls: []
+}
+
+export type InboxDeclarationEventEvidence =
+  | DeclaredInboxDeclarationEventEvidence
+  | SignedEmptyInboxDeclarationEventEvidence
+  | MalformedInboxDeclarationEventEvidence
+
+/**
+ * Account-scoped, monotonic NIP-17 inbox-declaration evidence.
+ *
+ * `current` follows the NIP-01 replaceable-event frontier. `lastUsable` keeps
+ * the latest validated declaration when a newer signed empty or malformed
+ * replacement becomes current, so reads can remain recoverable without
+ * misrepresenting the current write route.
+ */
+export interface InboxDeclarationEvidenceRecord {
+  pubkey: NormalizedInboxDeclarationPubkey
+  current: InboxDeclarationEventEvidence
+  lastUsable?: DeclaredInboxDeclarationEventEvidence
+  latestLookup?: InboxDeclarationLookupEvidence
+  cachedAt: number
+}
+
 /**
  * Aggregate social signals for a product, keyed by the product's
  * coordinate (NIP-33 `kind:pubkey:d-tag`) or event id when available.
@@ -545,6 +623,10 @@ class ConduitDB extends Dexie {
   paymentAttempts!: EntityTable<StoredPaymentAttempt, "id">
   orderLifecycles!: EntityTable<OrderLifecycle, "orderId">
   productDeletionOutbox!: EntityTable<ProductDeletionDeliveryJob, "id">
+  inboxDeclarationEvidence!: EntityTable<
+    InboxDeclarationEvidenceRecord,
+    "pubkey"
+  >
 
   constructor() {
     super("conduit")
@@ -677,6 +759,12 @@ class ConduitDB extends Dexie {
       shopperTrustSnapshots: "id, merchantPubkey, shopperPubkey, cachedAt",
       productDeletionOutbox:
         "id, state, nextRetryAt, deliveryLeaseExpiresAt, updatedAt, createdAt",
+    })
+
+    this.version(11).stores({
+      // Public signed declaration evidence is monotonic protocol state. It is
+      // intentionally excluded from relay-scope clearing and cache pruning.
+      inboxDeclarationEvidence: "pubkey, cachedAt",
     })
   }
 }

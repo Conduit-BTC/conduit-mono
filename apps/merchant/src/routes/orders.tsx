@@ -1543,13 +1543,15 @@ function OrdersPage() {
         inboxReadiness.status !== "ready" && (
           <MessagingReadinessNotice
             state={
-              inboxReadiness.status === "malformed"
-                ? "malformed"
-                : inboxReadiness.status === "lookup_partial"
-                  ? "lookup_partial"
-                  : inboxReadiness.status === "lookup_unavailable"
-                    ? "lookup_unavailable"
-                    : "not_declared"
+              inboxReadiness.status === "signed_empty"
+                ? "signed_empty"
+                : inboxReadiness.status === "malformed"
+                  ? "malformed"
+                  : inboxReadiness.status === "lookup_partial"
+                    ? "lookup_partial"
+                    : inboxReadiness.status === "lookup_unavailable"
+                      ? "lookup_unavailable"
+                      : "not_observed"
             }
             onAction={() => {
               if (

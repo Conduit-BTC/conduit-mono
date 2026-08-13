@@ -7,6 +7,7 @@ import {
 } from "@nostr-dev-kit/ndk"
 import { config, type ConduitConfig } from "../config"
 import type { OrderRelayDeliveryRecord, OrderRelayDeliveryStatus } from "../db"
+import type { InboxDeclarationEvidenceRepository } from "./inbox-declaration-evidence"
 import { EVENT_KINDS } from "./kinds"
 import {
   fetchEventsFanout,
@@ -17,10 +18,13 @@ import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 import { parseOrderMessageRumorEvent } from "./orders"
 import {
   __resetInboxDeclarationCache,
-  primeInboxDeclarationCache,
+  inboxDeclarationPublishRelayUrls,
+  mergeInboxDeclarationEvidenceDurably,
+  primeInboxDeclarationEvidence,
   resolveInboxDeclaration,
   secureRelayUrls,
   selectPrivateMessageDeliveryRoute,
+  sharedInboxDiscoveryRelayUrls,
   type DeliveryRouteSelection,
   type InboxDeclarationResolution,
   type PrivateMessageDeliveryRoute,
@@ -28,7 +32,7 @@ import {
 } from "./private-message-routing"
 import { publishWithPlanner } from "./relay-publish"
 import { getRelayLists, isInsecureRelayUrl } from "./relay-list"
-import { getGeneralReadRelayUrls, tryNormalizeRelayUrl } from "./relay-settings"
+import { tryNormalizeRelayUrl } from "./relay-settings"
 import {
   withTransientNip07Retry,
   type TransientNip07RetryOptions,
@@ -491,11 +495,14 @@ const ORDER_RELAY_RETRY_RETENTION_MS = 24 * 60 * 60 * 1_000
 export type PrivateMessageRelayReadinessReason =
   | "recipient_not_ready"
   | "recipient_lookup_failed"
+  | "recipient_declaration_signed_empty"
   | "recipient_declaration_malformed"
 
 const READINESS_MESSAGES: Record<PrivateMessageRelayReadinessReason, string> = {
   recipient_not_ready: "Recipient has not declared NIP-17 inbox relays.",
   recipient_lookup_failed: "Recipient inbox relay discovery failed.",
+  recipient_declaration_signed_empty:
+    "Recipient's signed inbox declaration lists no relays.",
   recipient_declaration_malformed:
     "Recipient inbox relay declaration is unusable.",
 }
@@ -583,7 +590,9 @@ export async function publishPrivateMessage(
     throw new PrivateMessageRelayReadinessError(
       recipientRoute.blockedReason === "declaration_malformed"
         ? "recipient_declaration_malformed"
-        : (recipientRoute.blockedReason ?? "recipient_not_ready")
+        : recipientRoute.blockedReason === "declaration_signed_empty"
+          ? "recipient_declaration_signed_empty"
+          : (recipientRoute.blockedReason ?? "recipient_not_ready")
     )
   }
 
@@ -824,7 +833,7 @@ function declarationFromKnownRelays(
       ? "declared"
       : relayUrls.length > 0
         ? "malformed"
-        : "not_declared"
+        : "not_observed"
   return {
     pubkey,
     state,
@@ -916,12 +925,29 @@ export interface FetchInboxRelayOptions {
   fetchEvents?: typeof fetchEventsFanout
   fetchEventsWithDiagnostics?: typeof fetchEventsFanoutWithDiagnostics
   relayUrls?: string[]
+  evidenceRepository?: InboxDeclarationEvidenceRepository
 }
 
 export type OwnPrivateMessageRelayReadiness =
-  | { state: "ready"; relayUrls: string[]; stale: boolean }
-  | { state: "not_declared" }
-  | { state: "malformed" }
+  | {
+      state: "ready"
+      relayUrls: string[]
+      stale: boolean
+      distributionRepairable: boolean
+    }
+  | {
+      state: "signed_empty"
+      stale: boolean
+      distributionRepairable: boolean
+      retainedRelayUrls: string[]
+    }
+  | { state: "not_observed" }
+  | {
+      state: "malformed"
+      stale: boolean
+      distributionRepairable: boolean
+      retainedRelayUrls: string[]
+    }
   | { state: "lookup_partial" }
   | { state: "lookup_unavailable" }
 
@@ -958,6 +984,7 @@ function toDeclarationOptions(
       ? adaptFetchEventsToDiagnostics(options.fetchEvents)
       : options.fetchEventsWithDiagnostics,
     relayUrls: options.relayUrls,
+    evidenceRepository: options.evidenceRepository,
   }
 }
 
@@ -978,7 +1005,8 @@ export async function fetchInboxRelayUrls(
   switch (resolution.state) {
     case "declared":
       return resolution.relayUrls
-    case "not_declared":
+    case "signed_empty":
+    case "not_observed":
     case "malformed":
       return []
     case "lookup_unavailable":
@@ -997,9 +1025,19 @@ export async function inspectOwnPrivateMessageRelayReadiness(
   pubkey: string,
   options: FetchInboxRelayOptions = {}
 ): Promise<OwnPrivateMessageRelayReadiness> {
-  const resolution = await resolveInboxDeclaration(
-    pubkey,
-    toDeclarationOptions(options)
+  const declarationOptions = toDeclarationOptions(options)
+  const resolution = await resolveInboxDeclaration(pubkey, {
+    ...declarationOptions,
+    // Owner readiness is specifically a cross-client check. A declaration
+    // found only on an owner-local relay is not ready for unrelated senders.
+    relayUrls: options.relayUrls ?? sharedInboxDiscoveryRelayUrls(),
+    freshnessMs: 0,
+  })
+  const distributionRepairable = Boolean(
+    resolution.stale &&
+    resolution.observation?.coverage === "complete" &&
+    resolution.observation.eventId === undefined &&
+    resolution.eventId
   )
   switch (resolution.state) {
     case "declared":
@@ -1007,11 +1045,24 @@ export async function inspectOwnPrivateMessageRelayReadiness(
         state: "ready",
         relayUrls: resolution.relayUrls,
         stale: resolution.stale,
+        distributionRepairable,
       }
-    case "not_declared":
-      return { state: "not_declared" }
+    case "signed_empty":
+      return {
+        state: "signed_empty",
+        stale: resolution.stale,
+        distributionRepairable: false,
+        retainedRelayUrls: resolution.retainedReadRelayUrls ?? [],
+      }
+    case "not_observed":
+      return { state: "not_observed" }
     case "malformed":
-      return { state: "malformed" }
+      return {
+        state: "malformed",
+        stale: resolution.stale,
+        distributionRepairable: false,
+        retainedRelayUrls: resolution.retainedReadRelayUrls ?? [],
+      }
     case "lookup_partial":
       return { state: "lookup_partial" }
     case "lookup_unavailable":
@@ -1029,6 +1080,17 @@ export interface PublishPrivateMessageRelayDeclarationInput {
   relayConfig?: Pick<ConduitConfig, "dmInboxDefaultRelayUrls">
   getSignerPubkey?: (signer: NDKSigner) => Promise<string>
   signFn?: (event: NDKEvent, signer: NDKSigner) => Promise<string>
+  getDiscoveryRelayUrls?: () => readonly string[]
+  publishFn?: typeof publishWithPlanner
+  /** Durable evidence seam (tests/non-browser adapters). */
+  evidenceRepository?: InboxDeclarationEvidenceRepository
+}
+
+export interface RedistributePrivateMessageRelayDeclarationInput {
+  pubkey: string
+  /** Exact previously validated event; redistribution never signs a replacement. */
+  signedEvent: SignedPublicNostrEvent
+  ndk?: ReturnType<typeof getNdk>
   getDiscoveryRelayUrls?: () => readonly string[]
   publishFn?: typeof publishWithPlanner
 }
@@ -1067,7 +1129,9 @@ export async function publishPrivateMessageRelayDeclaration(
     "Private-message relay declaration"
   )
   const discoveryRelayUrls = requireSecureRelayUrls(
-    (input.getDiscoveryRelayUrls ?? (() => getGeneralReadRelayUrls({})))(),
+    (
+      input.getDiscoveryRelayUrls ?? (() => inboxDeclarationPublishRelayUrls())
+    )(),
     "Private-message relay discovery targets"
   )
   const getSignerPubkey =
@@ -1088,6 +1152,21 @@ export async function publishPrivateMessageRelayDeclaration(
 
   const signFn = input.signFn ?? ((event, signer) => event.sign(signer))
   await signFn(event, input.signer)
+
+  const signedEvent = event.rawEvent() as SignedPublicNostrEvent
+  const expectedTags = relayUrls.map((relayUrl) => ["relay", relayUrl])
+  if (
+    !isValidSignedPublicNostrEvent(signedEvent) ||
+    signedEvent.pubkey !== input.pubkey ||
+    signedEvent.kind !== EVENT_KINDS.PRIVATE_MESSAGE_RELAYS ||
+    signedEvent.created_at !== event.created_at ||
+    signedEvent.content !== "" ||
+    JSON.stringify(signedEvent.tags) !== JSON.stringify(expectedTags)
+  ) {
+    throw new Error(
+      "Private-message relay declaration signer returned an invalid event"
+    )
+  }
   await (input.publishFn ?? publishWithPlanner)(event, {
     intent: "author_event",
     authorPubkey: input.pubkey,
@@ -1096,6 +1175,56 @@ export async function publishPrivateMessageRelayDeclaration(
     deliveryMode: "critical",
   })
 
-  primeInboxDeclarationCache(input.pubkey, relayUrls, Date.now, event.id)
+  const observedAt = Date.now()
+  const mergedEvidence = await mergeInboxDeclarationEvidenceDurably(
+    {
+      pubkey: input.pubkey,
+      signedEvent,
+      // Publish ACKs are distribution evidence, not read provenance. Shared
+      // read-back records exact source relays separately below this boundary.
+      sourceRelayUrls: [],
+      observedAt,
+    },
+    input.evidenceRepository
+  )
+  primeInboxDeclarationEvidence(mergedEvidence)
+  return event
+}
+
+/**
+ * Re-publish an exact retained declaration after shared discovery completed
+ * without seeing it. This must never mint a newer replaceable event: a bounded
+ * empty view cannot prove that another client has not published a newer one.
+ */
+export async function redistributePrivateMessageRelayDeclaration(
+  input: RedistributePrivateMessageRelayDeclarationInput
+): Promise<NDKEvent> {
+  const signedEvent = input.signedEvent
+  if (
+    !isValidSignedPublicNostrEvent(signedEvent) ||
+    signedEvent.id !== signedEvent.id.toLowerCase() ||
+    signedEvent.pubkey !== input.pubkey ||
+    signedEvent.pubkey !== signedEvent.pubkey.toLowerCase() ||
+    signedEvent.sig !== signedEvent.sig.toLowerCase() ||
+    signedEvent.kind !== EVENT_KINDS.PRIVATE_MESSAGE_RELAYS
+  ) {
+    throw new Error(
+      "Private-message relay redistribution requires the exact valid declaration"
+    )
+  }
+  const discoveryRelayUrls = requireSecureRelayUrls(
+    (
+      input.getDiscoveryRelayUrls ?? (() => inboxDeclarationPublishRelayUrls())
+    )(),
+    "Private-message relay discovery targets"
+  )
+  const event = new NDKEvent(input.ndk ?? getNdk(), signedEvent)
+  await (input.publishFn ?? publishWithPlanner)(event, {
+    intent: "author_event",
+    authorPubkey: input.pubkey,
+    authenticatedPubkey: input.pubkey,
+    exclusiveRelayUrls: discoveryRelayUrls,
+    deliveryMode: "critical",
+  })
   return event
 }

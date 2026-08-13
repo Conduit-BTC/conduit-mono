@@ -4228,7 +4228,7 @@ async function resolvePrincipalInboxDeclaration(
       const secure = relays.filter((url) => !isInsecureRelayUrl(url))
       return {
         pubkey: principalPubkey,
-        state: secure.length > 0 ? "declared" : "not_declared",
+        state: secure.length > 0 ? "declared" : "not_observed",
         relayUrls: secure,
         stale: false,
         fetchedAt: now(),
