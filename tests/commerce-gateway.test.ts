@@ -1468,6 +1468,156 @@ describe("commerce gateway", () => {
     expect(cachedProducts[0]?.eventId).toBe(localProduct.id)
   })
 
+  it("certifies a complete exact-coordinate revalidation as canonical", async () => {
+    const product = makeSignedProductEvent({
+      dTag: "canonical-detail",
+      createdAt: 100,
+      title: "Canonical detail",
+      stock: 1,
+    })
+    const addressId = `30402:${product.pubkey}:canonical-detail`
+    let productFilter: Record<string, unknown> | null = null
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () => [],
+      fetchEventsFanoutDetailed: async (filter, options) => {
+        const relayUrls = options?.relayUrls?.length
+          ? options.relayUrls
+          : ["wss://canonical.example"]
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          productFilter = filter as Record<string, unknown>
+          return {
+            events: [product],
+            relays: relayUrls.map((relayUrl) => ({
+              relayUrl,
+              status: "success" as const,
+              eventCount: 1,
+            })),
+          }
+        }
+        return {
+          events: [],
+          relays: relayUrls.map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: 0,
+          })),
+        }
+      },
+    })
+
+    const result = await getProductDetail({
+      productId: addressId,
+      revalidateCanonical: true,
+    })
+
+    expect(productFilter).toMatchObject({
+      authors: [product.pubkey],
+      "#d": ["canonical-detail"],
+    })
+    expect(result.data?.eventId).toBe(product.id)
+    expect(result.meta).toMatchObject({
+      source: "commerce",
+      stale: false,
+      degraded: false,
+      capped: false,
+    })
+    expect(result.meta.capabilities.canonicalFreshness).toBe(true)
+  })
+
+  it("does not certify partial exact-coordinate relay coverage as canonical", async () => {
+    const product = makeSignedProductEvent({
+      dTag: "partial-detail",
+      createdAt: 100,
+      title: "Partial detail",
+      stock: 1,
+    })
+    const addressId = `30402:${product.pubkey}:partial-detail`
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () => [],
+      fetchEventsFanoutDetailed: async (_filter, options) => {
+        const relayUrls = options?.relayUrls?.length
+          ? options.relayUrls
+          : ["wss://complete.example", "wss://partial.example"]
+        const [completeRelayUrl, ...remainingRelayUrls] = relayUrls
+        const partialRelayUrls =
+          remainingRelayUrls.length > 0
+            ? remainingRelayUrls
+            : ["wss://partial.example"]
+        return {
+          events: [product],
+          relays: [
+            {
+              relayUrl: completeRelayUrl!,
+              status: "success" as const,
+              eventCount: 1,
+            },
+            ...partialRelayUrls.map((relayUrl) => ({
+              relayUrl,
+              status: "partial" as const,
+              eventCount: 0,
+            })),
+          ],
+        }
+      },
+    })
+
+    const result = await getProductDetail({
+      productId: addressId,
+      revalidateCanonical: true,
+    })
+
+    expect(result.data?.eventId).toBe(product.id)
+    expect(result.meta).toMatchObject({
+      source: "commerce",
+      stale: true,
+      degraded: true,
+    })
+    expect(result.meta.capabilities.canonicalFreshness).toBe(false)
+  })
+
+  it("keeps cached fallback stale when canonical revalidation is unavailable", async () => {
+    const cachedProduct = makeSignedProductEvent({
+      dTag: "cached-canonical-detail",
+      createdAt: 100,
+      title: "Cached canonical detail",
+      stock: 1,
+    })
+    const addressId = `30402:${cachedProduct.pubkey}:cached-canonical-detail`
+    await cacheSignedProductListingEvent(cachedProduct)
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () => [],
+      fetchEventsFanoutDetailed: async (_filter, options) => {
+        const relayUrls = options?.relayUrls?.length
+          ? options.relayUrls
+          : ["wss://unavailable.example"]
+        return {
+          events: [],
+          relays: relayUrls.map((relayUrl) => ({
+            relayUrl,
+            status: "failed" as const,
+            eventCount: 0,
+          })),
+        }
+      },
+    })
+
+    const result = await getProductDetail({
+      productId: addressId,
+      revalidateCanonical: true,
+    })
+
+    expect(result.data?.eventId).toBe(cachedProduct.id)
+    expect(result.meta).toMatchObject({
+      source: "local_cache",
+      stale: true,
+      degraded: true,
+    })
+    expect(result.meta.capabilities.canonicalFreshness).toBe(false)
+  })
+
   it("uses the lower event id to resolve same-timestamp product versions", async () => {
     const dTag = "same-second-edit"
     const versions = [

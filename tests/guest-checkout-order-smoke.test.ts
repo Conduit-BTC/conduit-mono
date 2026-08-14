@@ -107,6 +107,51 @@ function identity(orderId = "smoke-order") {
   }
 }
 
+function productRead(
+  overrides: {
+    source?: "commerce" | "public" | "local_cache"
+    stale?: boolean
+    degraded?: boolean
+    capped?: boolean
+    canonicalFreshness?: boolean
+  } = {}
+) {
+  return {
+    data: {
+      addressId: `30402:${MERCHANT_PUBKEY}:fixture`,
+      product: {
+        pubkey: MERCHANT_PUBKEY,
+        title: "Fixture product",
+        price: 1,
+        currency: "USD",
+        sourcePrice: {
+          amount: 1,
+          currency: "USD",
+          normalizedCurrency: "USD",
+        },
+        format: "digital",
+        stock: 1,
+        shippingCountryRules: [],
+        shippingCountries: [],
+      },
+    },
+    meta: {
+      source: overrides.source ?? "commerce",
+      stale: overrides.stale ?? false,
+      degraded: overrides.degraded ?? false,
+      capped: overrides.capped ?? false,
+      capabilities: {
+        sortModes: ["newest", "price_asc", "price_desc", "updated_at_desc"],
+        textSearch: true,
+        protectedSummaries: false,
+        canonicalFreshness: overrides.canonicalFreshness ?? true,
+        cursorPagination: false,
+      },
+      fetchedAt: 1_700_000_000_000,
+    },
+  } as never
+}
+
 describe("guest checkout order smoke", () => {
   it("validates that the protected signer owns the product fixture", () => {
     const config = parseGuestCheckoutOrderSmokeConfig(environment())
@@ -194,8 +239,68 @@ describe("guest checkout order smoke", () => {
     expect(payload.items[0]).not.toHaveProperty("sourceShippingCost")
   })
 
-  it("publishes once and proves Merchant recovers the same guest order", async () => {
+  it("fails closed when canonical revalidation falls back to cached product data", async () => {
     const config = parseGuestCheckoutOrderSmokeConfig(environment())
+    let published = false
+    let failure: unknown
+
+    try {
+      await runGuestCheckoutOrderSmoke(config, {
+        getProduct: async () =>
+          productRead({
+            source: "local_cache",
+            stale: true,
+            degraded: true,
+            canonicalFreshness: false,
+          }),
+        publishOrder: async () => {
+          published = true
+          throw new Error("Cached product data must not reach publication.")
+        },
+      })
+    } catch (error) {
+      failure = error
+    }
+
+    expect(formatGuestCheckoutOrderSmokeFailure(failure)).toBe(
+      "Guest checkout order smoke failed at product_read."
+    )
+    expect(published).toBe(false)
+  })
+
+  it("fails closed when the canonical product read has partial relay coverage", async () => {
+    const config = parseGuestCheckoutOrderSmokeConfig(environment())
+    let published = false
+    let failure: unknown
+
+    try {
+      await runGuestCheckoutOrderSmoke(config, {
+        getProduct: async () =>
+          productRead({
+            degraded: true,
+            canonicalFreshness: false,
+          }),
+        publishOrder: async () => {
+          published = true
+          throw new Error("Partial product data must not reach publication.")
+        },
+      })
+    } catch (error) {
+      failure = error
+    }
+
+    expect(formatGuestCheckoutOrderSmokeFailure(failure)).toBe(
+      "Guest checkout order smoke failed at product_read."
+    )
+    expect(published).toBe(false)
+  })
+
+  it("requires a canonical product read before publishing and recovering the order", async () => {
+    const config = parseGuestCheckoutOrderSmokeConfig(environment())
+    let productQuery: {
+      productId: string
+      revalidateCanonical?: boolean
+    } | null = null
     let published:
       | Parameters<
           NonNullable<
@@ -205,27 +310,10 @@ describe("guest checkout order smoke", () => {
       | null = null
 
     const result = await runGuestCheckoutOrderSmoke(config, {
-      getProduct: async () =>
-        ({
-          data: {
-            addressId: `30402:${MERCHANT_PUBKEY}:fixture`,
-            product: {
-              pubkey: MERCHANT_PUBKEY,
-              title: "Fixture product",
-              price: 1,
-              currency: "USD",
-              sourcePrice: {
-                amount: 1,
-                currency: "USD",
-                normalizedCurrency: "USD",
-              },
-              format: "digital",
-              stock: 1,
-              shippingCountryRules: [],
-              shippingCountries: [],
-            },
-          },
-        }) as never,
+      getProduct: async (query) => {
+        productQuery = query
+        return productRead()
+      },
       getPricingRate: async () => ({
         rate: 100_000,
         fetchedAt: 1_700_000_000_000,
@@ -284,6 +372,10 @@ describe("guest checkout order smoke", () => {
     })
 
     expect(result).toEqual({ status: "passed" })
+    expect(productQuery).toEqual({
+      productId: `30402:${MERCHANT_PUBKEY}:fixture`,
+      revalidateCanonical: true,
+    })
     expect(published).not.toBeNull()
     const payload = JSON.parse(published!.content)
     expect(payload.items[0].priceAtPurchase).toBe(1_000)

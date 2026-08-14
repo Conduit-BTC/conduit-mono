@@ -367,6 +367,17 @@ export async function runGuestCheckoutOrderSmoke(
       productId: config.productAddress,
       revalidateCanonical: true,
     })
+    if (
+      product.meta.source === "local_cache" ||
+      product.meta.stale ||
+      product.meta.degraded ||
+      product.meta.capped ||
+      !product.meta.capabilities.canonicalFreshness
+    ) {
+      throw new Error(
+        "Guest checkout smoke requires current product data from a complete network read."
+      )
+    }
     pricing = await buildGuestOrderPricing(
       product.data,
       config,
