@@ -52,11 +52,9 @@ jobs:
           fi
 
           metadata="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
-            --json baseRefName,headRefOid,isCrossRepository,state)"
-          base_ref="$(node -e 'const data = JSON.parse(process.argv[1]); console.log(data.baseRefName || "")' "$metadata")"
-          head_sha="$(node -e 'const data = JSON.parse(process.argv[1]); console.log(data.headRefOid || "")' "$metadata")"
-          is_cross_repo="$(node -e 'const data = JSON.parse(process.argv[1]); console.log(data.isCrossRepository ? "true" : "false")' "$metadata")"
-          state="$(node -e 'const data = JSON.parse(process.argv[1]); console.log(data.state || "")' "$metadata")"
+            --json baseRefName,headRefOid,isCrossRepository,state \
+            --jq '[.baseRefName // "", .headRefOid // "", ((.isCrossRepository == true) | tostring), .state // ""] | join("\u001f")')"
+          IFS=$'\x1f' read -r base_ref head_sha is_cross_repo state <<< "$metadata"
 
           if [[ "$is_cross_repo" == "true" ]]; then
             echo "Simplify review is disabled for cross-repository pull requests." >&2
