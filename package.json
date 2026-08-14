@@ -8,7 +8,7 @@
     "packages/*"
   ],
   "overrides": {
-    "nanoid": "3.3.17",
+    "nanoid": "3.3.18",
     "postcss": "8.5.25",
     "undici": "7.29.0"
   },
