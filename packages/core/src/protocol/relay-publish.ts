@@ -30,6 +30,10 @@ import {
   assertSafeReplaceablePublish,
   type ReplaceablePublishSafetyOptions,
 } from "./replaceable-safety"
+import {
+  isValidSignedPublicNostrEvent,
+  type SignedPublicNostrEvent,
+} from "./signed-event"
 
 const STANDARD_PUBLISH_TIMEOUT_MS = 5_000
 const CRITICAL_PUBLISH_TIMEOUT_MS = 10_000
@@ -91,6 +95,28 @@ export class RelayPublishDiagnosticsError extends Error {
     this.name = "RelayPublishDiagnosticsError"
     this.diagnostics = diagnostics
     this.cause = cause
+  }
+}
+
+function assertValidSignedPublish(
+  event: NDKEvent,
+  input: PublishWithPlannerInput
+): void {
+  let rawEvent: SignedPublicNostrEvent
+  try {
+    rawEvent = event.rawEvent() as SignedPublicNostrEvent
+  } catch {
+    throw new Error("Refusing to publish an invalid signed Nostr event.")
+  }
+  if (!isValidSignedPublicNostrEvent(rawEvent)) {
+    throw new Error("Refusing to publish an invalid signed Nostr event.")
+  }
+  if (input.intent !== "author_event") return
+  const expectedAuthor = input.authorPubkey?.trim().toLowerCase()
+  if (!expectedAuthor || rawEvent.pubkey.toLowerCase() !== expectedAuthor) {
+    throw new Error(
+      "Refusing to publish an event signed by a different account."
+    )
   }
 }
 
@@ -308,6 +334,18 @@ function getPublishErrorMessage(error: unknown): string {
   return "No acknowledgement before publish timeout"
 }
 
+const NIP_01_DUPLICATE_REASON = /^duplicate:/i
+const NIP_01_REJECTION_REASON =
+  /^(?:pow|blocked|rate-limited|invalid|restricted|mute|error):/i
+
+function isExplicitRelayRejection(error: unknown): boolean {
+  return NIP_01_REJECTION_REASON.test(getPublishErrorMessage(error).trim())
+}
+
+function isDuplicateRelayAcceptance(error: unknown): boolean {
+  return NIP_01_DUPLICATE_REASON.test(getPublishErrorMessage(error).trim())
+}
+
 function createPublishDiagnosticsError(input: {
   message: string
   plan: RelayWritePlan
@@ -349,6 +387,7 @@ async function publishToRelayUrls(input: {
   successfulRelayUrls: string[]
   failedRelayUrls: string[]
   relayFailureMessages: Record<string, string>
+  rejectedRelayUrls: string[]
   thrown: unknown
 }> {
   // NDKEvent.publish() reads the instance from the event itself even when the
@@ -361,6 +400,7 @@ async function publishToRelayUrls(input: {
       successfulRelayUrls: [],
       failedRelayUrls: [],
       relayFailureMessages: {},
+      rejectedRelayUrls: [],
       thrown: null,
     }
   }
@@ -368,6 +408,7 @@ async function publishToRelayUrls(input: {
   const relaySet = NDKRelaySet.fromRelayUrls([...input.relayUrls], input.ndk)
   let publishedUrls = new Set<string>()
   let explicitFailedUrls = new Set<string>()
+  const rejectedRelayUrls = new Set<string>()
   const explicitFailureMessages = new Map<string, string>()
   let thrown: unknown = null
 
@@ -385,7 +426,21 @@ async function publishToRelayUrls(input: {
       for (const [relay, relayError] of err.errors.entries()) {
         const url = relayUrl(relay)
         if (url) {
+          // `duplicate:` means this exact event is already durable on the
+          // relay. Treat it as an idempotent acknowledgement so a retry after
+          // an ACK-loss or browser crash can converge.
+          if (isDuplicateRelayAcceptance(relayError)) {
+            publishedUrls.add(url)
+            continue
+          }
           explicitFailedUrls.add(url)
+          // NDK currently stores OK-false, timeout, and transport failures as
+          // plain Error values in the same map. Only NIP-01's machine-readable
+          // rejection prefixes prove a relay explicitly rejected the event;
+          // every ambiguous failure remains retryable as timed_out.
+          if (isExplicitRelayRejection(relayError)) {
+            rejectedRelayUrls.add(url)
+          }
           explicitFailureMessages.set(url, getPublishErrorMessage(relayError))
         }
       }
@@ -416,7 +471,49 @@ async function publishToRelayUrls(input: {
     ])
   )
 
-  return { ...outcome, relayFailureMessages, thrown }
+  return {
+    ...outcome,
+    relayFailureMessages,
+    rejectedRelayUrls: Array.from(rejectedRelayUrls),
+    thrown,
+  }
+}
+
+export type ExclusiveRelayPublishStatus = "acked" | "rejected" | "timed_out"
+
+/**
+ * Publish one already-signed author event to one exact relay target and return
+ * a structured ACK/reject/timeout result. No fallback or plan recomputation is
+ * allowed at this boundary; durable callers own the immutable relay plan.
+ */
+export async function publishSignedEventToRelay(input: {
+  event: NDKEvent
+  relayUrl: string
+  authorPubkey: string
+}): Promise<ExclusiveRelayPublishStatus> {
+  assertValidSignedPublish(input.event, {
+    intent: "author_event",
+    authorPubkey: input.authorPubkey,
+  })
+  const plan = await planPublishRelays({
+    intent: "author_event",
+    authorPubkey: input.authorPubkey,
+    exclusiveRelayUrls: [input.relayUrl],
+  })
+  const [relayUrl] = plan.primaryRelayUrls
+  if (!relayUrl || plan.primaryRelayUrls.length !== 1) {
+    throw new Error("Expected one valid secure relay target.")
+  }
+
+  const outcome = await publishToRelayUrls({
+    event: input.event,
+    ndk: testOverrides.getNdk ? testOverrides.getNdk() : getNdk(),
+    relayUrls: [relayUrl],
+    requiredRelayCount: 1,
+    timeoutMs: CRITICAL_PUBLISH_TIMEOUT_MS,
+  })
+  if (outcome.successfulRelayUrls.includes(relayUrl)) return "acked"
+  return outcome.rejectedRelayUrls.includes(relayUrl) ? "rejected" : "timed_out"
 }
 
 /**
@@ -492,10 +589,19 @@ export async function publishWithPlanner(
   event: NDKEvent,
   input: PublishWithPlannerInput
 ): Promise<PublishWithPlannerResult> {
+  if (
+    event.kind === EVENT_KINDS.GIFT_WRAP &&
+    input.exclusiveRelayUrls === undefined
+  ) {
+    throw new Error(
+      "Gift wraps require an exclusive private-message relay plan."
+    )
+  }
   if (event.kind === EVENT_KINDS.RELAY_LIST) {
     assertSafeNip65RelayTags(event.tags ?? [])
   }
   assertSafeReplaceablePublish(event, input.replaceableSafety)
+  assertValidSignedPublish(event, input)
 
   const basePlan = input.exclusiveRelayUrls
     ? await planPublishRelays(input)

@@ -13,6 +13,11 @@ Provide aggregate proof of product usage and reliability without user surveillan
 5. No storage of message/order/payment content in telemetry systems.
 6. Product clients and telemetry stay cookieless.
 
+The exact Product legal paths `/privacy-policy` and `/terms-of-service` are a
+hard no-telemetry boot boundary. Direct loads must bypass signer restoration,
+sessions, Nostr connections, cache/worker maintenance, pricing, readiness,
+payment automation, and every telemetry provider or queue.
+
 ## Identity Boundary
 
 Telemetry must distinguish active user identity from public page identity.
@@ -109,11 +114,13 @@ telemetry, or support diagnostics.
 
 ## Allowed Tooling
 
-- `Plausible` (optional): aggregate traffic only, no custom user identifiers,
-  no automatic pageview capture, and no cookies.
-- `PostHog` (optional): operational events and feature flags only; self-hosted
-  preferred, memory-only persistence, no person profiles, no session replay,
-  and no heatmaps.
+- `Plausible` (legacy, nonofficial/dev only): aggregate traffic only, no custom
+  user identifiers, no automatic pageview capture, and no cookies. Official
+  Product hosts disable this provider.
+- `PostHog` (optional): allowlisted operational events only; sessionStorage-only
+  SDK state, no person profiles, no feature flags, no session replay, and no
+  heatmaps. Official Product hosts pin browser ingestion to the constrained
+  Conduit telemetry proxy even if a build-time host override is present.
 - Self-hosted stack strongly preferred for both.
 
 ## Aggregate Reporting Requirements

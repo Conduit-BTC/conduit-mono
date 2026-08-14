@@ -77,6 +77,11 @@ rate quote, and forwards only the canonical public draft to the signer Worker.
 The browser supplies product coordinates and quantities, not an authoritative
 amount or comment.
 
+The Market authorization boundary also receives ordinary connection metadata
+and uses source IP information to enforce fail-closed rate limits. It does not
+accept buyer names, street addresses, phone numbers, email addresses, order
+notes, private messages, invoice preimages, or NWC secrets in this request.
+
 - `ANON_ZAP_SIGNER_URL`: server-side URL for the signer Worker. Production
   requires HTTPS and rejects credentials, query strings, fragments, and private
   hosts.

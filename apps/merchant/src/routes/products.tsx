@@ -7,7 +7,7 @@ import {
   EVENT_KINDS,
   SHIPPING_COUNTRIES,
   SUPPORTED_PRODUCT_PRICE_CURRENCIES,
-  appendConduitClientTag,
+  buildProductDeletionEventDraft,
   buildProductPublishResultTelemetryProperties,
   cacheSignedProductDeletionEvent,
   canonicalizeProductPrice,
@@ -17,11 +17,14 @@ import {
   getMerchantStorefront,
   getProductImageCandidates,
   getProductPriceDisplay,
+  prepareProductCatalog,
   recordBrowserTelemetryEvent,
   requireNdkConnected,
   type CommerceResult,
   type ListingSafetyEvaluation,
+  type PreparedProductFamily,
   type ProductSchema,
+  type ProductDeletionDeliveryJob,
   type ProductZapMessagePolicy,
   type PublishWithPlannerResult,
   useAuth,
@@ -36,6 +39,7 @@ import {
   DialogHeader,
   DialogTitle,
   DoubleSideStatusPill,
+  FreshnessChip,
   Input,
   Label,
   ProductCard,
@@ -79,6 +83,7 @@ import {
   buildLocalProductDeliveryNotice,
   buildLocalProductRetryNotice,
   buildProductDeliveryNotice,
+  buildQueuedProductDeletionNotice,
   formatProductRelayUrls,
   getProductDeliveryNoticeVariant,
   type ProductDeliveryNotice,
@@ -90,16 +95,42 @@ import {
   type ShippingConfig,
 } from "../lib/readiness"
 import {
-  deliverSignedProductEvent,
+  deliverQueuedProductDeletion,
+  getPendingProductDeletionJobs,
+  persistSignedProductDeletion,
+  planCurrentProductDeletionWriteRelays,
+  productDeletionJobToPublishResult,
+} from "../lib/product-deletion-delivery"
+import {
+  deliverSignedProductEventBundle,
   getRelayPublishDiagnosticsError,
-  signAndPublishProductListing,
+  signAndPublishProductWriteBundle,
   SignedProductDeliveryError,
 } from "../lib/product-publishing"
 import {
+  getProductFamilyStockDisplay,
   getProductStockDisplay,
   isPlainStockInput,
   parseProductStockInput,
 } from "../lib/productStock"
+import {
+  addProductVariationAxis,
+  buildProductFamilyChangePlan,
+  createEmptyProductVariationForm,
+  generateProductVariationRows,
+  getProductVariationCartesianCount,
+  getProductVariationCombinations,
+  getProductVariationFormState,
+  groupProductVariationRecords,
+  MAX_PRODUCT_VARIATION_COUNT,
+  reconcileProductVariationForm,
+  removeProductVariationAxis,
+  removeProductVariationRow,
+  updateProductVariationAxis,
+  updateProductVariationInheritance,
+  updateProductVariationOverride,
+  type ProductVariationFormResult,
+} from "../lib/productVariations"
 
 export const Route = createFileRoute("/products")({
   beforeLoad: () => {
@@ -113,8 +144,16 @@ type MerchantProduct = {
   addressId: string
   dTag: string | null
   eventCreatedAt: number
+  sourceRelayUrls: string[]
   product: ProductSchema
   safety: ListingSafetyEvaluation
+}
+
+type MerchantProductFamily = MerchantProduct & {
+  variations: MerchantProduct[]
+  orphanVariation: boolean
+  variationForm: ProductVariationFormResult
+  family?: PreparedProductFamily<MerchantProduct>
 }
 
 type ProductFormState = MerchantProductFormValues
@@ -123,14 +162,14 @@ type ProductPublishMutationPayload = {
   merchantPubkey: string
   form: ProductFormState
   dTag: string
-  existing?: MerchantProduct
-  signedEvent?: NDKEvent
+  existing?: MerchantProductFamily
+  signedEvents?: readonly NDKEvent[]
   previousNotice?: ProductDeliveryNotice
 }
 
 type ProductDeleteMutationPayload = {
-  product: MerchantProduct
-  signedEvent?: NDKEvent
+  product?: MerchantProductFamily
+  deliveryJobId?: string
   previousNotice?: ProductDeliveryNotice
 }
 
@@ -148,6 +187,7 @@ function createEmptyProductForm(
     summary: "",
     price: "0",
     stock: "",
+    variations: createEmptyProductVariationForm(),
     currency: "USD",
     format: "physical",
     shippingPricingMode: "fixed",
@@ -165,12 +205,18 @@ const EMPTY_FORM: ProductFormState = createEmptyProductForm()
 
 function getProductDraftTarget(
   merchantPubkey: string,
-  product?: MerchantProduct | null
+  product?: MerchantProductFamily | null
 ): ProductDraftTarget {
+  const familyEventId = product
+    ? [product, ...product.variations]
+        .map((record) => record.eventId)
+        .sort()
+        .join(":")
+    : null
   return {
     merchantPubkey,
     productAddressId: product?.addressId ?? null,
-    baseEventId: product?.eventId ?? null,
+    baseEventId: familyEventId,
   }
 }
 
@@ -217,9 +263,10 @@ function productShippingConfigFromProduct(
 }
 
 function productToForm(
-  product: ProductSchema,
+  family: MerchantProductFamily,
   presetAvailable = true
 ): ProductFormState {
+  const product = family.product
   const source = product.sourcePrice
   const sourceShippingCost = product.sourceShippingCost
   const currency = source?.normalizedCurrency ?? product.currency
@@ -231,6 +278,7 @@ function productToForm(
     summary: product.summary ?? "",
     price: formatProductAmountInput(source?.amount ?? product.price),
     stock: typeof product.stock === "number" ? String(product.stock) : "",
+    variations: family.variationForm.state,
     currency,
     format: product.format,
     shippingPricingMode:
@@ -433,13 +481,52 @@ function ListingSafetySummary({
   item,
   onEdit,
 }: {
-  item: MerchantProduct
-  onEdit: () => void
+  item: MerchantProductFamily
+  onEdit?: () => void
 }) {
   const display = getListingSafetyDisplay(item.safety)
   const isActive = item.safety.state === "active"
   const isPolicyWarning = item.safety.state === "flagged"
   const zapPolicyLabel = getZapPolicyLabel(item.product)
+
+  if (item.product.type === "variable" && item.variationForm.supported) {
+    return (
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2">
+        <StatusPill variant="info" className="text-[10px]">
+          Variable product
+        </StatusPill>
+        <span className="text-xs text-[var(--text-secondary)]">
+          {item.variations.length} variation
+          {item.variations.length === 1 ? "" : "s"}
+        </span>
+      </div>
+    )
+  }
+
+  if (!item.variationForm.supported) {
+    return (
+      <article className="rounded-xl border border-warning/30 bg-warning/10 p-4 text-sm text-warning">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="font-semibold text-[var(--text-primary)]">
+              {item.product.title}
+            </div>
+            <p className="mt-2 leading-6">
+              {item.variationForm.reason ??
+                "This variation family cannot be edited safely."}
+            </p>
+          </div>
+          <StatusPill variant="warning" className="text-[10px]">
+            Read-only
+          </StatusPill>
+        </div>
+        <p className="mt-3 text-xs leading-5 text-[var(--text-secondary)]">
+          You can delete the known listing family, but editing is disabled to
+          avoid losing unsupported option data.
+        </p>
+      </article>
+    )
+  }
 
   if (isActive) {
     return (
@@ -492,9 +579,11 @@ function ListingSafetySummary({
       <p className="mt-3 text-xs leading-5 text-[var(--text-secondary)]">
         {display.merchantAction}
       </p>
-      <Button variant="outline" size="sm" className="mt-3" onClick={onEdit}>
-        {isPolicyWarning ? "Review listing" : "Fix listing"}
-      </Button>
+      {onEdit && (
+        <Button variant="outline" size="sm" className="mt-3" onClick={onEdit}>
+          {isPolicyWarning ? "Review listing" : "Fix listing"}
+        </Button>
+      )}
     </article>
   )
 }
@@ -513,6 +602,7 @@ async function fetchMerchantProducts(
       addressId: record.addressId,
       dTag: record.dTag,
       eventCreatedAt: record.eventCreatedAt,
+      sourceRelayUrls: record.sourceRelayUrls ?? [],
       product: record.product,
       safety: record.safety ?? evaluateListingSafety(record.product),
     })),
@@ -534,6 +624,7 @@ async function fetchCachedMerchantProducts(
       addressId: record.addressId,
       dTag: record.dTag,
       eventCreatedAt: record.eventCreatedAt,
+      sourceRelayUrls: record.sourceRelayUrls ?? [],
       product: record.product,
       safety: record.safety ?? evaluateListingSafety(record.product),
     })),
@@ -545,8 +636,8 @@ async function publishProduct(
   merchantPubkey: string,
   form: ProductFormState,
   dTag: string,
-  onSignedLocal: (event: NDKEvent) => Promise<void>,
-  existing?: MerchantProduct
+  onSignedLocal: (events: readonly NDKEvent[]) => Promise<void>,
+  existing?: MerchantProductFamily
 ): Promise<PublishWithPlannerResult> {
   const formValidation = validateProductPublishForm(form, {
     hasPresetShippingZone: isShippingComplete(
@@ -621,6 +712,8 @@ async function publishProduct(
     price: normalizedPrice,
     currency,
     type: "simple",
+    parentProductId: undefined,
+    specifications: [],
     format: form.format,
     ...shippingCost,
     ...shippingMetadata,
@@ -636,51 +729,87 @@ async function publishProduct(
     updatedAt: now,
   })
 
-  return signAndPublishProductListing({
+  const plan = buildProductFamilyChangePlan({
+    parentDTag: dTag,
+    baseProduct: product,
+    variations: form.variations,
+    currency,
+    existing: existing
+      ? {
+          root: existing,
+          variations: existing.variations,
+          orphanVariation: existing.orphanVariation,
+        }
+      : undefined,
+    now,
+  })
+
+  return signAndPublishProductWriteBundle({
     merchantPubkey,
-    product,
-    dTag,
-    previousEventCreatedAt: existing?.eventCreatedAt,
+    listings: plan.publish.map((target) => ({
+      product: target.product,
+      dTag: target.dTag,
+      previousEventCreatedAt: target.existing?.eventCreatedAt,
+    })),
+    deletions: plan.remove.map((target) => ({
+      eventId: target.eventId,
+      addressId: target.addressId,
+    })),
     onSignedLocal,
   })
 }
 
 async function deleteProduct(
   merchantPubkey: string,
-  product: MerchantProduct,
-  onSignedLocal: (event: NDKEvent) => Promise<void>
-): Promise<PublishWithPlannerResult> {
+  product: MerchantProductFamily,
+  onSignedLocal: (event: NDKEvent, deliveryJobId: string) => Promise<void>
+): Promise<{ delivery: PublishWithPlannerResult; deliveryJobId: string }> {
   const ndk = await requireNdkConnected()
   if (!ndk.signer) throw new Error("Signer not connected")
   const signerPubkey = (await ndk.signer.user()).pubkey
   if (signerPubkey !== merchantPubkey) {
     throw new Error("Active signer does not match current merchant pubkey")
   }
-  if (product.product.pubkey !== merchantPubkey) {
+  const familyRecords = [product, ...product.variations]
+  if (
+    familyRecords.some((record) => record.product.pubkey !== merchantPubkey)
+  ) {
     throw new Error(
       "Product pubkey mismatch; refusing to publish deletion event"
     )
   }
+  const draft = buildProductDeletionEventDraft({
+    merchantPubkey,
+    targets: familyRecords.map((record) => ({
+      eventId: record.eventId,
+      addressId: record.dTag ? record.addressId : undefined,
+    })),
+    clientAppId: "merchant",
+  })
+  const currentWriteRelayUrls =
+    await planCurrentProductDeletionWriteRelays(merchantPubkey)
 
   const deletion = new NDKEvent(ndk)
   deletion.kind = EVENT_KINDS.DELETION
   deletion.created_at = Math.floor(Date.now() / 1000)
-  const tags: string[][] = [
-    ["e", product.eventId],
-    ["k", String(EVENT_KINDS.PRODUCT)],
-    ["p", product.product.pubkey],
-  ]
-  if (product.dTag) {
-    tags.push(["a", `30402:${product.product.pubkey}:${product.dTag}`])
-  }
-  deletion.tags = appendConduitClientTag(tags, "merchant")
-  deletion.content = ""
+  deletion.tags = draft.tags
+  deletion.content = draft.content
 
   await deletion.sign(ndk.signer)
+  const deliveryJob = await persistSignedProductDeletion({
+    signedEvent: deletion.rawEvent(),
+    currentWriteRelayUrls,
+    sourceRelayUrls: Array.from(
+      new Set(familyRecords.flatMap((record) => record.sourceRelayUrls))
+    ),
+  })
   await cacheSignedProductDeletionEvent(deletion)
   try {
-    await onSignedLocal(deletion)
-    return await deliverSignedProductEvent(deletion, merchantPubkey)
+    await onSignedLocal(deletion, deliveryJob.id)
+    return {
+      delivery: await deliverQueuedProductDeletion(deliveryJob.id),
+      deliveryJobId: deliveryJob.id,
+    }
   } catch (error) {
     throw error instanceof SignedProductDeliveryError
       ? error
@@ -696,7 +825,7 @@ function ProductsPage() {
   const productDraftStoreRef = useRef(new ProductDraftStore())
   const productPublishStartedAtRef = useRef<number | null>(null)
   const [form, setForm] = useState<ProductFormState>(EMPTY_FORM)
-  const [editing, setEditing] = useState<MerchantProduct | null>(null)
+  const [editing, setEditing] = useState<MerchantProductFamily | null>(null)
   const [productDialogOpen, setProductDialogOpen] = useState(false)
   const [activeProductDraftTarget, setActiveProductDraftTarget] =
     useState<ProductDraftTarget | null>(null)
@@ -721,9 +850,62 @@ function ProductsPage() {
     queryFn: () => fetchCachedMerchantProducts(pubkey!),
     staleTime: 5_000,
   })
-  const merchantProducts = useMemo(
+  const pendingDeletionJobsQuery = useQuery({
+    queryKey: ["merchant-product-deletion-jobs", pubkey ?? "none"],
+    enabled: !!pubkey,
+    queryFn: () => getPendingProductDeletionJobs(pubkey!),
+    refetchInterval: 5_000,
+  })
+  const pendingDeletionJobs = useMemo<ProductDeletionDeliveryJob[]>(
+    () => pendingDeletionJobsQuery.data ?? [],
+    [pendingDeletionJobsQuery.data]
+  )
+  const merchantProductRecords = useMemo(
     () => productsQuery.data?.data ?? cachedProductsQuery.data?.data ?? [],
     [cachedProductsQuery.data?.data, productsQuery.data?.data]
+  )
+  const merchantProductReadMeta =
+    productsQuery.data?.meta ?? cachedProductsQuery.data?.meta
+  const merchantProducts = useMemo<MerchantProductFamily[]>(
+    () =>
+      // Group at the read boundary so edit and delete always operate on the
+      // same complete variation family shown to the merchant.
+      groupProductVariationRecords(merchantProductRecords).map((family) => {
+        const variationForm = getProductVariationFormState(
+          family.root,
+          family.variations
+        )
+        const hasFamilyImage = [family.root, ...family.variations].some(
+          (record) => getProductImageCandidates(record.product).length > 0
+        )
+        const safety =
+          family.root.product.type === "variable" && variationForm.supported
+            ? evaluateListingSafety(family.root.product, undefined, {
+                variationGroupRole: "parent",
+                hasGroupImage: hasFamilyImage,
+              })
+            : family.root.safety
+        const prepared = prepareProductCatalog(
+          [family.root, ...family.variations],
+          {
+            source: merchantProductReadMeta?.source ?? "local_cache",
+            fetchedAt: merchantProductReadMeta?.fetchedAt ?? Date.now(),
+            stale: merchantProductReadMeta?.stale ?? true,
+            degraded: merchantProductReadMeta?.degraded ?? true,
+            capped: merchantProductReadMeta?.capped ?? false,
+          }
+        ).items[0]
+
+        return {
+          ...family.root,
+          safety,
+          variations: family.variations,
+          orphanVariation: family.orphanVariation,
+          variationForm,
+          family: prepared?.kind === "family" ? prepared.family : undefined,
+        }
+      }),
+    [merchantProductReadMeta, merchantProductRecords]
   )
   const shippingConfig = loadShippingConfig(pubkey)
   const hasPresetShippingZone = isShippingComplete(shippingConfig)
@@ -735,6 +917,9 @@ function ProductsPage() {
       }),
       queryClient.invalidateQueries({
         queryKey: ["merchant-products-live", pubkey ?? "none"],
+      }),
+      queryClient.invalidateQueries({
+        queryKey: ["merchant-product-deletion-jobs", pubkey ?? "none"],
       }),
     ])
   }
@@ -770,9 +955,9 @@ function ProductsPage() {
 
   const saveMutation = useMutation({
     mutationFn: async (payload: ProductPublishMutationPayload) => {
-      if (payload.signedEvent) {
-        return deliverSignedProductEvent(
-          payload.signedEvent,
+      if (payload.signedEvents) {
+        return deliverSignedProductEventBundle(
+          payload.signedEvents,
           payload.merchantPubkey
         )
       }
@@ -781,10 +966,10 @@ function ProductsPage() {
         payload.merchantPubkey,
         payload.form,
         payload.dTag,
-        async (event) => {
+        async (events) => {
           setProductDeliveryRetry({
             action: "publish",
-            payload: { ...payload, signedEvent: event },
+            payload: { ...payload, signedEvents: events },
           })
           completeLocalProductSave(payload)
           await showLocalProductProjection("publish", payload.merchantPubkey)
@@ -794,9 +979,9 @@ function ProductsPage() {
     },
     onMutate: (payload) => {
       productPublishStartedAtRef.current = Date.now()
-      if (!payload.signedEvent) setProductDeliveryRetry(null)
+      if (!payload.signedEvents) setProductDeliveryRetry(null)
       setProductDeliveryNotice(
-        payload.signedEvent ? buildLocalProductDeliveryNotice("publish") : null
+        payload.signedEvents ? buildLocalProductDeliveryNotice("publish") : null
       )
     },
     onSuccess: async (data, variables) => {
@@ -809,7 +994,7 @@ function ProductsPage() {
         app: "merchant",
         eventName: "product_publish_result",
         properties: buildProductPublishResultTelemetryProperties({
-          eventFamily: variables.signedEvent
+          eventFamily: variables.signedEvents
             ? "delivery_retry"
             : variables.existing
               ? "update"
@@ -829,7 +1014,7 @@ function ProductsPage() {
         app: "merchant",
         eventName: "product_publish_result",
         properties: buildProductPublishResultTelemetryProperties({
-          eventFamily: variables.signedEvent
+          eventFamily: variables.signedEvents
             ? "delivery_retry"
             : variables.existing
               ? "update"
@@ -866,38 +1051,51 @@ function ProductsPage() {
 
   const deleteMutation = useMutation({
     mutationFn: async (payload: ProductDeleteMutationPayload) => {
-      if (payload.signedEvent) {
-        return deliverSignedProductEvent(payload.signedEvent, pubkey!)
+      if (payload.deliveryJobId) {
+        return {
+          delivery: await deliverQueuedProductDeletion(payload.deliveryJobId),
+          deliveryJobId: payload.deliveryJobId,
+        }
       }
+      if (!payload.product)
+        throw new Error("Product deletion target is missing")
 
-      return deleteProduct(pubkey!, payload.product, async (event) => {
-        setProductDeliveryRetry({
-          action: "delete",
-          payload: { ...payload, signedEvent: event },
-        })
-        await showLocalProductProjection("delete", pubkey!)
-      })
+      return deleteProduct(
+        pubkey!,
+        payload.product,
+        async (_event, deliveryJobId) => {
+          setProductDeliveryRetry({
+            action: "delete",
+            payload: { ...payload, deliveryJobId },
+          })
+          await showLocalProductProjection("delete", pubkey!)
+        }
+      )
     },
     onMutate: (payload) => {
-      if (!payload.signedEvent) setProductDeliveryRetry(null)
+      if (!payload.deliveryJobId) setProductDeliveryRetry(null)
       setProductDeliveryNotice(
-        payload.signedEvent ? buildLocalProductDeliveryNotice("delete") : null
+        payload.deliveryJobId
+          ? buildQueuedProductDeletionNotice("delivering")
+          : null
       )
     },
     onSuccess: async (data, variables) => {
       const { product } = variables
-      const draftCleared = productDraftStoreRef.current.clear(
-        getProductDraftTarget(product.product.pubkey, product)
-      )
-      if (activeProductDraftTarget?.productAddressId === product.addressId) {
-        setEditing(null)
-        setActiveProductDraftTarget(null)
-        setForm(createEmptyProductForm(hasPresetShippingZone))
-        setDraftStorageAvailable(draftCleared)
+      if (product) {
+        const draftCleared = productDraftStoreRef.current.clear(
+          getProductDraftTarget(product.product.pubkey, product)
+        )
+        if (activeProductDraftTarget?.productAddressId === product.addressId) {
+          setEditing(null)
+          setActiveProductDraftTarget(null)
+          setForm(createEmptyProductForm(hasPresetShippingZone))
+          setDraftStorageAvailable(draftCleared)
+        }
       }
       const notice = buildProductDeliveryNotice(
         "delete",
-        data,
+        data.delivery,
         variables.previousNotice
       )
       setProductDeliveryNotice(notice)
@@ -918,6 +1116,11 @@ function ProductsPage() {
         setProductDeliveryNotice(
           variables.previousNotice ?? buildLocalProductRetryNotice("delete")
         )
+      } else if (variables.deliveryJobId) {
+        setProductDeliveryNotice(
+          variables.previousNotice ??
+            buildQueuedProductDeletionNotice("retry_needed")
+        )
       } else {
         setProductDeliveryNotice((current) =>
           current?.action === "delete" && current.state === "delivering"
@@ -929,6 +1132,39 @@ function ProductsPage() {
     },
   })
 
+  useEffect(() => {
+    if (deleteMutation.isPending) return
+    const job = pendingDeletionJobs.at(-1)
+    if (!job) {
+      setProductDeliveryRetry((current) =>
+        current?.action === "delete" ? null : current
+      )
+      setProductDeliveryNotice((current) =>
+        current?.action === "delete" &&
+        (current.state === "partial" ||
+          current.state === "retry_needed" ||
+          current.state === "delivering")
+          ? null
+          : current
+      )
+      return
+    }
+
+    setProductDeliveryRetry({
+      action: "delete",
+      payload: { deliveryJobId: job.id },
+    })
+    setProductDeliveryNotice((current) => {
+      if (current?.action === "publish") return current
+      return job.deliveryAttemptCount === 0
+        ? buildQueuedProductDeletionNotice("retry_needed")
+        : buildProductDeliveryNotice(
+            "delete",
+            productDeletionJobToPublishResult(job)
+          )
+    })
+  }, [deleteMutation.isPending, pendingDeletionJobs])
+
   const productDeliveryCanRetry =
     (productDeliveryNotice?.state === "partial" ||
       productDeliveryNotice?.state === "retry_needed") &&
@@ -936,7 +1172,7 @@ function ProductsPage() {
 
   function retryProductDelivery(): void {
     if (productDeliveryRetry?.action === "delete") {
-      if (productDeliveryRetry.payload.signedEvent) {
+      if (productDeliveryRetry.payload.deliveryJobId) {
         deleteMutation.mutate({
           ...productDeliveryRetry.payload,
           previousNotice: productDeliveryNotice ?? undefined,
@@ -947,7 +1183,7 @@ function ProductsPage() {
 
     if (
       productDeliveryRetry?.action === "publish" &&
-      productDeliveryRetry.payload.signedEvent
+      productDeliveryRetry.payload.signedEvents
     ) {
       saveMutation.mutate({
         ...productDeliveryRetry.payload,
@@ -961,7 +1197,7 @@ function ProductsPage() {
   const savedProductForm = useMemo(
     () =>
       editing
-        ? productToForm(editing.product, hasPresetShippingZone)
+        ? productToForm(editing, hasPresetShippingZone)
         : createEmptyProductForm(hasPresetShippingZone),
     [editing, hasPresetShippingZone]
   )
@@ -1002,7 +1238,9 @@ function ProductsPage() {
   const productStatusMessage = !productFormValidation.canPublish
     ? productFormValidation.firstError
     : editing
-      ? "Save changes to publish this listing update."
+      ? form.variations.enabled
+        ? "Save changes to publish only the parent or variations that changed."
+        : "Save changes to publish this listing update."
       : "Publish this product to add it to your store."
   const productsInitialLoading =
     productsQuery.isLoading && cachedProductsQuery.isLoading
@@ -1036,13 +1274,25 @@ function ProductsPage() {
           return a.product.title.localeCompare(b.product.title)
         case "price_asc":
           return (
-            (a.product.priceSats ?? a.product.price) -
-            (b.product.priceSats ?? b.product.price)
+            (a.family?.priceSummary.minimum?.product.priceSats ??
+              a.family?.priceSummary.minimum?.product.price ??
+              a.product.priceSats ??
+              a.product.price) -
+            (b.family?.priceSummary.minimum?.product.priceSats ??
+              b.family?.priceSummary.minimum?.product.price ??
+              b.product.priceSats ??
+              b.product.price)
           )
         case "price_desc":
           return (
-            (b.product.priceSats ?? b.product.price) -
-            (a.product.priceSats ?? a.product.price)
+            (b.family?.priceSummary.minimum?.product.priceSats ??
+              b.family?.priceSummary.minimum?.product.price ??
+              b.product.priceSats ??
+              b.product.price) -
+            (a.family?.priceSummary.minimum?.product.priceSats ??
+              a.family?.priceSummary.minimum?.product.price ??
+              a.product.priceSats ??
+              a.product.price)
           )
         case "updated_desc":
           return b.eventCreatedAt - a.eventCreatedAt
@@ -1058,6 +1308,18 @@ function ProductsPage() {
   const productStatusLabel = productsQuery.isFetching
     ? "Updating listings"
     : `${visibleProducts.length} of ${merchantProducts.length} listings`
+  const productVariationCombinations = useMemo(
+    () => getProductVariationCombinations(form.variations),
+    [form.variations]
+  )
+  const productVariationCartesianCount = useMemo(
+    () => getProductVariationCartesianCount(form.variations),
+    [form.variations]
+  )
+  const productVariationGenerationMessage =
+    productVariationCartesianCount > MAX_PRODUCT_VARIATION_COUNT
+      ? `These axes define ${productVariationCartesianCount} combinations. Reduce the values to generate at most ${MAX_PRODUCT_VARIATION_COUNT}, or keep the existing sparse rows.`
+      : null
   const productIsDigital = form.format === "digital"
   const productCoordinatesShipping =
     !productIsDigital && form.shippingPricingMode === "coordinate_after_order"
@@ -1157,7 +1419,8 @@ function ProductsPage() {
     setProductDialogOpen(true)
   }
 
-  function openEditDialog(item: MerchantProduct): void {
+  function openEditDialog(item: MerchantProductFamily): void {
+    if (!item.variationForm.supported) return
     rememberProductDialogTrigger()
     saveMutation.reset()
     if (
@@ -1186,7 +1449,7 @@ function ProductsPage() {
             loaded.draft,
             hasPresetShippingZone
           )
-        : productToForm(item.product, hasPresetShippingZone)
+        : productToForm(item, hasPresetShippingZone)
     )
     setDraftStorageAvailable(loaded.storageAvailable)
     setProductDialogOpen(true)
@@ -1295,8 +1558,13 @@ function ProductsPage() {
           </div>
         )}
 
-        <div className="mt-3 min-h-5 text-xs text-[var(--text-muted)]">
-          {productStatusLabel}
+        <div className="relative mt-3 flex min-h-[1.625rem] items-center pr-36 text-xs text-[var(--text-muted)]">
+          <span>{productStatusLabel}</span>
+          <FreshnessChip
+            status={productsQuery.isFetching ? "updating" : "idle"}
+            updatingLabel="Updating listings"
+            className="absolute right-0 top-0"
+          />
         </div>
         <SignedActionStatus
           state={
@@ -1309,7 +1577,7 @@ function ProductsPage() {
                 : "idle"
           }
           awaitingSignatureMessage="Confirm the deletion event in your signer. The listing will hide locally while relay delivery runs."
-          publishingMessage="The signed tombstone is active locally. Delivering it to relays."
+          publishingMessage="The signed deletion is saved. Confirming its local tombstone before relay delivery."
           errorMessage={getPublishErrorMessage(deleteMutation.error, "delete")}
           className="mt-2"
         />
@@ -1380,24 +1648,54 @@ function ProductsPage() {
 
         <div className="grid auto-rows-fr gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {visibleProducts.map((item) => {
+            const priceProduct =
+              item.family?.priceSummary.minimum?.product ?? item.product
             const { primary, secondary } = getProductPriceDisplay(
-              item.product,
+              priceProduct,
               btcUsdRateQuery.data ?? null
             )
+            const isConstrainedVariationFamily =
+              item.product.type === "variable" &&
+              item.variationForm.supported &&
+              item.variations.length > 0
 
             if (!item.safety.marketVisible) {
               return (
-                <ListingSafetySummary
-                  key={item.addressId}
-                  item={item}
-                  onEdit={() => openEditDialog(item)}
-                />
+                <div key={item.addressId} className="grid gap-2">
+                  <ListingSafetySummary
+                    item={item}
+                    onEdit={
+                      item.variationForm.supported
+                        ? () => openEditDialog(item)
+                        : undefined
+                    }
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={isDeleting}
+                    onClick={() => {
+                      const targetCount = 1 + item.variations.length
+                      const ok = window.confirm(
+                        targetCount > 1
+                          ? `Delete "${item.product.title}" and its ${item.variations.length} variations?`
+                          : `Delete "${item.product.title}"?`
+                      )
+                      if (ok) deleteMutation.mutate({ product: item })
+                    }}
+                  >
+                    {isDeleting ? "..." : "Delete"}
+                  </Button>
+                </div>
               )
             }
 
-            const isActive = item.safety.state === "active"
+            const isActive =
+              item.safety.state === "active" || isConstrainedVariationFamily
             const zapBadge = getZapPolicyBadge(item.product)
-            const stockDisplay = getProductStockDisplay(item.product.stock)
+            const stockDisplay = item.family
+              ? getProductFamilyStockDisplay(item.family.inventorySummary)
+              : getProductStockDisplay(item.product.stock)
 
             return (
               <div key={item.addressId} className="grid gap-2">
@@ -1413,7 +1711,9 @@ function ProductsPage() {
                     <div className="flex flex-col items-end gap-1">
                       {isActive && (
                         <StatusPill variant="success" className="text-[10px]">
-                          Active
+                          {isConstrainedVariationFamily
+                            ? `${item.variations.length} variants`
+                            : "Active"}
                         </StatusPill>
                       )}
                       <StatusPill
@@ -1431,7 +1731,11 @@ function ProductsPage() {
                   }
                   merchantName="Your store"
                   images={getProductImageCandidates(item.product)}
-                  primaryPrice={primary}
+                  primaryPrice={
+                    item.family?.priceSummary.varies
+                      ? `From ${primary}`
+                      : primary
+                  }
                   secondaryPrice={secondary}
                   imageLoading="lazy"
                   action={
@@ -1440,9 +1744,11 @@ function ProductsPage() {
                         variant="outline"
                         size="sm"
                         className="h-7 px-2 text-xs"
+                        disabled={!item.variationForm.supported}
                         onClick={(event) => {
                           event.preventDefault()
                           event.stopPropagation()
+                          if (!item.variationForm.supported) return
                           openEditDialog(item)
                         }}
                       >
@@ -1456,8 +1762,11 @@ function ProductsPage() {
                         onClick={(event) => {
                           event.preventDefault()
                           event.stopPropagation()
+                          const targetCount = 1 + item.variations.length
                           const ok = window.confirm(
-                            `Delete "${item.product.title}"?`
+                            targetCount > 1
+                              ? `Delete "${item.product.title}" and its ${item.variations.length} variations?`
+                              : `Delete "${item.product.title}"?`
                           )
                           if (ok) deleteMutation.mutate({ product: item })
                         }}
@@ -1484,7 +1793,10 @@ function ProductsPage() {
         }}
       >
         <DialogContent
-          className="max-h-[90vh] overflow-y-auto sm:max-w-2xl"
+          className={cn(
+            "max-h-[90vh] overflow-y-auto",
+            form.variations.enabled ? "sm:max-w-4xl" : "sm:max-w-2xl"
+          )}
           onPointerDownOutside={(event) => event.preventDefault()}
           onEscapeKeyDown={(event) => {
             if (isSaving) event.preventDefault()
@@ -1498,11 +1810,17 @@ function ProductsPage() {
         >
           <DialogHeader>
             <DialogTitle>
-              {editing ? "Edit listing" : "Add product"}
+              {editing
+                ? form.variations.enabled
+                  ? "Edit product family"
+                  : "Edit listing"
+                : "Add product"}
             </DialogTitle>
             <DialogDescription>
               {editing
-                ? "Update this product listing."
+                ? form.variations.enabled
+                  ? "Update the parent product and its size or color variations."
+                  : "Update this product listing."
                 : "Add a product to your store."}
             </DialogDescription>
           </DialogHeader>
@@ -1550,7 +1868,9 @@ function ProductsPage() {
 
             <div className="grid gap-3 sm:grid-cols-4">
               <div className="grid gap-1.5">
-                <Label htmlFor="product-price">Price</Label>
+                <Label htmlFor="product-price">
+                  {form.variations.enabled ? "Base price" : "Price"}
+                </Label>
                 <Input
                   id="product-price"
                   type="text"
@@ -1660,7 +1980,11 @@ function ProductsPage() {
                 />
               </div>
               <div className="grid gap-1.5 sm:col-span-2">
-                <Label htmlFor="product-stock">Stock quantity</Label>
+                <Label htmlFor="product-stock">
+                  {form.variations.enabled
+                    ? "Default stock quantity"
+                    : "Stock quantity"}
+                </Label>
                 <Input
                   id="product-stock"
                   type="text"
@@ -1690,7 +2014,9 @@ function ProductsPage() {
                 )}
               >
                 {productFormValidation.errors.stock ??
-                  "Leave blank to publish without stock tracking. Enter 0 to mark the listing sold out."}
+                  (form.variations.enabled
+                    ? "Used by every variation unless you enter a row override. Leave blank to publish without stock tracking."
+                    : "Leave blank to publish without stock tracking. Enter 0 to mark the listing sold out.")}
               </div>
               {productFormValidation.errors.price && (
                 <p
@@ -1843,6 +2169,560 @@ function ProductsPage() {
               )}
             </div>
 
+            <fieldset className="grid gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4">
+              <legend className="px-1 text-sm font-semibold text-[var(--text-primary)]">
+                Product options
+              </legend>
+              <label className="flex items-start gap-3 text-sm">
+                <input
+                  type="checkbox"
+                  checked={form.variations.enabled}
+                  onChange={(event) =>
+                    setForm((previous) => ({
+                      ...previous,
+                      variations: reconcileProductVariationForm({
+                        ...previous.variations,
+                        enabled: event.target.checked,
+                      }),
+                    }))
+                  }
+                  className="mt-1 h-4 w-4 rounded border-[var(--border)] accent-secondary-500"
+                />
+                <span className="grid gap-1">
+                  <span className="font-medium text-[var(--text-primary)]">
+                    This product has variations
+                  </span>
+                  <span className="text-xs leading-5 text-[var(--text-muted)]">
+                    Conduit publishes one variable parent and one explicit child
+                    listing for each row.
+                  </span>
+                </span>
+              </label>
+
+              {form.variations.enabled && (
+                <>
+                  <div className="grid gap-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div className="text-sm font-medium text-[var(--text-primary)]">
+                          Option axes
+                        </div>
+                        <p className="mt-1 text-xs text-[var(--text-muted)]">
+                          Size and color are presets. Axis names remain generic
+                          protocol specifications.
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {!form.variations.axes.some(
+                          (axis) => axis.key.trim().toLowerCase() === "size"
+                        ) ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() =>
+                              setForm((previous) => ({
+                                ...previous,
+                                variations: addProductVariationAxis(
+                                  previous.variations,
+                                  "size"
+                                ),
+                              }))
+                            }
+                          >
+                            Add size
+                          </Button>
+                        ) : null}
+                        {!form.variations.axes.some(
+                          (axis) => axis.key.trim().toLowerCase() === "color"
+                        ) ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() =>
+                              setForm((previous) => ({
+                                ...previous,
+                                variations: addProductVariationAxis(
+                                  previous.variations,
+                                  "color"
+                                ),
+                              }))
+                            }
+                          >
+                            Add color
+                          </Button>
+                        ) : null}
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() =>
+                            setForm((previous) => ({
+                              ...previous,
+                              variations: addProductVariationAxis(
+                                previous.variations
+                              ),
+                            }))
+                          }
+                        >
+                          Add custom axis
+                        </Button>
+                      </div>
+                    </div>
+
+                    {form.variations.axes.map((axis, index) => (
+                      <div
+                        key={axis.id}
+                        className="grid gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 sm:grid-cols-[minmax(8rem,0.45fr)_minmax(0,1fr)_auto] sm:items-end"
+                      >
+                        <div className="grid gap-1.5">
+                          <Label htmlFor={`product-variation-axis-${axis.id}`}>
+                            Axis name
+                          </Label>
+                          <Input
+                            id={`product-variation-axis-${axis.id}`}
+                            value={axis.key}
+                            placeholder={index === 0 ? "size" : "license-tier"}
+                            onChange={(event) =>
+                              setForm((previous) => ({
+                                ...previous,
+                                variations: updateProductVariationAxis(
+                                  previous.variations,
+                                  axis.id,
+                                  "key",
+                                  event.target.value
+                                ),
+                              }))
+                            }
+                          />
+                        </div>
+                        <div className="grid gap-1.5">
+                          <Label
+                            htmlFor={`product-variation-values-${axis.id}`}
+                          >
+                            Values
+                          </Label>
+                          <Input
+                            id={`product-variation-values-${axis.id}`}
+                            value={axis.values}
+                            aria-invalid={
+                              !!productFormValidation.errors.variations
+                            }
+                            aria-describedby="product-variations-help"
+                            placeholder={
+                              axis.key.trim().toLowerCase() === "size"
+                                ? "S, M, L, XL"
+                                : "Personal, Business"
+                            }
+                            onChange={(event) =>
+                              setForm((previous) => ({
+                                ...previous,
+                                variations: updateProductVariationAxis(
+                                  previous.variations,
+                                  axis.id,
+                                  "values",
+                                  event.target.value
+                                ),
+                              }))
+                            }
+                          />
+                        </div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() =>
+                            setForm((previous) => ({
+                              ...previous,
+                              variations: removeProductVariationAxis(
+                                previous.variations,
+                                axis.id
+                              ),
+                            }))
+                          }
+                        >
+                          Remove
+                        </Button>
+                      </div>
+                    ))}
+
+                    <div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        disabled={!!productVariationGenerationMessage}
+                        onClick={() =>
+                          setForm((previous) => ({
+                            ...previous,
+                            variations: generateProductVariationRows(
+                              previous.variations
+                            ),
+                          }))
+                        }
+                      >
+                        Generate combinations
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div
+                    id="product-variations-help"
+                    className={cn(
+                      "text-xs leading-5",
+                      productFormValidation.errors.variations
+                        ? "text-error"
+                        : productVariationGenerationMessage
+                          ? "text-warning"
+                          : "text-[var(--text-muted)]"
+                    )}
+                  >
+                    {productFormValidation.errors.variations ??
+                      productVariationGenerationMessage ??
+                      "Separate values with commas. Generated rows are explicit: remove any row you do not stock to keep a sparse family."}
+                  </div>
+
+                  {productVariationCombinations.length > 0 && (
+                    <div className="grid gap-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="text-sm font-medium text-[var(--text-primary)]">
+                          Variation rows
+                        </div>
+                        <Badge
+                          variant="secondary"
+                          className="border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-secondary)]"
+                        >
+                          {productVariationCombinations.length}
+                        </Badge>
+                      </div>
+                      <p className="text-xs leading-5 text-[var(--text-muted)]">
+                        Rows are the publish truth. Imported custom titles and
+                        child-specific fields are preserved.
+                      </p>
+                      <div
+                        data-product-variation-rows
+                        className="relative grid max-h-[32rem] gap-3 overflow-y-auto pr-1"
+                      >
+                        {productVariationCombinations.map(
+                          (combination, index) => (
+                            <div
+                              key={combination.identity}
+                              className="grid gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3"
+                            >
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="min-w-0">
+                                  <div className="truncate text-sm font-medium text-[var(--text-primary)]">
+                                    {combination.label}
+                                  </div>
+                                  <div className="mt-0.5 text-xs text-[var(--text-muted)]">
+                                    {combination.specifications
+                                      .map(
+                                        (specification) =>
+                                          `${specification.key}: ${specification.value}`
+                                      )
+                                      .join(" · ")}
+                                  </div>
+                                </div>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() =>
+                                    setForm((previous) => ({
+                                      ...previous,
+                                      variations: removeProductVariationRow(
+                                        previous.variations,
+                                        combination.identity
+                                      ),
+                                    }))
+                                  }
+                                >
+                                  Remove row
+                                </Button>
+                              </div>
+
+                              <div className="grid gap-3 sm:grid-cols-3">
+                                <div className="grid gap-1">
+                                  <Label
+                                    htmlFor={`product-variation-title-${index}`}
+                                    className="text-xs"
+                                  >
+                                    Child title
+                                  </Label>
+                                  <Input
+                                    id={`product-variation-title-${index}`}
+                                    value={combination.title}
+                                    placeholder={`${form.title || "Product"} - ${combination.label}`}
+                                    onChange={(event) =>
+                                      setForm((previous) => ({
+                                        ...previous,
+                                        variations:
+                                          updateProductVariationOverride(
+                                            previous.variations,
+                                            combination.identity,
+                                            "title",
+                                            event.target.value
+                                          ),
+                                      }))
+                                    }
+                                  />
+                                </div>
+                                <div className="grid gap-1">
+                                  <Label
+                                    htmlFor={`product-variation-price-${index}`}
+                                    className="text-xs"
+                                  >
+                                    Price ({form.currency})
+                                  </Label>
+                                  <Input
+                                    id={`product-variation-price-${index}`}
+                                    type="text"
+                                    inputMode={getProductAmountInputMode(
+                                      form.currency
+                                    )}
+                                    autoComplete="off"
+                                    className="tabular-nums"
+                                    value={combination.price}
+                                    placeholder={form.price || "Base price"}
+                                    onChange={(event) => {
+                                      if (
+                                        !isPlainDecimalInput(event.target.value)
+                                      ) {
+                                        return
+                                      }
+                                      setForm((previous) => ({
+                                        ...previous,
+                                        variations:
+                                          updateProductVariationOverride(
+                                            previous.variations,
+                                            combination.identity,
+                                            "price",
+                                            event.target.value
+                                          ),
+                                      }))
+                                    }}
+                                  />
+                                </div>
+                                <div className="grid gap-1">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <Label
+                                      htmlFor={`product-variation-stock-${index}`}
+                                      className="text-xs"
+                                    >
+                                      Stock
+                                    </Label>
+                                    <label className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
+                                      <input
+                                        type="checkbox"
+                                        checked={combination.inheritStock}
+                                        onChange={(event) =>
+                                          setForm((previous) => ({
+                                            ...previous,
+                                            variations:
+                                              updateProductVariationInheritance(
+                                                previous.variations,
+                                                combination.identity,
+                                                "inheritStock",
+                                                event.target.checked
+                                              ),
+                                          }))
+                                        }
+                                      />
+                                      Base
+                                    </label>
+                                  </div>
+                                  <Input
+                                    id={`product-variation-stock-${index}`}
+                                    type="text"
+                                    inputMode="numeric"
+                                    autoComplete="off"
+                                    className="tabular-nums"
+                                    value={combination.stock}
+                                    disabled={combination.inheritStock}
+                                    placeholder={form.stock || "Not tracked"}
+                                    onChange={(event) => {
+                                      if (
+                                        !isPlainStockInput(event.target.value)
+                                      ) {
+                                        return
+                                      }
+                                      setForm((previous) => ({
+                                        ...previous,
+                                        variations:
+                                          updateProductVariationOverride(
+                                            previous.variations,
+                                            combination.identity,
+                                            "stock",
+                                            event.target.value
+                                          ),
+                                      }))
+                                    }}
+                                  />
+                                </div>
+                              </div>
+
+                              <div className="grid gap-3 sm:grid-cols-3">
+                                <div className="grid gap-1">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <Label
+                                      htmlFor={`product-variation-images-${index}`}
+                                      className="text-xs"
+                                    >
+                                      Image URLs
+                                    </Label>
+                                    <label className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
+                                      <input
+                                        type="checkbox"
+                                        checked={combination.inheritImages}
+                                        onChange={(event) =>
+                                          setForm((previous) => ({
+                                            ...previous,
+                                            variations:
+                                              updateProductVariationInheritance(
+                                                previous.variations,
+                                                combination.identity,
+                                                "inheritImages",
+                                                event.target.checked
+                                              ),
+                                          }))
+                                        }
+                                      />
+                                      Base
+                                    </label>
+                                  </div>
+                                  <Textarea
+                                    id={`product-variation-images-${index}`}
+                                    value={combination.imageUrls}
+                                    disabled={combination.inheritImages}
+                                    placeholder="One HTTPS URL per line"
+                                    rows={2}
+                                    onChange={(event) =>
+                                      setForm((previous) => ({
+                                        ...previous,
+                                        variations:
+                                          updateProductVariationOverride(
+                                            previous.variations,
+                                            combination.identity,
+                                            "imageUrls",
+                                            event.target.value
+                                          ),
+                                      }))
+                                    }
+                                  />
+                                </div>
+                                <div className="grid gap-1">
+                                  <Label
+                                    htmlFor={`product-variation-format-${index}`}
+                                    className="text-xs"
+                                  >
+                                    Format
+                                  </Label>
+                                  <Select
+                                    value={combination.format}
+                                    onValueChange={(value) =>
+                                      setForm((previous) => ({
+                                        ...previous,
+                                        variations:
+                                          updateProductVariationOverride(
+                                            previous.variations,
+                                            combination.identity,
+                                            "format",
+                                            value
+                                          ),
+                                      }))
+                                    }
+                                  >
+                                    <SelectTrigger
+                                      id={`product-variation-format-${index}`}
+                                    >
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="inherit">
+                                        Base format
+                                      </SelectItem>
+                                      <SelectItem value="physical">
+                                        Physical
+                                      </SelectItem>
+                                      <SelectItem value="digital">
+                                        Digital
+                                      </SelectItem>
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                                <div className="grid gap-1">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <Label
+                                      htmlFor={`product-variation-shipping-${index}`}
+                                      className="text-xs"
+                                    >
+                                      Shipping ({form.currency})
+                                    </Label>
+                                    <label className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
+                                      <input
+                                        type="checkbox"
+                                        checked={combination.inheritShipping}
+                                        onChange={(event) =>
+                                          setForm((previous) => ({
+                                            ...previous,
+                                            variations:
+                                              updateProductVariationInheritance(
+                                                previous.variations,
+                                                combination.identity,
+                                                "inheritShipping",
+                                                event.target.checked
+                                              ),
+                                          }))
+                                        }
+                                      />
+                                      Base
+                                    </label>
+                                  </div>
+                                  <Input
+                                    id={`product-variation-shipping-${index}`}
+                                    value={combination.shippingCost}
+                                    disabled={combination.inheritShipping}
+                                    inputMode={getProductAmountInputMode(
+                                      form.currency
+                                    )}
+                                    placeholder="Coordinate after order"
+                                    onChange={(event) => {
+                                      if (
+                                        !isPlainDecimalInput(event.target.value)
+                                      ) {
+                                        return
+                                      }
+                                      setForm((previous) => ({
+                                        ...previous,
+                                        variations:
+                                          updateProductVariationOverride(
+                                            previous.variations,
+                                            combination.identity,
+                                            "shippingCost",
+                                            event.target.value
+                                          ),
+                                      }))
+                                    }}
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          )
+                        )}
+                      </div>
+                      <p className="text-xs leading-5 text-[var(--text-muted)]">
+                        First publish requires{" "}
+                        {productVariationCombinations.length + 1} signer
+                        approvals: one parent and{" "}
+                        {productVariationCombinations.length} variation
+                        {productVariationCombinations.length === 1 ? "" : "s"}.
+                      </p>
+                    </div>
+                  )}
+                </>
+              )}
+            </fieldset>
+
             <div className="grid gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
               <label className="flex items-start gap-3 text-sm">
                 <input
@@ -1944,8 +2824,16 @@ function ProductsPage() {
                       : "idle"
               }
               dirtyMessage={productStatusMessage}
-              awaitingSignatureMessage="Confirm the product listing in your signer. It will save locally while relay delivery runs."
-              publishingMessage="The signed listing is visible locally. Delivering it to relays."
+              awaitingSignatureMessage={
+                form.variations.enabled
+                  ? "Confirm each changed product listing in your signer. The family will save locally before relay delivery runs."
+                  : "Confirm the product listing in your signer. It will save locally while relay delivery runs."
+              }
+              publishingMessage={
+                form.variations.enabled
+                  ? "The signed product family is visible locally. Delivering its changed listings to relays."
+                  : "The signed listing is visible locally. Delivering it to relays."
+              }
               errorMessage={getPublishErrorMessage(
                 saveMutation.error,
                 "publish"

@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "apps": {
+    "market": {
+      "package": "@conduit/market",
+      "outputDirectory": "apps/market/dist",
+      "cloudflareProject": "conduit-market"
+    },
+    "merchant": {
+      "package": "@conduit/merchant",
+      "outputDirectory": "apps/merchant/dist",
+      "cloudflareProject": "conduit-merchant"
+    },
+    "store-builder": {
+      "package": "@conduit/store-builder",
+      "outputDirectory": "apps/store-builder/dist",
+      "cloudflareProject": null
+    }
+  },
+  "profiles": {
+    "preview": {
+      "releaseChannel": "preview",
+      "lightningNetwork": "mainnet",
+      "publicFeatures": {
+        "dmCompatibilityOrderRoutingEnabled": true
+      }
+    },
+    "production": {
+      "releaseChannel": "production",
+      "lightningNetwork": "mainnet",
+      "publicFeatures": {
+        "dmCompatibilityOrderRoutingEnabled": false
+      }
+    },
+    "staging": {
+      "releaseChannel": "staging",
+      "lightningNetwork": "signet",
+      "publicFeatures": {
+        "dmCompatibilityOrderRoutingEnabled": false
+      }
+    }
+  }
+}

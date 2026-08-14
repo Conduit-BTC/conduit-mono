@@ -11,6 +11,7 @@ import {
   getCartTotals,
   getProductAddAvailability,
   groupCartItems,
+  getCartAvailabilityVerificationMessage,
   isCartAvailabilityReadFresh,
   isCartProductAvailabilityBlocking,
   removeCartItem,
@@ -324,7 +325,7 @@ describe("cart model", () => {
     })
   })
 
-  it("requires a fresh complete commerce read before checkout can proceed", () => {
+  it("requires typed positive live evidence before checkout can proceed", () => {
     const cartItems = [item({ stock: 2 })]
     const refreshedProduct: Product = {
       id: cartItems[0]!.productId,
@@ -368,6 +369,40 @@ describe("cart model", () => {
         ...freshMeta,
         degraded: true,
       })
+    ).toBe(false)
+    expect(
+      isCartAvailabilityReadFresh(
+        refreshedAvailability,
+        { ...freshMeta, degraded: true },
+        [
+          {
+            productId: cartItems[0]!.productId,
+            addressId: cartItems[0]!.productId,
+            issue: null,
+            coverage: { listing: "complete", deletion: "partial" },
+          },
+        ]
+      )
+    ).toBe(true)
+    expect(
+      isCartAvailabilityReadFresh(
+        [
+          ...refreshedAvailability,
+          {
+            ...refreshedAvailability[0]!,
+            productId: "30402:merchant:missing-live-evidence",
+          },
+        ],
+        { ...freshMeta, degraded: true },
+        [
+          {
+            productId: cartItems[0]!.productId,
+            addressId: cartItems[0]!.productId,
+            issue: null,
+            coverage: { listing: "complete", deletion: "partial" },
+          },
+        ]
+      )
     ).toBe(false)
     expect(
       isCartAvailabilityReadFresh(
@@ -621,5 +656,95 @@ describe("cart model", () => {
       disabledProductIds: [],
       missingPolicyProductIds: [],
     })
+  })
+})
+
+describe("getCartAvailabilityVerificationMessage", () => {
+  const productId = "30402:merchant-a:product-a"
+
+  it("returns null when every coordinate has an exact live match", () => {
+    expect(
+      getCartAvailabilityVerificationMessage(
+        [item()],
+        [{ productId, addressId: productId, issue: null }]
+      )
+    ).toBeNull()
+  })
+
+  it("names the item for reference and listing problems", () => {
+    expect(
+      getCartAvailabilityVerificationMessage(
+        [item()],
+        [
+          {
+            productId,
+            addressId: null,
+            issue: "invalid_product_reference",
+          },
+        ]
+      )
+    ).toBe(
+      "Notebook has an invalid product reference. Remove it from your cart and add it again."
+    )
+    expect(
+      getCartAvailabilityVerificationMessage(
+        [item()],
+        [{ productId, addressId: productId, issue: "product_missing" }]
+      )
+    ).toBe(
+      "Notebook could not be found on the configured relays. The listing may have been removed."
+    )
+    expect(
+      getCartAvailabilityVerificationMessage(
+        [item()],
+        [{ productId, addressId: productId, issue: "listing_filtered" }]
+      )
+    ).toBe("Notebook is not publicly listed right now.")
+  })
+
+  it("asks for a retry on degraded lookups without advising relay changes", () => {
+    expect(
+      getCartAvailabilityVerificationMessage(
+        [item()],
+        [{ productId, addressId: productId, issue: "lookup_unavailable" }]
+      )
+    ).toBe(
+      "Product availability could not be checked because no relay responded. Check your connection and try again."
+    )
+    expect(
+      getCartAvailabilityVerificationMessage(
+        [item()],
+        [{ productId, addressId: productId, issue: "lookup_partial" }]
+      )
+    ).toBe(
+      "Some relays did not respond, so availability for Notebook could not be confirmed. Try again."
+    )
+    expect(
+      getCartAvailabilityVerificationMessage(
+        [item()],
+        [{ productId, addressId: productId, issue: "cached_only" }]
+      )
+    ).toBe(
+      "Notebook was confirmed only from a local snapshot. Try again to verify current availability."
+    )
+  })
+
+  it("surfaces the most actionable issue first for mixed failures", () => {
+    const secondId = "30402:merchant-a:product-b"
+    expect(
+      getCartAvailabilityVerificationMessage(
+        [item(), item({ productId: secondId, title: "Poster" })],
+        [
+          { productId, addressId: productId, issue: "lookup_partial" },
+          {
+            productId: secondId,
+            addressId: secondId,
+            issue: "product_missing",
+          },
+        ]
+      )
+    ).toBe(
+      "Poster could not be found on the configured relays. The listing may have been removed."
+    )
   })
 })

@@ -11,8 +11,10 @@ References:
 
 Non-goals for the current client repository:
 
-- key custody, key generation, escrow, refunds, or balance management
-- broad NIP-46 product UX beyond the external-signer policy already allowed by architecture
+- durable user account key custody or generation, escrow, refunds, or balance
+  management
+- server-managed NIP-46 account custody or signer recovery beyond the current
+  external-signer flow
 - service-operated checkout automation, except the scoped Anon Conduit Shopper public zap signer described below
 - making NIP-44 v3 the default send path before public draft/client references, signer support, and recipient capability detection exist
 - replacing the current shared protocol helpers with route-local relay substrates
@@ -21,11 +23,11 @@ Non-goals for the current client repository:
 
 Conduit Market and Merchant Portal user authentication use external signers only.
 
-| Signer path           | Status                  | Notes                                                   |
-| --------------------- | ----------------------- | ------------------------------------------------------- |
-| NIP-07 browser signer | Current client support  | Required path for current interactive signing           |
-| NIP-46 remote signer  | Architecture-compatible | Product UX depends on explicit implementation           |
-| App-generated keys    | Prohibited by default   | Only the bounded guest-order exception below is allowed |
+| Signer path           | Status                 | Notes                                                   |
+| --------------------- | ---------------------- | ------------------------------------------------------- |
+| NIP-07 browser signer | Current client support | Required path for current interactive signing           |
+| NIP-46 remote signer  | Current client support | Uses a revocable encrypted browser-local client key     |
+| App-generated keys    | Prohibited by default  | Only the bounded guest-order exception below is allowed |
 
 ### Client Ephemeral Guest Order Key Exception
 
@@ -161,6 +163,20 @@ Product listings are addressable events:
 
 Implementations must not dedupe only by `d` tag because different merchants can publish the same `d` value. Product identity, cart references, order item tags, and cache records should preserve the full addressable coordinate.
 
+### Product Deletion Frontier
+
+Validated kind `5` evidence is resolved before selecting the winning kind
+`30402` version. An author-scoped `e` tag removes its exact event ID regardless
+of relative timestamps. An author-scoped full `a` coordinate removes versions
+whose `created_at` is less than or equal to the deletion event timestamp; a
+genuinely newer version remains eligible. Missing or malformed legacy address
+metadata never authorizes an inferred or broader coordinate deletion.
+
+Local and remotely observed signed tombstones are durable, monotonic evidence
+shared by catalog, storefront, detail, batch, progressive, and cache reads.
+Relay omission does not revoke evidence. Progressive callbacks expose resolved
+frontier snapshots so a later tombstone can retract an earlier product.
+
 ## Product Zap Policy Tags
 
 Conduit-generated kind `30402` product listings include explicit checkout zap
@@ -234,14 +250,51 @@ Buyer-merchant communication is sent as NIP-17 encrypted messages:
 
 The kind `16` payload is never published directly. It is encrypted and delivered through NIP-17 wrapping. Kind `14` general DMs remain separate from order-linked kind `16` conversations in product state.
 
-NIP-17 transport routing is exclusive to kind `10050` declarations. Gift-wrap
-reads use only the principal's declared secure-message relays. Each gift-wrap
-write, including a sender self-copy, uses only that wrap recipient's declared
-secure-message relays. NIP-65, configured relay lists, commerce priority, and
-general relay defaults are not fallback routes. An absent, malformed,
-stale-unusable, or unavailable declaration means the principal or recipient is
-not ready for secure messaging and must produce an explicit degraded state; the
-client must not attempt fallback delivery or represent the read as complete.
+Kind `10050` declarations are authoritative for NIP-17 transport routing.
+Gift-wrap writes, including a sender self-copy, target that wrap recipient's
+declared secure-message relays unless the validated kind-16 compatibility
+exception below is enabled by the deployment profile. Kind `14` never uses that
+exception. NIP-65, configured relay lists, commerce priority, and general relay
+defaults are not arbitrary write fallback routes. A signed empty or malformed
+declaration means the principal or recipient is not ready for secure messaging
+and must produce an explicit degraded state; the client must not override that
+signed state or represent a failed lookup as "not declared".
+
+Gift-wrap reads are permissive: the principal reads the union of their valid
+declared inboxes, their locally enabled secure IN relays, and a bounded
+Conduit-operated compatibility read set. Read results carry coverage
+(`complete | partial | unavailable`) and source provenance; an all-failed read
+must never be reported as an authoritative empty inbox.
+
+### Temporary exception: validated-order compatibility routing (CND-208)
+
+A named, bounded, Conduit-owned exception exists while users migrate to valid
+kind `10050` declarations. It is not NIP-17-conformant routing and must not be
+presented as an extension of NIP-17. NIP-44/NIP-59 encryption is preserved.
+
+- Scope: validated kind `16` order-lifecycle messages only. Kind `14` general
+  DMs never use this lane.
+- Writes: only when the recipient has no usable declaration. Eligible relays
+  are the secure intersection of the operator-approved compatibility-write
+  registry and relays Conduit inbox readers poll. Recipient NIP-65 read relays
+  may reorder matching eligible entries but can never add a relay. The stable
+  result is normalized, deduplicated, and capped at three.
+- Arbitrary NIP-65, local IN/OUT, product provenance, NIP-89 hints,
+  commerce-priority, wrapper sources, and other public relays are never
+  compatibility write targets.
+- A valid current or cached kind `10050` declaration always outranks the
+  compatibility lane; a newly observed valid declaration returns subsequent writes
+  to the declared route.
+- The same recipient gift wrap is attempted on every planned target. One ACK is
+  successful delivery with partial diagnostics and retry state for non-ACKed
+  targets; zero ACKs is an explicit failure. ACK means relay acceptance, not
+  recipient pickup.
+- The lane requires a one-use validated-order scope bound to rumor id, order
+  id, sender, and recipient. A caller boolean cannot authorize it.
+- The lane ships through the repo-owned deployment profile. Preview enables it
+  for review; production and staging remain independently false by default.
+- Rationale, owner, evidence, and the removal checklist live in
+  `docs/knowledge/nip17-inbox-bootstrap-migration.md`.
 
 Current private-message code may continue to interoperate with NIP-44 v2, which is the current public NIP-44 encryption version. Any newer encryption-version work must be source-gated until public draft/client references and capabilities are explicit.
 
@@ -249,7 +302,8 @@ New secure messaging work should route sends and unwraps through a shared `@cond
 
 - preserves NIP-44 v2 as the default for existing signers and peers
 - keeps NIP-44 v3 readiness visible without making it the default send path before source and capability gates are satisfied
-- resolves NIP-17 reads and writes only through the applicable kind `10050` declaration
+- keeps kind `10050` authoritative and applies the separately gated, bounded
+  validated-kind-16 compatibility lane only under the rules above
 - rejects authenticated-context mismatches instead of returning plaintext when versioned encryption support adds that requirement
 - reports decrypt/unwrap diagnostics without plaintext, ciphertext, invoices, shipping/contact data, order contents, or message bodies
 

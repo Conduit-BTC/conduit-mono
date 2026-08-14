@@ -18,8 +18,7 @@ export interface LegalFooterImageIconLink extends LegalFooterBaseIconLink {
 }
 
 export type LegalFooterIconLink =
-  | LegalFooterLucideIconLink
-  | LegalFooterImageIconLink
+  LegalFooterLucideIconLink | LegalFooterImageIconLink
 
 export interface LegalFooterProps {
   className?: string
@@ -56,8 +55,8 @@ export function LegalFooter({
   logoSrc = "/images/logo/logo-full.svg",
   aboutLink,
   aboutHref = "/about",
-  privacyHref = "https://conduit.market/privacy-policy",
-  termsHref = "https://conduit.market/terms-of-service",
+  privacyHref = "/privacy-policy",
+  termsHref = "/terms-of-service",
   iconLinks = DEFAULT_ICON_LINKS,
 }: LegalFooterProps) {
   const year = new Date().getFullYear()
@@ -72,6 +71,8 @@ export function LegalFooter({
       <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center justify-center gap-x-4 gap-y-1.5 sm:justify-between">
         <a
           href={logoHref}
+          referrerPolicy="no-referrer"
+          rel="noopener noreferrer"
           className="flex shrink-0 items-center"
           aria-label="Conduit landing page"
         >
@@ -94,6 +95,8 @@ export function LegalFooter({
           {aboutLink ?? (
             <a
               href={aboutHref}
+              referrerPolicy="no-referrer"
+              rel="noopener noreferrer"
               className="transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
             >
               About
@@ -101,12 +104,16 @@ export function LegalFooter({
           )}
           <a
             href={termsHref}
+            referrerPolicy="no-referrer"
+            rel="noopener noreferrer"
             className="transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
           >
             Terms
           </a>
           <a
             href={privacyHref}
+            referrerPolicy="no-referrer"
+            rel="noopener noreferrer"
             className="transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
           >
             Privacy
@@ -121,6 +128,7 @@ export function LegalFooter({
                 href={link.href}
                 target="_blank"
                 rel="noopener noreferrer"
+                referrerPolicy="no-referrer"
                 aria-label={link.label}
                 title={link.label}
                 className="grid size-8 place-items-center rounded-full border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"

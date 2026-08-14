@@ -75,7 +75,13 @@ CREATE INDEX idx_products_created ON events (created_at DESC)
 
 ## Privacy
 
-Relays must not inspect encrypted message content. Operational metrics should remain aggregated and should avoid behavioral profiling.
+NIP-17 relays receive encrypted gift wraps rather than plaintext message
+contents, but they can retain or copy ciphertext and observe outer recipient
+tags, event size, timing, traffic volume, connection behavior, direct-connection
+IP addresses, and—when NIP-42 is used—authentication pubkeys and request
+filters. Operational metrics should remain aggregated and should avoid
+behavioral profiling. Do not claim that encryption eliminates relay or network
+metadata.
 
 For private or restricted messaging behavior, Conduit should prefer relays that advertise or demonstrate NIP-42 authentication support. Relays that support DMs without auth can still exist in the settings UI, but Conduit should show a warning and may limit protected messaging use there.
 

@@ -14,9 +14,13 @@ Prioritize in this order:
 
 ## Non-Negotiable Constraints
 
-- External signer auth only (NIP-07, NIP-46). Never generate or store private keys.
-- No behavioral tracking or profiling.
-- No message content inspection.
+- Durable account signing uses external NIP-07 or NIP-46 signers. Do not
+  generate or store a user's durable Nostr account private key. Preserve the
+  narrow temporary guest-order and encrypted browser-local NIP-46 client-key
+  exceptions documented in the Product policies.
+- No behavioral tracking or person profiling. Product telemetry is limited to
+  the explicit operational allowlist in `docs/analytics/events.md`.
+- No message-content collection by product telemetry.
 - Payments are non-custodial Lightning payment requests, NWC/WebLN payment rails, and payment proofs. No custody or balance management.
 - No Zustand/Jotai/Redux style state libraries. Use React Context + TanStack Query + Dexie patterns.
 

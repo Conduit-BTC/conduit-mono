@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import { NDKUser } from "@nostr-dev-kit/ndk"
-import { getPublicKey, type VerifiedEvent } from "nostr-tools"
+import { finalizeEvent, getPublicKey, type VerifiedEvent } from "nostr-tools"
 
 import {
   AUTH_REVISION_STORAGE_KEY,
@@ -8,6 +8,7 @@ import {
   NdkBunkerSignerAdapter,
   RemoteSignerError,
   bumpAuthRevision,
+  claimAuthRevision,
   forgetAuthSession,
   logoutRemoteSigner,
   prepareRemoteSignerSessionStorage,
@@ -17,6 +18,7 @@ import {
   parseBunkerUri,
   persistRemoteSignerSession,
   readAuthRevision,
+  rollbackAndAbandonRemoteSignerConnection,
   rollbackNewRemoteSignerSession,
   readAuthSession,
   restoreRemoteSigner,
@@ -27,7 +29,8 @@ import {
 } from "../packages/core/src/protocol/remote-signer"
 
 const REMOTE_PUBKEY = "1".repeat(64)
-const USER_PUBKEY = "2".repeat(64)
+const USER_SECRET = Uint8Array.from([...new Uint8Array(31), 23])
+const USER_PUBKEY = getPublicKey(USER_SECRET)
 const OTHER_PUBKEY = "3".repeat(64)
 const CLIENT_PRIVATE_KEY = new Uint8Array(32).fill(4)
 const CLIENT_PRIVATE_KEY_HEX = "04".repeat(32)
@@ -77,15 +80,6 @@ function seededKeyVault(): MemoryKeyVault {
 function fakeSigner(
   overrides: Partial<RemoteBunkerSigner> = {}
 ): RemoteBunkerSigner {
-  const signedEvent = {
-    id: "5".repeat(64),
-    sig: "6".repeat(128),
-    pubkey: USER_PUBKEY,
-    kind: 1,
-    content: "",
-    tags: [],
-    created_at: 1,
-  } as VerifiedEvent
   return {
     bp: {
       pubkey: REMOTE_PUBKEY,
@@ -96,7 +90,7 @@ function fakeSigner(
     ping: async () => undefined,
     getPublicKey: async () => USER_PUBKEY,
     switchRelays: async () => false,
-    signEvent: async () => signedEvent,
+    signEvent: async (event) => finalizeEvent(event, USER_SECRET),
     nip04Encrypt: async (_pubkey, value) => `04:${value}`,
     nip04Decrypt: async (_pubkey, value) => value.replace("04:", ""),
     nip44Encrypt: async (_pubkey, value) => `44:${value}`,
@@ -201,6 +195,31 @@ describe("remote signer parsing and storage", () => {
     expect(storage.getItem(AUTH_STORAGE_KEY)).toBeNull()
   })
 
+  it("treats an inaccessible browser storage getter as unavailable", () => {
+    const originalWindowDescriptor = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "window"
+    )
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: {
+        get localStorage() {
+          throw new Error("Storage access denied")
+        },
+      },
+    })
+
+    try {
+      expect(readAuthSession()).toBeNull()
+    } finally {
+      if (originalWindowDescriptor) {
+        Object.defineProperty(globalThis, "window", originalWindowDescriptor)
+      } else {
+        Reflect.deleteProperty(globalThis, "window")
+      }
+    }
+  })
+
   it("does not commit a stale remote session after vault persistence", async () => {
     const storage = new MemoryStorage()
     const keyVault = new MemoryKeyVault()
@@ -244,6 +263,50 @@ describe("remote signer parsing and storage", () => {
     expect(keyVault.values.has(CLIENT_KEY_ID)).toBe(false)
   })
 
+  it("preserves matching metadata and key when post-write rollback cannot read storage", async () => {
+    const backingStorage = new MemoryStorage()
+    let storageReadable = true
+    const restrictedStorage: AuthStorage = {
+      getItem(key) {
+        if (!storageReadable) throw new Error("Storage access denied")
+        return backingStorage.getItem(key)
+      },
+      setItem(key, value) {
+        backingStorage.setItem(key, value)
+      },
+      removeItem(key) {
+        backingStorage.removeItem(key)
+      },
+    }
+    const keyVault = new MemoryKeyVault()
+    let checks = 0
+
+    await expect(
+      persistRemoteSignerSession(
+        {
+          session: session(),
+          clientPrivateKey: CLIENT_PRIVATE_KEY_HEX,
+          clientKeyAlreadyPersisted: false,
+        },
+        restrictedStorage,
+        keyVault,
+        () => {
+          checks += 1
+          if (checks === 2) {
+            storageReadable = false
+            return false
+          }
+          return true
+        }
+      )
+    ).rejects.toMatchObject({
+      code: "unavailable",
+      operation: "persist session",
+    })
+    expect(backingStorage.getItem(AUTH_STORAGE_KEY)).not.toBeNull()
+    expect(keyVault.values.get(CLIENT_KEY_ID)).toBe(CLIENT_PRIVATE_KEY_HEX)
+  })
+
   it("rolls back only the losing pairing key, not winning metadata", async () => {
     const storage = new MemoryStorage()
     const keyVault = new MemoryKeyVault()
@@ -262,6 +325,32 @@ describe("remote signer parsing and storage", () => {
 
     expect(readAuthSession(storage)).toEqual(winner)
     expect(keyVault.values.has(CLIENT_KEY_ID)).toBe(false)
+  })
+
+  it("classifies a failed rollback key removal", async () => {
+    const storage = new MemoryStorage()
+    storage.setItem(AUTH_STORAGE_KEY, JSON.stringify(session()))
+
+    await expect(
+      rollbackNewRemoteSignerSession(
+        {
+          session: session(),
+          clientKeyAlreadyPersisted: false,
+        },
+        storage,
+        {
+          prepare: async () => undefined,
+          store: async () => undefined,
+          load: async () => null,
+          remove: async () => {
+            throw new Error("Vault removal failed")
+          },
+        }
+      )
+    ).rejects.toMatchObject({
+      code: "unavailable",
+      operation: "rollback session",
+    })
   })
 
   it("does not remove a shared key when a restored session loses its claim", async () => {
@@ -355,9 +444,169 @@ describe("remote signer parsing and storage", () => {
     expect(readAuthRevision(storage)).toBe(second)
     expect(storage.getItem(AUTH_REVISION_STORAGE_KEY)).toBe(second)
   })
+
+  it("does not mistake an older readable revision for a newly acquired claim", () => {
+    const storage: AuthStorage = {
+      getItem: (key) =>
+        key === AUTH_REVISION_STORAGE_KEY ? "account-a-claim" : null,
+      setItem: () => {
+        throw new Error("storage blocked")
+      },
+      removeItem: () => undefined,
+    }
+
+    const claim = claimAuthRevision(storage)
+
+    expect(claim.persisted).toBe(false)
+    expect(claim.revision).not.toBe("account-a-claim")
+    expect(readAuthRevision(storage)).toBe("account-a-claim")
+  })
+
+  it("proves a new authority claim by reading it back", () => {
+    const storage = new MemoryStorage()
+
+    const claim = claimAuthRevision(storage)
+
+    expect(claim.persisted).toBe(true)
+    expect(readAuthRevision(storage)).toBe(claim.revision)
+  })
 })
 
 describe("remote signer lifecycle", () => {
+  it("rolls back and abandons a newly persisted uncommitted connection", async () => {
+    const storage = new MemoryStorage()
+    const keyVault = new MemoryKeyVault()
+    let logoutCalls = 0
+    const bunkerSigner = fakeSigner({
+      logout: async () => {
+        logoutCalls += 1
+      },
+    })
+    const connection = await pairRemoteSigner(BUNKER_URI, {
+      keyVault,
+      generateClientPrivateKey: () => CLIENT_PRIVATE_KEY,
+      createBunkerSigner: () => bunkerSigner,
+    })
+
+    expect(
+      await persistRemoteSignerSession(connection, storage, keyVault)
+    ).toBe(true)
+    expect(readAuthSession(storage)).toEqual(connection.session)
+    expect(keyVault.values.has(connection.session.clientKeyId)).toBe(true)
+
+    await rollbackAndAbandonRemoteSignerConnection(
+      connection,
+      storage,
+      keyVault
+    )
+
+    expect(readAuthSession(storage)).toBeNull()
+    expect(keyVault.values.has(connection.session.clientKeyId)).toBe(false)
+    expect(logoutCalls).toBe(1)
+    await expect(
+      connection.signer.encrypt(
+        new NDKUser({ pubkey: OTHER_PUBKEY }),
+        "payload"
+      )
+    ).rejects.toThrow("session is unavailable")
+  })
+
+  it("preserves a restored session when its uncommitted connection is abandoned", async () => {
+    const storage = new MemoryStorage()
+    const keyVault = seededKeyVault()
+    const storedSession = session()
+    storage.setItem(AUTH_STORAGE_KEY, JSON.stringify(storedSession))
+    let logoutCalls = 0
+    let closeCalls = 0
+    const bunkerSigner = fakeSigner({
+      logout: async () => {
+        logoutCalls += 1
+      },
+      close: async () => {
+        closeCalls += 1
+      },
+    })
+    const connection = await restoreRemoteSigner(storedSession, {
+      keyVault,
+      createBunkerSigner: () => bunkerSigner,
+      now: () => 20,
+    })
+
+    expect(
+      await persistRemoteSignerSession(connection, storage, keyVault)
+    ).toBe(true)
+
+    await rollbackAndAbandonRemoteSignerConnection(
+      connection,
+      storage,
+      keyVault
+    )
+
+    expect(readAuthSession(storage)).toEqual(connection.session)
+    expect(keyVault.values.get(CLIENT_KEY_ID)).toBe(CLIENT_PRIVATE_KEY_HEX)
+    expect(logoutCalls).toBe(0)
+    expect(closeCalls).toBe(1)
+    await expect(
+      connection.signer.encrypt(
+        new NDKUser({ pubkey: OTHER_PUBKEY }),
+        "payload"
+      )
+    ).rejects.toThrow("session is unavailable")
+  })
+
+  it("preserves the key and metadata when rollback storage cannot be read", async () => {
+    const backingStorage = new MemoryStorage()
+    let storageReadable = true
+    const restrictedStorage: AuthStorage = {
+      getItem(key) {
+        if (!storageReadable) throw new Error("Storage access denied")
+        return backingStorage.getItem(key)
+      },
+      setItem(key, value) {
+        backingStorage.setItem(key, value)
+      },
+      removeItem(key) {
+        backingStorage.removeItem(key)
+      },
+    }
+    const keyVault = new MemoryKeyVault()
+    let logoutCalls = 0
+    const bunkerSigner = fakeSigner({
+      logout: async () => {
+        logoutCalls += 1
+      },
+    })
+    const connection = await pairRemoteSigner(BUNKER_URI, {
+      keyVault,
+      generateClientPrivateKey: () => CLIENT_PRIVATE_KEY,
+      createBunkerSigner: () => bunkerSigner,
+    })
+
+    expect(
+      await persistRemoteSignerSession(connection, restrictedStorage, keyVault)
+    ).toBe(true)
+    storageReadable = false
+
+    await expect(
+      rollbackAndAbandonRemoteSignerConnection(
+        connection,
+        restrictedStorage,
+        keyVault
+      )
+    ).rejects.toMatchObject({
+      operation: "rollback session",
+    })
+    expect(backingStorage.getItem(AUTH_STORAGE_KEY)).not.toBeNull()
+    expect(keyVault.values.has(connection.session.clientKeyId)).toBe(true)
+    expect(logoutCalls).toBe(1)
+    await expect(
+      connection.signer.encrypt(
+        new NDKUser({ pubkey: OTHER_PUBKEY }),
+        "payload"
+      )
+    ).rejects.toThrow("session is unavailable")
+  })
+
   it("does not contact the signer when encrypted storage is unavailable", async () => {
     let signerCreated = false
     await expect(
@@ -815,15 +1064,14 @@ describe("NDK remote signer adapter", () => {
     expect(await adapter.decrypt(peer, "44:hello", "nip44")).toBe("hello")
     expect(await adapter.encrypt(peer, "hello", "nip04")).toBe("04:hello")
     expect(await adapter.decrypt(peer, "04:hello", "nip04")).toBe("hello")
-    expect(
-      await adapter.sign({
-        pubkey: USER_PUBKEY,
-        kind: 1,
-        content: "",
-        tags: [],
-        created_at: 1,
-      })
-    ).toBe("6".repeat(128))
+    const signature = await adapter.sign({
+      pubkey: USER_PUBKEY,
+      kind: 1,
+      content: "",
+      tags: [],
+      created_at: 1,
+    })
+    expect(signature).toHaveLength(128)
     expect((await adapter.user()).pubkey).toBe(USER_PUBKEY)
   })
 
@@ -849,6 +1097,8 @@ describe("NDK remote signer adapter", () => {
   })
 
   it("rejects an altered event returned by the remote signer", async () => {
+    let encryptCalls = 0
+    let closeCalls = 0
     const adapter = new NdkBunkerSignerAdapter(
       fakeSigner({
         signEvent: async (event) =>
@@ -859,6 +1109,13 @@ describe("NDK remote signer adapter", () => {
             sig: "6".repeat(128),
             pubkey: USER_PUBKEY,
           }) as VerifiedEvent,
+        nip44Encrypt: async () => {
+          encryptCalls += 1
+          return "ciphertext"
+        },
+        close: async () => {
+          closeCalls += 1
+        },
       }),
       USER_PUBKEY
     )
@@ -872,6 +1129,104 @@ describe("NDK remote signer adapter", () => {
         created_at: 1,
       })
     ).rejects.toMatchObject({ code: "invalid_response" })
+    await expect(
+      adapter.encrypt(new NDKUser({ pubkey: OTHER_PUBKEY }), "secret", "nip44")
+    ).rejects.toMatchObject({ code: "unavailable" })
+    expect(encryptCalls).toBe(0)
+    expect(closeCalls).toBe(1)
+  })
+
+  it("rejects a signer that mutates submitted tags in place", async () => {
+    const tags = [["subject", "original"]]
+    const adapter = new NdkBunkerSignerAdapter(
+      fakeSigner({
+        signEvent: async (event) => {
+          event.tags[0]![1] = "changed"
+          return finalizeEvent(event, USER_SECRET)
+        },
+      }),
+      USER_PUBKEY
+    )
+
+    await expect(
+      adapter.sign({
+        pubkey: USER_PUBKEY,
+        kind: 1,
+        content: "original",
+        tags,
+        created_at: 1,
+      })
+    ).rejects.toMatchObject({ code: "invalid_response" })
+    expect(tags).toEqual([["subject", "original"]])
+  })
+
+  it("invalidates the adapter when the remote signer changes accounts", async () => {
+    let decryptCalls = 0
+    const adapter = new NdkBunkerSignerAdapter(
+      fakeSigner({
+        signEvent: async (event) =>
+          ({
+            ...event,
+            id: "5".repeat(64),
+            sig: "6".repeat(128),
+            pubkey: OTHER_PUBKEY,
+          }) as VerifiedEvent,
+        nip44Decrypt: async () => {
+          decryptCalls += 1
+          return "plaintext"
+        },
+      }),
+      USER_PUBKEY
+    )
+
+    await expect(
+      adapter.sign({
+        pubkey: USER_PUBKEY,
+        kind: 1,
+        content: "original",
+        tags: [],
+        created_at: 1,
+      })
+    ).rejects.toMatchObject({ code: "session_identity_mismatch" })
+    await expect(
+      adapter.decrypt(
+        new NDKUser({ pubkey: OTHER_PUBKEY }),
+        "ciphertext",
+        "nip44"
+      )
+    ).rejects.toMatchObject({ code: "unavailable" })
+    expect(decryptCalls).toBe(0)
+  })
+
+  it("rejects an invalid signature over an unchanged remote event", async () => {
+    let encryptCalls = 0
+    const adapter = new NdkBunkerSignerAdapter(
+      fakeSigner({
+        signEvent: async (event) => ({
+          ...finalizeEvent(event, USER_SECRET),
+          sig: "0".repeat(128),
+        }),
+        nip44Encrypt: async () => {
+          encryptCalls += 1
+          return "ciphertext"
+        },
+      }),
+      USER_PUBKEY
+    )
+
+    await expect(
+      adapter.sign({
+        pubkey: USER_PUBKEY,
+        kind: 1,
+        content: "original",
+        tags: [],
+        created_at: 1,
+      })
+    ).rejects.toMatchObject({ code: "invalid_response" })
+    await expect(
+      adapter.encrypt(new NDKUser({ pubkey: OTHER_PUBKEY }), "secret", "nip44")
+    ).rejects.toMatchObject({ code: "unavailable" })
+    expect(encryptCalls).toBe(0)
   })
 
   it("rejects an in-flight operation after the session is invalidated", async () => {

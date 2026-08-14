@@ -3,8 +3,8 @@
 **Status:** Active
 **Owner:** Protocol / Market Lead
 **Applies to:** Conduit Market, Merchant Portal, Store Builder, shared protocol utilities
-**Last updated:** 2026-07-10
-**Decision rule:** Spec-first. External implementations inform compatibility, not correctness.
+**Last updated:** 2026-08-09
+**Decision rule:** Spec-correct emission, safe bounded compatibility, and explicit migration. External implementations inform compatibility, not protocol truth.
 
 ## External Codebase References (Expandable)
 
@@ -26,19 +26,27 @@ Define the bounds of interoperability between Conduit and external Gamma/NIP-99 
 - development velocity
 - architectural integrity (no silent coupling to any single app)
 
-## Non-Negotiable Priority Order
+## Decision Order
 
-1. Protocol correctness
-   - Implement Gamma Markets / NIP-99 as specified.
+1. Safety and protocol truth
+   - Validate signatures, authorship, authorization, privacy, coordinates, and
+     payment-sensitive terms strictly.
+   - Implement canonical Gamma Markets / NIP-99 emission as specified.
    - Do not treat any external codebase as spec authority.
-2. Network interoperability
+2. Product availability under real network conditions
+   - A specification defines event meaning; it does not prove that unevenly
+     adopted discovery or capability metadata is safe to make a hard gate.
+   - Preserve safe user outcomes under partial, stale, delayed, or divergent
+     relay views. Require positive evidence for irreversible actions without
+     treating unknown negative evidence as a veto.
+3. Network interoperability
    - Conduit-created listings render and are discoverable in external Gamma/NIP-99 markets.
    - External Gamma/NIP-99 listings render and are discoverable in Conduit.
-3. Conduit merchant checkout
+4. Conduit merchant checkout
    - Enable external discovery -> checkout with Conduit merchants wherever feasible.
-4. Velocity and design quality
+5. Velocity and design quality
    - Do not block spec-correct implementation to mirror non-spec or fragile external patterns.
-   - If we observe issues, we surface them; we don’t silently adopt them.
+   - If we observe issues, surface and bound them; do not silently adopt them.
 
 ## Interoperability Levels
 
@@ -84,6 +92,11 @@ Define the bounds of interoperability between Conduit and external Gamma/NIP-99 
 
 - Gamma/NIP-99 spec is the source of truth.
 - Plebeian’s implementation is a compatibility target and a pragmatic reference, not an authority.
+- "Spec-first" determines protocol claims, validation, and canonical emission.
+  It does not automatically decide whether absent or undiscovered metadata may
+  block a previously safe user journey. Apply
+  `docs/knowledge/decentralized-network-product-posture.md` before introducing
+  a strict product gate.
 
 ### No silent coupling
 
@@ -123,6 +136,9 @@ Then Conduit:
 Agents and reviewers must:
 
 - verify spec compliance first (Gamma/NIP-99)
+- classify safety, data-integrity, discovery/capability, and migration facts
+  before deciding which states block the user
+- distinguish signed negative evidence from incomplete or unavailable discovery
 - check Plebeian codebase conventions to avoid obvious incompatibilities
 - avoid "copy-the-app" decisions without spec justification
 - surface interoperability risks early with minimal patches and clear notes
@@ -189,3 +205,10 @@ Add short entries here as they arise:
 - Conduit behavior: Render product descriptions through a constrained Markdown renderer for display only. Do not infer checkout price, shipping, stock, payment, merchant identity, or order state from Markdown text.
 - Risk: Level 1 rendering mismatch.
 - Action: adapter.
+
+- **[2026-07-31]** Omitted product format compatibility
+- Spec expectation: GammaMarkets defaults an omitted product format to `digital`.
+- Observed behavior: NIP-99 listings can predate the Gamma `type` format slot, and Conduit historically treated an omitted format as `physical`; changing that fallback would silently hide shipping behavior on existing listings.
+- Conduit behavior: Continue accepting an omitted format as `physical` for backward-compatible reads. Merchant emits the explicit `digital` or `physical` format on every new listing.
+- Risk: Level 1 rendering mismatch and Level 2 checkout degradation.
+- Action: compatibility parser fallback; keep emitted events explicit and spec-aligned.

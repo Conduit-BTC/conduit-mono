@@ -77,6 +77,7 @@ import {
 } from "../lib/cart-shipping-options"
 import {
   getCartAvailabilityBlockingMessage,
+  getCartAvailabilityVerificationMessage,
   getCartPublicZapPolicy,
   isCartProductAvailabilityBlocking,
   type CartProductAvailability,
@@ -844,7 +845,6 @@ function CheckoutPage() {
   )
   const merchantTrust = useMerchantTrustContext({
     merchantPubkey: selectedMerchant ?? null,
-    viewerPubkey: signedBuyerPubkey,
   })
   const merchantProfile = merchantTrust.profile
   const merchantLud16 = merchantProfile?.lud16
@@ -1239,7 +1239,11 @@ function CheckoutPage() {
     const refreshResult = await checkoutAvailability.refresh()
     if (!refreshResult.fresh) {
       throw new Error(
-        "Current product availability could not be verified. Check your connection and try again."
+        getCartAvailabilityVerificationMessage(
+          checkoutItems,
+          refreshResult.diagnostics
+        ) ??
+          "Current product availability could not be verified. Check your connection and try again."
       )
     }
 
@@ -1419,6 +1423,8 @@ function CheckoutPage() {
   function buildLifecycleItems(
     items: Array<{
       productId: string
+      familyProductId?: string
+      selectedSpecifications?: Array<{ key: string; value: string }>
       title?: string
       format: "physical" | "digital"
       quantity: number
@@ -1441,6 +1447,10 @@ function CheckoutPage() {
   ): OrderLifecycleItem[] {
     return items.map((item) => ({
       productId: item.productId,
+      familyProductId: item.familyProductId,
+      selectedSpecifications: item.selectedSpecifications?.map(
+        (specification) => ({ ...specification })
+      ),
       title: item.title,
       format: item.format,
       quantity: item.quantity,
@@ -1579,6 +1589,8 @@ function CheckoutPage() {
         addressValidity: addressValidity.status as OrderAddressValidity,
         shippingZoneEligibility,
         orderDeliveryStatus: "sent",
+        orderDeliveryRoute: delivery.deliveryRoute,
+        orderRelayDelivery: delivery.orderRelayDelivery,
         invoiceStatus: "not_requested",
         paymentStatus: "not_started",
         proofDeliveryStatus: "not_started",
@@ -1876,6 +1888,8 @@ function CheckoutPage() {
         addressValidity: addressValidity.status as OrderAddressValidity,
         shippingZoneEligibility,
         orderDeliveryStatus: "sent",
+        orderDeliveryRoute: orderDelivery.deliveryRoute,
+        orderRelayDelivery: orderDelivery.orderRelayDelivery,
         invoiceStatus: "not_requested",
         paymentStatus: "not_started",
         proofDeliveryStatus: "not_started",

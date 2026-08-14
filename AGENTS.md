@@ -62,7 +62,7 @@ Authentication: External signers only (NIP-07, NIP-46). No key custody.
 Messaging: NIP-17 encrypted DMs for buyer-merchant communication.
 Payments: NWC-based Lightning payments (NIP-47).
 
-Nostr-sensitive work must read `docs/knowledge/external-nostr-references.md` and the relevant public NIP/GammaMarkets source before coding. Product listings are NIP-99 + GammaMarkets `kind:30402`; do not introduce alternate product-listing protocol terminology, schemas, or assumptions.
+Nostr-sensitive work must read `docs/knowledge/decentralized-network-product-posture.md`, `docs/knowledge/external-nostr-references.md`, and the relevant public NIP/GammaMarkets source before coding. Product listings are NIP-99 + GammaMarkets `kind:30402`; do not introduce alternate product-listing protocol terminology, schemas, or assumptions.
 
 ## Session Workflow
 
@@ -75,7 +75,7 @@ Nostr-sensitive work must read `docs/knowledge/external-nostr-references.md` and
 2. **Before building**: Read the relevant existing public implementation context
    - Use `docs/specs/*.md` when an existing durable contract applies; creating or updating a spec is not a default prerequisite
    - For UI/theming work, also read `docs/DESIGN.md`
-   - For Nostr protocol, relay, signer, messaging, payment, product-event, cache, or outbox work, also read `docs/knowledge/external-nostr-references.md`
+   - For Nostr protocol, relay, signer, messaging, payment, product-event, cache, or outbox work, also read `docs/knowledge/decentralized-network-product-posture.md` and `docs/knowledge/external-nostr-references.md`
 
 3. **Plan before implementing**:
    - For non-trivial work, prefer Plan mode and produce a concise implementation and validation plan before editing
@@ -100,6 +100,9 @@ Nostr-sensitive work must read `docs/knowledge/external-nostr-references.md` and
 Treat these as Nostr-sensitive changes: `packages/core/src/protocol/*`, relay settings/planning, NDK calls, event parsing/emission, signer auth, NIP-17/NIP-44/NIP-59 messaging, NWC/payment behavior, Dexie cache/outbox behavior for signed events, product identity, and route code that publishes, fetches, unwraps, or decrypts Nostr events.
 
 - Check public protocol sources before implementation, not after review.
+- Classify each proposed gate as a security/payment invariant, data-integrity invariant, discovery/capability condition, or ecosystem migration before choosing strict or degraded behavior.
+- A completed bounded relay plan is not proof of global Nostr absence. Preserve source, freshness, coverage, and stronger prior evidence; do not collapse empty, partial, unavailable, stale, conflicting, or malformed states into one boolean.
+- Require positive evidence for irreversible actions, but do not give unavailable sources veto power merely because they might contain unknown negative evidence. When compatibility is needed, keep it named, bounded, measured, repairable, and explicitly removable.
 - Prefer shared protocol helpers and hooks in `@conduit/core`; route files should compose prepared state and workflows.
 - Do not add route-local `giftWrap`, publish, unwrap/decrypt, relay fanout, or event parsing when a shared helper exists or should be deepened.
 - Model relay partial failure, stale/degraded state, source disagreement, and publish ACK/reject/timeout where user decisions depend on freshness.
@@ -190,6 +193,18 @@ bun run --filter @conduit/merchant dev --host 0.0.0.0 --port 7001
 ```
 
 ## Code Style
+
+### Implementation Minimalism
+
+- Check dependency documentation, types, and repository usage before concluding that custom code
+  or another package is required.
+- Build the smallest working end-to-end change first. Add later capabilities without destabilizing
+  verified behavior.
+- Keep components modular. Separate concerns only where the boundary is clear and useful.
+- Do not introduce a known temporary architecture unless requirements make the tradeoff necessary
+  and the replacement path is explicit.
+- Preserve backward compatibility when the product, API contract, or migration requirements
+  require it. Remove obsolete paths otherwise.
 
 - **TypeScript strict mode** - All code must pass strict type checking
 - **Double quotes** for strings

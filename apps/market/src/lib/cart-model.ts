@@ -3,13 +3,20 @@ import {
   getShippingCostSats,
   resolveCartShippingCost,
   type CommerceQueryMeta,
+  type ProductAvailabilityDiagnostic,
+  type ProductAvailabilityIssue,
   type ProductZapMessagePolicy,
   type PricingRateInput,
   type Product,
+  type ProductSpecification,
 } from "@conduit/core"
 
 export type CartItem = {
   productId: string
+  /** Variable parent coordinate when productId identifies a variation child. */
+  familyProductId?: string
+  /** Human-readable selection snapshot preserved in signed-event order. */
+  selectedSpecifications?: ProductSpecification[]
   merchantPubkey: string
   merchantAddedAt?: number
   title: string
@@ -126,6 +133,10 @@ export function createCartItemFromProduct(
 ): Omit<CartItem, "quantity"> {
   return {
     productId: product.id,
+    selectedSpecifications:
+      (product.specifications?.length ?? 0) > 0
+        ? [...product.specifications]
+        : undefined,
     merchantPubkey: product.pubkey,
     title: product.title,
     price: product.price,
@@ -225,16 +236,101 @@ export function getCartAvailabilityBlockingMessage(
   return "Some items are sold out or exceed current stock. Update your cart before sending the order."
 }
 
+const AVAILABILITY_ISSUE_PRIORITY: readonly ProductAvailabilityIssue[] = [
+  "invalid_product_reference",
+  "product_missing",
+  "listing_filtered",
+  "lookup_unavailable",
+  "lookup_partial",
+  "cached_only",
+]
+
+function describeAvailabilityIssue(
+  issue: ProductAvailabilityIssue,
+  titles: string[]
+): string {
+  const single = titles.length === 1
+  const subject = single ? titles[0]! : `${titles.length} items`
+  switch (issue) {
+    case "invalid_product_reference":
+      return `${subject} ${single ? "has" : "have"} an invalid product reference. Remove ${single ? "it" : "them"} from your cart and add ${single ? "it" : "them"} again.`
+    case "product_missing":
+      return `${subject} could not be found on the configured relays. The listing may have been removed.`
+    case "listing_filtered":
+      return `${subject} ${single ? "is" : "are"} not publicly listed right now.`
+    case "lookup_unavailable":
+      return "Product availability could not be checked because no relay responded. Check your connection and try again."
+    case "lookup_partial":
+      return `Some relays did not respond, so availability for ${subject} could not be confirmed. Try again.`
+    case "cached_only":
+      return `${subject} ${single ? "was" : "were"} confirmed only from a local snapshot. Try again to verify current availability.`
+  }
+}
+
+/**
+ * Map typed product lookup diagnostics to a checkout-blocking message. Returns
+ * null when every requested coordinate had an exact live match. The cart is
+ * never cleared by these states; the buyer retries or edits the cart.
+ */
+export function getCartAvailabilityVerificationMessage(
+  items: CartItem[],
+  diagnostics: readonly ProductAvailabilityDiagnostic[]
+): string | null {
+  const issues = diagnostics.filter(
+    (
+      diagnostic
+    ): diagnostic is ProductAvailabilityDiagnostic & {
+      issue: ProductAvailabilityIssue
+    } => diagnostic.issue !== null
+  )
+  if (issues.length === 0) return null
+
+  const titleByProductId = new Map(
+    items.map((item) => [item.productId, item.title])
+  )
+  const issue =
+    AVAILABILITY_ISSUE_PRIORITY.find((candidate) =>
+      issues.some((entry) => entry.issue === candidate)
+    ) ?? issues[0]!.issue
+  const titles = issues
+    .filter((entry) => entry.issue === issue)
+    .map(
+      (entry) => titleByProductId.get(entry.productId) ?? "A product in cart"
+    )
+  return describeAvailabilityIssue(issue, titles)
+}
+
 export function isCartAvailabilityReadFresh(
   availability: CartProductAvailability[],
-  meta: CartAvailabilityReadMeta | undefined
+  meta: CartAvailabilityReadMeta | undefined,
+  diagnostics?: readonly ProductAvailabilityDiagnostic[]
 ): boolean {
+  const positiveLiveProductIds = new Set(
+    diagnostics
+      ?.filter(
+        (diagnostic) =>
+          diagnostic.issue === null &&
+          diagnostic.coverage !== undefined &&
+          diagnostic.coverage.listing !== "unavailable"
+      )
+      .map((diagnostic) => diagnostic.productId) ?? []
+  )
+  const typedLiveEvidence =
+    diagnostics !== undefined &&
+    diagnostics.length > 0 &&
+    diagnostics.every(
+      (diagnostic) =>
+        diagnostic.issue === null &&
+        diagnostic.coverage !== undefined &&
+        diagnostic.coverage.listing !== "unavailable"
+    ) &&
+    availability.every((entry) => positiveLiveProductIds.has(entry.productId))
   return (
     availability.length > 0 &&
     !!meta &&
     meta.source !== "local_cache" &&
     !meta.stale &&
-    !meta.degraded &&
+    (!meta.degraded || typedLiveEvidence) &&
     availability.every((entry) => entry.refreshed)
   )
 }

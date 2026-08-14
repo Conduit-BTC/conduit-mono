@@ -26,6 +26,23 @@ Public PRs should identify the existing implementation context they checked and 
 
 Reviewers may request a durable contract update when the behavior has broad or long-lived public implications, but should not block an otherwise complete change solely because it lacks spec churn.
 
+### Shared Protocol Boundaries
+
+- `docs/knowledge/decentralized-network-product-posture.md`: product decisions
+  under partial, delayed, divergent, and unevenly adopted network state
+- `docs/knowledge/compatibility-exception-template.md`: required governance for
+  named, bounded protocol-migration exceptions
+- `docs/knowledge/product-deletion-convergence.md`: durable NIP-09 evidence,
+  source-aware delivery, retry, and cross-surface product resolution
+- `docs/knowledge/product-legal-documents.md`: official-host scope, shared legal
+  source, versioning, release, and public-route isolation
+
+### Active Compatibility Exceptions
+
+- `docs/knowledge/nip17-inbox-bootstrap-migration.md`: temporary validated-order
+  compatibility routing while users migrate to discoverable NIP-17 inbox
+  declarations
+
 ## Where To Put New Docs
 
 - Add new architecture-level material to `docs/ARCHITECTURE.md` only with explicit approval.
@@ -38,7 +55,7 @@ Do not add product strategy, private commercial, private service, release coordi
 
 ## Nostr Source Policy
 
-Before changing Nostr protocol, relay, signer, payment, messaging, product-event, cache, or outbox behavior, read `docs/knowledge/external-nostr-references.md`, any applicable existing repo contract, and the relevant public protocol source. Public protocol sources must be checked before implementation, not after review.
+Before changing Nostr protocol, relay, signer, payment, messaging, product-event, cache, or outbox behavior, read `docs/knowledge/decentralized-network-product-posture.md`, `docs/knowledge/external-nostr-references.md`, any applicable existing repo contract, and the relevant public protocol source. Public protocol sources must be checked before implementation, not after review.
 
 ## Public Repo Posture
 

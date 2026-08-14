@@ -60,8 +60,14 @@ export {
 } from "./LegacyDirectMessageNotice"
 export { LiveReadNotice, type LiveReadNoticeProps } from "./LiveReadNotice"
 export {
+  FreshnessChip,
+  type FreshnessChipProps,
+  type FreshnessChipStatus,
+} from "./FreshnessChip"
+export {
   MessagingReadinessNotice,
   type MessagingReadinessNoticeProps,
+  type MessagingReadinessState,
 } from "./MessagingReadinessNotice"
 export { Label } from "./Label"
 export {
@@ -111,6 +117,13 @@ export {
   type RelaySettingsPanelState,
 } from "./RelaySettingsPanel"
 export {
+  MAX_INBOX_RELAY_SELECTION,
+  PrivateInboxSection,
+  type PrivateInboxSectionProps,
+  type PrivateInboxStatus,
+} from "./PrivateInboxSection"
+export { Checkbox, type CheckboxProps } from "./Checkbox"
+export {
   ProductCard,
   ProductCardSkeleton,
   ProductCartAction,
@@ -156,6 +169,32 @@ export {
   type LegalFooterIconLink,
   type LegalFooterProps,
 } from "./LegalFooter"
+export {
+  PRODUCT_LEGAL_EFFECTIVE_DATE,
+  PRODUCT_LEGAL_EFFECTIVE_DATE_LABEL,
+  PRODUCT_LEGAL_LAST_UPDATED_DATE,
+  PRODUCT_LEGAL_LAST_UPDATED_DATE_LABEL,
+  PRODUCT_LEGAL_VERSION,
+  PRODUCT_LEGAL_VERSION_HISTORY,
+  PRODUCT_PRIVACY_CANONICAL_URL,
+  PRODUCT_PRIVACY_PATH,
+  PRODUCT_TERMS_CANONICAL_URL,
+  PRODUCT_TERMS_PATH,
+  WEBSITE_PRIVACY_URL,
+  WEBSITE_TERMS_URL,
+  getProductLegalHostMode,
+  isConduitProductLegalPreviewHostname,
+  isOfficialProductHostname,
+  isProductLegalPath,
+  type ProductLegalHostMode,
+} from "./ProductLegalVersion"
+export {
+  ProductLegalPageLayout,
+  type ProductLegalDocumentKind,
+  type ProductLegalPageLayoutProps,
+} from "./ProductLegalPageLayout"
+export { ProductPrivacyPolicy } from "./ProductPrivacyPolicy"
+export { ProductTermsOfService } from "./ProductTermsOfService"
 export {
   AboutPagePanel,
   type AboutPageBuildInfo,

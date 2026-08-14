@@ -275,6 +275,39 @@ describe("planRelayReads", () => {
     })
     expect(plan.relayUrls).toEqual(["wss://shared.example.com"])
   })
+
+  it("plans shopper trust from merchant and shopper NIP-65 hints before public relays", () => {
+    const state = settings([entry("wss://public.example.com")])
+    const lists = new Map<string, RelayList>([
+      [
+        "merchant",
+        relayList("merchant", [], ["wss://merchant-write.example.com"]),
+      ],
+      [
+        "shopper",
+        relayList(
+          "shopper",
+          ["wss://shopper-read.example.com"],
+          ["wss://shopper-write.example.com"]
+        ),
+      ],
+    ])
+
+    const plan = planRelayReads({
+      intent: "shopper_trust",
+      authors: ["merchant", "shopper"],
+      recipients: ["shopper"],
+      relayLists: lists,
+      settings: state,
+    })
+
+    expect(plan.relayUrls.slice(0, 3)).toEqual([
+      "wss://merchant-write.example.com",
+      "wss://shopper-write.example.com",
+      "wss://shopper-read.example.com",
+    ])
+    expect(plan.relayUrls).toContain("wss://public.example.com")
+  })
 })
 
 describe("planRelayWrites", () => {
@@ -321,6 +354,38 @@ describe("planRelayWrites", () => {
       "wss://stale.example.com",
     ])
     expect(plan.broadcastRelayUrls).toEqual([])
+  })
+
+  it("author_event includes the author's current NIP-65 write relays", () => {
+    const state = settings([
+      entry("wss://configured.example.com", {
+        section: "commerce",
+        writeEnabled: true,
+      }),
+    ])
+    const lists = new Map<string, RelayList>([
+      [
+        "alice",
+        relayList(
+          "alice",
+          ["wss://alice-read.example.com"],
+          ["wss://alice-write.example.com"]
+        ),
+      ],
+    ])
+
+    const plan = planRelayWrites({
+      intent: "author_event",
+      authorPubkey: "alice",
+      authenticatedPubkey: "alice",
+      relayLists: lists,
+      settings: state,
+    })
+
+    expect(plan.primaryRelayUrls).toEqual([
+      "wss://alice-write.example.com",
+      "wss://configured.example.com",
+    ])
   })
 
   it("recipient_event prefers recipient read relays as primary and seeds broadcast on user outbox", () => {

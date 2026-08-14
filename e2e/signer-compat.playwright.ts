@@ -12,6 +12,7 @@ import {
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
+const merchantTrustHarnessUrl = "/src/test-fixtures/merchant-trust-harness.tsx"
 
 async function openMarketSignerDialog(page: Page): Promise<void> {
   await page.goto(`${marketUrl}/products`)
@@ -87,6 +88,191 @@ test("market getRelays failure does not block signer connect", async ({
 
   await connectFromMarketDialog(page)
 
+  await expect
+    .poll(() => storedAuthPubkey(page), {
+      timeout: 10_000,
+    })
+    .toBe(TEST_BUYER_PUBKEY)
+})
+
+test("market trust ignores a remembered viewer until auth is connected", async ({
+  page,
+}) => {
+  await seedStoredAuth(page, TEST_BUYER_PUBKEY)
+  await installLockedTestSigner(page)
+  await page.goto(`${marketUrl}/products`)
+
+  await page.evaluate(
+    async ({ harnessUrl, viewerPubkey, merchantPubkey }) => {
+      const container = document.createElement("div")
+      container.id = "merchant-trust-harness"
+      document.body.append(container)
+      const { mountMerchantTrustHarness } = (await import(harnessUrl)) as {
+        mountMerchantTrustHarness: (
+          element: HTMLElement,
+          staleViewerPubkey: string,
+          merchantPubkey: string
+        ) => void
+      }
+      mountMerchantTrustHarness(container, viewerPubkey, merchantPubkey)
+    },
+    {
+      harnessUrl: merchantTrustHarnessUrl,
+      viewerPubkey: TEST_BUYER_PUBKEY,
+      merchantPubkey: TEST_MERCHANT_PUBKEY,
+    }
+  )
+
+  const probe = page.getByTestId("merchant-trust-probe")
+  await expect(probe).toHaveAttribute("data-social-state", "disconnected")
+  await expect(probe).toHaveAttribute("data-mutual-count", "none")
+  await expect(probe).toHaveAttribute("data-viewer-follows", "null")
+})
+
+test("market signer authority storage failure remains retryable", async ({
+  page,
+}) => {
+  await installTestSigner(page, TEST_BUYER_PUBKEY, { rememberAuth: false })
+  await page.addInitScript(() => {
+    const setItem = Storage.prototype.setItem
+    Storage.prototype.setItem = function (key: string, value: string): void {
+      if (key === "conduit:auth:revision") return
+      setItem.call(this, key, value)
+    }
+  })
+  await openMarketSignerDialog(page)
+
+  const connectButton = page.getByRole("button", {
+    name: /Connect Extension \(NIP-07\)/i,
+  })
+  await connectButton.click()
+
+  await expect(
+    page.getByText(/could not establish exclusive signer authority/i)
+  ).toBeVisible({ timeout: 10_000 })
+  await expect(connectButton).toBeEnabled()
+})
+
+test("market signer authority read failure remains retryable", async ({
+  page,
+}) => {
+  await installTestSigner(page, TEST_BUYER_PUBKEY, { rememberAuth: false })
+  await page.addInitScript(() => {
+    const getItem = Storage.prototype.getItem
+    const setItem = Storage.prototype.setItem
+    let claimed = false
+    let claimedRevisionReads = 0
+    let failOnce = true
+    let blocked = false
+
+    Storage.prototype.setItem = function (key: string, value: string): void {
+      setItem.call(this, key, value)
+      if (key === "conduit:auth:revision" && failOnce) {
+        claimed = true
+        claimedRevisionReads = 0
+      }
+    }
+    Storage.prototype.getItem = function (key: string): string | null {
+      if (blocked) throw new Error("Storage access denied")
+      if (claimed && key === "conduit:auth:revision") {
+        claimedRevisionReads += 1
+        if (claimedRevisionReads > 1) {
+          blocked = true
+          throw new Error("Storage access denied")
+        }
+      }
+      return getItem.call(this, key)
+    }
+    ;(
+      window as Window &
+        typeof globalThis & {
+          restoreSignerSetupStorage: () => void
+        }
+    ).restoreSignerSetupStorage = () => {
+      blocked = false
+      claimed = false
+      failOnce = false
+    }
+  })
+  await openMarketSignerDialog(page)
+
+  const connectButton = page.getByRole("button", {
+    name: /Connect Extension \(NIP-07\)/i,
+  })
+  await connectButton.click()
+
+  await expect(page.getByRole("dialog")).toBeVisible({ timeout: 10_000 })
+  await expect(
+    page.getByText(/lost signer authority or could not read site storage/i)
+  ).toBeVisible()
+  await expect(connectButton).toBeEnabled()
+  await page.evaluate(() => {
+    ;(
+      window as Window &
+        typeof globalThis & {
+          restoreSignerSetupStorage: () => void
+        }
+    ).restoreSignerSetupStorage()
+  })
+  await connectButton.click()
+  await expect
+    .poll(() => storedAuthPubkey(page), {
+      timeout: 10_000,
+    })
+    .toBe(TEST_BUYER_PUBKEY)
+})
+
+test("market does not publish a NIP-07 signer after a late authority read failure", async ({
+  page,
+}) => {
+  await installTestSigner(page, TEST_BUYER_PUBKEY, { rememberAuth: false })
+  await page.addInitScript(() => {
+    const getItem = Storage.prototype.getItem
+    const setItem = Storage.prototype.setItem
+    let blocked = false
+    let failOnce = true
+
+    Storage.prototype.setItem = function (key: string, value: string): void {
+      setItem.call(this, key, value)
+      if (key === "conduit:auth" && failOnce) {
+        blocked = true
+      }
+    }
+    Storage.prototype.getItem = function (key: string): string | null {
+      if (blocked) throw new Error("Storage access denied")
+      return getItem.call(this, key)
+    }
+    ;(
+      window as Window &
+        typeof globalThis & {
+          restoreSignerSetupStorage: () => void
+        }
+    ).restoreSignerSetupStorage = () => {
+      blocked = false
+      failOnce = false
+    }
+  })
+  await openMarketSignerDialog(page)
+
+  await connectFromMarketDialog(page)
+  await expect(page.getByRole("dialog")).toBeVisible({ timeout: 10_000 })
+  await expect(
+    page.getByText(/lost signer authority or could not read site storage/i)
+  ).toBeVisible()
+  await page.evaluate(() => {
+    ;(
+      window as Window &
+        typeof globalThis & {
+          restoreSignerSetupStorage: () => void
+        }
+    ).restoreSignerSetupStorage()
+  })
+
+  const reconnectButton = page.getByRole("button", {
+    name: /Connect Extension \(NIP-07\)/i,
+  })
+  await expect(reconnectButton).toBeEnabled()
+  await connectFromMarketDialog(page)
   await expect
     .poll(() => storedAuthPubkey(page), {
       timeout: 10_000,

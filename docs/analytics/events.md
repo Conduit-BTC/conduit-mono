@@ -1,6 +1,6 @@
 # Telemetry Event Allowlist
 
-Conduit telemetry is privacy-safe operational telemetry only. Product clients
+Conduit telemetry is privacy-constrained operational telemetry only. Product clients
 must remain useful without telemetry, and telemetry must stay disabled unless a
 deployment explicitly enables it.
 
@@ -34,19 +34,23 @@ Runtime telemetry events may only use these fields:
 PostHog Cloud currently reports a plan-managed event retention window of 84
 months. The provider controls that field and does not expose it as a mutable
 project setting. This longer provider window is acceptable only while every
-event remains aggregate-only, uses a shared service identity, and passes the
-allowlist and redaction controls in this document. Maintainers must review the
-provider window at least quarterly and select a shorter plan or self-hosted
-retention policy when PostHog makes one available.
+event uses the shared service identity, any session linkage remains ephemeral
+and non-identifying, and every property passes the allowlist and redaction
+controls in this document. Maintainers must review the provider window at least
+quarterly and select a shorter plan or self-hosted retention policy when
+PostHog makes one available.
 
 Redaction happens before provider delivery. Events that fail the event-name or
 property allowlist must be dropped rather than repaired downstream. Browser
-events must remove raw paths, query strings, SDK-generated device/session
-properties, IP/fingerprint properties, and active-user identifiers. Worker
-events must construct a new payload from the documented property allowlist and
-must never spread request-derived properties into a provider payload. If an
-event outside this contract is ingested, delete it from the provider and treat
-the incident as a telemetry-policy failure.
+events must remove raw paths, query strings, SDK-generated device/window
+properties, IP/fingerprint properties, and active-user identifiers. The only
+allowed SDK journey properties are UUIDv7 `$session_id`, `$pageview_id`, and
+`$prev_pageview_id` values used to calculate anonymous session metrics, plus a
+sanitized `$prev_pageview_pathname` route class on `$pageleave`. Worker events
+must construct a new payload from the documented property allowlist and must
+never spread request-derived properties into a provider payload. If an event
+outside this contract is ingested, delete it from the provider and treat the
+incident as a telemetry-policy failure.
 
 ## PostHog Dashboard Split
 
@@ -54,21 +58,71 @@ PostHog dashboards should split Market and Merchant traffic with the shared
 `app` property. Use `app = market` for Market client panels and
 `app = merchant` for Merchant Portal panels. Do not use PostHog identity,
 grouping, person profile, or session replay features to create this split.
-PostHog project settings must discard IP data. Browser capture uses memory-only
-SDK state, one static browser-service distinct ID, and disabled person-profile
-processing. Do not enable PostHog's server-hashed cookieless mode for Conduit
+PostHog project settings must discard IP data. Browser capture uses
+sessionStorage-only SDK state, one static browser-service distinct ID, and
+disabled person-profile processing. A random session ID may link events within
+one anonymous visit, but it must rotate after 30 minutes of inactivity, expire
+within 24 hours, and never be promoted into a person or cross-session
+identifier. Dashboards must label these counts as sessions, not users or
+visitors. Do not enable PostHog's server-hashed cookieless mode for Conduit
 events because it requires raw IP, host, and user-agent inputs that this
 telemetry policy excludes.
+
+## Product Legal Route Exclusion
+
+Direct loads of `/privacy-policy` and `/terms-of-service` in Market and Merchant
+must bypass product telemetry completely. They also bypass signer restoration,
+Conduit sessions, Nostr connections, cache pruning, deletion-delivery workers,
+BTC price warmups, merchant readiness, and payment automation. Keep the exact
+legal-path allowlist in `@conduit/ui`; do not classify these routes for pageview
+or error telemetry. Links into and between Product legal pages use ordinary
+full-document anchors so a navigation rebuilds the correct provider boundary.
 
 Do not include active user, signer, buyer, wallet, or session pubkeys/npubs,
 invoices, order contents, product titles, addresses, message contents, IPs,
 fingerprints, signer connection strings, NWC URIs, raw URLs, raw paths, query
-strings, or user journey identifiers. Browser custom events may include only
-shared-helper route context through `page_url` and `page_path`; store route
-context may include the public store `npub` as the page identifier, while
-product, profile, order, query string, unknown route, and active user
-identifiers stay redacted. Public store npubs must not be copied into custom
-properties or joined to viewer identity.
+strings, cross-session identifiers, or SDK window/device identifiers. Browser
+custom events may include only shared-helper route context through `page_url`
+and `page_path`; store route context may include the public store `npub` as the
+page identifier, while product, profile, order, query string, unknown route,
+and active user identifiers stay redacted. Public store npubs must not be
+copied into custom properties or joined to viewer identity.
+
+## Provider Lifecycle Events
+
+Three PostHog lifecycle events are allowed through the shared sanitizer:
+
+- `$pageview` uses the static browser-service distinct ID, sanitized route
+  class, app, and ephemeral UUIDv7 session/pageview IDs.
+- `$pageleave` adds bounded duration and scroll/content percentages so bounce
+  rate and session duration can be calculated. Its route fields and
+  `$prev_pageview_pathname` identify the departing sanitized route class.
+  Pixel coordinates, raw paths, and SDK window/device fields are dropped.
+- `$web_vitals` keeps only finite bounded CLS, FCP, INP, and LCP numeric values,
+  app, sanitized route class, and the ephemeral session ID. Nested metric
+  events, DOM attribution, element data, metric IDs, window IDs, and browser
+  metadata are dropped.
+
+The SDK must keep automatic interaction capture, exception capture, network
+timing, Web Vitals attribution, heatmaps, and session recording disabled.
+Session storage is the only allowed PostHog persistence mechanism; cookies and
+localStorage remain prohibited. The SDK must bootstrap with the shared static
+browser-service identity rather than generating a device identifier, and it
+must not retain campaign parameters or referrer data.
+
+Browser ingestion is routed through the origin-restricted
+`e.conduit.market` Worker. The proxy accepts only PostHog event-ingestion paths
+from the configured Market and Merchant production or single-label preview
+origins. It must not forward cookies, browser user-agent, `CF-Connecting-IP`,
+`X-Forwarded-For`, or other identity headers, and it must not cache or log
+request payloads. It must reject ingest bodies larger than 1 MiB before
+forwarding them upstream.
+
+The official Shop and Sell hosts disable the legacy Plausible integration and
+pin PostHog ingestion to `e.conduit.market`; build-time provider overrides do
+not widen that official-host boundary. Nonofficial and local test hosts may use
+the legacy provider configuration only within their explicit telemetry host
+allowlist.
 
 ## Events
 

@@ -8,7 +8,9 @@
     "packages/*"
   ],
   "overrides": {
-    "postcss": "8.5.25"
+    "nanoid": "3.3.17",
+    "postcss": "8.5.25",
+    "undici": "7.29.0"
   },
   "scripts": {
     "seed:nsec": "bun -e 'import { nip19 } from \"@nostr-dev-kit/ndk\"; import { randomBytes } from \"node:crypto\"; console.log(nip19.nsecEncode(randomBytes(32)));'",
@@ -43,6 +45,8 @@
     "dev:mock": "bun run dev:market:mock & bun run dev:merchant:mock",
     "dev:store-builder": "bun run --filter @conduit/store-builder dev",
     "build": "bun run --filter @conduit/core build && bun run --filter @conduit/ui build && bun run --filter './apps/*' build",
+    "build:preview": "CONDUIT_DEPLOYMENT_PROFILE=preview bun run build && bun scripts/ci/verify_deployment_artifacts.ts preview",
+    "build:production": "CONDUIT_DEPLOYMENT_PROFILE=production bun run build && bun scripts/ci/verify_deployment_artifacts.ts production",
     "build:packages": "bun run --filter @conduit/core build && bun run --filter @conduit/ui build",
     "typecheck": "bun run --filter '*' typecheck",
     "lint": "bun run --filter '*' lint",

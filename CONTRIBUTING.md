@@ -51,7 +51,13 @@ Read existing specs when they apply, but do not create or update a spec for ordi
 
 For UI and theming work, also check [docs/DESIGN.md](docs/DESIGN.md) before introducing new shared styles or tokens.
 
-For Nostr protocol, relay, signer, messaging, payment, product-event, cache, or outbox work, also check [external-nostr-references.md](docs/knowledge/external-nostr-references.md) and the relevant public NIP or GammaMarkets source before implementation. Product listings are NIP-99 + GammaMarkets `kind:30402`; do not introduce alternate product-listing protocol terminology, schemas, or assumptions.
+For Nostr protocol, relay, signer, messaging, payment, product-event, cache, or outbox work, also check [decentralized-network-product-posture.md](docs/knowledge/decentralized-network-product-posture.md), [external-nostr-references.md](docs/knowledge/external-nostr-references.md), and the relevant public NIP or GammaMarkets source before implementation. Product listings are NIP-99 + GammaMarkets `kind:30402`; do not introduce alternate product-listing protocol terminology, schemas, or assumptions.
+
+The protocol source defines event meaning and canonical emission. Before
+turning missing or divergent decentralized state into a product gate, classify
+the requirement, define the action's minimum positive evidence, preserve
+stronger known evidence, and test partial/unavailable network views. A finite
+relay fanout must not be described as proof of global absence.
 
 ### Reviewer-Owned Context Check
 
@@ -159,6 +165,14 @@ the `bug` and `user-reported` labels. Maintainers should triage these by:
   - `BUN_VERSION=1.3.5`
   - `NODE_VERSION=20`
 - Without those vars, Cloudflare can fall back to `npm install`, which breaks Bun workspace installs.
+- Public frontend behavior comes from `deploy/pages-profiles.json`, not Pages
+  dashboard `VITE_*` feature toggles. A Pages Git build derives `preview` from a
+  non-`main` `CF_PAGES_BRANCH` and `production` from `main`; an unknown or
+  incomplete profile fails during Vite config loading.
+- Cloudflare may rebuild the Git commit, but it cannot independently resolve
+  managed public feature state. CI builds the same explicit profile and checks
+  each emitted `/.well-known/conduit-deployment.json` for the expected profile,
+  source commit, feature value, and public-config digest.
 
 ### Required checks before merge
 
@@ -260,16 +274,22 @@ These are non-negotiable across all code:
 
 ### Authentication
 
-- External signers only (NIP-07, NIP-46)
-- **Never** generate, store, or manage private keys in app code
+- Durable account signing uses external signers only (NIP-07, NIP-46)
+- Do not generate, store, or manage a user's durable Nostr account private key.
+  The reviewed exceptions are a temporary order-scoped guest checkout key and
+  an encrypted browser-local NIP-46 client connection key; neither may become a
+  Conduit-custodied account key.
 - Identity = pubkey only
 
 ### Privacy
 
-- **No** behavioral tracking or profiling
-- **No** message content inspection
-- System metrics only (relay success rates, load times)
-- All user data stays on the user's device or their relays
+- **No** behavioral tracking or person profiling
+- **No** message-content collection by product telemetry
+- Explicit, privacy-constrained operational events only; see
+  `docs/analytics/events.md`
+- Treat browsers, counterparties, relays, wallets, signers, merchant-selected
+  services, and Conduit-operated supporting endpoints as distinct data
+  boundaries. Do not claim all data stays on one device or only on relays.
 
 ### Payments
 

@@ -81,6 +81,16 @@ export function useRelaySettings(
   const pubkey = options.pubkey?.trim() || null
   const enabled = options.enabled ?? true
   const bootstrapRelayList = options.bootstrapRelayList ?? true
+  const relaySettingsContextKey = JSON.stringify([
+    enabled,
+    bootstrapRelayList,
+    pubkey,
+    scope?.trim() || null,
+  ])
+  const currentContextKeyRef = useRef(relaySettingsContextKey)
+  const [initializedContextKey, setInitializedContextKey] = useState(
+    relaySettingsContextKey
+  )
   const [settings, setSettings] = useState<RelaySettingsState>(() =>
     loadRelaySettings(scope)
   )
@@ -101,6 +111,10 @@ export function useRelaySettings(
   const [publishError, setPublishError] = useState<string | null>(null)
 
   useEffect(() => {
+    currentContextKeyRef.current = relaySettingsContextKey
+    setInitializedContextKey(relaySettingsContextKey)
+    setScanningUrls([])
+    setError(null)
     if (!enabled) {
       setIsLoadingPublishedRelayList(false)
       return
@@ -115,7 +129,7 @@ export function useRelaySettings(
     } else {
       setIsLoadingPublishedRelayList(false)
     }
-  }, [bootstrapRelayList, enabled, pubkey, scope])
+  }, [bootstrapRelayList, enabled, pubkey, relaySettingsContextKey, scope])
 
   useEffect(() => {
     if (!enabled) return
@@ -176,6 +190,7 @@ export function useRelaySettings(
 
   const scanImportedRelayUrls = useCallback(
     async (urls: readonly string[]): Promise<void> => {
+      const operationContextKey = relaySettingsContextKey
       const uniqueUrls = Array.from(new Set(urls))
       if (uniqueUrls.length === 0) return
 
@@ -192,6 +207,7 @@ export function useRelaySettings(
             return scanRelaySettingsEntry(url, {}, existing)
           })
         )
+        if (currentContextKeyRef.current !== operationContextKey) return
         persist((current) =>
           scanned.reduce(
             (next, entry) => upsertRelaySettingsEntry(next, entry),
@@ -199,12 +215,14 @@ export function useRelaySettings(
           )
         )
       } finally {
-        setScanningUrls((current) =>
-          current.filter((url) => !uniqueUrls.includes(url))
-        )
+        if (currentContextKeyRef.current === operationContextKey) {
+          setScanningUrls((current) =>
+            current.filter((url) => !uniqueUrls.includes(url))
+          )
+        }
       }
     },
-    [persist]
+    [persist, relaySettingsContextKey]
   )
 
   useEffect(() => {
@@ -243,7 +261,6 @@ export function useRelaySettings(
         if (signerPreferences.length > 0) {
           const next = persistImportedPreferences(signerPreferences, "signer")
           void scanImportedRelayUrls(next.entries.map((entry) => entry.url))
-          setIsLoadingPublishedRelayList(false)
         }
 
         const cachedRelayList = await getRelayList(pubkey, {
@@ -265,11 +282,6 @@ export function useRelaySettings(
             )
             void scanImportedRelayUrls(next.entries.map((entry) => entry.url))
           }
-          setIsLoadingPublishedRelayList(false)
-        }
-
-        if (signerPreferences.length === 0 && !cachedRelayList) {
-          setIsLoadingPublishedRelayList(false)
         }
 
         const relayListSearchUrls = Array.from(
@@ -320,6 +332,7 @@ export function useRelaySettings(
   ])
 
   async function addRelay(url: string): Promise<void> {
+    const operationContextKey = relaySettingsContextKey
     setError(null)
     const normalized = tryNormalizeRelayUrl(url)
     const scanningKey = normalized.ok ? normalized.url : url.trim()
@@ -334,15 +347,20 @@ export function useRelaySettings(
         current.includes(scanningKey) ? current : [...current, scanningKey]
       )
       const scanned = await scanRelaySettingsEntry(url, {}, existing)
+      if (currentContextKeyRef.current !== operationContextKey) return
       persist((current) => upsertRelaySettingsEntry(current, scanned))
     } catch (scanError) {
+      if (currentContextKeyRef.current !== operationContextKey) return
       setError(getErrorMessage(scanError))
     } finally {
-      setScanningUrls((current) => removeScanningUrl(current, scanningKey))
+      if (currentContextKeyRef.current === operationContextKey) {
+        setScanningUrls((current) => removeScanningUrl(current, scanningKey))
+      }
     }
   }
 
   async function refreshRelay(url: string): Promise<void> {
+    const operationContextKey = relaySettingsContextKey
     setError(null)
     const existing = settingsRef.current.entries.find(
       (entry) => entry.url === url
@@ -353,11 +371,15 @@ export function useRelaySettings(
         current.includes(url) ? current : [...current, url]
       )
       const scanned = await scanRelaySettingsEntry(url, {}, existing)
+      if (currentContextKeyRef.current !== operationContextKey) return
       persist((current) => upsertRelaySettingsEntry(current, scanned))
     } catch (scanError) {
+      if (currentContextKeyRef.current !== operationContextKey) return
       setError(getErrorMessage(scanError))
     } finally {
-      setScanningUrls((current) => removeScanningUrl(current, url))
+      if (currentContextKeyRef.current === operationContextKey) {
+        setScanningUrls((current) => removeScanningUrl(current, url))
+      }
     }
   }
 
@@ -470,7 +492,9 @@ export function useRelaySettings(
     settings,
     scanningUrls,
     error,
-    isLoadingPublishedRelayList,
+    isLoadingPublishedRelayList:
+      isLoadingPublishedRelayList ||
+      initializedContextKey !== relaySettingsContextKey,
     publishedRelayListUpdatedAt,
     publishingRelayList,
     publishError,

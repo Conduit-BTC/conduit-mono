@@ -125,8 +125,8 @@ export function applyPlausibleInitOptions(
 interface PostHogClient {
   init: (key: string, config: ConduitPostHogConfig) => void
   capture: (
-    eventName: "$pageview" | BrowserTelemetryEventName,
-    properties: Record<string, string | boolean>
+    eventName: PostHogTelemetryEventName | BrowserTelemetryEventName,
+    properties: Record<string, PostHogPropertyValue>
   ) => void
 }
 
@@ -136,20 +136,33 @@ type PostHogModule = {
 
 export interface ConduitPostHogConfig {
   api_host: string
+  ui_host: "https://us.posthog.com"
+  bootstrap: {
+    distinctID: "conduit-browser-telemetry"
+    isIdentifiedID: false
+  }
   autocapture: false
   capture_exceptions: false
   capture_dead_clicks: false
   capture_heatmaps: false
   capture_pageview: false
-  capture_pageleave: false
-  capture_performance: false
+  capture_pageleave: true
+  capture_performance: {
+    network_timing: false
+    web_vitals: true
+    web_vitals_allowed_metrics: ["LCP", "CLS", "FCP", "INP"]
+    web_vitals_attribution: false
+  }
   rageclick: false
   disable_session_recording: true
   disable_surveys: true
   disable_web_experiments: true
   disable_external_dependency_loading: true
-  disable_persistence: true
-  persistence: "memory"
+  disable_persistence: false
+  persistence: "sessionStorage"
+  save_campaign_params: false
+  save_referrer: false
+  session_idle_timeout_seconds: 1800
   person_profiles: "never"
   advanced_disable_flags: true
   advanced_disable_feature_flags: true
@@ -173,8 +186,37 @@ declare global {
 }
 
 const DEFAULT_PLAUSIBLE_SCRIPT_SRC = "https://plausible.io/js/script.js"
-const DEFAULT_POSTHOG_HOST = "https://us.i.posthog.com"
+const DEFAULT_POSTHOG_HOST = "https://e.conduit.market"
+const DEFAULT_POSTHOG_UI_HOST = "https://us.posthog.com"
 const POSTHOG_ANONYMOUS_DISTINCT_ID = "conduit-browser-telemetry"
+const OFFICIAL_PRODUCT_TELEMETRY_HOSTS = new Set([
+  "shop.conduit.market",
+  "sell.conduit.market",
+])
+const postHogTelemetryEventNames = [
+  "$pageleave",
+  "$pageview",
+  "$web_vitals",
+] as const
+type PostHogTelemetryEventName = (typeof postHogTelemetryEventNames)[number]
+type PostHogPropertyValue = string | boolean | number
+const postHogTelemetryEventNameSet = new Set<string>(postHogTelemetryEventNames)
+const postHogWebVitalValueNames = [
+  "$web_vitals_CLS_value",
+  "$web_vitals_FCP_value",
+  "$web_vitals_INP_value",
+  "$web_vitals_LCP_value",
+] as const
+const postHogPageViewContextNames = [
+  "$pageview_id",
+  "$prev_pageview_id",
+] as const
+const postHogPageLeavePercentageNames = [
+  "$prev_pageview_last_content_percentage",
+  "$prev_pageview_last_scroll_percentage",
+  "$prev_pageview_max_content_percentage",
+  "$prev_pageview_max_scroll_percentage",
+] as const
 const staticTelemetryRouteSegments = new Set([
   "about",
   "cart",
@@ -274,6 +316,26 @@ export function resolveBrowserTelemetryConfig(
             host: clean(env.VITE_POSTHOG_HOST) ?? DEFAULT_POSTHOG_HOST,
           }
         : null,
+  }
+}
+
+export function constrainOfficialBrowserTelemetryConfig(
+  config: BrowserTelemetryConfig,
+  hostname: string
+): BrowserTelemetryConfig {
+  if (!OFFICIAL_PRODUCT_TELEMETRY_HOSTS.has(hostname.trim().toLowerCase())) {
+    return config
+  }
+
+  return {
+    ...config,
+    plausible: null,
+    posthog: config.posthog
+      ? {
+          ...config.posthog,
+          host: DEFAULT_POSTHOG_HOST,
+        }
+      : null,
   }
 }
 
@@ -389,20 +451,33 @@ export function getConduitPostHogConfig(
 ): ConduitPostHogConfig {
   return {
     api_host: input.host,
+    ui_host: DEFAULT_POSTHOG_UI_HOST,
+    bootstrap: {
+      distinctID: POSTHOG_ANONYMOUS_DISTINCT_ID,
+      isIdentifiedID: false,
+    },
     autocapture: false,
     capture_exceptions: false,
     capture_dead_clicks: false,
     capture_heatmaps: false,
     capture_pageview: false,
-    capture_pageleave: false,
-    capture_performance: false,
+    capture_pageleave: true,
+    capture_performance: {
+      network_timing: false,
+      web_vitals: true,
+      web_vitals_allowed_metrics: ["LCP", "CLS", "FCP", "INP"],
+      web_vitals_attribution: false,
+    },
     rageclick: false,
     disable_session_recording: true,
     disable_surveys: true,
     disable_web_experiments: true,
     disable_external_dependency_loading: true,
-    disable_persistence: true,
-    persistence: "memory",
+    disable_persistence: false,
+    persistence: "sessionStorage",
+    save_campaign_params: false,
+    save_referrer: false,
+    session_idle_timeout_seconds: 1800,
     person_profiles: "never",
     advanced_disable_flags: true,
     advanced_disable_feature_flags: true,
@@ -419,14 +494,14 @@ export function sanitizePostHogCaptureEvent(
 ): PostHogCaptureEvent | null {
   const eventName = typeof event.event === "string" ? event.event : null
   if (
-    eventName !== "$pageview" &&
+    (!eventName || !postHogTelemetryEventNameSet.has(eventName)) &&
     (!eventName || !isBrowserTelemetryEventName(eventName))
   ) {
     return null
   }
 
   const sourceProperties = event.properties ?? {}
-  const sanitizedProperties: Record<string, string | boolean> =
+  const sanitizedProperties: Record<string, PostHogPropertyValue> =
     getPostHogIngestionProperties(sourceProperties)
 
   for (const [key, value] of Object.entries(sourceProperties)) {
@@ -452,45 +527,189 @@ export function sanitizePostHogCaptureEvent(
     if (normalized) sanitizedProperties[key] = normalized
   }
 
-  const pageUrl =
+  addPostHogSessionContext(sanitizedProperties, sourceProperties)
+  if (eventName === "$pageleave") {
+    addPostHogPageLeaveProperties(sanitizedProperties, sourceProperties)
+  }
+  if (eventName === "$web_vitals") {
+    addPostHogWebVitalProperties(sanitizedProperties, sourceProperties)
+  }
+
+  const sourcePageUrl = sanitizeTelemetryRouteUrl(
+    getStringProperty(sourceProperties, "$current_url")
+  )
+  const currentPageUrl =
     typeof sanitizedProperties.page_url === "string"
       ? sanitizedProperties.page_url
-      : sanitizeTelemetryRouteUrl(
-          getStringProperty(sourceProperties, "$current_url")
-        )
+      : sourcePageUrl
+  const sourcePagePath = getStringProperty(sourceProperties, "$pathname")
+  const previousPagePath =
+    eventName === "$pageleave" &&
+    typeof sanitizedProperties.$prev_pageview_pathname === "string"
+      ? sanitizedProperties.$prev_pageview_pathname
+      : null
   const pagePath =
-    typeof sanitizedProperties.page_path === "string"
+    previousPagePath ??
+    (typeof sanitizedProperties.page_path === "string"
       ? sanitizedProperties.page_path
-      : sanitizeTelemetryPath(
-          getStringProperty(sourceProperties, "$pathname") ?? "/"
-        )
+      : sourcePagePath
+        ? sanitizeTelemetryPath(sourcePagePath)
+        : currentPageUrl
+          ? sanitizeTelemetryPath(new URL(currentPageUrl).pathname)
+          : "/")
+  const pageUrl =
+    previousPagePath && currentPageUrl
+      ? buildTelemetryPageUrl({
+          origin: new URL(currentPageUrl).origin,
+          pathname: previousPagePath,
+        })
+      : currentPageUrl
 
   if (pageUrl) sanitizedProperties.$current_url = pageUrl
   sanitizedProperties.$pathname = pagePath
+  sanitizedProperties.page_path = pagePath
+  if (pageUrl) sanitizedProperties.page_url = pageUrl
 
-  return {
-    ...event,
+  const inferredApp = getTelemetryAppForPageUrl(pageUrl)
+  if (typeof sanitizedProperties.app !== "string" && inferredApp !== null) {
+    sanitizedProperties.app = inferredApp
+  }
+
+  const sanitizedEvent: PostHogCaptureEvent = {
+    event: eventName,
     properties: sanitizedProperties,
   }
+  if (isTelemetryEventUuid(event.uuid)) sanitizedEvent.uuid = event.uuid
+  if (
+    event.timestamp instanceof Date &&
+    Number.isFinite(event.timestamp.getTime())
+  ) {
+    sanitizedEvent.timestamp = event.timestamp
+  }
+  return sanitizedEvent
 }
 
 function getPostHogIngestionProperties(
   properties: Record<string, unknown>
-): Record<string, string | boolean> {
-  const sanitized: Record<string, string | boolean> = {}
+): Record<string, PostHogPropertyValue> {
+  const sanitized: Record<string, PostHogPropertyValue> = {
+    $process_person_profile: false,
+    distinct_id: POSTHOG_ANONYMOUS_DISTINCT_ID,
+  }
   const token = properties.token
   if (typeof token === "string" && token.trim()) {
     sanitized.token = token
   }
 
-  if (properties.distinct_id === POSTHOG_ANONYMOUS_DISTINCT_ID) {
-    sanitized.distinct_id = POSTHOG_ANONYMOUS_DISTINCT_ID
+  return sanitized
+}
+
+function addPostHogSessionContext(
+  sanitized: Record<string, PostHogPropertyValue>,
+  source: Record<string, unknown>
+): void {
+  const sessionId = source.$session_id
+  if (isUuidV7(sessionId)) sanitized.$session_id = sessionId
+
+  for (const propertyName of postHogPageViewContextNames) {
+    const value = source[propertyName]
+    if (isUuidV7(value)) sanitized[propertyName] = value
   }
-  if (properties.$process_person_profile === false) {
-    sanitized.$process_person_profile = false
+}
+
+function addPostHogPageLeaveProperties(
+  sanitized: Record<string, PostHogPropertyValue>,
+  source: Record<string, unknown>
+): void {
+  const previousPagePath = getStringProperty(source, "$prev_pageview_pathname")
+  if (previousPagePath) {
+    sanitized.$prev_pageview_pathname = sanitizeTelemetryPath(previousPagePath)
   }
 
-  return sanitized
+  const duration = source.$prev_pageview_duration
+  if (
+    typeof duration === "number" &&
+    Number.isFinite(duration) &&
+    duration >= 0 &&
+    duration <= 86_400
+  ) {
+    sanitized.$prev_pageview_duration = duration
+  }
+
+  for (const propertyName of postHogPageLeavePercentageNames) {
+    const value = source[propertyName]
+    if (
+      typeof value === "number" &&
+      Number.isFinite(value) &&
+      value >= 0 &&
+      value <= 1
+    ) {
+      sanitized[propertyName] = value
+    }
+  }
+}
+
+function addPostHogWebVitalProperties(
+  sanitized: Record<string, PostHogPropertyValue>,
+  source: Record<string, unknown>
+): void {
+  for (const propertyName of postHogWebVitalValueNames) {
+    const value = source[propertyName]
+    if (
+      typeof value === "number" &&
+      Number.isFinite(value) &&
+      value >= 0 &&
+      value <= 900_000
+    ) {
+      sanitized[propertyName] = value
+    }
+  }
+}
+
+function isUuidV7(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      value
+    )
+  )
+}
+
+function isTelemetryEventUuid(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      value
+    )
+  )
+}
+
+function getTelemetryAppForPageUrl(
+  pageUrl: string | null
+): ConduitTelemetryApp | null {
+  if (!pageUrl) return null
+
+  try {
+    const hostname = new URL(pageUrl).hostname.toLowerCase()
+    if (
+      hostname === "shop.conduit.market" ||
+      hostname === "conduit-market-coo.pages.dev" ||
+      isTelemetryHostnameMatch(hostname, "*.conduit-market-coo.pages.dev")
+    ) {
+      return "market"
+    }
+    if (
+      hostname === "sell.conduit.market" ||
+      hostname === "conduit-merchant-33n.pages.dev" ||
+      isTelemetryHostnameMatch(hostname, "*.conduit-merchant-33n.pages.dev")
+    ) {
+      return "merchant"
+    }
+  } catch {
+    return null
+  }
+
+  return null
 }
 
 export function recordBrowserTelemetryEvent(input: TelemetryEventInput): void {
@@ -505,7 +724,10 @@ function recordBrowserTelemetryEventUnsafe(input: TelemetryEventInput): void {
   if (typeof window === "undefined" || typeof document === "undefined") return
   if (!isBrowserTelemetryEventName(input.eventName)) return
 
-  const config = resolveBrowserTelemetryConfig(input.app)
+  const config = constrainOfficialBrowserTelemetryConfig(
+    resolveBrowserTelemetryConfig(input.app),
+    window.location.hostname
+  )
   if (!config.enabled) return
   if (!isTelemetryAllowedForCurrentHost(config)) return
   if (isGlobalPrivacyControlEnabled()) return
@@ -556,7 +778,10 @@ function recordBrowserTelemetryPageViewUnsafe(
 ): void {
   if (typeof window === "undefined" || typeof document === "undefined") return
 
-  const config = resolveBrowserTelemetryConfig(input.app)
+  const config = constrainOfficialBrowserTelemetryConfig(
+    resolveBrowserTelemetryConfig(input.app),
+    window.location.hostname
+  )
   if (!config.enabled) return
   if (!isTelemetryAllowedForCurrentHost(config)) return
   if (isGlobalPrivacyControlEnabled()) return
@@ -713,8 +938,13 @@ async function ensurePostHog(
   }
 
   posthogInitializedFor = key
-  posthogClientPromise = import("posthog-js")
-    .then((mod) => {
+  posthogClientPromise = Promise.all([
+    import("posthog-js"),
+    // PostHog publishes this side-effect extension without a declaration file.
+    // @ts-expect-error The runtime module is part of the installed posthog-js package.
+    import("posthog-js/dist/web-vitals"),
+  ])
+    .then(([mod]) => {
       const postHogModule = mod as unknown as PostHogModule
       const client = (postHogModule.default ?? postHogModule) as
         PostHogClient | undefined

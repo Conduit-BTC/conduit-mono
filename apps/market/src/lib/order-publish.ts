@@ -3,9 +3,12 @@ import {
   EVENT_KINDS,
   appendConduitClientTag,
   cacheParsedOrderMessage,
+  createValidatedOrderRouteScope,
   getNdk,
   parseOrderMessageRumorEvent,
   publishPrivateMessage,
+  type OrderDeliveryRoute,
+  type OrderRelayDeliveryRecord,
 } from "@conduit/core"
 
 /**
@@ -20,6 +23,10 @@ import {
 export type BuyerMessageDeliveryResult = {
   buyerSelfCopyError: string | null
   localCacheError: string | null
+  /** Write lane that delivered the merchant leg (CND-208). */
+  deliveryRoute: OrderDeliveryRoute
+  /** Exact encrypted recipient wrap + per-relay outcomes for bounded retry. */
+  orderRelayDelivery?: OrderRelayDeliveryRecord
 }
 
 export type BuyerOrderSigningIdentity =
@@ -111,7 +118,8 @@ async function cacheBuyerOrderRumor(rumor: NDKEvent): Promise<string | null> {
 /**
  * Translate a delivery result into a buyer-facing notice when a non-critical
  * leg (local cache or buyer self-copy) needs retry. The merchant copy is always
- * critical and throws on failure, so reaching here means the merchant has it.
+ * critical and throws on failure, so reaching here means at least one intended
+ * delivery relay accepted the merchant leg for pickup.
  */
 export function getDeliveryNotice(
   delivery: BuyerMessageDeliveryResult,
@@ -141,13 +149,27 @@ export async function publishBuyerOrderMessage(
   prepareBuyerRumor(rumor, buyerIdentity.pubkey)
 
   const publish = dependencies.publishPrivateMessageFn ?? publishPrivateMessage
-  const { selfCopyError: buyerSelfCopyError } = await publish({
+  const {
+    selfCopyError: buyerSelfCopyError,
+    deliveryRoute,
+    orderRelayDelivery,
+  } = await publish({
     rumor,
     senderPubkey: buyerIdentity.pubkey,
     recipientPubkey: merchantPubkey,
     signer: buyerIdentity.signer,
     rumorKind: EVENT_KINDS.ORDER,
     selfCopy: buyerIdentity.kind !== "guest_ephemeral",
+    // Checkout-created kind-16 orders are locally validated, so the merchant
+    // leg may use the bounded compatibility route when the merchant has
+    // no usable NIP-17 declaration (CND-208). Guest orders gain no reply
+    // promise from this.
+    validatedOrderScope: createValidatedOrderRouteScope({
+      rumor,
+      orderId: rumor.tags.find((tag) => tag[0] === "order")?.[1] ?? "",
+      senderPubkey: buyerIdentity.pubkey,
+      recipientPubkey: merchantPubkey,
+    }),
   })
 
   const localCacheError =
@@ -156,7 +178,12 @@ export async function publishBuyerOrderMessage(
       : await (dependencies.cacheBuyerOrderRumorFn ?? cacheBuyerOrderRumor)(
           rumor
         )
-  return { buyerSelfCopyError, localCacheError }
+  return {
+    buyerSelfCopyError,
+    localCacheError,
+    deliveryRoute,
+    ...(orderRelayDelivery ? { orderRelayDelivery } : {}),
+  }
 }
 
 /** Build the kind-16 payment-proof rumor for an order. */

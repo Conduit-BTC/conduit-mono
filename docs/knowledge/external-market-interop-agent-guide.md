@@ -2,18 +2,27 @@
 
 Use this when touching anything related to listings/events/rendering/checkout handoff that should work with external Gamma/NIP-99 marketplaces (currently: Plebeian).
 
-Source policy: `docs/knowledge/external-market-interop-policy.md` (2026-02-10).
+Source policy: `docs/knowledge/external-market-interop-policy.md` (2026-08-09).
+Product posture: `docs/knowledge/decentralized-network-product-posture.md`.
 
-## Priority Order (Non-Negotiable)
+## Decision Order
 
-1. Spec correctness (Gamma/NIP-99)
-2. Discovery parity (Conduit <-> external listings render + are discoverable)
-3. External discovery -> Conduit checkout (critical path)
-4. Velocity + design (do not let external quirks override spec-correct implementation)
+1. Preserve cryptographic, authorization, privacy, identity, and
+   payment-sensitive invariants.
+2. Establish canonical Gamma/NIP-99 meaning and emission.
+3. Classify missing or divergent state: data integrity,
+   discovery/capability, or ecosystem migration.
+4. Preserve safe discovery and checkout outcomes under incomplete network
+   evidence; do not turn an unavailable source into proof of a negative fact.
+5. Isolate, measure, and remove compatibility behavior rather than silently
+   redefining the protocol.
 
 ## Rules Of Engagement
 
 - Spec-first: implement what the spec says. External codebases are compatibility targets, not authorities.
+- Spec-first governs protocol truth and canonical emission, not automatic
+  product gating. Define the positive evidence required by the user action and
+  the stronger signed evidence that can invalidate it.
 - No silent coupling: never hard-code Plebeian-only conventions in shared logic.
 - Be liberal in what we accept (safe, best-effort parsing); be conservative in what we emit (strict, spec-aligned).
 - If we must support an external quirk, do it behind an explicit compat adapter and document it.
@@ -30,12 +39,14 @@ Source policy: `docs/knowledge/external-market-interop-policy.md` (2026-02-10).
 When you observe external behavior that differs from spec or our emitter:
 
 1. Confirm spec requirement first.
-2. Add robust parsing and optional mapping:
+2. Classify the divergence and decide whether strict enforcement would block a
+   safe, previously working cohort because of incomplete adoption or discovery.
+3. Add robust parsing and optional mapping:
    - keep it in an explicit compat layer (e.g., `@conduit/core` protocol parsing helpers or adapter module)
    - do not pollute core types with UI-state or app-specific meaning
-3. Document the divergence:
+4. Document the divergence:
    - add a short entry to the "Compat Notes" appendix in `docs/knowledge/external-market-interop-policy.md`
-4. If it affects Level 1 or Level 2 materially, create an interop issue:
+5. If it affects Level 1 or Level 2 materially, create an interop issue:
    - tag with one of: `spec-ambiguity`, `external-quirk`, `missing-surface`, `rendering-mismatch`, `checkout-blocker`, `security-or-privacy-risk`
 
 ## PR/Review Language (Use This)

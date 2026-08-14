@@ -11,7 +11,10 @@ import {
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
+  useReducer,
+  useRef,
   useState,
   type FormEvent,
 } from "react"
@@ -22,6 +25,7 @@ import {
   AvatarFallback,
   AvatarImage,
   Button,
+  FreshnessChip,
   Select,
   SelectContent,
   SelectItem,
@@ -37,8 +41,6 @@ import {
   pubkeyToNpub,
   recordBrowserTelemetryEvent,
   useAuth,
-  type PricingRateInput,
-  type Product,
 } from "@conduit/core"
 import { SignerSwitch } from "../../components/SignerSwitch"
 import { RichProfileText } from "../../components/RichProfileText"
@@ -57,24 +59,25 @@ import { ProfileBanner } from "../../components/ProfileBanner"
 import { useShopperPricing } from "../../hooks/useShopperPricing"
 import { useCart } from "../../hooks/useCart"
 import { useMerchantTrustContext } from "../../hooks/useMerchantTrustContext"
-import {
-  compareCommercePrices,
-  getComparablePriceValue,
-} from "../../lib/pricing"
 import { useProgressiveProducts } from "../../hooks/useProgressiveProducts"
-import { createCartItemFromProduct } from "../../lib/cart-model"
 import {
   filterProductsByFacets,
   getCategoryFacetOptions,
   normalizeFacetValues,
 } from "../../lib/facets"
+import {
+  createStorefrontFollowState,
+  isStorefrontFollowScopeEqual,
+  storefrontFollowReducer,
+} from "../../lib/storefront-follow-state"
+import { cartItemInputFromProductSelection } from "../../lib/productVariations"
+import {
+  hasUnavailablePriceForBrowseSort,
+  sortBrowseProducts,
+} from "../../lib/marketBrowseModel"
 
 type SortOption = "newest" | "price_asc" | "price_desc"
 type CategoryFacetOption = ReturnType<typeof getCategoryFacetOptions>[number]
-
-function isPriceSort(sort: SortOption | undefined): boolean {
-  return sort === "price_asc" || sort === "price_desc"
-}
 
 type StoreSearch = {
   q?: string
@@ -98,30 +101,6 @@ export const Route = createFileRoute("/store/$pubkey")({
     }
   },
 })
-
-function sortProducts(
-  products: Product[],
-  sort: SortOption | undefined,
-  btcUsdRate: PricingRateInput
-): Product[] {
-  switch (sort) {
-    case "price_asc":
-      return [...products].sort(
-        (a, b) =>
-          compareCommercePrices(a, b, btcUsdRate, "asc") ||
-          b.createdAt - a.createdAt
-      )
-    case "price_desc":
-      return [...products].sort(
-        (a, b) =>
-          compareCommercePrices(a, b, btcUsdRate, "desc") ||
-          b.createdAt - a.createdAt
-      )
-    case "newest":
-    default:
-      return [...products].sort((a, b) => b.createdAt - a.createdAt)
-  }
-}
 
 function CategoryFacetButton({
   option,
@@ -166,6 +145,7 @@ function StorefrontPage() {
   const queryClient = useQueryClient()
   const cart = useCart()
   const { pubkey: viewerPubkey, status } = useAuth()
+  const activeViewerPubkey = status === "connected" ? viewerPubkey : null
   const shopperPricing = useShopperPricing()
   const btcUsdRate = shopperPricing.quote
   const [localSearch, setLocalSearch] = useState(search.q ?? "")
@@ -175,7 +155,7 @@ function StorefrontPage() {
   const productsQuery = useProgressiveProducts({
     scope: "storefront",
     merchantPubkey: pubkey,
-    authenticatedPubkey: status === "connected" ? viewerPubkey : null,
+    authenticatedPubkey: activeViewerPubkey,
     textQuery: search.q,
   })
   const profileRelayHints = useMemo(
@@ -192,18 +172,28 @@ function StorefrontPage() {
   const productCount = storeProducts.length
   const merchantTrust = useMerchantTrustContext({
     merchantPubkey: pubkey,
-    viewerPubkey,
     listingCount: productCount,
     profileRelayHints,
   })
   const profile = merchantTrust.profile
   const selectedTags = useMemo(() => search.tag ?? [], [search.tag])
   const selectedTagSet = useMemo(() => new Set(selectedTags), [selectedTags])
-  const [followState, setFollowState] = useState<
-    "idle" | "saving_follow" | "saving_unfollow"
-  >("idle")
-  const [followOverride, setFollowOverride] = useState<boolean | null>(null)
-  const [followError, setFollowError] = useState<string | null>(null)
+  const followScope = useMemo(
+    () => ({ merchantPubkey: pubkey, viewerPubkey: activeViewerPubkey }),
+    [activeViewerPubkey, pubkey]
+  )
+  const [followState, dispatchFollow] = useReducer(
+    storefrontFollowReducer,
+    followScope,
+    createStorefrontFollowState
+  )
+  const followOperationIdRef = useRef(0)
+  const followStateMatchesScope = isStorefrontFollowScopeEqual(
+    followState.scope,
+    followScope
+  )
+  const followOverride = followStateMatchesScope ? followState.override : null
+  const followError = followStateMatchesScope ? followState.error : null
 
   const merchantIdentityPending = merchantTrust.merchantNamePending
   const merchantName = merchantTrust.merchantName
@@ -265,7 +255,8 @@ function StorefrontPage() {
 
   const isFollowing =
     followOverride ?? merchantTrust.viewerFollowsMerchant === true
-  const isFollowBusy = followState !== "idle"
+  const isFollowBusy =
+    followStateMatchesScope && followState.saveState !== "idle"
 
   const toggleTag = (tag: string) => {
     if (selectedTagSet.has(tag)) {
@@ -286,21 +277,43 @@ function StorefrontPage() {
   }, [search.q, selectedTags, storeProducts])
 
   const hasUnavailablePriceForSort = useMemo(() => {
-    if (!isPriceSort(search.sort)) return false
-    return matchingProducts.some(
-      (product) => getComparablePriceValue(product, btcUsdRate) === null
+    return hasUnavailablePriceForBrowseSort(
+      matchingProducts,
+      search.sort,
+      btcUsdRate,
+      productsQuery.familiesByProductId
     )
-  }, [btcUsdRate, matchingProducts, search.sort])
+  }, [
+    btcUsdRate,
+    matchingProducts,
+    productsQuery.familiesByProductId,
+    search.sort,
+  ])
 
   const filteredProducts = useMemo(
-    () => sortProducts(matchingProducts, search.sort, btcUsdRate),
-    [btcUsdRate, matchingProducts, search.sort]
+    () =>
+      sortBrowseProducts(
+        matchingProducts,
+        search.sort,
+        btcUsdRate,
+        productsQuery.familiesByProductId
+      ),
+    [
+      btcUsdRate,
+      matchingProducts,
+      productsQuery.familiesByProductId,
+      search.sort,
+    ]
   )
 
   useEffect(() => {
     setLocalSearch(search.q ?? "")
     setSearchDirty(false)
   }, [search.q])
+
+  useLayoutEffect(() => {
+    dispatchFollow({ type: "scope_changed", scope: followScope })
+  }, [followScope])
 
   const normalizedSearch = localSearch.trim()
   const pendingSearch =
@@ -360,8 +373,13 @@ function StorefrontPage() {
     if (isFollowBusy) return
 
     const nextShouldFollow = !isFollowing
-    setFollowState(nextShouldFollow ? "saving_follow" : "saving_unfollow")
-    setFollowError(null)
+    const operationId = ++followOperationIdRef.current
+    dispatchFollow({
+      type: "operation_started",
+      scope: followScope,
+      operationId,
+      shouldFollow: nextShouldFollow,
+    })
     try {
       await publishContactListUpdate({
         ownerPubkey: viewerPubkey,
@@ -370,19 +388,30 @@ function StorefrontPage() {
         appId: "market",
       })
 
-      setFollowOverride(nextShouldFollow)
+      dispatchFollow({
+        type: "publish_succeeded",
+        scope: followScope,
+        operationId,
+        shouldFollow: nextShouldFollow,
+      })
       await queryClient.invalidateQueries({
         queryKey: ["merchant-trust-social", viewerPubkey, pubkey],
       })
-      setFollowState("idle")
+      dispatchFollow({
+        type: "operation_settled",
+        scope: followScope,
+        operationId,
+      })
     } catch (error) {
-      setFollowOverride(null)
-      setFollowError(
-        error instanceof Error
-          ? error.message
-          : "Could not update this follow list."
-      )
-      setFollowState("idle")
+      dispatchFollow({
+        type: "operation_failed",
+        scope: followScope,
+        operationId,
+        message:
+          error instanceof Error
+            ? error.message
+            : "Could not update this follow list.",
+      })
     }
   }
 
@@ -541,7 +570,7 @@ function StorefrontPage() {
                     <UserPlus className="h-4 w-4" />
                   )}
                   {isFollowBusy ? (
-                    followState === "saving_unfollow" ? (
+                    followState.saveState === "saving_unfollow" ? (
                       "Unfollowing…"
                     ) : (
                       "Following…"
@@ -717,20 +746,15 @@ function StorefrontPage() {
                 </span>
               )}
             </div>
-            <span
-              aria-hidden={
-                !(productsQuery.isHydrating && filteredProducts.length > 0)
-              }
-              className={[
-                "absolute right-0 top-0 inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-2.5 py-1 text-xs text-[var(--text-secondary)] transition-opacity duration-150",
+            <FreshnessChip
+              status={
                 productsQuery.isHydrating && filteredProducts.length > 0
-                  ? "opacity-100"
-                  : "pointer-events-none opacity-0",
-              ].join(" ")}
-            >
-              <LoaderCircle className="h-3 w-3 animate-spin text-secondary-300" />
-              Updating store
-            </span>
+                  ? "updating"
+                  : "idle"
+              }
+              updatingLabel="Updating store"
+              className="absolute right-0 top-0"
+            />
             {hasUnavailablePriceForSort && (
               <div className="mt-2 text-xs text-[var(--text-muted)]">
                 Listings without a rate-backed sats price are shown last.
@@ -739,9 +763,9 @@ function StorefrontPage() {
           </div>
 
           {productsQuery.isInitialLoading && (
-            <ul className="mt-4 grid min-w-0 max-w-full auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
+            <ul className="mt-4 grid min-w-0 max-w-full items-start list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
               {Array.from({ length: 6 }).map((_, index) => (
-                <li key={index} className="h-full">
+                <li key={index}>
                   <ProductGridCardSkeleton />
                 </li>
               ))}
@@ -786,36 +810,56 @@ function StorefrontPage() {
             )}
 
           {filteredProducts.length > 0 && (
-            <ul className="mt-4 grid min-w-0 max-w-full auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
+            <ul className="mt-4 grid min-w-0 max-w-full items-start list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
               {filteredProducts.map((product, index) => (
-                <li key={product.id} className="h-full">
+                <li key={product.id}>
                   <ProductGridCard
                     product={product}
+                    family={productsQuery.familiesByProductId[product.id]}
+                    familyHydrating={productsQuery.isHydrating}
                     merchantName={merchantName}
                     merchantNamePending={merchantIdentityPending}
                     imageLoading={index < 4 ? "eager" : "lazy"}
                     btcUsdRate={btcUsdRate}
                     pricePreference={shopperPricing.preference}
-                    cartQuantity={
-                      cart.items.find((item) => item.productId === product.id)
-                        ?.quantity ?? 0
+                    getCartQuantity={(selectedProduct) =>
+                      cart.items.find(
+                        (item) =>
+                          item.merchantPubkey === selectedProduct.pubkey &&
+                          item.productId === selectedProduct.id
+                      )?.quantity ?? 0
                     }
-                    onAddToCart={() =>
-                      cart.addItem(createCartItemFromProduct(product))
+                    onAddToCart={(selectedProduct) =>
+                      cart.addItem(
+                        cartItemInputFromProductSelection(
+                          product,
+                          selectedProduct
+                        )
+                      )
                     }
-                    onIncrement={() =>
-                      cart.addItem(createCartItemFromProduct(product))
+                    onIncrement={(selectedProduct) =>
+                      cart.addItem(
+                        cartItemInputFromProductSelection(
+                          product,
+                          selectedProduct
+                        )
+                      )
                     }
-                    onDecrement={() => {
+                    onDecrement={(selectedProduct) => {
                       const existing = cart.items.find(
-                        (item) => item.productId === product.id
+                        (item) =>
+                          item.merchantPubkey === selectedProduct.pubkey &&
+                          item.productId === selectedProduct.id
                       )
                       if (!existing) return
                       if (existing.quantity <= 1) {
-                        cart.removeItem(product.id)
+                        cart.removeItem(selectedProduct.id)
                         return
                       }
-                      cart.setQuantity(product.id, existing.quantity - 1)
+                      cart.setQuantity(
+                        selectedProduct.id,
+                        existing.quantity - 1
+                      )
                     }}
                   />
                 </li>

@@ -6,7 +6,7 @@ import {
   useState,
 } from "react"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { ChevronDown, LoaderCircle, X } from "lucide-react"
+import { ChevronDown, X } from "lucide-react"
 import { EVENT_KINDS, normalizePubkey, pubkeyToNpub } from "@conduit/core"
 import {
   Avatar,
@@ -18,6 +18,7 @@ import {
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuTrigger,
+  FreshnessChip,
 } from "@conduit/ui"
 import { SignerSwitch } from "../../components/SignerSwitch"
 import { MerchantAvatarFallback } from "../../components/MerchantIdentity"
@@ -28,13 +29,13 @@ import {
 import { useShopperPricing } from "../../hooks/useShopperPricing"
 import { useCart } from "../../hooks/useCart"
 import { useMarketBrowseModel } from "../../hooks/useMarketBrowseModel"
-import { createCartItemFromProduct } from "../../lib/cart-model"
 import { normalizeFacetValues } from "../../lib/facets"
 import {
   type MarketBrowseSearch,
   type MarketBrowseSortOption,
 } from "../../lib/marketBrowseModel"
 import type { ProductCatalogSourceMode } from "../../lib/productCatalogRead"
+import { cartItemInputFromProductSelection } from "../../lib/productVariations"
 
 const PAGE_SIZE = 12
 const COLLAPSED_TAG_CLOUD_HEIGHT = 76
@@ -669,25 +670,18 @@ function ProductsPage() {
         <span>
           {filtered.length} {filtered.length === 1 ? "result" : "results"}
         </span>
-        <span
-          aria-hidden={!isUpdatingListings}
-          className={[
-            "absolute right-0 top-0 inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-2.5 py-1 text-[var(--text-secondary)] transition-opacity duration-150",
-            isUpdatingListings
-              ? "opacity-100"
-              : "pointer-events-none opacity-0",
-          ].join(" ")}
-        >
-          <LoaderCircle className="size-3 animate-spin text-secondary-300" />
-          Updating listings
-        </span>
+        <FreshnessChip
+          status={isUpdatingListings ? "updating" : "idle"}
+          updatingLabel="Updating listings"
+          className="absolute right-0 top-0"
+        />
       </div>
 
       {/* Loading */}
       {productsQuery.isInitialLoading && (
-        <ul className="grid auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
+        <ul className="grid items-start list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
           {Array.from({ length: PAGE_SIZE }).map((_, idx) => (
-            <li key={idx} className="h-full">
+            <li key={idx}>
               <ProductGridCardSkeleton />
             </li>
           ))}
@@ -741,13 +735,12 @@ function ProductsPage() {
 
       {/* Product grid */}
       {productCards.length > 0 && (
-        <ul className="grid auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
-          {productCards.map(({ product, merchant }, index) => {
+        <ul className="grid items-start list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
+          {productCards.map(({ product, family, merchant }, index) => {
             return (
               <li
                 key={product.id}
                 className={[
-                  "h-full",
                   // Keep the first page fully rendered (LCP / above the fold).
                   // Let the browser skip layout + paint for the revealed tail
                   // while reserving row height so the scrollbar stays stable.
@@ -758,31 +751,50 @@ function ProductsPage() {
               >
                 <ProductGridCard
                   product={product}
+                  family={family}
+                  familyHydrating={productsQuery.isHydrating}
                   merchantName={merchant.displayName}
                   merchantNamePending={merchant.status === "pending"}
                   imageLoading={index < 4 ? "eager" : "lazy"}
                   btcUsdRate={btcUsdRate}
                   pricePreference={shopperPricing.preference}
-                  cartQuantity={
-                    cart.items.find((item) => item.productId === product.id)
-                      ?.quantity ?? 0
+                  getCartQuantity={(selectedProduct) =>
+                    cart.items.find(
+                      (item) =>
+                        item.merchantPubkey === selectedProduct.pubkey &&
+                        item.productId === selectedProduct.id
+                    )?.quantity ?? 0
                   }
-                  onAddToCart={() =>
-                    cart.addItem(createCartItemFromProduct(product), 1)
+                  onAddToCart={(selectedProduct) =>
+                    cart.addItem(
+                      cartItemInputFromProductSelection(
+                        product,
+                        selectedProduct
+                      ),
+                      1
+                    )
                   }
-                  onIncrement={() =>
-                    cart.addItem(createCartItemFromProduct(product), 1)
+                  onIncrement={(selectedProduct) =>
+                    cart.addItem(
+                      cartItemInputFromProductSelection(
+                        product,
+                        selectedProduct
+                      ),
+                      1
+                    )
                   }
-                  onDecrement={() => {
+                  onDecrement={(selectedProduct) => {
                     const existing = cart.items.find(
-                      (item) => item.productId === product.id
+                      (item) =>
+                        item.merchantPubkey === selectedProduct.pubkey &&
+                        item.productId === selectedProduct.id
                     )
                     if (!existing) return
                     if (existing.quantity <= 1) {
-                      cart.removeItem(product.id)
+                      cart.removeItem(selectedProduct.id)
                       return
                     }
-                    cart.setQuantity(product.id, existing.quantity - 1)
+                    cart.setQuantity(selectedProduct.id, existing.quantity - 1)
                   }}
                 />
               </li>
