@@ -45,6 +45,10 @@ describe("RelaySettingsPanel", () => {
 
     expect(removeButton).toBeDefined()
     expect(removeButton).not.toContain("opacity-0")
+    expect(removeButton).toContain("hover:border-[var(--error)]")
+    expect(removeButton).toContain(
+      "hover:bg-[color-mix(in_srgb,var(--error)_12%,transparent)]"
+    )
     expect(removeButton).toContain("hover:text-[var(--error)]")
   })
 })
