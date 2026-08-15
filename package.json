@@ -67,7 +67,7 @@
     "@nostr-dev-kit/ndk": "^3.0.3",
     "@playwright/test": "^1.61.1",
     "@tanstack/router-generator": "^1.167.21",
-    "eslint": "^10.8.0",
+    "eslint": "^10.8.1",
     "eslint-plugin-react": "^7.37.4",
     "eslint-plugin-react-hooks": "^7.1.1",
     "husky": "^9.1.7",
@@ -75,7 +75,7 @@
     "nostr-tools": "2.24.1",
     "prettier": "^3.9.6",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.65.0"
+    "typescript-eslint": "^8.67.0"
   },
   "lint-staged": {
     "*.{ts,tsx,js,jsx,cjs,mjs}": [
