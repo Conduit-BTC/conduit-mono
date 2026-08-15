@@ -3,6 +3,7 @@ import {
   getProductImageCandidates,
   isPublicNetworkHostname,
   MAX_PRODUCT_IMAGE_CANDIDATES,
+  normalizeUntrustedRelayHintsForContext,
   normalizePublicHttpsUrl,
   normalizePublicMediaUrl,
   normalizePublicWebSocketUrl,
@@ -118,6 +119,27 @@ describe("public network target safety", () => {
       normalizePublicWebSocketUrl("ws://relay.example.com/path")
     ).toBeNull()
     expect(normalizePublicWebSocketUrl("wss://127.0.0.1:7777")).toBeNull()
+  })
+
+  it("admits private relay hints only through an authenticated approved plan", () => {
+    const localRelay = "wss://127.0.0.1:7777"
+    const publicRelay = "wss://relay.example.com"
+    const publicHttpsRelay = "https://relay-two.example.com/path?ignored=true"
+
+    expect(
+      normalizeUntrustedRelayHintsForContext({
+        relayUrls: [localRelay, publicRelay, publicHttpsRelay],
+        approvedRelayUrls: [localRelay],
+        allowApprovedPrivate: false,
+      })
+    ).toEqual([publicRelay, "wss://relay-two.example.com/path"])
+    expect(
+      normalizeUntrustedRelayHintsForContext({
+        relayUrls: [localRelay, publicRelay],
+        approvedRelayUrls: [localRelay],
+        allowApprovedPrivate: true,
+      })
+    ).toEqual([localRelay, publicRelay])
   })
 
   it("deduplicates and caps product image request candidates", () => {

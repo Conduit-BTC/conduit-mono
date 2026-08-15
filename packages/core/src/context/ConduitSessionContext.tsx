@@ -8,11 +8,7 @@ import {
   type ReactNode,
 } from "react"
 import type { ConduitAppId } from "../protocol/nip89"
-import {
-  connectNdk,
-  disconnectNdk,
-  refreshNdkRelaySettings,
-} from "../protocol/ndk"
+import { disconnectNdk, refreshNdkRelaySettings } from "../protocol/ndk"
 import {
   getActiveRelaySettingsScope,
   subscribeRelaySettingsChanges,
@@ -104,14 +100,12 @@ export function ConduitSessionProvider({
 
     activeScopeRef.current = session.relayScope
     setActivatedRelayScope(session.relayScope)
-    void connectNdk()
   }, [identityReady, session.relayScope])
 
   useEffect(() => {
     return subscribeRelaySettingsChanges((scope) => {
       if (!scope || scope !== activeScopeRef.current) return
       refreshNdkRelaySettings(scope)
-      void connectNdk()
     })
   }, [])
 

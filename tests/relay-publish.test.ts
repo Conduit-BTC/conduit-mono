@@ -399,6 +399,81 @@ describe("planPublishRelays", () => {
     expect(result.failedRelayUrls).toEqual([broadcastRelay])
   })
 
+  it("drops private extra relay hints that the authenticated planner did not select", async () => {
+    const primaryRelay = "wss://recipient.example"
+    const publicExtraRelay = "wss://public-extra.example"
+    const privateExtraRelay = "wss://127.0.0.1:7447"
+    const fakeEvent = signedTestEvent({
+      publish: async (relaySet: unknown) => {
+        const relayUrls = [
+          ...((relaySet as { relayUrls?: Set<string> | string[] }).relayUrls ??
+            []),
+        ]
+        return new Set(relayUrls.map((url) => ({ url })))
+      },
+    })
+
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "recipient_event",
+        primaryRelayUrls: [primaryRelay],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+
+    const result = await publishWithPlanner(fakeEvent, {
+      intent: "recipient_event",
+      authorPubkey: "alice",
+      authenticatedPubkey: "alice",
+      recipientPubkeys: ["bob"],
+      extraRelayUrls: [privateExtraRelay, publicExtraRelay],
+    })
+
+    expect(result.plan.primaryRelayUrls).toEqual([
+      primaryRelay,
+      publicExtraRelay,
+    ])
+    expect(result.attemptedRelayUrls).not.toContain(privateExtraRelay)
+  })
+
+  it("preserves a private extra hint already selected for the authenticated user", async () => {
+    const recipientRelay = "wss://recipient.example"
+    const authenticatedLocalRelay = "wss://127.0.0.1:7447"
+    const fakeEvent = signedTestEvent({
+      publish: async (relaySet: unknown) => {
+        const relayUrls = [
+          ...((relaySet as { relayUrls?: Set<string> | string[] }).relayUrls ??
+            []),
+        ]
+        return new Set(relayUrls.map((url) => ({ url })))
+      },
+    })
+
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "recipient_event",
+        primaryRelayUrls: [recipientRelay],
+        broadcastRelayUrls: [authenticatedLocalRelay],
+        parkedRelayUrls: [],
+      }),
+    })
+
+    const result = await publishWithPlanner(fakeEvent, {
+      intent: "recipient_event",
+      authorPubkey: "alice",
+      authenticatedPubkey: "alice",
+      recipientPubkeys: ["bob"],
+      extraRelayUrls: [authenticatedLocalRelay],
+    })
+
+    expect(result.plan.primaryRelayUrls).toEqual([
+      recipientRelay,
+      authenticatedLocalRelay,
+    ])
+    expect(result.attemptedRelayUrls).toContain(authenticatedLocalRelay)
+  })
+
   it("refuses to publish a gift wrap without an exclusive private-message plan", async () => {
     let attempted = false
     const fakeEvent = signedTestEvent({
@@ -465,6 +540,91 @@ describe("planPublishRelays", () => {
         event,
         relayUrl,
         authorPubkey: AUTHOR_PUBKEY,
+      })
+    ).resolves.toBe("acked")
+  })
+
+  it("preserves an authenticated author's exact local relay target", async () => {
+    const relayUrl = "ws://127.0.0.1:7777"
+    const attempts: string[][] = []
+    const event = signedTestEvent({
+      kind: EVENT_KINDS.DELETION,
+      tags: [["e", "a".repeat(64)]],
+      content: "",
+      publish: async (relaySet: unknown) => {
+        const relayUrls = [
+          ...((relaySet as { relayUrls?: Set<string> | string[] }).relayUrls ??
+            []),
+        ]
+        attempts.push(relayUrls)
+        return new Set([{ url: relayUrl }])
+      },
+    })
+
+    await expect(
+      publishSignedEventToRelay({
+        event,
+        relayUrl,
+        authorPubkey: AUTHOR_PUBKEY,
+        authenticatedPubkey: AUTHOR_PUBKEY,
+      })
+    ).resolves.toBe("acked")
+    expect(attempts).toEqual([[`${relayUrl}/`]])
+  })
+
+  it("rejects an exact insecure relay outside the authenticated author context", async () => {
+    const event = signedTestEvent({
+      kind: EVENT_KINDS.DELETION,
+      tags: [["e", "a".repeat(64)]],
+      content: "",
+      publish: async () => {
+        throw new Error("must not publish")
+      },
+    })
+
+    await expect(
+      publishSignedEventToRelay({
+        event,
+        relayUrl: "ws://127.0.0.1:7777",
+        authorPubkey: AUTHOR_PUBKEY,
+      })
+    ).rejects.toThrow("public or authenticated relay target")
+  })
+
+  it("rejects an exact private WSS relay outside the authenticated author context", async () => {
+    const event = signedTestEvent({
+      kind: EVENT_KINDS.DELETION,
+      tags: [["e", "a".repeat(64)]],
+      content: "",
+      publish: async () => {
+        throw new Error("must not publish")
+      },
+    })
+
+    await expect(
+      publishSignedEventToRelay({
+        event,
+        relayUrl: "wss://127.0.0.1:7447",
+        authorPubkey: AUTHOR_PUBKEY,
+      })
+    ).rejects.toThrow("public or authenticated relay target")
+  })
+
+  it("preserves an authenticated author's exact private WSS target", async () => {
+    const relayUrl = "wss://127.0.0.1:7447"
+    const event = signedTestEvent({
+      kind: EVENT_KINDS.DELETION,
+      tags: [["e", "a".repeat(64)]],
+      content: "",
+      publish: async () => new Set([{ url: `${relayUrl}/` }]),
+    })
+
+    await expect(
+      publishSignedEventToRelay({
+        event,
+        relayUrl,
+        authorPubkey: AUTHOR_PUBKEY,
+        authenticatedPubkey: AUTHOR_PUBKEY,
       })
     ).resolves.toBe("acked")
   })
@@ -753,6 +913,32 @@ describe("planPublishRelays", () => {
     expect(attempts[2]).toContain(APP_WRITE_ATTEMPT_RELAYS[0])
     expect(result.successfulRelayUrls).toEqual(CANONICAL_APP_WRITE_RELAYS)
     expect(result.failedRelayUrls).toContain(primaryRelay)
+  })
+
+  it("does not fall through to NDK default publishing without an approved target", async () => {
+    let publishCalls = 0
+    const fakeEvent = signedTestEvent({
+      publish: async () => {
+        publishCalls += 1
+        return new Set()
+      },
+    })
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "recipient_event",
+        primaryRelayUrls: [],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+
+    await expect(
+      publishWithPlanner(fakeEvent, {
+        intent: "recipient_event",
+        authorPubkey: AUTHOR_PUBKEY,
+      })
+    ).rejects.toThrow("without an approved relay target")
+    expect(publishCalls).toBe(0)
   })
 })
 

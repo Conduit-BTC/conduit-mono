@@ -5,7 +5,7 @@ import { normalizePublicMediaUrl } from "../network-target-safety"
 import { EVENT_KINDS } from "./kinds"
 import { getProfiles } from "./commerce"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
-import { requireNdkConnected } from "./ndk"
+import { getNdk } from "./ndk"
 import { publishWithPlanner } from "./relay-publish"
 import {
   assertSafeReplaceablePublish,
@@ -153,7 +153,7 @@ export async function publishProfile(
     }
     validatedProfile[field] = safeUrl
   }
-  const ndk = await requireNdkConnected()
+  const ndk = getNdk()
   if (!ndk.signer) throw new Error("Signer not connected")
 
   const user = await ndk.signer.user()

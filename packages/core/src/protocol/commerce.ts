@@ -24,8 +24,8 @@ import {
   fetchEventsFanoutProgressive,
   fetchEventsFanoutWithDiagnostics,
   getEventSourceRelayUrls,
+  getNdk,
   mergeEventSourceRelayUrls,
-  requireNdkConnected,
 } from "./ndk"
 import {
   deriveInboxReadCoverage,
@@ -81,6 +81,7 @@ import {
 import {
   getCommerceReadRelayUrls,
   getGeneralReadRelayUrls,
+  normalizeUntrustedRelayHintsForContext,
 } from "./relay-settings"
 import { getRelayLists, isInsecureRelayUrl } from "./relay-list"
 import { planRelayReads, type RelayReadIntent } from "./relay-planner"
@@ -308,7 +309,7 @@ type CommerceTestOverrides = {
   fetchEventsFanoutWithDiagnostics?: typeof fetchEventsFanoutWithDiagnostics
   fetchEventsFanoutDetailed?: typeof fetchEventsFanoutDetailed
   fetchEventsFanoutProgressive?: typeof fetchEventsFanoutProgressive
-  requireNdkConnected?: typeof requireNdkConnected
+  getNdk?: () => ReturnType<typeof getNdk> | Promise<ReturnType<typeof getNdk>>
   giftUnwrap?: (
     event: NDKEvent,
     signer: NDKSigner
@@ -486,9 +487,11 @@ async function planCommerceReadRelayPlan(input: {
     input.relayHintMode !== "force" &&
     (input.intent === "commerce_products" ||
       (input.intent === "author_products" && (input.authors?.length ?? 0) > 1))
-  const externalRelayHints = (input.extraRelayUrls ?? []).filter(
-    (url) => !isInsecureRelayUrl(url)
-  )
+  const externalRelayHints = normalizeUntrustedRelayHintsForContext({
+    relayUrls: input.extraRelayUrls ?? [],
+    approvedRelayUrls: plan.relayUrls,
+    allowApprovedPrivate: !!input.authenticatedPubkey,
+  })
   const plannedRelayUrls = preferFallbackFirst
     ? uniqueStrings([
         ...fallbackRelayUrls,
@@ -664,10 +667,8 @@ async function runFetchEventsFanoutDetailed(
   }
 }
 
-async function runRequireNdkConnected(): Promise<
-  Awaited<ReturnType<typeof requireNdkConnected>>
-> {
-  const impl = testOverrides.requireNdkConnected ?? requireNdkConnected
+async function runGetNdk(): Promise<ReturnType<typeof getNdk>> {
+  const impl = testOverrides.getNdk ?? getNdk
   return await impl()
 }
 
@@ -2043,9 +2044,9 @@ async function fetchProductDeletionTimestamps(
       const productAddresses = uniqueStrings(
         chunkCandidates.map((candidate) => candidate.addressId)
       )
-      const sourceRelayUrls = uniqueStrings(
+      const rawSourceRelayUrls = uniqueStrings(
         chunkCandidates.flatMap((candidate) => candidate.sourceRelayUrls ?? [])
-      ).filter((relayUrl) => !isInsecureRelayUrl(relayUrl))
+      )
       const filters: NDKFilter[] = [
         ...chunkStrings(productEventIds, 200).map((eventIdChunk) => ({
           kinds: [EVENT_KINDS.DELETION],
@@ -2066,6 +2067,11 @@ async function fetchProductDeletionTimestamps(
         authors: authorChunk,
         authenticatedPubkey: options.authenticatedPubkey,
         maxRelays: options.readPolicy?.maxRelays,
+      })
+      const sourceRelayUrls = normalizeUntrustedRelayHintsForContext({
+        relayUrls: rawSourceRelayUrls,
+        approvedRelayUrls: deletionRelayPlan.relayUrls,
+        allowApprovedPrivate: !!options.authenticatedPubkey,
       })
       const preferredDeletionRelayUrls = uniqueStrings([
         ...sourceRelayUrls,
@@ -4171,7 +4177,7 @@ async function fetchParsedOrderMessages(
   }
 
   try {
-    const ndk = await runRequireNdkConnected()
+    const ndk = await runGetNdk()
     const signer = ndk.signer
     if (!signer) {
       if (cachedById.size > 0) {
@@ -4665,7 +4671,7 @@ async function fetchParsedDirectMessages(
   }
 
   try {
-    const ndk = await runRequireNdkConnected()
+    const ndk = await runGetNdk()
     const signer = ndk.signer
     if (!signer) {
       if (cachedById.size > 0) {

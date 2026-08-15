@@ -50,6 +50,10 @@ function SocialChips({ trust }: { trust: MerchantTrustContext }) {
     return <TrustChip tone="warning">Follow context unavailable</TrustChip>
   }
 
+  if (trust.socialState === "limited") {
+    return <TrustChip tone="warning">Follow context limited</TrustChip>
+  }
+
   return (
     <>
       {trust.merchantFollowsViewer && (

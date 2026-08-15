@@ -2211,7 +2211,7 @@ describe("commerce gateway", () => {
     )
 
     __setCommerceTestOverrides({
-      requireNdkConnected: async () => ({ signer: undefined }) as never,
+      getNdk: async () => ({ signer: undefined }) as never,
     })
 
     const listResult = await getBuyerConversationList({
@@ -2280,7 +2280,7 @@ describe("commerce gateway", () => {
     )
 
     __setCommerceTestOverrides({
-      requireNdkConnected: async () => ({ signer: undefined }) as never,
+      getNdk: async () => ({ signer: undefined }) as never,
     })
 
     const asBuyer = await getCachedBuyerConversationList({
@@ -2320,7 +2320,7 @@ describe("commerce gateway", () => {
     })
 
     __setCommerceTestOverrides({
-      requireNdkConnected: async () => ({ signer: undefined }) as never,
+      getNdk: async () => ({ signer: undefined }) as never,
     })
 
     const asBuyer = await getCachedBuyerConversationList({
@@ -2446,7 +2446,7 @@ describe("commerce gateway", () => {
     })
 
     __setCommerceTestOverrides({
-      requireNdkConnected: async () => ({ signer: undefined }) as never,
+      getNdk: async () => ({ signer: undefined }) as never,
     })
 
     const result = await getBuyerConversationList({
@@ -2501,7 +2501,7 @@ describe("commerce gateway", () => {
     }
 
     __setCommerceTestOverrides({
-      requireNdkConnected: async () => ({ signer: {} }) as never,
+      getNdk: async () => ({ signer: {} }) as never,
       fetchEventsFanout: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
           ? ([wrappedEvent] as never)
@@ -2564,7 +2564,7 @@ describe("commerce gateway", () => {
     }
 
     __setCommerceTestOverrides({
-      requireNdkConnected: async () => ({ signer: {} }) as never,
+      getNdk: async () => ({ signer: {} }) as never,
       fetchEventsFanout: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
           ? ([wrappedEvent] as never)
@@ -2610,7 +2610,7 @@ describe("commerce gateway", () => {
     }
 
     __setCommerceTestOverrides({
-      requireNdkConnected: async () => ({ signer: {} }) as never,
+      getNdk: async () => ({ signer: {} }) as never,
       fetchEventsFanout: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
           ? ([wrappedEvent] as never)
@@ -2650,7 +2650,7 @@ describe("commerce gateway", () => {
           : undefined,
     })
     __setCommerceTestOverrides({
-      requireNdkConnected: async () => ({ signer: {} }) as never,
+      getNdk: async () => ({ signer: {} }) as never,
       resolveInboxRelayUrls: async () => merchantReadRelays,
       fetchEventsFanout: async (filter, options) => {
         if (filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)) {
@@ -2717,7 +2717,7 @@ describe("commerce gateway", () => {
     }
 
     __setCommerceTestOverrides({
-      requireNdkConnected: async () => ({ signer: {} }) as never,
+      getNdk: async () => ({ signer: {} }) as never,
       fetchEventsFanout: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
           ? ([wrappedEvent] as never)
@@ -2805,7 +2805,7 @@ describe("commerce gateway", () => {
       | undefined
 
     __setCommerceTestOverrides({
-      requireNdkConnected: async () => {
+      getNdk: async () => {
         calledRequireNdk = true
         return { signer: undefined } as never
       },
@@ -2838,7 +2838,7 @@ describe("commerce gateway", () => {
     expect(seenOptions?.fetchTimeoutMs).toBe(3_000)
   })
 
-  it("uses cached product source relays as first-choice merchant profile hints", async () => {
+  it("uses public cached product sources but drops stale private profile hints", async () => {
     cachedProducts.push({
       id: "30402:merchant:source-hinted-item",
       pubkey: "merchant",
@@ -2850,7 +2850,7 @@ describe("commerce gateway", () => {
       visibility: "public",
       images: [{ url: "https://example.com/source-hinted-item.png" }],
       tags: ["cached"],
-      sourceRelayUrls: ["wss://profile-source.example"],
+      sourceRelayUrls: ["wss://127.0.0.1:7447", "wss://profile-source.example"],
       createdAt: FIXED_NOW - 5_000,
       updatedAt: FIXED_NOW - 5_000,
       cachedAt: FIXED_NOW - 1_000,
@@ -2891,8 +2891,56 @@ describe("commerce gateway", () => {
     })
 
     expect(seenRelayUrls?.[0]).toBe("wss://profile-source.example")
+    expect(seenRelayUrls).not.toContain("wss://127.0.0.1:7447")
     expect(result.data.merchant?.name).toBe("Source Merchant")
     expect(result.data.merchant?.picture).toBe("https://example.com/avatar.png")
+  })
+
+  it("preserves an authenticated user's private relay in the current profile plan", async () => {
+    const localRelayUrl = "wss://127.0.0.1:7447"
+    cachedProducts.push({
+      id: "30402:merchant:local-source-item",
+      pubkey: "merchant",
+      title: "Local Source Item",
+      summary: "cached summary",
+      price: 25,
+      currency: "USD",
+      type: "simple",
+      visibility: "public",
+      images: [{ url: "https://example.com/local-source-item.png" }],
+      tags: ["cached"],
+      sourceRelayUrls: [localRelayUrl],
+      createdAt: FIXED_NOW - 5_000,
+      updatedAt: FIXED_NOW - 5_000,
+      cachedAt: FIXED_NOW - 1_000,
+    })
+    __setRelayListTestOverrides({
+      loadCached: async (pubkey) => ({
+        pubkey,
+        readRelayUrls: [],
+        writeRelayUrls: [localRelayUrl],
+        eventCreatedAt: 1,
+        cachedAt: FIXED_NOW,
+      }),
+    })
+
+    let seenRelayUrls: string[] | undefined
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (_filter, options) => {
+        seenRelayUrls = options?.relayUrls
+        return []
+      },
+    })
+
+    await getProfiles({
+      pubkeys: ["merchant"],
+      authenticatedPubkey: "merchant",
+      priority: "background",
+      skipCache: true,
+      readPolicy: { maxRelays: 1 },
+    })
+
+    expect(seenRelayUrls).toEqual([localRelayUrl])
   })
 
   it("uses explicit product relay hints before default relays for profiles", async () => {

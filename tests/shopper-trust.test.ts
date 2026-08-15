@@ -160,15 +160,17 @@ function createCache(
 
 describe("shopper trust evidence", () => {
   it("registers the combined post-v9 cache and deletion stores", () => {
-    expect(db.verno).toBe(11)
+    expect(db.verno).toBe(12)
     expect(db.tables.map(({ name }) => name)).toEqual(
       expect.arrayContaining([
         "shopperTrustSnapshots",
         "productDeletionOutbox",
         "inboxDeclarationEvidence",
+        "ownContactListSnapshots",
       ])
     )
     expect(db.inboxDeclarationEvidence.schema.primKey.name).toBe("pubkey")
+    expect(db.ownContactListSnapshots.schema.primKey.name).toBe("pubkey")
   })
 
   it("keeps both divergent version-9 stores in the upgrade history", async () => {

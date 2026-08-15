@@ -14,7 +14,7 @@
  *
  * The planner is pure / synchronous and never opens a websocket. Callers
  * (e.g. `commerce.ts`, publish helpers) are responsible for executing the
- * plan with `fetchEventsFanout` / `event.publish()`.
+ * plan with the bounded reader or an explicit relay-set publisher.
  *
  * Read intents map to the existing `CommerceReadPlanName` so commerce.ts
  * can adopt the planner without breaking the source-tagging model. Read
@@ -56,6 +56,8 @@ export type RelayReadIntent =
   | "product_reviews"
   /** A profile's recent social feed (kind 1 / kind 6 / kind 30023, etc.). */
   | "profile_social_feed"
+  /** NIP-02 contact lists, routed to each author's write relays. */
+  | "contact_lists"
   /** Bounded public evidence for the selected incoming-order shopper. */
   | "shopper_trust"
   /** Generic kind-fanout that has no author hint. */
@@ -284,6 +286,7 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
       case "product_comments_preview":
       case "product_reviews":
       case "profile_social_feed":
+      case "contact_lists":
       case "shopper_trust":
       case "profiles":
       case "relay_lists":

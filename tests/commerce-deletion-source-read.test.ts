@@ -73,6 +73,8 @@ describe("product deletion reads retain source-relay provenance", () => {
     const targetIndex = products.length - 1
     const target = products[targetIndex]!
     const targetSourceRelayUrl = sourceRelayUrl(targetIndex)
+    const stalePrivateSourceRelayUrl = "wss://127.0.0.1:7447"
+    attachEventSourceRelayUrl(target, stalePrivateSourceRelayUrl)
     const targetAddress = `${EVENT_KINDS.PRODUCT}:${target.pubkey}:source-only-${targetIndex}`
     const deletion = new NDKEvent(
       undefined,
@@ -179,6 +181,11 @@ describe("product deletion reads retain source-relay provenance", () => {
     expect(
       deletionRelayAttempts.some((relayUrls) =>
         relayUrls.includes(targetSourceRelayUrl)
+      )
+    ).toBe(true)
+    expect(
+      deletionRelayAttempts.every(
+        (relayUrls) => !relayUrls.includes(stalePrivateSourceRelayUrl)
       )
     ).toBe(true)
     expect(

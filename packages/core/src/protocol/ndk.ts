@@ -1,6 +1,5 @@
 import NDK, {
   NDKEvent,
-  NDKRelayStatus,
   type NDKFilter,
   type NDKSigner,
 } from "@nostr-dev-kit/ndk"
@@ -20,14 +19,6 @@ import {
   recordRelaySuccess,
 } from "./relay-health"
 import type { SignedPublicNostrEvent } from "./signed-event"
-
-export type NdkConnectionState = "idle" | "connecting" | "connected" | "error"
-
-export interface NdkState {
-  status: NdkConnectionState
-  connectedRelays: string[]
-  error: string | null
-}
 
 export interface FetchEventsFanoutOptions {
   relayUrls?: string[]
@@ -84,8 +75,6 @@ type EventWithSourceRelayUrls = NDKEvent & {
   [EVENT_SOURCE_RELAY_URLS]?: string[]
 }
 
-type Listener = () => void
-
 /**
  * Identifies the auth lifecycle that installed the shared NDK signer.
  * Cleanup must present the same lease so an older provider cannot clear a
@@ -98,26 +87,6 @@ export type SignerLease = {
 
 let ndkInstance: NDK | null = null
 let activeSignerLease: SignerLease | null = null
-let state: NdkState = {
-  status: "idle",
-  connectedRelays: [],
-  error: null,
-}
-let connectPromise: Promise<void> | null = null
-let requirePromise: Promise<NDK> | null = null
-let ndkGeneration = 0
-const listeners = new Set<Listener>()
-
-function setState(partial: Partial<NdkState>): void {
-  state = { ...state, ...partial }
-  listeners.forEach((fn) => fn())
-}
-
-function getConnectedRelayUrls(ndk: NDK): string[] {
-  return Array.from(ndk.pool?.relays?.entries() ?? [])
-    .filter(([, relay]) => relay.status >= NDKRelayStatus.CONNECTED)
-    .map(([url]) => url)
-}
 
 function uniqueRelayUrls(urls: readonly string[]): string[] {
   return Array.from(new Set(urls.map((url) => url.trim()).filter(Boolean)))
@@ -155,21 +124,21 @@ export function mergeEventSourceRelayUrls(
   }
 }
 
-export function subscribeNdkState(listener: Listener): () => void {
-  listeners.add(listener)
-  return () => listeners.delete(listener)
-}
-
-export function getNdkState(): NdkState {
-  return state
-}
-
+/**
+ * Return the shared NDK compatibility context used for event construction,
+ * signing, encryption, and explicitly planned publishes.
+ *
+ * The instance is deliberately offline: Conduit owns relay discovery and read
+ * execution, and publish callers must provide an approved relay set. Keeping
+ * NDK's outbox and signer-relay auto-connect disabled prevents library defaults
+ * or third-party relay hints from creating ambient WebSocket destinations.
+ */
 export function getNdk(): NDK {
   if (!ndkInstance) {
     ndkInstance = new NDK({
-      explicitRelayUrls: getGeneralReadRelayUrls({
-        fallbackRelayUrls: config.defaultRelays,
-      }),
+      explicitRelayUrls: [],
+      enableOutboxModel: false,
+      autoConnectUserRelays: false,
     })
     if (activeSignerLease) {
       // Relay-client resets must not silently disconnect the auth session.
@@ -177,6 +146,13 @@ export function getNdk(): NDK {
     }
   }
   return ndkInstance
+}
+
+function disconnectNdkPools(ndk: NDK): void {
+  const relays = new Set(
+    ndk.pools.flatMap((pool) => Array.from(pool.relays.values()))
+  )
+  for (const relay of relays) relay.disconnect()
 }
 
 const MAX_CONCURRENT_RELAY_READS = 8
@@ -1223,118 +1199,6 @@ export async function fetchEventsFanoutProgressive(
   }
 }
 
-export async function connectNdk(timeoutMs = 10_000): Promise<void> {
-  const ndk = getNdk()
-  const generation = ndkGeneration
-
-  // If already connected with live relays, skip
-  if (state.status === "connected" && getConnectedRelayUrls(ndk).length > 0) {
-    return
-  }
-
-  if (connectPromise) {
-    await connectPromise
-    return
-  }
-
-  if (generation === ndkGeneration) {
-    setState({ status: "connecting", error: null })
-  }
-
-  connectPromise = (async () => {
-    try {
-      await ndk.connect(timeoutMs)
-      if (generation !== ndkGeneration) return
-
-      const connected = getConnectedRelayUrls(ndk)
-
-      if (connected.length > 0) {
-        setState({
-          status: "connected",
-          connectedRelays: connected,
-          error: null,
-        })
-      } else {
-        setState({
-          status: "error",
-          error: "No relays responded within timeout",
-          connectedRelays: [],
-        })
-      }
-    } catch (err) {
-      if (generation !== ndkGeneration) return
-      setState({
-        status: "error",
-        error:
-          err instanceof Error ? err.message : "Failed to connect to relays",
-        connectedRelays: [],
-      })
-    } finally {
-      if (generation === ndkGeneration) {
-        connectPromise = null
-      }
-    }
-  })()
-
-  await connectPromise
-}
-
-export async function requireNdkConnected(timeoutMs = 10_000): Promise<NDK> {
-  // Deduplicate concurrent callers — only one retry path runs at a time
-  if (requirePromise) {
-    return requirePromise
-  }
-
-  const generation = ndkGeneration
-  const promise = (async () => {
-    try {
-      await connectNdk(timeoutMs)
-      if (generation !== ndkGeneration) {
-        return requireNdkConnected(timeoutMs)
-      }
-
-      let ndk = getNdk()
-      if (getConnectedRelayUrls(ndk).length > 0) {
-        setState({
-          status: "connected",
-          connectedRelays: getConnectedRelayUrls(ndk),
-          error: null,
-        })
-        return ndk
-      }
-
-      // First attempt failed — reset the NDK instance for fresh websocket connections and retry
-      ndkInstance = null
-      connectPromise = null
-      ndk = getNdk()
-
-      await connectNdk(timeoutMs * 2)
-      if (generation !== ndkGeneration) {
-        return requireNdkConnected(timeoutMs)
-      }
-
-      const retryRelays = getConnectedRelayUrls(ndk)
-      if (retryRelays.length === 0) {
-        throw new Error(state.error ?? "Failed to connect to relays")
-      }
-
-      setState({
-        status: "connected",
-        connectedRelays: retryRelays,
-        error: null,
-      })
-      return ndk
-    } finally {
-      if (generation === ndkGeneration) {
-        requirePromise = null
-      }
-    }
-  })()
-
-  requirePromise = promise
-  return requirePromise
-}
-
 export function setSigner(signer: NDKSigner): SignerLease {
   const ndk = getNdk()
   const lease = Object.freeze({
@@ -1355,43 +1219,24 @@ export function removeSigner(lease: SignerLease): void {
 }
 
 export function disconnectNdk(): void {
-  ndkGeneration += 1
   if (ndkInstance) {
+    disconnectNdkPools(ndkInstance)
     ndkInstance.signer = undefined
     ndkInstance = null
   }
   closeAllRelayConnections()
-  connectPromise = null
-  requirePromise = null
-  setState({
-    status: "idle",
-    connectedRelays: [],
-    error: null,
-  })
 }
 
 export function refreshNdkRelaySettings(scope?: string | null): void {
-  ndkGeneration += 1
   if (scope !== undefined) {
     setActiveRelaySettingsScope(scope)
   }
 
   if (ndkInstance) {
-    for (const [, relay] of ndkInstance.pool?.relays?.entries() ?? []) {
-      relay.disconnect()
-    }
+    disconnectNdkPools(ndkInstance)
+    ndkInstance.signer = undefined
   }
   closeAllRelayConnections()
 
   ndkInstance = null
-  connectPromise = null
-  requirePromise = null
-
-  getNdk()
-
-  setState({
-    status: "idle",
-    connectedRelays: [],
-    error: null,
-  })
 }

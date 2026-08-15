@@ -1,16 +1,14 @@
 import { afterEach, describe, expect, it } from "bun:test"
-import NDK, { type NDKSigner } from "@nostr-dev-kit/ndk"
+import { type NDKSigner } from "@nostr-dev-kit/ndk"
 import {
   __resetNdkTestState,
   disconnectNdk,
   getNdk,
   refreshNdkRelaySettings,
   removeSigner,
-  requireNdkConnected,
   setSigner,
 } from "../packages/core/src/protocol/ndk"
 
-const originalNdkConnect = NDK.prototype.connect
 const originalWindowDescriptor = Object.getOwnPropertyDescriptor(
   globalThis,
   "window"
@@ -34,7 +32,6 @@ function fakeSigner(pubkey: string): NDKSigner {
 
 describe("NDK signer lifecycle", () => {
   afterEach(() => {
-    NDK.prototype.connect = originalNdkConnect
     __resetNdkTestState()
     disconnectNdk()
     restoreWindow()
@@ -58,19 +55,13 @@ describe("NDK signer lifecycle", () => {
     expect(getNdk().signer).toBe(activeSigner)
   })
 
-  it("uses the active signer lease when a connection retry rebuilds the client", async () => {
-    const staleSigner = fakeSigner("a".repeat(64))
-    const activeSigner = fakeSigner("b".repeat(64))
+  it("constructs an offline compatibility context without ambient relays", () => {
+    const ndk = getNdk()
 
-    NDK.prototype.connect = async () => {}
-    setSigner(activeSigner)
-    getNdk().signer = staleSigner
-
-    await expect(requireNdkConnected(1)).rejects.toThrow(
-      "No relays responded within timeout"
-    )
-
-    expect(getNdk().signer).toBe(activeSigner)
+    expect(ndk.explicitRelayUrls).toEqual([])
+    expect(ndk.outboxPool).toBeUndefined()
+    expect(ndk.autoConnectUserRelays).toBe(false)
+    expect(ndk.pool.relays.size).toBe(0)
   })
 
   it("does not let stale auth cleanup remove a newer connected signer", () => {
@@ -104,7 +95,7 @@ describe("NDK signer lifecycle", () => {
     expect(getNdk().signer).toBeUndefined()
   })
 
-  it("does not retain a signer when NDK initialization fails", () => {
+  it("does not read relay settings while installing a signer", () => {
     const activeSigner = fakeSigner("a".repeat(64))
 
     Object.defineProperty(globalThis, "window", {
@@ -118,10 +109,40 @@ describe("NDK signer lifecycle", () => {
       },
     })
 
-    expect(() => setSigner(activeSigner)).toThrow("Storage access denied")
+    expect(() => setSigner(activeSigner)).not.toThrow()
 
     restoreWindow()
 
-    expect(getNdk().signer).toBeUndefined()
+    expect(getNdk().signer).toBe(activeSigner)
+  })
+
+  it("does not ask an installed signer for relays", () => {
+    let relayLookups = 0
+    const activeSigner = {
+      ...fakeSigner("a".repeat(64)),
+      relays: async () => {
+        relayLookups += 1
+        return []
+      },
+    } as NDKSigner
+
+    setSigner(activeSigner)
+
+    expect(relayLookups).toBe(0)
+    expect(getNdk().pool.relays.size).toBe(0)
+  })
+
+  it("disconnects explicitly planned relay sockets before dropping the adapter", () => {
+    const ndk = getNdk()
+    let disconnects = 0
+    ndk.pool.relays.set("wss://relay.example/", {
+      disconnect() {
+        disconnects += 1
+      },
+    } as never)
+
+    disconnectNdk()
+
+    expect(disconnects).toBe(1)
   })
 })

@@ -3,7 +3,11 @@ import { db, type CachedRelayList } from "../db"
 import { config } from "../config"
 import { normalizePublicWebSocketUrl } from "../network-target-safety"
 import { EVENT_KINDS } from "./kinds"
-import { fetchEventsFanout } from "./ndk"
+import {
+  fetchEventsFanout,
+  fetchEventsFanoutDetailed,
+  type FetchEventsFanoutResult,
+} from "./ndk"
 import {
   getGeneralReadRelayUrls,
   parseNip65RelayTags,
@@ -60,14 +64,29 @@ export interface RelayListLookupOptions {
   signal?: AbortSignal
 }
 
+export type RelayListResolutionState =
+  | "network"
+  | "fresh-cache"
+  | "stale-cache"
+  | "missing"
+  | "partial-network"
+  | "lookup-unavailable"
+
+export interface RelayListsDetailedResult {
+  relayLists: Map<string, RelayList>
+  resolutionStates: Map<string, RelayListResolutionState>
+}
+
 interface RelayListTestOverrides {
   fetchEventsFanout?: typeof fetchEventsFanout
+  fetchEventsFanoutDetailed?: typeof fetchEventsFanoutDetailed
   loadCached?: (pubkey: string) => Promise<CachedRelayList | undefined>
   putCached?: (entry: CachedRelayList) => Promise<void>
   now?: () => number
 }
 
 let testOverrides: RelayListTestOverrides = {}
+const testCacheWriteLocks = new Map<string, Promise<void>>()
 
 export function __setRelayListTestOverrides(
   overrides: Partial<RelayListTestOverrides>
@@ -77,6 +96,7 @@ export function __setRelayListTestOverrides(
 
 export function __resetRelayListTestOverrides(): void {
   testOverrides = {}
+  testCacheWriteLocks.clear()
 }
 
 function now(opts?: RelayListLookupOptions): number {
@@ -236,19 +256,6 @@ async function loadCached(pubkey: string): Promise<RelayList | undefined> {
   }
 }
 
-async function putCached(list: RelayList): Promise<void> {
-  const row = toCachedRow(list)
-  if (testOverrides.putCached) {
-    await testOverrides.putCached(row)
-    return
-  }
-  try {
-    await db.relayLists.put(row)
-  } catch {
-    // best-effort; ignore persistence failures in non-browser environments.
-  }
-}
-
 function filterLookupRelayList(
   list: RelayList | undefined,
   opts: RelayListLookupOptions
@@ -306,6 +313,68 @@ function preferFetchedRelayList(
   return fetched.eventId <= cached.eventId ? fetched : cached
 }
 
+async function withTestCacheWriteLock<T>(
+  pubkey: string,
+  operation: () => Promise<T>
+): Promise<T> {
+  const previous = testCacheWriteLocks.get(pubkey) ?? Promise.resolve()
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const tail = previous.catch(() => undefined).then(() => gate)
+  testCacheWriteLocks.set(pubkey, tail)
+
+  await previous.catch(() => undefined)
+  try {
+    return await operation()
+  } finally {
+    release()
+    if (testCacheWriteLocks.get(pubkey) === tail) {
+      testCacheWriteLocks.delete(pubkey)
+    }
+  }
+}
+
+/**
+ * Atomically retain the NIP-01 winner against the row current at commit time.
+ * The network fetch happens outside this transaction, so every caller must use
+ * the returned winner rather than assuming its fetched candidate was stored.
+ */
+async function retainStrongestRelayList(
+  fetched: RelayList
+): Promise<RelayList> {
+  if (testOverrides.loadCached || testOverrides.putCached) {
+    return await withTestCacheWriteLock(fetched.pubkey, async () => {
+      const currentRow = testOverrides.loadCached
+        ? await testOverrides.loadCached(fetched.pubkey)
+        : undefined
+      const current = currentRow ? fromCachedRow(currentRow) : undefined
+      const winner = preferFetchedRelayList(fetched, current)
+      if (winner === fetched && testOverrides.putCached) {
+        await testOverrides.putCached(toCachedRow(fetched))
+      }
+      return winner
+    })
+  }
+
+  try {
+    return await db.transaction("rw", db.relayLists, async () => {
+      const currentRow = await db.relayLists.get(fetched.pubkey)
+      const current = currentRow ? fromCachedRow(currentRow) : undefined
+      const winner = preferFetchedRelayList(fetched, current)
+      if (winner === fetched) {
+        await db.relayLists.put(toCachedRow(fetched))
+      }
+      return winner
+    })
+  } catch {
+    // Cache persistence is best-effort when IndexedDB is unavailable. The
+    // verified network candidate remains usable in this execution.
+    return fetched
+  }
+}
+
 async function runFetch(
   filter: NDKFilter,
   relayUrls: readonly string[],
@@ -318,6 +387,50 @@ async function runFetch(
     fetchTimeoutMs: RELAY_LIST_FETCH_TIMEOUT_MS,
     signal,
   })) as NDKEvent[]
+}
+
+async function runFetchDetailed(
+  filter: NDKFilter,
+  relayUrls: readonly string[],
+  signal?: AbortSignal
+): Promise<FetchEventsFanoutResult> {
+  if (relayUrls.length === 0) {
+    return { events: [], relays: [], eventsVerified: true }
+  }
+  if (testOverrides.fetchEventsFanoutDetailed) {
+    return await testOverrides.fetchEventsFanoutDetailed(filter, {
+      relayUrls: [...relayUrls],
+      connectTimeoutMs: RELAY_LIST_CONNECT_TIMEOUT_MS,
+      fetchTimeoutMs: RELAY_LIST_FETCH_TIMEOUT_MS,
+      skipHealthFilter: true,
+      signal,
+    })
+  }
+  if (testOverrides.fetchEventsFanout) {
+    const events = await testOverrides.fetchEventsFanout(filter, {
+      relayUrls: [...relayUrls],
+      connectTimeoutMs: RELAY_LIST_CONNECT_TIMEOUT_MS,
+      fetchTimeoutMs: RELAY_LIST_FETCH_TIMEOUT_MS,
+      skipHealthFilter: true,
+      signal,
+    })
+    return {
+      events,
+      relays: relayUrls.map((relayUrl) => ({
+        relayUrl,
+        status: "success",
+        eventCount: events.length,
+      })),
+      eventsVerified: true,
+    }
+  }
+  return await fetchEventsFanoutDetailed(filter, {
+    relayUrls: [...relayUrls],
+    connectTimeoutMs: RELAY_LIST_CONNECT_TIMEOUT_MS,
+    fetchTimeoutMs: RELAY_LIST_FETCH_TIMEOUT_MS,
+    skipHealthFilter: true,
+    signal,
+  })
 }
 
 function throwIfLookupAborted(signal?: AbortSignal): void {
@@ -362,12 +475,13 @@ export async function getRelayList(
     throwIfLookupAborted(opts.signal)
     const latest = pickLatestRelayListEvent(events, pubkey)
     if (!latest) {
-      return filterLookupRelayList(withLookupState(cached, "stale-cache"), opts)
+      return filterLookupRelayList(
+        withLookupState(retained, "stale-cache"),
+        opts
+      )
     }
     const fetched = parseRelayListEvent(latest, { cachedAt: now(opts) })
-    const list = preferFetchedRelayList(fetched, retained)
-    throwIfLookupAborted(opts.signal)
-    if (list === fetched) await putCached(list)
+    const list = await retainStrongestRelayList(fetched)
     throwIfLookupAborted(opts.signal)
     return filterLookupRelayList(
       withLookupState(list, list === fetched ? "network" : "stale-cache"),
@@ -375,7 +489,7 @@ export async function getRelayList(
     )
   } catch (error) {
     if (opts.signal?.aborted) throw error
-    return filterLookupRelayList(withLookupState(cached, "stale-cache"), opts)
+    return filterLookupRelayList(withLookupState(retained, "stale-cache"), opts)
   }
 }
 
@@ -387,20 +501,33 @@ export async function getRelayLists(
   pubkeys: readonly string[],
   opts: RelayListLookupOptions = {}
 ): Promise<Map<string, RelayList>> {
+  return (await getRelayListsDetailed(pubkeys, opts)).relayLists
+}
+
+/**
+ * Resolve relay lists without collapsing a completed no-event lookup into a
+ * transport failure. Replaceable-event writers need this distinction before
+ * treating fallback reads as complete enough to authorize a replacement.
+ */
+export async function getRelayListsDetailed(
+  pubkeys: readonly string[],
+  opts: RelayListLookupOptions = {}
+): Promise<RelayListsDetailedResult> {
   throwIfLookupAborted(opts.signal)
   const out = new Map<string, RelayList>()
-  const cachedByPubkey = new Map<string, RelayList>()
+  const resolutionStates = new Map<string, RelayListResolutionState>()
   const unique = Array.from(
     new Set(pubkeys.map((pubkey) => pubkey.trim()).filter(Boolean))
   )
-  if (unique.length === 0) return out
+  if (unique.length === 0) {
+    return { relayLists: out, resolutionStates }
+  }
 
   const missing: string[] = []
 
   for (const pubkey of unique) {
     const cached = await loadCached(pubkey)
     throwIfLookupAborted(opts.signal)
-    if (cached) cachedByPubkey.set(pubkey, cached)
     if (!opts.skipCache) {
       if (cached && now(opts) - cached.cachedAt < RELAY_LIST_CACHE_TTL_MS) {
         out.set(
@@ -410,6 +537,7 @@ export async function getRelayLists(
             opts
           )
         )
+        resolutionStates.set(pubkey, "fresh-cache")
       } else {
         if (cached) {
           out.set(
@@ -419,23 +547,43 @@ export async function getRelayLists(
               opts
             )
           )
+          resolutionStates.set(pubkey, "stale-cache")
         }
         missing.push(pubkey)
       }
     } else {
+      if (cached) {
+        out.set(
+          pubkey,
+          filterRelayListForContext(
+            withLookupState(cached, "stale-cache")!,
+            opts
+          )
+        )
+        resolutionStates.set(pubkey, "stale-cache")
+      }
       missing.push(pubkey)
     }
   }
 
-  if (missing.length === 0) return out
-  if (opts.cacheOnly) return out
+  if (missing.length === 0) return { relayLists: out, resolutionStates }
+  if (opts.cacheOnly) {
+    for (const pubkey of missing) {
+      if (!resolutionStates.has(pubkey)) {
+        // A cache miss says nothing about whether the author has published a
+        // relay list. Only a completed network lookup can establish absence.
+        resolutionStates.set(pubkey, "lookup-unavailable")
+      }
+    }
+    return { relayLists: out, resolutionStates }
+  }
 
   const relayUrls =
     opts.relayUrls ??
     getGeneralReadRelayUrls({ fallbackRelayUrls: config.defaultRelays })
 
   try {
-    const events = await runFetch(
+    const result = await runFetchDetailed(
       {
         kinds: [EVENT_KINDS.RELAY_LIST],
         authors: missing,
@@ -445,14 +593,42 @@ export async function getRelayLists(
       opts.signal
     )
     throwIfLookupAborted(opts.signal)
+    const statusByRelay = new Map(
+      result.relays.map((relay) => [relay.relayUrl, relay.status] as const)
+    )
+    const verified = result.eventsVerified === true
+    const transportComplete =
+      verified &&
+      relayUrls.length > 0 &&
+      relayUrls.every((relayUrl) => statusByRelay.get(relayUrl) === "success")
+    const transportUsable =
+      verified &&
+      relayUrls.some((relayUrl) => {
+        const status = statusByRelay.get(relayUrl)
+        return status === "success" || status === "partial"
+      })
 
     for (const pubkey of missing) {
-      const latest = pickLatestRelayListEvent(events, pubkey)
-      if (!latest) continue
+      const latest = verified
+        ? pickLatestRelayListEvent(result.events, pubkey)
+        : undefined
+      if (!latest) {
+        if (out.has(pubkey)) {
+          resolutionStates.set(pubkey, "stale-cache")
+        } else {
+          resolutionStates.set(
+            pubkey,
+            transportComplete
+              ? "missing"
+              : transportUsable
+                ? "partial-network"
+                : "lookup-unavailable"
+          )
+        }
+        continue
+      }
       const fetched = parseRelayListEvent(latest, { cachedAt: now(opts) })
-      const list = preferFetchedRelayList(fetched, cachedByPubkey.get(pubkey))
-      throwIfLookupAborted(opts.signal)
-      if (list === fetched) await putCached(list)
+      const list = await retainStrongestRelayList(fetched)
       throwIfLookupAborted(opts.signal)
       out.set(
         pubkey,
@@ -461,13 +637,27 @@ export async function getRelayLists(
           opts
         )
       )
+      resolutionStates.set(
+        pubkey,
+        list !== fetched
+          ? "stale-cache"
+          : transportComplete
+            ? "network"
+            : "partial-network"
+      )
     }
   } catch (error) {
     if (opts.signal?.aborted) throw error
     // best-effort; cached entries already merged above
+    for (const pubkey of missing) {
+      resolutionStates.set(
+        pubkey,
+        out.has(pubkey) ? "stale-cache" : "lookup-unavailable"
+      )
+    }
   }
 
-  return out
+  return { relayLists: out, resolutionStates }
 }
 
 /**
@@ -483,9 +673,8 @@ export async function ingestRelayListEvent(
     sourceRelayUrls,
     cachedAt: Date.now(),
   })
-  const list = preferFetchedRelayList(fetched, await loadCached(event.pubkey))
-  if (list === fetched) await putCached(list)
+  const list = await retainStrongestRelayList(fetched)
   return filterRelayListForContext(
-    withLookupState(list, list === fetched ? "network" : "fresh-cache")!
+    withLookupState(list, list === fetched ? "network" : "stale-cache")!
   )
 }
