@@ -229,6 +229,53 @@ describe("merchant product variation planning", () => {
     })
   })
 
+  it("round-trips imported specification tuples in any tag order", () => {
+    const initial = buildProductFamilyChangePlan({
+      parentDTag: "grouped-shoes",
+      baseProduct: baseProduct({ title: "Grouped Shoes" }),
+      variations: variationForm([
+        { key: "US Size", values: "Men · 5, Women · 5" },
+        { key: "color", values: "White, Black" },
+      ]),
+      currency: "USD",
+      now: NOW,
+    })
+    const family = toFamily(initial)
+    const reordered = family.variations[1]
+    if (!reordered) throw new Error("Expected an imported variation")
+    family.variations[1] = {
+      ...reordered,
+      product: {
+        ...reordered.product,
+        specifications: [...reordered.product.specifications].reverse(),
+      },
+    }
+
+    const restored = getProductVariationFormState(
+      family.root,
+      family.variations
+    )
+    expect(restored.supported).toBe(true)
+    expect(getMissingProductVariationRowCount(restored.state)).toBe(0)
+
+    const regenerated = generateProductVariationRows(restored.state)
+    expect(regenerated.rows).toHaveLength(4)
+    expect(new Set(regenerated.rows.map(({ identity }) => identity)).size).toBe(
+      4
+    )
+
+    const roundTrip = buildProductFamilyChangePlan({
+      parentDTag: "grouped-shoes",
+      baseProduct: family.root.product,
+      variations: regenerated,
+      currency: "USD",
+      existing: family,
+      now: NOW + 60_000,
+    })
+    expect(roundTrip.publish).toEqual([])
+    expect(roundTrip.remove).toEqual([])
+  })
+
   it("tombstones an explicitly removed sparse row", () => {
     const initial = buildProductFamilyChangePlan({
       parentDTag: "conduit-tee",
@@ -338,6 +385,31 @@ describe("merchant product variation planning", () => {
     expect(generateProductVariationRows(state).rows).toEqual([])
   })
 
+  it("disables restore when retained and missing rows exceed the family cap", () => {
+    const retained = variationForm([
+      {
+        key: "size",
+        values: Array.from({ length: 64 }, (_, index) => `A${index + 1}`).join(
+          ", "
+        ),
+      },
+    ])
+    const changed: ProductVariationFormState = {
+      ...retained,
+      axes: retained.axes.map((axis) => ({
+        ...axis,
+        values: Array.from({ length: 64 }, (_, index) => `B${index + 1}`).join(
+          ", "
+        ),
+      })),
+    }
+
+    expect(getProductVariationCartesianCount(changed)).toBe(64)
+    expect(getMissingProductVariationRowCount(changed)).toBeNull()
+    expect(generateProductVariationRows(changed)).toBe(changed)
+    expect(changed.rows).toHaveLength(64)
+  })
+
   it("groups Men and Women size lists into 23 alternatives", () => {
     const state: ProductVariationFormState = {
       ...createEmptyProductVariationForm(),
@@ -424,6 +496,39 @@ describe("merchant product variation planning", () => {
       now: NOW,
     })
     expect(plan.desired).toHaveLength(24)
+  })
+
+  it("canonicalizes grouped separator spacing before deduplication", () => {
+    const state = variationForm([
+      { key: "US Size", values: "Men · 5, Men  ·  5" },
+    ])
+
+    expect(getProductVariationCartesianCount(state)).toBe(1)
+    expect(state.rows).toHaveLength(1)
+    expect(state.rows[0]?.specifications).toEqual([
+      { key: "US Size", value: "Men · 5" },
+    ])
+    expect(getProductVariationFormError(state, "USD")).toBe(
+      "Remove duplicate values from US Size."
+    )
+
+    const canonicalRow = state.rows[0]
+    if (!canonicalRow) throw new Error("Expected a canonical grouped row")
+    const duplicateRows: ProductVariationFormState = {
+      ...state,
+      axes: [createProductVariationAxis("US Size", "Men · 5", 0)],
+      rows: [
+        canonicalRow,
+        {
+          ...canonicalRow,
+          identity: "legacy-spacing",
+          specifications: [{ key: "US Size", value: "Men  ·  5" }],
+        },
+      ],
+    }
+    expect(getProductVariationFormError(duplicateRows, "USD")).toContain(
+      "duplicates another variation row"
+    )
   })
 
   it("adds alternative sizes before combining them with other axes", () => {

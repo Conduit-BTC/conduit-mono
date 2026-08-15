@@ -125,6 +125,18 @@ function normalizePart(value: string): string {
   return value.trim().toLocaleLowerCase("en-US")
 }
 
+function compareNormalizedParts(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0
+}
+
+function canonicalizeVariationValue(value: string): string {
+  const candidate = value.trim()
+  const grouped = parseGroupedProductOptionValue(candidate)
+  return grouped
+    ? formatGroupedProductOptionValue(grouped.group, grouped.value)
+    : candidate
+}
+
 function axisId(key: string, index = 0): string {
   const normalized = normalizePart(key).replace(/[^a-z0-9]+/g, "-")
   return `axis-${normalized || "option"}-${index}`
@@ -153,11 +165,12 @@ function parseVariationAxis(input: string): ParsedVariationAxis {
   const seen = new Set<string>()
 
   for (const rawValue of input.split(",")) {
-    const value = rawValue.trim()
-    if (!value) continue
+    const candidate = rawValue.trim()
+    if (!candidate) continue
+    const value = canonicalizeVariationValue(candidate)
     const identity = normalizePart(value)
     if (seen.has(identity)) {
-      duplicates.push(value)
+      duplicates.push(candidate)
       continue
     }
     seen.add(identity)
@@ -318,7 +331,16 @@ function getCombinationIdentity(
   specifications: ProductSchema["specifications"]
 ): string {
   return specifications
-    .map(({ key, value }) => `${normalizePart(key)}:${normalizePart(value)}`)
+    .map(({ key, value }) => ({
+      key: normalizePart(key),
+      value: normalizePart(canonicalizeVariationValue(value)),
+    }))
+    .sort(
+      (left, right) =>
+        compareNormalizedParts(left.key, right.key) ||
+        compareNormalizedParts(left.value, right.value)
+    )
+    .map(({ key, value }) => `${key}:${value}`)
     .join("|")
 }
 
@@ -542,10 +564,13 @@ export function getMissingProductVariationRowCount(
   const existingIdentities = new Set(
     state.rows.map((row) => getCombinationIdentity(row.specifications))
   )
-  return buildAxisCombinations(state.axes).filter(
+  const missingRowCount = buildAxisCombinations(state.axes).filter(
     (specifications) =>
       !existingIdentities.has(getCombinationIdentity(specifications))
   ).length
+  return state.rows.length + missingRowCount > MAX_PRODUCT_VARIATION_COUNT
+    ? null
+    : missingRowCount
 }
 
 export function getProductVariationGenerationLimitMessage(
@@ -562,10 +587,10 @@ export function getProductVariationGenerationLimitMessage(
 export function generateProductVariationRows(
   state: ProductVariationFormState
 ): ProductVariationFormState {
-  if (getProductVariationCartesianCount(state) > MAX_PRODUCT_VARIATION_COUNT) {
-    return state
-  }
-  const rowsByIdentity = new Map(state.rows.map((row) => [row.identity, row]))
+  if (getMissingProductVariationRowCount(state) === null) return state
+  const rowsByIdentity = new Map(
+    state.rows.map((row) => [getCombinationIdentity(row.specifications), row])
+  )
   const rows = [...state.rows]
   for (const specifications of buildAxisCombinations(state.axes)) {
     const identity = getCombinationIdentity(specifications)
@@ -765,7 +790,9 @@ export function getProductVariationFormError(
     for (const specification of row.specifications) {
       const key = normalizePart(specification.key)
       if (
-        !allowedValuesByKey.get(key)?.has(normalizePart(specification.value))
+        !allowedValuesByKey
+          .get(key)
+          ?.has(normalizePart(canonicalizeVariationValue(specification.value)))
       ) {
         return `${getCombinationLabel(row.specifications) || "A variation"} uses a value that is not listed for ${specification.key.trim()}.`
       }
@@ -980,12 +1007,13 @@ export function getProductVariationFormState<
 
     for (const specification of specifications) {
       const key = normalizePart(specification.key)
-      const valueIdentity = normalizePart(specification.value)
+      const canonicalValue = canonicalizeVariationValue(specification.value)
+      const valueIdentity = normalizePart(canonicalValue)
       const seen = seenValuesByKey.get(key) ?? new Set<string>()
       const values = valuesByKey.get(key) ?? []
       if (!seen.has(valueIdentity)) {
         seen.add(valueIdentity)
-        values.push(specification.value)
+        values.push(canonicalValue)
       }
       seenValuesByKey.set(key, seen)
       valuesByKey.set(key, values)
