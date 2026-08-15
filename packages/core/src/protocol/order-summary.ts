@@ -22,6 +22,9 @@ export type OrderSummary = {
       normalizedCurrency: string
     }
   }>
+  itemSubtotal: number | null
+  shippingCostSats: number | null
+  shippingCostStatus: "not_required" | "included" | "priced" | "manual" | null
   subtotal: number
   currency: string
   shippingAddress: {
@@ -61,6 +64,12 @@ export type OrderSummary = {
 export interface OrderSummaryParticipants {
   buyerPubkey: string
   merchantPubkey: string
+}
+
+function normalizeSummaryCurrency(currency: unknown): string {
+  if (typeof currency !== "string") return ""
+  const normalized = currency.trim().toUpperCase()
+  return normalized === "SAT" ? "SATS" : normalized
 }
 
 function isExternalPaymentReport(
@@ -189,7 +198,33 @@ export function extractOrderSummary(
     firstOrder?.type === "order" ? firstOrder.payload.subtotal : 0
   const currency =
     firstOrder?.type === "order" ? firstOrder.payload.currency : "USD"
-
+  const itemCurrenciesMatch = items.every(
+    (item) =>
+      normalizeSummaryCurrency(item.currency) ===
+      normalizeSummaryCurrency(currency)
+  )
+  const calculatedItemSubtotal =
+    firstOrder?.type === "order" && itemCurrenciesMatch
+      ? items.reduce(
+          (total, item) => total + item.priceAtPurchase * item.quantity,
+          0
+        )
+      : null
+  const itemSubtotalIsSats = normalizeSummaryCurrency(currency) === "SATS"
+  const itemSubtotal =
+    calculatedItemSubtotal !== null &&
+    Number.isFinite(calculatedItemSubtotal) &&
+    (!itemSubtotalIsSats || Number.isSafeInteger(calculatedItemSubtotal))
+      ? calculatedItemSubtotal
+      : null
+  const shippingCostSats =
+    firstOrder?.type === "order"
+      ? (firstOrder.payload.shippingCostSats ?? null)
+      : null
+  const shippingCostStatus =
+    firstOrder?.type === "order"
+      ? (firstOrder.payload.shippingCostStatus ?? null)
+      : null
   const shippingAddress =
     firstOrder?.type === "order" && firstOrder.payload.shippingAddress
       ? {
@@ -257,6 +292,9 @@ export function extractOrderSummary(
         ? (firstOrder.payload.buyerIdentityKind ?? null)
         : null,
     items,
+    itemSubtotal,
+    shippingCostSats,
+    shippingCostStatus,
     subtotal,
     currency,
     shippingAddress,
