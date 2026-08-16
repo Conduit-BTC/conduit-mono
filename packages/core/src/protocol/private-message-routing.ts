@@ -15,16 +15,17 @@ import {
   fetchEventsFanoutWithDiagnostics,
   getEventSourceRelayUrls,
 } from "./ndk"
-import { isInsecureRelayUrl } from "./relay-list"
 import {
   getGeneralReadRelayUrls,
   getGeneralWriteRelayUrls,
-  tryNormalizeRelayUrl,
+  normalizeSecureRelayUrls as secureRelayUrls,
 } from "./relay-settings"
 import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
 } from "./signed-event"
+
+export { normalizeSecureRelayUrls as secureRelayUrls } from "./relay-settings"
 
 /**
  * Shared NIP-17 inbox routing boundary (CND-208).
@@ -393,20 +394,6 @@ export function getCachedInboxDeclaration(
 
 function cacheKey(pubkey: string): string {
   return pubkey.trim().toLowerCase()
-}
-
-/** Normalize, deduplicate, and keep only secure wss:// relay urls. */
-export function secureRelayUrls(relayUrls: readonly string[]): string[] {
-  const seen = new Set<string>()
-  const out: string[] = []
-  for (const url of relayUrls) {
-    const normalized = tryNormalizeRelayUrl(url)
-    if (!normalized.ok || isInsecureRelayUrl(normalized.url)) continue
-    if (seen.has(normalized.url)) continue
-    seen.add(normalized.url)
-    out.push(normalized.url)
-  }
-  return out
 }
 
 /** Stable shared relays used to make declarations discoverable cross-client. */

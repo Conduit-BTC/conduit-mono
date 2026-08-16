@@ -59,7 +59,6 @@ function SettingsPage() {
                   stale: inboxDeclaration.stale,
                   distributionRepairable:
                     inboxDeclaration.distributionRepairable,
-                  declaredRelayUrls: inboxDeclaration.declaredRelayUrls,
                   candidateRelays: getInboxRelayCandidates(
                     relaySettings.settings.entries,
                     inboxDeclaration.declaredRelayUrls,

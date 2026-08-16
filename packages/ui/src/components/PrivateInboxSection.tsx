@@ -36,8 +36,6 @@ export interface PrivateInboxSectionProps {
   stale?: boolean
   /** Complete shared discovery permits an explicit redistribution or repair. */
   distributionRepairable?: boolean
-  /** Relays in the current kind-10050 declaration (empty when none). */
-  declaredRelayUrls: string[]
   /** Typed configured/declaration/capability evidence for secure inbox relays. */
   candidateRelays: InboxRelayCandidate[]
   lookupError?: string | null
@@ -211,7 +209,6 @@ export function PrivateInboxSection({
   status,
   stale = false,
   distributionRepairable = false,
-  declaredRelayUrls,
   candidateRelays,
   lookupError = null,
   publishing = false,
@@ -225,11 +222,14 @@ export function PrivateInboxSection({
   // Key selection state on relay-url values, not array identity: parent
   // re-renders pass fresh arrays every time and must not clobber an
   // in-progress checkbox selection.
+  const declaredRelayUrls: string[] = []
+  const selectableCandidateUrls: string[] = []
+  for (const candidate of candidateRelays) {
+    if (candidate.declared) declaredRelayUrls.push(candidate.url)
+    if (candidate.selectable) selectableCandidateUrls.push(candidate.url)
+  }
   const declaredKey = declaredRelayUrls.join("\n")
-  const selectableCandidateKey = candidateRelays
-    .filter((candidate) => candidate.selectable)
-    .map((candidate) => candidate.url)
-    .join("\n")
+  const selectableCandidateKey = selectableCandidateUrls.join("\n")
 
   const defaultSelection = useMemo(() => {
     const declared = declaredKey ? declaredKey.split("\n") : []

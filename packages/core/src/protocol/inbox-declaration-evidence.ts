@@ -13,7 +13,7 @@ import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
 } from "./signed-event"
-import { tryNormalizeRelayUrl } from "./relay-settings"
+import { normalizeSecureRelayUrls } from "./relay-settings"
 
 export type {
   DeclaredInboxDeclarationEventEvidence,
@@ -77,68 +77,22 @@ export function normalizeInboxDeclarationEvidencePubkey(
     : null
 }
 
-function cloneSignedEvent(
-  event: SignedPublicNostrEvent
-): SignedPublicNostrEvent {
-  return {
-    id: event.id,
-    pubkey: event.pubkey,
-    created_at: event.created_at,
-    kind: event.kind,
-    tags: event.tags.map((tag) => [...tag]),
-    content: event.content,
-    sig: event.sig,
-  }
+function cloneSignedEvent<T extends SignedPublicNostrEvent>(event: T): T {
+  return structuredClone(event)
 }
 
 /** Return a mutation-safe copy suitable for route/read-state projection. */
 export function cloneInboxDeclarationEventEvidence<
   T extends InboxDeclarationEventEvidence,
 >(evidence: T): T {
-  return {
-    ...evidence,
-    signedEvent: cloneSignedEvent(evidence.signedEvent),
-    secureRelayUrls: [...evidence.secureRelayUrls],
-    sourceRelayUrls: [...evidence.sourceRelayUrls],
-  } as T
+  return structuredClone(evidence)
 }
 
 /** Return a mutation-safe copy suitable for route/read-state projection. */
-export function cloneInboxDeclarationEvidenceRecord(
-  record: InboxDeclarationEvidenceRecord
-): InboxDeclarationEvidenceRecord {
-  return {
-    pubkey: record.pubkey,
-    current: cloneInboxDeclarationEventEvidence(record.current),
-    lastUsable: record.lastUsable
-      ? cloneInboxDeclarationEventEvidence(record.lastUsable)
-      : undefined,
-    latestLookup: record.latestLookup ? { ...record.latestLookup } : undefined,
-    cachedAt: record.cachedAt,
-  }
-}
-
-function normalizeSecureRelayUrls(relayUrls: readonly string[]): string[] {
-  const seen = new Set<string>()
-  const normalizedUrls: string[] = []
-
-  for (const relayUrl of relayUrls) {
-    const normalized = tryNormalizeRelayUrl(relayUrl)
-    if (!normalized.ok) continue
-
-    let secure: boolean
-    try {
-      secure = new URL(normalized.url).protocol === "wss:"
-    } catch {
-      continue
-    }
-    if (!secure || seen.has(normalized.url)) continue
-
-    seen.add(normalized.url)
-    normalizedUrls.push(normalized.url)
-  }
-
-  return normalizedUrls
+export function cloneInboxDeclarationEvidenceRecord<
+  T extends InboxDeclarationEvidenceRecord,
+>(record: T): T {
+  return structuredClone(record)
 }
 
 function assertLocalTimestamp(value: number, name: string): number {

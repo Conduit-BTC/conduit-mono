@@ -2,6 +2,8 @@ import { describe, expect, it } from "bun:test"
 import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 
 import {
+  cloneInboxDeclarationEventEvidence,
+  cloneInboxDeclarationEvidenceRecord,
   createInMemoryInboxDeclarationEvidenceRepository,
   getInboxDeclarationEvidence,
   mergeInboxDeclarationEvidence,
@@ -309,6 +311,46 @@ describe("durable inbox declaration evidence", () => {
     const restored = await getInboxDeclarationEvidence(ACCOUNT_A, repository)
     expect(restored?.current.signedEvent).toEqual(event)
     expect(restored?.current.secureRelayUrls).toEqual(["wss://inbox.example"])
+  })
+
+  it("preserves and isolates nested evidence fields as the schema evolves", async () => {
+    const repository = createInMemoryInboxDeclarationEvidenceRepository()
+    const event = declarationEvent({ createdAt: 501 })
+    const record = await mergeInboxDeclarationEvidence(
+      { pubkey: ACCOUNT_A, signedEvent: event },
+      repository
+    )
+    const evidenceWithExtension = {
+      ...record.current,
+      transportEvidence: {
+        relayGroups: [["wss://inbox.example"]],
+      },
+    }
+    const recordWithExtension = {
+      ...record,
+      current: evidenceWithExtension,
+      transportEvidence: {
+        relayGroups: [["wss://source.example"]],
+      },
+    }
+
+    const evidenceClone = cloneInboxDeclarationEventEvidence(
+      evidenceWithExtension
+    )
+    const recordClone = cloneInboxDeclarationEvidenceRecord(recordWithExtension)
+    evidenceClone.transportEvidence.relayGroups[0]!.push(
+      "wss://mutated.example"
+    )
+    recordClone.transportEvidence.relayGroups[0]!.push("wss://mutated.example")
+    recordClone.current.signedEvent.tags[0]!.push("mutated")
+
+    expect(evidenceWithExtension.transportEvidence.relayGroups).toEqual([
+      ["wss://inbox.example"],
+    ])
+    expect(recordWithExtension.transportEvidence.relayGroups).toEqual([
+      ["wss://source.example"],
+    ])
+    expect(recordWithExtension.current.signedEvent.tags).toEqual(event.tags)
   })
 
   it("isolates evidence by normalized account pubkey", async () => {

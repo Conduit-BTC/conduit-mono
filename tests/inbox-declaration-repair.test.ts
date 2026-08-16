@@ -23,6 +23,12 @@ function resolution(
   }
 }
 
+function checkboxOpeningTag(markup: string, id: string): string {
+  const idIndex = markup.indexOf(`id="${id}"`)
+  const inputStart = markup.lastIndexOf("<input", idIndex)
+  return markup.slice(inputStart, markup.indexOf(">", idIndex) + 1)
+}
+
 describe("verifyDeclarationReadBack", () => {
   it("confirms a fresh declared read-back", () => {
     expect(verifyDeclarationReadBack(resolution({}))).toEqual({
@@ -252,11 +258,57 @@ describe("canPublishInboxDeclaration", () => {
 })
 
 describe("PrivateInboxSection relay evidence", () => {
+  it("derives the current declaration selection and publish gate from candidate evidence", () => {
+    const markup = renderToStaticMarkup(
+      createElement(PrivateInboxSection, {
+        status: "ready",
+        candidateRelays: [
+          {
+            url: "wss://configured.example",
+            configured: true,
+            enabled: true,
+            declared: false,
+            retained: false,
+            selectable: true,
+            relayInfoProbe: "unknown",
+            protectedMessageCapabilityEvidence: "unknown",
+            protectedMessageRuntimeEvidence: "unknown",
+          },
+          {
+            url: "wss://declared.example",
+            configured: false,
+            enabled: false,
+            declared: true,
+            retained: false,
+            selectable: true,
+            relayInfoProbe: "unknown",
+            protectedMessageCapabilityEvidence: "unknown",
+            protectedMessageRuntimeEvidence: "unknown",
+          },
+        ],
+        onPublish: () => undefined,
+        onRetryLookup: () => undefined,
+      })
+    )
+    const labelIndex = markup.indexOf("Update inbox declaration")
+    const buttonStart = markup.lastIndexOf("<button", labelIndex)
+    const buttonOpeningTag = markup.slice(
+      buttonStart,
+      markup.indexOf(">", buttonStart) + 1
+    )
+
+    expect(checkboxOpeningTag(markup, "inbox-relay-0")).not.toContain(
+      ' checked=""'
+    )
+    expect(checkboxOpeningTag(markup, "inbox-relay-1")).toContain(' checked=""')
+    expect(markup).toContain("Declared")
+    expect(buttonOpeningTag).toContain(' disabled=""')
+  })
+
   it("renders declared, reachability, and protected-message evidence without overclaiming delivery", () => {
     const markup = renderToStaticMarkup(
       createElement(PrivateInboxSection, {
         status: "ready",
-        declaredRelayUrls: ["wss://declared.example"],
         candidateRelays: [
           {
             url: "wss://declared.example",
@@ -315,7 +367,6 @@ describe("PrivateInboxSection relay evidence", () => {
       renderToStaticMarkup(
         createElement(PrivateInboxSection, {
           status,
-          declaredRelayUrls: [],
           candidateRelays: [],
           onPublish: () => undefined,
           onRetryLookup: () => undefined,
@@ -340,7 +391,6 @@ describe("PrivateInboxSection relay evidence", () => {
       createElement(PrivateInboxSection, {
         status: "signed_empty",
         stale: true,
-        declaredRelayUrls: [],
         candidateRelays: [],
         onPublish: () => undefined,
         onRetryLookup: () => undefined,
@@ -354,7 +404,6 @@ describe("PrivateInboxSection relay evidence", () => {
         status: "ready",
         stale: true,
         distributionRepairable: true,
-        declaredRelayUrls: ["wss://inbox.example"],
         candidateRelays: [
           {
             url: "wss://inbox.example",
@@ -389,7 +438,6 @@ describe("PrivateInboxSection relay evidence", () => {
         status: "ready",
         stale: true,
         distributionRepairable: true,
-        declaredRelayUrls: relayUrls,
         candidateRelays: relayUrls.map((url) => ({
           url,
           configured: false,
@@ -414,6 +462,12 @@ describe("PrivateInboxSection relay evidence", () => {
 
     expect(labelIndex).toBeGreaterThan(-1)
     expect(buttonStart).toBeGreaterThan(-1)
+    expect(checkboxOpeningTag(markup, "inbox-relay-0")).toContain(' checked=""')
+    expect(checkboxOpeningTag(markup, "inbox-relay-1")).toContain(' checked=""')
+    expect(checkboxOpeningTag(markup, "inbox-relay-2")).toContain(' checked=""')
+    expect(checkboxOpeningTag(markup, "inbox-relay-3")).not.toContain(
+      ' checked=""'
+    )
     expect(openingTag).not.toContain(' disabled=""')
     expect(openingTag).not.toContain(" disabled>")
   })
@@ -422,7 +476,6 @@ describe("PrivateInboxSection relay evidence", () => {
     const markup = renderToStaticMarkup(
       createElement(PrivateInboxSection, {
         status: "signed_empty",
-        declaredRelayUrls: [],
         candidateRelays: [
           {
             url: "wss://previous.example",

@@ -25,11 +25,13 @@ import {
   getRelayBucketConfigs,
   loadRelaySettings,
   mergeRelayPreferencesIntoSettings,
+  normalizeSecureRelayUrls,
   normalizeRelaySettingsState,
   normalizeRelayUrl,
   parseNip65RelayTags,
   saveRelaySettings,
   scanRelaySettingsEntry,
+  secureRelayUrls,
   serializeNip65RelayTags,
   type RelaySettingsEntry,
   type RelaySettingsState,
@@ -226,6 +228,22 @@ describe("relay settings protocol helpers", () => {
     expect(normalizeRelayUrl("http://127.0.0.1:7777")).toBe(
       "ws://127.0.0.1:7777"
     )
+  })
+
+  it("normalizes secure relay urls before stable deduplication", () => {
+    const inputs = [
+      " Relay.Example.com/path/?ignored=1#fragment ",
+      "https://relay.example.com/path/",
+      "wss://second.example/",
+      "WSS://SECOND.EXAMPLE",
+      "ws://insecure.example",
+      "http://also-insecure.example",
+      "not a relay host",
+    ]
+    const expected = ["wss://relay.example.com/path", "wss://second.example"]
+
+    expect(normalizeSecureRelayUrls(inputs)).toEqual(expected)
+    expect(secureRelayUrls(inputs)).toEqual(expected)
   })
 
   it("parses and serializes NIP-65 read/write relay tags", () => {

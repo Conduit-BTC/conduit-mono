@@ -525,6 +525,25 @@ export function tryNormalizeRelayUrl(
   }
 }
 
+/** Normalize, deduplicate, and retain only secure wss:// relay URLs. */
+export function normalizeSecureRelayUrls(
+  relayUrls: readonly string[]
+): string[] {
+  const seen = new Set<string>()
+  const normalizedUrls: string[] = []
+
+  for (const relayUrl of relayUrls) {
+    const normalized = tryNormalizeRelayUrl(relayUrl)
+    if (!normalized.ok || !normalized.url.startsWith("wss://")) continue
+    if (seen.has(normalized.url)) continue
+
+    seen.add(normalized.url)
+    normalizedUrls.push(normalized.url)
+  }
+
+  return normalizedUrls
+}
+
 export function getRelayInfoDocumentUrl(relayUrl: string): string {
   const parsed = new URL(normalizeRelayUrl(relayUrl))
   parsed.protocol = parsed.protocol === "ws:" ? "http:" : "https:"
