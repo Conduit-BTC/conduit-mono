@@ -121,6 +121,8 @@ function hasIpv6Prefix(
 }
 
 const IPV6_DOCUMENTATION_PREFIX = 0x20010db8000000000000000000000000n
+const IPV6_ORCHID_PREFIX = 0x20010010000000000000000000000000n
+const IPV6_ORCHID_V2_PREFIX = 0x20010020000000000000000000000000n
 const IPV6_TEREDO_PREFIX = 0x20010000000000000000000000000000n
 const IPV6_6TO4_PREFIX = 0x20020000000000000000000000000000n
 const IPV6_BENCHMARK_PREFIX = 0x20010002000000000000000000000000n
@@ -132,6 +134,8 @@ function isPublicIpv6Address(value: bigint): boolean {
   // encodings without pretending to perform DNS or routing-policy checks.
   if (value >> 125n !== 1n) return false
   if (hasIpv6Prefix(value, IPV6_DOCUMENTATION_PREFIX, 32)) return false
+  if (hasIpv6Prefix(value, IPV6_ORCHID_PREFIX, 28)) return false
+  if (hasIpv6Prefix(value, IPV6_ORCHID_V2_PREFIX, 28)) return false
   if (hasIpv6Prefix(value, IPV6_TEREDO_PREFIX, 32)) return false
   if (hasIpv6Prefix(value, IPV6_6TO4_PREFIX, 16)) return false
   if (hasIpv6Prefix(value, IPV6_BENCHMARK_PREFIX, 48)) return false

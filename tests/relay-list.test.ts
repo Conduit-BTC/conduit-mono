@@ -679,6 +679,9 @@ describe("getRelayList / getRelayLists cache behavior", () => {
               ["r", "wss://127.0.0.1:4848"],
               ["r", "wss://192.168.1.10:4848"],
               ["r", "wss://relay-alice.conduit.market"],
+              ["r", "https://relay-two.conduit.market/path?ignored=true"],
+              ["r", "wss://relay-two.conduit.market/path"],
+              ["r", "wss://service.test"],
             ],
           }),
         ] as unknown as NDKEvent[]
@@ -686,12 +689,17 @@ describe("getRelayList / getRelayLists cache behavior", () => {
     })
 
     const list = await getRelayList("alice")
-    expect(list?.readRelayUrls).toEqual(["wss://relay-alice.conduit.market"])
+    expect(list?.readRelayUrls).toEqual([
+      "wss://relay-alice.conduit.market",
+      "wss://relay-two.conduit.market/path",
+    ])
     expect(cache.get("alice")?.readRelayUrls).toEqual([
       "ws://artshop:4848",
       "wss://127.0.0.1:4848",
       "wss://192.168.1.10:4848",
       "wss://relay-alice.conduit.market",
+      "wss://relay-two.conduit.market/path",
+      "wss://service.test",
     ])
   })
 

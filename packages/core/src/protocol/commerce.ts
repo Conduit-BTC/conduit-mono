@@ -16,10 +16,7 @@ import {
 import { CANONICAL_APP_BACKPLANE_RELAYS, config } from "../config"
 import { compareCommercePrices } from "../pricing"
 import type { Product, Profile } from "../types"
-import {
-  normalizePublicMediaUrl,
-  normalizePublicWebSocketUrl,
-} from "../network-target-safety"
+import { normalizePublicMediaUrl } from "../network-target-safety"
 import { EVENT_KINDS } from "./kinds"
 import {
   fetchEventsFanout,
@@ -68,6 +65,7 @@ import {
   normalizeProductSummaryForDisplay,
   parseProductEvent,
 } from "./products"
+import { mergeRicherProfile } from "./profile-cache"
 import { parseProfileEvent } from "./profiles"
 import {
   isValidSignedPublicNostrEvent,
@@ -84,8 +82,8 @@ import {
 import {
   getCommerceReadRelayUrls,
   getGeneralReadRelayUrls,
+  normalizePublicRelayHints,
   normalizeUntrustedRelayHintsForContext,
-  tryNormalizeRelayUrl,
 } from "./relay-settings"
 import { getRelayLists, isInsecureRelayUrl } from "./relay-list"
 import { planRelayReads, type RelayReadIntent } from "./relay-planner"
@@ -494,11 +492,8 @@ async function planCommerceReadRelayPlan(input: {
     input.relayHintMode !== "force" &&
     (input.intent === "commerce_products" ||
       (input.intent === "author_products" && (input.authors?.length ?? 0) > 1))
-  const publicExternalRelayHints = uniqueStrings(
-    (input.extraRelayUrls ?? []).flatMap((relayUrl) => {
-      const normalized = normalizePublicCommerceRelayUrl(relayUrl)
-      return normalized ? [normalized] : []
-    })
+  const publicExternalRelayHints = normalizePublicRelayHints(
+    input.extraRelayUrls ?? []
   )
   const authenticatedAuthorRelayHints = normalizeUntrustedRelayHintsForContext({
     relayUrls: input.authenticatedAuthorRelayUrls ?? [],
@@ -1286,12 +1281,6 @@ type ContextualRelayHints = {
   authenticatedAuthorRelayUrls: string[]
 }
 
-function normalizePublicCommerceRelayUrl(relayUrl: string): string | null {
-  if (!normalizePublicWebSocketUrl(relayUrl)) return null
-  const normalized = tryNormalizeRelayUrl(relayUrl)
-  return normalized.ok ? normalized.url : null
-}
-
 function contextualRelayHints(
   entries: readonly { pubkey: string; relayUrls: readonly string[] }[],
   authenticatedPubkey: string | null | undefined
@@ -1304,7 +1293,7 @@ function contextualRelayHints(
     const isAuthenticatedOwner =
       !!normalizedOwner && entry.pubkey.trim().toLowerCase() === normalizedOwner
     for (const relayUrl of entry.relayUrls) {
-      const publicRelayUrl = normalizePublicCommerceRelayUrl(relayUrl)
+      const [publicRelayUrl] = normalizePublicRelayHints([relayUrl])
       if (publicRelayUrl) publicRelayUrls.push(publicRelayUrl)
       else if (isAuthenticatedOwner) {
         authenticatedAuthorRelayUrls.push(relayUrl)
@@ -1906,45 +1895,6 @@ function cachedProfileToProfile(row: CachedProfile): Profile {
   }
 }
 
-function mergeProfileField(
-  current: string | undefined,
-  incoming: string | undefined
-): string | undefined {
-  return typeof incoming === "string" && incoming.trim().length > 0
-    ? incoming
-    : current
-}
-
-function mergeProfileData(
-  current: Profile | undefined,
-  incoming: Profile | undefined
-): Profile | undefined {
-  if (!incoming) return current
-  if (!current) return incoming
-  if (!hasProfileContent(incoming)) {
-    return hasProfileContent(current) ? current : incoming
-  }
-  if (!hasProfileContent(current)) return incoming
-
-  return {
-    pubkey: incoming.pubkey || current.pubkey,
-    name: mergeProfileField(current.name, incoming.name),
-    displayName: mergeProfileField(current.displayName, incoming.displayName),
-    about: mergeProfileField(current.about, incoming.about),
-    picture: mergeProfileField(
-      normalizePublicMediaUrl(current.picture) ?? undefined,
-      normalizePublicMediaUrl(incoming.picture) ?? undefined
-    ),
-    banner: mergeProfileField(
-      normalizePublicMediaUrl(current.banner) ?? undefined,
-      normalizePublicMediaUrl(incoming.banner) ?? undefined
-    ),
-    nip05: mergeProfileField(current.nip05, incoming.nip05),
-    lud16: mergeProfileField(current.lud16, incoming.lud16),
-    website: mergeProfileField(current.website, incoming.website),
-  }
-}
-
 function compareReplaceableProfileEvents(a: NDKEvent, b: NDKEvent): number {
   const createdAt = (b.created_at ?? 0) - (a.created_at ?? 0)
   if (createdAt !== 0) return createdAt
@@ -2005,7 +1955,7 @@ function mergeProfileEvents(
         latestEventCreatedAt < currentFrontier ||
         (latestEventCreatedAt === currentFrontier &&
           (currentRow.eventId || "\uffff") <= (latestEvent.id || "\uffff")))
-    const profile = mergeProfileData(
+    const profile = mergeRicherProfile(
       profiles[pubkey] ?? currentProjection,
       currentFrontierWins
         ? undefined
@@ -2200,12 +2150,8 @@ async function fetchProductDeletionTimestamps(
         authenticatedPubkey: options.authenticatedPubkey,
         maxRelays: options.readPolicy?.maxRelays,
       })
-      const publicSourceRelayUrls = uniqueStrings(
-        rawSourceRelayUrls.flatMap((relayUrl) => {
-          const normalized = normalizePublicCommerceRelayUrl(relayUrl)
-          return normalized ? [normalized] : []
-        })
-      )
+      const publicSourceRelayUrls =
+        normalizePublicRelayHints(rawSourceRelayUrls)
       const normalizedAuthenticatedPubkey = options.authenticatedPubkey
         ?.trim()
         .toLowerCase()

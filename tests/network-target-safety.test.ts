@@ -3,6 +3,7 @@ import {
   getProductImageCandidates,
   isPublicNetworkHostname,
   MAX_PRODUCT_IMAGE_CANDIDATES,
+  normalizePublicRelayHints,
   normalizeUntrustedRelayHintsForContext,
   normalizePublicHttpsUrl,
   normalizePublicMediaUrl,
@@ -108,6 +109,8 @@ describe("public network target safety", () => {
       "[fd12:3456::1]",
       "[fe80::1]",
       "[ff02::1]",
+      "[2001:10::1]",
+      "[2001:20::1]",
       "[2001:db8::1]",
       "[3fff::1]",
       "[3fff:0fff:ffff::1]",
@@ -158,6 +161,23 @@ describe("public network target safety", () => {
         allowApprovedPrivate: true,
       })
     ).toEqual([localRelay, publicRelay])
+  })
+
+  it("normalizes public-only relay hints before stable dedupe", () => {
+    expect(
+      normalizePublicRelayHints([
+        "https://relay-two.conduit.market/path?ignored=true",
+        "wss://relay-two.conduit.market/path",
+        "wss://127.0.0.1:7777",
+        "wss://service.test",
+        "wss://audit:secret@relay-two.conduit.market/path",
+        "relay-one.conduit.market/path?ignored=true",
+        "wss://relay-one.conduit.market/path",
+      ])
+    ).toEqual([
+      "wss://relay-two.conduit.market/path",
+      "wss://relay-one.conduit.market/path",
+    ])
   })
 
   it("deduplicates and caps product image request candidates", () => {

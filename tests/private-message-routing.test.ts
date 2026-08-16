@@ -89,9 +89,12 @@ describe("resolveInboxDeclaration", () => {
             createdAt: 100,
             relays: [
               "wss://inbox.conduit.market",
+              "https://inbox-two.conduit.market/path?ignored=true",
+              "wss://inbox-two.conduit.market/path",
               "ws://insecure.conduit.market",
               "wss://127.0.0.1:8080",
               "wss://10.0.0.5/inbox",
+              "wss://service.test",
             ],
           }),
         ],
@@ -100,7 +103,10 @@ describe("resolveInboxDeclaration", () => {
     })
 
     expect(result.state).toBe("declared")
-    expect(result.relayUrls).toEqual(["wss://inbox.conduit.market"])
+    expect(result.relayUrls).toEqual([
+      "wss://inbox.conduit.market",
+      "wss://inbox-two.conduit.market/path",
+    ])
     expect(result.stale).toBe(false)
   })
 
@@ -641,10 +647,7 @@ describe("resolveInboxDeclaration", () => {
         ],
         successfulRelayUrls:
           coverage === "complete"
-            ? [
-                "wss://read-a.conduit.market",
-                "wss://read-b.conduit.market",
-              ]
+            ? ["wss://read-a.conduit.market", "wss://read-b.conduit.market"]
             : ["wss://read-a.conduit.market"],
         failedRelayUrls:
           coverage === "complete" ? [] : ["wss://read-b.conduit.market"],

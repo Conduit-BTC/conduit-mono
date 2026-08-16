@@ -498,6 +498,9 @@ export function normalizeRelayUrl(input: string): string {
   if (!parsed.hostname) {
     throw new Error("Relay URL must include a host")
   }
+  if (parsed.username || parsed.password) {
+    throw new Error("Relay URL must not include credentials")
+  }
 
   parsed.hash = ""
   parsed.search = ""
@@ -579,6 +582,17 @@ export function normalizeUntrustedRelayHintsForContext(input: {
   }
 
   return Array.from(accepted)
+}
+
+/** Normalize untrusted relay hints without granting any owner-local exception. */
+export function normalizePublicRelayHints(
+  relayUrls: readonly string[]
+): string[] {
+  return normalizeUntrustedRelayHintsForContext({
+    relayUrls,
+    approvedRelayUrls: [],
+    allowApprovedPrivate: false,
+  })
 }
 
 export function getRelayInfoDocumentUrl(relayUrl: string): string {

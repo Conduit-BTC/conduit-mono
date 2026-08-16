@@ -1,6 +1,5 @@
 import type { NDKEvent } from "@nostr-dev-kit/ndk"
 import { config } from "../config"
-import { normalizePublicWebSocketUrl } from "../network-target-safety"
 import {
   applyInboxDeclarationEvidenceMerge,
   cloneInboxDeclarationEvidenceRecord,
@@ -19,8 +18,8 @@ import {
 import {
   getGeneralReadRelayUrls,
   getGeneralWriteRelayUrls,
+  normalizePublicRelayHints,
   normalizeSecureRelayUrls as secureRelayUrls,
-  tryNormalizeRelayUrl,
 } from "./relay-settings"
 import {
   isValidSignedPublicNostrEvent,
@@ -564,16 +563,7 @@ function allowsLocalRelayUrls(
 }
 
 export function publicRelayHintUrls(relayUrls: readonly string[]): string[] {
-  const seen = new Set<string>()
-  const out: string[] = []
-  for (const raw of relayUrls) {
-    const normalized = tryNormalizeRelayUrl(raw)
-    if (!normalized.ok || !normalizePublicWebSocketUrl(normalized.url)) continue
-    if (seen.has(normalized.url)) continue
-    seen.add(normalized.url)
-    out.push(normalized.url)
-  }
-  return out
+  return normalizePublicRelayHints(relayUrls)
 }
 
 function declarationForContext(

@@ -53,6 +53,21 @@ describe("conversation list search", () => {
     )
     expect(source).toContain('aria-label="Search merchant conversations"')
     expect(source).toContain("<MerchantThreadRow")
+    expect(source).toContain("<ConversationProfilePicture")
+    expect(source).not.toContain("function ProfilePicture")
+    expect(source).not.toContain("normalizePublicMediaUrl")
+
+    const profilePictureSource = await Bun.file(
+      "apps/market/src/components/ConversationProfilePicture.tsx"
+    ).text()
+    expect(profilePictureSource).toContain("<Avatar")
+    expect(profilePictureSource).toContain("<AvatarImage")
+    expect(profilePictureSource).toContain("<AvatarFallback")
+    expect(profilePictureSource).toContain("<MerchantAvatarFallback")
+    expect(profilePictureSource).not.toContain("<img")
+    expect(profilePictureSource).not.toContain("normalizePublicMediaUrl")
+    expect(profilePictureSource).not.toContain("srcSet")
+    expect(profilePictureSource).not.toContain("referrerPolicy")
   })
 
   it("keeps a single divider below the Merchant conversation header", async () => {

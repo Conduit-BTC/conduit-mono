@@ -5,6 +5,7 @@ import {
   fetchMerchantTrustSocialSummary,
   formatNpub,
   getProfileDisplayLabel,
+  normalizePubkey,
   subscribeRelaySettingsChanges,
   useConduitSession,
   useProfile,
@@ -33,6 +34,17 @@ export type MerchantTrustContext = MerchantTrustSocialSummary & {
   listingCount?: number
 }
 
+export function getMerchantProfileAuthenticatedPubkey(
+  merchantPubkey: string | null | undefined,
+  viewerPubkey: string | null | undefined
+): string | undefined {
+  const normalizedMerchant = normalizePubkey(merchantPubkey)
+  const normalizedViewer = normalizePubkey(viewerPubkey)
+  return normalizedMerchant && normalizedMerchant === normalizedViewer
+    ? normalizedViewer
+    : undefined
+}
+
 export function useMerchantTrustContext({
   merchantPubkey,
   listingCount,
@@ -46,6 +58,10 @@ export function useMerchantTrustContext({
   const queryClient = useQueryClient()
   const viewerPubkey = session.mode === "signed_in" ? session.pubkey : null
   const profileQuery = useProfile(merchantPubkey ?? null, {
+    authenticatedPubkey: getMerchantProfileAuthenticatedPubkey(
+      merchantPubkey,
+      viewerPubkey
+    ),
     relayHints: profileRelayHints,
     refetchUnresolvedMs: 2_000,
     maxUnresolvedRefetches: 2,

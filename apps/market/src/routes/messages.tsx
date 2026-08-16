@@ -41,7 +41,6 @@ import {
   getNdk,
   formatPubkey,
   markDirectMessageConversationRead,
-  normalizePublicMediaUrl,
   normalizePubkey,
   parseDirectMessageRumor,
   parseOrderMessageRumorEvent,
@@ -57,10 +56,8 @@ import {
 import type { DirectConversationSummary } from "@conduit/core"
 import { requireAuth } from "../lib/auth"
 import { CopyButton } from "../components/CopyButton"
-import {
-  MerchantAvatarFallback,
-  getMerchantDisplayName,
-} from "../components/MerchantIdentity"
+import { ConversationProfilePicture } from "../components/ConversationProfilePicture"
+import { getMerchantDisplayName } from "../components/MerchantIdentity"
 import {
   fetchCachedBuyerConversations,
   fetchBuyerConversations,
@@ -121,20 +118,6 @@ export const Route = createFileRoute("/messages")({
   component: MessagesPage,
 })
 
-function ProfilePicture({ src, alt }: { src?: string; alt: string }) {
-  const safeSrc = normalizePublicMediaUrl(src)
-  return safeSrc ? (
-    <img
-      src={safeSrc}
-      alt={alt}
-      referrerPolicy="no-referrer"
-      className="h-full w-full object-cover"
-    />
-  ) : (
-    <MerchantAvatarFallback />
-  )
-}
-
 function MerchantThreadRow({
   conversation,
   active,
@@ -170,7 +153,10 @@ function MerchantThreadRow({
     >
       <div className="flex items-start gap-3">
         <div className="h-11 w-11 shrink-0 overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]">
-          <ProfilePicture src={profile?.picture} alt={merchantName} />
+          <ConversationProfilePicture
+            src={profile?.picture}
+            alt={merchantName}
+          />
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
@@ -227,7 +213,7 @@ function DmThreadRow({
     >
       <div className="flex items-start gap-3">
         <div className="h-11 w-11 shrink-0 overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]">
-          <ProfilePicture src={profile?.picture} alt={name} />
+          <ConversationProfilePicture src={profile?.picture} alt={name} />
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
@@ -1034,7 +1020,7 @@ function MessagesPage() {
                       <div className="border-b border-[var(--border)] px-6 py-5">
                         <div className="flex items-center gap-3">
                           <div className="h-12 w-12 overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]">
-                            <ProfilePicture
+                            <ConversationProfilePicture
                               src={selectedDmProfile.data?.picture}
                               alt={selectedDmName ?? "Contact"}
                             />
@@ -1381,7 +1367,7 @@ function MessagesPage() {
                     <div className="border-b border-[var(--border)] px-6 py-5">
                       <div className="flex items-center gap-3">
                         <div className="h-12 w-12 overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]">
-                          <ProfilePicture
+                          <ConversationProfilePicture
                             src={selectedProfile.data?.picture}
                             alt={merchantName ?? "Merchant"}
                           />

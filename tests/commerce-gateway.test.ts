@@ -3058,13 +3058,23 @@ describe("commerce gateway", () => {
       pubkeys: ["live-merchant"],
       priority: "visible",
       skipCache: true,
-      readPolicy: { maxRelays: 1 },
+      readPolicy: { maxRelays: 2 },
       relayHintsByPubkey: {
-        "live-merchant": ["wss://live-product-source.conduit.market"],
+        "live-merchant": [
+          "https://live-product-source.conduit.market/?ignored=true",
+          "wss://live-product-source.conduit.market",
+          "wss://127.0.0.1:7447",
+          "wss://service.test",
+          "second-product-source.conduit.market/path?ignored=true",
+          "wss://second-product-source.conduit.market/path",
+        ],
       },
     })
 
-    expect(seenRelayUrls?.[0]).toBe("wss://live-product-source.conduit.market")
+    expect(seenRelayUrls).toEqual([
+      "wss://live-product-source.conduit.market",
+      "wss://second-product-source.conduit.market/path",
+    ])
     expect(result.data["live-merchant"]?.displayName).toBe("Live Merchant")
   })
 
@@ -3244,6 +3254,59 @@ describe("commerce gateway", () => {
     expect(cachedProfiles.get("merchant")).toMatchObject({
       rawContent: "{}",
       eventId: "profile-blank-newer",
+      eventCreatedAt: 20,
+    })
+  })
+
+  it("shares richer profile merging without changing the durable frontier", async () => {
+    const latestContent = JSON.stringify({
+      display_name: "",
+      about: "Current relay bio",
+      picture: "",
+    })
+    cachedProfiles.set("merchant", {
+      pubkey: "merchant",
+      displayName: "Cached Merchant",
+      picture: "https://cdn.conduit.market/cached-avatar.png",
+      rawContent: JSON.stringify({
+        display_name: "Cached Merchant",
+        picture: "https://cdn.conduit.market/cached-avatar.png",
+      }),
+      eventId: "profile-cached",
+      eventCreatedAt: 10,
+      cachedAt: FIXED_NOW - 1_000,
+    })
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PROFILE)
+          ? ([
+              {
+                id: "profile-current",
+                pubkey: "merchant",
+                created_at: 20,
+                content: latestContent,
+                tags: [],
+              },
+            ] as never)
+          : [],
+    })
+
+    const result = await getProfiles({
+      pubkeys: ["merchant"],
+      skipCache: true,
+    })
+
+    expect(result.data.merchant).toMatchObject({
+      displayName: "Cached Merchant",
+      about: "Current relay bio",
+      picture: "https://cdn.conduit.market/cached-avatar.png",
+    })
+    expect(cachedProfiles.get("merchant")).toMatchObject({
+      displayName: "Cached Merchant",
+      about: "Current relay bio",
+      picture: "https://cdn.conduit.market/cached-avatar.png",
+      rawContent: latestContent,
+      eventId: "profile-current",
       eventCreatedAt: 20,
     })
   })

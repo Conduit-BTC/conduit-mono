@@ -1,7 +1,6 @@
 import type { NDKEvent, NDKFilter } from "@nostr-dev-kit/ndk"
 import { db, type CachedRelayList } from "../db"
 import { config } from "../config"
-import { normalizePublicWebSocketUrl } from "../network-target-safety"
 import { EVENT_KINDS } from "./kinds"
 import {
   fetchEventsFanout,
@@ -10,6 +9,7 @@ import {
 } from "./ndk"
 import {
   getGeneralReadRelayUrls,
+  normalizePublicRelayHints,
   parseNip65RelayTags,
   tryNormalizeRelayUrl,
   type RelayPreference,
@@ -140,16 +140,7 @@ function allowsInsecureRelayUrls(
 }
 
 function publicRelayHintUrls(urls: readonly string[]): string[] {
-  const seen = new Set<string>()
-  const publicUrls: string[] = []
-  for (const raw of urls) {
-    const normalized = tryNormalizeRelayUrl(raw)
-    if (!normalized.ok || !normalizePublicWebSocketUrl(normalized.url)) continue
-    if (seen.has(normalized.url)) continue
-    seen.add(normalized.url)
-    publicUrls.push(normalized.url)
-  }
-  return publicUrls
+  return normalizePublicRelayHints(urls)
 }
 
 export function filterRelayListForContext(

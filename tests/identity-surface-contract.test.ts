@@ -138,6 +138,9 @@ describe("identity surface contracts", () => {
 
     expect(trustHook).toContain("useConduitSession")
     expect(trustHook).toContain('session.mode === "signed_in"')
+    expect(trustHook).toContain(
+      "authenticatedPubkey: getMerchantProfileAuthenticatedPubkey("
+    )
     expect(trustHook).not.toContain("viewerPubkey?: string | null")
     expect(store).not.toContain("merchantPubkey: pubkey,\n    viewerPubkey,")
     expect(store).toContain("storefrontFollowReducer")
