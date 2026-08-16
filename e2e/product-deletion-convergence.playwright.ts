@@ -143,7 +143,7 @@ async function seedCachedProduct(page: Page): Promise<void> {
             eventId,
             eventCreatedAt: 100,
             dTag,
-            sourceRelayUrls: ["wss://source-browser.example"],
+            sourceRelayUrls: ["wss://source-browser.conduit.market"],
             createdAt: timestamp,
             updatedAt: timestamp,
             cachedAt: timestamp,
@@ -596,7 +596,7 @@ test("Merchant persists one exact deletion and restores it after reload", async 
         roles: expect.arrayContaining(["conduit"]),
       }),
       expect.objectContaining({
-        relayUrl: "wss://source-browser.example",
+        relayUrl: "wss://source-browser.conduit.market",
         roles: expect.arrayContaining(["source"]),
       }),
       expect.objectContaining({

@@ -35,7 +35,7 @@ async function seedCachedMerchantProduct(page: Page): Promise<void> {
           format: "physical",
           visibility: "public",
           stock: 1,
-          images: [{ url: "https://example.com/pocket-relay.png" }],
+          images: [{ url: "https://blossom.conduit.market/pocket-relay.png" }],
           tags: ["relay", "hardware", "nostr"],
           publicZapEnabled: true,
           zapMessagePolicy: "generic_only",
