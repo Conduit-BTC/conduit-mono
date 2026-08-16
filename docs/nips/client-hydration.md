@@ -11,7 +11,7 @@ This is a compact implementation note for CND-133-style work. It summarizes the 
 | NIP-19                | `nprofile`, `nevent`, and `naddr` can carry relay hints for targeted reads        |
 | NIP-57                | Zap requests/receipts depend on profile/payment metadata in trust and checkout UX |
 | NIP-65                | Kind `10002` relay lists provide author read/write preferences for planner inputs |
-| NIP-99 + GammaMarkets | Kind `30402` product listings and de-commerce interop                             |
+| NIP-99 + Open Markets | Kind `30402` product listings and de-commerce interop                             |
 | NIP-17/NIP-44         | Order/message surfaces hydrate profile context around private conversations       |
 
 ## Conduit Rules

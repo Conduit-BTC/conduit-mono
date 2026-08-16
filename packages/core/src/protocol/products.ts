@@ -235,7 +235,7 @@ export function buildProductDeletionEventDraft({
 /**
  * Build a spec-aligned kind-30402 listing draft.
  *
- * NIP-99/Gamma expect `content` to be the human-readable listing
+ * NIP-99/Open Markets expect `content` to be the human-readable listing
  * description. Structured commerce data belongs in tags.
  */
 export function buildProductListingEventDraft({
@@ -909,7 +909,7 @@ export function normalizeProductSummaryForDisplay(
  * - Interop varies across de-commerce implementations.
  * - We first try legacy JSON content matching our `productSchema`.
  * - If content is not a legacy product object, we fall back to fields from
- *   NIP-99/Gamma tags and Markdown content.
+ *   NIP-99/Open Markets tags and Markdown content.
  */
 export function parseProductEvent(
   event: Pick<NDKEvent, "content" | "pubkey" | "created_at" | "tags" | "id">
@@ -985,7 +985,7 @@ export function parseProductEvent(
     // fall through
   }
 
-  // Fallback: market-spec/NIP-99 style tags + markdown content.
+  // Fallback: Open Markets/NIP-99-style tags + Markdown content.
   const fromContent = (event.content || "").trim()
   const jsonContentProjection = projectProductJsonDisplayFields(fromContent)
   const markdownContent = jsonContentProjection?.isJson ? "" : fromContent
@@ -1004,7 +1004,7 @@ export function parseProductEvent(
   const summaryTag = getTagValue(event.tags, "summary")
   const locationTag = getTagValue(event.tags, "location")
 
-  // market-spec: ["type", "simple|variable|variation", "digital|physical"]
+  // Open Markets: ["type", "simple|variable|variation", "digital|physical"]
   const type = productTypeTag.type ?? "simple"
   const format: "physical" | "digital" =
     productTypeTag.format === "digital" ? "digital" : "physical"

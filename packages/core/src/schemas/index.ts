@@ -58,7 +58,7 @@ export const productSchema = z.object({
   type: z.enum(["simple", "variable", "variation"]).default("simple"),
   /** Full kind-30402 coordinate of this variation's variable parent. */
   parentProductId: z.string().optional(),
-  /** GammaMarkets `spec` tags preserved in signed-event order. */
+  /** Open Markets `spec` tags preserved in signed-event order. */
   specifications: z.array(productSpecificationSchema).default([]),
   /** Whether the product requires physical shipping. Defaults to "physical". */
   format: z.enum(["physical", "digital"]).default("physical"),
