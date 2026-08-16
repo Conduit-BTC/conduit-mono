@@ -8,6 +8,7 @@
 
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { db, type CachedOwnContactListSnapshot } from "../db"
+import { normalizePublicWebSocketUrl } from "../network-target-safety"
 import { EVENT_KINDS } from "./kinds"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 import { getNdk } from "./ndk"
@@ -67,6 +68,8 @@ export interface FollowListAuthorRead {
   pubkey: string
   event?: SignedPublicNostrEvent
   eventSourceRelayUrls: string[]
+  /** Selected current NIP-65 author hints, before adding an independent base. */
+  hintRelayUrls?: string[]
   plannedRelayUrls: string[]
   relays: RelayReadSourceStatus[]
   eventsVerified: boolean
@@ -595,6 +598,7 @@ export async function readLatestFollowLists(
           {
             pubkey,
             eventSourceRelayUrls: [],
+            hintRelayUrls: selectedHints,
             plannedRelayUrls: [],
             relays: [],
             eventsVerified: true,
@@ -630,6 +634,7 @@ export async function readLatestFollowLists(
           {
             pubkey,
             eventSourceRelayUrls: [],
+            hintRelayUrls: selectedHints,
             plannedRelayUrls,
             relays: plannedRelayUrls.map((relayUrl) => ({
               relayUrl,
@@ -703,6 +708,7 @@ export async function readLatestFollowLists(
           eventSourceRelayUrls: event
             ? [...(result.eventSourceRelayUrls[event.id] ?? [])]
             : [],
+          hintRelayUrls: selectedHints,
           plannedRelayUrls,
           relays,
           eventsVerified,
@@ -842,11 +848,33 @@ export function requirePublishableContactListSnapshot(
   )
   const hasCurrentRelayDiscovery =
     author?.relayListState === "network" || author?.relayListState === "missing"
+  const selectedHintRelayUrls = author?.hintRelayUrls ?? []
+  const selectedHintRelayUrlSet = new Set(selectedHintRelayUrls)
+  const completedOwnerLocalHint = author?.eventSourceRelayUrls.some(
+    (relayUrl) =>
+      selectedHintRelayUrlSet.has(relayUrl) &&
+      !normalizePublicWebSocketUrl(relayUrl) &&
+      author.relays.some(
+        (relay) => relay.relayUrl === relayUrl && relay.status === "success"
+      )
+  )
+  const allSelectedHintsCompleted = selectedHintRelayUrls.every((relayUrl) =>
+    author?.relays.some(
+      (relay) => relay.relayUrl === relayUrl && relay.status === "success"
+    )
+  )
+  const exactOwnerLocalEvidenceIsPublishable =
+    author?.snapshotState === "network" &&
+    author.coverage === "limited" &&
+    !author.relayHintTruncated &&
+    hasCurrentRelayDiscovery &&
+    completedOwnerLocalHint &&
+    allSelectedHintsCompleted
 
   if (
     !author?.event ||
     !author.eventsVerified ||
-    author.coverage !== "complete" ||
+    (author.coverage !== "complete" && !exactOwnerLocalEvidenceIsPublishable) ||
     !hasCurrentRelayDiscovery ||
     !hasCompletedSource
   ) {

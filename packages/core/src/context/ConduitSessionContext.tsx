@@ -58,7 +58,11 @@ export function ConduitSessionProvider({
     [allowGuest, appId, signedInPubkey]
   )
   const profileQuery = useProfile(
-    session.mode === "signed_in" ? session.pubkey : null
+    session.mode === "signed_in" ? session.pubkey : null,
+    {
+      authenticatedPubkey:
+        session.mode === "signed_in" ? session.pubkey : null,
+    }
   )
   const identityReady =
     session.mode === "guest" ||

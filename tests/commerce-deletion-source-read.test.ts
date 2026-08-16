@@ -19,7 +19,7 @@ const FIXED_NOW = 1_700_000_000_000
 const AUTHOR_COUNT = 17
 
 function sourceRelayUrl(index: number): string {
-  return `wss://product-deletion-source-${index}.example`
+  return `wss://product-deletion-source-${index}.conduit.market`
 }
 
 let cachedProducts: CachedProduct[] = []
@@ -39,7 +39,7 @@ function makeProduct(secretKey: Uint8Array, index: number): NDKEvent {
           ["title", `Source-only product ${index}`],
           ["price", "25", "USD"],
           ["type", "simple", "physical"],
-          ["image", `https://example.com/source-only-${index}.png`],
+          ["image", `https://cdn.conduit.market/source-only-${index}.png`],
           ["t", "source-read"],
         ],
       },

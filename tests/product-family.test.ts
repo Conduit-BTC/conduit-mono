@@ -182,7 +182,7 @@ describe("product family module", () => {
   it("requires a complete selection and resolves one exact purchasable child", () => {
     const parent = record("workspace", {
       type: "variable",
-      images: [{ url: "https://example.com/family.png" }],
+      images: [{ url: "https://cdn.conduit.market/family.png" }],
     })
     const child = record("workspace-15-business-dark", {
       type: "variation",
@@ -226,6 +226,41 @@ describe("product family module", () => {
     expect(resolved.selectedSpecifications).toEqual(
       child.product.specifications
     )
+    expect(resolved.imageProjection).toEqual({
+      images: parent.product.images,
+      source: "parent",
+      sourceProductId: parent.addressId,
+    })
+  })
+
+  it("falls back to a public parent image when selected images are unsafe", () => {
+    const parent = record("workspace", {
+      type: "variable",
+      images: [{ url: "https://cdn.conduit.market/family.png" }],
+    })
+    const child = record("workspace-private-image", {
+      type: "variation",
+      parentProductId: parent.addressId,
+      specifications: [{ key: "theme", value: "Private" }],
+      images: [{ url: "http://127.0.0.1/private.png" }],
+    })
+    const catalog = prepareProductCatalog([parent, child], {
+      source: "commerce",
+      fetchedAt: 2,
+      stale: false,
+      degraded: false,
+      capped: false,
+    })
+    const item = catalog.items[0]
+    if (item?.kind !== "family") throw new Error("Expected a family")
+
+    const resolved = resolvePurchasableSelection(item, {
+      specifications: [{ key: "theme", value: "Private" }],
+    })
+    expect(resolved.status).toBe("selected")
+    if (resolved.status !== "selected") {
+      throw new Error("Expected an exact child selection")
+    }
     expect(resolved.imageProjection).toEqual({
       images: parent.product.images,
       source: "parent",

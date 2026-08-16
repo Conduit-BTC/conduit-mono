@@ -3,14 +3,22 @@ const PUBLIC_MEDIA_PROTOCOLS = new Set(["http:", "https:"])
 const PUBLIC_HTTPS_PROTOCOLS = new Set(["https:"])
 const PUBLIC_WEBSOCKET_PROTOCOLS = new Set(["wss:"])
 
-const LOCAL_HOSTNAME_SUFFIXES = [
+const SPECIAL_USE_HOSTNAME_SUFFIXES = [
   "localhost",
   "local",
   "localdomain",
   "internal",
   "home",
   "lan",
-  "home.arpa",
+  "arpa",
+  "test",
+  "invalid",
+  "example",
+  "example.com",
+  "example.net",
+  "example.org",
+  "alt",
+  "onion",
 ] as const
 
 function parseIpv4Address(hostname: string): number | null {
@@ -116,6 +124,7 @@ const IPV6_DOCUMENTATION_PREFIX = 0x20010db8000000000000000000000000n
 const IPV6_TEREDO_PREFIX = 0x20010000000000000000000000000000n
 const IPV6_6TO4_PREFIX = 0x20020000000000000000000000000000n
 const IPV6_BENCHMARK_PREFIX = 0x20010002000000000000000000000000n
+const IPV6_DOCUMENTATION_V2_PREFIX = 0x3fff0000000000000000000000000000n
 
 function isPublicIpv6Address(value: bigint): boolean {
   // Globally routable unicast space is currently within 2000::/3. Keeping
@@ -126,6 +135,7 @@ function isPublicIpv6Address(value: bigint): boolean {
   if (hasIpv6Prefix(value, IPV6_TEREDO_PREFIX, 32)) return false
   if (hasIpv6Prefix(value, IPV6_6TO4_PREFIX, 16)) return false
   if (hasIpv6Prefix(value, IPV6_BENCHMARK_PREFIX, 48)) return false
+  if (hasIpv6Prefix(value, IPV6_DOCUMENTATION_V2_PREFIX, 20)) return false
   return true
 }
 
@@ -163,7 +173,7 @@ export function isPublicNetworkHostname(hostname: string): boolean {
   if (/^(?:0x[0-9a-f]+|[0-9.]+)$/i.test(normalized)) return false
 
   if (
-    LOCAL_HOSTNAME_SUFFIXES.some(
+    SPECIAL_USE_HOSTNAME_SUFFIXES.some(
       (suffix) => normalized === suffix || normalized.endsWith(`.${suffix}`)
     )
   ) {

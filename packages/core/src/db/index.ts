@@ -175,6 +175,10 @@ export interface ProductDeletionDeliveryJob {
 
 export interface CachedProfile {
   pubkey: string
+  /** Exact newest observed kind-0 content, retained only for safe republish. */
+  rawContent?: string
+  eventId?: string
+  eventCreatedAt?: number
   name?: string
   displayName?: string
   about?: string

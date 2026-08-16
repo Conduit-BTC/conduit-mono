@@ -1,6 +1,6 @@
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import type { Profile } from "../types"
-import { db } from "../db"
+import { db, type CachedProfile } from "../db"
 import { normalizePublicMediaUrl } from "../network-target-safety"
 import { EVENT_KINDS } from "./kinds"
 import { getProfiles } from "./commerce"
@@ -55,6 +55,24 @@ function setProfileContentField(
   delete content[key]
 }
 
+function parseProfilePublishContent(
+  content: string | null | undefined
+): Record<string, string> {
+  if (!content) return {}
+  try {
+    const parsed = JSON.parse(content) as unknown
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return {}
+    return Object.fromEntries(
+      Object.entries(parsed).filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string"
+      )
+    )
+  } catch {
+    return {}
+  }
+}
+
 export function parseProfileEvent(
   event: Pick<NDKEvent, "content" | "pubkey">
 ): Profile {
@@ -86,10 +104,15 @@ export function parseProfileEvent(
 
 export async function fetchProfile(
   pubkey: string,
-  opts?: { skipCache?: boolean; priority?: "visible" | "background" }
+  opts?: {
+    authenticatedPubkey?: string | null
+    skipCache?: boolean
+    priority?: "visible" | "background"
+  }
 ): Promise<Profile> {
   const result = await getProfiles({
     pubkeys: [pubkey],
+    authenticatedPubkey: opts?.authenticatedPubkey,
     skipCache: opts?.skipCache,
     priority: opts?.priority,
   })
@@ -106,12 +129,28 @@ export function buildNip01ProfileContent(
   return content
 }
 
+export function buildProfileUpdatePayload(
+  profile: Omit<Profile, "pubkey">,
+  latestProfile?: Profile | null
+): Omit<Profile, "pubkey"> {
+  return Object.fromEntries(
+    PROFILE_CONTENT_FIELDS.flatMap(([profileField]) => {
+      if (!hasOwnProfileField(profile, profileField)) return []
+      const nextValue = profile[profileField] || undefined
+      const latestValue = latestProfile?.[profileField] || undefined
+      return nextValue === latestValue ? [] : [[profileField, nextValue]]
+    })
+  ) as Omit<Profile, "pubkey">
+}
+
 export function buildNip01ProfilePublishContent({
   profile,
   latestProfile,
+  latestContent,
 }: {
   profile: Omit<Profile, "pubkey">
-  latestProfile: Profile
+  latestProfile?: Profile
+  latestContent?: string
 }): Record<string, string> {
   const hasProfileInput = PROFILE_CONTENT_FIELDS.some(([profileField]) =>
     hasOwnProfileField(profile, profileField)
@@ -119,10 +158,26 @@ export function buildNip01ProfilePublishContent({
 
   if (!hasProfileInput) return buildNip01ProfileContent(profile)
 
-  const content = buildNip01ProfileContent(latestProfile)
+  const content = latestContent
+    ? parseProfilePublishContent(latestContent)
+    : buildNip01ProfileContent(latestProfile ?? {})
   for (const [profileField, contentKey] of PROFILE_CONTENT_FIELDS) {
     if (!hasOwnProfileField(profile, profileField)) continue
-    setProfileContentField(content, contentKey, profile[profileField])
+    if (profileField === "displayName") delete content.displayName
+    let value = profile[profileField]
+    if (
+      (profileField === "picture" || profileField === "banner") &&
+      value?.trim()
+    ) {
+      const safeUrl = normalizePublicMediaUrl(value)
+      if (!safeUrl) {
+        throw new Error(
+          `Profile ${profileField} URL must use a public http or https destination`
+        )
+      }
+      value = safeUrl
+    }
+    setProfileContentField(content, contentKey, value)
   }
 
   return content
@@ -135,6 +190,21 @@ export function shouldEnforceNip01ProfileMinimumFields({
   latestContent?: Record<string, string>
 }): boolean {
   return countMeaningfulProfileFields(JSON.stringify(content)) <= 1
+}
+
+export function getNextProfileEventCreatedAt(
+  latestCreatedAt: number | undefined,
+  nowMs = Date.now()
+): number {
+  const nowSeconds = Math.floor(nowMs / 1_000)
+  if (
+    typeof latestCreatedAt !== "number" ||
+    !Number.isSafeInteger(latestCreatedAt) ||
+    latestCreatedAt < 0
+  ) {
+    return nowSeconds
+  }
+  return Math.max(nowSeconds, latestCreatedAt + 1)
 }
 
 export async function publishProfile(
@@ -159,17 +229,28 @@ export async function publishProfile(
   const user = await ndk.signer.user()
   const pubkey = user.pubkey
   const latestProfile = await fetchProfile(pubkey, {
+    authenticatedPubkey: pubkey,
+    skipCache: true,
     priority: "visible",
   })
+  let latestRow: CachedProfile | undefined
+  try {
+    latestRow = await db.profiles.get(pubkey)
+  } catch {
+    throw new Error(
+      "Cannot safely publish a profile update while durable profile context is unavailable"
+    )
+  }
 
   // Build NIP-01 snake_case content, merging partial edits onto loaded context.
   const content = buildNip01ProfilePublishContent({
     profile: validatedProfile,
     latestProfile,
+    latestContent: latestRow?.rawContent,
   })
   const event = new NDKEvent(ndk)
   event.kind = EVENT_KINDS.PROFILE
-  event.created_at = Math.floor(Date.now() / 1000)
+  event.created_at = getNextProfileEventCreatedAt(latestRow?.eventCreatedAt)
   event.content = JSON.stringify(content)
   event.tags = appendConduitClientTag([], appId)
 
@@ -186,6 +267,9 @@ export async function publishProfile(
   // Update local cache
   await db.profiles.put({
     ...publishedProfile,
+    rawContent: event.content,
+    eventId: event.id,
+    eventCreatedAt: event.created_at,
     sourceRelayUrls: [],
     cachedAt: Date.now(),
   })

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { createFileRoute } from "@tanstack/react-router"
 import {
+  buildProfileUpdatePayload,
   formatNpub,
   pubkeyToNpub,
   useAuth,
@@ -84,7 +85,7 @@ function Field({
 
 function ProfilePage() {
   const { pubkey } = useAuth()
-  const profileQuery = useProfile(pubkey)
+  const profileQuery = useProfile(pubkey, { authenticatedPubkey: pubkey })
   const updateMutation = useUpdateProfile("market")
   const [editing, setEditing] = useState(false)
   const [copied, setCopied] = useState(false)
@@ -152,16 +153,19 @@ function ProfilePage() {
     if (!hasProfileChanges || updateMutation.isPending) return
     setProfileSaveSucceeded(false)
     updateMutation.mutate(
-      {
-        name: form.name || undefined,
-        displayName: form.displayName || undefined,
-        about: form.about || undefined,
-        picture: form.picture || undefined,
-        banner: form.banner || undefined,
-        nip05: form.nip05 || undefined,
-        lud16: form.lud16 || undefined,
-        website: form.website || undefined,
-      },
+      buildProfileUpdatePayload(
+        {
+          name: form.name || undefined,
+          displayName: form.displayName || undefined,
+          about: form.about || undefined,
+          picture: form.picture || undefined,
+          banner: form.banner || undefined,
+          nip05: form.nip05 || undefined,
+          lud16: form.lud16 || undefined,
+          website: form.website || undefined,
+        },
+        profileQuery.data
+      ),
       {
         onSuccess: () => {
           setProfileSaveSucceeded(true)

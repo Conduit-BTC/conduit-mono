@@ -21,7 +21,8 @@ const WALLET_SECRET = Uint8Array.from([...new Uint8Array(31), 10])
 const SENDER_PUBKEY = getPublicKey(SENDER_SECRET)
 const RECIPIENT_PUBKEY = "2".repeat(64)
 const WALLET_PUBKEY = getPublicKey(WALLET_SECRET)
-const PAY_REQUEST_URL = "https://wallet.example/.well-known/lnurlp/merchant"
+const PAY_REQUEST_URL =
+  "https://wallet.conduit.market/.well-known/lnurlp/merchant"
 const LNURL = encodeLnurl(PAY_REQUEST_URL)
 const HISTORIC_CREATED_AT = 1_765_000_000
 
@@ -41,7 +42,7 @@ function zapRequest(
         ["p", RECIPIENT_PUBKEY],
         ["amount", "42000"],
         ["lnurl", lnurl],
-        ["relays", "wss://relay.example"],
+        ["relays", "wss://relay.conduit.market"],
         ...tags,
       ],
     },

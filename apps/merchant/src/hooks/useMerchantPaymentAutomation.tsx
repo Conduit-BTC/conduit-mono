@@ -60,7 +60,7 @@ export function MerchantPaymentAutomationProvider({
 }) {
   const { pubkey, status } = useAuth()
   const queryClient = useQueryClient()
-  const profileQuery = useProfile(pubkey)
+  const profileQuery = useProfile(pubkey, { authenticatedPubkey: pubkey })
   const nwc = useNwcConnection()
   const attemptedRunsRef = useRef(new Set<string>())
   const runningRef = useRef(false)

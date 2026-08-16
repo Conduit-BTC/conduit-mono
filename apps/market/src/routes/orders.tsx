@@ -1212,7 +1212,10 @@ function OrderDetail({
           resolveItem={(id) => {
             const product = productsById.get(id)
             return product
-              ? { title: product.title, imageUrl: product.images[0]?.url }
+              ? {
+                  title: product.title,
+                  imageUrl: getProductImageCandidates(product)[0]?.url,
+                }
               : undefined
           }}
           formatAmount={(amount, currency, sourcePrice) =>

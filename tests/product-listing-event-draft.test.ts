@@ -6,6 +6,8 @@ import {
   canonicalizeProductTags,
   canonicalizeShippingCost,
   EVENT_KINDS,
+  getProductImageCandidates,
+  MAX_PRODUCT_IMAGE_CANDIDATES,
   parseProductEvent,
   type ProductSchema,
 } from "@conduit/core"
@@ -52,7 +54,43 @@ function expectTag(tags: string[][], expected: string[]): void {
 }
 
 describe("product listing event drafts", () => {
-  it("drops non-public image destinations from legacy and tag listings", () => {
+  it("retains signed image evidence while capping public request candidates", () => {
+    const publicImageUrls = Array.from(
+      { length: MAX_PRODUCT_IMAGE_CANDIDATES + 5 },
+      (_, index) => `https://cdn.conduit.market/products/${index}.png`
+    )
+    const privateImageUrl = "http://127.0.0.1/private.png"
+    const parsed = parseProductEvent({
+      id: "many-images",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: "Product description",
+      tags: [
+        ["d", "many-images"],
+        ["title", "Many images"],
+        ["price", "10", "USD"],
+        ...publicImageUrls.map((url) => ["image", url]),
+        ["image", privateImageUrl],
+        ["image", publicImageUrls[0]!],
+      ],
+    })
+
+    expect(parsed.images.map((image) => image.url)).toEqual([
+      ...publicImageUrls,
+      privateImageUrl,
+      publicImageUrls[0]!,
+    ])
+    expect(getProductImageCandidates(parsed)).toHaveLength(
+      MAX_PRODUCT_IMAGE_CANDIDATES
+    )
+    expect(
+      buildProductListingEventDraft({ product: parsed, dTag: "many-images" })
+        .tags.filter((tag) => tag[0] === "image")
+        .map((tag) => tag[1])
+    ).toEqual([...publicImageUrls, privateImageUrl, publicImageUrls[0]!])
+  })
+
+  it("retains non-public signed images but excludes them from request projection", () => {
     const legacy = parseProductEvent({
       id: "legacy-image-safety",
       pubkey: "merchant",
@@ -61,7 +99,7 @@ describe("product listing event drafts", () => {
         baseProduct({
           images: [
             { url: "http://2130706433/camera.jpg" },
-            { url: "https://cdn.example.com/product.png", alt: "Product" },
+            { url: "https://cdn.conduit.market/product.png", alt: "Product" },
           ],
         })
       ),
@@ -82,11 +120,17 @@ describe("product listing event drafts", () => {
     })
 
     expect(legacy.images).toEqual([
-      { url: "https://cdn.example.com/product.png", alt: "Product" },
+      { url: "http://2130706433/camera.jpg" },
+      { url: "https://cdn.conduit.market/product.png", alt: "Product" },
     ])
     expect(tagged.images).toEqual([
+      { url: "https://169.254.169.254/latest/meta-data" },
       { url: "https://images.example.com/product.png" },
     ])
+    expect(getProductImageCandidates(legacy)).toEqual([
+      { url: "https://cdn.conduit.market/product.png", alt: "Product" },
+    ])
+    expect(getProductImageCandidates(tagged)).toEqual([])
   })
 
   it("canonicalizes product tags in first-seen order", () => {

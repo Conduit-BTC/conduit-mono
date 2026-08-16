@@ -81,12 +81,29 @@ export function parseNip05Identifier(
     return null
   }
 
-  if (!domain.includes(".") || /[/:]/.test(domain)) return null
+  // Parse the identifier as an identifier, never as a forgiving URL. WHATWG
+  // treats backslashes as path separators and accepts query/fragment
+  // delimiters in surprising authority positions, which can redirect the
+  // well-known lookup away from the claimed domain.
+  if (!domain.includes(".") || /[%\\/:?#@]/.test(domain)) return null
   if (!NIP05_LOCAL_PART_PATTERN.test(name)) return null
 
   let canonicalDomain: string
   try {
-    canonicalDomain = new URL(`https://${domain}`).hostname
+    const parsed = new URL(`https://${domain}/`)
+    canonicalDomain = parsed.hostname
+    if (
+      parsed.protocol !== "https:" ||
+      parsed.username ||
+      parsed.password ||
+      parsed.port ||
+      parsed.pathname !== "/" ||
+      parsed.search ||
+      parsed.hash ||
+      parsed.href !== `https://${canonicalDomain}/`
+    ) {
+      return null
+    }
   } catch {
     return null
   }

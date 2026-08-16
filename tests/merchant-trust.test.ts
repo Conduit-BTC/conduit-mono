@@ -169,7 +169,7 @@ describe("NIP-02 merchant trust helpers", () => {
   it("plans merchant trust reads without accepting the merchant's local relay", async () => {
     const viewerLocalRelay = "ws://127.0.0.1:7777"
     const merchantPrivateRelay = "wss://127.0.0.1:7447"
-    const merchantPublicRelay = "wss://merchant.example"
+    const merchantPublicRelay = "wss://merchant.conduit.market"
     const attemptedByAuthor = new Map<string, string[]>()
     const viewerEvent = followListEvent({
       secret: viewerSecret,
@@ -284,6 +284,47 @@ describe("NIP-02 merchant trust helpers", () => {
     expect(read.authors[0]?.coverage).toBe("limited")
   })
 
+  it("keeps exact owner-local evidence publishable when only the independent base fails", async () => {
+    const ownerLocalRelay = "wss://127.0.0.1:7447"
+    const event = followListEvent({
+      secret: viewerSecret,
+      createdAt: 100,
+      follows: [merchantPubkey],
+    })
+
+    const read = await readLatestFollowLists(
+      {
+        pubkeys: [viewerPubkey],
+        authenticatedPubkey: viewerPubkey,
+      },
+      {
+        refreshRelayLists: true,
+        resolveRelayLists: async () =>
+          new Map([
+            [viewerPubkey, relayList(viewerPubkey, [], [ownerLocalRelay])],
+          ]),
+        fetchEvents: async (_filter, options) => ({
+          events: [event],
+          eventSourceRelayUrls: { [event.id]: [ownerLocalRelay] },
+          relays: options.relayUrls.map((relayUrl) => ({
+            relayUrl,
+            status:
+              relayUrl === ownerLocalRelay
+                ? ("success" as const)
+                : ("failed" as const),
+            eventCount: relayUrl === ownerLocalRelay ? 1 : 0,
+          })),
+          eventsVerified: false,
+        }),
+      }
+    )
+
+    expect(read.authors[0]?.coverage).toBe("limited")
+    expect(requirePublishableContactListSnapshot(read, viewerPubkey)).toBe(
+      event
+    )
+  })
+
   it("marks a bounded author-hint overflow non-publishable", async () => {
     const hints = [
       "wss://hint-one.example",
@@ -327,7 +368,7 @@ describe("NIP-02 merchant trust helpers", () => {
   })
 
   it("ignores far-future and forged contact-list snapshots", async () => {
-    const publicRelay = "wss://relay.example/"
+    const publicRelay = "wss://relay.conduit.market/"
     const future = followListEvent({
       secret: merchantSecret,
       createdAt: 10_000,
@@ -894,7 +935,7 @@ describe("NIP-02 merchant trust helpers", () => {
   })
 
   it("reports failed and partial relay observations truthfully", async () => {
-    const publicRelay = "wss://relay.example/"
+    const publicRelay = "wss://relay.conduit.market/"
     const resolveRelayLists = async () =>
       new Map([
         [merchantPubkey, relayList(merchantPubkey, [], [publicRelay])],

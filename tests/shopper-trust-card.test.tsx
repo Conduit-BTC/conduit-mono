@@ -93,7 +93,7 @@ describe("ShopperTrustCard", () => {
         profile={{
           pubkey: shopperPubkey,
           displayName: "Alice Buyer",
-          picture: "https://example.com/alice.png",
+          picture: "https://cdn.conduit.market/alice.png",
           nip05: "alice@example.com",
         }}
         profileState="loaded"

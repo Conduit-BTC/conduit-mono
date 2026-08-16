@@ -22,10 +22,10 @@ describe("ProfileBanner", () => {
 
   it("renders a responsive decorative profile banner", () => {
     const html = renderToStaticMarkup(
-      <ProfileBanner src="https://example.com/banner.jpg" />
+      <ProfileBanner src="https://cdn.conduit.market/banner.jpg" />
     )
 
-    expect(html).toContain("https://example.com/banner.jpg")
+    expect(html).toContain("https://cdn.conduit.market/banner.jpg")
     expect(html).toContain("h-28")
     expect(html).toContain("sm:h-40")
     expect(html).toContain("lg:h-48")

@@ -560,7 +560,7 @@ function allowsLocalRelayUrls(
   allowLocalRelayUrlsForPubkey: string | null | undefined
 ): boolean {
   const allowedOwner = cacheKey(allowLocalRelayUrlsForPubkey ?? "")
-  return !!allowedOwner && allowedOwner === pubkey
+  return !!allowedOwner && allowedOwner === cacheKey(pubkey)
 }
 
 export function publicRelayHintUrls(relayUrls: readonly string[]): string[] {
@@ -1169,6 +1169,8 @@ export interface InboxReadPlan {
 
 export interface PlanInboxReadRelaysInput {
   declaration: InboxDeclarationResolution
+  /** Exact authenticated inbox owner whose private/local relays may be read. */
+  authenticatedPubkey?: string | null
   /** Locally enabled secure IN relays; defaults to relay-settings reads. */
   localReadRelayUrls?: readonly string[]
   /** Bounded compatibility reads; defaults to config.commerceDmFallbackRelayUrls. */
@@ -1190,25 +1192,34 @@ export interface PlanInboxReadRelaysInput {
 export function planInboxReadRelays(
   input: PlanInboxReadRelaysInput
 ): InboxReadPlan {
-  const declared = secureRelayUrls(
+  const allowOwnerLocalRelays = allowsLocalRelayUrls(
+    input.declaration.pubkey,
+    input.authenticatedPubkey
+  )
+  const projectOwnerRelayUrls = allowOwnerLocalRelays
+    ? secureRelayUrls
+    : publicRelayHintUrls
+  const declared = projectOwnerRelayUrls(
     input.declaration.state === "declared" ? input.declaration.relayUrls : []
   )
-  const cachedFallback = secureRelayUrls([
+  const cachedFallback = projectOwnerRelayUrls([
     ...(input.declaration.retainedReadRelayUrls ?? []),
     ...(input.declaration.state === "lookup_partial" ||
     input.declaration.state === "lookup_unavailable"
       ? (getCachedInboxDeclaration(input.declaration.pubkey)?.relayUrls ?? [])
       : []),
   ])
-  const localIn = secureRelayUrls(
+  const rawLocalIn =
     input.localReadRelayUrls ??
-      getGeneralReadRelayUrls({ fallbackRelayUrls: [] })
-  )
-  const compatibility = secureRelayUrls(
+    getGeneralReadRelayUrls({ fallbackRelayUrls: [] })
+  const localIn = allowOwnerLocalRelays
+    ? secureRelayUrls(rawLocalIn)
+    : publicRelayHintUrls(rawLocalIn)
+  const compatibility = publicRelayHintUrls(
     input.compatibilityRelayUrls ?? config.commerceDmFallbackRelayUrls
   )
   const compatibilitySet = new Set(compatibility)
-  const requiredCompatibility = secureRelayUrls(
+  const requiredCompatibility = publicRelayHintUrls(
     input.requiredCompatibilityRelayUrls ?? config.dmCompatibilityOrderRelayUrls
   ).filter((url) => compatibilitySet.has(url))
   const requiredCompatibilitySet = new Set(requiredCompatibility)

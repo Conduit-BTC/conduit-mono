@@ -38,14 +38,14 @@ function lifecycle(overrides: Partial<OrderLifecycle> = {}): OrderLifecycle {
       route: "compatibility_order",
       relayDelivery: [
         {
-          relayUrl: "wss://acked.example",
+          relayUrl: "wss://acked.conduit.market",
           source: "compatibility_registry",
           status: "acked",
           attemptCount: 1,
           acknowledgedAt: 1,
         },
         {
-          relayUrl: "wss://failed.example",
+          relayUrl: "wss://failed.conduit.market",
           source: "compatibility_registry",
           status: "timed_out",
           attemptCount: 1,
@@ -107,7 +107,7 @@ describe("order relay delivery retry", () => {
     })
 
     expect(attempts.map((attempt) => attempt.relayUrl)).toEqual([
-      "wss://failed.example",
+      "wss://failed.conduit.market",
     ])
     expect(attempts[0]?.signedEvent).toEqual(signedWrap)
     expect(
@@ -151,7 +151,7 @@ describe("order relay delivery retry", () => {
         attemptCount: 1,
       },
       {
-        relayUrl: "wss://retry.example/inbox",
+        relayUrl: "wss://retry.conduit.market/inbox",
         source: "declared",
         status: "timed_out",
         attemptCount: 1,
@@ -170,7 +170,7 @@ describe("order relay delivery retry", () => {
       },
     })
 
-    expect(attempts).toEqual(["wss://retry.example/inbox"])
+    expect(attempts).toEqual(["wss://retry.conduit.market/inbox"])
   })
 
   it("refuses background replay for a guest or different active account", async () => {

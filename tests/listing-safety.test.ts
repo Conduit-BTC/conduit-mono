@@ -18,7 +18,7 @@ function product(overrides: Partial<Product> = {}): Product {
     type: "simple",
     format: "physical",
     visibility: "public",
-    images: [{ url: "https://example.com/item.png" }],
+    images: [{ url: "https://cdn.conduit.market/item.png" }],
     tags: ["gear"],
     createdAt: 1,
     updatedAt: 1,
@@ -241,7 +241,7 @@ describe("listing safety", () => {
     ).toBe(false)
     expect(
       hasMarketVisibleListingImage(
-        product({ images: [{ url: "http://cdn.example.com/item.png" }] })
+        product({ images: [{ url: "http://cdn.conduit.market/item.png" }] })
       )
     ).toBe(true)
     expect(hasMarketVisibleListingImage(product())).toBe(true)

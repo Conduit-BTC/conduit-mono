@@ -294,7 +294,9 @@ function AccountControl({
 export function MarketHeader() {
   const { pubkey, status, disconnect } = useAuth()
   const session = useConduitSession()
-  const { data: profile, refetch: refetchProfile } = useProfile(pubkey)
+  const { data: profile, refetch: refetchProfile } = useProfile(pubkey, {
+    authenticatedPubkey: pubkey,
+  })
   const wallet = useWallet()
   const cart = useCart()
   const navigate = useNavigate()

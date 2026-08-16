@@ -37,7 +37,7 @@ function form(
     shippingCost: "",
     usePresetShippingZone: false,
     customShippingConfig: { countries: [] },
-    imageUrl: "https://example.com/pocket-node.png",
+    imageUrl: "https://cdn.conduit.market/pocket-node.png",
     tags: "gear, hardware, demo",
     ...overrides,
   }

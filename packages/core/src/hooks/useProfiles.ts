@@ -14,10 +14,12 @@ import {
 import type { Profile } from "../types"
 
 const PROFILE_STALE_TIME_MS = 30 * 60_000
+const EMPTY_PROFILE_MAP: ProfileMap = {}
 
 type ProfilePriority = "visible" | "background"
 
 export interface UseProfilesOptions {
+  authenticatedPubkey?: string | null
   enabled?: boolean
   maxUnresolvedRefetches?: number
   priority?: ProfilePriority
@@ -26,6 +28,19 @@ export interface UseProfilesOptions {
   refetchUnresolvedMs?: number
   skipCache?: boolean
   staleTime?: number
+}
+
+export function getProfileQueryPerspectiveKey(
+  authenticatedPubkey: string | null | undefined
+): string {
+  return authenticatedPubkey?.trim().toLowerCase() ?? ""
+}
+
+export function getProfileSingletonQueryKey(
+  pubkey: string,
+  authenticatedPubkey: string | null | undefined
+): readonly ["profile", string, string] {
+  return ["profile", getProfileQueryPerspectiveKey(authenticatedPubkey), pubkey]
 }
 
 export interface UseProfilesResult {
@@ -93,6 +108,9 @@ export function useProfiles(
 ): UseProfilesResult {
   const queryClient = useQueryClient()
   const priority = options.priority ?? "visible"
+  const authenticatedPerspective = getProfileQueryPerspectiveKey(
+    options.authenticatedPubkey
+  )
   const pubkeyKey = uniquePubkeys(pubkeys).join("\u0000")
   const unique = useMemo(
     () => (pubkeyKey ? pubkeyKey.split("\u0000") : []),
@@ -102,7 +120,14 @@ export function useProfiles(
     () => getRelayHintKey(options.relayHintsByPubkey),
     [options.relayHintsByPubkey]
   )
-  const [resolvedProfiles, setResolvedProfiles] = useState<ProfileMap>({})
+  const [resolvedProfileState, setResolvedProfileState] = useState<{
+    perspective: string
+    profiles: ProfileMap
+  }>({ perspective: authenticatedPerspective, profiles: {} })
+  const resolvedProfiles =
+    resolvedProfileState.perspective === authenticatedPerspective
+      ? resolvedProfileState.profiles
+      : EMPTY_PROFILE_MAP
   const [unresolvedRefetchCount, setUnresolvedRefetchCount] = useState(0)
   const enabled = (options.enabled ?? true) && unique.length > 0
   const cacheResolvedProfiles = useCallback(
@@ -115,43 +140,70 @@ export function useProfiles(
 
       if (Object.keys(richProfiles).length === 0) return
 
-      setResolvedProfiles((current) =>
-        mergeRicherProfiles(current, richProfiles)
-      )
+      setResolvedProfileState((current) => ({
+        perspective: authenticatedPerspective,
+        profiles: mergeRicherProfiles(
+          current.perspective === authenticatedPerspective
+            ? current.profiles
+            : {},
+          richProfiles
+        ),
+      }))
 
       for (const [pubkey, profile] of Object.entries(richProfiles)) {
         queryClient.setQueryData<Profile | undefined>(
-          ["profile", pubkey],
+          getProfileSingletonQueryKey(pubkey, authenticatedPerspective),
           (current) => mergeRicherProfile(current, profile)
         )
       }
     },
-    [queryClient]
+    [authenticatedPerspective, queryClient]
   )
 
   useEffect(() => {
     setUnresolvedRefetchCount(0)
-  }, [options.skipCache, priority, pubkeyKey, relayHintKey])
+  }, [
+    authenticatedPerspective,
+    options.skipCache,
+    priority,
+    pubkeyKey,
+    relayHintKey,
+  ])
 
   useEffect(() => {
-    const cached = Object.fromEntries(
-      unique
-        .map((pubkey) => [
-          pubkey,
-          queryClient.getQueryData<Profile>(["profile", pubkey]),
-        ])
-        .filter(([, profile]) => !!profile)
-    ) as ProfileMap
+    const cached: ProfileMap = {}
+    for (const pubkey of unique) {
+      const profile = queryClient.getQueryData<Profile>(
+        getProfileSingletonQueryKey(pubkey, authenticatedPerspective)
+      )
+      if (profile) cached[pubkey] = profile
+    }
 
-    setResolvedProfiles((current) => mergeRicherProfiles(current, cached))
-  }, [queryClient, unique])
+    setResolvedProfileState((current) => ({
+      perspective: authenticatedPerspective,
+      profiles: mergeRicherProfiles(
+        current.perspective === authenticatedPerspective
+          ? current.profiles
+          : {},
+        cached
+      ),
+    }))
+  }, [authenticatedPerspective, queryClient, unique])
 
   const query = useQuery({
-    queryKey: ["profiles", unique, priority, relayHintKey, options.skipCache],
+    queryKey: [
+      "profiles",
+      authenticatedPerspective,
+      unique,
+      priority,
+      relayHintKey,
+      options.skipCache,
+    ],
     enabled,
     queryFn: async () => {
       const result = await getProfiles({
         pubkeys: unique,
+        authenticatedPubkey: options.authenticatedPubkey,
         priority,
         skipCache: options.skipCache,
         readPolicy: defaultReadPolicy(priority, options.readPolicy),
@@ -160,7 +212,10 @@ export function useProfiles(
       })
       return result.data
     },
-    placeholderData: (previousData) => previousData,
+    placeholderData: (previousData, previousQuery) =>
+      previousQuery?.queryKey[1] === authenticatedPerspective
+        ? previousData
+        : undefined,
     staleTime: options.staleTime ?? PROFILE_STALE_TIME_MS,
     retry: 2,
     refetchOnWindowFocus: true,

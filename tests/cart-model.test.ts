@@ -52,14 +52,14 @@ describe("cart model", () => {
           title: "Safe",
           price: 1,
           currency: "SATS",
-          image: "https://cdn.example.com/public.png",
+          image: "https://cdn.conduit.market/public.png",
           quantity: 1,
         },
       ],
     })
 
     expect(state.items[0]?.image).toBeUndefined()
-    expect(state.items[1]?.image).toBe("https://cdn.example.com/public.png")
+    expect(state.items[1]?.image).toBe("https://cdn.conduit.market/public.png")
     expect(sanitizeStoredCartState(null)).toEqual({ items: [] })
   })
 

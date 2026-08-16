@@ -318,7 +318,7 @@ export function buildProductListingEventDraft({
       tags.push(["shipping_exclude", rule.code, ...rule.exclude])
     }
   }
-  for (const image of getProductImageCandidates(product)) {
+  for (const image of getProductProtocolImages(product)) {
     tags.push(["image", image.url])
   }
   for (const tag of canonicalizeProductTags(product.tags)) {
@@ -342,20 +342,53 @@ export function getProductImageCandidates(
   const candidates: Array<{ url: string; alt?: string }> = []
   const seen = new Set<string>()
 
-  for (const image of Array.isArray(product.images) ? product.images : []) {
-    if (!image || typeof image !== "object") continue
+  for (const image of getProductProtocolImages(product)) {
     const url = normalizePublicMediaUrl(image.url)
     if (!url || seen.has(url)) continue
 
     seen.add(url)
-    candidates.push({
-      url,
-      ...(typeof image.alt === "string" && image.alt ? { alt: image.alt } : {}),
-    })
+    candidates.push({ ...image, url })
     if (candidates.length >= MAX_PRODUCT_IMAGE_CANDIDATES) break
   }
 
   return candidates
+}
+
+/**
+ * Preserve every structurally valid HTTP(S) image committed by the protocol
+ * event, in signed order. This is evidence retention, not permission to load
+ * the URL. Request/render boundaries must use getProductImageCandidates.
+ */
+export function getProductProtocolImages(
+  product: Pick<ProductSchema, "images">
+): Array<{ url: string; alt?: string }> {
+  const images: Array<{ url: string; alt?: string }> = []
+
+  for (const image of Array.isArray(product.images) ? product.images : []) {
+    if (!image || typeof image !== "object") continue
+    if (
+      typeof image.url !== "string" ||
+      !image.url ||
+      image.url !== image.url.trim() ||
+      image.url.length > 4_096
+    ) {
+      continue
+    }
+    try {
+      const parsed = new URL(image.url)
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        continue
+      }
+    } catch {
+      continue
+    }
+    images.push({
+      url: image.url,
+      ...(typeof image.alt === "string" && image.alt ? { alt: image.alt } : {}),
+    })
+  }
+
+  return images
 }
 
 export function hasMarketVisibleProductImage(
@@ -919,7 +952,7 @@ export function parseProductEvent(
       event.tags,
       candidate.type ?? "simple"
     )
-    candidate.images = getProductImageCandidates({
+    candidate.images = getProductProtocolImages({
       images: Array.isArray(parsed.images) ? parsed.images : [],
     })
 
@@ -977,7 +1010,7 @@ export function parseProductEvent(
     productTypeTag.format === "digital" ? "digital" : "physical"
   const parentProductId = parseVariationParentProductId(event.tags, type)
 
-  const images = getProductImageCandidates({
+  const images = getProductProtocolImages({
     images: getTagValues(event.tags, "image").map((url) => ({ url })),
   })
 

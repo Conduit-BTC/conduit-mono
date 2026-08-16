@@ -16,7 +16,10 @@ import {
 import { CANONICAL_APP_BACKPLANE_RELAYS, config } from "../config"
 import { compareCommercePrices } from "../pricing"
 import type { Product, Profile } from "../types"
-import { normalizePublicMediaUrl } from "../network-target-safety"
+import {
+  normalizePublicMediaUrl,
+  normalizePublicWebSocketUrl,
+} from "../network-target-safety"
 import { EVENT_KINDS } from "./kinds"
 import {
   fetchEventsFanout,
@@ -61,7 +64,7 @@ import {
 } from "./product-family"
 import {
   canonicalizeProductTags,
-  getProductImageCandidates,
+  getProductProtocolImages,
   normalizeProductSummaryForDisplay,
   parseProductEvent,
 } from "./products"
@@ -82,6 +85,7 @@ import {
   getCommerceReadRelayUrls,
   getGeneralReadRelayUrls,
   normalizeUntrustedRelayHintsForContext,
+  tryNormalizeRelayUrl,
 } from "./relay-settings"
 import { getRelayLists, isInsecureRelayUrl } from "./relay-list"
 import { planRelayReads, type RelayReadIntent } from "./relay-planner"
@@ -434,7 +438,10 @@ async function planCommerceReadRelayPlan(input: {
   authenticatedPubkey?: string | null
   maxRelays?: number
   relayHintMode?: "auto" | "skip" | "force"
+  /** Untrusted hints that must independently resolve to public WSS targets. */
   extraRelayUrls?: readonly string[]
+  /** Hints belonging to the exact authenticated author. */
+  authenticatedAuthorRelayUrls?: readonly string[]
 }): Promise<CommerceReadRelayPlan> {
   const hintPubkeys = Array.from(
     new Set(
@@ -487,11 +494,21 @@ async function planCommerceReadRelayPlan(input: {
     input.relayHintMode !== "force" &&
     (input.intent === "commerce_products" ||
       (input.intent === "author_products" && (input.authors?.length ?? 0) > 1))
-  const externalRelayHints = normalizeUntrustedRelayHintsForContext({
-    relayUrls: input.extraRelayUrls ?? [],
+  const publicExternalRelayHints = uniqueStrings(
+    (input.extraRelayUrls ?? []).flatMap((relayUrl) => {
+      const normalized = normalizePublicCommerceRelayUrl(relayUrl)
+      return normalized ? [normalized] : []
+    })
+  )
+  const authenticatedAuthorRelayHints = normalizeUntrustedRelayHintsForContext({
+    relayUrls: input.authenticatedAuthorRelayUrls ?? [],
     approvedRelayUrls: plan.relayUrls,
     allowApprovedPrivate: !!input.authenticatedPubkey,
   })
+  const externalRelayHints = uniqueStrings([
+    ...publicExternalRelayHints,
+    ...authenticatedAuthorRelayHints,
+  ])
   const plannedRelayUrls = preferFallbackFirst
     ? uniqueStrings([
         ...fallbackRelayUrls,
@@ -1185,7 +1202,7 @@ function toCachedProduct(record: CommerceProductRecord) {
     shippingCountryRules: product.shippingCountryRules,
     visibility: product.visibility,
     stock: product.stock,
-    images: getProductImageCandidates(product),
+    images: getProductProtocolImages(product),
     tags: canonicalizeProductTags(product.tags),
     publicZapEnabled: product.publicZapEnabled,
     zapMessagePolicy: product.zapMessagePolicy,
@@ -1234,7 +1251,7 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
     shippingCountryRules: row.shippingCountryRules,
     visibility: row.visibility ?? "public",
     stock: row.stock,
-    images: getProductImageCandidates({ images: row.images ?? [] }),
+    images: getProductProtocolImages({ images: row.images ?? [] }),
     tags,
     publicZapEnabled: row.publicZapEnabled ?? true,
     zapMessagePolicy,
@@ -1264,23 +1281,90 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
   })
 }
 
-async function loadProductSourceRelayHints(
-  pubkeys: readonly string[]
-): Promise<string[]> {
-  const uniquePubkeys = uniqueStrings(pubkeys)
-  if (uniquePubkeys.length === 0) return []
-
-  const rows = (
-    await Promise.all(uniquePubkeys.map((pubkey) => loadCachedProducts(pubkey)))
-  ).flat()
-
-  return uniqueStrings(rows.flatMap((row) => row.sourceRelayUrls ?? []))
+type ContextualRelayHints = {
+  publicRelayUrls: string[]
+  authenticatedAuthorRelayUrls: string[]
 }
 
-function getProfileQueryRelayHints(query: ProfileBatchQuery): string[] {
-  if (!query.relayHintsByPubkey) return []
-  return uniqueStrings(
-    query.pubkeys.flatMap((pubkey) => query.relayHintsByPubkey?.[pubkey] ?? [])
+function normalizePublicCommerceRelayUrl(relayUrl: string): string | null {
+  if (!normalizePublicWebSocketUrl(relayUrl)) return null
+  const normalized = tryNormalizeRelayUrl(relayUrl)
+  return normalized.ok ? normalized.url : null
+}
+
+function contextualRelayHints(
+  entries: readonly { pubkey: string; relayUrls: readonly string[] }[],
+  authenticatedPubkey: string | null | undefined
+): ContextualRelayHints {
+  const normalizedOwner = authenticatedPubkey?.trim().toLowerCase() ?? ""
+  const publicRelayUrls: string[] = []
+  const authenticatedAuthorRelayUrls: string[] = []
+
+  for (const entry of entries) {
+    const isAuthenticatedOwner =
+      !!normalizedOwner && entry.pubkey.trim().toLowerCase() === normalizedOwner
+    for (const relayUrl of entry.relayUrls) {
+      const publicRelayUrl = normalizePublicCommerceRelayUrl(relayUrl)
+      if (publicRelayUrl) publicRelayUrls.push(publicRelayUrl)
+      else if (isAuthenticatedOwner) {
+        authenticatedAuthorRelayUrls.push(relayUrl)
+      }
+    }
+  }
+
+  return {
+    publicRelayUrls: uniqueStrings(publicRelayUrls),
+    authenticatedAuthorRelayUrls: uniqueStrings(authenticatedAuthorRelayUrls),
+  }
+}
+
+function mergeContextualRelayHints(
+  ...hints: readonly ContextualRelayHints[]
+): ContextualRelayHints {
+  return {
+    publicRelayUrls: uniqueStrings(
+      hints.flatMap((hint) => hint.publicRelayUrls)
+    ),
+    authenticatedAuthorRelayUrls: uniqueStrings(
+      hints.flatMap((hint) => hint.authenticatedAuthorRelayUrls)
+    ),
+  }
+}
+
+async function loadProductSourceRelayHints(
+  pubkeys: readonly string[],
+  authenticatedPubkey?: string | null
+): Promise<ContextualRelayHints> {
+  const uniquePubkeys = uniqueStrings(pubkeys)
+  if (uniquePubkeys.length === 0) {
+    return { publicRelayUrls: [], authenticatedAuthorRelayUrls: [] }
+  }
+
+  const rowsByPubkey = await Promise.all(
+    uniquePubkeys.map(async (pubkey) => ({
+      pubkey,
+      rows: await loadCachedProducts(pubkey),
+    }))
+  )
+
+  return contextualRelayHints(
+    rowsByPubkey.map(({ pubkey, rows }) => ({
+      pubkey,
+      relayUrls: rows.flatMap((row) => row.sourceRelayUrls ?? []),
+    })),
+    authenticatedPubkey
+  )
+}
+
+function getProfileQueryRelayHints(
+  query: ProfileBatchQuery
+): ContextualRelayHints {
+  return contextualRelayHints(
+    query.pubkeys.map((pubkey) => ({
+      pubkey,
+      relayUrls: query.relayHintsByPubkey?.[pubkey] ?? [],
+    })),
+    query.authenticatedPubkey
   )
 }
 
@@ -1861,20 +1945,36 @@ function mergeProfileData(
   }
 }
 
+function compareReplaceableProfileEvents(a: NDKEvent, b: NDKEvent): number {
+  const createdAt = (b.created_at ?? 0) - (a.created_at ?? 0)
+  if (createdAt !== 0) return createdAt
+  return (a.id || "\uffff").localeCompare(b.id || "\uffff")
+}
+
+function pickLatestProfileEvent(
+  events: readonly NDKEvent[],
+  pubkey: string
+): NDKEvent | undefined {
+  return events
+    .filter((event) => event.pubkey === pubkey)
+    .sort(compareReplaceableProfileEvents)[0]
+}
+
 function pickLatestProfileEventWithContent(
   events: readonly NDKEvent[],
   pubkey: string
 ): NDKEvent | undefined {
   return events
     .filter((event) => event.pubkey === pubkey)
-    .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))
+    .sort(compareReplaceableProfileEvents)
     .find((event) => hasProfileContent(parseProfileEvent(event)))
 }
 
 function mergeProfileEvents(
   pubkeys: readonly string[],
   currentProfiles: Record<string, Profile>,
-  events: readonly NDKEvent[]
+  events: readonly NDKEvent[],
+  currentRows: ReadonlyMap<string, CachedProfile> = new Map()
 ): {
   profiles: Record<string, Profile>
   rowsToCache: CachedProfile[]
@@ -1886,25 +1986,57 @@ function mergeProfileEvents(
 
   for (const pubkey of pubkeys) {
     const event = pickLatestProfileEventWithContent(events, pubkey)
+    const latestEvent = pickLatestProfileEvent(events, pubkey)
+    const currentRow = currentRows.get(pubkey)
+    const currentFrontier = currentRow?.eventCreatedAt ?? -1
+    const latestEventCreatedAt = latestEvent?.created_at ?? -1
+    const latestEventWins =
+      !!latestEvent &&
+      (latestEventCreatedAt > currentFrontier ||
+        (latestEventCreatedAt === currentFrontier &&
+          (latestEvent.id || "\uffff") < (currentRow?.eventId || "\uffff")))
+    const frontier = latestEventWins ? latestEvent : undefined
+    const currentProjection = currentRow
+      ? cachedProfileToProfile(currentRow)
+      : undefined
+    const currentFrontierWins =
+      currentRow?.eventCreatedAt !== undefined &&
+      (!latestEvent ||
+        latestEventCreatedAt < currentFrontier ||
+        (latestEventCreatedAt === currentFrontier &&
+          (currentRow.eventId || "\uffff") <= (latestEvent.id || "\uffff")))
     const profile = mergeProfileData(
-      profiles[pubkey],
-      event ? parseProfileEvent(event) : { pubkey }
+      profiles[pubkey] ?? currentProjection,
+      currentFrontierWins
+        ? undefined
+        : event
+          ? parseProfileEvent(event)
+          : { pubkey }
     )
-    const sourceRelayUrls = event ? getEventSourceRelayUrls(event) : undefined
+    const sourceRelayUrls = uniqueStrings([
+      ...(currentRow?.sourceRelayUrls ?? []),
+      ...(event ? getEventSourceRelayUrls(event) : []),
+      ...(frontier ? getEventSourceRelayUrls(frontier) : []),
+    ])
     profiles[pubkey] = profile ?? { pubkey }
-    if (profile && hasProfileContent(profile)) {
+    if (frontier || (profile && hasProfileContent(profile))) {
       if (event) hasResolvedProfile = true
+      const cachedProfile = profile ?? { pubkey }
       rowsToCache.push({
-        pubkey: profile.pubkey,
-        name: profile.name,
-        displayName: profile.displayName,
-        about: profile.about,
-        picture: profile.picture,
-        banner: profile.banner,
-        nip05: profile.nip05,
-        lud16: profile.lud16,
-        website: profile.website,
-        sourceRelayUrls,
+        pubkey: cachedProfile.pubkey,
+        name: cachedProfile.name,
+        displayName: cachedProfile.displayName,
+        about: cachedProfile.about,
+        picture: cachedProfile.picture,
+        banner: cachedProfile.banner,
+        nip05: cachedProfile.nip05,
+        lud16: cachedProfile.lud16,
+        website: cachedProfile.website,
+        rawContent: frontier?.content ?? currentRow?.rawContent,
+        eventId: frontier?.id || currentRow?.eventId,
+        eventCreatedAt: frontier?.created_at ?? currentRow?.eventCreatedAt,
+        sourceRelayUrls:
+          sourceRelayUrls.length > 0 ? sourceRelayUrls : undefined,
         cachedAt: now(),
       })
     }
@@ -2068,11 +2200,38 @@ async function fetchProductDeletionTimestamps(
         authenticatedPubkey: options.authenticatedPubkey,
         maxRelays: options.readPolicy?.maxRelays,
       })
-      const sourceRelayUrls = normalizeUntrustedRelayHintsForContext({
-        relayUrls: rawSourceRelayUrls,
-        approvedRelayUrls: deletionRelayPlan.relayUrls,
-        allowApprovedPrivate: !!options.authenticatedPubkey,
-      })
+      const publicSourceRelayUrls = uniqueStrings(
+        rawSourceRelayUrls.flatMap((relayUrl) => {
+          const normalized = normalizePublicCommerceRelayUrl(relayUrl)
+          return normalized ? [normalized] : []
+        })
+      )
+      const normalizedAuthenticatedPubkey = options.authenticatedPubkey
+        ?.trim()
+        .toLowerCase()
+      const authenticatedOwnerRawSourceRelayUrls: string[] = []
+      if (normalizedAuthenticatedPubkey) {
+        for (const candidate of chunkCandidates) {
+          if (
+            candidate.pubkey.trim().toLowerCase() ===
+            normalizedAuthenticatedPubkey
+          ) {
+            authenticatedOwnerRawSourceRelayUrls.push(
+              ...(candidate.sourceRelayUrls ?? [])
+            )
+          }
+        }
+      }
+      const authenticatedOwnerSourceRelayUrls =
+        normalizeUntrustedRelayHintsForContext({
+          relayUrls: authenticatedOwnerRawSourceRelayUrls,
+          approvedRelayUrls: deletionRelayPlan.relayUrls,
+          allowApprovedPrivate: !!options.authenticatedPubkey,
+        })
+      const sourceRelayUrls = uniqueStrings([
+        ...publicSourceRelayUrls,
+        ...authenticatedOwnerSourceRelayUrls,
+      ])
       const preferredDeletionRelayUrls = uniqueStrings([
         ...sourceRelayUrls,
         ...CANONICAL_APP_BACKPLANE_RELAYS,
@@ -4013,12 +4172,32 @@ export async function getProfiles(
     }
   }
 
-  const cachedRows = query.skipCache ? [] : await loadCachedProfiles(pubkeys)
+  // A forced refresh must bypass cached display data without forgetting the
+  // durable replaceable-event frontier. Otherwise a narrower relay view can
+  // regress raw kind-0 publish context and silently delete unchanged fields.
+  let retainedCachedRows: Array<CachedProfile | undefined>
+  try {
+    retainedCachedRows = await loadCachedProfiles(pubkeys)
+  } catch {
+    // Profile cache persistence is best-effort. A storage failure must not
+    // prevent a forced network refresh or turn a public profile read fatal.
+    retainedCachedRows = pubkeys.map(() => undefined)
+  }
+  const cachedRows = query.skipCache ? [] : retainedCachedRows
+  const cachedRowsByPubkey = new Map(
+    retainedCachedRows.flatMap((row) =>
+      row ? ([[row.pubkey, row]] as const) : []
+    )
+  )
   pubkeys.forEach((pubkey, index) => {
     const cached = cachedRows[index]
+    const isAuthenticatedOwner =
+      !!query.authenticatedPubkey &&
+      pubkey.toLowerCase() === query.authenticatedPubkey.trim().toLowerCase()
     if (
       cached &&
       hasProfileContent(cached) &&
+      !isAuthenticatedOwner &&
       now() - cached.cachedAt < PROFILE_CACHE_TTL_MS
     ) {
       result[pubkey] = cachedProfileToProfile(cached)
@@ -4053,16 +4232,18 @@ export async function getProfiles(
 
   try {
     const visible = query.priority !== "background"
-    const sourceRelayHints = uniqueStrings([
-      ...getProfileQueryRelayHints({ ...query, pubkeys: missing }),
-      ...(await loadProductSourceRelayHints(missing)),
-    ])
+    const sourceRelayHints = mergeContextualRelayHints(
+      getProfileQueryRelayHints({ ...query, pubkeys: missing }),
+      await loadProductSourceRelayHints(missing, query.authenticatedPubkey)
+    )
     const relayUrls = await planCommerceReadRelays({
       intent: "profiles",
       authors: missing,
       authenticatedPubkey: query.authenticatedPubkey,
       maxRelays: query.readPolicy?.maxRelays ?? (visible ? 8 : 4),
-      extraRelayUrls: sourceRelayHints,
+      extraRelayUrls: sourceRelayHints.publicRelayUrls,
+      authenticatedAuthorRelayUrls:
+        sourceRelayHints.authenticatedAuthorRelayUrls,
     })
     const profileFilter: NDKFilter = {
       kinds: [EVENT_KINDS.PROFILE],
@@ -4079,7 +4260,12 @@ export async function getProfiles(
     const emitProgress = (events: readonly NDKEvent[]) => {
       if (!query.onProgress) return
 
-      const progress = mergeProfileEvents(missing, result, events)
+      const progress = mergeProfileEvents(
+        missing,
+        result,
+        events,
+        cachedRowsByPubkey
+      )
       if (!progress.hasResolvedProfile) return
 
       query.onProgress({
@@ -4103,7 +4289,8 @@ export async function getProfiles(
     const { profiles, rowsToCache } = mergeProfileEvents(
       missing,
       result,
-      events
+      events,
+      cachedRowsByPubkey
     )
     Object.assign(result, profiles)
 
@@ -4282,6 +4469,7 @@ async function fetchNewInboxWraps(
   const declaration = await resolvePrincipalInboxDeclaration(principalPubkey)
   const readPlan = planInboxReadRelays({
     declaration,
+    authenticatedPubkey: principalPubkey,
     maxRelays: DM_INBOX_READ_FANOUT,
   })
 

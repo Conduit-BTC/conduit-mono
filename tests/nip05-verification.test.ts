@@ -26,23 +26,37 @@ function jsonFetcher(
 
 describe("NIP-05 verification", () => {
   it("parses a NIP-05 identifier and normalizes the domain", () => {
-    expect(parseNip05Identifier(" Alice@Example.COM ")).toEqual({
+    expect(parseNip05Identifier(" Alice@Conduit.MARKET ")).toEqual({
       name: "Alice",
-      domain: "example.com",
-      normalizedIdentifier: "Alice@example.com",
+      domain: "conduit.market",
+      normalizedIdentifier: "Alice@conduit.market",
     })
   })
 
   it("parses a bare domain as the NIP-05 root identifier", () => {
-    expect(parseNip05Identifier("example.com")).toEqual({
+    expect(parseNip05Identifier("conduit.market")).toEqual({
       name: "_",
-      domain: "example.com",
-      normalizedIdentifier: "_@example.com",
+      domain: "conduit.market",
+      normalizedIdentifier: "_@conduit.market",
     })
   })
 
   it("rejects local parts outside the NIP-05 character set", () => {
-    expect(parseNip05Identifier("ali+ce@example.com")).toBeNull()
+    expect(parseNip05Identifier("ali+ce@conduit.market")).toBeNull()
+  })
+
+  it("rejects URL delimiters and backslashes before building a request", () => {
+    for (const identifier of [
+      "alice@conduit.market/path",
+      "alice@conduit.market\\path",
+      "alice@conduit.market?name=bob",
+      "alice@conduit.market#fragment",
+      "alice@conduit.market:443",
+      "alice@%63onduit.market",
+      "alice@conduit%2emarket",
+    ]) {
+      expect(parseNip05Identifier(identifier)).toBeNull()
+    }
   })
 
   it("marks the identifier valid only when the well-known response maps name to pubkey", async () => {
@@ -50,7 +64,7 @@ describe("NIP-05 verification", () => {
     const result = await getNip05Verification(
       {
         pubkey: ALICE_PUBKEY,
-        nip05: "alice@example.com",
+        nip05: "alice@conduit.market",
       },
       {
         fetcher: jsonFetcher({ names: { alice: ALICE_PUBKEY } }, { calls }),
@@ -59,7 +73,7 @@ describe("NIP-05 verification", () => {
     )
 
     expect(calls).toEqual([
-      "https://example.com/.well-known/nostr.json?name=alice",
+      "https://conduit.market/.well-known/nostr.json?name=alice",
     ])
     expect(result.status).toBe("valid")
     expect(result.source).toBe("network")
@@ -70,7 +84,7 @@ describe("NIP-05 verification", () => {
     const result = await getNip05Verification(
       {
         pubkey: ALICE_PUBKEY,
-        nip05: "example.com",
+        nip05: "conduit.market",
       },
       {
         fetcher: jsonFetcher({ names: { _: ALICE_PUBKEY } }, { calls }),
@@ -78,16 +92,18 @@ describe("NIP-05 verification", () => {
       }
     )
 
-    expect(calls).toEqual(["https://example.com/.well-known/nostr.json?name=_"])
+    expect(calls).toEqual([
+      "https://conduit.market/.well-known/nostr.json?name=_",
+    ])
     expect(result.status).toBe("valid")
-    expect(result.normalizedIdentifier).toBe("_@example.com")
+    expect(result.normalizedIdentifier).toBe("_@conduit.market")
   })
 
   it("marks the identifier invalid when the domain maps the name to another pubkey", async () => {
     const result = await getNip05Verification(
       {
         pubkey: ALICE_PUBKEY,
-        nip05: "alice@example.com",
+        nip05: "alice@conduit.market",
       },
       {
         fetcher: jsonFetcher({ names: { alice: BOB_PUBKEY } }),
@@ -103,7 +119,7 @@ describe("NIP-05 verification", () => {
     const result = await getNip05Verification(
       {
         pubkey: ALICE_PUBKEY,
-        nip05: "alice@example.com",
+        nip05: "alice@conduit.market",
       },
       {
         fetcher: jsonFetcher({}, { status: 404 }),
@@ -123,7 +139,7 @@ describe("NIP-05 verification", () => {
     const result = await getNip05Verification(
       {
         pubkey: ALICE_PUBKEY,
-        nip05: "alice@example.com",
+        nip05: "alice@conduit.market",
       },
       {
         fetcher,
@@ -150,7 +166,7 @@ describe("NIP-05 verification", () => {
     const result = await getNip05Verification(
       {
         pubkey: ALICE_PUBKEY,
-        nip05: "alice@example.com",
+        nip05: "alice@conduit.market",
       },
       {
         fetcher,
@@ -160,7 +176,7 @@ describe("NIP-05 verification", () => {
 
     expect(calls).toEqual([
       {
-        url: "https://example.com/.well-known/nostr.json?name=alice",
+        url: "https://conduit.market/.well-known/nostr.json?name=alice",
         redirect: "error",
       },
     ])
@@ -169,15 +185,15 @@ describe("NIP-05 verification", () => {
   })
 
   it("serves fresh cached verification rows without refetching", async () => {
-    const id = getNip05VerificationCacheId(ALICE_PUBKEY, "alice@example.com")
+    const id = getNip05VerificationCacheId(ALICE_PUBKEY, "alice@conduit.market")
     const cacheRows = new Map<string, CachedNip05Verification>([
       [
         id,
         {
           id,
           pubkey: ALICE_PUBKEY,
-          nip05: "alice@example.com",
-          normalizedIdentifier: "alice@example.com",
+          nip05: "alice@conduit.market",
+          normalizedIdentifier: "alice@conduit.market",
           status: "valid",
           checkedAt: 1_000,
           expiresAt: 10_000,
@@ -194,7 +210,7 @@ describe("NIP-05 verification", () => {
     const result = await getNip05Verification(
       {
         pubkey: ALICE_PUBKEY,
-        nip05: "alice@example.com",
+        nip05: "alice@conduit.market",
       },
       {
         cache: {
@@ -220,20 +236,20 @@ describe("NIP-05 verification", () => {
       return new Response("{}")
     }
 
-    const result = await getNip05Verification(
-      {
-        pubkey: ALICE_PUBKEY,
-        nip05: "not-an-identifier",
-      },
-      {
-        fetcher,
-        now: () => 1_000,
-      }
-    )
+    for (const nip05 of [
+      "not-an-identifier",
+      "alice@%63onduit.market",
+      "alice@conduit%2emarket",
+    ]) {
+      const result = await getNip05Verification(
+        { pubkey: ALICE_PUBKEY, nip05 },
+        { fetcher, now: () => 1_000 }
+      )
 
-    expect(result.status).toBe("invalid")
-    expect(result.reason).toBe("malformed_identifier")
-    expect(result.source).toBe("syntax")
+      expect(result.status).toBe("invalid")
+      expect(result.reason).toBe("malformed_identifier")
+      expect(result.source).toBe("syntax")
+    }
     expect(fetchCount).toBe(0)
   })
 
@@ -242,6 +258,8 @@ describe("NIP-05 verification", () => {
       "alice@127.0.0.1",
       "alice@192.168.1.5",
       "alice@foo.localhost",
+      "alice@example.com",
+      "alice@resolver.arpa",
     ]) {
       let fetchCount = 0
       const result = await getNip05Verification(

@@ -62,7 +62,7 @@ function RequiredMark() {
 
 function ProfilePage() {
   const { pubkey } = useAuth()
-  const profileQuery = useProfile(pubkey)
+  const profileQuery = useProfile(pubkey, { authenticatedPubkey: pubkey })
   const updateMutation = useUpdateProfile("merchant")
   const [editing, setEditing] = useState(false)
   const [form, setForm] = useState<ProfileFormValues>(EMPTY_PROFILE_FORM)
@@ -78,6 +78,7 @@ function ProfilePage() {
 
   const profileData = profileQuery.data
   const profileBannerUrl = normalizePublicMediaUrl(profileData?.banner)
+  const formPictureUrl = normalizePublicMediaUrl(form.picture)
   const formBannerUrl = normalizePublicMediaUrl(form.banner)
   const complete = isProfileComplete(profileData)
   const displayName = profileData?.displayName || profileData?.name
@@ -109,7 +110,7 @@ function ProfilePage() {
     e.preventDefault()
     if (!hasProfileChanges || updateMutation.isPending) return
     setProfileSaveSucceeded(false)
-    updateMutation.mutate(profileFormToUpdatePayload(form), {
+    updateMutation.mutate(profileFormToUpdatePayload(form, profileData), {
       onSuccess: () => {
         setProfileSaveSucceeded(true)
         setEditing(false)
@@ -618,7 +619,7 @@ function ProfilePage() {
                           <div className="-mt-6 flex items-end gap-3 px-4 pb-3">
                             <Avatar className="h-12 w-12 border-4 border-[var(--surface-elevated)]">
                               <AvatarImage
-                                src={form.picture}
+                                src={formPictureUrl ?? undefined}
                                 alt="Avatar preview"
                               />
                               <AvatarFallback className="bg-[var(--avatar-bg)]">

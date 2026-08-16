@@ -182,7 +182,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
           makeRelayListEvent({
             pubkey,
             created_at: 100 + pubkey.length,
-            tags: [["r", `wss://relay-${pubkey}.example.com`]],
+            tags: [["r", `wss://relay-${pubkey}.conduit.market`]],
           })
         ) as unknown as NDKEvent[]
       },
@@ -196,33 +196,33 @@ describe("getRelayList / getRelayLists cache behavior", () => {
   it("returns cached entries when fresh and skips network", async () => {
     cache.set("alice", {
       pubkey: "alice",
-      readRelayUrls: ["wss://cached.example.com"],
-      writeRelayUrls: ["wss://cached.example.com"],
+      readRelayUrls: ["wss://cached.conduit.market"],
+      writeRelayUrls: ["wss://cached.conduit.market"],
       eventCreatedAt: 1,
       cachedAt: FIXED_NOW - 1_000,
     })
     const list = await getRelayList("alice")
-    expect(list?.readRelayUrls).toEqual(["wss://cached.example.com"])
+    expect(list?.readRelayUrls).toEqual(["wss://cached.conduit.market"])
     expect(fetchCalls.length).toBe(0)
   })
 
   it("refreshes when cached entry is older than TTL", async () => {
     cache.set("alice", {
       pubkey: "alice",
-      readRelayUrls: ["wss://stale.example.com"],
+      readRelayUrls: ["wss://stale.conduit.market"],
       writeRelayUrls: [],
       eventCreatedAt: 1,
       cachedAt: FIXED_NOW - RELAY_LIST_CACHE_TTL_MS - 1,
     })
     const list = await getRelayList("alice")
     expect(fetchCalls.length).toBe(1)
-    expect(list?.readRelayUrls).toEqual(["wss://relay-alice.example.com"])
+    expect(list?.readRelayUrls).toEqual(["wss://relay-alice.conduit.market"])
   })
 
   it("does not regress a newer cached replaceable event on a narrower refresh", async () => {
     cache.set("alice", {
       pubkey: "alice",
-      readRelayUrls: ["wss://newer-cached.example.com"],
+      readRelayUrls: ["wss://newer-cached.conduit.market"],
       writeRelayUrls: [],
       eventCreatedAt: 200,
       eventId: "00",
@@ -235,21 +235,21 @@ describe("getRelayList / getRelayLists cache behavior", () => {
             pubkey: "alice",
             id: "11",
             created_at: 100,
-            tags: [["r", "wss://older-network.example.com"]],
+            tags: [["r", "wss://older-network.conduit.market"]],
           }),
         ] as unknown as NDKEvent[],
     })
 
     const list = await getRelayList("alice")
 
-    expect(list?.readRelayUrls).toEqual(["wss://newer-cached.example.com"])
+    expect(list?.readRelayUrls).toEqual(["wss://newer-cached.conduit.market"])
     expect(cache.get("alice")?.eventCreatedAt).toBe(200)
   })
 
   it("converges equal-timestamp observations on the lower event id across reads", async () => {
     cache.set("alice", {
       pubkey: "alice",
-      readRelayUrls: ["wss://higher-id.example.com"],
+      readRelayUrls: ["wss://higher-id.conduit.market"],
       writeRelayUrls: [],
       eventCreatedAt: 200,
       eventId: "ff",
@@ -262,21 +262,21 @@ describe("getRelayList / getRelayLists cache behavior", () => {
             pubkey: "alice",
             id: "00",
             created_at: 200,
-            tags: [["r", "wss://lower-id.example.com"]],
+            tags: [["r", "wss://lower-id.conduit.market"]],
           }),
         ] as unknown as NDKEvent[],
     })
 
     const list = await getRelayList("alice")
 
-    expect(list?.readRelayUrls).toEqual(["wss://lower-id.example.com"])
+    expect(list?.readRelayUrls).toEqual(["wss://lower-id.conduit.market"])
     expect(cache.get("alice")?.eventId).toBe("00")
   })
 
   it("retains the lower cached id when an equal-timestamp higher id arrives", async () => {
     cache.set("alice", {
       pubkey: "alice",
-      readRelayUrls: ["wss://lower-id.example.com"],
+      readRelayUrls: ["wss://lower-id.conduit.market"],
       writeRelayUrls: [],
       eventCreatedAt: 200,
       eventId: "00",
@@ -289,21 +289,21 @@ describe("getRelayList / getRelayLists cache behavior", () => {
             pubkey: "alice",
             id: "ff",
             created_at: 200,
-            tags: [["r", "wss://higher-id.example.com"]],
+            tags: [["r", "wss://higher-id.conduit.market"]],
           }),
         ] as unknown as NDKEvent[],
     })
 
     const list = await getRelayList("alice")
 
-    expect(list?.readRelayUrls).toEqual(["wss://lower-id.example.com"])
+    expect(list?.readRelayUrls).toEqual(["wss://lower-id.conduit.market"])
     expect(cache.get("alice")?.eventId).toBe("00")
   })
 
   it("forces a single refresh without letting skipCache regress the retained winner", async () => {
     cache.set("alice", {
       pubkey: "alice",
-      readRelayUrls: ["wss://retained.example.com"],
+      readRelayUrls: ["wss://retained.conduit.market"],
       writeRelayUrls: [],
       eventCreatedAt: 200,
       eventId: "00",
@@ -316,22 +316,22 @@ describe("getRelayList / getRelayLists cache behavior", () => {
             pubkey: "alice",
             id: "ff",
             created_at: 100,
-            tags: [["r", "wss://regressed.example.com"]],
+            tags: [["r", "wss://regressed.conduit.market"]],
           }),
         ] as unknown as NDKEvent[],
     })
 
     const list = await getRelayList("alice", { skipCache: true })
 
-    expect(list?.readRelayUrls).toEqual(["wss://retained.example.com"])
+    expect(list?.readRelayUrls).toEqual(["wss://retained.conduit.market"])
     expect(cache.get("alice")?.eventCreatedAt).toBe(200)
   })
 
   it("retains stale evidence when a forced single refresh finds no event", async () => {
     cache.set("alice", {
       pubkey: "alice",
-      readRelayUrls: ["wss://retained.example.com"],
-      writeRelayUrls: ["wss://retained.example.com"],
+      readRelayUrls: ["wss://retained.conduit.market"],
+      writeRelayUrls: ["wss://retained.conduit.market"],
       eventCreatedAt: 200,
       eventId: "00",
       cachedAt: FIXED_NOW - 1_000,
@@ -343,14 +343,14 @@ describe("getRelayList / getRelayLists cache behavior", () => {
     const list = await getRelayList("alice", { skipCache: true })
 
     expect(list?.lookupState).toBe("stale-cache")
-    expect(list?.writeRelayUrls).toEqual(["wss://retained.example.com"])
+    expect(list?.writeRelayUrls).toEqual(["wss://retained.conduit.market"])
   })
 
   it("retains stale evidence when a forced single refresh fails", async () => {
     cache.set("alice", {
       pubkey: "alice",
-      readRelayUrls: ["wss://retained.example.com"],
-      writeRelayUrls: ["wss://retained.example.com"],
+      readRelayUrls: ["wss://retained.conduit.market"],
+      writeRelayUrls: ["wss://retained.conduit.market"],
       eventCreatedAt: 200,
       eventId: "00",
       cachedAt: FIXED_NOW - 1_000,
@@ -364,13 +364,13 @@ describe("getRelayList / getRelayLists cache behavior", () => {
     const list = await getRelayList("alice", { skipCache: true })
 
     expect(list?.lookupState).toBe("stale-cache")
-    expect(list?.writeRelayUrls).toEqual(["wss://retained.example.com"])
+    expect(list?.writeRelayUrls).toEqual(["wss://retained.conduit.market"])
   })
 
   it("atomically retains a newer single-refresh winner across concurrent tabs", async () => {
     cache.set("alice", {
       pubkey: "alice",
-      readRelayUrls: ["wss://initial.example.com"],
+      readRelayUrls: ["wss://initial.conduit.market"],
       writeRelayUrls: [],
       eventCreatedAt: 100,
       eventId: "initial",
@@ -390,7 +390,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
               pubkey: "alice",
               id: "newer",
               created_at: 200,
-              tags: [["r", "wss://newer.example.com"]],
+              tags: [["r", "wss://newer.conduit.market"]],
             }),
           ] as unknown as NDKEvent[]
         }
@@ -400,7 +400,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
             pubkey: "alice",
             id: "older",
             created_at: 150,
-            tags: [["r", "wss://older.example.com"]],
+            tags: [["r", "wss://older.conduit.market"]],
           }),
         ] as unknown as NDKEvent[]
       },
@@ -417,14 +417,14 @@ describe("getRelayList / getRelayLists cache behavior", () => {
 
     expect(newerResult?.lookupState).toBe("network")
     expect(olderResult?.lookupState).toBe("stale-cache")
-    expect(olderResult?.readRelayUrls).toEqual(["wss://newer.example.com"])
+    expect(olderResult?.readRelayUrls).toEqual(["wss://newer.conduit.market"])
     expect(cache.get("alice")?.eventCreatedAt).toBe(200)
   })
 
   it("forces batched refreshes without regressing retained winners", async () => {
     cache.set("alice", {
       pubkey: "alice",
-      readRelayUrls: ["wss://retained.example.com"],
+      readRelayUrls: ["wss://retained.conduit.market"],
       writeRelayUrls: [],
       eventCreatedAt: 200,
       eventId: "00",
@@ -437,7 +437,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
             pubkey: "alice",
             id: "ff",
             created_at: 100,
-            tags: [["r", "wss://regressed.example.com"]],
+            tags: [["r", "wss://regressed.conduit.market"]],
           }),
         ] as unknown as NDKEvent[],
     })
@@ -445,7 +445,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
     const lists = await getRelayLists(["alice"], { skipCache: true })
 
     expect(lists.get("alice")?.readRelayUrls).toEqual([
-      "wss://retained.example.com",
+      "wss://retained.conduit.market",
     ])
     expect(cache.get("alice")?.eventCreatedAt).toBe(200)
   })
@@ -453,13 +453,13 @@ describe("getRelayList / getRelayLists cache behavior", () => {
   it("returns the durable lower-id winner from concurrent detailed refreshes", async () => {
     cache.set("alice", {
       pubkey: "alice",
-      readRelayUrls: ["wss://initial.example.com"],
+      readRelayUrls: ["wss://initial.conduit.market"],
       writeRelayUrls: [],
       eventCreatedAt: 100,
       eventId: "initial",
       cachedAt: FIXED_NOW - RELAY_LIST_CACHE_TTL_MS - 1,
     })
-    const relayUrls = ["wss://discovery.example.com"]
+    const relayUrls = ["wss://discovery.conduit.market"]
     let fetchCall = 0
     let resolveLowerIdCommit!: () => void
     const lowerIdCommitted = new Promise<void>((resolve) => {
@@ -477,8 +477,8 @@ describe("getRelayList / getRelayLists cache behavior", () => {
             [
               "r",
               fetchCall === 1
-                ? "wss://lower-id.example.com"
-                : "wss://higher-id.example.com",
+                ? "wss://lower-id.conduit.market"
+                : "wss://higher-id.conduit.market",
             ],
           ],
         })
@@ -506,7 +506,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
     expect(lowerIdResult.resolutionStates.get("alice")).toBe("network")
     expect(higherIdResult.resolutionStates.get("alice")).toBe("stale-cache")
     expect(higherIdResult.relayLists.get("alice")?.readRelayUrls).toEqual([
-      "wss://lower-id.example.com",
+      "wss://lower-id.conduit.market",
     ])
     expect(cache.get("alice")?.eventId).toBe("00")
   })
@@ -514,7 +514,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
   it("returns existing cached entry when network fetch fails", async () => {
     cache.set("alice", {
       pubkey: "alice",
-      readRelayUrls: ["wss://stale.example.com"],
+      readRelayUrls: ["wss://stale.conduit.market"],
       writeRelayUrls: [],
       eventCreatedAt: 1,
       cachedAt: FIXED_NOW - RELAY_LIST_CACHE_TTL_MS - 1,
@@ -525,13 +525,13 @@ describe("getRelayList / getRelayLists cache behavior", () => {
       },
     })
     const list = await getRelayList("alice")
-    expect(list?.readRelayUrls).toEqual(["wss://stale.example.com"])
+    expect(list?.readRelayUrls).toEqual(["wss://stale.conduit.market"])
   })
 
   it("getRelayLists batches missing pubkeys into a single fetch", async () => {
     cache.set("alice", {
       pubkey: "alice",
-      readRelayUrls: ["wss://cached.example.com"],
+      readRelayUrls: ["wss://cached.conduit.market"],
       writeRelayUrls: [],
       eventCreatedAt: 1,
       cachedAt: FIXED_NOW - 1_000,
@@ -540,13 +540,13 @@ describe("getRelayList / getRelayLists cache behavior", () => {
     expect(fetchCalls.length).toBe(1)
     expect(fetchCalls[0]?.authors.sort()).toEqual(["bob", "carol"])
     expect(result.get("alice")?.readRelayUrls).toEqual([
-      "wss://cached.example.com",
+      "wss://cached.conduit.market",
     ])
     expect(result.get("bob")?.readRelayUrls).toEqual([
-      "wss://relay-bob.example.com",
+      "wss://relay-bob.conduit.market",
     ])
     expect(result.get("carol")?.readRelayUrls).toEqual([
-      "wss://relay-carol.example.com",
+      "wss://relay-carol.conduit.market",
     ])
   })
 
@@ -599,7 +599,10 @@ describe("getRelayList / getRelayLists cache behavior", () => {
   })
 
   it("does not call discovery complete when an intended relay was omitted", async () => {
-    const relayUrls = ["wss://healthy.example/", "wss://parked.example/"]
+    const relayUrls = [
+      "wss://healthy.conduit.market/",
+      "wss://parked.conduit.market/",
+    ]
     __setRelayListTestOverrides({
       fetchEventsFanoutDetailed: async (_filter, options) => {
         expect(options.skipHealthFilter).toBe(true)
@@ -629,8 +632,8 @@ describe("getRelayList / getRelayLists cache behavior", () => {
   it("retains prior relay evidence when a forced lookup returns no event", async () => {
     cache.set("alice", {
       pubkey: "alice",
-      readRelayUrls: ["wss://previous.example/"],
-      writeRelayUrls: ["wss://previous.example/"],
+      readRelayUrls: ["wss://previous.conduit.market/"],
+      writeRelayUrls: ["wss://previous.conduit.market/"],
       eventCreatedAt: 200,
       eventId: "00",
       cachedAt: FIXED_NOW - 1_000,
@@ -654,7 +657,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
 
     expect(result.resolutionStates.get("alice")).toBe("stale-cache")
     expect(result.relayLists.get("alice")?.writeRelayUrls).toEqual([
-      "wss://previous.example",
+      "wss://previous.conduit.market",
     ])
   })
 
@@ -675,7 +678,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
               ["r", "ws://artshop:4848"],
               ["r", "wss://127.0.0.1:4848"],
               ["r", "wss://192.168.1.10:4848"],
-              ["r", "wss://relay-alice.example.com"],
+              ["r", "wss://relay-alice.conduit.market"],
             ],
           }),
         ] as unknown as NDKEvent[]
@@ -683,12 +686,12 @@ describe("getRelayList / getRelayLists cache behavior", () => {
     })
 
     const list = await getRelayList("alice")
-    expect(list?.readRelayUrls).toEqual(["wss://relay-alice.example.com"])
+    expect(list?.readRelayUrls).toEqual(["wss://relay-alice.conduit.market"])
     expect(cache.get("alice")?.readRelayUrls).toEqual([
       "ws://artshop:4848",
       "wss://127.0.0.1:4848",
       "wss://192.168.1.10:4848",
-      "wss://relay-alice.example.com",
+      "wss://relay-alice.conduit.market",
     ])
   })
 
@@ -702,7 +705,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
             tags: [
               ["r", "ws://artshop:4848"],
               ["r", "wss://127.0.0.1:4848"],
-              ["r", "wss://relay-alice.example.com"],
+              ["r", "wss://relay-alice.conduit.market"],
             ],
           }),
         ] as unknown as NDKEvent[]
@@ -715,7 +718,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
     expect(list?.readRelayUrls).toEqual([
       "ws://artshop:4848",
       "wss://127.0.0.1:4848",
-      "wss://relay-alice.example.com",
+      "wss://relay-alice.conduit.market",
     ])
   })
 
@@ -729,7 +732,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
             pubkey,
             tags: [
               ["r", `ws://local-${pubkey}:4848`],
-              ["r", `wss://relay-${pubkey}.example.com`],
+              ["r", `wss://relay-${pubkey}.conduit.market`],
             ],
           })
         ) as unknown as NDKEvent[]
@@ -741,10 +744,10 @@ describe("getRelayList / getRelayLists cache behavior", () => {
     })
     expect(result.get("alice")?.readRelayUrls).toEqual([
       "ws://local-alice:4848",
-      "wss://relay-alice.example.com",
+      "wss://relay-alice.conduit.market",
     ])
     expect(result.get("bob")?.readRelayUrls).toEqual([
-      "wss://relay-bob.example.com",
+      "wss://relay-bob.conduit.market",
     ])
   })
 
@@ -756,9 +759,12 @@ describe("getRelayList / getRelayLists cache behavior", () => {
       }),
       ["wss://source.example.com"]
     )
-    expect(list.readRelayUrls).toEqual(["wss://ingested.example.com"])
+    expect(list.readRelayUrls).toEqual([])
     expect(cache.get("alice")?.readRelayUrls).toEqual([
       "wss://ingested.example.com",
+    ])
+    expect(cache.get("alice")?.sourceRelayUrls).toEqual([
+      "wss://source.example.com",
     ])
     expect(fetchCalls.length).toBe(0)
   })
@@ -766,7 +772,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
   it("does not let a concurrent older ingest overwrite a newer winner", async () => {
     cache.set("alice", {
       pubkey: "alice",
-      readRelayUrls: ["wss://initial.example.com"],
+      readRelayUrls: ["wss://initial.conduit.market"],
       writeRelayUrls: [],
       eventCreatedAt: 100,
       eventId: "initial",
@@ -776,7 +782,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
       pubkey: "alice",
       id: "older",
       created_at: 150,
-      tags: [["r", "wss://older.example.com"]],
+      tags: [["r", "wss://older.conduit.market"]],
     })
     let olderIngest: Promise<RelayList> | undefined
     let injected = false
@@ -795,7 +801,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
         pubkey: "alice",
         id: "newer",
         created_at: 200,
-        tags: [["r", "wss://newer.example.com"]],
+        tags: [["r", "wss://newer.conduit.market"]],
       })
     )
     expect(olderIngest).toBeDefined()
@@ -803,7 +809,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
 
     expect(newerResult.lookupState).toBe("network")
     expect(olderResult.lookupState).toBe("stale-cache")
-    expect(olderResult.readRelayUrls).toEqual(["wss://newer.example.com"])
+    expect(olderResult.readRelayUrls).toEqual(["wss://newer.conduit.market"])
     expect(cache.get("alice")?.eventCreatedAt).toBe(200)
   })
 })

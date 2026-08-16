@@ -13,11 +13,13 @@ describe("public network target safety", () => {
   it("preserves ordinary public media destinations", () => {
     expect(
       normalizePublicMediaUrl(
-        "https://cdn.example.com:8443/products/item.png?token=a%2Fb#preview"
+        "https://cdn.conduit.market:8443/products/item.png?token=a%2Fb#preview"
       )
-    ).toBe("https://cdn.example.com:8443/products/item.png?token=a%2Fb#preview")
-    expect(normalizePublicMediaUrl("http://images.example.com/item.jpg")).toBe(
-      "http://images.example.com/item.jpg"
+    ).toBe(
+      "https://cdn.conduit.market:8443/products/item.png?token=a%2Fb#preview"
+    )
+    expect(normalizePublicMediaUrl("http://cdn.conduit.market/item.jpg")).toBe(
+      "http://cdn.conduit.market/item.jpg"
     )
     expect(normalizePublicMediaUrl("https://8.8.8.8/item.jpg")).toBe(
       "https://8.8.8.8/item.jpg"
@@ -51,6 +53,17 @@ describe("public network target safety", () => {
       "device.home",
       "gateway.lan",
       "service.home.arpa",
+      "resolver.arpa",
+      "8.b.d.0.1.0.0.2.ip6.arpa",
+      "service.test",
+      "service.invalid",
+      "service.example",
+      "example.com",
+      "assets.example.com",
+      "example.net",
+      "example.org",
+      "service.alt",
+      "service.onion",
       "intranet",
     ]) {
       expect(isPublicNetworkHostname(hostname)).toBe(false)
@@ -96,6 +109,8 @@ describe("public network target safety", () => {
       "[fe80::1]",
       "[ff02::1]",
       "[2001:db8::1]",
+      "[3fff::1]",
+      "[3fff:0fff:ffff::1]",
       "[2002:7f00:1::]",
     ]) {
       expect(
@@ -106,25 +121,28 @@ describe("public network target safety", () => {
 
   it("applies protocol-specific policy to fetch and relay destinations", () => {
     expect(
-      normalizePublicHttpsUrl("https://identity.example/.well-known/x")
-    ).toBe("https://identity.example/.well-known/x")
-    expect(normalizePublicHttpsUrl("http://identity.example/x")).toBeNull()
+      normalizePublicHttpsUrl("https://identity.conduit.market/.well-known/x")
+    ).toBe("https://identity.conduit.market/.well-known/x")
     expect(
-      normalizePublicHttpsUrl("https://identity.example/x#fragment")
+      normalizePublicHttpsUrl("http://identity.conduit.market/x")
     ).toBeNull()
-    expect(normalizePublicWebSocketUrl("wss://relay.example.com/path")).toBe(
-      "wss://relay.example.com/path"
+    expect(
+      normalizePublicHttpsUrl("https://identity.conduit.market/x#fragment")
+    ).toBeNull()
+    expect(normalizePublicWebSocketUrl("wss://relay.conduit.market/path")).toBe(
+      "wss://relay.conduit.market/path"
     )
     expect(
-      normalizePublicWebSocketUrl("ws://relay.example.com/path")
+      normalizePublicWebSocketUrl("ws://relay.conduit.market/path")
     ).toBeNull()
     expect(normalizePublicWebSocketUrl("wss://127.0.0.1:7777")).toBeNull()
   })
 
   it("admits private relay hints only through an authenticated approved plan", () => {
     const localRelay = "wss://127.0.0.1:7777"
-    const publicRelay = "wss://relay.example.com"
-    const publicHttpsRelay = "https://relay-two.example.com/path?ignored=true"
+    const publicRelay = "wss://relay.conduit.market"
+    const publicHttpsRelay =
+      "https://relay-two.conduit.market/path?ignored=true"
 
     expect(
       normalizeUntrustedRelayHintsForContext({
@@ -132,7 +150,7 @@ describe("public network target safety", () => {
         approvedRelayUrls: [localRelay],
         allowApprovedPrivate: false,
       })
-    ).toEqual([publicRelay, "wss://relay-two.example.com/path"])
+    ).toEqual([publicRelay, "wss://relay-two.conduit.market/path"])
     expect(
       normalizeUntrustedRelayHintsForContext({
         relayUrls: [localRelay, publicRelay],
@@ -148,16 +166,16 @@ describe("public network target safety", () => {
       ...Array.from(
         { length: MAX_PRODUCT_IMAGE_CANDIDATES + 5 },
         (_, index) => ({
-          url: `https://cdn.example.com/${index}.png`,
+          url: `https://cdn.conduit.market/${index}.png`,
         })
       ),
-      { url: "https://cdn.example.com/0.png" },
+      { url: "https://cdn.conduit.market/0.png" },
     ]
 
     const candidates = getProductImageCandidates({ images })
 
     expect(candidates).toHaveLength(MAX_PRODUCT_IMAGE_CANDIDATES)
-    expect(candidates[0]?.url).toBe("https://cdn.example.com/0.png")
+    expect(candidates[0]?.url).toBe("https://cdn.conduit.market/0.png")
     expect(new Set(candidates.map((image) => image.url)).size).toBe(
       MAX_PRODUCT_IMAGE_CANDIDATES
     )

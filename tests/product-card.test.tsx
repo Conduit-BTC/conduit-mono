@@ -10,15 +10,15 @@ describe("ProductCard", () => {
         title="Public Image Product"
         merchantName="Alice Store"
         images={[
-          { url: "https://cdn.example.com/primary.png" },
-          { url: "https://beacon.example.com/fallback.png" },
+          { url: "https://cdn.conduit.market/primary.png" },
+          { url: "https://fallback.conduit.market/fallback.png" },
         ]}
         primaryPrice="25 sats"
       />
     )
 
-    expect(html).toContain("https://cdn.example.com/primary.png")
-    expect(html).not.toContain("https://beacon.example.com/fallback.png")
+    expect(html).toContain("https://cdn.conduit.market/primary.png")
+    expect(html).not.toContain("https://fallback.conduit.market/fallback.png")
     expect(html).toContain('referrerPolicy="no-referrer"')
   })
 
@@ -44,7 +44,7 @@ describe("ProductCard", () => {
         merchantName="Mallory Store"
         images={[
           { url: "http://127.0.0.1/private.png" },
-          { url: "https://beacon.example.com/fallback.png" },
+          { url: "https://fallback.conduit.market/fallback.png" },
         ]}
         primaryPrice="25 sats"
       />
@@ -52,7 +52,7 @@ describe("ProductCard", () => {
 
     expect(html).toContain("Image unavailable")
     expect(html).not.toContain("127.0.0.1")
-    expect(html).not.toContain("beacon.example.com")
+    expect(html).not.toContain("fallback.conduit.market")
   })
 
   it("renders a stable card when no product image is available", () => {

@@ -99,8 +99,8 @@ describe("planPublishRelays", () => {
         if (pubkey === "bob") {
           return {
             pubkey: "bob",
-            readRelayUrls: ["wss://bob-read.example"],
-            writeRelayUrls: ["wss://bob-write.example"],
+            readRelayUrls: ["wss://bob-read.conduit.market"],
+            writeRelayUrls: ["wss://bob-write.conduit.market"],
             eventCreatedAt: 1,
             sourceRelayUrls: undefined,
             cachedAt: NOW,
@@ -117,13 +117,13 @@ describe("planPublishRelays", () => {
     })
 
     expect(plan.intent).toBe("recipient_event")
-    expect(plan.primaryRelayUrls).toContain("wss://bob-read.example")
+    expect(plan.primaryRelayUrls).toContain("wss://bob-read.conduit.market")
   })
 
   it("uses every recipient relay for critical delivery jobs", async () => {
     const relays = Array.from(
       { length: 6 },
-      (_, index) => `wss://bob-read-${index}.example`
+      (_, index) => `wss://bob-read-${index}.conduit.market`
     )
     __setRelayListTestOverrides({
       now: () => NOW,
@@ -244,7 +244,7 @@ describe("planPublishRelays", () => {
       publishWithPlanner(
         {
           kind: EVENT_KINDS.RELAY_LIST,
-          tags: [["r", "wss://only.example"]],
+          tags: [["r", "wss://only.conduit.market"]],
         } as never,
         {
           intent: "author_event",
@@ -271,8 +271,8 @@ describe("planPublishRelays", () => {
         signedTestEvent({
           kind: EVENT_KINDS.RELAY_LIST,
           tags: [
-            ["r", "wss://one.example"],
-            ["r", "wss://two.example", "write"],
+            ["r", "wss://one.conduit.market"],
+            ["r", "wss://two.conduit.market", "write"],
           ],
           publish: async (relaySet: unknown) => {
             const relayUrls = [
@@ -302,7 +302,7 @@ describe("planPublishRelays", () => {
         planned = true
         return {
           intent: "author_event",
-          primaryRelayUrls: ["wss://relay.example"],
+          primaryRelayUrls: ["wss://relay.conduit.market"],
           broadcastRelayUrls: [],
           parkedRelayUrls: [],
         }
@@ -326,8 +326,8 @@ describe("planPublishRelays", () => {
   })
 
   it("does not let broadcast success mask recipient primary failure", async () => {
-    const primaryRelay = "wss://recipient.example"
-    const broadcastRelay = "wss://sender.example"
+    const primaryRelay = "wss://recipient.conduit.market"
+    const broadcastRelay = "wss://sender.conduit.market"
     const attempts: string[][] = []
     const fakeEvent = signedTestEvent({
       publish: async (relaySet: unknown) => {
@@ -365,8 +365,8 @@ describe("planPublishRelays", () => {
   })
 
   it("returns broadcast failures as diagnostics after primary delivery succeeds", async () => {
-    const primaryRelay = "wss://recipient.example"
-    const broadcastRelay = "wss://sender.example"
+    const primaryRelay = "wss://recipient.conduit.market"
+    const broadcastRelay = "wss://sender.conduit.market"
     const fakeEvent = signedTestEvent({
       publish: async (relaySet: unknown) => {
         const relayUrls = [
@@ -400,8 +400,8 @@ describe("planPublishRelays", () => {
   })
 
   it("drops private extra relay hints that the authenticated planner did not select", async () => {
-    const primaryRelay = "wss://recipient.example"
-    const publicExtraRelay = "wss://public-extra.example"
+    const primaryRelay = "wss://recipient.conduit.market"
+    const publicExtraRelay = "wss://public-extra.conduit.market"
     const privateExtraRelay = "wss://127.0.0.1:7447"
     const fakeEvent = signedTestEvent({
       publish: async (relaySet: unknown) => {
@@ -438,7 +438,7 @@ describe("planPublishRelays", () => {
   })
 
   it("preserves a private extra hint already selected for the authenticated user", async () => {
-    const recipientRelay = "wss://recipient.example"
+    const recipientRelay = "wss://recipient.conduit.market"
     const authenticatedLocalRelay = "wss://127.0.0.1:7447"
     const fakeEvent = signedTestEvent({
       publish: async (relaySet: unknown) => {
@@ -489,7 +489,7 @@ describe("planPublishRelays", () => {
         intent: "recipient_event",
         authorPubkey: "alice",
         recipientPubkeys: ["bob"],
-        extraRelayUrls: ["wss://inbox-10050.example"],
+        extraRelayUrls: ["wss://inbox-10050.conduit.market"],
       })
     ).rejects.toThrow(
       "Gift wraps require an exclusive private-message relay plan"
@@ -498,7 +498,7 @@ describe("planPublishRelays", () => {
   })
 
   it("never leaves the exclusive relay set after every declared relay rejects", async () => {
-    const exclusiveRelay = "wss://declared-inbox.example"
+    const exclusiveRelay = "wss://declared-inbox.conduit.market"
     const attempts: string[][] = []
     const fakeEvent = signedTestEvent({
       kind: EVENT_KINDS.GIFT_WRAP,
@@ -519,7 +519,7 @@ describe("planPublishRelays", () => {
         recipientPubkeys: ["bob"],
         deliveryMode: "critical",
         exclusiveRelayUrls: [exclusiveRelay],
-        extraRelayUrls: ["wss://must-not-be-used.example"],
+        extraRelayUrls: ["wss://must-not-be-used.conduit.market"],
       })
     ).rejects.toThrow("required exclusive relay set")
 
@@ -527,7 +527,7 @@ describe("planPublishRelays", () => {
   })
 
   it("returns a structured ACK for one exact durable relay target", async () => {
-    const relayUrl = "wss://durable-delete.example"
+    const relayUrl = "wss://durable-delete.conduit.market"
     const event = signedTestEvent({
       kind: EVENT_KINDS.DELETION,
       tags: [["e", "a".repeat(64)]],
@@ -630,7 +630,7 @@ describe("planPublishRelays", () => {
   })
 
   it("returns a structured timeout without fallback fanout", async () => {
-    const relayUrl = "wss://durable-timeout.example"
+    const relayUrl = "wss://durable-timeout.conduit.market"
     let attempts = 0
     const event = signedTestEvent({
       kind: EVENT_KINDS.DELETION,
@@ -653,7 +653,7 @@ describe("planPublishRelays", () => {
   })
 
   it("classifies an NDK relay-set timeout as retryable, not rejected", async () => {
-    const relayUrl = "wss://durable-ndk-timeout.example"
+    const relayUrl = "wss://durable-ndk-timeout.conduit.market"
     const event = signedTestEvent({
       kind: EVENT_KINDS.DELETION,
       tags: [["e", "a".repeat(64)]],
@@ -673,7 +673,7 @@ describe("planPublishRelays", () => {
   })
 
   it("classifies a NIP-01 OK-false reason as an explicit rejection", async () => {
-    const relayUrl = "wss://durable-reject.example"
+    const relayUrl = "wss://durable-reject.conduit.market"
     const event = signedTestEvent({
       kind: EVENT_KINDS.DELETION,
       tags: [["e", "a".repeat(64)]],
@@ -693,7 +693,7 @@ describe("planPublishRelays", () => {
   })
 
   it("treats a NIP-01 duplicate response as an idempotent acknowledgement", async () => {
-    const relayUrl = "wss://durable-duplicate.example"
+    const relayUrl = "wss://durable-duplicate.conduit.market"
     const event = signedTestEvent({
       kind: EVENT_KINDS.DELETION,
       tags: [["e", "a".repeat(64)]],
@@ -713,7 +713,7 @@ describe("planPublishRelays", () => {
   })
 
   it("retries non-NIP-65 author events on public fallback relays when configured writes fail", async () => {
-    const primaryRelay = "wss://configured-write.example"
+    const primaryRelay = "wss://configured-write.conduit.market"
     const normalizedPrimaryRelay = `${primaryRelay}/`
     const attempts: string[][] = []
     const fakeEvent = signedTestEvent({
@@ -754,14 +754,14 @@ describe("planPublishRelays", () => {
   })
 
   it("falls back to the app write relay for NIP-65 after configured writes fail", async () => {
-    const primaryRelay = "wss://configured-write.example"
+    const primaryRelay = "wss://configured-write.conduit.market"
     const normalizedPrimaryRelay = `${primaryRelay}/`
     const attempts: string[][] = []
     const fakeEvent = signedTestEvent({
       kind: EVENT_KINDS.RELAY_LIST,
       tags: [
-        ["r", "wss://one.example"],
-        ["r", "wss://two.example", "write"],
+        ["r", "wss://one.conduit.market"],
+        ["r", "wss://two.conduit.market", "write"],
       ],
       publish: async (relaySet: unknown) => {
         const relayUrls = [
@@ -798,12 +798,12 @@ describe("planPublishRelays", () => {
   })
 
   it("includes relay failure reasons in publish diagnostics", async () => {
-    const primaryRelay = "wss://configured-write.example"
+    const primaryRelay = "wss://configured-write.conduit.market"
     const fakeEvent = signedTestEvent({
       kind: EVENT_KINDS.RELAY_LIST,
       tags: [
-        ["r", "wss://one.example"],
-        ["r", "wss://two.example", "write"],
+        ["r", "wss://one.conduit.market"],
+        ["r", "wss://two.conduit.market", "write"],
       ],
       publish: async () => {
         throw new Error("relay rejected the event kind")
@@ -825,12 +825,12 @@ describe("planPublishRelays", () => {
         authorPubkey: AUTHOR_PUBKEY,
       })
     ).rejects.toThrow(
-      "wss://configured-write.example (relay rejected the event kind)"
+      "wss://configured-write.conduit.market (relay rejected the event kind)"
     )
   })
 
   it("retries critical recipient primary relays with a longer timeout", async () => {
-    const primaryRelay = "wss://recipient.example"
+    const primaryRelay = "wss://recipient.conduit.market"
     const normalizedPrimaryRelay = `${primaryRelay}/`
     const attempts: { relayUrls: string[]; timeoutMs: number | undefined }[] =
       []
@@ -873,7 +873,7 @@ describe("planPublishRelays", () => {
   })
 
   it("broadens critical recipient delivery to fallback relays after primary retry fails", async () => {
-    const primaryRelay = "wss://recipient.example"
+    const primaryRelay = "wss://recipient.conduit.market"
     const normalizedPrimaryRelay = `${primaryRelay}/`
     const attempts: string[][] = []
     const fakeEvent = signedTestEvent({
@@ -943,9 +943,9 @@ describe("planPublishRelays", () => {
 })
 
 describe("deriveRelayOutcomes", () => {
-  const A = "wss://a.example"
-  const B = "wss://b.example"
-  const C = "wss://c.example"
+  const A = "wss://a.conduit.market"
+  const B = "wss://b.conduit.market"
+  const C = "wss://c.conduit.market"
 
   it("marks every attempted relay as successful when all are acked", () => {
     const result = deriveRelayOutcomes({

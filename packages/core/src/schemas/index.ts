@@ -8,6 +8,20 @@ const publicMediaUrlSchema = z
     "URL must use a public http or https destination"
   )
 
+const protocolHttpUrlSchema = z
+  .string()
+  .min(1)
+  .max(4096)
+  .refine((value) => {
+    if (value !== value.trim()) return false
+    try {
+      const url = new URL(value)
+      return url.protocol === "http:" || url.protocol === "https:"
+    } catch {
+      return false
+    }
+  }, "URL must be an absolute http or https URL")
+
 /**
  * Product schema for validation
  */
@@ -77,11 +91,12 @@ export const productSchema = z.object({
   images: z
     .array(
       z.object({
-        url: publicMediaUrlSchema,
+        // Signed listing evidence is retained here. Request/render consumers
+        // apply public-network projection before loading an image.
+        url: protocolHttpUrlSchema,
         alt: z.string().optional(),
       })
     )
-    .max(12)
     .default([]),
   tags: z.array(z.string()).default([]),
   publicZapEnabled: z.boolean().default(true),
