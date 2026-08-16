@@ -48,8 +48,12 @@ updates:
       typescript-compiler:
         applies-to: version-updates
         patterns:
-          - "@types/*"
           - "typescript"
+
+      type-definitions:
+        applies-to: version-updates
+        patterns:
+          - "@types/*"
 
       css-tooling:
         applies-to: version-updates
