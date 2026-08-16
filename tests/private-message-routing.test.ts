@@ -20,6 +20,7 @@ import {
   type InboxDeclarationEvidenceRepository,
   type ResolveInboxDeclarationOptions,
 } from "@conduit/core"
+import { attachEventSourceRelayUrl } from "@conduit/core/protocol/ndk"
 
 const OWNER_SECRET = new Uint8Array(32).fill(1)
 const OTHER_SECRET = new Uint8Array(32).fill(2)
@@ -521,6 +522,74 @@ describe("resolveInboxDeclaration", () => {
     expect(getCachedInboxDeclaration(OWNER)?.eventCreatedAt).toBe(200)
   })
 
+  it("projects the newest same-event lookup across concurrent resolvers", async () => {
+    for (const testCase of [
+      { firstCoverage: "complete", secondCoverage: "partial", stale: true },
+      { firstCoverage: "partial", secondCoverage: "complete", stale: false },
+    ] as const) {
+      __resetInboxDeclarationCache()
+      const backing = createInMemoryInboxDeclarationEvidenceRepository()
+      let firstMerge = true
+      let enteredFirst!: () => void
+      const firstEntered = new Promise<void>((resolve) => {
+        enteredFirst = resolve
+      })
+      let releaseFirst!: () => void
+      const firstReleased = new Promise<void>((resolve) => {
+        releaseFirst = resolve
+      })
+      const repository: InboxDeclarationEvidenceRepository = {
+        get: (pubkey) => backing.get(pubkey),
+        merge: (input) => backing.merge(input),
+        mergeBatch: async (inputs) => {
+          if (firstMerge) {
+            firstMerge = false
+            enteredFirst()
+            await firstReleased
+          }
+          return backing.mergeBatch(inputs)
+        },
+      }
+      const event = declarationEvent({
+        createdAt: 100,
+        relays: ["wss://inbox.example"],
+      })
+      attachEventSourceRelayUrl(event as never, "wss://read-a.example")
+      const fetchFor = (coverage: "complete" | "partial") => async () => ({
+        events: [event] as never,
+        attemptedRelayUrls: ["wss://read-a.example", "wss://read-b.example"],
+        successfulRelayUrls:
+          coverage === "complete"
+            ? ["wss://read-a.example", "wss://read-b.example"]
+            : ["wss://read-a.example"],
+        failedRelayUrls:
+          coverage === "complete" ? [] : ["wss://read-b.example"],
+      })
+
+      const first = resolveInboxDeclaration(OWNER, {
+        relayUrls: ["wss://read-a.example", "wss://read-b.example"],
+        freshnessMs: 0,
+        evidenceRepository: repository,
+        fetchEventsWithDiagnostics: fetchFor(testCase.firstCoverage),
+        now: () => 100,
+      })
+      await firstEntered
+      const second = resolveInboxDeclaration(OWNER, {
+        relayUrls: ["wss://read-a.example", "wss://read-b.example"],
+        freshnessMs: 0,
+        evidenceRepository: repository,
+        fetchEventsWithDiagnostics: fetchFor(testCase.secondCoverage),
+        now: () => 200,
+      })
+      releaseFirst()
+
+      const [firstResult, secondResult] = await Promise.all([first, second])
+      expect(firstResult.stale).toBe(testCase.stale)
+      expect(secondResult.stale).toBe(testCase.stale)
+      expect(getCachedInboxDeclaration(OWNER)?.stale).toBe(testCase.stale)
+    }
+  })
+
   it("reconciles a recovered repository with a stronger in-memory frontier", async () => {
     const unavailableRepository: InboxDeclarationEvidenceRepository = {
       get: async () => {
@@ -691,6 +760,93 @@ describe("resolveInboxDeclaration", () => {
     expect(first.state).toBe("declared")
     expect(second.state).toBe("declared")
     expect(fetches).toBe(1)
+  })
+
+  it("reconciles a newer cross-tab durable frontier before the TTL fast path", async () => {
+    const cases = [
+      {
+        name: "changed declaration",
+        event: declarationEvent({
+          createdAt: 200,
+          relays: ["wss://new-inbox.example"],
+        }),
+        state: "declared" as const,
+      },
+      {
+        name: "signed empty",
+        event: declarationEvent({ createdAt: 200, relays: [] }),
+        state: "signed_empty" as const,
+      },
+      {
+        name: "malformed",
+        event: declarationEvent({
+          createdAt: 200,
+          relays: ["ws://insecure.example"],
+        }),
+        state: "malformed" as const,
+      },
+    ]
+
+    for (const candidate of cases) {
+      __resetInboxDeclarationCache()
+      const durable = createInMemoryInboxDeclarationEvidenceRepository()
+      let durableReads = 0
+      const repository: InboxDeclarationEvidenceRepository = {
+        ...durable,
+        get: async (pubkey) => {
+          durableReads += 1
+          return durable.get(pubkey)
+        },
+      }
+      let networkReads = 0
+      const oldEvent = declarationEvent({
+        createdAt: 100,
+        relays: ["wss://old-inbox.example"],
+      })
+      const fetch = async () => {
+        networkReads += 1
+        return {
+          events: [oldEvent] as never,
+          attemptedRelayUrls: ["wss://read.example"],
+          successfulRelayUrls: ["wss://read.example"],
+          failedRelayUrls: [],
+        }
+      }
+
+      const first = await resolveInboxDeclaration(OWNER, {
+        relayUrls: ["wss://read.example"],
+        evidenceRepository: repository,
+        fetchEventsWithDiagnostics: fetch,
+        now: () => 1_000,
+      })
+      await durable.merge({
+        pubkey: OWNER,
+        signedEvent: candidate.event,
+        sourceRelayUrls: ["wss://other-tab.example"],
+        observedAt: 1_001,
+        completeObservedAt: 1_001,
+        cachedAt: 1_001,
+        lookup: {
+          observedAt: 1_001,
+          coverage: "complete",
+          hadEvent: true,
+          eventId: candidate.event.id,
+        },
+      })
+
+      const second = await resolveInboxDeclaration(OWNER, {
+        relayUrls: ["wss://read.example"],
+        evidenceRepository: repository,
+        fetchEventsWithDiagnostics: fetch,
+        now: () => 1_002,
+      })
+
+      expect(first.eventId).toBe(oldEvent.id)
+      expect(second.state).toBe(candidate.state)
+      expect(second.eventId).toBe(candidate.event.id)
+      expect(durableReads).toBe(2)
+      expect(networkReads).toBe(1)
+    }
   })
 
   it("refetches after the freshness window and after invalidation", async () => {
@@ -1050,6 +1206,24 @@ describe("selectPrivateMessageDeliveryRoute", () => {
 
     expect(selection.route).toBe("blocked")
     expect(selection.blockedReason).toBe("declaration_signed_empty")
+  })
+
+  it("never lets a locally staged declaration authorize writes or compatibility", () => {
+    const selection = selectPrivateMessageDeliveryRoute({
+      rumorKind: EVENT_KINDS.ORDER,
+      declaration: resolution({
+        state: "distribution_pending",
+        relayUrls: [],
+        pendingRelayUrls: ["wss://pending-inbox.example"],
+      }),
+      validatedOrder: true,
+      compatibilityEnabled: true,
+      compatibilityRelayUrls: ["wss://compatibility.example"],
+    })
+
+    expect(selection.route).toBe("blocked")
+    expect(selection.relayUrls).toEqual([])
+    expect(selection.blockedReason).toBe("declaration_distribution_pending")
   })
 
   it("maps lookup failure to recipient_lookup_failed when compatibility is off", () => {

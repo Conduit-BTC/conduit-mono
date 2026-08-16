@@ -1,19 +1,35 @@
 import { describe, expect, it } from "bun:test"
+import { schnorr } from "../packages/core/node_modules/@noble/curves/secp256k1.js"
 import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 
 import {
+  applyInboxDeclarationEvidenceMerge,
   cloneInboxDeclarationEventEvidence,
   cloneInboxDeclarationEvidenceRecord,
   createInMemoryInboxDeclarationEvidenceRepository,
   getInboxDeclarationEvidence,
   mergeInboxDeclarationEvidence,
+  stageInboxDeclarationDistribution,
 } from "@conduit/core/protocol/inbox-declaration-evidence"
+import { readRetainedInboxDeclarationEvidence } from "@conduit/core/protocol/private-message-routing"
 import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
 
 const ACCOUNT_A_SECRET = new Uint8Array(32).fill(1)
 const ACCOUNT_B_SECRET = new Uint8Array(32).fill(2)
 const ACCOUNT_A = getPublicKey(ACCOUNT_A_SECRET)
 const ACCOUNT_B = getPublicKey(ACCOUNT_B_SECRET)
+
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
+    ""
+  )
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  return Uint8Array.from(
+    hex.match(/.{2}/g)?.map((pair) => Number.parseInt(pair, 16)) ?? []
+  )
+}
 
 function declarationEvent(input: {
   secret?: Uint8Array
@@ -42,6 +58,214 @@ function declarationEvent(input: {
 }
 
 describe("durable inbox declaration evidence", () => {
+  it("keeps staged bytes pending until exact shared-source confirmation", async () => {
+    const repository = createInMemoryInboxDeclarationEvidenceRepository()
+    const signedEvent = declarationEvent({ createdAt: 100 })
+
+    const staged = await stageInboxDeclarationDistribution(
+      {
+        pubkey: ACCOUNT_A,
+        signedEvent,
+        publishRelayUrls: ["wss://shared-b.example", "wss://shared-a.example"],
+        expectedCurrentEventId: null,
+        stagedAt: 1_000,
+      },
+      repository
+    )
+
+    expect(staged.current.signedEvent).toEqual(signedEvent)
+    expect(staged.lastUsable).toBeUndefined()
+    expect(staged.pendingDistribution).toEqual({
+      signedEvent,
+      publishRelayUrls: ["wss://shared-b.example", "wss://shared-a.example"],
+      stagedAt: 1_000,
+    })
+
+    const confirmed = await mergeInboxDeclarationEvidence(
+      {
+        pubkey: ACCOUNT_A,
+        signedEvent,
+        sourceRelayUrls: ["wss://shared-a.example"],
+        sharedSourceRelayUrls: ["wss://shared-a.example"],
+        observedAt: 2_000,
+      },
+      repository
+    )
+
+    expect(confirmed.pendingDistribution).toBeUndefined()
+    expect(confirmed.current.sharedSourceRelayUrls).toEqual([
+      "wss://shared-a.example",
+    ])
+    expect(confirmed.lastUsable?.signedEvent).toEqual(signedEvent)
+  })
+
+  it("rejects a same-id stage with different signed bytes or targets", async () => {
+    const repository = createInMemoryInboxDeclarationEvidenceRepository()
+    const first = declarationEvent({ createdAt: 100 })
+    const second = {
+      ...first,
+      sig: bytesToHex(
+        schnorr.sign(
+          hexToBytes(first.id),
+          ACCOUNT_A_SECRET,
+          new Uint8Array(32).fill(9)
+        )
+      ),
+    }
+    expect(second.id).toBe(first.id)
+    expect(second.sig).not.toBe(first.sig)
+
+    await stageInboxDeclarationDistribution(
+      {
+        pubkey: ACCOUNT_A,
+        signedEvent: first,
+        publishRelayUrls: ["wss://shared-a.example"],
+        expectedCurrentEventId: null,
+      },
+      repository
+    )
+    await expect(
+      stageInboxDeclarationDistribution(
+        {
+          pubkey: ACCOUNT_A,
+          signedEvent: second,
+          publishRelayUrls: ["wss://shared-b.example"],
+          expectedCurrentEventId: first.id,
+        },
+        repository
+      )
+    ).rejects.toMatchObject({ code: "staged_event_lost_frontier" })
+
+    const retained = await getInboxDeclarationEvidence(ACCOUNT_A, repository)
+    expect(retained?.pendingDistribution?.signedEvent).toEqual(first)
+    expect(retained?.pendingDistribution?.publishRelayUrls).toEqual([
+      "wss://shared-a.example",
+    ])
+  })
+
+  it("keeps staged bytes canonical when same-id evidence has another valid signature", () => {
+    const stagedEvent = declarationEvent({ createdAt: 100 })
+    const processEvent = {
+      ...stagedEvent,
+      sig: bytesToHex(
+        schnorr.sign(
+          hexToBytes(stagedEvent.id),
+          ACCOUNT_A_SECRET,
+          new Uint8Array(32).fill(8)
+        )
+      ),
+    }
+    expect(processEvent.id).toBe(stagedEvent.id)
+    expect(processEvent.sig).not.toBe(stagedEvent.sig)
+
+    const processRecord = applyInboxDeclarationEvidenceMerge(
+      undefined,
+      {
+        pubkey: ACCOUNT_A,
+        signedEvent: processEvent,
+        observedAt: 2_000,
+      },
+      () => 2_000
+    )
+    const merged = applyInboxDeclarationEvidenceMerge(
+      processRecord,
+      {
+        pubkey: ACCOUNT_A,
+        signedEvent: stagedEvent,
+        pendingDistribution: {
+          signedEvent: stagedEvent,
+          publishRelayUrls: ["wss://shared-a.example"],
+          stagedAt: 1_000,
+        },
+        observedAt: 1_000,
+      },
+      () => 2_000
+    )
+
+    expect(merged.current.signedEvent).toEqual(stagedEvent)
+    expect(merged.pendingDistribution?.signedEvent).toEqual(stagedEvent)
+  })
+
+  it("rejects mutated retained pending bytes and target plans", async () => {
+    const seed = createInMemoryInboxDeclarationEvidenceRepository()
+    const signedEvent = declarationEvent({ createdAt: 100 })
+    const staged = await stageInboxDeclarationDistribution(
+      {
+        pubkey: ACCOUNT_A,
+        signedEvent,
+        publishRelayUrls: ["wss://shared-a.example"],
+        expectedCurrentEventId: null,
+      },
+      seed
+    )
+    const alternateSignature = bytesToHex(
+      schnorr.sign(
+        hexToBytes(signedEvent.id),
+        ACCOUNT_A_SECRET,
+        new Uint8Array(32).fill(7)
+      )
+    )
+    expect(alternateSignature).not.toBe(signedEvent.sig)
+
+    const mutatedBytes = cloneInboxDeclarationEvidenceRecord(staged)
+    mutatedBytes.pendingDistribution!.signedEvent.sig = alternateSignature
+    await expect(
+      readRetainedInboxDeclarationEvidence(ACCOUNT_A, {
+        evidenceRepository: createInMemoryInboxDeclarationEvidenceRepository([
+          mutatedBytes,
+        ]),
+      })
+    ).rejects.toThrow("must match its signed frontier")
+
+    const mutatedTargets = cloneInboxDeclarationEvidenceRecord(staged)
+    mutatedTargets.pendingDistribution!.publishRelayUrls = [
+      "wss://shared-a.example",
+      "wss://shared-a.example",
+    ]
+    await expect(
+      readRetainedInboxDeclarationEvidence(ACCOUNT_A, {
+        evidenceRepository: createInMemoryInboxDeclarationEvidenceRepository([
+          mutatedTargets,
+        ]),
+      })
+    ).rejects.toThrow("canonical and ordered")
+  })
+
+  it("retains an older usable route behind a newer pending declaration", async () => {
+    const repository = createInMemoryInboxDeclarationEvidenceRepository()
+    const pending = declarationEvent({
+      createdAt: 200,
+      tags: [["relay", "wss://new-inbox.example"]],
+    })
+    const prior = declarationEvent({
+      createdAt: 100,
+      tags: [["relay", "wss://prior-inbox.example"]],
+    })
+
+    await stageInboxDeclarationDistribution(
+      {
+        pubkey: ACCOUNT_A,
+        signedEvent: pending,
+        publishRelayUrls: ["wss://shared.example"],
+        expectedCurrentEventId: null,
+      },
+      repository
+    )
+    const merged = await mergeInboxDeclarationEvidence(
+      {
+        pubkey: ACCOUNT_A,
+        signedEvent: prior,
+        sourceRelayUrls: ["wss://shared.example"],
+        sharedSourceRelayUrls: ["wss://shared.example"],
+      },
+      repository
+    )
+
+    expect(merged.current.signedEvent.id).toBe(pending.id)
+    expect(merged.pendingDistribution?.signedEvent.id).toBe(pending.id)
+    expect(merged.lastUsable?.signedEvent.id).toBe(prior.id)
+  })
+
   it("rejects invalid signatures, kinds, and cross-account authors", async () => {
     const repository = createInMemoryInboxDeclarationEvidenceRepository()
     const valid = declarationEvent({ createdAt: 100 })

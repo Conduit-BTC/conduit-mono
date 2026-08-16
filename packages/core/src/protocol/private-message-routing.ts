@@ -40,6 +40,7 @@ export { normalizeSecureRelayUrls as secureRelayUrls } from "./relay-settings"
 /** Typed result of a kind-10050 declaration lookup. */
 export type InboxDeclarationState =
   | "declared"
+  | "distribution_pending"
   | "signed_empty"
   | "not_observed"
   | "lookup_partial"
@@ -115,6 +116,12 @@ export interface InboxDeclarationResolution {
   eventCreatedAt?: number
   /** Relays that have yielded the exact current signed event over time. */
   sourceRelayUrls?: string[]
+  /** Shared discovery relays that returned the exact current event. */
+  sharedSourceRelayUrls?: string[]
+  /** Usable relay tags in the staged declaration; never write-authorizing. */
+  pendingRelayUrls?: string[]
+  /** Immutable targets for retrying the exact staged event. */
+  pendingPublishRelayUrls?: string[]
   /** Diagnostics for this invocation's network observation. */
   observation?: InboxDeclarationObservation
 }
@@ -139,6 +146,8 @@ export interface ResolveInboxDeclarationOptions {
   freshnessMs?: number
   /** Durable evidence seam (tests/non-browser adapters). */
   evidenceRepository?: InboxDeclarationEvidenceRepository
+  /** Sources whose exact-event readback proves cross-client distribution. */
+  sharedConfirmationRelayUrls?: readonly string[]
 }
 
 /** Positive declarations stay fresh for this long before a re-fetch. */
@@ -231,6 +240,67 @@ export function getCachedInboxDeclarationEvidence(
   return record ? cloneInboxDeclarationEvidenceRecord(record) : undefined
 }
 
+export interface ReadRetainedInboxDeclarationOptions {
+  /** Durable evidence seam (tests/non-browser adapters). */
+  evidenceRepository?: InboxDeclarationEvidenceRepository
+  now?: () => number
+}
+
+/**
+ * Read the retained declaration frontier without relay traffic.
+ *
+ * This is the send-time safety boundary: another tab's durable frontier must
+ * be consulted immediately before a kind-14 send, while a stronger
+ * process-only frontier fails closed until it is durably reconciled.
+ */
+export async function readRetainedInboxDeclarationEvidence(
+  pubkey: string,
+  options: ReadRetainedInboxDeclarationOptions = {}
+): Promise<InboxDeclarationEvidenceRecord | null> {
+  const key = cacheKey(pubkey)
+  if (!normalizeInboxDeclarationEvidencePubkey(key)) return null
+
+  const persisted = await getInboxDeclarationEvidence(
+    key,
+    options.evidenceRepository
+  )
+  if (!persisted) return null
+
+  const durable = mergeEvidenceRecords(
+    undefined,
+    backfillLegacySharedSourceProvenance(
+      persisted,
+      new Set(sharedInboxDiscoveryRelayUrls())
+    ),
+    options.now
+  )
+  const process = declarationEvidenceCache.get(key)
+  if (process) {
+    const strongest = mergeEvidenceRecords(durable, process, options.now)
+    if (strongest.current.signedEvent.id !== durable.current.signedEvent.id) {
+      return null
+    }
+  }
+
+  return cloneInboxDeclarationEvidenceRecord(durable)
+}
+
+export async function readRetainedInboxDeclaration(
+  pubkey: string,
+  options: ReadRetainedInboxDeclarationOptions = {}
+): Promise<InboxDeclarationResolution | null> {
+  const durable = await readRetainedInboxDeclarationEvidence(pubkey, options)
+  if (!durable) return null
+
+  return resolutionFromEvidence(durable, {
+    stale: !hasCurrentCompleteLookup(durable),
+    fetchedAt:
+      durable.latestLookup?.observedAt ??
+      durable.current.completeObservedAt ??
+      durable.current.observedAt,
+  })
+}
+
 /** Validated monotonic process fallback when IndexedDB is unavailable. */
 export function mergeInboxDeclarationEvidenceInMemory(
   input: MergeInboxDeclarationEvidenceInput,
@@ -261,6 +331,11 @@ function evidenceMergeInputs(
     pubkey: record.pubkey,
     signedEvent: entry.signedEvent,
     sourceRelayUrls: entry.sourceRelayUrls,
+    sharedSourceRelayUrls: entry.sharedSourceRelayUrls ?? [],
+    pendingDistribution:
+      entry.signedEvent.id === record.current.signedEvent.id
+        ? record.pendingDistribution
+        : undefined,
     observedAt: entry.observedAt,
     completeObservedAt: entry.completeObservedAt,
     cachedAt: record.cachedAt,
@@ -280,6 +355,22 @@ function mergeEvidenceRecords(
     merged = applyInboxDeclarationEvidenceMerge(merged, input, now)
   }
   return merged!
+}
+
+function backfillLegacySharedSourceProvenance(
+  record: InboxDeclarationEvidenceRecord,
+  sharedRelayUrlSet: ReadonlySet<string>
+): InboxDeclarationEvidenceRecord {
+  const migrated = cloneInboxDeclarationEvidenceRecord(record)
+  const backfill = (evidence: InboxDeclarationEvidenceRecord["current"]) => {
+    if (evidence.sharedSourceRelayUrls !== undefined) return
+    evidence.sharedSourceRelayUrls = secureRelayUrls(
+      evidence.sourceRelayUrls
+    ).filter((relayUrl) => sharedRelayUrlSet.has(relayUrl))
+  }
+  backfill(migrated.current)
+  if (migrated.lastUsable) backfill(migrated.lastUsable)
+  return migrated
 }
 
 async function withDeclarationEvidenceMergeLock<T>(
@@ -350,7 +441,26 @@ async function reconcileInboxDeclarationEvidenceBatch(
         record = record ? mergeEvidenceRecords(latest, record, now) : latest
       }
       for (const input of inputs) {
-        record = applyInboxDeclarationEvidenceMerge(record, input, now)
+        // A live relay observation is not durable confirmation when the
+        // repository rejected the merge. Preserve only shared provenance that
+        // was already held for this exact event; otherwise a restart could
+        // regress from ready back to pending.
+        const existingEvidence =
+          record?.current.signedEvent.id === input.signedEvent.id
+            ? record.current
+            : record?.lastUsable?.signedEvent.id === input.signedEvent.id
+              ? record.lastUsable
+              : undefined
+        const retainedSharedSourceRelayUrlSet = new Set(
+          secureRelayUrls(existingEvidence?.sharedSourceRelayUrls ?? [])
+        )
+        const fallbackInput = {
+          ...input,
+          sharedSourceRelayUrls: secureRelayUrls(
+            input.sharedSourceRelayUrls ?? []
+          ).filter((relayUrl) => retainedSharedSourceRelayUrlSet.has(relayUrl)),
+        }
+        record = applyInboxDeclarationEvidenceMerge(record, fallbackInput, now)
       }
     }
 
@@ -383,6 +493,51 @@ function currentEvidenceWasObservedAt(
   resolution: InboxDeclarationResolution
 ): number {
   return resolution.fetchedAt
+}
+
+async function projectAndCacheInboxDeclarationResolution(
+  pubkey: string,
+  record: InboxDeclarationEvidenceRecord,
+  input: {
+    stale: boolean
+    fetchedAt: number
+    observation?: InboxDeclarationObservation
+    clearInvalidation?: boolean
+  },
+  now: () => number
+): Promise<InboxDeclarationResolution> {
+  const key = cacheKey(pubkey)
+  return withDeclarationEvidenceMergeLock(key, async () => {
+    const latest = declarationEvidenceCache.get(key)
+    const strongest = latest
+      ? mergeEvidenceRecords(record, latest, now)
+      : record
+    const sameFrontier =
+      strongest.current.signedEvent.id === record.current.signedEvent.id
+    const sameLookup =
+      JSON.stringify(strongest.latestLookup) ===
+      JSON.stringify(record.latestLookup)
+    declarationEvidenceCache.set(
+      key,
+      cloneInboxDeclarationEvidenceRecord(strongest)
+    )
+    const resolution = resolutionFromEvidence(strongest, {
+      stale:
+        !sameFrontier ||
+        !hasCurrentCompleteLookup(strongest) ||
+        (sameLookup && input.stale),
+      fetchedAt:
+        sameFrontier && sameLookup
+          ? input.fetchedAt
+          : (strongest.latestLookup?.observedAt ??
+            strongest.current.completeObservedAt ??
+            strongest.current.observedAt),
+      observation: sameFrontier && sameLookup ? input.observation : undefined,
+    })
+    declarationCache.set(key, resolution)
+    if (input.clearInvalidation) invalidatedDeclarationKeys.delete(key)
+    return resolution
+  })
 }
 
 /** Read the cached declaration without any relay traffic. */
@@ -472,15 +627,29 @@ function resolutionFromEvidence(
   }
 ): InboxDeclarationResolution {
   const current = record.current
+  const pendingDistribution =
+    record.pendingDistribution?.signedEvent.id === current.signedEvent.id
+      ? record.pendingDistribution
+      : undefined
+  const state: InboxDeclarationState = pendingDistribution
+    ? "distribution_pending"
+    : current.state
   const declaredRelayUrls =
-    current.state === "declared" ? secureRelayUrls(current.secureRelayUrls) : []
+    state === "declared" ? secureRelayUrls(current.secureRelayUrls) : []
+  const pendingRelayUrls =
+    state === "distribution_pending" && current.state === "declared"
+      ? secureRelayUrls(current.secureRelayUrls)
+      : []
   const retainedReadRelayUrls =
-    current.state === "declared"
+    state === "declared"
       ? []
-      : secureRelayUrls(record.lastUsable?.secureRelayUrls ?? [])
+      : secureRelayUrls([
+          ...pendingRelayUrls,
+          ...(record.lastUsable?.secureRelayUrls ?? []),
+        ])
   return {
     pubkey: record.pubkey,
-    state: current.state,
+    state,
     relayUrls: declaredRelayUrls,
     retainedReadRelayUrls,
     stale: input.stale,
@@ -488,6 +657,9 @@ function resolutionFromEvidence(
     eventId: current.signedEvent.id,
     eventCreatedAt: current.signedEvent.created_at,
     sourceRelayUrls: [...current.sourceRelayUrls],
+    sharedSourceRelayUrls: [...(current.sharedSourceRelayUrls ?? [])],
+    pendingRelayUrls,
+    pendingPublishRelayUrls: [...(pendingDistribution?.publishRelayUrls ?? [])],
     observation: input.observation,
   }
 }
@@ -503,6 +675,9 @@ function cachedFallbackResolution(
     relayUrls: [...cached.relayUrls],
     retainedReadRelayUrls: [...(cached.retainedReadRelayUrls ?? [])],
     sourceRelayUrls: [...(cached.sourceRelayUrls ?? [])],
+    sharedSourceRelayUrls: [...(cached.sharedSourceRelayUrls ?? [])],
+    pendingRelayUrls: [...(cached.pendingRelayUrls ?? [])],
+    pendingPublishRelayUrls: [...(cached.pendingPublishRelayUrls ?? [])],
     stale: true,
     fetchedAt: now,
     observation,
@@ -521,7 +696,6 @@ async function persistCachedLookupOutcome(
 ): Promise<InboxDeclarationResolution | null> {
   const key = cacheKey(pubkey)
   const evidence = declarationEvidenceCache.get(key)
-  let fallback: InboxDeclarationResolution | null
   if (evidence) {
     const current = evidence.current
     const merged = await reconcileInboxDeclarationEvidenceBatch(
@@ -545,14 +719,19 @@ async function persistCachedLookupOutcome(
       repository,
       now
     )
-    fallback = resolutionFromEvidence(merged, {
-      stale: true,
-      fetchedAt,
-      observation,
-    })
-  } else {
-    fallback = cachedFallbackResolution(cached, observation, fetchedAt)
+    return await projectAndCacheInboxDeclarationResolution(
+      key,
+      merged,
+      {
+        stale: true,
+        fetchedAt,
+        observation,
+        clearInvalidation: true,
+      },
+      now
+    )
   }
+  const fallback = cachedFallbackResolution(cached, observation, fetchedAt)
   if (fallback) {
     declarationCache.set(key, fallback)
     invalidatedDeclarationKeys.delete(key)
@@ -564,12 +743,15 @@ function declarationEventSourceRelayUrls(
   event: NDKEvent,
   successfulRelayUrls: readonly string[]
 ): string[] {
-  const attached = secureRelayUrls(getEventSourceRelayUrls(event))
-  if (attached.length > 0) return attached
   const successful = secureRelayUrls(successfulRelayUrls)
-  // An events-only adapter with exactly one completed source has unambiguous
-  // provenance even when it cannot attach the internal source symbol.
-  return successful.length === 1 ? successful : []
+  const successfulSet = new Set(successful)
+  const attached = secureRelayUrls(getEventSourceRelayUrls(event))
+  if (attached.length > 0) {
+    return attached.filter((url) => successfulSet.has(url))
+  }
+  // Completion diagnostics alone do not prove which relay returned an event.
+  // Native fanout attaches per-event source provenance before aggregation.
+  return []
 }
 
 function reconcileInboxReadDiagnostics(
@@ -625,32 +807,84 @@ export async function resolveInboxDeclaration(
   const freshnessMs = options.freshnessMs ?? INBOX_DECLARATION_FRESHNESS_MS
   const fetchedAt = now()
   const repository = options.evidenceRepository
+  const canonicalSharedRelayUrlSet = new Set(sharedInboxDiscoveryRelayUrls())
+  const sharedConfirmationRelayUrlSet = new Set(
+    secureRelayUrls(
+      options.sharedConfirmationRelayUrls ?? [...canonicalSharedRelayUrlSet]
+    ).filter((relayUrl) => canonicalSharedRelayUrlSet.has(relayUrl))
+  )
 
   let cached = declarationCache.get(key)
-  if (!cached && normalizeInboxDeclarationEvidencePubkey(key)) {
+  if (normalizeInboxDeclarationEvidencePubkey(key)) {
     try {
       const persisted = await getInboxDeclarationEvidence(key, repository)
       if (persisted) {
-        cached = resolutionFromEvidence(persisted, {
-          stale:
-            !hasCurrentCompleteLookup(persisted) ||
-            fetchedAt - (persisted.current.completeObservedAt ?? 0) >=
-              freshnessMs,
-          fetchedAt:
-            persisted.latestLookup?.observedAt ??
-            persisted.current.completeObservedAt ??
-            persisted.current.observedAt,
-        })
+        const persistedForReconciliation = mergeEvidenceRecords(
+          undefined,
+          backfillLegacySharedSourceProvenance(
+            persisted,
+            canonicalSharedRelayUrlSet
+          ),
+          now
+        )
+        const processEvidence = declarationEvidenceCache.get(key)
         declarationEvidenceCache.set(
           key,
-          cloneInboxDeclarationEvidenceRecord(persisted)
+          processEvidence
+            ? mergeEvidenceRecords(
+                processEvidence,
+                persistedForReconciliation,
+                now
+              )
+            : cloneInboxDeclarationEvidenceRecord(persistedForReconciliation)
         )
-        declarationCache.set(key, cached)
+        // A fresh process cache is not authoritative across browser tabs.
+        // Reconcile the durable frontier before considering the TTL fast path,
+        // and repair durable storage if a prior transient write failure left
+        // stronger validated process evidence only in memory.
+        const reconciled = await reconcileInboxDeclarationEvidenceBatch(
+          key,
+          evidenceMergeInputs(persistedForReconciliation),
+          repository,
+          now
+        )
+        cached = await projectAndCacheInboxDeclarationResolution(
+          key,
+          reconciled,
+          {
+            stale:
+              !hasCurrentCompleteLookup(reconciled) ||
+              fetchedAt - (reconciled.current.completeObservedAt ?? 0) >=
+                freshnessMs,
+            fetchedAt:
+              reconciled.latestLookup?.observedAt ??
+              reconciled.current.completeObservedAt ??
+              reconciled.current.observedAt,
+          },
+          now
+        )
       }
     } catch {
       // IndexedDB can be unavailable in privacy modes. Relay discovery remains
       // usable; the durable store is an evidence aid, not a network gate.
     }
+  }
+  const latestProcessEvidence = declarationEvidenceCache.get(key)
+  if (
+    latestProcessEvidence &&
+    cached?.eventId !== latestProcessEvidence.current.signedEvent.id
+  ) {
+    cached = resolutionFromEvidence(latestProcessEvidence, {
+      stale:
+        !hasCurrentCompleteLookup(latestProcessEvidence) ||
+        fetchedAt - (latestProcessEvidence.current.completeObservedAt ?? 0) >=
+          freshnessMs,
+      fetchedAt:
+        latestProcessEvidence.latestLookup?.observedAt ??
+        latestProcessEvidence.current.completeObservedAt ??
+        latestProcessEvidence.current.observedAt,
+    })
+    declarationCache.set(key, cached)
   }
   if (
     cached &&
@@ -814,37 +1048,47 @@ export async function resolveInboxDeclaration(
   }
   const record = await reconcileInboxDeclarationEvidenceBatch(
     key,
-    signedDeclarations.map((candidate) => ({
-      pubkey: key,
-      signedEvent: candidate.signedEvent,
-      sourceRelayUrls: declarationEventSourceRelayUrls(
+    signedDeclarations.map((candidate) => {
+      const sourceRelayUrls = declarationEventSourceRelayUrls(
         candidate.event,
         result.successfulRelayUrls
-      ),
-      observedAt: fetchedAt,
-      completeObservedAt:
-        observation.coverage === "complete" ? fetchedAt : undefined,
-      cachedAt: fetchedAt,
-      lookup: {
+      )
+      return {
+        pubkey: key,
+        signedEvent: candidate.signedEvent,
+        sourceRelayUrls,
+        sharedSourceRelayUrls: sourceRelayUrls.filter((url) =>
+          sharedConfirmationRelayUrlSet.has(url)
+        ),
         observedAt: fetchedAt,
-        coverage: observation.coverage,
-        hadEvent: true,
-        eventId: signedEvent.id,
-      },
-    })),
+        completeObservedAt:
+          observation.coverage === "complete" ? fetchedAt : undefined,
+        cachedAt: fetchedAt,
+        lookup: {
+          observedAt: fetchedAt,
+          coverage: observation.coverage,
+          hadEvent: true,
+          eventId: signedEvent.id,
+        },
+      }
+    }),
     repository,
     now
   )
 
-  const resolution = resolutionFromEvidence(record, {
-    stale:
-      observation.coverage !== "complete" ||
-      record.current.signedEvent.id !== signedEvent.id,
-    fetchedAt: record.current.observedAt,
-    observation,
-  })
-  declarationCache.set(key, resolution)
-  invalidatedDeclarationKeys.delete(key)
+  const resolution = await projectAndCacheInboxDeclarationResolution(
+    key,
+    record,
+    {
+      stale:
+        observation.coverage !== "complete" ||
+        record.current.signedEvent.id !== signedEvent.id,
+      fetchedAt: record.current.observedAt,
+      observation,
+      clearInvalidation: true,
+    },
+    now
+  )
   return resolution
 }
 
@@ -960,6 +1204,7 @@ export interface DeliveryRouteSelection {
   blockedReason?:
     | "recipient_not_ready"
     | "recipient_lookup_failed"
+    | "declaration_distribution_pending"
     | "declaration_signed_empty"
     | "declaration_malformed"
 }
@@ -1058,6 +1303,15 @@ export function selectPrivateMessageDeliveryRoute(
       relaySources: {},
       truncated: false,
       blockedReason: "declaration_signed_empty",
+    }
+  }
+  if (declaration.state === "distribution_pending") {
+    return {
+      route: "blocked",
+      relayUrls: [],
+      relaySources: {},
+      truncated: false,
+      blockedReason: "declaration_distribution_pending",
     }
   }
   if (declaration.state === "malformed") {

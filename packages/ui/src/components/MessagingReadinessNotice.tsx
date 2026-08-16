@@ -6,6 +6,8 @@ import { Button } from "./Button"
  * Typed NIP-17 inbox readiness states (CND-208).
  * - not_observed: no kind-10050 declaration was observed on the bounded
  *   discovery set; setup happens in Network.
+ * - distribution_pending: an exact signed declaration is locally durable but
+ *   has not been confirmed on shared discovery relays.
  * - signed_empty: the current signed declaration intentionally lists no
  *   relays; restore it from Network settings.
  * - malformed: a signed declaration has relay tags but none are usable;
@@ -15,11 +17,33 @@ import { Button } from "./Button"
  */
 export type MessagingReadinessState =
   | "not_observed"
+  | "distribution_pending"
   | "signed_empty"
   | "malformed"
   | "lookup_failed"
   | "lookup_partial"
   | "lookup_unavailable"
+
+export type MessagingReadinessStatus =
+  MessagingReadinessState | "loading" | "ready"
+
+export function toMessagingReadinessNoticeState(
+  status: MessagingReadinessStatus
+): MessagingReadinessState | null {
+  switch (status) {
+    case "loading":
+    case "ready":
+      return null
+    case "not_observed":
+    case "distribution_pending":
+    case "signed_empty":
+    case "malformed":
+    case "lookup_failed":
+    case "lookup_partial":
+    case "lookup_unavailable":
+      return status
+  }
+}
 
 export interface MessagingReadinessNoticeProps {
   state: MessagingReadinessState
@@ -36,6 +60,12 @@ const COPY: Record<
   not_observed: {
     title: "Finish private inbox setup",
     body: "No encrypted inbox declaration was found on the shared discovery relays. Choose inbox relays in Network settings so orders and messages can reach this identity.",
+    actionLabel: "Open Network settings",
+    setup: true,
+  },
+  distribution_pending: {
+    title: "Private inbox distribution pending",
+    body: "Your signed inbox declaration has not been confirmed on shared relays yet. Finish the exact-event retry from Network settings before sending general direct messages. Validated order replies can still deliver, but your self-copy may remain pending.",
     actionLabel: "Open Network settings",
     setup: true,
   },

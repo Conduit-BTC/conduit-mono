@@ -22,6 +22,7 @@ import { SignedActionStatus } from "./SignedActionStatus"
 export type PrivateInboxStatus =
   | "loading"
   | "ready"
+  | "distribution_pending"
   | "not_observed"
   | "signed_empty"
   | "malformed"
@@ -199,6 +200,9 @@ export function canPublishInboxDeclaration(
   if (input.stale && !input.distributionRepairable) return false
   if (input.selectedCount < 1) return false
   if (input.selectedCount > MAX_INBOX_RELAY_SELECTION) return false
+  if (input.status === "distribution_pending") {
+    return input.distributionRepairable && !input.selectionChanged
+  }
   if (input.status !== "ready") return true
   return input.distributionRepairable
     ? !input.selectionChanged
@@ -254,6 +258,9 @@ export function PrivateInboxSection({
     MAX_INBOX_RELAY_SELECTION
   )
   const selectionChanged = !sameUrlSet(selectedUrls, effectiveDeclaredRelayUrls)
+  const exactRedistribution =
+    distributionRepairable &&
+    (status === "ready" || status === "distribution_pending")
   const canPublish = canPublishInboxDeclaration({
     status,
     stale,
@@ -276,15 +283,17 @@ export function PrivateInboxSection({
       ? distributionRepairable
         ? "Redistribute your private inbox"
         : "Private inbox ready"
-      : status === "signed_empty"
-        ? "Restore your private inbox"
-        : status === "malformed"
-          ? "Repair your private inbox"
-          : lookupDegraded
-            ? "Private inbox status unknown"
-            : status === "loading"
-              ? "Checking private inbox"
-              : "Finish private inbox setup"
+      : status === "distribution_pending"
+        ? "Finish distributing your private inbox"
+        : status === "signed_empty"
+          ? "Restore your private inbox"
+          : status === "malformed"
+            ? "Repair your private inbox"
+            : lookupDegraded
+              ? "Private inbox status unknown"
+              : status === "loading"
+                ? "Checking private inbox"
+                : "Finish private inbox setup"
 
   const description =
     status === "ready"
@@ -293,21 +302,25 @@ export function PrivateInboxSection({
         : stale
           ? "Using your last confirmed inbox declaration. The latest lookup was degraded, so this may be out of date. Retry the lookup before publishing changes."
           : "Your signed NIP-17 inbox declaration tells other clients where to deliver orders and encrypted messages."
-      : status === "signed_empty"
-        ? stale && !distributionRepairable
-          ? "A signed empty declaration is retained, but the latest shared lookup was degraded. Retry before publishing a repair."
-          : "Your current signed declaration lists no secure inbox relays, so senders cannot deliver new messages. Choose relays below to restore it."
-        : status === "malformed"
+      : status === "distribution_pending"
+        ? distributionRepairable
+          ? "Your exact signed declaration is retained for retry, but shared relays have not confirmed it yet. Retry sends the same signed event without asking your signer again."
+          : "Your signed declaration has not been confirmed on shared relays, and shared discovery is incomplete. Retry the lookup before changing or redistributing it."
+        : status === "signed_empty"
           ? stale && !distributionRepairable
-            ? "A malformed signed declaration is retained, but the latest shared lookup was degraded. Retry before publishing a repair."
-            : "A signed declaration was found, but its relay tags could not be used safely. This is not the same as choosing an empty inbox. Publish a repaired declaration below."
-          : status === "lookup_partial"
-            ? "Some relays did not respond, so your declaration could not be fully confirmed. This does not mean it is missing."
-            : status === "lookup_unavailable"
-              ? "No relay responded to the declaration lookup. Retry when your connection recovers."
-              : status === "loading"
-                ? "Looking up your inbox relay declaration."
-                : "No usable signed declaration was observed within this bounded lookup. That does not prove one is absent everywhere. Pick up to three IN relays below and publish."
+            ? "A signed empty declaration is retained, but the latest shared lookup was degraded. Retry before publishing a repair."
+            : "Your current signed declaration lists no secure inbox relays, so senders cannot deliver new messages. Choose relays below to restore it."
+          : status === "malformed"
+            ? stale && !distributionRepairable
+              ? "A malformed signed declaration is retained, but the latest shared lookup was degraded. Retry before publishing a repair."
+              : "A signed declaration was found, but its relay tags could not be used safely. This is not the same as choosing an empty inbox. Publish a repaired declaration below."
+            : status === "lookup_partial"
+              ? "Some relays did not respond, so your declaration could not be fully confirmed. This does not mean it is missing."
+              : status === "lookup_unavailable"
+                ? "No relay responded to the declaration lookup. Retry when your connection recovers."
+                : status === "loading"
+                  ? "Looking up your inbox relay declaration."
+                  : "No usable signed declaration was observed within this bounded lookup. That does not prove one is absent everywhere. Pick up to three IN relays below and publish."
 
   return (
     <div
@@ -370,6 +383,7 @@ export function PrivateInboxSection({
                       checked={checked}
                       disabled={
                         publishing ||
+                        status === "distribution_pending" ||
                         (distributionRepairable && status === "ready") ||
                         !candidate.selectable ||
                         (!checked &&
@@ -403,10 +417,9 @@ export function PrivateInboxSection({
           {candidateRelays.length > 0 ? (
             <>
               <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-xs leading-5 text-[var(--text-secondary)]">
-                Publishing signs a NIP-17 inbox declaration (kind 10050) with{" "}
-                {selectedUrls.length} relay{" "}
-                {selectedUrls.length === 1 ? "tag" : "tags"}. It replaces your
-                previous declaration on relays that accept this publish.
+                {exactRedistribution
+                  ? "Retrying republishes the exact signed inbox declaration already stored on this device. It does not ask the signer to create another event."
+                  : `Publishing signs a NIP-17 inbox declaration (kind 10050) with ${selectedUrls.length} relay ${selectedUrls.length === 1 ? "tag" : "tags"}. It replaces your previous declaration on relays that accept this publish.`}
               </div>
               <div className="flex justify-end">
                 <Button
@@ -417,25 +430,34 @@ export function PrivateInboxSection({
                 >
                   <Upload className="h-4 w-4" />
                   {publishing
-                    ? "Waiting for signer..."
-                    : status === "ready"
-                      ? distributionRepairable
-                        ? "Redistribute inbox declaration"
-                        : "Update inbox declaration"
-                      : "Publish inbox declaration"}
+                    ? exactRedistribution
+                      ? "Redistributing declaration..."
+                      : "Waiting for signer..."
+                    : status === "distribution_pending"
+                      ? "Retry inbox declaration"
+                      : status === "ready"
+                        ? distributionRepairable
+                          ? "Redistribute inbox declaration"
+                          : "Update inbox declaration"
+                        : "Publish inbox declaration"}
                 </Button>
               </div>
               <SignedActionStatus
                 state={
                   publishing
-                    ? "awaiting_signature"
+                    ? exactRedistribution
+                      ? "publishing"
+                      : "awaiting_signature"
                     : publishError
                       ? "error"
                       : publishSuccess
                         ? "success"
                         : "idle"
                 }
-                awaitingSignatureMessage="Confirm the inbox declaration in your signer. It will show as ready after it is read back from relays."
+                awaitingSignatureMessage={
+                  "Confirm the inbox declaration in your signer. It will show as ready after it is read back from relays."
+                }
+                publishingMessage="Redistributing the exact stored declaration. It will show as ready after shared relays return it."
                 successMessage={
                   publishConfirmationPending
                     ? "Inbox declaration published. Relay confirmation is still pending; retry the lookup to confirm."

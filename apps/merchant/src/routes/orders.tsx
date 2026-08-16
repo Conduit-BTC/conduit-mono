@@ -49,6 +49,7 @@ import {
   Input,
   Label,
   MessagingReadinessNotice,
+  toMessagingReadinessNoticeState,
   OrderMessagesWidget,
   Select,
   SelectContent,
@@ -417,6 +418,9 @@ function OrdersPage() {
     enabled: signerConnected && session.relaySettingsReady,
     relayScope: session.relayScope,
   })
+  const inboxReadinessNoticeState = toMessagingReadinessNoticeState(
+    inboxReadiness.status
+  )
 
   const ordersQuery = useQuery({
     queryKey: ["merchant-order-messages-live", pubkey ?? "none"],
@@ -1540,19 +1544,9 @@ function OrdersPage() {
 
       {signerConnected &&
         !inboxReadiness.isLoading &&
-        inboxReadiness.status !== "ready" && (
+        inboxReadinessNoticeState && (
           <MessagingReadinessNotice
-            state={
-              inboxReadiness.status === "signed_empty"
-                ? "signed_empty"
-                : inboxReadiness.status === "malformed"
-                  ? "malformed"
-                  : inboxReadiness.status === "lookup_partial"
-                    ? "lookup_partial"
-                    : inboxReadiness.status === "lookup_unavailable"
-                      ? "lookup_unavailable"
-                      : "not_observed"
-            }
+            state={inboxReadinessNoticeState}
             onAction={() => {
               if (
                 inboxReadiness.status === "lookup_partial" ||

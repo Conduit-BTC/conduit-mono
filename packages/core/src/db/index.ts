@@ -257,6 +257,11 @@ interface InboxDeclarationEventEvidenceBase {
   secureRelayUrls: string[]
   /** Secure normalized relays on which this exact event was observed. */
   sourceRelayUrls: string[]
+  /**
+   * Shared discovery relays that returned this exact event. Optional for
+   * records written before shared-source confirmation was persisted.
+   */
+  sharedSourceRelayUrls?: string[]
   /** Most recent local observation time in milliseconds. */
   observedAt: number
   /**
@@ -286,6 +291,17 @@ export type InboxDeclarationEventEvidence =
   | MalformedInboxDeclarationEventEvidence
 
 /**
+ * Exact signed declaration staged durably before its first network attempt.
+ * The immutable publish plan lets a later process retry the same bytes without
+ * asking the signer to create a second replaceable event.
+ */
+export interface PendingInboxDeclarationDistribution {
+  signedEvent: SignedPublicNostrEvent
+  publishRelayUrls: string[]
+  stagedAt: number
+}
+
+/**
  * Account-scoped, monotonic NIP-17 inbox-declaration evidence.
  *
  * `current` follows the NIP-01 replaceable-event frontier. `lastUsable` keeps
@@ -297,6 +313,7 @@ export interface InboxDeclarationEvidenceRecord {
   pubkey: NormalizedInboxDeclarationPubkey
   current: InboxDeclarationEventEvidence
   lastUsable?: DeclaredInboxDeclarationEventEvidence
+  pendingDistribution?: PendingInboxDeclarationDistribution
   latestLookup?: InboxDeclarationLookupEvidence
   cachedAt: number
 }

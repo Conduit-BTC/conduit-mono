@@ -10,6 +10,7 @@ import {
   LegacyDirectMessageNotice,
   LiveReadNotice,
   MessagingReadinessNotice,
+  toMessagingReadinessNoticeState,
   MessageComposer,
   matchesConversationSearch,
   SearchInput,
@@ -23,7 +24,6 @@ import {
   getConversationPreview,
   getConversationMessageDisplayContent,
   useOptimisticConversationMessages,
-  type MessagingReadinessState,
   type OrderAmountFormatter,
   type OptimisticConversationMessage,
 } from "@conduit/ui"
@@ -44,6 +44,7 @@ import {
   normalizePubkey,
   parseDirectMessageRumor,
   parseOrderMessageRumorEvent,
+  PrivateMessageRelayReadinessError,
   publishPrivateMessage,
   pubkeyToNpub,
   useAuth,
@@ -317,16 +318,9 @@ function MessagesPage() {
     relayScope: session.relayScope,
   })
   const messagingReady = dmReadiness.status === "ready"
-  const readinessNoticeState: MessagingReadinessState =
-    dmReadiness.status === "signed_empty"
-      ? "signed_empty"
-      : dmReadiness.status === "malformed"
-        ? "malformed"
-        : dmReadiness.status === "lookup_partial"
-          ? "lookup_partial"
-          : dmReadiness.status === "lookup_unavailable"
-            ? "lookup_unavailable"
-            : "not_observed"
+  const readinessNoticeState = toMessagingReadinessNoticeState(
+    dmReadiness.status
+  )
   const readinessLookupDegraded =
     readinessNoticeState === "lookup_partial" ||
     readinessNoticeState === "lookup_unavailable"
@@ -707,8 +701,14 @@ function MessagesPage() {
         }),
       ])
     },
-    onError: (_error, { message }) => {
+    onError: (error, { message }) => {
       optimisticDmQueue.markFailed(message.localId)
+      if (
+        error instanceof PrivateMessageRelayReadinessError &&
+        error.reason === "sender_not_ready"
+      ) {
+        dmReadiness.refetch()
+      }
     },
   })
 
@@ -823,6 +823,7 @@ function MessagesPage() {
             Checking encrypted messaging setup...
           </div>
         ) : !messagingReady &&
+          readinessNoticeState &&
           dmConversations.length === 0 &&
           !selectedDmPubkey ? (
           <MessagingReadinessNotice
@@ -832,7 +833,7 @@ function MessagesPage() {
           />
         ) : (
           <>
-            {!messagingReady && (
+            {!messagingReady && readinessNoticeState && (
               <MessagingReadinessNotice
                 state={readinessNoticeState}
                 onAction={onReadinessAction}
@@ -1093,7 +1094,8 @@ function MessagesPage() {
                                 ).toLocaleString()}
                                 deliveryState={message.deliveryState}
                                 onRetry={
-                                  message.deliveryState === "failed"
+                                  message.deliveryState === "failed" &&
+                                  messagingReady
                                     ? () => retryDirectMessage(message)
                                     : undefined
                                 }
@@ -1119,6 +1121,10 @@ function MessagesPage() {
                             >
                               Start current conversation
                             </Button>
+                          </div>
+                        ) : dmReadiness.isLoading ? (
+                          <div className="text-sm text-[var(--text-secondary)]">
+                            Checking encrypted messaging setup...
                           </div>
                         ) : !messagingReady ? (
                           <div className="text-sm text-[var(--text-secondary)]">
@@ -1177,13 +1183,16 @@ function MessagesPage() {
             </div>
           )}
 
-          {signerConnected && !dmReadiness.isLoading && !messagingReady && (
-            <MessagingReadinessNotice
-              state={readinessNoticeState}
-              onAction={onReadinessAction}
-              pending={dmReadiness.isRefetching}
-            />
-          )}
+          {signerConnected &&
+            !dmReadiness.isLoading &&
+            !messagingReady &&
+            readinessNoticeState && (
+              <MessagingReadinessNotice
+                state={readinessNoticeState}
+                onAction={onReadinessAction}
+                pending={dmReadiness.isRefetching}
+              />
+            )}
 
           {signerConnected && messagesQuery.isFetching && (
             <div className="text-sm text-[var(--text-secondary)]">
@@ -1443,43 +1452,32 @@ function MessagesPage() {
                     </div>
 
                     <div className="border-t border-[var(--border)] px-6 py-4">
-                      {!messagingReady ? (
-                        <div className="text-sm text-[var(--text-secondary)]">
-                          Enable encrypted messaging to reply in this order
-                          conversation.
+                      <div className="flex flex-col gap-3 sm:flex-row">
+                        <input
+                          value={replyText}
+                          onChange={(event) => setReplyText(event.target.value)}
+                          placeholder="Send a message to the merchant"
+                          className="h-11 flex-1 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)]"
+                          aria-label="Reply to merchant"
+                        />
+                        <Button
+                          className="h-11 px-5 text-sm"
+                          disabled={
+                            replyMutation.isPending || !replyText.trim()
+                          }
+                          onClick={() => replyMutation.mutate()}
+                        >
+                          {replyMutation.isPending
+                            ? "Sending..."
+                            : "Send message"}
+                        </Button>
+                      </div>
+                      {replyMutation.error && (
+                        <div className="mt-2 text-xs text-error">
+                          {replyMutation.error instanceof Error
+                            ? replyMutation.error.message
+                            : "Failed to send message"}
                         </div>
-                      ) : (
-                        <>
-                          <div className="flex flex-col gap-3 sm:flex-row">
-                            <input
-                              value={replyText}
-                              onChange={(event) =>
-                                setReplyText(event.target.value)
-                              }
-                              placeholder="Send a message to the merchant"
-                              className="h-11 flex-1 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)]"
-                              aria-label="Reply to merchant"
-                            />
-                            <Button
-                              className="h-11 px-5 text-sm"
-                              disabled={
-                                replyMutation.isPending || !replyText.trim()
-                              }
-                              onClick={() => replyMutation.mutate()}
-                            >
-                              {replyMutation.isPending
-                                ? "Sending..."
-                                : "Send message"}
-                            </Button>
-                          </div>
-                          {replyMutation.error && (
-                            <div className="mt-2 text-xs text-error">
-                              {replyMutation.error instanceof Error
-                                ? replyMutation.error.message
-                                : "Failed to send message"}
-                            </div>
-                          )}
-                        </>
                       )}
                     </div>
                   </>
