@@ -16,8 +16,8 @@ import {
 } from "./productStock"
 
 export const MAX_PRODUCT_VARIATION_AXES = 3
-export const MAX_PRODUCT_VARIATION_AXIS_VALUES = 12
 export const MAX_PRODUCT_VARIATION_COUNT = 64
+export const MAX_PRODUCT_VARIATION_AXIS_VALUES = MAX_PRODUCT_VARIATION_COUNT
 export const MAX_PRODUCT_VARIATION_VALUE_LENGTH = 40
 
 export interface ProductVariationAxis {
@@ -27,6 +27,7 @@ export interface ProductVariationAxis {
 }
 
 export interface ProductVariationRow {
+  included: boolean
   identity: string
   dTag?: string
   specifications: ProductSchema["specifications"]
@@ -123,7 +124,7 @@ export function createProductVariationAxis(
 export function createEmptyProductVariationForm(): ProductVariationFormState {
   return {
     enabled: false,
-    axes: [createProductVariationAxis("size")],
+    axes: [createProductVariationAxis("")],
     rows: [],
   }
 }
@@ -156,6 +157,20 @@ function parseVariationAxis(input: string): ParsedVariationAxis {
 function getCombinationIdentity(
   specifications: ProductSchema["specifications"]
 ): string {
+  const tuples = specifications.map(
+    ({ key, value }) => [normalizePart(key), normalizePart(value)] as const
+  )
+  tuples.sort(([leftKey, leftValue], [rightKey, rightValue]) => {
+    if (leftKey !== rightKey) return leftKey < rightKey ? -1 : 1
+    if (leftValue === rightValue) return 0
+    return leftValue < rightValue ? -1 : 1
+  })
+  return JSON.stringify(tuples)
+}
+
+function getLegacyCombinationIdentity(
+  specifications: ProductSchema["specifications"]
+): string {
   return specifications
     .map(({ key, value }) => `${normalizePart(key)}:${normalizePart(value)}`)
     .join("|")
@@ -172,6 +187,7 @@ function createVariationRow(
   existing?: Partial<ProductVariationRow>
 ): ProductVariationRow {
   return {
+    included: true,
     identity: getCombinationIdentity(specifications),
     specifications: specifications.map((specification) => ({
       ...specification,
@@ -193,6 +209,7 @@ function parseNewVariationRow(value: unknown): ProductVariationRow | null {
   if (!value || typeof value !== "object") return null
   const row = value as Partial<Record<keyof ProductVariationRow, unknown>>
   if (
+    (row.included !== undefined && typeof row.included !== "boolean") ||
     typeof row.identity !== "string" ||
     (row.dTag !== undefined && typeof row.dTag !== "string") ||
     !Array.isArray(row.specifications) ||
@@ -224,6 +241,7 @@ function parseNewVariationRow(value: unknown): ProductVariationRow | null {
     specifications.push({ key: candidate.key, value: candidate.value })
   }
   return createVariationRow(specifications, {
+    included: row.included ?? true,
     identity: getCombinationIdentity(specifications),
     ...(row.dTag ? { dTag: row.dTag } : {}),
     title: row.title,
@@ -289,7 +307,9 @@ function migrateLegacyVariationState(
   return {
     ...generated,
     rows: generated.rows.map((row) => {
-      const override = overrides.get(row.identity)
+      const override = overrides.get(
+        getLegacyCombinationIdentity(row.specifications)
+      )
       return override
         ? {
             ...row,
@@ -340,18 +360,38 @@ export function parseProductVariationFormState(
 function buildAxisCombinations(
   axes: readonly ProductVariationAxis[]
 ): ProductSchema["specifications"][] {
-  const usableAxes = axes
-    .map((axis) => ({
-      key: axis.key.trim(),
-      values: parseVariationAxis(axis.values).values,
-    }))
-    .filter((axis) => axis.key && axis.values.length > 0)
-  if (usableAxes.length === 0) return []
+  if (axes.length === 0) return []
+  const usableAxes = axes.map((axis) => ({
+    key: axis.key.trim(),
+    parsed: parseVariationAxis(axis.values),
+  }))
+  if (
+    usableAxes.some(
+      ({ key, parsed }) =>
+        !key ||
+        parsed.values.length === 0 ||
+        parsed.values.length > MAX_PRODUCT_VARIATION_AXIS_VALUES ||
+        parsed.duplicates.length > 0 ||
+        parsed.tooLong.length > 0
+    ) ||
+    new Set(usableAxes.map((axis) => normalizePart(axis.key))).size !==
+      usableAxes.length
+  ) {
+    return []
+  }
+  const combinationCount = usableAxes.reduce(
+    (total, axis) => total * axis.parsed.values.length,
+    1
+  )
+  if (combinationCount > MAX_PRODUCT_VARIATION_COUNT) return []
 
   return usableAxes.reduce<ProductSchema["specifications"][]>(
     (combinations, axis) =>
       combinations.flatMap((combination) =>
-        axis.values.map((value) => [...combination, { key: axis.key, value }])
+        axis.parsed.values.map((value) => [
+          ...combination,
+          { key: axis.key, value },
+        ])
       ),
     [[]]
   )
@@ -360,26 +400,39 @@ function buildAxisCombinations(
 export function getProductVariationCartesianCount(
   state: Pick<ProductVariationFormState, "axes">
 ): number {
-  const counts = state.axes
-    .map((axis) => ({
-      key: axis.key.trim(),
-      valueCount: parseVariationAxis(axis.values).values.length,
-    }))
-    .filter((axis) => axis.key && axis.valueCount > 0)
-    .map((axis) => axis.valueCount)
-  if (counts.length === 0) return 0
+  if (state.axes.length === 0) return 0
+  const parsedAxes = state.axes.map((axis) => ({
+    key: axis.key.trim(),
+    valueCount: parseVariationAxis(axis.values).values.length,
+  }))
+  if (parsedAxes.some((axis) => !axis.key || axis.valueCount === 0)) return 0
+  const counts = parsedAxes.map((axis) => axis.valueCount)
   return counts.reduce((total, count) => total * count, 1)
 }
 
 export function generateProductVariationRows(
   state: ProductVariationFormState
 ): ProductVariationFormState {
-  if (getProductVariationCartesianCount(state) > MAX_PRODUCT_VARIATION_COUNT) {
+  const combinations = buildAxisCombinations(state.axes)
+  if (
+    combinations.length === 0 ||
+    combinations.length > MAX_PRODUCT_VARIATION_COUNT
+  ) {
     return state
   }
-  const rowsByIdentity = new Map(state.rows.map((row) => [row.identity, row]))
-  const rows = [...state.rows]
-  for (const specifications of buildAxisCombinations(state.axes)) {
+  const candidateIdentities = new Set(
+    combinations.map((specifications) => getCombinationIdentity(specifications))
+  )
+  const rowsByIdentity = new Map(
+    state.rows.map((row) => [getCombinationIdentity(row.specifications), row])
+  )
+  const rows = state.rows.map((row) => ({
+    ...row,
+    included: candidateIdentities.has(
+      getCombinationIdentity(row.specifications)
+    ),
+  }))
+  for (const specifications of combinations) {
     const identity = getCombinationIdentity(specifications)
     if (rowsByIdentity.has(identity)) continue
     const row = createVariationRow(specifications)
@@ -414,12 +467,12 @@ export function updateProductVariationAxis(
   field: "key" | "values",
   value: string
 ): ProductVariationFormState {
-  return {
+  return reconcileProductVariationAvailability({
     ...state,
     axes: state.axes.map((axis) =>
       axis.id === id ? { ...axis, [field]: value } : axis
     ),
-  }
+  })
 }
 
 export function addProductVariationAxis(
@@ -438,16 +491,94 @@ export function removeProductVariationAxis(
   state: ProductVariationFormState,
   id: string
 ): ProductVariationFormState {
-  return { ...state, axes: state.axes.filter((axis) => axis.id !== id) }
+  return reconcileProductVariationAvailability({
+    ...state,
+    axes: state.axes.filter((axis) => axis.id !== id),
+  })
 }
 
 export function removeProductVariationRow(
   state: ProductVariationFormState,
   identity: string
 ): ProductVariationFormState {
+  return setProductVariationCombinationIncluded(state, identity, false)
+}
+
+export function getProductVariationMatrix(
+  state: ProductVariationFormState
+): ProductVariationCombination[] {
+  const combinations = buildAxisCombinations(state.axes)
+  if (combinations.length > MAX_PRODUCT_VARIATION_COUNT) return []
+
+  const rowsByIdentity = new Map(
+    state.rows.map((row) => [getCombinationIdentity(row.specifications), row])
+  )
+  return combinations.map((specifications) => {
+    const identity = getCombinationIdentity(specifications)
+    const row = rowsByIdentity.get(identity)
+    return {
+      ...createVariationRow(specifications, row),
+      included: row?.included ?? false,
+      identity,
+      label: getCombinationLabel(specifications),
+    }
+  })
+}
+
+function reconcileProductVariationAvailability(
+  state: ProductVariationFormState
+): ProductVariationFormState {
+  const combinations = buildAxisCombinations(state.axes)
+  if (combinations.length === 0) return state
+
+  const candidateIdentities = new Set(
+    combinations.map((specifications) => getCombinationIdentity(specifications))
+  )
+  let changed = false
+  const rows = state.rows.map((row) => {
+    if (
+      !row.included ||
+      candidateIdentities.has(getCombinationIdentity(row.specifications))
+    ) {
+      return row
+    }
+    changed = true
+    return { ...row, included: false }
+  })
+  return changed ? { ...state, rows } : state
+}
+
+export function setProductVariationCombinationIncluded(
+  state: ProductVariationFormState,
+  identity: string,
+  included: boolean
+): ProductVariationFormState {
+  const reconciled = reconcileProductVariationAvailability(state)
+  const candidate = getProductVariationMatrix(reconciled).find(
+    (combination) => combination.identity === identity
+  )
+  if (!candidate) return reconciled
+
+  const rowIndex = reconciled.rows.findIndex(
+    (row) => getCombinationIdentity(row.specifications) === identity
+  )
+  if (rowIndex < 0) {
+    if (!included) return reconciled
+    return {
+      ...reconciled,
+      rows: [
+        ...reconciled.rows,
+        createVariationRow(candidate.specifications, { included: true }),
+      ],
+    }
+  }
+  if (reconciled.rows[rowIndex]?.included === included) return reconciled
+
   return {
-    ...state,
-    rows: state.rows.filter((row) => row.identity !== identity),
+    ...reconciled,
+    rows: reconciled.rows.map((row, index) =>
+      index === rowIndex ? { ...row, included } : row
+    ),
   }
 }
 
@@ -492,10 +623,15 @@ export function updateProductVariationInheritance(
 export function getProductVariationCombinations(
   state: ProductVariationFormState
 ): ProductVariationCombination[] {
-  return state.rows.map((row) => ({
-    ...row,
-    label: getCombinationLabel(row.specifications),
-  }))
+  const combinations: ProductVariationCombination[] = []
+  for (const row of state.rows) {
+    if (!row.included) continue
+    combinations.push({
+      ...row,
+      label: getCombinationLabel(row.specifications),
+    })
+  }
+  return combinations
 }
 
 function parseImageUrls(value: string): string[] {
@@ -518,9 +654,9 @@ export function getProductVariationFormError(
   currency: string
 ): string | null {
   if (!state.enabled) return null
-  if (state.axes.length === 0) return "Add at least one option axis."
+  if (state.axes.length === 0) return "Add at least one option."
   if (state.axes.length > MAX_PRODUCT_VARIATION_AXES) {
-    return `Use ${MAX_PRODUCT_VARIATION_AXES} option axes or fewer.`
+    return `Use ${MAX_PRODUCT_VARIATION_AXES} options or fewer.`
   }
 
   const seenKeys = new Set<string>()
@@ -529,8 +665,8 @@ export function getProductVariationFormError(
   for (const axis of state.axes) {
     const key = normalizePart(axis.key)
     const parsed = parseVariationAxis(axis.values)
-    if (!key) return "Give every option axis a name."
-    if (seenKeys.has(key)) return "Use a different name for each option axis."
+    if (!key) return "Give every option a name."
+    if (seenKeys.has(key)) return "Use a different name for each option."
     seenKeys.add(key)
     expectedKeys.push(key)
     allowedValuesByKey.set(
@@ -551,15 +687,20 @@ export function getProductVariationFormError(
     }
   }
 
-  if (state.rows.length === 0) {
-    return "Generate or add at least one variation row."
+  const includedRows = state.rows.filter((row) => row.included)
+  if (includedRows.length === 0) {
+    const cartesianCount = getProductVariationCartesianCount(state)
+    if (cartesianCount > MAX_PRODUCT_VARIATION_COUNT) {
+      return `These options create ${cartesianCount} combinations. Reduce the values to ${MAX_PRODUCT_VARIATION_COUNT} combinations or fewer.`
+    }
+    return "Make at least one combination available."
   }
-  if (state.rows.length > MAX_PRODUCT_VARIATION_COUNT) {
-    return `Keep the variation count to ${MAX_PRODUCT_VARIATION_COUNT} or fewer.`
+  if (includedRows.length > MAX_PRODUCT_VARIATION_COUNT) {
+    return `Keep the available combination count to ${MAX_PRODUCT_VARIATION_COUNT} or fewer.`
   }
 
   const seenIdentities = new Set<string>()
-  for (const row of state.rows) {
+  for (const row of includedRows) {
     const rowKeys = row.specifications.map(({ key }) => normalizePart(key))
     if (
       rowKeys.length !== expectedKeys.length ||

@@ -9,8 +9,13 @@ import {
   getProductVariationCombinations,
   getProductVariationFormError,
   getProductVariationFormState,
+  getProductVariationMatrix,
   groupProductVariationRecords,
+  parseProductVariationFormState,
+  reconcileProductVariationForm,
   removeProductVariationRow,
+  setProductVariationCombinationIncluded,
+  updateProductVariationAxis,
   updateProductVariationOverride,
   type ProductListingFamily,
   type ProductListingRecordLike,
@@ -87,6 +92,14 @@ function toFamily(
 }
 
 describe("merchant product variation planning", () => {
+  it("starts with a neutral option definition", () => {
+    const state = createEmptyProductVariationForm()
+
+    expect(state.axes).toHaveLength(1)
+    expect(state.axes[0]?.key).toBe("")
+    expect(state.axes[0]?.values).toBe("")
+  })
+
   it("builds a variable parent and explicit S/M/L/XL child rows", () => {
     const plan = buildProductFamilyChangePlan({
       parentDTag: "conduit-tee",
@@ -128,6 +141,9 @@ describe("merchant product variation planning", () => {
     })
 
     expect(full.rows).toHaveLength(8)
+    const matrix = getProductVariationMatrix(sparse)
+    expect(matrix).toHaveLength(8)
+    expect(matrix.filter(({ included }) => included)).toHaveLength(5)
     expect(plan.desired).toHaveLength(6)
     expect(
       plan.desired
@@ -206,6 +222,9 @@ describe("merchant product variation planning", () => {
       family.variations
     )
     expect(restored.supported).toBe(true)
+    const matrix = getProductVariationMatrix(restored.state)
+    expect(matrix).toHaveLength(4)
+    expect(matrix.filter(({ included }) => included)).toHaveLength(3)
 
     const roundTrip = buildProductFamilyChangePlan({
       parentDTag: "workspace",
@@ -254,6 +273,120 @@ describe("merchant product variation planning", () => {
     expect(plan.remove[0]?.product.specifications).toEqual([
       { key: "size", value: "L" },
     ])
+  })
+
+  it("preserves row fields when availability is toggled off and on", () => {
+    const initial = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct(),
+      variations: sizeVariationForm("S, M"),
+      currency: "USD",
+      now: NOW,
+    })
+    const family = toFamily(initial)
+    const restored = getProductVariationFormState(
+      family.root,
+      family.variations
+    ).state
+    const target = restored.rows[1]!
+    const customized = updateProductVariationOverride(
+      restored,
+      target.identity,
+      "title",
+      "Retained title"
+    )
+
+    const excluded = setProductVariationCombinationIncluded(
+      customized,
+      target.identity,
+      false
+    )
+    expect(getProductVariationCombinations(excluded)).toHaveLength(1)
+    expect(excluded.rows[1]).toMatchObject({
+      included: false,
+      dTag: target.dTag,
+      title: "Retained title",
+    })
+
+    const restoredAvailability = setProductVariationCombinationIncluded(
+      excluded,
+      target.identity,
+      true
+    )
+    expect(restoredAvailability.rows[1]).toMatchObject({
+      included: true,
+      dTag: target.dTag,
+      title: "Retained title",
+    })
+  })
+
+  it("takes obsolete rows out of availability when definitions change", () => {
+    const initial = variationForm([{ key: "option", values: "one, two" }])
+    const updated = updateProductVariationAxis(
+      initial,
+      initial.axes[0]!.id,
+      "values",
+      "one, three"
+    )
+    const beforeSelection = getProductVariationMatrix(updated)
+    const newCombination = beforeSelection.find(
+      ({ specifications }) => specifications[0]?.value === "three"
+    )
+    if (!newCombination) throw new Error("Expected the new combination")
+
+    expect(
+      getProductVariationCombinations(updated).map(
+        ({ specifications }) => specifications[0]?.value
+      )
+    ).toEqual(["one"])
+    expect(beforeSelection.filter(({ included }) => included)).toHaveLength(1)
+
+    const selected = setProductVariationCombinationIncluded(
+      updated,
+      newCombination.identity,
+      true
+    )
+    expect(
+      getProductVariationCombinations(selected).map(
+        ({ specifications }) => specifications[0]?.value
+      )
+    ).toEqual(["one", "three"])
+    expect(getProductVariationFormError(selected, "USD")).toBeNull()
+    expect(
+      selected.rows.find(
+        ({ specifications }) => specifications[0]?.value === "two"
+      )?.included
+    ).toBe(false)
+  })
+
+  it("keeps included stock zero distinct from an excluded combination", () => {
+    const state = sizeVariationForm("A, B")
+    const first = state.rows[0]!
+    const second = state.rows[1]!
+    const withZeroStock = updateProductVariationOverride(
+      state,
+      first.identity,
+      "stock",
+      "0"
+    )
+    const sparse = setProductVariationCombinationIncluded(
+      withZeroStock,
+      second.identity,
+      false
+    )
+    const plan = buildProductFamilyChangePlan({
+      parentDTag: "zero-stock",
+      baseProduct: baseProduct(),
+      variations: sparse,
+      currency: "USD",
+      now: NOW,
+    })
+
+    expect(plan.desired).toHaveLength(2)
+    expect(plan.desired[1]?.product.stock).toBe(0)
+    expect(plan.desired[1]?.product.specifications).toEqual(
+      first.specifications
+    )
   })
 
   it("groups reachable children and leaves orphan variations visible", () => {
@@ -333,5 +466,100 @@ describe("merchant product variation planning", () => {
 
     expect(getProductVariationCartesianCount(state)).toBe(75)
     expect(generateProductVariationRows(state).rows).toEqual([])
+    expect(getProductVariationFormError(state, "USD")).toContain(
+      "75 combinations"
+    )
+  })
+
+  it("supports a neutral availability matrix with more than twelve values", () => {
+    const values = Array.from(
+      { length: 14 },
+      (_, index) => `value-${index + 1}`
+    )
+    const state: ProductVariationFormState = {
+      ...createEmptyProductVariationForm(),
+      enabled: true,
+      axes: [
+        createProductVariationAxis("option-a", "first, second", 0),
+        createProductVariationAxis("option-b", values.join(", "), 1),
+      ],
+    }
+
+    const matrix = getProductVariationMatrix(state)
+    expect(matrix).toHaveLength(28)
+    expect(matrix.every(({ included }) => !included)).toBe(true)
+    expect(generateProductVariationRows(state).rows).toHaveLength(28)
+  })
+
+  it("matches reordered specifications and keeps tuple identities collision-safe", () => {
+    const state = variationForm([
+      { key: "a", values: "b|c:d, b" },
+      { key: "c", values: "e, d|c:e" },
+    ])
+    const reordered = reconcileProductVariationForm({
+      ...state,
+      rows: state.rows.map((row) => ({
+        ...row,
+        identity: "stale",
+        specifications: [...row.specifications].reverse(),
+      })),
+    })
+    const matrix = getProductVariationMatrix(reordered)
+
+    expect(matrix).toHaveLength(4)
+    expect(new Set(matrix.map(({ identity }) => identity)).size).toBe(4)
+    expect(matrix.every(({ included }) => included)).toBe(true)
+  })
+
+  it("keeps reordered tuple identity stable for distinct Unicode keys", () => {
+    const state = variationForm([
+      { key: "a", values: "x" },
+      { key: "á", values: "x" },
+    ])
+    const originalIdentity = state.rows[0]!.identity
+    const reordered = reconcileProductVariationForm({
+      ...state,
+      rows: [
+        {
+          ...state.rows[0]!,
+          specifications: [...state.rows[0]!.specifications].reverse(),
+        },
+      ],
+    })
+
+    expect(reordered.rows[0]?.identity).toBe(originalIdentity)
+    expect(getProductVariationMatrix(reordered)[0]?.included).toBe(true)
+  })
+
+  it("keeps punctuation-bearing values opaque and distinct", () => {
+    const state: ProductVariationFormState = {
+      ...createEmptyProductVariationForm(),
+      enabled: true,
+      axes: [
+        createProductVariationAxis("option", "left · value, left  ·  value", 0),
+      ],
+    }
+    const matrix = getProductVariationMatrix(state)
+
+    expect(
+      matrix.map(({ specifications }) => specifications[0]?.value)
+    ).toEqual(["left · value", "left  ·  value"])
+    expect(new Set(matrix.map(({ identity }) => identity)).size).toBe(2)
+  })
+
+  it("loads existing drafts with every stored row included", () => {
+    const state = sizeVariationForm("A, B")
+    const storedRows: Array<Record<string, unknown>> = state.rows.map(
+      (row) => ({ ...row })
+    )
+    for (const row of storedRows) delete row.included
+    const stored = {
+      ...state,
+      rows: storedRows,
+    }
+
+    const parsed = parseProductVariationFormState(stored)
+
+    expect(parsed?.rows.every(({ included }) => included)).toBe(true)
   })
 })

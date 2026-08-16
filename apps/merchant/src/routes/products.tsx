@@ -53,6 +53,7 @@ import {
   Textarea,
   cn,
 } from "@conduit/ui"
+import { ProductCombinationMatrix } from "../components/ProductCombinationMatrix"
 import { ProductTagEditor } from "../components/ProductTagEditor"
 import { ShippingDestinationsEditor } from "../components/ShippingDestinationsEditor"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
@@ -120,12 +121,14 @@ import {
   generateProductVariationRows,
   getProductVariationCartesianCount,
   getProductVariationCombinations,
+  getProductVariationMatrix,
   getProductVariationFormState,
   groupProductVariationRecords,
+  MAX_PRODUCT_VARIATION_AXES,
   MAX_PRODUCT_VARIATION_COUNT,
   reconcileProductVariationForm,
   removeProductVariationAxis,
-  removeProductVariationRow,
+  setProductVariationCombinationIncluded,
   updateProductVariationAxis,
   updateProductVariationInheritance,
   updateProductVariationOverride,
@@ -1312,13 +1315,24 @@ function ProductsPage() {
     () => getProductVariationCombinations(form.variations),
     [form.variations]
   )
+  const productVariationMatrix = useMemo(
+    () => getProductVariationMatrix(form.variations),
+    [form.variations]
+  )
+  const productVariationRemovalCount = useMemo(
+    () =>
+      form.variations.rows.filter(
+        (row) => !row.included && typeof row.dTag === "string"
+      ).length,
+    [form.variations.rows]
+  )
   const productVariationCartesianCount = useMemo(
     () => getProductVariationCartesianCount(form.variations),
     [form.variations]
   )
   const productVariationGenerationMessage =
     productVariationCartesianCount > MAX_PRODUCT_VARIATION_COUNT
-      ? `These axes define ${productVariationCartesianCount} combinations. Reduce the values to generate at most ${MAX_PRODUCT_VARIATION_COUNT}, or keep the existing sparse rows.`
+      ? `These options create ${productVariationCartesianCount} combinations. Reduce the values to review at most ${MAX_PRODUCT_VARIATION_COUNT}; existing available combinations are preserved.`
       : null
   const productIsDigital = form.format === "digital"
   const productCoordinatesShipping =
@@ -2190,11 +2204,11 @@ function ProductsPage() {
                 />
                 <span className="grid gap-1">
                   <span className="font-medium text-[var(--text-primary)]">
-                    This product has variations
+                    This product has options
                   </span>
-                  <span className="text-xs leading-5 text-[var(--text-muted)]">
-                    Conduit publishes one variable parent and one explicit child
-                    listing for each row.
+                  <span className="text-pretty text-xs leading-5 text-[var(--text-muted)]">
+                    Define the values that distinguish one listing from another,
+                    then choose which combinations are available.
                   </span>
                 </span>
               </label>
@@ -2205,85 +2219,59 @@ function ProductsPage() {
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div>
                         <div className="text-sm font-medium text-[var(--text-primary)]">
-                          Option axes
+                          Option definitions
                         </div>
-                        <p className="mt-1 text-xs text-[var(--text-muted)]">
-                          Size and color are presets. Axis names remain generic
-                          protocol specifications.
+                        <p className="mt-1 text-pretty text-xs text-[var(--text-muted)]">
+                          Values within one option are alternatives. Separate
+                          options combine.
                         </p>
                       </div>
-                      <div className="flex flex-wrap gap-2">
-                        {!form.variations.axes.some(
-                          (axis) => axis.key.trim().toLowerCase() === "size"
-                        ) ? (
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            onClick={() =>
-                              setForm((previous) => ({
-                                ...previous,
-                                variations: addProductVariationAxis(
-                                  previous.variations,
-                                  "size"
-                                ),
-                              }))
-                            }
-                          >
-                            Add size
-                          </Button>
-                        ) : null}
-                        {!form.variations.axes.some(
-                          (axis) => axis.key.trim().toLowerCase() === "color"
-                        ) ? (
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            onClick={() =>
-                              setForm((previous) => ({
-                                ...previous,
-                                variations: addProductVariationAxis(
-                                  previous.variations,
-                                  "color"
-                                ),
-                              }))
-                            }
-                          >
-                            Add color
-                          </Button>
-                        ) : null}
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          onClick={() =>
-                            setForm((previous) => ({
-                              ...previous,
-                              variations: addProductVariationAxis(
-                                previous.variations
-                              ),
-                            }))
-                          }
-                        >
-                          Add custom axis
-                        </Button>
-                      </div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={
+                          form.variations.axes.length >=
+                          MAX_PRODUCT_VARIATION_AXES
+                        }
+                        onClick={() =>
+                          setForm((previous) => ({
+                            ...previous,
+                            variations: addProductVariationAxis(
+                              previous.variations
+                            ),
+                          }))
+                        }
+                      >
+                        Add option
+                      </Button>
                     </div>
 
-                    {form.variations.axes.map((axis, index) => (
+                    {form.variations.axes.map((axis) => (
                       <div
                         key={axis.id}
                         className="grid gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 sm:grid-cols-[minmax(8rem,0.45fr)_minmax(0,1fr)_auto] sm:items-end"
                       >
                         <div className="grid gap-1.5">
                           <Label htmlFor={`product-variation-axis-${axis.id}`}>
-                            Axis name
+                            Option name
                           </Label>
                           <Input
                             id={`product-variation-axis-${axis.id}`}
                             value={axis.key}
-                            placeholder={index === 0 ? "size" : "license-tier"}
+                            aria-invalid={
+                              !axis.key.trim() ||
+                              form.variations.axes.some(
+                                (candidate) =>
+                                  candidate.id !== axis.id &&
+                                  candidate.key
+                                    .trim()
+                                    .toLocaleLowerCase("en-US") ===
+                                    axis.key.trim().toLocaleLowerCase("en-US")
+                              )
+                            }
+                            aria-describedby="product-variations-help"
+                            placeholder="Enter a name"
                             onChange={(event) =>
                               setForm((previous) => ({
                                 ...previous,
@@ -2310,11 +2298,7 @@ function ProductsPage() {
                               !!productFormValidation.errors.variations
                             }
                             aria-describedby="product-variations-help"
-                            placeholder={
-                              axis.key.trim().toLowerCase() === "size"
-                                ? "S, M, L, XL"
-                                : "Personal, Business"
-                            }
+                            placeholder="Separate values with commas"
                             onChange={(event) =>
                               setForm((previous) => ({
                                 ...previous,
@@ -2332,6 +2316,7 @@ function ProductsPage() {
                           type="button"
                           size="sm"
                           variant="outline"
+                          aria-label={`Remove ${axis.key.trim() || "unnamed option"}`}
                           onClick={() =>
                             setForm((previous) => ({
                               ...previous,
@@ -2342,51 +2327,73 @@ function ProductsPage() {
                             }))
                           }
                         >
-                          Remove
+                          Remove option
                         </Button>
                       </div>
                     ))}
-
-                    <div>
-                      <Button
-                        type="button"
-                        size="sm"
-                        disabled={!!productVariationGenerationMessage}
-                        onClick={() =>
-                          setForm((previous) => ({
-                            ...previous,
-                            variations: generateProductVariationRows(
-                              previous.variations
-                            ),
-                          }))
-                        }
-                      >
-                        Generate combinations
-                      </Button>
-                    </div>
                   </div>
 
                   <div
                     id="product-variations-help"
                     className={cn(
                       "text-xs leading-5",
-                      productFormValidation.errors.variations
-                        ? "text-error"
-                        : productVariationGenerationMessage
-                          ? "text-warning"
+                      productVariationGenerationMessage
+                        ? "text-warning"
+                        : productFormValidation.errors.variations
+                          ? "text-error"
                           : "text-[var(--text-muted)]"
                     )}
                   >
-                    {productFormValidation.errors.variations ??
-                      productVariationGenerationMessage ??
-                      "Separate values with commas. Generated rows are explicit: remove any row you do not stock to keep a sparse family."}
+                    {productVariationGenerationMessage ??
+                      productFormValidation.errors.variations ??
+                      "Separate values with commas. Every possible combination appears in the availability matrix."}
                   </div>
+
+                  {productVariationRemovalCount > 0 && (
+                    <p
+                      role="status"
+                      aria-live="polite"
+                      className="text-pretty text-xs leading-5 text-warning"
+                    >
+                      Saving will remove {productVariationRemovalCount}{" "}
+                      previously published combination
+                      {productVariationRemovalCount === 1 ? "" : "s"} from this
+                      product.
+                    </p>
+                  )}
+
+                  {productVariationMatrix.length > 0 && (
+                    <ProductCombinationMatrix
+                      axes={form.variations.axes}
+                      combinations={productVariationMatrix}
+                      invalid={productVariationCombinations.length === 0}
+                      onIncludeAll={() =>
+                        setForm((previous) => ({
+                          ...previous,
+                          variations: generateProductVariationRows(
+                            previous.variations
+                          ),
+                        }))
+                      }
+                      onIncludedChange={(identity, included) =>
+                        setForm((previous) => ({
+                          ...previous,
+                          variations: setProductVariationCombinationIncluded(
+                            previous.variations,
+                            identity,
+                            included
+                          ),
+                        }))
+                      }
+                      validationMessageId="product-variations-help"
+                    />
+                  )}
 
                   {productVariationCombinations.length > 0 && (
                     <div className="grid gap-2">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="text-sm font-medium text-[var(--text-primary)]">
-                          Variation rows
+                          Available combinations
                         </div>
                         <Badge
                           variant="secondary"
@@ -2395,9 +2402,9 @@ function ProductsPage() {
                           {productVariationCombinations.length}
                         </Badge>
                       </div>
-                      <p className="text-xs leading-5 text-[var(--text-muted)]">
-                        Rows are the publish truth. Imported custom titles and
-                        child-specific fields are preserved.
+                      <p className="text-pretty text-xs leading-5 text-[var(--text-muted)]">
+                        Set fields here only when a combination differs from the
+                        base product. Only available combinations are published.
                       </p>
                       <div
                         data-product-variation-rows
@@ -2430,14 +2437,16 @@ function ProductsPage() {
                                   onClick={() =>
                                     setForm((previous) => ({
                                       ...previous,
-                                      variations: removeProductVariationRow(
-                                        previous.variations,
-                                        combination.identity
-                                      ),
+                                      variations:
+                                        setProductVariationCombinationIncluded(
+                                          previous.variations,
+                                          combination.identity,
+                                          false
+                                        ),
                                     }))
                                   }
                                 >
-                                  Remove row
+                                  Mark unavailable
                                 </Button>
                               </div>
 
@@ -2447,7 +2456,7 @@ function ProductsPage() {
                                     htmlFor={`product-variation-title-${index}`}
                                     className="text-xs"
                                   >
-                                    Child title
+                                    Combination title
                                   </Label>
                                   <Input
                                     id={`product-variation-title-${index}`}

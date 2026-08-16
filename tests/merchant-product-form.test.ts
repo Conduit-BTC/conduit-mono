@@ -201,7 +201,7 @@ describe("merchant product form validation", () => {
     )
 
     expect(missingOptions.canPublish).toBe(false)
-    expect(missingOptions.errors.variations).toContain("at least one")
+    expect(missingOptions.errors.variations).toContain("name")
     expect(validOptions.canPublish).toBe(true)
   })
 

@@ -11,7 +11,7 @@ import {
 
 // Keep the storage key stable so version 1 drafts can be migrated in place.
 const PRODUCT_DRAFT_STORAGE_PREFIX = "conduit:merchant:product_draft:v1"
-const PRODUCT_DRAFT_VERSION = 4
+const PRODUCT_DRAFT_VERSION = 5
 const CLEARED_PRODUCT_DRAFT_MARKER = "conduit:product-draft-cleared:v1"
 const LEGACY_SCIENTIFIC_AMOUNT_PATTERN = /^\d+(?:\.\d+)?e[+-]?\d+$/i
 
@@ -84,6 +84,7 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
       (candidate.version !== 1 &&
         candidate.version !== 2 &&
         candidate.version !== 3 &&
+        candidate.version !== 4 &&
         candidate.version !== PRODUCT_DRAFT_VERSION) ||
       typeof candidate.savedAt !== "number" ||
       !Number.isFinite(candidate.savedAt) ||
@@ -145,7 +146,7 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
       candidate.version >= 3 && typeof form.stock === "string" ? form.stock : ""
     if (!/^\d*$/.test(stock)) return null
     const variations =
-      candidate.version === PRODUCT_DRAFT_VERSION
+      candidate.version >= 4
         ? parseProductVariationFormState(form.variations)
         : createEmptyProductVariationForm()
     if (!variations) return null
