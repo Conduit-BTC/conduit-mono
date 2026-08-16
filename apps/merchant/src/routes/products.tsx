@@ -128,6 +128,8 @@ import {
   groupProductVariationRecords,
   isProductVariationGroupedSizeAxis,
   isProductVariationSizeAxisKey,
+  MAX_PRODUCT_VARIATION_AXIS_VALUES,
+  MAX_PRODUCT_VARIATION_COUNT,
   reconcileProductVariationForm,
   removeProductVariationAxis,
   removeProductVariationRow,
@@ -1334,7 +1336,8 @@ function ProductsPage() {
     [form.variations]
   )
   const groupProductSizeAlternatives = () => {
-    const groupedAxisId = productVariationAlternativeSuggestion?.axisIds[0]
+    const groupedAxisId =
+      productVariationAlternativeSuggestion?.groups[0]?.axisId
     if (!groupedAxisId || !productVariationAlternativeSuggestion.canGroup) {
       return
     }
@@ -2419,17 +2422,18 @@ function ProductsPage() {
                           </p>
                           {!productVariationAlternativeSuggestion.canGroup && (
                             <p className="mt-1 text-pretty text-xs leading-5 text-error">
-                              A grouped size list can contain at most 64
-                              choices. Reduce these lists before grouping them.
+                              A grouped size list can contain at most{" "}
+                              {MAX_PRODUCT_VARIATION_AXIS_VALUES} choices.
+                              Reduce these lists before grouping them.
                             </p>
                           )}
                           {productVariationAlternativeSuggestion.canGroup &&
                             productVariationAlternativeSuggestion.resultingVariationCount >
-                              64 && (
+                              MAX_PRODUCT_VARIATION_COUNT && (
                               <p className="mt-1 text-pretty text-xs leading-5 text-warning">
                                 Grouping is safe, but the other options still
-                                bring the final count above the 64-variation
-                                limit.
+                                bring the final count above the{" "}
+                                {MAX_PRODUCT_VARIATION_COUNT}-variation limit.
                               </p>
                             )}
                         </div>

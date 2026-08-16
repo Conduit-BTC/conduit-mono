@@ -85,7 +85,6 @@ export interface ProductVariationAlternativeGroup {
 }
 
 export interface ProductVariationAlternativeSuggestion {
-  axisIds: string[]
   axisKey: string
   groups: ProductVariationAlternativeGroup[]
   choiceCount: number
@@ -286,7 +285,6 @@ function getAlternativeSizeAxisSuggestion(
   }
 
   return {
-    axisIds: groups.map(({ axisId }) => axisId),
     axisKey: sharedTokens.join(" ").trim() || "Size",
     groups,
     choiceCount,
@@ -308,7 +306,7 @@ export function groupProductVariationAxesAsAlternatives(
   const suggestion = getAlternativeSizeAxisSuggestion(state)
   if (!suggestion || !suggestion.canGroup) return state
 
-  const axisIds = new Set(suggestion.axisIds)
+  const axisIds = new Set(suggestion.groups.map(({ axisId }) => axisId))
   const firstAxisIndex = state.axes.findIndex((axis) => axisIds.has(axis.id))
   const firstAxis = state.axes[firstAxisIndex]
   if (!firstAxis) return state

@@ -429,7 +429,6 @@ describe("merchant product variation planning", () => {
     }
 
     expect(getProductVariationAlternativeSuggestion(state)).toEqual({
-      axisIds: ["axis-us-size-men-0", "axis-us-size-women-1"],
       axisKey: "US Size",
       groups: [
         {
