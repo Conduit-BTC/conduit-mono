@@ -99,7 +99,7 @@ export async function registerNwcWalletAtomically(input: {
   listWallets(): Promise<WalletDescriptor[]>
   register(): Promise<WalletDescriptor>
   ensureDefault(wallet: WalletDescriptor): Promise<void>
-}): Promise<WalletDescriptor> {
+}): Promise<{ wallet: WalletDescriptor; created: boolean }> {
   const normalizedUri = input.uri.trim()
   if (!normalizedUri) {
     throw new Error("Connected Wallet credential is required.")
@@ -131,7 +131,7 @@ export async function registerNwcWalletAtomically(input: {
       await input.store.deleteNwcCredential(existingWalletId)
     }
     if (existingWallet) {
-      return existingWallet
+      return { wallet: existingWallet, created: false }
     }
 
     const wallet = await input.register()
@@ -144,7 +144,13 @@ export async function registerNwcWalletAtomically(input: {
       throw new Error("Connected Wallet credential verification failed.")
     }
     await input.ensureDefault(wallet)
-    return wallet
+    const verifiedWallet = (await input.listWallets()).find(
+      (candidate) => candidate.id === wallet.id
+    )
+    if (!verifiedWallet) {
+      throw new Error("Connected Wallet descriptor verification failed.")
+    }
+    return { wallet: verifiedWallet, created: true }
   })
 }
 

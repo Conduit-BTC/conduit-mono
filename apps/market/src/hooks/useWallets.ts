@@ -442,7 +442,7 @@ export function useWallets(): UseWalletsReturn {
           info,
           getConfiguredWalletNetwork()
         )
-        const connectedWallet = await registerNwcWalletAtomically({
+        const { wallet: connectedWallet } = await registerNwcWalletAtomically({
           store,
           uri,
           listWallets: () => registry.list(),

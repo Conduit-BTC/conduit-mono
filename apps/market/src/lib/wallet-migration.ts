@@ -9,6 +9,7 @@ import {
   type WalletRegistry,
   type WalletRegistryStore,
 } from "@conduit/core"
+import { registerNwcWalletAtomically } from "./wallet-storage"
 
 const LEGACY_NWC_STORAGE_KEY = "conduit:buyer-wallet-nwc"
 const LEGACY_NWC_CAPABILITY_STORAGE_KEY = "conduit:buyer-wallet-nwc-capability"
@@ -64,64 +65,30 @@ export async function migrateLegacyNwcWallet(input: {
     input.fallbackNetwork
   )
   const capabilities = registration.capabilities
-  const result = await input.credentialStore.transaction(async () => {
-    const existingWalletIds = await input.credentialStore.findWalletIdsByUri(
-      legacy.uri
-    )
-    const registeredWallets = await input.registry.list()
-    let existingWallet: WalletDescriptor | null = null
-    for (const existingWalletId of existingWalletIds) {
-      const registeredWallet = registeredWallets.find(
-        (wallet) => wallet.id === existingWalletId
-      )
-      if (registeredWallet) {
-        if (
-          registeredWallet.kind !== "connected" ||
-          registeredWallet.providerId !== "nwc" ||
-          existingWallet
-        ) {
-          throw new Error("Connected Wallet registration is inconsistent.")
-        }
-        existingWallet = registeredWallet
-        continue
+  const result = await registerNwcWalletAtomically({
+    store: input.credentialStore,
+    uri: legacy.uri,
+    listWallets: () => input.registry.list(),
+    register: () =>
+      input.registry.add({
+        kind: "connected",
+        providerId: "nwc",
+        label: capability?.alias?.trim() || "Connected wallet",
+        network: registration.network,
+        capabilities,
+      }),
+    ensureDefault: async (wallet) => {
+      if (capabilities.includes("pay_invoice")) {
+        await input.registry.setDefault(wallet.id, "pay_invoice")
       }
-
-      // Repair a credential left behind by a partial migration before the
-      // replacement descriptor and credential are committed atomically.
-      await input.credentialStore.deleteNwcCredential(existingWalletId)
-    }
-    if (existingWallet) {
-      return { status: "already_migrated", wallet: existingWallet } as const
-    }
-
-    const wallet = await input.registry.add({
-      kind: "connected",
-      providerId: "nwc",
-      label: capability?.alias?.trim() || "Connected wallet",
-      network: registration.network,
-      capabilities,
-    })
-    await input.credentialStore.putNwcCredential(wallet.id, legacy.uri)
-    const storedUri = await input.credentialStore.getNwcCredential(wallet.id)
-    if (storedUri !== legacy.uri) {
-      throw new Error("NWC credential verification failed.")
-    }
-
-    if (capabilities.includes("pay_invoice")) {
-      await input.registry.setDefault(wallet.id, "pay_invoice")
-    }
-
-    const verifiedWallet = (await input.registry.list()).find(
-      (candidate) => candidate.id === wallet.id
-    )
-    if (!verifiedWallet) {
-      throw new Error("Wallet descriptor verification failed.")
-    }
-    return { status: "migrated", wallet: verifiedWallet } as const
+    },
   })
 
   clearLegacyStorage(input.legacyStorage)
-  return result
+  return {
+    status: result.created ? "migrated" : "already_migrated",
+    wallet: result.wallet,
+  }
 }
 
 function parseLegacyConnection(raw: string): { uri: string } | null {

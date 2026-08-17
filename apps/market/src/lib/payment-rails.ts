@@ -4,9 +4,9 @@ import {
   recordBrowserTelemetryEvent,
   weblnSendPayment,
   type ConduitAppId,
+  type OrderPaymentTarget,
   type WalletPaymentDiagnostic,
   type WalletPaymentFeeApproval,
-  type WalletProviderId,
 } from "@conduit/core"
 import {
   marketWalletPaymentCoordinator,
@@ -21,14 +21,7 @@ export type CheckoutPaymentRail = "wallet" | "webln"
  * A discriminated union makes implicit rail fallback unrepresentable. Callers
  * must return to buyer review before changing this target.
  */
-export type CheckoutPaymentTarget =
-  | {
-      type: "wallet"
-      walletId: string
-      providerId: WalletProviderId
-    }
-  | { type: "webln" }
-  | { type: "manual" }
+export type CheckoutPaymentTarget = OrderPaymentTarget
 
 export type CheckoutInvoicePaymentResult =
   | {

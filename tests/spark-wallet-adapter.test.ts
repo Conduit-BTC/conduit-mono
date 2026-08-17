@@ -946,9 +946,9 @@ describe("SparkWalletManager", () => {
         accountNumber: 0,
       },
     ])
-    const quote = await manager.prepareSparkTransfer("wallet-personal", {
-      address: "spark1recipient",
-      amountSats: 2_100,
+    const quote = await manager.prepareSend("wallet-personal", {
+      destination: { type: "spark_address", address: "spark1recipient" },
+      amount: { type: "exact", amountSats: 2_100 },
     })
     expect(quote).toMatchObject({
       amountSats: 2_100,
@@ -956,10 +956,12 @@ describe("SparkWalletManager", () => {
     })
 
     await expect(
-      manager.confirmSparkTransfer("wallet-personal", quote.id)
+      manager.confirmSend("wallet-personal", quote.id)
     ).resolves.toEqual({
       status: "sent",
+      method: "spark",
       paymentId: "spark-payment",
+      amountSats: 2_100,
       feeSats: 2,
     })
 
@@ -969,7 +971,7 @@ describe("SparkWalletManager", () => {
         optionsType: "bolt11Invoice",
       },
       {
-        idempotencyKey: quote.attemptId,
+        idempotencyKey: expect.any(String),
         optionsType: "sparkAddress",
       },
     ])
@@ -1012,9 +1014,9 @@ describe("SparkWalletManager", () => {
     })
 
     await expect(
-      manager.prepareSparkTransfer("wallet-personal", {
-        address: "spark1recipient",
-        amountSats: 2_100,
+      manager.prepareSend("wallet-personal", {
+        destination: { type: "spark_address", address: "spark1recipient" },
+        amount: { type: "exact", amountSats: 2_100 },
       })
     ).rejects.toThrow("Spark prepared a different transfer amount.")
     expect(sendCalls).toBe(0)
@@ -1070,14 +1072,14 @@ describe("SparkWalletManager", () => {
       mnemonic: "abandon ".repeat(11) + "about",
       accountNumber: 0,
     })
-    const quote = await firstManager.prepareSparkTransfer("wallet-personal", {
-      address: "spark1recipient",
-      amountSats: 2_100,
+    const quote = await firstManager.prepareSend("wallet-personal", {
+      destination: { type: "spark_address", address: "spark1recipient" },
+      amount: { type: "exact", amountSats: 2_100 },
     })
 
     const [firstResult, duplicateResult] = await Promise.all([
-      firstManager.confirmSparkTransfer("wallet-personal", quote.id),
-      firstManager.confirmSparkTransfer("wallet-personal", quote.id),
+      firstManager.confirmSend("wallet-personal", quote.id),
+      firstManager.confirmSend("wallet-personal", quote.id),
     ])
 
     expect(firstResult).toEqual({
@@ -1087,10 +1089,8 @@ describe("SparkWalletManager", () => {
     })
     expect(duplicateResult).toEqual(firstResult)
     expect(sendCalls).toBe(1)
-    firstManager.discardSparkTransferQuote("wallet-personal", quote.id)
-    expect(firstManager.hasUnresolvedSparkTransfer("wallet-personal")).toBe(
-      true
-    )
+    firstManager.discardSendQuote("wallet-personal", quote.id)
+    expect(firstManager.hasUnresolvedSend("wallet-personal")).toBe(true)
 
     await firstManager.close("wallet-personal")
     const regtestManager = createManager("regtest")
@@ -1099,20 +1099,18 @@ describe("SparkWalletManager", () => {
       mnemonic: "abandon ".repeat(11) + "about",
       accountNumber: 0,
     })
-    expect(
-      regtestManager.hasUnresolvedSparkTransfer("wallet-restored-on-regtest")
-    ).toBe(false)
-    regtestManager.acknowledgeUnresolvedSparkTransfer(
-      "wallet-restored-on-regtest"
+    expect(regtestManager.hasUnresolvedSend("wallet-restored-on-regtest")).toBe(
+      false
     )
-    const regtestQuote = await regtestManager.prepareSparkTransfer(
+    regtestManager.acknowledgeUnresolvedSend("wallet-restored-on-regtest")
+    const regtestQuote = await regtestManager.prepareSend(
       "wallet-restored-on-regtest",
       {
-        address: "spark1recipient",
-        amountSats: 2_100,
+        destination: { type: "spark_address", address: "spark1recipient" },
+        amount: { type: "exact", amountSats: 2_100 },
       }
     )
-    regtestManager.discardSparkTransferQuote(
+    regtestManager.discardSendQuote(
       "wallet-restored-on-regtest",
       regtestQuote.id
     )
@@ -1125,31 +1123,25 @@ describe("SparkWalletManager", () => {
       accountNumber: 0,
     })
     await expect(
-      reloadedManager.prepareSparkTransfer(
-        "wallet-restored-with-new-registration-id",
-        {
-          address: "spark1recipient",
-          amountSats: 2_100,
-        }
-      )
+      reloadedManager.prepareSend("wallet-restored-with-new-registration-id", {
+        destination: { type: "spark_address", address: "spark1recipient" },
+        amount: { type: "exact", amountSats: 2_100 },
+      })
     ).rejects.toThrow("A previous Spark payment is unresolved.")
 
-    reloadedManager.acknowledgeUnresolvedSparkTransfer(
+    reloadedManager.acknowledgeUnresolvedSend(
       "wallet-restored-with-new-registration-id"
     )
     expect(
-      reloadedManager.hasUnresolvedSparkTransfer(
+      reloadedManager.hasUnresolvedSend(
         "wallet-restored-with-new-registration-id"
       )
     ).toBe(false)
     await expect(
-      reloadedManager.prepareSparkTransfer(
-        "wallet-restored-with-new-registration-id",
-        {
-          address: "spark1recipient",
-          amountSats: 2_100,
-        }
-      )
+      reloadedManager.prepareSend("wallet-restored-with-new-registration-id", {
+        destination: { type: "spark_address", address: "spark1recipient" },
+        amount: { type: "exact", amountSats: 2_100 },
+      })
     ).resolves.toMatchObject({ amountSats: 2_100, feeSats: 2 })
     expect(sendCalls).toBe(1)
   })

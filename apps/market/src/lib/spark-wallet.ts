@@ -146,24 +146,6 @@ export type SparkPayInvoiceResult =
       reason: string
     }
 
-export interface SparkDirectTransferQuote {
-  id: string
-  attemptId: string
-  amountSats: number
-  feeSats: number
-}
-
-export type SparkDirectTransferResult =
-  | {
-      status: "sent"
-      paymentId: string
-      feeSats: number
-    }
-  | {
-      status: "failed" | "ambiguous"
-      reason: string
-    }
-
 export type SparkSendRequest =
   | {
       destination: {
@@ -811,52 +793,6 @@ export class SparkWalletManager {
         )} Check wallet history before trying again.`,
       }
     }
-  }
-
-  async prepareSparkTransfer(
-    walletId: string,
-    input: { address: string; amountSats: number }
-  ): Promise<SparkDirectTransferQuote> {
-    const quote = await this.prepareSend(walletId, {
-      destination: { type: "spark_address", address: input.address },
-      amount: { type: "exact", amountSats: input.amountSats },
-    })
-    const preparedQuote = this.#sendQuotes.get(quote.id)
-    if (!preparedQuote) {
-      throw new Error("This Spark transfer quote is no longer available.")
-    }
-    return {
-      id: quote.id,
-      attemptId: preparedQuote.attemptId,
-      amountSats: quote.amountSats,
-      feeSats: quote.feeSats,
-    }
-  }
-
-  async confirmSparkTransfer(
-    walletId: string,
-    quoteId: string
-  ): Promise<SparkDirectTransferResult> {
-    const result = await this.confirmSend(walletId, quoteId)
-    return result.status === "sent"
-      ? {
-          status: "sent",
-          paymentId: result.paymentId,
-          feeSats: result.feeSats,
-        }
-      : result
-  }
-
-  hasUnresolvedSparkTransfer(walletId: string): boolean {
-    return this.hasUnresolvedSend(walletId)
-  }
-
-  acknowledgeUnresolvedSparkTransfer(walletId: string): void {
-    this.acknowledgeUnresolvedSend(walletId)
-  }
-
-  discardSparkTransferQuote(walletId: string, quoteId: string): void {
-    this.discardSendQuote(walletId, quoteId)
   }
 
   #clearSendSafety(safetyScope: string, attemptId: string): void {

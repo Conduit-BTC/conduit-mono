@@ -726,15 +726,15 @@ describe("first-party Spark SDK adapter", () => {
     })
 
     await expect(
-      manager.prepareSparkTransfer("wallet-personal", {
-        address: "spark1invoice",
-        amountSats: 2_100,
+      manager.prepareSend("wallet-personal", {
+        destination: { type: "spark_address", address: "spark1invoice" },
+        amount: { type: "exact", amountSats: 2_100 },
       })
     ).rejects.toThrow(
       "Spark invoices are not supported for direct transfers. Use a plain Spark address."
     )
     expect(transferCalls).toBe(0)
-    expect(manager.hasUnresolvedSparkTransfer("wallet-personal")).toBe(false)
+    expect(manager.hasUnresolvedSend("wallet-personal")).toBe(false)
   })
 
   it("keeps a nonterminal direct Spark transfer pending without sending twice", async () => {

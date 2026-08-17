@@ -726,7 +726,7 @@ describe("legacy NWC wallet migration", () => {
         credentialStore: store,
         fallbackNetwork: "mainnet",
       })
-    ).rejects.toThrow("NWC credential verification failed.")
+    ).rejects.toThrow("Connected Wallet credential verification failed.")
 
     expect(await registry.list()).toEqual([])
     expect(await store.findWalletIdsByUri(VALID_NWC_URI)).toEqual([])

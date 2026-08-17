@@ -13,14 +13,7 @@ export function getCheckoutOrderPaymentTarget(input: {
   isGuest: boolean
 }): OrderPaymentTarget {
   if (input.isGuest || !input.canAutoPay) return { type: "manual" }
-  if (input.selectedTarget.type === "wallet") {
-    return {
-      type: "wallet",
-      walletId: input.selectedTarget.walletId,
-      providerId: input.selectedTarget.providerId,
-    }
-  }
-  return { type: input.selectedTarget.type }
+  return input.selectedTarget
 }
 
 function getPreferredWallet(

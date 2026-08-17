@@ -20,7 +20,6 @@ import {
   validateLightningInvoiceForPayment,
   waitForZapReceipt,
   type OrderLifecycle,
-  type OrderPaymentTarget,
   type SignedPublicNostrEvent,
   type WalletPaymentFeeApproval,
 } from "@conduit/core"
@@ -342,19 +341,6 @@ const inFlight = new Set<string>()
 const privateFallbackTransitions = new Set<string>()
 const receiptObservers = new Set<string>()
 const receiptRescanTimers = new Map<string, ReturnType<typeof setTimeout>>()
-
-export function getStoredOrderPaymentTarget(
-  target: CheckoutPaymentTarget
-): OrderPaymentTarget {
-  if (target.type === "wallet") {
-    return {
-      type: "wallet",
-      walletId: target.walletId,
-      providerId: target.providerId,
-    }
-  }
-  return { type: target.type }
-}
 
 export function canSubmitExternalPaymentReport(
   lifecycle: OrderLifecycle | null | undefined
@@ -690,7 +676,7 @@ export async function runOrderPayment(
       totalSats: ctx.totalSats,
       totalMsats: ctx.totalMsats,
       items: ctx.items,
-      paymentTarget: getStoredOrderPaymentTarget(ctx.paymentTarget),
+      paymentTarget: ctx.paymentTarget,
     })
     if (claim.status !== "claimed") {
       const message =

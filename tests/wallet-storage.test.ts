@@ -255,7 +255,7 @@ describe("NWC wallet credential storage", () => {
     let registerCalls = 0
     let defaultCalls = 0
 
-    const wallet = await registerNwcWalletAtomically({
+    const result = await registerNwcWalletAtomically({
       store: state.store,
       uri: `  ${NWC_URI}  `,
       listWallets: async () => [...state.wallets.values()],
@@ -268,7 +268,7 @@ describe("NWC wallet credential storage", () => {
       },
     })
 
-    expect(wallet).toEqual(existingWallet)
+    expect(result).toEqual({ wallet: existingWallet, created: false })
     expect(registerCalls).toBe(0)
     expect(defaultCalls).toBe(0)
     expect([...state.wallets.values()]).toEqual([existingWallet])
@@ -281,7 +281,7 @@ describe("NWC wallet credential storage", () => {
     state.credentials.set(NWC_WALLET.id, LEGACY_NWC_URI)
     let registerCalls = 0
 
-    const wallet = await registerNwcWalletAtomically({
+    const result = await registerNwcWalletAtomically({
       store: state.store,
       uri: NWC_URI,
       listWallets: async () => [...state.wallets.values()],
@@ -292,7 +292,7 @@ describe("NWC wallet credential storage", () => {
       ensureDefault: async () => undefined,
     })
 
-    expect(wallet).toEqual(NWC_WALLET)
+    expect(result).toEqual({ wallet: NWC_WALLET, created: false })
     expect(registerCalls).toBe(0)
     expect([...state.wallets.values()]).toEqual([NWC_WALLET])
   })
@@ -326,8 +326,11 @@ describe("NWC wallet credential storage", () => {
       connect(LEGACY_NWC_URI),
     ])
 
-    expect(first.id).toBe("nwc-wallet-1")
-    expect(second.id).toBe(first.id)
+    expect(first).toEqual({
+      wallet: expect.objectContaining({ id: "nwc-wallet-1" }),
+      created: true,
+    })
+    expect(second).toEqual({ wallet: first.wallet, created: false })
     expect(registerCalls).toBe(1)
     expect(defaultCalls).toBe(1)
     expect([...state.wallets.values()]).toHaveLength(1)
@@ -340,7 +343,7 @@ describe("NWC wallet credential storage", () => {
     const state = createTransactionalNwcWalletState()
     state.credentials.set("missing-wallet", NWC_URI)
 
-    const wallet = await registerNwcWalletAtomically({
+    const result = await registerNwcWalletAtomically({
       store: state.store,
       uri: NWC_URI,
       listWallets: async () => [...state.wallets.values()],
@@ -351,7 +354,7 @@ describe("NWC wallet credential storage", () => {
       ensureDefault: async () => undefined,
     })
 
-    expect(wallet).toEqual(NWC_WALLET)
+    expect(result).toEqual({ wallet: NWC_WALLET, created: true })
     expect(state.credentials.has("missing-wallet")).toBeFalse()
     expect(state.credentials.get(NWC_WALLET.id)).toBe(NWC_URI)
   })
@@ -363,7 +366,7 @@ describe("NWC wallet credential storage", () => {
     state.credentials.set("missing-wallet", NWC_URI)
     let registerCalls = 0
 
-    const wallet = await registerNwcWalletAtomically({
+    const result = await registerNwcWalletAtomically({
       store: state.store,
       uri: NWC_URI,
       listWallets: async () => [...state.wallets.values()],
@@ -374,7 +377,7 @@ describe("NWC wallet credential storage", () => {
       ensureDefault: async () => undefined,
     })
 
-    expect(wallet).toEqual(NWC_WALLET)
+    expect(result).toEqual({ wallet: NWC_WALLET, created: false })
     expect(registerCalls).toBe(0)
     expect([...state.wallets.values()]).toEqual([NWC_WALLET])
     expect([...state.credentials.entries()]).toEqual([[NWC_WALLET.id, NWC_URI]])
@@ -390,7 +393,7 @@ describe("NWC wallet credential storage", () => {
       label: "Blink",
     }
 
-    const wallet = await registerNwcWalletAtomically({
+    const result = await registerNwcWalletAtomically({
       store: state.store,
       uri: NEXT_NWC_URI,
       listWallets: async () => [...state.wallets.values()],
@@ -401,7 +404,7 @@ describe("NWC wallet credential storage", () => {
       ensureDefault: async () => undefined,
     })
 
-    expect(wallet).toEqual(nextWallet)
+    expect(result).toEqual({ wallet: nextWallet, created: true })
     expect([...state.wallets.values()]).toHaveLength(2)
     expect(state.credentials.get(nextWallet.id)).toBe(NEXT_NWC_URI)
   })
@@ -422,6 +425,30 @@ describe("NWC wallet credential storage", () => {
         ensureDefault: async () => undefined,
       })
     ).rejects.toThrow("Connected Wallet credential verification failed.")
+
+    expect([...state.wallets.values()]).toEqual([])
+    expect([...state.credentials.values()]).toEqual([])
+  })
+
+  it("rolls back a new credential when descriptor readback fails", async () => {
+    const state = createTransactionalNwcWalletState()
+    let listCalls = 0
+
+    await expect(
+      registerNwcWalletAtomically({
+        store: state.store,
+        uri: NWC_URI,
+        listWallets: async () => {
+          listCalls += 1
+          return listCalls === 1 ? [...state.wallets.values()] : []
+        },
+        register: async () => {
+          state.wallets.set(NWC_WALLET.id, NWC_WALLET)
+          return NWC_WALLET
+        },
+        ensureDefault: async () => undefined,
+      })
+    ).rejects.toThrow("Connected Wallet descriptor verification failed.")
 
     expect([...state.wallets.values()]).toEqual([])
     expect([...state.credentials.values()]).toEqual([])
