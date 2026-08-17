@@ -26,15 +26,16 @@ validated kind-16 order-lifecycle traffic during migration. It is not
 NIP-17-conformant routing and must not be presented as an extension of NIP-17.
 NIP-44/NIP-59 encrypted gift wraps are preserved end to end.
 
-| State                                           | Reads                                                              | Writes                                  |
-| ----------------------------------------------- | ------------------------------------------------------------------ | --------------------------------------- |
-| Valid kind 10050                                | Declared inboxes + local secure IN + bounded compatibility overlap | Declared inboxes only                   |
-| No usable declaration, validated kind 16 order  | Local secure IN + configured compatibility relays                  | Bounded compatibility order plan        |
-| Discovery unavailable, valid cached declaration | Cached declared inboxes + compatibility reads                      | Cached declared inboxes                 |
-| Valid signed empty declaration observed         | Preserve cached reads; show explicit no-inbox state                | Block; do not override signed state     |
-| Malformed declaration observed                  | Preserve cached reads; show repair and ambiguity                   | Currently blocked pending safety review |
-| General kind 14 DM without declaration          | Permissive own-inbox reads; sends stay blocked                     | Block                                   |
-| Guest checkout                                  | Merchant order leg may use compatibility                           | No guest inbox/self-copy/reply promise  |
+| State                                               | Reads                                                              | Writes                                  |
+| --------------------------------------------------- | ------------------------------------------------------------------ | --------------------------------------- |
+| Valid kind 10050                                    | Declared inboxes + local secure IN + bounded compatibility overlap | Declared inboxes only                   |
+| No usable declaration, validated kind 16 order      | Local secure IN + configured compatibility relays                  | Bounded compatibility order plan        |
+| Discovery unavailable, valid cached declaration     | Cached declared inboxes + compatibility reads                      | Cached declared inboxes                 |
+| Valid signed empty declaration observed             | Preserve cached reads; show explicit no-inbox state                | Block; do not override signed state     |
+| Malformed declaration observed                      | Preserve cached reads; show repair and ambiguity                   | Currently blocked pending safety review |
+| General kind 14 DM without declaration              | Permissive own-inbox reads; sends stay blocked                     | Block                                   |
+| Guest checkout                                      | Merchant order leg may use compatibility                           | No guest inbox/self-copy/reply promise  |
+| Guest or partial-identity merchant lifecycle record | Merchant inbox reads + configured compatibility relays             | Encrypted merchant self-record only     |
 
 Invariants:
 
@@ -46,8 +47,11 @@ Invariants:
   `not_declared` for route selection. This is scoped observation, not proof of
   global Nostr absence. Relay omission must not be described as a signed opt-out
   or revocation.
-- The compatibility lane is recipient-only: the non-critical sender self-copy leg
-  stays strict and fails soft when the sender has no usable declaration.
+- The compatibility lane is recipient-only. For buyer-addressed order traffic,
+  the non-critical sender self-copy leg stays strict and fails soft when the
+  sender has no usable declaration. For a guest or partial-identity lifecycle
+  action, the critical recipient is the merchant sender; this is an encrypted
+  merchant self-record and does not imply a guest inbox, reply, or notification.
 - Gift-wrap reads are permissive at the transport layer (inner kinds are not
   separable before decryption); the kind-14 strictness applies to delivery
   writes only. DM surfaces display received messages permissively and gate
@@ -63,7 +67,14 @@ Invariants:
   hints, wrapper sources, commerce-priority, and other public relays are
   explicitly ineligible.
 - Compatibility requires a one-use validated kind-16 order scope bound to the
-  rumor id, order id, sender, and recipient; kind 14 stays strict-only.
+  rumor id, order id, sender, and recipient; kind 14 stays strict-only. A
+  merchant self-record uses a separate one-use scope that additionally binds
+  a revalidated inbound order anchor, the buyer counterparty, supported
+  lifecycle type, content identities, and an immutable rumor fingerprint. Its
+  inner `p` tag remains the buyer so the order projection is unchanged while
+  the encrypted outer recipient is the merchant. An arbitrary caller-supplied
+  buyer/order tuple or a partial history without the inbound order cannot mint
+  this scope.
 - The same signed recipient wrap is attempted on the whole plan. Relay ACK is
   relay acceptance, not recipient receipt/read. At least one ACK is successful
   delivery; failed targets remain content-free retry state. Zero ACKs is an
@@ -73,6 +84,36 @@ Invariants:
   truncation instead of allowing an unbounded recipient-controlled fanout.
 - No automatic signer prompt; no NIP-04 sending.
 - Diagnostics and telemetry stay identifier-free and content-free.
+
+### Bounded merchant history reads
+
+Recent conversation surfaces read one page of up to 400 gift wraps. Merchant
+order priority and queue reads may walk at most four pages and 1,600 unique
+wraps so older actionable orders are considered before the 200-conversation
+display limit.
+
+Pagination uses the encrypted outer wrap's NIP-01 `until` coordinate. NIP-59
+deliberately randomizes that timestamp, so a decrypted rumor or cache-row time
+is not a safe pagination cursor. Because `until` is inclusive, a saturated
+same-second page is retried at the same timestamp and stops as
+`cursor_stalled` if it yields no unseen ids; subtracting a second could skip
+valid wraps.
+
+`meta.inbox.historyCoverage` reports temporal depth independently from relay
+coverage: `recent_only`, `complete_within_scope`, `bounded`,
+`cursor_stalled`, or `interrupted`. Priority results are degraded for the last
+three states, and Merchant must tell the operator that older orders may be
+missing instead of presenting the ranking as exhaustive.
+
+After a deep read, a process-local, relay-plan-bound checkpoint lets the
+30-second order poll use one page when every saturated relay still overlaps its
+previous page. Because NIP-59 backdating can insert a newly received wrap
+behind that page, overlap is only short-lived continuity evidence: saturated
+histories are rescanned at least every five minutes, and an unbridged page or
+changed relay plan triggers an immediate deep read. The checkpoint is not
+durable; a reload safely repeats the bounded scan. A persisted outer-wrap
+frontier is a follow-up and cannot be reconstructed from decrypted rumor
+timestamps.
 
 ## Known doctrine gaps in the preview implementation
 
@@ -103,7 +144,9 @@ or unvalidated sender/recipient relationships.
 - Typed routing model, declaration cache, read planning, route selection:
   `packages/core/src/protocol/private-message-routing.ts`
 - Send-side gating and lane provenance: `packages/core/src/protocol/messaging.ts`
-  (`publishPrivateMessage`, `ValidatedOrderRouteScope`, `deliveryRoute`)
+  (`publishPrivateMessage`, `ValidatedInboundOrderLifecycleAnchor`,
+  `ValidatedOrderRouteScope`,
+  `ValidatedOrderSelfRecordRouteScope`, `deliveryRoute`)
 - Permissive inbox reads with coverage/source meta:
   `packages/core/src/protocol/commerce.ts` (`meta.inbox`)
 - Network-owned readiness/repair: `packages/core/src/hooks/useInboxDeclaration.ts`,

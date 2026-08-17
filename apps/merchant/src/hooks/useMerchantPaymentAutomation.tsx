@@ -181,6 +181,7 @@ export function MerchantPaymentAutomationProvider({
           type: "status_update",
           tags: [["status", "paid"]],
           payload: { status: "paid" },
+          inboundOrder: match.candidate.inboundOrder,
           delivery: match.candidate.delivery,
         })
         verified += 1

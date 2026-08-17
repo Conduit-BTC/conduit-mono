@@ -30,6 +30,37 @@ describe("order conversation status presentation", () => {
     )
   })
 
+  it("does not describe an unverified external payment report as proof", () => {
+    const report = {
+      id: "payment-report",
+      orderId: "order-1",
+      type: "payment_proof",
+      createdAt: 1,
+      senderPubkey: "buyer",
+      recipientPubkey: "merchant",
+      rawContent: "",
+      payload: {
+        action: "external_invoice",
+        source: "external",
+        invoice: "lnbc1reported",
+        verification: {
+          state: "needs_merchant_verification",
+          checks: [],
+        },
+      },
+    } as ParsedOrderMessage
+
+    expect(getConversationPreview(report)).toBe("Payment reported")
+    const html = renderToStaticMarkup(
+      createElement(OrderConversationMessage, {
+        message: report,
+        mine: false,
+      })
+    )
+    expect(html).toContain("Payment reported — verify settlement")
+    expect(html).not.toContain("Lightning payment sent")
+  })
+
   it("uses the shopper amount formatter for previews and order details", () => {
     const message = {
       id: "order-message",
