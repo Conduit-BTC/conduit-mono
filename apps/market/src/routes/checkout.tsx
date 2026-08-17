@@ -23,7 +23,6 @@ import {
   getPriceSats,
   getTelemetryAmountBucket,
   getTelemetryCountBucket,
-  getZapNoteMaxCodePoints,
   hasWebLN,
   getNdk,
   getShippingOptions,
@@ -32,6 +31,7 @@ import {
   pubkeyToNpub,
   recordBrowserTelemetryEvent,
   validateAddressConsistency,
+  ZAP_NOTE_MAX_CODE_POINTS,
   useAuth,
   useProfile,
   type AddressValidityResult,
@@ -795,15 +795,7 @@ function CheckoutPage() {
       zapContentEdited,
     ]
   )
-  const zapNoteMaxCodePoints = useMemo(() => {
-    try {
-      return getZapNoteMaxCodePoints(zapTargetCandidateAddress)
-    } catch {
-      // A malformed legacy coordinate is rejected before order publication.
-      // Keep the form usable so checkout can surface that bounded error.
-      return getZapNoteMaxCodePoints()
-    }
-  }, [zapTargetCandidateAddress])
+  const zapNoteMaxCodePoints = ZAP_NOTE_MAX_CODE_POINTS
   const zapNoteCodePointCount = countZapContentCodePoints(zapContent)
   const shopperZapContentEditable =
     publicZapPolicy.effectiveZapMessagePolicy === "custom"

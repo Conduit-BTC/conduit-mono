@@ -148,7 +148,6 @@ describe("parseOmfZapoutReceipt", () => {
       senderPubkey: SENDER_PUBKEY,
       recipientPubkey: RECIPIENT_PUBKEY,
       amountMsats: 42_000,
-      zapRequestContent: "Paid publicly\nfrom checkout.",
       note: "Paid publicly\nfrom checkout.",
       comment: "Paid publicly from checkout.",
       productAddress: null,
@@ -185,7 +184,6 @@ describe("parseOmfZapoutReceipt", () => {
 
     expect(receipt.content).toBe("")
     expect(parseOmfZapoutReceipt(receipt as ZapReceiptInput)).toMatchObject({
-      zapRequestContent: content,
       note: "sick shirt 🔥",
       comment: "sick shirt 🔥",
       productAddress: PRODUCT_ADDRESS,
@@ -200,7 +198,6 @@ describe("parseOmfZapoutReceipt", () => {
     })
 
     expect(parseOmfZapoutReceipt(receipt as ZapReceiptInput)).toMatchObject({
-      zapRequestContent: "Paid publicly\nfrom checkout.",
       note: "Paid publicly\nfrom checkout.",
       comment: "Paid publicly from checkout.",
     })
@@ -314,7 +311,6 @@ describe("parseOmfZapoutReceipt", () => {
     const parsed = parseOmfZapoutReceipt(receipt as ZapReceiptInput)
 
     expect(parsed).not.toBeNull()
-    expect(parsed?.zapRequestContent).toBe(content)
     expect(parsed?.note).toBe(content)
     expect(parsed?.productAddress).toBeNull()
     expect(parsed?.productNaddr).toBeNull()
@@ -363,7 +359,6 @@ describe("parseOmfZapoutReceipt", () => {
       zapReceipt(JSON.stringify(request)) as ZapReceiptInput
     )
 
-    expect(parsed?.zapRequestContent).toBe(content)
     expect(parsed?.note).toBe("🔥".repeat(280))
     expect(parsed?.comment).toBe("🔥".repeat(280))
   })

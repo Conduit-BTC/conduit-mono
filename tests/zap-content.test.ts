@@ -6,7 +6,6 @@ import {
   buildZapRequestContent,
   countZapContentCodePoints,
   getProductZapNaddr,
-  getZapNoteMaxCodePoints,
   parseZapRequestContent,
   truncateZapNoteInput,
   validateAnonZapRequestDraft,
@@ -88,16 +87,14 @@ describe("product zap request content", () => {
   })
 
   it("preserves the complete note budget alongside the product suffix", () => {
-    const maxNoteCodePoints = getZapNoteMaxCodePoints(PRODUCT_ADDRESS)
     const content = buildZapRequestContent({
-      note: `${"a".repeat(maxNoteCodePoints)}b`,
+      note: `${"a".repeat(ZAP_NOTE_MAX_CODE_POINTS)}b`,
       productAddress: PRODUCT_ADDRESS,
     })
     const parsed = parseZapRequestContent(content, PRODUCT_ADDRESS)
 
-    expect(parsed.note).toBe("a".repeat(maxNoteCodePoints))
+    expect(parsed.note).toBe("a".repeat(ZAP_NOTE_MAX_CODE_POINTS))
     expect(parsed.productAddress).toBe(CANONICAL_PRODUCT_ADDRESS)
-    expect(maxNoteCodePoints).toBe(ZAP_NOTE_MAX_CODE_POINTS)
     expect(countZapContentCodePoints(content)).toBeGreaterThan(
       ZAP_NOTE_MAX_CODE_POINTS
     )
@@ -181,9 +178,6 @@ describe("product zap request content", () => {
       })
       const parsed = parseZapRequestContent(content, productAddress)
 
-      expect(getZapNoteMaxCodePoints(productAddress)).toBe(
-        ZAP_NOTE_MAX_CODE_POINTS
-      )
       expect(parsed.note).toBe("n".repeat(ZAP_NOTE_MAX_CODE_POINTS))
       expect(parsed.productAddress).toBe(productAddress.toLowerCase())
       expect(countZapContentCodePoints(content)).toBeLessThanOrEqual(

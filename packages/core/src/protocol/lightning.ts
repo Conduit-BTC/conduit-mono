@@ -281,7 +281,6 @@ export interface OmfZapoutReceipt {
   senderPubkey: string | null
   recipientPubkey: string | null
   amountMsats: number | null
-  zapRequestContent: string
   note: string | null
   comment: string | null
   productAddress: string | null
@@ -1245,7 +1244,6 @@ export function parseOmfZapoutReceipt(
     senderPubkey,
     recipientPubkey: requestRecipientPubkey,
     amountMsats: requestAmountMsats,
-    zapRequestContent: signedRequest.content,
     note,
     comment: note ? getPublicZapComment(note) : null,
     productAddress: parsedContent.productAddress,

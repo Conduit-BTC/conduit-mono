@@ -1,6 +1,7 @@
 import { nip19 } from "nostr-tools"
 
 import { EVENT_KINDS } from "./kinds"
+import { parseProductAddressCoordinate } from "./product-deletion"
 
 /** Shopper-authored note budget; preserves the existing public-comment limit. */
 export const ZAP_NOTE_MAX_CODE_POINTS = 280
@@ -14,7 +15,6 @@ export const ZAP_REQUEST_CONTENT_MAX_CODE_POINTS = 1_024
 const PRODUCT_ZAP_CONTENT_SEPARATOR = "\n\n"
 const NOSTR_URI_PREFIX = "nostr:"
 const MAX_NIP19_TLV_VALUE_BYTES = 255
-const HEX_64 = /^[0-9a-f]{64}$/i
 
 export type ParsedZapRequestContent = Readonly<{
   note: string
@@ -46,28 +46,20 @@ function hasInvalidProductIdentifierCodePoint(identifier: string): boolean {
 function parseProductZapAddress(
   productAddress: string
 ): ProductZapAddress | null {
-  const kindSeparator = productAddress.indexOf(":")
-  const pubkeySeparator = productAddress.indexOf(":", kindSeparator + 1)
-  if (kindSeparator < 1 || pubkeySeparator < 0) return null
-
-  const kind = productAddress.slice(0, kindSeparator)
-  const pubkey = productAddress.slice(kindSeparator + 1, pubkeySeparator)
-  const identifier = productAddress.slice(pubkeySeparator + 1)
+  const coordinate = parseProductAddressCoordinate(productAddress)
   if (
-    kind !== String(EVENT_KINDS.PRODUCT) ||
-    !HEX_64.test(pubkey) ||
-    identifier.length === 0 ||
-    hasInvalidProductIdentifierCodePoint(identifier) ||
-    new TextEncoder().encode(identifier).byteLength > MAX_NIP19_TLV_VALUE_BYTES
+    !coordinate ||
+    hasInvalidProductIdentifierCodePoint(coordinate.dTag) ||
+    new TextEncoder().encode(coordinate.dTag).byteLength >
+      MAX_NIP19_TLV_VALUE_BYTES
   ) {
     return null
   }
 
-  const normalizedPubkey = pubkey.toLowerCase()
   return {
-    pubkey: normalizedPubkey,
-    identifier,
-    address: `${EVENT_KINDS.PRODUCT}:${normalizedPubkey}:${identifier}`,
+    pubkey: coordinate.authorPubkey,
+    identifier: coordinate.dTag,
+    address: coordinate.addressId,
   }
 }
 
@@ -166,28 +158,6 @@ function parseProductNaddrWithoutCanonicalization(
   }
 }
 
-export function getZapNoteMaxCodePoints(
-  productAddress?: string | null
-): number {
-  if (!productAddress) return ZAP_NOTE_MAX_CODE_POINTS
-
-  const suffix = getProductZapSuffix(productAddress)
-  const suffixCodePoints = countZapContentCodePoints(suffix)
-  if (suffixCodePoints > ZAP_REQUEST_CONTENT_MAX_CODE_POINTS) {
-    throw new Error("Product zap reference exceeds the zap content limit.")
-  }
-
-  return Math.max(
-    0,
-    Math.min(
-      ZAP_NOTE_MAX_CODE_POINTS,
-      ZAP_REQUEST_CONTENT_MAX_CODE_POINTS -
-        suffixCodePoints -
-        countZapContentCodePoints(PRODUCT_ZAP_CONTENT_SEPARATOR)
-    )
-  )
-}
-
 export function parseZapRequestContent(
   content: string,
   expectedProductAddress?: string | null
@@ -261,10 +231,7 @@ export function buildZapRequestContent(input: {
   const productAddress = requireProductZapAddress(input.productAddress).address
   const parsedInput = parseZapRequestContent(input.note ?? "", productAddress)
   const noteInput = parsedInput.productAddress ? parsedInput.note : input.note
-  const note = truncateZapNoteInput(
-    noteInput,
-    getZapNoteMaxCodePoints(productAddress)
-  )
+  const note = truncateZapNoteInput(noteInput, ZAP_NOTE_MAX_CODE_POINTS)
   const suffix = getProductZapSuffix(productAddress)
   const content = note
     ? `${note}${PRODUCT_ZAP_CONTENT_SEPARATOR}${suffix}`
