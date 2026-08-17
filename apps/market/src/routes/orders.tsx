@@ -712,12 +712,14 @@ function OrderDetail({
   const [retryTarget, setRetryTarget] = useState<OrderPaymentTarget | null>(
     persistedRetryTarget
   )
+  const persistedRetryTargetRef = useRef(persistedRetryTarget)
+  persistedRetryTargetRef.current = persistedRetryTarget
   const sparkFeeApproval = useSparkFeeApproval()
   const queryClient = useQueryClient()
 
   useEffect(() => {
-    setRetryTarget(row.lifecycle?.paymentTarget ?? null)
-  }, [persistedRetryTargetValue, row.lifecycle?.paymentTarget, vm.orderId])
+    setRetryTarget(persistedRetryTargetRef.current)
+  }, [persistedRetryTargetValue, vm.orderId])
 
   const productsQuery = useQuery({
     queryKey: ["selected-order-products", row.merchantPubkey],
