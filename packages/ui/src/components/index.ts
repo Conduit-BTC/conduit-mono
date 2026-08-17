@@ -66,8 +66,10 @@ export {
 } from "./FreshnessChip"
 export {
   MessagingReadinessNotice,
+  toMessagingReadinessNoticeState,
   type MessagingReadinessNoticeProps,
   type MessagingReadinessState,
+  type MessagingReadinessStatus,
 } from "./MessagingReadinessNotice"
 export { Label } from "./Label"
 export {

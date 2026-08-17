@@ -128,6 +128,36 @@ export interface RelayPlanOptions {
   includePublicFallback?: boolean
 }
 
+export type InboxRelayInfoProbeStatus = "succeeded" | "failed" | "unknown"
+export type InboxRelayProtectedMessageCapabilityEvidence =
+  "advertised" | "known" | "unknown"
+export type InboxRelayProtectedMessageRuntimeEvidence =
+  "probe_passed" | "probe_failed" | "unknown"
+
+/**
+ * Evidence presented when choosing relays for a signed kind-10050 inbox list.
+ *
+ * These fields intentionally stay independent. A successful relay-info fetch,
+ * advertised NIP-59 support, and a protected-message observation are useful
+ * evidence, but none proves that a recipient picked up a message.
+ */
+export interface InboxRelayCandidate {
+  url: string
+  /** The relay exists in the local relay-settings list. */
+  configured: boolean
+  /** The local IN preference is enabled, independent of reachability. */
+  enabled: boolean
+  /** The relay is present in the currently resolved signed declaration. */
+  declared: boolean
+  /** The relay comes only from the retained last-usable declaration. */
+  retained: boolean
+  /** The checkbox may be selected for the next declaration publish. */
+  selectable: boolean
+  relayInfoProbe: InboxRelayInfoProbeStatus
+  protectedMessageCapabilityEvidence: InboxRelayProtectedMessageCapabilityEvidence
+  protectedMessageRuntimeEvidence: InboxRelayProtectedMessageRuntimeEvidence
+}
+
 export const RELAY_SETTINGS_STORAGE_VERSION = 1
 export const RELAY_SETTINGS_STORAGE_KEY = "conduit:relay-settings:v1"
 export const RELAY_SCAN_STALE_MS = 7 * 24 * 60 * 60 * 1_000
@@ -493,6 +523,25 @@ export function tryNormalizeRelayUrl(
       error: error instanceof Error ? error.message : "Invalid relay URL",
     }
   }
+}
+
+/** Normalize, deduplicate, and retain only secure wss:// relay URLs. */
+export function normalizeSecureRelayUrls(
+  relayUrls: readonly string[]
+): string[] {
+  const seen = new Set<string>()
+  const normalizedUrls: string[] = []
+
+  for (const relayUrl of relayUrls) {
+    const normalized = tryNormalizeRelayUrl(relayUrl)
+    if (!normalized.ok || !normalized.url.startsWith("wss://")) continue
+    if (seen.has(normalized.url)) continue
+
+    seen.add(normalized.url)
+    normalizedUrls.push(normalized.url)
+  }
+
+  return normalizedUrls
 }
 
 export function getRelayInfoDocumentUrl(relayUrl: string): string {
@@ -1244,26 +1293,136 @@ export function getGeneralReadRelayUrls(
   return withRelayFallback(relayUrls, options.fallbackRelayUrls)
 }
 
+function getInboxRelayInfoProbeStatus(
+  entry: RelaySettingsEntry | undefined
+): InboxRelayInfoProbeStatus {
+  if (!entry) return "unknown"
+  if (entry.warnings.unreachable) return "failed"
+  if (entry.scannedAt !== undefined && entry.capabilities.nip11) {
+    return "succeeded"
+  }
+  return "unknown"
+}
+
+function getInboxProtectedMessageCapabilityEvidence(
+  entry: RelaySettingsEntry | undefined
+): InboxRelayProtectedMessageCapabilityEvidence {
+  if (!entry) return "unknown"
+
+  const observation = entry.observations?.protectedMessages
+  const hasSupport =
+    entry.capabilities.protectedMessages === true ||
+    observation?.supported === true
+  if (hasSupport && observation?.evidence.includes("nip11")) {
+    return "advertised"
+  }
+  if (
+    hasSupport &&
+    observation?.evidence.includes("conduit-commerce-profile")
+  ) {
+    return "known"
+  }
+  if (
+    entry.capabilities.protectedMessages === true &&
+    entry.commerceProfileVersion !== undefined
+  ) {
+    return "known"
+  }
+  return "unknown"
+}
+
+function getInboxProtectedMessageRuntimeEvidence(
+  entry: RelaySettingsEntry | undefined
+): InboxRelayProtectedMessageRuntimeEvidence {
+  const observation = entry?.observations?.protectedMessages
+  if (!observation?.evidence.includes("active-probe")) return "unknown"
+  if (observation.status === "failed") return "probe_failed"
+  if (
+    observation.supported === true &&
+    observation.status === "observed" &&
+    observation.confidence === "observed"
+  ) {
+    return "probe_passed"
+  }
+  return "unknown"
+}
+
 /**
- * Relays eligible as NIP-17 inbox declaration targets (CND-208): the user's
- * enabled, reachable IN relays, secure wss:// only. Local IN state is not
- * itself a declaration; these are only candidates for an explicit signed
- * kind-10050 publish from Network settings.
+ * Build the secure inbox relay presentation model from local settings and the
+ * current signed declaration. Declared relays and configured relays remain in
+ * the model even when they are disabled, unscanned, or currently unreachable.
+ */
+export function getInboxRelayCandidates(
+  entries: readonly RelaySettingsEntry[],
+  declaredRelayUrls: readonly string[] = [],
+  retainedRelayUrls: readonly string[] = []
+): InboxRelayCandidate[] {
+  const byUrl = new Map<
+    string,
+    { entry?: RelaySettingsEntry; declared: boolean; retained: boolean }
+  >()
+
+  for (const relayUrl of declaredRelayUrls) {
+    const normalized = tryNormalizeRelayUrl(relayUrl)
+    if (!normalized.ok || !normalized.url.startsWith("wss://")) continue
+    byUrl.set(normalized.url, { declared: true, retained: false })
+  }
+
+  for (const relayUrl of retainedRelayUrls) {
+    const normalized = tryNormalizeRelayUrl(relayUrl)
+    if (!normalized.ok || !normalized.url.startsWith("wss://")) continue
+    const existing = byUrl.get(normalized.url)
+    byUrl.set(normalized.url, {
+      ...existing,
+      declared: existing?.declared ?? false,
+      retained: true,
+    })
+  }
+
+  for (const entry of entries) {
+    const normalized = tryNormalizeRelayUrl(entry.url)
+    if (!normalized.ok || !normalized.url.startsWith("wss://")) continue
+    const existing = byUrl.get(normalized.url)
+    byUrl.set(normalized.url, {
+      entry,
+      declared: existing?.declared ?? false,
+      retained: existing?.retained ?? false,
+    })
+  }
+
+  return Array.from(byUrl.entries()).map(([url, value]) => {
+    const configured = value.entry !== undefined
+    const enabled = value.entry?.readEnabled === true
+    const relayInfoProbe = getInboxRelayInfoProbeStatus(value.entry)
+    return {
+      url,
+      configured,
+      enabled,
+      declared: value.declared,
+      retained: value.retained,
+      selectable:
+        value.declared ||
+        value.retained ||
+        (configured && enabled && relayInfoProbe !== "failed"),
+      relayInfoProbe,
+      protectedMessageCapabilityEvidence:
+        getInboxProtectedMessageCapabilityEvidence(value.entry),
+      protectedMessageRuntimeEvidence: getInboxProtectedMessageRuntimeEvidence(
+        value.entry
+      ),
+    }
+  })
+}
+
+/**
+ * Compatibility projection for callers that only need eligible relay URLs.
  */
 export function getInboxCandidateRelayUrls(
   entries: readonly RelaySettingsEntry[]
 ): string[] {
-  const candidates: string[] = []
-  const seen = new Set<string>()
-  for (const entry of entries) {
-    if (!hasFreshOrSeededRead(entry)) continue
-    const normalized = tryNormalizeRelayUrl(entry.url)
-    if (!normalized.ok || !normalized.url.startsWith("wss://")) continue
-    if (seen.has(normalized.url)) continue
-    seen.add(normalized.url)
-    candidates.push(normalized.url)
-  }
-  return candidates
+  return getInboxRelayCandidates(entries)
+    .filter((candidate) => candidate.selectable)
+    .map((candidate) => candidate.url)
 }
 
 export function getGeneralWriteRelayUrls(

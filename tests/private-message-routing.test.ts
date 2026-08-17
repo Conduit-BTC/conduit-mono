@@ -1,33 +1,45 @@
 import { beforeEach, describe, expect, it } from "bun:test"
+import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
   __resetInboxDeclarationCache,
+  createInMemoryInboxDeclarationEvidenceRepository,
   deriveInboxReadCoverage,
   EVENT_KINDS,
+  getInboxDeclarationEvidence,
   getCachedInboxDeclaration,
+  inboxDeclarationPublishRelayUrls,
+  sharedInboxDiscoveryRelayUrls,
   invalidateInboxDeclaration,
+  mergeInboxDeclarationEvidence,
   planCompatibilityOrderRelays,
   planInboxReadRelays,
   primeInboxDeclarationCache,
   resolveInboxDeclaration,
   selectPrivateMessageDeliveryRoute,
   type InboxDeclarationResolution,
+  type InboxDeclarationEvidenceRepository,
+  type ResolveInboxDeclarationOptions,
 } from "@conduit/core"
+import { attachEventSourceRelayUrl } from "@conduit/core/protocol/ndk"
 
-const OWNER = "owner"
+const OWNER_SECRET = new Uint8Array(32).fill(1)
+const OTHER_SECRET = new Uint8Array(32).fill(2)
+const OWNER = getPublicKey(OWNER_SECRET)
 
 function declarationEvent(params: {
-  pubkey?: string
+  secretKey?: Uint8Array
   createdAt: number
-  id?: string
   relays: string[]
 }) {
-  return {
-    id: params.id ?? `event-${params.createdAt}`,
-    kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
-    pubkey: params.pubkey ?? OWNER,
-    created_at: params.createdAt,
-    tags: params.relays.map((url) => ["relay", url]),
-  }
+  return finalizeEvent(
+    {
+      kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
+      created_at: params.createdAt,
+      tags: params.relays.map((url) => ["relay", url]),
+      content: "",
+    },
+    params.secretKey ?? OWNER_SECRET
+  )
 }
 
 function diagnostics(params: {
@@ -56,13 +68,20 @@ function resolution(
   }
 }
 
+let evidenceRepository: InboxDeclarationEvidenceRepository
+
 beforeEach(() => {
   __resetInboxDeclarationCache()
+  evidenceRepository = createInMemoryInboxDeclarationEvidenceRepository()
 })
+
+function resolveForTest(options: ResolveInboxDeclarationOptions) {
+  return resolveInboxDeclaration(OWNER, { ...options, evidenceRepository })
+}
 
 describe("resolveInboxDeclaration", () => {
   it("resolves a declared inbox with secure relays only", async () => {
-    const result = await resolveInboxDeclaration(OWNER, {
+    const result = await resolveForTest({
       relayUrls: ["wss://read.example"],
       fetchEventsWithDiagnostics: diagnostics({
         events: [
@@ -80,8 +99,8 @@ describe("resolveInboxDeclaration", () => {
     expect(result.stale).toBe(false)
   })
 
-  it("never reports not_declared when every discovery relay failed", async () => {
-    const result = await resolveInboxDeclaration(OWNER, {
+  it("never reports not_observed when every discovery relay failed", async () => {
+    const result = await resolveForTest({
       relayUrls: ["wss://read.example"],
       fetchEventsWithDiagnostics: diagnostics({
         successful: [],
@@ -93,7 +112,7 @@ describe("resolveInboxDeclaration", () => {
   })
 
   it("keeps an empty partial lookup partial", async () => {
-    const result = await resolveInboxDeclaration(OWNER, {
+    const result = await resolveForTest({
       relayUrls: ["wss://a.example", "wss://b.example"],
       fetchEventsWithDiagnostics: diagnostics({
         successful: ["wss://a.example"],
@@ -104,52 +123,50 @@ describe("resolveInboxDeclaration", () => {
     expect(result.state).toBe("lookup_partial")
   })
 
-  it("reports not_declared only with complete empty coverage", async () => {
-    const result = await resolveInboxDeclaration(OWNER, {
+  it("reports not_observed only with complete empty coverage", async () => {
+    const result = await resolveForTest({
       relayUrls: ["wss://read.example"],
       fetchEventsWithDiagnostics: diagnostics({
         successful: ["wss://read.example"],
       }),
     })
 
-    expect(result.state).toBe("not_declared")
+    expect(result.state).toBe("not_observed")
   })
 
   it("selects the newest declaration deterministically", async () => {
-    const result = await resolveInboxDeclaration(OWNER, {
+    const older = declarationEvent({
+      createdAt: 100,
+      relays: ["wss://old.example"],
+    })
+    const tieA = declarationEvent({
+      createdAt: 200,
+      relays: ["wss://tie-a.example"],
+    })
+    const tieB = declarationEvent({
+      createdAt: 200,
+      relays: ["wss://tie-b.example"],
+    })
+    const result = await resolveForTest({
       relayUrls: ["wss://read.example"],
       fetchEventsWithDiagnostics: diagnostics({
-        events: [
-          declarationEvent({
-            createdAt: 100,
-            id: "older",
-            relays: ["wss://old.example"],
-          }),
-          declarationEvent({
-            createdAt: 200,
-            id: "tie-a",
-            relays: ["wss://tie-a.example"],
-          }),
-          declarationEvent({
-            createdAt: 200,
-            id: "tie-b",
-            relays: ["wss://tie-b.example"],
-          }),
-        ],
+        events: [older, tieA, tieB],
         successful: ["wss://read.example"],
       }),
     })
 
-    expect(result.relayUrls).toEqual(["wss://tie-a.example"])
+    expect(result.relayUrls).toEqual([
+      tieA.id < tieB.id ? "wss://tie-a.example" : "wss://tie-b.example",
+    ])
   })
 
   it("ignores declarations signed by other authors", async () => {
-    const result = await resolveInboxDeclaration(OWNER, {
+    const result = await resolveForTest({
       relayUrls: ["wss://read.example"],
       fetchEventsWithDiagnostics: diagnostics({
         events: [
           declarationEvent({
-            pubkey: "attacker",
+            secretKey: OTHER_SECRET,
             createdAt: 100,
             relays: ["wss://attacker.example"],
           }),
@@ -158,11 +175,11 @@ describe("resolveInboxDeclaration", () => {
       }),
     })
 
-    expect(result.state).toBe("not_declared")
+    expect(result.state).toBe("not_observed")
   })
 
-  it("reports malformed for a signed declaration without usable relays", async () => {
-    const result = await resolveInboxDeclaration(OWNER, {
+  it("distinguishes a signed empty declaration from malformed relay tags", async () => {
+    const result = await resolveForTest({
       relayUrls: ["wss://read.example"],
       fetchEventsWithDiagnostics: diagnostics({
         events: [declarationEvent({ createdAt: 100, relays: [] })],
@@ -170,25 +187,552 @@ describe("resolveInboxDeclaration", () => {
       }),
     })
 
-    expect(result.state).toBe("malformed")
-  })
+    expect(result.state).toBe("signed_empty")
 
-  it("does not overwrite a cached valid declaration with a malformed one", async () => {
-    primeInboxDeclarationCache(OWNER, ["wss://inbox.example"], () => 0)
-    const result = await resolveInboxDeclaration(OWNER, {
+    __resetInboxDeclarationCache()
+    evidenceRepository = createInMemoryInboxDeclarationEvidenceRepository()
+    const malformed = await resolveForTest({
       relayUrls: ["wss://read.example"],
-      freshnessMs: 1,
-      now: () => 1_000,
       fetchEventsWithDiagnostics: diagnostics({
         events: [declarationEvent({ createdAt: 100, relays: ["ws://bad"] })],
         successful: ["wss://read.example"],
       }),
     })
+    expect(malformed.state).toBe("malformed")
+  })
+
+  it("keeps the last usable declaration for reads behind a newer malformed event", async () => {
+    await resolveForTest({
+      relayUrls: ["wss://read.example"],
+      now: () => 0,
+      fetchEventsWithDiagnostics: diagnostics({
+        events: [
+          declarationEvent({
+            createdAt: 100,
+            relays: ["wss://inbox.example"],
+          }),
+        ],
+        successful: ["wss://read.example"],
+      }),
+    })
+    const result = await resolveForTest({
+      relayUrls: ["wss://read.example"],
+      freshnessMs: 1,
+      now: () => 1_000,
+      fetchEventsWithDiagnostics: diagnostics({
+        events: [declarationEvent({ createdAt: 200, relays: ["ws://bad"] })],
+        successful: ["wss://read.example"],
+      }),
+    })
 
     expect(result.state).toBe("malformed")
-    expect(getCachedInboxDeclaration(OWNER)?.relayUrls).toEqual([
-      "wss://inbox.example",
+    expect(result.retainedReadRelayUrls).toEqual(["wss://inbox.example"])
+  })
+
+  it("converges non-overlapping relay views when the blocker is observed first", async () => {
+    const signedEmpty = declarationEvent({ createdAt: 200, relays: [] })
+    const olderDeclared = declarationEvent({
+      createdAt: 100,
+      relays: ["wss://older-inbox.example"],
+    })
+
+    const blocker = await resolveForTest({
+      relayUrls: ["wss://shared-a.example"],
+      fetchEventsWithDiagnostics: diagnostics({
+        events: [signedEmpty],
+        successful: ["wss://shared-a.example"],
+      }),
+    })
+    expect(blocker.state).toBe("signed_empty")
+
+    __resetInboxDeclarationCache()
+    const recovered = await resolveForTest({
+      relayUrls: ["wss://shared-b.example"],
+      freshnessMs: 0,
+      fetchEventsWithDiagnostics: diagnostics({
+        events: [olderDeclared],
+        successful: ["wss://shared-b.example"],
+      }),
+    })
+
+    expect(recovered.state).toBe("signed_empty")
+    expect(recovered.eventId).toBe(signedEmpty.id)
+    expect(recovered.stale).toBe(true)
+    expect(recovered.retainedReadRelayUrls).toEqual([
+      "wss://older-inbox.example",
     ])
+  })
+
+  it("retains an older usable declaration returned with a newer blocker in one fanout", async () => {
+    const signedEmpty = declarationEvent({ createdAt: 200, relays: [] })
+    const olderDeclared = declarationEvent({
+      createdAt: 100,
+      relays: ["wss://older-inbox.example"],
+    })
+
+    const result = await resolveForTest({
+      relayUrls: ["wss://shared.example"],
+      fetchEventsWithDiagnostics: diagnostics({
+        events: [signedEmpty, olderDeclared],
+        successful: ["wss://shared.example"],
+      }),
+    })
+
+    expect(result.state).toBe("signed_empty")
+    expect(result.eventId).toBe(signedEmpty.id)
+    expect(result.retainedReadRelayUrls).toEqual(["wss://older-inbox.example"])
+  })
+
+  it("keeps omitted requested relays partial and bypasses the health filter", async () => {
+    let skipHealthFilter: boolean | undefined
+    const result = await resolveForTest({
+      relayUrls: ["wss://healthy.example", "wss://parked.example"],
+      fetchEventsWithDiagnostics: async (_filter, options) => {
+        skipHealthFilter = options?.skipHealthFilter
+        return {
+          events: [],
+          attemptedRelayUrls: ["wss://healthy.example"],
+          successfulRelayUrls: ["wss://healthy.example"],
+          failedRelayUrls: [],
+        }
+      },
+    })
+
+    expect(skipHealthFilter).toBe(true)
+    expect(result.state).toBe("lookup_partial")
+    expect(result.observation?.failedRelayUrls).toEqual([
+      "wss://parked.example",
+    ])
+  })
+
+  it("does not hydrate a partial exact-event observation as fresh", async () => {
+    const event = declarationEvent({
+      createdAt: 100,
+      relays: ["wss://inbox.example"],
+    })
+    let fetches = 0
+    const fetch = async () => {
+      fetches += 1
+      return fetches === 1
+        ? {
+            events: [event] as never,
+            attemptedRelayUrls: [
+              "wss://shared-a.example",
+              "wss://shared-b.example",
+            ],
+            successfulRelayUrls: ["wss://shared-a.example"],
+            failedRelayUrls: ["wss://shared-b.example"],
+          }
+        : {
+            events: [] as never,
+            attemptedRelayUrls: [
+              "wss://shared-a.example",
+              "wss://shared-b.example",
+            ],
+            successfulRelayUrls: [],
+            failedRelayUrls: [
+              "wss://shared-a.example",
+              "wss://shared-b.example",
+            ],
+          }
+    }
+
+    const first = await resolveForTest({
+      relayUrls: ["wss://shared-a.example", "wss://shared-b.example"],
+      fetchEventsWithDiagnostics: fetch,
+      now: () => 1_000,
+    })
+    expect(first.stale).toBe(true)
+
+    __resetInboxDeclarationCache()
+    const second = await resolveForTest({
+      relayUrls: ["wss://shared-a.example", "wss://shared-b.example"],
+      fetchEventsWithDiagnostics: fetch,
+      now: () => 1_001,
+    })
+    expect(fetches).toBe(2)
+    expect(second.state).toBe("declared")
+    expect(second.stale).toBe(true)
+  })
+
+  it("keeps later degraded observations stale across cache reset", async () => {
+    const event = declarationEvent({
+      createdAt: 100,
+      relays: ["wss://inbox.example"],
+    })
+    const relayUrls = ["wss://shared-a.example", "wss://shared-b.example"]
+    const degradedResults = [
+      {
+        name: "partial exact",
+        result: {
+          events: [event] as never,
+          attemptedRelayUrls: relayUrls,
+          successfulRelayUrls: [relayUrls[0]!],
+          failedRelayUrls: [relayUrls[1]!],
+        },
+      },
+      {
+        name: "unavailable",
+        result: {
+          events: [] as never,
+          attemptedRelayUrls: relayUrls,
+          successfulRelayUrls: [],
+          failedRelayUrls: relayUrls,
+        },
+      },
+      {
+        name: "complete empty",
+        result: {
+          events: [] as never,
+          attemptedRelayUrls: relayUrls,
+          successfulRelayUrls: relayUrls,
+          failedRelayUrls: [],
+        },
+      },
+    ]
+
+    for (const scenario of degradedResults) {
+      __resetInboxDeclarationCache()
+      evidenceRepository = createInMemoryInboxDeclarationEvidenceRepository()
+      await resolveForTest({
+        relayUrls,
+        fetchEventsWithDiagnostics: diagnostics({
+          events: [event],
+          successful: relayUrls,
+        }),
+        now: () => 1_000,
+      })
+      const degraded = await resolveForTest({
+        relayUrls,
+        freshnessMs: 0,
+        fetchEventsWithDiagnostics: async () => scenario.result,
+        now: () => 2_000,
+      })
+      expect(degraded.stale, scenario.name).toBe(true)
+
+      __resetInboxDeclarationCache()
+      let restartFetches = 0
+      const afterRestart = await resolveForTest({
+        relayUrls,
+        freshnessMs: 60_000,
+        fetchEventsWithDiagnostics: async () => {
+          restartFetches += 1
+          return scenario.result
+        },
+        now: () => 2_001,
+      })
+      expect(restartFetches, scenario.name).toBe(1)
+      expect(afterRestart.stale, scenario.name).toBe(true)
+    }
+  })
+
+  it("hydrates a complete source-ambiguous observation consistently", async () => {
+    const event = declarationEvent({
+      createdAt: 100,
+      relays: ["wss://inbox.example"],
+    })
+    let fetches = 0
+    const fetch = async () => {
+      fetches += 1
+      return {
+        events: [event] as never,
+        attemptedRelayUrls: [
+          "wss://shared-a.example",
+          "wss://shared-b.example",
+        ],
+        successfulRelayUrls: [
+          "wss://shared-a.example",
+          "wss://shared-b.example",
+        ],
+        failedRelayUrls: [],
+      }
+    }
+
+    const first = await resolveForTest({
+      relayUrls: ["wss://shared-a.example", "wss://shared-b.example"],
+      fetchEventsWithDiagnostics: fetch,
+      now: () => 1_000,
+    })
+    expect(first.stale).toBe(false)
+    expect(first.sourceRelayUrls).toEqual([])
+
+    __resetInboxDeclarationCache()
+    const second = await resolveForTest({
+      relayUrls: ["wss://shared-a.example", "wss://shared-b.example"],
+      fetchEventsWithDiagnostics: fetch,
+      freshnessMs: 60_000,
+      now: () => 1_001,
+    })
+    expect(second.stale).toBe(false)
+    expect(fetches).toBe(1)
+  })
+
+  it("serializes repository-failure fallback so an older request cannot win", async () => {
+    let enterFirst!: () => void
+    const firstEntered = new Promise<void>((resolve) => {
+      enterFirst = resolve
+    })
+    let releaseFirst!: () => void
+    const firstRelease = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
+    let mergeCalls = 0
+    const failMerge = async () => {
+      mergeCalls += 1
+      if (mergeCalls === 1) {
+        enterFirst()
+        await firstRelease
+      }
+      throw new Error("IndexedDB unavailable")
+    }
+    const throwingRepository: InboxDeclarationEvidenceRepository = {
+      get: async () => undefined,
+      merge: failMerge,
+      mergeBatch: failMerge,
+    }
+    const newer = declarationEvent({ createdAt: 200, relays: [] })
+    const older = declarationEvent({
+      createdAt: 100,
+      relays: ["wss://older.example"],
+    })
+
+    const newerResult = resolveInboxDeclaration(OWNER, {
+      relayUrls: ["wss://shared.example"],
+      freshnessMs: 0,
+      evidenceRepository: throwingRepository,
+      fetchEventsWithDiagnostics: diagnostics({
+        events: [newer],
+        successful: ["wss://shared.example"],
+      }),
+    })
+    await firstEntered
+    const olderResult = resolveInboxDeclaration(OWNER, {
+      relayUrls: ["wss://shared.example"],
+      freshnessMs: 0,
+      evidenceRepository: throwingRepository,
+      fetchEventsWithDiagnostics: diagnostics({
+        events: [older],
+        successful: ["wss://shared.example"],
+      }),
+    })
+    releaseFirst()
+
+    expect((await newerResult).eventCreatedAt).toBe(200)
+    expect((await olderResult).eventCreatedAt).toBe(200)
+    expect(getCachedInboxDeclaration(OWNER)?.eventCreatedAt).toBe(200)
+  })
+
+  it("projects the newest same-event lookup across concurrent resolvers", async () => {
+    for (const testCase of [
+      { firstCoverage: "complete", secondCoverage: "partial", stale: true },
+      { firstCoverage: "partial", secondCoverage: "complete", stale: false },
+    ] as const) {
+      __resetInboxDeclarationCache()
+      const backing = createInMemoryInboxDeclarationEvidenceRepository()
+      let firstMerge = true
+      let enteredFirst!: () => void
+      const firstEntered = new Promise<void>((resolve) => {
+        enteredFirst = resolve
+      })
+      let releaseFirst!: () => void
+      const firstReleased = new Promise<void>((resolve) => {
+        releaseFirst = resolve
+      })
+      const repository: InboxDeclarationEvidenceRepository = {
+        get: (pubkey) => backing.get(pubkey),
+        merge: (input) => backing.merge(input),
+        mergeBatch: async (inputs) => {
+          if (firstMerge) {
+            firstMerge = false
+            enteredFirst()
+            await firstReleased
+          }
+          return backing.mergeBatch(inputs)
+        },
+      }
+      const event = declarationEvent({
+        createdAt: 100,
+        relays: ["wss://inbox.example"],
+      })
+      attachEventSourceRelayUrl(event as never, "wss://read-a.example")
+      const fetchFor = (coverage: "complete" | "partial") => async () => ({
+        events: [event] as never,
+        attemptedRelayUrls: ["wss://read-a.example", "wss://read-b.example"],
+        successfulRelayUrls:
+          coverage === "complete"
+            ? ["wss://read-a.example", "wss://read-b.example"]
+            : ["wss://read-a.example"],
+        failedRelayUrls:
+          coverage === "complete" ? [] : ["wss://read-b.example"],
+      })
+
+      const first = resolveInboxDeclaration(OWNER, {
+        relayUrls: ["wss://read-a.example", "wss://read-b.example"],
+        freshnessMs: 0,
+        evidenceRepository: repository,
+        fetchEventsWithDiagnostics: fetchFor(testCase.firstCoverage),
+        now: () => 100,
+      })
+      await firstEntered
+      const second = resolveInboxDeclaration(OWNER, {
+        relayUrls: ["wss://read-a.example", "wss://read-b.example"],
+        freshnessMs: 0,
+        evidenceRepository: repository,
+        fetchEventsWithDiagnostics: fetchFor(testCase.secondCoverage),
+        now: () => 200,
+      })
+      releaseFirst()
+
+      const [firstResult, secondResult] = await Promise.all([first, second])
+      expect(firstResult.stale).toBe(testCase.stale)
+      expect(secondResult.stale).toBe(testCase.stale)
+      expect(getCachedInboxDeclaration(OWNER)?.stale).toBe(testCase.stale)
+    }
+  })
+
+  it("reconciles a recovered repository with a stronger in-memory frontier", async () => {
+    const unavailableRepository: InboxDeclarationEvidenceRepository = {
+      get: async () => {
+        throw new Error("IndexedDB unavailable")
+      },
+      merge: async () => {
+        throw new Error("IndexedDB unavailable")
+      },
+      mergeBatch: async () => {
+        throw new Error("IndexedDB unavailable")
+      },
+    }
+    const blocker = declarationEvent({ createdAt: 200, relays: [] })
+    const older = declarationEvent({
+      createdAt: 100,
+      relays: ["wss://older.example"],
+    })
+    await resolveInboxDeclaration(OWNER, {
+      relayUrls: ["wss://shared.example"],
+      freshnessMs: 0,
+      evidenceRepository: unavailableRepository,
+      fetchEventsWithDiagnostics: diagnostics({
+        events: [blocker],
+        successful: ["wss://shared.example"],
+      }),
+    })
+
+    const recoveredRepository =
+      createInMemoryInboxDeclarationEvidenceRepository()
+    const result = await resolveInboxDeclaration(OWNER, {
+      relayUrls: ["wss://shared.example"],
+      freshnessMs: 0,
+      evidenceRepository: recoveredRepository,
+      fetchEventsWithDiagnostics: diagnostics({
+        events: [older],
+        successful: ["wss://shared.example"],
+      }),
+    })
+
+    expect(result.state).toBe("signed_empty")
+    expect(result.eventId).toBe(blocker.id)
+    expect(
+      (await getInboxDeclarationEvidence(OWNER, recoveredRepository))?.current
+        .signedEvent.id
+    ).toBe(blocker.id)
+  })
+
+  it("seeds recovered storage atomically with the usable predecessor", async () => {
+    const unavailableRepository: InboxDeclarationEvidenceRepository = {
+      get: async () => undefined,
+      merge: async () => {
+        throw new Error("IndexedDB unavailable")
+      },
+      mergeBatch: async () => {
+        throw new Error("IndexedDB unavailable")
+      },
+    }
+    const declared = declarationEvent({
+      createdAt: 100,
+      relays: ["wss://usable.example"],
+    })
+    const blocker = declarationEvent({ createdAt: 200, relays: [] })
+    await resolveInboxDeclaration(OWNER, {
+      relayUrls: ["wss://shared.example"],
+      freshnessMs: 0,
+      evidenceRepository: unavailableRepository,
+      fetchEventsWithDiagnostics: diagnostics({
+        events: [blocker, declared],
+        successful: ["wss://shared.example"],
+      }),
+    })
+
+    const durable = createInMemoryInboxDeclarationEvidenceRepository()
+    let singleMerges = 0
+    let batchMerges = 0
+    const recoveredRepository: InboxDeclarationEvidenceRepository = {
+      get: (pubkey) => durable.get(pubkey),
+      merge: async () => {
+        singleMerges += 1
+        throw new Error("single merge must not be used")
+      },
+      mergeBatch: (inputs) => {
+        batchMerges += 1
+        return durable.mergeBatch(inputs)
+      },
+    }
+    const result = await resolveInboxDeclaration(OWNER, {
+      relayUrls: ["wss://shared.example"],
+      freshnessMs: 0,
+      evidenceRepository: recoveredRepository,
+      fetchEventsWithDiagnostics: diagnostics({
+        events: [declared],
+        successful: ["wss://shared.example"],
+      }),
+    })
+    const persisted = await getInboxDeclarationEvidence(
+      OWNER,
+      recoveredRepository
+    )
+
+    expect(singleMerges).toBe(0)
+    expect(batchMerges).toBe(1)
+    expect(result.state).toBe("signed_empty")
+    expect(persisted?.current.signedEvent.id).toBe(blocker.id)
+    expect(persisted?.lastUsable?.signedEvent.id).toBe(declared.id)
+  })
+
+  it("keeps persisted last-usable evidence when get fails but merge recovers", async () => {
+    const durable = createInMemoryInboxDeclarationEvidenceRepository()
+    const declared = declarationEvent({
+      createdAt: 100,
+      relays: ["wss://usable.example"],
+    })
+    const blocker = declarationEvent({ createdAt: 200, relays: [] })
+    await mergeInboxDeclarationEvidence(
+      { pubkey: OWNER, signedEvent: declared },
+      durable
+    )
+    await mergeInboxDeclarationEvidence(
+      { pubkey: OWNER, signedEvent: blocker },
+      durable
+    )
+    const recoveringRepository: InboxDeclarationEvidenceRepository = {
+      get: async () => {
+        throw new Error("transient read failure")
+      },
+      merge: (input) => durable.merge(input),
+      mergeBatch: (inputs) => durable.mergeBatch(inputs),
+    }
+
+    __resetInboxDeclarationCache()
+    const result = await resolveInboxDeclaration(OWNER, {
+      relayUrls: ["wss://shared.example"],
+      freshnessMs: 0,
+      evidenceRepository: recoveringRepository,
+      fetchEventsWithDiagnostics: diagnostics({
+        events: [blocker],
+        successful: ["wss://shared.example"],
+      }),
+    })
+
+    expect(result.state).toBe("signed_empty")
+    expect(result.retainedReadRelayUrls).toEqual(["wss://usable.example"])
   })
 
   it("serves a fresh cached declaration without refetching", async () => {
@@ -202,12 +746,12 @@ describe("resolveInboxDeclaration", () => {
       return await fetch()
     }
 
-    const first = await resolveInboxDeclaration(OWNER, {
+    const first = await resolveForTest({
       relayUrls: ["wss://read.example"],
       fetchEventsWithDiagnostics: counting,
       now: () => 0,
     })
-    const second = await resolveInboxDeclaration(OWNER, {
+    const second = await resolveForTest({
       relayUrls: ["wss://read.example"],
       fetchEventsWithDiagnostics: counting,
       now: () => 1_000,
@@ -216,6 +760,93 @@ describe("resolveInboxDeclaration", () => {
     expect(first.state).toBe("declared")
     expect(second.state).toBe("declared")
     expect(fetches).toBe(1)
+  })
+
+  it("reconciles a newer cross-tab durable frontier before the TTL fast path", async () => {
+    const cases = [
+      {
+        name: "changed declaration",
+        event: declarationEvent({
+          createdAt: 200,
+          relays: ["wss://new-inbox.example"],
+        }),
+        state: "declared" as const,
+      },
+      {
+        name: "signed empty",
+        event: declarationEvent({ createdAt: 200, relays: [] }),
+        state: "signed_empty" as const,
+      },
+      {
+        name: "malformed",
+        event: declarationEvent({
+          createdAt: 200,
+          relays: ["ws://insecure.example"],
+        }),
+        state: "malformed" as const,
+      },
+    ]
+
+    for (const candidate of cases) {
+      __resetInboxDeclarationCache()
+      const durable = createInMemoryInboxDeclarationEvidenceRepository()
+      let durableReads = 0
+      const repository: InboxDeclarationEvidenceRepository = {
+        ...durable,
+        get: async (pubkey) => {
+          durableReads += 1
+          return durable.get(pubkey)
+        },
+      }
+      let networkReads = 0
+      const oldEvent = declarationEvent({
+        createdAt: 100,
+        relays: ["wss://old-inbox.example"],
+      })
+      const fetch = async () => {
+        networkReads += 1
+        return {
+          events: [oldEvent] as never,
+          attemptedRelayUrls: ["wss://read.example"],
+          successfulRelayUrls: ["wss://read.example"],
+          failedRelayUrls: [],
+        }
+      }
+
+      const first = await resolveInboxDeclaration(OWNER, {
+        relayUrls: ["wss://read.example"],
+        evidenceRepository: repository,
+        fetchEventsWithDiagnostics: fetch,
+        now: () => 1_000,
+      })
+      await durable.merge({
+        pubkey: OWNER,
+        signedEvent: candidate.event,
+        sourceRelayUrls: ["wss://other-tab.example"],
+        observedAt: 1_001,
+        completeObservedAt: 1_001,
+        cachedAt: 1_001,
+        lookup: {
+          observedAt: 1_001,
+          coverage: "complete",
+          hadEvent: true,
+          eventId: candidate.event.id,
+        },
+      })
+
+      const second = await resolveInboxDeclaration(OWNER, {
+        relayUrls: ["wss://read.example"],
+        evidenceRepository: repository,
+        fetchEventsWithDiagnostics: fetch,
+        now: () => 1_002,
+      })
+
+      expect(first.eventId).toBe(oldEvent.id)
+      expect(second.state).toBe(candidate.state)
+      expect(second.eventId).toBe(candidate.event.id)
+      expect(durableReads).toBe(2)
+      expect(networkReads).toBe(1)
+    }
   })
 
   it("refetches after the freshness window and after invalidation", async () => {
@@ -232,13 +863,13 @@ describe("resolveInboxDeclaration", () => {
       }
     }
 
-    await resolveInboxDeclaration(OWNER, {
+    await resolveForTest({
       relayUrls: ["wss://read.example"],
       fetchEventsWithDiagnostics: counting,
       freshnessMs: 100,
       now: () => 0,
     })
-    await resolveInboxDeclaration(OWNER, {
+    await resolveForTest({
       relayUrls: ["wss://read.example"],
       fetchEventsWithDiagnostics: counting,
       freshnessMs: 100,
@@ -247,13 +878,21 @@ describe("resolveInboxDeclaration", () => {
     expect(fetches).toBe(2)
 
     invalidateInboxDeclaration(OWNER)
-    expect(getCachedInboxDeclaration(OWNER)).toBeNull()
+    expect(getCachedInboxDeclaration(OWNER)?.stale).toBe(true)
+
+    await resolveForTest({
+      relayUrls: ["wss://read.example"],
+      fetchEventsWithDiagnostics: counting,
+      freshnessMs: 100,
+      now: () => 201,
+    })
+    expect(fetches).toBe(3)
   })
 
-  it("evicts the cached declaration after a complete authoritative absence", async () => {
+  it("preserves stronger cached evidence after a complete empty observation", async () => {
     primeInboxDeclarationCache(OWNER, ["wss://inbox.example"], () => 0)
 
-    const absent = await resolveInboxDeclaration(OWNER, {
+    const absent = await resolveForTest({
       relayUrls: ["wss://read.example"],
       freshnessMs: 1,
       now: () => 1_000,
@@ -262,11 +901,14 @@ describe("resolveInboxDeclaration", () => {
         successful: ["wss://read.example"],
       }),
     })
-    expect(absent.state).toBe("not_declared")
-    expect(getCachedInboxDeclaration(OWNER)).toBeNull()
+    expect(absent.state).toBe("declared")
+    expect(absent.stale).toBe(true)
+    expect(getCachedInboxDeclaration(OWNER)?.relayUrls).toEqual([
+      "wss://inbox.example",
+    ])
 
-    // A later transient failure must not resurrect the evicted declaration.
-    const failed = await resolveInboxDeclaration(OWNER, {
+    // A later transient failure continues to use the retained evidence.
+    const failed = await resolveForTest({
       relayUrls: ["wss://read.example"],
       freshnessMs: 1,
       now: () => 2_000,
@@ -275,13 +917,14 @@ describe("resolveInboxDeclaration", () => {
         failed: ["wss://read.example"],
       }),
     })
-    expect(failed.state).toBe("lookup_unavailable")
-    expect(failed.relayUrls).toEqual([])
+    expect(failed.state).toBe("declared")
+    expect(failed.stale).toBe(true)
+    expect(failed.relayUrls).toEqual(["wss://inbox.example"])
   })
 
   it("falls back to the stale cached declaration when discovery is unavailable", async () => {
     primeInboxDeclarationCache(OWNER, ["wss://inbox.example"], () => 0)
-    const result = await resolveInboxDeclaration(OWNER, {
+    const result = await resolveForTest({
       relayUrls: ["wss://read.example"],
       freshnessMs: 1,
       now: () => 1_000,
@@ -294,6 +937,23 @@ describe("resolveInboxDeclaration", () => {
     expect(result.state).toBe("declared")
     expect(result.stale).toBe(true)
     expect(result.relayUrls).toEqual(["wss://inbox.example"])
+  })
+})
+
+describe("inbox declaration discovery planning", () => {
+  it("reserves shared discovery before owner-local relays under the cap", () => {
+    const owner = [
+      "wss://owner-one.example",
+      "wss://owner-two.example",
+      "wss://owner-three.example",
+      "wss://owner-four.example",
+    ]
+
+    expect(inboxDeclarationPublishRelayUrls(owner)).toEqual([
+      // Production shared relays remain reserved regardless of owner list size.
+      ...sharedInboxDiscoveryRelayUrls(),
+      ...owner.slice(0, 3),
+    ])
   })
 })
 
@@ -318,7 +978,7 @@ describe("planInboxReadRelays", () => {
 
   it("keeps compatibility reads when local settings are nonempty", () => {
     const plan = planInboxReadRelays({
-      declaration: resolution({ state: "not_declared", relayUrls: [] }),
+      declaration: resolution({ state: "not_observed", relayUrls: [] }),
       localReadRelayUrls: ["wss://local.example"],
       compatibilityRelayUrls: ["wss://compat.example"],
     })
@@ -329,7 +989,7 @@ describe("planInboxReadRelays", () => {
 
   it("reserves approved compatibility write targets inside a capped read plan", () => {
     const plan = planInboxReadRelays({
-      declaration: resolution({ state: "not_declared", relayUrls: [] }),
+      declaration: resolution({ state: "not_observed", relayUrls: [] }),
       localReadRelayUrls: [
         "wss://local-one.example",
         "wss://local-two.example",
@@ -441,7 +1101,7 @@ describe("selectPrivateMessageDeliveryRoute", () => {
   it("routes a validated order to a bounded compatibility plan when enabled", () => {
     const selection = selectPrivateMessageDeliveryRoute({
       rumorKind: EVENT_KINDS.ORDER,
-      declaration: resolution({ state: "not_declared", relayUrls: [] }),
+      declaration: resolution({ state: "not_observed", relayUrls: [] }),
       validatedOrder: true,
       compatibilityEnabled: true,
       compatibilityRelayUrls: [
@@ -487,7 +1147,7 @@ describe("selectPrivateMessageDeliveryRoute", () => {
   it("blocks compatibility when the deployment-profile flag is off", () => {
     const selection = selectPrivateMessageDeliveryRoute({
       rumorKind: EVENT_KINDS.ORDER,
-      declaration: resolution({ state: "not_declared", relayUrls: [] }),
+      declaration: resolution({ state: "not_observed", relayUrls: [] }),
       validatedOrder: true,
       compatibilityEnabled: false,
       compatibilityRelayUrls: ["wss://compatibility.example"],
@@ -500,7 +1160,7 @@ describe("selectPrivateMessageDeliveryRoute", () => {
   it("never routes kind-14 general DMs through compatibility", () => {
     const selection = selectPrivateMessageDeliveryRoute({
       rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
-      declaration: resolution({ state: "not_declared", relayUrls: [] }),
+      declaration: resolution({ state: "not_observed", relayUrls: [] }),
       validatedOrder: false,
       compatibilityEnabled: true,
       compatibilityRelayUrls: ["wss://compatibility.example"],
@@ -513,7 +1173,7 @@ describe("selectPrivateMessageDeliveryRoute", () => {
   it("blocks unvalidated kind-16 orders from the compatibility lane", () => {
     const selection = selectPrivateMessageDeliveryRoute({
       rumorKind: EVENT_KINDS.ORDER,
-      declaration: resolution({ state: "not_declared", relayUrls: [] }),
+      declaration: resolution({ state: "not_observed", relayUrls: [] }),
       validatedOrder: false,
       compatibilityEnabled: true,
       compatibilityRelayUrls: ["wss://compatibility.example"],
@@ -535,6 +1195,37 @@ describe("selectPrivateMessageDeliveryRoute", () => {
     expect(selection.blockedReason).toBe("declaration_malformed")
   })
 
+  it("keeps a signed empty declaration distinct while blocking writes", () => {
+    const selection = selectPrivateMessageDeliveryRoute({
+      rumorKind: EVENT_KINDS.ORDER,
+      declaration: resolution({ state: "signed_empty", relayUrls: [] }),
+      validatedOrder: true,
+      compatibilityEnabled: true,
+      compatibilityRelayUrls: ["wss://compatibility.example"],
+    })
+
+    expect(selection.route).toBe("blocked")
+    expect(selection.blockedReason).toBe("declaration_signed_empty")
+  })
+
+  it("never lets a locally staged declaration authorize writes or compatibility", () => {
+    const selection = selectPrivateMessageDeliveryRoute({
+      rumorKind: EVENT_KINDS.ORDER,
+      declaration: resolution({
+        state: "distribution_pending",
+        relayUrls: [],
+        pendingRelayUrls: ["wss://pending-inbox.example"],
+      }),
+      validatedOrder: true,
+      compatibilityEnabled: true,
+      compatibilityRelayUrls: ["wss://compatibility.example"],
+    })
+
+    expect(selection.route).toBe("blocked")
+    expect(selection.relayUrls).toEqual([])
+    expect(selection.blockedReason).toBe("declaration_distribution_pending")
+  })
+
   it("maps lookup failure to recipient_lookup_failed when compatibility is off", () => {
     const selection = selectPrivateMessageDeliveryRoute({
       rumorKind: EVENT_KINDS.ORDER,
@@ -550,7 +1241,7 @@ describe("selectPrivateMessageDeliveryRoute", () => {
   it("drops insecure compatibility relay urls", () => {
     const selection = selectPrivateMessageDeliveryRoute({
       rumorKind: EVENT_KINDS.ORDER,
-      declaration: resolution({ state: "not_declared", relayUrls: [] }),
+      declaration: resolution({ state: "not_observed", relayUrls: [] }),
       validatedOrder: true,
       compatibilityEnabled: true,
       compatibilityRelayUrls: ["ws://insecure.example"],

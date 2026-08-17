@@ -480,7 +480,7 @@ describe("general direct-message gateway", () => {
     expect(result.data).toEqual([])
     expect(result.meta.stale).toBe(false)
     expect(result.meta.degraded).toBe(false)
-    expect(result.meta.inbox?.declarationState).toBe("not_declared")
+    expect(result.meta.inbox?.declarationState).toBe("not_observed")
     expect(result.meta.inbox?.coverage).toBe("complete")
   })
 
