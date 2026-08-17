@@ -33,6 +33,7 @@ import {
   SelectValue,
 } from "@conduit/ui"
 import {
+  CONTACT_LIST_WRITES_AVAILABLE,
   formatNpub,
   getCommerceReadRelayUrls,
   getTelemetryCountBucket,
@@ -557,7 +558,12 @@ function StorefrontPage() {
                       : "",
                   ].join(" ")}
                   onClick={() => void handleFollow()}
-                  disabled={isFollowBusy}
+                  disabled={!CONTACT_LIST_WRITES_AVAILABLE || isFollowBusy}
+                  aria-describedby={
+                    CONTACT_LIST_WRITES_AVAILABLE
+                      ? undefined
+                      : "storefront-follow-maintenance"
+                  }
                 >
                   {isFollowBusy ? (
                     <LoaderCircle className="h-4 w-4 animate-spin" />
@@ -589,6 +595,15 @@ function StorefrontPage() {
                   )}
                 </Button>
               </div>
+              {!CONTACT_LIST_WRITES_AVAILABLE && (
+                <p
+                  id="storefront-follow-maintenance"
+                  role="status"
+                  className="max-w-sm text-left text-xs leading-5 text-[var(--text-secondary)] sm:ml-auto sm:text-right"
+                >
+                  Follow updates are temporarily paused.
+                </p>
+              )}
               {followError && (
                 <p className="max-w-sm text-left text-xs leading-5 text-[var(--warning)] sm:ml-auto sm:text-right">
                   {followError}
