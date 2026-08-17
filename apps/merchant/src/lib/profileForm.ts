@@ -15,21 +15,6 @@ export const EMPTY_PROFILE_FORM: ProfileFormValues = {
   website: "",
 }
 
-const PROFILE_FORM_FIELDS = [
-  "name",
-  "displayName",
-  "about",
-  "picture",
-  "banner",
-  "nip05",
-  "lud16",
-  "website",
-] as const satisfies readonly (keyof ProfileFormValues)[]
-
-function emptyToUndefined(value: string | undefined): string | undefined {
-  return value || undefined
-}
-
 export function profileToFormValues(
   profile: Profile | null | undefined
 ): ProfileFormValues {
@@ -51,10 +36,5 @@ export function profileFormToUpdatePayload(
   form: ProfileFormValues,
   latestProfile?: Profile | null
 ): Omit<Profile, "pubkey"> {
-  return buildProfileUpdatePayload(
-    Object.fromEntries(
-      PROFILE_FORM_FIELDS.map((field) => [field, emptyToUndefined(form[field])])
-    ) as Omit<Profile, "pubkey">,
-    latestProfile
-  )
+  return buildProfileUpdatePayload(form, latestProfile)
 }

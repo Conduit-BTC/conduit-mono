@@ -12,14 +12,7 @@ import {
 } from "lucide-react"
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router"
-import {
-  config,
-  formatNpub,
-  subscribeRelaySettingsChanges,
-  useAuth,
-  useConduitSession,
-  useProfile,
-} from "@conduit/core"
+import { config, formatNpub, useAuth, useProfile } from "@conduit/core"
 import {
   Avatar,
   AvatarFallback,
@@ -293,8 +286,7 @@ function AccountControl({
 
 export function MarketHeader() {
   const { pubkey, status, disconnect } = useAuth()
-  const session = useConduitSession()
-  const { data: profile, refetch: refetchProfile } = useProfile(pubkey, {
+  const { data: profile } = useProfile(pubkey, {
     authenticatedPubkey: pubkey,
   })
   const wallet = useWallet()
@@ -311,7 +303,6 @@ export function MarketHeader() {
   const [connectOpen, setConnectOpen] = useState(false)
   const [navState, setNavState] = useState<NavState>("top")
   const searchInputRef = useRef<HTMLInputElement | null>(null)
-  const profileRelayScopeRef = useRef<string | null>(null)
   const currentQuery = typeof search.q === "string" ? search.q : ""
   const isBrowseRoute = pathname === "/products"
   const connected = status === "connected" && !!pubkey
@@ -333,28 +324,6 @@ export function MarketHeader() {
       isBrowseRoute && searchDirty && normalizedSearchValue !== currentQuery,
     [currentQuery, isBrowseRoute, normalizedSearchValue, searchDirty]
   )
-
-  useEffect(() => {
-    const readyScope =
-      session.relaySettingsReady && pubkey && session.relayScope
-        ? `${pubkey}:${session.relayScope}`
-        : null
-    if (!readyScope) {
-      profileRelayScopeRef.current = null
-      return
-    }
-    if (profileRelayScopeRef.current === readyScope) return
-    profileRelayScopeRef.current = readyScope
-    void refetchProfile()
-  }, [pubkey, refetchProfile, session.relayScope, session.relaySettingsReady])
-
-  useEffect(() => {
-    if (!session.relaySettingsReady || !pubkey || !session.relayScope) return
-    return subscribeRelaySettingsChanges((changedScope) => {
-      if (changedScope !== session.relayScope) return
-      void refetchProfile()
-    })
-  }, [pubkey, refetchProfile, session.relayScope, session.relaySettingsReady])
 
   useEffect(() => {
     // Mirror the URL query into the input only when the user isn't actively

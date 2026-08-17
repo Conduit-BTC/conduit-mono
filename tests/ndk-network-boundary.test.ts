@@ -27,15 +27,21 @@ describe("NDK network boundary", () => {
   })
 
   it("refetches the signed-in profile after authenticated relay activation", async () => {
-    const header = await Bun.file(
-      "apps/market/src/components/MarketHeader.tsx"
-    ).text()
+    const [sessionContext, header] = await Promise.all([
+      Bun.file("packages/core/src/context/ConduitSessionContext.tsx").text(),
+      Bun.file("apps/market/src/components/MarketHeader.tsx").text(),
+    ])
 
-    expect(header).toContain("session.relaySettingsReady")
-    expect(header).toContain("session.relayScope")
-    expect(header).toContain("void refetchProfile()")
-    expect(header).toContain("profileRelayScopeRef.current === readyScope")
-    expect(header).toContain("subscribeRelaySettingsChanges")
-    expect(header).toContain("changedScope !== session.relayScope")
+    expect(sessionContext).toContain("!relaySettingsReady ||")
+    expect(sessionContext).toContain("session.relayScope")
+    expect(sessionContext).toContain("void refetchProfile()")
+    expect(sessionContext).toContain(
+      "profileRelayScopeRef.current === profileScope"
+    )
+    expect(sessionContext).toContain("subscribeRelaySettingsChanges")
+    expect(sessionContext).toContain("scope !== activeScopeRef.current")
+    expect(sessionContext).toContain("profileRefreshReadyRef.current")
+    expect(header).not.toContain("subscribeRelaySettingsChanges")
+    expect(header).not.toContain("useConduitSession")
   })
 })

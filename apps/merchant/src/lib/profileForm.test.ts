@@ -35,4 +35,11 @@ test("maps only changed profile form values to the publish payload", () => {
       profile
     )
   ).toEqual({ displayName: "Updated Merchant" })
+
+  expect(
+    profileFormToUpdatePayload(
+      { ...profileToFormValues(profile), picture: "" },
+      profile
+    )
+  ).toEqual({ picture: undefined })
 })

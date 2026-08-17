@@ -152,27 +152,12 @@ function ProfilePage() {
     event.preventDefault()
     if (!hasProfileChanges || updateMutation.isPending) return
     setProfileSaveSucceeded(false)
-    updateMutation.mutate(
-      buildProfileUpdatePayload(
-        {
-          name: form.name || undefined,
-          displayName: form.displayName || undefined,
-          about: form.about || undefined,
-          picture: form.picture || undefined,
-          banner: form.banner || undefined,
-          nip05: form.nip05 || undefined,
-          lud16: form.lud16 || undefined,
-          website: form.website || undefined,
-        },
-        profileQuery.data
-      ),
-      {
-        onSuccess: () => {
-          setProfileSaveSucceeded(true)
-          setEditing(false)
-        },
-      }
-    )
+    updateMutation.mutate(buildProfileUpdatePayload(form, profileQuery.data), {
+      onSuccess: () => {
+        setProfileSaveSucceeded(true)
+        setEditing(false)
+      },
+    })
   }
 
   return (
