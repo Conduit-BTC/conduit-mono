@@ -27,7 +27,12 @@ export type BuyerMessageDeliveryResult = {
   deliveryRoute: OrderDeliveryRoute
   /** Exact encrypted recipient wrap + per-relay outcomes for bounded retry. */
   orderRelayDelivery?: OrderRelayDeliveryRecord
+  /** Content-free outcome for the advisory external-client notification. */
+  companionNotificationStatus: OrderCompanionNotificationStatus
 }
+
+export type OrderCompanionNotificationStatus =
+  "sent" | "skipped_non_declared_route" | "skipped_non_order" | "failed"
 
 export type BuyerOrderSigningIdentity =
   | {
@@ -51,6 +56,14 @@ type BuyerOrderPublishDependencies = {
   publishPrivateMessageFn?: typeof publishPrivateMessage
   cacheBuyerOrderRumorFn?: typeof cacheBuyerOrderRumor
 }
+
+const ORDER_NOTIFICATION_SUBJECT = "conduit-order-notification"
+const MERCHANT_ORDERS_URL = "https://sell.conduit.market/orders?order="
+const SIGNED_IN_ORDER_NOTIFICATION_COPY =
+  "A new order was sent to you through Conduit Market."
+const GUEST_ORDER_NOTIFICATION_COPY =
+  "A new guest order was sent to you through Conduit Market.\n" +
+  "This buyer does not receive Nostr replies. Review the order and follow up using the email or phone provided there."
 
 function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
@@ -100,6 +113,105 @@ export function prepareBuyerRumor(rumor: NDKEvent, buyerPubkey: string): void {
     rumor.id = rumor.getEventHash()
   } catch (error) {
     console.warn("Failed to derive buyer order rumor id", error)
+  }
+}
+
+function isConduitMarketClientTag(tag: string[]): boolean {
+  return (
+    tag[0] === "client" &&
+    (tag[1] === "Conduit Market" ||
+      tag[2]?.endsWith(":conduit-market") === true)
+  )
+}
+
+/**
+ * Build the advisory kind-14 rumor from the authoritative order identity.
+ * Reusing the order id and timestamp keeps the inner rumor stable if a caller
+ * legitimately reconstructs it, while NIP-59 still randomizes each outer wrap.
+ */
+export function buildOrderCompanionNotificationRumor(
+  authoritativeOrder: NDKEvent,
+  buyerPubkey: string,
+  merchantPubkey: string,
+  buyerIdentityKind: "signed_in" | "guest_ephemeral" = "signed_in"
+): NDKEvent {
+  const orderId = authoritativeOrder.tags.find((tag) => tag[0] === "order")?.[1]
+  if (!orderId) throw new Error("Order notification requires an order tag.")
+  if (authoritativeOrder.created_at === undefined) {
+    throw new Error("Order notification requires the order timestamp.")
+  }
+
+  const companion = new NDKEvent()
+  companion.kind = EVENT_KINDS.DIRECT_MESSAGE
+  companion.pubkey = buyerPubkey
+  companion.created_at = authoritativeOrder.created_at
+  companion.tags = appendConduitClientTag(
+    [
+      ["p", merchantPubkey],
+      ["subject", ORDER_NOTIFICATION_SUBJECT],
+      ["order", orderId],
+    ],
+    "market"
+  )
+
+  // Test and local builds can omit NIP-89 deployment metadata. The locally
+  // constructed authoritative order already carries the canonical Market tag,
+  // so retain it when the config-backed helper cannot reconstruct it.
+  if (!companion.tags.some((tag) => tag[0] === "client")) {
+    const authoritativeClientTag = authoritativeOrder.tags.find(
+      isConduitMarketClientTag
+    )
+    if (authoritativeClientTag) {
+      companion.tags.push([...authoritativeClientTag])
+    }
+  }
+
+  const notificationCopy =
+    buyerIdentityKind === "guest_ephemeral"
+      ? GUEST_ORDER_NOTIFICATION_COPY
+      : SIGNED_IN_ORDER_NOTIFICATION_COPY
+  companion.content =
+    `${notificationCopy}\n` +
+    `Review it at: ${MERCHANT_ORDERS_URL}${encodeURIComponent(orderId)}`
+  companion.id = companion.getEventHash()
+  return companion
+}
+
+async function publishOrderCompanionNotification(input: {
+  authoritativeOrder: NDKEvent
+  buyerIdentity: BuyerOrderSigningIdentity & { signer: NDKSigner }
+  merchantPubkey: string
+  deliveryRoute: OrderDeliveryRoute
+  publish: typeof publishPrivateMessage
+}): Promise<OrderCompanionNotificationStatus> {
+  const messageType = input.authoritativeOrder.tags.find(
+    (tag) => tag[0] === "type"
+  )?.[1]
+  if (messageType !== "order") return "skipped_non_order"
+  if (input.deliveryRoute !== "declared_inbox") {
+    return "skipped_non_declared_route"
+  }
+
+  try {
+    const companion = buildOrderCompanionNotificationRumor(
+      input.authoritativeOrder,
+      input.buyerIdentity.pubkey,
+      input.merchantPubkey,
+      input.buyerIdentity.kind ?? "signed_in"
+    )
+    await input.publish({
+      rumor: companion,
+      senderPubkey: input.buyerIdentity.pubkey,
+      recipientPubkey: input.merchantPubkey,
+      signer: input.buyerIdentity.signer,
+      rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+      selfCopy: false,
+    })
+    return "sent"
+  } catch {
+    // The companion is advisory. Its content and failure details must not enter
+    // checkout delivery state, relay retry records, or buyer-facing errors.
+    return "failed"
   }
 }
 
@@ -172,6 +284,17 @@ export async function publishBuyerOrderMessage(
     }),
   })
 
+  // publishPrivateMessage only resolves the critical recipient leg after at
+  // least one relay ACK. The advisory kind-14 attempt therefore cannot precede
+  // authoritative order acceptance and cannot authorize order/payment retry.
+  const companionNotificationStatus = await publishOrderCompanionNotification({
+    authoritativeOrder: rumor,
+    buyerIdentity,
+    merchantPubkey,
+    deliveryRoute,
+    publish,
+  })
+
   const localCacheError =
     buyerIdentity.kind === "guest_ephemeral"
       ? null
@@ -182,6 +305,7 @@ export async function publishBuyerOrderMessage(
     buyerSelfCopyError,
     localCacheError,
     deliveryRoute,
+    companionNotificationStatus,
     ...(orderRelayDelivery ? { orderRelayDelivery } : {}),
   }
 }
