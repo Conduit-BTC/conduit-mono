@@ -6,23 +6,16 @@ import { EVENT_KINDS } from "./kinds"
 import { getProfiles } from "./commerce"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 import { getNdk } from "./ndk"
+import {
+  projectCachedProfile,
+  projectProfileContent,
+  retainStrongestCachedProfiles,
+} from "./profile-cache"
 import { publishWithPlanner } from "./relay-publish"
 import {
   assertSafeReplaceablePublish,
   countMeaningfulProfileFields,
 } from "./replaceable-safety"
-
-interface RawProfileContent {
-  name?: string
-  display_name?: string
-  displayName?: string
-  about?: string
-  picture?: string
-  banner?: string
-  nip05?: string
-  lud16?: string
-  website?: string
-}
 
 const PROFILE_CONTENT_FIELDS = [
   ["name", "name"],
@@ -43,7 +36,7 @@ function hasOwnProfileField(
 }
 
 function setProfileContentField(
-  content: Record<string, string>,
+  content: Record<string, unknown>,
   key: string,
   value: string | undefined
 ): void {
@@ -55,20 +48,81 @@ function setProfileContentField(
   delete content[key]
 }
 
+function hasNonRoundTrippableJsonNumber(content: string): boolean {
+  let inString = false
+  let escaped = false
+
+  for (let index = 0; index < content.length; index += 1) {
+    const character = content[index]
+    if (inString) {
+      if (escaped) {
+        escaped = false
+      } else if (character === "\\") {
+        escaped = true
+      } else if (character === '"') {
+        inString = false
+      }
+      continue
+    }
+
+    if (character === '"') {
+      inString = true
+      continue
+    }
+    if (character !== "-" && (character < "0" || character > "9")) continue
+
+    const token = content
+      .slice(index)
+      .match(/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/)?.[0]
+    if (!token) continue
+    if (JSON.stringify(Number(token)) !== token) return true
+    index += token.length - 1
+  }
+
+  return false
+}
+
 function parseProfilePublishContent(
   content: string | null | undefined
-): Record<string, string> {
+): Record<string, unknown> {
   if (!content) return {}
+  const parse = JSON.parse as (
+    text: string,
+    reviver: (
+      key: string,
+      value: unknown,
+      context?: { source?: string }
+    ) => unknown
+  ) => unknown
+  const rawJSON = (
+    JSON as typeof JSON & { rawJSON?: (source: string) => unknown }
+  ).rawJSON
+  const hasNonRoundTrippableNumber = hasNonRoundTrippableJsonNumber(content)
+  let observedNumberSource = false
+  let cannotPreserveNumber = false
+
   try {
-    const parsed = JSON.parse(content) as unknown
+    const parsed = parse(content, (_key, value, context) => {
+      if (typeof value === "number" && context?.source) {
+        observedNumberSource = true
+        if (JSON.stringify(value) !== context.source) {
+          if (rawJSON) return rawJSON(context.source)
+          cannotPreserveNumber = true
+        }
+      }
+      return value
+    })
+    if (hasNonRoundTrippableNumber && !observedNumberSource) {
+      cannotPreserveNumber = true
+    }
+    if (cannotPreserveNumber) {
+      throw new Error("This browser cannot preserve profile numeric metadata")
+    }
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
       return {}
-    return Object.fromEntries(
-      Object.entries(parsed).filter(
-        (entry): entry is [string, string] => typeof entry[1] === "string"
-      )
-    )
-  } catch {
+    return Object.fromEntries(Object.entries(parsed))
+  } catch (error) {
+    if (cannotPreserveNumber) throw error
     return {}
   }
 }
@@ -76,30 +130,7 @@ function parseProfilePublishContent(
 export function parseProfileEvent(
   event: Pick<NDKEvent, "content" | "pubkey">
 ): Profile {
-  let raw: RawProfileContent = {}
-  try {
-    const parsed = JSON.parse(event.content || "{}") as unknown
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      raw = parsed as RawProfileContent
-    }
-  } catch {
-    // malformed content — return bare profile
-  }
-
-  const stringValue = (value: unknown): string | undefined =>
-    typeof value === "string" ? value : undefined
-
-  return {
-    pubkey: event.pubkey,
-    name: stringValue(raw.name),
-    displayName: stringValue(raw.display_name ?? raw.displayName),
-    about: stringValue(raw.about),
-    picture: normalizePublicMediaUrl(raw.picture) ?? undefined,
-    banner: normalizePublicMediaUrl(raw.banner) ?? undefined,
-    nip05: stringValue(raw.nip05),
-    lud16: stringValue(raw.lud16),
-    website: stringValue(raw.website),
-  }
+  return projectProfileContent(event.pubkey, event.content)
 }
 
 export async function fetchProfile(
@@ -151,7 +182,7 @@ export function buildNip01ProfilePublishContent({
   profile: Omit<Profile, "pubkey">
   latestProfile?: Profile
   latestContent?: string
-}): Record<string, string> {
+}): Record<string, unknown> {
   const hasProfileInput = PROFILE_CONTENT_FIELDS.some(([profileField]) =>
     hasOwnProfileField(profile, profileField)
   )
@@ -186,8 +217,8 @@ export function buildNip01ProfilePublishContent({
 export function shouldEnforceNip01ProfileMinimumFields({
   content,
 }: {
-  content: Record<string, string>
-  latestContent?: Record<string, string>
+  content: Record<string, unknown>
+  latestContent?: Record<string, unknown>
 }): boolean {
   return countMeaningfulProfileFields(JSON.stringify(content)) <= 1
 }
@@ -205,6 +236,30 @@ export function getNextProfileEventCreatedAt(
     return nowSeconds
   }
   return Math.max(nowSeconds, latestCreatedAt + 1)
+}
+
+export class ProfilePublishSupersededError extends Error {
+  readonly code = "profile_publish_superseded" as const
+
+  constructor() {
+    super(
+      "Another profile update took precedence while this one was publishing. The retained profile was kept; review it and retry."
+    )
+    this.name = "ProfilePublishSupersededError"
+  }
+}
+
+export function assertProfilePublishRetained(
+  retainedProfile:
+    Pick<CachedProfile, "eventId" | "eventCreatedAt"> | undefined,
+  publishedEvent: Pick<NDKEvent, "id" | "created_at">
+): void {
+  if (
+    retainedProfile?.eventId !== publishedEvent.id ||
+    retainedProfile.eventCreatedAt !== publishedEvent.created_at
+  ) {
+    throw new ProfilePublishSupersededError()
+  }
 }
 
 export async function publishProfile(
@@ -264,15 +319,20 @@ export async function publishProfile(
 
   const publishedProfile = parseProfileEvent({ pubkey, content: event.content })
 
-  // Update local cache
-  await db.profiles.put({
-    ...publishedProfile,
-    rawContent: event.content,
-    eventId: event.id,
-    eventCreatedAt: event.created_at,
-    sourceRelayUrls: [],
-    cachedAt: Date.now(),
-  })
+  // Reconcile against the commit-time frontier so a concurrent tab cannot
+  // replace stronger profile evidence with this row after the network step.
+  const retention = await retainStrongestCachedProfiles([
+    {
+      ...publishedProfile,
+      rawContent: event.content,
+      eventId: event.id,
+      eventCreatedAt: event.created_at,
+      sourceRelayUrls: [],
+      cachedAt: Date.now(),
+    },
+  ])
+  const retainedProfile = retention.rows[0]
+  assertProfilePublishRetained(retainedProfile, event)
 
-  return publishedProfile
+  return projectCachedProfile(retainedProfile)
 }

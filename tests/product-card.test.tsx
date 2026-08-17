@@ -23,18 +23,24 @@ describe("ProductCard", () => {
   })
 
   it("does not render a non-public image destination passed at the UI boundary", () => {
-    const html = renderToStaticMarkup(
-      <ProductCard
-        title="Unsafe Image Product"
-        merchantName="Mallory Store"
-        images={[{ url: "http://127.0.0.1/private.png" }]}
-        primaryPrice="25 sats"
-      />
-    )
+    for (const url of [
+      "http://127.0.0.1/private.png",
+      "https://[2001:100::1]/avatar.png",
+      "https://[2001:1::4]/avatar.png",
+    ]) {
+      const html = renderToStaticMarkup(
+        <ProductCard
+          title="Unsafe Image Product"
+          merchantName="Mallory Store"
+          images={[{ url }]}
+          primaryPrice="25 sats"
+        />
+      )
 
-    expect(html).toContain("Image unavailable")
-    expect(html).not.toContain("127.0.0.1")
-    expect(html).not.toContain("<img")
+      expect(html).toContain("Image unavailable")
+      expect(html).not.toContain(url)
+      expect(html).not.toContain("<img")
+    }
   })
 
   it("does not skip an unsafe first candidate to request a later author URL", () => {

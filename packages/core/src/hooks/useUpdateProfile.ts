@@ -1,7 +1,10 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import type { ConduitAppId } from "../protocol/nip89"
 import type { ProfileMap } from "../protocol/profile-cache"
-import { publishProfile } from "../protocol/profiles"
+import {
+  ProfilePublishSupersededError,
+  publishProfile,
+} from "../protocol/profiles"
 import type { Profile } from "../types"
 import {
   getProfileQueryPerspectiveKey,
@@ -13,6 +16,13 @@ export function useUpdateProfile(appId: ConduitAppId) {
   return useMutation({
     mutationFn: (profile: Omit<Profile, "pubkey">) =>
       publishProfile(profile, appId),
+    onError: (error) => {
+      if (!(error instanceof ProfilePublishSupersededError)) return
+      void qc.invalidateQueries({
+        predicate: ({ queryKey }) =>
+          queryKey[0] === "profile" || queryKey[0] === "profiles",
+      })
+    },
     onSuccess: (profile) => {
       const ownerPerspective = getProfileQueryPerspectiveKey(profile.pubkey)
       qc.setQueryData<Profile>(

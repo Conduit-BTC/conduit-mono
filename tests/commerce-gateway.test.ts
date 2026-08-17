@@ -3245,13 +3245,29 @@ describe("commerce gateway", () => {
       },
     })
 
-    const result = await getProfiles({
+    const firstResult = await getProfiles({
+      pubkeys: ["merchant"],
+      skipCache: true,
+    })
+    const secondResult = await getProfiles({
       pubkeys: ["merchant"],
       skipCache: true,
     })
 
-    expect(result.data.merchant?.name).toBe("ZALGEBAR")
+    expect(firstResult.data.merchant?.name).toBe("ZALGEBAR")
+    expect(secondResult.data.merchant?.name).toBe("ZALGEBAR")
+    expect(firstResult.meta).toMatchObject({
+      source: "public",
+      stale: false,
+      degraded: false,
+    })
+    expect(secondResult.meta).toMatchObject({
+      source: "public",
+      stale: false,
+      degraded: false,
+    })
     expect(cachedProfiles.get("merchant")).toMatchObject({
+      name: "ZALGEBAR",
       rawContent: "{}",
       eventId: "profile-blank-newer",
       eventCreatedAt: 20,
@@ -3344,6 +3360,11 @@ describe("commerce gateway", () => {
     })
 
     expect(result.data.merchant?.name).toBe("Current Merchant")
+    expect(result.meta).toMatchObject({
+      source: "local_cache",
+      stale: true,
+      degraded: true,
+    })
     expect(cachedProfiles.get("merchant")).toMatchObject({
       rawContent: JSON.stringify({
         name: "Current Merchant",
@@ -3353,6 +3374,158 @@ describe("commerce gateway", () => {
       eventCreatedAt: 20,
     })
   })
+
+  it("repairs a stale projection when the exact cached event is observed", async () => {
+    const eventId = "1".repeat(64)
+    const rawContent = JSON.stringify({ name: "Alice" })
+    cachedProfiles.set("merchant", {
+      pubkey: "merchant",
+      name: "Alice",
+      about: "Stale enriched biography",
+      rawContent,
+      eventId,
+      eventCreatedAt: 110,
+      cachedAt: FIXED_NOW - 1_000,
+    })
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PROFILE)
+          ? ([
+              {
+                id: eventId,
+                pubkey: "merchant",
+                created_at: 110,
+                content: rawContent,
+                tags: [],
+              },
+            ] as never)
+          : [],
+    })
+
+    const result = await getProfiles({
+      pubkeys: ["merchant"],
+      skipCache: true,
+    })
+
+    expect(result.data.merchant).toMatchObject({ name: "Alice" })
+    expect(result.data.merchant?.about).toBeUndefined()
+    expect(result.meta).toMatchObject({
+      source: "public",
+      stale: false,
+      degraded: false,
+    })
+    expect(cachedProfiles.get("merchant")).toMatchObject({
+      name: "Alice",
+      rawContent,
+      eventId,
+      eventCreatedAt: 110,
+    })
+    expect(cachedProfiles.get("merchant")?.about).toBeUndefined()
+  })
+
+  for (const scenario of [
+    {
+      label: "a newer timestamp",
+      delayedId: "5".repeat(64),
+      delayedCreatedAt: 105,
+      winnerId: "1".repeat(64),
+      winnerCreatedAt: 110,
+    },
+    {
+      label: "the lower event id at an equal timestamp",
+      delayedId: "7".repeat(64),
+      delayedCreatedAt: 110,
+      winnerId: "1".repeat(64),
+      winnerCreatedAt: 110,
+    },
+  ]) {
+    it(`atomically retains ${scenario.label} across concurrent profile refreshes`, async () => {
+      const initialId = "9".repeat(64)
+      cachedProfiles.set("merchant", {
+        pubkey: "merchant",
+        name: "Initial profile",
+        rawContent: JSON.stringify({ name: "Initial profile" }),
+        eventId: initialId,
+        eventCreatedAt: 100,
+        cachedAt: FIXED_NOW - 1_000,
+      })
+
+      let fetchCall = 0
+      let markDelayedFetchStarted!: () => void
+      let resumeDelayedFetch!: () => void
+      const delayedFetchStarted = new Promise<void>((resolve) => {
+        markDelayedFetchStarted = resolve
+      })
+      const delayedFetchGate = new Promise<void>((resolve) => {
+        resumeDelayedFetch = resolve
+      })
+      __setCommerceTestOverrides({
+        fetchEventsFanout: async (filter) => {
+          if (!filter.kinds?.includes(EVENT_KINDS.PROFILE)) return []
+
+          fetchCall += 1
+          if (fetchCall === 1) {
+            markDelayedFetchStarted()
+            await delayedFetchGate
+            return [
+              {
+                id: scenario.delayedId,
+                pubkey: "merchant",
+                created_at: scenario.delayedCreatedAt,
+                content: JSON.stringify({ name: "Delayed loser" }),
+                tags: [],
+              } as never,
+            ]
+          }
+
+          return [
+            {
+              id: scenario.winnerId,
+              pubkey: "merchant",
+              created_at: scenario.winnerCreatedAt,
+              content: JSON.stringify({
+                name: "Committed winner",
+                bot: true,
+                birthday: { year: 1990, month: 8 },
+              }),
+              tags: [],
+            } as never,
+          ]
+        },
+      })
+
+      const delayedResultPromise = getProfiles({
+        pubkeys: ["merchant"],
+        skipCache: true,
+      })
+      await delayedFetchStarted
+
+      const winnerResult = await getProfiles({
+        pubkeys: ["merchant"],
+        skipCache: true,
+      })
+      resumeDelayedFetch()
+      const delayedResult = await delayedResultPromise
+
+      expect(winnerResult.data.merchant?.name).toBe("Committed winner")
+      expect(delayedResult.data.merchant?.name).toBe("Committed winner")
+      expect(delayedResult.meta).toMatchObject({
+        degraded: true,
+        source: "local_cache",
+        stale: true,
+      })
+      expect(cachedProfiles.get("merchant")).toMatchObject({
+        name: "Committed winner",
+        rawContent: JSON.stringify({
+          name: "Committed winner",
+          bot: true,
+          birthday: { year: 1990, month: 8 },
+        }),
+        eventId: scenario.winnerId,
+        eventCreatedAt: scenario.winnerCreatedAt,
+      })
+    })
+  }
 
   it("keeps stale cached profile identity when live profile lookup misses", async () => {
     cachedProfiles.set("merchant", {
@@ -3370,6 +3543,11 @@ describe("commerce gateway", () => {
     })
 
     expect(result.data.merchant?.displayName).toBe("ZALGEBAR")
+    expect(result.meta).toMatchObject({
+      source: "local_cache",
+      stale: true,
+      degraded: true,
+    })
   })
 
   it("does not cache bare profile misses as successful profile rows", async () => {

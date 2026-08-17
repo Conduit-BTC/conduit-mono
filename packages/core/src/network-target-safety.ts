@@ -127,6 +127,25 @@ const IPV6_TEREDO_PREFIX = 0x20010000000000000000000000000000n
 const IPV6_6TO4_PREFIX = 0x20020000000000000000000000000000n
 const IPV6_BENCHMARK_PREFIX = 0x20010002000000000000000000000000n
 const IPV6_DOCUMENTATION_V2_PREFIX = 0x3fff0000000000000000000000000000n
+const IPV6_IETF_PROTOCOL_ASSIGNMENTS_PREFIX =
+  0x20010000000000000000000000000000n
+const IPV6_PCP_ANYCAST = 0x20010001000000000000000000000001n
+const IPV6_TURN_ANYCAST = 0x20010001000000000000000000000002n
+const IPV6_DNS_SD_ANYCAST = 0x20010001000000000000000000000003n
+const IPV6_AMT_PREFIX = 0x20010003000000000000000000000000n
+const IPV6_AS112_PREFIX = 0x20010004011200000000000000000000n
+const IPV6_DET_PREFIX = 0x20010030000000000000000000000000n
+
+function isPublicIetfProtocolAssignment(value: bigint): boolean {
+  return (
+    value === IPV6_PCP_ANYCAST ||
+    value === IPV6_TURN_ANYCAST ||
+    value === IPV6_DNS_SD_ANYCAST ||
+    hasIpv6Prefix(value, IPV6_AMT_PREFIX, 32) ||
+    hasIpv6Prefix(value, IPV6_AS112_PREFIX, 48) ||
+    hasIpv6Prefix(value, IPV6_DET_PREFIX, 28)
+  )
+}
 
 function isPublicIpv6Address(value: bigint): boolean {
   // Globally routable unicast space is currently within 2000::/3. Keeping
@@ -140,6 +159,16 @@ function isPublicIpv6Address(value: bigint): boolean {
   if (hasIpv6Prefix(value, IPV6_6TO4_PREFIX, 16)) return false
   if (hasIpv6Prefix(value, IPV6_BENCHMARK_PREFIX, 48)) return false
   if (hasIpv6Prefix(value, IPV6_DOCUMENTATION_V2_PREFIX, 20)) return false
+  // IANA marks the 2001::/23 parent as non-destination-valid,
+  // non-forwardable, and non-global unless a more-specific allocation says
+  // otherwise. Default-deny its unallocated gaps while retaining the public
+  // suballocations admitted by this client policy.
+  if (
+    hasIpv6Prefix(value, IPV6_IETF_PROTOCOL_ASSIGNMENTS_PREFIX, 23) &&
+    !isPublicIetfProtocolAssignment(value)
+  ) {
+    return false
+  }
   return true
 }
 

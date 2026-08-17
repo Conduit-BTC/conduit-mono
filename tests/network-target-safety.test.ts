@@ -122,6 +122,37 @@ describe("public network target safety", () => {
     }
   })
 
+  it("default-denies unallocated IETF protocol-assignment IPv6 space", () => {
+    for (const hostname of [
+      "[2001:1::4]",
+      "[2001:4:111::1]",
+      "[2001:4:113::1]",
+      "[2001:40::1]",
+      "[2001:100::1]",
+      "[2001:1ff:ffff:ffff:ffff:ffff:ffff:ffff]",
+    ]) {
+      expect(isPublicNetworkHostname(hostname)).toBe(false)
+      expect(
+        normalizePublicMediaUrl(`https://${hostname}/image.png`)
+      ).toBeNull()
+      expect(normalizePublicHttpsUrl(`https://${hostname}/metadata`)).toBeNull()
+      expect(normalizePublicWebSocketUrl(`wss://${hostname}/relay`)).toBeNull()
+    }
+
+    for (const hostname of [
+      "[2001:1::1]",
+      "[2001:1::2]",
+      "[2001:1::3]",
+      "[2001:3::1]",
+      "[2001:4:112::1]",
+      "[2001:30::1]",
+      "[2001:3f:ffff:ffff:ffff:ffff:ffff:ffff]",
+      "[2001:200::1]",
+    ]) {
+      expect(isPublicNetworkHostname(hostname)).toBe(true)
+    }
+  })
+
   it("applies protocol-specific policy to fetch and relay destinations", () => {
     expect(
       normalizePublicHttpsUrl("https://identity.conduit.market/.well-known/x")

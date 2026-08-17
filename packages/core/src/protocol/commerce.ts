@@ -65,7 +65,14 @@ import {
   normalizeProductSummaryForDisplay,
   parseProductEvent,
 } from "./products"
-import { mergeRicherProfile } from "./profile-cache"
+import {
+  areProfileProjectionsEqual,
+  mergeRicherProfile,
+  projectCachedProfile,
+  reduceCachedProfileRows,
+  retainStrongestCachedProfiles,
+  type CachedProfileRetentionResult,
+} from "./profile-cache"
 import { parseProfileEvent } from "./profiles"
 import {
   isValidSignedPublicNostrEvent,
@@ -381,6 +388,7 @@ const READ_PLANS: Record<CommerceReadPlanName, CommerceReadSource[]> = {
 }
 
 let testOverrides: CommerceTestOverrides = {}
+let testProfileCacheWriteLock: Promise<void> = Promise.resolve()
 const volatileProductTombstones = new Map<string, CachedProductTombstone>()
 const successfulWrapIdsByPrincipal = new Map<string, Set<string>>()
 const retryWrapsByPrincipal = new Map<
@@ -699,6 +707,7 @@ export function __setCommerceTestOverrides(
 
 export function __resetCommerceTestOverrides(): void {
   testOverrides = {}
+  testProfileCacheWriteLock = Promise.resolve()
   volatileProductTombstones.clear()
   successfulWrapIdsByPrincipal.clear()
   retryWrapsByPrincipal.clear()
@@ -1843,15 +1852,41 @@ async function loadCachedProfiles(
   return await db.profiles.bulkGet(pubkeys)
 }
 
-async function storeCachedProfiles(rows: CachedProfile[]): Promise<void> {
-  if (rows.length === 0) return
-
-  if (testOverrides.putCachedProfiles) {
-    await testOverrides.putCachedProfiles(rows)
-    return
+async function storeCachedProfiles(
+  rows: CachedProfile[]
+): Promise<CachedProfileRetentionResult> {
+  if (rows.length === 0) {
+    return { rows: [], displacedPubkeys: new Set() }
   }
 
-  await db.profiles.bulkPut(rows)
+  if (testOverrides.getCachedProfiles || testOverrides.putCachedProfiles) {
+    const previous = testProfileCacheWriteLock
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    testProfileCacheWriteLock = previous.catch(() => undefined).then(() => gate)
+
+    await previous.catch(() => undefined)
+    try {
+      const pubkeys = Array.from(new Set(rows.map((row) => row.pubkey)))
+      const currentRows = testOverrides.getCachedProfiles
+        ? await testOverrides.getCachedProfiles(pubkeys)
+        : pubkeys.map(() => undefined)
+      const retention = reduceCachedProfileRows(rows, currentRows)
+      if (retention.updates.length > 0 && testOverrides.putCachedProfiles) {
+        await testOverrides.putCachedProfiles(retention.updates)
+      }
+      return {
+        rows: retention.rows,
+        displacedPubkeys: retention.displacedPubkeys,
+      }
+    } finally {
+      release()
+    }
+  }
+
+  return await retainStrongestCachedProfiles(rows)
 }
 
 function hasProfileContent(
@@ -1877,22 +1912,6 @@ function hasProfileContent(
     profile.lud16,
     profile.website,
   ].some((value) => typeof value === "string" && value.trim().length > 0)
-}
-
-function cachedProfileToProfile(row: CachedProfile): Profile {
-  const text = (value: unknown): string | undefined =>
-    typeof value === "string" ? value : undefined
-  return {
-    pubkey: row.pubkey,
-    name: text(row.name),
-    displayName: text(row.displayName),
-    about: text(row.about),
-    picture: normalizePublicMediaUrl(row.picture) ?? undefined,
-    banner: normalizePublicMediaUrl(row.banner) ?? undefined,
-    nip05: text(row.nip05),
-    lud16: text(row.lud16),
-    website: text(row.website),
-  }
 }
 
 function compareReplaceableProfileEvents(a: NDKEvent, b: NDKEvent): number {
@@ -1946,8 +1965,12 @@ function mergeProfileEvents(
         (latestEventCreatedAt === currentFrontier &&
           (latestEvent.id || "\uffff") < (currentRow?.eventId || "\uffff")))
     const frontier = latestEventWins ? latestEvent : undefined
+    const exactCurrentFrontierObserved =
+      !!latestEvent?.id &&
+      latestEventCreatedAt === currentFrontier &&
+      latestEvent.id === currentRow?.eventId
     const currentProjection = currentRow
-      ? cachedProfileToProfile(currentRow)
+      ? projectCachedProfile(currentRow)
       : undefined
     const currentFrontierWins =
       currentRow?.eventCreatedAt !== undefined &&
@@ -1955,21 +1978,28 @@ function mergeProfileEvents(
         latestEventCreatedAt < currentFrontier ||
         (latestEventCreatedAt === currentFrontier &&
           (currentRow.eventId || "\uffff") <= (latestEvent.id || "\uffff")))
-    const profile = mergeRicherProfile(
-      profiles[pubkey] ?? currentProjection,
-      currentFrontierWins
-        ? undefined
-        : event
-          ? parseProfileEvent(event)
-          : { pubkey }
-    )
+    const profile = exactCurrentFrontierObserved
+      ? mergeRicherProfile(
+          undefined,
+          event ? parseProfileEvent(event) : { pubkey }
+        )
+      : mergeRicherProfile(
+          profiles[pubkey] ?? currentProjection,
+          currentFrontierWins
+            ? undefined
+            : event
+              ? parseProfileEvent(event)
+              : { pubkey }
+        )
     const sourceRelayUrls = uniqueStrings([
       ...(currentRow?.sourceRelayUrls ?? []),
       ...(event ? getEventSourceRelayUrls(event) : []),
-      ...(frontier ? getEventSourceRelayUrls(frontier) : []),
+      ...(latestEvent ? getEventSourceRelayUrls(latestEvent) : []),
     ])
     profiles[pubkey] = profile ?? { pubkey }
-    if (frontier || (profile && hasProfileContent(profile))) {
+    const observedFrontier =
+      frontier ?? (exactCurrentFrontierObserved ? latestEvent : undefined)
+    if (observedFrontier || (profile && hasProfileContent(profile))) {
       if (event) hasResolvedProfile = true
       const cachedProfile = profile ?? { pubkey }
       rowsToCache.push({
@@ -1982,9 +2012,10 @@ function mergeProfileEvents(
         nip05: cachedProfile.nip05,
         lud16: cachedProfile.lud16,
         website: cachedProfile.website,
-        rawContent: frontier?.content ?? currentRow?.rawContent,
-        eventId: frontier?.id || currentRow?.eventId,
-        eventCreatedAt: frontier?.created_at ?? currentRow?.eventCreatedAt,
+        rawContent: observedFrontier?.content ?? currentRow?.rawContent,
+        eventId: observedFrontier?.id || currentRow?.eventId,
+        eventCreatedAt:
+          observedFrontier?.created_at ?? currentRow?.eventCreatedAt,
         sourceRelayUrls:
           sourceRelayUrls.length > 0 ? sourceRelayUrls : undefined,
         cachedAt: now(),
@@ -4146,10 +4177,10 @@ export async function getProfiles(
       !isAuthenticatedOwner &&
       now() - cached.cachedAt < PROFILE_CACHE_TTL_MS
     ) {
-      result[pubkey] = cachedProfileToProfile(cached)
+      result[pubkey] = projectCachedProfile(cached)
     } else {
       if (cached && hasProfileContent(cached)) {
-        result[pubkey] = cachedProfileToProfile(cached)
+        result[pubkey] = projectCachedProfile(cached)
       }
       missing.push(pubkey)
     }
@@ -4238,15 +4269,56 @@ export async function getProfiles(
       events,
       cachedRowsByPubkey
     )
-    Object.assign(result, profiles)
+    const liveRowsByPubkey = new Map(
+      mergeProfileEvents(missing, {}, events).rowsToCache.map((row) => [
+        row.pubkey,
+        row,
+      ])
+    )
+    let cacheRetention: CachedProfileRetentionResult | undefined
 
     if (rowsToCache.length > 0) {
-      await storeCachedProfiles(rowsToCache)
+      cacheRetention = await storeCachedProfiles(rowsToCache)
+      for (const row of cacheRetention.rows) {
+        profiles[row.pubkey] = projectCachedProfile(row)
+      }
     }
+    Object.assign(result, profiles)
+
+    const displaced = (cacheRetention?.displacedPubkeys.size ?? 0) > 0
+    const missingPubkeys = new Set(missing)
+    const usesFreshCachedResult = pubkeys.some(
+      (pubkey) =>
+        !missingPubkeys.has(pubkey) && hasProfileContent(result[pubkey])
+    )
+    const usesUnconfirmedCachedResult =
+      cacheRetention?.rows.some((row) => {
+        if (!hasProfileContent(row)) return false
+        const liveRow = liveRowsByPubkey.get(row.pubkey)
+        return (
+          !liveRow ||
+          row.eventId !== liveRow.eventId ||
+          row.eventCreatedAt !== liveRow.eventCreatedAt ||
+          !areProfileProjectionsEqual(
+            projectCachedProfile(row),
+            projectCachedProfile(liveRow)
+          )
+        )
+      }) ?? false
+    const dependsOnCache = usesFreshCachedResult || usesUnconfirmedCachedResult
+    const stale = displaced || usesUnconfirmedCachedResult
 
     return {
       data: result,
-      meta: createMeta("profile_batch", "public", PROFILE_CAPABILITIES),
+      meta: createMeta(
+        "profile_batch",
+        dependsOnCache ? "local_cache" : "public",
+        PROFILE_CAPABILITIES,
+        {
+          stale,
+          degraded: stale,
+        }
+      ),
     }
   } catch (error) {
     const hasAnyCached = Object.keys(result).length > 0
