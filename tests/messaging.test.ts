@@ -720,6 +720,7 @@ describe("publishPrivateMessage", () => {
           "wss://sender-a.inbox.example",
           "wss://sender-b.inbox.example",
         ],
+        inspectOwnInboxReadiness: readyOwnInbox,
         giftWrapFn: (async (_rumor, recipient) =>
           wrap(`wrap-${recipient.pubkey}`)) as never,
         publishFn: (async (event) => {
@@ -759,6 +760,16 @@ describe("publishPrivateMessage", () => {
         "wss://sender-a.inbox.example",
         "wss://sender-b.inbox.example",
       ],
+      inspectOwnInboxReadiness: async () => ({
+        state: "ready" as const,
+        eventId: "a".repeat(64),
+        relayUrls: [
+          "wss://sender-a.inbox.example",
+          "wss://sender-b.inbox.example",
+        ],
+        stale: false,
+        distributionRepairable: false,
+      }),
       giftWrapFn: (async (_rumor, recipient) =>
         wrap(`wrap-${recipient.pubkey}`)) as never,
       publishFn: (async (_event, options) => {
