@@ -28,6 +28,8 @@ export interface RelayReadSourceStatus {
   relayUrl: string
   status: "success" | "partial" | "failed"
   eventCount: number
+  /** Structurally matching events rejected by id or signature verification. */
+  rejectedEventCount?: number
 }
 
 export interface SignedEventRelayReadResult {
@@ -89,7 +91,11 @@ export async function fetchSignedEventsFanoutDetailed(
   return {
     events: result.events.map(copySignedEvent),
     eventSourceRelayUrls,
-    relays: result.relays.map((relay) => ({ ...relay })),
+    relays: result.relays.map((relay) => ({
+      ...relay,
+      // Make authoritative absence explicit for replacement-sensitive reads.
+      rejectedEventCount: relay.rejectedEventCount ?? 0,
+    })),
     eventsVerified: result.eventsVerified === true,
   }
 }

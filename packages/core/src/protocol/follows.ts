@@ -318,7 +318,8 @@ async function persistOwnContactListSnapshot(
   snapshot: CachedOwnContactListSnapshot,
   options: {
     required: boolean
-    expectedBaseEvent?: SignedPublicNostrEvent
+    /** `null` means the complete preflight read established no prior event. */
+    expectedBaseEvent?: SignedPublicNostrEvent | null
   }
 ): Promise<CachedOwnContactListSnapshot> {
   const normalized = cloneOwnContactListSnapshot(snapshot)
@@ -331,6 +332,11 @@ async function persistOwnContactListSnapshot(
     )
       ? current
       : undefined
+    if (validCurrent && options.expectedBaseEvent === null) {
+      throw new ReplaceablePublishSafetyError(
+        "Refusing to publish an initial follow list because a durable owner snapshot appeared after the read."
+      )
+    }
     if (validCurrent && options.expectedBaseEvent) {
       const strongestBeforeUpdate = selectLatestFollowListEvent([
         validCurrent.event,
@@ -836,7 +842,7 @@ export function buildContactListUpdateTags({
 export function requirePublishableContactListSnapshot(
   read: FollowListReadResult,
   ownerPubkey: string
-): SignedPublicNostrEvent {
+): SignedPublicNostrEvent | null {
   const normalizedOwnerPubkey = normalizeHexPubkey(ownerPubkey)
   const author = read.authors.find(
     (candidate) => candidate.pubkey === normalizedOwnerPubkey
@@ -870,6 +876,31 @@ export function requirePublishableContactListSnapshot(
     hasCurrentRelayDiscovery &&
     completedOwnerLocalHint &&
     allSelectedHintsCompleted
+  const completeEmptyNetworkReadIsPublishable =
+    !author?.event &&
+    author?.snapshotState === "none" &&
+    author.eventsVerified &&
+    author.coverage === "complete" &&
+    !author.relayHintTruncated &&
+    hasCurrentRelayDiscovery &&
+    author.plannedRelayUrls.length > 0 &&
+    author.relays.every(
+      (relay) =>
+        relay.status === "success" &&
+        relay.eventCount === 0 &&
+        relay.rejectedEventCount === 0
+    ) &&
+    author.plannedRelayUrls.every((relayUrl) =>
+      author.relays.some(
+        (relay) =>
+          relay.relayUrl === relayUrl &&
+          relay.status === "success" &&
+          relay.eventCount === 0 &&
+          relay.rejectedEventCount === 0
+      )
+    )
+
+  if (completeEmptyNetworkReadIsPublishable) return null
 
   if (
     !author?.event ||
@@ -985,8 +1016,10 @@ export async function publishContactListUpdate({
     normalizedOwnerPubkey
   )
 
+  if (!latest && !shouldFollow) return
+
   const nextTags = buildContactListUpdateTags({
-    currentTags: latest.tags,
+    currentTags: latest?.tags,
     targetPubkey: normalizedTargetPubkey,
     shouldFollow,
   })
@@ -995,9 +1028,9 @@ export async function publishContactListUpdate({
   event.kind = EVENT_KINDS.CONTACT_LIST
   event.created_at = Math.max(
     Math.floor(Date.now() / 1000),
-    latest.created_at + 1
+    (latest?.created_at ?? -1) + 1
   )
-  event.content = latest.content ?? ""
+  event.content = latest?.content ?? ""
   event.tags = appendConduitClientTag(nextTags, appId)
 
   assertSafeReplaceablePublish(event, replaceableSafety)

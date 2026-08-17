@@ -40,6 +40,8 @@ export interface FetchEventsRelayStatus {
   relayUrl: string
   status: "success" | "partial" | "failed"
   eventCount: number
+  /** Structurally matching events rejected by id or signature verification. */
+  rejectedEventCount?: number
 }
 
 export interface FetchEventsFanoutResult {
@@ -941,6 +943,7 @@ async function fetchEventsFromRelay(
   relayUrl: string
   events: NDKEvent[]
   status: FetchEventsRelayStatus["status"]
+  rejectedEventCount: number
 }> {
   await acquireRelayReadSlot(signal)
   try {
@@ -1003,6 +1006,10 @@ async function fetchEventsFromRelay(
       verified.push(event)
       if (eventLimit !== null && verified.length >= eventLimit) break
     }
+    const rejectedEventCount = accepted.reduce(
+      (count, isAccepted) => count + (isAccepted ? 0 : 1),
+      0
+    )
 
     const status: FetchEventsRelayStatus["status"] =
       truncated || verificationTruncated
@@ -1016,11 +1023,16 @@ async function fetchEventsFromRelay(
     if (status === "success") recordRelaySuccess(relayUrl)
     else recordRelayFailure(relayUrl)
 
-    return { relayUrl, events: verified, status }
+    return { relayUrl, events: verified, status, rejectedEventCount }
   } catch (error) {
     if (signal?.aborted || isAbortError(error)) throw error
     recordRelayFailure(relayUrl)
-    return { relayUrl, events: [], status: "failed" }
+    return {
+      relayUrl,
+      events: [],
+      status: "failed",
+      rejectedEventCount: 0,
+    }
   } finally {
     releaseRelayReadSlot()
   }
@@ -1127,6 +1139,9 @@ export async function fetchEventsFanoutDetailed(
         relayUrl: result.relayUrl,
         status: result.status,
         eventCount: result.events.length,
+        ...(result.rejectedEventCount > 0
+          ? { rejectedEventCount: result.rejectedEventCount }
+          : {}),
       })),
       eventsVerified: true,
     }

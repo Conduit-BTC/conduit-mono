@@ -4,9 +4,11 @@ import { nip19 } from "nostr-tools"
 import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
   __resetFollowListTestState,
+  __resetNdkTestState,
   __resetRelayHealth,
   __setFollowListTestOverrides,
   buildMerchantTrustSocialSummary,
+  disconnectNdk,
   extractFollowPubkeys,
   fetchMerchantTrustSocialSummary,
   publishContactListUpdate,
@@ -373,6 +375,112 @@ describe("NIP-02 merchant trust helpers", () => {
     expect(forgedRead.events).toEqual([])
   })
 
+  it("does not treat a relay-rejected owner event as an empty follow list", async () => {
+    const publicRelay = "wss://relay.conduit.market/"
+    const signed = followListEvent({
+      secret: viewerSecret,
+      createdAt: 100,
+      follows: [merchantPubkey],
+    })
+    const forged = { ...signed, sig: "0".repeat(128) }
+    const originalWebSocket = globalThis.WebSocket
+    const originalWorker = globalThis.Worker
+
+    class ForgedEventWebSocket {
+      static CONNECTING = 0
+      static OPEN = 1
+      static CLOSING = 2
+      static CLOSED = 3
+
+      readyState = ForgedEventWebSocket.CONNECTING
+      onopen: ((event: Event) => void) | null = null
+      onmessage: ((event: MessageEvent<string>) => void) | null = null
+      onerror: ((event: Event) => void) | null = null
+      onclose: ((event: Event) => void) | null = null
+
+      constructor() {
+        queueMicrotask(() => {
+          this.readyState = ForgedEventWebSocket.OPEN
+          this.onopen?.(new Event("open"))
+        })
+      }
+
+      send(payload: string): void {
+        const parsed = JSON.parse(payload) as [string, string]
+        if (parsed[0] !== "REQ") return
+        const subId = parsed[1]
+        queueMicrotask(() => {
+          this.onmessage?.({
+            data: JSON.stringify(["EVENT", subId, forged]),
+          } as MessageEvent<string>)
+          this.onmessage?.({
+            data: JSON.stringify(["EOSE", subId]),
+          } as MessageEvent<string>)
+        })
+      }
+
+      close(): void {
+        this.readyState = ForgedEventWebSocket.CLOSED
+        this.onclose?.(new Event("close"))
+      }
+    }
+
+    Object.defineProperty(globalThis, "WebSocket", {
+      configurable: true,
+      writable: true,
+      value: ForgedEventWebSocket,
+    })
+    Object.defineProperty(globalThis, "Worker", {
+      configurable: true,
+      writable: true,
+      value: undefined,
+    })
+    __resetNdkTestState()
+
+    try {
+      const read = await readLatestFollowLists(
+        {
+          pubkeys: [viewerPubkey],
+          authenticatedPubkey: viewerPubkey,
+        },
+        {
+          now: () => 20_000_000,
+          resolveRelayLists: async () =>
+            new Map([
+              [viewerPubkey, relayList(viewerPubkey, [], [publicRelay])],
+            ]),
+        }
+      )
+
+      expect(read.events).toEqual([])
+      expect(read.authors[0]?.relays.length).toBeGreaterThan(0)
+      expect(
+        read.authors[0]?.relays.every(
+          (relay) =>
+            relay.status === "success" &&
+            relay.eventCount === 0 &&
+            relay.rejectedEventCount === 1
+        )
+      ).toBe(true)
+      expect(() =>
+        requirePublishableContactListSnapshot(read, viewerPubkey)
+      ).toThrow("completed the read")
+    } finally {
+      disconnectNdk()
+      __resetNdkTestState()
+      Object.defineProperty(globalThis, "WebSocket", {
+        configurable: true,
+        writable: true,
+        value: originalWebSocket,
+      })
+      Object.defineProperty(globalThis, "Worker", {
+        configurable: true,
+        writable: true,
+        value: originalWorker,
+      })
+    }
+  })
+
   it("selects the NIP-01 winner across more than ten merged relay events", async () => {
     const publicRelay = "wss://many-events.example"
     const events = Array.from({ length: 11 }, (_, index) =>
@@ -662,6 +770,159 @@ describe("NIP-02 merchant trust helpers", () => {
     ).rejects.toThrow("completed the read")
     expect(published).toHaveLength(1)
     expect(extractFollowPubkeys(published[0]?.tags)).toContain(merchantPubkey)
+  })
+
+  it("publishes an initial follow list after a complete empty owner read", async () => {
+    const publicRelay = "wss://initial-follow.example"
+    const ndk = new NDK({
+      explicitRelayUrls: [],
+      enableOutboxModel: false,
+      autoConnectUserRelays: false,
+    })
+    ndk.signer = new NDKPrivateKeySigner(nip19.nsecEncode(viewerSecret))
+    const published: SignedPublicNostrEvent[] = []
+    const snapshotCache = createOwnContactListSnapshotCache()
+
+    __setFollowListTestOverrides({
+      ...snapshotCache.overrides,
+      getNdk: () => ndk,
+      readLatestFollowLists: async (input, options) => {
+        expect(options.refreshRelayLists).toBe(true)
+        return await readLatestFollowLists(input, {
+          ...options,
+          resolveRelayLists: async () =>
+            new Map([
+              [viewerPubkey, relayList(viewerPubkey, [], [publicRelay])],
+            ]),
+          fetchEvents: async (_filter, fetchOptions) => ({
+            events: [],
+            eventSourceRelayUrls: {},
+            relays: fetchOptions.relayUrls.map((relayUrl) => ({
+              relayUrl,
+              status: "success" as const,
+              eventCount: 0,
+              rejectedEventCount: 0,
+            })),
+            eventsVerified: false,
+          }),
+        })
+      },
+      publishWithPlanner: async (event, input) => {
+        published.push(event.rawEvent() as SignedPublicNostrEvent)
+        return {
+          plan: {
+            intent: input.intent,
+            primaryRelayUrls: [publicRelay],
+            broadcastRelayUrls: [],
+            parkedRelayUrls: [],
+          },
+          attemptedRelayUrls: [publicRelay],
+          successfulRelayUrls: [publicRelay],
+          failedRelayUrls: [],
+          relayFailureMessages: {},
+        }
+      },
+    })
+
+    await publishContactListUpdate({
+      ownerPubkey: viewerPubkey,
+      targetPubkey: merchantPubkey,
+      shouldFollow: false,
+      appId: "market",
+    })
+    expect(published).toHaveLength(0)
+    expect(snapshotCache.get()).toBeUndefined()
+
+    await publishContactListUpdate({
+      ownerPubkey: viewerPubkey,
+      targetPubkey: merchantPubkey,
+      shouldFollow: true,
+      appId: "market",
+    })
+
+    expect(published).toHaveLength(1)
+    expect(published[0]).toMatchObject({
+      pubkey: viewerPubkey,
+      kind: 3,
+      content: "",
+    })
+    expect(extractFollowPubkeys(published[0]?.tags)).toEqual([merchantPubkey])
+    expect(snapshotCache.get()).toMatchObject({
+      pubkey: viewerPubkey,
+      state: "observed",
+      event: { id: published[0]?.id },
+    })
+  })
+
+  it("aborts an initial follow when another tab stores a list after the empty read", async () => {
+    const publicRelay = "wss://initial-follow-race.example"
+    const concurrentSnapshot = followListEvent({
+      secret: viewerSecret,
+      createdAt: Math.floor(Date.now() / 1_000) + 1,
+      follows: [mutualPubkey],
+    })
+    const ndk = new NDK({
+      explicitRelayUrls: [],
+      enableOutboxModel: false,
+      autoConnectUserRelays: false,
+    })
+    ndk.signer = new NDKPrivateKeySigner(nip19.nsecEncode(viewerSecret))
+    let publishAttempts = 0
+
+    __setFollowListTestOverrides({
+      getNdk: () => ndk,
+      readLatestFollowLists: async () => ({
+        events: [],
+        authors: [
+          {
+            pubkey: viewerPubkey,
+            eventSourceRelayUrls: [],
+            hintRelayUrls: [publicRelay],
+            plannedRelayUrls: [publicRelay],
+            relays: [
+              {
+                relayUrl: publicRelay,
+                status: "success",
+                eventCount: 0,
+                rejectedEventCount: 0,
+              },
+            ],
+            eventsVerified: true,
+            coverage: "complete",
+            relayListState: "network",
+            relayHintTruncated: false,
+            snapshotState: "none",
+          },
+        ],
+        plannedRelayUrls: [publicRelay],
+        relays: [],
+        eventsVerified: true,
+      }),
+      loadOwnContactListSnapshot: async () => ({
+        pubkey: viewerPubkey,
+        event: concurrentSnapshot,
+        sourceRelayUrls: [publicRelay],
+        state: "observed",
+        cachedAt: Date.now(),
+      }),
+      putOwnContactListSnapshot: async () => {
+        throw new Error("initial race should fail before persistence")
+      },
+      publishWithPlanner: async () => {
+        publishAttempts += 1
+        throw new Error("initial race should fail before relay publish")
+      },
+    })
+
+    await expect(
+      publishContactListUpdate({
+        ownerPubkey: viewerPubkey,
+        targetPubkey: merchantPubkey,
+        shouldFollow: true,
+        appId: "market",
+      })
+    ).rejects.toThrow("snapshot appeared after the read")
+    expect(publishAttempts).toBe(0)
   })
 
   it("aborts when another tab stores a stronger snapshot after the read", async () => {
@@ -1015,6 +1276,61 @@ describe("NIP-02 merchant trust helpers", () => {
     expect(
       requirePublishableContactListSnapshot(completedRead, viewerPubkey)
     ).toBe(event)
+  })
+
+  it("requires a genuinely empty relay result for an initial follow list", () => {
+    const publicRelay = "wss://initial-evidence.example/"
+    const completeEmptyRead = {
+      events: [],
+      authors: [
+        {
+          pubkey: viewerPubkey,
+          eventSourceRelayUrls: [],
+          hintRelayUrls: [publicRelay],
+          plannedRelayUrls: [publicRelay],
+          relays: [
+            {
+              relayUrl: publicRelay,
+              status: "success" as const,
+              eventCount: 0,
+              rejectedEventCount: 0,
+            },
+          ],
+          eventsVerified: true,
+          coverage: "complete" as const,
+          relayListState: "network" as const,
+          relayHintTruncated: false,
+          snapshotState: "none" as const,
+        },
+      ],
+      plannedRelayUrls: [publicRelay],
+      relays: [],
+      eventsVerified: true,
+    }
+
+    expect(
+      requirePublishableContactListSnapshot(completeEmptyRead, viewerPubkey)
+    ).toBeNull()
+    expect(() =>
+      requirePublishableContactListSnapshot(
+        {
+          ...completeEmptyRead,
+          authors: [
+            {
+              ...completeEmptyRead.authors[0]!,
+              relays: [
+                {
+                  relayUrl: publicRelay,
+                  status: "success" as const,
+                  eventCount: 1,
+                },
+              ],
+            },
+          ],
+        },
+        viewerPubkey
+      )
+    ).toThrow("completed the read")
   })
 
   it("passes cancellation to each author-isolated relay read", async () => {
