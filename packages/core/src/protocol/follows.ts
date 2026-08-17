@@ -30,6 +30,19 @@ export interface MerchantTrustSocialSummary {
   mutualFollowCount: number | null
 }
 
+export const CONTACT_LIST_WRITES_AVAILABLE: boolean = false
+export const CONTACT_LIST_WRITE_UNAVAILABLE_MESSAGE =
+  "Follow updates are temporarily paused while contact-list safety is upgraded."
+
+export class ContactListWriteUnavailableError extends Error {
+  readonly code = "contact_list_writes_unavailable"
+
+  constructor() {
+    super(CONTACT_LIST_WRITE_UNAVAILABLE_MESSAGE)
+    this.name = "ContactListWriteUnavailableError"
+  }
+}
+
 function normalizeHexPubkey(value: string | undefined): string | null {
   const trimmed = value?.trim().toLowerCase()
   if (!trimmed || !/^[0-9a-f]{64}$/.test(trimmed)) return null
@@ -163,6 +176,10 @@ export async function publishContactListUpdate({
   shouldFollow: boolean
   appId: ConduitAppId
 }): Promise<void> {
+  if (!CONTACT_LIST_WRITES_AVAILABLE) {
+    throw new ContactListWriteUnavailableError()
+  }
+
   const normalizedOwnerPubkey = normalizeHexPubkey(ownerPubkey)
   const normalizedTargetPubkey = normalizeHexPubkey(targetPubkey)
 
