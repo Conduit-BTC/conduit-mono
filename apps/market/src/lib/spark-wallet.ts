@@ -4,6 +4,7 @@ import {
   getLightningInvoiceNetwork,
   isAmountlessLightningInvoice,
   normalizeLightningInvoice,
+  type WalletPaymentFeeApproval,
 } from "@conduit/core"
 
 import {
@@ -116,13 +117,7 @@ export interface SparkPayInvoiceInput {
   amountMsats: number
   idempotencyKey: string
   completionTimeoutSecs?: number
-  approveFee?: (quote: SparkInvoicePaymentQuote) => Promise<boolean>
-}
-
-export interface SparkInvoicePaymentQuote {
-  amountSats: number
-  feeSats: number
-  totalSats: number
+  approveFee?: WalletPaymentFeeApproval
 }
 
 export type SparkPayInvoiceResult =
@@ -878,17 +873,13 @@ export class SparkWalletManager {
     }
 
     let prepared: SparkPreparedPayment
+    let feeSats: number
     try {
-      prepared = await client.prepareSendPayment({
-        paymentRequest: { type: "input", input: input.invoice },
-        amount: BigInt(amountSats),
-      })
-      if (prepared.paymentMethod.type !== "bolt11Invoice") {
-        return {
-          status: "pre_publish_failed",
-          reason: "Spark did not recognize the payment request as BOLT11.",
-        }
-      }
+      ;({ prepared, feeSats } = await this.#prepareLightningSend(
+        client,
+        input.invoice,
+        amountSats
+      ))
     } catch (error) {
       return {
         status: "pre_publish_failed",
@@ -896,20 +887,6 @@ export class SparkWalletManager {
       }
     }
 
-    if (prepared.amount !== BigInt(amountSats)) {
-      return {
-        status: "pre_publish_failed",
-        reason: "Spark prepared a different invoice amount.",
-      }
-    }
-
-    const feeSats = safeBigIntToNumber(prepared.paymentMethod.lightningFeeSats)
-    if (feeSats === null) {
-      return {
-        status: "pre_publish_failed",
-        reason: "Spark did not return a valid Lightning fee.",
-      }
-    }
     if (!input.approveFee) {
       return {
         status: "pre_publish_failed",

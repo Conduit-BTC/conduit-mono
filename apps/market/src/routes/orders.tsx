@@ -120,38 +120,12 @@ import {
 } from "../lib/checkout-payment"
 import { publishBuyerOrderMessage } from "../lib/order-publish"
 import { getWalletProviderDescription } from "../lib/wallet-provider-label"
+import {
+  getCheckoutPaymentTargetOptions,
+  getCheckoutPaymentTargetValue,
+} from "../lib/checkout-payment-target"
 
 const ORDERS_SEARCH_DEFAULT: { order?: string } = {}
-const RETRY_WEBLN_TARGET = "__webln__"
-const RETRY_MANUAL_TARGET = "__manual__"
-
-function getRetryTargetValue(target: OrderPaymentTarget | undefined): string {
-  if (!target) return ""
-  if (target.type === "wallet") return JSON.stringify(target)
-  if (target.type === "webln") return RETRY_WEBLN_TARGET
-  return RETRY_MANUAL_TARGET
-}
-
-function parseRetryWalletTarget(
-  value: string
-): Extract<OrderPaymentTarget, { type: "wallet" }> | null {
-  try {
-    const parsed = JSON.parse(value) as Partial<OrderPaymentTarget>
-    return parsed.type === "wallet" &&
-      typeof parsed.walletId === "string" &&
-      parsed.walletId.length > 0 &&
-      typeof parsed.providerId === "string" &&
-      parsed.providerId.length > 0
-      ? {
-          type: "wallet",
-          walletId: parsed.walletId,
-          providerId: parsed.providerId,
-        }
-      : null
-  } catch {
-    return null
-  }
-}
 
 function getRetryZapMode(lifecycle: OrderLifecycle): CheckoutZapMode {
   if (
@@ -731,18 +705,19 @@ function OrderDetail({
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [messagesOpen, setMessagesOpen] = useState(false)
   const [replyText, setReplyText] = useState("")
-  const persistedRetryTargetValue = getRetryTargetValue(
-    row.lifecycle?.paymentTarget
-  )
-  const [retryTargetValue, setRetryTargetValue] = useState(
-    persistedRetryTargetValue
+  const persistedRetryTarget = row.lifecycle?.paymentTarget ?? null
+  const persistedRetryTargetValue = persistedRetryTarget
+    ? getCheckoutPaymentTargetValue(persistedRetryTarget)
+    : ""
+  const [retryTarget, setRetryTarget] = useState<OrderPaymentTarget | null>(
+    persistedRetryTarget
   )
   const sparkFeeApproval = useSparkFeeApproval()
   const queryClient = useQueryClient()
 
   useEffect(() => {
-    setRetryTargetValue(persistedRetryTargetValue)
-  }, [persistedRetryTargetValue, vm.orderId])
+    setRetryTarget(row.lifecycle?.paymentTarget ?? null)
+  }, [persistedRetryTargetValue, row.lifecycle?.paymentTarget, vm.orderId])
 
   const productsQuery = useQuery({
     queryKey: ["selected-order-products", row.merchantPubkey],
@@ -767,7 +742,16 @@ function OrderDetail({
       candidate.capabilities.includes("pay_invoice")
   )
   const eligibleWalletDisplayLabels = getWalletDisplayLabels(eligibleWallets)
-  const retryWalletTarget = parseRetryWalletTarget(retryTargetValue)
+  const weblnAvailable = !guestIdentity && hasWebLN()
+  const retryTargetOptions = getCheckoutPaymentTargetOptions({
+    eligibleWallets,
+    selectedTarget: retryTarget ?? { type: "manual" },
+    weblnAvailable,
+  })
+  const retryTargetValue = retryTarget
+    ? getCheckoutPaymentTargetValue(retryTarget)
+    : ""
+  const retryWalletTarget = retryTarget?.type === "wallet" ? retryTarget : null
   const paymentWallet = resolveWalletPaymentInstance(wallets.wallets, {
     walletId: retryWalletTarget?.walletId,
     providerId: retryWalletTarget?.providerId,
@@ -795,33 +779,22 @@ function OrderDetail({
     !guestIdentity &&
     paymentWallet?.providerId === "spark" &&
     wallets.runtime[paymentWallet.id]?.status === "ready"
-  const selectedStoredPaymentTarget: OrderPaymentTarget | null = paymentWallet
-    ? {
-        type: "wallet",
-        walletId: paymentWallet.id,
-        providerId: paymentWallet.providerId,
-      }
-    : retryTargetValue === RETRY_WEBLN_TARGET
-      ? { type: "webln" }
-      : retryTargetValue === RETRY_MANUAL_TARGET
-        ? { type: "manual" }
-        : null
+  const selectedStoredPaymentTarget: OrderPaymentTarget | null =
+    retryTarget?.type === "wallet" && !paymentWallet ? null : retryTarget
 
   function buildServiceCtx(): OrderPaymentContext | null {
     const lc = row.lifecycle
     if (!lc) return null
     if (!lc.merchantLightningAddress) return null
     const paymentTarget =
-      paymentWallet && (canTryNwc || canTrySpark)
-        ? {
-            type: "wallet" as const,
-            walletId: paymentWallet.id,
-            providerId: paymentWallet.providerId,
-          }
-        : retryTargetValue === RETRY_WEBLN_TARGET && hasWebLN()
-          ? ({ type: "webln" } as const)
-          : retryTargetValue === RETRY_MANUAL_TARGET
-            ? ({ type: "manual" } as const)
+      retryTarget?.type === "wallet" &&
+      paymentWallet &&
+      (canTryNwc || canTrySpark)
+        ? retryTarget
+        : retryTarget?.type === "webln" && weblnAvailable
+          ? retryTarget
+          : retryTarget?.type === "manual"
+            ? retryTarget
             : null
     if (!paymentTarget) return null
     return {
@@ -1102,7 +1075,12 @@ function OrderDetail({
                 </label>
                 <Select
                   value={retryTargetValue}
-                  onValueChange={setRetryTargetValue}
+                  onValueChange={(value) => {
+                    const option = retryTargetOptions.find(
+                      (candidate) => candidate.value === value
+                    )
+                    if (option) setRetryTarget(option.target)
+                  }}
                   disabled={busy || wallets.loading}
                 >
                   <SelectTrigger id={`retry-wallet-${vm.orderId}`}>
@@ -1130,7 +1108,7 @@ function OrderDetail({
                       return (
                         <SelectItem
                           key={candidate.id}
-                          value={getRetryTargetValue({
+                          value={getCheckoutPaymentTargetValue({
                             type: "wallet",
                             walletId: candidate.id,
                             providerId: candidate.providerId,
@@ -1144,12 +1122,20 @@ function OrderDetail({
                         </SelectItem>
                       )
                     })}
-                    {!guestIdentity && hasWebLN() && (
-                      <SelectItem value={RETRY_WEBLN_TARGET}>
+                    {(weblnAvailable || retryTarget?.type === "webln") && (
+                      <SelectItem
+                        value={getCheckoutPaymentTargetValue({
+                          type: "webln",
+                        })}
+                        disabled={!weblnAvailable}
+                      >
                         Browser wallet (WebLN)
+                        {!weblnAvailable ? ", unavailable" : ""}
                       </SelectItem>
                     )}
-                    <SelectItem value={RETRY_MANUAL_TARGET}>
+                    <SelectItem
+                      value={getCheckoutPaymentTargetValue({ type: "manual" })}
+                    >
                       Show invoice for manual payment
                     </SelectItem>
                   </SelectContent>

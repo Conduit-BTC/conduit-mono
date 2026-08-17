@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react"
+import type { WalletPaymentFeeQuote } from "@conduit/core"
 import {
   Button,
   Dialog,
@@ -9,17 +10,15 @@ import {
   DialogTitle,
 } from "@conduit/ui"
 
-import type { SparkInvoicePaymentQuote } from "../lib/spark-wallet"
-
 export interface SparkFeeApprovalController {
-  quote: SparkInvoicePaymentQuote | null
-  requestApproval(quote: SparkInvoicePaymentQuote): Promise<boolean>
+  quote: WalletPaymentFeeQuote | null
+  requestApproval(quote: WalletPaymentFeeQuote): Promise<boolean>
   approve(): void
   decline(): void
 }
 
 export function useSparkFeeApproval(): SparkFeeApprovalController {
-  const [quote, setQuote] = useState<SparkInvoicePaymentQuote | null>(null)
+  const [quote, setQuote] = useState<WalletPaymentFeeQuote | null>(null)
   const resolverRef = useRef<((approved: boolean) => void) | null>(null)
   const focusReturnRef = useRef<HTMLElement | null>(null)
 
@@ -40,7 +39,7 @@ export function useSparkFeeApproval(): SparkFeeApprovalController {
     }
   }, [])
 
-  const requestApproval = useCallback((nextQuote: SparkInvoicePaymentQuote) => {
+  const requestApproval = useCallback((nextQuote: WalletPaymentFeeQuote) => {
     resolverRef.current?.(false)
     focusReturnRef.current =
       typeof document !== "undefined" &&

@@ -78,50 +78,11 @@ export interface WalletPayInvoiceCapability {
   ): Promise<WalletPayInvoiceResult>
 }
 
-export interface WalletBalanceResult {
-  balanceMsats: number
-}
-
-export interface WalletBalanceCapability {
-  (walletId: string): Promise<WalletBalanceResult>
-}
-
-export interface WalletReceiveInput {
-  amountMsats?: number
-  description?: string
-  expirySeconds?: number
-}
-
-export interface WalletReceiveResult {
-  paymentRequest: string
-  feeMsats?: number
-}
-
-export interface WalletReceiveCapability {
-  (walletId: string, input: WalletReceiveInput): Promise<WalletReceiveResult>
-}
-
-export interface WalletHistoryEntry {
-  id: string
-  direction: "send" | "receive"
-  status: "completed" | "pending" | "failed"
-  amountMsats: number
-  feeMsats?: number
-  createdAt: number
-}
-
-export interface WalletHistoryCapability {
-  (walletId: string): Promise<WalletHistoryEntry[]>
-}
-
 interface WalletProvider {
   readonly providerId: WalletProviderId
   readonly kind: WalletKind
   readonly lifecycle: WalletProviderLifecycle
   readonly payInvoice?: WalletPayInvoiceCapability
-  readonly balance?: WalletBalanceCapability
-  readonly receive?: WalletReceiveCapability
-  readonly history?: WalletHistoryCapability
 }
 
 export interface PortableWalletProvider extends WalletProvider {
