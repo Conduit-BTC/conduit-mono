@@ -357,6 +357,20 @@ describe("merchant product variation planning", () => {
         ({ specifications }) => specifications[0]?.value === "two"
       )?.included
     ).toBe(false)
+
+    const obsoleteIdentity = initial.rows.find(
+      ({ specifications }) => specifications[0]?.value === "two"
+    )!.identity
+    const obsoleteRestore = setProductVariationCombinationIncluded(
+      selected,
+      obsoleteIdentity,
+      true
+    )
+    expect(
+      obsoleteRestore.rows.find(
+        ({ specifications }) => specifications[0]?.value === "two"
+      )?.included
+    ).toBe(false)
   })
 
   it("keeps included stock zero distinct from an excluded combination", () => {
@@ -469,6 +483,209 @@ describe("merchant product variation planning", () => {
     expect(getProductVariationFormError(state, "USD")).toContain(
       "75 combinations"
     )
+  })
+
+  it("can exclude an existing row while the Cartesian matrix is oversized", () => {
+    const values = Array.from({ length: 8 }, (_, index) => `value-${index + 1}`)
+    const initial = variationForm([
+      { key: "option-a", values: values.join(", ") },
+      { key: "option-b", values: values.join(", ") },
+    ])
+    const target = initial.rows.find(
+      ({ specifications }) => specifications[1]?.value === "value-2"
+    )!
+    const oversized = updateProductVariationAxis(
+      initial,
+      initial.axes[1]!.id,
+      "values",
+      `${values.slice(1).join(", ")}, value-9, value-10`
+    )
+
+    expect(getProductVariationCartesianCount(oversized)).toBe(72)
+    expect(getProductVariationMatrix(oversized)).toEqual([])
+    expect(getProductVariationCombinations(oversized)).toHaveLength(56)
+    expect(
+      oversized.rows.filter(
+        ({ specifications }) => specifications[1]?.value === "value-1"
+      )
+    ).toHaveLength(8)
+    expect(
+      oversized.rows
+        .filter(({ specifications }) => specifications[1]?.value === "value-1")
+        .every(({ included }) => !included)
+    ).toBe(true)
+
+    const excluded = setProductVariationCombinationIncluded(
+      oversized,
+      target.identity,
+      false
+    )
+
+    expect(
+      excluded.rows.find(({ identity }) => identity === target.identity)
+        ?.included
+    ).toBe(false)
+    expect(getProductVariationCombinations(excluded)).toHaveLength(55)
+
+    const restoredWhileOversized = setProductVariationCombinationIncluded(
+      excluded,
+      target.identity,
+      true
+    )
+    expect(
+      restoredWhileOversized.rows.find(
+        ({ identity }) => identity === target.identity
+      )?.included
+    ).toBe(true)
+
+    const missingIdentity = variationForm([
+      { key: "option-a", values: "value-1" },
+      { key: "option-b", values: "value-9" },
+    ]).rows[0]!.identity
+    const unchanged = setProductVariationCombinationIncluded(
+      oversized,
+      missingIdentity,
+      true
+    )
+    expect(unchanged.rows).toHaveLength(oversized.rows.length)
+    expect(
+      unchanged.rows.some(({ identity }) => identity === missingIdentity)
+    ).toBe(false)
+  })
+
+  it("can toggle an existing row while an option definition is incomplete", () => {
+    const initial = variationForm([{ key: "option", values: "one, two" }])
+    const target = {
+      ...initial.rows[0]!,
+      dTag: "existing-option-one",
+      title: "Retained title",
+    }
+    const customized = {
+      ...initial,
+      rows: [target, ...initial.rows.slice(1)],
+    }
+    const incomplete = updateProductVariationAxis(
+      customized,
+      customized.axes[0]!.id,
+      "key",
+      ""
+    )
+
+    expect(getProductVariationMatrix(incomplete)).toEqual([])
+
+    const excluded = setProductVariationCombinationIncluded(
+      incomplete,
+      target.identity,
+      false
+    )
+    const restoredWhileIncomplete = setProductVariationCombinationIncluded(
+      excluded,
+      target.identity,
+      true
+    )
+    const excludedAgain = setProductVariationCombinationIncluded(
+      restoredWhileIncomplete,
+      target.identity,
+      false
+    )
+    const repaired = updateProductVariationAxis(
+      excludedAgain,
+      excludedAgain.axes[0]!.id,
+      "key",
+      "option"
+    )
+    const matrixRow = getProductVariationMatrix(repaired).find(
+      ({ identity }) => identity === target.identity
+    )
+    const restored = setProductVariationCombinationIncluded(
+      repaired,
+      target.identity,
+      true
+    )
+
+    expect(
+      excluded.rows.find(({ identity }) => identity === target.identity)
+        ?.included
+    ).toBe(false)
+    expect(
+      restoredWhileIncomplete.rows.find(
+        ({ identity }) => identity === target.identity
+      )
+    ).toMatchObject({
+      included: true,
+      dTag: "existing-option-one",
+      title: "Retained title",
+    })
+    expect(matrixRow).toMatchObject({
+      included: false,
+      dTag: "existing-option-one",
+      title: "Retained title",
+    })
+    expect(
+      restored.rows.find(({ identity }) => identity === target.identity)
+    ).toMatchObject({
+      included: true,
+      dTag: "existing-option-one",
+      title: "Retained title",
+    })
+
+    const missingIdentity = variationForm([{ key: "option", values: "three" }])
+      .rows[0]!.identity
+    const unchanged = setProductVariationCombinationIncluded(
+      incomplete,
+      missingIdentity,
+      true
+    )
+    expect(unchanged.rows).toHaveLength(incomplete.rows.length)
+    expect(
+      unchanged.rows.some(({ identity }) => identity === missingIdentity)
+    ).toBe(false)
+  })
+
+  it("excludes every stored duplicate for the selected combination", () => {
+    const initial = variationForm([{ key: "option", values: "one, two" }])
+    const target = initial.rows[0]!
+    const duplicateState = {
+      ...initial,
+      rows: [
+        { ...target, included: false },
+        { ...target, included: true, dTag: "duplicate" },
+        ...initial.rows.slice(1),
+      ],
+    }
+
+    const excluded = setProductVariationCombinationIncluded(
+      duplicateState,
+      target.identity,
+      false
+    )
+
+    expect(
+      excluded.rows
+        .filter(({ identity }) => identity === target.identity)
+        .map(({ included }) => included)
+    ).toEqual([false, false])
+    expect(
+      getProductVariationMatrix(excluded).find(
+        ({ identity }) => identity === target.identity
+      )?.included
+    ).toBe(false)
+
+    const restored = setProductVariationCombinationIncluded(
+      excluded,
+      target.identity,
+      true
+    )
+    expect(
+      restored.rows
+        .filter(({ identity }) => identity === target.identity)
+        .map(({ included }) => included)
+    ).toEqual([false, true])
+    expect(
+      getProductVariationMatrix(restored).find(
+        ({ identity }) => identity === target.identity
+      )?.included
+    ).toBe(true)
   })
 
   it("supports a neutral availability matrix with more than twelve values", () => {

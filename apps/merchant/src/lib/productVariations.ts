@@ -99,6 +99,13 @@ interface ParsedVariationAxis {
   tooLong: string[]
 }
 
+interface UsableVariationAxis {
+  key: string
+  normalizedKey: string
+  values: string[]
+  normalizedValues: Set<string>
+}
+
 const NATURAL_COLLATOR = new Intl.Collator(undefined, {
   numeric: true,
   sensitivity: "base",
@@ -152,6 +159,61 @@ function parseVariationAxis(input: string): ParsedVariationAxis {
   }
 
   return { values, duplicates, tooLong }
+}
+
+function getUsableVariationAxes(
+  axes: readonly ProductVariationAxis[]
+): UsableVariationAxis[] | null {
+  if (axes.length === 0) return null
+
+  const seenKeys = new Set<string>()
+  const usableAxes: UsableVariationAxis[] = []
+  for (const axis of axes) {
+    const key = axis.key.trim()
+    const normalizedKey = normalizePart(key)
+    const parsed = parseVariationAxis(axis.values)
+    if (
+      !key ||
+      seenKeys.has(normalizedKey) ||
+      parsed.values.length === 0 ||
+      parsed.values.length > MAX_PRODUCT_VARIATION_AXIS_VALUES ||
+      parsed.duplicates.length > 0 ||
+      parsed.tooLong.length > 0
+    ) {
+      return null
+    }
+    seenKeys.add(normalizedKey)
+    usableAxes.push({
+      key,
+      normalizedKey,
+      values: parsed.values,
+      normalizedValues: new Set(parsed.values.map(normalizePart)),
+    })
+  }
+  return usableAxes
+}
+
+function isVariationCombinationCompatible(
+  specifications: ProductSchema["specifications"],
+  axes: readonly UsableVariationAxis[]
+): boolean {
+  if (specifications.length !== axes.length) return false
+
+  const axesByKey = new Map(axes.map((axis) => [axis.normalizedKey, axis]))
+  const seenKeys = new Set<string>()
+  for (const specification of specifications) {
+    const key = normalizePart(specification.key)
+    const axis = axesByKey.get(key)
+    if (
+      !axis ||
+      seenKeys.has(key) ||
+      !axis.normalizedValues.has(normalizePart(specification.value))
+    ) {
+      return false
+    }
+    seenKeys.add(key)
+  }
+  return true
 }
 
 function getCombinationIdentity(
@@ -360,27 +422,10 @@ export function parseProductVariationFormState(
 function buildAxisCombinations(
   axes: readonly ProductVariationAxis[]
 ): ProductSchema["specifications"][] {
-  if (axes.length === 0) return []
-  const usableAxes = axes.map((axis) => ({
-    key: axis.key.trim(),
-    parsed: parseVariationAxis(axis.values),
-  }))
-  if (
-    usableAxes.some(
-      ({ key, parsed }) =>
-        !key ||
-        parsed.values.length === 0 ||
-        parsed.values.length > MAX_PRODUCT_VARIATION_AXIS_VALUES ||
-        parsed.duplicates.length > 0 ||
-        parsed.tooLong.length > 0
-    ) ||
-    new Set(usableAxes.map((axis) => normalizePart(axis.key))).size !==
-      usableAxes.length
-  ) {
-    return []
-  }
+  const usableAxes = getUsableVariationAxes(axes)
+  if (!usableAxes) return []
   const combinationCount = usableAxes.reduce(
-    (total, axis) => total * axis.parsed.values.length,
+    (total, axis) => total * axis.values.length,
     1
   )
   if (combinationCount > MAX_PRODUCT_VARIATION_COUNT) return []
@@ -388,10 +433,7 @@ function buildAxisCombinations(
   return usableAxes.reduce<ProductSchema["specifications"][]>(
     (combinations, axis) =>
       combinations.flatMap((combination) =>
-        axis.parsed.values.map((value) => [
-          ...combination,
-          { key: axis.key, value },
-        ])
+        axis.values.map((value) => [...combination, { key: axis.key, value }])
       ),
     [[]]
   )
@@ -528,17 +570,14 @@ export function getProductVariationMatrix(
 function reconcileProductVariationAvailability(
   state: ProductVariationFormState
 ): ProductVariationFormState {
-  const combinations = buildAxisCombinations(state.axes)
-  if (combinations.length === 0) return state
+  const usableAxes = getUsableVariationAxes(state.axes)
+  if (!usableAxes) return state
 
-  const candidateIdentities = new Set(
-    combinations.map((specifications) => getCombinationIdentity(specifications))
-  )
   let changed = false
   const rows = state.rows.map((row) => {
     if (
       !row.included ||
-      candidateIdentities.has(getCombinationIdentity(row.specifications))
+      isVariationCombinationCompatible(row.specifications, usableAxes)
     ) {
       return row
     }
@@ -554,31 +593,71 @@ export function setProductVariationCombinationIncluded(
   included: boolean
 ): ProductVariationFormState {
   const reconciled = reconcileProductVariationAvailability(state)
+  const matchingRowIndexes = reconciled.rows.flatMap((row, index) =>
+    getCombinationIdentity(row.specifications) === identity ? [index] : []
+  )
+  if (matchingRowIndexes.length > 0) {
+    if (!included) {
+      if (
+        matchingRowIndexes.every(
+          (index) => reconciled.rows[index]?.included === false
+        )
+      ) {
+        return reconciled
+      }
+      const matchingIndexes = new Set(matchingRowIndexes)
+      return {
+        ...reconciled,
+        rows: reconciled.rows.map((row, index) =>
+          matchingIndexes.has(index) ? { ...row, included: false } : row
+        ),
+      }
+    }
+
+    const usableAxes = getUsableVariationAxes(reconciled.axes)
+    if (
+      usableAxes &&
+      !isVariationCombinationCompatible(
+        reconciled.rows[matchingRowIndexes[0]]!.specifications,
+        usableAxes
+      )
+    ) {
+      return reconciled
+    }
+
+    const includedRowIndex = matchingRowIndexes[matchingRowIndexes.length - 1]!
+    const matchingIndexes = new Set(matchingRowIndexes)
+    if (
+      matchingRowIndexes.every(
+        (index) =>
+          reconciled.rows[index]?.included === (index === includedRowIndex)
+      )
+    ) {
+      return reconciled
+    }
+    return {
+      ...reconciled,
+      rows: reconciled.rows.map((row, index) =>
+        matchingIndexes.has(index)
+          ? { ...row, included: index === includedRowIndex }
+          : row
+      ),
+    }
+  }
+
+  if (!included) return reconciled
+
   const candidate = getProductVariationMatrix(reconciled).find(
     (combination) => combination.identity === identity
   )
   if (!candidate) return reconciled
 
-  const rowIndex = reconciled.rows.findIndex(
-    (row) => getCombinationIdentity(row.specifications) === identity
-  )
-  if (rowIndex < 0) {
-    if (!included) return reconciled
-    return {
-      ...reconciled,
-      rows: [
-        ...reconciled.rows,
-        createVariationRow(candidate.specifications, { included: true }),
-      ],
-    }
-  }
-  if (reconciled.rows[rowIndex]?.included === included) return reconciled
-
   return {
     ...reconciled,
-    rows: reconciled.rows.map((row, index) =>
-      index === rowIndex ? { ...row, included } : row
-    ),
+    rows: [
+      ...reconciled.rows,
+      createVariationRow(candidate.specifications, { included: true }),
+    ],
   }
 }
 
