@@ -1759,6 +1759,19 @@ describe("event-market organizer inbox readiness", () => {
     expect(
       await resolveEventMarketOrganizerInbox("not-a-pubkey")
     ).toMatchObject({ state: "blocked", reason: "invalid_organizer" })
+
+    __resetInboxRelayCache()
+    await expect(
+      resolveEventMarketOrganizerInbox(ORGANIZER, {
+        relayUrls: ["wss://discovery.example"],
+        fetchEventsWithDiagnostics: async () => ({
+          events: [],
+          attemptedRelayUrls: ["wss://discovery.example"],
+          successfulRelayUrls: ["wss://discovery.example"],
+          failedRelayUrls: [],
+        }),
+      })
+    ).resolves.toMatchObject({ state: "blocked", reason: "not_declared" })
   })
 
   it("reads handoff wraps from declared kind-10050 relays only", async () => {

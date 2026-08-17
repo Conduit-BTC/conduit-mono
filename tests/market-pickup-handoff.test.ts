@@ -8,6 +8,7 @@ import type { CartPickupFulfillment } from "../apps/market/src/lib/cart-model"
 import {
   ORGANIZER_HANDOFF_DISCLOSURE,
   assertCartPickupHandlerReady,
+  getOrganizerInboxBlockingMessage,
   getOrganizerPickupClaimCode,
   getPickupHandoffPrivacyCopy,
   getPickupHandoffSummary,
@@ -199,5 +200,22 @@ describe("Market pickup handoff", () => {
         })
       )
     ).rejects.toThrow("Only stale organizer inbox evidence")
+  })
+
+  it("keeps staged and signed-empty inbox blockers distinct", () => {
+    expect(
+      getOrganizerInboxBlockingMessage({
+        state: "blocked",
+        organizerPubkey: ORGANIZER,
+        reason: "distribution_pending",
+      })
+    ).toContain("still being distributed")
+    expect(
+      getOrganizerInboxBlockingMessage({
+        state: "blocked",
+        organizerPubkey: ORGANIZER,
+        reason: "signed_empty",
+      })
+    ).toContain("has no relay targets")
   })
 })

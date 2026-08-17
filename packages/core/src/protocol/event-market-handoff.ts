@@ -120,6 +120,8 @@ export type EventMarketOrganizerInboxResolution =
       reason:
         | "invalid_organizer"
         | "not_declared"
+        | "distribution_pending"
+        | "signed_empty"
         | "malformed"
         | "lookup_partial"
         | "lookup_unavailable"
@@ -144,7 +146,10 @@ export async function resolveEventMarketOrganizerInbox(
     return {
       state: "blocked",
       organizerPubkey: normalized,
-      reason: declaration.state,
+      reason:
+        declaration.state === "not_observed"
+          ? "not_declared"
+          : declaration.state,
     }
   }
   if (declaration.stale) {

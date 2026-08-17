@@ -247,12 +247,6 @@ function organizerAckReadCopy(blocker: MerchantHandoffAckReadBlocker): {
   }
 }
 
-function formatSummaryAmount(amount: number, currency: string): string {
-  if (currency.trim().toUpperCase() === "SATS")
-    return `${amount.toLocaleString()} sats`
-  return `${amount.toLocaleString()} ${currency.trim().toUpperCase()}`
-}
-
 function CopyInline({ value, label }: { value: string; label: string }) {
   const [copied, setCopied] = useState(false)
   return (
