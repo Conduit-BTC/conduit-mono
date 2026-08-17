@@ -2157,8 +2157,12 @@ async function fetchProductDeletionTimestamps(
       const productAddresses = uniqueStrings(
         chunkCandidates.map((candidate) => candidate.addressId)
       )
-      const rawSourceRelayUrls = uniqueStrings(
-        chunkCandidates.flatMap((candidate) => candidate.sourceRelayUrls ?? [])
+      const sourceRelayHints = contextualRelayHints(
+        chunkCandidates.map((candidate) => ({
+          pubkey: candidate.pubkey,
+          relayUrls: candidate.sourceRelayUrls ?? [],
+        })),
+        options.authenticatedPubkey
       )
       const filters: NDKFilter[] = [
         ...chunkStrings(productEventIds, 200).map((eventIdChunk) => ({
@@ -2181,32 +2185,14 @@ async function fetchProductDeletionTimestamps(
         authenticatedPubkey: options.authenticatedPubkey,
         maxRelays: options.readPolicy?.maxRelays,
       })
-      const publicSourceRelayUrls =
-        normalizePublicRelayHints(rawSourceRelayUrls)
-      const normalizedAuthenticatedPubkey = options.authenticatedPubkey
-        ?.trim()
-        .toLowerCase()
-      const authenticatedOwnerRawSourceRelayUrls: string[] = []
-      if (normalizedAuthenticatedPubkey) {
-        for (const candidate of chunkCandidates) {
-          if (
-            candidate.pubkey.trim().toLowerCase() ===
-            normalizedAuthenticatedPubkey
-          ) {
-            authenticatedOwnerRawSourceRelayUrls.push(
-              ...(candidate.sourceRelayUrls ?? [])
-            )
-          }
-        }
-      }
       const authenticatedOwnerSourceRelayUrls =
         normalizeUntrustedRelayHintsForContext({
-          relayUrls: authenticatedOwnerRawSourceRelayUrls,
+          relayUrls: sourceRelayHints.authenticatedAuthorRelayUrls,
           approvedRelayUrls: deletionRelayPlan.relayUrls,
           allowApprovedPrivate: !!options.authenticatedPubkey,
         })
       const sourceRelayUrls = uniqueStrings([
-        ...publicSourceRelayUrls,
+        ...sourceRelayHints.publicRelayUrls,
         ...authenticatedOwnerSourceRelayUrls,
       ])
       const preferredDeletionRelayUrls = uniqueStrings([

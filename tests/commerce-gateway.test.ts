@@ -1696,6 +1696,51 @@ describe("commerce gateway", () => {
     ).toBe(true)
   })
 
+  it("uses approved owner source provenance for storefront deletion reads", async () => {
+    const localRelayUrl = "wss://127.0.0.1:7447"
+    const product = makeSignedProductEvent({
+      dTag: "owner-source-deletion",
+      createdAt: 100,
+      title: "Owner source deletion",
+    })
+    attachEventSourceRelayUrl(product, localRelayUrl)
+    __setRelayListTestOverrides({
+      loadCached: async (pubkey) => ({
+        pubkey,
+        readRelayUrls: [],
+        writeRelayUrls: [localRelayUrl],
+        eventCreatedAt: 1,
+        cachedAt: FIXED_NOW,
+      }),
+    })
+
+    const deletionRelayAttempts: string[][] = []
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter, options) => {
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          return [product] as never
+        }
+        if (filter.kinds?.includes(EVENT_KINDS.DELETION)) {
+          deletionRelayAttempts.push([...(options?.relayUrls ?? [])])
+        }
+        return []
+      },
+    })
+
+    await getMerchantStorefront({
+      merchantPubkey: product.pubkey,
+      authenticatedPubkey: product.pubkey,
+      limit: 10,
+    })
+
+    expect(deletionRelayAttempts.length).toBeGreaterThan(0)
+    expect(
+      deletionRelayAttempts.every((relayUrls) =>
+        relayUrls.includes(localRelayUrl)
+      )
+    ).toBe(true)
+  })
+
   it("treats a successful exact event-id detail read as complete", async () => {
     const product = makeSignedProductEvent({
       dTag: "exact-event-detail",
