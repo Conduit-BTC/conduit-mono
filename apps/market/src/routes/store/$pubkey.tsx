@@ -4,9 +4,6 @@ import {
   LoaderCircle,
   MessageCircle,
   Search,
-  UserCheck,
-  UserMinus,
-  UserPlus,
 } from "lucide-react"
 import {
   useCallback,
@@ -57,6 +54,7 @@ import {
 } from "../../components/MerchantIdentity"
 import { MerchantTrustSummary } from "../../components/MerchantTrustSummary"
 import { ProfileBanner } from "../../components/ProfileBanner"
+import { StorefrontFollowButton } from "../../components/StorefrontFollowButton"
 import { useShopperPricing } from "../../hooks/useShopperPricing"
 import { useCart } from "../../hooks/useCart"
 import { useMerchantTrustContext } from "../../hooks/useMerchantTrustContext"
@@ -256,8 +254,10 @@ function StorefrontPage() {
 
   const isFollowing =
     followOverride ?? merchantTrust.viewerFollowsMerchant === true
-  const isFollowBusy =
-    followStateMatchesScope && followState.saveState !== "idle"
+  const followSaveState = followStateMatchesScope
+    ? followState.saveState
+    : "idle"
+  const isFollowBusy = followSaveState !== "idle"
 
   const toggleTag = (tag: string) => {
     if (selectedTagSet.has(tag)) {
@@ -549,51 +549,14 @@ function StorefrontPage() {
                   <MessageCircle className="h-4 w-4" />
                   Send message
                 </Button>
-                <Button
-                  variant={isFollowing ? "outline" : "primary"}
-                  className={[
-                    "group h-11 max-w-full shrink-0 px-4 text-sm",
-                    isFollowing
-                      ? "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)] hover:border-[var(--text-secondary)] hover:bg-[var(--surface)]"
-                      : "",
-                  ].join(" ")}
+                <StorefrontFollowButton
+                  isFollowing={isFollowing}
+                  merchantName={merchantName}
                   onClick={() => void handleFollow()}
-                  disabled={!CONTACT_LIST_WRITES_AVAILABLE || isFollowBusy}
-                  aria-describedby={
-                    CONTACT_LIST_WRITES_AVAILABLE
-                      ? undefined
-                      : "storefront-follow-maintenance"
-                  }
-                >
-                  {isFollowBusy ? (
-                    <LoaderCircle className="h-4 w-4 animate-spin" />
-                  ) : isFollowing ? (
-                    <span className="relative grid h-4 w-4 place-items-center">
-                      <UserCheck className="col-start-1 row-start-1 h-4 w-4 transition-opacity duration-150 group-hover:opacity-0" />
-                      <UserMinus className="col-start-1 row-start-1 h-4 w-4 opacity-0 transition-opacity duration-150 group-hover:opacity-100" />
-                    </span>
-                  ) : (
-                    <UserPlus className="h-4 w-4" />
-                  )}
-                  {isFollowBusy ? (
-                    followState.saveState === "saving_unfollow" ? (
-                      "Unfollowing…"
-                    ) : (
-                      "Following…"
-                    )
-                  ) : isFollowing ? (
-                    <span className="grid">
-                      <span className="col-start-1 row-start-1 transition-opacity duration-150 group-hover:opacity-0">
-                        Following
-                      </span>
-                      <span className="col-start-1 row-start-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
-                        Unfollow
-                      </span>
-                    </span>
-                  ) : (
-                    "Follow"
-                  )}
-                </Button>
+                  saveState={followSaveState}
+                  unavailableDescriptionId="storefront-follow-maintenance"
+                  writesAvailable={CONTACT_LIST_WRITES_AVAILABLE}
+                />
               </div>
               {!CONTACT_LIST_WRITES_AVAILABLE && (
                 <p
