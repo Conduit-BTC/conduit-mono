@@ -49,7 +49,7 @@ export interface MerchantTrustSocialSummary {
   mutualFollowCount: number | null
 }
 
-export const CONTACT_LIST_WRITES_AVAILABLE: boolean = false
+export const CONTACT_LIST_WRITES_AVAILABLE: boolean = true
 export const CONTACT_LIST_WRITE_UNAVAILABLE_MESSAGE =
   "Follow updates are temporarily paused while contact-list safety is upgraded."
 

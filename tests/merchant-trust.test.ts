@@ -3,23 +3,17 @@ import NDK, { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import { nip19 } from "nostr-tools"
 import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
-  CONTACT_LIST_WRITES_AVAILABLE,
-  CONTACT_LIST_WRITE_UNAVAILABLE_MESSAGE,
-  ContactListWriteUnavailableError,
   __resetFollowListTestState,
   __resetRelayHealth,
   __setFollowListTestOverrides,
   buildMerchantTrustSocialSummary,
-  disconnectNdk,
   extractFollowPubkeys,
   fetchMerchantTrustSocialSummary,
-  getNdkState,
   publishContactListUpdate,
   readLatestFollowLists,
   recordRelayFailure,
   requirePublishableContactListSnapshot,
   selectLatestFollowListEvent,
-  subscribeNdkState,
   type CachedOwnContactListSnapshot,
   type FollowListReadOptions,
   type RelayList,
@@ -86,40 +80,6 @@ function createOwnContactListSnapshotCache() {
 }
 
 describe("NIP-02 merchant trust helpers", () => {
-  it("blocks contact-list writes before relay connection side effects", async () => {
-    disconnectNdk()
-    const initialNdkState = getNdkState()
-    let stateChangeCount = 0
-    const unsubscribe = subscribeNdkState(() => {
-      stateChangeCount += 1
-    })
-
-    try {
-      const error = await publishContactListUpdate({
-        ownerPubkey: viewerPubkey,
-        targetPubkey: merchantPubkey,
-        shouldFollow: true,
-        appId: "market",
-      }).then(
-        () => null,
-        (failure: unknown) => failure
-      )
-
-      expect(CONTACT_LIST_WRITES_AVAILABLE).toBe(false)
-      expect(error).toBeInstanceOf(ContactListWriteUnavailableError)
-      expect(error).toMatchObject({
-        name: "ContactListWriteUnavailableError",
-        code: "contact_list_writes_unavailable",
-        message: CONTACT_LIST_WRITE_UNAVAILABLE_MESSAGE,
-      })
-      expect(stateChangeCount).toBe(0)
-      expect(getNdkState()).toEqual(initialNdkState)
-    } finally {
-      unsubscribe()
-      disconnectNdk()
-    }
-  })
-
   it("extracts unique p-tag pubkeys and ignores malformed tags", () => {
     expect(
       extractFollowPubkeys([
