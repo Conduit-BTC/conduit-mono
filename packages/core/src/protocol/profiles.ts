@@ -266,18 +266,7 @@ export async function publishProfile(
   profile: Omit<Profile, "pubkey">,
   appId: ConduitAppId
 ): Promise<Profile> {
-  const validatedProfile = { ...profile }
-  for (const field of ["picture", "banner"] as const) {
-    const value = profile[field]
-    if (!value?.trim()) continue
-    const safeUrl = normalizePublicMediaUrl(value)
-    if (!safeUrl) {
-      throw new Error(
-        `Profile ${field} URL must use a public http or https destination`
-      )
-    }
-    validatedProfile[field] = safeUrl
-  }
+  buildNip01ProfilePublishContent({ profile })
   const ndk = getNdk()
   if (!ndk.signer) throw new Error("Signer not connected")
 
@@ -299,7 +288,7 @@ export async function publishProfile(
 
   // Build NIP-01 snake_case content, merging partial edits onto loaded context.
   const content = buildNip01ProfilePublishContent({
-    profile: validatedProfile,
+    profile,
     latestProfile,
     latestContent: latestRow?.rawContent,
   })

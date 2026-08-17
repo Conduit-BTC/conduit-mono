@@ -1,10 +1,6 @@
 import { UserRound } from "lucide-react"
-import {
-  normalizePublicMediaUrl,
-  type MerchantConversationSummary,
-  type Profile,
-} from "@conduit/core"
-import { StatusPill } from "@conduit/ui"
+import { type MerchantConversationSummary, type Profile } from "@conduit/core"
+import { Avatar, AvatarFallback, AvatarImage, StatusPill } from "@conduit/ui"
 import {
   getMerchantBuyerDisplayName,
   getMerchantConversationStatusDisplay,
@@ -23,25 +19,22 @@ export function BuyerAvatar({
   decorative?: boolean
 }) {
   const dim = size === "sm" ? "h-9 w-9" : "h-11 w-11"
-  const pictureUrl = normalizePublicMediaUrl(picture)
   return (
-    <div
-      className={`${dim} flex shrink-0 items-center justify-center overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]`}
+    <Avatar
+      className={`${dim} border border-[var(--border)] bg-[var(--surface-elevated)]`}
     >
-      {pictureUrl ? (
-        <img
-          src={pictureUrl}
-          alt={decorative ? "" : name}
-          className="h-full w-full object-cover"
-          referrerPolicy="no-referrer"
-        />
-      ) : (
+      <AvatarImage
+        src={picture}
+        alt={decorative ? "" : name}
+        className="object-cover"
+      />
+      <AvatarFallback>
         <UserRound
           className="h-1/2 w-1/2 text-[var(--text-muted)]"
           aria-hidden="true"
         />
-      )}
-    </div>
+      </AvatarFallback>
+    </Avatar>
   )
 }
 

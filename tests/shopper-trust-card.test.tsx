@@ -111,7 +111,6 @@ describe("ShopperTrustCard", () => {
     expect(html).toContain("Buyer context")
     expect(html).toContain("Buyer context observations loaded")
     expect(html).toContain("Alice Buyer")
-    expect(html).toContain('alt=""')
     expect(html).toContain('target="_blank"')
     expect(html).toContain('rel="noopener noreferrer"')
     expect(html).toContain("alice@example.com")

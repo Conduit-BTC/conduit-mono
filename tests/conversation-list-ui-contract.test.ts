@@ -80,4 +80,16 @@ describe("conversation list search", () => {
     )
     expect(source).not.toContain("border-y border-[var(--border)]")
   })
+
+  it("reuses the shared conversation avatar on Market order surfaces", async () => {
+    const source = await Bun.file("apps/market/src/routes/orders.tsx").text()
+    const merchantAvatarSource = source.slice(
+      source.indexOf("function MerchantAvatar"),
+      source.indexOf("function OrderListCard")
+    )
+
+    expect(merchantAvatarSource).toContain("<ConversationProfilePicture")
+    expect(source).not.toContain("normalizePublicMediaUrl")
+    expect(merchantAvatarSource).not.toContain("<img")
+  })
 })

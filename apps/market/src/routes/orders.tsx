@@ -12,7 +12,6 @@ import {
   getOrderPublicZapSigner,
   listOrderLifecycles,
   normalizeLightningInvoice,
-  normalizePublicMediaUrl,
   pruneExpiredGuestOrderData,
   pubkeyToNpub,
   useAuth,
@@ -55,11 +54,9 @@ import {
   ShoppingBag,
 } from "lucide-react"
 import { QRCodeSVG } from "qrcode.react"
+import { ConversationProfilePicture } from "../components/ConversationProfilePicture"
 import { CopyButton } from "../components/CopyButton"
-import {
-  MerchantAvatarFallback,
-  getMerchantDisplayName,
-} from "../components/MerchantIdentity"
+import { getMerchantDisplayName } from "../components/MerchantIdentity"
 import {
   fetchBuyerConversations,
   fetchCachedBuyerConversations,
@@ -212,19 +209,12 @@ function MerchantAvatar({
   name: string
   picture?: string
 }) {
-  const pictureUrl = normalizePublicMediaUrl(picture)
   return (
     <div className="h-11 w-11 shrink-0 overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]">
-      {pictureUrl ? (
-        <img
-          src={pictureUrl}
-          alt={name || formatNpub(pubkey, 8)}
-          referrerPolicy="no-referrer"
-          className="h-full w-full object-cover"
-        />
-      ) : (
-        <MerchantAvatarFallback />
-      )}
+      <ConversationProfilePicture
+        src={picture}
+        alt={name || formatNpub(pubkey, 8)}
+      />
     </div>
   )
 }

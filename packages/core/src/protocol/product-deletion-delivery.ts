@@ -112,17 +112,6 @@ function cloneJob(job: ProductDeletionDeliveryJob): ProductDeletionDeliveryJob {
   }
 }
 
-function normalizeSecureRelayUrl(raw: string): string | null {
-  const normalized = tryNormalizeRelayUrl(raw)
-  if (!normalized.ok) return null
-
-  try {
-    return new URL(normalized.url).protocol === "wss:" ? normalized.url : null
-  } catch {
-    return null
-  }
-}
-
 function addRelayRole(
   targets: Map<string, Set<ProductDeletionRelayRole>>,
   rawRelayUrl: string,
@@ -160,13 +149,10 @@ function isApprovedPersistedRelayTarget(
 export function planProductDeletionRelays(
   input: ProductDeletionRelayPlanInput
 ): ProductDeletionRelayTarget[] {
-  const canonicalRelayUrl = normalizeSecureRelayUrl(
+  const canonicalRelayUrl = normalizePublicWebSocketUrl(
     input.canonicalConduitRelayUrl
   )
-  if (
-    !canonicalRelayUrl ||
-    !normalizePublicWebSocketUrl(input.canonicalConduitRelayUrl)
-  ) {
+  if (!canonicalRelayUrl) {
     throw new Error(
       "Canonical Conduit relay must use a public secure wss:// URL"
     )
