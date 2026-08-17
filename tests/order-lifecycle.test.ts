@@ -13,6 +13,7 @@ import {
   deriveOrderLifecyclePhase,
   getOrderLifecyclePaymentAdmission,
   isGuestOrderDataExpired,
+  isLegacyInterruptedOrderPayment,
   patchClaimedOrderLifecyclePayment,
   reconcileInterruptedOrderPayment,
   reconcileLegacyInterruptedOrderPayment,
@@ -148,6 +149,33 @@ describe("deriveOrderLifecyclePhase", () => {
     expect(deriveOrderLifecyclePhase({ ...base, phase: "cancelled" })).toBe(
       "cancelled"
     )
+  })
+})
+
+describe("isLegacyInterruptedOrderPayment", () => {
+  it("recognizes only the legacy mid-payment and pending-proof states", () => {
+    expect(
+      isLegacyInterruptedOrderPayment({
+        ...base,
+        invoiceStatus: "requesting",
+        paymentStatus: "paying",
+      })
+    ).toBe(true)
+    expect(
+      isLegacyInterruptedOrderPayment({
+        ...base,
+        invoiceStatus: "received",
+        paymentStatus: "paying",
+      })
+    ).toBe(true)
+    expect(
+      isLegacyInterruptedOrderPayment({
+        ...base,
+        paymentStatus: "paid",
+        proofDeliveryStatus: "pending",
+      })
+    ).toBe(true)
+    expect(isLegacyInterruptedOrderPayment(base)).toBe(false)
   })
 })
 

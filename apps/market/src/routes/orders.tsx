@@ -34,6 +34,7 @@ import {
   DecryptFailureNotice,
   LiveReadNotice,
   OrderMessagesWidget,
+  SearchInput,
   Sheet,
   SheetContent,
   SheetHeader,
@@ -51,7 +52,6 @@ import {
   MessageCircle,
   ReceiptText,
   RotateCw,
-  Search,
   ShoppingBag,
 } from "lucide-react"
 import { QRCodeSVG } from "qrcode.react"
@@ -1772,16 +1772,14 @@ function SearchBox({
   onChange: (value: string) => void
 }) {
   return (
-    <div className="relative mt-3">
-      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
-      <input
-        aria-label="Search orders"
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        placeholder="Search orders"
-        className="h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] pl-9 pr-3 text-base text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-primary-500 focus:ring-2 focus:ring-primary-500/30"
-      />
-    </div>
+    <SearchInput
+      aria-label="Search orders"
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      placeholder="Search orders"
+      containerClassName="mt-3"
+      className="bg-[var(--surface-elevated)]"
+    />
   )
 }
 

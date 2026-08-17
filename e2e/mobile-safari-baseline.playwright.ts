@@ -4,6 +4,7 @@ import {
   TEST_BUYER_PUBKEY,
   TEST_MERCHANT_PUBKEY,
   installTestSigner,
+  seedMarketCart,
 } from "./helpers/auth"
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
@@ -37,29 +38,6 @@ async function expectMobileTouchTarget(control: Locator): Promise<void> {
   const box = await control.boundingBox()
   expect(box?.width).toBeGreaterThanOrEqual(44)
   expect(box?.height).toBeGreaterThanOrEqual(44)
-}
-
-async function seedMarketCart(page: Page): Promise<void> {
-  await page.evaluate((merchantPubkey) => {
-    localStorage.setItem(
-      "conduit:cart",
-      JSON.stringify({
-        items: [
-          {
-            productId: "e2e-mobile-product",
-            merchantPubkey,
-            title: "E2E Mobile Product",
-            price: 1_000,
-            currency: "SATS",
-            priceSats: 1_000,
-            format: "physical",
-            shippingCostSats: 0,
-            quantity: 1,
-          },
-        ],
-      })
-    )
-  }, TEST_MERCHANT_PUBKEY)
 }
 
 async function seedInterruptedPayment(
@@ -208,7 +186,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     await page.reload()
     await page.locator('button[title="Cart"]').tap()
     await expect(page).toHaveURL(/\/cart$/)
-    await expect(page.getByText("E2E Mobile Product")).toBeVisible()
+    await expect(page.getByText("E2E Smoke Product")).toBeVisible()
     await assertMobileViewport(page)
 
     await page.goBack()
@@ -217,7 +195,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     await expect(page).toHaveURL(/\/cart$/)
 
     await page.reload()
-    await expect(page.getByText("E2E Mobile Product")).toBeVisible()
+    await expect(page.getByText("E2E Smoke Product")).toBeVisible()
 
     const portrait = page.viewportSize()
     expect(portrait).not.toBeNull()
@@ -286,6 +264,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     test("market mobile signer exposes NIP-46 handoff and cancel recovery", async ({
       page,
     }) => {
+      await page.routeWebSocket(/.*/, () => {})
       await page.addInitScript(() => {
         // Keep any failure artifact inert and reproducible: this known fixture
         // material never represents a user or reusable signer connection.
@@ -295,46 +274,6 @@ test.describe("CND-162 mobile browser baseline", () => {
             array.fill(7)
             return array
           },
-        })
-
-        class HangingWebSocket extends EventTarget {
-          static readonly CONNECTING = 0
-          static readonly OPEN = 1
-          static readonly CLOSING = 2
-          static readonly CLOSED = 3
-          readonly CONNECTING = 0
-          readonly OPEN = 1
-          readonly CLOSING = 2
-          readonly CLOSED = 3
-          readonly url: string
-          readonly protocol = ""
-          readonly extensions = ""
-          bufferedAmount = 0
-          binaryType: BinaryType = "blob"
-          readyState = HangingWebSocket.CONNECTING
-          onopen: ((event: Event) => void) | null = null
-          onclose: ((event: CloseEvent) => void) | null = null
-          onerror: ((event: Event) => void) | null = null
-          onmessage: ((event: MessageEvent) => void) | null = null
-
-          constructor(url: string | URL) {
-            super()
-            this.url = String(url)
-          }
-
-          send(): void {}
-
-          close(): void {
-            this.readyState = HangingWebSocket.CLOSED
-            const event = new CloseEvent("close")
-            this.onclose?.(event)
-            this.dispatchEvent(event)
-          }
-        }
-
-        Object.defineProperty(window, "WebSocket", {
-          configurable: true,
-          value: HangingWebSocket,
         })
       })
       await page.goto(`${marketUrl}/products`)

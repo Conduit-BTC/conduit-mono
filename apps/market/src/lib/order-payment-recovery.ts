@@ -1,4 +1,5 @@
 import {
+  isLegacyInterruptedOrderPayment,
   reconcileInterruptedOrderPayment,
   reconcileLegacyInterruptedOrderPayment,
   type OrderLifecycle,
@@ -57,13 +58,7 @@ export async function reconcileOrderPaymentForDisplay(
       return result.lifecycle ?? lifecycle
     }
 
-    const mayBeLegacyInterruption =
-      (lifecycle.paymentStatus === "paying" &&
-        (lifecycle.invoiceStatus === "requesting" ||
-          lifecycle.invoiceStatus === "received")) ||
-      (lifecycle.paymentStatus === "paid" &&
-        lifecycle.proofDeliveryStatus === "pending")
-    if (!mayBeLegacyInterruption) return lifecycle
+    if (!isLegacyInterruptedOrderPayment(lifecycle)) return lifecycle
 
     const result = await dependencies.reconcileLegacyInterruptedOrderPayment(
       lifecycle.orderId

@@ -934,6 +934,21 @@ export async function reconcileInterruptedOrderPayment(
  * introduced. Only stale states that the previous payment service could leave
  * mid-flight are eligible; current claimed rows use the renewable lease above.
  */
+export function isLegacyInterruptedOrderPayment(
+  lifecycle: Pick<
+    OrderLifecycle,
+    "paymentStatus" | "invoiceStatus" | "proofDeliveryStatus"
+  >
+): boolean {
+  return (
+    (lifecycle.paymentStatus === "paying" &&
+      (lifecycle.invoiceStatus === "requesting" ||
+        lifecycle.invoiceStatus === "received")) ||
+    (lifecycle.paymentStatus === "paid" &&
+      lifecycle.proofDeliveryStatus === "pending")
+  )
+}
+
 export async function reconcileLegacyInterruptedOrderPayment(
   orderId: string,
   now = Date.now()
@@ -948,13 +963,7 @@ export async function reconcileLegacyInterruptedOrderPayment(
         return { status: "not_legacy_interrupted", lifecycle }
       }
 
-      const legacyInterrupted =
-        (lifecycle.paymentStatus === "paying" &&
-          (lifecycle.invoiceStatus === "requesting" ||
-            lifecycle.invoiceStatus === "received")) ||
-        (lifecycle.paymentStatus === "paid" &&
-          lifecycle.proofDeliveryStatus === "pending")
-      if (!legacyInterrupted) {
+      if (!isLegacyInterruptedOrderPayment(lifecycle)) {
         return { status: "not_legacy_interrupted", lifecycle }
       }
       if (now - lifecycle.updatedAt < LEGACY_ORDER_PAYMENT_RECOVERY_GRACE_MS) {
