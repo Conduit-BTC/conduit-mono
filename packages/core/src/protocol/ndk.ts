@@ -1,6 +1,9 @@
 import NDK, {
   NDKEvent,
+  normalizeRelayUrl,
+  NDKRelayStatus,
   type NDKFilter,
+  type NDKRelay,
   type NDKSigner,
 } from "@nostr-dev-kit/ndk"
 import { schnorr } from "@noble/curves/secp256k1.js"
@@ -88,7 +91,26 @@ export type SignerLease = {
 }
 
 let ndkInstance: NDK | null = null
+let durableNdkInstance: NDK | null = null
+const durableRelayEntries = new Map<
+  string,
+  {
+    activePublishes: number
+    disconnecting: Promise<void> | null
+    relay: NDKRelay
+  }
+>()
 let activeSignerLease: SignerLease | null = null
+
+const DURABLE_RELAY_DISCONNECT_TIMEOUT_MS = 1_000
+
+function createOfflineNdk(): NDK {
+  return new NDK({
+    explicitRelayUrls: [],
+    enableOutboxModel: false,
+    autoConnectUserRelays: false,
+  })
+}
 
 function uniqueRelayUrls(urls: readonly string[]): string[] {
   return Array.from(new Set(urls.map((url) => url.trim()).filter(Boolean)))
@@ -137,17 +159,123 @@ export function mergeEventSourceRelayUrls(
  */
 export function getNdk(): NDK {
   if (!ndkInstance) {
-    ndkInstance = new NDK({
-      explicitRelayUrls: [],
-      enableOutboxModel: false,
-      autoConnectUserRelays: false,
-    })
+    ndkInstance = createOfflineNdk()
     if (activeSignerLease) {
       // Relay-client resets must not silently disconnect the auth session.
       ndkInstance.signer = activeSignerLease.signer
     }
   }
   return ndkInstance
+}
+
+/**
+ * Return the offline client owned by durable outbox delivery. It is reused so
+ * NDK does not allocate a relay graph and validation timer for every retry,
+ * and it is deliberately excluded from auth and relay-scope resets.
+ */
+export function getDurableNdk(): NDK {
+  durableNdkInstance ??= createOfflineNdk()
+  return durableNdkInstance
+}
+
+export interface DurableNdkRelayLease {
+  ndk: NDK
+  relay: NDKRelay
+  release: () => Promise<void>
+}
+
+function disconnectDurableRelay(
+  ndk: NDK,
+  normalizedRelayUrl: string,
+  entry: { activePublishes: number; relay: NDKRelay }
+): Promise<void> {
+  entry.relay.connectivity.resetReconnectionState()
+  if (entry.relay.status === NDKRelayStatus.DISCONNECTED) {
+    ndk.pool.removeRelay(normalizedRelayUrl)
+    return Promise.resolve()
+  }
+
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = () => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      entry.relay.off("disconnect", finish)
+      resolve()
+    }
+    const timeout = setTimeout(() => {
+      // NDK exposes no way to force a relay out of DISCONNECTING. Discard a
+      // stuck cached identity so a later durable job can create a usable one.
+      if (durableRelayEntries.get(normalizedRelayUrl) === entry) {
+        durableRelayEntries.delete(normalizedRelayUrl)
+      }
+      finish()
+    }, DURABLE_RELAY_DISCONNECT_TIMEOUT_MS)
+
+    entry.relay.on("disconnect", finish)
+    ndk.pool.removeRelay(normalizedRelayUrl)
+    if (entry.relay.status === NDKRelayStatus.DISCONNECTED) {
+      finish()
+      return
+    }
+  })
+}
+
+/**
+ * Retain one stable relay object while an exact durable publish is active.
+ * Idle relays stay cached for retry identity, but are removed from the pool
+ * and disconnected so they cannot reconnect across account/session changes.
+ */
+export async function acquireDurableNdkRelay(
+  relayUrl: string
+): Promise<DurableNdkRelayLease> {
+  const ndk = getDurableNdk()
+  const normalizedRelayUrl = normalizeRelayUrl(relayUrl)
+  let entry = durableRelayEntries.get(normalizedRelayUrl)
+
+  if (entry?.disconnecting) {
+    await entry.disconnecting
+    if (durableRelayEntries.get(normalizedRelayUrl) !== entry) {
+      return await acquireDurableNdkRelay(normalizedRelayUrl)
+    }
+  }
+
+  if (!entry) {
+    entry = {
+      activePublishes: 0,
+      disconnecting: null,
+      relay: ndk.pool.getRelay(normalizedRelayUrl, false, false),
+    }
+    durableRelayEntries.set(normalizedRelayUrl, entry)
+  } else if (!ndk.pool.relays.has(normalizedRelayUrl)) {
+    ndk.pool.addRelay(entry.relay, false)
+  }
+
+  entry.activePublishes += 1
+  let released = false
+
+  return {
+    ndk,
+    relay: entry.relay,
+    release: async () => {
+      if (released) return
+      released = true
+      entry.activePublishes -= 1
+      if (entry.activePublishes > 0) return
+
+      const disconnecting = disconnectDurableRelay(
+        ndk,
+        normalizedRelayUrl,
+        entry
+      )
+      entry.disconnecting = disconnecting
+      await disconnecting
+      if (entry.disconnecting === disconnecting) {
+        entry.disconnecting = null
+      }
+    },
+  }
 }
 
 function disconnectNdkPools(ndk: NDK): void {
@@ -484,6 +612,13 @@ export function __setNdkVerifyTimeoutMsForTests(timeoutMs: number): void {
 
 export function __resetNdkTestState(): void {
   activeSignerLease = null
+  for (const { relay } of durableRelayEntries.values()) {
+    relay.connectivity.resetReconnectionState()
+    relay.disconnect()
+  }
+  durableRelayEntries.clear()
+  if (durableNdkInstance) disconnectNdkPools(durableNdkInstance)
+  durableNdkInstance = null
   if (ndkInstance) ndkInstance.signer = undefined
   if (verifyWorker) {
     verifyWorker.onmessage = null
