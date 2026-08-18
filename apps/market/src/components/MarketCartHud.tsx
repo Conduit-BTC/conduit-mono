@@ -558,9 +558,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                   const display = shopperPricing.formatPrice(item)
                   const identity = getCartItemIdentity(item)
                   const availability =
-                    cartAvailability.availabilityByProductId.get(
-                      item.productId
-                    )
+                    cartAvailability.availabilityByProductId.get(item.productId)
                   const currentStock = getCartItemStockForAvailability(
                     item,
                     availability

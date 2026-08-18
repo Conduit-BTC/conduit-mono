@@ -160,28 +160,25 @@ function onStorage(e: StorageEvent): void {
 export function useCart() {
   const snap = useSyncExternalStore(subscribe, readSnapshot, readSnapshot)
 
-  const addItem = useCallback(
-    (item: CartItemInput, quantity = 1) => {
-      if (item.stock === 0) return
+  const addItem = useCallback((item: CartItemInput, quantity = 1) => {
+    if (item.stock === 0) return
 
-      const curr = readSnapshot()
-      writeState({
-        items: addCartItem(curr.items, sanitizeCartItemImage(item), quantity),
-      })
-      recordBrowserTelemetryEvent({
-        app: "market",
-        eventName: "cart_add",
-        properties: {
-          action: "add",
-          count_bucket: getTelemetryCountBucket(quantity),
-          product_type: item.format ?? "physical",
-          status: "success",
-          surface: "cart",
-        },
-      })
-    },
-    []
-  )
+    const curr = readSnapshot()
+    writeState({
+      items: addCartItem(curr.items, sanitizeCartItemImage(item), quantity),
+    })
+    recordBrowserTelemetryEvent({
+      app: "market",
+      eventName: "cart_add",
+      properties: {
+        action: "add",
+        count_bucket: getTelemetryCountBucket(quantity),
+        product_type: item.format ?? "physical",
+        status: "success",
+        surface: "cart",
+      },
+    })
+  }, [])
 
   const setQuantity = useCallback(
     (identity: CartItemIdentity, quantity: number) => {

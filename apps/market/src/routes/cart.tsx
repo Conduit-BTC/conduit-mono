@@ -1173,15 +1173,13 @@ function CartPage() {
                       })
                     }
                     onAdd={(selectedProduct) =>
-                      cart.addItem(
-                        {
-                          ...cartItemInputFromProduct(selectedProduct),
-                          ...cartItemInputFromProductSelection(
-                            product,
-                            selectedProduct
-                          ),
-                        }
-                      )
+                      cart.addItem({
+                        ...cartItemInputFromProduct(selectedProduct),
+                        ...cartItemInputFromProductSelection(
+                          product,
+                          selectedProduct
+                        ),
+                      })
                     }
                   />
                 )

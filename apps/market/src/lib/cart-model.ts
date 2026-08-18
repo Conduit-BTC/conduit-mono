@@ -475,7 +475,9 @@ function parseCartItem(value: unknown): CartItem | null {
   const priceSats = finiteNonnegativeNumber(value.priceSats)
   const shippingCostSats = finiteNonnegativeNumber(value.shippingCostSats)
   const stock = finiteNonnegativeNumber(value.stock)
-  const selectedSpecifications = parseSpecifications(value.selectedSpecifications)
+  const selectedSpecifications = parseSpecifications(
+    value.selectedSpecifications
+  )
   const format =
     value.format === "digital" || value.format === "physical"
       ? value.format

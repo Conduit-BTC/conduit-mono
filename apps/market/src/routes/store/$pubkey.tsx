@@ -876,26 +876,22 @@ function StorefrontPage() {
                       })?.quantity ?? 0
                     }
                     onAddToCart={(selectedProduct) =>
-                      cart.addItem(
-                        {
-                          ...cartItemInputFromProduct(selectedProduct),
-                          ...cartItemInputFromProductSelection(
-                            product,
-                            selectedProduct
-                          ),
-                        }
-                      )
+                      cart.addItem({
+                        ...cartItemInputFromProduct(selectedProduct),
+                        ...cartItemInputFromProductSelection(
+                          product,
+                          selectedProduct
+                        ),
+                      })
                     }
                     onIncrement={(selectedProduct) =>
-                      cart.addItem(
-                        {
-                          ...cartItemInputFromProduct(selectedProduct),
-                          ...cartItemInputFromProductSelection(
-                            product,
-                            selectedProduct
-                          ),
-                        }
-                      )
+                      cart.addItem({
+                        ...cartItemInputFromProduct(selectedProduct),
+                        ...cartItemInputFromProductSelection(
+                          product,
+                          selectedProduct
+                        ),
+                      })
                     }
                     onDecrement={(selectedProduct) => {
                       const identity = {
