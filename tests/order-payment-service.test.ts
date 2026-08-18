@@ -1581,17 +1581,15 @@ describe("runOrderPayment", () => {
     }) as typeof table.put
 
     try {
-      await observeOrderPublicZapReceipt(orderId, undefined, {
-        waitForZapReceipt: async (input) => {
-          waitCalled = true
-          expect(input.zapRequestId).toBe("shopper-zap-request-id")
-          expect(input.recipientPubkey).toBe(merchantPubkey)
-          expect(input.expectedInvoice).toBe("lnbc1shoppertargeted")
-          expect(input.expectedAmountMsats).toBe(1_000)
-          expect(input.expectedLnurl).toBe("lnurl1shopper")
-          expect(input.lnurlNostrPubkey).toBe("c".repeat(64))
-          return { id: "shopper-zap-receipt-id" } as never
-        },
+      await observeOrderPublicZapReceipt(orderId, undefined, async (input) => {
+        waitCalled = true
+        expect(input.zapRequestId).toBe("shopper-zap-request-id")
+        expect(input.recipientPubkey).toBe(merchantPubkey)
+        expect(input.expectedInvoice).toBe("lnbc1shoppertargeted")
+        expect(input.expectedAmountMsats).toBe(1_000)
+        expect(input.expectedLnurl).toBe("lnurl1shopper")
+        expect(input.lnurlNostrPubkey).toBe("c".repeat(64))
+        return { id: "shopper-zap-receipt-id" } as never
       })
 
       expect(waitCalled).toBe(true)

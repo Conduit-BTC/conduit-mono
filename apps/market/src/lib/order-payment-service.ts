@@ -343,13 +343,6 @@ const privateFallbackTransitions = new Set<string>()
 const receiptObservers = new Set<string>()
 const receiptRescanTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
-export type OrderReceiptObserverDependencies = Readonly<{
-  waitForZapReceipt: typeof waitForZapReceipt
-}>
-
-const defaultOrderReceiptObserverDependencies: OrderReceiptObserverDependencies =
-  { waitForZapReceipt }
-
 export function canSubmitExternalPaymentReport(
   lifecycle: OrderLifecycle | null | undefined
 ): lifecycle is OrderLifecycle {
@@ -528,7 +521,7 @@ async function deliverReceiptLinkedProof(
 export async function observeOrderPublicZapReceipt(
   orderId: string,
   buyerIdentity?: BuyerOrderSigningIdentity,
-  dependencyOverrides: Partial<OrderReceiptObserverDependencies> = {}
+  waitForReceipt: typeof waitForZapReceipt = waitForZapReceipt
 ): Promise<void> {
   if (receiptObservers.has(orderId)) return
   receiptObservers.add(orderId)
@@ -560,10 +553,7 @@ export async function observeOrderPublicZapReceipt(
           lifecycle.zapReceiptObservationDeadline - nowMs
         )
       : 0
-    const receipt = await (
-      dependencyOverrides.waitForZapReceipt ??
-      defaultOrderReceiptObserverDependencies.waitForZapReceipt
-    )({
+    const receipt = await waitForReceipt({
       zapRequestId: lifecycle.zapRequestId,
       requestCreatedAt: lifecycle.zapRequestCreatedAt,
       recipientPubkey: lifecycle.merchantPubkey,

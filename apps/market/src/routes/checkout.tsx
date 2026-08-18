@@ -926,13 +926,6 @@ function CheckoutPage() {
   }, [zapContentEditable, zapContentEdited])
 
   useEffect(() => {
-    if (!zapContentEditable || !zapContentEdited) return
-    setZapContent((current) =>
-      truncatePublicZapNoteDraft(current, zapNoteMaxCodePoints)
-    )
-  }, [zapContentEditable, zapContentEdited, zapNoteMaxCodePoints])
-
-  useEffect(() => {
     const check = () => setWeblnAvailable(hasWebLN())
     check()
     const timer = window.setTimeout(check, 1000)

@@ -75,27 +75,31 @@ function getProductZapSuffix(productAddress: string): string {
   return `${NOSTR_URI_PREFIX}${getProductZapNaddr(productAddress)}`
 }
 
-function parseProductNaddr(value: string): {
-  address: string
-  naddr: string
-} | null {
+function decodeProductNaddr(value: string): ProductZapAddress | null {
   try {
     const decoded = nip19.decode(value)
     if (decoded.type !== "naddr" || decoded.data.kind !== EVENT_KINDS.PRODUCT) {
       return null
     }
 
-    const parsedAddress = parseProductZapAddress(
+    return parseProductZapAddress(
       `${decoded.data.kind}:${decoded.data.pubkey}:${decoded.data.identifier}`
     )
-    if (!parsedAddress) return null
-
-    return {
-      address: parsedAddress.address,
-      naddr: getProductZapNaddr(parsedAddress.address),
-    }
   } catch {
     return null
+  }
+}
+
+function parseProductNaddr(value: string): {
+  address: string
+  naddr: string
+} | null {
+  const parsedAddress = decodeProductNaddr(value)
+  if (!parsedAddress) return null
+
+  return {
+    address: parsedAddress.address,
+    naddr: getProductZapNaddr(parsedAddress.address),
   }
 }
 
@@ -128,8 +132,8 @@ export function getProductZapNaddr(productAddress: string): string {
       identifier: parsed.identifier,
       relays: [],
     })
-    const decoded = parseProductNaddrWithoutCanonicalization(naddr)
-    if (decoded !== parsed.address) {
+    const decoded = decodeProductNaddr(naddr)
+    if (decoded?.address !== parsed.address) {
       throw new Error("Product zap address did not round-trip through NIP-19.")
     }
     return naddr
@@ -137,24 +141,6 @@ export function getProductZapNaddr(productAddress: string): string {
     throw new Error("Product zap address cannot be encoded as naddr.", {
       cause: error,
     })
-  }
-}
-
-function parseProductNaddrWithoutCanonicalization(
-  value: string
-): string | null {
-  try {
-    const decoded = nip19.decode(value)
-    if (decoded.type !== "naddr" || decoded.data.kind !== EVENT_KINDS.PRODUCT) {
-      return null
-    }
-    return (
-      parseProductZapAddress(
-        `${decoded.data.kind}:${decoded.data.pubkey}:${decoded.data.identifier}`
-      )?.address ?? null
-    )
-  } catch {
-    return null
   }
 }
 
