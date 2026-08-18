@@ -1,3 +1,8 @@
+import {
+  browserTelemetryEventNames,
+  browserTelemetryPropertyNames,
+} from "@conduit/core/telemetry-contract"
+
 const POSTHOG_INGEST_ORIGIN = "https://us.i.posthog.com"
 const MAX_INGEST_BODY_BYTES = 1024 * 1024
 const POSTHOG_ANONYMOUS_DISTINCT_ID = "conduit-browser-telemetry"
@@ -26,61 +31,27 @@ const allowedPreviewSuffixes = [
 ] as const
 
 /**
- * Event names the browser sanitizer is allowed to emit. Mirrors
- * `browserTelemetryEventNames` plus the PostHog session metric events in
- * `packages/core/src/telemetry.ts`; a repo test asserts the two stay in sync.
+ * Event names the browser sanitizer is allowed to emit: the shared browser
+ * telemetry contract plus the PostHog session metric events the proxied
+ * client emits directly.
  */
-export const workerAllowedEventNames = new Set([
+export const workerAllowedEventNames = new Set<string>([
   "$pageleave",
   "$pageview",
   "$web_vitals",
-  "app_load_result",
-  "client_error_result",
-  "signer_connected",
-  "signer_disconnected",
-  "cart_add",
-  "cart_remove",
-  "cart_clear",
-  "checkout_initiated",
-  "checkout_step_result",
-  "checkout_success",
-  "checkout_result",
-  "relay_connect_result",
-  "relay_publish_result",
-  "wallet_connect_result",
-  "payment_attempt_result",
-  "merchant_setup_step_result",
-  "product_publish_result",
-  "shipping_publish_result",
-  "market_browse_action",
-  "product_detail_action",
+  ...browserTelemetryEventNames,
 ])
 
 /**
- * Short label properties from the documented browser telemetry allowlist.
- * Mirrors `browserTelemetryPropertyNames` minus the page context properties,
- * which carry sanitized route URLs and use dedicated validators below.
+ * Short label properties from the documented browser telemetry allowlist:
+ * the shared contract minus the page context properties, which carry
+ * sanitized route URLs and use dedicated validators below.
  */
-export const workerLabelPropertyNames = new Set([
-  "event_name",
-  "app",
-  "network",
-  "status",
-  "latency_bucket",
-  "count",
-  "time_bucket",
-  "surface",
-  "action",
-  "step",
-  "mode",
-  "rail",
-  "method",
-  "event_family",
-  "count_bucket",
-  "result_count_bucket",
-  "amount_bucket",
-  "product_type",
-])
+export const workerLabelPropertyNames = new Set<string>(
+  browserTelemetryPropertyNames.filter(
+    (name) => name !== "page_path" && name !== "page_url"
+  )
+)
 
 const pagePathPropertyNames = new Set(["page_path", "$pathname"])
 const pageUrlPropertyNames = new Set(["page_url", "$current_url"])

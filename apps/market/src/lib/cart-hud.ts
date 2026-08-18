@@ -22,18 +22,6 @@ export type CartHudCapabilityInput = {
   merchantLightningReady: boolean
 }
 
-const SUPPRESSED_ROUTES = new Set([
-  "/about",
-  "/cart",
-  "/checkout",
-  "/messages",
-  "/network",
-  "/orders",
-  "/profile",
-  "/wallet",
-  "/zapouts",
-])
-
 export function getCartHudRouteMode(pathname: string): CartHudRouteMode {
   if (
     pathname === "/" ||
@@ -44,8 +32,7 @@ export function getCartHudRouteMode(pathname: string): CartHudRouteMode {
   }
   if (pathname.startsWith("/store/")) return "expanded"
   if (pathname.startsWith("/products/")) return "compact"
-  if (pathname.startsWith("/u/")) return "suppressed"
-  return SUPPRESSED_ROUTES.has(pathname) ? "suppressed" : "suppressed"
+  return "suppressed"
 }
 
 export function getCartHudCheckoutCapability(

@@ -574,31 +574,6 @@ export function selectMerchantCartItems(
   return items.filter((item) => item.merchantPubkey === merchantPubkey)
 }
 
-export function cartItemInputFromProduct(product: Product): CartItemInput {
-  return {
-    productId: product.id,
-    merchantPubkey: product.pubkey,
-    title: product.title,
-    price: product.price,
-    currency: product.currency,
-    priceSats: product.priceSats,
-    sourcePrice: product.sourcePrice,
-    sourceShippingCost: product.sourceShippingCost,
-    image: getProductImageCandidates(product)[0]?.url,
-    tags: product.tags,
-    format: product.format,
-    shippingCostSats: product.shippingCostSats,
-    shippingOptionId: product.shippingOptionId,
-    shippingOptionDTag: product.shippingOptionDTag,
-    shippingCountries: product.shippingCountries,
-    shippingCountryRules: product.shippingCountryRules,
-    publicZapEnabled: product.publicZapEnabled,
-    zapMessagePolicy: product.zapMessagePolicy,
-    publicZapPolicyKnown: product.publicZapPolicyKnown,
-    stock: product.stock,
-  }
-}
-
 export function getCartCommerceFingerprint(items: readonly CartItem[]): string {
   return JSON.stringify(
     items
@@ -645,7 +620,7 @@ export function cartItemsMatchCurrentProducts(
   const currentItems = items.map((item) => {
     const product = productsByKey.get(getCartItemKey(item))
     return product
-      ? { ...cartItemInputFromProduct(product), quantity: item.quantity }
+      ? { ...createCartItemFromProduct(product), quantity: item.quantity }
       : null
   })
   return (

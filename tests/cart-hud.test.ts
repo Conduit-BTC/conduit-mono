@@ -29,8 +29,6 @@ describe("Market cart HUD policy", () => {
     expect(source).toContain("market-cart-hud-surface")
     expect(styles).toContain("var(--background) 92%, transparent")
     expect(styles).toContain("var(--warning) 1%, var(--surface)")
-    expect(source).toContain("var(--primary-500)_4%,var(--surface)")
-    expect(source).toContain("var(--primary-500)_8%,var(--surface)")
     expect(
       source.match(/var\(--primary-500\)_15%,transparent/g)?.length
     ).toBeGreaterThanOrEqual(3)

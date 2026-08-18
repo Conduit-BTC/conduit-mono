@@ -4,14 +4,8 @@ import {
   handlePostHogProxyRequest,
   isSanitizedTelemetryRoutePath,
   rebuildPostHogIngestPayload,
-  workerAllowedEventNames,
-  workerLabelPropertyNames,
 } from "../apps/posthog-proxy/src"
-import {
-  browserTelemetryEventNames,
-  browserTelemetryPropertyNames,
-  sanitizeTelemetryPath,
-} from "../packages/core/src/telemetry"
+import { sanitizeTelemetryPath } from "../packages/core/src/telemetry"
 import { pubkeyToNpub } from "../packages/core/src/utils"
 
 const PROJECT_TOKEN = "phc_workerTestProjectToken0001"
@@ -374,23 +368,6 @@ describe("PostHog reverse proxy", () => {
     expect(isSanitizedTelemetryRoutePath("/:param")).toBe(true)
     expect(isSanitizedTelemetryRoutePath("/wallet/:param")).toBe(true)
     expect(isSanitizedTelemetryRoutePath("/orders/:param")).toBe(false)
-  })
-
-  it("stays in sync with the @conduit/core telemetry allowlists", () => {
-    const expectedEvents = new Set<string>([
-      "$pageleave",
-      "$pageview",
-      "$web_vitals",
-      ...browserTelemetryEventNames,
-    ])
-    expect(new Set(workerAllowedEventNames)).toEqual(expectedEvents)
-
-    const expectedLabels = new Set<string>(
-      browserTelemetryPropertyNames.filter(
-        (name) => name !== "page_path" && name !== "page_url"
-      )
-    )
-    expect(new Set(workerLabelPropertyNames)).toEqual(expectedLabels)
   })
 
   it("rejects oversized declared and streamed payloads", async () => {

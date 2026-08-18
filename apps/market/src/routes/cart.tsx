@@ -59,7 +59,6 @@ import { useCartProductAvailability } from "../hooks/useCartProductAvailability"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import { buildCheckoutPricingIntent } from "../lib/checkout-payment"
 import {
-  cartItemInputFromProduct,
   getCartCostSummary,
   getCartItemStockForAvailability,
   getCartItemIdentity,
@@ -1174,7 +1173,6 @@ function CartPage() {
                     }
                     onAdd={(selectedProduct) =>
                       cart.addItem({
-                        ...cartItemInputFromProduct(selectedProduct),
                         ...cartItemInputFromProductSelection(
                           product,
                           selectedProduct

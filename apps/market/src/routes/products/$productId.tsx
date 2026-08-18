@@ -39,11 +39,7 @@ import {
   useProgressiveProductDetail,
   useProgressiveProducts,
 } from "../../hooks/useProgressiveProducts"
-import {
-  cartItemInputFromProduct,
-  getProductAddAvailability,
-  selectCartItem,
-} from "../../lib/cart-model"
+import { getProductAddAvailability, selectCartItem } from "../../lib/cart-model"
 import { getProductDisplaySummary } from "../../lib/productDisplaySummary"
 import {
   cartItemInputFromProductSelection,
@@ -275,7 +271,6 @@ function ProductPage() {
     recordProductDetailAction("add_to_cart")
     cart.addItem(
       {
-        ...cartItemInputFromProduct(selectedProduct),
         ...cartItemInputFromProductSelection(product, selectedProduct),
       },
       quantity
@@ -871,7 +866,6 @@ function ProductPage() {
                         onAddToCart={(relatedSelection) =>
                           cart.addItem(
                             {
-                              ...cartItemInputFromProduct(relatedSelection),
                               ...cartItemInputFromProductSelection(
                                 relatedProduct,
                                 relatedSelection
@@ -883,7 +877,6 @@ function ProductPage() {
                         onIncrement={(relatedSelection) =>
                           cart.addItem(
                             {
-                              ...cartItemInputFromProduct(relatedSelection),
                               ...cartItemInputFromProductSelection(
                                 relatedProduct,
                                 relatedSelection

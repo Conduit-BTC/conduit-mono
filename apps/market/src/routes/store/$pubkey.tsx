@@ -62,7 +62,7 @@ import { useShopperPricing } from "../../hooks/useShopperPricing"
 import { useCart } from "../../hooks/useCart"
 import { useMerchantTrustContext } from "../../hooks/useMerchantTrustContext"
 import { useProgressiveProducts } from "../../hooks/useProgressiveProducts"
-import { cartItemInputFromProduct, selectCartItem } from "../../lib/cart-model"
+import { selectCartItem } from "../../lib/cart-model"
 import {
   filterProductsByFacets,
   getCategoryFacetOptions,
@@ -877,7 +877,6 @@ function StorefrontPage() {
                     }
                     onAddToCart={(selectedProduct) =>
                       cart.addItem({
-                        ...cartItemInputFromProduct(selectedProduct),
                         ...cartItemInputFromProductSelection(
                           product,
                           selectedProduct
@@ -886,7 +885,6 @@ function StorefrontPage() {
                     }
                     onIncrement={(selectedProduct) =>
                       cart.addItem({
-                        ...cartItemInputFromProduct(selectedProduct),
                         ...cartItemInputFromProductSelection(
                           product,
                           selectedProduct

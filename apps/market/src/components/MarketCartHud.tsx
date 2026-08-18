@@ -463,11 +463,13 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
             </Link>
           )}
 
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="icon"
             aria-label={expanded ? "Collapse cart" : "Expand cart"}
             aria-expanded={expanded}
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-[color-mix(in_srgb,var(--primary-500)_5%,transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+            className="h-11 w-11 shrink-0 text-[var(--text-muted)]"
             onClick={() => setExpanded((current) => !current)}
           >
             <ChevronDown
@@ -477,7 +479,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
               )}
               aria-hidden="true"
             />
-          </button>
+          </Button>
           {!expanded &&
             (checkoutDisabled ? (
               <Button
@@ -611,9 +613,11 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                         ) : null}
                         <div className="mt-1 flex justify-end">
                           <div className="flex shrink-0 items-center gap-1">
-                            <button
+                            <Button
                               type="button"
-                              className="flex h-9 w-9 items-center justify-center rounded-lg border border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_4%,var(--surface))] transition-colors hover:bg-[color-mix(in_srgb,var(--primary-500)_8%,var(--surface))] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+                              variant="outline"
+                              size="icon"
+                              className="h-9 w-9"
                               aria-label={`Decrease ${item.title} quantity`}
                               onClick={() => {
                                 if (item.quantity <= 1)
@@ -623,16 +627,18 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                               }}
                             >
                               <Minus className="h-4 w-4" aria-hidden="true" />
-                            </button>
+                            </Button>
                             <span
                               key={item.quantity}
                               className="market-cart-hud-value w-8 text-center text-sm font-semibold tabular-nums"
                             >
                               {item.quantity}
                             </span>
-                            <button
+                            <Button
                               type="button"
-                              className="flex h-9 w-9 items-center justify-center rounded-lg border border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_4%,var(--surface))] transition-colors hover:bg-[color-mix(in_srgb,var(--primary-500)_8%,var(--surface))] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+                              variant="outline"
+                              size="icon"
+                              className="h-9 w-9"
                               aria-label={`Increase ${item.title} quantity`}
                               disabled={
                                 cartAvailability.isChecking ||
@@ -642,36 +648,13 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                               }
                               onClick={() =>
                                 cart.addItem(
-                                  {
-                                    productId: item.productId,
-                                    merchantPubkey: item.merchantPubkey,
-                                    title: item.title,
-                                    price: item.price,
-                                    currency: item.currency,
-                                    priceSats: item.priceSats,
-                                    sourcePrice: item.sourcePrice,
-                                    image: item.image,
-                                    tags: item.tags,
-                                    format: item.format,
-                                    shippingCostSats: item.shippingCostSats,
-                                    sourceShippingCost: item.sourceShippingCost,
-                                    shippingOptionId: item.shippingOptionId,
-                                    shippingOptionDTag: item.shippingOptionDTag,
-                                    shippingCountries: item.shippingCountries,
-                                    shippingCountryRules:
-                                      item.shippingCountryRules,
-                                    publicZapEnabled: item.publicZapEnabled,
-                                    zapMessagePolicy: item.zapMessagePolicy,
-                                    publicZapPolicyKnown:
-                                      item.publicZapPolicyKnown,
-                                    stock: currentStock,
-                                  },
+                                  { ...item, stock: currentStock },
                                   1
                                 )
                               }
                             >
                               <Plus className="h-4 w-4" aria-hidden="true" />
-                            </button>
+                            </Button>
                           </div>
                         </div>
                       </div>

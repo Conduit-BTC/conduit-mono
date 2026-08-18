@@ -30,7 +30,7 @@ import { useShopperPricing } from "../../hooks/useShopperPricing"
 import { useCart } from "../../hooks/useCart"
 import { useMarketBrowseModel } from "../../hooks/useMarketBrowseModel"
 import { normalizeFacetValues } from "../../lib/facets"
-import { cartItemInputFromProduct, selectCartItem } from "../../lib/cart-model"
+import { selectCartItem } from "../../lib/cart-model"
 import {
   type MarketBrowseSearch,
   type MarketBrowseSortOption,
@@ -768,7 +768,6 @@ function ProductsPage() {
                   onAddToCart={(selectedProduct) =>
                     cart.addItem(
                       {
-                        ...cartItemInputFromProduct(selectedProduct),
                         ...cartItemInputFromProductSelection(
                           product,
                           selectedProduct
@@ -780,7 +779,6 @@ function ProductsPage() {
                   onIncrement={(selectedProduct) =>
                     cart.addItem(
                       {
-                        ...cartItemInputFromProduct(selectedProduct),
                         ...cartItemInputFromProductSelection(
                           product,
                           selectedProduct
