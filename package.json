@@ -66,7 +66,7 @@
     "@eslint/js": "^10.0.1",
     "@getalby/sdk": "^8.0.3",
     "@nostr-dev-kit/ndk": "^3.0.3",
-    "@playwright/test": "^1.61.1",
+    "@playwright/test": "^1.62.1",
     "@tanstack/router-generator": "^1.167.21",
     "eslint": "^10.8.1",
     "eslint-plugin-react": "^7.37.4",
