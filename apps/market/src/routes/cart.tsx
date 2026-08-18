@@ -20,6 +20,7 @@ import {
   getMerchantStorefront,
   getProfileName,
   getTelemetryCountBucket,
+  normalizePublicMediaUrl,
   normalizePubkey,
   pubkeyToNpub,
   recordBrowserTelemetryEvent,
@@ -52,12 +53,12 @@ import {
   getMerchantDisplayName,
   getProfileNip05,
 } from "../components/MerchantIdentity"
+import { ProductVariationSelector } from "../components/ProductVariationSelector"
 import { type CartItem, useCart } from "../hooks/useCart"
 import { useCartProductAvailability } from "../hooks/useCartProductAvailability"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import { buildCheckoutPricingIntent } from "../lib/checkout-payment"
 import {
-  createCartItemFromProduct,
   getCartCostSummary,
   getCartItemStockForAvailability,
   getProductAddAvailability,
@@ -66,6 +67,13 @@ import {
   type CartProductAvailability,
   type MerchantCartGroup,
 } from "../lib/cart-model"
+import {
+  cartItemInputFromProductSelection,
+  getDefaultProductSelection,
+  getProductSelection,
+  getProductSelectionImages,
+  type MarketProductFamily,
+} from "../lib/productVariations"
 
 type PriceFormatter = (price: CommercePriceLike) => ShopperPriceDisplay
 
@@ -77,6 +85,11 @@ type CartSummaryPrice = {
   primary: string
   secondary?: string | null
   canZapOut: boolean
+}
+
+type SuggestedProduct = {
+  product: Product
+  family?: MarketProductFamily
 }
 
 export const Route = createFileRoute("/cart")({
@@ -161,7 +174,7 @@ async function fetchSuggestedProducts(
   excludedIds: string[],
   preferredTags: string[],
   source: "cache" | "live" = "live"
-): Promise<Product[]> {
+): Promise<SuggestedProduct[]> {
   const result = merchantPubkey
     ? source === "cache"
       ? await getCachedMerchantStorefront({ merchantPubkey, limit: 48 })
@@ -177,33 +190,39 @@ async function fetchSuggestedProducts(
   const seen = new Set<string>()
 
   return result.data
-    .map((record) => record.product)
-    .filter((product): product is Product => {
-      if (!product) return false
+    .map((record) => ({
+      product: record.product,
+      family: record.family,
+    }))
+    .filter((suggestion) => {
+      const { product, family } = suggestion
       if (excludedSet.has(product.id)) return false
+      if (family?.children.some((child) => excludedSet.has(child.product.id))) {
+        return false
+      }
       if (seen.has(product.id)) return false
       seen.add(product.id)
       return true
     })
     .sort((a, b) => {
-      const aTagOverlap = a.tags.reduce((count, tag) => {
+      const aTagOverlap = a.product.tags.reduce((count, tag) => {
         return count + (preferredTagSet.has(tag.trim().toLowerCase()) ? 1 : 0)
       }, 0)
-      const bTagOverlap = b.tags.reduce((count, tag) => {
+      const bTagOverlap = b.product.tags.reduce((count, tag) => {
         return count + (preferredTagSet.has(tag.trim().toLowerCase()) ? 1 : 0)
       }, 0)
 
       if (bTagOverlap !== aTagOverlap) return bTagOverlap - aTagOverlap
 
       if (merchantPubkey) {
-        const aMerchantMatch = a.pubkey === merchantPubkey ? 1 : 0
-        const bMerchantMatch = b.pubkey === merchantPubkey ? 1 : 0
+        const aMerchantMatch = a.product.pubkey === merchantPubkey ? 1 : 0
+        const bMerchantMatch = b.product.pubkey === merchantPubkey ? 1 : 0
         if (bMerchantMatch !== aMerchantMatch) {
           return bMerchantMatch - aMerchantMatch
         }
       }
 
-      return b.updatedAt - a.updatedAt
+      return b.product.updatedAt - a.product.updatedAt
     })
     .slice(0, 4)
 }
@@ -286,29 +305,52 @@ function MerchantIdentity({
 }
 
 function RelatedProductRow({
-  product,
+  suggestion,
   formatPrice,
-  cartQuantity,
+  getCartQuantity,
   onAdd,
 }: {
-  product: Product
+  suggestion: SuggestedProduct
   formatPrice: PriceFormatter
-  cartQuantity: number
-  onAdd: () => void
+  getCartQuantity: (product: Product) => number
+  onAdd: (product: Product) => void
 }) {
+  const { product, family } = suggestion
+  const defaultSelection = useMemo(
+    () => getDefaultProductSelection(product, family),
+    [family, product]
+  )
+  const [selectedProductId, setSelectedProductId] = useState(
+    defaultSelection.id
+  )
   const [imageFailed, setImageFailed] = useState(false)
-  const imageUrl = product.images[0]?.url
-  const price = formatPrice(product)
+  const selectedProduct = getProductSelection(
+    product,
+    family,
+    selectedProductId
+  )
+  const images = getProductSelectionImages(product, selectedProduct)
+  const imageUrl = images[0]?.url
+  const price = formatPrice(selectedProduct)
+  const cartQuantity = getCartQuantity(selectedProduct)
   const { data: profile } = useProfile(product.pubkey)
   const merchantName = getProfileName(profile)
   const merchantLabel = merchantName ?? formatNpub(product.pubkey, 6)
-  const soldOut = product.stock === 0
+  const soldOut = selectedProduct.stock === 0
   const addAvailability = getProductAddAvailability(
-    product.stock,
+    selectedProduct.stock,
     cartQuantity,
     1
   )
   const atStockLimit = !soldOut && !addAvailability.canAdd
+
+  useEffect(() => {
+    setSelectedProductId(defaultSelection.id)
+  }, [defaultSelection.id])
+
+  useEffect(() => {
+    setImageFailed(false)
+  }, [imageUrl])
 
   if (!imageUrl || imageFailed) return null
 
@@ -320,18 +362,19 @@ function RelatedProductRow({
     >
       <Link
         to="/products/$productId"
-        params={{ productId: product.id }}
+        params={{ productId: selectedProduct.id }}
         className="shrink-0 overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--background)]"
       >
         <img
           src={imageUrl}
-          alt={product.images[0]?.alt ?? product.title}
+          alt={images[0]?.alt ?? product.title}
           className={`h-20 w-20 object-cover ${
             soldOut ? "grayscale opacity-60" : ""
           }`}
           width={80}
           height={80}
           loading="lazy"
+          referrerPolicy="no-referrer"
           onError={() => setImageFailed(true)}
         />
       </Link>
@@ -339,7 +382,7 @@ function RelatedProductRow({
       <div className="min-w-0 flex-1">
         <Link
           to="/products/$productId"
-          params={{ productId: product.id }}
+          params={{ productId: selectedProduct.id }}
           className="line-clamp-2 text-sm font-medium leading-6 text-[var(--text-primary)] transition-colors hover:text-secondary-300"
         >
           {product.title}
@@ -366,6 +409,15 @@ function RelatedProductRow({
             {price.secondary}
           </div>
         )}
+        {family ? (
+          <ProductVariationSelector
+            family={family}
+            selectedProduct={selectedProduct}
+            onSelect={(selection) => setSelectedProductId(selection.id)}
+            compact
+            className="mt-2"
+          />
+        ) : null}
         <Button
           size="sm"
           variant={cartQuantity > 0 ? "muted" : "outline"}
@@ -373,7 +425,7 @@ function RelatedProductRow({
           disabled={soldOut || atStockLimit}
           onClick={() => {
             if (!addAvailability.canAdd) return
-            onAdd()
+            onAdd(selectedProduct)
           }}
         >
           <CartIcon className="h-4 w-4" />
@@ -405,6 +457,7 @@ function CartLineItem({
   onDecrement: () => void
   onRemove: () => void
 }) {
+  const imageUrl = normalizePublicMediaUrl(item.image)
   const soldOut = availability?.status === "sold_out"
   const insufficientStock = availability?.status === "insufficient_stock"
   const incrementDisabled =
@@ -434,14 +487,15 @@ function CartLineItem({
       }`}
     >
       <div className="size-[88px] overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--background)] sm:size-28">
-        {item.image && (
+        {imageUrl && (
           <img
-            src={item.image}
+            src={imageUrl}
             alt={item.title}
             className={`h-full w-full object-cover ${
               soldOut ? "grayscale opacity-60" : ""
             }`}
             loading="lazy"
+            referrerPolicy="no-referrer"
             onError={(event) => {
               event.currentTarget.style.display = "none"
             }}
@@ -687,6 +741,19 @@ function CartPage() {
   )
   const expandedMerchant = expandedGroup?.merchantPubkey
   const relatedSourceItems = expandedGroup?.items ?? cart.items
+  const relatedExcludedProductIds = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          relatedSourceItems.flatMap((item) =>
+            item.familyProductId
+              ? [item.productId, item.familyProductId]
+              : [item.productId]
+          )
+        )
+      ),
+    [relatedSourceItems]
+  )
   const preferredTags = useMemo(
     () => relatedSourceItems.flatMap((item) => item.tags ?? []),
     [relatedSourceItems]
@@ -771,10 +838,7 @@ function CartPage() {
   const relatedProductsQueryKey = [
     "cart-related-products",
     expandedMerchant ?? "all",
-    relatedSourceItems
-      .map((item) => item.productId)
-      .sort()
-      .join(":"),
+    relatedExcludedProductIds.slice().sort().join(":"),
     preferredTags.slice().sort().join(":"),
   ] as const
 
@@ -784,7 +848,7 @@ function CartPage() {
     queryFn: () =>
       fetchSuggestedProducts(
         expandedMerchant,
-        relatedSourceItems.map((item) => item.productId),
+        relatedExcludedProductIds,
         preferredTags,
         "cache"
       ),
@@ -798,7 +862,7 @@ function CartPage() {
     queryFn: () =>
       fetchSuggestedProducts(
         expandedMerchant,
-        relatedSourceItems.map((item) => item.productId),
+        relatedExcludedProductIds,
         preferredTags,
         "live"
       ),
@@ -1090,19 +1154,25 @@ function CartPage() {
                 </div>
               )}
 
-              {relatedProducts.map((product) => {
-                const cartQuantity =
-                  cart.items.find((item) => item.productId === product.id)
-                    ?.quantity ?? 0
-
+              {relatedProducts.map((suggestion) => {
+                const { product } = suggestion
                 return (
                   <RelatedProductRow
                     key={product.id}
-                    product={product}
+                    suggestion={suggestion}
                     formatPrice={shopperPricing.formatPrice}
-                    cartQuantity={cartQuantity}
-                    onAdd={() =>
-                      cart.addItem(createCartItemFromProduct(product))
+                    getCartQuantity={(selectedProduct) =>
+                      cart.items.find(
+                        (item) => item.productId === selectedProduct.id
+                      )?.quantity ?? 0
+                    }
+                    onAdd={(selectedProduct) =>
+                      cart.addItem(
+                        cartItemInputFromProductSelection(
+                          product,
+                          selectedProduct
+                        )
+                      )
                     }
                   />
                 )

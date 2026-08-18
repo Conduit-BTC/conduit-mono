@@ -12,13 +12,7 @@ import {
 } from "lucide-react"
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router"
-import {
-  config,
-  formatNpub,
-  useAuth,
-  useNdkState,
-  useProfile,
-} from "@conduit/core"
+import { config, formatNpub, useAuth, useProfile } from "@conduit/core"
 import {
   Avatar,
   AvatarFallback,
@@ -292,8 +286,9 @@ function AccountControl({
 
 export function MarketHeader() {
   const { pubkey, status, disconnect } = useAuth()
-  const { status: ndkStatus } = useNdkState()
-  const { data: profile, refetch } = useProfile(pubkey)
+  const { data: profile } = useProfile(pubkey, {
+    authenticatedPubkey: pubkey,
+  })
   const wallet = useWallet()
   const cart = useCart()
   const navigate = useNavigate()
@@ -329,12 +324,6 @@ export function MarketHeader() {
       isBrowseRoute && searchDirty && normalizedSearchValue !== currentQuery,
     [currentQuery, isBrowseRoute, normalizedSearchValue, searchDirty]
   )
-
-  useEffect(() => {
-    if (ndkStatus === "connected" && pubkey) {
-      void refetch()
-    }
-  }, [ndkStatus, pubkey, refetch])
 
   useEffect(() => {
     // Mirror the URL query into the input only when the user isn't actively

@@ -93,7 +93,7 @@ describe("planRelayReads", () => {
 
   it("uses commerce relays for commerce_products intent", () => {
     const state = settings([
-      entry("wss://commerce.example.com", {
+      entry("wss://commerce.conduit.market", {
         section: "commerce",
         readEnabled: true,
         writeEnabled: true,
@@ -108,7 +108,7 @@ describe("planRelayReads", () => {
           cleanup: true,
         },
       }),
-      entry("wss://public.example.com", {
+      entry("wss://public.conduit.market", {
         section: "public",
         readEnabled: true,
       }),
@@ -117,21 +117,21 @@ describe("planRelayReads", () => {
       intent: "commerce_products",
       settings: state,
     })
-    expect(plan.relayUrls[0]).toBe("wss://commerce.example.com")
-    expect(plan.relayUrls).toContain("wss://public.example.com")
+    expect(plan.relayUrls[0]).toBe("wss://commerce.conduit.market")
+    expect(plan.relayUrls).toContain("wss://public.conduit.market")
   })
 
   it("prepends author write relays as hints for author_products", () => {
     const state = settings([
-      entry("wss://commerce.example.com", { section: "commerce" }),
+      entry("wss://commerce.conduit.market", { section: "commerce" }),
     ])
     const lists = new Map<string, RelayList>([
       [
         "alice",
         relayList(
           "alice",
-          ["wss://alice-read.example.com"],
-          ["wss://alice-write.example.com"]
+          ["wss://alice-read.conduit.market"],
+          ["wss://alice-write.conduit.market"]
         ),
       ],
     ])
@@ -141,21 +141,21 @@ describe("planRelayReads", () => {
       relayLists: lists,
       settings: state,
     })
-    expect(plan.relayUrls[0]).toBe("wss://alice-write.example.com")
-    expect(plan.hintRelayUrls).toEqual(["wss://alice-write.example.com"])
+    expect(plan.relayUrls[0]).toBe("wss://alice-write.conduit.market")
+    expect(plan.hintRelayUrls).toEqual(["wss://alice-write.conduit.market"])
   })
 
   it("ignores insecure author relays from third-party NIP-65 hints", () => {
     const state = settings([
-      entry("wss://commerce.example.com", { section: "commerce" }),
+      entry("wss://commerce.conduit.market", { section: "commerce" }),
     ])
     const lists = new Map<string, RelayList>([
       [
         "alice",
         relayList(
           "alice",
-          ["wss://alice-read.example.com"],
-          ["ws://artshop:4848", "wss://alice-write.example.com"]
+          ["wss://alice-read.conduit.market"],
+          ["ws://artshop:4848", "wss://alice-write.conduit.market"]
         ),
       ],
     ])
@@ -165,21 +165,21 @@ describe("planRelayReads", () => {
       relayLists: lists,
       settings: state,
     })
-    expect(plan.hintRelayUrls).toEqual(["wss://alice-write.example.com"])
+    expect(plan.hintRelayUrls).toEqual(["wss://alice-write.conduit.market"])
     expect(plan.relayUrls).not.toContain("ws://artshop:4848")
   })
 
   it("allows insecure author relays from the authenticated user's own NIP-65", () => {
     const state = settings([
-      entry("wss://commerce.example.com", { section: "commerce" }),
+      entry("wss://commerce.conduit.market", { section: "commerce" }),
     ])
     const lists = new Map<string, RelayList>([
       [
         "alice",
         relayList(
           "alice",
-          ["wss://alice-read.example.com"],
-          ["ws://artshop:4848", "wss://alice-write.example.com"]
+          ["wss://alice-read.conduit.market"],
+          ["ws://artshop:4848", "wss://alice-write.conduit.market"]
         ),
       ],
     ])
@@ -192,19 +192,19 @@ describe("planRelayReads", () => {
     })
     expect(plan.hintRelayUrls).toEqual([
       "ws://artshop:4848",
-      "wss://alice-write.example.com",
+      "wss://alice-write.conduit.market",
     ])
   })
 
   it("uses recipient read relays as hints for dm_inbox", () => {
-    const state = settings([entry("wss://general.example.com")])
+    const state = settings([entry("wss://general.conduit.market")])
     const lists = new Map<string, RelayList>([
       [
         "bob",
         relayList(
           "bob",
-          ["wss://bob-read.example.com"],
-          ["wss://bob-write.example.com"]
+          ["wss://bob-read.conduit.market"],
+          ["wss://bob-write.conduit.market"]
         ),
       ],
     ])
@@ -214,45 +214,45 @@ describe("planRelayReads", () => {
       relayLists: lists,
       settings: state,
     })
-    expect(plan.relayUrls[0]).toBe("wss://bob-read.example.com")
-    expect(plan.relayUrls).toContain("wss://general.example.com")
+    expect(plan.relayUrls[0]).toBe("wss://bob-read.conduit.market")
+    expect(plan.relayUrls).toContain("wss://general.conduit.market")
   })
 
   it("excludes parked relays and reports them", () => {
-    recordRelayFailure("wss://broken.example.com", 1)
-    recordRelayFailure("wss://broken.example.com", 1)
+    recordRelayFailure("wss://broken.conduit.market", 1)
+    recordRelayFailure("wss://broken.conduit.market", 1)
     const state = settings([
-      entry("wss://broken.example.com"),
-      entry("wss://ok.example.com"),
+      entry("wss://broken.conduit.market"),
+      entry("wss://ok.conduit.market"),
     ])
     const plan = planRelayReads({
       intent: "general",
       settings: state,
       now: 100,
     })
-    expect(plan.relayUrls).toEqual(["wss://ok.example.com"])
-    expect(plan.parkedRelayUrls).toEqual(["wss://broken.example.com"])
+    expect(plan.relayUrls).toEqual(["wss://ok.conduit.market"])
+    expect(plan.parkedRelayUrls).toEqual(["wss://broken.conduit.market"])
   })
 
   it("can be forced to skip the health filter", () => {
-    recordRelayFailure("wss://broken.example.com", 1)
-    recordRelayFailure("wss://broken.example.com", 1)
-    const state = settings([entry("wss://broken.example.com")])
+    recordRelayFailure("wss://broken.conduit.market", 1)
+    recordRelayFailure("wss://broken.conduit.market", 1)
+    const state = settings([entry("wss://broken.conduit.market")])
     const plan = planRelayReads({
       intent: "general",
       settings: state,
       skipHealthFilter: true,
       now: 100,
     })
-    expect(plan.relayUrls).toEqual(["wss://broken.example.com"])
+    expect(plan.relayUrls).toEqual(["wss://broken.conduit.market"])
     expect(plan.parkedRelayUrls).toEqual([])
   })
 
   it("caps fanout to maxRelays", () => {
     const state = settings([
-      entry("wss://r1.example.com"),
-      entry("wss://r2.example.com"),
-      entry("wss://r3.example.com"),
+      entry("wss://r1.conduit.market"),
+      entry("wss://r2.conduit.market"),
+      entry("wss://r3.conduit.market"),
     ])
     const plan = planRelayReads({
       intent: "general",
@@ -263,9 +263,9 @@ describe("planRelayReads", () => {
   })
 
   it("dedupes overlapping hint and base relays", () => {
-    const state = settings([entry("wss://shared.example.com")])
+    const state = settings([entry("wss://shared.conduit.market")])
     const lists = new Map<string, RelayList>([
-      ["alice", relayList("alice", [], ["wss://shared.example.com"])],
+      ["alice", relayList("alice", [], ["wss://shared.conduit.market"])],
     ])
     const plan = planRelayReads({
       intent: "author_products",
@@ -273,7 +273,40 @@ describe("planRelayReads", () => {
       relayLists: lists,
       settings: state,
     })
-    expect(plan.relayUrls).toEqual(["wss://shared.example.com"])
+    expect(plan.relayUrls).toEqual(["wss://shared.conduit.market"])
+  })
+
+  it("plans shopper trust from merchant and shopper NIP-65 hints before public relays", () => {
+    const state = settings([entry("wss://public.conduit.market")])
+    const lists = new Map<string, RelayList>([
+      [
+        "merchant",
+        relayList("merchant", [], ["wss://merchant-write.conduit.market"]),
+      ],
+      [
+        "shopper",
+        relayList(
+          "shopper",
+          ["wss://shopper-read.conduit.market"],
+          ["wss://shopper-write.conduit.market"]
+        ),
+      ],
+    ])
+
+    const plan = planRelayReads({
+      intent: "shopper_trust",
+      authors: ["merchant", "shopper"],
+      recipients: ["shopper"],
+      relayLists: lists,
+      settings: state,
+    })
+
+    expect(plan.relayUrls.slice(0, 3)).toEqual([
+      "wss://merchant-write.conduit.market",
+      "wss://shopper-write.conduit.market",
+      "wss://shopper-read.conduit.market",
+    ])
+    expect(plan.relayUrls).toContain("wss://public.conduit.market")
   })
 })
 
@@ -287,7 +320,7 @@ describe("planRelayWrites", () => {
 
   it("author_event uses user-enabled write relays as primary", () => {
     const state = settings([
-      entry("wss://commerce.example.com", {
+      entry("wss://commerce.conduit.market", {
         section: "commerce",
         writeEnabled: true,
         capabilities: {
@@ -301,7 +334,7 @@ describe("planRelayWrites", () => {
           cleanup: true,
         },
       }),
-      entry("wss://stale.example.com", {
+      entry("wss://stale.conduit.market", {
         writeEnabled: true,
         warnings: {
           dmWithoutAuth: false,
@@ -317,15 +350,47 @@ describe("planRelayWrites", () => {
       settings: state,
     })
     expect(plan.primaryRelayUrls).toEqual([
-      "wss://commerce.example.com",
-      "wss://stale.example.com",
+      "wss://commerce.conduit.market",
+      "wss://stale.conduit.market",
     ])
     expect(plan.broadcastRelayUrls).toEqual([])
   })
 
+  it("author_event includes the author's current NIP-65 write relays", () => {
+    const state = settings([
+      entry("wss://configured.conduit.market", {
+        section: "commerce",
+        writeEnabled: true,
+      }),
+    ])
+    const lists = new Map<string, RelayList>([
+      [
+        "alice",
+        relayList(
+          "alice",
+          ["wss://alice-read.conduit.market"],
+          ["wss://alice-write.conduit.market"]
+        ),
+      ],
+    ])
+
+    const plan = planRelayWrites({
+      intent: "author_event",
+      authorPubkey: "alice",
+      authenticatedPubkey: "alice",
+      relayLists: lists,
+      settings: state,
+    })
+
+    expect(plan.primaryRelayUrls).toEqual([
+      "wss://alice-write.conduit.market",
+      "wss://configured.conduit.market",
+    ])
+  })
+
   it("recipient_event prefers recipient read relays as primary and seeds broadcast on user outbox", () => {
     const state = settings([
-      entry("wss://outbox.example.com", {
+      entry("wss://outbox.conduit.market", {
         section: "commerce",
         writeEnabled: true,
         capabilities: {
@@ -345,8 +410,8 @@ describe("planRelayWrites", () => {
         "bob",
         relayList(
           "bob",
-          ["wss://bob-inbox.example.com"],
-          ["wss://bob-write.example.com"]
+          ["wss://bob-inbox.conduit.market"],
+          ["wss://bob-write.conduit.market"]
         ),
       ],
     ])
@@ -356,13 +421,13 @@ describe("planRelayWrites", () => {
       relayLists: lists,
       settings: state,
     })
-    expect(plan.primaryRelayUrls).toEqual(["wss://bob-inbox.example.com"])
-    expect(plan.broadcastRelayUrls).toEqual(["wss://outbox.example.com"])
+    expect(plan.primaryRelayUrls).toEqual(["wss://bob-inbox.conduit.market"])
+    expect(plan.broadcastRelayUrls).toEqual(["wss://outbox.conduit.market"])
   })
 
   it("treats third-party recipient NIP-65 lists with only insecure relays as missing", () => {
     const state = settings([
-      entry("wss://outbox.example.com", {
+      entry("wss://outbox.conduit.market", {
         section: "commerce",
         writeEnabled: true,
         capabilities: {
@@ -394,7 +459,7 @@ describe("planRelayWrites", () => {
 
   it("allows insecure recipient relays for authenticated self-copy delivery", () => {
     const state = settings([
-      entry("wss://outbox.example.com", {
+      entry("wss://outbox.conduit.market", {
         section: "commerce",
         writeEnabled: true,
         capabilities: {
@@ -420,12 +485,12 @@ describe("planRelayWrites", () => {
       settings: state,
     })
     expect(plan.primaryRelayUrls).toEqual(["ws://umbrel.local:4848"])
-    expect(plan.broadcastRelayUrls).toEqual(["wss://outbox.example.com"])
+    expect(plan.broadcastRelayUrls).toEqual(["wss://outbox.conduit.market"])
   })
 
   it("uses shared recipient fallback relays when recipient has no cached list", () => {
     const state = settings([
-      entry("wss://outbox.example.com", {
+      entry("wss://outbox.conduit.market", {
         section: "commerce",
         writeEnabled: true,
         capabilities: {
@@ -449,8 +514,8 @@ describe("planRelayWrites", () => {
     expect(plan.primaryRelayUrls).toEqual(
       config.commerceDmFallbackRelayUrls.slice(0, 4)
     )
-    expect(plan.primaryRelayUrls).not.toContain("wss://outbox.example.com")
-    expect(plan.broadcastRelayUrls).toEqual(["wss://outbox.example.com"])
+    expect(plan.primaryRelayUrls).not.toContain("wss://outbox.conduit.market")
+    expect(plan.broadcastRelayUrls).toEqual(["wss://outbox.conduit.market"])
   })
 
   it("uses default public relays for recipient delivery when the signer has no write relays", () => {
@@ -470,12 +535,12 @@ describe("planRelayWrites", () => {
   it("merges multiple recipients' inboxes and dedupes", () => {
     const state = settings([])
     const lists = new Map<string, RelayList>([
-      ["bob", relayList("bob", ["wss://shared.example.com"], [])],
+      ["bob", relayList("bob", ["wss://shared.conduit.market"], [])],
       [
         "carol",
         relayList(
           "carol",
-          ["wss://shared.example.com", "wss://carol-only.example.com"],
+          ["wss://shared.conduit.market", "wss://carol-only.conduit.market"],
           []
         ),
       ],
@@ -487,14 +552,14 @@ describe("planRelayWrites", () => {
       settings: state,
     })
     expect(plan.primaryRelayUrls).toEqual([
-      "wss://shared.example.com",
-      "wss://carol-only.example.com",
+      "wss://shared.conduit.market",
+      "wss://carol-only.conduit.market",
     ])
   })
 
   it("respects fanout caps", () => {
     const state = settings([
-      entry("wss://w1.example.com", {
+      entry("wss://w1.conduit.market", {
         writeEnabled: true,
         capabilities: {
           nip11: true,
@@ -504,7 +569,7 @@ describe("planRelayWrites", () => {
           commerce: false,
         },
       }),
-      entry("wss://w2.example.com", {
+      entry("wss://w2.conduit.market", {
         writeEnabled: true,
         capabilities: {
           nip11: true,
@@ -514,7 +579,7 @@ describe("planRelayWrites", () => {
           commerce: false,
         },
       }),
-      entry("wss://w3.example.com", {
+      entry("wss://w3.conduit.market", {
         writeEnabled: true,
         capabilities: {
           nip11: true,
@@ -534,10 +599,10 @@ describe("planRelayWrites", () => {
   })
 
   it("excludes parked relays from both primary and broadcast", () => {
-    recordRelayFailure("wss://parked.example.com", 1)
-    recordRelayFailure("wss://parked.example.com", 1)
+    recordRelayFailure("wss://parked.conduit.market", 1)
+    recordRelayFailure("wss://parked.conduit.market", 1)
     const state = settings([
-      entry("wss://parked.example.com", {
+      entry("wss://parked.conduit.market", {
         writeEnabled: true,
         capabilities: {
           nip11: true,
@@ -547,7 +612,7 @@ describe("planRelayWrites", () => {
           commerce: false,
         },
       }),
-      entry("wss://ok.example.com", {
+      entry("wss://ok.conduit.market", {
         writeEnabled: true,
         capabilities: {
           nip11: true,
@@ -563,7 +628,7 @@ describe("planRelayWrites", () => {
       settings: state,
       now: 100,
     })
-    expect(plan.primaryRelayUrls).toEqual(["wss://ok.example.com"])
-    expect(plan.parkedRelayUrls).toEqual(["wss://parked.example.com"])
+    expect(plan.primaryRelayUrls).toEqual(["wss://ok.conduit.market"])
+    expect(plan.parkedRelayUrls).toEqual(["wss://parked.conduit.market"])
   })
 })

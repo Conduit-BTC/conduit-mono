@@ -1,6 +1,6 @@
 import { UserRound } from "lucide-react"
 import { type MerchantConversationSummary, type Profile } from "@conduit/core"
-import { StatusPill } from "@conduit/ui"
+import { Avatar, AvatarFallback, AvatarImage, StatusPill } from "@conduit/ui"
 import {
   getMerchantBuyerDisplayName,
   getMerchantConversationStatusDisplay,
@@ -11,22 +11,30 @@ export function BuyerAvatar({
   name,
   picture,
   size = "md",
+  decorative = false,
 }: {
   name: string
   picture?: string
   size?: "sm" | "md"
+  decorative?: boolean
 }) {
   const dim = size === "sm" ? "h-9 w-9" : "h-11 w-11"
   return (
-    <div
-      className={`${dim} flex shrink-0 items-center justify-center overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]`}
+    <Avatar
+      className={`${dim} border border-[var(--border)] bg-[var(--surface-elevated)]`}
     >
-      {picture ? (
-        <img src={picture} alt={name} className="h-full w-full object-cover" />
-      ) : (
-        <UserRound className="h-1/2 w-1/2 text-[var(--text-muted)]" />
-      )}
-    </div>
+      <AvatarImage
+        src={picture}
+        alt={decorative ? "" : name}
+        className="object-cover"
+      />
+      <AvatarFallback>
+        <UserRound
+          className="h-1/2 w-1/2 text-[var(--text-muted)]"
+          aria-hidden="true"
+        />
+      </AvatarFallback>
+    </Avatar>
   )
 }
 

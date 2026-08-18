@@ -13,7 +13,8 @@ const MERCHANT_PUBKEY = getPublicKey(MERCHANT_SECRET)
 const NOW_SECONDS = 1_800_000_000
 const PRODUCT_D_TAG = "cnd-150-test-product"
 const PRODUCT_ADDRESS = `30402:${MERCHANT_PUBKEY}:${PRODUCT_D_TAG}`
-const LNURL_PAY_URL = "https://wallet.example/.well-known/lnurlp/merchant"
+const LNURL_PAY_URL =
+  "https://wallet.conduit.market/.well-known/lnurlp/merchant"
 const LNURL = encodeLnurl(LNURL_PAY_URL)
 
 function signMerchantEvent(input: {
@@ -53,7 +54,7 @@ function productEvent(
     ["title", "CND-150 test product"],
     ["price", String(overrides.price ?? 10), currency],
     ["type", "simple", shippingCost === undefined ? "digital" : "physical"],
-    ["image", "https://cdn.example/cnd-150.png"],
+    ["image", "https://cdn.conduit.market/cnd-150.png"],
     ["checkout_zap_message_policy", "generic_only"],
   ]
   if (publicZapPolicy !== "unknown") {
@@ -81,7 +82,7 @@ function productEvent(
 function profileEvent(): SignedPublicNostrEvent {
   return signMerchantEvent({
     kind: 0,
-    content: JSON.stringify({ lud16: "merchant@wallet.example" }),
+    content: JSON.stringify({ lud16: "merchant@wallet.conduit.market" }),
   })
 }
 
@@ -96,7 +97,7 @@ function authorize(
     productEvents: [productEvent()],
     profileEvents: [profileEvent()],
     deletionEvents: [],
-    receiptRelayUrls: ["wss://relay.example"],
+    receiptRelayUrls: ["wss://relay.conduit.market"],
     nowSeconds: NOW_SECONDS,
     ...overrides,
   })
@@ -179,7 +180,7 @@ describe("anonymous public zap checkout authorization", () => {
         ["p", MERCHANT_PUBKEY],
         ["amount", "30000"],
         ["lnurl", LNURL],
-        ["relays", "wss://relay.example"],
+        ["relays", "wss://relay.conduit.market"],
         ["omf", "zapout"],
         ["client", "conduit-market"],
       ],

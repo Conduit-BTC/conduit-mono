@@ -1,18 +1,24 @@
 # One-Way Checkout and Multi-Rail Payments (Architecture Note)
 
+> Status: historical design context. The current Product Apps implement
+> non-custodial Lightning flows; the stablecoin and card sections below are not
+> implemented product behavior.
+
 Goal: enable a buyer-initiated, one-way checkout flow where:
 
 - Buyer computes cart total
 - Buyer pays immediately
 - Merchant confirmation/fulfillment can happen later (async)
-- Conduit never touches funds, generates invoices, or intermediates settlement
+- Conduit never takes custody of funds or intermediates settlement
 
 This is primarily about coordinating "payment intent" and "proof of payment", not operating payments.
 
 ## Principles
 
 - No custody: Conduit never holds funds.
-- No invoice issuance: Conduit does not generate Lightning invoices or stablecoin payment requests.
+- No platform custody: merchant wallets and payment providers issue and process
+  Lightning invoices; Product Apps may coordinate invoice requests and display
+  invoices without holding funds.
 - Interop-first: merchant payment metadata should be publicly discoverable so any compatible client can pay.
 - Thin abstraction: keep payment rails behind a minimal interface; advanced payment features are out of scope.
 

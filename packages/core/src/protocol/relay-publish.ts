@@ -23,6 +23,7 @@ import {
 import { EVENT_KINDS } from "./kinds"
 import {
   assertSafeNip65RelayTags,
+  normalizeUntrustedRelayHintsForContext,
   tryNormalizeRelayUrl,
 } from "./relay-settings"
 import { config } from "../config"
@@ -34,6 +35,11 @@ import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
 } from "./signed-event"
+import {
+  publishSignedEventFrameToRelay,
+  type ExactRelayWriteStatus,
+} from "./relay-writer"
+import { normalizePublicWebSocketUrl } from "../network-target-safety"
 
 const STANDARD_PUBLISH_TIMEOUT_MS = 5_000
 const CRITICAL_PUBLISH_TIMEOUT_MS = 10_000
@@ -47,8 +53,9 @@ export interface PublishWithPlannerInput {
   recipientPubkeys?: readonly string[]
   /**
    * Extra recipient relay hints (e.g. NIP-17 kind-10050 private-message inbox
-   * relays) added as delivery targets alongside the planned NIP-65 set. Secure
-   * URLs only; insecure hints are dropped.
+   * relays) added as delivery targets alongside the planned NIP-65 set. Public
+   * wss:// URLs are accepted automatically. Private/local URLs are accepted
+   * only when the authenticated planner already selected the same relay.
    */
   extraRelayUrls?: readonly string[]
   /**
@@ -68,6 +75,18 @@ export interface PublishWithPlannerInput {
   skipHealthFilter?: boolean
   /** Context for non-destructive replaceable-event publishes. */
   replaceableSafety?: ReplaceablePublishSafetyOptions
+}
+
+function hasAuthenticatedAuthorRelayContext(
+  input: Pick<PublishWithPlannerInput, "authorPubkey" | "authenticatedPubkey">
+): boolean {
+  const authorPubkey = input.authorPubkey?.trim().toLowerCase()
+  const authenticatedPubkey = input.authenticatedPubkey?.trim().toLowerCase()
+  return (
+    !!authorPubkey &&
+    /^[0-9a-f]{64}$/.test(authorPubkey) &&
+    authorPubkey === authenticatedPubkey
+  )
 }
 
 export interface PublishWithPlannerResult {
@@ -108,6 +127,13 @@ function assertValidSignedPublish(
   } catch {
     throw new Error("Refusing to publish an invalid signed Nostr event.")
   }
+  assertValidSignedPublicPublish(rawEvent, input)
+}
+
+function assertValidSignedPublicPublish(
+  rawEvent: SignedPublicNostrEvent,
+  input: PublishWithPlannerInput
+): void {
   if (!isValidSignedPublicNostrEvent(rawEvent)) {
     throw new Error("Refusing to publish an invalid signed Nostr event.")
   }
@@ -334,6 +360,18 @@ function getPublishErrorMessage(error: unknown): string {
   return "No acknowledgement before publish timeout"
 }
 
+const NIP_01_DUPLICATE_REASON = /^duplicate:/i
+const NIP_01_REJECTION_REASON =
+  /^(?:pow|blocked|rate-limited|invalid|restricted|mute|error):/i
+
+function isExplicitRelayRejection(error: unknown): boolean {
+  return NIP_01_REJECTION_REASON.test(getPublishErrorMessage(error).trim())
+}
+
+function isDuplicateRelayAcceptance(error: unknown): boolean {
+  return NIP_01_DUPLICATE_REASON.test(getPublishErrorMessage(error).trim())
+}
+
 function createPublishDiagnosticsError(input: {
   message: string
   plan: RelayWritePlan
@@ -375,6 +413,7 @@ async function publishToRelayUrls(input: {
   successfulRelayUrls: string[]
   failedRelayUrls: string[]
   relayFailureMessages: Record<string, string>
+  rejectedRelayUrls: string[]
   thrown: unknown
 }> {
   // NDKEvent.publish() reads the instance from the event itself even when the
@@ -387,6 +426,7 @@ async function publishToRelayUrls(input: {
       successfulRelayUrls: [],
       failedRelayUrls: [],
       relayFailureMessages: {},
+      rejectedRelayUrls: [],
       thrown: null,
     }
   }
@@ -394,6 +434,7 @@ async function publishToRelayUrls(input: {
   const relaySet = NDKRelaySet.fromRelayUrls([...input.relayUrls], input.ndk)
   let publishedUrls = new Set<string>()
   let explicitFailedUrls = new Set<string>()
+  const rejectedRelayUrls = new Set<string>()
   const explicitFailureMessages = new Map<string, string>()
   let thrown: unknown = null
 
@@ -411,7 +452,21 @@ async function publishToRelayUrls(input: {
       for (const [relay, relayError] of err.errors.entries()) {
         const url = relayUrl(relay)
         if (url) {
+          // `duplicate:` means this exact event is already durable on the
+          // relay. Treat it as an idempotent acknowledgement so a retry after
+          // an ACK-loss or browser crash can converge.
+          if (isDuplicateRelayAcceptance(relayError)) {
+            publishedUrls.add(url)
+            continue
+          }
           explicitFailedUrls.add(url)
+          // NDK currently stores OK-false, timeout, and transport failures as
+          // plain Error values in the same map. Only NIP-01's machine-readable
+          // rejection prefixes prove a relay explicitly rejected the event;
+          // every ambiguous failure remains retryable as timed_out.
+          if (isExplicitRelayRejection(relayError)) {
+            rejectedRelayUrls.add(url)
+          }
           explicitFailureMessages.set(url, getPublishErrorMessage(relayError))
         }
       }
@@ -442,7 +497,67 @@ async function publishToRelayUrls(input: {
     ])
   )
 
-  return { ...outcome, relayFailureMessages, thrown }
+  return {
+    ...outcome,
+    relayFailureMessages,
+    rejectedRelayUrls: Array.from(rejectedRelayUrls),
+    thrown,
+  }
+}
+
+export type ExclusiveRelayPublishStatus = ExactRelayWriteStatus
+
+interface ExactRelayTargetInput {
+  relayUrl: string
+  authorPubkey: string
+  /** Preserve an authenticated author's intentional local `ws://` target. */
+  authenticatedPubkey?: string | null
+}
+
+export interface ExactRelayPublishInput extends ExactRelayTargetInput {
+  signedEvent: SignedPublicNostrEvent
+}
+
+function resolveExactRelayTarget(input: ExactRelayTargetInput): string {
+  const normalized = tryNormalizeRelayUrl(input.relayUrl)
+  const allowAuthenticatedAuthorLocalRelay = hasAuthenticatedAuthorRelayContext(
+    {
+      authorPubkey: input.authorPubkey,
+      authenticatedPubkey: input.authenticatedPubkey,
+    }
+  )
+  if (
+    !normalized.ok ||
+    (!normalizePublicWebSocketUrl(normalized.url) &&
+      !allowAuthenticatedAuthorLocalRelay)
+  ) {
+    throw new Error("Expected one valid public or authenticated relay target.")
+  }
+  return normalized.url
+}
+
+/**
+ * Publish one already-signed author event to one exact relay target and return
+ * a structured ACK/reject/timeout result. No fallback or plan recomputation is
+ * allowed. Its isolated socket does not share NDK relay/session lifecycle, so
+ * ambient resets cannot interrupt a durable retry in flight.
+ */
+export async function publishSignedEventToRelay(
+  input: ExactRelayPublishInput
+): Promise<ExclusiveRelayPublishStatus> {
+  assertValidSignedPublicPublish(input.signedEvent, {
+    intent: "author_event",
+    authorPubkey: input.authorPubkey,
+  })
+  const relayUrl = resolveExactRelayTarget(input)
+  const status = await publishSignedEventFrameToRelay({
+    signedEvent: input.signedEvent,
+    relayUrl,
+    timeoutMs: CRITICAL_PUBLISH_TIMEOUT_MS,
+  })
+  if (status === "acked") recordRelaySuccess(relayUrl)
+  else recordRelayFailure(relayUrl)
+  return status
 }
 
 /**
@@ -507,9 +622,8 @@ export async function planPublishRelays(
  * Publish an NDKEvent to a planner-resolved relay set.
  *
  * Returns the resolved plan and the URL list that was attempted so callers
- * can surface diagnostics. If the planner yields no relays we fall back to
- * the NDKEvent's default `publish()` (NDK's pool of connected relays), except
- * for NIP-65 relay-list publishes where explicit user OUT relays are required.
+ * can surface diagnostics. Every network attempt uses either the resolved
+ * plan or a Conduit-configured fallback; bare NDK pool publishing is forbidden.
  *
  * Primary relays are the delivery requirement. Broadcast relays are diagnostic
  * best-effort fanout and must not make a recipient delivery look successful.
@@ -518,6 +632,14 @@ export async function publishWithPlanner(
   event: NDKEvent,
   input: PublishWithPlannerInput
 ): Promise<PublishWithPlannerResult> {
+  if (
+    event.kind === EVENT_KINDS.GIFT_WRAP &&
+    input.exclusiveRelayUrls === undefined
+  ) {
+    throw new Error(
+      "Gift wraps require an exclusive private-message relay plan."
+    )
+  }
   if (event.kind === EVENT_KINDS.RELAY_LIST) {
     assertSafeNip65RelayTags(event.tags ?? [])
   }
@@ -531,7 +653,14 @@ export async function publishWithPlanner(
       : await planPublishRelays(input)
   const extraPrimaryRelayUrls = input.exclusiveRelayUrls
     ? []
-    : (input.extraRelayUrls ?? []).filter((url) => !isInsecureRelayUrl(url))
+    : normalizeUntrustedRelayHintsForContext({
+        relayUrls: input.extraRelayUrls ?? [],
+        approvedRelayUrls: [
+          ...basePlan.primaryRelayUrls,
+          ...basePlan.broadcastRelayUrls,
+        ],
+        allowApprovedPrivate: !!input.authenticatedPubkey,
+      })
   const plan =
     extraPrimaryRelayUrls.length > 0
       ? {
@@ -597,15 +726,7 @@ export async function publishWithPlanner(
       )
     }
 
-    // Defensive: planner produced no targets and no configured fallback exists.
-    await event.publish()
-    return {
-      plan: emptyPlan(input.intent),
-      attemptedRelayUrls: [],
-      successfulRelayUrls: [],
-      failedRelayUrls: [],
-      relayFailureMessages: {},
-    }
+    throw new Error("Refusing to publish without an approved relay target.")
   }
 
   const ndk = testOverrides.getNdk ? testOverrides.getNdk() : getNdk()

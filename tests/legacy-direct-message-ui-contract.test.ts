@@ -25,23 +25,101 @@ describe("legacy direct-message UI contract", () => {
     expect(branch).not.toContain("<MessageComposer")
   })
 
-  it("gates Market inbox reads behind explicit messaging readiness", async () => {
+  it("keeps Market inbox reads permissive and gates sends on readiness", async () => {
     const source = await Bun.file("apps/market/src/routes/messages.tsx").text()
 
     expect(source).toContain("MessagingReadinessNotice,")
-    expect(source).toContain("enabled: signerConnected && messagingReady")
-    expect(source).toContain("publishPrivateMessageRelayDeclaration")
+    // Own-inbox reads are permissive (CND-208); no read query gates on readiness.
+    expect(source).not.toContain("enabled: signerConnected && messagingReady")
+    // Kind-14 sends still require an own declaration.
+    expect(source).toContain(
+      'if (!messagingReady) throw new Error("Encrypted messaging is not enabled")'
+    )
     expect(source).toContain("<MessagingReadinessNotice")
+    // Validated kind-16 order replies keep the recipient-delivery path even
+    // when the sender self-copy declaration needs repair.
+    expect(source).toContain('aria-label="Reply to merchant"')
+    expect(source).not.toContain(
+      "Enable encrypted messaging to reply in this order conversation."
+    )
+    // Network settings owns declaration setup/repair (CND-208).
+    expect(source).not.toContain("publishPrivateMessageRelayDeclaration")
+    expect(source).toContain('to: "/network"')
   })
 
-  it("gates Merchant inbox reads behind explicit messaging readiness", async () => {
+  it("keeps Merchant inbox reads permissive and gates sends on readiness", async () => {
     const source = await Bun.file(
       "apps/merchant/src/routes/messages.tsx"
     ).text()
 
     expect(source).toContain("MessagingReadinessNotice,")
-    expect(source).toContain("enabled: signerConnected && messagingReady")
-    expect(source).toContain("publishPrivateMessageRelayDeclaration")
+    // Own-inbox reads are permissive (CND-208); no read query gates on readiness.
+    expect(source).not.toContain("enabled: signerConnected && messagingReady")
+    // Sends still require an own declaration.
+    expect(source).toContain("!messagingReady ||")
     expect(source).toContain("<MessagingReadinessNotice")
+    // Network settings owns declaration setup/repair (CND-208).
+    expect(source).not.toContain("publishPrivateMessageRelayDeclaration")
+    expect(source).toContain('to: "/network"')
+  })
+
+  it("keeps declaration publishing owned by Network settings", async () => {
+    for (const routePath of [
+      "apps/market/src/routes/network.tsx",
+      "apps/merchant/src/routes/network.tsx",
+    ]) {
+      const source = await Bun.file(routePath).text()
+      expect(source).toContain("useInboxDeclaration")
+      expect(source).toContain("privateInbox")
+      expect(source).toContain("getInboxRelayCandidates")
+    }
+  })
+
+  it("waits for first-login relay import before deciding inbox readiness", async () => {
+    for (const routePath of [
+      "apps/market/src/routes/messages.tsx",
+      "apps/market/src/routes/network.tsx",
+      "apps/merchant/src/routes/messages.tsx",
+      "apps/merchant/src/routes/network.tsx",
+      "apps/merchant/src/routes/orders.tsx",
+    ]) {
+      const source = await Bun.file(routePath).text()
+      expect(source).toContain("session.relaySettingsReady")
+      expect(source).toContain("relayScope: session.relayScope")
+    }
+
+    const hookSource = await Bun.file(
+      "packages/core/src/hooks/useInboxDeclaration.ts"
+    ).text()
+    expect(hookSource).toContain("subscribeRelaySettingsChanges")
+    expect(hookSource).toContain("invalidateInboxDeclaration(pubkey)")
+    expect(hookSource).toContain("queryClient.invalidateQueries({ queryKey })")
+    expect(hookSource).toContain('isLoading: status === "loading"')
+
+    const ordersSource = await Bun.file(
+      "apps/merchant/src/routes/orders.tsx"
+    ).text()
+    expect(ordersSource).toContain("toMessagingReadinessNoticeState(")
+    expect(ordersSource).toContain("state={inboxReadinessNoticeState}")
+
+    for (const routePath of [
+      "apps/market/src/routes/messages.tsx",
+      "apps/merchant/src/routes/messages.tsx",
+    ]) {
+      const source = await Bun.file(routePath).text()
+      expect(source).toContain(") : dmReadiness.isLoading ? (")
+      expect(source).toContain("Checking encrypted messaging setup...")
+      expect(source).toContain('message.deliveryState === "failed" &&')
+      expect(source).toContain("messagingReady")
+    }
+
+    const relaySettingsSource = await Bun.file(
+      "packages/core/src/hooks/useRelaySettings.ts"
+    ).text()
+    expect(relaySettingsSource).toContain("relaySettingsContextKey")
+    expect(relaySettingsSource).toContain("currentContextKeyRef.current")
+    expect(relaySettingsSource).toContain(
+      "currentContextKeyRef.current !== operationContextKey"
+    )
   })
 })

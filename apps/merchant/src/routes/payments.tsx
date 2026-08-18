@@ -41,7 +41,7 @@ export const Route = createFileRoute("/payments")({
 
 function PaymentsPage() {
   const { pubkey } = useAuth()
-  const profileQuery = useProfile(pubkey)
+  const profileQuery = useProfile(pubkey, { authenticatedPubkey: pubkey })
   const updateMutation = useUpdateProfile("merchant")
 
   const profile = profileQuery.data
@@ -134,10 +134,13 @@ function PaymentsPage() {
     setLud16SaveSucceeded(false)
     try {
       await updateMutation.mutateAsync(
-        profileFormToUpdatePayload({
-          ...profileToFormValues(profile),
-          lud16: nextLud16,
-        })
+        profileFormToUpdatePayload(
+          {
+            ...profileToFormValues(profile),
+            lud16: nextLud16,
+          },
+          profile
+        )
       )
       setLud16SaveSucceeded(true)
       setEditingLud16(false)

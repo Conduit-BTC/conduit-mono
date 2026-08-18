@@ -1,33 +1,36 @@
-# GammaMarkets `market-spec`: Canonical Interop Notes
+# GammaMarkets `market-spec`: Historical And Compatibility Notes
 
-This is a short, implementation-oriented note for Conduit engineers and agents.
+This note preserves provenance and deployed compatibility context from the earlier GammaMarkets commerce specification. The maintained active reference is [open-markets-specification-notes.md](./open-markets-specification-notes.md).
 
 ## What It Is
 
 - Repo: https://github.com/GammaMarkets/market-spec
-- Purpose: an extension proposal/specification to extend NIP-99 for a fuller e-commerce use case.
-- Canonical text lives in: `spec.md` (the README is intentionally minimal and just points there).
+- Historical purpose: an extension proposal/specification to extend NIP-99 for a fuller e-commerce use case.
+- Historical specification text: `spec.md` (the README is intentionally minimal and points there).
+- Current governance: the Open Markets repository is the active working venue. Do not use this repository as the governing source for new protocol behavior.
 
-## Why We Treat It As Canonical (For De-commerce Interop)
+## Why We Retain It
 
-- NIP-99 explicitly points implementers to this extension proposal for standardized e-commerce behavior.
-- This spec is our primary interoperability contract across marketplaces.
+- It records the lineage of the commerce model now maintained through the Open Markets venue.
+- Deployed marketplaces and Conduit compatibility handling may still reflect this earlier wire behavior.
 - External codebases (Plebeian, etc.) are used to validate real-world compatibility, not to define correctness.
 
-## Conduit Policy For Changes
+## Conduit Compatibility Policy
 
-We should not change protocol behavior unless it produces a clearly better world.
+Do not derive new protocol behavior from this historical source when the current default-branch Open Markets working specification differs or is silent.
 
 Operationally:
-- Prefer implementing spec-aligned behavior in `@conduit/core` first.
+
+- Prefer implementing Open Markets/NIP-99-aligned behavior in `@conduit/core` first.
 - If an external market diverges, be liberal in parsing and conservative in emitting.
 - If we must support a non-spec quirk, do it behind an explicit compat adapter and document it in:
   - `docs/knowledge/external-market-interop-policy.md` (Compat Notes appendix)
 - Treat backwards-incompatible changes as exceptional: require explicit decision + migration plan.
 
-## Key “Spec-First” Anchors To Implement Against
+## Earlier Wire Anchors To Preserve In Compatibility Review
 
-From `spec.md` (high-level):
+The earlier `spec.md` described:
+
 - Required components include:
   - Product listings (kind `30402`)
   - Product collections (kind `30405`)
@@ -41,9 +44,11 @@ From `spec.md` (high-level):
   - Conduit should render and discover Plebeian listings (Level 1).
   - External discovery -> Conduit checkout is a priority path (Level 2).
 
-## “Where To Look” When Implementing
+## Where To Look
 
-- Canonical de-commerce spec:
+- Active commerce working specification:
+  - https://github.com/OpenMarketsFoundation/specification
+- Earlier GammaMarkets specification text:
   - https://github.com/GammaMarkets/market-spec/blob/main/spec.md
 - NIPs (prefer AI-friendly mirror for extraction, official repo for disputes):
   - https://nostrbook.dev/

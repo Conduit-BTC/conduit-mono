@@ -90,17 +90,19 @@ fields and merchant self-copy records preserve the operational history.
 
 ## Pages
 
-| Route       | Description                           |
-| ----------- | ------------------------------------- |
-| `/`         | Readiness dashboard and overview      |
-| `/products` | Product list/create/edit workspace    |
-| `/orders`   | Order list and order detail workspace |
-| `/messages` | Buyer support messaging workspace     |
-| `/profile`  | Merchant/store profile setup          |
-| `/payments` | Payment and wallet readiness          |
-| `/shipping` | Shipping readiness/options            |
-| `/network`  | Relay/network settings                |
-| `/about`    | App/source/provenance surface         |
+| Route               | Description                           |
+| ------------------- | ------------------------------------- |
+| `/`                 | Readiness dashboard and overview      |
+| `/products`         | Product list/create/edit workspace    |
+| `/orders`           | Order list and order detail workspace |
+| `/messages`         | Buyer support messaging workspace     |
+| `/profile`          | Merchant/store profile setup          |
+| `/payments`         | Payment and wallet readiness          |
+| `/shipping`         | Shipping readiness/options            |
+| `/network`          | Relay/network settings                |
+| `/about`            | App/source/provenance surface         |
+| `/privacy-policy`   | Public Product Privacy Policy         |
+| `/terms-of-service` | Public Product Terms of Service       |
 
 Do not document `/products/new`, `/products/$id/edit`, `/orders/$id`, or `/settings/*` unless those routes exist again.
 
@@ -212,6 +214,18 @@ const deletionEvent = {
   content: "",
 }
 ```
+
+Before delivery, Merchant persists the exact signed deletion and an immutable,
+deterministic target plan containing the merchant's configured and NIP-65 write
+relays, every validated source relay observed for the product, and the canonical
+Conduit commerce relay. Per-relay ACK, rejection, timeout, and retry state is
+durable across route changes, reloads, and browser restarts. Retries publish the
+same signed event and only revisit targets that have not acknowledged it.
+
+Legacy products may be deleted by a valid exact event ID when trustworthy
+address metadata is unavailable. Merchant may emit an address-only target when
+the full same-author coordinate is trustworthy, but it must refuse to sign when
+neither target is valid.
 
 ## Order States
 
@@ -366,7 +380,12 @@ VITE_CACHE_API_URL=
 
 ## Privacy Constraints
 
-- No buyer behavior analytics
-- No message content inspection
-- Operational metrics only
-- All buyer data stays on the buyer's device, merchant's device, or selected relays
+- No buyer behavior profiling or persistent visitor/account identity in Product
+  telemetry
+- No message, order, address, invoice, signer, or wallet-secret content in
+  telemetry, logs, or Conduit-operated Product servers
+- Operational metrics only, constrained by `docs/specs/privacy-observability.md`
+- Buyer data may be processed by buyer and merchant devices, counterparties,
+  relays, signers, wallets, LNURL/payment providers, merchant-selected services,
+  and the narrow Conduit-operated endpoints documented in the Product Privacy
+  Policy; do not collapse those recipients into a device-or-relay-only claim

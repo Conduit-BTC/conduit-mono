@@ -2,6 +2,7 @@ import {
   canonicalizeProductTags,
   CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG,
   getShippingOptionAddress,
+  normalizePublicMediaUrl,
   type ProductSchema,
   type ProductZapMessagePolicy,
 } from "@conduit/core"
@@ -15,6 +16,10 @@ import {
   type ProductShippingPricingMode,
 } from "./productPriceForm"
 import { getProductStockInputError } from "./productStock"
+import {
+  getProductVariationFormError,
+  type ProductVariationFormState,
+} from "./productVariations"
 
 export const MIN_PRODUCT_TAG_COUNT = 3
 export const RECOMMENDED_MIN_PRODUCT_TAG_COUNT = 5
@@ -26,6 +31,7 @@ export interface ProductPublishFormValues {
   title: string
   price: string
   stock: string
+  variations?: ProductVariationFormState
   currency: string
   format: ProductFulfillmentFormat
   shippingPricingMode: ProductShippingPricingMode
@@ -38,6 +44,7 @@ export interface ProductPublishFormValues {
 
 export interface MerchantProductFormValues extends ProductPublishFormValues {
   summary: string
+  variations: ProductVariationFormState
   publicZapEnabled: boolean
   zapMessagePolicy: ProductZapMessagePolicy
 }
@@ -99,6 +106,7 @@ export type ProductPublishFormField =
   | "stock"
   | "imageUrl"
   | "tags"
+  | "variations"
   | "shippingCost"
   | "shippingZone"
 
@@ -208,6 +216,7 @@ function firstError(
     errors.stock ??
     errors.imageUrl ??
     errors.tags ??
+    errors.variations ??
     errors.shippingCost ??
     errors.shippingZone ??
     null
@@ -247,6 +256,14 @@ export function validateProductPublishForm(
   const stockError = getProductStockInputError(form.stock)
   if (stockError) addError(errors, "stock", stockError)
 
+  if (form.variations) {
+    const variationError = getProductVariationFormError(
+      form.variations,
+      currency
+    )
+    if (variationError) addError(errors, "variations", variationError)
+  }
+
   if (!imageUrl) {
     addError(
       errors,
@@ -255,6 +272,12 @@ export function validateProductPublishForm(
     )
   } else if (!/^https:\/\//i.test(imageUrl)) {
     addError(errors, "imageUrl", "Image URL must start with https://")
+  } else if (!normalizePublicMediaUrl(imageUrl)) {
+    addError(
+      errors,
+      "imageUrl",
+      "Image URL must use a public network destination."
+    )
   }
 
   if (tags.length < MIN_PRODUCT_TAG_COUNT) {

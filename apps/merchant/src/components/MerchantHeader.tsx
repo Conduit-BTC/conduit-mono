@@ -5,6 +5,7 @@ import {
   Copy,
   CreditCard,
   ExternalLink,
+  FileText,
   GitFork,
   Info,
   LogOut,
@@ -12,6 +13,7 @@ import {
   MessageCircle,
   Package,
   ShoppingBag,
+  ShieldCheck,
   Store,
   Truck,
   UserRound,
@@ -91,6 +93,7 @@ const setupNavItems: NavItem[] = [
 type MerchantResourceLink = {
   label: string
   href: string
+  external: boolean
 } & (
   | { icon: ComponentType<{ className?: string }>; imageSrc?: never }
   | { imageSrc: string; icon?: never }
@@ -100,32 +103,38 @@ const merchantResourceLinks: readonly MerchantResourceLink[] = [
   {
     label: "conduit.market",
     href: "https://conduit.market/",
+    external: true,
     icon: ExternalLink,
   },
   {
     label: "GitHub",
     href: "https://github.com/Conduit-BTC/conduit-mono",
+    external: true,
     icon: GitFork,
   },
   {
     label: "Support",
     href: "https://github.com/Conduit-BTC/conduit-mono/issues",
+    external: true,
     icon: CircleHelp,
   },
   {
     label: "Nostr",
     href: "https://njump.me/npub1nkfqwlz7xkhhdaa3ekz88qqqk7a0ks7jpv9zdsv0u206swxjw9rq0g2svu",
+    external: true,
     imageSrc: "/images/logo/nostr-n-logo-white.png",
   },
   {
     label: "Terms",
-    href: "https://conduit.market/terms-of-service",
-    icon: ExternalLink,
+    href: "/terms-of-service",
+    external: false,
+    icon: FileText,
   },
   {
     label: "Privacy",
-    href: "https://conduit.market/privacy-policy",
-    icon: ExternalLink,
+    href: "/privacy-policy",
+    external: false,
+    icon: ShieldCheck,
   },
 ] as const
 
@@ -275,7 +284,7 @@ function UserMenu({ className }: { className?: string } = {}) {
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
   })
-  const profileQuery = useProfile(pubkey)
+  const profileQuery = useProfile(pubkey, { authenticatedPubkey: pubkey })
   const profile = profileQuery.data
   const readiness = useMerchantReadinessState()
   const bugReportUrl = buildBugReportUrl({ app: "merchant", route: pathname })
@@ -308,6 +317,7 @@ function UserMenu({ className }: { className?: string } = {}) {
       <DropdownMenuTrigger asChild>
         <button
           type="button"
+          aria-label="Open merchant account menu"
           className={cn(
             "inline-flex h-12 min-w-[12.75rem] items-center gap-3 rounded-[16px] bg-primary-500 px-3 text-left text-white transition-colors hover:bg-primary-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50",
             className
@@ -394,7 +404,12 @@ function UserMenu({ className }: { className?: string } = {}) {
               asChild
               className="h-10 rounded-xl px-2 text-sm font-medium text-[var(--text-primary)] focus:bg-[var(--surface-elevated)]"
             >
-              <a href={link.href} target="_blank" rel="noopener noreferrer">
+              <a
+                href={link.href}
+                target={link.external ? "_blank" : undefined}
+                rel={link.external ? "noopener noreferrer" : undefined}
+                referrerPolicy={link.external ? "no-referrer" : undefined}
+              >
                 {"imageSrc" in link ? (
                   <img
                     src={link.imageSrc}

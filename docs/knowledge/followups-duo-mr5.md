@@ -1,5 +1,9 @@
 # Historical AI Review Followups (MVP Era)
 
+> Historical only: current shared messaging code retains and surfaces typed,
+> content-free unwrap/decrypt failures. The statements below describe the 2026-02
+> review baseline and must not be treated as current Product behavior.
+
 Source: AI review notes captured on 2026-02-11.
 
 These are "nice-to-have" followups that were explicitly called out as acceptable to defer for MVP, but worth tracking so we do not forget.
@@ -20,9 +24,9 @@ These are "nice-to-have" followups that were explicitly called out as acceptable
 - Merchant orders polling interval:
   - Current interval is a fixed `10s`.
   - Make configurable for production (and/or use backoff when relay errors occur).
-- Decryption failures:
-  - Gift-wrapped order unwrapping uses `Promise.allSettled` and currently drops failures quietly.
-  - Add minimal logging for unwrap/decrypt failures (no plaintext leakage), so debugging is possible.
+- Decryption failures (resolved since this review):
+  - Shared gift-wrap unwrapping now retains and surfaces typed, content-free
+    failures without logging plaintext, ciphertext, order contents, or messages.
 - Relay connect timeout:
   - `ndk.connect(3000)` may be too short for slow networks.
   - Make configurable (env or constant) and consider a slightly longer default.

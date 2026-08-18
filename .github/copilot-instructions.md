@@ -14,9 +14,13 @@ Prioritize in this order:
 
 ## Non-Negotiable Constraints
 
-- External signer auth only (NIP-07, NIP-46). Never generate or store private keys.
-- No behavioral tracking or profiling.
-- No message content inspection.
+- Durable account signing uses external NIP-07 or NIP-46 signers. Do not
+  generate or store a user's durable Nostr account private key. Preserve the
+  narrow temporary guest-order and encrypted browser-local NIP-46 client-key
+  exceptions documented in the Product policies.
+- No behavioral tracking or person profiling. Product telemetry is limited to
+  the explicit operational allowlist in `docs/analytics/events.md`.
+- No message-content collection by product telemetry.
 - Payments are non-custodial Lightning payment requests, NWC/WebLN payment rails, and payment proofs. No custody or balance management.
 - No Zustand/Jotai/Redux style state libraries. Use React Context + TanStack Query + Dexie patterns.
 
@@ -51,8 +55,8 @@ For Market and Merchant changes touching orders/messages:
 
 For changes touching Nostr protocol, relay behavior, NDK usage, products/listings, private messages, signer auth, NWC/payments, local cache, or commerce outbox:
 
-- Verify the PR cites `docs/knowledge/external-nostr-references.md` plus the relevant NIP or GammaMarkets `market-spec`.
-- Verify product listings remain NIP-99 + GammaMarkets `kind:30402`; flag alternate product-listing protocol terminology or schema assumptions.
+- Verify the PR cites `docs/knowledge/external-nostr-references.md` plus the relevant NIP or Open Markets working specification source.
+- Verify product listings remain NIP-99 plus the Open Markets working specification for `kind:30402` commerce events; flag alternate product-listing protocol terminology or schema assumptions.
 - Verify relay behavior models partial reads, publish ACK/reject/timeout, stale/degraded state, and source disagreement where relevant.
 - Verify NIP-17 messaging uses NIP-59 seals/gift wraps and NIP-44 v2 as the current public encryption baseline; NIP-44 v3 readiness should remain visible, but v3 implementation must be source-gated by public draft/client references and explicit capability discovery.
 - Verify kind `10050` private-message relay hints are not confused with general NIP-65 `kind:10002` relay preferences when DM routing is in scope.

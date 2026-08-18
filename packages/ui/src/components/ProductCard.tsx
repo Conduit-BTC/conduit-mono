@@ -1,5 +1,6 @@
 import { Check, ImageOff, ShoppingCart } from "lucide-react"
 import { type ReactNode, useEffect, useRef, useState } from "react"
+import { normalizePublicMediaUrl } from "@conduit/core"
 import { Badge } from "./Badge"
 import { Button } from "./Button"
 import { cn } from "../utils"
@@ -22,6 +23,8 @@ export interface ProductCardProps {
   imageLoading?: "eager" | "lazy"
   cartQuantity?: number
   soldOut?: boolean
+  /** Optional product controls rendered between identity and price. */
+  options?: ReactNode
   action?: ReactNode
   onActivate?: () => void
   onMerchantActivate?: () => void
@@ -41,6 +44,7 @@ export function ProductCard({
   imageLoading = "lazy",
   cartQuantity = 0,
   soldOut = false,
+  options,
   action,
   onActivate,
   onMerchantActivate,
@@ -48,20 +52,19 @@ export function ProductCard({
   className,
 }: ProductCardProps) {
   const [imageFailed, setImageFailed] = useState(false)
-  const [imageIndex, setImageIndex] = useState(0)
   const [imageLoaded, setImageLoaded] = useState(false)
-  const activeImage = images[imageIndex]
-  const imageKey = images.map((image) => image.url).join("|")
+  const firstImage = images[0]
+  const firstImageUrl = normalizePublicMediaUrl(firstImage?.url)
+  const activeImage =
+    firstImage && firstImageUrl
+      ? { ...firstImage, url: firstImageUrl }
+      : undefined
+  const imageKey = activeImage?.url ?? ""
 
   useEffect(() => {
     setImageFailed(false)
-    setImageIndex(0)
     setImageLoaded(false)
   }, [imageKey, title])
-
-  useEffect(() => {
-    setImageLoaded(false)
-  }, [activeImage?.url])
 
   const merchantNameContent = merchantNamePending ? (
     <span className="inline-block max-w-full animate-pulse truncate leading-5">
@@ -112,12 +115,9 @@ export function ProductCard({
               )}
               decoding="async"
               loading={imageLoading}
+              referrerPolicy="no-referrer"
               onLoad={() => setImageLoaded(true)}
               onError={() => {
-                if (imageIndex < images.length - 1) {
-                  setImageIndex((current) => current + 1)
-                  return
-                }
                 setImageFailed(true)
                 onInvalidImage?.()
               }}
@@ -168,6 +168,8 @@ export function ProductCard({
             </div>
           )}
         </div>
+
+        {options ? <div className="pt-3">{options}</div> : null}
 
         <div className="mt-auto flex items-end justify-between gap-2 pt-3">
           <div className="min-w-0">
@@ -317,7 +319,7 @@ export function ProductCartAction({
 
 export function ProductCardSkeleton() {
   return (
-    <div className="flex h-full animate-pulse flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-md)]">
+    <div className="flex animate-pulse flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-md)]">
       <div className="aspect-[4/3] bg-[var(--surface-elevated)]" />
       <div className="flex flex-1 flex-col p-3">
         <div className="min-h-[3.25rem] space-y-1.5">

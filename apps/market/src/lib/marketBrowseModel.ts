@@ -1,6 +1,9 @@
 import {
   formatNpub,
   getProfileName,
+  normalizePublicMediaUrl,
+  type CommerceProductRecord,
+  type PreparedProductFamily,
   type PricingRateInput,
   type Product,
   type Profile,
@@ -53,7 +56,22 @@ export function getGlobalProductSearchQueryKey(input: {
 
 export interface MarketProductCardView {
   product: Product
+  family?: PreparedProductFamily<CommerceProductRecord>
   merchant: MerchantIdentityView
+}
+
+type ProductFamiliesById = Record<
+  string,
+  PreparedProductFamily<CommerceProductRecord>
+>
+
+function getBrowsePriceProduct(
+  product: Product,
+  familiesByProductId: ProductFamiliesById
+): Product {
+  return (
+    familiesByProductId[product.id]?.priceSummary.minimum?.product ?? product
+  )
 }
 
 export function mergeProductSearchResults(
@@ -82,7 +100,7 @@ export function getMerchantIdentityView(
 ): MerchantIdentityView {
   const profileName = getProfileName(profile)
   const fallbackName = getPendingMerchantName(pubkey)
-  const picture = profile?.picture?.trim()
+  const picture = normalizePublicMediaUrl(profile?.picture)
 
   return {
     pubkey,
@@ -114,20 +132,29 @@ export function getMerchantIdentityFromMap(
 export function sortBrowseProducts(
   products: Product[],
   sort: MarketBrowseSortOption | undefined,
-  btcUsdRate: PricingRateInput
+  btcUsdRate: PricingRateInput,
+  familiesByProductId: ProductFamiliesById = {}
 ): Product[] {
   switch (sort) {
     case "price_asc":
       return Array.from(products).sort(
         (a, b) =>
-          compareCommercePrices(a, b, btcUsdRate, "asc") ||
-          b.createdAt - a.createdAt
+          compareCommercePrices(
+            getBrowsePriceProduct(a, familiesByProductId),
+            getBrowsePriceProduct(b, familiesByProductId),
+            btcUsdRate,
+            "asc"
+          ) || b.createdAt - a.createdAt
       )
     case "price_desc":
       return Array.from(products).sort(
         (a, b) =>
-          compareCommercePrices(a, b, btcUsdRate, "desc") ||
-          b.createdAt - a.createdAt
+          compareCommercePrices(
+            getBrowsePriceProduct(a, familiesByProductId),
+            getBrowsePriceProduct(b, familiesByProductId),
+            btcUsdRate,
+            "desc"
+          ) || b.createdAt - a.createdAt
       )
     case "newest":
     default:
@@ -140,11 +167,16 @@ export function sortBrowseProducts(
 export function hasUnavailablePriceForBrowseSort(
   products: Product[],
   sort: MarketBrowseSortOption | undefined,
-  btcUsdRate: PricingRateInput
+  btcUsdRate: PricingRateInput,
+  familiesByProductId: ProductFamiliesById = {}
 ): boolean {
   if (!isPriceSort(sort)) return false
   return products.some(
-    (product) => getComparablePriceValue(product, btcUsdRate) === null
+    (product) =>
+      getComparablePriceValue(
+        getBrowsePriceProduct(product, familiesByProductId),
+        btcUsdRate
+      ) === null
   )
 }
 

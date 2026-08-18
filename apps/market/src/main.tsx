@@ -13,9 +13,11 @@ import {
   ConduitSessionProvider,
   pruneCommerceCaches,
   pruneExpiredGuestOrderData,
+  resumePendingOrderRelayDeliveries,
   useBtcUsdRate,
   useConduitSession,
 } from "@conduit/core"
+import { isProductLegalPath } from "@conduit/ui"
 import bricolageMediumUrl from "../../../packages/ui/src/assets/fonts/BricolageGrotesque-Medium.ttf?url"
 import bricolageRegularUrl from "../../../packages/ui/src/assets/fonts/BricolageGrotesque-Regular.ttf?url"
 import bricolageSemiBoldUrl from "../../../packages/ui/src/assets/fonts/BricolageGrotesque-SemiBold.ttf?url"
@@ -35,6 +37,7 @@ const criticalMarketFontUrls = [
   bricolageMediumUrl,
   bricolageSemiBoldUrl,
 ]
+const isProductLegalEntry = isProductLegalPath(window.location.pathname)
 
 function preloadCriticalMarketFonts() {
   for (const url of criticalMarketFontUrls) {
@@ -77,6 +80,34 @@ function MarketAuthQueryBoundary({ children }: { children: ReactNode }) {
     })
   }, [identity, queryClient])
 
+  useEffect(() => {
+    if (session.mode !== "signed_in" || !session.pubkey) return
+    const buyerPubkey = session.pubkey
+    let active = false
+    const resume = () => {
+      if (active) return
+      active = true
+      void resumePendingOrderRelayDeliveries(buyerPubkey).finally(() => {
+        active = false
+      })
+    }
+    const resumeWhenVisible = () => {
+      if (document.visibilityState === "visible") resume()
+    }
+
+    resume()
+    const interval = window.setInterval(resumeWhenVisible, 60_000)
+    window.addEventListener("online", resume)
+    window.addEventListener("focus", resume)
+    document.addEventListener("visibilitychange", resumeWhenVisible)
+    return () => {
+      window.clearInterval(interval)
+      window.removeEventListener("online", resume)
+      window.removeEventListener("focus", resume)
+      document.removeEventListener("visibilitychange", resumeWhenVisible)
+    }
+  }, [session.mode, session.pubkey])
+
   return <>{children}</>
 }
 
@@ -97,26 +128,36 @@ function pruneGuestRecoveryState() {
   void pruneExpiredGuestOrderData().catch(() => {})
 }
 
-void pruneCommerceCaches()
-pruneGuestRecoveryState()
-window.addEventListener("focus", pruneGuestRecoveryState)
-window.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") pruneGuestRecoveryState()
-})
-preloadCriticalMarketFonts()
+const root = createRoot(document.getElementById("root")!)
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <AuthProvider>
-        <ConduitSessionProvider appId="market">
-          <MarketAuthQueryBoundary>
-            <MarketPricingWarmup />
-            <RouterProvider router={router} />
-          </MarketAuthQueryBoundary>
-        </ConduitSessionProvider>
-      </AuthProvider>
-      {SHOW_DEVTOOLS && <ReactQueryDevtools />}
-    </QueryClientProvider>
-  </StrictMode>
-)
+if (isProductLegalEntry) {
+  root.render(
+    <StrictMode>
+      <RouterProvider router={router} />
+    </StrictMode>
+  )
+} else {
+  void pruneCommerceCaches()
+  pruneGuestRecoveryState()
+  window.addEventListener("focus", pruneGuestRecoveryState)
+  window.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") pruneGuestRecoveryState()
+  })
+  preloadCriticalMarketFonts()
+
+  root.render(
+    <StrictMode>
+      <QueryClientProvider client={queryClient}>
+        <AuthProvider>
+          <ConduitSessionProvider appId="market">
+            <MarketAuthQueryBoundary>
+              <MarketPricingWarmup />
+              <RouterProvider router={router} />
+            </MarketAuthQueryBoundary>
+          </ConduitSessionProvider>
+        </AuthProvider>
+        {SHOW_DEVTOOLS && <ReactQueryDevtools />}
+      </QueryClientProvider>
+    </StrictMode>
+  )
+}

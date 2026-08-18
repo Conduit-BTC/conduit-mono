@@ -21,22 +21,25 @@ test("maps missing profile fields to editable empty strings", () => {
   })
 })
 
-test("maps profile form values to publish payload", () => {
+test("maps only changed profile form values to the publish payload", () => {
   const profile = {
     pubkey: "abc",
     displayName: "Merchant",
     about: "",
-    picture: "https://example.com/avatar.png",
+    picture: "https://cdn.conduit.market/avatar.png",
   } as Profile
 
-  expect(profileFormToUpdatePayload(profileToFormValues(profile))).toEqual({
-    name: undefined,
-    displayName: "Merchant",
-    about: undefined,
-    picture: "https://example.com/avatar.png",
-    banner: undefined,
-    nip05: undefined,
-    lud16: undefined,
-    website: undefined,
-  })
+  expect(
+    profileFormToUpdatePayload(
+      { ...profileToFormValues(profile), displayName: "Updated Merchant" },
+      profile
+    )
+  ).toEqual({ displayName: "Updated Merchant" })
+
+  expect(
+    profileFormToUpdatePayload(
+      { ...profileToFormValues(profile), picture: "" },
+      profile
+    )
+  ).toEqual({ picture: undefined })
 })

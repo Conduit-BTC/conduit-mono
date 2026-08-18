@@ -4,15 +4,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   buildOrderStatusTimeline,
   canMockInvoice,
+  clearProtectedReadAuthenticationSuppression,
   convertCommerceAmountToSats,
   decodeLightningInvoiceAmount,
+  deriveProtectedReadPresentationState,
   formatNpub,
+  getAtomicProductDetail,
   getCachedMerchantConversationList,
   getCurrencyAmountStep,
   getLightningNetworkMismatchMessage,
   getMerchantConversationList,
   getMerchantOrderActions,
-  getProductDetail,
   getProductImageCandidates,
   getProductsByIds,
   hasWebLN,
@@ -24,6 +26,7 @@ import {
   nwcMakeInvoice,
   publishMerchantOrderMessage,
   pubkeyToNpub,
+  selectProtectedReadRows,
   weblnMakeInvoice,
   type MerchantConversationSummary,
   type MerchantOrderAction,
@@ -32,7 +35,11 @@ import {
   type Profile,
   type SignedPublicNostrEvent,
   useAuth,
+  useConduitSession,
+  useInboxDeclaration,
+  useNip05Verification,
   useProfiles,
+  useShopperTrustEvidence,
 } from "@conduit/core"
 import {
   AlertDialog,
@@ -44,6 +51,9 @@ import {
   Button,
   Input,
   Label,
+  LiveReadNotice,
+  MessagingReadinessNotice,
+  toMessagingReadinessNoticeState,
   OrderMessagesWidget,
   RefreshChip,
   Select,
@@ -63,6 +73,8 @@ import {
 import { requireAuth } from "../lib/auth"
 import { OrderCardScroller } from "../components/OrderCardScroller"
 import { BuyerAvatar, OrderListItem } from "../components/OrderListItem"
+import { OrderItemsCard } from "../components/OrderItemsCard"
+import { ShopperTrustCard } from "../components/ShopperTrustCard"
 import {
   getMerchantBuyerDisplayName,
   getMerchantConversationQueue,
@@ -83,8 +95,8 @@ import {
   isMerchantOrderActionSurfacePending,
   runExclusiveOrderAction,
 } from "../lib/order-action-view"
-import { getProfileUrl } from "../lib/market-links"
 import { prepareShippingUpdate } from "../lib/shipping-update"
+import { formatMerchantOrderAmount } from "../lib/order-summary-display"
 import {
   buildLocalProductDeliveryNotice,
   buildLocalProductRetryNotice,
@@ -103,14 +115,7 @@ import {
   ProductStockDecisionStore,
   type OrderStockAdjustment,
 } from "../lib/productStock"
-import {
-  Check,
-  ChevronRight,
-  Copy,
-  MessageCircle,
-  Search,
-  ShoppingBag,
-} from "lucide-react"
+import { Check, ChevronRight, Copy, MessageCircle, Search } from "lucide-react"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { useMerchantPaymentAutomation } from "../hooks/useMerchantPaymentAutomation"
 import { OrderStockPanel } from "../components/OrderStockPanel"
@@ -168,12 +173,6 @@ function normalizeInvoiceCurrencyChoice(
 
 const panelCard =
   "rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5"
-
-function formatSummaryAmount(amount: number, currency: string): string {
-  if (currency.trim().toUpperCase() === "SATS")
-    return `${amount.toLocaleString()} sats`
-  return `${amount.toLocaleString()} ${currency.trim().toUpperCase()}`
-}
 
 function CopyInline({ value, label }: { value: string; label: string }) {
   const [copied, setCopied] = useState(false)
@@ -322,83 +321,9 @@ function MobileOrdersScroller({
   )
 }
 
-function OrderItemsCard({
-  items,
-  productLookup,
-  subtotal,
-  currency,
-}: {
-  items: Array<{
-    productId: string
-    title?: string
-    quantity: number
-    priceAtPurchase: number
-    currency: string
-  }>
-  productLookup: Map<
-    string,
-    {
-      title: string
-      imageUrl?: string
-      format: "physical" | "digital"
-    }
-  >
-  subtotal: number
-  currency: string
-}) {
-  return (
-    <section className={panelCard}>
-      <h3 className="flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
-        <ShoppingBag className="h-4 w-4" />
-        Items
-      </h3>
-      <div className="mt-3 space-y-3">
-        {items.map((item) => {
-          const match = productLookup.get(item.productId)
-          const image = match?.imageUrl
-          const title = item.title || match?.title || "Product"
-          return (
-            <div
-              key={item.productId}
-              className="flex items-start justify-between gap-3 text-sm"
-            >
-              <div className="flex min-w-0 items-start gap-3">
-                <div className="h-12 w-12 shrink-0 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)]">
-                  {image ? (
-                    <img
-                      src={image}
-                      alt={title}
-                      loading="lazy"
-                      className="h-full w-full object-cover"
-                    />
-                  ) : null}
-                </div>
-                <div className="min-w-0">
-                  <div className="text-[var(--text-primary)]">{title}</div>
-                  <div className="mt-0.5 text-xs text-[var(--text-secondary)]">
-                    Qty {item.quantity}
-                  </div>
-                </div>
-              </div>
-              <div className="shrink-0 text-right text-[var(--text-secondary)]">
-                {formatSummaryAmount(item.priceAtPurchase, item.currency)}
-              </div>
-            </div>
-          )
-        })}
-      </div>
-      <div className="mt-4 flex items-center justify-between border-t border-[var(--border)] pt-4 text-sm">
-        <span className="font-medium text-[var(--text-secondary)]">Total</span>
-        <span className="text-base font-semibold text-[var(--text-primary)]">
-          {formatSummaryAmount(subtotal, currency)}
-        </span>
-      </div>
-    </section>
-  )
-}
-
 function OrdersPage() {
   const { pubkey, status } = useAuth()
+  const session = useConduitSession()
   const navigate = useNavigate()
   const { order: selectedFromUrl, queue: queueFromUrl } = Route.useSearch()
   const selectedQueueFromUrl = queueFromUrl ?? "all"
@@ -478,6 +403,16 @@ function OrdersPage() {
 
   const nwc = useMerchantPaymentAutomation()
 
+  // Orders reads stay permissive without a NIP-17 declaration (CND-208);
+  // this banner only reports readiness and links to Network for repair.
+  const inboxReadiness = useInboxDeclaration(pubkey, {
+    enabled: signerConnected && session.relaySettingsReady,
+    relayScope: session.relayScope,
+  })
+  const inboxReadinessNoticeState = toMessagingReadinessNoticeState(
+    inboxReadiness.status
+  )
+
   const ordersQuery = useQuery({
     queryKey: ["merchant-order-messages-live", pubkey ?? "none"],
     enabled: signerConnected,
@@ -494,17 +429,32 @@ function OrdersPage() {
     staleTime: 5_000,
   })
   const isOrdersFetching = ordersQuery.isFetching
+  const isOrdersInitialHydration = ordersQuery.isLoading
   const refetchOrders = ordersQuery.refetch
 
   const handleRefresh = useCallback(() => {
-    if (!signerConnected) return
+    if (!signerConnected || !pubkey) return
+    clearProtectedReadAuthenticationSuppression(pubkey)
     void refetchOrders()
-  }, [refetchOrders, signerConnected])
+  }, [pubkey, refetchOrders, signerConnected])
 
   const conversations = useMemo(
-    () => ordersQuery.data?.data ?? cachedOrdersQuery.data?.data ?? [],
+    () =>
+      selectProtectedReadRows(
+        ordersQuery.data?.data,
+        cachedOrdersQuery.data?.data
+      ),
     [cachedOrdersQuery.data, ordersQuery.data]
   )
+  const ordersMeta = ordersQuery.data?.meta
+  const protectedOrdersReadState = deriveProtectedReadPresentationState({
+    visibleCount: conversations.length,
+    pending: ordersQuery.isLoading,
+    error: ordersQuery.error,
+    meta: ordersMeta,
+  })
+  const protectedOrderCountsUnavailable =
+    conversations.length === 0 && protectedOrdersReadState !== "complete"
   const buyerPubkeys = useMemo(
     () =>
       Array.from(
@@ -518,7 +468,8 @@ function OrdersPage() {
     [conversations]
   )
   const buyerProfilesQuery = useProfiles(buyerPubkeys, {
-    enabled: signerConnected && buyerPubkeys.length > 0,
+    enabled:
+      signerConnected && !isOrdersInitialHydration && buyerPubkeys.length > 0,
     priority: "background",
     refetchUnresolvedMs: 12_000,
     maxUnresolvedRefetches: 1,
@@ -882,6 +833,39 @@ function OrdersPage() {
     selected && !isGuestOrder
       ? buyerProfilesQuery.data?.[selected.buyerPubkey]
       : undefined
+  const selectedShopperPubkey =
+    selected && !isGuestOrder ? selected.buyerPubkey : null
+  const shopperTrustQuery = useShopperTrustEvidence(
+    pubkey && selectedShopperPubkey
+      ? {
+          merchantPubkey: pubkey,
+          shopperPubkey: selectedShopperPubkey,
+        }
+      : null,
+    {
+      enabled:
+        signerConnected &&
+        session.relaySettingsReady &&
+        !isOrdersInitialHydration,
+      relayScope: session.relayScope,
+    }
+  )
+  const selectedBuyerNip05 = selectedBuyerProfile?.nip05?.trim()
+  const selectedBuyerNip05Verification = useNip05Verification(
+    selectedShopperPubkey,
+    selectedBuyerNip05,
+    {
+      enabled:
+        signerConnected && !isOrdersInitialHydration && !!selectedBuyerNip05,
+    }
+  )
+  const selectedBuyerProfileState = !selectedShopperPubkey
+    ? "unavailable"
+    : buyerProfilesQuery.hasProfile(selectedShopperPubkey)
+      ? "loaded"
+      : isOrdersInitialHydration || !buyerProfilesQuery.lookupSettled
+        ? "loading"
+        : "unavailable"
   const selectedBuyerName = selected
     ? getMerchantBuyerDisplayName(selected, selectedBuyerProfile)
     : null
@@ -952,7 +936,7 @@ function OrdersPage() {
         }
       }
 
-      const latest = await getProductDetail({
+      const latest = await getAtomicProductDetail({
         productId: payload.adjustment.addressId,
         includeMarketHidden: true,
       })
@@ -968,9 +952,12 @@ function OrdersPage() {
           "The current merchant listing could not be verified. Refresh orders and try again."
         )
       }
-      if (record.product.type !== "simple") {
+      if (
+        record.product.type !== "simple" &&
+        record.product.type !== "variation"
+      ) {
         throw new Error(
-          "Automatic stock updates are not available for variable listings yet."
+          "Automatic stock updates require a purchasable product listing."
         )
       }
       if (record.eventId !== payload.adjustment.sourceEventId) {
@@ -1452,7 +1439,7 @@ function OrdersPage() {
             Open threads
           </div>
           <div className="mt-2 text-2xl font-semibold text-[var(--text-primary)] md:mt-3 md:text-3xl">
-            {conversations.length}
+            {protectedOrderCountsUnavailable ? "—" : conversations.length}
           </div>
         </div>
         <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-3 md:p-4">
@@ -1460,7 +1447,7 @@ function OrdersPage() {
             Awaiting invoice
           </div>
           <div className="mt-2 text-2xl font-semibold text-[var(--text-primary)] md:mt-3 md:text-3xl">
-            {awaitingInvoiceCount}
+            {protectedOrderCountsUnavailable ? "—" : awaitingInvoiceCount}
           </div>
         </div>
         <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-3 md:p-4">
@@ -1468,7 +1455,7 @@ function OrdersPage() {
             Active fulfillment
           </div>
           <div className="mt-2 text-2xl font-semibold text-[var(--text-primary)] md:mt-3 md:text-3xl">
-            {activeFulfillmentCount}
+            {protectedOrderCountsUnavailable ? "—" : activeFulfillmentCount}
           </div>
         </div>
       </div>
@@ -1479,18 +1466,39 @@ function OrdersPage() {
         </div>
       )}
 
-      {signerConnected && ordersQuery.error && (
-        <div className="rounded-md border border-error/30 bg-error/10 p-4 text-sm text-error">
-          Failed to load orders:{" "}
-          {ordersQuery.error instanceof Error
-            ? ordersQuery.error.message
-            : "Unknown error"}
-        </div>
-      )}
+      {signerConnected &&
+        !inboxReadiness.isLoading &&
+        inboxReadinessNoticeState && (
+          <MessagingReadinessNotice
+            state={inboxReadinessNoticeState}
+            onAction={() => {
+              if (
+                inboxReadiness.status === "lookup_partial" ||
+                inboxReadiness.status === "lookup_unavailable"
+              ) {
+                inboxReadiness.refetch()
+              } else {
+                void navigate({ to: "/network" })
+              }
+            }}
+            pending={inboxReadiness.isRefetching}
+          />
+        )}
+
+      {signerConnected &&
+        protectedOrdersReadState !== "complete" &&
+        protectedOrdersReadState !== "pending" && (
+          <LiveReadNotice
+            state={protectedOrdersReadState}
+            onRetry={handleRefresh}
+            retrying={ordersQuery.isRefetching}
+          />
+        )}
 
       {signerConnected &&
         !cachedOrdersQuery.isLoading &&
-        conversations.length === 0 && (
+        conversations.length === 0 &&
+        protectedOrdersReadState === "complete" && (
           <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
             No orders yet. Place an order from the Market app targeting this
             merchant pubkey.
@@ -1586,7 +1594,10 @@ function OrdersPage() {
                   <OrderItemsCard
                     items={orderSummary.items}
                     productLookup={productLookup}
-                    subtotal={orderSummary.subtotal}
+                    itemSubtotal={orderSummary.itemSubtotal}
+                    shippingCostSats={orderSummary.shippingCostSats}
+                    shippingCostStatus={orderSummary.shippingCostStatus}
+                    total={orderSummary.subtotal}
                     currency={orderSummary.currency}
                   />
                 </div>
@@ -2043,10 +2054,82 @@ function OrdersPage() {
                       <OrderItemsCard
                         items={orderSummary.items}
                         productLookup={productLookup}
-                        subtotal={orderSummary.subtotal}
+                        itemSubtotal={orderSummary.itemSubtotal}
+                        shippingCostSats={orderSummary.shippingCostSats}
+                        shippingCostStatus={orderSummary.shippingCostStatus}
+                        total={orderSummary.subtotal}
                         currency={orderSummary.currency}
                       />
                     </div>
+
+                    {isGuestOrder ? (
+                      <section className={panelCard}>
+                        <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                          Buyer
+                        </h3>
+                        <div className="mt-3 flex items-center gap-3">
+                          <BuyerAvatar name={selectedBuyerName ?? ""} />
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate font-semibold text-[var(--text-primary)]">
+                              {selectedBuyerName}
+                            </div>
+                            <div className="truncate font-mono text-xs text-[var(--text-muted)]">
+                              Guest checkout
+                            </div>
+                          </div>
+                          <StatusPill
+                            variant={selectedStatusDisplay?.tone ?? "neutral"}
+                            className="shrink-0 capitalize"
+                          >
+                            {selectedStatusDisplay?.label ?? "Unknown"}
+                          </StatusPill>
+                        </div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="mt-3 w-full"
+                          onClick={() => setMessagesOpen(true)}
+                        >
+                          <MessageCircle
+                            className="size-4"
+                            aria-hidden="true"
+                          />
+                          Order history
+                          {(selected.messages?.length ?? 0) > 0 && (
+                            <span className="ml-1 rounded-full bg-[var(--surface)] px-1.5 text-xs text-[var(--text-secondary)]">
+                              {selected.messages?.length}
+                            </span>
+                          )}
+                        </Button>
+                      </section>
+                    ) : (
+                      <ShopperTrustCard
+                        shopperPubkey={selected.buyerPubkey}
+                        profile={selectedBuyerProfile}
+                        profileState={selectedBuyerProfileState}
+                        evidence={shopperTrustQuery.evidence}
+                        isHydrating={
+                          shopperTrustQuery.isHydrating ||
+                          isOrdersInitialHydration ||
+                          !session.relaySettingsReady
+                        }
+                        nip05Status={
+                          selectedBuyerNip05 && isOrdersInitialHydration
+                            ? "checking"
+                            : selectedBuyerNip05Verification.status
+                        }
+                        statusDisplay={{
+                          label: selectedStatusDisplay?.label ?? "Unknown",
+                          tone: selectedStatusDisplay?.tone ?? "neutral",
+                        }}
+                        messageCount={selected.messages?.length ?? 0}
+                        messageLabel={
+                          buyerInboxKnown ? "Message" : "Order history"
+                        }
+                        onRefresh={shopperTrustQuery.refetch}
+                        onOpenMessages={() => setMessagesOpen(true)}
+                      />
+                    )}
 
                     {orderSummary.shippingAddress && (
                       <section className={panelCard}>
@@ -2168,7 +2251,7 @@ function OrdersPage() {
                           </DetailRow>
                           <DetailRow label="Total">
                             <span>
-                              {formatSummaryAmount(
+                              {formatMerchantOrderAmount(
                                 orderSummary.subtotal,
                                 orderSummary.currency
                               )}
@@ -2185,57 +2268,6 @@ function OrdersPage() {
                           )}
                         </div>
                       )}
-                    </section>
-
-                    <section className={panelCard}>
-                      <h3 className="text-sm font-semibold text-[var(--text-primary)]">
-                        Buyer
-                      </h3>
-                      <div className="mt-3 flex items-center gap-3">
-                        <BuyerAvatar
-                          name={selectedBuyerName ?? ""}
-                          picture={selectedBuyerProfile?.picture}
-                        />
-                        <div className="min-w-0 flex-1">
-                          {isGuestOrder ? (
-                            <div className="truncate font-semibold text-[var(--text-primary)]">
-                              {selectedBuyerName}
-                            </div>
-                          ) : (
-                            <a
-                              href={getProfileUrl(selected.buyerPubkey)}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="block truncate font-semibold text-[var(--text-primary)] underline-offset-2 hover:underline"
-                            >
-                              {selectedBuyerName}
-                            </a>
-                          )}
-                          <div className="truncate font-mono text-xs text-[var(--text-muted)]">
-                            {formatNpub(selected.buyerPubkey, 8)}
-                          </div>
-                        </div>
-                        <StatusPill
-                          variant={selectedStatusDisplay?.tone ?? "neutral"}
-                          className="shrink-0 capitalize"
-                        >
-                          {selectedStatusDisplay?.label ?? "Unknown"}
-                        </StatusPill>
-                      </div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="mt-3 w-full"
-                        onClick={() => setMessagesOpen(true)}
-                      >
-                        <MessageCircle className="size-4" aria-hidden="true" />
-                        {buyerInboxKnown ? "Message" : "Order history"}
-                        {(selected.messages?.length ?? 0) > 0 && (
-                          <span className="ml-1 rounded-full bg-[var(--surface)] px-1.5 text-xs text-[var(--text-secondary)]">
-                            {selected.messages?.length}
-                          </span>
-                        )}
-                      </Button>
                     </section>
                   </div>
                 </div>

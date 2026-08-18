@@ -1,0 +1,162 @@
+name: Agent Simplify Review
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+    branches: [main]
+  issue_comment:
+    types: [created, edited]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to review
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: agent-simplify-review-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  simplify:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+        github.event.pull_request.draft == false &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        github.event.pull_request.user.login != 'dependabot[bot]') ||
+      (github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request &&
+        github.event.comment.body == '/agent simplify' &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Validate pull request
+        id: pr
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Pull request number must be a positive integer." >&2
+            exit 1
+          fi
+
+          metadata="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --json baseRefName,headRefOid,isCrossRepository,state \
+            --jq '[.baseRefName // "", .headRefOid // "", ((.isCrossRepository == true) | tostring), .state // ""] | join("\u001f")')"
+          IFS=$'\x1f' read -r base_ref head_sha is_cross_repo state <<< "$metadata"
+
+          if [[ "$is_cross_repo" == "true" ]]; then
+            echo "Simplify review is disabled for cross-repository pull requests." >&2
+            exit 1
+          fi
+          if [[ "$base_ref" != "main" ]]; then
+            echo "Simplify review requires a pull request targeting main." >&2
+            exit 1
+          fi
+          if [[ "$state" != "OPEN" || -z "$head_sha" ]]; then
+            echo "Simplify review requires an open pull request with a resolvable head SHA." >&2
+            exit 1
+          fi
+
+          echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Require automation credentials
+        shell: bash
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+          GITHUB_APP_CLIENT_ID: ${{ vars.WORKFLOW_AGENT_GITHUB_APP_CLIENT_ID }}
+          GITHUB_APP_PRIVATE_KEY: ${{ secrets.WORKFLOW_AGENT_GITHUB_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n "$CODEX_AUTH_JSON" ]] || { echo "CODEX_AUTH_JSON is required." >&2; exit 1; }
+          [[ -n "$GITHUB_APP_CLIENT_ID" ]] || { echo "WORKFLOW_AGENT_GITHUB_APP_CLIENT_ID is required." >&2; exit 1; }
+          [[ -n "$GITHUB_APP_PRIVATE_KEY" ]] || { echo "WORKFLOW_AGENT_GITHUB_APP_PRIVATE_KEY is required." >&2; exit 1; }
+
+      - name: Checkout immutable pull request head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ steps.pr.outputs.head_sha }}
+
+      - name: Create GitHub App review token
+        id: app_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.WORKFLOW_AGENT_GITHUB_APP_CLIENT_ID }}
+          private-key: ${{ secrets.WORKFLOW_AGENT_GITHUB_APP_PRIVATE_KEY }}
+          permission-actions: read
+          permission-contents: read
+          permission-pull-requests: write
+
+      - name: Run simplify review
+        uses: sudden-network/agent@2afabe84ac9bf58e57f605b41b2c4f87bbe9c579 # v1.14.1
+        with:
+          agent_auth_file: ${{ secrets.CODEX_AUTH_JSON }}
+          github_token: ${{ steps.app_token.outputs.token }}
+          github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
+          model: ${{ vars.WORKFLOW_AGENT_CODEX_MODEL || 'gpt-5.6-sol/xhigh' }}
+          resume: false
+          prompt: |
+            Perform a read-only simplicity review of Conduit-BTC/conduit-mono
+            PR #${{ steps.pr.outputs.number }}. This complements normal
+            correctness and security review; do not edit files, push, change
+            labels, merge, deploy, request reviewers, or update external systems.
+
+            Review the complete base-to-head diff on every run, including runs
+            caused by a new push. Treat this as a fresh review, not an
+            incremental continuation of an earlier session.
+
+            Read AGENTS.md, contributor guidance, the changed files, and their
+            callers before judging the diff. Report a finding only when you can
+            name a concrete, behavior-preserving replacement that is smaller or
+            reuses an established implementation. Look for duplicate helpers,
+            app-local code that belongs in an existing shared owner, unnecessary
+            dependencies, speculative abstractions/configuration, and custom
+            code replacing an existing library or platform capability. Do not
+            use raw line count or file count as evidence.
+
+            Conduit-specific boundaries:
+            - Prefer @conduit/core protocol/schema/helpers and @conduit/ui
+              primitives; preserve the core → ui → apps ownership direction.
+            - Do not recommend route-local Nostr parsing, publish, relay, signer,
+              payment, cache/outbox, or encrypted-message behavior.
+            - A native control is not simpler when it bypasses an existing
+              @conduit/ui primitive or its accessibility/design behavior.
+            - Never simplify away interoperability, external-signer boundaries,
+              relay partial failures, non-custodial payment safety, privacy-safe
+              telemetry, content-free diagnostics, tests, or public-repo rules.
+            - Do not expose private planning, credentials, message/order/payment
+              content, signer material, wallet data, or operational payloads.
+
+            Evidence threshold:
+            - The replacement must preserve requested behavior, repo boundaries,
+              validation, error handling, security, accessibility, observability,
+              documentation, migrations, generated artifacts, and required tests.
+            - Required cross-layer changes are completeness, not bloat.
+            - If no change clears this threshold, submit a concise clean review.
+
+            Review delivery contract:
+            - Before submitting, inspect existing unresolved inline simplify findings. Do not duplicate an equivalent unresolved finding.
+            - Submit review feedback through GitHub pull request reviews, not PR Conversation or issue comments.
+            - Use `github.octokit_request` with `POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews` for the final review submission. Include `event: "COMMENT"` and a concise `body` so GitHub submits the review immediately instead of leaving it pending.
+            - Every actionable code finding must be an inline PR review comment on a changed file and line so GitHub creates a resolvable conversation. Use `comments[].body`, `comments[].path`, `comments[].line`, and `comments[].side`. Use `"RIGHT"` for additions or context and `"LEFT"` for deletions.
+            - For a finding spanning multiple files, anchor the inline comment on the primary changed line and mention the related files in that comment body.
+            - Do not post actionable findings as issue comments or PR Conversation comments. If an inline PR review cannot be submitted, leave no top-level finding and state the delivery blocker in the PR review body.
+            - Keep the PR review body to a concise summary and residual test or release risks. Do not duplicate actionable finding detail there.
+
+            When the correction is a small exact replacement, include a GitHub
+            suggestion block in the inline comment. Otherwise describe the
+            concrete replacement without proposing a broad refactor.

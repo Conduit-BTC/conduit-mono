@@ -10,6 +10,7 @@ export * from "./schemas"
 
 // Utils
 export * from "./utils"
+export * from "./network-target-safety"
 
 // Build provenance
 export {
@@ -24,6 +25,7 @@ export {
   applyPlausibleInitOptions,
   buildTelemetryEventPageContext,
   buildTelemetryPageUrl,
+  constrainOfficialBrowserTelemetryConfig,
   getTelemetryAmountBucket,
   getTelemetryCountBucket,
   getConduitPostHogConfig,
@@ -153,6 +155,7 @@ export {
   CANONICAL_COMMERCE_DM_FALLBACK_RELAYS,
   CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS,
   CANONICAL_DEFAULT_RELAYS,
+  CANONICAL_DM_COMPATIBILITY_ORDER_RELAYS,
   CANONICAL_DM_INBOX_DEFAULT_RELAYS,
   CANONICAL_SEARCH_INDEX_RELAYS,
   CANONICAL_ZAP_PUBLIC_RELAYS,
@@ -172,13 +175,34 @@ export {
 export {
   db,
   pruneCommerceCaches,
+  pruneShopperTrustSnapshots,
+  shopperTrustSnapshotIsExpired,
+  SHOPPER_TRUST_SNAPSHOT_MAX_ROWS,
+  SHOPPER_TRUST_SNAPSHOT_RETENTION_MS,
   type StoredOrder,
   type StoredMessage,
   type CachedProduct,
   type CachedProductTombstone,
+  type ProductDeletionDeliveryJob,
+  type ProductDeletionDeliveryState,
+  type ProductDeletionRelayDelivery,
+  type ProductDeletionRelayDeliveryStatus,
+  type ProductDeletionRelayRole,
+  type ProductDeletionRelayTarget,
   type CachedProfile,
   type CachedOrderMessage,
+  type DeclaredInboxDeclarationEventEvidence,
+  type InboxDeclarationEventEvidence,
+  type InboxDeclarationEvidenceRecord,
+  type InboxDeclarationEvidenceState,
+  type MalformedInboxDeclarationEventEvidence,
+  type NormalizedInboxDeclarationPubkey,
+  type SignedEmptyInboxDeclarationEventEvidence,
   type CachedNip05Verification,
+  type CachedShopperTrustCoverage,
+  type CachedShopperTrustSignal,
+  type CachedShopperTrustSignalState,
+  type CachedShopperTrustSnapshot,
   type StoredPaymentAttempt,
   type OrderLifecycle,
   type OrderLifecycleItem,
@@ -189,6 +213,10 @@ export {
   type OrderGuestContact,
   type OrderAddressValidity,
   type OrderShippingZoneEligibility,
+  type OrderDeliveryRoute,
+  type OrderRelayDelivery,
+  type OrderRelayDeliveryRecord,
+  type OrderRelayDeliveryStatus,
   type OrderDeliveryStatus,
   type OrderInvoiceStatus,
   type OrderPaymentStatus,
@@ -213,7 +241,6 @@ export {
 } from "./context/ConduitSessionContext"
 
 // Hooks
-export { useNdkState } from "./hooks/useNdkState"
 export { useNip07Availability } from "./hooks/useNip07Availability"
 export {
   useProfile,
@@ -226,12 +253,28 @@ export {
   type UseNip05VerificationResult,
 } from "./hooks/useNip05Verification"
 export {
+  getProfileQueryPerspectiveKey,
+  getProfileSingletonQueryKey,
   useProfiles,
   type UseProfilesOptions,
   type UseProfilesResult,
 } from "./hooks/useProfiles"
 export {
+  useShopperTrustEvidence,
+  type UseShopperTrustEvidenceOptions,
+  type UseShopperTrustEvidenceResult,
+} from "./hooks/useShopperTrustEvidence"
+export {
+  prepareRelaySettingsContextPresentation,
+  resolveRelayAuthDisplayEvidence,
   useRelaySettings,
   type UseRelaySettingsResult,
 } from "./hooks/useRelaySettings"
+export {
+  INBOX_DECLARATION_QUERY_KEY,
+  useInboxDeclaration,
+  type InboxDeclarationStatus,
+  type UseInboxDeclarationOptions,
+  type UseInboxDeclarationResult,
+} from "./hooks/useInboxDeclaration"
 export { useUpdateProfile } from "./hooks/useUpdateProfile"

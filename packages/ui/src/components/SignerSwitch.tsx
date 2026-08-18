@@ -696,7 +696,7 @@ function SignerDisconnectedContent({
         </p>
 
         <p className="px-4 text-center text-sm leading-5 text-[var(--text-muted)]">
-          Conduit never stores or recovers your keys.
+          Conduit does not custody or recover your durable Nostr account key.
         </p>
         <p className="px-4 text-center text-xs leading-5 text-[var(--text-muted)]">
           Remote reconnect stores an encrypted, revocable NIP-46 connection key

@@ -1,5 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router"
-import { useAuth, useConduitSession, useRelaySettings } from "@conduit/core"
+import {
+  getInboxRelayCandidates,
+  useAuth,
+  useConduitSession,
+  useInboxDeclaration,
+  useRelaySettings,
+} from "@conduit/core"
 import { RelaySettingsPanel } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
 
@@ -17,12 +23,17 @@ function NetworkPage() {
     pubkey,
     bootstrapRelayList: false,
   })
+  const inboxDeclaration = useInboxDeclaration(pubkey, {
+    enabled: session.relaySettingsReady,
+    relayScope: session.relayScope,
+  })
 
   return (
     <div className="mx-auto max-w-[54rem] py-2 sm:py-6">
       <div className="mx-auto max-w-[50rem]">
         <RelaySettingsPanel
           settings={relaySettings.settings}
+          authEvidenceByUrl={relaySettings.authEvidenceByUrl}
           scanningUrls={relaySettings.scanningUrls}
           error={relaySettings.error}
           isLoadingPublishedRelayList={
@@ -42,6 +53,29 @@ function NetworkPage() {
           onReset={relaySettings.resetRelaySettings}
           onPublishRelayList={
             pubkey ? relaySettings.publishRelayList : undefined
+          }
+          privateInbox={
+            pubkey
+              ? {
+                  status: inboxDeclaration.status,
+                  stale: inboxDeclaration.stale,
+                  distributionRepairable:
+                    inboxDeclaration.distributionRepairable,
+                  candidateRelays: getInboxRelayCandidates(
+                    relaySettings.settings.entries,
+                    inboxDeclaration.declaredRelayUrls,
+                    inboxDeclaration.retainedRelayUrls
+                  ),
+                  lookupError: inboxDeclaration.error,
+                  publishing: inboxDeclaration.publishing,
+                  publishError: inboxDeclaration.publishError,
+                  publishSuccess: inboxDeclaration.publishSuccess,
+                  publishConfirmationPending:
+                    inboxDeclaration.publishConfirmationPending,
+                  onPublish: inboxDeclaration.publishDeclaration,
+                  onRetryLookup: inboxDeclaration.refetch,
+                }
+              : undefined
           }
         />
       </div>

@@ -78,7 +78,7 @@ jobs:
         if: steps.sudden_auth.outputs.has_auth != 'true'
         run: echo "CODEX_AUTH_JSON or Sudden Agent auth is not configured; skipping agent review."
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         if: steps.sudden_auth.outputs.has_auth == 'true'
         with:
           fetch-depth: 0

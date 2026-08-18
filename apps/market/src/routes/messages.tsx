@@ -10,6 +10,7 @@ import {
   LegacyDirectMessageNotice,
   LiveReadNotice,
   MessagingReadinessNotice,
+  toMessagingReadinessNoticeState,
   MessageComposer,
   matchesConversationSearch,
   SearchInput,
@@ -33,6 +34,9 @@ import {
   buildDirectMessageRumor,
   cacheParsedDirectMessage,
   cacheParsedOrderMessage,
+  clearProtectedReadAuthenticationSuppression,
+  createValidatedOrderRouteScope,
+  deriveProtectedReadPresentationState,
   formatNpub,
   getCachedDirectMessageConversationList,
   getDirectMessageConversationList,
@@ -40,29 +44,30 @@ import {
   formatPubkey,
   markDirectMessageConversationRead,
   normalizePubkey,
-  inspectOwnPrivateMessageRelayReadiness,
   parseDirectMessageRumor,
   parseOrderMessageRumorEvent,
+  PrivateMessageRelayReadinessError,
   publishPrivateMessage,
-  publishPrivateMessageRelayDeclaration,
   pubkeyToNpub,
+  selectProtectedReadRows,
   useAuth,
+  useConduitSession,
+  useInboxDeclaration,
   useProfile,
   useProfiles,
 } from "@conduit/core"
 import type { DirectConversationSummary } from "@conduit/core"
 import { requireAuth } from "../lib/auth"
 import { CopyButton } from "../components/CopyButton"
-import {
-  MerchantAvatarFallback,
-  getMerchantDisplayName,
-} from "../components/MerchantIdentity"
+import { ConversationProfilePicture } from "../components/ConversationProfilePicture"
+import { getMerchantDisplayName } from "../components/MerchantIdentity"
 import {
   fetchCachedBuyerConversations,
   fetchBuyerConversations,
   type BuyerConversation,
 } from "../lib/orderConversations"
 import { getAutomaticMerchantThreadId } from "../lib/message-route-state"
+import { getDirectMessageSearchEmptyCopy } from "../lib/protected-read-copy"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 
@@ -152,15 +157,10 @@ function MerchantThreadRow({
     >
       <div className="flex items-start gap-3">
         <div className="h-11 w-11 shrink-0 overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]">
-          {profile?.picture ? (
-            <img
-              src={profile.picture}
-              alt={merchantName}
-              className="h-full w-full object-cover"
-            />
-          ) : (
-            <MerchantAvatarFallback />
-          )}
+          <ConversationProfilePicture
+            src={profile?.picture}
+            alt={merchantName}
+          />
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
@@ -217,15 +217,7 @@ function DmThreadRow({
     >
       <div className="flex items-start gap-3">
         <div className="h-11 w-11 shrink-0 overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]">
-          {profile?.picture ? (
-            <img
-              src={profile.picture}
-              alt={name}
-              className="h-full w-full object-cover"
-            />
-          ) : (
-            <MerchantAvatarFallback />
-          )}
+          <ConversationProfilePicture src={profile?.picture} alt={name} />
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
@@ -279,6 +271,7 @@ function MessagesPage() {
       { settledSatsAreAuthoritative: true }
     )
   const { pubkey, status } = useAuth()
+  const session = useConduitSession()
   const queryClient = useQueryClient()
   const search = Route.useSearch()
   const navigate = useNavigate({ from: Route.fullPath })
@@ -307,38 +300,33 @@ function MessagesPage() {
 
   const activeTab = search.tab ?? "merchants"
 
-  const dmReadinessQuery = useQuery({
-    queryKey: ["buyer-dm-readiness", pubkey ?? "none"],
-    enabled: signerConnected,
-    queryFn: () => inspectOwnPrivateMessageRelayReadiness(pubkey!),
-    staleTime: 30_000,
+  // Network settings is the only surface that publishes or repairs the
+  // NIP-17 inbox declaration; this route only reflects readiness (CND-208).
+  const dmReadiness = useInboxDeclaration(pubkey, {
+    enabled: signerConnected && session.relaySettingsReady,
+    relayScope: session.relayScope,
   })
-  const messagingReady = dmReadinessQuery.data?.state === "ready"
-  const enableMessagingMutation = useMutation({
-    mutationFn: async () => {
-      const ndk = getNdk()
-      if (!ndk.signer || !pubkey) throw new Error("Signer not connected")
-      await publishPrivateMessageRelayDeclaration({
-        pubkey,
-        signer: ndk.signer,
-        ndk,
-      })
-    },
-    onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: ["buyer-dm-readiness", pubkey ?? "none"],
-        }),
-        queryClient.invalidateQueries({
-          queryKey: ["buyer-dms-live", pubkey ?? "none"],
-        }),
-      ])
-    },
-  })
+  const messagingReady = dmReadiness.status === "ready"
+  const readinessNoticeState = toMessagingReadinessNoticeState(
+    dmReadiness.status
+  )
+  const readinessLookupDegraded =
+    readinessNoticeState === "lookup_partial" ||
+    readinessNoticeState === "lookup_unavailable"
+  const onReadinessAction = () => {
+    if (readinessLookupDegraded) {
+      dmReadiness.refetch()
+    } else {
+      void navigate({ to: "/network" })
+    }
+  }
 
+  // Order conversations read permissively (declared inbox + local IN +
+  // compatibility relays), so merchant order replies stay reachable even
+  // before the buyer publishes a kind-10050 declaration (CND-208).
   const messagesQuery = useQuery({
     queryKey: ["buyer-messages-live", pubkey ?? "none"],
-    enabled: signerConnected && messagingReady,
+    enabled: signerConnected,
     queryFn: () => fetchBuyerConversations(pubkey!),
     refetchInterval: 30_000,
     refetchIntervalInBackground: true,
@@ -349,11 +337,26 @@ function MessagesPage() {
     queryFn: () => fetchCachedBuyerConversations(pubkey!),
     staleTime: 5_000,
   })
+  const retryMerchantThreadsRead = () => {
+    if (!pubkey) return
+    clearProtectedReadAuthenticationSuppression(pubkey)
+    void messagesQuery.refetch()
+  }
 
   const conversations = useMemo(
-    () => messagesQuery.data?.data ?? cachedMessagesQuery.data?.data ?? [],
+    () =>
+      selectProtectedReadRows(
+        messagesQuery.data?.data,
+        cachedMessagesQuery.data?.data
+      ),
     [cachedMessagesQuery.data, messagesQuery.data]
   )
+  const merchantThreadsReadState = deriveProtectedReadPresentationState({
+    visibleCount: conversations.length,
+    pending: messagesQuery.isLoading,
+    error: messagesQuery.error,
+    meta: messagesQuery.data?.meta,
+  })
   const merchantPubkeys = useMemo(
     () =>
       Array.from(
@@ -477,12 +480,21 @@ function MessagesPage() {
       })
       prepareBuyerConversationRumor(rumor, pubkey)
 
+      // Reply inside an existing validated order thread: order identity and
+      // counterparty match the parsed conversation, so the compatibility lane
+      // may carry it when the merchant has no usable declaration.
       const { selfCopyError } = await publishPrivateMessage({
         rumor,
         senderPubkey: pubkey,
         recipientPubkey: selectedConversation.merchantPubkey,
         signer: ndk.signer,
         rumorKind: EVENT_KINDS.ORDER,
+        validatedOrderScope: createValidatedOrderRouteScope({
+          rumor,
+          orderId: selectedConversation.orderId,
+          senderPubkey: pubkey,
+          recipientPubkey: selectedConversation.merchantPubkey,
+        }),
       })
       if (selfCopyError) {
         console.warn("Buyer message self-copy publish failed", selfCopyError)
@@ -504,9 +516,10 @@ function MessagesPage() {
   })
 
   // General kind-14 DM inbox, cache-first, distinct from order threads.
+  // Own-inbox reads are permissive (CND-208); only sends require readiness.
   const dmsLiveQuery = useQuery({
     queryKey: ["buyer-dms-live", pubkey ?? "none"],
-    enabled: signerConnected && messagingReady,
+    enabled: signerConnected,
     queryFn: () =>
       getDirectMessageConversationList({ principalPubkey: pubkey! }),
     refetchInterval: 30_000,
@@ -519,9 +532,18 @@ function MessagesPage() {
       getCachedDirectMessageConversationList({ principalPubkey: pubkey! }),
     staleTime: 5_000,
   })
+  const retryDirectMessagesRead = () => {
+    if (!pubkey) return
+    clearProtectedReadAuthenticationSuppression(pubkey)
+    void dmsLiveQuery.refetch()
+  }
 
   const dmConversations = useMemo(
-    () => dmsLiveQuery.data?.data ?? dmsCacheQuery.data?.data ?? [],
+    () =>
+      selectProtectedReadRows(
+        dmsLiveQuery.data?.data,
+        dmsCacheQuery.data?.data
+      ),
     [dmsCacheQuery.data, dmsLiveQuery.data]
   )
   const dmCounterpartyPubkeys = useMemo(
@@ -557,6 +579,17 @@ function MessagesPage() {
     })
   }, [dmConversations, dmProfilesQuery.data, dmSearch])
   const dmLiveMeta = dmsLiveQuery.data?.meta
+  const directMessagesReadState = deriveProtectedReadPresentationState({
+    visibleCount: dmConversations.length,
+    pending: dmsLiveQuery.isLoading,
+    error: dmsLiveQuery.error,
+    meta: dmLiveMeta,
+  })
+  const directMessageListPending =
+    directMessagesReadState === "pending" && dmConversations.length === 0
+  const directMessageSearchEmptyCopy = getDirectMessageSearchEmptyCopy(
+    directMessagesReadState
+  )
   const dmDecryptFailures = dmLiveMeta?.decryptFailures?.length ?? 0
 
   // Scaffold a compose view when arriving via ?merchant=<pubkey>.
@@ -692,8 +725,14 @@ function MessagesPage() {
         }),
       ])
     },
-    onError: (_error, { message }) => {
+    onError: (error, { message }) => {
       optimisticDmQueue.markFailed(message.localId)
+      if (
+        error instanceof PrivateMessageRelayReadinessError &&
+        error.reason === "sender_not_ready"
+      ) {
+        dmReadiness.refetch()
+      }
     },
   })
 
@@ -801,79 +840,46 @@ function MessagesPage() {
               General direct messages are tied to your signer identity.
             </p>
           </section>
-        ) : dmReadinessQuery.isLoading &&
+        ) : dmReadiness.isLoading &&
           dmConversations.length === 0 &&
           !selectedDmPubkey ? (
           <div className="text-sm text-[var(--text-secondary)]">
             Checking encrypted messaging setup...
           </div>
         ) : !messagingReady &&
+          readinessNoticeState &&
           dmConversations.length === 0 &&
           !selectedDmPubkey ? (
           <MessagingReadinessNotice
-            state={dmReadinessQuery.error ? "lookup_failed" : "not_declared"}
-            onAction={() => {
-              if (dmReadinessQuery.error) {
-                void dmReadinessQuery.refetch()
-              } else {
-                enableMessagingMutation.mutate()
-              }
-            }}
-            pending={
-              dmReadinessQuery.isRefetching || enableMessagingMutation.isPending
-            }
-            error={
-              enableMessagingMutation.error
-                ? "Could not enable messaging. Retry when your signer and relays are available."
-                : null
-            }
+            state={readinessNoticeState}
+            onAction={onReadinessAction}
+            pending={dmReadiness.isRefetching}
           />
         ) : (
           <>
-            {!messagingReady && (
+            {!messagingReady && readinessNoticeState && (
               <MessagingReadinessNotice
-                state={
-                  dmReadinessQuery.error ? "lookup_failed" : "not_declared"
-                }
-                onAction={() => {
-                  if (dmReadinessQuery.error) {
-                    void dmReadinessQuery.refetch()
-                  } else {
-                    enableMessagingMutation.mutate()
-                  }
-                }}
-                pending={
-                  dmReadinessQuery.isRefetching ||
-                  enableMessagingMutation.isPending
-                }
-                error={
-                  enableMessagingMutation.error
-                    ? "Could not enable messaging. Retry when your signer and relays are available."
-                    : null
-                }
+                state={readinessNoticeState}
+                onAction={onReadinessAction}
+                pending={dmReadiness.isRefetching}
               />
             )}
-            {messagingReady && dmDecryptFailures > 0 && (
+            {dmDecryptFailures > 0 && (
               <DecryptFailureNotice
                 count={dmDecryptFailures}
-                onRetry={() => dmsLiveQuery.refetch()}
+                onRetry={retryDirectMessagesRead}
                 retrying={dmsLiveQuery.isRefetching}
               />
             )}
-            {messagingReady && (dmsLiveQuery.error || dmLiveMeta?.stale) && (
-              <LiveReadNotice
-                state={
-                  dmsLiveQuery.error
-                    ? dmConversations.length > 0
-                      ? "cached"
-                      : "unavailable"
-                    : "partial"
-                }
-                onRetry={() => void dmsLiveQuery.refetch()}
-                retrying={dmsLiveQuery.isRefetching}
-              />
-            )}
-            {messagingReady && (
+            {directMessagesReadState !== "complete" &&
+              directMessagesReadState !== "pending" && (
+                <LiveReadNotice
+                  state={directMessagesReadState}
+                  onRetry={retryDirectMessagesRead}
+                  retrying={dmsLiveQuery.isRefetching}
+                />
+              )}
+            {signerConnected && (
               <DecryptFailureNotice
                 count={dmLiveMeta?.legacyDecryptFailures?.length ?? 0}
                 label="Some legacy messages couldn't be decrypted."
@@ -881,25 +887,21 @@ function MessagesPage() {
                   dmLiveMeta?.legacyDecryptFailures?.some(
                     (failure) => failure.retryable
                   )
-                    ? () => void dmsLiveQuery.refetch()
+                    ? retryDirectMessagesRead
                     : undefined
                 }
                 retrying={dmsLiveQuery.isRefetching}
               />
             )}
 
-            {dmsCacheQuery.isLoading &&
-            dmsLiveQuery.isLoading &&
-            dmConversations.length === 0 &&
-            !selectedDmPubkey ? (
+            {directMessageListPending && !selectedDmPubkey ? (
               <div className="text-sm text-[var(--text-secondary)]">
                 Loading your inbox…
               </div>
             ) : dmConversations.length === 0 &&
               !selectedDmPubkey &&
               messagingReady &&
-              !dmsLiveQuery.error &&
-              !dmLiveMeta?.stale ? (
+              directMessagesReadState === "complete" ? (
               <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-8 text-center">
                 <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-300">
                   <MessageCircleMore className="h-7 w-7" />
@@ -944,7 +946,7 @@ function MessagesPage() {
                       ))
                     ) : (
                       <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
-                        No conversations match your search.
+                        {directMessageSearchEmptyCopy}
                       </div>
                     )}
                   </div>
@@ -996,7 +998,7 @@ function MessagesPage() {
                         </ConversationCardScroller>
                       ) : (
                         <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
-                          No conversations match your search.
+                          {directMessageSearchEmptyCopy}
                         </div>
                       )}
                     </section>
@@ -1016,7 +1018,7 @@ function MessagesPage() {
                       <div className="mt-4 space-y-2">
                         {filteredDmConversations.length === 0 && (
                           <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
-                            No conversations match your search.
+                            {directMessageSearchEmptyCopy}
                           </div>
                         )}
                         {filteredDmConversations.map((conversation) => (
@@ -1048,15 +1050,10 @@ function MessagesPage() {
                       <div className="border-b border-[var(--border)] px-6 py-5">
                         <div className="flex items-center gap-3">
                           <div className="h-12 w-12 overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]">
-                            {selectedDmProfile.data?.picture ? (
-                              <img
-                                src={selectedDmProfile.data.picture}
-                                alt={selectedDmName ?? "Contact"}
-                                className="h-full w-full object-cover"
-                              />
-                            ) : (
-                              <MerchantAvatarFallback />
-                            )}
+                            <ConversationProfilePicture
+                              src={selectedDmProfile.data?.picture}
+                              alt={selectedDmName ?? "Contact"}
+                            />
                           </div>
                           <div className="min-w-0 flex-1">
                             <div className="truncate text-lg font-semibold text-[var(--text-primary)]">
@@ -1107,7 +1104,8 @@ function MessagesPage() {
                                 ).toLocaleString()}
                                 deliveryState={message.deliveryState}
                                 onRetry={
-                                  message.deliveryState === "failed"
+                                  message.deliveryState === "failed" &&
+                                  messagingReady
                                     ? () => retryDirectMessage(message)
                                     : undefined
                                 }
@@ -1116,7 +1114,11 @@ function MessagesPage() {
                           </>
                         ) : (
                           <div className="flex h-full min-h-[160px] items-center justify-center text-center text-sm text-[var(--text-secondary)]">
-                            No messages yet. Say hello.
+                            {directMessagesReadState === "pending"
+                              ? "Loading message history…"
+                              : directMessagesReadState === "complete"
+                                ? "No messages yet. Say hello."
+                                : "Message history is unavailable. Retry the protected read before relying on an empty thread."}
                           </div>
                         )}
                       </div>
@@ -1133,6 +1135,10 @@ function MessagesPage() {
                             >
                               Start current conversation
                             </Button>
+                          </div>
+                        ) : dmReadiness.isLoading ? (
+                          <div className="text-sm text-[var(--text-secondary)]">
+                            Checking encrypted messaging setup...
                           </div>
                         ) : !messagingReady ? (
                           <div className="text-sm text-[var(--text-secondary)]">
@@ -1185,74 +1191,51 @@ function MessagesPage() {
             </section>
           )}
 
-          {signerConnected && dmReadinessQuery.isLoading && (
+          {signerConnected && dmReadiness.isLoading && (
             <div className="text-sm text-[var(--text-secondary)]">
               Checking encrypted messaging setup...
             </div>
           )}
 
           {signerConnected &&
-            !dmReadinessQuery.isLoading &&
-            !messagingReady && (
+            !dmReadiness.isLoading &&
+            !messagingReady &&
+            readinessNoticeState && (
               <MessagingReadinessNotice
-                state={
-                  dmReadinessQuery.error ? "lookup_failed" : "not_declared"
-                }
-                onAction={() => {
-                  if (dmReadinessQuery.error) {
-                    void dmReadinessQuery.refetch()
-                  } else {
-                    enableMessagingMutation.mutate()
-                  }
-                }}
-                pending={
-                  dmReadinessQuery.isRefetching ||
-                  enableMessagingMutation.isPending
-                }
-                error={
-                  enableMessagingMutation.error
-                    ? "Could not enable messaging. Retry when your signer and relays are available."
-                    : null
-                }
+                state={readinessNoticeState}
+                onAction={onReadinessAction}
+                pending={dmReadiness.isRefetching}
               />
             )}
 
-          {signerConnected && messagingReady && messagesQuery.isFetching && (
+          {signerConnected && messagesQuery.isFetching && (
             <div className="text-sm text-[var(--text-secondary)]">
               Checking latest merchant conversations...
             </div>
           )}
 
           {signerConnected &&
-            messagingReady &&
-            (messagesQuery.error || messagesQuery.data?.meta.stale) && (
+            merchantThreadsReadState !== "complete" &&
+            merchantThreadsReadState !== "pending" && (
               <LiveReadNotice
-                state={
-                  messagesQuery.error
-                    ? conversations.length > 0
-                      ? "cached"
-                      : "unavailable"
-                    : "partial"
-                }
-                onRetry={() => void messagesQuery.refetch()}
+                state={merchantThreadsReadState}
+                onRetry={retryMerchantThreadsRead}
                 retrying={messagesQuery.isRefetching}
               />
             )}
 
-          {signerConnected && messagingReady && (
+          {signerConnected && (
             <DecryptFailureNotice
               count={messagesQuery.data?.meta.decryptFailures?.length ?? 0}
-              onRetry={() => void messagesQuery.refetch()}
+              onRetry={retryMerchantThreadsRead}
               retrying={messagesQuery.isRefetching}
             />
           )}
 
           {signerConnected &&
-            messagingReady &&
             !cachedMessagesQuery.isLoading &&
             conversations.length === 0 &&
-            !messagesQuery.error &&
-            !messagesQuery.data?.meta.stale && (
+            merchantThreadsReadState === "complete" && (
               <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-8 text-center">
                 <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-300">
                   <Store className="h-7 w-7" />
@@ -1412,15 +1395,10 @@ function MessagesPage() {
                     <div className="border-b border-[var(--border)] px-6 py-5">
                       <div className="flex items-center gap-3">
                         <div className="h-12 w-12 overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]">
-                          {selectedProfile.data?.picture ? (
-                            <img
-                              src={selectedProfile.data.picture}
-                              alt={merchantName ?? "Merchant"}
-                              className="h-full w-full object-cover"
-                            />
-                          ) : (
-                            <MerchantAvatarFallback />
-                          )}
+                          <ConversationProfilePicture
+                            src={selectedProfile.data?.picture}
+                            alt={merchantName ?? "Merchant"}
+                          />
                         </div>
                         <div className="min-w-0 flex-1">
                           <Link
@@ -1477,43 +1455,32 @@ function MessagesPage() {
                     </div>
 
                     <div className="border-t border-[var(--border)] px-6 py-4">
-                      {!messagingReady ? (
-                        <div className="text-sm text-[var(--text-secondary)]">
-                          Enable encrypted messaging to reply in this order
-                          conversation.
+                      <div className="flex flex-col gap-3 sm:flex-row">
+                        <input
+                          value={replyText}
+                          onChange={(event) => setReplyText(event.target.value)}
+                          placeholder="Send a message to the merchant"
+                          className="h-11 flex-1 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)]"
+                          aria-label="Reply to merchant"
+                        />
+                        <Button
+                          className="h-11 px-5 text-sm"
+                          disabled={
+                            replyMutation.isPending || !replyText.trim()
+                          }
+                          onClick={() => replyMutation.mutate()}
+                        >
+                          {replyMutation.isPending
+                            ? "Sending..."
+                            : "Send message"}
+                        </Button>
+                      </div>
+                      {replyMutation.error && (
+                        <div className="mt-2 text-xs text-error">
+                          {replyMutation.error instanceof Error
+                            ? replyMutation.error.message
+                            : "Failed to send message"}
                         </div>
-                      ) : (
-                        <>
-                          <div className="flex flex-col gap-3 sm:flex-row">
-                            <input
-                              value={replyText}
-                              onChange={(event) =>
-                                setReplyText(event.target.value)
-                              }
-                              placeholder="Send a message to the merchant"
-                              className="h-11 flex-1 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)]"
-                              aria-label="Reply to merchant"
-                            />
-                            <Button
-                              className="h-11 px-5 text-sm"
-                              disabled={
-                                replyMutation.isPending || !replyText.trim()
-                              }
-                              onClick={() => replyMutation.mutate()}
-                            >
-                              {replyMutation.isPending
-                                ? "Sending..."
-                                : "Send message"}
-                            </Button>
-                          </div>
-                          {replyMutation.error && (
-                            <div className="mt-2 text-xs text-error">
-                              {replyMutation.error instanceof Error
-                                ? replyMutation.error.message
-                                : "Failed to send message"}
-                            </div>
-                          )}
-                        </>
                       )}
                     </div>
                   </>

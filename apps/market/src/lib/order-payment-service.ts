@@ -824,7 +824,9 @@ export async function runOrderPayment(
             lnurlNostrPubkey: providerReceiptPubkey ?? undefined,
             recipientPubkey: ctx.merchantPubkey,
             zapContent: ctx.zapContent,
-            explicitRelayUrls: ndk.explicitRelayUrls ?? [],
+            // Receipt relays are an explicit public payment policy. The shared
+            // NDK compatibility context intentionally has no ambient pool.
+            explicitRelayUrls: [],
             zapRelayUrls: config.zapRelayUrls,
           },
           {

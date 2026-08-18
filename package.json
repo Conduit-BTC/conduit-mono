@@ -8,8 +8,9 @@
     "packages/*"
   ],
   "overrides": {
-    "nanoid": "3.3.17",
-    "postcss": "8.5.25",
+    "dompurify": "3.4.13",
+    "nanoid": "3.3.18",
+    "postcss": "8.5.26",
     "undici": "7.29.0"
   },
   "scripts": {
@@ -45,12 +46,15 @@
     "dev:mock": "bun run dev:market:mock & bun run dev:merchant:mock",
     "dev:store-builder": "bun run --filter @conduit/store-builder dev",
     "build": "bun run --filter @conduit/core build && bun run --filter @conduit/ui build && bun run --filter './apps/*' build",
+    "build:preview": "CONDUIT_DEPLOYMENT_PROFILE=preview bun run build && bun scripts/ci/verify_deployment_artifacts.ts preview",
+    "build:production": "CONDUIT_DEPLOYMENT_PROFILE=production bun run build && bun scripts/ci/verify_deployment_artifacts.ts production",
     "build:packages": "bun run --filter @conduit/core build && bun run --filter @conduit/ui build",
     "typecheck": "bun run --filter '*' typecheck",
     "lint": "bun run --filter '*' lint",
     "telemetry:check": "bun scripts/ci/check_telemetry_policy.ts",
     "smoke:anon-zap": "bun scripts/smoke/anon_zap_authorization.ts",
     "smoke:anon-zap-provider": "bun scripts/smoke/anon_zap_provider.ts",
+    "smoke:nip42": "bun scripts/smoke/nip42_protected_read.ts",
     "test": "bun test",
     "test:e2e": "playwright test",
     "clean": "rm -rf node_modules apps/*/node_modules packages/*/node_modules"
@@ -63,9 +67,9 @@
     "@eslint/js": "^10.0.1",
     "@getalby/sdk": "^8.0.3",
     "@nostr-dev-kit/ndk": "^3.0.3",
-    "@playwright/test": "^1.61.1",
+    "@playwright/test": "^1.62.1",
     "@tanstack/router-generator": "^1.167.21",
-    "eslint": "^10.8.0",
+    "eslint": "^10.8.1",
     "eslint-plugin-react": "^7.37.4",
     "eslint-plugin-react-hooks": "^7.1.1",
     "husky": "^9.1.7",
@@ -73,7 +77,7 @@
     "nostr-tools": "2.24.1",
     "prettier": "^3.9.6",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.65.0"
+    "typescript-eslint": "^8.67.0"
   },
   "lint-staged": {
     "*.{ts,tsx,js,jsx,cjs,mjs}": [

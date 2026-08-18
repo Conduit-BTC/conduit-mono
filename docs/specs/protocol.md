@@ -8,11 +8,15 @@ References:
 - NIP-99 classified listing events and GammaMarkets `market-spec` product listings
 - One-way checkout architecture note: `docs/knowledge/one-way-checkout-multi-rail-payments.md`
 - External protocol references: `docs/knowledge/external-nostr-references.md`
+- Protected relay reads and rollout:
+  `docs/knowledge/nip42-protected-read-rollout.md`
 
 Non-goals for the current client repository:
 
-- key custody, key generation, escrow, refunds, or balance management
-- broad NIP-46 product UX beyond the external-signer policy already allowed by architecture
+- durable user account key custody or generation, escrow, refunds, or balance
+  management
+- server-managed NIP-46 account custody or signer recovery beyond the current
+  external-signer flow
 - service-operated checkout automation, except the scoped Anon Conduit Shopper public zap signer described below
 - making NIP-44 v3 the default send path before public draft/client references, signer support, and recipient capability detection exist
 - replacing the current shared protocol helpers with route-local relay substrates
@@ -21,11 +25,57 @@ Non-goals for the current client repository:
 
 Conduit Market and Merchant Portal user authentication use external signers only.
 
-| Signer path           | Status                  | Notes                                                   |
-| --------------------- | ----------------------- | ------------------------------------------------------- |
-| NIP-07 browser signer | Current client support  | Required path for current interactive signing           |
-| NIP-46 remote signer  | Architecture-compatible | Product UX depends on explicit implementation           |
-| App-generated keys    | Prohibited by default   | Only the bounded guest-order exception below is allowed |
+| Signer path           | Status                 | Notes                                                   |
+| --------------------- | ---------------------- | ------------------------------------------------------- |
+| NIP-07 browser signer | Current client support | Required path for current interactive signing           |
+| NIP-46 remote signer  | Current client support | Uses a revocable encrypted browser-local client key     |
+| App-generated keys    | Prohibited by default  | Only the bounded guest-order exception below is allowed |
+
+### Relay Read Authentication
+
+NIP-42 is used only for an explicitly protected relay operation. The first
+protected operation is the active principal reading their own `kind:1059` gift
+wraps with filters constrained to `#p` equal to the active account pubkey.
+Product, profile, declaration, relay-list, and other public reads remain
+free of NIP-42 account proof and must not trigger a signer prompt. This is not
+network anonymity: each queried relay sees the request filters, and relays,
+hosts, and transport providers may observe ordinary connection metadata such as
+source IP, destination, timing, and traffic volume.
+
+The protected-read executor owns plain Nostr request/event contracts,
+WebSockets, subscription lifecycles, authentication, reconnects, validation,
+and typed per-relay outcomes without importing NDK. NIP-07 and NIP-46 are the
+only eligible account signer adapters. Guest-order keys and unsigned sessions
+cannot authenticate and have no fallback. NDK remains a named edge adapter for
+existing signer and gift-wrap/unwrap work; protected reads must not deepen its
+relay ownership.
+
+Authenticated connections are isolated by normalized relay URL and a random,
+process-local account-session scope. They are never shared with public reads
+or another account, and are closed on logout, account/signer change, relay
+removal/read disable, settings-scope change, auth failure, and reconnect.
+
+When a protected connection has a current relay `AUTH` challenge, the client
+creates kind `22242` with empty content, current time, and exact `relay` and
+`challenge` tags, waits for the matching positive `OK`, then retries the
+protected `REQ` with a new subscription id. Under the current client-first
+`when_challenged` policy, a connection with no challenge receives an initial
+protected `REQ` and may complete without NIP-42 when the relay permits it.
+Challenge-before-request and challenge-plus-`auth-required:`-close are both
+supported. Negative/missing `OK`, signer failure, `restricted:` close, repeated
+challenges, reconnects, and timeouts have bounded typed outcomes rather than
+becoming EOSE or empty data. Client support does not prove that a relay requires
+or correctly enforces recipient authentication.
+
+Across relays, valid results survive another relay's auth failure and coverage
+is `partial`. All auth/unavailable failures are `unavailable`, never empty.
+Zero messages is terminal only when every required attempt for the bounded plan
+completes successfully with EOSE. Cached messages remain visible as
+stale/degraded after an incomplete authenticated refresh.
+
+The exact state machine, observation/privacy constraints, recipient-scoped
+relay policy, validation matrix, and client-first rollout/rollback contract are
+defined in `docs/knowledge/nip42-protected-read-rollout.md`.
 
 ### Client Ephemeral Guest Order Key Exception
 
@@ -146,6 +196,7 @@ This exception is constrained as follows:
 | `9735`  | Zap receipt                  | relay/wallet | NIP-57                                                   |
 | `10002` | Relay list                   | both         | NIP-65 relay hints                                       |
 | `10050` | Private message relays       | both         | NIP-17 secure-message relay declarations                 |
+| `22242` | Relay authentication         | client       | NIP-42 connection-bound auth event                       |
 | `30402` | Product listing              | merchant     | NIP-99 + GammaMarkets market-spec                        |
 | `30406` | Shipping option              | merchant     | Conduit commerce extension                               |
 | `31989` | Application recommendation   | both         | NIP-89                                                   |
@@ -160,6 +211,20 @@ Product listings are addressable events:
 ```
 
 Implementations must not dedupe only by `d` tag because different merchants can publish the same `d` value. Product identity, cart references, order item tags, and cache records should preserve the full addressable coordinate.
+
+### Product Deletion Frontier
+
+Validated kind `5` evidence is resolved before selecting the winning kind
+`30402` version. An author-scoped `e` tag removes its exact event ID regardless
+of relative timestamps. An author-scoped full `a` coordinate removes versions
+whose `created_at` is less than or equal to the deletion event timestamp; a
+genuinely newer version remains eligible. Missing or malformed legacy address
+metadata never authorizes an inferred or broader coordinate deletion.
+
+Local and remotely observed signed tombstones are durable, monotonic evidence
+shared by catalog, storefront, detail, batch, progressive, and cache reads.
+Relay omission does not revoke evidence. Progressive callbacks expose resolved
+frontier snapshots so a later tombstone can retract an earlier product.
 
 ## Product Zap Policy Tags
 
@@ -234,14 +299,107 @@ Buyer-merchant communication is sent as NIP-17 encrypted messages:
 
 The kind `16` payload is never published directly. It is encrypted and delivered through NIP-17 wrapping. Kind `14` general DMs remain separate from order-linked kind `16` conversations in product state.
 
-NIP-17 transport routing is exclusive to kind `10050` declarations. Gift-wrap
-reads use only the principal's declared secure-message relays. Each gift-wrap
-write, including a sender self-copy, uses only that wrap recipient's declared
-secure-message relays. NIP-65, configured relay lists, commerce priority, and
-general relay defaults are not fallback routes. An absent, malformed,
-stale-unusable, or unavailable declaration means the principal or recipient is
-not ready for secure messaging and must produce an explicit degraded state; the
-client must not attempt fallback delivery or represent the read as complete.
+Kind `10050` declarations are authoritative for NIP-17 transport routing.
+Gift-wrap writes, including a sender self-copy, target that wrap recipient's
+declared secure-message relays unless the validated kind-16 compatibility
+exception below is enabled by the deployment profile. Kind `14` never uses that
+exception. NIP-65, configured relay lists, commerce priority, and general relay
+defaults are not secure-message write fallback routes. In particular, a
+recipient's kind `10002` event may inform bounded discovery or rank an already
+eligible compatibility target, but it never supplies a gift-wrap write target.
+
+Declaration evidence is durable, account-scoped, and monotonic. The shared
+protocol boundary retains the exact validated signed kind `10050` event, its
+relay-tag interpretation, the relay sources that returned that event, and the
+most recent observation time. A separate complete-plan observation time is
+advanced only when every relay in the bounded lookup plan completes; partial or
+unavailable fanout never makes the frontier fresh after restart. The latest
+bounded lookup time, coverage, and whether it returned the current event are
+stored separately; a later empty, incomplete, or conflicting lookup remains
+degraded across process restart. Bounded lookup coverage does not overwrite the
+signed frontier. Invalid signatures, event ids, kinds, or authorship are
+rejected before the evidence frontier is updated. As a NIP-01 replaceable
+event, the winning frontier has the greatest `created_at`; when timestamps tie,
+the lexicographically smaller event id wins. Re-observing the same event unions
+its source-relay provenance instead of creating a new version.
+
+The current frontier and the last usable declared relay set are retained
+separately. Declaration resolution exposes signed frontier states and bounded
+observation-only states:
+
+- `declared`: the winning signed event contains at least one usable secure
+  `wss://` relay tag;
+- `signed_empty`: the winning cryptographically valid signed event contains no
+  `relay` tags, preserving an explicit signed no-inbox state separately from
+  malformed input; it is not a usable NIP-17 declaration;
+- `malformed`: a cryptographically valid signed event contains declaration data
+  but its relay-tag shape cannot be interpreted safely, including an all-invalid
+  relay-tag set;
+- `not_observed`: the bounded discovery plan completed without an event and no
+  signed frontier is retained;
+- `lookup_partial`: only part of the bounded discovery plan completed;
+- `lookup_unavailable`: none of the bounded discovery plan completed.
+
+A complete-but-empty, partial, or unavailable lookup never deletes or
+downgrades stronger retained signed evidence. With a retained frontier, those
+observations make the resolution stale or degraded while preserving its
+dominant signed state. A newer `signed_empty` or `malformed` frontier blocks
+writes, but its retained last-usable relays may still support permissive inbox
+reads. Relay-settings changes expire freshness and trigger rediscovery; they do
+not delete account evidence.
+
+Declaration publishing and repair use a bounded shared discovery set that is
+stable across Conduit clients, in addition to bounded owner-selected
+distribution targets. Repair is cross-client confirmed only when the exact
+signed event is read back from the shared discovery set with source provenance;
+an in-memory prime, durable local record, or owner-only relay readback is not
+confirmation that another client can discover it. If that shared plan completes
+without observing a retained current `declared` frontier, Network may explicitly
+redistribute that exact signed event to the same relay set. A retained
+`signed_empty` or `malformed` frontier remains retry-only until it is observed
+directly; the client cannot safely mint a replacement from an empty bounded
+view. Redistribution never signs a new replacement or advances its
+`created_at`; a bounded empty view cannot prove that another client has not
+published a newer event elsewhere. Partial, unavailable, or conflicting
+observations are also retry-only and never authorize that repair.
+
+Gift-wrap reads are permissive: the principal reads the union of their valid
+declared or retained last-usable inboxes, their locally enabled secure IN relays,
+and a bounded Conduit-operated compatibility read set. Read results carry
+coverage (`complete | partial | unavailable`) and source provenance; an
+all-failed read must never be reported as an authoritative empty inbox.
+
+### Temporary exception: validated-order compatibility routing (CND-208)
+
+A named, bounded, Conduit-owned exception exists while users migrate to valid
+kind `10050` declarations. It is not NIP-17-conformant routing and must not be
+presented as an extension of NIP-17. NIP-44/NIP-59 encryption is preserved.
+
+- Scope: validated kind `16` order-lifecycle messages only. Kind `14` general
+  DMs never use this lane.
+- Writes: only when the recipient has no usable declaration. Eligible relays
+  are the secure intersection of the operator-approved compatibility-write
+  registry and relays Conduit inbox readers poll. Recipient NIP-65 read relays
+  may reorder matching eligible entries but can never add a relay. The stable
+  result is normalized, deduplicated, and capped at three.
+- Arbitrary NIP-65, local IN/OUT, product provenance, NIP-89 hints,
+  commerce-priority, wrapper sources, and other public relays are never
+  compatibility write targets.
+- A current `declared` kind `10050` frontier always outranks the compatibility
+  lane; a newly observed declared frontier returns subsequent writes to the
+  declared route. A retained last-usable relay set under a newer `signed_empty`
+  or `malformed` frontier is read evidence only and never authorizes writes or
+  compatibility.
+- The same recipient gift wrap is attempted on every planned target. One ACK is
+  successful delivery with partial diagnostics and retry state for non-ACKed
+  targets; zero ACKs is an explicit failure. ACK means relay acceptance, not
+  recipient pickup.
+- The lane requires a one-use validated-order scope bound to rumor id, order
+  id, sender, and recipient. A caller boolean cannot authorize it.
+- The lane ships through the repo-owned deployment profile. Preview enables it
+  for review; production and staging remain independently false by default.
+- Rationale, owner, evidence, and the removal checklist live in
+  `docs/knowledge/nip17-inbox-bootstrap-migration.md`.
 
 Current private-message code may continue to interoperate with NIP-44 v2, which is the current public NIP-44 encryption version. Any newer encryption-version work must be source-gated until public draft/client references and capabilities are explicit.
 
@@ -249,7 +407,8 @@ New secure messaging work should route sends and unwraps through a shared `@cond
 
 - preserves NIP-44 v2 as the default for existing signers and peers
 - keeps NIP-44 v3 readiness visible without making it the default send path before source and capability gates are satisfied
-- resolves NIP-17 reads and writes only through the applicable kind `10050` declaration
+- keeps kind `10050` authoritative and applies the separately gated, bounded
+  validated-kind-16 compatibility lane only under the rules above
 - rejects authenticated-context mismatches instead of returning plaintext when versioned encryption support adds that requirement
 - reports decrypt/unwrap diagnostics without plaintext, ciphertext, invoices, shipping/contact data, order contents, or message bodies
 

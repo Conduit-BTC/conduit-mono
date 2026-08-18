@@ -44,6 +44,11 @@ import {
 } from "../protocol/remote-signer"
 import { withBrowserAuthOperationLock } from "../protocol/remote-signer-vault"
 import { isTransientNip07BridgeError } from "../protocol/signing-retry"
+import { createNdkNostrEventSigner } from "../protocol/ndk-nostr-event-signer"
+import {
+  createProtectedReadSessionLifecycle,
+  type ProtectedReadSessionLifecycle,
+} from "../protocol/protected-read-session-lifecycle"
 
 export type AuthStatus =
   | "disconnected"
@@ -360,6 +365,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const authEpoch = useRef(0)
   const remoteConnection = useRef<RemoteSignerConnection | null>(null)
   const activeSignerLease = useRef<SignerLease | null>(null)
+  const protectedReadSessionLifecycle = useRef<ProtectedReadSessionLifecycle>(
+    createProtectedReadSessionLifecycle()
+  )
   const activeSessionSigner = useRef<SessionSigner | null>(null)
   const activeSession = useRef<AuthSession | null>(null)
   const activePairing = useRef<AbortController | null>(null)
@@ -377,6 +385,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     activeSignerLease.current = null
     activeSessionSigner.current = null
     activeSession.current = null
+    protectedReadSessionLifecycle.current.deactivate()
     sessionSigner?.invalidateLocal()
     connection?.signer.invalidate()
     if (signerLease) removeSigner(signerLease)
@@ -619,19 +628,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       const boundSession = session
+      const hasSessionAuthority = () => {
+        if (readAuthRevision() !== boundSession.authClaim) return false
+        if (!sessionPersisted) return true
+        return JSON.stringify(readAuthSession()) === JSON.stringify(boundSession)
+      }
       const sessionSigner = new SessionSigner(signer, {
         expectedPubkey: pk,
-        hasAuthority: () => {
-          if (readAuthRevision() !== boundSession.authClaim) return false
-          if (!sessionPersisted) return true
-          return (
-            JSON.stringify(readAuthSession()) === JSON.stringify(boundSession)
-          )
-        },
+        hasAuthority: hasSessionAuthority,
         onInvalidated: handleSignerSessionInvalidated,
       })
       const signerLease = setSigner(sessionSigner)
       activeSignerLease.current = signerLease
+      try {
+        protectedReadSessionLifecycle.current.activate(
+          createNdkNostrEventSigner(sessionSigner, pk, session.type),
+          pk,
+          hasSessionAuthority
+        )
+      } catch (installError) {
+        removeSigner(signerLease)
+        activeSignerLease.current = null
+        throw installError
+      }
       activeSessionSigner.current = sessionSigner
       remoteConnection.current = connectedRemote
       uncommittedRemote = null

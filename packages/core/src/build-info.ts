@@ -6,6 +6,11 @@ export interface ConduitBuildInfo {
   buildTime: string | null
   sourceUrl: string
   releaseChannel: string
+  deploymentProfile: string
+  publicConfigDigest: string | null
+  publicFeatures: {
+    dmCompatibilityOrderRoutingEnabled: boolean
+  }
 }
 
 function clean(value: string | undefined): string | null {
@@ -35,4 +40,12 @@ export const conduitBuildInfo: ConduitBuildInfo = Object.freeze({
     clean(import.meta.env.VITE_SOURCE_URL) ??
     "https://github.com/Conduit-BTC/conduit-mono",
   releaseChannel: clean(import.meta.env.VITE_RELEASE_CHANNEL) ?? "unknown",
+  deploymentProfile:
+    clean(import.meta.env.VITE_DEPLOYMENT_PROFILE) ?? "unknown",
+  publicConfigDigest: clean(import.meta.env.VITE_PUBLIC_CONFIG_DIGEST),
+  publicFeatures: Object.freeze({
+    dmCompatibilityOrderRoutingEnabled: ["1", "true", "on"].includes(
+      (import.meta.env.VITE_DM_BOOTSTRAP_WRITES ?? "").trim().toLowerCase()
+    ),
+  }),
 })

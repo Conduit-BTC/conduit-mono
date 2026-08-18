@@ -26,6 +26,7 @@ import {
   getNdk,
   getShippingOptions,
   normalizePubkey,
+  normalizePublicMediaUrl,
   pubkeyToNpub,
   recordBrowserTelemetryEvent,
   validateAddressConsistency,
@@ -77,6 +78,7 @@ import {
 } from "../lib/cart-shipping-options"
 import {
   getCartAvailabilityBlockingMessage,
+  getCartAvailabilityVerificationMessage,
   getCartPublicZapPolicy,
   isCartProductAvailabilityBlocking,
   type CartProductAvailability,
@@ -562,6 +564,7 @@ function OrderSummary({
                 }
               : undefined,
           })
+          const imageUrl = normalizePublicMediaUrl(item.image)
           return (
             <div
               key={item.productId}
@@ -571,12 +574,13 @@ function OrderSummary({
             >
               <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--background)]">
                 <img
-                  src={item.image ?? "/images/placeholders/product.png"}
+                  src={imageUrl ?? "/images/placeholders/product.png"}
                   alt={item.title}
                   className={`aspect-square h-full w-full object-cover ${
                     soldOut ? "grayscale opacity-60" : ""
                   }`}
                   loading="lazy"
+                  referrerPolicy="no-referrer"
                   onError={(e) => {
                     ;(e.currentTarget as HTMLImageElement).src =
                       "/images/placeholders/product.png"
@@ -1237,7 +1241,11 @@ function CheckoutPage() {
     const refreshResult = await checkoutAvailability.refresh()
     if (!refreshResult.fresh) {
       throw new Error(
-        "Current product availability could not be verified. Check your connection and try again."
+        getCartAvailabilityVerificationMessage(
+          checkoutItems,
+          refreshResult.diagnostics
+        ) ??
+          "Current product availability could not be verified. Check your connection and try again."
       )
     }
 
@@ -1417,6 +1425,8 @@ function CheckoutPage() {
   function buildLifecycleItems(
     items: Array<{
       productId: string
+      familyProductId?: string
+      selectedSpecifications?: Array<{ key: string; value: string }>
       title?: string
       format: "physical" | "digital"
       quantity: number
@@ -1439,6 +1449,10 @@ function CheckoutPage() {
   ): OrderLifecycleItem[] {
     return items.map((item) => ({
       productId: item.productId,
+      familyProductId: item.familyProductId,
+      selectedSpecifications: item.selectedSpecifications?.map(
+        (specification) => ({ ...specification })
+      ),
       title: item.title,
       format: item.format,
       quantity: item.quantity,
@@ -1577,6 +1591,8 @@ function CheckoutPage() {
         addressValidity: addressValidity.status as OrderAddressValidity,
         shippingZoneEligibility,
         orderDeliveryStatus: "sent",
+        orderDeliveryRoute: delivery.deliveryRoute,
+        orderRelayDelivery: delivery.orderRelayDelivery,
         invoiceStatus: "not_requested",
         paymentStatus: "not_started",
         proofDeliveryStatus: "not_started",
@@ -1897,6 +1913,8 @@ function CheckoutPage() {
         addressValidity: addressValidity.status as OrderAddressValidity,
         shippingZoneEligibility,
         orderDeliveryStatus: "sent",
+        orderDeliveryRoute: orderDelivery.deliveryRoute,
+        orderRelayDelivery: orderDelivery.orderRelayDelivery,
         invoiceStatus: "not_requested",
         paymentStatus: "not_started",
         proofDeliveryStatus: "not_started",

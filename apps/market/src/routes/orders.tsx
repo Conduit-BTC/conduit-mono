@@ -3,16 +3,20 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   appendConduitClientTag,
+  clearProtectedReadAuthenticationSuppression,
   db,
+  deriveProtectedReadPresentationState,
   EVENT_KINDS,
   formatNpub,
   formatPubkey,
   getNdk,
+  getProductImageCandidates,
   getOrderPublicZapSigner,
   listOrderLifecycles,
   normalizeLightningInvoice,
   pruneExpiredGuestOrderData,
   pubkeyToNpub,
+  selectProtectedReadRows,
   useAuth,
   useProfile,
   useProfiles,
@@ -53,11 +57,9 @@ import {
   ShoppingBag,
 } from "lucide-react"
 import { QRCodeSVG } from "qrcode.react"
+import { ConversationProfilePicture } from "../components/ConversationProfilePicture"
 import { CopyButton } from "../components/CopyButton"
-import {
-  MerchantAvatarFallback,
-  getMerchantDisplayName,
-} from "../components/MerchantIdentity"
+import { getMerchantDisplayName } from "../components/MerchantIdentity"
 import {
   fetchBuyerConversations,
   fetchCachedBuyerConversations,
@@ -212,15 +214,10 @@ function MerchantAvatar({
 }) {
   return (
     <div className="h-11 w-11 shrink-0 overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]">
-      {picture ? (
-        <img
-          src={picture}
-          alt={name || formatNpub(pubkey, 8)}
-          className="h-full w-full object-cover"
-        />
-      ) : (
-        <MerchantAvatarFallback />
-      )}
+      <ConversationProfilePicture
+        src={picture}
+        alt={name || formatNpub(pubkey, 8)}
+      />
     </div>
   )
 }
@@ -470,7 +467,9 @@ function OrderItemsSection({
       <div className="mt-3 space-y-3">
         {vm.items.map((item, index) => {
           const product = productsById.get(item.productId)
-          const image = product?.images[0]
+          const image = product
+            ? getProductImageCandidates(product)[0]
+            : undefined
           const price = formatPrice({
             price: item.priceAtPurchase,
             currency: item.currency,
@@ -490,6 +489,7 @@ function OrderItemsSection({
                       src={image.url}
                       alt={image.alt ?? product?.title ?? item.displayTitle}
                       loading="lazy"
+                      referrerPolicy="no-referrer"
                       className="h-full w-full object-cover"
                     />
                   ) : null}
@@ -498,6 +498,16 @@ function OrderItemsSection({
                   <div className="text-[var(--text-primary)]">
                     {product?.title ?? item.displayTitle}
                   </div>
+                  {(item.selectedSpecifications?.length ?? 0) > 0 ? (
+                    <div className="mt-0.5 text-xs text-[var(--text-secondary)]">
+                      {item.selectedSpecifications
+                        ?.map(
+                          (specification) =>
+                            `${specification.key}: ${specification.value}`
+                        )
+                        .join(" · ")}
+                    </div>
+                  ) : null}
                   <div className="mt-0.5 text-xs text-[var(--text-secondary)]">
                     Qty {item.quantity}
                   </div>
@@ -1195,7 +1205,10 @@ function OrderDetail({
           resolveItem={(id) => {
             const product = productsById.get(id)
             return product
-              ? { title: product.title, imageUrl: product.images[0]?.url }
+              ? {
+                  title: product.title,
+                  imageUrl: getProductImageCandidates(product)[0]?.url,
+                }
               : undefined
           }}
           formatAmount={(amount, currency, sourcePrice) =>
@@ -1307,9 +1320,12 @@ function OrdersPage() {
 
   const isFetching = messagesQuery.isFetching || lifecyclesQuery.isFetching
   const refetchAll = useCallback(() => {
-    if (signerConnected) void messagesQuery.refetch()
+    if (signerConnected && activeBuyerPubkey) {
+      clearProtectedReadAuthenticationSuppression(activeBuyerPubkey)
+      void messagesQuery.refetch()
+    }
     void lifecyclesQuery.refetch()
-  }, [lifecyclesQuery, messagesQuery, signerConnected])
+  }, [activeBuyerPubkey, lifecyclesQuery, messagesQuery, signerConnected])
 
   useEffect(() => {
     if (isFetching) {
@@ -1344,10 +1360,20 @@ function OrdersPage() {
   }, [activeBuyerPubkey, refetchAll])
 
   const conversations = useMemo(
-    () => messagesQuery.data?.data ?? cachedMessagesQuery.data?.data ?? [],
+    () =>
+      selectProtectedReadRows(
+        messagesQuery.data?.data,
+        cachedMessagesQuery.data?.data
+      ),
     [cachedMessagesQuery.data, messagesQuery.data]
   )
   const messagesMeta = messagesQuery.data?.meta
+  const protectedOrdersReadState = deriveProtectedReadPresentationState({
+    visibleCount: conversations.length,
+    pending: messagesQuery.isLoading,
+    error: messagesQuery.error,
+    meta: messagesMeta,
+  })
   const lifecycles = useMemo(
     () => lifecyclesQuery.data ?? [],
     [lifecyclesQuery.data]
@@ -1565,24 +1591,20 @@ function OrdersPage() {
         />
       )}
 
-      {signerConnected && (messagesQuery.error || messagesMeta?.degraded) && (
-        <LiveReadNotice
-          state={
-            messagesQuery.error
-              ? conversations.length > 0
-                ? "cached"
-                : "unavailable"
-              : "partial"
-          }
-          onRetry={() => void messagesQuery.refetch()}
-          retrying={messagesQuery.isRefetching}
-        />
-      )}
+      {signerConnected &&
+        protectedOrdersReadState !== "complete" &&
+        protectedOrdersReadState !== "pending" && (
+          <LiveReadNotice
+            state={protectedOrdersReadState}
+            onRetry={refetchAll}
+            retrying={messagesQuery.isRefetching}
+          />
+        )}
 
       {signerConnected && (
         <DecryptFailureNotice
           count={messagesMeta?.decryptFailures?.length ?? 0}
-          onRetry={() => void messagesQuery.refetch()}
+          onRetry={refetchAll}
           retrying={messagesQuery.isRefetching}
         />
       )}
@@ -1590,8 +1612,7 @@ function OrdersPage() {
       {activeBuyerPubkey &&
         !lifecyclesQuery.isLoading &&
         !hasOrders &&
-        !messagesQuery.error &&
-        !messagesMeta?.degraded && (
+        protectedOrdersReadState === "complete" && (
           <EmptyState
             title={signerConnected ? "No orders yet" : "Guest order not found"}
             body={

@@ -33,7 +33,7 @@
 
 - [ ] User auth remains external signer only (NIP-07/NIP-46)
 - [ ] No key custody introduced outside approved, documented service-signer exceptions
-- [ ] No message content inspection introduced
+- [ ] No plaintext message content added to telemetry, logs, or Conduit-operated servers
 - [ ] No behavioral tracking/profiling introduced
 - [ ] Payment flow remains non-custodial
 - [ ] Shared package dependency boundaries preserved
@@ -42,13 +42,26 @@
 
 Complete this section when the PR touches protocol/app logic, infra/relay behavior, signer auth, messaging, payments, local cache/outbox, product event parsing/emission, or NDK/relay code.
 
-- [ ] `docs/knowledge/external-nostr-references.md` and the relevant public NIP/GammaMarkets source were checked before implementation
+- [ ] `docs/knowledge/external-nostr-references.md` and the relevant public NIP/Open Markets source were checked before implementation
 - [ ] Relevant existing repo context and public protocol sources are listed above
-- [ ] Product listings remain NIP-99 + GammaMarkets `kind:30402`; no alternate product-listing protocol terminology, schemas, or assumptions introduced
+- [ ] Product listings remain NIP-99 plus the Open Markets working specification for `kind:30402` commerce events; no alternate product-listing protocol terminology, schemas, or assumptions introduced
 - [ ] Relay/source assumptions are stated, including NIP-65 `kind:10002`, NIP-17 `kind:10050`, cache, fallback, stale, or degraded-state behavior when relevant
 - [ ] NIP-44 v3 work cites public draft/client references, keeps v2 fallback, and gates behavior on explicit signer/recipient capability detection
 - [ ] New protocol construction, `giftWrap`, publish, unwrap/decrypt, relay planning, or event parsing lives in `@conduit/core`, or the PR explains why route-local code is unavoidable
 - [ ] Diagnostics/logs/telemetry remain content-free: no plaintext, ciphertext, invoices, order contents, addresses, signer secrets, NWC URIs, or message bodies
+
+## Decentralized Network Product Review
+
+Complete when relay, cache, discovery, capability, interoperability, or
+convergence state can block, degrade, retry, or change a user action.
+
+- [ ] `docs/knowledge/decentralized-network-product-posture.md` was checked
+- [ ] Requirements are classified as safety/payment, data integrity, discovery/capability, or ecosystem migration
+- [ ] Required positive evidence and stronger negative/revocation evidence are stated separately
+- [ ] Empty, partial, unavailable, stale, conflicting, malformed, and absent-within-scope states remain distinguishable where the decision depends on them
+- [ ] The PR identifies any previously working cohort that becomes blocked and explains why the gate is necessary
+- [ ] Partial-network counterexamples cover the user outcome, not only helper return values
+- [ ] Any compatibility exception is named, bounded, rollout-controlled, privacy-safe, measurable, repairable, and linked from the active-exception index with an explicit removal gate
 
 ## Public Context Review
 

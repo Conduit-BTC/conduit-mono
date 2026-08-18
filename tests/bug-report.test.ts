@@ -9,6 +9,11 @@ const buildInfo: ConduitBuildInfo = {
   buildTime: "2026-05-13T00:00:00.000Z",
   sourceUrl: "https://github.com/Conduit-BTC/conduit-mono.git",
   releaseChannel: "preview",
+  deploymentProfile: "preview",
+  publicConfigDigest: "digest",
+  publicFeatures: {
+    dmCompatibilityOrderRoutingEnabled: true,
+  },
 }
 
 describe("bug report helpers", () => {

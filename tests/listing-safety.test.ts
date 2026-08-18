@@ -18,7 +18,7 @@ function product(overrides: Partial<Product> = {}): Product {
     type: "simple",
     format: "physical",
     visibility: "public",
-    images: [{ url: "https://example.com/item.png" }],
+    images: [{ url: "https://cdn.conduit.market/item.png" }],
     tags: ["gear"],
     createdAt: 1,
     updatedAt: 1,
@@ -205,12 +205,45 @@ describe("listing safety", () => {
     )
   })
 
+  it("allows non-simple listings only after commerce prepares a valid group", () => {
+    const variable = evaluateListingSafety(
+      product({ type: "variable", images: [] }),
+      undefined,
+      { variationGroupRole: "parent", hasGroupImage: true }
+    )
+    const variation = evaluateListingSafety(
+      product({ type: "variation" }),
+      undefined,
+      { variationGroupRole: "variation" }
+    )
+
+    expect(variable.state).toBe("active")
+    expect(variable.marketVisible).toBe(true)
+    expect(variation.state).toBe("active")
+    expect(variation.purchasable).toBe(true)
+  })
+
   it("validates market image URLs", () => {
     expect(
       hasMarketVisibleListingImage(
         product({ images: [{ url: "ftp://x.test" }] })
       )
     ).toBe(false)
+    expect(
+      hasMarketVisibleListingImage(
+        product({ images: [{ url: "http://127.0.0.1/camera.jpg" }] })
+      )
+    ).toBe(false)
+    expect(
+      hasMarketVisibleListingImage(
+        product({ images: [{ url: "https://192.168.1.1/status.png" }] })
+      )
+    ).toBe(false)
+    expect(
+      hasMarketVisibleListingImage(
+        product({ images: [{ url: "http://cdn.conduit.market/item.png" }] })
+      )
+    ).toBe(true)
     expect(hasMarketVisibleListingImage(product())).toBe(true)
   })
 })

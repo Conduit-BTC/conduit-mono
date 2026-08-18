@@ -35,7 +35,7 @@ async function seedCachedMerchantProduct(page: Page): Promise<void> {
           format: "physical",
           visibility: "public",
           stock: 1,
-          images: [{ url: "https://example.com/pocket-relay.png" }],
+          images: [{ url: "https://blossom.conduit.market/pocket-relay.png" }],
           tags: ["relay", "hardware", "nostr"],
           publicZapEnabled: true,
           zapMessagePolicy: "generic_only",
@@ -250,6 +250,68 @@ test("merchant product tags suggest the loaded catalog without blocking freeform
     page.getByRole("button", { name: "Remove blur tag tag" })
   ).toBeVisible()
   await context.close()
+})
+
+test("merchant product options support generic three-axis sparse rows", async ({
+  page,
+}) => {
+  await installTestSigner(page, TEST_MERCHANT_PUBKEY)
+  await page.goto(`${merchantUrl}/products`)
+  await page.getByRole("button", { name: "Add product" }).first().click()
+
+  await page
+    .getByRole("checkbox", { name: /This product has variations/ })
+    .check()
+  await page.getByRole("button", { name: "Add custom axis" }).click()
+  await page.getByRole("button", { name: "Add custom axis" }).click()
+
+  const axisNames = page.getByLabel("Axis name")
+  const axisValues = page.getByLabel("Values")
+  await axisNames.nth(0).fill("screen-size")
+  await axisValues.nth(0).fill('13", 15"')
+  await axisNames.nth(1).fill("license-tier")
+  await axisValues.nth(1).fill("Personal, Business")
+  await axisNames.nth(2).fill("theme")
+  await axisValues.nth(2).fill("Light, Dark")
+
+  await page.getByRole("button", { name: "Generate combinations" }).click()
+  await expect(page.getByRole("button", { name: "Remove row" })).toHaveCount(8)
+  await expect(page.getByText('13" / Personal / Light')).toBeVisible()
+
+  const dialogOverflow = await page
+    .getByRole("dialog", { name: "Add product" })
+    .evaluate((dialog) => {
+      const directContentBottom = Math.max(
+        ...Array.from(dialog.children).map(
+          (child) => child.offsetTop + child.clientHeight
+        )
+      )
+      const variationScroller = dialog.querySelector(
+        "[data-product-variation-rows]"
+      )
+
+      if (!(variationScroller instanceof HTMLElement)) {
+        throw new Error("Variation row scroller was not rendered")
+      }
+
+      return {
+        excessScrollHeight: dialog.scrollHeight - directContentBottom,
+        variationClientHeight: variationScroller.clientHeight,
+        variationScrollHeight: variationScroller.scrollHeight,
+      }
+    })
+
+  expect(dialogOverflow.variationScrollHeight).toBeGreaterThan(
+    dialogOverflow.variationClientHeight
+  )
+  expect(dialogOverflow.excessScrollHeight).toBeLessThanOrEqual(32)
+
+  await page.getByRole("button", { name: "Remove row" }).first().click()
+  await expect(page.getByRole("button", { name: "Remove row" })).toHaveCount(7)
+  await page.getByLabel("Child title").first().fill("Studio License")
+  await expect(page.getByLabel("Child title").first()).toHaveValue(
+    "Studio License"
+  )
 })
 
 test("merchant product drafts survive safe dialog dismissal", async ({

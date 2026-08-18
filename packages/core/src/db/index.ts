@@ -1,6 +1,8 @@
 import Dexie, { type EntityTable, type Table } from "dexie"
 import { config } from "../config"
 import type { ProductZapMessagePolicy } from "../schemas"
+import type { SignedPublicNostrEvent } from "../protocol/signed-event"
+import type { ProductSpecification } from "../types"
 
 export interface StoredOrder {
   id: string
@@ -8,6 +10,8 @@ export interface StoredOrder {
   merchantPubkey: string
   items: Array<{
     productId: string
+    familyProductId?: string
+    selectedSpecifications?: ProductSpecification[]
     format?: "physical" | "digital"
     quantity: number
     priceAtPurchase: number
@@ -62,6 +66,7 @@ export interface StoredMessage {
 export interface CachedProduct {
   id: string
   pubkey: string
+  dTag?: string
   title: string
   summary?: string
   price: number
@@ -73,6 +78,8 @@ export interface CachedProduct {
     normalizedCurrency: string
   }
   type?: "simple" | "variable" | "variation"
+  parentProductId?: string
+  specifications?: Array<{ key: string; value: string }>
   format?: "physical" | "digital"
   shippingCostSats?: number
   sourceShippingCost?: {
@@ -112,11 +119,66 @@ export interface CachedProductTombstone {
   eventId?: string
   deletedAt: number
   deletionEventId: string
+  signedEvent?: SignedPublicNostrEvent
+  sourceRelayUrls?: string[]
+  observedLocally?: boolean
   cachedAt: number
+}
+
+export type ProductDeletionRelayRole = "author_write" | "source" | "conduit"
+
+export type ProductDeletionRelayDeliveryStatus =
+  "pending" | "acked" | "rejected" | "timed_out"
+
+export type ProductDeletionDeliveryState = "pending" | "partial" | "delivered"
+
+export interface ProductDeletionRelayTarget {
+  relayUrl: string
+  roles: ProductDeletionRelayRole[]
+}
+
+export interface ProductDeletionRelayDelivery {
+  relayUrl: string
+  status: ProductDeletionRelayDeliveryStatus
+  attemptCount: number
+  lastAttemptAt?: number
+  acknowledgedAt?: number
+  rejectedAt?: number
+  timedOutAt?: number
+}
+
+/**
+ * Durable delivery state for one exact, already-signed NIP-09 deletion event.
+ *
+ * `relayPlan` is immutable after creation. Delivery attempts update only the
+ * corresponding `relayDelivery` entry, allowing startup/background workers to
+ * retry the same event without asking the signer to sign again.
+ */
+export interface ProductDeletionDeliveryJob {
+  /** The signed deletion event id. */
+  id: string
+  signedEvent: SignedPublicNostrEvent
+  relayPlan: ProductDeletionRelayTarget[]
+  relayDelivery: ProductDeletionRelayDelivery[]
+  state: ProductDeletionDeliveryState
+  deliveryAttemptCount: number
+  retryCount: number
+  lastAttemptAt?: number
+  nextRetryAt?: number
+  /** Opaque local worker claim used to avoid duplicate cross-tab delivery. */
+  deliveryLeaseOwner?: string
+  /** Millisecond deadline after which another worker may recover the job. */
+  deliveryLeaseExpiresAt?: number
+  createdAt: number
+  updatedAt: number
 }
 
 export interface CachedProfile {
   pubkey: string
+  /** Exact newest observed kind-0 content, retained only for safe republish. */
+  rawContent?: string
+  eventId?: string
+  eventCreatedAt?: number
   name?: string
   displayName?: string
   about?: string
@@ -157,9 +219,122 @@ export interface CachedRelayList {
   writeRelayUrls: string[]
   /** `created_at` of the kind-10002 event in seconds. */
   eventCreatedAt: number
+  /** Event id used to resolve equal-timestamp replaceable events per NIP-01. */
+  eventId?: string
   /** Relays the kind-10002 event was observed on, if known. */
   sourceRelayUrls?: string[]
   /** Local cache time in milliseconds. */
+  cachedAt: number
+}
+
+/** A validated, lowercase 32-byte Nostr public key. */
+declare const normalizedInboxDeclarationPubkeyBrand: unique symbol
+export type NormalizedInboxDeclarationPubkey = string & {
+  readonly [normalizedInboxDeclarationPubkeyBrand]: true
+}
+
+export type InboxDeclarationEvidenceState =
+  "declared" | "signed_empty" | "malformed"
+
+export type InboxDeclarationLookupCoverage =
+  "complete" | "partial" | "unavailable"
+
+/**
+ * Most recent bounded declaration lookup for this account. This is stored
+ * independently from the signed frontier so an incomplete or conflicting
+ * observation cannot disappear after a process restart.
+ */
+export interface InboxDeclarationLookupEvidence {
+  observedAt: number
+  coverage: InboxDeclarationLookupCoverage
+  /** True when the lookup returned an event, including unusable evidence. */
+  hadEvent: boolean
+  /** Valid signed event selected by that lookup, when one was available. */
+  eventId?: string
+}
+
+interface InboxDeclarationEventEvidenceBase {
+  state: InboxDeclarationEvidenceState
+  /** Exact, signature-validated kind-10050 event observed from the network. */
+  signedEvent: SignedPublicNostrEvent
+  /** Secure normalized relay tags, preserving their signed event order. */
+  secureRelayUrls: string[]
+  /** Secure normalized relays on which this exact event was observed. */
+  sourceRelayUrls: string[]
+  /**
+   * Shared discovery relays that returned this exact event. Optional for
+   * records written before shared-source confirmation was persisted.
+   */
+  sharedSourceRelayUrls?: string[]
+  /** Most recent local observation time in milliseconds. */
+  observedAt: number
+  /**
+   * Most recent time a bounded discovery plan completed while this exact
+   * event was the winning observed frontier. Partial reads never advance it.
+   */
+  completeObservedAt?: number
+}
+
+export interface DeclaredInboxDeclarationEventEvidence extends InboxDeclarationEventEvidenceBase {
+  state: "declared"
+}
+
+export interface SignedEmptyInboxDeclarationEventEvidence extends InboxDeclarationEventEvidenceBase {
+  state: "signed_empty"
+  secureRelayUrls: []
+}
+
+export interface MalformedInboxDeclarationEventEvidence extends InboxDeclarationEventEvidenceBase {
+  state: "malformed"
+  secureRelayUrls: []
+}
+
+export type InboxDeclarationEventEvidence =
+  | DeclaredInboxDeclarationEventEvidence
+  | SignedEmptyInboxDeclarationEventEvidence
+  | MalformedInboxDeclarationEventEvidence
+
+/**
+ * Exact signed declaration staged durably before its first network attempt.
+ * The immutable publish plan lets a later process retry the same bytes without
+ * asking the signer to create a second replaceable event.
+ */
+export interface PendingInboxDeclarationDistribution {
+  signedEvent: SignedPublicNostrEvent
+  publishRelayUrls: string[]
+  stagedAt: number
+}
+
+/**
+ * Account-scoped, monotonic NIP-17 inbox-declaration evidence.
+ *
+ * `current` follows the NIP-01 replaceable-event frontier. `lastUsable` keeps
+ * the latest validated declaration when a newer signed empty or malformed
+ * replacement becomes current, so reads can remain recoverable without
+ * misrepresenting the current write route.
+ */
+export interface InboxDeclarationEvidenceRecord {
+  pubkey: NormalizedInboxDeclarationPubkey
+  current: InboxDeclarationEventEvidence
+  lastUsable?: DeclaredInboxDeclarationEventEvidence
+  pendingDistribution?: PendingInboxDeclarationDistribution
+  latestLookup?: InboxDeclarationLookupEvidence
+  cachedAt: number
+}
+
+/**
+ * Strongest verified kind-3 snapshot observed for the authenticated owner.
+ *
+ * This public event is retained across relay-plan changes and restarts so a
+ * later incomplete/omitting read cannot authorize an older replacement.
+ * `pending` means the exact signed event may have reached a relay but no ACK
+ * was observed; callers may retry that event but must not replace it.
+ */
+export interface CachedOwnContactListSnapshot {
+  pubkey: string
+  event: SignedPublicNostrEvent
+  sourceRelayUrls: string[]
+  state: "observed" | "pending"
   cachedAt: number
 }
 
@@ -200,6 +375,47 @@ export interface CachedNip05Verification {
   reason?: string
   checkedAt: number
   expiresAt: number
+  cachedAt: number
+}
+
+export type CachedShopperTrustSignalState =
+  "available" | "partial" | "stale" | "unavailable"
+
+export interface CachedShopperTrustCoverage {
+  attemptedRelays: number
+  responsiveRelays: number
+  transportComplete: boolean
+  completeForPlan: boolean
+  truncated: boolean
+}
+
+export interface CachedShopperTrustSignal<T> {
+  state: CachedShopperTrustSignalState
+  value: T | null
+  observedAt?: number
+  coverage: CachedShopperTrustCoverage
+}
+
+/**
+ * Aggregate public evidence for one merchant/shopper pair.
+ *
+ * Raw follow graphs, report content, zap comments, invoices, descriptions,
+ * and other event payloads must never be stored in this projection.
+ */
+export interface CachedShopperTrustSnapshot {
+  id: string
+  merchantPubkey: string
+  shopperPubkey: string
+  oldestEvent: CachedShopperTrustSignal<{ timestamp: number | null }>
+  followersObserved: CachedShopperTrustSignal<{ count: number }>
+  followsInCommon: CachedShopperTrustSignal<{ count: number }>
+  zapsSent: CachedShopperTrustSignal<{ count: number }>
+  zapsReceived: CachedShopperTrustSignal<{ count: number }>
+  reportsFromNetwork: CachedShopperTrustSignal<{
+    count: number
+    reporterCount: number
+  }>
+  degraded: boolean
   cachedAt: number
 }
 
@@ -253,6 +469,46 @@ export type OrderShippingZoneEligibility =
 
 export type OrderDeliveryStatus = "not_started" | "pending" | "sent" | "failed"
 
+/**
+ * Which write lane delivered the kind-16 order message (CND-208):
+ * the recipient's declared NIP-17 inbox, or the temporary bounded
+ * compatibility route used only while no usable declaration exists.
+ */
+export type OrderDeliveryRoute = "declared_inbox" | "compatibility_order"
+
+export type OrderRelayDeliveryStatus =
+  "pending" | "acked" | "rejected" | "timed_out"
+
+export interface OrderRelayDelivery {
+  relayUrl: string
+  source: "declared" | "recipient_nip65" | "compatibility_registry"
+  status: OrderRelayDeliveryStatus
+  attemptCount: number
+  lastAttemptAt?: number
+  acknowledgedAt?: number
+  rejectedAt?: number
+  timedOutAt?: number
+}
+
+/**
+ * Content-safe retry state for the exact signed recipient gift wrap. The
+ * encrypted wrap may be replayed to failed targets without retaining rumor
+ * plaintext, signer material, or relay failure strings.
+ */
+export interface OrderRelayDeliveryRecord {
+  signedRecipientWrap: SignedPublicNostrEvent
+  route: OrderDeliveryRoute
+  relayDelivery: OrderRelayDelivery[]
+  deliveryAttemptCount: number
+  retryCount: number
+  nextRetryAt?: number
+  deliveryLeaseOwner?: string
+  deliveryLeaseExpiresAt?: number
+  createdAt: number
+  updatedAt: number
+  expiresAt: number
+}
+
 export type OrderInvoiceStatus =
   "not_requested" | "requesting" | "received" | "manual_required" | "failed"
 
@@ -275,6 +531,8 @@ export type OrderLifecyclePhase =
 
 export interface OrderLifecycleItem {
   productId: string
+  familyProductId?: string
+  selectedSpecifications?: ProductSpecification[]
   /** Local product-title snapshot for buyer order display. Public listing data. */
   title?: string
   /** Fulfillment type at purchase time. Missing legacy values require shipping. */
@@ -356,6 +614,10 @@ export interface OrderLifecycle {
   shippingZoneEligibility: OrderShippingZoneEligibility
 
   orderDeliveryStatus: OrderDeliveryStatus
+  /** Write-lane provenance for the delivered order message (CND-208). */
+  orderDeliveryRoute?: OrderDeliveryRoute
+  /** Exact encrypted wrap + per-relay ACK state for bounded retry. */
+  orderRelayDelivery?: OrderRelayDeliveryRecord
   invoiceStatus: OrderInvoiceStatus
   paymentStatus: OrderPaymentStatus
   proofDeliveryStatus: OrderProofDeliveryStatus
@@ -394,8 +656,15 @@ class ConduitDB extends Dexie {
   relayLists!: EntityTable<CachedRelayList, "pubkey">
   productSocialSummaries!: EntityTable<CachedProductSocialSummary, "key">
   nip05Verifications!: EntityTable<CachedNip05Verification, "id">
+  shopperTrustSnapshots!: EntityTable<CachedShopperTrustSnapshot, "id">
   paymentAttempts!: EntityTable<StoredPaymentAttempt, "id">
   orderLifecycles!: EntityTable<OrderLifecycle, "orderId">
+  productDeletionOutbox!: EntityTable<ProductDeletionDeliveryJob, "id">
+  inboxDeclarationEvidence!: EntityTable<
+    InboxDeclarationEvidenceRecord,
+    "pubkey"
+  >
+  ownContactListSnapshots!: EntityTable<CachedOwnContactListSnapshot, "pubkey">
 
   constructor() {
     super("conduit")
@@ -499,6 +768,46 @@ class ConduitDB extends Dexie {
       orderLifecycles:
         "orderId, buyerPubkey, merchantPubkey, phase, updatedAt, createdAt",
     })
+
+    this.version(9).stores({
+      orders: "id, buyerPubkey, merchantPubkey, status, createdAt",
+      messages: "id, senderPubkey, recipientPubkey, kind, createdAt, read",
+      products: "id, pubkey, *tags, cachedAt",
+      productTombstones: "id, pubkey, addressId, eventId, deletedAt, cachedAt",
+      profiles: "pubkey, cachedAt",
+      orderMessages:
+        "id, orderId, type, senderPubkey, recipientPubkey, createdAt",
+      relayLists: "pubkey, cachedAt",
+      productSocialSummaries: "key, cachedAt",
+      nip05Verifications:
+        "id, pubkey, normalizedIdentifier, status, expiresAt, cachedAt",
+      paymentAttempts:
+        "id, orderId, buyerPubkey, merchantPubkey, proofDeliveryStatus, createdAt",
+      orderLifecycles:
+        "orderId, buyerPubkey, merchantPubkey, phase, updatedAt, createdAt",
+      // Version 9 shipped independently on main and the shopper-trust preview.
+      // Keep the union here so Dexie does not delete either lineage's store
+      // before version 10 converges both schemas.
+      shopperTrustSnapshots: "id, merchantPubkey, shopperPubkey, cachedAt",
+      productDeletionOutbox:
+        "id, state, nextRetryAt, deliveryLeaseExpiresAt, updatedAt, createdAt",
+    })
+
+    this.version(10).stores({
+      shopperTrustSnapshots: "id, merchantPubkey, shopperPubkey, cachedAt",
+      productDeletionOutbox:
+        "id, state, nextRetryAt, deliveryLeaseExpiresAt, updatedAt, createdAt",
+    })
+
+    this.version(11).stores({
+      // Public signed declaration evidence is monotonic protocol state. It is
+      // intentionally excluded from relay-scope clearing and cache pruning.
+      inboxDeclarationEvidence: "pubkey, cachedAt",
+    })
+
+    this.version(12).stores({
+      ownContactListSnapshots: "pubkey, state, cachedAt",
+    })
   }
 }
 
@@ -509,6 +818,8 @@ const FALLBACK_CACHE_PRUNE_HIGH_WATER_BYTES = 35 * 1024 * 1024
 const FALLBACK_CACHE_PRUNE_TARGET_BYTES = 24 * 1024 * 1024
 const CACHE_PRUNE_FRESH_MS = 24 * 60 * 60 * 1_000
 const STORAGE_PRESSURE_HIGH_WATER_RATIO = 0.7
+export const SHOPPER_TRUST_SNAPSHOT_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000
+export const SHOPPER_TRUST_SNAPSHOT_MAX_ROWS = 500
 
 function getCommerceCacheScope(): string {
   return JSON.stringify({
@@ -534,12 +845,15 @@ export async function ensureCommerceCacheScope(): Promise<void> {
 
   await Promise.all([
     db.products.clear(),
-    db.productTombstones.clear(),
+    // Signed tombstones are monotonic protocol evidence, not a relay-scoped
+    // cache. Keep them across relay/config scope changes so a later omission
+    // cannot resurrect a product that was already observed as deleted.
     db.profiles.clear(),
     db.orderMessages.clear(),
     db.relayLists.clear(),
     db.productSocialSummaries.clear(),
     db.nip05Verifications.clear(),
+    db.shopperTrustSnapshots.clear(),
   ])
 
   window.localStorage.setItem(CACHE_SCOPE_KEY, nextScope)
@@ -577,8 +891,39 @@ async function pruneTableByCachedAt(
   await table.bulkDelete(staleRows)
 }
 
+export function shopperTrustSnapshotIsExpired(
+  cachedAt: number,
+  now = Date.now()
+): boolean {
+  return now - cachedAt > SHOPPER_TRUST_SNAPSHOT_RETENTION_MS
+}
+
+/**
+ * Pairwise trust projections are privacy-sensitive convenience data. Enforce
+ * a hard age and count bound independently of browser storage pressure.
+ */
+export async function pruneShopperTrustSnapshots(
+  now = Date.now()
+): Promise<void> {
+  if (typeof window === "undefined") return
+
+  const staleBefore = now - SHOPPER_TRUST_SNAPSHOT_RETENTION_MS
+  await db.shopperTrustSnapshots.where("cachedAt").below(staleBefore).delete()
+
+  const count = await db.shopperTrustSnapshots.count()
+  const overflow = count - SHOPPER_TRUST_SNAPSHOT_MAX_ROWS
+  if (overflow <= 0) return
+  const oldestKeys = await db.shopperTrustSnapshots
+    .orderBy("cachedAt")
+    .limit(overflow)
+    .primaryKeys()
+  await db.shopperTrustSnapshots.bulkDelete(oldestKeys)
+}
+
 export async function pruneCommerceCaches(): Promise<void> {
   if (typeof window === "undefined") return
+
+  await pruneShopperTrustSnapshots()
 
   const storageEstimate =
     typeof navigator !== "undefined" && navigator.storage?.estimate

@@ -17,6 +17,15 @@ Playwright smoke coverage is part of the current repo baseline. This spec define
   - add to cart
   - checkout order send
   - merchant order visibility
+- Public Product legal routes on both apps:
+  - direct signed-out, restoring, and signed-in loads bypass auth and product
+    workflows
+  - all four production-shaped URLs render the shared version at desktop and
+    mobile viewports
+  - canonical metadata, full-document navigation, and no-referrer cross-origin
+    links are enforced
+  - no signer, session, Nostr, cache, worker, price, readiness, payment, or
+    telemetry network activity starts
 
 ### Out of scope
 

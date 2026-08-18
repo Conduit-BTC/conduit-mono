@@ -129,6 +129,53 @@ test("market trust ignores a remembered viewer until auth is connected", async (
   await expect(probe).toHaveAttribute("data-viewer-follows", "null")
 })
 
+test("market owner profile drops the public placeholder after connect", async ({
+  page,
+}) => {
+  await installTestSigner(page, TEST_BUYER_PUBKEY, { rememberAuth: false })
+  await page.goto(`${marketUrl}/products`)
+
+  await page.evaluate(
+    async ({ harnessUrl, ownerPubkey }) => {
+      const container = document.createElement("div")
+      container.id = "merchant-trust-owner-harness"
+      document.body.append(container)
+      const { mountMerchantTrustHarness } = (await import(harnessUrl)) as {
+        mountMerchantTrustHarness: (
+          element: HTMLElement,
+          staleViewerPubkey: string,
+          merchantPubkey: string,
+          options?: { publicProfileName?: string }
+        ) => void
+      }
+      mountMerchantTrustHarness(container, ownerPubkey, ownerPubkey, {
+        publicProfileName: "Public cached profile",
+      })
+    },
+    {
+      harnessUrl: merchantTrustHarnessUrl,
+      ownerPubkey: TEST_BUYER_PUBKEY,
+    }
+  )
+
+  const probe = page.getByTestId("merchant-trust-probe")
+  await expect(probe).toHaveAttribute(
+    "data-profile-name",
+    "Public cached profile"
+  )
+
+  await page.getByTestId("merchant-trust-connect").evaluate((button) => {
+    ;(button as HTMLButtonElement).click()
+  })
+  await expect(probe).toHaveAttribute("data-auth-status", "connected", {
+    timeout: 10_000,
+  })
+  await expect(probe).not.toHaveAttribute(
+    "data-profile-name",
+    "Public cached profile"
+  )
+})
+
 test("market signer authority storage failure remains retryable", async ({
   page,
 }) => {

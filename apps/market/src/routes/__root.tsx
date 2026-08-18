@@ -20,6 +20,7 @@ import {
   LegalFooter,
   NotFoundPage,
   SignerAuthUrlNotice,
+  isProductLegalPath,
 } from "@conduit/ui"
 import { MarketHeader } from "../components/MarketHeader"
 
@@ -61,7 +62,8 @@ function ReportBugLink({ className }: { className?: string }) {
     <a
       href={bugReportUrl}
       target="_blank"
-      rel="noreferrer"
+      rel="noopener noreferrer"
+      referrerPolicy="no-referrer"
       className={
         className ??
         "font-medium text-[var(--text-primary)] underline decoration-[var(--border)] underline-offset-4 hover:decoration-[var(--text-primary)]"
@@ -81,10 +83,17 @@ function useMarketBugReportUrl(): string {
 }
 
 function RootLayout() {
-  const { authUrl, dismissAuthUrl, method, status } = useAuth()
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
   })
+
+  if (isProductLegalPath(pathname)) return <Outlet />
+
+  return <MarketProductRoot pathname={pathname} />
+}
+
+function MarketProductRoot({ pathname }: { pathname: string }) {
+  const { authUrl, dismissAuthUrl, method, status } = useAuth()
   const appLoadTelemetrySentRef = useRef(false)
   const previousAuthStatusRef = useRef(status)
   const previousAuthMethodRef = useRef(method)
@@ -221,6 +230,26 @@ function getPageTitle(pathname: string): string {
 }
 
 function RootErrorComponent({ error }: ErrorComponentProps) {
+  const pathname = useRouterState({
+    select: (state) => state.location.pathname,
+  })
+
+  if (isProductLegalPath(pathname)) {
+    return (
+      <div className="min-h-dvh bg-[var(--background)] px-4 py-12 text-[var(--text-primary)]">
+        <ErrorPage
+          title="This legal page could not be displayed"
+          message="Reload the page. If the problem continues, use the canonical Shop legal URL."
+          showReload
+        />
+      </div>
+    )
+  }
+
+  return <MarketProductRootError error={error} />
+}
+
+function MarketProductRootError({ error }: { error: Error }) {
   useEffect(() => {
     recordBrowserClientError({
       app: "market",
