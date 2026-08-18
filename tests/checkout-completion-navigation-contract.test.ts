@@ -15,7 +15,7 @@ describe("checkout completion navigation contracts", () => {
 
     expect(checkoutRoute).toContain("const navigate = useNavigate()")
     expect(ordersNavigations.length).toBeGreaterThanOrEqual(2)
-    expect(checkoutRoute).toContain("createOrderLifecycle(")
+    expect(checkoutRoute).toContain("submitBuyerOrderMessage(")
   })
 
   it("does not offer cart as a terminal paid-checkout action", async () => {
@@ -52,22 +52,17 @@ describe("checkout completion navigation contracts", () => {
       "async function payNow(): Promise<void>"
     )
     const orderPublishIndex = checkoutRoute.indexOf(
-      "await publishBuyerOrderMessage(",
+      "await submitBuyerOrderMessage(",
       payNowIndex
-    )
-    const lifecycleIndex = checkoutRoute.indexOf(
-      "await createOrderLifecycle(",
-      orderPublishIndex
     )
     const paymentServiceIndex = checkoutRoute.indexOf(
       "void runOrderPayment(serviceCtx)",
-      lifecycleIndex
+      orderPublishIndex
     )
 
     expect(payNowIndex).toBeGreaterThan(-1)
     expect(orderPublishIndex).toBeGreaterThan(-1)
-    expect(lifecycleIndex).toBeGreaterThan(orderPublishIndex)
-    expect(paymentServiceIndex).toBeGreaterThan(lifecycleIndex)
+    expect(paymentServiceIndex).toBeGreaterThan(orderPublishIndex)
     expect(checkoutRoute).not.toContain("prepareAnonZapCheckout")
     expect(checkoutRoute).not.toContain("pendingAnonAuthorization")
     expect(checkoutRoute).toContain("for (const item of checkoutPricing.items)")

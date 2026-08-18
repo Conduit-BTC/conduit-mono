@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import {
+  recordOrderRelayDeliveryUpdate,
   retryOrderRelayDelivery,
   type OrderLifecycle,
   type OrderRelayDeliveryRepository,
@@ -89,6 +90,81 @@ function repository(initial: OrderLifecycle): {
 }
 
 describe("order relay delivery retry", () => {
+  it("merges first-attempt outcomes without widening the staged plan", async () => {
+    const staged = lifecycle({ orderDeliveryStatus: "pending" })
+    staged.orderRelayDelivery!.relayDelivery =
+      staged.orderRelayDelivery!.relayDelivery.map((target) => ({
+        ...target,
+        status: "pending",
+        attemptCount: 0,
+        acknowledgedAt: undefined,
+        timedOutAt: undefined,
+      }))
+    staged.orderRelayDelivery!.deliveryAttemptCount = 0
+    const store = repository(staged)
+    const update = structuredClone(staged.orderRelayDelivery!)
+    update.deliveryAttemptCount = 1
+    update.relayDelivery[0] = {
+      ...update.relayDelivery[0]!,
+      status: "acked",
+      attemptCount: 1,
+      acknowledgedAt: 100,
+    }
+    update.relayDelivery[1] = {
+      ...update.relayDelivery[1]!,
+      status: "timed_out",
+      attemptCount: 1,
+      timedOutAt: 100,
+    }
+
+    await recordOrderRelayDeliveryUpdate("order-id", update, {
+      repository: store.repository,
+      now: () => 100,
+    })
+
+    expect(store.read().orderDeliveryStatus).toBe("sent")
+    expect(
+      store
+        .read()
+        .orderRelayDelivery?.relayDelivery.map((target) => target.status)
+    ).toEqual(["acked", "timed_out"])
+
+    const widened = structuredClone(update)
+    widened.relayDelivery.push({
+      relayUrl: "wss://new.conduit.market",
+      source: "declared",
+      status: "acked",
+      attemptCount: 1,
+    })
+    await expect(
+      recordOrderRelayDeliveryUpdate("order-id", widened, {
+        repository: store.repository,
+        now: () => 101,
+      })
+    ).rejects.toThrow("does not match the staged plan")
+    expect(store.read().orderRelayDelivery?.relayDelivery).toHaveLength(2)
+  })
+
+  it("keeps an ACK monotonic when a stale first-attempt update arrives", async () => {
+    const store = repository(lifecycle())
+    const stale = structuredClone(store.read().orderRelayDelivery!)
+    stale.relayDelivery[0] = {
+      ...stale.relayDelivery[0]!,
+      status: "timed_out",
+      attemptCount: 2,
+      timedOutAt: 100,
+    }
+
+    await recordOrderRelayDeliveryUpdate("order-id", stale, {
+      repository: store.repository,
+      now: () => 100,
+    })
+
+    expect(store.read().orderRelayDelivery?.relayDelivery[0]?.status).toBe(
+      "acked"
+    )
+  })
+
   it("replays the exact wrap only to non-ACKed targets and converges", async () => {
     const store = repository(lifecycle())
     const attempts: Array<{
@@ -202,5 +278,64 @@ describe("order relay delivery retry", () => {
     expect(serialized).toContain("encrypted-gift-wrap")
     expect(serialized).not.toContain("Order update")
     expect(serialized).not.toMatch(/failureMessage|invoice|nsec|privateKey/)
+  })
+
+  it("allows a same-session guest to explicitly retry the exact wrap", async () => {
+    const store = repository(
+      lifecycle({ buyerIdentityKind: "guest_ephemeral" })
+    )
+    let attempts = 0
+
+    await retryOrderRelayDelivery("order-id", "buyer", {
+      repository: store.repository,
+      allowGuestExplicitRetry: true,
+      now: () => 100,
+      publisher: async () => {
+        attempts += 1
+        return "acked"
+      },
+    })
+
+    expect(attempts).toBe(1)
+    expect(store.read().orderDeliveryStatus).toBe("sent")
+  })
+
+  it("marks an expired zero-ACK delivery failed but preserves partial success", async () => {
+    for (const [candidate, expected] of [
+      [
+        lifecycle({
+          orderDeliveryStatus: "pending",
+          orderRelayDelivery: {
+            ...lifecycle().orderRelayDelivery!,
+            relayDelivery: lifecycle().orderRelayDelivery!.relayDelivery.map(
+              (target) => ({
+                ...target,
+                status: "timed_out" as const,
+                acknowledgedAt: undefined,
+              })
+            ),
+            expiresAt: 50,
+          },
+        }),
+        "failed",
+      ],
+      [
+        lifecycle({
+          orderRelayDelivery: {
+            ...lifecycle().orderRelayDelivery!,
+            expiresAt: 50,
+          },
+        }),
+        "sent",
+      ],
+    ] as const) {
+      const store = repository(candidate)
+      await retryOrderRelayDelivery("order-id", "buyer", {
+        repository: store.repository,
+        now: () => 100,
+      })
+      expect(store.read().orderDeliveryStatus).toBe(expected)
+      expect(store.read().orderRelayDelivery?.nextRetryAt).toBeUndefined()
+    }
   })
 })

@@ -25,6 +25,13 @@ export interface RetryOrderRelayDeliveryOptions {
   publisher?: OrderRelayDeliveryPublisher
   now?: () => number
   leaseOwner?: string
+  /** Same-session user action only; background resume always excludes guests. */
+  allowGuestExplicitRetry?: boolean
+}
+
+export interface RecordOrderRelayDeliveryUpdateOptions {
+  repository?: OrderRelayDeliveryRepository
+  now?: () => number
 }
 
 const dexieRepository: OrderRelayDeliveryRepository = {
@@ -69,6 +76,122 @@ function hasRetryablePublicTarget(
   )
 }
 
+function hasRelayAcknowledgement(
+  delivery: NonNullable<OrderLifecycle["orderRelayDelivery"]>
+): boolean {
+  return delivery.relayDelivery.some((target) => target.status === "acked")
+}
+
+function sameSignedWrap(
+  left: SignedPublicNostrEvent,
+  right: SignedPublicNostrEvent
+): boolean {
+  return (
+    left.id === right.id &&
+    left.pubkey === right.pubkey &&
+    left.created_at === right.created_at &&
+    left.kind === right.kind &&
+    left.content === right.content &&
+    left.sig === right.sig &&
+    JSON.stringify(left.tags) === JSON.stringify(right.tags)
+  )
+}
+
+function assertSameStagedPlan(
+  current: NonNullable<OrderLifecycle["orderRelayDelivery"]>,
+  update: NonNullable<OrderLifecycle["orderRelayDelivery"]>
+): void {
+  if (
+    current.route !== update.route ||
+    !sameSignedWrap(current.signedRecipientWrap, update.signedRecipientWrap) ||
+    current.relayDelivery.length !== update.relayDelivery.length ||
+    current.relayDelivery.some((target, index) => {
+      const next = update.relayDelivery[index]
+      return (
+        !next ||
+        target.relayUrl !== next.relayUrl ||
+        target.source !== next.source
+      )
+    })
+  ) {
+    throw new Error(
+      "Order relay delivery update does not match the staged plan."
+    )
+  }
+}
+
+/**
+ * Merge a first-attempt outcome into the pre-publish checkpoint. The signed
+ * bytes and relay plan are immutable, and an ACK can never be downgraded by a
+ * late timeout or a competing worker.
+ */
+export async function recordOrderRelayDeliveryUpdate(
+  orderId: string,
+  update: NonNullable<OrderLifecycle["orderRelayDelivery"]>,
+  options: RecordOrderRelayDeliveryUpdateOptions = {}
+): Promise<OrderLifecycle | undefined> {
+  const repository = options.repository ?? dexieRepository
+  const now = options.now ?? Date.now
+  return await repository.update(orderId, (current) => {
+    const staged = current.orderRelayDelivery
+    if (!staged) return current
+    assertSameStagedPlan(staged, update)
+    const relayDelivery = staged.relayDelivery.map((target, index) => {
+      const next = update.relayDelivery[index]!
+      if (target.status === "acked") {
+        return {
+          ...target,
+          attemptCount: Math.max(target.attemptCount, next.attemptCount),
+        }
+      }
+      return {
+        ...target,
+        ...next,
+        relayUrl: target.relayUrl,
+        source: target.source,
+        attemptCount: Math.max(target.attemptCount, next.attemptCount),
+      }
+    })
+    const allAcked = relayDelivery.every((target) => target.status === "acked")
+    const anyAcked = relayDelivery.some((target) => target.status === "acked")
+    const timestamp = now()
+    return {
+      ...current,
+      orderDeliveryStatus: anyAcked ? "sent" : current.orderDeliveryStatus,
+      orderRelayDelivery: {
+        ...staged,
+        relayDelivery,
+        deliveryAttemptCount: Math.max(
+          staged.deliveryAttemptCount,
+          update.deliveryAttemptCount
+        ),
+        retryCount: Math.max(staged.retryCount, update.retryCount),
+        nextRetryAt: allAcked ? undefined : update.nextRetryAt,
+        updatedAt: Math.max(staged.updatedAt, update.updatedAt, timestamp),
+      },
+      updatedAt: timestamp,
+    }
+  })
+}
+
+function finalizeExpiredDelivery(
+  current: OrderLifecycle,
+  timestamp: number
+): OrderLifecycle {
+  const delivery = current.orderRelayDelivery
+  if (!delivery || delivery.expiresAt > timestamp) return current
+  const finalized = { ...delivery }
+  delete finalized.nextRetryAt
+  delete finalized.deliveryLeaseOwner
+  delete finalized.deliveryLeaseExpiresAt
+  return {
+    ...current,
+    orderDeliveryStatus: hasRelayAcknowledgement(delivery) ? "sent" : "failed",
+    orderRelayDelivery: { ...finalized, updatedAt: timestamp },
+    updatedAt: timestamp,
+  }
+}
+
 export async function retryOrderRelayDelivery(
   orderId: string,
   activeBuyerPubkey: string,
@@ -82,11 +205,14 @@ export async function retryOrderRelayDelivery(
 
   const claimed = await repository.update(orderId, (current) => {
     const delivery = current.orderRelayDelivery
+    if (delivery && delivery.expiresAt <= timestamp) {
+      return finalizeExpiredDelivery(current, timestamp)
+    }
     if (
       !delivery ||
-      current.buyerIdentityKind === "guest_ephemeral" ||
+      (current.buyerIdentityKind === "guest_ephemeral" &&
+        !options.allowGuestExplicitRetry) ||
       current.buyerPubkey !== activeBuyerPubkey ||
-      delivery.expiresAt <= timestamp ||
       !hasRetryablePublicTarget(delivery) ||
       (delivery.deliveryLeaseOwner &&
         delivery.deliveryLeaseOwner !== leaseOwner &&
@@ -192,9 +318,18 @@ export async function resumePendingOrderRelayDeliveries(
   for (const lifecycle of lifecycles) {
     const delivery = lifecycle.orderRelayDelivery
     if (
+      delivery &&
+      lifecycle.buyerIdentityKind !== "guest_ephemeral" &&
+      delivery.expiresAt <= timestamp
+    ) {
+      await repository.update(lifecycle.orderId, (current) =>
+        finalizeExpiredDelivery(current, timestamp)
+      )
+      continue
+    }
+    if (
       !delivery ||
       lifecycle.buyerIdentityKind === "guest_ephemeral" ||
-      delivery.expiresAt <= timestamp ||
       (delivery.nextRetryAt ?? 0) > timestamp ||
       !hasRetryablePublicTarget(delivery)
     ) {

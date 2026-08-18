@@ -12,6 +12,7 @@ import {
   getOrderFilterPhase,
   getOrderPaymentMethodLabel,
   isZeroCostPickupOrder,
+  shouldOfferOrderPaymentContinuation,
   type OrderViewModel,
 } from "../apps/market/src/lib/order-view"
 
@@ -172,6 +173,53 @@ describe("buildOrderViewModel", () => {
     expect(vm.items[0].displayTitle).toBe("Nostr Hoodie")
     expect(vm.totalSats).toBe(111)
     expect(vm.paymentStatus).toBe("paid")
+  })
+
+  it("distinguishes queued, relay-accepted, recipient-observed, and confirmed delivery", () => {
+    const queued = vmFromLifecycle({
+      orderDeliveryStatus: "pending",
+      invoiceStatus: "not_requested",
+      paymentStatus: "not_started",
+      proofDeliveryStatus: "not_started",
+    })
+    expect(queued.orderDeliveryEvidence).toBe("locally_queued")
+    expect(deriveOrderHeaderStatus(queued).detailLabel).toBe(
+      "Saved locally; waiting for relay"
+    )
+
+    const relayAccepted = vmFromLifecycle({
+      invoiceStatus: "not_requested",
+      paymentStatus: "not_started",
+      proofDeliveryStatus: "not_started",
+    })
+    expect(relayAccepted.orderDeliveryEvidence).toBe("relay_accepted")
+
+    const recipientObserved = buildOrderViewModel({
+      orderId: "order-1",
+      merchantPubkey: "merchant",
+      lifecycle: baseLifecycle({
+        invoiceStatus: "not_requested",
+        paymentStatus: "not_started",
+        proofDeliveryStatus: "not_started",
+      }),
+      messages: [
+        {
+          id: "invoice",
+          orderId: "order-1",
+          createdAt: 2,
+          senderPubkey: "merchant",
+          recipientPubkey: "buyer",
+          rawContent: "{}",
+          type: "payment_request",
+          payload: { invoice: "invoice" },
+        } as never,
+      ],
+    })
+    expect(recipientObserved.orderDeliveryEvidence).toBe("recipient_observed")
+
+    expect(vmWithMerchantStatus("accepted").orderDeliveryEvidence).toBe(
+      "confirmed"
+    )
   })
 
   it("retains the merchant source quote for historical item display", () => {
@@ -641,9 +689,10 @@ describe("deriveOrderHeaderStatus", () => {
     expect(status.showSpinner).toBe(false)
   })
 
-  it("Pending · Awaiting invoice after order send", () => {
+  it("Pending · Awaiting invoice after a pay-later order send", () => {
     const status = deriveOrderHeaderStatus(
       vmFromLifecycle({
+        checkoutMode: "pay_later",
         invoiceStatus: "not_requested",
         paymentStatus: "not_started",
         proofDeliveryStatus: "not_started",
@@ -652,6 +701,21 @@ describe("deriveOrderHeaderStatus", () => {
     expect(status.primaryLabel).toBe("Pending")
     expect(status.detailLabel).toBe("Awaiting invoice")
     expect(status.showSpinner).toBe(false)
+  })
+
+  it("offers payment continuation after a queued pay-now order reaches a relay", () => {
+    const vm = vmFromLifecycle({
+      checkoutMode: "private_checkout",
+      invoiceStatus: "not_requested",
+      paymentStatus: "not_started",
+      proofDeliveryStatus: "not_started",
+    })
+    const status = deriveOrderHeaderStatus(vm)
+
+    expect(shouldOfferOrderPaymentContinuation(vm)).toBe(true)
+    expect(status.primaryLabel).toBe("Action needed")
+    expect(status.detailLabel).toBe("Continue payment")
+    expect(status.actionNeeded).toBe(true)
   })
 
   it("Action needed for manual external payment", () => {

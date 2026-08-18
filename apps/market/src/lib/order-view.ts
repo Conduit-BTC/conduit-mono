@@ -55,6 +55,24 @@ export interface OrderViewItem {
   fulfillment?: CartItemFulfillment
 }
 
+export type OrderDeliveryEvidence =
+  "locally_queued" | "relay_accepted" | "recipient_observed" | "confirmed"
+
+export function getOrderDeliveryEvidenceLabel(
+  evidence: OrderDeliveryEvidence
+): string {
+  switch (evidence) {
+    case "locally_queued":
+      return "Queued locally"
+    case "relay_accepted":
+      return "Relay accepted"
+    case "recipient_observed":
+      return "Merchant responded"
+    case "confirmed":
+      return "Merchant confirmed"
+  }
+}
+
 export interface OrderViewModel {
   orderId: string
   merchantPubkey: string
@@ -79,6 +97,7 @@ export interface OrderViewModel {
 
   // Buyer-side payment lifecycle (lifecycle record, else derived from messages).
   orderDeliveryStatus: OrderDeliveryStatus
+  orderDeliveryEvidence: OrderDeliveryEvidence
   invoiceStatus: OrderInvoiceStatus
   paymentStatus: OrderPaymentStatus
   proofDeliveryStatus: OrderProofDeliveryStatus
@@ -157,6 +176,22 @@ export function isZeroCostPickupOrder(
         exactZeroPickupCost
       )
     })
+  )
+}
+
+/** A recovered pay-now order must offer a fresh user action before payment. */
+export function shouldOfferOrderPaymentContinuation(
+  vm: Pick<
+    OrderViewModel,
+    "checkoutMode" | "orderDeliveryStatus" | "paymentStatus" | "totalSats"
+  >
+): boolean {
+  return (
+    vm.checkoutMode !== null &&
+    vm.checkoutMode !== "pay_later" &&
+    vm.orderDeliveryStatus === "sent" &&
+    vm.paymentStatus === "not_started" &&
+    (vm.totalSats ?? 0) > 0
   )
 }
 
@@ -359,6 +394,19 @@ export function buildOrderViewModel(
     merchantPubkey,
     conversation?.status ?? null
   )
+  const merchantMessageObserved =
+    messages?.some(
+      (message) =>
+        message.senderPubkey === merchantPubkey &&
+        message.recipientPubkey !== merchantPubkey
+    ) ?? false
+  const orderDeliveryEvidence: OrderDeliveryEvidence = merchantStatus
+    ? "confirmed"
+    : merchantMessageObserved
+      ? "recipient_observed"
+      : orderDeliveryStatus === "sent"
+        ? "relay_accepted"
+        : "locally_queued"
   const paymentPaid = isBuyerOrderPaid({ paymentStatus, merchantStatus })
 
   const tracking =
@@ -437,6 +485,7 @@ export function buildOrderViewModel(
       lifecycle?.shippingAddress ?? summary?.shippingAddress ?? null,
     contactNote: lifecycle?.contactNote ?? summary?.orderNote ?? null,
     orderDeliveryStatus,
+    orderDeliveryEvidence,
     invoiceStatus,
     paymentStatus,
     proofDeliveryStatus,
@@ -834,6 +883,15 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
       showSpinner: false,
     }
   }
+  if (vm.orderDeliveryEvidence === "locally_queued") {
+    return {
+      tone: "neutral",
+      primaryLabel: "Queued",
+      detailLabel: "Saved locally; waiting for relay",
+      actionNeeded: false,
+      showSpinner: true,
+    }
+  }
   if (isZeroCostPickupOrder(vm)) {
     if (
       vm.merchantStatus === "accepted" ||
@@ -904,6 +962,15 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
       tone: "warning",
       primaryLabel: "Action needed",
       detailLabel: "Pay with external wallet",
+      actionNeeded: true,
+      showSpinner: false,
+    }
+  }
+  if (shouldOfferOrderPaymentContinuation(vm)) {
+    return {
+      tone: "warning",
+      primaryLabel: "Action needed",
+      detailLabel: "Continue payment",
       actionNeeded: true,
       showSpinner: false,
     }

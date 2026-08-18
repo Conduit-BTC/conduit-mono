@@ -15,6 +15,7 @@ import {
   normalizeLightningInvoice,
   pruneExpiredGuestOrderData,
   pubkeyToNpub,
+  retryOrderRelayDelivery,
   useAuth,
   useProfile,
   useProfiles,
@@ -72,9 +73,11 @@ import {
   buildOrderTimeline,
   buildOrderViewModel,
   deriveOrderHeaderStatus,
+  getOrderDeliveryEvidenceLabel,
   getOrderFilterPhase,
   getOrderPaymentMethodLabel,
   isZeroCostPickupOrder,
+  shouldOfferOrderPaymentContinuation,
   type OrderHeaderStatus,
   type OrderViewModel,
 } from "../lib/order-view"
@@ -812,7 +815,18 @@ function OrderDetail({
     })
   }
 
+  async function retryOrderDelivery(): Promise<void> {
+    if (!row.lifecycle?.orderRelayDelivery) return
+    await retryOrderRelayDelivery(vm.orderId, buyerPubkey, {
+      allowGuestExplicitRetry: !!guestIdentity,
+    })
+    await queryClient.invalidateQueries({ queryKey: ["order-lifecycles"] })
+  }
+
   const showRetryPayment = !zeroCostPickupOrder && vm.paymentStatus === "failed"
+  const showContinuePayment = shouldOfferOrderPaymentContinuation(vm)
+  const showRetryOrderDelivery =
+    vm.orderDeliveryStatus === "pending" && !!row.lifecycle?.orderRelayDelivery
   const showAnonPaymentRecovery =
     showRetryPayment &&
     vm.publicZapSigner === "anon" &&
@@ -945,6 +959,38 @@ function OrderDetail({
         </section>
       </>
 
+      {showRetryOrderDelivery && (
+        <StatusNotice
+          variant="neutral"
+          title="Queued locally"
+          detail="Waiting for relay acceptance"
+        >
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              variant="outline"
+              className="h-10 px-4 text-sm"
+              disabled={busy}
+              onClick={() => void withBusy(retryOrderDelivery)}
+            >
+              <RotateCw className="h-4 w-4" />
+              Retry delivery
+            </Button>
+            <span className="text-xs text-[var(--text-secondary)]">
+              The exact encrypted order is saved on this device. Retrying does
+              not create a new order or add relay destinations.
+            </span>
+            {recoveryError && (
+              <p
+                role="alert"
+                className="w-full text-sm text-[var(--destructive)]"
+              >
+                {recoveryError}
+              </p>
+            )}
+          </div>
+        </StatusNotice>
+      )}
+
       {showExternalWallet && (
         <div className="space-y-3">
           <StatusNotice
@@ -989,21 +1035,24 @@ function OrderDetail({
         </div>
       )}
 
-      {(showRetryPayment || showAmbiguousPayment || showResendProof) && (
+      {(showContinuePayment ||
+        showRetryPayment ||
+        showAmbiguousPayment ||
+        showResendProof) && (
         <StatusNotice
           variant={TONE_VARIANT[headerStatus.tone]}
           title={headerStatus.primaryLabel}
           detail={headerStatus.detailLabel}
         >
           <div className="flex flex-wrap items-center gap-3">
-            {showRetryPayment && (
+            {(showContinuePayment || showRetryPayment) && (
               <Button
                 className="h-10 px-4 text-sm"
                 disabled={busy || !buildServiceCtx()}
                 onClick={() => void withBusy(retryPayment)}
               >
                 <RotateCw className="h-4 w-4" />
-                Try payment again
+                {showContinuePayment ? "Continue payment" : "Try payment again"}
               </Button>
             )}
             {showAnonPaymentRecovery && (
@@ -1036,13 +1085,16 @@ function OrderDetail({
                 ? "Conduit did not observe the matching public receipt. If your wallet shows payment, do not pay again. The receipt can still reconcile if it reaches the configured relays during this guest session."
                 : showAmbiguousPayment
                   ? "Your wallet may have received the payment request, but Conduit couldn't confirm whether funds moved. Check your wallet and merchant messages before trying again."
-                  : showRetryPayment && !buildServiceCtx()
+                  : (showContinuePayment || showRetryPayment) &&
+                      !buildServiceCtx()
                     ? "This order did not keep a checkout-time Lightning target, so retry is unavailable from Orders. Message the merchant before attempting another payment path."
-                    : showRetryPayment
-                      ? showAnonPaymentRecovery
-                        ? "This older anonymous zap attempt failed before automatic fallback was available. No funds moved; retry it or continue with a private invoice."
-                        : "No funds moved. You can retry payment for this order."
-                      : "Payment went through; the receipt didn't reach the merchant."}
+                    : showContinuePayment
+                      ? "The order reached a relay. Continue when you are ready to request and pay the Lightning invoice."
+                      : showRetryPayment
+                        ? showAnonPaymentRecovery
+                          ? "This older anonymous zap attempt failed before automatic fallback was available. No funds moved; retry it or continue with a private invoice."
+                          : "No funds moved. You can retry payment for this order."
+                        : "Payment went through; the receipt didn't reach the merchant."}
             </span>
             {recoveryError && (
               <p
@@ -1339,6 +1391,11 @@ function OrderDetail({
                 </DetailRow>
                 <DetailRow label="Ordered">
                   <span>{new Date(vm.createdAt).toLocaleString()}</span>
+                </DetailRow>
+                <DetailRow label="Delivery">
+                  <span>
+                    {getOrderDeliveryEvidenceLabel(vm.orderDeliveryEvidence)}
+                  </span>
                 </DetailRow>
               </div>
             )}
