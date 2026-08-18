@@ -132,16 +132,6 @@ export function pruneExpiredCheckoutShippingSession(
   return readStoredCheckoutShipping(storage, nowMs) === null
 }
 
-export function readCheckoutShippingSession(
-  storage: SessionStorageLike | null = getSessionStorage(),
-  nowMs = Date.now(),
-  ownerPubkey: string | null = null
-): ShippingFormState {
-  const stored = readStoredCheckoutShipping(storage, nowMs, ownerPubkey)
-  if (!stored) return DEFAULT_CHECKOUT_SHIPPING
-  return { ...DEFAULT_CHECKOUT_SHIPPING, ...stored.value }
-}
-
 export function readCheckoutShippingInitialization(
   preset: ShopperShippingPreset | null,
   storage: SessionStorageLike | null = getSessionStorage(),

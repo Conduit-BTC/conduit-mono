@@ -328,10 +328,6 @@ function requirePreparedAnonZap(
   return prepared
 }
 
-function isAmbiguousPaymentError(error: unknown): boolean {
-  return isAmbiguousCheckoutPaymentError(error)
-}
-
 type Listener = (state: OrderPaymentRuntimeState) => void
 
 const runtimeStates = new Map<string, OrderPaymentRuntimeState>()
@@ -1110,7 +1106,7 @@ export async function runOrderPayment(
           { paymentStatus: "paid", proofDeliveryStatus: "retry_needed" },
           { running: false, stage: null }
         )
-      } else if (isAmbiguousPaymentError(e)) {
+      } else if (isAmbiguousCheckoutPaymentError(e)) {
         await patchAndEmit(
           orderId,
           {
