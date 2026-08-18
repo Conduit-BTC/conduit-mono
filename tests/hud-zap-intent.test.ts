@@ -2,11 +2,12 @@ import { describe, expect, it } from "bun:test"
 import {
   armHudZapIntent,
   consumeHudZapIntent,
-  getHudZapCartFingerprint,
   getHudZapAuthorizationRejection,
-  isHudZapAuthorizationValid,
 } from "../apps/market/src/lib/hud-zap-intent"
-import type { CartItem } from "../apps/market/src/lib/cart-model"
+import {
+  getCartCommerceFingerprint,
+  type CartItem,
+} from "../apps/market/src/lib/cart-model"
 
 const items: CartItem[] = [
   {
@@ -25,7 +26,7 @@ function authorization(createdAt = 1_000) {
   return {
     merchantPubkey: "merchant-a",
     buyerPubkey: "buyer-a",
-    cartFingerprint: getHudZapCartFingerprint(items),
+    cartFingerprint: getCartCommerceFingerprint(items),
     totalMsats: 1_000_000,
     createdAt,
   }
@@ -48,14 +49,14 @@ describe("HUD zap intent", () => {
   it("binds authorization to buyer, cart terms, quantity, and total", () => {
     const intent = authorization()
     expect(
-      isHudZapAuthorizationValid(intent, {
+      getHudZapAuthorizationRejection(intent, {
         merchantPubkey: "merchant-a",
         buyerPubkey: "buyer-a",
         items,
         totalMsats: 1_000_000,
         nowMs: 2_000,
       })
-    ).toBe(true)
+    ).toBeNull()
 
     for (const input of [
       { buyerPubkey: "buyer-b", items, totalMsats: 1_000_000 },
@@ -67,12 +68,12 @@ describe("HUD zap intent", () => {
       { buyerPubkey: "buyer-a", items, totalMsats: 2_000_000 },
     ]) {
       expect(
-        isHudZapAuthorizationValid(intent, {
+        getHudZapAuthorizationRejection(intent, {
           merchantPubkey: "merchant-a",
           nowMs: 2_000,
           ...input,
         })
-      ).toBe(false)
+      ).toBe("changed")
     }
   })
 

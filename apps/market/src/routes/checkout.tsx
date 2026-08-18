@@ -140,7 +140,6 @@ import {
 import {
   consumeHudZapIntent,
   getHudZapAuthorizationRejection,
-  isHudZapAuthorizationValid,
   type HudZapAuthorization,
 } from "../lib/hud-zap-intent"
 import {
@@ -1731,12 +1730,12 @@ function CheckoutPage() {
   function assertHudZapAuthorization(totalMsats: number): void {
     if (!autoZapAuthorization) return
     if (
-      !isHudZapAuthorizationValid(autoZapAuthorization, {
+      getHudZapAuthorizationRejection(autoZapAuthorization, {
         merchantPubkey: selectedMerchant,
         buyerPubkey: signedBuyerPubkey,
         items: checkoutItems,
         totalMsats,
-      })
+      }) !== null
     ) {
       throw new Error(
         "Cart or payment details changed after zap out was armed. Review checkout before paying."

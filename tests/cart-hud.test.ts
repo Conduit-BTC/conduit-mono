@@ -184,7 +184,7 @@ describe("Market cart HUD policy", () => {
     expect(checkout).toContain("autoZapInputsResolving")
     expect(checkout).toContain("consumeHudZapIntent(selectedMerchant)")
     expect(checkout).toContain("!autoZapAuthorization")
-    expect(checkout).toContain("isHudZapAuthorizationValid")
+    expect(checkout).toContain("getHudZapAuthorizationRejection")
     expect(checkout).toContain("void payNowRef.current()")
     expect(checkout).toContain(
       'const [step, setStep] = useState<CheckoutStep>("shipping")'

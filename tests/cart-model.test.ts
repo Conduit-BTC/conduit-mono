@@ -490,7 +490,6 @@ describe("cart model", () => {
       ],
     })
 
-    expect(parsed.supported).toBe(true)
     expect(parsed.writable).toBe(true)
     expect(parsed.shouldPersist).toBe(true)
     expect(parsed.state.items).toHaveLength(2)
@@ -506,19 +505,20 @@ describe("cart model", () => {
   })
 
   it("deduplicates only exact identities using the latest snapshot", () => {
+    const merchantHex = "a".repeat(64)
     const parsed = parsePersistedCart({
       version: 2,
       items: [
         item({
-          productId: "30402:merchant-a:shared",
-          merchantPubkey: "merchant-a",
+          productId: `30402:${merchantHex}:shared`,
+          merchantPubkey: merchantHex,
           merchantAddedAt: 20,
           title: "Old title",
           quantity: 2,
         }),
         item({
-          productId: "30402:merchant-a:shared",
-          merchantPubkey: "merchant-a",
+          productId: `30402:${merchantHex}:shared`,
+          merchantPubkey: merchantHex,
           merchantAddedAt: 10,
           title: "Current title",
           quantity: 3,
@@ -537,8 +537,8 @@ describe("cart model", () => {
       version: 2,
       items: [
         item({
-          productId: "30402:merchant-a:product-a",
-          merchantPubkey: "merchant-b",
+          productId: `30402:${"a".repeat(64)}:product-a`,
+          merchantPubkey: "b".repeat(64),
         }),
         item({ quantity: Number.NaN }),
         item({ productId: "valid-legacy", quantity: 2.8 }),
@@ -555,19 +555,16 @@ describe("cart model", () => {
     expect(parsePersistedCart(null)).toEqual({
       state: { items: [] },
       shouldPersist: false,
-      supported: false,
       writable: true,
     })
     expect(parsePersistedCart({ version: 3, items: [item()] })).toEqual({
       state: { items: [] },
       shouldPersist: false,
-      supported: false,
       writable: false,
     })
     expect(parsePersistedCart({ version: 3, entries: [item()] })).toEqual({
       state: { items: [] },
       shouldPersist: false,
-      supported: false,
       writable: false,
     })
   })
@@ -701,8 +698,10 @@ describe("cart model", () => {
 
   it("preserves stock through persisted cart parsing", () => {
     expect(
-      parsePersistedCart({ version: 2, items: [item({ stock: 7 })] }).state
-        .items[0]
+      parsePersistedCart({
+        version: 2,
+        items: [item({ productId: "product-a", stock: 7 })],
+      }).state.items[0]
     ).toMatchObject({ stock: 7 })
   })
 

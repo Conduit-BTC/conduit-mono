@@ -12,10 +12,6 @@ export type HudZapAuthorization = {
 
 let pendingIntent: HudZapAuthorization | null = null
 
-export function getHudZapCartFingerprint(items: readonly CartItem[]): string {
-  return getCartCommerceFingerprint(items)
-}
-
 export function armHudZapIntent(intent: HudZapAuthorization): void {
   pendingIntent = intent
 }
@@ -63,16 +59,9 @@ export function getHudZapAuthorizationRejection(
     input.merchantPubkey !== authorization.merchantPubkey ||
     input.buyerPubkey !== authorization.buyerPubkey ||
     input.totalMsats !== authorization.totalMsats ||
-    getHudZapCartFingerprint(input.items) !== authorization.cartFingerprint
+    getCartCommerceFingerprint(input.items) !== authorization.cartFingerprint
   ) {
     return "changed"
   }
   return null
-}
-
-export function isHudZapAuthorizationValid(
-  authorization: HudZapAuthorization,
-  input: HudZapAuthorizationInput
-): boolean {
-  return getHudZapAuthorizationRejection(authorization, input) === null
 }

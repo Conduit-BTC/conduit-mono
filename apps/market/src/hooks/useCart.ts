@@ -60,7 +60,7 @@ function loadFromStorage(): void {
       items: result.state.items.map(sanitizeCartItemImage),
     }
     storageWritable = result.writable
-    if (result.supported && result.shouldPersist) {
+    if (result.shouldPersist) {
       try {
         localStorage.setItem(
           CART_STORAGE_KEY,

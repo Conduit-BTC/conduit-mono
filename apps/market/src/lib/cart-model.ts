@@ -2,6 +2,7 @@ import {
   getPriceSats,
   getProductImageCandidates,
   getShippingCostSats,
+  normalizeProductCoordinate,
   resolveCartShippingCost,
   type CommerceQueryMeta,
   type ProductAvailabilityDiagnostic,
@@ -75,7 +76,6 @@ export type PersistedCartState = {
 export type ParsedPersistedCart = {
   state: CartState
   shouldPersist: boolean
-  supported: boolean
   writable: boolean
 }
 
@@ -435,19 +435,6 @@ function parseSpecifications(
   return specifications
 }
 
-function normalizeProductCoordinate(
-  productId: string,
-  merchantPubkey: string
-): string | null {
-  if (!productId.startsWith("30402:")) {
-    return `30402:${merchantPubkey}:${productId}`
-  }
-  const [, coordinatePubkey, ...identifier] = productId.split(":")
-  return coordinatePubkey === merchantPubkey && identifier.join(":").length > 0
-    ? productId
-    : null
-}
-
 function parseCartItem(value: unknown): CartItem | null {
   if (!isRecord(value)) return null
   const storedProductId = nonemptyString(value.productId)
@@ -632,7 +619,6 @@ export function parsePersistedCart(value: unknown): ParsedPersistedCart {
     return {
       state: { items: [] },
       shouldPersist: false,
-      supported: false,
       writable: false,
     }
   }
@@ -640,7 +626,6 @@ export function parsePersistedCart(value: unknown): ParsedPersistedCart {
     return {
       state: { items: [] },
       shouldPersist: false,
-      supported: false,
       writable: true,
     }
   }
@@ -681,7 +666,6 @@ export function parsePersistedCart(value: unknown): ParsedPersistedCart {
     state: { items: Array.from(deduplicated.values()) },
     shouldPersist:
       value.version !== CART_STORAGE_VERSION || hasLegacyProductIds,
-    supported: true,
     writable: true,
   }
 }

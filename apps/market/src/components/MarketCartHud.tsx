@@ -28,6 +28,7 @@ import { useShopperPricing } from "../hooks/useShopperPricing"
 import { useWallet } from "../hooks/useWallet"
 import {
   getCartAvailabilityBlockingMessage,
+  getCartCommerceFingerprint,
   getCartCostSummary,
   getCartItemKey,
   cartItemsMatchCurrentProducts,
@@ -48,10 +49,7 @@ import {
   buildShippingAddressFromForm,
   validateShippingFields,
 } from "../lib/checkout-validation"
-import {
-  armHudZapIntent,
-  getHudZapCartFingerprint,
-} from "../lib/hud-zap-intent"
+import { armHudZapIntent } from "../lib/hud-zap-intent"
 import {
   getCartShippingDestinationEligibility,
   hasPhysicalItemsMissingShippingZone,
@@ -323,7 +321,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
     armHudZapIntent({
       merchantPubkey: selectedMerchant,
       buyerPubkey: pubkey,
-      cartFingerprint: getHudZapCartFingerprint(activeGroup.items),
+      cartFingerprint: getCartCommerceFingerprint(activeGroup.items),
       totalMsats: pricingIntent.totalMsats,
       createdAt: Date.now(),
     })
