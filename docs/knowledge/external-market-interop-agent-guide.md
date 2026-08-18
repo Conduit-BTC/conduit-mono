@@ -1,15 +1,15 @@
 # External Market Interop: Agent Guide
 
-Use this when touching anything related to listings/events/rendering/checkout handoff that should work with external Gamma/NIP-99 marketplaces (currently: Plebeian).
+Use this when touching anything related to listings/events/rendering/checkout handoff that should work with external NIP-99 commerce marketplaces, including implementations derived from the earlier GammaMarkets work (currently: Plebeian).
 
-Source policy: `docs/knowledge/external-market-interop-policy.md` (2026-08-09).
+Source policy: `docs/knowledge/external-market-interop-policy.md` (2026-08-16).
 Product posture: `docs/knowledge/decentralized-network-product-posture.md`.
 
 ## Decision Order
 
 1. Preserve cryptographic, authorization, privacy, identity, and
    payment-sensitive invariants.
-2. Establish canonical Gamma/NIP-99 meaning and emission.
+2. Establish canonical Open Markets/NIP-99 meaning and emission.
 3. Classify missing or divergent state: data integrity,
    discovery/capability, or ecosystem migration.
 4. Preserve safe discovery and checkout outcomes under incomplete network

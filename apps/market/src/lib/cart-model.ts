@@ -52,7 +52,7 @@ export type CartItem = {
   publicZapEnabled?: boolean
   zapMessagePolicy?: ProductZapMessagePolicy
   publicZapPolicyKnown?: boolean
-  /** Last known GammaMarkets stock value. Zero means the item is sold out. */
+  /** Last known stock value from legacy GammaMarkets-compatible tags. Zero means the item is sold out. */
   stock?: number
   quantity: number
 }

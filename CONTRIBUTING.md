@@ -51,7 +51,7 @@ Read existing specs when they apply, but do not create or update a spec for ordi
 
 For UI and theming work, also check [docs/DESIGN.md](docs/DESIGN.md) before introducing new shared styles or tokens.
 
-For Nostr protocol, relay, signer, messaging, payment, product-event, cache, or outbox work, also check [decentralized-network-product-posture.md](docs/knowledge/decentralized-network-product-posture.md), [external-nostr-references.md](docs/knowledge/external-nostr-references.md), and the relevant public NIP or GammaMarkets source before implementation. Product listings are NIP-99 + GammaMarkets `kind:30402`; do not introduce alternate product-listing protocol terminology, schemas, or assumptions.
+For Nostr protocol, relay, signer, messaging, payment, product-event, cache, or outbox work, also check [decentralized-network-product-posture.md](docs/knowledge/decentralized-network-product-posture.md), [external-nostr-references.md](docs/knowledge/external-nostr-references.md), and the relevant public NIP or Open Markets source before implementation. Product listings are NIP-99 plus the Open Markets working specification for `kind:30402` commerce events, derived from the earlier GammaMarkets `market-spec` work; do not introduce alternate product-listing protocol terminology, schemas, or assumptions.
 
 The protocol source defines event meaning and canonical emission. Before
 turning missing or divergent decentralized state into a product gate, classify
