@@ -55,8 +55,7 @@ export const SHOPPER_PAYMENT_RAILS = [
 export type ShopperPaymentRail = (typeof SHOPPER_PAYMENT_RAILS)[number]
 
 const countryCodes = new Set(SHIPPING_COUNTRIES.map(({ code }) => code))
-const optionalText = (max: number) =>
-  z.string().trim().max(max).optional().or(z.literal(""))
+const optionalText = (max: number) => z.string().trim().max(max).optional()
 
 export const shopperShippingPresetSchema = z
   .object({
@@ -172,7 +171,6 @@ export type ShopperPresetsReadResult =
       state: "found"
       envelope: ShopperPresetsEnvelope
       revision: ShopperPresetsRevision
-      usable: boolean
     }
   | { state: "not_found" }
   | { state: "unavailable"; reason: "relay_read" | "invalid_envelope" }
@@ -532,12 +530,12 @@ export async function fetchShopperPresets(
   } catch {
     return { state: "unavailable", reason: "relay_read" }
   }
-  const usable =
+  const hasRelaySuccess =
     result.relays.some(({ status }) => status === "success") ||
     result.events.length > 0
   const latest = selectLatestShopperPresetsEvent(result.events, owner)
   if (!latest) {
-    return usable
+    return hasRelaySuccess
       ? { state: "not_found" }
       : { state: "unavailable", reason: "relay_read" }
   }
@@ -549,7 +547,6 @@ export async function fetchShopperPresets(
         eventId: latest.id,
         createdAt: latest.created_at ?? 0,
       },
-      usable,
     }
   } catch {
     return { state: "unavailable", reason: "invalid_envelope" }
@@ -580,10 +577,7 @@ export async function publishShopperPresets({
   }
 
   const current = await fetchShopperPresets(owner, { ...dependencies, ndk })
-  if (
-    current.state === "unavailable" ||
-    (current.state === "found" && !current.usable)
-  ) {
+  if (current.state === "unavailable") {
     throw new ShopperPresetsProtocolError(
       "fresh_read_required",
       "A complete fresh preset read is required before publishing."
@@ -629,7 +623,6 @@ export async function publishShopperPresets({
   })
   if (
     convergence.state !== "found" ||
-    !convergence.usable ||
     convergence.revision.eventId !== event.id
   ) {
     throw new ShopperPresetsProtocolError(

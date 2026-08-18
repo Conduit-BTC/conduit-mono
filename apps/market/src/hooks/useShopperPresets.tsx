@@ -206,7 +206,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
       setSyncState("ready")
       return
     }
-    if (result.state === "unavailable" || !result.usable) {
+    if (result.state === "unavailable") {
       setUnlockState("error")
       setSyncState("unavailable")
       return
@@ -277,7 +277,6 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
           state: "found",
           envelope: result.envelope,
           revision: result.revision,
-          usable: true,
         }
         handledRemoteRef.current = result.revision.eventId
         setRemotePreset(result.envelope)
@@ -312,7 +311,6 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
           state: "found",
           envelope: result.envelope,
           revision: result.revision,
-          usable: true,
         }
         handledRemoteRef.current = result.revision.eventId
         setRemotePreset(result.envelope)

@@ -4,7 +4,7 @@ import {
   DEFAULT_CHECKOUT_SHIPPING,
   clearCheckoutShippingSession,
   pruneExpiredCheckoutShippingSession,
-  readCheckoutShippingSession,
+  readCheckoutShippingInitialization,
   writeCheckoutShippingSession,
 } from "../apps/market/src/lib/checkout-session"
 
@@ -39,16 +39,20 @@ describe("checkout shipping session", () => {
     writeCheckoutShippingSession(shipping, storage, updatedAt)
 
     expect(
-      readCheckoutShippingSession(
+      readCheckoutShippingInitialization(
+        null,
         storage,
-        updatedAt + GUEST_ORDER_LOCAL_RETENTION_MS - 1
-      )
+        updatedAt + GUEST_ORDER_LOCAL_RETENTION_MS - 1,
+        null
+      ).value
     ).toEqual(shipping)
     expect(
-      readCheckoutShippingSession(
+      readCheckoutShippingInitialization(
+        null,
         storage,
-        updatedAt + GUEST_ORDER_LOCAL_RETENTION_MS
-      )
+        updatedAt + GUEST_ORDER_LOCAL_RETENTION_MS,
+        null
+      ).value
     ).toEqual(DEFAULT_CHECKOUT_SHIPPING)
     expect(storage.length).toBe(0)
   })
@@ -60,9 +64,9 @@ describe("checkout shipping session", () => {
       JSON.stringify({ email: "legacy@example.com" })
     )
 
-    expect(readCheckoutShippingSession(storage)).toEqual(
-      DEFAULT_CHECKOUT_SHIPPING
-    )
+    expect(
+      readCheckoutShippingInitialization(null, storage, undefined, null).value
+    ).toEqual(DEFAULT_CHECKOUT_SHIPPING)
     expect(storage.length).toBe(0)
   })
 
@@ -74,9 +78,10 @@ describe("checkout shipping session", () => {
       1_700_000_000_001
     )
 
-    expect(readCheckoutShippingSession(storage, 1_700_000_000_000)).toEqual(
-      DEFAULT_CHECKOUT_SHIPPING
-    )
+    expect(
+      readCheckoutShippingInitialization(null, storage, 1_700_000_000_000, null)
+        .value
+    ).toEqual(DEFAULT_CHECKOUT_SHIPPING)
     expect(storage.length).toBe(0)
   })
 
@@ -126,7 +131,12 @@ describe("checkout shipping session", () => {
       false
     )
     expect(
-      readCheckoutShippingSession(storage, updatedAt + 1, "buyer-a").street
+      readCheckoutShippingInitialization(
+        null,
+        storage,
+        updatedAt + 1,
+        "buyer-a"
+      ).value.street
     ).toBe("123 Private Street")
   })
 })

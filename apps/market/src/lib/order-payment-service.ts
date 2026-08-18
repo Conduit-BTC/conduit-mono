@@ -404,10 +404,6 @@ function requirePreparedAnonZap(
   return prepared
 }
 
-function isAmbiguousPaymentError(error: unknown): boolean {
-  return isAmbiguousCheckoutPaymentError(error)
-}
-
 type Listener = (state: OrderPaymentRuntimeState) => void
 
 const runtimeStates = new Map<string, OrderPaymentRuntimeState>()
@@ -1418,7 +1414,7 @@ async function runOrderPaymentInternal(
             lifecycle: recovered.lifecycle,
           })
           clearSessionClaim = true
-        } else if (isAmbiguousPaymentError(e)) {
+        } else if (isAmbiguousCheckoutPaymentError(e)) {
           await patchClaim(
             {
               paymentClaimId: undefined,
