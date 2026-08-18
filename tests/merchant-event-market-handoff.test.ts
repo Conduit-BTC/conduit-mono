@@ -718,8 +718,8 @@ describe("merchant organizer handoff workflow", () => {
       signer: {} as never,
       storage,
       transport: {
-        recipientInboxRelays: ["wss://organizer-inbox.example"],
-        senderInboxRelays: ["wss://merchant-inbox.example"],
+        recipientInboxRelays: ["wss://organizer-inbox.relay.dev"],
+        senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
         publishFn: (async (event, options) => {
           publishedIds.push(event.id)
           const relays = options.exclusiveRelayUrls ?? []
@@ -762,8 +762,8 @@ describe("merchant organizer handoff workflow", () => {
   it("persists partial recipient delivery without claiming clean delivery", async () => {
     const storage = new MemoryStorage()
     const recipientRelays = [
-      "wss://organizer-primary.example",
-      "wss://organizer-backup.example",
+      "wss://organizer-primary.relay.dev",
+      "wss://organizer-backup.relay.dev",
     ]
     const result = await issueOrganizerReadyReceipt({
       merchantPubkey: MERCHANT,
@@ -774,7 +774,7 @@ describe("merchant organizer handoff workflow", () => {
       storage,
       transport: {
         recipientInboxRelays: recipientRelays,
-        senderInboxRelays: ["wss://merchant-inbox.example"],
+        senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
         giftWrapFn: (async (_rumor, recipient) =>
           ndkWrap(recipient.pubkey)) as never,
         publishFn: (async (_event, options) => {
@@ -815,8 +815,8 @@ describe("merchant organizer handoff workflow", () => {
     const storage = new MemoryStorage()
     const sourceOrder = order(2_000, "alternating-recipient-order")
     const recipientRelays = [
-      "wss://organizer-primary.example",
-      "wss://organizer-backup.example",
+      "wss://organizer-primary.relay.dev",
+      "wss://organizer-backup.relay.dev",
     ]
     const initial = await issueOrganizerReadyReceipt({
       merchantPubkey: MERCHANT,
@@ -827,7 +827,7 @@ describe("merchant organizer handoff workflow", () => {
       storage,
       transport: {
         recipientInboxRelays: recipientRelays,
-        senderInboxRelays: ["wss://merchant-inbox.example"],
+        senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
         giftWrapFn: (async (_rumor, recipient) =>
           ndkWrap(recipient.pubkey)) as never,
         publishFn: (async (_event, options) => {
@@ -862,7 +862,7 @@ describe("merchant organizer handoff workflow", () => {
       storage,
       transport: {
         recipientInboxRelays: recipientRelays,
-        senderInboxRelays: ["wss://merchant-inbox.example"],
+        senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
         publishFn: (async (_event, options) => {
           const relays = options.exclusiveRelayUrls ?? []
           retryTargets.push([...relays])
@@ -891,10 +891,10 @@ describe("merchant organizer handoff workflow", () => {
   it("unions alternating self-copy ACKs without replaying completed legs", async () => {
     const storage = new MemoryStorage()
     const sourceOrder = order(2_000, "alternating-self-order")
-    const recipientRelay = "wss://organizer-inbox.example"
+    const recipientRelay = "wss://organizer-inbox.relay.dev"
     const senderRelays = [
-      "wss://merchant-primary.example",
-      "wss://merchant-backup.example",
+      "wss://merchant-primary.relay.dev",
+      "wss://merchant-backup.relay.dev",
     ]
     const initial = await issueOrganizerReadyReceipt({
       merchantPubkey: MERCHANT,
@@ -963,8 +963,8 @@ describe("merchant organizer handoff workflow", () => {
     const storage = new MemoryStorage()
     const sourceOrder = order(2_000, "zero-to-partial-order")
     const recipientRelays = [
-      "wss://organizer-primary.example",
-      "wss://organizer-backup.example",
+      "wss://organizer-primary.relay.dev",
+      "wss://organizer-backup.relay.dev",
     ]
     const zeroDiagnostics = plannerResult({
       attempted: recipientRelays,
@@ -981,7 +981,7 @@ describe("merchant organizer handoff workflow", () => {
         storage,
         transport: {
           recipientInboxRelays: recipientRelays,
-          senderInboxRelays: ["wss://merchant-inbox.example"],
+          senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
           giftWrapFn: (async (_rumor, recipient) =>
             ndkWrap(recipient.pubkey)) as never,
           publishFn: (async () => {
@@ -1009,7 +1009,7 @@ describe("merchant organizer handoff workflow", () => {
       storage,
       transport: {
         recipientInboxRelays: recipientRelays,
-        senderInboxRelays: ["wss://merchant-inbox.example"],
+        senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
         publishFn: (async (_event, options) => {
           const relays = options.exclusiveRelayUrls ?? []
           return options.recipientPubkeys?.[0] === ORGANIZER
@@ -1039,9 +1039,9 @@ describe("merchant organizer handoff workflow", () => {
   it("preserves progress across reload and current inbox changes", async () => {
     const storage = new MemoryStorage()
     const sourceOrder = order(2_000, "reload-current-inbox-order")
-    const relayA = "wss://organizer-a.example"
-    const relayB = "wss://organizer-b.example"
-    const relayC = "wss://organizer-c.example"
+    const relayA = "wss://organizer-a.relay.dev"
+    const relayB = "wss://organizer-b.relay.dev"
+    const relayC = "wss://organizer-c.relay.dev"
     await issueOrganizerReadyReceipt({
       merchantPubkey: MERCHANT,
       order: sourceOrder,
@@ -1051,7 +1051,7 @@ describe("merchant organizer handoff workflow", () => {
       storage,
       transport: {
         recipientInboxRelays: [relayA, relayB],
-        senderInboxRelays: ["wss://merchant-inbox.example"],
+        senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
         giftWrapFn: (async (_rumor, recipient) =>
           ndkWrap(recipient.pubkey)) as never,
         publishFn: (async (_event, options) => {
@@ -1081,7 +1081,7 @@ describe("merchant organizer handoff workflow", () => {
       storage,
       transport: {
         recipientInboxRelays: [relayB, relayC],
-        senderInboxRelays: ["wss://merchant-inbox.example"],
+        senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
         publishFn: (async (_event, options) => {
           const relays = options.exclusiveRelayUrls ?? []
           changedInboxAttempts.push([...relays])
@@ -1108,7 +1108,7 @@ describe("merchant organizer handoff workflow", () => {
       storage,
       transport: {
         recipientInboxRelays: [relayA, relayB, relayC],
-        senderInboxRelays: ["wss://merchant-inbox.example"],
+        senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
         publishFn: (async (_event, options) => {
           const relays = options.exclusiveRelayUrls ?? []
           readdedInboxAttempts.push([...relays])
@@ -1168,8 +1168,8 @@ describe("merchant organizer handoff workflow", () => {
       const sourceOrder = order(2_000, `ready-self-${testCase.name}`)
       const initialPublishedIds: string[] = []
       const senderRelays = [
-        "wss://merchant-primary.example",
-        "wss://merchant-backup.example",
+        "wss://merchant-primary.relay.dev",
+        "wss://merchant-backup.relay.dev",
       ]
       const result = await issueOrganizerReadyReceipt({
         merchantPubkey: MERCHANT,
@@ -1179,7 +1179,7 @@ describe("merchant organizer handoff workflow", () => {
         signer: merchantSigner,
         storage,
         transport: {
-          recipientInboxRelays: ["wss://organizer-inbox.example"],
+          recipientInboxRelays: ["wss://organizer-inbox.relay.dev"],
           senderInboxRelays: senderRelays,
           giftWrapFn: (async (_rumor, recipient) =>
             ndkWrap(recipient.pubkey)) as never,
@@ -1224,7 +1224,7 @@ describe("merchant organizer handoff workflow", () => {
           signer: {} as never,
           storage,
           transport: {
-            recipientInboxRelays: ["wss://organizer-inbox.example"],
+            recipientInboxRelays: ["wss://organizer-inbox.relay.dev"],
             senderInboxRelays: senderRelays,
             publishFn: (async (event, options) => {
               retriedIds.push(event.id)
@@ -1247,8 +1247,8 @@ describe("merchant organizer handoff workflow", () => {
   it("records zero recipient ACKs and bounded failed-target counts", async () => {
     const storage = new MemoryStorage()
     const recipientRelays = [
-      "wss://organizer-primary.example",
-      "wss://organizer-backup.example",
+      "wss://organizer-primary.relay.dev",
+      "wss://organizer-backup.relay.dev",
     ]
     const diagnostics = plannerResult({
       attempted: recipientRelays,
@@ -1266,7 +1266,7 @@ describe("merchant organizer handoff workflow", () => {
         storage,
         transport: {
           recipientInboxRelays: recipientRelays,
-          senderInboxRelays: ["wss://merchant-inbox.example"],
+          senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
           giftWrapFn: (async (_rumor, recipient) =>
             ndkWrap(recipient.pubkey)) as never,
           publishFn: (async () => {
@@ -1301,8 +1301,8 @@ describe("merchant organizer handoff workflow", () => {
       signer: merchantSigner,
       storage,
       transport: {
-        recipientInboxRelays: ["wss://organizer-inbox.example"],
-        senderInboxRelays: ["wss://merchant-inbox.example"],
+        recipientInboxRelays: ["wss://organizer-inbox.relay.dev"],
+        senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
         giftWrapFn: (async (_rumor, recipient) =>
           ndkWrap(recipient.pubkey)) as never,
         publishFn: (async (event, options) => {
@@ -1334,8 +1334,8 @@ describe("merchant organizer handoff workflow", () => {
       signer: {} as never,
       storage,
       transport: {
-        recipientInboxRelays: ["wss://organizer-inbox.example"],
-        senderInboxRelays: ["wss://merchant-inbox.example"],
+        recipientInboxRelays: ["wss://organizer-inbox.relay.dev"],
+        senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
         publishFn: (async (event, options) => {
           retriedIds.push(event.id)
           const relays = options.exclusiveRelayUrls ?? []
@@ -1398,8 +1398,8 @@ describe("merchant organizer handoff workflow", () => {
         signer: merchantSigner,
         storage,
         transport: {
-          recipientInboxRelays: ["wss://organizer-inbox.example"],
-          senderInboxRelays: ["wss://merchant-inbox.example"],
+          recipientInboxRelays: ["wss://organizer-inbox.relay.dev"],
+          senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
           giftWrapFn: (async (_rumor, recipient) =>
             ndkWrap(recipient.pubkey)) as never,
           publishFn: (async (_event, options) => {
@@ -1443,8 +1443,8 @@ describe("merchant organizer handoff workflow", () => {
         signer: merchantSigner,
         storage,
         transport: {
-          recipientInboxRelays: ["wss://organizer-inbox.example"],
-          senderInboxRelays: ["wss://merchant-inbox.example"],
+          recipientInboxRelays: ["wss://organizer-inbox.relay.dev"],
+          senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
           giftWrapFn: (async (_rumor, recipient) =>
             ndkWrap(recipient.pubkey)) as never,
           publishFn: (async (_event, options) => {
@@ -1594,8 +1594,8 @@ describe("merchant organizer handoff workflow", () => {
       )
       rememberEventMarketHandoffDelivery(MERCHANT, ready, storage)
       const senderRelays = [
-        "wss://merchant-primary.example",
-        "wss://merchant-backup.example",
+        "wss://merchant-primary.relay.dev",
+        "wss://merchant-backup.relay.dev",
       ]
       const publishedIds: string[] = []
 
@@ -1608,7 +1608,7 @@ describe("merchant organizer handoff workflow", () => {
         evidenceReadStale: false,
         storage,
         transport: {
-          recipientInboxRelays: ["wss://organizer-inbox.example"],
+          recipientInboxRelays: ["wss://organizer-inbox.relay.dev"],
           senderInboxRelays: senderRelays,
           giftWrapFn: (async (_rumor, recipient) =>
             ndkWrap(recipient.pubkey)) as never,
@@ -1703,8 +1703,8 @@ describe("merchant organizer handoff workflow", () => {
         evidenceReadStale: false,
         storage,
         transport: {
-          recipientInboxRelays: ["wss://organizer-inbox.example"],
-          senderInboxRelays: ["wss://merchant-inbox.example"],
+          recipientInboxRelays: ["wss://organizer-inbox.relay.dev"],
+          senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
           giftWrapFn: (async (_rumor, recipient) =>
             ndkWrap(recipient.pubkey)) as never,
           publishFn: (async (event, options) => {
@@ -1820,8 +1820,8 @@ describe("merchant organizer handoff workflow", () => {
           evidenceReadStale: false,
           storage,
           transport: {
-            recipientInboxRelays: ["wss://organizer-inbox.example"],
-            senderInboxRelays: ["wss://merchant-inbox.example"],
+            recipientInboxRelays: ["wss://organizer-inbox.relay.dev"],
+            senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
             publishFn: (async (event, options) => {
               publishedIds.push(event.id)
               const relays = options.exclusiveRelayUrls ?? []
@@ -1875,10 +1875,10 @@ describe("merchant organizer handoff workflow", () => {
           storage,
           transport: {
             recipientInboxRelays: [
-              "wss://organizer-primary.example",
-              "wss://organizer-backup.example",
+              "wss://organizer-primary.relay.dev",
+              "wss://organizer-backup.relay.dev",
             ],
-            senderInboxRelays: ["wss://merchant-inbox.example"],
+            senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
             publishFn: (async (_event, options) => {
               const relays = options.exclusiveRelayUrls ?? []
               if (

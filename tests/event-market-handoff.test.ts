@@ -726,8 +726,8 @@ describe("event-market private handoff delivery", () => {
         persisted = record
       },
       transport: {
-        recipientInboxRelays: ["wss://organizer.inbox.example"],
-        senderInboxRelays: ["wss://merchant.inbox.example"],
+        recipientInboxRelays: ["wss://organizer.inbox.relay.dev"],
+        senderInboxRelays: ["wss://merchant.inbox.relay.dev"],
         giftWrapFn: (async (_rumor, recipient) =>
           signedWrap(recipient.pubkey)) as never,
         publishFn: (async (_event, options) => {
@@ -737,9 +737,9 @@ describe("event-market private handoff delivery", () => {
             return {
               ...successfulDelivery(relays),
               successfulRelayUrls: [relays[0]!],
-              failedRelayUrls: ["wss://organizer.backup.example"],
+              failedRelayUrls: ["wss://organizer.backup.relay.dev"],
               relayFailureMessages: {
-                "wss://organizer.backup.example":
+                "wss://organizer.backup.relay.dev":
                   "No acknowledgement before timeout",
               },
             }
@@ -837,8 +837,8 @@ describe("event-market private handoff delivery", () => {
       persistExactWraps: (record) => persisted.push(record),
       transport: {
         ...transport,
-        recipientInboxRelays: ["wss://merchant.inbox.example"],
-        senderInboxRelays: ["wss://organizer.inbox.example"],
+        recipientInboxRelays: ["wss://merchant.inbox.relay.dev"],
+        senderInboxRelays: ["wss://organizer.inbox.relay.dev"],
       },
     })
     const revocationAuthorization =
@@ -858,8 +858,8 @@ describe("event-market private handoff delivery", () => {
       persistExactWraps: (record) => persisted.push(record),
       transport: {
         ...transport,
-        recipientInboxRelays: ["wss://organizer.inbox.example"],
-        senderInboxRelays: ["wss://merchant.inbox.example"],
+        recipientInboxRelays: ["wss://organizer.inbox.relay.dev"],
+        senderInboxRelays: ["wss://merchant.inbox.relay.dev"],
       },
     })
     expect(persisted.map((record) => record.messageType)).toEqual([
@@ -929,8 +929,8 @@ describe("event-market private handoff delivery", () => {
         },
         transport: selfWrapFailureTransport(
           ORGANIZER,
-          "wss://merchant.inbox.example",
-          "wss://organizer.inbox.example"
+          "wss://merchant.inbox.relay.dev",
+          "wss://organizer.inbox.relay.dev"
         ),
       })
     ).rejects.toThrow("sender self-copy")
@@ -954,8 +954,8 @@ describe("event-market private handoff delivery", () => {
         },
         transport: selfWrapFailureTransport(
           MERCHANT,
-          "wss://organizer.inbox.example",
-          "wss://merchant.inbox.example"
+          "wss://organizer.inbox.relay.dev",
+          "wss://merchant.inbox.relay.dev"
         ),
       })
     ).rejects.toThrow("sender self-copy")
@@ -991,7 +991,7 @@ describe("event-market private handoff delivery", () => {
         } as unknown as NDKSigner,
         transport: {
           ...common.transport,
-          recipientInboxRelays: ["wss://organizer.inbox.example"],
+          recipientInboxRelays: ["wss://organizer.inbox.relay.dev"],
         },
       })
     ).rejects.toThrow("signer does not match sender")
@@ -1014,8 +1014,8 @@ describe("event-market private handoff delivery", () => {
           initialProgress = progress
         },
         transport: {
-          recipientInboxRelays: ["wss://organizer.inbox.example"],
-          senderInboxRelays: ["wss://merchant.inbox.example"],
+          recipientInboxRelays: ["wss://organizer.inbox.relay.dev"],
+          senderInboxRelays: ["wss://merchant.inbox.relay.dev"],
           giftWrapFn: (async (_rumor, recipient) =>
             signedWrap(recipient.pubkey)) as never,
           publishFn: (async (_event, options) => ({
@@ -1038,8 +1038,8 @@ describe("event-market private handoff delivery", () => {
     const publishedIds: string[] = []
     const retried = await retryEventMarketPrivateDelivery({
       record: persisted!,
-      recipientInboxRelays: ["wss://organizer.inbox.example"],
-      senderInboxRelays: ["wss://merchant.inbox.example"],
+      recipientInboxRelays: ["wss://organizer.inbox.relay.dev"],
+      senderInboxRelays: ["wss://merchant.inbox.relay.dev"],
       publishFn: (async (event, options) => {
         publishedIds.push(event.id)
         return successfulDelivery(options.exclusiveRelayUrls ?? [])
@@ -1055,13 +1055,13 @@ describe("event-market private handoff delivery", () => {
     for (const testCase of [
       {
         successes: [] as string[],
-        failures: ["wss://merchant.inbox.example"],
+        failures: ["wss://merchant.inbox.relay.dev"],
         status: "zero_success",
         error: "Sender self-copy received no relay ACK.",
       },
       {
-        successes: ["wss://merchant-a.inbox.example"],
-        failures: ["wss://merchant-b.inbox.example"],
+        successes: ["wss://merchant-a.inbox.relay.dev"],
+        failures: ["wss://merchant-b.inbox.relay.dev"],
         status: "partial_success",
         error: "Sender self-copy reached only part of its inbox relay set.",
       },
@@ -1069,10 +1069,10 @@ describe("event-market private handoff delivery", () => {
       let callCount = 0
       const result = await retryEventMarketPrivateDelivery({
         record,
-        recipientInboxRelays: ["wss://organizer.inbox.example"],
+        recipientInboxRelays: ["wss://organizer.inbox.relay.dev"],
         senderInboxRelays: [
-          "wss://merchant-a.inbox.example",
-          "wss://merchant-b.inbox.example",
+          "wss://merchant-a.inbox.relay.dev",
+          "wss://merchant-b.inbox.relay.dev",
         ],
         publishFn: (async (_event, options) => {
           callCount += 1
@@ -1099,8 +1099,8 @@ describe("event-market private handoff delivery", () => {
     let callCount = 0
     const result = await retryEventMarketPrivateDelivery({
       record,
-      recipientInboxRelays: ["wss://organizer.inbox.example"],
-      senderInboxRelays: ["wss://merchant.inbox.example"],
+      recipientInboxRelays: ["wss://organizer.inbox.relay.dev"],
+      senderInboxRelays: ["wss://merchant.inbox.relay.dev"],
       publishFn: (async (_event, options) => {
         callCount += 1
         return callCount === 1
@@ -1122,12 +1122,12 @@ describe("event-market private handoff delivery", () => {
   it("converges alternating relay ACKs without republishing exact wraps", async () => {
     const record = readyDeliveryRecord()
     const recipientRelays = [
-      "wss://organizer-a.inbox.example",
-      "wss://organizer-b.inbox.example",
+      "wss://organizer-a.inbox.relay.dev",
+      "wss://organizer-b.inbox.relay.dev",
     ]
     const selfRelays = [
-      "wss://merchant-a.inbox.example",
-      "wss://merchant-b.inbox.example",
+      "wss://merchant-a.inbox.relay.dev",
+      "wss://merchant-b.inbox.relay.dev",
     ]
     const firstWrapIds: string[] = []
     let firstCall = 0
@@ -1202,8 +1202,8 @@ describe("event-market private handoff delivery", () => {
     expect(completed.recipientStatus).toBe("full_success")
     expect(completed.selfDeliveryStatus).toBe("full_success")
 
-    const changedRecipient = "wss://organizer-c.inbox.example"
-    const changedSelf = "wss://merchant-c.inbox.example"
+    const changedRecipient = "wss://organizer-c.inbox.relay.dev"
+    const changedSelf = "wss://merchant-c.inbox.relay.dev"
     const changedTargets: string[][] = []
     const changed = await retryEventMarketPrivateDelivery({
       record,
@@ -1243,12 +1243,12 @@ describe("event-market private handoff delivery", () => {
 
   it("converges thrown partial recipient and self ACKs across initial delivery and reload retries", async () => {
     const recipientRelays = [
-      "wss://organizer-a.inbox.example",
-      "wss://organizer-b.inbox.example",
+      "wss://organizer-a.inbox.relay.dev",
+      "wss://organizer-b.inbox.relay.dev",
     ]
     const selfRelays = [
-      "wss://merchant-a.inbox.example",
-      "wss://merchant-b.inbox.example",
+      "wss://merchant-a.inbox.relay.dev",
+      "wss://merchant-b.inbox.relay.dev",
     ]
     let record: EventMarketPrivateDeliveryRecord | null = null
     const initial = await publishEventMarketReadyReceipt({
@@ -1279,8 +1279,8 @@ describe("event-market private handoff delivery", () => {
     ).toHaveLength(1)
     expect(initial.deliveryProgress.selfAcknowledgedRelayRefs).toHaveLength(1)
 
-    const addedRecipient = "wss://organizer-c.inbox.example"
-    const addedSelf = "wss://merchant-c.inbox.example"
+    const addedRecipient = "wss://organizer-c.inbox.relay.dev"
+    const addedSelf = "wss://merchant-c.inbox.relay.dev"
     const retryWrapIds: string[] = []
     const retryTargets: string[][] = []
     const retried = await retryEventMarketPrivateDelivery({
@@ -1339,11 +1339,11 @@ describe("event-market private handoff delivery", () => {
     const retry = (candidate: EventMarketPrivateDeliveryRecord) =>
       retryEventMarketPrivateDelivery({
         record: candidate,
-        recipientInboxRelays: ["wss://organizer.inbox.example"],
-        senderInboxRelays: ["wss://merchant.inbox.example"],
+        recipientInboxRelays: ["wss://organizer.inbox.relay.dev"],
+        senderInboxRelays: ["wss://merchant.inbox.relay.dev"],
         publishFn: (async () => {
           publishCalls += 1
-          return successfulDelivery(["wss://organizer.inbox.example"])
+          return successfulDelivery(["wss://organizer.inbox.relay.dev"])
         }) as never,
       })
     const wrapWithRecipients = (recipients: string[]) =>
@@ -1734,26 +1734,26 @@ describe("event-market organizer inbox readiness", () => {
       {
         kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
         created_at: ISSUED_AT,
-        tags: [["relay", "wss://organizer.inbox.example"]],
+        tags: [["relay", "wss://organizer.inbox.relay.dev"]],
         content: "",
       },
       ORGANIZER_SECRET
     )
     await expect(
       resolveEventMarketOrganizerInbox(ORGANIZER, {
-        relayUrls: ["wss://discovery.example"],
+        relayUrls: ["wss://discovery.relay.dev"],
         now: () => ISSUED_AT * 1_000,
         fetchEventsWithDiagnostics: async () => ({
           events: [new NDKEvent(undefined, declaration)],
-          attemptedRelayUrls: ["wss://discovery.example"],
-          successfulRelayUrls: ["wss://discovery.example"],
+          attemptedRelayUrls: ["wss://discovery.relay.dev"],
+          successfulRelayUrls: ["wss://discovery.relay.dev"],
           failedRelayUrls: [],
         }),
       })
     ).resolves.toEqual({
       state: "ready",
       organizerPubkey: ORGANIZER,
-      relayUrls: ["wss://organizer.inbox.example"],
+      relayUrls: ["wss://organizer.inbox.relay.dev"],
     })
 
     expect(
@@ -1763,11 +1763,11 @@ describe("event-market organizer inbox readiness", () => {
     __resetInboxRelayCache()
     await expect(
       resolveEventMarketOrganizerInbox(ORGANIZER, {
-        relayUrls: ["wss://discovery.example"],
+        relayUrls: ["wss://discovery.relay.dev"],
         fetchEventsWithDiagnostics: async () => ({
           events: [],
-          attemptedRelayUrls: ["wss://discovery.example"],
-          successfulRelayUrls: ["wss://discovery.example"],
+          attemptedRelayUrls: ["wss://discovery.relay.dev"],
+          successfulRelayUrls: ["wss://discovery.relay.dev"],
           failedRelayUrls: [],
         }),
       })
@@ -1775,12 +1775,12 @@ describe("event-market organizer inbox readiness", () => {
   })
 
   it("reads handoff wraps from declared kind-10050 relays only", async () => {
-    const declaredRelay = "wss://organizer.inbox.example"
-    const compatibilityRelay = "wss://compatibility.example"
+    const declaredRelay = "wss://organizer.inbox.relay.dev"
+    const compatibilityRelay = "wss://compatibility.relay.dev"
     const wrap = signedWrap(ORGANIZER)
     const seenPlans: string[][] = []
     __setCommerceTestOverrides({
-      requireNdkConnected: async () => ({ signer: organizerSigner }) as never,
+      getNdk: async () => ({ signer: organizerSigner }) as never,
       resolveInboxRelayUrls: async () => [declaredRelay],
       fetchEventsFanout: async (_filter, options) => {
         const relays = [...(options?.relayUrls ?? [])]
@@ -1811,7 +1811,7 @@ describe("event-market organizer inbox readiness", () => {
   })
 
   it("blocks handoff when the inbox cap can hide a revocation", async () => {
-    const declaredRelay = "wss://organizer.inbox.example"
+    const declaredRelay = "wss://organizer.inbox.relay.dev"
     const readyRumor = buildEventMarketReadyReceiptRumor(readyPayload())
     const hiddenRevocationRumor = buildEventMarketFulfillmentRevocationRumor(
       revocationPayload(readyRumor.id)
@@ -1824,7 +1824,7 @@ describe("event-market organizer inbox readiness", () => {
     let requestedLimit: number | undefined
 
     __setCommerceTestOverrides({
-      requireNdkConnected: async () => ({ signer: organizerSigner }) as never,
+      getNdk: async () => ({ signer: organizerSigner }) as never,
       resolveInboxRelayUrls: async () => [declaredRelay],
       fetchEventsFanout: async (filter) => {
         requestedLimit = filter.limit

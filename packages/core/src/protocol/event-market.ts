@@ -5,7 +5,7 @@ import { EVENT_KINDS } from "./kinds"
 import {
   fetchEventsFanoutDetailed,
   getEventSourceRelayUrls,
-  requireNdkConnected,
+  getNdk,
   type FetchEventsFanoutResult,
 } from "./ndk"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
@@ -1897,7 +1897,7 @@ export interface GetOrganizerEventMarketsInput {
 interface EventMarketTestOverrides {
   fetchEventsFanoutDetailed?: typeof fetchEventsFanoutDetailed
   getRelayLists?: typeof getRelayLists
-  requireNdkConnected?: typeof requireNdkConnected
+  getNdk?: () => ReturnType<typeof getNdk> | Promise<ReturnType<typeof getNdk>>
   publishWithPlanner?: typeof publishWithPlanner
   signDraft?: (input: {
     draft: EventMarketEventDraft
@@ -3796,9 +3796,7 @@ async function signEventMarketDraft(input: {
     return signed
   }
 
-  const connect =
-    eventMarketTestOverrides.requireNdkConnected ?? requireNdkConnected
-  const ndk = await connect()
+  const ndk = await (eventMarketTestOverrides.getNdk ?? getNdk)()
   if (!ndk.signer) throw new Error("Signer not connected")
   const signerPubkey = normalizePubkey((await ndk.signer.user()).pubkey)
   if (signerPubkey !== input.organizerPubkey) {
@@ -3868,9 +3866,7 @@ async function publishSignedEventMarketRecord(input: {
   ) {
     throw new Error("Refusing to publish invalid organizer event evidence.")
   }
-  const connect =
-    eventMarketTestOverrides.requireNdkConnected ?? requireNdkConnected
-  const ndk = await connect()
+  const ndk = await (eventMarketTestOverrides.getNdk ?? getNdk)()
   const event = new NDKEvent(ndk, input.signedEvent)
   const publish =
     eventMarketTestOverrides.publishWithPlanner ?? publishWithPlanner

@@ -10,11 +10,16 @@ import {
   type OrganizerEventMarketCalendarPublishInput,
   type OrganizerEventMarketCollectionPublishInput,
   type OrganizerEventMarketPickupPublishInput,
+  type OrganizerEventMarketPublishResult,
+  type OrganizerEventMarketSignedEvent,
   type OrganizerEventMarketSignedRecord,
   type SignedPublicNostrEvent,
+  type EventMarketAcceptedProductEvidence,
   type EventMarketProductPreview,
   type EventMarketHandoffMode,
+  type EventMarketParticipationRequest,
   type EventMarketResolution,
+  type EventMarketResolutionState,
 } from "@conduit/core"
 import {
   epochSecondsToLocalDateTime,
@@ -27,17 +32,7 @@ import {
   type OrganizerCollectionMembershipAction,
 } from "./event-market-workflow"
 
-export type MerchantOrganizerEventMarketState =
-  | "active"
-  | "ended"
-  | "missing"
-  | "partial"
-  | "unavailable"
-  | "stale"
-  | "deleted"
-  | "malformed"
-  | "conflicting"
-  | "unsupported"
+export type MerchantOrganizerEventMarketState = EventMarketResolutionState
 
 export type MerchantOrganizerEventRecord = "calendar" | "pickup" | "collection"
 
@@ -358,133 +353,29 @@ function numberValue(...values: unknown[]): number | undefined {
   return undefined
 }
 
-function stringList(value: unknown): string[] {
-  if (!Array.isArray(value)) return []
-  return Array.from(
-    new Set(
-      value.flatMap((item) =>
-        typeof item === "string" && item.trim() ? [item.trim()] : []
-      )
-    )
-  )
-}
-
-function isEventMarketProductPreview(
-  value: unknown
-): value is EventMarketProductPreview {
-  const preview = asRecord(value)
-  if (!preview) return false
-  const images = preview.images
-  const imageListValid =
-    Array.isArray(images) &&
-    images.every((image) => {
-      const record = asRecord(image)
-      return (
-        !!record &&
-        typeof record.url === "string" &&
-        record.url.trim().length > 0 &&
-        (record.alt === undefined || typeof record.alt === "string")
-      )
-    })
-  const baseValid =
-    typeof preview.coordinate === "string" &&
-    preview.coordinate.trim().length > 0 &&
-    typeof preview.eventId === "string" &&
-    /^[0-9a-f]{64}$/i.test(preview.eventId) &&
-    typeof preview.createdAt === "number" &&
-    Number.isFinite(preview.createdAt) &&
-    typeof preview.title === "string" &&
-    preview.title.trim().length > 0 &&
-    (preview.summary === undefined || typeof preview.summary === "string") &&
-    imageListValid &&
-    (preview.type === "simple" ||
-      preview.type === "variable" ||
-      preview.type === "variation") &&
-    (preview.format === "physical" || preview.format === "digital") &&
-    (preview.stock === undefined ||
-      (typeof preview.stock === "number" &&
-        Number.isFinite(preview.stock) &&
-        preview.stock >= 0))
-  if (!baseValid) return false
-  if (preview.priceStatus === "malformed") return true
-  return (
-    preview.priceStatus === "resolved" &&
-    typeof preview.price === "number" &&
-    Number.isFinite(preview.price) &&
-    preview.price >= 0 &&
-    typeof preview.currency === "string" &&
-    preview.currency.trim().length > 0
-  )
-}
-
 function coordinateDTag(coordinate: string): string {
   return coordinate.split(":").slice(2).join(":")
 }
 
-function normalizeParticipation(
-  value: unknown,
+function projectParticipation(
+  item: EventMarketParticipationRequest | EventMarketAcceptedProductEvidence,
   status: MerchantOrganizerParticipation["status"]
-): MerchantOrganizerParticipation[] {
-  if (!Array.isArray(value)) return []
-  return value.flatMap((item) => {
-    if (typeof item === "string") {
-      return item.trim() ? [{ productCoordinate: item.trim(), status }] : []
-    }
-    const record = asRecord(item)
-    if (!record) return []
-    const product = asRecord(record.product)
-    const fulfillment = asRecord(record.fulfillment)
-    const productCoordinate = textValue(
-      record.productCoordinate,
-      record.coordinate,
-      product?.coordinate,
-      product?.id
-    )
-    if (!productCoordinate) return []
-    return [
-      {
-        productCoordinate,
-        eventId: textValue(record.eventId),
-        createdAt: numberValue(record.createdAt),
-        title: textValue(record.title, product?.title),
-        merchantPubkey: textValue(record.merchantPubkey, product?.pubkey),
-        productPreview: isEventMarketProductPreview(record.productPreview)
-          ? record.productPreview
-          : undefined,
-        fulfillmentStatus:
-          record.fulfillmentStatus === "none" ||
-          record.fulfillmentStatus === "ambiguous" ||
-          record.fulfillmentStatus === "resolved"
-            ? record.fulfillmentStatus
-            : undefined,
-        fulfillmentReason: textValue(record.fulfillmentReason),
-        pickupCoordinate: textValue(
-          record.pickupCoordinate,
-          fulfillment?.pickupCoordinate,
-          asRecord(fulfillment?.selectedPickup)?.coordinate
-        ),
-        pickupAuthorPubkey: textValue(
-          record.pickupAuthorPubkey,
-          fulfillment?.pickupAuthorPubkey
-        ),
-        handoffMode:
-          record.handoffMode === "merchant_handoff" ||
-          record.handoffMode === "organizer_handoff"
-            ? record.handoffMode
-            : fulfillment?.handoffMode === "merchant_handoff" ||
-                fulfillment?.handoffMode === "organizer_handoff"
-              ? fulfillment.handoffMode
-              : undefined,
-        handlerPubkey: textValue(
-          record.handlerPubkey,
-          record.handoffPubkey,
-          fulfillment?.handlerPubkey,
-          fulfillment?.handoffPubkey
-        ),
-        status,
-      },
-    ]
-  })
+): MerchantOrganizerParticipation {
+  return {
+    productCoordinate: item.productCoordinate,
+    eventId: item.eventId,
+    createdAt: item.createdAt,
+    title: item.title,
+    merchantPubkey: item.merchantPubkey,
+    productPreview: item.productPreview,
+    fulfillmentStatus: item.fulfillmentStatus,
+    fulfillmentReason: item.fulfillmentReason,
+    pickupCoordinate: item.pickupCoordinate,
+    pickupAuthorPubkey: item.pickupAuthorPubkey,
+    handoffMode: item.handoffMode,
+    handlerPubkey: item.handoffPubkey,
+    status,
+  }
 }
 
 export function isParticipationHandoffVerified(
@@ -547,57 +438,15 @@ export function isParticipationProductPreviewVerified(
   )
 }
 
-function normalizeState(value: unknown): MerchantOrganizerEventMarketState {
-  switch (value) {
-    case "active":
-    case "ended":
-    case "missing":
-    case "partial":
-    case "unavailable":
-    case "stale":
-    case "deleted":
-    case "malformed":
-    case "conflicting":
-    case "unsupported":
-      return value
-    default:
-      return "unavailable"
-  }
-}
-
-function normalizeEventMarket(
-  value: unknown
+function projectEventMarket(
+  resolution: EventMarketResolution
 ): MerchantOrganizerEventMarket | null {
-  const root = asRecord(value)
-  if (!root) return null
-  const resolution = asRecord(root.data) ?? root
-  const calendar = asRecord(resolution.calendar)
-  const pickup = asRecord(resolution.pickup)
-  const collection = asRecord(resolution.collection)
-  const organizerPubkey = textValue(
-    resolution.organizerPubkey,
-    collection?.authorPubkey,
-    collection?.pubkey
-  )
-  const collectionCoordinate = textValue(
-    resolution.collectionCoordinate,
-    resolution.reference,
-    collection?.coordinate,
-    collection?.id
-  )
-  const calendarCoordinate = textValue(
-    resolution.calendarCoordinate,
-    calendar?.coordinate,
-    calendar?.id
-  )
-  const pickupCoordinate = textValue(
-    resolution.pickupCoordinate,
-    pickup?.coordinate,
-    pickup?.id
-  )
-  const pickupCoordinates = stringList(
-    resolution.pickupCoordinates ?? collection?.pickupCoordinates
-  )
+  const { calendar, collection, pickup } = resolution
+  const organizerPubkey = resolution.organizerPubkey
+  const collectionCoordinate = resolution.collectionCoordinate
+  const calendarCoordinate = resolution.calendarCoordinate
+  const pickupCoordinate = resolution.pickupCoordinate
+  const pickupCoordinates = [...(collection?.pickupCoordinates ?? [])]
   if (pickupCoordinate && !pickupCoordinates.includes(pickupCoordinate)) {
     pickupCoordinates.unshift(pickupCoordinate)
   }
@@ -605,28 +454,19 @@ function normalizeEventMarket(
     return null
   }
 
-  const productCoordinates = stringList(
-    resolution.organizerProductCoordinates ??
-      collection?.productCoordinates ??
-      resolution.productCoordinates
-  )
-  const acceptedProductCoordinates = stringList(
-    resolution.acceptedProductCoordinates
-  )
-  const pending = normalizeParticipation(
-    resolution.participationRequests ?? resolution.requests,
-    "pending"
-  )
-  const acceptedDetails = normalizeParticipation(
-    resolution.acceptedProductEvidence,
-    "accepted"
+  const productCoordinates = [...resolution.organizerProductCoordinates]
+  const pending = resolution.participationRequests.map((item) =>
+    projectParticipation(item, "pending")
   )
   const acceptedByCoordinate = new Map(
-    acceptedDetails.map((item) => [item.productCoordinate, item])
+    resolution.acceptedProductEvidence.map((item) => [
+      item.productCoordinate,
+      projectParticipation(item, "accepted"),
+    ])
   )
   const accepted = productCoordinates
     .map((productCoordinate): MerchantOrganizerParticipation | null =>
-      acceptedProductCoordinates.includes(productCoordinate)
+      resolution.acceptedProductCoordinates.includes(productCoordinate)
         ? (acceptedByCoordinate.get(productCoordinate) ?? {
             productCoordinate,
             status: "accepted",
@@ -634,128 +474,95 @@ function normalizeEventMarket(
         : null
     )
     .filter((item): item is MerchantOrganizerParticipation => item !== null)
-  const organizerOnlyCoordinates = stringList(
-    resolution.organizerOnlyProductCoordinates
-  )
-  const organizerOnly = organizerOnlyCoordinates.map(
+  const organizerOnly = resolution.organizerOnlyProductCoordinates.map(
     (productCoordinate): MerchantOrganizerParticipation => ({
       productCoordinate,
       status: "organizer_only",
     })
   )
   const naddr = encodeEventMarketNaddr(collectionCoordinate)
-  const calendarKind = numberValue(calendar?.kind) === 31922 ? 31922 : 31923
+  const calendarKind = calendar?.kind === 31922 ? 31922 : 31923
 
   return {
-    state: normalizeState(resolution.state),
+    state: resolution.state,
     organizerPubkey,
     collectionCoordinate,
     calendarCoordinate: calendarCoordinate ?? "",
     pickupCoordinate,
     pickupCoordinates,
     naddr,
-    title:
-      textValue(calendar?.title, collection?.title) ??
-      "Event evidence unavailable",
-    summary: textValue(calendar?.summary, collection?.summary),
-    imageUrl: textValue(calendar?.imageUrl, calendar?.image, collection?.image),
-    eventLocation:
-      stringList(calendar?.locations)[0] ?? textValue(calendar?.location),
-    eventGeohash: textValue(calendar?.geohash, calendar?.g),
+    title: calendar?.title ?? collection?.title ?? "Event evidence unavailable",
+    summary: calendar?.summary ?? collection?.summary,
+    imageUrl: calendar?.image ?? collection?.image,
+    eventLocation: calendar?.locations[0],
+    eventGeohash: calendar?.geohash,
     calendarKind,
     start:
       calendarKind === 31922
-        ? (textValue(calendar?.startDate, calendar?.start) ?? "")
-        : (numberValue(calendar?.start) ?? 0) / 1_000,
+        ? (calendar?.startDate ?? "")
+        : (calendar?.start ?? 0) / 1_000,
     end:
       calendarKind === 31922
-        ? textValue(calendar?.endDate, calendar?.end)
-        : numberValue(calendar?.end) !== undefined
-          ? numberValue(calendar?.end)! / 1_000
+        ? calendar?.endDate
+        : calendar
+          ? calendar.end / 1_000
           : undefined,
-    timezone: textValue(
-      calendar?.timezone,
-      calendar?.startTzid,
-      calendar?.endTzid
-    ),
-    pickupTitle: textValue(pickup?.title),
-    pickupLocation: textValue(pickup?.location),
-    pickupGeohash: textValue(pickup?.geohash, pickup?.g),
-    pickupCountry:
-      stringList(pickup?.countries ?? pickup?.countryCodes)[0] ??
-      textValue(pickup?.country),
-    pickupPrice:
-      textValue(pickup?.price) ??
-      (numberValue(pickup?.price) !== undefined
-        ? String(numberValue(pickup?.price))
-        : undefined),
-    pickupCurrency: textValue(pickup?.currency),
-    calendarCreatedAt: numberValue(calendar?.createdAt, calendar?.created_at),
-    pickupCreatedAt: numberValue(pickup?.createdAt, pickup?.created_at),
-    collectionCreatedAt: numberValue(
-      collection?.createdAt,
-      collection?.created_at
-    ),
+    timezone: calendar?.startTzid ?? calendar?.endTzid,
+    pickupTitle: pickup?.title,
+    pickupLocation: pickup?.location,
+    pickupGeohash: pickup?.geohash,
+    pickupCountry: pickup?.countries[0],
+    pickupPrice: pickup ? String(pickup.price) : undefined,
+    pickupCurrency: pickup?.currency,
+    calendarCreatedAt: calendar?.createdAt,
+    pickupCreatedAt: pickup?.createdAt,
+    collectionCreatedAt: collection?.createdAt,
     productCoordinates,
     participation: [...pending, ...accepted, ...organizerOnly],
-    source: resolution as unknown as EventMarketResolution,
+    source: resolution,
   }
 }
 
-function normalizeMarketList(value: unknown): MerchantOrganizerEventMarket[] {
-  if (Array.isArray(value)) {
-    return value.flatMap((item) => {
-      const normalized = normalizeEventMarket(item)
-      return normalized ? [normalized] : []
-    })
-  }
-  const root = asRecord(value)
-  const values = root?.data ?? root?.markets
-  return Array.isArray(values) ? normalizeMarketList(values) : []
+function projectMarketList(
+  values: readonly EventMarketResolution[]
+): MerchantOrganizerEventMarket[] {
+  return values.flatMap((resolution) => {
+    const projected = projectEventMarket(resolution)
+    return projected ? [projected] : []
+  })
 }
 
-function relayUrlList(record: Record<string, unknown> | null, key: string) {
-  return stringList(record?.[key])
-}
+type OrganizerEventMarketDeliverySource =
+  OrganizerEventMarketSignedEvent | OrganizerEventMarketSignedRecord
 
-function normalizeDeliveryRecord(
-  value: unknown,
-  fallbackRecord?: MerchantOrganizerEventRecord
-): MerchantOrganizerRecordDelivery | null {
-  const root = asRecord(value)
-  if (!root) return null
-  const delivery = asRecord(root.delivery) ?? root
-  const record = textValue(root.record, fallbackRecord)
-  if (record !== "calendar" && record !== "pickup" && record !== "collection") {
-    return null
-  }
-  const successful = relayUrlList(delivery, "successfulRelayUrls")
-  const acknowledged = relayUrlList(delivery, "acknowledgedRelayUrls")
-  const rejected = relayUrlList(delivery, "rejectedRelayUrls")
-  const timedOut = relayUrlList(delivery, "timedOutRelayUrls")
-  const failed = relayUrlList(delivery, "failedRelayUrls")
+function projectDeliveryRecord(
+  value: OrganizerEventMarketDeliverySource
+): MerchantOrganizerRecordDelivery {
+  const delivery = "delivery" in value ? value.delivery : undefined
+  const successful = delivery?.successfulRelayUrls ?? []
+  const acknowledged = delivery?.acknowledgedRelayUrls ?? []
+  const rejected = delivery?.rejectedRelayUrls ?? []
+  const timedOut = delivery?.timedOutRelayUrls ?? []
+  const failed = delivery?.failedRelayUrls ?? []
   return {
-    record,
+    record: value.record,
     acknowledgedCount: acknowledged.length || successful.length,
     rejectedCount: rejected.length,
     timedOutCount:
       timedOut.length || Math.max(0, failed.length - rejected.length),
-    signedEvent:
-      (root.signedEvent as SignedPublicNostrEvent | undefined) ?? null,
+    signedEvent: value.signedEvent,
   }
 }
 
-function normalizePublishResult(
-  value: unknown,
+function projectPublishResult(
+  value: OrganizerEventMarketPublishResult,
   collectionCoordinate: string
 ): MerchantOrganizerPublishResult {
-  const root = asRecord(value) ?? {}
-  const records = (["calendar", "pickup", "collection"] as const).flatMap(
-    (record) => {
-      const normalized = normalizeDeliveryRecord(root[record], record)
-      return normalized ? [normalized] : []
-    }
-  )
+  const records = [
+    projectDeliveryRecord(value.calendar),
+    ...(value.pickup ? [projectDeliveryRecord(value.pickup)] : []),
+    projectDeliveryRecord(value.collection),
+  ]
   return {
     records,
     collectionCoordinate,
@@ -799,7 +606,7 @@ export async function listOrganizerEventMarkets(
   organizerPubkey: string
 ): Promise<MerchantOrganizerEventMarket[]> {
   const result = await getOrganizerEventMarkets({ organizerPubkey })
-  return normalizeMarketList(result)
+  return projectMarketList(result)
 }
 
 export async function resolveOrganizerEventMarket(
@@ -811,7 +618,7 @@ export async function resolveOrganizerEventMarket(
     reference: parsedReference.naddr,
     ...(organizerPubkey ? { expectedOrganizerPubkey: organizerPubkey } : {}),
   })
-  const normalized = normalizeEventMarket(result)
+  const normalized = projectEventMarket(result)
   if (
     !normalized ||
     normalized.collectionCoordinate !== parsedReference.coordinate
@@ -934,17 +741,19 @@ export async function publishMerchantOrganizerEventMarket(input: {
         }
       : undefined,
     onSignedEvent: async (record) => {
-      const normalized = normalizeDeliveryRecord(record)
-      if (normalized) {
-        await input.onSignedEvent?.(normalized, collectionCoordinate)
-      }
+      await input.onSignedEvent?.(
+        projectDeliveryRecord(record),
+        collectionCoordinate
+      )
     },
     onSignedRecord: (record: OrganizerEventMarketSignedRecord) => {
-      const normalized = normalizeDeliveryRecord(record)
-      if (normalized) input.onSignedRecord?.(normalized, collectionCoordinate)
+      input.onSignedRecord?.(
+        projectDeliveryRecord(record),
+        collectionCoordinate
+      )
     },
   })
-  return normalizePublishResult(result, collectionCoordinate)
+  return projectPublishResult(result, collectionCoordinate)
 }
 
 export async function publishMerchantOrganizerMembership(input: {
@@ -974,12 +783,11 @@ export async function publishMerchantOrganizerMembership(input: {
       "Current signed product preview or handoff evidence is unavailable or unsupported."
     )
   }
-  const resolution = asRecord(input.market.source)
-  const sourceCollection = asRecord(resolution?.collection) ?? {}
+  const sourceCollection = input.market.source.collection
   const collection: OrganizerEventMarketCollectionPublishInput = {
     dTag: coordinateDTag(input.market.collectionCoordinate),
     title: input.market.title,
-    content: textValue(sourceCollection.content) ?? "",
+    content: sourceCollection?.content ?? "",
     summary: input.market.summary,
     image: input.market.imageUrl,
     location: input.market.eventLocation,
@@ -995,18 +803,13 @@ export async function publishMerchantOrganizerMembership(input: {
     collection,
     previousCreatedAt: input.market.collectionCreatedAt,
     onSignedEvent: async (record) => {
-      const normalized = normalizeDeliveryRecord(record, "collection")
-      if (normalized) {
-        await input.onSignedEvent?.(
-          normalized,
-          input.market.collectionCoordinate
-        )
-      }
+      await input.onSignedEvent?.(
+        projectDeliveryRecord(record),
+        input.market.collectionCoordinate
+      )
     },
   })
-  const normalized = normalizeDeliveryRecord(result, "collection")
-  if (!normalized) throw new Error("Collection delivery result was invalid.")
-  return normalized
+  return projectDeliveryRecord(result)
 }
 
 export async function retryMerchantOrganizerRecord(input: {
@@ -1020,9 +823,7 @@ export async function retryMerchantOrganizerRecord(input: {
     organizerPubkey: input.organizerPubkey,
     signedEvent: input.record.signedEvent,
   })
-  const normalized = normalizeDeliveryRecord(result, input.record.record)
-  if (!normalized) throw new Error("Retry delivery result was invalid.")
-  return normalized
+  return projectDeliveryRecord(result)
 }
 
 export function organizerEventMarketToForm(

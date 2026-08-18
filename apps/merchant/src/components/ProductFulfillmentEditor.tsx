@@ -233,11 +233,12 @@ export function ProductFulfillmentEditor({
           {market && !baseEvidenceError && (
             <div className="grid gap-2" aria-label="Event handoff handler">
               <Label>Who hands out this product?</Label>
-              <button
+              <Button
                 type="button"
+                variant="outline"
                 aria-pressed={handoffMode === "merchant_handoff"}
                 className={cn(
-                  "rounded-xl border p-3 text-left transition",
+                  "h-auto w-full justify-start whitespace-normal p-3 text-left",
                   handoffMode === "merchant_handoff"
                     ? "border-primary-500 bg-primary-500/10"
                     : "border-[var(--border)] bg-[var(--surface)]"
@@ -251,13 +252,14 @@ export function ProductFulfillmentEditor({
                   Buyers pick up from your booth. The order remains between you
                   and the buyer; no organizer receipt is shared.
                 </span>
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
+                variant="outline"
                 aria-pressed={handoffMode === "organizer_handoff"}
                 disabled={!market.pickupCoordinate}
                 className={cn(
-                  "rounded-xl border p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-60",
+                  "h-auto w-full justify-start whitespace-normal p-3 text-left",
                   handoffMode === "organizer_handoff"
                     ? "border-secondary-500 bg-secondary-500/10"
                     : "border-[var(--border)] bg-[var(--surface)]"
@@ -272,7 +274,7 @@ export function ProductFulfillmentEditor({
                   the organizer. They never receive the full order, buyer
                   contact, notes, address, invoice, or payment secrets.
                 </span>
-              </button>
+              </Button>
 
               {!market.pickupCoordinate && (
                 <p className="text-xs leading-5 text-[var(--text-muted)]">

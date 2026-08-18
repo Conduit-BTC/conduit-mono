@@ -4433,7 +4433,7 @@ async function fetchParsedOrderMessages(
 async function fetchEventMarketPrivateMessagesStrict(
   principalPubkey: string
 ): Promise<EventMarketPrivateMessageListResult> {
-  const ndk = await runRequireNdkConnected()
+  const ndk = await runGetNdk()
   const signer = ndk.signer
   if (!signer) {
     throw new Error("Connect your Nostr signer to view event handoffs.")

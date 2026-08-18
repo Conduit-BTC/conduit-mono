@@ -389,8 +389,8 @@ describe("merchant organizer handoff authorization", () => {
       coverage: coverage(),
     })
     const recipientRelays = [
-      "wss://merchant-primary.example",
-      "wss://merchant-backup.example",
+      "wss://merchant-primary.relay.dev",
+      "wss://merchant-backup.relay.dev",
     ]
     const failed = {
       ...plannerResult(recipientRelays),
@@ -409,7 +409,7 @@ describe("merchant organizer handoff authorization", () => {
         storage,
         transport: {
           recipientInboxRelays: recipientRelays,
-          senderInboxRelays: ["wss://organizer-inbox.example"],
+          senderInboxRelays: ["wss://organizer-inbox.relay.dev"],
           giftWrapFn: (async (_rumor, recipient) =>
             signedWrap(recipient.pubkey)) as never,
           publishFn: (async () => {
@@ -443,7 +443,7 @@ describe("merchant organizer handoff authorization", () => {
       storage,
       transport: {
         recipientInboxRelays: recipientRelays,
-        senderInboxRelays: ["wss://organizer-inbox.example"],
+        senderInboxRelays: ["wss://organizer-inbox.relay.dev"],
         publishFn: (async (event, options) => {
           publishedIds.push(event.id)
           return plannerResult(options.exclusiveRelayUrls ?? [])
@@ -486,8 +486,8 @@ describe("merchant organizer handoff authorization", () => {
       const storage = new MemoryStorage()
       const initialPublishedIds: string[] = []
       const senderRelays = [
-        "wss://organizer-primary.example",
-        "wss://organizer-backup.example",
+        "wss://organizer-primary.relay.dev",
+        "wss://organizer-backup.relay.dev",
       ]
       const result = await acknowledgeOrganizerHandoff({
         organizerPubkey: ORGANIZER,
@@ -498,7 +498,7 @@ describe("merchant organizer handoff authorization", () => {
         signer: organizerSigner,
         storage,
         transport: {
-          recipientInboxRelays: ["wss://merchant-inbox.example"],
+          recipientInboxRelays: ["wss://merchant-inbox.relay.dev"],
           senderInboxRelays: senderRelays,
           giftWrapFn: (async (_rumor, recipient) =>
             signedWrap(recipient.pubkey)) as never,
@@ -533,7 +533,7 @@ describe("merchant organizer handoff authorization", () => {
         signer: {} as never,
         storage,
         transport: {
-          recipientInboxRelays: ["wss://merchant-inbox.example"],
+          recipientInboxRelays: ["wss://merchant-inbox.relay.dev"],
           senderInboxRelays: senderRelays,
           publishFn: (async (event, options) => {
             retriedIds.push(event.id)

@@ -21,7 +21,6 @@ import {
   prepareProductCatalog,
   recordBrowserTelemetryEvent,
   resolveEventMarketOrganizerInbox,
-  requireNdkConnected,
   type CommerceResult,
   type ListingSafetyEvaluation,
   type PreparedProductFamily,

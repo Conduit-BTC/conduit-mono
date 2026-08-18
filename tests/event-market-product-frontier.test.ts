@@ -28,7 +28,7 @@ const PICKUP = `${EVENT_KINDS.SHIPPING_OPTION}:${ORGANIZER}:pickup`
 const PRODUCT = `${EVENT_KINDS.PRODUCT}:${MERCHANT}:coffee`
 const RELAY_A = "wss://relay.conduit.market"
 const RELAY_B = "wss://nos.lol"
-const MERCHANT_RELAY = "wss://merchant-write.example"
+const MERCHANT_RELAY = "wss://merchant-write.relay.dev"
 const NOW_MS = 1_800_000_100_000
 
 type TagFilter = NDKFilter & {

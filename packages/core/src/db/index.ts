@@ -842,7 +842,7 @@ class ConduitDB extends Dexie {
     })
 
     this.version(14).stores({
-      // Version 13 is reserved by the Spark wallet branch that lands first.
+      // Keep this schema disjoint from the version-13 wallet-store migration.
       eventMarketEvidence: "id, organizerPubkey, kind, addressId, cachedAt",
     })
   }

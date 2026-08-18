@@ -367,7 +367,7 @@ describe("merchant organizer delivery outbox", () => {
     )[REFERENCE]![0]!
     const published: SignedPublicNostrEvent[] = []
     __setEventMarketTestOverrides({
-      requireNdkConnected: async () => new NDK(),
+      getNdk: async () => new NDK(),
       publishWithPlanner: async (event) => {
         published.push(event.rawEvent() as SignedPublicNostrEvent)
         return {

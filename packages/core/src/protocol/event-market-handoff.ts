@@ -11,7 +11,6 @@ import {
   type EventMarketFulfillmentRevocationSchema,
   type EventMarketHandoffAckSchema,
   type EventMarketReadyReceiptSchema,
-  type EventMarketReceiptVariantSchema,
   type OrderPickupFulfillmentSchema,
   type OrderSchema,
 } from "../schemas"
@@ -396,20 +395,12 @@ function pickupGraphMatches(
   )
 }
 
-export interface ValidateEventMarketReceiptVariantInput {
-  product: EventMarketReadyReceiptSchema["items"][number]["product"]
-  variants: EventMarketReadyReceiptSchema["items"][number]["variants"]
-}
-
 export interface ValidateEventMarketReadyReceiptInput {
   payload: EventMarketReadyReceiptSchema
   order: OrderSchema
   /** Fresh current public graph; stale/deleted/conflicting evidence is denied. */
   market: EventMarketResolution
   fulfillmentState: "paid" | "zero_cost"
-  validateVariantSelection?: (
-    input: ValidateEventMarketReceiptVariantInput
-  ) => boolean
 }
 
 /** Bind the minimal organizer receipt to one authenticated merchant order. */
@@ -547,18 +538,6 @@ export function validateEventMarketReadyReceipt(
         "Current merchant product does not select the organizer pickup."
       )
     }
-    if (
-      receiptItem.variants.length > 0 &&
-      (!input.validateVariantSelection ||
-        !input.validateVariantSelection({
-          product: receiptItem.product,
-          variants: receiptItem.variants,
-        }))
-    ) {
-      throw new Error(
-        "Ready receipt variant selection is not signed-product valid."
-      )
-    }
   }
   return payload
 }
@@ -568,9 +547,6 @@ export interface BuildEventMarketReadyReceiptPayloadInput extends Omit<
   "payload"
 > {
   issuedAt?: number
-  variantsByProduct?: Readonly<
-    Record<string, readonly EventMarketReceiptVariantSchema[]>
-  >
 }
 
 /** Build the minimal organizer payload without exposing the private order. */
@@ -584,32 +560,6 @@ export function buildEventMarketReadyReceiptPayload(
   const firstFulfillment = pickupItems[0]?.fulfillment
   if (firstFulfillment?.type !== "pickup") {
     throw new Error("Organizer ready receipt requires pickup fulfillment.")
-  }
-  const variantsByProduct = new Map<string, EventMarketReceiptVariantSchema[]>()
-  for (const [coordinate, variants] of Object.entries(
-    input.variantsByProduct ?? {}
-  )) {
-    const normalized = eventMarketCoordinateIdentity(coordinate.trim())
-    if (!normalized || variantsByProduct.has(normalized)) {
-      throw new Error("Ready receipt variant selection is ambiguous.")
-    }
-    variantsByProduct.set(
-      normalized,
-      variants.map((variant) => ({ ...variant }))
-    )
-  }
-  const orderProducts = new Set(
-    pickupItems.flatMap((item) => {
-      const identity = eventMarketCoordinateIdentity(item.productId)
-      return identity ? [identity] : []
-    })
-  )
-  if (
-    Array.from(variantsByProduct.keys()).some(
-      (coordinate) => !orderProducts.has(coordinate)
-    )
-  ) {
-    throw new Error("Ready receipt variants reference an unordered product.")
   }
   const payload = eventMarketReadyReceiptSchema.parse({
     version: 1,
@@ -638,10 +588,7 @@ export function buildEventMarketReadyReceiptPayload(
           createdAt: fulfillment.product.createdAt,
         },
         quantity: item.quantity,
-        variants:
-          variantsByProduct.get(
-            eventMarketCoordinateIdentity(item.productId) ?? ""
-          ) ?? [],
+        variants: [],
       }
     }),
     issuedAt: input.issuedAt ?? Math.floor(Date.now() / 1_000),
@@ -651,7 +598,6 @@ export function buildEventMarketReadyReceiptPayload(
     order,
     market: input.market,
     fulfillmentState: input.fulfillmentState,
-    validateVariantSelection: input.validateVariantSelection,
   })
 }
 

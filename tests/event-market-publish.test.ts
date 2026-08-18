@@ -102,7 +102,7 @@ describe("organizer event-market publishing", () => {
     let durable: SignedPublicNostrEvent | null = null
     const published: SignedPublicNostrEvent[] = []
     __setEventMarketTestOverrides({
-      requireNdkConnected: connectedNdk,
+      getNdk: connectedNdk,
       signDraft: async ({ draft, createdAt, organizerPubkey }) => {
         expect(organizerPubkey).toBe(OTHER_PUBKEY)
         return finalizeEvent(
@@ -147,7 +147,7 @@ describe("organizer event-market publishing", () => {
   it("publishes an organizer event without forcing an organizer pickup", async () => {
     const publishedKinds: number[] = []
     __setEventMarketTestOverrides({
-      requireNdkConnected: connectedNdk,
+      getNdk: connectedNdk,
       signDraft,
       publishWithPlanner: async (event: NDKEvent) => {
         publishedKinds.push(event.kind!)
@@ -170,7 +170,7 @@ describe("organizer event-market publishing", () => {
     let signCalls = 0
     let publishCalls = 0
     __setEventMarketTestOverrides({
-      requireNdkConnected: connectedNdk,
+      getNdk: connectedNdk,
       signDraft: async (draftInput) => {
         signCalls += 1
         return signDraft(draftInput)
@@ -196,7 +196,7 @@ describe("organizer event-market publishing", () => {
       user: async () => ({ pubkey: OTHER_PUBKEY }),
     } as never
     __setEventMarketTestOverrides({
-      requireNdkConnected: async () => ndk,
+      getNdk: async () => ndk,
     })
 
     await expect(publishOrganizerEventMarket(input())).rejects.toThrow(
@@ -207,7 +207,7 @@ describe("organizer event-market publishing", () => {
   it("rejects a signer result with an invalid signature before relay I/O", async () => {
     let publishCalls = 0
     __setEventMarketTestOverrides({
-      requireNdkConnected: connectedNdk,
+      getNdk: connectedNdk,
       signDraft: async (draftInput) => {
         const signed = await signDraft(draftInput)
         return { ...signed, content: `${signed.content}tampered` }
@@ -227,7 +227,7 @@ describe("organizer event-market publishing", () => {
   it("binds collection references to the organizer drafts being published", async () => {
     let publishCalls = 0
     __setEventMarketTestOverrides({
-      requireNdkConnected: connectedNdk,
+      getNdk: connectedNdk,
       signDraft,
       publishWithPlanner: async () => {
         publishCalls += 1
@@ -251,7 +251,7 @@ describe("organizer event-market publishing", () => {
   it("advances each replaceable record beyond its own observed frontier", async () => {
     const createdAtByKind = new Map<number, number>()
     __setEventMarketTestOverrides({
-      requireNdkConnected: connectedNdk,
+      getNdk: connectedNdk,
       signDraft: async (draftInput) => {
         createdAtByKind.set(draftInput.draft.kind, draftInput.createdAt)
         return signDraft(draftInput)
@@ -279,7 +279,7 @@ describe("organizer event-market publishing", () => {
     const publishedKinds: number[] = []
     const deliveredRecords: string[] = []
     __setEventMarketTestOverrides({
-      requireNdkConnected: connectedNdk,
+      getNdk: connectedNdk,
       signDraft,
       publishWithPlanner: async (event: NDKEvent) => {
         publishedKinds.push(event.kind!)
@@ -308,7 +308,7 @@ describe("organizer event-market publishing", () => {
   it("aborts before collection publication when a prerequisite gets zero ACKs", async () => {
     const publishedKinds: number[] = []
     __setEventMarketTestOverrides({
-      requireNdkConnected: connectedNdk,
+      getNdk: connectedNdk,
       signDraft,
       publishWithPlanner: async (event: NDKEvent) => {
         publishedKinds.push(event.kind!)
@@ -333,7 +333,7 @@ describe("organizer event-market publishing", () => {
       signedEvent: SignedPublicNostrEvent
     }> = []
     __setEventMarketTestOverrides({
-      requireNdkConnected: connectedNdk,
+      getNdk: connectedNdk,
       signDraft,
       publishWithPlanner: async (event: NDKEvent) => {
         sequence.push(`publish:${event.kind}`)
@@ -406,7 +406,7 @@ describe("organizer event-market publishing", () => {
     )
     const published: SignedPublicNostrEvent[] = []
     __setEventMarketTestOverrides({
-      requireNdkConnected: connectedNdk,
+      getNdk: connectedNdk,
       publishWithPlanner: async (event: NDKEvent) => {
         published.push(event.rawEvent() as SignedPublicNostrEvent)
         return publishResult(true)

@@ -667,31 +667,14 @@ export type OrderSchema = z.infer<typeof orderSchema>
 
 export const eventMarketClaimRefSchema = z.string().regex(/^[0-9a-f]{64}$/)
 
-export const eventMarketReceiptVariantSchema = z
-  .object({
-    name: z.string().min(1).max(80),
-    value: z.string().min(1).max(160),
-  })
-  .strict()
-
 export const eventMarketReceiptItemSchema = z
   .object({
     product: pickupEvidenceCoordinateSchema,
     quantity: z.number().int().min(1).max(10_000),
     /** Reserved for a future signed-product option projection. */
-    variants: z.array(eventMarketReceiptVariantSchema).max(0).default([]),
+    variants: z.tuple([]).default([]),
   })
   .strict()
-  .superRefine((item, context) => {
-    const names = item.variants.map((variant) => variant.name.toLowerCase())
-    if (new Set(names).size !== names.length) {
-      context.addIssue({
-        code: "custom",
-        path: ["variants"],
-        message: "Receipt variant names must be unique.",
-      })
-    }
-  })
 
 const eventMarketPrivateGraphFields = {
   claimRef: eventMarketClaimRefSchema,
@@ -824,9 +807,6 @@ export const eventMarketHandoffAckSchema = z
   .strict()
   .superRefine(refineEventMarketPrivateGraph)
 
-export type EventMarketReceiptVariantSchema = z.infer<
-  typeof eventMarketReceiptVariantSchema
->
 export type EventMarketReceiptItemSchema = z.infer<
   typeof eventMarketReceiptItemSchema
 >
