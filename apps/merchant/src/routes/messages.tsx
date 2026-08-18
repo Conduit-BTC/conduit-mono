@@ -6,6 +6,8 @@ import { Search } from "lucide-react"
 import {
   buildDirectMessageRumor,
   cacheParsedDirectMessage,
+  clearProtectedReadAuthenticationSuppression,
+  deriveProtectedReadPresentationState,
   EVENT_KINDS,
   formatNpub,
   getCachedDirectMessageConversationList,
@@ -19,6 +21,7 @@ import {
   publishPrivateMessage,
   PrivateMessageRelayReadinessError,
   pubkeyToNpub,
+  selectProtectedReadRows,
   useAuth,
   useConduitSession,
   useInboxDeclaration,
@@ -26,6 +29,7 @@ import {
   type Profile,
 } from "@conduit/core"
 import {
+  Button,
   ConversationCardScroller,
   ConversationMessageBubble,
   DecryptFailureNotice,
@@ -126,12 +130,23 @@ function MessagesPage() {
       getCachedDirectMessageConversationList({ principalPubkey: pubkey! }),
     staleTime: 5_000,
   })
+  const retryMessagesRead = () => {
+    if (!pubkey) return
+    clearProtectedReadAuthenticationSuppression(pubkey)
+    void liveQuery.refetch()
+  }
 
   const conversations = useMemo(
-    () => liveQuery.data?.data ?? cachedQuery.data?.data ?? [],
+    () => selectProtectedReadRows(liveQuery.data?.data, cachedQuery.data?.data),
     [cachedQuery.data, liveQuery.data]
   )
   const liveMeta = liveQuery.data?.meta
+  const protectedMessagesReadState = deriveProtectedReadPresentationState({
+    visibleCount: conversations.length,
+    pending: liveQuery.isLoading,
+    error: liveQuery.error,
+    meta: liveMeta,
+  })
 
   const counterpartyPubkeys = useMemo(
     () =>
@@ -231,10 +246,21 @@ function MessagesPage() {
         limit: 3,
       }),
   })
-  const relatedOrders =
-    relatedOrdersLiveQuery.data?.data ??
-    relatedOrdersCacheQuery.data?.data ??
-    []
+  const retryRelatedOrdersRead = () => {
+    if (!pubkey) return
+    clearProtectedReadAuthenticationSuppression(pubkey)
+    void relatedOrdersLiveQuery.refetch()
+  }
+  const relatedOrders = selectProtectedReadRows(
+    relatedOrdersLiveQuery.data?.data,
+    relatedOrdersCacheQuery.data?.data
+  )
+  const relatedOrdersReadState = deriveProtectedReadPresentationState({
+    visibleCount: relatedOrders.length,
+    pending: relatedOrdersLiveQuery.isLoading,
+    error: relatedOrdersLiveQuery.error,
+    meta: relatedOrdersLiveQuery.data?.meta,
+  })
 
   useEffect(() => {
     if (!pubkey || !selected?.unreadFromCounterparty) return
@@ -382,7 +408,8 @@ function MessagesPage() {
     messagingReady &&
     !cachedQuery.isLoading &&
     !liveQuery.isLoading &&
-    conversations.length === 0
+    conversations.length === 0 &&
+    protectedMessagesReadState === "complete"
 
   return (
     <div className="min-w-0 max-w-full space-y-6 xl:flex xl:h-[calc(100vh-8.5rem)] xl:flex-col xl:overflow-hidden">
@@ -423,20 +450,16 @@ function MessagesPage() {
           />
         )}
 
-      {signerConnected && (liveQuery.error || liveMeta?.stale) && (
-        <LiveReadNotice
-          state={
-            liveQuery.error
-              ? conversations.length > 0
-                ? "cached"
-                : "unavailable"
-              : "partial"
-          }
-          onRetry={() => void liveQuery.refetch()}
-          retrying={liveQuery.isRefetching}
-          className="xl:shrink-0"
-        />
-      )}
+      {signerConnected &&
+        protectedMessagesReadState !== "complete" &&
+        protectedMessagesReadState !== "pending" && (
+          <LiveReadNotice
+            state={protectedMessagesReadState}
+            onRetry={retryMessagesRead}
+            retrying={liveQuery.isRefetching}
+            className="xl:shrink-0"
+          />
+        )}
 
       {signerConnected && (
         <DecryptFailureNotice
@@ -446,7 +469,7 @@ function MessagesPage() {
             liveMeta?.legacyDecryptFailures?.some(
               (failure) => failure.retryable
             )
-              ? () => void liveQuery.refetch()
+              ? retryMessagesRead
               : undefined
           }
           retrying={liveQuery.isRefetching}
@@ -462,11 +485,11 @@ function MessagesPage() {
           </div>
         )}
 
-      {showEmpty && !liveQuery.error && !liveMeta?.degraded && (
+      {showEmpty && (
         <>
           <DecryptFailureNotice
             count={liveMeta?.decryptFailures?.length ?? 0}
-            onRetry={() => void liveQuery.refetch()}
+            onRetry={retryMessagesRead}
             retrying={liveQuery.isRefetching}
             className="xl:shrink-0"
           />
@@ -644,12 +667,7 @@ function MessagesPage() {
                   <div className="mb-2 text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">
                     Related orders
                   </div>
-                  {relatedOrdersLiveQuery.isLoading &&
-                  relatedOrdersCacheQuery.isLoading ? (
-                    <div className="text-xs text-[var(--text-secondary)]">
-                      Loading related orders...
-                    </div>
-                  ) : relatedOrders.length > 0 ? (
+                  {relatedOrders.length > 0 ? (
                     <OrderCardScroller
                       conversations={relatedOrders}
                       buyerName={() => selectedName ?? "Buyer"}
@@ -663,20 +681,36 @@ function MessagesPage() {
                         })
                       }}
                     />
-                  ) : relatedOrdersLiveQuery.error ? (
+                  ) : relatedOrdersReadState === "pending" ? (
                     <div className="text-xs text-[var(--text-secondary)]">
-                      Related order context is unavailable.
+                      Loading related orders...
                     </div>
-                  ) : (
+                  ) : relatedOrdersReadState === "complete" ? (
                     <div className="text-xs text-[var(--text-secondary)]">
                       No related orders found.
+                    </div>
+                  ) : (
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--text-secondary)]">
+                      <span>
+                        Related order context is {relatedOrdersReadState}. Retry
+                        before relying on an empty result.
+                      </span>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={retryRelatedOrdersRead}
+                        disabled={relatedOrdersLiveQuery.isRefetching}
+                      >
+                        Retry
+                      </Button>
                     </div>
                   )}
                 </div>
 
                 <DecryptFailureNotice
                   count={liveMeta?.decryptFailures?.length ?? 0}
-                  onRetry={() => void liveQuery.refetch()}
+                  onRetry={retryMessagesRead}
                   retrying={liveQuery.isRefetching}
                   className="mb-3 xl:shrink-0"
                 />
@@ -685,7 +719,11 @@ function MessagesPage() {
                   {threadMessages.length === 0 &&
                   optimisticThreadMessages.length === 0 ? (
                     <div className="text-sm text-[var(--text-secondary)]">
-                      No messages in this conversation yet.
+                      {protectedMessagesReadState === "pending"
+                        ? "Loading message history…"
+                        : protectedMessagesReadState === "complete"
+                          ? "No messages in this conversation yet."
+                          : "Message history is unavailable. Retry before relying on an empty thread."}
                     </div>
                   ) : (
                     <>

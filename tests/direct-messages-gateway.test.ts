@@ -91,6 +91,7 @@ beforeEach(() => {
   directRows = []
   orderRows = []
   __setCommerceTestOverrides({
+    allowMissingProtectedReadAuthorization: true,
     now: () => 1_700_000_000_000,
     getNdk: async () => ({ signer: {} }) as never,
     resolveInboxRelayUrls: async () => ["wss://inbox.example"],

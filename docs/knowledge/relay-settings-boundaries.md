@@ -48,6 +48,31 @@ auth requirements.
 NIP-11 should not be used to require client/application/event NIPs such as
 NIP-17, NIP-33, NIP-65, NIP-99, or Open Markets product semantics.
 
+NIP-42 evidence needs finer language than a generic supported/unsupported
+badge:
+
+- **Untested:** no current capability evidence.
+- **Advertised:** NIP-11 lists NIP-42 or an auth limitation.
+- **Challenge observed:** a runtime connection received `AUTH`.
+- **Succeeded:** a valid auth event received its matching positive `OK` on the
+  current connection.
+- **Rejected:** the relay returned a matching negative auth `OK`.
+- **Unavailable:** another bounded auth failure prevented current-connection
+  success.
+
+Advertisement is never “verified” authentication. A challenge is not success,
+and success on one connection does not prove the relay will authorize every
+filter or enforce recipient isolation. Active proof comes only from an explicit
+signed-in protected operation; generic scans, public reads, and route hydration
+must not prompt NIP-07 or NIP-46 solely to improve a settings badge.
+
+Auth evidence shown in settings must remain privacy-safe. Do not persist or
+display the challenge, auth event, signature, account pubkey, full protected
+filter, authenticated socket, or a stable account-derived session key. Clear
+connection-bound success/challenge state when its session is closed. The exact
+protected-read evidence and rollout contract lives in
+`docs/knowledge/nip42-protected-read-rollout.md`.
+
 Until active probes land, current commerce compatibility remains conservative
 metadata:
 
@@ -66,6 +91,11 @@ Active probing should be bounded:
 - run in the background for user-managed or repeatedly encountered candidates
 - cache failures and successes as observations
 - never mutate the user's NIP-65 settings from probe discovery alone
+
+Cached observations may include coarse NIP-11 advertisement and bounded
+reachability. Connection-bound NIP-42 challenge/success evidence must be
+downgraded or cleared when that connection/session ends rather than presented as
+a current authenticated state.
 
 Current relay settings should prefer passive runtime observations and explicit
 user-managed scans over broad probing.

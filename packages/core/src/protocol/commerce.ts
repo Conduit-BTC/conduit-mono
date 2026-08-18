@@ -1,6 +1,6 @@
 import {
+  NDKEvent,
   giftUnwrap,
-  type NDKEvent,
   type NDKFilter,
   type NDKSigner,
   nip19,
@@ -94,6 +94,16 @@ import {
 } from "./relay-settings"
 import { getRelayLists, isInsecureRelayUrl } from "./relay-list"
 import { planRelayReads, type RelayReadIntent } from "./relay-planner"
+import {
+  readProtectedInbox,
+  type ProtectedInboxAuthSummary,
+  type ReadProtectedInboxOptions,
+} from "./protected-inbox-read"
+import {
+  getProtectedReadAuthorization,
+  hasProtectedReadAuthority,
+  type ProtectedReadAuthorization,
+} from "./protected-read-authorization"
 
 const PRODUCT_CACHE_TTL_MS = 24 * 60 * 60_000
 const BROAD_AUTHOR_HINT_LIMIT = 16
@@ -138,6 +148,8 @@ export interface PrivateInboxReadStatus {
   declarationState: InboxDeclarationState
   coverage: InboxReadCoverage
   readSource: InboxReadSource
+  /** Current-session relay-auth evidence; never persisted with messages. */
+  authentication?: ProtectedInboxAuthSummary
 }
 
 export interface CommerceQueryMeta {
@@ -314,11 +326,15 @@ type LegacyDmSyncResult = {
 }
 
 type CommerceTestOverrides = {
+  allowMissingProtectedReadAuthorization?: boolean
   fetchEventsFanout?: typeof fetchEventsFanout
   fetchEventsFanoutWithDiagnostics?: typeof fetchEventsFanoutWithDiagnostics
   fetchEventsFanoutDetailed?: typeof fetchEventsFanoutDetailed
   fetchEventsFanoutProgressive?: typeof fetchEventsFanoutProgressive
   getNdk?: () => ReturnType<typeof getNdk> | Promise<ReturnType<typeof getNdk>>
+  readProtectedInbox?: (
+    options: ReadProtectedInboxOptions
+  ) => ReturnType<typeof readProtectedInbox>
   giftUnwrap?: (
     event: NDKEvent,
     signer: NDKSigner
@@ -346,6 +362,15 @@ type CommerceTestOverrides = {
     principalPubkey: string
   ) => Promise<StoredMessage[]>
   putCachedDirectMessages?: (rows: StoredMessage[]) => Promise<void>
+  persistProtectedInboxMessages?: (
+    orderRows: CachedOrderMessage[],
+    directRows: StoredMessage[],
+    assertAuthority: () => void
+  ) => Promise<void>
+  persistLegacyDirectMessages?: (
+    rows: StoredMessage[],
+    assertAuthority: () => void
+  ) => Promise<void>
   resolveInboxRelayUrls?: (principalPubkey: string) => Promise<string[]>
   markDirectMessagesRead?: (
     principalPubkey: string,
@@ -406,6 +431,30 @@ const retryLegacyDmsByPrincipal = new Map<
   >
 >()
 const legacyDmSyncPromises = new Map<string, Promise<LegacyDmSyncResult>>()
+
+class ProtectedInboxAuthorityChangedError extends Error {
+  constructor() {
+    super("Protected-read authority changed during inbox synchronization")
+    this.name = "ProtectedInboxAuthorityChangedError"
+  }
+}
+
+function assertInboxSyncAuthority(
+  authorization: ProtectedReadAuthorization | null
+): void {
+  if (authorization && !hasProtectedReadAuthority(authorization)) {
+    throw new ProtectedInboxAuthorityChangedError()
+  }
+}
+
+function resolveInboxSyncAuthorization(
+  principalPubkey: string
+): ProtectedReadAuthorization | null {
+  const authorization = getProtectedReadAuthorization(principalPubkey)
+  if (authorization) return authorization
+  if (testOverrides.allowMissingProtectedReadAuthorization === true) return null
+  throw new ProtectedInboxAuthorityChangedError()
+}
 
 function now(): number {
   return testOverrides.now?.() ?? Date.now()
@@ -690,6 +739,31 @@ async function runFetchEventsFanoutDetailed(
 async function runGetNdk(): Promise<ReturnType<typeof getNdk>> {
   const impl = testOverrides.getNdk ?? getNdk
   return await impl()
+}
+
+/**
+ * NDK remains an envelope/signer edge, but protected reads must not connect
+ * its relay pool merely to reach the active signer.
+ */
+async function resolveEnvelopeSigner(): Promise<NDKSigner | undefined> {
+  return (await runGetNdk()).signer
+}
+
+function unavailableInboxStatus(
+  failure: ProtectedInboxAuthSummary["failure"] = "signer_unavailable"
+): PrivateInboxReadStatus {
+  return {
+    declarationState: "lookup_unavailable",
+    coverage: "unavailable",
+    readSource: "cache",
+    authentication: {
+      state: "unavailable",
+      challengedCount: 0,
+      succeededCount: 0,
+      failedCount: 0,
+      failure,
+    },
+  }
 }
 
 export function resolveReadPlan(name: CommerceReadPlanName): CommerceReadPlan {
@@ -4356,7 +4430,10 @@ function unwrapOptions(): UnwrapGiftWrapOptions {
 async function fetchParsedOrderMessages(
   principalPubkey: string
 ): Promise<RawMessageFetchResult> {
+  const authorization = resolveInboxSyncAuthorization(principalPubkey)
+  assertInboxSyncAuthority(authorization)
   const cached = await loadCachedOrderMessages(principalPubkey)
+  assertInboxSyncAuthority(authorization)
 
   const cachedById = new Map<string, ParsedOrderMessage>()
   for (const row of cached) {
@@ -4368,29 +4445,35 @@ async function fetchParsedOrderMessages(
   }
 
   try {
-    const ndk = await runGetNdk()
-    const signer = ndk.signer
+    const signer = await resolveEnvelopeSigner()
     if (!signer) {
       if (cachedById.size > 0) {
         const messages = Array.from(cachedById.values()).sort(
           (a, b) => a.createdAt - b.createdAt
         )
+        assertInboxSyncAuthority(authorization)
         return {
           messages,
           source: "local_cache",
           stale: true,
           decryptFailures: [],
+          inbox: unavailableInboxStatus(),
         }
       }
       throw new Error("Connect your Nostr signer to view order conversations.")
     }
 
-    const sync = await syncPrivateMessageInbox(principalPubkey, signer)
+    const sync = await syncPrivateMessageInbox(
+      principalPubkey,
+      signer,
+      authorization
+    )
     for (const parsed of sync.orderMessages) cachedById.set(parsed.id, parsed)
 
     const messages = Array.from(cachedById.values()).sort(
       (a, b) => a.createdAt - b.createdAt
     )
+    assertInboxSyncAuthority(authorization)
     return {
       messages,
       source:
@@ -4400,15 +4483,18 @@ async function fetchParsedOrderMessages(
       inbox: sync.inbox,
     }
   } catch (error) {
+    if (error instanceof ProtectedInboxAuthorityChangedError) throw error
     if (cachedById.size > 0) {
       const messages = Array.from(cachedById.values()).sort(
         (a, b) => a.createdAt - b.createdAt
       )
+      assertInboxSyncAuthority(authorization)
       return {
         messages,
         source: "local_cache",
         stale: true,
         decryptFailures: [],
+        inbox: unavailableInboxStatus(),
       }
     }
     throw error
@@ -4462,7 +4548,8 @@ type InboxWrapFetchResult = {
  */
 async function fetchNewInboxWraps(
   principalPubkey: string,
-  limit: number
+  limit: number,
+  authorization: ProtectedReadAuthorization | null
 ): Promise<InboxWrapFetchResult> {
   const filter: NDKFilter = {
     kinds: [EVENT_KINDS.GIFT_WRAP],
@@ -4477,19 +4564,53 @@ async function fetchNewInboxWraps(
     maxRelays: DM_INBOX_READ_FANOUT,
   })
 
-  const result = await runFetchEventsFanoutWithDiagnostics(filter, {
+  if (
+    testOverrides.fetchEventsFanoutWithDiagnostics ||
+    testOverrides.fetchEventsFanout
+  ) {
+    const result = await runFetchEventsFanoutWithDiagnostics(filter, {
+      relayUrls: readPlan.relayUrls,
+      connectTimeoutMs: 4_000,
+      fetchTimeoutMs: 12_000,
+    })
+    const successful = successfulWrapIdsByPrincipal.get(principalPubkey)
+    return {
+      wraps: result.events.filter((event) => !successful?.has(event.id)),
+      inbox: {
+        declarationState: declaration.state,
+        coverage: deriveInboxReadCoverage(result),
+        readSource: readPlan.source,
+        authentication: {
+          state: "not_challenged",
+          challengedCount: 0,
+          succeededCount: 0,
+          failedCount: 0,
+        },
+      },
+    }
+  }
+
+  const protectedResult = await (
+    testOverrides.readProtectedInbox ?? readProtectedInbox
+  )({
+    principalPubkey,
     relayUrls: readPlan.relayUrls,
+    limit,
+    authorization,
     connectTimeoutMs: 4_000,
-    fetchTimeoutMs: 12_000,
+    queryTimeoutMs: 12_000,
   })
 
   const successful = successfulWrapIdsByPrincipal.get(principalPubkey)
   return {
-    wraps: result.events.filter((event) => !successful?.has(event.id)),
+    wraps: protectedResult.events
+      .filter((event) => !successful?.has(event.id))
+      .map((event) => new NDKEvent(undefined, event)),
     inbox: {
       declarationState: declaration.state,
-      coverage: deriveInboxReadCoverage(result),
+      coverage: protectedResult.coverage,
       readSource: readPlan.source,
+      authentication: protectedResult.auth,
     },
   }
 }
@@ -4523,6 +4644,33 @@ async function storeCachedDirectMessages(rows: StoredMessage[]): Promise<void> {
   await db.messages.bulkPut(rows)
 }
 
+async function persistLegacyDirectMessages(
+  rows: StoredMessage[],
+  authorization: ProtectedReadAuthorization | null
+): Promise<void> {
+  const assertAuthority = () => assertInboxSyncAuthority(authorization)
+  assertAuthority()
+  if (rows.length === 0) return
+
+  if (testOverrides.persistLegacyDirectMessages) {
+    await testOverrides.persistLegacyDirectMessages(rows, assertAuthority)
+    assertAuthority()
+    return
+  }
+  if (testOverrides.putCachedDirectMessages) {
+    await storeCachedDirectMessages(rows)
+    assertAuthority()
+    return
+  }
+
+  await db.transaction("rw", db.messages, async () => {
+    assertAuthority()
+    await db.messages.bulkPut(rows)
+    assertAuthority()
+  })
+  assertAuthority()
+}
+
 function cachedDirectMessageRow(message: ParsedDirectMessage): StoredMessage {
   return {
     id: message.id,
@@ -4538,6 +4686,46 @@ function cachedDirectMessageRow(message: ParsedDirectMessage): StoredMessage {
   }
 }
 
+async function persistProtectedInboxMessages(
+  orderRows: CachedOrderMessage[],
+  directRows: StoredMessage[],
+  authorization: ProtectedReadAuthorization | null
+): Promise<void> {
+  const assertAuthority = () => assertInboxSyncAuthority(authorization)
+  assertAuthority()
+
+  if (testOverrides.persistProtectedInboxMessages) {
+    await testOverrides.persistProtectedInboxMessages(
+      orderRows,
+      directRows,
+      assertAuthority
+    )
+    assertAuthority()
+    return
+  }
+
+  if (
+    testOverrides.putCachedOrderMessages ||
+    testOverrides.putCachedDirectMessages
+  ) {
+    await storeCachedOrderMessages(orderRows)
+    assertAuthority()
+    await storeCachedDirectMessages(directRows)
+    assertAuthority()
+    return
+  }
+
+  await db.transaction("rw", db.orderMessages, db.messages, async () => {
+    assertAuthority()
+    if (orderRows.length > 0) await db.orderMessages.bulkPut(orderRows)
+    if (directRows.length > 0) await db.messages.bulkPut(directRows)
+    // Throwing here aborts the Dexie transaction, including completed bulkPut
+    // requests, if another tab changed signer authority during persistence.
+    assertAuthority()
+  })
+  assertAuthority()
+}
+
 function parseCachedDirectMessage(row: StoredMessage): ParsedDirectMessage {
   return {
     id: row.id,
@@ -4549,32 +4737,34 @@ function parseCachedDirectMessage(row: StoredMessage): ParsedDirectMessage {
   }
 }
 
-function successfulLegacyDmIds(principalPubkey: string): Set<string> {
-  let ids = successfulLegacyDmIdsByPrincipal.get(principalPubkey)
+function successfulLegacyDmIds(sessionPrincipalKey: string): Set<string> {
+  let ids = successfulLegacyDmIdsByPrincipal.get(sessionPrincipalKey)
   if (!ids) {
     ids = new Set<string>()
-    successfulLegacyDmIdsByPrincipal.set(principalPubkey, ids)
+    successfulLegacyDmIdsByPrincipal.set(sessionPrincipalKey, ids)
   }
   return ids
 }
 
 function retryLegacyDms(
-  principalPubkey: string
+  sessionPrincipalKey: string
 ): Map<
   string,
   { event: NDKEvent; attempts: number; failure?: LegacyDmDecryptFailure }
 > {
-  let events = retryLegacyDmsByPrincipal.get(principalPubkey)
+  let events = retryLegacyDmsByPrincipal.get(sessionPrincipalKey)
   if (!events) {
     events = new Map()
-    retryLegacyDmsByPrincipal.set(principalPubkey, events)
+    retryLegacyDmsByPrincipal.set(sessionPrincipalKey, events)
   }
   return events
 }
 
 async function runLegacyDmSync(
   principalPubkey: string,
-  signer: NDKSigner
+  signer: NDKSigner,
+  authorization: ProtectedReadAuthorization | null,
+  sessionPrincipalKey: string
 ): Promise<LegacyDmSyncResult> {
   const relayUrls = await planCommerceReadRelays({
     intent: "legacy_dm",
@@ -4602,9 +4792,10 @@ async function runLegacyDmSync(
     ),
     loadCachedDirectMessages(principalPubkey),
   ])
+  assertInboxSyncAuthority(authorization)
   const cachedIds = new Set(cached.map((row) => row.id))
-  const successful = successfulLegacyDmIds(principalPubkey)
-  const retry = retryLegacyDms(principalPubkey)
+  const successful = successfulLegacyDmIds(sessionPrincipalKey)
+  const retry = retryLegacyDms(sessionPrincipalKey)
   const candidates = new Map<string, NDKEvent>()
   for (const { event, attempts } of retry.values()) {
     if (attempts < MAX_LEGACY_DM_DECRYPT_ATTEMPTS) {
@@ -4639,6 +4830,7 @@ async function runLegacyDmSync(
         decryptLegacyDirectMessage(event, principalPubkey, decrypt)
       )
     )
+    assertInboxSyncAuthority(authorization)
     for (const outcome of outcomes) {
       if (outcome.status === "ignored") {
         successful.add(outcome.eventId)
@@ -4663,15 +4855,21 @@ async function runLegacyDmSync(
   }
 
   try {
-    await storeCachedDirectMessages(messages.map(cachedDirectMessageRow))
+    await persistLegacyDirectMessages(
+      messages.map(cachedDirectMessageRow),
+      authorization
+    )
     for (const message of messages) {
       successful.add(message.id)
       retry.delete(message.id)
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof ProtectedInboxAuthorityChangedError) throw error
+    assertInboxSyncAuthority(authorization)
     // Keep encrypted events in memory for retry; plaintext remains transient.
   }
 
+  assertInboxSyncAuthority(authorization)
   return {
     directMessages: messages,
     decryptFailures: Array.from(retry.values()).flatMap(({ failure }) =>
@@ -4682,17 +4880,30 @@ async function runLegacyDmSync(
 
 async function syncLegacyDms(
   principalPubkey: string,
-  signer: NDKSigner
+  signer: NDKSigner,
+  authorization: ProtectedReadAuthorization | null
 ): Promise<LegacyDmSyncResult> {
-  const existing = legacyDmSyncPromises.get(principalPubkey)
+  const syncKey = `${authorization?.sessionScope ?? "legacy-test"}:${principalPubkey}`
+  const existing = legacyDmSyncPromises.get(syncKey)
   if (existing) return await existing
-  const pending = runLegacyDmSync(principalPubkey, signer)
-  legacyDmSyncPromises.set(principalPubkey, pending)
+  const pending = runLegacyDmSync(
+    principalPubkey,
+    signer,
+    authorization,
+    syncKey
+  )
+  legacyDmSyncPromises.set(syncKey, pending)
   try {
     return await pending
+  } catch (error) {
+    if (error instanceof ProtectedInboxAuthorityChangedError) {
+      successfulLegacyDmIdsByPrincipal.delete(syncKey)
+      retryLegacyDmsByPrincipal.delete(syncKey)
+    }
+    throw error
   } finally {
-    if (legacyDmSyncPromises.get(principalPubkey) === pending) {
-      legacyDmSyncPromises.delete(principalPubkey)
+    if (legacyDmSyncPromises.get(syncKey) === pending) {
+      legacyDmSyncPromises.delete(syncKey)
     }
   }
 }
@@ -4719,13 +4930,15 @@ function retryWraps(
 
 async function runPrivateMessageInboxSync(
   principalPubkey: string,
-  signer: NDKSigner
+  signer: NDKSigner,
+  authorization: ProtectedReadAuthorization | null
 ): Promise<PrivateInboxSyncResult> {
   const [cachedOrders, cachedDirect, fetched] = await Promise.all([
     loadCachedOrderMessages(principalPubkey),
     loadCachedDirectMessages(principalPubkey),
-    fetchNewInboxWraps(principalPubkey, 400),
+    fetchNewInboxWraps(principalPubkey, 400, authorization),
   ])
+  assertInboxSyncAuthority(authorization)
   const cachedOrderIds = new Set(cachedOrders.map((row) => row.id))
   const cachedDirectIds = new Set(cachedDirect.map((row) => row.id))
   const successful = successfulWrapIds(principalPubkey)
@@ -4743,6 +4956,9 @@ async function runPrivateMessageInboxSync(
     signer,
     unwrapOptions()
   )
+  // Decrypted rumors must not escape after a cross-tab revision/account change,
+  // even before the browser delivers its asynchronous storage event.
+  assertInboxSyncAuthority(authorization)
   const orderEntries: Array<{
     wrapId: string
     message: ParsedOrderMessage
@@ -4802,26 +5018,25 @@ async function runPrivateMessageInboxSync(
   const cachedOrderEntries = orderEntries.filter((entry) => entry.isCached)
   const newOrderEntries = orderEntries.filter((entry) => !entry.isCached)
   for (const entry of cachedOrderEntries) persisted(entry.wrapId)
-  try {
-    await storeCachedOrderMessages(
-      newOrderEntries.map((entry) => cachedOrderMessageRow(entry.message))
-    )
-    for (const entry of newOrderEntries) persisted(entry.wrapId)
-  } catch {
-    // Keep wrappers pending for a later cache retry; parsed messages remain usable.
-  }
-
   const cachedDirectEntries = directEntries.filter((entry) => entry.isCached)
   const newDirectEntries = directEntries.filter((entry) => !entry.isCached)
   for (const entry of cachedDirectEntries) persisted(entry.wrapId)
+
   try {
-    await storeCachedDirectMessages(
-      newDirectEntries.map((entry) => cachedDirectMessageRow(entry.message))
+    await persistProtectedInboxMessages(
+      newOrderEntries.map((entry) => cachedOrderMessageRow(entry.message)),
+      newDirectEntries.map((entry) => cachedDirectMessageRow(entry.message)),
+      authorization
     )
+    for (const entry of newOrderEntries) persisted(entry.wrapId)
     for (const entry of newDirectEntries) persisted(entry.wrapId)
-  } catch {
+  } catch (error) {
+    if (error instanceof ProtectedInboxAuthorityChangedError) throw error
+    assertInboxSyncAuthority(authorization)
     // Keep wrappers pending for a later cache retry; parsed messages remain usable.
   }
+
+  assertInboxSyncAuthority(authorization)
 
   return {
     orderMessages: orderEntries.map((entry) => entry.message),
@@ -4835,18 +5050,24 @@ async function runPrivateMessageInboxSync(
 
 async function syncPrivateMessageInbox(
   principalPubkey: string,
-  signer: NDKSigner
+  signer: NDKSigner,
+  authorization: ProtectedReadAuthorization | null
 ): Promise<PrivateInboxSyncResult> {
-  const existing = inboxSyncPromises.get(principalPubkey)
+  const syncKey = `${authorization?.sessionScope ?? "legacy-test"}:${principalPubkey}`
+  const existing = inboxSyncPromises.get(syncKey)
   if (existing) return await existing
 
-  const pending = runPrivateMessageInboxSync(principalPubkey, signer)
-  inboxSyncPromises.set(principalPubkey, pending)
+  const pending = runPrivateMessageInboxSync(
+    principalPubkey,
+    signer,
+    authorization
+  )
+  inboxSyncPromises.set(syncKey, pending)
   try {
     return await pending
   } finally {
-    if (inboxSyncPromises.get(principalPubkey) === pending) {
-      inboxSyncPromises.delete(principalPubkey)
+    if (inboxSyncPromises.get(syncKey) === pending) {
+      inboxSyncPromises.delete(syncKey)
     }
   }
 }
@@ -4854,7 +5075,10 @@ async function syncPrivateMessageInbox(
 async function fetchParsedDirectMessages(
   principalPubkey: string
 ): Promise<RawDirectMessageFetchResult> {
+  const authorization = resolveInboxSyncAuthorization(principalPubkey)
+  assertInboxSyncAuthority(authorization)
   const cached = await loadCachedDirectMessages(principalPubkey)
+  assertInboxSyncAuthority(authorization)
   const cachedById = new Map<string, ParsedDirectMessage>()
   const unreadMessageIds = new Set<string>()
   for (const row of cached) {
@@ -4863,13 +5087,13 @@ async function fetchParsedDirectMessages(
   }
 
   try {
-    const ndk = await runGetNdk()
-    const signer = ndk.signer
+    const signer = await resolveEnvelopeSigner()
     if (!signer) {
       if (cachedById.size > 0) {
         const messages = Array.from(cachedById.values()).sort(
           (a, b) => a.createdAt - b.createdAt
         )
+        assertInboxSyncAuthority(authorization)
         return {
           messages,
           unreadMessageIds,
@@ -4877,15 +5101,23 @@ async function fetchParsedDirectMessages(
           stale: true,
           decryptFailures: [],
           legacyDecryptFailures: [],
+          inbox: unavailableInboxStatus(),
         }
       }
       throw new Error("Connect your Nostr signer to view messages.")
     }
 
     const [currentResult, legacyResult] = await Promise.allSettled([
-      syncPrivateMessageInbox(principalPubkey, signer),
-      syncLegacyDms(principalPubkey, signer),
+      syncPrivateMessageInbox(principalPubkey, signer, authorization),
+      syncLegacyDms(principalPubkey, signer, authorization),
     ])
+    assertInboxSyncAuthority(authorization)
+    if (
+      currentResult.status === "rejected" &&
+      currentResult.reason instanceof ProtectedInboxAuthorityChangedError
+    ) {
+      throw currentResult.reason
+    }
     if (
       currentResult.status === "rejected" &&
       legacyResult.status === "rejected" &&
@@ -4915,6 +5147,7 @@ async function fetchParsedDirectMessages(
     const messages = Array.from(cachedById.values()).sort(
       (a, b) => a.createdAt - b.createdAt
     )
+    assertInboxSyncAuthority(authorization)
     return {
       messages,
       unreadMessageIds,
@@ -4928,10 +5161,12 @@ async function fetchParsedDirectMessages(
       inbox: current.inbox,
     }
   } catch (error) {
+    if (error instanceof ProtectedInboxAuthorityChangedError) throw error
     if (cachedById.size > 0) {
       const messages = Array.from(cachedById.values()).sort(
         (a, b) => a.createdAt - b.createdAt
       )
+      assertInboxSyncAuthority(authorization)
       return {
         messages,
         unreadMessageIds,
@@ -4939,6 +5174,7 @@ async function fetchParsedDirectMessages(
         stale: true,
         decryptFailures: [],
         legacyDecryptFailures: [],
+        inbox: unavailableInboxStatus(),
       }
     }
     throw error

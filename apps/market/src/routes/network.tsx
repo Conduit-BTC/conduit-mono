@@ -33,6 +33,7 @@ function SettingsPage() {
       <div className="mx-auto max-w-[50rem]">
         <RelaySettingsPanel
           settings={relaySettings.settings}
+          authEvidenceByUrl={relaySettings.authEvidenceByUrl}
           scanningUrls={relaySettings.scanningUrls}
           error={relaySettings.error}
           isLoadingPublishedRelayList={

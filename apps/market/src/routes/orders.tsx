@@ -3,7 +3,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   appendConduitClientTag,
+  clearProtectedReadAuthenticationSuppression,
   db,
+  deriveProtectedReadPresentationState,
   EVENT_KINDS,
   formatNpub,
   formatPubkey,
@@ -14,6 +16,7 @@ import {
   normalizeLightningInvoice,
   pruneExpiredGuestOrderData,
   pubkeyToNpub,
+  selectProtectedReadRows,
   useAuth,
   useProfile,
   useProfiles,
@@ -1317,9 +1320,12 @@ function OrdersPage() {
 
   const isFetching = messagesQuery.isFetching || lifecyclesQuery.isFetching
   const refetchAll = useCallback(() => {
-    if (signerConnected) void messagesQuery.refetch()
+    if (signerConnected && activeBuyerPubkey) {
+      clearProtectedReadAuthenticationSuppression(activeBuyerPubkey)
+      void messagesQuery.refetch()
+    }
     void lifecyclesQuery.refetch()
-  }, [lifecyclesQuery, messagesQuery, signerConnected])
+  }, [activeBuyerPubkey, lifecyclesQuery, messagesQuery, signerConnected])
 
   useEffect(() => {
     if (isFetching) {
@@ -1354,10 +1360,20 @@ function OrdersPage() {
   }, [activeBuyerPubkey, refetchAll])
 
   const conversations = useMemo(
-    () => messagesQuery.data?.data ?? cachedMessagesQuery.data?.data ?? [],
+    () =>
+      selectProtectedReadRows(
+        messagesQuery.data?.data,
+        cachedMessagesQuery.data?.data
+      ),
     [cachedMessagesQuery.data, messagesQuery.data]
   )
   const messagesMeta = messagesQuery.data?.meta
+  const protectedOrdersReadState = deriveProtectedReadPresentationState({
+    visibleCount: conversations.length,
+    pending: messagesQuery.isLoading,
+    error: messagesQuery.error,
+    meta: messagesMeta,
+  })
   const lifecycles = useMemo(
     () => lifecyclesQuery.data ?? [],
     [lifecyclesQuery.data]
@@ -1575,24 +1591,20 @@ function OrdersPage() {
         />
       )}
 
-      {signerConnected && (messagesQuery.error || messagesMeta?.degraded) && (
-        <LiveReadNotice
-          state={
-            messagesQuery.error
-              ? conversations.length > 0
-                ? "cached"
-                : "unavailable"
-              : "partial"
-          }
-          onRetry={() => void messagesQuery.refetch()}
-          retrying={messagesQuery.isRefetching}
-        />
-      )}
+      {signerConnected &&
+        protectedOrdersReadState !== "complete" &&
+        protectedOrdersReadState !== "pending" && (
+          <LiveReadNotice
+            state={protectedOrdersReadState}
+            onRetry={refetchAll}
+            retrying={messagesQuery.isRefetching}
+          />
+        )}
 
       {signerConnected && (
         <DecryptFailureNotice
           count={messagesMeta?.decryptFailures?.length ?? 0}
-          onRetry={() => void messagesQuery.refetch()}
+          onRetry={refetchAll}
           retrying={messagesQuery.isRefetching}
         />
       )}
@@ -1600,8 +1612,7 @@ function OrdersPage() {
       {activeBuyerPubkey &&
         !lifecyclesQuery.isLoading &&
         !hasOrders &&
-        !messagesQuery.error &&
-        !messagesMeta?.degraded && (
+        protectedOrdersReadState === "complete" && (
           <EmptyState
             title={signerConnected ? "No orders yet" : "Guest order not found"}
             body={
