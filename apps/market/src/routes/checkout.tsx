@@ -2278,16 +2278,7 @@ function CheckoutPage() {
                 },
               }
             : undefined,
-        paymentTarget:
-          storedPaymentTarget.type === "wallet"
-            ? {
-                type: "wallet",
-                walletId: storedPaymentTarget.walletId,
-                providerId: storedPaymentTarget.providerId,
-              }
-            : storedPaymentTarget.type === "webln"
-              ? { type: "webln" }
-              : { type: "manual" },
+        paymentTarget: storedPaymentTarget,
         approveFee:
           storedPaymentTarget.type === "wallet" &&
           storedPaymentTarget.providerId === "spark"

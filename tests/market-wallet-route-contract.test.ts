@@ -444,7 +444,9 @@ describe("Market wallet route contracts", () => {
     )
     const content = await readFile("apps/market/src/routes/orders.tsx", "utf8")
 
-    expect(checkout).toContain("paymentTarget: storedPaymentTarget")
+    expect(checkout.match(/paymentTarget: storedPaymentTarget/g)).toHaveLength(
+      2
+    )
     expect(content).toContain("const wallets = useWallets()")
     expect(content).toContain("row.lifecycle?.paymentTarget")
     expect(content).toContain("resolveWalletPaymentInstance")

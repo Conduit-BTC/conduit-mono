@@ -97,8 +97,6 @@ export interface NwcSessionPayInvoiceInput {
   timeoutMs: number
   appId: ConduitAppId
   metadata?: Record<string, unknown>
-  /** Local opaque registry ID. Never sent to the wallet or telemetry. */
-  walletId?: string
 }
 
 type NwcSessionClientLike = {
@@ -635,15 +633,6 @@ export function closeBuyerNwcSession(walletId: string): void {
   }
   session.close()
   buyerNwcSessions.delete(walletId)
-}
-
-export async function payInvoiceWithBuyerNwcSession(
-  connection: NwcConnection,
-  input: NwcSessionPayInvoiceInput
-): Promise<NwcSessionPaymentResult> {
-  const session = getBuyerNwcSession(input.walletId)
-  session.setConnection(connection)
-  return session.payInvoice(input)
 }
 
 function createSdkNwcClient(connection: NwcConnection): NwcSessionClientLike {

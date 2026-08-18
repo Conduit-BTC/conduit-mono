@@ -239,7 +239,6 @@ async function payInvoiceWithNwcProvider(
       timeoutMs: input.timeoutMs,
       appId: input.appId,
       metadata: input.metadata,
-      walletId,
     })
     if (result.status === "paid") {
       return {

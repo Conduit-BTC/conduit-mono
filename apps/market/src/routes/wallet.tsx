@@ -981,7 +981,7 @@ function PortableWalletDialog({
     >
       <DialogContent
         showCloseButton={!pending && !createdMnemonic}
-        className="max-h-[90vh] overflow-y-auto"
+        className="max-h-[90vh]"
       >
         {createdMnemonic ? (
           <>
@@ -2389,7 +2389,7 @@ function WalletHistoryDialog({
         if (!open) close()
       }}
     >
-      <DialogContent className="max-h-[85vh] overflow-y-auto">
+      <DialogContent className="max-h-[85vh]">
         <DialogHeader>
           <DialogTitle>{wallet?.label} history</DialogTitle>
           <DialogDescription>
