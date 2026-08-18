@@ -465,6 +465,11 @@ function parseCartItem(value: unknown): CartItem | null {
   const selectedSpecifications = parseSpecifications(
     value.selectedSpecifications
   )
+  const sourcePrice = parseSourcePrice(value.sourcePrice)
+  const sourceShippingCost = parseSourcePrice(value.sourceShippingCost)
+  const tags = optionalStringArray(value.tags)
+  const shippingCountries = optionalStringArray(value.shippingCountries)
+  const shippingCountryRules = parseShippingRules(value.shippingCountryRules)
   const format =
     value.format === "digital" || value.format === "physical"
       ? value.format
@@ -484,31 +489,21 @@ function parseCartItem(value: unknown): CartItem | null {
       : {}),
     ...(selectedSpecifications ? { selectedSpecifications } : {}),
     ...(priceSats !== undefined ? { priceSats } : {}),
-    ...(parseSourcePrice(value.sourcePrice)
-      ? { sourcePrice: parseSourcePrice(value.sourcePrice) }
-      : {}),
+    ...(sourcePrice ? { sourcePrice } : {}),
     ...(nonemptyString(value.image) ? { image: String(value.image) } : {}),
-    ...(optionalStringArray(value.tags)
-      ? { tags: optionalStringArray(value.tags) }
-      : {}),
+    ...(tags ? { tags } : {}),
     ...(format ? { format } : {}),
     ...(shippingCostSats !== undefined ? { shippingCostSats } : {}),
     ...(stock !== undefined ? { stock } : {}),
-    ...(parseSourcePrice(value.sourceShippingCost)
-      ? { sourceShippingCost: parseSourcePrice(value.sourceShippingCost) }
-      : {}),
+    ...(sourceShippingCost ? { sourceShippingCost } : {}),
     ...(nonemptyString(value.shippingOptionId)
       ? { shippingOptionId: String(value.shippingOptionId) }
       : {}),
     ...(nonemptyString(value.shippingOptionDTag)
       ? { shippingOptionDTag: String(value.shippingOptionDTag) }
       : {}),
-    ...(optionalStringArray(value.shippingCountries)
-      ? { shippingCountries: optionalStringArray(value.shippingCountries) }
-      : {}),
-    ...(parseShippingRules(value.shippingCountryRules)
-      ? { shippingCountryRules: parseShippingRules(value.shippingCountryRules) }
-      : {}),
+    ...(shippingCountries ? { shippingCountries } : {}),
+    ...(shippingCountryRules ? { shippingCountryRules } : {}),
     ...(typeof value.publicZapEnabled === "boolean"
       ? { publicZapEnabled: value.publicZapEnabled }
       : {}),

@@ -98,7 +98,7 @@ function RootShell({
         {children}
       </main>
       <LegalFooter
-        footerRef={footerRef}
+        ref={footerRef}
         aboutLink={
           <Link
             to="/about"
