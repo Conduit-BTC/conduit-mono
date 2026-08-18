@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { NDKEvent, NDKPublishError, type NDKRelay } from "@nostr-dev-kit/ndk"
+import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
   __resetRelayListTestOverrides,
@@ -10,14 +10,14 @@ import {
   deriveRelayOutcomes,
   EVENT_KINDS,
   planPublishRelays,
-  publishDurableSignedEventToRelay,
   publishSignedEventToRelay,
   publishWithPlanner,
   type RelayList,
+  type SignedPublicNostrEvent,
 } from "@conduit/core"
 import {
   __resetNdkTestState,
-  getDurableNdk,
+  refreshNdkRelaySettings,
 } from "../packages/core/src/protocol/ndk"
 
 const NOW = 1_700_000_000_000
@@ -51,8 +51,38 @@ function signedTestEvent(input: {
   return event
 }
 
-function installAcknowledgingWebSocket(closeDelayMs = 0): {
+function signedRawTestEvent(
+  input: {
+    kind?: number
+    tags?: string[][]
+    content?: string
+  } = {}
+): SignedPublicNostrEvent {
+  return finalizeEvent(
+    {
+      kind: input.kind ?? 1,
+      created_at: 1_700_000_000,
+      tags: input.tags ?? [],
+      content: input.content ?? "test",
+    },
+    AUTHOR_SECRET
+  )
+}
+
+function installRelayPublishWebSocket(
+  options: {
+    accepted?: boolean
+    closeAfterResponse?: boolean
+    closeBeforeResponse?: boolean
+    closeDelayMs?: number
+    reason?: string
+    responseDelayMs?: number
+    responseEventId?: string
+  } = {}
+): {
   counters: { closed: number; opened: number }
+  openedUrls: string[]
+  sentEvents: SignedPublicNostrEvent[]
   restore: () => void
 } {
   const originalDescriptor = Object.getOwnPropertyDescriptor(
@@ -60,6 +90,8 @@ function installAcknowledgingWebSocket(closeDelayMs = 0): {
     "WebSocket"
   )
   const counters = { closed: 0, opened: 0 }
+  const openedUrls: string[] = []
+  const sentEvents: SignedPublicNostrEvent[] = []
 
   class AcknowledgingWebSocket {
     static CONNECTING = 0
@@ -75,6 +107,7 @@ function installAcknowledgingWebSocket(closeDelayMs = 0): {
 
     constructor(readonly url: string) {
       counters.opened += 1
+      openedUrls.push(url)
       queueMicrotask(() => {
         if (this.readyState !== AcknowledgingWebSocket.CONNECTING) return
         this.readyState = AcknowledgingWebSocket.OPEN
@@ -83,14 +116,32 @@ function installAcknowledgingWebSocket(closeDelayMs = 0): {
     }
 
     send(payload: string): void {
-      const frame = JSON.parse(payload) as [string, { id?: string } | undefined]
+      const frame = JSON.parse(payload) as [
+        string,
+        SignedPublicNostrEvent | undefined,
+      ]
       if (frame[0] !== "EVENT" || !frame[1]?.id) return
-      const eventId = frame[1].id
-      queueMicrotask(() => {
+      sentEvents.push(frame[1])
+      if (options.closeBeforeResponse) {
+        queueMicrotask(() => this.close())
+        return
+      }
+      const respond = () => {
         this.onmessage?.({
-          data: JSON.stringify(["OK", eventId, true, ""]),
+          data: JSON.stringify([
+            "OK",
+            options.responseEventId ?? frame[1]?.id,
+            options.accepted ?? true,
+            options.reason ?? "",
+          ]),
         } as MessageEvent<string>)
-      })
+        if (options.closeAfterResponse) this.close()
+      }
+      if ((options.responseDelayMs ?? 0) > 0) {
+        setTimeout(respond, options.responseDelayMs)
+      } else {
+        queueMicrotask(respond)
+      }
     }
 
     close(): void {
@@ -105,7 +156,7 @@ function installAcknowledgingWebSocket(closeDelayMs = 0): {
         this.readyState = AcknowledgingWebSocket.CLOSED
         counters.closed += 1
         this.onclose?.(new Event("close"))
-      }, closeDelayMs)
+      }, options.closeDelayMs ?? 0)
     }
   }
 
@@ -117,6 +168,8 @@ function installAcknowledgingWebSocket(closeDelayMs = 0): {
 
   return {
     counters,
+    openedUrls,
+    sentEvents,
     restore: () => {
       if (originalDescriptor) {
         Object.defineProperty(globalThis, "WebSocket", originalDescriptor)
@@ -125,15 +178,6 @@ function installAcknowledgingWebSocket(closeDelayMs = 0): {
       }
     },
   }
-}
-
-function ndkPublishFailure(relayUrl: string, reason: string): NDKPublishError {
-  const relay = { url: `${relayUrl}/` } as NDKRelay
-  return new NDKPublishError(
-    "Not enough relays received the event",
-    new Map([[relay, new Error(reason)]]),
-    new Set()
-  )
 }
 
 function relayList(
@@ -608,139 +652,98 @@ describe("planPublishRelays", () => {
     expect(attempts).toEqual([[`${exclusiveRelay}/`], [`${exclusiveRelay}/`]])
   })
 
-  it("returns a structured ACK for one exact durable relay target", async () => {
+  it("publishes an immutable signed snapshot over one isolated socket", async () => {
+    const fakeWebSocket = installRelayPublishWebSocket()
     const relayUrl = "wss://durable-delete.conduit.market"
-    const event = signedTestEvent({
+    const signedEvent = signedRawTestEvent({
       kind: EVENT_KINDS.DELETION,
       tags: [["e", "a".repeat(64)]],
       content: "",
-      publish: async () => new Set([{ url: `${relayUrl}/` }]),
     })
+    const expectedEvent = {
+      id: signedEvent.id,
+      pubkey: signedEvent.pubkey,
+      created_at: signedEvent.created_at,
+      kind: signedEvent.kind,
+      tags: signedEvent.tags.map((tag) => [...tag]),
+      content: signedEvent.content,
+      sig: signedEvent.sig,
+    }
 
-    await expect(
-      publishSignedEventToRelay({
-        event,
+    try {
+      const publish = publishSignedEventToRelay({
+        signedEvent,
         relayUrl,
         authorPubkey: AUTHOR_PUBKEY,
       })
-    ).resolves.toBe("acked")
-  })
+      signedEvent.id = "f".repeat(64)
+      signedEvent.tags[0]![1] = "mutated-after-publish"
+      signedEvent.content = "mutated-after-publish"
 
-  it("uses one persistent durable relay instead of the ambient event client", async () => {
-    const fakeWebSocket = installAcknowledgingWebSocket()
-    const relayUrl = "wss://durable-isolated.conduit.market"
-    const usedRelays: NDKRelay[] = []
-    const inputEvent = signedTestEvent({
-      kind: EVENT_KINDS.DELETION,
-      tags: [["e", "a".repeat(64)]],
-      content: "",
-      publish: async () => {
-        throw new Error("must publish the isolated event")
-      },
-    })
-    const isolatedEvent = signedTestEvent({
-      kind: EVENT_KINDS.DELETION,
-      tags: [["e", "a".repeat(64)]],
-      content: "",
-      publish: async (relaySet) => {
-        const relay = Array.from(
-          (relaySet as { relays: Set<NDKRelay> }).relays
-        )[0]
-        if (!relay) throw new Error("Expected one durable relay")
-        usedRelays.push(relay)
-        return new Set([relay])
-      },
-    })
-    __setRelayPublishTestOverrides({
-      createDurableEvent: () => isolatedEvent,
-    })
-
-    try {
-      await expect(
-        publishDurableSignedEventToRelay({
-          event: inputEvent,
-          relayUrl,
-          authorPubkey: AUTHOR_PUBKEY,
-        })
-      ).resolves.toBe("acked")
-
-      const durableRelay = usedRelays[0]
-      expect(durableRelay?.url).toBe(`${relayUrl}/`)
-      expect(getDurableNdk().pool.relays.size).toBe(0)
-
-      await expect(
-        publishDurableSignedEventToRelay({
-          event: inputEvent,
-          relayUrl,
-          authorPubkey: AUTHOR_PUBKEY,
-        })
-      ).resolves.toBe("acked")
-      expect(usedRelays[1]).toBe(durableRelay)
-      expect(getDurableNdk().pool.relays.size).toBe(0)
+      await expect(publish).resolves.toBe("acked")
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(fakeWebSocket.sentEvents).toEqual([expectedEvent])
+      expect(fakeWebSocket.openedUrls).toEqual([relayUrl])
+      expect(fakeWebSocket.counters).toEqual({ opened: 1, closed: 1 })
     } finally {
       fakeWebSocket.restore()
     }
   })
 
-  it("disconnects the durable relay after a failed attempt", async () => {
-    const fakeWebSocket = installAcknowledgingWebSocket()
-    const relayUrl = "wss://durable-timeout.conduit.market"
-    const inputEvent = signedTestEvent({
-      kind: EVENT_KINDS.DELETION,
-      tags: [["e", "a".repeat(64)]],
-      content: "",
-      publish: async () => {
-        throw new Error("must publish the isolated event")
-      },
+  it("keeps an in-flight exact publish isolated from ambient NDK resets", async () => {
+    const fakeWebSocket = installRelayPublishWebSocket({ responseDelayMs: 20 })
+    const relayUrl = "wss://durable-isolated.conduit.market"
+    const signedEvent = signedRawTestEvent({ kind: EVENT_KINDS.DELETION })
+
+    try {
+      const publish = publishSignedEventToRelay({
+        signedEvent,
+        relayUrl,
+        authorPubkey: AUTHOR_PUBKEY,
+      })
+      await Promise.resolve()
+      expect(fakeWebSocket.sentEvents).toHaveLength(1)
+
+      refreshNdkRelaySettings("merchant:replacement")
+
+      await expect(publish).resolves.toBe("acked")
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(fakeWebSocket.counters).toEqual({ opened: 1, closed: 1 })
+    } finally {
+      fakeWebSocket.restore()
+    }
+  })
+
+  it("closes the isolated socket after a failed attempt", async () => {
+    const fakeWebSocket = installRelayPublishWebSocket({
+      closeBeforeResponse: true,
     })
-    const isolatedEvent = signedTestEvent({
-      kind: EVENT_KINDS.DELETION,
-      tags: [["e", "a".repeat(64)]],
-      content: "",
-      publish: async () => {
-        throw ndkPublishFailure(relayUrl, "Timeout: 8000ms")
-      },
-    })
-    __setRelayPublishTestOverrides({
-      createDurableEvent: () => isolatedEvent,
-    })
+    const signedEvent = signedRawTestEvent({ kind: EVENT_KINDS.DELETION })
 
     try {
       await expect(
-        publishDurableSignedEventToRelay({
-          event: inputEvent,
-          relayUrl,
+        publishSignedEventToRelay({
+          signedEvent,
+          relayUrl: "wss://durable-timeout.conduit.market",
           authorPubkey: AUTHOR_PUBKEY,
         })
       ).resolves.toBe("timed_out")
-      expect(getDurableNdk().pool.relays.size).toBe(0)
+      expect(fakeWebSocket.counters).toEqual({ opened: 1, closed: 1 })
     } finally {
       fakeWebSocket.restore()
     }
   })
 
-  it("waits for relay close before immediate sequential reuse", async () => {
-    const fakeWebSocket = installAcknowledgingWebSocket(20)
+  it("uses independent sockets for immediate sequential retries", async () => {
+    const fakeWebSocket = installRelayPublishWebSocket({ closeDelayMs: 20 })
+    const relayUrl = "wss://sequential-durable.conduit.market"
+    const signedEvent = signedRawTestEvent({ kind: EVENT_KINDS.DELETION })
 
     try {
-      const relayUrl = "wss://sequential-durable.conduit.market"
-      const event = new NDKEvent(
-        undefined,
-        finalizeEvent(
-          {
-            kind: EVENT_KINDS.DELETION,
-            created_at: NOW,
-            tags: [["e", "a".repeat(64)]],
-            content: "",
-          },
-          AUTHOR_SECRET
-        )
-      )
-
       for (let attempt = 0; attempt < 2; attempt += 1) {
         await expect(
-          publishDurableSignedEventToRelay({
-            event,
+          publishSignedEventToRelay({
+            signedEvent,
             relayUrl,
             authorPubkey: AUTHOR_PUBKEY,
           })
@@ -748,179 +751,224 @@ describe("planPublishRelays", () => {
       }
 
       expect(fakeWebSocket.counters.opened).toBe(2)
+      await new Promise((resolve) => setTimeout(resolve, 25))
       expect(fakeWebSocket.counters.closed).toBe(2)
-      expect(getDurableNdk().pool.relays.size).toBe(0)
+    } finally {
+      fakeWebSocket.restore()
+    }
+  })
+
+  it("isolates concurrent publishes to the same relay and event", async () => {
+    const fakeWebSocket = installRelayPublishWebSocket({ responseDelayMs: 10 })
+    const relayUrl = "wss://concurrent-durable.conduit.market"
+    const signedEvent = signedRawTestEvent({ kind: EVENT_KINDS.DELETION })
+
+    try {
+      await expect(
+        Promise.all([
+          publishSignedEventToRelay({
+            signedEvent,
+            relayUrl,
+            authorPubkey: AUTHOR_PUBKEY,
+          }),
+          publishSignedEventToRelay({
+            signedEvent,
+            relayUrl,
+            authorPubkey: AUTHOR_PUBKEY,
+          }),
+        ])
+      ).resolves.toEqual(["acked", "acked"])
+      expect(fakeWebSocket.counters.opened).toBe(2)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(fakeWebSocket.counters.closed).toBe(2)
     } finally {
       fakeWebSocket.restore()
     }
   })
 
   it("preserves an authenticated author's exact local relay target", async () => {
+    const fakeWebSocket = installRelayPublishWebSocket()
     const relayUrl = "ws://127.0.0.1:7777"
-    const attempts: string[][] = []
-    const event = signedTestEvent({
-      kind: EVENT_KINDS.DELETION,
-      tags: [["e", "a".repeat(64)]],
-      content: "",
-      publish: async (relaySet: unknown) => {
-        const relayUrls = [
-          ...((relaySet as { relayUrls?: Set<string> | string[] }).relayUrls ??
-            []),
-        ]
-        attempts.push(relayUrls)
-        return new Set([{ url: relayUrl }])
-      },
-    })
 
-    await expect(
-      publishSignedEventToRelay({
-        event,
-        relayUrl,
-        authorPubkey: AUTHOR_PUBKEY,
-        authenticatedPubkey: AUTHOR_PUBKEY,
-      })
-    ).resolves.toBe("acked")
-    expect(attempts).toEqual([[`${relayUrl}/`]])
+    try {
+      await expect(
+        publishSignedEventToRelay({
+          signedEvent: signedRawTestEvent({ kind: EVENT_KINDS.DELETION }),
+          relayUrl,
+          authorPubkey: AUTHOR_PUBKEY,
+          authenticatedPubkey: AUTHOR_PUBKEY,
+        })
+      ).resolves.toBe("acked")
+      expect(fakeWebSocket.openedUrls).toEqual([relayUrl])
+    } finally {
+      fakeWebSocket.restore()
+    }
   })
 
   it("rejects an exact insecure relay outside the authenticated author context", async () => {
-    const event = signedTestEvent({
-      kind: EVENT_KINDS.DELETION,
-      tags: [["e", "a".repeat(64)]],
-      content: "",
-      publish: async () => {
-        throw new Error("must not publish")
-      },
-    })
+    const fakeWebSocket = installRelayPublishWebSocket()
 
-    await expect(
-      publishSignedEventToRelay({
-        event,
-        relayUrl: "ws://127.0.0.1:7777",
-        authorPubkey: AUTHOR_PUBKEY,
-      })
-    ).rejects.toThrow("public or authenticated relay target")
+    try {
+      await expect(
+        publishSignedEventToRelay({
+          signedEvent: signedRawTestEvent({ kind: EVENT_KINDS.DELETION }),
+          relayUrl: "ws://127.0.0.1:7777",
+          authorPubkey: AUTHOR_PUBKEY,
+        })
+      ).rejects.toThrow("public or authenticated relay target")
+      expect(fakeWebSocket.counters.opened).toBe(0)
+    } finally {
+      fakeWebSocket.restore()
+    }
   })
 
   it("rejects an exact private WSS relay outside the authenticated author context", async () => {
-    const event = signedTestEvent({
-      kind: EVENT_KINDS.DELETION,
-      tags: [["e", "a".repeat(64)]],
-      content: "",
-      publish: async () => {
-        throw new Error("must not publish")
-      },
-    })
+    const fakeWebSocket = installRelayPublishWebSocket()
 
-    await expect(
-      publishSignedEventToRelay({
-        event,
-        relayUrl: "wss://127.0.0.1:7447",
-        authorPubkey: AUTHOR_PUBKEY,
-      })
-    ).rejects.toThrow("public or authenticated relay target")
+    try {
+      await expect(
+        publishSignedEventToRelay({
+          signedEvent: signedRawTestEvent({ kind: EVENT_KINDS.DELETION }),
+          relayUrl: "wss://127.0.0.1:7447",
+          authorPubkey: AUTHOR_PUBKEY,
+        })
+      ).rejects.toThrow("public or authenticated relay target")
+      expect(fakeWebSocket.counters.opened).toBe(0)
+    } finally {
+      fakeWebSocket.restore()
+    }
   })
 
   it("preserves an authenticated author's exact private WSS target", async () => {
+    const fakeWebSocket = installRelayPublishWebSocket()
     const relayUrl = "wss://127.0.0.1:7447"
-    const event = signedTestEvent({
-      kind: EVENT_KINDS.DELETION,
-      tags: [["e", "a".repeat(64)]],
-      content: "",
-      publish: async () => new Set([{ url: `${relayUrl}/` }]),
-    })
 
-    await expect(
-      publishSignedEventToRelay({
-        event,
-        relayUrl,
-        authorPubkey: AUTHOR_PUBKEY,
-        authenticatedPubkey: AUTHOR_PUBKEY,
-      })
-    ).resolves.toBe("acked")
+    try {
+      await expect(
+        publishSignedEventToRelay({
+          signedEvent: signedRawTestEvent({ kind: EVENT_KINDS.DELETION }),
+          relayUrl,
+          authorPubkey: AUTHOR_PUBKEY,
+          authenticatedPubkey: AUTHOR_PUBKEY,
+        })
+      ).resolves.toBe("acked")
+      expect(fakeWebSocket.openedUrls).toEqual([relayUrl])
+    } finally {
+      fakeWebSocket.restore()
+    }
   })
 
-  it("returns a structured timeout without fallback fanout", async () => {
-    const relayUrl = "wss://durable-timeout.conduit.market"
-    let attempts = 0
-    const event = signedTestEvent({
-      kind: EVENT_KINDS.DELETION,
-      tags: [["e", "a".repeat(64)]],
-      content: "",
-      publish: async () => {
-        attempts += 1
-        throw new Error("connection closed")
-      },
-    })
+  it("refuses a mismatched author before constructing a socket", async () => {
+    const fakeWebSocket = installRelayPublishWebSocket()
 
-    await expect(
-      publishSignedEventToRelay({
-        event,
-        relayUrl,
-        authorPubkey: AUTHOR_PUBKEY,
-      })
-    ).resolves.toBe("timed_out")
-    expect(attempts).toBe(1)
+    try {
+      await expect(
+        publishSignedEventToRelay({
+          signedEvent: signedRawTestEvent({ kind: EVENT_KINDS.DELETION }),
+          relayUrl: "wss://author-mismatch.conduit.market",
+          authorPubkey: OTHER_AUTHOR_PUBKEY,
+        })
+      ).rejects.toThrow("signed by a different account")
+      expect(fakeWebSocket.counters.opened).toBe(0)
+    } finally {
+      fakeWebSocket.restore()
+    }
   })
 
-  it("classifies an NDK relay-set timeout as retryable, not rejected", async () => {
-    const relayUrl = "wss://durable-ndk-timeout.conduit.market"
-    const event = signedTestEvent({
-      kind: EVENT_KINDS.DELETION,
-      tags: [["e", "a".repeat(64)]],
-      content: "",
-      publish: async () => {
-        throw ndkPublishFailure(relayUrl, "Publish timeout after 10000ms")
-      },
+  it("refuses an invalid signed event before constructing a socket", async () => {
+    const fakeWebSocket = installRelayPublishWebSocket()
+    const signedEvent = signedRawTestEvent({ kind: EVENT_KINDS.DELETION })
+    signedEvent.sig = "0".repeat(128)
+
+    try {
+      await expect(
+        publishSignedEventToRelay({
+          signedEvent,
+          relayUrl: "wss://invalid-event.conduit.market",
+          authorPubkey: AUTHOR_PUBKEY,
+        })
+      ).rejects.toThrow("invalid signed Nostr event")
+      expect(fakeWebSocket.counters.opened).toBe(0)
+    } finally {
+      fakeWebSocket.restore()
+    }
+  })
+
+  it("ignores an OK for another event id and keeps the result retryable", async () => {
+    const fakeWebSocket = installRelayPublishWebSocket({
+      closeAfterResponse: true,
+      responseEventId: "f".repeat(64),
     })
 
-    await expect(
-      publishSignedEventToRelay({
-        event,
-        relayUrl,
-        authorPubkey: AUTHOR_PUBKEY,
-      })
-    ).resolves.toBe("timed_out")
+    try {
+      await expect(
+        publishSignedEventToRelay({
+          signedEvent: signedRawTestEvent({ kind: EVENT_KINDS.DELETION }),
+          relayUrl: "wss://wrong-ack.conduit.market",
+          authorPubkey: AUTHOR_PUBKEY,
+        })
+      ).resolves.toBe("timed_out")
+      expect(fakeWebSocket.counters.closed).toBe(1)
+    } finally {
+      fakeWebSocket.restore()
+    }
   })
 
   it("classifies a NIP-01 OK-false reason as an explicit rejection", async () => {
-    const relayUrl = "wss://durable-reject.conduit.market"
-    const event = signedTestEvent({
-      kind: EVENT_KINDS.DELETION,
-      tags: [["e", "a".repeat(64)]],
-      content: "",
-      publish: async () => {
-        throw ndkPublishFailure(relayUrl, "blocked: deletion denied")
-      },
+    const fakeWebSocket = installRelayPublishWebSocket({
+      accepted: false,
+      reason: "blocked: deletion denied",
     })
 
-    await expect(
-      publishSignedEventToRelay({
-        event,
-        relayUrl,
-        authorPubkey: AUTHOR_PUBKEY,
-      })
-    ).resolves.toBe("rejected")
+    try {
+      await expect(
+        publishSignedEventToRelay({
+          signedEvent: signedRawTestEvent({ kind: EVENT_KINDS.DELETION }),
+          relayUrl: "wss://durable-reject.conduit.market",
+          authorPubkey: AUTHOR_PUBKEY,
+        })
+      ).resolves.toBe("rejected")
+    } finally {
+      fakeWebSocket.restore()
+    }
   })
 
   it("treats a NIP-01 duplicate response as an idempotent acknowledgement", async () => {
-    const relayUrl = "wss://durable-duplicate.conduit.market"
-    const event = signedTestEvent({
-      kind: EVENT_KINDS.DELETION,
-      tags: [["e", "a".repeat(64)]],
-      content: "",
-      publish: async () => {
-        throw ndkPublishFailure(relayUrl, "duplicate: already have this event")
-      },
+    const fakeWebSocket = installRelayPublishWebSocket({
+      accepted: false,
+      reason: "duplicate: already have this event",
     })
 
-    await expect(
-      publishSignedEventToRelay({
-        event,
-        relayUrl,
-        authorPubkey: AUTHOR_PUBKEY,
-      })
-    ).resolves.toBe("acked")
+    try {
+      await expect(
+        publishSignedEventToRelay({
+          signedEvent: signedRawTestEvent({ kind: EVENT_KINDS.DELETION }),
+          relayUrl: "wss://durable-duplicate.conduit.market",
+          authorPubkey: AUTHOR_PUBKEY,
+        })
+      ).resolves.toBe("acked")
+    } finally {
+      fakeWebSocket.restore()
+    }
+  })
+
+  it("keeps an unprefixed OK-false response retryable", async () => {
+    const fakeWebSocket = installRelayPublishWebSocket({
+      accepted: false,
+      reason: "could not store event",
+    })
+
+    try {
+      await expect(
+        publishSignedEventToRelay({
+          signedEvent: signedRawTestEvent({ kind: EVENT_KINDS.DELETION }),
+          relayUrl: "wss://durable-ambiguous.conduit.market",
+          authorPubkey: AUTHOR_PUBKEY,
+        })
+      ).resolves.toBe("timed_out")
+    } finally {
+      fakeWebSocket.restore()
+    }
   })
 
   it("retries non-NIP-65 author events on public fallback relays when configured writes fail", async () => {
