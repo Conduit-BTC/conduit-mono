@@ -358,7 +358,7 @@ function RemoteSignerConnect({
                 readOnly
                 aria-label="Nostr Connect connection URL"
                 spellCheck={false}
-                className="min-h-24 resize-none break-all font-mono text-base"
+                className="min-h-24 resize-none break-all font-mono"
               />
               <div className="grid gap-2 sm:grid-cols-2">
                 <Button asChild className="w-full">
@@ -412,7 +412,7 @@ function RemoteSignerConnect({
             autoCorrect="off"
             spellCheck={false}
             disabled={connectDisabled}
-            className="min-h-20 resize-none break-all font-mono text-base"
+            className="min-h-20 resize-none break-all font-mono"
           />
           <Button
             type="button"

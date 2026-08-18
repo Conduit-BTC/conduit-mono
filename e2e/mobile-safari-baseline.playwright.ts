@@ -304,9 +304,7 @@ test.describe("CND-162 mobile browser baseline", () => {
 
       await dialog.getByRole("tab", { name: "QR code" }).click()
       const closeButton = dialog.getByRole("button", { name: "Close" })
-      const closeBox = await closeButton.boundingBox()
-      expect(closeBox?.width).toBeGreaterThanOrEqual(44)
-      expect(closeBox?.height).toBeGreaterThanOrEqual(44)
+      await expectMobileTouchTarget(closeButton)
 
       await page.addStyleTag({
         content: `
