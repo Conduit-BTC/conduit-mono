@@ -24,6 +24,7 @@ import {
 } from "@conduit/ui"
 import { MarketHeader } from "../components/MarketHeader"
 import { MarketCartHud } from "../components/MarketCartHud"
+import { CartReadinessCoordinator } from "../components/CartReadinessCoordinator"
 
 export const Route = createRootRoute({
   component: RootLayout,
@@ -220,6 +221,7 @@ function MarketProductRoot({ pathname }: { pathname: string }) {
 
   return (
     <RootShell cartHud={<MarketCartHud pathname={pathname} />}>
+      <CartReadinessCoordinator />
       <Outlet />
       {authUrl && (
         <SignerAuthUrlNotice authUrl={authUrl} onDismiss={dismissAuthUrl} />

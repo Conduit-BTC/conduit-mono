@@ -22,6 +22,13 @@ import {
   type NwcSessionSnapshot,
 } from "../lib/buyer-nwc-session"
 
+/**
+ * Mount-time NWC warm reuse window. Sequential route mounts inside this
+ * window reuse the last live probe instead of re-opening wallet relays;
+ * explicit reconnects and payment attempts still probe live.
+ */
+const NWC_MOUNT_WARM_MAX_AGE_MS = 30_000
+
 const WALLET_STORAGE_KEY = "conduit:buyer-wallet-nwc"
 const WALLET_CAPABILITY_STORAGE_KEY = "conduit:buyer-wallet-nwc-capability"
 const WALLET_RETRY_POLL_MS = 12_000
@@ -36,10 +43,7 @@ export type WalletConnectionStatus =
   | "error"
 
 export type NwcReachability =
-  | "unchecked"
-  | "checking"
-  | "reachable"
-  | "unreachable"
+  "unchecked" | "checking" | "reachable" | "unreachable"
 
 export interface WalletState {
   status: WalletConnectionStatus
@@ -367,7 +371,7 @@ export function useWallet(options: UseWalletOptions = {}): UseWalletReturn {
     }))
 
     session
-      .warm()
+      .ensureWarm(NWC_MOUNT_WARM_MAX_AGE_MS)
       .then((snapshot) => {
         writeSnapshotCapabilityIfCurrent(stored, snapshot)
         setState(getStateFromSessionSnapshot(snapshot, cached?.info ?? null))

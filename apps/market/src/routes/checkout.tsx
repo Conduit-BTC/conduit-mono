@@ -63,7 +63,12 @@ import {
 } from "../components/MerchantIdentity"
 import { SignerSwitch } from "../components/SignerSwitch"
 import { type CartItem, useCart } from "../hooks/useCart"
-import { useCartProductAvailability } from "../hooks/useCartProductAvailability"
+import {
+  useCartReadiness,
+  useMerchantLnurlPreflight,
+  type MerchantCartRefreshResult,
+} from "../hooks/useCartReadiness"
+import { LNURL_METADATA_LEASE_MS } from "../lib/cart-readiness"
 import { useMerchantTrustContext } from "../hooks/useMerchantTrustContext"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import {
@@ -744,14 +749,6 @@ function CheckoutPage() {
   const authPending = authStatus === "restoring" || authStatus === "connecting"
   const isGuestCheckout = !signerConnected && !authPending
 
-  // LNURL probe state
-  const [lnurlPayAvailable, setLnurlPayAvailable] = useState(false)
-  const [lnurlAllowsNostr, setLnurlAllowsNostr] = useState(false)
-  const [lnurlPayMetadata, setLnurlPayMetadata] = useState<Awaited<
-    ReturnType<typeof fetchLnurlPayMetadata>
-  > | null>(null)
-  const [lnurlProbing, setLnurlProbing] = useState(false)
-
   const selectedMerchant =
     search.merchant ??
     (Array.from(new Set(cart.items.map((item) => item.merchantPubkey)))
@@ -763,15 +760,35 @@ function CheckoutPage() {
     if (!selectedMerchant) return []
     return selectMerchantCartItems(cart.items, selectedMerchant)
   }, [cart.items, selectedMerchant])
-  const checkoutAvailability = useCartProductAvailability(checkoutItems)
-  const checkoutAvailabilityMessage = useMemo(
-    () =>
-      getCartAvailabilityBlockingMessage(
-        checkoutItems,
-        checkoutAvailability.availabilityByProductId
-      ),
-    [checkoutAvailability.availabilityByProductId, checkoutItems]
+  // Checkout consumes the same prepared per-merchant readiness the HUD and
+  // cart warmed, so arriving within the freshness lease starts no new
+  // blocking read. The authoritative live refresh still happens immediately
+  // before order publication.
+  const checkoutReadiness = useCartReadiness(checkoutItems)
+  const selectedMerchantReadiness = selectedMerchant
+    ? checkoutReadiness.byMerchant.get(selectedMerchant)
+    : undefined
+  const emptyAvailability = useMemo(
+    () => new Map<string, CartProductAvailability>(),
+    []
   )
+  const checkoutAvailability = {
+    availabilityByProductId:
+      selectedMerchantReadiness?.availabilityByProductId ?? emptyAvailability,
+    // Initial no-evidence read only; a background refresh keeps the prepared
+    // evidence actionable instead of blocking every control.
+    isChecking: selectedMerchantReadiness?.isChecking ?? false,
+    refresh:
+      selectedMerchantReadiness?.refresh ??
+      (async (): Promise<MerchantCartRefreshResult> => ({
+        availability: [],
+        products: [],
+        fresh: false,
+        diagnostics: [],
+      })),
+  }
+  const checkoutAvailabilityMessage =
+    selectedMerchantReadiness?.blockingMessage ?? null
   const hasUnavailableCheckoutItems = checkoutAvailabilityMessage !== null
   const publicZapPolicy = useMemo(
     () => getCartPublicZapPolicy(checkoutItems),
@@ -783,31 +800,6 @@ function CheckoutPage() {
       : publicZapPolicy.missingPolicyProductIds.length > 0
         ? "At least one product is missing public zap policy metadata, so checkout will use a private invoice."
         : null
-  const guestZapMode: CheckoutZapMode =
-    anonZapSignerAvailable &&
-    lnurlAllowsNostr &&
-    publicZapPolicy.publicZapsAllowed
-      ? "anonymous_public_zap"
-      : "private_checkout"
-  const selectedZapMode = isGuestCheckout ? guestZapMode : zapMode
-
-  const zapVisibility = getCheckoutZapVisibility(selectedZapMode)
-  const zapContentEditable = isPublicZapContentEditable(
-    selectedZapMode,
-    publicZapPolicy.effectiveZapMessagePolicy
-  )
-  const shopperZapContentEditable =
-    publicZapPolicy.effectiveZapMessagePolicy === "custom"
-  const publicZapModeDescription = publicZapPolicyMessage
-    ? publicZapPolicyMessage
-    : !lnurlAllowsNostr
-      ? "This merchant wallet does not advertise public zap receipts."
-      : shopperZapContentEditable
-        ? "Include an editable public zap comment."
-        : "Use the merchant's generic public zap comment."
-  const anonZapModeDescription = !anonZapSignerAvailable
-    ? "Anon Conduit Shopper signing is not configured yet."
-    : "Use a fixed item-count message without identifying the shopper."
 
   // True when every item in the cart is a digital product (no shipping needed)
   const isAllDigital = useMemo(
@@ -873,6 +865,39 @@ function CheckoutPage() {
   })
   const merchantProfile = merchantTrust.profile
   const merchantLud16 = merchantProfile?.lud16
+  // Shared LNURL-pay metadata preflight: the same cached read the HUD and
+  // cart warmed while this merchant had items in the cart. The lease and
+  // Lightning-address key control refresh; no invoice is requested here.
+  const lnurlPreflight = useMerchantLnurlPreflight(merchantLud16)
+  const lnurlProbing = lnurlPreflight.status === "pending"
+  const lnurlPayAvailable = lnurlPreflight.status === "ready"
+  const lnurlPayMetadata = lnurlPreflight.metadata
+  const lnurlAllowsNostr = lnurlPayMetadata?.allowsNostr === true
+  const guestZapMode: CheckoutZapMode =
+    anonZapSignerAvailable &&
+    lnurlAllowsNostr &&
+    publicZapPolicy.publicZapsAllowed
+      ? "anonymous_public_zap"
+      : "private_checkout"
+  const selectedZapMode = isGuestCheckout ? guestZapMode : zapMode
+
+  const zapVisibility = getCheckoutZapVisibility(selectedZapMode)
+  const zapContentEditable = isPublicZapContentEditable(
+    selectedZapMode,
+    publicZapPolicy.effectiveZapMessagePolicy
+  )
+  const shopperZapContentEditable =
+    publicZapPolicy.effectiveZapMessagePolicy === "custom"
+  const publicZapModeDescription = publicZapPolicyMessage
+    ? publicZapPolicyMessage
+    : !lnurlAllowsNostr
+      ? "This merchant wallet does not advertise public zap receipts."
+      : shopperZapContentEditable
+        ? "Include an editable public zap comment."
+        : "Use the merchant's generic public zap comment."
+  const anonZapModeDescription = !anonZapSignerAvailable
+    ? "Anon Conduit Shopper signing is not configured yet."
+    : "Use a fixed item-count message without identifying the shopper."
   const merchantName = merchantTrust.merchantName
   const selectZapMode = useCallback(
     (nextMode: CheckoutZapMode) => {
@@ -934,43 +959,6 @@ function CheckoutPage() {
       window.removeEventListener("focus", check)
     }
   }, [])
-
-  // Probe merchant's LNURL for Nostr zap support when merchant profile arrives
-  useEffect(() => {
-    setLnurlPayAvailable(false)
-    setLnurlAllowsNostr(false)
-    setLnurlPayMetadata(null)
-
-    if (!merchantLud16) {
-      setLnurlProbing(false)
-      return
-    }
-
-    let cancelled = false
-    setLnurlProbing(true)
-
-    fetchLnurlPayMetadata(merchantLud16)
-      .then((meta) => {
-        if (!cancelled) {
-          setLnurlPayMetadata(meta)
-          setLnurlPayAvailable(true)
-          setLnurlAllowsNostr(meta.allowsNostr)
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setLnurlPayAvailable(false)
-          setLnurlAllowsNostr(false)
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setLnurlProbing(false)
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [merchantLud16])
 
   useEffect(() => {
     if (isGuestCheckout) return
@@ -1750,6 +1738,27 @@ function CheckoutPage() {
   }
 
   /**
+   * Reuses the shared LNURL preflight result while it is inside its lease and
+   * bound to the same Lightning address; otherwise fetches fresh metadata.
+   * The payment attempt therefore refetches only when the cached evidence is
+   * absent, expired, or changed rather than unconditionally at every layer.
+   */
+  async function getFreshLnurlMetadata(
+    lud16: string
+  ): Promise<Awaited<ReturnType<typeof fetchLnurlPayMetadata>>> {
+    if (
+      lnurlPreflight.status === "ready" &&
+      lnurlPreflight.metadata &&
+      lnurlPreflight.dataUpdatedAt !== null &&
+      Date.now() - lnurlPreflight.dataUpdatedAt <= LNURL_METADATA_LEASE_MS &&
+      merchantLud16 === lud16
+    ) {
+      return lnurlPreflight.metadata
+    }
+    return fetchLnurlPayMetadata(lud16)
+  }
+
+  /**
    * Fast zap / direct payment. Publishes the order, creates the durable order
    * lifecycle record, hands payment to the route-independent service, and
    * navigates to `/orders?order=<id>` immediately (CND-122). Checkout is no
@@ -1806,8 +1815,10 @@ function CheckoutPage() {
     })
 
     try {
-      await assertCheckoutItemsAvailable()
-
+      // One authoritative live listing refresh runs immediately before order
+      // publication below; prepared readiness already validated this cart on
+      // arrival, so an extra blocking refresh here would duplicate work and
+      // burn the claimed authorization window.
       if (hasUnpricedCheckoutItems) {
         throw new Error(
           "One or more items cannot be converted to sats right now. Refresh prices before ordering."
@@ -1852,7 +1863,7 @@ function CheckoutPage() {
       const effectiveZapContent =
         checkoutMode === "private_checkout" ? "" : zapContent
       const requiresPublicZap = isCheckoutPublicZapMode(checkoutMode)
-      const currentLnurlMetadata = await fetchLnurlPayMetadata(merchantLud16)
+      const currentLnurlMetadata = await getFreshLnurlMetadata(merchantLud16)
       if (
         checkoutPricing.totalMsats < currentLnurlMetadata.minSendable ||
         checkoutPricing.totalMsats > currentLnurlMetadata.maxSendable

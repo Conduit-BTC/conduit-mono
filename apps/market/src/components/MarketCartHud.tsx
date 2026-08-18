@@ -3,11 +3,9 @@ import { Link, useNavigate } from "@tanstack/react-router"
 import {
   formatNpub,
   getProfileName,
-  hasWebLN,
   pubkeyToNpub,
   useAuth,
   useProfiles,
-  validateAddressConsistency,
 } from "@conduit/core"
 import {
   Avatar,
@@ -20,37 +18,20 @@ import {
 } from "@conduit/ui"
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { useCart } from "../hooks/useCart"
-import { useCartProductAvailability } from "../hooks/useCartProductAvailability"
+import { useCartReadiness } from "../hooks/useCartReadiness"
+import { useMerchantCheckoutCapability } from "../hooks/useMerchantCheckoutCapability"
 import { useShopperPricing } from "../hooks/useShopperPricing"
-import { useWallet } from "../hooks/useWallet"
 import {
-  getCartAvailabilityBlockingMessage,
   getCartCommerceFingerprint,
   getCartCostSummary,
   getCartItemKey,
-  cartItemsMatchCurrentProducts,
   getCartItemStockForAvailability,
   groupCartItems,
   isCartProductAvailabilityBlocking,
 } from "../lib/cart-model"
-import {
-  getCartHudCheckoutCapability,
-  getCartHudCheckoutFallbackMessage,
-  getCartHudRouteMode,
-  reconcileCartHudMerchant,
-} from "../lib/cart-hud"
+import { getCartHudRouteMode, reconcileCartHudMerchant } from "../lib/cart-hud"
 import { MerchantAvatarFallback } from "./MerchantIdentity"
-import { buildCheckoutPricingIntent } from "../lib/checkout-payment"
-import { readCheckoutShippingSession } from "../lib/checkout-session"
-import {
-  buildShippingAddressFromForm,
-  validateShippingFields,
-} from "../lib/checkout-validation"
 import { armHudZapIntent } from "../lib/hud-zap-intent"
-import {
-  getCartShippingDestinationEligibility,
-  hasPhysicalItemsMissingShippingZone,
-} from "../lib/cart-shipping-options"
 
 const HUD_EXIT_DURATION_MS = 240
 
@@ -60,10 +41,9 @@ export type MarketCartHudProps = {
 
 export function MarketCartHud({ pathname }: MarketCartHudProps) {
   const navigate = useNavigate()
-  const { pubkey, status: authStatus } = useAuth()
+  const { pubkey } = useAuth()
   const cart = useCart()
   const shopperPricing = useShopperPricing()
-  const wallet = useWallet()
   const groups = useMemo(() => groupCartItems(cart.items), [cart.items])
   const merchantPubkeys = useMemo(
     () => groups.map((group) => group.merchantPubkey),
@@ -81,7 +61,6 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   const [announcement, setAnnouncement] = useState("")
   const [mounted, setMounted] = useState(false)
   const [entered, setEntered] = useState(false)
-  const [webLnAvailable, setWebLnAvailable] = useState(false)
   const [zapStarting, setZapStarting] = useState(false)
   const hudRef = useRef<HTMLElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
@@ -115,7 +94,10 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   const selectedMerchant =
     currentMerchant ?? lastVisibleRef.current?.merchantPubkey ?? null
   const activeGroup = currentGroup ?? lastVisibleRef.current?.group
-  const cartAvailability = useCartProductAvailability(currentGroup?.items ?? [])
+  const cartReadiness = useCartReadiness(cart.items)
+  const activeReadiness = selectedMerchant
+    ? cartReadiness.byMerchant.get(selectedMerchant)
+    : undefined
   const activeProfile = selectedMerchant
     ? profiles.data[selectedMerchant]
     : undefined
@@ -128,70 +110,22 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
       ? shopperPricing.formatSatsAmount(activeSummary.totalSats)
       : null
     : null
-  const activeAvailabilityMessage = activeGroup
-    ? getCartAvailabilityBlockingMessage(
-        activeGroup.items,
-        cartAvailability.availabilityByProductId
-      )
-    : null
+  const activeAvailabilityMessage = activeReadiness?.blockingMessage ?? null
   const checkoutDisabled = !!activeAvailabilityMessage
-  const isAllDigital = Boolean(
-    activeGroup?.items.length &&
-    activeGroup.items.every((item) => item.format === "digital")
-  )
-  const shippingPreset = readCheckoutShippingSession()
-  const shippingAddress = buildShippingAddressFromForm(shippingPreset)
-  const shippingPresetReady =
-    isAllDigital ||
-    (validateShippingFields(shippingPreset).length === 0 &&
-      validateAddressConsistency(shippingAddress).canDirectPay)
-  const shippingDestinationReady = Boolean(
-    isAllDigital ||
-    (activeGroup &&
-      !hasPhysicalItemsMissingShippingZone(activeGroup.items) &&
-      getCartShippingDestinationEligibility(
-        {
-          country: shippingAddress.country,
-          postalCode: shippingAddress.postalCode,
-        },
-        activeGroup.items,
-        []
-      ).eligible === true)
-  )
-  const pricingIntent = activeGroup
-    ? buildCheckoutPricingIntent(activeGroup.items, shopperPricing.quote)
-    : null
-  const listingTermsCurrent = Boolean(
-    activeGroup &&
-    cartItemsMatchCurrentProducts(activeGroup.items, cartAvailability.products)
-  )
-  const automaticWalletReady =
-    webLnAvailable ||
-    (wallet.status === "pay-capable" && Boolean(wallet.connection))
-  // Browse-time eligibility stays capability-only. Contacting the merchant's
-  // LNURL endpoint here would disclose the visit to a merchant-controlled
-  // server, so checkout revalidates the payment endpoint and amount limits
-  // inside its explicit payment flow instead.
-  const checkoutCapability = getCartHudCheckoutCapability({
-    listingFresh:
-      shouldShow &&
-      cartAvailability.isFresh &&
-      !cartAvailability.hasUnavailableItems &&
-      listingTermsCurrent,
-    shopperPresetReady: shippingPresetReady,
-    walletReady:
-      authStatus === "connected" && Boolean(pubkey) && automaticWalletReady,
-    itemPricesAvailable:
-      activeSummary?.itemPricesAvailable === true &&
-      pricingIntent?.status === "ok",
-    shippingReady:
-      shippingPresetReady &&
-      shippingDestinationReady &&
-      activeSummary?.shippingReadyForZap === true,
-    merchantLightningReady: Boolean(merchantLud16),
+  // Cart presence is sufficient shopper intent for the LNURL metadata
+  // preflight, so the HUD decides Zap Out capability from the shared
+  // per-merchant readiness and metadata evidence. Checkout still performs
+  // the authoritative endpoint, amount, and invoice validation inside its
+  // explicit payment flow.
+  const capabilityView = useMerchantCheckoutCapability({
+    items: activeGroup?.items ?? [],
+    readiness: activeReadiness,
+    merchantLud16,
+    enabled: shouldShow,
   })
-  const checkoutFallbackMessage =
-    getCartHudCheckoutFallbackMessage(checkoutCapability)
+  const checkoutCapability = capabilityView.capability
+  const pricingIntent = capabilityView.pricingIntent
+  const checkoutFallbackMessage = capabilityView.fallbackMessage
   // Collapsing hides and inerts the panel. If focus is inside, move it to
   // the disclosure toggle first so keyboard and screen-reader users are not
   // dropped at the document root.
@@ -213,13 +147,6 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   const activateMerchant = useCallback((merchantPubkey: string) => {
     setActiveMerchant(merchantPubkey)
     setExpanded(true)
-  }, [])
-
-  useEffect(() => {
-    const check = () => setWebLnAvailable(hasWebLN())
-    check()
-    window.addEventListener("focus", check)
-    return () => window.removeEventListener("focus", check)
   }, [])
 
   useEffect(() => {
@@ -341,7 +268,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
 
   const merchantName =
     getProfileName(activeProfile) ?? `Store ${formatNpub(selectedMerchant, 6)}`
-  const zapReady = checkoutCapability.state === "zap_ready"
+  const zapReady = checkoutCapability.outcome === "zap_candidate"
   const startZapOut = () => {
     if (!zapReady || zapStarting || !pubkey || pricingIntent?.status !== "ok") {
       return
@@ -538,7 +465,8 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                   size="sm"
                   disabled={zapStarting}
                   canComplete={() =>
-                    checkoutCapability.state === "zap_ready" && !zapStarting
+                    checkoutCapability.outcome === "zap_candidate" &&
+                    !zapStarting
                   }
                   onHoldComplete={startZapOut}
                   chargedLabel="Release to zap out"
@@ -604,7 +532,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                 {activeGroup.items.map((item) => {
                   const display = shopperPricing.formatPrice(item)
                   const availability =
-                    cartAvailability.availabilityByProductId.get(item.productId)
+                    activeReadiness?.availabilityByProductId.get(item.productId)
                   const currentStock = getCartItemStockForAvailability(
                     item,
                     availability
@@ -683,7 +611,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                               className="h-9 w-9"
                               aria-label={`Increase ${item.title} quantity`}
                               disabled={
-                                cartAvailability.isChecking ||
+                                activeReadiness?.isChecking === true ||
                                 itemUnavailable ||
                                 (typeof currentStock === "number" &&
                                   item.quantity >= currentStock)
@@ -706,8 +634,16 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
               </div>
 
               <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--border)] pt-3">
-                <span className="max-w-md text-xs text-[var(--text-muted)]">
-                  {activeAvailabilityMessage ?? checkoutFallbackMessage}
+                <span
+                  role="status"
+                  className="max-w-md text-xs text-[var(--text-muted)]"
+                >
+                  {activeAvailabilityMessage ??
+                    (activeReadiness?.isChecking
+                      ? "Checking stock…"
+                      : activeReadiness?.isRefreshing
+                        ? "Refreshing availability…"
+                        : checkoutFallbackMessage)}
                 </span>
                 <div className="flex shrink-0 gap-2">
                   <Button asChild variant="outline" size="sm">
@@ -734,13 +670,14 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                       size="sm"
                       disabled={zapStarting}
                       canComplete={() =>
-                        checkoutCapability.state === "zap_ready" && !zapStarting
+                        checkoutCapability.outcome === "zap_candidate" &&
+                        !zapStarting
                       }
                       onHoldComplete={startZapOut}
                       chargedLabel="Release to zap out"
                     >
                       <Zap className="h-4 w-4" aria-hidden="true" />
-                      Zap out
+                      Continue to Zap Out
                     </HoldToReleaseButton>
                   ) : (
                     <Button asChild size="sm">

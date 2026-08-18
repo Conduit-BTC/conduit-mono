@@ -212,11 +212,18 @@ describe("Market cart HUD policy", () => {
     expect(hud).toContain("Zap out")
     expect(hud).toContain('intent: "zap"')
     expect(hud).toContain("checkoutFallbackMessage")
-    expect(hud).toContain("const wallet = useWallet()")
+    // Capability comes from the shared per-merchant derivation over prepared
+    // readiness and the LNURL preflight, not from HUD-local wallet probing.
+    expect(hud).toContain("useMerchantCheckoutCapability({")
+    expect(hud).toContain("useCartReadiness(cart.items)")
+    expect(hud).not.toContain("useWallet()")
     expect(hud).not.toContain("refreshBalance: true")
     expect(hud).not.toContain("getKnownWalletPaymentConstraint")
     expect(hud).not.toContain("fetchLnurlPayMetadata")
-    expect(checkout).toContain("fetchLnurlPayMetadata(merchantLud16)")
+    // Checkout reuses the fresh preflighted metadata and refetches only when
+    // it is absent, expired, or changed.
+    expect(checkout).toContain("getFreshLnurlMetadata(merchantLud16)")
+    expect(checkout).toContain("useMerchantLnurlPreflight(merchantLud16)")
     expect(checkout).toContain("lnurlAllowsNostr: lnurlReadyForSelectedPayment")
     expect(checkout).toContain("lnurlAmountWithinRange: lnurlAmountReady")
     expect(checkout).toContain("if (!fastEligible) {")
