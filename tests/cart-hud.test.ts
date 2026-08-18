@@ -185,7 +185,15 @@ describe("Market cart HUD policy", () => {
     expect(checkout).toContain("consumeHudZapIntent(selectedMerchant)")
     expect(checkout).toContain("!autoZapAuthorization")
     expect(checkout).toContain("getHudZapAuthorizationRejection")
-    expect(checkout).toContain("void payNowRef.current()")
+    // The automatic attempt claims the authorization exactly once: state
+    // clears before the attempt starts, so a failed automatic zap out never
+    // leaves an expired token behind for a later manual hold to inherit.
+    expect(checkout).toContain("setAutoZapAuthorization(null)")
+    expect(checkout).toContain("void payNowRef.current(autoZapAuthorization)")
+    expect(checkout).toContain("void payNow()")
+    expect(checkout).toContain(
+      "assertClaimedZapAuthorization(zapAuthorization, pricingIntent.totalMsats)"
+    )
     expect(checkout).toContain(
       'const [step, setStep] = useState<CheckoutStep>("shipping")'
     )

@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 import {
   armHudZapIntent,
   consumeHudZapIntent,
+  getHudZapAuthorizationBindingMismatch,
   getHudZapAuthorizationRejection,
 } from "../apps/market/src/lib/hud-zap-intent"
 import {
@@ -106,5 +107,39 @@ describe("HUD zap intent", () => {
         nowMs: 2_000,
       })
     ).toBeNull()
+  })
+})
+
+describe("claimed HUD zap authorization", () => {
+  it("keeps a claimed attempt valid past the arm-time TTL", () => {
+    const intent = authorization()
+    expect(
+      getHudZapAuthorizationBindingMismatch(intent, {
+        merchantPubkey: "merchant-a",
+        buyerPubkey: "buyer-a",
+        items,
+        totalMsats: 1_000_000,
+      })
+    ).toBeNull()
+  })
+
+  it("still aborts a claimed attempt when commerce terms change", () => {
+    const intent = authorization()
+    expect(
+      getHudZapAuthorizationBindingMismatch(intent, {
+        merchantPubkey: "merchant-a",
+        buyerPubkey: "buyer-a",
+        items,
+        totalMsats: 2_000_000,
+      })
+    ).toBe("changed")
+    expect(
+      getHudZapAuthorizationBindingMismatch(intent, {
+        merchantPubkey: "merchant-a",
+        buyerPubkey: "buyer-b",
+        items,
+        totalMsats: 1_000_000,
+      })
+    ).toBe("changed")
   })
 })

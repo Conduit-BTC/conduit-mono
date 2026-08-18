@@ -139,6 +139,7 @@ import {
 } from "../lib/guest-order-identity"
 import {
   consumeHudZapIntent,
+  getHudZapAuthorizationBindingMismatch,
   getHudZapAuthorizationRejection,
   type HudZapAuthorization,
 } from "../lib/hud-zap-intent"
@@ -718,7 +719,9 @@ function CheckoutPage() {
   // order (CND-89).
   const paymentInFlightRef = useRef(false)
   const autoZapStartedRef = useRef(false)
-  const payNowRef = useRef<() => Promise<void>>(async () => undefined)
+  const payNowRef = useRef<
+    (zapAuthorization?: HudZapAuthorization | null) => Promise<void>
+  >(async () => undefined)
   const [autoZapAuthorization, setAutoZapAuthorization] =
     useState<HudZapAuthorization | null>(null)
   const anonZapSignerAvailable = isAnonZapSignerConfigured()
@@ -1318,7 +1321,7 @@ function CheckoutPage() {
     }
     // An armed zap out was authorized against the details the shopper held on.
     // Editing delivery details withdraws that authorization.
-    if (autoZapAuthorization && !autoZapStartedRef.current) {
+    if (autoZapAuthorization) {
       setAutoZapAuthorization(null)
       setError(
         "Delivery details changed after zap out was armed. Review checkout before paying."
@@ -1727,10 +1730,13 @@ function CheckoutPage() {
     return buildCheckoutPricingIntent(checkoutItems, refetched)
   }
 
-  function assertHudZapAuthorization(totalMsats: number): void {
-    if (!autoZapAuthorization) return
+  function assertClaimedZapAuthorization(
+    zapAuthorization: HudZapAuthorization | null,
+    totalMsats: number
+  ): void {
+    if (!zapAuthorization) return
     if (
-      getHudZapAuthorizationRejection(autoZapAuthorization, {
+      getHudZapAuthorizationBindingMismatch(zapAuthorization, {
         merchantPubkey: selectedMerchant,
         buyerPubkey: signedBuyerPubkey,
         items: checkoutItems,
@@ -1754,7 +1760,9 @@ function CheckoutPage() {
    * is created and the service surfaces the invoice for an external wallet on
    * Orders (CND-120).
    */
-  async function payNow(): Promise<void> {
+  async function payNow(
+    zapAuthorization: HudZapAuthorization | null = null
+  ): Promise<void> {
     if (!selectedMerchant || checkoutItems.length === 0) return
     if (!signedBuyerPubkey && !isGuestCheckout) return
     const requestedCheckoutMode = selectedZapMode
@@ -1838,7 +1846,7 @@ function CheckoutPage() {
       if (pricingIntent.status !== "ok") {
         throw new Error(pricingIntent.reason)
       }
-      assertHudZapAuthorization(pricingIntent.totalMsats)
+      assertClaimedZapAuthorization(zapAuthorization, pricingIntent.totalMsats)
       const checkoutMode = requestedCheckoutMode
       const checkoutPricing = pricingIntent
       const effectiveZapContent =
@@ -1928,7 +1936,10 @@ function CheckoutPage() {
       orderRumor.content = JSON.stringify(orderPayload)
 
       await assertCheckoutItemsAvailable()
-      assertHudZapAuthorization(checkoutPricing.totalMsats)
+      assertClaimedZapAuthorization(
+        zapAuthorization,
+        checkoutPricing.totalMsats
+      )
       const orderDelivery = await publishBuyerOrderMessage(
         orderRumor,
         ndk,
@@ -2141,9 +2152,15 @@ function CheckoutPage() {
     if (
       !autoZapAuthorization ||
       autoZapStartedRef.current ||
-      autoZapInputsResolving ||
-      hasUnavailableCheckoutItems
+      autoZapInputsResolving
     ) {
+      return
+    }
+    if (hasUnavailableCheckoutItems) {
+      setAutoZapAuthorization(null)
+      setError(
+        "An item in this order is unavailable. Review checkout before paying."
+      )
       return
     }
     if (!fastEligible) {
@@ -2171,9 +2188,14 @@ function CheckoutPage() {
       )
       return
     }
+    // Claim the authorization into this automatic attempt. It is consumed
+    // exactly once: state clears before the attempt starts, so every
+    // success, failure, or cancellation leaves no armed token behind and a
+    // later manual hold starts a fresh attempt without inheriting it.
     autoZapStartedRef.current = true
+    setAutoZapAuthorization(null)
     setOverlayPlaying(true)
-    void payNowRef.current()
+    void payNowRef.current(autoZapAuthorization)
   }, [
     autoZapAuthorization,
     autoZapInputsResolving,

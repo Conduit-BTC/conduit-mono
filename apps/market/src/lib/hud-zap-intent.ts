@@ -41,6 +41,25 @@ export type HudZapAuthorizationInput = {
 export type HudZapAuthorizationRejection = "expired" | "changed"
 
 /**
+ * Checks that an authorization is still bound to the same buyer, merchant,
+ * cart contents, and total. A claimed in-flight attempt keeps using this
+ * binding check without the arm-time TTL: once checkout claims the
+ * authorization into its own attempt state, slow in-scope confirmation must
+ * not expire it, but any commerce change still aborts the attempt.
+ */
+export function getHudZapAuthorizationBindingMismatch(
+  authorization: HudZapAuthorization,
+  input: Omit<HudZapAuthorizationInput, "nowMs">
+): "changed" | null {
+  return input.merchantPubkey !== authorization.merchantPubkey ||
+    input.buyerPubkey !== authorization.buyerPubkey ||
+    input.totalMsats !== authorization.totalMsats ||
+    getCartCommerceFingerprint(input.items) !== authorization.cartFingerprint
+    ? "changed"
+    : null
+}
+
+/**
  * Names why an armed authorization cannot be used, so checkout can explain a
  * slow merchant endpoint separately from a cart or identity change.
  */
@@ -55,13 +74,5 @@ export function getHudZapAuthorizationRejection(
   ) {
     return "expired"
   }
-  if (
-    input.merchantPubkey !== authorization.merchantPubkey ||
-    input.buyerPubkey !== authorization.buyerPubkey ||
-    input.totalMsats !== authorization.totalMsats ||
-    getCartCommerceFingerprint(input.items) !== authorization.cartFingerprint
-  ) {
-    return "changed"
-  }
-  return null
+  return getHudZapAuthorizationBindingMismatch(authorization, input)
 }
