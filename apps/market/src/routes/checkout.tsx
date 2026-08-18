@@ -986,7 +986,6 @@ function CheckoutPage() {
   const presetMaySeedShippingRef = useRef(
     !initialShippingRef.current.hasActiveDraft
   )
-  const shippingEditedRef = useRef(initialShippingRef.current.hasActiveDraft)
   const presetIdentityRef = useRef(initialIdentity)
   const pendingDraftOwnerRef = useRef(pendingDraftOwner)
   const [shipping, setShipping] = useState<ShippingFormState>(
@@ -1096,7 +1095,6 @@ function CheckoutPage() {
           undefined,
           signedBuyerPubkey
         )
-        shippingEditedRef.current = recovered.hasActiveDraft
         presetMaySeedShippingRef.current = !recovered.hasActiveDraft && !preset
         if (JSON.stringify(shipping) !== JSON.stringify(recovered.value)) {
           setShipping(recovered.value)
@@ -1107,7 +1105,6 @@ function CheckoutPage() {
     }
     if (presetIdentityRef.current === signedBuyerPubkey) return
     presetIdentityRef.current = signedBuyerPubkey
-    shippingEditedRef.current = false
     clearCheckoutShippingSession()
     const preset = getIdentityBoundShippingPreset(
       signedBuyerPubkey,
@@ -1781,7 +1778,6 @@ function CheckoutPage() {
     value: ShippingFormState[K]
   ): void {
     presetMaySeedShippingRef.current = false
-    shippingEditedRef.current = true
     const normalizedValue =
       field === "phone"
         ? (sanitizeShippingPhoneInput(String(value)) as ShippingFormState[K])

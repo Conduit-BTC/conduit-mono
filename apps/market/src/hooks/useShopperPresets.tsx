@@ -44,11 +44,6 @@ export type ShopperPresetsUnlockState =
   | "unlocked"
   | "error"
 
-type RemotePreset = {
-  envelope: ShopperPresetsEnvelope
-  eventId: string
-}
-
 type DecryptedPreset = {
   ownerPubkey: string
   value: ShopperPresetsValue
@@ -104,7 +99,7 @@ export async function fetchShopperPresetsForSession(
 }
 
 export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
-  const { pubkey, signer, status } = useAuth()
+  const { pubkey, status } = useAuth()
   const { identityReady } = useConduitSession()
   const queryClient = useQueryClient()
   const identityPubkey = status === "connected" ? pubkey : null
@@ -113,7 +108,8 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
   const handledRemoteRef = useRef<string | null>(null)
   const [decryptedPreset, setDecryptedPreset] =
     useState<DecryptedPreset | null>(null)
-  const [remotePreset, setRemotePreset] = useState<RemotePreset | null>(null)
+  const [remotePreset, setRemotePreset] =
+    useState<ShopperPresetsEnvelope | null>(null)
   const [unlockState, setUnlockState] =
     useState<ShopperPresetsUnlockState>("disconnected")
   const [syncState, setSyncState] =
@@ -151,7 +147,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
 
   const decryptRemote = useCallback(
     async (
-      encrypted: RemotePreset,
+      encrypted: ShopperPresetsEnvelope,
       password: string,
       policy: ShopperPresetsUnlockPolicy
     ): Promise<boolean> => {
@@ -160,7 +156,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
       setUnlockState("unlocking")
       try {
         const document = await decryptShopperPresetsDocument(
-          encrypted.envelope,
+          encrypted,
           password
         )
         if (identityRef.current !== identity) return false
@@ -217,10 +213,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
     }
     if (handledRemoteRef.current === result.revision.eventId) return
     handledRemoteRef.current = result.revision.eventId
-    const encrypted = {
-      envelope: result.envelope,
-      eventId: result.revision.eventId,
-    }
+    const encrypted = result.envelope
     setRemotePreset(encrypted)
     setDecryptedPreset(null)
     setSyncState("synced")
@@ -269,8 +262,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
       password: string,
       policy: ShopperPresetsUnlockPolicy
     ): Promise<boolean> => {
-      if (!identityPubkey || !identityReady || !signer || !value.shipping)
-        return false
+      if (!identityPubkey || !identityReady || !value.shipping) return false
       const identity = identityPubkey
       setSyncState("syncing")
       try {
@@ -279,7 +271,6 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
           value,
           password,
           appId: "market",
-          dependencies: { signer },
         })
         if (identityRef.current !== identity) return false
         const next: ShopperPresetsReadResult = {
@@ -289,10 +280,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
           usable: true,
         }
         handledRemoteRef.current = result.revision.eventId
-        setRemotePreset({
-          envelope: result.envelope,
-          eventId: result.revision.eventId,
-        })
+        setRemotePreset(result.envelope)
         setDecryptedPreset({ ownerPubkey: identity, value })
         setUnlockState("unlocked")
         setSyncState("synced")
@@ -304,12 +292,12 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
         return false
       }
     },
-    [identityPubkey, identityReady, queryClient, rememberPassword, signer]
+    [identityPubkey, identityReady, queryClient, rememberPassword]
   )
 
   const clear = useCallback(
     async (password: string): Promise<boolean> => {
-      if (!identityPubkey || !identityReady || !signer) return false
+      if (!identityPubkey || !identityReady) return false
       const identity = identityPubkey
       setSyncState("syncing")
       try {
@@ -318,7 +306,6 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
           value: null,
           password,
           appId: "market",
-          dependencies: { signer },
         })
         if (identityRef.current !== identity) return false
         const next: ShopperPresetsReadResult = {
@@ -328,10 +315,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
           usable: true,
         }
         handledRemoteRef.current = result.revision.eventId
-        setRemotePreset({
-          envelope: result.envelope,
-          eventId: result.revision.eventId,
-        })
+        setRemotePreset(result.envelope)
         setDecryptedPreset({
           ownerPubkey: identity,
           value: DEFAULT_SHOPPER_PRESETS,
@@ -346,14 +330,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
         return false
       }
     },
-    [
-      identityPubkey,
-      identityReady,
-      queryClient,
-      rememberPassword,
-      signer,
-      unlockPolicy,
-    ]
+    [identityPubkey, identityReady, queryClient, rememberPassword, unlockPolicy]
   )
 
   const lock = useCallback(() => {
@@ -409,7 +386,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
       unlockState,
       unlockPolicy,
       hasRemotePreset: remotePreset !== null,
-      canSync: !!identityPubkey && identityReady && !!signer,
+      canSync: !!identityPubkey && identityReady,
       updateLocal,
       unlock,
       save,
@@ -428,7 +405,6 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
       refresh,
       remotePreset,
       save,
-      signer,
       syncState,
       unlock,
       unlockPolicy,
