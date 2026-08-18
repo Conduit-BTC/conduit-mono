@@ -1061,8 +1061,11 @@ export function parseProductEvent(
         : candidate
     const res = productSchema.safeParse(pricedCandidate)
     if (res.success) {
+      const displaySummary =
+        res.data.summary ??
+        projectProductJsonDisplayFields(event.content)?.summary
       const normalizedSummary = normalizeProductSummaryForDisplay(
-        res.data.summary,
+        displaySummary,
         {
           title: res.data.title,
           priceInfo: {

@@ -262,6 +262,7 @@ describe("NDK relay worker verification fallback", () => {
           relayUrl: "wss://saturated-verifier.example",
           status: "success",
           eventCount: 1,
+          rejectedEventCount: 1,
         },
       ])
     } finally {
@@ -352,6 +353,7 @@ describe("NDK relay worker verification fallback", () => {
             relayUrl: "wss://reserved-verifier.example",
             status: "success",
             eventCount: 1,
+            rejectedEventCount: 1,
           },
         ])
       }
@@ -1207,6 +1209,7 @@ describe("NDK relay worker verification fallback", () => {
         relayUrl: "wss://verification-timeout.example",
         status: "success",
         eventCount: 1,
+        rejectedEventCount: 1,
       },
     ])
     expect(workerTerminates).toBe(1)

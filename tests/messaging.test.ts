@@ -690,18 +690,18 @@ describe("publishPrivateMessage", () => {
     const cases = [
       {
         successfulRelayUrls: [] as string[],
-        failedRelayUrls: ["wss://sender.inbox.example"],
+        failedRelayUrls: ["wss://sender.inbox.conduit.market"],
         status: "zero_success",
         error: "Sender self-copy received no relay ACK.",
       },
       {
-        successfulRelayUrls: ["wss://sender-a.inbox.example"],
-        failedRelayUrls: ["wss://sender-b.inbox.example"],
+        successfulRelayUrls: ["wss://sender-a.inbox.conduit.market"],
+        failedRelayUrls: ["wss://sender-b.inbox.conduit.market"],
         status: "partial_success",
         error: "Sender self-copy reached only part of its inbox relay set.",
       },
       {
-        successfulRelayUrls: ["wss://sender.inbox.example"],
+        successfulRelayUrls: ["wss://sender.inbox.conduit.market"],
         failedRelayUrls: [] as string[],
         status: "full_success",
         error: null,
@@ -715,10 +715,10 @@ describe("publishPrivateMessage", () => {
         recipientPubkey: "recipient",
         signer,
         rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
-        recipientInboxRelays: ["wss://recipient.inbox.example"],
+        recipientInboxRelays: ["wss://recipient.inbox.conduit.market"],
         senderInboxRelays: [
-          "wss://sender-a.inbox.example",
-          "wss://sender-b.inbox.example",
+          "wss://sender-a.inbox.conduit.market",
+          "wss://sender-b.inbox.conduit.market",
         ],
         inspectOwnInboxReadiness: readyOwnInbox,
         giftWrapFn: (async (_rumor, recipient) =>
@@ -726,7 +726,7 @@ describe("publishPrivateMessage", () => {
         publishFn: (async (event) => {
           if (event.id === "wrap-recipient") {
             return {
-              successfulRelayUrls: ["wss://recipient.inbox.example"],
+              successfulRelayUrls: ["wss://recipient.inbox.conduit.market"],
               failedRelayUrls: [],
             } as never
           }
@@ -753,19 +753,19 @@ describe("publishPrivateMessage", () => {
       signer,
       rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
       recipientInboxRelays: [
-        "wss://recipient-a.inbox.example",
-        "wss://recipient-b.inbox.example",
+        "wss://recipient-a.inbox.conduit.market",
+        "wss://recipient-b.inbox.conduit.market",
       ],
       senderInboxRelays: [
-        "wss://sender-a.inbox.example",
-        "wss://sender-b.inbox.example",
+        "wss://sender-a.inbox.conduit.market",
+        "wss://sender-b.inbox.conduit.market",
       ],
       inspectOwnInboxReadiness: async () => ({
         state: "ready" as const,
         eventId: "a".repeat(64),
         relayUrls: [
-          "wss://sender-a.inbox.example",
-          "wss://sender-b.inbox.example",
+          "wss://sender-a.inbox.conduit.market",
+          "wss://sender-b.inbox.conduit.market",
         ],
         stale: false,
         distributionRepairable: false,
@@ -803,11 +803,11 @@ describe("publishPrivateMessage", () => {
 
     expect(result.deliveryStatus).toBe("partial_success")
     expect(result.recipientDelivery.successfulRelayUrls).toEqual([
-      "wss://recipient-a.inbox.example",
+      "wss://recipient-a.inbox.conduit.market",
     ])
     expect(result.selfDeliveryStatus).toBe("partial_success")
     expect(result.selfDelivery?.successfulRelayUrls).toEqual([
-      "wss://sender-a.inbox.example",
+      "wss://sender-a.inbox.conduit.market",
     ])
     expect(result.selfCopyError).toBe(
       "Sender self-copy reached only part of its inbox relay set."
