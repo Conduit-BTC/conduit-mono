@@ -29,7 +29,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@tanstack/react-query-devtools": "^5.62.8",
+    "@tanstack/react-query-devtools": "^5.101.4",
     "@tanstack/router-core": "^1.171.16",
     "@tanstack/router-devtools": "^1.167.1",
     "@tanstack/router-generator": "^1.167.21",
