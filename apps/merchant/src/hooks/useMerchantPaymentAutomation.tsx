@@ -174,8 +174,8 @@ export function MerchantPaymentAutomationProvider({
             10_000,
             "merchant"
           ),
-        publishConfirmation: (candidate) =>
-          publishMerchantOrderMessage({
+        publishConfirmation: async (candidate) => {
+          await publishMerchantOrderMessage({
             merchantPubkey: pubkey,
             buyerPubkey: candidate.buyerPubkey,
             orderId: candidate.orderId,
@@ -183,7 +183,8 @@ export function MerchantPaymentAutomationProvider({
             tags: [["status", "paid"]],
             payload: { status: "paid" },
             delivery: candidate.delivery,
-          }),
+          })
+        },
       })
       checked = result.checked
       verified = result.verified
