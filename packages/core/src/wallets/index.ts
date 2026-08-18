@@ -1,8 +1,25 @@
+import type { ConduitConfig } from "../config"
+
 export type WalletKind = "portable" | "connected"
 
 export type WalletProviderId = "spark" | "nwc" | (string & {})
 
 export type WalletNetwork = "mainnet" | "testnet" | "signet" | "regtest"
+
+export function isWalletNetwork(value: unknown): value is WalletNetwork {
+  return (
+    value === "mainnet" ||
+    value === "testnet" ||
+    value === "signet" ||
+    value === "regtest"
+  )
+}
+
+export function getWalletNetworkFromLightningConfig(
+  network: ConduitConfig["lightningNetwork"]
+): WalletNetwork {
+  return network === "mock" ? "regtest" : network
+}
 
 export type WalletCapability =
   "pay_invoice" | "receive" | "balance" | "history" | "spark_transfer"

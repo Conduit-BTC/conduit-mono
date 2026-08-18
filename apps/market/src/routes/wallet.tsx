@@ -1078,55 +1078,56 @@ function PortableWalletDialog({
                 void submitPassword()
               }}
             >
-              <div
-                role="group"
-                aria-label="Spark wallet setup mode"
-                className="grid grid-cols-2 gap-2 rounded-xl bg-[var(--surface)] p-1"
-              >
-                <Button
-                  type="button"
-                  variant={mode === "create" ? "primary" : "ghost"}
-                  aria-pressed={mode === "create"}
-                  onClick={() => selectMode("create")}
-                  disabled={pending}
-                >
-                  Create new
-                </Button>
-                <Button
-                  type="button"
-                  variant={mode === "restore" ? "primary" : "ghost"}
-                  aria-pressed={mode === "restore"}
-                  onClick={() => selectMode("restore")}
-                  disabled={pending}
-                >
-                  Restore
-                </Button>
-              </div>
-
-              <div className="grid gap-2">
-                <Label htmlFor="portable-label">Wallet label</Label>
-                <Input
-                  id="portable-label"
-                  value={label}
-                  onChange={(event) => {
-                    setLabel(event.target.value)
-                    setError(null)
-                  }}
-                  placeholder="Personal"
-                  autoComplete="off"
-                  required
-                  disabled={pending}
-                  aria-invalid={error === "Enter a wallet label."}
-                  aria-describedby={
-                    error === "Enter a wallet label."
-                      ? "portable-wallet-form-error"
-                      : undefined
+              <Tabs
+                className="contents"
+                value={mode}
+                onValueChange={(nextMode) => {
+                  if (nextMode === "create" || nextMode === "restore") {
+                    selectMode(nextMode)
                   }
-                />
-              </div>
+                }}
+              >
+                <TabsList
+                  aria-label="Spark wallet setup mode"
+                  className="grid w-full grid-cols-2"
+                >
+                  <TabsTrigger value="create" disabled={pending}>
+                    Create new
+                  </TabsTrigger>
+                  <TabsTrigger value="restore" disabled={pending}>
+                    Restore
+                  </TabsTrigger>
+                </TabsList>
 
-              {mode === "restore" && (
-                <>
+                <div className="grid gap-2">
+                  <Label htmlFor="portable-label">Wallet label</Label>
+                  <Input
+                    id="portable-label"
+                    value={label}
+                    onChange={(event) => {
+                      setLabel(event.target.value)
+                      setError(null)
+                    }}
+                    placeholder="Personal"
+                    autoComplete="off"
+                    required
+                    disabled={pending}
+                    aria-invalid={error === "Enter a wallet label."}
+                    aria-describedby={
+                      error === "Enter a wallet label."
+                        ? "portable-wallet-form-error"
+                        : undefined
+                    }
+                  />
+                </div>
+
+                <TabsContent value="create" className="mt-0">
+                  <p className="text-xs leading-5 text-[var(--text-muted)]">
+                    A recovery phrase and Spark account number will be generated
+                    and shown after setup.
+                  </p>
+                </TabsContent>
+                <TabsContent value="restore" className="mt-0 grid gap-4">
                   <div className="grid gap-2">
                     <Label htmlFor="portable-mnemonic">Recovery phrase</Label>
                     <Textarea
@@ -1194,78 +1195,80 @@ function PortableWalletDialog({
                         : "Enter the account number saved with the source wallet."}
                     </p>
                   </div>
-                </>
-              )}
+                </TabsContent>
 
-              <div className="grid gap-2">
-                <Label htmlFor="portable-password">Local wallet password</Label>
-                <Input
-                  id="portable-password"
-                  type="password"
-                  value={password}
-                  onChange={(event) => {
-                    setPassword(event.target.value)
-                    setError(null)
-                  }}
-                  autoComplete="new-password"
-                  placeholder="At least 10 characters"
-                  minLength={10}
-                  required
-                  disabled={pending}
-                  aria-invalid={
-                    error ===
-                    "Use at least 10 characters for the local wallet password."
-                  }
-                  aria-describedby={
-                    error ===
-                    "Use at least 10 characters for the local wallet password."
-                      ? "portable-wallet-form-error portable-password-help"
-                      : "portable-password-help"
-                  }
-                />
-                <p
-                  id="portable-password-help"
-                  className="text-xs leading-5 text-[var(--text-muted)]"
-                >
-                  Encrypts the recovery phrase on this device. To restore this
-                  Spark wallet, save the phrase, Spark account number, and
-                  network. This password only unlocks it on this device.
-                </p>
-              </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="portable-password">
+                    Local wallet password
+                  </Label>
+                  <Input
+                    id="portable-password"
+                    type="password"
+                    value={password}
+                    onChange={(event) => {
+                      setPassword(event.target.value)
+                      setError(null)
+                    }}
+                    autoComplete="new-password"
+                    placeholder="At least 10 characters"
+                    minLength={10}
+                    required
+                    disabled={pending}
+                    aria-invalid={
+                      error ===
+                      "Use at least 10 characters for the local wallet password."
+                    }
+                    aria-describedby={
+                      error ===
+                      "Use at least 10 characters for the local wallet password."
+                        ? "portable-wallet-form-error portable-password-help"
+                        : "portable-password-help"
+                    }
+                  />
+                  <p
+                    id="portable-password-help"
+                    className="text-xs leading-5 text-[var(--text-muted)]"
+                  >
+                    Encrypts the recovery phrase on this device. To restore this
+                    Spark wallet, save the phrase, Spark account number, and
+                    network. This password only unlocks it on this device.
+                  </p>
+                </div>
 
-              {error && (
-                <p
-                  id="portable-wallet-form-error"
-                  role="alert"
-                  className="text-sm text-[var(--text-secondary)]"
-                >
-                  {error}
-                </p>
-              )}
+                {error && (
+                  <p
+                    id="portable-wallet-form-error"
+                    role="alert"
+                    className="text-sm text-[var(--text-secondary)]"
+                  >
+                    {error}
+                  </p>
+                )}
 
-              <DialogFooter>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  onClick={close}
-                  disabled={pending}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  type="submit"
-                  variant="primary"
-                  aria-busy={pendingAction === "password"}
-                  disabled={pending}
-                >
-                  {pendingAction === "password" && (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  )}
-                  {mode === "create"
-                    ? "Create Spark wallet"
-                    : "Restore Spark wallet"}
-                </Button>
-              </DialogFooter>
+                <DialogFooter>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={close}
+                    disabled={pending}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    type="submit"
+                    variant="primary"
+                    aria-busy={pendingAction === "password"}
+                    disabled={pending}
+                  >
+                    {pendingAction === "password" && (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    )}
+                    {mode === "create"
+                      ? "Create Spark wallet"
+                      : "Restore Spark wallet"}
+                  </Button>
+                </DialogFooter>
+              </Tabs>
             </form>
           </>
         )}

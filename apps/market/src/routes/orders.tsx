@@ -14,6 +14,7 @@ import {
   getProductImageCandidates,
   getOrderPublicZapSigner,
   getWalletDisplayLabels,
+  getWalletNetworkFromLightningConfig,
   hasWebLN,
   listOrderLifecycles,
   normalizeLightningInvoice,
@@ -706,20 +707,49 @@ function OrderDetail({
   const [messagesOpen, setMessagesOpen] = useState(false)
   const [replyText, setReplyText] = useState("")
   const persistedRetryTarget = row.lifecycle?.paymentTarget ?? null
-  const persistedRetryTargetValue = persistedRetryTarget
-    ? getCheckoutPaymentTargetValue(persistedRetryTarget)
-    : ""
+  const persistedRetryTargetType = persistedRetryTarget?.type ?? null
+  const persistedRetryWalletId =
+    persistedRetryTarget?.type === "wallet"
+      ? persistedRetryTarget.walletId
+      : null
+  const persistedRetryProviderId =
+    persistedRetryTarget?.type === "wallet"
+      ? persistedRetryTarget.providerId
+      : null
   const [retryTarget, setRetryTarget] = useState<OrderPaymentTarget | null>(
     persistedRetryTarget
   )
-  const persistedRetryTargetRef = useRef(persistedRetryTarget)
-  persistedRetryTargetRef.current = persistedRetryTarget
   const sparkFeeApproval = useSparkFeeApproval()
   const queryClient = useQueryClient()
 
   useEffect(() => {
-    setRetryTarget(persistedRetryTargetRef.current)
-  }, [persistedRetryTargetValue, vm.orderId])
+    if (
+      persistedRetryTargetType === "wallet" &&
+      persistedRetryWalletId !== null &&
+      persistedRetryProviderId !== null
+    ) {
+      setRetryTarget({
+        type: "wallet",
+        walletId: persistedRetryWalletId,
+        providerId: persistedRetryProviderId,
+      })
+      return
+    }
+    if (persistedRetryTargetType === "manual") {
+      setRetryTarget({ type: "manual" })
+      return
+    }
+    if (persistedRetryTargetType === "webln") {
+      setRetryTarget({ type: "webln" })
+      return
+    }
+    setRetryTarget(null)
+  }, [
+    persistedRetryProviderId,
+    persistedRetryTargetType,
+    persistedRetryWalletId,
+    vm.orderId,
+  ])
 
   const productsQuery = useQuery({
     queryKey: ["selected-order-products", row.merchantPubkey],
@@ -736,8 +766,9 @@ function OrderDetail({
     return map
   }, [productsQuery.data])
 
-  const walletNetwork =
-    config.lightningNetwork === "mock" ? "regtest" : config.lightningNetwork
+  const walletNetwork = getWalletNetworkFromLightningConfig(
+    config.lightningNetwork
+  )
   const eligibleWallets = wallets.wallets.filter(
     (candidate) =>
       candidate.network === walletNetwork &&

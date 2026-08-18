@@ -22,6 +22,7 @@ import {
   fetchLnurlPayMetadata,
   getPriceSats,
   getWalletDisplayLabels,
+  getWalletNetworkFromLightningConfig,
   getAuthSignerReadiness,
   getTelemetryAmountBucket,
   getTelemetryCountBucket,
@@ -883,8 +884,9 @@ function CheckoutPage() {
   const shopperPricing = useShopperPricing()
   const btcUsdRateQuery = shopperPricing.rateQuery
   const wallets = useWallets()
-  const checkoutWalletNetwork =
-    config.lightningNetwork === "mock" ? "regtest" : config.lightningNetwork
+  const checkoutWalletNetwork = getWalletNetworkFromLightningConfig(
+    config.lightningNetwork
+  )
   const eligibleWallets = wallets.wallets.filter(
     (candidate) =>
       candidate.network === checkoutWalletNetwork &&

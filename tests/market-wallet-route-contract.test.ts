@@ -25,7 +25,8 @@ describe("Market wallet route contracts", () => {
       hook.match(/await registerSparkWallet\(\{/g) ?? []
 
     expect(finalizations.length).toBeGreaterThanOrEqual(6)
-    expect(sparkRegistrations).toHaveLength(2)
+    expect(sparkRegistrations).toHaveLength(1)
+    expect(hook).toContain("const setupSparkWallet = useCallback(")
     expect(hook).not.toMatch(/await reload\(\)\s+notifyWalletsChanged\(\)/)
     expect(hook).not.toMatch(/passkey|VITE_BREEZ_API_KEY|breez-spark-sdk/i)
     expect(hook).toMatch(
@@ -311,8 +312,13 @@ describe("Market wallet route contracts", () => {
     expect(checkout).toContain(
       'className="mt-3 text-xs leading-5 text-[var(--text-secondary)]"'
     )
-    expect(wallet).toContain('aria-pressed={mode === "create"}')
-    expect(wallet).toContain('aria-pressed={mode === "restore"}')
+    expect(wallet).toContain('<TabsTrigger value="create" disabled={pending}>')
+    expect(wallet).toContain('<TabsTrigger value="restore" disabled={pending}>')
+    expect(wallet).toMatch(/<TabsContent value="create"/)
+    expect(wallet).toMatch(/<TabsContent value="restore"/)
+    expect(wallet).toContain('aria-label="Spark wallet setup mode"')
+    expect(wallet).not.toContain('aria-pressed={mode === "create"}')
+    expect(wallet).not.toContain('aria-pressed={mode === "restore"}')
     expect(wallet.match(/<form/g)?.length ?? 0).toBeGreaterThanOrEqual(2)
     expect(wallet).toContain('type="submit"')
     expect(wallet).toContain("recoveryHeadingRef.current?.focus()")
@@ -450,6 +456,10 @@ describe("Market wallet route contracts", () => {
     expect(content).toContain("Loading saved wallets")
     expect(content).toContain("{wallets.initializationError}")
     expect(content).toContain("wallets.retryInitialization()")
+    expect(content).toContain("persistedRetryTargetType")
+    expect(content).toContain("persistedRetryWalletId")
+    expect(content).toContain("persistedRetryProviderId")
+    expect(content).not.toContain("persistedRetryTargetRef.current")
     expect(content).not.toMatch(
       /eligibleWallets\.find\(\(candidate\) =>\s*candidate\.defaultIntents\.includes/
     )

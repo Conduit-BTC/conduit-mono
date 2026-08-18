@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   config,
   getWalletDefaultReplacement,
+  getWalletNetworkFromLightningConfig,
   parseNwcUri,
   type WalletDescriptor,
   type WalletNetwork,
@@ -440,7 +441,7 @@ export function useWallets(): UseWalletsReturn {
         const info = snapshot.info
         const registration = getNwcWalletRegistrationDetails(
           info,
-          getConfiguredWalletNetwork()
+          getWalletNetworkFromLightningConfig(config.lightningNetwork)
         )
         const { wallet: connectedWallet } = await registerNwcWalletAtomically({
           store,
@@ -468,91 +469,24 @@ export function useWallets(): UseWalletsReturn {
     [ensureDefault, finalizeWalletMutation, registry, store]
   )
 
-  const createSpark = useCallback(
-    async (label: string, password: string) => {
-      const manager = requireSparkManager()
-      const network = getSparkWalletNetwork()
-      const accountNumber = getDefaultSparkAccountNumber(network)
-      const walletId = crypto.randomUUID()
-      const mnemonic = generateSparkMnemonic()
-      const binding = {
-        walletId,
-        providerId: "spark" as const,
-        network,
-        accountNumber,
-      }
-      const recovery = await encryptSparkMnemonic(mnemonic, password, binding)
-      const wallet = await registerSparkWallet({
-        walletId,
-        label: requireWalletLabel(label),
-        network,
-        recovery: {
-          type: "password",
-          walletId,
-          providerId: "spark",
-          network,
-          accountNumber,
-          recovery,
-        },
-      })
-      try {
-        await manager.openWithMnemonic({
-          walletId: wallet.id,
-          mnemonic,
-          accountNumber,
-        })
-        await refreshSparkBalance(wallet.id, manager, setRuntime)
-        await ensureDefault(wallet)
-      } catch (error) {
-        const rollback = await rollbackFailedWalletSetup({
-          closeWallet: () => manager.close(wallet.id),
-          removeRegistration: () => registry.remove(wallet.id),
-        })
-        if (rollback.status === "kept") {
-          await finalizeWalletMutation()
-          throw new Error(
-            `${getErrorMessage(error, "Portable Wallet setup failed.")} ${rollback.reason}`,
-            { cause: error }
-          )
-        }
-        throw error
-      }
-      await finalizeWalletMutation()
-      return {
-        wallet,
-        mnemonic,
-        accountNumber,
-      }
-    },
-    [ensureDefault, finalizeWalletMutation, registerSparkWallet, registry]
-  )
-
-  const importSpark = useCallback(
+  const setupSparkWallet = useCallback(
     async (input: {
       label: string
-      mnemonic: string
       password: string
+      mnemonic: string
       accountNumber: number
     }) => {
       const manager = requireSparkManager()
-      const mnemonic = normalizeSparkMnemonic(input.mnemonic)
-      if (!isValidSparkMnemonic(mnemonic)) {
-        throw new Error("Enter a valid BIP39 recovery phrase.")
-      }
       const network = getSparkWalletNetwork()
-      const accountNumber = input.accountNumber
-      if (!isValidSparkAccountNumber(accountNumber)) {
-        throw new Error("Enter a valid Spark account number.")
-      }
       const walletId = crypto.randomUUID()
       const binding = {
         walletId,
         providerId: "spark" as const,
         network,
-        accountNumber,
+        accountNumber: input.accountNumber,
       }
       const recovery = await encryptSparkMnemonic(
-        mnemonic,
+        input.mnemonic,
         input.password,
         binding
       )
@@ -565,15 +499,15 @@ export function useWallets(): UseWalletsReturn {
           walletId,
           providerId: "spark",
           network,
-          accountNumber,
+          accountNumber: input.accountNumber,
           recovery,
         },
       })
       try {
         await manager.openWithMnemonic({
           walletId: wallet.id,
-          mnemonic,
-          accountNumber,
+          mnemonic: input.mnemonic,
+          accountNumber: input.accountNumber,
         })
         await refreshSparkBalance(wallet.id, manager, setRuntime)
         await ensureDefault(wallet)
@@ -595,6 +529,53 @@ export function useWallets(): UseWalletsReturn {
       return wallet
     },
     [ensureDefault, finalizeWalletMutation, registerSparkWallet, registry]
+  )
+
+  const createSpark = useCallback(
+    async (label: string, password: string) => {
+      requireSparkManager()
+      const network = getSparkWalletNetwork()
+      const accountNumber = getDefaultSparkAccountNumber(network)
+      const mnemonic = generateSparkMnemonic()
+      const wallet = await setupSparkWallet({
+        label,
+        password,
+        mnemonic,
+        accountNumber,
+      })
+      return {
+        wallet,
+        mnemonic,
+        accountNumber,
+      }
+    },
+    [setupSparkWallet]
+  )
+
+  const importSpark = useCallback(
+    async (input: {
+      label: string
+      mnemonic: string
+      password: string
+      accountNumber: number
+    }) => {
+      requireSparkManager()
+      const mnemonic = normalizeSparkMnemonic(input.mnemonic)
+      if (!isValidSparkMnemonic(mnemonic)) {
+        throw new Error("Enter a valid BIP39 recovery phrase.")
+      }
+      const accountNumber = input.accountNumber
+      if (!isValidSparkAccountNumber(accountNumber)) {
+        throw new Error("Enter a valid Spark account number.")
+      }
+      return setupSparkWallet({
+        label: input.label,
+        password: input.password,
+        mnemonic,
+        accountNumber,
+      })
+    },
+    [setupSparkWallet]
   )
 
   const unlockSpark = useCallback(
@@ -871,7 +852,8 @@ export function useWallets(): UseWalletsReturn {
   const defaultPaymentWallet =
     wallets.find(
       (wallet) =>
-        wallet.network === getConfiguredWalletNetwork() &&
+        wallet.network ===
+          getWalletNetworkFromLightningConfig(config.lightningNetwork) &&
         wallet.defaultIntents.includes("pay_invoice")
     ) ?? null
 
@@ -942,12 +924,6 @@ function getNwcRuntimeState(snapshot: NwcSessionSnapshot): WalletRuntimeState {
     balanceMsats: snapshot.balance.balanceMsats,
     error: null,
   }
-}
-
-function getConfiguredWalletNetwork(): WalletNetwork {
-  return config.lightningNetwork === "mock"
-    ? "regtest"
-    : config.lightningNetwork
 }
 
 function getSparkWalletNetwork() {
@@ -1021,6 +997,8 @@ async function initializeWalletStorage(): Promise<void> {
     legacyStorage: window.localStorage,
     registry: getMarketWalletRegistry(),
     credentialStore: getMarketWalletStore(),
-    fallbackNetwork: getConfiguredWalletNetwork(),
+    fallbackNetwork: getWalletNetworkFromLightningConfig(
+      config.lightningNetwork
+    ),
   })
 }

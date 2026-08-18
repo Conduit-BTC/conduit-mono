@@ -3,8 +3,10 @@ import {
   decodeLightningInvoiceAmount,
   decodeLightningInvoicePaymentHash,
   getLightningInvoiceNetwork,
+  getWalletNetworkFromLightningConfig,
   isAmountlessLightningInvoice,
   normalizeLightningInvoice,
+  type WalletNetwork,
 } from "@conduit/core"
 
 import {
@@ -17,7 +19,7 @@ import {
 } from "./spark-wallet"
 import { isSparkWalletSessionCoordinationAvailable } from "./spark-wallet-lease"
 
-export type SparkNetwork = "mainnet" | "testnet" | "signet" | "regtest"
+export type SparkNetwork = WalletNetwork
 export type SupportedSparkNetwork = Extract<SparkNetwork, "mainnet" | "regtest">
 export type SparkNativeNetwork = "MAINNET" | "TESTNET" | "SIGNET" | "REGTEST"
 
@@ -1106,8 +1108,7 @@ async function loadFirstPartySparkModule(): Promise<SparkNativeModule> {
 }
 
 export function getSparkNetwork(): SparkNetwork {
-  if (config.lightningNetwork === "mock") return "regtest"
-  return config.lightningNetwork
+  return getWalletNetworkFromLightningConfig(config.lightningNetwork)
 }
 
 export function getDefaultSparkAccountNumber(network: SparkNetwork): number {

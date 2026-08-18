@@ -1,6 +1,7 @@
 import {
   getWalletDefaultReplacement,
   getWalletDefaultUpdates,
+  isWalletNetwork,
   parseNwcUri,
   type NwcGetInfoResult,
   type WalletCapability,
@@ -156,7 +157,10 @@ export function getNwcWalletRegistrationDetails(
   info: Pick<NwcGetInfoResult, "methods" | "network"> | null,
   fallbackNetwork: WalletNetwork
 ): { network: WalletNetwork; capabilities: WalletCapability[] } {
-  const verifiedNetwork = getWalletNetwork(info?.network)
+  const reportedNetwork = info?.network
+  const verifiedNetwork = isWalletNetwork(reportedNetwork)
+    ? reportedNetwork
+    : null
   return {
     network: verifiedNetwork ?? fallbackNetwork,
     capabilities: getNwcWalletCapabilities(info?.methods ?? []).filter(
@@ -244,15 +248,6 @@ export async function reconcileNwcWalletRegistration(input: {
 
     return changed
   })
-}
-
-function getWalletNetwork(network: string | undefined): WalletNetwork | null {
-  return network === "mainnet" ||
-    network === "testnet" ||
-    network === "signet" ||
-    network === "regtest"
-    ? network
-    : null
 }
 
 function arraysEqual<T>(left: readonly T[], right: readonly T[]): boolean {

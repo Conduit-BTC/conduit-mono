@@ -4,6 +4,8 @@ import {
   getWalletDefaultReplacement,
   getWalletDefaultUpdates,
   getWalletDisplayLabels,
+  getWalletNetworkFromLightningConfig,
+  isWalletNetwork,
   resolveWalletPaymentInstance,
   WalletRegistry,
   type SetWalletDefaultInput,
@@ -89,6 +91,18 @@ class InterleavingDefaultStore implements WalletRegistryStore {
 }
 
 describe("WalletRegistry", () => {
+  it("shares canonical wallet network validation and config mapping", () => {
+    expect(
+      ["mainnet", "testnet", "signet", "regtest"].every(isWalletNetwork)
+    ).toBe(true)
+    expect(isWalletNetwork("mock")).toBe(false)
+    expect(isWalletNetwork(undefined)).toBe(false)
+    expect(getWalletNetworkFromLightningConfig("mainnet")).toBe("mainnet")
+    expect(getWalletNetworkFromLightningConfig("signet")).toBe("signet")
+    expect(getWalletNetworkFromLightningConfig("testnet")).toBe("testnet")
+    expect(getWalletNetworkFromLightningConfig("mock")).toBe("regtest")
+  })
+
   it("keeps multiple wallet instances distinct from their provider", async () => {
     const ids = ["wallet-personal", "wallet-spending", "wallet-zeus"]
     const registry = new WalletRegistry(createMemoryStore(), {

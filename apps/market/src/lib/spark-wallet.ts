@@ -15,7 +15,10 @@ import {
   createSparkSendSafetyStore,
   type SparkSendSafetyStore,
 } from "./spark-direct-transfer-safety"
-import { isValidSparkAccountNumber } from "./spark-recovery"
+import {
+  isValidSparkAccountNumber,
+  normalizeSparkMnemonic,
+} from "./spark-recovery"
 
 export interface SparkSdkSeed {
   type: "mnemonic"
@@ -251,7 +254,7 @@ export class SparkWalletManager {
       accountNumber: input.accountNumber,
       seed: {
         type: "mnemonic",
-        mnemonic: input.mnemonic.trim().toLowerCase().replace(/\s+/g, " "),
+        mnemonic: normalizeSparkMnemonic(input.mnemonic),
       },
     })
   }

@@ -2,6 +2,7 @@ import {
   db,
   getNwcUriFingerprint,
   getWalletDefaultUpdates,
+  isWalletNetwork,
   WalletRegistry,
   type SetWalletDefaultInput,
   type WalletDescriptor,
@@ -337,13 +338,4 @@ function assertSparkRecoveryMatchesWallet(
       "Portable Wallet recovery data does not match its registration."
     )
   }
-}
-
-function isWalletNetwork(value: unknown): value is WalletNetwork {
-  return (
-    value === "mainnet" ||
-    value === "testnet" ||
-    value === "signet" ||
-    value === "regtest"
-  )
 }

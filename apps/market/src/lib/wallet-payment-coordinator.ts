@@ -1,6 +1,8 @@
 import {
   classifyNwcPaymentError,
   config,
+  getWalletNetworkFromLightningConfig,
+  isWalletNetwork,
   resolveWalletPaymentInstance,
   type ConnectedWalletProvider,
   type NwcConnection,
@@ -120,7 +122,7 @@ export function getNwcPaymentReadiness(input: {
     }
   }
 
-  const liveNetwork = getVerifiedWalletNetwork(info.network)
+  const liveNetwork = isWalletNetwork(info.network) ? info.network : null
   if (!liveNetwork) {
     return {
       ready: false,
@@ -156,7 +158,9 @@ function getNwcLifecycleStatus(
   snapshot: NwcSessionSnapshot
 ): WalletLifecycleStatus {
   if (snapshot.status === "reachable") {
-    const configuredNetwork = getConfiguredWalletNetwork()
+    const configuredNetwork = getWalletNetworkFromLightningConfig(
+      config.lightningNetwork
+    )
     return getNwcPaymentReadiness({
       snapshot,
       walletNetwork: configuredNetwork,
@@ -212,7 +216,9 @@ async function payInvoiceWithNwcProvider(
     }
   }
 
-  const configuredNetwork = getConfiguredWalletNetwork()
+  const configuredNetwork = getWalletNetworkFromLightningConfig(
+    config.lightningNetwork
+  )
   const readiness = getNwcPaymentReadiness({
     snapshot: session.getSnapshot(),
     walletNetwork: configuredNetwork,
@@ -337,7 +343,7 @@ export const marketWalletPaymentCoordinator = new WalletPaymentCoordinator(
 async function isPersistedMarketPaymentTargetEligible(
   target: WalletPaymentTarget
 ): Promise<boolean> {
-  const network = getConfiguredWalletNetwork()
+  const network = getWalletNetworkFromLightningConfig(config.lightningNetwork)
   return (
     resolveWalletPaymentInstance(await getMarketWalletRegistry().list(), {
       walletId: target.walletId,
@@ -345,21 +351,4 @@ async function isPersistedMarketPaymentTargetEligible(
       network,
     }) !== null
   )
-}
-
-function getConfiguredWalletNetwork(): WalletNetwork {
-  return config.lightningNetwork === "mock"
-    ? "regtest"
-    : config.lightningNetwork
-}
-
-function getVerifiedWalletNetwork(
-  network: string | undefined
-): WalletNetwork | null {
-  return network === "mainnet" ||
-    network === "testnet" ||
-    network === "signet" ||
-    network === "regtest"
-    ? network
-    : null
 }

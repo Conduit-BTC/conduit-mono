@@ -1,6 +1,6 @@
 import { generateMnemonic, validateMnemonic } from "@scure/bip39"
 import { wordlist } from "@scure/bip39/wordlists/english.js"
-import type { WalletNetwork } from "@conduit/core"
+import { isWalletNetwork, type WalletNetwork } from "@conduit/core"
 
 const DEFAULT_PBKDF2_ITERATIONS = 600_000
 const MIN_PBKDF2_ITERATIONS = 100_000
@@ -272,15 +272,6 @@ function isCanonicalBase64InRange(
     /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
       value
     )
-  )
-}
-
-function isWalletNetwork(value: unknown): value is WalletNetwork {
-  return (
-    value === "mainnet" ||
-    value === "testnet" ||
-    value === "signet" ||
-    value === "regtest"
   )
 }
 
