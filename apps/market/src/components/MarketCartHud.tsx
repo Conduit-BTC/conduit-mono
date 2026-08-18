@@ -16,12 +16,9 @@ import {
   Button,
   HoldToReleaseButton,
   StatusPill,
-  Tabs,
-  TabsList,
-  TabsTrigger,
   cn,
 } from "@conduit/ui"
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { useCart } from "../hooks/useCart"
 import { useCartProductAvailability } from "../hooks/useCartProductAvailability"
 import { useShopperPricing } from "../hooks/useShopperPricing"
@@ -87,7 +84,11 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   const [webLnAvailable, setWebLnAvailable] = useState(false)
   const [zapStarting, setZapStarting] = useState(false)
   const hudRef = useRef<HTMLElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const disclosureRef = useRef<HTMLButtonElement>(null)
+  const detailsPanelId = useId()
   const previousQuantitiesRef = useRef(new Map<string, number>())
+  const cartHydratedRef = useRef(false)
   const previousScrollYRef = useRef(0)
 
   const currentMerchant = reconcileCartHudMerchant(
@@ -191,6 +192,29 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   })
   const checkoutFallbackMessage =
     getCartHudCheckoutFallbackMessage(checkoutCapability)
+  // Collapsing hides and inerts the panel. If focus is inside, move it to
+  // the disclosure toggle first so keyboard and screen-reader users are not
+  // dropped at the document root.
+  const collapseHud = useCallback(() => {
+    const panel = panelRef.current
+    if (
+      panel &&
+      document.activeElement instanceof HTMLElement &&
+      panel.contains(document.activeElement)
+    ) {
+      disclosureRef.current?.focus()
+    }
+    setExpanded(false)
+  }, [])
+
+  // One activation path for pointer, Enter, and Space: selecting a merchant
+  // while collapsed both selects it and expands the panel, including when the
+  // activated merchant is already selected.
+  const activateMerchant = useCallback((merchantPubkey: string) => {
+    setActiveMerchant(merchantPubkey)
+    setExpanded(true)
+  }, [])
+
   useEffect(() => {
     const check = () => setWebLnAvailable(hasWebLN())
     check()
@@ -234,7 +258,12 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
       }
     }
     previousQuantitiesRef.current = next
-    if (!increasedMerchant || previous.size === 0) return
+    // The first pass observes whatever the persisted cart restored; announcing
+    // or expanding for it would misreport hydration as a shopper action. Any
+    // later increase is a real mutation, including the session's first item.
+    const isInitialHydration = !cartHydratedRef.current
+    cartHydratedRef.current = true
+    if (isInitialHydration || !increasedMerchant) return
     setActiveMerchant(increasedMerchant)
     setExpanded(true)
     setAnnouncement(
@@ -249,7 +278,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
     previousScrollYRef.current = window.scrollY
     const onScroll = () => {
       const nextY = window.scrollY
-      if (nextY - previousScrollYRef.current >= 24) setExpanded(false)
+      if (nextY - previousScrollYRef.current >= 24) collapseHud()
       previousScrollYRef.current = nextY
     }
     const onFocus = (event: FocusEvent) => {
@@ -260,16 +289,16 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
           "input, textarea, select, [contenteditable='true']"
         )
       ) {
-        setExpanded(false)
+        collapseHud()
       }
     }
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setExpanded(false)
+      if (event.key === "Escape") collapseHud()
     }
     const visualViewport = window.visualViewport
     const onViewportResize = () => {
       if (visualViewport && visualViewport.height < window.innerHeight * 0.75) {
-        setExpanded(false)
+        collapseHud()
       }
     }
     window.addEventListener("scroll", onScroll, { passive: true })
@@ -282,7 +311,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
       window.removeEventListener("keydown", onKeyDown)
       visualViewport?.removeEventListener("resize", onViewportResize)
     }
-  }, [groups.length, routeMode])
+  }, [collapseHud, groups.length, routeMode])
 
   useEffect(() => {
     const root = document.documentElement
@@ -351,82 +380,87 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
         inert={!shouldShow}
         className="market-cart-hud-surface pointer-events-auto mx-auto w-full max-w-4xl overflow-hidden rounded-2xl border border-[var(--border)] shadow-[0_12px_34px_color-mix(in_srgb,var(--shadow)_22%,transparent)] backdrop-blur"
       >
-        <div className="flex min-h-14 items-center gap-2 px-3 py-2 sm:gap-3 sm:px-4">
-          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary-500 text-white">
-            <ShoppingCart className="h-5 w-5" aria-hidden="true" />
+        <div className="grid min-h-14 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 px-3 py-2 sm:gap-3 sm:px-4">
+          <span
+            aria-hidden="true"
+            className="flex h-10 w-8 shrink-0 items-center justify-center text-primary-500"
+          >
+            <ShoppingCart className="h-6 w-6" />
           </span>
 
           {groups.length > 1 ? (
-            <Tabs
-              value={selectedMerchant}
-              onValueChange={setActiveMerchant}
-              className="mr-auto min-w-0 w-fit max-w-[calc(100%_-_7rem)] flex-none"
+            <div
+              role="group"
+              aria-label="Store carts"
+              className="flex h-auto w-fit min-w-0 max-w-full justify-start justify-self-start gap-1 overflow-x-auto rounded-xl border-0 p-1 pr-8 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+              style={{
+                maskImage:
+                  "linear-gradient(to right, black 0, black calc(100% - 20px), transparent 100%)",
+                WebkitMaskImage:
+                  "linear-gradient(to right, black 0, black calc(100% - 20px), transparent 100%)",
+              }}
             >
-              <TabsList
-                aria-label="Store carts"
-                className="flex h-auto w-fit max-w-full justify-start gap-1 overflow-x-auto rounded-xl border-0 p-1 pr-8 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-                style={{
-                  maskImage:
-                    "linear-gradient(to right, black 0, black calc(100% - 20px), transparent 100%)",
-                  WebkitMaskImage:
-                    "linear-gradient(to right, black 0, black calc(100% - 20px), transparent 100%)",
-                }}
-              >
-                {groups.map((group) => {
-                  const profile = profiles.data[group.merchantPubkey]
-                  const groupSummary = getCartCostSummary(
-                    group.items,
-                    shopperPricing.quote
-                  )
-                  const groupTotal = shopperPricing.formatSatsAmount(
-                    groupSummary.totalSats
-                  )
-                  const selected = group.merchantPubkey === selectedMerchant
-                  return (
-                    <TabsTrigger
-                      key={group.merchantPubkey}
-                      value={group.merchantPubkey}
-                      className="market-cart-hud-item min-h-11 max-w-60 shrink-0 gap-2 rounded-lg border border-transparent px-3 data-[state=active]:border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] data-[state=active]:bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] data-[state=active]:text-[var(--text-primary)] data-[state=active]:shadow-[var(--shadow-glass-inset)] data-[state=inactive]:hover:border-[color-mix(in_srgb,var(--primary-500)_10%,transparent)] data-[state=inactive]:hover:bg-[color-mix(in_srgb,var(--primary-500)_5%,transparent)] data-[state=inactive]:hover:text-[var(--text-primary)]"
-                    >
-                      <Avatar className="h-7 w-7">
-                        <AvatarImage src={profile?.picture} alt="" />
-                        <AvatarFallback>
-                          <MerchantAvatarFallback iconClassName="h-4 w-4" />
-                        </AvatarFallback>
-                      </Avatar>
-                      <span className="min-w-0 text-left leading-tight">
-                        <span className="flex min-w-0 items-center gap-2">
-                          <span className="block max-w-32 truncate">
-                            {getProfileName(profile) ??
-                              formatNpub(group.merchantPubkey, 6)}
-                          </span>
-                          <StatusPill
-                            variant="neutral"
-                            aria-label={`${group.totalItems} cart ${group.totalItems === 1 ? "item" : "items"}`}
-                            className="border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-2 py-0.5 text-[0.68rem] font-semibold tabular-nums text-[var(--text-primary)]"
-                          >
-                            {group.totalItems}
-                          </StatusPill>
+              {groups.map((group) => {
+                const profile = profiles.data[group.merchantPubkey]
+                const groupSummary = getCartCostSummary(
+                  group.items,
+                  shopperPricing.quote
+                )
+                const groupTotal = shopperPricing.formatSatsAmount(
+                  groupSummary.totalSats
+                )
+                const selected = group.merchantPubkey === selectedMerchant
+                return (
+                  <button
+                    key={group.merchantPubkey}
+                    type="button"
+                    aria-pressed={selected}
+                    onClick={() => activateMerchant(group.merchantPubkey)}
+                    className={cn(
+                      "market-cart-hud-item flex min-h-11 max-w-60 shrink-0 items-center gap-2 rounded-lg border px-3 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 motion-reduce:transition-none",
+                      selected
+                        ? "border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]"
+                        : "border-transparent text-[var(--text-secondary)] hover:border-[color-mix(in_srgb,var(--primary-500)_10%,transparent)] hover:bg-[color-mix(in_srgb,var(--primary-500)_5%,transparent)] hover:text-[var(--text-primary)]"
+                    )}
+                  >
+                    <Avatar className="h-7 w-7">
+                      <AvatarImage src={profile?.picture} alt="" />
+                      <AvatarFallback>
+                        <MerchantAvatarFallback iconClassName="h-4 w-4" />
+                      </AvatarFallback>
+                    </Avatar>
+                    <span className="min-w-0 text-left leading-tight">
+                      <span className="flex min-w-0 items-center gap-2">
+                        <span className="block max-w-32 truncate">
+                          {getProfileName(profile) ??
+                            formatNpub(group.merchantPubkey, 6)}
                         </span>
-                        {selected && expanded ? (
-                          <span className="block max-w-44 truncate text-xs font-normal text-[var(--text-muted)]">
-                            {groupSummary.itemPricesAvailable
-                              ? groupTotal.primary
-                              : "Total unavailable"}
-                          </span>
-                        ) : null}
+                        <StatusPill
+                          variant="neutral"
+                          aria-label={`${group.totalItems} cart ${group.totalItems === 1 ? "item" : "items"}`}
+                          className="border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-2 py-0.5 text-[0.68rem] font-semibold tabular-nums text-[var(--text-primary)]"
+                        >
+                          {group.totalItems}
+                        </StatusPill>
                       </span>
-                    </TabsTrigger>
-                  )
-                })}
-              </TabsList>
-            </Tabs>
+                      {selected && expanded ? (
+                        <span className="block max-w-44 truncate text-xs font-normal text-[var(--text-muted)]">
+                          {groupSummary.itemPricesAvailable
+                            ? groupTotal.primary
+                            : "Total unavailable"}
+                        </span>
+                      ) : null}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
           ) : (
             <Link
               to="/store/$pubkey"
               params={{ pubkey: selectedMerchant }}
               aria-label={`Open ${merchantName} store`}
-              className="mr-auto flex min-h-11 w-fit min-w-0 max-w-60 flex-none items-center gap-2 rounded-lg border border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-3 text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)] transition-colors hover:bg-[color-mix(in_srgb,var(--primary-500)_12%,transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+              className="flex min-h-11 w-fit min-w-0 max-w-60 items-center justify-self-start gap-2 rounded-lg border border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-3 text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)] transition-colors hover:bg-[color-mix(in_srgb,var(--primary-500)_12%,transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
             >
               <Avatar className="h-7 w-7">
                 <AvatarImage src={activeProfile?.picture} alt="" />
@@ -454,63 +488,83 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
             </Link>
           )}
 
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            aria-label={expanded ? "Collapse cart" : "Expand cart"}
-            aria-expanded={expanded}
-            className="h-11 w-11 shrink-0 text-[var(--text-muted)]"
-            onClick={() => setExpanded((current) => !current)}
-          >
-            <ChevronDown
-              className={cn(
-                "h-5 w-5 transition-transform motion-reduce:transition-none",
-                expanded && "rotate-180"
-              )}
-              aria-hidden="true"
-            />
-          </Button>
-          {!expanded &&
-            (checkoutDisabled ? (
-              <Button
-                size="sm"
-                disabled
-                title={
-                  activeAvailabilityMessage ?? "Checking current product stock"
-                }
-              >
-                Checkout
-              </Button>
-            ) : zapReady ? (
-              <HoldToReleaseButton
-                size="sm"
-                disabled={zapStarting}
-                canComplete={() =>
-                  checkoutCapability.state === "zap_ready" && !zapStarting
-                }
-                onHoldComplete={startZapOut}
-                chargedLabel="Release to zap out"
-              >
-                <Zap className="h-4 w-4" aria-hidden="true" />
-                Zap out
-              </HoldToReleaseButton>
-            ) : (
-              <Button asChild size="sm">
-                <Link
-                  to="/checkout"
-                  search={{ merchant: pubkeyToNpub(selectedMerchant) }}
-                  title={checkoutFallbackMessage}
+          <div className="flex shrink-0 items-center gap-1 sm:gap-2">
+            <Button
+              ref={disclosureRef}
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label={expanded ? "Collapse cart" : "Expand cart"}
+              aria-expanded={expanded}
+              aria-controls={detailsPanelId}
+              className="h-11 w-11 shrink-0 text-[var(--text-muted)]"
+              onClick={() => (expanded ? collapseHud() : setExpanded(true))}
+            >
+              {/* Bottom-anchored dock: expanding raises content (up), collapsing
+                  lowers it (down), so the arrow points at the resulting motion. */}
+              <ChevronDown
+                className={cn(
+                  "h-5 w-5 transition-transform motion-reduce:transition-none",
+                  !expanded && "rotate-180"
+                )}
+                aria-hidden="true"
+              />
+            </Button>
+            {!expanded &&
+              (checkoutDisabled ? (
+                <>
+                  <Button
+                    size="sm"
+                    disabled
+                    aria-describedby={`${detailsPanelId}-blocked-reason`}
+                    title={
+                      activeAvailabilityMessage ??
+                      "Checking current product stock"
+                    }
+                  >
+                    Checkout
+                  </Button>
+                  <span
+                    id={`${detailsPanelId}-blocked-reason`}
+                    role="status"
+                    className="sr-only"
+                  >
+                    {activeAvailabilityMessage ??
+                      "Checking current product stock"}
+                  </span>
+                </>
+              ) : zapReady ? (
+                <HoldToReleaseButton
+                  size="sm"
+                  disabled={zapStarting}
+                  canComplete={() =>
+                    checkoutCapability.state === "zap_ready" && !zapStarting
+                  }
+                  onHoldComplete={startZapOut}
+                  chargedLabel="Release to zap out"
                 >
-                  Checkout
-                </Link>
-              </Button>
-            ))}
+                  <Zap className="h-4 w-4" aria-hidden="true" />
+                  Zap out
+                </HoldToReleaseButton>
+              ) : (
+                <Button asChild size="sm">
+                  <Link
+                    to="/checkout"
+                    search={{ merchant: pubkeyToNpub(selectedMerchant) }}
+                    title={checkoutFallbackMessage}
+                  >
+                    Checkout
+                  </Link>
+                </Button>
+              ))}
+          </div>
         </div>
 
         <div
+          id={detailsPanelId}
+          ref={panelRef}
           className={cn(
-            "grid transition-[grid-template-rows,opacity] duration-200 motion-reduce:transition-none",
+            "grid transition-opacity duration-200 motion-reduce:transition-none",
             expanded
               ? "grid-rows-[1fr] border-t border-[var(--border)] opacity-100"
               : "grid-rows-[0fr] opacity-0"
@@ -653,7 +707,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
 
               <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--border)] pt-3">
                 <span className="max-w-md text-xs text-[var(--text-muted)]">
-                  {checkoutFallbackMessage}
+                  {activeAvailabilityMessage ?? checkoutFallbackMessage}
                 </span>
                 <div className="flex shrink-0 gap-2">
                   <Button asChild variant="outline" size="sm">

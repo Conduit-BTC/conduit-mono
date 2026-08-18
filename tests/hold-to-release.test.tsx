@@ -27,7 +27,7 @@ describe("HoldToReleaseButton", () => {
   it("supports release completion and all required cancellation paths", () => {
     expect(source).toContain('stateRef.current !== "charged"')
     expect(source).toContain("firedRef.current = true")
-    expect(source).toContain("onPointerCancel={() =>")
+    expect(source).toContain("onPointerCancel={cancel}")
     expect(source).toContain("onPointerMove={handlePointerMove}")
     expect(source).toContain("releasedInside")
     expect(source).toContain("onLostPointerCapture")
@@ -38,6 +38,17 @@ describe("HoldToReleaseButton", () => {
     expect(source).toContain("if (!firedRef.current && haptics) vibrate(0)")
     expect(source).toContain("event.detail === 0")
     expect(source).toContain("activateAssistively()")
+  })
+
+  it("clears the native-activation latch on every cancellation path", () => {
+    // `cancel()` owns the latch reset, so Escape, blur, visibility loss,
+    // pointer cancellation, and disabled transitions cannot leave a stale
+    // latch that discards the next assistive `detail: 0` activation.
+    const cancelBody = source.slice(
+      source.indexOf("const cancel = useCallback"),
+      source.indexOf("const arm = useCallback")
+    )
+    expect(cancelBody).toContain("nativeActivationRef.current = false")
   })
 
   it("uses progressive browser haptics without requiring vibration support", () => {

@@ -48,9 +48,7 @@ describe("checkout completion navigation contracts", () => {
     const checkoutRoute = await Bun.file(
       "apps/market/src/routes/checkout.tsx"
     ).text()
-    const payNowIndex = checkoutRoute.indexOf(
-      "async function payNow(): Promise<void>"
-    )
+    const payNowIndex = checkoutRoute.indexOf("async function payNow(")
     const orderPublishIndex = checkoutRoute.indexOf(
       "await publishBuyerOrderMessage(",
       payNowIndex

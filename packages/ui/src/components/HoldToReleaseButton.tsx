@@ -73,6 +73,10 @@ export function HoldToReleaseButton({
     pointerIdRef.current = null
     keyRef.current = null
     firedRef.current = false
+    // Every cancellation path resets the native-activation latch. A latch
+    // left armed by Escape, blur, visibility loss, or a disabled transition
+    // would silently discard the next assistive `detail: 0` activation.
+    nativeActivationRef.current = false
     updateState("idle")
     if (haptics) vibrate(0)
   }, [haptics, updateState])
@@ -180,7 +184,6 @@ export function HoldToReleaseButton({
       event.currentTarget.releasePointerCapture(event.pointerId)
     }
     if (!releasedInside) {
-      nativeActivationRef.current = false
       cancel()
       return
     }
@@ -202,7 +205,6 @@ export function HoldToReleaseButton({
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId)
     }
-    nativeActivationRef.current = false
     cancel()
   }
 
@@ -266,10 +268,7 @@ export function HoldToReleaseButton({
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
-      onPointerCancel={() => {
-        nativeActivationRef.current = false
-        cancel()
-      }}
+      onPointerCancel={cancel}
       onLostPointerCapture={() => {
         if (!firedRef.current && pointerIdRef.current !== null) cancel()
       }}

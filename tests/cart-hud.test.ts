@@ -36,13 +36,53 @@ describe("Market cart HUD policy", () => {
     expect(source).toContain("linear-gradient(to right")
     expect(source).toContain("rounded-xl border-0 p-1 pr-8")
     expect(source.match(/max-w-60/g)?.length).toBe(2)
-    expect(source).toContain(
-      'className="mr-auto min-w-0 w-fit max-w-[calc(100%_-_7rem)] flex-none"'
-    )
-    expect(source).toContain("min-h-11 w-fit min-w-0 max-w-60 flex-none")
+    // Three-column header: shrink-free glyph, minmax(0,1fr) merchant rail,
+    // shrink-free disclosure + CTA controls. No magic width subtraction.
+    expect(source).toContain("grid-cols-[auto_minmax(0,1fr)_auto]")
+    expect(source).not.toContain("calc(100%_-_7rem)")
+    expect(source).toContain("min-h-11 w-fit min-w-0 max-w-60 items-center")
     expect(source.match(/<StatusPill/g)?.length).toBe(2)
     expect(source).toContain('variant="neutral"')
     expect(source).toContain("selected && expanded")
+  })
+
+  it("uses one truthful activation and disclosure interaction model", () => {
+    const source = readFileSync(
+      new URL(
+        "../apps/market/src/components/MarketCartHud.tsx",
+        import.meta.url
+      ),
+      "utf8"
+    )
+
+    // Single-selection merchant button group instead of tabs pointing at a
+    // panel that is not a tabpanel.
+    expect(source).toContain('role="group"')
+    expect(source).toContain("aria-pressed={selected}")
+    expect(source).not.toContain("TabsTrigger")
+    // One activation path shared by pointer, Enter, and Space; activating a
+    // merchant while collapsed selects and expands it, including the
+    // already-selected merchant.
+    expect(source).toContain("const activateMerchant = useCallback")
+    expect(source).toContain(
+      "onClick={() => activateMerchant(group.merchantPubkey)}"
+    )
+    // The disclosure toggle controls the real details panel element.
+    expect(source).toContain("aria-controls={detailsPanelId}")
+    expect(source).toContain("id={detailsPanelId}")
+    // Bottom dock arrow points at the resulting motion: collapsed -> up.
+    expect(source).toContain('!expanded && "rotate-180"')
+    // Collapse restores focus out of the soon-to-be-inert panel.
+    expect(source).toContain("const collapseHud = useCallback")
+    expect(source).toContain("disclosureRef.current?.focus()")
+    // No layout-property animation on expansion.
+    expect(source).not.toContain("transition-[grid-template-rows")
+    expect(source).toContain("grid transition-opacity duration-200")
+    // Decorative cart glyph carries no control-like filled surface.
+    expect(source).not.toContain("rounded-xl bg-primary-500 text-white")
+    // Initial hydration is tracked separately from a real first-item add.
+    expect(source).toContain("cartHydratedRef")
+    expect(source).toContain("isInitialHydration")
   })
 
   it("slides the dock in and out of the bottom of the page", () => {
