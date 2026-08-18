@@ -62,7 +62,7 @@ async function seedCustomZapCheckout(page: Page): Promise<void> {
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
-        callback: "https://example.com/lnurl/callback",
+        callback: "https://wallet.conduit.market/lnurl/callback",
         minSendable: 1_000,
         maxSendable: 10_000_000,
         tag: "payRequest",
@@ -85,7 +85,7 @@ async function seedMerchantProfile(page: Page): Promise<void> {
         transaction.objectStore("profiles").put({
           pubkey: merchantPubkey,
           name: "CND-158 Merchant",
-          lud16: "merchant@example.com",
+          lud16: "merchant@wallet.conduit.market",
           cachedAt: Date.now(),
         })
         transaction.oncomplete = () => resolve()
@@ -116,7 +116,7 @@ async function seedOrderHistory(page: Page, zapContent: string): Promise<void> {
             merchantPubkey,
             checkoutMode: "public_zap_as_shopper",
             publicZapSigner: "shopper",
-            merchantLightningAddress: "merchant@example.com",
+            merchantLightningAddress: "merchant@wallet.conduit.market",
             items: [
               {
                 productId: canonicalProductId,
