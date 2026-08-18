@@ -8,7 +8,7 @@ import {
   getNdk,
   persistProductDeletionDelivery,
   planPublishRelays,
-  publishSignedEventToRelay,
+  publishDurableSignedEventToRelay,
   type ProductDeletionDeliveryOptions,
   type ProductDeletionDeliveryJob,
   type ProductDeletionRelayPublisher,
@@ -28,7 +28,7 @@ async function publishProductDeletionRelay(
   const ndk = getNdk()
   const event = new NDKEvent(ndk, input.signedEvent)
   return {
-    status: await publishSignedEventToRelay({
+    status: await publishDurableSignedEventToRelay({
       event,
       relayUrl: input.relayUrl,
       authorPubkey: input.signedEvent.pubkey,

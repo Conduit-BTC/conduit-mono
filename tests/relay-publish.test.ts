@@ -10,10 +10,15 @@ import {
   deriveRelayOutcomes,
   EVENT_KINDS,
   planPublishRelays,
+  publishDurableSignedEventToRelay,
   publishSignedEventToRelay,
   publishWithPlanner,
   type RelayList,
 } from "@conduit/core"
+import {
+  __resetNdkTestState,
+  getDurableNdk,
+} from "../packages/core/src/protocol/ndk"
 
 const NOW = 1_700_000_000_000
 const AUTHOR_SECRET = Uint8Array.from([...new Uint8Array(31), 21])
@@ -44,6 +49,82 @@ function signedTestEvent(input: {
   )
   event.publish = input.publish as never
   return event
+}
+
+function installAcknowledgingWebSocket(closeDelayMs = 0): {
+  counters: { closed: number; opened: number }
+  restore: () => void
+} {
+  const originalDescriptor = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "WebSocket"
+  )
+  const counters = { closed: 0, opened: 0 }
+
+  class AcknowledgingWebSocket {
+    static CONNECTING = 0
+    static OPEN = 1
+    static CLOSING = 2
+    static CLOSED = 3
+
+    readyState = AcknowledgingWebSocket.CONNECTING
+    onopen: ((event: Event) => void) | null = null
+    onmessage: ((event: MessageEvent<string>) => void) | null = null
+    onerror: ((event: Event) => void) | null = null
+    onclose: ((event: Event) => void) | null = null
+
+    constructor(readonly url: string) {
+      counters.opened += 1
+      queueMicrotask(() => {
+        if (this.readyState !== AcknowledgingWebSocket.CONNECTING) return
+        this.readyState = AcknowledgingWebSocket.OPEN
+        this.onopen?.(new Event("open"))
+      })
+    }
+
+    send(payload: string): void {
+      const frame = JSON.parse(payload) as [string, { id?: string } | undefined]
+      if (frame[0] !== "EVENT" || !frame[1]?.id) return
+      const eventId = frame[1].id
+      queueMicrotask(() => {
+        this.onmessage?.({
+          data: JSON.stringify(["OK", eventId, true, ""]),
+        } as MessageEvent<string>)
+      })
+    }
+
+    close(): void {
+      if (
+        this.readyState === AcknowledgingWebSocket.CLOSING ||
+        this.readyState === AcknowledgingWebSocket.CLOSED
+      ) {
+        return
+      }
+      this.readyState = AcknowledgingWebSocket.CLOSING
+      setTimeout(() => {
+        this.readyState = AcknowledgingWebSocket.CLOSED
+        counters.closed += 1
+        this.onclose?.(new Event("close"))
+      }, closeDelayMs)
+    }
+  }
+
+  Object.defineProperty(globalThis, "WebSocket", {
+    configurable: true,
+    writable: true,
+    value: AcknowledgingWebSocket,
+  })
+
+  return {
+    counters,
+    restore: () => {
+      if (originalDescriptor) {
+        Object.defineProperty(globalThis, "WebSocket", originalDescriptor)
+      } else {
+        Reflect.deleteProperty(globalThis, "WebSocket")
+      }
+    },
+  }
 }
 
 function ndkPublishFailure(relayUrl: string, reason: string): NDKPublishError {
@@ -79,6 +160,7 @@ describe("planPublishRelays", () => {
   afterEach(() => {
     __resetRelayListTestOverrides()
     __resetRelayPublishTestOverrides()
+    __resetNdkTestState()
   })
 
   it("returns an author plan with no recipient hints", async () => {
@@ -542,6 +624,135 @@ describe("planPublishRelays", () => {
         authorPubkey: AUTHOR_PUBKEY,
       })
     ).resolves.toBe("acked")
+  })
+
+  it("uses one persistent durable relay instead of the ambient event client", async () => {
+    const fakeWebSocket = installAcknowledgingWebSocket()
+    const relayUrl = "wss://durable-isolated.conduit.market"
+    const usedRelays: NDKRelay[] = []
+    const inputEvent = signedTestEvent({
+      kind: EVENT_KINDS.DELETION,
+      tags: [["e", "a".repeat(64)]],
+      content: "",
+      publish: async () => {
+        throw new Error("must publish the isolated event")
+      },
+    })
+    const isolatedEvent = signedTestEvent({
+      kind: EVENT_KINDS.DELETION,
+      tags: [["e", "a".repeat(64)]],
+      content: "",
+      publish: async (relaySet) => {
+        const relay = Array.from(
+          (relaySet as { relays: Set<NDKRelay> }).relays
+        )[0]
+        if (!relay) throw new Error("Expected one durable relay")
+        usedRelays.push(relay)
+        return new Set([relay])
+      },
+    })
+    __setRelayPublishTestOverrides({
+      createDurableEvent: () => isolatedEvent,
+    })
+
+    try {
+      await expect(
+        publishDurableSignedEventToRelay({
+          event: inputEvent,
+          relayUrl,
+          authorPubkey: AUTHOR_PUBKEY,
+        })
+      ).resolves.toBe("acked")
+
+      const durableRelay = usedRelays[0]
+      expect(durableRelay?.url).toBe(`${relayUrl}/`)
+      expect(getDurableNdk().pool.relays.size).toBe(0)
+
+      await expect(
+        publishDurableSignedEventToRelay({
+          event: inputEvent,
+          relayUrl,
+          authorPubkey: AUTHOR_PUBKEY,
+        })
+      ).resolves.toBe("acked")
+      expect(usedRelays[1]).toBe(durableRelay)
+      expect(getDurableNdk().pool.relays.size).toBe(0)
+    } finally {
+      fakeWebSocket.restore()
+    }
+  })
+
+  it("disconnects the durable relay after a failed attempt", async () => {
+    const fakeWebSocket = installAcknowledgingWebSocket()
+    const relayUrl = "wss://durable-timeout.conduit.market"
+    const inputEvent = signedTestEvent({
+      kind: EVENT_KINDS.DELETION,
+      tags: [["e", "a".repeat(64)]],
+      content: "",
+      publish: async () => {
+        throw new Error("must publish the isolated event")
+      },
+    })
+    const isolatedEvent = signedTestEvent({
+      kind: EVENT_KINDS.DELETION,
+      tags: [["e", "a".repeat(64)]],
+      content: "",
+      publish: async () => {
+        throw ndkPublishFailure(relayUrl, "Timeout: 8000ms")
+      },
+    })
+    __setRelayPublishTestOverrides({
+      createDurableEvent: () => isolatedEvent,
+    })
+
+    try {
+      await expect(
+        publishDurableSignedEventToRelay({
+          event: inputEvent,
+          relayUrl,
+          authorPubkey: AUTHOR_PUBKEY,
+        })
+      ).resolves.toBe("timed_out")
+      expect(getDurableNdk().pool.relays.size).toBe(0)
+    } finally {
+      fakeWebSocket.restore()
+    }
+  })
+
+  it("waits for relay close before immediate sequential reuse", async () => {
+    const fakeWebSocket = installAcknowledgingWebSocket(20)
+
+    try {
+      const relayUrl = "wss://sequential-durable.conduit.market"
+      const event = new NDKEvent(
+        undefined,
+        finalizeEvent(
+          {
+            kind: EVENT_KINDS.DELETION,
+            created_at: NOW,
+            tags: [["e", "a".repeat(64)]],
+            content: "",
+          },
+          AUTHOR_SECRET
+        )
+      )
+
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        await expect(
+          publishDurableSignedEventToRelay({
+            event,
+            relayUrl,
+            authorPubkey: AUTHOR_PUBKEY,
+          })
+        ).resolves.toBe("acked")
+      }
+
+      expect(fakeWebSocket.counters.opened).toBe(2)
+      expect(fakeWebSocket.counters.closed).toBe(2)
+      expect(getDurableNdk().pool.relays.size).toBe(0)
+    } finally {
+      fakeWebSocket.restore()
+    }
   })
 
   it("preserves an authenticated author's exact local relay target", async () => {

@@ -7,12 +7,12 @@
  */
 
 import {
+  NDKEvent,
   NDKPublishError,
   NDKRelaySet,
-  type NDKEvent,
   type NDKRelay,
 } from "@nostr-dev-kit/ndk"
-import { getNdk } from "./ndk"
+import { acquireDurableNdkRelay, getDurableNdk, getNdk } from "./ndk"
 import { getRelayLists, isInsecureRelayUrl } from "./relay-list"
 import { recordRelayFailure, recordRelaySuccess } from "./relay-health"
 import {
@@ -140,6 +140,10 @@ interface RelayPublishTestOverrides {
     input: PublishWithPlannerInput
   ) => Promise<RelayWritePlan>
   getNdk?: typeof getNdk
+  createDurableEvent?: (
+    event: NDKEvent,
+    ndk: ReturnType<typeof getNdk>
+  ) => NDKEvent
 }
 
 let testOverrides: RelayPublishTestOverrides = {}
@@ -496,18 +500,45 @@ async function publishToRelayUrls(input: {
 
 export type ExclusiveRelayPublishStatus = "acked" | "rejected" | "timed_out"
 
-/**
- * Publish one already-signed author event to one exact relay target and return
- * a structured ACK/reject/timeout result. No fallback or plan recomputation is
- * allowed at this boundary; durable callers own the immutable relay plan.
- */
-export async function publishSignedEventToRelay(input: {
+export interface ExactRelayPublishInput {
   event: NDKEvent
   relayUrl: string
   authorPubkey: string
   /** Preserve an authenticated author's intentional local `ws://` target. */
   authenticatedPubkey?: string | null
-}): Promise<ExclusiveRelayPublishStatus> {
+}
+
+interface DurableRelayPublishTransport {
+  ndk: ReturnType<typeof getNdk>
+  event: NDKEvent
+  release: () => Promise<void>
+}
+
+async function createDurableRelayPublishTransport(
+  event: NDKEvent,
+  relayUrl: string
+): Promise<DurableRelayPublishTransport> {
+  const ndk = getDurableNdk()
+  const rawEvent = event.rawEvent()
+  const exactSignedEvent = {
+    ...rawEvent,
+    tags: rawEvent.tags.map((tag) => [...tag]),
+  }
+  const exactEvent =
+    testOverrides.createDurableEvent?.(event, ndk) ??
+    new NDKEvent(ndk, exactSignedEvent)
+  const relayLease = await acquireDurableNdkRelay(relayUrl)
+  return {
+    ndk,
+    event: exactEvent,
+    release: relayLease.release,
+  }
+}
+
+async function publishExactSignedEventToRelay(
+  input: ExactRelayPublishInput,
+  durable: boolean
+): Promise<ExclusiveRelayPublishStatus> {
   assertValidSignedPublish(input.event, {
     intent: "author_event",
     authorPubkey: input.authorPubkey,
@@ -528,15 +559,47 @@ export async function publishSignedEventToRelay(input: {
   }
   const relayUrl = normalized.url
 
-  const outcome = await publishToRelayUrls({
-    event: input.event,
-    ndk: testOverrides.getNdk ? testOverrides.getNdk() : getNdk(),
-    relayUrls: [relayUrl],
-    requiredRelayCount: 1,
-    timeoutMs: CRITICAL_PUBLISH_TIMEOUT_MS,
-  })
+  const transport = durable
+    ? await createDurableRelayPublishTransport(input.event, relayUrl)
+    : null
+
+  let outcome: Awaited<ReturnType<typeof publishToRelayUrls>>
+  try {
+    outcome = await publishToRelayUrls({
+      event: transport?.event ?? input.event,
+      ndk:
+        transport?.ndk ??
+        (testOverrides.getNdk ? testOverrides.getNdk() : getNdk()),
+      relayUrls: [relayUrl],
+      requiredRelayCount: 1,
+      timeoutMs: CRITICAL_PUBLISH_TIMEOUT_MS,
+    })
+  } finally {
+    await transport?.release()
+  }
   if (outcome.successfulRelayUrls.includes(relayUrl)) return "acked"
   return outcome.rejectedRelayUrls.includes(relayUrl) ? "rejected" : "timed_out"
+}
+
+/**
+ * Publish one already-signed author event to one exact relay target and return
+ * a structured ACK/reject/timeout result. No fallback or plan recomputation is
+ * allowed at this boundary; durable callers own the immutable relay plan.
+ */
+export async function publishSignedEventToRelay(
+  input: ExactRelayPublishInput
+): Promise<ExclusiveRelayPublishStatus> {
+  return await publishExactSignedEventToRelay(input, false)
+}
+
+/**
+ * Publish one exact signed outbox event through the durable offline client.
+ * Auth and relay-scope resets cannot disconnect this transport in flight.
+ */
+export async function publishDurableSignedEventToRelay(
+  input: ExactRelayPublishInput
+): Promise<ExclusiveRelayPublishStatus> {
+  return await publishExactSignedEventToRelay(input, true)
 }
 
 /**
