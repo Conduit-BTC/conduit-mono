@@ -7,12 +7,12 @@
  */
 
 import {
-  NDKEvent,
   NDKPublishError,
   NDKRelaySet,
+  type NDKEvent,
   type NDKRelay,
 } from "@nostr-dev-kit/ndk"
-import { acquireDurableNdkRelay, getDurableNdk, getNdk } from "./ndk"
+import { getNdk } from "./ndk"
 import { getRelayLists, isInsecureRelayUrl } from "./relay-list"
 import { recordRelayFailure, recordRelaySuccess } from "./relay-health"
 import {
@@ -35,6 +35,10 @@ import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
 } from "./signed-event"
+import {
+  publishSignedEventFrameToRelay,
+  type ExactRelayWriteStatus,
+} from "./relay-writer"
 import { normalizePublicWebSocketUrl } from "../network-target-safety"
 
 const STANDARD_PUBLISH_TIMEOUT_MS = 5_000
@@ -123,6 +127,13 @@ function assertValidSignedPublish(
   } catch {
     throw new Error("Refusing to publish an invalid signed Nostr event.")
   }
+  assertValidSignedPublicPublish(rawEvent, input)
+}
+
+function assertValidSignedPublicPublish(
+  rawEvent: SignedPublicNostrEvent,
+  input: PublishWithPlannerInput
+): void {
   if (!isValidSignedPublicNostrEvent(rawEvent)) {
     throw new Error("Refusing to publish an invalid signed Nostr event.")
   }
@@ -140,10 +151,6 @@ interface RelayPublishTestOverrides {
     input: PublishWithPlannerInput
   ) => Promise<RelayWritePlan>
   getNdk?: typeof getNdk
-  createDurableEvent?: (
-    event: NDKEvent,
-    ndk: ReturnType<typeof getNdk>
-  ) => NDKEvent
 }
 
 let testOverrides: RelayPublishTestOverrides = {}
@@ -498,51 +505,20 @@ async function publishToRelayUrls(input: {
   }
 }
 
-export type ExclusiveRelayPublishStatus = "acked" | "rejected" | "timed_out"
+export type ExclusiveRelayPublishStatus = ExactRelayWriteStatus
 
-export interface ExactRelayPublishInput {
-  event: NDKEvent
+interface ExactRelayTargetInput {
   relayUrl: string
   authorPubkey: string
   /** Preserve an authenticated author's intentional local `ws://` target. */
   authenticatedPubkey?: string | null
 }
 
-interface DurableRelayPublishTransport {
-  ndk: ReturnType<typeof getNdk>
-  event: NDKEvent
-  release: () => Promise<void>
+export interface ExactRelayPublishInput extends ExactRelayTargetInput {
+  signedEvent: SignedPublicNostrEvent
 }
 
-async function createDurableRelayPublishTransport(
-  event: NDKEvent,
-  relayUrl: string
-): Promise<DurableRelayPublishTransport> {
-  const ndk = getDurableNdk()
-  const rawEvent = event.rawEvent()
-  const exactSignedEvent = {
-    ...rawEvent,
-    tags: rawEvent.tags.map((tag) => [...tag]),
-  }
-  const exactEvent =
-    testOverrides.createDurableEvent?.(event, ndk) ??
-    new NDKEvent(ndk, exactSignedEvent)
-  const relayLease = await acquireDurableNdkRelay(relayUrl)
-  return {
-    ndk,
-    event: exactEvent,
-    release: relayLease.release,
-  }
-}
-
-async function publishExactSignedEventToRelay(
-  input: ExactRelayPublishInput,
-  durable: boolean
-): Promise<ExclusiveRelayPublishStatus> {
-  assertValidSignedPublish(input.event, {
-    intent: "author_event",
-    authorPubkey: input.authorPubkey,
-  })
+function resolveExactRelayTarget(input: ExactRelayTargetInput): string {
   const normalized = tryNormalizeRelayUrl(input.relayUrl)
   const allowAuthenticatedAuthorLocalRelay = hasAuthenticatedAuthorRelayContext(
     {
@@ -557,49 +533,31 @@ async function publishExactSignedEventToRelay(
   ) {
     throw new Error("Expected one valid public or authenticated relay target.")
   }
-  const relayUrl = normalized.url
-
-  const transport = durable
-    ? await createDurableRelayPublishTransport(input.event, relayUrl)
-    : null
-
-  let outcome: Awaited<ReturnType<typeof publishToRelayUrls>>
-  try {
-    outcome = await publishToRelayUrls({
-      event: transport?.event ?? input.event,
-      ndk:
-        transport?.ndk ??
-        (testOverrides.getNdk ? testOverrides.getNdk() : getNdk()),
-      relayUrls: [relayUrl],
-      requiredRelayCount: 1,
-      timeoutMs: CRITICAL_PUBLISH_TIMEOUT_MS,
-    })
-  } finally {
-    await transport?.release()
-  }
-  if (outcome.successfulRelayUrls.includes(relayUrl)) return "acked"
-  return outcome.rejectedRelayUrls.includes(relayUrl) ? "rejected" : "timed_out"
+  return normalized.url
 }
 
 /**
  * Publish one already-signed author event to one exact relay target and return
  * a structured ACK/reject/timeout result. No fallback or plan recomputation is
- * allowed at this boundary; durable callers own the immutable relay plan.
+ * allowed. Its isolated socket does not share NDK relay/session lifecycle, so
+ * ambient resets cannot interrupt a durable retry in flight.
  */
 export async function publishSignedEventToRelay(
   input: ExactRelayPublishInput
 ): Promise<ExclusiveRelayPublishStatus> {
-  return await publishExactSignedEventToRelay(input, false)
-}
-
-/**
- * Publish one exact signed outbox event through the durable offline client.
- * Auth and relay-scope resets cannot disconnect this transport in flight.
- */
-export async function publishDurableSignedEventToRelay(
-  input: ExactRelayPublishInput
-): Promise<ExclusiveRelayPublishStatus> {
-  return await publishExactSignedEventToRelay(input, true)
+  assertValidSignedPublicPublish(input.signedEvent, {
+    intent: "author_event",
+    authorPubkey: input.authorPubkey,
+  })
+  const relayUrl = resolveExactRelayTarget(input)
+  const status = await publishSignedEventFrameToRelay({
+    signedEvent: input.signedEvent,
+    relayUrl,
+    timeoutMs: CRITICAL_PUBLISH_TIMEOUT_MS,
+  })
+  if (status === "acked") recordRelaySuccess(relayUrl)
+  else recordRelayFailure(relayUrl)
+  return status
 }
 
 /**

@@ -2,9 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test"
 import { type NDKSigner } from "@nostr-dev-kit/ndk"
 import {
   __resetNdkTestState,
-  acquireDurableNdkRelay,
   disconnectNdk,
-  getDurableNdk,
   getNdk,
   refreshNdkRelaySettings,
   removeSigner,
@@ -55,33 +53,6 @@ describe("NDK signer lifecycle", () => {
     refreshNdkRelaySettings()
 
     expect(getNdk().signer).toBe(activeSigner)
-  })
-
-  it("keeps one signer-free durable client across ambient session resets", async () => {
-    const durableNdk = getDurableNdk()
-    const firstLease = await acquireDurableNdkRelay(
-      "wss://durable-retry.conduit.market"
-    )
-
-    expect(getDurableNdk()).toBe(durableNdk)
-    expect(durableNdk).not.toBe(getNdk())
-    expect(durableNdk.signer).toBeUndefined()
-
-    refreshNdkRelaySettings("merchant:replacement")
-
-    expect(getDurableNdk()).toBe(durableNdk)
-    expect(durableNdk.signer).toBeUndefined()
-
-    const secondLease = await acquireDurableNdkRelay(
-      "wss://durable-retry.conduit.market"
-    )
-    expect(secondLease.relay).toBe(firstLease.relay)
-
-    await firstLease.release()
-    expect(durableNdk.pool.relays.has(firstLease.relay.url)).toBe(true)
-
-    await secondLease.release()
-    expect(durableNdk.pool.relays.has(firstLease.relay.url)).toBe(false)
   })
 
   it("constructs an offline compatibility context without ambient relays", () => {

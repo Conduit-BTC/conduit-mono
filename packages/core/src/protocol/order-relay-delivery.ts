@@ -1,7 +1,6 @@
-import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { db, type OrderLifecycle, type OrderRelayDeliveryStatus } from "../db"
 import { normalizePublicWebSocketUrl } from "../network-target-safety"
-import { publishDurableSignedEventToRelay } from "./relay-publish"
+import { publishSignedEventToRelay } from "./relay-publish"
 import type { SignedPublicNostrEvent } from "./signed-event"
 
 const RETRY_DELAY_MS = 60_000
@@ -46,9 +45,8 @@ async function defaultPublisher(input: {
   relayUrl: string
   signedEvent: SignedPublicNostrEvent
 }): Promise<OrderRelayDeliveryStatus> {
-  const event = new NDKEvent(undefined, input.signedEvent)
-  return await publishDurableSignedEventToRelay({
-    event,
+  return await publishSignedEventToRelay({
+    signedEvent: input.signedEvent,
     relayUrl: input.relayUrl,
     authorPubkey: input.signedEvent.pubkey,
   })
