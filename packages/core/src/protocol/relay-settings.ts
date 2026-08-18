@@ -1,4 +1,5 @@
 import { config, isRetiredDefaultRelayUrl, type ConduitConfig } from "../config"
+import { normalizePublicWebSocketUrl } from "../network-target-safety"
 
 export type RelaySettingsSection = "commerce" | "public"
 export type RelaySettingsSource = "default" | "manual" | "signer" | "published"
@@ -497,6 +498,9 @@ export function normalizeRelayUrl(input: string): string {
   if (!parsed.hostname) {
     throw new Error("Relay URL must include a host")
   }
+  if (parsed.username || parsed.password) {
+    throw new Error("Relay URL must not include credentials")
+  }
 
   parsed.hash = ""
   parsed.search = ""
@@ -542,6 +546,53 @@ export function normalizeSecureRelayUrls(
   }
 
   return normalizedUrls
+}
+
+/**
+ * Normalize relay URLs learned from untrusted provenance or protocol hints.
+ * Public WSS destinations are accepted directly. A private/local destination
+ * is accepted only when the current authenticated planner already selected
+ * the same canonical relay URL.
+ */
+export function normalizeUntrustedRelayHintsForContext(input: {
+  relayUrls: readonly string[]
+  approvedRelayUrls: readonly string[]
+  allowApprovedPrivate: boolean
+}): string[] {
+  const approvedRelayUrls = input.allowApprovedPrivate
+    ? new Set(
+        input.approvedRelayUrls.flatMap((url) => {
+          const normalized = tryNormalizeRelayUrl(url)
+          return normalized.ok ? [normalized.url] : []
+        })
+      )
+    : new Set<string>()
+  const accepted = new Set<string>()
+
+  for (const rawRelayUrl of input.relayUrls) {
+    const normalized = tryNormalizeRelayUrl(rawRelayUrl)
+    if (!normalized.ok) continue
+    if (
+      !normalizePublicWebSocketUrl(normalized.url) &&
+      !approvedRelayUrls.has(normalized.url)
+    ) {
+      continue
+    }
+    accepted.add(normalized.url)
+  }
+
+  return Array.from(accepted)
+}
+
+/** Normalize untrusted relay hints without granting any owner-local exception. */
+export function normalizePublicRelayHints(
+  relayUrls: readonly string[]
+): string[] {
+  return normalizeUntrustedRelayHintsForContext({
+    relayUrls,
+    approvedRelayUrls: [],
+    allowApprovedPrivate: false,
+  })
 }
 
 export function getRelayInfoDocumentUrl(relayUrl: string): string {

@@ -3,6 +3,7 @@ import {
   Link as LinkIcon,
   LoaderCircle,
   MessageCircle,
+  RotateCcw,
   Search,
   UserCheck,
   UserMinus,
@@ -68,6 +69,7 @@ import {
 } from "../../lib/facets"
 import {
   createStorefrontFollowState,
+  deriveStorefrontFollowControl,
   isStorefrontFollowScopeEqual,
   storefrontFollowReducer,
 } from "../../lib/storefront-follow-state"
@@ -254,8 +256,12 @@ function StorefrontPage() {
     [selectedTags, storeProducts]
   )
 
-  const isFollowing =
-    followOverride ?? merchantTrust.viewerFollowsMerchant === true
+  const followControl = deriveStorefrontFollowControl({
+    override: followOverride,
+    observedFollowing: merchantTrust.viewerFollowsMerchant === true,
+    pendingFollowing: merchantTrust.pendingViewerFollowsMerchant,
+  })
+  const { isFollowing } = followControl
   const isFollowBusy =
     followStateMatchesScope && followState.saveState !== "idle"
 
@@ -373,7 +379,7 @@ function StorefrontPage() {
     }
     if (isFollowBusy) return
 
-    const nextShouldFollow = !isFollowing
+    const nextShouldFollow = followControl.shouldFollowOnClick
     const operationId = ++followOperationIdRef.current
     dispatchFollow({
       type: "operation_started",
@@ -396,7 +402,7 @@ function StorefrontPage() {
         shouldFollow: nextShouldFollow,
       })
       await queryClient.invalidateQueries({
-        queryKey: ["merchant-trust-social", viewerPubkey, pubkey],
+        queryKey: ["merchant-trust-social"],
       })
       dispatchFollow({
         type: "operation_settled",
@@ -567,6 +573,8 @@ function StorefrontPage() {
                 >
                   {isFollowBusy ? (
                     <LoaderCircle className="h-4 w-4 animate-spin" />
+                  ) : followControl.isPendingRetry ? (
+                    <RotateCcw className="h-4 w-4" />
                   ) : isFollowing ? (
                     <span className="relative grid h-4 w-4 place-items-center">
                       <UserCheck className="col-start-1 row-start-1 h-4 w-4 transition-opacity duration-150 group-hover:opacity-0" />
@@ -580,6 +588,12 @@ function StorefrontPage() {
                       "Unfollowing…"
                     ) : (
                       "Following…"
+                    )
+                  ) : followControl.isPendingRetry ? (
+                    followControl.shouldFollowOnClick ? (
+                      "Retry follow"
+                    ) : (
+                      "Retry unfollow"
                     )
                   ) : isFollowing ? (
                     <span className="grid">

@@ -56,10 +56,8 @@ import {
 import type { DirectConversationSummary } from "@conduit/core"
 import { requireAuth } from "../lib/auth"
 import { CopyButton } from "../components/CopyButton"
-import {
-  MerchantAvatarFallback,
-  getMerchantDisplayName,
-} from "../components/MerchantIdentity"
+import { ConversationProfilePicture } from "../components/ConversationProfilePicture"
+import { getMerchantDisplayName } from "../components/MerchantIdentity"
 import {
   fetchCachedBuyerConversations,
   fetchBuyerConversations,
@@ -155,15 +153,10 @@ function MerchantThreadRow({
     >
       <div className="flex items-start gap-3">
         <div className="h-11 w-11 shrink-0 overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]">
-          {profile?.picture ? (
-            <img
-              src={profile.picture}
-              alt={merchantName}
-              className="h-full w-full object-cover"
-            />
-          ) : (
-            <MerchantAvatarFallback />
-          )}
+          <ConversationProfilePicture
+            src={profile?.picture}
+            alt={merchantName}
+          />
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
@@ -220,15 +213,7 @@ function DmThreadRow({
     >
       <div className="flex items-start gap-3">
         <div className="h-11 w-11 shrink-0 overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]">
-          {profile?.picture ? (
-            <img
-              src={profile.picture}
-              alt={name}
-              className="h-full w-full object-cover"
-            />
-          ) : (
-            <MerchantAvatarFallback />
-          )}
+          <ConversationProfilePicture src={profile?.picture} alt={name} />
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
@@ -1035,15 +1020,10 @@ function MessagesPage() {
                       <div className="border-b border-[var(--border)] px-6 py-5">
                         <div className="flex items-center gap-3">
                           <div className="h-12 w-12 overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]">
-                            {selectedDmProfile.data?.picture ? (
-                              <img
-                                src={selectedDmProfile.data.picture}
-                                alt={selectedDmName ?? "Contact"}
-                                className="h-full w-full object-cover"
-                              />
-                            ) : (
-                              <MerchantAvatarFallback />
-                            )}
+                            <ConversationProfilePicture
+                              src={selectedDmProfile.data?.picture}
+                              alt={selectedDmName ?? "Contact"}
+                            />
                           </div>
                           <div className="min-w-0 flex-1">
                             <div className="truncate text-lg font-semibold text-[var(--text-primary)]">
@@ -1387,15 +1367,10 @@ function MessagesPage() {
                     <div className="border-b border-[var(--border)] px-6 py-5">
                       <div className="flex items-center gap-3">
                         <div className="h-12 w-12 overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]">
-                          {selectedProfile.data?.picture ? (
-                            <img
-                              src={selectedProfile.data.picture}
-                              alt={merchantName ?? "Merchant"}
-                              className="h-full w-full object-cover"
-                            />
-                          ) : (
-                            <MerchantAvatarFallback />
-                          )}
+                          <ConversationProfilePicture
+                            src={selectedProfile.data?.picture}
+                            alt={merchantName ?? "Merchant"}
+                          />
                         </div>
                         <div className="min-w-0 flex-1">
                           <Link

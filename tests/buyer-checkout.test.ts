@@ -414,7 +414,7 @@ describe("isFastCheckoutEligible", () => {
     expect(
       isFastCheckoutEligible({
         walletPayCapable: true,
-        merchantLud16: "merchant@wallet.example",
+        merchantLud16: "merchant@wallet.conduit.market",
         lnurlAllowsNostr: true,
       })
     ).toBe(true)
@@ -424,7 +424,7 @@ describe("isFastCheckoutEligible", () => {
     expect(
       isFastCheckoutEligible({
         walletPayCapable: false,
-        merchantLud16: "merchant@wallet.example",
+        merchantLud16: "merchant@wallet.conduit.market",
         lnurlAllowsNostr: true,
       })
     ).toBe(false)
@@ -434,7 +434,7 @@ describe("isFastCheckoutEligible", () => {
     expect(
       isFastCheckoutEligible({
         walletPayCapable: false,
-        merchantLud16: "merchant@wallet.example",
+        merchantLud16: "merchant@wallet.conduit.market",
         lnurlAllowsNostr: true,
         allowsManualFallback: true,
       })
@@ -465,7 +465,7 @@ describe("isFastCheckoutEligible", () => {
     expect(
       isFastCheckoutEligible({
         walletPayCapable: true,
-        merchantLud16: "merchant@wallet.example",
+        merchantLud16: "merchant@wallet.conduit.market",
         lnurlAllowsNostr: false,
       })
     ).toBe(false)
@@ -475,7 +475,7 @@ describe("isFastCheckoutEligible", () => {
     expect(
       getFastCheckoutUnavailableReasons({
         walletPayCapable: true,
-        merchantLud16: "merchant@wallet.example",
+        merchantLud16: "merchant@wallet.conduit.market",
         lnurlAllowsNostr: true,
         pricingReady: false,
         shippingEligible: false,
@@ -491,7 +491,7 @@ describe("isFastCheckoutEligible", () => {
     expect(
       getFastCheckoutUnavailableReasons({
         walletPayCapable: true,
-        merchantLud16: "merchant@wallet.example",
+        merchantLud16: "merchant@wallet.conduit.market",
         lnurlAllowsNostr: true,
         shippingEligible: false,
         shippingState: "missing_product_zone",
@@ -518,7 +518,7 @@ describe("isFastCheckoutEligible", () => {
     expect(
       getFastCheckoutUnavailableReasons({
         walletPayCapable: true,
-        merchantLud16: "merchant@wallet.example",
+        merchantLud16: "merchant@wallet.conduit.market",
         lnurlAllowsNostr: false,
       })
     ).toEqual([
@@ -530,7 +530,7 @@ describe("isFastCheckoutEligible", () => {
     expect(
       getFastCheckoutUnavailableReasons({
         walletPayCapable: true,
-        merchantLud16: "merchant@wallet.example",
+        merchantLud16: "merchant@wallet.conduit.market",
         lnurlAllowsNostr: true,
         requiresNostrZap: false,
       })
@@ -541,7 +541,7 @@ describe("isFastCheckoutEligible", () => {
     expect(
       getFastCheckoutUnavailableReasons({
         walletPayCapable: false,
-        merchantLud16: "merchant@wallet.example",
+        merchantLud16: "merchant@wallet.conduit.market",
         lnurlAllowsNostr: true,
         allowsManualFallback: true,
       })
@@ -569,7 +569,7 @@ describe("isFastCheckoutEligible", () => {
     expect(
       getFastCheckoutUnavailableReasons({
         walletPayCapable: true,
-        merchantLud16: "merchant@wallet.example",
+        merchantLud16: "merchant@wallet.conduit.market",
         lnurlAllowsNostr: false,
         requiresNostrZap: false,
       })
@@ -580,7 +580,7 @@ describe("isFastCheckoutEligible", () => {
     expect(
       getFastCheckoutUnavailableReasons({
         walletPayCapable: true,
-        merchantLud16: "merchant@wallet.example",
+        merchantLud16: "merchant@wallet.conduit.market",
         lnurlAllowsNostr: true,
         shippingPriced: false,
       })
@@ -593,7 +593,7 @@ describe("isFastCheckoutEligible", () => {
     expect(
       getFastCheckoutUnavailableReasons({
         walletPayCapable: true,
-        merchantLud16: "merchant@wallet.example",
+        merchantLud16: "merchant@wallet.conduit.market",
         lnurlAllowsNostr: true,
         addressValidForDirectPayment: false,
       })
@@ -606,7 +606,7 @@ describe("isFastCheckoutEligible", () => {
     expect(
       isFastCheckoutEligible({
         walletPayCapable: true,
-        merchantLud16: "merchant@wallet.example",
+        merchantLud16: "merchant@wallet.conduit.market",
         lnurlAllowsNostr: true,
         shippingEligible: true,
         addressValidForDirectPayment: true,
@@ -1088,7 +1088,7 @@ describe("checkout payment helpers", () => {
     expect(
       isFastCheckoutEligible({
         walletPayCapable: true,
-        merchantLud16: "merchant@wallet.example",
+        merchantLud16: "merchant@wallet.conduit.market",
         lnurlAllowsNostr: true,
         pricingReady: intent.status === "ok",
         shippingEligible: true,
@@ -1132,7 +1132,7 @@ describe("checkout payment helpers", () => {
     expect(
       isFastCheckoutEligible({
         walletPayCapable: true,
-        merchantLud16: "merchant@wallet.example",
+        merchantLud16: "merchant@wallet.conduit.market",
         lnurlAllowsNostr: true,
         pricingReady: true,
         shippingEligible: true,
@@ -1590,7 +1590,7 @@ describe("checkout payment helpers", () => {
     const result = await requestCheckoutLnurlInvoice(
       {
         visibility: "private_checkout",
-        lnurlCallback: "https://wallet.example/cb",
+        lnurlCallback: "https://wallet.conduit.market/cb",
         amountMsats: 50_000,
         lnurl: "lnurl1test",
         recipientPubkey: FAKE_PUBKEY,
@@ -1610,7 +1610,10 @@ describe("checkout payment helpers", () => {
       zapRelayUrls: [],
       shouldWaitForZapReceipt: false,
     })
-    expect(fetchLnurl).toHaveBeenCalledWith("https://wallet.example/cb", 50_000)
+    expect(fetchLnurl).toHaveBeenCalledWith(
+      "https://wallet.conduit.market/cb",
+      50_000
+    )
     expect(fetchZap).toHaveBeenCalledTimes(0)
     expect(signZapRequest).toHaveBeenCalledTimes(0)
   })
@@ -1634,7 +1637,7 @@ describe("checkout payment helpers", () => {
     const result = await requestCheckoutLnurlInvoice(
       {
         visibility: "public_zap",
-        lnurlCallback: "https://wallet.example/cb",
+        lnurlCallback: "https://wallet.conduit.market/cb",
         amountMsats: 50_000,
         lnurl: "lnurl1test",
         lnurlNostrPubkey: "d".repeat(64),
@@ -1683,7 +1686,7 @@ describe("checkout payment helpers", () => {
       ],
     })
     expect(fetchZap).toHaveBeenCalledWith(
-      "https://wallet.example/cb",
+      "https://wallet.conduit.market/cb",
       50_000,
       expect.stringContaining('"kind":9734'),
       "lnurl1test"
@@ -2408,9 +2411,9 @@ describe("parseNwcUri", () => {
   })
 
   it("parses optional lud16", () => {
-    const uri = `${VALID_NWC_URI}&lud16=user%40wallet.example`
+    const uri = `${VALID_NWC_URI}&lud16=user%40wallet.conduit.market`
     const conn = parseNwcUri(uri)
-    expect(conn.lud16).toBe("user@wallet.example")
+    expect(conn.lud16).toBe("user@wallet.conduit.market")
   })
 
   it("throws on wrong scheme", () => {
@@ -2454,7 +2457,7 @@ describe("fetchLnurlPayMetadata", () => {
   it("resolves a valid payRequest response", async () => {
     mockFetch({
       tag: "payRequest",
-      callback: "https://wallet.example/lnurlp/callback",
+      callback: "https://wallet.conduit.market/lnurlp/callback",
       minSendable: 1000,
       maxSendable: 100_000_000,
       metadata: "[]",
@@ -2462,8 +2465,10 @@ describe("fetchLnurlPayMetadata", () => {
       nostrPubkey: FAKE_PUBKEY,
     })
 
-    const result = await fetchLnurlPayMetadata("user@wallet.example")
-    expect(result.callback).toBe("https://wallet.example/lnurlp/callback")
+    const result = await fetchLnurlPayMetadata("user@wallet.conduit.market")
+    expect(result.callback).toBe(
+      "https://wallet.conduit.market/lnurlp/callback"
+    )
     expect(result.allowsNostr).toBe(true)
     expect(result.nostrPubkey).toBe(FAKE_PUBKEY)
     expect(result.minSendable).toBe(1000)
@@ -2471,14 +2476,16 @@ describe("fetchLnurlPayMetadata", () => {
 
   it("throws when tag is not payRequest", async () => {
     mockFetch({ tag: "withdrawRequest" })
-    await expect(fetchLnurlPayMetadata("user@wallet.example")).rejects.toThrow(
-      /LNURL-pay endpoint/
-    )
+    await expect(
+      fetchLnurlPayMetadata("user@wallet.conduit.market")
+    ).rejects.toThrow(/LNURL-pay endpoint/)
   })
 
   it("throws on HTTP error", async () => {
     mockFetch({}, false)
-    await expect(fetchLnurlPayMetadata("user@wallet.example")).rejects.toThrow()
+    await expect(
+      fetchLnurlPayMetadata("user@wallet.conduit.market")
+    ).rejects.toThrow()
   })
 
   it("throws on malformed lud16 (no @)", async () => {
@@ -2490,12 +2497,12 @@ describe("fetchLnurlPayMetadata", () => {
   it("sets allowsNostr false when not declared", async () => {
     mockFetch({
       tag: "payRequest",
-      callback: "https://wallet.example/cb",
+      callback: "https://wallet.conduit.market/cb",
       minSendable: 1000,
       maxSendable: 1_000_000,
       metadata: "[]",
     })
-    const result = await fetchLnurlPayMetadata("user@wallet.example")
+    const result = await fetchLnurlPayMetadata("user@wallet.conduit.market")
     expect(result.allowsNostr).toBe(false)
   })
 })
@@ -2523,7 +2530,7 @@ describe("fetchZapInvoice", () => {
   it("returns invoice on success", async () => {
     mockFetch({ pr: FAKE_INVOICE })
     const result = await fetchZapInvoice(
-      "https://wallet.example/lnurlp/callback",
+      "https://wallet.conduit.market/lnurlp/callback",
       100_000,
       FAKE_ZAP_REQUEST
     )
@@ -2534,7 +2541,7 @@ describe("fetchZapInvoice", () => {
     mockFetch({ status: "ERROR", reason: "Amount too low" })
     await expect(
       fetchZapInvoice(
-        "https://wallet.example/lnurlp/callback",
+        "https://wallet.conduit.market/lnurlp/callback",
         1,
         FAKE_ZAP_REQUEST
       )
@@ -2545,7 +2552,7 @@ describe("fetchZapInvoice", () => {
     mockFetch({}, false)
     await expect(
       fetchZapInvoice(
-        "https://wallet.example/lnurlp/callback",
+        "https://wallet.conduit.market/lnurlp/callback",
         100_000,
         FAKE_ZAP_REQUEST
       )
@@ -2558,7 +2565,7 @@ describe("fetchZapInvoice", () => {
     mockFetch({ status: "OK" })
     await expect(
       fetchZapInvoice(
-        "https://wallet.example/lnurlp/callback",
+        "https://wallet.conduit.market/lnurlp/callback",
         100_000,
         FAKE_ZAP_REQUEST
       )
@@ -2573,7 +2580,7 @@ describe("fetchZapInvoice", () => {
     }) as unknown as typeof fetch
 
     await fetchZapInvoice(
-      "https://wallet.example/cb",
+      "https://wallet.conduit.market/cb",
       50_000,
       FAKE_ZAP_REQUEST,
       "lnurl1test"
@@ -2592,7 +2599,7 @@ describe("fetchZapInvoice", () => {
     }) as unknown as typeof fetch
 
     await fetchZapInvoice(
-      "https://wallet.example/cb?tag=payRequest&nostr=leak&lnurl=leak",
+      "https://wallet.conduit.market/cb?tag=payRequest&nostr=leak&lnurl=leak",
       50_000,
       FAKE_ZAP_REQUEST,
       "lnurl1test"
@@ -2607,16 +2614,37 @@ describe("fetchZapInvoice", () => {
 
   it("requests a plain LNURL invoice without public zap metadata", async () => {
     let capturedUrl = ""
-    globalThis.fetch = mock(async (url: string | URL | Request) => {
+    let capturedInit: RequestInit | undefined
+    globalThis.fetch = mock(async (url: string | URL | Request, init) => {
       capturedUrl = url.toString()
+      capturedInit = init
       return { ok: true, status: 200, json: async () => ({ pr: FAKE_INVOICE }) }
     }) as unknown as typeof fetch
 
-    await fetchLnurlInvoice("https://wallet.example/cb", 50_000)
+    await fetchLnurlInvoice("https://wallet.conduit.market/cb", 50_000)
 
     expect(capturedUrl).toContain("amount=50000")
     expect(capturedUrl).not.toContain("nostr=")
     expect(capturedUrl).not.toContain("lnurl=")
+    expect(capturedInit?.redirect).toBe("error")
+  })
+
+  it("rejects a non-public LNURL callback before requesting it", async () => {
+    let fetchCount = 0
+    globalThis.fetch = mock(async () => {
+      fetchCount += 1
+      return { ok: true, status: 200, json: async () => ({ pr: FAKE_INVOICE }) }
+    }) as unknown as typeof fetch
+
+    for (const callback of [
+      "https://127.0.0.1/cb",
+      "https://wallet.home.arpa/cb",
+    ]) {
+      await expect(fetchLnurlInvoice(callback, 50_000)).rejects.toThrow(
+        /Unsafe LNURL-pay callback URL/
+      )
+    }
+    expect(fetchCount).toBe(0)
   })
 
   it("strips pre-existing NIP-57 params from plain LNURL invoice callbacks", async () => {
@@ -2627,7 +2655,7 @@ describe("fetchZapInvoice", () => {
     }) as unknown as typeof fetch
 
     await fetchLnurlInvoice(
-      "https://wallet.example/cb?tag=payRequest&nostr=leak&lnurl=leak",
+      "https://wallet.conduit.market/cb?tag=payRequest&nostr=leak&lnurl=leak",
       50_000
     )
 

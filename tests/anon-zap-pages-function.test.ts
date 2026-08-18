@@ -99,7 +99,7 @@ function productEvent(
       "simple",
       overrides.shippingCost === undefined ? "digital" : "physical",
     ],
-    ["image", "https://cdn.example/cnd-150-pages.png"],
+    ["image", "https://cdn.conduit.market/cnd-150-pages.png"],
     ["checkout_public_zaps", "true"],
     ["checkout_zap_message_policy", "generic_only"],
   ]
@@ -121,7 +121,7 @@ function productEvent(
 function profileEvent(): SignedPublicNostrEvent {
   return signMerchantEvent({
     kind: 0,
-    content: JSON.stringify({ lud16: "merchant@wallet.example" }),
+    content: JSON.stringify({ lud16: "merchant@wallet.conduit.market" }),
   })
 }
 
@@ -148,12 +148,12 @@ function env(overrides: Partial<AnonZapPagesEnv> = {}): AnonZapPagesEnv {
   return {
     ANON_ZAP_ALLOWED_ORIGINS:
       "https://shop.conduit.market,https://*.conduit-market-coo.pages.dev",
-    ANON_ZAP_SIGNER_URL: "https://anon-signer.example",
-    ANON_ZAP_SIGNER_ALLOWED_HOSTS: "anon-signer.example",
+    ANON_ZAP_SIGNER_URL: "https://signer.conduit.market",
+    ANON_ZAP_SIGNER_ALLOWED_HOSTS: "signer.conduit.market",
     ANON_SIGNER_REQUEST_AUTH_SECRET: AUTH_SECRET,
-    ANON_ZAP_COMMERCE_RELAYS: "wss://commerce.example",
-    ANON_ZAP_RECEIPT_RELAYS: "wss://receipts.example",
-    ANON_ZAP_LNURL_ALLOWED_HOSTS: "wallet.example",
+    ANON_ZAP_COMMERCE_RELAYS: "wss://commerce.conduit.market",
+    ANON_ZAP_RECEIPT_RELAYS: "wss://receipts.conduit.market",
+    ANON_ZAP_LNURL_ALLOWED_HOSTS: "wallet.conduit.market",
     ANON_ZAP_PROVIDER_ATTESTATION_KEY_ID: ATTESTATION_KEY_ID,
     ANON_ZAP_PROVIDER_ATTESTATION_PRIVATE_KEY_HEX: ATTESTATION_PRIVATE_KEY_HEX,
     ANON_ZAP_PROVIDER_ATTESTATION_PUBLIC_KEYS: `${ATTESTATION_KEY_ID}:${ATTESTATION_PUBKEY}`,
@@ -434,11 +434,11 @@ describe("Anon zap Pages proxy", () => {
 
   it("rejects unsafe or non-allowlisted signer Worker URLs before relay access", async () => {
     const cases: Array<Partial<AnonZapPagesEnv>> = [
-      { ANON_ZAP_SIGNER_URL: "http://anon-signer.example" },
-      { ANON_ZAP_SIGNER_URL: "https://user@anon-signer.example" },
-      { ANON_ZAP_SIGNER_URL: "https://anon-signer.example?token=secret" },
-      { ANON_ZAP_SIGNER_URL: "https://anon-signer.example#fragment" },
-      { ANON_ZAP_SIGNER_URL: "https://anon-signer.example:8443" },
+      { ANON_ZAP_SIGNER_URL: "http://signer.conduit.market" },
+      { ANON_ZAP_SIGNER_URL: "https://user@signer.conduit.market" },
+      { ANON_ZAP_SIGNER_URL: "https://signer.conduit.market?token=secret" },
+      { ANON_ZAP_SIGNER_URL: "https://signer.conduit.market#fragment" },
+      { ANON_ZAP_SIGNER_URL: "https://signer.conduit.market:8443" },
       {
         ANON_ZAP_SIGNER_URL: "https://127.0.0.1:7010",
         ANON_ZAP_SIGNER_ALLOWED_HOSTS: "127.0.0.1",
@@ -447,7 +447,7 @@ describe("Anon zap Pages proxy", () => {
         ANON_ZAP_SIGNER_URL: "https://8.8.8.8",
         ANON_ZAP_SIGNER_ALLOWED_HOSTS: "8.8.8.8",
       },
-      { ANON_ZAP_SIGNER_ALLOWED_HOSTS: "other-signer.example" },
+      { ANON_ZAP_SIGNER_ALLOWED_HOSTS: "other-signer.conduit.market" },
     ]
 
     for (const overrides of cases) {
@@ -754,7 +754,7 @@ describe("Anon zap Pages proxy", () => {
       request: new Request("https://shop.conduit.market/api/anon-zap-config"),
       env: env({
         ANON_ZAP_RECEIPT_RELAYS:
-          "wss://receipts-a.example,wss://receipts-b.example,wss://receipts-a.example",
+          "wss://receipts-a.conduit.market,wss://receipts-b.conduit.market,wss://receipts-a.conduit.market",
       }),
     }
     for (const response of [
@@ -764,8 +764,8 @@ describe("Anon zap Pages proxy", () => {
       expect(response.status).toBe(200)
       await expect(response.json()).resolves.toEqual({
         receiptRelayUrls: [
-          "wss://receipts-a.example",
-          "wss://receipts-b.example",
+          "wss://receipts-a.conduit.market",
+          "wss://receipts-b.conduit.market",
         ],
       })
     }
@@ -776,10 +776,13 @@ describe("Anon zap Pages proxy", () => {
       getAnonZapCommerceRelays(
         env({
           ANON_ZAP_COMMERCE_RELAYS:
-            "wss://commerce-a.example,wss://commerce-b.example,wss://commerce-a.example",
+            "wss://commerce-a.conduit.market,wss://commerce-b.conduit.market,wss://commerce-a.conduit.market",
         })
       )
-    ).toEqual(["wss://commerce-a.example", "wss://commerce-b.example"])
+    ).toEqual([
+      "wss://commerce-a.conduit.market",
+      "wss://commerce-b.conduit.market",
+    ])
   })
 
   it("rate limits authority lookups with pseudonymous source and source-recipient keys", async () => {
@@ -1167,7 +1170,7 @@ describe("Anon zap Pages proxy", () => {
         ),
         env({
           ANON_ZAP_COMMERCE_RELAYS:
-            "wss://commerce-a.example,wss://commerce-b.example",
+            "wss://commerce-a.conduit.market,wss://commerce-b.conduit.market",
         }),
         createDependencies({ incompleteRead })
       )
@@ -1228,7 +1231,7 @@ describe("Anon zap Pages proxy", () => {
     expect(signed[0]!.id).toBe(signed[1]!.id)
     expect(signerCalls).toHaveLength(2)
     expect(signerCalls[0]!.body).toBe(signerCalls[1]!.body)
-    expect(signerCalls[0]!.url).toBe("https://anon-signer.example")
+    expect(signerCalls[0]!.url).toBe("https://signer.conduit.market")
 
     const timestamp = signerCalls[0]!.headers.get(
       "x-conduit-anon-signer-timestamp"
@@ -1285,7 +1288,7 @@ describe("Anon zap Pages proxy", () => {
 
     expect(response.status).toBe(200)
     expect(boundRequests).toHaveLength(1)
-    expect(boundRequests[0]!.url).toBe("https://anon-signer.example/")
+    expect(boundRequests[0]!.url).toBe("https://signer.conduit.market/")
     expect(
       boundRequests[0]!.headers.get("x-conduit-anon-signer-signature")
     ).toMatch(/^[0-9a-f]{64}$/)

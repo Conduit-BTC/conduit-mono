@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useSyncExternalStore } from "react"
 import {
   getTelemetryCountBucket,
+  normalizePublicMediaUrl,
   recordBrowserTelemetryEvent,
 } from "@conduit/core"
 import {
@@ -27,6 +28,32 @@ let state: CartState = { items: [] }
 let initialized = false
 let storageListenerCount = 0
 
+function sanitizeCartItemImage<T extends { image?: string }>(item: T): T {
+  return {
+    ...item,
+    image: normalizePublicMediaUrl(item.image) ?? undefined,
+  }
+}
+
+function sanitizeStoredCartItems(value: unknown): CartItem[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .filter(
+      (item): item is CartItem =>
+        !!item && typeof item === "object" && !Array.isArray(item)
+    )
+    .map(sanitizeCartItemImage)
+}
+
+export function sanitizeStoredCartState(value: unknown): CartState {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { items: [] }
+  }
+  return {
+    items: sanitizeStoredCartItems((value as { items?: unknown }).items),
+  }
+}
+
 function notify(): void {
   listeners.forEach((l) => l())
 }
@@ -39,10 +66,7 @@ function loadFromStorage(): void {
   try {
     const raw = localStorage.getItem(CART_STORAGE_KEY)
     if (!raw) return
-    const parsed = JSON.parse(raw) as Partial<CartState>
-    state = {
-      items: Array.isArray(parsed.items) ? (parsed.items as CartItem[]) : [],
-    }
+    state = sanitizeStoredCartState(JSON.parse(raw) as unknown)
   } catch {
     // ignore
   }
@@ -116,7 +140,9 @@ export function useCart() {
       if (item.stock === 0) return
 
       const curr = readSnapshot()
-      writeState({ items: addCartItem(curr.items, item, quantity) })
+      writeState({
+        items: addCartItem(curr.items, sanitizeCartItemImage(item), quantity),
+      })
       recordBrowserTelemetryEvent({
         app: "market",
         eventName: "cart_add",

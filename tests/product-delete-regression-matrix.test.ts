@@ -53,7 +53,7 @@ function makeSignedProduct(params: {
         currency: "USD",
         type: "simple",
         visibility: "public",
-        images: [{ url: "https://example.com/product.png" }],
+        images: [{ url: "https://cdn.conduit.market/product.png" }],
         tags: ["regression"],
         createdAt: params.createdAt * 1000,
         updatedAt: params.createdAt * 1000,
@@ -119,8 +119,8 @@ beforeEach(() => {
   __setRelayListTestOverrides({
     loadCached: async (pubkey) => ({
       pubkey,
-      readRelayUrls: ["wss://merchant-read.example"],
-      writeRelayUrls: ["wss://merchant-write.example"],
+      readRelayUrls: ["wss://merchant-read.conduit.market"],
+      writeRelayUrls: ["wss://merchant-write.conduit.market"],
       eventCreatedAt: 1,
       cachedAt: FIXED_NOW,
     }),
@@ -356,7 +356,8 @@ describe("product deletion convergence regression matrix", () => {
     __setCommerceTestOverrides({
       fetchEventsFanoutProgressive: async (_filter, options, onProgress) => {
         await onProgress({
-          relayUrl: options?.relayUrls?.[0] ?? "wss://product-source.example",
+          relayUrl:
+            options?.relayUrls?.[0] ?? "wss://product-source.conduit.market",
           events: [product] as never,
           mergedEvents: [product] as never,
         })
@@ -416,7 +417,8 @@ describe("product deletion convergence regression matrix", () => {
     __setCommerceTestOverrides({
       fetchEventsFanoutProgressive: async (_filter, options, onProgress) => {
         await onProgress({
-          relayUrl: options?.relayUrls?.[0] ?? "wss://product-source.example",
+          relayUrl:
+            options?.relayUrls?.[0] ?? "wss://product-source.conduit.market",
           events: [product] as never,
           mergedEvents: [product] as never,
         })

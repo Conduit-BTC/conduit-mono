@@ -38,7 +38,7 @@ function makeSignedProduct(params: {
         currency: "USD",
         type: "simple",
         visibility: "public",
-        images: [{ url: "https://example.com/product.png" }],
+        images: [{ url: "https://cdn.conduit.market/product.png" }],
         tags: ["regression"],
         createdAt: params.createdAt * 1000,
         updatedAt: params.createdAt * 1000,
@@ -66,8 +66,8 @@ beforeEach(() => {
   __setRelayListTestOverrides({
     loadCached: async (pubkey) => ({
       pubkey,
-      readRelayUrls: ["wss://merchant-read.example"],
-      writeRelayUrls: ["wss://merchant-write.example"],
+      readRelayUrls: ["wss://merchant-read.conduit.market"],
+      writeRelayUrls: ["wss://merchant-write.conduit.market"],
       eventCreatedAt: 1,
       cachedAt: FIXED_NOW,
     }),
@@ -123,7 +123,7 @@ describe("product deletion source fanout", () => {
       createdAt: 100,
       title: "Older source copy",
     })
-    attachEventSourceRelayUrl(older, "wss://old-source.example")
+    attachEventSourceRelayUrl(older, "wss://old-source.conduit.market")
     relayProducts = [older]
 
     const firstRead = await getMerchantStorefront({
@@ -131,7 +131,7 @@ describe("product deletion source fanout", () => {
       includeMarketHidden: true,
     })
     expect(firstRead.data[0]?.sourceRelayUrls).toEqual([
-      "wss://old-source.example",
+      "wss://old-source.conduit.market",
     ])
 
     const newer = makeSignedProduct({
@@ -139,7 +139,7 @@ describe("product deletion source fanout", () => {
       createdAt: 200,
       title: "Newer source copy",
     })
-    attachEventSourceRelayUrl(newer, "wss://new-source.example")
+    attachEventSourceRelayUrl(newer, "wss://new-source.conduit.market")
     relayProducts = [newer]
 
     const secondRead = await getMerchantStorefront({
@@ -149,24 +149,24 @@ describe("product deletion source fanout", () => {
     expect(secondRead.data).toHaveLength(1)
     expect(secondRead.data[0]?.eventId).toBe(newer.id)
     expect([...(secondRead.data[0]?.sourceRelayUrls ?? [])].sort()).toEqual([
-      "wss://new-source.example",
-      "wss://old-source.example",
+      "wss://new-source.conduit.market",
+      "wss://old-source.conduit.market",
     ])
     expect(cachedProducts).toHaveLength(1)
     expect([...(cachedProducts[0]?.sourceRelayUrls ?? [])].sort()).toEqual([
-      "wss://new-source.example",
-      "wss://old-source.example",
+      "wss://new-source.conduit.market",
+      "wss://old-source.conduit.market",
     ])
 
     const plan = planProductDeletionRelays({
-      currentWriteRelayUrls: ["wss://current-write.example"],
+      currentWriteRelayUrls: ["wss://current-write.conduit.market"],
       sourceRelayUrls: secondRead.data[0]?.sourceRelayUrls ?? [],
       canonicalConduitRelayUrl: "wss://relay.conduit.market",
     })
     expect(plan.map(({ relayUrl }) => relayUrl)).toEqual([
-      "wss://current-write.example",
-      "wss://new-source.example",
-      "wss://old-source.example",
+      "wss://current-write.conduit.market",
+      "wss://new-source.conduit.market",
+      "wss://old-source.conduit.market",
       "wss://relay.conduit.market",
     ])
   })

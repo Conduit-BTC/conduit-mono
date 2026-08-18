@@ -199,7 +199,7 @@ describe("fetchZapInvoice description binding", () => {
 
     await expect(
       fetchZapInvoice(
-        "https://wallet.example/callback",
+        "https://wallet.conduit.market/callback",
         50_000,
         ZAP_REQUEST_JSON
       )
@@ -221,7 +221,7 @@ describe("fetchZapInvoice description binding", () => {
 
     await expect(
       fetchZapInvoice(
-        "https://wallet.example/callback",
+        "https://wallet.conduit.market/callback",
         50_000,
         ZAP_REQUEST_JSON
       )

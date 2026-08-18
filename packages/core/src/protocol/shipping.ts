@@ -13,7 +13,7 @@ import {
   type PricingRateInput,
 } from "../pricing"
 import { EVENT_KINDS } from "./kinds"
-import { fetchEventsFanout, requireNdkConnected } from "./ndk"
+import { fetchEventsFanout, getNdk } from "./ndk"
 import { publishWithPlanner } from "./relay-publish"
 import { getRelayLists } from "./relay-list"
 import { planRelayReads } from "./relay-planner"
@@ -251,7 +251,7 @@ export async function publishShippingOptions(
   config: ShippingConfig,
   appId: ConduitAppId
 ): Promise<void> {
-  const ndk = await requireNdkConnected()
+  const ndk = getNdk()
   if (!ndk.signer) throw new Error("Signer not connected")
   const signerPubkey = (await ndk.signer.user()).pubkey
 

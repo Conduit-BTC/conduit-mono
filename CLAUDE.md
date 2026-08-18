@@ -78,13 +78,9 @@ export const EVENT_KINDS = {
 
 ### Nostr Client Usage
 
-NDK is the current edge library used by shared protocol helpers in `packages/core`. Apps should prefer shared `@conduit/core` hooks/helpers over direct route-local NDK calls:
+NDK remains a compatibility edge inside shared protocol helpers for event construction, signing, encryption, and explicitly planned publishes. The shared NDK context is deliberately offline: it must not connect a global pool, discover relays, or choose destinations. Apps should use shared `@conduit/core` hooks/helpers instead of importing NDK or `getNdk` directly.
 
-```typescript
-import { getNdk, connectNdk } from "@conduit/core/protocol"
-```
-
-Current work may continue using NDK where it is the established repo pattern. For new relay-heavy, source-aware, or performance-critical behavior, call out in the PR if NDK appears to constrain the design and a shared adapter boundary should be considered. Do not introduce a broad custom relay substrate without an accepted architecture spec.
+New relay reads should use the source-aware planner and bounded reader boundaries in `packages/core`. Keep reducing NDK-dependent network behavior when touching established paths; do not add new ambient NDK connections or bare event publishes.
 
 Product listings are NIP-99 + GammaMarkets `kind:30402`. Do not introduce alternate product-listing protocol terminology, schemas, or assumptions. NIP-17 private-message work uses NIP-59 seals/gift wraps and NIP-44 v2 as the current public encryption version. Any newer encryption-version implementation must be source-gated by public draft/client references and explicit capability discovery.
 
@@ -166,16 +162,12 @@ Use `CONTRIBUTING.md` and `.github/workflows/ci.yml` as the canonical merge-chec
 ```typescript
 // packages/core/src/hooks/useProducts.ts
 import { useQuery } from "@tanstack/react-query"
-import { getNdk } from "../protocol/ndk"
+import { getMarketplaceProducts } from "../protocol/commerce"
 
-export function useProducts(filters?: ProductFilters) {
+export function useProducts(limit = 60) {
   return useQuery({
-    queryKey: ["products", filters],
-    queryFn: async () => {
-      const ndk = getNdk()
-      const events = await ndk.fetchEvents({ kinds: [30402], ...filters })
-      return Array.from(events).map(parseProduct)
-    },
+    queryKey: ["products", { limit }],
+    queryFn: async () => (await getMarketplaceProducts({ limit })).data,
     staleTime: 1000 * 60,
   })
 }

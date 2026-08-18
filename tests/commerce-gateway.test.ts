@@ -18,6 +18,7 @@ import {
   getMarketplaceProductsProgressive,
   getMerchantConversationList,
   getMerchantStorefront,
+  getProductImageCandidates,
   getProductDetail,
   getProductsByIds,
   getProfiles,
@@ -73,7 +74,7 @@ function makeProductEvent(params: {
       currency: "USD",
       type: "simple",
       visibility: "public",
-      images: [{ url: "https://example.com/product.png" }],
+      images: [{ url: "https://cdn.conduit.market/conduit-test/product.png" }],
       tags: ["test"],
       stock: params.stock,
       createdAt: params.createdAt * 1000,
@@ -124,7 +125,7 @@ function makeGammaProductEvent(params: {
         : []),
       ...(params.image === false
         ? []
-        : [["image", "https://example.com/product.png"]]),
+        : [["image", "https://cdn.conduit.market/conduit-test/product.png"]]),
     ],
   }
 }
@@ -150,7 +151,9 @@ function makeSignedProductEvent(params: {
         currency: "USD",
         type: "simple",
         visibility: "public",
-        images: [{ url: "https://example.com/product.png" }],
+        images: [
+          { url: "https://cdn.conduit.market/conduit-test/product.png" },
+        ],
         tags: ["test"],
         stock: params.stock,
         createdAt: params.createdAt * 1000,
@@ -986,7 +989,9 @@ describe("commerce gateway", () => {
       currency: "USD",
       type: "simple",
       visibility: "public",
-      images: [{ url: "https://example.com/cached-item.png" }],
+      images: [
+        { url: "https://cdn.conduit.market/conduit-test/cached-item.png" },
+      ],
       tags: ["cached"],
       createdAt: FIXED_NOW - 5_000,
       updatedAt: FIXED_NOW - 5_000,
@@ -1007,6 +1012,48 @@ describe("commerce gateway", () => {
     expect(result.data[0]?.product.title).toBe("Cached Item")
   })
 
+  it("retains cached product evidence while projecting profile and image requests safely", async () => {
+    cachedProducts.push({
+      id: "30402:merchant:cached-image-safety",
+      pubkey: "merchant",
+      title: "Cached Image Safety",
+      price: 25,
+      currency: "USD",
+      type: "simple",
+      visibility: "public",
+      images: [
+        { url: "https://192.168.1.5/private.png" },
+        { url: "https://cdn.conduit.market/conduit-test/public.png" },
+      ],
+      tags: ["cached"],
+      createdAt: FIXED_NOW - 5_000,
+      updatedAt: FIXED_NOW - 5_000,
+      cachedAt: FIXED_NOW - 1_000,
+    })
+    cachedProfiles.set("merchant", {
+      pubkey: "merchant",
+      name: "Cached Merchant",
+      picture: "http://127.0.0.1/avatar.png",
+      banner: "https://cdn.conduit.market/conduit-test/banner.png",
+      cachedAt: FIXED_NOW - 1_000,
+    })
+
+    const products = await getCachedMarketplaceProducts()
+    const profiles = await getProfiles({ pubkeys: ["merchant"] })
+
+    expect(products.data[0]?.product.images).toEqual([
+      { url: "https://192.168.1.5/private.png" },
+      { url: "https://cdn.conduit.market/conduit-test/public.png" },
+    ])
+    expect(getProductImageCandidates(products.data[0]!.product)).toEqual([
+      { url: "https://cdn.conduit.market/conduit-test/public.png" },
+    ])
+    expect(profiles.data.merchant?.picture).toBeUndefined()
+    expect(profiles.data.merchant?.banner).toBe(
+      "https://cdn.conduit.market/conduit-test/banner.png"
+    )
+  })
+
   it("normalizes JSON-shaped summaries restored from the product cache", async () => {
     cachedProducts.push({
       id: "30402:merchant:cached-json-summary",
@@ -1021,7 +1068,11 @@ describe("commerce gateway", () => {
       currency: "SATS",
       type: "simple",
       visibility: "public",
-      images: [{ url: "https://example.com/cached-json-summary.png" }],
+      images: [
+        {
+          url: "https://cdn.conduit.market/conduit-test/cached-json-summary.png",
+        },
+      ],
       tags: [" Ecash ", "ecash", "BITCOIN"],
       createdAt: FIXED_NOW - 5_000,
       updatedAt: FIXED_NOW - 5_000,
@@ -1052,7 +1103,9 @@ describe("commerce gateway", () => {
         currency: "USD",
         type: "simple",
         visibility: "public",
-        images: [{ url: `https://example.com/${pubkey}.png` }],
+        images: [
+          { url: `https://cdn.conduit.market/conduit-test/${pubkey}.png` },
+        ],
         tags: [],
         createdAt: FIXED_NOW - 5_000,
         updatedAt: FIXED_NOW - 5_000,
@@ -1203,7 +1256,9 @@ describe("commerce gateway", () => {
       currency: "USD",
       type: "simple",
       visibility: "public",
-      images: [{ url: "https://example.com/cached-item.png" }],
+      images: [
+        { url: "https://cdn.conduit.market/conduit-test/cached-item.png" },
+      ],
       tags: ["cached"],
       createdAt: FIXED_NOW - 5_000,
       updatedAt: FIXED_NOW - 5_000,
@@ -1238,7 +1293,11 @@ describe("commerce gateway", () => {
       currency: "USD",
       type: "simple",
       visibility: "public",
-      images: [{ url: "https://example.com/deleted-cached-item.png" }],
+      images: [
+        {
+          url: "https://cdn.conduit.market/conduit-test/deleted-cached-item.png",
+        },
+      ],
       tags: ["cached"],
       createdAt: 100_000,
       updatedAt: 100_000,
@@ -1286,7 +1345,11 @@ describe("commerce gateway", () => {
       currency: "USD",
       type: "simple",
       visibility: "public",
-      images: [{ url: "https://example.com/legacy-cached-item.png" }],
+      images: [
+        {
+          url: "https://cdn.conduit.market/conduit-test/legacy-cached-item.png",
+        },
+      ],
       tags: ["cached"],
       eventId,
       eventCreatedAt: id === exactAddress ? 200 : 100,
@@ -1516,7 +1579,11 @@ describe("commerce gateway", () => {
       currency: "USD",
       type: "simple",
       visibility: "public",
-      images: [{ url: "https://example.com/locally-deleted-item.png" }],
+      images: [
+        {
+          url: "https://cdn.conduit.market/conduit-test/locally-deleted-item.png",
+        },
+      ],
       tags: ["cached"],
       createdAt: 100_000,
       updatedAt: 100_000,
@@ -1586,8 +1653,8 @@ describe("commerce gateway", () => {
   })
 
   it("uses cached source provenance when resolving exact-event detail deletions", async () => {
-    const cachedSourceRelayUrl = "wss://cached-exact-source.example"
-    const liveSourceRelayUrl = "wss://live-exact-source.example"
+    const cachedSourceRelayUrl = "wss://cached-exact-source.conduit.market"
+    const liveSourceRelayUrl = "wss://live-exact-source.conduit.market"
     const cachedProduct = makeSignedProductEvent({
       dTag: "exact-source-detail",
       createdAt: 100,
@@ -1625,6 +1692,51 @@ describe("commerce gateway", () => {
     expect(
       deletionRelayAttempts.some((relayUrls) =>
         relayUrls.includes(cachedSourceRelayUrl)
+      )
+    ).toBe(true)
+  })
+
+  it("uses approved owner source provenance for storefront deletion reads", async () => {
+    const localRelayUrl = "wss://127.0.0.1:7447"
+    const product = makeSignedProductEvent({
+      dTag: "owner-source-deletion",
+      createdAt: 100,
+      title: "Owner source deletion",
+    })
+    attachEventSourceRelayUrl(product, localRelayUrl)
+    __setRelayListTestOverrides({
+      loadCached: async (pubkey) => ({
+        pubkey,
+        readRelayUrls: [],
+        writeRelayUrls: [localRelayUrl],
+        eventCreatedAt: 1,
+        cachedAt: FIXED_NOW,
+      }),
+    })
+
+    const deletionRelayAttempts: string[][] = []
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter, options) => {
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          return [product] as never
+        }
+        if (filter.kinds?.includes(EVENT_KINDS.DELETION)) {
+          deletionRelayAttempts.push([...(options?.relayUrls ?? [])])
+        }
+        return []
+      },
+    })
+
+    await getMerchantStorefront({
+      merchantPubkey: product.pubkey,
+      authenticatedPubkey: product.pubkey,
+      limit: 10,
+    })
+
+    expect(deletionRelayAttempts.length).toBeGreaterThan(0)
+    expect(
+      deletionRelayAttempts.every((relayUrls) =>
+        relayUrls.includes(localRelayUrl)
       )
     ).toBe(true)
   })
@@ -2016,7 +2128,7 @@ describe("commerce gateway", () => {
       currency: "USD",
       type: "simple",
       visibility: "public",
-      images: [{ url: "https://example.com/product.png" }],
+      images: [{ url: "https://cdn.conduit.market/conduit-test/product.png" }],
       tags: ["cached"],
       createdAt: 100_000,
       updatedAt: 100_000,
@@ -2173,7 +2285,7 @@ describe("commerce gateway", () => {
     )
 
     __setCommerceTestOverrides({
-      requireNdkConnected: async () => ({ signer: undefined }) as never,
+      getNdk: async () => ({ signer: undefined }) as never,
     })
 
     const listResult = await getBuyerConversationList({
@@ -2242,7 +2354,7 @@ describe("commerce gateway", () => {
     )
 
     __setCommerceTestOverrides({
-      requireNdkConnected: async () => ({ signer: undefined }) as never,
+      getNdk: async () => ({ signer: undefined }) as never,
     })
 
     const asBuyer = await getCachedBuyerConversationList({
@@ -2282,7 +2394,7 @@ describe("commerce gateway", () => {
     })
 
     __setCommerceTestOverrides({
-      requireNdkConnected: async () => ({ signer: undefined }) as never,
+      getNdk: async () => ({ signer: undefined }) as never,
     })
 
     const asBuyer = await getCachedBuyerConversationList({
@@ -2408,7 +2520,7 @@ describe("commerce gateway", () => {
     })
 
     __setCommerceTestOverrides({
-      requireNdkConnected: async () => ({ signer: undefined }) as never,
+      getNdk: async () => ({ signer: undefined }) as never,
     })
 
     const result = await getBuyerConversationList({
@@ -2463,7 +2575,7 @@ describe("commerce gateway", () => {
     }
 
     __setCommerceTestOverrides({
-      requireNdkConnected: async () => ({ signer: {} }) as never,
+      getNdk: async () => ({ signer: {} }) as never,
       fetchEventsFanout: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
           ? ([wrappedEvent] as never)
@@ -2526,7 +2638,7 @@ describe("commerce gateway", () => {
     }
 
     __setCommerceTestOverrides({
-      requireNdkConnected: async () => ({ signer: {} }) as never,
+      getNdk: async () => ({ signer: {} }) as never,
       fetchEventsFanout: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
           ? ([wrappedEvent] as never)
@@ -2572,7 +2684,7 @@ describe("commerce gateway", () => {
     }
 
     __setCommerceTestOverrides({
-      requireNdkConnected: async () => ({ signer: {} }) as never,
+      getNdk: async () => ({ signer: {} }) as never,
       fetchEventsFanout: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
           ? ([wrappedEvent] as never)
@@ -2612,7 +2724,7 @@ describe("commerce gateway", () => {
           : undefined,
     })
     __setCommerceTestOverrides({
-      requireNdkConnected: async () => ({ signer: {} }) as never,
+      getNdk: async () => ({ signer: {} }) as never,
       resolveInboxRelayUrls: async () => merchantReadRelays,
       fetchEventsFanout: async (filter, options) => {
         if (filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)) {
@@ -2679,7 +2791,7 @@ describe("commerce gateway", () => {
     }
 
     __setCommerceTestOverrides({
-      requireNdkConnected: async () => ({ signer: {} }) as never,
+      getNdk: async () => ({ signer: {} }) as never,
       fetchEventsFanout: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
           ? ([wrappedEvent] as never)
@@ -2755,6 +2867,50 @@ describe("commerce gateway", () => {
     expect(secondResult.data.alice?.displayName).toBe("Alice")
   })
 
+  it("revalidates a fresh public cache row from the authenticated owner's relay perspective", async () => {
+    const localRelayUrl = "wss://127.0.0.1:7447"
+    cachedProfiles.set("merchant", {
+      pubkey: "merchant",
+      displayName: "Public Cache",
+      cachedAt: FIXED_NOW - 1_000,
+    })
+    __setRelayListTestOverrides({
+      loadCached: async (pubkey) => ({
+        pubkey,
+        readRelayUrls: [],
+        writeRelayUrls: [localRelayUrl],
+        eventCreatedAt: 1,
+        cachedAt: FIXED_NOW,
+      }),
+    })
+    let seenRelayUrls: string[] | undefined
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter, options) => {
+        seenRelayUrls = options?.relayUrls
+        return filter.kinds?.includes(EVENT_KINDS.PROFILE)
+          ? ([
+              {
+                id: "profile-owner-local",
+                pubkey: "merchant",
+                created_at: 10,
+                content: JSON.stringify({ display_name: "Owner Relay" }),
+                tags: [],
+              },
+            ] as never)
+          : []
+      },
+    })
+
+    const result = await getProfiles({
+      pubkeys: ["merchant"],
+      authenticatedPubkey: "merchant",
+    })
+
+    expect(seenRelayUrls?.[0]).toBe(localRelayUrl)
+    expect(seenRelayUrls).toContain(localRelayUrl)
+    expect(result.data.merchant?.displayName).toBe("Owner Relay")
+  })
+
   it("reads visible profiles through explicit planned relay fanout", async () => {
     let calledRequireNdk = false
     let seenFilterAuthors: string[] | undefined
@@ -2767,7 +2923,7 @@ describe("commerce gateway", () => {
       | undefined
 
     __setCommerceTestOverrides({
-      requireNdkConnected: async () => {
+      getNdk: async () => {
         calledRequireNdk = true
         return { signer: undefined } as never
       },
@@ -2800,7 +2956,7 @@ describe("commerce gateway", () => {
     expect(seenOptions?.fetchTimeoutMs).toBe(3_000)
   })
 
-  it("uses cached product source relays as first-choice merchant profile hints", async () => {
+  it("uses public cached product sources but drops stale private profile hints", async () => {
     cachedProducts.push({
       id: "30402:merchant:source-hinted-item",
       pubkey: "merchant",
@@ -2810,9 +2966,16 @@ describe("commerce gateway", () => {
       currency: "USD",
       type: "simple",
       visibility: "public",
-      images: [{ url: "https://example.com/source-hinted-item.png" }],
+      images: [
+        {
+          url: "https://cdn.conduit.market/conduit-test/source-hinted-item.png",
+        },
+      ],
       tags: ["cached"],
-      sourceRelayUrls: ["wss://profile-source.example"],
+      sourceRelayUrls: [
+        "wss://127.0.0.1:7447",
+        "wss://profile-source.conduit.market",
+      ],
       createdAt: FIXED_NOW - 5_000,
       updatedAt: FIXED_NOW - 5_000,
       cachedAt: FIXED_NOW - 1_000,
@@ -2825,7 +2988,7 @@ describe("commerce gateway", () => {
         seenRelayUrls = options?.relayUrls
         if (
           filter.kinds?.includes(EVENT_KINDS.PROFILE) &&
-          options?.relayUrls?.[0] === "wss://profile-source.example"
+          options?.relayUrls?.[0] === "wss://profile-source.conduit.market"
         ) {
           return [
             {
@@ -2834,7 +2997,7 @@ describe("commerce gateway", () => {
               created_at: 10,
               content: JSON.stringify({
                 name: "Source Merchant",
-                picture: "https://example.com/avatar.png",
+                picture: "https://cdn.conduit.market/conduit-test/avatar.png",
               }),
               tags: [],
             } as never,
@@ -2852,9 +3015,63 @@ describe("commerce gateway", () => {
       readPolicy: { maxRelays: 1 },
     })
 
-    expect(seenRelayUrls?.[0]).toBe("wss://profile-source.example")
+    expect(seenRelayUrls?.[0]).toBe("wss://profile-source.conduit.market")
+    expect(seenRelayUrls).not.toContain("wss://127.0.0.1:7447")
     expect(result.data.merchant?.name).toBe("Source Merchant")
-    expect(result.data.merchant?.picture).toBe("https://example.com/avatar.png")
+    expect(result.data.merchant?.picture).toBe(
+      "https://cdn.conduit.market/conduit-test/avatar.png"
+    )
+  })
+
+  it("preserves an authenticated user's private relay in the current profile plan", async () => {
+    const localRelayUrl = "wss://127.0.0.1:7447"
+    cachedProducts.push({
+      id: "30402:merchant:local-source-item",
+      pubkey: "merchant",
+      title: "Local Source Item",
+      summary: "cached summary",
+      price: 25,
+      currency: "USD",
+      type: "simple",
+      visibility: "public",
+      images: [
+        {
+          url: "https://cdn.conduit.market/conduit-test/local-source-item.png",
+        },
+      ],
+      tags: ["cached"],
+      sourceRelayUrls: [localRelayUrl],
+      createdAt: FIXED_NOW - 5_000,
+      updatedAt: FIXED_NOW - 5_000,
+      cachedAt: FIXED_NOW - 1_000,
+    })
+    __setRelayListTestOverrides({
+      loadCached: async (pubkey) => ({
+        pubkey,
+        readRelayUrls: [],
+        writeRelayUrls: [localRelayUrl],
+        eventCreatedAt: 1,
+        cachedAt: FIXED_NOW,
+      }),
+    })
+
+    let seenRelayUrls: string[] | undefined
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (_filter, options) => {
+        seenRelayUrls = options?.relayUrls
+        return []
+      },
+    })
+
+    await getProfiles({
+      pubkeys: ["merchant"],
+      authenticatedPubkey: "merchant",
+      priority: "background",
+      skipCache: true,
+      readPolicy: { maxRelays: 1 },
+    })
+
+    expect(seenRelayUrls).toEqual([localRelayUrl])
   })
 
   it("uses explicit product relay hints before default relays for profiles", async () => {
@@ -2865,7 +3082,7 @@ describe("commerce gateway", () => {
         seenRelayUrls = options?.relayUrls
         if (
           filter.kinds?.includes(EVENT_KINDS.PROFILE) &&
-          options?.relayUrls?.[0] === "wss://live-product-source.example"
+          options?.relayUrls?.[0] === "wss://live-product-source.conduit.market"
         ) {
           return [
             {
@@ -2886,13 +3103,23 @@ describe("commerce gateway", () => {
       pubkeys: ["live-merchant"],
       priority: "visible",
       skipCache: true,
-      readPolicy: { maxRelays: 1 },
+      readPolicy: { maxRelays: 2 },
       relayHintsByPubkey: {
-        "live-merchant": ["wss://live-product-source.example"],
+        "live-merchant": [
+          "https://live-product-source.conduit.market/?ignored=true",
+          "wss://live-product-source.conduit.market",
+          "wss://127.0.0.1:7447",
+          "wss://service.test",
+          "second-product-source.conduit.market/path?ignored=true",
+          "wss://second-product-source.conduit.market/path",
+        ],
       },
     })
 
-    expect(seenRelayUrls?.[0]).toBe("wss://live-product-source.example")
+    expect(seenRelayUrls).toEqual([
+      "wss://live-product-source.conduit.market",
+      "wss://second-product-source.conduit.market/path",
+    ])
     expect(result.data["live-merchant"]?.displayName).toBe("Live Merchant")
   })
 
@@ -3063,13 +3290,287 @@ describe("commerce gateway", () => {
       },
     })
 
+    const firstResult = await getProfiles({
+      pubkeys: ["merchant"],
+      skipCache: true,
+    })
+    const secondResult = await getProfiles({
+      pubkeys: ["merchant"],
+      skipCache: true,
+    })
+
+    expect(firstResult.data.merchant?.name).toBe("ZALGEBAR")
+    expect(secondResult.data.merchant?.name).toBe("ZALGEBAR")
+    expect(firstResult.meta).toMatchObject({
+      source: "public",
+      stale: false,
+      degraded: false,
+    })
+    expect(secondResult.meta).toMatchObject({
+      source: "public",
+      stale: false,
+      degraded: false,
+    })
+    expect(cachedProfiles.get("merchant")).toMatchObject({
+      name: "ZALGEBAR",
+      rawContent: "{}",
+      eventId: "profile-blank-newer",
+      eventCreatedAt: 20,
+    })
+  })
+
+  it("shares richer profile merging without changing the durable frontier", async () => {
+    const latestContent = JSON.stringify({
+      display_name: "",
+      about: "Current relay bio",
+      picture: "",
+    })
+    cachedProfiles.set("merchant", {
+      pubkey: "merchant",
+      displayName: "Cached Merchant",
+      picture: "https://cdn.conduit.market/cached-avatar.png",
+      rawContent: JSON.stringify({
+        display_name: "Cached Merchant",
+        picture: "https://cdn.conduit.market/cached-avatar.png",
+      }),
+      eventId: "profile-cached",
+      eventCreatedAt: 10,
+      cachedAt: FIXED_NOW - 1_000,
+    })
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PROFILE)
+          ? ([
+              {
+                id: "profile-current",
+                pubkey: "merchant",
+                created_at: 20,
+                content: latestContent,
+                tags: [],
+              },
+            ] as never)
+          : [],
+    })
+
     const result = await getProfiles({
       pubkeys: ["merchant"],
       skipCache: true,
     })
 
-    expect(result.data.merchant?.name).toBe("ZALGEBAR")
+    expect(result.data.merchant).toMatchObject({
+      displayName: "Cached Merchant",
+      about: "Current relay bio",
+      picture: "https://cdn.conduit.market/cached-avatar.png",
+    })
+    expect(cachedProfiles.get("merchant")).toMatchObject({
+      displayName: "Cached Merchant",
+      about: "Current relay bio",
+      picture: "https://cdn.conduit.market/cached-avatar.png",
+      rawContent: latestContent,
+      eventId: "profile-current",
+      eventCreatedAt: 20,
+    })
   })
+
+  it("does not regress raw profile publish context during a forced narrower refresh", async () => {
+    cachedProfiles.set("merchant", {
+      pubkey: "merchant",
+      name: "Current Merchant",
+      rawContent: JSON.stringify({
+        name: "Current Merchant",
+        picture: "http://127.0.0.1/private-avatar.png",
+      }),
+      eventId: "profile-current",
+      eventCreatedAt: 20,
+      cachedAt: FIXED_NOW - 1_000,
+    })
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PROFILE)
+          ? ([
+              {
+                id: "profile-older",
+                pubkey: "merchant",
+                created_at: 10,
+                content: JSON.stringify({ name: "Older Relay View" }),
+                tags: [],
+              },
+            ] as never)
+          : [],
+    })
+
+    const result = await getProfiles({
+      pubkeys: ["merchant"],
+      skipCache: true,
+    })
+
+    expect(result.data.merchant?.name).toBe("Current Merchant")
+    expect(result.meta).toMatchObject({
+      source: "local_cache",
+      stale: true,
+      degraded: true,
+    })
+    expect(cachedProfiles.get("merchant")).toMatchObject({
+      rawContent: JSON.stringify({
+        name: "Current Merchant",
+        picture: "http://127.0.0.1/private-avatar.png",
+      }),
+      eventId: "profile-current",
+      eventCreatedAt: 20,
+    })
+  })
+
+  it("repairs a stale projection when the exact cached event is observed", async () => {
+    const eventId = "1".repeat(64)
+    const rawContent = JSON.stringify({ name: "Alice" })
+    cachedProfiles.set("merchant", {
+      pubkey: "merchant",
+      name: "Alice",
+      about: "Stale enriched biography",
+      rawContent,
+      eventId,
+      eventCreatedAt: 110,
+      cachedAt: FIXED_NOW - 1_000,
+    })
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PROFILE)
+          ? ([
+              {
+                id: eventId,
+                pubkey: "merchant",
+                created_at: 110,
+                content: rawContent,
+                tags: [],
+              },
+            ] as never)
+          : [],
+    })
+
+    const result = await getProfiles({
+      pubkeys: ["merchant"],
+      skipCache: true,
+    })
+
+    expect(result.data.merchant).toMatchObject({ name: "Alice" })
+    expect(result.data.merchant?.about).toBeUndefined()
+    expect(result.meta).toMatchObject({
+      source: "public",
+      stale: false,
+      degraded: false,
+    })
+    expect(cachedProfiles.get("merchant")).toMatchObject({
+      name: "Alice",
+      rawContent,
+      eventId,
+      eventCreatedAt: 110,
+    })
+    expect(cachedProfiles.get("merchant")?.about).toBeUndefined()
+  })
+
+  for (const scenario of [
+    {
+      label: "a newer timestamp",
+      delayedId: "5".repeat(64),
+      delayedCreatedAt: 105,
+      winnerId: "1".repeat(64),
+      winnerCreatedAt: 110,
+    },
+    {
+      label: "the lower event id at an equal timestamp",
+      delayedId: "7".repeat(64),
+      delayedCreatedAt: 110,
+      winnerId: "1".repeat(64),
+      winnerCreatedAt: 110,
+    },
+  ]) {
+    it(`atomically retains ${scenario.label} across concurrent profile refreshes`, async () => {
+      const initialId = "9".repeat(64)
+      cachedProfiles.set("merchant", {
+        pubkey: "merchant",
+        name: "Initial profile",
+        rawContent: JSON.stringify({ name: "Initial profile" }),
+        eventId: initialId,
+        eventCreatedAt: 100,
+        cachedAt: FIXED_NOW - 1_000,
+      })
+
+      let fetchCall = 0
+      let markDelayedFetchStarted!: () => void
+      let resumeDelayedFetch!: () => void
+      const delayedFetchStarted = new Promise<void>((resolve) => {
+        markDelayedFetchStarted = resolve
+      })
+      const delayedFetchGate = new Promise<void>((resolve) => {
+        resumeDelayedFetch = resolve
+      })
+      __setCommerceTestOverrides({
+        fetchEventsFanout: async (filter) => {
+          if (!filter.kinds?.includes(EVENT_KINDS.PROFILE)) return []
+
+          fetchCall += 1
+          if (fetchCall === 1) {
+            markDelayedFetchStarted()
+            await delayedFetchGate
+            return [
+              {
+                id: scenario.delayedId,
+                pubkey: "merchant",
+                created_at: scenario.delayedCreatedAt,
+                content: JSON.stringify({ name: "Delayed loser" }),
+                tags: [],
+              } as never,
+            ]
+          }
+
+          return [
+            {
+              id: scenario.winnerId,
+              pubkey: "merchant",
+              created_at: scenario.winnerCreatedAt,
+              content: JSON.stringify({
+                name: "Committed winner",
+                bot: true,
+                birthday: { year: 1990, month: 8 },
+              }),
+              tags: [],
+            } as never,
+          ]
+        },
+      })
+
+      const delayedResultPromise = getProfiles({
+        pubkeys: ["merchant"],
+        skipCache: true,
+      })
+      await delayedFetchStarted
+
+      const winnerResult = await getProfiles({
+        pubkeys: ["merchant"],
+        skipCache: true,
+      })
+      resumeDelayedFetch()
+      const delayedResult = await delayedResultPromise
+
+      expect(winnerResult.data.merchant?.name).toBe("Committed winner")
+      expect(delayedResult.data.merchant?.name).toBe("Committed winner")
+      expect(delayedResult.meta).toMatchObject({
+        degraded: true,
+        source: "local_cache",
+        stale: true,
+      })
+      expect(cachedProfiles.get("merchant")).toMatchObject({
+        name: "Committed winner",
+        rawContent: JSON.stringify({
+          name: "Committed winner",
+          bot: true,
+          birthday: { year: 1990, month: 8 },
+        }),
+        eventId: scenario.winnerId,
+        eventCreatedAt: scenario.winnerCreatedAt,
+      })
+    })
+  }
 
   it("keeps stale cached profile identity when live profile lookup misses", async () => {
     cachedProfiles.set("merchant", {
@@ -3087,6 +3588,11 @@ describe("commerce gateway", () => {
     })
 
     expect(result.data.merchant?.displayName).toBe("ZALGEBAR")
+    expect(result.meta).toMatchObject({
+      source: "local_cache",
+      stale: true,
+      degraded: true,
+    })
   })
 
   it("does not cache bare profile misses as successful profile rows", async () => {
@@ -3253,14 +3759,17 @@ describe("getProductsByIds diagnostics", () => {
         filter.kinds?.includes(EVENT_KINDS.PRODUCT)
           ? {
               events: [liveEvent],
-              attemptedRelayUrls: ["wss://ok.example", "wss://down.example"],
-              successfulRelayUrls: ["wss://ok.example"],
-              failedRelayUrls: ["wss://down.example"],
+              attemptedRelayUrls: [
+                "wss://ok.conduit.market",
+                "wss://down.conduit.market",
+              ],
+              successfulRelayUrls: ["wss://ok.conduit.market"],
+              failedRelayUrls: ["wss://down.conduit.market"],
             }
           : {
               events: [],
-              attemptedRelayUrls: ["wss://ok.example"],
-              successfulRelayUrls: ["wss://ok.example"],
+              attemptedRelayUrls: ["wss://ok.conduit.market"],
+              successfulRelayUrls: ["wss://ok.conduit.market"],
               failedRelayUrls: [],
             },
     })
@@ -3276,7 +3785,7 @@ describe("getProductsByIds diagnostics", () => {
   })
 
   it("surfaces a parked author relay without vetoing exact live evidence", async () => {
-    const parkedRelayUrl = "wss://parked-author-hint.example"
+    const parkedRelayUrl = "wss://parked-author-hint.conduit.market"
     const liveEvent = makeSignedProductEvent({
       dTag: "diagnosed-parked-hint",
       createdAt: 100,

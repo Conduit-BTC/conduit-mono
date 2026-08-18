@@ -26,7 +26,7 @@ function product(overrides: Partial<Product> = {}): Product {
     specifications: [],
     format: "physical",
     visibility: "public",
-    images: [{ url: "https://example.com/shirt.png" }],
+    images: [{ url: "https://cdn.conduit.market/shirt.png" }],
     tags: ["shirt"],
     publicZapEnabled: true,
     zapMessagePolicy: "generic_only",
@@ -99,7 +99,7 @@ describe("product variation selection", () => {
     const large = { ...sizeVariation("L", 2), images: [] }
     const parent = product({
       type: "variable",
-      images: [{ url: "https://example.com/parent.png" }],
+      images: [{ url: "https://cdn.conduit.market/parent.png" }],
     })
     const cartItem = cartItemInputFromProductSelection(parent, large)
 
@@ -109,7 +109,7 @@ describe("product variation selection", () => {
       { key: "size", value: "L" },
     ])
     expect(cartItem.price).toBe(large.price)
-    expect(cartItem.image).toBe("https://example.com/parent.png")
+    expect(cartItem.image).toBe("https://cdn.conduit.market/parent.png")
   })
 
   it("resolves selected price, stock, and percent-encoded child coordinate", () => {
@@ -132,11 +132,27 @@ describe("product variation selection", () => {
     const medium = { ...sizeVariation("M", 5), images: [] }
     const large = {
       ...sizeVariation("L", 2),
-      images: [{ url: "https://example.com/large.png" }],
+      images: [{ url: "https://cdn.conduit.market/large.png" }],
     }
     const parent = product({ type: "variable", images: [] })
     family(parent, [medium, large])
 
     expect(getProductSelectionImages(parent, medium)).toEqual([])
+  })
+
+  it("filters non-public selection images before rendering or cart persistence", () => {
+    const medium = {
+      ...sizeVariation("M", 5),
+      images: [{ url: "http://127.0.0.1/variation.png" }],
+    }
+    const parent = product({
+      type: "variable",
+      images: [{ url: "https://localhost/parent.png" }],
+    })
+
+    expect(getProductSelectionImages(parent, medium)).toEqual([])
+    expect(cartItemInputFromProductSelection(parent, medium).image).toBe(
+      undefined
+    )
   })
 })

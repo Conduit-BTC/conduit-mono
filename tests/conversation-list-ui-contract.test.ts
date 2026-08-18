@@ -53,6 +53,21 @@ describe("conversation list search", () => {
     )
     expect(source).toContain('aria-label="Search merchant conversations"')
     expect(source).toContain("<MerchantThreadRow")
+    expect(source).toContain("<ConversationProfilePicture")
+    expect(source).not.toContain("function ProfilePicture")
+    expect(source).not.toContain("normalizePublicMediaUrl")
+
+    const profilePictureSource = await Bun.file(
+      "apps/market/src/components/ConversationProfilePicture.tsx"
+    ).text()
+    expect(profilePictureSource).toContain("<Avatar")
+    expect(profilePictureSource).toContain("<AvatarImage")
+    expect(profilePictureSource).toContain("<AvatarFallback")
+    expect(profilePictureSource).toContain("<MerchantAvatarFallback")
+    expect(profilePictureSource).not.toContain("<img")
+    expect(profilePictureSource).not.toContain("normalizePublicMediaUrl")
+    expect(profilePictureSource).not.toContain("srcSet")
+    expect(profilePictureSource).not.toContain("referrerPolicy")
   })
 
   it("keeps a single divider below the Merchant conversation header", async () => {
@@ -64,5 +79,17 @@ describe("conversation list search", () => {
       "max-w-full shrink-0 border-b border-[var(--border)] pb-3"
     )
     expect(source).not.toContain("border-y border-[var(--border)]")
+  })
+
+  it("reuses the shared conversation avatar on Market order surfaces", async () => {
+    const source = await Bun.file("apps/market/src/routes/orders.tsx").text()
+    const merchantAvatarSource = source.slice(
+      source.indexOf("function MerchantAvatar"),
+      source.indexOf("function OrderListCard")
+    )
+
+    expect(merchantAvatarSource).toContain("<ConversationProfilePicture")
+    expect(source).not.toContain("normalizePublicMediaUrl")
+    expect(merchantAvatarSource).not.toContain("<img")
   })
 })

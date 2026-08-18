@@ -17,9 +17,9 @@ import {
   getMerchantStorefront,
   getProductImageCandidates,
   getProductPriceDisplay,
+  getNdk,
   prepareProductCatalog,
   recordBrowserTelemetryEvent,
-  requireNdkConnected,
   type CommerceResult,
   type ListingSafetyEvaluation,
   type PreparedProductFamily,
@@ -764,7 +764,7 @@ async function deleteProduct(
   product: MerchantProductFamily,
   onSignedLocal: (event: NDKEvent, deliveryJobId: string) => Promise<void>
 ): Promise<{ delivery: PublishWithPlannerResult; deliveryJobId: string }> {
-  const ndk = await requireNdkConnected()
+  const ndk = getNdk()
   if (!ndk.signer) throw new Error("Signer not connected")
   const signerPubkey = (await ndk.signer.user()).pubkey
   if (signerPubkey !== merchantPubkey) {

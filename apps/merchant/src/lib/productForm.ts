@@ -2,6 +2,7 @@ import {
   canonicalizeProductTags,
   CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG,
   getShippingOptionAddress,
+  normalizePublicMediaUrl,
   type ProductSchema,
   type ProductZapMessagePolicy,
 } from "@conduit/core"
@@ -271,6 +272,12 @@ export function validateProductPublishForm(
     )
   } else if (!/^https:\/\//i.test(imageUrl)) {
     addError(errors, "imageUrl", "Image URL must start with https://")
+  } else if (!normalizePublicMediaUrl(imageUrl)) {
+    addError(
+      errors,
+      "imageUrl",
+      "Image URL must use a public network destination."
+    )
   }
 
   if (tags.length < MIN_PRODUCT_TAG_COUNT) {

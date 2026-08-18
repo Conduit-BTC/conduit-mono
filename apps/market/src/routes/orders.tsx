@@ -8,6 +8,7 @@ import {
   formatNpub,
   formatPubkey,
   getNdk,
+  getProductImageCandidates,
   getOrderPublicZapSigner,
   listOrderLifecycles,
   normalizeLightningInvoice,
@@ -53,11 +54,9 @@ import {
   ShoppingBag,
 } from "lucide-react"
 import { QRCodeSVG } from "qrcode.react"
+import { ConversationProfilePicture } from "../components/ConversationProfilePicture"
 import { CopyButton } from "../components/CopyButton"
-import {
-  MerchantAvatarFallback,
-  getMerchantDisplayName,
-} from "../components/MerchantIdentity"
+import { getMerchantDisplayName } from "../components/MerchantIdentity"
 import {
   fetchBuyerConversations,
   fetchCachedBuyerConversations,
@@ -212,15 +211,10 @@ function MerchantAvatar({
 }) {
   return (
     <div className="h-11 w-11 shrink-0 overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]">
-      {picture ? (
-        <img
-          src={picture}
-          alt={name || formatNpub(pubkey, 8)}
-          className="h-full w-full object-cover"
-        />
-      ) : (
-        <MerchantAvatarFallback />
-      )}
+      <ConversationProfilePicture
+        src={picture}
+        alt={name || formatNpub(pubkey, 8)}
+      />
     </div>
   )
 }
@@ -470,7 +464,9 @@ function OrderItemsSection({
       <div className="mt-3 space-y-3">
         {vm.items.map((item, index) => {
           const product = productsById.get(item.productId)
-          const image = product?.images[0]
+          const image = product
+            ? getProductImageCandidates(product)[0]
+            : undefined
           const price = formatPrice({
             price: item.priceAtPurchase,
             currency: item.currency,
@@ -490,6 +486,7 @@ function OrderItemsSection({
                       src={image.url}
                       alt={image.alt ?? product?.title ?? item.displayTitle}
                       loading="lazy"
+                      referrerPolicy="no-referrer"
                       className="h-full w-full object-cover"
                     />
                   ) : null}
@@ -1205,7 +1202,10 @@ function OrderDetail({
           resolveItem={(id) => {
             const product = productsById.get(id)
             return product
-              ? { title: product.title, imageUrl: product.images[0]?.url }
+              ? {
+                  title: product.title,
+                  imageUrl: getProductImageCandidates(product)[0]?.url,
+                }
               : undefined
           }}
           formatAmount={(amount, currency, sourcePrice) =>
