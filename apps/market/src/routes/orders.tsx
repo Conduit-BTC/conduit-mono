@@ -1320,11 +1320,6 @@ function OrdersPage() {
     void lifecyclesQuery.refetch()
   }, [activeBuyerPubkey, lifecyclesQuery, messagesQuery, signerConnected])
 
-  const handleRefresh = useCallback(() => {
-    if (!activeBuyerPubkey) return
-    refetchAll()
-  }, [activeBuyerPubkey, refetchAll])
-
   const conversations = useMemo(
     () =>
       selectProtectedReadRows(
@@ -1521,7 +1516,7 @@ function OrdersPage() {
         </div>
         <RefreshChip
           refreshing={isFetching}
-          onRefresh={handleRefresh}
+          onRefresh={refetchAll}
           doneDurationMs={900}
           className="h-11 px-4 text-sm"
           disabled={!activeBuyerPubkey}
