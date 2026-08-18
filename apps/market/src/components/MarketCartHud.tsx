@@ -32,7 +32,9 @@ import {
   getCartItemIdentity,
   getCartItemKey,
   cartItemsMatchCurrentProducts,
+  getCartItemStockForAvailability,
   groupCartItems,
+  isCartProductAvailabilityBlocking,
 } from "../lib/cart-model"
 import {
   getCartHudCheckoutCapability,
@@ -555,6 +557,16 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                 {activeGroup.items.map((item) => {
                   const display = shopperPricing.formatPrice(item)
                   const identity = getCartItemIdentity(item)
+                  const availability =
+                    cartAvailability.availabilityByProductId.get(
+                      item.productId
+                    )
+                  const currentStock = getCartItemStockForAvailability(
+                    item,
+                    availability
+                  )
+                  const itemUnavailable =
+                    isCartProductAvailabilityBlocking(availability)
                   return (
                     <article
                       key={getCartItemKey(item)}
@@ -592,6 +604,13 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                         <div className="truncate text-xs text-[var(--text-muted)]">
                           {display.primary}
                         </div>
+                        {itemUnavailable ? (
+                          <div className="mt-1 text-xs font-medium text-[var(--error)]">
+                            {availability?.status === "sold_out"
+                              ? "Sold out"
+                              : `Only ${currentStock ?? 0} available`}
+                          </div>
+                        ) : null}
                         <div className="mt-1 flex justify-end">
                           <div className="flex shrink-0 items-center gap-1">
                             <button
@@ -617,6 +636,12 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                               type="button"
                               className="flex h-9 w-9 items-center justify-center rounded-lg border border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_4%,var(--surface))] transition-colors hover:bg-[color-mix(in_srgb,var(--primary-500)_8%,var(--surface))] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
                               aria-label={`Increase ${item.title} quantity`}
+                              disabled={
+                                cartAvailability.isChecking ||
+                                itemUnavailable ||
+                                (typeof currentStock === "number" &&
+                                  item.quantity >= currentStock)
+                              }
                               onClick={() =>
                                 cart.addItem(
                                   {
@@ -641,6 +666,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                                     zapMessagePolicy: item.zapMessagePolicy,
                                     publicZapPolicyKnown:
                                       item.publicZapPolicyKnown,
+                                    stock: currentStock,
                                   },
                                   1
                                 )
