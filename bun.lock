@@ -108,9 +108,6 @@
     "apps/posthog-proxy": {
       "name": "@conduit/posthog-proxy",
       "version": "0.0.1",
-      "dependencies": {
-        "@conduit/core": "workspace:*",
-      },
       "devDependencies": {
         "typescript": "^6.0.3",
         "wrangler": "4.123.0",

@@ -15,7 +15,6 @@
     "./schemas": "./src/schemas/index.ts",
     "./utils": "./src/utils/index.ts",
     "./config": "./src/config.ts",
-    "./telemetry-contract": "./src/telemetry-contract.ts",
     "./db": "./src/db/index.ts",
     "./context/*": "./src/context/*.tsx",
     "./hooks/*": "./src/hooks/*.ts"

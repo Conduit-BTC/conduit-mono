@@ -9,9 +9,6 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint \"src/**/*.ts\""
   },
-  "dependencies": {
-    "@conduit/core": "workspace:*"
-  },
   "devDependencies": {
     "typescript": "^6.0.3",
     "wrangler": "4.123.0"
