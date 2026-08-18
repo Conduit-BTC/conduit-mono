@@ -28,7 +28,7 @@ jobs:
     env:
       AUTH_SECRET_NAME: ${{ inputs.auth_secret_name || 'CODEX_AUTH_JSON' }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 1
           persist-credentials: false

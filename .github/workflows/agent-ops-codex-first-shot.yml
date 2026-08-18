@@ -168,7 +168,7 @@ jobs:
 
       - name: Checkout target branch
         if: steps.agent_auth.outputs.has_auth == 'true'
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false

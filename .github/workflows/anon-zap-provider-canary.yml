@@ -32,7 +32,7 @@ jobs:
       ANON_ZAP_PROVIDER_CANARY_EXPECTED_HOST: ${{ vars.ANON_ZAP_PROVIDER_CANARY_EXPECTED_HOST }}
       ANON_ZAP_PROVIDER_CANARY_REQUEST_INVOICE: ${{ inputs.request_invoice }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - uses: oven-sh/setup-bun@v2
