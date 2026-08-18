@@ -61,10 +61,7 @@ import {
   Input,
   Label,
   Select,
-  SelectContent,
-  SelectItem,
   SelectTrigger,
-  SelectValue,
   Textarea,
 } from "@conduit/ui"
 import {
@@ -73,6 +70,11 @@ import {
   getMerchantDisplayName,
   getProfileNip05,
 } from "../components/MerchantIdentity"
+import {
+  PAYMENT_TARGET_SELECT_TRIGGER_CLASS_NAME,
+  PaymentTargetSelectContent,
+  PaymentTargetSelectValue,
+} from "../components/PaymentTargetSelectContent"
 import { SignerSwitch } from "../components/SignerSwitch"
 import { type CartItem, useCart } from "../hooks/useCart"
 import { useCartProductAvailability } from "../hooks/useCartProductAvailability"
@@ -169,7 +171,6 @@ import {
   getKnownWalletPaymentConstraint,
   type WalletPaymentConstraint,
 } from "../lib/wallet-readiness"
-import { getWalletProviderDescription } from "../lib/wallet-provider-label"
 
 type PriceFormatter = (price: CommercePriceLike) => ShopperPriceDisplay
 
@@ -3068,7 +3069,7 @@ function CheckoutPage() {
                       >
                         <SelectTrigger
                           id="checkout-wallet"
-                          className="mt-2 h-11 rounded-xl"
+                          className={`mt-2 h-11 rounded-xl ${PAYMENT_TARGET_SELECT_TRIGGER_CLASS_NAME}`}
                         >
                           {wallets.loading ? (
                             <span className="flex items-center gap-2 text-[var(--text-muted)]">
@@ -3076,80 +3077,29 @@ function CheckoutPage() {
                               Loading saved wallets
                             </span>
                           ) : (
-                            <SelectValue />
+                            <PaymentTargetSelectValue
+                              target={selectedPaymentTarget}
+                              eligibleWallets={eligibleWallets}
+                              walletDisplayLabels={eligibleWalletDisplayLabels}
+                              weblnAvailable={weblnAvailable}
+                              showDefaultBadge
+                            />
                           )}
                         </SelectTrigger>
-                        <SelectContent className="w-[var(--radix-select-trigger-width)] max-w-[calc(100vw-2rem)]">
-                          {selectedPaymentTargetIsStale &&
-                            selectedPaymentTarget.type === "wallet" && (
-                              <SelectItem
-                                value={getCheckoutPaymentTargetValue(
+                        <PaymentTargetSelectContent
+                          options={paymentTargetOptions}
+                          eligibleWallets={eligibleWallets}
+                          walletDisplayLabels={eligibleWalletDisplayLabels}
+                          staleWalletValue={
+                            selectedPaymentTargetIsStale
+                              ? getCheckoutPaymentTargetValue(
                                   selectedPaymentTarget
-                                )}
-                                textValue="Previously selected wallet (unavailable)"
-                                disabled
-                              >
-                                Previously selected wallet (unavailable)
-                              </SelectItem>
-                            )}
-                          {eligibleWallets.map((candidate) => {
-                            const target: CheckoutPaymentTarget = {
-                              type: "wallet",
-                              walletId: candidate.id,
-                              providerId: candidate.providerId,
-                            }
-                            const displayLabel =
-                              eligibleWalletDisplayLabels.get(candidate.id) ??
-                              candidate.label
-                            return (
-                              <SelectItem
-                                key={candidate.id}
-                                value={getCheckoutPaymentTargetValue(target)}
-                                textValue={`${displayLabel} (${getWalletProviderDescription(candidate)})${
-                                  candidate.defaultIntents.includes(
-                                    "pay_invoice"
-                                  )
-                                    ? ", default"
-                                    : ""
-                                }`}
-                                className="max-w-full items-start overflow-hidden py-2 [&>span:last-child]:min-w-0 [&>span:last-child]:flex-1 [&>span:last-child]:overflow-hidden"
-                              >
-                                <span className="flex w-full min-w-0 items-start gap-2">
-                                  <span className="min-w-0 flex-1 whitespace-normal break-words leading-5">
-                                    {displayLabel} (
-                                    {getWalletProviderDescription(candidate)})
-                                  </span>
-                                  {candidate.defaultIntents.includes(
-                                    "pay_invoice"
-                                  ) && (
-                                    <span className="shrink-0 text-xs leading-5 text-[var(--text-muted)]">
-                                      Default
-                                    </span>
-                                  )}
-                                </span>
-                              </SelectItem>
-                            )
-                          })}
-                          {(weblnAvailable ||
-                            selectedPaymentTarget.type === "webln") && (
-                            <SelectItem
-                              value={getCheckoutPaymentTargetValue({
-                                type: "webln",
-                              })}
-                              disabled={!weblnAvailable}
-                            >
-                              Browser wallet (WebLN)
-                              {!weblnAvailable ? ", unavailable" : ""}
-                            </SelectItem>
-                          )}
-                          <SelectItem
-                            value={getCheckoutPaymentTargetValue({
-                              type: "manual",
-                            })}
-                          >
-                            Show invoice for manual payment
-                          </SelectItem>
-                        </SelectContent>
+                                )
+                              : null
+                          }
+                          weblnAvailable={weblnAvailable}
+                          showDefaultBadge
+                        />
                       </Select>
                       <p className="mt-2 text-xs leading-5 text-[var(--text-muted)]">
                         {wallets.loading

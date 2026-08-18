@@ -212,6 +212,10 @@ describe("Market wallet route contracts", () => {
       "apps/market/src/routes/checkout.tsx",
       "utf8"
     )
+    const targetContent = await readFile(
+      "apps/market/src/components/PaymentTargetSelectContent.tsx",
+      "utf8"
+    )
 
     expect(content).toContain("const wallets = useWallets()")
     expect(content).toContain('candidate.capabilities.includes("pay_invoice")')
@@ -220,9 +224,18 @@ describe("Market wallet route contracts", () => {
     expect(content).toContain("selectedPaymentTarget.walletId")
     expect(content).toContain("selectedPaymentTarget.providerId")
     expect(content).toContain("paymentTargetOptions")
-    expect(content).toContain("Browser wallet (WebLN)")
-    expect(content).toContain("Show invoice for manual payment")
-    expect(content).toContain("getWalletProviderDescription")
+    expect(content).toContain("<PaymentTargetSelectContent")
+    expect(content).toContain("<PaymentTargetSelectValue")
+    expect(content).toContain("showDefaultBadge")
+    expect(targetContent).toContain("export function PaymentTargetSelectValue")
+    expect(targetContent).toContain("PAYMENT_TARGET_SELECT_TRIGGER_CLASS_NAME")
+    expect(targetContent).toContain("[&>span]:basis-0")
+    expect(targetContent).toContain('className="w-0 min-w-0 flex-1 truncate"')
+    expect(targetContent).toContain("Browser wallet (WebLN)")
+    expect(targetContent).toContain("Show invoice for manual payment")
+    expect(targetContent).toContain("getWalletProviderDescription")
+    expect(targetContent).toContain("Previously selected wallet (unavailable)")
+    expect(targetContent).toContain("textValue=")
     expect(content).toContain("paymentTarget: storedPaymentTarget")
     expect(content).toContain("sparkFeeApproval.requestApproval")
     expect(content).toContain("Wallet balance")
@@ -270,10 +283,14 @@ describe("Market wallet route contracts", () => {
       "apps/market/src/routes/checkout.tsx",
       "utf8"
     )
+    const targetContent = await readFile(
+      "apps/market/src/components/PaymentTargetSelectContent.tsx",
+      "utf8"
+    )
 
     expect(content).toContain("isCheckoutWalletTargetStale")
     expect(content).toContain("selectedPaymentTargetIsStale")
-    expect(content).toContain("Previously selected wallet (unavailable)")
+    expect(targetContent).toContain("Previously selected wallet (unavailable)")
     expect(content).toMatch(
       /Choose another payment target before zap out\.\s+You can still send the order first\./
     )
@@ -304,11 +321,17 @@ describe("Market wallet route contracts", () => {
       "apps/market/src/routes/checkout.tsx",
       "utf8"
     )
+    const targetContent = await readFile(
+      "apps/market/src/components/PaymentTargetSelectContent.tsx",
+      "utf8"
+    )
     const wallet = await readFile("apps/market/src/routes/wallet.tsx", "utf8")
 
-    expect(checkout).toContain(
-      'className="w-[var(--radix-select-trigger-width)] max-w-[calc(100vw-2rem)]"'
+    expect(targetContent).toContain(
+      "w-[var(--radix-select-trigger-width)] max-w-[calc(100vw-2rem)]"
     )
+    expect(targetContent).toContain("[&_[data-radix-select-viewport]]:min-w-0")
+    expect(targetContent).toContain("[overflow-wrap:anywhere]")
     expect(checkout).toContain(
       'className="mt-3 text-xs leading-5 text-[var(--text-secondary)]"'
     )
@@ -443,6 +466,10 @@ describe("Market wallet route contracts", () => {
       "utf8"
     )
     const content = await readFile("apps/market/src/routes/orders.tsx", "utf8")
+    const targetContent = await readFile(
+      "apps/market/src/components/PaymentTargetSelectContent.tsx",
+      "utf8"
+    )
 
     expect(checkout.match(/paymentTarget: storedPaymentTarget/g)).toHaveLength(
       2
@@ -454,7 +481,13 @@ describe("Market wallet route contracts", () => {
     expect(content).toContain("retryWalletTargetIsStale")
     expect(content).toContain("getNwcPaymentReadiness")
     expect(content).toContain("nwcReadiness?.ready === true")
-    expect(content).toContain("Previously selected wallet (unavailable)")
+    expect(checkout).toContain("<PaymentTargetSelectContent")
+    expect(content).toContain("<PaymentTargetSelectContent")
+    expect(checkout).toContain("<PaymentTargetSelectValue")
+    expect(content).toContain("<PaymentTargetSelectValue")
+    expect(content).toContain('placeholder="Choose a payment target"')
+    expect(content).not.toContain("showDefaultBadge")
+    expect(targetContent).toContain("Previously selected wallet (unavailable)")
     expect(content).toContain("Loading saved wallets")
     expect(content).toContain("{wallets.initializationError}")
     expect(content).toContain("wallets.retryInitialization()")

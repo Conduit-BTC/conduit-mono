@@ -613,11 +613,8 @@ export class BuyerNwcSession {
 }
 
 const buyerNwcSessions = new Map<string, BuyerNwcSession>()
-const DEFAULT_NWC_SESSION_ID = "default"
 
-export function getBuyerNwcSession(
-  walletId = DEFAULT_NWC_SESSION_ID
-): BuyerNwcSession {
+export function getBuyerNwcSession(walletId: string): BuyerNwcSession {
   let session = buyerNwcSessions.get(walletId)
   if (!session) {
     session = new BuyerNwcSession()

@@ -44,10 +44,7 @@ import {
   LiveReadNotice,
   OrderMessagesWidget,
   Select,
-  SelectContent,
-  SelectItem,
   SelectTrigger,
-  SelectValue,
   Sheet,
   SheetContent,
   SheetHeader,
@@ -72,6 +69,11 @@ import { QRCodeSVG } from "qrcode.react"
 import { ConversationProfilePicture } from "../components/ConversationProfilePicture"
 import { CopyButton } from "../components/CopyButton"
 import { getMerchantDisplayName } from "../components/MerchantIdentity"
+import {
+  PAYMENT_TARGET_SELECT_TRIGGER_CLASS_NAME,
+  PaymentTargetSelectContent,
+  PaymentTargetSelectValue,
+} from "../components/PaymentTargetSelectContent"
 import {
   SparkFeeApprovalDialog,
   useSparkFeeApproval,
@@ -120,7 +122,6 @@ import {
   type CheckoutZapMode,
 } from "../lib/checkout-payment"
 import { publishBuyerOrderMessage } from "../lib/order-publish"
-import { getWalletProviderDescription } from "../lib/wallet-provider-label"
 import {
   getCheckoutPaymentTargetOptions,
   getCheckoutPaymentTargetValue,
@@ -1116,62 +1117,34 @@ function OrderDetail({
                   }}
                   disabled={busy || wallets.loading}
                 >
-                  <SelectTrigger id={`retry-wallet-${vm.orderId}`}>
+                  <SelectTrigger
+                    id={`retry-wallet-${vm.orderId}`}
+                    className={PAYMENT_TARGET_SELECT_TRIGGER_CLASS_NAME}
+                  >
                     {wallets.loading ? (
                       <span className="flex items-center gap-2 text-[var(--text-muted)]">
                         <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
                         Loading saved wallets
                       </span>
                     ) : (
-                      <SelectValue placeholder="Choose a payment target" />
+                      <PaymentTargetSelectValue
+                        target={retryTarget}
+                        eligibleWallets={eligibleWallets}
+                        walletDisplayLabels={eligibleWalletDisplayLabels}
+                        weblnAvailable={weblnAvailable}
+                        placeholder="Choose a payment target"
+                      />
                     )}
                   </SelectTrigger>
-                  <SelectContent className="w-[var(--radix-select-trigger-width)] max-w-[calc(100vw-2rem)]">
-                    {retryWalletTargetIsStale && (
-                      <SelectItem value={retryTargetValue} disabled>
-                        Previously selected wallet (unavailable)
-                      </SelectItem>
-                    )}
-                    {eligibleWallets.map((candidate) => {
-                      const displayLabel =
-                        eligibleWalletDisplayLabels.get(candidate.id) ??
-                        candidate.label
-                      const providerDescription =
-                        getWalletProviderDescription(candidate)
-                      return (
-                        <SelectItem
-                          key={candidate.id}
-                          value={getCheckoutPaymentTargetValue({
-                            type: "wallet",
-                            walletId: candidate.id,
-                            providerId: candidate.providerId,
-                          })}
-                          textValue={`${displayLabel} (${providerDescription})`}
-                          className="max-w-full items-start overflow-hidden py-2 [&>span:last-child]:min-w-0 [&>span:last-child]:flex-1 [&>span:last-child]:overflow-hidden"
-                        >
-                          <span className="block min-w-0 whitespace-normal break-words leading-5">
-                            {displayLabel} ({providerDescription})
-                          </span>
-                        </SelectItem>
-                      )
-                    })}
-                    {(weblnAvailable || retryTarget?.type === "webln") && (
-                      <SelectItem
-                        value={getCheckoutPaymentTargetValue({
-                          type: "webln",
-                        })}
-                        disabled={!weblnAvailable}
-                      >
-                        Browser wallet (WebLN)
-                        {!weblnAvailable ? ", unavailable" : ""}
-                      </SelectItem>
-                    )}
-                    <SelectItem
-                      value={getCheckoutPaymentTargetValue({ type: "manual" })}
-                    >
-                      Show invoice for manual payment
-                    </SelectItem>
-                  </SelectContent>
+                  <PaymentTargetSelectContent
+                    options={retryTargetOptions}
+                    eligibleWallets={eligibleWallets}
+                    walletDisplayLabels={eligibleWalletDisplayLabels}
+                    staleWalletValue={
+                      retryWalletTargetIsStale ? retryTargetValue : null
+                    }
+                    weblnAvailable={weblnAvailable}
+                  />
                 </Select>
               </div>
             )}

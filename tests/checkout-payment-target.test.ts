@@ -136,6 +136,26 @@ describe("checkout payment target selection", () => {
     ])
   })
 
+  it("keeps selected WebLN visible but unavailable after the bridge disappears", () => {
+    expect(
+      getCheckoutPaymentTargetOptions({
+        eligibleWallets: [],
+        selectedTarget: { type: "webln" },
+        weblnAvailable: false,
+      }).map((option) => option.target)
+    ).toEqual([{ type: "webln" }, { type: "manual" }])
+  })
+
+  it("offers only manual payment when no automatic target is available", () => {
+    expect(
+      getCheckoutPaymentTargetOptions({
+        eligibleWallets: [],
+        selectedTarget: { type: "manual" },
+        weblnAvailable: false,
+      }).map((option) => option.target)
+    ).toEqual([{ type: "manual" }])
+  })
+
   it("keeps manual payment explicit when automatic targets are available", () => {
     expect(
       resolveCheckoutPaymentTarget({
