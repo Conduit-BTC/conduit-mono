@@ -5,7 +5,6 @@ import {
   getLightningInvoiceNetwork,
   getWalletNetworkFromLightningConfig,
   isAmountlessLightningInvoice,
-  normalizeLightningInvoice,
   type WalletNetwork,
 } from "@conduit/core"
 
@@ -910,8 +909,7 @@ function validateLightningReceiveInvoice(input: {
   const decodedAmount = decodeLightningInvoiceAmount(paymentRequest)
   if (input.amountSats === 0) {
     if (
-      getLightningInvoiceAmountComponent(paymentRequest, input.network) !==
-        "" ||
+      !isAmountlessLightningInvoice(paymentRequest) ||
       decodedAmount.msats !== null
     ) {
       throw new Error(
@@ -932,32 +930,6 @@ function validateLightningReceiveInvoice(input: {
   }
 
   return paymentRequest
-}
-
-function getLightningInvoiceAmountComponent(
-  paymentRequest: string,
-  network: SparkNativeNetwork
-): string | null {
-  const normalized = normalizeLightningInvoice(paymentRequest).toLowerCase()
-  const prefix = getLightningInvoicePrefix(network)
-  const separatorIndex = normalized.lastIndexOf("1")
-  if (!normalized.startsWith(prefix) || separatorIndex < prefix.length) {
-    return null
-  }
-  return normalized.slice(prefix.length, separatorIndex)
-}
-
-function getLightningInvoicePrefix(network: SparkNativeNetwork): string {
-  switch (network) {
-    case "MAINNET":
-      return "lnbc"
-    case "TESTNET":
-      return "lntb"
-    case "SIGNET":
-      return "lnsb"
-    case "REGTEST":
-      return "lnbcrt"
-  }
 }
 
 function toNativeNetwork(network: SupportedSparkNetwork): SparkNativeNetwork {

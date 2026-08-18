@@ -33,6 +33,7 @@ import {
   normalizePublicMediaUrl,
   pubkeyToNpub,
   recordBrowserTelemetryEvent,
+  resolveWalletPaymentInstance,
   validateAddressConsistency,
   useAuth,
   useProfile,
@@ -911,14 +912,13 @@ function CheckoutPage() {
     selectedTarget: selectedPaymentTarget,
     weblnAvailable,
   })
-  const selectedWallet =
-    selectedPaymentTarget.type === "wallet"
-      ? (eligibleWallets.find(
-          (candidate) =>
-            candidate.id === selectedPaymentTarget.walletId &&
-            candidate.providerId === selectedPaymentTarget.providerId
-        ) ?? null)
-      : null
+  const selectedWalletTarget =
+    selectedPaymentTarget.type === "wallet" ? selectedPaymentTarget : null
+  const selectedWallet = resolveWalletPaymentInstance(wallets.wallets, {
+    walletId: selectedWalletTarget?.walletId,
+    providerId: selectedWalletTarget?.providerId,
+    network: checkoutWalletNetwork,
+  })
   const selectedWalletRuntime = selectedWallet
     ? wallets.runtime[selectedWallet.id]
     : null

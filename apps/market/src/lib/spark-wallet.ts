@@ -12,8 +12,8 @@ import {
   type SparkWalletSessionLease,
 } from "./spark-wallet-lease"
 import {
-  createSparkSendSafetyStore,
-  type SparkSendSafetyStore,
+  createSparkDirectTransferSafetyStore,
+  type SparkDirectTransferSafetyStore,
 } from "./spark-direct-transfer-safety"
 import {
   isValidSparkAccountNumber,
@@ -191,7 +191,7 @@ export type SparkSendResult =
 export class SparkWalletManager {
   readonly #factory: SparkSdkFactory
   readonly #acquireSessionLease: SparkWalletSessionLeaseAcquirer
-  readonly #sendSafety: SparkSendSafetyStore
+  readonly #sendSafety: SparkDirectTransferSafetyStore
   readonly #now: () => number
   readonly #clients = new Map<string, SparkSdkClient>()
   readonly #sessionLeases = new Map<string, SparkWalletSessionLease>()
@@ -232,7 +232,7 @@ export class SparkWalletManager {
   constructor(
     factory: SparkSdkFactory,
     acquireSessionLease: SparkWalletSessionLeaseAcquirer = acquireSparkWalletManagerSessionLease,
-    sendSafety: SparkSendSafetyStore = createSparkSendSafetyStore(),
+    sendSafety: SparkDirectTransferSafetyStore = createSparkDirectTransferSafetyStore(),
     now: () => number = Date.now
   ) {
     this.#factory = factory

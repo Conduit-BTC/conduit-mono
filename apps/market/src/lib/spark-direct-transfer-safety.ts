@@ -9,10 +9,8 @@ export interface SparkDirectTransferSafetyStore {
   delete(safetyScope: string): void
 }
 
-// The v2 storage key and legacy names remain stable so an unresolved direct
-// transfer from an earlier Conduit build also blocks the unified Spark send
-// flow after upgrade.
-export type SparkSendSafetyStore = SparkDirectTransferSafetyStore
+// The v2 storage key remains stable so an unresolved direct transfer from an
+// earlier Conduit build also blocks the unified Spark send flow after upgrade.
 
 const STORAGE_KEY_PREFIX = "conduit:spark-direct-transfer-safety:v2:"
 
@@ -87,8 +85,6 @@ export function createSparkDirectTransferSafetyStore(): SparkDirectTransferSafet
     ? new MemorySparkDirectTransferSafetyStore()
     : new BrowserSparkDirectTransferSafetyStore()
 }
-
-export const createSparkSendSafetyStore = createSparkDirectTransferSafetyStore
 
 function getStorageKey(safetyScope: string): string {
   return `${STORAGE_KEY_PREFIX}${encodeURIComponent(safetyScope)}`
