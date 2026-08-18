@@ -1,14 +1,5 @@
 import type { ConduitAppId } from "../protocol/nip89"
-import type {
-  WalletKind,
-  WalletLifecycleStatus,
-  WalletProviderId,
-} from "./index"
-
-export interface WalletProviderLifecycle {
-  getStatus(walletId: string): WalletLifecycleStatus
-  close(walletId: string): Promise<void>
-}
+import type { WalletProviderId } from "./index"
 
 export interface WalletPaymentFeeQuote {
   amountSats: number
@@ -78,23 +69,10 @@ export interface WalletPayInvoiceCapability {
   ): Promise<WalletPayInvoiceResult>
 }
 
-interface WalletProvider {
+export interface RegisteredWalletProvider {
   readonly providerId: WalletProviderId
-  readonly kind: WalletKind
-  readonly lifecycle: WalletProviderLifecycle
   readonly payInvoice?: WalletPayInvoiceCapability
 }
-
-export interface PortableWalletProvider extends WalletProvider {
-  readonly kind: "portable"
-}
-
-export interface ConnectedWalletProvider extends WalletProvider {
-  readonly kind: "connected"
-}
-
-export type RegisteredWalletProvider =
-  PortableWalletProvider | ConnectedWalletProvider
 
 export interface WalletPaymentTarget {
   walletId: string

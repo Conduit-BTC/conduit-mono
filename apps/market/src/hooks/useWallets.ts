@@ -88,7 +88,6 @@ export interface UseWalletsReturn {
   wallets: WalletDescriptor[]
   portableWallets: WalletDescriptor[]
   connectedWallets: WalletDescriptor[]
-  defaultPaymentWallet: WalletDescriptor | null
   runtime: Record<string, WalletRuntimeState>
   nwcSnapshots: Record<string, NwcSessionSnapshot>
   loading: boolean
@@ -133,7 +132,6 @@ export interface UseWalletsReturn {
     walletId: string,
     options?: { recoveryConfirmed?: boolean }
   ): Promise<void>
-  reload(): Promise<void>
   retryInitialization(): Promise<void>
 }
 
@@ -849,19 +847,11 @@ export function useWallets(): UseWalletsReturn {
     () => wallets.filter((wallet) => wallet.kind === "connected"),
     [wallets]
   )
-  const defaultPaymentWallet =
-    wallets.find(
-      (wallet) =>
-        wallet.network ===
-          getWalletNetworkFromLightningConfig(config.lightningNetwork) &&
-        wallet.defaultIntents.includes("pay_invoice")
-    ) ?? null
 
   return {
     wallets,
     portableWallets,
     connectedWallets,
-    defaultPaymentWallet,
     runtime,
     nwcSnapshots,
     loading,
@@ -885,7 +875,6 @@ export function useWallets(): UseWalletsReturn {
     refreshBalance,
     setDefaultPaymentWallet,
     removeWallet,
-    reload,
     retryInitialization,
   }
 }

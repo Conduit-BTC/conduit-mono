@@ -4,11 +4,8 @@ import {
   getWalletNetworkFromLightningConfig,
   isWalletNetwork,
   resolveWalletPaymentInstance,
-  type ConnectedWalletProvider,
   type NwcConnection,
-  type PortableWalletProvider,
   type RegisteredWalletProvider,
-  type WalletLifecycleStatus,
   type WalletNetwork,
   type WalletPayInvoiceInput,
   type WalletPayInvoiceResult,
@@ -16,12 +13,11 @@ import {
   type WalletProviderId,
 } from "@conduit/core"
 import {
-  closeBuyerNwcSession,
   getBuyerNwcSession,
   type NwcSessionPaymentResult,
   type NwcSessionSnapshot,
 } from "./buyer-nwc-session"
-import { getSparkWalletManager, payInvoiceWithSparkWallet } from "./spark-sdk"
+import { payInvoiceWithSparkWallet } from "./spark-sdk"
 import { getMarketWalletRegistry } from "./wallet-storage"
 
 export class WalletProviderRegistry {
@@ -154,27 +150,6 @@ export function getNwcPaymentReadiness(input: {
   return { ready: true }
 }
 
-function getNwcLifecycleStatus(
-  snapshot: NwcSessionSnapshot
-): WalletLifecycleStatus {
-  if (snapshot.status === "reachable") {
-    const configuredNetwork = getWalletNetworkFromLightningConfig(
-      config.lightningNetwork
-    )
-    return getNwcPaymentReadiness({
-      snapshot,
-      walletNetwork: configuredNetwork,
-      configuredNetwork,
-    }).ready
-      ? "ready"
-      : "error"
-  }
-  if (snapshot.status === "warming") return "connecting"
-  if (snapshot.status === "disconnected") return "registered"
-  if (snapshot.status === "unreachable") return "unavailable"
-  return "error"
-}
-
 function getNwcFailureResult(
   result: Exclude<NwcSessionPaymentResult, { status: "paid" }>,
   connection: NwcConnection
@@ -299,33 +274,13 @@ async function payInvoiceWithSparkProvider(
   }
 }
 
-const sparkWalletProvider: PortableWalletProvider = {
+const sparkWalletProvider: RegisteredWalletProvider = {
   providerId: "spark",
-  kind: "portable",
-  lifecycle: {
-    getStatus(walletId) {
-      const manager = getSparkWalletManager()
-      if (!manager) return "unavailable"
-      return manager.isOpen(walletId) ? "ready" : "locked"
-    },
-    async close(walletId) {
-      await getSparkWalletManager()?.close(walletId)
-    },
-  },
   payInvoice: payInvoiceWithSparkProvider,
 }
 
-const nwcWalletProvider: ConnectedWalletProvider = {
+const nwcWalletProvider: RegisteredWalletProvider = {
   providerId: "nwc",
-  kind: "connected",
-  lifecycle: {
-    getStatus(walletId) {
-      return getNwcLifecycleStatus(getBuyerNwcSession(walletId).getSnapshot())
-    },
-    async close(walletId) {
-      closeBuyerNwcSession(walletId)
-    },
-  },
   payInvoice: payInvoiceWithNwcProvider,
 }
 

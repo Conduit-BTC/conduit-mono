@@ -1,8 +1,7 @@
 import { afterEach, describe, expect, it, mock } from "bun:test"
 
 import type {
-  ConnectedWalletProvider,
-  PortableWalletProvider,
+  RegisteredWalletProvider,
   WalletPayInvoiceInput,
 } from "../packages/core/src/wallets"
 import { parseNwcUri } from "../packages/core/src/protocol/nwc"
@@ -39,7 +38,7 @@ afterEach(() => {
   closeBuyerNwcSession(NWC_WALLET_ID)
 })
 
-function portableProvider(
+function registeredProvider(
   providerId: string,
   payInvoice: (
     walletId: string,
@@ -48,35 +47,9 @@ function portableProvider(
     status: "paid"
     preimage: string
   }>
-): PortableWalletProvider {
+): RegisteredWalletProvider {
   return {
     providerId,
-    kind: "portable",
-    lifecycle: {
-      getStatus: () => "ready",
-      close: async () => undefined,
-    },
-    payInvoice,
-  }
-}
-
-function connectedProvider(
-  providerId: string,
-  payInvoice: (
-    walletId: string,
-    input: WalletPayInvoiceInput
-  ) => Promise<{
-    status: "paid"
-    preimage: string
-  }>
-): ConnectedWalletProvider {
-  return {
-    providerId,
-    kind: "connected",
-    lifecycle: {
-      getStatus: () => "ready",
-      close: async () => undefined,
-    },
     payInvoice,
   }
 }
@@ -93,8 +66,8 @@ describe("WalletPaymentCoordinator", () => {
     }))
     const coordinator = new WalletPaymentCoordinator(
       new WalletProviderRegistry([
-        portableProvider("spark", sparkPay),
-        connectedProvider("nwc", nwcPay),
+        registeredProvider("spark", sparkPay),
+        registeredProvider("nwc", nwcPay),
       ])
     )
 
@@ -126,7 +99,7 @@ describe("WalletPaymentCoordinator", () => {
       preimage: "spark-preimage",
     }))
     const coordinator = new WalletPaymentCoordinator(
-      new WalletProviderRegistry([portableProvider("spark", sparkPay)])
+      new WalletProviderRegistry([registeredProvider("spark", sparkPay)])
     )
 
     const result = await coordinator.payInvoice(
@@ -155,7 +128,7 @@ describe("WalletPaymentCoordinator", () => {
     }))
     const isTargetEligible = mock(async () => false)
     const coordinator = new WalletPaymentCoordinator(
-      new WalletProviderRegistry([portableProvider("spark", sparkPay)]),
+      new WalletProviderRegistry([registeredProvider("spark", sparkPay)]),
       { isTargetEligible }
     )
 
@@ -189,7 +162,7 @@ describe("WalletPaymentCoordinator", () => {
       preimage: "spark-preimage",
     }))
     const coordinator = new WalletPaymentCoordinator(
-      new WalletProviderRegistry([portableProvider("spark", sparkPay)]),
+      new WalletProviderRegistry([registeredProvider("spark", sparkPay)]),
       {
         isTargetEligible: async () => {
           throw new Error("IndexedDB unavailable")
@@ -217,7 +190,7 @@ describe("WalletPaymentCoordinator", () => {
   })
 
   it("rejects duplicate provider registrations instead of shadowing adapters", () => {
-    const provider = portableProvider("spark", async () => ({
+    const provider = registeredProvider("spark", async () => ({
       status: "paid",
       preimage: "preimage",
     }))
@@ -314,11 +287,6 @@ describe("WalletPaymentCoordinator", () => {
         "This Connected Wallet uses testnet, but Market is using mainnet.",
     })
     expect(payInvoice).toHaveBeenCalledTimes(0)
-    expect(
-      await marketWalletProviderRegistry
-        .get("nwc")
-        ?.lifecycle.getStatus(NWC_WALLET_ID)
-    ).toBe("error")
   })
 
   it("fails before publication until live NWC info is available", async () => {
