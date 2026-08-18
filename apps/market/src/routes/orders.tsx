@@ -36,6 +36,7 @@ import {
   DecryptFailureNotice,
   LiveReadNotice,
   OrderMessagesWidget,
+  RefreshChip,
   Sheet,
   SheetContent,
   SheetHeader,
@@ -45,7 +46,6 @@ import {
   StatusStepper,
 } from "@conduit/ui"
 import {
-  CheckCircle2,
   ChevronRight,
   Copy,
   ExternalLink,
@@ -1280,13 +1280,6 @@ function OrdersPage() {
     }, delayMs)
     return () => window.clearTimeout(timer)
   }, [guestIdentity])
-  const [refreshButtonState, setRefreshButtonState] = useState<
-    "idle" | "refreshing" | "done"
-  >("idle")
-  const refreshResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null
-  )
-
   const lifecyclesQuery = useQuery({
     queryKey: [
       "order-lifecycles",
@@ -1327,35 +1320,8 @@ function OrdersPage() {
     void lifecyclesQuery.refetch()
   }, [activeBuyerPubkey, lifecyclesQuery, messagesQuery, signerConnected])
 
-  useEffect(() => {
-    if (isFetching) {
-      if (refreshResetTimerRef.current) {
-        clearTimeout(refreshResetTimerRef.current)
-        refreshResetTimerRef.current = null
-      }
-      setRefreshButtonState("refreshing")
-      return
-    }
-    if (refreshButtonState === "refreshing") {
-      setRefreshButtonState("done")
-      refreshResetTimerRef.current = setTimeout(() => {
-        setRefreshButtonState("idle")
-        refreshResetTimerRef.current = null
-      }, 900)
-    }
-  }, [isFetching, refreshButtonState])
-
-  useEffect(
-    () => () => {
-      if (refreshResetTimerRef.current)
-        clearTimeout(refreshResetTimerRef.current)
-    },
-    []
-  )
-
   const handleRefresh = useCallback(() => {
     if (!activeBuyerPubkey) return
-    setRefreshButtonState("refreshing")
     refetchAll()
   }, [activeBuyerPubkey, refetchAll])
 
@@ -1553,27 +1519,13 @@ function OrdersPage() {
               : "Finish this guest payment and review locally saved checkout status. Merchant follow-up uses your submitted phone and email contact details."}
           </p>
         </div>
-        <Button
-          variant="outline"
+        <RefreshChip
+          refreshing={isFetching}
+          onRefresh={handleRefresh}
+          doneDurationMs={900}
           className="h-11 px-4 text-sm"
-          disabled={!activeBuyerPubkey || isFetching}
-          onClick={handleRefresh}
-        >
-          <span className="inline-flex items-center gap-2">
-            {refreshButtonState === "done" ? (
-              <CheckCircle2 className="h-4 w-4 text-emerald-400" />
-            ) : (
-              <RotateCw
-                className={`h-4 w-4 ${refreshButtonState === "refreshing" ? "animate-spin text-amber-300" : ""}`}
-              />
-            )}
-            {refreshButtonState === "refreshing"
-              ? "Refreshing…"
-              : refreshButtonState === "done"
-                ? "Updated"
-                : "Refresh"}
-          </span>
-        </Button>
+          disabled={!activeBuyerPubkey}
+        />
       </div>
 
       {!activeBuyerPubkey && (

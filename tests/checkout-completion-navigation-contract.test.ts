@@ -100,6 +100,6 @@ describe("checkout completion navigation contracts", () => {
     expect(ordersRoute).toContain("Closing it ends")
     expect(ordersRoute).toContain("local access to this guest order")
     expect(ordersRoute).toContain("merchant will follow up")
-    expect(ordersRoute).toContain("disabled={!activeBuyerPubkey || isFetching}")
+    expect(ordersRoute).toContain("disabled={!activeBuyerPubkey}")
   })
 })

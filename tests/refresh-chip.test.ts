@@ -9,7 +9,7 @@ function visibleLabelMarkup(markup: string, label: string): string {
   while (index > 0) {
     const spanStart = markup.lastIndexOf("<span", index)
     const spanMarkup = markup.slice(spanStart, index)
-    if (spanMarkup.includes("absolute")) return spanMarkup
+    if (spanMarkup.includes("col-start-1 row-start-1")) return spanMarkup
     index = markup.indexOf(`>${label}<`, index + 1)
   }
   throw new Error(`No stacked phase span found for label: ${label}`)
@@ -67,7 +67,7 @@ describe("RefreshChip", () => {
     expect(staleSpan).toContain("--warning")
   })
 
-  it("reserves the width of the longest label to stay shift-free", () => {
+  it("stacks every phase label in one grid cell to stay shift-free", () => {
     const markup = renderToStaticMarkup(
       createElement(RefreshChip, {
         refreshing: false,
@@ -76,11 +76,16 @@ describe("RefreshChip", () => {
       })
     )
 
-    const sizingIndex = markup.indexOf("invisible whitespace-nowrap")
-    expect(sizingIndex).toBeGreaterThan(0)
-    expect(
-      markup.slice(sizingIndex, markup.indexOf("</span>", sizingIndex))
-    ).toContain("Refreshing the whole storefront...")
+    expect(markup).toContain("inline-grid")
+    for (const label of [
+      "Refresh",
+      "Refreshing the whole storefront...",
+      "Updated",
+    ]) {
+      expect(visibleLabelMarkup(markup, label)).toContain(
+        "col-start-1 row-start-1"
+      )
+    }
   })
 
   it("is the shared refresh control on Market and Merchant data surfaces", async () => {
@@ -88,6 +93,7 @@ describe("RefreshChip", () => {
       "apps/market/src/routes/products/index.tsx",
       "apps/market/src/routes/products/$productId.tsx",
       "apps/market/src/routes/store/$pubkey.tsx",
+      "apps/market/src/routes/orders.tsx",
       "apps/merchant/src/routes/products.tsx",
       "apps/merchant/src/routes/orders.tsx",
     ]

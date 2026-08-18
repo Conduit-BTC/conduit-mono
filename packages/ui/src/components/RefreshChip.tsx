@@ -33,9 +33,9 @@ export interface RefreshChipProps extends Omit<
  * button with a rotate icon that spins while a refresh runs, then flashes a
  * green checked confirmation before settling back to idle.
  *
- * The label column is shift-free: every phase label is stacked over an
- * invisible sizing span that reserves the width of the longest label, so
- * phase changes never move surrounding content.
+ * The label column is shift-free: every phase label occupies the same grid
+ * cell, so the cell keeps the intrinsic width of the widest label and phase
+ * changes never move surrounding content.
  *
  * The phase machine follows the `refreshing` prop. While `refreshing` is
  * true the chip shows the refreshing label, reports `aria-busy`, and
@@ -85,9 +85,6 @@ function RefreshChip({
   }, [refreshing, doneDurationMs])
 
   const shownIdleLabel = stale ? staleLabel : idleLabel
-  const sizingLabel = [shownIdleLabel, refreshingLabel, doneLabel].reduce(
-    (longest, label) => (label.length > longest.length ? label : longest)
-  )
   const idleTextClass = stale
     ? "text-[var(--warning)]"
     : "text-[var(--text-primary)]"
@@ -132,22 +129,21 @@ function RefreshChip({
         </span>
         <span
           role="status"
-          className="relative inline-flex h-4 items-center justify-center"
+          className="inline-grid h-4 items-center justify-items-center"
         >
-          <span aria-hidden="true" className="invisible whitespace-nowrap">
-            {sizingLabel}
-          </span>
           <span
+            aria-hidden={phase !== "idle"}
             className={cn(
-              "absolute whitespace-nowrap transition-opacity duration-200",
+              "col-start-1 row-start-1 whitespace-nowrap transition-opacity duration-200",
               phase === "idle" ? cn("opacity-100", idleTextClass) : "opacity-0"
             )}
           >
             {shownIdleLabel}
           </span>
           <span
+            aria-hidden={!refreshingPhase}
             className={cn(
-              "absolute whitespace-nowrap transition-opacity duration-200",
+              "col-start-1 row-start-1 whitespace-nowrap transition-opacity duration-200",
               refreshingPhase
                 ? "opacity-100 text-[var(--secondary-500)]"
                 : "opacity-0"
@@ -156,8 +152,9 @@ function RefreshChip({
             {refreshingLabel}
           </span>
           <span
+            aria-hidden={phase !== "done"}
             className={cn(
-              "absolute whitespace-nowrap transition-opacity duration-200",
+              "col-start-1 row-start-1 whitespace-nowrap transition-opacity duration-200",
               phase === "done"
                 ? "opacity-100 text-[var(--success)]"
                 : "opacity-0"
