@@ -133,26 +133,6 @@ export const DEFAULT_SHOPPER_PRESETS: ShopperPresetsValue = {
   display: DEFAULT_SHOPPER_PRICE_PREFERENCE,
 }
 
-export const shopperPresetsValueSchema = z
-  .object({
-    shipping: shopperShippingPresetSchema.nullable(),
-    preferredRail: z.enum(SHOPPER_PAYMENT_RAILS),
-    display: z
-      .object({
-        currency: z.enum(SUPPORTED_SHOPPER_DISPLAY_CURRENCIES),
-        bitcoinUnit: z.enum(["bitcoin", "sats"]),
-      })
-      .strict(),
-  })
-  .strict()
-
-export function normalizeShopperPresetsValue(
-  value: unknown
-): ShopperPresetsValue {
-  const parsed = shopperPresetsValueSchema.safeParse(value)
-  return parsed.success ? parsed.data : DEFAULT_SHOPPER_PRESETS
-}
-
 const base64UrlSchema = z
   .string()
   .regex(/^[A-Za-z0-9_-]+$/, "Invalid base64url value")
@@ -293,10 +273,6 @@ async function deriveShopperPresetsKey(
     p: SHOPPER_PRESETS_KDF.parallelism,
     dkLen: SHOPPER_PRESETS_KDF.keyLength,
   })
-}
-
-export function getShopperPresetsAddress(pubkey: string): string {
-  return `${EVENT_KINDS.APPLICATION_DATA}:${normalizePubkey(pubkey)}:${SHOPPER_PRESETS_D_TAG}`
 }
 
 export function parseShopperPresetsEnvelope(

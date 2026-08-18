@@ -7,7 +7,6 @@ import {
   useState,
   type ReactNode,
 } from "react"
-import type { NDKSigner } from "@nostr-dev-kit/ndk"
 import { CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS } from "../config"
 import {
   getNdk,

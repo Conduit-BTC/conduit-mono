@@ -119,5 +119,3 @@ export function getBrowserShopperPresetsStorage(): {
     return null
   }
 }
-
-export function __resetShopperPresetsStoreForTests(): void {}
