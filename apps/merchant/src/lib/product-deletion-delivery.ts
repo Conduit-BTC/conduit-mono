@@ -5,7 +5,6 @@ import {
   deliverProductDeletionJob,
   getProductDeletionDelivery,
   getPendingProductDeletionDeliveries,
-  getNdk,
   persistProductDeletionDelivery,
   planPublishRelays,
   publishSignedEventToRelay,
@@ -25,11 +24,9 @@ function uniqueRelayUrls(urls: readonly string[]): string[] {
 async function publishProductDeletionRelay(
   input: Parameters<ProductDeletionRelayPublisher>[0]
 ): Promise<Awaited<ReturnType<ProductDeletionRelayPublisher>>> {
-  const ndk = getNdk()
-  const event = new NDKEvent(ndk, input.signedEvent)
   return {
     status: await publishSignedEventToRelay({
-      event,
+      signedEvent: input.signedEvent,
       relayUrl: input.relayUrl,
       authorPubkey: input.signedEvent.pubkey,
       authenticatedPubkey: input.roles.includes("author_write")
