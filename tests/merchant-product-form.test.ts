@@ -18,6 +18,11 @@ import {
   type MerchantProductFormValues,
   type ProductPublishFormValues,
 } from "../apps/merchant/src/lib/productForm"
+import {
+  createProductVariationAxis,
+  createEmptyProductVariationForm,
+  generateProductVariationRows,
+} from "../apps/merchant/src/lib/productVariations"
 
 function form(
   overrides: Partial<ProductPublishFormValues> = {}
@@ -32,7 +37,7 @@ function form(
     shippingCost: "",
     usePresetShippingZone: false,
     customShippingConfig: { countries: [] },
-    imageUrl: "https://example.com/pocket-node.png",
+    imageUrl: "https://cdn.conduit.market/pocket-node.png",
     tags: "gear, hardware, demo",
     ...overrides,
   }
@@ -176,6 +181,30 @@ describe("merchant product form validation", () => {
     ).toBe("Stock must be a non-negative safe integer.")
   })
 
+  it("requires complete, valid variation options before publishing", () => {
+    const missingOptions = validate(
+      form({
+        variations: {
+          ...createEmptyProductVariationForm(),
+          enabled: true,
+        },
+      })
+    )
+    const validOptions = validate(
+      form({
+        variations: generateProductVariationRows({
+          ...createEmptyProductVariationForm(),
+          enabled: true,
+          axes: [createProductVariationAxis("size", "S, M, L, XL")],
+        }),
+      })
+    )
+
+    expect(missingOptions.canPublish).toBe(false)
+    expect(missingOptions.errors.variations).toContain("at least one")
+    expect(validOptions.canPublish).toBe(true)
+  })
+
   it("canonicalizes and dedupes tags case-insensitively", () => {
     expect(parseProductTags("Gear, gear, , HARDWARE, Demo, hardware")).toEqual([
       "gear",
@@ -257,6 +286,17 @@ describe("merchant product form validation", () => {
     expect(zeroPrice.errors.price).toContain("greater than zero")
     expect(httpImage.canPublish).toBe(false)
     expect(httpImage.errors.imageUrl).toBe("Image URL must start with https://")
+  })
+
+  it("blocks private-network image destinations", () => {
+    const privateImage = validate(
+      form({ imageUrl: "https://192.168.1.20/item.png" })
+    )
+
+    expect(privateImage.canPublish).toBe(false)
+    expect(privateImage.errors.imageUrl).toBe(
+      "Image URL must use a public network destination."
+    )
   })
 
   it("rejects exponent and signed amount syntax", () => {

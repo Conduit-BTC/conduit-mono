@@ -1,5 +1,6 @@
 import {
   getPriceSats,
+  getProductImageCandidates,
   getShippingCostSats,
   resolveCartShippingCost,
   type CommerceQueryMeta,
@@ -8,10 +9,15 @@ import {
   type ProductZapMessagePolicy,
   type PricingRateInput,
   type Product,
+  type ProductSpecification,
 } from "@conduit/core"
 
 export type CartItem = {
   productId: string
+  /** Variable parent coordinate when productId identifies a variation child. */
+  familyProductId?: string
+  /** Human-readable selection snapshot preserved in signed-event order. */
+  selectedSpecifications?: ProductSpecification[]
   merchantPubkey: string
   merchantAddedAt?: number
   title: string
@@ -46,7 +52,7 @@ export type CartItem = {
   publicZapEnabled?: boolean
   zapMessagePolicy?: ProductZapMessagePolicy
   publicZapPolicyKnown?: boolean
-  /** Last known GammaMarkets stock value. Zero means the item is sold out. */
+  /** Last known stock value from legacy GammaMarkets-compatible tags. Zero means the item is sold out. */
   stock?: number
   quantity: number
 }
@@ -128,13 +134,17 @@ export function createCartItemFromProduct(
 ): Omit<CartItem, "quantity"> {
   return {
     productId: product.id,
+    selectedSpecifications:
+      (product.specifications?.length ?? 0) > 0
+        ? [...product.specifications]
+        : undefined,
     merchantPubkey: product.pubkey,
     title: product.title,
     price: product.price,
     currency: product.currency,
     priceSats: product.priceSats,
     sourcePrice: product.sourcePrice,
-    image: product.images[0]?.url,
+    image: getProductImageCandidates(product)[0]?.url,
     tags: product.tags,
     format: product.format,
     shippingCostSats: product.shippingCostSats,

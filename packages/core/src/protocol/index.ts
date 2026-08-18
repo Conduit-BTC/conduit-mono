@@ -1,5 +1,6 @@
 export * from "./kinds"
 export * from "./products"
+export * from "./product-family"
 export * from "./listing-safety"
 export * from "./profiles"
 export * from "./profile-cache"
@@ -22,6 +23,7 @@ export * from "./anon-zap-checkout"
 export * from "./lightning"
 export * from "./commerce"
 export * from "./follows"
+export * from "./inbox-declaration-evidence"
 export * from "./nip89"
 export * from "./nip07-signer"
 export * from "./nwc-diagnostics"
@@ -29,6 +31,7 @@ export * from "./relay-settings"
 export * from "./relay-list"
 export * from "./relay-health"
 export * from "./relay-planner"
+export * from "./relay-reader"
 export * from "./relay-publish"
 export * from "./product-deletion"
 export * from "./product-deletion-delivery"
@@ -54,8 +57,6 @@ export * from "./protected-read-state"
 export * from "./shipping"
 export {
   getNdk,
-  connectNdk,
-  requireNdkConnected,
   fetchEventsFanout,
   fetchEventsFanoutDetailed,
   fetchEventsFanoutProgressive,
@@ -66,10 +67,6 @@ export {
   removeSigner,
   __resetNdkTestState,
   __setNdkVerifyTimeoutMsForTests,
-  subscribeNdkState,
-  getNdkState,
-  type NdkConnectionState,
-  type NdkState,
   type SignerLease,
   type FetchEventsFanoutResult,
   type FetchEventsRelayStatus,

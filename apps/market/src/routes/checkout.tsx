@@ -26,6 +26,7 @@ import {
   getNdk,
   getShippingOptions,
   normalizePubkey,
+  normalizePublicMediaUrl,
   pubkeyToNpub,
   recordBrowserTelemetryEvent,
   validateAddressConsistency,
@@ -563,6 +564,7 @@ function OrderSummary({
                 }
               : undefined,
           })
+          const imageUrl = normalizePublicMediaUrl(item.image)
           return (
             <div
               key={item.productId}
@@ -572,12 +574,13 @@ function OrderSummary({
             >
               <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--background)]">
                 <img
-                  src={item.image ?? "/images/placeholders/product.png"}
+                  src={imageUrl ?? "/images/placeholders/product.png"}
                   alt={item.title}
                   className={`aspect-square h-full w-full object-cover ${
                     soldOut ? "grayscale opacity-60" : ""
                   }`}
                   loading="lazy"
+                  referrerPolicy="no-referrer"
                   onError={(e) => {
                     ;(e.currentTarget as HTMLImageElement).src =
                       "/images/placeholders/product.png"
@@ -1422,6 +1425,8 @@ function CheckoutPage() {
   function buildLifecycleItems(
     items: Array<{
       productId: string
+      familyProductId?: string
+      selectedSpecifications?: Array<{ key: string; value: string }>
       title?: string
       format: "physical" | "digital"
       quantity: number
@@ -1444,6 +1449,10 @@ function CheckoutPage() {
   ): OrderLifecycleItem[] {
     return items.map((item) => ({
       productId: item.productId,
+      familyProductId: item.familyProductId,
+      selectedSpecifications: item.selectedSpecifications?.map(
+        (specification) => ({ ...specification })
+      ),
       title: item.title,
       format: item.format,
       quantity: item.quantity,

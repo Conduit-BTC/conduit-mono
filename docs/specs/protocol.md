@@ -304,16 +304,70 @@ Gift-wrap writes, including a sender self-copy, target that wrap recipient's
 declared secure-message relays unless the validated kind-16 compatibility
 exception below is enabled by the deployment profile. Kind `14` never uses that
 exception. NIP-65, configured relay lists, commerce priority, and general relay
-defaults are not arbitrary write fallback routes. A signed empty or malformed
-declaration means the principal or recipient is not ready for secure messaging
-and must produce an explicit degraded state; the client must not override that
-signed state or represent a failed lookup as "not declared".
+defaults are not secure-message write fallback routes. In particular, a
+recipient's kind `10002` event may inform bounded discovery or rank an already
+eligible compatibility target, but it never supplies a gift-wrap write target.
+
+Declaration evidence is durable, account-scoped, and monotonic. The shared
+protocol boundary retains the exact validated signed kind `10050` event, its
+relay-tag interpretation, the relay sources that returned that event, and the
+most recent observation time. A separate complete-plan observation time is
+advanced only when every relay in the bounded lookup plan completes; partial or
+unavailable fanout never makes the frontier fresh after restart. The latest
+bounded lookup time, coverage, and whether it returned the current event are
+stored separately; a later empty, incomplete, or conflicting lookup remains
+degraded across process restart. Bounded lookup coverage does not overwrite the
+signed frontier. Invalid signatures, event ids, kinds, or authorship are
+rejected before the evidence frontier is updated. As a NIP-01 replaceable
+event, the winning frontier has the greatest `created_at`; when timestamps tie,
+the lexicographically smaller event id wins. Re-observing the same event unions
+its source-relay provenance instead of creating a new version.
+
+The current frontier and the last usable declared relay set are retained
+separately. Declaration resolution exposes signed frontier states and bounded
+observation-only states:
+
+- `declared`: the winning signed event contains at least one usable secure
+  `wss://` relay tag;
+- `signed_empty`: the winning cryptographically valid signed event contains no
+  `relay` tags, preserving an explicit signed no-inbox state separately from
+  malformed input; it is not a usable NIP-17 declaration;
+- `malformed`: a cryptographically valid signed event contains declaration data
+  but its relay-tag shape cannot be interpreted safely, including an all-invalid
+  relay-tag set;
+- `not_observed`: the bounded discovery plan completed without an event and no
+  signed frontier is retained;
+- `lookup_partial`: only part of the bounded discovery plan completed;
+- `lookup_unavailable`: none of the bounded discovery plan completed.
+
+A complete-but-empty, partial, or unavailable lookup never deletes or
+downgrades stronger retained signed evidence. With a retained frontier, those
+observations make the resolution stale or degraded while preserving its
+dominant signed state. A newer `signed_empty` or `malformed` frontier blocks
+writes, but its retained last-usable relays may still support permissive inbox
+reads. Relay-settings changes expire freshness and trigger rediscovery; they do
+not delete account evidence.
+
+Declaration publishing and repair use a bounded shared discovery set that is
+stable across Conduit clients, in addition to bounded owner-selected
+distribution targets. Repair is cross-client confirmed only when the exact
+signed event is read back from the shared discovery set with source provenance;
+an in-memory prime, durable local record, or owner-only relay readback is not
+confirmation that another client can discover it. If that shared plan completes
+without observing a retained current `declared` frontier, Network may explicitly
+redistribute that exact signed event to the same relay set. A retained
+`signed_empty` or `malformed` frontier remains retry-only until it is observed
+directly; the client cannot safely mint a replacement from an empty bounded
+view. Redistribution never signs a new replacement or advances its
+`created_at`; a bounded empty view cannot prove that another client has not
+published a newer event elsewhere. Partial, unavailable, or conflicting
+observations are also retry-only and never authorize that repair.
 
 Gift-wrap reads are permissive: the principal reads the union of their valid
-declared inboxes, their locally enabled secure IN relays, and a bounded
-Conduit-operated compatibility read set. Read results carry coverage
-(`complete | partial | unavailable`) and source provenance; an all-failed read
-must never be reported as an authoritative empty inbox.
+declared or retained last-usable inboxes, their locally enabled secure IN relays,
+and a bounded Conduit-operated compatibility read set. Read results carry
+coverage (`complete | partial | unavailable`) and source provenance; an
+all-failed read must never be reported as an authoritative empty inbox.
 
 ### Temporary exception: validated-order compatibility routing (CND-208)
 
@@ -331,9 +385,11 @@ presented as an extension of NIP-17. NIP-44/NIP-59 encryption is preserved.
 - Arbitrary NIP-65, local IN/OUT, product provenance, NIP-89 hints,
   commerce-priority, wrapper sources, and other public relays are never
   compatibility write targets.
-- A valid current or cached kind `10050` declaration always outranks the
-  compatibility lane; a newly observed valid declaration returns subsequent writes
-  to the declared route.
+- A current `declared` kind `10050` frontier always outranks the compatibility
+  lane; a newly observed declared frontier returns subsequent writes to the
+  declared route. A retained last-usable relay set under a newer `signed_empty`
+  or `malformed` frontier is read evidence only and never authorizes writes or
+  compatibility.
 - The same recipient gift wrap is attempted on every planned target. One ACK is
   successful delivery with partial diagnostics and retry state for non-ACKed
   targets; zero ACKs is an explicit failure. ACK means relay acceptance, not

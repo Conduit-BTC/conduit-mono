@@ -19,6 +19,7 @@ import {
   markDirectMessageConversationRead,
   parseDirectMessageRumor,
   publishPrivateMessage,
+  PrivateMessageRelayReadinessError,
   pubkeyToNpub,
   selectProtectedReadRows,
   useAuth,
@@ -44,8 +45,8 @@ import {
   SheetHeader,
   SheetTitle,
   SheetTrigger,
+  toMessagingReadinessNoticeState,
   useOptimisticConversationMessages,
-  type MessagingReadinessState,
   type OptimisticConversationMessage,
 } from "@conduit/ui"
 import { DirectConversationListItem } from "../components/DirectConversationListItem"
@@ -98,14 +99,9 @@ function MessagesPage() {
     relayScope: session.relayScope,
   })
   const messagingReady = dmReadiness.status === "ready"
-  const readinessNoticeState: MessagingReadinessState =
-    dmReadiness.status === "malformed"
-      ? "malformed"
-      : dmReadiness.status === "lookup_partial"
-        ? "lookup_partial"
-        : dmReadiness.status === "lookup_unavailable"
-          ? "lookup_unavailable"
-          : "not_declared"
+  const readinessNoticeState = toMessagingReadinessNoticeState(
+    dmReadiness.status
+  )
   const readinessLookupDegraded =
     readinessNoticeState === "lookup_partial" ||
     readinessNoticeState === "lookup_unavailable"
@@ -338,8 +334,14 @@ function MessagesPage() {
         }),
       ])
     },
-    onError: (_error, { message }) => {
+    onError: (error, { message }) => {
       optimisticMessageQueue.markFailed(message.localId)
+      if (
+        error instanceof PrivateMessageRelayReadinessError &&
+        error.reason === "sender_not_ready"
+      ) {
+        dmReadiness.refetch()
+      }
     },
   })
 
@@ -436,14 +438,17 @@ function MessagesPage() {
         </div>
       )}
 
-      {signerConnected && !dmReadiness.isLoading && !messagingReady && (
-        <MessagingReadinessNotice
-          state={readinessNoticeState}
-          onAction={onReadinessAction}
-          pending={dmReadiness.isRefetching}
-          className="xl:shrink-0"
-        />
-      )}
+      {signerConnected &&
+        !dmReadiness.isLoading &&
+        !messagingReady &&
+        readinessNoticeState && (
+          <MessagingReadinessNotice
+            state={readinessNoticeState}
+            onAction={onReadinessAction}
+            pending={dmReadiness.isRefetching}
+            className="xl:shrink-0"
+          />
+        )}
 
       {signerConnected &&
         protectedMessagesReadState !== "complete" &&
@@ -742,7 +747,7 @@ function MessagesPage() {
                           ).toLocaleString()}
                           deliveryState={message.deliveryState}
                           onRetry={
-                            message.deliveryState === "failed"
+                            message.deliveryState === "failed" && messagingReady
                               ? () => retryDirectMessage(message)
                               : undefined
                           }
@@ -755,6 +760,10 @@ function MessagesPage() {
                 <div className="mt-4 shrink-0 space-y-2">
                   {selected.transport === "nip04" ? (
                     <LegacyDirectMessageNotice />
+                  ) : dmReadiness.isLoading ? (
+                    <div className="text-sm text-[var(--text-secondary)]">
+                      Checking encrypted messaging setup...
+                    </div>
                   ) : !messagingReady ? (
                     <div className="text-sm text-[var(--text-secondary)]">
                       Enable encrypted messaging to reply in this current

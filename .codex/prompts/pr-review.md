@@ -29,8 +29,8 @@ Conduit constraints to enforce:
 - No behavioral tracking/profiling
 - Payments are non-custodial Lightning payment request/proof flows
 - No Zustand/Jotai/Redux state model
-- Nostr-sensitive work must cite `docs/knowledge/external-nostr-references.md` and the relevant public NIP or GammaMarkets `market-spec`
-- Product listings are NIP-99 + GammaMarkets `kind:30402`; alternate product-listing protocol assumptions are out of scope
+- Nostr-sensitive work must cite `docs/knowledge/external-nostr-references.md` and the relevant public NIP or Open Markets working specification source
+- Product listings are NIP-99 plus the Open Markets working specification for `kind:30402` commerce events, derived from the earlier GammaMarkets `market-spec` work; alternate product-listing protocol assumptions are out of scope
 - NIP-17/private-message work must preserve NIP-59 seal/gift-wrap behavior, NIP-44 v2 compatibility, and source-gate NIP-44 v3 implementation behind public draft/client references and capability detection
 - Relay work must distinguish NIP-65 `kind:10002` general relay preferences from NIP-17 `kind:10050` private-message relay hints
 - New route-local NDK event construction, `giftWrap`, publish, unwrap/decrypt, relay planning, or event parsing needs explicit justification; prefer `@conduit/core`

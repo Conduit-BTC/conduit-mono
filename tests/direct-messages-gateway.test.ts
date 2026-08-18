@@ -93,7 +93,7 @@ beforeEach(() => {
   __setCommerceTestOverrides({
     allowMissingProtectedReadAuthorization: true,
     now: () => 1_700_000_000_000,
-    requireNdkConnected: async () => ({ signer: {} }) as never,
+    getNdk: async () => ({ signer: {} }) as never,
     resolveInboxRelayUrls: async () => ["wss://inbox.example"],
     getCachedDirectMessages: async (principalPubkey) =>
       directRows.filter(
@@ -195,7 +195,7 @@ describe("general direct-message gateway", () => {
       createdAt: 100,
     })
     __setCommerceTestOverrides({
-      requireNdkConnected: async () =>
+      getNdk: async () =>
         ({
           signer: {
             decrypt: async (_user: unknown, ciphertext: string) =>
@@ -262,7 +262,7 @@ describe("general direct-message gateway", () => {
       createdAt: 100,
     })
     __setCommerceTestOverrides({
-      requireNdkConnected: async () =>
+      getNdk: async () =>
         ({
           signer: {
             decrypt: async (_user: unknown, ciphertext: string) => {
@@ -481,7 +481,7 @@ describe("general direct-message gateway", () => {
     expect(result.data).toEqual([])
     expect(result.meta.stale).toBe(false)
     expect(result.meta.degraded).toBe(false)
-    expect(result.meta.inbox?.declarationState).toBe("not_declared")
+    expect(result.meta.inbox?.declarationState).toBe("not_observed")
     expect(result.meta.inbox?.coverage).toBe("complete")
   })
 

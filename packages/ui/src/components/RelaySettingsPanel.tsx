@@ -606,7 +606,7 @@ function RelayRow({
             type="button"
             onClick={() => onRemoveRelay(entry.url)}
             disabled={isDefaultEntry}
-            className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--border-overlay)] bg-[color-mix(in_srgb,var(--neutral-500)_10%,transparent)] text-[var(--text-secondary)] opacity-100 transition-colors hover:border-[var(--error)] hover:bg-[color-mix(in_srgb,var(--error)_12%,transparent)] hover:text-[var(--error)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:border-[var(--border-overlay)] disabled:hover:bg-[color-mix(in_srgb,var(--neutral-500)_10%,transparent)] disabled:hover:text-[var(--text-secondary)] lg:opacity-0 lg:group-hover:opacity-100"
+            className="inline-flex size-9 items-center justify-center rounded-full border border-[var(--border-overlay)] bg-[color-mix(in_srgb,var(--neutral-500)_10%,transparent)] text-[var(--text-secondary)] opacity-100 transition-colors hover:border-[var(--error)] hover:bg-[color-mix(in_srgb,var(--error)_12%,transparent)] hover:text-[var(--error)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:border-[var(--border-overlay)] disabled:hover:bg-[color-mix(in_srgb,var(--neutral-500)_10%,transparent)] disabled:hover:text-[var(--text-secondary)]"
             aria-label={
               isDefaultEntry
                 ? `${entry.url} is a default fallback`
@@ -618,7 +618,7 @@ function RelayRow({
                 : "Remove relay"
             }
           >
-            <Trash2 className="h-3.5 w-3.5" />
+            <Trash2 className="size-3.5" aria-hidden="true" />
           </button>
         </div>
       </div>

@@ -10,6 +10,7 @@ import {
   LegacyDirectMessageNotice,
   LiveReadNotice,
   MessagingReadinessNotice,
+  toMessagingReadinessNoticeState,
   MessageComposer,
   matchesConversationSearch,
   SearchInput,
@@ -23,7 +24,6 @@ import {
   getConversationPreview,
   getConversationMessageDisplayContent,
   useOptimisticConversationMessages,
-  type MessagingReadinessState,
   type OrderAmountFormatter,
   type OptimisticConversationMessage,
 } from "@conduit/ui"
@@ -46,6 +46,7 @@ import {
   normalizePubkey,
   parseDirectMessageRumor,
   parseOrderMessageRumorEvent,
+  PrivateMessageRelayReadinessError,
   publishPrivateMessage,
   pubkeyToNpub,
   selectProtectedReadRows,
@@ -58,10 +59,8 @@ import {
 import type { DirectConversationSummary } from "@conduit/core"
 import { requireAuth } from "../lib/auth"
 import { CopyButton } from "../components/CopyButton"
-import {
-  MerchantAvatarFallback,
-  getMerchantDisplayName,
-} from "../components/MerchantIdentity"
+import { ConversationProfilePicture } from "../components/ConversationProfilePicture"
+import { getMerchantDisplayName } from "../components/MerchantIdentity"
 import {
   fetchCachedBuyerConversations,
   fetchBuyerConversations,
@@ -158,15 +157,10 @@ function MerchantThreadRow({
     >
       <div className="flex items-start gap-3">
         <div className="h-11 w-11 shrink-0 overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]">
-          {profile?.picture ? (
-            <img
-              src={profile.picture}
-              alt={merchantName}
-              className="h-full w-full object-cover"
-            />
-          ) : (
-            <MerchantAvatarFallback />
-          )}
+          <ConversationProfilePicture
+            src={profile?.picture}
+            alt={merchantName}
+          />
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
@@ -223,15 +217,7 @@ function DmThreadRow({
     >
       <div className="flex items-start gap-3">
         <div className="h-11 w-11 shrink-0 overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]">
-          {profile?.picture ? (
-            <img
-              src={profile.picture}
-              alt={name}
-              className="h-full w-full object-cover"
-            />
-          ) : (
-            <MerchantAvatarFallback />
-          )}
+          <ConversationProfilePicture src={profile?.picture} alt={name} />
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
@@ -321,14 +307,9 @@ function MessagesPage() {
     relayScope: session.relayScope,
   })
   const messagingReady = dmReadiness.status === "ready"
-  const readinessNoticeState: MessagingReadinessState =
-    dmReadiness.status === "malformed"
-      ? "malformed"
-      : dmReadiness.status === "lookup_partial"
-        ? "lookup_partial"
-        : dmReadiness.status === "lookup_unavailable"
-          ? "lookup_unavailable"
-          : "not_declared"
+  const readinessNoticeState = toMessagingReadinessNoticeState(
+    dmReadiness.status
+  )
   const readinessLookupDegraded =
     readinessNoticeState === "lookup_partial" ||
     readinessNoticeState === "lookup_unavailable"
@@ -744,8 +725,14 @@ function MessagesPage() {
         }),
       ])
     },
-    onError: (_error, { message }) => {
+    onError: (error, { message }) => {
       optimisticDmQueue.markFailed(message.localId)
+      if (
+        error instanceof PrivateMessageRelayReadinessError &&
+        error.reason === "sender_not_ready"
+      ) {
+        dmReadiness.refetch()
+      }
     },
   })
 
@@ -860,6 +847,7 @@ function MessagesPage() {
             Checking encrypted messaging setup...
           </div>
         ) : !messagingReady &&
+          readinessNoticeState &&
           dmConversations.length === 0 &&
           !selectedDmPubkey ? (
           <MessagingReadinessNotice
@@ -869,7 +857,7 @@ function MessagesPage() {
           />
         ) : (
           <>
-            {!messagingReady && (
+            {!messagingReady && readinessNoticeState && (
               <MessagingReadinessNotice
                 state={readinessNoticeState}
                 onAction={onReadinessAction}
@@ -1062,15 +1050,10 @@ function MessagesPage() {
                       <div className="border-b border-[var(--border)] px-6 py-5">
                         <div className="flex items-center gap-3">
                           <div className="h-12 w-12 overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]">
-                            {selectedDmProfile.data?.picture ? (
-                              <img
-                                src={selectedDmProfile.data.picture}
-                                alt={selectedDmName ?? "Contact"}
-                                className="h-full w-full object-cover"
-                              />
-                            ) : (
-                              <MerchantAvatarFallback />
-                            )}
+                            <ConversationProfilePicture
+                              src={selectedDmProfile.data?.picture}
+                              alt={selectedDmName ?? "Contact"}
+                            />
                           </div>
                           <div className="min-w-0 flex-1">
                             <div className="truncate text-lg font-semibold text-[var(--text-primary)]">
@@ -1121,7 +1104,8 @@ function MessagesPage() {
                                 ).toLocaleString()}
                                 deliveryState={message.deliveryState}
                                 onRetry={
-                                  message.deliveryState === "failed"
+                                  message.deliveryState === "failed" &&
+                                  messagingReady
                                     ? () => retryDirectMessage(message)
                                     : undefined
                                 }
@@ -1151,6 +1135,10 @@ function MessagesPage() {
                             >
                               Start current conversation
                             </Button>
+                          </div>
+                        ) : dmReadiness.isLoading ? (
+                          <div className="text-sm text-[var(--text-secondary)]">
+                            Checking encrypted messaging setup...
                           </div>
                         ) : !messagingReady ? (
                           <div className="text-sm text-[var(--text-secondary)]">
@@ -1209,13 +1197,16 @@ function MessagesPage() {
             </div>
           )}
 
-          {signerConnected && !dmReadiness.isLoading && !messagingReady && (
-            <MessagingReadinessNotice
-              state={readinessNoticeState}
-              onAction={onReadinessAction}
-              pending={dmReadiness.isRefetching}
-            />
-          )}
+          {signerConnected &&
+            !dmReadiness.isLoading &&
+            !messagingReady &&
+            readinessNoticeState && (
+              <MessagingReadinessNotice
+                state={readinessNoticeState}
+                onAction={onReadinessAction}
+                pending={dmReadiness.isRefetching}
+              />
+            )}
 
           {signerConnected && messagesQuery.isFetching && (
             <div className="text-sm text-[var(--text-secondary)]">
@@ -1404,15 +1395,10 @@ function MessagesPage() {
                     <div className="border-b border-[var(--border)] px-6 py-5">
                       <div className="flex items-center gap-3">
                         <div className="h-12 w-12 overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]">
-                          {selectedProfile.data?.picture ? (
-                            <img
-                              src={selectedProfile.data.picture}
-                              alt={merchantName ?? "Merchant"}
-                              className="h-full w-full object-cover"
-                            />
-                          ) : (
-                            <MerchantAvatarFallback />
-                          )}
+                          <ConversationProfilePicture
+                            src={selectedProfile.data?.picture}
+                            alt={merchantName ?? "Merchant"}
+                          />
                         </div>
                         <div className="min-w-0 flex-1">
                           <Link
@@ -1469,43 +1455,32 @@ function MessagesPage() {
                     </div>
 
                     <div className="border-t border-[var(--border)] px-6 py-4">
-                      {!messagingReady ? (
-                        <div className="text-sm text-[var(--text-secondary)]">
-                          Enable encrypted messaging to reply in this order
-                          conversation.
+                      <div className="flex flex-col gap-3 sm:flex-row">
+                        <input
+                          value={replyText}
+                          onChange={(event) => setReplyText(event.target.value)}
+                          placeholder="Send a message to the merchant"
+                          className="h-11 flex-1 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)]"
+                          aria-label="Reply to merchant"
+                        />
+                        <Button
+                          className="h-11 px-5 text-sm"
+                          disabled={
+                            replyMutation.isPending || !replyText.trim()
+                          }
+                          onClick={() => replyMutation.mutate()}
+                        >
+                          {replyMutation.isPending
+                            ? "Sending..."
+                            : "Send message"}
+                        </Button>
+                      </div>
+                      {replyMutation.error && (
+                        <div className="mt-2 text-xs text-error">
+                          {replyMutation.error instanceof Error
+                            ? replyMutation.error.message
+                            : "Failed to send message"}
                         </div>
-                      ) : (
-                        <>
-                          <div className="flex flex-col gap-3 sm:flex-row">
-                            <input
-                              value={replyText}
-                              onChange={(event) =>
-                                setReplyText(event.target.value)
-                              }
-                              placeholder="Send a message to the merchant"
-                              className="h-11 flex-1 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)]"
-                              aria-label="Reply to merchant"
-                            />
-                            <Button
-                              className="h-11 px-5 text-sm"
-                              disabled={
-                                replyMutation.isPending || !replyText.trim()
-                              }
-                              onClick={() => replyMutation.mutate()}
-                            >
-                              {replyMutation.isPending
-                                ? "Sending..."
-                                : "Send message"}
-                            </Button>
-                          </div>
-                          {replyMutation.error && (
-                            <div className="mt-2 text-xs text-error">
-                              {replyMutation.error instanceof Error
-                                ? replyMutation.error.message
-                                : "Failed to send message"}
-                            </div>
-                          )}
-                        </>
                       )}
                     </div>
                   </>

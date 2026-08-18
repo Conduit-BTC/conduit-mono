@@ -143,7 +143,7 @@ async function seedCachedProduct(page: Page): Promise<void> {
             eventId,
             eventCreatedAt: 100,
             dTag,
-            sourceRelayUrls: ["wss://source-browser.example"],
+            sourceRelayUrls: ["wss://source-browser.conduit.market"],
             createdAt: timestamp,
             updatedAt: timestamp,
             cachedAt: timestamp,
@@ -489,7 +489,7 @@ async function readDatabaseMigrationState(page: Page): Promise<{
   )
 }
 
-test("Merchant upgrades v8 cache data to the durable v10 cache stores", async ({
+test("Merchant upgrades v8 cache data to the durable v12 cache stores", async ({
   page,
 }) => {
   await page.route(
@@ -513,14 +513,22 @@ test("Merchant upgrades v8 cache data to the durable v10 cache stores", async ({
           nativeVersion: state.nativeVersion,
           hasOutbox: state.stores.includes("productDeletionOutbox"),
           hasShopperTrust: state.stores.includes("shopperTrustSnapshots"),
+          hasInboxDeclarationEvidence: state.stores.includes(
+            "inboxDeclarationEvidence"
+          ),
+          hasOwnContactListSnapshots: state.stores.includes(
+            "ownContactListSnapshots"
+          ),
         }
       },
       { timeout: 20_000 }
     )
     .toEqual({
-      nativeVersion: 100,
+      nativeVersion: 120,
       hasOutbox: true,
       hasShopperTrust: true,
+      hasInboxDeclarationEvidence: true,
+      hasOwnContactListSnapshots: true,
     })
 
   const migrated = await readDatabaseMigrationState(page)
@@ -588,7 +596,7 @@ test("Merchant persists one exact deletion and restores it after reload", async 
         roles: expect.arrayContaining(["conduit"]),
       }),
       expect.objectContaining({
-        relayUrl: "wss://source-browser.example",
+        relayUrl: "wss://source-browser.conduit.market",
         roles: expect.arrayContaining(["source"]),
       }),
       expect.objectContaining({

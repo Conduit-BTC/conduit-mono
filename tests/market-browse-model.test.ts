@@ -1,5 +1,10 @@
 import { describe, expect, it } from "bun:test"
-import type { Product, Profile } from "@conduit/core"
+import {
+  prepareProductCatalog,
+  type CommerceProductRecord,
+  type Product,
+  type Profile,
+} from "@conduit/core"
 import {
   filterProductsByFacets,
   getStoreFacetOptions,
@@ -9,6 +14,7 @@ import {
   getGlobalProductSearchQueryKey,
   getMerchantIdentityView,
   mergeProductSearchResults,
+  sortBrowseProducts,
   sortStoreFacetOptionsByRecentPublisher,
 } from "../apps/market/src/lib/marketBrowseModel"
 
@@ -131,6 +137,52 @@ describe("market browse model helpers", () => {
       ["merchant-b", 1],
       ["merchant-a", 1],
     ])
+  })
+
+  it("sorts variable products by the family minimum price shown on cards", () => {
+    const family = {
+      ...product("shirt", "merchant-a", ["shirt"], 300),
+      price: 1_000,
+      priceSats: 1_000,
+      type: "variable" as const,
+    }
+    const child = {
+      ...product("shirt-s", "merchant-a", ["shirt"], 301),
+      price: 3_000,
+      priceSats: 3_000,
+      type: "variation" as const,
+      parentProductId: "shirt",
+      specifications: [{ key: "size", value: "S" }],
+      stock: 5,
+    }
+    const sticker = {
+      ...product("sticker", "merchant-a", ["sticker"], 200),
+      price: 2_000,
+      priceSats: 2_000,
+    }
+    const records: CommerceProductRecord[] = [family, child].map(
+      (candidate) => ({
+        product: candidate,
+        addressId: candidate.id,
+        eventId: `${candidate.id}-event`,
+        eventCreatedAt: candidate.createdAt,
+        dTag: candidate.id,
+      })
+    )
+    const prepared = prepareProductCatalog(records, {
+      source: "commerce",
+      fetchedAt: 302,
+      stale: false,
+      degraded: false,
+      capped: false,
+    }).items[0]
+    if (prepared?.kind !== "family") throw new Error("Expected a family")
+
+    expect(
+      sortBrowseProducts([family, sticker], "price_asc", null, {
+        [family.id]: prepared.family,
+      }).map((item) => item.id)
+    ).toEqual(["sticker", "shirt"])
   })
 
   it("treats pending merchant fallback as unresolved identity", () => {

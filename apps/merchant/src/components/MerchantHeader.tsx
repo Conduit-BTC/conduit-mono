@@ -284,7 +284,7 @@ function UserMenu({ className }: { className?: string } = {}) {
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
   })
-  const profileQuery = useProfile(pubkey)
+  const profileQuery = useProfile(pubkey, { authenticatedPubkey: pubkey })
   const profile = profileQuery.data
   const readiness = useMerchantReadinessState()
   const bugReportUrl = buildBugReportUrl({ app: "merchant", route: pathname })

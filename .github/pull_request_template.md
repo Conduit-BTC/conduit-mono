@@ -42,9 +42,9 @@
 
 Complete this section when the PR touches protocol/app logic, infra/relay behavior, signer auth, messaging, payments, local cache/outbox, product event parsing/emission, or NDK/relay code.
 
-- [ ] `docs/knowledge/external-nostr-references.md` and the relevant public NIP/GammaMarkets source were checked before implementation
+- [ ] `docs/knowledge/external-nostr-references.md` and the relevant public NIP/Open Markets source were checked before implementation
 - [ ] Relevant existing repo context and public protocol sources are listed above
-- [ ] Product listings remain NIP-99 + GammaMarkets `kind:30402`; no alternate product-listing protocol terminology, schemas, or assumptions introduced
+- [ ] Product listings remain NIP-99 plus the Open Markets working specification for `kind:30402` commerce events; no alternate product-listing protocol terminology, schemas, or assumptions introduced
 - [ ] Relay/source assumptions are stated, including NIP-65 `kind:10002`, NIP-17 `kind:10050`, cache, fallback, stale, or degraded-state behavior when relevant
 - [ ] NIP-44 v3 work cites public draft/client references, keeps v2 fallback, and gates behavior on explicit signer/recipient capability detection
 - [ ] New protocol construction, `giftWrap`, publish, unwrap/decrypt, relay planning, or event parsing lives in `@conduit/core`, or the PR explains why route-local code is unavoidable

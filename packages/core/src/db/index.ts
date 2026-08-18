@@ -2,6 +2,7 @@ import Dexie, { type EntityTable, type Table } from "dexie"
 import { config } from "../config"
 import type { ProductZapMessagePolicy } from "../schemas"
 import type { SignedPublicNostrEvent } from "../protocol/signed-event"
+import type { ProductSpecification } from "../types"
 
 export interface StoredOrder {
   id: string
@@ -9,6 +10,8 @@ export interface StoredOrder {
   merchantPubkey: string
   items: Array<{
     productId: string
+    familyProductId?: string
+    selectedSpecifications?: ProductSpecification[]
     format?: "physical" | "digital"
     quantity: number
     priceAtPurchase: number
@@ -75,6 +78,8 @@ export interface CachedProduct {
     normalizedCurrency: string
   }
   type?: "simple" | "variable" | "variation"
+  parentProductId?: string
+  specifications?: Array<{ key: string; value: string }>
   format?: "physical" | "digital"
   shippingCostSats?: number
   sourceShippingCost?: {
@@ -170,6 +175,10 @@ export interface ProductDeletionDeliveryJob {
 
 export interface CachedProfile {
   pubkey: string
+  /** Exact newest observed kind-0 content, retained only for safe republish. */
+  rawContent?: string
+  eventId?: string
+  eventCreatedAt?: number
   name?: string
   displayName?: string
   about?: string
@@ -215,6 +224,117 @@ export interface CachedRelayList {
   /** Relays the kind-10002 event was observed on, if known. */
   sourceRelayUrls?: string[]
   /** Local cache time in milliseconds. */
+  cachedAt: number
+}
+
+/** A validated, lowercase 32-byte Nostr public key. */
+declare const normalizedInboxDeclarationPubkeyBrand: unique symbol
+export type NormalizedInboxDeclarationPubkey = string & {
+  readonly [normalizedInboxDeclarationPubkeyBrand]: true
+}
+
+export type InboxDeclarationEvidenceState =
+  "declared" | "signed_empty" | "malformed"
+
+export type InboxDeclarationLookupCoverage =
+  "complete" | "partial" | "unavailable"
+
+/**
+ * Most recent bounded declaration lookup for this account. This is stored
+ * independently from the signed frontier so an incomplete or conflicting
+ * observation cannot disappear after a process restart.
+ */
+export interface InboxDeclarationLookupEvidence {
+  observedAt: number
+  coverage: InboxDeclarationLookupCoverage
+  /** True when the lookup returned an event, including unusable evidence. */
+  hadEvent: boolean
+  /** Valid signed event selected by that lookup, when one was available. */
+  eventId?: string
+}
+
+interface InboxDeclarationEventEvidenceBase {
+  state: InboxDeclarationEvidenceState
+  /** Exact, signature-validated kind-10050 event observed from the network. */
+  signedEvent: SignedPublicNostrEvent
+  /** Secure normalized relay tags, preserving their signed event order. */
+  secureRelayUrls: string[]
+  /** Secure normalized relays on which this exact event was observed. */
+  sourceRelayUrls: string[]
+  /**
+   * Shared discovery relays that returned this exact event. Optional for
+   * records written before shared-source confirmation was persisted.
+   */
+  sharedSourceRelayUrls?: string[]
+  /** Most recent local observation time in milliseconds. */
+  observedAt: number
+  /**
+   * Most recent time a bounded discovery plan completed while this exact
+   * event was the winning observed frontier. Partial reads never advance it.
+   */
+  completeObservedAt?: number
+}
+
+export interface DeclaredInboxDeclarationEventEvidence extends InboxDeclarationEventEvidenceBase {
+  state: "declared"
+}
+
+export interface SignedEmptyInboxDeclarationEventEvidence extends InboxDeclarationEventEvidenceBase {
+  state: "signed_empty"
+  secureRelayUrls: []
+}
+
+export interface MalformedInboxDeclarationEventEvidence extends InboxDeclarationEventEvidenceBase {
+  state: "malformed"
+  secureRelayUrls: []
+}
+
+export type InboxDeclarationEventEvidence =
+  | DeclaredInboxDeclarationEventEvidence
+  | SignedEmptyInboxDeclarationEventEvidence
+  | MalformedInboxDeclarationEventEvidence
+
+/**
+ * Exact signed declaration staged durably before its first network attempt.
+ * The immutable publish plan lets a later process retry the same bytes without
+ * asking the signer to create a second replaceable event.
+ */
+export interface PendingInboxDeclarationDistribution {
+  signedEvent: SignedPublicNostrEvent
+  publishRelayUrls: string[]
+  stagedAt: number
+}
+
+/**
+ * Account-scoped, monotonic NIP-17 inbox-declaration evidence.
+ *
+ * `current` follows the NIP-01 replaceable-event frontier. `lastUsable` keeps
+ * the latest validated declaration when a newer signed empty or malformed
+ * replacement becomes current, so reads can remain recoverable without
+ * misrepresenting the current write route.
+ */
+export interface InboxDeclarationEvidenceRecord {
+  pubkey: NormalizedInboxDeclarationPubkey
+  current: InboxDeclarationEventEvidence
+  lastUsable?: DeclaredInboxDeclarationEventEvidence
+  pendingDistribution?: PendingInboxDeclarationDistribution
+  latestLookup?: InboxDeclarationLookupEvidence
+  cachedAt: number
+}
+
+/**
+ * Strongest verified kind-3 snapshot observed for the authenticated owner.
+ *
+ * This public event is retained across relay-plan changes and restarts so a
+ * later incomplete/omitting read cannot authorize an older replacement.
+ * `pending` means the exact signed event may have reached a relay but no ACK
+ * was observed; callers may retry that event but must not replace it.
+ */
+export interface CachedOwnContactListSnapshot {
+  pubkey: string
+  event: SignedPublicNostrEvent
+  sourceRelayUrls: string[]
+  state: "observed" | "pending"
   cachedAt: number
 }
 
@@ -411,6 +531,8 @@ export type OrderLifecyclePhase =
 
 export interface OrderLifecycleItem {
   productId: string
+  familyProductId?: string
+  selectedSpecifications?: ProductSpecification[]
   /** Local product-title snapshot for buyer order display. Public listing data. */
   title?: string
   /** Fulfillment type at purchase time. Missing legacy values require shipping. */
@@ -538,6 +660,11 @@ class ConduitDB extends Dexie {
   paymentAttempts!: EntityTable<StoredPaymentAttempt, "id">
   orderLifecycles!: EntityTable<OrderLifecycle, "orderId">
   productDeletionOutbox!: EntityTable<ProductDeletionDeliveryJob, "id">
+  inboxDeclarationEvidence!: EntityTable<
+    InboxDeclarationEvidenceRecord,
+    "pubkey"
+  >
+  ownContactListSnapshots!: EntityTable<CachedOwnContactListSnapshot, "pubkey">
 
   constructor() {
     super("conduit")
@@ -670,6 +797,16 @@ class ConduitDB extends Dexie {
       shopperTrustSnapshots: "id, merchantPubkey, shopperPubkey, cachedAt",
       productDeletionOutbox:
         "id, state, nextRetryAt, deliveryLeaseExpiresAt, updatedAt, createdAt",
+    })
+
+    this.version(11).stores({
+      // Public signed declaration evidence is monotonic protocol state. It is
+      // intentionally excluded from relay-scope clearing and cache pruning.
+      inboxDeclarationEvidence: "pubkey, cachedAt",
+    })
+
+    this.version(12).stores({
+      ownContactListSnapshots: "pubkey, state, cachedAt",
     })
   }
 }

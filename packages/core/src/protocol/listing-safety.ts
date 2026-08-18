@@ -1,4 +1,5 @@
 import type { Product } from "../types"
+import { normalizePublicMediaUrl } from "../network-target-safety"
 
 export type ListingSafetyState =
   "active" | "hidden" | "flagged" | "blocked" | "unsupported" | "pending_review"
@@ -38,6 +39,16 @@ export interface ListingSafetyDecision {
   reasons: ListingSafetyReason[]
   source: Exclude<ListingSafetyDecisionSource, "client_rules">
   evaluatedAt?: number
+}
+
+export interface ListingSafetyContext {
+  /**
+   * Non-simple products are checkout-capable only after the commerce layer
+   * proves a reachable parent/child group.
+   */
+  variationGroupRole?: "parent" | "variation"
+  /** A valid image on another member of the prepared group can render the card. */
+  hasGroupImage?: boolean
 }
 
 type ListingSafetyRuleTerm =
@@ -512,13 +523,7 @@ const STATE_RANK: Record<ListingSafetyState, number> = {
 }
 
 function isValidMarketImageUrl(url: string | undefined): boolean {
-  if (!url) return false
-  try {
-    const parsed = new URL(url)
-    return parsed.protocol === "http:" || parsed.protocol === "https:"
-  } catch {
-    return false
-  }
+  return normalizePublicMediaUrl(url) !== null
 }
 
 export function hasMarketVisibleListingImage(
@@ -619,7 +624,8 @@ function isPurchasableState(state: ListingSafetyState): boolean {
 
 export function evaluateListingSafety(
   product: Product,
-  decision?: ListingSafetyDecision | null
+  decision?: ListingSafetyDecision | null,
+  context: ListingSafetyContext = {}
 ): ListingSafetyEvaluation {
   const evaluatedAt = Date.now()
 
@@ -649,7 +655,10 @@ export function evaluateListingSafety(
     })
   }
 
-  if (!hasMarketVisibleListingImage(product)) {
+  if (
+    !hasMarketVisibleListingImage(product) &&
+    context.hasGroupImage !== true
+  ) {
     states.push("hidden")
     reasons.push({
       code: "missing_market_image",
@@ -661,7 +670,11 @@ export function evaluateListingSafety(
     })
   }
 
-  if (product.type !== "simple") {
+  const supportedVariationGroupRole =
+    (product.type === "variable" && context.variationGroupRole === "parent") ||
+    (product.type === "variation" && context.variationGroupRole === "variation")
+
+  if (product.type !== "simple" && !supportedVariationGroupRole) {
     states.push("unsupported")
     reasons.push({
       code: "unsupported_product_type",

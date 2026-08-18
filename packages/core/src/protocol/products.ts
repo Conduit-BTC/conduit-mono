@@ -11,13 +11,15 @@ import {
   type ProductSchema,
   type ProductZapMessagePolicy,
 } from "../schemas"
+import { normalizePublicMediaUrl } from "../network-target-safety"
 import { EVENT_KINDS } from "./kinds"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 
-const PRODUCT_IMAGE_URL_PATTERN = /^https?:\/\//i
+export const MAX_PRODUCT_IMAGE_CANDIDATES = 12
 const PRODUCT_JSON_DISPLAY_PROJECTION_MAX_DEPTH = 3
 const PRODUCT_TITLE_MAX_LENGTH = 200
 const PRODUCT_SUMMARY_MAX_LENGTH = 5000
+const PRODUCT_ADDRESS_PATTERN = /^30402:([0-9a-f]{64}):(.+)$/i
 export const PRODUCT_PUBLIC_ZAPS_TAG = "checkout_public_zaps"
 export const PRODUCT_ZAP_MESSAGE_POLICY_TAG = "checkout_zap_message_policy"
 const PRODUCT_PUBLIC_ZAPS_LEGACY_TAG = "public_zaps"
@@ -32,6 +34,23 @@ export interface ProductListingEventDraft {
 export interface BuildProductListingEventDraftInput {
   product: ProductSchema
   dTag: string
+  clientAppId?: ConduitAppId
+}
+
+export interface ProductDeletionEventTarget {
+  eventId: string
+  addressId?: string
+}
+
+export interface ProductDeletionEventDraft {
+  kind: typeof EVENT_KINDS.DELETION
+  content: string
+  tags: string[][]
+}
+
+export interface BuildProductDeletionEventDraftInput {
+  merchantPubkey: string
+  targets: readonly ProductDeletionEventTarget[]
   clientAppId?: ConduitAppId
 }
 
@@ -53,10 +72,170 @@ export function canonicalizeProductTags(tags: unknown): string[] {
   return canonicalTags
 }
 
+function parseProductTypeTag(tags: string[][] | undefined): {
+  type?: ProductSchema["type"]
+  format?: ProductSchema["format"]
+} {
+  const typeTag = tags?.find((tag) => tag[0] === "type")
+  const type =
+    typeTag?.[1] === "simple" ||
+    typeTag?.[1] === "variable" ||
+    typeTag?.[1] === "variation"
+      ? typeTag[1]
+      : undefined
+  const format =
+    typeTag?.[2] === "digital" || typeTag?.[2] === "physical"
+      ? typeTag[2]
+      : undefined
+  return { type, format }
+}
+
+function parseProductVisibilityTag(
+  tags: string[][] | undefined
+): ProductSchema["visibility"] | undefined {
+  const value = tags
+    ?.find((tag) => tag[0] === "visibility")?.[1]
+    ?.trim()
+    .toLowerCase()
+
+  if (value === "public" || value === "on-sale") return "public"
+  if (value === "hidden" || value === "private") return "private"
+  return undefined
+}
+
+function canonicalizeProductSpecifications(
+  specifications: ProductSchema["specifications"] | undefined
+): ProductSchema["specifications"] {
+  const canonical: ProductSchema["specifications"] = []
+  const seen = new Set<string>()
+
+  for (const specification of specifications ?? []) {
+    const key = specification.key.trim()
+    const value = specification.value.trim()
+    if (!key || !value) continue
+
+    const identity = JSON.stringify([key.toLowerCase(), value.toLowerCase()])
+    if (seen.has(identity)) continue
+    seen.add(identity)
+    canonical.push({ key, value })
+  }
+
+  return canonical
+}
+
+function parseProductSpecifications(
+  tags: string[][] | undefined
+): ProductSchema["specifications"] {
+  return canonicalizeProductSpecifications(
+    (tags ?? [])
+      .filter((tag) => tag[0] === "spec")
+      .map((tag) => ({
+        key: tag[1] ?? "",
+        value: tag[2] ?? "",
+      }))
+  )
+}
+
+function normalizeVariationParentProductId(
+  value: string | undefined,
+  merchantPubkey?: string
+): string | undefined {
+  const normalized = value?.trim()
+  if (!normalized) return undefined
+
+  const match = PRODUCT_ADDRESS_PATTERN.exec(normalized)
+  if (!match || !match[2]?.trim()) return undefined
+
+  const parentPubkey = match[1]!.toLowerCase()
+  if (merchantPubkey && parentPubkey !== merchantPubkey.trim().toLowerCase()) {
+    return undefined
+  }
+  return `30402:${parentPubkey}:${match[2]}`
+}
+
+function parseVariationParentProductId(
+  tags: string[][] | undefined,
+  productType: ProductSchema["type"]
+): string | undefined {
+  if (productType !== "variation") return undefined
+
+  const productReferences = (tags ?? [])
+    .filter((tag) => tag[0] === "a" && tag[1]?.startsWith("30402:"))
+    .map((tag) => tag[1]!.trim())
+
+  if (productReferences.length !== 1) return undefined
+  return normalizeVariationParentProductId(productReferences[0])
+}
+
+/**
+ * Build one NIP-09 request for one product or a complete variable-product
+ * family. A single request keeps the local tombstone projection atomic.
+ */
+export function buildProductDeletionEventDraft({
+  merchantPubkey,
+  targets,
+  clientAppId,
+}: BuildProductDeletionEventDraftInput): ProductDeletionEventDraft {
+  const normalizedMerchantPubkey = merchantPubkey.trim().toLowerCase()
+  if (!/^[0-9a-f]{64}$/.test(normalizedMerchantPubkey)) {
+    throw new Error("Merchant pubkey must be 64 lowercase hex characters")
+  }
+
+  const uniqueTargets = Array.from(
+    new Map(
+      targets.map((target) => [
+        `${target.eventId.trim()}\u0000${target.addressId?.trim() ?? ""}`,
+        {
+          eventId: target.eventId.trim(),
+          addressId: target.addressId?.trim(),
+        },
+      ])
+    ).values()
+  )
+  if (uniqueTargets.length === 0) {
+    throw new Error("At least one product deletion target is required")
+  }
+
+  for (const target of uniqueTargets) {
+    if (!target.eventId)
+      throw new Error("Product deletion event id is required")
+    if (
+      target.addressId &&
+      normalizeVariationParentProductId(
+        target.addressId,
+        normalizedMerchantPubkey
+      ) !== target.addressId
+    ) {
+      throw new Error(
+        "Product deletion address must be a same-merchant kind-30402 coordinate"
+      )
+    }
+  }
+
+  let tags: string[][] = [
+    ...uniqueTargets.map((target) => ["e", target.eventId]),
+    ["k", String(EVENT_KINDS.PRODUCT)],
+    ["p", normalizedMerchantPubkey],
+    ...uniqueTargets
+      .filter(
+        (target): target is { eventId: string; addressId: string } =>
+          !!target.addressId
+      )
+      .map((target) => ["a", target.addressId]),
+  ]
+  if (clientAppId) tags = appendConduitClientTag(tags, clientAppId)
+
+  return {
+    kind: EVENT_KINDS.DELETION,
+    content: "",
+    tags,
+  }
+}
+
 /**
  * Build a spec-aligned kind-30402 listing draft.
  *
- * NIP-99/Gamma expect `content` to be the human-readable listing
+ * NIP-99/Open Markets expect `content` to be the human-readable listing
  * description. Structured commerce data belongs in tags.
  */
 export function buildProductListingEventDraft({
@@ -73,6 +252,21 @@ export function buildProductListingEventDraft({
   const priceCurrency = sourcePrice?.currency ?? product.currency
   const emittedZapMessagePolicy: ProductZapMessagePolicy =
     product.zapMessagePolicy === "custom" ? "custom" : "generic_only"
+  const specifications = canonicalizeProductSpecifications(
+    product.specifications
+  )
+  const parentProductId = normalizeVariationParentProductId(
+    product.parentProductId,
+    product.pubkey
+  )
+  if (product.type === "variation" && !parentProductId) {
+    throw new Error(
+      "Variation products require one same-merchant kind-30402 parent coordinate"
+    )
+  }
+  if (product.type !== "variation" && product.parentProductId?.trim()) {
+    throw new Error("Only variation products may reference a parent product")
+  }
 
   let tags: string[][] = [
     ["d", normalizedDTag],
@@ -85,6 +279,11 @@ export function buildProductListingEventDraft({
     ],
     [PRODUCT_ZAP_MESSAGE_POLICY_TAG, emittedZapMessagePolicy],
   ]
+
+  if (parentProductId) tags.push(["a", parentProductId])
+  for (const specification of specifications) {
+    tags.push(["spec", specification.key, specification.value])
+  }
 
   if (content) tags.push(["summary", content])
 
@@ -119,7 +318,7 @@ export function buildProductListingEventDraft({
       tags.push(["shipping_exclude", rule.code, ...rule.exclude])
     }
   }
-  for (const image of product.images) {
+  for (const image of getProductProtocolImages(product)) {
     tags.push(["image", image.url])
   }
   for (const tag of canonicalizeProductTags(product.tags)) {
@@ -140,9 +339,56 @@ export function buildProductListingEventDraft({
 export function getProductImageCandidates(
   product: Pick<ProductSchema, "images">
 ): Array<{ url: string; alt?: string }> {
-  return product.images.filter((image) =>
-    PRODUCT_IMAGE_URL_PATTERN.test(image.url)
-  )
+  const candidates: Array<{ url: string; alt?: string }> = []
+  const seen = new Set<string>()
+
+  for (const image of getProductProtocolImages(product)) {
+    const url = normalizePublicMediaUrl(image.url)
+    if (!url || seen.has(url)) continue
+
+    seen.add(url)
+    candidates.push({ ...image, url })
+    if (candidates.length >= MAX_PRODUCT_IMAGE_CANDIDATES) break
+  }
+
+  return candidates
+}
+
+/**
+ * Preserve every structurally valid HTTP(S) image committed by the protocol
+ * event, in signed order. This is evidence retention, not permission to load
+ * the URL. Request/render boundaries must use getProductImageCandidates.
+ */
+export function getProductProtocolImages(
+  product: Pick<ProductSchema, "images">
+): Array<{ url: string; alt?: string }> {
+  const images: Array<{ url: string; alt?: string }> = []
+
+  for (const image of Array.isArray(product.images) ? product.images : []) {
+    if (!image || typeof image !== "object") continue
+    if (
+      typeof image.url !== "string" ||
+      !image.url ||
+      image.url !== image.url.trim() ||
+      image.url.length > 4_096
+    ) {
+      continue
+    }
+    try {
+      const parsed = new URL(image.url)
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        continue
+      }
+    } catch {
+      continue
+    }
+    images.push({
+      url: image.url,
+      ...(typeof image.alt === "string" && image.alt ? { alt: image.alt } : {}),
+    })
+  }
+
+  return images
 }
 
 export function hasMarketVisibleProductImage(
@@ -663,7 +909,7 @@ export function normalizeProductSummaryForDisplay(
  * - Interop varies across de-commerce implementations.
  * - We first try legacy JSON content matching our `productSchema`.
  * - If content is not a legacy product object, we fall back to fields from
- *   NIP-99/Gamma tags and Markdown content.
+ *   NIP-99/Open Markets tags and Markdown content.
  */
 export function parseProductEvent(
   event: Pick<NDKEvent, "content" | "pubkey" | "created_at" | "tags" | "id">
@@ -672,6 +918,9 @@ export function parseProductEvent(
   const dTag = getTagValue(event.tags, "d")
   const zapPolicy = parseProductZapPolicy(event.tags)
   const stockTag = parseStockTag(event.tags)
+  const productTypeTag = parseProductTypeTag(event.tags)
+  const visibilityTag = parseProductVisibilityTag(event.tags)
+  const specifications = parseProductSpecifications(event.tags)
 
   // Try legacy Conduit JSON content first for already-published listings.
   try {
@@ -687,6 +936,10 @@ export function parseProductEvent(
       tags: canonicalizeProductTags(
         Array.isArray(parsed.tags) ? parsed.tags : getTagValues(event.tags, "t")
       ),
+      ...(productTypeTag.type ? { type: productTypeTag.type } : {}),
+      ...(productTypeTag.format ? { format: productTypeTag.format } : {}),
+      ...(visibilityTag ? { visibility: visibilityTag } : {}),
+      specifications,
       // Compatibility content may describe the product, but it cannot replace
       // identity or time committed to by the signed event envelope.
       id: dTag ? `30402:${event.pubkey}:${dTag}` : event.id,
@@ -695,6 +948,13 @@ export function parseProductEvent(
       createdAt: createdAtMs,
       updatedAt: createdAtMs,
     }
+    candidate.parentProductId = parseVariationParentProductId(
+      event.tags,
+      candidate.type ?? "simple"
+    )
+    candidate.images = getProductProtocolImages({
+      images: Array.isArray(parsed.images) ? parsed.images : [],
+    })
 
     const pricedCandidate =
       typeof candidate.price === "number"
@@ -725,7 +985,7 @@ export function parseProductEvent(
     // fall through
   }
 
-  // Fallback: market-spec/NIP-99 style tags + markdown content.
+  // Fallback: Open Markets/NIP-99-style tags + Markdown content.
   const fromContent = (event.content || "").trim()
   const jsonContentProjection = projectProductJsonDisplayFields(fromContent)
   const markdownContent = jsonContentProjection?.isJson ? "" : fromContent
@@ -744,18 +1004,15 @@ export function parseProductEvent(
   const summaryTag = getTagValue(event.tags, "summary")
   const locationTag = getTagValue(event.tags, "location")
 
-  // market-spec: ["type", "simple|variable|variation", "digital|physical"]
-  const typeTag = event.tags?.find((t) => t[0] === "type")
-  const type =
-    typeTag?.[1] === "variable" || typeTag?.[1] === "variation"
-      ? typeTag[1]
-      : "simple"
+  // Open Markets: ["type", "simple|variable|variation", "digital|physical"]
+  const type = productTypeTag.type ?? "simple"
   const format: "physical" | "digital" =
-    typeTag?.[2] === "digital" ? "digital" : "physical"
+    productTypeTag.format === "digital" ? "digital" : "physical"
+  const parentProductId = parseVariationParentProductId(event.tags, type)
 
-  const images = getTagValues(event.tags, "image")
-    .filter((url) => url.startsWith("http://") || url.startsWith("https://"))
-    .map((url) => ({ url }))
+  const images = getProductProtocolImages({
+    images: getTagValues(event.tags, "image").map((url) => ({ url })),
+  })
 
   const tags = canonicalizeProductTags(getTagValues(event.tags, "t"))
   const summaryContext: ProductSummaryCleanupContext = {
@@ -786,7 +1043,10 @@ export function parseProductEvent(
       price: priceInfo?.price ?? 0,
       currency: priceInfo?.currency ?? "USD",
       type,
+      parentProductId,
+      specifications,
       format,
+      ...(visibilityTag ? { visibility: visibilityTag } : {}),
       ...shippingTags,
       ...zapPolicy,
       ...stockTag,

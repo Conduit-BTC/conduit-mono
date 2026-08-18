@@ -1,4 +1,8 @@
-import type { Profile, ProfileFormValues } from "@conduit/core"
+import {
+  buildProfileUpdatePayload,
+  type Profile,
+  type ProfileFormValues,
+} from "@conduit/core"
 
 export const EMPTY_PROFILE_FORM: ProfileFormValues = {
   name: "",
@@ -9,21 +13,6 @@ export const EMPTY_PROFILE_FORM: ProfileFormValues = {
   nip05: "",
   lud16: "",
   website: "",
-}
-
-const PROFILE_FORM_FIELDS = [
-  "name",
-  "displayName",
-  "about",
-  "picture",
-  "banner",
-  "nip05",
-  "lud16",
-  "website",
-] as const satisfies readonly (keyof ProfileFormValues)[]
-
-function emptyToUndefined(value: string | undefined): string | undefined {
-  return value || undefined
 }
 
 export function profileToFormValues(
@@ -44,9 +33,8 @@ export function profileToFormValues(
 }
 
 export function profileFormToUpdatePayload(
-  form: ProfileFormValues
+  form: ProfileFormValues,
+  latestProfile?: Profile | null
 ): Omit<Profile, "pubkey"> {
-  return Object.fromEntries(
-    PROFILE_FORM_FIELDS.map((field) => [field, emptyToUndefined(form[field])])
-  ) as Omit<Profile, "pubkey">
+  return buildProfileUpdatePayload(form, latestProfile)
 }

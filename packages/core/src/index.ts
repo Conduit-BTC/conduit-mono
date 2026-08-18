@@ -10,6 +10,7 @@ export * from "./schemas"
 
 // Utils
 export * from "./utils"
+export * from "./network-target-safety"
 
 // Build provenance
 export {
@@ -190,6 +191,13 @@ export {
   type ProductDeletionRelayTarget,
   type CachedProfile,
   type CachedOrderMessage,
+  type DeclaredInboxDeclarationEventEvidence,
+  type InboxDeclarationEventEvidence,
+  type InboxDeclarationEvidenceRecord,
+  type InboxDeclarationEvidenceState,
+  type MalformedInboxDeclarationEventEvidence,
+  type NormalizedInboxDeclarationPubkey,
+  type SignedEmptyInboxDeclarationEventEvidence,
   type CachedNip05Verification,
   type CachedShopperTrustCoverage,
   type CachedShopperTrustSignal,
@@ -233,7 +241,6 @@ export {
 } from "./context/ConduitSessionContext"
 
 // Hooks
-export { useNdkState } from "./hooks/useNdkState"
 export { useNip07Availability } from "./hooks/useNip07Availability"
 export {
   useProfile,
@@ -246,6 +253,8 @@ export {
   type UseNip05VerificationResult,
 } from "./hooks/useNip05Verification"
 export {
+  getProfileQueryPerspectiveKey,
+  getProfileSingletonQueryKey,
   useProfiles,
   type UseProfilesOptions,
   type UseProfilesResult,

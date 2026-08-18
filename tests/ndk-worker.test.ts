@@ -595,6 +595,7 @@ describe("NDK relay worker verification fallback", () => {
         relayUrl: "wss://invalid-first.example",
         status: "success",
         eventCount: 1,
+        rejectedEventCount: 1,
       },
     ])
   })
@@ -1154,13 +1155,13 @@ describe("NDK relay worker verification fallback", () => {
     )
 
     expect(result.events).toEqual([])
-    expect(result.relays).toEqual([
-      {
-        relayUrl: "wss://cumulative-frame-budget.example",
-        status: "partial",
-        eventCount: 0,
-      },
-    ])
+    expect(result.relays).toHaveLength(1)
+    expect(result.relays[0]).toMatchObject({
+      relayUrl: "wss://cumulative-frame-budget.example",
+      status: "partial",
+      eventCount: 0,
+    })
+    expect(result.relays[0]?.rejectedEventCount).toBeGreaterThan(0)
     expect(closeRequests).toBe(1)
   })
 

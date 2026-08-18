@@ -82,7 +82,11 @@ async function seedProduct(page: Page): Promise<void> {
             format: "digital",
             visibility: "public",
             stock: 1,
-            images: [{ url: "https://example.com/market-delete-fixture.png" }],
+            images: [
+              {
+                url: "https://blossom.conduit.market/market-delete-fixture.png",
+              },
+            ],
             tags: ["deletion", "market", "regression"],
             publicZapEnabled: true,
             zapMessagePolicy: "generic_only",

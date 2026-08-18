@@ -1,5 +1,6 @@
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { db, type OrderLifecycle, type OrderRelayDeliveryStatus } from "../db"
+import { normalizePublicWebSocketUrl } from "../network-target-safety"
 import { publishSignedEventToRelay } from "./relay-publish"
 import type { SignedPublicNostrEvent } from "./signed-event"
 
@@ -60,6 +61,16 @@ function nextLeaseOwner(): string {
   )
 }
 
+function hasRetryablePublicTarget(
+  delivery: NonNullable<OrderLifecycle["orderRelayDelivery"]>
+): boolean {
+  return delivery.relayDelivery.some(
+    (target) =>
+      target.status !== "acked" &&
+      normalizePublicWebSocketUrl(target.relayUrl) !== null
+  )
+}
+
 export async function retryOrderRelayDelivery(
   orderId: string,
   activeBuyerPubkey: string,
@@ -78,7 +89,7 @@ export async function retryOrderRelayDelivery(
       current.buyerIdentityKind === "guest_ephemeral" ||
       current.buyerPubkey !== activeBuyerPubkey ||
       delivery.expiresAt <= timestamp ||
-      delivery.relayDelivery.every((target) => target.status === "acked") ||
+      !hasRetryablePublicTarget(delivery) ||
       (delivery.deliveryLeaseOwner &&
         delivery.deliveryLeaseOwner !== leaseOwner &&
         (delivery.deliveryLeaseExpiresAt ?? 0) > timestamp)
@@ -108,7 +119,9 @@ export async function retryOrderRelayDelivery(
 
   const signedEvent = claimed.orderRelayDelivery.signedRecipientWrap
   const outstanding = claimed.orderRelayDelivery.relayDelivery.filter(
-    (target) => target.status !== "acked"
+    (target) =>
+      target.status !== "acked" &&
+      normalizePublicWebSocketUrl(target.relayUrl) !== null
   )
 
   for (const target of outstanding) {
@@ -185,7 +198,7 @@ export async function resumePendingOrderRelayDeliveries(
       lifecycle.buyerIdentityKind === "guest_ephemeral" ||
       delivery.expiresAt <= timestamp ||
       (delivery.nextRetryAt ?? 0) > timestamp ||
-      delivery.relayDelivery.every((target) => target.status === "acked")
+      !hasRetryablePublicTarget(delivery)
     ) {
       continue
     }

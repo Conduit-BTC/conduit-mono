@@ -18,7 +18,7 @@ This is the Conduit monorepo - a decentralized Nostr-based commerce platform. Se
 3. For UI/theming work, read `docs/DESIGN.md` before introducing shared style values or tokens.
 4. If the work changes product requirements, protocol behavior, or shared implementation expectations, update the relevant contract in the implementation PR before merge and keep contract and code aligned.
 5. Use `@conduit/core` Zod schemas for validation. Interop parsing stays best-effort, but shared contracts should be reflected in repo docs first.
-6. For Nostr protocol, relay, signer, messaging, payment, product-event, cache, or outbox work, read `docs/knowledge/external-nostr-references.md` and the relevant public NIP/GammaMarkets source before implementation.
+6. For Nostr protocol, relay, signer, messaging, payment, product-event, cache, or outbox work, read `docs/knowledge/external-nostr-references.md` and the relevant public NIP/Open Markets source before implementation.
 
 Product strategy, ticket status, ownership, sequencing, private commercial plans, and private operating context live outside this public repository.
 
@@ -72,21 +72,17 @@ export const EVENT_KINDS = {
   ZAP_RECEIPT: 9735, // Zap receipt (NIP-57)
   RELAY_LIST: 10002, // Relay list (NIP-65)
   DM_GIFT_WRAP: 1059, // NIP-17 gift wrap
-  PRODUCT: 30402, // Product listing (NIP-99 + GammaMarkets `market-spec`)
+  PRODUCT: 30402, // Product listing (NIP-99 + Open Markets working specification)
 } as const
 ```
 
 ### Nostr Client Usage
 
-NDK is the current edge library used by shared protocol helpers in `packages/core`. Apps should prefer shared `@conduit/core` hooks/helpers over direct route-local NDK calls:
+NDK remains a compatibility edge inside shared protocol helpers for event construction, signing, encryption, and explicitly planned publishes. The shared NDK context is deliberately offline: it must not connect a global pool, discover relays, or choose destinations. Apps should use shared `@conduit/core` hooks/helpers instead of importing NDK or `getNdk` directly.
 
-```typescript
-import { getNdk, connectNdk } from "@conduit/core/protocol"
-```
+New relay reads should use the source-aware planner and bounded reader boundaries in `packages/core`. Keep reducing NDK-dependent network behavior when touching established paths; do not add new ambient NDK connections or bare event publishes.
 
-Current work may continue using NDK where it is the established repo pattern. For new relay-heavy, source-aware, or performance-critical behavior, call out in the PR if NDK appears to constrain the design and a shared adapter boundary should be considered. Do not introduce a broad custom relay substrate without an accepted architecture spec.
-
-Product listings are NIP-99 + GammaMarkets `kind:30402`. Do not introduce alternate product-listing protocol terminology, schemas, or assumptions. NIP-17 private-message work uses NIP-59 seals/gift wraps and NIP-44 v2 as the current public encryption version. Any newer encryption-version implementation must be source-gated by public draft/client references and explicit capability discovery.
+Product listings are NIP-99 plus the Open Markets working specification for `kind:30402` commerce events, derived from the earlier GammaMarkets `market-spec` work. Do not introduce alternate product-listing protocol terminology, schemas, or assumptions. NIP-17 private-message work uses NIP-59 seals/gift wraps and NIP-44 v2 as the current public encryption version. Any newer encryption-version implementation must be source-gated by public draft/client references and explicit capability discovery.
 
 New `giftWrap`, publish, unwrap/decrypt, relay planning, event parsing, and source-resolution behavior should live behind `@conduit/core` unless the PR documents why route-local code is unavoidable.
 
@@ -166,16 +162,12 @@ Use `CONTRIBUTING.md` and `.github/workflows/ci.yml` as the canonical merge-chec
 ```typescript
 // packages/core/src/hooks/useProducts.ts
 import { useQuery } from "@tanstack/react-query"
-import { getNdk } from "../protocol/ndk"
+import { getMarketplaceProducts } from "../protocol/commerce"
 
-export function useProducts(filters?: ProductFilters) {
+export function useProducts(limit = 60) {
   return useQuery({
-    queryKey: ["products", filters],
-    queryFn: async () => {
-      const ndk = getNdk()
-      const events = await ndk.fetchEvents({ kinds: [30402], ...filters })
-      return Array.from(events).map(parseProduct)
-    },
+    queryKey: ["products", { limit }],
+    queryFn: async () => (await getMarketplaceProducts({ limit })).data,
     staleTime: 1000 * 60,
   })
 }
