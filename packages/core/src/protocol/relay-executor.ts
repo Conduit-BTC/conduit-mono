@@ -7,6 +7,7 @@ import {
   suppressProtectedReadAuthentication,
   subscribeProtectedReadSignerRevocation,
   type ProtectedReadAuthorization,
+  type ProtectedReadRelayAuthenticationSuppression,
 } from "./protected-read-authorization"
 import {
   NostrSignerError,
@@ -531,12 +532,14 @@ class RelayConnection {
   private readonly listeners = new Set<FrameListener>()
   private readonly usedChallenges = new Set<string>()
   private readonly authConsumers = new Set<symbol>()
+  private readonly signerInvocationListeners = new Set<() => void>()
   private readyResolve!: () => void
   private readyReject!: (error: Error) => void
   private readonly readyPromise: Promise<void>
   private pendingAuth: PendingAuth | null = null
   private authPromise: Promise<void> | null = null
   private authPromiseChallenge: string | null = null
+  private authSignerInvoked = false
   private cancelAuthAttempt: ((error: RelayAuthError) => void) | null = null
   private authenticatedChallenge: string | null = null
   private challenge: string | null = null
@@ -636,7 +639,8 @@ class RelayConnection {
     authorization: ProtectedReadAuthorization,
     now: () => number,
     timeoutMs: number,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onSignerInvoked?: () => void
   ): Promise<void> {
     assertProtectedReadAuthorization(
       authorization,
@@ -647,9 +651,11 @@ class RelayConnection {
     if (this.invalidChallenge) throw new RelayAuthError("challenge_invalid")
     if (this.authenticatedChallenge === challenge) return
     if (this.usedChallenges.has(challenge)) {
+      onSignerInvoked?.()
       throw new RelayAuthError("challenge_replayed")
     }
     if (this.usedChallenges.size >= MAX_USED_CHALLENGES) {
+      onSignerInvoked?.()
       throw new RelayAuthError("challenge_loop")
     }
     if (this.authPromise) {
@@ -657,6 +663,9 @@ class RelayConnection {
         throw new RelayAuthError("challenge_superseded")
       }
     } else {
+      let authenticationPhase:
+        "before_signer" | "signer_pending" | "auth_sent" = "before_signer"
+      this.authSignerInvoked = false
       let cancellation: RelayAuthError | null = null
       let resolveCancellation!: (error: RelayAuthError) => void
       const cancellationPromise = new Promise<RelayAuthError>((resolve) => {
@@ -691,14 +700,11 @@ class RelayConnection {
         authorization.sessionScope,
         async () => {
           throwIfCancelled()
-          const suppressed =
-            getProtectedReadAuthenticationSuppression(authorization)
+          const suppressed = getProtectedReadAuthenticationSuppression(
+            authorization,
+            this.url
+          )
           if (suppressed) {
-            suppressProtectedReadAuthentication(
-              authorization,
-              this.url,
-              suppressed
-            )
             throw new RelayAuthError(suppressed)
           }
           assertProtectedReadAuthorization(
@@ -713,13 +719,8 @@ class RelayConnection {
           }
           throwIfCancelled()
           const suppressionAfterIdentity =
-            getProtectedReadAuthenticationSuppression(authorization)
+            getProtectedReadAuthenticationSuppression(authorization, this.url)
           if (suppressionAfterIdentity) {
-            suppressProtectedReadAuthentication(
-              authorization,
-              this.url,
-              suppressionAfterIdentity
-            )
             throw new RelayAuthError(suppressionAfterIdentity)
           }
           const draft: UnsignedNostrEvent = {
@@ -734,6 +735,9 @@ class RelayConnection {
           }
           let signed: SignedNostrEvent
           try {
+            authenticationPhase = "signer_pending"
+            this.authSignerInvoked = true
+            for (const listener of this.signerInvocationListeners) listener()
             const signerResult = await Promise.race([
               authorization.signer.signEvent(draft).then((event) => ({
                 status: "signed" as const,
@@ -753,26 +757,32 @@ class RelayConnection {
             if (error instanceof NostrSignerError) {
               switch (error.code) {
                 case "authorization_denied":
-                  suppressProtectedReadAuthentication(
-                    authorization,
-                    this.url,
-                    "signer_authorization_denied"
-                  )
+                  suppressProtectedReadAuthentication(authorization, {
+                    scope: "session",
+                    reason: "signer_authorization_denied",
+                  })
                   throw new RelayAuthError("signer_authorization_denied")
                 case "timeout":
-                  suppressProtectedReadAuthentication(
-                    authorization,
-                    this.url,
-                    "authentication_timed_out"
-                  )
+                  suppressProtectedReadAuthentication(authorization, {
+                    scope: "session",
+                    reason: "authentication_timed_out",
+                  })
                   throw new RelayAuthError("authentication_timed_out")
                 case "authority_changed":
                   throw new RelayAuthError("authority_changed")
                 case "invalid_response":
                 case "unavailable":
+                  suppressProtectedReadAuthentication(authorization, {
+                    scope: "session",
+                    reason: "signer_unavailable",
+                  })
                   throw new RelayAuthError("signer_unavailable")
               }
             }
+            suppressProtectedReadAuthentication(authorization, {
+              scope: "session",
+              reason: "signer_unavailable",
+            })
             throw new RelayAuthError("signer_unavailable")
           }
           throwIfCancelled()
@@ -784,25 +794,45 @@ class RelayConnection {
             authorization.expectedPubkey
           )
           if (!exactAuthEvent(signed, draft, this.url, challenge)) {
+            suppressProtectedReadAuthentication(authorization, {
+              scope: "session",
+              reason: "signer_unavailable",
+            })
             throw new RelayAuthError("signer_unavailable")
           }
-          await new Promise<void>((resolve, reject) => {
-            this.pendingAuth = {
-              eventId: signed.id,
-              resolve,
-              reject,
+          try {
+            await new Promise<void>((resolve, reject) => {
+              this.pendingAuth = {
+                eventId: signed.id,
+                resolve,
+                reject,
+              }
+              try {
+                this.send(["AUTH", signed])
+                authenticationPhase = "auth_sent"
+                // Once an auth event has left this client, the connection must
+                // never sign the same challenge again, even if the caller
+                // aborts or a newer challenge supersedes the pending OK.
+                this.usedChallenges.add(challenge)
+              } catch {
+                this.pendingAuth = null
+                reject(new RelayAuthError("transport_unavailable"))
+              }
+            })
+          } catch (error) {
+            if (
+              error instanceof RelayAuthError &&
+              (error.code === "authentication_rejected" ||
+                error.code === "transport_unavailable")
+            ) {
+              suppressProtectedReadAuthentication(authorization, {
+                scope: "relay",
+                relayUrl: this.url,
+                reason: error.code,
+              })
             }
-            try {
-              this.send(["AUTH", signed])
-              // Once an auth event has left this client, the connection must
-              // never sign the same challenge again, even if the caller
-              // aborts or a newer challenge supersedes the pending OK.
-              this.usedChallenges.add(challenge)
-            } catch {
-              this.pendingAuth = null
-              reject(new RelayAuthError("transport_unavailable"))
-            }
-          })
+            throw error
+          }
           throwIfCancelled()
           assertProtectedReadAuthorization(
             authorization,
@@ -817,11 +847,18 @@ class RelayConnection {
         new Promise<never>((_, reject) => {
           timeout = setTimeout(() => {
             const error = new RelayAuthError("authentication_timed_out")
-            suppressProtectedReadAuthentication(
-              authorization,
-              this.url,
-              "authentication_timed_out"
-            )
+            if (authenticationPhase === "signer_pending") {
+              suppressProtectedReadAuthentication(authorization, {
+                scope: "session",
+                reason: "authentication_timed_out",
+              })
+            } else if (authenticationPhase === "auth_sent") {
+              suppressProtectedReadAuthentication(authorization, {
+                scope: "relay",
+                relayUrl: this.url,
+                reason: "authentication_timed_out",
+              })
+            }
             this.cancelAuthAttempt?.(error)
             reject(error)
           }, timeoutMs)
@@ -836,10 +873,17 @@ class RelayConnection {
 
     const consumer = Symbol("relay-auth-consumer")
     this.authConsumers.add(consumer)
+    if (onSignerInvoked) {
+      this.signerInvocationListeners.add(onSignerInvoked)
+      if (this.authSignerInvoked) onSignerInvoked()
+    }
     try {
       await waitWithAbort(this.authPromise, signal)
     } finally {
       this.authConsumers.delete(consumer)
+      if (onSignerInvoked) {
+        this.signerInvocationListeners.delete(onSignerInvoked)
+      }
       if (signal?.aborted && this.authConsumers.size === 0) {
         this.cancelAuthAttempt?.(new RelayAuthError("aborted"))
       }
@@ -948,6 +992,35 @@ function authOutcomeForFailure(code: RelayFailureCode): RelayAuthOutcome {
       return "challenge_replayed"
     default:
       return "not_challenged"
+  }
+}
+
+function promptSuppressionForTerminalFailure(
+  failure: RelayFailureCode,
+  auth: RelayAuthOutcome,
+  signerInvoked: boolean
+): ProtectedReadRelayAuthenticationSuppression | null {
+  if (!signerInvoked && auth !== "succeeded") return null
+  switch (failure) {
+    case "aborted":
+    case "authority_changed":
+    case "authentication_timed_out":
+    case "signer_authorization_denied":
+    case "signer_unavailable":
+    case "challenge_superseded":
+      return null
+    case "authentication_required":
+    case "missing_challenge":
+    case "authentication_rejected":
+    case "subscription_rejected":
+    case "query_timed_out":
+    case "transport_unavailable":
+    case "challenge_invalid":
+    case "challenge_replayed":
+    case "challenge_loop":
+    case "protocol_invalid":
+    case "protocol_limit_exceeded":
+      return failure
   }
 }
 
@@ -1224,27 +1297,6 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
         failure: "aborted",
       }
     }
-    if (authorization) {
-      const suppressed = getProtectedReadAuthenticationSuppression(
-        authorization,
-        relayUrl
-      )
-      if (suppressed) {
-        const auth = authOutcomeForFailure(suppressed)
-        this.recordEvidence(authorization.sessionScope, relayUrl, auth)
-        observe({ type: "auth", relayIndex, state: auth })
-        return {
-          relayIndex,
-          status: "failed",
-          auth,
-          eventCount: 0,
-          duplicateCount: 0,
-          malformedCount: 0,
-          unusableCount: 0,
-          failure: suppressed,
-        }
-      }
-    }
     let connection: RelayConnection
     try {
       connection = await this.getConnection(
@@ -1295,6 +1347,7 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
       let unusableCount = 0
       let auth: RelayAuthOutcome = "not_challenged"
       let authAttempts = 0
+      let signerInvoked = false
       let authWork: Promise<void> | null = null
       let finished = false
       let queryTimer: ReturnType<typeof setTimeout> | undefined
@@ -1339,6 +1392,20 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
         options.signal?.removeEventListener("abort", onAbort)
         if (subscriptionId) connection.closeSubscription(subscriptionId)
         protectedEvents.clear()
+        if (authorization && failure) {
+          const suppression = promptSuppressionForTerminalFailure(
+            failure,
+            auth,
+            signerInvoked
+          )
+          if (suppression) {
+            suppressProtectedReadAuthentication(authorization, {
+              scope: "relay",
+              relayUrl,
+              reason: suppression,
+            })
+          }
+        }
         const status: RelaySourceResult["status"] = aborted
           ? "aborted"
           : failure
@@ -1430,14 +1497,11 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
           finish("missing_challenge")
           return
         }
-        const suppressed =
-          getProtectedReadAuthenticationSuppression(authorization)
+        const suppressed = getProtectedReadAuthenticationSuppression(
+          authorization,
+          relayUrl
+        )
         if (suppressed) {
-          suppressProtectedReadAuthentication(
-            authorization,
-            relayUrl,
-            suppressed
-          )
           auth = authOutcomeForFailure(suppressed)
           this.recordEvidence(authorization.sessionScope, relayUrl, auth)
           observe({ type: "auth", relayIndex, state: auth })
@@ -1462,7 +1526,15 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
         observe({ type: "auth", relayIndex, state: auth })
         let retrySupersedingChallenge = false
         const work = connection
-          .authenticate(authorization, this.now, authTimeoutMs, options.signal)
+          .authenticate(
+            authorization,
+            this.now,
+            authTimeoutMs,
+            options.signal,
+            () => {
+              signerInvoked = true
+            }
+          )
           .then(() => {
             if (finished) return
             if (!hasProtectedReadAuthority(authorization)) {
@@ -1482,16 +1554,6 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
             if (failure === "challenge_superseded") {
               retrySupersedingChallenge = true
               return
-            }
-            if (
-              failure === "signer_authorization_denied" ||
-              failure === "authentication_timed_out"
-            ) {
-              suppressProtectedReadAuthentication(
-                authorization,
-                relayUrl,
-                failure
-              )
             }
             auth = authOutcomeForFailure(failure)
             this.recordEvidence(authorization.sessionScope, relayUrl, auth)

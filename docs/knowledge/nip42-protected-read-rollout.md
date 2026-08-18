@@ -90,6 +90,17 @@ cannot create an unbounded extension or remote-signer prompt storm. Concurrent
 requests on the same eligible connection may share one in-flight successful
 authentication, but never across session scopes.
 
+An explicit signer denial, invalid or unavailable signer response, or timeout
+while the external signer is pending suppresses further authentication prompts
+for the account session. A matching negative auth `OK`, relay acknowledgment
+timeout after `AUTH`, connection loss after signer invocation, post-auth
+terminal protocol failure, `restricted:` close, or protected query timeout
+suppresses further prompts only for that relay. Suppression is checked when a
+relay challenge would start authentication, not before connecting, so a
+same-relay rollback that stops challenging can recover through the client-first
+unauthenticated request. Background refreshes cannot clear the gate; only an
+explicit Retry action or replacement account session does.
+
 The caller's filters are cloned before connection or signer work. Authority is
 checked before each protected request and terminal frame, again before the
 aggregate result is returned, and around transactional cache writes. Losing

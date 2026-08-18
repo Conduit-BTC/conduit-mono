@@ -2,8 +2,39 @@ import type { NostrEventSigner } from "./nostr-event-signer"
 
 export type ProtectedReadOperation = "private_inbox_read"
 export type ProtectedReadAuthPolicy = "required" | "when_challenged"
+type ProtectedReadSessionAuthenticationSuppression =
+  | "signer_authorization_denied"
+  | "authentication_timed_out"
+  | "signer_unavailable"
+
+export type ProtectedReadRelayAuthenticationSuppression =
+  | "authentication_required"
+  | "missing_challenge"
+  | "authentication_rejected"
+  | "authentication_timed_out"
+  | "subscription_rejected"
+  | "query_timed_out"
+  | "transport_unavailable"
+  | "challenge_invalid"
+  | "challenge_replayed"
+  | "challenge_loop"
+  | "protocol_invalid"
+  | "protocol_limit_exceeded"
+
 export type ProtectedReadAuthenticationSuppression =
-  "signer_authorization_denied" | "authentication_timed_out"
+  | ProtectedReadSessionAuthenticationSuppression
+  | ProtectedReadRelayAuthenticationSuppression
+
+type ProtectedReadAuthenticationSuppressionRequest =
+  | {
+      scope: "session"
+      reason: ProtectedReadSessionAuthenticationSuppression
+    }
+  | {
+      scope: "relay"
+      relayUrl: string
+      reason: ProtectedReadRelayAuthenticationSuppression
+    }
 
 const AUTHORIZATION_BRAND: unique symbol = Symbol(
   "protected-read-authorization"
@@ -15,9 +46,9 @@ type ActiveSignerLease = {
   readonly signer: NostrEventSigner
   readonly hasAuthority: () => boolean
   authenticationSuppression: {
-    reason: ProtectedReadAuthenticationSuppression
-    challengedRelayUrls: Set<string>
-  } | null
+    sessionReason: ProtectedReadSessionAuthenticationSuppression | null
+    relayReasons: Map<string, ProtectedReadRelayAuthenticationSuppression>
+  }
   active: boolean
 }
 
@@ -96,7 +127,10 @@ export function installProtectedReadSigner(
     expectedPubkey: normalizePubkey(expectedPubkey),
     signer,
     hasAuthority,
-    authenticationSuppression: null,
+    authenticationSuppression: {
+      sessionReason: null,
+      relayReasons: new Map(),
+    },
     active: true,
   }
   activeLease = lease
@@ -181,13 +215,14 @@ export function hasProtectedReadAuthority(
 }
 
 /**
- * Denial and timeout suppress further background auth prompts for this exact
- * account session. Reads may still use relays that do not challenge.
+ * Signer denial, unavailability, and external-signer timeout suppress
+ * background auth prompts for the account session. Relay terminal failures,
+ * including AUTH-OK timeout, suppress only that relay. Reads may still use a
+ * suppressed relay when it no longer challenges after policy rollback.
  */
 export function suppressProtectedReadAuthentication(
   authorization: ProtectedReadAuthorization,
-  relayUrl: string,
-  reason: ProtectedReadAuthenticationSuppression
+  suppression: ProtectedReadAuthenticationSuppressionRequest
 ): boolean {
   const lease = authorization[AUTHORIZATION_BRAND]
   if (
@@ -200,13 +235,16 @@ export function suppressProtectedReadAuthentication(
   ) {
     return false
   }
-  if (!lease.authenticationSuppression) {
-    lease.authenticationSuppression = {
-      reason,
-      challengedRelayUrls: new Set(),
-    }
+  if (suppression.scope === "session") {
+    lease.authenticationSuppression.sessionReason ??= suppression.reason
+  } else if (
+    !lease.authenticationSuppression.relayReasons.has(suppression.relayUrl)
+  ) {
+    lease.authenticationSuppression.relayReasons.set(
+      suppression.relayUrl,
+      suppression.reason
+    )
   }
-  lease.authenticationSuppression.challengedRelayUrls.add(relayUrl)
   return true
 }
 
@@ -226,13 +264,9 @@ export function getProtectedReadAuthenticationSuppression(
     return null
   }
   const suppression = lease.authenticationSuppression
-  if (
-    !suppression ||
-    (relayUrl !== undefined && !suppression.challengedRelayUrls.has(relayUrl))
-  ) {
-    return null
-  }
-  return suppression.reason
+  if (suppression.sessionReason) return suppression.sessionReason
+  if (relayUrl === undefined) return null
+  return suppression.relayReasons.get(relayUrl) ?? null
 }
 
 /** Explicit user retry hook; never clears another account's session. */
@@ -253,7 +287,8 @@ export function clearProtectedReadAuthenticationSuppression(
   ) {
     return false
   }
-  lease.authenticationSuppression = null
+  lease.authenticationSuppression.sessionReason = null
+  lease.authenticationSuppression.relayReasons.clear()
   return true
 }
 

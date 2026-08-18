@@ -346,14 +346,23 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
   })
 
   it("treats a matching negative OK as authentication rejection", async () => {
+    let enforcementEnabled = true
+    let signCalls = 0
     const harness = new FakeRelayHarness().at("wss://protected.example", {
-      onOpen: (socket) => socket.relay(["AUTH", "negative-ok"]),
+      onOpen: (socket) => {
+        if (enforcementEnabled) socket.relay(["AUTH", "negative-ok"])
+      },
       onSend: (socket, frame) => {
         if (frame[0] === "AUTH") respondToAuth(socket, frame, false)
+        if (frame[0] === "REQ" && !enforcementEnabled) {
+          socket.relay(["EOSE", frame[1]])
+        }
       },
     })
     const executor = createExecutor(harness)
-    const { authorization } = authorize()
+    const { authorization } = authorize(
+      createSigner(PRIVATE_KEY_A, { onSign: () => signCalls++ })
+    )
 
     const result = await executor.query(protectedRequest(), { authorization })
 
@@ -364,6 +373,142 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
       auth: "authentication_rejected",
       failure: "authentication_rejected",
     })
+    expect(signCalls).toBe(1)
+
+    const suppressedPoll = await executor.query(protectedRequest(), {
+      authorization,
+    })
+    expect(source(suppressedPoll).failure).toBe("authentication_rejected")
+    expect(signCalls).toBe(1)
+
+    enforcementEnabled = false
+    const rollbackRead = await executor.query(protectedRequest(), {
+      authorization,
+    })
+    expect(rollbackRead.status).toBe("success")
+    expect(rollbackRead.authoritativeEmpty).toBe(true)
+    expect(source(rollbackRead).auth).toBe("not_challenged")
+    expect(signCalls).toBe(1)
+  })
+
+  it("suppresses repeated prompts when transport fails after AUTH is sent", async () => {
+    let signCalls = 0
+    const harness = new FakeRelayHarness().at("wss://protected.example", {
+      onOpen: (socket) => socket.relay(["AUTH", "transport-after-auth"]),
+      onSend: (socket, frame) => {
+        if (frame[0] === "AUTH") socket.transportError()
+      },
+    })
+    const executor = createExecutor(harness)
+    const { authorization } = authorize(
+      createSigner(PRIVATE_KEY_A, { onSign: () => signCalls++ })
+    )
+
+    const first = await executor.query(protectedRequest(), { authorization })
+    expect(source(first).failure).toBe("transport_unavailable")
+    expect(signCalls).toBe(1)
+
+    const second = await executor.query(protectedRequest(), { authorization })
+    expect(source(second).failure).toBe("transport_unavailable")
+    expect(signCalls).toBe(1)
+  })
+
+  it("suppresses repeated prompts when transport closes during signing", async () => {
+    let signCalls = 0
+    let markSignStarted!: () => void
+    let releaseSign!: () => void
+    const signStarted = new Promise<void>((resolve) => {
+      markSignStarted = resolve
+    })
+    const signPending = new Promise<void>((resolve) => {
+      releaseSign = resolve
+    })
+    const signer: NostrEventSigner = {
+      authMethod: "nip07",
+      getPublicKey: async () => PUBKEY_A,
+      signEvent: async (event) => {
+        signCalls += 1
+        markSignStarted()
+        await signPending
+        return finalizeEvent(event, PRIVATE_KEY_A)
+      },
+    }
+    const harness = new FakeRelayHarness().at("wss://protected.example", {
+      onOpen: (socket) => socket.relay(["AUTH", "close-during-sign"]),
+    })
+    const executor = createExecutor(harness)
+    const { authorization } = authorize(signer)
+
+    const pending = executor.query(protectedRequest(), { authorization })
+    await signStarted
+    harness.sockets[0]?.transportClose()
+
+    const first = await pending
+    expect(source(first).failure).toBe("transport_unavailable")
+    expect(signCalls).toBe(1)
+
+    releaseSign()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const second = await executor.query(protectedRequest(), { authorization })
+    expect(source(second).failure).toBe("transport_unavailable")
+    expect(signCalls).toBe(1)
+  })
+
+  it("suppresses repeated prompts when accepted AUTH closes synchronously", async () => {
+    let signCalls = 0
+    const harness = new FakeRelayHarness().at("wss://protected.example", {
+      onOpen: (socket) => socket.relay(["AUTH", "accepted-then-close"]),
+      onSend: (socket, frame) => {
+        if (frame[0] !== "AUTH") return
+        respondToAuth(socket, frame)
+        socket.transportClose()
+      },
+    })
+    const executor = createExecutor(harness)
+    const { authorization } = authorize(
+      createSigner(PRIVATE_KEY_A, { onSign: () => signCalls++ })
+    )
+
+    const first = await executor.query(protectedRequest(), { authorization })
+    expect(source(first).failure).toBe("transport_unavailable")
+    expect(signCalls).toBe(1)
+
+    const second = await executor.query(protectedRequest(), { authorization })
+    expect(source(second).failure).toBe("transport_unavailable")
+    expect(signCalls).toBe(1)
+  })
+
+  it("suppresses repeated prompts after invalid signer output", async () => {
+    let signCalls = 0
+    const signer: NostrEventSigner = {
+      authMethod: "nip07",
+      getPublicKey: async () => PUBKEY_A,
+      signEvent: async (event) => {
+        signCalls += 1
+        return finalizeEvent({ ...event, content: "unexpected" }, PRIVATE_KEY_A)
+      },
+    }
+    const harness = new FakeRelayHarness()
+      .at("wss://protected.example", {
+        onOpen: (socket) => socket.relay(["AUTH", "invalid-signer-output"]),
+      })
+      .at("wss://other.example", {
+        onOpen: (socket) => socket.relay(["AUTH", "other-challenge"]),
+      })
+    const executor = createExecutor(harness)
+    const { authorization } = authorize(signer)
+
+    const first = await executor.query(protectedRequest(), { authorization })
+    expect(source(first).failure).toBe("signer_unavailable")
+    expect(signCalls).toBe(1)
+
+    const second = await executor.query(
+      protectedRequest(PUBKEY_A, ["wss://other.example"]),
+      { authorization }
+    )
+    expect(source(second).failure).toBe("signer_unavailable")
+    expect(signCalls).toBe(1)
   })
 
   it("does not accept auth-required CLOSED without a challenge", async () => {
@@ -486,6 +631,14 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
     expect(source(second).failure).toBe("query_timed_out")
     expect(harness.sockets).toHaveLength(2)
     expect(harness.sockets[1]?.closed).toBe(true)
+    expect(signCalls).toBe(1)
+
+    expect(clearProtectedReadAuthenticationSuppression(PUBKEY_A)).toBe(true)
+    const explicitRetry = await executor.query(protectedRequest(), {
+      authorization,
+      queryTimeoutMs: 10,
+    })
+    expect(source(explicitRetry).failure).toBe("query_timed_out")
     expect(signCalls).toBe(2)
   })
 
@@ -555,7 +708,7 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
     const second = await executor.query(protectedRequest(), { authorization })
     expect(source(second).failure).toBe("signer_authorization_denied")
     expect(signCalls).toBe(1)
-    expect(harness.sockets).toHaveLength(1)
+    expect(harness.sockets).toHaveLength(2)
 
     const legacyFallback = await executor.query(
       protectedRequest(PUBKEY_A, ["wss://legacy.example"]),
@@ -578,7 +731,7 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
       harness.sockets.filter((socket) =>
         socket.url.includes("protected.example")
       )
-    ).toHaveLength(2)
+    ).toHaveLength(3)
   })
 
   it("serializes concurrent relay prompts and stops after the first denial", async () => {
@@ -617,9 +770,17 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
 
   it("suppresses repeated signer prompts after auth OK timeout", async () => {
     let signCalls = 0
-    const harness = new FakeRelayHarness().at("wss://protected.example", {
-      onOpen: (socket) => socket.relay(["AUTH", "auth-ok-timeout"]),
-    })
+    const harness = new FakeRelayHarness()
+      .at("wss://protected.example", {
+        onOpen: (socket) => socket.relay(["AUTH", "auth-ok-timeout"]),
+      })
+      .at("wss://healthy.example", {
+        onOpen: (socket) => socket.relay(["AUTH", "healthy-auth"]),
+        onSend: (socket, frame) => {
+          if (frame[0] === "AUTH") respondToAuth(socket, frame)
+          if (frame[0] === "REQ") socket.relay(["EOSE", frame[1]])
+        },
+      })
     const executor = createExecutor(harness)
     const { authorization } = authorize(
       createSigner(PRIVATE_KEY_A, {
@@ -637,10 +798,18 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
       harness.sockets[0]?.sent.filter((frame) => frame[0] === "AUTH")
     ).toHaveLength(1)
 
+    const healthy = await executor.query(
+      protectedRequest(PUBKEY_A, ["wss://healthy.example"]),
+      { authorization }
+    )
+    expect(healthy.status).toBe("success")
+    expect(source(healthy).auth).toBe("succeeded")
+    expect(signCalls).toBe(2)
+
     const second = await executor.query(protectedRequest(), { authorization })
     expect(source(second).failure).toBe("authentication_timed_out")
-    expect(signCalls).toBe(1)
-    expect(harness.sockets).toHaveLength(1)
+    expect(signCalls).toBe(2)
+    expect(harness.sockets).toHaveLength(3)
   })
 
   it("keeps explicit retry cleared after a timed-out signer resolves late", async () => {
@@ -1211,6 +1380,7 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
 
   it("bounds successive fresh challenge loops", async () => {
     let challenge = 0
+    let signCalls = 0
     const harness = new FakeRelayHarness().at("wss://protected.example", {
       onSend: (socket, frame) => {
         if (frame[0] === "AUTH") respondToAuth(socket, frame)
@@ -1221,7 +1391,9 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
       },
     })
     const executor = createExecutor(harness)
-    const { authorization } = authorize()
+    const { authorization } = authorize(
+      createSigner(PRIVATE_KEY_A, { onSign: () => signCalls++ })
+    )
 
     const result = await executor.query(protectedRequest(), {
       authorization,
@@ -1236,6 +1408,15 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
     expect(
       harness.sockets[0]?.sent.filter((frame) => frame[0] === "AUTH")
     ).toHaveLength(2)
+    expect(signCalls).toBe(2)
+
+    const suppressedPoll = await executor.query(protectedRequest(), {
+      authorization,
+      maxAuthAttempts: 2,
+      queryTimeoutMs: 100,
+    })
+    expect(source(suppressedPoll).failure).toBe("challenge_loop")
+    expect(signCalls).toBe(2)
   })
 
   it("rejects a previously used challenge replayed on the same connection", async () => {
@@ -1707,6 +1888,10 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
     const second = await executor.query(protectedRequest(), { authorization })
     expect(source(second).failure).toBe("challenge_replayed")
     expect(signCalls).toBe(1)
+
+    const third = await executor.query(protectedRequest(), { authorization })
+    expect(source(third).failure).toBe("challenge_replayed")
+    expect(signCalls).toBe(1)
   })
 
   it("does not re-sign an A challenge after A to B to A supersession", async () => {
@@ -1743,6 +1928,7 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
   })
 
   it("maps restricted subscriptions separately and clears live success evidence", async () => {
+    let signCalls = 0
     const harness = new FakeRelayHarness().at("wss://protected.example", {
       onOpen: (socket) => socket.relay(["AUTH", "restricted-after-auth"]),
       onSend: (socket, frame) => {
@@ -1753,7 +1939,9 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
       },
     })
     const executor = createExecutor(harness)
-    const { authorization } = authorize()
+    const { authorization } = authorize(
+      createSigner(PRIVATE_KEY_A, { onSign: () => signCalls++ })
+    )
 
     const result = await executor.query(protectedRequest(), { authorization })
 
@@ -1761,6 +1949,7 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
       auth: "succeeded",
       failure: "subscription_rejected",
     })
+    expect(signCalls).toBe(1)
     expect(harness.sockets[0]?.closed).toBe(true)
     expect(
       executor.getAuthenticationEvidence(
@@ -1768,18 +1957,29 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
         authorization.sessionScope
       )
     ).toBeUndefined()
+
+    const suppressedPoll = await executor.query(protectedRequest(), {
+      authorization,
+    })
+    expect(source(suppressedPoll).failure).toBe("subscription_rejected")
+    expect(signCalls).toBe(1)
   })
 
   it("keeps malformed-only EOSE non-authoritative and closes the bad source", async () => {
+    let signCalls = 0
     const harness = new FakeRelayHarness().at("wss://protected.example", {
+      onOpen: (socket) => socket.relay(["AUTH", "malformed-after-auth"]),
       onSend: (socket, frame) => {
+        if (frame[0] === "AUTH") respondToAuth(socket, frame)
         if (frame[0] !== "REQ") return
         socket.relay(["EVENT", frame[1], { id: "invalid" }])
         socket.relay(["EOSE", frame[1]])
       },
     })
     const executor = createExecutor(harness)
-    const { authorization } = authorize()
+    const { authorization } = authorize(
+      createSigner(PRIVATE_KEY_A, { onSign: () => signCalls++ })
+    )
 
     const result = await executor.query(protectedRequest(), { authorization })
 
@@ -1787,6 +1987,45 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
     expect(result.authoritativeEmpty).toBe(false)
     expect(source(result).failure).toBe("protocol_invalid")
     expect(harness.sockets[0]?.closed).toBe(true)
+    expect(signCalls).toBe(1)
+
+    const suppressedPoll = await executor.query(protectedRequest(), {
+      authorization,
+    })
+    expect(source(suppressedPoll).failure).toBe("protocol_invalid")
+    expect(signCalls).toBe(1)
+  })
+
+  it("suppresses repeated prompts after an authenticated protocol limit", async () => {
+    let signCalls = 0
+    const harness = new FakeRelayHarness().at("wss://protected.example", {
+      onOpen: (socket) => socket.relay(["AUTH", "limit-after-auth"]),
+      onSend: (socket, frame) => {
+        if (frame[0] === "AUTH") respondToAuth(socket, frame)
+        if (frame[0] !== "REQ") return
+        for (let index = 0; index < 4; index += 1) {
+          socket.relay(["EOSE", `unmatched-${index}`])
+        }
+      },
+    })
+    const executor = createExecutor(harness)
+    const { authorization } = authorize(
+      createSigner(PRIVATE_KEY_A, { onSign: () => signCalls++ })
+    )
+
+    const first = await executor.query(protectedRequest(), {
+      authorization,
+      maxFramesPerRelay: 3,
+    })
+    expect(source(first).failure).toBe("protocol_limit_exceeded")
+    expect(signCalls).toBe(1)
+
+    const suppressedPoll = await executor.query(protectedRequest(), {
+      authorization,
+      maxFramesPerRelay: 3,
+    })
+    expect(source(suppressedPoll).failure).toBe("protocol_limit_exceeded")
+    expect(signCalls).toBe(1)
   })
 
   it("fails a protected connection poisoned by an invalid early AUTH frame", async () => {
