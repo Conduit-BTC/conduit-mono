@@ -63,6 +63,26 @@ export function getShippingRegionRequirement(
   return getAddressRegionRequirement(country)
 }
 
+/**
+ * Single normalization from the shipping form state to the order address
+ * schema. Checkout and the cart HUD must share this mapping so the
+ * payment-sensitive field list cannot drift between surfaces.
+ */
+export function buildShippingAddressFromForm(
+  shipping: ShippingFormState
+): ShippingAddressSchema {
+  return {
+    name: `${shipping.firstName.trim()} ${shipping.lastName.trim()}`.trim(),
+    street: [shipping.street.trim(), shipping.line2.trim()]
+      .filter(Boolean)
+      .join(", "),
+    city: shipping.city.trim(),
+    state: (shipping.state ?? "").trim() || undefined,
+    postalCode: shipping.postalCode.trim(),
+    country: shipping.country.trim().toUpperCase(),
+  }
+}
+
 // ─── Validation ───────────────────────────────────────────────────────────────
 
 export function validateShippingFields(

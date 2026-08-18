@@ -23,7 +23,6 @@ import {
   setCartItemQuantity,
   type CartItem,
 } from "../apps/market/src/lib/cart-model"
-import { sanitizeStoredCartState } from "../apps/market/src/hooks/useCart"
 import type { Product } from "@conduit/core"
 
 function item(overrides: Partial<CartItem> = {}): CartItem {
@@ -39,35 +38,6 @@ function item(overrides: Partial<CartItem> = {}): CartItem {
 }
 
 describe("cart model", () => {
-  it("sanitizes product media restored from legacy cart storage", () => {
-    const state = sanitizeStoredCartState({
-      items: [
-        {
-          productId: "unsafe",
-          merchantPubkey: "merchant",
-          title: "Unsafe",
-          price: 1,
-          currency: "SATS",
-          image: "http://127.0.0.1/private.png",
-          quantity: 1,
-        },
-        {
-          productId: "safe",
-          merchantPubkey: "merchant",
-          title: "Safe",
-          price: 1,
-          currency: "SATS",
-          image: "https://cdn.conduit.market/public.png",
-          quantity: 1,
-        },
-      ],
-    })
-
-    expect(state.items[0]?.image).toBeUndefined()
-    expect(state.items[1]?.image).toBe("https://cdn.conduit.market/public.png")
-    expect(sanitizeStoredCartState(null)).toEqual({ items: [] })
-  })
-
   it("caps product additions at the remaining tracked stock", () => {
     expect(getProductAddAvailability(undefined, 4, 2)).toEqual({
       remainingStock: undefined,

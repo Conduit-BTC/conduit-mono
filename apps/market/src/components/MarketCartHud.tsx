@@ -29,7 +29,6 @@ import { useWallet } from "../hooks/useWallet"
 import {
   getCartAvailabilityBlockingMessage,
   getCartCostSummary,
-  getCartItemIdentity,
   getCartItemKey,
   cartItemsMatchCurrentProducts,
   getCartItemStockForAvailability,
@@ -45,7 +44,10 @@ import {
 import { MerchantAvatarFallback } from "./MerchantIdentity"
 import { buildCheckoutPricingIntent } from "../lib/checkout-payment"
 import { readCheckoutShippingSession } from "../lib/checkout-session"
-import { validateShippingFields } from "../lib/checkout-validation"
+import {
+  buildShippingAddressFromForm,
+  validateShippingFields,
+} from "../lib/checkout-validation"
 import {
   armHudZapIntent,
   getHudZapCartFingerprint,
@@ -139,16 +141,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
     activeGroup.items.every((item) => item.format === "digital")
   )
   const shippingPreset = readCheckoutShippingSession()
-  const shippingAddress = {
-    name: `${shippingPreset.firstName.trim()} ${shippingPreset.lastName.trim()}`.trim(),
-    street: [shippingPreset.street.trim(), shippingPreset.line2.trim()]
-      .filter(Boolean)
-      .join(", "),
-    city: shippingPreset.city.trim(),
-    state: (shippingPreset.state ?? "").trim() || undefined,
-    postalCode: shippingPreset.postalCode.trim(),
-    country: shippingPreset.country.trim().toUpperCase(),
-  }
+  const shippingAddress = buildShippingAddressFromForm(shippingPreset)
   const shippingPresetReady =
     isAllDigital ||
     (validateShippingFields(shippingPreset).length === 0 &&
@@ -558,7 +551,6 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
               >
                 {activeGroup.items.map((item) => {
                   const display = shopperPricing.formatPrice(item)
-                  const identity = getCartItemIdentity(item)
                   const availability =
                     cartAvailability.availabilityByProductId.get(item.productId)
                   const currentStock = getCartItemStockForAvailability(
@@ -620,10 +612,8 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                               className="h-9 w-9"
                               aria-label={`Decrease ${item.title} quantity`}
                               onClick={() => {
-                                if (item.quantity <= 1)
-                                  cart.removeItem(identity)
-                                else
-                                  cart.setQuantity(identity, item.quantity - 1)
+                                if (item.quantity <= 1) cart.removeItem(item)
+                                else cart.setQuantity(item, item.quantity - 1)
                               }}
                             >
                               <Minus className="h-4 w-4" aria-hidden="true" />

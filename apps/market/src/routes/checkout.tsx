@@ -89,6 +89,7 @@ import {
 } from "../lib/cart-model"
 import { LightningStrikeOverlay } from "../components/LightningStrikeOverlay"
 import {
+  buildShippingAddressFromForm,
   isFastCheckoutEligible,
   isFastCheckoutInputPending,
   getFastCheckoutUnavailableReasons,
@@ -1398,16 +1399,7 @@ function CheckoutPage() {
 
   function buildShippingAddress(): ShippingAddressSchema | undefined {
     if (isAllDigital) return undefined
-    return {
-      name: `${shipping.firstName.trim()} ${shipping.lastName.trim()}`.trim(),
-      street: [shipping.street.trim(), shipping.line2.trim()]
-        .filter(Boolean)
-        .join(", "),
-      city: shipping.city.trim(),
-      state: (shipping.state ?? "").trim() || undefined,
-      postalCode: shipping.postalCode.trim(),
-      country: shipping.country.trim().toUpperCase(),
-    }
+    return buildShippingAddressFromForm(shipping)
   }
 
   function buildContactNote(): string | undefined {

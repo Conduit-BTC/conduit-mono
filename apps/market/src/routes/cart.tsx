@@ -61,7 +61,6 @@ import { buildCheckoutPricingIntent } from "../lib/checkout-payment"
 import {
   getCartCostSummary,
   getCartItemStockForAvailability,
-  getCartItemIdentity,
   getCartItemKey,
   getProductAddAvailability,
   groupCartItems,
@@ -1091,14 +1090,13 @@ function CartPage() {
                   )
                 }
                 onDecrement={(item) => {
-                  const identity = getCartItemIdentity(item)
                   if (item.quantity <= 1) {
-                    cart.removeItem(identity)
+                    cart.removeItem(item)
                     return
                   }
-                  cart.setQuantity(identity, item.quantity - 1)
+                  cart.setQuantity(item, item.quantity - 1)
                 }}
-                onRemove={(item) => cart.removeItem(getCartItemIdentity(item))}
+                onRemove={(item) => cart.removeItem(item)}
               />
             )
           })}

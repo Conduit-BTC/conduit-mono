@@ -536,13 +536,6 @@ export function getCartItemKey(identity: CartItemIdentity): string {
   return JSON.stringify([identity.merchantPubkey, identity.productId])
 }
 
-export function getCartItemIdentity(item: CartItemIdentity): CartItemIdentity {
-  return {
-    merchantPubkey: item.merchantPubkey,
-    productId: item.productId,
-  }
-}
-
 export function isSameCartItem(
   item: CartItemIdentity,
   identity: CartItemIdentity

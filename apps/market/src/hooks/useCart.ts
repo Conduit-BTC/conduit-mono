@@ -41,25 +41,6 @@ function sanitizeCartItemImage<T extends { image?: string }>(item: T): T {
   }
 }
 
-function sanitizeStoredCartItems(value: unknown): CartItem[] {
-  if (!Array.isArray(value)) return []
-  return value
-    .filter(
-      (item): item is CartItem =>
-        !!item && typeof item === "object" && !Array.isArray(item)
-    )
-    .map(sanitizeCartItemImage)
-}
-
-export function sanitizeStoredCartState(value: unknown): CartState {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return { items: [] }
-  }
-  return {
-    items: sanitizeStoredCartItems((value as { items?: unknown }).items),
-  }
-}
-
 function notify(): void {
   listeners.forEach((l) => l())
 }
