@@ -18,7 +18,10 @@ import {
 } from "@conduit/ui"
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { useCart } from "../hooks/useCart"
-import { useCartReadiness } from "../hooks/useCartReadiness"
+import {
+  useCartLnurlPreflights,
+  useCartReadiness,
+} from "../hooks/useCartReadiness"
 import { useMerchantCheckoutCapability } from "../hooks/useMerchantCheckoutCapability"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import {
@@ -53,6 +56,16 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
     priority: "visible",
     maxUnresolvedRefetches: 2,
   })
+  // Warm one LNURL-pay metadata read per merchant Lightning address while the
+  // cart has items, including on routes where the dock itself stays hidden.
+  const lud16ByMerchant = useMemo(() => {
+    const map = new Map<string, string | undefined>()
+    for (const merchantPubkey of merchantPubkeys) {
+      map.set(merchantPubkey, profiles.data[merchantPubkey]?.lud16)
+    }
+    return map
+  }, [merchantPubkeys, profiles.data])
+  useCartLnurlPreflights(lud16ByMerchant)
   const routeMode = getCartHudRouteMode(pathname)
   const [expanded, setExpanded] = useState(routeMode === "expanded")
   const [activeMerchant, setActiveMerchant] = useState<string | null>(
