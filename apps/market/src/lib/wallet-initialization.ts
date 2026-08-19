@@ -1,3 +1,5 @@
+import type { WalletDescriptor, WalletProviderId } from "@conduit/core"
+
 /**
  * Deduplicates wallet storage initialization across hook consumers while still
  * allowing a failed migration/open to be retried.
@@ -90,21 +92,48 @@ export class LatestWalletReloadCoordinator {
   }
 }
 
-export async function finalizeCommittedWalletMutation(input: {
-  notifyChanged(): void
-  reload(): Promise<void>
-}): Promise<"refreshed" | "refresh_failed"> {
-  let notificationFailed = false
-  try {
-    input.notifyChanged()
-  } catch {
-    notificationFailed = true
+export class WalletDescriptorSubscriptionCoordinator {
+  #generation = 0
+  #terminal = false
+
+  start(): number {
+    this.#generation += 1
+    this.#terminal = false
+    return this.#generation
   }
 
-  try {
-    await input.reload()
-    return notificationFailed ? "refresh_failed" : "refreshed"
-  } catch {
-    return "refresh_failed"
+  markFailed(generation: number): boolean {
+    if (generation !== this.#generation) return false
+    this.#terminal = true
+    return true
   }
+
+  accepts(generation: number, outcome: "succeeded" | "failed"): boolean {
+    return (
+      generation === this.#generation &&
+      (outcome === "failed" || !this.#terminal)
+    )
+  }
+
+  acceptsCurrent(outcome: "succeeded" | "failed"): boolean {
+    return outcome === "failed" || !this.#terminal
+  }
+}
+
+export function getRemovedWalletIdsForProvider(
+  previousWallets: readonly WalletDescriptor[],
+  nextWallets: readonly WalletDescriptor[],
+  providerId: WalletProviderId
+): string[] {
+  return previousWallets
+    .filter(
+      (wallet) =>
+        wallet.providerId === providerId &&
+        !nextWallets.some(
+          (candidate) =>
+            candidate.id === wallet.id &&
+            candidate.providerId === wallet.providerId
+        )
+    )
+    .map((wallet) => wallet.id)
 }

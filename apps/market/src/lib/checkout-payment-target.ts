@@ -47,18 +47,6 @@ export function resolveCheckoutPaymentTarget(input: {
   return input.weblnAvailable ? { type: "webln" } : { type: "manual" }
 }
 
-export function isCheckoutWalletTargetStale(input: {
-  target: CheckoutPaymentTarget
-  eligibleWallets: readonly WalletDescriptor[]
-}): boolean {
-  const target = input.target
-  if (target.type !== "wallet") return false
-  return !input.eligibleWallets.some(
-    (wallet) =>
-      wallet.id === target.walletId && wallet.providerId === target.providerId
-  )
-}
-
 export function getCheckoutPaymentTargetValue(
   target: CheckoutPaymentTarget
 ): string {

@@ -402,41 +402,6 @@ describe("WalletRegistry", () => {
     ])
   })
 
-  it("keeps renamed wallets unique without conflicting with their current label", async () => {
-    const ids = ["wallet-primary", "wallet-secondary"]
-    const registry = new WalletRegistry(createMemoryStore(), {
-      createId: () => ids.shift()!,
-      now: () => 1_700_000_000_000,
-    })
-    const primary = await registry.add({
-      kind: "portable",
-      providerId: "spark",
-      label: "Primary",
-      network: "mainnet",
-      capabilities: ["pay_invoice"],
-    })
-    const secondary = await registry.add({
-      kind: "connected",
-      providerId: "nwc",
-      label: "Secondary",
-      network: "mainnet",
-      capabilities: ["pay_invoice"],
-    })
-
-    await expect(
-      registry.updateLabel(secondary.id, " primary ")
-    ).resolves.toMatchObject({
-      id: secondary.id,
-      label: "primary (2)",
-    })
-    await expect(
-      registry.updateLabel(primary.id, " Primary ")
-    ).resolves.toMatchObject({
-      id: primary.id,
-      label: "Primary",
-    })
-  })
-
   it("disambiguates legacy duplicate labels without exposing wallet ids", () => {
     const labels = getWalletDisplayLabels([
       {

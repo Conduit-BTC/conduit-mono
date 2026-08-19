@@ -42,7 +42,6 @@ export async function openRegisteredSparkWallet(
       accountNumber: number
     }>
     afterOpen?(): Promise<void>
-    onValidated?(): void | Promise<void>
   }
 ): Promise<void> {
   const runExclusive = input.runExclusive ?? runWithSparkWalletOperationLock
@@ -69,7 +68,6 @@ export async function openRegisteredSparkWallet(
     await validateOpenRegistration(input, registration)
     await input.afterOpen?.()
     await validateOpenRegistration(input, registration)
-    await input.onValidated?.()
   })
 }
 

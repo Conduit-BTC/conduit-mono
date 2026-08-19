@@ -1,4 +1,4 @@
-import Dexie, { type EntityTable, type Table } from "dexie"
+import Dexie, { liveQuery, type EntityTable, type Table } from "dexie"
 import { config } from "../config"
 import type { ProductZapMessagePolicy } from "../schemas"
 import type { SignedPublicNostrEvent } from "../protocol/signed-event"
@@ -846,14 +846,29 @@ class ConduitDB extends Dexie {
     })
 
     this.version(13).stores({
-      wallets:
-        "id, kind, providerId, network, status, *capabilities, *defaultIntents, updatedAt, createdAt",
-      walletCredentials: "walletId, providerId, updatedAt",
+      wallets: "id",
+      walletCredentials: "walletId",
     })
   }
 }
 
 export const db = new ConduitDB()
+
+/**
+ * Observe committed wallet descriptor mutations in this document and other
+ * browser contexts. The listener reloads the complete wallet state so runtime
+ * provider state remains owned by the Market wallet hook.
+ */
+export function subscribeToWalletDescriptorChanges(observer: {
+  onChange(): void
+  onError(error: unknown): void
+}): () => void {
+  const subscription = liveQuery(() => db.wallets.toArray()).subscribe({
+    next: () => observer.onChange(),
+    error: (error) => observer.onError(error),
+  })
+  return () => subscription.unsubscribe()
+}
 
 const CACHE_SCOPE_KEY = "conduit:commerce-cache-scope:v1"
 const FALLBACK_CACHE_PRUNE_HIGH_WATER_BYTES = 35 * 1024 * 1024

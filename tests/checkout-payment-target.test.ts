@@ -3,7 +3,6 @@ import type { WalletDescriptor } from "@conduit/core"
 import {
   getCheckoutOrderPaymentTarget,
   getCheckoutPaymentTargetOptions,
-  isCheckoutWalletTargetStale,
   resolveCheckoutPaymentTarget,
 } from "../apps/market/src/lib/checkout-payment-target"
 
@@ -187,36 +186,5 @@ describe("checkout payment target selection", () => {
       walletId: "reused-id",
       providerId: "spark",
     })
-  })
-
-  it("marks only a missing exact wallet selection as stale", () => {
-    const eligibleWallets = [wallet("reused-id", "nwc")]
-
-    expect(
-      isCheckoutWalletTargetStale({
-        target: {
-          type: "wallet",
-          walletId: "reused-id",
-          providerId: "spark",
-        },
-        eligibleWallets,
-      })
-    ).toBe(true)
-    expect(
-      isCheckoutWalletTargetStale({
-        target: {
-          type: "wallet",
-          walletId: "reused-id",
-          providerId: "nwc",
-        },
-        eligibleWallets,
-      })
-    ).toBe(false)
-    expect(
-      isCheckoutWalletTargetStale({
-        target: { type: "manual" },
-        eligibleWallets,
-      })
-    ).toBe(false)
   })
 })

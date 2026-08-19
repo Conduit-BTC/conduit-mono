@@ -173,6 +173,10 @@ describe("shopper trust evidence", () => {
     )
     expect(db.inboxDeclarationEvidence.schema.primKey.name).toBe("pubkey")
     expect(db.ownContactListSnapshots.schema.primKey.name).toBe("pubkey")
+    expect(db.wallets.schema.primKey.name).toBe("id")
+    expect(db.wallets.schema.indexes).toHaveLength(0)
+    expect(db.walletCredentials.schema.primKey.name).toBe("walletId")
+    expect(db.walletCredentials.schema.indexes).toHaveLength(0)
   })
 
   it("keeps both divergent version-9 stores in the upgrade history", async () => {

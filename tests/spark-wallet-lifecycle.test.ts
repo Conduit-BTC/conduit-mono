@@ -145,7 +145,6 @@ describe("Spark wallet lifecycle coordination", () => {
     const state = createLifecycleState()
     let wallets = [WALLET]
     let afterOpenCalls = 0
-    let validatedCalls = 0
 
     const unlock = openRegisteredSparkWallet({
       walletId: WALLET.id,
@@ -159,9 +158,6 @@ describe("Spark wallet lifecycle coordination", () => {
       manager: state.manager,
       afterOpen: async () => {
         afterOpenCalls += 1
-      },
-      onValidated: () => {
-        validatedCalls += 1
       },
     })
     await authenticationStarted.promise
@@ -178,7 +174,6 @@ describe("Spark wallet lifecycle coordination", () => {
     expect(state.openCalls).toBe(1)
     expect(state.closeCalls).toBe(1)
     expect(afterOpenCalls).toBe(0)
-    expect(validatedCalls).toBe(0)
     expect(state.openWallets.has(WALLET.id)).toBe(false)
   })
 

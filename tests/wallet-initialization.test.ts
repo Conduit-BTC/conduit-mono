@@ -1,11 +1,13 @@
 import { describe, expect, it, mock } from "bun:test"
+import type { WalletDescriptor } from "@conduit/core"
 
 import {
-  finalizeCommittedWalletMutation,
+  getRemovedWalletIdsForProvider,
   LatestWalletReloadCoordinator,
   reconcileWalletSynchronizationError,
   WALLET_STORAGE_INITIALIZATION_ERROR,
   WALLET_STORAGE_SYNCHRONIZATION_ERROR,
+  WalletDescriptorSubscriptionCoordinator,
   WalletInitializationCoordinator,
 } from "../apps/market/src/lib/wallet-initialization"
 
@@ -95,33 +97,52 @@ describe("LatestWalletReloadCoordinator", () => {
   })
 })
 
-describe("finalizeCommittedWalletMutation", () => {
-  it("broadcasts before refresh and contains a post-commit refresh failure", async () => {
-    const refresh = deferred<void>()
-    const events: string[] = []
+describe("WalletDescriptorSubscriptionCoordinator", () => {
+  it("keeps a terminal observer error visible until Retry starts a new generation", async () => {
+    const coordinator = new WalletDescriptorSubscriptionCoordinator()
+    const generation = coordinator.start()
+    const reload = deferred<void>()
+    let synchronizationError: string | null = null
+    const applyOutcome = (
+      targetGeneration: number,
+      outcome: "succeeded" | "failed"
+    ) => {
+      if (coordinator.accepts(targetGeneration, outcome)) {
+        synchronizationError = reconcileWalletSynchronizationError(
+          synchronizationError,
+          outcome
+        )
+      }
+    }
+    const lateReload = reload.promise.then(() =>
+      applyOutcome(generation, "succeeded")
+    )
 
-    const completion = finalizeCommittedWalletMutation({
-      notifyChanged() {
-        events.push("notified")
-      },
-      reload() {
-        events.push("reload-started")
-        return refresh.promise
-      },
-    })
+    expect(coordinator.markFailed(generation)).toBe(true)
+    applyOutcome(generation, "failed")
+    expect(synchronizationError).toBe(WALLET_STORAGE_SYNCHRONIZATION_ERROR)
+    expect(coordinator.acceptsCurrent("succeeded")).toBe(false)
 
-    expect(events).toEqual(["notified", "reload-started"])
-    refresh.reject(new Error("post-commit reload failed"))
-    await expect(completion).resolves.toBe("refresh_failed")
+    reload.resolve(undefined)
+    await lateReload
+    expect(synchronizationError).toBe(WALLET_STORAGE_SYNCHRONIZATION_ERROR)
+
+    const retryGeneration = coordinator.start()
+    expect(coordinator.markFailed(generation)).toBe(false)
+    applyOutcome(retryGeneration, "succeeded")
+    expect(synchronizationError).toBeNull()
   })
+})
 
-  it("reports a successful post-commit refresh", async () => {
-    await expect(
-      finalizeCommittedWalletMutation({
-        notifyChanged() {},
-        async reload() {},
-      })
-    ).resolves.toBe("refreshed")
+describe("getRemovedWalletIdsForProvider", () => {
+  it("finds only removed sessions for the requested provider", () => {
+    expect(
+      getRemovedWalletIdsForProvider(
+        [wallet("nwc-a", "nwc"), wallet("spark-a", "spark")],
+        [wallet("nwc-b", "nwc"), wallet("spark-a", "spark")],
+        "nwc"
+      )
+    ).toEqual(["nwc-a"])
   })
 })
 
@@ -141,7 +162,7 @@ describe("reconcileWalletSynchronizationError", () => {
     ).toBe(WALLET_STORAGE_INITIALIZATION_ERROR)
   })
 
-  it("does not hide an initialization failure behind a channel failure", () => {
+  it("does not hide an initialization failure behind a subscription failure", () => {
     expect(reconcileWalletSynchronizationError(null, "failed")).toBe(
       WALLET_STORAGE_SYNCHRONIZATION_ERROR
     )
@@ -176,4 +197,22 @@ async function isSettled(promise: Promise<unknown>): Promise<boolean> {
       Promise.resolve(pending),
     ])) !== pending
   )
+}
+
+function wallet(
+  id: string,
+  providerId: WalletDescriptor["providerId"]
+): WalletDescriptor {
+  return {
+    id,
+    kind: providerId === "nwc" ? "connected" : "portable",
+    providerId,
+    label: id,
+    network: "mainnet",
+    capabilities: ["pay_invoice"],
+    status: "registered",
+    defaultIntents: [],
+    createdAt: 1,
+    updatedAt: 1,
+  }
 }

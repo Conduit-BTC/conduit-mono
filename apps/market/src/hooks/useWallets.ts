@@ -4,6 +4,7 @@ import {
   getWalletDefaultReplacement,
   getWalletNetworkFromLightningConfig,
   parseNwcUri,
+  subscribeToWalletDescriptorChanges,
   type WalletDescriptor,
   type WalletNetwork,
 } from "@conduit/core"
@@ -55,17 +56,17 @@ import {
 } from "../lib/wallet-storage"
 import { rollbackFailedWalletSetup } from "../lib/wallet-setup-rollback"
 import {
-  finalizeCommittedWalletMutation,
+  getRemovedWalletIdsForProvider,
   LatestWalletReloadCoordinator,
   reconcileWalletSynchronizationError,
   WALLET_STORAGE_INITIALIZATION_ERROR,
+  WalletDescriptorSubscriptionCoordinator,
   WalletInitializationCoordinator,
 } from "../lib/wallet-initialization"
 import {
-  getRemovedWalletIdsForProvider,
-  notifyWalletsChanged,
-  subscribeToWalletChanges,
-} from "../lib/wallet-change-channel"
+  notifyWalletChangeFallback,
+  subscribeToWalletChangeFallback,
+} from "../lib/wallet-change-fallback"
 
 export type WalletRuntimeState =
   | {
@@ -151,6 +152,9 @@ export function useWallets(): UseWalletsReturn {
   const [reloadCoordinator] = useState(
     () => new LatestWalletReloadCoordinator()
   )
+  const [subscriptionCoordinator] = useState(
+    () => new WalletDescriptorSubscriptionCoordinator()
+  )
   const [runtime, setRuntime] = useState<Record<string, WalletRuntimeState>>({})
   const [nwcSnapshots, setNwcSnapshots] = useState<
     Record<string, NwcSessionSnapshot>
@@ -159,6 +163,7 @@ export function useWallets(): UseWalletsReturn {
   const [initializationError, setInitializationError] = useState<string | null>(
     null
   )
+  const [walletSubscriptionEpoch, setWalletSubscriptionEpoch] = useState(0)
 
   const reload = useCallback(async () => {
     await reloadCoordinator.run(
@@ -250,18 +255,21 @@ export function useWallets(): UseWalletsReturn {
     await reloadCoordinator.waitForLatest()
   }, [registry, reloadCoordinator])
 
-  const finalizeWalletMutation = useCallback(async () => {
-    const result = await finalizeCommittedWalletMutation({
-      notifyChanged: notifyWalletsChanged,
-      reload,
-    })
-    setInitializationError((current) =>
-      reconcileWalletSynchronizationError(
-        current,
-        result === "refresh_failed" ? "failed" : "succeeded"
+  const refreshAfterCommittedWalletMutation = useCallback(async () => {
+    notifyWalletChangeFallback()
+    let outcome: "succeeded" | "failed"
+    try {
+      await reload()
+      outcome = "succeeded"
+    } catch {
+      outcome = "failed"
+    }
+    if (subscriptionCoordinator.acceptsCurrent(outcome)) {
+      setInitializationError((current) =>
+        reconcileWalletSynchronizationError(current, outcome)
       )
-    )
-  }, [reload])
+    }
+  }, [reload, subscriptionCoordinator])
 
   const retryInitialization = useCallback(async () => {
     setLoading(true)
@@ -269,31 +277,61 @@ export function useWallets(): UseWalletsReturn {
     try {
       await walletInitialization.run(initializeWalletStorage)
       await reload()
+      setWalletSubscriptionEpoch(subscriptionCoordinator.start())
     } catch {
       setInitializationError(WALLET_STORAGE_INITIALIZATION_ERROR)
     } finally {
       setLoading(false)
     }
-  }, [reload])
+  }, [reload, subscriptionCoordinator])
 
   useEffect(() => {
     void retryInitialization()
   }, [retryInitialization])
 
   useEffect(() => {
-    return subscribeToWalletChanges(reload, undefined, {
-      onSuccess() {
-        setInitializationError((current) =>
-          reconcileWalletSynchronizationError(current, "succeeded")
-        )
-      },
+    if (walletSubscriptionEpoch === 0) return
+
+    let active = true
+    const reportSynchronization = (outcome: "succeeded" | "failed") => {
+      if (
+        !active ||
+        !subscriptionCoordinator.accepts(walletSubscriptionEpoch, outcome)
+      ) {
+        return
+      }
+      setInitializationError((current) =>
+        reconcileWalletSynchronizationError(current, outcome)
+      )
+    }
+    const reloadFromSubscription = () => {
+      void reload().then(
+        () => reportSynchronization("succeeded"),
+        () => reportSynchronization("failed")
+      )
+    }
+    const unsubscribeDescriptorChanges = subscribeToWalletDescriptorChanges({
+      onChange: reloadFromSubscription,
       onError() {
-        setInitializationError((current) =>
-          reconcileWalletSynchronizationError(current, "failed")
-        )
+        if (
+          !active ||
+          !subscriptionCoordinator.markFailed(walletSubscriptionEpoch)
+        ) {
+          return
+        }
+        reportSynchronization("failed")
       },
     })
-  }, [reload])
+    const unsubscribeFallback = subscribeToWalletChangeFallback(
+      reloadFromSubscription
+    )
+
+    return () => {
+      active = false
+      unsubscribeDescriptorChanges()
+      unsubscribeFallback()
+    }
+  }, [reload, subscriptionCoordinator, walletSubscriptionEpoch])
 
   useEffect(() => {
     const manager = getSparkWalletManager()
@@ -353,8 +391,8 @@ export function useWallets(): UseWalletsReturn {
             info: snapshot.info,
             store,
           })
-          if (changed) {
-            await finalizeWalletMutation()
+          if (changed && active) {
+            await refreshAfterCommittedWalletMutation()
           }
         })
         .catch(() => {
@@ -377,7 +415,7 @@ export function useWallets(): UseWalletsReturn {
         unsubscribe()
       }
     }
-  }, [finalizeWalletMutation, store, wallets])
+  }, [refreshAfterCommittedWalletMutation, store, wallets])
 
   const ensureDefault = useCallback(
     async (wallet: WalletDescriptor) => {
@@ -458,13 +496,13 @@ export function useWallets(): UseWalletsReturn {
         const session = getBuyerNwcSession(connectedWallet.id)
         session.setConnection(connection)
         void session.warm()
-        await finalizeWalletMutation()
+        await refreshAfterCommittedWalletMutation()
         return connectedWallet
       } finally {
         closeBuyerNwcSession(temporaryWalletId)
       }
     },
-    [ensureDefault, finalizeWalletMutation, registry, store]
+    [ensureDefault, refreshAfterCommittedWalletMutation, registry, store]
   )
 
   const setupSparkWallet = useCallback(
@@ -515,7 +553,7 @@ export function useWallets(): UseWalletsReturn {
           removeRegistration: () => registry.remove(wallet.id),
         })
         if (rollback.status === "kept") {
-          await finalizeWalletMutation()
+          await refreshAfterCommittedWalletMutation()
           throw new Error(
             `${getErrorMessage(error, "Portable Wallet setup failed.")} ${rollback.reason}`,
             { cause: error }
@@ -523,10 +561,15 @@ export function useWallets(): UseWalletsReturn {
         }
         throw error
       }
-      await finalizeWalletMutation()
+      await refreshAfterCommittedWalletMutation()
       return wallet
     },
-    [ensureDefault, finalizeWalletMutation, registerSparkWallet, registry]
+    [
+      ensureDefault,
+      refreshAfterCommittedWalletMutation,
+      registerSparkWallet,
+      registry,
+    ]
   )
 
   const createSpark = useCallback(
@@ -608,7 +651,6 @@ export function useWallets(): UseWalletsReturn {
             }
           },
           afterOpen: () => refreshSparkBalance(walletId, manager, setRuntime),
-          onValidated: notifyWalletsChanged,
         })
       } catch (error) {
         setRuntime((current) => ({
@@ -668,7 +710,6 @@ export function useWallets(): UseWalletsReturn {
       ...current,
       [walletId]: lockedRuntime(),
     }))
-    notifyWalletsChanged()
   }, [])
 
   const receiveSparkLightning = useCallback(
@@ -707,7 +748,6 @@ export function useWallets(): UseWalletsReturn {
         await refreshSparkBalance(walletId, manager, setRuntime).catch(
           () => undefined
         )
-        notifyWalletsChanged()
       }
       return result
     },
@@ -750,9 +790,9 @@ export function useWallets(): UseWalletsReturn {
   const setDefaultPaymentWallet = useCallback(
     async (walletId: string) => {
       await registry.setDefault(walletId, "pay_invoice")
-      await finalizeWalletMutation()
+      await refreshAfterCommittedWalletMutation()
     },
-    [finalizeWalletMutation, registry]
+    [refreshAfterCommittedWalletMutation, registry]
   )
 
   const removeWallet = useCallback(
@@ -833,10 +873,10 @@ export function useWallets(): UseWalletsReturn {
             })
           : await removeCurrentRegistration()
       if (removed) {
-        await finalizeWalletMutation()
+        await refreshAfterCommittedWalletMutation()
       }
     },
-    [finalizeWalletMutation, registry, store]
+    [refreshAfterCommittedWalletMutation, registry, store]
   )
 
   const portableWallets = useMemo(

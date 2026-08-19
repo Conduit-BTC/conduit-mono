@@ -178,6 +178,7 @@ export {
 export {
   db,
   pruneCommerceCaches,
+  subscribeToWalletDescriptorChanges,
   pruneShopperTrustSnapshots,
   shopperTrustSnapshotIsExpired,
   SHOPPER_TRUST_SNAPSHOT_MAX_ROWS,

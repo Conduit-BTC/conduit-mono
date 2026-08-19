@@ -95,8 +95,7 @@ function getWalletLabelComparisonKey(label: string): string {
 
 export function getAvailableWalletLabel(
   wallets: readonly WalletDescriptor[],
-  requestedLabel: string,
-  excludeWalletId?: string
+  requestedLabel: string
 ): string {
   const label = normalizeWalletLabel(requestedLabel)
   if (!label) {
@@ -104,9 +103,7 @@ export function getAvailableWalletLabel(
   }
 
   const usedLabels = new Set(
-    wallets
-      .filter((wallet) => wallet.id !== excludeWalletId)
-      .map((wallet) => getWalletLabelComparisonKey(wallet.label))
+    wallets.map((wallet) => getWalletLabelComparisonKey(wallet.label))
   )
   if (!usedLabels.has(getWalletLabelComparisonKey(label))) {
     return label
@@ -291,24 +288,6 @@ export class WalletRegistry {
 
     await this.#store.put(wallet)
     return wallet
-  }
-
-  async updateLabel(
-    walletId: string,
-    requestedLabel: string
-  ): Promise<WalletDescriptor> {
-    const wallets = await this.#store.list()
-    const wallet = wallets.find((candidate) => candidate.id === walletId)
-    if (!wallet) {
-      throw new Error("Wallet not found.")
-    }
-    const updated = {
-      ...wallet,
-      label: getAvailableWalletLabel(wallets, requestedLabel, walletId),
-      updatedAt: this.#now(),
-    }
-    await this.#store.put(updated)
-    return updated
   }
 
   async remove(walletId: string): Promise<void> {

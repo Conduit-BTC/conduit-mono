@@ -17,17 +17,25 @@ describe("Market wallet route contracts", () => {
     expect(content).not.toContain('startsWith("nostr+walletconnect://")')
   })
 
-  it("broadcasts committed wallet mutations before best-effort refresh", async () => {
+  it("observes committed wallet mutations and reloads prepared state", async () => {
     const hook = await readFile("apps/market/src/hooks/useWallets.ts", "utf8")
     const route = await readFile("apps/market/src/routes/wallet.tsx", "utf8")
-    const finalizations = hook.match(/await finalizeWalletMutation\(\)/g) ?? []
+    const database = await readFile("packages/core/src/db/index.ts", "utf8")
+    const finalizations =
+      hook.match(/await refreshAfterCommittedWalletMutation\(\)/g) ?? []
     const sparkRegistrations =
       hook.match(/await registerSparkWallet\(\{/g) ?? []
 
     expect(finalizations.length).toBeGreaterThanOrEqual(6)
     expect(sparkRegistrations).toHaveLength(1)
     expect(hook).toContain("const setupSparkWallet = useCallback(")
-    expect(hook).not.toMatch(/await reload\(\)\s+notifyWalletsChanged\(\)/)
+    expect(database).toContain(
+      "liveQuery(() => db.wallets.toArray()).subscribe"
+    )
+    expect(hook).toContain("subscribeToWalletDescriptorChanges")
+    expect(hook).toContain("setWalletSubscriptionEpoch")
+    expect(hook).toContain("notifyWalletChangeFallback()")
+    expect(hook).not.toContain("notifyWalletsChanged")
     expect(hook).not.toMatch(/passkey|VITE_BREEZ_API_KEY|breez-spark-sdk/i)
     expect(hook).toMatch(
       /await store\.transaction\(async \(\) => \{[\s\S]{0,300}await registry\.remove/
@@ -43,7 +51,7 @@ describe("Market wallet route contracts", () => {
     expect(hook.match(/await openRegisteredSparkWallet\(\{/g)).toHaveLength(1)
     expect(hook).toContain("await sparkManager.closeWalletsExcept(")
     expect(hook.match(/afterOpen: \(\) =>/g)).toHaveLength(1)
-    expect(hook.match(/onValidated: notifyWalletsChanged/g)).toHaveLength(1)
+    expect(hook).not.toContain("onValidated")
     expect(hook).toMatch(
       /requestedWallet\.providerId === "spark"[\s\S]{0,180}runSparkWalletRemoval/
     )
@@ -289,7 +297,10 @@ describe("Market wallet route contracts", () => {
       "utf8"
     )
 
-    expect(content).toContain("isCheckoutWalletTargetStale")
+    expect(content).toMatch(
+      /selectedWalletTarget !== null && selectedWallet === null/
+    )
+    expect(content).not.toContain("isCheckoutWalletTargetStale")
     expect(content).toContain("selectedPaymentTargetIsStale")
     expect(targetContent).toContain("Previously selected wallet (unavailable)")
     expect(content).toMatch(

@@ -161,7 +161,6 @@ import {
   getCheckoutOrderPaymentTarget,
   getCheckoutPaymentTargetOptions,
   getCheckoutPaymentTargetValue,
-  isCheckoutWalletTargetStale,
   resolveCheckoutPaymentTarget,
 } from "../lib/checkout-payment-target"
 import type { CheckoutPaymentTarget } from "../lib/payment-rails"
@@ -903,10 +902,6 @@ function CheckoutPage() {
     eligibleWallets,
     weblnAvailable,
   })
-  const selectedPaymentTargetIsStale = isCheckoutWalletTargetStale({
-    target: selectedPaymentTarget,
-    eligibleWallets,
-  })
   const paymentTargetOptions = getCheckoutPaymentTargetOptions({
     eligibleWallets,
     selectedTarget: selectedPaymentTarget,
@@ -919,6 +914,8 @@ function CheckoutPage() {
     providerId: selectedWalletTarget?.providerId,
     network: checkoutWalletNetwork,
   })
+  const selectedPaymentTargetIsStale =
+    selectedWalletTarget !== null && selectedWallet === null
   const selectedWalletRuntime = selectedWallet
     ? wallets.runtime[selectedWallet.id]
     : null
