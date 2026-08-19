@@ -1,174 +1,53 @@
-import { expect, test } from "@playwright/test"
+import { expect, test, type Page } from "@playwright/test"
 
-const MERCHANT_A = "1".repeat(64)
-const MERCHANT_B = "2".repeat(64)
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 
-test.beforeEach(async ({ page }) => {
-  await page.addInitScript(
-    ({ merchantA, merchantB }) => {
-      localStorage.setItem(
-        "conduit:cart",
-        JSON.stringify({
-          version: 2,
-          items: [
-            {
-              productId: `30402:${merchantA}:notebook`,
-              merchantPubkey: merchantA,
-              merchantAddedAt: 100,
-              title: "Field Notebook",
-              price: 1_200,
-              currency: "SATS",
-              priceSats: 1_200,
-              format: "digital",
-              quantity: 2,
-            },
-            {
-              productId: `30402:${merchantB}:lamp`,
-              merchantPubkey: merchantB,
-              merchantAddedAt: 200,
-              title: "Reading Lamp",
-              price: 3_400,
-              currency: "SATS",
-              priceSats: 3_400,
-              format: "digital",
-              quantity: 1,
-            },
-          ],
-        })
-      )
-    },
-    { merchantA: MERCHANT_A, merchantB: MERCHANT_B }
-  )
-})
+const MERCHANTS = Array.from({ length: 10 }, (_, index) =>
+  String(index + 1)
+    .repeat(64)
+    .slice(0, 64)
+)
+const MERCHANT_A = MERCHANTS[0]!
+const MERCHANT_B = MERCHANTS[1]!
 
-for (const viewport of [
-  { name: "mobile", width: 390, height: 844 },
-  { name: "desktop", width: 1_440, height: 900 },
-]) {
-  test(`market cart HUD is contained and route-aware on ${viewport.name}`, async ({
-    page,
-  }) => {
-    await page.setViewportSize(viewport)
-    await page.goto(`${marketUrl}/products`)
-    const hud = page.getByRole("region", { name: "Cart inventory" })
-    await expect(hud).toBeVisible()
-    await expect(hud.getByRole("tab")).toHaveCount(2)
-    const cartSelector = hud.getByRole("tablist", { name: "Store carts" })
-    expect(
-      await cartSelector.evaluate((element) => ({
-        borderWidth: getComputedStyle(element).borderWidth,
-        maskImage: getComputedStyle(element).maskImage.toString(),
-      }))
-    ).toEqual({
-      borderWidth: "0px",
-      maskImage: expect.stringContaining("linear-gradient"),
-    })
-    const selectedCart = hud.getByRole("tab", { selected: true })
-    const selectedItemCount = selectedCart.getByLabel("1 cart item")
-    await expect(selectedItemCount).toHaveText("1")
-    await expect(selectedCart).toContainText("3,400")
-    await expect(hud.getByText("Reading Lamp")).toBeVisible()
-    const merchantLink = hud.getByRole("link", { name: /Open .* store/ })
-    await expect(merchantLink).toBeVisible()
-    await expect(merchantLink).toHaveAttribute("href", `/store/${MERCHANT_B}`)
-    const productRail = hud.getByRole("region", { name: "Cart products" })
-    await expect(productRail).toBeVisible()
-    expect(
-      await productRail.evaluate((element) =>
-        getComputedStyle(element).maskImage.toString()
-      )
-    ).toContain("linear-gradient")
-    await expect(
-      hud.getByRole("link", { name: /Continue to checkout/ })
-    ).toBeVisible()
-
-    expect(
-      await page.evaluate(() => ({
-        clientWidth: document.documentElement.clientWidth,
-        scrollWidth: document.documentElement.scrollWidth,
-        hudHeight: getComputedStyle(document.documentElement).getPropertyValue(
-          "--market-hud-height"
-        ),
-      }))
-    ).toEqual({
-      clientWidth: viewport.width,
-      scrollWidth: viewport.width,
-      hudHeight: expect.stringMatching(/^[1-9]\d*px$/),
-    })
-
-    const legalFooter = page.locator("footer").filter({
-      has: page.getByRole("navigation", { name: "Legal links" }),
-    })
-    const footerLayout = await legalFooter.evaluate((footer) => ({
-      height: Math.ceil(footer.getBoundingClientRect().height),
-      offset: getComputedStyle(document.documentElement).getPropertyValue(
-        "--market-fixed-footer-height"
-      ),
-      position: getComputedStyle(footer).position,
-      scrollPaddingBottom: getComputedStyle(document.documentElement)
-        .scrollPaddingBottom,
-    }))
-    expect(footerLayout.scrollPaddingBottom).not.toBe("auto")
-
-    if (viewport.name === "desktop") {
-      const hudBox = await hud.boundingBox()
-      const footerBox = await legalFooter.boundingBox()
-      expect(footerLayout.position).toBe("fixed")
-      expect(footerLayout.offset).toBe(`${footerLayout.height}px`)
-      expect(hudBox).not.toBeNull()
-      expect(footerBox).not.toBeNull()
-      expect(hudBox!.y + hudBox!.height).toBeLessThanOrEqual(footerBox!.y)
-    } else {
-      expect(footerLayout.position).not.toBe("fixed")
-      expect(footerLayout.offset).toBe("0px")
-    }
-
-    const toggle = hud.locator("button[aria-expanded]")
-    await toggle.click()
-    await expect(toggle).toHaveAttribute("aria-expanded", "false")
-    await expect(hud.locator("[inert]")).toHaveAttribute("aria-hidden", "true")
-    await expect(selectedItemCount).toHaveText("1")
-    await expect(selectedCart).not.toContainText("3,400")
-    expect(
-      await page.evaluate(() => document.documentElement.scrollWidth)
-    ).toBe(viewport.width)
-
-    await page.goto(`${marketUrl}/cart`)
-    await expect(
-      page.getByRole("region", { name: "Cart inventory" })
-    ).toHaveCount(0)
-  })
+function cartSeed(merchantCount: number) {
+  return {
+    version: 2,
+    items: MERCHANTS.slice(0, merchantCount).map((merchant, index) => ({
+      productId: `30402:${merchant}:item-${index}`,
+      merchantPubkey: merchant,
+      merchantAddedAt: 100 + index,
+      title: `Catalog item ${index + 1}`,
+      price: 1_200 + index,
+      currency: "SATS",
+      priceSats: 1_200 + index,
+      format: "digital",
+      quantity: 1 + (index % 2),
+    })),
+  }
 }
 
-test("market cart HUD browsing never contacts a merchant-controlled LNURL endpoint", async ({
-  page,
-}) => {
-  const lnurlRequests: string[] = []
-  page.on("request", (request) => {
-    const url = request.url()
-    if (url.includes("/.well-known/lnurlp/") || url.includes("lnurl.test")) {
-      lnurlRequests.push(url)
-    }
-  })
+async function seedCart(page: Page, merchantCount: number): Promise<void> {
+  await page.addInitScript((seed) => {
+    localStorage.setItem("conduit:cart", JSON.stringify(seed))
+  }, cartSeed(merchantCount))
+}
 
-  await page.goto(`${marketUrl}/products`)
-  // Let the app open its Dexie database so the seed cannot create an empty one.
-  await expect(
-    page.getByRole("region", { name: "Cart inventory" })
-  ).toBeVisible()
-  await page.evaluate((merchantPubkey) => {
+async function seedMerchantProfile(
+  page: Page,
+  profile: { pubkey: string; name: string; lud16?: string }
+): Promise<void> {
+  await page.evaluate((row) => {
     return new Promise<void>((resolve, reject) => {
       const request = indexedDB.open("conduit")
       request.onerror = () => reject(request.error)
       request.onsuccess = () => {
-        const database = request.result
-        const transaction = database.transaction("profiles", "readwrite")
+        const transaction = request.result.transaction("profiles", "readwrite")
         transaction.objectStore("profiles").put({
-          pubkey: merchantPubkey,
-          name: "Lamp Merchant",
-          displayName: "Lamp Merchant",
-          lud16: "payments@lnurl.test",
+          pubkey: row.pubkey,
+          name: row.name,
+          displayName: row.name,
+          ...(row.lud16 ? { lud16: row.lud16 } : {}),
           cachedAt: Date.now(),
         })
         transaction.oncomplete = () => resolve()
@@ -176,43 +55,367 @@ test("market cart HUD browsing never contacts a merchant-controlled LNURL endpoi
         transaction.onabort = () => reject(transaction.error)
       }
     })
-  }, MERCHANT_B)
+  }, profile)
+}
 
+async function expectInsideHud(page: Page): Promise<void> {
+  // Measure the HUD and its fixed controls in one pass and poll so the
+  // slide-in transition cannot race the two measurements.
+  await expect
+    .poll(
+      () =>
+        page.evaluate(() => {
+          const hud = document.querySelector(
+            "section[aria-label='Cart inventory']"
+          )
+          if (!hud) return "missing-hud"
+          const hudBox = hud.getBoundingClientRect()
+          const controls = [
+            hud.querySelector("button[aria-expanded]"),
+            ...Array.from(hud.querySelectorAll("a,button")).filter((el) =>
+              /^(Checkout|Zap out)$/.test(el.textContent?.trim() ?? "")
+            ),
+          ].filter((el): el is Element => el !== null)
+          for (const control of controls) {
+            const box = control.getBoundingClientRect()
+            if (box.width <= 24) return "clipped-width"
+            if (
+              box.left < hudBox.left - 0.5 ||
+              box.right > hudBox.right + 0.5 ||
+              box.top < hudBox.top - 0.5 ||
+              box.bottom > hudBox.bottom + 0.5
+            ) {
+              return "outside-hud"
+            }
+          }
+          return "contained"
+        }),
+      { timeout: 5_000 }
+    )
+    .toBe("contained")
+}
+
+test("market cart HUD keeps every fixed control inside the HUD across merchant counts and widths", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  for (const merchantCount of [1, 2, 6, 10]) {
+    await page.addInitScript((seed) => {
+      localStorage.setItem("conduit:cart", JSON.stringify(seed))
+    }, cartSeed(merchantCount))
+    await page.goto(`${marketUrl}/products`)
+    if (merchantCount === 6) {
+      // Long merchant names must truncate inside the rail, not push the CTA.
+      await seedMerchantProfile(page, {
+        pubkey: MERCHANT_A,
+        name: "The Extraordinarily Long Merchant Name Emporium And Sundries",
+      })
+      await page.reload()
+    }
+    const hud = page.getByRole("region", { name: "Cart inventory" })
+    await expect(hud).toBeVisible()
+
+    for (const width of [390, 896, 1440]) {
+      await page.setViewportSize({ width, height: 900 })
+      await expect(hud).toBeVisible()
+      await expectInsideHud(page)
+
+      if (merchantCount > 1) {
+        const rail = hud.getByRole("group", { name: "Store carts" })
+        await expect(rail.getByRole("button")).toHaveCount(merchantCount)
+        const railBox = await rail.evaluate((element) => ({
+          clientWidth: element.clientWidth,
+          scrollWidth: element.scrollWidth,
+        }))
+        expect(railBox.scrollWidth).toBeGreaterThanOrEqual(railBox.clientWidth)
+      }
+
+      const overflow = await page.evaluate(() => ({
+        clientWidth: document.documentElement.clientWidth,
+        scrollWidth: document.documentElement.scrollWidth,
+      }))
+      expect(overflow.scrollWidth).toBe(overflow.clientWidth)
+
+      // The expanded panel's CTA must also stay contained.
+      const toggle = hud.locator("button[aria-expanded]")
+      if ((await toggle.getAttribute("aria-expanded")) === "false") {
+        await toggle.click()
+      }
+      const expandedCta = hud
+        .locator("a,button")
+        .filter({ hasText: /^(Continue to checkout|Continue to Zap Out)$/ })
+        .first()
+      await expect(expandedCta).toBeVisible()
+      const hudBox = await hud.boundingBox()
+      const ctaBox = await expandedCta.boundingBox()
+      expect(ctaBox!.x + ctaBox!.width).toBeLessThanOrEqual(
+        hudBox!.x + hudBox!.width + 0.5
+      )
+    }
+  }
+})
+
+test("market cart HUD is route-aware and layered above the fixed footer", async ({
+  page,
+}) => {
+  await seedCart(page, 2)
+  await page.setViewportSize({ width: 1440, height: 900 })
   await page.goto(`${marketUrl}/products`)
   const hud = page.getByRole("region", { name: "Cart inventory" })
-  // The seeded profile is resolved, so the HUD held the merchant lightning
-  // address and every other input a browse-time probe would have needed.
-  await expect(
-    hud.getByRole("link", { name: "Open Lamp Merchant store" })
-  ).toBeVisible()
-  expect(
-    await page.evaluate(() => {
-      return new Promise<string | undefined>((resolve, reject) => {
-        const request = indexedDB.open("conduit")
-        request.onerror = () => reject(request.error)
-        request.onsuccess = () => {
-          const read = request.result
-            .transaction("profiles", "readonly")
-            .objectStore("profiles")
-            .getAll()
-          read.onerror = () => reject(read.error)
-          read.onsuccess = () =>
-            resolve(
-              (read.result as Array<{ lud16?: string }>).find(
-                (row) => row.lud16
-              )?.lud16
-            )
-        }
-      })
-    })
-  ).toBe("payments@lnurl.test")
+  await expect(hud).toBeVisible()
 
-  await page.goto(`${marketUrl}/store/${MERCHANT_B}`)
+  const rail = hud.getByRole("group", { name: "Store carts" })
+  expect(
+    await rail.evaluate((element) =>
+      getComputedStyle(element).maskImage.toString()
+    )
+  ).toContain("linear-gradient")
+  const selectedCart = rail.locator("button[aria-pressed='true']")
+  await expect(selectedCart).toHaveCount(1)
+  await expect(hud.getByRole("region", { name: "Cart products" })).toBeVisible()
+
+  expect(
+    await page.evaluate(() =>
+      getComputedStyle(document.documentElement).getPropertyValue(
+        "--market-hud-height"
+      )
+    )
+  ).toMatch(/^[1-9]\d*px$/)
+
+  const legalFooter = page.locator("footer").filter({
+    has: page.getByRole("navigation", { name: "Legal links" }),
+  })
+  const footerLayout = await legalFooter.evaluate((footer) => ({
+    height: Math.ceil(footer.getBoundingClientRect().height),
+    offset: getComputedStyle(document.documentElement).getPropertyValue(
+      "--market-fixed-footer-height"
+    ),
+    position: getComputedStyle(footer).position,
+  }))
+  expect(footerLayout.position).toBe("fixed")
+  expect(footerLayout.offset).toBe(`${footerLayout.height}px`)
+  const hudBox = await hud.boundingBox()
+  const footerBox = await legalFooter.boundingBox()
+  expect(hudBox!.y + hudBox!.height).toBeLessThanOrEqual(footerBox!.y)
+
+  await page.goto(`${marketUrl}/cart`)
+  await expect(
+    page.getByRole("region", { name: "Cart inventory" })
+  ).toHaveCount(0)
+})
+
+test("merchant activation expands a collapsed HUD for pointer and keyboard", async ({
+  page,
+}) => {
+  await seedCart(page, 2)
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto(`${marketUrl}/products`)
+  const hud = page.getByRole("region", { name: "Cart inventory" })
+  await expect(hud).toBeVisible()
+  const toggle = hud.locator("button[aria-expanded]")
+  const rail = hud.getByRole("group", { name: "Store carts" })
+  const merchantButtons = rail.getByRole("button")
+  const panelId = await toggle.getAttribute("aria-controls")
+  const panel = hud.locator(`[id="${panelId}"]`)
+
+  // Bottom dock arrow points at the resulting motion: expanded shows down
+  // (no rotation), collapsed shows up (rotated).
+  const chevronRotation = () =>
+    toggle.locator("svg").evaluate((el) => {
+      const style = getComputedStyle(el)
+      return style.rotate !== "none" && style.rotate !== ""
+        ? style.rotate
+        : style.transform
+    })
+  await expect(toggle).toHaveAttribute("aria-expanded", "true")
+  expect(await chevronRotation()).toBe("none")
+
+  await toggle.click()
+  await expect(toggle).toHaveAttribute("aria-expanded", "false")
+  await expect(panel).toHaveAttribute("aria-hidden", "true")
+  await expect.poll(chevronRotation).not.toBe("none")
+
+  // Pointer activation of an inactive merchant selects and expands it.
+  const inactive = rail.locator("button[aria-pressed='false']").first()
+  const inactiveLabel = await inactive.textContent()
+  await inactive.click()
+  await expect(toggle).toHaveAttribute("aria-expanded", "true")
+  await expect(panel).not.toHaveAttribute("aria-hidden", "true")
+  const productRail = hud.getByRole("region", { name: "Cart products" })
+  await expect(productRail).toBeVisible()
+  expect(inactiveLabel).toBeTruthy()
+
+  // Activating the already-selected merchant while collapsed also expands.
+  await toggle.click()
+  await expect(toggle).toHaveAttribute("aria-expanded", "false")
+  await rail.locator("button[aria-pressed='true']").click()
+  await expect(toggle).toHaveAttribute("aria-expanded", "true")
+
+  // Keyboard: Enter and Space on a merchant button expand a collapsed HUD.
+  await toggle.click()
+  await merchantButtons.first().focus()
+  await page.keyboard.press("Enter")
+  await expect(toggle).toHaveAttribute("aria-expanded", "true")
+  await toggle.click()
+  await merchantButtons.first().focus()
+  await page.keyboard.press(" ")
+  await expect(toggle).toHaveAttribute("aria-expanded", "true")
+})
+
+test("collapsing the HUD restores focus from the panel to the disclosure toggle", async ({
+  page,
+}) => {
+  await seedCart(page, 2)
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto(`${marketUrl}/products`)
+  const hud = page.getByRole("region", { name: "Cart inventory" })
+  await expect(hud).toBeVisible()
+  const toggle = hud.locator("button[aria-expanded]")
+  await expect(toggle).toHaveAttribute("aria-expanded", "true")
+
+  const quantityButton = hud
+    .getByRole("button", { name: /Decrease .* quantity/ })
+    .first()
+  await quantityButton.focus()
+  await page.keyboard.press("Escape")
+  await expect(toggle).toHaveAttribute("aria-expanded", "false")
+  await expect(toggle).toBeFocused()
+})
+
+test("restoring a cart is quiet while a real first increase announces and expands", async ({
+  page,
+}) => {
+  await seedCart(page, 1)
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto(`${marketUrl}/products`)
+  const hud = page.getByRole("region", { name: "Cart inventory" })
+  await expect(hud).toBeVisible()
+  const liveRegion = hud.locator("[aria-live='polite']")
+  await expect(liveRegion).toHaveText("")
+
+  const toggle = hud.locator("button[aria-expanded]")
+  await toggle.click()
+  await expect(toggle).toHaveAttribute("aria-expanded", "false")
+
+  // A cross-tab storage mutation increasing a quantity is a real change.
+  await page.evaluate(() => {
+    const stored = JSON.parse(localStorage.getItem("conduit:cart") ?? "{}")
+    stored.items[0].quantity += 1
+    localStorage.setItem("conduit:cart", JSON.stringify(stored))
+    window.dispatchEvent(
+      new StorageEvent("storage", {
+        key: "conduit:cart",
+        storageArea: localStorage,
+        newValue: JSON.stringify(stored),
+      })
+    )
+  })
+  await expect(toggle).toHaveAttribute("aria-expanded", "true")
+  await expect(liveRegion).toContainText("Cart updated")
+})
+
+test("cart presence starts one shared LNURL preflight per merchant without payment data", async ({
+  page,
+}) => {
+  const lnurlRequests: Array<{
+    url: string
+    method: string
+    body: string | null
+  }> = []
+  await page.route("https://merchant-fixture.dev/**", async (route) => {
+    const request = route.request()
+    lnurlRequests.push({
+      url: request.url(),
+      method: request.method(),
+      body: request.postData(),
+    })
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        tag: "payRequest",
+        callback: "https://merchant-fixture.dev/callback",
+        minSendable: 1_000,
+        maxSendable: 100_000_000_000,
+        allowsNostr: true,
+        nostrPubkey: "f".repeat(64),
+        metadata: JSON.stringify([["text/plain", "pay"]]),
+      }),
+    })
+  })
+
+  // Plain product visits without a cart create no LNURL requests.
+  await page.goto(`${marketUrl}/products`)
+  await page.waitForTimeout(1_000)
+  expect(lnurlRequests).toEqual([])
+
+  // Restoring a cart for the merchant starts the preflight once the profile
+  // resolves the Lightning address.
+  await seedCart(page, 2)
+  await page.goto(`${marketUrl}/products`)
   await expect(
     page.getByRole("region", { name: "Cart inventory" })
   ).toBeVisible()
+  await seedMerchantProfile(page, {
+    pubkey: MERCHANT_B,
+    name: "Lamp Merchant",
+    lud16: "payments@merchant-fixture.dev",
+  })
+  await page.goto(`${marketUrl}/products`)
+  await expect(
+    page.getByRole("region", { name: "Cart inventory" })
+  ).toBeVisible()
+  await expect
+    .poll(() => lnurlRequests.length, { timeout: 15_000 })
+    .toBeGreaterThanOrEqual(1)
 
-  expect(lnurlRequests).toEqual([])
+  // The preflight is a bare capability GET: no cart contents, buyer
+  // identity, invoice, or payment data leave the app, and the invoice
+  // callback is never contacted without explicit payment intent.
+  for (const request of lnurlRequests) {
+    expect(request.method).toBe("GET")
+    expect(request.body).toBeNull()
+    expect(request.url).toBe(
+      "https://merchant-fixture.dev/.well-known/lnurlp/payments"
+    )
+  }
+
+  // Route handoff inside the lease reuses the same result: an in-app
+  // navigation to the cart starts no additional metadata request.
+  const requestsBeforeNavigation = lnurlRequests.length
+  const hud = page.getByRole("region", { name: "Cart inventory" })
+  const toggle = hud.locator("button[aria-expanded]")
+  if ((await toggle.getAttribute("aria-expanded")) === "false") {
+    await toggle.click()
+  }
+  await hud.getByRole("link", { name: "View cart" }).click()
+  await expect(page).toHaveURL(/\/cart/)
+  await expect(page.getByText("Lamp Merchant").first()).toBeVisible()
+  await page.waitForTimeout(1_500)
+  expect(lnurlRequests.length).toBe(requestsBeforeNavigation)
+})
+
+test("a failed LNURL endpoint only degrades its merchant and never blocks the HUD", async ({
+  page,
+}) => {
+  await page.route("https://merchant-fixture.dev/**", (route) => route.abort())
+  await seedCart(page, 2)
+  await page.goto(`${marketUrl}/products`)
+  const hud = page.getByRole("region", { name: "Cart inventory" })
+  await expect(hud).toBeVisible()
+  await seedMerchantProfile(page, {
+    pubkey: MERCHANT_B,
+    name: "Lamp Merchant",
+    lud16: "payments@merchant-fixture.dev",
+  })
+  await page.goto(`${marketUrl}/products`)
+  await expect(hud).toBeVisible()
+  // The HUD stays interactive and the ordinary checkout path stays available.
+  await expect(
+    hud
+      .locator("a,button")
+      .filter({ hasText: /checkout/i })
+      .first()
+  ).toBeVisible()
 })
 
 test("market cart HUD does not present a partial total", async ({ page }) => {
