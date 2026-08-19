@@ -20,6 +20,22 @@ const simplifyWorkflow = await Bun.file(
 const countOccurrences = (text: string, value: string) =>
   text.split(value).length - 1
 
+const getOutputValue = (output: string, name: string) =>
+  output
+    .trim()
+    .split("\n")
+    .filter((line) => line.startsWith(`${name}=`))
+    .at(-1)
+    ?.slice(name.length + 1)
+
+const getNamedJob = (workflow: string, name: string) => {
+  const start = workflow.indexOf(`  ${name}:\n`)
+  const remainder = workflow.slice(start + 1)
+  const nextOffset = remainder.search(/\n {2}[A-Za-z0-9_-]+:\n/)
+  const next = nextOffset === -1 ? undefined : start + 1 + nextOffset
+  return workflow.slice(start, next)
+}
+
 const getNamedStep = (workflow: string, name: string) => {
   const start = workflow.indexOf(`      - name: ${name}`)
   const next = workflow.indexOf("\n      - name:", start + 1)
@@ -27,12 +43,15 @@ const getNamedStep = (workflow: string, name: string) => {
 }
 
 const getRunScript = (workflow: string, name: string) => {
-  const step = getNamedStep(workflow, name)
+  const stepStart = workflow.indexOf(`      - name: ${name}`)
   const marker = "        run: |\n"
-  const start = step.indexOf(marker)
-  return step
-    .slice(start + marker.length)
-    .split("\n")
+  const scriptStart = workflow.indexOf(marker, stepStart) + marker.length
+  const lines = workflow.slice(scriptStart).split("\n")
+  const end = lines.findIndex(
+    (line) => line !== "" && !line.startsWith("          ")
+  )
+  return lines
+    .slice(0, end === -1 ? undefined : end)
     .map((line) => line.replace(/^ {10}/, ""))
     .join("\n")
 }
@@ -40,6 +59,10 @@ const getRunScript = (workflow: string, name: string) => {
 const validationScript = getRunScript(
   simplifyWorkflow,
   "Validate pull request and trigger"
+)
+const revalidationScript = getRunScript(
+  simplifyWorkflow,
+  "Revalidate queued handoff"
 )
 const stageSkillScript = getRunScript(
   simplifyWorkflow,
@@ -50,6 +73,7 @@ type GateFixture = {
   eventName?: "pull_request_review" | "workflow_dispatch"
   headSha?: string
   triggerCommit?: string
+  expectedHead?: string
   reviewCommit?: string
   reviewer?: string
   reviewBody?: string
@@ -57,16 +81,20 @@ type GateFixture = {
   previousReviews?: string
 }
 
-const runGate = async ({
-  eventName = "pull_request_review",
-  headSha = "a".repeat(40),
-  triggerCommit = headSha,
-  reviewCommit = headSha,
-  reviewer = "conduit-sudden-agent[bot]",
-  reviewBody = `<!-- conduit:sudden-review clean head=${headSha} -->`,
-  reviewComments = "[]",
-  previousReviews = "[]",
-}: GateFixture = {}) => {
+const runGate = async (
+  {
+    eventName = "pull_request_review",
+    headSha = "a".repeat(40),
+    triggerCommit = headSha,
+    expectedHead = headSha,
+    reviewCommit = headSha,
+    reviewer = "conduit-sudden-agent[bot]",
+    reviewBody = `<!-- conduit:sudden-review clean head=${headSha} -->`,
+    reviewComments = "[]",
+    previousReviews = "[]",
+  }: GateFixture = {},
+  script = validationScript
+) => {
   const fixtureDirectory = await mkdtemp(join(tmpdir(), "conduit-handoff-"))
   const ghPath = join(fixtureDirectory, "gh")
   const outputPath = join(fixtureDirectory, "github-output")
@@ -94,7 +122,7 @@ fi
 
   try {
     await writeFile(ghPath, fakeGh, { mode: 0o755 })
-    const gateProcess = Bun.spawn(["bash", "-c", validationScript], {
+    const gateProcess = Bun.spawn(["bash", "-c", script], {
       cwd: process.cwd(),
       env: {
         ...Bun.env,
@@ -106,6 +134,7 @@ fi
         PR_NUMBER: "245",
         TRIGGER_REVIEW_ID: "123",
         TRIGGER_COMMIT_ID: triggerCommit,
+        EXPECTED_HEAD_SHA: expectedHead,
         FAKE_BASE_REF: "main",
         FAKE_HEAD_SHA: headSha,
         FAKE_REVIEWER: reviewer,
@@ -117,8 +146,9 @@ fi
       stdout: "pipe",
       stderr: "pipe",
     })
-    const [exitCode, stderr] = await Promise.all([
+    const [exitCode, stdout, stderr] = await Promise.all([
       gateProcess.exited,
+      new Response(gateProcess.stdout).text(),
       new Response(gateProcess.stderr).text(),
     ])
     const output = await Bun.file(outputPath)
@@ -127,7 +157,7 @@ fi
         exists ? readFile(outputPath, "utf8") : Promise.resolve("")
       )
 
-    return { exitCode, output, stderr }
+    return { exitCode, output, stderr, stdout }
   } finally {
     await rm(fixtureDirectory, { force: true, recursive: true })
   }
@@ -137,6 +167,9 @@ describe("agent review handoff", () => {
   it("does not treat uncommanded review comments as pull request events", () => {
     expect(reviewWorkflow).toContain("github.event_name == 'pull_request' &&")
     expect(reviewWorkflow).not.toContain("github.event.pull_request ||")
+    expect(reviewWorkflow).toContain(
+      "cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}"
+    )
     expect(reviewWorkflow).toContain(
       "github.event.comment.body == '/agent review'"
     )
@@ -238,9 +271,38 @@ describe("agent review handoff", () => {
 
     expect(triggerBlock).toContain("pull_request:\n    types: [synchronize]")
     expect(triggerBlock).toContain("pull_request_review:")
-    expect(simplifyWorkflow).toContain(
-      "cancel-in-progress: ${{ github.event_name == 'pull_request' }}"
+    const workflowHeader = simplifyWorkflow.slice(
+      0,
+      simplifyWorkflow.indexOf("jobs:")
     )
+    const cancelStaleJob = getNamedJob(simplifyWorkflow, "cancel-stale")
+    const preflightJob = getNamedJob(simplifyWorkflow, "preflight")
+    const simplifyJob = getNamedJob(simplifyWorkflow, "simplify")
+
+    expect(workflowHeader).not.toContain("concurrency:")
+    expect(cancelStaleJob).toContain(
+      "if: github.event_name == 'pull_request' && github.event.action == 'synchronize'"
+    )
+    expect(cancelStaleJob).toContain(
+      "group: agent-simplify-review-${{ github.event.pull_request.number }}"
+    )
+    expect(cancelStaleJob).toContain("cancel-in-progress: true")
+    expect(preflightJob).not.toContain("concurrency:")
+    expect(preflightJob).toContain("number: ${{ steps.pr.outputs.number }}")
+    expect(preflightJob).toContain("head_sha: ${{ steps.pr.outputs.head_sha }}")
+    expect(preflightJob).toContain(
+      "should_run: ${{ steps.pr.outputs.should_run }}"
+    )
+    expect(simplifyJob).toContain("needs: preflight")
+    expect(simplifyJob).toContain(
+      "needs.preflight.outputs.should_run == 'true'"
+    )
+    expect(simplifyJob).toContain(
+      "group: agent-simplify-review-${{ needs.preflight.outputs.number }}"
+    )
+    expect(simplifyJob).toContain("queue: max")
+    expect(simplifyJob).not.toContain("cancel-in-progress: true")
+    expect(simplifyJob).toContain("Revalidate queued handoff")
     expect(simplifyWorkflow).toContain(
       "github.event.review.user.login == 'conduit-sudden-agent[bot]'"
     )
@@ -299,7 +361,9 @@ describe("agent review handoff", () => {
       simplifyWorkflow.indexOf(
         'if [[ "$GITHUB_EVENT_NAME" == "pull_request_review" ]]'
       ),
-      simplifyWorkflow.indexOf('echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"')
+      simplifyWorkflow.lastIndexOf(
+        'echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"'
+      )
     )
     expect(automaticOnlyBlock).toContain("previous_ponytail_reviews")
     expect(automaticOnlyBlock).toContain("should_run=false")
@@ -417,14 +481,15 @@ while IFS= read -r _line; do :; done
     const headSha = "b".repeat(40)
     const clean = await runGate({ headSha })
     expect(clean.exitCode).toBe(0)
-    expect(clean.output).toContain("should_run=true")
+    expect(getOutputValue(clean.output, "should_run")).toBe("true")
 
     const stale = await runGate({
       headSha,
       triggerCommit: "c".repeat(40),
     })
-    expect(stale.exitCode).not.toBe(0)
-    expect(stale.stderr).toContain("clean review is stale")
+    expect(stale.exitCode).toBe(0)
+    expect(getOutputValue(stale.output, "should_run")).toBe("false")
+    expect(stale.stdout).toContain("clean review is stale")
 
     const dirty = await runGate({ headSha, reviewComments: "[{}]" })
     expect(dirty.exitCode).not.toBe(0)
@@ -440,7 +505,7 @@ while IFS= read -r _line; do :; done
       ]),
     })
     expect(duplicate.exitCode).toBe(0)
-    expect(duplicate.output).toContain("should_run=false")
+    expect(getOutputValue(duplicate.output, "should_run")).toBe("false")
 
     const oldHeadMarker = await runGate({
       headSha,
@@ -452,7 +517,7 @@ while IFS= read -r _line; do :; done
       ]),
     })
     expect(oldHeadMarker.exitCode).toBe(0)
-    expect(oldHeadMarker.output).toContain("should_run=false")
+    expect(getOutputValue(oldHeadMarker.output, "should_run")).toBe("false")
 
     const wrongReviewer = await runGate({
       headSha,
@@ -465,10 +530,11 @@ while IFS= read -r _line; do :; done
       headSha,
       reviewCommit: "e".repeat(40),
     })
-    expect(mismatchedFetchedCommit.exitCode).not.toBe(0)
-    expect(mismatchedFetchedCommit.stderr).toContain(
-      "source review does not match"
+    expect(mismatchedFetchedCommit.exitCode).toBe(0)
+    expect(getOutputValue(mismatchedFetchedCommit.output, "should_run")).toBe(
+      "false"
     )
+    expect(mismatchedFetchedCommit.stdout).toContain("source review is stale")
 
     const mismatchedMarker = await runGate({
       headSha,
@@ -488,6 +554,60 @@ while IFS= read -r _line; do :; done
       ]),
     })
     expect(manual.exitCode).toBe(0)
-    expect(manual.output).toContain("should_run=true")
+    expect(getOutputValue(manual.output, "should_run")).toBe("true")
+  })
+
+  it("revalidates queued handoffs inside the Ponytail execution lock", async () => {
+    const headSha = "1".repeat(40)
+    const clean = await runGate({ headSha }, revalidationScript)
+    expect(clean.exitCode).toBe(0)
+    expect(getOutputValue(clean.output, "should_run")).toBe("true")
+
+    const changedHead = await runGate(
+      { headSha, expectedHead: "2".repeat(40) },
+      revalidationScript
+    )
+    expect(changedHead.exitCode).toBe(0)
+    expect(getOutputValue(changedHead.output, "should_run")).toBe("false")
+    expect(changedHead.stdout).toContain("head changed while queued")
+
+    const duplicate = await runGate(
+      {
+        headSha,
+        previousReviews: JSON.stringify([
+          {
+            user: { login: "conduit-sudden-agent[bot]" },
+            body: `<!-- conduit:ponytail-final head=${headSha} -->`,
+          },
+        ]),
+      },
+      revalidationScript
+    )
+    expect(duplicate.exitCode).toBe(0)
+    expect(getOutputValue(duplicate.output, "should_run")).toBe("false")
+    expect(duplicate.stdout).toContain("now exists")
+
+    const dirty = await runGate(
+      { headSha, reviewComments: "[{}]" },
+      revalidationScript
+    )
+    expect(dirty.exitCode).not.toBe(0)
+    expect(dirty.stderr).toContain("contains inline findings")
+
+    const manual = await runGate(
+      {
+        eventName: "workflow_dispatch",
+        headSha,
+        previousReviews: JSON.stringify([
+          {
+            user: { login: "conduit-sudden-agent[bot]" },
+            body: `<!-- conduit:ponytail-final head=${headSha} -->`,
+          },
+        ]),
+      },
+      revalidationScript
+    )
+    expect(manual.exitCode).toBe(0)
+    expect(getOutputValue(manual.output, "should_run")).toBe("true")
   })
 })

@@ -22,7 +22,7 @@ permissions:
 
 concurrency:
   group: agent-pr-review-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number || github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
 
 jobs:
   review:
