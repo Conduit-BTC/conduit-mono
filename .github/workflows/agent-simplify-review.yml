@@ -125,15 +125,15 @@ jobs:
               exit 1
             fi
 
-            # Deliberately PR-wide: a response commit must not rearm automatic
-            # Ponytail. Maintainers can request an explicit rerun when needed.
+            # Deliberately PR-wide: a response commit or failed first attempt
+            # must not rearm Ponytail. Maintainers can request an explicit rerun.
             previous_ponytail_reviews="$(
               gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews?per_page=100" |
-                jq -s --arg marker '<!-- conduit:ponytail-final' \
+                jq -s --arg marker '<!-- conduit:ponytail-' \
                   '[.[][] | select((.user.login == "conduit-sudden-agent[bot]") and (((.body // "") | contains($marker))))] | length'
             )"
             if (( previous_ponytail_reviews > 0 )); then
-              echo "A final Ponytail review already exists; skipping the automatic rerun."
+              echo "An automatic Ponytail attempt already exists; skipping the automatic rerun."
               should_run=false
             fi
           fi
@@ -221,17 +221,45 @@ jobs:
 
             previous_ponytail_reviews="$(
               gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews?per_page=100" |
-                jq -s --arg marker '<!-- conduit:ponytail-final' \
+                jq -s --arg marker '<!-- conduit:ponytail-' \
                   '[.[][] | select((.user.login == "conduit-sudden-agent[bot]") and (((.body // "") | contains($marker))))] | length'
             )"
             if (( previous_ponytail_reviews > 0 )); then
-              skip_queued_handoff "A final Ponytail review now exists; skipping the queued rerun."
+              skip_queued_handoff "An automatic Ponytail attempt now exists; skipping the queued rerun."
             fi
           fi
 
           echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
           echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
           echo "should_run=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub App review token
+        id: app_token
+        if: steps.pr.outputs.should_run == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.WORKFLOW_AGENT_GITHUB_APP_CLIENT_ID }}
+          private-key: ${{ secrets.WORKFLOW_AGENT_GITHUB_APP_PRIVATE_KEY }}
+          permission-actions: read
+          permission-contents: read
+          permission-pull-requests: write
+
+      - name: Reserve automatic Ponytail attempt
+        if: steps.pr.outputs.should_run == 'true' && github.event_name == 'pull_request_review'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          marker="<!-- conduit:ponytail-attempted head=$HEAD_SHA -->"
+          gh api --method POST \
+            "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews" \
+            -f event=COMMENT \
+            -f commit_id="$HEAD_SHA" \
+            -f body="$marker"$'\n\n''Automatic final Ponytail review started.' \
+            --silent
 
       - name: Require automation credentials
         if: steps.pr.outputs.should_run == 'true'
@@ -285,17 +313,6 @@ jobs:
           printf '%s  %s\n' "$PONYTAIL_SKILL_SHA256" "$skill_download" | sha256sum --check --strict
           install -m 0600 "$skill_download" "$skill_path"
           echo "skill_path=$skill_path" >> "$GITHUB_OUTPUT"
-
-      - name: Create GitHub App review token
-        id: app_token
-        if: steps.pr.outputs.should_run == 'true'
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ vars.WORKFLOW_AGENT_GITHUB_APP_CLIENT_ID }}
-          private-key: ${{ secrets.WORKFLOW_AGENT_GITHUB_APP_PRIVATE_KEY }}
-          permission-actions: read
-          permission-contents: read
-          permission-pull-requests: write
 
       - name: Run final Ponytail review
         if: steps.pr.outputs.should_run == 'true'

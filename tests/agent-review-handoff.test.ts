@@ -85,6 +85,10 @@ const stageSkillScript = getRunScript(
   simplifyWorkflow,
   "Stage pinned Ponytail review skill"
 )
+const reserveAttemptScript = getRunScript(
+  simplifyWorkflow,
+  "Reserve automatic Ponytail attempt"
+)
 
 type GateFixture = {
   eventName?: "pull_request_review" | "workflow_dispatch"
@@ -366,6 +370,11 @@ describe("agent review handoff", () => {
   })
 
   it("invokes the pinned Ponytail skill once automatically per pull request", () => {
+    const reserveAttemptStep = getNamedStep(
+      simplifyWorkflow,
+      "Reserve automatic Ponytail attempt"
+    )
+
     expect(simplifyWorkflow).toContain(
       "[$ponytail-review](${{ steps.ponytail_skill.outputs.skill_path }})"
     )
@@ -380,10 +389,61 @@ describe("agent review handoff", () => {
       "<!-- conduit:ponytail-final head=${{ steps.pr.outputs.head_sha }} -->"
     )
     expect(simplifyWorkflow).toContain(
-      "jq -s --arg marker '<!-- conduit:ponytail-final'"
+      "jq -s --arg marker '<!-- conduit:ponytail-'"
     )
     expect(simplifyWorkflow).toContain(
-      "A final Ponytail review already exists; skipping the automatic rerun."
+      "An automatic Ponytail attempt already exists; skipping the automatic rerun."
+    )
+    expect(reserveAttemptStep).toContain(
+      "if: steps.pr.outputs.should_run == 'true' && github.event_name == 'pull_request_review'"
+    )
+    expect(reserveAttemptStep).toContain(
+      'marker="<!-- conduit:ponytail-attempted head=$HEAD_SHA -->"'
+    )
+    expect(reserveAttemptStep).toContain(
+      "GH_TOKEN: ${{ steps.app_token.outputs.token }}"
+    )
+    expect(reserveAttemptStep).toContain(
+      "PR_NUMBER: ${{ steps.pr.outputs.number }}"
+    )
+    expect(reserveAttemptStep).toContain(
+      "HEAD_SHA: ${{ steps.pr.outputs.head_sha }}"
+    )
+    expect(reserveAttemptStep).toContain("gh api --method POST")
+    expect(reserveAttemptStep).toContain("-f event=COMMENT")
+    expect(reserveAttemptStep).toContain('-f commit_id="$HEAD_SHA"')
+    expect(reserveAttemptStep).toContain(
+      "Automatic final Ponytail review started."
+    )
+    expect(
+      simplifyWorkflow.indexOf("- name: Revalidate queued handoff")
+    ).toBeLessThan(
+      simplifyWorkflow.indexOf("- name: Create GitHub App review token")
+    )
+    expect(
+      simplifyWorkflow.indexOf("- name: Create GitHub App review token")
+    ).toBeLessThan(
+      simplifyWorkflow.indexOf("- name: Reserve automatic Ponytail attempt")
+    )
+    expect(
+      simplifyWorkflow.indexOf("- name: Reserve automatic Ponytail attempt")
+    ).toBeLessThan(
+      simplifyWorkflow.indexOf("- name: Require automation credentials")
+    )
+    expect(
+      simplifyWorkflow.indexOf("- name: Require automation credentials")
+    ).toBeLessThan(
+      simplifyWorkflow.indexOf("- name: Checkout immutable pull request head")
+    )
+    expect(
+      simplifyWorkflow.indexOf("- name: Checkout immutable pull request head")
+    ).toBeLessThan(
+      simplifyWorkflow.indexOf("- name: Stage pinned Ponytail review skill")
+    )
+    expect(
+      simplifyWorkflow.indexOf("- name: Stage pinned Ponytail review skill")
+    ).toBeLessThan(
+      simplifyWorkflow.indexOf("- name: Run final Ponytail review")
     )
     expect(simplifyWorkflow).toContain("should_run=false")
     expect(simplifyWorkflow).toContain(
@@ -394,10 +454,87 @@ describe("agent review handoff", () => {
         simplifyWorkflow,
         "if: steps.pr.outputs.should_run == 'true'"
       )
-    ).toBe(5)
+    ).toBe(6)
     expect(simplifyWorkflow).toContain(
       "github.event.comment.body == '/agent simplify'"
     )
+  })
+
+  it("writes the durable attempt marker before the automatic review", async () => {
+    const fixtureDirectory = await mkdtemp(join(tmpdir(), "conduit-attempt-"))
+    const ghPath = join(fixtureDirectory, "gh")
+    const resultPath = join(fixtureDirectory, "result")
+    const headSha = "9".repeat(40)
+    const fakeGh = `#!/usr/bin/env bash
+set -euo pipefail
+
+expected_body=$'body=<!-- conduit:ponytail-attempted head='"$FAKE_HEAD_SHA"$' -->\\n\\nAutomatic final Ponytail review started.'
+[[ "$1" == "api" ]]
+shift
+method=""
+path=""
+event_field=""
+commit_field=""
+body_field=""
+silent=false
+while (( $# > 0 )); do
+  case "$1" in
+    --method)
+      shift
+      method="$1"
+      ;;
+    -f)
+      shift
+      case "$1" in
+        event=*) event_field="$1" ;;
+        commit_id=*) commit_field="$1" ;;
+        body=*) body_field="$1" ;;
+        *) exit 2 ;;
+      esac
+      ;;
+    --silent) silent=true ;;
+    repos/*) path="$1" ;;
+    *) exit 2 ;;
+  esac
+  shift
+done
+[[ "$method" == "POST" ]]
+[[ "$path" == "repos/Conduit-BTC/conduit-mono/pulls/245/reviews" ]]
+[[ "$event_field" == "event=COMMENT" ]]
+[[ "$commit_field" == "commit_id=$FAKE_HEAD_SHA" ]]
+[[ "$body_field" == "$expected_body" ]]
+[[ "$silent" == "true" ]]
+printf 'reserved\\n' > "$FAKE_RESULT_PATH"
+`
+
+    try {
+      await writeFile(ghPath, fakeGh, { mode: 0o755 })
+      const reserveProcess = Bun.spawn(["bash", "-c", reserveAttemptScript], {
+        cwd: process.cwd(),
+        env: {
+          ...Bun.env,
+          PATH: `${fixtureDirectory}:${Bun.env.PATH ?? ""}`,
+          GH_TOKEN: "fixture-token",
+          GITHUB_REPOSITORY: "Conduit-BTC/conduit-mono",
+          PR_NUMBER: "245",
+          HEAD_SHA: headSha,
+          FAKE_HEAD_SHA: headSha,
+          FAKE_RESULT_PATH: resultPath,
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      })
+      const [exitCode, stderr] = await Promise.all([
+        reserveProcess.exited,
+        new Response(reserveProcess.stderr).text(),
+      ])
+
+      expect(stderr).toBe("")
+      expect(exitCode).toBe(0)
+      expect(await readFile(resultPath, "utf8")).toBe("reserved\n")
+    } finally {
+      await rm(fixtureDirectory, { force: true, recursive: true })
+    }
   })
 
   it("stages the skill outside PR-controlled symlinks", async () => {
@@ -538,6 +675,19 @@ while IFS= read -r _line; do :; done
     expect(duplicate.exitCode).toBe(0)
     expect(getOutputValue(duplicate.output, "should_run")).toBe("false")
 
+    const attempted = await runGate({
+      headSha,
+      previousReviews: JSON.stringify([
+        {
+          user: { login: "conduit-sudden-agent[bot]" },
+          body: `<!-- conduit:ponytail-attempted head=${headSha} -->`,
+        },
+      ]),
+    })
+    expect(attempted.exitCode).toBe(0)
+    expect(getOutputValue(attempted.output, "should_run")).toBe("false")
+    expect(attempted.stdout).toContain("attempt already exists")
+
     const oldHeadMarker = await runGate({
       headSha,
       previousReviews: JSON.stringify([
@@ -589,6 +739,10 @@ while IFS= read -r _line; do :; done
           user: { login: "conduit-sudden-agent[bot]" },
           body: `<!-- conduit:ponytail-final head=${headSha} -->`,
         },
+        {
+          user: { login: "conduit-sudden-agent[bot]" },
+          body: `<!-- conduit:ponytail-attempted head=${headSha} -->`,
+        },
       ]),
     })
     expect(manual.exitCode).toBe(0)
@@ -625,6 +779,22 @@ while IFS= read -r _line; do :; done
     expect(getOutputValue(duplicate.output, "should_run")).toBe("false")
     expect(duplicate.stdout).toContain("now exists")
 
+    const attempted = await runGate(
+      {
+        headSha,
+        previousReviews: JSON.stringify([
+          {
+            user: { login: "conduit-sudden-agent[bot]" },
+            body: `<!-- conduit:ponytail-attempted head=${headSha} -->`,
+          },
+        ]),
+      },
+      revalidationScript
+    )
+    expect(attempted.exitCode).toBe(0)
+    expect(getOutputValue(attempted.output, "should_run")).toBe("false")
+    expect(attempted.stdout).toContain("attempt now exists")
+
     const dirty = await runGate(
       { headSha, reviewComments: "[{}]" },
       revalidationScript
@@ -650,6 +820,10 @@ while IFS= read -r _line; do :; done
           {
             user: { login: "conduit-sudden-agent[bot]" },
             body: `<!-- conduit:ponytail-final head=${headSha} -->`,
+          },
+          {
+            user: { login: "conduit-sudden-agent[bot]" },
+            body: `<!-- conduit:ponytail-attempted head=${headSha} -->`,
           },
         ]),
       },
