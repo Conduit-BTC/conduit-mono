@@ -103,7 +103,7 @@ export async function assertSparkWalletRegistrationSessionAvailable(
 export async function runWithSparkWalletOperationLock<T>(
   walletId: string,
   operation: () => Promise<T>,
-  lockManager: SparkWalletOperationLockManager | null = getBrowserWalletOperationLockManager(),
+  lockManager: SparkWalletOperationLockManager | null = getBrowserLockManager(),
   requireCrossTabLock = typeof window !== "undefined"
 ): Promise<T> {
   if (!lockManager) {
@@ -214,7 +214,8 @@ function getSparkWalletSessionLockName(sessionKey: string): string {
   return `conduit:spark-wallet-session:${sessionKey}`
 }
 
-function getBrowserLockManager(): SparkWalletSessionLockManager | null {
+function getBrowserLockManager():
+  (SparkWalletSessionLockManager & SparkWalletOperationLockManager) | null {
   if (
     typeof navigator === "undefined" ||
     !("locks" in navigator) ||
@@ -222,16 +223,6 @@ function getBrowserLockManager(): SparkWalletSessionLockManager | null {
   ) {
     return null
   }
-  return navigator.locks as unknown as SparkWalletSessionLockManager
-}
-
-function getBrowserWalletOperationLockManager(): SparkWalletOperationLockManager | null {
-  if (
-    typeof navigator === "undefined" ||
-    !("locks" in navigator) ||
-    !navigator.locks
-  ) {
-    return null
-  }
-  return navigator.locks as unknown as SparkWalletOperationLockManager
+  return navigator.locks as unknown as SparkWalletSessionLockManager &
+    SparkWalletOperationLockManager
 }

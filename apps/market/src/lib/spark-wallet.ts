@@ -1158,17 +1158,9 @@ async function getSparkWalletIdentityKey(
   // This domain-separated digest exists only in memory and Web Locks so two
   // registrations cannot open the same native wallet concurrently. It is
   // never persisted, logged, or emitted as telemetry.
-  const encoded = new TextEncoder().encode(
+  return hashSensitiveScope(
     `conduit:spark-wallet-identity:v2\0${network}\0${accountNumber}\0${seed.type}\0${seed.mnemonic}`
   )
-  try {
-    const digest = await crypto.subtle.digest("SHA-256", encoded.slice().buffer)
-    return [...new Uint8Array(digest)]
-      .map((byte) => byte.toString(16).padStart(2, "0"))
-      .join("")
-  } finally {
-    encoded.fill(0)
-  }
 }
 
 async function getSparkSendSafetyScope(identityKey: string): Promise<string> {
@@ -1177,9 +1169,13 @@ async function getSparkSendSafetyScope(identityKey: string): Promise<string> {
   // transfers from earlier builds also block the unified send flow. Restoring
   // the same Spark identity cannot bypass this local duplicate-send lock. The
   // scope must never enter logs, telemetry, or wallet descriptors.
-  const encoded = new TextEncoder().encode(
+  return hashSensitiveScope(
     `conduit:spark-direct-transfer-safety-scope:v1\0${identityKey}`
   )
+}
+
+async function hashSensitiveScope(value: string): Promise<string> {
+  const encoded = new TextEncoder().encode(value)
   try {
     const digest = await crypto.subtle.digest("SHA-256", encoded.slice().buffer)
     return [...new Uint8Array(digest)]

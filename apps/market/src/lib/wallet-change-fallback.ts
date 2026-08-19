@@ -1,7 +1,8 @@
 const WALLET_CHANGE_STORAGE_KEY = "conduit:wallets-change:v1"
+const WALLET_CHANGE_BROADCAST_PROBE = "conduit:wallets-change-fallback-probe"
 
 export interface WalletChangeFallbackRuntime {
-  broadcastChannelAvailable: boolean
+  createBroadcastChannel?: () => Pick<BroadcastChannel, "close">
   eventTarget: {
     addEventListener(type: "storage", listener: (event: unknown) => void): void
     removeEventListener(
@@ -17,7 +18,7 @@ export function subscribeToWalletChangeFallback(
   listener: () => void,
   runtime: WalletChangeFallbackRuntime | null = getBrowserWalletChangeFallbackRuntime()
 ): () => void {
-  if (!runtime?.storage || runtime.broadcastChannelAvailable) {
+  if (!runtime?.storage) {
     return () => undefined
   }
 
@@ -40,7 +41,16 @@ export function subscribeToWalletChangeFallback(
 export function notifyWalletChangeFallback(
   runtime: WalletChangeFallbackRuntime | null = getBrowserWalletChangeFallbackRuntime()
 ): void {
-  if (!runtime?.storage || runtime.broadcastChannelAvailable) return
+  if (!runtime?.storage) return
+
+  if (runtime.createBroadcastChannel) {
+    try {
+      runtime.createBroadcastChannel().close()
+      return
+    } catch {
+      // Fall through when BroadcastChannel is exposed but unusable here.
+    }
+  }
 
   try {
     runtime.storage.setItem(WALLET_CHANGE_STORAGE_KEY, runtime.createToken())
@@ -60,8 +70,10 @@ function getBrowserWalletChangeFallbackRuntime(): WalletChangeFallbackRuntime | 
   }
 
   return {
-    broadcastChannelAvailable:
-      typeof globalThis.BroadcastChannel === "function",
+    ...(typeof globalThis.BroadcastChannel === "function" && {
+      createBroadcastChannel: () =>
+        new globalThis.BroadcastChannel(WALLET_CHANGE_BROADCAST_PROBE),
+    }),
     eventTarget: {
       addEventListener(type, listener) {
         window.addEventListener(type, listener as EventListener)

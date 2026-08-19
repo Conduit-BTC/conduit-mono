@@ -7,7 +7,10 @@ import {
   type SparkSdkFactory,
   type SparkSdkPayment,
 } from "../apps/market/src/lib/spark-wallet"
-import { MemorySparkDirectTransferSafetyStore } from "../apps/market/src/lib/spark-direct-transfer-safety"
+import {
+  MemorySparkDirectTransferSafetyStore,
+  type SparkDirectTransferSafetyStore,
+} from "../apps/market/src/lib/spark-direct-transfer-safety"
 import { bytesToBolt11Words, makeBolt11Fixture } from "./support/bolt11-fixture"
 
 describe("SparkWalletManager", () => {
@@ -1426,6 +1429,15 @@ describe("SparkWalletManager", () => {
 
   it("keys session exclusivity by recovery identity rather than registration ID", async () => {
     const acquired: Array<{ walletId: string; identityKey: string }> = []
+    const safetyScopes: string[] = []
+    const safetyStore: SparkDirectTransferSafetyStore = {
+      get(safetyScope) {
+        safetyScopes.push(safetyScope)
+        return null
+      },
+      put() {},
+      delete() {},
+    }
     const acquireSessionLease = async (
       walletId: string,
       identityKey: string
@@ -1440,7 +1452,8 @@ describe("SparkWalletManager", () => {
           return createNoopSdkClient()
         },
       },
-      acquireSessionLease
+      acquireSessionLease,
+      safetyStore
     )
     const mnemonic = "abandon ".repeat(11) + "about"
 
@@ -1477,8 +1490,14 @@ describe("SparkWalletManager", () => {
     expect(acquired[0]?.identityKey).toBe(acquired[1]?.identityKey)
     expect(acquired[2]?.identityKey).not.toBe(acquired[0]?.identityKey)
     expect(acquired[3]?.identityKey).not.toBe(acquired[0]?.identityKey)
-    expect(acquired[0]?.identityKey).toMatch(/^[0-9a-f]{64}$/)
+    expect(acquired[0]?.identityKey).toBe(
+      "a172d0beb60d6729378e9d46c58352506fe22eefb8ab888e7e16b0a4bac9abd0"
+    )
     expect(acquired[0]?.identityKey).not.toContain("abandon")
+    expect(manager.hasUnresolvedSend("wallet-primary")).toBe(false)
+    expect(safetyScopes).toEqual([
+      "3b21be9de9ec6ccf58d0220259822110d046d16b37039c5264b57297644fb7a8",
+    ])
   })
 
   it("coalesces SDK events into wallet-only invalidations and ignores late events", async () => {

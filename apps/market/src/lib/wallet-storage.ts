@@ -21,7 +21,7 @@ import {
 const MAX_STORED_WALLET_ID_LENGTH = 128
 const MAX_STORED_SPARK_RECOVERY_LENGTH = 4_096
 
-export interface StoredSparkPasswordRecovery {
+export interface StoredSparkWalletRecovery {
   type: "password"
   walletId: string
   providerId: "spark"
@@ -29,8 +29,6 @@ export interface StoredSparkPasswordRecovery {
   accountNumber: number
   recovery: SparkEncryptedRecovery
 }
-
-export type StoredSparkWalletRecovery = StoredSparkPasswordRecovery
 
 export function findMatchingNwcCredentialWalletIds(
   credentials: readonly {
