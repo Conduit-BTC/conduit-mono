@@ -269,24 +269,18 @@ describe("agent review handoff", () => {
       simplifyWorkflow.indexOf("permissions:")
     )
 
-    expect(triggerBlock).toContain("pull_request:\n    types: [synchronize]")
+    expect(triggerBlock).not.toContain("pull_request:")
     expect(triggerBlock).toContain("pull_request_review:")
     const workflowHeader = simplifyWorkflow.slice(
       0,
       simplifyWorkflow.indexOf("jobs:")
     )
-    const cancelStaleJob = getNamedJob(simplifyWorkflow, "cancel-stale")
     const preflightJob = getNamedJob(simplifyWorkflow, "preflight")
     const simplifyJob = getNamedJob(simplifyWorkflow, "simplify")
 
     expect(workflowHeader).not.toContain("concurrency:")
-    expect(cancelStaleJob).toContain(
-      "if: github.event_name == 'pull_request' && github.event.action == 'synchronize'"
-    )
-    expect(cancelStaleJob).toContain(
-      "group: agent-simplify-review-${{ github.event.pull_request.number }}"
-    )
-    expect(cancelStaleJob).toContain("cancel-in-progress: true")
+    expect(simplifyWorkflow).not.toContain("cancel-stale:")
+    expect(simplifyWorkflow).not.toContain("cancel-in-progress:")
     expect(preflightJob).not.toContain("concurrency:")
     expect(preflightJob).toContain("number: ${{ steps.pr.outputs.number }}")
     expect(preflightJob).toContain("head_sha: ${{ steps.pr.outputs.head_sha }}")
@@ -298,11 +292,18 @@ describe("agent review handoff", () => {
       "needs.preflight.outputs.should_run == 'true'"
     )
     expect(simplifyJob).toContain(
-      "group: agent-simplify-review-${{ needs.preflight.outputs.number }}"
+      "group: agent-ponytail-final-${{ needs.preflight.outputs.number }}"
     )
     expect(simplifyJob).toContain("queue: max")
     expect(simplifyJob).not.toContain("cancel-in-progress: true")
     expect(simplifyJob).toContain("Revalidate queued handoff")
+    expect(simplifyJob).toContain(
+      "Immediately before submission, fetch the pull request again."
+    )
+    expect(simplifyJob).toContain(
+      "its head is not `${{ steps.pr.outputs.head_sha }}`, stop without"
+    )
+    expect(simplifyJob).toContain("submitting a review.")
     expect(simplifyWorkflow).toContain(
       "github.event.review.user.login == 'conduit-sudden-agent[bot]'"
     )
