@@ -157,6 +157,7 @@ jobs:
           ref: ${{ steps.pr.outputs.head_sha }}
 
       - name: Stage pinned Ponytail review skill
+        id: ponytail_skill
         if: steps.pr.outputs.should_run == 'true'
         shell: bash
         env:
@@ -164,11 +165,28 @@ jobs:
           PONYTAIL_SKILL_SHA256: 40df33b58fc6ef889b93585733feb9566b76e9586efa7f376785c1e995197ac0
         run: |
           set -euo pipefail
-          skill_path=".agents/skills/ponytail-review/SKILL.md"
-          mkdir -p "$(dirname "$skill_path")"
+          skill_download="$(mktemp "$RUNNER_TEMP/ponytail-review.XXXXXX")"
+          skill_directory="$HOME/.agents/skills/ponytail-review"
+          skill_path="$skill_directory/SKILL.md"
+          trap 'rm -f "$skill_download"' EXIT
+
+          for candidate in "$HOME/.agents" "$HOME/.agents/skills" "$skill_directory" "$skill_path"; do
+            if [[ -L "$candidate" ]]; then
+              echo "Refusing a symlink in the runner-owned Ponytail skill path." >&2
+              exit 1
+            fi
+          done
+          if [[ -e "$skill_path" ]]; then
+            echo "Refusing to overwrite an existing runner skill." >&2
+            exit 1
+          fi
+
+          install -d -m 0700 "$skill_directory"
           curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
-            "$PONYTAIL_SKILL_URL" --output "$skill_path"
-          printf '%s  %s\n' "$PONYTAIL_SKILL_SHA256" "$skill_path" | sha256sum --check --strict
+            "$PONYTAIL_SKILL_URL" --output "$skill_download"
+          printf '%s  %s\n' "$PONYTAIL_SKILL_SHA256" "$skill_download" | sha256sum --check --strict
+          install -m 0600 "$skill_download" "$skill_path"
+          echo "skill_path=$skill_path" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub App review token
         id: app_token
@@ -191,8 +209,10 @@ jobs:
           model: ${{ vars.WORKFLOW_AGENT_CODEX_MODEL || 'gpt-5.6-sol/xhigh' }}
           resume: false
           prompt: |
-            Use the $ponytail-review skill to perform one read-only final
-            simplicity review of Conduit-BTC/conduit-mono PR
+            Use the
+            [$ponytail-review](${{ steps.ponytail_skill.outputs.skill_path }})
+            skill to perform one read-only final simplicity review of
+            Conduit-BTC/conduit-mono PR
             #${{ steps.pr.outputs.number }} at head
             ${{ steps.pr.outputs.head_sha }}. Review the complete base-to-head
             diff. Do not edit files, push, change labels, merge, deploy, request

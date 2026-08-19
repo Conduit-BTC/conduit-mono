@@ -1,5 +1,12 @@
 import { describe, expect, it } from "bun:test"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -19,22 +26,25 @@ const getNamedStep = (workflow: string, name: string) => {
   return workflow.slice(start, next === -1 ? undefined : next)
 }
 
-const validationStepStart = simplifyWorkflow.indexOf(
-  "      - name: Validate pull request and trigger"
+const getRunScript = (workflow: string, name: string) => {
+  const step = getNamedStep(workflow, name)
+  const marker = "        run: |\n"
+  const start = step.indexOf(marker)
+  return step
+    .slice(start + marker.length)
+    .split("\n")
+    .map((line) => line.replace(/^ {10}/, ""))
+    .join("\n")
+}
+
+const validationScript = getRunScript(
+  simplifyWorkflow,
+  "Validate pull request and trigger"
 )
-const validationScriptStart = simplifyWorkflow.indexOf(
-  "        run: |\n",
-  validationStepStart
+const stageSkillScript = getRunScript(
+  simplifyWorkflow,
+  "Stage pinned Ponytail review skill"
 )
-const validationScriptEnd = simplifyWorkflow.indexOf(
-  "\n      - name:",
-  validationScriptStart + 1
-)
-const validationScript = simplifyWorkflow
-  .slice(validationScriptStart + "        run: |\n".length, validationScriptEnd)
-  .split("\n")
-  .map((line) => line.replace(/^ {10}/, ""))
-  .join("\n")
 
 type GateFixture = {
   eventName?: "pull_request_review" | "workflow_dispatch"
@@ -252,7 +262,10 @@ describe("agent review handoff", () => {
   })
 
   it("invokes the pinned Ponytail skill once automatically per pull request", () => {
-    expect(simplifyWorkflow).toContain("Use the $ponytail-review skill")
+    expect(simplifyWorkflow).toContain(
+      "[$ponytail-review](${{ steps.ponytail_skill.outputs.skill_path }})"
+    )
+    expect(simplifyWorkflow).not.toContain("Use the $ponytail-review skill")
     expect(simplifyWorkflow).toContain(
       "DietrichGebert/ponytail/0a4dd63ad4541f4f655c4108a295916f3c1d8fda/skills/ponytail-review/SKILL.md"
     )
@@ -290,6 +303,114 @@ describe("agent review handoff", () => {
     )
     expect(automaticOnlyBlock).toContain("previous_ponytail_reviews")
     expect(automaticOnlyBlock).toContain("should_run=false")
+  })
+
+  it("stages the skill outside PR-controlled symlinks", async () => {
+    const fixtureDirectory = await mkdtemp(join(tmpdir(), "conduit-skill-"))
+    const checkout = join(fixtureDirectory, "checkout")
+    const fakeBin = join(fixtureDirectory, "bin")
+    const runnerHome = join(fixtureDirectory, "home")
+    const runnerTemp = join(fixtureDirectory, "runner-temp")
+    const maliciousSkillDirectory = join(
+      checkout,
+      ".agents",
+      "skills",
+      "ponytail-review"
+    )
+    const agentsPath = join(checkout, "AGENTS.md")
+    const duplicateSkillPath = join(
+      checkout,
+      ".agents",
+      "skills",
+      "duplicate-ponytail",
+      "SKILL.md"
+    )
+    const outputPath = join(fixtureDirectory, "github-output")
+    const fakeCurl = `#!/usr/bin/env bash
+set -euo pipefail
+output=""
+while (( $# > 0 )); do
+  if [[ "$1" == "--output" ]]; then
+    shift
+    output="$1"
+  fi
+  shift
+done
+[[ -n "$output" ]]
+printf 'verified Ponytail skill\n' > "$output"
+`
+    const fakeSha256sum = `#!/usr/bin/env bash
+set -euo pipefail
+while IFS= read -r _line; do :; done
+`
+
+    try {
+      await mkdir(maliciousSkillDirectory, { recursive: true })
+      await mkdir(fakeBin, { recursive: true })
+      await mkdir(runnerHome, { recursive: true })
+      await mkdir(runnerTemp, { recursive: true })
+      await writeFile(agentsPath, "trusted repository instructions\n")
+      await symlink(
+        "../../../AGENTS.md",
+        join(maliciousSkillDirectory, "SKILL.md")
+      )
+      await mkdir(join(checkout, ".agents", "skills", "duplicate-ponytail"), {
+        recursive: true,
+      })
+      await writeFile(
+        duplicateSkillPath,
+        "---\nname: ponytail-review\ndescription: untrusted duplicate\n---\n"
+      )
+      await writeFile(join(fakeBin, "curl"), fakeCurl, { mode: 0o755 })
+      await writeFile(join(fakeBin, "sha256sum"), fakeSha256sum, {
+        mode: 0o755,
+      })
+
+      const stageProcess = Bun.spawn(["bash", "-c", stageSkillScript], {
+        cwd: checkout,
+        env: {
+          ...Bun.env,
+          HOME: runnerHome,
+          RUNNER_TEMP: runnerTemp,
+          GITHUB_OUTPUT: outputPath,
+          PATH: `${fakeBin}:${Bun.env.PATH ?? ""}`,
+          PONYTAIL_SKILL_URL: "https://example.invalid/SKILL.md",
+          PONYTAIL_SKILL_SHA256: "fixture-hash",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      })
+      const [exitCode, stderr] = await Promise.all([
+        stageProcess.exited,
+        new Response(stageProcess.stderr).text(),
+      ])
+
+      expect(stderr).toBe("")
+      expect(exitCode).toBe(0)
+      expect(await readFile(agentsPath, "utf8")).toBe(
+        "trusted repository instructions\n"
+      )
+      expect(
+        await readFile(
+          join(runnerHome, ".agents", "skills", "ponytail-review", "SKILL.md"),
+          "utf8"
+        )
+      ).toBe("verified Ponytail skill\n")
+      expect(await readFile(outputPath, "utf8")).toBe(
+        `skill_path=${join(
+          runnerHome,
+          ".agents",
+          "skills",
+          "ponytail-review",
+          "SKILL.md"
+        )}\n`
+      )
+      expect(await readFile(duplicateSkillPath, "utf8")).toContain(
+        "name: ponytail-review"
+      )
+    } finally {
+      await rm(fixtureDirectory, { force: true, recursive: true })
+    }
   })
 
   it("evaluates clean, stale, dirty, duplicate, and manual gate fixtures", async () => {
