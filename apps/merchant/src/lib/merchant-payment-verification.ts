@@ -28,7 +28,7 @@ export type MerchantPaymentVerificationResult = {
   lookupFailures: number
 }
 
-export function getMerchantPaymentEvidenceKey(
+function getMerchantPaymentEvidenceKey(
   candidate: MerchantPaymentVerificationCandidate
 ): string {
   return `${candidate.orderId}:${candidate.evidenceMessageId}`

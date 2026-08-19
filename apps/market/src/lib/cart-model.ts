@@ -98,7 +98,6 @@ export type CartCostSummary = {
   totalSats: number
   itemPricesAvailable: boolean
   shippingReadyForZap: boolean
-  canZapOut: boolean
 }
 
 export type CartPublicZapPolicy = {
@@ -862,7 +861,6 @@ export function getCartCostSummary(
     totalSats: itemSubtotalSats + shippingCost.totalSats,
     itemPricesAvailable,
     shippingReadyForZap,
-    canZapOut: itemPricesAvailable && shippingReadyForZap,
   }
 }
 

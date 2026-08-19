@@ -90,7 +90,6 @@ type CartSearch = {
 type CartSummaryPrice = {
   primary: string
   secondary?: string | null
-  canZapOut: boolean
 }
 
 type SuggestedProduct = {
@@ -143,7 +142,6 @@ function getCartSummaryPrice(
           ? "Price conversion is stale"
           : "Price conversion unavailable",
       secondary: `${summary.count} item${summary.count === 1 ? "" : "s"}`,
-      canZapOut: false,
     }
   }
 
@@ -153,10 +151,7 @@ function getCartSummaryPrice(
     priceSats: pricing.totalSats,
   })
 
-  return {
-    ...display,
-    canZapOut: summary.canZapOut,
-  }
+  return display
 }
 
 function getCartTelemetryProductType(items: CartItem[]): string {

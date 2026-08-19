@@ -781,7 +781,6 @@ describe("cart model", () => {
       totalSats: 800,
       itemPricesAvailable: true,
       shippingReadyForZap: true,
-      canZapOut: true,
     })
   })
 
@@ -801,7 +800,6 @@ describe("cart model", () => {
       totalSats: 200,
       itemPricesAvailable: true,
       shippingReadyForZap: false,
-      canZapOut: false,
     })
   })
 
@@ -821,7 +819,6 @@ describe("cart model", () => {
       totalSats: 200,
       itemPricesAvailable: true,
       shippingReadyForZap: false,
-      canZapOut: false,
     })
   })
 
@@ -845,7 +842,6 @@ describe("cart model", () => {
       totalSats: 250,
       itemPricesAvailable: true,
       shippingReadyForZap: true,
-      canZapOut: true,
     })
   })
 
@@ -865,7 +861,6 @@ describe("cart model", () => {
       totalSats: 100,
       itemPricesAvailable: true,
       shippingReadyForZap: true,
-      canZapOut: true,
     })
   })
 

@@ -20,7 +20,6 @@ import {
   type NwcGetInfoResult,
 } from "@conduit/core"
 import {
-  getMerchantPaymentEvidenceKey,
   getMerchantNwcAddressStatus,
   getMerchantPaymentVerificationCandidates,
   verifyMerchantPaymentCandidates,
@@ -114,10 +113,6 @@ export function MerchantPaymentAutomationProvider({
     !!conversationsQuery.error ||
     (conversationsQuery.data?.meta.degraded === true &&
       conversationsQuery.data.data.length === 0)
-  const runKey = candidates
-    .map((candidate) => `${candidate.orderId}:${candidate.evidenceMessageId}`)
-    .sort()
-    .join("|")
 
   useEffect(() => {
     confirmedEvidenceRef.current.clear()
@@ -147,17 +142,6 @@ export function MerchantPaymentAutomationProvider({
     ) {
       return
     }
-    const pendingCandidates = candidates.filter(
-      (candidate) =>
-        !confirmedEvidenceRef.current.has(
-          getMerchantPaymentEvidenceKey(candidate)
-        )
-    )
-    if (pendingCandidates.length === 0) {
-      setRun({ status: "complete", checked: 0, verified: 0 })
-      return
-    }
-
     runningRef.current = true
     setRun({ status: "checking", checked: 0, verified: 0 })
     let checked = 0
@@ -165,7 +149,7 @@ export function MerchantPaymentAutomationProvider({
 
     try {
       const result = await verifyMerchantPaymentCandidates({
-        candidates: pendingCandidates,
+        candidates,
         confirmedEvidence: confirmedEvidenceRef.current,
         lookupInvoice: (candidate) =>
           nwcLookupInvoice(
@@ -189,14 +173,12 @@ export function MerchantPaymentAutomationProvider({
       checked = result.checked
       verified = result.verified
 
+      const allLookupsFailed = result.lookupFailures > 0 && result.checked === 0
       setRun({
-        status:
-          result.lookupFailures === pendingCandidates.length
-            ? "error"
-            : "complete",
+        status: allLookupsFailed ? "error" : "complete",
         checked,
         verified,
-        ...(result.lookupFailures === pendingCandidates.length
+        ...(allLookupsFailed
           ? { message: "The wallet could not check pending invoices." }
           : {}),
       })
@@ -244,7 +226,7 @@ export function MerchantPaymentAutomationProvider({
 
   useEffect(() => {
     if (
-      !runKey ||
+      candidates.length === 0 ||
       conversationReadUnavailable ||
       !signerConnected ||
       !canVerifyPayments ||
@@ -255,10 +237,10 @@ export function MerchantPaymentAutomationProvider({
     void verifyCandidates()
   }, [
     canVerifyPayments,
+    candidates,
     conversationReadUnavailable,
     connectionKey,
     conversationsQuery.isFetching,
-    runKey,
     signerConnected,
     verifyCandidates,
   ])

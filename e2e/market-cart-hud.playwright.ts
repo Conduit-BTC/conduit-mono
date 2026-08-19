@@ -95,7 +95,7 @@ async function expectInsideHud(page: Page): Promise<void> {
     .toBe("contained")
 }
 
-test("market cart HUD keeps every fixed control inside the HUD across merchant counts and widths", async ({
+test("market cart HUD keeps every fixed control inside the HUD across merchant-count and width variants", async ({
   page,
 }) => {
   test.setTimeout(120_000)
@@ -204,7 +204,7 @@ test("market cart HUD is route-aware and layered above the fixed footer", async 
   ).toHaveCount(0)
 })
 
-test("merchant activation expands a collapsed HUD for pointer and keyboard", async ({
+test("market cart HUD rail activation expands a collapsed HUD for pointer and keyboard", async ({
   page,
 }) => {
   await seedCart(page, 2)
@@ -262,7 +262,7 @@ test("merchant activation expands a collapsed HUD for pointer and keyboard", asy
   await expect(toggle).toHaveAttribute("aria-expanded", "true")
 })
 
-test("collapsing the HUD restores focus from the panel to the disclosure toggle", async ({
+test("market cart HUD collapse restores focus from the panel to the disclosure toggle", async ({
   page,
 }) => {
   await seedCart(page, 2)
@@ -282,7 +282,7 @@ test("collapsing the HUD restores focus from the panel to the disclosure toggle"
   await expect(toggle).toBeFocused()
 })
 
-test("restoring a cart is quiet while a real first increase announces and expands", async ({
+test("market cart HUD restore is quiet while a real first increase announces and expands", async ({
   page,
 }) => {
   await seedCart(page, 1)
@@ -314,7 +314,7 @@ test("restoring a cart is quiet while a real first increase announces and expand
   await expect(liveRegion).toContainText("Cart updated")
 })
 
-test("cart presence starts one shared LNURL preflight per merchant without payment data", async ({
+test("market cart presence starts one shared merchant-scoped LNURL preflight without payment data", async ({
   page,
 }) => {
   const lnurlRequests: Array<{
@@ -394,7 +394,7 @@ test("cart presence starts one shared LNURL preflight per merchant without payme
   expect(lnurlRequests.length).toBe(requestsBeforeNavigation)
 })
 
-test("a failed LNURL endpoint only degrades its merchant and never blocks the HUD", async ({
+test("market cart HUD isolates a failed merchant-scoped LNURL endpoint and stays interactive", async ({
   page,
 }) => {
   await page.route("https://merchant-fixture.dev/**", (route) => route.abort())
