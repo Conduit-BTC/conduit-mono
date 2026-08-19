@@ -1,9 +1,12 @@
 name: Agent Simplify Review
 
 on:
+  # This event only cancels a stale Ponytail run. The job condition below does
+  # not start Ponytail until Sudden Agent submits a clean review for the new head.
   pull_request:
-    types: [opened, reopened, synchronize, ready_for_review]
-    branches: [main]
+    types: [synchronize]
+  pull_request_review:
+    types: [submitted]
   issue_comment:
     types: [created, edited]
   workflow_dispatch:
@@ -20,29 +23,30 @@ permissions:
 
 concurrency:
   group: agent-simplify-review-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   simplify:
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' &&
-        github.event.pull_request.draft == false &&
-        github.event.pull_request.head.repo.full_name == github.repository &&
-        github.event.pull_request.user.login != 'dependabot[bot]') ||
       (github.event_name == 'issue_comment' &&
         github.event.issue.pull_request &&
         github.event.comment.body == '/agent simplify' &&
-        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+      (github.event_name == 'pull_request_review' &&
+        github.event.review.user.login == 'conduit-sudden-agent[bot]' &&
+        contains(github.event.review.body, '<!-- conduit:sudden-review clean head='))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Validate pull request
+      - name: Validate pull request and trigger
         id: pr
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
+          TRIGGER_REVIEW_ID: ${{ github.event.review.id }}
+          TRIGGER_COMMIT_ID: ${{ github.event.review.commit_id }}
         run: |
           set -euo pipefail
 
@@ -52,9 +56,9 @@ jobs:
           fi
 
           metadata="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
-            --json baseRefName,headRefOid,isCrossRepository,state \
-            --jq '[.baseRefName // "", .headRefOid // "", ((.isCrossRepository == true) | tostring), .state // ""] | join("\u001f")')"
-          IFS=$'\x1f' read -r base_ref head_sha is_cross_repo state <<< "$metadata"
+            --json baseRefName,headRefOid,isCrossRepository,isDraft,state \
+            --jq '[.baseRefName // "", .headRefOid // "", ((.isCrossRepository == true) | tostring), ((.isDraft == true) | tostring), .state // ""] | join("\u001f")')"
+          IFS=$'\x1f' read -r base_ref head_sha is_cross_repo is_draft state <<< "$metadata"
 
           if [[ "$is_cross_repo" == "true" ]]; then
             echo "Simplify review is disabled for cross-repository pull requests." >&2
@@ -64,15 +68,73 @@ jobs:
             echo "Simplify review requires a pull request targeting main." >&2
             exit 1
           fi
+          if [[ "$is_draft" == "true" ]]; then
+            echo "Simplify review requires a ready pull request." >&2
+            exit 1
+          fi
           if [[ "$state" != "OPEN" || -z "$head_sha" ]]; then
             echo "Simplify review requires an open pull request with a resolvable head SHA." >&2
             exit 1
           fi
 
+          should_run=true
+
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request_review" ]]; then
+            if [[ ! "$TRIGGER_REVIEW_ID" =~ ^[1-9][0-9]*$ ]]; then
+              echo "Automatic simplify review requires a valid source review ID." >&2
+              exit 1
+            fi
+            if [[ "$TRIGGER_COMMIT_ID" != "$head_sha" ]]; then
+              echo "The clean review is stale for the current pull request head." >&2
+              exit 1
+            fi
+
+            review="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews/$TRIGGER_REVIEW_ID")"
+            reviewer="$(jq -r '.user.login // ""' <<< "$review")"
+            review_commit="$(jq -r '.commit_id // ""' <<< "$review")"
+            review_body="$(jq -r '.body // ""' <<< "$review")"
+            clean_marker="<!-- conduit:sudden-review clean head=$head_sha -->"
+
+            if [[ "$reviewer" != "conduit-sudden-agent[bot]" ]]; then
+              echo "Automatic simplify review requires the Sudden Agent reviewer." >&2
+              exit 1
+            fi
+            if [[ "$review_commit" != "$head_sha" ]]; then
+              echo "The source review does not match the current pull request head." >&2
+              exit 1
+            fi
+            if [[ "$review_body" != *"$clean_marker"* ]]; then
+              echo "The source review does not contain the exact clean-review marker." >&2
+              exit 1
+            fi
+
+            review_comment_count="$(
+              gh api --paginate \
+                "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews/$TRIGGER_REVIEW_ID/comments?per_page=100" |
+                jq -s 'map(length) | add // 0'
+            )"
+            if [[ "$review_comment_count" != "0" ]]; then
+              echo "The source review contains inline findings; Ponytail will not run." >&2
+              exit 1
+            fi
+
+            previous_ponytail_reviews="$(
+              gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews?per_page=100" |
+                jq -s --arg marker '<!-- conduit:ponytail-final' \
+                  '[.[][] | select((.user.login == "conduit-sudden-agent[bot]") and (((.body // "") | contains($marker))))] | length'
+            )"
+            if (( previous_ponytail_reviews > 0 )); then
+              echo "A final Ponytail review already exists; skipping the automatic rerun."
+              should_run=false
+            fi
+          fi
+
           echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
           echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+          echo "should_run=$should_run" >> "$GITHUB_OUTPUT"
 
       - name: Require automation credentials
+        if: steps.pr.outputs.should_run == 'true'
         shell: bash
         env:
           CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
@@ -85,14 +147,30 @@ jobs:
           [[ -n "$GITHUB_APP_PRIVATE_KEY" ]] || { echo "WORKFLOW_AGENT_GITHUB_APP_PRIVATE_KEY is required." >&2; exit 1; }
 
       - name: Checkout immutable pull request head
+        if: steps.pr.outputs.should_run == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
           ref: ${{ steps.pr.outputs.head_sha }}
 
+      - name: Stage pinned Ponytail review skill
+        if: steps.pr.outputs.should_run == 'true'
+        shell: bash
+        env:
+          PONYTAIL_SKILL_URL: https://raw.githubusercontent.com/DietrichGebert/ponytail/0a4dd63ad4541f4f655c4108a295916f3c1d8fda/skills/ponytail-review/SKILL.md
+          PONYTAIL_SKILL_SHA256: 40df33b58fc6ef889b93585733feb9566b76e9586efa7f376785c1e995197ac0
+        run: |
+          set -euo pipefail
+          skill_path=".agents/skills/ponytail-review/SKILL.md"
+          mkdir -p "$(dirname "$skill_path")"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+            "$PONYTAIL_SKILL_URL" --output "$skill_path"
+          printf '%s  %s\n' "$PONYTAIL_SKILL_SHA256" "$skill_path" | sha256sum --check --strict
+
       - name: Create GitHub App review token
         id: app_token
+        if: steps.pr.outputs.should_run == 'true'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ vars.WORKFLOW_AGENT_GITHUB_APP_CLIENT_ID }}
@@ -101,7 +179,8 @@ jobs:
           permission-contents: read
           permission-pull-requests: write
 
-      - name: Run simplify review
+      - name: Run final Ponytail review
+        if: steps.pr.outputs.should_run == 'true'
         uses: sudden-network/agent@2afabe84ac9bf58e57f605b41b2c4f87bbe9c579 # v1.14.1
         with:
           agent_auth_file: ${{ secrets.CODEX_AUTH_JSON }}
@@ -110,53 +189,60 @@ jobs:
           model: ${{ vars.WORKFLOW_AGENT_CODEX_MODEL || 'gpt-5.6-sol/xhigh' }}
           resume: false
           prompt: |
-            Perform a read-only simplicity review of Conduit-BTC/conduit-mono
-            PR #${{ steps.pr.outputs.number }}. This complements normal
-            correctness and security review; do not edit files, push, change
-            labels, merge, deploy, request reviewers, or update external systems.
-
-            Review the complete base-to-head diff on every run, including runs
-            caused by a new push. Treat this as a fresh review, not an
-            incremental continuation of an earlier session.
+            Use the $ponytail-review skill to perform one read-only final
+            simplicity review of Conduit-BTC/conduit-mono PR
+            #${{ steps.pr.outputs.number }} at head
+            ${{ steps.pr.outputs.head_sha }}. Review the complete base-to-head
+            diff. Do not edit files, push, change labels, merge, deploy, request
+            reviewers, or update external systems.
 
             Read AGENTS.md, contributor guidance, the changed files, and their
-            callers before judging the diff. Report a finding only when you can
-            name a concrete, behavior-preserving replacement that is smaller or
-            reuses an established implementation. Look for duplicate helpers,
-            app-local code that belongs in an existing shared owner, unnecessary
-            dependencies, speculative abstractions/configuration, and custom
-            code replacing an existing library or platform capability. Do not
-            use raw line count or file count as evidence.
+            callers before judging the diff. Apply the skill only to concrete,
+            behavior-preserving reductions. Preserve repository ownership
+            boundaries, validation, error handling, security, accessibility,
+            observability, documentation, migrations, generated artifacts, and
+            required tests.
 
             Conduit-specific boundaries:
-            - Prefer @conduit/core protocol/schema/helpers and @conduit/ui
-              primitives; preserve the core → ui → apps ownership direction.
-            - Do not recommend route-local Nostr parsing, publish, relay, signer,
-              payment, cache/outbox, or encrypted-message behavior.
-            - A native control is not simpler when it bypasses an existing
-              @conduit/ui primitive or its accessibility/design behavior.
+            - Prefer existing @conduit/core protocol, schema, and helper owners,
+              and @conduit/ui primitives. Preserve core → ui → apps ownership.
+            - Do not recommend route-local Nostr parsing, publishing, relay,
+              signer, payment, cache, outbox, or encrypted-message behavior.
             - Never simplify away interoperability, external-signer boundaries,
               relay partial failures, non-custodial payment safety, privacy-safe
               telemetry, content-free diagnostics, tests, or public-repo rules.
-            - Do not expose private planning, credentials, message/order/payment
-              content, signer material, wallet data, or operational payloads.
-
-            Evidence threshold:
-            - The replacement must preserve requested behavior, repo boundaries,
-              validation, error handling, security, accessibility, observability,
-              documentation, migrations, generated artifacts, and required tests.
-            - Required cross-layer changes are completeness, not bloat.
-            - If no change clears this threshold, submit a concise clean review.
+            - Do not expose private planning, credentials, message, order, or
+              payment content, signer material, wallet data, or operational payloads.
 
             Review delivery contract:
-            - Before submitting, inspect existing unresolved inline simplify findings. Do not duplicate an equivalent unresolved finding.
-            - Submit review feedback through GitHub pull request reviews, not PR Conversation or issue comments.
-            - Use `github.octokit_request` with `POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews` for the final review submission. Include `event: "COMMENT"` and a concise `body` so GitHub submits the review immediately instead of leaving it pending.
-            - Every actionable code finding must be an inline PR review comment on a changed file and line so GitHub creates a resolvable conversation. Use `comments[].body`, `comments[].path`, `comments[].line`, and `comments[].side`. Use `"RIGHT"` for additions or context and `"LEFT"` for deletions.
-            - For a finding spanning multiple files, anchor the inline comment on the primary changed line and mention the related files in that comment body.
-            - Do not post actionable findings as issue comments or PR Conversation comments. If an inline PR review cannot be submitted, leave no top-level finding and state the delivery blocker in the PR review body.
-            - Keep the PR review body to a concise summary and residual test or release risks. Do not duplicate actionable finding detail there.
-
-            When the correction is a small exact replacement, include a GitHub
-            suggestion block in the inline comment. Otherwise describe the
-            concrete replacement without proposing a broad refactor.
+            - Before submitting, inspect existing unresolved inline Ponytail or
+              simplify findings. Do not duplicate an equivalent finding.
+            - Immediately before submission, fetch the pull request again. If
+              its head is not `${{ steps.pr.outputs.head_sha }}`, stop without
+              submitting a review.
+            - Submit review feedback through one GitHub pull request review, not
+              PR Conversation or issue comments.
+            - Use `github.octokit_request` with
+              `POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews` for the
+              final review submission. Include `event: "COMMENT"`,
+              `commit_id: "${{ steps.pr.outputs.head_sha }}"`, and a concise
+              `body` so GitHub submits the review immediately.
+            - Every actionable simplification must be an inline PR review
+              comment on a changed file and line. Use `comments[].body`,
+              `comments[].path`, `comments[].line`, and `comments[].side`. Use
+              `"RIGHT"` for additions or context and `"LEFT"` for deletions.
+            - For a finding spanning multiple files, anchor the inline comment
+              on the primary changed line. Mention related files in that body.
+            - Do not post actionable findings as issue comments or PR
+              Conversation comments. If an inline PR review cannot be submitted,
+              leave no top-level finding. State the delivery blocker in the PR
+              review body.
+            - Keep the review body to a concise outcome, the skill's net line
+              metric, and residual test or release risks. Do not duplicate
+              actionable finding detail there.
+            - Always include
+              `<!-- conduit:ponytail-final head=${{ steps.pr.outputs.head_sha }} -->`
+              in the review body. This marker makes the automatic handoff run
+              once for this pull request. The head records review provenance.
+            - If there is nothing to cut, include the marker, say
+              `Lean already. Ship.`, and stop.
