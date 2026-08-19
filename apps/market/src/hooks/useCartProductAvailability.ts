@@ -1,14 +1,12 @@
 import { useMemo } from "react"
 import { useQuery } from "@tanstack/react-query"
+import { getProductsByIds } from "@conduit/core"
 import {
-  getProductsByIds,
-  type ProductAvailabilityDiagnostic,
-} from "@conduit/core"
-import {
+  getCartAvailabilityReadDecision,
   getCartProductAvailability,
-  isCartAvailabilityReadFresh,
   isCartProductAvailabilityBlocking,
   type CartItem,
+  type CartAvailabilityReadDecision,
   type CartProductAvailability,
 } from "../lib/cart-model"
 
@@ -42,6 +40,17 @@ export function useCartProductAvailability(items: CartItem[]) {
     () => new Map(availability.map((entry) => [entry.productId, entry])),
     [availability]
   )
+  const readDecision = useMemo(
+    () =>
+      getCartAvailabilityReadDecision({
+        productIds,
+        availability,
+        meta: query.data?.meta,
+        diagnostics: query.data?.diagnostics ?? [],
+        querySucceeded: query.isSuccess,
+      }),
+    [availability, productIds, query.data, query.isSuccess]
+  )
   const hasInsufficientStockItems = availability.some(
     (entry) => entry.status === "insufficient_stock"
   )
@@ -50,8 +59,7 @@ export function useCartProductAvailability(items: CartItem[]) {
   )
   async function refresh(): Promise<{
     availability: CartProductAvailability[]
-    fresh: boolean
-    diagnostics: ProductAvailabilityDiagnostic[]
+    decision: CartAvailabilityReadDecision
   }> {
     const result = await query.refetch()
     const commerceResult = result.isSuccess ? result.data : undefined
@@ -59,16 +67,17 @@ export function useCartProductAvailability(items: CartItem[]) {
       items,
       commerceResult?.data
     )
-    const diagnostics = commerceResult?.diagnostics ?? []
+    const decision = getCartAvailabilityReadDecision({
+      productIds,
+      availability: refreshedAvailability,
+      meta: commerceResult?.meta,
+      diagnostics: commerceResult?.diagnostics ?? [],
+      querySucceeded: result.isSuccess,
+    })
 
     return {
       availability: refreshedAvailability,
-      fresh: isCartAvailabilityReadFresh(
-        refreshedAvailability,
-        commerceResult?.meta,
-        diagnostics
-      ),
-      diagnostics,
+      decision,
     }
   }
 
@@ -77,6 +86,7 @@ export function useCartProductAvailability(items: CartItem[]) {
     hasInsufficientStockItems,
     hasUnavailableItems,
     isChecking: query.isLoading || query.isFetching,
+    readDecision,
     refresh,
   }
 }

@@ -44,6 +44,81 @@ describe("checkout completion navigation contracts", () => {
     expect(checkoutRoute).toContain("amountSats: deliveredAmountSats")
   })
 
+  it("does not report downstream checkout failures before those steps start", async () => {
+    const checkoutRoute = await Bun.file(
+      "apps/market/src/routes/checkout.tsx"
+    ).text()
+    const placeOrderStart = checkoutRoute.indexOf(
+      "async function placeOrder(): Promise<void>"
+    )
+    const placeOrderEnd = checkoutRoute.indexOf(
+      "// ─── Fast zap path",
+      placeOrderStart
+    )
+    const placeOrderSource = checkoutRoute.slice(placeOrderStart, placeOrderEnd)
+    const orderAvailability = placeOrderSource.indexOf(
+      'await assertCheckoutItemsAvailable("order_first")'
+    )
+    const orderStarted = placeOrderSource.indexOf("orderSubmitStarted = true")
+    const orderStartedTelemetry = placeOrderSource.indexOf(
+      'status: "started"',
+      orderStarted
+    )
+    const orderFailureGuard = placeOrderSource.indexOf(
+      "if (orderSubmitStarted) {"
+    )
+    const orderFailure = placeOrderSource.indexOf(
+      'stepName: "order_submit"',
+      orderFailureGuard
+    )
+
+    expect(placeOrderStart).toBeGreaterThan(-1)
+    expect(placeOrderEnd).toBeGreaterThan(placeOrderStart)
+    expect(placeOrderSource).toContain("let orderSubmitStarted = false")
+    expect(orderStarted).toBeGreaterThan(orderAvailability)
+    expect(orderStartedTelemetry).toBeGreaterThan(orderStarted)
+    expect(orderFailureGuard).toBeGreaterThan(orderStartedTelemetry)
+    expect(orderFailure).toBeGreaterThan(orderFailureGuard)
+    expect(placeOrderSource).toContain(
+      'status: orderSubmitStarted ? "failed" : "blocked"'
+    )
+
+    const payNowStart = checkoutRoute.indexOf(
+      "async function payNow(): Promise<void>"
+    )
+    const payNowEnd = checkoutRoute.indexOf(
+      "// --- Full-screen transition states",
+      payNowStart
+    )
+    const payNowSource = checkoutRoute.slice(payNowStart, payNowEnd)
+    const paymentAvailability = payNowSource.indexOf(
+      "await assertCheckoutItemsAvailable(requestedCheckoutMode)"
+    )
+    const paymentStarted = payNowSource.indexOf("directPaymentStarted = true")
+    const paymentStartedTelemetry = payNowSource.indexOf(
+      'stepName: "direct_payment"',
+      paymentStarted
+    )
+    const paymentFailureGuard = payNowSource.indexOf(
+      "if (directPaymentStarted) {"
+    )
+    const paymentFailure = payNowSource.indexOf(
+      'stepName: "direct_payment"',
+      paymentFailureGuard
+    )
+
+    expect(payNowStart).toBeGreaterThan(-1)
+    expect(payNowEnd).toBeGreaterThan(payNowStart)
+    expect(payNowSource).toContain("let directPaymentStarted = false")
+    expect(paymentStarted).toBeGreaterThan(paymentAvailability)
+    expect(paymentStartedTelemetry).toBeGreaterThan(paymentStarted)
+    expect(paymentFailureGuard).toBeGreaterThan(paymentStartedTelemetry)
+    expect(paymentFailure).toBeGreaterThan(paymentFailureGuard)
+    expect(payNowSource).toContain(
+      'status: directPaymentStarted ? "failed" : "blocked"'
+    )
+  })
+
   it("keeps anonymous zap preparation behind durable order delivery", async () => {
     const checkoutRoute = await Bun.file(
       "apps/market/src/routes/checkout.tsx"

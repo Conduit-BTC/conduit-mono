@@ -11,6 +11,7 @@ function adjustment(
     addressId: "30402:merchant:pocket-relay",
     sourceEventId: "event-1",
     title: "Pocket Relay",
+    state: "stock_update_available",
     quantity: 2,
     currentStock: 12,
     nextStock: 10,
@@ -36,6 +37,8 @@ describe("merchant order stock UI", () => {
         pending={false}
         updatePending={false}
         errorMessage={null}
+        canMessageBuyer
+        onMessageBuyer={() => undefined}
         {...handlers}
       />
     )
@@ -47,6 +50,7 @@ describe("merchant order stock UI", () => {
     expect(markup).toContain("12 → 10")
     expect(markup).toContain("Update to 10")
     expect(markup).toContain("Keep 12")
+    expect(markup).not.toContain("Message buyer")
     expect(markup).toContain('aria-labelledby="order-stock-heading"')
   })
 
@@ -55,6 +59,7 @@ describe("merchant order stock UI", () => {
       <OrderStockPanel
         adjustments={[
           adjustment({
+            state: "restocking_required",
             quantity: 5,
             currentStock: 2,
             nextStock: 0,
@@ -70,8 +75,51 @@ describe("merchant order stock UI", () => {
       />
     )
 
+    expect(markup).toContain("Restocking required")
     expect(markup).toContain("exceeds tracked stock by 3")
     expect(markup).toContain("Update to 0")
+    expect(markup).not.toContain("Keep 2")
+    expect(markup).not.toContain("Message buyer")
+  })
+
+  it("shows merchant resolution options when tracked stock is already zero", () => {
+    const markup = renderToStaticMarkup(
+      <OrderStockPanel
+        adjustments={[
+          adjustment({
+            state: "restocking_required",
+            quantity: 1,
+            currentStock: 0,
+            nextStock: 0,
+            shortfall: 1,
+          }),
+        ]}
+        delivery={null}
+        deliveryNeedsAttention={false}
+        pending={false}
+        updatePending={false}
+        errorMessage={null}
+        canMessageBuyer
+        onMessageBuyer={() => undefined}
+        {...handlers}
+      />
+    )
+
+    expect(markup).toContain("Restocking required")
+    expect(markup).toContain("tracked stock is already 0")
+    expect(markup).toContain("fulfill it after restocking")
+    expect(markup).toContain("if they are first in line")
+    expect(markup).toContain("coordinate a refund")
+    expect(markup).toContain("Message buyer")
+    expect(markup).not.toContain("Keep stock at 0")
+    expect(markup).not.toContain("Update to 0")
+  })
+
+  it("keeps merchant stock mutation verification strict", async () => {
+    const source = await Bun.file("apps/merchant/src/routes/orders.tsx").text()
+
+    expect(source).toContain("latest.meta.degraded || latest.meta.stale")
+    expect(source).not.toContain("hasExactLiveProductAvailabilityEvidence")
   })
 
   it("keeps signed relay delivery status and retry visible", () => {

@@ -35,6 +35,12 @@ import type {
   CachedProfile,
 } from "@conduit/core"
 import { attachEventSourceRelayUrl } from "@conduit/core/protocol/ndk"
+import {
+  getCartAvailabilityBlockingMessage,
+  getCartAvailabilityReadDecision,
+  getCartProductAvailability,
+  type CartItem,
+} from "../apps/market/src/lib/cart-model"
 
 const FIXED_NOW = 1_700_000_000_000
 const MERCHANT_A_SECRET = new Uint8Array(32).fill(1)
@@ -172,6 +178,47 @@ function makeSignedProductEvent(params: {
     secretKey
   )
   return new NDKEvent(undefined, signed)
+}
+
+function composeCheckoutAvailability(
+  result: Awaited<ReturnType<typeof getProductsByIds>>,
+  input: {
+    productId: string
+    merchantPubkey: string
+    title: string
+  }
+) {
+  const items: CartItem[] = [
+    {
+      productId: input.productId,
+      merchantPubkey: input.merchantPubkey,
+      title: input.title,
+      price: 25,
+      currency: "USD",
+      stock: 1,
+      quantity: 1,
+    },
+  ]
+  const availability = getCartProductAvailability(
+    items,
+    result.data.map((record) => record.product)
+  )
+  const decision = getCartAvailabilityReadDecision({
+    productIds: [input.productId],
+    availability,
+    meta: result.meta,
+    diagnostics: result.diagnostics,
+    querySucceeded: true,
+  })
+
+  return {
+    availability,
+    decision,
+    inventoryMessage: getCartAvailabilityBlockingMessage(
+      items,
+      new Map(availability.map((entry) => [entry.productId, entry]))
+    ),
+  }
 }
 
 function makeSignedDeletionEvent(params: {
@@ -3758,6 +3805,7 @@ describe("getProductsByIds diagnostics", () => {
       dTag: "diagnosed-partial-live",
       createdAt: 100,
       title: "Partial Live",
+      stock: 1,
     })
     const liveAddressId = `30402:${liveEvent.pubkey}:diagnosed-partial-live`
     __setCommerceTestOverrides({
@@ -3782,13 +3830,32 @@ describe("getProductsByIds diagnostics", () => {
     })
 
     const result = await getProductsByIds([liveAddressId])
+    const checkout = composeCheckoutAvailability(result, {
+      productId: liveAddressId,
+      merchantPubkey: liveEvent.pubkey,
+      title: "Partial Live",
+    })
 
     expect(result.data[0]?.eventId).toBe(liveEvent.id)
     expect(result.diagnostics[0]).toMatchObject({
       issue: null,
       coverage: { listing: "partial" },
     })
+    expect(result.meta.stale).toBe(true)
     expect(result.meta.degraded).toBe(true)
+    expect(checkout.availability).toEqual([
+      {
+        productId: liveAddressId,
+        status: "available",
+        stock: 1,
+        refreshed: true,
+      },
+    ])
+    expect(checkout.decision).toEqual({
+      status: "verified_at_read",
+      coverage: "partial",
+    })
+    expect(checkout.inventoryMessage).toBeNull()
   })
 
   it("surfaces a parked author relay without vetoing exact live evidence", async () => {
@@ -3839,6 +3906,7 @@ describe("getProductsByIds diagnostics", () => {
       coverage: { listing: "partial", deletion: "partial" },
     })
     expect(result.meta.source).toBe("commerce")
+    expect(result.meta.stale).toBe(true)
     expect(result.meta.degraded).toBe(true)
   })
 
@@ -3946,6 +4014,7 @@ describe("getProductsByIds diagnostics", () => {
       dTag: "diagnosed-deletion-unavailable",
       createdAt: 100,
       title: "Deletion Discovery Unavailable",
+      stock: 1,
     })
     const liveAddressId = `30402:${liveEvent.pubkey}:diagnosed-deletion-unavailable`
     __setCommerceTestOverrides({
@@ -3969,6 +4038,11 @@ describe("getProductsByIds diagnostics", () => {
     })
 
     const result = await getProductsByIds([liveAddressId])
+    const checkout = composeCheckoutAvailability(result, {
+      productId: liveAddressId,
+      merchantPubkey: liveEvent.pubkey,
+      title: "Deletion Discovery Unavailable",
+    })
 
     expect(result.data[0]?.eventId).toBe(liveEvent.id)
     expect(result.diagnostics[0]).toMatchObject({
@@ -3977,6 +4051,11 @@ describe("getProductsByIds diagnostics", () => {
     })
     expect(result.meta.source).toBe("commerce")
     expect(result.meta.degraded).toBe(true)
+    expect(checkout.decision).toEqual({
+      status: "verified_at_read",
+      coverage: "partial",
+    })
+    expect(checkout.inventoryMessage).toBeNull()
   })
 
   it("blocks cached-only terms when live listing reads are degraded", async () => {

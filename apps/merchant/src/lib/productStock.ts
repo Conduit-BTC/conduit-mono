@@ -1,6 +1,7 @@
 import {
   EVENT_KINDS,
   isValidSignedPublicNostrEvent,
+  parseProductEvent,
   type CommerceProductRecord,
   type ProductFamilyInventorySummary,
   type SignedPublicNostrEvent,
@@ -44,11 +45,15 @@ export interface OrderStockItem {
   quantity: number
 }
 
+export type OrderStockAdjustmentState =
+  "stock_update_available" | "restocking_required"
+
 export interface OrderStockAdjustment {
   key: string
   addressId: string
   sourceEventId: string
   title: string
+  state: OrderStockAdjustmentState
   quantity: number
   currentStock: number
   nextStock: number
@@ -134,27 +139,62 @@ function parseStoredDecisions(raw: string | null): StoredProductStockDecisions {
   }
 }
 
-function isOrderStockAdjustment(value: unknown): value is OrderStockAdjustment {
-  if (!value || typeof value !== "object") return false
-  const adjustment = value as Partial<OrderStockAdjustment>
-  return (
-    typeof adjustment.key === "string" &&
-    typeof adjustment.addressId === "string" &&
-    typeof adjustment.sourceEventId === "string" &&
-    typeof adjustment.title === "string" &&
-    typeof adjustment.quantity === "number" &&
-    Number.isSafeInteger(adjustment.quantity) &&
-    adjustment.quantity > 0 &&
-    typeof adjustment.currentStock === "number" &&
-    Number.isSafeInteger(adjustment.currentStock) &&
-    adjustment.currentStock >= 0 &&
-    typeof adjustment.nextStock === "number" &&
-    Number.isSafeInteger(adjustment.nextStock) &&
-    adjustment.nextStock >= 0 &&
-    typeof adjustment.shortfall === "number" &&
-    Number.isSafeInteger(adjustment.shortfall) &&
-    adjustment.shortfall >= 0
-  )
+function parseOrderStockAdjustment(
+  value: unknown
+): OrderStockAdjustment | null {
+  if (!value || typeof value !== "object") return null
+  const {
+    key,
+    addressId,
+    sourceEventId,
+    title,
+    state: storedState,
+    quantity,
+    currentStock,
+    nextStock: storedNextStock,
+    shortfall: storedShortfall,
+  } = value as Record<string, unknown>
+  if (
+    typeof key !== "string" ||
+    typeof addressId !== "string" ||
+    typeof sourceEventId !== "string" ||
+    typeof title !== "string" ||
+    typeof quantity !== "number" ||
+    !Number.isSafeInteger(quantity) ||
+    quantity <= 0 ||
+    typeof currentStock !== "number" ||
+    !Number.isSafeInteger(currentStock) ||
+    currentStock < 0 ||
+    typeof storedNextStock !== "number" ||
+    !Number.isSafeInteger(storedNextStock) ||
+    storedNextStock < 0 ||
+    typeof storedShortfall !== "number" ||
+    !Number.isSafeInteger(storedShortfall) ||
+    storedShortfall < 0
+  ) {
+    return null
+  }
+
+  const nextStock = Math.max(0, currentStock - quantity)
+  const shortfall = Math.max(0, quantity - currentStock)
+  if (storedNextStock !== nextStock || storedShortfall !== shortfall)
+    return null
+
+  const state: OrderStockAdjustmentState =
+    shortfall > 0 ? "restocking_required" : "stock_update_available"
+  if (storedState !== undefined && storedState !== state) return null
+
+  return {
+    key,
+    addressId,
+    sourceEventId,
+    title,
+    state,
+    quantity,
+    currentStock,
+    nextStock,
+    shortfall,
+  }
 }
 
 function getSignedProductAddressId(
@@ -167,27 +207,55 @@ function getSignedProductAddressId(
   return dTag ? `${event.kind}:${event.pubkey}:${dTag}` : null
 }
 
-function isPendingProductStockDelivery(
+function parsePendingProductStockDelivery(
   value: unknown,
-  merchantPubkey: string
-): value is PendingProductStockDelivery {
-  if (!value || typeof value !== "object") return false
+  merchantPubkey: string,
+  storedDeliveryKey?: string
+): PendingProductStockDelivery | null {
+  if (!value || typeof value !== "object") return null
   const delivery = value as Partial<PendingProductStockDelivery>
+  const adjustment = parseOrderStockAdjustment(delivery.adjustment)
   if (
     typeof delivery.orderId !== "string" ||
     !delivery.orderId.trim() ||
-    !isOrderStockAdjustment(delivery.adjustment) ||
+    !adjustment ||
     !delivery.signedEvent ||
     !isValidSignedPublicNostrEvent(delivery.signedEvent) ||
     delivery.signedEvent.pubkey !== merchantPubkey ||
-    getSignedProductAddressId(delivery.signedEvent) !==
-      delivery.adjustment.addressId ||
+    getSignedProductAddressId(delivery.signedEvent) !== adjustment.addressId ||
     typeof delivery.savedAt !== "number" ||
     !Number.isFinite(delivery.savedAt)
   ) {
-    return false
+    return null
   }
-  return true
+
+  const orderId = delivery.orderId.trim()
+  const canonicalKey = getOrderStockDecisionKey(orderId, adjustment.addressId)
+  if (
+    adjustment.key !== canonicalKey ||
+    (storedDeliveryKey !== undefined && storedDeliveryKey !== canonicalKey)
+  ) {
+    return null
+  }
+
+  try {
+    const signedProduct = parseProductEvent(delivery.signedEvent)
+    if (
+      signedProduct.id !== adjustment.addressId ||
+      signedProduct.stock !== adjustment.nextStock
+    ) {
+      return null
+    }
+  } catch {
+    return null
+  }
+
+  return {
+    orderId,
+    adjustment,
+    signedEvent: delivery.signedEvent,
+    savedAt: delivery.savedAt,
+  }
 }
 
 function parseStoredDeliveries(
@@ -212,9 +280,12 @@ function parseStoredDeliveries(
 
     const deliveries: Record<string, PendingProductStockDelivery> = {}
     for (const [key, value] of Object.entries(candidate.deliveries)) {
-      if (isPendingProductStockDelivery(value, merchantPubkey)) {
-        deliveries[key] = value
-      }
+      const delivery = parsePendingProductStockDelivery(
+        value,
+        merchantPubkey,
+        key
+      )
+      if (delivery) deliveries[key] = delivery
     }
     return { version: 1, deliveries }
   } catch {
@@ -288,6 +359,24 @@ export function getOrderStockDecisionKey(
   )}`
 }
 
+export function shouldShowOrderStockAdjustment(input: {
+  adjustment: OrderStockAdjustment
+  orderStatus: string | null | undefined
+  hasSessionDecision: boolean
+  persistedDecision: ProductStockDecision | null
+}): boolean {
+  if (
+    input.orderStatus === "cancelled" ||
+    input.orderStatus === "complete" ||
+    input.orderStatus === "delivered" ||
+    input.orderStatus === "refund_requested"
+  ) {
+    return false
+  }
+  if (input.adjustment.state === "restocking_required") return true
+  return !input.hasSessionDecision && !input.persistedDecision
+}
+
 export function buildOrderStockAdjustments(input: {
   orderId: string
   merchantPubkey: string
@@ -324,35 +413,51 @@ export function buildOrderStockAdjustments(input: {
     string,
     { record: CommerceProductRecord; quantity: number }
   >()
+  const unsafeQuantityAddresses = new Set<string>()
   for (const item of input.items) {
     if (!Number.isSafeInteger(item.quantity) || item.quantity <= 0) continue
     const record = recordsByLookupId.get(normalizeLookupId(item.productId))
     if (!record) continue
+    if (unsafeQuantityAddresses.has(record.addressId)) continue
 
     const current = quantitiesByAddress.get(record.addressId)
+    const quantity = (current?.quantity ?? 0) + item.quantity
+    if (!Number.isSafeInteger(quantity)) {
+      quantitiesByAddress.delete(record.addressId)
+      unsafeQuantityAddresses.add(record.addressId)
+      continue
+    }
     quantitiesByAddress.set(record.addressId, {
       record,
-      quantity: (current?.quantity ?? 0) + item.quantity,
+      quantity,
     })
   }
 
-  return Array.from(quantitiesByAddress.values())
-    .map(({ record, quantity }) => {
-      const currentStock = record.product.stock!
-      const nextStock = Math.max(0, currentStock - quantity)
-      return {
-        key: getOrderStockDecisionKey(input.orderId, record.addressId),
-        addressId: record.addressId,
-        sourceEventId: record.eventId,
-        title: record.product.title,
-        quantity,
-        currentStock,
-        nextStock,
-        shortfall: Math.max(0, quantity - currentStock),
-      }
+  const adjustments: OrderStockAdjustment[] = []
+  for (const { record, quantity } of quantitiesByAddress.values()) {
+    const currentStock = record.product.stock!
+    const nextStock = Math.max(0, currentStock - quantity)
+    const shortfall = Math.max(0, quantity - currentStock)
+    const state: OrderStockAdjustmentState =
+      shortfall > 0 ? "restocking_required" : "stock_update_available"
+    if (state !== "restocking_required" && currentStock === nextStock) continue
+
+    adjustments.push({
+      key: getOrderStockDecisionKey(input.orderId, record.addressId),
+      addressId: record.addressId,
+      sourceEventId: record.eventId,
+      title: record.product.title,
+      state,
+      quantity,
+      currentStock,
+      nextStock,
+      shortfall,
     })
-    .filter((adjustment) => adjustment.currentStock !== adjustment.nextStock)
-    .sort((left, right) => left.title.localeCompare(right.title))
+  }
+
+  return adjustments.sort((left, right) =>
+    left.title.localeCompare(right.title)
+  )
 }
 
 export class ProductStockDecisionStore {
@@ -462,15 +567,22 @@ export class PendingProductStockDeliveryStore {
       orderId: delivery.orderId.trim(),
       savedAt: Date.now(),
     }
-    if (!isPendingProductStockDelivery(pending, normalizedMerchant)) {
+    const normalizedPending = parsePendingProductStockDelivery(
+      pending,
+      normalizedMerchant
+    )
+    if (!normalizedPending) {
       throw new Error("Expected a valid signed product stock delivery")
     }
 
     const deliveryKey = getOrderStockDecisionKey(
-      pending.orderId,
-      pending.adjustment.addressId
+      normalizedPending.orderId,
+      normalizedPending.adjustment.addressId
     )
-    this.memoryDeliveries.set(`${normalizedMerchant}:${deliveryKey}`, pending)
+    this.memoryDeliveries.set(
+      `${normalizedMerchant}:${deliveryKey}`,
+      normalizedPending
+    )
 
     const storageKey = getDeliveryStorageKey(normalizedMerchant)
     if (!storageKey || !this.storage) return false
@@ -479,7 +591,7 @@ export class PendingProductStockDeliveryStore {
         this.storage.getItem(storageKey),
         normalizedMerchant
       )
-      stored.deliveries[deliveryKey] = pending
+      stored.deliveries[deliveryKey] = normalizedPending
       const entries = Object.entries(stored.deliveries).sort(
         ([, left], [, right]) => right.savedAt - left.savedAt
       )

@@ -112,6 +112,7 @@ import {
   buildOrderStockAdjustments,
   PendingProductStockDeliveryStore,
   ProductStockDecisionStore,
+  shouldShowOrderStockAdjustment,
   type OrderStockAdjustment,
 } from "../lib/productStock"
 import {
@@ -761,23 +762,6 @@ function OrdersPage() {
     () => (selected ? getMerchantOrderSummary(selected) : null),
     [selected]
   )
-  const stockAdjustments =
-    !selected || !orderSummary || !pubkey
-      ? []
-      : buildOrderStockAdjustments({
-          orderId: selected.orderId,
-          merchantPubkey: pubkey,
-          items: orderSummary.items,
-          productRecords: orderProductsQuery.data?.data ?? [],
-        }).filter(
-          (adjustment) =>
-            !sessionStockDecisionKeys.has(`${pubkey}:${adjustment.key}`) &&
-            !stockDecisionStoreRef.current.get(
-              pubkey,
-              selected.orderId,
-              adjustment.addressId
-            )
-        )
   const selectedStatusDisplay = useMemo(
     () =>
       selected ? getMerchantConversationStatusDisplay(selected) : undefined,
@@ -814,6 +798,28 @@ function OrdersPage() {
         ),
       }
     : { status: null }
+  const stockAdjustments =
+    !selected || !orderSummary || !pubkey
+      ? []
+      : buildOrderStockAdjustments({
+          orderId: selected.orderId,
+          merchantPubkey: pubkey,
+          items: orderSummary.items,
+          productRecords: orderProductsQuery.data?.data ?? [],
+        }).filter((adjustment) =>
+          shouldShowOrderStockAdjustment({
+            adjustment,
+            orderStatus: merchantOrderState.status,
+            hasSessionDecision: sessionStockDecisionKeys.has(
+              `${pubkey}:${adjustment.key}`
+            ),
+            persistedDecision: stockDecisionStoreRef.current.get(
+              pubkey,
+              selected.orderId,
+              adjustment.addressId
+            ),
+          })
+        )
   const merchantPaid = isMerchantOrderPaid(merchantOrderState)
   const safeTrackingUrl = normalizeSafeHttpUrl(orderSummary?.trackingUrl)
   const assertPaidForFulfillment = useCallback(() => {
@@ -1745,8 +1751,10 @@ function OrdersPage() {
                             pending={orderActionPending}
                             updatePending={stockUpdateMutation.isPending}
                             errorMessage={stockUpdateErrorMessage}
+                            canMessageBuyer={buyerInboxKnown}
                             onUpdate={updateStock}
                             onDecline={keepCurrentStock}
+                            onMessageBuyer={() => setMessagesOpen(true)}
                             onRetry={retryStockDelivery}
                             onDismissDelivery={dismissStockDelivery}
                           />
