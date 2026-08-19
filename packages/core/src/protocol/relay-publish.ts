@@ -891,7 +891,19 @@ export async function publishWithPlanner(
     })
   }
 
-  assertShouldContinue()
+  if (input.shouldContinue?.() === false) {
+    return {
+      plan,
+      attemptedRelayUrls: mergeUnique([
+        plan.primaryRelayUrls,
+        primary.successfulRelayUrls,
+        primary.failedRelayUrls,
+      ]),
+      successfulRelayUrls: primary.successfulRelayUrls,
+      failedRelayUrls: primary.failedRelayUrls,
+      relayFailureMessages: primary.relayFailureMessages,
+    }
+  }
   const broadcast = await publishToRelayUrls({
     event,
     ndk,
