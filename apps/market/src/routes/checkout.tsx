@@ -11,7 +11,7 @@ import {
 } from "lucide-react"
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { useQuery } from "@tanstack/react-query"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   EVENT_KINDS,
@@ -50,6 +50,7 @@ import {
   Badge,
   Button,
   Combobox,
+  HoldToReleaseButton,
   Input,
   Label,
   Textarea,
@@ -62,7 +63,13 @@ import {
 } from "../components/MerchantIdentity"
 import { SignerSwitch } from "../components/SignerSwitch"
 import { type CartItem, useCart } from "../hooks/useCart"
-import { useCartProductAvailability } from "../hooks/useCartProductAvailability"
+import {
+  merchantLnurlPreflightQueryOptions,
+  normalizeMerchantLnurlAddress,
+  useCartReadiness,
+  useMerchantLnurlPreflight,
+  type MerchantCartRefreshResult,
+} from "../hooks/useCartReadiness"
 import { useMerchantTrustContext } from "../hooks/useMerchantTrustContext"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import {
@@ -79,13 +86,18 @@ import {
 import {
   getCartAvailabilityBlockingMessage,
   getCartAvailabilityVerificationMessage,
+  getCartItemKey,
   getCartPublicZapPolicy,
+  cartItemsMatchCurrentProducts,
   isCartProductAvailabilityBlocking,
+  selectMerchantCartItems,
   type CartProductAvailability,
 } from "../lib/cart-model"
 import { LightningStrikeOverlay } from "../components/LightningStrikeOverlay"
 import {
+  buildShippingAddressFromForm,
   isFastCheckoutEligible,
+  isFastCheckoutInputPending,
   getFastCheckoutUnavailableReasons,
   getShippingCheckoutState,
   getShippingStepBlockingMessage,
@@ -132,6 +144,12 @@ import {
   createSessionGuestOrderSigningIdentity,
 } from "../lib/guest-order-identity"
 import {
+  consumeHudZapIntent,
+  getHudZapAuthorizationBindingMismatch,
+  getHudZapAuthorizationRejection,
+  type HudZapAuthorization,
+} from "../lib/hud-zap-intent"
+import {
   runOrderPayment,
   type OrderPaymentContext,
 } from "../lib/order-payment-service"
@@ -149,6 +167,7 @@ type CheckoutStep =
 
 type CheckoutSearch = {
   merchant?: string
+  intent?: "zap"
 }
 
 type CheckoutTelemetryMode = "checkout" | "order_first" | CheckoutZapMode
@@ -195,6 +214,7 @@ export const Route = createFileRoute("/checkout")({
       typeof search.merchant === "string"
         ? (normalizePubkey(search.merchant) ?? search.merchant)
         : undefined,
+    intent: search.intent === "zap" ? "zap" : undefined,
   }),
   component: CheckoutPage,
 })
@@ -567,7 +587,7 @@ function OrderSummary({
           const imageUrl = normalizePublicMediaUrl(item.image)
           return (
             <div
-              key={item.productId}
+              key={getCartItemKey(item)}
               className={`grid grid-cols-[72px_minmax(0,1fr)_auto] gap-3 border-b border-[var(--border)] pb-4 last:border-b-0 last:pb-0 ${
                 unavailable ? "opacity-80" : ""
               }`}
@@ -704,6 +724,12 @@ function CheckoutPage() {
   // first tick so a second click is rejected before it can publish a duplicate
   // order (CND-89).
   const paymentInFlightRef = useRef(false)
+  const autoZapStartedRef = useRef(false)
+  const payNowRef = useRef<
+    (zapAuthorization?: HudZapAuthorization | null) => Promise<void>
+  >(async () => undefined)
+  const [autoZapAuthorization, setAutoZapAuthorization] =
+    useState<HudZapAuthorization | null>(null)
   const anonZapSignerAvailable = isAnonZapSignerConfigured()
   const defaultPublicZapMode: CheckoutZapMode = anonZapSignerAvailable
     ? "anonymous_public_zap"
@@ -724,11 +750,6 @@ function CheckoutPage() {
   const authPending = authStatus === "restoring" || authStatus === "connecting"
   const isGuestCheckout = !signerConnected && !authPending
 
-  // LNURL probe state
-  const [lnurlPayAvailable, setLnurlPayAvailable] = useState(false)
-  const [lnurlAllowsNostr, setLnurlAllowsNostr] = useState(false)
-  const [lnurlProbing, setLnurlProbing] = useState(false)
-
   const selectedMerchant =
     search.merchant ??
     (Array.from(new Set(cart.items.map((item) => item.merchantPubkey)))
@@ -738,17 +759,37 @@ function CheckoutPage() {
 
   const checkoutItems = useMemo(() => {
     if (!selectedMerchant) return []
-    return cart.items.filter((item) => item.merchantPubkey === selectedMerchant)
+    return selectMerchantCartItems(cart.items, selectedMerchant)
   }, [cart.items, selectedMerchant])
-  const checkoutAvailability = useCartProductAvailability(checkoutItems)
-  const checkoutAvailabilityMessage = useMemo(
-    () =>
-      getCartAvailabilityBlockingMessage(
-        checkoutItems,
-        checkoutAvailability.availabilityByProductId
-      ),
-    [checkoutAvailability.availabilityByProductId, checkoutItems]
+  // Checkout consumes the same prepared per-merchant readiness the HUD and
+  // cart warmed, so arriving within the freshness lease starts no new
+  // blocking read. The authoritative live refresh still happens immediately
+  // before order publication.
+  const checkoutReadiness = useCartReadiness(checkoutItems)
+  const selectedMerchantReadiness = selectedMerchant
+    ? checkoutReadiness.byMerchant.get(selectedMerchant)
+    : undefined
+  const emptyAvailability = useMemo(
+    () => new Map<string, CartProductAvailability>(),
+    []
   )
+  const checkoutAvailability = {
+    availabilityByProductId:
+      selectedMerchantReadiness?.availabilityByProductId ?? emptyAvailability,
+    // Initial no-evidence read only; a background refresh keeps the prepared
+    // evidence actionable instead of blocking every control.
+    isChecking: selectedMerchantReadiness?.isChecking ?? false,
+    refresh:
+      selectedMerchantReadiness?.refresh ??
+      (async (): Promise<MerchantCartRefreshResult> => ({
+        availability: [],
+        products: [],
+        fresh: false,
+        diagnostics: [],
+      })),
+  }
+  const checkoutAvailabilityMessage =
+    selectedMerchantReadiness?.blockingMessage ?? null
   const hasUnavailableCheckoutItems = checkoutAvailabilityMessage !== null
   const publicZapPolicy = useMemo(
     () => getCartPublicZapPolicy(checkoutItems),
@@ -760,31 +801,6 @@ function CheckoutPage() {
       : publicZapPolicy.missingPolicyProductIds.length > 0
         ? "At least one product is missing public zap policy metadata, so checkout will use a private invoice."
         : null
-  const guestZapMode: CheckoutZapMode =
-    anonZapSignerAvailable &&
-    lnurlAllowsNostr &&
-    publicZapPolicy.publicZapsAllowed
-      ? "anonymous_public_zap"
-      : "private_checkout"
-  const selectedZapMode = isGuestCheckout ? guestZapMode : zapMode
-
-  const zapVisibility = getCheckoutZapVisibility(selectedZapMode)
-  const zapContentEditable = isPublicZapContentEditable(
-    selectedZapMode,
-    publicZapPolicy.effectiveZapMessagePolicy
-  )
-  const shopperZapContentEditable =
-    publicZapPolicy.effectiveZapMessagePolicy === "custom"
-  const publicZapModeDescription = publicZapPolicyMessage
-    ? publicZapPolicyMessage
-    : !lnurlAllowsNostr
-      ? "This merchant wallet does not advertise public zap receipts."
-      : shopperZapContentEditable
-        ? "Include an editable public zap comment."
-        : "Use the merchant's generic public zap comment."
-  const anonZapModeDescription = !anonZapSignerAvailable
-    ? "Anon Conduit Shopper signing is not configured yet."
-    : "Use a fixed item-count message without identifying the shopper."
 
   // True when every item in the cart is a digital product (no shipping needed)
   const isAllDigital = useMemo(
@@ -850,6 +866,40 @@ function CheckoutPage() {
   })
   const merchantProfile = merchantTrust.profile
   const merchantLud16 = merchantProfile?.lud16
+  // Shared LNURL-pay metadata preflight: the same cached read the HUD and
+  // cart warmed while this merchant had items in the cart. The lease and
+  // Lightning-address key control refresh; no invoice is requested here.
+  const queryClient = useQueryClient()
+  const lnurlPreflight = useMerchantLnurlPreflight(merchantLud16)
+  const lnurlProbing = lnurlPreflight.status === "pending"
+  const lnurlPayAvailable = lnurlPreflight.status === "ready"
+  const lnurlPayMetadata = lnurlPreflight.metadata
+  const lnurlAllowsNostr = lnurlPayMetadata?.allowsNostr === true
+  const guestZapMode: CheckoutZapMode =
+    anonZapSignerAvailable &&
+    lnurlAllowsNostr &&
+    publicZapPolicy.publicZapsAllowed
+      ? "anonymous_public_zap"
+      : "private_checkout"
+  const selectedZapMode = isGuestCheckout ? guestZapMode : zapMode
+
+  const zapVisibility = getCheckoutZapVisibility(selectedZapMode)
+  const zapContentEditable = isPublicZapContentEditable(
+    selectedZapMode,
+    publicZapPolicy.effectiveZapMessagePolicy
+  )
+  const shopperZapContentEditable =
+    publicZapPolicy.effectiveZapMessagePolicy === "custom"
+  const publicZapModeDescription = publicZapPolicyMessage
+    ? publicZapPolicyMessage
+    : !lnurlAllowsNostr
+      ? "This merchant wallet does not advertise public zap receipts."
+      : shopperZapContentEditable
+        ? "Include an editable public zap comment."
+        : "Use the merchant's generic public zap comment."
+  const anonZapModeDescription = !anonZapSignerAvailable
+    ? "Anon Conduit Shopper signing is not configured yet."
+    : "Use a fixed item-count message without identifying the shopper."
   const merchantName = merchantTrust.merchantName
   const selectZapMode = useCallback(
     (nextMode: CheckoutZapMode) => {
@@ -911,41 +961,6 @@ function CheckoutPage() {
       window.removeEventListener("focus", check)
     }
   }, [])
-
-  // Probe merchant's LNURL for Nostr zap support when merchant profile arrives
-  useEffect(() => {
-    setLnurlPayAvailable(false)
-    setLnurlAllowsNostr(false)
-
-    if (!merchantLud16) {
-      setLnurlProbing(false)
-      return
-    }
-
-    let cancelled = false
-    setLnurlProbing(true)
-
-    fetchLnurlPayMetadata(merchantLud16)
-      .then((meta) => {
-        if (!cancelled) {
-          setLnurlPayAvailable(true)
-          setLnurlAllowsNostr(meta.allowsNostr)
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setLnurlPayAvailable(false)
-          setLnurlAllowsNostr(false)
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setLnurlProbing(false)
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [merchantLud16])
 
   useEffect(() => {
     if (isGuestCheckout) return
@@ -1070,8 +1085,7 @@ function CheckoutPage() {
   })
   const canTrySavedNwcWallet =
     !!wallet.connection &&
-    wallet.status !== "unsupported" &&
-    wallet.status !== "error" &&
+    wallet.status === "pay-capable" &&
     !walletPaymentConstraint
   const canAttemptLightningPayment = canTrySavedNwcWallet || weblnAvailable
   const requiresPublicZap = isCheckoutPublicZapMode(selectedZapMode)
@@ -1082,13 +1096,19 @@ function CheckoutPage() {
       lnurlAllowsNostr,
     }) &&
     (!requiresPublicZap || publicZapPolicy.publicZapsAllowed)
+  const lnurlAmountReady =
+    pricingPreview.status === "ok" &&
+    !!lnurlPayMetadata &&
+    pricingPreview.totalMsats >= lnurlPayMetadata.minSendable &&
+    pricingPreview.totalMsats <= lnurlPayMetadata.maxSendable
   const allowsManualLightningFallback =
-    !!merchantLud16 && lnurlReadyForSelectedPayment
+    !!merchantLud16 && lnurlReadyForSelectedPayment && lnurlAmountReady
   const fastEligibilityInput = {
-    walletPayCapable: canAttemptLightningPayment,
+    walletPayCapable: !isGuestCheckout && canAttemptLightningPayment,
     merchantLud16,
+    merchantProfileUnavailable: merchantTrust.profileState === "limited",
     lnurlAllowsNostr: lnurlReadyForSelectedPayment,
-    allowsManualFallback: allowsManualLightningFallback,
+    lnurlAmountWithinRange: lnurlAmountReady,
     requiresNostrZap: requiresPublicZap,
     pricingReady: pricingPreview.status === "ok",
     shippingEligible: shippingEligibleForFastCheckout,
@@ -1097,6 +1117,13 @@ function CheckoutPage() {
     addressValidForDirectPayment: currentAddressValidity.canDirectPay,
   }
   const fastEligible = isFastCheckoutEligible(fastEligibilityInput)
+  const guestManualInvoiceEligible =
+    isGuestCheckout &&
+    allowsManualLightningFallback &&
+    pricingPreview.status === "ok" &&
+    shippingEligibleForFastCheckout &&
+    checkoutShippingCost.status !== "manual" &&
+    currentAddressValidity.canDirectPay
   const fastUnavailableReasons =
     getFastCheckoutUnavailableReasons(fastEligibilityInput)
   const fastUnavailableReasonsWithoutPricing =
@@ -1260,6 +1287,11 @@ function CheckoutPage() {
     if (refreshedAvailabilityMessage) {
       throw new Error(refreshedAvailabilityMessage)
     }
+    if (!cartItemsMatchCurrentProducts(checkoutItems, refreshResult.products)) {
+      throw new Error(
+        "Product price or fulfillment details changed. Review the updated listing before ordering."
+      )
+    }
   }
 
   function updateShipping<K extends keyof ShippingFormState>(
@@ -1276,6 +1308,14 @@ function CheckoutPage() {
     setShippingErrors(validateCheckoutDetails(next))
     if (isValidationField(field)) {
       markShippingFieldTouched(field)
+    }
+    // An armed zap out was authorized against the details the shopper held on.
+    // Editing delivery details withdraws that authorization.
+    if (autoZapAuthorization) {
+      setAutoZapAuthorization(null)
+      setError(
+        "Delivery details changed after zap out was armed. Review checkout before paying."
+      )
     }
   }
 
@@ -1351,16 +1391,7 @@ function CheckoutPage() {
 
   function buildShippingAddress(): ShippingAddressSchema | undefined {
     if (isAllDigital) return undefined
-    return {
-      name: `${shipping.firstName.trim()} ${shipping.lastName.trim()}`.trim(),
-      street: [shipping.street.trim(), shipping.line2.trim()]
-        .filter(Boolean)
-        .join(", "),
-      city: shipping.city.trim(),
-      state: (shipping.state ?? "").trim() || undefined,
-      postalCode: shipping.postalCode.trim(),
-      country: shipping.country.trim().toUpperCase(),
-    }
+    return buildShippingAddressFromForm(shipping)
   }
 
   function buildContactNote(): string | undefined {
@@ -1689,6 +1720,49 @@ function CheckoutPage() {
     return buildCheckoutPricingIntent(checkoutItems, refetched)
   }
 
+  function assertClaimedZapAuthorization(
+    zapAuthorization: HudZapAuthorization | null,
+    totalMsats: number
+  ): void {
+    if (!zapAuthorization) return
+    if (
+      getHudZapAuthorizationBindingMismatch(zapAuthorization, {
+        merchantPubkey: selectedMerchant,
+        buyerPubkey: signedBuyerPubkey,
+        items: checkoutItems,
+        totalMsats,
+      }) !== null
+    ) {
+      throw new Error(
+        "Cart or payment details changed after zap out was armed. Review checkout before paying."
+      )
+    }
+  }
+
+  /**
+   * Reuses the shared LNURL preflight result while it is inside its lease and
+   * bound to the same Lightning address; otherwise fetches fresh metadata.
+   * The payment attempt therefore refetches only when the cached evidence is
+   * absent, expired, or changed rather than unconditionally at every layer.
+   */
+  /**
+   * Payment-time metadata read. Reuses the shared preflight cache entry while
+   * it is fresh and otherwise makes one direct request with no retry, so the
+   * amount-range and public-zap checks below always run on current metadata.
+   */
+  async function getFreshLnurlMetadata(
+    lud16: string
+  ): Promise<Awaited<ReturnType<typeof fetchLnurlPayMetadata>>> {
+    const normalized = normalizeMerchantLnurlAddress(lud16)
+    if (!normalized) return fetchLnurlPayMetadata(lud16)
+    return queryClient.fetchQuery(
+      merchantLnurlPreflightQueryOptions(normalized, {
+        bounded: false,
+        retry: false,
+      })
+    )
+  }
+
   /**
    * Fast zap / direct payment. Publishes the order, creates the durable order
    * lifecycle record, hands payment to the route-independent service, and
@@ -1700,7 +1774,9 @@ function CheckoutPage() {
    * is created and the service surfaces the invoice for an external wallet on
    * Orders (CND-120).
    */
-  async function payNow(): Promise<void> {
+  async function payNow(
+    zapAuthorization: HudZapAuthorization | null = null
+  ): Promise<void> {
     if (!selectedMerchant || checkoutItems.length === 0) return
     if (!signedBuyerPubkey && !isGuestCheckout) return
     const requestedCheckoutMode = selectedZapMode
@@ -1744,8 +1820,10 @@ function CheckoutPage() {
     })
 
     try {
-      await assertCheckoutItemsAvailable()
-
+      // One authoritative live listing refresh runs immediately before order
+      // publication below; prepared readiness already validated this cart on
+      // arrival, so an extra blocking refresh here would duplicate work and
+      // burn the claimed authorization window.
       if (hasUnpricedCheckoutItems) {
         throw new Error(
           "One or more items cannot be converted to sats right now. Refresh prices before ordering."
@@ -1784,11 +1862,26 @@ function CheckoutPage() {
       if (pricingIntent.status !== "ok") {
         throw new Error(pricingIntent.reason)
       }
+      assertClaimedZapAuthorization(zapAuthorization, pricingIntent.totalMsats)
       const checkoutMode = requestedCheckoutMode
       const checkoutPricing = pricingIntent
       const effectiveZapContent =
         checkoutMode === "private_checkout" ? "" : zapContent
       const requiresPublicZap = isCheckoutPublicZapMode(checkoutMode)
+      const currentLnurlMetadata = await getFreshLnurlMetadata(merchantLud16)
+      if (
+        checkoutPricing.totalMsats < currentLnurlMetadata.minSendable ||
+        checkoutPricing.totalMsats > currentLnurlMetadata.maxSendable
+      ) {
+        throw new Error(
+          "The merchant payment endpoint does not accept this order amount."
+        )
+      }
+      if (requiresPublicZap && !currentLnurlMetadata.allowsNostr) {
+        throw new Error(
+          "The merchant payment endpoint no longer supports public zaps."
+        )
+      }
       const finalWalletPaymentConstraint = getKnownWalletPaymentConstraint({
         amountMsats: checkoutPricing.totalMsats,
         balance: wallet.balance,
@@ -1800,8 +1893,7 @@ function CheckoutPage() {
       const shouldTrySavedNwcWallet =
         !isGuestCheckout &&
         !!wallet.connection &&
-        wallet.status !== "unsupported" &&
-        wallet.status !== "error" &&
+        wallet.status === "pay-capable" &&
         !finalWalletPaymentConstraint
 
       const orderId = crypto.randomUUID()
@@ -1859,6 +1951,11 @@ function CheckoutPage() {
       orderRumor.tags = appendConduitClientTag(orderRumor.tags, "market")
       orderRumor.content = JSON.stringify(orderPayload)
 
+      await assertCheckoutItemsAvailable()
+      assertClaimedZapAuthorization(
+        zapAuthorization,
+        checkoutPricing.totalMsats
+      )
       const orderDelivery = await publishBuyerOrderMessage(
         orderRumor,
         ndk,
@@ -2035,6 +2132,97 @@ function CheckoutPage() {
       paymentInFlightRef.current = false
     }
   }
+
+  payNowRef.current = payNow
+  useEffect(() => {
+    if (search.intent !== "zap" || autoZapStartedRef.current) return
+    const authorization = consumeHudZapIntent(selectedMerchant)
+    if (authorization) setAutoZapAuthorization(authorization)
+    void navigate({
+      to: "/checkout",
+      search: { merchant: selectedMerchant },
+      replace: true,
+    })
+  }, [navigate, search.intent, selectedMerchant])
+
+  // The HUD arms zap out from capability-only readiness, so checkout is the
+  // first place the merchant payment endpoint is known. Wait while that answer
+  // is still resolving, then explain the decline instead of stalling silently.
+  const autoZapInputsResolving = isFastCheckoutInputPending({
+    authPending,
+    walletConnecting: wallet.status === "connecting",
+    merchantProfileLoading: merchantTrust.profileState === "loading",
+    lnurlProbing,
+    privateZapFallbackPending:
+      !isGuestCheckout &&
+      lnurlPayAvailable &&
+      !lnurlAllowsNostr &&
+      isCheckoutPublicZapMode(selectedZapMode),
+    shippingLookupPending: shippingOptionsIsLoading,
+    shippingState: shippingCheckoutState,
+    availabilityChecking: checkoutAvailability.isChecking,
+    pricingRefreshing: pricingRefreshState === "refreshing",
+  })
+
+  useEffect(() => {
+    if (
+      !autoZapAuthorization ||
+      autoZapStartedRef.current ||
+      autoZapInputsResolving
+    ) {
+      return
+    }
+    if (hasUnavailableCheckoutItems) {
+      setAutoZapAuthorization(null)
+      setError(
+        "An item in this order is unavailable. Review checkout before paying."
+      )
+      return
+    }
+    if (!fastEligible) {
+      setAutoZapAuthorization(null)
+      setError(
+        fastUnavailableReasons[0] ??
+          "Zap out is unavailable for this order. Review checkout before paying."
+      )
+      setStep("payment")
+      return
+    }
+    const rejection = getHudZapAuthorizationRejection(autoZapAuthorization, {
+      merchantPubkey: selectedMerchant,
+      buyerPubkey: signedBuyerPubkey,
+      items: checkoutItems,
+      totalMsats:
+        pricingPreview.status === "ok" ? pricingPreview.totalMsats : null,
+    })
+    if (rejection) {
+      setAutoZapAuthorization(null)
+      setError(
+        rejection === "expired"
+          ? "Zap out expired while checkout confirmed payment details. Review checkout before paying."
+          : "Cart or payment details changed after zap out was armed. Review checkout before paying."
+      )
+      return
+    }
+    // Claim the authorization into this automatic attempt. It is consumed
+    // exactly once: state clears before the attempt starts, so every
+    // success, failure, or cancellation leaves no armed token behind and a
+    // later manual hold starts a fresh attempt without inheriting it.
+    autoZapStartedRef.current = true
+    setAutoZapAuthorization(null)
+    setOverlayPlaying(true)
+    void payNowRef.current(autoZapAuthorization)
+  }, [
+    autoZapAuthorization,
+    autoZapInputsResolving,
+    checkoutItems,
+    fastEligible,
+    fastUnavailableReasons,
+    hasUnavailableCheckoutItems,
+    pricingPreview,
+    selectedMerchant,
+    signedBuyerPubkey,
+  ])
 
   // --- Full-screen transition states --------------------------------------
   // Note: `paying` and `paid` are NOT handled here. They render inline inside
@@ -2994,27 +3182,49 @@ function CheckoutPage() {
                 {/* Action buttons */}
                 <div className="mt-6 flex flex-wrap gap-3">
                   {fastEligible && (
-                    <Button
+                    <HoldToReleaseButton
                       className="h-11 px-5 text-sm"
                       disabled={
                         checkoutAvailability.isChecking ||
                         hasUnavailableCheckoutItems
                       }
-                      onClick={() => {
+                      canComplete={() =>
+                        fastEligible &&
+                        !checkoutAvailability.isChecking &&
+                        !hasUnavailableCheckoutItems &&
+                        !paymentInFlightRef.current
+                      }
+                      onHoldComplete={() => {
                         if (canAttemptLightningPayment) {
                           setOverlayPlaying(true)
                         }
                         void payNow()
                       }}
+                      chargedLabel="Release to zap out"
                     >
                       <LightningIcon className="h-4 w-4" />
                       {isGuestCheckout
-                        ? "Send order and show invoice"
+                        ? "Hold to send order and show invoice"
                         : walletPaymentConstraint && !weblnAvailable
-                          ? "Send order and show invoice"
-                          : "Zap out"}
-                    </Button>
+                          ? "Hold to send order and show invoice"
+                          : "Hold to zap out"}
+                    </HoldToReleaseButton>
                   )}
+                  {isGuestCheckout &&
+                    !fastEligible &&
+                    guestManualInvoiceEligible && (
+                      <Button
+                        className="h-11 px-5 text-sm"
+                        disabled={
+                          checkoutAvailability.isChecking ||
+                          hasUnavailableCheckoutItems
+                        }
+                        onClick={() => void payNow()}
+                      >
+                        <OrderIcon className="h-4 w-4" />
+                        Send order and show invoice
+                      </Button>
+                    )}
                   {pricingOnlyFastCheckoutBlocker && !fastEligible && (
                     <Button
                       className="h-11 px-5 text-sm"
@@ -3035,18 +3245,20 @@ function CheckoutPage() {
                     </Button>
                   )}
 
-                  {isGuestCheckout && !fastEligible && (
-                    <Button
-                      variant={
-                        pricingOnlyFastCheckoutBlocker ? "outline" : "primary"
-                      }
-                      className="h-11 px-5 text-sm"
-                      onClick={() => setConnectOpen(true)}
-                    >
-                      <KeyRound className="h-4 w-4" />
-                      Connect signer to send order
-                    </Button>
-                  )}
+                  {isGuestCheckout &&
+                    !fastEligible &&
+                    !guestManualInvoiceEligible && (
+                      <Button
+                        variant={
+                          pricingOnlyFastCheckoutBlocker ? "outline" : "primary"
+                        }
+                        className="h-11 px-5 text-sm"
+                        onClick={() => setConnectOpen(true)}
+                      >
+                        <KeyRound className="h-4 w-4" />
+                        Connect signer to send order
+                      </Button>
+                    )}
 
                   {!isGuestCheckout && (
                     <Button
