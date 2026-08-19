@@ -106,7 +106,7 @@ const runGate = async (
     expectedHead = headSha,
     reviewCommit = headSha,
     reviewer = "conduit-sudden-agent[bot]",
-    reviewBody = `<!-- conduit:sudden-review clean head=${headSha} -->`,
+    reviewBody = `<!-- conduit:sudden-review clean head=${headSha} -->\nNo actionable findings.`,
     reviewComments = "[]",
     previousReviews = "[]",
   }: GateFixture = {},
@@ -365,6 +365,9 @@ describe("agent review handoff", () => {
     expect(simplifyWorkflow).toContain(
       'if [[ "$review_body" != *"$clean_marker"* ]]'
     )
+    expect(
+      countOccurrences(simplifyWorkflow, 'grep -Fqx "$clean_summary"')
+    ).toBe(2)
     expect(simplifyWorkflow).toContain(
       '`commit_id: "${{ steps.pr.outputs.head_sha }}"`'
     )
@@ -585,10 +588,17 @@ while IFS= read -r _line; do :; done
 
     const mismatchedMarker = await runGate({
       headSha,
-      reviewBody: `<!-- conduit:sudden-review clean head=${"f".repeat(40)} -->`,
+      reviewBody: `<!-- conduit:sudden-review clean head=${"f".repeat(40)} -->\nNo actionable findings.`,
     })
     expect(mismatchedMarker.exitCode).not.toBe(0)
     expect(mismatchedMarker.stderr).toContain("exact clean-review marker")
+
+    const missingSummary = await runGate({
+      headSha,
+      reviewBody: `<!-- conduit:sudden-review clean head=${headSha} -->\nReview delivery blocked.`,
+    })
+    expect(missingSummary.exitCode).not.toBe(0)
+    expect(missingSummary.stderr).toContain("exact clean-review summary")
 
     const manual = await runGate({
       eventName: "workflow_dispatch",
@@ -640,6 +650,16 @@ while IFS= read -r _line; do :; done
     )
     expect(dirty.exitCode).not.toBe(0)
     expect(dirty.stderr).toContain("contains inline findings")
+
+    const missingSummary = await runGate(
+      {
+        headSha,
+        reviewBody: `<!-- conduit:sudden-review clean head=${headSha} -->\nReview delivery blocked.`,
+      },
+      revalidationScript
+    )
+    expect(missingSummary.exitCode).not.toBe(0)
+    expect(missingSummary.stderr).toContain("exact clean-review summary")
 
     const manual = await runGate(
       {
