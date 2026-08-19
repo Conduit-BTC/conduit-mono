@@ -220,10 +220,14 @@ describe("Market cart HUD policy", () => {
     expect(hud).not.toContain("refreshBalance: true")
     expect(hud).not.toContain("getKnownWalletPaymentConstraint")
     expect(hud).not.toContain("fetchLnurlPayMetadata")
-    // Checkout reuses the fresh preflighted metadata and refetches only when
-    // it is absent, expired, or changed.
+    // Checkout reuses the shared preflight cache entry and requests again only
+    // when it is absent, expired, or the address changed.
     expect(checkout).toContain("getFreshLnurlMetadata(merchantLud16)")
     expect(checkout).toContain("useMerchantLnurlPreflight(merchantLud16)")
+    expect(checkout).toContain("queryClient.fetchQuery(")
+    expect(checkout).toContain(
+      "merchantLnurlPreflightQueryOptions(normalized, {"
+    )
     expect(checkout).toContain("lnurlAllowsNostr: lnurlReadyForSelectedPayment")
     expect(checkout).toContain("lnurlAmountWithinRange: lnurlAmountReady")
     expect(checkout).toContain("if (!fastEligible) {")

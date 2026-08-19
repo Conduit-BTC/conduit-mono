@@ -196,9 +196,38 @@ export function merchantLnurlPreflightQueryKey(
   return ["merchant-lnurl-pay-metadata", normalizedLud16]
 }
 
-function normalizeLud16(lud16: string | null | undefined): string | null {
+export function normalizeMerchantLnurlAddress(
+  lud16: string | null | undefined
+): string | null {
   const normalized = lud16?.trim().toLowerCase() ?? null
   return normalized && isValidLud16Address(normalized) ? normalized : null
+}
+
+/**
+ * Single owner of the LNURL-pay metadata query: key, request, and freshness
+ * lease. Background surfaces bound their requests and retry once; the payment
+ * path reuses the same cache entry with a direct request and no retry.
+ */
+export function merchantLnurlPreflightQueryOptions(
+  normalizedLud16: string | null,
+  options: { bounded?: boolean; retry?: number | boolean } = {}
+) {
+  const bounded = options.bounded ?? true
+  const request = () =>
+    bounded
+      ? lnurlPreflightLimiter(() =>
+          fetchLnurlPayMetadata(normalizedLud16 as string, {
+            timeoutMs: LNURL_PREFLIGHT_TIMEOUT_MS,
+          })
+        )
+      : fetchLnurlPayMetadata(normalizedLud16 as string)
+  return {
+    queryKey: merchantLnurlPreflightQueryKey(normalizedLud16),
+    queryFn: request,
+    staleTime: LNURL_METADATA_LEASE_MS,
+    gcTime: 5 * 60_000,
+    retry: options.retry ?? 1,
+  }
 }
 
 /**
@@ -213,42 +242,29 @@ function normalizeLud16(lud16: string | null | undefined): string | null {
 export function useMerchantLnurlPreflight(
   lud16: string | null | undefined,
   options: { enabled?: boolean } = {}
-): MerchantLnurlPreflight & { dataUpdatedAt: number | null } {
-  const normalized = normalizeLud16(lud16)
+): MerchantLnurlPreflight {
+  const normalized = normalizeMerchantLnurlAddress(lud16)
   const enabled = Boolean(normalized) && (options.enabled ?? true)
   const query = useQuery({
-    queryKey: merchantLnurlPreflightQueryKey(normalized),
-    queryFn: () =>
-      lnurlPreflightLimiter(() =>
-        fetchLnurlPayMetadata(normalized as string, {
-          timeoutMs: LNURL_PREFLIGHT_TIMEOUT_MS,
-        })
-      ),
+    ...merchantLnurlPreflightQueryOptions(normalized),
     enabled,
-    staleTime: LNURL_METADATA_LEASE_MS,
-    gcTime: 5 * 60_000,
-    retry: 1,
   })
 
   if (!normalized) {
-    return { status: "no_address", metadata: null, dataUpdatedAt: null }
+    return { status: "no_address", metadata: null }
   }
   if (query.data) {
-    return {
-      status: "ready",
-      metadata: query.data,
-      dataUpdatedAt: query.dataUpdatedAt,
-    }
+    return { status: "ready", metadata: query.data }
   }
   if (!enabled || query.isLoading || query.isFetching) {
-    return { status: "pending", metadata: null, dataUpdatedAt: null }
+    return { status: "pending", metadata: null }
   }
-  return { status: "unavailable", metadata: null, dataUpdatedAt: null }
+  return { status: "unavailable", metadata: null }
 }
 
 /**
- * Warms LNURL metadata for every merchant currently in the cart. Mounted by
- * the root coordinator; consumers read the same query keys per merchant.
+ * Warms LNURL metadata for every merchant currently in the cart. Consumers
+ * read the same query keys per merchant.
  */
 export function useCartLnurlPreflights(
   lud16ByMerchant: ReadonlyMap<string, string | undefined>
@@ -258,24 +274,15 @@ export function useCartLnurlPreflights(
       Array.from(
         new Set(
           Array.from(lud16ByMerchant.values())
-            .map((lud16) => normalizeLud16(lud16))
+            .map((lud16) => normalizeMerchantLnurlAddress(lud16))
             .filter((value): value is string => value !== null)
         )
       ).sort(),
     [lud16ByMerchant]
   )
   useQueries({
-    queries: normalizedAddresses.map((address) => ({
-      queryKey: merchantLnurlPreflightQueryKey(address),
-      queryFn: () =>
-        lnurlPreflightLimiter(() =>
-          fetchLnurlPayMetadata(address, {
-            timeoutMs: LNURL_PREFLIGHT_TIMEOUT_MS,
-          })
-        ),
-      staleTime: LNURL_METADATA_LEASE_MS,
-      gcTime: 5 * 60_000,
-      retry: 1,
-    })),
+    queries: normalizedAddresses.map((address) =>
+      merchantLnurlPreflightQueryOptions(address)
+    ),
   })
 }

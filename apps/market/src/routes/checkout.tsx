@@ -11,7 +11,7 @@ import {
 } from "lucide-react"
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { useQuery } from "@tanstack/react-query"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   EVENT_KINDS,
@@ -64,11 +64,12 @@ import {
 import { SignerSwitch } from "../components/SignerSwitch"
 import { type CartItem, useCart } from "../hooks/useCart"
 import {
+  merchantLnurlPreflightQueryOptions,
+  normalizeMerchantLnurlAddress,
   useCartReadiness,
   useMerchantLnurlPreflight,
   type MerchantCartRefreshResult,
 } from "../hooks/useCartReadiness"
-import { LNURL_METADATA_LEASE_MS } from "../lib/cart-readiness"
 import { useMerchantTrustContext } from "../hooks/useMerchantTrustContext"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import {
@@ -868,6 +869,7 @@ function CheckoutPage() {
   // Shared LNURL-pay metadata preflight: the same cached read the HUD and
   // cart warmed while this merchant had items in the cart. The lease and
   // Lightning-address key control refresh; no invoice is requested here.
+  const queryClient = useQueryClient()
   const lnurlPreflight = useMerchantLnurlPreflight(merchantLud16)
   const lnurlProbing = lnurlPreflight.status === "pending"
   const lnurlPayAvailable = lnurlPreflight.status === "ready"
@@ -1743,19 +1745,22 @@ function CheckoutPage() {
    * The payment attempt therefore refetches only when the cached evidence is
    * absent, expired, or changed rather than unconditionally at every layer.
    */
+  /**
+   * Payment-time metadata read. Reuses the shared preflight cache entry while
+   * it is fresh and otherwise makes one direct request with no retry, so the
+   * amount-range and public-zap checks below always run on current metadata.
+   */
   async function getFreshLnurlMetadata(
     lud16: string
   ): Promise<Awaited<ReturnType<typeof fetchLnurlPayMetadata>>> {
-    if (
-      lnurlPreflight.status === "ready" &&
-      lnurlPreflight.metadata &&
-      lnurlPreflight.dataUpdatedAt !== null &&
-      Date.now() - lnurlPreflight.dataUpdatedAt <= LNURL_METADATA_LEASE_MS &&
-      merchantLud16 === lud16
-    ) {
-      return lnurlPreflight.metadata
-    }
-    return fetchLnurlPayMetadata(lud16)
+    const normalized = normalizeMerchantLnurlAddress(lud16)
+    if (!normalized) return fetchLnurlPayMetadata(lud16)
+    return queryClient.fetchQuery(
+      merchantLnurlPreflightQueryOptions(normalized, {
+        bounded: false,
+        retry: false,
+      })
+    )
   }
 
   /**

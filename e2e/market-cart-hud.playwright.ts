@@ -194,9 +194,18 @@ test("market cart HUD is route-aware and layered above the fixed footer", async 
   }))
   expect(footerLayout.position).toBe("fixed")
   expect(footerLayout.offset).toBe(`${footerLayout.height}px`)
-  const hudBox = await hud.boundingBox()
-  const footerBox = await legalFooter.boundingBox()
-  expect(hudBox!.y + hudBox!.height).toBeLessThanOrEqual(footerBox!.y)
+  // Measured together and polled: the dock slides in, so two separate reads
+  // can capture the HUD mid transition.
+  await expect
+    .poll(async () =>
+      hud.evaluate((element) => {
+        const footer = document.querySelector("footer")
+        const hudRect = element.getBoundingClientRect()
+        const footerRect = footer!.getBoundingClientRect()
+        return Math.round(hudRect.bottom - footerRect.top)
+      })
+    )
+    .toBeLessThanOrEqual(0)
 
   await page.goto(`${marketUrl}/cart`)
   await expect(
