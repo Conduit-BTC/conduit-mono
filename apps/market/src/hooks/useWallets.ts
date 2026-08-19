@@ -94,7 +94,7 @@ export interface UseWalletsReturn {
   loading: boolean
   initializationError: string | null
   sparkAvailability: ReturnType<typeof getSparkConfiguration>
-  getSparkRecoveryMethod(walletId: string): Promise<"password" | null>
+  hasSparkRecovery(walletId: string): Promise<boolean>
   connectNwc(uri: string, label?: string): Promise<WalletDescriptor>
   createSpark(
     label: string,
@@ -696,9 +696,9 @@ export function useWallets(): UseWalletsReturn {
     [registry, store]
   )
 
-  const getSparkRecoveryMethod = useCallback(
+  const hasSparkRecovery = useCallback(
     async (walletId: string) => {
-      return (await store.getSparkRecovery(walletId)) ? "password" : null
+      return Boolean(await store.getSparkRecovery(walletId))
     },
     [store]
   )
@@ -897,7 +897,7 @@ export function useWallets(): UseWalletsReturn {
     loading,
     initializationError,
     sparkAvailability: getSparkConfiguration(),
-    getSparkRecoveryMethod,
+    hasSparkRecovery,
     connectNwc,
     createSpark,
     importSpark,

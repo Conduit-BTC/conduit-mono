@@ -57,6 +57,7 @@ import {
   Textarea,
 } from "@conduit/ui"
 
+import { SparkRecoveryBundleDetails } from "../components/SparkRecoveryBundleDetails"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import {
   useWallets,
@@ -68,7 +69,7 @@ import {
   getPortableWalletFormError,
   type PortableWalletMode,
 } from "../lib/portable-wallet-form"
-import { formatSparkRecoveryBundleForClipboard } from "../lib/spark-recovery-bundle"
+import type { SparkRecoveryBundle } from "../lib/spark-recovery-bundle"
 import type {
   SparkPaymentSummary,
   SparkSendQuote,
@@ -84,10 +85,10 @@ export const Route = createFileRoute("/wallet")({
   component: WalletsPage,
 })
 
-type SparkRecoveryMethodState =
+type SparkRecoveryState =
   | { status: "idle" }
   | { status: "checking" }
-  | { status: "ready"; method: "password" }
+  | { status: "ready" }
   | { status: "missing"; reason: string }
 
 const SPARK_HISTORY_LOAD_TIMEOUT_MS = 15_000
@@ -796,28 +797,28 @@ function WalletRuntimePill({ runtime }: { runtime: WalletRuntimeState }) {
   }
 }
 
-function useSparkRecoveryMethod(
+function useSparkRecoveryState(
   walletId: string | null,
-  getRecoveryMethod: UseWalletsReturn["getSparkRecoveryMethod"]
-): SparkRecoveryMethodState {
-  const [method, setMethod] = useState<SparkRecoveryMethodState>({
+  hasRecovery: UseWalletsReturn["hasSparkRecovery"]
+): SparkRecoveryState {
+  const [state, setState] = useState<SparkRecoveryState>({
     status: "idle",
   })
 
   useEffect(() => {
     if (!walletId) {
-      setMethod({ status: "idle" })
+      setState({ status: "idle" })
       return
     }
 
     let current = true
-    setMethod({ status: "checking" })
-    void getRecoveryMethod(walletId)
-      .then((next) => {
+    setState({ status: "checking" })
+    void hasRecovery(walletId)
+      .then((available) => {
         if (!current) return
-        setMethod(
-          next
-            ? { status: "ready", method: next }
+        setState(
+          available
+            ? { status: "ready" }
             : {
                 status: "missing",
                 reason:
@@ -827,7 +828,7 @@ function useSparkRecoveryMethod(
       })
       .catch(() => {
         if (current) {
-          setMethod({
+          setState({
             status: "missing",
             reason:
               "The local recovery method could not be read. Retry or restore this wallet again.",
@@ -837,9 +838,9 @@ function useSparkRecoveryMethod(
     return () => {
       current = false
     }
-  }, [getRecoveryMethod, walletId])
+  }, [hasRecovery, walletId])
 
-  return method
+  return state
 }
 
 function PortableWalletDialog({
@@ -858,17 +859,9 @@ function PortableWalletDialog({
   const [accountNumber, setAccountNumber] = useState("")
   const [pendingAction, setPendingAction] = useState<"password" | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [createdMnemonic, setCreatedMnemonic] = useState<string | null>(null)
-  const [createdAccountNumber, setCreatedAccountNumber] = useState<
-    number | null
-  >(null)
-  const [createdNetwork, setCreatedNetwork] = useState<
-    WalletDescriptor["network"] | null
-  >(null)
+  const [createdRecovery, setCreatedRecovery] =
+    useState<SparkRecoveryBundle | null>(null)
   const [recoverySaved, setRecoverySaved] = useState(false)
-  const [recoveryCopyStatus, setRecoveryCopyStatus] = useState<
-    "idle" | "copied"
-  >("idle")
   const recoveryHeadingRef = useRef<HTMLHeadingElement>(null)
   const pending = pendingAction !== null
   const sparkNetwork =
@@ -890,11 +883,8 @@ function PortableWalletDialog({
     setAccountNumber("")
     setPendingAction(null)
     setError(null)
-    setCreatedMnemonic(null)
-    setCreatedAccountNumber(null)
-    setCreatedNetwork(null)
+    setCreatedRecovery(null)
     setRecoverySaved(false)
-    setRecoveryCopyStatus("idle")
   }
 
   const close = () => {
@@ -911,10 +901,10 @@ function PortableWalletDialog({
   }
 
   useEffect(() => {
-    if (open && createdMnemonic) {
+    if (open && createdRecovery) {
       recoveryHeadingRef.current?.focus()
     }
-  }, [createdMnemonic, open])
+  }, [createdRecovery, open])
 
   const submitPassword = async () => {
     if (passwordSubmissionError) {
@@ -927,9 +917,11 @@ function PortableWalletDialog({
       if (mode === "create") {
         const result = await wallets.createSpark(label, password)
         setPassword("")
-        setCreatedMnemonic(result.mnemonic)
-        setCreatedAccountNumber(result.accountNumber)
-        setCreatedNetwork(result.wallet.network)
+        setCreatedRecovery({
+          mnemonic: result.mnemonic,
+          accountNumber: result.accountNumber,
+          network: result.wallet.network,
+        })
       } else {
         await wallets.importSpark({
           label,
@@ -946,44 +938,20 @@ function PortableWalletDialog({
     }
   }
 
-  const copyRecoveryBundle = async () => {
-    if (
-      !createdMnemonic ||
-      createdAccountNumber === null ||
-      createdNetwork === null
-    ) {
-      return
-    }
-    setError(null)
-    setRecoveryCopyStatus("idle")
-    try {
-      await navigator.clipboard.writeText(
-        formatSparkRecoveryBundleForClipboard({
-          mnemonic: createdMnemonic,
-          accountNumber: createdAccountNumber,
-          network: createdNetwork,
-        })
-      )
-      setRecoveryCopyStatus("copied")
-    } catch (caught) {
-      setError(getErrorMessage(caught, "Could not copy the recovery details."))
-    }
-  }
-
   return (
     <Dialog
       open={open}
       onOpenChange={(next) => {
         if (next || pending) return
-        if (!next && createdMnemonic && !recoverySaved) return
+        if (!next && createdRecovery && !recoverySaved) return
         if (!next) close()
       }}
     >
       <DialogContent
-        showCloseButton={!pending && !createdMnemonic}
+        showCloseButton={!pending && !createdRecovery}
         className="max-h-[90vh]"
       >
-        {createdMnemonic ? (
+        {createdRecovery ? (
           <>
             <DialogHeader>
               <DialogTitle ref={recoveryHeadingRef} tabIndex={-1}>
@@ -995,38 +963,7 @@ function PortableWalletDialog({
                 you.
               </DialogDescription>
             </DialogHeader>
-            <div className="rounded-2xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] p-4">
-              <p className="select-all font-mono text-sm leading-7 text-[var(--text-primary)]">
-                {createdMnemonic}
-              </p>
-              <p className="mt-3 text-sm text-[var(--text-secondary)]">
-                Spark account number: {createdAccountNumber}
-              </p>
-              <p className="mt-1 text-sm text-[var(--text-secondary)]">
-                Spark network:{" "}
-                {createdNetwork
-                  ? getWalletNetworkLabel(createdNetwork)
-                  : "Unavailable"}
-              </p>
-            </div>
-            <Button variant="outline" onClick={() => void copyRecoveryBundle()}>
-              <Copy className="h-4 w-4" />
-              Copy recovery details
-            </Button>
-            <p className="text-sm leading-5 text-[var(--text-muted)]">
-              Your clipboard may be readable by other apps or synced between
-              devices. Clear it after saving this backup somewhere private.
-            </p>
-            {recoveryCopyStatus === "copied" && (
-              <p role="status" className="text-sm text-[var(--text-secondary)]">
-                Copied. Clear your clipboard after saving the backup.
-              </p>
-            )}
-            {error && (
-              <p role="alert" className="text-sm text-[var(--text-secondary)]">
-                {error}
-              </p>
-            )}
+            <SparkRecoveryBundleDetails {...createdRecovery} />
             <div className="flex items-center justify-between gap-4 rounded-xl border border-[var(--border)] p-3">
               <Label htmlFor="recovery-saved" className="leading-5">
                 I saved the recovery phrase, Spark account number, and network
@@ -1411,9 +1348,9 @@ function UnlockWalletDialog({
   const [password, setPassword] = useState("")
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const recoveryMethod = useSparkRecoveryMethod(
+  const recoveryState = useSparkRecoveryState(
     wallet?.id ?? null,
-    wallets.getSparkRecoveryMethod
+    wallets.hasSparkRecovery
   )
 
   const close = () => {
@@ -1452,8 +1389,8 @@ function UnlockWalletDialog({
             phrase on this device.
           </DialogDescription>
         </DialogHeader>
-        {recoveryMethod.status === "checking" ||
-        recoveryMethod.status === "idle" ? (
+        {recoveryState.status === "checking" ||
+        recoveryState.status === "idle" ? (
           <div
             role="status"
             className="flex items-center gap-2 py-4 text-sm text-[var(--text-muted)]"
@@ -1461,12 +1398,12 @@ function UnlockWalletDialog({
             <Loader2 className="h-4 w-4 animate-spin" />
             Checking recovery method
           </div>
-        ) : recoveryMethod.status === "missing" ? (
+        ) : recoveryState.status === "missing" ? (
           <p
             role="alert"
             className="text-sm leading-6 text-[var(--text-secondary)]"
           >
-            {recoveryMethod.reason}
+            {recoveryState.reason}
           </p>
         ) : (
           <div className="grid gap-2">
@@ -1490,7 +1427,7 @@ function UnlockWalletDialog({
           <Button variant="ghost" onClick={close} disabled={pending}>
             Cancel
           </Button>
-          {recoveryMethod.status === "ready" && (
+          {recoveryState.status === "ready" && (
             <Button
               onClick={() => void submitPassword()}
               disabled={pending || !password}
@@ -2477,60 +2414,41 @@ function RecoveryWalletDialog({
   wallets: UseWalletsReturn
 }) {
   const [password, setPassword] = useState("")
-  const [mnemonic, setMnemonic] = useState("")
-  const [accountNumber, setAccountNumber] = useState<number | null>(null)
+  const [recovery, setRecovery] = useState<SparkRecoveryBundle | null>(null)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [recoveryCopyStatus, setRecoveryCopyStatus] = useState<
-    "idle" | "copied"
-  >("idle")
-  const recoveryMethod = useSparkRecoveryMethod(
+  const recoveryHeadingRef = useRef<HTMLHeadingElement>(null)
+  const recoveryState = useSparkRecoveryState(
     wallet?.id ?? null,
-    wallets.getSparkRecoveryMethod
+    wallets.hasSparkRecovery
   )
 
   const close = () => {
     setPassword("")
-    setMnemonic("")
-    setAccountNumber(null)
+    setRecovery(null)
     setPending(false)
     setError(null)
-    setRecoveryCopyStatus("idle")
     onOpenChange(false)
   }
+
+  useEffect(() => {
+    if (recovery) {
+      recoveryHeadingRef.current?.focus()
+    }
+  }, [recovery])
 
   const revealPassword = async () => {
     if (!wallet) return
     setPending(true)
     setError(null)
     try {
-      const recovery = await wallets.revealSparkRecovery(wallet.id, password)
-      setMnemonic(recovery.mnemonic)
-      setAccountNumber(recovery.accountNumber)
-      setRecoveryCopyStatus("idle")
+      const revealed = await wallets.revealSparkRecovery(wallet.id, password)
+      setRecovery({ ...revealed, network: wallet.network })
       setPassword("")
     } catch (caught) {
       setError(getErrorMessage(caught, "Could not show recovery phrase."))
     } finally {
       setPending(false)
-    }
-  }
-
-  const copyRecoveryBundle = async () => {
-    if (!wallet || !mnemonic || accountNumber === null) return
-    setError(null)
-    setRecoveryCopyStatus("idle")
-    try {
-      await navigator.clipboard.writeText(
-        formatSparkRecoveryBundleForClipboard({
-          mnemonic,
-          accountNumber,
-          network: wallet.network,
-        })
-      )
-      setRecoveryCopyStatus("copied")
-    } catch (caught) {
-      setError(getErrorMessage(caught, "Could not copy the recovery details."))
     }
   }
 
@@ -2541,54 +2459,28 @@ function RecoveryWalletDialog({
         if (!open && !pending) close()
       }}
     >
-      <DialogContent showCloseButton={!mnemonic && !pending}>
+      <DialogContent showCloseButton={!recovery && !pending}>
         <DialogHeader>
-          <DialogTitle>Recovery for {wallet?.label}</DialogTitle>
+          <DialogTitle ref={recoveryHeadingRef} tabIndex={-1}>
+            Recovery for {wallet?.label}
+          </DialogTitle>
           <DialogDescription>
             Keep this BIP39 phrase, Spark account number, and network together
             as the standards-based recovery bundle for this Portable Wallet.
             Keep it private.
           </DialogDescription>
         </DialogHeader>
-        {wallet && mnemonic ? (
+        {wallet && recovery ? (
           <>
-            <div className="rounded-2xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] p-4">
-              <p className="select-all font-mono text-sm leading-7 text-[var(--text-primary)]">
-                {mnemonic}
-              </p>
-              <p className="mt-3 text-sm text-[var(--text-secondary)]">
-                Spark account number: {accountNumber}
-              </p>
-              <p className="mt-1 text-sm text-[var(--text-secondary)]">
-                Spark network: {getWalletNetworkLabel(wallet.network)}
-              </p>
-            </div>
-            <Button variant="outline" onClick={() => void copyRecoveryBundle()}>
-              <Copy className="h-4 w-4" />
-              Copy recovery details
-            </Button>
-            <p className="text-sm leading-5 text-[var(--text-muted)]">
-              Your clipboard may be readable by other apps or synced between
-              devices. Clear it after saving this backup somewhere private.
-            </p>
-            {recoveryCopyStatus === "copied" && (
-              <p role="status" className="text-sm text-[var(--text-secondary)]">
-                Copied. Clear your clipboard after saving the backup.
-              </p>
-            )}
-            {error && (
-              <p role="alert" className="text-sm text-[var(--text-secondary)]">
-                {error}
-              </p>
-            )}
+            <SparkRecoveryBundleDetails {...recovery} />
             <DialogFooter>
               <Button onClick={close}>Done</Button>
             </DialogFooter>
           </>
         ) : (
           <>
-            {recoveryMethod.status === "checking" ||
-            recoveryMethod.status === "idle" ? (
+            {recoveryState.status === "checking" ||
+            recoveryState.status === "idle" ? (
               <div
                 role="status"
                 className="flex items-center gap-2 py-4 text-sm text-[var(--text-muted)]"
@@ -2596,12 +2488,12 @@ function RecoveryWalletDialog({
                 <Loader2 className="h-4 w-4 animate-spin" />
                 Checking recovery method
               </div>
-            ) : recoveryMethod.status === "missing" ? (
+            ) : recoveryState.status === "missing" ? (
               <p
                 role="alert"
                 className="text-sm leading-6 text-[var(--text-secondary)]"
               >
-                {recoveryMethod.reason}
+                {recoveryState.reason}
               </p>
             ) : (
               <div className="grid gap-2">
@@ -2625,7 +2517,7 @@ function RecoveryWalletDialog({
               <Button variant="ghost" onClick={close} disabled={pending}>
                 Cancel
               </Button>
-              {recoveryMethod.status === "ready" && (
+              {recoveryState.status === "ready" && (
                 <Button
                   onClick={() => void revealPassword()}
                   disabled={pending || !password}

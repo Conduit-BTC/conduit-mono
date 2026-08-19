@@ -62,6 +62,10 @@ describe("Market wallet route contracts", () => {
 
   it("renders plural Portable and Connected wallet groups", async () => {
     const content = await readFile("apps/market/src/routes/wallet.tsx", "utf8")
+    const recoveryBundleDetails = await readFile(
+      "apps/market/src/components/SparkRecoveryBundleDetails.tsx",
+      "utf8"
+    )
 
     expect(content).toContain('title="Portable"')
     expect(content).toContain('title="Connected"')
@@ -96,7 +100,7 @@ describe("Market wallet route contracts", () => {
     expect(content).toContain("getWalletNetworkLabel")
     expect(content).toContain("This wallet can hold and send real bitcoin.")
     expect(content).toContain("This wallet is separate from Bitcoin Mainnet.")
-    expect(content).toContain("Copy recovery details")
+    expect(recoveryBundleDetails).toContain("Copy recovery details")
     expect(content).toContain("useShopperPricing")
     expect(content).toContain("formatBitcoinBaseUnits")
     expect(content).toContain("sats === 0")
@@ -337,6 +341,10 @@ describe("Market wallet route contracts", () => {
       "apps/market/src/components/PaymentTargetSelectContent.tsx",
       "utf8"
     )
+    const recoveryBundleDetails = await readFile(
+      "apps/market/src/components/SparkRecoveryBundleDetails.tsx",
+      "utf8"
+    )
     const wallet = await readFile("apps/market/src/routes/wallet.tsx", "utf8")
 
     expect(targetContent).toContain(
@@ -362,9 +370,13 @@ describe("Market wallet route contracts", () => {
     expect(wallet).toContain('runtime.status === "ready" ? "Refresh" : "Retry"')
     expect(wallet).toContain("Payment request copied.")
     expect(wallet).toContain("Copy was blocked. Copy the request manually.")
-    expect(wallet).toContain(
+    expect(recoveryBundleDetails).toContain(
       "Your clipboard may be readable by other apps or synced between"
     )
+    expect(
+      recoveryBundleDetails.match(/function SparkRecoveryBundleDetails\(/g)
+    ).toHaveLength(1)
+    expect(wallet.match(/<SparkRecoveryBundleDetails /g)).toHaveLength(2)
     expect(wallet).toMatch(
       /Copying\s+a recovery phrase puts it on your system clipboard/
     )

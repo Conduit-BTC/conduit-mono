@@ -43,7 +43,7 @@ function runtime(input: {
 }
 
 describe("wallet change storage fallback", () => {
-  it("filters storage changes and cleans up", () => {
+  it("filters storage changes, accepts legacy tokens, and cleans up", () => {
     const target = new FakeStorageEventTarget()
     let calls = 0
     const unsubscribe = subscribeToWalletChangeFallback(() => {
@@ -54,7 +54,7 @@ describe("wallet change storage fallback", () => {
     target.dispatch({ key: STORAGE_KEY, newValue: null })
     expect(calls).toBe(0)
 
-    target.dispatch({ key: STORAGE_KEY, newValue: "opaque-change-token" })
+    target.dispatch({ key: STORAGE_KEY, newValue: "legacy-opaque-token" })
     expect(calls).toBe(1)
 
     unsubscribe()
@@ -63,56 +63,52 @@ describe("wallet change storage fallback", () => {
     expect(target.listeners.size).toBe(0)
   })
 
-  it("defers to Dexie after successfully probing BroadcastChannel", () => {
-    const target = new FakeStorageEventTarget()
-    let writes = 0
-    let closes = 0
-    const fallbackRuntime = runtime({
-      target,
-      createBroadcastChannel: () => ({
-        close() {
-          closes += 1
-        },
-      }),
-      setItem: () => {
-        writes += 1
-      },
-    })
-    const unsubscribe = subscribeToWalletChangeFallback(
-      () => undefined,
-      fallbackRuntime
-    )
-
-    notifyWalletChangeFallback(fallbackRuntime)
-
-    expect(writes).toBe(0)
-    expect(closes).toBe(1)
-    expect(target.listeners.size).toBe(1)
-    unsubscribe()
+  it("reloads only the mixed-capability and storage-only receiver paths", () => {
+    expect(
+      runTransportCase({ writerBroadcast: true, receiverBroadcast: true })
+    ).toMatchObject({ calls: 0, tokenPrefix: "dexie-broadcast:" })
+    expect(
+      runTransportCase({ writerBroadcast: true, receiverBroadcast: false })
+    ).toMatchObject({ calls: 1, tokenPrefix: "dexie-broadcast:" })
+    expect(
+      runTransportCase({ writerBroadcast: false, receiverBroadcast: true })
+    ).toMatchObject({ calls: 1, tokenPrefix: "storage-fallback:" })
+    expect(
+      runTransportCase({ writerBroadcast: false, receiverBroadcast: false })
+    ).toMatchObject({ calls: 1, tokenPrefix: "storage-fallback:" })
   })
 
-  it("falls back when BroadcastChannel construction fails", () => {
+  it("treats legacy tokens and a failed probe close as storage fallback", () => {
     const target = new FakeStorageEventTarget()
-    const writes: Array<[string, string]> = []
     let calls = 0
-    const fallbackRuntime = runtime({
-      target,
-      createBroadcastChannel: () => {
-        throw new Error("BroadcastChannel unavailable")
+    let writtenValue = ""
+    const unsubscribe = subscribeToWalletChangeFallback(
+      () => {
+        calls += 1
       },
-      setItem: (key, value) => {
-        writes.push([key, value])
-        target.dispatch({ key, newValue: value })
-      },
-    })
-    const unsubscribe = subscribeToWalletChangeFallback(() => {
-      calls += 1
-    }, fallbackRuntime)
+      runtime({ target, createBroadcastChannel: broadcastChannel(true) })
+    )
 
-    notifyWalletChangeFallback(fallbackRuntime)
-
-    expect(writes).toEqual([[STORAGE_KEY, "opaque-change-token"]])
+    target.dispatch({ key: STORAGE_KEY, newValue: "legacy-token" })
     expect(calls).toBe(1)
+
+    notifyWalletChangeFallback(
+      runtime({
+        target,
+        createBroadcastChannel: () => ({
+          close() {
+            throw new Error("BroadcastChannel close failed")
+          },
+        }),
+        setItem: (key, value) => {
+          writtenValue = value
+          target.dispatch({ key, newValue: value })
+        },
+      })
+    )
+
+    expect(writtenValue).toStartWith("storage-fallback:")
+    expect(calls).toBe(2)
     unsubscribe()
   })
 
@@ -130,3 +126,46 @@ describe("wallet change storage fallback", () => {
     ).not.toThrow()
   })
 })
+
+function runTransportCase(input: {
+  writerBroadcast: boolean
+  receiverBroadcast: boolean
+}): { calls: number; tokenPrefix: string } {
+  const target = new FakeStorageEventTarget()
+  let calls = 0
+  let writtenValue = ""
+  const receiverRuntime = runtime({
+    target,
+    createBroadcastChannel: broadcastChannel(input.receiverBroadcast),
+  })
+  const unsubscribe = subscribeToWalletChangeFallback(() => {
+    calls += 1
+  }, receiverRuntime)
+  const writerRuntime = runtime({
+    target,
+    createBroadcastChannel: broadcastChannel(input.writerBroadcast),
+    setItem: (key, value) => {
+      writtenValue = value
+      target.dispatch({ key, newValue: value })
+    },
+  })
+
+  notifyWalletChangeFallback(writerRuntime)
+  unsubscribe()
+
+  return {
+    calls,
+    tokenPrefix: writtenValue.slice(0, writtenValue.lastIndexOf(":") + 1),
+  }
+}
+
+function broadcastChannel(
+  available: boolean
+): () => Pick<BroadcastChannel, "close"> {
+  return () => {
+    if (!available) {
+      throw new Error("BroadcastChannel unavailable")
+    }
+    return { close() {} }
+  }
+}

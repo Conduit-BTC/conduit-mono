@@ -659,7 +659,6 @@ describe("first-party Spark SDK adapter", () => {
       amount: 2_100n,
       paymentMethod: {
         fee: "0",
-        sparkTransferFeeSats: 0,
         type: "sparkAddress",
       },
     })

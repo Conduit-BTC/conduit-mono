@@ -458,7 +458,6 @@ function adaptFirstPartySparkWallet(input: {
           paymentMethod: {
             type: "sparkAddress",
             fee: "0",
-            sparkTransferFeeSats: 0,
           },
           amount: BigInt(amountSats),
         }

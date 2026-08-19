@@ -32,7 +32,6 @@ export interface SparkPreparedPayment {
     type: string
     fee?: string
     lightningFeeSats?: number | bigint
-    sparkTransferFeeSats?: number | bigint
   }
   amount: bigint
 }

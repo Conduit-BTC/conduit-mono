@@ -1,5 +1,7 @@
 const WALLET_CHANGE_STORAGE_KEY = "conduit:wallets-change:v1"
 const WALLET_CHANGE_BROADCAST_PROBE = "conduit:wallets-change-fallback-probe"
+const DEXIE_BROADCAST_TOKEN_PREFIX = "dexie-broadcast:"
+const STORAGE_FALLBACK_TOKEN_PREFIX = "storage-fallback:"
 
 export interface WalletChangeFallbackRuntime {
   createBroadcastChannel?: () => Pick<BroadcastChannel, "close">
@@ -25,9 +27,15 @@ export function subscribeToWalletChangeFallback(
   const handleStorageChange = (event: unknown) => {
     const storageEvent = event as { key?: unknown; newValue?: unknown }
     if (
-      storageEvent.key === WALLET_CHANGE_STORAGE_KEY &&
-      typeof storageEvent.newValue === "string"
+      storageEvent.key !== WALLET_CHANGE_STORAGE_KEY ||
+      typeof storageEvent.newValue !== "string"
     ) {
+      return
+    }
+    const writerHasDexieBroadcast =
+      storageEvent.newValue.startsWith(DEXIE_BROADCAST_TOKEN_PREFIX) &&
+      storageEvent.newValue.length > DEXIE_BROADCAST_TOKEN_PREFIX.length
+    if (!writerHasDexieBroadcast || !hasUsableBroadcastChannel(runtime)) {
       listener()
     }
   }
@@ -43,19 +51,29 @@ export function notifyWalletChangeFallback(
 ): void {
   if (!runtime?.storage) return
 
-  if (runtime.createBroadcastChannel) {
-    try {
-      runtime.createBroadcastChannel().close()
-      return
-    } catch {
-      // Fall through when BroadcastChannel is exposed but unusable here.
-    }
-  }
+  const prefix = hasUsableBroadcastChannel(runtime)
+    ? DEXIE_BROADCAST_TOKEN_PREFIX
+    : STORAGE_FALLBACK_TOKEN_PREFIX
 
   try {
-    runtime.storage.setItem(WALLET_CHANGE_STORAGE_KEY, runtime.createToken())
+    runtime.storage.setItem(
+      WALLET_CHANGE_STORAGE_KEY,
+      `${prefix}${runtime.createToken()}`
+    )
   } catch {
     // The origin reload still runs when storage is unavailable.
+  }
+}
+
+function hasUsableBroadcastChannel(
+  runtime: WalletChangeFallbackRuntime
+): boolean {
+  if (!runtime.createBroadcastChannel) return false
+  try {
+    runtime.createBroadcastChannel().close()
+    return true
+  } catch {
+    return false
   }
 }
 
