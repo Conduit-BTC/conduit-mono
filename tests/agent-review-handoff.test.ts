@@ -13,6 +13,12 @@ const simplifyWorkflow = await Bun.file(
 const countOccurrences = (text: string, value: string) =>
   text.split(value).length - 1
 
+const getNamedStep = (workflow: string, name: string) => {
+  const start = workflow.indexOf(`      - name: ${name}`)
+  const next = workflow.indexOf("\n      - name:", start + 1)
+  return workflow.slice(start, next === -1 ? undefined : next)
+}
+
 const validationStepStart = simplifyWorkflow.indexOf(
   "      - name: Validate pull request and trigger"
 )
@@ -137,7 +143,81 @@ describe("agent review handoff", () => {
       '`commit_id: "${{ steps.pr.outputs.head_sha }}"`'
     )
     expect(reviewWorkflow).toContain("Never include the clean marker")
-    expect(reviewWorkflow).toContain("resume: false")
+    expect(reviewWorkflow).toContain(
+      "Automatic Ponytail review is intentionally once per pull request."
+    )
+    expect(countOccurrences(reviewWorkflow, "resume: false")).toBe(3)
+    expect(
+      countOccurrences(
+        reviewWorkflow,
+        "prompt: ${{ steps.review_prompt.outputs.value }}"
+      )
+    ).toBe(3)
+  })
+
+  it("preserves the review validation toolchain and auth fallbacks", () => {
+    const codexReview = getNamedStep(
+      reviewWorkflow,
+      "Run Sudden Agent review with CODEX_AUTH_JSON"
+    )
+    const authFileReview = getNamedStep(
+      reviewWorkflow,
+      "Run Sudden Agent review with auth file"
+    )
+    const apiKeyReview = getNamedStep(
+      reviewWorkflow,
+      "Run Sudden Agent review with API key"
+    )
+
+    expect(reviewWorkflow).toContain(
+      "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6"
+    )
+    expect(reviewWorkflow).toContain(
+      "bun install --frozen-lockfile --ignore-scripts"
+    )
+    expect(codexReview).toContain(
+      "agent_auth_file: ${{ secrets.CODEX_AUTH_JSON }}"
+    )
+    expect(codexReview).toContain(
+      "continue-on-error: ${{ steps.auth.outputs.has_auth_file == 'true' || steps.auth.outputs.has_api_key == 'true' }}"
+    )
+    expect(authFileReview).toContain(
+      "agent_auth_file: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}"
+    )
+    expect(authFileReview).toContain(
+      "steps.auth.outputs.has_auth_file == 'true'"
+    )
+    expect(authFileReview).toContain(
+      "steps.auth.outputs.has_codex_auth_json != 'true' ||"
+    )
+    expect(authFileReview).toContain(
+      "steps.review_codex_auth_json.outcome == 'failure'"
+    )
+    expect(authFileReview).toContain(
+      "continue-on-error: ${{ steps.auth.outputs.has_api_key == 'true' }}"
+    )
+    expect(apiKeyReview).toContain(
+      "agent_api_key: ${{ secrets.SUDDEN_AGENT_API_KEY }}"
+    )
+    expect(apiKeyReview).toContain("steps.auth.outputs.has_api_key == 'true'")
+    expect(apiKeyReview).toContain(
+      "steps.auth.outputs.has_codex_auth_json != 'true' ||"
+    )
+    expect(apiKeyReview).toContain(
+      "steps.review_codex_auth_json.outcome == 'failure'"
+    )
+    expect(apiKeyReview).toContain(
+      "steps.auth.outputs.has_auth_file != 'true' ||"
+    )
+    expect(apiKeyReview).toContain(
+      "steps.review_auth_file.outcome == 'failure'"
+    )
+
+    for (const reviewStep of [codexReview, authFileReview, apiKeyReview]) {
+      expect(reviewStep).toContain(
+        "prompt: ${{ steps.review_prompt.outputs.value }}"
+      )
+    }
   })
 
   it("runs automatic simplification only from a current clean bot review", () => {

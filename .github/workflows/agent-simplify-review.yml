@@ -118,6 +118,8 @@ jobs:
               exit 1
             fi
 
+            # Deliberately PR-wide: a response commit must not rearm automatic
+            # Ponytail. Maintainers can request an explicit rerun when needed.
             previous_ponytail_reviews="$(
               gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews?per_page=100" |
                 jq -s --arg marker '<!-- conduit:ponytail-final' \
