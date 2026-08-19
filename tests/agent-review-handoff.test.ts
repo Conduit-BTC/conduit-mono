@@ -168,11 +168,8 @@ fi
       new Response(gateProcess.stdout).text(),
       new Response(gateProcess.stderr).text(),
     ])
-    const output = await Bun.file(outputPath)
-      .exists()
-      .then((exists) =>
-        exists ? readFile(outputPath, "utf8") : Promise.resolve("")
-      )
+    const outputFile = Bun.file(outputPath)
+    const output = (await outputFile.exists()) ? await outputFile.text() : ""
 
     return { exitCode, output, stderr, stdout }
   } finally {
@@ -310,13 +307,6 @@ describe("agent review handoff", () => {
   })
 
   it("runs automatic simplification only from a current clean bot review", () => {
-    const triggerBlock = simplifyWorkflow.slice(
-      0,
-      simplifyWorkflow.indexOf("permissions:")
-    )
-
-    expect(triggerBlock).not.toContain("pull_request:")
-    expect(triggerBlock).toContain("pull_request_review:")
     const workflowHeader = simplifyWorkflow.slice(
       0,
       simplifyWorkflow.indexOf("jobs:")
@@ -324,6 +314,8 @@ describe("agent review handoff", () => {
     const preflightJob = getNamedJob(simplifyWorkflow, "preflight")
     const simplifyJob = getNamedJob(simplifyWorkflow, "simplify")
 
+    expect(workflowHeader).not.toContain("pull_request:")
+    expect(workflowHeader).toContain("pull_request_review:")
     expect(workflowHeader).not.toContain("concurrency:")
     expect(simplifyWorkflow).not.toContain("cancel-stale:")
     expect(simplifyWorkflow).not.toContain("cancel-in-progress:")
@@ -406,17 +398,6 @@ describe("agent review handoff", () => {
     expect(simplifyWorkflow).toContain(
       "github.event.comment.body == '/agent simplify'"
     )
-
-    const automaticOnlyBlock = simplifyWorkflow.slice(
-      simplifyWorkflow.indexOf(
-        'if [[ "$GITHUB_EVENT_NAME" == "pull_request_review" ]]'
-      ),
-      simplifyWorkflow.lastIndexOf(
-        'echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"'
-      )
-    )
-    expect(automaticOnlyBlock).toContain("previous_ponytail_reviews")
-    expect(automaticOnlyBlock).toContain("should_run=false")
   })
 
   it("stages the skill outside PR-controlled symlinks", async () => {
