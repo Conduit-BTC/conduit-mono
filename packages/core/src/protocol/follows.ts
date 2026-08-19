@@ -922,11 +922,13 @@ export async function publishContactListUpdate({
   targetPubkey,
   shouldFollow,
   appId,
+  isSessionCurrent,
 }: {
   ownerPubkey: string
   targetPubkey: string
   shouldFollow: boolean
   appId: ConduitAppId
+  isSessionCurrent?: () => boolean
 }): Promise<void> {
   if (!CONTACT_LIST_WRITES_AVAILABLE) {
     throw new ContactListWriteUnavailableError()
@@ -941,11 +943,19 @@ export async function publishContactListUpdate({
 
   const ndk = followListTestOverrides.getNdk?.() ?? getNdk()
   if (!ndk.signer) throw new Error("Signer not connected")
+  const signer = ndk.signer
 
-  const signerPubkey = normalizeHexPubkey((await ndk.signer.user()).pubkey)
+  const assertCurrentSignerSession = () => {
+    if (ndk.signer !== signer || isSessionCurrent?.() === false) {
+      throw new Error("Signer session changed while updating the follow list")
+    }
+  }
+
+  const signerPubkey = normalizeHexPubkey((await signer.user()).pubkey)
   if (signerPubkey !== normalizedOwnerPubkey) {
     throw new Error("Active signer does not match this follow list")
   }
+  assertCurrentSignerSession()
 
   const readFollowLists =
     followListTestOverrides.readLatestFollowLists ?? readLatestFollowLists
@@ -959,6 +969,7 @@ export async function publishContactListUpdate({
       refreshRelayLists: true,
     }
   )
+  assertCurrentSignerSession()
   const ownerRead = existing.authors.find(
     (candidate) => candidate.pubkey === normalizedOwnerPubkey
   )
@@ -974,16 +985,26 @@ export async function publishContactListUpdate({
     event: NDKEvent,
     snapshot: SignedPublicNostrEvent
   ): Promise<string[]> => {
+    assertCurrentSignerSession()
     assertSafeReplaceablePublish(event, replaceableSafety)
     const result = await publishEvent(event, {
       intent: "author_event",
       authorPubkey: normalizedOwnerPubkey,
       authenticatedPubkey: normalizedOwnerPubkey,
       replaceableSafety,
+      shouldContinue: () => {
+        try {
+          assertCurrentSignerSession()
+          return true
+        } catch {
+          return false
+        }
+      },
     })
     if (result.successfulRelayUrls.length === 0) {
       throw new Error("No relay acknowledged the follow-list update.")
     }
+    assertCurrentSignerSession()
     await persistOwnContactListSnapshot(
       {
         pubkey: normalizedOwnerPubkey,
@@ -994,6 +1015,7 @@ export async function publishContactListUpdate({
       },
       { required: false }
     )
+    assertCurrentSignerSession()
     return result.successfulRelayUrls
   }
 
@@ -1034,8 +1056,11 @@ export async function publishContactListUpdate({
   event.tags = appendConduitClientTag(nextTags, appId)
 
   assertSafeReplaceablePublish(event, replaceableSafety)
-  await event.sign(ndk.signer)
+  assertCurrentSignerSession()
+  await event.sign(signer)
+  assertCurrentSignerSession()
   const signedEvent = event.rawEvent() as SignedPublicNostrEvent
+  assertCurrentSignerSession()
   const retained = await persistOwnContactListSnapshot(
     {
       pubkey: normalizedOwnerPubkey,
@@ -1046,6 +1071,7 @@ export async function publishContactListUpdate({
     },
     { required: true, expectedBaseEvent: latest }
   )
+  assertCurrentSignerSession()
   if (retained.event.id !== signedEvent.id) {
     throw new ReplaceablePublishSafetyError(
       "Refusing to publish a follow-list replacement because a stronger owner snapshot was stored concurrently."

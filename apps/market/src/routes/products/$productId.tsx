@@ -39,7 +39,7 @@ import {
   useProgressiveProductDetail,
   useProgressiveProducts,
 } from "../../hooks/useProgressiveProducts"
-import { getProductAddAvailability } from "../../lib/cart-model"
+import { getProductAddAvailability, selectCartItem } from "../../lib/cart-model"
 import { getProductDisplaySummary } from "../../lib/productDisplaySummary"
 import {
   cartItemInputFromProductSelection,
@@ -134,11 +134,10 @@ function ProductPage() {
     : ""
   const merchantNip05 = getProfileNip05(merchantProfile.data)
   const cartItem = selectedProduct
-    ? cart.items.find(
-        (item) =>
-          item.merchantPubkey === selectedProduct.pubkey &&
-          item.productId === selectedProduct.id
-      )
+    ? selectCartItem(cart.items, {
+        merchantPubkey: selectedProduct.pubkey,
+        productId: selectedProduct.id,
+      })
     : null
   const cartQuantity = cartItem?.quantity ?? 0
   const productAddAvailability = getProductAddAvailability(
@@ -271,7 +270,9 @@ function ProductPage() {
     if (!product || !selectedProduct || !productAddAvailability.canAdd) return
     recordProductDetailAction("add_to_cart")
     cart.addItem(
-      cartItemInputFromProductSelection(product, selectedProduct),
+      {
+        ...cartItemInputFromProductSelection(product, selectedProduct),
+      },
       quantity
     )
   }
@@ -864,35 +865,42 @@ function ProductPage() {
                         }
                         onAddToCart={(relatedSelection) =>
                           cart.addItem(
-                            cartItemInputFromProductSelection(
-                              relatedProduct,
-                              relatedSelection
-                            ),
+                            {
+                              ...cartItemInputFromProductSelection(
+                                relatedProduct,
+                                relatedSelection
+                              ),
+                            },
                             1
                           )
                         }
                         onIncrement={(relatedSelection) =>
                           cart.addItem(
-                            cartItemInputFromProductSelection(
-                              relatedProduct,
-                              relatedSelection
-                            ),
+                            {
+                              ...cartItemInputFromProductSelection(
+                                relatedProduct,
+                                relatedSelection
+                              ),
+                            },
                             1
                           )
                         }
                         onDecrement={(relatedSelection) => {
-                          const relatedCartItem = cart.items.find(
-                            (item) =>
-                              item.merchantPubkey === relatedSelection.pubkey &&
-                              item.productId === relatedSelection.id
+                          const relatedIdentity = {
+                            merchantPubkey: relatedSelection.pubkey,
+                            productId: relatedSelection.id,
+                          }
+                          const relatedCartItem = selectCartItem(
+                            cart.items,
+                            relatedIdentity
                           )
                           if (!relatedCartItem) return
                           if (relatedCartItem.quantity <= 1) {
-                            cart.removeItem(relatedSelection.id)
+                            cart.removeItem(relatedIdentity)
                             return
                           }
                           cart.setQuantity(
-                            relatedSelection.id,
+                            relatedIdentity,
                             relatedCartItem.quantity - 1
                           )
                         }}

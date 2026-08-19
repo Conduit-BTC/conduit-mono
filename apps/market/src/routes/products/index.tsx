@@ -30,6 +30,7 @@ import { useShopperPricing } from "../../hooks/useShopperPricing"
 import { useCart } from "../../hooks/useCart"
 import { useMarketBrowseModel } from "../../hooks/useMarketBrowseModel"
 import { normalizeFacetValues } from "../../lib/facets"
+import { selectCartItem } from "../../lib/cart-model"
 import {
   type MarketBrowseSearch,
   type MarketBrowseSortOption,
@@ -759,42 +760,45 @@ function ProductsPage() {
                   btcUsdRate={btcUsdRate}
                   pricePreference={shopperPricing.preference}
                   getCartQuantity={(selectedProduct) =>
-                    cart.items.find(
-                      (item) =>
-                        item.merchantPubkey === selectedProduct.pubkey &&
-                        item.productId === selectedProduct.id
-                    )?.quantity ?? 0
+                    selectCartItem(cart.items, {
+                      merchantPubkey: selectedProduct.pubkey,
+                      productId: selectedProduct.id,
+                    })?.quantity ?? 0
                   }
                   onAddToCart={(selectedProduct) =>
                     cart.addItem(
-                      cartItemInputFromProductSelection(
-                        product,
-                        selectedProduct
-                      ),
+                      {
+                        ...cartItemInputFromProductSelection(
+                          product,
+                          selectedProduct
+                        ),
+                      },
                       1
                     )
                   }
                   onIncrement={(selectedProduct) =>
                     cart.addItem(
-                      cartItemInputFromProductSelection(
-                        product,
-                        selectedProduct
-                      ),
+                      {
+                        ...cartItemInputFromProductSelection(
+                          product,
+                          selectedProduct
+                        ),
+                      },
                       1
                     )
                   }
                   onDecrement={(selectedProduct) => {
-                    const existing = cart.items.find(
-                      (item) =>
-                        item.merchantPubkey === selectedProduct.pubkey &&
-                        item.productId === selectedProduct.id
-                    )
+                    const identity = {
+                      merchantPubkey: selectedProduct.pubkey,
+                      productId: selectedProduct.id,
+                    }
+                    const existing = selectCartItem(cart.items, identity)
                     if (!existing) return
                     if (existing.quantity <= 1) {
-                      cart.removeItem(selectedProduct.id)
+                      cart.removeItem(identity)
                       return
                     }
-                    cart.setQuantity(selectedProduct.id, existing.quantity - 1)
+                    cart.setQuantity(identity, existing.quantity - 1)
                   }}
                 />
               </li>
