@@ -3,6 +3,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   rm,
   symlink,
   writeFile,
@@ -16,6 +17,22 @@ const reviewWorkflow = await Bun.file(
 const simplifyWorkflow = await Bun.file(
   ".github/workflows/agent-simplify-review.yml"
 ).text()
+const workflowDirectory = ".github/workflows"
+const workflows = await Promise.all(
+  (await readdir(workflowDirectory))
+    .filter((name) => name.endsWith(".yml") || name.endsWith(".yaml"))
+    .map(async (name) => {
+      const path = `${workflowDirectory}/${name}`
+      return [path, await Bun.file(path).text()] as const
+    })
+)
+const requiredTokenWorkflowPaths = [
+  ".github/workflows/agent-auth-refresh.yml",
+  ".github/workflows/agent-ops-codex-first-shot.yml",
+  ".github/workflows/agent-pr-harden.yml",
+  ".github/workflows/agent-pr-review.yml",
+  ".github/workflows/agent-simplify-review.yml",
+] as const
 
 const countOccurrences = (text: string, value: string) =>
   text.split(value).length - 1
@@ -259,6 +276,35 @@ describe("agent review handoff", () => {
     for (const reviewStep of [codexReview, authFileReview, apiKeyReview]) {
       expect(reviewStep).toContain(
         "prompt: ${{ steps.review_prompt.outputs.value }}"
+      )
+    }
+  })
+
+  it("uses one current GitHub App client ID contract", () => {
+    const tokenAction = "actions/create-github-app-token@"
+    const pinnedTokenAction =
+      "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1"
+    const clientIdInput =
+      "client-id: ${{ vars.WORKFLOW_AGENT_GITHUB_APP_CLIENT_ID }}"
+
+    for (const [path, workflow] of workflows) {
+      expect(workflow, path).not.toContain("WORKFLOW_AGENT_GITHUB_APP_ID")
+      expect(workflow, path).not.toContain("app-id:")
+
+      const tokenActionCount = countOccurrences(workflow, tokenAction)
+      expect(countOccurrences(workflow, pinnedTokenAction), path).toBe(
+        tokenActionCount
+      )
+      expect(countOccurrences(workflow, clientIdInput), path).toBe(
+        tokenActionCount
+      )
+    }
+
+    for (const requiredPath of requiredTokenWorkflowPaths) {
+      const workflow = workflows.find(([path]) => path === requiredPath)?.[1]
+      expect(workflow, requiredPath).toBeDefined()
+      expect(countOccurrences(workflow ?? "", tokenAction), requiredPath).toBe(
+        1
       )
     }
   })
