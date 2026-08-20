@@ -287,6 +287,50 @@ describe("NIP-02 merchant trust helpers", () => {
     )
   })
 
+  it("rejects capped exact owner-local evidence before replacing a follow list", async () => {
+    const ownerLocalRelay = "wss://127.0.0.1:7447"
+    const event = followListEvent({
+      secret: viewerSecret,
+      createdAt: 100,
+      follows: [merchantPubkey],
+    })
+
+    const read = await readLatestFollowLists(
+      {
+        pubkeys: [viewerPubkey],
+        authenticatedPubkey: viewerPubkey,
+      },
+      {
+        refreshRelayLists: true,
+        resolveRelayLists: async () =>
+          new Map([
+            [viewerPubkey, relayList(viewerPubkey, [], [ownerLocalRelay])],
+          ]),
+        fetchEvents: async (_filter, options) => ({
+          events: [event],
+          eventSourceRelayUrls: { [event.id]: [ownerLocalRelay] },
+          relays: options.relayUrls.map((relayUrl) => ({
+            relayUrl,
+            status:
+              relayUrl === ownerLocalRelay
+                ? ("success" as const)
+                : ("failed" as const),
+            eventCount: relayUrl === ownerLocalRelay ? 1 : 0,
+            rejectedEventCount: relayUrl === ownerLocalRelay ? 9 : 0,
+          })),
+          eventsVerified: false,
+        }),
+      }
+    )
+
+    expect(read.authors[0]?.relayHintTruncated).toBe(false)
+    expect(read.authors[0]?.capped).toBe(true)
+    expect(read.authors[0]?.coverage).toBe("limited")
+    expect(() =>
+      requirePublishableContactListSnapshot(read, viewerPubkey)
+    ).toThrow("completed the read")
+  })
+
   it("marks a bounded author-hint overflow non-publishable", async () => {
     const hints = [
       "wss://hint-one.example",

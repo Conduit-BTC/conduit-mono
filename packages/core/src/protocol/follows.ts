@@ -888,6 +888,7 @@ export function requirePublishableContactListSnapshot(
     author?.snapshotState === "network" &&
     author.coverage === "limited" &&
     !author.relayHintTruncated &&
+    !author.capped &&
     hasCurrentRelayDiscovery &&
     completedOwnerLocalHint &&
     allSelectedHintsCompleted
