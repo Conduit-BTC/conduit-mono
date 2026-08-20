@@ -102,7 +102,10 @@ Source boundary:
   and auth-event state in memory, but sends the signing request to the selected
   external signer and the signed auth event to the selected relay; those
   signers and relays may retain records under their own policies.
-- NWC/NIP-47 payment behavior remains non-custodial. Do not introduce balance management, custody, or wallet-secret handling.
+- NWC/NIP-47 payment behavior remains non-custodial. NWC secrets stay in the
+  isolated Connected Wallet provider path. Portable Wallet seed handling is a
+  distinct client-side exception governed by `docs/specs/wallets.md`; it does
+  not authorize Nostr account-key custody.
 - Keep NWC encryption behavior conservative; do not move wallet flows to a newer encryption version without explicit wallet capability discovery and an accepted source.
 
 ## Libraries and Tools

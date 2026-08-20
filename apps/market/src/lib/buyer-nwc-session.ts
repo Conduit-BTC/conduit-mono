@@ -231,7 +231,7 @@ export class BuyerNwcSession {
       return {
         status: "pre_publish_failed",
         phase: "before_publish",
-        reason: "No NWC wallet connection is saved.",
+        reason: "No Connected Wallet is connected.",
       }
     }
 
@@ -243,7 +243,8 @@ export class BuyerNwcSession {
       return {
         status: "pre_publish_failed",
         phase: "before_publish",
-        reason: "Saved wallet does not support outgoing payments via NWC.",
+        reason:
+          "This Connected Wallet does not support outgoing payments via NWC.",
       }
     }
 
@@ -545,7 +546,7 @@ export class BuyerNwcSession {
         lastWarmAt: Date.now(),
         error:
           status === "unsupported"
-            ? "Saved wallet does not support outgoing payments via NWC."
+            ? "This Connected Wallet does not support outgoing payments via NWC."
             : null,
       }
       this.notify()
@@ -595,7 +596,7 @@ export class BuyerNwcSession {
         result: {
           status: "pre_publish_failed",
           phase: "before_publish",
-          reason: "No NWC wallet connection is saved.",
+          reason: "No Connected Wallet is connected.",
         },
       }
     }
@@ -630,19 +631,35 @@ export class BuyerNwcSession {
   }
 }
 
-const buyerNwcSession = new BuyerNwcSession()
+const buyerNwcSessions = new Map<string, BuyerNwcSession>()
 
-export function getBuyerNwcSession(): BuyerNwcSession {
-  return buyerNwcSession
+export function getBuyerNwcSession(walletId: string): BuyerNwcSession {
+  let session = buyerNwcSessions.get(walletId)
+  if (!session) {
+    session = new BuyerNwcSession()
+    buyerNwcSessions.set(walletId, session)
+  }
+  return session
 }
 
-export async function payInvoiceWithBuyerNwcSession(
-  connection: NwcConnection,
-  input: NwcSessionPayInvoiceInput
-): Promise<NwcSessionPaymentResult> {
-  const session = getBuyerNwcSession()
-  session.setConnection(connection)
-  return session.payInvoice(input)
+export function getBuyerNwcSessionSnapshots(
+  walletIds: readonly string[]
+): Record<string, NwcSessionSnapshot> {
+  return Object.fromEntries(
+    walletIds.map((walletId) => [
+      walletId,
+      getBuyerNwcSession(walletId).getSnapshot(),
+    ])
+  )
+}
+
+export function closeBuyerNwcSession(walletId: string): void {
+  const session = buyerNwcSessions.get(walletId)
+  if (!session) {
+    return
+  }
+  session.close()
+  buyerNwcSessions.delete(walletId)
 }
 
 function createSdkNwcClient(connection: NwcConnection): NwcSessionClientLike {

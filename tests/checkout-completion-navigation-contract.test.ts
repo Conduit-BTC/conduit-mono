@@ -74,6 +74,44 @@ describe("checkout completion navigation contracts", () => {
     )
   })
 
+  it("preflights and snapshots the authenticated signer before checkout work", async () => {
+    const checkoutRoute = await Bun.file(
+      "apps/market/src/routes/checkout.tsx"
+    ).text()
+    const payNowIndex = checkoutRoute.indexOf("async function payNow(")
+    const payNowPreflightIndex = checkoutRoute.indexOf(
+      "getCheckoutBuyerIdentity()",
+      payNowIndex
+    )
+    const payNowInFlightIndex = checkoutRoute.indexOf(
+      "paymentInFlightRef.current = true",
+      payNowIndex
+    )
+    const placeOrderIndex = checkoutRoute.indexOf(
+      "async function placeOrder(): Promise<void>"
+    )
+    const placeOrderPreflightIndex = checkoutRoute.indexOf(
+      "getCheckoutBuyerIdentity()",
+      placeOrderIndex
+    )
+    const placeOrderInFlightIndex = checkoutRoute.indexOf(
+      "paymentInFlightRef.current = true",
+      placeOrderIndex
+    )
+
+    expect(checkoutRoute).toContain(
+      "const { pubkey, signer, capabilities, status: authStatus } = useAuth()"
+    )
+    expect(payNowIndex).toBeGreaterThan(-1)
+    expect(payNowPreflightIndex).toBeGreaterThan(payNowIndex)
+    expect(payNowPreflightIndex).toBeLessThan(payNowInFlightIndex)
+    expect(placeOrderPreflightIndex).toBeGreaterThan(placeOrderIndex)
+    expect(placeOrderPreflightIndex).toBeLessThan(placeOrderInFlightIndex)
+    expect(checkoutRoute).toContain(
+      'kind: "signed_in", pubkey: signedBuyerPubkey, signer'
+    )
+  })
+
   it("offers guest shoppers a signer path when invoice checkout is unavailable", async () => {
     const checkoutRoute = await Bun.file(
       "apps/market/src/routes/checkout.tsx"
