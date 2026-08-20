@@ -17,7 +17,6 @@ import {
   resolveDefaultMarketPerspectiveFollowRefresh,
   selectDefaultMarketPerspectiveFollowSnapshot,
   storeDefaultMarketPerspectiveFollowSnapshot,
-  storeDefaultMarketPerspectiveFollowPubkeys,
   subscribeDefaultMarketPerspectiveFollowStorage,
 } from "../apps/market/src/lib/defaultMarketPerspective"
 import {
@@ -47,6 +46,24 @@ function createVerifiedFollowSnapshot(
   })
   if (!snapshot) throw new Error("Expected a valid signed follow snapshot")
   return snapshot
+}
+
+function withMockWindow(value: unknown, run: () => void): void {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window")
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value,
+  })
+
+  try {
+    run()
+  } finally {
+    if (originalWindow) {
+      Object.defineProperty(globalThis, "window", originalWindow)
+    } else {
+      Reflect.deleteProperty(globalThis, "window")
+    }
+  }
 }
 
 describe("default Market perspective follow-list safety", () => {
@@ -119,147 +136,141 @@ describe("default Market perspective follow-list safety", () => {
     ]
 
     expect(
-      storeDefaultMarketPerspectiveFollowPubkeys(noisyRefresh, 1, {
-        previousPubkeys: DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS,
-      })
+      resolveSafeDefaultMarketPerspectiveFollowRefresh(
+        noisyRefresh,
+        DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS
+      )
+    ).toEqual([...refreshed].sort())
+    expect(
+      storeDefaultMarketPerspectiveFollowSnapshot(
+        { pubkeys: noisyRefresh, eventCreatedAt: 1 },
+        {
+          previousPubkeys: DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS,
+        }
+      )?.pubkeys
     ).toEqual([...refreshed].sort())
   })
 
   it("keeps the newest cached curation snapshot across reloads", () => {
-    const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window")
     const storage = new Map<string, string>()
-    Object.defineProperty(globalThis, "window", {
-      configurable: true,
-      value: {
+    withMockWindow(
+      {
         localStorage: {
           getItem: (key: string) => storage.get(key) ?? null,
           setItem: (key: string, value: string) => storage.set(key, value),
         },
       },
-    })
-
-    try {
-      const threshold = getDefaultMarketPerspectiveRefreshThreshold()
-      const firstPubkeys = DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS.slice(
-        0,
-        threshold
-      )
-      const newestPubkeys = DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS.slice(
-        -DEFAULT_MARKET_PERSPECTIVE_MIN_REFRESH_FOLLOWS
-      )
-      const olderPubkeys =
-        DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS.slice(-threshold)
-      const firstSnapshot = createVerifiedFollowSnapshot(
-        firstPubkeys,
-        DEFAULT_MARKET_PERSPECTIVE_FOLLOWS_CREATED_AT
-      )
-      const first = storeDefaultMarketPerspectiveFollowSnapshot(firstSnapshot, {
-        previousPubkeys: DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS,
-        expectedPubkey: TEST_FOLLOW_PUBKEY,
-      })
-      expect(first?.pubkeys).toEqual([...firstPubkeys].sort())
-
-      const newestSnapshot = createVerifiedFollowSnapshot(
-        newestPubkeys,
-        DEFAULT_MARKET_PERSPECTIVE_FOLLOWS_CREATED_AT + 2
-      )
-      const newest = storeDefaultMarketPerspectiveFollowSnapshot(
-        newestSnapshot,
-        {
-          previousSnapshot: first ?? undefined,
-          expectedPubkey: TEST_FOLLOW_PUBKEY,
-        }
-      )
-      expect(newest?.pubkeys).toEqual([...newestPubkeys].sort())
-
-      storeDefaultMarketPerspectiveFollowSnapshot(
-        createVerifiedFollowSnapshot(
-          olderPubkeys,
-          DEFAULT_MARKET_PERSPECTIVE_FOLLOWS_CREATED_AT
-        ),
-        {
-          previousSnapshot: newest ?? undefined,
-          expectedPubkey: TEST_FOLLOW_PUBKEY,
-        }
-      )
-
-      expect(
-        isSameFollowListSnapshot(
-          getDefaultMarketPerspectiveFollowSnapshot({
-            expectedPubkey: TEST_FOLLOW_PUBKEY,
-          }),
-          newest ?? undefined
+      () => {
+        const threshold = getDefaultMarketPerspectiveRefreshThreshold()
+        const firstPubkeys = DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS.slice(
+          0,
+          threshold
         )
-      ).toBe(true)
-    } finally {
-      if (originalWindow) {
-        Object.defineProperty(globalThis, "window", originalWindow)
-      } else {
-        Reflect.deleteProperty(globalThis, "window")
+        const newestPubkeys = DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS.slice(
+          -DEFAULT_MARKET_PERSPECTIVE_MIN_REFRESH_FOLLOWS
+        )
+        const olderPubkeys =
+          DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS.slice(-threshold)
+        const firstSnapshot = createVerifiedFollowSnapshot(
+          firstPubkeys,
+          DEFAULT_MARKET_PERSPECTIVE_FOLLOWS_CREATED_AT
+        )
+        const first = storeDefaultMarketPerspectiveFollowSnapshot(
+          firstSnapshot,
+          {
+            previousPubkeys: DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS,
+            expectedPubkey: TEST_FOLLOW_PUBKEY,
+          }
+        )
+        expect(first?.pubkeys).toEqual([...firstPubkeys].sort())
+
+        const newestSnapshot = createVerifiedFollowSnapshot(
+          newestPubkeys,
+          DEFAULT_MARKET_PERSPECTIVE_FOLLOWS_CREATED_AT + 2
+        )
+        const newest = storeDefaultMarketPerspectiveFollowSnapshot(
+          newestSnapshot,
+          {
+            previousSnapshot: first ?? undefined,
+            expectedPubkey: TEST_FOLLOW_PUBKEY,
+          }
+        )
+        expect(newest?.pubkeys).toEqual([...newestPubkeys].sort())
+
+        storeDefaultMarketPerspectiveFollowSnapshot(
+          createVerifiedFollowSnapshot(
+            olderPubkeys,
+            DEFAULT_MARKET_PERSPECTIVE_FOLLOWS_CREATED_AT
+          ),
+          {
+            previousSnapshot: newest ?? undefined,
+            expectedPubkey: TEST_FOLLOW_PUBKEY,
+          }
+        )
+
+        expect(
+          isSameFollowListSnapshot(
+            getDefaultMarketPerspectiveFollowSnapshot({
+              expectedPubkey: TEST_FOLLOW_PUBKEY,
+            }),
+            newest ?? undefined
+          )
+        ).toBe(true)
       }
-    }
+    )
   })
 
   it("checks refresh retention against storage that advanced beyond stale caller state", () => {
-    const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window")
     const storage = new Map<string, string>()
-    Object.defineProperty(globalThis, "window", {
-      configurable: true,
-      value: {
+    withMockWindow(
+      {
         localStorage: {
           getItem: (key: string) => storage.get(key) ?? null,
           setItem: (key: string, value: string) => storage.set(key, value),
         },
       },
-    })
-
-    try {
-      const advancedPubkeys = DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS
-      const staleCallerPubkeys = advancedPubkeys.slice(
-        0,
-        DEFAULT_MARKET_PERSPECTIVE_MIN_REFRESH_FOLLOWS
-      )
-      const advancedSnapshot = createVerifiedFollowSnapshot(
-        advancedPubkeys,
-        DEFAULT_MARKET_PERSPECTIVE_FOLLOWS_CREATED_AT + 1
-      )
-      const advanced = storeDefaultMarketPerspectiveFollowSnapshot(
-        advancedSnapshot,
-        {
-          previousPubkeys: advancedPubkeys,
-          expectedPubkey: TEST_FOLLOW_PUBKEY,
-        }
-      )
-      expect(advanced?.pubkeys).toHaveLength(advancedPubkeys.length)
-
-      const retained = storeDefaultMarketPerspectiveFollowSnapshot(
-        createVerifiedFollowSnapshot(
-          staleCallerPubkeys,
-          DEFAULT_MARKET_PERSPECTIVE_FOLLOWS_CREATED_AT + 2
-        ),
-        {
-          previousPubkeys: staleCallerPubkeys,
-          expectedPubkey: TEST_FOLLOW_PUBKEY,
-        }
-      )
-      expect(
-        isSameFollowListSnapshot(retained ?? undefined, advanced ?? undefined)
-      ).toBe(true)
-      expect(
-        isSameFollowListSnapshot(
-          getDefaultMarketPerspectiveFollowSnapshot({
-            expectedPubkey: TEST_FOLLOW_PUBKEY,
-          }),
-          advanced ?? undefined
+      () => {
+        const advancedPubkeys = DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS
+        const staleCallerPubkeys = advancedPubkeys.slice(
+          0,
+          DEFAULT_MARKET_PERSPECTIVE_MIN_REFRESH_FOLLOWS
         )
-      ).toBe(true)
-    } finally {
-      if (originalWindow) {
-        Object.defineProperty(globalThis, "window", originalWindow)
-      } else {
-        Reflect.deleteProperty(globalThis, "window")
+        const advancedSnapshot = createVerifiedFollowSnapshot(
+          advancedPubkeys,
+          DEFAULT_MARKET_PERSPECTIVE_FOLLOWS_CREATED_AT + 1
+        )
+        const advanced = storeDefaultMarketPerspectiveFollowSnapshot(
+          advancedSnapshot,
+          {
+            previousPubkeys: advancedPubkeys,
+            expectedPubkey: TEST_FOLLOW_PUBKEY,
+          }
+        )
+        expect(advanced?.pubkeys).toHaveLength(advancedPubkeys.length)
+
+        const retained = storeDefaultMarketPerspectiveFollowSnapshot(
+          createVerifiedFollowSnapshot(
+            staleCallerPubkeys,
+            DEFAULT_MARKET_PERSPECTIVE_FOLLOWS_CREATED_AT + 2
+          ),
+          {
+            previousPubkeys: staleCallerPubkeys,
+            expectedPubkey: TEST_FOLLOW_PUBKEY,
+          }
+        )
+        expect(
+          isSameFollowListSnapshot(retained ?? undefined, advanced ?? undefined)
+        ).toBe(true)
+        expect(
+          isSameFollowListSnapshot(
+            getDefaultMarketPerspectiveFollowSnapshot({
+              expectedPubkey: TEST_FOLLOW_PUBKEY,
+            }),
+            advanced ?? undefined
+          )
+        ).toBe(true)
       }
-    }
+    )
   })
 
   it("reconciles a stale tab to stronger storage before selecting an older relay result", () => {
@@ -468,7 +479,6 @@ describe("default Market perspective follow-list safety", () => {
   })
 
   it("does not let a projection-only cache evict or veto the bundled frontier", () => {
-    const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window")
     const storage = new Map<string, string>()
     const projectedPubkeys = Array.from({ length: 1_000 }, (_, index) =>
       index.toString(16).padStart(64, "0")
@@ -481,51 +491,43 @@ describe("default Market perspective follow-list safety", () => {
         eventId: "f".repeat(64),
       })
     )
-    Object.defineProperty(globalThis, "window", {
-      configurable: true,
-      value: {
+    withMockWindow(
+      {
         localStorage: {
           getItem: (key: string) => storage.get(key) ?? null,
           setItem: (key: string, value: string) => storage.set(key, value),
           removeItem: (key: string) => storage.delete(key),
         },
       },
-    })
+      () => {
+        const retained = getDefaultMarketPerspectiveFollowSnapshot()
+        const olderVerified = {
+          ...createVerifiedFollowSnapshot(
+            DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS.slice(0, 26),
+            DEFAULT_MARKET_PERSPECTIVE_FOLLOWS_CREATED_AT - 1
+          ),
+          signedEvent: undefined,
+        }
 
-    try {
-      const retained = getDefaultMarketPerspectiveFollowSnapshot()
-      const olderVerified = {
-        ...createVerifiedFollowSnapshot(
-          DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS.slice(0, 26),
-          DEFAULT_MARKET_PERSPECTIVE_FOLLOWS_CREATED_AT - 1
-        ),
-        signedEvent: undefined,
-      }
-
-      expect(retained.evidence).toBe("bundled")
-      expect(storage.has(DEFAULT_MARKET_PERSPECTIVE_FOLLOW_STORAGE_KEY)).toBe(
-        false
-      )
-      expect(
-        resolveSafeDefaultMarketPerspectiveFollowRefresh(
-          DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS.slice(0, 26),
-          retained.pubkeys
+        expect(retained.evidence).toBe("bundled")
+        expect(storage.has(DEFAULT_MARKET_PERSPECTIVE_FOLLOW_STORAGE_KEY)).toBe(
+          false
         )
-      ).not.toBeNull()
-      expect(
-        selectDefaultMarketPerspectiveFollowSnapshot(
-          retained,
-          undefined,
-          olderVerified
-        )
-      ).toEqual(retained)
-    } finally {
-      if (originalWindow) {
-        Object.defineProperty(globalThis, "window", originalWindow)
-      } else {
-        Reflect.deleteProperty(globalThis, "window")
+        expect(
+          resolveSafeDefaultMarketPerspectiveFollowRefresh(
+            DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS.slice(0, 26),
+            retained.pubkeys
+          )
+        ).not.toBeNull()
+        expect(
+          selectDefaultMarketPerspectiveFollowSnapshot(
+            retained,
+            undefined,
+            olderVerified
+          )
+        ).toEqual(retained)
       }
-    }
+    )
   })
 
   it("derives persisted projections only from valid signed contact-list events", () => {
@@ -570,10 +572,8 @@ describe("default Market perspective follow-list safety", () => {
   })
 
   it("keeps a newer in-memory frontier when browser persistence is unavailable", () => {
-    const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window")
-    Object.defineProperty(globalThis, "window", {
-      configurable: true,
-      value: {
+    withMockWindow(
+      {
         localStorage: {
           getItem: () => null,
           setItem: () => {
@@ -581,47 +581,39 @@ describe("default Market perspective follow-list safety", () => {
           },
         },
       },
-    })
+      () => {
+        const bundled = getDefaultMarketPerspectiveFollowSnapshot()
+        const first = storeDefaultMarketPerspectiveFollowSnapshot(
+          createVerifiedFollowSnapshot(
+            DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS.slice(0, 26),
+            DEFAULT_MARKET_PERSPECTIVE_FOLLOWS_CREATED_AT + 1
+          ),
+          {
+            previousSnapshot: bundled,
+            expectedPubkey: TEST_FOLLOW_PUBKEY,
+          }
+        )
+        const second = storeDefaultMarketPerspectiveFollowSnapshot(
+          createVerifiedFollowSnapshot(
+            DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS.slice(0, 25),
+            DEFAULT_MARKET_PERSPECTIVE_FOLLOWS_CREATED_AT + 2
+          ),
+          {
+            previousSnapshot: first ?? undefined,
+            expectedPubkey: TEST_FOLLOW_PUBKEY,
+          }
+        )
 
-    try {
-      const bundled = getDefaultMarketPerspectiveFollowSnapshot()
-      const first = storeDefaultMarketPerspectiveFollowSnapshot(
-        createVerifiedFollowSnapshot(
-          DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS.slice(0, 26),
-          DEFAULT_MARKET_PERSPECTIVE_FOLLOWS_CREATED_AT + 1
-        ),
-        {
-          previousSnapshot: bundled,
-          expectedPubkey: TEST_FOLLOW_PUBKEY,
-        }
-      )
-      const second = storeDefaultMarketPerspectiveFollowSnapshot(
-        createVerifiedFollowSnapshot(
-          DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS.slice(0, 25),
+        expect(first?.pubkeys).toHaveLength(26)
+        expect(second?.pubkeys).toHaveLength(25)
+        expect(second?.eventCreatedAt).toBe(
           DEFAULT_MARKET_PERSPECTIVE_FOLLOWS_CREATED_AT + 2
-        ),
-        {
-          previousSnapshot: first ?? undefined,
-          expectedPubkey: TEST_FOLLOW_PUBKEY,
-        }
-      )
-
-      expect(first?.pubkeys).toHaveLength(26)
-      expect(second?.pubkeys).toHaveLength(25)
-      expect(second?.eventCreatedAt).toBe(
-        DEFAULT_MARKET_PERSPECTIVE_FOLLOWS_CREATED_AT + 2
-      )
-    } finally {
-      if (originalWindow) {
-        Object.defineProperty(globalThis, "window", originalWindow)
-      } else {
-        Reflect.deleteProperty(globalThis, "window")
+        )
       }
-    }
+    )
   })
 
   it("discards an impossible future cached frontier", () => {
-    const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window")
     const storage = new Map<string, string>()
     let now = 1_800_000_000
     storage.set(
@@ -635,51 +627,41 @@ describe("default Market perspective follow-list safety", () => {
         eventId: "f".repeat(64),
       })
     )
-    Object.defineProperty(globalThis, "window", {
-      configurable: true,
-      value: {
+    withMockWindow(
+      {
         localStorage: {
           getItem: (key: string) => storage.get(key) ?? null,
           setItem: (key: string, value: string) => storage.set(key, value),
           removeItem: (key: string) => storage.delete(key),
         },
       },
-    })
+      () => {
+        const bundled = {
+          pubkeys: [...DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS].sort(),
+          eventCreatedAt: DEFAULT_MARKET_PERSPECTIVE_FOLLOWS_CREATED_AT,
+          evidence: "bundled",
+        }
+        expect(
+          getDefaultMarketPerspectiveFollowSnapshot({ now: () => now })
+        ).toEqual(bundled)
+        expect(storage.has(DEFAULT_MARKET_PERSPECTIVE_FOLLOW_STORAGE_KEY)).toBe(
+          false
+        )
 
-    try {
-      const bundled = {
-        pubkeys: [...DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS].sort(),
-        eventCreatedAt: DEFAULT_MARKET_PERSPECTIVE_FOLLOWS_CREATED_AT,
-        evidence: "bundled",
+        now += 2
+        expect(
+          getDefaultMarketPerspectiveFollowSnapshot({ now: () => now })
+        ).toEqual(bundled)
       }
-      expect(
-        getDefaultMarketPerspectiveFollowSnapshot({ now: () => now })
-      ).toEqual(bundled)
-      expect(storage.has(DEFAULT_MARKET_PERSPECTIVE_FOLLOW_STORAGE_KEY)).toBe(
-        false
-      )
-
-      now += 2
-      expect(
-        getDefaultMarketPerspectiveFollowSnapshot({ now: () => now })
-      ).toEqual(bundled)
-    } finally {
-      if (originalWindow) {
-        Object.defineProperty(globalThis, "window", originalWindow)
-      } else {
-        Reflect.deleteProperty(globalThis, "window")
-      }
-    }
+    )
   })
 
   it("retries an in-memory frontier after browser persistence recovers", () => {
-    const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window")
     const storage = new Map<string, string>()
     let storageAvailable = false
     let writeAttempts = 0
-    Object.defineProperty(globalThis, "window", {
-      configurable: true,
-      value: {
+    withMockWindow(
+      {
         localStorage: {
           getItem: (key: string) => storage.get(key) ?? null,
           setItem: (key: string, value: string) => {
@@ -689,123 +671,106 @@ describe("default Market perspective follow-list safety", () => {
           },
         },
       },
-    })
-
-    try {
-      const bundled = getDefaultMarketPerspectiveFollowSnapshot()
-      const snapshot = createVerifiedFollowSnapshot(
-        DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS.slice(0, 26),
-        DEFAULT_MARKET_PERSPECTIVE_FOLLOWS_CREATED_AT + 1
-      )
-      const first = storeDefaultMarketPerspectiveFollowSnapshot(snapshot, {
-        previousSnapshot: bundled,
-        expectedPubkey: TEST_FOLLOW_PUBKEY,
-      })
-      expect(writeAttempts).toBe(1)
-
-      storageAvailable = true
-      const retried = storeDefaultMarketPerspectiveFollowSnapshot(snapshot, {
-        previousSnapshot: first ?? undefined,
-        expectedPubkey: TEST_FOLLOW_PUBKEY,
-      })
-
-      expect(writeAttempts).toBe(2)
-      expect(retried).toEqual(first)
-      expect(
-        isSameFollowListSnapshot(
-          getDefaultMarketPerspectiveFollowSnapshot({
-            expectedPubkey: TEST_FOLLOW_PUBKEY,
-          }),
-          first ?? undefined
+      () => {
+        const bundled = getDefaultMarketPerspectiveFollowSnapshot()
+        const snapshot = createVerifiedFollowSnapshot(
+          DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS.slice(0, 26),
+          DEFAULT_MARKET_PERSPECTIVE_FOLLOWS_CREATED_AT + 1
         )
-      ).toBe(true)
-    } finally {
-      if (originalWindow) {
-        Object.defineProperty(globalThis, "window", originalWindow)
-      } else {
-        Reflect.deleteProperty(globalThis, "window")
+        const first = storeDefaultMarketPerspectiveFollowSnapshot(snapshot, {
+          previousSnapshot: bundled,
+          expectedPubkey: TEST_FOLLOW_PUBKEY,
+        })
+        expect(writeAttempts).toBe(1)
+
+        storageAvailable = true
+        const retried = storeDefaultMarketPerspectiveFollowSnapshot(snapshot, {
+          previousSnapshot: first ?? undefined,
+          expectedPubkey: TEST_FOLLOW_PUBKEY,
+        })
+
+        expect(writeAttempts).toBe(2)
+        expect(retried).toEqual(first)
+        expect(
+          isSameFollowListSnapshot(
+            getDefaultMarketPerspectiveFollowSnapshot({
+              expectedPubkey: TEST_FOLLOW_PUBKEY,
+            }),
+            first ?? undefined
+          )
+        ).toBe(true)
       }
-    }
+    )
   })
 
   it("repairs a weaker cross-tab write from the stronger signed in-memory frontier", () => {
-    const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window")
     const storage = new Map<string, string>()
-    Object.defineProperty(globalThis, "window", {
-      configurable: true,
-      value: {
+    withMockWindow(
+      {
         localStorage: {
           getItem: (key: string) => storage.get(key) ?? null,
           setItem: (key: string, value: string) => storage.set(key, value),
           removeItem: (key: string) => storage.delete(key),
         },
       },
-    })
-
-    try {
-      const weaker = createVerifiedFollowSnapshot(
-        DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS.slice(0, 26),
-        DEFAULT_MARKET_PERSPECTIVE_FOLLOWS_CREATED_AT + 1
-      )
-      const stronger = createVerifiedFollowSnapshot(
-        DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS.slice(0, 25),
-        DEFAULT_MARKET_PERSPECTIVE_FOLLOWS_CREATED_AT + 2
-      )
-      storage.set(
-        DEFAULT_MARKET_PERSPECTIVE_FOLLOW_STORAGE_KEY,
-        JSON.stringify({
-          pubkeys: weaker.pubkeys,
-          eventCreatedAt: weaker.eventCreatedAt,
-          eventId: weaker.eventId,
-          signedEvent: weaker.signedEvent,
-        })
-      )
-      const persistedWeaker = getDefaultMarketPerspectiveFollowSnapshot({
-        expectedPubkey: TEST_FOLLOW_PUBKEY,
-      })
-      const selected = selectDefaultMarketPerspectiveFollowSnapshot(
-        stronger,
-        persistedWeaker
-      )
-      const reconciliation = getDefaultMarketPerspectiveFollowReconciliation({
-        enabled: true,
-        inMemory: stronger,
-        persisted: persistedWeaker,
-        selected,
-      })
-
-      expect(reconciliation).toEqual({
-        needsStateUpdate: false,
-        needsStorageRepair: true,
-      })
-      expect(
-        storeDefaultMarketPerspectiveFollowSnapshot(selected, {
-          previousSnapshot: stronger,
+      () => {
+        const weaker = createVerifiedFollowSnapshot(
+          DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS.slice(0, 26),
+          DEFAULT_MARKET_PERSPECTIVE_FOLLOWS_CREATED_AT + 1
+        )
+        const stronger = createVerifiedFollowSnapshot(
+          DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS.slice(0, 25),
+          DEFAULT_MARKET_PERSPECTIVE_FOLLOWS_CREATED_AT + 2
+        )
+        storage.set(
+          DEFAULT_MARKET_PERSPECTIVE_FOLLOW_STORAGE_KEY,
+          JSON.stringify({
+            pubkeys: weaker.pubkeys,
+            eventCreatedAt: weaker.eventCreatedAt,
+            eventId: weaker.eventId,
+            signedEvent: weaker.signedEvent,
+          })
+        )
+        const persistedWeaker = getDefaultMarketPerspectiveFollowSnapshot({
           expectedPubkey: TEST_FOLLOW_PUBKEY,
         })
-      ).toEqual(stronger)
-
-      const repaired = getDefaultMarketPerspectiveFollowSnapshot({
-        expectedPubkey: TEST_FOLLOW_PUBKEY,
-      })
-      expect(isSameFollowListSnapshot(repaired, stronger)).toBe(true)
-      expect(
-        isSameFollowListSnapshot(
-          selectDefaultMarketPerspectiveFollowSnapshot(weaker, repaired),
-          stronger
+        const selected = selectDefaultMarketPerspectiveFollowSnapshot(
+          stronger,
+          persistedWeaker
         )
-      ).toBe(true)
-    } finally {
-      if (originalWindow) {
-        Object.defineProperty(globalThis, "window", originalWindow)
-      } else {
-        Reflect.deleteProperty(globalThis, "window")
+        const reconciliation = getDefaultMarketPerspectiveFollowReconciliation({
+          enabled: true,
+          inMemory: stronger,
+          persisted: persistedWeaker,
+          selected,
+        })
+
+        expect(reconciliation).toEqual({
+          needsStateUpdate: false,
+          needsStorageRepair: true,
+        })
+        expect(
+          storeDefaultMarketPerspectiveFollowSnapshot(selected, {
+            previousSnapshot: stronger,
+            expectedPubkey: TEST_FOLLOW_PUBKEY,
+          })
+        ).toEqual(stronger)
+
+        const repaired = getDefaultMarketPerspectiveFollowSnapshot({
+          expectedPubkey: TEST_FOLLOW_PUBKEY,
+        })
+        expect(isSameFollowListSnapshot(repaired, stronger)).toBe(true)
+        expect(
+          isSameFollowListSnapshot(
+            selectDefaultMarketPerspectiveFollowSnapshot(weaker, repaired),
+            stronger
+          )
+        ).toBe(true)
       }
-    }
+    )
   })
 
   it("notifies subscribers when another tab changes the cached frontier", () => {
-    const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window")
     const storage = new Map<string, string>()
     const listeners = new Map<string, Set<(event: Event) => void>>()
     const localStorage = {
@@ -813,9 +778,8 @@ describe("default Market perspective follow-list safety", () => {
       setItem: (key: string, value: string) => storage.set(key, value),
       removeItem: (key: string) => storage.delete(key),
     }
-    Object.defineProperty(globalThis, "window", {
-      configurable: true,
-      value: {
+    withMockWindow(
+      {
         localStorage,
         addEventListener: (type: string, listener: (event: Event) => void) => {
           const current = listeners.get(type) ?? new Set()
@@ -829,40 +793,35 @@ describe("default Market perspective follow-list safety", () => {
           return true
         },
       },
-    })
+      () => {
+        let notifications = 0
+        const unsubscribe = subscribeDefaultMarketPerspectiveFollowStorage(
+          () => {
+            notifications += 1
+          }
+        )
+        const raw = JSON.stringify({ eventId: "1".repeat(64) })
+        storage.set(DEFAULT_MARKET_PERSPECTIVE_FOLLOW_STORAGE_KEY, raw)
+        listeners.get("storage")?.forEach((listener) =>
+          listener({
+            type: "storage",
+            key: DEFAULT_MARKET_PERSPECTIVE_FOLLOW_STORAGE_KEY,
+            storageArea: localStorage,
+          } as unknown as StorageEvent)
+        )
 
-    try {
-      let notifications = 0
-      const unsubscribe = subscribeDefaultMarketPerspectiveFollowStorage(() => {
-        notifications += 1
-      })
-      const raw = JSON.stringify({ eventId: "1".repeat(64) })
-      storage.set(DEFAULT_MARKET_PERSPECTIVE_FOLLOW_STORAGE_KEY, raw)
-      listeners.get("storage")?.forEach((listener) =>
-        listener({
-          type: "storage",
-          key: DEFAULT_MARKET_PERSPECTIVE_FOLLOW_STORAGE_KEY,
-          storageArea: localStorage,
-        } as unknown as StorageEvent)
-      )
-
-      expect(notifications).toBe(1)
-      expect(getDefaultMarketPerspectiveFollowStorageSnapshot()).toBe(raw)
-      unsubscribe()
-      listeners.get("storage")?.forEach((listener) =>
-        listener({
-          type: "storage",
-          key: DEFAULT_MARKET_PERSPECTIVE_FOLLOW_STORAGE_KEY,
-          storageArea: localStorage,
-        } as unknown as StorageEvent)
-      )
-      expect(notifications).toBe(1)
-    } finally {
-      if (originalWindow) {
-        Object.defineProperty(globalThis, "window", originalWindow)
-      } else {
-        Reflect.deleteProperty(globalThis, "window")
+        expect(notifications).toBe(1)
+        expect(getDefaultMarketPerspectiveFollowStorageSnapshot()).toBe(raw)
+        unsubscribe()
+        listeners.get("storage")?.forEach((listener) =>
+          listener({
+            type: "storage",
+            key: DEFAULT_MARKET_PERSPECTIVE_FOLLOW_STORAGE_KEY,
+            storageArea: localStorage,
+          } as unknown as StorageEvent)
+        )
+        expect(notifications).toBe(1)
       }
-    }
+    )
   })
 })

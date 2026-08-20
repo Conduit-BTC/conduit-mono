@@ -5,7 +5,6 @@ import {
   hasAuthoritativeQuerySnapshot,
   replaceProgressiveProductFrontier,
   runProgressiveReadPass,
-  selectAuthoritativeQueryFrontier,
   selectProgressiveProductFrontier,
 } from "../apps/market/src/lib/progressiveProductFrontier"
 
@@ -67,20 +66,12 @@ describe("Market progressive product frontier", () => {
   })
 
   it("does not render previous-key placeholder data while the new query is paused", () => {
-    const previousProduct = { id: "previous-key" }
     expect(
       hasAuthoritativeQuerySnapshot({
         hasData: true,
         isPlaceholderData: true,
       })
     ).toBe(false)
-    expect(
-      selectAuthoritativeQueryFrontier({
-        hasAuthoritativeNetworkSnapshot: false,
-        networkData: previousProduct,
-        cachedData: undefined,
-      })
-    ).toBeUndefined()
   })
 
   it("commits the fast frontier before a broader completion read can fail", async () => {

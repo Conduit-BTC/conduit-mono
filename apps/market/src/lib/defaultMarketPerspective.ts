@@ -499,26 +499,3 @@ export function storeDefaultMarketPerspectiveFollowSnapshot(
 
   return selected
 }
-
-export function storeDefaultMarketPerspectiveFollowPubkeys(
-  pubkeys: string[],
-  eventCreatedAt = Math.floor(Date.now() / 1000),
-  options: {
-    previousSnapshot?: FollowListSnapshot
-    previousPubkeys?: readonly string[]
-    eventId?: string
-    now?: () => number
-    expectedPubkey?: string
-  } = {}
-): string[] | null {
-  return (
-    storeDefaultMarketPerspectiveFollowSnapshot(
-      {
-        pubkeys,
-        eventCreatedAt,
-        eventId: options.eventId,
-      },
-      options
-    )?.pubkeys ?? null
-  )
-}

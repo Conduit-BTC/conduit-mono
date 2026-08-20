@@ -43,7 +43,6 @@ import {
   hasAuthoritativeQuerySnapshot,
   replaceProgressiveProductFrontier,
   runProgressiveReadPass,
-  selectAuthoritativeQueryFrontier,
   selectProgressiveProductFrontier,
 } from "../lib/progressiveProductFrontier"
 
@@ -988,11 +987,7 @@ export function useProgressiveProductDetail(productId: string): {
     hasData: networkQuery.data !== undefined,
     isPlaceholderData: networkQuery.isPlaceholderData,
   })
-  const active = selectAuthoritativeQueryFrontier({
-    hasAuthoritativeNetworkSnapshot: hasNetworkResult,
-    networkData: networkQuery.data,
-    cachedData: cachedQuery.data,
-  })
+  const active = hasNetworkResult ? networkQuery.data : cachedQuery.data
   const product = active?.data?.product ?? null
   const family = active?.data?.family ?? null
   const listingSafety = active?.data?.safety ?? null

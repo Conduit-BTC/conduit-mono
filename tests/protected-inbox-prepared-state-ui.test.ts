@@ -1,7 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import {
   deriveProtectedReadPresentationState,
-  isProtectedReadPresentationIncomplete,
   prepareProtectedReadRefreshState,
   selectProtectedReadRows,
 } from "@conduit/core"
@@ -91,18 +90,6 @@ describe("protected inbox prepared state", () => {
         },
       })
     ).toBe("cached")
-  })
-
-  it("treats only complete protected reads as current", () => {
-    expect(isProtectedReadPresentationIncomplete("complete")).toBe(false)
-    for (const state of [
-      "pending",
-      "cached",
-      "partial",
-      "unavailable",
-    ] as const) {
-      expect(isProtectedReadPresentationIncomplete(state)).toBe(true)
-    }
   })
 
   it("prepares truthful refresh state across protected and local sources", () => {

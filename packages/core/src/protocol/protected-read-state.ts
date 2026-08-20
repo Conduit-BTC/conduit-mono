@@ -15,12 +15,6 @@ export interface ProtectedReadPresentationInput {
   }
 }
 
-export function isProtectedReadPresentationIncomplete(
-  state: ProtectedReadPresentationState
-): boolean {
-  return state !== "complete"
-}
-
 export interface ProtectedReadRefreshSourceState {
   refreshing: boolean
   stale: boolean
@@ -38,7 +32,7 @@ export function prepareProtectedReadRefreshState(input: {
       input.protectedReadRefreshing ||
       (input.additionalSources?.some((source) => source.refreshing) ?? false),
     stale:
-      isProtectedReadPresentationIncomplete(input.protectedReadState) ||
+      input.protectedReadState !== "complete" ||
       !!input.protectedReadPaused ||
       (input.additionalSources?.some((source) => source.stale) ?? false),
   }

@@ -49,16 +49,6 @@ export function hasAuthoritativeQuerySnapshot(input: {
   return input.hasData && !input.isPlaceholderData
 }
 
-export function selectAuthoritativeQueryFrontier<T>(input: {
-  hasAuthoritativeNetworkSnapshot: boolean
-  networkData: T | undefined
-  cachedData: T | undefined
-}): T | undefined {
-  return input.hasAuthoritativeNetworkSnapshot
-    ? input.networkData
-    : input.cachedData
-}
-
 export async function runProgressiveReadPass<T>(input: {
   readFast: () => Promise<T>
   readCompletion?: () => Promise<T>
