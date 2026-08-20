@@ -14,7 +14,9 @@ import {
   getDefaultMarketPerspectiveFollowReconciliation,
   getDefaultMarketPerspectiveFollowSnapshot,
   getDefaultMarketPerspectiveFollowStorageSnapshot,
-  resolveSafeDefaultMarketPerspectiveFollowRefresh,
+  isDefaultMarketPerspectiveFollowDiscoveryStale,
+  parseVerifiedFollowListEventSnapshot,
+  resolveDefaultMarketPerspectiveFollowRefresh,
   selectDefaultMarketPerspectiveFollowSnapshot,
   storeDefaultMarketPerspectiveFollowSnapshot,
   subscribeDefaultMarketPerspectiveFollowStorage,
@@ -22,7 +24,6 @@ import {
 import {
   isProductDiscoveryReadIncomplete,
   isSameFollowListSnapshot,
-  parseFollowListSnapshot,
   type FollowListSnapshot,
 } from "../lib/productCatalogRead"
 
@@ -35,35 +36,15 @@ export interface GuestMarketDiscovery {
   refetch: () => Promise<boolean>
 }
 
-function getSafeGuestFollowCandidate(
-  result: FollowListResult | undefined,
-  previousPubkeys: readonly string[]
+function getObservedGuestFollowCandidate(
+  result: FollowListResult | undefined
 ): FollowListSnapshot | null {
   if (
     !result?.meta.eventObserved ||
     isProductDiscoveryReadIncomplete(result.meta)
   )
     return null
-  const safePubkeys = resolveSafeDefaultMarketPerspectiveFollowRefresh(
-    result.data,
-    previousPubkeys
-  )
-  if (!safePubkeys) return null
-  return (
-    parseFollowListSnapshot(
-      {
-        pubkeys: safePubkeys,
-        eventCreatedAt: result.meta.eventCreatedAt,
-        eventId: result.meta.eventId,
-      },
-      {
-        requireEventId: true,
-        sortPubkeys: true,
-        evidence: "verified",
-        signedEvent: result.event,
-      }
-    ) ?? null
-  )
+  return parseVerifiedFollowListEventSnapshot(result.event) ?? null
 }
 
 export function useGuestMarketDiscovery(input: {
@@ -123,29 +104,28 @@ export function useGuestMarketDiscovery(input: {
       ),
     [guestFollowSnapshot, persistedGuestFollowSnapshot]
   )
-  const acceptedGuestFollowSnapshot = useMemo(
+  const observedGuestFollowSnapshot = useMemo(
     () =>
       input.enabled
-        ? getSafeGuestFollowCandidate(
-            followRefreshQuery.data,
-            retainedGuestFollowSnapshot.pubkeys
-          )
+        ? getObservedGuestFollowCandidate(followRefreshQuery.data)
         : null,
+    [followRefreshQuery.data, input.enabled]
+  )
+  const guestFollowRefresh = useMemo(
+    () =>
+      resolveDefaultMarketPerspectiveFollowRefresh({
+        readAvailable: input.enabled && followRefreshQuery.isSuccess,
+        retainedSnapshot: retainedGuestFollowSnapshot,
+        observedCandidate: observedGuestFollowSnapshot,
+      }),
     [
-      followRefreshQuery.data,
+      observedGuestFollowSnapshot,
+      followRefreshQuery.isSuccess,
       input.enabled,
-      retainedGuestFollowSnapshot.pubkeys,
+      retainedGuestFollowSnapshot,
     ]
   )
-  const selectedGuestFollowSnapshot = useMemo(
-    () =>
-      selectDefaultMarketPerspectiveFollowSnapshot(
-        retainedGuestFollowSnapshot,
-        undefined,
-        acceptedGuestFollowSnapshot ?? undefined
-      ),
-    [acceptedGuestFollowSnapshot, retainedGuestFollowSnapshot]
-  )
+  const selectedGuestFollowSnapshot = guestFollowRefresh.selectedSnapshot
   const { needsStateUpdate, needsStorageRepair } =
     getDefaultMarketPerspectiveFollowReconciliation({
       enabled: input.enabled,
@@ -201,22 +181,21 @@ export function useGuestMarketDiscovery(input: {
         return reconciled.catalogWillRekey
       }
       const latestRetainedSnapshot = reconciled.retained
-      const candidate = getSafeGuestFollowCandidate(
-        result.data,
-        latestRetainedSnapshot.pubkeys
-      )
-      const selected = candidate
-        ? selectDefaultMarketPerspectiveFollowSnapshot(
-            latestRetainedSnapshot,
-            undefined,
-            candidate
-          )
-        : latestRetainedSnapshot
-      const storedSnapshot = candidate
-        ? (storeDefaultMarketPerspectiveFollowSnapshot(selected, {
-            previousSnapshot: latestRetainedSnapshot,
-          }) ?? latestRetainedSnapshot)
-        : latestRetainedSnapshot
+      const observedCandidate = getObservedGuestFollowCandidate(result.data)
+      const refreshResolution = resolveDefaultMarketPerspectiveFollowRefresh({
+        readAvailable: true,
+        retainedSnapshot: latestRetainedSnapshot,
+        observedCandidate,
+      })
+      const storedSnapshot =
+        refreshResolution.disposition === "accepted"
+          ? (storeDefaultMarketPerspectiveFollowSnapshot(
+              refreshResolution.selectedSnapshot,
+              {
+                previousSnapshot: latestRetainedSnapshot,
+              }
+            ) ?? latestRetainedSnapshot)
+          : refreshResolution.selectedSnapshot
       setGuestFollowSnapshot(storedSnapshot)
       return (
         previousCatalogKey !==
@@ -229,15 +208,6 @@ export function useGuestMarketDiscovery(input: {
     }
   }, [input.enabled, refreshGuestFollows, selectedGuestFollowSnapshot])
 
-  const rejectedRefresh =
-    input.enabled &&
-    followRefreshQuery.isSuccess &&
-    (acceptedGuestFollowSnapshot === null ||
-      !isSameFollowListSnapshot(
-        acceptedGuestFollowSnapshot,
-        selectedGuestFollowSnapshot
-      ))
-
   return {
     usesGuestMarket: input.enabled,
     perspectivePubkey: input.enabled ? DEFAULT_MARKET_PERSPECTIVE_NPUB : null,
@@ -246,12 +216,14 @@ export function useGuestMarketDiscovery(input: {
       : undefined,
     isRefreshing:
       input.enabled && (followRefreshQuery.isFetching || needsStateUpdate),
-    stale:
-      input.enabled &&
-      (followRefreshQuery.isError ||
-        followRefreshIncomplete ||
-        selectedGuestFollowSnapshot.evidence !== "verified" ||
-        rejectedRefresh),
+    stale: isDefaultMarketPerspectiveFollowDiscoveryStale({
+      enabled: input.enabled,
+      queryError: followRefreshQuery.isError,
+      queryPaused: followRefreshQuery.isPaused,
+      readIncomplete: followRefreshIncomplete,
+      selectedSnapshot: selectedGuestFollowSnapshot,
+      refreshDisposition: guestFollowRefresh.disposition,
+    }),
     refetch,
   }
 }

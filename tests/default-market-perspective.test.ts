@@ -11,8 +11,10 @@ import {
   getDefaultMarketPerspectiveFollowSnapshot,
   getDefaultMarketPerspectiveFollowStorageSnapshot,
   getDefaultMarketPerspectiveRefreshThreshold,
+  isDefaultMarketPerspectiveFollowDiscoveryStale,
   parseVerifiedFollowListEventSnapshot,
   resolveSafeDefaultMarketPerspectiveFollowRefresh,
+  resolveDefaultMarketPerspectiveFollowRefresh,
   selectDefaultMarketPerspectiveFollowSnapshot,
   storeDefaultMarketPerspectiveFollowSnapshot,
   storeDefaultMarketPerspectiveFollowPubkeys,
@@ -275,24 +277,121 @@ describe("default Market perspective follow-list safety", () => {
     }
     const olderRelayResult = {
       ...stale,
+      pubkeys: stale.pubkeys.slice(
+        0,
+        DEFAULT_MARKET_PERSPECTIVE_MIN_REFRESH_FOLLOWS
+      ),
       eventCreatedAt: DEFAULT_MARKET_PERSPECTIVE_FOLLOWS_CREATED_AT + 2,
       eventId: "2".repeat(64),
       evidence: "verified" as const,
     }
 
+    const retained = selectDefaultMarketPerspectiveFollowSnapshot(
+      stale,
+      advanced
+    )
+    const superseded = resolveDefaultMarketPerspectiveFollowRefresh({
+      readAvailable: true,
+      retainedSnapshot: retained,
+      observedCandidate: olderRelayResult,
+    })
+
+    expect(superseded.selectedSnapshot).toEqual(advanced)
+    expect(superseded.disposition).toBe("superseded")
     expect(
-      selectDefaultMarketPerspectiveFollowSnapshot(
-        stale,
-        advanced,
-        olderRelayResult
-      )
-    ).toEqual(advanced)
+      isDefaultMarketPerspectiveFollowDiscoveryStale({
+        enabled: true,
+        queryError: false,
+        queryPaused: false,
+        readIncomplete: false,
+        selectedSnapshot: superseded.selectedSnapshot,
+        refreshDisposition: superseded.disposition,
+      })
+    ).toBe(false)
+    expect(
+      resolveDefaultMarketPerspectiveFollowRefresh({
+        readAvailable: true,
+        retainedSnapshot: retained,
+        observedCandidate: retained,
+      }).disposition
+    ).toBe("accepted")
+    expect(
+      resolveDefaultMarketPerspectiveFollowRefresh({
+        readAvailable: true,
+        retainedSnapshot: retained,
+        observedCandidate: {
+          ...olderRelayResult,
+          eventCreatedAt: DEFAULT_MARKET_PERSPECTIVE_FOLLOWS_CREATED_AT + 4,
+          eventId: "0".repeat(64),
+        },
+      }).disposition
+    ).toBe("rejected")
+    expect(
+      resolveDefaultMarketPerspectiveFollowRefresh({
+        readAvailable: false,
+        retainedSnapshot: retained,
+        observedCandidate: null,
+      }).disposition
+    ).toBe("unavailable")
     expect(
       resolveSafeDefaultMarketPerspectiveFollowRefresh(
         stale.pubkeys.slice(0, DEFAULT_MARKET_PERSPECTIVE_MIN_REFRESH_FOLLOWS),
         advanced.pubkeys
       )
     ).toBeNull()
+  })
+
+  it("keeps unsafe, incomplete, and unverified guest discovery stale", () => {
+    const verified = createVerifiedFollowSnapshot(
+      DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS.slice(0, 26),
+      DEFAULT_MARKET_PERSPECTIVE_FOLLOWS_CREATED_AT + 1
+    )
+    const current = {
+      enabled: true,
+      queryError: false,
+      queryPaused: false,
+      readIncomplete: false,
+      selectedSnapshot: verified,
+      refreshDisposition: "accepted" as const,
+    }
+
+    expect(isDefaultMarketPerspectiveFollowDiscoveryStale(current)).toBe(false)
+    expect(
+      isDefaultMarketPerspectiveFollowDiscoveryStale({
+        ...current,
+        refreshDisposition: "rejected",
+      })
+    ).toBe(true)
+    expect(
+      isDefaultMarketPerspectiveFollowDiscoveryStale({
+        ...current,
+        queryPaused: true,
+      })
+    ).toBe(true)
+    expect(
+      isDefaultMarketPerspectiveFollowDiscoveryStale({
+        ...current,
+        queryError: true,
+      })
+    ).toBe(true)
+    expect(
+      isDefaultMarketPerspectiveFollowDiscoveryStale({
+        ...current,
+        readIncomplete: true,
+      })
+    ).toBe(true)
+    expect(
+      isDefaultMarketPerspectiveFollowDiscoveryStale({
+        ...current,
+        selectedSnapshot: getDefaultMarketPerspectiveFollowSnapshot(),
+      })
+    ).toBe(true)
+    expect(
+      isDefaultMarketPerspectiveFollowDiscoveryStale({
+        ...current,
+        enabled: false,
+      })
+    ).toBe(false)
   })
 
   it("does not let corrupt same-event storage undo a verified in-memory repair", () => {

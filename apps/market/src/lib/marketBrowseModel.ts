@@ -69,18 +69,22 @@ type BrowseFreshnessMeta = CommerceFreshnessMeta
 export function isMarketBrowseRefreshStale(input: {
   catalogMeta: BrowseFreshnessMeta | null | undefined
   catalogError: unknown
+  catalogPaused: boolean
   discoveryStale: boolean
   globalSearchEnabled: boolean
   globalSearchMeta: BrowseFreshnessMeta | null | undefined
   globalSearchError: unknown
+  globalSearchPaused: boolean
 }): boolean {
   return (
     isCommerceReadIncomplete(input.catalogMeta) ||
     !!input.catalogError ||
+    input.catalogPaused ||
     input.discoveryStale ||
     (input.globalSearchEnabled &&
       (isCommerceReadIncomplete(input.globalSearchMeta) ||
-        !!input.globalSearchError))
+        !!input.globalSearchError ||
+        input.globalSearchPaused))
   )
 }
 

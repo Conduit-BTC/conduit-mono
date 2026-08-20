@@ -279,7 +279,9 @@ function ProductPage() {
 
   const productRefreshing = productQuery.isHydrating
   const productReadIncomplete =
-    isCommerceReadIncomplete(productQuery.meta) || !!productQuery.error
+    isCommerceReadIncomplete(productQuery.meta) ||
+    !!productQuery.error ||
+    productQuery.isRefreshPaused
 
   return (
     <div className="min-w-0 max-w-full space-y-8 overflow-x-hidden">

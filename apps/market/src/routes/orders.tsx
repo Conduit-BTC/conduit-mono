@@ -15,6 +15,7 @@ import {
   listOrderLifecycles,
   normalizeLightningInvoice,
   pruneExpiredGuestOrderData,
+  prepareProtectedReadRefreshState,
   pubkeyToNpub,
   selectProtectedReadRows,
   useAuth,
@@ -1311,7 +1312,6 @@ function OrdersPage() {
     staleTime: 5_000,
   })
 
-  const isFetching = messagesQuery.isFetching || lifecyclesQuery.isFetching
   const refetchAll = useCallback(() => {
     if (signerConnected && activeBuyerPubkey) {
       clearProtectedReadAuthenticationSuppression(activeBuyerPubkey)
@@ -1331,9 +1331,20 @@ function OrdersPage() {
   const messagesMeta = messagesQuery.data?.meta
   const protectedOrdersReadState = deriveProtectedReadPresentationState({
     visibleCount: conversations.length,
-    pending: messagesQuery.isLoading,
+    pending: signerConnected && messagesQuery.isPending,
     error: messagesQuery.error,
     meta: messagesMeta,
+  })
+  const ordersRefreshState = prepareProtectedReadRefreshState({
+    protectedReadState: protectedOrdersReadState,
+    protectedReadRefreshing: messagesQuery.isFetching,
+    protectedReadPaused: messagesQuery.isPaused,
+    additionalSources: [
+      {
+        refreshing: lifecyclesQuery.isFetching,
+        stale: lifecyclesQuery.isError || lifecyclesQuery.isPaused,
+      },
+    ],
   })
   const lifecycles = useMemo(
     () => lifecyclesQuery.data ?? [],
@@ -1515,7 +1526,8 @@ function OrdersPage() {
           </p>
         </div>
         <RefreshChip
-          refreshing={isFetching}
+          refreshing={ordersRefreshState.refreshing}
+          stale={ordersRefreshState.stale}
           onRefresh={refetchAll}
           doneDurationMs={900}
           disabled={!activeBuyerPubkey}
@@ -1556,7 +1568,7 @@ function OrdersPage() {
       )}
 
       {activeBuyerPubkey &&
-        !lifecyclesQuery.isLoading &&
+        !lifecyclesQuery.isPending &&
         !hasOrders &&
         protectedOrdersReadState === "complete" && (
           <EmptyState

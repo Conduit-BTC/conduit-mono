@@ -15,6 +15,35 @@ export interface ProtectedReadPresentationInput {
   }
 }
 
+export function isProtectedReadPresentationIncomplete(
+  state: ProtectedReadPresentationState
+): boolean {
+  return state !== "complete"
+}
+
+export interface ProtectedReadRefreshSourceState {
+  refreshing: boolean
+  stale: boolean
+}
+
+/** Prepare the exact sources owned by a protected-read refresh control. */
+export function prepareProtectedReadRefreshState(input: {
+  protectedReadState: ProtectedReadPresentationState
+  protectedReadRefreshing: boolean
+  protectedReadPaused?: boolean
+  additionalSources?: readonly ProtectedReadRefreshSourceState[]
+}): ProtectedReadRefreshSourceState {
+  return {
+    refreshing:
+      input.protectedReadRefreshing ||
+      (input.additionalSources?.some((source) => source.refreshing) ?? false),
+    stale:
+      isProtectedReadPresentationIncomplete(input.protectedReadState) ||
+      !!input.protectedReadPaused ||
+      (input.additionalSources?.some((source) => source.stale) ?? false),
+  }
+}
+
 /**
  * Keep the rows from a completed live read paired with that read's metadata.
  * Protected live APIs already merge their cache before returning, so the

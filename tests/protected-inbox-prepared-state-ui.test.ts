@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test"
 import {
   deriveProtectedReadPresentationState,
+  isProtectedReadPresentationIncomplete,
+  prepareProtectedReadRefreshState,
   selectProtectedReadRows,
 } from "@conduit/core"
 import { getDirectMessageSearchEmptyCopy } from "../apps/market/src/lib/protected-read-copy"
@@ -89,6 +91,72 @@ describe("protected inbox prepared state", () => {
         },
       })
     ).toBe("cached")
+  })
+
+  it("treats only complete protected reads as current", () => {
+    expect(isProtectedReadPresentationIncomplete("complete")).toBe(false)
+    for (const state of [
+      "pending",
+      "cached",
+      "partial",
+      "unavailable",
+    ] as const) {
+      expect(isProtectedReadPresentationIncomplete(state)).toBe(true)
+    }
+  })
+
+  it("prepares truthful refresh state across protected and local sources", () => {
+    expect(
+      prepareProtectedReadRefreshState({
+        protectedReadState: "complete",
+        protectedReadRefreshing: false,
+      })
+    ).toEqual({ refreshing: false, stale: false })
+    expect(
+      prepareProtectedReadRefreshState({
+        protectedReadState: "complete",
+        protectedReadRefreshing: true,
+      })
+    ).toEqual({ refreshing: true, stale: false })
+    expect(
+      prepareProtectedReadRefreshState({
+        protectedReadState: "complete",
+        protectedReadRefreshing: false,
+        protectedReadPaused: true,
+      })
+    ).toEqual({ refreshing: false, stale: true })
+
+    for (const protectedReadState of [
+      "pending",
+      "cached",
+      "partial",
+      "unavailable",
+    ] as const) {
+      expect(
+        prepareProtectedReadRefreshState({
+          protectedReadState,
+          protectedReadRefreshing: false,
+        })
+      ).toEqual({ refreshing: false, stale: true })
+    }
+
+    expect(
+      prepareProtectedReadRefreshState({
+        protectedReadState: "complete",
+        protectedReadRefreshing: false,
+        additionalSources: [{ refreshing: true, stale: false }],
+      })
+    ).toEqual({ refreshing: true, stale: false })
+    expect(
+      prepareProtectedReadRefreshState({
+        protectedReadState: "complete",
+        protectedReadRefreshing: false,
+        additionalSources: [
+          { refreshing: false, stale: true },
+          { refreshing: false, stale: false },
+        ],
+      })
+    ).toEqual({ refreshing: false, stale: true })
   })
 
   it("wires the shared state into every Market and Merchant protected surface", async () => {

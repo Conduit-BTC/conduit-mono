@@ -254,6 +254,80 @@ export function getDefaultMarketPerspectiveCatalogAuthorKey(
   )
 }
 
+export type DefaultMarketPerspectiveFollowRefreshDisposition =
+  "unavailable" | "rejected" | "accepted" | "superseded"
+
+/**
+ * Classify a completed guest follow refresh without confusing an older safe
+ * query result with an unsafe result. A candidate that loses the NIP-01
+ * frontier comparison is superseded by stronger retained evidence, not
+ * rejected.
+ */
+export function resolveDefaultMarketPerspectiveFollowRefresh(input: {
+  readAvailable: boolean
+  retainedSnapshot: FollowListSnapshot
+  observedCandidate: FollowListSnapshot | null
+}): {
+  selectedSnapshot: FollowListSnapshot
+  disposition: DefaultMarketPerspectiveFollowRefreshDisposition
+} {
+  if (!input.readAvailable) {
+    return {
+      selectedSnapshot: input.retainedSnapshot,
+      disposition: "unavailable",
+    }
+  }
+  if (!input.observedCandidate) {
+    return {
+      selectedSnapshot: input.retainedSnapshot,
+      disposition: "rejected",
+    }
+  }
+  const selectedFrontier = selectDefaultMarketPerspectiveFollowSnapshot(
+    input.retainedSnapshot,
+    undefined,
+    input.observedCandidate
+  )
+  if (!isSameFollowListSnapshot(input.observedCandidate, selectedFrontier)) {
+    return {
+      selectedSnapshot: selectedFrontier,
+      disposition: "superseded",
+    }
+  }
+  const safePubkeys = resolveSafeDefaultMarketPerspectiveFollowRefresh(
+    input.observedCandidate.pubkeys,
+    input.retainedSnapshot.pubkeys
+  )
+  if (!safePubkeys) {
+    return {
+      selectedSnapshot: input.retainedSnapshot,
+      disposition: "rejected",
+    }
+  }
+  return {
+    selectedSnapshot: input.observedCandidate,
+    disposition: "accepted",
+  }
+}
+
+export function isDefaultMarketPerspectiveFollowDiscoveryStale(input: {
+  enabled: boolean
+  queryError: boolean
+  queryPaused: boolean
+  readIncomplete: boolean
+  selectedSnapshot: FollowListSnapshot
+  refreshDisposition: DefaultMarketPerspectiveFollowRefreshDisposition
+}): boolean {
+  return (
+    input.enabled &&
+    (input.queryError ||
+      input.queryPaused ||
+      input.readIncomplete ||
+      input.selectedSnapshot.evidence !== "verified" ||
+      input.refreshDisposition === "rejected")
+  )
+}
+
 export function selectDefaultMarketPerspectiveFollowSnapshot(
   inMemory: FollowListSnapshot,
   persisted?: FollowListSnapshot,

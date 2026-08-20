@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 import { readFile } from "node:fs/promises"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
+import { prepareProtectedReadRefreshState } from "@conduit/core"
 import { RefreshChip } from "../packages/ui/src/components/RefreshChip"
 import { resolveRefreshChipPhase } from "../packages/ui/src/components/RefreshChipState"
 
@@ -53,6 +54,47 @@ describe("RefreshChip", () => {
         stale: true,
       })
     ).toBe("refreshing")
+  })
+
+  it("only completes when every protected refresh source is current", () => {
+    const completed = prepareProtectedReadRefreshState({
+      protectedReadState: "complete",
+      protectedReadRefreshing: false,
+      additionalSources: [{ refreshing: false, stale: false }],
+    })
+    expect(
+      resolveRefreshChipPhase({
+        currentPhase: "refreshing",
+        refreshCompleted: true,
+        ...completed,
+      })
+    ).toBe("done")
+
+    const localFailure = prepareProtectedReadRefreshState({
+      protectedReadState: "complete",
+      protectedReadRefreshing: false,
+      additionalSources: [{ refreshing: false, stale: true }],
+    })
+    expect(
+      resolveRefreshChipPhase({
+        currentPhase: "refreshing",
+        refreshCompleted: true,
+        ...localFailure,
+      })
+    ).toBe("idle")
+
+    const paused = prepareProtectedReadRefreshState({
+      protectedReadState: "complete",
+      protectedReadRefreshing: false,
+      protectedReadPaused: true,
+    })
+    expect(
+      resolveRefreshChipPhase({
+        currentPhase: "refreshing",
+        refreshCompleted: true,
+        ...paused,
+      })
+    ).toBe("idle")
   })
 
   it("renders an interactive refresh button while idle", () => {
@@ -147,6 +189,10 @@ describe("RefreshChip", () => {
   })
 
   it("keeps empty Market surfaces visibly busy during refresh", async () => {
+    const browseModelSource = await readFile(
+      "apps/market/src/hooks/useMarketBrowseModel.ts",
+      "utf8"
+    )
     const detailSource = await readFile(
       "apps/market/src/routes/products/$productId.tsx",
       "utf8"
@@ -165,6 +211,12 @@ describe("RefreshChip", () => {
     expect(storefrontSource).toContain("refreshing={productsQuery.isHydrating}")
     expect(storefrontSource).not.toContain(
       "productsQuery.isHydrating && filteredProducts.length > 0"
+    )
+    expect(browseModelSource).toContain(
+      "isUpdatingListings: preparedProductsQuery.isHydrating"
+    )
+    expect(browseModelSource).not.toContain(
+      "!preparedProductsQuery.isInitialLoading &&"
     )
   })
 
@@ -216,5 +268,85 @@ describe("RefreshChip", () => {
     ]) {
       expect(source).toContain("isCommerceReadIncomplete")
     }
+  })
+
+  it("keeps incomplete order reads out of the Updated phase", async () => {
+    const marketOrdersSource = await readFile(
+      "apps/market/src/routes/orders.tsx",
+      "utf8"
+    )
+    const merchantOrdersSource = await readFile(
+      "apps/merchant/src/routes/orders.tsx",
+      "utf8"
+    )
+
+    expect(marketOrdersSource).toContain("const ordersRefreshState =")
+    expect(marketOrdersSource).toContain("prepareProtectedReadRefreshState({")
+    expect(marketOrdersSource).toContain(
+      "protectedReadPaused: messagesQuery.isPaused"
+    )
+    expect(marketOrdersSource).toContain(
+      "lifecyclesQuery.isError || lifecyclesQuery.isPaused"
+    )
+    expect(marketOrdersSource).toContain(
+      "refreshing={ordersRefreshState.refreshing}"
+    )
+    expect(marketOrdersSource).toContain("stale={ordersRefreshState.stale}")
+
+    expect(merchantOrdersSource).toContain(
+      "const ordersRefreshState = prepareProtectedReadRefreshState({"
+    )
+    expect(merchantOrdersSource).toContain("protectedOrdersReadState")
+    expect(merchantOrdersSource).toContain(
+      "protectedReadPaused: ordersQuery.isPaused"
+    )
+    expect(merchantOrdersSource).toContain(
+      "refreshing={ordersRefreshState.refreshing}"
+    )
+    expect(merchantOrdersSource).toContain("stale={ordersRefreshState.stale}")
+  })
+
+  it("keeps paused product refreshes out of the Updated phase", async () => {
+    const progressiveSource = await readFile(
+      "apps/market/src/hooks/useProgressiveProducts.ts",
+      "utf8"
+    )
+    const browseSource = await readFile(
+      "apps/market/src/hooks/useMarketBrowseModel.ts",
+      "utf8"
+    )
+    const detailSource = await readFile(
+      "apps/market/src/routes/products/$productId.tsx",
+      "utf8"
+    )
+    const storefrontSource = await readFile(
+      "apps/market/src/routes/store/$pubkey.tsx",
+      "utf8"
+    )
+    const merchantProductsSource = await readFile(
+      "apps/merchant/src/routes/products.tsx",
+      "utf8"
+    )
+
+    expect(progressiveSource).toContain("isRefreshPaused")
+    expect(progressiveSource).toContain("firstDegreeQuery.isPaused")
+    expect(progressiveSource).toContain("firstNetworkQuery.isPaused")
+    expect(progressiveSource).toContain("networkQuery.isPaused")
+    expect(progressiveSource).toContain("firstDegreeQuery.isPending")
+    expect(progressiveSource).toContain("cachedQuery.isPending")
+    expect(progressiveSource).toContain("firstNetworkQuery.isPending")
+    expect(browseSource).toContain(
+      "catalogPaused: productsQuery.isRefreshPaused"
+    )
+    expect(browseSource).toContain(
+      "globalSearchPaused: globalSearchQuery.isPaused"
+    )
+    expect(browseSource).toContain("globalSearchQuery.isPending")
+    expect(detailSource).toContain("productQuery.isRefreshPaused")
+    expect(storefrontSource).toContain("productsQuery.isRefreshPaused")
+    expect(merchantProductsSource).toContain("productsQuery.isPaused")
+    expect(merchantProductsSource).toContain(
+      "productsQuery.isPending && cachedProductsQuery.isPending"
+    )
   })
 })

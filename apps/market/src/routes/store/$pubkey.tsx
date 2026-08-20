@@ -166,7 +166,9 @@ function StorefrontPage() {
     textQuery: search.q,
   })
   const productReadIncomplete =
-    isCommerceReadIncomplete(productsQuery.meta) || !!productsQuery.error
+    isCommerceReadIncomplete(productsQuery.meta) ||
+    !!productsQuery.error ||
+    productsQuery.isRefreshPaused
   const profileRelayHints = useMemo(
     () =>
       Array.from(

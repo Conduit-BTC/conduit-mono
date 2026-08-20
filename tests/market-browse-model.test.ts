@@ -101,32 +101,62 @@ describe("market browse model helpers", () => {
       isMarketBrowseRefreshStale({
         catalogMeta: { ...freshMeta, degraded: true },
         catalogError: null,
+        catalogPaused: false,
         discoveryStale: false,
         globalSearchEnabled: false,
         globalSearchMeta: null,
         globalSearchError: null,
+        globalSearchPaused: false,
       })
     ).toBe(true)
     expect(
       isMarketBrowseRefreshStale({
         catalogMeta: freshMeta,
         catalogError: null,
+        catalogPaused: false,
         discoveryStale: false,
         globalSearchEnabled: true,
         globalSearchMeta: { ...freshMeta, stale: true },
         globalSearchError: null,
+        globalSearchPaused: false,
       })
     ).toBe(true)
     expect(
       isMarketBrowseRefreshStale({
         catalogMeta: freshMeta,
         catalogError: null,
+        catalogPaused: false,
         discoveryStale: false,
         globalSearchEnabled: false,
         globalSearchMeta: { ...freshMeta, stale: true },
         globalSearchError: null,
+        globalSearchPaused: true,
       })
     ).toBe(false)
+    expect(
+      isMarketBrowseRefreshStale({
+        catalogMeta: freshMeta,
+        catalogError: null,
+        catalogPaused: true,
+        discoveryStale: false,
+        globalSearchEnabled: false,
+        globalSearchMeta: null,
+        globalSearchError: null,
+        globalSearchPaused: false,
+      })
+    ).toBe(true)
+    expect(
+      isMarketBrowseRefreshStale({
+        catalogMeta: freshMeta,
+        catalogError: null,
+        catalogPaused: false,
+        discoveryStale: false,
+        globalSearchEnabled: true,
+        globalSearchMeta: freshMeta,
+        globalSearchError: null,
+        globalSearchPaused: true,
+      })
+    ).toBe(true)
   })
 
   it("keeps global search out of explicit connected catalog scopes", () => {

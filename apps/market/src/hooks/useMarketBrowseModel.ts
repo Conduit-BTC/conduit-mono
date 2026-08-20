@@ -148,7 +148,7 @@ export function useMarketBrowseModel({
       productsQuery.isInitialLoading ||
       (globalSearchEnabled &&
         productData.length === 0 &&
-        globalSearchQuery.isLoading),
+        globalSearchQuery.isPending),
     isHydrating:
       productsQuery.isHydrating ||
       (usesAnonymousPerspective && guestMarket.isRefreshing) ||
@@ -159,12 +159,14 @@ export function useMarketBrowseModel({
     isRefreshStale: isMarketBrowseRefreshStale({
       catalogMeta: productsQuery.meta,
       catalogError: productsQuery.error,
+      catalogPaused: productsQuery.isRefreshPaused,
       discoveryStale:
         productsQuery.discoveryStale ||
         (usesAnonymousPerspective && guestMarket.stale),
       globalSearchEnabled,
       globalSearchMeta: globalSearchQuery.data?.meta,
       globalSearchError: globalSearchQuery.error,
+      globalSearchPaused: globalSearchQuery.isPaused,
     }),
     refetch,
   }
@@ -309,9 +311,7 @@ export function useMarketBrowseModel({
     ),
     hasMore: visibleCount < filtered.length,
     hasUnavailablePriceForSort,
-    isUpdatingListings:
-      !preparedProductsQuery.isInitialLoading &&
-      preparedProductsQuery.isHydrating,
+    isUpdatingListings: preparedProductsQuery.isHydrating,
     productCards,
     productData,
     productsQuery: preparedProductsQuery,

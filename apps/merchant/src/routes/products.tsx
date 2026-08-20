@@ -868,7 +868,9 @@ function ProductsPage() {
   const merchantProductReadMeta =
     productsQuery.data?.meta ?? cachedProductsQuery.data?.meta
   const merchantProductReadIncomplete =
-    isCommerceReadIncomplete(merchantProductReadMeta) || !!productsQuery.error
+    isCommerceReadIncomplete(merchantProductReadMeta) ||
+    !!productsQuery.error ||
+    productsQuery.isPaused
   const merchantProducts = useMemo<MerchantProductFamily[]>(
     () =>
       // Group at the read boundary so edit and delete always operate on the
@@ -1246,7 +1248,7 @@ function ProductsPage() {
         : "Save changes to publish this listing update."
       : "Publish this product to add it to your store."
   const productsInitialLoading =
-    productsQuery.isLoading && cachedProductsQuery.isLoading
+    !!pubkey && productsQuery.isPending && cachedProductsQuery.isPending
 
   const tagFilters = useMemo(
     () => buildProductTagCatalog(merchantProducts.map((item) => item.product)),

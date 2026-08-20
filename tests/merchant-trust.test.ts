@@ -783,6 +783,79 @@ describe("NIP-02 merchant trust helpers", () => {
     expect(regressed.authors[0]?.snapshotState).toBe("observed")
   })
 
+  it("retains a future authenticated-owner observation across a later complete omission", async () => {
+    const now = 1_700_000_000_000
+    const publicRelay = "wss://future-owner-observation.example"
+    const visible = followListEvent({
+      secret: viewerSecret,
+      createdAt: now / 1_000,
+      follows: [mutualPubkey],
+    })
+    const future = followListEvent({
+      secret: viewerSecret,
+      createdAt: now / 1_000 + 301,
+      follows: [merchantPubkey],
+    })
+    let returnedEvents: SignedPublicNostrEvent[] = [visible, future]
+    const options: FollowListReadOptions = {
+      now: () => now,
+      resolveRelayLists: async () =>
+        new Map([[viewerPubkey, relayList(viewerPubkey, [], [publicRelay])]]),
+      fetchEvents: async (_filter, fetchOptions) => ({
+        events: returnedEvents,
+        eventSourceRelayUrls: Object.fromEntries(
+          returnedEvents.map((event) => [event.id, [publicRelay]])
+        ),
+        relays: fetchOptions.relayUrls.map((relayUrl) => ({
+          relayUrl,
+          status: "success" as const,
+          eventCount: returnedEvents.length,
+        })),
+        eventsVerified: false,
+      }),
+    }
+    const snapshotCache = createOwnContactListSnapshotCache()
+    __setFollowListTestOverrides(snapshotCache.overrides)
+
+    const observed = await readLatestFollowLists(
+      {
+        pubkeys: [viewerPubkey],
+        authenticatedPubkey: viewerPubkey,
+      },
+      options
+    )
+
+    expect(snapshotCache.get()?.event.id).toBe(future.id)
+    expect(observed.events.map((event) => event.id)).toEqual([visible.id])
+    expect(observed.authors[0]?.event?.id).toBe(visible.id)
+    expect(observed.authors[0]?.ownerSafetySnapshot?.event.id).toBe(future.id)
+    expect(observed.authors[0]?.coverage).toBe("limited")
+    expect(observed.authors[0]?.snapshotState).toBe("network")
+    expect(() =>
+      requirePublishableContactListSnapshot(observed, viewerPubkey)
+    ).toThrow("completed the read")
+
+    __resetFollowListTestState()
+    __setFollowListTestOverrides(snapshotCache.overrides)
+    returnedEvents = []
+    const omitted = await readLatestFollowLists(
+      {
+        pubkeys: [viewerPubkey],
+        authenticatedPubkey: viewerPubkey,
+      },
+      options
+    )
+
+    expect(omitted.events).toEqual([])
+    expect(omitted.authors[0]?.event).toBeUndefined()
+    expect(omitted.authors[0]?.ownerSafetySnapshot?.event.id).toBe(future.id)
+    expect(omitted.authors[0]?.coverage).toBe("limited")
+    expect(omitted.authors[0]?.snapshotState).toBe("none")
+    expect(() =>
+      requirePublishableContactListSnapshot(omitted, viewerPubkey)
+    ).toThrow("completed the read")
+  })
+
   it("returns the transactional owner winner when another tab writes during persistence", async () => {
     const publicRelay = "wss://concurrent-observation.example"
     const networkSnapshot = followListEvent({

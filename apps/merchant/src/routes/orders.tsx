@@ -26,6 +26,7 @@ import {
   nwcMakeInvoice,
   publishMerchantOrderMessage,
   pubkeyToNpub,
+  prepareProtectedReadRefreshState,
   selectProtectedReadRows,
   weblnMakeInvoice,
   type MerchantConversationSummary,
@@ -428,8 +429,7 @@ function OrdersPage() {
       getCachedMerchantConversationList({ principalPubkey: pubkey! }),
     staleTime: 5_000,
   })
-  const isOrdersFetching = ordersQuery.isFetching
-  const isOrdersInitialHydration = ordersQuery.isLoading
+  const isOrdersInitialHydration = signerConnected && ordersQuery.isPending
   const refetchOrders = ordersQuery.refetch
 
   const handleRefresh = useCallback(() => {
@@ -449,9 +449,14 @@ function OrdersPage() {
   const ordersMeta = ordersQuery.data?.meta
   const protectedOrdersReadState = deriveProtectedReadPresentationState({
     visibleCount: conversations.length,
-    pending: ordersQuery.isLoading,
+    pending: signerConnected && ordersQuery.isPending,
     error: ordersQuery.error,
     meta: ordersMeta,
+  })
+  const ordersRefreshState = prepareProtectedReadRefreshState({
+    protectedReadState: protectedOrdersReadState,
+    protectedReadRefreshing: ordersQuery.isFetching,
+    protectedReadPaused: ordersQuery.isPaused,
   })
   const protectedOrderCountsUnavailable =
     conversations.length === 0 && protectedOrdersReadState !== "complete"
@@ -1425,7 +1430,8 @@ function OrdersPage() {
           </p>
           <div className="mt-3">
             <RefreshChip
-              refreshing={isOrdersFetching}
+              refreshing={ordersRefreshState.refreshing}
+              stale={ordersRefreshState.stale}
               onRefresh={handleRefresh}
               disabled={!signerConnected}
             />

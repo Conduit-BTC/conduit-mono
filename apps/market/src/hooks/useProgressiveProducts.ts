@@ -111,6 +111,7 @@ export interface ProgressiveProductsResult {
   hydrationStage: "cache" | "resolving_follows" | "first_degree"
   isInitialLoading: boolean
   isHydrating: boolean
+  isRefreshPaused: boolean
   isShowingCache: boolean
   discoveryStale: boolean
   error: unknown
@@ -918,9 +919,12 @@ export function useProgressiveProducts(
     isInitialLoading:
       products.length === 0 &&
       (isResolvingPerspectiveGraph ||
-        (firstDegreeDiscoveryEnabled && firstDegreeQuery.isLoading) ||
-        cachedQuery.isLoading ||
-        firstNetworkQuery.isLoading ||
+        (firstDegreeDiscoveryEnabled && firstDegreeQuery.isPending) ||
+        (canReadCache && cachedQuery.isPending) ||
+        (queryEnabled &&
+          catalogReady &&
+          !streamsNetwork &&
+          firstNetworkQuery.isPending) ||
         isRestartingProgressiveRead ||
         (progressiveRead.key === discoveryKey && progressiveRead.isFetching)),
     isHydrating:
@@ -929,6 +933,9 @@ export function useProgressiveProducts(
       firstNetworkQuery.isFetching ||
       isRestartingProgressiveRead ||
       (progressiveRead.key === discoveryKey && progressiveRead.isFetching),
+    isRefreshPaused:
+      (firstDegreeDiscoveryEnabled && firstDegreeQuery.isPaused) ||
+      (!streamsNetwork && firstNetworkQuery.isPaused),
     isShowingCache:
       !hasNetworkResult &&
       !hasAuthoritativeProgressiveSnapshot &&
@@ -956,6 +963,7 @@ export function useProgressiveProductDetail(productId: string): {
   profileRelayHintsByPubkey: Record<string, string[]>
   isInitialLoading: boolean
   isHydrating: boolean
+  isRefreshPaused: boolean
   isShowingCache: boolean
   error: unknown
   refetch: () => void
@@ -1011,11 +1019,12 @@ export function useProgressiveProductDetail(productId: string): {
     profileRelayHintsByPubkey,
     isInitialLoading: isProductDetailInitialLoading({
       product,
-      cacheLoading: cachedQuery.isLoading,
-      networkLoading: networkQuery.isLoading,
+      cachePending: cachedQuery.isPending,
+      networkPending: networkQuery.isPending,
       networkFetching: networkQuery.isFetching,
     }),
     isHydrating: networkQuery.isFetching,
+    isRefreshPaused: networkQuery.isPaused,
     isShowingCache: active === cachedQuery.data && !!product,
     error: networkQuery.error ?? cachedQuery.error,
     refetch,
@@ -1024,14 +1033,14 @@ export function useProgressiveProductDetail(productId: string): {
 
 export function isProductDetailInitialLoading({
   product,
-  cacheLoading,
-  networkLoading,
+  cachePending,
+  networkPending,
   networkFetching,
 }: {
   product: Product | null
-  cacheLoading: boolean
-  networkLoading: boolean
+  cachePending: boolean
+  networkPending: boolean
   networkFetching: boolean
 }): boolean {
-  return !product && (cacheLoading || networkLoading || networkFetching)
+  return !product && (cachePending || networkPending || networkFetching)
 }
