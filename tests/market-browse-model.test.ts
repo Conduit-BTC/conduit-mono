@@ -13,7 +13,9 @@ import {
   allowsGlobalProductSearch,
   getGlobalProductSearchQueryKey,
   getMerchantIdentityView,
+  isMarketBrowseRefreshStale,
   mergeProductSearchResults,
+  refreshMarketBrowseData,
   sortBrowseProducts,
   sortStoreFacetOptionsByRecentPublisher,
 } from "../apps/market/src/lib/marketBrowseModel"
@@ -48,6 +50,115 @@ const products = [
 ]
 
 describe("market browse model helpers", () => {
+  const freshMeta = {
+    stale: false,
+    degraded: false,
+    capped: false,
+  }
+
+  it("refreshes dependent browse sources after discovery settles", async () => {
+    const refreshes: string[] = []
+    await refreshMarketBrowseData({
+      globalSearchEnabled: false,
+      refreshCatalog: () => refreshes.push("catalog"),
+      refreshGlobalSearch: () => refreshes.push("global-search"),
+    })
+    expect(refreshes).toEqual(["catalog"])
+
+    let settleDiscovery: ((changed: boolean) => void) | undefined
+    const refresh = refreshMarketBrowseData({
+      globalSearchEnabled: true,
+      refreshDiscovery: () => {
+        refreshes.push("discovery")
+        return new Promise<boolean>((resolve) => {
+          settleDiscovery = resolve
+        })
+      },
+      refreshCatalog: () => refreshes.push("catalog"),
+      refreshGlobalSearch: () => refreshes.push("global-search"),
+    })
+    expect(refreshes).toEqual(["catalog", "discovery", "global-search"])
+    settleDiscovery?.(false)
+    await refresh
+    expect(refreshes).toEqual([
+      "catalog",
+      "discovery",
+      "global-search",
+      "catalog",
+    ])
+
+    await refreshMarketBrowseData({
+      globalSearchEnabled: false,
+      refreshDiscovery: async () => true,
+      refreshCatalog: () => refreshes.push("obsolete-catalog"),
+      refreshGlobalSearch: () => refreshes.push("global-search"),
+    })
+    expect(refreshes).not.toContain("obsolete-catalog")
+  })
+
+  it("treats stale or incomplete active browse sources as not updated", () => {
+    expect(
+      isMarketBrowseRefreshStale({
+        catalogMeta: { ...freshMeta, degraded: true },
+        catalogError: null,
+        catalogPaused: false,
+        discoveryStale: false,
+        globalSearchEnabled: false,
+        globalSearchMeta: null,
+        globalSearchError: null,
+        globalSearchPaused: false,
+      })
+    ).toBe(true)
+    expect(
+      isMarketBrowseRefreshStale({
+        catalogMeta: freshMeta,
+        catalogError: null,
+        catalogPaused: false,
+        discoveryStale: false,
+        globalSearchEnabled: true,
+        globalSearchMeta: { ...freshMeta, stale: true },
+        globalSearchError: null,
+        globalSearchPaused: false,
+      })
+    ).toBe(true)
+    expect(
+      isMarketBrowseRefreshStale({
+        catalogMeta: freshMeta,
+        catalogError: null,
+        catalogPaused: false,
+        discoveryStale: false,
+        globalSearchEnabled: false,
+        globalSearchMeta: { ...freshMeta, stale: true },
+        globalSearchError: null,
+        globalSearchPaused: true,
+      })
+    ).toBe(false)
+    expect(
+      isMarketBrowseRefreshStale({
+        catalogMeta: freshMeta,
+        catalogError: null,
+        catalogPaused: true,
+        discoveryStale: false,
+        globalSearchEnabled: false,
+        globalSearchMeta: null,
+        globalSearchError: null,
+        globalSearchPaused: false,
+      })
+    ).toBe(true)
+    expect(
+      isMarketBrowseRefreshStale({
+        catalogMeta: freshMeta,
+        catalogError: null,
+        catalogPaused: false,
+        discoveryStale: false,
+        globalSearchEnabled: true,
+        globalSearchMeta: freshMeta,
+        globalSearchError: null,
+        globalSearchPaused: true,
+      })
+    ).toBe(true)
+  })
+
   it("keeps global search out of explicit connected catalog scopes", () => {
     expect(
       allowsGlobalProductSearch({

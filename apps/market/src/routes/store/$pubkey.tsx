@@ -26,7 +26,7 @@ import {
   AvatarFallback,
   AvatarImage,
   Button,
-  FreshnessChip,
+  RefreshChip,
   Select,
   SelectContent,
   SelectItem,
@@ -38,6 +38,7 @@ import {
   formatNpub,
   getCommerceReadRelayUrls,
   getTelemetryCountBucket,
+  isCommerceReadIncomplete,
   normalizePubkey,
   publishContactListUpdate,
   pubkeyToNpub,
@@ -164,6 +165,10 @@ function StorefrontPage() {
     authenticatedPubkey: activeViewerPubkey,
     textQuery: search.q,
   })
+  const productReadIncomplete =
+    isCommerceReadIncomplete(productsQuery.meta) ||
+    !!productsQuery.error ||
+    productsQuery.isRefreshPaused
   const profileRelayHints = useMemo(
     () =>
       Array.from(
@@ -408,9 +413,14 @@ function StorefrontPage() {
         operationId,
         shouldFollow: nextShouldFollow,
       })
-      await queryClient.invalidateQueries({
-        queryKey: ["merchant-trust-social"],
-      })
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["merchant-trust-social"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["market-perspective-follows"],
+        }),
+      ])
       dispatchFollow({
         type: "operation_settled",
         scope: followScope,
@@ -781,8 +791,8 @@ function StorefrontPage() {
             </div>
           </div>
 
-          <div className="relative mt-4 min-h-[1.625rem] pr-32 sm:pr-36">
-            <div className="flex flex-wrap items-center gap-2 text-sm text-[var(--text-secondary)]">
+          <div className="relative mt-4 min-h-8 pr-40 sm:pr-44">
+            <div className="flex min-h-8 flex-wrap items-center gap-2 text-sm text-[var(--text-secondary)]">
               <span>
                 {filteredProducts.length} listing
                 {filteredProducts.length === 1 ? "" : "s"}
@@ -793,13 +803,11 @@ function StorefrontPage() {
                 </span>
               )}
             </div>
-            <FreshnessChip
-              status={
-                productsQuery.isHydrating && filteredProducts.length > 0
-                  ? "updating"
-                  : "idle"
-              }
-              updatingLabel="Updating store"
+            <RefreshChip
+              refreshing={productsQuery.isHydrating}
+              onRefresh={productsQuery.refetch}
+              stale={productReadIncomplete}
+              refreshingLabel="Updating store..."
               className="absolute right-0 top-0"
             />
             {hasUnavailablePriceForSort && (
