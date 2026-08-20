@@ -230,7 +230,6 @@ interface RebuiltIngestPayload {
   ok: true
   shape: "single" | "batch"
   events: Record<string, unknown>[]
-  dropped: number
 }
 
 interface RejectedIngestPayload {
@@ -264,17 +263,14 @@ export function rebuildPostHogIngestPayload(
   }
 
   const events: Record<string, unknown>[] = []
-  let dropped = 0
   for (const candidate of candidates) {
     const event = rebuildIngestEvent(candidate, pinnedToken, originContext)
     if (event) {
       events.push(event)
-    } else {
-      dropped += 1
     }
   }
 
-  return { ok: true, shape, events, dropped }
+  return { ok: true, shape, events }
 }
 
 function rebuildIngestEvent(
