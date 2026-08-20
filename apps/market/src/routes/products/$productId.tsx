@@ -276,9 +276,8 @@ function ProductPage() {
     )
   }
 
-  const productRefreshing = !!product && productQuery.isHydrating
-  const productStale =
-    !!product && !productQuery.isHydrating && !!productQuery.meta?.stale
+  const productRefreshing = productQuery.isHydrating
+  const productStale = !productQuery.isHydrating && !!productQuery.meta?.stale
 
   return (
     <div className="min-w-0 max-w-full space-y-8 overflow-x-hidden">

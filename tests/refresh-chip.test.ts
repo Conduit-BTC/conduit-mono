@@ -145,4 +145,26 @@ describe("RefreshChip", () => {
       expect(source).not.toContain("FreshnessChip")
     }
   })
+
+  it("keeps empty Market surfaces visibly busy during refresh", async () => {
+    const detailSource = await readFile(
+      "apps/market/src/routes/products/$productId.tsx",
+      "utf8"
+    )
+    const storefrontSource = await readFile(
+      "apps/market/src/routes/store/$pubkey.tsx",
+      "utf8"
+    )
+
+    expect(detailSource).toContain(
+      "const productRefreshing = productQuery.isHydrating"
+    )
+    expect(detailSource).not.toContain(
+      "const productRefreshing = !!product && productQuery.isHydrating"
+    )
+    expect(storefrontSource).toContain("refreshing={productsQuery.isHydrating}")
+    expect(storefrontSource).not.toContain(
+      "productsQuery.isHydrating && filteredProducts.length > 0"
+    )
+  })
 })

@@ -794,9 +794,7 @@ function StorefrontPage() {
               )}
             </div>
             <RefreshChip
-              refreshing={
-                productsQuery.isHydrating && filteredProducts.length > 0
-              }
+              refreshing={productsQuery.isHydrating}
               onRefresh={productsQuery.refetch}
               refreshingLabel="Updating store..."
               className="absolute right-0 top-0"
