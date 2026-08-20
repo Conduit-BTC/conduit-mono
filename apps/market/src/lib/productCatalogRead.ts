@@ -1,4 +1,5 @@
 import {
+  isCommerceReadIncomplete,
   normalizePubkey,
   type CommerceQueryMeta,
   type SignedPublicNostrEvent,
@@ -55,7 +56,7 @@ export async function refreshProductCatalogSources(input: {
 export function isProductDiscoveryReadIncomplete(
   meta: Pick<CommerceQueryMeta, "stale" | "degraded" | "capped"> | undefined
 ): boolean {
-  return !!(meta?.stale || meta?.degraded || meta?.capped)
+  return isCommerceReadIncomplete(meta)
 }
 
 export interface FollowListSnapshot {

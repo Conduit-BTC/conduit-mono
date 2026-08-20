@@ -5,6 +5,7 @@ import {
   formatNpub,
   getListingSafetyDisplay,
   getProfileName,
+  isCommerceReadIncomplete,
   pubkeyToNpub,
   recordBrowserTelemetryEvent,
   useProfile,
@@ -277,7 +278,8 @@ function ProductPage() {
   }
 
   const productRefreshing = productQuery.isHydrating
-  const productStale = !productQuery.isHydrating && !!productQuery.meta?.stale
+  const productReadIncomplete =
+    isCommerceReadIncomplete(productQuery.meta) || !!productQuery.error
 
   return (
     <div className="min-w-0 max-w-full space-y-8 overflow-x-hidden">
@@ -316,7 +318,7 @@ function ProductPage() {
           <RefreshChip
             refreshing={productRefreshing}
             onRefresh={productQuery.refetch}
-            stale={productStale}
+            stale={productReadIncomplete}
             staleLabel="May be out of date"
             refreshingLabel="Updating listing..."
             className="absolute right-0 top-0 sm:static"

@@ -1,9 +1,10 @@
 import {
   formatNpub,
   getProfileName,
+  isCommerceReadIncomplete,
   normalizePublicMediaUrl,
   type CommerceProductRecord,
-  type CommerceQueryMeta,
+  type CommerceFreshnessMeta,
   type PreparedProductFamily,
   type PricingRateInput,
   type Product,
@@ -63,16 +64,7 @@ export async function refreshMarketBrowseData(input: {
   if (!authorSetChanged) input.refreshCatalog()
 }
 
-type BrowseFreshnessMeta = Pick<
-  CommerceQueryMeta,
-  "stale" | "degraded" | "capped"
->
-
-function hasIncompleteFreshness(
-  meta: BrowseFreshnessMeta | null | undefined
-): boolean {
-  return !!(meta?.stale || meta?.degraded || meta?.capped)
-}
+type BrowseFreshnessMeta = CommerceFreshnessMeta
 
 export function isMarketBrowseRefreshStale(input: {
   catalogMeta: BrowseFreshnessMeta | null | undefined
@@ -83,11 +75,11 @@ export function isMarketBrowseRefreshStale(input: {
   globalSearchError: unknown
 }): boolean {
   return (
-    hasIncompleteFreshness(input.catalogMeta) ||
+    isCommerceReadIncomplete(input.catalogMeta) ||
     !!input.catalogError ||
     input.discoveryStale ||
     (input.globalSearchEnabled &&
-      (hasIncompleteFreshness(input.globalSearchMeta) ||
+      (isCommerceReadIncomplete(input.globalSearchMeta) ||
         !!input.globalSearchError))
   )
 }

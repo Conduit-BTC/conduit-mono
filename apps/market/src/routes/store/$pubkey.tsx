@@ -38,6 +38,7 @@ import {
   formatNpub,
   getCommerceReadRelayUrls,
   getTelemetryCountBucket,
+  isCommerceReadIncomplete,
   normalizePubkey,
   publishContactListUpdate,
   pubkeyToNpub,
@@ -164,6 +165,8 @@ function StorefrontPage() {
     authenticatedPubkey: activeViewerPubkey,
     textQuery: search.q,
   })
+  const productReadIncomplete =
+    isCommerceReadIncomplete(productsQuery.meta) || !!productsQuery.error
   const profileRelayHints = useMemo(
     () =>
       Array.from(
@@ -796,6 +799,7 @@ function StorefrontPage() {
             <RefreshChip
               refreshing={productsQuery.isHydrating}
               onRefresh={productsQuery.refetch}
+              stale={productReadIncomplete}
               refreshingLabel="Updating store..."
               className="absolute right-0 top-0"
             />

@@ -18,6 +18,7 @@ import {
   getProductImageCandidates,
   getProductPriceDisplay,
   getNdk,
+  isCommerceReadIncomplete,
   prepareProductCatalog,
   recordBrowserTelemetryEvent,
   type CommerceResult,
@@ -866,6 +867,8 @@ function ProductsPage() {
   )
   const merchantProductReadMeta =
     productsQuery.data?.meta ?? cachedProductsQuery.data?.meta
+  const merchantProductReadIncomplete =
+    isCommerceReadIncomplete(merchantProductReadMeta) || !!productsQuery.error
   const merchantProducts = useMemo<MerchantProductFamily[]>(
     () =>
       // Group at the read boundary so edit and delete always operate on the
@@ -1563,6 +1566,7 @@ function ProductsPage() {
           <RefreshChip
             refreshing={productsQuery.isFetching}
             onRefresh={() => void productsQuery.refetch()}
+            stale={merchantProductReadIncomplete}
             refreshingLabel="Updating listings..."
             className="absolute right-0 top-1/2 -translate-y-1/2"
           />

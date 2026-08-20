@@ -179,6 +179,17 @@ export interface CommerceQueryMeta {
   legacyDecryptFailures?: LegacyDmDecryptFailure[]
 }
 
+export type CommerceFreshnessMeta = Pick<
+  CommerceQueryMeta,
+  "stale" | "degraded" | "capped"
+>
+
+export function isCommerceReadIncomplete(
+  meta: CommerceFreshnessMeta | null | undefined
+): boolean {
+  return !!(meta?.stale || meta?.degraded || meta?.capped)
+}
+
 export interface CommerceResult<T> {
   data: T
   meta: CommerceQueryMeta

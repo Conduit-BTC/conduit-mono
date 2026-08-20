@@ -167,4 +167,32 @@ describe("RefreshChip", () => {
       "productsQuery.isHydrating && filteredProducts.length > 0"
     )
   })
+
+  it("keeps incomplete product reads out of the Updated phase", async () => {
+    const detailSource = await readFile(
+      "apps/market/src/routes/products/$productId.tsx",
+      "utf8"
+    )
+    const storefrontSource = await readFile(
+      "apps/market/src/routes/store/$pubkey.tsx",
+      "utf8"
+    )
+    const merchantProductsSource = await readFile(
+      "apps/merchant/src/routes/products.tsx",
+      "utf8"
+    )
+
+    expect(detailSource).toContain("stale={productReadIncomplete}")
+    expect(storefrontSource).toContain("stale={productReadIncomplete}")
+    expect(merchantProductsSource).toContain(
+      "stale={merchantProductReadIncomplete}"
+    )
+    for (const source of [
+      detailSource,
+      storefrontSource,
+      merchantProductsSource,
+    ]) {
+      expect(source).toContain("isCommerceReadIncomplete")
+    }
+  })
 })

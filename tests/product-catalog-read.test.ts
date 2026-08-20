@@ -232,6 +232,20 @@ describe("product catalog read planning", () => {
         capped: false,
       })
     ).toBe(true)
+    expect(
+      isProductDiscoveryReadIncomplete({
+        stale: false,
+        degraded: false,
+        capped: true,
+      })
+    ).toBe(true)
+    expect(
+      isProductDiscoveryReadIncomplete({
+        stale: false,
+        degraded: false,
+        capped: false,
+      })
+    ).toBe(false)
   })
 
   it("keeps a newer signed-empty follow snapshot over older relay views", () => {
