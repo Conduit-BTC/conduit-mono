@@ -334,7 +334,7 @@ describe("browser telemetry", () => {
             amount_bucket: "1k_10k_sats",
             latency_bucket: "unknown",
             mode: "automatic",
-            rail: "nwc",
+            rail: "wallet",
             status: "success",
           },
         })
@@ -812,14 +812,14 @@ describe("browser telemetry", () => {
       buildPaymentAttemptResultTelemetryProperties({
         amountSats: 25_000,
         latencyMs: 1_200,
-        rail: "nwc",
+        rail: "wallet",
         status: "blocked",
       })
     ).toEqual({
       amount_bucket: "10k_100k_sats",
       latency_bucket: "1s_3s",
       mode: "automatic",
-      rail: "nwc",
+      rail: "wallet",
       status: "blocked",
     })
     expect(

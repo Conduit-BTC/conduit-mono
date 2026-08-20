@@ -61,6 +61,7 @@ import {
 } from "../hooks/useCartReadiness"
 import { useMerchantCheckoutCapability } from "../hooks/useMerchantCheckoutCapability"
 import { useShopperPricing } from "../hooks/useShopperPricing"
+import { useWallets, type UseWalletsReturn } from "../hooks/useWallets"
 import { buildCheckoutPricingIntent } from "../lib/checkout-payment"
 import {
   getCartCostSummary,
@@ -584,6 +585,7 @@ function CartLineItem({
 function MerchantCartCard({
   group,
   readiness,
+  wallets,
   expanded,
   forceExpanded,
   btcUsdRate,
@@ -597,6 +599,7 @@ function MerchantCartCard({
 }: {
   group: MerchantCartGroup
   readiness: MerchantCartReadiness | undefined
+  wallets: UseWalletsReturn
   expanded: boolean
   forceExpanded: boolean
   btcUsdRate: BtcUsdRateQuote | null
@@ -628,6 +631,7 @@ function MerchantCartCard({
     items: group.items,
     readiness,
     merchantLud16: profile?.lud16,
+    wallets,
   })
   const canZapOut = capability.outcome === "zap_candidate"
   // Only the initial no-evidence read blocks the card; a background refresh
@@ -738,6 +742,7 @@ function MerchantCartCard({
 
 function CartPage() {
   const cart = useCart()
+  const wallets = useWallets()
   const cartReadiness = useCartReadiness(cart.items)
   const search = Route.useSearch()
   const navigate = useNavigate()
@@ -1044,6 +1049,7 @@ function CartPage() {
                 key={group.merchantPubkey}
                 group={group}
                 readiness={cartReadiness.byMerchant.get(group.merchantPubkey)}
+                wallets={wallets}
                 expanded={expanded}
                 forceExpanded={forceExpanded}
                 btcUsdRate={shopperPricing.quote}

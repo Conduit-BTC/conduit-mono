@@ -124,7 +124,7 @@ const validBrowserEventProperties = {
     amount_bucket: "1k_10k_sats",
     latency_bucket: "250ms_1s",
     mode: "automatic",
-    rail: "nwc",
+    rail: "wallet",
     status: "success",
   },
   merchant_setup_step_result: {

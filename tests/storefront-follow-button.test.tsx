@@ -1,20 +1,28 @@
 import { describe, expect, it } from "bun:test"
+import type { ComponentProps } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 
 import { StorefrontFollowButton } from "../apps/market/src/components/StorefrontFollowButton"
 
+type FollowButtonProps = ComponentProps<typeof StorefrontFollowButton>
+
+function renderButton(overrides: Partial<FollowButtonProps> = {}): string {
+  return renderToStaticMarkup(
+    <StorefrontFollowButton
+      isFollowing={false}
+      merchantName="Bitcoin Bazar"
+      onClick={() => undefined}
+      retryAction={null}
+      saveState="idle"
+      writesAvailable
+      {...overrides}
+    />
+  )
+}
+
 describe("storefront follow button", () => {
   it("keeps the initial Follow state enabled", () => {
-    const markup = renderToStaticMarkup(
-      <StorefrontFollowButton
-        isFollowing={false}
-        merchantName="Bitcoin Bazar"
-        onClick={() => undefined}
-        retryAction={null}
-        saveState="idle"
-        writesAvailable
-      />
-    )
+    const markup = renderButton()
 
     expect(markup).toContain("bg-primary-500")
     expect(markup).toContain("lucide-user-plus")
@@ -24,16 +32,7 @@ describe("storefront follow button", () => {
   })
 
   it("shows an undimmed loading state while a follow is saving", () => {
-    const markup = renderToStaticMarkup(
-      <StorefrontFollowButton
-        isFollowing={false}
-        merchantName="Bitcoin Bazar"
-        onClick={() => undefined}
-        retryAction={null}
-        saveState="saving_follow"
-        writesAvailable
-      />
-    )
+    const markup = renderButton({ saveState: "saving_follow" })
 
     expect(markup).toContain("bg-[var(--surface-elevated)]")
     expect(markup).toContain("disabled:opacity-100")
@@ -47,16 +46,7 @@ describe("storefront follow button", () => {
   })
 
   it("keeps the settled Following state actionable as Unfollow", () => {
-    const markup = renderToStaticMarkup(
-      <StorefrontFollowButton
-        isFollowing
-        merchantName="Bitcoin Bazar"
-        onClick={() => undefined}
-        retryAction={null}
-        saveState="idle"
-        writesAvailable
-      />
-    )
+    const markup = renderButton({ isFollowing: true })
 
     expect(markup).toContain("lucide-check")
     expect(markup).toContain(">Following<")
@@ -70,16 +60,7 @@ describe("storefront follow button", () => {
   })
 
   it("keeps an ambiguous follow available as an exact retry", () => {
-    const markup = renderToStaticMarkup(
-      <StorefrontFollowButton
-        isFollowing
-        merchantName="Bitcoin Bazar"
-        onClick={() => undefined}
-        retryAction="follow"
-        saveState="idle"
-        writesAvailable
-      />
-    )
+    const markup = renderButton({ isFollowing: true, retryAction: "follow" })
 
     expect(markup).toContain("lucide-rotate-ccw")
     expect(markup).toContain("Retry follow")
@@ -88,16 +69,7 @@ describe("storefront follow button", () => {
   })
 
   it("keeps an ambiguous unfollow available as an exact retry", () => {
-    const markup = renderToStaticMarkup(
-      <StorefrontFollowButton
-        isFollowing={false}
-        merchantName="Bitcoin Bazar"
-        onClick={() => undefined}
-        retryAction="unfollow"
-        saveState="idle"
-        writesAvailable
-      />
-    )
+    const markup = renderButton({ retryAction: "unfollow" })
 
     expect(markup).toContain("lucide-rotate-ccw")
     expect(markup).toContain("Retry unfollow")
@@ -106,16 +78,7 @@ describe("storefront follow button", () => {
   })
 
   it("keeps unfollow writes visibly pending and guarded", () => {
-    const markup = renderToStaticMarkup(
-      <StorefrontFollowButton
-        isFollowing={false}
-        merchantName="Bitcoin Bazar"
-        onClick={() => undefined}
-        retryAction={null}
-        saveState="saving_unfollow"
-        writesAvailable
-      />
-    )
+    const markup = renderButton({ saveState: "saving_unfollow" })
 
     expect(markup).toContain("bg-[var(--surface-elevated)]")
     expect(markup).toContain("disabled:opacity-100")
@@ -128,17 +91,11 @@ describe("storefront follow button", () => {
   })
 
   it("preserves the contact-list maintenance gate and its explanation", () => {
-    const markup = renderToStaticMarkup(
-      <StorefrontFollowButton
-        isFollowing
-        merchantName="Bitcoin Bazar"
-        onClick={() => undefined}
-        retryAction={null}
-        saveState="idle"
-        unavailableDescriptionId="storefront-follow-maintenance"
-        writesAvailable={false}
-      />
-    )
+    const markup = renderButton({
+      isFollowing: true,
+      unavailableDescriptionId: "storefront-follow-maintenance",
+      writesAvailable: false,
+    })
 
     expect(markup).toContain("lucide-check")
     expect(markup).toContain(">Following<")

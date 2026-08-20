@@ -343,7 +343,7 @@ const browserTelemetryLabelValues = {
     "public_zap_as_shopper",
     "private_checkout",
   ],
-  rail: ["lightning", "nwc", "webln", "none"],
+  rail: ["lightning", "wallet", "nwc", "webln", "none"],
   method: ["nip07", "nip46", "nwc"],
   event_family: [
     "type_error",

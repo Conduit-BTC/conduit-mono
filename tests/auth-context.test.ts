@@ -6,9 +6,11 @@ import { finalizeEvent, getPublicKey, verifyEvent } from "nostr-tools/pure"
 import {
   connectNip07SignerForAuth,
   getNip07Capabilities,
+  getAuthSignerReadiness,
   hasNip07,
   isTransientNip07ConnectError,
   resolveFailedAuthAttempt,
+  shouldReuseConnectedAuthSession,
   type AuthConnectOptions,
   type AuthContextValue,
 } from "../packages/core/src/context/AuthContext"
@@ -695,5 +697,82 @@ describe("NIP-46 AuthContext API", () => {
     releaseRollback?.()
 
     expect(await resolution).toEqual({ kind: "ignore" })
+  })
+})
+
+describe("authenticated signer readiness", () => {
+  const capabilities = {
+    signEvent: true,
+    nip44: true,
+    nip04: false,
+  }
+  const signer = {} as NonNullable<AuthContextValue["signer"]>
+
+  it("requires the live signer behind a connected pubkey", () => {
+    expect(
+      getAuthSignerReadiness({
+        status: "connected",
+        pubkey: "a".repeat(64),
+        signer: null,
+        capabilities,
+      })
+    ).toBe("unavailable")
+
+    expect(
+      getAuthSignerReadiness({
+        status: "connected",
+        pubkey: "a".repeat(64),
+        signer,
+        capabilities,
+      })
+    ).toBe("ready")
+  })
+
+  it("requires NIP-44 encryption for private order delivery", () => {
+    expect(
+      getAuthSignerReadiness({
+        status: "connected",
+        pubkey: "a".repeat(64),
+        signer,
+        capabilities: { ...capabilities, nip44: false },
+      })
+    ).toBe("incompatible")
+  })
+
+  it("does not silently downgrade pending auth to disconnected", () => {
+    expect(
+      getAuthSignerReadiness({
+        status: "restoring",
+        pubkey: "a".repeat(64),
+        signer: null,
+        capabilities,
+      })
+    ).toBe("pending")
+  })
+
+  it("does not silently downgrade a failed authenticated session to guest checkout", () => {
+    expect(
+      getAuthSignerReadiness({
+        status: "error",
+        pubkey: "a".repeat(64),
+        signer: null,
+        capabilities,
+      })
+    ).toBe("unavailable")
+
+    expect(
+      getAuthSignerReadiness({
+        status: "error",
+        pubkey: null,
+        signer: null,
+        capabilities,
+      })
+    ).toBe("disconnected")
+  })
+
+  it("makes duplicate automatic restores idempotent", () => {
+    expect(shouldReuseConnectedAuthSession("restore", true)).toBe(true)
+    expect(shouldReuseConnectedAuthSession("restore", false)).toBe(false)
+    expect(shouldReuseConnectedAuthSession("interactive", true)).toBe(false)
   })
 })

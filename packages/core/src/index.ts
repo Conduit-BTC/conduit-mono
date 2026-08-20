@@ -12,6 +12,9 @@ export * from "./schemas"
 export * from "./utils"
 export * from "./network-target-safety"
 
+// Wallets
+export * from "./wallets"
+
 // Build provenance
 export {
   conduitBuildInfo,
@@ -178,6 +181,7 @@ export {
 export {
   db,
   pruneCommerceCaches,
+  subscribeToWalletDescriptorChanges,
   pruneShopperTrustSnapshots,
   shopperTrustSnapshotIsExpired,
   SHOPPER_TRUST_SNAPSHOT_MAX_ROWS,
@@ -207,6 +211,7 @@ export {
   type CachedShopperTrustSignalState,
   type CachedShopperTrustSnapshot,
   type StoredPaymentAttempt,
+  type StoredWalletCredential,
   type OrderLifecycle,
   type OrderLifecycleItem,
   type OrderLifecyclePhase,
@@ -223,6 +228,7 @@ export {
   type OrderDeliveryStatus,
   type OrderInvoiceStatus,
   type OrderPaymentStatus,
+  type OrderPaymentTarget,
   type OrderProofDeliveryStatus,
   type OrderZapReceiptStatus,
 } from "./db"
@@ -232,8 +238,10 @@ export {
   AuthProvider,
   useAuth,
   hasNip07,
+  getAuthSignerReadiness,
   isTransientNip07ConnectError,
   type AuthStatus,
+  type AuthSignerReadiness,
   type AuthContextValue,
 } from "./context/AuthContext"
 export {
