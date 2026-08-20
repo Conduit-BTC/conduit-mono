@@ -1,6 +1,7 @@
 import {
   isCommerceReadIncomplete,
   normalizePubkey,
+  selectLatestFollowListEvent,
   type CommerceQueryMeta,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
@@ -27,6 +28,16 @@ export type PerspectiveAuthorSource =
 export interface PerspectiveAuthorResolution {
   authorPubkeys: string[] | undefined
   source: PerspectiveAuthorSource
+}
+
+export function retainedFollowSnapshotSupersedesLive(
+  live: Pick<SignedPublicNostrEvent, "id" | "created_at"> | null | undefined,
+  retained: Pick<SignedPublicNostrEvent, "id" | "created_at"> | null | undefined
+): boolean {
+  if (!retained) return false
+  if (!live) return true
+  if (live.id === retained.id) return false
+  return selectLatestFollowListEvent([live, retained])?.id === retained.id
 }
 
 export async function refreshProductCatalogSources(input: {
@@ -204,6 +215,8 @@ export function resolvePerspectiveAuthorPubkeys(input: {
     input.perspectivePubkey
   )
   const sourceMode = input.sourceMode ?? "following"
+  const hasRefreshedAuthors = input.refreshedAuthorPubkeys !== undefined
+  const hasCachedAuthors = input.cachedAuthorPubkeys !== undefined
 
   if (input.usesPerspectiveGraph && sourceMode === "conduit") {
     const seeded = uniquePerspectiveAuthors(
@@ -219,46 +232,48 @@ export function resolvePerspectiveAuthorPubkeys(input: {
   }
 
   if (input.usesPerspectiveGraph && sourceMode === "combined") {
-    if (refreshed.length > 0) {
-      return {
-        authorPubkeys: includePerspectiveAuthor(
-          uniquePerspectiveAuthors(
-            [...refreshed, ...fallback],
+    if (hasRefreshedAuthors) {
+      if (refreshed.length > 0) {
+        return {
+          authorPubkeys: includePerspectiveAuthor(
+            uniquePerspectiveAuthors(
+              [...refreshed, ...fallback],
+              input.perspectivePubkey
+            ),
             input.perspectivePubkey
           ),
-          input.perspectivePubkey
-        ),
-        source: fallback.length > 0 ? "combined" : "refreshed",
+          source: fallback.length > 0 ? "combined" : "refreshed",
+        }
       }
-    }
-
-    const seeded = uniquePerspectiveAuthors(
-      input.seedAuthorPubkeys,
-      input.perspectivePubkey
-    )
-    if (seeded.length > 0) {
-      return {
-        authorPubkeys: includePerspectiveAuthor(
-          uniquePerspectiveAuthors(
-            [...seeded, ...fallback],
+    } else {
+      const seeded = uniquePerspectiveAuthors(
+        input.seedAuthorPubkeys,
+        input.perspectivePubkey
+      )
+      if (seeded.length > 0) {
+        return {
+          authorPubkeys: includePerspectiveAuthor(
+            uniquePerspectiveAuthors(
+              [...seeded, ...fallback],
+              input.perspectivePubkey
+            ),
             input.perspectivePubkey
           ),
-          input.perspectivePubkey
-        ),
-        source: fallback.length > 0 ? "combined" : "seed",
+          source: fallback.length > 0 ? "combined" : "seed",
+        }
       }
-    }
 
-    if (cached.length > 0) {
-      return {
-        authorPubkeys: includePerspectiveAuthor(
-          uniquePerspectiveAuthors(
-            [...cached, ...fallback],
+      if (hasCachedAuthors && cached.length > 0) {
+        return {
+          authorPubkeys: includePerspectiveAuthor(
+            uniquePerspectiveAuthors(
+              [...cached, ...fallback],
+              input.perspectivePubkey
+            ),
             input.perspectivePubkey
           ),
-          input.perspectivePubkey
-        ),
-        source: fallback.length > 0 ? "combined" : "cached",
+          source: fallback.length > 0 ? "combined" : "cached",
+        }
       }
     }
 
@@ -278,8 +293,10 @@ export function resolvePerspectiveAuthorPubkeys(input: {
     }
   }
 
-  if (refreshed.length > 0) {
-    return { authorPubkeys: refreshed, source: "refreshed" }
+  if (hasRefreshedAuthors) {
+    return refreshed.length > 0
+      ? { authorPubkeys: refreshed, source: "refreshed" }
+      : { authorPubkeys: [], source: "none" }
   }
 
   const seeded = uniquePerspectiveAuthors(
@@ -288,7 +305,11 @@ export function resolvePerspectiveAuthorPubkeys(input: {
   )
   if (seeded.length > 0) return { authorPubkeys: seeded, source: "seed" }
 
-  if (cached.length > 0) return { authorPubkeys: cached, source: "cached" }
+  if (hasCachedAuthors) {
+    return cached.length > 0
+      ? { authorPubkeys: cached, source: "cached" }
+      : { authorPubkeys: [], source: "none" }
+  }
 
   if (input.usesPerspectiveGraph && input.followLookupSettled) {
     return { authorPubkeys: [], source: "none" }

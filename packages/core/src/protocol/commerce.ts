@@ -20,6 +20,7 @@ import { normalizePublicMediaUrl } from "../network-target-safety"
 import { EVENT_KINDS } from "./kinds"
 import {
   extractFollowPubkeys,
+  isPlausibleFollowListEventTimestamp,
   readLatestFollowLists,
   type FollowListAuthorRead,
   type FollowListCoverageState,
@@ -2795,8 +2796,17 @@ export async function getFollowPubkeys(
     { now: testOverrides.now }
   )
   const author = result.authors[0]
-  const latestEvent = author?.event
-  const incomplete = author?.coverage !== "complete"
+  const selectedEvent = author?.event
+  const eventTimestampPlausible = isPlausibleFollowListEventTimestamp(
+    selectedEvent,
+    testOverrides.now
+  )
+  const latestEvent = eventTimestampPlausible ? selectedEvent : undefined
+  const hiddenFutureSnapshot = selectedEvent !== undefined && !latestEvent
+  const incomplete = author?.coverage !== "complete" || hiddenFutureSnapshot
+  const coverage = hiddenFutureSnapshot
+    ? "limited"
+    : (author?.coverage ?? "unavailable")
   const retainedSnapshot =
     author?.snapshotState === "observed" || author?.snapshotState === "pending"
 
@@ -2817,7 +2827,7 @@ export async function getFollowPubkeys(
       eventObserved: latestEvent !== undefined,
       eventCreatedAt: latestEvent?.created_at,
       eventId: latestEvent?.id,
-      coverage: author?.coverage ?? "unavailable",
+      coverage,
       snapshotState: author?.snapshotState ?? "none",
     },
   }

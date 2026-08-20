@@ -5,6 +5,7 @@ import {
   type CommerceQueryMeta,
   type CommerceReadPolicy,
   type CommerceResult,
+  extractFollowPubkeys,
   type FollowListResult,
   getFollowPubkeys,
   getCachedMarketplaceProducts,
@@ -16,6 +17,8 @@ import {
   getProductDetail,
   isListingMarketVisible,
   normalizePubkey,
+  peekRetainedOwnFollowListSnapshot,
+  readRetainedOwnFollowListSnapshot,
   type ListingSafetyEvaluation,
   type PreparedProductFamily,
   type Product,
@@ -27,6 +30,7 @@ import {
   isProductDiscoveryReadIncomplete,
   isPerspectiveMarketplaceRead,
   refreshProductCatalogSources,
+  retainedFollowSnapshotSupersedesLive,
   resolvePerspectiveAuthorPubkeys,
   type PerspectiveAuthorSource,
   type ProductCatalogSourceMode,
@@ -276,6 +280,10 @@ export function useProgressiveProducts(
         : undefined,
     [rawSeedAuthorPubkeys]
   )
+  const retainedFirstDegreeDiscoveryEnabled =
+    firstDegreeDiscoveryEnabled &&
+    perspectivePubkey === authenticatedPubkey &&
+    !seededAuthors
   const firstDegreeQuery = useQuery({
     queryKey: [
       "market-perspective-follows",
@@ -294,6 +302,43 @@ export function useProgressiveProducts(
       return data && !data.meta.eventObserved ? 5_000 : false
     },
   })
+  const retainedFirstDegreeQuery = useQuery({
+    queryKey: [
+      "market-perspective-follows",
+      "retained",
+      perspectivePubkey,
+      authenticatedPubkey,
+    ],
+    queryFn: ({ signal }) =>
+      readRetainedOwnFollowListSnapshot(perspectivePubkey!, { signal }),
+    enabled: retainedFirstDegreeDiscoveryEnabled,
+    initialData: () =>
+      retainedFirstDegreeDiscoveryEnabled
+        ? peekRetainedOwnFollowListSnapshot(perspectivePubkey!)
+        : undefined,
+    staleTime: 0,
+    refetchOnWindowFocus: false,
+  })
+  const retainedFirstDegreeSnapshot = useMemo(
+    () =>
+      (retainedFirstDegreeDiscoveryEnabled
+        ? peekRetainedOwnFollowListSnapshot(perspectivePubkey!)
+        : undefined) ??
+      retainedFirstDegreeQuery.data ??
+      undefined,
+    [
+      perspectivePubkey,
+      retainedFirstDegreeDiscoveryEnabled,
+      retainedFirstDegreeQuery.data,
+    ]
+  )
+  const retainedFirstDegreeAuthors = useMemo(
+    () =>
+      retainedFirstDegreeSnapshot
+        ? extractFollowPubkeys(retainedFirstDegreeSnapshot.event.tags)
+        : undefined,
+    [retainedFirstDegreeSnapshot]
+  )
 
   const fallbackPerspectiveAuthors = useMemo(
     () =>
@@ -303,22 +348,31 @@ export function useProgressiveProducts(
     [seededAuthors, usesPerspectiveGraph]
   )
   const resolveFirstDegreeAuthors = useCallback(
-    (result: FollowListResult | undefined, followLookupSettled: boolean) =>
-      resolvePerspectiveAuthorPubkeys({
+    (result: FollowListResult | undefined, followLookupSettled: boolean) => {
+      const retainedSupersedesLive = retainedFollowSnapshotSupersedesLive(
+        result?.meta.eventObserved ? result.event : undefined,
+        retainedFirstDegreeSnapshot?.event
+      )
+      return resolvePerspectiveAuthorPubkeys({
         usesPerspectiveGraph,
         sourceMode: catalogSource,
         perspectivePubkey,
-        refreshedAuthorPubkeys: result?.meta.eventObserved
-          ? result.data
-          : undefined,
+        refreshedAuthorPubkeys:
+          result?.meta.eventObserved && !retainedSupersedesLive
+            ? result.data
+            : undefined,
         seedAuthorPubkeys: seededAuthors,
+        cachedAuthorPubkeys: retainedFirstDegreeAuthors,
         fallbackAuthorPubkeys: fallbackPerspectiveAuthors,
         followLookupSettled,
-      }),
+      })
+    },
     [
       catalogSource,
       fallbackPerspectiveAuthors,
       perspectivePubkey,
+      retainedFirstDegreeAuthors,
+      retainedFirstDegreeSnapshot,
       seededAuthors,
       usesPerspectiveGraph,
     ]
@@ -327,12 +381,15 @@ export function useProgressiveProducts(
     () =>
       resolveFirstDegreeAuthors(
         firstDegreeQuery.data,
-        firstDegreeQuery.isSuccess || firstDegreeQuery.isError
+        firstDegreeQuery.isSuccess ||
+          firstDegreeQuery.isError ||
+          retainedFirstDegreeSnapshot !== undefined
       ),
     [
       firstDegreeQuery.data,
       firstDegreeQuery.isError,
       firstDegreeQuery.isSuccess,
+      retainedFirstDegreeSnapshot,
       resolveFirstDegreeAuthors,
     ]
   )
@@ -343,6 +400,14 @@ export function useProgressiveProducts(
     firstDegreeDiscoveryEnabled &&
     firstDegreeQuery.isSuccess &&
     !firstDegreeQuery.data.meta.eventObserved
+  const retainedFirstDegreeSupersedesLive =
+    retainedFirstDegreeDiscoveryEnabled &&
+    retainedFollowSnapshotSupersedesLive(
+      firstDegreeQuery.data?.meta.eventObserved
+        ? firstDegreeQuery.data.event
+        : undefined,
+      retainedFirstDegreeSnapshot?.event
+    )
   const firstDegreeAuthors = firstDegreeResolution.authorPubkeys
   const usingFallbackPerspective = firstDegreeResolution.source === "fallback"
   const fallbackAuthorCount = fallbackPerspectiveAuthors?.length ?? 0
@@ -869,7 +934,10 @@ export function useProgressiveProducts(
       !hasAuthoritativeProgressiveSnapshot &&
       progressiveRead.count === 0 &&
       cachedCount > 0,
-    discoveryStale: firstDegreeReadIncomplete || firstDegreeReadUnconfirmed,
+    discoveryStale:
+      firstDegreeReadIncomplete ||
+      firstDegreeReadUnconfirmed ||
+      retainedFirstDegreeSupersedesLive,
     error:
       firstNetworkQuery.error ??
       (progressiveRead.key === discoveryKey ? progressiveRead.error : null) ??

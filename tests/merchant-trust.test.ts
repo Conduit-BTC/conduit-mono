@@ -11,7 +11,9 @@ import {
   disconnectNdk,
   extractFollowPubkeys,
   fetchMerchantTrustSocialSummary,
+  peekRetainedOwnFollowListSnapshot,
   publishContactListUpdate,
+  readRetainedOwnFollowListSnapshot,
   readLatestFollowLists,
   recordRelayFailure,
   requirePublishableContactListSnapshot,
@@ -110,6 +112,132 @@ describe("NIP-02 merchant trust helpers", () => {
     ])
 
     expect(latest?.id).toBe("a".repeat(64))
+  })
+
+  it("reads a verified retained owner snapshot without relay discovery", async () => {
+    const retained = followListEvent({
+      secret: viewerSecret,
+      createdAt: 200,
+      follows: [merchantPubkey],
+    })
+    let loadCalls = 0
+    __setFollowListTestOverrides({
+      loadOwnContactListSnapshot: async () => {
+        loadCalls += 1
+        return {
+          pubkey: viewerPubkey,
+          event: retained,
+          sourceRelayUrls: ["wss://retained.example"],
+          state: "observed",
+          cachedAt: Date.now(),
+        }
+      },
+    })
+
+    const snapshot = await readRetainedOwnFollowListSnapshot(viewerPubkey)
+
+    expect(loadCalls).toBe(1)
+    expect(snapshot?.event.id).toBe(retained.id)
+    expect(extractFollowPubkeys(snapshot?.event.tags)).toEqual([merchantPubkey])
+    expect(snapshot?.state).toBe("observed")
+
+    snapshot?.event.tags.push(["p", mutualPubkey])
+    snapshot?.sourceRelayUrls.push("wss://mutated.example")
+    const inMemory = peekRetainedOwnFollowListSnapshot(viewerPubkey)
+    expect(loadCalls).toBe(1)
+    expect(extractFollowPubkeys(inMemory?.event.tags)).toEqual([merchantPubkey])
+    expect(inMemory?.sourceRelayUrls).toEqual(["wss://retained.example"])
+  })
+
+  it("preserves a verified retained signed-empty owner snapshot", async () => {
+    const retained = followListEvent({
+      secret: viewerSecret,
+      createdAt: 200,
+      follows: [],
+    })
+    __setFollowListTestOverrides({
+      loadOwnContactListSnapshot: async () => ({
+        pubkey: viewerPubkey,
+        event: retained,
+        sourceRelayUrls: [],
+        state: "observed",
+        cachedAt: Date.now(),
+      }),
+    })
+
+    const snapshot = await readRetainedOwnFollowListSnapshot(viewerPubkey)
+
+    expect(snapshot?.event.id).toBe(retained.id)
+    expect(extractFollowPubkeys(snapshot?.event.tags)).toEqual([])
+  })
+
+  it("withholds a future retained snapshot without discarding its frontier", async () => {
+    const now = 1_700_000_000_000
+    const future = followListEvent({
+      secret: viewerSecret,
+      createdAt: now / 1_000 + 301,
+      follows: [merchantPubkey],
+    })
+    __setFollowListTestOverrides({
+      loadOwnContactListSnapshot: async () => ({
+        pubkey: viewerPubkey,
+        event: future,
+        sourceRelayUrls: [],
+        state: "observed",
+        cachedAt: now,
+      }),
+    })
+
+    expect(
+      await readRetainedOwnFollowListSnapshot(viewerPubkey, { now: () => now })
+    ).toBeNull()
+    expect(
+      peekRetainedOwnFollowListSnapshot(viewerPubkey, { now: () => now })
+    ).toBeUndefined()
+
+    const caughtUp = await readRetainedOwnFollowListSnapshot(viewerPubkey, {
+      now: () => now + 1_000,
+    })
+    expect(caughtUp?.event.id).toBe(future.id)
+  })
+
+  it("rejects invalid retained owner snapshots", async () => {
+    const valid = followListEvent({
+      secret: viewerSecret,
+      createdAt: 200,
+      follows: [merchantPubkey],
+    })
+    const invalidSnapshots: CachedOwnContactListSnapshot[] = [
+      {
+        pubkey: merchantPubkey,
+        event: valid,
+        sourceRelayUrls: [],
+        state: "observed",
+        cachedAt: Date.now(),
+      },
+      {
+        pubkey: viewerPubkey,
+        event: { ...valid, kind: 1 },
+        sourceRelayUrls: [],
+        state: "observed",
+        cachedAt: Date.now(),
+      },
+      {
+        pubkey: viewerPubkey,
+        event: { ...valid, sig: "0".repeat(128) },
+        sourceRelayUrls: [],
+        state: "observed",
+        cachedAt: Date.now(),
+      },
+    ]
+
+    for (const invalid of invalidSnapshots) {
+      __resetFollowListTestState()
+      __setFollowListTestOverrides({
+        loadOwnContactListSnapshot: async () => invalid,
+      })
+      expect(await readRetainedOwnFollowListSnapshot(viewerPubkey)).toBeNull()
+    }
   })
 
   it("derives bounded merchant social context without follower crawling", () => {

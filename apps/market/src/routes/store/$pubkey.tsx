@@ -411,9 +411,14 @@ function StorefrontPage() {
         operationId,
         shouldFollow: nextShouldFollow,
       })
-      await queryClient.invalidateQueries({
-        queryKey: ["merchant-trust-social"],
-      })
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["merchant-trust-social"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["market-perspective-follows"],
+        }),
+      ])
       dispatchFollow({
         type: "operation_settled",
         scope: followScope,

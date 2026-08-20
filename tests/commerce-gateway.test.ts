@@ -3017,6 +3017,39 @@ describe("commerce gateway", () => {
     expect(result.meta.snapshotState).toBe("observed")
   })
 
+  it("does not project an implausibly future retained follow snapshot", async () => {
+    const futureEvent: SignedPublicNostrEvent = {
+      id: "4".repeat(64),
+      pubkey: MERCHANT_A_PUBKEY,
+      kind: EVENT_KINDS.CONTACT_LIST,
+      created_at: FIXED_NOW / 1_000 + 301,
+      content: "",
+      sig: "a".repeat(128),
+      tags: [["p", "d".repeat(64)]],
+    }
+    __setCommerceTestOverrides({
+      readLatestFollowLists: async () =>
+        makeFollowListRead({
+          pubkey: MERCHANT_A_PUBKEY,
+          event: futureEvent,
+          coverage: "limited",
+          snapshotState: "observed",
+        }),
+    })
+
+    const result = await getFollowPubkeys({
+      pubkey: MERCHANT_A_PUBKEY,
+      authenticatedPubkey: MERCHANT_A_PUBKEY,
+    })
+
+    expect(result.data).toEqual([])
+    expect(result.event).toBeUndefined()
+    expect(result.meta.eventObserved).toBe(false)
+    expect(result.meta.coverage).toBe("limited")
+    expect(result.meta.stale).toBe(true)
+    expect(result.meta.degraded).toBe(true)
+  })
+
   it("dedupes profile requests and serves cached profiles when relays fail later", async () => {
     __setCommerceTestOverrides({
       fetchEventsFanout: async (filter) => {

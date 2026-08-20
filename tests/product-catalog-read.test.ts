@@ -7,6 +7,7 @@ import {
   isPerspectiveMarketplaceRead,
   parseFollowListSnapshot,
   refreshProductCatalogSources,
+  retainedFollowSnapshotSupersedesLive,
   resolvePerspectiveAuthorPubkeys,
   selectStrongestFollowListSnapshot,
 } from "../apps/market/src/lib/productCatalogRead"
@@ -194,11 +195,113 @@ describe("product catalog read planning", () => {
     })
   })
 
+  it("starts following mode from a retained signed author snapshot", () => {
+    const resolved = resolvePerspectiveAuthorPubkeys({
+      usesPerspectiveGraph: true,
+      sourceMode: "following",
+      perspectivePubkey: viewerPubkey,
+      cachedAuthorPubkeys: [merchantBPubkey, merchantAPubkey],
+      followLookupSettled: false,
+    })
+
+    expect(resolved).toEqual({
+      authorPubkeys: [merchantAPubkey, merchantBPubkey],
+      source: "cached",
+    })
+  })
+
+  it("treats a retained signed-empty snapshot as a ready author scope", () => {
+    const resolved = resolvePerspectiveAuthorPubkeys({
+      usesPerspectiveGraph: true,
+      sourceMode: "following",
+      perspectivePubkey: viewerPubkey,
+      cachedAuthorPubkeys: [],
+      followLookupSettled: false,
+    })
+
+    expect(resolved).toEqual({
+      authorPubkeys: [],
+      source: "none",
+    })
+  })
+
+  it("lets a live signed-empty snapshot clear retained following authors", () => {
+    const resolved = resolvePerspectiveAuthorPubkeys({
+      usesPerspectiveGraph: true,
+      sourceMode: "following",
+      perspectivePubkey: viewerPubkey,
+      refreshedAuthorPubkeys: [],
+      cachedAuthorPubkeys: [merchantAPubkey],
+      followLookupSettled: true,
+    })
+
+    expect(resolved).toEqual({
+      authorPubkeys: [],
+      source: "none",
+    })
+  })
+
+  it("keeps the strongest retained follow frontier over stale query data", () => {
+    const olderLive = { id: "2".repeat(64), created_at: 100 }
+    const newerRetained = { id: "3".repeat(64), created_at: 200 }
+    const lowerIdRetained = { id: "1".repeat(64), created_at: 100 }
+
+    expect(retainedFollowSnapshotSupersedesLive(olderLive, newerRetained)).toBe(
+      true
+    )
+    expect(
+      retainedFollowSnapshotSupersedesLive(olderLive, lowerIdRetained)
+    ).toBe(true)
+    expect(
+      retainedFollowSnapshotSupersedesLive(olderLive, {
+        ...olderLive,
+        created_at: 999,
+      })
+    ).toBe(false)
+    expect(retainedFollowSnapshotSupersedesLive(newerRetained, olderLive)).toBe(
+      false
+    )
+
+    const retainedSignedEmpty = resolvePerspectiveAuthorPubkeys({
+      usesPerspectiveGraph: true,
+      sourceMode: "following",
+      perspectivePubkey: viewerPubkey,
+      refreshedAuthorPubkeys: retainedFollowSnapshotSupersedesLive(
+        olderLive,
+        newerRetained
+      )
+        ? undefined
+        : [merchantAPubkey],
+      cachedAuthorPubkeys: [],
+      followLookupSettled: true,
+    })
+    expect(retainedSignedEmpty).toEqual({
+      authorPubkeys: [],
+      source: "none",
+    })
+  })
+
+  it("does not retain cached follows after a live signed-empty combined read", () => {
+    const resolved = resolvePerspectiveAuthorPubkeys({
+      usesPerspectiveGraph: true,
+      sourceMode: "combined",
+      perspectivePubkey: viewerPubkey,
+      refreshedAuthorPubkeys: [],
+      cachedAuthorPubkeys: [merchantAPubkey],
+      fallbackAuthorPubkeys: [merchantBPubkey],
+      followLookupSettled: true,
+    })
+
+    expect(resolved).toEqual({
+      authorPubkeys: [viewerPubkey, merchantBPubkey],
+      source: "fallback",
+    })
+  })
+
   it("waits for signed-in follow lookup before using fallback perspective authors", () => {
     const resolved = resolvePerspectiveAuthorPubkeys({
       usesPerspectiveGraph: true,
       perspectivePubkey: viewerPubkey,
-      refreshedAuthorPubkeys: [],
       fallbackAuthorPubkeys: [merchantAPubkey],
       followLookupSettled: false,
     })

@@ -89,6 +89,21 @@ export interface FollowListReadResult {
   eventsVerified: boolean
 }
 
+/**
+ * Signature-validated owner contact-list evidence retained locally.
+ *
+ * The signed event preserves the distinction between a cache miss and an
+ * observed contact list with no `p` tags. Consumers may use this snapshot to
+ * prepare reads while live relay discovery continues, but should keep the
+ * live read's freshness and coverage state authoritative.
+ */
+export interface RetainedOwnFollowListSnapshot {
+  pubkey: string
+  event: SignedPublicNostrEvent
+  sourceRelayUrls: string[]
+  state: "observed" | "pending"
+}
+
 export interface MerchantTrustSocialReadResult extends MerchantTrustSocialSummary {
   readState: "available" | "limited" | "unavailable"
   pendingViewerFollowsMerchant: boolean | null
@@ -190,6 +205,16 @@ export function selectLatestFollowListEvent<T extends FollowListEventLike>(
   })[0]
 }
 
+export function isPlausibleFollowListEventTimestamp(
+  event: Pick<FollowListEventLike, "created_at"> | null | undefined,
+  now: () => number = Date.now
+): boolean {
+  if (event?.created_at === undefined) return false
+  const latestAllowedTimestamp =
+    Math.floor(now() / 1_000) + FOLLOW_LIST_FUTURE_TOLERANCE_SECONDS
+  return event.created_at <= latestAllowedTimestamp
+}
+
 function cloneSignedEvent(
   event: SignedPublicNostrEvent
 ): SignedPublicNostrEvent {
@@ -221,6 +246,17 @@ function isValidOwnContactListSnapshot(
     (snapshot.state === "observed" || snapshot.state === "pending") &&
     isValidSignedPublicNostrEvent(snapshot.event)
   )
+}
+
+function toRetainedOwnFollowListSnapshot(
+  snapshot: CachedOwnContactListSnapshot
+): RetainedOwnFollowListSnapshot {
+  return {
+    pubkey: snapshot.pubkey,
+    event: cloneSignedEvent(snapshot.event),
+    sourceRelayUrls: [...snapshot.sourceRelayUrls],
+    state: snapshot.state,
+  }
 }
 
 function chooseStrongestOwnContactListSnapshot(
@@ -301,7 +337,7 @@ async function loadOwnContactListSnapshot(
   }
 
   const memory = observedOwnFollowLists.get(pubkey)
-  const memorySnapshot: CachedOwnContactListSnapshot | undefined = memory
+  const memoryCandidate: CachedOwnContactListSnapshot | undefined = memory
     ? {
         pubkey,
         event: memory.event,
@@ -310,10 +346,56 @@ async function loadOwnContactListSnapshot(
         cachedAt: 0,
       }
     : undefined
+  const memorySnapshot = isValidOwnContactListSnapshot(memoryCandidate, pubkey)
+    ? memoryCandidate
+    : undefined
   const chosen = stored
     ? chooseStrongestOwnContactListSnapshot(memorySnapshot, stored)
     : memorySnapshot
   return chosen ? rememberOwnContactListSnapshot(chosen) : undefined
+}
+
+/**
+ * Returns already-loaded owner contact-list evidence without touching
+ * IndexedDB or relays. This gives same-process remounts an immediate seed;
+ * hard reloads should also call `readRetainedOwnFollowListSnapshot`.
+ */
+export function peekRetainedOwnFollowListSnapshot(
+  pubkey: string,
+  options: { now?: () => number } = {}
+): RetainedOwnFollowListSnapshot | undefined {
+  const normalizedPubkey = normalizeHexPubkey(pubkey)
+  if (!normalizedPubkey) return undefined
+  const memory = observedOwnFollowLists.get(normalizedPubkey)
+  if (!memory) return undefined
+  const snapshot: CachedOwnContactListSnapshot = {
+    pubkey: normalizedPubkey,
+    event: memory.event,
+    sourceRelayUrls: memory.eventSourceRelayUrls,
+    state: memory.state,
+    cachedAt: 0,
+  }
+  return isValidOwnContactListSnapshot(snapshot, normalizedPubkey) &&
+    isPlausibleFollowListEventTimestamp(snapshot.event, options.now)
+    ? toRetainedOwnFollowListSnapshot(snapshot)
+    : undefined
+}
+
+/** Reads retained owner contact-list evidence without any network work. */
+export async function readRetainedOwnFollowListSnapshot(
+  pubkey: string,
+  options: { signal?: AbortSignal; now?: () => number } = {}
+): Promise<RetainedOwnFollowListSnapshot | null> {
+  const normalizedPubkey = normalizeHexPubkey(pubkey)
+  if (!normalizedPubkey) return null
+  const snapshot = await loadOwnContactListSnapshot(
+    normalizedPubkey,
+    options.signal
+  )
+  return snapshot &&
+    isPlausibleFollowListEventTimestamp(snapshot.event, options.now)
+    ? toRetainedOwnFollowListSnapshot(snapshot)
+    : null
 }
 
 async function persistOwnContactListSnapshot(
@@ -548,9 +630,6 @@ export async function readLatestFollowLists(
   const normalizedAuthenticatedPubkey = normalizeHexPubkey(
     authenticatedPubkey ?? undefined
   )
-  const latestAllowedTimestamp =
-    Math.floor((options.now?.() ?? Date.now()) / 1_000) +
-    FOLLOW_LIST_FUTURE_TOLERANCE_SECONDS
   const requestedMaxRelays = Math.floor(
     options.maxRelays ?? FOLLOW_LIST_MAX_RELAYS_PER_AUTHOR
   )
@@ -704,7 +783,10 @@ export async function readLatestFollowLists(
           (candidate) =>
             candidate.kind === EVENT_KINDS.CONTACT_LIST &&
             candidate.pubkey === pubkey &&
-            candidate.created_at <= latestAllowedTimestamp
+            isPlausibleFollowListEventTimestamp(
+              candidate,
+              options.now ?? Date.now
+            )
         )
       )
       const hasUsableSource = relays.some((relay) => relay.status !== "failed")
