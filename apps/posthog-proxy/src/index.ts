@@ -1,6 +1,8 @@
 import {
   browserTelemetryEventNames,
   browserTelemetryPropertyNames,
+  hasRequiredBrowserTelemetryEventProperties,
+  isAllowedBrowserTelemetryEventProperty,
   isAllowedBrowserTelemetryLabelValue,
 } from "@conduit/core/telemetry-contract"
 
@@ -42,6 +44,16 @@ export const workerAllowedEventNames = new Set<string>([
   "$web_vitals",
   ...browserTelemetryEventNames,
 ])
+
+const browserTelemetryEventNameSet = new Set<string>(browserTelemetryEventNames)
+const browserTelemetryPropertyNameSet = new Set<string>(
+  browserTelemetryPropertyNames
+)
+const providerLifecycleRequiredPropertyNames = {
+  $pageview: ["app", "page_url", "page_path", "$session_id", "$pageview_id"],
+  $pageleave: ["app", "page_url", "page_path", "$session_id"],
+  $web_vitals: ["app", "page_url", "page_path", "$session_id"],
+} as const
 
 /**
  * Short label properties from the documented browser telemetry allowlist:
@@ -314,6 +326,7 @@ function rebuildIngestEventProperties(
     $process_person_profile: false,
     distinct_id: POSTHOG_ANONYMOUS_DISTINCT_ID,
   }
+  const isBrowserTelemetryEvent = browserTelemetryEventNameSet.has(eventName)
 
   for (const [key, propertyValue] of Object.entries(value)) {
     if (key === "distinct_id") {
@@ -334,6 +347,20 @@ function rebuildIngestEventProperties(
       if (pinnedToken && propertyValue !== pinnedToken) return null
       rebuilt.token = pinnedToken ?? propertyValue
       continue
+    }
+    if (
+      isBrowserTelemetryEvent &&
+      browserTelemetryPropertyNameSet.has(key) &&
+      !isAllowedBrowserTelemetryEventProperty(eventName, key)
+    ) {
+      return null
+    }
+    if (
+      !isBrowserTelemetryEvent &&
+      workerLabelPropertyNames.has(key) &&
+      key !== "app"
+    ) {
+      return null
     }
     if (workerLabelPropertyNames.has(key)) {
       if (
@@ -394,6 +421,33 @@ function rebuildIngestEventProperties(
   if (typeof rebuilt.token !== "string") {
     if (!pinnedToken) return null
     rebuilt.token = pinnedToken
+  }
+
+  if (isBrowserTelemetryEvent) {
+    if (!hasRequiredBrowserTelemetryEventProperties(eventName, rebuilt)) {
+      return null
+    }
+  } else {
+    const requiredProperties = (
+      providerLifecycleRequiredPropertyNames as Partial<
+        Record<string, readonly string[]>
+      >
+    )[eventName]
+    if (
+      !requiredProperties?.every((propertyName) =>
+        Object.prototype.hasOwnProperty.call(rebuilt, propertyName)
+      )
+    ) {
+      return null
+    }
+  }
+  if (
+    eventName === "$web_vitals" &&
+    !Array.from(webVitalValuePropertyNames).some((propertyName) =>
+      Object.prototype.hasOwnProperty.call(rebuilt, propertyName)
+    )
+  ) {
+    return null
   }
 
   return rebuilt

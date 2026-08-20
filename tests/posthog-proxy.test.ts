@@ -5,6 +5,11 @@ import {
   isSanitizedTelemetryRoutePath,
   rebuildPostHogIngestPayload,
 } from "../apps/posthog-proxy/src"
+import {
+  browserTelemetryEventNames,
+  browserTelemetryEventPropertyContracts,
+  type BrowserTelemetryEventName,
+} from "../packages/core/src/telemetry-contract"
 import { sanitizeTelemetryPath } from "../packages/core/src/telemetry"
 import { pubkeyToNpub } from "../packages/core/src/utils"
 
@@ -18,6 +23,8 @@ function makeEvent(
     event: "$pageview",
     properties: {
       $process_person_profile: false,
+      $pageview_id: "0198f4a0-3333-7abc-8def-0123456789ab",
+      $session_id: "0198f4a0-2222-7abc-8def-0123456789ab",
       distinct_id: "conduit-browser-telemetry",
       token: PROJECT_TOKEN,
       app: "market",
@@ -28,6 +35,132 @@ function makeEvent(
     uuid: "0198f4a0-1111-7abc-8def-0123456789ab",
     ...overrides,
   }
+}
+
+const validBrowserEventProperties = {
+  app_load_result: { network: "browser", status: "success" },
+  client_error_result: {
+    action: "window_error",
+    event_family: "type_error",
+    mode: "unhandled",
+    status: "failure",
+    surface: "browser",
+  },
+  signer_connected: { method: "nip07", status: "success" },
+  signer_disconnected: { method: "nip46", status: "success" },
+  cart_add: {
+    action: "add",
+    count_bucket: "1",
+    product_type: "physical",
+    status: "success",
+    surface: "cart",
+  },
+  cart_remove: {
+    action: "remove",
+    count_bucket: "1",
+    product_type: "digital",
+    status: "success",
+    surface: "cart",
+  },
+  cart_clear: {
+    action: "clear_all",
+    count_bucket: "2_3",
+    product_type: "mixed",
+    status: "success",
+    surface: "cart",
+  },
+  checkout_initiated: {
+    count_bucket: "2_3",
+    product_type: "physical",
+    status: "success",
+    surface: "cart",
+  },
+  checkout_step_result: {
+    amount_bucket: "10k_100k_sats",
+    count_bucket: "2_3",
+    mode: "checkout",
+    product_type: "physical",
+    rail: "none",
+    status: "started",
+    step: "shipping",
+    surface: "checkout",
+  },
+  checkout_success: {
+    amount_bucket: "10k_100k_sats",
+    count_bucket: "2_3",
+    mode: "order_first",
+    product_type: "physical",
+    rail: "lightning",
+    status: "order_sent",
+    surface: "checkout",
+  },
+  checkout_result: {
+    amount_bucket: "10k_100k_sats",
+    count_bucket: "2_3",
+    mode: "checkout",
+    network: "browser",
+    product_type: "physical",
+    rail: "nwc",
+    status: "success",
+    surface: "checkout",
+  },
+  relay_connect_result: { network: "browser", status: "success" },
+  relay_publish_result: { network: "browser", status: "failure" },
+  wallet_connect_result: {
+    method: "nwc",
+    rail: "lightning",
+    status: "pay_capable",
+  },
+  payment_attempt_result: {
+    amount_bucket: "1k_10k_sats",
+    latency_bucket: "250ms_1s",
+    mode: "automatic",
+    rail: "nwc",
+    status: "success",
+  },
+  merchant_setup_step_result: {
+    app: "merchant",
+    status: "blocked",
+    step: "payments",
+    surface: "merchant_readiness",
+  },
+  product_publish_result: {
+    app: "merchant",
+    event_family: "create",
+    latency_bucket: "1s_3s",
+    status: "success",
+  },
+  shipping_publish_result: {
+    app: "merchant",
+    event_family: "publish",
+    latency_bucket: "1s_3s",
+    status: "failure",
+  },
+  market_browse_action: {
+    action: "storefront_search",
+    result_count_bucket: "4_10",
+    status: "success",
+    surface: "storefront",
+  },
+  product_detail_action: {
+    action: "view_cart",
+    product_type: "digital",
+    surface: "product_detail",
+  },
+} satisfies Record<BrowserTelemetryEventName, Record<string, string>>
+
+function makeBrowserTelemetryEvent(
+  eventName: BrowserTelemetryEventName,
+  properties: Record<string, unknown> = {}
+): Record<string, unknown> {
+  return makeEvent(
+    { event: eventName },
+    {
+      event_name: eventName,
+      ...validBrowserEventProperties[eventName],
+      ...properties,
+    }
+  )
 }
 
 function encode(payload: unknown): ArrayBuffer {
@@ -177,6 +310,8 @@ describe("PostHog reverse proxy", () => {
       event: "$pageview",
       properties: {
         $process_person_profile: false,
+        $pageview_id: "0198f4a0-3333-7abc-8def-0123456789ab",
+        $session_id: "0198f4a0-2222-7abc-8def-0123456789ab",
         distinct_id: "conduit-browser-telemetry",
         token: PROJECT_TOKEN,
         app: "market",
@@ -237,14 +372,7 @@ describe("PostHog reverse proxy", () => {
       ingestRequest([
         makeEvent(),
         makeEvent({ event: "$create_alias" }),
-        makeEvent(
-          { event: "checkout_result" },
-          {
-            event_name: "checkout_result",
-            status: "success",
-            rail: "nwc",
-          }
-        ),
+        makeBrowserTelemetryEvent("checkout_result"),
       ]),
       async (request) => {
         upstreamRequest = request
@@ -262,6 +390,91 @@ describe("PostHog reverse proxy", () => {
       "$pageview",
       "checkout_result",
     ])
+  })
+
+  it("requires every custom browser event contract", () => {
+    expect(Object.keys(validBrowserEventProperties)).toEqual([
+      ...browserTelemetryEventNames,
+    ])
+
+    for (const eventName of browserTelemetryEventNames) {
+      const valid = rebuildPostHogIngestPayload(
+        encode(makeBrowserTelemetryEvent(eventName))
+      )
+      expect(valid.ok).toBe(true)
+      if (valid.ok) expect(valid.events).toHaveLength(1)
+
+      const requiredProperties = [
+        "event_name",
+        "app",
+        "page_url",
+        "page_path",
+        ...browserTelemetryEventPropertyContracts[eventName].required,
+      ]
+      for (const requiredProperty of requiredProperties) {
+        const incomplete = makeBrowserTelemetryEvent(eventName)
+        delete (incomplete.properties as Record<string, unknown>)[
+          requiredProperty
+        ]
+        const rebuilt = rebuildPostHogIngestPayload(encode(incomplete))
+
+        expect(rebuilt.ok).toBe(true)
+        if (rebuilt.ok) expect(rebuilt.events).toHaveLength(0)
+      }
+    }
+
+    const unrelatedProperty = rebuildPostHogIngestPayload(
+      encode(makeBrowserTelemetryEvent("checkout_result", { action: "add" }))
+    )
+    expect(unrelatedProperty.ok).toBe(true)
+    if (unrelatedProperty.ok) expect(unrelatedProperty.events).toHaveLength(0)
+  })
+
+  it("requires app and route context for provider lifecycle events", () => {
+    for (const event of ["$pageview", "$pageleave", "$web_vitals"]) {
+      const eventProperties =
+        event === "$web_vitals" ? { $web_vitals_LCP_value: 1_200 } : {}
+      const valid = rebuildPostHogIngestPayload(
+        encode(makeEvent({ event }, eventProperties))
+      )
+      expect(valid.ok).toBe(true)
+      if (valid.ok) expect(valid.events).toHaveLength(1)
+
+      for (const requiredProperty of ["app", "page_url", "page_path"]) {
+        const incomplete = makeEvent({ event }, eventProperties)
+        delete (incomplete.properties as Record<string, unknown>)[
+          requiredProperty
+        ]
+        const rebuilt = rebuildPostHogIngestPayload(encode(incomplete))
+
+        expect(rebuilt.ok).toBe(true)
+        if (rebuilt.ok) expect(rebuilt.events).toHaveLength(0)
+      }
+    }
+
+    for (const [event, missingProperty] of [
+      ["$pageview", "$session_id"],
+      ["$pageview", "$pageview_id"],
+      ["$pageleave", "$session_id"],
+      ["$web_vitals", "$session_id"],
+    ] as const) {
+      const properties =
+        event === "$web_vitals" ? { $web_vitals_LCP_value: 1_200 } : {}
+      const incomplete = makeEvent({ event }, properties)
+      delete (incomplete.properties as Record<string, unknown>)[missingProperty]
+      const rebuilt = rebuildPostHogIngestPayload(encode(incomplete))
+
+      expect(rebuilt.ok).toBe(true)
+      if (rebuilt.ok) expect(rebuilt.events).toHaveLength(0)
+    }
+
+    const metriclessWebVitals = rebuildPostHogIngestPayload(
+      encode(makeEvent({ event: "$web_vitals" }))
+    )
+    expect(metriclessWebVitals.ok).toBe(true)
+    if (metriclessWebVitals.ok) {
+      expect(metriclessWebVitals.events).toHaveLength(0)
+    }
   })
 
   it("enforces the pinned project token when configured", async () => {
@@ -342,7 +555,11 @@ describe("PostHog reverse proxy", () => {
       "private_token_1234567890",
     ]) {
       const rebuilt = rebuildPostHogIngestPayload(
-        encode(makeEvent({}, { status: sensitiveValue }))
+        encode(
+          makeBrowserTelemetryEvent("checkout_result", {
+            status: sensitiveValue,
+          })
+        )
       )
 
       expect(rebuilt.ok).toBe(true)
@@ -356,7 +573,7 @@ describe("PostHog reverse proxy", () => {
       { event_name: "cart_add", status: "success" },
     ]) {
       const rebuilt = rebuildPostHogIngestPayload(
-        encode(makeEvent({ event: "checkout_result" }, properties))
+        encode(makeBrowserTelemetryEvent("checkout_result", properties))
       )
 
       expect(rebuilt.ok).toBe(true)

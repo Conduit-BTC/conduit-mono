@@ -57,6 +57,176 @@ export const browserTelemetryPropertyNames = [
 export type BrowserTelemetryPropertyName =
   (typeof browserTelemetryPropertyNames)[number]
 
+interface BrowserTelemetryEventPropertyContract {
+  required: readonly BrowserTelemetryPropertyName[]
+  optional: readonly BrowserTelemetryPropertyName[]
+}
+
+const browserTelemetryBasePropertyNames = [
+  "event_name",
+  "app",
+  "page_url",
+  "page_path",
+] as const
+const countAndTimePropertyNames = ["count", "time_bucket"] as const
+const timePropertyNames = ["time_bucket"] as const
+
+/**
+ * Event-specific property contracts. The four base fields above are required
+ * for every custom browser event. Raw `count` and `time_bucket` remain
+ * documented but closed by the value allowlist until shared bounded builders
+ * define their values.
+ */
+export const browserTelemetryEventPropertyContracts = {
+  app_load_result: {
+    required: ["network", "status"],
+    optional: ["latency_bucket", ...countAndTimePropertyNames],
+  },
+  client_error_result: {
+    required: ["surface", "action", "event_family", "mode", "status"],
+    optional: [],
+  },
+  signer_connected: {
+    required: ["method", "status"],
+    optional: countAndTimePropertyNames,
+  },
+  signer_disconnected: {
+    required: ["method", "status"],
+    optional: countAndTimePropertyNames,
+  },
+  cart_add: {
+    required: ["surface", "action", "status", "count_bucket", "product_type"],
+    optional: timePropertyNames,
+  },
+  cart_remove: {
+    required: ["surface", "action", "status", "count_bucket", "product_type"],
+    optional: timePropertyNames,
+  },
+  cart_clear: {
+    required: ["surface", "action", "status", "count_bucket", "product_type"],
+    optional: timePropertyNames,
+  },
+  checkout_initiated: {
+    required: ["surface", "status", "count_bucket", "product_type"],
+    optional: timePropertyNames,
+  },
+  checkout_step_result: {
+    required: [
+      "surface",
+      "step",
+      "mode",
+      "rail",
+      "status",
+      "count_bucket",
+      "amount_bucket",
+      "product_type",
+    ],
+    optional: timePropertyNames,
+  },
+  checkout_success: {
+    required: [
+      "surface",
+      "mode",
+      "rail",
+      "status",
+      "count_bucket",
+      "amount_bucket",
+      "product_type",
+    ],
+    optional: timePropertyNames,
+  },
+  checkout_result: {
+    required: [
+      "surface",
+      "mode",
+      "rail",
+      "network",
+      "status",
+      "count_bucket",
+      "amount_bucket",
+      "product_type",
+    ],
+    optional: timePropertyNames,
+  },
+  relay_connect_result: {
+    required: ["network", "status"],
+    optional: ["latency_bucket", ...countAndTimePropertyNames],
+  },
+  relay_publish_result: {
+    required: ["network", "status"],
+    optional: ["latency_bucket", ...countAndTimePropertyNames],
+  },
+  wallet_connect_result: {
+    required: ["rail", "method", "status"],
+    optional: ["latency_bucket", ...countAndTimePropertyNames],
+  },
+  payment_attempt_result: {
+    required: ["rail", "mode", "status", "latency_bucket", "amount_bucket"],
+    optional: countAndTimePropertyNames,
+  },
+  merchant_setup_step_result: {
+    required: ["surface", "step", "status"],
+    optional: countAndTimePropertyNames,
+  },
+  product_publish_result: {
+    required: ["event_family", "status", "latency_bucket"],
+    optional: countAndTimePropertyNames,
+  },
+  shipping_publish_result: {
+    required: ["event_family", "status", "latency_bucket"],
+    optional: countAndTimePropertyNames,
+  },
+  market_browse_action: {
+    required: ["surface", "action", "status", "result_count_bucket"],
+    optional: ["product_type", ...timePropertyNames],
+  },
+  product_detail_action: {
+    required: ["surface", "action", "product_type"],
+    optional: timePropertyNames,
+  },
+} as const satisfies Record<
+  BrowserTelemetryEventName,
+  BrowserTelemetryEventPropertyContract
+>
+
+function getBrowserTelemetryEventPropertyContract(
+  eventName: string
+): BrowserTelemetryEventPropertyContract | undefined {
+  return (
+    browserTelemetryEventPropertyContracts as Partial<
+      Record<string, BrowserTelemetryEventPropertyContract>
+    >
+  )[eventName]
+}
+
+export function isAllowedBrowserTelemetryEventProperty(
+  eventName: string,
+  propertyName: string
+): boolean {
+  const contract = getBrowserTelemetryEventPropertyContract(eventName)
+  if (!contract) return false
+  return (
+    browserTelemetryBasePropertyNames.includes(
+      propertyName as (typeof browserTelemetryBasePropertyNames)[number]
+    ) ||
+    contract.required.includes(propertyName as BrowserTelemetryPropertyName) ||
+    contract.optional.includes(propertyName as BrowserTelemetryPropertyName)
+  )
+}
+
+export function hasRequiredBrowserTelemetryEventProperties(
+  eventName: string,
+  properties: Readonly<Record<string, unknown>>
+): boolean {
+  const contract = getBrowserTelemetryEventPropertyContract(eventName)
+  if (!contract) return false
+
+  return [...browserTelemetryBasePropertyNames, ...contract.required].every(
+    (propertyName) =>
+      Object.prototype.hasOwnProperty.call(properties, propertyName)
+  )
+}
+
 type BrowserTelemetryLabelPropertyName = Exclude<
   BrowserTelemetryPropertyName,
   "page_path" | "page_url"

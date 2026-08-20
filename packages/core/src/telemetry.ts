@@ -3,8 +3,11 @@ import { normalizePubkey, pubkeyToNpub } from "./utils"
 export type ConduitTelemetryApp = "market" | "merchant"
 
 export {
+  browserTelemetryEventPropertyContracts,
   browserTelemetryEventNames,
   browserTelemetryPropertyNames,
+  hasRequiredBrowserTelemetryEventProperties,
+  isAllowedBrowserTelemetryEventProperty,
   isAllowedBrowserTelemetryLabelValue,
 } from "./telemetry-contract"
 export type {
@@ -14,6 +17,8 @@ export type {
 import {
   browserTelemetryEventNames,
   browserTelemetryPropertyNames,
+  hasRequiredBrowserTelemetryEventProperties,
+  isAllowedBrowserTelemetryEventProperty,
   isAllowedBrowserTelemetryLabelValue,
 } from "./telemetry-contract"
 import type {
@@ -379,7 +384,7 @@ export function isBrowserTelemetryEventName(
 
 export function sanitizeTelemetryEventProperties(
   input: TelemetryEventInput
-): Record<string, string | boolean> {
+): Record<string, string | boolean> | null {
   const sanitized: Record<string, string | boolean> = {
     event_name: input.eventName,
     app: input.app,
@@ -391,17 +396,19 @@ export function sanitizeTelemetryEventProperties(
       key === "event_name" ||
       key === "app" ||
       key === "page_path" ||
-      key === "page_url"
+      key === "page_url" ||
+      !isAllowedBrowserTelemetryEventProperty(input.eventName, key)
     ) {
-      continue
+      return null
     }
-    if (typeof value !== "string") continue
+    if (typeof value !== "string") return null
     const normalized = sanitizeTelemetryPropertyValue(
       key,
       value,
       input.eventName
     )
-    if (normalized) sanitized[key] = normalized
+    if (!normalized) return null
+    sanitized[key] = normalized
   }
 
   return sanitized
@@ -475,15 +482,31 @@ export function sanitizePostHogCaptureEvent(
   const sourceProperties = event.properties ?? {}
   const sanitizedProperties: Record<string, PostHogPropertyValue> =
     getPostHogIngestionProperties(sourceProperties)
+  const isBrowserEvent = isBrowserTelemetryEventName(eventName)
 
   for (const [key, value] of Object.entries(sourceProperties)) {
     if (!browserTelemetryPropertyNameSet.has(key)) continue
+    if (
+      isBrowserEvent &&
+      !isAllowedBrowserTelemetryEventProperty(eventName, key)
+    ) {
+      return null
+    }
+    if (
+      !isBrowserEvent &&
+      key !== "app" &&
+      key !== "page_path" &&
+      key !== "page_url"
+    ) {
+      return null
+    }
 
-    if (typeof value !== "string") continue
+    if (typeof value !== "string") return null
 
     if (key === "page_url") {
       const pageUrl = sanitizeTelemetryRouteUrl(value)
-      if (pageUrl) sanitizedProperties[key] = pageUrl
+      if (!pageUrl) return null
+      sanitizedProperties[key] = pageUrl
       continue
     }
     if (key === "page_path") {
@@ -492,7 +515,8 @@ export function sanitizePostHogCaptureEvent(
     }
 
     const normalized = sanitizeTelemetryPropertyValue(key, value, eventName)
-    if (normalized) sanitizedProperties[key] = normalized
+    if (!normalized) return null
+    sanitizedProperties[key] = normalized
   }
 
   addPostHogSessionContext(sanitizedProperties, sourceProperties)
@@ -541,6 +565,12 @@ export function sanitizePostHogCaptureEvent(
   const inferredApp = getTelemetryAppForPageUrl(pageUrl)
   if (typeof sanitizedProperties.app !== "string" && inferredApp !== null) {
     sanitizedProperties.app = inferredApp
+  }
+  if (
+    isBrowserEvent &&
+    !hasRequiredBrowserTelemetryEventProperties(eventName, sanitizedProperties)
+  ) {
+    return null
   }
 
   const sanitizedEvent: PostHogCaptureEvent = {
@@ -700,12 +730,20 @@ function recordBrowserTelemetryEventUnsafe(input: TelemetryEventInput): void {
   if (!isTelemetryAllowedForCurrentHost(config)) return
   if (isGlobalPrivacyControlEnabled()) return
 
+  const sanitizedProperties = sanitizeTelemetryEventProperties(input)
+  if (!sanitizedProperties) return
+
   const properties = {
-    ...sanitizeTelemetryEventProperties(input),
+    ...sanitizedProperties,
     ...buildTelemetryEventPageContext({
       origin: window.location.origin,
       pathname: window.location.pathname,
     }),
+  }
+  if (
+    !hasRequiredBrowserTelemetryEventProperties(input.eventName, properties)
+  ) {
+    return
   }
 
   if (config.plausible) {

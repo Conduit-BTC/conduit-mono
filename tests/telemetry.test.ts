@@ -300,6 +300,7 @@ describe("browser telemetry", () => {
     const previousAllowedHosts = process.env.VITE_TELEMETRY_ALLOWED_HOSTS
     const previousPlausibleSrc = process.env.VITE_PLAUSIBLE_SRC
     const previousPostHogKey = process.env.VITE_POSTHOG_KEY
+    let plausibleCalls = 0
 
     const fakeDocument = {
       querySelector: () => ({}) as HTMLScriptElement,
@@ -311,6 +312,7 @@ describe("browser telemetry", () => {
         pathname: "/checkout",
       },
       plausible: () => {
+        plausibleCalls += 1
         throw new Error("provider unavailable")
       },
     } as unknown as Window
@@ -330,11 +332,14 @@ describe("browser telemetry", () => {
           eventName: "payment_attempt_result",
           properties: {
             amount_bucket: "1k_10k_sats",
+            latency_bucket: "unknown",
+            mode: "automatic",
             rail: "nwc",
             status: "success",
           },
         })
       ).not.toThrow()
+      expect(plausibleCalls).toBe(1)
     } finally {
       restoreProcessEnvValue("VITE_ENABLE_TELEMETRY", previousEnableTelemetry)
       restoreProcessEnvValue(
@@ -530,10 +535,14 @@ describe("browser telemetry", () => {
           $host: "shop.conduit.market",
           $pathname: "/products/30402:merchant:item",
           action: "add",
+          count_bucket: "1",
           distinct_id: "sdk-generated-id",
+          event_name: "cart_add",
           page_path: "/products/:productId",
           page_url: "https://shop.conduit.market/products/:productId",
+          product_type: "physical",
           status: "success",
+          surface: "cart",
         },
       })
     ).toEqual({
@@ -544,10 +553,14 @@ describe("browser telemetry", () => {
         $process_person_profile: false,
         action: "add",
         app: "market",
+        count_bucket: "1",
         distinct_id: "conduit-browser-telemetry",
+        event_name: "cart_add",
         page_path: "/products/:productId",
         page_url: "https://shop.conduit.market/products/:productId",
+        product_type: "physical",
         status: "success",
+        surface: "cart",
       },
     })
   })
@@ -564,12 +577,19 @@ describe("browser telemetry", () => {
           $pathname: "/checkout",
           $process_person_profile: false,
           $session_id: "session-id",
+          amount_bucket: "10k_100k_sats",
           app: "market",
+          count_bucket: "2_3",
           distinct_id: "conduit-browser-telemetry",
+          event_name: "checkout_result",
           mode: "checkout",
+          network: "browser",
           page_path: "/checkout",
           page_url: "https://shop.conduit.market/checkout",
+          product_type: "physical",
+          rail: "nwc",
           status: "failed",
+          surface: "checkout",
           token: "phc_public_project_token",
         },
       })
@@ -579,12 +599,19 @@ describe("browser telemetry", () => {
         $current_url: "https://shop.conduit.market/checkout",
         $pathname: "/checkout",
         $process_person_profile: false,
+        amount_bucket: "10k_100k_sats",
         app: "market",
+        count_bucket: "2_3",
         distinct_id: "conduit-browser-telemetry",
+        event_name: "checkout_result",
         mode: "checkout",
+        network: "browser",
         page_path: "/checkout",
         page_url: "https://shop.conduit.market/checkout",
+        product_type: "physical",
+        rail: "nwc",
         status: "failed",
+        surface: "checkout",
         token: "phc_public_project_token",
       },
     })
@@ -839,7 +866,7 @@ describe("browser telemetry", () => {
     })
   })
 
-  it("drops telemetry properties that are sensitive, high-cardinality, or free text", () => {
+  it("drops events with invalid or event-incompatible properties", () => {
     expect(
       sanitizeTelemetryEventProperties({
         app: "market",
@@ -848,12 +875,9 @@ describe("browser telemetry", () => {
           action: "ADD",
           count_bucket: "2_3",
           product_type: "digital",
-          pubkey:
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           status: "success",
           surface: "cart",
-          title: "Handmade product title",
-        } as Record<string, string>,
+        },
       })
     ).toEqual({
       action: "add",
@@ -868,6 +892,37 @@ describe("browser telemetry", () => {
     expect(
       sanitizeTelemetryEventProperties({
         app: "market",
+        eventName: "cart_add",
+        properties: {
+          action: "add",
+          count_bucket: "1",
+          product_type: "physical",
+          rail: "nwc",
+          status: "success",
+          surface: "cart",
+        },
+      })
+    ).toBeNull()
+
+    expect(
+      sanitizeTelemetryEventProperties({
+        app: "market",
+        eventName: "cart_add",
+        properties: {
+          action: "add",
+          count_bucket: "1",
+          product_type: "physical",
+          pubkey:
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          status: "success",
+          surface: "cart",
+        } as Record<string, string>,
+      })
+    ).toBeNull()
+
+    expect(
+      sanitizeTelemetryEventProperties({
+        app: "market",
         eventName: "checkout_initiated",
         properties: {
           action: "5551234567",
@@ -877,10 +932,7 @@ describe("browser telemetry", () => {
           status: "npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
         },
       })
-    ).toEqual({
-      app: "market",
-      event_name: "checkout_initiated",
-    })
+    ).toBeNull()
   })
 })
 
