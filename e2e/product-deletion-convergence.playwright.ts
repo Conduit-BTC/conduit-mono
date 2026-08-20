@@ -9,6 +9,7 @@ const MERCHANT_PUBKEY = getPublicKey(MERCHANT_SECRET)
 const PRODUCT_EVENT_ID = "9".repeat(64)
 const PRODUCT_D_TAG = "durable-delete-browser"
 const PRODUCT_ADDRESS = `30402:${MERCHANT_PUBKEY}:${PRODUCT_D_TAG}`
+const relayLifecycleHarnessUrl = "/src/test-fixtures/relay-lifecycle-harness.ts"
 
 type UnsignedBrowserEvent = {
   kind: number
@@ -65,6 +66,11 @@ type ObservedRelayPublish = {
   event: Record<string, unknown>
 }
 
+type RelayResponseGate = {
+  errors: unknown[]
+  wait: (relayUrl: string, event: Record<string, unknown>) => Promise<void>
+}
+
 function normalizeRelayUrl(relayUrl: string): string {
   return relayUrl.endsWith("/") ? relayUrl.slice(0, -1) : relayUrl
 }
@@ -72,7 +78,8 @@ function normalizeRelayUrl(relayUrl: string): string {
 async function installRelayMock(
   page: Page,
   publishes: ObservedRelayPublish[],
-  accept: (relayUrl: string, event: Record<string, unknown>) => boolean
+  accept: (relayUrl: string, event: Record<string, unknown>) => boolean,
+  responseGate?: RelayResponseGate
 ): Promise<void> {
   await page.routeWebSocket(/^wss:\/\//, (socket) => {
     const relayUrl = normalizeRelayUrl(socket.url())
@@ -101,14 +108,23 @@ async function installRelayMock(
       const event = structuredClone(frame[1] as Record<string, unknown>)
       publishes.push({ relayUrl, event })
       const accepted = accept(relayUrl, event)
-      socket.send(
-        JSON.stringify([
-          "OK",
-          event.id,
-          accepted,
-          accepted ? "" : "blocked: simulated partial delivery",
-        ])
-      )
+      const sendResponse = () =>
+        socket.send(
+          JSON.stringify([
+            "OK",
+            event.id,
+            accepted,
+            accepted ? "" : "blocked: simulated partial delivery",
+          ])
+        )
+      const responseReady = responseGate?.wait(relayUrl, event)
+      if (!responseReady) {
+        sendResponse()
+        return
+      }
+      void responseReady
+        .then(sendResponse)
+        .catch((error) => responseGate.errors.push(error))
     })
   })
 }
@@ -143,7 +159,7 @@ async function seedCachedProduct(page: Page): Promise<void> {
             eventId,
             eventCreatedAt: 100,
             dTag,
-            sourceRelayUrls: ["wss://source-browser.example"],
+            sourceRelayUrls: ["wss://source-browser.conduit.market"],
             createdAt: timestamp,
             updatedAt: timestamp,
             cachedAt: timestamp,
@@ -489,7 +505,7 @@ async function readDatabaseMigrationState(page: Page): Promise<{
   )
 }
 
-test("Merchant upgrades v8 cache data to the durable v11 cache stores", async ({
+test("Merchant upgrades v8 cache data to the durable v12 cache stores", async ({
   page,
 }) => {
   await page.route(
@@ -513,14 +529,22 @@ test("Merchant upgrades v8 cache data to the durable v11 cache stores", async ({
           nativeVersion: state.nativeVersion,
           hasOutbox: state.stores.includes("productDeletionOutbox"),
           hasShopperTrust: state.stores.includes("shopperTrustSnapshots"),
+          hasInboxDeclarationEvidence: state.stores.includes(
+            "inboxDeclarationEvidence"
+          ),
+          hasOwnContactListSnapshots: state.stores.includes(
+            "ownContactListSnapshots"
+          ),
         }
       },
       { timeout: 20_000 }
     )
     .toEqual({
-      nativeVersion: 110,
+      nativeVersion: 120,
       hasOutbox: true,
       hasShopperTrust: true,
+      hasInboxDeclarationEvidence: true,
+      hasOwnContactListSnapshots: true,
     })
 
   const migrated = await readDatabaseMigrationState(page)
@@ -588,7 +612,7 @@ test("Merchant persists one exact deletion and restores it after reload", async 
         roles: expect.arrayContaining(["conduit"]),
       }),
       expect.objectContaining({
-        relayUrl: "wss://source-browser.example",
+        relayUrl: "wss://source-browser.conduit.market",
         roles: expect.arrayContaining(["source"]),
       }),
       expect.objectContaining({
@@ -682,10 +706,22 @@ test("Merchant resumes a partial deletion after browser restart without signing 
     await firstContext.close()
 
     const retryPublishes: ObservedRelayPublish[] = []
+    const retryResponseErrors: unknown[] = []
+    let releaseRetryAcknowledgement = () => {}
+    const retryAcknowledgementGate = new Promise<void>((resolve) => {
+      releaseRetryAcknowledgement = resolve
+    })
     const restartedContext = await browser.newContext({ storageState })
     const restartedPage = await restartedContext.newPage()
     try {
-      await installRelayMock(restartedPage, retryPublishes, () => true)
+      await installRelayMock(restartedPage, retryPublishes, () => true, {
+        errors: retryResponseErrors,
+        wait: async (relayUrl) => {
+          if (relayUrl === "wss://write-browser.example") {
+            await retryAcknowledgementGate
+          }
+        },
+      })
       await installValidTestSigner(restartedPage, () => {
         signerCalls += 1
         throw new Error("A durable retry must not request another signature")
@@ -697,6 +733,18 @@ test("Merchant resumes a partial deletion after browser restart without signing 
           exact: true,
         })
       ).toBeVisible()
+
+      await expect.poll(() => retryPublishes.length).toBe(1)
+      // Hold the relay ACK until the ambient session client is reset. The
+      // durable retry must own a separate transport or this exact publish is
+      // disconnected and incorrectly backed off as a timeout.
+      await restartedPage.evaluate(async (harnessUrl) => {
+        const harness = (await import(harnessUrl)) as {
+          resetSharedRelayClient: () => void
+        }
+        harness.resetSharedRelayClient()
+      }, relayLifecycleHarnessUrl)
+      releaseRetryAcknowledgement()
 
       await expect
         .poll(
@@ -718,12 +766,14 @@ test("Merchant resumes a partial deletion after browser restart without signing 
         "wss://write-browser.example",
       ])
       expect(retryPublishes[0]?.event).toEqual(exactSignedEvent)
+      expect(retryResponseErrors).toEqual([])
       for (const relayUrl of ackedBeforeRestart) {
         expect(retryPublishes.some((item) => item.relayUrl === relayUrl)).toBe(
           false
         )
       }
     } finally {
+      releaseRetryAcknowledgement()
       await restartedContext.close()
     }
   } finally {

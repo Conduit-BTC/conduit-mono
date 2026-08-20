@@ -26,9 +26,9 @@ const ATTESTATION_PUBLIC_KEY = getPublicKey(
 const ATTESTATION_KEY_ID = "preview-2026"
 const PRODUCT_ADDRESS = `30402:${MERCHANT_PUBKEY}:canary-product`
 const LNURL = encodeLnurl(
-  "https://wallet.example/.well-known/lnurlp/canary-merchant"
+  "https://wallet.conduit.market/.well-known/lnurlp/canary-merchant"
 )
-const RELAYS = ["wss://relay.example", "wss://receipts.example"]
+const RELAYS = ["wss://relay.conduit.market", "wss://receipts.conduit.market"]
 const NOW_SECONDS = 1_800_000_000
 
 type JsonRecord = Record<string, unknown>
@@ -145,7 +145,7 @@ function createFixture(overrides: FixtureOverrides = {}) {
   }
 
   const config: AnonZapCanaryConfig = {
-    baseUrl: new URL("https://preview.example"),
+    baseUrl: new URL("https://preview.conduit.market"),
     merchantPubkey: MERCHANT_PUBKEY,
     productAddress: PRODUCT_ADDRESS,
     signerPubkey: SIGNER_PUBKEY,
@@ -179,7 +179,9 @@ describe("anonymous zap deployment canary", () => {
       "/api/anon-zap-sign",
     ])
     expect(
-      fixture.calls.every((call) => call.origin === "https://preview.example")
+      fixture.calls.every(
+        (call) => call.origin === "https://preview.conduit.market"
+      )
     ).toBe(true)
     expect(fixture.calls.every((call) => call.method === "POST")).toBe(true)
     expect(fixture.calls.every((call) => call.redirect === "error")).toBe(true)
@@ -193,7 +195,7 @@ describe("anonymous zap deployment canary", () => {
   it("blocks redirects, unexpected paths, and unexpected methods", async () => {
     let networkCalls = 0
     const guardedFetch = createAnonZapCanaryFetch(
-      new URL("https://preview.example"),
+      new URL("https://preview.conduit.market"),
       async () => {
         networkCalls += 1
         return new Response(null, { status: 204 })
@@ -201,12 +203,12 @@ describe("anonymous zap deployment canary", () => {
     )
 
     await expect(
-      guardedFetch("https://preview.example/api/anon-zap-sign", {
+      guardedFetch("https://preview.conduit.market/api/anon-zap-sign", {
         method: "GET",
       })
     ).rejects.toThrow("unexpected network call")
     await expect(
-      guardedFetch("https://preview.example/lnurl/callback", {
+      guardedFetch("https://preview.conduit.market/lnurl/callback", {
         method: "POST",
       })
     ).rejects.toThrow("unexpected network call")
@@ -227,7 +229,7 @@ describe("anonymous zap deployment canary", () => {
       (authorization) =>
         replaceTag(authorization, "amount", ["amount", "22000"]),
       (authorization) => {
-        authorization.relayUrls = ["wss://different.example"]
+        authorization.relayUrls = ["wss://different.conduit.market"]
       },
       (authorization) => {
         const draft = authorization.draft as { tags: string[][] }

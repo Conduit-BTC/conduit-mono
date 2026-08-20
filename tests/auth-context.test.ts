@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, mock } from "bun:test"
+import { readFileSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
 import { finalizeEvent, getPublicKey, verifyEvent } from "nostr-tools/pure"
@@ -15,6 +16,8 @@ import {
   RemoteSignerError,
   type RemoteSignerConnection,
 } from "../packages/core/src/protocol/remote-signer"
+import { createProtectedReadSessionLifecycle } from "../packages/core/src/protocol/protected-read-session-lifecycle"
+import type { NostrEventSigner } from "../packages/core/src/protocol/nostr-event-signer"
 
 const originalWindowDescriptor = Object.getOwnPropertyDescriptor(
   globalThis,
@@ -373,16 +376,106 @@ describe("NIP-07 availability", () => {
   })
 })
 
+describe("restore attempt isolation", () => {
+  const source = readFileSync(
+    new URL("../packages/core/src/context/AuthContext.tsx", import.meta.url),
+    "utf8"
+  )
+
+  it("never clears the global signer when a restore attempt fails", () => {
+    expect(source).toContain(
+      'void connect({ mode: "restore" }).catch(() => undefined)'
+    )
+    const bareRemoveSignerCalls = source.match(/\n\s*removeSigner\(\)/g) ?? []
+    expect(bareRemoveSignerCalls).toHaveLength(0)
+  })
+
+  it("returns silently when a queued restore finds an already connected session", () => {
+    expect(source).toContain('if (mode === "restore") return')
+  })
+
+  it("releases the connecting flag inside the epoch-owned finally block", () => {
+    const fenceIndex = source.indexOf("if (attemptOwnsEpoch()) {")
+    expect(fenceIndex).toBeGreaterThan(-1)
+    const fencedBlock = source.slice(
+      fenceIndex,
+      source.indexOf("}", fenceIndex)
+    )
+    expect(fencedBlock).toContain("connecting.current = false")
+  })
+})
+
 describe("NIP-46 AuthContext API", () => {
+  it("replaces and clears the exact protected-read session lease idempotently", () => {
+    const installed: string[] = []
+    const removed: string[] = []
+    let sequence = 0
+    const lifecycle = createProtectedReadSessionLifecycle({
+      install: (_signer, expectedPubkey) => {
+        sequence += 1
+        const lease = {
+          sessionScope: `scope-${sequence}`,
+          expectedPubkey,
+        }
+        installed.push(`${lease.sessionScope}:${expectedPubkey}`)
+        return lease
+      },
+      remove: (lease) => {
+        removed.push(`${lease.sessionScope}:${lease.expectedPubkey}`)
+      },
+    })
+    const signer = {
+      authMethod: "nip07",
+      getPublicKey: async () => ACCOUNT_A_PUBKEY,
+      signEvent: async () => {
+        throw new Error("not used")
+      },
+    } satisfies NostrEventSigner
+
+    const first = lifecycle.activate(signer, ACCOUNT_A_PUBKEY, () => true)
+    const second = lifecycle.activate(signer, ACCOUNT_B_PUBKEY, () => true)
+    expect(lifecycle.currentLease()).toBe(second)
+    expect(installed).toEqual([
+      `scope-1:${ACCOUNT_A_PUBKEY}`,
+      `scope-2:${ACCOUNT_B_PUBKEY}`,
+    ])
+    expect(removed).toEqual([`${first.sessionScope}:${ACCOUNT_A_PUBKEY}`])
+
+    lifecycle.deactivate()
+    lifecycle.deactivate()
+    expect(lifecycle.currentLease()).toBeNull()
+    expect(removed).toEqual([
+      `${first.sessionScope}:${ACCOUNT_A_PUBKEY}`,
+      `${second.sessionScope}:${ACCOUNT_B_PUBKEY}`,
+    ])
+  })
+
+  it("routes AuthProvider connect, disconnect, storage switch, and unmount through the lease lifecycle", async () => {
+    const source = await readFile(
+      "packages/core/src/context/AuthContext.tsx",
+      "utf8"
+    )
+
+    expect(source).toContain("createProtectedReadSessionLifecycle()")
+    expect(source).toContain("protectedReadSessionLifecycle.current.activate(")
+    expect(source).toContain(
+      "protectedReadSessionLifecycle.current.deactivate()"
+    )
+    expect(source).not.toContain("installProtectedReadSigner(")
+    expect(source).not.toContain("removeProtectedReadSigner(")
+  })
+
   it("exposes the client-initiated flow discriminator and ephemeral URI", () => {
     const options = {
       method: "nip46",
       nip46Flow: "nostrconnect",
     } satisfies AuthConnectOptions
     const uri: AuthContextValue["nostrConnectUri"] = null
+    const authGeneration: AuthContextValue["authGeneration"] = 0
 
     expect(options.nip46Flow).toBe("nostrconnect")
     expect(uri).toBeNull()
+    expect(authGeneration).toBe(0)
   })
 
   it("preflights the client before persistence and installs before ownership commit", async () => {

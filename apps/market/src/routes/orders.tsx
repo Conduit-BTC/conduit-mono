@@ -3,16 +3,21 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   appendConduitClientTag,
+  clearProtectedReadAuthenticationSuppression,
   db,
+  deriveProtectedReadPresentationState,
   EVENT_KINDS,
   formatNpub,
   formatPubkey,
   getNdk,
+  getProductImageCandidates,
   getOrderPublicZapSigner,
   listOrderLifecycles,
   normalizeLightningInvoice,
   pruneExpiredGuestOrderData,
+  prepareProtectedReadRefreshState,
   pubkeyToNpub,
+  selectProtectedReadRows,
   useAuth,
   useProfile,
   useProfiles,
@@ -32,6 +37,7 @@ import {
   DecryptFailureNotice,
   LiveReadNotice,
   OrderMessagesWidget,
+  RefreshChip,
   Sheet,
   SheetContent,
   SheetHeader,
@@ -41,7 +47,6 @@ import {
   StatusStepper,
 } from "@conduit/ui"
 import {
-  CheckCircle2,
   ChevronRight,
   Copy,
   ExternalLink,
@@ -53,11 +58,9 @@ import {
   ShoppingBag,
 } from "lucide-react"
 import { QRCodeSVG } from "qrcode.react"
+import { ConversationProfilePicture } from "../components/ConversationProfilePicture"
 import { CopyButton } from "../components/CopyButton"
-import {
-  MerchantAvatarFallback,
-  getMerchantDisplayName,
-} from "../components/MerchantIdentity"
+import { getMerchantDisplayName } from "../components/MerchantIdentity"
 import {
   fetchBuyerConversations,
   fetchCachedBuyerConversations,
@@ -212,15 +215,10 @@ function MerchantAvatar({
 }) {
   return (
     <div className="h-11 w-11 shrink-0 overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]">
-      {picture ? (
-        <img
-          src={picture}
-          alt={name || formatNpub(pubkey, 8)}
-          className="h-full w-full object-cover"
-        />
-      ) : (
-        <MerchantAvatarFallback />
-      )}
+      <ConversationProfilePicture
+        src={picture}
+        alt={name || formatNpub(pubkey, 8)}
+      />
     </div>
   )
 }
@@ -470,7 +468,9 @@ function OrderItemsSection({
       <div className="mt-3 space-y-3">
         {vm.items.map((item, index) => {
           const product = productsById.get(item.productId)
-          const image = product?.images[0]
+          const image = product
+            ? getProductImageCandidates(product)[0]
+            : undefined
           const price = formatPrice({
             price: item.priceAtPurchase,
             currency: item.currency,
@@ -490,6 +490,7 @@ function OrderItemsSection({
                       src={image.url}
                       alt={image.alt ?? product?.title ?? item.displayTitle}
                       loading="lazy"
+                      referrerPolicy="no-referrer"
                       className="h-full w-full object-cover"
                     />
                   ) : null}
@@ -1205,7 +1206,10 @@ function OrderDetail({
           resolveItem={(id) => {
             const product = productsById.get(id)
             return product
-              ? { title: product.title, imageUrl: product.images[0]?.url }
+              ? {
+                  title: product.title,
+                  imageUrl: getProductImageCandidates(product)[0]?.url,
+                }
               : undefined
           }}
           formatAmount={(amount, currency, sourcePrice) =>
@@ -1277,13 +1281,6 @@ function OrdersPage() {
     }, delayMs)
     return () => window.clearTimeout(timer)
   }, [guestIdentity])
-  const [refreshButtonState, setRefreshButtonState] = useState<
-    "idle" | "refreshing" | "done"
-  >("idle")
-  const refreshResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null
-  )
-
   const lifecyclesQuery = useQuery({
     queryKey: [
       "order-lifecycles",
@@ -1315,49 +1312,40 @@ function OrdersPage() {
     staleTime: 5_000,
   })
 
-  const isFetching = messagesQuery.isFetching || lifecyclesQuery.isFetching
   const refetchAll = useCallback(() => {
-    if (signerConnected) void messagesQuery.refetch()
+    if (signerConnected && activeBuyerPubkey) {
+      clearProtectedReadAuthenticationSuppression(activeBuyerPubkey)
+      void messagesQuery.refetch()
+    }
     void lifecyclesQuery.refetch()
-  }, [lifecyclesQuery, messagesQuery, signerConnected])
-
-  useEffect(() => {
-    if (isFetching) {
-      if (refreshResetTimerRef.current) {
-        clearTimeout(refreshResetTimerRef.current)
-        refreshResetTimerRef.current = null
-      }
-      setRefreshButtonState("refreshing")
-      return
-    }
-    if (refreshButtonState === "refreshing") {
-      setRefreshButtonState("done")
-      refreshResetTimerRef.current = setTimeout(() => {
-        setRefreshButtonState("idle")
-        refreshResetTimerRef.current = null
-      }, 900)
-    }
-  }, [isFetching, refreshButtonState])
-
-  useEffect(
-    () => () => {
-      if (refreshResetTimerRef.current)
-        clearTimeout(refreshResetTimerRef.current)
-    },
-    []
-  )
-
-  const handleRefresh = useCallback(() => {
-    if (!activeBuyerPubkey) return
-    setRefreshButtonState("refreshing")
-    refetchAll()
-  }, [activeBuyerPubkey, refetchAll])
+  }, [activeBuyerPubkey, lifecyclesQuery, messagesQuery, signerConnected])
 
   const conversations = useMemo(
-    () => messagesQuery.data?.data ?? cachedMessagesQuery.data?.data ?? [],
+    () =>
+      selectProtectedReadRows(
+        messagesQuery.data?.data,
+        cachedMessagesQuery.data?.data
+      ),
     [cachedMessagesQuery.data, messagesQuery.data]
   )
   const messagesMeta = messagesQuery.data?.meta
+  const protectedOrdersReadState = deriveProtectedReadPresentationState({
+    visibleCount: conversations.length,
+    pending: signerConnected && messagesQuery.isPending,
+    error: messagesQuery.error,
+    meta: messagesMeta,
+  })
+  const ordersRefreshState = prepareProtectedReadRefreshState({
+    protectedReadState: protectedOrdersReadState,
+    protectedReadRefreshing: messagesQuery.isFetching,
+    protectedReadPaused: messagesQuery.isPaused,
+    additionalSources: [
+      {
+        refreshing: lifecyclesQuery.isFetching,
+        stale: lifecyclesQuery.isError || lifecyclesQuery.isPaused,
+      },
+    ],
+  })
   const lifecycles = useMemo(
     () => lifecyclesQuery.data ?? [],
     [lifecyclesQuery.data]
@@ -1537,27 +1525,13 @@ function OrdersPage() {
               : "Finish this guest payment and review locally saved checkout status. Merchant follow-up uses your submitted phone and email contact details."}
           </p>
         </div>
-        <Button
-          variant="outline"
-          className="h-11 px-4 text-sm"
-          disabled={!activeBuyerPubkey || isFetching}
-          onClick={handleRefresh}
-        >
-          <span className="inline-flex items-center gap-2">
-            {refreshButtonState === "done" ? (
-              <CheckCircle2 className="h-4 w-4 text-emerald-400" />
-            ) : (
-              <RotateCw
-                className={`h-4 w-4 ${refreshButtonState === "refreshing" ? "animate-spin text-amber-300" : ""}`}
-              />
-            )}
-            {refreshButtonState === "refreshing"
-              ? "Refreshing…"
-              : refreshButtonState === "done"
-                ? "Updated"
-                : "Refresh"}
-          </span>
-        </Button>
+        <RefreshChip
+          refreshing={ordersRefreshState.refreshing}
+          stale={ordersRefreshState.stale}
+          onRefresh={refetchAll}
+          doneDurationMs={900}
+          disabled={!activeBuyerPubkey}
+        />
       </div>
 
       {!activeBuyerPubkey && (
@@ -1575,33 +1549,28 @@ function OrdersPage() {
         />
       )}
 
-      {signerConnected && (messagesQuery.error || messagesMeta?.degraded) && (
-        <LiveReadNotice
-          state={
-            messagesQuery.error
-              ? conversations.length > 0
-                ? "cached"
-                : "unavailable"
-              : "partial"
-          }
-          onRetry={() => void messagesQuery.refetch()}
-          retrying={messagesQuery.isRefetching}
-        />
-      )}
+      {signerConnected &&
+        protectedOrdersReadState !== "complete" &&
+        protectedOrdersReadState !== "pending" && (
+          <LiveReadNotice
+            state={protectedOrdersReadState}
+            onRetry={refetchAll}
+            retrying={messagesQuery.isRefetching}
+          />
+        )}
 
       {signerConnected && (
         <DecryptFailureNotice
           count={messagesMeta?.decryptFailures?.length ?? 0}
-          onRetry={() => void messagesQuery.refetch()}
+          onRetry={refetchAll}
           retrying={messagesQuery.isRefetching}
         />
       )}
 
       {activeBuyerPubkey &&
-        !lifecyclesQuery.isLoading &&
+        !lifecyclesQuery.isPending &&
         !hasOrders &&
-        !messagesQuery.error &&
-        !messagesMeta?.degraded && (
+        protectedOrdersReadState === "complete" && (
           <EmptyState
             title={signerConnected ? "No orders yet" : "Guest order not found"}
             body={

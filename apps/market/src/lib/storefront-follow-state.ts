@@ -62,6 +62,27 @@ export function createStorefrontFollowState(
   }
 }
 
+export function deriveStorefrontFollowControl(input: {
+  override: boolean | null
+  observedFollowing: boolean
+  pendingFollowing: boolean | null
+}): {
+  isFollowing: boolean
+  shouldFollowOnClick: boolean
+  isPendingRetry: boolean
+} {
+  const pendingFollowing =
+    input.override === null ? input.pendingFollowing : null
+  const isFollowing =
+    input.override ?? pendingFollowing ?? input.observedFollowing
+
+  return {
+    isFollowing,
+    shouldFollowOnClick: pendingFollowing ?? !isFollowing,
+    isPendingRetry: pendingFollowing !== null,
+  }
+}
+
 function isCurrentOperation(
   state: StorefrontFollowState,
   action: {

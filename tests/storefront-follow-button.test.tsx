@@ -10,6 +10,7 @@ describe("storefront follow button", () => {
         isFollowing={false}
         merchantName="Bitcoin Bazar"
         onClick={() => undefined}
+        retryAction={null}
         saveState="idle"
         writesAvailable
       />
@@ -28,6 +29,7 @@ describe("storefront follow button", () => {
         isFollowing={false}
         merchantName="Bitcoin Bazar"
         onClick={() => undefined}
+        retryAction={null}
         saveState="saving_follow"
         writesAvailable
       />
@@ -50,6 +52,7 @@ describe("storefront follow button", () => {
         isFollowing
         merchantName="Bitcoin Bazar"
         onClick={() => undefined}
+        retryAction={null}
         saveState="idle"
         writesAvailable
       />
@@ -58,8 +61,48 @@ describe("storefront follow button", () => {
     expect(markup).toContain("lucide-check")
     expect(markup).toContain(">Following<")
     expect(markup).toContain(">Unfollow<")
-    expect(markup).toContain('aria-label="Unfollow Bitcoin Bazar"')
+    expect(markup).toContain("Following · Unfollow")
+    expect(markup).toContain("group-focus-visible:opacity-0")
+    expect(markup).toContain("group-focus-visible:opacity-100")
+    expect(markup).toContain("[@media(hover:none)]:inline")
+    expect(markup).toContain('aria-label="Following Bitcoin Bazar; Unfollow"')
     expect(markup).not.toContain('disabled=""')
+  })
+
+  it("keeps an ambiguous follow available as an exact retry", () => {
+    const markup = renderToStaticMarkup(
+      <StorefrontFollowButton
+        isFollowing
+        merchantName="Bitcoin Bazar"
+        onClick={() => undefined}
+        retryAction="follow"
+        saveState="idle"
+        writesAvailable
+      />
+    )
+
+    expect(markup).toContain("lucide-rotate-ccw")
+    expect(markup).toContain("Retry follow")
+    expect(markup).toContain('aria-label="Retry follow Bitcoin Bazar"')
+    expect(markup).not.toContain(">Unfollow<")
+  })
+
+  it("keeps an ambiguous unfollow available as an exact retry", () => {
+    const markup = renderToStaticMarkup(
+      <StorefrontFollowButton
+        isFollowing={false}
+        merchantName="Bitcoin Bazar"
+        onClick={() => undefined}
+        retryAction="unfollow"
+        saveState="idle"
+        writesAvailable
+      />
+    )
+
+    expect(markup).toContain("lucide-rotate-ccw")
+    expect(markup).toContain("Retry unfollow")
+    expect(markup).toContain('aria-label="Retry unfollow Bitcoin Bazar"')
+    expect(markup).not.toContain(">Follow<")
   })
 
   it("keeps unfollow writes visibly pending and guarded", () => {
@@ -68,6 +111,7 @@ describe("storefront follow button", () => {
         isFollowing={false}
         merchantName="Bitcoin Bazar"
         onClick={() => undefined}
+        retryAction={null}
         saveState="saving_unfollow"
         writesAvailable
       />
@@ -89,6 +133,7 @@ describe("storefront follow button", () => {
         isFollowing
         merchantName="Bitcoin Bazar"
         onClick={() => undefined}
+        retryAction={null}
         saveState="idle"
         unavailableDescriptionId="storefront-follow-maintenance"
         writesAvailable={false}
@@ -97,6 +142,8 @@ describe("storefront follow button", () => {
 
     expect(markup).toContain("lucide-check")
     expect(markup).toContain(">Following<")
+    expect(markup).not.toContain(">Unfollow<")
+    expect(markup).toContain('aria-label="Following Bitcoin Bazar"')
     expect(markup).toContain('disabled=""')
     expect(markup).toContain('aria-describedby="storefront-follow-maintenance"')
   })

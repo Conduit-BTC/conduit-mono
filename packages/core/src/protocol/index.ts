@@ -31,6 +31,7 @@ export * from "./relay-settings"
 export * from "./relay-list"
 export * from "./relay-health"
 export * from "./relay-planner"
+export * from "./relay-reader"
 export * from "./relay-publish"
 export * from "./product-deletion"
 export * from "./product-deletion-delivery"
@@ -41,11 +42,22 @@ export * from "./social-hydrator"
 export * from "./shopper-trust"
 export * from "./session"
 export * from "./session-signer"
+export * from "./nostr-event-signer"
+export type {
+  ProtectedReadAuthorization,
+  ProtectedReadAuthenticationSuppression,
+  ProtectedReadAuthPolicy,
+  ProtectedReadOperation,
+} from "./protected-read-authorization"
+export { clearProtectedReadAuthenticationSuppression } from "./protected-read-authorization"
+export * from "./protected-read-session-lifecycle"
+export * from "./relay-executor"
+export * from "./protected-inbox-read"
+export * from "./protected-read-state"
 export * from "./shipping"
+export * from "./signed-event"
 export {
   getNdk,
-  connectNdk,
-  requireNdkConnected,
   fetchEventsFanout,
   fetchEventsFanoutDetailed,
   fetchEventsFanoutProgressive,
@@ -56,10 +68,6 @@ export {
   removeSigner,
   __resetNdkTestState,
   __setNdkVerifyTimeoutMsForTests,
-  subscribeNdkState,
-  getNdkState,
-  type NdkConnectionState,
-  type NdkState,
   type SignerLease,
   type FetchEventsFanoutResult,
   type FetchEventsRelayStatus,

@@ -6,6 +6,8 @@ import {
   canonicalizeProductTags,
   canonicalizeShippingCost,
   EVENT_KINDS,
+  getProductImageCandidates,
+  MAX_PRODUCT_IMAGE_CANDIDATES,
   parseProductEvent,
   type ProductSchema,
 } from "@conduit/core"
@@ -52,6 +54,85 @@ function expectTag(tags: string[][], expected: string[]): void {
 }
 
 describe("product listing event drafts", () => {
+  it("retains signed image evidence while capping public request candidates", () => {
+    const publicImageUrls = Array.from(
+      { length: MAX_PRODUCT_IMAGE_CANDIDATES + 5 },
+      (_, index) => `https://cdn.conduit.market/products/${index}.png`
+    )
+    const privateImageUrl = "http://127.0.0.1/private.png"
+    const parsed = parseProductEvent({
+      id: "many-images",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: "Product description",
+      tags: [
+        ["d", "many-images"],
+        ["title", "Many images"],
+        ["price", "10", "USD"],
+        ...publicImageUrls.map((url) => ["image", url]),
+        ["image", privateImageUrl],
+        ["image", publicImageUrls[0]!],
+      ],
+    })
+
+    expect(parsed.images.map((image) => image.url)).toEqual([
+      ...publicImageUrls,
+      privateImageUrl,
+      publicImageUrls[0]!,
+    ])
+    expect(getProductImageCandidates(parsed)).toHaveLength(
+      MAX_PRODUCT_IMAGE_CANDIDATES
+    )
+    expect(
+      buildProductListingEventDraft({ product: parsed, dTag: "many-images" })
+        .tags.filter((tag) => tag[0] === "image")
+        .map((tag) => tag[1])
+    ).toEqual([...publicImageUrls, privateImageUrl, publicImageUrls[0]!])
+  })
+
+  it("retains non-public signed images but excludes them from request projection", () => {
+    const legacy = parseProductEvent({
+      id: "legacy-image-safety",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: JSON.stringify(
+        baseProduct({
+          images: [
+            { url: "http://2130706433/camera.jpg" },
+            { url: "https://cdn.conduit.market/product.png", alt: "Product" },
+          ],
+        })
+      ),
+      tags: [["d", "legacy-image-safety"]],
+    })
+    const tagged = parseProductEvent({
+      id: "tag-image-safety",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: "Product description",
+      tags: [
+        ["d", "tag-image-safety"],
+        ["title", "Tagged product"],
+        ["price", "10", "USD"],
+        ["image", "https://169.254.169.254/latest/meta-data"],
+        ["image", "https://images.example.com/product.png"],
+      ],
+    })
+
+    expect(legacy.images).toEqual([
+      { url: "http://2130706433/camera.jpg" },
+      { url: "https://cdn.conduit.market/product.png", alt: "Product" },
+    ])
+    expect(tagged.images).toEqual([
+      { url: "https://169.254.169.254/latest/meta-data" },
+      { url: "https://images.example.com/product.png" },
+    ])
+    expect(getProductImageCandidates(legacy)).toEqual([
+      { url: "https://cdn.conduit.market/product.png", alt: "Product" },
+    ])
+    expect(getProductImageCandidates(tagged)).toEqual([])
+  })
+
   it("canonicalizes product tags in first-seen order", () => {
     expect(
       canonicalizeProductTags([
@@ -187,7 +268,7 @@ describe("product listing event drafts", () => {
     expect(draft.tags).not.toContainEqual(["shipping_cost", "5"])
   })
 
-  it("emits Gamma stock tag when stock tracking is set", () => {
+  it("emits Open Markets stock tag when stock tracking is set", () => {
     const trackedDraft = buildProductListingEventDraft({
       product: baseProduct({ stock: 12 }),
       dTag: "tracked-stock-product",
@@ -266,7 +347,7 @@ describe("product listing event drafts", () => {
     expect(medium.stock).toBe(7)
   })
 
-  it("emits and parses Gamma variation parent and specification tags", () => {
+  it("emits and parses Open Markets variation parent and specification tags", () => {
     const merchantPubkey = "b".repeat(64)
     const parentProductId = `30402:${merchantPubkey}:conduit-tee`
     const draft = buildProductListingEventDraft({
@@ -397,7 +478,7 @@ describe("product listing event drafts", () => {
     ).toBe(false)
   })
 
-  it("emits Gamma shipping option extra cost when it matches the product currency", () => {
+  it("emits Open Markets shipping option extra cost when it matches the product currency", () => {
     const draft = buildProductListingEventDraft({
       product: baseProduct({
         price: 25_000,
@@ -750,7 +831,7 @@ describe("product listing event parsing", () => {
     expect(parsed.publicZapPolicyKnown).toBe(true)
   })
 
-  it("parses Gamma shipping option extra cost from product listings", () => {
+  it("parses Open Markets shipping option extra cost from product listings", () => {
     const parsed = parseProductEvent({
       id: "spec-event-with-shipping-extra-cost",
       pubkey: "merchant",
@@ -775,7 +856,7 @@ describe("product listing event parsing", () => {
     })
   })
 
-  it("keeps Gamma fiat shipping option extra cost in the product currency", () => {
+  it("keeps Open Markets fiat shipping option extra cost in the product currency", () => {
     const parsed = parseProductEvent({
       id: "spec-event-with-fiat-shipping-extra-cost",
       pubkey: "merchant",
@@ -819,7 +900,7 @@ describe("product listing event parsing", () => {
     expect(parsed.shippingCostSats).toBe(250)
   })
 
-  it("parses Gamma stock tags and keeps zero distinct from missing stock", () => {
+  it("parses Open Markets stock tags and keeps zero distinct from missing stock", () => {
     const zero = parseProductEvent({
       id: "zero-stock-event",
       pubkey: "merchant",

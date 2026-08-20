@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   assertSafeNip65RelayList,
@@ -27,6 +27,24 @@ import { getRelayList } from "../protocol/relay-list"
 import { EVENT_KINDS } from "../protocol/kinds"
 import { getNdk } from "../protocol/ndk"
 import { publishWithPlanner } from "../protocol/relay-publish"
+import {
+  closeAllProtectedRelayConnections,
+  closeProtectedRelayConnectionsForRelay,
+  getRelayAuthenticationEvidence,
+  subscribeRelayAuthenticationEvidence,
+  type RelayAuthEvidenceState,
+} from "../protocol/relay-executor"
+
+export type RelayAuthDisplayEvidence = RelayAuthEvidenceState | "advertised"
+
+export function resolveRelayAuthDisplayEvidence(
+  runtime: RelayAuthEvidenceState | undefined,
+  advertised: boolean
+): RelayAuthDisplayEvidence {
+  if (runtime && runtime !== "untested") return runtime
+  if (advertised) return "advertised"
+  return runtime ?? "untested"
+}
 
 export interface UseRelaySettingsOptions {
   pubkey?: string | null
@@ -36,6 +54,7 @@ export interface UseRelaySettingsOptions {
 
 export interface UseRelaySettingsResult {
   settings: RelaySettingsState
+  authEvidenceByUrl: Readonly<Record<string, RelayAuthDisplayEvidence>>
   scanningUrls: string[]
   error: string | null
   isLoadingPublishedRelayList: boolean
@@ -70,6 +89,18 @@ function createEmptyRelaySettings(): RelaySettingsState {
   }
 }
 
+export function prepareRelaySettingsContextPresentation(
+  settings: RelaySettingsState,
+  authEvidenceByUrl: Readonly<Record<string, RelayAuthDisplayEvidence>>,
+  contextReady: boolean
+): Pick<UseRelaySettingsResult, "settings" | "authEvidenceByUrl"> {
+  if (contextReady) return { settings, authEvidenceByUrl }
+  return {
+    settings: createEmptyRelaySettings(),
+    authEvidenceByUrl: {},
+  }
+}
+
 function hasNoRelaySettings(settings: RelaySettingsState): boolean {
   return settings.entries.length === 0
 }
@@ -88,6 +119,7 @@ export function useRelaySettings(
     scope?.trim() || null,
   ])
   const currentContextKeyRef = useRef(relaySettingsContextKey)
+  const previousContextKeyRef = useRef(relaySettingsContextKey)
   const [initializedContextKey, setInitializedContextKey] = useState(
     relaySettingsContextKey
   )
@@ -95,6 +127,13 @@ export function useRelaySettings(
     loadRelaySettings(scope)
   )
   const settingsRef = useRef(settings)
+  const previousReadableRelayUrlsRef = useRef(
+    new Set(
+      settings.entries
+        .filter((entry) => entry.readEnabled)
+        .map((entry) => entry.url)
+    )
+  )
   const autoScannedStaleKeyRef = useRef("")
   const [scanningUrls, setScanningUrls] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -109,8 +148,56 @@ export function useRelaySettings(
     useState<number | null>(null)
   const [publishingRelayList, setPublishingRelayList] = useState(false)
   const [publishError, setPublishError] = useState<string | null>(null)
+  const [authEvidenceRevision, setAuthEvidenceRevision] = useState(0)
+  const contextReady = initializedContextKey === relaySettingsContextKey
+
+  useEffect(
+    () =>
+      subscribeRelayAuthenticationEvidence(() =>
+        setAuthEvidenceRevision((current) => current + 1)
+      ),
+    []
+  )
+
+  const authEvidenceByUrl = useMemo<
+    Readonly<Record<string, RelayAuthDisplayEvidence>>
+  >(() => {
+    void authEvidenceRevision
+    if (!contextReady) return {}
+    return Object.fromEntries(
+      settings.entries.map((entry) => {
+        const runtime =
+          enabled && pubkey
+            ? getRelayAuthenticationEvidence(entry.url, pubkey)
+            : undefined
+        const advertised =
+          entry.observations?.auth.status === "advertised" ||
+          entry.capabilities.auth
+        const state = resolveRelayAuthDisplayEvidence(runtime, advertised)
+        return [entry.url, state] as const
+      })
+    )
+  }, [authEvidenceRevision, contextReady, enabled, pubkey, settings.entries])
 
   useEffect(() => {
+    const nextReadable = new Set(
+      settings.entries
+        .filter((entry) => entry.readEnabled)
+        .map((entry) => entry.url)
+    )
+    for (const relayUrl of previousReadableRelayUrlsRef.current) {
+      if (!nextReadable.has(relayUrl)) {
+        closeProtectedRelayConnectionsForRelay(relayUrl)
+      }
+    }
+    previousReadableRelayUrlsRef.current = nextReadable
+  }, [settings.entries])
+
+  useEffect(() => {
+    if (previousContextKeyRef.current !== relaySettingsContextKey) {
+      closeAllProtectedRelayConnections()
+      previousContextKeyRef.current = relaySettingsContextKey
+    }
     currentContextKeyRef.current = relaySettingsContextKey
     setInitializedContextKey(relaySettingsContextKey)
     setScanningUrls([])
@@ -132,7 +219,7 @@ export function useRelaySettings(
   }, [bootstrapRelayList, enabled, pubkey, relaySettingsContextKey, scope])
 
   useEffect(() => {
-    if (!enabled) return
+    if (!enabled || !contextReady) return
     if (typeof window === "undefined") return
 
     const storageKey = getRelaySettingsStorageKey(scope)
@@ -145,10 +232,10 @@ export function useRelaySettings(
 
     window.addEventListener("storage", handleStorage)
     return () => window.removeEventListener("storage", handleStorage)
-  }, [enabled, pubkey, scope])
+  }, [contextReady, enabled, pubkey, scope])
 
   useEffect(() => {
-    if (!enabled) return
+    if (!enabled || !contextReady) return
     return subscribeRelaySettingsChanges((changedScope) => {
       const targetScope = scope?.trim() || null
       if (changedScope !== targetScope) return
@@ -156,7 +243,7 @@ export function useRelaySettings(
       settingsRef.current = next
       setSettings(next)
     })
-  }, [enabled, pubkey, scope])
+  }, [contextReady, enabled, pubkey, scope])
 
   const persist = useCallback(
     (update: (current: RelaySettingsState) => RelaySettingsState): void => {
@@ -226,7 +313,7 @@ export function useRelaySettings(
   )
 
   useEffect(() => {
-    if (!enabled) return
+    if (!enabled || !contextReady) return
 
     const staleUrls = settings.entries
       .filter((entry) => entry.warnings.staleRelayInfo)
@@ -240,10 +327,10 @@ export function useRelaySettings(
     autoScannedStaleKeyRef.current = staleKey
 
     void scanImportedRelayUrls(staleUrls)
-  }, [enabled, scanImportedRelayUrls, settings.entries])
+  }, [contextReady, enabled, scanImportedRelayUrls, settings.entries])
 
   useEffect(() => {
-    if (!enabled || !bootstrapRelayList) return
+    if (!enabled || !bootstrapRelayList || !contextReady) return
     let cancelled = false
 
     async function loadPublishedRelayList(): Promise<void> {
@@ -324,6 +411,7 @@ export function useRelaySettings(
     }
   }, [
     bootstrapRelayList,
+    contextReady,
     enabled,
     persistImportedPreferences,
     pubkey,
@@ -385,11 +473,13 @@ export function useRelaySettings(
 
   function removeRelay(url: string): void {
     setError(null)
+    closeProtectedRelayConnectionsForRelay(url)
     persist((current) => removeRelaySettingsEntry(current, url))
   }
 
   function toggleRelayRead(url: string, enabled: boolean): void {
     setError(null)
+    if (!enabled) closeProtectedRelayConnectionsForRelay(url)
     persist((current) =>
       updateRelaySettingsEntry(current, url, {
         readEnabled: enabled,
@@ -416,6 +506,7 @@ export function useRelaySettings(
   function resetRelaySettings(): void {
     setError(null)
     setPublishError(null)
+    closeAllProtectedRelayConnections()
     const next = saveRelaySettings(createEmptyRelaySettings(), scope)
     settingsRef.current = next
     setSettings(next)
@@ -424,6 +515,7 @@ export function useRelaySettings(
   function restoreDefaultRelaySettings(): void {
     setError(null)
     setPublishError(null)
+    closeAllProtectedRelayConnections()
     const next = saveRelaySettings(createEmptyRelaySettings(), scope)
     settingsRef.current = next
     setSettings(next)
@@ -488,13 +580,40 @@ export function useRelaySettings(
     }
   }
 
-  return {
+  const presentation = prepareRelaySettingsContextPresentation(
     settings,
+    authEvidenceByUrl,
+    contextReady
+  )
+  if (!contextReady) {
+    const noop = () => undefined
+    const noopAsync = async () => undefined
+    return {
+      ...presentation,
+      scanningUrls: [],
+      error: null,
+      isLoadingPublishedRelayList: true,
+      publishedRelayListUpdatedAt: null,
+      publishingRelayList: false,
+      publishError: null,
+      addRelay: noopAsync,
+      refreshRelay: noopAsync,
+      removeRelay: noop,
+      toggleRelayRead: noop,
+      toggleRelayWrite: noop,
+      reorderRelay: noop,
+      resetRelaySettings: noop,
+      restoreDefaultRelaySettings: noop,
+      includeDefaultRelays: noop,
+      publishRelayList: noopAsync,
+    }
+  }
+
+  return {
+    ...presentation,
     scanningUrls,
     error,
-    isLoadingPublishedRelayList:
-      isLoadingPublishedRelayList ||
-      initializedContextKey !== relaySettingsContextKey,
+    isLoadingPublishedRelayList,
     publishedRelayListUpdatedAt,
     publishingRelayList,
     publishError,

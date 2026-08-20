@@ -1,4 +1,5 @@
 import {
+  getProductImageCandidates,
   resolvePurchasableSelection,
   type CommerceProductRecord,
   type PreparedProductFamily,
@@ -174,8 +175,11 @@ export function getProductSelectionImages(
   product: Product,
   selectedProduct: Product
 ): Array<{ url: string; alt?: string }> {
-  if (selectedProduct.images.length > 0) return selectedProduct.images
-  if (product.images.length > 0) return product.images
+  const selectedImages = getProductImageCandidates(selectedProduct)
+  if (selectedImages.length > 0) return selectedImages
+
+  const parentImages = getProductImageCandidates(product)
+  if (parentImages.length > 0) return parentImages
   return []
 }
 

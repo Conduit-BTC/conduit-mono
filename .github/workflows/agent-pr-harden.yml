@@ -79,12 +79,12 @@ jobs:
         if: steps.sudden_auth.outputs.has_auth == 'true'
         shell: bash
         env:
-          WORKFLOW_AGENT_GITHUB_APP_ID: ${{ vars.WORKFLOW_AGENT_GITHUB_APP_ID }}
+          WORKFLOW_AGENT_GITHUB_APP_CLIENT_ID: ${{ vars.WORKFLOW_AGENT_GITHUB_APP_CLIENT_ID }}
           WORKFLOW_AGENT_GITHUB_APP_PRIVATE_KEY: ${{ secrets.WORKFLOW_AGENT_GITHUB_APP_PRIVATE_KEY }}
         run: |
           set -euo pipefail
 
-          if [[ -n "$WORKFLOW_AGENT_GITHUB_APP_ID" && -n "$WORKFLOW_AGENT_GITHUB_APP_PRIVATE_KEY" ]]; then
+          if [[ -n "$WORKFLOW_AGENT_GITHUB_APP_CLIENT_ID" && -n "$WORKFLOW_AGENT_GITHUB_APP_PRIVATE_KEY" ]]; then
             echo "has_app=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_app=false" >> "$GITHUB_OUTPUT"
@@ -93,9 +93,9 @@ jobs:
       - name: Create workflow agent GitHub App token
         id: app_token
         if: steps.app_auth.outputs.has_app == 'true'
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.WORKFLOW_AGENT_GITHUB_APP_ID }}
+          client-id: ${{ vars.WORKFLOW_AGENT_GITHUB_APP_CLIENT_ID }}
           private-key: ${{ secrets.WORKFLOW_AGENT_GITHUB_APP_PRIVATE_KEY }}
           permission-actions: read
           permission-contents: write
@@ -108,7 +108,7 @@ jobs:
           echo "Agent PR Harden requires the conduit-sudden-agent GitHub App token."
           exit 1
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         if: steps.sudden_auth.outputs.has_auth == 'true'
         with:
           fetch-depth: 0

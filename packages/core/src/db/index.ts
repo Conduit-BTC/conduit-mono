@@ -175,6 +175,10 @@ export interface ProductDeletionDeliveryJob {
 
 export interface CachedProfile {
   pubkey: string
+  /** Exact newest observed kind-0 content, retained only for safe republish. */
+  rawContent?: string
+  eventId?: string
+  eventCreatedAt?: number
   name?: string
   displayName?: string
   about?: string
@@ -315,6 +319,22 @@ export interface InboxDeclarationEvidenceRecord {
   lastUsable?: DeclaredInboxDeclarationEventEvidence
   pendingDistribution?: PendingInboxDeclarationDistribution
   latestLookup?: InboxDeclarationLookupEvidence
+  cachedAt: number
+}
+
+/**
+ * Strongest verified kind-3 snapshot observed for the authenticated owner.
+ *
+ * This public event is retained across relay-plan changes and restarts so a
+ * later incomplete/omitting read cannot authorize an older replacement.
+ * `pending` means the exact signed event may have reached a relay but no ACK
+ * was observed; callers may retry that event but must not replace it.
+ */
+export interface CachedOwnContactListSnapshot {
+  pubkey: string
+  event: SignedPublicNostrEvent
+  sourceRelayUrls: string[]
+  state: "observed" | "pending"
   cachedAt: number
 }
 
@@ -644,6 +664,7 @@ class ConduitDB extends Dexie {
     InboxDeclarationEvidenceRecord,
     "pubkey"
   >
+  ownContactListSnapshots!: EntityTable<CachedOwnContactListSnapshot, "pubkey">
 
   constructor() {
     super("conduit")
@@ -782,6 +803,10 @@ class ConduitDB extends Dexie {
       // Public signed declaration evidence is monotonic protocol state. It is
       // intentionally excluded from relay-scope clearing and cache pruning.
       inboxDeclarationEvidence: "pubkey, cachedAt",
+    })
+
+    this.version(12).stores({
+      ownContactListSnapshots: "pubkey, state, cachedAt",
     })
   }
 }

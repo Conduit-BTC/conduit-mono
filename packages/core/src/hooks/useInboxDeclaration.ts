@@ -348,6 +348,7 @@ export function useInboxDeclaration(
         freshnessMs: 0,
         relayUrls: sharedRelayUrls,
         sharedConfirmationRelayUrls: sharedRelayUrls,
+        allowLocalRelayUrlsForPubkey: pubkey,
       })
       return verifyDeclarationReadBack(resolution, {
         eventId: publishedEvent.id,

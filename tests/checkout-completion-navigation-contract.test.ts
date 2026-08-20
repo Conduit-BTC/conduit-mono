@@ -48,9 +48,7 @@ describe("checkout completion navigation contracts", () => {
     const checkoutRoute = await Bun.file(
       "apps/market/src/routes/checkout.tsx"
     ).text()
-    const payNowIndex = checkoutRoute.indexOf(
-      "async function payNow(): Promise<void>"
-    )
+    const payNowIndex = checkoutRoute.indexOf("async function payNow(")
     const orderPublishIndex = checkoutRoute.indexOf(
       "await publishBuyerOrderMessage(",
       payNowIndex
@@ -81,8 +79,12 @@ describe("checkout completion navigation contracts", () => {
       "apps/market/src/routes/checkout.tsx"
     ).text()
 
-    expect(checkoutRoute).toContain("{isGuestCheckout && !fastEligible && (")
+    expect(checkoutRoute).toContain("!guestManualInvoiceEligible && (")
     expect(checkoutRoute).toContain("Connect signer to send order")
+    expect(checkoutRoute).toContain("Send order and show invoice")
+    expect(checkoutRoute).toContain(
+      "walletPayCapable: !isGuestCheckout && canAttemptLightningPayment"
+    )
     expect(checkoutRoute).toContain("<SignerSwitch")
   })
 
@@ -100,6 +102,6 @@ describe("checkout completion navigation contracts", () => {
     expect(ordersRoute).toContain("Closing it ends")
     expect(ordersRoute).toContain("local access to this guest order")
     expect(ordersRoute).toContain("merchant will follow up")
-    expect(ordersRoute).toContain("disabled={!activeBuyerPubkey || isFetching}")
+    expect(ordersRoute).toContain("disabled={!activeBuyerPubkey}")
   })
 })

@@ -37,7 +37,7 @@ function form(
     shippingCost: "",
     usePresetShippingZone: false,
     customShippingConfig: { countries: [] },
-    imageUrl: "https://example.com/pocket-node.png",
+    imageUrl: "https://cdn.conduit.market/pocket-node.png",
     tags: "gear, hardware, demo",
     ...overrides,
   }
@@ -286,6 +286,17 @@ describe("merchant product form validation", () => {
     expect(zeroPrice.errors.price).toContain("greater than zero")
     expect(httpImage.canPublish).toBe(false)
     expect(httpImage.errors.imageUrl).toBe("Image URL must start with https://")
+  })
+
+  it("blocks private-network image destinations", () => {
+    const privateImage = validate(
+      form({ imageUrl: "https://192.168.1.20/item.png" })
+    )
+
+    expect(privateImage.canPublish).toBe(false)
+    expect(privateImage.errors.imageUrl).toBe(
+      "Image URL must use a public network destination."
+    )
   })
 
   it("rejects exponent and signed amount syntax", () => {

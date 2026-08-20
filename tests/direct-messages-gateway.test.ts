@@ -91,8 +91,9 @@ beforeEach(() => {
   directRows = []
   orderRows = []
   __setCommerceTestOverrides({
+    allowMissingProtectedReadAuthorization: true,
     now: () => 1_700_000_000_000,
-    requireNdkConnected: async () => ({ signer: {} }) as never,
+    getNdk: async () => ({ signer: {} }) as never,
     resolveInboxRelayUrls: async () => ["wss://inbox.example"],
     getCachedDirectMessages: async (principalPubkey) =>
       directRows.filter(
@@ -194,7 +195,7 @@ describe("general direct-message gateway", () => {
       createdAt: 100,
     })
     __setCommerceTestOverrides({
-      requireNdkConnected: async () =>
+      getNdk: async () =>
         ({
           signer: {
             decrypt: async (_user: unknown, ciphertext: string) =>
@@ -261,7 +262,7 @@ describe("general direct-message gateway", () => {
       createdAt: 100,
     })
     __setCommerceTestOverrides({
-      requireNdkConnected: async () =>
+      getNdk: async () =>
         ({
           signer: {
             decrypt: async (_user: unknown, ciphertext: string) => {

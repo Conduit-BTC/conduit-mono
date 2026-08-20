@@ -10,6 +10,7 @@ export * from "./schemas"
 
 // Utils
 export * from "./utils"
+export * from "./network-target-safety"
 
 // Build provenance
 export {
@@ -19,6 +20,7 @@ export {
   type ConduitBuildInfo,
 } from "./build-info"
 export {
+  browserTelemetryEventPropertyContracts,
   browserTelemetryEventNames,
   browserTelemetryPropertyNames,
   applyPlausibleInitOptions,
@@ -28,6 +30,8 @@ export {
   getTelemetryAmountBucket,
   getTelemetryCountBucket,
   getConduitPostHogConfig,
+  hasRequiredBrowserTelemetryEventProperties,
+  isAllowedBrowserTelemetryEventProperty,
   isBrowserTelemetryEventName,
   recordBrowserTelemetryEvent,
   recordBrowserTelemetryPageView,
@@ -240,7 +244,6 @@ export {
 } from "./context/ConduitSessionContext"
 
 // Hooks
-export { useNdkState } from "./hooks/useNdkState"
 export { useNip07Availability } from "./hooks/useNip07Availability"
 export {
   useProfile,
@@ -253,6 +256,8 @@ export {
   type UseNip05VerificationResult,
 } from "./hooks/useNip05Verification"
 export {
+  getProfileQueryPerspectiveKey,
+  getProfileSingletonQueryKey,
   useProfiles,
   type UseProfilesOptions,
   type UseProfilesResult,
@@ -263,6 +268,8 @@ export {
   type UseShopperTrustEvidenceResult,
 } from "./hooks/useShopperTrustEvidence"
 export {
+  prepareRelaySettingsContextPresentation,
+  resolveRelayAuthDisplayEvidence,
   useRelaySettings,
   type UseRelaySettingsResult,
 } from "./hooks/useRelaySettings"

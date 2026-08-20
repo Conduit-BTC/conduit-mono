@@ -21,11 +21,11 @@
     "lucide-react": "^1.31.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "react-hook-form": "^7.84.0",
+    "react-hook-form": "^7.85.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@tanstack/react-query-devtools": "^5.62.8",
+    "@tanstack/react-query-devtools": "^5.101.4",
     "@tanstack/router-core": "^1.171.16",
     "@tanstack/router-devtools": "^1.167.1",
     "@tanstack/router-generator": "^1.167.21",

@@ -98,6 +98,7 @@ export function useMerchantReadiness() {
   const { pubkey } = useAuth()
   const session = useConduitSession()
   const profileQuery = useProfile(pubkey, {
+    authenticatedPubkey: pubkey,
     skipCache: true,
     staleTime: PROFILE_READINESS_POLL_MS,
     refetchUnresolvedMs: PROFILE_READINESS_POLL_MS,

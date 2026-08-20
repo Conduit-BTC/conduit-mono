@@ -44,6 +44,11 @@ import {
 } from "../protocol/remote-signer"
 import { withBrowserAuthOperationLock } from "../protocol/remote-signer-vault"
 import { isTransientNip07BridgeError } from "../protocol/signing-retry"
+import { createNdkNostrEventSigner } from "../protocol/ndk-nostr-event-signer"
+import {
+  createProtectedReadSessionLifecycle,
+  type ProtectedReadSessionLifecycle,
+} from "../protocol/protected-read-session-lifecycle"
 
 export type AuthStatus =
   | "disconnected"
@@ -54,6 +59,7 @@ export type AuthStatus =
 
 export interface AuthContextValue {
   pubkey: string | null
+  authGeneration: number
   method: AuthMethod | null
   rememberedMethod: AuthMethod | null
   status: AuthStatus
@@ -355,11 +361,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [capabilities, setCapabilities] = useState<AuthSignerCapabilities>(
     NO_SIGNER_CAPABILITIES
   )
+  const [authGeneration, setAuthGeneration] = useState(0)
   const connecting = useRef(false)
   const connected = useRef(false)
   const authEpoch = useRef(0)
   const remoteConnection = useRef<RemoteSignerConnection | null>(null)
   const activeSignerLease = useRef<SignerLease | null>(null)
+  const protectedReadSessionLifecycle = useRef<ProtectedReadSessionLifecycle>(
+    createProtectedReadSessionLifecycle()
+  )
   const activeSessionSigner = useRef<SessionSigner | null>(null)
   const activeSession = useRef<AuthSession | null>(null)
   const activePairing = useRef<AbortController | null>(null)
@@ -368,6 +378,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     activePairing.current?.abort()
     activePairing.current = null
     authEpoch.current += 1
+    setAuthGeneration(authEpoch.current)
     connecting.current = false
     connected.current = false
     const connection = remoteConnection.current
@@ -377,6 +388,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     activeSignerLease.current = null
     activeSessionSigner.current = null
     activeSession.current = null
+    protectedReadSessionLifecycle.current.deactivate()
     sessionSigner?.invalidateLocal()
     connection?.signer.invalidate()
     if (signerLease) removeSigner(signerLease)
@@ -436,6 +448,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       options.method ?? (mode === "restore" ? storedSession?.type : "nip07")
     if (connecting.current) return
     if (connected.current) {
+      if (mode === "restore") return
       throw new Error("Disconnect the current signer before connecting another.")
     }
     if (!requestedMethod) {
@@ -453,6 +466,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     connecting.current = true
     const epoch = authEpoch.current + 1
     authEpoch.current = epoch
+    setAuthGeneration(epoch)
     let authRevision = readAuthRevision()
     const attemptOwnsEpoch = () => epoch === authEpoch.current
     const attemptIsCurrent = () =>
@@ -619,19 +633,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       const boundSession = session
+      const hasSessionAuthority = () => {
+        if (readAuthRevision() !== boundSession.authClaim) return false
+        if (!sessionPersisted) return true
+        return JSON.stringify(readAuthSession()) === JSON.stringify(boundSession)
+      }
       const sessionSigner = new SessionSigner(signer, {
         expectedPubkey: pk,
-        hasAuthority: () => {
-          if (readAuthRevision() !== boundSession.authClaim) return false
-          if (!sessionPersisted) return true
-          return (
-            JSON.stringify(readAuthSession()) === JSON.stringify(boundSession)
-          )
-        },
+        hasAuthority: hasSessionAuthority,
         onInvalidated: handleSignerSessionInvalidated,
       })
       const signerLease = setSigner(sessionSigner)
       activeSignerLease.current = signerLease
+      try {
+        protectedReadSessionLifecycle.current.activate(
+          createNdkNostrEventSigner(sessionSigner, pk, session.type),
+          pk,
+          hasSessionAuthority
+        )
+      } catch (installError) {
+        removeSigner(signerLease)
+        activeSignerLease.current = null
+        throw installError
+      }
       activeSessionSigner.current = sessionSigner
       remoteConnection.current = connectedRemote
       uncommittedRemote = null
@@ -776,6 +800,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const cancelConnect = useCallback(() => {
     if (!activePairing.current) return
     authEpoch.current += 1
+    setAuthGeneration(authEpoch.current)
     activePairing.current.abort()
     activePairing.current = null
     connecting.current = false
@@ -912,6 +937,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     <AuthContext.Provider
       value={{
         pubkey,
+        authGeneration,
         method,
         rememberedMethod,
         status,

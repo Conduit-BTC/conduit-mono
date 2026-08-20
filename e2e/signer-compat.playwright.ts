@@ -13,6 +13,16 @@ import {
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
 const merchantTrustHarnessUrl = "/src/test-fixtures/merchant-trust-harness.tsx"
+const ndkModuleUrl = `/@fs${process.cwd()}/packages/core/src/protocol/ndk.ts`
+
+async function hasActiveNdkSigner(page: Page): Promise<boolean> {
+  return page.evaluate(async (url) => {
+    const module = (await import(/* @vite-ignore */ url)) as {
+      getNdk: () => { signer?: unknown }
+    }
+    return !!module.getNdk().signer
+  }, ndkModuleUrl)
+}
 
 async function openMarketSignerDialog(page: Page): Promise<void> {
   await page.goto(`${marketUrl}/products`)
@@ -127,6 +137,53 @@ test("market trust ignores a remembered viewer until auth is connected", async (
   await expect(probe).toHaveAttribute("data-social-state", "disconnected")
   await expect(probe).toHaveAttribute("data-mutual-count", "none")
   await expect(probe).toHaveAttribute("data-viewer-follows", "null")
+})
+
+test("market owner profile drops the public placeholder after connect", async ({
+  page,
+}) => {
+  await installTestSigner(page, TEST_BUYER_PUBKEY, { rememberAuth: false })
+  await page.goto(`${marketUrl}/products`)
+
+  await page.evaluate(
+    async ({ harnessUrl, ownerPubkey }) => {
+      const container = document.createElement("div")
+      container.id = "merchant-trust-owner-harness"
+      document.body.append(container)
+      const { mountMerchantTrustHarness } = (await import(harnessUrl)) as {
+        mountMerchantTrustHarness: (
+          element: HTMLElement,
+          staleViewerPubkey: string,
+          merchantPubkey: string,
+          options?: { publicProfileName?: string }
+        ) => void
+      }
+      mountMerchantTrustHarness(container, ownerPubkey, ownerPubkey, {
+        publicProfileName: "Public cached profile",
+      })
+    },
+    {
+      harnessUrl: merchantTrustHarnessUrl,
+      ownerPubkey: TEST_BUYER_PUBKEY,
+    }
+  )
+
+  const probe = page.getByTestId("merchant-trust-probe")
+  await expect(probe).toHaveAttribute(
+    "data-profile-name",
+    "Public cached profile"
+  )
+
+  await page.getByTestId("merchant-trust-connect").evaluate((button) => {
+    ;(button as HTMLButtonElement).click()
+  })
+  await expect(probe).toHaveAttribute("data-auth-status", "connected", {
+    timeout: 10_000,
+  })
+  await expect(probe).not.toHaveAttribute(
+    "data-profile-name",
+    "Public cached profile"
+  )
 })
 
 test("market signer authority storage failure remains retryable", async ({
@@ -331,4 +388,19 @@ test("merchant remembered auth falls back to explicit retry when signer needs ac
   await expect(
     page.getByRole("heading", { name: "Merchant Portal" })
   ).toBeVisible({ timeout: 10_000 })
+})
+
+test("market restored session keeps a usable signer attached", async ({
+  page,
+}) => {
+  await installTestSigner(page, TEST_BUYER_PUBKEY)
+  await page.goto(`${marketUrl}/products`)
+
+  await expect(page.getByLabel("Open account menu")).toBeVisible({
+    timeout: 15_000,
+  })
+
+  await expect
+    .poll(() => hasActiveNdkSigner(page), { timeout: 10_000 })
+    .toBe(true)
 })

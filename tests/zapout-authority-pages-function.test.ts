@@ -29,8 +29,9 @@ const MERCHANT_PUBKEY = getPublicKey(MERCHANT_SECRET)
 const SHOPPER_PUBKEY = getPublicKey(SHOPPER_SECRET)
 const PROVIDER_PUBKEY = getPublicKey(PROVIDER_SECRET)
 const NOW_SECONDS = Math.floor(Date.now() / 1000) - 60
-const PAY_REQUEST_URL = "https://wallet.example/.well-known/lnurlp/merchant"
-const LUD16 = "merchant@wallet.example"
+const PAY_REQUEST_URL =
+  "https://wallet.conduit.market/.well-known/lnurlp/merchant"
+const LUD16 = "merchant@wallet.conduit.market"
 const AUTH_SECRET = "11".repeat(32)
 const ATTESTATION_KEY_ID = "test-2026"
 const ATTESTATION_PRIVATE_KEY_HEX = "0".repeat(63) + "9"
@@ -67,7 +68,7 @@ function zapRequest(attestProvider = false, payRequestUrl = PAY_REQUEST_URL) {
         ["p", MERCHANT_PUBKEY],
         ["amount", "42000"],
         ["lnurl", encodeLnurl(payRequestUrl)],
-        ["relays", "wss://receipts.example"],
+        ["relays", "wss://receipts.conduit.market"],
         ["omf", "zapout"],
         ...(attestProvider ? [["omf_provider", PROVIDER_PUBKEY]] : []),
         ["client", "conduit-market"],
@@ -149,7 +150,7 @@ function metadata(overrides: Partial<LnurlPayMetadata> = {}): LnurlPayMetadata {
   return {
     payRequestUrl: PAY_REQUEST_URL,
     lnurl: encodeLnurl(PAY_REQUEST_URL),
-    callback: "https://wallet.example/lnurl/callback",
+    callback: "https://wallet.conduit.market/lnurl/callback",
     minSendable: 1_000,
     maxSendable: 100_000_000,
     tag: "payRequest",
@@ -164,8 +165,8 @@ function env(rateLimitSuccess = true) {
   return {
     ANON_ZAP_ALLOWED_ORIGINS: "https://shop.conduit.market",
     ANON_SIGNER_REQUEST_AUTH_SECRET: AUTH_SECRET,
-    ANON_ZAP_COMMERCE_RELAYS: "wss://commerce.example",
-    ANON_ZAP_LNURL_ALLOWED_HOSTS: "wallet.example",
+    ANON_ZAP_COMMERCE_RELAYS: "wss://commerce.conduit.market",
+    ANON_ZAP_LNURL_ALLOWED_HOSTS: "wallet.conduit.market",
     ANON_ZAP_PROVIDER_ATTESTATION_PUBLIC_KEYS: `${ATTESTATION_KEY_ID}:${ATTESTATION_PUBKEY}`,
     ANON_ZAP_RATE_LIMIT_SERVICE: {
       async fetch() {
@@ -266,7 +267,7 @@ describe("Zapouts payment-time authority Pages function", () => {
       for (let request = 0; request < 2; request += 1) {
         const result = await fetchZapoutAuthorityProfileEvents(
           [MERCHANT_PUBKEY],
-          ["wss://commerce.example"]
+          ["wss://commerce.conduit.market"]
         )
         expect(result.complete).toBe(true)
       }
@@ -304,7 +305,7 @@ describe("Zapouts payment-time authority Pages function", () => {
     const event = await serverAttestedReceipt()
     const deps = dependencies({
       profileEvents: [
-        profileEvent("merchant@new-wallet.example", NOW_SECONDS + 30),
+        profileEvent("merchant@new-wallet.conduit.market", NOW_SECONDS + 30),
       ],
     })
     const response = await verifyZapoutAuthorityRequest(
@@ -346,7 +347,7 @@ describe("Zapouts payment-time authority Pages function", () => {
     const event = receipt(PROVIDER_SECRET, true)
     const deps = dependencies({
       profileEvents: [
-        profileEvent("merchant@new-wallet.example", NOW_SECONDS + 30),
+        profileEvent("merchant@new-wallet.conduit.market", NOW_SECONDS + 30),
       ],
     })
     const response = await verifyZapoutAuthorityRequest(
@@ -377,7 +378,8 @@ describe("Zapouts payment-time authority Pages function", () => {
       env(),
       dependencies({
         lnurlMetadata: metadata({
-          payRequestUrl: "https://wallet.example/.well-known/lnurlp/different",
+          payRequestUrl:
+            "https://wallet.conduit.market/.well-known/lnurlp/different",
         }),
       }).value
     )
@@ -393,7 +395,7 @@ describe("Zapouts payment-time authority Pages function", () => {
       env(),
       dependencies({
         profileEvents: [
-          profileEvent("merchant@new-wallet.example", NOW_SECONDS + 30),
+          profileEvent("merchant@new-wallet.conduit.market", NOW_SECONDS + 30),
         ],
       }).value
     )
@@ -461,7 +463,7 @@ describe("Zapouts payment-time authority Pages function", () => {
     const spoofed = receipt(
       PROVIDER_SECRET,
       false,
-      "https://wallet.example/.well-known/lnurlp/spoofed"
+      "https://wallet.conduit.market/.well-known/lnurlp/spoofed"
     )
     const rateLimitKeys: string[] = []
     const deps = dependencies({})

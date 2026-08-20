@@ -22,7 +22,7 @@ import {
   AvatarFallback,
   AvatarImage,
   Button,
-  FreshnessChip,
+  RefreshChip,
   Select,
   SelectContent,
   SelectItem,
@@ -34,6 +34,7 @@ import {
   formatNpub,
   getCommerceReadRelayUrls,
   getTelemetryCountBucket,
+  isCommerceReadIncomplete,
   normalizePubkey,
   publishContactListUpdate,
   pubkeyToNpub,
@@ -59,6 +60,7 @@ import { useShopperPricing } from "../../hooks/useShopperPricing"
 import { useCart } from "../../hooks/useCart"
 import { useMerchantTrustContext } from "../../hooks/useMerchantTrustContext"
 import { useProgressiveProducts } from "../../hooks/useProgressiveProducts"
+import { selectCartItem } from "../../lib/cart-model"
 import {
   filterProductsByFacets,
   getCategoryFacetOptions,
@@ -66,6 +68,7 @@ import {
 } from "../../lib/facets"
 import {
   createStorefrontFollowState,
+  deriveStorefrontFollowControl,
   isStorefrontFollowScopeEqual,
   storefrontFollowReducer,
 } from "../../lib/storefront-follow-state"
@@ -143,7 +146,9 @@ function StorefrontPage() {
   const navigate = Route.useNavigate()
   const queryClient = useQueryClient()
   const cart = useCart()
-  const { pubkey: viewerPubkey, status } = useAuth()
+  const { pubkey: viewerPubkey, status, authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  authGenerationRef.current = authGeneration
   const activeViewerPubkey = status === "connected" ? viewerPubkey : null
   const shopperPricing = useShopperPricing()
   const btcUsdRate = shopperPricing.quote
@@ -157,6 +162,10 @@ function StorefrontPage() {
     authenticatedPubkey: activeViewerPubkey,
     textQuery: search.q,
   })
+  const productReadIncomplete =
+    isCommerceReadIncomplete(productsQuery.meta) ||
+    !!productsQuery.error ||
+    productsQuery.isRefreshPaused
   const profileRelayHints = useMemo(
     () =>
       Array.from(
@@ -252,8 +261,12 @@ function StorefrontPage() {
     [selectedTags, storeProducts]
   )
 
-  const isFollowing =
-    followOverride ?? merchantTrust.viewerFollowsMerchant === true
+  const followControl = deriveStorefrontFollowControl({
+    override: followOverride,
+    observedFollowing: merchantTrust.viewerFollowsMerchant === true,
+    pendingFollowing: merchantTrust.pendingViewerFollowsMerchant,
+  })
+  const { isFollowing } = followControl
   const followSaveState = followStateMatchesScope
     ? followState.saveState
     : "idle"
@@ -373,8 +386,9 @@ function StorefrontPage() {
     }
     if (isFollowBusy) return
 
-    const nextShouldFollow = !isFollowing
+    const nextShouldFollow = followControl.shouldFollowOnClick
     const operationId = ++followOperationIdRef.current
+    const followAuthGeneration = authGeneration
     dispatchFollow({
       type: "operation_started",
       scope: followScope,
@@ -387,7 +401,10 @@ function StorefrontPage() {
         targetPubkey: pubkey,
         shouldFollow: nextShouldFollow,
         appId: "market",
+        isSessionCurrent: () =>
+          authGenerationRef.current === followAuthGeneration,
       })
+      if (authGenerationRef.current !== followAuthGeneration) return
 
       dispatchFollow({
         type: "publish_succeeded",
@@ -395,15 +412,21 @@ function StorefrontPage() {
         operationId,
         shouldFollow: nextShouldFollow,
       })
-      await queryClient.invalidateQueries({
-        queryKey: ["merchant-trust-social", viewerPubkey, pubkey],
-      })
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["merchant-trust-social"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["market-perspective-follows"],
+        }),
+      ])
       dispatchFollow({
         type: "operation_settled",
         scope: followScope,
         operationId,
       })
     } catch (error) {
+      if (authGenerationRef.current !== followAuthGeneration) return
       dispatchFollow({
         type: "operation_failed",
         scope: followScope,
@@ -553,6 +576,13 @@ function StorefrontPage() {
                   isFollowing={isFollowing}
                   merchantName={merchantName}
                   onClick={() => void handleFollow()}
+                  retryAction={
+                    followControl.isPendingRetry
+                      ? followControl.shouldFollowOnClick
+                        ? "follow"
+                        : "unfollow"
+                      : null
+                  }
                   saveState={followSaveState}
                   unavailableDescriptionId="storefront-follow-maintenance"
                   writesAvailable={CONTACT_LIST_WRITES_AVAILABLE}
@@ -569,7 +599,17 @@ function StorefrontPage() {
               )}
               {followError && (
                 <p className="max-w-sm text-left text-xs leading-5 text-[var(--warning)] sm:ml-auto sm:text-right">
-                  {followError}
+                  {followError}{" "}
+                  {followError.startsWith(
+                    "Refusing to publish a follow-list replacement"
+                  ) ? (
+                    <Link
+                      to="/network"
+                      className="font-semibold underline underline-offset-2 hover:text-[var(--text-primary)]"
+                    >
+                      Open Network settings
+                    </Link>
+                  ) : null}
                 </p>
               )}
             </div>
@@ -712,8 +752,8 @@ function StorefrontPage() {
             </div>
           </div>
 
-          <div className="relative mt-4 min-h-[1.625rem] pr-32 sm:pr-36">
-            <div className="flex flex-wrap items-center gap-2 text-sm text-[var(--text-secondary)]">
+          <div className="relative mt-4 min-h-8 pr-40 sm:pr-44">
+            <div className="flex min-h-8 flex-wrap items-center gap-2 text-sm text-[var(--text-secondary)]">
               <span>
                 {filteredProducts.length} listing
                 {filteredProducts.length === 1 ? "" : "s"}
@@ -724,13 +764,11 @@ function StorefrontPage() {
                 </span>
               )}
             </div>
-            <FreshnessChip
-              status={
-                productsQuery.isHydrating && filteredProducts.length > 0
-                  ? "updating"
-                  : "idle"
-              }
-              updatingLabel="Updating store"
+            <RefreshChip
+              refreshing={productsQuery.isHydrating}
+              onRefresh={productsQuery.refetch}
+              stale={productReadIncomplete}
+              refreshingLabel="Updating store..."
               className="absolute right-0 top-0"
             />
             {hasUnavailablePriceForSort && (
@@ -801,43 +839,39 @@ function StorefrontPage() {
                     btcUsdRate={btcUsdRate}
                     pricePreference={shopperPricing.preference}
                     getCartQuantity={(selectedProduct) =>
-                      cart.items.find(
-                        (item) =>
-                          item.merchantPubkey === selectedProduct.pubkey &&
-                          item.productId === selectedProduct.id
-                      )?.quantity ?? 0
+                      selectCartItem(cart.items, {
+                        merchantPubkey: selectedProduct.pubkey,
+                        productId: selectedProduct.id,
+                      })?.quantity ?? 0
                     }
                     onAddToCart={(selectedProduct) =>
-                      cart.addItem(
-                        cartItemInputFromProductSelection(
+                      cart.addItem({
+                        ...cartItemInputFromProductSelection(
                           product,
                           selectedProduct
-                        )
-                      )
+                        ),
+                      })
                     }
                     onIncrement={(selectedProduct) =>
-                      cart.addItem(
-                        cartItemInputFromProductSelection(
+                      cart.addItem({
+                        ...cartItemInputFromProductSelection(
                           product,
                           selectedProduct
-                        )
-                      )
+                        ),
+                      })
                     }
                     onDecrement={(selectedProduct) => {
-                      const existing = cart.items.find(
-                        (item) =>
-                          item.merchantPubkey === selectedProduct.pubkey &&
-                          item.productId === selectedProduct.id
-                      )
+                      const identity = {
+                        merchantPubkey: selectedProduct.pubkey,
+                        productId: selectedProduct.id,
+                      }
+                      const existing = selectCartItem(cart.items, identity)
                       if (!existing) return
                       if (existing.quantity <= 1) {
-                        cart.removeItem(selectedProduct.id)
+                        cart.removeItem(identity)
                         return
                       }
-                      cart.setQuantity(
-                        selectedProduct.id,
-                        existing.quantity - 1
-                      )
+                      cart.setQuantity(identity, existing.quantity - 1)
                     }}
                   />
                 </li>

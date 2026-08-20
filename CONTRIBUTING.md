@@ -51,7 +51,7 @@ Read existing specs when they apply, but do not create or update a spec for ordi
 
 For UI and theming work, also check [docs/DESIGN.md](docs/DESIGN.md) before introducing new shared styles or tokens.
 
-For Nostr protocol, relay, signer, messaging, payment, product-event, cache, or outbox work, also check [decentralized-network-product-posture.md](docs/knowledge/decentralized-network-product-posture.md), [external-nostr-references.md](docs/knowledge/external-nostr-references.md), and the relevant public NIP or GammaMarkets source before implementation. Product listings are NIP-99 + GammaMarkets `kind:30402`; do not introduce alternate product-listing protocol terminology, schemas, or assumptions.
+For Nostr protocol, relay, signer, messaging, payment, product-event, cache, or outbox work, also check [decentralized-network-product-posture.md](docs/knowledge/decentralized-network-product-posture.md), [external-nostr-references.md](docs/knowledge/external-nostr-references.md), and the relevant public NIP or Open Markets source before implementation. Product listings are NIP-99 plus the Open Markets working specification for `kind:30402` commerce events, derived from the earlier GammaMarkets `market-spec` work; do not introduce alternate product-listing protocol terminology, schemas, or assumptions.
 
 The protocol source defines event meaning and canonical emission. Before
 turning missing or divergent decentralized state into a product gate, classify
@@ -232,20 +232,16 @@ export function ProductCard({ product, className }: ProductCardProps) {
 
 ### Data Fetching
 
-Relay data should go through shared TanStack Query hooks or protocol helpers in `@conduit/core`. NDK is the current edge library, but routes should not invent new relay fanout or source-resolution behavior when shared helpers already exist:
+Relay data should go through shared TanStack Query hooks or protocol helpers in `@conduit/core`. NDK remains an offline compatibility edge for signing, encryption, event construction, and explicit planned publishes; it is not a relay discovery or read API. Routes should not invent new relay fanout or source-resolution behavior when shared helpers already exist:
 
 ```typescript
 import { useQuery } from "@tanstack/react-query"
-import { getNdk } from "../protocol/ndk"
+import { getMarketplaceProducts } from "../protocol/commerce"
 
-export function useProducts(filters?: ProductFilters) {
+export function useProducts(limit = 60) {
   return useQuery({
-    queryKey: ["products", filters],
-    queryFn: async () => {
-      const ndk = getNdk()
-      const events = await ndk.fetchEvents({ kinds: [30402], ...filters })
-      return Array.from(events).map(parseProduct)
-    },
+    queryKey: ["products", { limit }],
+    queryFn: async () => (await getMarketplaceProducts({ limit })).data,
     staleTime: 1000 * 60,
   })
 }

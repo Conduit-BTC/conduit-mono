@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -58,7 +58,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - uses: oven-sh/setup-bun@v2
@@ -72,7 +72,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - uses: oven-sh/setup-bun@v2
@@ -86,7 +86,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - uses: oven-sh/setup-bun@v2
@@ -100,7 +100,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - uses: oven-sh/setup-bun@v2
@@ -115,7 +115,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - uses: oven-sh/setup-bun@v2
@@ -132,7 +132,7 @@ jobs:
     outputs:
       shards: ${{ steps.select.outputs.shards }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -173,7 +173,7 @@ jobs:
       - name: No browser smoke needed
         if: matrix.area == 'none'
         run: echo "No browser-facing runtime paths changed."
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         if: matrix.area != 'none'
         with:
           persist-credentials: false
@@ -251,7 +251,7 @@ jobs:
       VITE_BUILD_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
       VITE_BUILD_BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - uses: oven-sh/setup-bun@v2
@@ -279,7 +279,7 @@ jobs:
         run: |
           echo "Preview link comments are skipped for fork PRs because GitHub provides a read-only token and Cloudflare Pages does not publish same-repository preview checks for fork heads."
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         if: github.event.pull_request.head.repo.full_name == github.repository
         with:
           persist-credentials: false

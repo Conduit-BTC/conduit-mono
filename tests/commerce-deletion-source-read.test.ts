@@ -19,7 +19,7 @@ const FIXED_NOW = 1_700_000_000_000
 const AUTHOR_COUNT = 17
 
 function sourceRelayUrl(index: number): string {
-  return `wss://product-deletion-source-${index}.example`
+  return `wss://product-deletion-source-${index}.conduit.market`
 }
 
 let cachedProducts: CachedProduct[] = []
@@ -39,7 +39,7 @@ function makeProduct(secretKey: Uint8Array, index: number): NDKEvent {
           ["title", `Source-only product ${index}`],
           ["price", "25", "USD"],
           ["type", "simple", "physical"],
-          ["image", `https://example.com/source-only-${index}.png`],
+          ["image", `https://cdn.conduit.market/source-only-${index}.png`],
           ["t", "source-read"],
         ],
       },
@@ -73,6 +73,8 @@ describe("product deletion reads retain source-relay provenance", () => {
     const targetIndex = products.length - 1
     const target = products[targetIndex]!
     const targetSourceRelayUrl = sourceRelayUrl(targetIndex)
+    const stalePrivateSourceRelayUrl = "wss://127.0.0.1:7447"
+    attachEventSourceRelayUrl(target, stalePrivateSourceRelayUrl)
     const targetAddress = `${EVENT_KINDS.PRODUCT}:${target.pubkey}:source-only-${targetIndex}`
     const deletion = new NDKEvent(
       undefined,
@@ -96,6 +98,7 @@ describe("product deletion reads retain source-relay provenance", () => {
     const snapshots: CommerceProductRecord[][] = []
 
     __setRelayListTestOverrides({
+      fetchEventsFanout: async () => [],
       loadCached: async (pubkey) => ({
         pubkey,
         readRelayUrls: [],
@@ -103,6 +106,8 @@ describe("product deletion reads retain source-relay provenance", () => {
         eventCreatedAt: 1,
         cachedAt: FIXED_NOW,
       }),
+      now: () => FIXED_NOW,
+      putCached: async () => {},
     })
     __setCommerceTestOverrides({
       now: () => FIXED_NOW,
@@ -179,6 +184,11 @@ describe("product deletion reads retain source-relay provenance", () => {
     expect(
       deletionRelayAttempts.some((relayUrls) =>
         relayUrls.includes(targetSourceRelayUrl)
+      )
+    ).toBe(true)
+    expect(
+      deletionRelayAttempts.every(
+        (relayUrls) => !relayUrls.includes(stalePrivateSourceRelayUrl)
       )
     ).toBe(true)
     expect(

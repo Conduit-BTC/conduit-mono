@@ -17,9 +17,10 @@ import {
   getMerchantStorefront,
   getProductImageCandidates,
   getProductPriceDisplay,
+  getNdk,
+  isCommerceReadIncomplete,
   prepareProductCatalog,
   recordBrowserTelemetryEvent,
-  requireNdkConnected,
   type CommerceResult,
   type ListingSafetyEvaluation,
   type PreparedProductFamily,
@@ -39,10 +40,10 @@ import {
   DialogHeader,
   DialogTitle,
   DoubleSideStatusPill,
-  FreshnessChip,
   Input,
   Label,
   ProductCard,
+  RefreshChip,
   Select,
   SelectContent,
   SelectItem,
@@ -764,7 +765,7 @@ async function deleteProduct(
   product: MerchantProductFamily,
   onSignedLocal: (event: NDKEvent, deliveryJobId: string) => Promise<void>
 ): Promise<{ delivery: PublishWithPlannerResult; deliveryJobId: string }> {
-  const ndk = await requireNdkConnected()
+  const ndk = getNdk()
   if (!ndk.signer) throw new Error("Signer not connected")
   const signerPubkey = (await ndk.signer.user()).pubkey
   if (signerPubkey !== merchantPubkey) {
@@ -866,6 +867,10 @@ function ProductsPage() {
   )
   const merchantProductReadMeta =
     productsQuery.data?.meta ?? cachedProductsQuery.data?.meta
+  const merchantProductReadIncomplete =
+    isCommerceReadIncomplete(merchantProductReadMeta) ||
+    !!productsQuery.error ||
+    productsQuery.isPaused
   const merchantProducts = useMemo<MerchantProductFamily[]>(
     () =>
       // Group at the read boundary so edit and delete always operate on the
@@ -1243,7 +1248,7 @@ function ProductsPage() {
         : "Save changes to publish this listing update."
       : "Publish this product to add it to your store."
   const productsInitialLoading =
-    productsQuery.isLoading && cachedProductsQuery.isLoading
+    !!pubkey && productsQuery.isPending && cachedProductsQuery.isPending
 
   const tagFilters = useMemo(
     () => buildProductTagCatalog(merchantProducts.map((item) => item.product)),
@@ -1558,12 +1563,14 @@ function ProductsPage() {
           </div>
         )}
 
-        <div className="relative mt-3 flex min-h-[1.625rem] items-center pr-36 text-xs text-[var(--text-muted)]">
+        <div className="relative mt-3 flex min-h-8 items-center pr-44 text-xs text-[var(--text-muted)]">
           <span>{productStatusLabel}</span>
-          <FreshnessChip
-            status={productsQuery.isFetching ? "updating" : "idle"}
-            updatingLabel="Updating listings"
-            className="absolute right-0 top-0"
+          <RefreshChip
+            refreshing={productsQuery.isFetching}
+            onRefresh={() => void productsQuery.refetch()}
+            stale={merchantProductReadIncomplete}
+            refreshingLabel="Updating listings..."
+            className="absolute right-0 top-1/2 -translate-y-1/2"
           />
         </div>
         <SignedActionStatus

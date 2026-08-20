@@ -8,11 +8,7 @@ import {
   type ReactNode,
 } from "react"
 import type { ConduitAppId } from "../protocol/nip89"
-import {
-  connectNdk,
-  disconnectNdk,
-  refreshNdkRelaySettings,
-} from "../protocol/ndk"
+import { disconnectNdk, refreshNdkRelaySettings } from "../protocol/ndk"
 import {
   getActiveRelaySettingsScope,
   subscribeRelaySettingsChanges,
@@ -62,7 +58,11 @@ export function ConduitSessionProvider({
     [allowGuest, appId, signedInPubkey]
   )
   const profileQuery = useProfile(
-    session.mode === "signed_in" ? session.pubkey : null
+    session.mode === "signed_in" ? session.pubkey : null,
+    {
+      authenticatedPubkey:
+        session.mode === "signed_in" ? session.pubkey : null,
+    }
   )
   const identityReady =
     session.mode === "guest" ||
@@ -82,6 +82,11 @@ export function ConduitSessionProvider({
     !relaySettings.isLoadingPublishedRelayList
 
   const activeScopeRef = useRef<string | null>(null)
+  const profileRelayScopeRef = useRef<string | null>(null)
+  const profileRefreshReadyRef = useRef(false)
+  const refetchProfile = profileQuery.refetch
+  profileRefreshReadyRef.current =
+    session.mode === "signed_in" && relaySettingsReady
 
   useEffect(() => {
     if (!session.relayScope) {
@@ -104,16 +109,39 @@ export function ConduitSessionProvider({
 
     activeScopeRef.current = session.relayScope
     setActivatedRelayScope(session.relayScope)
-    void connectNdk()
   }, [identityReady, session.relayScope])
+
+  useEffect(() => {
+    const profileScope =
+      session.mode === "signed_in" && session.relayScope
+        ? `${session.pubkey}:${session.relayScope}`
+        : null
+    if (!profileScope) {
+      profileRelayScopeRef.current = null
+      return
+    }
+    if (
+      !relaySettingsReady ||
+      profileRelayScopeRef.current === profileScope
+    )
+      return
+    profileRelayScopeRef.current = profileScope
+    void refetchProfile()
+  }, [
+    refetchProfile,
+    relaySettingsReady,
+    session.mode,
+    session.pubkey,
+    session.relayScope,
+  ])
 
   useEffect(() => {
     return subscribeRelaySettingsChanges((scope) => {
       if (!scope || scope !== activeScopeRef.current) return
       refreshNdkRelaySettings(scope)
-      void connectNdk()
+      if (profileRefreshReadyRef.current) void refetchProfile()
     })
-  }, [])
+  }, [refetchProfile])
 
   const value = useMemo<ConduitSessionContextValue>(
     () => ({ ...session, identityReady, relaySettingsReady }),

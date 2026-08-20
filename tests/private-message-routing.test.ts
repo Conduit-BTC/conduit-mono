@@ -61,7 +61,7 @@ function resolution(
   return {
     pubkey: OWNER,
     state: "declared",
-    relayUrls: ["wss://inbox.example"],
+    relayUrls: ["wss://inbox.conduit.market"],
     stale: false,
     fetchedAt: 0,
     ...overrides,
@@ -82,29 +82,91 @@ function resolveForTest(options: ResolveInboxDeclarationOptions) {
 describe("resolveInboxDeclaration", () => {
   it("resolves a declared inbox with secure relays only", async () => {
     const result = await resolveForTest({
-      relayUrls: ["wss://read.example"],
+      relayUrls: ["wss://read.conduit.market"],
       fetchEventsWithDiagnostics: diagnostics({
         events: [
           declarationEvent({
             createdAt: 100,
-            relays: ["wss://inbox.example", "ws://insecure.example"],
+            relays: [
+              "wss://inbox.conduit.market",
+              "https://inbox-two.conduit.market/path?ignored=true",
+              "wss://inbox-two.conduit.market/path",
+              "ws://insecure.conduit.market",
+              "wss://127.0.0.1:8080",
+              "wss://10.0.0.5/inbox",
+              "wss://service.test",
+            ],
           }),
         ],
-        successful: ["wss://read.example"],
+        successful: ["wss://read.conduit.market"],
       }),
     })
 
     expect(result.state).toBe("declared")
-    expect(result.relayUrls).toEqual(["wss://inbox.example"])
+    expect(result.relayUrls).toEqual([
+      "wss://inbox.conduit.market",
+      "wss://inbox-two.conduit.market/path",
+    ])
     expect(result.stale).toBe(false)
+  })
+
+  it("preserves an authenticated owner's intentional local inbox relay", async () => {
+    const result = await resolveForTest({
+      allowLocalRelayUrlsForPubkey: OWNER,
+      relayUrls: ["wss://read.conduit.market"],
+      fetchEventsWithDiagnostics: diagnostics({
+        events: [
+          declarationEvent({
+            createdAt: 100,
+            relays: ["wss://127.0.0.1:8080", "wss://inbox.conduit.market"],
+          }),
+        ],
+        successful: ["wss://read.conduit.market"],
+      }),
+    })
+
+    expect(result.state).toBe("declared")
+    expect(result.relayUrls).toEqual([
+      "wss://127.0.0.1:8080",
+      "wss://inbox.conduit.market",
+    ])
+  })
+
+  it("does not leak an owner's local-relay cache allowance into remote use", async () => {
+    const ownerResult = await resolveForTest({
+      allowLocalRelayUrlsForPubkey: OWNER,
+      relayUrls: ["wss://read.conduit.market"],
+      fetchEventsWithDiagnostics: diagnostics({
+        events: [
+          declarationEvent({
+            createdAt: 100,
+            relays: ["wss://127.0.0.1:8080", "wss://inbox.conduit.market"],
+          }),
+        ],
+        successful: ["wss://read.conduit.market"],
+      }),
+    })
+
+    const remoteResult = await resolveForTest({
+      fetchEventsWithDiagnostics: async () => {
+        throw new Error("fresh cache should avoid a second lookup")
+      },
+    })
+
+    expect(ownerResult.relayUrls).toEqual([
+      "wss://127.0.0.1:8080",
+      "wss://inbox.conduit.market",
+    ])
+    expect(remoteResult.state).toBe("declared")
+    expect(remoteResult.relayUrls).toEqual(["wss://inbox.conduit.market"])
   })
 
   it("never reports not_observed when every discovery relay failed", async () => {
     const result = await resolveForTest({
-      relayUrls: ["wss://read.example"],
+      relayUrls: ["wss://read.conduit.market"],
       fetchEventsWithDiagnostics: diagnostics({
         successful: [],
-        failed: ["wss://read.example"],
+        failed: ["wss://read.conduit.market"],
       }),
     })
 
@@ -113,10 +175,10 @@ describe("resolveInboxDeclaration", () => {
 
   it("keeps an empty partial lookup partial", async () => {
     const result = await resolveForTest({
-      relayUrls: ["wss://a.example", "wss://b.example"],
+      relayUrls: ["wss://a.conduit.market", "wss://b.conduit.market"],
       fetchEventsWithDiagnostics: diagnostics({
-        successful: ["wss://a.example"],
-        failed: ["wss://b.example"],
+        successful: ["wss://a.conduit.market"],
+        failed: ["wss://b.conduit.market"],
       }),
     })
 
@@ -125,9 +187,9 @@ describe("resolveInboxDeclaration", () => {
 
   it("reports not_observed only with complete empty coverage", async () => {
     const result = await resolveForTest({
-      relayUrls: ["wss://read.example"],
+      relayUrls: ["wss://read.conduit.market"],
       fetchEventsWithDiagnostics: diagnostics({
-        successful: ["wss://read.example"],
+        successful: ["wss://read.conduit.market"],
       }),
     })
 
@@ -137,41 +199,43 @@ describe("resolveInboxDeclaration", () => {
   it("selects the newest declaration deterministically", async () => {
     const older = declarationEvent({
       createdAt: 100,
-      relays: ["wss://old.example"],
+      relays: ["wss://old.conduit.market"],
     })
     const tieA = declarationEvent({
       createdAt: 200,
-      relays: ["wss://tie-a.example"],
+      relays: ["wss://tie-a.conduit.market"],
     })
     const tieB = declarationEvent({
       createdAt: 200,
-      relays: ["wss://tie-b.example"],
+      relays: ["wss://tie-b.conduit.market"],
     })
     const result = await resolveForTest({
-      relayUrls: ["wss://read.example"],
+      relayUrls: ["wss://read.conduit.market"],
       fetchEventsWithDiagnostics: diagnostics({
         events: [older, tieA, tieB],
-        successful: ["wss://read.example"],
+        successful: ["wss://read.conduit.market"],
       }),
     })
 
     expect(result.relayUrls).toEqual([
-      tieA.id < tieB.id ? "wss://tie-a.example" : "wss://tie-b.example",
+      tieA.id < tieB.id
+        ? "wss://tie-a.conduit.market"
+        : "wss://tie-b.conduit.market",
     ])
   })
 
   it("ignores declarations signed by other authors", async () => {
     const result = await resolveForTest({
-      relayUrls: ["wss://read.example"],
+      relayUrls: ["wss://read.conduit.market"],
       fetchEventsWithDiagnostics: diagnostics({
         events: [
           declarationEvent({
             secretKey: OTHER_SECRET,
             createdAt: 100,
-            relays: ["wss://attacker.example"],
+            relays: ["wss://attacker.conduit.market"],
           }),
         ],
-        successful: ["wss://read.example"],
+        successful: ["wss://read.conduit.market"],
       }),
     })
 
@@ -180,10 +244,10 @@ describe("resolveInboxDeclaration", () => {
 
   it("distinguishes a signed empty declaration from malformed relay tags", async () => {
     const result = await resolveForTest({
-      relayUrls: ["wss://read.example"],
+      relayUrls: ["wss://read.conduit.market"],
       fetchEventsWithDiagnostics: diagnostics({
         events: [declarationEvent({ createdAt: 100, relays: [] })],
-        successful: ["wss://read.example"],
+        successful: ["wss://read.conduit.market"],
       }),
     })
 
@@ -192,10 +256,10 @@ describe("resolveInboxDeclaration", () => {
     __resetInboxDeclarationCache()
     evidenceRepository = createInMemoryInboxDeclarationEvidenceRepository()
     const malformed = await resolveForTest({
-      relayUrls: ["wss://read.example"],
+      relayUrls: ["wss://read.conduit.market"],
       fetchEventsWithDiagnostics: diagnostics({
         events: [declarationEvent({ createdAt: 100, relays: ["ws://bad"] })],
-        successful: ["wss://read.example"],
+        successful: ["wss://read.conduit.market"],
       }),
     })
     expect(malformed.state).toBe("malformed")
@@ -203,55 +267,55 @@ describe("resolveInboxDeclaration", () => {
 
   it("keeps the last usable declaration for reads behind a newer malformed event", async () => {
     await resolveForTest({
-      relayUrls: ["wss://read.example"],
+      relayUrls: ["wss://read.conduit.market"],
       now: () => 0,
       fetchEventsWithDiagnostics: diagnostics({
         events: [
           declarationEvent({
             createdAt: 100,
-            relays: ["wss://inbox.example"],
+            relays: ["wss://inbox.conduit.market"],
           }),
         ],
-        successful: ["wss://read.example"],
+        successful: ["wss://read.conduit.market"],
       }),
     })
     const result = await resolveForTest({
-      relayUrls: ["wss://read.example"],
+      relayUrls: ["wss://read.conduit.market"],
       freshnessMs: 1,
       now: () => 1_000,
       fetchEventsWithDiagnostics: diagnostics({
         events: [declarationEvent({ createdAt: 200, relays: ["ws://bad"] })],
-        successful: ["wss://read.example"],
+        successful: ["wss://read.conduit.market"],
       }),
     })
 
     expect(result.state).toBe("malformed")
-    expect(result.retainedReadRelayUrls).toEqual(["wss://inbox.example"])
+    expect(result.retainedReadRelayUrls).toEqual(["wss://inbox.conduit.market"])
   })
 
   it("converges non-overlapping relay views when the blocker is observed first", async () => {
     const signedEmpty = declarationEvent({ createdAt: 200, relays: [] })
     const olderDeclared = declarationEvent({
       createdAt: 100,
-      relays: ["wss://older-inbox.example"],
+      relays: ["wss://older-inbox.conduit.market"],
     })
 
     const blocker = await resolveForTest({
-      relayUrls: ["wss://shared-a.example"],
+      relayUrls: ["wss://shared-a.conduit.market"],
       fetchEventsWithDiagnostics: diagnostics({
         events: [signedEmpty],
-        successful: ["wss://shared-a.example"],
+        successful: ["wss://shared-a.conduit.market"],
       }),
     })
     expect(blocker.state).toBe("signed_empty")
 
     __resetInboxDeclarationCache()
     const recovered = await resolveForTest({
-      relayUrls: ["wss://shared-b.example"],
+      relayUrls: ["wss://shared-b.conduit.market"],
       freshnessMs: 0,
       fetchEventsWithDiagnostics: diagnostics({
         events: [olderDeclared],
-        successful: ["wss://shared-b.example"],
+        successful: ["wss://shared-b.conduit.market"],
       }),
     })
 
@@ -259,7 +323,7 @@ describe("resolveInboxDeclaration", () => {
     expect(recovered.eventId).toBe(signedEmpty.id)
     expect(recovered.stale).toBe(true)
     expect(recovered.retainedReadRelayUrls).toEqual([
-      "wss://older-inbox.example",
+      "wss://older-inbox.conduit.market",
     ])
   })
 
@@ -267,32 +331,37 @@ describe("resolveInboxDeclaration", () => {
     const signedEmpty = declarationEvent({ createdAt: 200, relays: [] })
     const olderDeclared = declarationEvent({
       createdAt: 100,
-      relays: ["wss://older-inbox.example"],
+      relays: ["wss://older-inbox.conduit.market"],
     })
 
     const result = await resolveForTest({
-      relayUrls: ["wss://shared.example"],
+      relayUrls: ["wss://shared.conduit.market"],
       fetchEventsWithDiagnostics: diagnostics({
         events: [signedEmpty, olderDeclared],
-        successful: ["wss://shared.example"],
+        successful: ["wss://shared.conduit.market"],
       }),
     })
 
     expect(result.state).toBe("signed_empty")
     expect(result.eventId).toBe(signedEmpty.id)
-    expect(result.retainedReadRelayUrls).toEqual(["wss://older-inbox.example"])
+    expect(result.retainedReadRelayUrls).toEqual([
+      "wss://older-inbox.conduit.market",
+    ])
   })
 
   it("keeps omitted requested relays partial and bypasses the health filter", async () => {
     let skipHealthFilter: boolean | undefined
     const result = await resolveForTest({
-      relayUrls: ["wss://healthy.example", "wss://parked.example"],
+      relayUrls: [
+        "wss://healthy.conduit.market",
+        "wss://parked.conduit.market",
+      ],
       fetchEventsWithDiagnostics: async (_filter, options) => {
         skipHealthFilter = options?.skipHealthFilter
         return {
           events: [],
-          attemptedRelayUrls: ["wss://healthy.example"],
-          successfulRelayUrls: ["wss://healthy.example"],
+          attemptedRelayUrls: ["wss://healthy.conduit.market"],
+          successfulRelayUrls: ["wss://healthy.conduit.market"],
           failedRelayUrls: [],
         }
       },
@@ -301,14 +370,14 @@ describe("resolveInboxDeclaration", () => {
     expect(skipHealthFilter).toBe(true)
     expect(result.state).toBe("lookup_partial")
     expect(result.observation?.failedRelayUrls).toEqual([
-      "wss://parked.example",
+      "wss://parked.conduit.market",
     ])
   })
 
   it("does not hydrate a partial exact-event observation as fresh", async () => {
     const event = declarationEvent({
       createdAt: 100,
-      relays: ["wss://inbox.example"],
+      relays: ["wss://inbox.conduit.market"],
     })
     let fetches = 0
     const fetch = async () => {
@@ -317,28 +386,31 @@ describe("resolveInboxDeclaration", () => {
         ? {
             events: [event] as never,
             attemptedRelayUrls: [
-              "wss://shared-a.example",
-              "wss://shared-b.example",
+              "wss://shared-a.conduit.market",
+              "wss://shared-b.conduit.market",
             ],
-            successfulRelayUrls: ["wss://shared-a.example"],
-            failedRelayUrls: ["wss://shared-b.example"],
+            successfulRelayUrls: ["wss://shared-a.conduit.market"],
+            failedRelayUrls: ["wss://shared-b.conduit.market"],
           }
         : {
             events: [] as never,
             attemptedRelayUrls: [
-              "wss://shared-a.example",
-              "wss://shared-b.example",
+              "wss://shared-a.conduit.market",
+              "wss://shared-b.conduit.market",
             ],
             successfulRelayUrls: [],
             failedRelayUrls: [
-              "wss://shared-a.example",
-              "wss://shared-b.example",
+              "wss://shared-a.conduit.market",
+              "wss://shared-b.conduit.market",
             ],
           }
     }
 
     const first = await resolveForTest({
-      relayUrls: ["wss://shared-a.example", "wss://shared-b.example"],
+      relayUrls: [
+        "wss://shared-a.conduit.market",
+        "wss://shared-b.conduit.market",
+      ],
       fetchEventsWithDiagnostics: fetch,
       now: () => 1_000,
     })
@@ -346,7 +418,10 @@ describe("resolveInboxDeclaration", () => {
 
     __resetInboxDeclarationCache()
     const second = await resolveForTest({
-      relayUrls: ["wss://shared-a.example", "wss://shared-b.example"],
+      relayUrls: [
+        "wss://shared-a.conduit.market",
+        "wss://shared-b.conduit.market",
+      ],
       fetchEventsWithDiagnostics: fetch,
       now: () => 1_001,
     })
@@ -358,9 +433,12 @@ describe("resolveInboxDeclaration", () => {
   it("keeps later degraded observations stale across cache reset", async () => {
     const event = declarationEvent({
       createdAt: 100,
-      relays: ["wss://inbox.example"],
+      relays: ["wss://inbox.conduit.market"],
     })
-    const relayUrls = ["wss://shared-a.example", "wss://shared-b.example"]
+    const relayUrls = [
+      "wss://shared-a.conduit.market",
+      "wss://shared-b.conduit.market",
+    ]
     const degradedResults = [
       {
         name: "partial exact",
@@ -429,7 +507,7 @@ describe("resolveInboxDeclaration", () => {
   it("hydrates a complete source-ambiguous observation consistently", async () => {
     const event = declarationEvent({
       createdAt: 100,
-      relays: ["wss://inbox.example"],
+      relays: ["wss://inbox.conduit.market"],
     })
     let fetches = 0
     const fetch = async () => {
@@ -437,19 +515,22 @@ describe("resolveInboxDeclaration", () => {
       return {
         events: [event] as never,
         attemptedRelayUrls: [
-          "wss://shared-a.example",
-          "wss://shared-b.example",
+          "wss://shared-a.conduit.market",
+          "wss://shared-b.conduit.market",
         ],
         successfulRelayUrls: [
-          "wss://shared-a.example",
-          "wss://shared-b.example",
+          "wss://shared-a.conduit.market",
+          "wss://shared-b.conduit.market",
         ],
         failedRelayUrls: [],
       }
     }
 
     const first = await resolveForTest({
-      relayUrls: ["wss://shared-a.example", "wss://shared-b.example"],
+      relayUrls: [
+        "wss://shared-a.conduit.market",
+        "wss://shared-b.conduit.market",
+      ],
       fetchEventsWithDiagnostics: fetch,
       now: () => 1_000,
     })
@@ -458,7 +539,10 @@ describe("resolveInboxDeclaration", () => {
 
     __resetInboxDeclarationCache()
     const second = await resolveForTest({
-      relayUrls: ["wss://shared-a.example", "wss://shared-b.example"],
+      relayUrls: [
+        "wss://shared-a.conduit.market",
+        "wss://shared-b.conduit.market",
+      ],
       fetchEventsWithDiagnostics: fetch,
       freshnessMs: 60_000,
       now: () => 1_001,
@@ -493,26 +577,26 @@ describe("resolveInboxDeclaration", () => {
     const newer = declarationEvent({ createdAt: 200, relays: [] })
     const older = declarationEvent({
       createdAt: 100,
-      relays: ["wss://older.example"],
+      relays: ["wss://older.conduit.market"],
     })
 
     const newerResult = resolveInboxDeclaration(OWNER, {
-      relayUrls: ["wss://shared.example"],
+      relayUrls: ["wss://shared.conduit.market"],
       freshnessMs: 0,
       evidenceRepository: throwingRepository,
       fetchEventsWithDiagnostics: diagnostics({
         events: [newer],
-        successful: ["wss://shared.example"],
+        successful: ["wss://shared.conduit.market"],
       }),
     })
     await firstEntered
     const olderResult = resolveInboxDeclaration(OWNER, {
-      relayUrls: ["wss://shared.example"],
+      relayUrls: ["wss://shared.conduit.market"],
       freshnessMs: 0,
       evidenceRepository: throwingRepository,
       fetchEventsWithDiagnostics: diagnostics({
         events: [older],
-        successful: ["wss://shared.example"],
+        successful: ["wss://shared.conduit.market"],
       }),
     })
     releaseFirst()
@@ -554,20 +638,26 @@ describe("resolveInboxDeclaration", () => {
         createdAt: 100,
         relays: ["wss://inbox.example"],
       })
-      attachEventSourceRelayUrl(event as never, "wss://read-a.example")
+      attachEventSourceRelayUrl(event as never, "wss://read-a.conduit.market")
       const fetchFor = (coverage: "complete" | "partial") => async () => ({
         events: [event] as never,
-        attemptedRelayUrls: ["wss://read-a.example", "wss://read-b.example"],
+        attemptedRelayUrls: [
+          "wss://read-a.conduit.market",
+          "wss://read-b.conduit.market",
+        ],
         successfulRelayUrls:
           coverage === "complete"
-            ? ["wss://read-a.example", "wss://read-b.example"]
-            : ["wss://read-a.example"],
+            ? ["wss://read-a.conduit.market", "wss://read-b.conduit.market"]
+            : ["wss://read-a.conduit.market"],
         failedRelayUrls:
-          coverage === "complete" ? [] : ["wss://read-b.example"],
+          coverage === "complete" ? [] : ["wss://read-b.conduit.market"],
       })
 
       const first = resolveInboxDeclaration(OWNER, {
-        relayUrls: ["wss://read-a.example", "wss://read-b.example"],
+        relayUrls: [
+          "wss://read-a.conduit.market",
+          "wss://read-b.conduit.market",
+        ],
         freshnessMs: 0,
         evidenceRepository: repository,
         fetchEventsWithDiagnostics: fetchFor(testCase.firstCoverage),
@@ -575,7 +665,10 @@ describe("resolveInboxDeclaration", () => {
       })
       await firstEntered
       const second = resolveInboxDeclaration(OWNER, {
-        relayUrls: ["wss://read-a.example", "wss://read-b.example"],
+        relayUrls: [
+          "wss://read-a.conduit.market",
+          "wss://read-b.conduit.market",
+        ],
         freshnessMs: 0,
         evidenceRepository: repository,
         fetchEventsWithDiagnostics: fetchFor(testCase.secondCoverage),
@@ -605,27 +698,27 @@ describe("resolveInboxDeclaration", () => {
     const blocker = declarationEvent({ createdAt: 200, relays: [] })
     const older = declarationEvent({
       createdAt: 100,
-      relays: ["wss://older.example"],
+      relays: ["wss://older.conduit.market"],
     })
     await resolveInboxDeclaration(OWNER, {
-      relayUrls: ["wss://shared.example"],
+      relayUrls: ["wss://shared.conduit.market"],
       freshnessMs: 0,
       evidenceRepository: unavailableRepository,
       fetchEventsWithDiagnostics: diagnostics({
         events: [blocker],
-        successful: ["wss://shared.example"],
+        successful: ["wss://shared.conduit.market"],
       }),
     })
 
     const recoveredRepository =
       createInMemoryInboxDeclarationEvidenceRepository()
     const result = await resolveInboxDeclaration(OWNER, {
-      relayUrls: ["wss://shared.example"],
+      relayUrls: ["wss://shared.conduit.market"],
       freshnessMs: 0,
       evidenceRepository: recoveredRepository,
       fetchEventsWithDiagnostics: diagnostics({
         events: [older],
-        successful: ["wss://shared.example"],
+        successful: ["wss://shared.conduit.market"],
       }),
     })
 
@@ -649,16 +742,16 @@ describe("resolveInboxDeclaration", () => {
     }
     const declared = declarationEvent({
       createdAt: 100,
-      relays: ["wss://usable.example"],
+      relays: ["wss://usable.conduit.market"],
     })
     const blocker = declarationEvent({ createdAt: 200, relays: [] })
     await resolveInboxDeclaration(OWNER, {
-      relayUrls: ["wss://shared.example"],
+      relayUrls: ["wss://shared.conduit.market"],
       freshnessMs: 0,
       evidenceRepository: unavailableRepository,
       fetchEventsWithDiagnostics: diagnostics({
         events: [blocker, declared],
-        successful: ["wss://shared.example"],
+        successful: ["wss://shared.conduit.market"],
       }),
     })
 
@@ -677,12 +770,12 @@ describe("resolveInboxDeclaration", () => {
       },
     }
     const result = await resolveInboxDeclaration(OWNER, {
-      relayUrls: ["wss://shared.example"],
+      relayUrls: ["wss://shared.conduit.market"],
       freshnessMs: 0,
       evidenceRepository: recoveredRepository,
       fetchEventsWithDiagnostics: diagnostics({
         events: [declared],
-        successful: ["wss://shared.example"],
+        successful: ["wss://shared.conduit.market"],
       }),
     })
     const persisted = await getInboxDeclarationEvidence(
@@ -701,7 +794,7 @@ describe("resolveInboxDeclaration", () => {
     const durable = createInMemoryInboxDeclarationEvidenceRepository()
     const declared = declarationEvent({
       createdAt: 100,
-      relays: ["wss://usable.example"],
+      relays: ["wss://usable.conduit.market"],
     })
     const blocker = declarationEvent({ createdAt: 200, relays: [] })
     await mergeInboxDeclarationEvidence(
@@ -722,24 +815,31 @@ describe("resolveInboxDeclaration", () => {
 
     __resetInboxDeclarationCache()
     const result = await resolveInboxDeclaration(OWNER, {
-      relayUrls: ["wss://shared.example"],
+      relayUrls: ["wss://shared.conduit.market"],
       freshnessMs: 0,
       evidenceRepository: recoveringRepository,
       fetchEventsWithDiagnostics: diagnostics({
         events: [blocker],
-        successful: ["wss://shared.example"],
+        successful: ["wss://shared.conduit.market"],
       }),
     })
 
     expect(result.state).toBe("signed_empty")
-    expect(result.retainedReadRelayUrls).toEqual(["wss://usable.example"])
+    expect(result.retainedReadRelayUrls).toEqual([
+      "wss://usable.conduit.market",
+    ])
   })
 
   it("serves a fresh cached declaration without refetching", async () => {
     let fetches = 0
     const fetch = diagnostics({
-      events: [declarationEvent({ createdAt: 100, relays: ["wss://a"] })],
-      successful: ["wss://read.example"],
+      events: [
+        declarationEvent({
+          createdAt: 100,
+          relays: ["wss://a.conduit.market"],
+        }),
+      ],
+      successful: ["wss://read.conduit.market"],
     })
     const counting: typeof fetch = async () => {
       fetches += 1
@@ -747,12 +847,12 @@ describe("resolveInboxDeclaration", () => {
     }
 
     const first = await resolveForTest({
-      relayUrls: ["wss://read.example"],
+      relayUrls: ["wss://read.conduit.market"],
       fetchEventsWithDiagnostics: counting,
       now: () => 0,
     })
     const second = await resolveForTest({
-      relayUrls: ["wss://read.example"],
+      relayUrls: ["wss://read.conduit.market"],
       fetchEventsWithDiagnostics: counting,
       now: () => 1_000,
     })
@@ -768,7 +868,7 @@ describe("resolveInboxDeclaration", () => {
         name: "changed declaration",
         event: declarationEvent({
           createdAt: 200,
-          relays: ["wss://new-inbox.example"],
+          relays: ["wss://new-inbox.conduit.market"],
         }),
         state: "declared" as const,
       },
@@ -801,20 +901,20 @@ describe("resolveInboxDeclaration", () => {
       let networkReads = 0
       const oldEvent = declarationEvent({
         createdAt: 100,
-        relays: ["wss://old-inbox.example"],
+        relays: ["wss://old-inbox.conduit.market"],
       })
       const fetch = async () => {
         networkReads += 1
         return {
           events: [oldEvent] as never,
-          attemptedRelayUrls: ["wss://read.example"],
-          successfulRelayUrls: ["wss://read.example"],
+          attemptedRelayUrls: ["wss://read.conduit.market"],
+          successfulRelayUrls: ["wss://read.conduit.market"],
           failedRelayUrls: [],
         }
       }
 
       const first = await resolveInboxDeclaration(OWNER, {
-        relayUrls: ["wss://read.example"],
+        relayUrls: ["wss://read.conduit.market"],
         evidenceRepository: repository,
         fetchEventsWithDiagnostics: fetch,
         now: () => 1_000,
@@ -822,7 +922,7 @@ describe("resolveInboxDeclaration", () => {
       await durable.merge({
         pubkey: OWNER,
         signedEvent: candidate.event,
-        sourceRelayUrls: ["wss://other-tab.example"],
+        sourceRelayUrls: ["wss://other-tab.conduit.market"],
         observedAt: 1_001,
         completeObservedAt: 1_001,
         cachedAt: 1_001,
@@ -835,7 +935,7 @@ describe("resolveInboxDeclaration", () => {
       })
 
       const second = await resolveInboxDeclaration(OWNER, {
-        relayUrls: ["wss://read.example"],
+        relayUrls: ["wss://read.conduit.market"],
         evidenceRepository: repository,
         fetchEventsWithDiagnostics: fetch,
         now: () => 1_002,
@@ -855,22 +955,25 @@ describe("resolveInboxDeclaration", () => {
       fetches += 1
       return {
         events: [
-          declarationEvent({ createdAt: 100, relays: ["wss://a"] }),
+          declarationEvent({
+            createdAt: 100,
+            relays: ["wss://a.conduit.market"],
+          }),
         ] as never,
-        attemptedRelayUrls: ["wss://read.example"],
-        successfulRelayUrls: ["wss://read.example"],
+        attemptedRelayUrls: ["wss://read.conduit.market"],
+        successfulRelayUrls: ["wss://read.conduit.market"],
         failedRelayUrls: [],
       }
     }
 
     await resolveForTest({
-      relayUrls: ["wss://read.example"],
+      relayUrls: ["wss://read.conduit.market"],
       fetchEventsWithDiagnostics: counting,
       freshnessMs: 100,
       now: () => 0,
     })
     await resolveForTest({
-      relayUrls: ["wss://read.example"],
+      relayUrls: ["wss://read.conduit.market"],
       fetchEventsWithDiagnostics: counting,
       freshnessMs: 100,
       now: () => 200,
@@ -881,7 +984,7 @@ describe("resolveInboxDeclaration", () => {
     expect(getCachedInboxDeclaration(OWNER)?.stale).toBe(true)
 
     await resolveForTest({
-      relayUrls: ["wss://read.example"],
+      relayUrls: ["wss://read.conduit.market"],
       fetchEventsWithDiagnostics: counting,
       freshnessMs: 100,
       now: () => 201,
@@ -890,63 +993,63 @@ describe("resolveInboxDeclaration", () => {
   })
 
   it("preserves stronger cached evidence after a complete empty observation", async () => {
-    primeInboxDeclarationCache(OWNER, ["wss://inbox.example"], () => 0)
+    primeInboxDeclarationCache(OWNER, ["wss://inbox.conduit.market"], () => 0)
 
     const absent = await resolveForTest({
-      relayUrls: ["wss://read.example"],
+      relayUrls: ["wss://read.conduit.market"],
       freshnessMs: 1,
       now: () => 1_000,
       fetchEventsWithDiagnostics: diagnostics({
         events: [],
-        successful: ["wss://read.example"],
+        successful: ["wss://read.conduit.market"],
       }),
     })
     expect(absent.state).toBe("declared")
     expect(absent.stale).toBe(true)
     expect(getCachedInboxDeclaration(OWNER)?.relayUrls).toEqual([
-      "wss://inbox.example",
+      "wss://inbox.conduit.market",
     ])
 
     // A later transient failure continues to use the retained evidence.
     const failed = await resolveForTest({
-      relayUrls: ["wss://read.example"],
+      relayUrls: ["wss://read.conduit.market"],
       freshnessMs: 1,
       now: () => 2_000,
       fetchEventsWithDiagnostics: diagnostics({
         successful: [],
-        failed: ["wss://read.example"],
+        failed: ["wss://read.conduit.market"],
       }),
     })
     expect(failed.state).toBe("declared")
     expect(failed.stale).toBe(true)
-    expect(failed.relayUrls).toEqual(["wss://inbox.example"])
+    expect(failed.relayUrls).toEqual(["wss://inbox.conduit.market"])
   })
 
   it("falls back to the stale cached declaration when discovery is unavailable", async () => {
-    primeInboxDeclarationCache(OWNER, ["wss://inbox.example"], () => 0)
+    primeInboxDeclarationCache(OWNER, ["wss://inbox.conduit.market"], () => 0)
     const result = await resolveForTest({
-      relayUrls: ["wss://read.example"],
+      relayUrls: ["wss://read.conduit.market"],
       freshnessMs: 1,
       now: () => 1_000,
       fetchEventsWithDiagnostics: diagnostics({
         successful: [],
-        failed: ["wss://read.example"],
+        failed: ["wss://read.conduit.market"],
       }),
     })
 
     expect(result.state).toBe("declared")
     expect(result.stale).toBe(true)
-    expect(result.relayUrls).toEqual(["wss://inbox.example"])
+    expect(result.relayUrls).toEqual(["wss://inbox.conduit.market"])
   })
 })
 
 describe("inbox declaration discovery planning", () => {
   it("reserves shared discovery before owner-local relays under the cap", () => {
     const owner = [
-      "wss://owner-one.example",
-      "wss://owner-two.example",
-      "wss://owner-three.example",
-      "wss://owner-four.example",
+      "wss://owner-one.conduit.market",
+      "wss://owner-two.conduit.market",
+      "wss://owner-three.conduit.market",
+      "wss://owner-four.conduit.market",
     ]
 
     expect(inboxDeclarationPublishRelayUrls(owner)).toEqual([
@@ -960,104 +1063,139 @@ describe("inbox declaration discovery planning", () => {
 describe("planInboxReadRelays", () => {
   it("unions declared, local IN, and compatibility reads with sources", () => {
     const plan = planInboxReadRelays({
-      declaration: resolution({ relayUrls: ["wss://inbox.example"] }),
-      localReadRelayUrls: ["wss://local.example"],
-      compatibilityRelayUrls: ["wss://compat.example", "wss://inbox.example"],
+      declaration: resolution({ relayUrls: ["wss://inbox.conduit.market"] }),
+      localReadRelayUrls: ["wss://local.conduit.market"],
+      compatibilityRelayUrls: [
+        "wss://compat.conduit.market",
+        "wss://inbox.conduit.market",
+      ],
     })
 
     expect(plan.relayUrls).toEqual([
-      "wss://inbox.example",
-      "wss://local.example",
-      "wss://compat.example",
+      "wss://inbox.conduit.market",
+      "wss://local.conduit.market",
+      "wss://compat.conduit.market",
     ])
-    expect(plan.relaySources["wss://inbox.example"]).toBe("declared")
-    expect(plan.relaySources["wss://local.example"]).toBe("local_in")
-    expect(plan.relaySources["wss://compat.example"]).toBe("compatibility")
+    expect(plan.relaySources["wss://inbox.conduit.market"]).toBe("declared")
+    expect(plan.relaySources["wss://local.conduit.market"]).toBe("local_in")
+    expect(plan.relaySources["wss://compat.conduit.market"]).toBe(
+      "compatibility"
+    )
     expect(plan.source).toBe("mixed")
   })
 
   it("keeps compatibility reads when local settings are nonempty", () => {
     const plan = planInboxReadRelays({
       declaration: resolution({ state: "not_observed", relayUrls: [] }),
-      localReadRelayUrls: ["wss://local.example"],
-      compatibilityRelayUrls: ["wss://compat.example"],
+      localReadRelayUrls: ["wss://local.conduit.market"],
+      compatibilityRelayUrls: ["wss://compat.conduit.market"],
     })
 
-    expect(plan.relayUrls).toContain("wss://compat.example")
-    expect(plan.relayUrls).toContain("wss://local.example")
+    expect(plan.relayUrls).toContain("wss://compat.conduit.market")
+    expect(plan.relayUrls).toContain("wss://local.conduit.market")
   })
 
   it("reserves approved compatibility write targets inside a capped read plan", () => {
     const plan = planInboxReadRelays({
       declaration: resolution({ state: "not_observed", relayUrls: [] }),
       localReadRelayUrls: [
-        "wss://local-one.example",
-        "wss://local-two.example",
-        "wss://local-three.example",
+        "wss://local-one.conduit.market",
+        "wss://local-two.conduit.market",
+        "wss://local-three.conduit.market",
       ],
       compatibilityRelayUrls: [
-        "wss://conduit.example",
-        "wss://inbox.example",
-        "wss://interop.example",
-        "wss://public.example",
+        "wss://commerce.conduit.market",
+        "wss://inbox.conduit.market",
+        "wss://interop.conduit.market",
+        "wss://public.conduit.market",
       ],
       requiredCompatibilityRelayUrls: [
-        "wss://conduit.example",
-        "wss://inbox.example",
-        "wss://interop.example",
-        "wss://not-in-read-set.example",
+        "wss://commerce.conduit.market",
+        "wss://inbox.conduit.market",
+        "wss://interop.conduit.market",
+        "wss://not-in-read-set.conduit.market",
       ],
       maxRelays: 4,
     })
 
     expect(plan.relayUrls).toEqual([
-      "wss://conduit.example",
-      "wss://inbox.example",
-      "wss://interop.example",
-      "wss://local-one.example",
+      "wss://commerce.conduit.market",
+      "wss://inbox.conduit.market",
+      "wss://interop.conduit.market",
+      "wss://local-one.conduit.market",
     ])
   })
 
   it("uses the cached declared relays when discovery degraded", () => {
-    primeInboxDeclarationCache(OWNER, ["wss://cached-inbox.example"], () => 0)
+    primeInboxDeclarationCache(
+      OWNER,
+      ["wss://cached-inbox.conduit.market"],
+      () => 0
+    )
     const plan = planInboxReadRelays({
       declaration: resolution({
         state: "lookup_unavailable",
         relayUrls: [],
       }),
       localReadRelayUrls: [],
-      compatibilityRelayUrls: ["wss://compat.example"],
+      compatibilityRelayUrls: ["wss://compat.conduit.market"],
     })
 
     expect(plan.relayUrls).toEqual([
-      "wss://cached-inbox.example",
-      "wss://compat.example",
+      "wss://cached-inbox.conduit.market",
+      "wss://compat.conduit.market",
     ])
-    expect(plan.relaySources["wss://cached-inbox.example"]).toBe("cache")
+    expect(plan.relaySources["wss://cached-inbox.conduit.market"]).toBe("cache")
+  })
+
+  it("does not restore a private cached declaration outside the exact owner context", () => {
+    const localRelay = "wss://127.0.0.1:7447"
+    const publicRelay = "wss://cached-inbox.conduit.market"
+    primeInboxDeclarationCache(OWNER, [localRelay, publicRelay], () => 0)
+    const declaration = resolution({
+      state: "lookup_unavailable",
+      relayUrls: [],
+    })
+
+    const thirdPartyPlan = planInboxReadRelays({
+      declaration,
+      authenticatedPubkey: "different-owner",
+      localReadRelayUrls: [localRelay],
+      compatibilityRelayUrls: [],
+    })
+    const ownerPlan = planInboxReadRelays({
+      declaration,
+      authenticatedPubkey: OWNER,
+      localReadRelayUrls: [localRelay],
+      compatibilityRelayUrls: [],
+    })
+
+    expect(thirdPartyPlan.relayUrls).toEqual([publicRelay])
+    expect(ownerPlan.relayUrls).toEqual([localRelay, publicRelay])
   })
 
   it("caps the plan at maxRelays preserving priority order", () => {
     const plan = planInboxReadRelays({
-      declaration: resolution({ relayUrls: ["wss://inbox.example"] }),
-      localReadRelayUrls: ["wss://local.example"],
-      compatibilityRelayUrls: ["wss://compat.example"],
+      declaration: resolution({ relayUrls: ["wss://inbox.conduit.market"] }),
+      localReadRelayUrls: ["wss://local.conduit.market"],
+      compatibilityRelayUrls: ["wss://compat.conduit.market"],
       maxRelays: 2,
     })
 
     expect(plan.relayUrls).toEqual([
-      "wss://inbox.example",
-      "wss://local.example",
+      "wss://inbox.conduit.market",
+      "wss://local.conduit.market",
     ])
   })
 
   it("drops insecure relay urls from every source", () => {
     const plan = planInboxReadRelays({
-      declaration: resolution({ relayUrls: ["ws://inbox.example"] }),
-      localReadRelayUrls: ["ws://local.example"],
-      compatibilityRelayUrls: ["wss://compat.example"],
+      declaration: resolution({ relayUrls: ["ws://inbox.conduit.market"] }),
+      localReadRelayUrls: ["ws://local.conduit.market"],
+      compatibilityRelayUrls: ["wss://compat.conduit.market"],
     })
 
-    expect(plan.relayUrls).toEqual(["wss://compat.example"])
+    expect(plan.relayUrls).toEqual(["wss://compat.conduit.market"])
   })
 })
 
@@ -1088,14 +1226,14 @@ describe("selectPrivateMessageDeliveryRoute", () => {
   it("always prefers a valid declaration over compatibility", () => {
     const selection = selectPrivateMessageDeliveryRoute({
       rumorKind: EVENT_KINDS.ORDER,
-      declaration: resolution({ relayUrls: ["wss://inbox.example"] }),
+      declaration: resolution({ relayUrls: ["wss://inbox.conduit.market"] }),
       validatedOrder: true,
       compatibilityEnabled: true,
-      compatibilityRelayUrls: ["wss://compatibility.example"],
+      compatibilityRelayUrls: ["wss://compatibility.conduit.market"],
     })
 
     expect(selection.route).toBe("declared_inbox")
-    expect(selection.relayUrls).toEqual(["wss://inbox.example"])
+    expect(selection.relayUrls).toEqual(["wss://inbox.conduit.market"])
   })
 
   it("routes a validated order to a bounded compatibility plan when enabled", () => {
@@ -1105,18 +1243,18 @@ describe("selectPrivateMessageDeliveryRoute", () => {
       validatedOrder: true,
       compatibilityEnabled: true,
       compatibilityRelayUrls: [
-        "wss://one.example",
-        "wss://two.example",
-        "wss://three.example",
-        "wss://four.example",
+        "wss://one.conduit.market",
+        "wss://two.conduit.market",
+        "wss://three.conduit.market",
+        "wss://four.conduit.market",
       ],
     })
 
     expect(selection.route).toBe("compatibility_order")
     expect(selection.relayUrls).toEqual([
-      "wss://one.example",
-      "wss://two.example",
-      "wss://three.example",
+      "wss://one.conduit.market",
+      "wss://two.conduit.market",
+      "wss://three.conduit.market",
     ])
   })
 
@@ -1125,21 +1263,21 @@ describe("selectPrivateMessageDeliveryRoute", () => {
       rumorKind: EVENT_KINDS.ORDER,
       declaration: resolution({
         relayUrls: [
-          "wss://declared-one.example",
-          "wss://declared-two.example",
-          "wss://declared-three.example",
-          "wss://declared-four.example",
+          "wss://declared-one.conduit.market",
+          "wss://declared-two.conduit.market",
+          "wss://declared-three.conduit.market",
+          "wss://declared-four.conduit.market",
         ],
       }),
       validatedOrder: true,
       compatibilityEnabled: true,
-      compatibilityRelayUrls: ["wss://compatibility.example"],
+      compatibilityRelayUrls: ["wss://compatibility.conduit.market"],
     })
 
     expect(selection.relayUrls).toEqual([
-      "wss://declared-one.example",
-      "wss://declared-two.example",
-      "wss://declared-three.example",
+      "wss://declared-one.conduit.market",
+      "wss://declared-two.conduit.market",
+      "wss://declared-three.conduit.market",
     ])
     expect(selection.truncated).toBe(true)
   })
@@ -1150,7 +1288,7 @@ describe("selectPrivateMessageDeliveryRoute", () => {
       declaration: resolution({ state: "not_observed", relayUrls: [] }),
       validatedOrder: true,
       compatibilityEnabled: false,
-      compatibilityRelayUrls: ["wss://compatibility.example"],
+      compatibilityRelayUrls: ["wss://compatibility.conduit.market"],
     })
 
     expect(selection.route).toBe("blocked")
@@ -1163,7 +1301,7 @@ describe("selectPrivateMessageDeliveryRoute", () => {
       declaration: resolution({ state: "not_observed", relayUrls: [] }),
       validatedOrder: false,
       compatibilityEnabled: true,
-      compatibilityRelayUrls: ["wss://compatibility.example"],
+      compatibilityRelayUrls: ["wss://compatibility.conduit.market"],
     })
 
     expect(selection.route).toBe("blocked")
@@ -1176,7 +1314,7 @@ describe("selectPrivateMessageDeliveryRoute", () => {
       declaration: resolution({ state: "not_observed", relayUrls: [] }),
       validatedOrder: false,
       compatibilityEnabled: true,
-      compatibilityRelayUrls: ["wss://compatibility.example"],
+      compatibilityRelayUrls: ["wss://compatibility.conduit.market"],
     })
 
     expect(selection.route).toBe("blocked")
@@ -1188,7 +1326,7 @@ describe("selectPrivateMessageDeliveryRoute", () => {
       declaration: resolution({ state: "malformed", relayUrls: [] }),
       validatedOrder: true,
       compatibilityEnabled: true,
-      compatibilityRelayUrls: ["wss://compatibility.example"],
+      compatibilityRelayUrls: ["wss://compatibility.conduit.market"],
     })
 
     expect(selection.route).toBe("blocked")
@@ -1201,7 +1339,7 @@ describe("selectPrivateMessageDeliveryRoute", () => {
       declaration: resolution({ state: "signed_empty", relayUrls: [] }),
       validatedOrder: true,
       compatibilityEnabled: true,
-      compatibilityRelayUrls: ["wss://compatibility.example"],
+      compatibilityRelayUrls: ["wss://compatibility.conduit.market"],
     })
 
     expect(selection.route).toBe("blocked")
@@ -1244,7 +1382,7 @@ describe("selectPrivateMessageDeliveryRoute", () => {
       declaration: resolution({ state: "not_observed", relayUrls: [] }),
       validatedOrder: true,
       compatibilityEnabled: true,
-      compatibilityRelayUrls: ["ws://insecure.example"],
+      compatibilityRelayUrls: ["ws://insecure.conduit.market"],
     })
 
     expect(selection.route).toBe("blocked")
@@ -1255,49 +1393,49 @@ describe("planCompatibilityOrderRelays", () => {
   it("normalizes, deduplicates, and caps the approved pool", () => {
     const plan = planCompatibilityOrderRelays({
       approvedRelayUrls: [
-        "WSS://One.Example/",
-        "wss://one.example",
-        "wss://two.example",
-        "ws://insecure.example",
-        "wss://three.example",
-        "wss://four.example",
+        "WSS://One.Conduit.Market/",
+        "wss://one.conduit.market",
+        "wss://two.conduit.market",
+        "ws://insecure.conduit.market",
+        "wss://three.conduit.market",
+        "wss://four.conduit.market",
       ],
       recipientReadRelayUrls: [],
       maxRelays: 3,
     })
 
     expect(plan.relayUrls).toEqual([
-      "wss://one.example",
-      "wss://two.example",
-      "wss://three.example",
+      "wss://one.conduit.market",
+      "wss://two.conduit.market",
+      "wss://three.conduit.market",
     ])
   })
 
   it("lets signed recipient read evidence reorder but never widen the approved pool", () => {
     const plan = planCompatibilityOrderRelays({
       approvedRelayUrls: [
-        "wss://one.example",
-        "wss://two.example",
-        "wss://three.example",
+        "wss://one.conduit.market",
+        "wss://two.conduit.market",
+        "wss://three.conduit.market",
       ],
       recipientReadRelayUrls: [
-        "wss://arbitrary.example",
-        "wss://three.example/",
-        "wss://one.example",
+        "wss://arbitrary.conduit.market",
+        "wss://three.conduit.market/",
+        "wss://one.conduit.market",
       ],
       maxRelays: 3,
     })
 
     expect(plan.relayUrls).toEqual([
-      "wss://three.example",
-      "wss://one.example",
-      "wss://two.example",
+      "wss://three.conduit.market",
+      "wss://one.conduit.market",
+      "wss://two.conduit.market",
     ])
-    expect(plan.relayUrls).not.toContain("wss://arbitrary.example")
+    expect(plan.relayUrls).not.toContain("wss://arbitrary.conduit.market")
     expect(plan.relaySources).toEqual({
-      "wss://three.example": "recipient_nip65",
-      "wss://one.example": "recipient_nip65",
-      "wss://two.example": "compatibility_registry",
+      "wss://three.conduit.market": "recipient_nip65",
+      "wss://one.conduit.market": "recipient_nip65",
+      "wss://two.conduit.market": "compatibility_registry",
     })
   })
 })
