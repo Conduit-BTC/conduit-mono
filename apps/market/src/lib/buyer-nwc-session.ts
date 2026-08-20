@@ -178,6 +178,25 @@ export class BuyerNwcSession {
     }
   }
 
+  /**
+   * Freshness-aware warm for capability handoff between routes. A probe
+   * younger than `maxAgeMs` with a live reachable result is reused instead
+   * of re-opening relays; payment-time transport validation is unaffected.
+   */
+  ensureWarm(maxAgeMs: number): Promise<NwcSessionSnapshot> {
+    const snapshot = this.snapshot
+    if (
+      this.connection &&
+      snapshot.connection === this.connection &&
+      snapshot.lastWarmAt !== null &&
+      Date.now() - snapshot.lastWarmAt <= maxAgeMs &&
+      (snapshot.status === "reachable" || snapshot.status === "unsupported")
+    ) {
+      return Promise.resolve(snapshot)
+    }
+    return this.warm()
+  }
+
   warm(): Promise<NwcSessionSnapshot> {
     if (!this.connection) {
       this.snapshot = disconnectedSnapshot()
@@ -621,6 +640,17 @@ export function getBuyerNwcSession(walletId: string): BuyerNwcSession {
     buyerNwcSessions.set(walletId, session)
   }
   return session
+}
+
+export function getBuyerNwcSessionSnapshots(
+  walletIds: readonly string[]
+): Record<string, NwcSessionSnapshot> {
+  return Object.fromEntries(
+    walletIds.map((walletId) => [
+      walletId,
+      getBuyerNwcSession(walletId).getSnapshot(),
+    ])
+  )
 }
 
 export function closeBuyerNwcSession(walletId: string): void {

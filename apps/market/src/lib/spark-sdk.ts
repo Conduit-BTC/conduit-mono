@@ -211,12 +211,12 @@ export class FirstPartySparkSdkFactory implements SparkSdkFactory {
 
   async open(input: {
     walletId: string
-    seed: Parameters<SparkSdkFactory["open"]>[0]["seed"]
+    mnemonic: string
     accountNumber: number
   }): Promise<SparkSdkClient> {
     const module = await this.#getModule()
     const { wallet } = await module.initialize({
-      mnemonicOrSeed: input.seed.mnemonic,
+      mnemonicOrSeed: input.mnemonic,
       accountNumber: input.accountNumber,
       options: {
         log: false,

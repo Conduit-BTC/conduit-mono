@@ -218,6 +218,21 @@ function getWalletPaymentAttemptId(lifecycle: OrderLifecycle): string {
     : createWalletPaymentAttemptId()
 }
 
+function canStartOrReplaceOrderPayment(lifecycle: OrderLifecycle): boolean {
+  if (
+    lifecycle.orderDeliveryStatus !== "sent" ||
+    lifecycle.phase === "completed" ||
+    lifecycle.phase === "cancelled"
+  ) {
+    return false
+  }
+  return (
+    (lifecycle.paymentStatus === "not_started" &&
+      lifecycle.invoiceStatus === "not_requested") ||
+    lifecycle.paymentStatus === "failed"
+  )
+}
+
 export function getOrderLifecyclePaymentAdmission(
   lifecycle: OrderLifecycle | undefined,
   input: OrderPaymentClaimInput
@@ -226,16 +241,7 @@ export function getOrderLifecyclePaymentAdmission(
   if (!paymentClaimMatchesLifecycle(lifecycle, input)) {
     return "snapshot_mismatch"
   }
-  if (
-    lifecycle.orderDeliveryStatus !== "sent" ||
-    lifecycle.phase === "completed" ||
-    lifecycle.phase === "cancelled"
-  ) {
-    return "unsafe_state"
-  }
-  return (lifecycle.paymentStatus === "not_started" &&
-    lifecycle.invoiceStatus === "not_requested") ||
-    lifecycle.paymentStatus === "failed"
+  return canStartOrReplaceOrderPayment(lifecycle)
     ? "admissible"
     : "unsafe_state"
 }
@@ -374,16 +380,7 @@ export function getOrderPaymentTargetReplacementAdmission(
   lifecycle: OrderLifecycle | undefined
 ): OrderPaymentTargetReplacementAdmission {
   if (!lifecycle) return "missing"
-  if (
-    lifecycle.orderDeliveryStatus !== "sent" ||
-    lifecycle.phase === "completed" ||
-    lifecycle.phase === "cancelled"
-  ) {
-    return "unsafe_state"
-  }
-  return (lifecycle.paymentStatus === "not_started" &&
-    lifecycle.invoiceStatus === "not_requested") ||
-    lifecycle.paymentStatus === "failed"
+  return canStartOrReplaceOrderPayment(lifecycle)
     ? "replaceable"
     : "unsafe_state"
 }

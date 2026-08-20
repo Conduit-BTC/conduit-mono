@@ -20,11 +20,6 @@ import {
   normalizeSparkMnemonic,
 } from "./spark-recovery"
 
-export interface SparkSdkSeed {
-  type: "mnemonic"
-  mnemonic: string
-}
-
 export type SparkWalletNetwork = "mainnet" | "regtest"
 
 export interface SparkPreparedPayment {
@@ -104,7 +99,7 @@ export interface SparkSdkFactory {
   readonly network: SparkWalletNetwork
   open(input: {
     walletId: string
-    seed: SparkSdkSeed
+    mnemonic: string
     accountNumber: number
   }): Promise<SparkSdkClient>
 }
@@ -251,10 +246,7 @@ export class SparkWalletManager {
     await this.#open({
       walletId: input.walletId,
       accountNumber: input.accountNumber,
-      seed: {
-        type: "mnemonic",
-        mnemonic: normalizeSparkMnemonic(input.mnemonic),
-      },
+      mnemonic: normalizeSparkMnemonic(input.mnemonic),
     })
   }
 
@@ -965,12 +957,12 @@ export class SparkWalletManager {
 
   async #open(input: {
     walletId: string
-    seed: SparkSdkSeed
+    mnemonic: string
     accountNumber: number
   }): Promise<void> {
     await this.close(input.walletId)
     const identityKey = await getSparkWalletIdentityKey(
-      input.seed,
+      input.mnemonic,
       input.accountNumber,
       this.#factory.network
     )
@@ -1150,7 +1142,7 @@ function safeBigIntToNumber(value: number | bigint | undefined): number | null {
 }
 
 async function getSparkWalletIdentityKey(
-  seed: SparkSdkSeed,
+  mnemonic: string,
   accountNumber: number,
   network: SparkWalletNetwork
 ): Promise<string> {
@@ -1158,7 +1150,7 @@ async function getSparkWalletIdentityKey(
   // registrations cannot open the same native wallet concurrently. It is
   // never persisted, logged, or emitted as telemetry.
   return hashSensitiveScope(
-    `conduit:spark-wallet-identity:v2\0${network}\0${accountNumber}\0${seed.type}\0${seed.mnemonic}`
+    `conduit:spark-wallet-identity:v2\0${network}\0${accountNumber}\0mnemonic\0${mnemonic}`
   )
 }
 

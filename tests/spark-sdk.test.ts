@@ -356,7 +356,7 @@ describe("first-party Spark SDK adapter", () => {
 
     const client = await factory.open({
       walletId: "wallet-personal",
-      seed: { type: "mnemonic", mnemonic: MNEMONIC },
+      mnemonic: MNEMONIC,
       accountNumber: 7,
     })
 
@@ -430,7 +430,7 @@ describe("first-party Spark SDK adapter", () => {
     const open = factory
       .open({
         walletId: "wallet-personal",
-        seed: { type: "mnemonic", mnemonic: MNEMONIC },
+        mnemonic: MNEMONIC,
         accountNumber: 1,
       })
       .then((client) => {
@@ -514,7 +514,7 @@ describe("first-party Spark SDK adapter", () => {
 
     await factory.open({
       walletId: "wallet-restored",
-      seed: { type: "mnemonic", mnemonic: MNEMONIC },
+      mnemonic: MNEMONIC,
       accountNumber: 1,
     })
 
@@ -574,7 +574,7 @@ describe("first-party Spark SDK adapter", () => {
     await expect(
       factory.open({
         walletId: "wallet-stalled",
-        seed: { type: "mnemonic", mnemonic: MNEMONIC },
+        mnemonic: MNEMONIC,
         accountNumber: 0,
       })
     ).rejects.toThrow(
@@ -621,7 +621,7 @@ describe("first-party Spark SDK adapter", () => {
     await expect(
       factory.open({
         walletId: "wallet-personal",
-        seed: { type: "mnemonic", mnemonic: MNEMONIC },
+        mnemonic: MNEMONIC,
         accountNumber: 0,
       })
     ).rejects.toThrow("private mode")
@@ -1365,7 +1365,7 @@ function createFactory(
 async function openClient(factory: FirstPartySparkSdkFactory) {
   return factory.open({
     walletId: "wallet-personal",
-    seed: { type: "mnemonic", mnemonic: MNEMONIC },
+    mnemonic: MNEMONIC,
     accountNumber: getDefaultSparkAccountNumber(factory.network),
   })
 }

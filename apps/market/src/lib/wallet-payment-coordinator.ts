@@ -25,17 +25,13 @@ export class WalletProviderRegistry {
 
   constructor(providers: readonly RegisteredWalletProvider[] = []) {
     for (const provider of providers) {
-      this.register(provider)
+      if (this.#providers.has(provider.providerId)) {
+        throw new Error(
+          `Wallet provider "${provider.providerId}" is already registered.`
+        )
+      }
+      this.#providers.set(provider.providerId, provider)
     }
-  }
-
-  register(provider: RegisteredWalletProvider): void {
-    if (this.#providers.has(provider.providerId)) {
-      throw new Error(
-        `Wallet provider "${provider.providerId}" is already registered.`
-      )
-    }
-    this.#providers.set(provider.providerId, provider)
   }
 
   get(providerId: WalletProviderId): RegisteredWalletProvider | null {

@@ -12,6 +12,7 @@ import {
 import {
   closeBuyerNwcSession,
   getBuyerNwcSession,
+  getBuyerNwcSessionSnapshots,
   type NwcSessionSnapshot,
 } from "../lib/buyer-nwc-session"
 import {
@@ -67,6 +68,12 @@ import {
   notifyWalletChangeFallback,
   subscribeToWalletChangeFallback,
 } from "../lib/wallet-change-fallback"
+
+/**
+ * Reuse a recent live NWC probe across sequential route mounts. Explicit
+ * connects and payment attempts still perform their own live probes.
+ */
+const NWC_MOUNT_WARM_MAX_AGE_MS = 30_000
 
 export type WalletRuntimeState =
   | {
@@ -144,7 +151,12 @@ const lockedRuntime = (): WalletRuntimeState => ({
 
 const walletInitialization = new WalletInitializationCoordinator()
 
-export function useWallets(): UseWalletsReturn {
+export function useWallets(
+  options: { enabled?: boolean } = {}
+): UseWalletsReturn {
+  const enabled = options.enabled ?? true
+  const enabledRef = useRef(enabled)
+  enabledRef.current = enabled
   const registry = getMarketWalletRegistry()
   const store = getMarketWalletStore()
   const [wallets, setWallets] = useState<WalletDescriptor[]>([])
@@ -159,101 +171,103 @@ export function useWallets(): UseWalletsReturn {
   const [nwcSnapshots, setNwcSnapshots] = useState<
     Record<string, NwcSessionSnapshot>
   >({})
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(enabled)
   const [initializationError, setInitializationError] = useState<string | null>(
     null
   )
   const [walletSubscriptionEpoch, setWalletSubscriptionEpoch] = useState(0)
+  const initializationAttemptRef = useRef(0)
 
-  const reload = useCallback(async () => {
-    await reloadCoordinator.run(
-      async () => {
-        const nextWallets = await registry.list()
-        const sparkManager = getSparkWalletManager()
-        const openSparkRuntime = new Map<string, WalletRuntimeState>()
+  const reload = useCallback(
+    async (shouldApply: () => boolean = () => true) => {
+      await reloadCoordinator.run(
+        async () => {
+          const nextWallets = await registry.list()
+          const sparkManager = getSparkWalletManager()
+          const openSparkRuntime = new Map<string, WalletRuntimeState>()
 
-        if (sparkManager) {
-          await sparkManager.closeWalletsExcept(
-            new Set(
-              nextWallets
-                .filter((wallet) => wallet.providerId === "spark")
-                .map((wallet) => wallet.id)
+          if (sparkManager) {
+            await sparkManager.closeWalletsExcept(
+              new Set(
+                nextWallets
+                  .filter((wallet) => wallet.providerId === "spark")
+                  .map((wallet) => wallet.id)
+              )
             )
-          )
-          await Promise.all(
-            nextWallets.map(async (wallet) => {
-              if (
-                wallet.providerId !== "spark" ||
-                !sparkManager.isOpen(wallet.id)
-              ) {
-                return
-              }
-              try {
-                const balanceSats = await sparkManager.getBalance(wallet.id)
-                openSparkRuntime.set(wallet.id, {
-                  status: "ready",
-                  balanceMsats: balanceSats * 1_000,
-                  error: null,
-                })
-              } catch (error) {
-                openSparkRuntime.set(wallet.id, {
-                  status: "error",
-                  balanceMsats: null,
-                  error: getErrorMessage(
-                    error,
-                    "Could not refresh wallet balance."
-                  ),
-                })
-              }
-            })
-          )
-        }
+            await Promise.all(
+              nextWallets.map(async (wallet) => {
+                if (
+                  wallet.providerId !== "spark" ||
+                  !sparkManager.isOpen(wallet.id)
+                ) {
+                  return
+                }
+                try {
+                  const balanceSats = await sparkManager.getBalance(wallet.id)
+                  openSparkRuntime.set(wallet.id, {
+                    status: "ready",
+                    balanceMsats: balanceSats * 1_000,
+                    error: null,
+                  })
+                } catch (error) {
+                  openSparkRuntime.set(wallet.id, {
+                    status: "error",
+                    balanceMsats: null,
+                    error: getErrorMessage(
+                      error,
+                      "Could not refresh wallet balance."
+                    ),
+                  })
+                }
+              })
+            )
+          }
 
-        return { nextWallets, openSparkRuntime }
-      },
-      ({ nextWallets, openSparkRuntime }) => {
-        for (const walletId of getRemovedWalletIdsForProvider(
-          walletsRef.current,
-          nextWallets,
-          "nwc"
-        )) {
-          closeBuyerNwcSession(walletId)
-        }
-        walletsRef.current = nextWallets
-        setWallets(nextWallets)
-        const nextNwcWalletIds = new Set(
-          nextWallets
+          return { nextWallets, openSparkRuntime }
+        },
+        ({ nextWallets, openSparkRuntime }) => {
+          if (!enabledRef.current || !shouldApply()) return
+          for (const walletId of getRemovedWalletIdsForProvider(
+            walletsRef.current,
+            nextWallets,
+            "nwc"
+          )) {
+            closeBuyerNwcSession(walletId)
+          }
+          walletsRef.current = nextWallets
+          setWallets(nextWallets)
+          const nextNwcWalletIds = nextWallets
             .filter((wallet) => wallet.providerId === "nwc")
             .map((wallet) => wallet.id)
-        )
-        setNwcSnapshots((current) =>
-          Object.fromEntries(
-            Object.entries(current).filter(([walletId]) =>
-              nextNwcWalletIds.has(walletId)
-            )
-          )
-        )
-        setRuntime((current) => {
-          const next = { ...current }
-          for (const wallet of nextWallets) {
-            if (wallet.providerId === "spark") {
-              next[wallet.id] =
-                openSparkRuntime.get(wallet.id) ?? lockedRuntime()
-            } else {
-              next[wallet.id] ??= lockedRuntime()
+          const nextNwcSnapshots = getBuyerNwcSessionSnapshots(nextNwcWalletIds)
+          setNwcSnapshots(nextNwcSnapshots)
+          setRuntime((current) => {
+            const next = { ...current }
+            for (const wallet of nextWallets) {
+              if (wallet.providerId === "spark") {
+                next[wallet.id] =
+                  openSparkRuntime.get(wallet.id) ?? lockedRuntime()
+              } else if (wallet.providerId === "nwc") {
+                next[wallet.id] = getNwcRuntimeState(
+                  nextNwcSnapshots[wallet.id]
+                )
+              } else {
+                next[wallet.id] ??= lockedRuntime()
+              }
             }
-          }
-          for (const walletId of Object.keys(next)) {
-            if (!nextWallets.some((wallet) => wallet.id === walletId)) {
-              delete next[walletId]
+            for (const walletId of Object.keys(next)) {
+              if (!nextWallets.some((wallet) => wallet.id === walletId)) {
+                delete next[walletId]
+              }
             }
-          }
-          return next
-        })
-      }
-    )
-    await reloadCoordinator.waitForLatest()
-  }, [registry, reloadCoordinator])
+            return next
+          })
+        }
+      )
+      await reloadCoordinator.waitForLatest()
+    },
+    [registry, reloadCoordinator]
+  )
 
   const refreshAfterCommittedWalletMutation = useCallback(async () => {
     notifyWalletChangeFallback()
@@ -272,25 +286,46 @@ export function useWallets(): UseWalletsReturn {
   }, [reload, subscriptionCoordinator])
 
   const retryInitialization = useCallback(async () => {
+    const attempt = initializationAttemptRef.current + 1
+    initializationAttemptRef.current = attempt
+    const isCurrentAttempt = () =>
+      enabledRef.current && initializationAttemptRef.current === attempt
     setLoading(true)
     setInitializationError(null)
     try {
       await walletInitialization.run(initializeWalletStorage)
-      await reload()
+      if (!isCurrentAttempt()) return
+      await reload(isCurrentAttempt)
+      if (!isCurrentAttempt()) return
       setWalletSubscriptionEpoch(subscriptionCoordinator.start())
     } catch {
-      setInitializationError(WALLET_STORAGE_INITIALIZATION_ERROR)
+      if (isCurrentAttempt()) {
+        setInitializationError(WALLET_STORAGE_INITIALIZATION_ERROR)
+      }
     } finally {
-      setLoading(false)
+      if (initializationAttemptRef.current === attempt) {
+        setLoading(false)
+      }
     }
   }, [reload, subscriptionCoordinator])
 
   useEffect(() => {
+    if (!enabled) {
+      initializationAttemptRef.current += 1
+      walletsRef.current = []
+      setWallets([])
+      setRuntime({})
+      setNwcSnapshots({})
+      setWalletSubscriptionEpoch(0)
+      setInitializationError(null)
+      setLoading(false)
+      return
+    }
     void retryInitialization()
-  }, [retryInitialization])
+  }, [enabled, retryInitialization])
 
   useEffect(() => {
-    if (walletSubscriptionEpoch === 0) return
+    if (!enabled || walletSubscriptionEpoch === 0) return
 
     let active = true
     const reportSynchronization = (outcome: "succeeded" | "failed") => {
@@ -331,9 +366,10 @@ export function useWallets(): UseWalletsReturn {
       unsubscribeDescriptorChanges()
       unsubscribeFallback()
     }
-  }, [reload, subscriptionCoordinator, walletSubscriptionEpoch])
+  }, [enabled, reload, subscriptionCoordinator, walletSubscriptionEpoch])
 
   useEffect(() => {
+    if (!enabled) return
     const manager = getSparkWalletManager()
     if (!manager) {
       return
@@ -351,9 +387,10 @@ export function useWallets(): UseWalletsReturn {
       active = false
       unsubscribe()
     }
-  }, [])
+  }, [enabled])
 
   useEffect(() => {
+    if (!enabled) return
     const unsubscribes: Array<() => void> = []
     let active = true
 
@@ -382,7 +419,7 @@ export function useWallets(): UseWalletsReturn {
             return
           }
           session.setConnection(parseNwcUri(uri))
-          const snapshot = await session.warm()
+          const snapshot = await session.ensureWarm(NWC_MOUNT_WARM_MAX_AGE_MS)
           if (!active || !snapshot.info) {
             return
           }
@@ -415,7 +452,7 @@ export function useWallets(): UseWalletsReturn {
         unsubscribe()
       }
     }
-  }, [refreshAfterCommittedWalletMutation, store, wallets])
+  }, [enabled, refreshAfterCommittedWalletMutation, store, wallets])
 
   const ensureDefault = useCallback(
     async (wallet: WalletDescriptor) => {

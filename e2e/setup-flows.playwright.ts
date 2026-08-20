@@ -578,6 +578,40 @@ test("market wallets route renders portable and connected wallet groups", async 
   await expect(connectWalletButton).toBeFocused()
 })
 
+test("portable wallet restore keeps derivation advanced and device-only fields clear", async ({
+  page,
+}) => {
+  await page.goto(`${marketUrl}/wallet`)
+  await page.getByRole("button", { name: "Add portable wallet" }).click()
+
+  const dialog = page.getByRole("dialog", { name: "Add a Spark wallet" })
+  await expect(dialog).toBeVisible()
+  const networkContext = dialog.getByText(/^Spark wallet · /)
+  await expect(networkContext).toBeVisible()
+  const networkLabel = await networkContext.textContent()
+
+  await dialog.getByRole("tab", { name: "Restore" }).click()
+  await expect(dialog.getByLabel("Recovery phrase")).toBeVisible()
+  const advancedSettings = dialog.locator("details")
+  await expect(advancedSettings).not.toHaveAttribute("open", "")
+  await advancedSettings.locator("summary").click()
+  await expect(dialog.getByLabel("Spark account number")).toHaveValue(
+    networkLabel?.endsWith("Regtest") ? "0" : "1"
+  )
+  await expect(dialog.getByLabel("Wallet nickname (optional)")).toBeVisible()
+  await expect(dialog.getByLabel("Local wallet password")).toBeVisible()
+  await expect(
+    dialog.getByText("Use this nickname to identify the wallet in Conduit.", {
+      exact: false,
+    })
+  ).toBeVisible()
+  await expect(
+    dialog.getByText("It is not the source wallet's password", {
+      exact: false,
+    })
+  ).toBeVisible()
+})
+
 test("market wallets remain available without a Nostr signer", async ({
   page,
 }) => {

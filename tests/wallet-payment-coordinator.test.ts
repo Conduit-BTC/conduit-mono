@@ -194,9 +194,7 @@ describe("WalletPaymentCoordinator", () => {
       status: "paid",
       preimage: "preimage",
     }))
-    const registry = new WalletProviderRegistry([provider])
-
-    expect(() => registry.register(provider)).toThrow(
+    expect(() => new WalletProviderRegistry([provider, provider])).toThrow(
       'Wallet provider "spark" is already registered.'
     )
   })

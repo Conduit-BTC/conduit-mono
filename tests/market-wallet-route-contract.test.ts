@@ -77,9 +77,17 @@ describe("Market wallet route contracts", () => {
     expect(content).toContain("Save your Spark recovery details")
     expect(content).toContain("Spark is currently supported.")
     expect(content).toContain("Spark wallet setup mode")
+    expect(content).toContain("Wallet nickname (optional)")
+    expect(content).toContain("On this device")
+    expect(content).toContain("Advanced recovery settings")
+    expect(content).toContain("MAX_SPARK_ACCOUNT_NUMBER")
+    expect(content).toContain("Change only if the source")
+    expect(content).toContain("wallet specifies a different account number.")
     expect(content).toContain(
-      "network. This password only unlocks it on this device."
+      "Use this nickname to identify the wallet in Conduit."
     )
+    expect(content).toContain("Encrypts the recovery phrase in this browser.")
+    expect(content).toContain("is not needed to")
     expect(content).toContain("BIP39 phrase, Spark account number, and network")
     expect(content).not.toContain("compatible Spark application")
     expect(content).not.toContain("The phrase is the cross-application backup")
@@ -98,7 +106,9 @@ describe("Market wallet route contracts", () => {
     expect(content).not.toContain("does not delete the Spark wallet")
     expect(content).toContain("getWalletProviderDescription")
     expect(content).toContain("getWalletNetworkLabel")
-    expect(content).toContain("This wallet can hold and send real bitcoin.")
+    expect(content).toContain(
+      "Uses real bitcoin and supports Lightning and Spark payments."
+    )
     expect(content).toContain("This wallet is separate from Bitcoin Mainnet.")
     expect(recoveryBundleDetails).toContain("Copy recovery details")
     expect(content).toContain("useShopperPricing")
@@ -113,13 +123,22 @@ describe("Market wallet route contracts", () => {
     expect(
       getWalletProviderDescription({
         kind: "portable",
+        providerId: "spark",
+        network: "mainnet",
+      })
+    ).toBe("Spark wallet · Mainnet")
+    expect(
+      getWalletProviderDescription({
+        kind: "portable",
         providerId: "wavelength",
+        network: "mainnet",
       })
     ).toBe("Wavelength Portable Wallet")
     expect(
       getWalletProviderDescription({
         kind: "connected",
         providerId: "nwc",
+        network: "mainnet",
       })
     ).toBe("Connected via NWC")
   })
@@ -254,7 +273,8 @@ describe("Market wallet route contracts", () => {
     expect(content).toContain("Wallet balance")
     expect(content).toContain("getKnownWalletPaymentConstraint")
     expect(content).toContain("Automatic wallet payment will be skipped")
-    expect(content).toContain("Send order and show invoice")
+    expect(content).toContain("Hold to send order and show invoice")
+    expect(content).toContain("HoldToReleaseButton")
     expect(content).toContain("if (canAttemptLightningPayment)")
     expect(content).toContain('selectedPaymentTarget.type === "wallet"')
     expect(content).toContain('selectedPaymentTarget.type === "webln"')
@@ -381,7 +401,7 @@ describe("Market wallet route contracts", () => {
       /Copying\s+a recovery phrase puts it on your system clipboard/
     )
     expect(wallet).toMatch(
-      /await wallets\.createSpark\(label, password\)\s+setPassword\(""\)/
+      /await wallets\.createSpark\(walletLabel, password\)\s+setPassword\(""\)/
     )
     expect(wallet).toContain("error ? (")
   })

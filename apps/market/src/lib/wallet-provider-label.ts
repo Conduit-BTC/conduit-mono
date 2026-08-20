@@ -10,9 +10,12 @@ export function getWalletProviderName(providerId: string): string {
 }
 
 export function getWalletProviderDescription(
-  wallet: Pick<WalletDescriptor, "kind" | "providerId">
+  wallet: Pick<WalletDescriptor, "kind" | "providerId" | "network">
 ): string {
   const providerName = getWalletProviderName(wallet.providerId)
+  if (wallet.providerId === "spark") {
+    return `Spark wallet · ${getWalletNetworkContextLabel(wallet.network)}`
+  }
   return wallet.kind === "portable"
     ? `${providerName} Portable Wallet`
     : `Connected via ${providerName}`
@@ -26,6 +29,19 @@ export function getWalletNetworkLabel(network: WalletNetwork): string {
       return "Bitcoin Testnet"
     case "signet":
       return "Bitcoin Signet"
+    case "regtest":
+      return "Regtest"
+  }
+}
+
+function getWalletNetworkContextLabel(network: WalletNetwork): string {
+  switch (network) {
+    case "mainnet":
+      return "Mainnet"
+    case "testnet":
+      return "Testnet"
+    case "signet":
+      return "Signet"
     case "regtest":
       return "Regtest"
   }

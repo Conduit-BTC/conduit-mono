@@ -6,6 +6,7 @@ import {
   __buyerNwcSessionTestInternals,
   closeBuyerNwcSession,
   getBuyerNwcSession,
+  getBuyerNwcSessionSnapshots,
 } from "../apps/market/src/lib/buyer-nwc-session"
 
 type FakeNwcClient = {
@@ -89,6 +90,22 @@ describe("BuyerNwcSession", () => {
 
     closeBuyerNwcSession("wallet-a")
     expect(getBuyerNwcSession("wallet-a")).not.toBe(walletA)
+  })
+
+  it("hydrates a pre-warmed session snapshot for route handoff", async () => {
+    __buyerNwcSessionTestInternals.__setClientFactory(() =>
+      fakeClient({
+        getInfo: async () => ({ methods: ["pay_invoice"] }),
+      })
+    )
+    const session = getBuyerNwcSession("wallet-a")
+    session.setConnection(connection)
+    await session.warm()
+
+    const snapshots = getBuyerNwcSessionSnapshots(["wallet-a"])
+
+    expect(snapshots["wallet-a"]).toBe(session.getSnapshot())
+    expect(snapshots["wallet-a"]?.status).toBe("reachable")
   })
 
   it("warms one client and reuses it for payment", async () => {

@@ -67,9 +67,13 @@ import {
 import type { NwcSessionSnapshot } from "../lib/buyer-nwc-session"
 import {
   getPortableWalletFormError,
+  getPortableWalletLabel,
+  resolvePortableWalletAccountNumber,
   type PortableWalletMode,
 } from "../lib/portable-wallet-form"
+import { MAX_SPARK_ACCOUNT_NUMBER } from "../lib/spark-recovery"
 import type { SparkRecoveryBundle } from "../lib/spark-recovery-bundle"
+import { getDefaultSparkAccountNumber } from "../lib/spark-sdk"
 import type {
   SparkPaymentSummary,
   SparkSendQuote,
@@ -623,9 +627,11 @@ function WalletRow({
             <p className="mt-1 text-sm text-[var(--text-secondary)]">
               {getWalletProviderDescription(wallet)}
             </p>
-            <p className="mt-1 text-xs text-[var(--text-muted)]">
-              {getWalletNetworkLabel(wallet.network)}
-            </p>
+            {wallet.providerId !== "spark" && (
+              <p className="mt-1 text-xs text-[var(--text-muted)]">
+                {getWalletNetworkLabel(wallet.network)}
+              </p>
+            )}
             <p className="mt-1 text-xs text-[var(--text-muted)]">{balance}</p>
             {capabilityPills.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-1.5">
@@ -852,11 +858,18 @@ function PortableWalletDialog({
   onOpenChange: (open: boolean) => void
   wallets: UseWalletsReturn
 }) {
+  const sparkNetwork =
+    wallets.sparkAvailability.status === "ready"
+      ? wallets.sparkAvailability.network
+      : null
+  const defaultSparkAccountNumber = sparkNetwork
+    ? getDefaultSparkAccountNumber(sparkNetwork)
+    : 1
   const [mode, setMode] = useState<PortableWalletMode>("create")
   const [label, setLabel] = useState("")
   const [password, setPassword] = useState("")
   const [mnemonic, setMnemonic] = useState("")
-  const [accountNumber, setAccountNumber] = useState("")
+  const [accountNumber, setAccountNumber] = useState("1")
   const [pendingAction, setPendingAction] = useState<"password" | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [createdRecovery, setCreatedRecovery] =
@@ -864,13 +877,8 @@ function PortableWalletDialog({
   const [recoverySaved, setRecoverySaved] = useState(false)
   const recoveryHeadingRef = useRef<HTMLHeadingElement>(null)
   const pending = pendingAction !== null
-  const sparkNetwork =
-    wallets.sparkAvailability.status === "ready"
-      ? wallets.sparkAvailability.network
-      : null
   const passwordSubmissionError = getPortableWalletFormError({
     mode,
-    label,
     password,
     mnemonic,
     accountNumber,
@@ -880,7 +888,7 @@ function PortableWalletDialog({
     setLabel("")
     setPassword("")
     setMnemonic("")
-    setAccountNumber("")
+    setAccountNumber(String(defaultSparkAccountNumber))
     setPendingAction(null)
     setError(null)
     setCreatedRecovery(null)
@@ -896,9 +904,15 @@ function PortableWalletDialog({
     setMode(nextMode)
     setPassword("")
     setMnemonic("")
-    setAccountNumber("")
+    setAccountNumber(String(defaultSparkAccountNumber))
     setError(null)
   }
+
+  useEffect(() => {
+    if (open) {
+      setAccountNumber(String(defaultSparkAccountNumber))
+    }
+  }, [defaultSparkAccountNumber, open])
 
   useEffect(() => {
     if (open && createdRecovery) {
@@ -914,8 +928,9 @@ function PortableWalletDialog({
     setPendingAction("password")
     setError(null)
     try {
+      const walletLabel = getPortableWalletLabel(label)
       if (mode === "create") {
-        const result = await wallets.createSpark(label, password)
+        const result = await wallets.createSpark(walletLabel, password)
         setPassword("")
         setCreatedRecovery({
           mnemonic: result.mnemonic,
@@ -924,10 +939,13 @@ function PortableWalletDialog({
         })
       } else {
         await wallets.importSpark({
-          label,
+          label: walletLabel,
           mnemonic,
           password,
-          accountNumber: Number(accountNumber),
+          accountNumber: resolvePortableWalletAccountNumber(
+            accountNumber,
+            defaultSparkAccountNumber
+          ),
         })
         close()
       }
@@ -987,8 +1005,7 @@ function PortableWalletDialog({
               <DialogTitle>Add a Spark wallet</DialogTitle>
               <DialogDescription>
                 Spark is the first Portable Wallet provider. Create a new wallet
-                or restore one with its recovery phrase, Spark account number,
-                and network.
+                or restore a standard wallet with its recovery phrase.
               </DialogDescription>
             </DialogHeader>
 
@@ -998,11 +1015,15 @@ function PortableWalletDialog({
                 className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3"
               >
                 <p className="text-sm font-medium text-[var(--text-primary)]">
-                  {getWalletNetworkLabel(sparkNetwork)}
+                  {getWalletProviderDescription({
+                    kind: "portable",
+                    providerId: "spark",
+                    network: sparkNetwork,
+                  })}
                 </p>
                 <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">
                   {sparkNetwork === "mainnet"
-                    ? "This wallet can hold and send real bitcoin."
+                    ? "Uses real bitcoin and supports Lightning and Spark payments."
                     : "Test funds only. This wallet is separate from Bitcoin Mainnet."}
                 </p>
               </div>
@@ -1036,28 +1057,6 @@ function PortableWalletDialog({
                   </TabsTrigger>
                 </TabsList>
 
-                <div className="grid gap-2">
-                  <Label htmlFor="portable-label">Wallet label</Label>
-                  <Input
-                    id="portable-label"
-                    value={label}
-                    onChange={(event) => {
-                      setLabel(event.target.value)
-                      setError(null)
-                    }}
-                    placeholder="Personal"
-                    autoComplete="off"
-                    required
-                    disabled={pending}
-                    aria-invalid={error === "Enter a wallet label."}
-                    aria-describedby={
-                      error === "Enter a wallet label."
-                        ? "portable-wallet-form-error"
-                        : undefined
-                    }
-                  />
-                </div>
-
                 <TabsContent value="create" className="mt-0">
                   <p className="text-xs leading-5 text-[var(--text-muted)]">
                     A recovery phrase and Spark account number will be generated
@@ -1089,88 +1088,119 @@ function PortableWalletDialog({
                       }
                     />
                   </div>
+                  <details className="rounded-xl border border-[var(--border)] px-4 py-3">
+                    <summary className="cursor-pointer rounded-sm text-sm font-medium text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500">
+                      Advanced recovery settings
+                    </summary>
+                    <div className="mt-4 grid gap-2">
+                      <Label htmlFor="portable-account">
+                        Spark account number
+                      </Label>
+                      <Input
+                        id="portable-account"
+                        type="number"
+                        min={0}
+                        max={MAX_SPARK_ACCOUNT_NUMBER}
+                        step={1}
+                        value={accountNumber}
+                        onChange={(event) => {
+                          setAccountNumber(event.target.value)
+                          setError(null)
+                        }}
+                        disabled={pending}
+                        aria-invalid={
+                          error === "Enter a valid Spark account number."
+                        }
+                        aria-describedby={
+                          error === "Enter a valid Spark account number."
+                            ? "portable-wallet-form-error portable-account-help"
+                            : "portable-account-help"
+                        }
+                      />
+                      <p
+                        id="portable-account-help"
+                        className="text-xs leading-5 text-[var(--text-muted)]"
+                      >
+                        Standard{" "}
+                        {sparkNetwork
+                          ? getWalletNetworkLabel(sparkNetwork)
+                          : "Mainnet"}{" "}
+                        wallets use Spark account number{" "}
+                        {defaultSparkAccountNumber}. Change only if the source
+                        wallet specifies a different account number.
+                      </p>
+                    </div>
+                  </details>
+                </TabsContent>
+
+                <fieldset className="grid gap-4 rounded-xl border border-[var(--border)] p-4">
+                  <legend className="px-1 text-sm font-medium text-[var(--text-primary)]">
+                    On this device
+                  </legend>
                   <div className="grid gap-2">
-                    <Label htmlFor="portable-account">
-                      Spark account number
+                    <Label htmlFor="portable-label">
+                      Wallet nickname (optional)
                     </Label>
                     <Input
-                      id="portable-account"
-                      type="number"
-                      min={0}
-                      max={0x7fffffff}
-                      step={1}
-                      value={accountNumber}
+                      id="portable-label"
+                      value={label}
                       onChange={(event) => {
-                        setAccountNumber(event.target.value)
+                        setLabel(event.target.value)
                         setError(null)
                       }}
+                      placeholder="Personal"
+                      autoComplete="off"
                       disabled={pending}
+                      aria-describedby="portable-label-help"
+                    />
+                    <p
+                      id="portable-label-help"
+                      className="text-xs leading-5 text-[var(--text-muted)]"
+                    >
+                      Use this nickname to identify the wallet in Conduit. It is
+                      stored only in this browser, is not included in the wallet
+                      backup, and is not restored on another device.
+                    </p>
+                  </div>
+
+                  <div className="grid gap-2">
+                    <Label htmlFor="portable-password">
+                      Local wallet password
+                    </Label>
+                    <Input
+                      id="portable-password"
+                      type="password"
+                      value={password}
+                      onChange={(event) => {
+                        setPassword(event.target.value)
+                        setError(null)
+                      }}
+                      autoComplete="new-password"
+                      placeholder="At least 10 characters"
+                      minLength={10}
                       required
+                      disabled={pending}
                       aria-invalid={
-                        error === "Enter a valid Spark account number." ||
                         error ===
-                          "Enter the Spark account number from the recovery bundle."
+                        "Use at least 10 characters for the local wallet password."
                       }
                       aria-describedby={
-                        error === "Enter a valid Spark account number." ||
                         error ===
-                          "Enter the Spark account number from the recovery bundle."
-                          ? "portable-wallet-form-error portable-account-help"
-                          : "portable-account-help"
+                        "Use at least 10 characters for the local wallet password."
+                          ? "portable-wallet-form-error portable-password-help"
+                          : "portable-password-help"
                       }
                     />
                     <p
-                      id="portable-account-help"
+                      id="portable-password-help"
                       className="text-xs leading-5 text-[var(--text-muted)]"
                     >
-                      {sparkNetwork
-                        ? `Enter the account number saved with the source wallet. Conduit-created ${getWalletNetworkLabel(
-                            sparkNetwork
-                          )} wallets use account ${
-                            sparkNetwork === "regtest" ? 0 : 1
-                          }.`
-                        : "Enter the account number saved with the source wallet."}
+                      Encrypts the recovery phrase in this browser. It is not
+                      the source wallet&apos;s password and is not needed to
+                      restore the wallet elsewhere.
                     </p>
                   </div>
-                </TabsContent>
-
-                <div className="grid gap-2">
-                  <Label htmlFor="portable-password">
-                    Local wallet password
-                  </Label>
-                  <Input
-                    id="portable-password"
-                    type="password"
-                    value={password}
-                    onChange={(event) => {
-                      setPassword(event.target.value)
-                      setError(null)
-                    }}
-                    autoComplete="new-password"
-                    placeholder="At least 10 characters"
-                    minLength={10}
-                    required
-                    disabled={pending}
-                    aria-invalid={
-                      error ===
-                      "Use at least 10 characters for the local wallet password."
-                    }
-                    aria-describedby={
-                      error ===
-                      "Use at least 10 characters for the local wallet password."
-                        ? "portable-wallet-form-error portable-password-help"
-                        : "portable-password-help"
-                    }
-                  />
-                  <p
-                    id="portable-password-help"
-                    className="text-xs leading-5 text-[var(--text-muted)]"
-                  >
-                    Encrypts the recovery phrase on this device. To restore this
-                    Spark wallet, save the phrase, Spark account number, and
-                    network. This password only unlocks it on this device.
-                  </p>
-                </div>
+                </fieldset>
 
                 {error && (
                   <p

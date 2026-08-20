@@ -1,33 +1,25 @@
 import { describe, expect, it } from "bun:test"
 
-import { getPortableWalletFormError } from "../apps/market/src/lib/portable-wallet-form"
+import {
+  getPortableWalletFormError,
+  getPortableWalletLabel,
+  resolvePortableWalletAccountNumber,
+} from "../apps/market/src/lib/portable-wallet-form"
 
 describe("Portable Wallet form validation", () => {
-  it("requires the label, phrase, and a valid account override", () => {
+  it("requires the phrase and validates a supplied account override", () => {
     expect(
       getPortableWalletFormError({
         mode: "restore",
-        label: "",
-        password: "",
-        mnemonic: "",
-        accountNumber: "",
-      })
-    ).toBe("Enter a wallet label.")
-
-    expect(
-      getPortableWalletFormError({
-        mode: "restore",
-        label: "Recovered Spark",
         password: "long-enough-password",
         mnemonic: "",
-        accountNumber: "0",
+        accountNumber: "",
       })
     ).toBe("Enter the recovery phrase.")
 
     expect(
       getPortableWalletFormError({
         mode: "restore",
-        label: "Recovered Spark",
         password: "long-enough-password",
         mnemonic: "synthetic recovery words",
         accountNumber: "-1",
@@ -35,23 +27,21 @@ describe("Portable Wallet form validation", () => {
     ).toBe("Enter a valid Spark account number.")
   })
 
-  it("requires the explicit Spark account number from the recovery bundle", () => {
+  it("accepts the standard inferred Spark account number", () => {
     expect(
       getPortableWalletFormError({
         mode: "restore",
-        label: "Recovered Spark",
         password: "long-enough-password",
         mnemonic: "synthetic recovery words",
         accountNumber: "",
       })
-    ).toBe("Enter the Spark account number from the recovery bundle.")
+    ).toBeNull()
   })
 
   it("accepts complete create and restore submissions", () => {
     expect(
       getPortableWalletFormError({
         mode: "create",
-        label: "New Spark",
         password: "long-enough-password",
         mnemonic: "",
         accountNumber: "0",
@@ -61,7 +51,6 @@ describe("Portable Wallet form validation", () => {
     expect(
       getPortableWalletFormError({
         mode: "restore",
-        label: "Recovered Spark",
         password: "long-enough-password",
         mnemonic: "synthetic recovery words",
         accountNumber: "1",
@@ -73,7 +62,6 @@ describe("Portable Wallet form validation", () => {
     expect(
       getPortableWalletFormError({
         mode: "create",
-        label: "New Spark",
         password: "too-short",
         mnemonic: "",
         accountNumber: "0",
@@ -84,7 +72,6 @@ describe("Portable Wallet form validation", () => {
   it("accepts only Spark account numbers in the hardened BIP32 range", () => {
     const input = {
       mode: "restore" as const,
-      label: "Recovered Spark",
       password: "long-enough-password",
       mnemonic: "synthetic recovery words",
     }
@@ -101,5 +88,17 @@ describe("Portable Wallet form validation", () => {
         accountNumber: "2147483648",
       })
     ).toBe("Enter a valid Spark account number.")
+  })
+
+  it("uses an optional nickname or a stable generated-label base", () => {
+    expect(getPortableWalletLabel("  Personal wallet  ")).toBe(
+      "Personal wallet"
+    )
+    expect(getPortableWalletLabel("   ")).toBe("Spark wallet")
+  })
+
+  it("uses Mainnet account 1 by default and preserves an explicit override", () => {
+    expect(resolvePortableWalletAccountNumber("", 1)).toBe(1)
+    expect(resolvePortableWalletAccountNumber("0", 1)).toBe(0)
   })
 })

@@ -12,8 +12,9 @@ receive or control wallet credentials or funds.
 - **Connected Wallet**: an external wallet authorized through a connection
   protocol. Nostr Wallet Connect (NWC) is the first Connected Wallet protocol.
 - **Provider**: the implementation behind a wallet, such as Spark or NWC.
-- **Wallet instance**: one user-labelled wallet registered on the device. A
-  provider may have multiple instances.
+- **Wallet instance**: one wallet registered on the device. A user may assign
+  an optional device-local nickname, and a provider may have multiple
+  instances.
 
 Spark must not be called "the Conduit wallet." Future providers must fit the
 Portable/Connected model without changing this terminology.
@@ -54,7 +55,8 @@ disconnecting a signer must never unlock or remove a wallet.
 Each Spark wallet has a user-chosen local password. Market derives an
 encryption key with PBKDF2-SHA-256 and stores only an AES-GCM encrypted recovery
 envelope in the device-local credential store. The password is not a wallet
-seed, is not stored, and cannot recover the wallet on another device.
+seed or the source wallet's password, is not stored, and is not needed to
+recover the wallet in another browser or application.
 
 The portable recovery bundle is the BIP39 mnemonic, explicit Spark account
 number, and network. Market can restore the same account from that bundle
@@ -63,6 +65,15 @@ another application must be verified for that specific application before it
 is advertised. Market must show all three values when a wallet is created and
 when an authenticated local user requests its recovery details.
 
+The standard production restore flow is phrase-first. On Mainnet it assumes
+Spark account number `1`, shows Mainnet as fixed deployment context, and does
+not require either value as a routine form entry. A collapsed **Advanced
+recovery settings** section may override the **Spark account number** when the
+source wallet used a non-standard account. Network is not editable while the
+Spark runtime is configured as one manager for the deployment network. These
+form defaults do not remove account number or network from the displayed and
+exported recovery bundle.
+
 ## Multi-wallet registry
 
 Market maintains a collection of wallet instances. Each descriptor contains:
@@ -70,7 +81,8 @@ Market maintains a collection of wallet instances. Each descriptor contains:
 - a locally generated opaque identifier;
 - kind (`portable` or `connected`);
 - provider identifier;
-- user-facing label;
+- user-facing device-local label, generated from `Spark wallet` when an
+  optional nickname is omitted;
 - network;
 - declared capabilities;
 - lifecycle status;
@@ -134,9 +146,11 @@ The initial Spark experience supports:
 - advanced direct Spark address send/receive for ecosystem interoperability.
 
 Identity derivation must use Spark's documented standard path and an explicit
-account number. Recovery material must include or deterministically fix the
-account number. Claimed cross-application recovery requires a real fixture or
-manual test against the named compatible application.
+account number. Mainnet standard recovery deterministically uses account number
+`1`; account `0` remains an explicit negative-control derivation for a Mainnet
+compatibility fixture. Recovery material must include the actual account
+number. Claimed cross-application recovery requires a fixed independently
+sourced fixture or manual test against the named compatible application.
 
 For BOLT11 checkout, the adapter must not prefer a direct Spark transfer when
 that would remove the Lightning preimage or invoice association expected by the
@@ -196,6 +210,15 @@ Removing a Portable Wallet requires recovery acknowledgement. A default marker
 belongs to an instance, not to a provider. Removal acknowledgement is scoped to
 the selected wallet instance and never carries over to another row.
 
+Spark setup and restore use Spark-specific network framing, such as **Spark
+wallet · Mainnet**, and state that a Mainnet wallet uses real bitcoin and
+supports Lightning and Spark payments. Restore presents the recovery phrase
+before collapsed advanced derivation settings. Optional **Wallet nickname** and
+required local password controls are grouped under **On this device**. The UI
+must explain that the nickname is local and not backed up, and that the password
+encrypts the recovery phrase in this browser, is not the source wallet's
+password, and is not needed elsewhere.
+
 The route is a device-owned surface and must render while signed out. Identity
 sign-in may still be required for order messaging and other Nostr workflows,
 but never merely to create, restore, unlock, receive with, or remove a local
@@ -236,6 +259,7 @@ Required coverage includes:
 - isolated Portable Wallet provider storage;
 - signed-out `/wallet`, dialog-state reset, and in-flight dismissal behavior;
 - password-encrypted device storage plus phrase/account/network recovery;
+- phrase-first Mainnet/account-`1` restore with an account-`0` negative control;
 - recovery and reopen behavior; and
 - content-free logs and telemetry.
 
