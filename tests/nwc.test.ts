@@ -6,6 +6,7 @@ import {
   classifyNwcPaymentError,
   getNwcConnectionDiagnostics,
   getNwcRelayDiagnostics,
+  getNwcUriFingerprint,
   nwcGetBalance,
   nwcGetInfo,
   nwcLookupInvoice,
@@ -85,6 +86,64 @@ afterEach(() => {
 })
 
 describe("NWC URI parsing", () => {
+  it("fingerprints equivalent modern and legacy connection URIs identically", () => {
+    const modernUri = [
+      `nostr+walletconnect://${connection.walletPubkey}`,
+      `?relay=${encodeURIComponent(connection.relays[0])}`,
+      `&secret=${connection.secret}`,
+      "&lud16=buyer%40example.com",
+    ].join("")
+    const legacyUri = [
+      `nostrwalletconnect://${connection.walletPubkey}`,
+      `?secret=${connection.secret}`,
+      `&relay=${encodeURIComponent(connection.relays[0])}`,
+    ].join("")
+
+    expect(getNwcUriFingerprint(legacyUri)).toBe(
+      getNwcUriFingerprint(modernUri)
+    )
+    expect(
+      getNwcUriFingerprint(modernUri.replace(connection.secret, "c".repeat(64)))
+    ).not.toBe(getNwcUriFingerprint(modernUri))
+    expect(
+      getNwcUriFingerprint(
+        modernUri.replace(
+          encodeURIComponent(connection.relays[0]),
+          encodeURIComponent("wss://other-relay.example")
+        )
+      )
+    ).not.toBe(getNwcUriFingerprint(modernUri))
+  })
+
+  it("normalizes relay order, duplicates, and equivalent relay URLs", () => {
+    const relayWithAliases = "https://Relay.Example:443/path/?b=2&a=1"
+    const normalizedRelay = "wss://relay.example/path?a=1&b=2"
+    const secondRelay = "wss://second.example"
+    const firstUri = [
+      `nostr+walletconnect://${connection.walletPubkey}`,
+      `?relay=${encodeURIComponent(relayWithAliases)}`,
+      `&relay=${encodeURIComponent(secondRelay)}`,
+      `&secret=${connection.secret}`,
+    ].join("")
+    const equivalentUri = [
+      `nostrwalletconnect://${connection.walletPubkey}`,
+      `?secret=${connection.secret}`,
+      `&relay=${encodeURIComponent(secondRelay)}`,
+      `&relay=${encodeURIComponent(normalizedRelay)}`,
+      `&relay=${encodeURIComponent(normalizedRelay)}`,
+      "&ignored=metadata#not-part-of-the-connection",
+    ].join("")
+
+    expect(getNwcUriFingerprint(equivalentUri)).toBe(
+      getNwcUriFingerprint(firstUri)
+    )
+    expect(
+      getNwcUriFingerprint(
+        equivalentUri.replace("a%3D1%26b%3D2", "a%3D9%26b%3D2")
+      )
+    ).not.toBe(getNwcUriFingerprint(firstUri))
+  })
+
   it("parses modern NWC URIs", () => {
     const parsed = parseNwcUri(
       [

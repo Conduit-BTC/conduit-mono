@@ -1,11 +1,19 @@
 import { useEffect, useMemo, useState } from "react"
-import { hasWebLN, useAuth, validateAddressConsistency } from "@conduit/core"
+import {
+  config,
+  getAuthSignerReadiness,
+  getWalletNetworkFromLightningConfig,
+  hasWebLN,
+  resolveWalletPaymentInstance,
+  useAuth,
+  validateAddressConsistency,
+} from "@conduit/core"
 import {
   useMerchantLnurlPreflight,
   type MerchantCartReadiness,
 } from "./useCartReadiness"
 import { useShopperPricing } from "./useShopperPricing"
-import { useWallet } from "./useWallet"
+import { useWallets, type UseWalletsReturn } from "./useWallets"
 import {
   deriveMerchantCheckoutCapability,
   getMerchantCapabilityFallbackMessage,
@@ -18,6 +26,7 @@ import {
   type CartItem,
 } from "../lib/cart-model"
 import { buildCheckoutPricingIntent } from "../lib/checkout-payment"
+import { resolveCheckoutPaymentTarget } from "../lib/checkout-payment-target"
 import { readCheckoutShippingSession } from "../lib/checkout-session"
 import {
   buildShippingAddressFromForm,
@@ -27,6 +36,7 @@ import {
   getCartShippingDestinationEligibility,
   hasPhysicalItemsMissingShippingZone,
 } from "../lib/cart-shipping-options"
+import { getNwcPaymentReadiness } from "../lib/wallet-payment-coordinator"
 
 export type MerchantCheckoutCapabilityView = {
   capability: MerchantCheckoutCapability
@@ -49,11 +59,15 @@ export function useMerchantCheckoutCapability(input: {
   readiness: MerchantCartReadiness | undefined
   merchantLud16: string | null | undefined
   enabled?: boolean
+  wallets?: UseWalletsReturn
 }): MerchantCheckoutCapabilityView {
-  const { pubkey, status: authStatus } = useAuth()
-  const wallet = useWallet()
-  const shopperPricing = useShopperPricing()
+  const { pubkey, signer, capabilities, status: authStatus } = useAuth()
   const enabled = input.enabled ?? true
+  const ownedWallets = useWallets({
+    enabled: !input.wallets && enabled && input.items.length > 0,
+  })
+  const wallets = input.wallets ?? ownedWallets
+  const shopperPricing = useShopperPricing()
   const [webLnAvailable, setWebLnAvailable] = useState(false)
   useEffect(() => {
     const check = () => setWebLnAvailable(hasWebLN())
@@ -99,9 +113,52 @@ export function useMerchantCheckoutCapability(input: {
     input.readiness &&
     cartItemsMatchCurrentProducts(items, input.readiness.products)
   )
-  const automaticWalletReady =
-    webLnAvailable ||
-    (wallet.status === "pay-capable" && Boolean(wallet.connection))
+  const configuredWalletNetwork = getWalletNetworkFromLightningConfig(
+    config.lightningNetwork
+  )
+  const eligibleWallets = wallets.wallets.filter(
+    (wallet) =>
+      wallet.network === configuredWalletNetwork &&
+      wallet.capabilities.includes("pay_invoice")
+  )
+  const paymentTarget = resolveCheckoutPaymentTarget({
+    selection: null,
+    eligibleWallets,
+    weblnAvailable: webLnAvailable,
+  })
+  const selectedWallet =
+    paymentTarget.type === "wallet"
+      ? resolveWalletPaymentInstance(wallets.wallets, {
+          walletId: paymentTarget.walletId,
+          providerId: paymentTarget.providerId,
+          network: configuredWalletNetwork,
+        })
+      : null
+  const automaticWalletReady = (() => {
+    if (wallets.loading) return false
+    if (paymentTarget.type === "webln") return webLnAvailable
+    if (wallets.initializationError) return false
+    if (!selectedWallet) return false
+    if (selectedWallet.providerId === "spark") {
+      return wallets.runtime[selectedWallet.id]?.status === "ready"
+    }
+    const snapshot = wallets.nwcSnapshots[selectedWallet.id]
+    return Boolean(
+      snapshot &&
+      getNwcPaymentReadiness({
+        snapshot,
+        walletNetwork: selectedWallet.network,
+        configuredNetwork: configuredWalletNetwork,
+      }).ready
+    )
+  })()
+  const authSignerReady =
+    getAuthSignerReadiness({
+      status: authStatus,
+      pubkey,
+      signer,
+      capabilities,
+    }) === "ready"
 
   const capability = deriveMerchantCheckoutCapability({
     readiness: enabled
@@ -110,8 +167,7 @@ export function useMerchantCheckoutCapability(input: {
     blockingMessage: input.readiness?.blockingMessage ?? null,
     listingTermsCurrent,
     shopperPresetReady: shippingPresetReady,
-    walletReady:
-      authStatus === "connected" && Boolean(pubkey) && automaticWalletReady,
+    walletReady: authSignerReady && automaticWalletReady,
     itemPricesAvailable:
       summary?.itemPricesAvailable === true && pricingIntent?.status === "ok",
     shippingReady:

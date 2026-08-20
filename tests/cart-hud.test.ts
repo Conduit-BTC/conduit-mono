@@ -206,6 +206,17 @@ describe("Market cart HUD policy", () => {
       new URL("../apps/market/src/routes/checkout.tsx", import.meta.url),
       "utf8"
     )
+    const capability = readFileSync(
+      new URL(
+        "../apps/market/src/hooks/useMerchantCheckoutCapability.ts",
+        import.meta.url
+      ),
+      "utf8"
+    )
+    const wallets = readFileSync(
+      new URL("../apps/market/src/hooks/useWallets.ts", import.meta.url),
+      "utf8"
+    )
 
     expect(hud).toContain('to="/checkout"')
     expect(hud).toContain("<HoldToReleaseButton")
@@ -220,6 +231,24 @@ describe("Market cart HUD policy", () => {
     expect(hud).not.toContain("refreshBalance: true")
     expect(hud).not.toContain("getKnownWalletPaymentConstraint")
     expect(hud).not.toContain("fetchLnurlPayMetadata")
+    expect(capability).toContain("const ownedWallets = useWallets({")
+    expect(capability).toContain(
+      "enabled: !input.wallets && enabled && input.items.length > 0"
+    )
+    expect(capability).toContain(
+      "const wallets = input.wallets ?? ownedWallets"
+    )
+    expect(capability).not.toContain("useWallet()")
+    expect(capability).toContain("resolveCheckoutPaymentTarget({")
+    expect(capability).toContain("resolveWalletPaymentInstance(")
+    expect(capability).toContain("getNwcPaymentReadiness({")
+    expect(capability).toContain("getAuthSignerReadiness({")
+    expect(capability).toContain(
+      'if (paymentTarget.type === "webln") return webLnAvailable'
+    )
+    expect(wallets).toContain("NWC_MOUNT_WARM_MAX_AGE_MS = 30_000")
+    expect(wallets).toContain("session.ensureWarm(")
+    expect(wallets).toContain("getBuyerNwcSessionSnapshots(nextNwcWalletIds)")
     // Checkout reuses the shared preflight cache entry and requests again only
     // when it is absent, expired, or the address changed.
     expect(checkout).toContain("getFreshLnurlMetadata(merchantLud16)")
@@ -233,6 +262,9 @@ describe("Market cart HUD policy", () => {
     expect(checkout).toContain("if (!fastEligible) {")
     expect(checkout).toContain("isFastCheckoutInputPending({")
     expect(checkout).toContain("autoZapInputsResolving")
+    expect(checkout).toContain(
+      'walletConnecting: wallets.loading || wallet.status === "connecting"'
+    )
     expect(checkout).toContain("consumeHudZapIntent(selectedMerchant)")
     expect(checkout).toContain("!autoZapAuthorization")
     expect(checkout).toContain("getHudZapAuthorizationRejection")

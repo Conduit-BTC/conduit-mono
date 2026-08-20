@@ -8,7 +8,7 @@ System architecture and technical design for the current `conduit-mono` client r
 
 ```
 Market ─────────┐
-                ├── @conduit/core ── Nostr relays, Lightning/NWC/WebLN, Dexie
+                ├── @conduit/core ── Nostr relays, Lightning/Spark/NWC/WebLN, Dexie
 Merchant ───────┤
                 └── @conduit/ui ─── shared components, tokens, styles
 Store Builder ──┘
@@ -210,14 +210,27 @@ Dexie is used for local-first persistence and recovery:
 | `relayLists`             | NIP-65 relay list cache                       |
 | `productSocialSummaries` | Product trust/social summary cache            |
 | `paymentAttempts`        | Buyer payment attempt history                 |
+| `wallets`                | Non-secret local wallet descriptors/defaults  |
+| `walletCredentials`      | Device-local provider credential records      |
 
 Cache data is evidence for fast paint and recovery. It should not be presented as proof that relay discovery is complete.
+
+`wallets` and `walletCredentials` are deliberately separate. The registry
+contains opaque local instance IDs, provider/kind metadata, capabilities,
+network, status, labels, and defaults. `walletCredentials` contains
+provider-owned local records such as an NWC connection URI or an encrypted Spark
+recovery envelope. These records are device-local, are never relay-synced, and
+must not enter logs or telemetry. Spark SDK storage is additionally isolated by
+wallet instance.
 
 ### localStorage
 
 localStorage is used for small local preferences, cart state, selected public
-key/signer method, relay settings, and scoped wallet configuration. IndexedDB
-stores local order/message/payment records and caches. Guest checkout and remote
+key/signer method, and relay settings. IndexedDB stores local
+order/message/payment records, caches, wallet descriptors, and provider-owned
+credential records. A legacy single-wallet NWC record may be read only for
+transactional migration into `wallets` and `walletCredentials`; new wallet
+credentials must not be written to localStorage. Guest checkout and remote
 signer flows also use bounded session or encrypted browser-local storage as
 described in `docs/specs/protocol.md`. Sensitive contents must remain excluded
 from telemetry and diagnostics even when the browser, a counterparty, a signer,
@@ -253,15 +266,59 @@ Signed commerce writes for orders, messages, merchant replies, payment proofs, a
 
 ## Payments
 
-Conduit is non-custodial. Apps never hold balances or process refunds.
+Conduit is non-custodial. Conduit-operated services never receive wallet seeds,
+NWC connection secrets, or control funds, and apps do not process refunds.
+
+Market supports multiple wallet instances behind a provider-neutral wallet
+registry:
+
+- **Portable Wallets** are self-custodial wallets whose recovery material can
+  recreate the wallet in a compatible application. Spark is the first provider.
+- **Connected Wallets** remain external wallets authorized through a connection
+  protocol. NWC is the first connection protocol.
+
+Portable Wallet credentials are distinct from Nostr identity keys. Nostr account
+authentication remains external-signer-only; a Portable Wallet provider may
+create or restore a wallet seed only inside its isolated client-side storage.
+Non-secret registry metadata lives in Dexie. See `docs/specs/wallets.md`.
+
+Wallet ownership is device-local rather than Nostr-account-scoped. Market keeps
+`/wallet` available while signed out so a user can create, restore, unlock,
+receive with, or remove a device-owned Portable Wallet without connecting an
+identity signer. A shared browser profile therefore shares its local wallet
+registry; signing out does not delete or switch those wallets.
+
+Each Spark wallet uses a user-chosen local password to encrypt its BIP39
+mnemonic in the device-local credential store. The password is an unlock
+credential for that browser profile, not portable recovery material. The BIP39
+mnemonic, explicit Spark account number, and network form the portable
+cross-application recovery bundle.
 
 Current payment model:
 
 1. Buyer creates an order.
-2. If merchant/buyer readiness allows fast checkout, buyer can initiate payment from checkout using NWC/WebLN-compatible rails.
+2. If merchant/buyer readiness allows fast checkout, buyer selects an eligible
+   Portable or Connected Wallet instance. NWC, Spark, and WebLN-compatible rails
+   may satisfy the payment request.
 3. Otherwise the order-first/manual invoice path remains the fallback baseline.
 4. Payment request and payment proof messages stay linked to the order conversation.
 5. Merchant verifies payment independently or through their own wallet tooling and updates order state.
+
+The chosen wallet instance ID is persisted only in the buyer's local order
+lifecycle. It is never included in order messages, payment proofs, merchant
+payloads, logs, or analytics. A retry resolves that exact instance; changing the
+wallet or falling back to WebLN/manual payment requires a new explicit user
+choice.
+
+Spark sends use a prepare/review/send boundary. Market displays the payment
+amount, provider fee, and total before the irreversible send call. Declining or
+dismissing the review performs no send. An ambiguous result remains attached to
+the original wallet and attempt and must be reconciled from payment history
+before any retry.
+
+Wallet secrets, recovery material, credentials, invoices, payment content,
+selected wallet instance IDs, and balances are excluded from diagnostics and
+telemetry.
 
 Payment proof is receipt-style evidence, not custody. Product UI should avoid collapsing these states:
 
@@ -326,4 +383,5 @@ VITE_BLOSSOM_SERVER_URL=https://blossom.conduit.market
 
 - [Protocol spec](./specs/protocol.md) - Protocol and message contracts
 - [Relay spec](./specs/relay.md) - Relay compatibility and settings model
+- [Wallets spec](./specs/wallets.md) - Portable/Connected Wallet contract
 - [Nostr NIPs](https://github.com/nostr-protocol/nips) - Protocol specifications
