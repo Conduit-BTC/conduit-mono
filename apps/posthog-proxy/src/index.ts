@@ -1,6 +1,7 @@
 import {
   browserTelemetryEventNames,
   browserTelemetryPropertyNames,
+  isAllowedBrowserTelemetryLabelValue,
 } from "@conduit/core/telemetry-contract"
 
 const POSTHOG_INGEST_ORIGIN = "https://us.i.posthog.com"
@@ -85,7 +86,6 @@ const uuidV7Pattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const eventUuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
-const labelValuePattern = /^[a-z0-9_:-]{1,64}$/
 
 /**
  * Route classes `sanitizeTelemetryPath` in `packages/core/src/telemetry.ts`
@@ -285,13 +285,7 @@ function rebuildIngestEvent(
     rebuilt.uuid = value.uuid
   }
   if (value.timestamp !== undefined) {
-    if (
-      typeof value.timestamp !== "string" ||
-      value.timestamp.length > 40 ||
-      !Number.isFinite(Date.parse(value.timestamp))
-    ) {
-      return null
-    }
+    if (!isCanonicalIsoTimestamp(value.timestamp)) return null
     rebuilt.timestamp = value.timestamp
   }
   if (value.offset !== undefined) {
@@ -343,19 +337,8 @@ function rebuildIngestEventProperties(
     }
     if (workerLabelPropertyNames.has(key)) {
       if (
-        key === "app" &&
-        propertyValue !== "market" &&
-        propertyValue !== "merchant"
-      ) {
-        return null
-      }
-      if (typeof propertyValue === "boolean") {
-        rebuilt[key] = propertyValue
-        continue
-      }
-      if (
         typeof propertyValue !== "string" ||
-        !labelValuePattern.test(propertyValue)
+        !isAllowedBrowserTelemetryLabelValue(key, propertyValue, eventName)
       ) {
         return null
       }
@@ -429,6 +412,15 @@ function isBoundedNumber(value: unknown, max: number): value is number {
   )
 }
 
+function isCanonicalIsoTimestamp(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 40) return false
+  const epochMilliseconds = Date.parse(value)
+  return (
+    Number.isFinite(epochMilliseconds) &&
+    new Date(epochMilliseconds).toISOString() === value
+  )
+}
+
 /**
  * Accept only the closed set of sanitized route classes the browser
  * sanitizer emits. Raw high-cardinality routes such as `/orders/12345`
@@ -470,6 +462,7 @@ function isSanitizedPageUrl(value: unknown): value is string {
   }
   if (url.username || url.password) return false
   if (!isSanitizedTelemetryRoutePath(url.pathname)) return false
+  if (value !== `${url.origin}${url.pathname}`) return false
 
   const hostname = url.hostname.toLowerCase()
   return (
@@ -546,6 +539,7 @@ function isSingleLabelSubdomain(hostname: string, suffix: string): boolean {
 
 function getCorsHeaders(origin: string): Headers {
   return new Headers({
+    "access-control-allow-credentials": "true",
     "access-control-allow-headers": "accept, content-type",
     "access-control-allow-methods": "POST, OPTIONS",
     "access-control-allow-origin": origin,

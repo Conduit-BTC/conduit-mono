@@ -76,6 +76,9 @@ describe("PostHog reverse proxy", () => {
 
       expect(response.status).toBe(204)
       expect(response.headers.get("access-control-allow-origin")).toBe(origin)
+      expect(response.headers.get("access-control-allow-credentials")).toBe(
+        "true"
+      )
     }
   })
 
@@ -236,7 +239,11 @@ describe("PostHog reverse proxy", () => {
         makeEvent({ event: "$create_alias" }),
         makeEvent(
           { event: "checkout_result" },
-          { status: "success", rail: "nwc" }
+          {
+            event_name: "checkout_result",
+            status: "success",
+            rail: "nwc",
+          }
         ),
       ]),
       async (request) => {
@@ -325,6 +332,62 @@ describe("PostHog reverse proxy", () => {
     if (sessionIdV4.ok) expect(sessionIdV4.events).toHaveLength(0)
   })
 
+  it("rejects identifiers and free text hidden under allowlisted label keys", () => {
+    for (const sensitiveValue of [
+      "a".repeat(64),
+      "0198f4a0-1111-4abc-8def-0123456789ab",
+      `npub1${"q".repeat(58)}`,
+      `nsec1${"q".repeat(58)}`,
+      "5551234567",
+      "private_token_1234567890",
+    ]) {
+      const rebuilt = rebuildPostHogIngestPayload(
+        encode(makeEvent({}, { status: sensitiveValue }))
+      )
+
+      expect(rebuilt.ok).toBe(true)
+      if (rebuilt.ok) expect(rebuilt.events).toHaveLength(0)
+    }
+
+    for (const properties of [
+      { status: true },
+      { count: "1" },
+      { time_bucket: "hour_13" },
+      { event_name: "cart_add", status: "success" },
+    ]) {
+      const rebuilt = rebuildPostHogIngestPayload(
+        encode(makeEvent({ event: "checkout_result" }, properties))
+      )
+
+      expect(rebuilt.ok).toBe(true)
+      if (rebuilt.ok) expect(rebuilt.events).toHaveLength(0)
+    }
+  })
+
+  it("accepts only canonical ISO event timestamps", () => {
+    const canonicalTimestamp = "2026-08-20T17:00:00.000Z"
+    const canonical = rebuildPostHogIngestPayload(
+      encode(makeEvent({ timestamp: canonicalTimestamp }))
+    )
+
+    expect(canonical.ok).toBe(true)
+    if (canonical.ok) {
+      expect(canonical.events[0]?.timestamp).toBe(canonicalTimestamp)
+    }
+
+    for (const timestamp of [
+      "2026-08-20T17:00:00Z",
+      "Thu, 01 Jan 1970 00:00:00 GMT (secret)",
+    ]) {
+      const rebuilt = rebuildPostHogIngestPayload(
+        encode(makeEvent({ timestamp }))
+      )
+
+      expect(rebuilt.ok).toBe(true)
+      if (rebuilt.ok) expect(rebuilt.events).toHaveLength(0)
+    }
+  })
+
   it("accepts only sanitized route classes for path and URL properties", () => {
     for (const rawPath of [
       "/orders/12345",
@@ -368,6 +431,20 @@ describe("PostHog reverse proxy", () => {
     expect(isSanitizedTelemetryRoutePath("/:param")).toBe(true)
     expect(isSanitizedTelemetryRoutePath("/wallet/:param")).toBe(true)
     expect(isSanitizedTelemetryRoutePath("/orders/:param")).toBe(false)
+
+    for (const noncanonicalUrl of [
+      "https://shop.conduit.market/private-order/../products",
+      "https://shop.conduit.market/private-order/%2e%2e/products",
+    ]) {
+      const dotSegmentLeak = rebuildPostHogIngestPayload(
+        encode(
+          makeEvent({}, { page_path: "/products", page_url: noncanonicalUrl })
+        )
+      )
+
+      expect(dotSegmentLeak.ok).toBe(true)
+      if (dotSegmentLeak.ok) expect(dotSegmentLeak.events).toHaveLength(0)
+    }
   })
 
   it("rejects oversized declared and streamed payloads", async () => {

@@ -5,6 +5,7 @@ export type ConduitTelemetryApp = "market" | "merchant"
 export {
   browserTelemetryEventNames,
   browserTelemetryPropertyNames,
+  isAllowedBrowserTelemetryLabelValue,
 } from "./telemetry-contract"
 export type {
   BrowserTelemetryEventName,
@@ -13,6 +14,7 @@ export type {
 import {
   browserTelemetryEventNames,
   browserTelemetryPropertyNames,
+  isAllowedBrowserTelemetryLabelValue,
 } from "./telemetry-contract"
 import type {
   BrowserTelemetryEventName,
@@ -112,6 +114,7 @@ export interface ConduitPostHogConfig {
   capture_heatmaps: false
   capture_pageview: false
   capture_pageleave: true
+  disable_compression: true
   capture_performance: {
     network_timing: false
     web_vitals: true
@@ -386,15 +389,18 @@ export function sanitizeTelemetryEventProperties(
     if (
       !browserTelemetryPropertyNameSet.has(key) ||
       key === "event_name" ||
-      key === "app"
+      key === "app" ||
+      key === "page_path" ||
+      key === "page_url"
     ) {
       continue
     }
-    if (typeof value === "boolean") {
-      sanitized[key] = value
-      continue
-    }
-    const normalized = sanitizeTelemetryPropertyValue(value)
+    if (typeof value !== "string") continue
+    const normalized = sanitizeTelemetryPropertyValue(
+      key,
+      value,
+      input.eventName
+    )
     if (normalized) sanitized[key] = normalized
   }
 
@@ -427,6 +433,7 @@ export function getConduitPostHogConfig(
     capture_heatmaps: false,
     capture_pageview: false,
     capture_pageleave: true,
+    disable_compression: true,
     capture_performance: {
       network_timing: false,
       web_vitals: true,
@@ -472,10 +479,6 @@ export function sanitizePostHogCaptureEvent(
   for (const [key, value] of Object.entries(sourceProperties)) {
     if (!browserTelemetryPropertyNameSet.has(key)) continue
 
-    if (typeof value === "boolean") {
-      sanitizedProperties[key] = value
-      continue
-    }
     if (typeof value !== "string") continue
 
     if (key === "page_url") {
@@ -488,7 +491,7 @@ export function sanitizePostHogCaptureEvent(
       continue
     }
 
-    const normalized = sanitizeTelemetryPropertyValue(value)
+    const normalized = sanitizeTelemetryPropertyValue(key, value, eventName)
     if (normalized) sanitizedProperties[key] = normalized
   }
 
@@ -806,15 +809,19 @@ function sanitizeTelemetryRouteUrl(value: string | null): string | null {
   }
 }
 
-function sanitizeTelemetryPropertyValue(value: string): string | null {
+function sanitizeTelemetryPropertyValue(
+  propertyName: string,
+  value: string,
+  eventName?: string
+): string | null {
   const normalized = value.trim().toLowerCase()
-  if (!normalized) return null
-  if (normalized.length > 64) return null
-  if (/^https?:\/\//.test(normalized) || normalized.includes("://")) return null
-  if (/^[0-9a-f]{64}$/i.test(normalized)) return null
-  if (/^(naddr|nevent|note|nprofile|npub|nsec)1/i.test(normalized)) return null
-  if (!/^[a-z0-9_:-]+$/.test(normalized)) return null
-  return normalized
+  return isAllowedBrowserTelemetryLabelValue(
+    propertyName,
+    normalized,
+    eventName
+  )
+    ? normalized
+    : null
 }
 
 function parseAllowedTelemetryHosts(raw: string | undefined): string[] {

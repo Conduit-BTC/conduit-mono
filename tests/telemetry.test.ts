@@ -170,6 +170,7 @@ describe("browser telemetry", () => {
       capture_heatmaps: false,
       capture_pageview: false,
       capture_pageleave: true,
+      disable_compression: true,
       capture_performance: {
         network_timing: false,
         web_vitals: true,
@@ -869,6 +870,9 @@ describe("browser telemetry", () => {
         app: "market",
         eventName: "checkout_initiated",
         properties: {
+          action: "5551234567",
+          event_family: "private_token_1234567890",
+          mode: "0198f4a0-1111-4abc-8def-0123456789ab",
           surface: "https://example.com/cart",
           status: "npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
         },
