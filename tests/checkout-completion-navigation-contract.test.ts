@@ -78,9 +78,7 @@ describe("checkout completion navigation contracts", () => {
     const checkoutRoute = await Bun.file(
       "apps/market/src/routes/checkout.tsx"
     ).text()
-    const payNowIndex = checkoutRoute.indexOf(
-      "async function payNow(): Promise<void>"
-    )
+    const payNowIndex = checkoutRoute.indexOf("async function payNow(")
     const payNowPreflightIndex = checkoutRoute.indexOf(
       "getCheckoutBuyerIdentity()",
       payNowIndex
@@ -104,6 +102,7 @@ describe("checkout completion navigation contracts", () => {
     expect(checkoutRoute).toContain(
       "const { pubkey, signer, capabilities, status: authStatus } = useAuth()"
     )
+    expect(payNowIndex).toBeGreaterThan(-1)
     expect(payNowPreflightIndex).toBeGreaterThan(payNowIndex)
     expect(payNowPreflightIndex).toBeLessThan(payNowInFlightIndex)
     expect(placeOrderPreflightIndex).toBeGreaterThan(placeOrderIndex)
@@ -141,6 +140,6 @@ describe("checkout completion navigation contracts", () => {
     expect(ordersRoute).toContain("Closing it ends")
     expect(ordersRoute).toContain("local access to this guest order")
     expect(ordersRoute).toContain("merchant will follow up")
-    expect(ordersRoute).toContain("disabled={!activeBuyerPubkey || isFetching}")
+    expect(ordersRoute).toContain("disabled={!activeBuyerPubkey}")
   })
 })

@@ -106,6 +106,7 @@ describe("NIP-02 follow helpers", () => {
               coverage: "complete",
               relayListState: "network",
               relayHintTruncated: false,
+              capped: false,
               snapshotState: "none",
             },
           ],

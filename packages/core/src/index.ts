@@ -23,6 +23,7 @@ export {
   type ConduitBuildInfo,
 } from "./build-info"
 export {
+  browserTelemetryEventPropertyContracts,
   browserTelemetryEventNames,
   browserTelemetryPropertyNames,
   applyPlausibleInitOptions,
@@ -32,6 +33,8 @@ export {
   getTelemetryAmountBucket,
   getTelemetryCountBucket,
   getConduitPostHogConfig,
+  hasRequiredBrowserTelemetryEventProperties,
+  isAllowedBrowserTelemetryEventProperty,
   isBrowserTelemetryEventName,
   recordBrowserTelemetryEvent,
   recordBrowserTelemetryPageView,
