@@ -3,6 +3,7 @@ import {
   getProfileName,
   normalizePublicMediaUrl,
   type CommerceProductRecord,
+  type CommerceQueryMeta,
   type PreparedProductFamily,
   type PricingRateInput,
   type Product,
@@ -39,13 +40,56 @@ export function allowsGlobalProductSearch(input: {
   return input.anonymous || input.catalogSource === "combined"
 }
 
-export function refreshMarketBrowseData(input: {
+export async function refreshMarketBrowseData(input: {
   globalSearchEnabled: boolean
+  refreshDiscovery?: () => Promise<boolean>
   refreshCatalog: () => void
   refreshGlobalSearch: () => unknown
-}): void {
-  input.refreshCatalog()
+}): Promise<void> {
+  if (!input.refreshDiscovery) {
+    input.refreshCatalog()
+    if (input.globalSearchEnabled) void input.refreshGlobalSearch()
+    return
+  }
+
+  const discoveryRefresh = input.refreshDiscovery()
   if (input.globalSearchEnabled) void input.refreshGlobalSearch()
+  let authorSetChanged = false
+  try {
+    authorSetChanged = await discoveryRefresh
+  } catch {
+    // The catalog still refreshes against the retained safe author set.
+  }
+  if (!authorSetChanged) input.refreshCatalog()
+}
+
+type BrowseFreshnessMeta = Pick<
+  CommerceQueryMeta,
+  "stale" | "degraded" | "capped"
+>
+
+function hasIncompleteFreshness(
+  meta: BrowseFreshnessMeta | null | undefined
+): boolean {
+  return !!(meta?.stale || meta?.degraded || meta?.capped)
+}
+
+export function isMarketBrowseRefreshStale(input: {
+  catalogMeta: BrowseFreshnessMeta | null | undefined
+  catalogError: unknown
+  discoveryStale: boolean
+  globalSearchEnabled: boolean
+  globalSearchMeta: BrowseFreshnessMeta | null | undefined
+  globalSearchError: unknown
+}): boolean {
+  return (
+    hasIncompleteFreshness(input.catalogMeta) ||
+    !!input.catalogError ||
+    input.discoveryStale ||
+    (input.globalSearchEnabled &&
+      (hasIncompleteFreshness(input.globalSearchMeta) ||
+        !!input.globalSearchError))
+  )
 }
 
 export function getGlobalProductSearchQueryKey(input: {

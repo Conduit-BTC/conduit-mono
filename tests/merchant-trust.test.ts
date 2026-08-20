@@ -323,10 +323,46 @@ describe("NIP-02 merchant trust helpers", () => {
     )
 
     expect(read.authors[0]?.relayHintTruncated).toBe(true)
+    expect(read.authors[0]?.capped).toBe(true)
     expect(read.authors[0]?.coverage).toBe("limited")
     expect(() =>
       requirePublishableContactListSnapshot(read, viewerPubkey)
     ).toThrow("completed the read")
+  })
+
+  it("marks a relay response capped when rejected events fill the result limit", async () => {
+    const publicRelay = "wss://saturated-follow-response.example"
+    const event = followListEvent({
+      secret: viewerSecret,
+      createdAt: 100,
+      follows: [merchantPubkey],
+    })
+
+    const read = await readLatestFollowLists(
+      {
+        pubkeys: [viewerPubkey],
+        authenticatedPubkey: viewerPubkey,
+      },
+      {
+        resolveRelayLists: async () =>
+          new Map([[viewerPubkey, relayList(viewerPubkey, [], [publicRelay])]]),
+        fetchEvents: async (_filter, options) => ({
+          events: [event],
+          eventSourceRelayUrls: { [event.id]: [publicRelay] },
+          relays: options.relayUrls.map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: relayUrl === publicRelay ? 1 : 0,
+            rejectedEventCount: relayUrl === publicRelay ? 9 : 0,
+          })),
+          eventsVerified: false,
+        }),
+      }
+    )
+
+    expect(read.authors[0]?.event?.id).toBe(event.id)
+    expect(read.authors[0]?.capped).toBe(true)
+    expect(read.authors[0]?.coverage).toBe("limited")
   })
 
   it("ignores far-future and forged contact-list snapshots", async () => {
@@ -891,6 +927,7 @@ describe("NIP-02 merchant trust helpers", () => {
             coverage: "complete",
             relayListState: "network",
             relayHintTruncated: false,
+            capped: false,
             snapshotState: "none",
           },
         ],
@@ -1225,6 +1262,7 @@ describe("NIP-02 merchant trust helpers", () => {
           coverage: "limited" as const,
           relayListState: "network" as const,
           relayHintTruncated: false,
+          capped: false,
           snapshotState: "network" as const,
         },
       ],
@@ -1300,6 +1338,7 @@ describe("NIP-02 merchant trust helpers", () => {
           coverage: "complete" as const,
           relayListState: "network" as const,
           relayHintTruncated: false,
+          capped: false,
           snapshotState: "none" as const,
         },
       ],

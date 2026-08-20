@@ -76,6 +76,8 @@ export interface FollowListAuthorRead {
   coverage: FollowListCoverageState
   relayListState: RelayListResolutionState
   relayHintTruncated: boolean
+  /** True when relay/result bounds may have hidden a stronger replacement. */
+  capped: boolean
   snapshotState: "none" | "network" | "observed" | "pending"
 }
 
@@ -611,6 +613,7 @@ export async function readLatestFollowLists(
             coverage: "unavailable",
             relayListState,
             relayHintTruncated,
+            capped: relayHintTruncated,
             snapshotState: "none",
           },
           normalizedAuthenticatedPubkey,
@@ -651,6 +654,7 @@ export async function readLatestFollowLists(
             coverage: "unavailable",
             relayListState,
             relayHintTruncated,
+            capped: relayHintTruncated,
             snapshotState: "none",
           },
           normalizedAuthenticatedPubkey,
@@ -685,6 +689,16 @@ export async function readLatestFollowLists(
             maxEvents: FOLLOW_LIST_MAX_VERIFICATION_CANDIDATES,
           })
       const eventsVerified = !candidateOverflow && !verification.truncated
+      const responseCapped = relays.some(
+        (relay) =>
+          relay.eventCount + (relay.rejectedEventCount ?? 0) >=
+          FOLLOW_LIST_EVENTS_PER_AUTHOR
+      )
+      const capped =
+        relayHintTruncated ||
+        candidateOverflow ||
+        verification.truncated ||
+        responseCapped
       const event = selectLatestFollowListEvent(
         verification.events.filter(
           (candidate) =>
@@ -702,7 +716,7 @@ export async function readLatestFollowLists(
         ? "unavailable"
         : eventsVerified &&
             relayDiscoveryComplete &&
-            !relayHintTruncated &&
+            !capped &&
             relays.every((relay) => relay.status === "success")
           ? "complete"
           : "limited"
@@ -721,6 +735,7 @@ export async function readLatestFollowLists(
           coverage,
           relayListState,
           relayHintTruncated,
+          capped,
           snapshotState: event ? "network" : "none",
         },
         normalizedAuthenticatedPubkey,

@@ -1,9 +1,14 @@
 import { describe, expect, it } from "bun:test"
 import {
+  getCatalogAuthorKey,
   getCatalogAuthorPubkeys,
   getProductCatalogQueryKey,
+  isProductDiscoveryReadIncomplete,
   isPerspectiveMarketplaceRead,
+  parseFollowListSnapshot,
+  refreshProductCatalogSources,
   resolvePerspectiveAuthorPubkeys,
+  selectStrongestFollowListSnapshot,
 } from "../apps/market/src/lib/productCatalogRead"
 
 describe("product catalog read planning", () => {
@@ -11,11 +16,72 @@ describe("product catalog read planning", () => {
   const merchantAPubkey = "b".repeat(64)
   const merchantBPubkey = "c".repeat(64)
 
+  function runRefresh(input: {
+    queryEnabled?: boolean
+    catalogReady?: boolean
+    streamsNetwork?: boolean
+    usesPerspectiveGraph?: boolean
+    catalogSource?: "following" | "conduit" | "combined"
+    authorSetChanged?: boolean
+  }): Promise<string[]> {
+    const refreshes: string[] = []
+    return refreshProductCatalogSources({
+      queryEnabled: input.queryEnabled ?? true,
+      catalogReady: input.catalogReady ?? true,
+      streamsNetwork: input.streamsNetwork ?? true,
+      usesPerspectiveGraph: input.usesPerspectiveGraph ?? true,
+      catalogSource: input.catalogSource ?? "following",
+      refreshPerspectiveAuthors: async () => {
+        refreshes.push("authors")
+        return input.authorSetChanged ?? false
+      },
+      restartNetworkStream: () => refreshes.push("stream"),
+      refreshNetwork: () => refreshes.push("network"),
+      refreshCache: () => refreshes.push("cache"),
+    }).then(() => refreshes)
+  }
+
+  it("refreshes perspective authors before signed-in catalog sources", async () => {
+    expect(await runRefresh({ catalogSource: "following" })).toEqual([
+      "authors",
+      "stream",
+      "cache",
+    ])
+    expect(await runRefresh({ catalogSource: "combined" })).toEqual([
+      "authors",
+      "stream",
+      "cache",
+    ])
+  })
+
+  it("lets an author-set change rekey the catalog without a second read", async () => {
+    expect(await runRefresh({ authorSetChanged: true })).toEqual(["authors"])
+  })
+
+  it("refreshes discovery even while a perspective catalog is not ready", async () => {
+    expect(await runRefresh({ catalogReady: false })).toEqual(["authors"])
+  })
+
+  it("does not fetch perspective authors for Conduit or storefront reads", async () => {
+    expect(await runRefresh({ catalogSource: "conduit" })).toEqual([
+      "stream",
+      "cache",
+    ])
+    expect(
+      await runRefresh({
+        streamsNetwork: false,
+        usesPerspectiveGraph: false,
+      })
+    ).toEqual(["network", "cache"])
+  })
+
+  it("does not refresh disabled catalog queries", async () => {
+    expect(await runRefresh({ queryEnabled: false })).toEqual([])
+  })
+
   it("keeps all-store marketplace reads scoped to the market perspective", () => {
     expect(isPerspectiveMarketplaceRead({ scope: "marketplace" })).toBe(true)
-    expect(
-      getCatalogAuthorPubkeys({ scope: "marketplace" }, ["merchant-a"])
-    ).toEqual(["merchant-a"])
+    expect(getCatalogAuthorPubkeys(["merchant-a"])).toEqual(["merchant-a"])
   })
 
   it("keeps the perspective catalog key stable across local facet and sort changes", () => {
@@ -64,6 +130,31 @@ describe("product catalog read planning", () => {
     )
 
     expect(viewerA).not.toEqual(viewerB)
+  })
+
+  it("keeps perspective keys stable across equivalent seed ordering", () => {
+    const first = getProductCatalogQueryKey(
+      {
+        scope: "marketplace",
+        perspectivePubkey: viewerPubkey,
+        seedAuthorPubkeys: [merchantAPubkey, merchantBPubkey],
+      },
+      "network"
+    )
+    const reordered = getProductCatalogQueryKey(
+      {
+        scope: "marketplace",
+        perspectivePubkey: viewerPubkey,
+        seedAuthorPubkeys: [merchantBPubkey, merchantAPubkey, merchantAPubkey],
+      },
+      "network"
+    )
+
+    expect(reordered).toEqual(first)
+    expect(
+      getCatalogAuthorKey([merchantBPubkey, merchantAPubkey, merchantAPubkey])
+    ).toBe(getCatalogAuthorKey([merchantAPubkey, merchantBPubkey]))
+    expect(getCatalogAuthorKey(undefined)).not.toBe(getCatalogAuthorKey([]))
   })
 
   it("keeps scoped catalog keys specific to the selected merchant", () => {
@@ -130,6 +221,163 @@ describe("product catalog read planning", () => {
     expect(resolved).toEqual({
       authorPubkeys: [merchantAPubkey],
       source: "refreshed",
+    })
+  })
+
+  it("recognizes incomplete follow discovery metadata", () => {
+    expect(
+      isProductDiscoveryReadIncomplete({
+        stale: false,
+        degraded: true,
+        capped: false,
+      })
+    ).toBe(true)
+  })
+
+  it("keeps a newer signed-empty follow snapshot over older relay views", () => {
+    const newerEmpty = {
+      pubkeys: [],
+      eventCreatedAt: 200,
+      eventId: "2".repeat(64),
+    }
+    const retained = selectStrongestFollowListSnapshot(newerEmpty, {
+      pubkeys: [merchantAPubkey],
+      eventCreatedAt: 100,
+      eventId: "1".repeat(64),
+    })
+
+    expect(retained).toEqual(newerEmpty)
+    expect(
+      parseFollowListSnapshot(JSON.parse(JSON.stringify(retained)), {
+        excludePubkey: viewerPubkey,
+        requireEventId: true,
+        sortPubkeys: true,
+      })
+    ).toEqual(newerEmpty)
+  })
+
+  it("replaces older follow snapshots atomically without merging authors", () => {
+    expect(
+      selectStrongestFollowListSnapshot(
+        {
+          pubkeys: [],
+          eventCreatedAt: 100,
+          eventId: "1".repeat(64),
+        },
+        {
+          pubkeys: [merchantAPubkey],
+          eventCreatedAt: 200,
+          eventId: "2".repeat(64),
+        }
+      )
+    ).toEqual({
+      pubkeys: [merchantAPubkey],
+      eventCreatedAt: 200,
+      eventId: "2".repeat(64),
+    })
+  })
+
+  it("uses the lower event id for equal-timestamp follow snapshots", () => {
+    expect(
+      selectStrongestFollowListSnapshot(
+        {
+          pubkeys: [merchantBPubkey],
+          eventCreatedAt: 200,
+          eventId: "2".repeat(64),
+        },
+        {
+          pubkeys: [merchantAPubkey],
+          eventCreatedAt: 200,
+          eventId: "1".repeat(64),
+        }
+      )
+    ).toEqual({
+      pubkeys: [merchantAPubkey],
+      eventCreatedAt: 200,
+      eventId: "1".repeat(64),
+    })
+  })
+
+  it("upgrades an id-less bundled projection with a signed snapshot", () => {
+    expect(
+      selectStrongestFollowListSnapshot(
+        {
+          pubkeys: [merchantBPubkey],
+          eventCreatedAt: 200,
+        },
+        {
+          pubkeys: [merchantAPubkey],
+          eventCreatedAt: 200,
+          eventId: "1".repeat(64),
+        }
+      )
+    ).toEqual({
+      pubkeys: [merchantAPubkey],
+      eventCreatedAt: 200,
+      eventId: "1".repeat(64),
+    })
+  })
+
+  it("repairs a cached projection from the verified copy of the same event", () => {
+    expect(
+      selectStrongestFollowListSnapshot(
+        {
+          pubkeys: [merchantBPubkey],
+          eventCreatedAt: 200,
+          eventId: "1".repeat(64),
+        },
+        {
+          pubkeys: [merchantAPubkey],
+          eventCreatedAt: 200,
+          eventId: "1".repeat(64),
+        }
+      )
+    ).toEqual({
+      pubkeys: [merchantAPubkey],
+      eventCreatedAt: 200,
+      eventId: "1".repeat(64),
+    })
+  })
+
+  it("repairs corrupted cached timing from the verified copy of the same event", () => {
+    expect(
+      selectStrongestFollowListSnapshot(
+        {
+          pubkeys: [merchantBPubkey],
+          eventCreatedAt: 300,
+          eventId: "1".repeat(64),
+        },
+        {
+          pubkeys: [merchantAPubkey],
+          eventCreatedAt: 200,
+          eventId: "1".repeat(64),
+        }
+      )
+    ).toEqual({
+      pubkeys: [merchantAPubkey],
+      eventCreatedAt: 200,
+      eventId: "1".repeat(64),
+    })
+  })
+
+  it("normalizes cached follow snapshots before comparing frontiers", () => {
+    expect(
+      parseFollowListSnapshot(
+        {
+          pubkeys: [merchantBPubkey, viewerPubkey, merchantBPubkey],
+          eventCreatedAt: 200,
+          eventId: "2".repeat(64),
+        },
+        {
+          excludePubkey: viewerPubkey,
+          requireEventId: true,
+          sortPubkeys: true,
+        }
+      )
+    ).toEqual({
+      pubkeys: [merchantBPubkey],
+      eventCreatedAt: 200,
+      eventId: "2".repeat(64),
     })
   })
 

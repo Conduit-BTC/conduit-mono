@@ -674,6 +674,7 @@ function ProductsPage() {
         <RefreshChip
           refreshing={isUpdatingListings}
           onRefresh={productsQuery.refetch}
+          stale={productsQuery.isRefreshStale}
           refreshingLabel="Updating listings..."
           className="absolute right-0 top-1/2 -translate-y-1/2"
         />

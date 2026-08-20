@@ -17,6 +17,7 @@ import {
   getGlobalProductSearchQueryKey,
   getStoreTriggerLabel,
   hasUnavailablePriceForBrowseSort,
+  isMarketBrowseRefreshStale,
   mergeProductSearchResults,
   refreshMarketBrowseData,
   sortBrowseProducts,
@@ -123,16 +124,24 @@ export function useMarketBrowseModel({
     [globalSearchEnabled, globalSearchProducts, productsQuery.products]
   )
   const refreshCatalog = productsQuery.refetch
+  const refreshGuestDiscovery = guestMarket.refetch
   const refreshGlobalSearch = globalSearchQuery.refetch
-  const refetch = useCallback(
-    () =>
-      refreshMarketBrowseData({
-        globalSearchEnabled,
-        refreshCatalog,
-        refreshGlobalSearch,
-      }),
-    [globalSearchEnabled, refreshCatalog, refreshGlobalSearch]
-  )
+  const refetch = useCallback(() => {
+    void refreshMarketBrowseData({
+      globalSearchEnabled,
+      refreshDiscovery: usesAnonymousPerspective
+        ? refreshGuestDiscovery
+        : undefined,
+      refreshCatalog,
+      refreshGlobalSearch,
+    })
+  }, [
+    globalSearchEnabled,
+    refreshCatalog,
+    refreshGlobalSearch,
+    refreshGuestDiscovery,
+    usesAnonymousPerspective,
+  ])
   const preparedProductsQuery = {
     ...productsQuery,
     isInitialLoading:
@@ -142,10 +151,21 @@ export function useMarketBrowseModel({
         globalSearchQuery.isLoading),
     isHydrating:
       productsQuery.isHydrating ||
+      (usesAnonymousPerspective && guestMarket.isRefreshing) ||
       (globalSearchEnabled && globalSearchQuery.isFetching),
     error:
       productsQuery.error ??
       (globalSearchEnabled ? globalSearchQuery.error : null),
+    isRefreshStale: isMarketBrowseRefreshStale({
+      catalogMeta: productsQuery.meta,
+      catalogError: productsQuery.error,
+      discoveryStale:
+        productsQuery.discoveryStale ||
+        (usesAnonymousPerspective && guestMarket.stale),
+      globalSearchEnabled,
+      globalSearchMeta: globalSearchQuery.data?.meta,
+      globalSearchError: globalSearchQuery.error,
+    }),
     refetch,
   }
   const allMerchantPubkeys = useMemo(() => {
