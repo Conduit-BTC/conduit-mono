@@ -32,17 +32,9 @@ export type NwcSessionStatus =
 
 export type NwcSessionPaymentPhase = "before_publish" | "after_publish"
 export type NwcSessionBalanceStatus =
-  | "unchecked"
-  | "checking"
-  | "available"
-  | "unavailable"
-  | "error"
+  "unchecked" | "checking" | "available" | "unavailable" | "error"
 export type NwcSessionBudgetStatus =
-  | "unchecked"
-  | "checking"
-  | "available"
-  | "unavailable"
-  | "error"
+  "unchecked" | "checking" | "available" | "unavailable" | "error"
 
 export interface NwcSessionBalanceState {
   status: NwcSessionBalanceStatus
@@ -184,6 +176,25 @@ export class BuyerNwcSession {
     return () => {
       this.listeners.delete(listener)
     }
+  }
+
+  /**
+   * Freshness-aware warm for capability handoff between routes. A probe
+   * younger than `maxAgeMs` with a live reachable result is reused instead
+   * of re-opening relays; payment-time transport validation is unaffected.
+   */
+  ensureWarm(maxAgeMs: number): Promise<NwcSessionSnapshot> {
+    const snapshot = this.snapshot
+    if (
+      this.connection &&
+      snapshot.connection === this.connection &&
+      snapshot.lastWarmAt !== null &&
+      Date.now() - snapshot.lastWarmAt <= maxAgeMs &&
+      (snapshot.status === "reachable" || snapshot.status === "unsupported")
+    ) {
+      return Promise.resolve(snapshot)
+    }
+    return this.warm()
   }
 
   warm(): Promise<NwcSessionSnapshot> {

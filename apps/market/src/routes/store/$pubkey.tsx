@@ -62,6 +62,7 @@ import { useShopperPricing } from "../../hooks/useShopperPricing"
 import { useCart } from "../../hooks/useCart"
 import { useMerchantTrustContext } from "../../hooks/useMerchantTrustContext"
 import { useProgressiveProducts } from "../../hooks/useProgressiveProducts"
+import { selectCartItem } from "../../lib/cart-model"
 import {
   filterProductsByFacets,
   getCategoryFacetOptions,
@@ -147,7 +148,9 @@ function StorefrontPage() {
   const navigate = Route.useNavigate()
   const queryClient = useQueryClient()
   const cart = useCart()
-  const { pubkey: viewerPubkey, status } = useAuth()
+  const { pubkey: viewerPubkey, status, authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  authGenerationRef.current = authGeneration
   const activeViewerPubkey = status === "connected" ? viewerPubkey : null
   const shopperPricing = useShopperPricing()
   const btcUsdRate = shopperPricing.quote
@@ -381,6 +384,7 @@ function StorefrontPage() {
 
     const nextShouldFollow = followControl.shouldFollowOnClick
     const operationId = ++followOperationIdRef.current
+    const followAuthGeneration = authGeneration
     dispatchFollow({
       type: "operation_started",
       scope: followScope,
@@ -393,7 +397,10 @@ function StorefrontPage() {
         targetPubkey: pubkey,
         shouldFollow: nextShouldFollow,
         appId: "market",
+        isSessionCurrent: () =>
+          authGenerationRef.current === followAuthGeneration,
       })
+      if (authGenerationRef.current !== followAuthGeneration) return
 
       dispatchFollow({
         type: "publish_succeeded",
@@ -410,6 +417,7 @@ function StorefrontPage() {
         operationId,
       })
     } catch (error) {
+      if (authGenerationRef.current !== followAuthGeneration) return
       dispatchFollow({
         type: "operation_failed",
         scope: followScope,
@@ -620,7 +628,17 @@ function StorefrontPage() {
               )}
               {followError && (
                 <p className="max-w-sm text-left text-xs leading-5 text-[var(--warning)] sm:ml-auto sm:text-right">
-                  {followError}
+                  {followError}{" "}
+                  {followError.startsWith(
+                    "Refusing to publish a follow-list replacement"
+                  ) ? (
+                    <Link
+                      to="/network"
+                      className="font-semibold underline underline-offset-2 hover:text-[var(--text-primary)]"
+                    >
+                      Open Network settings
+                    </Link>
+                  ) : null}
                 </p>
               )}
             </div>
@@ -851,43 +869,39 @@ function StorefrontPage() {
                     btcUsdRate={btcUsdRate}
                     pricePreference={shopperPricing.preference}
                     getCartQuantity={(selectedProduct) =>
-                      cart.items.find(
-                        (item) =>
-                          item.merchantPubkey === selectedProduct.pubkey &&
-                          item.productId === selectedProduct.id
-                      )?.quantity ?? 0
+                      selectCartItem(cart.items, {
+                        merchantPubkey: selectedProduct.pubkey,
+                        productId: selectedProduct.id,
+                      })?.quantity ?? 0
                     }
                     onAddToCart={(selectedProduct) =>
-                      cart.addItem(
-                        cartItemInputFromProductSelection(
+                      cart.addItem({
+                        ...cartItemInputFromProductSelection(
                           product,
                           selectedProduct
-                        )
-                      )
+                        ),
+                      })
                     }
                     onIncrement={(selectedProduct) =>
-                      cart.addItem(
-                        cartItemInputFromProductSelection(
+                      cart.addItem({
+                        ...cartItemInputFromProductSelection(
                           product,
                           selectedProduct
-                        )
-                      )
+                        ),
+                      })
                     }
                     onDecrement={(selectedProduct) => {
-                      const existing = cart.items.find(
-                        (item) =>
-                          item.merchantPubkey === selectedProduct.pubkey &&
-                          item.productId === selectedProduct.id
-                      )
+                      const identity = {
+                        merchantPubkey: selectedProduct.pubkey,
+                        productId: selectedProduct.id,
+                      }
+                      const existing = selectCartItem(cart.items, identity)
                       if (!existing) return
                       if (existing.quantity <= 1) {
-                        cart.removeItem(selectedProduct.id)
+                        cart.removeItem(identity)
                         return
                       }
-                      cart.setQuantity(
-                        selectedProduct.id,
-                        existing.quantity - 1
-                      )
+                      cart.setQuantity(identity, existing.quantity - 1)
                     }}
                   />
                 </li>
