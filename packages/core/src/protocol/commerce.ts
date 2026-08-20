@@ -475,6 +475,15 @@ function commerceReadRelayUrls(): string[] {
   })
 }
 
+function hasCommerceFetchTestOverride(): boolean {
+  return !!(
+    testOverrides.fetchEventsFanout ||
+    testOverrides.fetchEventsFanoutWithDiagnostics ||
+    testOverrides.fetchEventsFanoutDetailed ||
+    testOverrides.fetchEventsFanoutProgressive
+  )
+}
+
 /**
  * Resolve a planner-driven relay URL list for a commerce read intent.
  * Pulls cached NIP-65 relay lists for any author/recipient hints so
@@ -514,7 +523,7 @@ async function planCommerceReadRelayPlan(input: {
   const relayLists = shouldFetchRelayHints
     ? await getRelayLists(
         hintPubkeys,
-        testOverrides.fetchEventsFanout
+        hasCommerceFetchTestOverride()
           ? {
               cacheOnly: true,
               allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
