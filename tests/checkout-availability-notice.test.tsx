@@ -13,7 +13,9 @@ describe("checkout availability notice", () => {
 
     expect(markup).toContain('role="status"')
     expect(markup).toContain('aria-live="polite"')
-    expect(markup).toContain("A current signed listing was found")
+    expect(markup).toContain(
+      "A signed listing was observed live on responding relays"
+    )
     expect(markup).toContain("some relays did not respond")
   })
 

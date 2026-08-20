@@ -13,9 +13,9 @@ export function CheckoutAvailabilityNotice({
 
   const availabilityCopy = lastQuantityReported
     ? partialCoverage
-      ? "This order uses the last quantity reported by the current signed listing. Some relays did not respond, and Nostr listings do not reserve inventory, so the merchant will confirm final availability."
-      : "This order uses the last quantity reported by the current signed listing. Nostr listings do not reserve inventory, so the merchant will confirm final availability."
-    : "A current signed listing was found, but some relays did not respond. The merchant will confirm final availability."
+      ? "This order uses the last quantity reported by a signed listing observed live on responding relays. Some relays did not respond, and Nostr listings do not reserve inventory, so the merchant will confirm final availability."
+      : "This order uses the last quantity reported by a signed listing observed live. Nostr listings do not reserve inventory, so the merchant will confirm final availability."
+    : "A signed listing was observed live on responding relays, but some relays did not respond. The merchant will confirm final availability."
 
   return (
     <div

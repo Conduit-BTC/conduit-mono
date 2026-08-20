@@ -1,13 +1,16 @@
 import { afterEach, describe, expect, it, mock } from "bun:test"
+import { readFileSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
 import { finalizeEvent, getPublicKey, verifyEvent } from "nostr-tools/pure"
 import {
   connectNip07SignerForAuth,
   getNip07Capabilities,
+  getAuthSignerReadiness,
   hasNip07,
   isTransientNip07ConnectError,
   resolveFailedAuthAttempt,
+  shouldReuseConnectedAuthSession,
   type AuthConnectOptions,
   type AuthContextValue,
 } from "../packages/core/src/context/AuthContext"
@@ -375,6 +378,35 @@ describe("NIP-07 availability", () => {
   })
 })
 
+describe("restore attempt isolation", () => {
+  const source = readFileSync(
+    new URL("../packages/core/src/context/AuthContext.tsx", import.meta.url),
+    "utf8"
+  )
+
+  it("never clears the global signer when a restore attempt fails", () => {
+    expect(source).toContain(
+      'void connect({ mode: "restore" }).catch(() => undefined)'
+    )
+    const bareRemoveSignerCalls = source.match(/\n\s*removeSigner\(\)/g) ?? []
+    expect(bareRemoveSignerCalls).toHaveLength(0)
+  })
+
+  it("returns silently when a queued restore finds an already connected session", () => {
+    expect(source).toContain('if (mode === "restore") return')
+  })
+
+  it("releases the connecting flag inside the epoch-owned finally block", () => {
+    const fenceIndex = source.indexOf("if (attemptOwnsEpoch()) {")
+    expect(fenceIndex).toBeGreaterThan(-1)
+    const fencedBlock = source.slice(
+      fenceIndex,
+      source.indexOf("}", fenceIndex)
+    )
+    expect(fencedBlock).toContain("connecting.current = false")
+  })
+})
+
 describe("NIP-46 AuthContext API", () => {
   it("replaces and clears the exact protected-read session lease idempotently", () => {
     const installed: string[] = []
@@ -441,9 +473,11 @@ describe("NIP-46 AuthContext API", () => {
       nip46Flow: "nostrconnect",
     } satisfies AuthConnectOptions
     const uri: AuthContextValue["nostrConnectUri"] = null
+    const authGeneration: AuthContextValue["authGeneration"] = 0
 
     expect(options.nip46Flow).toBe("nostrconnect")
     expect(uri).toBeNull()
+    expect(authGeneration).toBe(0)
   })
 
   it("preflights the client before persistence and installs before ownership commit", async () => {
@@ -663,5 +697,82 @@ describe("NIP-46 AuthContext API", () => {
     releaseRollback?.()
 
     expect(await resolution).toEqual({ kind: "ignore" })
+  })
+})
+
+describe("authenticated signer readiness", () => {
+  const capabilities = {
+    signEvent: true,
+    nip44: true,
+    nip04: false,
+  }
+  const signer = {} as NonNullable<AuthContextValue["signer"]>
+
+  it("requires the live signer behind a connected pubkey", () => {
+    expect(
+      getAuthSignerReadiness({
+        status: "connected",
+        pubkey: "a".repeat(64),
+        signer: null,
+        capabilities,
+      })
+    ).toBe("unavailable")
+
+    expect(
+      getAuthSignerReadiness({
+        status: "connected",
+        pubkey: "a".repeat(64),
+        signer,
+        capabilities,
+      })
+    ).toBe("ready")
+  })
+
+  it("requires NIP-44 encryption for private order delivery", () => {
+    expect(
+      getAuthSignerReadiness({
+        status: "connected",
+        pubkey: "a".repeat(64),
+        signer,
+        capabilities: { ...capabilities, nip44: false },
+      })
+    ).toBe("incompatible")
+  })
+
+  it("does not silently downgrade pending auth to disconnected", () => {
+    expect(
+      getAuthSignerReadiness({
+        status: "restoring",
+        pubkey: "a".repeat(64),
+        signer: null,
+        capabilities,
+      })
+    ).toBe("pending")
+  })
+
+  it("does not silently downgrade a failed authenticated session to guest checkout", () => {
+    expect(
+      getAuthSignerReadiness({
+        status: "error",
+        pubkey: "a".repeat(64),
+        signer: null,
+        capabilities,
+      })
+    ).toBe("unavailable")
+
+    expect(
+      getAuthSignerReadiness({
+        status: "error",
+        pubkey: null,
+        signer: null,
+        capabilities,
+      })
+    ).toBe("disconnected")
+  })
+
+  it("makes duplicate automatic restores idempotent", () => {
+    expect(shouldReuseConnectedAuthSession("restore", true)).toBe(true)
+    expect(shouldReuseConnectedAuthSession("restore", false)).toBe(false)
+    expect(shouldReuseConnectedAuthSession("interactive", true)).toBe(false)
   })
 })

@@ -12,6 +12,7 @@ interface OrderStockDeliveryView {
 
 interface OrderStockPanelProps {
   adjustments: OrderStockAdjustment[]
+  stockMutationDisabledKeys?: ReadonlySet<string>
   delivery: OrderStockDeliveryView | null
   deliveryNeedsAttention: boolean
   pending: boolean
@@ -34,6 +35,7 @@ function getDeliveryStateLabel(state: ProductDeliveryNotice["state"]): string {
 
 export function OrderStockPanel({
   adjustments,
+  stockMutationDisabledKeys = new Set<string>(),
   delivery,
   deliveryNeedsAttention,
   pending,
@@ -111,7 +113,9 @@ export function OrderStockPanel({
 
       {adjustments.map((adjustment) => {
         const restockingRequired = adjustment.state === "restocking_required"
-        const canUpdateStock = adjustment.currentStock > adjustment.nextStock
+        const canUpdateStock =
+          !stockMutationDisabledKeys.has(adjustment.key) &&
+          adjustment.currentStock > adjustment.nextStock
         const showMessageBuyer =
           restockingRequired && canMessageBuyer && Boolean(onMessageBuyer)
         const showActions =

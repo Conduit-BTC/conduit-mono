@@ -115,6 +115,35 @@ describe("merchant order stock UI", () => {
     expect(markup).not.toContain("Update to 0")
   })
 
+  it("keeps restocking guidance without offering an already-applied update", () => {
+    const applied = adjustment({
+      state: "restocking_required",
+      quantity: 5,
+      currentStock: 2,
+      nextStock: 0,
+      shortfall: 3,
+    })
+    const markup = renderToStaticMarkup(
+      <OrderStockPanel
+        adjustments={[applied]}
+        stockMutationDisabledKeys={new Set([applied.key])}
+        delivery={null}
+        deliveryNeedsAttention={false}
+        pending={false}
+        updatePending={false}
+        errorMessage={null}
+        canMessageBuyer
+        onMessageBuyer={() => undefined}
+        {...handlers}
+      />
+    )
+
+    expect(markup).toContain("Restocking required")
+    expect(markup).toContain("exceeds tracked stock by 3")
+    expect(markup).toContain("Message buyer")
+    expect(markup).not.toContain("Update to 0")
+  })
+
   it("keeps merchant stock mutation verification strict", async () => {
     const source = await Bun.file("apps/merchant/src/routes/orders.tsx").text()
 
@@ -122,11 +151,18 @@ describe("merchant order stock UI", () => {
     expect(source).not.toContain("hasExactLiveProductAvailabilityEvidence")
   })
 
-  it("keeps signed relay delivery status and retry visible", () => {
-    const item = adjustment()
+  it("keeps a pending oversold snapshot retryable without another update", () => {
+    const item = adjustment({
+      state: "restocking_required",
+      quantity: 5,
+      currentStock: 2,
+      nextStock: 0,
+      shortfall: 3,
+    })
     const markup = renderToStaticMarkup(
       <OrderStockPanel
-        adjustments={[]}
+        adjustments={[item]}
+        stockMutationDisabledKeys={new Set([item.key])}
         delivery={{
           adjustment: item,
           notice: {
@@ -151,5 +187,7 @@ describe("merchant order stock UI", () => {
     expect(markup).toContain("Retry needed")
     expect(markup).toContain("Retry delivery")
     expect(markup).toContain("Hide for now")
+    expect(markup).toContain("exceeds tracked stock by 3")
+    expect(markup).not.toContain("Update to 0")
   })
 })

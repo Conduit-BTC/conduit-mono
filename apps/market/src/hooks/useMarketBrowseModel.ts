@@ -1,4 +1,4 @@
-import { useMemo } from "react"
+import { useCallback, useMemo } from "react"
 import { useQuery } from "@tanstack/react-query"
 import {
   getMarketplaceProducts,
@@ -17,7 +17,9 @@ import {
   getGlobalProductSearchQueryKey,
   getStoreTriggerLabel,
   hasUnavailablePriceForBrowseSort,
+  isMarketBrowseRefreshStale,
   mergeProductSearchResults,
+  refreshMarketBrowseData,
   sortBrowseProducts,
   sortStoreFacetOptionsByRecentPublisher,
   type MarketBrowseSearch,
@@ -121,19 +123,52 @@ export function useMarketBrowseModel({
         : productsQuery.products,
     [globalSearchEnabled, globalSearchProducts, productsQuery.products]
   )
+  const refreshCatalog = productsQuery.refetch
+  const refreshGuestDiscovery = guestMarket.refetch
+  const refreshGlobalSearch = globalSearchQuery.refetch
+  const refetch = useCallback(() => {
+    void refreshMarketBrowseData({
+      globalSearchEnabled,
+      refreshDiscovery: usesAnonymousPerspective
+        ? refreshGuestDiscovery
+        : undefined,
+      refreshCatalog,
+      refreshGlobalSearch,
+    })
+  }, [
+    globalSearchEnabled,
+    refreshCatalog,
+    refreshGlobalSearch,
+    refreshGuestDiscovery,
+    usesAnonymousPerspective,
+  ])
   const preparedProductsQuery = {
     ...productsQuery,
     isInitialLoading:
       productsQuery.isInitialLoading ||
       (globalSearchEnabled &&
         productData.length === 0 &&
-        globalSearchQuery.isLoading),
+        globalSearchQuery.isPending),
     isHydrating:
       productsQuery.isHydrating ||
+      (usesAnonymousPerspective && guestMarket.isRefreshing) ||
       (globalSearchEnabled && globalSearchQuery.isFetching),
     error:
       productsQuery.error ??
       (globalSearchEnabled ? globalSearchQuery.error : null),
+    isRefreshStale: isMarketBrowseRefreshStale({
+      catalogMeta: productsQuery.meta,
+      catalogError: productsQuery.error,
+      catalogPaused: productsQuery.isRefreshPaused,
+      discoveryStale:
+        productsQuery.discoveryStale ||
+        (usesAnonymousPerspective && guestMarket.stale),
+      globalSearchEnabled,
+      globalSearchMeta: globalSearchQuery.data?.meta,
+      globalSearchError: globalSearchQuery.error,
+      globalSearchPaused: globalSearchQuery.isPaused,
+    }),
+    refetch,
   }
   const allMerchantPubkeys = useMemo(() => {
     if (productData.length === 0) return []
@@ -276,9 +311,7 @@ export function useMarketBrowseModel({
     ),
     hasMore: visibleCount < filtered.length,
     hasUnavailablePriceForSort,
-    isUpdatingListings:
-      !preparedProductsQuery.isInitialLoading &&
-      preparedProductsQuery.isHydrating,
+    isUpdatingListings: preparedProductsQuery.isHydrating,
     productCards,
     productData,
     productsQuery: preparedProductsQuery,

@@ -7,6 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react"
+import type { NDKSigner } from "@nostr-dev-kit/ndk"
 import { CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS } from "../config"
 import {
   getNdk,
@@ -59,6 +60,8 @@ export type AuthStatus =
 
 export interface AuthContextValue {
   pubkey: string | null
+  signer: NDKSigner | null
+  authGeneration: number
   method: AuthMethod | null
   rememberedMethod: AuthMethod | null
   status: AuthStatus
@@ -78,7 +81,41 @@ export interface AuthSignerCapabilities {
   nip44: boolean
   nip04: boolean
 }
+
+export type AuthSignerReadiness =
+  | "disconnected"
+  | "pending"
+  | "ready"
+  | "unavailable"
+  | "incompatible"
+
+export function getAuthSignerReadiness(input: {
+  status: AuthStatus
+  pubkey: string | null
+  signer: NDKSigner | null
+  capabilities: AuthSignerCapabilities
+}): AuthSignerReadiness {
+  if (input.status === "restoring" || input.status === "connecting") {
+    return "pending"
+  }
+  if (input.status !== "connected") {
+    return input.pubkey ? "unavailable" : "disconnected"
+  }
+  if (!input.pubkey || !input.signer) return "unavailable"
+  if (!input.capabilities.signEvent || !input.capabilities.nip44) {
+    return "incompatible"
+  }
+  return "ready"
+}
+
 export type AuthConnectMode = "interactive" | "restore"
+
+export function shouldReuseConnectedAuthSession(
+  mode: AuthConnectMode,
+  connected: boolean
+): boolean {
+  return mode === "restore" && connected
+}
 
 export interface AuthConnectOptions {
   mode?: AuthConnectMode
@@ -345,6 +382,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [pubkey, setPubkey] = useState<string | null>(
     () => initialSessionRef.current?.userPubkey ?? null
   )
+  const [signer, setAuthSigner] = useState<NDKSigner | null>(null)
   const [method, setMethod] = useState<AuthMethod | null>(
     () => initialSessionRef.current?.type ?? null
   )
@@ -360,6 +398,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [capabilities, setCapabilities] = useState<AuthSignerCapabilities>(
     NO_SIGNER_CAPABILITIES
   )
+  const [authGeneration, setAuthGeneration] = useState(0)
   const connecting = useRef(false)
   const connected = useRef(false)
   const authEpoch = useRef(0)
@@ -376,6 +415,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     activePairing.current?.abort()
     activePairing.current = null
     authEpoch.current += 1
+    setAuthGeneration(authEpoch.current)
     connecting.current = false
     connected.current = false
     const connection = remoteConnection.current
@@ -389,6 +429,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     sessionSigner?.invalidateLocal()
     connection?.signer.invalidate()
     if (signerLease) removeSigner(signerLease)
+    setAuthSigner(null)
     setPubkey(null)
     setMethod(null)
     setRememberedMethod(null)
@@ -444,7 +485,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const requestedMethod =
       options.method ?? (mode === "restore" ? storedSession?.type : "nip07")
     if (connecting.current) return
+    // StrictMode and overlapping restore callers can queue behind the browser
+    // lock. If another restore connected first, this request is satisfied.
+    if (shouldReuseConnectedAuthSession(mode, connected.current)) return
     if (connected.current) {
+      if (mode === "restore") return
       throw new Error("Disconnect the current signer before connecting another.")
     }
     if (!requestedMethod) {
@@ -462,6 +507,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     connecting.current = true
     const epoch = authEpoch.current + 1
     authEpoch.current = epoch
+    setAuthGeneration(epoch)
     let authRevision = readAuthRevision()
     const attemptOwnsEpoch = () => epoch === authEpoch.current
     const attemptIsCurrent = () =>
@@ -655,6 +701,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       remoteConnection.current = connectedRemote
       uncommittedRemote = null
       activeSession.current = session
+      setAuthSigner(sessionSigner)
       setPubkey(pk)
       setMethod(session.type)
       setRememberedMethod(session.type)
@@ -722,13 +769,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const connect = useCallback(
     async (options: AuthConnectOptions = {}) => {
+      const mode = options.mode ?? "interactive"
+      if (shouldReuseConnectedAuthSession(mode, connected.current)) return
       activePairing.current?.abort()
       activePairing.current = null
       setNostrConnectUri(null)
       if (connected.current) {
         throw new Error("Disconnect the current signer before connecting another.")
       }
-      const mode = options.mode ?? "interactive"
       const requestedMethod =
         options.method ??
         (mode === "restore" ? readAuthSession()?.type ?? null : "nip07")
@@ -795,6 +843,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const cancelConnect = useCallback(() => {
     if (!activePairing.current) return
     authEpoch.current += 1
+    setAuthGeneration(authEpoch.current)
     activePairing.current.abort()
     activePairing.current = null
     connecting.current = false
@@ -931,6 +980,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     <AuthContext.Provider
       value={{
         pubkey,
+        signer,
+        authGeneration,
         method,
         rememberedMethod,
         status,

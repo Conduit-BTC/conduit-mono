@@ -26,6 +26,7 @@ import {
   nwcMakeInvoice,
   publishMerchantOrderMessage,
   pubkeyToNpub,
+  prepareProtectedReadRefreshState,
   selectProtectedReadRows,
   weblnMakeInvoice,
   type MerchantConversationSummary,
@@ -55,6 +56,7 @@ import {
   MessagingReadinessNotice,
   toMessagingReadinessNoticeState,
   OrderMessagesWidget,
+  RefreshChip,
   Select,
   SelectContent,
   SelectItem,
@@ -110,20 +112,13 @@ import {
 } from "../lib/product-publishing"
 import {
   buildOrderStockAdjustments,
+  getOrderStockAdjustmentForDisplay,
   PendingProductStockDeliveryStore,
   ProductStockDecisionStore,
   shouldShowOrderStockAdjustment,
   type OrderStockAdjustment,
 } from "../lib/productStock"
-import {
-  Check,
-  CheckCircle2,
-  ChevronRight,
-  Copy,
-  MessageCircle,
-  RotateCw,
-  Search,
-} from "lucide-react"
+import { Check, ChevronRight, Copy, MessageCircle, Search } from "lucide-react"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { useMerchantPaymentAutomation } from "../hooks/useMerchantPaymentAutomation"
 import { OrderStockPanel } from "../components/OrderStockPanel"
@@ -372,13 +367,7 @@ function OrdersPage() {
     new PendingProductStockDeliveryStore()
   )
   const [weblnAvailable, setWeblnAvailable] = useState(false)
-  const [refreshButtonState, setRefreshButtonState] = useState<
-    "idle" | "refreshing" | "done"
-  >("idle")
   const selectedOrderResetRef = useRef<string | null>(null)
-  const refreshResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null
-  )
   const signerConnected = status === "connected" && !!pubkey
   const invoiceAmountNumber = useMemo(() => {
     const amount = Number(invoiceAmount)
@@ -442,43 +431,11 @@ function OrdersPage() {
       getCachedMerchantConversationList({ principalPubkey: pubkey! }),
     staleTime: 5_000,
   })
-  const isOrdersFetching = ordersQuery.isFetching
-  const isOrdersInitialHydration = ordersQuery.isLoading
+  const isOrdersInitialHydration = signerConnected && ordersQuery.isPending
   const refetchOrders = ordersQuery.refetch
-
-  useEffect(() => {
-    if (isOrdersFetching) {
-      if (refreshResetTimerRef.current) {
-        clearTimeout(refreshResetTimerRef.current)
-        refreshResetTimerRef.current = null
-      }
-      setRefreshButtonState("refreshing")
-      return
-    }
-
-    if (refreshButtonState === "refreshing") {
-      setRefreshButtonState("done")
-      refreshResetTimerRef.current = setTimeout(() => {
-        setRefreshButtonState("idle")
-        refreshResetTimerRef.current = null
-      }, 900)
-    }
-  }, [isOrdersFetching, refreshButtonState])
-
-  useEffect(() => {
-    return () => {
-      if (refreshResetTimerRef.current)
-        clearTimeout(refreshResetTimerRef.current)
-    }
-  }, [])
 
   const handleRefresh = useCallback(() => {
     if (!signerConnected || !pubkey) return
-    if (refreshResetTimerRef.current) {
-      clearTimeout(refreshResetTimerRef.current)
-      refreshResetTimerRef.current = null
-    }
-    setRefreshButtonState("refreshing")
     clearProtectedReadAuthenticationSuppression(pubkey)
     void refetchOrders()
   }, [pubkey, refetchOrders, signerConnected])
@@ -494,9 +451,14 @@ function OrdersPage() {
   const ordersMeta = ordersQuery.data?.meta
   const protectedOrdersReadState = deriveProtectedReadPresentationState({
     visibleCount: conversations.length,
-    pending: ordersQuery.isLoading,
+    pending: signerConnected && ordersQuery.isPending,
     error: ordersQuery.error,
     meta: ordersMeta,
+  })
+  const ordersRefreshState = prepareProtectedReadRefreshState({
+    protectedReadState: protectedOrdersReadState,
+    protectedReadRefreshing: ordersQuery.isFetching,
+    protectedReadPaused: ordersQuery.isPaused,
   })
   const protectedOrderCountsUnavailable =
     conversations.length === 0 && protectedOrdersReadState !== "complete"
@@ -806,20 +768,68 @@ function OrdersPage() {
           merchantPubkey: pubkey,
           items: orderSummary.items,
           productRecords: orderProductsQuery.data?.data ?? [],
-        }).filter((adjustment) =>
-          shouldShowOrderStockAdjustment({
-            adjustment,
-            orderStatus: merchantOrderState.status,
-            hasSessionDecision: sessionStockDecisionKeys.has(
-              `${pubkey}:${adjustment.key}`
-            ),
-            persistedDecision: stockDecisionStoreRef.current.get(
-              pubkey,
-              selected.orderId,
-              adjustment.addressId
-            ),
-          })
-        )
+        }).flatMap((adjustment) => {
+          const pendingAdjustment =
+            stockDelivery?.orderId === selected.orderId &&
+            stockDelivery.adjustment.key === adjustment.key
+              ? stockDelivery.adjustment
+              : null
+          const storedDecision = stockDecisionStoreRef.current.get(
+            pubkey,
+            selected.orderId,
+            adjustment.addressId
+          )
+          const persistedDecision = pendingAdjustment
+            ? {
+                kind: "applied" as const,
+                decidedAt: 0,
+                adjustment: pendingAdjustment,
+              }
+            : storedDecision
+          if (
+            !shouldShowOrderStockAdjustment({
+              adjustment,
+              orderStatus: merchantOrderState.status,
+              hasSessionDecision: sessionStockDecisionKeys.has(
+                `${pubkey}:${adjustment.key}`
+              ),
+              persistedDecision,
+            })
+          ) {
+            return []
+          }
+          return [
+            getOrderStockAdjustmentForDisplay({
+              adjustment,
+              persistedDecision,
+            }),
+          ]
+        })
+  const stockMutationDisabledKeys = new Set<string>()
+  for (const adjustment of stockAdjustments) {
+    const hasPendingDelivery = Boolean(
+      stockDelivery &&
+      selected &&
+      stockDelivery.orderId === selected.orderId &&
+      stockDelivery.adjustment.key === adjustment.key
+    )
+    const hasPersistedDecision = Boolean(
+      pubkey &&
+      selected &&
+      stockDecisionStoreRef.current.get(
+        pubkey,
+        selected.orderId,
+        adjustment.addressId
+      )
+    )
+    if (
+      sessionStockDecisionKeys.has(`${pubkey}:${adjustment.key}`) ||
+      hasPendingDelivery ||
+      hasPersistedDecision
+    ) {
+      stockMutationDisabledKeys.add(adjustment.key)
+    }
+  }
   const merchantPaid = isMerchantOrderPaid(merchantOrderState)
   const safeTrackingUrl = normalizeSafeHttpUrl(orderSummary?.trackingUrl)
   const assertPaidForFulfillment = useCallback(() => {
@@ -1099,7 +1109,8 @@ function OrdersPage() {
           merchantPubkey,
           payload.orderId,
           payload.adjustment.addressId,
-          "applied"
+          "applied",
+          payload.adjustment
         )
         pendingStockDeliveryStoreRef.current.delete(
           merchantPubkey,
@@ -1429,7 +1440,8 @@ function OrdersPage() {
       pubkey,
       selected.orderId,
       adjustment.addressId,
-      "declined"
+      "declined",
+      adjustment
     )
     setSessionStockDecisionKeys((current) => {
       const next = new Set(current)
@@ -1474,61 +1486,12 @@ function OrdersPage() {
             share shipping details.
           </p>
           <div className="mt-3">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={!signerConnected || isOrdersFetching}
-              onClick={handleRefresh}
-            >
-              <span className="inline-flex items-center gap-1">
-                <span
-                  className={`inline-flex h-4 w-4 items-center justify-center transition-colors duration-200 ${
-                    refreshButtonState === "refreshing"
-                      ? "animate-pulse text-[var(--secondary-500)]"
-                      : refreshButtonState === "done"
-                        ? "text-[var(--success)]"
-                        : "text-[var(--text-secondary)]"
-                  }`}
-                >
-                  {refreshButtonState === "done" ? (
-                    <CheckCircle2 className="h-3.5 w-3.5" />
-                  ) : (
-                    <RotateCw
-                      className={`h-3.5 w-3.5 ${refreshButtonState === "refreshing" ? "animate-spin" : ""}`}
-                    />
-                  )}
-                </span>
-                <span className="relative inline-flex h-4 min-w-[7rem] items-center justify-center">
-                  <span
-                    className={`absolute transition-opacity duration-200 ${
-                      refreshButtonState === "idle"
-                        ? "opacity-100 text-[var(--text-primary)]"
-                        : "opacity-0"
-                    }`}
-                  >
-                    Refresh
-                  </span>
-                  <span
-                    className={`absolute transition-opacity duration-200 ${
-                      refreshButtonState === "refreshing"
-                        ? "animate-pulse opacity-100 text-[var(--secondary-500)]"
-                        : "opacity-0"
-                    }`}
-                  >
-                    Refreshing...
-                  </span>
-                  <span
-                    className={`absolute transition-opacity duration-200 ${
-                      refreshButtonState === "done"
-                        ? "opacity-100 text-[var(--success)]"
-                        : "opacity-0"
-                    }`}
-                  >
-                    Updated
-                  </span>
-                </span>
-              </span>
-            </Button>
+            <RefreshChip
+              refreshing={ordersRefreshState.refreshing}
+              stale={ordersRefreshState.stale}
+              onRefresh={handleRefresh}
+              disabled={!signerConnected}
+            />
           </div>
         </div>
       </div>
@@ -1746,6 +1709,9 @@ function OrdersPage() {
 
                           <OrderStockPanel
                             adjustments={stockAdjustments}
+                            stockMutationDisabledKeys={
+                              stockMutationDisabledKeys
+                            }
                             delivery={selectedStockDelivery}
                             deliveryNeedsAttention={stockDeliveryCanRetry}
                             pending={orderActionPending}

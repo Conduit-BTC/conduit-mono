@@ -21,6 +21,8 @@ export type ProductStockDecisionKind = "applied" | "declined"
 export interface ProductStockDecision {
   kind: ProductStockDecisionKind
   decidedAt: number
+  /** Original order-relative state, preserved across listing refetches. */
+  adjustment?: OrderStockAdjustment
 }
 
 interface StoredProductStockDecisions {
@@ -95,6 +97,42 @@ function getDeliveryStorageKey(merchantPubkey: string): string | null {
     : null
 }
 
+function getDecisionProductAddressId(decisionKey: string): string | null {
+  const separatorIndex = decisionKey.indexOf(":")
+  if (
+    separatorIndex <= 0 ||
+    separatorIndex === decisionKey.length - 1 ||
+    decisionKey.indexOf(":", separatorIndex + 1) !== -1
+  ) {
+    return null
+  }
+
+  try {
+    const orderId = decodeURIComponent(decisionKey.slice(0, separatorIndex))
+    const productAddressId = decodeURIComponent(
+      decisionKey.slice(separatorIndex + 1)
+    )
+    if (!orderId.trim() || !productAddressId.trim()) return null
+    return getOrderStockDecisionKey(orderId, productAddressId) === decisionKey
+      ? productAddressId
+      : null
+  } catch {
+    return null
+  }
+}
+
+function isDecisionBoundToProduct(
+  decision: ProductStockDecision,
+  decisionKey: string,
+  productAddressId: string
+): boolean {
+  return (
+    !decision.adjustment ||
+    (decision.adjustment.key === decisionKey &&
+      decision.adjustment.addressId === productAddressId)
+  )
+}
+
 function parseStoredDecisions(raw: string | null): StoredProductStockDecisions {
   if (!raw) return { version: 1, decisions: {} }
 
@@ -119,7 +157,11 @@ function parseStoredDecisions(raw: string | null): StoredProductStockDecisions {
     const decisions: Record<string, ProductStockDecision> = {}
     for (const [key, value] of Object.entries(candidate.decisions)) {
       if (!value || typeof value !== "object") continue
-      const decision = value as { kind?: unknown; decidedAt?: unknown }
+      const decision = value as {
+        kind?: unknown
+        decidedAt?: unknown
+        adjustment?: unknown
+      }
       if (
         (decision.kind !== "applied" && decision.kind !== "declined") ||
         typeof decision.decidedAt !== "number" ||
@@ -127,9 +169,23 @@ function parseStoredDecisions(raw: string | null): StoredProductStockDecisions {
       ) {
         continue
       }
+      const adjustment =
+        decision.adjustment === undefined
+          ? undefined
+          : parseOrderStockAdjustment(decision.adjustment)
+      const productAddressId = getDecisionProductAddressId(key)
+      if (
+        decision.adjustment !== undefined &&
+        (!adjustment ||
+          adjustment.key !== key ||
+          adjustment.addressId !== productAddressId)
+      ) {
+        continue
+      }
       decisions[key] = {
         kind: decision.kind,
         decidedAt: decision.decidedAt,
+        ...(adjustment ? { adjustment } : {}),
       }
     }
 
@@ -373,8 +429,19 @@ export function shouldShowOrderStockAdjustment(input: {
   ) {
     return false
   }
-  if (input.adjustment.state === "restocking_required") return true
+  if (input.persistedDecision?.adjustment) {
+    return input.persistedDecision.adjustment.state === "restocking_required"
+  }
   return !input.hasSessionDecision && !input.persistedDecision
+}
+
+export function getOrderStockAdjustmentForDisplay(input: {
+  adjustment: OrderStockAdjustment
+  persistedDecision: ProductStockDecision | null
+}): OrderStockAdjustment {
+  return input.persistedDecision?.adjustment?.state === "restocking_required"
+    ? input.persistedDecision.adjustment
+    : input.adjustment
 }
 
 export function buildOrderStockAdjustments(input: {
@@ -470,16 +537,40 @@ export class ProductStockDecisionStore {
     orderId: string,
     productAddressId: string
   ): ProductStockDecision | null {
-    const decisionKey = getOrderStockDecisionKey(orderId, productAddressId)
+    const normalizedProductAddressId = productAddressId.trim()
+    const decisionKey = getOrderStockDecisionKey(
+      orderId,
+      normalizedProductAddressId
+    )
     const memoryKey = `${merchantPubkey}:${decisionKey}`
     const memoryDecision = this.memoryDecisions.get(memoryKey)
-    if (memoryDecision) return memoryDecision
+    if (
+      memoryDecision &&
+      isDecisionBoundToProduct(
+        memoryDecision,
+        decisionKey,
+        normalizedProductAddressId
+      )
+    ) {
+      return memoryDecision
+    }
+    if (memoryDecision) this.memoryDecisions.delete(memoryKey)
 
     const storageKey = getDecisionStorageKey(merchantPubkey)
     if (!storageKey || !this.storage) return null
     try {
       const stored = parseStoredDecisions(this.storage.getItem(storageKey))
       const decision = stored.decisions[decisionKey] ?? null
+      if (
+        decision &&
+        !isDecisionBoundToProduct(
+          decision,
+          decisionKey,
+          normalizedProductAddressId
+        )
+      ) {
+        return null
+      }
       if (decision) this.memoryDecisions.set(memoryKey, decision)
       return decision
     } catch {
@@ -491,10 +582,28 @@ export class ProductStockDecisionStore {
     merchantPubkey: string,
     orderId: string,
     productAddressId: string,
-    kind: ProductStockDecisionKind
+    kind: ProductStockDecisionKind,
+    adjustment?: OrderStockAdjustment
   ): boolean {
-    const decisionKey = getOrderStockDecisionKey(orderId, productAddressId)
-    const decision: ProductStockDecision = { kind, decidedAt: Date.now() }
+    const normalizedProductAddressId = productAddressId.trim()
+    const decisionKey = getOrderStockDecisionKey(
+      orderId,
+      normalizedProductAddressId
+    )
+    if (
+      adjustment &&
+      (adjustment.key !== decisionKey ||
+        adjustment.addressId !== normalizedProductAddressId)
+    ) {
+      throw new Error(
+        "Stock decision adjustment does not match the order product"
+      )
+    }
+    const decision: ProductStockDecision = {
+      kind,
+      decidedAt: Date.now(),
+      ...(adjustment ? { adjustment: { ...adjustment } } : {}),
+    }
     this.memoryDecisions.set(`${merchantPubkey}:${decisionKey}`, decision)
 
     const storageKey = getDecisionStorageKey(merchantPubkey)
@@ -547,14 +656,16 @@ export class PendingProductStockDeliveryStore {
       }
     }
 
-    return Array.from(this.memoryDeliveries.entries())
-      .filter(
-        ([key, delivery]) =>
-          key.startsWith(`${normalizedMerchant}:`) &&
-          delivery.orderId === normalizedOrder
-      )
-      .map(([, delivery]) => delivery)
-      .sort((left, right) => right.savedAt - left.savedAt)
+    const deliveries: PendingProductStockDelivery[] = []
+    for (const [key, delivery] of this.memoryDeliveries.entries()) {
+      if (
+        key.startsWith(`${normalizedMerchant}:`) &&
+        delivery.orderId === normalizedOrder
+      ) {
+        deliveries.push(delivery)
+      }
+    }
+    return deliveries.sort((left, right) => right.savedAt - left.savedAt)
   }
 
   set(
