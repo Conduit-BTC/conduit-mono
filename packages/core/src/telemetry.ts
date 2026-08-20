@@ -7,6 +7,7 @@ export {
   browserTelemetryEventNames,
   browserTelemetryPropertyNames,
   hasRequiredBrowserTelemetryEventProperties,
+  isAllowedBrowserTelemetryEventApp,
   isAllowedBrowserTelemetryEventProperty,
   isAllowedBrowserTelemetryLabelValue,
 } from "./telemetry-contract"
@@ -18,6 +19,7 @@ import {
   browserTelemetryEventNames,
   browserTelemetryPropertyNames,
   hasRequiredBrowserTelemetryEventProperties,
+  isAllowedBrowserTelemetryEventApp,
   isAllowedBrowserTelemetryEventProperty,
   isAllowedBrowserTelemetryLabelValue,
 } from "./telemetry-contract"
@@ -385,6 +387,10 @@ export function isBrowserTelemetryEventName(
 export function sanitizeTelemetryEventProperties(
   input: TelemetryEventInput
 ): Record<string, string | boolean> | null {
+  if (!isAllowedBrowserTelemetryEventApp(input.eventName, input.app)) {
+    return null
+  }
+
   const sanitized: Record<string, string | boolean> = {
     event_name: input.eventName,
     app: input.app,

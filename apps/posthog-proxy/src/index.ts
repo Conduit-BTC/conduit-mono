@@ -5,6 +5,7 @@ import {
   isAllowedBrowserTelemetryEventProperty,
   isAllowedBrowserTelemetryLabelValue,
 } from "@conduit/core/telemetry-contract"
+import type { BrowserTelemetryApp } from "@conduit/core/telemetry-contract"
 
 const POSTHOG_INGEST_ORIGIN = "https://us.i.posthog.com"
 const MAX_INGEST_BODY_BYTES = 1024 * 1024
@@ -21,17 +22,22 @@ const allowedIngestPaths = new Set([
   "/i/v0/e/",
 ])
 
-const allowedOriginHosts = new Set([
-  "conduit-market-coo.pages.dev",
-  "conduit-merchant-33n.pages.dev",
-  "sell.conduit.market",
-  "shop.conduit.market",
+const allowedOriginApps = new Map<string, BrowserTelemetryApp>([
+  ["conduit-market-coo.pages.dev", "market"],
+  ["conduit-merchant-33n.pages.dev", "merchant"],
+  ["sell.conduit.market", "merchant"],
+  ["shop.conduit.market", "market"],
 ])
 
-const allowedPreviewSuffixes = [
-  "conduit-market-coo.pages.dev",
-  "conduit-merchant-33n.pages.dev",
+const allowedPreviewOriginApps = [
+  { app: "market", suffix: "conduit-market-coo.pages.dev" },
+  { app: "merchant", suffix: "conduit-merchant-33n.pages.dev" },
 ] as const
+
+export interface AllowedOriginContext {
+  app: BrowserTelemetryApp
+  origin: string
+}
 
 /**
  * Event names the browser sanitizer is allowed to emit: the shared browser
@@ -140,10 +146,11 @@ export async function handlePostHogProxyRequest(
     return jsonResponse({ error: "not_found" }, 404)
   }
 
-  const origin = getAllowedOrigin(request.headers.get("origin"))
-  if (!origin) {
+  const originContext = getAllowedOriginContext(request.headers.get("origin"))
+  if (!originContext) {
     return jsonResponse({ error: "origin_not_allowed" }, 403)
   }
+  const { origin } = originContext
 
   if (request.method === "OPTIONS") {
     return new Response(null, {
@@ -172,6 +179,7 @@ export async function handlePostHogProxyRequest(
 
   const rebuilt = rebuildPostHogIngestPayload(
     requestBody,
+    originContext,
     env.POSTHOG_PROJECT_TOKEN
   )
   if (!rebuilt.ok) {
@@ -239,6 +247,7 @@ interface RejectedIngestPayload {
  */
 export function rebuildPostHogIngestPayload(
   body: ArrayBuffer,
+  originContext: AllowedOriginContext,
   pinnedToken?: string
 ): RebuiltIngestPayload | RejectedIngestPayload {
   let parsed: unknown
@@ -257,7 +266,7 @@ export function rebuildPostHogIngestPayload(
   const events: Record<string, unknown>[] = []
   let dropped = 0
   for (const candidate of candidates) {
-    const event = rebuildIngestEvent(candidate, pinnedToken)
+    const event = rebuildIngestEvent(candidate, pinnedToken, originContext)
     if (event) {
       events.push(event)
     } else {
@@ -270,7 +279,8 @@ export function rebuildPostHogIngestPayload(
 
 function rebuildIngestEvent(
   value: unknown,
-  pinnedToken: string | undefined
+  pinnedToken: string | undefined,
+  originContext: AllowedOriginContext
 ): Record<string, unknown> | null {
   if (!isPlainObject(value)) return null
   for (const key of Object.keys(value)) {
@@ -284,7 +294,8 @@ function rebuildIngestEvent(
   const properties = rebuildIngestEventProperties(
     eventName,
     value.properties,
-    pinnedToken
+    pinnedToken,
+    originContext
   )
   if (!properties) return null
 
@@ -318,7 +329,8 @@ function rebuildIngestEvent(
 function rebuildIngestEventProperties(
   eventName: string,
   value: unknown,
-  pinnedToken: string | undefined
+  pinnedToken: string | undefined,
+  originContext: AllowedOriginContext
 ): Record<string, unknown> | null {
   if (!isPlainObject(value)) return null
 
@@ -449,8 +461,48 @@ function rebuildIngestEventProperties(
   ) {
     return null
   }
+  if (!hasTrustedPageContext(rebuilt, originContext)) {
+    return null
+  }
 
   return rebuilt
+}
+
+function hasTrustedPageContext(
+  properties: Record<string, unknown>,
+  originContext: AllowedOriginContext
+): boolean {
+  if (properties.app !== originContext.app) return false
+
+  const pageUrl = properties.page_url
+  const pagePath = properties.page_path
+  if (typeof pageUrl !== "string" || typeof pagePath !== "string") return false
+
+  const parsedPageUrl = new URL(pageUrl)
+  if (
+    parsedPageUrl.origin !== originContext.origin ||
+    parsedPageUrl.pathname !== pagePath
+  ) {
+    return false
+  }
+
+  if (
+    properties.$current_url !== undefined &&
+    properties.$current_url !== pageUrl
+  ) {
+    return false
+  }
+  if (properties.$pathname !== undefined && properties.$pathname !== pagePath) {
+    return false
+  }
+  if (
+    properties.$prev_pageview_pathname !== undefined &&
+    properties.$prev_pageview_pathname !== pagePath
+  ) {
+    return false
+  }
+
+  return true
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -518,13 +570,7 @@ function isSanitizedPageUrl(value: unknown): value is string {
   if (!isSanitizedTelemetryRoutePath(url.pathname)) return false
   if (value !== `${url.origin}${url.pathname}`) return false
 
-  const hostname = url.hostname.toLowerCase()
-  return (
-    allowedOriginHosts.has(hostname) ||
-    allowedPreviewSuffixes.some((suffix) =>
-      isSingleLabelSubdomain(hostname, suffix)
-    )
-  )
+  return getAllowedTelemetryApp(url.hostname.toLowerCase()) !== null
 }
 
 async function readBoundedRequestBody(
@@ -562,27 +608,40 @@ async function readBoundedRequestBody(
   return body.buffer
 }
 
-function getAllowedOrigin(rawOrigin: string | null): string | null {
+function getAllowedOriginContext(
+  rawOrigin: string | null
+): AllowedOriginContext | null {
   if (!rawOrigin) return null
 
   try {
     const origin = new URL(rawOrigin)
-    if (origin.protocol !== "https:" || origin.port) return null
-
-    const hostname = origin.hostname.toLowerCase()
     if (
-      !allowedOriginHosts.has(hostname) &&
-      !allowedPreviewSuffixes.some((suffix) =>
-        isSingleLabelSubdomain(hostname, suffix)
-      )
+      origin.protocol !== "https:" ||
+      origin.port ||
+      origin.username ||
+      origin.password ||
+      rawOrigin !== origin.origin
     ) {
       return null
     }
 
-    return origin.origin
+    const app = getAllowedTelemetryApp(origin.hostname.toLowerCase())
+    if (!app) return null
+
+    return { app, origin: origin.origin }
   } catch {
     return null
   }
+}
+
+function getAllowedTelemetryApp(hostname: string): BrowserTelemetryApp | null {
+  const exactApp = allowedOriginApps.get(hostname)
+  if (exactApp) return exactApp
+
+  for (const { app, suffix } of allowedPreviewOriginApps) {
+    if (isSingleLabelSubdomain(hostname, suffix)) return app
+  }
+  return null
 }
 
 function isSingleLabelSubdomain(hostname: string, suffix: string): boolean {

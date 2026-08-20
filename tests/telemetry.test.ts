@@ -907,6 +907,32 @@ describe("browser telemetry", () => {
     expect(
       sanitizeTelemetryEventProperties({
         app: "market",
+        eventName: "product_publish_result",
+        properties: {
+          event_family: "create",
+          latency_bucket: "250ms_1s",
+          status: "success",
+        },
+      })
+    ).toBeNull()
+
+    expect(
+      sanitizeTelemetryEventProperties({
+        app: "merchant",
+        eventName: "cart_add",
+        properties: {
+          action: "add",
+          count_bucket: "1",
+          product_type: "physical",
+          status: "success",
+          surface: "cart",
+        },
+      })
+    ).toBeNull()
+
+    expect(
+      sanitizeTelemetryEventProperties({
+        app: "market",
         eventName: "cart_add",
         properties: {
           action: "add",

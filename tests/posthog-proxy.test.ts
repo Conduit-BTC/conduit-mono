@@ -1,9 +1,10 @@
 import { describe, expect, it } from "bun:test"
 
 import {
+  type AllowedOriginContext,
   handlePostHogProxyRequest,
   isSanitizedTelemetryRoutePath,
-  rebuildPostHogIngestPayload,
+  rebuildPostHogIngestPayload as rebuildPostHogIngestPayloadWithContext,
 } from "../apps/posthog-proxy/src"
 import {
   browserTelemetryEventNames,
@@ -14,6 +15,14 @@ import { sanitizeTelemetryPath } from "../packages/core/src/telemetry"
 import { pubkeyToNpub } from "../packages/core/src/utils"
 
 const PROJECT_TOKEN = "phc_workerTestProjectToken0001"
+const MARKET_ORIGIN_CONTEXT = {
+  app: "market",
+  origin: "https://shop.conduit.market",
+} as const satisfies AllowedOriginContext
+const MERCHANT_ORIGIN_CONTEXT = {
+  app: "merchant",
+  origin: "https://sell.conduit.market",
+} as const satisfies AllowedOriginContext
 
 function makeEvent(
   overrides: Record<string, unknown> = {},
@@ -153,10 +162,14 @@ function makeBrowserTelemetryEvent(
   eventName: BrowserTelemetryEventName,
   properties: Record<string, unknown> = {}
 ): Record<string, unknown> {
+  const app = properties.app ?? validBrowserEventProperties[eventName].app
   return makeEvent(
     { event: eventName },
     {
       event_name: eventName,
+      ...(app === "merchant"
+        ? { page_url: "https://sell.conduit.market/products/:productId" }
+        : {}),
       ...validBrowserEventProperties[eventName],
       ...properties,
     }
@@ -171,12 +184,22 @@ function encode(payload: unknown): ArrayBuffer {
   ) as ArrayBuffer
 }
 
-function ingestRequest(payload: unknown): Request {
+function rebuildPostHogIngestPayload(
+  body: ArrayBuffer,
+  originContext: AllowedOriginContext = MARKET_ORIGIN_CONTEXT
+) {
+  return rebuildPostHogIngestPayloadWithContext(body, originContext)
+}
+
+function ingestRequest(
+  payload: unknown,
+  origin = "https://shop.conduit.market"
+): Request {
   return new Request("https://e.conduit.market/e/?ip=1&_=123&ver=1.386.6", {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      origin: "https://shop.conduit.market",
+      origin,
     },
     body: JSON.stringify(payload),
   })
@@ -220,6 +243,10 @@ describe("PostHog reverse proxy", () => {
       null,
       "https://nested.branch.conduit-market-coo.pages.dev",
       "https://shop.conduit.market.evil.example",
+      "https://shop.conduit.market/",
+      "https://shop.conduit.market/private",
+      "https://shop.conduit.market?source=private",
+      "https://user:password@shop.conduit.market",
     ]) {
       const headers = origin ? { origin } : undefined
       const response = await handlePostHogProxyRequest(
@@ -373,6 +400,10 @@ describe("PostHog reverse proxy", () => {
         makeEvent(),
         makeEvent({ event: "$create_alias" }),
         makeBrowserTelemetryEvent("checkout_result"),
+        makeBrowserTelemetryEvent("app_load_result", {
+          app: "merchant",
+          page_url: "https://sell.conduit.market/products/:productId",
+        }),
       ]),
       async (request) => {
         upstreamRequest = request
@@ -392,14 +423,162 @@ describe("PostHog reverse proxy", () => {
     ])
   })
 
+  it("binds app and page context to the allowed caller origin", async () => {
+    let upstreamCalls = 0
+    const fetcher = async (): Promise<Response> => {
+      upstreamCalls += 1
+      return new Response("ok")
+    }
+
+    for (const [origin, app] of [
+      ["https://shop.conduit.market", "market"],
+      ["https://sell.conduit.market", "merchant"],
+      ["https://conduit-market-coo.pages.dev", "market"],
+      ["https://conduit-merchant-33n.pages.dev", "merchant"],
+      ["https://branch.conduit-market-coo.pages.dev", "market"],
+      ["https://branch.conduit-merchant-33n.pages.dev", "merchant"],
+    ] as const) {
+      const callsBefore = upstreamCalls
+      const response = await handlePostHogProxyRequest(
+        ingestRequest(
+          makeBrowserTelemetryEvent("app_load_result", {
+            app,
+            page_url: `${origin}/products/:productId`,
+          }),
+          origin
+        ),
+        fetcher
+      )
+
+      expect(response.status).toBe(200)
+      expect(upstreamCalls).toBe(callsBefore + 1)
+    }
+
+    for (const [event, properties] of [
+      ["$pageview", {}],
+      ["$pageleave", {}],
+      ["$web_vitals", { $web_vitals_LCP_value: 1_200 }],
+    ] as const) {
+      const callsBefore = upstreamCalls
+      const response = await handlePostHogProxyRequest(
+        ingestRequest(makeEvent({ event }, properties)),
+        fetcher
+      )
+
+      expect(response.status).toBe(200)
+      expect(upstreamCalls).toBe(callsBefore + 1)
+    }
+
+    const callsAfterValidEvents = upstreamCalls
+
+    for (const properties of [
+      {
+        app: "merchant",
+        page_url: "https://sell.conduit.market/products/:productId",
+      },
+      {
+        app: "merchant",
+        page_url: "https://shop.conduit.market/products/:productId",
+      },
+      {
+        app: "market",
+        page_url: "https://sell.conduit.market/products/:productId",
+      },
+      {
+        page_path: "/cart",
+        page_url: "https://shop.conduit.market/products/:productId",
+      },
+      {
+        $current_url: "https://sell.conduit.market/products/:productId",
+      },
+      { $pathname: "/cart" },
+    ]) {
+      const response = await handlePostHogProxyRequest(
+        ingestRequest(makeBrowserTelemetryEvent("app_load_result", properties)),
+        fetcher
+      )
+
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({ status: "dropped" })
+    }
+
+    for (const [origin, properties] of [
+      [
+        "https://shop.conduit.market",
+        {
+          app: "market",
+          page_url: "https://conduit-market-coo.pages.dev/products/:productId",
+        },
+      ],
+      [
+        "https://branch-a.conduit-market-coo.pages.dev",
+        {
+          app: "market",
+          page_url:
+            "https://branch-b.conduit-market-coo.pages.dev/products/:productId",
+        },
+      ],
+      [
+        "https://branch.conduit-market-coo.pages.dev",
+        {
+          app: "merchant",
+          page_url:
+            "https://branch.conduit-merchant-33n.pages.dev/products/:productId",
+        },
+      ],
+    ] as const) {
+      const response = await handlePostHogProxyRequest(
+        ingestRequest(
+          makeBrowserTelemetryEvent("app_load_result", properties),
+          origin
+        ),
+        fetcher
+      )
+
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({ status: "dropped" })
+    }
+
+    for (const event of [
+      makeEvent({ event: "$pageleave" }, { $prev_pageview_pathname: "/cart" }),
+      makeBrowserTelemetryEvent("product_publish_result", {
+        app: "market",
+        page_url: "https://shop.conduit.market/products/:productId",
+      }),
+      makeBrowserTelemetryEvent("cart_add", {
+        app: "merchant",
+        page_url: "https://sell.conduit.market/products/:productId",
+      }),
+    ]) {
+      const origin =
+        (event.properties as Record<string, unknown>).app === "merchant"
+          ? "https://sell.conduit.market"
+          : "https://shop.conduit.market"
+      const response = await handlePostHogProxyRequest(
+        ingestRequest(event, origin),
+        fetcher
+      )
+
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({ status: "dropped" })
+    }
+
+    expect(upstreamCalls).toBe(callsAfterValidEvents)
+  })
+
   it("requires every custom browser event contract", () => {
     expect(Object.keys(validBrowserEventProperties)).toEqual([
       ...browserTelemetryEventNames,
     ])
 
     for (const eventName of browserTelemetryEventNames) {
+      const originContext =
+        validBrowserEventProperties[eventName].app === "merchant"
+          ? MERCHANT_ORIGIN_CONTEXT
+          : MARKET_ORIGIN_CONTEXT
       const valid = rebuildPostHogIngestPayload(
-        encode(makeBrowserTelemetryEvent(eventName))
+        encode(makeBrowserTelemetryEvent(eventName)),
+        originContext
       )
       expect(valid.ok).toBe(true)
       if (valid.ok) expect(valid.events).toHaveLength(1)
@@ -416,7 +595,10 @@ describe("PostHog reverse proxy", () => {
         delete (incomplete.properties as Record<string, unknown>)[
           requiredProperty
         ]
-        const rebuilt = rebuildPostHogIngestPayload(encode(incomplete))
+        const rebuilt = rebuildPostHogIngestPayload(
+          encode(incomplete),
+          originContext
+        )
 
         expect(rebuilt.ok).toBe(true)
         if (rebuilt.ok) expect(rebuilt.events).toHaveLength(0)

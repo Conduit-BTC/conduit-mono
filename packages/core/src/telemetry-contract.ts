@@ -31,6 +31,8 @@ export const browserTelemetryEventNames = [
 export type BrowserTelemetryEventName =
   (typeof browserTelemetryEventNames)[number]
 
+export type BrowserTelemetryApp = "market" | "merchant"
+
 export const browserTelemetryPropertyNames = [
   "event_name",
   "app",
@@ -58,6 +60,7 @@ export type BrowserTelemetryPropertyName =
   (typeof browserTelemetryPropertyNames)[number]
 
 interface BrowserTelemetryEventPropertyContract {
+  apps: readonly BrowserTelemetryApp[]
   required: readonly BrowserTelemetryPropertyName[]
   optional: readonly BrowserTelemetryPropertyName[]
 }
@@ -70,6 +73,9 @@ const browserTelemetryBasePropertyNames = [
 ] as const
 const countAndTimePropertyNames = ["count", "time_bucket"] as const
 const timePropertyNames = ["time_bucket"] as const
+const sharedTelemetryApps = ["market", "merchant"] as const
+const marketTelemetryApps = ["market"] as const
+const merchantTelemetryApps = ["merchant"] as const
 
 /**
  * Event-specific property contracts. The four base fields above are required
@@ -79,38 +85,47 @@ const timePropertyNames = ["time_bucket"] as const
  */
 export const browserTelemetryEventPropertyContracts = {
   app_load_result: {
+    apps: sharedTelemetryApps,
     required: ["network", "status"],
     optional: ["latency_bucket", ...countAndTimePropertyNames],
   },
   client_error_result: {
+    apps: sharedTelemetryApps,
     required: ["surface", "action", "event_family", "mode", "status"],
     optional: [],
   },
   signer_connected: {
+    apps: sharedTelemetryApps,
     required: ["method", "status"],
     optional: countAndTimePropertyNames,
   },
   signer_disconnected: {
+    apps: sharedTelemetryApps,
     required: ["method", "status"],
     optional: countAndTimePropertyNames,
   },
   cart_add: {
+    apps: marketTelemetryApps,
     required: ["surface", "action", "status", "count_bucket", "product_type"],
     optional: timePropertyNames,
   },
   cart_remove: {
+    apps: marketTelemetryApps,
     required: ["surface", "action", "status", "count_bucket", "product_type"],
     optional: timePropertyNames,
   },
   cart_clear: {
+    apps: marketTelemetryApps,
     required: ["surface", "action", "status", "count_bucket", "product_type"],
     optional: timePropertyNames,
   },
   checkout_initiated: {
+    apps: marketTelemetryApps,
     required: ["surface", "status", "count_bucket", "product_type"],
     optional: timePropertyNames,
   },
   checkout_step_result: {
+    apps: marketTelemetryApps,
     required: [
       "surface",
       "step",
@@ -124,6 +139,7 @@ export const browserTelemetryEventPropertyContracts = {
     optional: timePropertyNames,
   },
   checkout_success: {
+    apps: marketTelemetryApps,
     required: [
       "surface",
       "mode",
@@ -136,6 +152,7 @@ export const browserTelemetryEventPropertyContracts = {
     optional: timePropertyNames,
   },
   checkout_result: {
+    apps: marketTelemetryApps,
     required: [
       "surface",
       "mode",
@@ -149,38 +166,47 @@ export const browserTelemetryEventPropertyContracts = {
     optional: timePropertyNames,
   },
   relay_connect_result: {
+    apps: sharedTelemetryApps,
     required: ["network", "status"],
     optional: ["latency_bucket", ...countAndTimePropertyNames],
   },
   relay_publish_result: {
+    apps: sharedTelemetryApps,
     required: ["network", "status"],
     optional: ["latency_bucket", ...countAndTimePropertyNames],
   },
   wallet_connect_result: {
+    apps: marketTelemetryApps,
     required: ["rail", "method", "status"],
     optional: ["latency_bucket", ...countAndTimePropertyNames],
   },
   payment_attempt_result: {
+    apps: marketTelemetryApps,
     required: ["rail", "mode", "status", "latency_bucket", "amount_bucket"],
     optional: countAndTimePropertyNames,
   },
   merchant_setup_step_result: {
+    apps: merchantTelemetryApps,
     required: ["surface", "step", "status"],
     optional: countAndTimePropertyNames,
   },
   product_publish_result: {
+    apps: merchantTelemetryApps,
     required: ["event_family", "status", "latency_bucket"],
     optional: countAndTimePropertyNames,
   },
   shipping_publish_result: {
+    apps: merchantTelemetryApps,
     required: ["event_family", "status", "latency_bucket"],
     optional: countAndTimePropertyNames,
   },
   market_browse_action: {
+    apps: marketTelemetryApps,
     required: ["surface", "action", "status", "result_count_bucket"],
     optional: ["product_type", ...timePropertyNames],
   },
   product_detail_action: {
+    apps: marketTelemetryApps,
     required: ["surface", "action", "product_type"],
     optional: timePropertyNames,
   },
@@ -212,6 +238,14 @@ export function isAllowedBrowserTelemetryEventProperty(
     contract.required.includes(propertyName as BrowserTelemetryPropertyName) ||
     contract.optional.includes(propertyName as BrowserTelemetryPropertyName)
   )
+}
+
+export function isAllowedBrowserTelemetryEventApp(
+  eventName: string,
+  app: string
+): app is BrowserTelemetryApp {
+  const contract = getBrowserTelemetryEventPropertyContract(eventName)
+  return contract?.apps.includes(app as BrowserTelemetryApp) === true
 }
 
 export function hasRequiredBrowserTelemetryEventProperties(
@@ -356,6 +390,14 @@ export function isAllowedBrowserTelemetryLabelValue(
     browserTelemetryLabelValues as Partial<Record<string, readonly string[]>>
   )[propertyName]
   if (!allowedValues?.includes(value)) return false
+  if (
+    propertyName === "app" &&
+    eventName !== undefined &&
+    getBrowserTelemetryEventPropertyContract(eventName) &&
+    !isAllowedBrowserTelemetryEventApp(eventName, value)
+  ) {
+    return false
+  }
   return (
     propertyName !== "event_name" ||
     eventName === undefined ||
