@@ -7,6 +7,7 @@ import {
   getMerchantNwcAddressStatus,
   getMerchantPaymentVerificationCandidates,
   isNwcSettlementMatch,
+  verifyMerchantPaymentCandidates,
 } from "../apps/merchant/src/lib/merchant-payment-verification"
 
 const BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
@@ -99,6 +100,103 @@ function invoiceOnlyConversation(orderId: string): MerchantConversationSummary {
 }
 
 describe("merchant NWC payment verification", () => {
+  it("retries pending evidence and suppresses a published confirmation", async () => {
+    const candidate = getMerchantPaymentVerificationCandidates([
+      conversation(),
+    ])[0]!
+    const confirmedEvidence = new Set<string>()
+    let settled = false
+    let published = 0
+    const lookupInvoice = async () => ({
+      type: "incoming" as const,
+      state: settled ? ("settled" as const) : ("pending" as const),
+      invoice,
+      paymentHash: "payment-hash",
+      amountMsats: 100_000,
+      settledAt: 1_700_000_010,
+    })
+    const publishConfirmation = async () => {
+      published += 1
+    }
+
+    expect(
+      await verifyMerchantPaymentCandidates({
+        candidates: [candidate],
+        confirmedEvidence,
+        lookupInvoice,
+        publishConfirmation,
+      })
+    ).toEqual({ checked: 1, verified: 0, lookupFailures: 0 })
+    settled = true
+    expect(
+      await verifyMerchantPaymentCandidates({
+        candidates: [candidate],
+        confirmedEvidence,
+        lookupInvoice,
+        publishConfirmation,
+      })
+    ).toEqual({ checked: 1, verified: 1, lookupFailures: 0 })
+    expect(
+      await verifyMerchantPaymentCandidates({
+        candidates: [candidate],
+        confirmedEvidence,
+        lookupInvoice,
+        publishConfirmation,
+      })
+    ).toEqual({ checked: 0, verified: 0, lookupFailures: 0 })
+    expect(published).toBe(1)
+  })
+
+  it("retries lookup and publication failures", async () => {
+    const candidate = getMerchantPaymentVerificationCandidates([
+      conversation(),
+    ])[0]!
+    const confirmedEvidence = new Set<string>()
+    let lookupFails = true
+    let publishFails = true
+    const lookupInvoice = async () => {
+      if (lookupFails) throw new Error("wallet unavailable")
+      return {
+        type: "incoming" as const,
+        state: "settled" as const,
+        invoice,
+        paymentHash: "payment-hash",
+        amountMsats: 100_000,
+        settledAt: 1_700_000_010,
+      }
+    }
+    const publishConfirmation = async () => {
+      if (publishFails) throw new Error("signer unavailable")
+    }
+
+    expect(
+      await verifyMerchantPaymentCandidates({
+        candidates: [candidate],
+        confirmedEvidence,
+        lookupInvoice,
+        publishConfirmation,
+      })
+    ).toEqual({ checked: 0, verified: 0, lookupFailures: 1 })
+    lookupFails = false
+    await expect(
+      verifyMerchantPaymentCandidates({
+        candidates: [candidate],
+        confirmedEvidence,
+        lookupInvoice,
+        publishConfirmation,
+      })
+    ).rejects.toThrow("signer unavailable")
+    publishFails = false
+    expect(
+      await verifyMerchantPaymentCandidates({
+        candidates: [candidate],
+        confirmedEvidence,
+        lookupInvoice,
+        publishConfirmation,
+      })
+    ).toEqual({ checked: 1, verified: 1, lookupFailures: 0 })
+  })
+
   it("requires exact order invoices and rejects replay across orders", () => {
     expect(getMerchantPaymentVerificationCandidates([conversation()])).toEqual([
       expect.objectContaining({
