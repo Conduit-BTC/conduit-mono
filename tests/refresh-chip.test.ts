@@ -168,6 +168,28 @@ describe("RefreshChip", () => {
     )
   })
 
+  it("keeps Market route refresh controls at the shared small-button height", async () => {
+    const detailSource = await readFile(
+      "apps/market/src/routes/products/$productId.tsx",
+      "utf8"
+    )
+    const ordersSource = await readFile(
+      "apps/market/src/routes/orders.tsx",
+      "utf8"
+    )
+
+    expect(detailSource).toContain(
+      'className="relative grid min-h-8 gap-2 text-sm text-[var(--text-secondary)] sm:block"'
+    )
+    expect(detailSource).not.toContain(
+      'className="relative grid min-h-7 gap-2 text-sm text-[var(--text-secondary)] sm:block"'
+    )
+    const ordersRefreshChip =
+      ordersSource.match(/<RefreshChip[\s\S]*?\/>/)?.[0] ?? ""
+    expect(ordersRefreshChip).toContain("doneDurationMs={900}")
+    expect(ordersRefreshChip).not.toContain("h-11")
+  })
+
   it("keeps incomplete product reads out of the Updated phase", async () => {
     const detailSource = await readFile(
       "apps/market/src/routes/products/$productId.tsx",

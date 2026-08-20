@@ -283,7 +283,7 @@ function ProductPage() {
 
   return (
     <div className="min-w-0 max-w-full space-y-8 overflow-x-hidden">
-      <div className="relative grid min-h-7 gap-2 text-sm text-[var(--text-secondary)] sm:block">
+      <div className="relative grid min-h-8 gap-2 text-sm text-[var(--text-secondary)] sm:block">
         <div className="flex min-w-0 flex-wrap items-center gap-2 sm:pr-48">
           <Link
             to="/products"

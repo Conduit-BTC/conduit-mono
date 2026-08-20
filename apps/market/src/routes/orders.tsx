@@ -1518,7 +1518,6 @@ function OrdersPage() {
           refreshing={isFetching}
           onRefresh={refetchAll}
           doneDurationMs={900}
-          className="h-11 px-4 text-sm"
           disabled={!activeBuyerPubkey}
         />
       </div>
