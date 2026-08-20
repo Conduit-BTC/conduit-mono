@@ -19,6 +19,13 @@ import type { Product, Profile } from "../types"
 import { normalizePublicMediaUrl } from "../network-target-safety"
 import { EVENT_KINDS } from "./kinds"
 import {
+  extractFollowPubkeys,
+  isPlausibleFollowListEventTimestamp,
+  readLatestFollowLists,
+  type FollowListAuthorRead,
+  type FollowListCoverageState,
+} from "./follows"
+import {
   fetchEventsFanout,
   fetchEventsFanoutDetailed,
   fetchEventsFanoutProgressive,
@@ -173,9 +180,40 @@ export interface CommerceQueryMeta {
   legacyDecryptFailures?: LegacyDmDecryptFailure[]
 }
 
+export type CommerceFreshnessMeta = Pick<
+  CommerceQueryMeta,
+  "stale" | "degraded" | "capped"
+>
+
+export function isCommerceReadIncomplete(
+  meta: CommerceFreshnessMeta | null | undefined
+): boolean {
+  return !!(meta?.stale || meta?.degraded || meta?.capped)
+}
+
 export interface CommerceResult<T> {
   data: T
   meta: CommerceQueryMeta
+}
+
+export interface FollowListQueryMeta extends CommerceQueryMeta {
+  /**
+   * True when a verified signed kind-3 snapshot is available. This
+   * distinguishes an intentional empty contact list from a bounded read that
+   * found no event; `snapshotState` identifies retained evidence.
+   */
+  eventObserved: boolean
+  /** NIP-01 replaceable-event ordering evidence for the selected kind-3. */
+  eventCreatedAt?: number
+  eventId?: string
+  coverage: FollowListCoverageState
+  snapshotState: FollowListAuthorRead["snapshotState"]
+}
+
+export interface FollowListResult extends CommerceResult<string[]> {
+  meta: FollowListQueryMeta
+  /** The verified signed kind-3 selected for this result, when observed. */
+  event?: SignedPublicNostrEvent
 }
 
 export interface CommerceProductRecord {
@@ -331,6 +369,7 @@ type CommerceTestOverrides = {
   fetchEventsFanoutWithDiagnostics?: typeof fetchEventsFanoutWithDiagnostics
   fetchEventsFanoutDetailed?: typeof fetchEventsFanoutDetailed
   fetchEventsFanoutProgressive?: typeof fetchEventsFanoutProgressive
+  readLatestFollowLists?: typeof readLatestFollowLists
   getNdk?: () => ReturnType<typeof getNdk> | Promise<ReturnType<typeof getNdk>>
   readProtectedInbox?: (
     options: ReadProtectedInboxOptions
@@ -2728,58 +2767,69 @@ function getProductRawEventLimit(displayLimit: number | undefined): number {
   )
 }
 
-function parseContactListPubkeys(
-  event: Pick<NDKEvent, "tags"> | undefined
-): string[] {
-  if (!event) return []
-  return uniqueStrings(
-    (event.tags ?? [])
-      .filter((tag) => tag[0] === "p" && typeof tag[1] === "string")
-      .map((tag) => tag[1])
-  )
-}
-
-function pickLatestEvent<T extends Pick<NDKEvent, "created_at">>(
-  events: T[]
-): T | undefined {
-  return events.reduce<T | undefined>((latest, event) => {
-    if (!latest) return event
-    return (event.created_at ?? 0) >= (latest.created_at ?? 0) ? event : latest
-  }, undefined)
-}
-
 export async function getFollowPubkeys(
   query: FollowListQuery
-): Promise<CommerceResult<string[]>> {
+): Promise<FollowListResult> {
   const pubkey = query.pubkey.trim()
   if (!pubkey) {
     return {
       data: [],
-      meta: createMeta("profile_batch", "public", PROFILE_CAPABILITIES),
+      meta: {
+        ...createMeta("profile_batch", "public", PROFILE_CAPABILITIES, {
+          stale: true,
+          degraded: true,
+        }),
+        eventObserved: false,
+        coverage: "unavailable",
+        snapshotState: "none",
+      },
     }
   }
 
-  const relayUrls = await planCommerceReadRelays({
-    intent: "profile_social_feed",
-    authors: [pubkey],
-    authenticatedPubkey: query.authenticatedPubkey,
-  })
-  const events = await runFetchEventsFanout(
+  const readFollowLists =
+    testOverrides.readLatestFollowLists ?? readLatestFollowLists
+  const result = await readFollowLists(
     {
-      kinds: [EVENT_KINDS.CONTACT_LIST],
-      authors: [pubkey],
-      limit: 5,
+      pubkeys: [pubkey],
+      authenticatedPubkey: query.authenticatedPubkey,
     },
-    {
-      relayUrls,
-      connectTimeoutMs: 2_500,
-      fetchTimeoutMs: 4_000,
-    }
+    { now: testOverrides.now }
   )
+  const author = result.authors[0]
+  const selectedEvent = author?.event
+  const eventTimestampPlausible = isPlausibleFollowListEventTimestamp(
+    selectedEvent,
+    testOverrides.now
+  )
+  const latestEvent = eventTimestampPlausible ? selectedEvent : undefined
+  const hiddenFutureSnapshot = selectedEvent !== undefined && !latestEvent
+  const incomplete = author?.coverage !== "complete" || hiddenFutureSnapshot
+  const coverage = hiddenFutureSnapshot
+    ? "limited"
+    : (author?.coverage ?? "unavailable")
+  const retainedSnapshot =
+    author?.snapshotState === "observed" || author?.snapshotState === "pending"
 
   return {
-    data: parseContactListPubkeys(pickLatestEvent(events)),
-    meta: createMeta("profile_batch", "public", PROFILE_CAPABILITIES),
+    data: extractFollowPubkeys(latestEvent?.tags),
+    event: latestEvent,
+    meta: {
+      ...createMeta(
+        "profile_batch",
+        retainedSnapshot ? "local_cache" : "public",
+        PROFILE_CAPABILITIES,
+        {
+          stale: incomplete,
+          degraded: incomplete,
+          capped: !!author?.capped,
+        }
+      ),
+      eventObserved: latestEvent !== undefined,
+      eventCreatedAt: latestEvent?.created_at,
+      eventId: latestEvent?.id,
+      coverage,
+      snapshotState: author?.snapshotState ?? "none",
+    },
   }
 }
 

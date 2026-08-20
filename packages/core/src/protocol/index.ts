@@ -55,6 +55,7 @@ export * from "./relay-executor"
 export * from "./protected-inbox-read"
 export * from "./protected-read-state"
 export * from "./shipping"
+export * from "./signed-event"
 export {
   getNdk,
   fetchEventsFanout,

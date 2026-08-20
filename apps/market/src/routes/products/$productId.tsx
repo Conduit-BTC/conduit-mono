@@ -5,6 +5,7 @@ import {
   formatNpub,
   getListingSafetyDisplay,
   getProfileName,
+  isCommerceReadIncomplete,
   pubkeyToNpub,
   recordBrowserTelemetryEvent,
   useProfile,
@@ -17,8 +18,7 @@ import {
   AvatarImage,
   Badge,
   Button,
-  FreshnessChip,
-  type FreshnessChipStatus,
+  RefreshChip,
 } from "@conduit/ui"
 import { CopyButton } from "../../components/CopyButton"
 import {
@@ -277,17 +277,15 @@ function ProductPage() {
     )
   }
 
-  const productFreshness: FreshnessChipStatus = product
-    ? productQuery.isHydrating
-      ? "updating"
-      : productQuery.meta?.stale
-        ? "stale"
-        : "idle"
-    : "idle"
+  const productRefreshing = productQuery.isHydrating
+  const productReadIncomplete =
+    isCommerceReadIncomplete(productQuery.meta) ||
+    !!productQuery.error ||
+    productQuery.isRefreshPaused
 
   return (
     <div className="min-w-0 max-w-full space-y-8 overflow-x-hidden">
-      <div className="relative grid min-h-7 gap-2 text-sm text-[var(--text-secondary)] sm:block">
+      <div className="relative grid min-h-8 gap-2 text-sm text-[var(--text-secondary)] sm:block">
         <div className="flex min-w-0 flex-wrap items-center gap-2 sm:pr-48">
           <Link
             to="/products"
@@ -318,11 +316,13 @@ function ProductPage() {
             {product?.title ?? "Product"}
           </span>
         </div>
-        <div className="relative min-h-[1.625rem] sm:absolute sm:right-0 sm:top-1/2 sm:min-h-0 sm:-translate-y-1/2">
-          <FreshnessChip
-            status={productFreshness}
-            updatingLabel="Updating listing"
-            staleLabel="Listing may be out of date"
+        <div className="relative min-h-8 sm:absolute sm:right-0 sm:top-1/2 sm:min-h-0 sm:-translate-y-1/2">
+          <RefreshChip
+            refreshing={productRefreshing}
+            onRefresh={productQuery.refetch}
+            stale={productReadIncomplete}
+            staleLabel="May be out of date"
+            refreshingLabel="Updating listing..."
             className="absolute right-0 top-0 sm:static"
           />
         </div>
