@@ -98,6 +98,7 @@ describe("product deletion reads retain source-relay provenance", () => {
     const snapshots: CommerceProductRecord[][] = []
 
     __setRelayListTestOverrides({
+      fetchEventsFanout: async () => [],
       loadCached: async (pubkey) => ({
         pubkey,
         readRelayUrls: [],
@@ -105,6 +106,8 @@ describe("product deletion reads retain source-relay provenance", () => {
         eventCreatedAt: 1,
         cachedAt: FIXED_NOW,
       }),
+      now: () => FIXED_NOW,
+      putCached: async () => {},
     })
     __setCommerceTestOverrides({
       now: () => FIXED_NOW,

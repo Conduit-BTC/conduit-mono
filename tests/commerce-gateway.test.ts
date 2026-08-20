@@ -199,6 +199,14 @@ beforeEach(async () => {
   cachedProductTombstones = []
   cachedProfiles = new Map()
   cachedOrderMessages = []
+  // Commerce tests own the complete relay boundary. Keep secondary NIP-65
+  // planning (including deletion-frontier reads) from reaching the network.
+  __setRelayListTestOverrides({
+    fetchEventsFanout: async () => [],
+    loadCached: async () => undefined,
+    putCached: async () => {},
+    now: () => FIXED_NOW,
+  })
   __setCommerceTestOverrides({
     now: () => FIXED_NOW,
     resolveInboxRelayUrls: async () => ["wss://inbox.example"],
