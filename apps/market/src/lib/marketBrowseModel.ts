@@ -39,6 +39,15 @@ export function allowsGlobalProductSearch(input: {
   return input.anonymous || input.catalogSource === "combined"
 }
 
+export function refreshMarketBrowseData(input: {
+  globalSearchEnabled: boolean
+  refreshCatalog: () => void
+  refreshGlobalSearch: () => unknown
+}): void {
+  input.refreshCatalog()
+  if (input.globalSearchEnabled) void input.refreshGlobalSearch()
+}
+
 export function getGlobalProductSearchQueryKey(input: {
   query: string
   pubkey: string | null

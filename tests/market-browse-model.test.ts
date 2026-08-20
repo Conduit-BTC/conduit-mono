@@ -14,6 +14,7 @@ import {
   getGlobalProductSearchQueryKey,
   getMerchantIdentityView,
   mergeProductSearchResults,
+  refreshMarketBrowseData,
   sortBrowseProducts,
   sortStoreFacetOptionsByRecentPublisher,
 } from "../apps/market/src/lib/marketBrowseModel"
@@ -48,6 +49,29 @@ const products = [
 ]
 
 describe("market browse model helpers", () => {
+  it("refreshes global search only when it contributes visible results", () => {
+    let catalogRefreshes = 0
+    let globalSearchRefreshes = 0
+    const refresh = (globalSearchEnabled: boolean) =>
+      refreshMarketBrowseData({
+        globalSearchEnabled,
+        refreshCatalog: () => {
+          catalogRefreshes += 1
+        },
+        refreshGlobalSearch: () => {
+          globalSearchRefreshes += 1
+        },
+      })
+
+    refresh(false)
+    expect(catalogRefreshes).toBe(1)
+    expect(globalSearchRefreshes).toBe(0)
+
+    refresh(true)
+    expect(catalogRefreshes).toBe(2)
+    expect(globalSearchRefreshes).toBe(1)
+  })
+
   it("keeps global search out of explicit connected catalog scopes", () => {
     expect(
       allowsGlobalProductSearch({

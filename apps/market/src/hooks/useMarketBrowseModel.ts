@@ -1,4 +1,4 @@
-import { useMemo } from "react"
+import { useCallback, useMemo } from "react"
 import { useQuery } from "@tanstack/react-query"
 import {
   getMarketplaceProducts,
@@ -18,6 +18,7 @@ import {
   getStoreTriggerLabel,
   hasUnavailablePriceForBrowseSort,
   mergeProductSearchResults,
+  refreshMarketBrowseData,
   sortBrowseProducts,
   sortStoreFacetOptionsByRecentPublisher,
   type MarketBrowseSearch,
@@ -121,6 +122,17 @@ export function useMarketBrowseModel({
         : productsQuery.products,
     [globalSearchEnabled, globalSearchProducts, productsQuery.products]
   )
+  const refreshCatalog = productsQuery.refetch
+  const refreshGlobalSearch = globalSearchQuery.refetch
+  const refetch = useCallback(
+    () =>
+      refreshMarketBrowseData({
+        globalSearchEnabled,
+        refreshCatalog,
+        refreshGlobalSearch,
+      }),
+    [globalSearchEnabled, refreshCatalog, refreshGlobalSearch]
+  )
   const preparedProductsQuery = {
     ...productsQuery,
     isInitialLoading:
@@ -134,6 +146,7 @@ export function useMarketBrowseModel({
     error:
       productsQuery.error ??
       (globalSearchEnabled ? globalSearchQuery.error : null),
+    refetch,
   }
   const allMerchantPubkeys = useMemo(() => {
     if (productData.length === 0) return []
