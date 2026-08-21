@@ -149,7 +149,6 @@ export function useMerchantCheckoutCapability(input: {
   )
   const paymentTarget = resolveCheckoutPaymentTarget({
     selection: null,
-    preferredRail: shopperPresets.preset.preferredRail,
     eligibleWallets,
     weblnAvailable: webLnAvailable,
   })
