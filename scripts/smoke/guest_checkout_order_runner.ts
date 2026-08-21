@@ -9,6 +9,7 @@ import {
   getAtomicProductDetail,
   getMerchantConversationList,
   getNdk,
+  getShippingOptions as fetchShippingOptions,
   removeSigner,
   setSigner,
   type BtcUsdRateQuote,
@@ -24,7 +25,11 @@ import {
   type ReadyCheckoutPricing,
 } from "../../apps/market/src/lib/checkout-order"
 import { buildCheckoutPricingIntent } from "../../apps/market/src/lib/checkout-payment"
-import { getCartShippingDestinationEligibility } from "../../apps/market/src/lib/cart-shipping-options"
+import {
+  getCartShippingDestinationEligibility,
+  hasPhysicalItemsMissingShippingSnapshot,
+  hasPhysicalItemsMissingShippingZone,
+} from "../../apps/market/src/lib/cart-shipping-options"
 import { createCartItemFromProduct } from "../../apps/market/src/lib/cart-model"
 import { publishBuyerOrderMessage } from "../../apps/market/src/lib/order-publish"
 
@@ -97,6 +102,7 @@ type GuestIdentity = ReturnType<typeof createGuestOrderSigningIdentity>
 export type GuestCheckoutOrderSmokeDependencies = {
   getProduct?: typeof getAtomicProductDetail
   getPricingRate?: () => Promise<BtcUsdRateQuote>
+  getShippingOptions?: typeof fetchShippingOptions
   createOrderId?: () => string
   createGuestIdentity?: (
     orderId: string,
@@ -225,6 +231,7 @@ async function buildGuestOrderPricing(
   record: CommerceProductRecord | null,
   config: GuestCheckoutOrderSmokeConfig,
   getPricingRate: () => Promise<BtcUsdRateQuote>,
+  getShippingOptions: typeof fetchShippingOptions,
   nowMs: number
 ): Promise<ReadyCheckoutPricing> {
   if (!record || record.product.pubkey !== config.merchantPubkey) {
@@ -250,15 +257,41 @@ async function buildGuestOrderPricing(
     quantity: 1,
   }
 
+  let merchantShippingOptions: Awaited<
+    ReturnType<typeof fetchShippingOptions>
+  > = []
+  const requiresMerchantShippingOptions =
+    item.format !== "digital" &&
+    hasPhysicalItemsMissingShippingSnapshot([item]) &&
+    !hasPhysicalItemsMissingShippingZone([item])
+  if (requiresMerchantShippingOptions) {
+    try {
+      merchantShippingOptions = await getShippingOptions(config.merchantPubkey)
+    } catch (error) {
+      throw new GuestCheckoutOrderSmokeInconclusive(
+        "Guest checkout smoke could not read the merchant shipping options.",
+        { cause: error }
+      )
+    }
+  }
+
   const destinationEligibility = getCartShippingDestinationEligibility(
     {
       country: config.shippingCountry,
       postalCode: config.shippingPostalCode,
     },
     [item],
-    []
+    merchantShippingOptions
   )
   if (destinationEligibility.eligible !== true) {
+    if (
+      destinationEligibility.eligible === null &&
+      requiresMerchantShippingOptions
+    ) {
+      throw new GuestCheckoutOrderSmokeInconclusive(
+        "Guest checkout smoke requires current shipping eligibility evidence."
+      )
+    }
     throw new Error(
       `Guest checkout smoke shipping destination is not eligible: ${destinationEligibility.reason}.`
     )
@@ -445,6 +478,7 @@ export async function runGuestCheckoutOrderSmoke(
       product.data,
       config,
       dependencies.getPricingRate ?? fetchBtcUsdRate,
+      dependencies.getShippingOptions ?? fetchShippingOptions,
       nowMs()
     )
   } catch (error) {

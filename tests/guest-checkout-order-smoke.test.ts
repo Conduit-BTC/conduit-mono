@@ -163,6 +163,30 @@ function productRead(
   } as never
 }
 
+function merchantShippingOptions() {
+  return [
+    {
+      id: `30406:${MERCHANT_PUBKEY}:shipping`,
+      pubkey: MERCHANT_PUBKEY,
+      dTag: "shipping",
+      title: "Standard shipping",
+      currency: "USD",
+      price: 0,
+      countries: ["US"],
+      countryRules: [
+        {
+          code: "US",
+          name: "United States",
+          restrictTo: [],
+          exclude: [],
+        },
+      ],
+      service: "standard",
+      createdAt: 1_700_000_000_000,
+    },
+  ]
+}
+
 function recoveredOrderRead(
   published: { content: string },
   meta: {
@@ -461,6 +485,97 @@ describe("guest checkout order smoke", () => {
       expect(formatGuestCheckoutOrderSmokeFailure(failure)).toBe(
         "Guest checkout order smoke failed at product_read."
       )
+      expect(published).toBe(false)
+    }
+  })
+
+  it("uses merchant kind 30406 rules for a physical listing without an embedded snapshot", async () => {
+    const config = parseGuestCheckoutOrderSmokeConfig(environment())
+    let shippingQuery: string | null = null
+    let published = false
+    let failure: unknown
+
+    try {
+      await runGuestCheckoutOrderSmoke(config, {
+        getProduct: async () =>
+          productRead({
+            product: {
+              format: "physical",
+              shippingOptionId: `30406:${MERCHANT_PUBKEY}:shipping`,
+              shippingOptionDTag: "shipping",
+              shippingCountries: [],
+              shippingCountryRules: [],
+            },
+          }),
+        getPricingRate: async () => ({
+          rate: 100_000,
+          fetchedAt: 1_700_000_000_000,
+          source: "mempool",
+          fiatUsdRates: {},
+          fiatSource: "frankfurter",
+        }),
+        getShippingOptions: async (merchantPubkey) => {
+          shippingQuery = merchantPubkey
+          return merchantShippingOptions()
+        },
+        createOrderId: () => "smoke-order",
+        createGuestIdentity: () => identity(),
+        publishOrder: async () => {
+          published = true
+          throw new Error("Stop after shipping validation.")
+        },
+        nowMs: () => 1_700_000_123_000,
+      })
+    } catch (error) {
+      failure = error
+    }
+
+    expect(shippingQuery).toBe(MERCHANT_PUBKEY)
+    expect(published).toBe(true)
+    expect(formatGuestCheckoutOrderSmokeFailure(failure)).toBe(
+      "Guest checkout order smoke failed at order_publish."
+    )
+  })
+
+  it("reports missing merchant shipping evidence as inconclusive", async () => {
+    const config = parseGuestCheckoutOrderSmokeConfig(environment())
+
+    for (const getShippingOptions of [
+      async () => [],
+      async () => {
+        throw new Error("Shipping relay lookup failed.")
+      },
+    ]) {
+      let published = false
+      let failure: unknown
+
+      try {
+        await runGuestCheckoutOrderSmoke(config, {
+          getProduct: async () =>
+            productRead({
+              product: {
+                format: "physical",
+                shippingOptionId: `30406:${MERCHANT_PUBKEY}:shipping`,
+                shippingOptionDTag: "shipping",
+                shippingCountries: [],
+                shippingCountryRules: [],
+              },
+            }),
+          getShippingOptions,
+          publishOrder: async () => {
+            published = true
+            throw new Error("Missing shipping evidence must not publish.")
+          },
+        })
+      } catch (error) {
+        failure = error
+      }
+
+      expect(getGuestCheckoutOrderSmokeFailureEvidence(failure)).toEqual({
+        status: "inconclusive",
+        stage: "product_read",
+        summary: "Guest checkout order smoke inconclusive at product_read.",
+      })
       expect(published).toBe(false)
     }
   })
