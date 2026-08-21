@@ -24,6 +24,8 @@ import {
   clearCheckoutShippingSession,
   getIdentityBoundShippingPreset,
   getShippingFormFromPreset,
+  initializeCheckoutShippingSession,
+  readCheckoutShippingCapabilityInitialization,
   readCheckoutShippingInitialization,
   writeCheckoutShippingSession,
 } from "../apps/market/src/lib/checkout-session"
@@ -439,6 +441,12 @@ describe("Market shopper preset integration", () => {
     expect(source).toMatch(
       /setUnlockState\(\(current\) =>[\s\S]*current === "unlocked" \? "unlocked" : "error"/u
     )
+    expect(source).toMatch(
+      /const preserveUnlocked =[\s\S]*decryptedPreset\?\.ownerPubkey === identityPubkey[\s\S]*unlockState === "unlocked"/u
+    )
+    expect(source).toMatch(
+      /if \(!preserveUnlocked\) setUnlockState\("unlocking"\)[\s\S]*setDecryptedPreset\(null\)[\s\S]*setUnlockState\("error"\)/u
+    )
   })
 
   it("settles no-op refreshes while retaining the accepted preset", async () => {
@@ -481,8 +489,8 @@ describe("Market shopper preset integration", () => {
     expect(capability).toContain(
       'const identityPubkey = authStatus === "connected" ? pubkey : null'
     )
-    expect(capability).toContain(
-      "undefined,\n        undefined,\n        identityPubkey\n      ).value"
+    expect(capability).toMatch(
+      /readCheckoutShippingCapabilityInitialization\([\s\S]*identityPubkey\s*\)\.value/u
     )
     expect(preferences).toContain("presets.clear(password, policy)")
     expect(preferences).toContain("const policyEditedRef = useRef(false)")
@@ -783,6 +791,39 @@ describe("Market shopper preset integration", () => {
     expect(source).not.toContain("authStorageRevision")
   })
 
+  it("keeps capability readiness aligned while checkout claims a guest draft", () => {
+    const storage = memoryStorage()
+    const guestDraft = { ...DEFAULT_CHECKOUT_SHIPPING, street: "Guest draft" }
+    writeCheckoutShippingSession(guestDraft, storage, 1_000, null)
+
+    expect(
+      readCheckoutShippingCapabilityInitialization(
+        null,
+        "buyer-a",
+        storage,
+        1_001
+      )
+    ).toEqual({ value: guestDraft, hasActiveDraft: true })
+    expect(
+      initializeCheckoutShippingSession(null, "buyer-a", storage, 1_002)
+    ).toEqual({ value: guestDraft, hasActiveDraft: true })
+    expect(
+      readCheckoutShippingInitialization(null, storage, 1_003, "buyer-a")
+    ).toEqual({ value: guestDraft, hasActiveDraft: true })
+
+    const foreignStorage = memoryStorage()
+    writeCheckoutShippingSession(guestDraft, foreignStorage, 1_000, "buyer-a")
+    expect(
+      readCheckoutShippingCapabilityInitialization(
+        null,
+        "buyer-b",
+        foreignStorage,
+        1_001
+      )
+    ).toEqual({ value: DEFAULT_CHECKOUT_SHIPPING, hasActiveDraft: false })
+    expect(foreignStorage.length).toBe(1)
+  })
+
   it("delegates ownership decisions to checkout session initialization before preset seeding", async () => {
     const [checkout, session] = await Promise.all([
       Bun.file("apps/market/src/routes/checkout.tsx").text(),
@@ -905,6 +946,8 @@ describe("Market shopper preset integration", () => {
     expect(capability).toContain("getIdentityBoundShippingPreset(")
     expect(capability).toContain("shopperPresets.presetOwnerPubkey")
     expect(capability).toContain("shopperPresets.preset.shipping")
-    expect(capability).toContain("readCheckoutShippingInitialization(")
+    expect(capability).toContain(
+      "readCheckoutShippingCapabilityInitialization("
+    )
   })
 })

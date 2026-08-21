@@ -205,7 +205,8 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
       encrypted: ShopperPresetsEnvelope,
       password: string,
       policy: ShopperPresetsUnlockPolicy,
-      revision: ShopperPresetsRevision
+      revision: ShopperPresetsRevision,
+      preserveUnlocked = false
     ): Promise<boolean> => {
       const lifecycle = relayLifecycle
       if (
@@ -216,7 +217,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
         )
       )
         return false
-      setUnlockState("unlocking")
+      if (!preserveUnlocked) setUnlockState("unlocking")
       try {
         const document = await decryptShopperPresetsDocument(
           encrypted,
@@ -251,8 +252,10 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
             acceptedReadRef.current?.revision ?? null,
             revision
           )
-        )
+        ) {
+          setDecryptedPreset(null)
           setUnlockState("error")
+        }
         return false
       }
     },
@@ -333,8 +336,10 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
     }
     acceptedReadRef.current = result
     const encrypted = result.envelope
+    const preserveUnlocked =
+      decryptedPreset?.ownerPubkey === identityPubkey &&
+      unlockState === "unlocked"
     setRemotePreset(encrypted)
-    setDecryptedPreset(null)
     setSyncState("synced")
     const storage = getBrowserShopperPresetsStorage()
     const remembered = storage
@@ -345,6 +350,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
         )
       : null
     if (!remembered) {
+      setDecryptedPreset(null)
       setUnlockState("locked")
       return
     }
@@ -352,7 +358,8 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
       encrypted,
       remembered.password,
       remembered.policy,
-      result.revision
+      result.revision,
+      preserveUnlocked
     ).then((unlocked) => {
       if (
         unlocked ||
@@ -370,7 +377,15 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
       clearShopperPresetsUnlock(identityPubkey, storage.local, storage.session)
       setUnlockState("locked")
     })
-  }, [decryptRemote, identityPubkey, queryClient, relayLifecycle, remote.data])
+  }, [
+    decryptRemote,
+    decryptedPreset,
+    identityPubkey,
+    queryClient,
+    relayLifecycle,
+    remote.data,
+    unlockState,
+  ])
 
   useEffect(() => {
     if (!identityPubkey || !remote.isError || acceptedReadRef.current !== null)

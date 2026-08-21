@@ -224,6 +224,38 @@ export function initializeCheckoutShippingSession(
   }
 }
 
+export function readCheckoutShippingCapabilityInitialization(
+  preset: ShopperShippingPreset | null,
+  identityPubkey: string | null,
+  storage: SessionStorageLike | null = getSessionStorage(),
+  nowMs = Date.now()
+): { value: ShippingFormState; hasActiveDraft: boolean } {
+  const action = getCheckoutShippingDraftOwnershipAction({
+    identityPubkey,
+    isRestorePending: false,
+    ownership: inspectCheckoutShippingDraftOwnership(storage, nowMs),
+  })
+
+  if (action === "restore") {
+    return readCheckoutShippingInitialization(
+      preset,
+      storage,
+      nowMs,
+      identityPubkey
+    )
+  }
+  if (action === "claim") {
+    return readCheckoutShippingInitialization(preset, storage, nowMs, null)
+  }
+
+  return {
+    value: preset
+      ? getShippingFormFromPreset(preset)
+      : DEFAULT_CHECKOUT_SHIPPING,
+    hasActiveDraft: false,
+  }
+}
+
 export function pruneExpiredCheckoutShippingSession(
   storage: SessionStorageLike | null = getSessionStorage(),
   nowMs = Date.now()
