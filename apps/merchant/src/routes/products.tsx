@@ -124,6 +124,7 @@ import {
   getProductVariationCombinations,
   getProductVariationMatrix,
   getProductVariationFormState,
+  getProductVariationRemovalCount,
   groupProductVariationRecords,
   MAX_PRODUCT_VARIATION_AXES,
   MAX_PRODUCT_VARIATION_COUNT,
@@ -1325,11 +1326,8 @@ function ProductsPage() {
     [form.variations]
   )
   const productVariationRemovalCount = useMemo(
-    () =>
-      form.variations.rows.filter(
-        (row) => !row.included && typeof row.dTag === "string"
-      ).length,
-    [form.variations.rows]
+    () => getProductVariationRemovalCount(form.variations, editing?.variations),
+    [editing?.variations, form.variations]
   )
   const productVariationCartesianCount = useMemo(
     () => getProductVariationCartesianCount(form.variations),
@@ -2220,6 +2218,19 @@ function ProductsPage() {
                 </span>
               </label>
 
+              {productVariationRemovalCount > 0 && (
+                <p
+                  role="status"
+                  aria-live="polite"
+                  className="text-pretty text-xs leading-5 text-warning"
+                >
+                  Saving will remove {productVariationRemovalCount} previously
+                  published combination
+                  {productVariationRemovalCount === 1 ? "" : "s"} from this
+                  product.
+                </p>
+              )}
+
               {form.variations.enabled && (
                 <>
                   <div className="grid gap-3">
@@ -2355,19 +2366,6 @@ function ProductsPage() {
                       productFormValidation.errors.variations ??
                       "Separate values with commas. Every possible combination appears in the availability matrix."}
                   </div>
-
-                  {productVariationRemovalCount > 0 && (
-                    <p
-                      role="status"
-                      aria-live="polite"
-                      className="text-pretty text-xs leading-5 text-warning"
-                    >
-                      Saving will remove {productVariationRemovalCount}{" "}
-                      previously published combination
-                      {productVariationRemovalCount === 1 ? "" : "s"} from this
-                      product.
-                    </p>
-                  )}
 
                   {productVariationMatrix.length > 0 && (
                     <ProductCombinationMatrix

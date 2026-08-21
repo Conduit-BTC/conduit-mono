@@ -522,10 +522,20 @@ export function addProductVariationAxis(
   key = ""
 ): ProductVariationFormState {
   if (state.axes.length >= MAX_PRODUCT_VARIATION_AXES) return state
-  const nextIndex = state.axes.length
+  const existingIds = new Set(state.axes.map(({ id }) => id))
+  let nextIndex = state.axes.reduce((next, axis) => {
+    const index = Number(axis.id.match(/-(\d+)$/)?.[1])
+    return Number.isSafeInteger(index) ? Math.max(next, index + 1) : next
+  }, state.axes.length)
+  let nextAxis = createProductVariationAxis(key, "", nextIndex)
+  while (existingIds.has(nextAxis.id)) {
+    nextIndex += 1
+    nextAxis = createProductVariationAxis(key, "", nextIndex)
+  }
+
   return {
     ...state,
-    axes: [...state.axes, createProductVariationAxis(key, "", nextIndex)],
+    axes: [...state.axes, nextAxis],
   }
 }
 
@@ -565,6 +575,17 @@ export function getProductVariationMatrix(
       label: getCombinationLabel(specifications),
     }
   })
+}
+
+export function getProductVariationRemovalCount(
+  state: ProductVariationFormState,
+  existingVariations: readonly Pick<ProductListingRecordLike, "dTag">[] = []
+): number {
+  if (!state.enabled) {
+    return existingVariations.filter(({ dTag }) => !!dTag).length
+  }
+
+  return state.rows.filter(({ included, dTag }) => !included && !!dTag).length
 }
 
 function reconcileProductVariationAvailability(

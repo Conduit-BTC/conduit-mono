@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { canonicalizeProductPrice, type ProductSchema } from "@conduit/core"
 import {
+  addProductVariationAxis,
   buildProductFamilyChangePlan,
   createEmptyProductVariationForm,
   createProductVariationAxis,
@@ -10,9 +11,11 @@ import {
   getProductVariationFormError,
   getProductVariationFormState,
   getProductVariationMatrix,
+  getProductVariationRemovalCount,
   groupProductVariationRecords,
   parseProductVariationFormState,
   reconcileProductVariationForm,
+  removeProductVariationAxis,
   removeProductVariationRow,
   setProductVariationCombinationIncluded,
   updateProductVariationAxis,
@@ -98,6 +101,42 @@ describe("merchant product variation planning", () => {
     expect(state.axes).toHaveLength(1)
     expect(state.axes[0]?.key).toBe("")
     expect(state.axes[0]?.values).toBe("")
+  })
+
+  it("keeps option IDs unique after removing a middle axis and adding one", () => {
+    const initial: ProductVariationFormState = {
+      ...createEmptyProductVariationForm(),
+      enabled: true,
+      axes: [
+        createProductVariationAxis("first", "one", 0),
+        createProductVariationAxis("second", "two", 1),
+        createProductVariationAxis("third", "three", 2),
+      ],
+    }
+    const withoutMiddle = removeProductVariationAxis(
+      initial,
+      initial.axes[1]!.id
+    )
+    const added = addProductVariationAxis(withoutMiddle)
+    const addedAxis = added.axes[2]!
+    const edited = updateProductVariationAxis(
+      added,
+      addedAxis.id,
+      "key",
+      "fourth"
+    )
+
+    expect(added.axes.map(({ id }) => id)).toEqual([
+      "axis-first-0",
+      "axis-third-2",
+      "axis-option-3",
+    ])
+    expect(new Set(added.axes.map(({ id }) => id)).size).toBe(3)
+    expect(edited.axes.map(({ key }) => key)).toEqual([
+      "first",
+      "third",
+      "fourth",
+    ])
   })
 
   it("builds a variable parent and explicit S/M/L/XL child rows", () => {
@@ -273,6 +312,35 @@ describe("merchant product variation planning", () => {
     expect(plan.remove[0]?.product.specifications).toEqual([
       { key: "size", value: "L" },
     ])
+  })
+
+  it("counts every published child before converting a variable product to simple", () => {
+    const initial = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct(),
+      variations: sizeVariationForm("S, M, L"),
+      currency: "USD",
+      now: NOW,
+    })
+    const family = toFamily(initial)
+    const restored = getProductVariationFormState(
+      family.root,
+      family.variations
+    ).state
+    const simple = { ...restored, enabled: false }
+    const plan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: family.root.product,
+      variations: simple,
+      currency: "USD",
+      existing: family,
+      now: NOW + 60_000,
+    })
+
+    expect(plan.remove).toHaveLength(3)
+    expect(getProductVariationRemovalCount(simple, family.variations)).toBe(
+      plan.remove.length
+    )
   })
 
   it("preserves row fields when availability is toggled off and on", () => {
