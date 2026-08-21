@@ -2,6 +2,7 @@ import { NDKEvent, NDKPrivateKeySigner, nip19 } from "@nostr-dev-kit/ndk"
 import { getPublicKey } from "nostr-tools"
 
 import {
+  createProtectedReadSessionLifecycle,
   fetchBtcUsdRate,
   getMerchantConversationList,
   getNdk,
@@ -14,6 +15,7 @@ import {
 } from "@conduit/core"
 import { normalizePubkey } from "@conduit/core/utils"
 
+import { createNdkNostrEventSigner } from "../../packages/core/src/protocol/ndk-nostr-event-signer"
 import { createGuestOrderSigningIdentity } from "../../apps/market/src/lib/guest-order-identity"
 import {
   buildCheckoutOrderRumor,
@@ -151,17 +153,15 @@ export function parseGuestCheckoutOrderSmokeConfig(
       )
     }
 
-    const shippingCountry = (env.GUEST_CHECKOUT_SMOKE_SHIPPING_COUNTRY ?? "US")
-      .trim()
-      .toUpperCase()
+    const shippingCountry =
+      env.GUEST_CHECKOUT_SMOKE_SHIPPING_COUNTRY?.trim().toUpperCase() || "US"
     if (!/^[A-Z]{2}$/.test(shippingCountry)) {
       throw new Error(
         "GUEST_CHECKOUT_SMOKE_SHIPPING_COUNTRY must be an ISO country code."
       )
     }
-    const shippingPostalCode = (
-      env.GUEST_CHECKOUT_SMOKE_SHIPPING_POSTAL_CODE ?? "00000"
-    ).trim()
+    const shippingPostalCode =
+      env.GUEST_CHECKOUT_SMOKE_SHIPPING_POSTAL_CODE?.trim() || "00000"
     if (!shippingPostalCode || shippingPostalCode.length > 32) {
       throw new Error("GUEST_CHECKOUT_SMOKE_SHIPPING_POSTAL_CODE is invalid.")
     }
@@ -420,7 +420,17 @@ export async function runGuestCheckoutOrderSmoke(
     nip19.nsecEncode(config.merchantPrivateKey)
   )
   const merchantSignerLease = setSigner(merchantSigner)
+  const protectedReadSession = createProtectedReadSessionLifecycle()
+  let merchantSignerAuthorityCurrent = true
   try {
+    // This headless adapter exercises the same NIP-07-shaped signEvent boundary
+    // as Merchant with real cryptography. It is not extension approval or UX
+    // evidence, and it does not claim NIP-46 mobile-wallet coverage.
+    protectedReadSession.activate(
+      createNdkNostrEventSigner(merchantSigner, config.merchantPubkey, "nip07"),
+      config.merchantPubkey,
+      () => merchantSignerAuthorityCurrent && getNdk().signer === merchantSigner
+    )
     await recoverOrderAsMerchant(
       config,
       { orderId, buyerPubkey: identity.pubkey },
@@ -429,7 +439,12 @@ export async function runGuestCheckoutOrderSmoke(
   } catch (error) {
     throw new GuestCheckoutOrderSmokeFailure("merchant_recovery", error)
   } finally {
-    removeSigner(merchantSignerLease)
+    merchantSignerAuthorityCurrent = false
+    try {
+      protectedReadSession.deactivate()
+    } finally {
+      removeSigner(merchantSignerLease)
+    }
   }
 
   return { status: "passed" }

@@ -5,6 +5,10 @@ import { NDKPrivateKeySigner, nip19 } from "@nostr-dev-kit/ndk"
 import { getPublicKey } from "nostr-tools"
 
 import { disconnectNdk, getNdk } from "@conduit/core"
+import {
+  __resetProtectedReadSigner,
+  getProtectedReadAuthorization,
+} from "../packages/core/src/protocol/protected-read-authorization"
 
 import {
   buildGuestCheckoutOrderRumor,
@@ -157,7 +161,10 @@ function productRead(
 }
 
 describe("guest checkout order smoke", () => {
-  afterEach(() => disconnectNdk())
+  afterEach(() => {
+    __resetProtectedReadSigner()
+    disconnectNdk()
+  })
 
   it("validates that the protected signer owns the product fixture", () => {
     const config = parseGuestCheckoutOrderSmokeConfig(environment())
@@ -165,6 +172,18 @@ describe("guest checkout order smoke", () => {
     expect(config.merchantPubkey).toBe(MERCHANT_PUBKEY)
     expect(config.productAddress).toBe(`30402:${MERCHANT_PUBKEY}:fixture`)
     expect(config.shippingCountry).toBe("US")
+  })
+
+  it("uses shipping defaults for blank GitHub environment variables", () => {
+    const config = parseGuestCheckoutOrderSmokeConfig(
+      environment({
+        GUEST_CHECKOUT_SMOKE_SHIPPING_COUNTRY: " ",
+        GUEST_CHECKOUT_SMOKE_SHIPPING_POSTAL_CODE: "",
+      })
+    )
+
+    expect(config.shippingCountry).toBe("US")
+    expect(config.shippingPostalCode).toBe("00000")
   })
 
   it("rejects signer and product ownership mismatches", () => {
@@ -367,6 +386,7 @@ describe("guest checkout order smoke", () => {
           >["publishOrder"]
         >[0]
       | null = null
+    let recoveryAuthorizationMethod: string | null = null
 
     const result = await runGuestCheckoutOrderSmoke(config, {
       getProduct: async (query) => {
@@ -387,6 +407,9 @@ describe("guest checkout order smoke", () => {
         return { buyerSelfCopyError: null, localCacheError: null }
       },
       getMerchantOrders: async () => {
+        recoveryAuthorizationMethod =
+          getProtectedReadAuthorization(MERCHANT_PUBKEY)?.signer.authMethod ??
+          null
         if (!published) throw new Error("Order was not published")
         const payload = JSON.parse(published.content)
         return {
@@ -449,6 +472,8 @@ describe("guest checkout order smoke", () => {
       source: "mempool",
       fiatSource: "frankfurter",
     })
+    expect(recoveryAuthorizationMethod).toBe("nip07")
+    expect(getProtectedReadAuthorization(MERCHANT_PUBKEY)).toBeNull()
     expect(getNdk().signer).toBeUndefined()
   })
 
@@ -461,6 +486,7 @@ describe("guest checkout order smoke", () => {
     )
     let now = 1_700_000_000_000
     let failure: unknown
+    let sawProtectedReadAuthorization = false
 
     try {
       await runGuestCheckoutOrderSmoke(config, {
@@ -478,8 +504,10 @@ describe("guest checkout order smoke", () => {
           buyerSelfCopyError: null,
           localCacheError: null,
         }),
-        getMerchantOrders: async () =>
-          ({
+        getMerchantOrders: async () => {
+          sawProtectedReadAuthorization ||=
+            getProtectedReadAuthorization(MERCHANT_PUBKEY) !== null
+          return {
             data: [],
             meta: {
               plan: "protected_conversation_list",
@@ -489,7 +517,8 @@ describe("guest checkout order smoke", () => {
               degraded: false,
               capabilities: [],
             },
-          }) as never,
+          } as never
+        },
         nowMs: () => now,
         sleep: async (milliseconds) => {
           now += milliseconds
@@ -502,6 +531,8 @@ describe("guest checkout order smoke", () => {
     expect(formatGuestCheckoutOrderSmokeFailure(failure)).toBe(
       "Guest checkout order smoke failed at merchant_recovery."
     )
+    expect(sawProtectedReadAuthorization).toBe(true)
+    expect(getProtectedReadAuthorization(MERCHANT_PUBKEY)).toBeNull()
     expect(getNdk().signer).toBeUndefined()
   })
 

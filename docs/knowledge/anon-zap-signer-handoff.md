@@ -461,6 +461,11 @@ Market delivery path, switches to the merchant signer, and polls Merchant's
 shared conversation query until that exact order decrypts with the expected
 guest identity and product.
 
+Merchant recovery uses a NIP-07-shaped CI adapter over the dedicated test
+signer. The adapter performs real event signing and protected-read
+authorization, but it is not evidence for extension approval UX, browser
+injection behavior, or mobile NIP-46 flows.
+
 Each run leaves one persistent order for the dedicated test merchant. The order
 uses synthetic `.invalid` contact data and is visibly marked as an automated
 test that must not be fulfilled. Keep the workflow manual-only and use only a
