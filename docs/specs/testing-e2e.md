@@ -447,6 +447,10 @@ behavior, promotion, rollback, hotfix back-merges, and release ownership.
 A protected canary complements hermetic pull request smoke. It does not replace
 candidate-SHA validation.
 
+Protected credentials are CI test-harness fixtures outside application and
+service runtime. They do not authorize durable account custody or another
+production signer path.
+
 - Run only from a reviewed environment that does not expose credentials to
   pull requests or forks.
 - Bind the run to an immutable deployed commit and report that commit.

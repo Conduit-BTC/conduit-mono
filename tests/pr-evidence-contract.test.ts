@@ -85,6 +85,9 @@ describe("pull request evidence contract", () => {
     expect(testingSpec).toContain(
       "Do not add a permanent `next` branch for this work"
     )
+    expect(testingSpec).toContain(
+      "They do not authorize durable account custody or another"
+    )
     expect(reviewInstructions).toContain(
       "stubbed signers do not prove signatures, encryption, relay delivery"
     )
