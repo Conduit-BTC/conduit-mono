@@ -967,6 +967,7 @@ function CheckoutPage() {
   const [step, setStep] = useState<CheckoutStep>("shipping")
   const checkoutShippingInitializedRef = useRef(false)
   const presetMaySeedShippingRef = useRef(false)
+  const presetSeededShippingRef = useRef(false)
   const presetIdentityRef = useRef<string | null>(null)
   const [shipping, setShipping] = useState<ShippingFormState>(
     DEFAULT_CHECKOUT_SHIPPING
@@ -1058,7 +1059,10 @@ function CheckoutPage() {
       )
       checkoutShippingInitializedRef.current = true
       presetIdentityRef.current = draftOwnerIdentity
-      presetMaySeedShippingRef.current = !initialized.hasActiveDraft
+      presetSeededShippingRef.current =
+        !initialized.hasActiveDraft && preset !== null
+      presetMaySeedShippingRef.current =
+        !initialized.hasActiveDraft && preset === null
       setShipping(initialized.value)
       return
     }
@@ -1072,25 +1076,21 @@ function CheckoutPage() {
         preset,
         draftOwnerIdentity
       )
-      presetMaySeedShippingRef.current = !initialized.hasActiveDraft
+      presetSeededShippingRef.current =
+        !initialized.hasActiveDraft && preset !== null
+      presetMaySeedShippingRef.current =
+        !initialized.hasActiveDraft && preset === null
       setShipping(initialized.value)
       return
     }
 
     clearCheckoutShippingSession()
     presetMaySeedShippingRef.current = !preset
+    presetSeededShippingRef.current = preset !== null
     const next = preset
       ? getShippingFormFromPreset(preset)
       : DEFAULT_CHECKOUT_SHIPPING
     setShipping(next)
-    if (preset) {
-      writeCheckoutShippingSession(
-        next,
-        undefined,
-        undefined,
-        draftOwnerIdentity
-      )
-    }
   }, [
     shopperPresets.preset.shipping,
     shopperPresets.presetOwnerPubkey,
@@ -1099,17 +1099,23 @@ function CheckoutPage() {
   ])
 
   useEffect(() => {
-    if (!presetMaySeedShippingRef.current) return
     const preset = getIdentityBoundShippingPreset(
       draftOwnerIdentity,
       shopperPresets.presetOwnerPubkey,
       shopperPresets.preset.shipping
     )
-    if (!preset) return
+    if (!preset) {
+      if (presetSeededShippingRef.current) {
+        presetSeededShippingRef.current = false
+        setShipping(DEFAULT_CHECKOUT_SHIPPING)
+      }
+      return
+    }
+    if (!presetMaySeedShippingRef.current) return
     presetMaySeedShippingRef.current = false
+    presetSeededShippingRef.current = true
     const next = getShippingFormFromPreset(preset)
     setShipping(next)
-    writeCheckoutShippingSession(next, undefined, undefined, draftOwnerIdentity)
   }, [
     shopperPresets.preset.shipping,
     shopperPresets.presetOwnerPubkey,
@@ -1739,6 +1745,7 @@ function CheckoutPage() {
     value: ShippingFormState[K]
   ): void {
     presetMaySeedShippingRef.current = false
+    presetSeededShippingRef.current = false
     const normalizedValue =
       field === "phone"
         ? (sanitizeShippingPhoneInput(String(value)) as ShippingFormState[K])
