@@ -9,12 +9,13 @@ import {
   getAtomicProductDetail,
   getMerchantConversationList,
   getNdk,
-  getShippingOptions as fetchShippingOptions,
+  getShippingOptionsDetailed as fetchShippingOptions,
   removeSigner,
   setSigner,
   type BtcUsdRateQuote,
   type CommerceProductRecord,
   type MerchantConversationSummary,
+  type ParsedShippingOption,
 } from "@conduit/core"
 import { normalizePubkey } from "@conduit/core/utils"
 
@@ -256,16 +257,22 @@ function requireGuestOrderCartItem(
   return {
     ...createCartItemFromProduct(product),
     productId: config.productAddress,
-    selectedSpecifications: undefined,
     quantity: 1,
   }
+}
+
+function getGuestOrderCartItemFingerprint(item: CartItem): string {
+  return JSON.stringify({
+    commerce: getCartCommerceFingerprint([item]),
+    selectedSpecifications: item.selectedSpecifications ?? null,
+  })
 }
 
 function requireCurrentProductRead(meta: {
   source: string
   stale: boolean
   degraded: boolean
-  capped: boolean
+  capped?: boolean
 }): void {
   if (
     meta.source !== "commerce" ||
@@ -286,19 +293,23 @@ async function buildGuestOrderPricing(
   getShippingOptions: typeof fetchShippingOptions,
   nowMs: () => number
 ): Promise<ReadyCheckoutPricing> {
-  let merchantShippingOptions: Awaited<
-    ReturnType<typeof fetchShippingOptions>
-  > = []
+  let merchantShippingOptions: ParsedShippingOption[] = []
   const requiresMerchantShippingOptions =
     item.format !== "digital" &&
     hasPhysicalItemsMissingShippingSnapshot([item]) &&
     !hasPhysicalItemsMissingShippingZone([item])
   if (requiresMerchantShippingOptions) {
     try {
-      const fetchedMerchantShippingOptions = await getShippingOptions(
-        config.merchantPubkey
+      const shippingOptionsRead = await getShippingOptions(
+        config.merchantPubkey,
+        { strict: true }
       )
-      merchantShippingOptions = fetchedMerchantShippingOptions.filter(
+      if (shippingOptionsRead.coverage !== "complete") {
+        throw new GuestCheckoutOrderSmokeInconclusive(
+          "Guest checkout smoke requires complete merchant shipping option evidence."
+        )
+      }
+      merchantShippingOptions = shippingOptionsRead.options.filter(
         (option) =>
           option.pubkey === config.merchantPubkey &&
           (!item.shippingOptionId || option.id === item.shippingOptionId) &&
@@ -515,7 +526,7 @@ export async function runGuestCheckoutOrderSmoke(
     const product = await getProduct({ productId: config.productAddress })
     requireCurrentProductRead(product.meta)
     const item = requireGuestOrderCartItem(product.data, config)
-    productFingerprint = getCartCommerceFingerprint([item])
+    productFingerprint = getGuestOrderCartItemFingerprint(item)
     pricing = await buildGuestOrderPricing(
       item,
       config,
@@ -552,7 +563,9 @@ export async function runGuestCheckoutOrderSmoke(
     const product = await getProduct({ productId: config.productAddress })
     requireCurrentProductRead(product.meta)
     const refreshedItem = requireGuestOrderCartItem(product.data, config)
-    if (getCartCommerceFingerprint([refreshedItem]) !== productFingerprint) {
+    if (
+      getGuestOrderCartItemFingerprint(refreshedItem) !== productFingerprint
+    ) {
       throw new Error(
         "Guest checkout smoke product terms changed before publication."
       )

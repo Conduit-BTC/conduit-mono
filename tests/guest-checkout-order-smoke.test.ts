@@ -203,6 +203,13 @@ function merchantShippingOptions() {
   ]
 }
 
+function shippingOptionsRead(
+  options = merchantShippingOptions(),
+  coverage: "complete" | "partial" | "unavailable" = "complete"
+) {
+  return { options, coverage }
+}
+
 function recoveredOrderRead(
   published: { content: string },
   meta: {
@@ -579,6 +586,14 @@ describe("guest checkout order smoke", () => {
         secondRead: productRead({ degraded: true }),
         status: "inconclusive",
       },
+      {
+        secondRead: productRead({
+          product: {
+            specifications: [{ key: "color", value: "blue" }],
+          },
+        }),
+        status: "failed",
+      },
     ] as const) {
       let productReads = 0
       let published = false
@@ -713,6 +728,7 @@ describe("guest checkout order smoke", () => {
   it("uses merchant kind 30406 rules for a physical listing without an embedded snapshot", async () => {
     const config = parseGuestCheckoutOrderSmokeConfig(environment())
     let shippingQuery: string | null = null
+    let strictShippingRead = false
     let published = false
     let failure: unknown
 
@@ -735,9 +751,10 @@ describe("guest checkout order smoke", () => {
           fiatUsdRates: {},
           fiatSource: "frankfurter",
         }),
-        getShippingOptions: async (merchantPubkey) => {
+        getShippingOptions: async (merchantPubkey, options) => {
           shippingQuery = merchantPubkey
-          return merchantShippingOptions()
+          strictShippingRead = options.strict === true
+          return shippingOptionsRead()
         },
         createOrderId: () => "smoke-order",
         createGuestIdentity: () => identity(),
@@ -752,6 +769,7 @@ describe("guest checkout order smoke", () => {
     }
 
     expect(shippingQuery).toBe(MERCHANT_PUBKEY)
+    expect(strictShippingRead).toBe(true)
     expect(published).toBe(true)
     expect(formatGuestCheckoutOrderSmokeFailure(failure)).toBe(
       "Guest checkout order smoke failed at order_publish."
@@ -792,7 +810,8 @@ describe("guest checkout order smoke", () => {
               shippingCountryRules: [],
             },
           }),
-        getShippingOptions: async () => [referencedOption, unrelatedOption],
+        getShippingOptions: async () =>
+          shippingOptionsRead([referencedOption, unrelatedOption]),
         publishOrder: async () => {
           published = true
           throw new Error("An unrelated shipping zone must not authorize.")
@@ -808,15 +827,18 @@ describe("guest checkout order smoke", () => {
     expect(published).toBe(false)
   })
 
-  it("reports missing or ambiguous merchant shipping evidence as inconclusive", async () => {
+  it("reports incomplete, missing, or ambiguous merchant shipping evidence as inconclusive", async () => {
     const config = parseGuestCheckoutOrderSmokeConfig(environment())
 
     for (const getShippingOptions of [
-      async () => [],
-      async () => [
-        merchantShippingOptions()[0]!,
-        { ...merchantShippingOptions()[0]! },
-      ],
+      async () => shippingOptionsRead([], "complete"),
+      async () =>
+        shippingOptionsRead([
+          merchantShippingOptions()[0]!,
+          { ...merchantShippingOptions()[0]! },
+        ]),
+      async () => shippingOptionsRead(merchantShippingOptions(), "partial"),
+      async () => shippingOptionsRead(merchantShippingOptions(), "unavailable"),
       async () => {
         throw new Error("Shipping relay lookup failed.")
       },
@@ -957,7 +979,14 @@ describe("guest checkout order smoke", () => {
       getProduct: async (query) => {
         productReads += 1
         productQuery = query
-        return productRead()
+        return productRead({
+          product: {
+            specifications: [
+              { key: "color", value: "blue" },
+              { key: "size", value: "small" },
+            ],
+          },
+        })
       },
       getPricingRate: async () => ({
         rate: 100_000,
@@ -1057,6 +1086,10 @@ describe("guest checkout order smoke", () => {
       currency: "USD",
       normalizedCurrency: "USD",
     })
+    expect(payload.items[0].selectedSpecifications).toEqual([
+      { key: "color", value: "blue" },
+      { key: "size", value: "small" },
+    ])
     expect(payload.pricingQuote).toEqual({
       rate: 100_000,
       fetchedAt: 1_700_000_000_000,

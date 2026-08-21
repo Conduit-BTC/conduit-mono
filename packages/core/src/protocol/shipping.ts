@@ -13,9 +13,16 @@ import {
   type PricingRateInput,
 } from "../pricing"
 import { EVENT_KINDS } from "./kinds"
-import { fetchEventsFanout, getNdk } from "./ndk"
+import {
+  fetchEventsFanoutDetailed,
+  getNdk,
+  type FetchEventsFanoutResult,
+} from "./ndk"
 import { publishWithPlanner } from "./relay-publish"
-import { getRelayLists } from "./relay-list"
+import {
+  getRelayListsDetailed,
+  type RelayListResolutionState,
+} from "./relay-list"
 import { planRelayReads } from "./relay-planner"
 import type { ConduitAppId } from "./nip89"
 import { appendConduitClientTag } from "./nip89"
@@ -66,6 +73,22 @@ export interface ParsedShippingOption {
   /** Service label (e.g. "standard", "express") */
   service: string
   createdAt: number
+}
+
+export type ShippingOptionsReadCoverage = "complete" | "partial" | "unavailable"
+
+export interface ShippingOptionsReadResult {
+  options: ParsedShippingOption[]
+  coverage: ShippingOptionsReadCoverage
+}
+
+export interface ShippingOptionsReadOptions {
+  /**
+   * Refresh relay-list discovery and attempt the complete bounded relay plan.
+   * Protected canaries use this mode so partial evidence cannot authorize a
+   * persistent action. UI callers can keep the best-effort array helper.
+   */
+  strict?: boolean
 }
 
 export type ResolvedCartShippingCostStatus =
@@ -203,37 +226,149 @@ export function parseShippingOptionEvent(
 // Fetch
 // ---------------------------------------------------------------------------
 
-export async function getShippingOptions(
-  merchantPubkey: string
-): Promise<ParsedShippingOption[]> {
-  const relayLists = await getRelayLists([merchantPubkey], {
+type ShippingOptionEvent = Pick<
+  NDKEvent,
+  "id" | "pubkey" | "tags" | "created_at"
+>
+
+function getShippingOptionDTag(event: ShippingOptionEvent): string | null {
+  const dTag = event.tags.find((tag) => tag[0] === "d")?.[1]
+  return dTag || null
+}
+
+function isLaterShippingOptionWinner(
+  candidate: ShippingOptionEvent,
+  current: ShippingOptionEvent
+): boolean {
+  const candidateCreatedAt = candidate.created_at ?? 0
+  const currentCreatedAt = current.created_at ?? 0
+  return (
+    candidateCreatedAt > currentCreatedAt ||
+    (candidateCreatedAt === currentCreatedAt && candidate.id < current.id)
+  )
+}
+
+export function parseLatestShippingOptions(
+  events: readonly ShippingOptionEvent[]
+): ParsedShippingOption[] {
+  const winnerByAddress = new Map<string, ShippingOptionEvent>()
+  for (const event of events) {
+    const dTag = getShippingOptionDTag(event)
+    if (!dTag) continue
+    const address = `${event.pubkey}:${dTag}`
+    const current = winnerByAddress.get(address)
+    if (!current || isLaterShippingOptionWinner(event, current)) {
+      winnerByAddress.set(address, event)
+    }
+  }
+
+  return Array.from(winnerByAddress.values())
+    .sort((left, right) => {
+      const createdAtDifference =
+        (right.created_at ?? 0) - (left.created_at ?? 0)
+      return createdAtDifference || left.id.localeCompare(right.id)
+    })
+    .map((event) => parseShippingOptionEvent(event))
+    .filter((option): option is ParsedShippingOption => option !== null)
+}
+
+export function deriveShippingOptionsReadCoverage(
+  relayUrls: readonly string[],
+  result: FetchEventsFanoutResult
+): ShippingOptionsReadCoverage {
+  if (relayUrls.length === 0 || result.eventsVerified !== true) {
+    return "unavailable"
+  }
+  const statusByRelay = new Map(
+    result.relays.map((relay) => [relay.relayUrl, relay.status] as const)
+  )
+  if (
+    relayUrls.every((relayUrl) => statusByRelay.get(relayUrl) === "success")
+  ) {
+    return "complete"
+  }
+  return relayUrls.some((relayUrl) => {
+    const status = statusByRelay.get(relayUrl)
+    return status === "success" || status === "partial"
+  })
+    ? "partial"
+    : "unavailable"
+}
+
+function getRelayListReadCoverage(
+  state: RelayListResolutionState | undefined
+): ShippingOptionsReadCoverage {
+  if (state === "network" || state === "missing") return "complete"
+  if (
+    state === "fresh-cache" ||
+    state === "stale-cache" ||
+    state === "partial-network"
+  ) {
+    return "partial"
+  }
+  return "unavailable"
+}
+
+function combineShippingOptionsReadCoverage(
+  ...coverages: ShippingOptionsReadCoverage[]
+): ShippingOptionsReadCoverage {
+  if (coverages.includes("unavailable")) return "unavailable"
+  if (coverages.includes("partial")) return "partial"
+  return "complete"
+}
+
+export async function getShippingOptionsDetailed(
+  merchantPubkey: string,
+  options: ShippingOptionsReadOptions = {}
+): Promise<ShippingOptionsReadResult> {
+  const relayListResult = await getRelayListsDetailed([merchantPubkey], {
     cacheOnly: false,
+    skipCache: options.strict === true,
   })
   const readPlan = planRelayReads({
     intent: "author_products",
     authors: [merchantPubkey],
-    relayLists,
+    relayLists: relayListResult.relayLists,
     maxRelays: 12,
+    skipHealthFilter: options.strict === true,
   })
+  const relayListCoverage = getRelayListReadCoverage(
+    relayListResult.resolutionStates.get(merchantPubkey)
+  )
+  const authorHintsComplete = readPlan.hintRelayUrls.every((relayUrl) =>
+    readPlan.relayUrls.includes(relayUrl)
+  )
+  const planCoverage =
+    authorHintsComplete && readPlan.parkedRelayUrls.length === 0
+      ? "complete"
+      : "partial"
+  if (options.strict && readPlan.relayUrls.length === 0) {
+    return { options: [], coverage: "unavailable" }
+  }
   const filter: NDKFilter = {
     kinds: [EVENT_KINDS.SHIPPING_OPTION as number],
     authors: [merchantPubkey],
   }
 
-  const events = (await fetchEventsFanout(filter, {
+  const result = await fetchEventsFanoutDetailed(filter, {
     relayUrls: readPlan.relayUrls,
-  })) as NDKEvent[]
+    skipHealthFilter: options.strict === true,
+  })
 
-  const latestByDTag = new Map<string, ParsedShippingOption>()
-  for (const option of events
-    .map((e) => parseShippingOptionEvent(e))
-    .filter((o): o is ParsedShippingOption => o !== null)
-    .sort((a, b) => b.createdAt - a.createdAt)) {
-    if (latestByDTag.has(option.dTag)) continue
-    latestByDTag.set(option.dTag, option)
+  return {
+    options: parseLatestShippingOptions(result.events),
+    coverage: combineShippingOptionsReadCoverage(
+      relayListCoverage,
+      planCoverage,
+      deriveShippingOptionsReadCoverage(readPlan.relayUrls, result)
+    ),
   }
+}
 
-  return Array.from(latestByDTag.values())
+export async function getShippingOptions(
+  merchantPubkey: string
+): Promise<ParsedShippingOption[]> {
+  return (await getShippingOptionsDetailed(merchantPubkey)).options
 }
 
 // ---------------------------------------------------------------------------
