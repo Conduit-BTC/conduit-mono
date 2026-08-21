@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react"
 import { createFileRoute } from "@tanstack/react-router"
 import {
   Cloud,
@@ -14,6 +21,7 @@ import {
 import {
   DEFAULT_SHOPPER_PRESETS,
   SHIPPING_COUNTRIES,
+  SHOPPER_PRESET_PASSWORD_MAX_BYTES,
   SHOPPER_PAYMENT_RAILS,
   SUPPORTED_SHOPPER_DISPLAY_CURRENCIES,
   getShopperPresetPasswordError,
@@ -154,7 +162,7 @@ function UnlockPanel({
             autoComplete="current-password"
             value={password}
             disabled={busy}
-            maxLength={256}
+            maxLength={SHOPPER_PRESET_PASSWORD_MAX_BYTES}
             className="h-11 rounded-xl"
             onChange={(event) => setPassword(event.target.value)}
           />
@@ -248,8 +256,18 @@ function PreferencesPage() {
   )
   const [resultMessage, setResultMessage] = useState<string | null>(null)
   const draftIdentityRef = useRef(presets.identityPubkey)
+  const previousUnlockStateRef = useRef(presets.unlockState)
   const currentIdentityRef = useRef(presets.identityPubkey)
   currentIdentityRef.current = presets.identityPubkey
+  const clearPlaintextDraft = useCallback((enterResetMode = false): void => {
+    setDraft(normalizeShopperPreferencesDraft(DEFAULT_SHOPPER_PRESETS))
+    setDirty(false)
+    setResetMode(enterResetMode)
+    setResultMessage(null)
+    setPassword("")
+    setConfirmPassword("")
+    setClearOpen(false)
+  }, [])
   const status = syncStatus(presets.syncState)
   const busy = presets.syncState === "syncing"
   const locked =
@@ -289,20 +307,24 @@ function PreferencesPage() {
       : undefined
 
   useEffect(() => {
+    const plaintextBecameUnavailable =
+      previousUnlockStateRef.current === "unlocked" &&
+      presets.unlockState !== "unlocked"
+    previousUnlockStateRef.current = presets.unlockState
     if (draftIdentityRef.current !== presets.identityPubkey) {
       draftIdentityRef.current = presets.identityPubkey
-      setDraft(normalizeShopperPreferencesDraft(DEFAULT_SHOPPER_PRESETS))
-      setDirty(false)
-      setResetMode(false)
-      setResultMessage(null)
-      setPassword("")
-      setConfirmPassword("")
+      clearPlaintextDraft()
+      return
+    }
+    if (plaintextBecameUnavailable) {
+      clearPlaintextDraft()
       return
     }
     if (dirty || presets.unlockState !== "unlocked") return
     setDraft(normalizeShopperPreferencesDraft(presets.preset))
     setPolicy(presets.unlockPolicy)
   }, [
+    clearPlaintextDraft,
     dirty,
     presets.identityPubkey,
     presets.preset,
@@ -371,10 +393,19 @@ function PreferencesPage() {
     )
   }
 
+  function replaceForgottenPreset(): void {
+    clearPlaintextDraft(true)
+  }
+
+  function lock(): void {
+    clearPlaintextDraft()
+    presets.lock()
+  }
+
   if (locked && !resetMode) {
     return (
       <PreferencesFrame status={status}>
-        <UnlockPanel presets={presets} onReplace={() => setResetMode(true)} />
+        <UnlockPanel presets={presets} onReplace={replaceForgottenPreset} />
       </PreferencesFrame>
     )
   }
@@ -604,7 +635,7 @@ function PreferencesPage() {
               autoComplete="new-password"
               helperText={passwordHelperText}
               helperRows={2}
-              maxLength={256}
+              maxLength={SHOPPER_PRESET_PASSWORD_MAX_BYTES}
               onChange={setPassword}
             />
             <PresetInput
@@ -616,7 +647,7 @@ function PreferencesPage() {
               autoComplete="new-password"
               helperText={confirmationHelperText}
               helperRows={2}
-              maxLength={256}
+              maxLength={SHOPPER_PRESET_PASSWORD_MAX_BYTES}
               onChange={setConfirmPassword}
             />
           </div>
@@ -685,7 +716,7 @@ function PreferencesPage() {
               variant="outline"
               size="sm"
               className="rounded-xl"
-              onClick={presets.lock}
+              onClick={lock}
               disabled={busy}
             >
               <LockKeyhole className="size-4" />

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "bun:test"
-import type {
-  ShopperPresetsReadResult,
-  ShopperShippingPreset,
+import {
+  SHOPPER_PRESET_PASSWORD_MAX_BYTES,
+  getShopperPresetPasswordError,
+  type ShopperPresetsReadResult,
+  type ShopperShippingPreset,
 } from "@conduit/core"
 import { fetchShopperPresetsForSession } from "../apps/market/src/hooks/useShopperPresets"
 import {
@@ -139,6 +141,43 @@ describe("Market shopper preset integration", () => {
         relayState: "ready",
       })
     ).toEqual([])
+  })
+
+  it("accepts protocol-valid passwords through the 1024-byte boundary", () => {
+    const asciiMaximum = `${"a".repeat(SHOPPER_PRESET_PASSWORD_MAX_BYTES - 1)}7`
+    const multibyteMaximum = `${"é".repeat(511)}a7`
+
+    expect(new TextEncoder().encode(asciiMaximum)).toHaveLength(
+      SHOPPER_PRESET_PASSWORD_MAX_BYTES
+    )
+    expect(new TextEncoder().encode(multibyteMaximum)).toHaveLength(
+      SHOPPER_PRESET_PASSWORD_MAX_BYTES
+    )
+    expect(getShopperPresetPasswordError(asciiMaximum)).toBeNull()
+    expect(getShopperPresetPasswordError(multibyteMaximum)).toBeNull()
+    expect(getShopperPresetPasswordError(`${multibyteMaximum}a`)).toBe(
+      "Password is too long."
+    )
+    expect(
+      getShopperPreferencesSaveBlockers({
+        shipping: preset,
+        password: asciiMaximum,
+        confirmPassword: asciiMaximum,
+        identityConnected: true,
+        relayState: "ready",
+      })
+    ).toEqual([])
+  })
+
+  it("uses the shared password ceiling on every preferences password field", async () => {
+    const preferences = await Bun.file(
+      "apps/market/src/routes/preferences.tsx"
+    ).text()
+
+    expect(preferences).not.toContain("maxLength={256}")
+    expect(
+      preferences.match(/maxLength=\{SHOPPER_PRESET_PASSWORD_MAX_BYTES\}/gu)
+    ).toHaveLength(3)
   })
 
   it("requires at least one number in an otherwise long password", () => {

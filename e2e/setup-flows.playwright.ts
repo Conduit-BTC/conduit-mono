@@ -1165,6 +1165,8 @@ test("market shopper preferences remove legacy plaintext and render the complete
   const encryptionPasswordPosition = await encryptionPassword.boundingBox()
   const confirmPasswordPosition = await confirmPassword.boundingBox()
   expect(confirmPasswordPosition?.y).toBe(encryptionPasswordPosition?.y)
+  await expect(encryptionPassword).toHaveAttribute("maxlength", "1024")
+  await expect(confirmPassword).toHaveAttribute("maxlength", "1024")
   const unlockPreferencePositionBefore = await unlockPreference.evaluate(
     (element) => element.getBoundingClientRect().top + window.scrollY
   )
@@ -1224,4 +1226,18 @@ test("market shopper preferences remove legacy plaintext and render the complete
   await expect(
     page.getByText("Encrypted on relays", { exact: true })
   ).toBeVisible()
+
+  await recipientName.fill("Sensitive unsaved recipient")
+  await addressLine1.fill("Sensitive unsaved address")
+  await page.getByRole("button", { name: "Lock", exact: true }).click()
+  await expect(
+    page.getByRole("heading", { name: "Unlock shipping preset" })
+  ).toBeVisible()
+  const unlockPassword = page.getByLabel("Password", { exact: true })
+  await expect(unlockPassword).toHaveAttribute("maxlength", "1024")
+  await page.getByRole("button", { name: "Replace forgotten preset" }).click()
+  await expect(recipientName).toHaveValue("")
+  await expect(addressLine1).toHaveValue("")
+  await expect(page.getByText("Sensitive unsaved recipient")).toHaveCount(0)
+  await expect(page.getByText("Sensitive unsaved address")).toHaveCount(0)
 })
