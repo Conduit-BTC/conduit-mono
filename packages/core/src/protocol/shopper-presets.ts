@@ -15,7 +15,11 @@ import {
 } from "../pricing"
 import { SHIPPING_COUNTRIES } from "./countries"
 import { EVENT_KINDS } from "./kinds"
-import { fetchEventsFanoutDetailed, getNdk } from "./ndk"
+import {
+  fetchEventsFanoutDetailed,
+  getEventSourceRelayUrls,
+  getNdk,
+} from "./ndk"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 import { getRelayLists } from "./relay-list"
 import { planRelayReads } from "./relay-planner"
@@ -23,7 +27,7 @@ import {
   publishWithPlanner,
   type PublishWithPlannerResult,
 } from "./relay-publish"
-import { getCommerceWriteRelayUrls } from "./relay-settings"
+import { getCommerceWriteRelayUrls, normalizeRelayUrl } from "./relay-settings"
 import { signNdkEventWithTransientNip07Retry } from "./signing-retry"
 
 export const SHOPPER_PRESETS_D_TAG = "conduit/shopper-presets"
@@ -538,6 +542,75 @@ export async function fetchShopperPresets(
   }
 }
 
+async function verifyShopperPresetsConvergence({
+  owner,
+  eventId,
+  relayUrls,
+  fetchEvents,
+}: {
+  owner: string
+  eventId: string
+  relayUrls: readonly string[]
+  fetchEvents: typeof fetchEventsFanoutDetailed
+}): Promise<Extract<ShopperPresetsReadResult, { state: "found" }> | null> {
+  const targets = Array.from(
+    new Set(relayUrls.map((relayUrl) => normalizeRelayUrl(relayUrl)))
+  )
+  if (targets.length === 0) return null
+
+  let result: Awaited<ReturnType<typeof fetchEventsFanoutDetailed>>
+  try {
+    result = await fetchEvents(
+      {
+        kinds: [EVENT_KINDS.APPLICATION_DATA],
+        authors: [owner],
+        "#d": [SHOPPER_PRESETS_D_TAG],
+        limit: 12,
+      },
+      {
+        relayUrls: targets,
+        connectTimeoutMs: SHOPPER_PRESETS_CONNECT_TIMEOUT_MS,
+        fetchTimeoutMs: SHOPPER_PRESETS_FETCH_TIMEOUT_MS,
+      }
+    )
+  } catch {
+    return null
+  }
+
+  const relayStatusByUrl = new Map(
+    result.relays.map((relay) => [normalizeRelayUrl(relay.relayUrl), relay])
+  )
+  if (
+    targets.some(
+      (relayUrl) => relayStatusByUrl.get(relayUrl)?.status !== "success"
+    )
+  ) {
+    return null
+  }
+
+  const latest = selectLatestShopperPresetsEvent(result.events, owner)
+  if (!latest || latest.id !== eventId) return null
+  const sourceRelayUrls = new Set(
+    getEventSourceRelayUrls(latest).map((relayUrl) =>
+      normalizeRelayUrl(relayUrl)
+    )
+  )
+  if (targets.some((relayUrl) => !sourceRelayUrls.has(relayUrl))) return null
+
+  try {
+    return {
+      state: "found",
+      envelope: parseShopperPresetsEnvelope(latest.content),
+      revision: {
+        eventId: latest.id,
+        createdAt: latest.created_at ?? 0,
+      },
+    }
+  } catch {
+    return null
+  }
+}
+
 export async function publishShopperPresets({
   pubkey,
   value,
@@ -593,19 +666,13 @@ export async function publishShopperPresets({
     deliveryMode: "standard",
   })
 
-  const convergenceRelayUrls =
-    publish.successfulRelayUrls.length > 0
-      ? publish.successfulRelayUrls
-      : publish.attemptedRelayUrls
-  const convergence = await fetchShopperPresets(owner, {
-    ...dependencies,
-    ndk,
-    readRelayUrls: convergenceRelayUrls,
+  const convergence = await verifyShopperPresetsConvergence({
+    owner,
+    eventId: event.id,
+    relayUrls: publish.attemptedRelayUrls,
+    fetchEvents: dependencies.fetchEvents ?? fetchEventsFanoutDetailed,
   })
-  if (
-    convergence.state !== "found" ||
-    convergence.revision.eventId !== event.id
-  ) {
+  if (!convergence) {
     throw new Error(
       "The published shopper preset did not converge on relay storage."
     )

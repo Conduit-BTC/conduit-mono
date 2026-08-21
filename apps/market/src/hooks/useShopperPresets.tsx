@@ -322,8 +322,12 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
         acceptedReadRef.current = result
         setRemotePreset(null)
         setDecryptedPreset(null)
+        setUnlockState("error")
+      } else {
+        setUnlockState((current) =>
+          current === "unlocked" ? "unlocked" : "error"
+        )
       }
-      setUnlockState("error")
       setSyncState("unavailable")
       return
     }
