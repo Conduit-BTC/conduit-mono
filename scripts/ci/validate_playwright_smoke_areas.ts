@@ -45,7 +45,9 @@ export function validatePlaywrightSmokeAreas(
   const orphaned: PlaywrightJsonSpec[] = []
 
   for (const spec of specs) {
-    const tags = new Set(spec.tags ?? [])
+    const tags = new Set(
+      (spec.tags ?? []).map((tag) => (tag.startsWith("@") ? tag : `@${tag}`))
+    )
     const assignedAreas = smokeAreas.filter(
       (area) =>
         tags.has(smokeAreaTags[area]) ||

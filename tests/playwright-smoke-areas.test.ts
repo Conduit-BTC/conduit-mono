@@ -26,8 +26,27 @@ describe("Playwright smoke area validation", () => {
         { file: "e2e/market.playwright.ts", title: "market flow @market" },
         {
           file: "e2e/merchant.playwright.ts",
-          tags: ["@merchant"],
+          tags: ["merchant"],
           title: "merchant flow",
+        },
+      ])
+    )
+
+    expect(counts).toEqual({ market: 1, merchant: 1 })
+  })
+
+  it("counts structured tags when titles contain no area token", () => {
+    const counts = validatePlaywrightSmokeAreas(
+      reportWithSpecs([
+        {
+          file: "e2e/market.playwright.ts",
+          tags: ["market"],
+          title: "buyer checkout completes",
+        },
+        {
+          file: "e2e/merchant.playwright.ts",
+          tags: ["merchant"],
+          title: "seller fulfills an order",
         },
       ])
     )
@@ -42,11 +61,11 @@ describe("Playwright smoke area validation", () => {
           {
             file: "e2e/orphan.playwright.ts",
             line: 12,
-            tags: ["@regression"],
+            tags: ["regression"],
             title: "orphaned test",
           },
-          { file: "e2e/market.playwright.ts", tags: ["@market"] },
-          { file: "e2e/merchant.playwright.ts", tags: ["@merchant"] },
+          { file: "e2e/market.playwright.ts", tags: ["market"] },
+          { file: "e2e/merchant.playwright.ts", tags: ["merchant"] },
         ])
       )
     ).toThrow("e2e/orphan.playwright.ts:12 (orphaned test)")
@@ -56,7 +75,7 @@ describe("Playwright smoke area validation", () => {
     expect(() =>
       validatePlaywrightSmokeAreas(
         reportWithSpecs([
-          { file: "e2e/market.playwright.ts", tags: ["@market"] },
+          { file: "e2e/market.playwright.ts", tags: ["market"] },
         ]),
         ["merchant"]
       )
