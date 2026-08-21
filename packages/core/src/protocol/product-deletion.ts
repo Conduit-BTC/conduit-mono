@@ -100,6 +100,24 @@ export function parseProductAddressCoordinate(
   }
 }
 
+/**
+ * Normalizes a stored product reference to its kind-30402 address coordinate.
+ * Bare legacy d-tags are prefixed with the owning merchant so V1 cart storage
+ * migrates unchanged; full coordinates must parse and stay merchant-scoped.
+ */
+export function normalizeProductCoordinate(
+  storedProductId: string,
+  merchantPubkey: string
+): string | null {
+  if (!storedProductId.startsWith(`${EVENT_KINDS.PRODUCT}:`)) {
+    return `${EVENT_KINDS.PRODUCT}:${merchantPubkey}:${storedProductId}`
+  }
+  const address = parseProductAddressCoordinate(storedProductId)
+  return address && address.authorPubkey === merchantPubkey
+    ? address.addressId
+    : null
+}
+
 export function productDeletionEventKey(
   authorPubkey: string,
   eventId: string

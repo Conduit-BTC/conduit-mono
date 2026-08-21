@@ -145,6 +145,7 @@ describe("identity surface contracts", () => {
     expect(store).not.toContain("merchantPubkey: pubkey,\n    viewerPubkey,")
     expect(store).toContain("storefrontFollowReducer")
     expect(store).toContain('type: "scope_changed"')
+    expect(store).toContain('queryKey: ["market-perspective-follows"]')
     expect(checkout).not.toContain("viewerPubkey: signedBuyerPubkey")
     expect(marketRoot).not.toContain('root === "merchant-trust-social"')
   })

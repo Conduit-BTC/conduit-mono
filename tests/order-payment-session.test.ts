@@ -41,9 +41,9 @@ describe("order payment session ownership", () => {
     expect(readOrderPaymentClaim("order-a", session)).toBeNull()
   })
 
-  it("fails closed when session storage is malformed or unavailable", () => {
+  it("fails closed when session storage is empty or unavailable", () => {
     const session = storage({
-      "conduit:order-payment-claims": "not-json",
+      "conduit:order-payment-claim:order-a": "",
     })
     expect(readOrderPaymentClaim("order-a", session)).toBeNull()
 
@@ -60,5 +60,24 @@ describe("order payment session ownership", () => {
     }
     expect(rememberOrderPaymentClaim("order-a", "claim-a", blocked)).toBe(false)
     expect(readOrderPaymentClaim("order-a", blocked)).toBeNull()
+  })
+
+  it("stores each order under an independent key", () => {
+    const values = new Map<string, string>()
+    const session = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+    }
+
+    rememberOrderPaymentClaim("order-a", "claim-a", session)
+    rememberOrderPaymentClaim("order-b", "claim-b", session)
+
+    expect(values).toEqual(
+      new Map([
+        ["conduit:order-payment-claim:order-a", "claim-a"],
+        ["conduit:order-payment-claim:order-b", "claim-b"],
+      ])
+    )
   })
 })

@@ -3,6 +3,7 @@ import {
   type OrderCheckoutMode,
   type OrderLifecycle,
   type OrderLifecyclePhase,
+  type OrderPaymentTarget,
   type OrderPublicZapSigner,
   type StoredPaymentAttempt,
 } from "../db"
@@ -129,6 +130,7 @@ export type OrderPaymentClaimInput = {
   totalSats: number
   totalMsats: number
   items: Array<{ productAddress: string; quantity: number }>
+  paymentTarget: OrderPaymentTarget
 }
 
 export type OrderPaymentClaimResult =
@@ -258,12 +260,113 @@ function paymentClaimIdentityMatchesLifecycle(
       input.merchantLightningAddress &&
     lifecycle.totalSats === input.totalSats &&
     lifecycle.totalMsats === input.totalMsats &&
+    paymentTargetsEqual(lifecycle.paymentTarget, input.paymentTarget) &&
     canonicalPaymentItems(
       lifecycle.items.map((item) => ({
         productAddress: item.productId,
         quantity: item.quantity,
       }))
     ) === canonicalPaymentItems(input.items)
+  )
+}
+
+function paymentTargetsEqual(
+  stored: OrderPaymentTarget | undefined,
+  requested: OrderPaymentTarget
+): boolean {
+  if (!stored || stored.type !== requested.type) return false
+  if (stored.type !== "wallet" || requested.type !== "wallet") return true
+  return (
+    stored.walletId === requested.walletId &&
+    stored.providerId === requested.providerId
+  )
+}
+
+function createWalletPaymentAttemptId(): string {
+  return globalThis.crypto.randomUUID()
+}
+
+const UUID_V4_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+function getWalletPaymentAttemptId(lifecycle: OrderLifecycle): string {
+  const existing = lifecycle.walletPaymentAttemptId
+  return existing &&
+    existing !== lifecycle.orderId &&
+    UUID_V4_PATTERN.test(existing)
+    ? existing
+    : createWalletPaymentAttemptId()
+}
+
+type ClaimedOrderLifecycleOverrides = Partial<
+  Pick<
+    OrderLifecycle,
+    | "merchantLightningAddress"
+    | "checkoutMode"
+    | "publicZapSigner"
+    | "publicZapFallback"
+    | "zapContent"
+    | "walletPaymentAttemptId"
+  >
+>
+
+function buildClaimedOrderLifecycle(
+  lifecycle: OrderLifecycle,
+  input: OrderPaymentClaimInput,
+  now: number,
+  overrides: ClaimedOrderLifecycleOverrides = {}
+): OrderLifecycle {
+  const walletPaymentAttemptId = Object.prototype.hasOwnProperty.call(
+    overrides,
+    "walletPaymentAttemptId"
+  )
+    ? overrides.walletPaymentAttemptId
+    : input.paymentTarget.type === "wallet"
+      ? getWalletPaymentAttemptId(lifecycle)
+      : undefined
+
+  return mergeOrderLifecyclePatch(
+    lifecycle,
+    {
+      paymentClaimId: input.paymentClaimId,
+      paymentClaimedAt: now,
+      paymentClaimLeaseExpiresAt: now + ORDER_PAYMENT_CLAIM_LEASE_MS,
+      walletPaymentAttemptId,
+      invoiceStatus: "requesting",
+      paymentStatus: "not_started",
+      proofDeliveryStatus: "not_started",
+      zapReceiptStatus: "not_applicable",
+      invoice: undefined,
+      paymentHash: undefined,
+      preimage: undefined,
+      feeMsats: undefined,
+      zapRequestId: undefined,
+      zapRequestCreatedAt: undefined,
+      zapReceiptId: undefined,
+      zapReceiptRelayUrls: undefined,
+      zapLnurl: undefined,
+      zapReceiptPubkey: undefined,
+      invoiceExpiresAt: undefined,
+      zapReceiptObservationDeadline: undefined,
+      lastError: undefined,
+      ...overrides,
+    },
+    now
+  )
+}
+
+function canStartOrReplaceOrderPayment(lifecycle: OrderLifecycle): boolean {
+  if (
+    lifecycle.orderDeliveryStatus !== "sent" ||
+    lifecycle.phase === "completed" ||
+    lifecycle.phase === "cancelled"
+  ) {
+    return false
+  }
+  return (
+    (lifecycle.paymentStatus === "not_started" &&
+      lifecycle.invoiceStatus === "not_requested") ||
+    lifecycle.paymentStatus === "failed"
   )
 }
 
@@ -276,16 +379,7 @@ export function getOrderLifecyclePaymentAdmission(
   if (!paymentClaimMatchesLifecycle(lifecycle, input)) {
     return "snapshot_mismatch"
   }
-  if (
-    lifecycle.orderDeliveryStatus !== "sent" ||
-    lifecycle.phase === "completed" ||
-    lifecycle.phase === "cancelled"
-  ) {
-    return "unsafe_state"
-  }
-  return (lifecycle.paymentStatus === "not_started" &&
-    lifecycle.invoiceStatus === "not_requested") ||
-    lifecycle.paymentStatus === "failed"
+  return canStartOrReplaceOrderPayment(lifecycle)
     ? "admissible"
     : "unsafe_state"
 }
@@ -316,13 +410,56 @@ export async function claimOrderLifecyclePayment(
     }
 
     const now = Date.now()
-    const claimed: OrderLifecycle = {
+    const claimed = buildClaimedOrderLifecycle(lifecycle, input, now)
+    await db.orderLifecycles.put(claimed)
+    return { status: "claimed", lifecycle: claimed }
+  })
+}
+
+export type OrderPrivateFallbackTransitionResult =
+  | { status: "transitioned"; lifecycle: OrderLifecycle }
+  | { status: "missing"; lifecycle: null }
+  | { status: "unsafe_state"; lifecycle: OrderLifecycle }
+
+function canTransitionOrderPrivateFallback(lifecycle: OrderLifecycle): boolean {
+  const publicZapSigner =
+    lifecycle.publicZapSigner ?? getOrderPublicZapSigner(lifecycle.checkoutMode)
+  return (
+    publicZapSigner === "anon" &&
+    lifecycle.orderDeliveryStatus === "sent" &&
+    lifecycle.phase !== "completed" &&
+    lifecycle.phase !== "cancelled" &&
+    lifecycle.invoiceStatus === "failed" &&
+    lifecycle.paymentStatus === "failed"
+  )
+}
+
+/**
+ * Moves one definitely failed anonymous zap into a fresh private-invoice
+ * attempt. The previous wallet idempotency token is discarded because the
+ * private fallback will request a different invoice.
+ */
+export async function transitionOrderPrivateFallback(
+  orderId: string
+): Promise<OrderPrivateFallbackTransitionResult> {
+  return db.transaction("rw", db.orderLifecycles, async () => {
+    const lifecycle = await db.orderLifecycles.get(orderId)
+    if (!lifecycle) {
+      return { status: "missing", lifecycle: null }
+    }
+    if (!canTransitionOrderPrivateFallback(lifecycle)) {
+      return { status: "unsafe_state", lifecycle }
+    }
+
+    const updated: OrderLifecycle = {
       ...lifecycle,
-      paymentClaimId: input.paymentClaimId,
-      paymentClaimedAt: now,
-      paymentClaimLeaseExpiresAt: now + ORDER_PAYMENT_CLAIM_LEASE_MS,
-      invoiceStatus: "requesting",
+      checkoutMode: "private_checkout",
+      publicZapSigner: undefined,
+      publicZapFallback: true,
+      zapContent: "",
+      invoiceStatus: "not_requested",
       paymentStatus: "not_started",
+      walletPaymentAttemptId: undefined,
       proofDeliveryStatus: "not_started",
       zapReceiptStatus: "not_applicable",
       invoice: undefined,
@@ -340,13 +477,65 @@ export async function claimOrderLifecyclePayment(
       lastError: undefined,
       phase: deriveOrderLifecyclePhase({
         ...lifecycle,
-        invoiceStatus: "requesting",
+        invoiceStatus: "not_requested",
         paymentStatus: "not_started",
       }),
-      updatedAt: now,
+      updatedAt: Date.now(),
     }
-    await db.orderLifecycles.put(claimed)
-    return { status: "claimed", lifecycle: claimed }
+    await db.orderLifecycles.put(updated)
+    return { status: "transitioned", lifecycle: updated }
+  })
+}
+
+export type OrderPaymentTargetReplacementAdmission =
+  "replaceable" | "missing" | "unsafe_state"
+
+export function getOrderPaymentTargetReplacementAdmission(
+  lifecycle: OrderLifecycle | undefined
+): OrderPaymentTargetReplacementAdmission {
+  if (!lifecycle) return "missing"
+  return canStartOrReplaceOrderPayment(lifecycle)
+    ? "replaceable"
+    : "unsafe_state"
+}
+
+export type ReplaceOrderPaymentTargetResult =
+  | { status: "updated"; lifecycle: OrderLifecycle }
+  | { status: "missing"; lifecycle: null }
+  | { status: "unsafe_state"; lifecycle: OrderLifecycle }
+
+/**
+ * Atomically replaces a definite pre-payment target.
+ *
+ * This is intentionally unavailable once an invoice may be in-flight, payable,
+ * paid, or ambiguous. The transaction serializes an explicit target change
+ * against a competing payment claim in another tab.
+ */
+export async function replaceOrderPaymentTarget(
+  orderId: string,
+  paymentTarget: OrderPaymentTarget
+): Promise<ReplaceOrderPaymentTargetResult> {
+  return db.transaction("rw", db.orderLifecycles, async () => {
+    const lifecycle = await db.orderLifecycles.get(orderId)
+    const admission = getOrderPaymentTargetReplacementAdmission(lifecycle)
+    if (!lifecycle || admission === "missing") {
+      return { status: "missing", lifecycle: null }
+    }
+    if (admission !== "replaceable") {
+      return { status: "unsafe_state", lifecycle }
+    }
+    const updated: OrderLifecycle = {
+      ...lifecycle,
+      paymentTarget,
+      walletPaymentAttemptId:
+        paymentTargetsEqual(lifecycle.paymentTarget, paymentTarget) &&
+        paymentTarget.type === "wallet"
+          ? lifecycle.walletPaymentAttemptId
+          : undefined,
+      updatedAt: Date.now(),
+    }
+    await db.orderLifecycles.put(updated)
+    return { status: "updated", lifecycle: updated }
   })
 }
 
@@ -382,37 +571,17 @@ export async function claimOrderLifecyclePrivateFallbackPayment(
     }
 
     const now = Date.now()
-    const claimed = mergeOrderLifecyclePatch(
-      lifecycle,
-      {
-        paymentClaimId: input.paymentClaimId,
-        paymentClaimedAt: now,
-        paymentClaimLeaseExpiresAt: now + ORDER_PAYMENT_CLAIM_LEASE_MS,
-        merchantLightningAddress: input.merchantLightningAddress ?? undefined,
-        checkoutMode: "private_checkout",
-        publicZapSigner: undefined,
-        publicZapFallback: true,
-        zapContent: "",
-        invoiceStatus: "requesting",
-        paymentStatus: "not_started",
-        proofDeliveryStatus: "not_started",
-        zapReceiptStatus: "not_applicable",
-        invoice: undefined,
-        paymentHash: undefined,
-        preimage: undefined,
-        feeMsats: undefined,
-        zapRequestId: undefined,
-        zapRequestCreatedAt: undefined,
-        zapReceiptId: undefined,
-        zapReceiptRelayUrls: undefined,
-        zapLnurl: undefined,
-        zapReceiptPubkey: undefined,
-        invoiceExpiresAt: undefined,
-        zapReceiptObservationDeadline: undefined,
-        lastError: undefined,
-      },
-      now
-    )
+    const claimed = buildClaimedOrderLifecycle(lifecycle, input, now, {
+      merchantLightningAddress: input.merchantLightningAddress ?? undefined,
+      checkoutMode: "private_checkout",
+      publicZapSigner: undefined,
+      publicZapFallback: true,
+      zapContent: "",
+      walletPaymentAttemptId:
+        input.paymentTarget.type === "wallet"
+          ? createWalletPaymentAttemptId()
+          : undefined,
+    })
     await db.orderLifecycles.put(claimed)
     return { status: "claimed", lifecycle: claimed }
   })

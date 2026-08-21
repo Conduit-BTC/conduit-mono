@@ -1,8 +1,9 @@
-import Dexie, { type EntityTable, type Table } from "dexie"
+import Dexie, { liveQuery, type EntityTable, type Table } from "dexie"
 import { config } from "../config"
 import type { ProductZapMessagePolicy } from "../schemas"
 import type { SignedPublicNostrEvent } from "../protocol/signed-event"
 import type { ProductSpecification } from "../types"
+import type { WalletDescriptor, WalletProviderId } from "../wallets"
 
 export interface StoredOrder {
   id: string
@@ -437,6 +438,14 @@ export interface StoredPaymentAttempt {
   updatedAt: number
 }
 
+export interface StoredWalletCredential {
+  walletId: string
+  providerId: WalletProviderId
+  credential: string
+  createdAt: number
+  updatedAt: number
+}
+
 /** How the buyer initiated payment for this order. */
 export type OrderCheckoutMode =
   | "anonymous_public_zap"
@@ -529,6 +538,21 @@ export type OrderZapReceiptStatus =
 export type OrderLifecyclePhase =
   "pending" | "in_progress" | "completed" | "failed" | "cancelled"
 
+/**
+ * The buyer-selected local payment target for this order.
+ *
+ * This is an opaque device-local routing choice. It MUST NOT be included in the
+ * merchant order, payment proof, logs, or telemetry.
+ */
+export type OrderPaymentTarget =
+  | {
+      type: "wallet"
+      walletId: string
+      providerId: WalletProviderId
+    }
+  | { type: "webln" }
+  | { type: "manual" }
+
 export interface OrderLifecycleItem {
   productId: string
   familyProductId?: string
@@ -577,6 +601,16 @@ export interface OrderLifecycle {
   /** A public anon-zap attempt failed before invoice issuance and continued privately. */
   publicZapFallback?: boolean
   merchantLightningAddress?: string
+  /** Local-only payment routing selection. Never forwarded off device. */
+  paymentTarget?: OrderPaymentTarget
+  /**
+   * Stable opaque token for retries against the selected saved-wallet provider.
+   *
+   * This value is generated independently of `orderId`, stays device-local
+   * except when passed to the selected provider as its idempotency key, and is
+   * cleared when the buyer explicitly changes payment targets.
+   */
+  walletPaymentAttemptId?: string
 
   items: OrderLifecycleItem[]
   itemSubtotalSats: number
@@ -675,6 +709,8 @@ class ConduitDB extends Dexie {
     "pubkey"
   >
   ownContactListSnapshots!: EntityTable<CachedOwnContactListSnapshot, "pubkey">
+  wallets!: EntityTable<WalletDescriptor, "id">
+  walletCredentials!: EntityTable<StoredWalletCredential, "walletId">
 
   constructor() {
     super("conduit")
@@ -818,10 +854,31 @@ class ConduitDB extends Dexie {
     this.version(12).stores({
       ownContactListSnapshots: "pubkey, state, cachedAt",
     })
+
+    this.version(13).stores({
+      wallets: "id",
+      walletCredentials: "walletId",
+    })
   }
 }
 
 export const db = new ConduitDB()
+
+/**
+ * Observe committed wallet descriptor mutations in this document and other
+ * browser contexts. The listener reloads the complete wallet state so runtime
+ * provider state remains owned by the Market wallet hook.
+ */
+export function subscribeToWalletDescriptorChanges(observer: {
+  onChange(): void
+  onError(error: unknown): void
+}): () => void {
+  const subscription = liveQuery(() => db.wallets.toArray()).subscribe({
+    next: () => observer.onChange(),
+    error: (error) => observer.onError(error),
+  })
+  return () => subscription.unsubscribe()
+}
 
 const CACHE_SCOPE_KEY = "conduit:commerce-cache-scope:v1"
 const FALLBACK_CACHE_PRUNE_HIGH_WATER_BYTES = 35 * 1024 * 1024

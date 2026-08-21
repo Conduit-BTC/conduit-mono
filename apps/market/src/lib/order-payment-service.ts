@@ -29,11 +29,11 @@ import {
   validateAnonZapRequestDraft,
   validateLightningInvoiceForPayment,
   waitForZapReceipt,
-  type NwcConnection,
   type OrderLifecycle,
   type OrderPaymentClaimResult,
   type OrderPaymentWalletSuccessRecoveryInput,
   type SignedPublicNostrEvent,
+  type WalletPaymentFeeApproval,
 } from "@conduit/core"
 import {
   getCheckoutZapVisibility,
@@ -51,7 +51,7 @@ import {
   publishBuyerOrderMessage,
   type BuyerOrderSigningIdentity,
 } from "./order-publish"
-import { payCheckoutInvoice } from "./payment-rails"
+import { payCheckoutInvoice, type CheckoutPaymentTarget } from "./payment-rails"
 import { savePaymentAttempt, updatePaymentAttempt } from "./payment-attempts"
 import {
   clearOrderPaymentClaim,
@@ -255,9 +255,8 @@ export interface OrderPaymentContext {
     localPricing: Extract<CheckoutPricingIntent, { status: "ok" }>
     destination: { country: string; postalCode: string }
   }
-  walletConnection: NwcConnection | null
-  tryNwc: boolean
-  tryWebln?: boolean
+  paymentTarget: CheckoutPaymentTarget
+  approveFee?: WalletPaymentFeeApproval
   formatSatsAmount?: (sats: number) => string
 }
 
@@ -828,6 +827,7 @@ async function runOrderPaymentInternal(
     totalSats: ctx.totalSats,
     totalMsats: ctx.totalMsats,
     items: ctx.items,
+    paymentTarget: ctx.paymentTarget,
   }
   if (
     !preparedClaim &&
@@ -1155,9 +1155,12 @@ async function runOrderPaymentInternal(
       const payResult = await dependencies.payCheckoutInvoice({
         invoice,
         amountMsats: ctx.totalMsats,
-        walletConnection: ctx.walletConnection,
-        tryNwc: ctx.tryNwc,
-        tryWebln: ctx.tryWebln,
+        walletPaymentAttemptId:
+          lifecycle.walletPaymentAttemptId === lifecycle.orderId
+            ? undefined
+            : lifecycle.walletPaymentAttemptId,
+        paymentTarget: ctx.paymentTarget,
+        approveFee: ctx.approveFee,
         timeoutMs: 60_000,
         appId: "market",
         metadata: {
@@ -1166,6 +1169,25 @@ async function runOrderPaymentInternal(
           amountMsats: ctx.totalMsats,
         },
       })
+
+      if (payResult.status === "retryable_failure") {
+        await patchClaim(
+          {
+            paymentClaimId: undefined,
+            invoiceStatus: "failed",
+            paymentStatus: "failed",
+            invoice,
+            zapReceiptStatus: "not_applicable",
+            lastError: payResult.reason,
+          },
+          {
+            running: false,
+            stage: null,
+            error: payResult.reason,
+          }
+        )
+        return runtimeStates.get(orderId)!
+      }
 
       if (payResult.status === "manual_required") {
         // No automatic rail. Private invoices retain the buyer-attested report
@@ -1419,6 +1441,7 @@ export async function runOrderPrivateFallback(
     totalSats: ctx.totalSats,
     totalMsats: ctx.totalMsats,
     items: ctx.items,
+    paymentTarget: ctx.paymentTarget,
   }
   if (!dependencies.rememberOrderPaymentClaim(ctx.orderId, paymentClaimId)) {
     const message = "Recoverable payment storage is unavailable."

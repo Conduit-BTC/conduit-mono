@@ -42,8 +42,12 @@ Reviewer-owned contract check:
 ### Authentication
 
 - External signers ONLY (NIP-07, NIP-46)
-- NO key generation, custody, or storage in apps
+- NO Nostr account-key generation, custody, or storage in apps
 - Merchant/buyer identity = pubkey only
+- Portable Wallet credentials are a distinct, device-local exception governed
+  by `docs/specs/wallets.md`; they must never be used as or derived from a
+  buyer/merchant Nostr identity
+- `/wallet` is device-owned and remains usable without a connected Nostr signer
 
 ### Privacy
 
@@ -51,11 +55,18 @@ Reviewer-owned contract check:
 - NO message content inspection
 - System metrics only (relay success, load times)
 - All user data stays on user's device or relays
+- NO wallet credentials, recovery material, invoices, payment content, selected
+  wallet instance IDs, or wallet balances in logs or telemetry
 
 ### Payments
 
-- Non-custodial Lightning payment requests, NWC/WebLN payment rails, and payment proofs
-- No balance management
+- Non-custodial Lightning through Portable Wallets, NWC/WebLN payment rails,
+  invoices, and payment proofs
+- Market may display and manage device-local Portable Wallet balances through
+  the provider boundary, but Conduit-operated services never receive
+  credentials, control funds, or process refunds
+- A selected wallet instance is local payment state and must not be sent to
+  merchants or analytics
 - No refund processing in-app
 
 ## Nostr Event Handling
@@ -102,20 +113,20 @@ New `giftWrap`, publish, unwrap/decrypt, relay planning, event parsing, and sour
 
 ## Tech Stack
 
-| Layer        | Choice                                            |
-| ------------ | ------------------------------------------------- |
-| Runtime      | Bun                                               |
-| Build        | Vite 6 + SWC                                      |
-| Framework    | React 19                                          |
-| Routing      | TanStack Router                                   |
-| Server State | TanStack Query over shared Nostr protocol helpers |
-| Client State | React Context (auth only)                         |
-| Persistence  | localStorage (cart, preferences)                  |
-| Database     | Dexie (IndexedDB) - orders, messages, cache       |
-| Forms        | react-hook-form + Zod                             |
-| Validation   | Zod schemas in `@conduit/core`                    |
-| UI           | shadcn/ui + Tailwind                              |
-| Analytics    | Privacy-constrained optional telemetry only       |
+| Layer        | Choice                                               |
+| ------------ | ---------------------------------------------------- |
+| Runtime      | Bun                                                  |
+| Build        | Vite 6 + SWC                                         |
+| Framework    | React 19                                             |
+| Routing      | TanStack Router                                      |
+| Server State | TanStack Query over shared Nostr protocol helpers    |
+| Client State | React Context (auth only)                            |
+| Persistence  | localStorage (cart, preferences)                     |
+| Database     | Dexie (IndexedDB) - orders, messages, cache, wallets |
+| Forms        | react-hook-form + Zod                                |
+| Validation   | Zod schemas in `@conduit/core`                       |
+| UI           | shadcn/ui + Tailwind                                 |
+| Analytics    | Privacy-constrained optional telemetry only          |
 
 **No state management library.** TanStack Query handles all relay data. Dexie handles local persistence.
 

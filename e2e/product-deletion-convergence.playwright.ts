@@ -505,7 +505,7 @@ async function readDatabaseMigrationState(page: Page): Promise<{
   )
 }
 
-test("Merchant upgrades v8 cache data to the durable v12 cache stores", async ({
+test("Merchant upgrades v8 cache data to the durable v13 cache stores", async ({
   page,
 }) => {
   await page.route(
@@ -535,16 +535,20 @@ test("Merchant upgrades v8 cache data to the durable v12 cache stores", async ({
           hasOwnContactListSnapshots: state.stores.includes(
             "ownContactListSnapshots"
           ),
+          hasWallets: state.stores.includes("wallets"),
+          hasWalletCredentials: state.stores.includes("walletCredentials"),
         }
       },
       { timeout: 20_000 }
     )
     .toEqual({
-      nativeVersion: 120,
+      nativeVersion: 130,
       hasOutbox: true,
       hasShopperTrust: true,
       hasInboxDeclarationEvidence: true,
       hasOwnContactListSnapshots: true,
+      hasWallets: true,
+      hasWalletCredentials: true,
     })
 
   const migrated = await readDatabaseMigrationState(page)

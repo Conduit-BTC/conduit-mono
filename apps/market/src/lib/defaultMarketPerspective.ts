@@ -1,3 +1,17 @@
+import {
+  EVENT_KINDS,
+  extractFollowPubkeys,
+  isValidSignedPublicNostrEvent,
+  type SignedPublicNostrEvent,
+} from "@conduit/core"
+import {
+  getCatalogAuthorKey,
+  isSameFollowListSnapshot,
+  parseFollowListSnapshot,
+  selectStrongestFollowListSnapshot,
+  type FollowListSnapshot,
+} from "./productCatalogRead"
+
 export const DEFAULT_MARKET_PERSPECTIVE_NPUB =
   "npub1nkfqwlz7xkhhdaa3ekz88qqqk7a0ks7jpv9zdsv0u206swxjw9rq0g2svu"
 
@@ -40,24 +54,161 @@ dd9b989dfe5e0840a92538f3e9f84f674e5f17ab05932efbacb4d8e6c905f302 5ffb8e1b6b629c0
 export const DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS =
   DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS_RAW.trim().split(/\s+/)
 
-const CACHE_KEY = "conduit.market.defaultPerspectiveFollows.v1"
+export const DEFAULT_MARKET_PERSPECTIVE_FOLLOW_STORAGE_KEY =
+  "conduit.market.defaultPerspectiveFollows.v3"
+const DEFAULT_MARKET_PERSPECTIVE_FOLLOW_STORAGE_EVENT =
+  "conduit:default-market-perspective-follows"
 const HEX_PUBKEY = /^[0-9a-f]{64}$/i
+const FOLLOW_LIST_FUTURE_TOLERANCE_SECONDS = 5 * 60
 
-type CachedDefaultPerspectiveFollows = {
-  createdAt: number
-  pubkeys: string[]
+type StorageListener = () => void
+
+export function getDefaultMarketPerspectiveFollowStorageSnapshot():
+  string | null {
+  if (typeof window === "undefined") return null
+  try {
+    return window.localStorage.getItem(
+      DEFAULT_MARKET_PERSPECTIVE_FOLLOW_STORAGE_KEY
+    )
+  } catch {
+    return null
+  }
 }
 
-function isValidCachedFollows(
-  value: unknown
-): value is CachedDefaultPerspectiveFollows {
-  if (!value || typeof value !== "object") return false
-  const candidate = value as Partial<CachedDefaultPerspectiveFollows>
-  return (
-    typeof candidate.createdAt === "number" &&
-    Array.isArray(candidate.pubkeys) &&
-    candidate.pubkeys.every((pubkey) => typeof pubkey === "string")
+export function subscribeDefaultMarketPerspectiveFollowStorage(
+  listener: StorageListener
+): () => void {
+  if (typeof window === "undefined") return () => undefined
+
+  const onStorage = (event: StorageEvent) => {
+    if (event.storageArea !== window.localStorage) return
+    if (
+      event.key !== DEFAULT_MARKET_PERSPECTIVE_FOLLOW_STORAGE_KEY &&
+      event.key !== null
+    )
+      return
+    listener()
+  }
+  window.addEventListener("storage", onStorage)
+  window.addEventListener(
+    DEFAULT_MARKET_PERSPECTIVE_FOLLOW_STORAGE_EVENT,
+    listener
   )
+
+  return () => {
+    window.removeEventListener("storage", onStorage)
+    window.removeEventListener(
+      DEFAULT_MARKET_PERSPECTIVE_FOLLOW_STORAGE_EVENT,
+      listener
+    )
+  }
+}
+
+function notifyDefaultMarketPerspectiveFollowStorage(): void {
+  if (
+    typeof window !== "undefined" &&
+    typeof window.dispatchEvent === "function"
+  ) {
+    window.dispatchEvent(
+      new Event(DEFAULT_MARKET_PERSPECTIVE_FOLLOW_STORAGE_EVENT)
+    )
+  }
+}
+
+function removeDefaultMarketPerspectiveFollowStorage(): void {
+  if (typeof window === "undefined") return
+  try {
+    window.localStorage.removeItem(
+      DEFAULT_MARKET_PERSPECTIVE_FOLLOW_STORAGE_KEY
+    )
+  } catch {
+    // Invalid storage remains ignored for the current read.
+  }
+}
+
+function isPlausibleFollowListSnapshot(
+  snapshot: FollowListSnapshot,
+  now = Math.floor(Date.now() / 1000)
+): boolean {
+  return snapshot.eventCreatedAt <= now + FOLLOW_LIST_FUTURE_TOLERANCE_SECONDS
+}
+
+function persistDefaultMarketPerspectiveFollowSnapshot(
+  snapshot: FollowListSnapshot,
+  persisted: FollowListSnapshot | undefined,
+  options: {
+    expectedPubkey?: string
+    now?: number
+  } = {}
+): void {
+  const verifiedSnapshot = parseVerifiedFollowListEventSnapshot(
+    snapshot.signedEvent,
+    options
+  )
+  if (
+    !verifiedSnapshot ||
+    !isSameFollowListSnapshot(verifiedSnapshot, snapshot) ||
+    isSameFollowListSnapshot(verifiedSnapshot, persisted)
+  ) {
+    return
+  }
+  try {
+    const { pubkeys, eventCreatedAt, eventId, signedEvent } = verifiedSnapshot
+    window.localStorage.setItem(
+      DEFAULT_MARKET_PERSPECTIVE_FOLLOW_STORAGE_KEY,
+      JSON.stringify({
+        pubkeys,
+        eventCreatedAt,
+        eventId,
+        signedEvent,
+        cachedAt: Date.now(),
+      })
+    )
+    notifyDefaultMarketPerspectiveFollowStorage()
+  } catch {
+    // Anonymous discovery still works from the bundled/in-memory frontier.
+  }
+}
+
+export function parseVerifiedFollowListEventSnapshot(
+  value: unknown,
+  options: {
+    expectedPubkey?: string
+    now?: number
+  } = {}
+): FollowListSnapshot | undefined {
+  if (!value || typeof value !== "object") return undefined
+  const event = value as SignedPublicNostrEvent
+  const expectedPubkey = (
+    options.expectedPubkey ?? DEFAULT_MARKET_PERSPECTIVE_PUBKEY
+  ).toLowerCase()
+  if (
+    !isValidSignedPublicNostrEvent(event) ||
+    event.kind !== EVENT_KINDS.CONTACT_LIST ||
+    event.pubkey.toLowerCase() !== expectedPubkey
+  ) {
+    return undefined
+  }
+
+  const snapshot = parseFollowListSnapshot(
+    {
+      pubkeys: extractFollowPubkeys(event.tags),
+      eventCreatedAt: event.created_at,
+      eventId: event.id,
+    },
+    {
+      requireEventId: true,
+      sortPubkeys: true,
+      evidence: "verified",
+      signedEvent: {
+        ...event,
+        tags: event.tags.map((tag) => [...tag]),
+      },
+    }
+  )
+  return snapshot && isPlausibleFollowListSnapshot(snapshot, options.now)
+    ? snapshot
+    : undefined
 }
 
 function normalizeFollowPubkeys(pubkeys: readonly string[]): string[] {
@@ -71,7 +222,7 @@ function normalizeFollowPubkeys(pubkeys: readonly string[]): string[] {
     normalized.push(value)
   }
 
-  return normalized
+  return normalized.sort()
 }
 
 export function getDefaultMarketPerspectiveRefreshThreshold(
@@ -95,52 +246,256 @@ export function resolveSafeDefaultMarketPerspectiveFollowRefresh(
   return normalized.length >= minimumCount ? normalized : null
 }
 
-export function getDefaultMarketPerspectiveFollowPubkeys(): string[] {
-  if (typeof window === "undefined") {
-    return DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS
-  }
-
-  try {
-    const parsed = JSON.parse(
-      window.localStorage.getItem(CACHE_KEY) ?? "null"
-    ) as unknown
-    if (
-      isValidCachedFollows(parsed) &&
-      parsed.createdAt >= DEFAULT_MARKET_PERSPECTIVE_FOLLOWS_CREATED_AT &&
-      parsed.pubkeys.length > 0
-    ) {
-      const safeCachedPubkeys =
-        resolveSafeDefaultMarketPerspectiveFollowRefresh(parsed.pubkeys)
-      if (safeCachedPubkeys) return safeCachedPubkeys
-    }
-  } catch {
-    // Seed remains the cold-start fallback.
-  }
-
-  return DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS
+export function getDefaultMarketPerspectiveCatalogAuthorKey(
+  pubkeys: readonly string[]
+): string {
+  return getCatalogAuthorKey(
+    pubkeys.filter((pubkey) => pubkey !== DEFAULT_MARKET_PERSPECTIVE_PUBKEY)
+  )
 }
 
-export function storeDefaultMarketPerspectiveFollowPubkeys(
-  pubkeys: string[],
-  createdAt = Math.floor(Date.now() / 1000),
-  options: { previousPubkeys?: readonly string[] } = {}
-): string[] | null {
-  const safePubkeys = resolveSafeDefaultMarketPerspectiveFollowRefresh(
-    pubkeys,
-    options.previousPubkeys
+export type DefaultMarketPerspectiveFollowRefreshDisposition =
+  "unavailable" | "rejected" | "accepted" | "superseded"
+
+/**
+ * Classify a completed guest follow refresh without confusing an older safe
+ * query result with an unsafe result. A candidate that loses the NIP-01
+ * frontier comparison is superseded by stronger retained evidence, not
+ * rejected.
+ */
+export function resolveDefaultMarketPerspectiveFollowRefresh(input: {
+  readAvailable: boolean
+  retainedSnapshot: FollowListSnapshot
+  observedCandidate: FollowListSnapshot | null
+}): {
+  selectedSnapshot: FollowListSnapshot
+  disposition: DefaultMarketPerspectiveFollowRefreshDisposition
+} {
+  if (!input.readAvailable) {
+    return {
+      selectedSnapshot: input.retainedSnapshot,
+      disposition: "unavailable",
+    }
+  }
+  if (!input.observedCandidate) {
+    return {
+      selectedSnapshot: input.retainedSnapshot,
+      disposition: "rejected",
+    }
+  }
+  const selectedFrontier = selectDefaultMarketPerspectiveFollowSnapshot(
+    input.retainedSnapshot,
+    undefined,
+    input.observedCandidate
   )
-  if (!safePubkeys) return null
+  if (!isSameFollowListSnapshot(input.observedCandidate, selectedFrontier)) {
+    return {
+      selectedSnapshot: selectedFrontier,
+      disposition: "superseded",
+    }
+  }
+  const safePubkeys = resolveSafeDefaultMarketPerspectiveFollowRefresh(
+    input.observedCandidate.pubkeys,
+    input.retainedSnapshot.pubkeys
+  )
+  if (!safePubkeys) {
+    return {
+      selectedSnapshot: input.retainedSnapshot,
+      disposition: "rejected",
+    }
+  }
+  return {
+    selectedSnapshot: input.observedCandidate,
+    disposition: "accepted",
+  }
+}
 
-  if (typeof window === "undefined") return safePubkeys
+export function isDefaultMarketPerspectiveFollowDiscoveryStale(input: {
+  enabled: boolean
+  queryError: boolean
+  queryPaused: boolean
+  readIncomplete: boolean
+  selectedSnapshot: FollowListSnapshot
+  refreshDisposition: DefaultMarketPerspectiveFollowRefreshDisposition
+}): boolean {
+  return (
+    input.enabled &&
+    (input.queryError ||
+      input.queryPaused ||
+      input.readIncomplete ||
+      input.selectedSnapshot.evidence !== "verified" ||
+      input.refreshDisposition === "rejected")
+  )
+}
 
-  try {
-    window.localStorage.setItem(
-      CACHE_KEY,
-      JSON.stringify({ createdAt, pubkeys: safePubkeys })
-    )
-  } catch {
-    // Anonymous discovery still works from the bundled seed.
+export function selectDefaultMarketPerspectiveFollowSnapshot(
+  inMemory: FollowListSnapshot,
+  persisted?: FollowListSnapshot,
+  candidate?: FollowListSnapshot
+): FollowListSnapshot {
+  // In-memory state may already contain a verified live repair of the stored
+  // projection. Put it in the candidate position so equal-event-id conflicts
+  // cannot let corrupt persisted fields undo that repair; distinct frontiers
+  // still follow NIP-01 ordering. A verified network candidate is applied last.
+  const select = (
+    current: FollowListSnapshot | undefined,
+    next: FollowListSnapshot | undefined
+  ) => {
+    const currentTrusted = current?.evidence !== undefined
+    const nextTrusted = next?.evidence !== undefined
+    if (nextTrusted && !currentTrusted) return next
+    if (currentTrusted && !nextTrusted) return current
+    return selectStrongestFollowListSnapshot(current, next)
+  }
+  const retained = select(persisted, inMemory) ?? inMemory
+  return select(retained, candidate) ?? retained
+}
+
+export function getDefaultMarketPerspectiveFollowReconciliation(input: {
+  enabled: boolean
+  inMemory: FollowListSnapshot
+  persisted: FollowListSnapshot
+  selected: FollowListSnapshot
+}): { needsStateUpdate: boolean; needsStorageRepair: boolean } {
+  return {
+    needsStateUpdate: !isSameFollowListSnapshot(input.inMemory, input.selected),
+    needsStorageRepair:
+      input.enabled &&
+      input.selected.evidence === "verified" &&
+      input.selected.signedEvent !== undefined &&
+      !isSameFollowListSnapshot(input.persisted, input.selected),
+  }
+}
+
+function getBundledDefaultMarketPerspectiveFollowSnapshot(): FollowListSnapshot {
+  return {
+    pubkeys: normalizeFollowPubkeys(DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS),
+    eventCreatedAt: DEFAULT_MARKET_PERSPECTIVE_FOLLOWS_CREATED_AT,
+    evidence: "bundled",
+  }
+}
+
+export function getDefaultMarketPerspectiveFollowSnapshot(
+  options: {
+    now?: () => number
+    expectedPubkey?: string
+  } = {}
+): FollowListSnapshot {
+  const bundled = getBundledDefaultMarketPerspectiveFollowSnapshot()
+  if (typeof window === "undefined") {
+    return bundled
   }
 
-  return safePubkeys
+  const raw = getDefaultMarketPerspectiveFollowStorageSnapshot()
+  if (raw === null) return bundled
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    const signedEvent =
+      parsed && typeof parsed === "object"
+        ? (parsed as { signedEvent?: unknown }).signedEvent
+        : undefined
+    const verified = parseVerifiedFollowListEventSnapshot(signedEvent, {
+      expectedPubkey: options.expectedPubkey,
+      now: options.now?.(),
+    })
+    if (
+      verified &&
+      verified.pubkeys.length >= DEFAULT_MARKET_PERSPECTIVE_MIN_REFRESH_FOLLOWS
+    ) {
+      return selectStrongestFollowListSnapshot(bundled, verified) ?? bundled
+    }
+  } catch {
+    // Rejected events and legacy projections are purged below.
+  }
+
+  // A rejected projection must not become eligible later merely because the
+  // local clock advanced into its future-skew window.
+  removeDefaultMarketPerspectiveFollowStorage()
+  return bundled
+}
+
+export function getDefaultMarketPerspectiveFollowPubkeys(): string[] {
+  return getDefaultMarketPerspectiveFollowSnapshot().pubkeys
+}
+
+export function storeDefaultMarketPerspectiveFollowSnapshot(
+  snapshot: FollowListSnapshot,
+  options: {
+    previousSnapshot?: FollowListSnapshot
+    previousPubkeys?: readonly string[]
+    now?: () => number
+    expectedPubkey?: string
+  } = {}
+): FollowListSnapshot | null {
+  const persisted =
+    typeof window === "undefined"
+      ? undefined
+      : getDefaultMarketPerspectiveFollowSnapshot({
+          now: options.now,
+          expectedPubkey: options.expectedPubkey,
+        })
+  const previousSnapshot =
+    options.previousSnapshot &&
+    isPlausibleFollowListSnapshot(options.previousSnapshot, options.now?.())
+      ? options.previousSnapshot
+      : undefined
+  const current = previousSnapshot
+    ? selectDefaultMarketPerspectiveFollowSnapshot(previousSnapshot, persisted)
+    : persisted
+  const safePubkeys = resolveSafeDefaultMarketPerspectiveFollowRefresh(
+    snapshot.pubkeys,
+    current?.pubkeys ??
+      options.previousSnapshot?.pubkeys ??
+      options.previousPubkeys
+  )
+  // In a browser, return the already-stored safe winner when a stale caller's
+  // candidate no longer meets retention. Consumers can reconcile immediately
+  // instead of remaining pending on a candidate that cannot be persisted.
+  if (!safePubkeys) {
+    if (current && typeof window !== "undefined") {
+      persistDefaultMarketPerspectiveFollowSnapshot(current, persisted, {
+        expectedPubkey: options.expectedPubkey,
+        now: options.now?.(),
+      })
+    }
+    return current ?? null
+  }
+
+  const candidate = parseFollowListSnapshot(
+    { ...snapshot, pubkeys: safePubkeys },
+    {
+      requireEventId: typeof window !== "undefined",
+      sortPubkeys: true,
+      evidence: snapshot.evidence,
+      signedEvent: snapshot.signedEvent,
+    }
+  )
+  if (!candidate) return null
+  if (!isPlausibleFollowListSnapshot(candidate, options.now?.())) {
+    if (current && typeof window !== "undefined") {
+      persistDefaultMarketPerspectiveFollowSnapshot(current, persisted, {
+        expectedPubkey: options.expectedPubkey,
+        now: options.now?.(),
+      })
+    }
+    return current ?? null
+  }
+  if (typeof window === "undefined") return candidate
+
+  const selected = current
+    ? selectDefaultMarketPerspectiveFollowSnapshot(
+        current,
+        undefined,
+        candidate
+      )
+    : candidate
+
+  // Compare with what is actually durable, not the combined in-memory winner.
+  // This retries a transiently failed write even when no newer event arrives.
+  persistDefaultMarketPerspectiveFollowSnapshot(selected, persisted, {
+    expectedPubkey: options.expectedPubkey,
+    now: options.now?.(),
+  })
+
+  return selected
 }

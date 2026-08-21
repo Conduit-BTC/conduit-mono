@@ -40,6 +40,27 @@ async function expectMobileTouchTarget(control: Locator): Promise<void> {
   expect(box?.height).toBeGreaterThanOrEqual(44)
 }
 
+async function installEmptyRelay(page: Page): Promise<void> {
+  await page.routeWebSocket(/^(?:ws|wss):\/\//, (socket) => {
+    socket.onMessage((message) => {
+      if (typeof message !== "string") return
+      let frame: unknown
+      try {
+        frame = JSON.parse(message)
+      } catch {
+        return
+      }
+      if (
+        Array.isArray(frame) &&
+        frame[0] === "REQ" &&
+        typeof frame[1] === "string"
+      ) {
+        socket.send(JSON.stringify(["EOSE", frame[1]]))
+      }
+    })
+  })
+}
+
 async function seedInterruptedPayment(
   page: Page,
   input: {
@@ -120,8 +141,8 @@ async function seedInterruptedPayment(
       database.close()
       if (storeMarker !== false) {
         sessionStorage.setItem(
-          "conduit:order-payment-claims",
-          JSON.stringify({ [orderId]: paymentClaimId })
+          `conduit:order-payment-claim:${orderId}`,
+          paymentClaimId
         )
       }
     },
@@ -163,7 +184,9 @@ async function readRecoveredPayment(
       paymentStatus: lifecycle?.paymentStatus as string | undefined,
       proofDeliveryStatus: lifecycle?.proofDeliveryStatus as string | undefined,
       paymentClaimId: lifecycle?.paymentClaimId as string | undefined,
-      marker: sessionStorage.getItem("conduit:order-payment-claims"),
+      marker: sessionStorage.getItem(
+        `conduit:order-payment-claim:${paymentOrderId}`
+      ),
     }
   }, orderId)
 }
@@ -186,7 +209,10 @@ test.describe("CND-162 mobile browser baseline", () => {
     await page.reload()
     await page.locator('button[title="Cart"]').tap()
     await expect(page).toHaveURL(/\/cart$/)
-    await expect(page.getByText("E2E Smoke Product")).toBeVisible()
+    const cartProduct = page
+      .getByRole("main")
+      .getByRole("link", { name: "E2E Smoke Product" })
+    await expect(cartProduct).toBeVisible()
     await assertMobileViewport(page)
 
     await page.goBack()
@@ -195,7 +221,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     await expect(page).toHaveURL(/\/cart$/)
 
     await page.reload()
-    await expect(page.getByText("E2E Smoke Product")).toBeVisible()
+    await expect(cartProduct).toBeVisible()
 
     const portrait = page.viewportSize()
     expect(portrait).not.toBeNull()
@@ -363,24 +389,28 @@ test.describe("CND-162 mobile browser baseline", () => {
     await page.goto(`${marketUrl}/wallet`)
 
     await expect(
-      page.getByRole("heading", { name: "Wallet", exact: true })
+      page.getByRole("heading", { name: "Wallets", exact: true })
     ).toBeVisible()
     await assertMobileViewport(page)
 
-    const connectionString = page.getByPlaceholder("nostr+walletconnect://...")
+    await page.getByRole("button", { name: "Connect wallet" }).tap()
+    const dialog = page.getByRole("dialog", { name: "Connect wallet" })
+    const connectionString = dialog.getByPlaceholder(
+      "nostr+walletconnect://..."
+    )
     await expectMobileSafeFont(connectionString)
     await expect(connectionString).toHaveAttribute("type", "password")
     await expect(connectionString).toHaveAttribute("autocomplete", "off")
 
-    await page.getByRole("button", { name: "Connect wallet" }).tap()
-    await expect(
-      page.getByText("Paste a nostr+walletconnect:// connection string.")
-    ).toBeVisible()
+    await connectionString.fill("not-a-wallet-connection")
+    await dialog.getByRole("button", { name: "Connect", exact: true }).tap()
+    await expect(dialog.getByRole("alert")).toBeVisible()
 
     await page.reload()
     await expect(
-      page.getByRole("heading", { name: "Wallet", exact: true })
+      page.getByRole("heading", { name: "Wallets", exact: true })
     ).toBeVisible()
+    await page.getByRole("button", { name: "Connect wallet" }).tap()
     await expect(connectionString).toBeVisible()
   })
 
@@ -388,6 +418,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     page,
   }) => {
     const orderId = "mobile-pre-wallet-recovery"
+    await installEmptyRelay(page)
     await installTestSigner(page, TEST_BUYER_PUBKEY)
     await page.goto(`${marketUrl}/orders`)
     await expect(
@@ -407,7 +438,7 @@ test.describe("CND-162 mobile browser baseline", () => {
       page.getByRole("button", { name: "Continue payment" })
     ).toBeVisible()
     await expect(
-      page.getByText(/before the invoice reached a wallet/i)
+      page.getByText(/choose the exact wallet or manual payment path/i)
     ).toBeVisible()
     await assertMobileViewport(page)
 
@@ -423,6 +454,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     page,
   }) => {
     const orderId = "mobile-wallet-handoff-recovery"
+    await installEmptyRelay(page)
     await installTestSigner(page, TEST_BUYER_PUBKEY)
     await page.goto(`${marketUrl}/orders`)
     await expect(
@@ -460,6 +492,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     page,
   }) => {
     const orderId = "mobile-paid-proof-recovery"
+    await installEmptyRelay(page)
     await installTestSigner(page, TEST_BUYER_PUBKEY)
     await page.goto(`${marketUrl}/orders`)
     await expect(

@@ -199,7 +199,7 @@ function RemoteSignerConnect({
   const [copied, setCopied] = useState(false)
   const [copyError, setCopyError] = useState(false)
   const connectionUrlRef = useRef<HTMLTextAreaElement>(null)
-  const copyResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const copyResetTimer = useRef<number | null>(null)
 
   useEffect(() => {
     setCopied(false)

@@ -1,8 +1,6 @@
-const ORDER_PAYMENT_CLAIMS_STORAGE_KEY = "conduit:order-payment-claims"
+const ORDER_PAYMENT_CLAIM_STORAGE_PREFIX = "conduit:order-payment-claim:"
 
 type SessionStorageLike = Pick<Storage, "getItem" | "setItem" | "removeItem">
-
-type StoredOrderPaymentClaims = Record<string, string>
 
 function getSessionStorage(): SessionStorageLike | null {
   if (typeof window === "undefined") return null
@@ -13,45 +11,8 @@ function getSessionStorage(): SessionStorageLike | null {
   }
 }
 
-function readClaims(
-  storage: SessionStorageLike | null
-): StoredOrderPaymentClaims {
-  if (!storage) return {}
-  try {
-    const raw = storage.getItem(ORDER_PAYMENT_CLAIMS_STORAGE_KEY)
-    if (!raw) return {}
-    const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return {}
-    }
-    return Object.fromEntries(
-      Object.entries(parsed).filter(
-        ([orderId, claimId]) =>
-          orderId.length > 0 &&
-          typeof claimId === "string" &&
-          claimId.length > 0
-      )
-    )
-  } catch {
-    return {}
-  }
-}
-
-function writeClaims(
-  claims: StoredOrderPaymentClaims,
-  storage: SessionStorageLike | null
-): boolean {
-  if (!storage) return false
-  try {
-    if (Object.keys(claims).length === 0) {
-      storage.removeItem(ORDER_PAYMENT_CLAIMS_STORAGE_KEY)
-    } else {
-      storage.setItem(ORDER_PAYMENT_CLAIMS_STORAGE_KEY, JSON.stringify(claims))
-    }
-    return true
-  } catch {
-    return false
-  }
+function getOrderPaymentClaimStorageKey(orderId: string): string {
+  return `${ORDER_PAYMENT_CLAIM_STORAGE_PREFIX}${orderId}`
 }
 
 export function rememberOrderPaymentClaim(
@@ -59,18 +20,28 @@ export function rememberOrderPaymentClaim(
   paymentClaimId: string,
   storage: SessionStorageLike | null = getSessionStorage()
 ): boolean {
-  if (!orderId || !paymentClaimId) return false
-  return writeClaims(
-    { ...readClaims(storage), [orderId]: paymentClaimId },
-    storage
-  )
+  if (!storage || !orderId || !paymentClaimId) return false
+  try {
+    storage.setItem(getOrderPaymentClaimStorageKey(orderId), paymentClaimId)
+    return true
+  } catch {
+    return false
+  }
 }
 
 export function readOrderPaymentClaim(
   orderId: string,
   storage: SessionStorageLike | null = getSessionStorage()
 ): string | null {
-  return readClaims(storage)[orderId] ?? null
+  if (!storage || !orderId) return null
+  try {
+    const paymentClaimId = storage.getItem(
+      getOrderPaymentClaimStorageKey(orderId)
+    )
+    return paymentClaimId?.length ? paymentClaimId : null
+  } catch {
+    return null
+  }
 }
 
 export function clearOrderPaymentClaim(
@@ -78,8 +49,13 @@ export function clearOrderPaymentClaim(
   paymentClaimId: string,
   storage: SessionStorageLike | null = getSessionStorage()
 ): boolean {
-  const claims = readClaims(storage)
-  if (claims[orderId] !== paymentClaimId) return false
-  delete claims[orderId]
-  return writeClaims(claims, storage)
+  if (!storage || !orderId || !paymentClaimId) return false
+  try {
+    const key = getOrderPaymentClaimStorageKey(orderId)
+    if (storage.getItem(key) !== paymentClaimId) return false
+    storage.removeItem(key)
+    return true
+  } catch {
+    return false
+  }
 }

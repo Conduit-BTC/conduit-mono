@@ -36,6 +36,8 @@ Reviewers may request a durable contract update when the behavior has broad or l
   source-aware delivery, retry, and cross-surface product resolution
 - `docs/knowledge/product-legal-documents.md`: official-host scope, shared legal
   source, versioning, release, and public-route isolation
+- `docs/knowledge/nip42-protected-read-rollout.md`: recipient-scoped protected
+  inbox authentication, relay operator contract, and client-first rollout
 
 ### QA Runbooks
 

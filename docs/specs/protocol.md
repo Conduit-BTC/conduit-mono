@@ -8,11 +8,13 @@ References:
 - NIP-99 classified listing events and GammaMarkets `market-spec` product listings
 - One-way checkout architecture note: `docs/knowledge/one-way-checkout-multi-rail-payments.md`
 - External protocol references: `docs/knowledge/external-nostr-references.md`
+- Protected relay reads and rollout:
+  `docs/knowledge/nip42-protected-read-rollout.md`
 
 Non-goals for the current client repository:
 
-- durable user account key custody or generation, escrow, refunds, or balance
-  management
+- durable Nostr user account-key custody or generation, server-side wallet
+  custody, escrow, or refunds
 - server-managed NIP-46 account custody or signer recovery beyond the current
   external-signer flow
 - service-operated checkout automation, except the scoped Anon Conduit Shopper public zap signer described below
@@ -28,6 +30,57 @@ Conduit Market and Merchant Portal user authentication use external signers only
 | NIP-07 browser signer | Current client support | Required path for current interactive signing           |
 | NIP-46 remote signer  | Current client support | Uses a revocable encrypted browser-local client key     |
 | App-generated keys    | Prohibited by default  | Only the bounded guest-order exception below is allowed |
+
+### Relay Read Authentication
+
+NIP-42 is used only for an explicitly protected relay operation. The first
+protected operation is the active principal reading their own `kind:1059` gift
+wraps with filters constrained to `#p` equal to the active account pubkey.
+Product, profile, declaration, relay-list, and other public reads remain
+free of NIP-42 account proof and must not trigger a signer prompt. This is not
+network anonymity: each queried relay sees the request filters, and relays,
+hosts, and transport providers may observe ordinary connection metadata such as
+source IP, destination, timing, and traffic volume.
+
+The protected-read executor owns plain Nostr request/event contracts,
+WebSockets, subscription lifecycles, authentication, reconnects, validation,
+and typed per-relay outcomes without importing NDK. NIP-07 and NIP-46 are the
+only eligible account signer adapters. Guest-order keys and unsigned sessions
+cannot authenticate and have no fallback. NDK remains a named edge adapter for
+existing signer and gift-wrap/unwrap work; protected reads must not deepen its
+relay ownership.
+
+Authenticated connections are isolated by normalized relay URL and a random,
+process-local account-session scope. They are never shared with public reads
+or another account, and are closed on logout, account/signer change, relay
+removal/read disable, settings-scope change, auth failure, and reconnect.
+
+When a protected connection has a current relay `AUTH` challenge, the client
+creates kind `22242` with empty content, current time, and exact `relay` and
+`challenge` tags, waits for the matching positive `OK`, then retries the
+protected `REQ` with a new subscription id. Under the current client-first
+`when_challenged` policy, a connection with no challenge receives an initial
+protected `REQ` and may complete without NIP-42 when the relay permits it.
+Challenge-before-request and challenge-plus-`auth-required:`-close are both
+supported. Negative/missing `OK`, signer failure, `restricted:` close, repeated
+challenges, reconnects, and timeouts have bounded typed outcomes rather than
+becoming EOSE or empty data. Client support does not prove that a relay requires
+or correctly enforces recipient authentication.
+
+Across relays, valid results survive another relay's auth failure and coverage
+is `partial`. All auth/unavailable failures are `unavailable`, never empty.
+Zero messages is terminal only when every required attempt for the bounded plan
+completes successfully with EOSE. Cached messages remain visible as
+stale/degraded after an incomplete authenticated refresh.
+
+The exact state machine, observation/privacy constraints, recipient-scoped
+relay policy, validation matrix, and client-first rollout/rollback contract are
+defined in `docs/knowledge/nip42-protected-read-rollout.md`.
+
+Portable Wallet credentials are not Nostr authentication keys. A client-side
+Portable Wallet provider may create or restore a separate self-custodial wallet
+seed under the requirements in `docs/specs/wallets.md`; this does not authorize
+generation, storage, or access to a user's Nostr account key.
 
 ### Client Ephemeral Guest Order Key Exception
 
@@ -148,6 +201,7 @@ This exception is constrained as follows:
 | `9735`  | Zap receipt                  | relay/wallet | NIP-57                                                   |
 | `10002` | Relay list                   | both         | NIP-65 relay hints                                       |
 | `10050` | Private message relays       | both         | NIP-17 secure-message relay declarations                 |
+| `22242` | Relay authentication         | client       | NIP-42 connection-bound auth event                       |
 | `30402` | Product listing              | merchant     | NIP-99 + GammaMarkets market-spec                        |
 | `30406` | Shipping option              | merchant     | Conduit commerce extension                               |
 | `31989` | Application recommendation   | both         | NIP-89                                                   |

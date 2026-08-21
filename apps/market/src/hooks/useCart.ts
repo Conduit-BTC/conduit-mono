@@ -8,15 +8,20 @@ import {
   addCartItem,
   clearMerchantCart,
   getCartTotals,
+  parsePersistedCart,
   removeCartItem,
+  selectCartItem,
+  serializeCartState,
   setCartItemQuantity,
   type CartItem,
+  type CartItemIdentity,
+  type CartItemInput,
   type CartState,
 } from "../lib/cart-model"
 
-export type { CartItem }
+export type { CartItem, CartItemIdentity, CartItemInput }
 
-const CART_STORAGE_KEY = "conduit:cart"
+export const CART_STORAGE_KEY = "conduit:cart"
 
 type Listener = () => void
 type CartClearOptions = {
@@ -26,31 +31,13 @@ const listeners = new Set<Listener>()
 
 let state: CartState = { items: [] }
 let initialized = false
+let storageWritable = true
 let storageListenerCount = 0
 
 function sanitizeCartItemImage<T extends { image?: string }>(item: T): T {
   return {
     ...item,
     image: normalizePublicMediaUrl(item.image) ?? undefined,
-  }
-}
-
-function sanitizeStoredCartItems(value: unknown): CartItem[] {
-  if (!Array.isArray(value)) return []
-  return value
-    .filter(
-      (item): item is CartItem =>
-        !!item && typeof item === "object" && !Array.isArray(item)
-    )
-    .map(sanitizeCartItemImage)
-}
-
-export function sanitizeStoredCartState(value: unknown): CartState {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return { items: [] }
-  }
-  return {
-    items: sanitizeStoredCartItems((value as { items?: unknown }).items),
   }
 }
 
@@ -63,10 +50,26 @@ function loadFromStorage(): void {
   initialized = true
 
   if (typeof window === "undefined") return
+  storageWritable = true
+  state = { items: [] }
   try {
     const raw = localStorage.getItem(CART_STORAGE_KEY)
     if (!raw) return
-    state = sanitizeStoredCartState(JSON.parse(raw) as unknown)
+    const result = parsePersistedCart(JSON.parse(raw))
+    state = {
+      items: result.state.items.map(sanitizeCartItemImage),
+    }
+    storageWritable = result.writable
+    if (result.shouldPersist) {
+      try {
+        localStorage.setItem(
+          CART_STORAGE_KEY,
+          JSON.stringify(serializeCartState(state))
+        )
+      } catch {
+        // Retain the migrated in-memory state when storage is unavailable.
+      }
+    }
   } catch {
     // ignore
   }
@@ -79,9 +82,12 @@ function readSnapshot(): CartState {
 
 function writeState(next: CartState): void {
   state = next
-  if (typeof window !== "undefined") {
+  if (typeof window !== "undefined" && storageWritable) {
     try {
-      localStorage.setItem(CART_STORAGE_KEY, JSON.stringify(next))
+      localStorage.setItem(
+        CART_STORAGE_KEY,
+        JSON.stringify(serializeCartState(next))
+      )
     } catch {
       // localStorage can fail (quota, privacy mode). Keep behavior non-blocking for MVP.
     }
@@ -135,38 +141,38 @@ function onStorage(e: StorageEvent): void {
 export function useCart() {
   const snap = useSyncExternalStore(subscribe, readSnapshot, readSnapshot)
 
-  const addItem = useCallback(
-    (item: Omit<CartItem, "quantity">, quantity = 1) => {
-      if (item.stock === 0) return
+  const addItem = useCallback((item: CartItemInput, quantity = 1) => {
+    if (item.stock === 0) return
 
+    const curr = readSnapshot()
+    writeState({
+      items: addCartItem(curr.items, sanitizeCartItemImage(item), quantity),
+    })
+    recordBrowserTelemetryEvent({
+      app: "market",
+      eventName: "cart_add",
+      properties: {
+        action: "add",
+        count_bucket: getTelemetryCountBucket(quantity),
+        product_type: item.format ?? "physical",
+        status: "success",
+        surface: "cart",
+      },
+    })
+  }, [])
+
+  const setQuantity = useCallback(
+    (identity: CartItemIdentity, quantity: number) => {
       const curr = readSnapshot()
-      writeState({
-        items: addCartItem(curr.items, sanitizeCartItemImage(item), quantity),
-      })
-      recordBrowserTelemetryEvent({
-        app: "market",
-        eventName: "cart_add",
-        properties: {
-          action: "add",
-          count_bucket: getTelemetryCountBucket(quantity),
-          product_type: item.format ?? "physical",
-          status: "success",
-          surface: "cart",
-        },
-      })
+      writeState({ items: setCartItemQuantity(curr.items, identity, quantity) })
     },
     []
   )
 
-  const setQuantity = useCallback((productId: string, quantity: number) => {
+  const removeItem = useCallback((identity: CartItemIdentity) => {
     const curr = readSnapshot()
-    writeState({ items: setCartItemQuantity(curr.items, productId, quantity) })
-  }, [])
-
-  const removeItem = useCallback((productId: string) => {
-    const curr = readSnapshot()
-    const removedItem = curr.items.find((item) => item.productId === productId)
-    writeState({ items: removeCartItem(curr.items, productId) })
+    const removedItem = selectCartItem(curr.items, identity)
+    writeState({ items: removeCartItem(curr.items, identity) })
     if (removedItem) {
       recordBrowserTelemetryEvent({
         app: "market",
