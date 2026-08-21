@@ -17,6 +17,7 @@ import {
   EVENT_KINDS,
   SHIPPING_COUNTRIES,
   appendConduitClientTag,
+  countZapContentCodePoints,
   config,
   createOrderLifecycle,
   fetchLnurlPayMetadata,
@@ -35,6 +36,7 @@ import {
   recordBrowserTelemetryEvent,
   resolveWalletPaymentInstance,
   validateAddressConsistency,
+  ZAP_NOTE_MAX_CODE_POINTS,
   useAuth,
   useProfile,
   type AddressValidityResult,
@@ -149,12 +151,15 @@ import {
 import {
   buildCheckoutPricingIntent,
   buildDefaultZapContent,
+  buildZapRequestContent,
   getCheckoutPublicZapSigner,
+  getCheckoutZapTargetAddress,
   getLnurlReadyForCheckoutPayment,
   getCheckoutShippingCost,
   getCheckoutZapVisibility,
   isCheckoutPublicZapMode,
   isPublicZapContentEditable,
+  truncatePublicZapNoteDraft,
   type CheckoutZapMode,
 } from "../lib/checkout-payment"
 import { isAnonZapSignerConfigured } from "../lib/anon-zap-signer"
@@ -1190,6 +1195,25 @@ function CheckoutPage() {
     selectedZapMode,
     publicZapPolicy.effectiveZapMessagePolicy
   )
+  const zapTargetCandidateAddress = useMemo(
+    () =>
+      getCheckoutZapTargetAddress({
+        items: checkoutItems,
+        mode: selectedZapMode,
+        policy: publicZapPolicy.effectiveZapMessagePolicy,
+        contentEdited: zapContentEdited,
+        content: zapContent,
+      }),
+    [
+      checkoutItems,
+      publicZapPolicy.effectiveZapMessagePolicy,
+      selectedZapMode,
+      zapContent,
+      zapContentEdited,
+    ]
+  )
+  const zapNoteMaxCodePoints = ZAP_NOTE_MAX_CODE_POINTS
+  const zapNoteCodePointCount = countZapContentCodePoints(zapContent)
   const shopperZapContentEditable =
     publicZapPolicy.effectiveZapMessagePolicy === "custom"
   const publicZapModeDescription = publicZapPolicyMessage
@@ -2215,8 +2239,18 @@ function CheckoutPage() {
       assertClaimedZapAuthorization(zapAuthorization, pricingIntent.totalMsats)
       const checkoutMode = requestedCheckoutMode
       const checkoutPricing = pricingIntent
-      const effectiveZapContent =
-        checkoutMode === "private_checkout" ? "" : zapContent
+      const effectiveZapTargetAddress = getCheckoutZapTargetAddress({
+        items: checkoutPricing.items,
+        mode: checkoutMode,
+        policy: publicZapPolicy.effectiveZapMessagePolicy,
+        contentEdited: zapContentEdited,
+        content: zapContent,
+      })
+      const effectiveZapContent = buildZapRequestContent(
+        getCheckoutZapVisibility(checkoutMode),
+        zapContent,
+        effectiveZapTargetAddress
+      )
       const requiresPublicZap = isCheckoutPublicZapMode(checkoutMode)
       const currentLnurlMetadata = await getFreshLnurlMetadata(merchantLud16)
       if (
@@ -2376,6 +2410,7 @@ function CheckoutPage() {
             }
           : undefined,
         zapContent: effectiveZapContent,
+        zapTargetAddress: effectiveZapTargetAddress,
         // The merchant receives guest fulfillment/contact data inside the
         // encrypted order. Do not retain another plaintext copy in IndexedDB.
         shippingAddress: guestIdentity
@@ -2420,6 +2455,7 @@ function CheckoutPage() {
         merchantLud16,
         zapMode: checkoutMode,
         zapContent: effectiveZapContent,
+        zapTargetAddress: effectiveZapTargetAddress,
         totalSats: checkoutPricing.totalSats,
         totalMsats: checkoutPricing.totalMsats,
         items: checkoutPricing.items.map((item) => ({
@@ -3606,25 +3642,65 @@ function CheckoutPage() {
                         {zapContentEditable ? (
                           <>
                             <Label htmlFor="zap-content">
-                              Public zap comment
+                              Public zap note (optional)
                             </Label>
                             <Textarea
                               id="zap-content"
                               value={zapContent}
                               onChange={(e) => {
-                                setZapContent(e.target.value)
+                                setZapContent(
+                                  truncatePublicZapNoteDraft(
+                                    e.target.value,
+                                    zapNoteMaxCodePoints
+                                  )
+                                )
                                 setZapContentEdited(true)
                               }}
-                              rows={1}
-                              maxLength={280}
-                              className="min-h-[2.75rem] rounded-xl bg-[var(--surface)] py-2.5 focus-visible:border-primary-500 focus-visible:ring-primary-500/30"
+                              rows={3}
+                              aria-describedby="zap-content-help zap-content-count"
+                              className="min-h-24 rounded-xl bg-[var(--surface)] py-2.5 text-base focus-visible:border-primary-500 focus-visible:ring-primary-500/30 sm:text-sm"
                             />
-                            <p className="text-xs leading-6 text-[var(--text-muted)]">
-                              Public zap receipts can expose this comment.
-                              Shipping address, contact details, private notes,
-                              wallet data, payment evidence, and order IDs are
-                              never added here.
+                            <div
+                              id="zap-content-help"
+                              className="space-y-1 text-xs leading-5 text-[var(--text-muted)]"
+                            >
+                              <p>
+                                Public zap receipts can expose this comment.
+                                Shipping address, contact details, private
+                                notes, wallet data, payment evidence, and order
+                                IDs are never added here.
+                              </p>
+                              {zapTargetCandidateAddress ? (
+                                <p>
+                                  A non-empty custom note also adds a public
+                                  link to this product if payment completes.
+                                </p>
+                              ) : checkoutItems.length > 1 ? (
+                                <p>
+                                  Multi-product checkout notes do not identify
+                                  products in the public receipt.
+                                </p>
+                              ) : null}
+                            </div>
+                            <p
+                              id="zap-content-count"
+                              className="text-right text-xs tabular-nums text-[var(--text-muted)]"
+                            >
+                              {zapNoteCodePointCount}/{zapNoteMaxCodePoints}
+                              {zapTargetCandidateAddress
+                                ? " note characters; product link reserved"
+                                : " characters"}
                             </p>
+                            <span
+                              className="sr-only"
+                              role="status"
+                              aria-live="polite"
+                              aria-atomic="true"
+                            >
+                              {zapNoteCodePointCount >= zapNoteMaxCodePoints
+                                ? `Public zap note limit reached: ${zapNoteMaxCodePoints} characters.`
+                                : ""}
+                            </span>
                           </>
                         ) : (
                           <>

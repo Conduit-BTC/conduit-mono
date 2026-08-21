@@ -30,6 +30,7 @@ import {
   buildZapRequestContent,
   CHECKOUT_QUOTE_MAX_AGE_MS,
   getCheckoutPublicZapSigner,
+  getCheckoutZapTargetAddress,
   getCheckoutZapVisibility,
   getLnurlReadyForCheckoutPayment,
   getCheckoutShippingCost,
@@ -44,6 +45,7 @@ import {
   isPublicZapContentEditable,
   isCheckoutPublicZapMode,
   parseRelayFailureMessage,
+  truncatePublicZapNoteDraft,
   type PaymentTrackerInput,
 } from "../apps/market/src/lib/checkout-payment"
 import {
@@ -59,6 +61,10 @@ import {
   OMF_ZAPOUT_MARKER_TAG,
 } from "../packages/core/src/protocol/lightning"
 import { parseNwcUri } from "../packages/core/src/protocol/nwc"
+import {
+  buildZapRequestContent as buildProtocolZapRequestContent,
+  getProductZapNaddr,
+} from "../packages/core/src/protocol/zap-content"
 import {
   getShippingDestinationEligibility,
   parseShippingOptionEvent,
@@ -1672,11 +1678,71 @@ describe("checkout payment helpers", () => {
     expect(isPublicZapContentEditable("private_checkout", "custom")).toBe(false)
   })
 
+  it("targets only an explicitly edited shopper zap for one unique product", () => {
+    const productAddress = `30402:${FAKE_PUBKEY}:shirt`
+    const base = {
+      items: [{ productId: productAddress }],
+      mode: "public_zap_as_shopper" as const,
+      policy: "custom" as const,
+      contentEdited: true,
+      content: "sick shirt 🔥",
+    }
+
+    expect(getCheckoutZapTargetAddress(base)).toBe(productAddress)
+    expect(
+      getCheckoutZapTargetAddress({ ...base, contentEdited: false })
+    ).toBeUndefined()
+    expect(
+      getCheckoutZapTargetAddress({ ...base, content: " \r\n\t " })
+    ).toBeUndefined()
+    expect(
+      getCheckoutZapTargetAddress({
+        ...base,
+        mode: "anonymous_public_zap",
+      })
+    ).toBeUndefined()
+    expect(
+      getCheckoutZapTargetAddress({ ...base, policy: "generic_only" })
+    ).toBeUndefined()
+    expect(
+      getCheckoutZapTargetAddress({
+        ...base,
+        items: [
+          { productId: productAddress },
+          { productId: `30402:${FAKE_PUBKEY}:hat` },
+        ],
+      })
+    ).toBeUndefined()
+    expect(
+      getCheckoutZapTargetAddress({
+        ...base,
+        items: [{ productId: "f".repeat(64) }],
+      })
+    ).toBeUndefined()
+    expect(
+      getCheckoutZapTargetAddress({
+        ...base,
+        items: [
+          {
+            productId: `30402:${FAKE_PUBKEY}:${"a".repeat(256)}`,
+          },
+        ],
+      })
+    ).toBeUndefined()
+  })
+
   it("uses empty zap content for private checkout", () => {
     expect(buildZapRequestContent("private_checkout", "hello public")).toBe("")
     expect(buildZapRequestContent("public_zap", "hello\npublic")).toBe(
-      "hello public"
+      "hello\npublic"
     )
+  })
+
+  it("bounds editable notes by code point without eating typing whitespace", () => {
+    expect(truncatePublicZapNoteDraft("sick \r\nshirt\t🔥", 13)).toBe(
+      "sick \nshirt 🔥"
+    )
+    expect(truncatePublicZapNoteDraft("🔥🔥a", 2)).toBe("🔥🔥")
   })
 
   it("requests a private LNURL invoice without signing a zap request or waiting for receipts", async () => {
@@ -1772,7 +1838,7 @@ describe("checkout payment helpers", () => {
     expect(signZapRequest.mock.calls[0]?.[0]).toMatchObject({
       kind: 9734,
       createdAt: 123,
-      content: "hello public",
+      content: "hello\npublic",
       tags: [
         ["p", FAKE_PUBKEY],
         ["amount", "50000"],
@@ -1793,6 +1859,83 @@ describe("checkout payment helpers", () => {
       "lnurl1test"
     )
     expect(fetchLnurl).toHaveBeenCalledTimes(0)
+  })
+
+  it("signs an interoperable product-targeted note without leaking checkout data", async () => {
+    const productAddress = `30402:${FAKE_PUBKEY}:sick-shirt`
+    const productNaddr = getProductZapNaddr(productAddress)
+    const zapContent = buildProtocolZapRequestContent({
+      note: "sick shirt 🔥",
+      productAddress,
+    })
+    const fetchZap = mock(async () => ({ invoice: "lnbc1targeted" }))
+    const signZapRequest = mock(async (draft) => ({
+      id: "targeted-zap-request",
+      rawEvent: {
+        kind: draft.kind,
+        content: draft.content,
+        tags: draft.tags,
+      },
+    }))
+
+    await requestCheckoutLnurlInvoice(
+      {
+        visibility: "public_zap",
+        lnurlCallback: "https://wallet.example/cb",
+        amountMsats: 50_000,
+        lnurl: "lnurl1test",
+        recipientPubkey: FAKE_PUBKEY,
+        zapContent,
+        zapTargetAddress: productAddress,
+        explicitRelayUrls: ["wss://relay.example"],
+        zapRelayUrls: [],
+        nowSeconds: 123,
+      },
+      {
+        fetchLnurlInvoice: mock(async () => ({ invoice: "unused" })) as never,
+        fetchZapInvoice: fetchZap as never,
+        signZapRequest: signZapRequest as never,
+      }
+    )
+
+    const draft = signZapRequest.mock.calls[0]?.[0]
+    expect(draft?.content).toBe(`sick shirt 🔥\n\nnostr:${productNaddr}`)
+    expect(draft?.tags).toContainEqual(["a", productAddress])
+    expect(draft?.tags).toContainEqual(["k", "30402"])
+    expect(draft?.content).not.toContain("123 Main St")
+    expect(draft?.content).not.toContain("alice@example.com")
+    expect(draft?.content).not.toContain("order-")
+    expect(draft?.content).not.toContain("lnbc")
+  })
+
+  it("rejects a product target owned by a different Lightning recipient before signing", async () => {
+    const signZapRequest = mock(async () => {
+      throw new Error("should not sign")
+    })
+    const fetchZap = mock(async () => ({ invoice: "unused" }))
+
+    await expect(
+      requestCheckoutLnurlInvoice(
+        {
+          visibility: "public_zap",
+          lnurlCallback: "https://wallet.example/cb",
+          amountMsats: 50_000,
+          lnurl: "lnurl1test",
+          recipientPubkey: FAKE_PUBKEY,
+          zapContent: "wrong target",
+          zapTargetAddress: `30402:${"c".repeat(64)}:shirt`,
+          explicitRelayUrls: [],
+          zapRelayUrls: [],
+        },
+        {
+          fetchLnurlInvoice: mock(async () => ({ invoice: "unused" })) as never,
+          fetchZapInvoice: fetchZap as never,
+          signZapRequest: signZapRequest as never,
+        }
+      )
+    ).rejects.toThrow("does not belong to the payment recipient")
+    expect(signZapRequest).toHaveBeenCalledTimes(0)
+    expect(fetchZap).toHaveBeenCalledTimes(0)
   })
 
   it("preserves invoice, amount, and recovery state for manual invoice fallback", () => {

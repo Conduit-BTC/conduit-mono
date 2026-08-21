@@ -125,6 +125,7 @@ export type OrderPaymentClaimInput = {
   merchantLightningAddress: string | null
   checkoutMode: OrderCheckoutMode
   zapContent: string
+  zapTargetAddress?: string
   totalSats: number
   totalMsats: number
   items: Array<{ productAddress: string; quantity: number }>
@@ -178,6 +179,7 @@ function paymentClaimMatchesLifecycle(
       input.merchantLightningAddress &&
     checkoutModesMatchForPayment(lifecycle, input.checkoutMode) &&
     (lifecycle.zapContent ?? "") === input.zapContent &&
+    (lifecycle.zapTargetAddress ?? null) === (input.zapTargetAddress ?? null) &&
     lifecycle.totalSats === input.totalSats &&
     lifecycle.totalMsats === input.totalMsats &&
     paymentTargetsEqual(lifecycle.paymentTarget, input.paymentTarget) &&
@@ -343,6 +345,7 @@ export async function transitionOrderPrivateFallback(
       publicZapSigner: undefined,
       publicZapFallback: true,
       zapContent: "",
+      zapTargetAddress: undefined,
       invoiceStatus: "not_requested",
       paymentStatus: "not_started",
       walletPaymentAttemptId: undefined,

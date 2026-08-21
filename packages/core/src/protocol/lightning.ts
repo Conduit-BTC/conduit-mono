@@ -18,6 +18,11 @@ import {
 } from "./signed-event"
 import { EVENT_KINDS } from "./kinds"
 import { fetchEventsFanout, getEventSourceRelayUrls } from "./ndk"
+import {
+  parseZapRequestContent,
+  truncateZapNoteInput,
+  ZAP_NOTE_MAX_CODE_POINTS,
+} from "./zap-content"
 
 // ─── LNURL / Zap helpers ──────────────────────────────────────────────────────
 
@@ -276,7 +281,9 @@ export interface OmfZapoutReceipt {
   senderPubkey: string | null
   recipientPubkey: string | null
   amountMsats: number | null
+  note: string | null
   comment: string | null
+  productNaddr: string | null
   sourceRelayUrls: string[]
 }
 
@@ -1076,28 +1083,78 @@ export function parseZapReceiptDescription(
   }
 }
 
-function getStringField(
-  record: Record<string, unknown>,
-  name: string
-): string | null {
-  const value = record[name]
-  return typeof value === "string" && value.trim() ? value : null
-}
-
 function parseMsatsTag(value: string | null): number | null {
   if (!value || !/^(0|[1-9]\d*)$/.test(value)) return null
   const parsed = Number(value)
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null
 }
 
-function getPublicZapComment(
-  zapRequest: Record<string, unknown>
-): string | null {
-  const content = getStringField(zapRequest, "content")
-  if (!content) return null
-  const normalized = content.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ")
+function getPublicZapComment(note: string): string | null {
+  const normalized = note.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ")
   const trimmed = normalized.trim()
-  return trimmed ? trimmed.slice(0, 280) : null
+  return trimmed
+    ? truncateZapNoteInput(trimmed, ZAP_NOTE_MAX_CODE_POINTS)
+    : null
+}
+
+function normalizeZapAddressCoordinate(value: string): string | null {
+  const kindSeparator = value.indexOf(":")
+  const pubkeySeparator = value.indexOf(":", kindSeparator + 1)
+  if (kindSeparator < 1 || pubkeySeparator < 0) return null
+
+  const kindText = value.slice(0, kindSeparator)
+  const pubkey = value.slice(kindSeparator + 1, pubkeySeparator)
+  const identifier = value.slice(pubkeySeparator + 1)
+  if (!/^(0|[1-9]\d*)$/.test(kindText) || !/^[0-9a-f]{64}$/i.test(pubkey)) {
+    return null
+  }
+  const kind = Number(kindText)
+  if (!Number.isSafeInteger(kind) || kind < 0 || kind > 0xffffffff) {
+    return null
+  }
+
+  return `${kind}:${pubkey.toLowerCase()}:${identifier}`
+}
+
+function getZapAddressTagAgreement(
+  requestTags: readonly string[][],
+  receiptTags: readonly string[][]
+): { address: string | null } | null {
+  const requestAddressTags = requestTags.filter((tag) => tag[0] === "a")
+  const receiptAddressTags = receiptTags.filter((tag) => tag[0] === "a")
+  if (
+    requestAddressTags.length > 1 ||
+    receiptAddressTags.length > 1 ||
+    requestAddressTags.length !== receiptAddressTags.length
+  ) {
+    return null
+  }
+  if (requestAddressTags.length === 0) return { address: null }
+
+  const requestAddress = normalizeZapAddressCoordinate(
+    requestAddressTags[0]?.[1] ?? ""
+  )
+  const receiptAddress = normalizeZapAddressCoordinate(
+    receiptAddressTags[0]?.[1] ?? ""
+  )
+  if (!requestAddress || requestAddress !== receiptAddress) return null
+
+  const requestKindTags = requestTags.filter((tag) => tag[0] === "k")
+  const addressKind = requestAddress.slice(0, requestAddress.indexOf(":"))
+  if (
+    requestKindTags.length > 1 ||
+    (requestKindTags.length === 1 && requestKindTags[0]?.[1] !== addressKind)
+  ) {
+    return null
+  }
+
+  return { address: requestAddress }
+}
+
+function getProductZapTargetAuthor(address: string | null): string | null {
+  return address?.startsWith(`${EVENT_KINDS.PRODUCT}:`)
+    ? normalizePubkey(address.split(":", 3)[1])
+    : null
 }
 
 export function parseOmfZapoutReceipt(
@@ -1141,9 +1198,15 @@ export function parseOmfZapoutReceipt(
   const requestTags = signedRequest.tags
   if (!hasOmfZapoutMarker(requestTags)) return null
 
+  const addressAgreement = getZapAddressTagAgreement(requestTags, receiptTags)
+  if (!addressAgreement) return null
+
   const senderPubkey = normalizePubkey(signedRequest.pubkey)
   const requestRecipientPubkey = normalizePubkey(
     getSingleTagValue(requestTags, "p")
+  )
+  const productTargetAuthor = getProductZapTargetAuthor(
+    addressAgreement.address
   )
   const receiptRecipientPubkey = normalizePubkey(
     getSingleTagValue(receiptTags, "p")
@@ -1167,6 +1230,8 @@ export function parseOmfZapoutReceipt(
     !receiptPubkey ||
     !senderPubkey ||
     !requestRecipientPubkey ||
+    (productTargetAuthor !== null &&
+      productTargetAuthor !== requestRecipientPubkey) ||
     !receiptRecipientPubkey ||
     requestRecipientPubkey !== receiptRecipientPubkey ||
     receiptSenderTags.length > 1 ||
@@ -1190,6 +1255,13 @@ export function parseOmfZapoutReceipt(
     return null
   }
 
+  const parsedContent = parseZapRequestContent(
+    signedRequest.content,
+    addressAgreement.address
+  )
+  const note =
+    truncateZapNoteInput(parsedContent.note, ZAP_NOTE_MAX_CODE_POINTS) || null
+
   return {
     id: signedReceipt.id,
     createdAt: signedReceipt.created_at,
@@ -1199,7 +1271,9 @@ export function parseOmfZapoutReceipt(
     senderPubkey,
     recipientPubkey: requestRecipientPubkey,
     amountMsats: requestAmountMsats,
-    comment: getPublicZapComment(signedRequest),
+    note,
+    comment: note ? getPublicZapComment(note) : null,
+    productNaddr: parsedContent.productNaddr,
     sourceRelayUrls: getEventSourceRelayUrls(event as NDKEvent),
   }
 }
@@ -1403,11 +1477,23 @@ export function validateZapReceiptEvent({
 
   const requestTags = signedRequest.tags
   const receiptTags = signedReceipt.tags
+  const addressAgreement = getZapAddressTagAgreement(requestTags, receiptTags)
+  if (!addressAgreement) return false
+  const normalizedRecipientPubkey = normalizePubkey(recipientPubkey)
+  const productTargetAuthor = getProductZapTargetAuthor(
+    addressAgreement.address
+  )
+  if (
+    productTargetAuthor !== null &&
+    productTargetAuthor !== normalizedRecipientPubkey
+  ) {
+    return false
+  }
   if (
     normalizePubkey(getSingleTagValue(requestTags, "p")) !==
-      normalizePubkey(recipientPubkey) ||
+      normalizedRecipientPubkey ||
     normalizePubkey(getSingleTagValue(receiptTags, "p")) !==
-      normalizePubkey(recipientPubkey)
+      normalizedRecipientPubkey
   ) {
     return false
   }

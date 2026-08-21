@@ -63,10 +63,12 @@ export const bannedPrivacyPackages = [
 export const sensitiveTelemetryPropertyNames = new Set([
   "address",
   "content",
+  "comment",
   "fingerprint",
   "invoice",
   "lnurl",
   "message",
+  "note",
   "npub",
   "nwcUri",
   "nwc_uri",
@@ -75,6 +77,10 @@ export const sensitiveTelemetryPropertyNames = new Set([
   "paymentHash",
   "preimage",
   "productTitle",
+  "publicNote",
+  "publicZapNote",
+  "public_note",
+  "public_zap_note",
   "pubkey",
   "secret",
   "shippingAddress",
@@ -82,6 +88,12 @@ export const sensitiveTelemetryPropertyNames = new Set([
   "title",
   "userAgent",
   "wallet",
+  "zapContent",
+  "zapRequestContent",
+  "zapTargetAddress",
+  "zap_content",
+  "zap_request_content",
+  "zap_target_address",
 ])
 
 export type TelemetryEventMarker = {

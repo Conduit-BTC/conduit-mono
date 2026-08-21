@@ -456,6 +456,7 @@ function ZapoutReceiptCard({
   const relayLabel = zapout.sourceRelayUrls[0]
     ? relayHost(zapout.sourceRelayUrls[0])
     : "Relay unknown"
+  const publicNote = zapout.note ?? zapout.comment
 
   return (
     <article className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 shadow-[var(--shadow-glass-inset)] sm:p-5">
@@ -470,10 +471,29 @@ function ZapoutReceiptCard({
           <div className="mt-3 text-2xl font-semibold text-[var(--text-primary)]">
             {formatZapoutAmount(zapout.amountMsats, formatSats)}
           </div>
-          {zapout.comment ? (
-            <p className="mt-2 max-w-2xl break-words text-sm leading-6 text-[var(--text-secondary)]">
-              {zapout.comment}
-            </p>
+          {publicNote ? (
+            <div className="mt-3 max-w-2xl rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-3">
+              <div className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
+                Zap note
+              </div>
+              <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-[var(--text-secondary)]">
+                {publicNote}
+              </p>
+            </div>
+          ) : null}
+          {zapout.productNaddr ? (
+            <Button
+              asChild
+              variant="outline"
+              className="mt-3 h-10 w-full px-4 text-sm sm:w-auto"
+            >
+              <Link
+                to="/products/$productId"
+                params={{ productId: zapout.productNaddr }}
+              >
+                View zapped product
+              </Link>
+            </Button>
           ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-2 text-xs text-[var(--text-muted)]">

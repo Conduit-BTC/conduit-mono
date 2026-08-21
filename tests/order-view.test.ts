@@ -1,5 +1,9 @@
 import { describe, expect, it } from "bun:test"
-import type { KnownOrderStatus, OrderLifecycle } from "@conduit/core"
+import {
+  buildZapRequestContent,
+  type KnownOrderStatus,
+  type OrderLifecycle,
+} from "@conduit/core"
 import {
   buildOrderTimeline,
   buildOrderViewModel,
@@ -137,6 +141,125 @@ describe("buildOrderViewModel", () => {
     expect(anon.publicZapSigner).toBe("anon")
     expect(getOrderPaymentMethodLabel(anon)).toBe("Anonymous public zap")
     expect(getOrderPaymentMethodLabel(shopper)).toBe("Public zap as shopper")
+  })
+
+  it("preserves the exact shopper zap content and derives its public product reference", () => {
+    const merchantPubkey = "ab".repeat(32)
+    const productAddress = `30402:${merchantPubkey}:sick-shirt`
+    const zapContent = buildZapRequestContent({
+      note: "sick shirt 🔥",
+      productAddress,
+    })
+    const vm = vmFromLifecycle({
+      merchantPubkey,
+      checkoutMode: "public_zap_as_shopper",
+      publicZapSigner: "shopper",
+      zapContent,
+      zapTargetAddress: productAddress,
+    })
+
+    expect(vm.publicZapNote).toBe("sick shirt 🔥")
+    expect(vm.publicZapProductNaddr).toMatch(/^naddr1/)
+    expect(zapContent).toBe(
+      `sick shirt 🔥\n\nnostr:${vm.publicZapProductNaddr}`
+    )
+  })
+
+  it("preserves an empty shopper zap message without inventing a note or product", () => {
+    const vm = vmFromLifecycle({
+      checkoutMode: "public_zap_as_shopper",
+      publicZapSigner: "shopper",
+      zapContent: "",
+      zapTargetAddress: undefined,
+    })
+
+    expect(vm.publicZapNote).toBeNull()
+    expect(vm.publicZapProductNaddr).toBeNull()
+  })
+
+  it("preserves a validated product reference when the shopper note is empty", () => {
+    const merchantPubkey = "ab".repeat(32)
+    const productAddress = `30402:${merchantPubkey}:empty-note-product`
+    const zapContent = buildZapRequestContent({
+      note: "",
+      productAddress,
+    })
+    const vm = vmFromLifecycle({
+      merchantPubkey,
+      checkoutMode: "public_zap_as_shopper",
+      publicZapSigner: "shopper",
+      zapContent,
+      zapTargetAddress: productAddress,
+    })
+
+    expect(vm.publicZapNote).toBeNull()
+    expect(vm.publicZapProductNaddr).toMatch(/^naddr1/)
+  })
+
+  it("does not project private order notes into public zap presentation", () => {
+    const privateOrderNote = "Leave this order at my side door"
+    const vm = vmFromLifecycle({
+      checkoutMode: "anonymous_public_zap",
+      publicZapSigner: "anon",
+      zapContent: "Zapped out 1 item at https://shop.conduit.market/",
+      zapTargetAddress: `30402:${"ab".repeat(32)}:private-order-test`,
+      contactNote: privateOrderNote,
+    })
+
+    expect(vm.contactNote).toBe(privateOrderNote)
+    expect(vm.publicZapNote).toBeNull()
+    expect(vm.publicZapProductNaddr).toBeNull()
+  })
+
+  it("does not link an invalid lifecycle product coordinate", () => {
+    const vm = vmFromLifecycle({
+      checkoutMode: "public_zap_as_shopper",
+      publicZapSigner: "shopper",
+      zapContent: "sick shirt 🔥",
+      zapTargetAddress: "30402:not-a-pubkey:sick-shirt",
+    })
+
+    expect(vm.publicZapNote).toBe("sick shirt 🔥")
+    expect(vm.publicZapProductNaddr).toBeNull()
+  })
+
+  it("preserves full content but rejects a product reference that disagrees with the lifecycle target", () => {
+    const merchantPubkey = "ab".repeat(32)
+    const signedProductAddress = `30402:${merchantPubkey}:signed-product`
+    const lifecycleProductAddress = `30402:${merchantPubkey}:different-product`
+    const zapContent = buildZapRequestContent({
+      note: "sick shirt 🔥",
+      productAddress: signedProductAddress,
+    })
+    const vm = vmFromLifecycle({
+      merchantPubkey,
+      checkoutMode: "public_zap_as_shopper",
+      publicZapSigner: "shopper",
+      zapContent,
+      zapTargetAddress: lifecycleProductAddress,
+    })
+
+    expect(vm.publicZapNote).toBe(zapContent)
+    expect(vm.publicZapProductNaddr).toBeNull()
+  })
+
+  it("does not promote a user-authored naddr when the lifecycle has no product target", () => {
+    const merchantPubkey = "ab".repeat(32)
+    const productAddress = `30402:${merchantPubkey}:user-authored-reference`
+    const zapContent = buildZapRequestContent({
+      note: "sick shirt 🔥",
+      productAddress,
+    })
+    const vm = vmFromLifecycle({
+      merchantPubkey,
+      checkoutMode: "public_zap_as_shopper",
+      publicZapSigner: "shopper",
+      zapContent,
+      zapTargetAddress: undefined,
+    })
+
+    expect(vm.publicZapNote).toBe(zapContent)
+    expect(vm.publicZapProductNaddr).toBeNull()
   })
 
   it("surfaces an anonymous public-note fallback as a private wallet flow", () => {

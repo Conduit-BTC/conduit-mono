@@ -59,13 +59,32 @@ describe("telemetry policy", () => {
 
   it("rejects sensitive source telemetry payload fields", () => {
     const errors = validateTelemetrySourceUsage({
-      source: 'trackTelemetry("checkout_result", { app: "market", pubkey })',
+      source:
+        'trackTelemetry("checkout_result", { app: "market", pubkey, note, zapContent, publicZapNote, publicNote, comment, zapTargetAddress })',
       relativePath: "apps/market/src/analytics.ts",
       allowedEventNames: new Set(["checkout_result"]),
     })
 
     expect(errors).toContain(
       "apps/market/src/analytics.ts includes sensitive telemetry property pubkey"
+    )
+    expect(errors).toContain(
+      "apps/market/src/analytics.ts includes sensitive telemetry property note"
+    )
+    expect(errors).toContain(
+      "apps/market/src/analytics.ts includes sensitive telemetry property zapContent"
+    )
+    expect(errors).toContain(
+      "apps/market/src/analytics.ts includes sensitive telemetry property publicZapNote"
+    )
+    expect(errors).toContain(
+      "apps/market/src/analytics.ts includes sensitive telemetry property publicNote"
+    )
+    expect(errors).toContain(
+      "apps/market/src/analytics.ts includes sensitive telemetry property comment"
+    )
+    expect(errors).toContain(
+      "apps/market/src/analytics.ts includes sensitive telemetry property zapTargetAddress"
     )
   })
 

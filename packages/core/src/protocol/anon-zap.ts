@@ -3,6 +3,10 @@ import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js"
 
 import { EVENT_KINDS } from "./kinds"
+import {
+  countZapContentCodePoints,
+  ZAP_NOTE_MAX_CODE_POINTS,
+} from "./zap-content"
 
 export type AnonZapRequestDraft = {
   kind: number
@@ -288,7 +292,10 @@ export function validateAnonZapRequestDraft(
   if (!Number.isSafeInteger(draft.createdAt) || draft.createdAt <= 0) {
     return { ok: false, reason: "Zap request timestamp is invalid." }
   }
-  if (typeof draft.content !== "string" || draft.content.length > 280) {
+  if (
+    typeof draft.content !== "string" ||
+    countZapContentCodePoints(draft.content) > ZAP_NOTE_MAX_CODE_POINTS
+  ) {
     return { ok: false, reason: "Public zap comment is too long." }
   }
   if (!Array.isArray(draft.tags)) {

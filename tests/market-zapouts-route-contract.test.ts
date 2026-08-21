@@ -36,6 +36,11 @@ describe("Market zapouts route contract", () => {
     expect(route).toContain("fetchOmfZapoutsFromRelay")
     expect(route).toContain("Feed coverage is partial")
     expect(route).toContain("refetchOnWindowFocus: true")
+    expect(route).toContain("zapout.note ?? zapout.comment")
+    expect(route).toContain("whitespace-pre-wrap")
+    expect(route).toContain("zapout.productNaddr")
+    expect(route).toContain('to="/products/$productId"')
+    expect(route).toContain("View zapped product")
     expect(route).not.toContain("requireAuth")
   })
 

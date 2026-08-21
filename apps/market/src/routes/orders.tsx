@@ -589,6 +589,108 @@ function OrderTimeline({
   )
 }
 
+function PublicZapNoteCard({ vm }: { vm: OrderViewModel }) {
+  const hasLocalZapRecord =
+    vm.publicZapSigner === "shopper" &&
+    (vm.publicZapNote !== null || vm.publicZapProductNaddr !== null)
+  if (!hasLocalZapRecord) return null
+
+  const receiptObserved = vm.zapReceiptStatus === "observed"
+  const receiptNotObserved =
+    vm.zapReceiptStatus === "receipt_not_observed" ||
+    vm.zapReceiptStatus === "timed_out" ||
+    vm.paymentStatus === "ambiguous"
+  const stoppedBeforeReceipt =
+    vm.paymentStatus === "failed" || vm.publicZapFallback
+  const publicDetail = vm.publicZapNote ? "The note" : "The product link"
+
+  const state = receiptObserved
+    ? {
+        label: "Public receipt observed",
+        variant: "success" as const,
+        description: `${publicDetail} is included in the public zap receipt observed for this payment.`,
+      }
+    : stoppedBeforeReceipt
+      ? {
+          label: "Saved locally",
+          variant: "neutral" as const,
+          description: `The public zap did not complete. ${publicDetail} remains in local order history and was not published in a receipt observed by Conduit.`,
+        }
+      : receiptNotObserved
+        ? {
+            label: "Receipt not observed",
+            variant: "warning" as const,
+            description: `Conduit has not observed a public receipt. ${publicDetail} is from local order history and is not confirmed as published.`,
+          }
+        : {
+            label: "Waiting for receipt",
+            variant: "info" as const,
+            description:
+              vm.paymentStatus === "paid"
+                ? `Payment was sent. ${publicDetail} becomes public only when a matching zap receipt is published.`
+                : `${publicDetail} is saved with your order. It becomes public only if payment succeeds and a zap receipt is published.`,
+          }
+
+  return (
+    <section
+      aria-labelledby="public-zap-note-title"
+      className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5"
+    >
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <h2
+            id="public-zap-note-title"
+            className="flex items-center gap-2 text-lg font-semibold text-[var(--text-primary)]"
+          >
+            <ReceiptText className="h-4 w-4 shrink-0" aria-hidden="true" />
+            Public zap note
+          </h2>
+          <p className="mt-1 max-w-2xl text-sm leading-6 text-[var(--text-secondary)]">
+            {state.description}
+          </p>
+        </div>
+        <StatusPill
+          variant={state.variant}
+          className="shrink-0 self-start"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          {state.label}
+        </StatusPill>
+      </div>
+
+      {vm.publicZapNote ? (
+        <blockquote className="mt-4 whitespace-pre-wrap break-words rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm leading-6 text-[var(--text-primary)]">
+          <span className="sr-only">Public note: </span>
+          {vm.publicZapNote}
+        </blockquote>
+      ) : (
+        <p className="mt-4 text-sm text-[var(--text-muted)]">
+          No public message was added.
+        </p>
+      )}
+
+      {vm.publicZapProductNaddr ? (
+        <div className="mt-4">
+          <Button
+            asChild
+            variant="outline"
+            className="h-10 w-full px-4 text-sm sm:w-auto"
+          >
+            <Link
+              to="/products/$productId"
+              params={{ productId: vm.publicZapProductNaddr }}
+            >
+              View zapped product
+            </Link>
+          </Button>
+        </div>
+      ) : null}
+    </section>
+  )
+}
+
 /** External-wallet QR fallback (CND-120): shown when payment is manual_required. */
 function ExternalWalletPanel({
   vm,
@@ -840,6 +942,7 @@ function OrderDetail({
       merchantLud16: lc.merchantLightningAddress ?? null,
       zapMode: getRetryZapMode(lc),
       zapContent: lc.zapContent ?? "",
+      zapTargetAddress: lc.zapTargetAddress,
       totalSats: lc.totalSats,
       totalMsats: lc.totalMsats,
       items: lc.items.map((item) => ({
@@ -930,10 +1033,12 @@ function OrderDetail({
     row.lifecycle?.invoiceStatus === "failed"
   const showAmbiguousPayment = vm.paymentStatus === "ambiguous"
   const showExternalWallet = vm.paymentStatus === "manual_required"
+  const supportsPublicReceiptObservation =
+    vm.publicZapSigner === "anon" || vm.publicZapSigner === "shopper"
   const autoDetectPublicReceipt =
-    vm.publicZapSigner === "anon" && vm.zapReceiptStatus === "waiting"
+    supportsPublicReceiptObservation && vm.zapReceiptStatus === "waiting"
   const publicReceiptNotObserved =
-    vm.publicZapSigner === "anon" &&
+    supportsPublicReceiptObservation &&
     vm.zapReceiptStatus === "receipt_not_observed"
   const showResendProof =
     vm.paymentStatus === "paid" &&
@@ -1304,6 +1409,8 @@ function OrderDetail({
             : undefined
         }
       />
+
+      <PublicZapNoteCard vm={vm} />
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
         <OrderTimeline vm={vm} formatSats={formatSats} />

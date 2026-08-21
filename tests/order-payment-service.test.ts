@@ -10,6 +10,7 @@ import {
   canSubmitExternalPaymentReport,
   getLifecyclePaymentProofAction,
   isOrderPaymentRunning,
+  observeOrderPublicZapReceipt,
   runOrderPayment,
   runOrderPrivateFallback,
   signShopperCheckoutZapRequest,
@@ -17,6 +18,8 @@ import {
   type OrderPaymentContext,
 } from "../apps/market/src/lib/order-payment-service"
 import type { OrderLifecycle } from "../packages/core/src/db"
+import { getNdk } from "../packages/core/src/protocol/ndk"
+import { buildZapRequestContent } from "../packages/core/src/protocol/zap-content"
 import {
   bolt11PlainDescriptionField,
   bytesToBolt11Words,
@@ -115,6 +118,7 @@ function paymentDependencies(
         merchantLightningAddress: input.merchantLightningAddress ?? undefined,
         checkoutMode: input.checkoutMode,
         zapContent: input.zapContent,
+        zapTargetAddress: input.zapTargetAddress,
         totalSats: input.totalSats,
         totalMsats: input.totalMsats,
         walletPaymentAttemptId:
@@ -440,6 +444,305 @@ describe("runOrderPayment", () => {
       expect(state.error).toBe(
         "This order already has an active or completed payment state."
       )
+    }
+  })
+
+  it("preserves the exact product target through shopper signer failure and retry", async () => {
+    const orderId = "shopper-product-zap-signer-retry"
+    const merchantPubkey = "b".repeat(64)
+    const productAddress = `30402:${merchantPubkey}:shirt`
+    const zapContent = buildZapRequestContent({
+      note: "sick shirt \ud83d\udd25",
+      productAddress,
+    })
+    const invoice = privateInvoice()
+    const shopperSigner = NDKPrivateKeySigner.generate()
+    const shopper = await shopperSigner.user()
+    let stored = lifecycle({
+      orderId,
+      buyerPubkey: shopper.pubkey,
+      merchantPubkey,
+      checkoutMode: "public_zap_as_shopper",
+      publicZapSigner: "shopper",
+      zapContent,
+      zapTargetAddress: productAddress,
+      invoice: undefined,
+      invoiceStatus: "not_requested",
+      paymentStatus: "not_started",
+    })
+    const table = db.orderLifecycles as typeof db.orderLifecycles & {
+      get: typeof db.orderLifecycles.get
+      put: typeof db.orderLifecycles.put
+    }
+    const originalGet = table.get
+    const originalPut = table.put
+    const ndk = getNdk()
+    const originalSigner = ndk.signer
+    const claimOrderLifecyclePayment =
+      paymentDependencies().claimOrderLifecyclePayment!
+    const claimedTargets: Array<string | undefined> = []
+    const requestedTargets: Array<string | undefined> = []
+
+    table.get = (async () => stored) as typeof table.get
+    table.put = (async (next: OrderLifecycle) => {
+      stored = next
+      return next.orderId
+    }) as typeof table.put
+    ndk.signer = {
+      user: async () => shopper,
+      sign: async () => {
+        throw new Error("User cancelled signing")
+      },
+    } as never
+
+    const context = basePaymentContext({
+      orderId,
+      buyerPubkey: shopper.pubkey,
+      merchantPubkey,
+      merchantLud16: "merchant@wallet.example",
+      zapMode: "public_zap_as_shopper",
+      zapContent,
+      zapTargetAddress: productAddress,
+    })
+    const dependencies = paymentDependencies({
+      claimOrderLifecyclePayment: async (input) => {
+        claimedTargets.push(input.zapTargetAddress)
+        return claimOrderLifecyclePayment(input)
+      },
+      fetchLnurlPayMetadata: async () => lnurlMetadata(),
+      requestCheckoutLnurlInvoice: async (params, requestDependencies) => {
+        requestedTargets.push(params.zapTargetAddress)
+        const signed = await requestDependencies.signZapRequest({
+          kind: 9734,
+          createdAt: 1_800_000_000,
+          content: params.zapContent,
+          tags: [
+            ["p", merchantPubkey],
+            ["amount", String(params.amountMsats)],
+            ["lnurl", params.lnurl],
+            ["relays", "wss://relay.example"],
+            ["a", productAddress],
+            ["k", "30402"],
+          ],
+        })
+        expect(signed.rawEvent.tags).toContainEqual(["a", productAddress])
+        return {
+          invoice,
+          zapRelayUrls: [],
+          shouldWaitForZapReceipt: false,
+        }
+      },
+      payCheckoutInvoice: async () => ({
+        status: "manual_required",
+        reason: "Open the invoice in a Lightning wallet.",
+      }),
+    })
+
+    try {
+      const failed = await runOrderPayment(context, dependencies)
+
+      expect(failed.error).toBe("User cancelled signing")
+      expect(failed.lifecycle?.paymentStatus).toBe("failed")
+      expect(failed.lifecycle?.zapTargetAddress).toBe(productAddress)
+
+      ndk.signer = shopperSigner
+      const retried = await runOrderPayment(context, dependencies)
+
+      expect(claimedTargets).toEqual([productAddress, productAddress])
+      expect(requestedTargets).toEqual([productAddress, productAddress])
+      expect(retried.error).toBeNull()
+      expect(retried.lifecycle?.paymentStatus).toBe("manual_required")
+      expect(retried.lifecycle?.zapTargetAddress).toBe(productAddress)
+    } finally {
+      ndk.signer = originalSigner
+      table.get = originalGet
+      table.put = originalPut
+    }
+  })
+
+  it("preserves the target through LNURL and invoice failures before retry", async () => {
+    const orderId = "shopper-product-zap-invoice-retry"
+    const merchantPubkey = "d".repeat(64)
+    const productAddress = `30402:${merchantPubkey}:cap`
+    const zapContent = buildZapRequestContent({
+      note: "great cap",
+      productAddress,
+    })
+    const validInvoice = privateInvoice()
+    let stored = lifecycle({
+      orderId,
+      merchantPubkey,
+      checkoutMode: "public_zap_as_shopper",
+      publicZapSigner: "shopper",
+      zapContent,
+      zapTargetAddress: productAddress,
+      invoice: undefined,
+      invoiceStatus: "not_requested",
+      paymentStatus: "not_started",
+    })
+    const table = db.orderLifecycles as typeof db.orderLifecycles & {
+      get: typeof db.orderLifecycles.get
+      put: typeof db.orderLifecycles.put
+    }
+    const originalGet = table.get
+    const originalPut = table.put
+    let metadataAttempts = 0
+    let invoiceAttempts = 0
+    const requestedTargets: Array<string | undefined> = []
+
+    table.get = (async () => stored) as typeof table.get
+    table.put = (async (next: OrderLifecycle) => {
+      stored = next
+      return next.orderId
+    }) as typeof table.put
+
+    const context = basePaymentContext({
+      orderId,
+      merchantPubkey,
+      merchantLud16: "merchant@wallet.example",
+      zapContent,
+      zapTargetAddress: productAddress,
+    })
+    const dependencies = paymentDependencies({
+      fetchLnurlPayMetadata: async () => {
+        metadataAttempts += 1
+        if (metadataAttempts === 1) {
+          throw new Error("LNURL metadata unavailable")
+        }
+        return lnurlMetadata()
+      },
+      requestCheckoutLnurlInvoice: async (params) => {
+        requestedTargets.push(params.zapTargetAddress)
+        invoiceAttempts += 1
+        if (invoiceAttempts === 1) {
+          throw new Error("LNURL callback failed")
+        }
+        return {
+          invoice:
+            invoiceAttempts === 2 ? privateInvoice("lnbc20n") : validInvoice,
+          zapRelayUrls: [],
+          shouldWaitForZapReceipt: false,
+        }
+      },
+      payCheckoutInvoice: async () => ({
+        status: "manual_required",
+        reason: "Open the invoice in a Lightning wallet.",
+      }),
+    })
+
+    try {
+      for (const expectedError of [
+        "LNURL metadata unavailable",
+        "LNURL callback failed",
+        "The invoice amount does not match this order total.",
+      ]) {
+        const failed = await runOrderPayment(context, dependencies)
+
+        expect(failed.error).toBe(expectedError)
+        expect(failed.lifecycle?.invoiceStatus).toBe("failed")
+        expect(failed.lifecycle?.paymentStatus).toBe("failed")
+        expect(failed.lifecycle?.zapContent).toBe(zapContent)
+        expect(failed.lifecycle?.zapTargetAddress).toBe(productAddress)
+      }
+
+      const retried = await runOrderPayment(context, dependencies)
+
+      expect(requestedTargets).toEqual([
+        productAddress,
+        productAddress,
+        productAddress,
+      ])
+      expect(retried.error).toBeNull()
+      expect(retried.lifecycle?.paymentStatus).toBe("manual_required")
+      expect(retried.lifecycle?.zapContent).toBe(zapContent)
+      expect(retried.lifecycle?.zapTargetAddress).toBe(productAddress)
+    } finally {
+      table.get = originalGet
+      table.put = originalPut
+    }
+  })
+
+  it("retains the product target after Lightning failure for payment retry", async () => {
+    const orderId = "shopper-product-zap-payment-retry"
+    const merchantPubkey = "c".repeat(64)
+    const productAddress = `30402:${merchantPubkey}:poster`
+    const zapContent = buildZapRequestContent({
+      note: "looks great",
+      productAddress,
+    })
+    const invoice = privateInvoice()
+    let stored = lifecycle({
+      orderId,
+      merchantPubkey,
+      checkoutMode: "public_zap_as_shopper",
+      publicZapSigner: "shopper",
+      zapContent,
+      zapTargetAddress: productAddress,
+      invoice: undefined,
+      invoiceStatus: "not_requested",
+      paymentStatus: "not_started",
+    })
+    const table = db.orderLifecycles as typeof db.orderLifecycles & {
+      get: typeof db.orderLifecycles.get
+      put: typeof db.orderLifecycles.put
+    }
+    const originalGet = table.get
+    const originalPut = table.put
+    const requestedTargets: Array<string | undefined> = []
+    let paymentAttempts = 0
+
+    table.get = (async () => stored) as typeof table.get
+    table.put = (async (next: OrderLifecycle) => {
+      stored = next
+      return next.orderId
+    }) as typeof table.put
+
+    const context = basePaymentContext({
+      orderId,
+      merchantPubkey,
+      merchantLud16: "merchant@wallet.example",
+      zapContent,
+      zapTargetAddress: productAddress,
+    })
+    const dependencies = paymentDependencies({
+      fetchLnurlPayMetadata: async () => lnurlMetadata(),
+      requestCheckoutLnurlInvoice: async (params) => {
+        requestedTargets.push(params.zapTargetAddress)
+        return {
+          invoice,
+          zapRelayUrls: [],
+          shouldWaitForZapReceipt: false,
+        }
+      },
+      payCheckoutInvoice: async () => {
+        paymentAttempts += 1
+        if (paymentAttempts === 1) {
+          throw new Error("Lightning wallet rejected payment")
+        }
+        return {
+          status: "manual_required",
+          reason: "Open the invoice in a Lightning wallet.",
+        }
+      },
+    })
+
+    try {
+      const failed = await runOrderPayment(context, dependencies)
+
+      expect(failed.error).toBe("Lightning wallet rejected payment")
+      expect(failed.lifecycle?.invoiceStatus).toBe("received")
+      expect(failed.lifecycle?.paymentStatus).toBe("failed")
+      expect(failed.lifecycle?.zapTargetAddress).toBe(productAddress)
+
+      const retried = await runOrderPayment(context, dependencies)
+
+      expect(requestedTargets).toEqual([productAddress, productAddress])
+      expect(retried.error).toBeNull()
+      expect(retried.lifecycle?.paymentStatus).toBe("manual_required")
+      expect(retried.lifecycle?.zapTargetAddress).toBe(productAddress)
+    } finally {
+      table.get = originalGet
+      table.put = originalPut
     }
   })
 
@@ -1127,10 +1430,17 @@ describe("runOrderPayment", () => {
 
   it("retains explicit private recovery for older failed lifecycle records", async () => {
     const orderId = "anon-zap-explicit-private-recovery"
+    const zapTargetAddress = `30402:${"d".repeat(64)}:legacy-product`
+    const zapContent = buildZapRequestContent({
+      note: "legacy public note",
+      productAddress: zapTargetAddress,
+    })
     let stored = lifecycle({
       orderId,
       checkoutMode: "anonymous_public_zap",
       publicZapSigner: "anon",
+      zapContent,
+      zapTargetAddress,
       invoice: undefined,
       invoiceStatus: "failed",
       paymentStatus: "failed",
@@ -1144,6 +1454,7 @@ describe("runOrderPayment", () => {
     const originalPut = table.put
     const restoreTransaction = mockImmediateOrderLifecycleTransaction()
     const requestedVisibilities: string[] = []
+    const requestedTargets: Array<string | undefined> = []
 
     table.get = (async () => stored) as typeof table.get
     table.put = (async (next: OrderLifecycle) => {
@@ -1157,21 +1468,28 @@ describe("runOrderPayment", () => {
           orderId,
           merchantLud16: "merchant@wallet.example",
           zapMode: "anonymous_public_zap",
+          zapContent,
+          zapTargetAddress,
         }),
         paymentDependencies({
           fetchLnurlPayMetadata: async () => lnurlMetadata(),
           requestCheckoutLnurlInvoice: async (params) => {
             requestedVisibilities.push(params.visibility)
+            requestedTargets.push(params.zapTargetAddress)
+            expect(params.zapContent).toBe("")
             throw new Error("private invoice unavailable")
           },
         })
       )
 
       expect(requestedVisibilities).toEqual(["private_checkout"])
+      expect(requestedTargets).toEqual([undefined])
       expect(state.lifecycle?.orderId).toBe(orderId)
       expect(state.lifecycle?.checkoutMode).toBe("private_checkout")
       expect(state.lifecycle?.publicZapSigner).toBeUndefined()
       expect(state.lifecycle?.publicZapFallback).toBe(true)
+      expect(state.lifecycle?.zapContent).toBe("")
+      expect(state.lifecycle?.zapTargetAddress).toBeUndefined()
       expect(state.lifecycle?.zapReceiptStatus).toBe("not_applicable")
       expect(state.lifecycle?.invoiceStatus).toBe("failed")
       expect(state.lifecycle?.paymentStatus).toBe("failed")
@@ -1313,7 +1631,7 @@ describe("runOrderPayment", () => {
     }
   })
 
-  it("resumes only complete, unexpired anon receipt contexts", () => {
+  it("resumes only complete, unexpired public receipt contexts", () => {
     const now = Date.now()
     const observable = lifecycle({
       checkoutMode: "anonymous_public_zap",
@@ -1327,6 +1645,38 @@ describe("runOrderPayment", () => {
     })
 
     expect(canObserveOrderPublicZapReceipt(observable, now)).toBe(true)
+    expect(
+      canObserveOrderPublicZapReceipt(
+        { ...observable, paymentStatus: "paying" },
+        now
+      )
+    ).toBe(false)
+    expect(
+      canObserveOrderPublicZapReceipt(
+        {
+          ...observable,
+          checkoutMode: "public_zap_as_shopper",
+          publicZapSigner: "shopper",
+        },
+        now
+      )
+    ).toBe(true)
+    expect(
+      canObserveOrderPublicZapReceipt(
+        { ...observable, publicZapFallback: true },
+        now
+      )
+    ).toBe(false)
+    expect(
+      canObserveOrderPublicZapReceipt(
+        {
+          ...observable,
+          checkoutMode: "private_checkout",
+          publicZapSigner: undefined,
+        },
+        now
+      )
+    ).toBe(false)
     expect(
       canObserveOrderPublicZapReceipt(
         { ...observable, zapReceiptRelayUrls: [] },
@@ -1371,6 +1721,74 @@ describe("runOrderPayment", () => {
         now
       )
     ).toBe(false)
+  })
+
+  it("reconciles a targeted shopper zap from the exact validated receipt context", async () => {
+    const now = Date.now()
+    const orderId = "shopper-targeted-receipt-observer"
+    const merchantPubkey = "a".repeat(64)
+    const productAddress = `30402:${merchantPubkey}:shirt`
+    let stored = lifecycle({
+      orderId,
+      buyerPubkey: "b".repeat(64),
+      merchantPubkey,
+      checkoutMode: "public_zap_as_shopper",
+      publicZapSigner: "shopper",
+      publicZapFallback: false,
+      zapContent: buildZapRequestContent({
+        note: "sick shirt 🔥",
+        productAddress,
+      }),
+      zapTargetAddress: productAddress,
+      invoice: "lnbc1shoppertargeted",
+      invoiceStatus: "received",
+      paymentStatus: "paid",
+      proofDeliveryStatus: "sent",
+      zapReceiptStatus: "waiting",
+      zapRequestId: "shopper-zap-request-id",
+      zapRequestCreatedAt: Math.floor(now / 1000) - 10,
+      zapLnurl: "lnurl1shopper",
+      zapReceiptPubkey: "c".repeat(64),
+      zapReceiptRelayUrls: ["wss://relay.example"],
+      zapReceiptObservationDeadline: now + 60_000,
+    })
+    const table = db.orderLifecycles as typeof db.orderLifecycles & {
+      get: typeof db.orderLifecycles.get
+      put: typeof db.orderLifecycles.put
+    }
+    const originalGet = table.get
+    const originalPut = table.put
+    let waitCalled = false
+
+    table.get = (async (id: string) =>
+      id === orderId ? stored : undefined) as typeof table.get
+    table.put = (async (next: OrderLifecycle) => {
+      stored = next
+      return next.orderId
+    }) as typeof table.put
+
+    try {
+      await observeOrderPublicZapReceipt(orderId, undefined, async (input) => {
+        waitCalled = true
+        expect(input.zapRequestId).toBe("shopper-zap-request-id")
+        expect(input.recipientPubkey).toBe(merchantPubkey)
+        expect(input.expectedInvoice).toBe("lnbc1shoppertargeted")
+        expect(input.expectedAmountMsats).toBe(1_000)
+        expect(input.expectedLnurl).toBe("lnurl1shopper")
+        expect(input.lnurlNostrPubkey).toBe("c".repeat(64))
+        return { id: "shopper-zap-receipt-id" } as never
+      })
+
+      expect(waitCalled).toBe(true)
+      expect(stored.zapReceiptStatus).toBe("observed")
+      expect(stored.zapReceiptId).toBe("shopper-zap-receipt-id")
+      expect(stored.paymentStatus).toBe("paid")
+      expect(stored.zapTargetAddress).toBe(productAddress)
+      expect(stored.zapContent).toContain("sick shirt 🔥")
+    } finally {
+      table.get = originalGet
+      table.put = originalPut
+    }
   })
 
   it("releases the order in-flight lock when lifecycle patching fails", async () => {
