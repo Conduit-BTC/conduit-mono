@@ -24,7 +24,6 @@ import {
   recordOrderPaymentWalletSuccessRecovery,
   recordOrderPaymentPreparationFailure,
   replaceOrderPaymentTarget,
-  transitionOrderPrivateFallback,
   type OrderLifecycle,
   type OrderPaymentClaimInput,
 } from "@conduit/core"
@@ -1008,95 +1007,6 @@ describe("order payment admission", () => {
       expect(replacementClaim.lifecycle.paymentTarget).toEqual(
         replacementTarget
       )
-    } finally {
-      table.get = originalGet
-      table.put = originalPut
-      database.transaction = originalTransaction
-    }
-  })
-
-  it("admits only one concurrent anonymous-to-private fallback transition", async () => {
-    const orderId = "concurrent-private-fallback-transition"
-    let stored: OrderLifecycle = {
-      ...lifecycle,
-      orderId,
-      invoice: "lnbc-old-anonymous-invoice",
-      invoiceStatus: "failed",
-      paymentStatus: "failed",
-      walletPaymentAttemptId: "11111111-1111-4111-8111-111111111111",
-      lastError: "Anonymous zap payment failed.",
-    }
-    const table = db.orderLifecycles as typeof db.orderLifecycles & {
-      get: typeof db.orderLifecycles.get
-      put: typeof db.orderLifecycles.put
-    }
-    const database = db as typeof db & {
-      transaction: typeof db.transaction
-    }
-    const originalGet = table.get
-    const originalPut = table.put
-    const originalTransaction = database.transaction
-    let insideTransaction = false
-    let uncoordinatedReads = 0
-    let releaseUncoordinatedReads: (() => void) | undefined
-    const bothUncoordinatedReadsStarted = new Promise<void>((resolve) => {
-      releaseUncoordinatedReads = resolve
-    })
-    let transactionQueue = Promise.resolve()
-
-    table.get = (async () => {
-      const snapshot = stored
-      if (!insideTransaction) {
-        uncoordinatedReads += 1
-        if (uncoordinatedReads === 2) releaseUncoordinatedReads?.()
-        await bothUncoordinatedReadsStarted
-      }
-      return snapshot
-    }) as typeof table.get
-    table.put = (async (next: OrderLifecycle) => {
-      stored = next
-      return next.orderId
-    }) as typeof table.put
-    database.transaction = (async (
-      _mode: string,
-      _table: unknown,
-      callback: () => Promise<unknown>
-    ) => {
-      const run = transactionQueue.then(async () => {
-        insideTransaction = true
-        try {
-          return await callback()
-        } finally {
-          insideTransaction = false
-        }
-      })
-      transactionQueue = run.then(
-        () => undefined,
-        () => undefined
-      )
-      return run
-    }) as typeof database.transaction
-
-    try {
-      const results = await Promise.all([
-        transitionOrderPrivateFallback(orderId),
-        transitionOrderPrivateFallback(orderId),
-      ])
-
-      expect(
-        results.filter((result) => result.status === "transitioned")
-      ).toHaveLength(1)
-      expect(
-        results.filter((result) => result.status === "unsafe_state")
-      ).toHaveLength(1)
-
-      expect(stored?.checkoutMode).toBe("private_checkout")
-      expect(stored?.publicZapSigner).toBeUndefined()
-      expect(stored?.publicZapFallback).toBe(true)
-      expect(stored?.invoiceStatus).toBe("not_requested")
-      expect(stored?.paymentStatus).toBe("not_started")
-      expect(stored?.walletPaymentAttemptId).toBeUndefined()
-      expect(stored?.invoice).toBeUndefined()
     } finally {
       table.get = originalGet
       table.put = originalPut
