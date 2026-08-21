@@ -133,6 +133,58 @@ bun run telemetry:check # Must pass when telemetry/analytics surfaces are affect
 - PRs require review before merging to `main`
 - PRs from forks may need a maintainer to approve GitHub Actions before CI runs
 
+### Acceptance Criteria, Evidence, and QA
+
+Define stable acceptance criteria such as `AC-1` before implementation. Make
+each criterion an observable success, failure, or regression-sensitive outcome.
+
+Map every criterion to one evidence row in the pull request template. Include:
+
+- the exact test or manual check;
+- the environment and signer fidelity;
+- a result tied to the current head SHA;
+- any remaining gap and its owner.
+
+Generic CI gate checkboxes are not behavioral evidence. Label evidence by its
+actual layer:
+
+- unit or contract;
+- browser UI with a stubbed signer;
+- browser integration with real local cryptography;
+- local NIP-46 and relay integration;
+- deployed preview;
+- protected live canary;
+- real extension, mobile signer, browser, or device QA.
+
+A mock signer does not prove a valid signature or NIP-44 exchange. A local
+adapter does not prove a third-party extension popup, mobile handoff, public
+relay, or deployed-preview result.
+
+For each critical flow change, add or update the matching Playwright or smoke
+test. If that is not practical, state the uncovered criterion and require the
+named manual QA. New or changed smoke tests must declare an explicit
+`@market` or `@merchant` area. Reserve `@commerce` for the cross-app
+commerce shard defined in the testing specification. Do not use title
+capitalization as test ownership.
+
+The author proposes one review and QA disposition:
+
+- **Evidence sign-off:** human code review is still required, but every
+  criterion has deterministic current-head evidence and no separate product QA
+  is needed.
+- **Targeted human QA:** a person must complete the named visual, interaction,
+  preview, signer, browser, or device checks.
+- **Maintainer-owned validation:** a maintainer must own the plan for protocol,
+  auth, payment, privacy, security, migration, secret, destructive-state, or
+  release changes.
+
+An author or agent cannot downgrade a high-risk change to evidence sign-off.
+The reviewer confirms or raises the disposition. New commits invalidate prior
+candidate-specific manual and preview evidence.
+
+See [the automated smoke testing and pull request evidence specification](docs/specs/testing-e2e.md)
+for the full confidence, signer, artifact, and selection contract.
+
 ### User-Reported Bugs
 
 GitHub bug reports use `.github/ISSUE_TEMPLATE/bug_report.yml`, which applies
@@ -197,7 +249,8 @@ skips preview comments for fork PRs with an explicit log message.
 The required `e2e-smoke` check aggregates path-aware Market and Merchant
 Playwright shards. App-local changes run only that app's shard, shared runtime
 changes run both, docs-only changes skip browser installation, and pushes to
-`main` run both shards.
+`main` run both shards. Playwright area tags select the tests. CI rejects an
+untagged smoke test or a selected area that contains zero tests.
 
 ## Code Conventions
 

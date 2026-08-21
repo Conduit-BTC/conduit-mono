@@ -57,6 +57,7 @@
     "smoke:nip42": "bun scripts/smoke/nip42_protected_read.ts",
     "test": "bun test",
     "test:e2e": "playwright test",
+    "test:e2e:areas": "bun scripts/ci/validate_playwright_smoke_areas.ts",
     "clean": "rm -rf node_modules apps/*/node_modules packages/*/node_modules"
   },
   "dependencies": {

@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test"
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const avatarHarnessUrl = "/src/test-fixtures/avatar-fallback-harness.tsx"
 
-test("market conversation avatar falls back after a public image load fails", async ({
+test("market conversation avatar falls back after a public image load fails @market", async ({
   page,
 }) => {
   const failedAvatarUrl =

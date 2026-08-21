@@ -78,7 +78,7 @@ const relayTargets = [
 
 test.use({ serviceWorkers: "block" })
 
-test("market blocks untrusted media, fetch, and relay targets before browser dispatch", async ({
+test("market blocks untrusted media, fetch, and relay targets before browser dispatch @market", async ({
   context,
   page,
 }) => {

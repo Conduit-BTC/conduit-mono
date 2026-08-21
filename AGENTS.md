@@ -306,4 +306,7 @@ Pull request required for all changes.
 - Use `.github/pull_request_template.md` for all PRs
 - For non-trivial internal work, put the implementation plan on the Linear issue and keep private tracker context out of the public PR
 - Add public-safe `docs/knowledge/*.md` context in the implementation PR when it will help future agents or contributors; specs are not required by default
+- Give non-trivial acceptance criteria stable IDs and map each one to current-head evidence or an explicit gap
+- List the smoke and Playwright coverage delta for changed critical flows; do not cite stubbed signer tests as proof of cryptography or relay delivery
+- Propose `Evidence sign-off`, `Targeted human QA`, or `Maintainer-owned validation`; agents must not downgrade protocol, auth, payment, privacy, security, migration, secret, destructive-state, or release work
 - When an implementation PR completes an issue, include `Resolves CND-...`, relevant demo evidence for user-visible behavior, and a concise area where reviewer feedback is especially useful

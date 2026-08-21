@@ -152,7 +152,8 @@ jobs:
             1. Functional correctness and regressions.
             2. Protocol, authentication, privacy, and payment constraints.
             3. Reliability and failure-mode handling.
-            4. Test coverage and verifiability.
+            4. Acceptance-criteria traceability, test fidelity, and
+               verifiability.
             5. Maintainability.
 
             Mandatory constraints:
@@ -164,6 +165,19 @@ jobs:
             - Telemetry follows docs/analytics/events.md.
             - Public repository content excludes private runbooks, credentials,
               dashboard exports, and private company planning context.
+            - Verify that observable acceptance criteria map to current-head
+              evidence or an explicit gap. Generic CI checkboxes are not
+              behavioral evidence.
+            - Verify that selected smoke shards include the named tests and
+              cannot pass with zero matching tests.
+            - Do not accept stubbed signer evidence as proof of signatures,
+              encryption, relay delivery, extension UX, or mobile handoff.
+            - Confirm exactly one QA disposition using this vocabulary:
+              `Evidence sign-off`, `Targeted human QA`, or
+              `Maintainer-owned validation`.
+            - `Evidence sign-off` still requires human code review. Reject
+              that disposition for protocol, auth, payment, privacy, security,
+              migration, secret, destructive-state, or release changes.
             - Automatic Ponytail review is intentionally once per pull request.
               New heads do not rearm it. Maintainers use `/agent simplify` for
               an explicit rerun.
@@ -183,8 +197,9 @@ jobs:
             - Anchor multi-file findings on the primary changed line and name
               related files in that inline comment.
             - Keep the review body to a concise summary, the reviewer-owned
-              public-context decision, and residual test or release risks. Do
-              not duplicate actionable finding detail there.
+              public-context decision, the reviewer-confirmed QA disposition,
+              and residual test or release risks. Do not duplicate actionable
+              finding detail there.
             - If an inline review cannot be submitted, leave no top-level
               finding and state the delivery blocker in the review body.
 
@@ -193,8 +208,8 @@ jobs:
               include this exact marker in the review body:
               `<!-- conduit:sudden-review clean head=${{ steps.pr.outputs.head_sha }} -->`
             - A clean review must have zero inline comments. State
-              `No actionable findings.` and list only residual verification
-              risks after the marker.
+              `No actionable findings.`, the confirmed QA disposition, and
+              only residual verification risks after the marker.
             - Never include the clean marker when any actionable finding exists
               or review delivery is blocked.
         run: |

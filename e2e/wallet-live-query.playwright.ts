@@ -15,7 +15,7 @@ interface BrowserDexieConstructor {
   new (databaseName: string): Dexie
 }
 
-test("market wallet descriptors converge across tabs through Dexie liveQuery", async ({
+test("market wallet descriptors converge across tabs through Dexie liveQuery @market", async ({
   context,
 }) => {
   const firstPage = await context.newPage()
