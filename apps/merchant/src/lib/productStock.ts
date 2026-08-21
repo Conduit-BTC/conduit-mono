@@ -21,7 +21,7 @@ export type ProductStockDecisionKind = "applied" | "declined"
 export interface ProductStockDecision {
   kind: ProductStockDecisionKind
   decidedAt: number
-  /** Original order-relative state, preserved across listing refetches. */
+  /** Latest unresolved order-relative state, preserved across listing refetches. */
   adjustment?: OrderStockAdjustment
 }
 
@@ -415,6 +415,68 @@ export function getOrderStockDecisionKey(
   )}`
 }
 
+export function doesOrderStockDecisionCoverAdjustment(input: {
+  adjustment: OrderStockAdjustment
+  persistedDecision: ProductStockDecision | null
+}): boolean {
+  const persistedAdjustment = input.persistedDecision?.adjustment
+  if (!input.persistedDecision) return false
+  if (!persistedAdjustment) return true
+  if (
+    persistedAdjustment.key !== input.adjustment.key ||
+    persistedAdjustment.addressId !== input.adjustment.addressId
+  ) {
+    return false
+  }
+  if (input.persistedDecision.kind !== "applied") return true
+  return getOrderStockDecisionFollowUpAdjustment(input) === null
+}
+
+export function getOrderStockDecisionFollowUpAdjustment(input: {
+  adjustment: OrderStockAdjustment
+  persistedDecision: ProductStockDecision | null
+}): OrderStockAdjustment | null {
+  const persistedAdjustment = input.persistedDecision?.adjustment
+  if (
+    input.persistedDecision?.kind !== "applied" ||
+    !persistedAdjustment ||
+    persistedAdjustment.state !== "restocking_required" ||
+    persistedAdjustment.key !== input.adjustment.key ||
+    persistedAdjustment.addressId !== input.adjustment.addressId ||
+    persistedAdjustment.shortfall <= 0 ||
+    input.adjustment.sourceEventId === persistedAdjustment.sourceEventId ||
+    input.adjustment.currentStock <= persistedAdjustment.nextStock
+  ) {
+    return null
+  }
+
+  const quantity = persistedAdjustment.shortfall
+  const currentStock = input.adjustment.currentStock
+  const nextStock = Math.max(0, currentStock - quantity)
+  const shortfall = Math.max(0, quantity - currentStock)
+  return {
+    ...input.adjustment,
+    state: shortfall > 0 ? "restocking_required" : "stock_update_available",
+    quantity,
+    currentStock,
+    nextStock,
+    shortfall,
+  }
+}
+
+export function isOrderStockAdjustmentMutationDisabled(input: {
+  adjustment: OrderStockAdjustment
+  persistedDecision: ProductStockDecision | null
+  hasPendingDelivery: boolean
+  hasSessionDecision: boolean
+}): boolean {
+  return (
+    input.hasPendingDelivery ||
+    input.hasSessionDecision ||
+    doesOrderStockDecisionCoverAdjustment(input)
+  )
+}
+
 export function shouldShowOrderStockAdjustment(input: {
   adjustment: OrderStockAdjustment
   orderStatus: string | null | undefined
@@ -429,17 +491,30 @@ export function shouldShowOrderStockAdjustment(input: {
   ) {
     return false
   }
-  if (input.persistedDecision?.adjustment) {
-    return input.persistedDecision.adjustment.state === "restocking_required"
+  if (
+    input.persistedDecision &&
+    doesOrderStockDecisionCoverAdjustment({
+      adjustment: input.adjustment,
+      persistedDecision: input.persistedDecision,
+    })
+  ) {
+    return (
+      input.persistedDecision.kind === "applied" &&
+      input.persistedDecision.adjustment?.state === "restocking_required"
+    )
   }
-  return !input.hasSessionDecision && !input.persistedDecision
+  return !input.hasSessionDecision
 }
 
 export function getOrderStockAdjustmentForDisplay(input: {
   adjustment: OrderStockAdjustment
   persistedDecision: ProductStockDecision | null
 }): OrderStockAdjustment {
-  return input.persistedDecision?.adjustment?.state === "restocking_required"
+  const followUpAdjustment = getOrderStockDecisionFollowUpAdjustment(input)
+  if (followUpAdjustment) return followUpAdjustment
+  return input.persistedDecision?.kind === "applied" &&
+    input.persistedDecision.adjustment?.state === "restocking_required" &&
+    doesOrderStockDecisionCoverAdjustment(input)
     ? input.persistedDecision.adjustment
     : input.adjustment
 }

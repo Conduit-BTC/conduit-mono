@@ -151,6 +151,25 @@ describe("merchant order stock UI", () => {
     expect(source).not.toContain("hasExactLiveProductAvailabilityEvidence")
   })
 
+  it("clears transient blockers only after a stock decision is durable", async () => {
+    const source = await Bun.file("apps/merchant/src/routes/orders.tsx").text()
+
+    expect(source).toContain(
+      "next.delete(`${merchantPubkey}:${payload.adjustment.key}`)"
+    )
+    expect(source).toContain("next.delete(`${pubkey}:${adjustment.key}`)")
+    expect(source).toContain("hasSessionDecision: sessionStockDecisionKeys.has")
+    expect(source).toContain('stockDelivery.notice.state !== "delivered"')
+    expect(source).toContain(
+      "stockDecisionHydratedSelectionId !== selectedStockDecisionId"
+    )
+    expect(
+      source.indexOf("pendingStockDeliveryStoreRef.current.getForOrder")
+    ).toBeLessThan(
+      source.indexOf("setStockDecisionHydratedSelectionId(selectedId)")
+    )
+  })
+
   it("keeps a pending oversold snapshot retryable without another update", () => {
     const item = adjustment({
       state: "restocking_required",

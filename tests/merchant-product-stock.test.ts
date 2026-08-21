@@ -3,11 +3,13 @@ import { EVENT_KINDS, type CommerceProductRecord } from "@conduit/core"
 import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
   buildOrderStockAdjustments,
+  doesOrderStockDecisionCoverAdjustment,
   getOrderStockAdjustmentForDisplay,
   getOrderStockDecisionKey,
   getProductFamilyStockDisplay,
   getProductStockDisplay,
   getProductStockInputError,
+  isOrderStockAdjustmentMutationDisabled,
   isPlainStockInput,
   parseProductStockInput,
   PendingProductStockDeliveryStore,
@@ -455,6 +457,238 @@ describe("merchant product stock", () => {
         persistedDecision: oversoldDecision,
       })
     ).toMatchObject({ currentStock: 2, nextStock: 0, shortfall: 3 })
+    expect(
+      doesOrderStockDecisionCoverAdjustment({
+        adjustment: oversoldAfterPublish,
+        persistedDecision: oversoldDecision,
+      })
+    ).toBe(true)
+  })
+
+  it("applies only the unresolved shortfall after restocking", () => {
+    const merchant = "a".repeat(64)
+    const orderId = "order-replenished"
+    const oversoldRecord = productRecord({ stock: 2 })
+    const oversold = buildOrderStockAdjustments({
+      orderId,
+      merchantPubkey: merchant,
+      items: [{ productId: oversoldRecord.addressId, quantity: 5 }],
+      productRecords: [oversoldRecord],
+    })[0]!
+    const persistedDecision = {
+      kind: "applied" as const,
+      decidedAt: 1,
+      adjustment: oversold,
+    }
+
+    for (const expected of [
+      {
+        stock: 2,
+        eventId: "c".repeat(64),
+        state: "restocking_required",
+        nextStock: 0,
+        shortfall: 1,
+      },
+      {
+        stock: 3,
+        eventId: "d".repeat(64),
+        state: "stock_update_available",
+        nextStock: 0,
+        shortfall: 0,
+      },
+      {
+        stock: 10,
+        eventId: "e".repeat(64),
+        state: "stock_update_available",
+        nextStock: 7,
+        shortfall: 0,
+      },
+    ] as const) {
+      const replenishedRecord = {
+        ...productRecord({ stock: expected.stock }),
+        eventId: expected.eventId,
+      }
+      const replenished = buildOrderStockAdjustments({
+        orderId,
+        merchantPubkey: merchant,
+        items: [{ productId: replenishedRecord.addressId, quantity: 5 }],
+        productRecords: [replenishedRecord],
+      })[0]!
+      const followUp = getOrderStockAdjustmentForDisplay({
+        adjustment: replenished,
+        persistedDecision,
+      })
+
+      expect(
+        doesOrderStockDecisionCoverAdjustment({
+          adjustment: replenished,
+          persistedDecision,
+        })
+      ).toBe(false)
+      expect(followUp).toMatchObject({
+        sourceEventId: expected.eventId,
+        state: expected.state,
+        quantity: 3,
+        currentStock: expected.stock,
+        nextStock: expected.nextStock,
+        shortfall: expected.shortfall,
+      })
+      expect(
+        shouldShowOrderStockAdjustment({
+          adjustment: replenished,
+          orderStatus: "processing",
+          hasSessionDecision: false,
+          persistedDecision,
+        })
+      ).toBe(true)
+    }
+
+    const ampleRecord = {
+      ...productRecord({ stock: 10 }),
+      eventId: "e".repeat(64),
+    }
+    const ample = buildOrderStockAdjustments({
+      orderId,
+      merchantPubkey: merchant,
+      items: [{ productId: ampleRecord.addressId, quantity: 5 }],
+      productRecords: [ampleRecord],
+    })[0]!
+    expect(
+      isOrderStockAdjustmentMutationDisabled({
+        adjustment: ample,
+        persistedDecision,
+        hasPendingDelivery: false,
+        hasSessionDecision: false,
+      })
+    ).toBe(false)
+    expect(
+      isOrderStockAdjustmentMutationDisabled({
+        adjustment: ample,
+        persistedDecision,
+        hasPendingDelivery: false,
+        hasSessionDecision: true,
+      })
+    ).toBe(true)
+    expect(
+      shouldShowOrderStockAdjustment({
+        adjustment: ample,
+        orderStatus: "processing",
+        hasSessionDecision: true,
+        persistedDecision,
+      })
+    ).toBe(false)
+
+    const partialRecord = {
+      ...productRecord({ stock: 2 }),
+      eventId: "c".repeat(64),
+    }
+    const partial = buildOrderStockAdjustments({
+      orderId,
+      merchantPubkey: merchant,
+      items: [{ productId: partialRecord.addressId, quantity: 5 }],
+      productRecords: [partialRecord],
+    })[0]!
+    const partialFollowUp = getOrderStockAdjustmentForDisplay({
+      adjustment: partial,
+      persistedDecision,
+    })
+    const residualDecision = {
+      kind: "applied" as const,
+      decidedAt: 2,
+      adjustment: partialFollowUp,
+    }
+    const afterResidualPublish = buildOrderStockAdjustments({
+      orderId,
+      merchantPubkey: merchant,
+      items: [{ productId: partialRecord.addressId, quantity: 5 }],
+      productRecords: [
+        {
+          ...productRecord({ stock: 0 }),
+          eventId: "f".repeat(64),
+        },
+      ],
+    })[0]!
+    expect(
+      doesOrderStockDecisionCoverAdjustment({
+        adjustment: afterResidualPublish,
+        persistedDecision: residualDecision,
+      })
+    ).toBe(true)
+    expect(
+      getOrderStockAdjustmentForDisplay({
+        adjustment: afterResidualPublish,
+        persistedDecision: residualDecision,
+      })
+    ).toMatchObject({
+      quantity: 3,
+      currentStock: 2,
+      nextStock: 0,
+      shortfall: 1,
+    })
+
+    const secondRestockRecord = {
+      ...productRecord({ stock: 5 }),
+      eventId: "1".repeat(64),
+    }
+    const secondRestock = buildOrderStockAdjustments({
+      orderId,
+      merchantPubkey: merchant,
+      items: [{ productId: secondRestockRecord.addressId, quantity: 5 }],
+      productRecords: [secondRestockRecord],
+    })[0]!
+    const finalFollowUp = getOrderStockAdjustmentForDisplay({
+      adjustment: secondRestock,
+      persistedDecision: residualDecision,
+    })
+    expect(finalFollowUp).toMatchObject({
+      sourceEventId: secondRestockRecord.eventId,
+      state: "stock_update_available",
+      quantity: 1,
+      currentStock: 5,
+      nextStock: 4,
+      shortfall: 0,
+    })
+    const completedResidualDecision = {
+      kind: "applied" as const,
+      decidedAt: 3,
+      adjustment: finalFollowUp,
+    }
+    const afterFinalPublish = buildOrderStockAdjustments({
+      orderId,
+      merchantPubkey: merchant,
+      items: [{ productId: secondRestockRecord.addressId, quantity: 5 }],
+      productRecords: [
+        {
+          ...productRecord({ stock: 4 }),
+          eventId: "2".repeat(64),
+        },
+      ],
+    })[0]!
+    expect(
+      doesOrderStockDecisionCoverAdjustment({
+        adjustment: afterFinalPublish,
+        persistedDecision: completedResidualDecision,
+      })
+    ).toBe(true)
+
+    expect(
+      doesOrderStockDecisionCoverAdjustment({
+        adjustment: ample,
+        persistedDecision: { ...persistedDecision, kind: "declined" },
+      })
+    ).toBe(true)
+    expect(
+      doesOrderStockDecisionCoverAdjustment({
+        adjustment: ample,
+        persistedDecision: { kind: "applied", decidedAt: 3 },
+      })
+    ).toBe(true)
+    expect(
+      doesOrderStockDecisionCoverAdjustment({
+        adjustment: ample,
+        persistedDecision: { kind: "declined", decidedAt: 3 },
+      })
+    ).toBe(true)
   })
 
   it("keeps a session decision when browser storage is unavailable", () => {
