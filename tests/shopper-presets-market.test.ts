@@ -270,7 +270,7 @@ describe("Market shopper preset integration", () => {
     expect(source).toContain("restorePendingPubkey")
     expect(source).toContain("const pendingDraftOwner = restorePendingPubkey")
     expect(source).toContain(
-      "const authPending = restorePendingPubkey !== null"
+      'authSignerReadiness === "pending" || restorePendingPubkey !== null'
     )
     expect(source).not.toContain('authStatus === "restoring"')
     expect(source).toContain(
