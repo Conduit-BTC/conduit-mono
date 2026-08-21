@@ -1,7 +1,11 @@
-import { describe, expect, it } from "bun:test"
+import { afterEach, describe, expect, it } from "bun:test"
 
 import {
+  disconnectNdk,
   EVENT_KINDS,
+  getNdk,
+  removeSigner,
+  setSigner,
   type OrderLifecycle,
   type OrderRelayDeliveryRecord,
   type SignedPublicNostrEvent,
@@ -13,6 +17,8 @@ import {
   publishBuyerOrderMessage,
   submitBuyerOrderMessage,
 } from "../apps/market/src/lib/order-publish"
+
+let activeSignerLease: ReturnType<typeof setSigner> | null = null
 
 describe("buyer order rumor preparation", () => {
   it("recreates the same payment-proof rumor id for receipt retries", () => {
@@ -67,6 +73,14 @@ function orderRumor(overrides: Record<string, unknown> = {}) {
 }
 
 describe("buyer order publishing", () => {
+  afterEach(() => {
+    if (activeSignerLease) {
+      removeSigner(activeSignerLease)
+      activeSignerLease = null
+    }
+    disconnectNdk()
+  })
+
   it("delegates signed-in delivery and self-copy to the shared boundary", async () => {
     const signer = { id: "connected-signer" }
     let captured: Record<string, unknown> | undefined
@@ -206,6 +220,47 @@ describe("buyer order publishing", () => {
       )
     ).rejects.toThrow("Buyer order signer is not connected.")
     expect(publishAttempts).toBe(0)
+  })
+
+  it("preserves connected buyer signing across an NDK transport reset", async () => {
+    const buyerPubkey = "b".repeat(64)
+    const signer = {
+      pubkey: buyerPubkey,
+      user: async () => ({ pubkey: buyerPubkey }),
+    }
+    let publishAttempts = 0
+
+    activeSignerLease = setSigner(signer as never)
+    const originalNdk = getNdk()
+    disconnectNdk()
+    const replacementNdk = getNdk()
+
+    expect(replacementNdk).not.toBe(originalNdk)
+    expect(replacementNdk.signer).toBe(signer)
+
+    await publishBuyerOrderMessage(
+      orderRumor(),
+      replacementNdk,
+      "merchant-pubkey",
+      {
+        kind: "signed_in",
+        pubkey: buyerPubkey,
+        signer: signer as never,
+      },
+      {
+        publishPrivateMessageFn: async () => {
+          publishAttempts += 1
+          return {
+            wrappedToRecipient: { id: "recipient-wrap" } as never,
+            wrappedToSelf: { id: "self-wrap" } as never,
+            selfCopyError: null,
+          }
+        },
+        cacheBuyerOrderRumorFn: async () => null,
+      }
+    )
+
+    expect(publishAttempts).toBe(1)
   })
 })
 

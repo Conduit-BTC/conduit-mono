@@ -6,9 +6,20 @@ describe("progressive product detail loading state", () => {
     expect(
       isProductDetailInitialLoading({
         product: null,
-        cacheLoading: false,
-        networkLoading: false,
+        cachePending: false,
+        networkPending: false,
         networkFetching: true,
+      })
+    ).toBe(true)
+  })
+
+  it("keeps the detail route loading while an initial lookup is paused", () => {
+    expect(
+      isProductDetailInitialLoading({
+        product: null,
+        cachePending: true,
+        networkPending: true,
+        networkFetching: false,
       })
     ).toBe(true)
   })
@@ -17,8 +28,8 @@ describe("progressive product detail loading state", () => {
     expect(
       isProductDetailInitialLoading({
         product: null,
-        cacheLoading: false,
-        networkLoading: false,
+        cachePending: false,
+        networkPending: false,
         networkFetching: false,
       })
     ).toBe(false)
@@ -42,8 +53,8 @@ describe("progressive product detail loading state", () => {
           createdAt: 1,
           updatedAt: 1,
         },
-        cacheLoading: false,
-        networkLoading: false,
+        cachePending: false,
+        networkPending: false,
         networkFetching: true,
       })
     ).toBe(false)

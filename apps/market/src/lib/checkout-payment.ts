@@ -30,7 +30,7 @@ import {
   type SourcePriceQuote,
   type StoredPaymentAttempt,
 } from "@conduit/core"
-import type { CartItem } from "../hooks/useCart"
+import type { CartItem } from "./cart-model"
 
 export const CHECKOUT_QUOTE_MAX_AGE_MS = DEFAULT_PRICING_RATE_MAX_AGE_MS
 

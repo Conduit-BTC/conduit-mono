@@ -37,17 +37,15 @@ describe("Market verified zero-cost pickup route contract", () => {
     const placeOrderStart = checkout.indexOf(
       "async function placeOrder(): Promise<void>"
     )
-    const payNowStart = checkout.indexOf(
-      "async function payNow(): Promise<void>"
-    )
+    const payNowStart = checkout.indexOf("async function payNow(")
     const placeOrder = checkout.slice(placeOrderStart, payNowStart)
 
     expect(placeOrderStart).toBeGreaterThan(-1)
     expect(placeOrder).toContain(
-      "!signedBuyerPubkey && !(isGuestCheckout && verifiedZeroCostPickup)"
+      "!signedBuyerIdentity && !(isGuestCheckout && verifiedZeroCostPickup)"
     )
     expect(placeOrder).toContain("createSessionGuestOrderSigningIdentity(")
-    expect(placeOrder).toContain("guestIdentity ?? buyerPubkey")
+    expect(placeOrder).toContain("guestIdentity ?? signedBuyerIdentity")
     expect(placeOrder).toContain("guestContact")
     expect(placeOrder).toContain('checkoutMode: "pay_later"')
     expect(placeOrder).not.toContain("runOrderPayment")
@@ -59,17 +57,19 @@ describe("Market verified zero-cost pickup route contract", () => {
 
   it("suppresses Lightning discovery and fails closed before any zero payment", async () => {
     const checkout = await source("apps/market/src/routes/checkout.tsx")
-    const payNowStart = checkout.indexOf(
-      "async function payNow(): Promise<void>"
-    )
+    const payNowStart = checkout.indexOf("async function payNow(")
     const payNow = checkout.slice(payNowStart)
     const freshZeroGuard = payNow.indexOf("if (!pricingIntent.paymentRequired)")
     const orderIdentity = payNow.indexOf("const orderId = crypto.randomUUID()")
     const paymentService = payNow.indexOf("void runOrderPayment(serviceCtx)")
 
-    expect(checkout).toContain("enabled: paymentPathEnabled")
-    expect(checkout).toContain("if (!paymentPathEnabled || !merchantLud16)")
-    expect(checkout).toContain("paymentPathEnabled && (canTrySavedNwcWallet")
+    expect(checkout).toContain("const paymentPathEnabled =")
+    expect(checkout).toMatch(
+      /const canAttemptLightningPayment =\s+paymentPathEnabled &&/
+    )
+    expect(checkout).toMatch(
+      /const allowsManualLightningFallback =\s+paymentPathEnabled &&/
+    )
     expect(checkout).toContain(
       "const fastEligible =\n    paymentPathEnabled &&"
     )
@@ -99,7 +99,10 @@ describe("Market verified zero-cost pickup route contract", () => {
     expect(orders).toContain(
       '!zeroCostPickupOrder && vm.paymentStatus === "failed"'
     )
-    expect(orders).toContain("useWallet({ enabled: !zeroCostPickupOrder })")
+    expect(orders).toContain("const wallets = useWallets()")
+    expect(orders).toContain(
+      'const showRetryPayment = !zeroCostPickupOrder && vm.paymentStatus === "failed"'
+    )
   })
 
   it("does not reinterpret generic or shipped zero listings as free pickup", async () => {

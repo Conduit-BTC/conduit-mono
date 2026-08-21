@@ -18,10 +18,32 @@ import {
   isProductLegalPath,
 } from "../packages/ui/src/components"
 
-const RELEASED_LEGAL_SOURCE =
-  "packages/ui/src/legal/versions/product-legal-v1.0-2026-08-09.tsx"
-const RELEASED_LEGAL_SOURCE_SHA256 =
-  "fbd4105cf934f324b22d9b78c3debafd85e8f47553d7ad6d312348d502459636"
+const PRODUCT_LEGAL_V1_0 = Object.freeze({
+  version: "conduit-product-legal-v1.0-2026-08-09",
+  effectiveDate: "2026-08-09",
+  lastUpdatedDate: "2026-08-09",
+  archivedSource:
+    "packages/ui/src/legal/versions/product-legal-v1.0-2026-08-09.tsx",
+  sha256: "fbd4105cf934f324b22d9b78c3debafd85e8f47553d7ad6d312348d502459636",
+})
+const PRODUCT_LEGAL_V1_1 = Object.freeze({
+  version: "conduit-product-legal-v1.1-2026-08-09",
+  effectiveDate: "2026-08-09",
+  lastUpdatedDate: "2026-08-09",
+  archivedSource:
+    "packages/ui/src/legal/versions/product-legal-v1.1-2026-08-09.tsx",
+  sha256: "94d3447fcbcf435f59fd17d21a897c76eceff44a94a33f4a58277cc39c168aaa",
+})
+
+function normalizeWhitespace(value: string): string {
+  return value.replace(/\s+/g, " ")
+}
+
+async function readCurrentReleasedLegalSource(): Promise<string> {
+  return normalizeWhitespace(
+    await Bun.file(PRODUCT_LEGAL_V1_1.archivedSource).text()
+  )
+}
 
 function renderOfficialDocuments(hostname: string) {
   return {
@@ -177,27 +199,48 @@ describe("shared Product legal documents", () => {
     )
   })
 
-  it("pins dates and the immutable archive to the released version", async () => {
-    const archive = await Bun.file(RELEASED_LEGAL_SOURCE).text()
-    const digest = createHash("sha256").update(archive).digest("hex")
-
+  it("pins dates and every immutable archive to the released history", async () => {
+    expect(PRODUCT_LEGAL_VERSION).toBe(PRODUCT_LEGAL_V1_1.version)
     expect(PRODUCT_LEGAL_EFFECTIVE_DATE).toBe("2026-08-09")
     expect(PRODUCT_LEGAL_LAST_UPDATED_DATE).toBe("2026-08-09")
     expect(PRODUCT_LEGAL_VERSION_HISTORY).toEqual([
       {
-        version: PRODUCT_LEGAL_VERSION,
-        effectiveDate: PRODUCT_LEGAL_EFFECTIVE_DATE,
-        lastUpdatedDate: PRODUCT_LEGAL_LAST_UPDATED_DATE,
-        archivedSource: RELEASED_LEGAL_SOURCE,
+        version: PRODUCT_LEGAL_V1_0.version,
+        effectiveDate: PRODUCT_LEGAL_V1_0.effectiveDate,
+        lastUpdatedDate: PRODUCT_LEGAL_V1_0.lastUpdatedDate,
+        archivedSource: PRODUCT_LEGAL_V1_0.archivedSource,
+      },
+      {
+        version: PRODUCT_LEGAL_V1_1.version,
+        effectiveDate: PRODUCT_LEGAL_V1_1.effectiveDate,
+        lastUpdatedDate: PRODUCT_LEGAL_V1_1.lastUpdatedDate,
+        archivedSource: PRODUCT_LEGAL_V1_1.archivedSource,
       },
     ])
-    expect(digest).toBe(RELEASED_LEGAL_SOURCE_SHA256)
+
+    for (const release of [PRODUCT_LEGAL_V1_0, PRODUCT_LEGAL_V1_1]) {
+      const archive = await Bun.file(release.archivedSource).text()
+      const digest = createHash("sha256").update(archive).digest("hex")
+      expect(digest).toBe(release.sha256)
+    }
+  })
+
+  it("selects the current archived prose in both shared document wrappers", async () => {
+    const [privacyWrapper, termsWrapper] = await Promise.all([
+      Bun.file("packages/ui/src/components/ProductPrivacyPolicy.tsx").text(),
+      Bun.file("packages/ui/src/components/ProductTermsOfService.tsx").text(),
+    ])
+
+    for (const wrapper of [privacyWrapper, termsWrapper]) {
+      expect(wrapper).toContain("product-legal-v1.1-2026-08-09")
+      expect(wrapper).not.toContain("product-legal-v1.0-2026-08-09")
+    }
   })
 })
 
 describe("deployed Product policy accuracy", () => {
   it("documents strict kind-10050 delivery and never kind-14 fallback", async () => {
-    const archive = await Bun.file(RELEASED_LEGAL_SOURCE).text()
+    const archive = await Bun.file(PRODUCT_LEGAL_V1_1.archivedSource).text()
     const profiles = await Bun.file("deploy/pages-profiles.json").json()
 
     expect(
@@ -215,7 +258,7 @@ describe("deployed Product policy accuracy", () => {
   })
 
   it("does not overclaim encryption, relay deletion, or telemetry retention", async () => {
-    const archive = await Bun.file(RELEASED_LEGAL_SOURCE).text()
+    const archive = await Bun.file(PRODUCT_LEGAL_V1_1.archivedSource).text()
 
     expect(archive).toContain("unwrap and decrypt these messages locally")
     expect(archive).toContain("persistent storage")
@@ -225,5 +268,66 @@ describe("deployed Product policy accuracy", () => {
     expect(archive).not.toContain("Conduit does not decrypt")
     expect(archive).not.toContain("only the intended recipient")
     expect(archive).not.toContain("short-lived retention")
+  })
+
+  it("states that every queried inbox relay sees its filter without requiring AUTH", async () => {
+    const archive = await readCurrentReleasedLegalSource()
+
+    expect(archive).toContain(
+      "Each queried relay can observe the request filter"
+    )
+    expect(archive).toContain(
+      "even if it returns no event and even if NIP-42 is not used."
+    )
+    expect(archive).toContain(
+      "every queried relay can observe the recipient-scoped filter."
+    )
+  })
+
+  it("does not treat NIP-42 support or a prior response as proof of enforcement", async () => {
+    const archive = await readCurrentReleasedLegalSource()
+
+    expect(archive).toContain(
+      "does not by itself prove that a relay prevents every unauthorized request."
+    )
+    expect(archive).toContain(
+      "a relay that does not challenge may still return encrypted gift wraps without authentication."
+    )
+  })
+
+  it("distinguishes no public-read account proof from network anonymity", async () => {
+    const archive = await readCurrentReleasedLegalSource()
+
+    expect(archive).toContain(
+      "do not intentionally send an NIP-42 account proof or prompt the signer."
+    )
+    expect(archive).toContain("They are not anonymous at the network layer")
+    expect(archive).toContain(
+      "Ordinary public reads do not request that account proof, but they are not anonymous at the network layer."
+    )
+  })
+
+  it("documents the legacy NIP-04 lane as read-only and outside protected reads", async () => {
+    const archive = await readCurrentReleasedLegalSource()
+
+    expect(archive).toContain("may also retrieve legacy NIP-04 direct messages")
+    expect(archive).toContain(
+      "They do not publish new legacy kind-4 direct messages."
+    )
+    expect(archive).toContain("does not protect these legacy reads.")
+  })
+
+  it("separates logout cleanup from retained account-scoped caches", async () => {
+    const archive = await readCurrentReleasedLegalSource()
+
+    expect(archive).toContain(
+      "When the Product Apps process a sign-out or disconnect, or detect an account switch or loss of signer authority, they close that session’s authenticated relay connections"
+    )
+    expect(archive).toContain(
+      "This does not necessarily delete account-scoped messages, orders, relay settings, wallet information, or other browser caches"
+    )
+    expect(archive).toContain(
+      "attempt to erase saved authentication-session and NIP-46 client-key material"
+    )
   })
 })

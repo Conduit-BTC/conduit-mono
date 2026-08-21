@@ -32,10 +32,17 @@
 ## Risk Review
 
 - [ ] User auth remains external signer only (NIP-07/NIP-46)
-- [ ] No key custody introduced outside approved, documented service-signer exceptions
+- [ ] No user Nostr account-key custody introduced; approved application signers
+      remain within `docs/specs/protocol.md`, and any Portable Wallet credential
+      handling stays inside `docs/specs/wallets.md`
 - [ ] No plaintext message content added to telemetry, logs, or Conduit-operated servers
 - [ ] No behavioral tracking/profiling introduced
 - [ ] Payment flow remains non-custodial
+- [ ] Wallet credentials, recovery material, payment content, selected wallet
+      instance IDs, and balances remain out of logs and telemetry
+- [ ] Portable Wallet sends require explicit fee approval and ambiguous outcomes
+      cannot silently retry through another wallet or rail
+- [ ] The selected wallet instance remains fixed after a payment attempt starts
 - [ ] Shared package dependency boundaries preserved
 
 ## Nostr-Sensitive Preflight
@@ -48,7 +55,10 @@ Complete this section when the PR touches protocol/app logic, infra/relay behavi
 - [ ] Relay/source assumptions are stated, including NIP-65 `kind:10002`, NIP-17 `kind:10050`, cache, fallback, stale, or degraded-state behavior when relevant
 - [ ] NIP-44 v3 work cites public draft/client references, keeps v2 fallback, and gates behavior on explicit signer/recipient capability detection
 - [ ] New protocol construction, `giftWrap`, publish, unwrap/decrypt, relay planning, or event parsing lives in `@conduit/core`, or the PR explains why route-local code is unavoidable
-- [ ] Diagnostics/logs/telemetry remain content-free: no plaintext, ciphertext, invoices, order contents, addresses, signer secrets, NWC URIs, or message bodies
+- [ ] Diagnostics/logs/telemetry remain content-free: no plaintext, ciphertext,
+      invoices, order contents, addresses, signer secrets, NWC URIs, wallet
+      seeds/mnemonics/derived keys, provider credentials, wallet balances, or
+      payment/message bodies
 
 ## Decentralized Network Product Review
 
@@ -84,6 +94,9 @@ Reviewer note:
 - [ ] `bun run build` passes, or build is not required for this change
 - [ ] `bun run telemetry:check` passes, or telemetry is not affected
 - [ ] Selected Market/Merchant E2E smoke shards pass, or browser smoke coverage is not affected
+- [ ] Spark wallet changes were exercised end-to-end on the configured network:
+      create, fund, pay, close/reopen, and restore; mainnet QA used deliberately
+      small amounts, or Portable Wallet behavior is not affected
 - [ ] Tested locally with mock Lightning
 - [ ] Verified on preview deploy (if applicable)
 
