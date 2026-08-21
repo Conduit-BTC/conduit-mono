@@ -2,7 +2,7 @@ import "fake-indexeddb/auto"
 
 async function main(): Promise<void> {
   const {
-    formatGuestCheckoutOrderSmokeFailure,
+    getGuestCheckoutOrderSmokeFailureEvidence,
     parseGuestCheckoutOrderSmokeConfig,
     runGuestCheckoutOrderSmoke,
   } = await import("./guest_checkout_order_runner")
@@ -15,7 +15,8 @@ async function main(): Promise<void> {
       "Guest checkout order smoke passed. The merchant recovered one encrypted guest order. No invoice was requested and no payment was attempted."
     )
   } catch (error) {
-    console.error(formatGuestCheckoutOrderSmokeFailure(error))
+    const evidence = getGuestCheckoutOrderSmokeFailureEvidence(error)
+    console.error(evidence.summary)
     process.exitCode = 1
   } finally {
     disconnectNdk()

@@ -13,6 +13,7 @@ import {
 import {
   buildGuestCheckoutOrderRumor,
   formatGuestCheckoutOrderSmokeFailure,
+  getGuestCheckoutOrderSmokeFailureEvidence,
   parseGuestCheckoutOrderSmokeConfig,
   runGuestCheckoutOrderSmoke,
 } from "../scripts/smoke/guest_checkout_order_runner"
@@ -158,6 +159,56 @@ function productRead(
         cursorPagination: false,
       },
       fetchedAt: 1_700_000_000_000,
+    },
+  } as never
+}
+
+function recoveredOrderRead(
+  published: { content: string },
+  meta: {
+    source: "commerce" | "local_cache"
+    stale: boolean
+    degraded: boolean
+    inbox: {
+      declarationState: "declared" | "lookup_unavailable"
+      coverage: "complete" | "partial" | "unavailable"
+      readSource: "declared" | "mixed" | "cache"
+    }
+  }
+) {
+  const payload = JSON.parse(published.content)
+  return {
+    data: [
+      {
+        id: "smoke-order",
+        orderId: "smoke-order",
+        merchantPubkey: MERCHANT_PUBKEY,
+        buyerPubkey: GUEST_SIGNER.pubkey,
+        latestAt: 1_700_000_000_000,
+        latestType: "order",
+        status: null,
+        totalSummary: "10 SATS",
+        preview: "Order for 10 SATS",
+        messageCount: 1,
+        messages: [
+          {
+            id: "rumor-id",
+            orderId: "smoke-order",
+            type: "order",
+            createdAt: 1_700_000_000,
+            senderPubkey: GUEST_SIGNER.pubkey,
+            recipientPubkey: MERCHANT_PUBKEY,
+            rawContent: published.content,
+            payload,
+          },
+        ],
+      },
+    ],
+    meta: {
+      plan: "protected_conversation_list",
+      fetchedAt: 1_700_000_000_000,
+      ...meta,
+      capabilities: [],
     },
   } as never
 }
@@ -322,9 +373,11 @@ describe("guest checkout order smoke", () => {
       failure = error
     }
 
-    expect(formatGuestCheckoutOrderSmokeFailure(failure)).toBe(
-      "Guest checkout order smoke failed at product_read."
-    )
+    expect(getGuestCheckoutOrderSmokeFailureEvidence(failure)).toEqual({
+      status: "inconclusive",
+      stage: "product_read",
+      summary: "Guest checkout order smoke inconclusive at product_read.",
+    })
     expect(published).toBe(false)
   })
 
@@ -350,7 +403,7 @@ describe("guest checkout order smoke", () => {
     }
 
     expect(formatGuestCheckoutOrderSmokeFailure(failure)).toBe(
-      "Guest checkout order smoke failed at product_read."
+      "Guest checkout order smoke inconclusive at product_read."
     )
     expect(published).toBe(false)
   })
@@ -488,8 +541,7 @@ describe("guest checkout order smoke", () => {
           getProtectedReadAuthorization(MERCHANT_PUBKEY)?.signer.authMethod ??
           null
         if (!published) throw new Error("Order was not published")
-        const payload = JSON.parse(published.content)
-        const recoveryMeta = [
+        const recoveryMeta: Parameters<typeof recoveredOrderRead>[1] = [
           {
             source: "local_cache",
             stale: true,
@@ -521,40 +573,7 @@ describe("guest checkout order smoke", () => {
             },
           },
         ][Math.min(recoveryCalls - 1, 2)]!
-        return {
-          data: [
-            {
-              id: "smoke-order",
-              orderId: "smoke-order",
-              merchantPubkey: MERCHANT_PUBKEY,
-              buyerPubkey: GUEST_SIGNER.pubkey,
-              latestAt: 1_700_000_000_000,
-              latestType: "order",
-              status: null,
-              totalSummary: "10 SATS",
-              preview: "Order for 10 SATS",
-              messageCount: 1,
-              messages: [
-                {
-                  id: "rumor-id",
-                  orderId: "smoke-order",
-                  type: "order",
-                  createdAt: 1_700_000_000,
-                  senderPubkey: GUEST_SIGNER.pubkey,
-                  recipientPubkey: MERCHANT_PUBKEY,
-                  rawContent: published.content,
-                  payload,
-                },
-              ],
-            },
-          ],
-          meta: {
-            plan: "protected_conversation_list",
-            fetchedAt: 1_700_000_000_000,
-            ...recoveryMeta,
-            capabilities: [],
-          },
-        } as never
+        return recoveredOrderRead(published, recoveryMeta)
       },
       nowMs: () => 1_700_000_000_000,
       sleep: async () => {},
@@ -580,6 +599,67 @@ describe("guest checkout order smoke", () => {
       fiatSource: "frankfurter",
     })
     expect(recoveryAuthorizationMethod).toBe("nip07")
+    expect(getProtectedReadAuthorization(MERCHANT_PUBKEY)).toBeNull()
+    expect(getNdk().signer).toBeUndefined()
+  })
+
+  it("reports inconclusive when partial merchant inbox evidence exhausts", async () => {
+    const config = parseGuestCheckoutOrderSmokeConfig(
+      environment({
+        GUEST_CHECKOUT_SMOKE_RECOVERY_TIMEOUT_MS: "2",
+        GUEST_CHECKOUT_SMOKE_RECOVERY_POLL_MS: "1",
+      })
+    )
+    let now = 1_700_000_000_000
+    let published: { content: string } | null = null
+    let recoveryCalls = 0
+    let failure: unknown
+
+    try {
+      await runGuestCheckoutOrderSmoke(config, {
+        getProduct: async () => productRead(),
+        getPricingRate: async () => ({
+          rate: 100_000,
+          fetchedAt: 1_700_000_000_000,
+          source: "mempool",
+          fiatUsdRates: {},
+          fiatSource: "frankfurter",
+        }),
+        createOrderId: () => "smoke-order",
+        createGuestIdentity: () => identity(),
+        publishOrder: async (rumor) => {
+          published = rumor
+          return { buyerSelfCopyError: null, localCacheError: null }
+        },
+        getMerchantOrders: async () => {
+          recoveryCalls += 1
+          if (!published) throw new Error("Order was not published")
+          return recoveredOrderRead(published, {
+            source: "commerce",
+            stale: false,
+            degraded: true,
+            inbox: {
+              declarationState: "declared",
+              coverage: "partial",
+              readSource: "mixed",
+            },
+          })
+        },
+        nowMs: () => now,
+        sleep: async (milliseconds) => {
+          now += milliseconds
+        },
+      })
+    } catch (error) {
+      failure = error
+    }
+
+    expect(getGuestCheckoutOrderSmokeFailureEvidence(failure)).toEqual({
+      status: "inconclusive",
+      stage: "merchant_recovery",
+      summary: "Guest checkout order smoke inconclusive at merchant_recovery.",
+    })
+    expect(recoveryCalls).toBe(2)
     expect(getProtectedReadAuthorization(MERCHANT_PUBKEY)).toBeNull()
     expect(getNdk().signer).toBeUndefined()
   })
@@ -622,6 +702,11 @@ describe("guest checkout order smoke", () => {
               fetchedAt: now,
               stale: false,
               degraded: false,
+              inbox: {
+                declarationState: "declared",
+                coverage: "complete",
+                readSource: "declared",
+              },
               capabilities: [],
             },
           } as never

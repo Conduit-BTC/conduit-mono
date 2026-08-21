@@ -34,22 +34,48 @@ const SMOKE_CONTACT = {
   phone: "+1555010100",
 }
 
-type GuestCheckoutOrderSmokeStage =
+export type GuestCheckoutOrderSmokeStage =
   | "configuration"
   | "product_read"
   | "order_build"
   | "order_publish"
   | "merchant_recovery"
 
+export type GuestCheckoutOrderSmokeStatus = "passed" | "failed" | "inconclusive"
+
+export type GuestCheckoutOrderSmokeFailureEvidence = {
+  status: Exclude<GuestCheckoutOrderSmokeStatus, "passed">
+  stage: GuestCheckoutOrderSmokeStage
+  summary: string
+}
+
 class GuestCheckoutOrderSmokeFailure extends Error {
   override name = "GuestCheckoutOrderSmokeFailure"
 
   constructor(
     readonly stage: GuestCheckoutOrderSmokeStage,
+    readonly status: Exclude<GuestCheckoutOrderSmokeStatus, "passed">,
     cause: unknown
   ) {
-    super(`Guest checkout order smoke failed at ${stage}.`, { cause })
+    super(`Guest checkout order smoke ${status} at ${stage}.`, { cause })
   }
+}
+
+class GuestCheckoutOrderSmokeInconclusive extends Error {
+  override name = "GuestCheckoutOrderSmokeInconclusive"
+}
+
+function stageFailure(
+  stage: GuestCheckoutOrderSmokeStage,
+  error: unknown
+): GuestCheckoutOrderSmokeFailure {
+  return new GuestCheckoutOrderSmokeFailure(
+    stage,
+    error instanceof GuestCheckoutOrderSmokeInconclusive
+      ? "inconclusive"
+      : "failed",
+    error
+  )
 }
 
 type Environment = Record<string, string | undefined>
@@ -189,7 +215,7 @@ export function parseGuestCheckoutOrderSmokeConfig(
       ),
     }
   } catch (error) {
-    throw new GuestCheckoutOrderSmokeFailure("configuration", error)
+    throw stageFailure("configuration", error)
   }
 }
 
@@ -326,18 +352,22 @@ async function recoverOrderAsMerchant(
 ): Promise<void> {
   const deadline = dependencies.nowMs() + config.recoveryTimeoutMs
   let lastError: unknown
+  let sawCompleteRead = false
+  let sawIncompleteRead = false
   do {
     try {
       const result = await dependencies.getMerchantOrders({
         principalPubkey: config.merchantPubkey,
         limit: 200,
       })
-      if (
+      const completeRead =
         result.meta.source === "commerce" &&
         !result.meta.stale &&
         !result.meta.degraded &&
         !result.meta.capped &&
-        result.meta.inbox?.coverage === "complete" &&
+        result.meta.inbox?.coverage === "complete"
+      if (
+        completeRead &&
         hasRecoveredGuestOrder(result.data, {
           ...input,
           merchantPubkey: config.merchantPubkey,
@@ -346,15 +376,29 @@ async function recoverOrderAsMerchant(
       ) {
         return
       }
-      lastError = new Error(
-        "Merchant recovery requires a current complete inbox read."
-      )
+      if (completeRead) {
+        sawCompleteRead = true
+        lastError = new Error(
+          "Merchant recovery did not observe the order in a complete inbox read."
+        )
+      } else {
+        sawIncompleteRead = true
+        lastError = new GuestCheckoutOrderSmokeInconclusive(
+          "Merchant recovery requires a current complete inbox read."
+        )
+      }
     } catch (error) {
       lastError = error
     }
     await dependencies.sleep(config.recoveryPollMs)
   } while (dependencies.nowMs() < deadline)
 
+  if (sawIncompleteRead && !sawCompleteRead) {
+    throw new GuestCheckoutOrderSmokeInconclusive(
+      "Merchant recovery exhausted incomplete inbox evidence.",
+      { cause: lastError }
+    )
+  }
   throw new Error("Merchant did not recover the guest order before timeout.", {
     cause: lastError,
   })
@@ -387,7 +431,7 @@ export async function runGuestCheckoutOrderSmoke(
       product.meta.degraded ||
       product.meta.capped
     ) {
-      throw new Error(
+      throw new GuestCheckoutOrderSmokeInconclusive(
         "Guest checkout smoke requires current product data from a complete network read."
       )
     }
@@ -398,7 +442,7 @@ export async function runGuestCheckoutOrderSmoke(
       nowMs()
     )
   } catch (error) {
-    throw new GuestCheckoutOrderSmokeFailure("product_read", error)
+    throw stageFailure("product_read", error)
   }
 
   const orderId = createOrderId()
@@ -415,13 +459,13 @@ export async function runGuestCheckoutOrderSmoke(
       createdAt: nowMs(),
     })
   } catch (error) {
-    throw new GuestCheckoutOrderSmokeFailure("order_build", error)
+    throw stageFailure("order_build", error)
   }
 
   try {
     await publishOrder(rumor, getNdk(), config.merchantPubkey, identity)
   } catch (error) {
-    throw new GuestCheckoutOrderSmokeFailure("order_publish", error)
+    throw stageFailure("order_publish", error)
   }
 
   const merchantSigner = new NDKPrivateKeySigner(
@@ -445,7 +489,7 @@ export async function runGuestCheckoutOrderSmoke(
       { getMerchantOrders, nowMs, sleep }
     )
   } catch (error) {
-    throw new GuestCheckoutOrderSmokeFailure("merchant_recovery", error)
+    throw stageFailure("merchant_recovery", error)
   } finally {
     merchantSignerAuthorityCurrent = false
     try {
@@ -459,9 +503,21 @@ export async function runGuestCheckoutOrderSmoke(
 }
 
 export function formatGuestCheckoutOrderSmokeFailure(error: unknown): string {
+  return getGuestCheckoutOrderSmokeFailureEvidence(error).summary
+}
+
+export function getGuestCheckoutOrderSmokeFailureEvidence(
+  error: unknown
+): GuestCheckoutOrderSmokeFailureEvidence {
   const stage =
     error instanceof GuestCheckoutOrderSmokeFailure
       ? error.stage
       : "configuration"
-  return `Guest checkout order smoke failed at ${stage}.`
+  const status =
+    error instanceof GuestCheckoutOrderSmokeFailure ? error.status : "failed"
+  return {
+    status,
+    stage,
+    summary: `Guest checkout order smoke ${status} at ${stage}.`,
+  }
 }

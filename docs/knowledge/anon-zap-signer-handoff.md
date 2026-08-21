@@ -464,6 +464,11 @@ current, complete inbox read decrypts that exact order with the expected guest
 identity and product. Stale, degraded, partial, and cache-backed recovery reads
 do not pass the canary.
 
+The runner emits a redacted `passed`, `failed`, or `inconclusive` outcome.
+Exhausted partial or degraded product and inbox evidence is `inconclusive` and
+still returns a nonzero job result. Fixture, construction, publication, and
+complete-read recovery failures remain `failed`.
+
 Merchant recovery uses a NIP-07-shaped CI adapter over the dedicated test
 signer. The adapter performs real event signing and protected-read
 authorization, but it is not evidence for extension approval UX, browser
