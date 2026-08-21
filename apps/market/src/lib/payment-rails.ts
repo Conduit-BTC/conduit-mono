@@ -2,7 +2,6 @@ import {
   buildPaymentAttemptResultTelemetryProperties,
   getWeblnPaymentFailurePhase,
   hasWebLN,
-  isWeblnPreSubmitFailure,
   recordBrowserTelemetryEvent,
   weblnSendPayment,
   type ConduitAppId,
@@ -216,15 +215,13 @@ export async function payCheckoutInvoice(
       }
     } catch (error) {
       const message = getErrorMessage(error, "Browser wallet payment failed")
-      if (isWeblnPreSubmitFailure(error)) {
+      const phase = getWeblnPaymentFailurePhase(error)
+      if (phase === "unavailable" || phase === "enable") {
         recordPaymentAttemptResult({
           amountSats,
           latencyMs: Date.now() - startedAt,
           rail: "webln",
-          status:
-            getWeblnPaymentFailurePhase(error) === "unavailable"
-              ? "unavailable"
-              : "failure",
+          status: phase === "unavailable" ? "unavailable" : "failure",
         })
         return {
           status: "retryable_failure",

@@ -65,7 +65,6 @@ type ShopperPresetsContextValue = {
   unlockPolicy: ShopperPresetsUnlockPolicy
   hasRemotePreset: boolean
   canSync: boolean
-  updateLocal: (value: ShopperPresetsValue) => void
   unlock: (
     password: string,
     policy: ShopperPresetsUnlockPolicy
@@ -501,13 +500,6 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
     presetOwnerPubkey && decryptedPreset
       ? decryptedPreset.value
       : DEFAULT_SHOPPER_PRESETS
-  const updateLocal = useCallback(
-    (value: ShopperPresetsValue) => {
-      if (!identityPubkey) return
-      setDecryptedPreset({ ownerPubkey: identityPubkey, value })
-    },
-    [identityPubkey]
-  )
   const discoveryDestination = useMemo(
     () => getShopperDiscoveryDestination(preset),
     [preset]
@@ -524,7 +516,6 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
       hasRemotePreset: remotePreset !== null,
       canSync:
         !!identityPubkey && !!relayScope && identityReady && relaySettingsReady,
-      updateLocal,
       unlock,
       save,
       clear,
@@ -548,7 +539,6 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
       unlock,
       unlockPolicy,
       unlockState,
-      updateLocal,
     ]
   )
 

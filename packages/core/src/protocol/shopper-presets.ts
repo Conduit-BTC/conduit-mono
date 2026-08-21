@@ -193,23 +193,10 @@ export type ShopperPresetsProtocolDependencies = {
   randomBytes?: (length: number) => Uint8Array
 }
 
-export class ShopperPresetsProtocolError extends Error {
-  readonly reason: "fresh_read_required" | "identity_mismatch"
-
-  constructor(reason: ShopperPresetsProtocolError["reason"], message: string) {
-    super(message)
-    this.name = "ShopperPresetsProtocolError"
-    this.reason = reason
-  }
-}
-
 function normalizePubkey(pubkey: string): string {
   const normalized = pubkey.trim().toLowerCase()
   if (!/^[0-9a-f]{64}$/.test(normalized)) {
-    throw new ShopperPresetsProtocolError(
-      "identity_mismatch",
-      "Connected shopper identity is invalid."
-    )
+    throw new Error("Connected shopper identity is invalid.")
   }
   return normalized
 }
@@ -310,18 +297,7 @@ export function serializeShopperPresetsEnvelope(
   envelope: ShopperPresetsEnvelope
 ): string {
   const parsed = shopperPresetsEnvelopeSchema.parse(envelope)
-  return JSON.stringify({
-    format: parsed.format,
-    version: parsed.version,
-    encryption: {
-      kdf: parsed.encryption.kdf,
-      parameters: parsed.encryption.parameters,
-      salt: parsed.encryption.salt,
-      cipher: parsed.encryption.cipher,
-      nonce: parsed.encryption.nonce,
-    },
-    ciphertext: parsed.ciphertext,
-  })
+  return JSON.stringify(parsed)
 }
 
 export function parseShopperPresetsPlaintext(
@@ -468,10 +444,7 @@ async function requireMatchingSigner(
 ): Promise<void> {
   const user = await signer.user()
   if (user.pubkey.toLowerCase() !== normalizePubkey(pubkey)) {
-    throw new ShopperPresetsProtocolError(
-      "identity_mismatch",
-      "The active signer does not match the shopper identity."
-    )
+    throw new Error("The active signer does not match the shopper identity.")
   }
 }
 
@@ -570,16 +543,12 @@ export async function publishShopperPresets({
   const ndk = dependencies.ndk ?? getNdk()
   const signer = dependencies.signer ?? ndk.signer
   if (!signer) {
-    throw new ShopperPresetsProtocolError(
-      "identity_mismatch",
-      "Connect a signer before syncing shopper presets."
-    )
+    throw new Error("Connect a signer before syncing shopper presets.")
   }
 
   const current = await fetchShopperPresets(owner, { ...dependencies, ndk })
   if (current.state === "unavailable") {
-    throw new ShopperPresetsProtocolError(
-      "fresh_read_required",
+    throw new Error(
       "A complete fresh preset read is required before publishing."
     )
   }
@@ -625,8 +594,7 @@ export async function publishShopperPresets({
     convergence.state !== "found" ||
     convergence.revision.eventId !== event.id
   ) {
-    throw new ShopperPresetsProtocolError(
-      "fresh_read_required",
+    throw new Error(
       "The published shopper preset did not converge on relay storage."
     )
   }

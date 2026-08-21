@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, mock } from "bun:test"
 import {
   getWeblnPaymentFailurePhase,
-  isWeblnPreSubmitFailure,
   WeblnPaymentError,
   weblnSendPayment,
   type WebLNProvider,
@@ -144,8 +143,8 @@ describe("weblnSendPayment", () => {
   })
 })
 
-describe("isWeblnPreSubmitFailure", () => {
-  it("returns true only for unavailable and enable failures", () => {
+describe("getWeblnPaymentFailurePhase", () => {
+  it("returns the failure phase reported by typed payment errors", () => {
     for (const phase of [
       "unavailable",
       "enable",
@@ -155,9 +154,6 @@ describe("isWeblnPreSubmitFailure", () => {
       const error = new WeblnPaymentError("Payment failed", phase)
 
       expect(getWeblnPaymentFailurePhase(error)).toBe(phase)
-      expect(isWeblnPreSubmitFailure(error)).toBe(
-        phase === "unavailable" || phase === "enable"
-      )
     }
   })
 })

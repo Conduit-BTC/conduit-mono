@@ -111,15 +111,6 @@ export function getWeblnPaymentFailurePhase(
 }
 
 /**
- * True only when the invoice provably never reached the wallet, so another
- * payment rail may attempt it without risking a double payment.
- */
-export function isWeblnPreSubmitFailure(error: unknown): boolean {
-  const phase = getWeblnPaymentFailurePhase(error)
-  return phase === "unavailable" || phase === "enable"
-}
-
-/**
  * Generate a Lightning invoice using WebLN (Alby extension or similar).
  * Throws if WebLN is not available or the user rejects.
  */

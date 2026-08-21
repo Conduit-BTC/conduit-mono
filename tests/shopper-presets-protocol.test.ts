@@ -98,6 +98,7 @@ describe("NIP-78 shopper presets", () => {
     })
     const serialized = serializeShopperPresetsEnvelope(envelope)
     expect(serialized).not.toContain("Ada")
+    expect(serialized).toBe(JSON.stringify(envelope))
     expect(parseShopperPresetsEnvelope(serialized)).toEqual(envelope)
     expect(await decryptShopperPresetsDocument(envelope, password)).toEqual(
       presetDocument()
