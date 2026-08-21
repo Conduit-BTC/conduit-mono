@@ -225,6 +225,25 @@ Emitted as an aggregate operational counter for relay connection outcomes.
 
 Emitted as an aggregate operational counter for relay publish outcomes.
 
+<!-- telemetry-event: nip17_compatibility_result properties=event_name,app,page_url,page_path,action,declaration_class,delivery_route,ack_outcome,repair_outcome,block_reason -->
+
+### `nip17_compatibility_result`
+
+Emitted only for the bounded NIP-17 migration rollout. It contains fixed enums
+and no identifiers, relay URLs, payloads, errors, or free text.
+
+- `action=order_delivery` denominator: every validated kind-16 recipient send
+  that reaches declaration route selection. Route-blocked attempts use
+  `delivery_route=blocked` and a fixed `block_reason`; a selected strict or
+  compatibility route uses `ack_outcome=zero|partial|positive`.
+- `action=declaration_repair` denominator: every explicit Network declaration
+  publish or exact-event redistribution. `repair_outcome` is `discoverable`,
+  `confirmation_pending`, or `failed`; delivery and ACK fields are
+  `not_applicable`.
+- Rollout observation uses a rolling 24-hour window per deployment profile.
+  Event counts are aggregate attempts, not users, merchants, or orders. No
+  identity may be reconstructed or correlated from these counters.
+
 <!-- telemetry-event: checkout_result properties=event_name,app,page_url,page_path,surface,mode,rail,network,status,count_bucket,amount_bucket,product_type,time_bucket -->
 
 ### `checkout_result`

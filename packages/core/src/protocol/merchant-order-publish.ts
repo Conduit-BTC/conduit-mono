@@ -116,6 +116,7 @@ export async function publishMerchantOrderMessage(
       senderPubkey: input.merchantPubkey,
       recipientPubkey,
     }),
+    telemetryApp: "merchant",
   })
   if (selfCopyError) {
     console.warn("Merchant order self-copy publish failed", selfCopyError)
