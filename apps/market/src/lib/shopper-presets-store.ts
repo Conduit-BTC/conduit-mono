@@ -12,6 +12,34 @@ type StoredUnlock = {
   password: string
 }
 
+function readStorageItem(storage: StorageRead, key: string): string | null {
+  try {
+    return storage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
+function setStorageItem(
+  storage: StorageWrite,
+  key: string,
+  value: string
+): void {
+  try {
+    storage.setItem(key, value)
+  } catch {
+    // Local unlock persistence must not affect relay preset operations.
+  }
+}
+
+function removeStorageItem(storage: StorageWrite, key: string): void {
+  try {
+    storage.removeItem(key)
+  } catch {
+    // Cleanup remains best-effort when browser storage is unavailable.
+  }
+}
+
 export function getLegacyShopperPresetsStorageKey(pubkey: string): string {
   return `${LEGACY_PRESETS_STORAGE_KEY_PREFIX}:${pubkey}`
 }
@@ -28,7 +56,10 @@ export function readShopperPresetsUnlockPolicy(
   pubkey: string,
   storage: StorageRead
 ): ShopperPresetsUnlockPolicy {
-  const value = storage.getItem(getShopperPresetsPolicyStorageKey(pubkey))
+  const value = readStorageItem(
+    storage,
+    getShopperPresetsPolicyStorageKey(pubkey)
+  )
   return value === "device" || value === "session" ? value : "always"
 }
 
@@ -46,7 +77,8 @@ export function readRememberedShopperPresetsPassword(
   ]
   for (const candidate of candidates) {
     try {
-      const raw = candidate.storage.getItem(
+      const raw = readStorageItem(
+        candidate.storage,
         getShopperPresetsUnlockStorageKey(pubkey)
       )
       if (!raw) continue
@@ -74,12 +106,13 @@ export function persistShopperPresetsUnlock(
 ): void {
   const unlockKey = getShopperPresetsUnlockStorageKey(pubkey)
   const policyKey = getShopperPresetsPolicyStorageKey(pubkey)
-  localStorage.removeItem(unlockKey)
-  sessionStorage.removeItem(unlockKey)
-  localStorage.setItem(policyKey, policy)
+  removeStorageItem(localStorage, unlockKey)
+  removeStorageItem(sessionStorage, unlockKey)
+  setStorageItem(localStorage, policyKey, policy)
   if (policy === "always") return
   const target = policy === "device" ? localStorage : sessionStorage
-  target.setItem(
+  setStorageItem(
+    target,
     unlockKey,
     JSON.stringify({ version: 1, password } satisfies StoredUnlock)
   )
@@ -91,15 +124,15 @@ export function clearShopperPresetsUnlock(
   sessionStorage: StorageWrite
 ): void {
   const key = getShopperPresetsUnlockStorageKey(pubkey)
-  localStorage.removeItem(key)
-  sessionStorage.removeItem(key)
+  removeStorageItem(localStorage, key)
+  removeStorageItem(sessionStorage, key)
 }
 
 export function removeLegacyPlaintextShopperPresets(
   pubkey: string,
   storage: StorageWrite
 ): void {
-  storage.removeItem(getLegacyShopperPresetsStorageKey(pubkey))
+  removeStorageItem(storage, getLegacyShopperPresetsStorageKey(pubkey))
 }
 
 export function getBrowserShopperPresetsStorage(): {

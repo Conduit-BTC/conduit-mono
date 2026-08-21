@@ -4,6 +4,11 @@ import type {
   ShopperShippingPreset,
 } from "@conduit/core"
 import { fetchShopperPresetsForSession } from "../apps/market/src/hooks/useShopperPresets"
+import {
+  isCurrentShopperPresetsRelayLifecycle,
+  shopperPresetsQueryKey,
+  shouldRefetchShopperPresetsAfterRelayActivation,
+} from "../apps/market/src/lib/shopper-presets-relay-lifecycle"
 import { getShopperPreferencesSaveBlockers } from "../apps/market/src/lib/shopper-preferences-validation"
 import { getCartShippingDestinationEligibility } from "../apps/market/src/lib/cart-shipping-options"
 import {
@@ -16,9 +21,11 @@ import {
 import {
   clearShopperPresetsUnlock,
   getLegacyShopperPresetsStorageKey,
+  getShopperPresetsPolicyStorageKey,
   getShopperPresetsUnlockStorageKey,
   persistShopperPresetsUnlock,
   readRememberedShopperPresetsPassword,
+  readShopperPresetsUnlockPolicy,
   removeLegacyPlaintextShopperPresets,
 } from "../apps/market/src/lib/shopper-presets-store"
 import type { CartItem } from "../apps/market/src/lib/cart-model"
@@ -37,6 +44,27 @@ function memoryStorage(): Storage {
     },
     setItem: (key, value) => {
       values.set(key, value)
+    },
+  }
+}
+
+function throwingStorage(operations: Array<"get" | "set" | "remove">): Storage {
+  const fails = new Set(operations)
+  return {
+    get length() {
+      return 0
+    },
+    clear: () => undefined,
+    getItem: () => {
+      if (fails.has("get")) throw new Error("storage read failed")
+      return null
+    },
+    key: () => null,
+    removeItem: () => {
+      if (fails.has("remove")) throw new Error("storage remove failed")
+    },
+    setItem: () => {
+      if (fails.has("set")) throw new Error("storage write failed")
     },
   }
 }
@@ -144,6 +172,94 @@ describe("Market shopper preset integration", () => {
     expect(waitCount).toBe(1)
   })
 
+  it("waits for the signed-in relay scope before the initial preset read", async () => {
+    const source = await Bun.file(
+      "apps/market/src/hooks/useShopperPresets.tsx"
+    ).text()
+
+    expect(source).toContain(
+      "const { identityReady, relayScope, relaySettingsReady } = useConduitSession()"
+    )
+    expect(source).toContain(
+      "enabled: !!identityPubkey && identityReady && relaySettingsReady"
+    )
+  })
+
+  it("does not explicitly refetch the initial ready session with no cache", () => {
+    expect(
+      shouldRefetchShopperPresetsAfterRelayActivation(
+        null,
+        {
+          identityPubkey: "buyer",
+          relayScope: "market:buyer",
+          relaySettingsReady: true,
+        },
+        false
+      )
+    ).toBe(false)
+  })
+
+  it("refetches a cached session once when relay settings reactivate", () => {
+    const lifecycle = {
+      identityPubkey: "buyer",
+      relayScope: "market:buyer",
+    }
+
+    expect(
+      shouldRefetchShopperPresetsAfterRelayActivation(
+        { ...lifecycle, relaySettingsReady: false },
+        { ...lifecycle, relaySettingsReady: true },
+        true
+      )
+    ).toBe(true)
+  })
+
+  it("uses a distinct query key for each relay scope", () => {
+    expect(shopperPresetsQueryKey("buyer", "market:buyer:primary")).not.toEqual(
+      shopperPresetsQueryKey("buyer", "market:buyer:secondary")
+    )
+  })
+
+  it("does not refetch repeatedly while relay settings remain ready", () => {
+    const lifecycle = {
+      identityPubkey: "buyer",
+      relayScope: "market:buyer",
+      relaySettingsReady: true,
+    }
+
+    expect(
+      shouldRefetchShopperPresetsAfterRelayActivation(
+        lifecycle,
+        lifecycle,
+        true
+      )
+    ).toBe(false)
+  })
+
+  it("fences preset commits after an identity or relay scope change", () => {
+    const previous = {
+      identityPubkey: "buyer-a",
+      relayScope: "market:buyer-a",
+      relaySettingsReady: false,
+    }
+    const current = {
+      identityPubkey: "buyer-b",
+      relayScope: "market:buyer-b",
+      relaySettingsReady: true,
+    }
+
+    expect(
+      shouldRefetchShopperPresetsAfterRelayActivation(previous, current, true)
+    ).toBe(false)
+    expect(isCurrentShopperPresetsRelayLifecycle(current, previous)).toBe(false)
+    expect(
+      isCurrentShopperPresetsRelayLifecycle(
+        { ...previous, relayScope: "market:buyer-a:next" },
+        previous
+      )
+    ).toBe(false)
+  })
+
   it("stores an unlock password only after an explicit policy choice", () => {
     const local = memoryStorage()
     const session = memoryStorage()
@@ -185,6 +301,105 @@ describe("Market shopper preset integration", () => {
     storage.setItem(key, JSON.stringify({ value: preset }))
     removeLegacyPlaintextShopperPresets("buyer", storage)
     expect(storage.getItem(key)).toBeNull()
+  })
+
+  it("treats storage read failures as absent unlock state", () => {
+    const storage = throwingStorage(["get"])
+
+    expect(readShopperPresetsUnlockPolicy("buyer", storage)).toBe("always")
+    expect(
+      readRememberedShopperPresetsPassword("buyer", storage, storage)
+    ).toBeNull()
+  })
+
+  it("keeps unlock persistence and cleanup best-effort when storage writes fail", () => {
+    const storage = throwingStorage(["set", "remove"])
+
+    expect(() =>
+      persistShopperPresetsUnlock(
+        "buyer",
+        "password one",
+        "always",
+        storage,
+        storage
+      )
+    ).not.toThrow()
+    expect(() =>
+      clearShopperPresetsUnlock("buyer", storage, storage)
+    ).not.toThrow()
+    expect(() =>
+      removeLegacyPlaintextShopperPresets("buyer", storage)
+    ).not.toThrow()
+  })
+
+  it("continues session password cleanup after a local storage removal failure", () => {
+    const local = throwingStorage(["remove"])
+    const session = memoryStorage()
+    const key = getShopperPresetsUnlockStorageKey("buyer")
+    session.setItem(key, JSON.stringify({ version: 1, password: "password" }))
+
+    clearShopperPresetsUnlock("buyer", local, session)
+
+    expect(session.getItem(key)).toBeNull()
+  })
+
+  it("keeps the selected policy in memory when local storage is unavailable", async () => {
+    const source = await Bun.file(
+      "apps/market/src/hooks/useShopperPresets.tsx"
+    ).text()
+    const setPolicyIndex = source.indexOf("setUnlockPolicy(policy)")
+    const persistIndex = source.indexOf(
+      "persistShopperPresetsUnlock(",
+      setPolicyIndex
+    )
+
+    expect(setPolicyIndex).toBeGreaterThan(-1)
+    expect(persistIndex).toBeGreaterThan(setPolicyIndex)
+    expect(source).toContain("clearShopperPresetsUnlock(")
+    expect(source).toContain("removeLegacyPlaintextShopperPresets(")
+    expect(source).toContain("readRememberedShopperPresetsPassword(")
+  })
+
+  it("keeps save, unlock, clear, and lock protocol outcomes separate from storage", async () => {
+    const source = await Bun.file(
+      "apps/market/src/hooks/useShopperPresets.tsx"
+    ).text()
+    const unlockIndex = source.indexOf("const decryptRemote = useCallback")
+    const saveIndex = source.indexOf("const save = useCallback")
+    const clearIndex = source.indexOf("const clear = useCallback")
+    const lockIndex = source.indexOf("const lock = useCallback")
+
+    expect(
+      source.indexOf("rememberPassword(password, policy)", unlockIndex)
+    ).toBeGreaterThan(unlockIndex)
+    expect(
+      source.indexOf("rememberPassword(password, policy)", saveIndex)
+    ).toBeGreaterThan(saveIndex)
+    expect(
+      source.indexOf("rememberPassword(password, unlockPolicy)", clearIndex)
+    ).toBeGreaterThan(clearIndex)
+    expect(
+      source.indexOf("clearShopperPresetsUnlock(", lockIndex)
+    ).toBeGreaterThan(lockIndex)
+  })
+
+  it("does not require password persistence for the always policy", () => {
+    const local = memoryStorage()
+    const session = throwingStorage(["set", "remove"])
+
+    expect(() =>
+      persistShopperPresetsUnlock(
+        "buyer",
+        "password one",
+        "always",
+        local,
+        session
+      )
+    ).not.toThrow()
+    expect(local.getItem(getShopperPresetsUnlockStorageKey("buyer"))).toBeNull()
+    expect(local.getItem(getShopperPresetsPolicyStorageKey("buyer"))).toBe(
+      "always"
+    )
   })
 
   it("prefills the complete checkout form without replacing an active draft", () => {

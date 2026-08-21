@@ -31,6 +31,12 @@ import {
   removeLegacyPlaintextShopperPresets,
   type ShopperPresetsUnlockPolicy,
 } from "../lib/shopper-presets-store"
+import {
+  isCurrentShopperPresetsRelayLifecycle,
+  shopperPresetsQueryKey,
+  shouldRefetchShopperPresetsAfterRelayActivation,
+  type ShopperPresetsRelayLifecycle,
+} from "../lib/shopper-presets-relay-lifecycle"
 
 export type ShopperPresetsSyncState =
   "disconnected" | "syncing" | "ready" | "synced" | "unavailable" | "error"
@@ -78,10 +84,6 @@ const ShopperPresetsContext = createContext<ShopperPresetsContextValue | null>(
   null
 )
 
-function queryKey(pubkey: string | null) {
-  return ["shopper-presets-envelope", pubkey] as const
-}
-
 const waitForColdStartRetry = () =>
   new Promise<void>((resolve) => globalThis.setTimeout(resolve, 500))
 
@@ -100,11 +102,22 @@ export async function fetchShopperPresetsForSession(
 
 export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
   const { pubkey, status } = useAuth()
-  const { identityReady } = useConduitSession()
+  const { identityReady, relayScope, relaySettingsReady } = useConduitSession()
   const queryClient = useQueryClient()
   const identityPubkey = status === "connected" ? pubkey : null
-  const identityRef = useRef(identityPubkey)
-  identityRef.current = identityPubkey
+  const relayLifecycle = useMemo<ShopperPresetsRelayLifecycle>(
+    () => ({
+      identityPubkey,
+      relayScope,
+      relaySettingsReady,
+    }),
+    [identityPubkey, relayScope, relaySettingsReady]
+  )
+  const relayLifecycleRef = useRef(relayLifecycle)
+  relayLifecycleRef.current = relayLifecycle
+  const previousRelayLifecycleRef = useRef<ShopperPresetsRelayLifecycle | null>(
+    null
+  )
   const handledRemoteRef = useRef<string | null>(null)
   const [decryptedPreset, setDecryptedPreset] =
     useState<DecryptedPreset | null>(null)
@@ -118,20 +131,38 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
     useState<ShopperPresetsUnlockPolicy>("always")
 
   const remote = useQuery({
-    queryKey: queryKey(identityPubkey),
+    queryKey: shopperPresetsQueryKey(identityPubkey, relayScope),
     queryFn: () => fetchShopperPresetsForSession(identityPubkey!),
-    enabled: !!identityPubkey && identityReady,
+    enabled: !!identityPubkey && identityReady && relaySettingsReady,
     staleTime: Number.POSITIVE_INFINITY,
     retry: false,
     refetchOnMount: false,
     refetchOnReconnect: false,
     refetchOnWindowFocus: false,
   })
+  const refetchRemote = remote.refetch
+
+  useEffect(() => {
+    const previous = previousRelayLifecycleRef.current
+    previousRelayLifecycleRef.current = relayLifecycle
+    const cacheKey = shopperPresetsQueryKey(identityPubkey, relayScope)
+    const hasCachedData = queryClient.getQueryData(cacheKey) !== undefined
+    if (
+      !shouldRefetchShopperPresetsAfterRelayActivation(
+        previous,
+        relayLifecycle,
+        hasCachedData
+      )
+    )
+      return
+    void refetchRemote()
+  }, [identityPubkey, queryClient, refetchRemote, relayLifecycle, relayScope])
 
   const rememberPassword = useCallback(
     (password: string, policy: ShopperPresetsUnlockPolicy) => {
       if (!identityPubkey) return
       const storage = getBrowserShopperPresetsStorage()
+      setUnlockPolicy(policy)
       if (!storage) return
       persistShopperPresetsUnlock(
         identityPubkey,
@@ -140,7 +171,6 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
         storage.local,
         storage.session
       )
-      setUnlockPolicy(policy)
     },
     [identityPubkey]
   )
@@ -151,17 +181,23 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
       password: string,
       policy: ShopperPresetsUnlockPolicy
     ): Promise<boolean> => {
-      const identity = identityPubkey
-      if (!identity) return false
+      const lifecycle = relayLifecycle
+      if (!lifecycle.identityPubkey) return false
       setUnlockState("unlocking")
       try {
         const document = await decryptShopperPresetsDocument(
           encrypted,
           password
         )
-        if (identityRef.current !== identity) return false
+        if (
+          !isCurrentShopperPresetsRelayLifecycle(
+            relayLifecycleRef.current,
+            lifecycle
+          )
+        )
+          return false
         setDecryptedPreset({
-          ownerPubkey: identity,
+          ownerPubkey: lifecycle.identityPubkey,
           value: getShopperPresetsValue(document),
         })
         setUnlockState("unlocked")
@@ -169,11 +205,17 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
         rememberPassword(password, policy)
         return true
       } catch {
-        if (identityRef.current === identity) setUnlockState("error")
+        if (
+          isCurrentShopperPresetsRelayLifecycle(
+            relayLifecycleRef.current,
+            lifecycle
+          )
+        )
+          setUnlockState("error")
         return false
       }
     },
-    [identityPubkey, rememberPassword]
+    [relayLifecycle, rememberPassword]
   )
 
   useEffect(() => {
@@ -194,11 +236,12 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
         readShopperPresetsUnlockPolicy(identityPubkey, storage.local)
       )
     }
-  }, [identityPubkey])
+  }, [identityPubkey, relayScope])
 
   useEffect(() => {
     const result = remote.data
     if (!identityPubkey || !result) return
+    const lifecycle = relayLifecycle
     if (result.state === "not_found") {
       setRemotePreset(null)
       setDecryptedPreset(null)
@@ -231,7 +274,15 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
     }
     void decryptRemote(encrypted, remembered.password, remembered.policy).then(
       (unlocked) => {
-        if (unlocked || !storage) return
+        if (
+          unlocked ||
+          !storage ||
+          !isCurrentShopperPresetsRelayLifecycle(
+            relayLifecycleRef.current,
+            lifecycle
+          )
+        )
+          return
         clearShopperPresetsUnlock(
           identityPubkey,
           storage.local,
@@ -240,7 +291,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
         setUnlockState("locked")
       }
     )
-  }, [decryptRemote, identityPubkey, remote.data])
+  }, [decryptRemote, identityPubkey, relayLifecycle, remote.data])
 
   useEffect(() => {
     if (!identityPubkey || !remote.isError) return
@@ -262,8 +313,17 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
       password: string,
       policy: ShopperPresetsUnlockPolicy
     ): Promise<boolean> => {
-      if (!identityPubkey || !identityReady || !value.shipping) return false
-      const identity = identityPubkey
+      if (
+        !identityPubkey ||
+        !relayScope ||
+        !identityReady ||
+        !relaySettingsReady ||
+        !value.shipping
+      )
+        return false
+      const lifecycle = relayLifecycle
+      const identity = lifecycle.identityPubkey
+      if (!identity) return false
       setSyncState("syncing")
       try {
         const result = await publishShopperPresets({
@@ -272,7 +332,13 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
           password,
           appId: "market",
         })
-        if (identityRef.current !== identity) return false
+        if (
+          !isCurrentShopperPresetsRelayLifecycle(
+            relayLifecycleRef.current,
+            lifecycle
+          )
+        )
+          return false
         const next: ShopperPresetsReadResult = {
           state: "found",
           envelope: result.envelope,
@@ -284,20 +350,45 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
         setUnlockState("unlocked")
         setSyncState("synced")
         rememberPassword(password, policy)
-        queryClient.setQueryData(queryKey(identity), next)
+        queryClient.setQueryData(
+          shopperPresetsQueryKey(identity, lifecycle.relayScope),
+          next
+        )
         return true
       } catch {
-        if (identityRef.current === identity) setSyncState("error")
+        if (
+          isCurrentShopperPresetsRelayLifecycle(
+            relayLifecycleRef.current,
+            lifecycle
+          )
+        )
+          setSyncState("error")
         return false
       }
     },
-    [identityPubkey, identityReady, queryClient, rememberPassword]
+    [
+      identityPubkey,
+      identityReady,
+      queryClient,
+      relayLifecycle,
+      relayScope,
+      relaySettingsReady,
+      rememberPassword,
+    ]
   )
 
   const clear = useCallback(
     async (password: string): Promise<boolean> => {
-      if (!identityPubkey || !identityReady) return false
-      const identity = identityPubkey
+      if (
+        !identityPubkey ||
+        !relayScope ||
+        !identityReady ||
+        !relaySettingsReady
+      )
+        return false
+      const lifecycle = relayLifecycle
+      const identity = lifecycle.identityPubkey
+      if (!identity) return false
       setSyncState("syncing")
       try {
         const result = await publishShopperPresets({
@@ -306,7 +397,13 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
           password,
           appId: "market",
         })
-        if (identityRef.current !== identity) return false
+        if (
+          !isCurrentShopperPresetsRelayLifecycle(
+            relayLifecycleRef.current,
+            lifecycle
+          )
+        )
+          return false
         const next: ShopperPresetsReadResult = {
           state: "found",
           envelope: result.envelope,
@@ -321,14 +418,32 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
         setUnlockState("unlocked")
         setSyncState("synced")
         rememberPassword(password, unlockPolicy)
-        queryClient.setQueryData(queryKey(identity), next)
+        queryClient.setQueryData(
+          shopperPresetsQueryKey(identity, lifecycle.relayScope),
+          next
+        )
         return true
       } catch {
-        if (identityRef.current === identity) setSyncState("error")
+        if (
+          isCurrentShopperPresetsRelayLifecycle(
+            relayLifecycleRef.current,
+            lifecycle
+          )
+        )
+          setSyncState("error")
         return false
       }
     },
-    [identityPubkey, identityReady, queryClient, rememberPassword, unlockPolicy]
+    [
+      identityPubkey,
+      identityReady,
+      queryClient,
+      relayLifecycle,
+      relayScope,
+      relaySettingsReady,
+      rememberPassword,
+      unlockPolicy,
+    ]
   )
 
   const lock = useCallback(() => {
@@ -342,18 +457,41 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
   }, [identityPubkey, remotePreset])
 
   const refresh = useCallback(async (): Promise<void> => {
-    if (!identityPubkey) return
-    const identity = identityPubkey
+    if (!identityPubkey || !relayScope || !relaySettingsReady) return
+    const lifecycle = relayLifecycle
+    const identity = lifecycle.identityPubkey
+    if (!identity) return
     handledRemoteRef.current = null
     setSyncState("syncing")
     try {
       const result = await fetchShopperPresets(identity)
-      if (identityRef.current !== identity) return
-      queryClient.setQueryData(queryKey(identity), result)
+      if (
+        !isCurrentShopperPresetsRelayLifecycle(
+          relayLifecycleRef.current,
+          lifecycle
+        )
+      )
+        return
+      queryClient.setQueryData(
+        shopperPresetsQueryKey(identity, lifecycle.relayScope),
+        result
+      )
     } catch {
-      if (identityRef.current === identity) setSyncState("error")
+      if (
+        isCurrentShopperPresetsRelayLifecycle(
+          relayLifecycleRef.current,
+          lifecycle
+        )
+      )
+        setSyncState("error")
     }
-  }, [identityPubkey, queryClient])
+  }, [
+    identityPubkey,
+    queryClient,
+    relayLifecycle,
+    relayScope,
+    relaySettingsReady,
+  ])
 
   const presetOwnerPubkey =
     decryptedPreset?.ownerPubkey === identityPubkey
@@ -384,7 +522,8 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
       unlockState,
       unlockPolicy,
       hasRemotePreset: remotePreset !== null,
-      canSync: !!identityPubkey && identityReady,
+      canSync:
+        !!identityPubkey && !!relayScope && identityReady && relaySettingsReady,
       updateLocal,
       unlock,
       save,
@@ -397,6 +536,8 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
       discoveryDestination,
       identityPubkey,
       identityReady,
+      relaySettingsReady,
+      relayScope,
       lock,
       preset,
       presetOwnerPubkey,

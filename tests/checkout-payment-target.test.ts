@@ -155,7 +155,7 @@ describe("checkout payment target selection", () => {
     ).toEqual({ type: "webln" })
   })
 
-  it("uses manual payment when the preferred automatic rail is unavailable", () => {
+  it("falls back to the normal automatic target when the preferred rail is unavailable", () => {
     expect(
       resolveCheckoutPaymentTarget({
         selection: null,
@@ -165,7 +165,11 @@ describe("checkout payment target selection", () => {
         ],
         weblnAvailable: true,
       })
-    ).toEqual({ type: "manual" })
+    ).toEqual({
+      type: "wallet",
+      walletId: "spark-default",
+      providerId: "spark",
+    })
     expect(
       resolveCheckoutPaymentTarget({
         selection: null,
@@ -173,7 +177,48 @@ describe("checkout payment target selection", () => {
         eligibleWallets: [wallet("nwc-default", "nwc", { isDefault: true })],
         weblnAvailable: false,
       })
+    ).toEqual({
+      type: "wallet",
+      walletId: "nwc-default",
+      providerId: "nwc",
+    })
+  })
+
+  it("falls through to WebLN, then manual, when no eligible wallet remains", () => {
+    expect(
+      resolveCheckoutPaymentTarget({
+        selection: null,
+        preferredRail: "nwc",
+        eligibleWallets: [],
+        weblnAvailable: true,
+      })
+    ).toEqual({ type: "webln" })
+    expect(
+      resolveCheckoutPaymentTarget({
+        selection: null,
+        preferredRail: "webln",
+        eligibleWallets: [],
+        weblnAvailable: false,
+      })
     ).toEqual({ type: "manual" })
+  })
+
+  it("falls back to the first eligible wallet when no default wallet exists", () => {
+    expect(
+      resolveCheckoutPaymentTarget({
+        selection: null,
+        preferredRail: "webln",
+        eligibleWallets: [
+          wallet("spark-first", "spark"),
+          wallet("nwc-second", "nwc"),
+        ],
+        weblnAvailable: false,
+      })
+    ).toEqual({
+      type: "wallet",
+      walletId: "spark-first",
+      providerId: "spark",
+    })
   })
 
   it("uses manual payment for a manual preference", () => {
