@@ -551,6 +551,30 @@ describe("Market shopper preset integration", () => {
     expect(session).toContain("inspectCheckoutShippingDraftOwnership")
   })
 
+  it("keeps unlocked preset shipping in memory until the shopper edits it", async () => {
+    const checkout = await Bun.file(
+      "apps/market/src/routes/checkout.tsx"
+    ).text()
+    const presetEffectStart = checkout.indexOf(
+      "const preset = getIdentityBoundShippingPreset("
+    )
+    const updateShippingStart = checkout.indexOf(
+      "function updateShipping<K extends keyof ShippingFormState>("
+    )
+
+    expect(checkout).toContain("const presetSeededShippingRef = useRef(false)")
+    expect(checkout).toContain("if (presetSeededShippingRef.current) {")
+    expect(checkout).toContain("setShipping(DEFAULT_CHECKOUT_SHIPPING)")
+    expect(presetEffectStart).toBeGreaterThan(-1)
+    expect(updateShippingStart).toBeGreaterThan(presetEffectStart)
+    expect(
+      checkout.slice(presetEffectStart, updateShippingStart)
+    ).not.toContain("writeCheckoutShippingSession(")
+    expect(checkout.slice(updateShippingStart)).toContain(
+      "writeCheckoutShippingSession(next, undefined, undefined, draftOwnerIdentity)"
+    )
+  })
+
   it("uses the connected auth identity for checkout draft ownership independently of signer readiness", async () => {
     const checkout = await Bun.file(
       "apps/market/src/routes/checkout.tsx"
