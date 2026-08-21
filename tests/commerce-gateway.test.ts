@@ -1629,7 +1629,7 @@ describe("commerce gateway", () => {
     expect(cachedProducts[0]?.eventId).toBe(localProduct.id)
   })
 
-  it("certifies a complete exact-coordinate revalidation as canonical", async () => {
+  it("keeps exact-coordinate revalidation non-canonical without deletion coverage", async () => {
     const product = makeSignedProductEvent({
       dTag: "canonical-detail",
       createdAt: 100,
@@ -1683,7 +1683,7 @@ describe("commerce gateway", () => {
       degraded: false,
       capped: false,
     })
-    expect(result.meta.capabilities.canonicalFreshness).toBe(true)
+    expect(result.meta.capabilities.canonicalFreshness).toBe(false)
   })
 
   it("does not certify partial exact-coordinate relay coverage as canonical", async () => {

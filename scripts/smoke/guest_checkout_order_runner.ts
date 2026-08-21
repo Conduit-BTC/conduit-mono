@@ -451,11 +451,13 @@ export async function runGuestCheckoutOrderSmoke(
     throw stageFailure("product_read", error)
   }
 
-  const orderId = createOrderId()
-  const identity = createGuestIdentity(orderId, config.merchantPubkey)
+  let orderId: string
+  let identity: GuestIdentity
   let rumor: NDKEvent
   let expectedPayload: unknown
   try {
+    orderId = createOrderId()
+    identity = createGuestIdentity(orderId, config.merchantPubkey)
     rumor = buildGuestCheckoutOrderRumor({
       orderId,
       identity,

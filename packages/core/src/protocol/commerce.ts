@@ -426,11 +426,6 @@ const PRODUCT_CAPABILITIES: CommerceCapabilities = {
   cursorPagination: false,
 }
 
-const CANONICAL_PRODUCT_CAPABILITIES: CommerceCapabilities = {
-  ...PRODUCT_CAPABILITIES,
-  canonicalFreshness: true,
-}
-
 const CONVERSATION_CAPABILITIES: CommerceCapabilities = {
   sortModes: ["updated_at_desc"],
   textSearch: true,
@@ -3586,18 +3581,11 @@ export async function getProductDetail(
         const hasLiveEvidence =
           directVisible.length > 0 || groupVisible.length > 0
         const meta = hasLiveEvidence
-          ? createMeta(
-              "product_detail",
-              "commerce",
-              query.revalidateCanonical && completeLiveRead
-                ? CANONICAL_PRODUCT_CAPABILITIES
-                : PRODUCT_CAPABILITIES,
-              {
-                stale: !completeLiveRead,
-                degraded: !completeLiveRead,
-                capped: groupRead.capped || directReadCapped,
-              }
-            )
+          ? createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES, {
+              stale: !completeLiveRead,
+              degraded: !completeLiveRead,
+              capped: groupRead.capped || directReadCapped,
+            })
           : createMeta("product_detail", "local_cache", PRODUCT_CAPABILITIES, {
               stale: true,
               degraded: true,

@@ -503,6 +503,46 @@ describe("guest checkout order smoke", () => {
     }
   })
 
+  it("classifies order id and guest identity failures as order_build", async () => {
+    const config = parseGuestCheckoutOrderSmokeConfig(environment())
+    const constructionFailures = [
+      {
+        createOrderId: () => {
+          throw new Error("Order id generation failed")
+        },
+      },
+      {
+        createGuestIdentity: () => {
+          throw new Error("Guest identity generation failed")
+        },
+      },
+    ]
+
+    for (const constructionFailure of constructionFailures) {
+      let failure: unknown
+      try {
+        await runGuestCheckoutOrderSmoke(config, {
+          getProduct: async () => productRead(),
+          getPricingRate: async () => ({
+            rate: 100_000,
+            fetchedAt: 1_700_000_000_000,
+            source: "mempool",
+            fiatUsdRates: {},
+            fiatSource: "frankfurter",
+          }),
+          nowMs: () => 1_700_000_000_000,
+          ...constructionFailure,
+        })
+      } catch (error) {
+        failure = error
+      }
+
+      expect(formatGuestCheckoutOrderSmokeFailure(failure)).toBe(
+        "Guest checkout order smoke failed at order_build."
+      )
+    }
+  })
+
   it("requires exact product and complete merchant inbox reads", async () => {
     const config = parseGuestCheckoutOrderSmokeConfig(environment())
     let productQuery: {
