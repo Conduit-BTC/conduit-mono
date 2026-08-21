@@ -257,6 +257,7 @@ function PreferencesPage() {
   const [resultMessage, setResultMessage] = useState<string | null>(null)
   const draftIdentityRef = useRef(presets.identityPubkey)
   const previousUnlockStateRef = useRef(presets.unlockState)
+  const policyEditedRef = useRef(false)
   const currentIdentityRef = useRef(presets.identityPubkey)
   currentIdentityRef.current = presets.identityPubkey
   const clearPlaintextDraft = useCallback((enterResetMode = false): void => {
@@ -313,16 +314,20 @@ function PreferencesPage() {
     previousUnlockStateRef.current = presets.unlockState
     if (draftIdentityRef.current !== presets.identityPubkey) {
       draftIdentityRef.current = presets.identityPubkey
+      policyEditedRef.current = false
+      setPolicy(presets.unlockPolicy)
       clearPlaintextDraft()
       return
     }
     if (plaintextBecameUnavailable) {
+      policyEditedRef.current = false
+      setPolicy(presets.unlockPolicy)
       clearPlaintextDraft()
       return
     }
+    if (!policyEditedRef.current) setPolicy(presets.unlockPolicy)
     if (dirty || presets.unlockState !== "unlocked") return
     setDraft(normalizeShopperPreferencesDraft(presets.preset))
-    setPolicy(presets.unlockPolicy)
   }, [
     clearPlaintextDraft,
     dirty,
@@ -394,6 +399,8 @@ function PreferencesPage() {
   }
 
   function replaceForgottenPreset(): void {
+    policyEditedRef.current = false
+    setPolicy(presets.unlockPolicy)
     clearPlaintextDraft(true)
   }
 
@@ -655,7 +662,10 @@ function PreferencesPage() {
             <UnlockPolicySelect
               value={policy}
               disabled={busy}
-              onChange={setPolicy}
+              onChange={(nextPolicy) => {
+                policyEditedRef.current = true
+                setPolicy(nextPolicy)
+              }}
             />
           </div>
         </div>
