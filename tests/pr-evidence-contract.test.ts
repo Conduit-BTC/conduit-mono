@@ -52,6 +52,8 @@ describe("pull request evidence contract", () => {
     }
 
     expect(reviewWorkflow).toContain("the reviewer-confirmed QA disposition")
+    expect(prTemplate).toContain("Reviewer-confirmed QA disposition:")
+    expect(prTemplate).not.toContain("Reviewer-confirmed disposition:")
     expect(prTemplate).toContain("Human code review: Required")
     expect(contributing).toContain(
       "An author or agent cannot downgrade a high-risk change"

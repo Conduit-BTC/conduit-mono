@@ -63,7 +63,7 @@ Author proposal. Select one:
 - State-changing actions and cleanup:
 - Residual gaps:
 - Evidence head SHA:
-- Reviewer-confirmed disposition:
+- Reviewer-confirmed QA disposition:
 
 ## Risk Review
 
