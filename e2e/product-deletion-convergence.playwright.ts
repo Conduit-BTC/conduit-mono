@@ -505,7 +505,7 @@ async function readDatabaseMigrationState(page: Page): Promise<{
   )
 }
 
-test("Merchant upgrades v8 cache data to the durable v13 cache stores", async ({
+test("Merchant upgrades v8 cache data to the durable v13 cache stores @merchant", async ({
   page,
 }) => {
   await page.route(
@@ -572,7 +572,7 @@ test("Merchant upgrades v8 cache data to the durable v13 cache stores", async ({
   ])
 })
 
-test("Merchant persists one exact deletion and restores it after reload", async ({
+test("Merchant persists one exact deletion and restores it after reload @merchant", async ({
   page,
 }) => {
   const publishes: ObservedRelayPublish[] = []
@@ -640,7 +640,7 @@ test("Merchant persists one exact deletion and restores it after reload", async 
   expect(afterReload.tombstoneCount).toBeGreaterThan(0)
 })
 
-test("Merchant resumes a partial deletion after browser restart without signing again", async ({
+test("Merchant resumes a partial deletion after browser restart without signing again @merchant", async ({
   browser,
 }) => {
   let signerCalls = 0

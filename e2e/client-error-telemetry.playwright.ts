@@ -75,7 +75,7 @@ async function dispatchRuntimeErrors(page: Page): Promise<void> {
 }
 
 for (const { app, url } of appCases) {
-  test(`${app} client-error telemetry covers runtime, boundary, and host gates`, async ({
+  test(`${app} client-error telemetry covers runtime, boundary, and host gates @${app}`, async ({
     page,
   }) => {
     await page.goto(`${url}/about`)

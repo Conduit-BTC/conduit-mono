@@ -58,7 +58,7 @@ type OwnContactListSnapshot = {
   cachedAt: number
 }
 
-test("market Dexie 4 preserves additive v12 data across a declared-v11 rollback", async ({
+test("market Dexie 4 preserves additive v12 data across a declared-v11 rollback @market", async ({
   page,
 }) => {
   const dexieMessages: string[] = []

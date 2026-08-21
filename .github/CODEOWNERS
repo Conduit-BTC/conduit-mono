@@ -8,6 +8,16 @@ apps/*/package.json @dylangolow @ericfj2140
 packages/*/package.json @dylangolow @ericfj2140
 .env.example @dylangolow @ericfj2140
 apps/*/.env.production @dylangolow @ericfj2140
+e2e/** @dylangolow @ericfj2140
+playwright.config.ts @dylangolow @ericfj2140
+scripts/smoke/** @dylangolow @ericfj2140
+scripts/ci/select_smoke_shards.ts @dylangolow @ericfj2140
+scripts/ci/validate_playwright_smoke_areas.ts @dylangolow @ericfj2140
+docs/specs/testing-e2e.md @dylangolow @ericfj2140
+tests/agent-review-handoff.test.ts @dylangolow @ericfj2140
+tests/playwright-smoke-areas.test.ts @dylangolow @ericfj2140
+tests/pr-evidence-contract.test.ts @dylangolow @ericfj2140
+tests/select-smoke-shards.test.ts @dylangolow @ericfj2140
 packages/ui/src/components/ProductLegal*.tsx @dylangolow @ericfj2140
 packages/ui/src/components/ProductLegalVersion.ts @dylangolow @ericfj2140
 packages/ui/src/components/ProductPrivacyPolicy.tsx @dylangolow @ericfj2140

@@ -144,26 +144,20 @@ jobs:
             diff. Do not edit files, push commits, create branches, change
             labels, merge, deploy, request reviewers, or update external systems.
 
-            Read AGENTS.md, contributor guidance, the changed files, their
-            callers, and applicable public implementation context before
+            Read AGENTS.md, CONTRIBUTING.md,
+            .github/instructions/pr-review.instructions.md, the changed files,
+            their callers, and applicable public implementation context before
             judging the diff.
 
             Review priorities:
             1. Functional correctness and regressions.
             2. Protocol, authentication, privacy, and payment constraints.
             3. Reliability and failure-mode handling.
-            4. Test coverage and verifiability.
+            4. Acceptance-criteria traceability, test fidelity, and
+               verifiability.
             5. Maintainability.
 
-            Mandatory constraints:
-            - User authentication remains external-signer-only. Service-signer
-              exceptions must be documented and narrowly scoped.
-            - Do not introduce behavioral tracking, profiling, or message,
-              order, payment, address, signer, or wallet secret inspection.
-            - Payments remain non-custodial.
-            - Telemetry follows docs/analytics/events.md.
-            - Public repository content excludes private runbooks, credentials,
-              dashboard exports, and private company planning context.
+            Workflow-specific constraint:
             - Automatic Ponytail review is intentionally once per pull request.
               New heads do not rearm it. Maintainers use `/agent simplify` for
               an explicit rerun.
@@ -183,8 +177,9 @@ jobs:
             - Anchor multi-file findings on the primary changed line and name
               related files in that inline comment.
             - Keep the review body to a concise summary, the reviewer-owned
-              public-context decision, and residual test or release risks. Do
-              not duplicate actionable finding detail there.
+              public-context decision, the reviewer-confirmed QA disposition,
+              and residual test or release risks. Do not duplicate actionable
+              finding detail there.
             - If an inline review cannot be submitted, leave no top-level
               finding and state the delivery blocker in the review body.
 
@@ -193,8 +188,13 @@ jobs:
               include this exact marker in the review body:
               `<!-- conduit:sudden-review clean head=${{ steps.pr.outputs.head_sha }} -->`
             - A clean review must have zero inline comments. State
-              `No actionable findings.` and list only residual verification
-              risks after the marker.
+              `No actionable findings.` on its own line after the marker.
+            - Include exactly one QA disposition line in this form:
+              `Reviewer-confirmed QA disposition: <disposition>`
+              Replace `<disposition>` with exactly one allowed value:
+              `Evidence sign-off`, `Targeted human QA`, or
+              `Maintainer-owned validation`.
+            - State only residual verification risks after these required lines.
             - Never include the clean marker when any actionable finding exists
               or review delivery is blocked.
         run: |

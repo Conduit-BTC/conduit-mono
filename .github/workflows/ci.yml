@@ -183,6 +183,9 @@ jobs:
           bun-version: "1.3.5"
       - if: matrix.area != 'none'
         run: bun install --frozen-lockfile
+      - name: Validate Playwright smoke area assignments
+        if: matrix.area != 'none'
+        run: bun run test:e2e:areas --area '${{ matrix.area }}'
       - name: Cache Playwright browsers
         if: matrix.area != 'none'
         uses: actions/cache@v6
@@ -201,7 +204,7 @@ jobs:
         if: matrix.area != 'none'
         env:
           PLAYWRIGHT_SMOKE_AREA: ${{ matrix.area }}
-        run: bunx playwright test --grep '${{ matrix.area }} '
+        run: bunx playwright test
       - name: Upload Playwright artifacts
         if: failure() && matrix.area != 'none'
         uses: actions/upload-artifact@v7

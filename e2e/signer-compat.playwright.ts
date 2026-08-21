@@ -53,7 +53,7 @@ async function storedAuthPubkey(page: Page): Promise<string | null> {
   })
 }
 
-test("market connect tolerates late NIP-07 signer injection", async ({
+test("market connect tolerates late NIP-07 signer injection @market", async ({
   page,
 }) => {
   await installLateTestSigner(page, TEST_BUYER_PUBKEY)
@@ -72,7 +72,9 @@ test("market connect tolerates late NIP-07 signer injection", async ({
     .toBe(TEST_BUYER_PUBKEY)
 })
 
-test("market rejected signer keeps retry path visible", async ({ page }) => {
+test("market rejected signer keeps retry path visible @market", async ({
+  page,
+}) => {
   await installRejectingTestSigner(page)
   await openMarketSignerDialog(page)
 
@@ -87,7 +89,7 @@ test("market rejected signer keeps retry path visible", async ({ page }) => {
   ).toBeEnabled()
 })
 
-test("market getRelays failure does not block signer connect", async ({
+test("market getRelays failure does not block signer connect @market", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_BUYER_PUBKEY, {
@@ -105,7 +107,7 @@ test("market getRelays failure does not block signer connect", async ({
     .toBe(TEST_BUYER_PUBKEY)
 })
 
-test("market trust ignores a remembered viewer until auth is connected", async ({
+test("market trust ignores a remembered viewer until auth is connected @market", async ({
   page,
 }) => {
   await seedStoredAuth(page, TEST_BUYER_PUBKEY)
@@ -139,7 +141,7 @@ test("market trust ignores a remembered viewer until auth is connected", async (
   await expect(probe).toHaveAttribute("data-viewer-follows", "null")
 })
 
-test("market owner profile drops the public placeholder after connect", async ({
+test("market owner profile drops the public placeholder after connect @market", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_BUYER_PUBKEY, { rememberAuth: false })
@@ -186,7 +188,7 @@ test("market owner profile drops the public placeholder after connect", async ({
   )
 })
 
-test("market signer authority storage failure remains retryable", async ({
+test("market signer authority storage failure remains retryable @market", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_BUYER_PUBKEY, { rememberAuth: false })
@@ -210,7 +212,7 @@ test("market signer authority storage failure remains retryable", async ({
   await expect(connectButton).toBeEnabled()
 })
 
-test("market signer authority read failure remains retryable", async ({
+test("market signer authority read failure remains retryable @market", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_BUYER_PUBKEY, { rememberAuth: false })
@@ -279,7 +281,7 @@ test("market signer authority read failure remains retryable", async ({
     .toBe(TEST_BUYER_PUBKEY)
 })
 
-test("market does not publish a NIP-07 signer after a late authority read failure", async ({
+test("market does not publish a NIP-07 signer after a late authority read failure @market", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_BUYER_PUBKEY, { rememberAuth: false })
@@ -337,7 +339,7 @@ test("market does not publish a NIP-07 signer after a late authority read failur
     .toBe(TEST_BUYER_PUBKEY)
 })
 
-test("merchant locked signer shows waiting state then connects after unlock", async ({
+test("merchant locked signer shows waiting state then connects after unlock @merchant", async ({
   page,
 }) => {
   await installLockedTestSigner(page)
@@ -361,7 +363,7 @@ test("merchant locked signer shows waiting state then connects after unlock", as
     .toBe(TEST_MERCHANT_PUBKEY)
 })
 
-test("merchant remembered auth falls back to explicit retry when signer needs activation", async ({
+test("merchant remembered auth falls back to explicit retry when signer needs activation @merchant", async ({
   page,
 }) => {
   await seedStoredAuth(page, TEST_MERCHANT_PUBKEY)
@@ -390,7 +392,7 @@ test("merchant remembered auth falls back to explicit retry when signer needs ac
   ).toBeVisible({ timeout: 10_000 })
 })
 
-test("market restored session keeps a usable signer attached", async ({
+test("market restored session keeps a usable signer attached @market", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_BUYER_PUBKEY)
