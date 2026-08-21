@@ -388,7 +388,7 @@ describe("Market shopper preset integration", () => {
     ).text()
     const effectStart = source.indexOf("const result = remote.data")
     const gate = source.indexOf(
-      "shouldApplyShopperPresetsReadResult(result, acceptedRevisionRef.current)",
+      "shouldApplyShopperPresetsReadResult(",
       effectStart
     )
     const notFound = source.indexOf(
@@ -400,8 +400,9 @@ describe("Market shopper preset integration", () => {
     expect(gate).toBeGreaterThan(effectStart)
     expect(gate).toBeLessThan(notFound)
     expect(source).not.toContain("handledRemoteRef")
+    expect(source).not.toContain("acceptedRevisionRef")
     expect(
-      source.match(/acceptedRevisionRef\.current = result\.revision/gu)
+      source.match(/acceptedRemoteRef\.current = (?:result|next)/gu)
     ).toHaveLength(3)
     const decryptStart = source.indexOf("const decryptRemote = useCallback")
     const remoteEffect = source.indexOf("const result = remote.data")
@@ -409,8 +410,35 @@ describe("Market shopper preset integration", () => {
       source.indexOf("isCurrentShopperPresetsRevision(", decryptStart)
     ).toBeLessThan(remoteEffect)
     expect(source).toMatch(
-      /isCurrentShopperPresetsRevision\(\s*acceptedRevisionRef\.current,\s*result\.revision\s*\)/u
+      /isCurrentShopperPresetsRevision\(\s*acceptedRemoteRef\.current\?\.revision \?\? null,\s*result\.revision\s*\)/u
     )
+  })
+
+  it("settles no-op refreshes while retaining the accepted preset", async () => {
+    const source = await Bun.file(
+      "apps/market/src/hooks/useShopperPresets.tsx"
+    ).text()
+    const refreshStart = source.indexOf("const refresh = useCallback")
+    const refreshEnd = source.indexOf("const presetOwnerPubkey", refreshStart)
+    const refresh = source.slice(refreshStart, refreshEnd)
+    const monotonicGate = refresh.indexOf(
+      "!shouldApplyShopperPresetsReadResult("
+    )
+    const restoreAccepted = refresh.indexOf(
+      "shopperPresetsQueryKey(identity, lifecycle.relayScope),\n            acceptedRemote",
+      monotonicGate
+    )
+    const settle = refresh.indexOf('setSyncState("synced")', monotonicGate)
+    const earlyReturn = refresh.indexOf("return", settle)
+
+    expect(refreshStart).toBeGreaterThan(-1)
+    expect(monotonicGate).toBeGreaterThan(-1)
+    expect(restoreAccepted).toBeGreaterThan(monotonicGate)
+    expect(settle).toBeGreaterThan(restoreAccepted)
+    expect(earlyReturn).toBeGreaterThan(settle)
+    expect(refresh).toContain('result.state === "not_found"')
+    expect(refresh).toContain('? "ready"')
+    expect(refresh).toContain(': "unavailable"')
   })
 
   it("keeps capability drafts and clear policy bound to connected auth state", async () => {
