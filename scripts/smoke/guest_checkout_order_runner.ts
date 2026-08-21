@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util"
+
 import { NDKEvent, NDKPrivateKeySigner, nip19 } from "@nostr-dev-kit/ndk"
 import { getPublicKey } from "nostr-tools"
 
@@ -316,6 +318,7 @@ function hasRecoveredGuestOrder(
     merchantPubkey: string
     buyerPubkey: string
     productAddress: string
+    expectedPayload: unknown
   }
 ): boolean {
   const conversation = conversations.find(
@@ -336,13 +339,16 @@ function hasRecoveredGuestOrder(
     order.payload.buyerIdentityKind === "guest_ephemeral" &&
     order.payload.merchantPubkey === input.merchantPubkey &&
     order.payload.buyerPubkey === input.buyerPubkey &&
-    order.payload.items.some((item) => item.productId === input.productAddress)
+    order.payload.items.some(
+      (item) => item.productId === input.productAddress
+    ) &&
+    isDeepStrictEqual(order.payload, input.expectedPayload)
   )
 }
 
 async function recoverOrderAsMerchant(
   config: GuestCheckoutOrderSmokeConfig,
-  input: { orderId: string; buyerPubkey: string },
+  input: { orderId: string; buyerPubkey: string; expectedPayload: unknown },
   dependencies: Required<
     Pick<
       GuestCheckoutOrderSmokeDependencies,
@@ -448,6 +454,7 @@ export async function runGuestCheckoutOrderSmoke(
   const orderId = createOrderId()
   const identity = createGuestIdentity(orderId, config.merchantPubkey)
   let rumor: NDKEvent
+  let expectedPayload: unknown
   try {
     rumor = buildGuestCheckoutOrderRumor({
       orderId,
@@ -458,6 +465,7 @@ export async function runGuestCheckoutOrderSmoke(
       shippingPostalCode: config.shippingPostalCode,
       createdAt: nowMs(),
     })
+    expectedPayload = JSON.parse(rumor.content)
   } catch (error) {
     throw stageFailure("order_build", error)
   }
@@ -485,7 +493,7 @@ export async function runGuestCheckoutOrderSmoke(
     )
     await recoverOrderAsMerchant(
       config,
-      { orderId, buyerPubkey: identity.pubkey },
+      { orderId, buyerPubkey: identity.pubkey, expectedPayload },
       { getMerchantOrders, nowMs, sleep }
     )
   } catch (error) {

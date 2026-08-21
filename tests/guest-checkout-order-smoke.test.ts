@@ -174,9 +174,11 @@ function recoveredOrderRead(
       coverage: "complete" | "partial" | "unavailable"
       readSource: "declared" | "mixed" | "cache"
     }
-  }
+  },
+  transformPayload: (payload: Record<string, unknown>) => unknown = (payload) =>
+    payload
 ) {
-  const payload = JSON.parse(published.content)
+  const payload = transformPayload(JSON.parse(published.content))
   return {
     data: [
       {
@@ -660,6 +662,69 @@ describe("guest checkout order smoke", () => {
       summary: "Guest checkout order smoke inconclusive at merchant_recovery.",
     })
     expect(recoveryCalls).toBe(2)
+    expect(getProtectedReadAuthorization(MERCHANT_PUBKEY)).toBeNull()
+    expect(getNdk().signer).toBeUndefined()
+  })
+
+  it("rejects a recovered order when its parsed payload drifts", async () => {
+    const config = parseGuestCheckoutOrderSmokeConfig(
+      environment({
+        GUEST_CHECKOUT_SMOKE_RECOVERY_TIMEOUT_MS: "1",
+        GUEST_CHECKOUT_SMOKE_RECOVERY_POLL_MS: "1",
+      })
+    )
+    let now = 1_700_000_000_000
+    let published: { content: string } | null = null
+    let failure: unknown
+
+    try {
+      await runGuestCheckoutOrderSmoke(config, {
+        getProduct: async () => productRead(),
+        getPricingRate: async () => ({
+          rate: 100_000,
+          fetchedAt: 1_700_000_000_000,
+          source: "mempool",
+          fiatUsdRates: {},
+          fiatSource: "frankfurter",
+        }),
+        createOrderId: () => "smoke-order",
+        createGuestIdentity: () => identity(),
+        publishOrder: async (rumor) => {
+          published = rumor
+          return { buyerSelfCopyError: null, localCacheError: null }
+        },
+        getMerchantOrders: async () => {
+          if (!published) throw new Error("Order was not published")
+          return recoveredOrderRead(
+            published,
+            {
+              source: "commerce",
+              stale: false,
+              degraded: false,
+              inbox: {
+                declarationState: "declared",
+                coverage: "complete",
+                readSource: "declared",
+              },
+            },
+            (payload) => ({
+              ...payload,
+              note: "Mutated after recovery.",
+            })
+          )
+        },
+        nowMs: () => now,
+        sleep: async (milliseconds) => {
+          now += milliseconds
+        },
+      })
+    } catch (error) {
+      failure = error
+    }
+
+    expect(formatGuestCheckoutOrderSmokeFailure(failure)).toBe(
+      "Guest checkout order smoke failed at merchant_recovery."
+    )
     expect(getProtectedReadAuthorization(MERCHANT_PUBKEY)).toBeNull()
     expect(getNdk().signer).toBeUndefined()
   })
