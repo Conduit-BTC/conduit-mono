@@ -29,6 +29,7 @@ import type {
 } from "@getalby/sdk/nwc"
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
+import { normalizeURL } from "nostr-tools/utils"
 
 import { decodeLightningInvoiceAmount } from "./lightning"
 import type { ConduitAppId } from "./nip89"
@@ -145,15 +146,25 @@ export function parseNwcUri(uri: string): NwcConnection {
 }
 
 /**
- * Produce a stable, non-secret identifier for a saved NWC connection URI.
+ * Produce a stable, non-secret identifier for an NWC authorization.
  *
- * Query caches can use this to distinguish credentials without retaining the
- * secret-bearing URI itself in a cache key or developer tooling.
+ * The wallet-service pubkey, client secret, and normalized relay set identify
+ * the connection. Scheme spelling, outer query ordering, and lud16 metadata do
+ * not. Query caches and credential stores can therefore compare equivalent
+ * connections without retaining secret-bearing material in keys or tooling.
  */
 export function getNwcUriFingerprint(uri: string): string {
-  const normalizedUri = uri.trim()
-  if (!normalizedUri) throw new Error("Cannot fingerprint an empty NWC URI")
-  return bytesToHex(sha256(new TextEncoder().encode(normalizedUri)))
+  const connection = parseNwcUri(uri)
+  const normalizedRelays = [
+    ...new Set(connection.relays.map((relay) => normalizeURL(relay))),
+  ].sort()
+  const identity = JSON.stringify([
+    "conduit:nwc-connection:v1",
+    connection.walletPubkey,
+    connection.secret,
+    normalizedRelays,
+  ])
+  return bytesToHex(sha256(new TextEncoder().encode(identity)))
 }
 
 // ─── make_invoice ─────────────────────────────────────────────────────────────

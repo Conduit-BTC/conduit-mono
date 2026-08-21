@@ -7,6 +7,7 @@ import {
   getOrderStatusDisplay,
   isInvoiceCompatibleWithCurrentNetwork,
   normalizeLightningInvoice,
+  normalizePublicMediaUrl,
   type ParsedOrderMessage,
 } from "@conduit/core"
 import { Badge } from "./Badge"
@@ -269,7 +270,7 @@ export function OrderConversationMessage({
                 item.title?.trim() ||
                 resolved?.title ||
                 formatProductReference(item.productId).title
-              const image = resolved?.imageUrl
+              const image = normalizePublicMediaUrl(resolved?.imageUrl)
               const itemPrice = formatAmount(
                 item.priceAtPurchase,
                 item.currency,
@@ -285,6 +286,7 @@ export function OrderConversationMessage({
                       src={image}
                       alt=""
                       loading="lazy"
+                      referrerPolicy="no-referrer"
                       className="h-10 w-10 shrink-0 rounded-md border border-[var(--border)] object-cover"
                     />
                   ) : (

@@ -1,13 +1,12 @@
-import { useMemo } from "react"
-import { useQuery } from "@tanstack/react-query"
+import { useEffect, useMemo } from "react"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
-  EVENT_KINDS,
   buildMerchantTrustSocialSummary,
+  fetchMerchantTrustSocialSummary,
   formatNpub,
-  getFollowListPubkeySet,
   getProfileDisplayLabel,
-  requireNdkConnected,
-  selectLatestFollowListEvent,
+  normalizePubkey,
+  subscribeRelaySettingsChanges,
   useConduitSession,
   useProfile,
   type MerchantTrustSocialSummary,
@@ -16,16 +15,34 @@ import {
 
 type ProfileState = "idle" | "loading" | "available" | "limited"
 type SocialState =
-  "disconnected" | "own_store" | "loading" | "available" | "unavailable"
+  | "disconnected"
+  | "own_store"
+  | "loading"
+  | "available"
+  | "limited"
+  | "unavailable"
 
 export type MerchantTrustContext = MerchantTrustSocialSummary & {
   merchantPubkey: string | null
   profile: Profile | undefined
   profileState: ProfileState
   socialState: SocialState
+  /** Desired state of an exact signed update awaiting an unambiguous ACK. */
+  pendingViewerFollowsMerchant: boolean | null
   merchantName: string
   merchantNamePending: boolean
   listingCount?: number
+}
+
+export function getMerchantProfileAuthenticatedPubkey(
+  merchantPubkey: string | null | undefined,
+  viewerPubkey: string | null | undefined
+): string | undefined {
+  const normalizedMerchant = normalizePubkey(merchantPubkey)
+  const normalizedViewer = normalizePubkey(viewerPubkey)
+  return normalizedMerchant && normalizedMerchant === normalizedViewer
+    ? normalizedViewer
+    : undefined
 }
 
 export function useMerchantTrustContext({
@@ -38,50 +55,55 @@ export function useMerchantTrustContext({
   profileRelayHints?: string[]
 }): MerchantTrustContext {
   const session = useConduitSession()
+  const queryClient = useQueryClient()
   const viewerPubkey = session.mode === "signed_in" ? session.pubkey : null
   const profileQuery = useProfile(merchantPubkey ?? null, {
+    authenticatedPubkey: getMerchantProfileAuthenticatedPubkey(
+      merchantPubkey,
+      viewerPubkey
+    ),
     relayHints: profileRelayHints,
     refetchUnresolvedMs: 2_000,
     maxUnresolvedRefetches: 2,
   })
   const profile = profileQuery.data
 
+  const socialQueryKey = useMemo(
+    () =>
+      [
+        "merchant-trust-social",
+        "v2",
+        session.relayScope ?? "none",
+        viewerPubkey ?? "none",
+        merchantPubkey ?? "none",
+      ] as const,
+    [merchantPubkey, session.relayScope, viewerPubkey]
+  )
   const socialQuery = useQuery({
-    queryKey: [
-      "merchant-trust-social",
-      viewerPubkey ?? "none",
-      merchantPubkey ?? "none",
-    ],
+    queryKey: socialQueryKey,
     enabled:
-      !!merchantPubkey && !!viewerPubkey && viewerPubkey !== merchantPubkey,
+      session.relaySettingsReady &&
+      !!merchantPubkey &&
+      !!viewerPubkey &&
+      viewerPubkey !== merchantPubkey,
     staleTime: 60_000,
-    queryFn: async () => {
-      const ndk = await requireNdkConnected()
-      const events = await ndk.fetchEvents({
-        kinds: [EVENT_KINDS.CONTACT_LIST],
-        authors: [viewerPubkey!, merchantPubkey!],
-        limit: 20,
-      })
-      const allEvents = Array.from(events)
-      const viewerLatest = selectLatestFollowListEvent(
-        allEvents.filter((event) => event.pubkey === viewerPubkey)
-      )
-      const merchantLatest = selectLatestFollowListEvent(
-        allEvents.filter((event) => event.pubkey === merchantPubkey)
-      )
-
-      return buildMerchantTrustSocialSummary({
-        merchantPubkey: merchantPubkey!,
-        viewerPubkey,
-        viewerFollowPubkeys: viewerLatest
-          ? getFollowListPubkeySet(viewerLatest)
-          : null,
-        merchantFollowPubkeys: merchantLatest
-          ? getFollowListPubkeySet(merchantLatest)
-          : null,
-      })
-    },
+    queryFn: ({ signal }) =>
+      fetchMerchantTrustSocialSummary(
+        {
+          merchantPubkey: merchantPubkey!,
+          viewerPubkey: viewerPubkey!,
+        },
+        { signal }
+      ),
   })
+
+  useEffect(() => {
+    if (!viewerPubkey || !session.relayScope) return
+    return subscribeRelaySettingsChanges((changedScope) => {
+      if (changedScope !== session.relayScope) return
+      void queryClient.invalidateQueries({ queryKey: socialQueryKey })
+    })
+  }, [queryClient, session.relayScope, socialQueryKey, viewerPubkey])
 
   const merchantName = merchantPubkey
     ? getProfileDisplayLabel(profile, merchantPubkey, {
@@ -121,11 +143,24 @@ export function useMerchantTrustContext({
       ? "disconnected"
       : viewerPubkey === merchantPubkey
         ? "own_store"
-        : socialQuery.isLoading || socialQuery.isFetching
+        : !session.relaySettingsReady ||
+            socialQuery.isLoading ||
+            socialQuery.isFetching
           ? "loading"
           : socialQuery.error
             ? "unavailable"
-            : "available"
+            : (socialQuery.data?.readState ?? "unavailable")
+
+  const socialSummary = socialQuery.data
+    ? {
+        merchantFollowingCount: socialQuery.data.merchantFollowingCount,
+        viewerFollowsMerchant: socialQuery.data.viewerFollowsMerchant,
+        merchantFollowsViewer: socialQuery.data.merchantFollowsViewer,
+        mutualFollowCount: socialQuery.data.mutualFollowCount,
+        pendingViewerFollowsMerchant:
+          socialQuery.data.pendingViewerFollowsMerchant,
+      }
+    : { ...fallbackSocial, pendingViewerFollowsMerchant: null }
 
   return {
     merchantPubkey: merchantPubkey ?? null,
@@ -135,6 +170,6 @@ export function useMerchantTrustContext({
     merchantName,
     merchantNamePending,
     listingCount,
-    ...(socialQuery.data ?? fallbackSocial),
+    ...socialSummary,
   }
 }

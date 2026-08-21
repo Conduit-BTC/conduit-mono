@@ -4,6 +4,7 @@ import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
   buildProductDeletionTarget,
   isProductDeletedByNip09,
+  normalizeProductCoordinate,
   parseProductAddressCoordinate,
   productDeletionEvidenceFromSignedEvent,
   resolveProductDeletion,
@@ -81,6 +82,21 @@ describe("product deletion coordinates", () => {
     ).toBeNull()
     expect(
       parseProductAddressCoordinate("30402:not-a-pubkey:coffee")
+    ).toBeNull()
+  })
+
+  it("normalizes stored product references to merchant-scoped coordinates", () => {
+    expect(normalizeProductCoordinate("legacy-d-tag", MERCHANT_A)).toBe(
+      `30402:${MERCHANT_A}:legacy-d-tag`
+    )
+    expect(
+      normalizeProductCoordinate(`30402:${MERCHANT_A}:coffee`, MERCHANT_A)
+    ).toBe(`30402:${MERCHANT_A}:coffee`)
+    expect(
+      normalizeProductCoordinate(`30402:${MERCHANT_A}:coffee`, MERCHANT_B)
+    ).toBeNull()
+    expect(
+      normalizeProductCoordinate("30402:not-a-pubkey:coffee", "not-a-pubkey")
     ).toBeNull()
   })
 })

@@ -1,7 +1,10 @@
 import {
   formatNpub,
   getProfileName,
+  isCommerceReadIncomplete,
+  normalizePublicMediaUrl,
   type CommerceProductRecord,
+  type CommerceFreshnessMeta,
   type PreparedProductFamily,
   type PricingRateInput,
   type Product,
@@ -36,6 +39,53 @@ export function allowsGlobalProductSearch(input: {
   anonymous: boolean
 }): boolean {
   return input.anonymous || input.catalogSource === "combined"
+}
+
+export async function refreshMarketBrowseData(input: {
+  globalSearchEnabled: boolean
+  refreshDiscovery?: () => Promise<boolean>
+  refreshCatalog: () => void
+  refreshGlobalSearch: () => unknown
+}): Promise<void> {
+  if (!input.refreshDiscovery) {
+    input.refreshCatalog()
+    if (input.globalSearchEnabled) void input.refreshGlobalSearch()
+    return
+  }
+
+  const discoveryRefresh = input.refreshDiscovery()
+  if (input.globalSearchEnabled) void input.refreshGlobalSearch()
+  let authorSetChanged = false
+  try {
+    authorSetChanged = await discoveryRefresh
+  } catch {
+    // The catalog still refreshes against the retained safe author set.
+  }
+  if (!authorSetChanged) input.refreshCatalog()
+}
+
+type BrowseFreshnessMeta = CommerceFreshnessMeta
+
+export function isMarketBrowseRefreshStale(input: {
+  catalogMeta: BrowseFreshnessMeta | null | undefined
+  catalogError: unknown
+  catalogPaused: boolean
+  discoveryStale: boolean
+  globalSearchEnabled: boolean
+  globalSearchMeta: BrowseFreshnessMeta | null | undefined
+  globalSearchError: unknown
+  globalSearchPaused: boolean
+}): boolean {
+  return (
+    isCommerceReadIncomplete(input.catalogMeta) ||
+    !!input.catalogError ||
+    input.catalogPaused ||
+    input.discoveryStale ||
+    (input.globalSearchEnabled &&
+      (isCommerceReadIncomplete(input.globalSearchMeta) ||
+        !!input.globalSearchError ||
+        input.globalSearchPaused))
+  )
 }
 
 export function getGlobalProductSearchQueryKey(input: {
@@ -99,7 +149,7 @@ export function getMerchantIdentityView(
 ): MerchantIdentityView {
   const profileName = getProfileName(profile)
   const fallbackName = getPendingMerchantName(pubkey)
-  const picture = profile?.picture?.trim()
+  const picture = normalizePublicMediaUrl(profile?.picture)
 
   return {
     pubkey,

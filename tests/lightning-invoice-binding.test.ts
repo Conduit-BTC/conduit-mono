@@ -2,8 +2,10 @@ import { afterEach, describe, expect, it, mock } from "bun:test"
 import { createHash } from "node:crypto"
 
 import {
+  decodeLightningInvoicePaymentHash,
   decodeLightningInvoiceMetadata,
   fetchZapInvoice,
+  getLightningInvoiceNetwork,
   validateZapInvoiceDescriptionBinding,
 } from "../packages/core/src/protocol/lightning"
 import {
@@ -30,6 +32,54 @@ const ZAP_REQUEST_JSON = JSON.stringify({
 function descriptionHashField(description = ZAP_REQUEST_JSON) {
   return buildDescriptionHashField(description)
 }
+
+describe("BOLT11 network decoding", () => {
+  it("distinguishes regtest from the overlapping mainnet prefix", () => {
+    const mainnet = makeBolt11Invoice({
+      hrp: "lnbc500n",
+      fields: [paymentHashField()],
+    })
+    const regtest = makeBolt11Invoice({
+      hrp: "lnbcrt500n",
+      fields: [paymentHashField()],
+    })
+
+    expect(getLightningInvoiceNetwork(mainnet)).toBe("mainnet")
+    expect(getLightningInvoiceNetwork(regtest)).toBe("regtest")
+  })
+})
+
+describe("BOLT11 payment hash decoding", () => {
+  it("accepts exactly one canonical 32-byte payment hash", () => {
+    const invoice = makeBolt11Invoice({
+      fields: [paymentHashField(), descriptionHashField()],
+    })
+
+    expect(decodeLightningInvoicePaymentHash(invoice)).toBe("07".repeat(32))
+  })
+
+  it("rejects missing, duplicate, and malformed payment hashes", () => {
+    const missing = makeBolt11Invoice({
+      fields: [descriptionHashField()],
+    })
+    const duplicate = makeBolt11Invoice({
+      fields: [paymentHashField(), paymentHashField(), descriptionHashField()],
+    })
+    const malformed = makeBolt11Invoice({
+      fields: [
+        {
+          tag: "p",
+          words: paymentHashField().words.slice(0, 51),
+        },
+        descriptionHashField(),
+      ],
+    })
+
+    expect(decodeLightningInvoicePaymentHash(missing)).toBeNull()
+    expect(decodeLightningInvoicePaymentHash(duplicate)).toBeNull()
+    expect(decodeLightningInvoicePaymentHash(malformed)).toBeNull()
+  })
+})
 
 describe("NIP-57 BOLT11 description binding", () => {
   it("accepts a single description hash of the exact zap request JSON", () => {
@@ -199,7 +249,7 @@ describe("fetchZapInvoice description binding", () => {
 
     await expect(
       fetchZapInvoice(
-        "https://wallet.example/callback",
+        "https://wallet.conduit.market/callback",
         50_000,
         ZAP_REQUEST_JSON
       )
@@ -221,7 +271,7 @@ describe("fetchZapInvoice description binding", () => {
 
     await expect(
       fetchZapInvoice(
-        "https://wallet.example/callback",
+        "https://wallet.conduit.market/callback",
         50_000,
         ZAP_REQUEST_JSON
       )

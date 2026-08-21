@@ -40,7 +40,7 @@ conduit-mono/
 | Server State | TanStack Query over shared Nostr protocol helpers                  |
 | Client State | React Context (auth only)                                          |
 | Persistence  | localStorage (cart, preferences)                                   |
-| Database     | Dexie (IndexedDB) for orders, messages, cache                      |
+| Database     | Dexie (IndexedDB) for orders, messages, cache, wallet registry     |
 | UI           | shadcn/ui + Tailwind CSS                                           |
 | Forms        | react-hook-form + Zod                                              |
 | Validation   | Zod schemas in `@conduit/core`                                     |
@@ -56,13 +56,21 @@ Core event kinds used:
 - **Kind 0** - User profile metadata
 - **Kind 5** - Event deletion (NIP-09)
 - **Kind 10002** - Relay list (NIP-65)
-- **Kind 30402** - Product listings (NIP-99 + GammaMarkets `market-spec`)
+- **Kind 30402** - Product listings (NIP-99 + Open Markets working specification, derived from the earlier GammaMarkets `market-spec`)
 
-Authentication: External signers only (NIP-07, NIP-46). No key custody.
+Authentication: External signers only (NIP-07, NIP-46). No Nostr account-key
+custody.
 Messaging: NIP-17 encrypted DMs for buyer-merchant communication.
-Payments: NWC-based Lightning payments (NIP-47).
+Payments: non-custodial Lightning through Portable Wallets, NWC (NIP-47),
+WebLN, invoices, and payment proofs.
 
-Nostr-sensitive work must read `docs/knowledge/decentralized-network-product-posture.md`, `docs/knowledge/external-nostr-references.md`, and the relevant public NIP/GammaMarkets source before coding. Product listings are NIP-99 + GammaMarkets `kind:30402`; do not introduce alternate product-listing protocol terminology, schemas, or assumptions.
+Portable Wallet recovery material is not a Nostr identity key. The only
+client-side wallet credential exception is the isolated, device-local provider
+boundary. It does not permit apps to generate, store, or derive Nostr account
+keys. The device-owned `/wallet` surface remains usable without connecting a
+Nostr signer.
+
+Nostr-sensitive work must read `docs/knowledge/decentralized-network-product-posture.md`, `docs/knowledge/external-nostr-references.md`, and the relevant public NIP/Open Markets source before coding. Product listings are NIP-99 plus the Open Markets working specification for `kind:30402` commerce events, derived from the earlier GammaMarkets `market-spec` work; do not introduce alternate product-listing protocol terminology, schemas, or assumptions.
 
 ## Session Workflow
 
@@ -106,7 +114,7 @@ Treat these as Nostr-sensitive changes: `packages/core/src/protocol/*`, relay se
 - Prefer shared protocol helpers and hooks in `@conduit/core`; route files should compose prepared state and workflows.
 - Do not add route-local `giftWrap`, publish, unwrap/decrypt, relay fanout, or event parsing when a shared helper exists or should be deepened.
 - Model relay partial failure, stale/degraded state, source disagreement, and publish ACK/reject/timeout where user decisions depend on freshness.
-- Keep diagnostics content-free: no plaintext, ciphertext, invoices, order contents, addresses, phone/email, signer secrets, NWC URIs, or message bodies.
+- Keep diagnostics content-free: no plaintext, ciphertext, invoices, order contents, addresses, phone/email, signer secrets, NWC URIs, Portable Wallet recovery material, provider credentials, wallet balances, or message bodies.
 - Keep NIP-44 v3 readiness visible when messaging work touches that area. Be truthful that public NIP-44 is currently v2, but do not remove v3 planning; gate implementation on public draft/client references and explicit capability detection.
 
 ## Protected Files
@@ -151,7 +159,7 @@ Keep private company context out of tracked public history unless explicitly req
 - Linear is the team-facing target for automated triage; GitHub issues are community-facing.
 - Private prompts, dashboard links, Linear/Slack/Cloudflare runbooks, credentials, and release coordination belong outside this public repo.
 - Code-changing agent workflows require maintainer intent, such as an `agent-ready` or `agent-fix` label, and must not run for high-risk protocol/auth/payment/privacy work without human planning.
-- Telemetry and smoke artifacts used by agents must follow `docs/analytics/events.md` and must not include pubkeys, npubs, nsecs, invoices, order contents, addresses, message contents, IPs, fingerprints, signer connection strings, or NWC URIs.
+- Telemetry and smoke artifacts used by agents must follow `docs/analytics/events.md` and must not include pubkeys, npubs, nsecs, invoices, order contents, addresses, message contents, IPs, fingerprints, signer connection strings, NWC URIs, Portable Wallet seeds/recovery material, provider credentials, or wallet balances.
 
 ## Commands
 
@@ -277,6 +285,7 @@ import `@conduit/ui`.
 ```bash
 # .env.local (gitignored)
 VITE_DEFAULT_RELAYS=
+VITE_LIGHTNING_NETWORK=mainnet
 VITE_BLOSSOM_SERVER_URL=https://blossom.conduit.market
 ```
 

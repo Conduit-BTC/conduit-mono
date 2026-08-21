@@ -35,7 +35,7 @@ async function seedCachedMerchantProduct(page: Page): Promise<void> {
           format: "physical",
           visibility: "public",
           stock: 1,
-          images: [{ url: "https://example.com/pocket-relay.png" }],
+          images: [{ url: "https://blossom.conduit.market/pocket-relay.png" }],
           tags: ["relay", "hardware", "nostr"],
           publicZapEnabled: true,
           zapMessagePolicy: "generic_only",
@@ -114,6 +114,66 @@ async function seedCachedMerchantTagCatalog(page: Page): Promise<void> {
       }
     })
   }, TEST_MERCHANT_PUBKEY)
+}
+
+async function seedPortableWalletDescriptor(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    return new Promise<void>((resolve, reject) => {
+      const request = indexedDB.open("conduit")
+      request.onerror = () => reject(request.error)
+      request.onsuccess = () => {
+        const database = request.result
+        const transaction = database.transaction(
+          ["wallets", "walletCredentials"],
+          "readwrite"
+        )
+        const timestamp = Date.now()
+        transaction.objectStore("wallets").put({
+          id: "playwright-portable-wallet",
+          kind: "portable",
+          providerId: "spark",
+          label: "QA Portable",
+          network: "mainnet",
+          capabilities: [
+            "pay_invoice",
+            "receive",
+            "balance",
+            "history",
+            "spark_transfer",
+          ],
+          status: "locked",
+          defaultIntents: ["pay_invoice"],
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        })
+        transaction.objectStore("walletCredentials").put({
+          walletId: "playwright-portable-wallet",
+          providerId: "spark",
+          credential: JSON.stringify({
+            type: "password",
+            walletId: "playwright-portable-wallet",
+            providerId: "spark",
+            network: "mainnet",
+            accountNumber: 1,
+            recovery: {
+              version: 2,
+              kdf: "PBKDF2-SHA-256",
+              cipher: "AES-GCM",
+              iterations: 100_000,
+              salt: "AAAAAAAAAAAAAAAAAAAAAA==",
+              iv: "AAAAAAAAAAAAAAAA",
+              ciphertext: "AAAAAAAAAAAAAAAAAAAAAA==",
+            },
+          }),
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        })
+        transaction.oncomplete = () => resolve()
+        transaction.onerror = () => reject(transaction.error)
+        transaction.onabort = () => reject(transaction.error)
+      }
+    })
+  })
 }
 
 test("merchant shipping country combobox supports search and selection", async ({
@@ -496,20 +556,152 @@ test("market checkout country combobox supports search and selection", async ({
   )
 })
 
-test("market wallet setup route renders for connected signer", async ({
+test("market wallets route renders portable and connected wallet groups", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_BUYER_PUBKEY)
   await page.goto(`${marketUrl}/wallet`)
 
   await expect(
-    page.getByRole("heading", { name: "Wallet", exact: true })
+    page.getByRole("heading", { name: "Wallets", exact: true })
   ).toBeVisible()
   await expect(
-    page.getByText("Wallet connection", { exact: true })
+    page.getByRole("heading", { name: "Portable", exact: true })
   ).toBeVisible()
   await expect(
-    page.getByRole("button", { name: /connect wallet/i })
+    page.getByRole("heading", { name: "Connected", exact: true })
   ).toBeVisible()
-  await expect(page.getByPlaceholder("nostr+walletconnect://...")).toBeVisible()
+  await expect(
+    page.getByText("No Portable Wallets on this device.", { exact: true })
+  ).toBeVisible()
+  await expect(
+    page.getByText("No Connected Wallets on this device.", { exact: true })
+  ).toBeVisible()
+
+  const connectWalletButton = page.getByRole("button", {
+    name: "Connect wallet",
+  })
+  await connectWalletButton.click()
+  await expect(
+    page.getByRole("heading", { name: "Connect wallet", exact: true })
+  ).toBeVisible()
+  const nwcConnection = page.getByPlaceholder("nostr+walletconnect://...")
+  await expect(nwcConnection).toBeVisible()
+  await nwcConnection.fill("not-an-nwc-authorization")
+  await page.getByRole("button", { name: "Connect", exact: true }).click()
+  await expect(page.getByRole("alert")).toBeVisible()
+  await page.getByRole("button", { name: "Cancel", exact: true }).click()
+  await expect(connectWalletButton).toBeFocused()
+})
+
+test("portable wallet restore keeps derivation advanced and device-only fields clear", async ({
+  page,
+}) => {
+  await page.goto(`${marketUrl}/wallet`)
+  await page.getByRole("button", { name: "Add portable wallet" }).click()
+
+  const dialog = page.getByRole("dialog", { name: "Add a Spark wallet" })
+  await expect(dialog).toBeVisible()
+  const networkContext = dialog.getByText(/^Spark wallet · /)
+  await expect(networkContext).toBeVisible()
+  const networkLabel = await networkContext.textContent()
+
+  await dialog.getByRole("tab", { name: "Restore" }).click()
+  await expect(dialog.getByLabel("Recovery phrase")).toBeVisible()
+  const advancedSettings = dialog.locator("details")
+  await expect(advancedSettings).not.toHaveAttribute("open", "")
+  await advancedSettings.locator("summary").click()
+  await expect(dialog.getByLabel("Spark account number")).toHaveValue(
+    networkLabel?.endsWith("Regtest") ? "0" : "1"
+  )
+  await expect(dialog.getByLabel("Wallet nickname (optional)")).toBeVisible()
+  await expect(dialog.getByLabel("Local wallet password")).toBeVisible()
+  await expect(
+    dialog.getByText("Use this nickname to identify the wallet in Conduit.", {
+      exact: false,
+    })
+  ).toBeVisible()
+  await expect(
+    dialog.getByText("It is not the source wallet's password", {
+      exact: false,
+    })
+  ).toBeVisible()
+})
+
+test("market wallets remain available without a Nostr signer", async ({
+  page,
+}) => {
+  await page.goto(marketUrl)
+
+  const walletsNavigation = page.getByRole("button", {
+    name: "Wallets",
+    exact: true,
+  })
+  await expect(walletsNavigation).toBeVisible()
+  await walletsNavigation.click()
+
+  await expect(page).toHaveURL(`${marketUrl}/wallet`)
+  await expect(page).toHaveTitle("Wallets | Conduit Market")
+  await expect(
+    page.getByRole("heading", { name: "Wallets", exact: true })
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Connect", exact: true })
+  ).toBeVisible()
+})
+
+test("wallet dialog dismissal clears device-local sensitive state", async ({
+  page,
+}) => {
+  await page.goto(`${marketUrl}/wallet`)
+  await expect(
+    page.getByRole("heading", { name: "Wallets", exact: true })
+  ).toBeVisible()
+  await seedPortableWalletDescriptor(page)
+  await page.reload()
+
+  await expect(page.getByText("QA Portable", { exact: true })).toBeVisible()
+
+  const unlockButton = page.getByRole("button", {
+    name: "Unlock",
+    exact: true,
+  })
+  await unlockButton.click()
+  const unlockDialog = page.getByRole("dialog", {
+    name: "Unlock QA Portable",
+  })
+  const unlockPassword = unlockDialog.getByLabel("Wallet password")
+  await unlockPassword.fill("ephemeral QA value")
+  await page.keyboard.press("Escape")
+  await expect(unlockDialog).not.toBeVisible()
+  await expect(unlockButton).toBeFocused()
+
+  await unlockButton.click()
+  await expect(unlockPassword).toHaveValue("")
+  await unlockDialog.getByRole("button", { name: "Cancel" }).click()
+
+  await page
+    .getByRole("button", { name: "Remove from this device", exact: true })
+    .click()
+  const removeDialog = page.getByRole("alertdialog", {
+    name: "Remove from this device?",
+  })
+  const recoveryConfirmation = removeDialog.getByRole("switch", {
+    name: "I have the recovery phrase and Spark account number",
+  })
+  await recoveryConfirmation.click()
+  await expect(recoveryConfirmation).toBeChecked()
+  await page.keyboard.press("Escape")
+  await expect(removeDialog).not.toBeVisible()
+
+  await page
+    .getByRole("button", { name: "Remove from this device", exact: true })
+    .click()
+  await expect(recoveryConfirmation).not.toBeChecked()
+  await expect(
+    removeDialog.getByRole("button", {
+      name: "Remove from this device",
+      exact: true,
+    })
+  ).toBeDisabled()
 })

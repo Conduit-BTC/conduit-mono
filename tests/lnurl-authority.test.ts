@@ -7,8 +7,8 @@ import {
   fetchLnurlPayMetadataFromUrl,
 } from "../packages/core/src/protocol/lightning"
 
-const PAY_REQUEST_URL = "https://wallet.example/.well-known/lnurlp/alice"
-const CALLBACK_URL = "https://wallet.example/lnurlp/callback"
+const PAY_REQUEST_URL = "https://wallet.conduit.market/.well-known/lnurlp/alice"
+const CALLBACK_URL = "https://wallet.conduit.market/lnurlp/callback"
 const PROVIDER_PUBKEY = "a".repeat(64)
 
 function metadataResponse(overrides: Record<string, unknown> = {}): Response {
@@ -70,11 +70,11 @@ describe("LNURL encoding and authority metadata", () => {
     const options = { fetchImpl: fetchImpl as unknown as typeof fetch }
 
     for (const unsafeUrl of [
-      "http://wallet.example/.well-known/lnurlp/alice",
+      "http://wallet.conduit.market/.well-known/lnurlp/alice",
       "https://localhost/.well-known/lnurlp/alice",
       "https://127.0.0.1/.well-known/lnurlp/alice",
-      "https://user:password@wallet.example/.well-known/lnurlp/alice",
-      "https://wallet.example:8443/.well-known/lnurlp/alice",
+      "https://user:password@wallet.conduit.market/.well-known/lnurlp/alice",
+      "https://wallet.conduit.market:8443/.well-known/lnurlp/alice",
     ]) {
       await expect(
         fetchLnurlPayMetadataFromUrl(unsafeUrl, options)
@@ -113,10 +113,13 @@ describe("LNURL encoding and authority metadata", () => {
   it("passes bounded fetch options through lud16 resolution", async () => {
     const fetchImpl = mock(async () => metadataResponse())
 
-    const metadata = await fetchLnurlPayMetadata("alice@wallet.example", {
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-      timeoutMs: 2_500,
-    })
+    const metadata = await fetchLnurlPayMetadata(
+      "alice@wallet.conduit.market",
+      {
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        timeoutMs: 2_500,
+      }
+    )
 
     expect(fetchImpl).toHaveBeenCalledTimes(1)
     expect(metadata.payRequestUrl).toBe(PAY_REQUEST_URL)

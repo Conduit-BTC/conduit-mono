@@ -5,6 +5,7 @@ import {
   formatNpub,
   getListingSafetyDisplay,
   getProfileName,
+  isCommerceReadIncomplete,
   pubkeyToNpub,
   recordBrowserTelemetryEvent,
   useProfile,
@@ -17,8 +18,7 @@ import {
   AvatarImage,
   Badge,
   Button,
-  FreshnessChip,
-  type FreshnessChipStatus,
+  RefreshChip,
 } from "@conduit/ui"
 import { CopyButton } from "../../components/CopyButton"
 import {
@@ -39,7 +39,7 @@ import {
   useProgressiveProductDetail,
   useProgressiveProducts,
 } from "../../hooks/useProgressiveProducts"
-import { getProductAddAvailability } from "../../lib/cart-model"
+import { getProductAddAvailability, selectCartItem } from "../../lib/cart-model"
 import { getProductDisplaySummary } from "../../lib/productDisplaySummary"
 import {
   cartItemInputFromProductSelection,
@@ -134,11 +134,10 @@ function ProductPage() {
     : ""
   const merchantNip05 = getProfileNip05(merchantProfile.data)
   const cartItem = selectedProduct
-    ? cart.items.find(
-        (item) =>
-          item.merchantPubkey === selectedProduct.pubkey &&
-          item.productId === selectedProduct.id
-      )
+    ? selectCartItem(cart.items, {
+        merchantPubkey: selectedProduct.pubkey,
+        productId: selectedProduct.id,
+      })
     : null
   const cartQuantity = cartItem?.quantity ?? 0
   const productAddAvailability = getProductAddAvailability(
@@ -271,22 +270,22 @@ function ProductPage() {
     if (!product || !selectedProduct || !productAddAvailability.canAdd) return
     recordProductDetailAction("add_to_cart")
     cart.addItem(
-      cartItemInputFromProductSelection(product, selectedProduct),
+      {
+        ...cartItemInputFromProductSelection(product, selectedProduct),
+      },
       quantity
     )
   }
 
-  const productFreshness: FreshnessChipStatus = product
-    ? productQuery.isHydrating
-      ? "updating"
-      : productQuery.meta?.stale
-        ? "stale"
-        : "idle"
-    : "idle"
+  const productRefreshing = productQuery.isHydrating
+  const productReadIncomplete =
+    isCommerceReadIncomplete(productQuery.meta) ||
+    !!productQuery.error ||
+    productQuery.isRefreshPaused
 
   return (
     <div className="min-w-0 max-w-full space-y-8 overflow-x-hidden">
-      <div className="relative grid min-h-7 gap-2 text-sm text-[var(--text-secondary)] sm:block">
+      <div className="relative grid min-h-8 gap-2 text-sm text-[var(--text-secondary)] sm:block">
         <div className="flex min-w-0 flex-wrap items-center gap-2 sm:pr-48">
           <Link
             to="/products"
@@ -317,11 +316,13 @@ function ProductPage() {
             {product?.title ?? "Product"}
           </span>
         </div>
-        <div className="relative min-h-[1.625rem] sm:absolute sm:right-0 sm:top-1/2 sm:min-h-0 sm:-translate-y-1/2">
-          <FreshnessChip
-            status={productFreshness}
-            updatingLabel="Updating listing"
-            staleLabel="Listing may be out of date"
+        <div className="relative min-h-8 sm:absolute sm:right-0 sm:top-1/2 sm:min-h-0 sm:-translate-y-1/2">
+          <RefreshChip
+            refreshing={productRefreshing}
+            onRefresh={productQuery.refetch}
+            stale={productReadIncomplete}
+            staleLabel="May be out of date"
+            refreshingLabel="Updating listing..."
             className="absolute right-0 top-0 sm:static"
           />
         </div>
@@ -439,6 +440,7 @@ function ProductPage() {
                     <img
                       src={image.url}
                       alt={image.alt ?? product.title}
+                      referrerPolicy="no-referrer"
                       className={`h-full w-full object-cover ${
                         productSoldOut ? "grayscale opacity-55" : ""
                       }`}
@@ -453,6 +455,7 @@ function ProductPage() {
                 <img
                   src={selectedImage?.url}
                   alt={selectedImage?.alt ?? product.title}
+                  referrerPolicy="no-referrer"
                   className={`block h-full max-h-full w-full min-w-0 max-w-full object-contain ${
                     productSoldOut ? "grayscale opacity-55" : ""
                   }`}
@@ -475,6 +478,7 @@ function ProductPage() {
                       <img
                         src={image.url}
                         alt={image.alt ?? product.title}
+                        referrerPolicy="no-referrer"
                         className={`h-full w-full object-cover ${
                           productSoldOut ? "grayscale opacity-55" : ""
                         }`}
@@ -861,35 +865,42 @@ function ProductPage() {
                         }
                         onAddToCart={(relatedSelection) =>
                           cart.addItem(
-                            cartItemInputFromProductSelection(
-                              relatedProduct,
-                              relatedSelection
-                            ),
+                            {
+                              ...cartItemInputFromProductSelection(
+                                relatedProduct,
+                                relatedSelection
+                              ),
+                            },
                             1
                           )
                         }
                         onIncrement={(relatedSelection) =>
                           cart.addItem(
-                            cartItemInputFromProductSelection(
-                              relatedProduct,
-                              relatedSelection
-                            ),
+                            {
+                              ...cartItemInputFromProductSelection(
+                                relatedProduct,
+                                relatedSelection
+                              ),
+                            },
                             1
                           )
                         }
                         onDecrement={(relatedSelection) => {
-                          const relatedCartItem = cart.items.find(
-                            (item) =>
-                              item.merchantPubkey === relatedSelection.pubkey &&
-                              item.productId === relatedSelection.id
+                          const relatedIdentity = {
+                            merchantPubkey: relatedSelection.pubkey,
+                            productId: relatedSelection.id,
+                          }
+                          const relatedCartItem = selectCartItem(
+                            cart.items,
+                            relatedIdentity
                           )
                           if (!relatedCartItem) return
                           if (relatedCartItem.quantity <= 1) {
-                            cart.removeItem(relatedSelection.id)
+                            cart.removeItem(relatedIdentity)
                             return
                           }
                           cart.setQuantity(
-                            relatedSelection.id,
+                            relatedIdentity,
                             relatedCartItem.quantity - 1
                           )
                         }}

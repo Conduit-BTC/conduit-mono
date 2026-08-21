@@ -6,7 +6,7 @@ import {
 export type TelemetryResultStatus =
   "success" | "failure" | "blocked" | "unavailable" | "ambiguous"
 
-export type PaymentAttemptTelemetryRail = "nwc" | "webln" | "none"
+export type PaymentAttemptTelemetryRail = "wallet" | "webln" | "none"
 export type ProductPublishTelemetryFamily =
   "create" | "update" | "delivery_retry"
 export type ShippingPublishTelemetryFamily = "publish" | "clear"

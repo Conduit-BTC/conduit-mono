@@ -10,6 +10,7 @@ import {
 } from "lucide-react"
 import { createFileRoute } from "@tanstack/react-router"
 import {
+  normalizePublicMediaUrl,
   pubkeyToNpub,
   useAuth,
   useProfile,
@@ -61,7 +62,7 @@ function RequiredMark() {
 
 function ProfilePage() {
   const { pubkey } = useAuth()
-  const profileQuery = useProfile(pubkey)
+  const profileQuery = useProfile(pubkey, { authenticatedPubkey: pubkey })
   const updateMutation = useUpdateProfile("merchant")
   const [editing, setEditing] = useState(false)
   const [form, setForm] = useState<ProfileFormValues>(EMPTY_PROFILE_FORM)
@@ -76,6 +77,9 @@ function ProfilePage() {
   }, [profileQuery.data])
 
   const profileData = profileQuery.data
+  const profileBannerUrl = normalizePublicMediaUrl(profileData?.banner)
+  const formPictureUrl = normalizePublicMediaUrl(form.picture)
+  const formBannerUrl = normalizePublicMediaUrl(form.banner)
   const complete = isProfileComplete(profileData)
   const displayName = profileData?.displayName || profileData?.name
   const npub = pubkey ? pubkeyToNpub(pubkey) : ""
@@ -106,7 +110,7 @@ function ProfilePage() {
     e.preventDefault()
     if (!hasProfileChanges || updateMutation.isPending) return
     setProfileSaveSucceeded(false)
-    updateMutation.mutate(profileFormToUpdatePayload(form), {
+    updateMutation.mutate(profileFormToUpdatePayload(form, profileData), {
       onSuccess: () => {
         setProfileSaveSucceeded(true)
         setEditing(false)
@@ -211,13 +215,14 @@ function ProfilePage() {
 
                 <div className="overflow-hidden rounded-[2rem] border border-[var(--border)] bg-[color-mix(in_srgb,var(--primary-500)_1%,transparent)] shadow-[var(--shadow-glass-inset)]">
                   {/* Banner */}
-                  {profileData?.banner ? (
+                  {profileBannerUrl ? (
                     <div className="h-32 w-full overflow-hidden sm:h-44">
                       <img
-                        src={profileData.banner}
+                        src={profileBannerUrl}
                         alt=""
                         className="h-full w-full object-cover"
                         aria-hidden="true"
+                        referrerPolicy="no-referrer"
                       />
                     </div>
                   ) : (
@@ -598,13 +603,14 @@ function ProfilePage() {
                           Preview
                         </div>
                         <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)]">
-                          {form.banner ? (
+                          {formBannerUrl ? (
                             <div className="h-24 w-full overflow-hidden">
                               <img
-                                src={form.banner}
+                                src={formBannerUrl}
                                 alt=""
                                 className="h-full w-full object-cover"
                                 aria-hidden="true"
+                                referrerPolicy="no-referrer"
                               />
                             </div>
                           ) : (
@@ -613,7 +619,7 @@ function ProfilePage() {
                           <div className="-mt-6 flex items-end gap-3 px-4 pb-3">
                             <Avatar className="h-12 w-12 border-4 border-[var(--surface-elevated)]">
                               <AvatarImage
-                                src={form.picture}
+                                src={formPictureUrl ?? undefined}
                                 alt="Avatar preview"
                               />
                               <AvatarFallback className="bg-[var(--avatar-bg)]">

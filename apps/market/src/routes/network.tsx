@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router"
 import {
-  getInboxCandidateRelayUrls,
+  getInboxRelayCandidates,
   useAuth,
   useConduitSession,
   useInboxDeclaration,
@@ -33,6 +33,7 @@ function SettingsPage() {
       <div className="mx-auto max-w-[50rem]">
         <RelaySettingsPanel
           settings={relaySettings.settings}
+          authEvidenceByUrl={relaySettings.authEvidenceByUrl}
           scanningUrls={relaySettings.scanningUrls}
           error={relaySettings.error}
           isLoadingPublishedRelayList={
@@ -57,9 +58,12 @@ function SettingsPage() {
               ? {
                   status: inboxDeclaration.status,
                   stale: inboxDeclaration.stale,
-                  declaredRelayUrls: inboxDeclaration.declaredRelayUrls,
-                  candidateRelayUrls: getInboxCandidateRelayUrls(
-                    relaySettings.settings.entries
+                  distributionRepairable:
+                    inboxDeclaration.distributionRepairable,
+                  candidateRelays: getInboxRelayCandidates(
+                    relaySettings.settings.entries,
+                    inboxDeclaration.declaredRelayUrls,
+                    inboxDeclaration.retainedRelayUrls
                   ),
                   lookupError: inboxDeclaration.error,
                   publishing: inboxDeclaration.publishing,

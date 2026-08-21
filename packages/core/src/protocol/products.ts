@@ -11,10 +11,11 @@ import {
   type ProductSchema,
   type ProductZapMessagePolicy,
 } from "../schemas"
+import { normalizePublicMediaUrl } from "../network-target-safety"
 import { EVENT_KINDS } from "./kinds"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 
-const PRODUCT_IMAGE_URL_PATTERN = /^https?:\/\//i
+export const MAX_PRODUCT_IMAGE_CANDIDATES = 12
 const PRODUCT_JSON_DISPLAY_PROJECTION_MAX_DEPTH = 3
 const PRODUCT_TITLE_MAX_LENGTH = 200
 const PRODUCT_SUMMARY_MAX_LENGTH = 5000
@@ -234,7 +235,7 @@ export function buildProductDeletionEventDraft({
 /**
  * Build a spec-aligned kind-30402 listing draft.
  *
- * NIP-99/Gamma expect `content` to be the human-readable listing
+ * NIP-99/Open Markets expect `content` to be the human-readable listing
  * description. Structured commerce data belongs in tags.
  */
 export function buildProductListingEventDraft({
@@ -317,7 +318,7 @@ export function buildProductListingEventDraft({
       tags.push(["shipping_exclude", rule.code, ...rule.exclude])
     }
   }
-  for (const image of product.images) {
+  for (const image of getProductProtocolImages(product)) {
     tags.push(["image", image.url])
   }
   for (const tag of canonicalizeProductTags(product.tags)) {
@@ -338,9 +339,56 @@ export function buildProductListingEventDraft({
 export function getProductImageCandidates(
   product: Pick<ProductSchema, "images">
 ): Array<{ url: string; alt?: string }> {
-  return product.images.filter((image) =>
-    PRODUCT_IMAGE_URL_PATTERN.test(image.url)
-  )
+  const candidates: Array<{ url: string; alt?: string }> = []
+  const seen = new Set<string>()
+
+  for (const image of getProductProtocolImages(product)) {
+    const url = normalizePublicMediaUrl(image.url)
+    if (!url || seen.has(url)) continue
+
+    seen.add(url)
+    candidates.push({ ...image, url })
+    if (candidates.length >= MAX_PRODUCT_IMAGE_CANDIDATES) break
+  }
+
+  return candidates
+}
+
+/**
+ * Preserve every structurally valid HTTP(S) image committed by the protocol
+ * event, in signed order. This is evidence retention, not permission to load
+ * the URL. Request/render boundaries must use getProductImageCandidates.
+ */
+export function getProductProtocolImages(
+  product: Pick<ProductSchema, "images">
+): Array<{ url: string; alt?: string }> {
+  const images: Array<{ url: string; alt?: string }> = []
+
+  for (const image of Array.isArray(product.images) ? product.images : []) {
+    if (!image || typeof image !== "object") continue
+    if (
+      typeof image.url !== "string" ||
+      !image.url ||
+      image.url !== image.url.trim() ||
+      image.url.length > 4_096
+    ) {
+      continue
+    }
+    try {
+      const parsed = new URL(image.url)
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        continue
+      }
+    } catch {
+      continue
+    }
+    images.push({
+      url: image.url,
+      ...(typeof image.alt === "string" && image.alt ? { alt: image.alt } : {}),
+    })
+  }
+
+  return images
 }
 
 export function hasMarketVisibleProductImage(
@@ -861,7 +909,7 @@ export function normalizeProductSummaryForDisplay(
  * - Interop varies across de-commerce implementations.
  * - We first try legacy JSON content matching our `productSchema`.
  * - If content is not a legacy product object, we fall back to fields from
- *   NIP-99/Gamma tags and Markdown content.
+ *   NIP-99/Open Markets tags and Markdown content.
  */
 export function parseProductEvent(
   event: Pick<NDKEvent, "content" | "pubkey" | "created_at" | "tags" | "id">
@@ -904,6 +952,9 @@ export function parseProductEvent(
       event.tags,
       candidate.type ?? "simple"
     )
+    candidate.images = getProductProtocolImages({
+      images: Array.isArray(parsed.images) ? parsed.images : [],
+    })
 
     const pricedCandidate =
       typeof candidate.price === "number"
@@ -934,7 +985,7 @@ export function parseProductEvent(
     // fall through
   }
 
-  // Fallback: market-spec/NIP-99 style tags + markdown content.
+  // Fallback: Open Markets/NIP-99-style tags + Markdown content.
   const fromContent = (event.content || "").trim()
   const jsonContentProjection = projectProductJsonDisplayFields(fromContent)
   const markdownContent = jsonContentProjection?.isJson ? "" : fromContent
@@ -953,15 +1004,15 @@ export function parseProductEvent(
   const summaryTag = getTagValue(event.tags, "summary")
   const locationTag = getTagValue(event.tags, "location")
 
-  // market-spec: ["type", "simple|variable|variation", "digital|physical"]
+  // Open Markets: ["type", "simple|variable|variation", "digital|physical"]
   const type = productTypeTag.type ?? "simple"
   const format: "physical" | "digital" =
     productTypeTag.format === "digital" ? "digital" : "physical"
   const parentProductId = parseVariationParentProductId(event.tags, type)
 
-  const images = getTagValues(event.tags, "image")
-    .filter((url) => url.startsWith("http://") || url.startsWith("https://"))
-    .map((url) => ({ url }))
+  const images = getProductProtocolImages({
+    images: getTagValues(event.tags, "image").map((url) => ({ url })),
+  })
 
   const tags = canonicalizeProductTags(getTagValues(event.tags, "t"))
   const summaryContext: ProductSummaryCleanupContext = {

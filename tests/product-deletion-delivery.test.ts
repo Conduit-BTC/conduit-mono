@@ -96,10 +96,15 @@ describe("product deletion relay plan", () => {
       planProductDeletionRelays({
         currentWriteRelayUrls: [
           "WSS://RELAY.EXAMPLE/",
+          "wss://127.0.0.1:7447",
+          "ws://127.0.0.1:7777",
           "https://write.example/catalog/?ignored=true",
-          "ws://insecure.example",
         ],
         sourceRelayUrls: [
+          "wss://127.0.0.1:7447/",
+          "ws://127.0.0.1:7777/",
+          "wss://192.168.1.50:7447",
+          "ws://insecure.example",
           "wss://relay.example",
           "wss://source.example/products/",
           "wss://relay.conduit.market/",
@@ -109,16 +114,20 @@ describe("product deletion relay plan", () => {
       })
     ).toEqual([
       {
+        relayUrl: "ws://127.0.0.1:7777",
+        roles: ["author_write", "source"],
+      },
+      {
+        relayUrl: "wss://127.0.0.1:7447",
+        roles: ["author_write", "source"],
+      },
+      {
         relayUrl: "wss://relay.conduit.market",
         roles: ["source", "conduit"],
       },
       {
         relayUrl: "wss://relay.example",
         roles: ["author_write", "source"],
-      },
-      {
-        relayUrl: "wss://source.example/products",
-        roles: ["source"],
       },
       {
         relayUrl: "wss://write.example/catalog",
@@ -135,6 +144,16 @@ describe("product deletion relay plan", () => {
         canonicalConduitRelayUrl: "ws://relay.conduit.market",
       })
     ).toThrow("secure wss://")
+  })
+
+  it("rejects a private canonical relay target", () => {
+    expect(() =>
+      planProductDeletionRelays({
+        currentWriteRelayUrls: [],
+        sourceRelayUrls: [],
+        canonicalConduitRelayUrl: "wss://127.0.0.1:7447",
+      })
+    ).toThrow("public secure wss://")
   })
 })
 
@@ -183,6 +202,64 @@ describe("durable product deletion delivery", () => {
     expect(await repository.listUndelivered()).toEqual([])
   })
 
+  it("retires a legacy private source-only target without publishing to it", async () => {
+    const repository = new MemoryProductDeletionOutbox()
+    const event = signedDeletionEvent()
+    const created = await persistProductDeletionDelivery(
+      {
+        signedEvent: event,
+        currentWriteRelayUrls: [],
+        sourceRelayUrls: [],
+        canonicalConduitRelayUrl: "wss://relay.conduit.market",
+      },
+      { repository, now: () => NOW }
+    )
+    const privateSourceRelay = "wss://127.0.0.1:7447"
+    await repository.update(created.id, (current) => ({
+      ...current,
+      relayPlan: [
+        ...current.relayPlan,
+        { relayUrl: privateSourceRelay, roles: ["source"] },
+      ],
+      relayDelivery: [
+        ...current.relayDelivery,
+        { relayUrl: privateSourceRelay, status: "pending", attemptCount: 0 },
+      ],
+    }))
+
+    const attemptedRelayUrls: string[] = []
+    const result = await deliverProductDeletionJob(
+      created.id,
+      async ({ relayUrl }) => {
+        attemptedRelayUrls.push(relayUrl)
+        return { status: "acked" }
+      },
+      { repository, now: () => NOW }
+    )
+
+    expect(attemptedRelayUrls).toEqual(["wss://relay.conduit.market"])
+    expect(result.relayPlan.map(({ relayUrl }) => relayUrl)).toEqual([
+      "wss://relay.conduit.market",
+    ])
+    expect(result.relayDelivery.map(({ relayUrl }) => relayUrl)).toEqual([
+      "wss://relay.conduit.market",
+    ])
+    expect(result.state).toBe("delivered")
+
+    await deliverProductDeletionJob(
+      created.id,
+      async ({ relayUrl }) => {
+        attemptedRelayUrls.push(relayUrl)
+        return { status: "acked" }
+      },
+      { repository, now: () => NOW }
+    )
+    expect(attemptedRelayUrls).toEqual(["wss://relay.conduit.market"])
+    expect(await getPendingProductDeletionDeliveries({ repository })).toEqual(
+      []
+    )
+  })
+
   it("persists the exact signed event and plan before publisher I/O", async () => {
     const repository = new MemoryProductDeletionOutbox()
     const event = signedDeletionEvent()
@@ -190,8 +267,8 @@ describe("durable product deletion delivery", () => {
     const job = await persistProductDeletionDelivery(
       {
         signedEvent: event,
-        currentWriteRelayUrls: ["wss://write.example"],
-        sourceRelayUrls: ["wss://source.example"],
+        currentWriteRelayUrls: ["wss://write.conduit.market"],
+        sourceRelayUrls: ["wss://source.conduit.market"],
         canonicalConduitRelayUrl: "wss://relay.conduit.market",
       },
       { repository, now }
@@ -209,8 +286,10 @@ describe("durable product deletion delivery", () => {
         persisted.relayPlan.length === 3
       expect(signedEvent).toEqual(event)
 
-      if (relayUrl === "wss://write.example") return { status: "acked" }
-      if (relayUrl === "wss://source.example") return { status: "rejected" }
+      if (relayUrl === "wss://write.conduit.market") return { status: "acked" }
+      if (relayUrl === "wss://source.conduit.market") {
+        return { status: "rejected" }
+      }
       return { status: "timed_out" }
     }
 
@@ -230,8 +309,8 @@ describe("durable product deletion delivery", () => {
       )
     ).toEqual({
       "wss://relay.conduit.market": "timed_out",
-      "wss://source.example": "rejected",
-      "wss://write.example": "acked",
+      "wss://source.conduit.market": "rejected",
+      "wss://write.conduit.market": "acked",
     })
     expect(
       result.relayDelivery.every(
@@ -241,7 +320,7 @@ describe("durable product deletion delivery", () => {
     ).toBe(true)
     expect(
       result.relayDelivery.find(
-        ({ relayUrl }) => relayUrl === "wss://source.example"
+        ({ relayUrl }) => relayUrl === "wss://source.conduit.market"
       )?.rejectedAt
     ).toBeNumber()
     expect(
@@ -273,8 +352,8 @@ describe("durable product deletion delivery", () => {
     const created = await persistProductDeletionDelivery(
       {
         signedEvent: event,
-        currentWriteRelayUrls: ["wss://write.example"],
-        sourceRelayUrls: ["wss://source.example"],
+        currentWriteRelayUrls: ["wss://write.conduit.market"],
+        sourceRelayUrls: ["wss://source.conduit.market"],
         canonicalConduitRelayUrl: "wss://relay.conduit.market",
       },
       { repository: beforeReload, now: firstNow }
@@ -283,9 +362,9 @@ describe("durable product deletion delivery", () => {
     await deliverProductDeletionJob(
       created.id,
       async ({ relayUrl }) =>
-        relayUrl === "wss://write.example"
+        relayUrl === "wss://write.conduit.market"
           ? { status: "acked" }
-          : relayUrl === "wss://source.example"
+          : relayUrl === "wss://source.conduit.market"
             ? { status: "rejected" }
             : { status: "timed_out" },
       { repository: beforeReload, now: firstNow, retryDelayMs: 1 }
@@ -318,7 +397,7 @@ describe("durable product deletion delivery", () => {
 
     expect(retriedRelayUrls).toEqual([
       "wss://relay.conduit.market",
-      "wss://source.example",
+      "wss://source.conduit.market",
     ])
     expect(retriedEvents).toEqual([event, event])
     expect(result.signedEvent).toEqual(event)
@@ -335,8 +414,8 @@ describe("durable product deletion delivery", () => {
       )
     ).toEqual({
       "wss://relay.conduit.market": 2,
-      "wss://source.example": 2,
-      "wss://write.example": 1,
+      "wss://source.conduit.market": 2,
+      "wss://write.conduit.market": 1,
     })
   })
 
@@ -347,8 +426,8 @@ describe("durable product deletion delivery", () => {
     await persistProductDeletionDelivery(
       {
         signedEvent: event,
-        currentWriteRelayUrls: ["wss://write.example"],
-        sourceRelayUrls: ["wss://source.example"],
+        currentWriteRelayUrls: ["wss://write.conduit.market"],
+        sourceRelayUrls: ["wss://source.conduit.market"],
         canonicalConduitRelayUrl: "wss://relay.conduit.market",
       },
       { repository, now: () => timestamp }
@@ -374,7 +453,10 @@ describe("durable product deletion delivery", () => {
       { repository, now: () => timestamp, retryDelayMs: 1 }
     )
 
-    expect(retried).toEqual(["wss://source.example", "wss://write.example"])
+    expect(retried).toEqual([
+      "wss://source.conduit.market",
+      "wss://write.conduit.market",
+    ])
     expect(retried).not.toContain("wss://relay.conduit.market")
     expect(result.state).toBe("delivered")
     expect(

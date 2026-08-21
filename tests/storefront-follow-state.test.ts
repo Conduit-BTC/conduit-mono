@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 
 import {
   createStorefrontFollowState,
+  deriveStorefrontFollowControl,
   storefrontFollowReducer,
   type StorefrontFollowScope,
 } from "../apps/market/src/lib/storefront-follow-state"
@@ -19,6 +20,45 @@ function scope(
 }
 
 describe("storefront follow state", () => {
+  it("keeps an ambiguous pending action available as an exact retry", () => {
+    expect(
+      deriveStorefrontFollowControl({
+        override: null,
+        observedFollowing: false,
+        pendingFollowing: true,
+      })
+    ).toEqual({
+      isFollowing: true,
+      shouldFollowOnClick: true,
+      isPendingRetry: true,
+    })
+    expect(
+      deriveStorefrontFollowControl({
+        override: null,
+        observedFollowing: true,
+        pendingFollowing: false,
+      })
+    ).toEqual({
+      isFollowing: false,
+      shouldFollowOnClick: false,
+      isPendingRetry: true,
+    })
+  })
+
+  it("lets a settled local result supersede stale pending query data", () => {
+    expect(
+      deriveStorefrontFollowControl({
+        override: true,
+        observedFollowing: false,
+        pendingFollowing: false,
+      })
+    ).toEqual({
+      isFollowing: true,
+      shouldFollowOnClick: false,
+      isPendingRetry: false,
+    })
+  })
+
   it("applies and settles the active scope's publish result", () => {
     const activeScope = scope(viewerA, merchantA)
     let state = createStorefrontFollowState(activeScope)

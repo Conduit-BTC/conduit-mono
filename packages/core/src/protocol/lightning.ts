@@ -3,6 +3,7 @@ import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
 
 import { config } from "../config"
+import { normalizePublicHttpsUrl } from "../network-target-safety"
 import {
   isSatsLikeCurrency,
   isUsdCurrencyCode,
@@ -76,17 +77,11 @@ async function readResponseTextWithLimit(
 
 export function normalizeSafeLnurlPayRequestUrl(raw: string): string | null {
   try {
-    if (!raw || raw !== raw.trim() || raw.length > 4_096) return null
-    const url = new URL(raw)
+    const publicUrl = normalizePublicHttpsUrl(raw)
+    if (!publicUrl) return null
+    const url = new URL(publicUrl)
     const hostname = url.hostname.toLowerCase().replace(/\.$/, "")
     const labels = hostname.split(".")
-    const isLocalName =
-      hostname === "localhost" ||
-      hostname.endsWith(".localhost") ||
-      hostname.endsWith(".local") ||
-      hostname.endsWith(".internal") ||
-      hostname.endsWith(".home") ||
-      hostname.endsWith(".lan")
     const isIpLiteral =
       hostname.startsWith("[") || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname)
     const hasValidDnsName =
@@ -98,16 +93,7 @@ export function normalizeSafeLnurlPayRequestUrl(raw: string): string | null {
           /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label)
       )
 
-    if (
-      url.protocol !== "https:" ||
-      url.username ||
-      url.password ||
-      url.hash ||
-      (url.port && url.port !== "443") ||
-      isLocalName ||
-      isIpLiteral ||
-      !hasValidDnsName
-    ) {
+    if ((url.port && url.port !== "443") || isIpLiteral || !hasValidDnsName) {
       return null
     }
 
@@ -373,7 +359,11 @@ export async function fetchLnurlInvoice(
   amountMsats: number,
   options: FetchLnurlInvoiceOptions = {}
 ): Promise<FetchZapInvoiceResult> {
-  const url = new URL(lnurlCallback)
+  const safeCallback = normalizeSafeLnurlPayRequestUrl(lnurlCallback)
+  if (!safeCallback) {
+    throw new Error("Unsafe LNURL-pay callback URL")
+  }
+  const url = new URL(safeCallback)
   url.searchParams.set("amount", String(amountMsats))
   url.searchParams.delete("nostr")
   url.searchParams.delete("lnurl")
@@ -384,10 +374,27 @@ export async function fetchLnurlInvoice(
   let data: Record<string, unknown>
   try {
     const res = await fetch(url.toString(), {
+      headers: { accept: "application/json" },
+      redirect: "error",
       signal: AbortSignal.timeout(15_000),
     })
     if (!res.ok) throw new Error(`LNURL callback returned ${res.status}`)
-    data = (await res.json()) as Record<string, unknown>
+    const contentLength = Number(res.headers?.get("content-length") ?? "0")
+    if (
+      Number.isFinite(contentLength) &&
+      contentLength > MAX_LNURL_METADATA_RESPONSE_BYTES
+    ) {
+      throw new Error("LNURL callback response is too large")
+    }
+    if (typeof res.text === "function") {
+      const body = await readResponseTextWithLimit(
+        res,
+        MAX_LNURL_METADATA_RESPONSE_BYTES
+      )
+      data = JSON.parse(body) as Record<string, unknown>
+    } else {
+      data = (await res.json()) as Record<string, unknown>
+    }
   } catch (e) {
     throw new Error(
       `Failed to fetch LNURL invoice: ${e instanceof Error ? e.message : "network error"}`,
@@ -465,6 +472,7 @@ const BECH32_GENERATORS = [
 const BOLT11_TIMESTAMP_WORD_COUNT = 7
 const BOLT11_SIGNATURE_WORD_COUNT = 104
 const BECH32_CHECKSUM_WORD_COUNT = 6
+const BOLT11_PAYMENT_HASH_WORD_COUNT = 52
 const BOLT11_DESCRIPTION_HASH_WORD_COUNT = 52
 
 type Bolt11TaggedField = {
@@ -496,6 +504,13 @@ export function convertCommerceAmountToSats(
 
 export function normalizeLightningInvoice(invoice: string): string {
   return invoice.trim().replace(/^lightning:/i, "")
+}
+
+export function isAmountlessLightningInvoice(invoice: string): boolean {
+  const normalized = normalizeLightningInvoice(invoice).toLowerCase()
+  if (!isValidBech32Invoice(normalized)) return false
+  const humanReadablePart = normalized.slice(0, normalized.lastIndexOf("1"))
+  return ["lnbc", "lnbcrt", "lntb", "lnsb"].includes(humanReadablePart)
 }
 
 function bech32Polymod(values: number[]): number {
@@ -687,8 +702,8 @@ export function getLightningInvoiceNetwork(
 ): LightningInvoiceNetwork {
   const normalized = normalizeLightningInvoice(invoice).toLowerCase()
 
-  if (normalized.startsWith("lnbc")) return "mainnet"
   if (normalized.startsWith("lnbcrt")) return "regtest"
+  if (normalized.startsWith("lnbc")) return "mainnet"
   if (normalized.startsWith("lnsb")) return "signet"
   if (normalized.startsWith("lntb")) return "testnet"
 
@@ -839,6 +854,26 @@ function equalBytesConstantTime(left: Uint8Array, right: Uint8Array): boolean {
     difference |= left[index]! ^ right[index]!
   }
   return difference === 0
+}
+
+export function decodeLightningInvoicePaymentHash(
+  invoice: string
+): string | null {
+  const parsed = parseBolt11Invoice(invoice)
+  if (!parsed) return null
+
+  const paymentHashes = parsed.taggedFields.filter((field) => field.tag === "p")
+  if (paymentHashes.length !== 1) return null
+  const paymentHash = paymentHashes[0]!
+  if (
+    !paymentHash ||
+    paymentHash.words.length !== BOLT11_PAYMENT_HASH_WORD_COUNT
+  ) {
+    return null
+  }
+
+  const paymentHashBytes = wordsToBytes(paymentHash.words, 32)
+  return paymentHashBytes ? bytesToHex(paymentHashBytes) : null
 }
 
 export type ZapInvoiceBindingErrorCode =

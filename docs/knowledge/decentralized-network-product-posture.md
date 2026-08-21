@@ -275,11 +275,15 @@ a tombstone exists and does not become an outage veto.
 `docs/knowledge/nip17-inbox-bootstrap-migration.md` keeps kind `10050` as the
 canonical route, moves repair to Network, permits broader safe reads, and names
 a bounded order-only compatibility write lane. The exception does not redefine
-NIP-17 and cannot silently widen to general DMs or arbitrary relays. Its current
-preview implementation still evicts process-local declaration evidence after a
-bounded complete-but-empty lookup and does not preserve that evidence across
-restart. The migration note records these doctrine gaps; they must be corrected
-and tested before production activation.
+NIP-17 and cannot silently widen to general DMs or arbitrary relays. Declaration
+evidence is durable and account-scoped, preserves the exact signed event and
+source observations, follows the NIP-01 replaceable-event frontier, and keeps a
+last-usable read set separate from the current write-authorizing state. Empty,
+partial, unavailable, and relay-settings-change observations can make evidence
+stale or degraded but cannot erase it. Network repair uses bounded shared
+discovery and exact-event readback so owner-only visibility is not mistaken for
+cross-client discovery. The remaining production blocker is the unimplemented
+privacy-safe measurement and removal gate documented by the migration note.
 
 ## Agent And Reviewer Preflight
 

@@ -10,6 +10,7 @@ import {
   LegacyDirectMessageNotice,
   LiveReadNotice,
   MessagingReadinessNotice,
+  toMessagingReadinessNoticeState,
   MessageComposer,
   matchesConversationSearch,
   SearchInput,
@@ -23,7 +24,6 @@ import {
   getConversationPreview,
   getConversationMessageDisplayContent,
   useOptimisticConversationMessages,
-  type MessagingReadinessState,
   type OrderAmountFormatter,
   type OptimisticConversationMessage,
 } from "@conduit/ui"
@@ -34,7 +34,9 @@ import {
   buildDirectMessageRumor,
   cacheParsedDirectMessage,
   cacheParsedOrderMessage,
+  clearProtectedReadAuthenticationSuppression,
   createValidatedOrderRouteScope,
+  deriveProtectedReadPresentationState,
   formatNpub,
   getCachedDirectMessageConversationList,
   getDirectMessageConversationList,
@@ -44,8 +46,10 @@ import {
   normalizePubkey,
   parseDirectMessageRumor,
   parseOrderMessageRumorEvent,
+  PrivateMessageRelayReadinessError,
   publishPrivateMessage,
   pubkeyToNpub,
+  selectProtectedReadRows,
   useAuth,
   useConduitSession,
   useInboxDeclaration,
@@ -55,16 +59,15 @@ import {
 import type { DirectConversationSummary } from "@conduit/core"
 import { requireAuth } from "../lib/auth"
 import { CopyButton } from "../components/CopyButton"
-import {
-  MerchantAvatarFallback,
-  getMerchantDisplayName,
-} from "../components/MerchantIdentity"
+import { ConversationProfilePicture } from "../components/ConversationProfilePicture"
+import { getMerchantDisplayName } from "../components/MerchantIdentity"
 import {
   fetchCachedBuyerConversations,
   fetchBuyerConversations,
   type BuyerConversation,
 } from "../lib/orderConversations"
 import { getAutomaticMerchantThreadId } from "../lib/message-route-state"
+import { getDirectMessageSearchEmptyCopy } from "../lib/protected-read-copy"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 
@@ -154,15 +157,10 @@ function MerchantThreadRow({
     >
       <div className="flex items-start gap-3">
         <div className="h-11 w-11 shrink-0 overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]">
-          {profile?.picture ? (
-            <img
-              src={profile.picture}
-              alt={merchantName}
-              className="h-full w-full object-cover"
-            />
-          ) : (
-            <MerchantAvatarFallback />
-          )}
+          <ConversationProfilePicture
+            src={profile?.picture}
+            alt={merchantName}
+          />
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
@@ -219,15 +217,7 @@ function DmThreadRow({
     >
       <div className="flex items-start gap-3">
         <div className="h-11 w-11 shrink-0 overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]">
-          {profile?.picture ? (
-            <img
-              src={profile.picture}
-              alt={name}
-              className="h-full w-full object-cover"
-            />
-          ) : (
-            <MerchantAvatarFallback />
-          )}
+          <ConversationProfilePicture src={profile?.picture} alt={name} />
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
@@ -317,14 +307,9 @@ function MessagesPage() {
     relayScope: session.relayScope,
   })
   const messagingReady = dmReadiness.status === "ready"
-  const readinessNoticeState: MessagingReadinessState =
-    dmReadiness.status === "malformed"
-      ? "malformed"
-      : dmReadiness.status === "lookup_partial"
-        ? "lookup_partial"
-        : dmReadiness.status === "lookup_unavailable"
-          ? "lookup_unavailable"
-          : "not_declared"
+  const readinessNoticeState = toMessagingReadinessNoticeState(
+    dmReadiness.status
+  )
   const readinessLookupDegraded =
     readinessNoticeState === "lookup_partial" ||
     readinessNoticeState === "lookup_unavailable"
@@ -352,11 +337,26 @@ function MessagesPage() {
     queryFn: () => fetchCachedBuyerConversations(pubkey!),
     staleTime: 5_000,
   })
+  const retryMerchantThreadsRead = () => {
+    if (!pubkey) return
+    clearProtectedReadAuthenticationSuppression(pubkey)
+    void messagesQuery.refetch()
+  }
 
   const conversations = useMemo(
-    () => messagesQuery.data?.data ?? cachedMessagesQuery.data?.data ?? [],
+    () =>
+      selectProtectedReadRows(
+        messagesQuery.data?.data,
+        cachedMessagesQuery.data?.data
+      ),
     [cachedMessagesQuery.data, messagesQuery.data]
   )
+  const merchantThreadsReadState = deriveProtectedReadPresentationState({
+    visibleCount: conversations.length,
+    pending: messagesQuery.isLoading,
+    error: messagesQuery.error,
+    meta: messagesQuery.data?.meta,
+  })
   const merchantPubkeys = useMemo(
     () =>
       Array.from(
@@ -532,9 +532,18 @@ function MessagesPage() {
       getCachedDirectMessageConversationList({ principalPubkey: pubkey! }),
     staleTime: 5_000,
   })
+  const retryDirectMessagesRead = () => {
+    if (!pubkey) return
+    clearProtectedReadAuthenticationSuppression(pubkey)
+    void dmsLiveQuery.refetch()
+  }
 
   const dmConversations = useMemo(
-    () => dmsLiveQuery.data?.data ?? dmsCacheQuery.data?.data ?? [],
+    () =>
+      selectProtectedReadRows(
+        dmsLiveQuery.data?.data,
+        dmsCacheQuery.data?.data
+      ),
     [dmsCacheQuery.data, dmsLiveQuery.data]
   )
   const dmCounterpartyPubkeys = useMemo(
@@ -570,6 +579,17 @@ function MessagesPage() {
     })
   }, [dmConversations, dmProfilesQuery.data, dmSearch])
   const dmLiveMeta = dmsLiveQuery.data?.meta
+  const directMessagesReadState = deriveProtectedReadPresentationState({
+    visibleCount: dmConversations.length,
+    pending: dmsLiveQuery.isLoading,
+    error: dmsLiveQuery.error,
+    meta: dmLiveMeta,
+  })
+  const directMessageListPending =
+    directMessagesReadState === "pending" && dmConversations.length === 0
+  const directMessageSearchEmptyCopy = getDirectMessageSearchEmptyCopy(
+    directMessagesReadState
+  )
   const dmDecryptFailures = dmLiveMeta?.decryptFailures?.length ?? 0
 
   // Scaffold a compose view when arriving via ?merchant=<pubkey>.
@@ -705,8 +725,14 @@ function MessagesPage() {
         }),
       ])
     },
-    onError: (_error, { message }) => {
+    onError: (error, { message }) => {
       optimisticDmQueue.markFailed(message.localId)
+      if (
+        error instanceof PrivateMessageRelayReadinessError &&
+        error.reason === "sender_not_ready"
+      ) {
+        dmReadiness.refetch()
+      }
     },
   })
 
@@ -821,6 +847,7 @@ function MessagesPage() {
             Checking encrypted messaging setup...
           </div>
         ) : !messagingReady &&
+          readinessNoticeState &&
           dmConversations.length === 0 &&
           !selectedDmPubkey ? (
           <MessagingReadinessNotice
@@ -830,7 +857,7 @@ function MessagesPage() {
           />
         ) : (
           <>
-            {!messagingReady && (
+            {!messagingReady && readinessNoticeState && (
               <MessagingReadinessNotice
                 state={readinessNoticeState}
                 onAction={onReadinessAction}
@@ -840,23 +867,18 @@ function MessagesPage() {
             {dmDecryptFailures > 0 && (
               <DecryptFailureNotice
                 count={dmDecryptFailures}
-                onRetry={() => dmsLiveQuery.refetch()}
+                onRetry={retryDirectMessagesRead}
                 retrying={dmsLiveQuery.isRefetching}
               />
             )}
-            {(dmsLiveQuery.error || dmLiveMeta?.stale) && (
-              <LiveReadNotice
-                state={
-                  dmsLiveQuery.error
-                    ? dmConversations.length > 0
-                      ? "cached"
-                      : "unavailable"
-                    : "partial"
-                }
-                onRetry={() => void dmsLiveQuery.refetch()}
-                retrying={dmsLiveQuery.isRefetching}
-              />
-            )}
+            {directMessagesReadState !== "complete" &&
+              directMessagesReadState !== "pending" && (
+                <LiveReadNotice
+                  state={directMessagesReadState}
+                  onRetry={retryDirectMessagesRead}
+                  retrying={dmsLiveQuery.isRefetching}
+                />
+              )}
             {signerConnected && (
               <DecryptFailureNotice
                 count={dmLiveMeta?.legacyDecryptFailures?.length ?? 0}
@@ -865,25 +887,21 @@ function MessagesPage() {
                   dmLiveMeta?.legacyDecryptFailures?.some(
                     (failure) => failure.retryable
                   )
-                    ? () => void dmsLiveQuery.refetch()
+                    ? retryDirectMessagesRead
                     : undefined
                 }
                 retrying={dmsLiveQuery.isRefetching}
               />
             )}
 
-            {dmsCacheQuery.isLoading &&
-            dmsLiveQuery.isLoading &&
-            dmConversations.length === 0 &&
-            !selectedDmPubkey ? (
+            {directMessageListPending && !selectedDmPubkey ? (
               <div className="text-sm text-[var(--text-secondary)]">
                 Loading your inbox…
               </div>
             ) : dmConversations.length === 0 &&
               !selectedDmPubkey &&
               messagingReady &&
-              !dmsLiveQuery.error &&
-              !dmLiveMeta?.stale ? (
+              directMessagesReadState === "complete" ? (
               <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-8 text-center">
                 <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-300">
                   <MessageCircleMore className="h-7 w-7" />
@@ -928,7 +946,7 @@ function MessagesPage() {
                       ))
                     ) : (
                       <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
-                        No conversations match your search.
+                        {directMessageSearchEmptyCopy}
                       </div>
                     )}
                   </div>
@@ -980,7 +998,7 @@ function MessagesPage() {
                         </ConversationCardScroller>
                       ) : (
                         <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
-                          No conversations match your search.
+                          {directMessageSearchEmptyCopy}
                         </div>
                       )}
                     </section>
@@ -1000,7 +1018,7 @@ function MessagesPage() {
                       <div className="mt-4 space-y-2">
                         {filteredDmConversations.length === 0 && (
                           <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
-                            No conversations match your search.
+                            {directMessageSearchEmptyCopy}
                           </div>
                         )}
                         {filteredDmConversations.map((conversation) => (
@@ -1032,15 +1050,10 @@ function MessagesPage() {
                       <div className="border-b border-[var(--border)] px-6 py-5">
                         <div className="flex items-center gap-3">
                           <div className="h-12 w-12 overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]">
-                            {selectedDmProfile.data?.picture ? (
-                              <img
-                                src={selectedDmProfile.data.picture}
-                                alt={selectedDmName ?? "Contact"}
-                                className="h-full w-full object-cover"
-                              />
-                            ) : (
-                              <MerchantAvatarFallback />
-                            )}
+                            <ConversationProfilePicture
+                              src={selectedDmProfile.data?.picture}
+                              alt={selectedDmName ?? "Contact"}
+                            />
                           </div>
                           <div className="min-w-0 flex-1">
                             <div className="truncate text-lg font-semibold text-[var(--text-primary)]">
@@ -1091,7 +1104,8 @@ function MessagesPage() {
                                 ).toLocaleString()}
                                 deliveryState={message.deliveryState}
                                 onRetry={
-                                  message.deliveryState === "failed"
+                                  message.deliveryState === "failed" &&
+                                  messagingReady
                                     ? () => retryDirectMessage(message)
                                     : undefined
                                 }
@@ -1100,7 +1114,11 @@ function MessagesPage() {
                           </>
                         ) : (
                           <div className="flex h-full min-h-[160px] items-center justify-center text-center text-sm text-[var(--text-secondary)]">
-                            No messages yet. Say hello.
+                            {directMessagesReadState === "pending"
+                              ? "Loading message history…"
+                              : directMessagesReadState === "complete"
+                                ? "No messages yet. Say hello."
+                                : "Message history is unavailable. Retry the protected read before relying on an empty thread."}
                           </div>
                         )}
                       </div>
@@ -1117,6 +1135,10 @@ function MessagesPage() {
                             >
                               Start current conversation
                             </Button>
+                          </div>
+                        ) : dmReadiness.isLoading ? (
+                          <div className="text-sm text-[var(--text-secondary)]">
+                            Checking encrypted messaging setup...
                           </div>
                         ) : !messagingReady ? (
                           <div className="text-sm text-[var(--text-secondary)]">
@@ -1175,13 +1197,16 @@ function MessagesPage() {
             </div>
           )}
 
-          {signerConnected && !dmReadiness.isLoading && !messagingReady && (
-            <MessagingReadinessNotice
-              state={readinessNoticeState}
-              onAction={onReadinessAction}
-              pending={dmReadiness.isRefetching}
-            />
-          )}
+          {signerConnected &&
+            !dmReadiness.isLoading &&
+            !messagingReady &&
+            readinessNoticeState && (
+              <MessagingReadinessNotice
+                state={readinessNoticeState}
+                onAction={onReadinessAction}
+                pending={dmReadiness.isRefetching}
+              />
+            )}
 
           {signerConnected && messagesQuery.isFetching && (
             <div className="text-sm text-[var(--text-secondary)]">
@@ -1190,16 +1215,11 @@ function MessagesPage() {
           )}
 
           {signerConnected &&
-            (messagesQuery.error || messagesQuery.data?.meta.stale) && (
+            merchantThreadsReadState !== "complete" &&
+            merchantThreadsReadState !== "pending" && (
               <LiveReadNotice
-                state={
-                  messagesQuery.error
-                    ? conversations.length > 0
-                      ? "cached"
-                      : "unavailable"
-                    : "partial"
-                }
-                onRetry={() => void messagesQuery.refetch()}
+                state={merchantThreadsReadState}
+                onRetry={retryMerchantThreadsRead}
                 retrying={messagesQuery.isRefetching}
               />
             )}
@@ -1207,7 +1227,7 @@ function MessagesPage() {
           {signerConnected && (
             <DecryptFailureNotice
               count={messagesQuery.data?.meta.decryptFailures?.length ?? 0}
-              onRetry={() => void messagesQuery.refetch()}
+              onRetry={retryMerchantThreadsRead}
               retrying={messagesQuery.isRefetching}
             />
           )}
@@ -1215,8 +1235,7 @@ function MessagesPage() {
           {signerConnected &&
             !cachedMessagesQuery.isLoading &&
             conversations.length === 0 &&
-            !messagesQuery.error &&
-            !messagesQuery.data?.meta.stale && (
+            merchantThreadsReadState === "complete" && (
               <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-8 text-center">
                 <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-300">
                   <Store className="h-7 w-7" />
@@ -1376,15 +1395,10 @@ function MessagesPage() {
                     <div className="border-b border-[var(--border)] px-6 py-5">
                       <div className="flex items-center gap-3">
                         <div className="h-12 w-12 overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]">
-                          {selectedProfile.data?.picture ? (
-                            <img
-                              src={selectedProfile.data.picture}
-                              alt={merchantName ?? "Merchant"}
-                              className="h-full w-full object-cover"
-                            />
-                          ) : (
-                            <MerchantAvatarFallback />
-                          )}
+                          <ConversationProfilePicture
+                            src={selectedProfile.data?.picture}
+                            alt={merchantName ?? "Merchant"}
+                          />
                         </div>
                         <div className="min-w-0 flex-1">
                           <Link
@@ -1441,43 +1455,32 @@ function MessagesPage() {
                     </div>
 
                     <div className="border-t border-[var(--border)] px-6 py-4">
-                      {!messagingReady ? (
-                        <div className="text-sm text-[var(--text-secondary)]">
-                          Enable encrypted messaging to reply in this order
-                          conversation.
+                      <div className="flex flex-col gap-3 sm:flex-row">
+                        <input
+                          value={replyText}
+                          onChange={(event) => setReplyText(event.target.value)}
+                          placeholder="Send a message to the merchant"
+                          className="h-11 flex-1 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)]"
+                          aria-label="Reply to merchant"
+                        />
+                        <Button
+                          className="h-11 px-5 text-sm"
+                          disabled={
+                            replyMutation.isPending || !replyText.trim()
+                          }
+                          onClick={() => replyMutation.mutate()}
+                        >
+                          {replyMutation.isPending
+                            ? "Sending..."
+                            : "Send message"}
+                        </Button>
+                      </div>
+                      {replyMutation.error && (
+                        <div className="mt-2 text-xs text-error">
+                          {replyMutation.error instanceof Error
+                            ? replyMutation.error.message
+                            : "Failed to send message"}
                         </div>
-                      ) : (
-                        <>
-                          <div className="flex flex-col gap-3 sm:flex-row">
-                            <input
-                              value={replyText}
-                              onChange={(event) =>
-                                setReplyText(event.target.value)
-                              }
-                              placeholder="Send a message to the merchant"
-                              className="h-11 flex-1 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)]"
-                              aria-label="Reply to merchant"
-                            />
-                            <Button
-                              className="h-11 px-5 text-sm"
-                              disabled={
-                                replyMutation.isPending || !replyText.trim()
-                              }
-                              onClick={() => replyMutation.mutate()}
-                            >
-                              {replyMutation.isPending
-                                ? "Sending..."
-                                : "Send message"}
-                            </Button>
-                          </div>
-                          {replyMutation.error && (
-                            <div className="mt-2 text-xs text-error">
-                              {replyMutation.error instanceof Error
-                                ? replyMutation.error.message
-                                : "Failed to send message"}
-                            </div>
-                          )}
-                        </>
                       )}
                     </div>
                   </>

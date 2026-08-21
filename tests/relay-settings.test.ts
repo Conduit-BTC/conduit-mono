@@ -19,15 +19,19 @@ import {
   getCommerceReadRelayUrls,
   getCommerceWriteRelayUrls,
   getGeneralWriteRelayUrls,
+  getInboxCandidateRelayUrls,
+  getInboxRelayCandidates,
   getPublishableRelaySettingsEntries,
   getRelayBucketConfigs,
   loadRelaySettings,
   mergeRelayPreferencesIntoSettings,
+  normalizeSecureRelayUrls,
   normalizeRelaySettingsState,
   normalizeRelayUrl,
   parseNip65RelayTags,
   saveRelaySettings,
   scanRelaySettingsEntry,
+  secureRelayUrls,
   serializeNip65RelayTags,
   type RelaySettingsEntry,
   type RelaySettingsState,
@@ -226,6 +230,22 @@ describe("relay settings protocol helpers", () => {
     )
   })
 
+  it("normalizes secure relay urls before stable deduplication", () => {
+    const inputs = [
+      " Relay.Example.com/path/?ignored=1#fragment ",
+      "https://relay.example.com/path/",
+      "wss://second.example/",
+      "WSS://SECOND.EXAMPLE",
+      "ws://insecure.example",
+      "http://also-insecure.example",
+      "not a relay host",
+    ]
+    const expected = ["wss://relay.example.com/path", "wss://second.example"]
+
+    expect(normalizeSecureRelayUrls(inputs)).toEqual(expected)
+    expect(secureRelayUrls(inputs)).toEqual(expected)
+  })
+
   it("parses and serializes NIP-65 read/write relay tags", () => {
     const parsed = parseNip65RelayTags([
       ["r", "wss://both.example"],
@@ -420,6 +440,189 @@ describe("relay settings protocol helpers", () => {
     expect(relay.readEnabled).toBe(false)
     expect(relay.writeEnabled).toBe(false)
     expect(relay.warnings.unreachable).toBe(true)
+  })
+
+  it("keeps declared and unreachable inbox relays in the typed candidate model", () => {
+    const reachable = createRelaySettingsEntryFromScan(
+      deriveRelayScanResult(
+        "wss://advertised.example",
+        { supported_nips: [59] },
+        { now: () => 10 }
+      )
+    )
+    const unreachable = createUnreachableRelaySettingsEntry(
+      "wss://unreachable.example",
+      "manual",
+      20,
+      {
+        ...reachable,
+        url: "wss://unreachable.example",
+        readEnabled: true,
+      }
+    )
+    const disabled = entry("wss://disabled.example", {
+      readEnabled: false,
+    })
+
+    const candidates = getInboxRelayCandidates(
+      state([reachable, unreachable, disabled]).entries,
+      ["wss://declared-only.example", "wss://advertised.example/"]
+    )
+
+    expect(candidates.map((candidate) => candidate.url)).toEqual([
+      "wss://declared-only.example",
+      "wss://advertised.example",
+      "wss://unreachable.example",
+      "wss://disabled.example",
+    ])
+    expect(candidates[0]).toEqual({
+      url: "wss://declared-only.example",
+      configured: false,
+      enabled: false,
+      declared: true,
+      retained: false,
+      selectable: true,
+      relayInfoProbe: "unknown",
+      protectedMessageCapabilityEvidence: "unknown",
+      protectedMessageRuntimeEvidence: "unknown",
+    })
+    expect(candidates[1]).toMatchObject({
+      configured: true,
+      enabled: true,
+      declared: true,
+      selectable: true,
+      relayInfoProbe: "succeeded",
+      protectedMessageCapabilityEvidence: "advertised",
+      protectedMessageRuntimeEvidence: "unknown",
+    })
+    expect(candidates[2]).toMatchObject({
+      configured: true,
+      enabled: true,
+      declared: false,
+      selectable: false,
+      relayInfoProbe: "failed",
+      protectedMessageCapabilityEvidence: "advertised",
+      protectedMessageRuntimeEvidence: "unknown",
+    })
+    expect(candidates[3]).toMatchObject({
+      configured: true,
+      enabled: false,
+      declared: false,
+      selectable: false,
+      relayInfoProbe: "unknown",
+      protectedMessageCapabilityEvidence: "unknown",
+      protectedMessageRuntimeEvidence: "unknown",
+    })
+
+    // The one-argument projection remains compatible with callers that only
+    // need enabled, reachable declaration targets.
+    expect(
+      getInboxCandidateRelayUrls(
+        state([reachable, unreachable, disabled]).entries
+      )
+    ).toEqual(["wss://advertised.example"])
+  })
+
+  it("keeps inbox relay capability evidence classes separate", () => {
+    const advertised = createRelaySettingsEntryFromScan(
+      deriveRelayScanResult("wss://advertised.example", {
+        supported_nips: [59],
+      })
+    )
+    const known = createRelaySettingsEntryFromScan(
+      deriveRelayScanResult(
+        "wss://known.example",
+        { supported_nips: [9, 42] },
+        { commerceRelayUrls: ["wss://known.example"] }
+      )
+    )
+    const observedBase = createRelaySettingsEntryFromScan(
+      deriveRelayScanResult("wss://observed.example", {
+        supported_nips: [],
+      })
+    )
+    const observed: RelaySettingsEntry = {
+      ...observedBase,
+      observations: {
+        ...observedBase.observations,
+        protectedMessages: {
+          supported: true,
+          status: "observed",
+          confidence: "observed",
+          evidence: ["active-probe"],
+          checkedAt: 30,
+        },
+      },
+    }
+    const failedProbe: RelaySettingsEntry = {
+      ...advertised,
+      url: "wss://probe-failed.example",
+      observations: {
+        ...advertised.observations,
+        protectedMessages: {
+          supported: true,
+          status: "failed",
+          confidence: "advertised",
+          evidence: ["nip11", "active-probe"],
+          checkedAt: 40,
+        },
+      },
+    }
+    const relayInfoOnly = createRelaySettingsEntryFromScan(
+      deriveRelayScanResult("wss://relay-info-only.example", {
+        supported_nips: [],
+      })
+    )
+
+    const byUrl = new Map(
+      getInboxRelayCandidates(
+        state([advertised, known, observed, failedProbe, relayInfoOnly])
+          .entries,
+        []
+      ).map((candidate) => [candidate.url, candidate])
+    )
+
+    expect(
+      byUrl.get("wss://advertised.example")?.protectedMessageCapabilityEvidence
+    ).toBe("advertised")
+    expect(
+      byUrl.get("wss://known.example")?.protectedMessageCapabilityEvidence
+    ).toBe("known")
+    expect(byUrl.get("wss://observed.example")).toMatchObject({
+      protectedMessageCapabilityEvidence: "unknown",
+      protectedMessageRuntimeEvidence: "probe_passed",
+    })
+    expect(byUrl.get("wss://probe-failed.example")).toMatchObject({
+      protectedMessageCapabilityEvidence: "advertised",
+      protectedMessageRuntimeEvidence: "probe_failed",
+    })
+    expect(byUrl.get("wss://relay-info-only.example")).toMatchObject({
+      relayInfoProbe: "succeeded",
+      protectedMessageCapabilityEvidence: "unknown",
+      protectedMessageRuntimeEvidence: "unknown",
+    })
+  })
+
+  it("keeps retained recovery relays distinct from the current declaration", () => {
+    expect(
+      getInboxRelayCandidates(
+        [],
+        [],
+        ["wss://previous.example", "ws://unsafe.example"]
+      )
+    ).toEqual([
+      {
+        url: "wss://previous.example",
+        configured: false,
+        enabled: false,
+        declared: false,
+        retained: true,
+        selectable: true,
+        relayInfoProbe: "unknown",
+        protectedMessageCapabilityEvidence: "unknown",
+        protectedMessageRuntimeEvidence: "unknown",
+      },
+    ])
   })
 
   it("preserves published NIP-65 controls when a capability refresh is unreachable", () => {
