@@ -47,15 +47,11 @@ export interface OrderStockItem {
   quantity: number
 }
 
-export type OrderStockAdjustmentState =
-  "stock_update_available" | "restocking_required"
-
 export interface OrderStockAdjustment {
   key: string
   addressId: string
   sourceEventId: string
   title: string
-  state: OrderStockAdjustmentState
   quantity: number
   currentStock: number
   nextStock: number
@@ -204,7 +200,6 @@ function parseOrderStockAdjustment(
     addressId,
     sourceEventId,
     title,
-    state: storedState,
     quantity,
     currentStock,
     nextStock: storedNextStock,
@@ -236,16 +231,11 @@ function parseOrderStockAdjustment(
   if (storedNextStock !== nextStock || storedShortfall !== shortfall)
     return null
 
-  const state: OrderStockAdjustmentState =
-    shortfall > 0 ? "restocking_required" : "stock_update_available"
-  if (storedState !== undefined && storedState !== state) return null
-
   return {
     key,
     addressId,
     sourceEventId,
     title,
-    state,
     quantity,
     currentStock,
     nextStock,
@@ -440,7 +430,6 @@ export function getOrderStockDecisionFollowUpAdjustment(input: {
   if (
     input.persistedDecision?.kind !== "applied" ||
     !persistedAdjustment ||
-    persistedAdjustment.state !== "restocking_required" ||
     persistedAdjustment.key !== input.adjustment.key ||
     persistedAdjustment.addressId !== input.adjustment.addressId ||
     persistedAdjustment.shortfall <= 0 ||
@@ -456,7 +445,6 @@ export function getOrderStockDecisionFollowUpAdjustment(input: {
   const shortfall = Math.max(0, quantity - currentStock)
   return {
     ...input.adjustment,
-    state: shortfall > 0 ? "restocking_required" : "stock_update_available",
     quantity,
     currentStock,
     nextStock,
@@ -500,7 +488,7 @@ export function shouldShowOrderStockAdjustment(input: {
   ) {
     return (
       input.persistedDecision.kind === "applied" &&
-      input.persistedDecision.adjustment?.state === "restocking_required"
+      (input.persistedDecision.adjustment?.shortfall ?? 0) > 0
     )
   }
   return !input.hasSessionDecision
@@ -512,11 +500,16 @@ export function getOrderStockAdjustmentForDisplay(input: {
 }): OrderStockAdjustment {
   const followUpAdjustment = getOrderStockDecisionFollowUpAdjustment(input)
   if (followUpAdjustment) return followUpAdjustment
-  return input.persistedDecision?.kind === "applied" &&
-    input.persistedDecision.adjustment?.state === "restocking_required" &&
+  const persistedAdjustment = input.persistedDecision?.adjustment
+  if (
+    input.persistedDecision?.kind === "applied" &&
+    persistedAdjustment &&
+    persistedAdjustment.shortfall > 0 &&
     doesOrderStockDecisionCoverAdjustment(input)
-    ? input.persistedDecision.adjustment
-    : input.adjustment
+  ) {
+    return persistedAdjustment
+  }
+  return input.adjustment
 }
 
 export function buildOrderStockAdjustments(input: {
@@ -580,16 +573,12 @@ export function buildOrderStockAdjustments(input: {
     const currentStock = record.product.stock!
     const nextStock = Math.max(0, currentStock - quantity)
     const shortfall = Math.max(0, quantity - currentStock)
-    const state: OrderStockAdjustmentState =
-      shortfall > 0 ? "restocking_required" : "stock_update_available"
-    if (state !== "restocking_required" && currentStock === nextStock) continue
 
     adjustments.push({
       key: getOrderStockDecisionKey(input.orderId, record.addressId),
       addressId: record.addressId,
       sourceEventId: record.eventId,
       title: record.product.title,
-      state,
       quantity,
       currentStock,
       nextStock,

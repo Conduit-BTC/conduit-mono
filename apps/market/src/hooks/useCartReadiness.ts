@@ -4,7 +4,6 @@ import {
   fetchLnurlPayMetadata,
   getProductsByIds,
   isValidLud16Address,
-  type ProductAvailabilityDiagnostic,
 } from "@conduit/core"
 import {
   CART_READINESS_LEASE_MS,
@@ -33,8 +32,6 @@ type PreparedProduct = CommerceReadResult["data"][number]["product"]
 export type MerchantCartRefreshResult = {
   availability: CartProductAvailability[]
   products: PreparedProduct[]
-  fresh: boolean
-  diagnostics: ProductAvailabilityDiagnostic[]
   decision: CartAvailabilityReadDecision
 }
 
@@ -43,7 +40,6 @@ export type MerchantCartReadiness = {
   state: MerchantCartReadinessState
   availabilityByProductId: ReadonlyMap<string, CartProductAvailability>
   products: PreparedProduct[]
-  fresh: boolean
   readDecision: CartAvailabilityReadDecision
   /** Initial read with no usable evidence yet. */
   isChecking: boolean
@@ -52,7 +48,6 @@ export type MerchantCartReadiness = {
   blockingMessage: string | null
   hasInsufficientStockItems: boolean
   hasUnavailableItems: boolean
-  diagnostics: ProductAvailabilityDiagnostic[]
   refresh: () => Promise<MerchantCartRefreshResult>
 }
 
@@ -172,8 +167,6 @@ export function useCartReadiness(items: CartItem[]): CartReadiness {
         return {
           availability: refreshedAvailability,
           products: refreshedProducts,
-          fresh: isCartAvailabilityReadComplete(decision),
-          diagnostics: refreshedDiagnostics,
           decision,
         }
       }
@@ -182,14 +175,12 @@ export function useCartReadiness(items: CartItem[]): CartReadiness {
         state,
         availabilityByProductId,
         products,
-        fresh,
         readDecision,
         isChecking: state === "checking",
         isRefreshing: state === "refreshing",
         blockingMessage,
         hasInsufficientStockItems,
         hasUnavailableItems,
-        diagnostics,
         refresh,
       })
     }

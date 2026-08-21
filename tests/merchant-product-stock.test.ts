@@ -141,7 +141,6 @@ describe("merchant product stock", () => {
 
     expect(adjustments).toHaveLength(1)
     expect(adjustments[0]).toMatchObject({
-      state: "stock_update_available",
       quantity: 3,
       currentStock: 12,
       nextStock: 9,
@@ -156,7 +155,6 @@ describe("merchant product stock", () => {
       productRecords: [record],
     })[0]
     expect(oversold).toMatchObject({
-      state: "restocking_required",
       nextStock: 0,
       shortfall: 3,
     })
@@ -173,7 +171,6 @@ describe("merchant product stock", () => {
     })[0]
 
     expect(adjustment).toMatchObject({
-      state: "stock_update_available",
       quantity: 1,
       currentStock: 1,
       nextStock: 0,
@@ -224,7 +221,6 @@ describe("merchant product stock", () => {
     expect(build(productRecord({ stock: undefined }))).toEqual([])
     expect(build(productRecord({ stock: 0 }))).toEqual([
       expect.objectContaining({
-        state: "restocking_required",
         currentStock: 0,
         nextStock: 0,
         shortfall: 1,
@@ -485,21 +481,18 @@ describe("merchant product stock", () => {
       {
         stock: 2,
         eventId: "c".repeat(64),
-        state: "restocking_required",
         nextStock: 0,
         shortfall: 1,
       },
       {
         stock: 3,
         eventId: "d".repeat(64),
-        state: "stock_update_available",
         nextStock: 0,
         shortfall: 0,
       },
       {
         stock: 10,
         eventId: "e".repeat(64),
-        state: "stock_update_available",
         nextStock: 7,
         shortfall: 0,
       },
@@ -527,7 +520,6 @@ describe("merchant product stock", () => {
       ).toBe(false)
       expect(followUp).toMatchObject({
         sourceEventId: expected.eventId,
-        state: expected.state,
         quantity: 3,
         currentStock: expected.stock,
         nextStock: expected.nextStock,
@@ -642,7 +634,6 @@ describe("merchant product stock", () => {
     })
     expect(finalFollowUp).toMatchObject({
       sourceEventId: secondRestockRecord.eventId,
-      state: "stock_update_available",
       quantity: 1,
       currentStock: 5,
       nextStock: 4,
@@ -725,7 +716,6 @@ describe("merchant product stock", () => {
       addressId,
       sourceEventId: "source-event",
       title: "Pocket Relay",
-      state: "restocking_required" as const,
       quantity: 5,
       currentStock: 2,
       nextStock: 0,
@@ -761,13 +751,13 @@ describe("merchant product stock", () => {
 
     const storageKey = storage.key(0)
     expect(storageKey).not.toBeNull()
-    const legacyStored = JSON.parse(storage.getItem(storageKey!)!) as {
+    const previewStored = JSON.parse(storage.getItem(storageKey!)!) as {
       deliveries: Record<string, { adjustment: Record<string, unknown> }>
     }
-    for (const delivery of Object.values(legacyStored.deliveries)) {
-      delete delivery.adjustment.state
+    for (const delivery of Object.values(previewStored.deliveries)) {
+      delivery.adjustment.state = "restocking_required"
     }
-    storage.setItem(storageKey!, JSON.stringify(legacyStored))
+    storage.setItem(storageKey!, JSON.stringify(previewStored))
 
     const afterReload = new PendingProductStockDeliveryStore(storage)
     const restored = afterReload.getForOrder(merchant, "order-1")

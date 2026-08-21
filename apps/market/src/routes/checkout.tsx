@@ -1065,8 +1065,6 @@ function CheckoutPage() {
       (async (): Promise<MerchantCartRefreshResult> => ({
         availability: [],
         products: [],
-        fresh: false,
-        diagnostics: [],
         decision: {
           status: "unverified",
           reason: "query_failed",

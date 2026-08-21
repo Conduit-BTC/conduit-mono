@@ -11,7 +11,6 @@ function adjustment(
     addressId: "30402:merchant:pocket-relay",
     sourceEventId: "event-1",
     title: "Pocket Relay",
-    state: "stock_update_available",
     quantity: 2,
     currentStock: 12,
     nextStock: 10,
@@ -59,7 +58,6 @@ describe("merchant order stock UI", () => {
       <OrderStockPanel
         adjustments={[
           adjustment({
-            state: "restocking_required",
             quantity: 5,
             currentStock: 2,
             nextStock: 0,
@@ -87,7 +85,6 @@ describe("merchant order stock UI", () => {
       <OrderStockPanel
         adjustments={[
           adjustment({
-            state: "restocking_required",
             quantity: 1,
             currentStock: 0,
             nextStock: 0,
@@ -117,7 +114,6 @@ describe("merchant order stock UI", () => {
 
   it("keeps restocking guidance without offering an already-applied update", () => {
     const applied = adjustment({
-      state: "restocking_required",
       quantity: 5,
       currentStock: 2,
       nextStock: 0,
@@ -172,7 +168,6 @@ describe("merchant order stock UI", () => {
 
   it("keeps a pending oversold snapshot retryable without another update", () => {
     const item = adjustment({
-      state: "restocking_required",
       quantity: 5,
       currentStock: 2,
       nextStock: 0,

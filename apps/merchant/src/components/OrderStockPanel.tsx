@@ -112,7 +112,7 @@ export function OrderStockPanel({
       )}
 
       {adjustments.map((adjustment) => {
-        const restockingRequired = adjustment.state === "restocking_required"
+        const restockingRequired = adjustment.shortfall > 0
         const canUpdateStock =
           !stockMutationDisabledKeys.has(adjustment.key) &&
           adjustment.currentStock > adjustment.nextStock

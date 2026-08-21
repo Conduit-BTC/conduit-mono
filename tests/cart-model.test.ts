@@ -21,7 +21,6 @@ import {
   getCartAvailabilityReadDecision,
   getCartAvailabilityVerificationMessage,
   isCartAvailabilityReadComplete,
-  isCartAvailabilityReadFresh,
   isCartProductAvailabilityBlocking,
   parsePersistedCart,
   removeCartItem,
@@ -858,59 +857,6 @@ describe("cart model", () => {
       )
     ).toBe(false)
     expect(cartItemsMatchCurrentProducts([cartItem], [])).toBe(false)
-  })
-
-  it("requires a fresh complete commerce read before checkout can proceed", () => {
-    const cartItems = [item({ stock: 2 })]
-    const refreshedProduct: Product = {
-      id: cartItems[0]!.productId,
-      pubkey: cartItems[0]!.merchantPubkey,
-      title: cartItems[0]!.title,
-      price: cartItems[0]!.price,
-      currency: cartItems[0]!.currency,
-      type: "simple",
-      format: "physical",
-      visibility: "public",
-      stock: 2,
-      images: [],
-      tags: [],
-      publicZapEnabled: true,
-      zapMessagePolicy: "generic_only",
-      publicZapPolicyKnown: true,
-      createdAt: 1,
-      updatedAt: 3,
-    }
-    const refreshedAvailability = getCartProductAvailability(cartItems, [
-      refreshedProduct,
-    ])
-    const freshMeta = {
-      source: "commerce" as const,
-      stale: false,
-      degraded: false,
-    }
-
-    expect(isCartAvailabilityReadFresh(refreshedAvailability, freshMeta)).toBe(
-      true
-    )
-    expect(
-      isCartAvailabilityReadFresh(refreshedAvailability, {
-        source: "local_cache",
-        stale: true,
-        degraded: true,
-      })
-    ).toBe(false)
-    expect(
-      isCartAvailabilityReadFresh(refreshedAvailability, {
-        ...freshMeta,
-        degraded: true,
-      })
-    ).toBe(false)
-    expect(
-      isCartAvailabilityReadFresh(
-        getCartProductAvailability(cartItems, []),
-        freshMeta
-      )
-    ).toBe(false)
   })
 
   it("keeps refreshed availability merchant-scoped for legacy identifiers", () => {
