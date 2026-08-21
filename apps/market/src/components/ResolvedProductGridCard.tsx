@@ -3,7 +3,7 @@ import { Link } from "@tanstack/react-router"
 import { formatNpub } from "@conduit/core"
 import { useCart } from "../hooks/useCart"
 import { useProductCartFulfillment } from "../hooks/useProductCartFulfillment"
-import { isSameCartFulfillment } from "../lib/cart-model"
+import { isSameCartFulfillment, selectCartItem } from "../lib/cart-model"
 import {
   cartItemInputFromProductSelection,
   getDefaultProductSelection,
@@ -65,9 +65,11 @@ export function ResolvedProductGridCard({
           })
         : null
     : null
-  const existing = cart.items.find(
-    (item) => item.productId === selectedProduct.id
-  )
+  const selectedIdentity = {
+    merchantPubkey: selectedProduct.pubkey,
+    productId: selectedProduct.id,
+  }
+  const existing = selectCartItem(cart.items, selectedIdentity)
   const sameFulfillment =
     !!existing &&
     !!cartCandidate &&
@@ -102,10 +104,10 @@ export function ResolvedProductGridCard({
     if (selection.id !== selectedProduct.id) return
     if (!existing || !sameFulfillment) return
     if (existing.quantity <= 1) {
-      cart.removeItem(selectedProduct.id)
+      cart.removeItem(selectedIdentity)
       return
     }
-    cart.setQuantity(selectedProduct.id, existing.quantity - 1)
+    cart.setQuantity(selectedIdentity, existing.quantity - 1)
   }
 
   const notice = fulfillment.isChecking

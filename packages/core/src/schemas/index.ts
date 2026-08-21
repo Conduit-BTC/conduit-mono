@@ -929,6 +929,7 @@ export const paymentProofDeliveryStatusSchema = z.enum([
 ])
 
 export const paymentProofSourceSchema = z.enum([
+  "wallet",
   "nwc",
   "webln",
   "external",

@@ -536,6 +536,8 @@ test("Merchant upgrades v8 cache data to the durable v14 cache stores", async ({
             "ownContactListSnapshots"
           ),
           hasEventMarketEvidence: state.stores.includes("eventMarketEvidence"),
+          hasWallets: state.stores.includes("wallets"),
+          hasWalletCredentials: state.stores.includes("walletCredentials"),
         }
       },
       { timeout: 20_000 }
@@ -547,6 +549,8 @@ test("Merchant upgrades v8 cache data to the durable v14 cache stores", async ({
       hasInboxDeclarationEvidence: true,
       hasOwnContactListSnapshots: true,
       hasEventMarketEvidence: true,
+      hasWallets: true,
+      hasWalletCredentials: true,
     })
 
   const migrated = await readDatabaseMigrationState(page)

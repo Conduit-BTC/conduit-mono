@@ -66,6 +66,12 @@ export type FollowListCoverageState = "complete" | "limited" | "unavailable"
 
 export interface FollowListAuthorRead {
   pubkey: string
+  /**
+   * Stronger authenticated-owner evidence that is intentionally excluded from
+   * the current discovery projection (for example, an implausibly future
+   * replacement). Publish flows must honor it even though readers must not.
+   */
+  ownerSafetySnapshot?: RetainedOwnFollowListSnapshot
   event?: SignedPublicNostrEvent
   eventSourceRelayUrls: string[]
   /** Selected current NIP-65 author hints, before adding an independent base. */
@@ -76,6 +82,8 @@ export interface FollowListAuthorRead {
   coverage: FollowListCoverageState
   relayListState: RelayListResolutionState
   relayHintTruncated: boolean
+  /** True when relay/result bounds may have hidden a stronger replacement. */
+  capped: boolean
   snapshotState: "none" | "network" | "observed" | "pending"
 }
 
@@ -85,6 +93,21 @@ export interface FollowListReadResult {
   plannedRelayUrls: string[]
   relays: RelayReadSourceStatus[]
   eventsVerified: boolean
+}
+
+/**
+ * Signature-validated owner contact-list evidence retained locally.
+ *
+ * The signed event preserves the distinction between a cache miss and an
+ * observed contact list with no `p` tags. Consumers may use this snapshot to
+ * prepare reads while live relay discovery continues, but should keep the
+ * live read's freshness and coverage state authoritative.
+ */
+export interface RetainedOwnFollowListSnapshot {
+  pubkey: string
+  event: SignedPublicNostrEvent
+  sourceRelayUrls: string[]
+  state: "observed" | "pending"
 }
 
 export interface MerchantTrustSocialReadResult extends MerchantTrustSocialSummary {
@@ -188,6 +211,16 @@ export function selectLatestFollowListEvent<T extends FollowListEventLike>(
   })[0]
 }
 
+export function isPlausibleFollowListEventTimestamp(
+  event: Pick<FollowListEventLike, "created_at"> | null | undefined,
+  now: () => number = Date.now
+): boolean {
+  if (event?.created_at === undefined) return false
+  const latestAllowedTimestamp =
+    Math.floor(now() / 1_000) + FOLLOW_LIST_FUTURE_TOLERANCE_SECONDS
+  return event.created_at <= latestAllowedTimestamp
+}
+
 function cloneSignedEvent(
   event: SignedPublicNostrEvent
 ): SignedPublicNostrEvent {
@@ -219,6 +252,17 @@ function isValidOwnContactListSnapshot(
     (snapshot.state === "observed" || snapshot.state === "pending") &&
     isValidSignedPublicNostrEvent(snapshot.event)
   )
+}
+
+function toRetainedOwnFollowListSnapshot(
+  snapshot: CachedOwnContactListSnapshot
+): RetainedOwnFollowListSnapshot {
+  return {
+    pubkey: snapshot.pubkey,
+    event: cloneSignedEvent(snapshot.event),
+    sourceRelayUrls: [...snapshot.sourceRelayUrls],
+    state: snapshot.state,
+  }
 }
 
 function chooseStrongestOwnContactListSnapshot(
@@ -299,7 +343,7 @@ async function loadOwnContactListSnapshot(
   }
 
   const memory = observedOwnFollowLists.get(pubkey)
-  const memorySnapshot: CachedOwnContactListSnapshot | undefined = memory
+  const memoryCandidate: CachedOwnContactListSnapshot | undefined = memory
     ? {
         pubkey,
         event: memory.event,
@@ -308,10 +352,56 @@ async function loadOwnContactListSnapshot(
         cachedAt: 0,
       }
     : undefined
+  const memorySnapshot = isValidOwnContactListSnapshot(memoryCandidate, pubkey)
+    ? memoryCandidate
+    : undefined
   const chosen = stored
     ? chooseStrongestOwnContactListSnapshot(memorySnapshot, stored)
     : memorySnapshot
   return chosen ? rememberOwnContactListSnapshot(chosen) : undefined
+}
+
+/**
+ * Returns already-loaded owner contact-list evidence without touching
+ * IndexedDB or relays. This gives same-process remounts an immediate seed;
+ * hard reloads should also call `readRetainedOwnFollowListSnapshot`.
+ */
+export function peekRetainedOwnFollowListSnapshot(
+  pubkey: string,
+  options: { now?: () => number } = {}
+): RetainedOwnFollowListSnapshot | undefined {
+  const normalizedPubkey = normalizeHexPubkey(pubkey)
+  if (!normalizedPubkey) return undefined
+  const memory = observedOwnFollowLists.get(normalizedPubkey)
+  if (!memory) return undefined
+  const snapshot: CachedOwnContactListSnapshot = {
+    pubkey: normalizedPubkey,
+    event: memory.event,
+    sourceRelayUrls: memory.eventSourceRelayUrls,
+    state: memory.state,
+    cachedAt: 0,
+  }
+  return isValidOwnContactListSnapshot(snapshot, normalizedPubkey) &&
+    isPlausibleFollowListEventTimestamp(snapshot.event, options.now)
+    ? toRetainedOwnFollowListSnapshot(snapshot)
+    : undefined
+}
+
+/** Reads retained owner contact-list evidence without any network work. */
+export async function readRetainedOwnFollowListSnapshot(
+  pubkey: string,
+  options: { signal?: AbortSignal; now?: () => number } = {}
+): Promise<RetainedOwnFollowListSnapshot | null> {
+  const normalizedPubkey = normalizeHexPubkey(pubkey)
+  if (!normalizedPubkey) return null
+  const snapshot = await loadOwnContactListSnapshot(
+    normalizedPubkey,
+    options.signal
+  )
+  return snapshot &&
+    isPlausibleFollowListEventTimestamp(snapshot.event, options.now)
+    ? toRetainedOwnFollowListSnapshot(snapshot)
+    : null
 }
 
 async function persistOwnContactListSnapshot(
@@ -385,16 +475,26 @@ async function persistOwnContactListSnapshot(
 async function preserveStrongestOwnFollowList(
   read: FollowListAuthorRead,
   authenticatedPubkey: string | null,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  observedOwnerFrontier?: {
+    event: SignedPublicNostrEvent
+    sourceRelayUrls: string[]
+  },
+  now: () => number = Date.now
 ): Promise<FollowListAuthorRead> {
   if (read.pubkey !== authenticatedPubkey) return read
   const retained = await loadOwnContactListSnapshot(read.pubkey, signal)
+  let retainedWinner = retained
 
-  if (read.event && read.eventsVerified) {
+  const observedEvent =
+    observedOwnerFrontier?.event ??
+    (read.event && read.eventsVerified ? read.event : undefined)
+  if (observedEvent) {
     const networkSnapshot: CachedOwnContactListSnapshot = {
       pubkey: read.pubkey,
-      event: read.event,
-      sourceRelayUrls: read.eventSourceRelayUrls,
+      event: observedEvent,
+      sourceRelayUrls:
+        observedOwnerFrontier?.sourceRelayUrls ?? read.eventSourceRelayUrls,
       state: "observed",
       cachedAt: Date.now(),
     }
@@ -402,34 +502,36 @@ async function preserveStrongestOwnFollowList(
       retained,
       networkSnapshot
     )
-    if (strongest.event.id === read.event.id) {
+    if (strongest.event.id === observedEvent.id) {
       const persisted = await persistOwnContactListSnapshot(networkSnapshot, {
         required: false,
       })
-      if (persisted.event.id === read.event.id) {
+      retainedWinner = persisted
+      if (
+        read.eventsVerified &&
+        read.event?.id === observedEvent.id &&
+        persisted.event.id === read.event.id
+      ) {
         return { ...read, snapshotState: "network" }
-      }
-      // A stronger snapshot may have won the transaction after the initial
-      // cache read. Never report the weaker network event as authoritative.
-      return {
-        ...read,
-        event: persisted.event,
-        eventSourceRelayUrls: [...persisted.sourceRelayUrls],
-        eventsVerified: true,
-        coverage: "limited",
-        snapshotState: persisted.state,
       }
     }
   }
 
-  if (!retained) return read
+  if (!retainedWinner) return read
+  if (!isPlausibleFollowListEventTimestamp(retainedWinner.event, now)) {
+    return {
+      ...read,
+      ownerSafetySnapshot: toRetainedOwnFollowListSnapshot(retainedWinner),
+      coverage: "limited",
+    }
+  }
   return {
     ...read,
-    event: retained.event,
-    eventSourceRelayUrls: [...retained.sourceRelayUrls],
+    event: retainedWinner.event,
+    eventSourceRelayUrls: [...retainedWinner.sourceRelayUrls],
     eventsVerified: true,
     coverage: "limited",
-    snapshotState: retained.state,
+    snapshotState: retainedWinner.state,
   }
 }
 
@@ -546,9 +648,6 @@ export async function readLatestFollowLists(
   const normalizedAuthenticatedPubkey = normalizeHexPubkey(
     authenticatedPubkey ?? undefined
   )
-  const latestAllowedTimestamp =
-    Math.floor((options.now?.() ?? Date.now()) / 1_000) +
-    FOLLOW_LIST_FUTURE_TOLERANCE_SECONDS
   const requestedMaxRelays = Math.floor(
     options.maxRelays ?? FOLLOW_LIST_MAX_RELAYS_PER_AUTHOR
   )
@@ -611,10 +710,13 @@ export async function readLatestFollowLists(
             coverage: "unavailable",
             relayListState,
             relayHintTruncated,
+            capped: relayHintTruncated,
             snapshotState: "none",
           },
           normalizedAuthenticatedPubkey,
-          options.signal
+          options.signal,
+          undefined,
+          options.now
         )
       }
 
@@ -651,10 +753,13 @@ export async function readLatestFollowLists(
             coverage: "unavailable",
             relayListState,
             relayHintTruncated,
+            capped: relayHintTruncated,
             snapshotState: "none",
           },
           normalizedAuthenticatedPubkey,
-          options.signal
+          options.signal,
+          undefined,
+          options.now
         )
       }
 
@@ -685,12 +790,31 @@ export async function readLatestFollowLists(
             maxEvents: FOLLOW_LIST_MAX_VERIFICATION_CANDIDATES,
           })
       const eventsVerified = !candidateOverflow && !verification.truncated
+      const responseCapped = relays.some(
+        (relay) =>
+          relay.eventCount + (relay.rejectedEventCount ?? 0) >=
+          FOLLOW_LIST_EVENTS_PER_AUTHOR
+      )
+      const capped =
+        relayHintTruncated ||
+        candidateOverflow ||
+        verification.truncated ||
+        responseCapped
+      const verifiedContactLists = verification.events.filter(
+        (candidate) =>
+          candidate.kind === EVENT_KINDS.CONTACT_LIST &&
+          candidate.pubkey === pubkey
+      )
+      const observedOwnerFrontier =
+        pubkey === normalizedAuthenticatedPubkey
+          ? selectLatestFollowListEvent(verifiedContactLists)
+          : undefined
       const event = selectLatestFollowListEvent(
-        verification.events.filter(
-          (candidate) =>
-            candidate.kind === EVENT_KINDS.CONTACT_LIST &&
-            candidate.pubkey === pubkey &&
-            candidate.created_at <= latestAllowedTimestamp
+        verifiedContactLists.filter((candidate) =>
+          isPlausibleFollowListEventTimestamp(
+            candidate,
+            options.now ?? Date.now
+          )
         )
       )
       const hasUsableSource = relays.some((relay) => relay.status !== "failed")
@@ -702,7 +826,7 @@ export async function readLatestFollowLists(
         ? "unavailable"
         : eventsVerified &&
             relayDiscoveryComplete &&
-            !relayHintTruncated &&
+            !capped &&
             relays.every((relay) => relay.status === "success")
           ? "complete"
           : "limited"
@@ -721,16 +845,32 @@ export async function readLatestFollowLists(
           coverage,
           relayListState,
           relayHintTruncated,
+          capped,
           snapshotState: event ? "network" : "none",
         },
         normalizedAuthenticatedPubkey,
-        options.signal
+        options.signal,
+        observedOwnerFrontier
+          ? {
+              event: observedOwnerFrontier,
+              sourceRelayUrls: [
+                ...(result.eventSourceRelayUrls[observedOwnerFrontier.id] ??
+                  []),
+              ],
+            }
+          : undefined,
+        options.now
       )
     })
   )
 
   return {
-    events: authors.flatMap(({ event }) => (event ? [event] : [])),
+    events: authors.flatMap(({ event }) =>
+      event &&
+      isPlausibleFollowListEventTimestamp(event, options.now ?? Date.now)
+        ? [event]
+        : []
+    ),
     authors,
     plannedRelayUrls: Array.from(
       new Set(authors.flatMap(({ plannedRelayUrls }) => plannedRelayUrls))
@@ -847,6 +987,11 @@ export function requirePublishableContactListSnapshot(
   const author = read.authors.find(
     (candidate) => candidate.pubkey === normalizedOwnerPubkey
   )
+  if (author?.ownerSafetySnapshot) {
+    throw new ReplaceablePublishSafetyError(
+      "Refusing to publish a follow-list replacement without a verified snapshot from a relay that completed the read."
+    )
+  }
   const hasCompletedSource = author?.relays.some(
     (relay) =>
       relay.status === "success" &&
@@ -873,6 +1018,7 @@ export function requirePublishableContactListSnapshot(
     author?.snapshotState === "network" &&
     author.coverage === "limited" &&
     !author.relayHintTruncated &&
+    !author.capped &&
     hasCurrentRelayDiscovery &&
     completedOwnerLocalHint &&
     allSelectedHintsCompleted
@@ -922,11 +1068,13 @@ export async function publishContactListUpdate({
   targetPubkey,
   shouldFollow,
   appId,
+  isSessionCurrent,
 }: {
   ownerPubkey: string
   targetPubkey: string
   shouldFollow: boolean
   appId: ConduitAppId
+  isSessionCurrent?: () => boolean
 }): Promise<void> {
   if (!CONTACT_LIST_WRITES_AVAILABLE) {
     throw new ContactListWriteUnavailableError()
@@ -941,11 +1089,19 @@ export async function publishContactListUpdate({
 
   const ndk = followListTestOverrides.getNdk?.() ?? getNdk()
   if (!ndk.signer) throw new Error("Signer not connected")
+  const signer = ndk.signer
 
-  const signerPubkey = normalizeHexPubkey((await ndk.signer.user()).pubkey)
+  const assertCurrentSignerSession = () => {
+    if (ndk.signer !== signer || isSessionCurrent?.() === false) {
+      throw new Error("Signer session changed while updating the follow list")
+    }
+  }
+
+  const signerPubkey = normalizeHexPubkey((await signer.user()).pubkey)
   if (signerPubkey !== normalizedOwnerPubkey) {
     throw new Error("Active signer does not match this follow list")
   }
+  assertCurrentSignerSession()
 
   const readFollowLists =
     followListTestOverrides.readLatestFollowLists ?? readLatestFollowLists
@@ -959,6 +1115,7 @@ export async function publishContactListUpdate({
       refreshRelayLists: true,
     }
   )
+  assertCurrentSignerSession()
   const ownerRead = existing.authors.find(
     (candidate) => candidate.pubkey === normalizedOwnerPubkey
   )
@@ -974,16 +1131,26 @@ export async function publishContactListUpdate({
     event: NDKEvent,
     snapshot: SignedPublicNostrEvent
   ): Promise<string[]> => {
+    assertCurrentSignerSession()
     assertSafeReplaceablePublish(event, replaceableSafety)
     const result = await publishEvent(event, {
       intent: "author_event",
       authorPubkey: normalizedOwnerPubkey,
       authenticatedPubkey: normalizedOwnerPubkey,
       replaceableSafety,
+      shouldContinue: () => {
+        try {
+          assertCurrentSignerSession()
+          return true
+        } catch {
+          return false
+        }
+      },
     })
     if (result.successfulRelayUrls.length === 0) {
       throw new Error("No relay acknowledged the follow-list update.")
     }
+    assertCurrentSignerSession()
     await persistOwnContactListSnapshot(
       {
         pubkey: normalizedOwnerPubkey,
@@ -994,18 +1161,23 @@ export async function publishContactListUpdate({
       },
       { required: false }
     )
+    assertCurrentSignerSession()
     return result.successfulRelayUrls
   }
 
+  const strongestOwnerEvent =
+    ownerRead?.ownerSafetySnapshot?.event ?? ownerRead?.event
+  const strongestOwnerSnapshotState =
+    ownerRead?.ownerSafetySnapshot?.state ?? ownerRead?.snapshotState
   if (
-    ownerRead?.event &&
-    getFollowListPubkeySet(ownerRead.event).has(normalizedTargetPubkey) ===
+    strongestOwnerEvent &&
+    getFollowListPubkeySet(strongestOwnerEvent).has(normalizedTargetPubkey) ===
       shouldFollow
   ) {
-    if (ownerRead.snapshotState === "pending") {
+    if (strongestOwnerSnapshotState === "pending") {
       await publishExact(
-        new NDKEvent(ndk, cloneSignedEvent(ownerRead.event)),
-        ownerRead.event
+        new NDKEvent(ndk, cloneSignedEvent(strongestOwnerEvent)),
+        strongestOwnerEvent
       )
     }
     return
@@ -1034,8 +1206,11 @@ export async function publishContactListUpdate({
   event.tags = appendConduitClientTag(nextTags, appId)
 
   assertSafeReplaceablePublish(event, replaceableSafety)
-  await event.sign(ndk.signer)
+  assertCurrentSignerSession()
+  await event.sign(signer)
+  assertCurrentSignerSession()
   const signedEvent = event.rawEvent() as SignedPublicNostrEvent
+  assertCurrentSignerSession()
   const retained = await persistOwnContactListSnapshot(
     {
       pubkey: normalizedOwnerPubkey,
@@ -1046,6 +1221,7 @@ export async function publishContactListUpdate({
     },
     { required: true, expectedBaseEvent: latest }
   )
+  assertCurrentSignerSession()
   if (retained.event.id !== signedEvent.id) {
     throw new ReplaceablePublishSafetyError(
       "Refusing to publish a follow-list replacement because a stronger owner snapshot was stored concurrently."

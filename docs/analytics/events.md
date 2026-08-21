@@ -245,10 +245,11 @@ Emitted as an aggregate operational counter for wallet connection outcomes.
 
 ### `payment_attempt_result`
 
-Emitted once for each automatic NWC or WebLN payment attempt, plus an
-`unavailable` result with `rail=none` when no automatic rail can run. It records
-only the automatic mode, rail enum, bounded outcome (`success`, `failure`,
-`blocked`, `unavailable`, or `ambiguous`), latency bucket, and amount bucket.
+Emitted once for each automatic Portable or Connected Wallet (`rail=wallet`)
+or WebLN payment attempt, plus an `unavailable` result with `rail=none` when no
+automatic rail can run. It records only the automatic mode, rail enum, bounded
+outcome (`success`, `failure`, `blocked`, `unavailable`, or `ambiguous`),
+latency bucket, and amount bucket.
 `ambiguous` means a request may have moved funds without returning sufficient
 proof and must not be collapsed into a safe retry. It must not include invoices,
 payment hashes, preimages, wallet connection data, provider errors, order data,

@@ -155,11 +155,15 @@ function EventCatalogProductCard({
     if (selection.id !== selectedProduct.id || !existing || !sameFulfillment) {
       return
     }
+    const identity = {
+      merchantPubkey: selectedProduct.pubkey,
+      productId: selectedProduct.id,
+    }
     if (existing.quantity <= 1) {
-      cart.removeItem(selectedProduct.id)
+      cart.removeItem(identity)
       return
     }
-    cart.setQuantity(selectedProduct.id, existing.quantity - 1)
+    cart.setQuantity(identity, existing.quantity - 1)
   }
 
   return (

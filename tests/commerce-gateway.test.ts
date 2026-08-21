@@ -13,6 +13,7 @@ import {
   cacheSignedProductDeletionEvent,
   cacheSignedProductListingEvent,
   getConversationDetail,
+  getFollowPubkeys,
   getAtomicProductDetail,
   getMarketplaceProducts,
   getMarketplaceProductsProgressive,
@@ -33,8 +34,16 @@ import type {
   CachedProduct,
   CachedProductTombstone,
   CachedProfile,
+  FollowListReadResult,
+  SignedPublicNostrEvent,
 } from "@conduit/core"
 import { attachEventSourceRelayUrl } from "@conduit/core/protocol/ndk"
+import {
+  getCartAvailabilityBlockingMessage,
+  getCartAvailabilityReadDecision,
+  getCartProductAvailability,
+  type CartItem,
+} from "../apps/market/src/lib/cart-model"
 
 const FIXED_NOW = 1_700_000_000_000
 const MERCHANT_A_SECRET = new Uint8Array(32).fill(1)
@@ -44,6 +53,46 @@ let cachedProducts: CachedProduct[] = []
 let cachedProductTombstones: CachedProductTombstone[] = []
 let cachedProfiles = new Map<string, CachedProfile>()
 let cachedOrderMessages: CachedOrderMessage[] = []
+
+function makeFollowListRead(input: {
+  pubkey: string
+  event?: SignedPublicNostrEvent
+  coverage?: "complete" | "limited" | "unavailable"
+  snapshotState?: "none" | "network" | "observed" | "pending"
+  capped?: boolean
+}): FollowListReadResult {
+  const relayUrl = "wss://follow-relay.example"
+  const coverage = input.coverage ?? "complete"
+  const relayStatus = coverage === "unavailable" ? "failed" : "success"
+  const author = {
+    pubkey: input.pubkey,
+    event: input.event,
+    eventSourceRelayUrls: input.event ? [relayUrl] : [],
+    hintRelayUrls: [relayUrl],
+    plannedRelayUrls: [relayUrl],
+    relays: [
+      {
+        relayUrl,
+        status: relayStatus,
+        eventCount: input.event ? 1 : 0,
+      },
+    ],
+    eventsVerified: true,
+    coverage,
+    relayListState: "network" as const,
+    relayHintTruncated: false,
+    capped: input.capped ?? false,
+    snapshotState: input.snapshotState ?? (input.event ? "network" : "none"),
+  } satisfies FollowListReadResult["authors"][number]
+
+  return {
+    events: input.event ? [input.event] : [],
+    authors: [author],
+    plannedRelayUrls: [relayUrl],
+    relays: author.relays,
+    eventsVerified: true,
+  }
+}
 
 function makeProductEvent(params: {
   pubkey: string
@@ -176,6 +225,47 @@ function makeSignedProductEvent(params: {
   return new NDKEvent(undefined, signed)
 }
 
+function composeCheckoutAvailability(
+  result: Awaited<ReturnType<typeof getProductsByIds>>,
+  input: {
+    productId: string
+    merchantPubkey: string
+    title: string
+  }
+) {
+  const items: CartItem[] = [
+    {
+      productId: input.productId,
+      merchantPubkey: input.merchantPubkey,
+      title: input.title,
+      price: 25,
+      currency: "USD",
+      stock: 1,
+      quantity: 1,
+    },
+  ]
+  const availability = getCartProductAvailability(
+    items,
+    result.data.map((record) => record.product)
+  )
+  const decision = getCartAvailabilityReadDecision({
+    productIds: [input.productId],
+    availability,
+    meta: result.meta,
+    diagnostics: result.diagnostics,
+    querySucceeded: true,
+  })
+
+  return {
+    availability,
+    decision,
+    inventoryMessage: getCartAvailabilityBlockingMessage(
+      items,
+      new Map(availability.map((entry) => [entry.productId, entry]))
+    ),
+  }
+}
+
 function makeSignedDeletionEvent(params: {
   secretKey?: Uint8Array
   createdAt: number
@@ -201,6 +291,14 @@ beforeEach(async () => {
   cachedProductTombstones = []
   cachedProfiles = new Map()
   cachedOrderMessages = []
+  // Commerce tests own the complete relay boundary. Keep secondary NIP-65
+  // planning (including deletion-frontier reads) from reaching the network.
+  __setRelayListTestOverrides({
+    fetchEventsFanout: async () => [],
+    loadCached: async () => undefined,
+    putCached: async () => {},
+    now: () => FIXED_NOW,
+  })
   __setCommerceTestOverrides({
     now: () => FIXED_NOW,
     resolveInboxRelayUrls: async () => ["wss://inbox.example"],
@@ -2315,6 +2413,7 @@ describe("commerce gateway", () => {
     )
 
     __setCommerceTestOverrides({
+      allowMissingProtectedReadAuthorization: true,
       getNdk: async () => ({ signer: undefined }) as never,
     })
 
@@ -2550,6 +2649,7 @@ describe("commerce gateway", () => {
     })
 
     __setCommerceTestOverrides({
+      allowMissingProtectedReadAuthorization: true,
       getNdk: async () => ({ signer: undefined }) as never,
     })
 
@@ -2605,6 +2705,7 @@ describe("commerce gateway", () => {
     }
 
     __setCommerceTestOverrides({
+      allowMissingProtectedReadAuthorization: true,
       getNdk: async () => ({ signer: {} }) as never,
       fetchEventsFanout: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
@@ -2668,6 +2769,7 @@ describe("commerce gateway", () => {
     }
 
     __setCommerceTestOverrides({
+      allowMissingProtectedReadAuthorization: true,
       getNdk: async () => ({ signer: {} }) as never,
       fetchEventsFanout: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
@@ -2714,6 +2816,7 @@ describe("commerce gateway", () => {
     }
 
     __setCommerceTestOverrides({
+      allowMissingProtectedReadAuthorization: true,
       getNdk: async () => ({ signer: {} }) as never,
       fetchEventsFanout: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
@@ -2754,6 +2857,7 @@ describe("commerce gateway", () => {
           : undefined,
     })
     __setCommerceTestOverrides({
+      allowMissingProtectedReadAuthorization: true,
       getNdk: async () => ({ signer: {} }) as never,
       resolveInboxRelayUrls: async () => merchantReadRelays,
       fetchEventsFanout: async (filter, options) => {
@@ -2821,6 +2925,7 @@ describe("commerce gateway", () => {
     }
 
     __setCommerceTestOverrides({
+      allowMissingProtectedReadAuthorization: true,
       getNdk: async () => ({ signer: {} }) as never,
       fetchEventsFanout: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
@@ -2857,6 +2962,169 @@ describe("commerce gateway", () => {
     expect(second.data).toHaveLength(1)
     expect(unwrapCalls).toBe(2)
     expect(cachedOrderMessages).toHaveLength(1)
+  })
+
+  it("marks follow discovery stale when relay coverage is incomplete", async () => {
+    __setCommerceTestOverrides({
+      readLatestFollowLists: async () =>
+        makeFollowListRead({
+          pubkey: MERCHANT_A_PUBKEY,
+          coverage: "unavailable",
+        }),
+    })
+
+    const result = await getFollowPubkeys({ pubkey: MERCHANT_A_PUBKEY })
+
+    expect(result.data).toEqual([])
+    expect(result.meta.stale).toBe(true)
+    expect(result.meta.degraded).toBe(true)
+    expect(result.meta.eventObserved).toBe(false)
+    expect(result.meta.coverage).toBe("unavailable")
+  })
+
+  it("marks an empty follow lookup unavailable and stale", async () => {
+    const result = await getFollowPubkeys({ pubkey: "  " })
+
+    expect(result.data).toEqual([])
+    expect(result.meta.eventObserved).toBe(false)
+    expect(result.meta.coverage).toBe("unavailable")
+    expect(result.meta.stale).toBe(true)
+    expect(result.meta.degraded).toBe(true)
+  })
+
+  it("distinguishes no follow event from a signed empty follow list", async () => {
+    __setCommerceTestOverrides({
+      readLatestFollowLists: async (input, options) => {
+        expect(input).toEqual({
+          pubkeys: [MERCHANT_A_PUBKEY],
+          authenticatedPubkey: MERCHANT_A_PUBKEY,
+        })
+        expect(options.now?.()).toBe(FIXED_NOW)
+        return makeFollowListRead({ pubkey: MERCHANT_A_PUBKEY })
+      },
+    })
+
+    const notObserved = await getFollowPubkeys({
+      pubkey: MERCHANT_A_PUBKEY,
+      authenticatedPubkey: MERCHANT_A_PUBKEY,
+    })
+    expect(notObserved.data).toEqual([])
+    expect(notObserved.meta.stale).toBe(false)
+    expect(notObserved.meta.eventObserved).toBe(false)
+
+    __setCommerceTestOverrides({
+      readLatestFollowLists: async () =>
+        makeFollowListRead({
+          pubkey: MERCHANT_A_PUBKEY,
+          event: {
+            id: "2".repeat(64),
+            pubkey: MERCHANT_A_PUBKEY,
+            kind: EVENT_KINDS.CONTACT_LIST,
+            created_at: 1_700_000_000,
+            content: "",
+            sig: "a".repeat(128),
+            tags: [],
+          },
+        }),
+    })
+
+    const signedEmpty = await getFollowPubkeys({
+      pubkey: MERCHANT_A_PUBKEY,
+    })
+    expect(signedEmpty.data).toEqual([])
+    expect(signedEmpty.meta.stale).toBe(false)
+    expect(signedEmpty.meta.eventObserved).toBe(true)
+    expect(signedEmpty.meta.eventCreatedAt).toBe(1_700_000_000)
+    expect(signedEmpty.meta.eventId).toBe("2".repeat(64))
+  })
+
+  it("projects the selected follow-list snapshot", async () => {
+    __setCommerceTestOverrides({
+      readLatestFollowLists: async () =>
+        makeFollowListRead({
+          pubkey: MERCHANT_A_PUBKEY,
+          event: {
+            id: "1".repeat(64),
+            pubkey: MERCHANT_A_PUBKEY,
+            kind: EVENT_KINDS.CONTACT_LIST,
+            created_at: 1_700_000_000,
+            content: "",
+            sig: "a".repeat(128),
+            tags: [["p", "c".repeat(64)]],
+          },
+        }),
+    })
+
+    const result = await getFollowPubkeys({ pubkey: MERCHANT_A_PUBKEY })
+
+    expect(result.data).toEqual(["c".repeat(64)])
+    expect(result.meta.eventId).toBe("1".repeat(64))
+    expect(result.event?.id).toBe("1".repeat(64))
+  })
+
+  it("keeps retained follow evidence stale and cache-sourced", async () => {
+    const event: SignedPublicNostrEvent = {
+      id: "3".repeat(64),
+      pubkey: MERCHANT_A_PUBKEY,
+      kind: EVENT_KINDS.CONTACT_LIST,
+      created_at: 1_700_000_000,
+      content: "",
+      sig: "a".repeat(128),
+      tags: [["p", "d".repeat(64)]],
+    }
+    __setCommerceTestOverrides({
+      readLatestFollowLists: async () =>
+        makeFollowListRead({
+          pubkey: MERCHANT_A_PUBKEY,
+          event,
+          coverage: "limited",
+          snapshotState: "observed",
+        }),
+    })
+
+    const result = await getFollowPubkeys({
+      pubkey: MERCHANT_A_PUBKEY,
+      authenticatedPubkey: MERCHANT_A_PUBKEY,
+    })
+
+    expect(result.data).toEqual(["d".repeat(64)])
+    expect(result.meta.source).toBe("local_cache")
+    expect(result.meta.stale).toBe(true)
+    expect(result.meta.degraded).toBe(true)
+    expect(result.meta.snapshotState).toBe("observed")
+  })
+
+  it("does not project an implausibly future retained follow snapshot", async () => {
+    const futureEvent: SignedPublicNostrEvent = {
+      id: "4".repeat(64),
+      pubkey: MERCHANT_A_PUBKEY,
+      kind: EVENT_KINDS.CONTACT_LIST,
+      created_at: FIXED_NOW / 1_000 + 301,
+      content: "",
+      sig: "a".repeat(128),
+      tags: [["p", "d".repeat(64)]],
+    }
+    __setCommerceTestOverrides({
+      readLatestFollowLists: async () =>
+        makeFollowListRead({
+          pubkey: MERCHANT_A_PUBKEY,
+          event: futureEvent,
+          coverage: "limited",
+          snapshotState: "observed",
+        }),
+    })
+
+    const result = await getFollowPubkeys({
+      pubkey: MERCHANT_A_PUBKEY,
+      authenticatedPubkey: MERCHANT_A_PUBKEY,
+    })
+
+    expect(result.data).toEqual([])
+    expect(result.event).toBeUndefined()
+    expect(result.meta.eventObserved).toBe(false)
+    expect(result.meta.coverage).toBe("limited")
+    expect(result.meta.stale).toBe(true)
+    expect(result.meta.degraded).toBe(true)
   })
 
   it("dedupes profile requests and serves cached profiles when relays fail later", async () => {
@@ -3781,6 +4049,7 @@ describe("getProductsByIds diagnostics", () => {
       dTag: "diagnosed-partial-live",
       createdAt: 100,
       title: "Partial Live",
+      stock: 1,
     })
     const liveAddressId = `30402:${liveEvent.pubkey}:diagnosed-partial-live`
     __setCommerceTestOverrides({
@@ -3805,13 +4074,33 @@ describe("getProductsByIds diagnostics", () => {
     })
 
     const result = await getProductsByIds([liveAddressId])
+    const checkout = composeCheckoutAvailability(result, {
+      productId: liveAddressId,
+      merchantPubkey: liveEvent.pubkey,
+      title: "Partial Live",
+    })
 
     expect(result.data[0]?.eventId).toBe(liveEvent.id)
     expect(result.diagnostics[0]).toMatchObject({
       issue: null,
       coverage: { listing: "partial" },
     })
+    expect(result.meta.stale).toBe(true)
     expect(result.meta.degraded).toBe(true)
+    expect(checkout.availability).toEqual([
+      {
+        merchantPubkey: liveEvent.pubkey,
+        productId: liveAddressId,
+        status: "available",
+        stock: 1,
+        refreshed: true,
+      },
+    ])
+    expect(checkout.decision).toEqual({
+      status: "verified_at_read",
+      coverage: "partial",
+    })
+    expect(checkout.inventoryMessage).toBeNull()
   })
 
   it("surfaces a parked author relay without vetoing exact live evidence", async () => {
@@ -3862,6 +4151,7 @@ describe("getProductsByIds diagnostics", () => {
       coverage: { listing: "partial", deletion: "partial" },
     })
     expect(result.meta.source).toBe("commerce")
+    expect(result.meta.stale).toBe(true)
     expect(result.meta.degraded).toBe(true)
   })
 
@@ -3969,6 +4259,7 @@ describe("getProductsByIds diagnostics", () => {
       dTag: "diagnosed-deletion-unavailable",
       createdAt: 100,
       title: "Deletion Discovery Unavailable",
+      stock: 1,
     })
     const liveAddressId = `30402:${liveEvent.pubkey}:diagnosed-deletion-unavailable`
     __setCommerceTestOverrides({
@@ -3992,6 +4283,11 @@ describe("getProductsByIds diagnostics", () => {
     })
 
     const result = await getProductsByIds([liveAddressId])
+    const checkout = composeCheckoutAvailability(result, {
+      productId: liveAddressId,
+      merchantPubkey: liveEvent.pubkey,
+      title: "Deletion Discovery Unavailable",
+    })
 
     expect(result.data[0]?.eventId).toBe(liveEvent.id)
     expect(result.diagnostics[0]).toMatchObject({
@@ -4000,6 +4296,11 @@ describe("getProductsByIds diagnostics", () => {
     })
     expect(result.meta.source).toBe("commerce")
     expect(result.meta.degraded).toBe(true)
+    expect(checkout.decision).toEqual({
+      status: "verified_at_read",
+      coverage: "partial",
+    })
+    expect(checkout.inventoryMessage).toBeNull()
   })
 
   it("blocks cached-only terms when live listing reads are degraded", async () => {
