@@ -295,12 +295,14 @@ describe("guest checkout order smoke", () => {
       pricing: pricing("physical"),
       shippingCountry: "US",
       shippingPostalCode: "00000",
-      createdAt: 1_700_000_000_000,
+      rumorCreatedAt: 1_700_000_123_000,
     })
     const payload = JSON.parse(rumor.content)
 
     expect(rumor.kind).toBe(16)
+    expect(rumor.created_at).toBe(1_700_000_123)
     expect(rumor.tags).toContainEqual(["type", "order"])
+    expect(payload.createdAt).toBe(identity().createdAt)
     expect(payload.buyerIdentityKind).toBe("guest_ephemeral")
     expect(payload.guestContact.email).toEndWith(".invalid")
     expect(payload.note).toContain("do not fulfill")
@@ -342,7 +344,7 @@ describe("guest checkout order smoke", () => {
       pricing: manualPricing,
       shippingCountry: "US",
       shippingPostalCode: "00000",
-      createdAt: 1_700_000_000_000,
+      rumorCreatedAt: 1_700_000_123_000,
     })
     const payload = JSON.parse(rumor.content)
 

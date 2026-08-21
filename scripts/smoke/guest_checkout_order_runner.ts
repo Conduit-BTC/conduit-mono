@@ -281,7 +281,7 @@ export function buildGuestCheckoutOrderRumor(input: {
   pricing: ReadyCheckoutPricing
   shippingCountry: string
   shippingPostalCode: string
-  createdAt: number
+  rumorCreatedAt: number
 }): NDKEvent {
   const hasPhysicalItem = input.pricing.items.some(
     (item) => item.format === "physical"
@@ -305,9 +305,9 @@ export function buildGuestCheckoutOrderRumor(input: {
       : {}),
     guestContact: SMOKE_CONTACT,
     note: "Automated guest checkout smoke - do not fulfill.",
-    createdAt: input.createdAt,
+    createdAt: input.identity.createdAt,
     ndk: getNdk(),
-    rumorCreatedAt: input.createdAt,
+    rumorCreatedAt: input.rumorCreatedAt,
   })
 }
 
@@ -465,7 +465,7 @@ export async function runGuestCheckoutOrderSmoke(
       pricing,
       shippingCountry: config.shippingCountry,
       shippingPostalCode: config.shippingPostalCode,
-      createdAt: nowMs(),
+      rumorCreatedAt: nowMs(),
     })
     expectedPayload = JSON.parse(rumor.content)
   } catch (error) {
