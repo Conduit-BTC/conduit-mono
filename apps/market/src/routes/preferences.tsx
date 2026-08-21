@@ -43,6 +43,7 @@ import {
   Switch,
 } from "@conduit/ui"
 import { useShopperPresets } from "../hooks/useShopperPresets"
+import { useShopperPricePreference } from "../hooks/useShopperPricePreference"
 import { requireAuth } from "../lib/auth"
 import { getShopperPreferencesSaveBlockers } from "../lib/shopper-preferences-validation"
 import type { ShopperPresetsUnlockPolicy } from "../lib/shopper-presets-store"
@@ -68,7 +69,7 @@ const PAYMENT_RAIL_LABELS: Record<ShopperPaymentRail, string> = {
   manual: "External wallet",
 }
 
-const EMPTY_SHIPPING_PRESET: ShopperShippingPreset = {
+const EMPTY_SHOPPER_SHIPPING_PRESET: ShopperShippingPreset = {
   recipientName: "",
   addressLine1: "",
   addressLine2: "",
@@ -78,6 +79,19 @@ const EMPTY_SHIPPING_PRESET: ShopperShippingPreset = {
   country: "US",
   email: "",
   phone: "",
+}
+
+type ShopperPreferencesDraft = Omit<ShopperPresetsValue, "shipping"> & {
+  shipping: ShopperShippingPreset
+}
+
+function normalizeShopperPreferencesDraft(
+  value: ShopperPresetsValue
+): ShopperPreferencesDraft {
+  return {
+    ...value,
+    shipping: value.shipping ?? EMPTY_SHOPPER_SHIPPING_PRESET,
+  }
 }
 
 function syncStatus(state: ReturnType<typeof useShopperPresets>["syncState"]) {
@@ -220,9 +234,9 @@ function UnlockPolicySelect({
 
 function PreferencesPage() {
   const presets = useShopperPresets()
-  const [draft, setDraft] = useState<ShopperPresetsValue>(presets.preset)
-  const [shipping, setShipping] = useState<ShopperShippingPreset>(
-    presets.preset.shipping ?? EMPTY_SHIPPING_PRESET
+  const { setCurrency, setSatsStandard } = useShopperPricePreference()
+  const [draft, setDraft] = useState<ShopperPreferencesDraft>(
+    normalizeShopperPreferencesDraft(presets.preset)
   )
   const [dirty, setDirty] = useState(false)
   const [resetMode, setResetMode] = useState(false)
@@ -243,14 +257,15 @@ function PreferencesPage() {
     (presets.unlockState === "locked" || presets.unlockState === "error")
   const countryLabel = useMemo(
     () =>
-      SHIPPING_COUNTRIES.find((country) => country.code === shipping.country)
-        ?.name ?? "Choose a country",
-    [shipping.country]
+      SHIPPING_COUNTRIES.find(
+        (country) => country.code === draft.shipping.country
+      )?.name ?? "Choose a country",
+    [draft.shipping.country]
   )
   const saveBlockers = useMemo(
     () =>
       getShopperPreferencesSaveBlockers({
-        shipping,
+        shipping: draft.shipping,
         password,
         confirmPassword,
         identityConnected: !!presets.identityPubkey,
@@ -261,7 +276,7 @@ function PreferencesPage() {
       password,
       presets.identityPubkey,
       presets.syncState,
-      shipping,
+      draft.shipping,
     ]
   )
   const passwordCharacters = Array.from(password).length
@@ -276,8 +291,7 @@ function PreferencesPage() {
   useEffect(() => {
     if (draftIdentityRef.current !== presets.identityPubkey) {
       draftIdentityRef.current = presets.identityPubkey
-      setDraft(DEFAULT_SHOPPER_PRESETS)
-      setShipping(EMPTY_SHIPPING_PRESET)
+      setDraft(normalizeShopperPreferencesDraft(DEFAULT_SHOPPER_PRESETS))
       setDirty(false)
       setResetMode(false)
       setResultMessage(null)
@@ -286,8 +300,7 @@ function PreferencesPage() {
       return
     }
     if (dirty || presets.unlockState !== "unlocked") return
-    setDraft(presets.preset)
-    setShipping(presets.preset.shipping ?? EMPTY_SHIPPING_PRESET)
+    setDraft(normalizeShopperPreferencesDraft(presets.preset))
     setPolicy(presets.unlockPolicy)
   }, [
     dirty,
@@ -301,7 +314,10 @@ function PreferencesPage() {
     field: K,
     value: ShopperShippingPreset[K]
   ): void {
-    setShipping((current) => ({ ...current, [field]: value }))
+    setDraft((current) => ({
+      ...current,
+      shipping: { ...current.shipping, [field]: value },
+    }))
     setDirty(true)
     setResultMessage(null)
   }
@@ -311,7 +327,7 @@ function PreferencesPage() {
       setResultMessage("The password confirmation does not match.")
       return
     }
-    const parsed = shopperShippingPresetSchema.safeParse(shipping)
+    const parsed = shopperShippingPresetSchema.safeParse(draft.shipping)
     if (!parsed.success) {
       setResultMessage("Complete the required shipping address fields.")
       return
@@ -321,7 +337,9 @@ function PreferencesPage() {
     const synced = await presets.save(value, password, policy)
     if (currentIdentityRef.current !== identity) return
     if (synced) {
-      setDraft(value)
+      setCurrency(value.display.currency)
+      setSatsStandard(value.display.bitcoinUnit === "sats")
+      setDraft(normalizeShopperPreferencesDraft(value))
       setDirty(false)
       setResetMode(false)
       setPassword("")
@@ -339,8 +357,7 @@ function PreferencesPage() {
     const synced = await presets.clear(password)
     if (currentIdentityRef.current !== identity) return
     if (synced) {
-      setDraft(DEFAULT_SHOPPER_PRESETS)
-      setShipping(EMPTY_SHIPPING_PRESET)
+      setDraft(normalizeShopperPreferencesDraft(DEFAULT_SHOPPER_PRESETS))
       setDirty(false)
       setPassword("")
       setConfirmPassword("")
@@ -379,7 +396,7 @@ function PreferencesPage() {
               id="preset-recipient"
               label="Recipient name"
               required
-              value={shipping.recipientName}
+              value={draft.shipping.recipientName}
               autoComplete="name"
               onChange={(value) => updateShipping("recipientName", value)}
             />
@@ -387,7 +404,7 @@ function PreferencesPage() {
               <Label htmlFor="preset-country">Country</Label>
               <Combobox
                 id="preset-country"
-                value={shipping.country}
+                value={draft.shipping.country}
                 selectedLabel={countryLabel}
                 options={COUNTRY_OPTIONS}
                 onValueChange={(value) => updateShipping("country", value)}
@@ -399,8 +416,10 @@ function PreferencesPage() {
               />
               <div className="min-h-5">
                 <p
-                  className={`text-xs leading-5 text-[var(--text-muted)] ${shipping.country.trim() ? "invisible" : ""}`}
-                  aria-hidden={shipping.country.trim() ? "true" : undefined}
+                  className={`text-xs leading-5 text-[var(--text-muted)] ${draft.shipping.country.trim() ? "invisible" : ""}`}
+                  aria-hidden={
+                    draft.shipping.country.trim() ? "true" : undefined
+                  }
                 >
                   Required
                 </p>
@@ -410,14 +429,14 @@ function PreferencesPage() {
               id="preset-address-line-1"
               label="Address line 1"
               required
-              value={shipping.addressLine1}
+              value={draft.shipping.addressLine1}
               autoComplete="address-line1"
               onChange={(value) => updateShipping("addressLine1", value)}
             />
             <PresetInput
               id="preset-address-line-2"
               label="Address line 2 (optional)"
-              value={shipping.addressLine2 ?? ""}
+              value={draft.shipping.addressLine2 ?? ""}
               autoComplete="address-line2"
               onChange={(value) => updateShipping("addressLine2", value)}
             />
@@ -425,14 +444,14 @@ function PreferencesPage() {
               id="preset-city"
               label="City"
               required
-              value={shipping.city}
+              value={draft.shipping.city}
               autoComplete="address-level2"
               onChange={(value) => updateShipping("city", value)}
             />
             <PresetInput
               id="preset-region"
               label="State / Province / Region"
-              value={shipping.stateOrRegion ?? ""}
+              value={draft.shipping.stateOrRegion ?? ""}
               autoComplete="address-level1"
               onChange={(value) => updateShipping("stateOrRegion", value)}
             />
@@ -440,14 +459,14 @@ function PreferencesPage() {
               id="preset-postal-code"
               label="Postal / ZIP code"
               required
-              value={shipping.postalCode}
+              value={draft.shipping.postalCode}
               autoComplete="postal-code"
               onChange={(value) => updateShipping("postalCode", value)}
             />
             <PresetInput
               id="preset-email"
               label="Email (optional)"
-              value={shipping.email ?? ""}
+              value={draft.shipping.email ?? ""}
               type="email"
               autoComplete="email"
               onChange={(value) => updateShipping("email", value)}
@@ -455,7 +474,7 @@ function PreferencesPage() {
             <PresetInput
               id="preset-phone"
               label="Phone (optional)"
-              value={shipping.phone ?? ""}
+              value={draft.shipping.phone ?? ""}
               type="tel"
               autoComplete="tel"
               onChange={(value) => updateShipping("phone", value)}

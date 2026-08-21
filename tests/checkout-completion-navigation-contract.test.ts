@@ -248,9 +248,9 @@ describe("checkout completion navigation contracts", () => {
       placeOrderIndex
     )
 
-    expect(checkoutRoute).toContain(
-      "const { pubkey, signer, capabilities, status: authStatus } = useAuth()"
-    )
+    expect(checkoutRoute).toContain("restorePendingPubkey,")
+    expect(checkoutRoute).toContain("signer,")
+    expect(checkoutRoute).toContain("status: authStatus,")
     expect(payNowIndex).toBeGreaterThan(-1)
     expect(payNowPreflightIndex).toBeGreaterThan(payNowIndex)
     expect(payNowPreflightIndex).toBeLessThan(payNowInFlightIndex)

@@ -64,7 +64,7 @@ import { useMerchantCheckoutCapability } from "../hooks/useMerchantCheckoutCapab
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import { useWallets, type UseWalletsReturn } from "../hooks/useWallets"
 import { useShopperPresets } from "../hooks/useShopperPresets"
-import { getCartShippingCountryPresetEligibility } from "../lib/cart-shipping-options"
+import { getCartShippingDestinationEligibility } from "../lib/cart-shipping-options"
 import { buildCheckoutPricingIntent } from "../lib/checkout-payment"
 import {
   getCartCostSummary,
@@ -902,7 +902,7 @@ function CartPage() {
         ?.name ?? presetCountry)
     : null
   const presetShippingEligibility = presetDestination
-    ? getCartShippingCountryPresetEligibility(cart.items, presetDestination)
+    ? getCartShippingDestinationEligibility(presetDestination, cart.items, [])
     : null
   const clearCartDialog = (
     <Dialog
@@ -1048,7 +1048,7 @@ function CartPage() {
 
           {presetCountryLabel && presetShippingEligibility && (
             <div className="flex items-start gap-3 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
-              {presetShippingEligibility === "eligible" ? (
+              {presetShippingEligibility.eligible === true ? (
                 <Check
                   className="mt-0.5 size-4 shrink-0 text-[var(--success)]"
                   aria-hidden="true"
@@ -1060,9 +1060,9 @@ function CartPage() {
                 />
               )}
               <p>
-                {presetShippingEligibility === "eligible"
+                {presetShippingEligibility.eligible === true
                   ? `These items list shipping to ${presetCountryLabel}.`
-                  : presetShippingEligibility === "ineligible"
+                  : presetShippingEligibility.eligible === false
                     ? `Some items do not list shipping to ${presetCountryLabel}. Confirm another destination at checkout.`
                     : `Shipping to ${presetCountryLabel} needs your full address at checkout.`}
               </p>

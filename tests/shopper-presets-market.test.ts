@@ -5,7 +5,7 @@ import type {
 } from "@conduit/core"
 import { fetchShopperPresetsForSession } from "../apps/market/src/hooks/useShopperPresets"
 import { getShopperPreferencesSaveBlockers } from "../apps/market/src/lib/shopper-preferences-validation"
-import { getCartShippingCountryPresetEligibility } from "../apps/market/src/lib/cart-shipping-options"
+import { getCartShippingDestinationEligibility } from "../apps/market/src/lib/cart-shipping-options"
 import {
   DEFAULT_CHECKOUT_SHIPPING,
   getIdentityBoundShippingPreset,
@@ -267,11 +267,20 @@ describe("Market shopper preset integration", () => {
     // Only a pending signed-in session restore may defer that read, because
     // a null-owner read deletes an owner-bound draft before recovery runs.
     const source = await Bun.file("apps/market/src/routes/checkout.tsx").text()
+    expect(source).toContain("restorePendingPubkey")
+    expect(source).toContain("const pendingDraftOwner = restorePendingPubkey")
+    expect(source).toContain(
+      "const authPending = restorePendingPubkey !== null"
+    )
+    expect(source).not.toContain('authStatus === "restoring"')
     expect(source).toContain(
       ": pendingDraftOwner\n" +
         "        ? { value: DEFAULT_CHECKOUT_SHIPPING, hasActiveDraft: false }\n" +
         "        : readCheckoutShippingInitialization(null, undefined, undefined, null)"
     )
+    expect(source).not.toContain("readAuthSession")
+    expect(source).not.toContain("AUTH_STORAGE_KEY")
+    expect(source).not.toContain("authStorageRevision")
   })
 
   it("uses country and postal code for local shipping compatibility", () => {
@@ -282,16 +291,54 @@ describe("Market shopper preset integration", () => {
       ],
     })
     expect(
-      getCartShippingCountryPresetEligibility([restricted], {
-        country: "US",
-        postalCode: "94559",
-      })
-    ).toBe("eligible")
+      getCartShippingDestinationEligibility(
+        { country: "US", postalCode: "94559" },
+        [restricted],
+        []
+      )
+    ).toEqual({ eligible: true })
     expect(
-      getCartShippingCountryPresetEligibility([restricted], {
-        country: "US",
-        postalCode: "10001",
-      })
-    ).toBe("ineligible")
+      getCartShippingDestinationEligibility(
+        { country: "US", postalCode: "10001" },
+        [restricted],
+        []
+      )
+    ).toEqual({ eligible: false, reason: "postal_restricted" })
+  })
+
+  it("uses the saved rail preference for initial checkout and Zap Out routing", async () => {
+    const [checkout, capability] = await Promise.all([
+      Bun.file("apps/market/src/routes/checkout.tsx").text(),
+      Bun.file("apps/market/src/hooks/useMerchantCheckoutCapability.ts").text(),
+    ])
+
+    expect(checkout).toContain(
+      "preferredRail: shopperPresets.preset.preferredRail"
+    )
+    expect(capability).toContain(
+      'import { useShopperPresets } from "./useShopperPresets"'
+    )
+    expect(capability).toContain("const shopperPresets = useShopperPresets()")
+    expect(capability).toContain(
+      "preferredRail: shopperPresets.preset.preferredRail"
+    )
+  })
+
+  it("uses only an unlocked identity-owned preset for Zap Out shipping readiness", async () => {
+    const capability = await Bun.file(
+      "apps/market/src/hooks/useMerchantCheckoutCapability.ts"
+    ).text()
+
+    expect(capability).toContain(
+      'const identityPubkey = authStatus === "connected" ? pubkey : null'
+    )
+    expect(capability).toContain("restorePendingPubkey")
+    expect(capability).toContain("DEFAULT_CHECKOUT_SHIPPING")
+    expect(capability).toContain("const shippingPreset = restorePendingPubkey")
+    expect(capability).toContain('shopperPresets.unlockState === "unlocked"')
+    expect(capability).toContain("getIdentityBoundShippingPreset(")
+    expect(capability).toContain("shopperPresets.presetOwnerPubkey")
+    expect(capability).toContain("shopperPresets.preset.shipping")
+    expect(capability).toContain("readCheckoutShippingInitialization(")
   })
 })

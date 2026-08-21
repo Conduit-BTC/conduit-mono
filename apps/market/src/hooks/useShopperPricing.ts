@@ -10,9 +10,9 @@ import { useShopperPricePreference } from "./useShopperPricePreference"
 
 export function useShopperPricing() {
   const rateQuery = useBtcUsdRate()
-  const pricePreference = useShopperPricePreference()
+  const { preference, setCurrency, setSatsStandard } =
+    useShopperPricePreference()
   const quote = rateQuery.data ?? null
-  const { preference } = pricePreference
 
   const formatPrice = useCallback(
     (price: CommercePriceLike, options?: ShopperPriceDisplayOptions) =>
@@ -25,10 +25,12 @@ export function useShopperPricing() {
   )
 
   return {
-    ...pricePreference,
+    preference,
     rateQuery,
     quote,
     formatPrice,
     formatSatsAmount,
+    setCurrency,
+    setSatsStandard,
   }
 }

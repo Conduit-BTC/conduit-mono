@@ -1,4 +1,8 @@
-import type { OrderPaymentTarget, WalletDescriptor } from "@conduit/core"
+import type {
+  OrderPaymentTarget,
+  ShopperPaymentRail,
+  WalletDescriptor,
+} from "@conduit/core"
 import type { CheckoutPaymentTarget } from "./payment-rails"
 
 export interface CheckoutPaymentTargetOption {
@@ -28,15 +32,40 @@ function getPreferredWallet(
   )
 }
 
+function getPreferredNwcWallet(
+  eligibleWallets: readonly WalletDescriptor[]
+): WalletDescriptor | null {
+  return getPreferredWallet(
+    eligibleWallets.filter((wallet) => wallet.providerId === "nwc")
+  )
+}
+
 export function resolveCheckoutPaymentTarget(input: {
   selection: CheckoutPaymentTarget | null
+  preferredRail?: ShopperPaymentRail
   eligibleWallets: readonly WalletDescriptor[]
   weblnAvailable: boolean
 }): CheckoutPaymentTarget {
-  const preferredWallet = getPreferredWallet(input.eligibleWallets)
   if (input.selection) {
     return input.selection
   }
+
+  if (input.preferredRail === "manual") return { type: "manual" }
+  if (input.preferredRail === "webln") {
+    return input.weblnAvailable ? { type: "webln" } : { type: "manual" }
+  }
+  if (input.preferredRail === "nwc") {
+    const preferredNwcWallet = getPreferredNwcWallet(input.eligibleWallets)
+    return preferredNwcWallet
+      ? {
+          type: "wallet",
+          walletId: preferredNwcWallet.id,
+          providerId: preferredNwcWallet.providerId,
+        }
+      : { type: "manual" }
+  }
+
+  const preferredWallet = getPreferredWallet(input.eligibleWallets)
   if (preferredWallet) {
     return {
       type: "wallet",

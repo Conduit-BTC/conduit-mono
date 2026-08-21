@@ -161,23 +161,23 @@ function getNwcFailureResult(
       diagnostics: [diagnostic],
     }
   }
-  if (
-    result.status === "wallet_error" &&
-    !isNwcWalletRefusalErrorCode(result.errorCode)
-  ) {
+
+  if (result.status === "wallet_error") {
+    if (isNwcWalletRefusalErrorCode(result.errorCode)) {
+      return {
+        status: "failed",
+        phase: result.phase,
+        reason: result.reason,
+        diagnostics: [diagnostic],
+      }
+    }
     return {
       status: "ambiguous",
       reason: result.reason,
       diagnostics: [diagnostic],
     }
   }
-  if (!diagnostic.safeManualFallback) {
-    return {
-      status: "ambiguous",
-      reason: result.reason,
-      diagnostics: [diagnostic],
-    }
-  }
+
   return {
     status: "failed",
     phase: result.phase,

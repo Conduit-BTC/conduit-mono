@@ -29,8 +29,7 @@ export const AMBIGUOUS_PAYMENT_WARNING =
 
 export function isAmbiguousCheckoutPaymentError(error: unknown): boolean {
   return (
-    error instanceof Error &&
-    error.message.includes(AMBIGUOUS_PAYMENT_WARNING)
+    error instanceof Error && error.message.includes(AMBIGUOUS_PAYMENT_WARNING)
   )
 }
 
@@ -169,9 +168,7 @@ export async function payCheckoutInvoice(
     })
 
     if (result.status === "ambiguous") {
-      throw new Error(
-        `${result.reason} ${AMBIGUOUS_PAYMENT_WARNING}`
-      )
+      throw new Error(`${result.reason} ${AMBIGUOUS_PAYMENT_WARNING}`)
     }
     const reason = diagnostic
       ? `${diagnostic.title}: ${diagnostic.action}`
@@ -223,10 +220,9 @@ export async function payCheckoutInvoice(
         rail: "webln",
         status: "ambiguous",
       })
-      throw new Error(
-        `${message} ${AMBIGUOUS_PAYMENT_WARNING}`,
-        { cause: error }
-      )
+      throw new Error(`${message} ${AMBIGUOUS_PAYMENT_WARNING}`, {
+        cause: error,
+      })
     }
   }
 
