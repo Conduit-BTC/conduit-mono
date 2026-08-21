@@ -40,6 +40,21 @@ function getPreferredNwcWallet(
   )
 }
 
+function getAutomaticPaymentTarget(input: {
+  eligibleWallets: readonly WalletDescriptor[]
+  weblnAvailable: boolean
+}): CheckoutPaymentTarget {
+  const preferredWallet = getPreferredWallet(input.eligibleWallets)
+  if (preferredWallet) {
+    return {
+      type: "wallet",
+      walletId: preferredWallet.id,
+      providerId: preferredWallet.providerId,
+    }
+  }
+  return input.weblnAvailable ? { type: "webln" } : { type: "manual" }
+}
+
 export function resolveCheckoutPaymentTarget(input: {
   selection: CheckoutPaymentTarget | null
   preferredRail?: ShopperPaymentRail
@@ -52,28 +67,20 @@ export function resolveCheckoutPaymentTarget(input: {
 
   if (input.preferredRail === "manual") return { type: "manual" }
   if (input.preferredRail === "webln") {
-    return input.weblnAvailable ? { type: "webln" } : { type: "manual" }
+    if (input.weblnAvailable) return { type: "webln" }
   }
   if (input.preferredRail === "nwc") {
     const preferredNwcWallet = getPreferredNwcWallet(input.eligibleWallets)
-    return preferredNwcWallet
-      ? {
-          type: "wallet",
-          walletId: preferredNwcWallet.id,
-          providerId: preferredNwcWallet.providerId,
-        }
-      : { type: "manual" }
-  }
-
-  const preferredWallet = getPreferredWallet(input.eligibleWallets)
-  if (preferredWallet) {
-    return {
-      type: "wallet",
-      walletId: preferredWallet.id,
-      providerId: preferredWallet.providerId,
+    if (preferredNwcWallet) {
+      return {
+        type: "wallet",
+        walletId: preferredNwcWallet.id,
+        providerId: preferredNwcWallet.providerId,
+      }
     }
   }
-  return input.weblnAvailable ? { type: "webln" } : { type: "manual" }
+
+  return getAutomaticPaymentTarget(input)
 }
 
 export function getCheckoutPaymentTargetValue(
