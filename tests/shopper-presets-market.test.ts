@@ -828,7 +828,7 @@ describe("Market shopper preset integration", () => {
     ).toEqual({ eligible: false, reason: "postal_restricted" })
   })
 
-  it("uses the saved rail preference for initial checkout and Zap Out routing", async () => {
+  it("uses the saved rail preference for checkout without narrowing Zap Out capability", async () => {
     const [checkout, capability] = await Promise.all([
       Bun.file("apps/market/src/routes/checkout.tsx").text(),
       Bun.file("apps/market/src/hooks/useMerchantCheckoutCapability.ts").text(),
@@ -841,9 +841,11 @@ describe("Market shopper preset integration", () => {
       'import { useShopperPresets } from "./useShopperPresets"'
     )
     expect(capability).toContain("const shopperPresets = useShopperPresets()")
-    expect(capability).toContain(
+    expect(capability).not.toContain(
       "preferredRail: shopperPresets.preset.preferredRail"
     )
+    expect(capability).toContain("resolveCheckoutPaymentTarget({")
+    expect(capability).toContain("selection: null")
   })
 
   it("uses only an unlocked identity-owned preset for Zap Out shipping readiness", async () => {
