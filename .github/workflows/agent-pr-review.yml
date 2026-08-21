@@ -208,8 +208,13 @@ jobs:
               include this exact marker in the review body:
               `<!-- conduit:sudden-review clean head=${{ steps.pr.outputs.head_sha }} -->`
             - A clean review must have zero inline comments. State
-              `No actionable findings.`, the confirmed QA disposition, and
-              only residual verification risks after the marker.
+              `No actionable findings.` on its own line after the marker.
+            - Include exactly one QA disposition line in this form:
+              `Reviewer-confirmed QA disposition: <disposition>`
+              Replace `<disposition>` with exactly one allowed value:
+              `Evidence sign-off`, `Targeted human QA`, or
+              `Maintainer-owned validation`.
+            - State only residual verification risks after these required lines.
             - Never include the clean marker when any actionable finding exists
               or review delivery is blocked.
         run: |
