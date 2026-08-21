@@ -729,6 +729,7 @@ describe("guest checkout order smoke", () => {
     const config = parseGuestCheckoutOrderSmokeConfig(environment())
     let shippingQuery: string | null = null
     let strictShippingRead = false
+    let shippingReads = 0
     let published = false
     let failure: unknown
 
@@ -752,6 +753,7 @@ describe("guest checkout order smoke", () => {
           fiatSource: "frankfurter",
         }),
         getShippingOptions: async (merchantPubkey, options) => {
+          shippingReads += 1
           shippingQuery = merchantPubkey
           strictShippingRead = options.strict === true
           return shippingOptionsRead()
@@ -770,10 +772,139 @@ describe("guest checkout order smoke", () => {
 
     expect(shippingQuery).toBe(MERCHANT_PUBKEY)
     expect(strictShippingRead).toBe(true)
+    expect(shippingReads).toBe(2)
     expect(published).toBe(true)
     expect(formatGuestCheckoutOrderSmokeFailure(failure)).toBe(
       "Guest checkout order smoke failed at order_publish."
     )
+  })
+
+  it("revalidates referenced shipping evidence immediately before publication", async () => {
+    const config = parseGuestCheckoutOrderSmokeConfig(environment())
+    const initialShippingRead = shippingOptionsRead()
+    const changedShippingRead = shippingOptionsRead([
+      {
+        ...merchantShippingOptions()[0]!,
+        price: 1,
+        createdAt: 1_700_000_001_000,
+      },
+    ])
+
+    for (const testCase of [
+      { secondRead: changedShippingRead, status: "failed" },
+      {
+        secondRead: shippingOptionsRead([], "complete"),
+        status: "inconclusive",
+      },
+      {
+        secondRead: shippingOptionsRead(merchantShippingOptions(), "partial"),
+        status: "inconclusive",
+      },
+    ] as const) {
+      let shippingReads = 0
+      let published = false
+      let failure: unknown
+
+      try {
+        await runGuestCheckoutOrderSmoke(config, {
+          getProduct: async () =>
+            productRead({
+              product: {
+                format: "physical",
+                shippingOptionId: `30406:${MERCHANT_PUBKEY}:shipping`,
+                shippingOptionDTag: "shipping",
+                shippingCountries: [],
+                shippingCountryRules: [],
+              },
+            }),
+          getPricingRate: async () => ({
+            rate: 100_000,
+            fetchedAt: 1_700_000_000_000,
+            source: "mempool",
+            fiatUsdRates: {},
+            fiatSource: "frankfurter",
+          }),
+          getShippingOptions: async () => {
+            shippingReads += 1
+            return shippingReads === 1
+              ? initialShippingRead
+              : testCase.secondRead
+          },
+          createOrderId: () => "smoke-order",
+          createGuestIdentity: () => identity(),
+          publishOrder: async () => {
+            published = true
+            throw new Error("Stale shipping evidence must not publish.")
+          },
+          nowMs: () => 1_700_000_123_000,
+        })
+      } catch (error) {
+        failure = error
+      }
+
+      expect(getGuestCheckoutOrderSmokeFailureEvidence(failure)).toEqual({
+        status: testCase.status,
+        stage: "product_read",
+        summary: `Guest checkout order smoke ${testCase.status} at product_read.`,
+      })
+      expect(shippingReads).toBe(2)
+      expect(published).toBe(false)
+    }
+  })
+
+  it("rejects a pricing quote that expires during final shipping revalidation", async () => {
+    const config = parseGuestCheckoutOrderSmokeConfig(environment())
+    const quoteFetchedAt = 1_700_000_000_000
+    let now = quoteFetchedAt
+    let shippingReads = 0
+    let published = false
+    let failure: unknown
+
+    try {
+      await runGuestCheckoutOrderSmoke(config, {
+        getProduct: async () =>
+          productRead({
+            product: {
+              format: "physical",
+              shippingOptionId: `30406:${MERCHANT_PUBKEY}:shipping`,
+              shippingOptionDTag: "shipping",
+              shippingCountries: [],
+              shippingCountryRules: [],
+            },
+          }),
+        getPricingRate: async () => ({
+          rate: 100_000,
+          fetchedAt: quoteFetchedAt,
+          source: "mempool",
+          fiatUsdRates: {},
+          fiatSource: "frankfurter",
+        }),
+        getShippingOptions: async () => {
+          shippingReads += 1
+          if (shippingReads === 2) {
+            now = quoteFetchedAt + CHECKOUT_QUOTE_MAX_AGE_MS + 1
+          }
+          return shippingOptionsRead()
+        },
+        createOrderId: () => "smoke-order",
+        createGuestIdentity: () => identity(),
+        publishOrder: async () => {
+          published = true
+          throw new Error("An expired quote must not publish.")
+        },
+        nowMs: () => now,
+      })
+    } catch (error) {
+      failure = error
+    }
+
+    expect(getGuestCheckoutOrderSmokeFailureEvidence(failure)).toEqual({
+      status: "failed",
+      stage: "product_read",
+      summary: "Guest checkout order smoke failed at product_read.",
+    })
+    expect(shippingReads).toBe(2)
+    expect(published).toBe(false)
   })
 
   it("does not let an unrelated merchant shipping zone authorize the fixture", async () => {

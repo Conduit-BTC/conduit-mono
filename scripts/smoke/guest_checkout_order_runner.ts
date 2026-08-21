@@ -10,6 +10,7 @@ import {
   getMerchantConversationList,
   getNdk,
   getShippingOptionsDetailed as fetchShippingOptions,
+  isPricingRateQuoteFresh,
   removeSigner,
   setSigner,
   type BtcUsdRateQuote,
@@ -25,7 +26,10 @@ import {
   buildCheckoutOrderRumor,
   type ReadyCheckoutPricing,
 } from "../../apps/market/src/lib/checkout-order"
-import { buildCheckoutPricingIntent } from "../../apps/market/src/lib/checkout-payment"
+import {
+  buildCheckoutPricingIntent,
+  CHECKOUT_QUOTE_MAX_AGE_MS,
+} from "../../apps/market/src/lib/checkout-payment"
 import {
   getCartShippingDestinationEligibility,
   hasPhysicalItemsMissingShippingSnapshot,
@@ -286,13 +290,11 @@ function requireCurrentProductRead(meta: {
   }
 }
 
-async function buildGuestOrderPricing(
+async function validateGuestOrderShipping(
   item: CartItem,
   config: GuestCheckoutOrderSmokeConfig,
-  getPricingRate: () => Promise<BtcUsdRateQuote>,
-  getShippingOptions: typeof fetchShippingOptions,
-  nowMs: () => number
-): Promise<ReadyCheckoutPricing> {
+  getShippingOptions: typeof fetchShippingOptions
+): Promise<ParsedShippingOption | null> {
   let merchantShippingOptions: ParsedShippingOption[] = []
   const requiresMerchantShippingOptions =
     item.format !== "digital" &&
@@ -354,6 +356,27 @@ async function buildGuestOrderPricing(
     )
   }
 
+  return requiresMerchantShippingOptions
+    ? (merchantShippingOptions[0] ?? null)
+    : null
+}
+
+async function buildGuestOrderPricing(
+  item: CartItem,
+  config: GuestCheckoutOrderSmokeConfig,
+  getPricingRate: () => Promise<BtcUsdRateQuote>,
+  getShippingOptions: typeof fetchShippingOptions,
+  nowMs: () => number
+): Promise<{
+  pricing: ReadyCheckoutPricing
+  referencedShippingOption: ParsedShippingOption | null
+}> {
+  const referencedShippingOption = await validateGuestOrderShipping(
+    item,
+    config,
+    getShippingOptions
+  )
+
   let pricing = buildCheckoutPricingIntent([item], null, nowMs())
   if (pricing.status !== "ok") {
     const quote = await getPricingRate()
@@ -362,7 +385,7 @@ async function buildGuestOrderPricing(
   if (pricing.status !== "ok") {
     throw new Error(pricing.reason)
   }
-  return pricing
+  return { pricing, referencedShippingOption }
 }
 
 export function buildGuestCheckoutOrderRumor(input: {
@@ -522,18 +545,21 @@ export async function runGuestCheckoutOrderSmoke(
 
   let pricing: ReadyCheckoutPricing
   let productFingerprint: string
+  let referencedShippingOption: ParsedShippingOption | null
   try {
     const product = await getProduct({ productId: config.productAddress })
     requireCurrentProductRead(product.meta)
     const item = requireGuestOrderCartItem(product.data, config)
     productFingerprint = getGuestOrderCartItemFingerprint(item)
-    pricing = await buildGuestOrderPricing(
+    const pricingResult = await buildGuestOrderPricing(
       item,
       config,
       dependencies.getPricingRate ?? fetchBtcUsdRate,
       dependencies.getShippingOptions ?? fetchShippingOptions,
       nowMs
     )
+    pricing = pricingResult.pricing
+    referencedShippingOption = pricingResult.referencedShippingOption
   } catch (error) {
     throw stageFailure("product_read", error)
   }
@@ -568,6 +594,33 @@ export async function runGuestCheckoutOrderSmoke(
     ) {
       throw new Error(
         "Guest checkout smoke product terms changed before publication."
+      )
+    }
+    if (referencedShippingOption) {
+      const refreshedShippingOption = await validateGuestOrderShipping(
+        refreshedItem,
+        config,
+        dependencies.getShippingOptions ?? fetchShippingOptions
+      )
+      if (
+        !refreshedShippingOption ||
+        !isDeepStrictEqual(refreshedShippingOption, referencedShippingOption)
+      ) {
+        throw new Error(
+          "Guest checkout smoke shipping terms changed before publication."
+        )
+      }
+    }
+    if (
+      pricing.approximate &&
+      !isPricingRateQuoteFresh(
+        pricing.quote,
+        nowMs(),
+        CHECKOUT_QUOTE_MAX_AGE_MS
+      )
+    ) {
+      throw new Error(
+        "Guest checkout smoke pricing quote expired before publication."
       )
     }
   } catch (error) {

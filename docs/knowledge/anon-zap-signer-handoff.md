@@ -528,11 +528,14 @@ satisfy its current signed kind `30406` shipping rules.
 
 When a physical listing references kind `30406` without an embedded shipping
 snapshot, the canary refreshes the merchant relay list and attempts the complete
-bounded shipping read plan. It accepts only a verified EOSE-complete response
-from every planned relay and the current NIP-01 replacement winner. Partial or
-unavailable coverage, a missing or ambiguous exact option, and conflicting
-references make the run inconclusive before publish. An ineligible destination
-fails before publish.
+bounded shipping read plan. It repeats that strict read immediately before
+publish and requires the exact option snapshot to match. It accepts only a
+verified EOSE-complete response from every planned relay and the current NIP-01
+replacement winner. Partial or unavailable coverage, a missing or ambiguous
+exact option, and conflicting references make the run inconclusive before
+publish. Changed shipping terms or an ineligible destination fail before
+publish. The canary also rejects a pricing quote that expires during the final
+product and shipping reads.
 
 For the workflow's initial introduction, the live dispatch is post-merge
 validation: GitHub only accepts `workflow_dispatch` for a workflow present on
