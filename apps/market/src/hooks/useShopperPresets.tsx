@@ -58,6 +58,11 @@ type DecryptedPreset = {
   value: ShopperPresetsValue
 }
 
+type FoundShopperPresetsReadResult = Extract<
+  ShopperPresetsReadResult,
+  { state: "found" }
+>
+
 type ShopperPresetsContextValue = {
   identityPubkey: string | null
   presetOwnerPubkey: string | null
@@ -123,7 +128,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
   const previousRelayLifecycleRef = useRef<ShopperPresetsRelayLifecycle | null>(
     null
   )
-  const acceptedRevisionRef = useRef<ShopperPresetsRevision | null>(null)
+  const acceptedRemoteRef = useRef<FoundShopperPresetsReadResult | null>(null)
   const [decryptedPreset, setDecryptedPreset] =
     useState<DecryptedPreset | null>(null)
   const [remotePreset, setRemotePreset] =
@@ -190,7 +195,10 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
       const lifecycle = relayLifecycle
       if (
         !lifecycle.identityPubkey ||
-        !isCurrentShopperPresetsRevision(acceptedRevisionRef.current, revision)
+        !isCurrentShopperPresetsRevision(
+          acceptedRemoteRef.current?.revision ?? null,
+          revision
+        )
       )
         return false
       setUnlockState("unlocking")
@@ -205,7 +213,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
             lifecycle
           ) ||
           !isCurrentShopperPresetsRevision(
-            acceptedRevisionRef.current,
+            acceptedRemoteRef.current?.revision ?? null,
             revision
           )
         )
@@ -224,7 +232,10 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
             relayLifecycleRef.current,
             lifecycle
           ) &&
-          isCurrentShopperPresetsRevision(acceptedRevisionRef.current, revision)
+          isCurrentShopperPresetsRevision(
+            acceptedRemoteRef.current?.revision ?? null,
+            revision
+          )
         )
           setUnlockState("error")
         return false
@@ -234,7 +245,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
   )
 
   useEffect(() => {
-    acceptedRevisionRef.current = null
+    acceptedRemoteRef.current = null
     setDecryptedPreset(null)
     setRemotePreset(null)
     if (!identityPubkey) {
@@ -257,10 +268,28 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
     const result = remote.data
     if (!identityPubkey || !result) return
     const lifecycle = relayLifecycle
+    const acceptedRemote = acceptedRemoteRef.current
     if (
-      !shouldApplyShopperPresetsReadResult(result, acceptedRevisionRef.current)
-    )
+      !shouldApplyShopperPresetsReadResult(
+        result,
+        acceptedRemote?.revision ?? null
+      )
+    ) {
+      if (
+        acceptedRemote &&
+        (result.state !== "found" ||
+          !isCurrentShopperPresetsRevision(
+            result.revision,
+            acceptedRemote.revision
+          ))
+      ) {
+        queryClient.setQueryData(
+          shopperPresetsQueryKey(identityPubkey, lifecycle.relayScope),
+          acceptedRemote
+        )
+      }
       return
+    }
     if (result.state === "not_found") {
       setRemotePreset(null)
       setDecryptedPreset(null)
@@ -273,7 +302,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
       setSyncState("unavailable")
       return
     }
-    acceptedRevisionRef.current = result.revision
+    acceptedRemoteRef.current = result
     const encrypted = result.envelope
     setRemotePreset(encrypted)
     setDecryptedPreset(null)
@@ -304,7 +333,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
           lifecycle
         ) ||
         !isCurrentShopperPresetsRevision(
-          acceptedRevisionRef.current,
+          acceptedRemoteRef.current?.revision ?? null,
           result.revision
         )
       )
@@ -312,13 +341,13 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
       clearShopperPresetsUnlock(identityPubkey, storage.local, storage.session)
       setUnlockState("locked")
     })
-  }, [decryptRemote, identityPubkey, relayLifecycle, remote.data])
+  }, [decryptRemote, identityPubkey, queryClient, relayLifecycle, remote.data])
 
   useEffect(() => {
     if (
       !identityPubkey ||
       !remote.isError ||
-      acceptedRevisionRef.current !== null
+      acceptedRemoteRef.current !== null
     )
       return
     setUnlockState("error")
@@ -327,7 +356,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
 
   const unlock = useCallback(
     async (password: string, policy: ShopperPresetsUnlockPolicy) => {
-      const revision = acceptedRevisionRef.current
+      const revision = acceptedRemoteRef.current?.revision
       if (!remotePreset || !revision) return false
       return decryptRemote(remotePreset, password, policy, revision)
     },
@@ -371,7 +400,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
           envelope: result.envelope,
           revision: result.revision,
         }
-        acceptedRevisionRef.current = result.revision
+        acceptedRemoteRef.current = next
         setRemotePreset(result.envelope)
         setDecryptedPreset({ ownerPubkey: identity, value })
         setUnlockState("unlocked")
@@ -439,7 +468,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
           envelope: result.envelope,
           revision: result.revision,
         }
-        acceptedRevisionRef.current = result.revision
+        acceptedRemoteRef.current = next
         setRemotePreset(result.envelope)
         setDecryptedPreset({
           ownerPubkey: identity,
@@ -500,6 +529,29 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
         )
       )
         return
+      const acceptedRemote = acceptedRemoteRef.current
+      if (
+        !shouldApplyShopperPresetsReadResult(
+          result,
+          acceptedRemote?.revision ?? null
+        )
+      ) {
+        if (acceptedRemote) {
+          queryClient.setQueryData(
+            shopperPresetsQueryKey(identity, lifecycle.relayScope),
+            acceptedRemote
+          )
+        }
+        setSyncState("synced")
+        return
+      }
+      setSyncState(
+        result.state === "found"
+          ? "synced"
+          : result.state === "not_found"
+            ? "ready"
+            : "unavailable"
+      )
       queryClient.setQueryData(
         shopperPresetsQueryKey(identity, lifecycle.relayScope),
         result
