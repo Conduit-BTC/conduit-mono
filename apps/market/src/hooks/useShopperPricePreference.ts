@@ -1,39 +1,60 @@
-import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react"
+import { useCallback, useSyncExternalStore } from "react"
 import {
   DEFAULT_SHOPPER_PRICE_PREFERENCE,
+  isSupportedShopperDisplayCurrency,
   normalizeShopperPricePreference,
   useAuth,
   type ShopperDisplayCurrency,
   type ShopperPricePreference,
 } from "@conduit/core"
-import {
-  LEGACY_PRICE_PREFERENCE_STORAGE_KEY_PREFIX,
-  getLegacyPricePreferenceStorageKey,
-} from "../lib/shopper-presets-store"
 import { useShopperPresets } from "./useShopperPresets"
 
 type Listener = () => void
 type PreferenceStorage = Pick<Storage, "getItem" | "setItem">
 
-const cachedPreferences = new Map<string, ShopperPricePreference>()
+const cachedPreferences = new Map<string, ShopperPricePreference | null>()
 const listenersByPubkey = new Map<string, Set<Listener>>()
+const SHOPPER_PRICE_PREFERENCE_STORAGE_KEY_PREFIX =
+  "conduit:market-price-preference:v1"
 let storageListenerCount = 0
 
 export function getShopperPricePreferenceStorageKey(pubkey: string): string {
-  return getLegacyPricePreferenceStorageKey(pubkey)
+  return `${SHOPPER_PRICE_PREFERENCE_STORAGE_KEY_PREFIX}:${pubkey}`
 }
 
 export function loadShopperPricePreference(
   pubkey: string,
   storage: Pick<PreferenceStorage, "getItem">
 ): ShopperPricePreference {
+  return (
+    readStoredShopperPricePreference(pubkey, storage) ??
+    DEFAULT_SHOPPER_PRICE_PREFERENCE
+  )
+}
+
+export function readStoredShopperPricePreference(
+  pubkey: string,
+  storage: Pick<PreferenceStorage, "getItem">
+): ShopperPricePreference | null {
   try {
     const raw = storage.getItem(getShopperPricePreferenceStorageKey(pubkey))
-    return raw
-      ? normalizeShopperPricePreference(JSON.parse(raw))
-      : DEFAULT_SHOPPER_PRICE_PREFERENCE
+    if (!raw) return null
+    const candidate = JSON.parse(raw) as {
+      currency?: unknown
+      bitcoinUnit?: unknown
+    }
+    if (
+      !candidate ||
+      typeof candidate !== "object" ||
+      typeof candidate.currency !== "string" ||
+      !isSupportedShopperDisplayCurrency(candidate.currency) ||
+      (candidate.bitcoinUnit !== "bitcoin" && candidate.bitcoinUnit !== "sats")
+    ) {
+      return null
+    }
+    return normalizeShopperPricePreference(candidate)
   } catch {
-    return DEFAULT_SHOPPER_PRICE_PREFERENCE
+    return null
   }
 }
 
@@ -50,17 +71,30 @@ export function persistShopperPricePreference(
   return normalized
 }
 
-function readPreference(pubkey: string | null): ShopperPricePreference {
-  if (!pubkey || typeof window === "undefined") {
-    return DEFAULT_SHOPPER_PRICE_PREFERENCE
+function readStoredPreference(
+  pubkey: string | null
+): ShopperPricePreference | null {
+  if (!pubkey || typeof window === "undefined") return null
+
+  if (cachedPreferences.has(pubkey)) {
+    return cachedPreferences.get(pubkey) ?? null
   }
 
-  const cached = cachedPreferences.get(pubkey)
-  if (cached) return cached
-
-  const preference = loadShopperPricePreference(pubkey, window.localStorage)
+  const preference = readStoredShopperPricePreference(
+    pubkey,
+    window.localStorage
+  )
   cachedPreferences.set(pubkey, preference)
   return preference
+}
+
+export function resolveShopperPricePreference(
+  localPreference: ShopperPricePreference | null,
+  unlockedPresetDisplay: ShopperPricePreference | null
+): ShopperPricePreference {
+  return (
+    localPreference ?? unlockedPresetDisplay ?? DEFAULT_SHOPPER_PRICE_PREFERENCE
+  )
 }
 
 function notify(pubkey: string): void {
@@ -83,12 +117,14 @@ function writePreference(
 
 function onStorage(event: StorageEvent): void {
   if (event.storageArea !== window.localStorage || !event.key) return
-  if (!event.key.startsWith(`${LEGACY_PRICE_PREFERENCE_STORAGE_KEY_PREFIX}:`)) {
+  if (
+    !event.key.startsWith(`${SHOPPER_PRICE_PREFERENCE_STORAGE_KEY_PREFIX}:`)
+  ) {
     return
   }
 
   const pubkey = event.key.slice(
-    LEGACY_PRICE_PREFERENCE_STORAGE_KEY_PREFIX.length + 1
+    SHOPPER_PRICE_PREFERENCE_STORAGE_KEY_PREFIX.length + 1
   )
   if (!pubkey) return
   cachedPreferences.delete(pubkey)
@@ -124,77 +160,51 @@ export function __resetShopperPricePreferenceForTests(): void {
 
 export function useShopperPricePreference() {
   const { pubkey, status } = useAuth()
-  const { preset, unlockState, updateLocal } = useShopperPresets()
+  const { preset, unlockState } = useShopperPresets()
   const identityPubkey = status === "connected" ? pubkey : null
   const subscribeToIdentity = useCallback(
     (listener: Listener) => subscribe(identityPubkey, listener),
     [identityPubkey]
   )
   const getSnapshot = useCallback(
-    () => readPreference(identityPubkey),
+    () => readStoredPreference(identityPubkey),
     [identityPubkey]
   )
   const localPreference = useSyncExternalStore(
     subscribeToIdentity,
     getSnapshot,
-    () => DEFAULT_SHOPPER_PRICE_PREFERENCE
+    () => null
   )
-  const preference =
-    identityPubkey && unlockState === "unlocked"
-      ? preset.display
-      : localPreference
-
-  useEffect(() => {
-    if (!identityPubkey || unlockState !== "unlocked") return
-    if (
-      localPreference.currency === preset.display.currency &&
-      localPreference.bitcoinUnit === preset.display.bitcoinUnit
-    ) {
-      return
-    }
-    writePreference(identityPubkey, preset.display)
-  }, [identityPubkey, localPreference, preset.display, unlockState])
-
-  const applyPreference = useCallback(
-    (next: ShopperPricePreference) => {
-      if (!identityPubkey) return
-      const normalized = normalizeShopperPricePreference(next)
-      writePreference(identityPubkey, normalized)
-      updateLocal({ ...preset, display: normalized })
-    },
-    [identityPubkey, preset, updateLocal]
-  )
-
-  const setPreference = useCallback(
-    (next: ShopperPricePreference) => {
-      applyPreference(next)
-    },
-    [applyPreference]
+  const preference = resolveShopperPricePreference(
+    localPreference,
+    identityPubkey && unlockState === "unlocked" ? preset.display : null
   )
   const setCurrency = useCallback(
     (currency: ShopperDisplayCurrency) => {
-      applyPreference({ ...preference, currency })
+      if (!identityPubkey) return
+      writePreference(identityPubkey, {
+        ...resolveShopperPricePreference(
+          readStoredPreference(identityPubkey),
+          unlockState === "unlocked" ? preset.display : null
+        ),
+        currency,
+      })
     },
-    [applyPreference, preference]
+    [identityPubkey, preset.display, unlockState]
   )
   const setSatsStandard = useCallback(
     (enabled: boolean) => {
-      applyPreference({
-        ...preference,
+      if (!identityPubkey) return
+      writePreference(identityPubkey, {
+        ...resolveShopperPricePreference(
+          readStoredPreference(identityPubkey),
+          unlockState === "unlocked" ? preset.display : null
+        ),
         bitcoinUnit: enabled ? "sats" : "bitcoin",
       })
     },
-    [applyPreference, preference]
+    [identityPubkey, preset.display, unlockState]
   )
 
-  return useMemo(
-    () => ({
-      preference,
-      canCustomize: !!identityPubkey,
-      setPreference,
-      setCurrency,
-      setSatsStandard,
-    }),
-    [identityPubkey, preference, setCurrency, setPreference, setSatsStandard]
-  )
+  return { preference, setCurrency, setSatsStandard }
 }

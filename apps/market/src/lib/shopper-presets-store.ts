@@ -3,8 +3,6 @@ export type ShopperPresetsUnlockPolicy = "device" | "session" | "always"
 const LEGACY_PRESETS_STORAGE_KEY_PREFIX = "conduit:market-shopper-presets:v1"
 const UNLOCK_STORAGE_KEY_PREFIX = "conduit:market-shopper-presets-unlock:v1"
 const POLICY_STORAGE_KEY_PREFIX = "conduit:market-shopper-presets-policy:v1"
-export const LEGACY_PRICE_PREFERENCE_STORAGE_KEY_PREFIX =
-  "conduit:market-price-preference:v1"
 
 type StorageRead = Pick<Storage, "getItem">
 type StorageWrite = Pick<Storage, "setItem" | "removeItem">
@@ -24,10 +22,6 @@ export function getShopperPresetsUnlockStorageKey(pubkey: string): string {
 
 export function getShopperPresetsPolicyStorageKey(pubkey: string): string {
   return `${POLICY_STORAGE_KEY_PREFIX}:${pubkey}`
-}
-
-export function getLegacyPricePreferenceStorageKey(pubkey: string): string {
-  return `${LEGACY_PRICE_PREFERENCE_STORAGE_KEY_PREFIX}:${pubkey}`
 }
 
 export function readShopperPresetsUnlockPolicy(

@@ -102,18 +102,3 @@ export function getCartShippingDestinationEligibility(
 
   return { eligible: true }
 }
-
-export type CartShippingCountryPresetEligibility =
-  "eligible" | "unknown" | "ineligible"
-
-export function getCartShippingCountryPresetEligibility(
-  items: CartItem[],
-  destination: { country: string; postalCode: string }
-): CartShippingCountryPresetEligibility {
-  const physicalItems = items.filter(isPhysicalItem)
-  if (physicalItems.length === 0) return "eligible"
-  const result = getCartShippingDestinationEligibility(destination, items, [])
-  if (result.eligible === true) return "eligible"
-  if (result.eligible === false) return "ineligible"
-  return "unknown"
-}

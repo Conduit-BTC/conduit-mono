@@ -5,6 +5,7 @@ import type {
   WalletPayInvoiceInput,
 } from "../packages/core/src/wallets"
 import { parseNwcUri } from "../packages/core/src/protocol/nwc"
+import { NWC_WALLET_REFUSAL_ERROR_CODES } from "../packages/core/src/protocol/nwc-diagnostics"
 import {
   __buyerNwcSessionTestInternals,
   closeBuyerNwcSession,
@@ -27,11 +28,13 @@ const marketAdapterCoordinator = new WalletPaymentCoordinator(
 class Nip47WalletError extends Error {
   constructor(
     message: string,
-    readonly code: string
+    readonly code?: string
   ) {
     super(message)
   }
 }
+
+class Nip47TimeoutError extends Error {}
 
 afterEach(() => {
   __buyerNwcSessionTestInternals.__setClientFactory(null)
@@ -373,7 +376,101 @@ describe("WalletPaymentCoordinator", () => {
     expect(payInvoice).toHaveBeenCalledTimes(0)
   })
 
-  it("keeps an unclassified post-publication NWC rejection ambiguous", async () => {
+  for (const errorCode of NWC_WALLET_REFUSAL_ERROR_CODES) {
+    it(`marks ${errorCode} as a definitive post-publication wallet refusal`, async () => {
+      __buyerNwcSessionTestInternals.__setClientFactory(
+        () =>
+          ({
+            getInfo: async () => ({
+              methods: ["pay_invoice"],
+              network: "mainnet",
+            }),
+            getBalance: async () => ({ balance: 0 }),
+            payInvoice: async () => {
+              throw new Nip47WalletError("Wallet rejected request.", errorCode)
+            },
+            close: () => undefined,
+            pool: {
+              ensureRelay: async () => undefined,
+            },
+          }) as never
+      )
+      const session = getBuyerNwcSession(NWC_WALLET_ID)
+      session.setConnection(NWC_CONNECTION)
+      await session.warm()
+
+      await expect(
+        marketAdapterCoordinator.payInvoice(
+          { walletId: NWC_WALLET_ID, providerId: "nwc" },
+          {
+            invoice: "lnbc1test",
+            amountMsats: 1_000,
+            idempotencyKey: `attempt-${errorCode.toLowerCase()}`,
+            timeoutMs: 1_000,
+            appId: "market",
+          }
+        )
+      ).resolves.toMatchObject({
+        status: "failed",
+        phase: "after_publish",
+        reason: `${errorCode}: Wallet rejected request.`,
+      })
+    })
+  }
+
+  for (const errorCode of [
+    "PAYMENT_FAILED",
+    "INTERNAL",
+    "OTHER",
+    "UNKNOWN_CODE",
+    undefined,
+  ]) {
+    it(`keeps ${errorCode ?? "a missing error code"} ambiguous after publication`, async () => {
+      __buyerNwcSessionTestInternals.__setClientFactory(
+        () =>
+          ({
+            getInfo: async () => ({
+              methods: ["pay_invoice"],
+              network: "mainnet",
+            }),
+            getBalance: async () => ({ balance: 0 }),
+            payInvoice: async () => {
+              throw new Nip47WalletError(
+                "Wallet response unavailable.",
+                errorCode
+              )
+            },
+            close: () => undefined,
+            pool: {
+              ensureRelay: async () => undefined,
+            },
+          }) as never
+      )
+      const session = getBuyerNwcSession(NWC_WALLET_ID)
+      session.setConnection(NWC_CONNECTION)
+      await session.warm()
+
+      await expect(
+        marketAdapterCoordinator.payInvoice(
+          { walletId: NWC_WALLET_ID, providerId: "nwc" },
+          {
+            invoice: "lnbc1test",
+            amountMsats: 1_000,
+            idempotencyKey: `attempt-${errorCode ?? "missing"}`,
+            timeoutMs: 1_000,
+            appId: "market",
+          }
+        )
+      ).resolves.toMatchObject({
+        status: "ambiguous",
+        reason: errorCode
+          ? `${errorCode}: Wallet response unavailable.`
+          : "Wallet response unavailable.",
+      })
+    })
+  }
+
+  it("keeps a response without a preimage ambiguous after publication", async () => {
     __buyerNwcSessionTestInternals.__setClientFactory(
       () =>
         ({
@@ -382,9 +479,7 @@ describe("WalletPaymentCoordinator", () => {
             network: "mainnet",
           }),
           getBalance: async () => ({ balance: 0 }),
-          payInvoice: async () => {
-            throw new Nip47WalletError("Unclassified wallet response", "OTHER")
-          },
+          payInvoice: async () => ({}),
           close: () => undefined,
           pool: {
             ensureRelay: async () => undefined,
@@ -400,7 +495,7 @@ describe("WalletPaymentCoordinator", () => {
       {
         invoice: "lnbc1test",
         amountMsats: 1_000,
-        idempotencyKey: "attempt-ambiguous",
+        idempotencyKey: "attempt-missing-preimage",
         timeoutMs: 1_000,
         appId: "market",
       }
@@ -408,11 +503,11 @@ describe("WalletPaymentCoordinator", () => {
 
     expect(result).toMatchObject({
       status: "ambiguous",
-      reason: "OTHER: Unclassified wallet response",
+      reason: "NWC pay_invoice response did not include a payment proof.",
     })
   })
 
-  it("keeps PAYMENT_FAILED ambiguous even when its message looks like a refusal", async () => {
+  it("keeps a post-publication timeout ambiguous", async () => {
     __buyerNwcSessionTestInternals.__setClientFactory(
       () =>
         ({
@@ -422,10 +517,7 @@ describe("WalletPaymentCoordinator", () => {
           }),
           getBalance: async () => ({ balance: 0 }),
           payInvoice: async () => {
-            throw new Nip47WalletError(
-              "insufficient capacity on all routes",
-              "PAYMENT_FAILED"
-            )
+            throw new Nip47TimeoutError("Wallet response timed out.")
           },
           close: () => undefined,
           pool: {
@@ -443,54 +535,14 @@ describe("WalletPaymentCoordinator", () => {
         {
           invoice: "lnbc1test",
           amountMsats: 1_000,
-          idempotencyKey: "attempt-payment-failed",
+          idempotencyKey: "attempt-timeout",
           timeoutMs: 1_000,
           appId: "market",
         }
       )
     ).resolves.toMatchObject({
       status: "ambiguous",
-      reason: "PAYMENT_FAILED: insufficient capacity on all routes",
-    })
-  })
-
-  it("keeps a documented NWC refusal retryable", async () => {
-    __buyerNwcSessionTestInternals.__setClientFactory(
-      () =>
-        ({
-          getInfo: async () => ({
-            methods: ["pay_invoice"],
-            network: "mainnet",
-          }),
-          getBalance: async () => ({ balance: 0 }),
-          payInvoice: async () => {
-            throw new Nip47WalletError("budget exceeded", "QUOTA_EXCEEDED")
-          },
-          close: () => undefined,
-          pool: {
-            ensureRelay: async () => undefined,
-          },
-        }) as never
-    )
-    const session = getBuyerNwcSession(NWC_WALLET_ID)
-    session.setConnection(NWC_CONNECTION)
-    await session.warm()
-
-    await expect(
-      marketAdapterCoordinator.payInvoice(
-        { walletId: NWC_WALLET_ID, providerId: "nwc" },
-        {
-          invoice: "lnbc1test",
-          amountMsats: 1_000,
-          idempotencyKey: "attempt-quota-exceeded",
-          timeoutMs: 1_000,
-          appId: "market",
-        }
-      )
-    ).resolves.toMatchObject({
-      status: "failed",
-      phase: "after_publish",
-      reason: "QUOTA_EXCEEDED: budget exceeded",
+      reason: "NWC request timed out.",
     })
   })
 })

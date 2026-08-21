@@ -14,7 +14,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
-  AUTH_STORAGE_KEY,
   EVENT_KINDS,
   SHIPPING_COUNTRIES,
   appendConduitClientTag,
@@ -33,7 +32,6 @@ import {
   normalizePubkey,
   normalizePublicMediaUrl,
   pubkeyToNpub,
-  readAuthSession,
   recordBrowserTelemetryEvent,
   resolveWalletPaymentInstance,
   validateAddressConsistency,
@@ -904,7 +902,13 @@ function OrderSummary({
 // ─── Checkout page ────────────────────────────────────────────────────────────
 
 function CheckoutPage() {
-  const { pubkey, signer, capabilities, status: authStatus } = useAuth()
+  const {
+    pubkey,
+    restorePendingPubkey,
+    signer,
+    capabilities,
+    status: authStatus,
+  } = useAuth()
   const cart = useCart()
   const search = Route.useSearch()
   const navigate = useNavigate()
@@ -926,6 +930,7 @@ function CheckoutPage() {
     useState<CheckoutPaymentTarget | null>(null)
   const selectedPaymentTarget = resolveCheckoutPaymentTarget({
     selection: paymentTargetSelection,
+    preferredRail: shopperPresets.preset.preferredRail,
     eligibleWallets,
     weblnAvailable,
   })
@@ -962,9 +967,7 @@ function CheckoutPage() {
     typeof readCheckoutShippingInitialization
   > | null>(null)
   const initialIdentity = authStatus === "connected" ? pubkey : null
-  const pendingDraftOwner = initialIdentity
-    ? null
-    : (readAuthSession()?.userPubkey ?? null)
+  const pendingDraftOwner = restorePendingPubkey
   if (!initialShippingRef.current) {
     initialShippingRef.current = initialIdentity
       ? readCheckoutShippingInitialization(
@@ -1029,7 +1032,6 @@ function CheckoutPage() {
   const [pricingRefreshFailedAt, setPricingRefreshFailedAt] = useState<
     number | null
   >(null)
-  const [authStorageRevision, setAuthStorageRevision] = useState(0)
   const btcUsdRate = btcUsdRateQuery.data ?? null
   const refetchBtcUsdRate = btcUsdRateQuery.refetch
   const btcUsdRateIsFetching = btcUsdRateQuery.isFetching
@@ -1041,8 +1043,8 @@ function CheckoutPage() {
   })
   const signerConnected = authSignerReadiness === "ready"
   const signedBuyerPubkey = signerConnected ? pubkey : null
-  const authPending = authSignerReadiness === "pending"
-  const isGuestCheckout = authSignerReadiness === "disconnected"
+  const authPending = restorePendingPubkey !== null
+  const isGuestCheckout = !authPending && authSignerReadiness === "disconnected"
   const signerBlockedMessage =
     authSignerReadiness === "unavailable"
       ? "Your Nostr account is connected, but its signer is unavailable. Disconnect and reconnect it before sending this order. Nothing will be sent or paid until you reconnect."
@@ -1059,26 +1061,9 @@ function CheckoutPage() {
   }
 
   useEffect(() => {
-    const handleAuthStorage = (event: StorageEvent): void => {
-      if (event.key === AUTH_STORAGE_KEY) {
-        setAuthStorageRevision((revision) => revision + 1)
-      }
-    }
-    window.addEventListener("storage", handleAuthStorage)
-    return () => window.removeEventListener("storage", handleAuthStorage)
-  }, [])
-
-  useEffect(() => {
     if (authPending) return
     const recoveryOwner = pendingDraftOwnerRef.current
     if (recoveryOwner) {
-      if (
-        !signedBuyerPubkey &&
-        authStatus === "disconnected" &&
-        readAuthSession()?.userPubkey === recoveryOwner
-      ) {
-        return
-      }
       pendingDraftOwnerRef.current = null
       if (signedBuyerPubkey === recoveryOwner) {
         presetIdentityRef.current = signedBuyerPubkey
@@ -1127,8 +1112,6 @@ function CheckoutPage() {
     shipping,
     shopperPresets.preset.shipping,
     shopperPresets.presetOwnerPubkey,
-    authStorageRevision,
-    authStatus,
     authPending,
     signedBuyerPubkey,
   ])
