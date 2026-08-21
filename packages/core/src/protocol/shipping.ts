@@ -1,7 +1,7 @@
 /**
  * Kind-30406 shipping option protocol helpers.
  *
- * GammaMarkets market-spec: https://github.com/GammaMarkets/market-spec
+ * Open Markets working specification: https://github.com/OpenMarketsFoundation/specification
  *
  * Conduit publishes one consolidated kind-30406 event with d-tag
  * "conduit-default" to represent the merchant's current shipping config.
@@ -13,7 +13,7 @@ import {
   type PricingRateInput,
 } from "../pricing"
 import { EVENT_KINDS } from "./kinds"
-import { fetchEventsFanout, requireNdkConnected } from "./ndk"
+import { fetchEventsFanout, getNdk } from "./ndk"
 import { publishWithPlanner } from "./relay-publish"
 import { getRelayLists } from "./relay-list"
 import { planRelayReads } from "./relay-planner"
@@ -251,7 +251,7 @@ export async function publishShippingOptions(
   config: ShippingConfig,
   appId: ConduitAppId
 ): Promise<void> {
-  const ndk = await requireNdkConnected()
+  const ndk = getNdk()
   if (!ndk.signer) throw new Error("Signer not connected")
   const signerPubkey = (await ndk.signer.user()).pubkey
 

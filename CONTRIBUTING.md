@@ -51,7 +51,7 @@ Read existing specs when they apply, but do not create or update a spec for ordi
 
 For UI and theming work, also check [docs/DESIGN.md](docs/DESIGN.md) before introducing new shared styles or tokens.
 
-For Nostr protocol, relay, signer, messaging, payment, product-event, cache, or outbox work, also check [decentralized-network-product-posture.md](docs/knowledge/decentralized-network-product-posture.md), [external-nostr-references.md](docs/knowledge/external-nostr-references.md), and the relevant public NIP or GammaMarkets source before implementation. Product listings are NIP-99 + GammaMarkets `kind:30402`; do not introduce alternate product-listing protocol terminology, schemas, or assumptions.
+For Nostr protocol, relay, signer, messaging, payment, product-event, cache, or outbox work, also check [decentralized-network-product-posture.md](docs/knowledge/decentralized-network-product-posture.md), [external-nostr-references.md](docs/knowledge/external-nostr-references.md), and the relevant public NIP or Open Markets source before implementation. Product listings are NIP-99 plus the Open Markets working specification for `kind:30402` commerce events, derived from the earlier GammaMarkets `market-spec` work; do not introduce alternate product-listing protocol terminology, schemas, or assumptions.
 
 The protocol source defines event meaning and canonical emission. Before
 turning missing or divergent decentralized state into a product gate, classify
@@ -232,20 +232,16 @@ export function ProductCard({ product, className }: ProductCardProps) {
 
 ### Data Fetching
 
-Relay data should go through shared TanStack Query hooks or protocol helpers in `@conduit/core`. NDK is the current edge library, but routes should not invent new relay fanout or source-resolution behavior when shared helpers already exist:
+Relay data should go through shared TanStack Query hooks or protocol helpers in `@conduit/core`. NDK remains an offline compatibility edge for signing, encryption, event construction, and explicit planned publishes; it is not a relay discovery or read API. Routes should not invent new relay fanout or source-resolution behavior when shared helpers already exist:
 
 ```typescript
 import { useQuery } from "@tanstack/react-query"
-import { getNdk } from "../protocol/ndk"
+import { getMarketplaceProducts } from "../protocol/commerce"
 
-export function useProducts(filters?: ProductFilters) {
+export function useProducts(limit = 60) {
   return useQuery({
-    queryKey: ["products", filters],
-    queryFn: async () => {
-      const ndk = getNdk()
-      const events = await ndk.fetchEvents({ kinds: [30402], ...filters })
-      return Array.from(events).map(parseProduct)
-    },
+    queryKey: ["products", { limit }],
+    queryFn: async () => (await getMarketplaceProducts({ limit })).data,
     staleTime: 1000 * 60,
   })
 }
@@ -255,7 +251,8 @@ export function useProducts(filters?: ProductFilters) {
 
 - **Server state**: TanStack Query (relay data, profiles, products)
 - **Auth state**: React Context in `@conduit/core`
-- **Local persistence**: Dexie (IndexedDB) for orders, messages, cache
+- **Local persistence**: Dexie (IndexedDB) for orders, messages, cache, wallet
+  descriptors, and local provider credentials
 - **Ephemeral UI state**: `useState` / `useReducer`
 - **No state management library** (no Zustand, Redux, Jotai)
 
@@ -280,6 +277,9 @@ These are non-negotiable across all code:
   an encrypted browser-local NIP-46 client connection key; neither may become a
   Conduit-custodied account key.
 - Identity = pubkey only
+- Portable Wallet recovery material is a separate, device-local credential
+  boundary governed by [the wallets specification](docs/specs/wallets.md); it
+  does not permit Nostr account-key custody
 
 ### Privacy
 
@@ -290,11 +290,15 @@ These are non-negotiable across all code:
 - Treat browsers, counterparties, relays, wallets, signers, merchant-selected
   services, and Conduit-operated supporting endpoints as distinct data
   boundaries. Do not claim all data stays on one device or only on relays.
+- Wallet credentials, recovery material, invoices, payment content, selected
+  wallet instance IDs, and wallet balances must not enter logs or telemetry
 
 ### Payments
 
-- Non-custodial Lightning payment requests, NWC/WebLN payment rails, and payment proofs
-- No balance management
+- Non-custodial Lightning through Portable Wallets, NWC/WebLN payment rails,
+  invoices, and payment proofs
+- Client code may display and manage device-local Portable Wallet balances
+  through the documented provider boundary
 - No fund custody
 
 ## File Organization

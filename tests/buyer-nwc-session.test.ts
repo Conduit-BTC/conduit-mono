@@ -4,6 +4,9 @@ import { parseNwcUri } from "@conduit/core"
 import {
   BuyerNwcSession,
   __buyerNwcSessionTestInternals,
+  closeBuyerNwcSession,
+  getBuyerNwcSession,
+  getBuyerNwcSessionSnapshots,
 } from "../apps/market/src/lib/buyer-nwc-session"
 
 type FakeNwcClient = {
@@ -72,9 +75,39 @@ class Nip47WalletError extends Error {
 
 afterEach(() => {
   __buyerNwcSessionTestInternals.__setClientFactory(null)
+  closeBuyerNwcSession("wallet-a")
+  closeBuyerNwcSession("wallet-b")
 })
 
 describe("BuyerNwcSession", () => {
+  it("isolates reusable sessions by local wallet id", () => {
+    const walletA = getBuyerNwcSession("wallet-a")
+    const sameWalletA = getBuyerNwcSession("wallet-a")
+    const walletB = getBuyerNwcSession("wallet-b")
+
+    expect(sameWalletA).toBe(walletA)
+    expect(walletB).not.toBe(walletA)
+
+    closeBuyerNwcSession("wallet-a")
+    expect(getBuyerNwcSession("wallet-a")).not.toBe(walletA)
+  })
+
+  it("hydrates a pre-warmed session snapshot for route handoff", async () => {
+    __buyerNwcSessionTestInternals.__setClientFactory(() =>
+      fakeClient({
+        getInfo: async () => ({ methods: ["pay_invoice"] }),
+      })
+    )
+    const session = getBuyerNwcSession("wallet-a")
+    session.setConnection(connection)
+    await session.warm()
+
+    const snapshots = getBuyerNwcSessionSnapshots(["wallet-a"])
+
+    expect(snapshots["wallet-a"]).toBe(session.getSnapshot())
+    expect(snapshots["wallet-a"]?.status).toBe("reachable")
+  })
+
   it("warms one client and reuses it for payment", async () => {
     const clients: FakeNwcClient[] = []
     let payCalls = 0
@@ -405,8 +438,7 @@ describe("BuyerNwcSession", () => {
 
   it("ignores a stale warm result after the wallet is disconnected", async () => {
     let resolveInfo:
-      | ((value: { methods: string[]; alias?: string }) => void)
-      | null = null
+      ((value: { methods: string[]; alias?: string }) => void) | null = null
 
     __buyerNwcSessionTestInternals.__setClientFactory(() =>
       fakeClient({

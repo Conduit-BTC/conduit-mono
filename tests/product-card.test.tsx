@@ -4,6 +4,63 @@ import { getProductPriceDisplay, getShopperPriceDisplay } from "@conduit/core"
 import { ProductCard, ProductCartAction } from "@conduit/ui"
 
 describe("ProductCard", () => {
+  it("loads only the first public candidate and does not preload a fallback chain", () => {
+    const html = renderToStaticMarkup(
+      <ProductCard
+        title="Public Image Product"
+        merchantName="Alice Store"
+        images={[
+          { url: "https://cdn.conduit.market/primary.png" },
+          { url: "https://fallback.conduit.market/fallback.png" },
+        ]}
+        primaryPrice="25 sats"
+      />
+    )
+
+    expect(html).toContain("https://cdn.conduit.market/primary.png")
+    expect(html).not.toContain("https://fallback.conduit.market/fallback.png")
+    expect(html).toContain('referrerPolicy="no-referrer"')
+  })
+
+  it("does not render a non-public image destination passed at the UI boundary", () => {
+    for (const url of [
+      "http://127.0.0.1/private.png",
+      "https://[2001:100::1]/avatar.png",
+      "https://[2001:1::4]/avatar.png",
+    ]) {
+      const html = renderToStaticMarkup(
+        <ProductCard
+          title="Unsafe Image Product"
+          merchantName="Mallory Store"
+          images={[{ url }]}
+          primaryPrice="25 sats"
+        />
+      )
+
+      expect(html).toContain("Image unavailable")
+      expect(html).not.toContain(url)
+      expect(html).not.toContain("<img")
+    }
+  })
+
+  it("does not skip an unsafe first candidate to request a later author URL", () => {
+    const html = renderToStaticMarkup(
+      <ProductCard
+        title="Unsafe First Image Product"
+        merchantName="Mallory Store"
+        images={[
+          { url: "http://127.0.0.1/private.png" },
+          { url: "https://fallback.conduit.market/fallback.png" },
+        ]}
+        primaryPrice="25 sats"
+      />
+    )
+
+    expect(html).toContain("Image unavailable")
+    expect(html).not.toContain("127.0.0.1")
+    expect(html).not.toContain("fallback.conduit.market")
+  })
+
   it("renders a stable card when no product image is available", () => {
     const html = renderToStaticMarkup(
       <ProductCard

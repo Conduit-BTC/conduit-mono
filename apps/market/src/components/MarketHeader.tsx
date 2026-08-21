@@ -12,13 +12,7 @@ import {
 } from "lucide-react"
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router"
-import {
-  config,
-  formatNpub,
-  useAuth,
-  useNdkState,
-  useProfile,
-} from "@conduit/core"
+import { config, formatNpub, useAuth, useProfile } from "@conduit/core"
 import {
   Avatar,
   AvatarFallback,
@@ -34,7 +28,6 @@ import {
 
 import { SignerSwitch } from "./SignerSwitch"
 import { useCart } from "../hooks/useCart"
-import { useWallet } from "../hooks/useWallet"
 
 type NavState = "top" | "scrolled" | "hidden"
 
@@ -67,7 +60,7 @@ function Logo() {
         fetchPriority="high"
         className="h-8 w-[6.75rem] shrink-0 object-contain"
       />
-      <span className="border-l border-[var(--border)] pl-2 font-display text-2xl font-medium text-[var(--text-primary)]">
+      <span className="hidden border-l border-[var(--border)] pl-2 font-display text-2xl font-medium text-[var(--text-primary)] min-[400px]:inline">
         market
       </span>
     </Link>
@@ -79,6 +72,7 @@ function HeaderAction({
   icon,
   active = false,
   enabled = true,
+  ariaLabel,
   className,
   labelClassName = "hidden xl:inline",
   count,
@@ -88,6 +82,7 @@ function HeaderAction({
   icon: ReactNode
   active?: boolean
   enabled?: boolean
+  ariaLabel?: string
   className?: string
   labelClassName?: string
   count?: number
@@ -96,7 +91,9 @@ function HeaderAction({
   return (
     <button
       type="button"
+      aria-label={ariaLabel ?? label}
       aria-disabled={!enabled}
+      aria-current={active ? "page" : undefined}
       title={enabled ? label : `Connect to use ${label.toLowerCase()}`}
       onClick={onClick}
       className={cn(
@@ -188,7 +185,6 @@ function AccountControl({
   displayName,
   npub,
   avatarUrl,
-  walletStatusLabel,
   authPending,
   onConnect,
   onDisconnect,
@@ -197,7 +193,6 @@ function AccountControl({
   displayName: string
   npub?: string
   avatarUrl?: string | null
-  walletStatusLabel?: string
   authPending: boolean
   onConnect: () => void
   onDisconnect: () => void
@@ -270,8 +265,7 @@ function AccountControl({
         />
         <AccountMenuLink
           icon={<Wallet className="size-4" />}
-          label="Wallet"
-          detail={walletStatusLabel}
+          label="Wallets"
           to="/wallet"
           onClick={() => setOpen(false)}
         />
@@ -292,9 +286,9 @@ function AccountControl({
 
 export function MarketHeader() {
   const { pubkey, status, disconnect } = useAuth()
-  const { status: ndkStatus } = useNdkState()
-  const { data: profile, refetch } = useProfile(pubkey)
-  const wallet = useWallet()
+  const { data: profile } = useProfile(pubkey, {
+    authenticatedPubkey: pubkey,
+  })
   const cart = useCart()
   const navigate = useNavigate()
   const { pathname, search } = useRouterState({
@@ -315,26 +309,12 @@ export function MarketHeader() {
   const displayName = connected
     ? (profile?.displayName ?? profile?.name ?? formatNpub(pubkey, 6))
     : "Connect"
-  const walletStatusLabel =
-    wallet.status === "pay-capable"
-      ? "Ready"
-      : wallet.status === "unreachable"
-        ? "Saved"
-        : wallet.status === "disconnected"
-          ? "Not connected"
-          : undefined
   const normalizedSearchValue = searchValue.trim()
   const pendingSearch = useMemo(
     () =>
       isBrowseRoute && searchDirty && normalizedSearchValue !== currentQuery,
     [currentQuery, isBrowseRoute, normalizedSearchValue, searchDirty]
   )
-
-  useEffect(() => {
-    if (ndkStatus === "connected" && pubkey) {
-      void refetch()
-    }
-  }, [ndkStatus, pubkey, refetch])
 
   useEffect(() => {
     // Mirror the URL query into the input only when the user isn't actively
@@ -472,7 +452,7 @@ export function MarketHeader() {
             <Badge
               variant="secondary"
               className={cn(
-                "border text-[10px] uppercase tracking-wider",
+                "hidden border text-[10px] uppercase tracking-wider min-[400px]:inline-flex",
                 config.lightningNetwork === "mock"
                   ? "border-yellow-500/30 bg-yellow-500/10 text-yellow-400"
                   : "border-blue-500/30 bg-blue-500/10 text-blue-400"
@@ -528,6 +508,13 @@ export function MarketHeader() {
           className="market-header-utility-nav flex min-w-0 items-center gap-1.5"
         >
           <HeaderAction
+            label="Wallets"
+            icon={<Wallet className="size-4" aria-hidden="true" />}
+            active={pathname === "/wallet"}
+            labelClassName="hidden xl:inline"
+            onClick={() => void navigate({ to: "/wallet" })}
+          />
+          <HeaderAction
             label="Messages"
             icon={<MessagesSquare className="size-4" aria-hidden="true" />}
             enabled={connected}
@@ -545,6 +532,9 @@ export function MarketHeader() {
           />
           <HeaderAction
             label="Cart"
+            ariaLabel={`Cart, ${cart.totals.count} ${
+              cart.totals.count === 1 ? "item" : "items"
+            }`}
             icon={<ShoppingCart className="size-4" aria-hidden="true" />}
             active={pathname === "/cart"}
             labelClassName="hidden sm:inline"
@@ -559,7 +549,6 @@ export function MarketHeader() {
             displayName={displayName}
             npub={pubkey ? formatNpub(pubkey, 8) : undefined}
             avatarUrl={profile?.picture}
-            walletStatusLabel={walletStatusLabel}
             authPending={authPending}
             onConnect={() => setConnectOpen(true)}
             onDisconnect={disconnect}

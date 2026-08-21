@@ -4,6 +4,7 @@ import {
   type ElementRef,
 } from "react"
 import * as AvatarPrimitive from "@radix-ui/react-avatar"
+import { normalizePublicMediaUrl } from "@conduit/core"
 import { cn } from "../utils"
 
 const Avatar = forwardRef<
@@ -24,11 +25,14 @@ Avatar.displayName = AvatarPrimitive.Root.displayName
 const AvatarImage = forwardRef<
   ElementRef<typeof AvatarPrimitive.Image>,
   ComponentPropsWithoutRef<typeof AvatarPrimitive.Image>
->(({ className, ...props }, ref) => (
+>(({ className, src, ...props }, ref) => (
   <AvatarPrimitive.Image
+    {...props}
     ref={ref}
     className={cn("aspect-square h-full w-full", className)}
-    {...props}
+    src={normalizePublicMediaUrl(src) ?? undefined}
+    srcSet={undefined}
+    referrerPolicy="no-referrer"
   />
 ))
 AvatarImage.displayName = AvatarPrimitive.Image.displayName

@@ -38,14 +38,14 @@ function lifecycle(overrides: Partial<OrderLifecycle> = {}): OrderLifecycle {
       route: "compatibility_order",
       relayDelivery: [
         {
-          relayUrl: "wss://acked.example",
+          relayUrl: "wss://acked.conduit.market",
           source: "compatibility_registry",
           status: "acked",
           attemptCount: 1,
           acknowledgedAt: 1,
         },
         {
-          relayUrl: "wss://failed.example",
+          relayUrl: "wss://failed.conduit.market",
           source: "compatibility_registry",
           status: "timed_out",
           attemptCount: 1,
@@ -107,7 +107,7 @@ describe("order relay delivery retry", () => {
     })
 
     expect(attempts.map((attempt) => attempt.relayUrl)).toEqual([
-      "wss://failed.example",
+      "wss://failed.conduit.market",
     ])
     expect(attempts[0]?.signedEvent).toEqual(signedWrap)
     expect(
@@ -133,6 +133,44 @@ describe("order relay delivery retry", () => {
     expect(
       store.read().orderRelayDelivery?.relayDelivery[0]?.attemptCount
     ).toBe(1)
+  })
+
+  it("never replays persisted remote delivery targets on private networks", async () => {
+    const unsafe = lifecycle()
+    unsafe.orderRelayDelivery!.relayDelivery = [
+      {
+        relayUrl: "wss://127.0.0.1:8080/inbox",
+        source: "declared",
+        status: "timed_out",
+        attemptCount: 1,
+      },
+      {
+        relayUrl: "wss://192.168.1.10/inbox",
+        source: "recipient_nip65",
+        status: "timed_out",
+        attemptCount: 1,
+      },
+      {
+        relayUrl: "wss://retry.conduit.market/inbox",
+        source: "declared",
+        status: "timed_out",
+        attemptCount: 1,
+      },
+    ]
+    const store = repository(unsafe)
+    const attempts: string[] = []
+
+    await retryOrderRelayDelivery("order-id", "buyer", {
+      repository: store.repository,
+      leaseOwner: "worker",
+      now: () => 100,
+      publisher: async ({ relayUrl }) => {
+        attempts.push(relayUrl)
+        return "acked"
+      },
+    })
+
+    expect(attempts).toEqual(["wss://retry.conduit.market/inbox"])
   })
 
   it("refuses background replay for a guest or different active account", async () => {

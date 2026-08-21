@@ -1,8 +1,10 @@
 import "fake-indexeddb/auto"
 
-import { describe, expect, it } from "bun:test"
+import { afterEach, describe, expect, it } from "bun:test"
 import { NDKPrivateKeySigner, nip19 } from "@nostr-dev-kit/ndk"
 import { getPublicKey } from "nostr-tools"
+
+import { disconnectNdk, getNdk } from "@conduit/core"
 
 import {
   buildGuestCheckoutOrderRumor,
@@ -114,6 +116,7 @@ function productRead(
     degraded?: boolean
     capped?: boolean
     canonicalFreshness?: boolean
+    product?: Record<string, unknown>
   } = {}
 ) {
   return {
@@ -133,6 +136,7 @@ function productRead(
         stock: 1,
         shippingCountryRules: [],
         shippingCountries: [],
+        ...overrides.product,
       },
     },
     meta: {
@@ -153,6 +157,8 @@ function productRead(
 }
 
 describe("guest checkout order smoke", () => {
+  afterEach(() => disconnectNdk())
+
   it("validates that the protected signer owns the product fixture", () => {
     const config = parseGuestCheckoutOrderSmokeConfig(environment())
 
@@ -295,6 +301,59 @@ describe("guest checkout order smoke", () => {
     expect(published).toBe(false)
   })
 
+  it("rejects unsupported and excluded physical shipping destinations", async () => {
+    const config = parseGuestCheckoutOrderSmokeConfig(environment())
+
+    for (const shippingCountryRules of [
+      [
+        {
+          code: "CA",
+          name: "Canada",
+          restrictTo: [],
+          exclude: [],
+        },
+      ],
+      [
+        {
+          code: "US",
+          name: "United States",
+          restrictTo: [],
+          exclude: ["00000"],
+        },
+      ],
+    ]) {
+      let published = false
+      let failure: unknown
+
+      try {
+        await runGuestCheckoutOrderSmoke(config, {
+          getProduct: async () =>
+            productRead({
+              product: {
+                format: "physical",
+                shippingCostSats: 2,
+                shippingCountries: shippingCountryRules.map(
+                  (rule) => rule.code
+                ),
+                shippingCountryRules,
+              },
+            }),
+          publishOrder: async () => {
+            published = true
+            throw new Error("An ineligible order must not be published.")
+          },
+        })
+      } catch (error) {
+        failure = error
+      }
+
+      expect(formatGuestCheckoutOrderSmokeFailure(failure)).toBe(
+        "Guest checkout order smoke failed at product_read."
+      )
+      expect(published).toBe(false)
+    }
+  })
+
   it("requires a canonical product read before publishing and recovering the order", async () => {
     const config = parseGuestCheckoutOrderSmokeConfig(environment())
     let productQuery: {
@@ -390,6 +449,60 @@ describe("guest checkout order smoke", () => {
       source: "mempool",
       fiatSource: "frankfurter",
     })
+    expect(getNdk().signer).toBeUndefined()
+  })
+
+  it("releases the protected merchant signer when recovery fails", async () => {
+    const config = parseGuestCheckoutOrderSmokeConfig(
+      environment({
+        GUEST_CHECKOUT_SMOKE_RECOVERY_TIMEOUT_MS: "1",
+        GUEST_CHECKOUT_SMOKE_RECOVERY_POLL_MS: "1",
+      })
+    )
+    let now = 1_700_000_000_000
+    let failure: unknown
+
+    try {
+      await runGuestCheckoutOrderSmoke(config, {
+        getProduct: async () => productRead(),
+        getPricingRate: async () => ({
+          rate: 100_000,
+          fetchedAt: 1_700_000_000_000,
+          source: "mempool",
+          fiatUsdRates: {},
+          fiatSource: "frankfurter",
+        }),
+        createOrderId: () => "smoke-order",
+        createGuestIdentity: () => identity(),
+        publishOrder: async () => ({
+          buyerSelfCopyError: null,
+          localCacheError: null,
+        }),
+        getMerchantOrders: async () =>
+          ({
+            data: [],
+            meta: {
+              plan: "protected_conversation_list",
+              source: "commerce",
+              fetchedAt: now,
+              stale: false,
+              degraded: false,
+              capabilities: [],
+            },
+          }) as never,
+        nowMs: () => now,
+        sleep: async (milliseconds) => {
+          now += milliseconds
+        },
+      })
+    } catch (error) {
+      failure = error
+    }
+
+    expect(formatGuestCheckoutOrderSmokeFailure(failure)).toBe(
+      "Guest checkout order smoke failed at merchant_recovery."
+    )
+    expect(getNdk().signer).toBeUndefined()
   })
 
   it("formats only a fixed failure stage without credential details", async () => {

@@ -5,9 +5,9 @@ import {
   cacheSignedProductDeletionEvent,
   cacheSignedProductListingEvent,
   EVENT_KINDS,
+  getNdk,
   isValidSignedPublicNostrEvent,
   publishWithPlanner,
-  requireNdkConnected,
   RelayPublishDiagnosticsError,
   type ProductSchema,
   type ProductDeletionEventTarget,
@@ -72,7 +72,7 @@ export async function deliverSignedProductEvent(
     if (event instanceof NDKEvent) {
       publishableEvent = event
     } else {
-      publishableEvent = new NDKEvent(await requireNdkConnected(), event)
+      publishableEvent = new NDKEvent(getNdk(), event)
     }
 
     return await publishWithPlanner(publishableEvent, {
@@ -136,7 +136,7 @@ export async function signAndPublishProductWriteBundle(input: {
   deletions?: readonly ProductDeletionEventTarget[]
   onSignedLocal: (events: readonly NDKEvent[]) => Promise<void>
 }): Promise<PublishWithPlannerResult> {
-  const ndk = await requireNdkConnected()
+  const ndk = getNdk()
   if (!ndk.signer) throw new Error("Signer not connected")
   const signerPubkey = (await ndk.signer.user()).pubkey
   if (signerPubkey !== input.merchantPubkey) {
@@ -208,7 +208,7 @@ export async function signAndPublishProductListing(input: {
   previousEventCreatedAt?: number
   onSignedLocal: (event: NDKEvent) => Promise<void>
 }): Promise<PublishWithPlannerResult> {
-  const ndk = await requireNdkConnected()
+  const ndk = getNdk()
   if (!ndk.signer) throw new Error("Signer not connected")
   const signerPubkey = (await ndk.signer.user()).pubkey
   if (signerPubkey !== input.merchantPubkey) {

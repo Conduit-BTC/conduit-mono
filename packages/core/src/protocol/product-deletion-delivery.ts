@@ -7,9 +7,13 @@ import {
   type ProductDeletionRelayRole,
   type ProductDeletionRelayTarget,
 } from "../db"
+import { normalizePublicWebSocketUrl } from "../network-target-safety"
 import { validateProductDeletionEvent } from "./product-deletion"
 import type { SignedPublicNostrEvent } from "./signed-event"
-import { tryNormalizeRelayUrl } from "./relay-settings"
+import {
+  normalizeUntrustedRelayHintsForContext,
+  tryNormalizeRelayUrl,
+} from "./relay-settings"
 
 const DEFAULT_RETRY_DELAY_MS = 30_000
 const DEFAULT_DELIVERY_LEASE_MS = 30_000
@@ -20,7 +24,9 @@ const ROLE_ORDER: readonly ProductDeletionRelayRole[] = [
 ]
 
 export interface ProductDeletionRelayPlanInput {
+  /** Current relay output from the authenticated author's write planner. */
   currentWriteRelayUrls: readonly string[]
+  /** Untrusted source provenance retained with product observations. */
   sourceRelayUrls: readonly string[]
   canonicalConduitRelayUrl: string
 }
@@ -39,6 +45,7 @@ export type ProductDeletionPublisherResult = {
  */
 export type ProductDeletionRelayPublisher = (input: {
   relayUrl: string
+  roles: ProductDeletionRelayRole[]
   signedEvent: SignedPublicNostrEvent
 }) => Promise<ProductDeletionPublisherResult>
 
@@ -105,52 +112,62 @@ function cloneJob(job: ProductDeletionDeliveryJob): ProductDeletionDeliveryJob {
   }
 }
 
-function normalizeSecureRelayUrl(raw: string): string | null {
-  const normalized = tryNormalizeRelayUrl(raw)
-  if (!normalized.ok) return null
-
-  try {
-    return new URL(normalized.url).protocol === "wss:" ? normalized.url : null
-  } catch {
-    return null
-  }
-}
-
 function addRelayRole(
   targets: Map<string, Set<ProductDeletionRelayRole>>,
   rawRelayUrl: string,
   role: ProductDeletionRelayRole
 ): void {
-  const relayUrl = normalizeSecureRelayUrl(rawRelayUrl)
-  if (!relayUrl) return
+  const normalized = tryNormalizeRelayUrl(rawRelayUrl)
+  if (!normalized.ok) return
+  const relayUrl = normalized.url
 
   const roles = targets.get(relayUrl) ?? new Set<ProductDeletionRelayRole>()
   roles.add(role)
   targets.set(relayUrl, roles)
 }
 
+function isApprovedPersistedRelayTarget(
+  target: ProductDeletionRelayTarget | undefined
+): target is ProductDeletionRelayTarget {
+  if (!target) return false
+  const normalized = tryNormalizeRelayUrl(target.relayUrl)
+  if (!normalized.ok) return false
+  return (
+    !!normalizePublicWebSocketUrl(normalized.url) ||
+    target.roles.includes("author_write")
+  )
+}
+
 /**
  * Build the exact, deterministic relay fanout plan recorded with a deletion.
  *
- * Inputs that cannot be normalized to secure `wss://` targets are ignored. The
- * canonical Conduit target is mandatory because it is part of the durable
- * deletion contract, while never being treated as the only source of truth.
+ * Author write targets are already approved by the authenticated planner, so
+ * its intentional local `ws://` relays remain valid. Untrusted source hints
+ * must be public WSS or match that plan. The canonical Conduit target remains
+ * mandatory and public-WSS-only.
  */
 export function planProductDeletionRelays(
   input: ProductDeletionRelayPlanInput
 ): ProductDeletionRelayTarget[] {
-  const canonicalRelayUrl = normalizeSecureRelayUrl(
+  const canonicalRelayUrl = normalizePublicWebSocketUrl(
     input.canonicalConduitRelayUrl
   )
   if (!canonicalRelayUrl) {
-    throw new Error("Canonical Conduit relay must use a secure wss:// URL")
+    throw new Error(
+      "Canonical Conduit relay must use a public secure wss:// URL"
+    )
   }
 
   const targets = new Map<string, Set<ProductDeletionRelayRole>>()
   for (const relayUrl of input.currentWriteRelayUrls) {
     addRelayRole(targets, relayUrl, "author_write")
   }
-  for (const relayUrl of input.sourceRelayUrls) {
+  const approvedSourceRelayUrls = normalizeUntrustedRelayHintsForContext({
+    relayUrls: input.sourceRelayUrls,
+    approvedRelayUrls: input.currentWriteRelayUrls,
+    allowApprovedPrivate: true,
+  })
+  for (const relayUrl of approvedSourceRelayUrls) {
     addRelayRole(targets, relayUrl, "source")
   }
   addRelayRole(targets, canonicalRelayUrl, "conduit")
@@ -270,9 +287,11 @@ function getDeliveryLeaseMs(options?: ProductDeletionDeliveryOptions): number {
 }
 
 /**
- * Persist the exact signed event and immutable relay plan before any delivery.
- * Repeated calls for the same event are idempotent only when the event and plan
- * are byte-for-byte equivalent.
+ * Persist the exact signed event and relay plan before any delivery. Newly
+ * created plans are immutable; retry may only remove a legacy target that no
+ * longer satisfies the authenticated/public destination policy. Repeated
+ * calls for the same event are idempotent only when the event and original
+ * plan are byte-for-byte equivalent.
  */
 export async function persistProductDeletionDelivery(
   input: PersistProductDeletionDeliveryInput,
@@ -353,6 +372,40 @@ function reconcileJob(
     nextRetryAt: state === "delivered" ? undefined : timestamp + retryDelayMs,
     updatedAt: timestamp,
   }
+}
+
+async function retireUnapprovedPersistedRelayTargets(
+  repository: ProductDeletionOutboxRepository,
+  id: string,
+  timestamp: number,
+  retryDelayMs: number
+): Promise<ProductDeletionDeliveryJob> {
+  return await repository.update(id, (current) => {
+    const relayPlan = current.relayPlan.filter((target) =>
+      isApprovedPersistedRelayTarget(target)
+    )
+    if (relayPlan.length === current.relayPlan.length) return current
+    if (relayPlan.length === 0) {
+      throw new Error(
+        "Product deletion delivery job has no approved relay targets"
+      )
+    }
+
+    const approvedRelayUrls = new Set(
+      relayPlan.map((target) => target.relayUrl)
+    )
+    return reconcileJob(
+      {
+        ...current,
+        relayPlan: cloneRelayPlan(relayPlan),
+        relayDelivery: current.relayDelivery.filter((delivery) =>
+          approvedRelayUrls.has(delivery.relayUrl)
+        ),
+      },
+      timestamp,
+      retryDelayMs
+    )
+  })
 }
 
 async function markDeliveryRunStarted(
@@ -512,6 +565,12 @@ async function deliverProductDeletionJobUnlocked(
     throw new Error("Product deletion delivery job not found")
   }
   assertSignedDeletionEvent(stored.signedEvent)
+  await retireUnapprovedPersistedRelayTargets(
+    repository,
+    id,
+    getNow(options),
+    retryDelayMs
+  )
 
   const claimed = await claimDeliveryLease(
     repository,
@@ -563,15 +622,26 @@ async function deliverProductDeletionJobUnlocked(
         continue
       }
       const exactSignedEvent = cloneSignedEvent(current.signedEvent)
+      const currentTarget = current.relayPlan.find(
+        (target) => target.relayUrl === relayUrl
+      )
 
       let outcome: ProductDeletionPublisherResult
-      try {
-        outcome = await publisher({
-          relayUrl,
-          signedEvent: exactSignedEvent,
-        })
-      } catch {
-        outcome = { status: "timed_out" }
+      if (!isApprovedPersistedRelayTarget(currentTarget)) {
+        // Pre-hardening jobs may contain a private source-only target. It was
+        // never approved as an authenticated author relay, so retire it
+        // without handing it to any network adapter.
+        outcome = { status: "rejected" }
+      } else {
+        try {
+          outcome = await publisher({
+            relayUrl,
+            roles: [...currentTarget.roles],
+            signedEvent: exactSignedEvent,
+          })
+        } catch {
+          outcome = { status: "timed_out" }
+        }
       }
 
       const status =

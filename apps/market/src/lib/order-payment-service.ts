@@ -15,12 +15,13 @@ import {
   normalizePubkey,
   patchOrderLifecycle,
   signNdkEventWithTransientNip07Retry,
+  transitionOrderPrivateFallback,
   validateAnonZapRequestDraft,
   validateLightningInvoiceForPayment,
   waitForZapReceipt,
-  type NwcConnection,
   type OrderLifecycle,
   type SignedPublicNostrEvent,
+  type WalletPaymentFeeApproval,
 } from "@conduit/core"
 import {
   getCheckoutZapVisibility,
@@ -38,7 +39,7 @@ import {
   publishBuyerOrderMessage,
   type BuyerOrderSigningIdentity,
 } from "./order-publish"
-import { payCheckoutInvoice } from "./payment-rails"
+import { payCheckoutInvoice, type CheckoutPaymentTarget } from "./payment-rails"
 import { savePaymentAttempt, updatePaymentAttempt } from "./payment-attempts"
 
 export function getLifecyclePaymentProofAction(
@@ -238,9 +239,8 @@ export interface OrderPaymentContext {
     localPricing: Extract<CheckoutPricingIntent, { status: "ok" }>
     destination: { country: string; postalCode: string }
   }
-  walletConnection: NwcConnection | null
-  tryNwc: boolean
-  tryWebln?: boolean
+  paymentTarget: CheckoutPaymentTarget
+  approveFee?: WalletPaymentFeeApproval
   formatSatsAmount?: (sats: number) => string
 }
 
@@ -676,6 +676,7 @@ export async function runOrderPayment(
       totalSats: ctx.totalSats,
       totalMsats: ctx.totalMsats,
       items: ctx.items,
+      paymentTarget: ctx.paymentTarget,
     })
     if (claim.status !== "claimed") {
       const message =
@@ -824,7 +825,9 @@ export async function runOrderPayment(
             lnurlNostrPubkey: providerReceiptPubkey ?? undefined,
             recipientPubkey: ctx.merchantPubkey,
             zapContent: ctx.zapContent,
-            explicitRelayUrls: ndk.explicitRelayUrls ?? [],
+            // Receipt relays are an explicit public payment policy. The shared
+            // NDK compatibility context intentionally has no ambient pool.
+            explicitRelayUrls: [],
             zapRelayUrls: config.zapRelayUrls,
           },
           {
@@ -952,9 +955,12 @@ export async function runOrderPayment(
       const payResult = await dependencies.payCheckoutInvoice({
         invoice,
         amountMsats: ctx.totalMsats,
-        walletConnection: ctx.walletConnection,
-        tryNwc: ctx.tryNwc,
-        tryWebln: ctx.tryWebln,
+        walletPaymentAttemptId:
+          lifecycle.walletPaymentAttemptId === lifecycle.orderId
+            ? undefined
+            : lifecycle.walletPaymentAttemptId,
+        paymentTarget: ctx.paymentTarget,
+        approveFee: ctx.approveFee,
         timeoutMs: 60_000,
         appId: "market",
         metadata: {
@@ -963,6 +969,25 @@ export async function runOrderPayment(
           amountMsats: ctx.totalMsats,
         },
       })
+
+      if (payResult.status === "retryable_failure") {
+        await patchAndEmit(
+          orderId,
+          {
+            invoiceStatus: "failed",
+            paymentStatus: "failed",
+            invoice,
+            zapReceiptStatus: "not_applicable",
+            lastError: payResult.reason,
+          },
+          {
+            running: false,
+            stage: null,
+            error: payResult.reason,
+          }
+        )
+        return runtimeStates.get(orderId)!
+      }
 
       if (payResult.status === "manual_required") {
         // No automatic rail. Private invoices retain the buyer-attested report
@@ -1133,48 +1158,13 @@ export async function runOrderPrivateFallback(
   privateFallbackTransitions.add(ctx.orderId)
 
   try {
-    const lifecycle = await getOrderLifecycle(ctx.orderId)
-    const publicZapSigner = lifecycle
-      ? (lifecycle.publicZapSigner ??
-        getOrderPublicZapSigner(lifecycle.checkoutMode))
-      : null
-    if (
-      !lifecycle ||
-      publicZapSigner !== "anon" ||
-      lifecycle.invoiceStatus !== "failed" ||
-      lifecycle.paymentStatus !== "failed"
-    ) {
+    const transition = await transitionOrderPrivateFallback(ctx.orderId)
+    if (transition.status !== "transitioned") {
       throw new Error(
         "A private invoice is only available after a failed anonymous zap attempt."
       )
     }
-
-    const transitioned = await patchAndEmit(ctx.orderId, {
-      checkoutMode: "private_checkout",
-      publicZapSigner: undefined,
-      publicZapFallback: true,
-      zapContent: "",
-      invoiceStatus: "not_requested",
-      paymentStatus: "not_started",
-      proofDeliveryStatus: "not_started",
-      zapReceiptStatus: "not_applicable",
-      invoice: undefined,
-      paymentHash: undefined,
-      preimage: undefined,
-      feeMsats: undefined,
-      zapRequestId: undefined,
-      zapRequestCreatedAt: undefined,
-      zapReceiptId: undefined,
-      zapReceiptRelayUrls: undefined,
-      zapLnurl: undefined,
-      zapReceiptPubkey: undefined,
-      invoiceExpiresAt: undefined,
-      zapReceiptObservationDeadline: undefined,
-      lastError: undefined,
-    })
-    if (!transitioned) {
-      throw new Error("Order payment state is no longer available.")
-    }
+    emit(ctx.orderId, { lifecycle: transition.lifecycle })
   } finally {
     privateFallbackTransitions.delete(ctx.orderId)
   }

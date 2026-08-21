@@ -20,6 +20,8 @@ import {
   type ReadyCheckoutPricing,
 } from "../../apps/market/src/lib/checkout-order"
 import { buildCheckoutPricingIntent } from "../../apps/market/src/lib/checkout-payment"
+import { getCartShippingDestinationEligibility } from "../../apps/market/src/lib/cart-shipping-options"
+import { createCartItemFromProduct } from "../../apps/market/src/lib/cart-model"
 import { publishBuyerOrderMessage } from "../../apps/market/src/lib/order-publish"
 
 const DEFAULT_RECOVERY_TIMEOUT_MS = 90_000
@@ -210,21 +212,24 @@ async function buildGuestOrderPricing(
   }
 
   const item = {
+    ...createCartItemFromProduct(product),
     productId: config.productAddress,
-    merchantPubkey: config.merchantPubkey,
-    title: product.title,
-    price: product.sourcePrice?.amount ?? product.price,
-    currency: product.sourcePrice?.currency ?? product.currency,
-    priceSats: product.priceSats,
-    sourcePrice: product.sourcePrice,
-    format: product.format,
-    shippingCostSats: product.shippingCostSats,
-    sourceShippingCost: product.sourceShippingCost,
-    shippingOptionId: product.shippingOptionId,
-    shippingOptionDTag: product.shippingOptionDTag,
-    shippingCountries: product.shippingCountries,
-    shippingCountryRules: product.shippingCountryRules,
+    selectedSpecifications: undefined,
     quantity: 1,
+  }
+
+  const destinationEligibility = getCartShippingDestinationEligibility(
+    {
+      country: config.shippingCountry,
+      postalCode: config.shippingPostalCode,
+    },
+    [item],
+    []
+  )
+  if (destinationEligibility.eligible !== true) {
+    throw new Error(
+      `Guest checkout smoke shipping destination is not eligible: ${destinationEligibility.reason}.`
+    )
   }
 
   let pricing = buildCheckoutPricingIntent([item], null, nowMs)
@@ -414,7 +419,7 @@ export async function runGuestCheckoutOrderSmoke(
   const merchantSigner = new NDKPrivateKeySigner(
     nip19.nsecEncode(config.merchantPrivateKey)
   )
-  setSigner(merchantSigner)
+  const merchantSignerLease = setSigner(merchantSigner)
   try {
     await recoverOrderAsMerchant(
       config,
@@ -424,7 +429,7 @@ export async function runGuestCheckoutOrderSmoke(
   } catch (error) {
     throw new GuestCheckoutOrderSmokeFailure("merchant_recovery", error)
   } finally {
-    removeSigner()
+    removeSigner(merchantSignerLease)
   }
 
   return { status: "passed" }

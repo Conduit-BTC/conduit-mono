@@ -8,6 +8,7 @@ import {
   validateGuestShippingFields,
   validateShippingFields,
   isFastCheckoutEligible,
+  isFastCheckoutInputPending,
   getFastCheckoutUnavailableReasons,
   getShippingPhoneDescribedBy,
   getShippingCheckoutState,
@@ -50,7 +51,7 @@ import {
   getCartShippingOptionsAvailable,
   hasPhysicalItemsMissingShippingZone,
 } from "../apps/market/src/lib/cart-shipping-options"
-import type { CartItem } from "../apps/market/src/hooks/useCart"
+import type { CartItem } from "../apps/market/src/lib/cart-model"
 import {
   fetchLnurlPayMetadata,
   fetchLnurlInvoice,
@@ -414,7 +415,7 @@ describe("isFastCheckoutEligible", () => {
     expect(
       isFastCheckoutEligible({
         walletPayCapable: true,
-        merchantLud16: "merchant@wallet.example",
+        merchantLud16: "merchant@wallet.conduit.market",
         lnurlAllowsNostr: true,
       })
     ).toBe(true)
@@ -424,21 +425,20 @@ describe("isFastCheckoutEligible", () => {
     expect(
       isFastCheckoutEligible({
         walletPayCapable: false,
-        merchantLud16: "merchant@wallet.example",
+        merchantLud16: "merchant@wallet.conduit.market",
         lnurlAllowsNostr: true,
       })
     ).toBe(false)
   })
 
-  it("allows fast checkout when LNURL is ready and external-wallet fallback is available", () => {
+  it("keeps manual invoice fallback out of fast checkout eligibility", () => {
     expect(
       isFastCheckoutEligible({
         walletPayCapable: false,
-        merchantLud16: "merchant@wallet.example",
+        merchantLud16: "merchant@wallet.conduit.market",
         lnurlAllowsNostr: true,
-        allowsManualFallback: true,
       })
-    ).toBe(true)
+    ).toBe(false)
   })
 
   it("returns false when merchantLud16 is missing", () => {
@@ -465,7 +465,7 @@ describe("isFastCheckoutEligible", () => {
     expect(
       isFastCheckoutEligible({
         walletPayCapable: true,
-        merchantLud16: "merchant@wallet.example",
+        merchantLud16: "merchant@wallet.conduit.market",
         lnurlAllowsNostr: false,
       })
     ).toBe(false)
@@ -475,7 +475,7 @@ describe("isFastCheckoutEligible", () => {
     expect(
       getFastCheckoutUnavailableReasons({
         walletPayCapable: true,
-        merchantLud16: "merchant@wallet.example",
+        merchantLud16: "merchant@wallet.conduit.market",
         lnurlAllowsNostr: true,
         pricingReady: false,
         shippingEligible: false,
@@ -491,7 +491,7 @@ describe("isFastCheckoutEligible", () => {
     expect(
       getFastCheckoutUnavailableReasons({
         walletPayCapable: true,
-        merchantLud16: "merchant@wallet.example",
+        merchantLud16: "merchant@wallet.conduit.market",
         lnurlAllowsNostr: true,
         shippingEligible: false,
         shippingState: "missing_product_zone",
@@ -499,6 +499,55 @@ describe("isFastCheckoutEligible", () => {
     ).toEqual([
       "A product in this cart is missing product-level shipping-zone data.",
     ])
+  })
+
+  it("separates an unloadable merchant profile from a missing Lightning Address", () => {
+    expect(
+      getFastCheckoutUnavailableReasons({
+        walletPayCapable: true,
+        merchantLud16: undefined,
+        merchantProfileUnavailable: true,
+        lnurlAllowsNostr: false,
+      })
+    ).toEqual(["Merchant profile could not be loaded from relays."])
+    expect(
+      getFastCheckoutUnavailableReasons({
+        walletPayCapable: true,
+        merchantLud16: undefined,
+        lnurlAllowsNostr: false,
+      })
+    ).toEqual(["Merchant has not added a Lightning Address."])
+  })
+
+  it("names an out-of-range order amount instead of blaming zap support", () => {
+    expect(
+      getFastCheckoutUnavailableReasons({
+        walletPayCapable: true,
+        merchantLud16: "merchant@wallet.example",
+        lnurlAllowsNostr: true,
+        lnurlAmountWithinRange: false,
+      })
+    ).toEqual(["Merchant Lightning Address cannot accept this order amount."])
+    expect(
+      isFastCheckoutEligible({
+        walletPayCapable: true,
+        merchantLud16: "merchant@wallet.example",
+        lnurlAllowsNostr: true,
+        lnurlAmountWithinRange: false,
+      })
+    ).toBe(false)
+  })
+
+  it("keeps an unchecked endpoint from reporting an amount problem", () => {
+    expect(
+      getFastCheckoutUnavailableReasons({
+        walletPayCapable: true,
+        merchantLud16: "merchant@wallet.example",
+        lnurlAllowsNostr: false,
+        lnurlAmountWithinRange: false,
+        requiresNostrZap: false,
+      })
+    ).toEqual(["Merchant Lightning Address could not be checked."])
   })
 
   it("does not report zap support when the merchant has no Lightning Address", () => {
@@ -518,7 +567,7 @@ describe("isFastCheckoutEligible", () => {
     expect(
       getFastCheckoutUnavailableReasons({
         walletPayCapable: true,
-        merchantLud16: "merchant@wallet.example",
+        merchantLud16: "merchant@wallet.conduit.market",
         lnurlAllowsNostr: false,
       })
     ).toEqual([
@@ -530,22 +579,23 @@ describe("isFastCheckoutEligible", () => {
     expect(
       getFastCheckoutUnavailableReasons({
         walletPayCapable: true,
-        merchantLud16: "merchant@wallet.example",
+        merchantLud16: "merchant@wallet.conduit.market",
         lnurlAllowsNostr: true,
         requiresNostrZap: false,
       })
     ).toEqual([])
   })
 
-  it("does not report a wallet-capability blocker when manual fallback can continue", () => {
+  it("reports wallet capability separately from the manual invoice fallback", () => {
     expect(
       getFastCheckoutUnavailableReasons({
         walletPayCapable: false,
-        merchantLud16: "merchant@wallet.example",
+        merchantLud16: "merchant@wallet.conduit.market",
         lnurlAllowsNostr: true,
-        allowsManualFallback: true,
       })
-    ).toEqual([])
+    ).toEqual([
+      "Connect a Lightning wallet or enable browser Lightning payments.",
+    ])
   })
 
   it("enables private checkout but disables public zap when LNURL-pay lacks NIP-57", () => {
@@ -569,7 +619,7 @@ describe("isFastCheckoutEligible", () => {
     expect(
       getFastCheckoutUnavailableReasons({
         walletPayCapable: true,
-        merchantLud16: "merchant@wallet.example",
+        merchantLud16: "merchant@wallet.conduit.market",
         lnurlAllowsNostr: false,
         requiresNostrZap: false,
       })
@@ -580,7 +630,7 @@ describe("isFastCheckoutEligible", () => {
     expect(
       getFastCheckoutUnavailableReasons({
         walletPayCapable: true,
-        merchantLud16: "merchant@wallet.example",
+        merchantLud16: "merchant@wallet.conduit.market",
         lnurlAllowsNostr: true,
         shippingPriced: false,
       })
@@ -593,7 +643,7 @@ describe("isFastCheckoutEligible", () => {
     expect(
       getFastCheckoutUnavailableReasons({
         walletPayCapable: true,
-        merchantLud16: "merchant@wallet.example",
+        merchantLud16: "merchant@wallet.conduit.market",
         lnurlAllowsNostr: true,
         addressValidForDirectPayment: false,
       })
@@ -606,12 +656,63 @@ describe("isFastCheckoutEligible", () => {
     expect(
       isFastCheckoutEligible({
         walletPayCapable: true,
-        merchantLud16: "merchant@wallet.example",
+        merchantLud16: "merchant@wallet.conduit.market",
         lnurlAllowsNostr: true,
         shippingEligible: true,
         addressValidForDirectPayment: true,
       })
     ).toBe(true)
+  })
+})
+
+// --- isFastCheckoutInputPending -----------------------------------------------
+
+describe("isFastCheckoutInputPending", () => {
+  const settled = {
+    authPending: false,
+    walletConnecting: false,
+    merchantProfileLoading: false,
+    lnurlProbing: false,
+    privateZapFallbackPending: false,
+    shippingLookupPending: false,
+    shippingState: "allowed" as const,
+    availabilityChecking: false,
+    pricingRefreshing: false,
+  }
+
+  it("reports settled inputs as decided", () => {
+    expect(isFastCheckoutInputPending(settled)).toBe(false)
+  })
+
+  it("waits for every individual unresolved input", () => {
+    const pendingFlags = [
+      "authPending",
+      "walletConnecting",
+      "merchantProfileLoading",
+      "lnurlProbing",
+      "privateZapFallbackPending",
+      "shippingLookupPending",
+      "availabilityChecking",
+      "pricingRefreshing",
+    ] as const
+
+    for (const flag of pendingFlags) {
+      expect(isFastCheckoutInputPending({ ...settled, [flag]: true })).toBe(
+        true
+      )
+    }
+    expect(
+      isFastCheckoutInputPending({ ...settled, shippingState: "loading" })
+    ).toBe(true)
+  })
+
+  it("treats a decided shipping refusal as resolved", () => {
+    expect(
+      isFastCheckoutInputPending({
+        ...settled,
+        shippingState: "country_unsupported",
+      })
+    ).toBe(false)
   })
 })
 
@@ -1088,7 +1189,7 @@ describe("checkout payment helpers", () => {
     expect(
       isFastCheckoutEligible({
         walletPayCapable: true,
-        merchantLud16: "merchant@wallet.example",
+        merchantLud16: "merchant@wallet.conduit.market",
         lnurlAllowsNostr: true,
         pricingReady: intent.status === "ok",
         shippingEligible: true,
@@ -1132,7 +1233,7 @@ describe("checkout payment helpers", () => {
     expect(
       isFastCheckoutEligible({
         walletPayCapable: true,
-        merchantLud16: "merchant@wallet.example",
+        merchantLud16: "merchant@wallet.conduit.market",
         lnurlAllowsNostr: true,
         pricingReady: true,
         shippingEligible: true,
@@ -1590,7 +1691,7 @@ describe("checkout payment helpers", () => {
     const result = await requestCheckoutLnurlInvoice(
       {
         visibility: "private_checkout",
-        lnurlCallback: "https://wallet.example/cb",
+        lnurlCallback: "https://wallet.conduit.market/cb",
         amountMsats: 50_000,
         lnurl: "lnurl1test",
         recipientPubkey: FAKE_PUBKEY,
@@ -1610,7 +1711,10 @@ describe("checkout payment helpers", () => {
       zapRelayUrls: [],
       shouldWaitForZapReceipt: false,
     })
-    expect(fetchLnurl).toHaveBeenCalledWith("https://wallet.example/cb", 50_000)
+    expect(fetchLnurl).toHaveBeenCalledWith(
+      "https://wallet.conduit.market/cb",
+      50_000
+    )
     expect(fetchZap).toHaveBeenCalledTimes(0)
     expect(signZapRequest).toHaveBeenCalledTimes(0)
   })
@@ -1634,7 +1738,7 @@ describe("checkout payment helpers", () => {
     const result = await requestCheckoutLnurlInvoice(
       {
         visibility: "public_zap",
-        lnurlCallback: "https://wallet.example/cb",
+        lnurlCallback: "https://wallet.conduit.market/cb",
         amountMsats: 50_000,
         lnurl: "lnurl1test",
         lnurlNostrPubkey: "d".repeat(64),
@@ -1683,7 +1787,7 @@ describe("checkout payment helpers", () => {
       ],
     })
     expect(fetchZap).toHaveBeenCalledWith(
-      "https://wallet.example/cb",
+      "https://wallet.conduit.market/cb",
       50_000,
       expect.stringContaining('"kind":9734'),
       "lnurl1test"
@@ -1914,7 +2018,138 @@ describe("payment proof payload", () => {
 describe("payCheckoutInvoice", () => {
   const connection = parseNwcUri(VALID_NWC_URI)
 
-  it("uses NWC first when the saved wallet is live", async () => {
+  it("pays with the explicitly selected Spark wallet and durable attempt id", async () => {
+    const approveFee = mock(async () => true)
+    const sparkPay = mock(async () => ({
+      status: "paid" as const,
+      paymentId: "spark-payment",
+      preimage: "spark-preimage",
+      paymentHash: "spark-hash",
+      feeMsats: 2_000,
+    }))
+    const weblnPay = mock(async () => {
+      throw new Error("should not use WebLN")
+    })
+
+    const result = await payCheckoutInvoice(
+      {
+        invoice: "lnbc1spark",
+        amountMsats: 1_000,
+        walletPaymentAttemptId: "wallet-attempt-123",
+        paymentTarget: {
+          type: "wallet",
+          walletId: "wallet-personal",
+          providerId: "spark",
+        },
+        approveFee,
+        timeoutMs: 60_000,
+        appId: "market",
+      },
+      {
+        walletPaymentCoordinator: { payInvoice: sparkPay as never },
+        hasWebLN: () => true,
+        weblnSendPayment: weblnPay as never,
+      }
+    )
+
+    expect(result).toEqual({
+      status: "paid",
+      rail: "wallet",
+      preimage: "spark-preimage",
+      paymentHash: "spark-hash",
+      feeMsats: 2_000,
+    })
+    expect(sparkPay).toHaveBeenCalledWith(
+      {
+        walletId: "wallet-personal",
+        providerId: "spark",
+      },
+      expect.objectContaining({
+        invoice: "lnbc1spark",
+        amountMsats: 1_000,
+        idempotencyKey: "wallet-attempt-123",
+        timeoutMs: 60_000,
+        approveFee,
+      })
+    )
+    expect(weblnPay).toHaveBeenCalledTimes(0)
+  })
+
+  it("does not fall back after an ambiguous Spark payment", async () => {
+    const weblnPay = mock(async () => ({
+      preimage: "should-not-pay",
+    }))
+
+    await expect(
+      payCheckoutInvoice(
+        {
+          invoice: "lnbc1spark",
+          amountMsats: 1_000,
+          walletPaymentAttemptId: "wallet-attempt-ambiguous",
+          paymentTarget: {
+            type: "wallet",
+            walletId: "wallet-personal",
+            providerId: "spark",
+          },
+          approveFee: async () => true,
+          timeoutMs: 60_000,
+          appId: "market",
+        },
+        {
+          walletPaymentCoordinator: {
+            payInvoice: mock(async () => ({
+              status: "ambiguous" as const,
+              reason:
+                "Spark payment is pending. Check the wallet before retrying.",
+            })) as never,
+          },
+          hasWebLN: () => true,
+          weblnSendPayment: weblnPay as never,
+        }
+      )
+    ).rejects.toThrow("Check your wallet before trying another payment path.")
+    expect(weblnPay).toHaveBeenCalledTimes(0)
+  })
+
+  it("keeps a declined Spark fee review on the selected payment path", async () => {
+    const weblnPay = mock(async () => ({
+      preimage: "should-not-pay",
+    }))
+
+    await expect(
+      payCheckoutInvoice(
+        {
+          invoice: "lnbc1spark",
+          amountMsats: 1_000,
+          walletPaymentAttemptId: "wallet-attempt-declined",
+          paymentTarget: {
+            type: "wallet",
+            walletId: "wallet-personal",
+            providerId: "spark",
+          },
+          approveFee: async () => false,
+          timeoutMs: 60_000,
+          appId: "market",
+        },
+        {
+          walletPaymentCoordinator: {
+            payInvoice: mock(async () => ({
+              status: "declined" as const,
+              reason: "Spark payment was not approved.",
+            })) as never,
+          },
+          hasWebLN: () => true,
+          weblnSendPayment: weblnPay as never,
+        }
+      )
+    ).resolves.toEqual({
+      status: "retryable_failure",
+      reason: "Spark payment was not approved.",
+    })
+    expect(weblnPay).toHaveBeenCalledTimes(0)
+  })
+
+  it("uses the explicitly selected NWC wallet", async () => {
     const nwcPay = mock(async () => ({
       status: "paid" as const,
       preimage: "preimage",
@@ -1929,13 +2164,17 @@ describe("payCheckoutInvoice", () => {
       {
         invoice: "lnbc1test",
         amountMsats: 1000,
-        walletConnection: connection,
-        tryNwc: true,
+        walletPaymentAttemptId: "wallet-attempt-nwc-paid",
+        paymentTarget: {
+          type: "wallet",
+          walletId: "wallet-zeus",
+          providerId: "nwc",
+        },
         timeoutMs: 60_000,
         appId: "market",
       },
       {
-        nwcSessionPayInvoice: nwcPay as never,
+        walletPaymentCoordinator: { payInvoice: nwcPay as never },
         hasWebLN: () => true,
         weblnSendPayment: weblnPay as never,
       }
@@ -1943,7 +2182,7 @@ describe("payCheckoutInvoice", () => {
 
     expect(result).toEqual({
       status: "paid",
-      rail: "nwc",
+      rail: "wallet",
       preimage: "preimage",
       paymentHash: "hash",
       feeMsats: 10,
@@ -1952,10 +2191,10 @@ describe("payCheckoutInvoice", () => {
     expect(weblnPay).toHaveBeenCalledTimes(0)
   })
 
-  it("falls back to WebLN when NWC fails before payment moves", async () => {
+  it("does not silently switch to WebLN when NWC fails before payment moves", async () => {
     const telemetryResults: Array<Record<string, unknown>> = []
     const nwcPay = mock(async () => ({
-      status: "pre_publish_failed" as const,
+      status: "failed" as const,
       phase: "before_publish" as const,
       reason: "Failed to connect to NWC relay(s).",
     }))
@@ -1968,39 +2207,32 @@ describe("payCheckoutInvoice", () => {
       {
         invoice: "lnbc1test",
         amountMsats: 1000,
-        walletConnection: connection,
-        tryNwc: true,
+        walletPaymentAttemptId: "wallet-attempt-nwc-unavailable",
+        paymentTarget: {
+          type: "wallet",
+          walletId: "wallet-zeus",
+          providerId: "nwc",
+        },
         timeoutMs: 60_000,
         appId: "market",
       },
       {
-        nwcSessionPayInvoice: nwcPay as never,
+        walletPaymentCoordinator: { payInvoice: nwcPay as never },
         hasWebLN: () => true,
         weblnSendPayment: weblnPay as never,
         recordPaymentAttemptResult: (input) => telemetryResults.push(input),
       }
     )
 
-    expect(result).toEqual({
-      status: "paid",
-      rail: "webln",
-      preimage: "webln-preimage",
-      paymentHash: "webln-hash",
-    })
+    expect(result).toMatchObject({ status: "retryable_failure" })
     expect(nwcPay).toHaveBeenCalledTimes(1)
-    expect(weblnPay).toHaveBeenCalledTimes(1)
+    expect(weblnPay).toHaveBeenCalledTimes(0)
     expect(telemetryResults).toEqual([
       {
         amountSats: 1,
         latencyMs: expect.any(Number),
-        rail: "nwc",
+        rail: "wallet",
         status: "unavailable",
-      },
-      {
-        amountSats: 1,
-        latencyMs: expect.any(Number),
-        rail: "webln",
-        status: "success",
       },
     ])
   })
@@ -2010,15 +2242,16 @@ describe("payCheckoutInvoice", () => {
       {
         invoice: "lnbc1test",
         amountMsats: 1000,
-        walletConnection: connection,
-        tryNwc: false,
+        paymentTarget: { type: "manual" },
         timeoutMs: 60_000,
         appId: "market",
       },
       {
-        nwcSessionPayInvoice: mock(async () => {
-          throw new Error("should not use NWC")
-        }) as never,
+        walletPaymentCoordinator: {
+          payInvoice: mock(async () => {
+            throw new Error("should not use wallet provider")
+          }) as never,
+        },
         hasWebLN: () => false,
         weblnSendPayment: mock(async () => {
           throw new Error("should not use WebLN")
@@ -2032,7 +2265,7 @@ describe("payCheckoutInvoice", () => {
     })
   })
 
-  it("can skip WebLN even when the browser advertises it", async () => {
+  it("does not invoke WebLN unless it is the explicit target", async () => {
     const weblnPay = mock(async () => ({
       preimage: "webln-preimage",
       paymentHash: "webln-hash",
@@ -2042,16 +2275,16 @@ describe("payCheckoutInvoice", () => {
       {
         invoice: "lnbc1test",
         amountMsats: 1000,
-        walletConnection: null,
-        tryNwc: false,
-        tryWebln: false,
+        paymentTarget: { type: "manual" },
         timeoutMs: 60_000,
         appId: "market",
       },
       {
-        nwcSessionPayInvoice: mock(async () => {
-          throw new Error("should not use NWC")
-        }) as never,
+        walletPaymentCoordinator: {
+          payInvoice: mock(async () => {
+            throw new Error("should not use wallet provider")
+          }) as never,
+        },
         hasWebLN: () => true,
         weblnSendPayment: weblnPay as never,
       }
@@ -2064,22 +2297,106 @@ describe("payCheckoutInvoice", () => {
     expect(weblnPay).toHaveBeenCalledTimes(0)
   })
 
-  it("returns sanitized NWC diagnostics when relay failure falls back to manual invoice", async () => {
+  it("pays with WebLN when the buyer explicitly selected the browser wallet", async () => {
+    const weblnPay = mock(async () => ({
+      preimage: "webln-preimage",
+      paymentHash: "webln-hash",
+    }))
+
+    await expect(
+      payCheckoutInvoice(
+        {
+          invoice: "lnbc1test",
+          amountMsats: 1_000,
+          paymentTarget: { type: "webln" },
+          timeoutMs: 60_000,
+          appId: "market",
+        },
+        {
+          walletPaymentCoordinator: {
+            payInvoice: mock(async () => {
+              throw new Error("should not use wallet provider")
+            }) as never,
+          },
+          hasWebLN: () => true,
+          weblnSendPayment: weblnPay as never,
+        }
+      )
+    ).resolves.toEqual({
+      status: "paid",
+      rail: "webln",
+      preimage: "webln-preimage",
+      paymentHash: "webln-hash",
+    })
+    expect(weblnPay).toHaveBeenCalledTimes(1)
+  })
+
+  it("keeps unavailable explicit WebLN retryable without switching targets", async () => {
+    const walletPay = mock(async () => {
+      throw new Error("should not use a saved wallet")
+    })
+    const weblnPay = mock(async () => {
+      throw new Error("should not invoke unavailable WebLN")
+    })
+
+    await expect(
+      payCheckoutInvoice(
+        {
+          invoice: "lnbc1test",
+          amountMsats: 1_000,
+          paymentTarget: { type: "webln" },
+          timeoutMs: 60_000,
+          appId: "market",
+        },
+        {
+          walletPaymentCoordinator: { payInvoice: walletPay as never },
+          hasWebLN: () => false,
+          weblnSendPayment: weblnPay as never,
+        }
+      )
+    ).resolves.toEqual({
+      status: "retryable_failure",
+      reason: "The selected browser wallet is unavailable.",
+    })
+    expect(walletPay).toHaveBeenCalledTimes(0)
+    expect(weblnPay).toHaveBeenCalledTimes(0)
+  })
+
+  it("returns sanitized NWC diagnostics with a retryable relay failure", async () => {
     const result = await payCheckoutInvoice(
       {
         invoice: "lnbc1test",
         amountMsats: 1000,
-        walletConnection: connection,
-        tryNwc: true,
+        walletPaymentAttemptId: "wallet-attempt-nwc-relay-failed",
+        paymentTarget: {
+          type: "wallet",
+          walletId: "wallet-zeus",
+          providerId: "nwc",
+        },
         timeoutMs: 60_000,
         appId: "market",
       },
       {
-        nwcSessionPayInvoice: mock(async () => ({
-          status: "pre_publish_failed" as const,
-          phase: "before_publish" as const,
-          reason: "Failed to connect to NWC relay(s).",
-        })) as never,
+        walletPaymentCoordinator: {
+          payInvoice: mock(async () => ({
+            status: "failed" as const,
+            phase: "before_publish" as const,
+            reason: "Failed to connect to NWC relay(s).",
+            diagnostics: [
+              {
+                code: "relay_unreachable",
+                severity: "warning",
+                title: "NWC relay unreachable",
+                detail:
+                  "Conduit could not confirm this wallet connection through its NWC relay.",
+                action:
+                  "Retry after the wallet relay is online or replace this wallet connection.",
+                relayHosts: ["relay.example.com"],
+                safeManualFallback: true,
+              },
+            ],
+          })) as never,
+        },
         hasWebLN: () => false,
         weblnSendPayment: mock(async () => {
           throw new Error("should not use WebLN")
@@ -2088,7 +2405,7 @@ describe("payCheckoutInvoice", () => {
     )
 
     expect(result).toMatchObject({
-      status: "manual_required",
+      status: "retryable_failure",
       diagnostics: [
         {
           code: "relay_unreachable",
@@ -2101,22 +2418,40 @@ describe("payCheckoutInvoice", () => {
     expect(result.reason).not.toContain(connection.secret)
   })
 
-  it("returns manual fallback when NWC reports a budget or balance limit", async () => {
+  it("returns a retryable failure when NWC reports a budget or balance limit", async () => {
     const result = await payCheckoutInvoice(
       {
         invoice: "lnbc1test",
         amountMsats: 1000,
-        walletConnection: connection,
-        tryNwc: true,
+        walletPaymentAttemptId: "wallet-attempt-nwc-budget",
+        paymentTarget: {
+          type: "wallet",
+          walletId: "wallet-zeus",
+          providerId: "nwc",
+        },
         timeoutMs: 60_000,
         appId: "market",
       },
       {
-        nwcSessionPayInvoice: mock(async () => ({
-          status: "wallet_error" as const,
-          phase: "after_publish" as const,
-          reason: "QUOTA_EXCEEDED: wallet budget exceeded",
-        })) as never,
+        walletPaymentCoordinator: {
+          payInvoice: mock(async () => ({
+            status: "failed" as const,
+            phase: "after_publish" as const,
+            reason: "QUOTA_EXCEEDED: wallet budget exceeded",
+            diagnostics: [
+              {
+                code: "permission_or_budget",
+                severity: "warning",
+                title: "Wallet app connection rejected payment",
+                detail:
+                  "The wallet or app connection appears to be missing payment permission, budget, or balance for this invoice.",
+                action:
+                  "Update the wallet app connection permissions or budget, then retry or pay the invoice manually.",
+                safeManualFallback: true,
+              },
+            ],
+          })) as never,
+        },
         hasWebLN: () => false,
         weblnSendPayment: mock(async () => {
           throw new Error("should not use WebLN")
@@ -2125,7 +2460,7 @@ describe("payCheckoutInvoice", () => {
     )
 
     expect(result).toMatchObject({
-      status: "manual_required",
+      status: "retryable_failure",
       diagnostics: [
         {
           code: "permission_or_budget",
@@ -2146,19 +2481,22 @@ describe("payCheckoutInvoice", () => {
         {
           invoice: "lnbc1test",
           amountMsats: 1000,
-          walletConnection: connection,
-          tryNwc: true,
+          walletPaymentAttemptId: "wallet-attempt-nwc-ambiguous",
+          paymentTarget: {
+            type: "wallet",
+            walletId: "wallet-zeus",
+            providerId: "nwc",
+          },
           timeoutMs: 60_000,
           appId: "market",
         },
         {
-          nwcSessionPayInvoice: mock(async () => {
-            return {
-              status: "published_timeout" as const,
-              phase: "after_publish" as const,
+          walletPaymentCoordinator: {
+            payInvoice: mock(async () => ({
+              status: "ambiguous" as const,
               reason: "NWC pay_invoice response timed out",
-            }
-          }) as never,
+            })) as never,
+          },
           hasWebLN: () => true,
           weblnSendPayment: weblnPay as never,
         }
@@ -2173,15 +2511,16 @@ describe("payCheckoutInvoice", () => {
         {
           invoice: "lnbc1test",
           amountMsats: 1000,
-          walletConnection: null,
-          tryNwc: false,
+          paymentTarget: { type: "webln" },
           timeoutMs: 60_000,
           appId: "market",
         },
         {
-          nwcSessionPayInvoice: mock(async () => {
-            throw new Error("should not use NWC")
-          }) as never,
+          walletPaymentCoordinator: {
+            payInvoice: mock(async () => {
+              throw new Error("should not use wallet provider")
+            }) as never,
+          },
           hasWebLN: () => true,
           weblnSendPayment: mock(async () => {
             throw new Error("WebLN payment did not return a payment proof")
@@ -2189,6 +2528,33 @@ describe("payCheckoutInvoice", () => {
         }
       )
     ).rejects.toThrow(/Check your wallet/)
+  })
+
+  it("treats every WebLN invocation failure as ambiguous", async () => {
+    await expect(
+      payCheckoutInvoice(
+        {
+          invoice: "lnbc1test",
+          amountMsats: 1000,
+          paymentTarget: { type: "webln" },
+          timeoutMs: 60_000,
+          appId: "market",
+        },
+        {
+          walletPaymentCoordinator: {
+            payInvoice: mock(async () => {
+              throw new Error("should not use wallet provider")
+            }) as never,
+          },
+          hasWebLN: () => true,
+          weblnSendPayment: mock(async () => {
+            throw new Error("Browser wallet request failed")
+          }) as never,
+        }
+      )
+    ).rejects.toThrow(
+      "Browser wallet request failed Check your wallet before trying another payment path."
+    )
   })
 })
 
@@ -2408,9 +2774,9 @@ describe("parseNwcUri", () => {
   })
 
   it("parses optional lud16", () => {
-    const uri = `${VALID_NWC_URI}&lud16=user%40wallet.example`
+    const uri = `${VALID_NWC_URI}&lud16=user%40wallet.conduit.market`
     const conn = parseNwcUri(uri)
-    expect(conn.lud16).toBe("user@wallet.example")
+    expect(conn.lud16).toBe("user@wallet.conduit.market")
   })
 
   it("throws on wrong scheme", () => {
@@ -2454,7 +2820,7 @@ describe("fetchLnurlPayMetadata", () => {
   it("resolves a valid payRequest response", async () => {
     mockFetch({
       tag: "payRequest",
-      callback: "https://wallet.example/lnurlp/callback",
+      callback: "https://wallet.conduit.market/lnurlp/callback",
       minSendable: 1000,
       maxSendable: 100_000_000,
       metadata: "[]",
@@ -2462,8 +2828,10 @@ describe("fetchLnurlPayMetadata", () => {
       nostrPubkey: FAKE_PUBKEY,
     })
 
-    const result = await fetchLnurlPayMetadata("user@wallet.example")
-    expect(result.callback).toBe("https://wallet.example/lnurlp/callback")
+    const result = await fetchLnurlPayMetadata("user@wallet.conduit.market")
+    expect(result.callback).toBe(
+      "https://wallet.conduit.market/lnurlp/callback"
+    )
     expect(result.allowsNostr).toBe(true)
     expect(result.nostrPubkey).toBe(FAKE_PUBKEY)
     expect(result.minSendable).toBe(1000)
@@ -2471,14 +2839,16 @@ describe("fetchLnurlPayMetadata", () => {
 
   it("throws when tag is not payRequest", async () => {
     mockFetch({ tag: "withdrawRequest" })
-    await expect(fetchLnurlPayMetadata("user@wallet.example")).rejects.toThrow(
-      /LNURL-pay endpoint/
-    )
+    await expect(
+      fetchLnurlPayMetadata("user@wallet.conduit.market")
+    ).rejects.toThrow(/LNURL-pay endpoint/)
   })
 
   it("throws on HTTP error", async () => {
     mockFetch({}, false)
-    await expect(fetchLnurlPayMetadata("user@wallet.example")).rejects.toThrow()
+    await expect(
+      fetchLnurlPayMetadata("user@wallet.conduit.market")
+    ).rejects.toThrow()
   })
 
   it("throws on malformed lud16 (no @)", async () => {
@@ -2490,12 +2860,12 @@ describe("fetchLnurlPayMetadata", () => {
   it("sets allowsNostr false when not declared", async () => {
     mockFetch({
       tag: "payRequest",
-      callback: "https://wallet.example/cb",
+      callback: "https://wallet.conduit.market/cb",
       minSendable: 1000,
       maxSendable: 1_000_000,
       metadata: "[]",
     })
-    const result = await fetchLnurlPayMetadata("user@wallet.example")
+    const result = await fetchLnurlPayMetadata("user@wallet.conduit.market")
     expect(result.allowsNostr).toBe(false)
   })
 })
@@ -2523,7 +2893,7 @@ describe("fetchZapInvoice", () => {
   it("returns invoice on success", async () => {
     mockFetch({ pr: FAKE_INVOICE })
     const result = await fetchZapInvoice(
-      "https://wallet.example/lnurlp/callback",
+      "https://wallet.conduit.market/lnurlp/callback",
       100_000,
       FAKE_ZAP_REQUEST
     )
@@ -2534,7 +2904,7 @@ describe("fetchZapInvoice", () => {
     mockFetch({ status: "ERROR", reason: "Amount too low" })
     await expect(
       fetchZapInvoice(
-        "https://wallet.example/lnurlp/callback",
+        "https://wallet.conduit.market/lnurlp/callback",
         1,
         FAKE_ZAP_REQUEST
       )
@@ -2545,7 +2915,7 @@ describe("fetchZapInvoice", () => {
     mockFetch({}, false)
     await expect(
       fetchZapInvoice(
-        "https://wallet.example/lnurlp/callback",
+        "https://wallet.conduit.market/lnurlp/callback",
         100_000,
         FAKE_ZAP_REQUEST
       )
@@ -2558,7 +2928,7 @@ describe("fetchZapInvoice", () => {
     mockFetch({ status: "OK" })
     await expect(
       fetchZapInvoice(
-        "https://wallet.example/lnurlp/callback",
+        "https://wallet.conduit.market/lnurlp/callback",
         100_000,
         FAKE_ZAP_REQUEST
       )
@@ -2573,7 +2943,7 @@ describe("fetchZapInvoice", () => {
     }) as unknown as typeof fetch
 
     await fetchZapInvoice(
-      "https://wallet.example/cb",
+      "https://wallet.conduit.market/cb",
       50_000,
       FAKE_ZAP_REQUEST,
       "lnurl1test"
@@ -2592,7 +2962,7 @@ describe("fetchZapInvoice", () => {
     }) as unknown as typeof fetch
 
     await fetchZapInvoice(
-      "https://wallet.example/cb?tag=payRequest&nostr=leak&lnurl=leak",
+      "https://wallet.conduit.market/cb?tag=payRequest&nostr=leak&lnurl=leak",
       50_000,
       FAKE_ZAP_REQUEST,
       "lnurl1test"
@@ -2607,16 +2977,37 @@ describe("fetchZapInvoice", () => {
 
   it("requests a plain LNURL invoice without public zap metadata", async () => {
     let capturedUrl = ""
-    globalThis.fetch = mock(async (url: string | URL | Request) => {
+    let capturedInit: RequestInit | undefined
+    globalThis.fetch = mock(async (url: string | URL | Request, init) => {
       capturedUrl = url.toString()
+      capturedInit = init
       return { ok: true, status: 200, json: async () => ({ pr: FAKE_INVOICE }) }
     }) as unknown as typeof fetch
 
-    await fetchLnurlInvoice("https://wallet.example/cb", 50_000)
+    await fetchLnurlInvoice("https://wallet.conduit.market/cb", 50_000)
 
     expect(capturedUrl).toContain("amount=50000")
     expect(capturedUrl).not.toContain("nostr=")
     expect(capturedUrl).not.toContain("lnurl=")
+    expect(capturedInit?.redirect).toBe("error")
+  })
+
+  it("rejects a non-public LNURL callback before requesting it", async () => {
+    let fetchCount = 0
+    globalThis.fetch = mock(async () => {
+      fetchCount += 1
+      return { ok: true, status: 200, json: async () => ({ pr: FAKE_INVOICE }) }
+    }) as unknown as typeof fetch
+
+    for (const callback of [
+      "https://127.0.0.1/cb",
+      "https://wallet.home.arpa/cb",
+    ]) {
+      await expect(fetchLnurlInvoice(callback, 50_000)).rejects.toThrow(
+        /Unsafe LNURL-pay callback URL/
+      )
+    }
+    expect(fetchCount).toBe(0)
   })
 
   it("strips pre-existing NIP-57 params from plain LNURL invoice callbacks", async () => {
@@ -2627,7 +3018,7 @@ describe("fetchZapInvoice", () => {
     }) as unknown as typeof fetch
 
     await fetchLnurlInvoice(
-      "https://wallet.example/cb?tag=payRequest&nostr=leak&lnurl=leak",
+      "https://wallet.conduit.market/cb?tag=payRequest&nostr=leak&lnurl=leak",
       50_000
     )
 

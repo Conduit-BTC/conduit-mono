@@ -27,7 +27,7 @@ export interface Product {
   type: "simple" | "variable" | "variation"
   /** Full kind-30402 coordinate of this variation's variable parent. */
   parentProductId?: string
-  /** GammaMarkets `spec` tags preserved in signed-event order. */
+  /** Open Markets `spec` tags preserved in signed-event order. */
   specifications: ProductSpecification[]
   /** Whether the product requires physical shipping. Defaults to "physical". */
   format: "physical" | "digital"

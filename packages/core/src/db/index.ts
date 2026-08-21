@@ -1,8 +1,9 @@
-import Dexie, { type EntityTable, type Table } from "dexie"
+import Dexie, { liveQuery, type EntityTable, type Table } from "dexie"
 import { config } from "../config"
 import type { ProductZapMessagePolicy } from "../schemas"
 import type { SignedPublicNostrEvent } from "../protocol/signed-event"
 import type { ProductSpecification } from "../types"
+import type { WalletDescriptor, WalletProviderId } from "../wallets"
 
 export interface StoredOrder {
   id: string
@@ -175,6 +176,10 @@ export interface ProductDeletionDeliveryJob {
 
 export interface CachedProfile {
   pubkey: string
+  /** Exact newest observed kind-0 content, retained only for safe republish. */
+  rawContent?: string
+  eventId?: string
+  eventCreatedAt?: number
   name?: string
   displayName?: string
   about?: string
@@ -220,6 +225,117 @@ export interface CachedRelayList {
   /** Relays the kind-10002 event was observed on, if known. */
   sourceRelayUrls?: string[]
   /** Local cache time in milliseconds. */
+  cachedAt: number
+}
+
+/** A validated, lowercase 32-byte Nostr public key. */
+declare const normalizedInboxDeclarationPubkeyBrand: unique symbol
+export type NormalizedInboxDeclarationPubkey = string & {
+  readonly [normalizedInboxDeclarationPubkeyBrand]: true
+}
+
+export type InboxDeclarationEvidenceState =
+  "declared" | "signed_empty" | "malformed"
+
+export type InboxDeclarationLookupCoverage =
+  "complete" | "partial" | "unavailable"
+
+/**
+ * Most recent bounded declaration lookup for this account. This is stored
+ * independently from the signed frontier so an incomplete or conflicting
+ * observation cannot disappear after a process restart.
+ */
+export interface InboxDeclarationLookupEvidence {
+  observedAt: number
+  coverage: InboxDeclarationLookupCoverage
+  /** True when the lookup returned an event, including unusable evidence. */
+  hadEvent: boolean
+  /** Valid signed event selected by that lookup, when one was available. */
+  eventId?: string
+}
+
+interface InboxDeclarationEventEvidenceBase {
+  state: InboxDeclarationEvidenceState
+  /** Exact, signature-validated kind-10050 event observed from the network. */
+  signedEvent: SignedPublicNostrEvent
+  /** Secure normalized relay tags, preserving their signed event order. */
+  secureRelayUrls: string[]
+  /** Secure normalized relays on which this exact event was observed. */
+  sourceRelayUrls: string[]
+  /**
+   * Shared discovery relays that returned this exact event. Optional for
+   * records written before shared-source confirmation was persisted.
+   */
+  sharedSourceRelayUrls?: string[]
+  /** Most recent local observation time in milliseconds. */
+  observedAt: number
+  /**
+   * Most recent time a bounded discovery plan completed while this exact
+   * event was the winning observed frontier. Partial reads never advance it.
+   */
+  completeObservedAt?: number
+}
+
+export interface DeclaredInboxDeclarationEventEvidence extends InboxDeclarationEventEvidenceBase {
+  state: "declared"
+}
+
+export interface SignedEmptyInboxDeclarationEventEvidence extends InboxDeclarationEventEvidenceBase {
+  state: "signed_empty"
+  secureRelayUrls: []
+}
+
+export interface MalformedInboxDeclarationEventEvidence extends InboxDeclarationEventEvidenceBase {
+  state: "malformed"
+  secureRelayUrls: []
+}
+
+export type InboxDeclarationEventEvidence =
+  | DeclaredInboxDeclarationEventEvidence
+  | SignedEmptyInboxDeclarationEventEvidence
+  | MalformedInboxDeclarationEventEvidence
+
+/**
+ * Exact signed declaration staged durably before its first network attempt.
+ * The immutable publish plan lets a later process retry the same bytes without
+ * asking the signer to create a second replaceable event.
+ */
+export interface PendingInboxDeclarationDistribution {
+  signedEvent: SignedPublicNostrEvent
+  publishRelayUrls: string[]
+  stagedAt: number
+}
+
+/**
+ * Account-scoped, monotonic NIP-17 inbox-declaration evidence.
+ *
+ * `current` follows the NIP-01 replaceable-event frontier. `lastUsable` keeps
+ * the latest validated declaration when a newer signed empty or malformed
+ * replacement becomes current, so reads can remain recoverable without
+ * misrepresenting the current write route.
+ */
+export interface InboxDeclarationEvidenceRecord {
+  pubkey: NormalizedInboxDeclarationPubkey
+  current: InboxDeclarationEventEvidence
+  lastUsable?: DeclaredInboxDeclarationEventEvidence
+  pendingDistribution?: PendingInboxDeclarationDistribution
+  latestLookup?: InboxDeclarationLookupEvidence
+  cachedAt: number
+}
+
+/**
+ * Strongest verified kind-3 snapshot observed for the authenticated owner.
+ *
+ * This public event is retained across relay-plan changes and restarts so a
+ * later incomplete/omitting read cannot authorize an older replacement.
+ * `pending` means the exact signed event may have reached a relay but no ACK
+ * was observed; callers may retry that event but must not replace it.
+ */
+export interface CachedOwnContactListSnapshot {
+  pubkey: string
+  event: SignedPublicNostrEvent
+  sourceRelayUrls: string[]
+  state: "observed" | "pending"
   cachedAt: number
 }
 
@@ -322,6 +438,14 @@ export interface StoredPaymentAttempt {
   updatedAt: number
 }
 
+export interface StoredWalletCredential {
+  walletId: string
+  providerId: WalletProviderId
+  credential: string
+  createdAt: number
+  updatedAt: number
+}
+
 /** How the buyer initiated payment for this order. */
 export type OrderCheckoutMode =
   | "anonymous_public_zap"
@@ -414,6 +538,21 @@ export type OrderZapReceiptStatus =
 export type OrderLifecyclePhase =
   "pending" | "in_progress" | "completed" | "failed" | "cancelled"
 
+/**
+ * The buyer-selected local payment target for this order.
+ *
+ * This is an opaque device-local routing choice. It MUST NOT be included in the
+ * merchant order, payment proof, logs, or telemetry.
+ */
+export type OrderPaymentTarget =
+  | {
+      type: "wallet"
+      walletId: string
+      providerId: WalletProviderId
+    }
+  | { type: "webln" }
+  | { type: "manual" }
+
 export interface OrderLifecycleItem {
   productId: string
   familyProductId?: string
@@ -462,6 +601,16 @@ export interface OrderLifecycle {
   /** A public anon-zap attempt failed before invoice issuance and continued privately. */
   publicZapFallback?: boolean
   merchantLightningAddress?: string
+  /** Local-only payment routing selection. Never forwarded off device. */
+  paymentTarget?: OrderPaymentTarget
+  /**
+   * Stable opaque token for retries against the selected saved-wallet provider.
+   *
+   * This value is generated independently of `orderId`, stays device-local
+   * except when passed to the selected provider as its idempotency key, and is
+   * cleared when the buyer explicitly changes payment targets.
+   */
+  walletPaymentAttemptId?: string
 
   items: OrderLifecycleItem[]
   itemSubtotalSats: number
@@ -545,6 +694,13 @@ class ConduitDB extends Dexie {
   paymentAttempts!: EntityTable<StoredPaymentAttempt, "id">
   orderLifecycles!: EntityTable<OrderLifecycle, "orderId">
   productDeletionOutbox!: EntityTable<ProductDeletionDeliveryJob, "id">
+  inboxDeclarationEvidence!: EntityTable<
+    InboxDeclarationEvidenceRecord,
+    "pubkey"
+  >
+  ownContactListSnapshots!: EntityTable<CachedOwnContactListSnapshot, "pubkey">
+  wallets!: EntityTable<WalletDescriptor, "id">
+  walletCredentials!: EntityTable<StoredWalletCredential, "walletId">
 
   constructor() {
     super("conduit")
@@ -678,10 +834,41 @@ class ConduitDB extends Dexie {
       productDeletionOutbox:
         "id, state, nextRetryAt, deliveryLeaseExpiresAt, updatedAt, createdAt",
     })
+
+    this.version(11).stores({
+      // Public signed declaration evidence is monotonic protocol state. It is
+      // intentionally excluded from relay-scope clearing and cache pruning.
+      inboxDeclarationEvidence: "pubkey, cachedAt",
+    })
+
+    this.version(12).stores({
+      ownContactListSnapshots: "pubkey, state, cachedAt",
+    })
+
+    this.version(13).stores({
+      wallets: "id",
+      walletCredentials: "walletId",
+    })
   }
 }
 
 export const db = new ConduitDB()
+
+/**
+ * Observe committed wallet descriptor mutations in this document and other
+ * browser contexts. The listener reloads the complete wallet state so runtime
+ * provider state remains owned by the Market wallet hook.
+ */
+export function subscribeToWalletDescriptorChanges(observer: {
+  onChange(): void
+  onError(error: unknown): void
+}): () => void {
+  const subscription = liveQuery(() => db.wallets.toArray()).subscribe({
+    next: () => observer.onChange(),
+    error: (error) => observer.onError(error),
+  })
+  return () => subscription.unsubscribe()
+}
 
 const CACHE_SCOPE_KEY = "conduit:commerce-cache-scope:v1"
 const FALLBACK_CACHE_PRUNE_HIGH_WATER_BYTES = 35 * 1024 * 1024

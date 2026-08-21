@@ -11,7 +11,10 @@ References:
 - Buyer surface: `docs/specs/market.md`
 - Merchant surface: `docs/specs/merchant.md`
 - Privacy rules: `docs/specs/privacy-observability.md`
-- External sources: `docs/knowledge/external-nostr-references.md` (NIP-17, NIP-44, NIP-07)
+- External sources: `docs/knowledge/external-nostr-references.md` (NIP-17,
+  NIP-42, NIP-44, NIP-07)
+- Protected-read contract and rollout:
+  `docs/knowledge/nip42-protected-read-rollout.md`
 
 Non-goals (per CND-57): public social inbox, comments, follows, reactions,
 notifications, discovery feeds, NIP-29 groups, NIP-04 sending, message-content
@@ -101,22 +104,62 @@ The boundary provides:
   wrap recipient's declared kind-10050 relays, except the bounded validated
   order compatibility lane below. NIP-65, configured relay lists, commerce
   priority, and general relay defaults are not secure-message write fallbacks.
-  A signed empty or malformed declaration is an explicit readiness/degraded
-  state that the client never overrides.
+  Kind `10002` never supplies a gift-wrap write target. A `signed_empty` or
+  `malformed` declaration is an explicit blocking state that the client never
+  overrides with retained relay tags.
 - **Typed routing states (`protocol/private-message-routing.ts`).** Declaration
-  discovery resolves to `declared | not_declared | lookup_partial |
-lookup_unavailable | malformed` with account-scoped freshness and
-  deterministic newest-event selection. Reads report coverage
-  (`complete | partial | unavailable`) and source
-  (`declared | local_in | compatibility | mixed | cache`). An all-failed lookup
-  must never collapse into `not_declared`, and a partial empty read stays
-  `partial`.
+  discovery distinguishes signed frontier states (`declared`, `signed_empty`,
+  `malformed`) from bounded observation outcomes (`not_observed`,
+  `lookup_partial`, `lookup_unavailable`). The state is account-scoped and backed
+  by durable declaration evidence rather than process memory alone. A complete
+  bounded read with no event and no retained frontier is `not_observed`, not
+  proof of global absence; an all-failed lookup is `lookup_unavailable`, and a
+  partial empty read is `lookup_partial`. When signed evidence is retained, the
+  observation outcome degrades freshness without replacing the dominant signed
+  state.
+- **Monotonic declaration frontier.** The durable record stores the exact
+  validated signed event and source-relay observations. Frontier selection
+  follows NIP-01: greater `created_at` wins and a lexicographically smaller id
+  wins a timestamp tie. Re-observation unions provenance. Only a complete
+  bounded-plan observation advances the durable freshness used after restart;
+  partial or unavailable fanout cannot turn retained evidence fresh.
+  The latest lookup outcome is stored separately, so a later complete-empty,
+  partial, unavailable, or conflicting read remains stale after restart but
+  never erases the signed frontier. Relay-settings changes expire freshness
+  rather than deleting evidence.
+- **Current versus last usable.** A newer `signed_empty` or `malformed` event
+  becomes the current frontier and blocks every declaration-based write. The
+  last usable declared relay set remains available only for permissive inbox
+  reads and recovery. Without retained signed evidence, only a completed empty
+  bounded read resolves to `not_observed`.
+- **Cross-client declaration discovery.** Declaration publish and repair use a
+  bounded shared discovery set that unrelated Conduit clients query. Repair is
+  confirmed only after the exact signed event is observed from that shared set;
+  process priming, durable local persistence, or owner-only readback does not
+  establish cross-client discoverability. A complete shared lookup that observes
+  no declaration may expose explicit same-set redistribution only for a retained
+  current `declared` event. Redistribution republishes that exact signed event
+  without asking the signer to mint a newer replacement. Retained
+  `signed_empty`/`malformed`, partial, unavailable, and conflicting observations
+  remain retry-only.
 - **Permissive inbox reads.** The principal's gift-wrap read plan is the union
-  of their valid declared inboxes, their locally enabled secure IN relays, and
-  the bounded Conduit compatibility read set. Nonempty local settings do not
-  suppress compatibility reads. Wraps are deduplicated by outer wrapper and
-  inner rumor ids, and found or cached messages stay visible under partial
-  failure.
+  of their current declared or retained last-usable inboxes, their locally
+  enabled secure IN relays, and the bounded Conduit compatibility read set.
+  Nonempty local settings do not suppress compatibility reads. Wraps are
+  deduplicated by outer wrapper and inner rumor ids, and found or cached
+  messages stay visible under partial failure. Reads report `complete`,
+  `partial`, or `unavailable` coverage and `declared`, `local_in`,
+  `compatibility`, `mixed`, or `cache` source.
+- **Protected inbox execution.** The shared inbox path executes the principal's
+  own `kind:1059`, `#p`-scoped filters through the NDK-neutral protected relay
+  executor. The explicit account/session authorization boundary accepts only
+  the active NIP-07 or NIP-46 signer; guest and anonymous sessions are rejected
+  before connecting or signing. Public reads carry no NIP-42 account proof and
+  never prompt a signer, but queried relays still see request filters and
+  ordinary connection metadata. Authentication challenge/OK/retry state and
+  per-relay failures are preserved as typed observations without putting
+  challenge or account identifiers in logs or telemetry. NDK remains only at
+  the existing signer and gift-unwrap edges.
 - **Validated-order compatibility routing (temporary, CND-208).** When a validated
   kind-16 order-lifecycle send finds no usable recipient declaration, the write
   may use a maximum of three relays from the explicit private-inbox
@@ -125,9 +168,9 @@ lookup_unavailable | malformed` with account-scoped freshness and
   lane; a valid declaration always outranks it. A one-use order scope binds the
   rumor, order, sender, and recipient. The lane is recipient-only:
   the non-critical sender self-copy leg stays strict and fails soft. A
-  complete authoritative "not declared" lookup evicts any cached declaration
-  so a confirmed-absent declaration never resurrects as a write target. See
-  `docs/specs/protocol.md` and
+  bounded complete-empty observation never erases a retained signed frontier.
+  A current `signed_empty` or `malformed` frontier still blocks the lane, and a
+  current `declared` frontier still outranks it. See `docs/specs/protocol.md` and
   `docs/knowledge/nip17-inbox-bootstrap-migration.md`.
 
 ## Legacy NIP-04 read lane
@@ -165,14 +208,27 @@ Messaging surfaces must render explicit states, never silent gaps:
 - **Not ready / relay unavailable** when the required principal or recipient
   kind-10050 declaration is absent or its declared relays are unusable. Do not
   hide this state behind NIP-65 or configured-relay fallback. Distinguish
-  lookup failure (`lookup_partial` / `lookup_unavailable`, retryable) from a
-  complete `not_declared` result; setup and repair are owned by the Network
-  surface, and Messages/Orders link there instead of publishing declarations.
+  lookup failure (`lookup_partial` / `lookup_unavailable`, retryable), bounded
+  complete-empty discovery (`not_observed`), a signed no-inbox frontier
+  (`signed_empty`), and structurally unusable signed evidence (`malformed`).
+  Setup and repair are owned by the Network surface, and Messages/Orders link
+  there instead of publishing declarations. A stale retained signed state shows
+  a retry affordance; retained last-usable relays are labeled as historical
+  evidence rather than current write targets. Only complete shared-empty
+  discovery exposes explicit redistribution of an unchanged declaration.
 - **Decrypt failed** when one or more gift wraps could not be unwrapped: show a
   visible, retryable degraded affordance that reports how many messages need
   retry. Retry re-attempts only the failed wrap ids (transient signer/timeout
   failures should recover without a full refetch).
 - **Empty** as a distinct terminal state from loading and error.
+
+An inbox is empty only when every required relay attempt in its bounded read
+plan reaches successful EOSE with no unresolved auth, connection, or protocol
+failure. One success plus one auth or transport failure is degraded/partial;
+all failures are unavailable. Cached conversations remain visible as
+stale/degraded in either case. An auth rejection, missing challenge, signer
+failure, `restricted:` close, or reconnect failure must never render "No
+messages" or "No orders" by itself.
 
 Raw Nostr event detail (gift-wrap ids, seal internals, ciphertext) must not be
 the primary UX. Prepared conversation state is rendered instead.
@@ -185,6 +241,13 @@ signer secrets, or pubkeys beyond local UI need. Decrypt-failure reporting is
 limited to wrap event ids, coarse reason categories, and retry state. This
 follows `docs/specs/privacy-observability.md`.
 
+Protected-read diagnostics additionally exclude NIP-42 challenges, auth events,
+signatures, full filters, authenticated socket material, and stable
+account-derived session identifiers. Auth capability presentation must
+distinguish untested, NIP-11-advertised, challenge-observed, succeeded, and
+rejected/unavailable evidence. NIP-11 advertisement is not proof of successful
+authentication or recipient enforcement.
+
 ## Validation / testing
 
 - Classify kind-14 general vs kind-16 order-linked from unwrapped rumors.
@@ -194,9 +257,21 @@ follows `docs/specs/privacy-observability.md`.
   declaration; only validated kind-16 order sends may use the flagged bounded
   compatibility plan, and kind-14 is excluded from it. One relay ACK is a
   successful partial delivery; zero ACKs is an explicit failure.
-- Declaration discovery separates `not_declared` from `lookup_partial` /
-  `lookup_unavailable` / `malformed`; permissive reads keep cached and partial
-  results visible with coverage and source provenance.
+- Declaration discovery separates `not_observed`, `lookup_partial`,
+  `lookup_unavailable`, `signed_empty`, and `malformed`; permissive reads keep
+  retained and partial results visible with coverage and source provenance.
+- Retained evidence survives restart and settings changes, follows NIP-01
+  frontier ordering, and cannot be erased by complete-empty, partial, or
+  unavailable observations.
+- A newer `signed_empty` or `malformed` frontier blocks writes while the last
+  usable declaration remains read-only recovery evidence.
+- Declaration repair confirms the exact signed event through the bounded shared
+  discovery set rather than accepting local priming or owner-only readback.
+- Partial and unavailable declaration observations do not advance durable
+  complete-plan freshness across restart, and later degraded lookup evidence is
+  retained. Complete shared-empty discovery may permit exact-event same-set
+  redistribution; it never signs a new replacement, and conflicting
+  observations do not authorize it.
 - Capability detection reports v2 as default and keeps v3 gated off.
 - Send helper emits the correct rumor kind and tags for each conversation type.
 - Legacy kind-4 events are read-only, never published, and remain in
@@ -206,3 +281,13 @@ follows `docs/specs/privacy-observability.md`.
 - General conversations group by transport and counterparty pubkey.
 - No message text or encrypted payload reaches any telemetry/log path.
 - Slow/missing relay readback still leaves cached conversations understandable.
+- Public reads never call the auth signer; protected reads accept NIP-07 and
+  NIP-46 and reject guest/cross-recipient filters before connection. When a
+  current challenge exists, they authenticate, wait for the matching `OK`, and
+  retry with a new subscription id. Under `when_challenged`, a relay that sends
+  no challenge may complete the initial protected request without NIP-42.
+- Deterministic relay tests cover challenge timing, negative/unrelated/missing
+  `OK`, signer failures, reconnect, bounded challenge loops, `restricted:`
+  responses, multi-relay partial success, account isolation, cleanup, and the
+  complete-empty versus unavailable distinction. The canonical matrix lives in
+  `docs/knowledge/nip42-protected-read-rollout.md`.

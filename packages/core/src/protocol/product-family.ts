@@ -1,5 +1,6 @@
 import type { Product } from "../types"
 import { compareCommercePrices } from "../pricing"
+import { getProductImageCandidates } from "./products"
 
 export interface ProductFamilyRecord {
   product: Product
@@ -409,16 +410,18 @@ export function prepareProductCatalog<
 function getSelectionImageProjection<
   TRecord extends ProductFamilyRecord = ProductFamilyRecord,
 >(record: TRecord, parent?: TRecord): ProductSelectionImageProjection {
-  if (record.product.images.length > 0) {
+  const selectedImages = getProductImageCandidates(record.product)
+  if (selectedImages.length > 0) {
     return {
-      images: record.product.images,
+      images: selectedImages,
       source: "selected",
       sourceProductId: record.addressId,
     }
   }
-  if (parent && parent.product.images.length > 0) {
+  const parentImages = parent ? getProductImageCandidates(parent.product) : []
+  if (parent && parentImages.length > 0) {
     return {
-      images: parent.product.images,
+      images: parentImages,
       source: "parent",
       sourceProductId: parent.addressId,
     }

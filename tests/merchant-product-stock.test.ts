@@ -3,13 +3,18 @@ import { EVENT_KINDS, type CommerceProductRecord } from "@conduit/core"
 import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
   buildOrderStockAdjustments,
+  doesOrderStockDecisionCoverAdjustment,
+  getOrderStockAdjustmentForDisplay,
+  getOrderStockDecisionKey,
   getProductFamilyStockDisplay,
   getProductStockDisplay,
   getProductStockInputError,
+  isOrderStockAdjustmentMutationDisabled,
   isPlainStockInput,
   parseProductStockInput,
   PendingProductStockDeliveryStore,
   ProductStockDecisionStore,
+  shouldShowOrderStockAdjustment,
 } from "../apps/merchant/src/lib/productStock"
 
 class MemoryStorage implements Storage {
@@ -149,7 +154,28 @@ describe("merchant product stock", () => {
       items: [{ productId: record.addressId, quantity: 15 }],
       productRecords: [record],
     })[0]
-    expect(oversold).toMatchObject({ nextStock: 0, shortfall: 3 })
+    expect(oversold).toMatchObject({
+      nextStock: 0,
+      shortfall: 3,
+    })
+  })
+
+  it("allows the final tracked unit to transition cleanly to sold out", () => {
+    const record = productRecord({ stock: 1 })
+
+    const adjustment = buildOrderStockAdjustments({
+      orderId: "order-final-unit",
+      merchantPubkey: record.product.pubkey,
+      items: [{ productId: record.addressId, quantity: 1 }],
+      productRecords: [record],
+    })[0]
+
+    expect(adjustment).toMatchObject({
+      quantity: 1,
+      currentStock: 1,
+      nextStock: 0,
+      shortfall: 0,
+    })
   })
 
   it("decrements the exact variation child selected by the order", () => {
@@ -182,7 +208,7 @@ describe("merchant product stock", () => {
     })
   })
 
-  it("does not prompt for untracked, sold-out, foreign, or variable listings", () => {
+  it("keeps sold-out tracked listings visible as restocking required", () => {
     const record = productRecord()
     const build = (candidate: CommerceProductRecord) =>
       buildOrderStockAdjustments({
@@ -193,9 +219,98 @@ describe("merchant product stock", () => {
       })
 
     expect(build(productRecord({ stock: undefined }))).toEqual([])
-    expect(build(productRecord({ stock: 0 }))).toEqual([])
+    expect(build(productRecord({ stock: 0 }))).toEqual([
+      expect.objectContaining({
+        currentStock: 0,
+        nextStock: 0,
+        shortfall: 1,
+      }),
+    ])
     expect(build(productRecord({ pubkey: "c".repeat(64) }))).toEqual([])
     expect(build(productRecord({ type: "variable" }))).toEqual([])
+  })
+
+  it("does not build an automatic adjustment when grouped quantity overflows", () => {
+    const record = productRecord()
+
+    expect(
+      buildOrderStockAdjustments({
+        orderId: "order-overflow",
+        merchantPubkey: record.product.pubkey,
+        items: [
+          { productId: record.addressId, quantity: Number.MAX_SAFE_INTEGER },
+          { productId: record.addressId, quantity: Number.MAX_SAFE_INTEGER },
+        ],
+        productRecords: [record],
+      })
+    ).toEqual([])
+  })
+
+  it("suppresses legacy decisions and ends prompts for terminal orders", () => {
+    const record = productRecord({ stock: 2 })
+    const restocking = buildOrderStockAdjustments({
+      orderId: "order-restock",
+      merchantPubkey: record.product.pubkey,
+      items: [{ productId: record.addressId, quantity: 5 }],
+      productRecords: [record],
+    })[0]!
+    const regular = buildOrderStockAdjustments({
+      orderId: "order-regular",
+      merchantPubkey: record.product.pubkey,
+      items: [{ productId: record.addressId, quantity: 1 }],
+      productRecords: [record],
+    })[0]!
+    const applied = { kind: "applied" as const, decidedAt: 1 }
+    const declined = { kind: "declined" as const, decidedAt: 1 }
+
+    expect(
+      shouldShowOrderStockAdjustment({
+        adjustment: restocking,
+        orderStatus: "processing",
+        hasSessionDecision: false,
+        persistedDecision: null,
+      })
+    ).toBe(true)
+    expect(
+      shouldShowOrderStockAdjustment({
+        adjustment: restocking,
+        orderStatus: "processing",
+        hasSessionDecision: false,
+        persistedDecision: applied,
+      })
+    ).toBe(false)
+    expect(
+      shouldShowOrderStockAdjustment({
+        adjustment: regular,
+        orderStatus: "processing",
+        hasSessionDecision: true,
+        persistedDecision: null,
+      })
+    ).toBe(false)
+    expect(
+      shouldShowOrderStockAdjustment({
+        adjustment: regular,
+        orderStatus: "processing",
+        hasSessionDecision: false,
+        persistedDecision: declined,
+      })
+    ).toBe(false)
+
+    for (const orderStatus of [
+      "cancelled",
+      "complete",
+      "delivered",
+      "refund_requested",
+    ] as const) {
+      expect(
+        shouldShowOrderStockAdjustment({
+          adjustment: restocking,
+          orderStatus,
+          hasSessionDecision: false,
+          persistedDecision: null,
+        })
+      ).toBe(false)
+    }
   })
 
   it("persists applied and declined decisions per merchant, order, and product", () => {
@@ -214,6 +329,359 @@ describe("merchant product stock", () => {
     expect(second.get(merchant, "order-3", address)).toBeNull()
   })
 
+  it("rejects persisted stock snapshots bound to another product", () => {
+    const storage = new MemoryStorage()
+    const merchant = "a".repeat(64)
+    const orderId = "order-1"
+    const adjustment = buildOrderStockAdjustments({
+      orderId,
+      merchantPubkey: merchant,
+      items: [{ productId: productRecord().addressId, quantity: 1 }],
+      productRecords: [productRecord()],
+    })[0]!
+    const otherAddress = `30402:${merchant}:other-product`
+    const store = new ProductStockDecisionStore(storage)
+
+    expect(() =>
+      store.set(merchant, orderId, adjustment.addressId, "applied", {
+        ...adjustment,
+        addressId: otherAddress,
+      })
+    ).toThrow("Stock decision adjustment does not match the order product")
+
+    expect(
+      store.set(merchant, orderId, adjustment.addressId, "applied", adjustment)
+    ).toBe(true)
+    const storageKey = storage.key(0)!
+    const stored = JSON.parse(storage.getItem(storageKey)!) as {
+      decisions: Record<
+        string,
+        { adjustment: { addressId: string }; kind: string; decidedAt: number }
+      >
+    }
+    stored.decisions[adjustment.key]!.adjustment.addressId = otherAddress
+    storage.setItem(storageKey, JSON.stringify(stored))
+
+    expect(
+      new ProductStockDecisionStore(storage).get(
+        merchant,
+        orderId,
+        adjustment.addressId
+      )
+    ).toBeNull()
+  })
+
+  it("preserves the original restocking outcome after an applied decrement", () => {
+    const storage = new MemoryStorage()
+    const store = new ProductStockDecisionStore(storage)
+    const merchant = "a".repeat(64)
+
+    const finalUnitRecord = productRecord({ stock: 1 })
+    const finalUnit = buildOrderStockAdjustments({
+      orderId: "order-final-unit",
+      merchantPubkey: merchant,
+      items: [{ productId: finalUnitRecord.addressId, quantity: 1 }],
+      productRecords: [finalUnitRecord],
+    })[0]!
+    expect(
+      store.set(
+        merchant,
+        "order-final-unit",
+        finalUnit.addressId,
+        "applied",
+        finalUnit
+      )
+    ).toBe(true)
+    const finalUnitAfterPublish = buildOrderStockAdjustments({
+      orderId: "order-final-unit",
+      merchantPubkey: merchant,
+      items: [{ productId: finalUnitRecord.addressId, quantity: 1 }],
+      productRecords: [productRecord({ stock: 0 })],
+    })[0]!
+    const finalUnitDecision = new ProductStockDecisionStore(storage).get(
+      merchant,
+      "order-final-unit",
+      finalUnit.addressId
+    )
+    expect(
+      shouldShowOrderStockAdjustment({
+        adjustment: finalUnitAfterPublish,
+        orderStatus: "processing",
+        hasSessionDecision: true,
+        persistedDecision: finalUnitDecision,
+      })
+    ).toBe(false)
+
+    const oversoldRecord = productRecord({ stock: 2 })
+    const oversold = buildOrderStockAdjustments({
+      orderId: "order-oversold",
+      merchantPubkey: merchant,
+      items: [{ productId: oversoldRecord.addressId, quantity: 5 }],
+      productRecords: [oversoldRecord],
+    })[0]!
+    expect(
+      store.set(
+        merchant,
+        "order-oversold",
+        oversold.addressId,
+        "applied",
+        oversold
+      )
+    ).toBe(true)
+    const oversoldAfterPublish = buildOrderStockAdjustments({
+      orderId: "order-oversold",
+      merchantPubkey: merchant,
+      items: [{ productId: oversoldRecord.addressId, quantity: 5 }],
+      productRecords: [productRecord({ stock: 0 })],
+    })[0]!
+    const oversoldDecision = new ProductStockDecisionStore(storage).get(
+      merchant,
+      "order-oversold",
+      oversold.addressId
+    )
+    expect(
+      shouldShowOrderStockAdjustment({
+        adjustment: oversoldAfterPublish,
+        orderStatus: "processing",
+        hasSessionDecision: true,
+        persistedDecision: oversoldDecision,
+      })
+    ).toBe(true)
+    expect(
+      getOrderStockAdjustmentForDisplay({
+        adjustment: oversoldAfterPublish,
+        persistedDecision: oversoldDecision,
+      })
+    ).toMatchObject({ currentStock: 2, nextStock: 0, shortfall: 3 })
+    expect(
+      doesOrderStockDecisionCoverAdjustment({
+        adjustment: oversoldAfterPublish,
+        persistedDecision: oversoldDecision,
+      })
+    ).toBe(true)
+  })
+
+  it("applies only the unresolved shortfall after restocking", () => {
+    const merchant = "a".repeat(64)
+    const orderId = "order-replenished"
+    const oversoldRecord = productRecord({ stock: 2 })
+    const oversold = buildOrderStockAdjustments({
+      orderId,
+      merchantPubkey: merchant,
+      items: [{ productId: oversoldRecord.addressId, quantity: 5 }],
+      productRecords: [oversoldRecord],
+    })[0]!
+    const persistedDecision = {
+      kind: "applied" as const,
+      decidedAt: 1,
+      adjustment: oversold,
+    }
+
+    for (const expected of [
+      {
+        stock: 2,
+        eventId: "c".repeat(64),
+        nextStock: 0,
+        shortfall: 1,
+      },
+      {
+        stock: 3,
+        eventId: "d".repeat(64),
+        nextStock: 0,
+        shortfall: 0,
+      },
+      {
+        stock: 10,
+        eventId: "e".repeat(64),
+        nextStock: 7,
+        shortfall: 0,
+      },
+    ] as const) {
+      const replenishedRecord = {
+        ...productRecord({ stock: expected.stock }),
+        eventId: expected.eventId,
+      }
+      const replenished = buildOrderStockAdjustments({
+        orderId,
+        merchantPubkey: merchant,
+        items: [{ productId: replenishedRecord.addressId, quantity: 5 }],
+        productRecords: [replenishedRecord],
+      })[0]!
+      const followUp = getOrderStockAdjustmentForDisplay({
+        adjustment: replenished,
+        persistedDecision,
+      })
+
+      expect(
+        doesOrderStockDecisionCoverAdjustment({
+          adjustment: replenished,
+          persistedDecision,
+        })
+      ).toBe(false)
+      expect(followUp).toMatchObject({
+        sourceEventId: expected.eventId,
+        quantity: 3,
+        currentStock: expected.stock,
+        nextStock: expected.nextStock,
+        shortfall: expected.shortfall,
+      })
+      expect(
+        shouldShowOrderStockAdjustment({
+          adjustment: replenished,
+          orderStatus: "processing",
+          hasSessionDecision: false,
+          persistedDecision,
+        })
+      ).toBe(true)
+    }
+
+    const ampleRecord = {
+      ...productRecord({ stock: 10 }),
+      eventId: "e".repeat(64),
+    }
+    const ample = buildOrderStockAdjustments({
+      orderId,
+      merchantPubkey: merchant,
+      items: [{ productId: ampleRecord.addressId, quantity: 5 }],
+      productRecords: [ampleRecord],
+    })[0]!
+    expect(
+      isOrderStockAdjustmentMutationDisabled({
+        adjustment: ample,
+        persistedDecision,
+        hasPendingDelivery: false,
+        hasSessionDecision: false,
+      })
+    ).toBe(false)
+    expect(
+      isOrderStockAdjustmentMutationDisabled({
+        adjustment: ample,
+        persistedDecision,
+        hasPendingDelivery: false,
+        hasSessionDecision: true,
+      })
+    ).toBe(true)
+    expect(
+      shouldShowOrderStockAdjustment({
+        adjustment: ample,
+        orderStatus: "processing",
+        hasSessionDecision: true,
+        persistedDecision,
+      })
+    ).toBe(false)
+
+    const partialRecord = {
+      ...productRecord({ stock: 2 }),
+      eventId: "c".repeat(64),
+    }
+    const partial = buildOrderStockAdjustments({
+      orderId,
+      merchantPubkey: merchant,
+      items: [{ productId: partialRecord.addressId, quantity: 5 }],
+      productRecords: [partialRecord],
+    })[0]!
+    const partialFollowUp = getOrderStockAdjustmentForDisplay({
+      adjustment: partial,
+      persistedDecision,
+    })
+    const residualDecision = {
+      kind: "applied" as const,
+      decidedAt: 2,
+      adjustment: partialFollowUp,
+    }
+    const afterResidualPublish = buildOrderStockAdjustments({
+      orderId,
+      merchantPubkey: merchant,
+      items: [{ productId: partialRecord.addressId, quantity: 5 }],
+      productRecords: [
+        {
+          ...productRecord({ stock: 0 }),
+          eventId: "f".repeat(64),
+        },
+      ],
+    })[0]!
+    expect(
+      doesOrderStockDecisionCoverAdjustment({
+        adjustment: afterResidualPublish,
+        persistedDecision: residualDecision,
+      })
+    ).toBe(true)
+    expect(
+      getOrderStockAdjustmentForDisplay({
+        adjustment: afterResidualPublish,
+        persistedDecision: residualDecision,
+      })
+    ).toMatchObject({
+      quantity: 3,
+      currentStock: 2,
+      nextStock: 0,
+      shortfall: 1,
+    })
+
+    const secondRestockRecord = {
+      ...productRecord({ stock: 5 }),
+      eventId: "1".repeat(64),
+    }
+    const secondRestock = buildOrderStockAdjustments({
+      orderId,
+      merchantPubkey: merchant,
+      items: [{ productId: secondRestockRecord.addressId, quantity: 5 }],
+      productRecords: [secondRestockRecord],
+    })[0]!
+    const finalFollowUp = getOrderStockAdjustmentForDisplay({
+      adjustment: secondRestock,
+      persistedDecision: residualDecision,
+    })
+    expect(finalFollowUp).toMatchObject({
+      sourceEventId: secondRestockRecord.eventId,
+      quantity: 1,
+      currentStock: 5,
+      nextStock: 4,
+      shortfall: 0,
+    })
+    const completedResidualDecision = {
+      kind: "applied" as const,
+      decidedAt: 3,
+      adjustment: finalFollowUp,
+    }
+    const afterFinalPublish = buildOrderStockAdjustments({
+      orderId,
+      merchantPubkey: merchant,
+      items: [{ productId: secondRestockRecord.addressId, quantity: 5 }],
+      productRecords: [
+        {
+          ...productRecord({ stock: 4 }),
+          eventId: "2".repeat(64),
+        },
+      ],
+    })[0]!
+    expect(
+      doesOrderStockDecisionCoverAdjustment({
+        adjustment: afterFinalPublish,
+        persistedDecision: completedResidualDecision,
+      })
+    ).toBe(true)
+
+    expect(
+      doesOrderStockDecisionCoverAdjustment({
+        adjustment: ample,
+        persistedDecision: { ...persistedDecision, kind: "declined" },
+      })
+    ).toBe(true)
+    expect(
+      doesOrderStockDecisionCoverAdjustment({
+        adjustment: ample,
+        persistedDecision: { kind: "applied", decidedAt: 3 },
+      })
+    ).toBe(true)
+    expect(
+      doesOrderStockDecisionCoverAdjustment({
+        adjustment: ample,
+        persistedDecision: { kind: "declined", decidedAt: 3 },
+      })
+    ).toBe(true)
+  })
+
   it("keeps a session decision when browser storage is unavailable", () => {
     const store = new ProductStockDecisionStore(null)
     const merchant = "a".repeat(64)
@@ -223,7 +691,7 @@ describe("merchant product stock", () => {
     expect(store.get(merchant, "order-1", address)?.kind).toBe("declined")
   })
 
-  it("restores a pending signed stock delivery after reload", () => {
+  it("restores the original pending oversold adjustment after reload", () => {
     const storage = new MemoryStorage()
     const secretKey = new Uint8Array(32).fill(3)
     const merchant = getPublicKey(secretKey)
@@ -238,23 +706,41 @@ describe("merchant product stock", () => {
           ["d", dTag],
           ["title", "Pocket Relay"],
           ["price", "25", "USD"],
-          ["stock", "11"],
+          ["stock", "0"],
         ],
       },
       secretKey
     )
     const adjustment = {
-      key: `order-1:${addressId}`,
+      key: getOrderStockDecisionKey("order-1", addressId),
       addressId,
       sourceEventId: "source-event",
       title: "Pocket Relay",
-      quantity: 1,
-      currentStock: 12,
-      nextStock: 11,
-      shortfall: 0,
+      quantity: 5,
+      currentStock: 2,
+      nextStock: 0,
+      shortfall: 3,
     }
 
     const first = new PendingProductStockDeliveryStore(storage)
+    expect(() =>
+      first.set(merchant, {
+        orderId: "order-1",
+        adjustment: { ...adjustment, key: "not-canonical" },
+        signedEvent,
+      })
+    ).toThrow("valid signed product stock delivery")
+    expect(() =>
+      first.set(merchant, {
+        orderId: "order-1",
+        adjustment: {
+          ...adjustment,
+          quantity: 4,
+          shortfall: 1,
+        },
+        signedEvent,
+      })
+    ).toThrow("valid signed product stock delivery")
     expect(
       first.set(merchant, {
         orderId: "order-1",
@@ -263,15 +749,46 @@ describe("merchant product stock", () => {
       })
     ).toBe(true)
 
+    const storageKey = storage.key(0)
+    expect(storageKey).not.toBeNull()
+    const previewStored = JSON.parse(storage.getItem(storageKey!)!) as {
+      deliveries: Record<string, { adjustment: Record<string, unknown> }>
+    }
+    for (const delivery of Object.values(previewStored.deliveries)) {
+      delivery.adjustment.state = "restocking_required"
+    }
+    storage.setItem(storageKey!, JSON.stringify(previewStored))
+
     const afterReload = new PendingProductStockDeliveryStore(storage)
     const restored = afterReload.getForOrder(merchant, "order-1")
     expect(restored).toHaveLength(1)
     expect(restored[0]?.orderId).toBe("order-1")
     expect(restored[0]?.adjustment).toEqual(adjustment)
+    expect(restored[0]?.adjustment).toMatchObject({
+      currentStock: 2,
+      nextStock: 0,
+      shortfall: 3,
+    })
     expect(restored[0]?.signedEvent.id).toBe(signedEvent.id)
     expect(restored[0]?.signedEvent.pubkey).toBe(signedEvent.pubkey)
 
+    const validStored = storage.getItem(storageKey!)!
+
     expect(afterReload.delete(merchant, "order-1", addressId)).toBe(true)
+    expect(
+      new PendingProductStockDeliveryStore(storage).getForOrder(
+        merchant,
+        "order-1"
+      )
+    ).toEqual([])
+
+    const invalidOuterKey = JSON.parse(validStored) as {
+      version: 1
+      deliveries: Record<string, unknown>
+    }
+    const storedDelivery = Object.values(invalidOuterKey.deliveries)[0]
+    invalidOuterKey.deliveries = { "not-canonical": storedDelivery }
+    storage.setItem(storageKey!, JSON.stringify(invalidOuterKey))
     expect(
       new PendingProductStockDeliveryStore(storage).getForOrder(
         merchant,

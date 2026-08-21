@@ -1,6 +1,6 @@
 import {
+  NDKEvent,
   giftUnwrap,
-  type NDKEvent,
   type NDKFilter,
   type NDKSigner,
   nip19,
@@ -16,15 +16,23 @@ import {
 import { CANONICAL_APP_BACKPLANE_RELAYS, config } from "../config"
 import { compareCommercePrices } from "../pricing"
 import type { Product, Profile } from "../types"
+import { normalizePublicMediaUrl } from "../network-target-safety"
 import { EVENT_KINDS } from "./kinds"
+import {
+  extractFollowPubkeys,
+  isPlausibleFollowListEventTimestamp,
+  readLatestFollowLists,
+  type FollowListAuthorRead,
+  type FollowListCoverageState,
+} from "./follows"
 import {
   fetchEventsFanout,
   fetchEventsFanoutDetailed,
   fetchEventsFanoutProgressive,
   fetchEventsFanoutWithDiagnostics,
   getEventSourceRelayUrls,
+  getNdk,
   mergeEventSourceRelayUrls,
-  requireNdkConnected,
 } from "./ndk"
 import {
   deriveInboxReadCoverage,
@@ -60,9 +68,18 @@ import {
 } from "./product-family"
 import {
   canonicalizeProductTags,
+  getProductProtocolImages,
   normalizeProductSummaryForDisplay,
   parseProductEvent,
 } from "./products"
+import {
+  areProfileProjectionsEqual,
+  mergeRicherProfile,
+  projectCachedProfile,
+  reduceCachedProfileRows,
+  retainStrongestCachedProfiles,
+  type CachedProfileRetentionResult,
+} from "./profile-cache"
 import { parseProfileEvent } from "./profiles"
 import {
   isValidSignedPublicNostrEvent,
@@ -79,9 +96,21 @@ import {
 import {
   getCommerceReadRelayUrls,
   getGeneralReadRelayUrls,
+  normalizePublicRelayHints,
+  normalizeUntrustedRelayHintsForContext,
 } from "./relay-settings"
 import { getRelayLists, isInsecureRelayUrl } from "./relay-list"
 import { planRelayReads, type RelayReadIntent } from "./relay-planner"
+import {
+  readProtectedInbox,
+  type ProtectedInboxAuthSummary,
+  type ReadProtectedInboxOptions,
+} from "./protected-inbox-read"
+import {
+  getProtectedReadAuthorization,
+  hasProtectedReadAuthority,
+  type ProtectedReadAuthorization,
+} from "./protected-read-authorization"
 
 const PRODUCT_CACHE_TTL_MS = 24 * 60 * 60_000
 const BROAD_AUTHOR_HINT_LIMIT = 16
@@ -126,6 +155,8 @@ export interface PrivateInboxReadStatus {
   declarationState: InboxDeclarationState
   coverage: InboxReadCoverage
   readSource: InboxReadSource
+  /** Current-session relay-auth evidence; never persisted with messages. */
+  authentication?: ProtectedInboxAuthSummary
 }
 
 export interface CommerceQueryMeta {
@@ -149,9 +180,40 @@ export interface CommerceQueryMeta {
   legacyDecryptFailures?: LegacyDmDecryptFailure[]
 }
 
+export type CommerceFreshnessMeta = Pick<
+  CommerceQueryMeta,
+  "stale" | "degraded" | "capped"
+>
+
+export function isCommerceReadIncomplete(
+  meta: CommerceFreshnessMeta | null | undefined
+): boolean {
+  return !!(meta?.stale || meta?.degraded || meta?.capped)
+}
+
 export interface CommerceResult<T> {
   data: T
   meta: CommerceQueryMeta
+}
+
+export interface FollowListQueryMeta extends CommerceQueryMeta {
+  /**
+   * True when a verified signed kind-3 snapshot is available. This
+   * distinguishes an intentional empty contact list from a bounded read that
+   * found no event; `snapshotState` identifies retained evidence.
+   */
+  eventObserved: boolean
+  /** NIP-01 replaceable-event ordering evidence for the selected kind-3. */
+  eventCreatedAt?: number
+  eventId?: string
+  coverage: FollowListCoverageState
+  snapshotState: FollowListAuthorRead["snapshotState"]
+}
+
+export interface FollowListResult extends CommerceResult<string[]> {
+  meta: FollowListQueryMeta
+  /** The verified signed kind-3 selected for this result, when observed. */
+  event?: SignedPublicNostrEvent
 }
 
 export interface CommerceProductRecord {
@@ -302,11 +364,16 @@ type LegacyDmSyncResult = {
 }
 
 type CommerceTestOverrides = {
+  allowMissingProtectedReadAuthorization?: boolean
   fetchEventsFanout?: typeof fetchEventsFanout
   fetchEventsFanoutWithDiagnostics?: typeof fetchEventsFanoutWithDiagnostics
   fetchEventsFanoutDetailed?: typeof fetchEventsFanoutDetailed
   fetchEventsFanoutProgressive?: typeof fetchEventsFanoutProgressive
-  requireNdkConnected?: typeof requireNdkConnected
+  readLatestFollowLists?: typeof readLatestFollowLists
+  getNdk?: () => ReturnType<typeof getNdk> | Promise<ReturnType<typeof getNdk>>
+  readProtectedInbox?: (
+    options: ReadProtectedInboxOptions
+  ) => ReturnType<typeof readProtectedInbox>
   giftUnwrap?: (
     event: NDKEvent,
     signer: NDKSigner
@@ -334,6 +401,15 @@ type CommerceTestOverrides = {
     principalPubkey: string
   ) => Promise<StoredMessage[]>
   putCachedDirectMessages?: (rows: StoredMessage[]) => Promise<void>
+  persistProtectedInboxMessages?: (
+    orderRows: CachedOrderMessage[],
+    directRows: StoredMessage[],
+    assertAuthority: () => void
+  ) => Promise<void>
+  persistLegacyDirectMessages?: (
+    rows: StoredMessage[],
+    assertAuthority: () => void
+  ) => Promise<void>
   resolveInboxRelayUrls?: (principalPubkey: string) => Promise<string[]>
   markDirectMessagesRead?: (
     principalPubkey: string,
@@ -381,6 +457,7 @@ const READ_PLANS: Record<CommerceReadPlanName, CommerceReadSource[]> = {
 }
 
 let testOverrides: CommerceTestOverrides = {}
+let testProfileCacheWriteLock: Promise<void> = Promise.resolve()
 const volatileProductTombstones = new Map<string, CachedProductTombstone>()
 const successfulWrapIdsByPrincipal = new Map<string, Set<string>>()
 const retryWrapsByPrincipal = new Map<
@@ -398,6 +475,30 @@ const retryLegacyDmsByPrincipal = new Map<
   >
 >()
 const legacyDmSyncPromises = new Map<string, Promise<LegacyDmSyncResult>>()
+
+class ProtectedInboxAuthorityChangedError extends Error {
+  constructor() {
+    super("Protected-read authority changed during inbox synchronization")
+    this.name = "ProtectedInboxAuthorityChangedError"
+  }
+}
+
+function assertInboxSyncAuthority(
+  authorization: ProtectedReadAuthorization | null
+): void {
+  if (authorization && !hasProtectedReadAuthority(authorization)) {
+    throw new ProtectedInboxAuthorityChangedError()
+  }
+}
+
+function resolveInboxSyncAuthorization(
+  principalPubkey: string
+): ProtectedReadAuthorization | null {
+  const authorization = getProtectedReadAuthorization(principalPubkey)
+  if (authorization) return authorization
+  if (testOverrides.allowMissingProtectedReadAuthorization === true) return null
+  throw new ProtectedInboxAuthorityChangedError()
+}
 
 function now(): number {
   return testOverrides.now?.() ?? Date.now()
@@ -418,6 +519,15 @@ function commerceReadRelayUrls(): string[] {
   })
 }
 
+function hasCommerceFetchTestOverride(): boolean {
+  return !!(
+    testOverrides.fetchEventsFanout ||
+    testOverrides.fetchEventsFanoutWithDiagnostics ||
+    testOverrides.fetchEventsFanoutDetailed ||
+    testOverrides.fetchEventsFanoutProgressive
+  )
+}
+
 /**
  * Resolve a planner-driven relay URL list for a commerce read intent.
  * Pulls cached NIP-65 relay lists for any author/recipient hints so
@@ -436,7 +546,10 @@ async function planCommerceReadRelayPlan(input: {
   authenticatedPubkey?: string | null
   maxRelays?: number
   relayHintMode?: "auto" | "skip" | "force"
+  /** Untrusted hints that must independently resolve to public WSS targets. */
   extraRelayUrls?: readonly string[]
+  /** Hints belonging to the exact authenticated author. */
+  authenticatedAuthorRelayUrls?: readonly string[]
 }): Promise<CommerceReadRelayPlan> {
   const hintPubkeys = Array.from(
     new Set(
@@ -454,7 +567,7 @@ async function planCommerceReadRelayPlan(input: {
   const relayLists = shouldFetchRelayHints
     ? await getRelayLists(
         hintPubkeys,
-        testOverrides.fetchEventsFanout
+        hasCommerceFetchTestOverride()
           ? {
               cacheOnly: true,
               allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
@@ -489,9 +602,18 @@ async function planCommerceReadRelayPlan(input: {
     input.relayHintMode !== "force" &&
     (input.intent === "commerce_products" ||
       (input.intent === "author_products" && (input.authors?.length ?? 0) > 1))
-  const externalRelayHints = (input.extraRelayUrls ?? []).filter(
-    (url) => !isInsecureRelayUrl(url)
+  const publicExternalRelayHints = normalizePublicRelayHints(
+    input.extraRelayUrls ?? []
   )
+  const authenticatedAuthorRelayHints = normalizeUntrustedRelayHintsForContext({
+    relayUrls: input.authenticatedAuthorRelayUrls ?? [],
+    approvedRelayUrls: plan.relayUrls,
+    allowApprovedPrivate: !!input.authenticatedPubkey,
+  })
+  const externalRelayHints = uniqueStrings([
+    ...publicExternalRelayHints,
+    ...authenticatedAuthorRelayHints,
+  ])
   const plannedRelayUrls = preferFallbackFirst
     ? uniqueStrings([
         ...fallbackRelayUrls,
@@ -667,11 +789,34 @@ async function runFetchEventsFanoutDetailed(
   }
 }
 
-async function runRequireNdkConnected(): Promise<
-  Awaited<ReturnType<typeof requireNdkConnected>>
-> {
-  const impl = testOverrides.requireNdkConnected ?? requireNdkConnected
+async function runGetNdk(): Promise<ReturnType<typeof getNdk>> {
+  const impl = testOverrides.getNdk ?? getNdk
   return await impl()
+}
+
+/**
+ * NDK remains an envelope/signer edge, but protected reads must not connect
+ * its relay pool merely to reach the active signer.
+ */
+async function resolveEnvelopeSigner(): Promise<NDKSigner | undefined> {
+  return (await runGetNdk()).signer
+}
+
+function unavailableInboxStatus(
+  failure: ProtectedInboxAuthSummary["failure"] = "signer_unavailable"
+): PrivateInboxReadStatus {
+  return {
+    declarationState: "lookup_unavailable",
+    coverage: "unavailable",
+    readSource: "cache",
+    authentication: {
+      state: "unavailable",
+      challengedCount: 0,
+      succeededCount: 0,
+      failedCount: 0,
+      failure,
+    },
+  }
 }
 
 export function resolveReadPlan(name: CommerceReadPlanName): CommerceReadPlan {
@@ -689,6 +834,7 @@ export function __setCommerceTestOverrides(
 
 export function __resetCommerceTestOverrides(): void {
   testOverrides = {}
+  testProfileCacheWriteLock = Promise.resolve()
   volatileProductTombstones.clear()
   successfulWrapIdsByPrincipal.clear()
   retryWrapsByPrincipal.clear()
@@ -967,13 +1113,7 @@ function sortProducts(
 }
 
 function isValidProductImageUrl(url: string | undefined): boolean {
-  if (!url) return false
-  try {
-    const parsed = new URL(url)
-    return parsed.protocol === "http:" || parsed.protocol === "https:"
-  } catch {
-    return false
-  }
+  return normalizePublicMediaUrl(url) !== null
 }
 
 export function hasMarketProductImage(
@@ -1193,7 +1333,7 @@ function toCachedProduct(record: CommerceProductRecord) {
     shippingCountryRules: product.shippingCountryRules,
     visibility: product.visibility,
     stock: product.stock,
-    images: product.images,
+    images: getProductProtocolImages(product),
     tags: canonicalizeProductTags(product.tags),
     publicZapEnabled: product.publicZapEnabled,
     zapMessagePolicy: product.zapMessagePolicy,
@@ -1242,7 +1382,7 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
     shippingCountryRules: row.shippingCountryRules,
     visibility: row.visibility ?? "public",
     stock: row.stock,
-    images: row.images ?? [],
+    images: getProductProtocolImages({ images: row.images ?? [] }),
     tags,
     publicZapEnabled: row.publicZapEnabled ?? true,
     zapMessagePolicy,
@@ -1272,23 +1412,84 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
   })
 }
 
-async function loadProductSourceRelayHints(
-  pubkeys: readonly string[]
-): Promise<string[]> {
-  const uniquePubkeys = uniqueStrings(pubkeys)
-  if (uniquePubkeys.length === 0) return []
-
-  const rows = (
-    await Promise.all(uniquePubkeys.map((pubkey) => loadCachedProducts(pubkey)))
-  ).flat()
-
-  return uniqueStrings(rows.flatMap((row) => row.sourceRelayUrls ?? []))
+type ContextualRelayHints = {
+  publicRelayUrls: string[]
+  authenticatedAuthorRelayUrls: string[]
 }
 
-function getProfileQueryRelayHints(query: ProfileBatchQuery): string[] {
-  if (!query.relayHintsByPubkey) return []
-  return uniqueStrings(
-    query.pubkeys.flatMap((pubkey) => query.relayHintsByPubkey?.[pubkey] ?? [])
+function contextualRelayHints(
+  entries: readonly { pubkey: string; relayUrls: readonly string[] }[],
+  authenticatedPubkey: string | null | undefined
+): ContextualRelayHints {
+  const normalizedOwner = authenticatedPubkey?.trim().toLowerCase() ?? ""
+  const publicRelayUrls: string[] = []
+  const authenticatedAuthorRelayUrls: string[] = []
+
+  for (const entry of entries) {
+    const isAuthenticatedOwner =
+      !!normalizedOwner && entry.pubkey.trim().toLowerCase() === normalizedOwner
+    for (const relayUrl of entry.relayUrls) {
+      const [publicRelayUrl] = normalizePublicRelayHints([relayUrl])
+      if (publicRelayUrl) publicRelayUrls.push(publicRelayUrl)
+      else if (isAuthenticatedOwner) {
+        authenticatedAuthorRelayUrls.push(relayUrl)
+      }
+    }
+  }
+
+  return {
+    publicRelayUrls: uniqueStrings(publicRelayUrls),
+    authenticatedAuthorRelayUrls: uniqueStrings(authenticatedAuthorRelayUrls),
+  }
+}
+
+function mergeContextualRelayHints(
+  ...hints: readonly ContextualRelayHints[]
+): ContextualRelayHints {
+  return {
+    publicRelayUrls: uniqueStrings(
+      hints.flatMap((hint) => hint.publicRelayUrls)
+    ),
+    authenticatedAuthorRelayUrls: uniqueStrings(
+      hints.flatMap((hint) => hint.authenticatedAuthorRelayUrls)
+    ),
+  }
+}
+
+async function loadProductSourceRelayHints(
+  pubkeys: readonly string[],
+  authenticatedPubkey?: string | null
+): Promise<ContextualRelayHints> {
+  const uniquePubkeys = uniqueStrings(pubkeys)
+  if (uniquePubkeys.length === 0) {
+    return { publicRelayUrls: [], authenticatedAuthorRelayUrls: [] }
+  }
+
+  const rowsByPubkey = await Promise.all(
+    uniquePubkeys.map(async (pubkey) => ({
+      pubkey,
+      rows: await loadCachedProducts(pubkey),
+    }))
+  )
+
+  return contextualRelayHints(
+    rowsByPubkey.map(({ pubkey, rows }) => ({
+      pubkey,
+      relayUrls: rows.flatMap((row) => row.sourceRelayUrls ?? []),
+    })),
+    authenticatedPubkey
+  )
+}
+
+function getProfileQueryRelayHints(
+  query: ProfileBatchQuery
+): ContextualRelayHints {
+  return contextualRelayHints(
+    query.pubkeys.map((pubkey) => ({
+      pubkey,
+      relayUrls: query.relayHintsByPubkey?.[pubkey] ?? [],
+    })),
+    query.authenticatedPubkey
   )
 }
 
@@ -1778,15 +1979,41 @@ async function loadCachedProfiles(
   return await db.profiles.bulkGet(pubkeys)
 }
 
-async function storeCachedProfiles(rows: CachedProfile[]): Promise<void> {
-  if (rows.length === 0) return
-
-  if (testOverrides.putCachedProfiles) {
-    await testOverrides.putCachedProfiles(rows)
-    return
+async function storeCachedProfiles(
+  rows: CachedProfile[]
+): Promise<CachedProfileRetentionResult> {
+  if (rows.length === 0) {
+    return { rows: [], displacedPubkeys: new Set() }
   }
 
-  await db.profiles.bulkPut(rows)
+  if (testOverrides.getCachedProfiles || testOverrides.putCachedProfiles) {
+    const previous = testProfileCacheWriteLock
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    testProfileCacheWriteLock = previous.catch(() => undefined).then(() => gate)
+
+    await previous.catch(() => undefined)
+    try {
+      const pubkeys = Array.from(new Set(rows.map((row) => row.pubkey)))
+      const currentRows = testOverrides.getCachedProfiles
+        ? await testOverrides.getCachedProfiles(pubkeys)
+        : pubkeys.map(() => undefined)
+      const retention = reduceCachedProfileRows(rows, currentRows)
+      if (retention.updates.length > 0 && testOverrides.putCachedProfiles) {
+        await testOverrides.putCachedProfiles(retention.updates)
+      }
+      return {
+        rows: retention.rows,
+        displacedPubkeys: retention.displacedPubkeys,
+      }
+    } finally {
+      release()
+    }
+  }
+
+  return await retainStrongestCachedProfiles(rows)
 }
 
 function hasProfileContent(
@@ -1814,51 +2041,19 @@ function hasProfileContent(
   ].some((value) => typeof value === "string" && value.trim().length > 0)
 }
 
-function cachedProfileToProfile(row: CachedProfile): Profile {
-  return {
-    pubkey: row.pubkey,
-    name: row.name,
-    displayName: row.displayName,
-    about: row.about,
-    picture: row.picture,
-    banner: row.banner,
-    nip05: row.nip05,
-    lud16: row.lud16,
-    website: row.website,
-  }
+function compareReplaceableProfileEvents(a: NDKEvent, b: NDKEvent): number {
+  const createdAt = (b.created_at ?? 0) - (a.created_at ?? 0)
+  if (createdAt !== 0) return createdAt
+  return (a.id || "\uffff").localeCompare(b.id || "\uffff")
 }
 
-function mergeProfileField(
-  current: string | undefined,
-  incoming: string | undefined
-): string | undefined {
-  return typeof incoming === "string" && incoming.trim().length > 0
-    ? incoming
-    : current
-}
-
-function mergeProfileData(
-  current: Profile | undefined,
-  incoming: Profile | undefined
-): Profile | undefined {
-  if (!incoming) return current
-  if (!current) return incoming
-  if (!hasProfileContent(incoming)) {
-    return hasProfileContent(current) ? current : incoming
-  }
-  if (!hasProfileContent(current)) return incoming
-
-  return {
-    pubkey: incoming.pubkey || current.pubkey,
-    name: mergeProfileField(current.name, incoming.name),
-    displayName: mergeProfileField(current.displayName, incoming.displayName),
-    about: mergeProfileField(current.about, incoming.about),
-    picture: mergeProfileField(current.picture, incoming.picture),
-    banner: mergeProfileField(current.banner, incoming.banner),
-    nip05: mergeProfileField(current.nip05, incoming.nip05),
-    lud16: mergeProfileField(current.lud16, incoming.lud16),
-    website: mergeProfileField(current.website, incoming.website),
-  }
+function pickLatestProfileEvent(
+  events: readonly NDKEvent[],
+  pubkey: string
+): NDKEvent | undefined {
+  return events
+    .filter((event) => event.pubkey === pubkey)
+    .sort(compareReplaceableProfileEvents)[0]
 }
 
 function pickLatestProfileEventWithContent(
@@ -1867,14 +2062,15 @@ function pickLatestProfileEventWithContent(
 ): NDKEvent | undefined {
   return events
     .filter((event) => event.pubkey === pubkey)
-    .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))
+    .sort(compareReplaceableProfileEvents)
     .find((event) => hasProfileContent(parseProfileEvent(event)))
 }
 
 function mergeProfileEvents(
   pubkeys: readonly string[],
   currentProfiles: Record<string, Profile>,
-  events: readonly NDKEvent[]
+  events: readonly NDKEvent[],
+  currentRows: ReadonlyMap<string, CachedProfile> = new Map()
 ): {
   profiles: Record<string, Profile>
   rowsToCache: CachedProfile[]
@@ -1886,25 +2082,69 @@ function mergeProfileEvents(
 
   for (const pubkey of pubkeys) {
     const event = pickLatestProfileEventWithContent(events, pubkey)
-    const profile = mergeProfileData(
-      profiles[pubkey],
-      event ? parseProfileEvent(event) : { pubkey }
-    )
-    const sourceRelayUrls = event ? getEventSourceRelayUrls(event) : undefined
+    const latestEvent = pickLatestProfileEvent(events, pubkey)
+    const currentRow = currentRows.get(pubkey)
+    const currentFrontier = currentRow?.eventCreatedAt ?? -1
+    const latestEventCreatedAt = latestEvent?.created_at ?? -1
+    const latestEventWins =
+      !!latestEvent &&
+      (latestEventCreatedAt > currentFrontier ||
+        (latestEventCreatedAt === currentFrontier &&
+          (latestEvent.id || "\uffff") < (currentRow?.eventId || "\uffff")))
+    const frontier = latestEventWins ? latestEvent : undefined
+    const exactCurrentFrontierObserved =
+      !!latestEvent?.id &&
+      latestEventCreatedAt === currentFrontier &&
+      latestEvent.id === currentRow?.eventId
+    const currentProjection = currentRow
+      ? projectCachedProfile(currentRow)
+      : undefined
+    const currentFrontierWins =
+      currentRow?.eventCreatedAt !== undefined &&
+      (!latestEvent ||
+        latestEventCreatedAt < currentFrontier ||
+        (latestEventCreatedAt === currentFrontier &&
+          (currentRow.eventId || "\uffff") <= (latestEvent.id || "\uffff")))
+    const profile = exactCurrentFrontierObserved
+      ? mergeRicherProfile(
+          undefined,
+          event ? parseProfileEvent(event) : { pubkey }
+        )
+      : mergeRicherProfile(
+          profiles[pubkey] ?? currentProjection,
+          currentFrontierWins
+            ? undefined
+            : event
+              ? parseProfileEvent(event)
+              : { pubkey }
+        )
+    const sourceRelayUrls = uniqueStrings([
+      ...(currentRow?.sourceRelayUrls ?? []),
+      ...(event ? getEventSourceRelayUrls(event) : []),
+      ...(latestEvent ? getEventSourceRelayUrls(latestEvent) : []),
+    ])
     profiles[pubkey] = profile ?? { pubkey }
-    if (profile && hasProfileContent(profile)) {
+    const observedFrontier =
+      frontier ?? (exactCurrentFrontierObserved ? latestEvent : undefined)
+    if (observedFrontier || (profile && hasProfileContent(profile))) {
       if (event) hasResolvedProfile = true
+      const cachedProfile = profile ?? { pubkey }
       rowsToCache.push({
-        pubkey: profile.pubkey,
-        name: profile.name,
-        displayName: profile.displayName,
-        about: profile.about,
-        picture: profile.picture,
-        banner: profile.banner,
-        nip05: profile.nip05,
-        lud16: profile.lud16,
-        website: profile.website,
-        sourceRelayUrls,
+        pubkey: cachedProfile.pubkey,
+        name: cachedProfile.name,
+        displayName: cachedProfile.displayName,
+        about: cachedProfile.about,
+        picture: cachedProfile.picture,
+        banner: cachedProfile.banner,
+        nip05: cachedProfile.nip05,
+        lud16: cachedProfile.lud16,
+        website: cachedProfile.website,
+        rawContent: observedFrontier?.content ?? currentRow?.rawContent,
+        eventId: observedFrontier?.id || currentRow?.eventId,
+        eventCreatedAt:
+          observedFrontier?.created_at ?? currentRow?.eventCreatedAt,
+        sourceRelayUrls:
+          sourceRelayUrls.length > 0 ? sourceRelayUrls : undefined,
         cachedAt: now(),
       })
     }
@@ -2044,9 +2284,13 @@ async function fetchProductDeletionTimestamps(
       const productAddresses = uniqueStrings(
         chunkCandidates.map((candidate) => candidate.addressId)
       )
-      const sourceRelayUrls = uniqueStrings(
-        chunkCandidates.flatMap((candidate) => candidate.sourceRelayUrls ?? [])
-      ).filter((relayUrl) => !isInsecureRelayUrl(relayUrl))
+      const sourceRelayHints = contextualRelayHints(
+        chunkCandidates.map((candidate) => ({
+          pubkey: candidate.pubkey,
+          relayUrls: candidate.sourceRelayUrls ?? [],
+        })),
+        options.authenticatedPubkey
+      )
       const filters: NDKFilter[] = [
         ...chunkStrings(productEventIds, 200).map((eventIdChunk) => ({
           kinds: [EVENT_KINDS.DELETION],
@@ -2068,6 +2312,16 @@ async function fetchProductDeletionTimestamps(
         authenticatedPubkey: options.authenticatedPubkey,
         maxRelays: options.readPolicy?.maxRelays,
       })
+      const authenticatedOwnerSourceRelayUrls =
+        normalizeUntrustedRelayHintsForContext({
+          relayUrls: sourceRelayHints.authenticatedAuthorRelayUrls,
+          approvedRelayUrls: deletionRelayPlan.relayUrls,
+          allowApprovedPrivate: !!options.authenticatedPubkey,
+        })
+      const sourceRelayUrls = uniqueStrings([
+        ...sourceRelayHints.publicRelayUrls,
+        ...authenticatedOwnerSourceRelayUrls,
+      ])
       const preferredDeletionRelayUrls = uniqueStrings([
         ...sourceRelayUrls,
         ...CANONICAL_APP_BACKPLANE_RELAYS,
@@ -2527,58 +2781,69 @@ function getProductRawEventLimit(displayLimit: number | undefined): number {
   )
 }
 
-function parseContactListPubkeys(
-  event: Pick<NDKEvent, "tags"> | undefined
-): string[] {
-  if (!event) return []
-  return uniqueStrings(
-    (event.tags ?? [])
-      .filter((tag) => tag[0] === "p" && typeof tag[1] === "string")
-      .map((tag) => tag[1])
-  )
-}
-
-function pickLatestEvent<T extends Pick<NDKEvent, "created_at">>(
-  events: T[]
-): T | undefined {
-  return events.reduce<T | undefined>((latest, event) => {
-    if (!latest) return event
-    return (event.created_at ?? 0) >= (latest.created_at ?? 0) ? event : latest
-  }, undefined)
-}
-
 export async function getFollowPubkeys(
   query: FollowListQuery
-): Promise<CommerceResult<string[]>> {
+): Promise<FollowListResult> {
   const pubkey = query.pubkey.trim()
   if (!pubkey) {
     return {
       data: [],
-      meta: createMeta("profile_batch", "public", PROFILE_CAPABILITIES),
+      meta: {
+        ...createMeta("profile_batch", "public", PROFILE_CAPABILITIES, {
+          stale: true,
+          degraded: true,
+        }),
+        eventObserved: false,
+        coverage: "unavailable",
+        snapshotState: "none",
+      },
     }
   }
 
-  const relayUrls = await planCommerceReadRelays({
-    intent: "profile_social_feed",
-    authors: [pubkey],
-    authenticatedPubkey: query.authenticatedPubkey,
-  })
-  const events = await runFetchEventsFanout(
+  const readFollowLists =
+    testOverrides.readLatestFollowLists ?? readLatestFollowLists
+  const result = await readFollowLists(
     {
-      kinds: [EVENT_KINDS.CONTACT_LIST],
-      authors: [pubkey],
-      limit: 5,
+      pubkeys: [pubkey],
+      authenticatedPubkey: query.authenticatedPubkey,
     },
-    {
-      relayUrls,
-      connectTimeoutMs: 2_500,
-      fetchTimeoutMs: 4_000,
-    }
+    { now: testOverrides.now }
   )
+  const author = result.authors[0]
+  const selectedEvent = author?.event
+  const eventTimestampPlausible = isPlausibleFollowListEventTimestamp(
+    selectedEvent,
+    testOverrides.now
+  )
+  const latestEvent = eventTimestampPlausible ? selectedEvent : undefined
+  const hiddenFutureSnapshot = selectedEvent !== undefined && !latestEvent
+  const incomplete = author?.coverage !== "complete" || hiddenFutureSnapshot
+  const coverage = hiddenFutureSnapshot
+    ? "limited"
+    : (author?.coverage ?? "unavailable")
+  const retainedSnapshot =
+    author?.snapshotState === "observed" || author?.snapshotState === "pending"
 
   return {
-    data: parseContactListPubkeys(pickLatestEvent(events)),
-    meta: createMeta("profile_batch", "public", PROFILE_CAPABILITIES),
+    data: extractFollowPubkeys(latestEvent?.tags),
+    event: latestEvent,
+    meta: {
+      ...createMeta(
+        "profile_batch",
+        retainedSnapshot ? "local_cache" : "public",
+        PROFILE_CAPABILITIES,
+        {
+          stale: incomplete,
+          degraded: incomplete,
+          capped: !!author?.capped,
+        }
+      ),
+      eventObserved: latestEvent !== undefined,
+      eventCreatedAt: latestEvent?.created_at,
+      eventId: latestEvent?.id,
+      coverage,
+      snapshotState: author?.snapshotState ?? "none",
+    },
   }
 }
 
@@ -3505,6 +3770,23 @@ export interface ProductsByIdsResult extends CommerceResult<
 
 export type ProductAvailabilityCoverage = "complete" | "partial" | "unavailable"
 
+/**
+ * Positive live evidence for one exact listing coordinate. This does not claim
+ * complete relay coverage, global freshness, or an inventory reservation.
+ */
+export function hasExactLiveProductAvailabilityEvidence(
+  diagnostic: ProductAvailabilityDiagnostic | undefined,
+  expectedAddressId: string
+): boolean {
+  return (
+    expectedAddressId.length > 0 &&
+    diagnostic?.addressId === expectedAddressId &&
+    diagnostic.issue === null &&
+    diagnostic.coverage !== undefined &&
+    diagnostic.coverage.listing !== "unavailable"
+  )
+}
+
 function productAvailabilityCoverageFromFanout(
   result: Awaited<ReturnType<typeof fetchEventsFanoutWithDiagnostics>>,
   expectedRelayUrls: readonly string[] = []
@@ -4015,18 +4297,38 @@ export async function getProfiles(
     }
   }
 
-  const cachedRows = query.skipCache ? [] : await loadCachedProfiles(pubkeys)
+  // A forced refresh must bypass cached display data without forgetting the
+  // durable replaceable-event frontier. Otherwise a narrower relay view can
+  // regress raw kind-0 publish context and silently delete unchanged fields.
+  let retainedCachedRows: Array<CachedProfile | undefined>
+  try {
+    retainedCachedRows = await loadCachedProfiles(pubkeys)
+  } catch {
+    // Profile cache persistence is best-effort. A storage failure must not
+    // prevent a forced network refresh or turn a public profile read fatal.
+    retainedCachedRows = pubkeys.map(() => undefined)
+  }
+  const cachedRows = query.skipCache ? [] : retainedCachedRows
+  const cachedRowsByPubkey = new Map(
+    retainedCachedRows.flatMap((row) =>
+      row ? ([[row.pubkey, row]] as const) : []
+    )
+  )
   pubkeys.forEach((pubkey, index) => {
     const cached = cachedRows[index]
+    const isAuthenticatedOwner =
+      !!query.authenticatedPubkey &&
+      pubkey.toLowerCase() === query.authenticatedPubkey.trim().toLowerCase()
     if (
       cached &&
       hasProfileContent(cached) &&
+      !isAuthenticatedOwner &&
       now() - cached.cachedAt < PROFILE_CACHE_TTL_MS
     ) {
-      result[pubkey] = cachedProfileToProfile(cached)
+      result[pubkey] = projectCachedProfile(cached)
     } else {
       if (cached && hasProfileContent(cached)) {
-        result[pubkey] = cachedProfileToProfile(cached)
+        result[pubkey] = projectCachedProfile(cached)
       }
       missing.push(pubkey)
     }
@@ -4055,16 +4357,18 @@ export async function getProfiles(
 
   try {
     const visible = query.priority !== "background"
-    const sourceRelayHints = uniqueStrings([
-      ...getProfileQueryRelayHints({ ...query, pubkeys: missing }),
-      ...(await loadProductSourceRelayHints(missing)),
-    ])
+    const sourceRelayHints = mergeContextualRelayHints(
+      getProfileQueryRelayHints({ ...query, pubkeys: missing }),
+      await loadProductSourceRelayHints(missing, query.authenticatedPubkey)
+    )
     const relayUrls = await planCommerceReadRelays({
       intent: "profiles",
       authors: missing,
       authenticatedPubkey: query.authenticatedPubkey,
       maxRelays: query.readPolicy?.maxRelays ?? (visible ? 8 : 4),
-      extraRelayUrls: sourceRelayHints,
+      extraRelayUrls: sourceRelayHints.publicRelayUrls,
+      authenticatedAuthorRelayUrls:
+        sourceRelayHints.authenticatedAuthorRelayUrls,
     })
     const profileFilter: NDKFilter = {
       kinds: [EVENT_KINDS.PROFILE],
@@ -4081,7 +4385,12 @@ export async function getProfiles(
     const emitProgress = (events: readonly NDKEvent[]) => {
       if (!query.onProgress) return
 
-      const progress = mergeProfileEvents(missing, result, events)
+      const progress = mergeProfileEvents(
+        missing,
+        result,
+        events,
+        cachedRowsByPubkey
+      )
       if (!progress.hasResolvedProfile) return
 
       query.onProgress({
@@ -4105,17 +4414,59 @@ export async function getProfiles(
     const { profiles, rowsToCache } = mergeProfileEvents(
       missing,
       result,
-      events
+      events,
+      cachedRowsByPubkey
     )
-    Object.assign(result, profiles)
+    const liveRowsByPubkey = new Map(
+      mergeProfileEvents(missing, {}, events).rowsToCache.map((row) => [
+        row.pubkey,
+        row,
+      ])
+    )
+    let cacheRetention: CachedProfileRetentionResult | undefined
 
     if (rowsToCache.length > 0) {
-      await storeCachedProfiles(rowsToCache)
+      cacheRetention = await storeCachedProfiles(rowsToCache)
+      for (const row of cacheRetention.rows) {
+        profiles[row.pubkey] = projectCachedProfile(row)
+      }
     }
+    Object.assign(result, profiles)
+
+    const displaced = (cacheRetention?.displacedPubkeys.size ?? 0) > 0
+    const missingPubkeys = new Set(missing)
+    const usesFreshCachedResult = pubkeys.some(
+      (pubkey) =>
+        !missingPubkeys.has(pubkey) && hasProfileContent(result[pubkey])
+    )
+    const usesUnconfirmedCachedResult =
+      cacheRetention?.rows.some((row) => {
+        if (!hasProfileContent(row)) return false
+        const liveRow = liveRowsByPubkey.get(row.pubkey)
+        return (
+          !liveRow ||
+          row.eventId !== liveRow.eventId ||
+          row.eventCreatedAt !== liveRow.eventCreatedAt ||
+          !areProfileProjectionsEqual(
+            projectCachedProfile(row),
+            projectCachedProfile(liveRow)
+          )
+        )
+      }) ?? false
+    const dependsOnCache = usesFreshCachedResult || usesUnconfirmedCachedResult
+    const stale = displaced || usesUnconfirmedCachedResult
 
     return {
       data: result,
-      meta: createMeta("profile_batch", "public", PROFILE_CAPABILITIES),
+      meta: createMeta(
+        "profile_batch",
+        dependsOnCache ? "local_cache" : "public",
+        PROFILE_CAPABILITIES,
+        {
+          stale,
+          degraded: stale,
+        }
+      ),
     }
   } catch (error) {
     const hasAnyCached = Object.keys(result).length > 0
@@ -4167,7 +4518,10 @@ function unwrapOptions(): UnwrapGiftWrapOptions {
 async function fetchParsedOrderMessages(
   principalPubkey: string
 ): Promise<RawMessageFetchResult> {
+  const authorization = resolveInboxSyncAuthorization(principalPubkey)
+  assertInboxSyncAuthority(authorization)
   const cached = await loadCachedOrderMessages(principalPubkey)
+  assertInboxSyncAuthority(authorization)
 
   const cachedById = new Map<string, ParsedOrderMessage>()
   for (const row of cached) {
@@ -4179,29 +4533,35 @@ async function fetchParsedOrderMessages(
   }
 
   try {
-    const ndk = await runRequireNdkConnected()
-    const signer = ndk.signer
+    const signer = await resolveEnvelopeSigner()
     if (!signer) {
       if (cachedById.size > 0) {
         const messages = Array.from(cachedById.values()).sort(
           (a, b) => a.createdAt - b.createdAt
         )
+        assertInboxSyncAuthority(authorization)
         return {
           messages,
           source: "local_cache",
           stale: true,
           decryptFailures: [],
+          inbox: unavailableInboxStatus(),
         }
       }
       throw new Error("Connect your Nostr signer to view order conversations.")
     }
 
-    const sync = await syncPrivateMessageInbox(principalPubkey, signer)
+    const sync = await syncPrivateMessageInbox(
+      principalPubkey,
+      signer,
+      authorization
+    )
     for (const parsed of sync.orderMessages) cachedById.set(parsed.id, parsed)
 
     const messages = Array.from(cachedById.values()).sort(
       (a, b) => a.createdAt - b.createdAt
     )
+    assertInboxSyncAuthority(authorization)
     return {
       messages,
       source:
@@ -4211,15 +4571,18 @@ async function fetchParsedOrderMessages(
       inbox: sync.inbox,
     }
   } catch (error) {
+    if (error instanceof ProtectedInboxAuthorityChangedError) throw error
     if (cachedById.size > 0) {
       const messages = Array.from(cachedById.values()).sort(
         (a, b) => a.createdAt - b.createdAt
       )
+      assertInboxSyncAuthority(authorization)
       return {
         messages,
         source: "local_cache",
         stale: true,
         decryptFailures: [],
+        inbox: unavailableInboxStatus(),
       }
     }
     throw error
@@ -4240,7 +4603,7 @@ async function resolvePrincipalInboxDeclaration(
       const secure = relays.filter((url) => !isInsecureRelayUrl(url))
       return {
         pubkey: principalPubkey,
-        state: secure.length > 0 ? "declared" : "not_declared",
+        state: secure.length > 0 ? "declared" : "not_observed",
         relayUrls: secure,
         stale: false,
         fetchedAt: now(),
@@ -4257,6 +4620,7 @@ async function resolvePrincipalInboxDeclaration(
   }
   return await resolveInboxDeclaration(principalPubkey, {
     fetchEventsWithDiagnostics: runFetchEventsFanoutWithDiagnostics,
+    allowLocalRelayUrlsForPubkey: principalPubkey,
   })
 }
 
@@ -4272,7 +4636,8 @@ type InboxWrapFetchResult = {
  */
 async function fetchNewInboxWraps(
   principalPubkey: string,
-  limit: number
+  limit: number,
+  authorization: ProtectedReadAuthorization | null
 ): Promise<InboxWrapFetchResult> {
   const filter: NDKFilter = {
     kinds: [EVENT_KINDS.GIFT_WRAP],
@@ -4283,22 +4648,57 @@ async function fetchNewInboxWraps(
   const declaration = await resolvePrincipalInboxDeclaration(principalPubkey)
   const readPlan = planInboxReadRelays({
     declaration,
+    authenticatedPubkey: principalPubkey,
     maxRelays: DM_INBOX_READ_FANOUT,
   })
 
-  const result = await runFetchEventsFanoutWithDiagnostics(filter, {
+  if (
+    testOverrides.fetchEventsFanoutWithDiagnostics ||
+    testOverrides.fetchEventsFanout
+  ) {
+    const result = await runFetchEventsFanoutWithDiagnostics(filter, {
+      relayUrls: readPlan.relayUrls,
+      connectTimeoutMs: 4_000,
+      fetchTimeoutMs: 12_000,
+    })
+    const successful = successfulWrapIdsByPrincipal.get(principalPubkey)
+    return {
+      wraps: result.events.filter((event) => !successful?.has(event.id)),
+      inbox: {
+        declarationState: declaration.state,
+        coverage: deriveInboxReadCoverage(result),
+        readSource: readPlan.source,
+        authentication: {
+          state: "not_challenged",
+          challengedCount: 0,
+          succeededCount: 0,
+          failedCount: 0,
+        },
+      },
+    }
+  }
+
+  const protectedResult = await (
+    testOverrides.readProtectedInbox ?? readProtectedInbox
+  )({
+    principalPubkey,
     relayUrls: readPlan.relayUrls,
+    limit,
+    authorization,
     connectTimeoutMs: 4_000,
-    fetchTimeoutMs: 12_000,
+    queryTimeoutMs: 12_000,
   })
 
   const successful = successfulWrapIdsByPrincipal.get(principalPubkey)
   return {
-    wraps: result.events.filter((event) => !successful?.has(event.id)),
+    wraps: protectedResult.events
+      .filter((event) => !successful?.has(event.id))
+      .map((event) => new NDKEvent(undefined, event)),
     inbox: {
       declarationState: declaration.state,
-      coverage: deriveInboxReadCoverage(result),
+      coverage: protectedResult.coverage,
       readSource: readPlan.source,
+      authentication: protectedResult.auth,
     },
   }
 }
@@ -4332,6 +4732,33 @@ async function storeCachedDirectMessages(rows: StoredMessage[]): Promise<void> {
   await db.messages.bulkPut(rows)
 }
 
+async function persistLegacyDirectMessages(
+  rows: StoredMessage[],
+  authorization: ProtectedReadAuthorization | null
+): Promise<void> {
+  const assertAuthority = () => assertInboxSyncAuthority(authorization)
+  assertAuthority()
+  if (rows.length === 0) return
+
+  if (testOverrides.persistLegacyDirectMessages) {
+    await testOverrides.persistLegacyDirectMessages(rows, assertAuthority)
+    assertAuthority()
+    return
+  }
+  if (testOverrides.putCachedDirectMessages) {
+    await storeCachedDirectMessages(rows)
+    assertAuthority()
+    return
+  }
+
+  await db.transaction("rw", db.messages, async () => {
+    assertAuthority()
+    await db.messages.bulkPut(rows)
+    assertAuthority()
+  })
+  assertAuthority()
+}
+
 function cachedDirectMessageRow(message: ParsedDirectMessage): StoredMessage {
   return {
     id: message.id,
@@ -4347,6 +4774,46 @@ function cachedDirectMessageRow(message: ParsedDirectMessage): StoredMessage {
   }
 }
 
+async function persistProtectedInboxMessages(
+  orderRows: CachedOrderMessage[],
+  directRows: StoredMessage[],
+  authorization: ProtectedReadAuthorization | null
+): Promise<void> {
+  const assertAuthority = () => assertInboxSyncAuthority(authorization)
+  assertAuthority()
+
+  if (testOverrides.persistProtectedInboxMessages) {
+    await testOverrides.persistProtectedInboxMessages(
+      orderRows,
+      directRows,
+      assertAuthority
+    )
+    assertAuthority()
+    return
+  }
+
+  if (
+    testOverrides.putCachedOrderMessages ||
+    testOverrides.putCachedDirectMessages
+  ) {
+    await storeCachedOrderMessages(orderRows)
+    assertAuthority()
+    await storeCachedDirectMessages(directRows)
+    assertAuthority()
+    return
+  }
+
+  await db.transaction("rw", db.orderMessages, db.messages, async () => {
+    assertAuthority()
+    if (orderRows.length > 0) await db.orderMessages.bulkPut(orderRows)
+    if (directRows.length > 0) await db.messages.bulkPut(directRows)
+    // Throwing here aborts the Dexie transaction, including completed bulkPut
+    // requests, if another tab changed signer authority during persistence.
+    assertAuthority()
+  })
+  assertAuthority()
+}
+
 function parseCachedDirectMessage(row: StoredMessage): ParsedDirectMessage {
   return {
     id: row.id,
@@ -4358,32 +4825,34 @@ function parseCachedDirectMessage(row: StoredMessage): ParsedDirectMessage {
   }
 }
 
-function successfulLegacyDmIds(principalPubkey: string): Set<string> {
-  let ids = successfulLegacyDmIdsByPrincipal.get(principalPubkey)
+function successfulLegacyDmIds(sessionPrincipalKey: string): Set<string> {
+  let ids = successfulLegacyDmIdsByPrincipal.get(sessionPrincipalKey)
   if (!ids) {
     ids = new Set<string>()
-    successfulLegacyDmIdsByPrincipal.set(principalPubkey, ids)
+    successfulLegacyDmIdsByPrincipal.set(sessionPrincipalKey, ids)
   }
   return ids
 }
 
 function retryLegacyDms(
-  principalPubkey: string
+  sessionPrincipalKey: string
 ): Map<
   string,
   { event: NDKEvent; attempts: number; failure?: LegacyDmDecryptFailure }
 > {
-  let events = retryLegacyDmsByPrincipal.get(principalPubkey)
+  let events = retryLegacyDmsByPrincipal.get(sessionPrincipalKey)
   if (!events) {
     events = new Map()
-    retryLegacyDmsByPrincipal.set(principalPubkey, events)
+    retryLegacyDmsByPrincipal.set(sessionPrincipalKey, events)
   }
   return events
 }
 
 async function runLegacyDmSync(
   principalPubkey: string,
-  signer: NDKSigner
+  signer: NDKSigner,
+  authorization: ProtectedReadAuthorization | null,
+  sessionPrincipalKey: string
 ): Promise<LegacyDmSyncResult> {
   const relayUrls = await planCommerceReadRelays({
     intent: "legacy_dm",
@@ -4411,9 +4880,10 @@ async function runLegacyDmSync(
     ),
     loadCachedDirectMessages(principalPubkey),
   ])
+  assertInboxSyncAuthority(authorization)
   const cachedIds = new Set(cached.map((row) => row.id))
-  const successful = successfulLegacyDmIds(principalPubkey)
-  const retry = retryLegacyDms(principalPubkey)
+  const successful = successfulLegacyDmIds(sessionPrincipalKey)
+  const retry = retryLegacyDms(sessionPrincipalKey)
   const candidates = new Map<string, NDKEvent>()
   for (const { event, attempts } of retry.values()) {
     if (attempts < MAX_LEGACY_DM_DECRYPT_ATTEMPTS) {
@@ -4448,6 +4918,7 @@ async function runLegacyDmSync(
         decryptLegacyDirectMessage(event, principalPubkey, decrypt)
       )
     )
+    assertInboxSyncAuthority(authorization)
     for (const outcome of outcomes) {
       if (outcome.status === "ignored") {
         successful.add(outcome.eventId)
@@ -4472,15 +4943,21 @@ async function runLegacyDmSync(
   }
 
   try {
-    await storeCachedDirectMessages(messages.map(cachedDirectMessageRow))
+    await persistLegacyDirectMessages(
+      messages.map(cachedDirectMessageRow),
+      authorization
+    )
     for (const message of messages) {
       successful.add(message.id)
       retry.delete(message.id)
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof ProtectedInboxAuthorityChangedError) throw error
+    assertInboxSyncAuthority(authorization)
     // Keep encrypted events in memory for retry; plaintext remains transient.
   }
 
+  assertInboxSyncAuthority(authorization)
   return {
     directMessages: messages,
     decryptFailures: Array.from(retry.values()).flatMap(({ failure }) =>
@@ -4491,17 +4968,30 @@ async function runLegacyDmSync(
 
 async function syncLegacyDms(
   principalPubkey: string,
-  signer: NDKSigner
+  signer: NDKSigner,
+  authorization: ProtectedReadAuthorization | null
 ): Promise<LegacyDmSyncResult> {
-  const existing = legacyDmSyncPromises.get(principalPubkey)
+  const syncKey = `${authorization?.sessionScope ?? "legacy-test"}:${principalPubkey}`
+  const existing = legacyDmSyncPromises.get(syncKey)
   if (existing) return await existing
-  const pending = runLegacyDmSync(principalPubkey, signer)
-  legacyDmSyncPromises.set(principalPubkey, pending)
+  const pending = runLegacyDmSync(
+    principalPubkey,
+    signer,
+    authorization,
+    syncKey
+  )
+  legacyDmSyncPromises.set(syncKey, pending)
   try {
     return await pending
+  } catch (error) {
+    if (error instanceof ProtectedInboxAuthorityChangedError) {
+      successfulLegacyDmIdsByPrincipal.delete(syncKey)
+      retryLegacyDmsByPrincipal.delete(syncKey)
+    }
+    throw error
   } finally {
-    if (legacyDmSyncPromises.get(principalPubkey) === pending) {
-      legacyDmSyncPromises.delete(principalPubkey)
+    if (legacyDmSyncPromises.get(syncKey) === pending) {
+      legacyDmSyncPromises.delete(syncKey)
     }
   }
 }
@@ -4528,13 +5018,15 @@ function retryWraps(
 
 async function runPrivateMessageInboxSync(
   principalPubkey: string,
-  signer: NDKSigner
+  signer: NDKSigner,
+  authorization: ProtectedReadAuthorization | null
 ): Promise<PrivateInboxSyncResult> {
   const [cachedOrders, cachedDirect, fetched] = await Promise.all([
     loadCachedOrderMessages(principalPubkey),
     loadCachedDirectMessages(principalPubkey),
-    fetchNewInboxWraps(principalPubkey, 400),
+    fetchNewInboxWraps(principalPubkey, 400, authorization),
   ])
+  assertInboxSyncAuthority(authorization)
   const cachedOrderIds = new Set(cachedOrders.map((row) => row.id))
   const cachedDirectIds = new Set(cachedDirect.map((row) => row.id))
   const successful = successfulWrapIds(principalPubkey)
@@ -4552,6 +5044,9 @@ async function runPrivateMessageInboxSync(
     signer,
     unwrapOptions()
   )
+  // Decrypted rumors must not escape after a cross-tab revision/account change,
+  // even before the browser delivers its asynchronous storage event.
+  assertInboxSyncAuthority(authorization)
   const orderEntries: Array<{
     wrapId: string
     message: ParsedOrderMessage
@@ -4611,26 +5106,25 @@ async function runPrivateMessageInboxSync(
   const cachedOrderEntries = orderEntries.filter((entry) => entry.isCached)
   const newOrderEntries = orderEntries.filter((entry) => !entry.isCached)
   for (const entry of cachedOrderEntries) persisted(entry.wrapId)
-  try {
-    await storeCachedOrderMessages(
-      newOrderEntries.map((entry) => cachedOrderMessageRow(entry.message))
-    )
-    for (const entry of newOrderEntries) persisted(entry.wrapId)
-  } catch {
-    // Keep wrappers pending for a later cache retry; parsed messages remain usable.
-  }
-
   const cachedDirectEntries = directEntries.filter((entry) => entry.isCached)
   const newDirectEntries = directEntries.filter((entry) => !entry.isCached)
   for (const entry of cachedDirectEntries) persisted(entry.wrapId)
+
   try {
-    await storeCachedDirectMessages(
-      newDirectEntries.map((entry) => cachedDirectMessageRow(entry.message))
+    await persistProtectedInboxMessages(
+      newOrderEntries.map((entry) => cachedOrderMessageRow(entry.message)),
+      newDirectEntries.map((entry) => cachedDirectMessageRow(entry.message)),
+      authorization
     )
+    for (const entry of newOrderEntries) persisted(entry.wrapId)
     for (const entry of newDirectEntries) persisted(entry.wrapId)
-  } catch {
+  } catch (error) {
+    if (error instanceof ProtectedInboxAuthorityChangedError) throw error
+    assertInboxSyncAuthority(authorization)
     // Keep wrappers pending for a later cache retry; parsed messages remain usable.
   }
+
+  assertInboxSyncAuthority(authorization)
 
   return {
     orderMessages: orderEntries.map((entry) => entry.message),
@@ -4644,18 +5138,24 @@ async function runPrivateMessageInboxSync(
 
 async function syncPrivateMessageInbox(
   principalPubkey: string,
-  signer: NDKSigner
+  signer: NDKSigner,
+  authorization: ProtectedReadAuthorization | null
 ): Promise<PrivateInboxSyncResult> {
-  const existing = inboxSyncPromises.get(principalPubkey)
+  const syncKey = `${authorization?.sessionScope ?? "legacy-test"}:${principalPubkey}`
+  const existing = inboxSyncPromises.get(syncKey)
   if (existing) return await existing
 
-  const pending = runPrivateMessageInboxSync(principalPubkey, signer)
-  inboxSyncPromises.set(principalPubkey, pending)
+  const pending = runPrivateMessageInboxSync(
+    principalPubkey,
+    signer,
+    authorization
+  )
+  inboxSyncPromises.set(syncKey, pending)
   try {
     return await pending
   } finally {
-    if (inboxSyncPromises.get(principalPubkey) === pending) {
-      inboxSyncPromises.delete(principalPubkey)
+    if (inboxSyncPromises.get(syncKey) === pending) {
+      inboxSyncPromises.delete(syncKey)
     }
   }
 }
@@ -4663,7 +5163,10 @@ async function syncPrivateMessageInbox(
 async function fetchParsedDirectMessages(
   principalPubkey: string
 ): Promise<RawDirectMessageFetchResult> {
+  const authorization = resolveInboxSyncAuthorization(principalPubkey)
+  assertInboxSyncAuthority(authorization)
   const cached = await loadCachedDirectMessages(principalPubkey)
+  assertInboxSyncAuthority(authorization)
   const cachedById = new Map<string, ParsedDirectMessage>()
   const unreadMessageIds = new Set<string>()
   for (const row of cached) {
@@ -4672,13 +5175,13 @@ async function fetchParsedDirectMessages(
   }
 
   try {
-    const ndk = await runRequireNdkConnected()
-    const signer = ndk.signer
+    const signer = await resolveEnvelopeSigner()
     if (!signer) {
       if (cachedById.size > 0) {
         const messages = Array.from(cachedById.values()).sort(
           (a, b) => a.createdAt - b.createdAt
         )
+        assertInboxSyncAuthority(authorization)
         return {
           messages,
           unreadMessageIds,
@@ -4686,15 +5189,23 @@ async function fetchParsedDirectMessages(
           stale: true,
           decryptFailures: [],
           legacyDecryptFailures: [],
+          inbox: unavailableInboxStatus(),
         }
       }
       throw new Error("Connect your Nostr signer to view messages.")
     }
 
     const [currentResult, legacyResult] = await Promise.allSettled([
-      syncPrivateMessageInbox(principalPubkey, signer),
-      syncLegacyDms(principalPubkey, signer),
+      syncPrivateMessageInbox(principalPubkey, signer, authorization),
+      syncLegacyDms(principalPubkey, signer, authorization),
     ])
+    assertInboxSyncAuthority(authorization)
+    if (
+      currentResult.status === "rejected" &&
+      currentResult.reason instanceof ProtectedInboxAuthorityChangedError
+    ) {
+      throw currentResult.reason
+    }
     if (
       currentResult.status === "rejected" &&
       legacyResult.status === "rejected" &&
@@ -4724,6 +5235,7 @@ async function fetchParsedDirectMessages(
     const messages = Array.from(cachedById.values()).sort(
       (a, b) => a.createdAt - b.createdAt
     )
+    assertInboxSyncAuthority(authorization)
     return {
       messages,
       unreadMessageIds,
@@ -4737,10 +5249,12 @@ async function fetchParsedDirectMessages(
       inbox: current.inbox,
     }
   } catch (error) {
+    if (error instanceof ProtectedInboxAuthorityChangedError) throw error
     if (cachedById.size > 0) {
       const messages = Array.from(cachedById.values()).sort(
         (a, b) => a.createdAt - b.createdAt
       )
+      assertInboxSyncAuthority(authorization)
       return {
         messages,
         unreadMessageIds,
@@ -4748,6 +5262,7 @@ async function fetchParsedDirectMessages(
         stale: true,
         decryptFailures: [],
         legacyDecryptFailures: [],
+        inbox: unavailableInboxStatus(),
       }
     }
     throw error
