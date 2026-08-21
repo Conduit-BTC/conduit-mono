@@ -13,6 +13,7 @@ import {
   allowsGlobalProductSearch,
   getGlobalProductSearchQueryKey,
   getMerchantIdentityView,
+  getProductShippingPresetEligibility,
   isMarketBrowseRefreshStale,
   mergeProductSearchResults,
   refreshMarketBrowseData,
@@ -329,5 +330,52 @@ describe("market browse model helpers", () => {
     expect(resolved.displayName).toBe("Alice Market")
     expect(resolved.status).toBe("resolved")
     expect(resolved.relayHints).toEqual([])
+  })
+
+  it("prioritizes preset-eligible products without hiding unknown coverage", () => {
+    const eligible = {
+      ...product("eligible", "merchant-a", [], 100),
+      shippingCountries: ["US"],
+      shippingCountryRules: [
+        { code: "US", name: "US", restrictTo: [], exclude: [] },
+      ],
+    }
+    const unknown = {
+      ...product("unknown", "merchant-b", [], 300),
+      shippingCountries: [],
+      shippingCountryRules: [],
+    }
+    const ineligible = {
+      ...product("ineligible", "merchant-c", [], 500),
+      shippingCountries: ["CA"],
+      shippingCountryRules: [
+        { code: "CA", name: "CA", restrictTo: [], exclude: [] },
+      ],
+    }
+
+    expect(
+      getProductShippingPresetEligibility(unknown, {
+        country: "US",
+        postalCode: "94559",
+      })
+    ).toBe("unknown")
+    expect(
+      sortBrowseProducts(
+        [ineligible, unknown, eligible],
+        "newest",
+        null,
+        {},
+        { country: "US", postalCode: "94559" }
+      ).map((item) => item.id)
+    ).toEqual(["eligible", "unknown", "ineligible"])
+    expect(
+      sortBrowseProducts(
+        [ineligible, unknown, eligible],
+        "price_asc",
+        null,
+        {},
+        { country: "US", postalCode: "94559" }
+      ).map((item) => item.id)
+    ).toEqual(["ineligible", "unknown", "eligible"])
   })
 })

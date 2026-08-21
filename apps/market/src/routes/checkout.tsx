@@ -90,6 +90,7 @@ import {
 import { useMerchantTrustContext } from "../hooks/useMerchantTrustContext"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import { useWallets, type WalletRuntimeState } from "../hooks/useWallets"
+import { useShopperPresets } from "../hooks/useShopperPresets"
 import {
   type NwcSessionBalanceState,
   type NwcSessionBudgetState,
@@ -143,7 +144,10 @@ import {
 } from "../lib/checkout-validation"
 import {
   clearCheckoutShippingSession,
-  readCheckoutShippingSession,
+  DEFAULT_CHECKOUT_SHIPPING,
+  getIdentityBoundShippingPreset,
+  getShippingFormFromPreset,
+  initializeCheckoutShippingSession,
   writeCheckoutShippingSession,
 } from "../lib/checkout-session"
 import {
@@ -900,11 +904,18 @@ function OrderSummary({
 // ─── Checkout page ────────────────────────────────────────────────────────────
 
 function CheckoutPage() {
-  const { pubkey, signer, capabilities, status: authStatus } = useAuth()
+  const {
+    pubkey,
+    restorePendingPubkey,
+    signer,
+    capabilities,
+    status: authStatus,
+  } = useAuth()
   const cart = useCart()
   const search = Route.useSearch()
   const navigate = useNavigate()
   const shopperPricing = useShopperPricing()
+  const shopperPresets = useShopperPresets()
   const btcUsdRateQuery = shopperPricing.rateQuery
   const wallets = useWallets()
   const checkoutWalletNetwork = getWalletNetworkFromLightningConfig(
@@ -921,6 +932,7 @@ function CheckoutPage() {
     useState<CheckoutPaymentTarget | null>(null)
   const selectedPaymentTarget = resolveCheckoutPaymentTarget({
     selection: paymentTargetSelection,
+    preferredRail: shopperPresets.preset.preferredRail,
     eligibleWallets,
     weblnAvailable,
   })
@@ -953,8 +965,12 @@ function CheckoutPage() {
   })
 
   const [step, setStep] = useState<CheckoutStep>("shipping")
-  const [shipping, setShipping] = useState<ShippingFormState>(() =>
-    readCheckoutShippingSession()
+  const checkoutShippingInitializedRef = useRef(false)
+  const presetMaySeedShippingRef = useRef(false)
+  const presetSeededShippingRef = useRef(false)
+  const presetIdentityRef = useRef<string | null>(null)
+  const [shipping, setShipping] = useState<ShippingFormState>(
+    DEFAULT_CHECKOUT_SHIPPING
   )
   const [note, setNote] = useState("")
   const [error, setError] = useState<string | null>(null)
@@ -1007,8 +1023,10 @@ function CheckoutPage() {
   })
   const signerConnected = authSignerReadiness === "ready"
   const signedBuyerPubkey = signerConnected ? pubkey : null
-  const authPending = authSignerReadiness === "pending"
-  const isGuestCheckout = authSignerReadiness === "disconnected"
+  const draftOwnerIdentity = authStatus === "connected" ? pubkey : null
+  const authPending =
+    authSignerReadiness === "pending" || restorePendingPubkey !== null
+  const isGuestCheckout = !authPending && authSignerReadiness === "disconnected"
   const signerBlockedMessage =
     authSignerReadiness === "unavailable"
       ? "Your Nostr account is connected, but its signer is unavailable. Disconnect and reconnect it before sending this order. Nothing will be sent or paid until you reconnect."
@@ -1023,6 +1041,86 @@ function CheckoutPage() {
     }
     return { kind: "signed_in", pubkey: signedBuyerPubkey, signer }
   }
+
+  useEffect(() => {
+    if (authPending) return
+
+    const preset = getIdentityBoundShippingPreset(
+      draftOwnerIdentity,
+      shopperPresets.presetOwnerPubkey,
+      shopperPresets.preset.shipping
+    )
+    if (!checkoutShippingInitializedRef.current) {
+      // The first settled identity decides the storage boundary. Until then,
+      // checkout renders defaults and never reads draft address/contact values.
+      const initialized = initializeCheckoutShippingSession(
+        preset,
+        draftOwnerIdentity
+      )
+      checkoutShippingInitializedRef.current = true
+      presetIdentityRef.current = draftOwnerIdentity
+      presetSeededShippingRef.current =
+        !initialized.hasActiveDraft && preset !== null
+      presetMaySeedShippingRef.current =
+        !initialized.hasActiveDraft && preset === null
+      setShipping(initialized.value)
+      return
+    }
+
+    const previousIdentity = presetIdentityRef.current
+    if (previousIdentity === draftOwnerIdentity) return
+    presetIdentityRef.current = draftOwnerIdentity
+
+    if (!previousIdentity && draftOwnerIdentity) {
+      const initialized = initializeCheckoutShippingSession(
+        preset,
+        draftOwnerIdentity
+      )
+      presetSeededShippingRef.current =
+        !initialized.hasActiveDraft && preset !== null
+      presetMaySeedShippingRef.current =
+        !initialized.hasActiveDraft && preset === null
+      setShipping(initialized.value)
+      return
+    }
+
+    clearCheckoutShippingSession()
+    presetMaySeedShippingRef.current = !preset
+    presetSeededShippingRef.current = preset !== null
+    const next = preset
+      ? getShippingFormFromPreset(preset)
+      : DEFAULT_CHECKOUT_SHIPPING
+    setShipping(next)
+  }, [
+    shopperPresets.preset.shipping,
+    shopperPresets.presetOwnerPubkey,
+    authPending,
+    draftOwnerIdentity,
+  ])
+
+  useEffect(() => {
+    const preset = getIdentityBoundShippingPreset(
+      draftOwnerIdentity,
+      shopperPresets.presetOwnerPubkey,
+      shopperPresets.preset.shipping
+    )
+    if (!preset) {
+      if (presetSeededShippingRef.current) {
+        presetSeededShippingRef.current = false
+        setShipping(DEFAULT_CHECKOUT_SHIPPING)
+      }
+      return
+    }
+    if (!presetMaySeedShippingRef.current) return
+    presetMaySeedShippingRef.current = false
+    presetSeededShippingRef.current = true
+    const next = getShippingFormFromPreset(preset)
+    setShipping(next)
+  }, [
+    shopperPresets.preset.shipping,
+    shopperPresets.presetOwnerPubkey,
+    draftOwnerIdentity,
+  ])
 
   const selectedMerchant =
     search.merchant ??
@@ -1646,13 +1744,19 @@ function CheckoutPage() {
     field: K,
     value: ShippingFormState[K]
   ): void {
+    presetMaySeedShippingRef.current = false
+    presetSeededShippingRef.current = false
     const normalizedValue =
       field === "phone"
         ? (sanitizeShippingPhoneInput(String(value)) as ShippingFormState[K])
         : value
-    const next = { ...shipping, [field]: normalizedValue }
+    const next = {
+      ...shipping,
+      [field]: normalizedValue,
+      ...(field === "firstName" || field === "lastName" ? { name: "" } : {}),
+    }
     setShipping(next)
-    writeCheckoutShippingSession(next)
+    writeCheckoutShippingSession(next, undefined, undefined, draftOwnerIdentity)
     setShippingErrors(validateCheckoutDetails(next))
     if (isValidationField(field)) {
       markShippingFieldTouched(field)

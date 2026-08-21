@@ -39,7 +39,11 @@ import {
   publishBuyerOrderMessage,
   type BuyerOrderSigningIdentity,
 } from "./order-publish"
-import { payCheckoutInvoice, type CheckoutPaymentTarget } from "./payment-rails"
+import {
+  isAmbiguousCheckoutPaymentError,
+  payCheckoutInvoice,
+  type CheckoutPaymentTarget,
+} from "./payment-rails"
 import { savePaymentAttempt, updatePaymentAttempt } from "./payment-attempts"
 
 export function getLifecyclePaymentProofAction(
@@ -322,13 +326,6 @@ function requirePreparedAnonZap(
   }
 
   return prepared
-}
-
-function isAmbiguousPaymentError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false
-  return /Check your wallet before trying another payment path\./i.test(
-    error.message
-  )
 }
 
 type Listener = (state: OrderPaymentRuntimeState) => void
@@ -1109,7 +1106,7 @@ export async function runOrderPayment(
           { paymentStatus: "paid", proofDeliveryStatus: "retry_needed" },
           { running: false, stage: null }
         )
-      } else if (isAmbiguousPaymentError(e)) {
+      } else if (isAmbiguousCheckoutPaymentError(e)) {
         await patchAndEmit(
           orderId,
           {

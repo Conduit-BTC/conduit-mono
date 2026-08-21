@@ -7,6 +7,7 @@ import {
   Radio,
   ReceiptText,
   Search,
+  Settings2,
   ShoppingCart,
   Wallet,
 } from "lucide-react"
@@ -158,7 +159,7 @@ function AccountMenuLink({
   icon: ReactNode
   label: string
   detail?: string
-  to: "/profile" | "/network" | "/wallet"
+  to: "/profile" | "/preferences" | "/network" | "/wallet"
   onClick: () => void
 }) {
   return (
@@ -255,6 +256,12 @@ function AccountControl({
           icon={<CircleUser className="size-4" />}
           label="Profile"
           to="/profile"
+          onClick={() => setOpen(false)}
+        />
+        <AccountMenuLink
+          icon={<Settings2 className="size-4" />}
+          label="Preferences"
+          to="/preferences"
           onClick={() => setOpen(false)}
         />
         <AccountMenuLink

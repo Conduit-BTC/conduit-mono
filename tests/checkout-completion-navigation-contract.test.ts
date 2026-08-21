@@ -248,9 +248,9 @@ describe("checkout completion navigation contracts", () => {
       placeOrderIndex
     )
 
-    expect(checkoutRoute).toContain(
-      "const { pubkey, signer, capabilities, status: authStatus } = useAuth()"
-    )
+    expect(checkoutRoute).toContain("restorePendingPubkey,")
+    expect(checkoutRoute).toContain("signer,")
+    expect(checkoutRoute).toContain("status: authStatus,")
     expect(payNowIndex).toBeGreaterThan(-1)
     expect(payNowPreflightIndex).toBeGreaterThan(payNowIndex)
     expect(payNowPreflightIndex).toBeLessThan(payNowInFlightIndex)
@@ -258,6 +258,19 @@ describe("checkout completion navigation contracts", () => {
     expect(placeOrderPreflightIndex).toBeLessThan(placeOrderInFlightIndex)
     expect(checkoutRoute).toContain(
       'kind: "signed_in", pubkey: signedBuyerPubkey, signer'
+    )
+  })
+
+  it("does not classify an interactively connecting signer as a guest checkout", async () => {
+    const checkoutRoute = await Bun.file(
+      "apps/market/src/routes/checkout.tsx"
+    ).text()
+
+    expect(checkoutRoute).toContain(
+      'authSignerReadiness === "pending" || restorePendingPubkey !== null'
+    )
+    expect(checkoutRoute).toContain(
+      'const isGuestCheckout = !authPending && authSignerReadiness === "disconnected"'
     )
   })
 
