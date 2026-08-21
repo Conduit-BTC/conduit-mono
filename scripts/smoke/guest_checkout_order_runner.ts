@@ -199,14 +199,18 @@ async function buildGuestOrderPricing(
   getPricingRate: () => Promise<BtcUsdRateQuote>,
   nowMs: number
 ): Promise<ReadyCheckoutPricing> {
-  if (
-    !record ||
-    record.addressId !== config.productAddress ||
-    record.product.pubkey !== config.merchantPubkey
-  ) {
+  if (!record || record.product.pubkey !== config.merchantPubkey) {
     throw new Error("Guest checkout smoke product could not be verified.")
   }
   const product = record.product
+  if (product.type !== "simple") {
+    throw new Error(
+      "Guest checkout smoke supports only a simple product fixture."
+    )
+  }
+  if (record.addressId !== config.productAddress) {
+    throw new Error("Guest checkout smoke product could not be verified.")
+  }
   if (product.stock === 0) {
     throw new Error("Guest checkout smoke product is out of stock.")
   }

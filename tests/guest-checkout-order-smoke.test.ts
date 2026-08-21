@@ -120,12 +120,13 @@ function productRead(
     degraded?: boolean
     capped?: boolean
     canonicalFreshness?: boolean
+    addressId?: string
     product?: Record<string, unknown>
   } = {}
 ) {
   return {
     data: {
-      addressId: `30402:${MERCHANT_PUBKEY}:fixture`,
+      addressId: overrides.addressId ?? `30402:${MERCHANT_PUBKEY}:fixture`,
       product: {
         pubkey: MERCHANT_PUBKEY,
         title: "Fixture product",
@@ -136,6 +137,7 @@ function productRead(
           currency: "USD",
           normalizedCurrency: "USD",
         },
+        type: "simple",
         format: "digital",
         stock: 1,
         shippingCountryRules: [],
@@ -184,6 +186,38 @@ describe("guest checkout order smoke", () => {
 
     expect(config.shippingCountry).toBe("US")
     expect(config.shippingPostalCode).toBe("00000")
+  })
+
+  it("scopes every fixture value to the smoke step and maps recovery timing", async () => {
+    const workflow = await Bun.file(
+      ".github/workflows/guest-checkout-order-smoke.yml"
+    ).text()
+    const smokeStepStart = workflow.indexOf(
+      "- name: Create and recover encrypted guest order"
+    )
+    expect(smokeStepStart).toBeGreaterThan(-1)
+    const setupSteps = workflow.slice(0, smokeStepStart)
+    const smokeStep = workflow.slice(smokeStepStart)
+    const fixtureNames = [
+      "GUEST_CHECKOUT_SMOKE_MERCHANT_PUBKEY",
+      "GUEST_CHECKOUT_SMOKE_PRODUCT_ADDRESS",
+      "GUEST_CHECKOUT_SMOKE_SHIPPING_COUNTRY",
+      "GUEST_CHECKOUT_SMOKE_SHIPPING_POSTAL_CODE",
+      "GUEST_CHECKOUT_SMOKE_RECOVERY_TIMEOUT_MS",
+      "GUEST_CHECKOUT_SMOKE_RECOVERY_POLL_MS",
+      "GUEST_CHECKOUT_SMOKE_MERCHANT_NSEC",
+    ]
+
+    for (const name of fixtureNames) {
+      expect(setupSteps).not.toContain(name)
+      expect(smokeStep).toContain(name)
+    }
+    expect(smokeStep).toContain(
+      "${{ vars.GUEST_CHECKOUT_SMOKE_RECOVERY_TIMEOUT_MS }}"
+    )
+    expect(smokeStep).toContain(
+      "${{ vars.GUEST_CHECKOUT_SMOKE_RECOVERY_POLL_MS }}"
+    )
   })
 
   it("rejects signer and product ownership mismatches", () => {
@@ -369,6 +403,46 @@ describe("guest checkout order smoke", () => {
       expect(formatGuestCheckoutOrderSmokeFailure(failure)).toBe(
         "Guest checkout order smoke failed at product_read."
       )
+      expect(published).toBe(false)
+    }
+  })
+
+  it("rejects every non-simple fixture before pricing or publish", async () => {
+    const config = parseGuestCheckoutOrderSmokeConfig(environment())
+    const nonSimpleReads = [
+      productRead({ product: { type: "variable" } }),
+      productRead({ product: { type: "variation" } }),
+      productRead({
+        addressId: `30402:${MERCHANT_PUBKEY}:projected-parent`,
+        product: { type: "variable" },
+      }),
+    ]
+
+    for (const read of nonSimpleReads) {
+      let pricingRequested = false
+      let published = false
+      let failure: unknown
+
+      try {
+        await runGuestCheckoutOrderSmoke(config, {
+          getProduct: async () => read,
+          getPricingRate: async () => {
+            pricingRequested = true
+            throw new Error("Non-simple fixtures must not request pricing.")
+          },
+          publishOrder: async () => {
+            published = true
+            throw new Error("Non-simple fixtures must not be published.")
+          },
+        })
+      } catch (error) {
+        failure = error
+      }
+
+      expect(formatGuestCheckoutOrderSmokeFailure(failure)).toBe(
+        "Guest checkout order smoke failed at product_read."
+      )
+      expect(pricingRequested).toBe(false)
       expect(published).toBe(false)
     }
   })

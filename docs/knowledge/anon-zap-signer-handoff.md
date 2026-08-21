@@ -469,10 +469,12 @@ injection behavior, or mobile NIP-46 flows.
 Each run leaves one persistent order for the dedicated test merchant. The order
 uses synthetic `.invalid` contact data and is visibly marked as an automated
 test that must not be fulfilled. Keep the workflow manual-only and use only a
-dedicated product. Local development may load the same names from an ignored
-`.env.local`. Store `GUEST_CHECKOUT_SMOKE_MERCHANT_NSEC` only as a protected
-environment secret in GitHub; all other fixture fields are public variables.
-Do not add a static buyer key because every run must create a new guest identity.
+dedicated simple product. Variable parents and variation children are outside
+this canary's fidelity claim. Local development may load the same names from an
+ignored `.env.local`. Store `GUEST_CHECKOUT_SMOKE_MERCHANT_NSEC` only as a
+protected environment secret in GitHub; all other fixture fields are public
+variables. Do not add a static buyer key because every run must create a new
+guest identity.
 
 Before the first dispatch, create the `guest-checkout-smoke` GitHub environment
 with required reviewers and a deployment-branch policy restricted to `main`.
@@ -485,14 +487,17 @@ receive the merchant secret. Configure:
 - for a physical fixture, environment variables
   `GUEST_CHECKOUT_SMOKE_SHIPPING_COUNTRY` and
   `GUEST_CHECKOUT_SMOKE_SHIPPING_POSTAL_CODE`
+- optional environment variables `GUEST_CHECKOUT_SMOKE_RECOVERY_TIMEOUT_MS` and
+  `GUEST_CHECKOUT_SMOKE_RECOVERY_POLL_MS` for slower relay recovery, within the
+  runner's enforced limits
 
 The secret must match the public merchant key. The product coordinate must be a
-current signed kind `30402` listing owned by that merchant and available on the
-configured commerce relays. The merchant must also publish the kind `10050`
-inbox-relay declaration required for NIP-17 delivery, and those relays must be
-reachable by both the Market publisher and Merchant recovery query. A physical
-fixture's country and postal code must satisfy its current signed kind `30406`
-shipping rules.
+current signed, Market-visible simple kind `30402` listing owned by that
+merchant and available on the configured commerce relays. The merchant must
+also publish the kind `10050` inbox-relay declaration required for NIP-17
+delivery, and those relays must be reachable by both the Market publisher and
+Merchant recovery query. A physical fixture's country and postal code must
+satisfy its current signed kind `30406` shipping rules.
 
 For the workflow's initial introduction, the live dispatch is post-merge
 validation: GitHub only accepts `workflow_dispatch` for a workflow present on
