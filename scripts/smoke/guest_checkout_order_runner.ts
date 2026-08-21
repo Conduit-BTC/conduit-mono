@@ -30,8 +30,18 @@ import {
   hasPhysicalItemsMissingShippingSnapshot,
   hasPhysicalItemsMissingShippingZone,
 } from "../../apps/market/src/lib/cart-shipping-options"
-import { createCartItemFromProduct } from "../../apps/market/src/lib/cart-model"
+import {
+  createCartItemFromProduct,
+  getCartCommerceFingerprint,
+  type CartItem,
+} from "../../apps/market/src/lib/cart-model"
 import { publishBuyerOrderMessage } from "../../apps/market/src/lib/order-publish"
+import {
+  UNAVAILABLE_GUEST_CHECKOUT_ORDER_RELAY_EVIDENCE,
+  type GuestCheckoutOrderSmokeRelayEvidence,
+  type GuestCheckoutOrderSmokeStage as EvidenceStage,
+  type GuestCheckoutOrderSmokeStatus as EvidenceStatus,
+} from "./guest_checkout_order_evidence"
 
 const DEFAULT_RECOVERY_TIMEOUT_MS = 90_000
 const DEFAULT_RECOVERY_POLL_MS = 2_000
@@ -41,14 +51,9 @@ const SMOKE_CONTACT = {
   phone: "+1555010100",
 }
 
-export type GuestCheckoutOrderSmokeStage =
-  | "configuration"
-  | "product_read"
-  | "order_build"
-  | "order_publish"
-  | "merchant_recovery"
+export type GuestCheckoutOrderSmokeStage = EvidenceStage
 
-export type GuestCheckoutOrderSmokeStatus = "passed" | "failed" | "inconclusive"
+export type GuestCheckoutOrderSmokeStatus = EvidenceStatus
 
 export type GuestCheckoutOrderSmokeFailureEvidence = {
   status: Exclude<GuestCheckoutOrderSmokeStatus, "passed">
@@ -110,6 +115,7 @@ export type GuestCheckoutOrderSmokeDependencies = {
   ) => GuestIdentity
   publishOrder?: typeof publishBuyerOrderMessage
   getMerchantOrders?: typeof getMerchantConversationList
+  onRelayEvidence?: (evidence: GuestCheckoutOrderSmokeRelayEvidence) => void
   nowMs?: () => number
   sleep?: (milliseconds: number) => Promise<void>
 }
@@ -227,13 +233,10 @@ export function parseGuestCheckoutOrderSmokeConfig(
   }
 }
 
-async function buildGuestOrderPricing(
+function requireGuestOrderCartItem(
   record: CommerceProductRecord | null,
-  config: GuestCheckoutOrderSmokeConfig,
-  getPricingRate: () => Promise<BtcUsdRateQuote>,
-  getShippingOptions: typeof fetchShippingOptions,
-  nowMs: number
-): Promise<ReadyCheckoutPricing> {
+  config: GuestCheckoutOrderSmokeConfig
+): CartItem {
   if (!record || record.product.pubkey !== config.merchantPubkey) {
     throw new Error("Guest checkout smoke product could not be verified.")
   }
@@ -250,13 +253,39 @@ async function buildGuestOrderPricing(
     throw new Error("Guest checkout smoke product is out of stock.")
   }
 
-  const item = {
+  return {
     ...createCartItemFromProduct(product),
     productId: config.productAddress,
     selectedSpecifications: undefined,
     quantity: 1,
   }
+}
 
+function requireCurrentProductRead(meta: {
+  source: string
+  stale: boolean
+  degraded: boolean
+  capped: boolean
+}): void {
+  if (
+    meta.source !== "commerce" ||
+    meta.stale ||
+    meta.degraded ||
+    meta.capped
+  ) {
+    throw new GuestCheckoutOrderSmokeInconclusive(
+      "Guest checkout smoke requires current product data from a complete network read."
+    )
+  }
+}
+
+async function buildGuestOrderPricing(
+  item: CartItem,
+  config: GuestCheckoutOrderSmokeConfig,
+  getPricingRate: () => Promise<BtcUsdRateQuote>,
+  getShippingOptions: typeof fetchShippingOptions,
+  nowMs: () => number
+): Promise<ReadyCheckoutPricing> {
   let merchantShippingOptions: Awaited<
     ReturnType<typeof fetchShippingOptions>
   > = []
@@ -297,9 +326,10 @@ async function buildGuestOrderPricing(
     )
   }
 
-  let pricing = buildCheckoutPricingIntent([item], null, nowMs)
+  let pricing = buildCheckoutPricingIntent([item], null, nowMs())
   if (pricing.status !== "ok") {
-    pricing = buildCheckoutPricingIntent([item], await getPricingRate(), nowMs)
+    const quote = await getPricingRate()
+    pricing = buildCheckoutPricingIntent([item], quote, nowMs())
   }
   if (pricing.status !== "ok") {
     throw new Error(pricing.reason)
@@ -455,6 +485,7 @@ export async function runGuestCheckoutOrderSmoke(
   const publishOrder = dependencies.publishOrder ?? publishBuyerOrderMessage
   const getMerchantOrders =
     dependencies.getMerchantOrders ?? getMerchantConversationList
+  const onRelayEvidence = dependencies.onRelayEvidence ?? (() => {})
   const nowMs = dependencies.nowMs ?? Date.now
   const sleep =
     dependencies.sleep ??
@@ -462,24 +493,18 @@ export async function runGuestCheckoutOrderSmoke(
       new Promise<void>((resolve) => setTimeout(resolve, milliseconds)))
 
   let pricing: ReadyCheckoutPricing
+  let productFingerprint: string
   try {
     const product = await getProduct({ productId: config.productAddress })
-    if (
-      product.meta.source !== "commerce" ||
-      product.meta.stale ||
-      product.meta.degraded ||
-      product.meta.capped
-    ) {
-      throw new GuestCheckoutOrderSmokeInconclusive(
-        "Guest checkout smoke requires current product data from a complete network read."
-      )
-    }
+    requireCurrentProductRead(product.meta)
+    const item = requireGuestOrderCartItem(product.data, config)
+    productFingerprint = getCartCommerceFingerprint([item])
     pricing = await buildGuestOrderPricing(
-      product.data,
+      item,
       config,
       dependencies.getPricingRate ?? fetchBtcUsdRate,
       dependencies.getShippingOptions ?? fetchShippingOptions,
-      nowMs()
+      nowMs
     )
   } catch (error) {
     throw stageFailure("product_read", error)
@@ -507,7 +532,47 @@ export async function runGuestCheckoutOrderSmoke(
   }
 
   try {
-    await publishOrder(rumor, getNdk(), config.merchantPubkey, identity)
+    const product = await getProduct({ productId: config.productAddress })
+    requireCurrentProductRead(product.meta)
+    const refreshedItem = requireGuestOrderCartItem(product.data, config)
+    if (getCartCommerceFingerprint([refreshedItem]) !== productFingerprint) {
+      throw new Error(
+        "Guest checkout smoke product terms changed before publication."
+      )
+    }
+  } catch (error) {
+    throw stageFailure("product_read", error)
+  }
+
+  try {
+    onRelayEvidence({
+      ...UNAVAILABLE_GUEST_CHECKOUT_ORDER_RELAY_EVIDENCE,
+    })
+    const delivery = await publishOrder(
+      rumor,
+      getNdk(),
+      config.merchantPubkey,
+      identity
+    )
+    const relayDelivery = delivery.orderRelayDelivery?.relayDelivery
+    if (relayDelivery) {
+      const relayAcknowledgementCount = relayDelivery.filter(
+        (target) => target.status === "acked"
+      ).length
+      const relayAttemptCount = Math.max(
+        relayAcknowledgementCount,
+        relayDelivery.reduce(
+          (total, target) =>
+            total + Math.max(0, Math.floor(target.attemptCount)),
+          0
+        )
+      )
+      onRelayEvidence({
+        relayAttemptCount,
+        relayAcknowledgementCount,
+        relayObservation: "available",
+      })
+    }
   } catch (error) {
     throw stageFailure("order_publish", error)
   }

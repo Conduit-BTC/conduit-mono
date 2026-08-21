@@ -1,5 +1,9 @@
 import "fake-indexeddb/auto"
 
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+
 import { afterEach, describe, expect, it } from "bun:test"
 import { NDKPrivateKeySigner, nip19 } from "@nostr-dev-kit/ndk"
 import { getPublicKey } from "nostr-tools"
@@ -17,7 +21,19 @@ import {
   parseGuestCheckoutOrderSmokeConfig,
   runGuestCheckoutOrderSmoke,
 } from "../scripts/smoke/guest_checkout_order_runner"
+import {
+  buildGuestCheckoutOrderSmokeArtifact,
+  NO_GUEST_CHECKOUT_ORDER_RELAY_ATTEMPT,
+  parseGuestCheckoutOrderSmokeArtifact,
+  serializeGuestCheckoutOrderSmokeArtifact,
+  UNAVAILABLE_GUEST_CHECKOUT_ORDER_RELAY_EVIDENCE,
+} from "../scripts/smoke/guest_checkout_order_evidence"
+import {
+  applyGuestCheckoutOrderSmokeCleanupOutcome,
+  parseGuestCheckoutOrderSmokeEvidenceContext,
+} from "../scripts/smoke/guest_checkout_order"
 import type { ReadyCheckoutPricing } from "../apps/market/src/lib/checkout-order"
+import { CHECKOUT_QUOTE_MAX_AGE_MS } from "../apps/market/src/lib/checkout-payment"
 
 const MERCHANT_SECRET = Uint8Array.from([...new Uint8Array(31), 7])
 const MERCHANT_PUBKEY = getPublicKey(MERCHANT_SECRET)
@@ -265,17 +281,81 @@ describe("guest checkout order smoke", () => {
     expect(config.shippingPostalCode).toBe("00000")
   })
 
-  it("scopes every fixture value to the smoke step and maps recovery timing", async () => {
+  it("fails invalid dispatches and scopes every fixture value to the smoke step", async () => {
     const workflow = await Bun.file(
       ".github/workflows/guest-checkout-order-smoke.yml"
     ).text()
+    const protectedJobStart = workflow.indexOf("create-and-recover-order:")
+    const dispatchJob = workflow.slice(0, protectedJobStart)
     expect(workflow).toContain("timeout-minutes: 10")
+    expect(dispatchJob).toContain("validate-dispatch:")
+    expect(dispatchJob).toContain('"$CONFIRM_ORDER_CREATION" != "true"')
+    expect(dispatchJob).toContain('"$DISPATCH_REF" != "refs/heads/main"')
+    expect(dispatchJob).toContain("^[0-9a-f]{40}$")
+    const runMarker = "        run: |\n"
+    const gateStart = dispatchJob.indexOf(runMarker)
+    expect(gateStart).toBeGreaterThan(-1)
+    const gateScript = dispatchJob
+      .slice(gateStart + runMarker.length)
+      .trimEnd()
+      .split("\n")
+      .map((line) => line.replace(/^ {10}/, ""))
+      .join("\n")
+    for (const testCase of [
+      {
+        confirmation: "true",
+        ref: "refs/heads/main",
+        sha: "a".repeat(40),
+        exitCode: 0,
+      },
+      {
+        confirmation: "false",
+        ref: "refs/heads/main",
+        sha: "a".repeat(40),
+        exitCode: 1,
+      },
+      {
+        confirmation: "true",
+        ref: "refs/heads/feature",
+        sha: "a".repeat(40),
+        exitCode: 1,
+      },
+      {
+        confirmation: "true",
+        ref: "refs/heads/main",
+        sha: "not-a-sha",
+        exitCode: 1,
+      },
+    ]) {
+      const gate = Bun.spawnSync({
+        cmd: ["bash", "-euo", "pipefail", "-c", gateScript],
+        env: {
+          PATH: process.env.PATH ?? "",
+          CONFIRM_ORDER_CREATION: testCase.confirmation,
+          DISPATCH_REF: testCase.ref,
+          CANDIDATE_SHA: testCase.sha,
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      })
+      expect(gate.exitCode).toBe(testCase.exitCode)
+    }
+    expect(workflow).toContain("needs: validate-dispatch")
+    expect(workflow).not.toContain("if: inputs.confirm_order_creation")
+    expect(workflow).toContain("ref: ${{ github.sha }}")
+    expect(workflow).toContain("fetch-depth: 1")
+    expect(workflow).toContain("persist-credentials: false")
+    expect(workflow).toContain('actual_sha="$(git rev-parse HEAD)"')
     const smokeStepStart = workflow.indexOf(
       "- name: Create and recover encrypted guest order"
     )
+    const evidenceStepStart = workflow.indexOf(
+      "- name: Validate redacted smoke evidence"
+    )
     expect(smokeStepStart).toBeGreaterThan(-1)
+    expect(evidenceStepStart).toBeGreaterThan(smokeStepStart)
     const setupSteps = workflow.slice(0, smokeStepStart)
-    const smokeStep = workflow.slice(smokeStepStart)
+    const smokeStep = workflow.slice(smokeStepStart, evidenceStepStart)
     const fixtureNames = [
       "GUEST_CHECKOUT_SMOKE_MERCHANT_PUBKEY",
       "GUEST_CHECKOUT_SMOKE_PRODUCT_ADDRESS",
@@ -290,12 +370,50 @@ describe("guest checkout order smoke", () => {
       expect(setupSteps).not.toContain(name)
       expect(smokeStep).toContain(name)
     }
+    for (const name of [
+      "GUEST_CHECKOUT_SMOKE_CANDIDATE_SHA",
+      "GUEST_CHECKOUT_SMOKE_WORKFLOW_RUN_ID",
+      "GUEST_CHECKOUT_SMOKE_WORKFLOW_RUN_ATTEMPT",
+      "GUEST_CHECKOUT_SMOKE_EVIDENCE_PATH",
+    ]) {
+      expect(setupSteps).not.toContain(name)
+      expect(smokeStep).toContain(name)
+    }
+    expect(dispatchJob).not.toContain("GUEST_CHECKOUT_SMOKE_")
     expect(smokeStep).toContain(
       "${{ vars.GUEST_CHECKOUT_SMOKE_RECOVERY_TIMEOUT_MS }}"
     )
     expect(smokeStep).toContain(
       "${{ vars.GUEST_CHECKOUT_SMOKE_RECOVERY_POLL_MS }}"
     )
+    expect(workflow).toContain("id: validate_evidence")
+    expect(workflow).toContain("if: always()")
+    expect(workflow).toContain("EXPECTED_SHA: ${{ github.sha }}")
+    expect(workflow).toContain("EXPECTED_RUN_ID: ${{ github.run_id }}")
+    expect(workflow).toContain(
+      "EXPECTED_RUN_ATTEMPT: ${{ github.run_attempt }}"
+    )
+    expect(workflow).toContain(
+      '"$EVIDENCE_PATH" "$EXPECTED_SHA" "$EXPECTED_RUN_ID"'
+    )
+    expect(workflow).toContain(
+      "if: always() && steps.validate_evidence.outcome == 'success'"
+    )
+    expect(workflow).toContain(
+      "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+    )
+    expect(workflow).toContain("name: guest-checkout-order-evidence")
+    expect(workflow).toContain(
+      "path: ${{ runner.temp }}/guest-checkout-order-evidence.json"
+    )
+    expect(workflow).toContain("if-no-files-found: error")
+    expect(workflow).toContain("retention-days: 7")
+
+    const actionReferences = [...workflow.matchAll(/uses:\s+[^@\s]+@([^\s]+)/g)]
+    expect(actionReferences.length).toBeGreaterThan(0)
+    for (const reference of actionReferences) {
+      expect(reference[1]).toMatch(/^[0-9a-f]{40}$/)
+    }
   })
 
   it("rejects signer and product ownership mismatches", () => {
@@ -433,6 +551,109 @@ describe("guest checkout order smoke", () => {
     expect(formatGuestCheckoutOrderSmokeFailure(failure)).toBe(
       "Guest checkout order smoke inconclusive at product_read."
     )
+    expect(published).toBe(false)
+  })
+
+  it("revalidates exact product terms immediately before publication", async () => {
+    const config = parseGuestCheckoutOrderSmokeConfig(environment())
+
+    for (const testCase of [
+      {
+        secondRead: productRead({
+          product: {
+            price: 2,
+            sourcePrice: {
+              amount: 2,
+              currency: "USD",
+              normalizedCurrency: "USD",
+            },
+          },
+        }),
+        status: "failed",
+      },
+      {
+        secondRead: productRead({ product: { stock: 0 } }),
+        status: "failed",
+      },
+      {
+        secondRead: productRead({ degraded: true }),
+        status: "inconclusive",
+      },
+    ] as const) {
+      let productReads = 0
+      let published = false
+      let failure: unknown
+
+      try {
+        await runGuestCheckoutOrderSmoke(config, {
+          getProduct: async () => {
+            productReads += 1
+            return productReads === 1 ? productRead() : testCase.secondRead
+          },
+          getPricingRate: async () => ({
+            rate: 100_000,
+            fetchedAt: 1_700_000_000_000,
+            source: "mempool",
+            fiatUsdRates: {},
+            fiatSource: "frankfurter",
+          }),
+          createOrderId: () => "smoke-order",
+          createGuestIdentity: () => identity(),
+          publishOrder: async () => {
+            published = true
+            throw new Error("Changed product terms must not be published.")
+          },
+          nowMs: () => 1_700_000_000_000,
+        })
+      } catch (error) {
+        failure = error
+      }
+
+      expect(getGuestCheckoutOrderSmokeFailureEvidence(failure)).toEqual({
+        status: testCase.status,
+        stage: "product_read",
+        summary: `Guest checkout order smoke ${testCase.status} at product_read.`,
+      })
+      expect(productReads).toBe(2)
+      expect(published).toBe(false)
+    }
+  })
+
+  it("evaluates a delayed pricing quote with the post-fetch clock", async () => {
+    const config = parseGuestCheckoutOrderSmokeConfig(environment())
+    const quoteFetchedAt = 1_700_000_000_000
+    let now = quoteFetchedAt
+    let published = false
+    let failure: unknown
+
+    try {
+      await runGuestCheckoutOrderSmoke(config, {
+        getProduct: async () => productRead(),
+        getPricingRate: async () => {
+          now = quoteFetchedAt + CHECKOUT_QUOTE_MAX_AGE_MS + 1
+          return {
+            rate: 100_000,
+            fetchedAt: quoteFetchedAt,
+            source: "mempool",
+            fiatUsdRates: {},
+            fiatSource: "frankfurter",
+          }
+        },
+        publishOrder: async () => {
+          published = true
+          throw new Error("A stale quote must not be published.")
+        },
+        nowMs: () => now,
+      })
+    } catch (error) {
+      failure = error
+    }
+
+    expect(getGuestCheckoutOrderSmokeFailureEvidence(failure)).toEqual({
+      status: "failed",
+      stage: "product_read",
+      summary: "Guest checkout order smoke failed at product_read.",
+    })
     expect(published).toBe(false)
   })
 
@@ -675,9 +896,12 @@ describe("guest checkout order smoke", () => {
       | null = null
     let recoveryAuthorizationMethod: string | null = null
     let recoveryCalls = 0
+    let productReads = 0
+    let relayEvidence: unknown
 
     const result = await runGuestCheckoutOrderSmoke(config, {
       getProduct: async (query) => {
+        productReads += 1
         productQuery = query
         return productRead()
       },
@@ -692,7 +916,28 @@ describe("guest checkout order smoke", () => {
       createGuestIdentity: () => identity(),
       publishOrder: async (rumor) => {
         published = rumor
-        return { buyerSelfCopyError: null, localCacheError: null }
+        return {
+          buyerSelfCopyError: null,
+          localCacheError: null,
+          deliveryRoute: "declared_inbox",
+          orderRelayDelivery: {
+            relayDelivery: [
+              {
+                relayUrl: "wss://acked.example",
+                status: "acked",
+                attemptCount: 1,
+              },
+              {
+                relayUrl: "wss://retry.example",
+                status: "timed_out",
+                attemptCount: 2,
+              },
+            ],
+          },
+        } as never
+      },
+      onRelayEvidence: (evidence) => {
+        relayEvidence = evidence
       },
       getMerchantOrders: async () => {
         recoveryCalls += 1
@@ -742,6 +987,13 @@ describe("guest checkout order smoke", () => {
     expect(productQuery).toEqual({
       productId: `30402:${MERCHANT_PUBKEY}:fixture`,
     })
+    expect(productReads).toBe(2)
+    expect(relayEvidence).toEqual({
+      relayAttemptCount: 3,
+      relayAcknowledgementCount: 1,
+      relayObservation: "available",
+    })
+    expect(JSON.stringify(relayEvidence)).not.toContain("relayUrl")
     expect(recoveryCalls).toBe(3)
     expect(published).not.toBeNull()
     const payload = JSON.parse(published!.content)
@@ -967,5 +1219,251 @@ describe("guest checkout order smoke", () => {
     )
     expect(formatted).not.toContain(merchantSecret)
     expect(formatted).not.toContain("private-invalid")
+  })
+
+  it("builds only fixed-schema, candidate-bound smoke evidence", () => {
+    const artifacts = [
+      buildGuestCheckoutOrderSmokeArtifact({
+        candidateCommitSha: "a".repeat(40),
+        workflowRunId: "123",
+        workflowRunAttempt: "1",
+        outcome: { status: "passed", stage: "complete" },
+        relayEvidence: NO_GUEST_CHECKOUT_ORDER_RELAY_ATTEMPT,
+        durationMs: 29_999,
+      }),
+      buildGuestCheckoutOrderSmokeArtifact({
+        candidateCommitSha: "b".repeat(40),
+        workflowRunId: "124",
+        workflowRunAttempt: "2",
+        outcome: { status: "failed", stage: "order_publish" },
+        relayEvidence: UNAVAILABLE_GUEST_CHECKOUT_ORDER_RELAY_EVIDENCE,
+        durationMs: 60_000,
+      }),
+      buildGuestCheckoutOrderSmokeArtifact({
+        candidateCommitSha: "c".repeat(40),
+        workflowRunId: "125",
+        workflowRunAttempt: "3",
+        outcome: { status: "inconclusive", stage: "merchant_recovery" },
+        relayEvidence: {
+          relayAttemptCount: 3,
+          relayAcknowledgementCount: 1,
+          relayObservation: "available",
+        },
+        durationMs: 240_000,
+      }),
+    ]
+
+    expect(artifacts.map((artifact) => artifact.status)).toEqual([
+      "passed",
+      "failed",
+      "inconclusive",
+    ])
+    expect(artifacts.map((artifact) => artifact.failureCode)).toEqual([
+      null,
+      "failed_order_publish",
+      "inconclusive_merchant_recovery",
+    ])
+    expect(artifacts.map((artifact) => artifact.durationBucket)).toEqual([
+      "under_30_seconds",
+      "60_to_119_seconds",
+      "240_seconds_or_more",
+    ])
+    expect(artifacts[1]).toMatchObject({
+      relayAttemptCount: null,
+      relayAcknowledgementCount: null,
+      relayObservation: "unavailable",
+    })
+
+    for (const artifact of artifacts) {
+      const serialized = serializeGuestCheckoutOrderSmokeArtifact(artifact)
+      expect(parseGuestCheckoutOrderSmokeArtifact(serialized)).toEqual(artifact)
+      expect(serialized).not.toContain(MERCHANT_PUBKEY)
+      expect(serialized).not.toMatch(
+        /nsec|npub|relayUrl|orderId|productId|email|phone|invoice/i
+      )
+    }
+  })
+
+  it("validates evidence context before the smoke runner can start", () => {
+    expect(() => parseGuestCheckoutOrderSmokeEvidenceContext({})).toThrow(
+      "Smoke evidence configuration is unavailable."
+    )
+    expect(() =>
+      parseGuestCheckoutOrderSmokeEvidenceContext({
+        GUEST_CHECKOUT_SMOKE_CANDIDATE_SHA: "a".repeat(40),
+        GUEST_CHECKOUT_SMOKE_WORKFLOW_RUN_ID: "invalid",
+        GUEST_CHECKOUT_SMOKE_WORKFLOW_RUN_ATTEMPT: "1",
+        GUEST_CHECKOUT_SMOKE_EVIDENCE_PATH: "/workspace/evidence.json",
+      })
+    ).toThrow("Guest checkout order smoke evidence is invalid.")
+    expect(
+      parseGuestCheckoutOrderSmokeEvidenceContext({
+        GUEST_CHECKOUT_SMOKE_CANDIDATE_SHA: "a".repeat(40),
+        GUEST_CHECKOUT_SMOKE_WORKFLOW_RUN_ID: "123",
+        GUEST_CHECKOUT_SMOKE_WORKFLOW_RUN_ATTEMPT: "1",
+        GUEST_CHECKOUT_SMOKE_EVIDENCE_PATH: "/workspace/evidence.json",
+      })
+    ).toEqual({
+      candidateCommitSha: "a".repeat(40),
+      workflowRunId: "123",
+      workflowRunAttempt: "1",
+      evidencePath: "/workspace/evidence.json",
+    })
+  })
+
+  it("converts a cleanup failure into failed evidence", () => {
+    expect(
+      applyGuestCheckoutOrderSmokeCleanupOutcome(
+        { status: "passed", stage: "complete" },
+        true
+      )
+    ).toEqual({ status: "failed", stage: "cleanup" })
+    expect(
+      applyGuestCheckoutOrderSmokeCleanupOutcome(
+        { status: "inconclusive", stage: "product_read" },
+        true
+      )
+    ).toEqual({ status: "inconclusive", stage: "product_read" })
+  })
+
+  it("rejects unsafe or non-allowlisted smoke evidence", () => {
+    const artifact = buildGuestCheckoutOrderSmokeArtifact({
+      candidateCommitSha: "d".repeat(40),
+      workflowRunId: "123",
+      workflowRunAttempt: "1",
+      outcome: { status: "passed", stage: "complete" },
+      relayEvidence: NO_GUEST_CHECKOUT_ORDER_RELAY_ATTEMPT,
+      durationMs: 1,
+    })
+    const serialized = serializeGuestCheckoutOrderSmokeArtifact(artifact)
+
+    for (const unsafe of [
+      "https://relay.example",
+      "wss://relay.example",
+      "bunker://connection",
+      "nostrconnect://connection",
+      "operator@example.invalid",
+      "127.0.0.1",
+      "2001:0db8:0000:0000:0000:0000:0000:0001",
+      `nsec1${"q".repeat(58)}`,
+      `lnbc${"q".repeat(20)}`,
+      `nwc:${"q".repeat(20)}`,
+      "e".repeat(64),
+    ]) {
+      expect(() =>
+        parseGuestCheckoutOrderSmokeArtifact(
+          serialized.replace("guest-checkout-order-evidence", unsafe)
+        )
+      ).toThrow("Guest checkout order smoke evidence is invalid.")
+    }
+    expect(() =>
+      parseGuestCheckoutOrderSmokeArtifact(
+        JSON.stringify({ ...artifact, unexpected: "unsafe" })
+      )
+    ).toThrow("Guest checkout order smoke evidence is invalid.")
+    expect(() =>
+      parseGuestCheckoutOrderSmokeArtifact(
+        JSON.stringify({ ...artifact, workflowRunId: 123 })
+      )
+    ).toThrow("Guest checkout order smoke evidence is invalid.")
+    expect(() =>
+      buildGuestCheckoutOrderSmokeArtifact({
+        candidateCommitSha: "e".repeat(40),
+        workflowRunId: "0",
+        workflowRunAttempt: "1",
+        outcome: { status: "passed", stage: "complete" },
+        relayEvidence: NO_GUEST_CHECKOUT_ORDER_RELAY_ATTEMPT,
+        durationMs: 1,
+      })
+    ).toThrow("Guest checkout order smoke evidence is invalid.")
+  })
+
+  it("writes redacted failed evidence before the smoke exits nonzero", async () => {
+    const evidenceDirectory = mkdtempSync(
+      join(tmpdir(), "conduit-guest-smoke-evidence-")
+    )
+    const evidencePath = join(evidenceDirectory, "evidence.json")
+    try {
+      const result = Bun.spawnSync({
+        cmd: [process.execPath, "scripts/smoke/guest_checkout_order.ts"],
+        cwd: process.cwd(),
+        env: {
+          PATH: process.env.PATH ?? "",
+          GUEST_CHECKOUT_SMOKE_CANDIDATE_SHA: "f".repeat(40),
+          GUEST_CHECKOUT_SMOKE_WORKFLOW_RUN_ID: "123",
+          GUEST_CHECKOUT_SMOKE_WORKFLOW_RUN_ATTEMPT: "1",
+          GUEST_CHECKOUT_SMOKE_EVIDENCE_PATH: evidencePath,
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      })
+
+      expect(result.exitCode).toBe(1)
+      expect(new TextDecoder().decode(result.stderr)).toBe(
+        "Guest checkout order smoke failed at configuration.\n"
+      )
+      const artifact = parseGuestCheckoutOrderSmokeArtifact(
+        await Bun.file(evidencePath).text()
+      )
+      expect(artifact).toMatchObject({
+        status: "failed",
+        stage: "configuration",
+        failureCode: "failed_configuration",
+        candidateCommitSha: "f".repeat(40),
+        relayAttemptCount: 0,
+        relayAcknowledgementCount: 0,
+        relayObservation: "available",
+      })
+
+      const validEvidence = Bun.spawnSync({
+        cmd: [
+          process.execPath,
+          "scripts/ci/validate_guest_checkout_order_evidence.ts",
+          evidencePath,
+          "f".repeat(40),
+          "123",
+          "1",
+        ],
+        cwd: process.cwd(),
+        stdout: "pipe",
+        stderr: "pipe",
+      })
+      expect(validEvidence.exitCode).toBe(0)
+
+      const misboundEvidence = Bun.spawnSync({
+        cmd: [
+          process.execPath,
+          "scripts/ci/validate_guest_checkout_order_evidence.ts",
+          evidencePath,
+          "0".repeat(40),
+          "123",
+          "1",
+        ],
+        cwd: process.cwd(),
+        stdout: "pipe",
+        stderr: "pipe",
+      })
+      expect(misboundEvidence.exitCode).toBe(1)
+      expect(new TextDecoder().decode(misboundEvidence.stderr)).toBe(
+        "Guest checkout order smoke evidence is invalid.\n"
+      )
+    } finally {
+      rmSync(evidenceDirectory, { recursive: true, force: true })
+    }
+  })
+
+  it("fails evidence preflight before loading fixture configuration", () => {
+    const result = Bun.spawnSync({
+      cmd: [process.execPath, "scripts/smoke/guest_checkout_order.ts"],
+      cwd: process.cwd(),
+      env: { PATH: process.env.PATH ?? "" },
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+
+    expect(result.exitCode).toBe(1)
+    expect(new TextDecoder().decode(result.stderr)).toBe(
+      "Guest checkout order smoke failed at evidence_configuration.\n"
+    )
   })
 })

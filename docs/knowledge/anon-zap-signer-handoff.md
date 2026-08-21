@@ -469,6 +469,20 @@ Exhausted partial or degraded product and inbox evidence is `inconclusive` and
 still returns a nonzero job result. Fixture, construction, publication, and
 complete-read recovery failures remain `failed`.
 
+The workflow fails dispatch validation before it requests protected environment
+access. The confirmation must be true, the ref must be `main`, and the
+candidate must be a 40-character commit SHA. The workflow checks out that exact
+SHA and verifies the checkout before it loads the fixture.
+
+Each attempt uploads one `guest-checkout-order-evidence` artifact after a strict
+privacy check. The fixed schema binds the result to the candidate SHA and
+workflow run. It includes only the status, fixed stage, duration bucket, and
+aggregate relay counts. It excludes identities, product data, order data,
+relay URLs, contacts, invoices, and signer material. A missing, unsafe, or
+misbound artifact fails the job. This protected live canary is source-run
+evidence. It is not deployed-preview, browser-extension, or mobile-wallet UX
+evidence.
+
 Merchant recovery uses a NIP-07-shaped CI adapter over the dedicated test
 signer. The adapter performs real event signing and protected-read
 authorization, but it is not evidence for extension approval UX, browser
@@ -498,6 +512,11 @@ receive the merchant secret. Configure:
 - optional environment variables `GUEST_CHECKOUT_SMOKE_RECOVERY_TIMEOUT_MS` and
   `GUEST_CHECKOUT_SMOKE_RECOVERY_POLL_MS` for slower relay recovery, within the
   runner's enforced limits
+
+Local runs must also set an absolute `GUEST_CHECKOUT_SMOKE_EVIDENCE_PATH`, a
+40-character `GUEST_CHECKOUT_SMOKE_CANDIDATE_SHA`, and positive numeric workflow
+run identifiers. Use synthetic local values. Do not copy protected workflow
+credentials into a local environment.
 
 The secret must match the public merchant key. The product coordinate must be a
 current signed, Market-visible simple kind `30402` listing owned by that
