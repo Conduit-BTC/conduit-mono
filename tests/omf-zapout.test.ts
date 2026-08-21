@@ -150,7 +150,6 @@ describe("parseOmfZapoutReceipt", () => {
       amountMsats: 42_000,
       note: "Paid publicly\nfrom checkout.",
       comment: "Paid publicly from checkout.",
-      productAddress: null,
       productNaddr: null,
       sourceRelayUrls: [],
     })
@@ -186,7 +185,6 @@ describe("parseOmfZapoutReceipt", () => {
     expect(parseOmfZapoutReceipt(receipt as ZapReceiptInput)).toMatchObject({
       note: "sick shirt 🔥",
       comment: "sick shirt 🔥",
-      productAddress: PRODUCT_ADDRESS,
       productNaddr: getProductZapNaddr(PRODUCT_ADDRESS),
     })
   })
@@ -270,9 +268,9 @@ describe("parseOmfZapoutReceipt", () => {
       )
     }
 
-    expect(parseWithKindTags([])).toMatchObject({
-      productAddress: PRODUCT_ADDRESS,
-    })
+    expect(parseWithKindTags([])?.productNaddr).toBe(
+      getProductZapNaddr(PRODUCT_ADDRESS)
+    )
     expect(parseWithKindTags([["k", "1"]])).toBeNull()
     expect(
       parseWithKindTags([
@@ -312,7 +310,6 @@ describe("parseOmfZapoutReceipt", () => {
 
     expect(parsed).not.toBeNull()
     expect(parsed?.note).toBe(content)
-    expect(parsed?.productAddress).toBeNull()
     expect(parsed?.productNaddr).toBeNull()
   })
 

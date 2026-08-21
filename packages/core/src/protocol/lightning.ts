@@ -283,7 +283,6 @@ export interface OmfZapoutReceipt {
   amountMsats: number | null
   note: string | null
   comment: string | null
-  productAddress: string | null
   productNaddr: string | null
   sourceRelayUrls: string[]
 }
@@ -1274,7 +1273,6 @@ export function parseOmfZapoutReceipt(
     amountMsats: requestAmountMsats,
     note,
     comment: note ? getPublicZapComment(note) : null,
-    productAddress: parsedContent.productAddress,
     productNaddr: parsedContent.productNaddr,
     sourceRelayUrls: getEventSourceRelayUrls(event as NDKEvent),
   }

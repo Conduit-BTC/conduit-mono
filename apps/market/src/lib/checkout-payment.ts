@@ -980,10 +980,6 @@ export function isPublicZapContentEditable(
   return mode === "public_zap_as_shopper" && policy === "custom"
 }
 
-export function sanitizePublicZapContent(content: string): string {
-  return buildProtocolZapRequestContent({ note: content })
-}
-
 /**
  * Bound the editable draft by Unicode code points without trimming boundary
  * whitespace while the shopper is typing. Final wire normalization happens in
@@ -1016,7 +1012,7 @@ export function getCheckoutZapTargetAddress(params: {
     params.mode !== "public_zap_as_shopper" ||
     params.policy !== "custom" ||
     !params.contentEdited ||
-    sanitizePublicZapContent(params.content).length === 0
+    buildProtocolZapRequestContent({ note: params.content }).length === 0
   ) {
     return undefined
   }

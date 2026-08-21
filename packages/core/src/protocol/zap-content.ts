@@ -115,12 +115,10 @@ export function truncateZapNoteInput(
     throw new Error("Zap note code point limit is invalid.")
   }
 
-  const normalized = normalizeZapNoteInput(input)
-  if (countZapContentCodePoints(normalized) <= maxCodePoints) {
-    return normalized
-  }
-
-  return Array.from(normalized).slice(0, maxCodePoints).join("").trimEnd()
+  return Array.from(normalizeZapNoteInput(input))
+    .slice(0, maxCodePoints)
+    .join("")
+    .trimEnd()
 }
 
 export function getProductZapNaddr(productAddress: string): string {

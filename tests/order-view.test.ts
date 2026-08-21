@@ -158,9 +158,7 @@ describe("buildOrderViewModel", () => {
       zapTargetAddress: productAddress,
     })
 
-    expect(vm.zapContent).toBe(zapContent)
     expect(vm.publicZapNote).toBe("sick shirt 🔥")
-    expect(vm.publicZapProductAddress).toBe(productAddress)
     expect(vm.publicZapProductNaddr).toMatch(/^naddr1/)
     expect(zapContent).toBe(
       `sick shirt 🔥\n\nnostr:${vm.publicZapProductNaddr}`
@@ -175,9 +173,7 @@ describe("buildOrderViewModel", () => {
       zapTargetAddress: undefined,
     })
 
-    expect(vm.zapContent).toBe("")
     expect(vm.publicZapNote).toBeNull()
-    expect(vm.publicZapProductAddress).toBeNull()
     expect(vm.publicZapProductNaddr).toBeNull()
   })
 
@@ -196,9 +192,7 @@ describe("buildOrderViewModel", () => {
       zapTargetAddress: productAddress,
     })
 
-    expect(vm.zapContent).toBe(zapContent)
     expect(vm.publicZapNote).toBeNull()
-    expect(vm.publicZapProductAddress).toBe(productAddress)
     expect(vm.publicZapProductNaddr).toMatch(/^naddr1/)
   })
 
@@ -214,7 +208,6 @@ describe("buildOrderViewModel", () => {
 
     expect(vm.contactNote).toBe(privateOrderNote)
     expect(vm.publicZapNote).toBeNull()
-    expect(vm.publicZapProductAddress).toBeNull()
     expect(vm.publicZapProductNaddr).toBeNull()
   })
 
@@ -227,7 +220,6 @@ describe("buildOrderViewModel", () => {
     })
 
     expect(vm.publicZapNote).toBe("sick shirt 🔥")
-    expect(vm.publicZapProductAddress).toBeNull()
     expect(vm.publicZapProductNaddr).toBeNull()
   })
 
@@ -247,9 +239,7 @@ describe("buildOrderViewModel", () => {
       zapTargetAddress: lifecycleProductAddress,
     })
 
-    expect(vm.zapContent).toBe(zapContent)
     expect(vm.publicZapNote).toBe(zapContent)
-    expect(vm.publicZapProductAddress).toBeNull()
     expect(vm.publicZapProductNaddr).toBeNull()
   })
 
@@ -268,9 +258,7 @@ describe("buildOrderViewModel", () => {
       zapTargetAddress: undefined,
     })
 
-    expect(vm.zapContent).toBe(zapContent)
     expect(vm.publicZapNote).toBe(zapContent)
-    expect(vm.publicZapProductAddress).toBeNull()
     expect(vm.publicZapProductNaddr).toBeNull()
   })
 

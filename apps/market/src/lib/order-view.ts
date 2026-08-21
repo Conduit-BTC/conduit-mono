@@ -59,12 +59,8 @@ export interface OrderViewModel {
   flow: OrderFlow
   publicZapSigner: OrderPublicZapSigner | null
   publicZapFallback: boolean
-  /** Exact public zap content saved with the local lifecycle. */
-  zapContent: string | null
   /** Shopper-authored note, separated from its protocol product reference. */
   publicZapNote: string | null
-  /** Validated kind-30402 address referenced by the public zap. */
-  publicZapProductAddress: string | null
   /** Canonical encoded product reference safe to pass to the product route. */
   publicZapProductNaddr: string | null
   createdAt: number
@@ -343,9 +339,7 @@ export function buildOrderViewModel(
     flow,
     publicZapSigner,
     publicZapFallback: lifecycle?.publicZapFallback === true,
-    zapContent,
     publicZapNote: parsedZapContent?.note || null,
-    publicZapProductAddress: parsedZapContent?.productAddress ?? null,
     publicZapProductNaddr: parsedZapContent?.productNaddr ?? null,
     createdAt: lifecycle?.createdAt ?? conversation?.latestAt ?? Date.now(),
     updatedAt: lifecycle?.updatedAt ?? conversation?.latestAt ?? Date.now(),
