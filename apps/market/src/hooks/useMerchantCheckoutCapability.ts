@@ -114,7 +114,7 @@ export function useMerchantCheckoutCapability(input: {
           : null,
         undefined,
         undefined,
-        pubkey
+        identityPubkey
       ).value
   const shippingAddress = buildShippingAddressFromForm(shippingPreset)
   const shippingPresetReady =

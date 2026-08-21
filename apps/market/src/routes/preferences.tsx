@@ -377,7 +377,7 @@ function PreferencesPage() {
 
   async function clear(): Promise<void> {
     const identity = presets.identityPubkey
-    const synced = await presets.clear(password)
+    const synced = await presets.clear(password, policy)
     if (currentIdentityRef.current !== identity) return
     if (synced) {
       setDraft(normalizeShopperPreferencesDraft(DEFAULT_SHOPPER_PRESETS))
