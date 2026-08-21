@@ -537,6 +537,10 @@ publish. Changed shipping terms or an ineligible destination fail before
 publish. The canary also rejects a pricing quote that expires during the final
 product and shipping reads.
 
+The physical listing must also include shipping cost data that production
+guest checkout can price. Kind `30406` supplies destination rules but does not
+make a manual shipping total eligible for the guest order-and-invoice path.
+
 For the workflow's initial introduction, the live dispatch is post-merge
 validation: GitHub only accepts `workflow_dispatch` for a workflow present on
 the default branch, and this workflow intentionally runs only the `main` ref.

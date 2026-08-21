@@ -739,6 +739,7 @@ describe("guest checkout order smoke", () => {
           productRead({
             product: {
               format: "physical",
+              shippingCostSats: 2,
               shippingOptionId: `30406:${MERCHANT_PUBKEY}:shipping`,
               shippingOptionDTag: "shipping",
               shippingCountries: [],
@@ -811,6 +812,7 @@ describe("guest checkout order smoke", () => {
             productRead({
               product: {
                 format: "physical",
+                shippingCostSats: 2,
                 shippingOptionId: `30406:${MERCHANT_PUBKEY}:shipping`,
                 shippingOptionDTag: "shipping",
                 shippingCountries: [],
@@ -866,6 +868,7 @@ describe("guest checkout order smoke", () => {
           productRead({
             product: {
               format: "physical",
+              shippingCostSats: 2,
               shippingOptionId: `30406:${MERCHANT_PUBKEY}:shipping`,
               shippingOptionDTag: "shipping",
               shippingCountries: [],
@@ -904,6 +907,56 @@ describe("guest checkout order smoke", () => {
       summary: "Guest checkout order smoke failed at product_read.",
     })
     expect(shippingReads).toBe(2)
+    expect(published).toBe(false)
+  })
+
+  it("rejects referenced shipping that production guest checkout leaves manual", async () => {
+    const config = parseGuestCheckoutOrderSmokeConfig(environment())
+    let shippingReads = 0
+    let published = false
+    let failure: unknown
+
+    try {
+      await runGuestCheckoutOrderSmoke(config, {
+        getProduct: async () =>
+          productRead({
+            product: {
+              format: "physical",
+              shippingOptionId: `30406:${MERCHANT_PUBKEY}:shipping`,
+              shippingOptionDTag: "shipping",
+              shippingCountries: [],
+              shippingCountryRules: [],
+            },
+          }),
+        getPricingRate: async () => ({
+          rate: 100_000,
+          fetchedAt: 1_700_000_000_000,
+          source: "mempool",
+          fiatUsdRates: {},
+          fiatSource: "frankfurter",
+        }),
+        getShippingOptions: async () => {
+          shippingReads += 1
+          return shippingOptionsRead([
+            { ...merchantShippingOptions()[0]!, price: 0.2 },
+          ])
+        },
+        publishOrder: async () => {
+          published = true
+          throw new Error("Manual guest shipping must not publish.")
+        },
+        nowMs: () => 1_700_000_000_000,
+      })
+    } catch (error) {
+      failure = error
+    }
+
+    expect(getGuestCheckoutOrderSmokeFailureEvidence(failure)).toEqual({
+      status: "failed",
+      stage: "product_read",
+      summary: "Guest checkout order smoke failed at product_read.",
+    })
+    expect(shippingReads).toBe(1)
     expect(published).toBe(false)
   })
 

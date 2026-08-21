@@ -385,6 +385,11 @@ async function buildGuestOrderPricing(
   if (pricing.status !== "ok") {
     throw new Error(pricing.reason)
   }
+  if (pricing.shippingCost.status === "manual") {
+    throw new Error(
+      "Guest checkout smoke requires shipping that production guest checkout can price."
+    )
+  }
   return { pricing, referencedShippingOption }
 }
 
