@@ -18,6 +18,7 @@ import {
   isGuestOrderDataExpired,
   normalizePubkey,
   ORDER_PAYMENT_CLAIM_LEASE_MS,
+  ORDER_PROOF_DELIVERY_CLAIM_LEASE_MS,
   patchClaimedOrderLifecyclePayment,
   recordObservedOrderPaymentReceipt,
   recordOrderPaymentProofDelivery,
@@ -25,6 +26,7 @@ import {
   recordOrderPaymentWalletSuccessRecovery,
   recordOrderPaymentPreparationFailure,
   renewOrderLifecyclePaymentClaim,
+  renewOrderPaymentProofDeliveryClaim,
   signNdkEventWithTransientNip07Retry,
   validateAnonZapRequestDraft,
   validateLightningInvoiceForPayment,
@@ -117,6 +119,9 @@ export async function signShopperCheckoutZapRequest(
  */
 
 const ZAP_RECEIPT_SCAN_MS = 5_000
+const PROOF_DELIVERY_HEARTBEAT_MS = Math.floor(
+  ORDER_PROOF_DELIVERY_CLAIM_LEASE_MS / 3
+)
 const ZAP_RECEIPT_RESCAN_DELAY_MS = 10_000
 const ZAP_RECEIPT_EXPIRY_GRACE_SECONDS = 10 * 60
 const DEFAULT_INVOICE_EXPIRY_SECONDS = 60 * 60
@@ -411,6 +416,23 @@ const inFlight = new Set<string>()
 /** Serializes the explicit anonymous-to-private recovery transition. */
 const privateFallbackTransitions = new Set<string>()
 const receiptObservers = new Set<string>()
+
+function startProofDeliveryClaimHeartbeat(
+  orderId: string,
+  proofDeliveryClaimId: string
+): () => void {
+  const timer = setInterval(() => {
+    void renewOrderPaymentProofDeliveryClaim(
+      orderId,
+      proofDeliveryClaimId
+    ).catch(() => {
+      console.warn(
+        "Payment-proof delivery lease renewal failed; guarded delivery remains recoverable."
+      )
+    })
+  }, PROOF_DELIVERY_HEARTBEAT_MS)
+  return () => clearInterval(timer)
+}
 const receiptRescanTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 export function canSubmitExternalPaymentReport(
@@ -560,61 +582,78 @@ async function deliverReceiptLinkedProof(
     zapReceiptId: string
   },
   buyerIdentity?: BuyerOrderSigningIdentity,
-  proofAlreadyClaimed = false
+  proofDeliveryClaimId?: string
 ): Promise<void> {
   if (lifecycle.proofDeliveryStatus === "sent") return
 
+  const claimId = proofDeliveryClaimId ?? generateId()
   let locked = lifecycle
-  if (!proofAlreadyClaimed) {
-    const lockedResult = await claimOrderPaymentProofDelivery(lifecycle.orderId)
+  if (!proofDeliveryClaimId) {
+    const lockedResult = await claimOrderPaymentProofDelivery(
+      lifecycle.orderId,
+      claimId
+    )
     emit(lifecycle.orderId, { lifecycle: lockedResult.lifecycle })
     if (lockedResult.status !== "claimed") return
     locked = lockedResult.lifecycle as typeof lifecycle
   }
+  if (locked.proofDeliveryClaimId !== claimId) return
 
-  const content = buildLifecyclePaymentProofContentJson(locked, {
-    action: "zap",
-    source: "external",
-    verificationState: "verified",
-    note: `Public zap receipt observed for order ${lifecycle.orderId}`,
-  })
-  const ndk = getNdk()
-  const proofRumor = buildPaymentProofRumor({
-    merchantPubkey: locked.merchantPubkey,
-    orderId: locked.orderId,
-    amountSats: locked.totalSats,
-    currency: "SATS",
-    content,
-    createdAt: locked.zapRequestCreatedAt,
-  })
-
-  let proofPublished = false
-  try {
-    await publishBuyerOrderMessage(
-      proofRumor,
-      ndk,
-      locked.merchantPubkey,
-      buyerIdentity ?? locked.buyerPubkey
-    )
-    proofPublished = true
-  } catch {
-    // Payment remains proven by the exact receipt; delivery can be retried.
-  }
-  const proofDeliveryStatus = proofPublished ? "sent" : "retry_needed"
-  await updatePaymentAttempt(locked.orderId, { proofDeliveryStatus }).catch(
-    () =>
-      console.warn(
-        "Failed to persist the local payment-proof delivery outcome."
-      )
+  const stopHeartbeat = startProofDeliveryClaimHeartbeat(
+    locked.orderId,
+    claimId
   )
   try {
-    const recorded = await recordOrderPaymentProofDelivery(
-      locked.orderId,
-      proofDeliveryStatus
+    const content = buildLifecyclePaymentProofContentJson(locked, {
+      action: "zap",
+      source: "external",
+      verificationState: "verified",
+      note: `Public zap receipt observed for order ${lifecycle.orderId}`,
+    })
+    const ndk = getNdk()
+    const proofRumor = buildPaymentProofRumor({
+      merchantPubkey: locked.merchantPubkey,
+      orderId: locked.orderId,
+      amountSats: locked.totalSats,
+      currency: "SATS",
+      content,
+      createdAt: locked.zapRequestCreatedAt,
+    })
+
+    let proofPublished = false
+    try {
+      await publishBuyerOrderMessage(
+        proofRumor,
+        ndk,
+        locked.merchantPubkey,
+        buyerIdentity ?? locked.buyerPubkey
+      )
+      proofPublished = true
+    } catch {
+      // Payment remains proven by the exact receipt; delivery can be retried.
+    }
+    const proofDeliveryStatus = proofPublished ? "sent" : "retry_needed"
+    await updatePaymentAttempt(locked.orderId, { proofDeliveryStatus }).catch(
+      () =>
+        console.warn(
+          "Failed to persist the local payment-proof delivery outcome."
+        )
     )
-    emit(locked.orderId, { lifecycle: recorded.lifecycle })
-  } catch {
-    console.warn("Failed to persist the order payment-proof delivery outcome.")
+    try {
+      const recorded = await recordOrderPaymentProofDelivery(
+        locked.orderId,
+        proofDeliveryStatus,
+        {},
+        claimId
+      )
+      emit(locked.orderId, { lifecycle: recorded.lifecycle })
+    } catch {
+      console.warn(
+        "Failed to persist the order payment-proof delivery outcome."
+      )
+    }
+  } finally {
+    stopHeartbeat()
   }
 }
 
@@ -675,12 +714,16 @@ export async function observeOrderPublicZapReceipt(
       .catch(() => null)
 
     if (receipt) {
+      const proofDeliveryStatus =
+        lifecycle.proofDeliveryStatus === "sent" ? "sent" : "pending"
+      const proofDeliveryClaimId =
+        proofDeliveryStatus === "pending" ? generateId() : undefined
       const receiptRecord =
         await dependencies.recordObservedOrderPaymentReceipt(orderId, {
           zapRequestId: lifecycle.zapRequestId,
           zapReceiptId: receipt.id,
-          proofDeliveryStatus:
-            lifecycle.proofDeliveryStatus === "sent" ? "sent" : "pending",
+          proofDeliveryStatus,
+          proofDeliveryClaimId,
         })
       emit(orderId, { lifecycle: receiptRecord.lifecycle })
       if (receiptRecord.status === "recorded") {
@@ -715,7 +758,7 @@ export async function observeOrderPublicZapReceipt(
             zapReceiptId: string
           },
           buyerIdentity,
-          true
+          proofDeliveryClaimId
         )
       }
       return
@@ -779,6 +822,7 @@ async function runOrderPaymentInternal(
   }
   let clearSessionClaim = false
   let claimHeartbeat: ReturnType<typeof setInterval> | null = null
+  let stopProofDeliveryHeartbeat: (() => void) | null = null
   const patchClaim = async (
     patch: Parameters<typeof patchClaimedOrderLifecyclePayment>[2],
     runtime?: Partial<OrderPaymentRuntimeState>
@@ -1239,10 +1283,15 @@ async function runOrderPaymentInternal(
         console.warn("Failed to persist payment attempt", e)
       }
 
+      const proofDeliveryClaimedAt = Date.now()
       await patchClaim(
         {
           paymentStatus: "paid",
           proofDeliveryStatus: "pending",
+          proofDeliveryClaimId: paymentClaimId,
+          proofDeliveryClaimedAt,
+          proofDeliveryClaimLeaseExpiresAt:
+            proofDeliveryClaimedAt + ORDER_PROOF_DELIVERY_CLAIM_LEASE_MS,
           invoice,
           paymentHash: payResult.paymentHash,
           preimage: payResult.preimage,
@@ -1250,6 +1299,10 @@ async function runOrderPaymentInternal(
           zapRequestId,
         },
         { stage: "sending_receipt" }
+      )
+      stopProofDeliveryHeartbeat = startProofDeliveryClaimHeartbeat(
+        orderId,
+        paymentClaimId
       )
 
       const proofPayload = buildLightningPaymentProofMessage({
@@ -1313,7 +1366,8 @@ async function runOrderPaymentInternal(
                 deliveryNotice: deliveryNotice ?? undefined,
                 lastError: undefined,
               }
-            : {}
+            : {},
+          paymentClaimId
         )
         emit(orderId, { lifecycle: recorded.lifecycle })
       }
@@ -1354,6 +1408,7 @@ async function runOrderPaymentInternal(
               {
                 ...walletSuccess,
                 proofDeliveryStatus: proofDeliveryOutcome,
+                proofDeliveryClaimId: paymentClaimId,
               }
             )
           emit(orderId, {
@@ -1397,6 +1452,7 @@ async function runOrderPaymentInternal(
       return runtimeStates.get(orderId)!
     }
   } finally {
+    stopProofDeliveryHeartbeat?.()
     if (claimHeartbeat) {
       dependencies.cancelPaymentClaimHeartbeat(claimHeartbeat)
     }
@@ -1511,52 +1567,69 @@ export async function resendOrderProof(
   ) {
     return runtimeStates.get(orderId)
   }
-  const proofClaim = await claimOrderPaymentProofDelivery(orderId)
+  const proofDeliveryClaimId = generateId()
+  const proofClaim = await claimOrderPaymentProofDelivery(
+    orderId,
+    proofDeliveryClaimId
+  )
   emit(orderId, { lifecycle: proofClaim.lifecycle })
   if (proofClaim.status !== "claimed") return runtimeStates.get(orderId)
   const locked = proofClaim.lifecycle
-  const content = buildLifecycleResendProofContentJson(locked)
-  const ndk = getNdk()
-  const proofRumor = buildPaymentProofRumor({
-    merchantPubkey: locked.merchantPubkey,
+  const stopHeartbeat = startProofDeliveryClaimHeartbeat(
     orderId,
-    amountSats: locked.totalSats,
-    currency: "SATS",
-    content,
-    createdAt:
-      locked.zapRequestId && locked.zapReceiptId
-        ? locked.zapRequestCreatedAt
-        : undefined,
-  })
-  let proofPublished = false
-  try {
-    await publishBuyerOrderMessage(
-      proofRumor,
-      ndk,
-      locked.merchantPubkey,
-      buyerIdentity ?? locked.buyerPubkey
-    )
-    proofPublished = true
-  } catch {
-    // The payment remains paid; only proof delivery needs another attempt.
-  }
-  const proofDeliveryStatus = proofPublished ? "sent" : "retry_needed"
-  await updatePaymentAttempt(orderId, { proofDeliveryStatus }).catch(() =>
-    console.warn("Failed to persist the local payment-proof delivery outcome.")
+    proofDeliveryClaimId
   )
   try {
-    const recorded = await recordOrderPaymentProofDelivery(
+    const content = buildLifecycleResendProofContentJson(locked)
+    const ndk = getNdk()
+    const proofRumor = buildPaymentProofRumor({
+      merchantPubkey: locked.merchantPubkey,
       orderId,
-      proofDeliveryStatus,
-      proofPublished
-        ? { lastError: undefined }
-        : { lastError: "Proof delivery failed" }
+      amountSats: locked.totalSats,
+      currency: "SATS",
+      content,
+      createdAt:
+        locked.zapRequestId && locked.zapReceiptId
+          ? locked.zapRequestCreatedAt
+          : undefined,
+    })
+    let proofPublished = false
+    try {
+      await publishBuyerOrderMessage(
+        proofRumor,
+        ndk,
+        locked.merchantPubkey,
+        buyerIdentity ?? locked.buyerPubkey
+      )
+      proofPublished = true
+    } catch {
+      // The payment remains paid; only proof delivery needs another attempt.
+    }
+    const proofDeliveryStatus = proofPublished ? "sent" : "retry_needed"
+    await updatePaymentAttempt(orderId, { proofDeliveryStatus }).catch(() =>
+      console.warn(
+        "Failed to persist the local payment-proof delivery outcome."
+      )
     )
-    emit(orderId, { lifecycle: recorded.lifecycle })
-  } catch {
-    console.warn("Failed to persist the order payment-proof delivery outcome.")
+    try {
+      const recorded = await recordOrderPaymentProofDelivery(
+        orderId,
+        proofDeliveryStatus,
+        proofPublished
+          ? { lastError: undefined }
+          : { lastError: "Proof delivery failed" },
+        proofDeliveryClaimId
+      )
+      emit(orderId, { lifecycle: recorded.lifecycle })
+    } catch {
+      console.warn(
+        "Failed to persist the order payment-proof delivery outcome."
+      )
+    }
+    return runtimeStates.get(orderId)
+  } finally {
+    stopHeartbeat()
   }
-  return runtimeStates.get(orderId)
 }
 
 /**
@@ -1570,16 +1643,25 @@ export async function submitExternalPaymentProof(
 ): Promise<OrderPaymentRuntimeState | undefined> {
   if (inFlight.has(orderId)) return runtimeStates.get(orderId)
   inFlight.add(orderId)
+  let stopProofDeliveryHeartbeat: (() => void) | null = null
   try {
     const lifecycle = await getOrderLifecycle(orderId)
     if (!canSubmitExternalPaymentReport(lifecycle)) {
       return runtimeStates.get(orderId)
     }
 
-    const proofClaim = await claimExternalOrderPaymentProof(orderId)
+    const proofDeliveryClaimId = generateId()
+    const proofClaim = await claimExternalOrderPaymentProof(
+      orderId,
+      proofDeliveryClaimId
+    )
     emit(orderId, { lifecycle: proofClaim.lifecycle })
     if (proofClaim.status !== "claimed") return runtimeStates.get(orderId)
     const locked = proofClaim.lifecycle
+    stopProofDeliveryHeartbeat = startProofDeliveryClaimHeartbeat(
+      orderId,
+      proofDeliveryClaimId
+    )
 
     const content = buildLifecyclePaymentProofContentJson(locked, {
       action: "external_invoice",
@@ -1614,7 +1696,8 @@ export async function submitExternalPaymentProof(
         proofDeliveryStatus,
         proofPublished
           ? { lastError: undefined }
-          : { lastError: "Proof delivery failed" }
+          : { lastError: "Proof delivery failed" },
+        proofDeliveryClaimId
       )
       emit(orderId, { lifecycle: recorded.lifecycle })
     } catch {
@@ -1624,6 +1707,7 @@ export async function submitExternalPaymentProof(
     }
     return runtimeStates.get(orderId)
   } finally {
+    stopProofDeliveryHeartbeat?.()
     inFlight.delete(orderId)
   }
 }

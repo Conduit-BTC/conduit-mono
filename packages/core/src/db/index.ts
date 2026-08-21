@@ -662,6 +662,12 @@ export interface OrderLifecycle {
   paymentClaimedAt?: number
   /** Renewed while the owning document is alive; stale claims may recover. */
   paymentClaimLeaseExpiresAt?: number
+  /** Opaque owner token for the current payment-proof publication attempt. */
+  proofDeliveryClaimId?: string
+  /** Wall-clock start for bounded stale proof-delivery recovery. */
+  proofDeliveryClaimedAt?: number
+  /** Renewed while proof publication is active; stale claims may recover. */
+  proofDeliveryClaimLeaseExpiresAt?: number
   invoiceStatus: OrderInvoiceStatus
   paymentStatus: OrderPaymentStatus
   proofDeliveryStatus: OrderProofDeliveryStatus

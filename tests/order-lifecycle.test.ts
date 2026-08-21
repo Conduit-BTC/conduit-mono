@@ -4,6 +4,7 @@ import {
   GUEST_ORDER_LOCAL_RETENTION_MS,
   LEGACY_ORDER_PAYMENT_RECOVERY_GRACE_MS,
   ORDER_PAYMENT_CLAIM_LEASE_MS,
+  ORDER_PROOF_DELIVERY_CLAIM_LEASE_MS,
   ORDER_PAYMENT_INTERRUPTED_AFTER_WALLET_ERROR,
   ORDER_PAYMENT_INTERRUPTED_BEFORE_WALLET_ERROR,
   claimExternalOrderPaymentProof,
@@ -17,12 +18,14 @@ import {
   isLegacyInterruptedOrderPayment,
   patchClaimedOrderLifecyclePayment,
   reconcileInterruptedOrderPayment,
+  reconcileInterruptedOrderProofDelivery,
   reconcileLegacyInterruptedOrderPayment,
   recordObservedOrderPaymentReceipt,
   recordOrderPaymentProofDelivery,
   recordOrderPaymentReceiptTimeout,
   recordOrderPaymentWalletSuccessRecovery,
   recordOrderPaymentPreparationFailure,
+  renewOrderPaymentProofDeliveryClaim,
   replaceOrderPaymentTarget,
   type OrderLifecycle,
   type OrderPaymentClaimInput,
@@ -177,6 +180,14 @@ describe("isLegacyInterruptedOrderPayment", () => {
         proofDeliveryStatus: "pending",
       })
     ).toBe(true)
+    expect(
+      isLegacyInterruptedOrderPayment({
+        ...base,
+        paymentStatus: "paid",
+        proofDeliveryStatus: "pending",
+        proofDeliveryClaimId: "current-proof-owner",
+      })
+    ).toBe(false)
     expect(isLegacyInterruptedOrderPayment(base)).toBe(false)
   })
 })
@@ -470,6 +481,7 @@ describe("order payment admission", () => {
         zapRequestId: "zap-request-current",
         zapReceiptId: "zap-receipt-current",
         proofDeliveryStatus: "pending",
+        proofDeliveryClaimId: "proof-claim-receipt",
       })
       expect(receipt.status).toBe("recorded")
       if (receipt.status !== "recorded") throw new Error("receipt not recorded")
@@ -477,6 +489,7 @@ describe("order payment admission", () => {
       expect(state.lifecycle()).toMatchObject({
         paymentStatus: "paid",
         proofDeliveryStatus: "pending",
+        proofDeliveryClaimId: "proof-claim-receipt",
         zapReceiptStatus: "observed",
         zapReceiptId: "zap-receipt-current",
       })
@@ -496,6 +509,7 @@ describe("order payment admission", () => {
           zapRequestId: "zap-request-current",
           zapReceiptId: "zap-receipt-current",
           proofDeliveryStatus: "pending",
+          proofDeliveryClaimId: "proof-claim-duplicate",
         }
       )
       expect(duplicateReceipt.status).toBe("recorded")
@@ -503,6 +517,9 @@ describe("order payment admission", () => {
         throw new Error("duplicate receipt not recorded")
       }
       expect(duplicateReceipt.proofDeliveryClaimed).toBe(false)
+      expect(state.lifecycle()?.proofDeliveryClaimId).toBe(
+        "proof-claim-receipt"
+      )
 
       await recordOrderPaymentWalletSuccessRecovery(claimed.orderId, {
         proofDeliveryStatus: "pending",
@@ -542,6 +559,7 @@ describe("order payment admission", () => {
         zapRequestId: waiting.zapRequestId!,
         zapReceiptId: "zap-receipt-current",
         proofDeliveryStatus: "pending",
+        proofDeliveryClaimId: "proof-claim-timeout-race",
       })
       releaseTimeout()
 
@@ -634,6 +652,7 @@ describe("order payment admission", () => {
   })
 
   it("allows only one browser document to claim proof publication", async () => {
+    const now = 1_800_000_000_000
     const retry: OrderLifecycle = {
       ...lifecycle,
       invoiceStatus: "received",
@@ -644,12 +663,192 @@ describe("order payment admission", () => {
     }
 
     await withMockOrderPaymentDb({ lifecycle: retry }, async (state) => {
-      const first = await claimOrderPaymentProofDelivery(retry.orderId)
-      const second = await claimOrderPaymentProofDelivery(retry.orderId)
+      const first = await claimOrderPaymentProofDelivery(
+        retry.orderId,
+        "proof-owner-first",
+        now
+      )
+      const second = await claimOrderPaymentProofDelivery(
+        retry.orderId,
+        "proof-owner-second",
+        now
+      )
 
       expect(first.status).toBe("claimed")
       expect(second.status).toBe("preserved")
+      expect(state.lifecycle()).toMatchObject({
+        proofDeliveryStatus: "pending",
+        proofDeliveryClaimId: "proof-owner-first",
+        proofDeliveryClaimLeaseExpiresAt:
+          now + ORDER_PROOF_DELIVERY_CLAIM_LEASE_MS,
+      })
+
+      const active = await reconcileInterruptedOrderProofDelivery(
+        retry.orderId,
+        "proof-owner-first",
+        now + ORDER_PROOF_DELIVERY_CLAIM_LEASE_MS - 1
+      )
+      expect(active.status).toBe("claim_active")
+
+      const takeover = await claimOrderPaymentProofDelivery(
+        retry.orderId,
+        "proof-owner-second",
+        now + ORDER_PROOF_DELIVERY_CLAIM_LEASE_MS + 1
+      )
+      expect(takeover.status).toBe("claimed")
+
+      const staleCompletion = await recordOrderPaymentProofDelivery(
+        retry.orderId,
+        "retry_needed",
+        {},
+        "proof-owner-first"
+      )
+      expect(staleCompletion.status).toBe("claim_mismatch")
+      expect(state.lifecycle()).toMatchObject({
+        proofDeliveryStatus: "pending",
+        proofDeliveryClaimId: "proof-owner-second",
+      })
+
+      await recordOrderPaymentWalletSuccessRecovery(retry.orderId, {
+        proofDeliveryStatus: "retry_needed",
+        proofDeliveryClaimId: "proof-owner-first",
+        invoice: retry.invoice!,
+        preimage: "payment-preimage",
+      })
+      expect(state.lifecycle()).toMatchObject({
+        proofDeliveryStatus: "pending",
+        proofDeliveryClaimId: "proof-owner-second",
+      })
+
+      const recovered = await reconcileInterruptedOrderProofDelivery(
+        retry.orderId,
+        "proof-owner-second",
+        now + ORDER_PROOF_DELIVERY_CLAIM_LEASE_MS * 2 + 2
+      )
+      expect(recovered.status).toBe("recovered")
+      expect(state.lifecycle()?.proofDeliveryStatus).toBe("retry_needed")
+      expect(state.lifecycle()?.proofDeliveryClaimId).toBeUndefined()
+
+      const delayedHeartbeat = await renewOrderPaymentProofDeliveryClaim(
+        retry.orderId,
+        "proof-owner-second"
+      )
+      expect(delayedHeartbeat.status).toBe("preserved")
+      expect(state.lifecycle()?.proofDeliveryStatus).toBe("retry_needed")
+    })
+  })
+
+  it("restores a sent proof checkpoint when its publisher lease expires", async () => {
+    const now = 1_800_000_000_000
+    const pending: OrderLifecycle = {
+      ...lifecycle,
+      invoiceStatus: "received",
+      paymentStatus: "paid",
+      proofDeliveryStatus: "pending",
+      paymentClaimId: "proof-owner",
+      proofDeliveryClaimId: "proof-owner",
+      proofDeliveryClaimedAt: now - ORDER_PROOF_DELIVERY_CLAIM_LEASE_MS,
+      proofDeliveryClaimLeaseExpiresAt: now,
+      invoice: "lnbc1private",
+      preimage: "payment-preimage",
+    }
+    const paymentAttempt: StoredPaymentAttempt = {
+      id: pending.orderId,
+      orderId: pending.orderId,
+      buyerPubkey: pending.buyerPubkey,
+      merchantPubkey: pending.merchantPubkey,
+      amountMsats: pending.totalMsats,
+      currency: "SATS",
+      invoice: pending.invoice!,
+      preimage: pending.preimage,
+      proofDeliveryStatus: "sent",
+      createdAt: pending.createdAt,
+      updatedAt: now,
+    }
+
+    await withMockOrderPaymentDb(
+      { lifecycle: pending, paymentAttempt },
+      async (state) => {
+        const recovered = await reconcileInterruptedOrderProofDelivery(
+          pending.orderId,
+          "proof-owner",
+          now + 1
+        )
+
+        expect(recovered.status).toBe("recovered")
+        expect(state.lifecycle()?.proofDeliveryStatus).toBe("sent")
+        expect(state.lifecycle()?.paymentClaimId).toBeUndefined()
+        expect(state.lifecycle()?.proofDeliveryClaimId).toBeUndefined()
+      }
+    )
+  })
+
+  it("preserves a proof publisher while its matching payment lease is live", async () => {
+    const now = 1_800_000_000_000
+    const pending: OrderLifecycle = {
+      ...lifecycle,
+      invoiceStatus: "received",
+      paymentStatus: "paid",
+      proofDeliveryStatus: "pending",
+      paymentClaimId: "shared-owner",
+      paymentClaimLeaseExpiresAt: now + ORDER_PAYMENT_CLAIM_LEASE_MS,
+      proofDeliveryClaimId: "shared-owner",
+      proofDeliveryClaimLeaseExpiresAt: now - 1,
+      invoice: "lnbc1private",
+      preimage: "payment-preimage",
+    }
+
+    await withMockOrderPaymentDb({ lifecycle: pending }, async (state) => {
+      const active = await reconcileInterruptedOrderProofDelivery(
+        pending.orderId,
+        "shared-owner",
+        now
+      )
+      expect(active.status).toBe("claim_active")
       expect(state.lifecycle()?.proofDeliveryStatus).toBe("pending")
+
+      const recovered = await reconcileInterruptedOrderProofDelivery(
+        pending.orderId,
+        "shared-owner",
+        now + ORDER_PAYMENT_CLAIM_LEASE_MS + 1
+      )
+      expect(recovered.status).toBe("recovered")
+      expect(state.lifecycle()?.proofDeliveryStatus).toBe("retry_needed")
+      expect(state.lifecycle()?.paymentClaimId).toBeUndefined()
+      expect(state.lifecycle()?.proofDeliveryClaimId).toBeUndefined()
+    })
+  })
+
+  it("lets a later receipt observer reclaim retryable proof work", async () => {
+    const observed: OrderLifecycle = {
+      ...lifecycle,
+      invoiceStatus: "received",
+      paymentStatus: "paid",
+      proofDeliveryStatus: "retry_needed",
+      invoice: "lnbc1public",
+      zapRequestId: "zap-request-current",
+      zapReceiptStatus: "observed",
+      zapReceiptId: "zap-receipt-current",
+    }
+
+    await withMockOrderPaymentDb({ lifecycle: observed }, async (state) => {
+      const receipt = await recordObservedOrderPaymentReceipt(
+        observed.orderId,
+        {
+          zapRequestId: observed.zapRequestId!,
+          zapReceiptId: observed.zapReceiptId!,
+          proofDeliveryStatus: "pending",
+          proofDeliveryClaimId: "later-receipt-owner",
+        }
+      )
+
+      expect(receipt.status).toBe("recorded")
+      if (receipt.status !== "recorded") throw new Error("receipt not recorded")
+      expect(receipt.proofDeliveryClaimed).toBe(true)
+      expect(state.lifecycle()).toMatchObject({
+        proofDeliveryStatus: "pending",
+        proofDeliveryClaimId: "later-receipt-owner",
+      })
     })
   })
 
@@ -666,23 +865,29 @@ describe("order payment admission", () => {
     }
 
     await withMockOrderPaymentDb({ lifecycle: manual }, async (state) => {
-      const first = await claimExternalOrderPaymentProof(manual.orderId)
-      const second = await claimExternalOrderPaymentProof(manual.orderId)
+      const first = await claimExternalOrderPaymentProof(
+        manual.orderId,
+        "external-proof-owner-first"
+      )
+      const second = await claimExternalOrderPaymentProof(
+        manual.orderId,
+        "external-proof-owner-second"
+      )
 
       expect(first.status).toBe("claimed")
       expect(second.status).toBe("preserved")
       expect(state.lifecycle()).toMatchObject({
         paymentStatus: "paid",
         proofDeliveryStatus: "pending",
+        proofDeliveryClaimId: "external-proof-owner-first",
       })
 
-      const recovered = await reconcileLegacyInterruptedOrderPayment(
+      const recovered = await reconcileInterruptedOrderProofDelivery(
         manual.orderId,
-        state.lifecycle()!.updatedAt +
-          LEGACY_ORDER_PAYMENT_RECOVERY_GRACE_MS +
-          1
+        "external-proof-owner-first",
+        state.lifecycle()!.proofDeliveryClaimLeaseExpiresAt! + 1
       )
-      expect(recovered.status).toBe("restored_paid")
+      expect(recovered.status).toBe("recovered")
       expect(state.lifecycle()).toMatchObject({
         paymentStatus: "paid",
         proofDeliveryStatus: "retry_needed",

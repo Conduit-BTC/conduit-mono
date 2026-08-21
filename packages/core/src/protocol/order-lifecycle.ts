@@ -166,6 +166,7 @@ export type OrderPaymentReceiptTimeoutResult =
 
 export type OrderPaymentProofDeliveryResult =
   | { status: "recorded" | "preserved"; lifecycle: OrderLifecycle }
+  | { status: "claim_mismatch"; lifecycle: OrderLifecycle }
   | { status: "missing"; lifecycle: null }
 
 export type OrderPaymentProofDeliveryClaimResult =
@@ -174,6 +175,7 @@ export type OrderPaymentProofDeliveryClaimResult =
 
 export type OrderPaymentWalletSuccessRecoveryInput = {
   proofDeliveryStatus: "pending" | "retry_needed" | "sent"
+  proofDeliveryClaimId?: string
   invoice: string
   paymentHash?: string
   preimage: string
@@ -202,7 +204,16 @@ export type LegacyInterruptedOrderPaymentReconciliation =
   | { status: "not_stale"; lifecycle: OrderLifecycle }
   | { status: "missing"; lifecycle: null }
 
+export type InterruptedOrderProofDeliveryReconciliation =
+  | { status: "recovered"; lifecycle: OrderLifecycle }
+  | {
+      status: "claim_active" | "claim_mismatch" | "not_interrupted"
+      lifecycle: OrderLifecycle
+    }
+  | { status: "missing"; lifecycle: null }
+
 export const ORDER_PAYMENT_CLAIM_LEASE_MS = 15_000
+export const ORDER_PROOF_DELIVERY_CLAIM_LEASE_MS = 30_000
 export const LEGACY_ORDER_PAYMENT_RECOVERY_GRACE_MS = 5 * 60_000
 
 export const ORDER_PAYMENT_INTERRUPTED_BEFORE_WALLET_ERROR =
@@ -576,6 +587,16 @@ function mergeOrderLifecyclePatch(
     merged.paymentClaimedAt = undefined
     merged.paymentClaimLeaseExpiresAt = undefined
   }
+  if (
+    (Object.prototype.hasOwnProperty.call(patch, "proofDeliveryClaimId") &&
+      patch.proofDeliveryClaimId === undefined) ||
+    (Object.prototype.hasOwnProperty.call(patch, "proofDeliveryStatus") &&
+      patch.proofDeliveryStatus !== "pending")
+  ) {
+    merged.proofDeliveryClaimId = undefined
+    merged.proofDeliveryClaimedAt = undefined
+    merged.proofDeliveryClaimLeaseExpiresAt = undefined
+  }
   merged.phase = patch.phase ?? deriveOrderLifecyclePhase(merged)
   if (merged.phase === "completed" && !merged.completedAt) {
     merged.completedAt = merged.updatedAt
@@ -640,6 +661,7 @@ export async function recordObservedOrderPaymentReceipt(
     zapRequestId: string
     zapReceiptId: string
     proofDeliveryStatus: "pending" | "sent"
+    proofDeliveryClaimId?: string
   }
 ): Promise<ObservedOrderPaymentReceiptResult> {
   return db.transaction("rw", db.orderLifecycles, async () => {
@@ -649,26 +671,45 @@ export async function recordObservedOrderPaymentReceipt(
       return { status: "request_mismatch", lifecycle }
     }
 
-    // Exact receipt evidence fences the payment owner below, so transfer any
-    // pending proof work it held without stealing another proof publisher's lock.
+    const now = Date.now()
+    const proofDeliveryClaimId = input.proofDeliveryClaimId?.trim()
+    const proofLeaseIsAvailable =
+      lifecycle.proofDeliveryStatus !== "pending" ||
+      !lifecycle.proofDeliveryClaimId ||
+      (lifecycle.proofDeliveryClaimLeaseExpiresAt ?? 0) <= now
+
+    // Exact receipt evidence fences the payment owner below, so atomically
+    // transfer its proof work without stealing another live proof lease.
     const proofDeliveryClaimed =
       lifecycle.proofDeliveryStatus !== "sent" &&
       input.proofDeliveryStatus === "pending" &&
-      (lifecycle.proofDeliveryStatus !== "pending" ||
-        !!lifecycle.paymentClaimId)
+      !!proofDeliveryClaimId &&
+      proofLeaseIsAvailable
 
-    const recorded = mergeOrderLifecyclePatch(lifecycle, {
-      paymentClaimId: undefined,
-      invoiceStatus: "received",
-      paymentStatus: "paid",
-      proofDeliveryStatus:
-        lifecycle.proofDeliveryStatus === "sent"
-          ? "sent"
-          : input.proofDeliveryStatus,
-      zapReceiptStatus: "observed",
-      zapReceiptId: input.zapReceiptId,
-      lastError: undefined,
-    })
+    const recorded = mergeOrderLifecyclePatch(
+      lifecycle,
+      {
+        paymentClaimId: undefined,
+        invoiceStatus: "received",
+        paymentStatus: "paid",
+        proofDeliveryStatus:
+          lifecycle.proofDeliveryStatus === "sent"
+            ? "sent"
+            : input.proofDeliveryStatus,
+        ...(proofDeliveryClaimed
+          ? {
+              proofDeliveryClaimId,
+              proofDeliveryClaimedAt: now,
+              proofDeliveryClaimLeaseExpiresAt:
+                now + ORDER_PROOF_DELIVERY_CLAIM_LEASE_MS,
+            }
+          : {}),
+        zapReceiptStatus: "observed",
+        zapReceiptId: input.zapReceiptId,
+        lastError: undefined,
+      },
+      now
+    )
     await db.orderLifecycles.put(recorded)
     return { status: "recorded", lifecycle: recorded, proofDeliveryClaimed }
   })
@@ -715,7 +756,8 @@ export async function recordOrderPaymentReceiptTimeout(
 export async function recordOrderPaymentProofDelivery(
   orderId: string,
   proofDeliveryStatus: "pending" | "retry_needed" | "sent",
-  patch: Pick<OrderLifecycle, "deliveryNotice" | "lastError"> = {}
+  patch: Pick<OrderLifecycle, "deliveryNotice" | "lastError"> = {},
+  proofDeliveryClaimId?: string
 ): Promise<OrderPaymentProofDeliveryResult> {
   return db.transaction("rw", db.orderLifecycles, async () => {
     const lifecycle = await db.orderLifecycles.get(orderId)
@@ -725,6 +767,13 @@ export async function recordOrderPaymentProofDelivery(
       proofDeliveryStatus !== "sent"
     ) {
       return { status: "preserved", lifecycle }
+    }
+    if (
+      proofDeliveryStatus !== "sent" &&
+      lifecycle.proofDeliveryClaimId &&
+      lifecycle.proofDeliveryClaimId !== proofDeliveryClaimId
+    ) {
+      return { status: "claim_mismatch", lifecycle }
     }
 
     const recorded = mergeOrderLifecyclePatch(lifecycle, {
@@ -738,28 +787,77 @@ export async function recordOrderPaymentProofDelivery(
 
 /** Atomically acquire proof publication work across browser documents. */
 export async function claimOrderPaymentProofDelivery(
-  orderId: string
+  orderId: string,
+  proofDeliveryClaimId: string,
+  now = Date.now()
 ): Promise<OrderPaymentProofDeliveryClaimResult> {
   return db.transaction("rw", db.orderLifecycles, async () => {
     const lifecycle = await db.orderLifecycles.get(orderId)
     if (!lifecycle) return { status: "missing", lifecycle: null }
+    const normalizedClaimId = proofDeliveryClaimId.trim()
     if (
-      lifecycle.proofDeliveryStatus === "pending" ||
-      lifecycle.proofDeliveryStatus === "sent"
+      !normalizedClaimId ||
+      lifecycle.proofDeliveryStatus === "sent" ||
+      (lifecycle.proofDeliveryStatus === "pending" &&
+        lifecycle.proofDeliveryClaimId !== normalizedClaimId &&
+        (lifecycle.proofDeliveryClaimLeaseExpiresAt ?? 0) > now)
     ) {
       return { status: "preserved", lifecycle }
     }
-    const claimed = mergeOrderLifecyclePatch(lifecycle, {
-      proofDeliveryStatus: "pending",
-    })
+    const claimed = mergeOrderLifecyclePatch(
+      lifecycle,
+      {
+        proofDeliveryStatus: "pending",
+        proofDeliveryClaimId: normalizedClaimId,
+        proofDeliveryClaimedAt:
+          lifecycle.proofDeliveryClaimId === normalizedClaimId
+            ? (lifecycle.proofDeliveryClaimedAt ?? now)
+            : now,
+        proofDeliveryClaimLeaseExpiresAt:
+          now + ORDER_PROOF_DELIVERY_CLAIM_LEASE_MS,
+      },
+      now
+    )
     await db.orderLifecycles.put(claimed)
     return { status: "claimed", lifecycle: claimed }
   })
 }
 
+export async function renewOrderPaymentProofDeliveryClaim(
+  orderId: string,
+  proofDeliveryClaimId: string
+): Promise<OrderPaymentProofDeliveryClaimResult> {
+  return db.transaction("rw", db.orderLifecycles, async () => {
+    const lifecycle = await db.orderLifecycles.get(orderId)
+    if (!lifecycle) return { status: "missing", lifecycle: null }
+    const normalizedClaimId = proofDeliveryClaimId.trim()
+    if (
+      !normalizedClaimId ||
+      lifecycle.proofDeliveryStatus !== "pending" ||
+      lifecycle.proofDeliveryClaimId !== normalizedClaimId
+    ) {
+      return { status: "preserved", lifecycle }
+    }
+
+    const now = Date.now()
+    const renewed = mergeOrderLifecyclePatch(
+      lifecycle,
+      {
+        proofDeliveryClaimLeaseExpiresAt:
+          now + ORDER_PROOF_DELIVERY_CLAIM_LEASE_MS,
+      },
+      now
+    )
+    await db.orderLifecycles.put(renewed)
+    return { status: "claimed", lifecycle: renewed }
+  })
+}
+
 /** Atomically turn one manual external-payment attestation into proof work. */
 export async function claimExternalOrderPaymentProof(
-  orderId: string
+  orderId: string,
+  proofDeliveryClaimId: string,
+  now = Date.now()
 ): Promise<ExternalOrderPaymentProofClaimResult> {
   return db.transaction("rw", db.orderLifecycles, async () => {
     const lifecycle = await db.orderLifecycles.get(orderId)
@@ -767,7 +865,9 @@ export async function claimExternalOrderPaymentProof(
     const publicZapSigner =
       lifecycle.publicZapSigner ??
       getOrderPublicZapSigner(lifecycle.checkoutMode)
+    const normalizedClaimId = proofDeliveryClaimId.trim()
     if (
+      !normalizedClaimId ||
       publicZapSigner ||
       !lifecycle.invoice ||
       lifecycle.paymentStatus !== "manual_required" ||
@@ -775,11 +875,19 @@ export async function claimExternalOrderPaymentProof(
     ) {
       return { status: "preserved", lifecycle }
     }
-    const claimed = mergeOrderLifecyclePatch(lifecycle, {
-      paymentStatus: "paid",
-      proofDeliveryStatus: "pending",
-      lastError: undefined,
-    })
+    const claimed = mergeOrderLifecyclePatch(
+      lifecycle,
+      {
+        paymentStatus: "paid",
+        proofDeliveryStatus: "pending",
+        proofDeliveryClaimId: normalizedClaimId,
+        proofDeliveryClaimedAt: now,
+        proofDeliveryClaimLeaseExpiresAt:
+          now + ORDER_PROOF_DELIVERY_CLAIM_LEASE_MS,
+        lastError: undefined,
+      },
+      now
+    )
     await db.orderLifecycles.put(claimed)
     return { status: "claimed", lifecycle: claimed }
   })
@@ -797,26 +905,40 @@ export async function recordOrderPaymentWalletSuccessRecovery(
   return db.transaction("rw", db.orderLifecycles, async () => {
     const lifecycle = await db.orderLifecycles.get(orderId)
     if (!lifecycle) return { status: "missing", lifecycle: null }
-    const recorded = mergeOrderLifecyclePatch(lifecycle, {
-      paymentClaimId: undefined,
-      invoiceStatus: "received",
-      paymentStatus: "paid",
-      proofDeliveryStatus:
-        lifecycle.proofDeliveryStatus === "sent" ||
-        input.proofDeliveryStatus === "sent"
-          ? "sent"
-          : input.proofDeliveryStatus === "pending" &&
-              lifecycle.proofDeliveryStatus === "pending" &&
-              lifecycle.zapReceiptStatus === "observed"
-            ? "pending"
-            : "retry_needed",
-      invoice: input.invoice,
-      paymentHash: input.paymentHash,
-      preimage: input.preimage,
-      feeMsats: input.feeMsats,
-      zapRequestId: input.zapRequestId,
-      lastError: undefined,
-    })
+    const now = Date.now()
+    const hasLiveProofDeliveryClaim =
+      !!lifecycle.proofDeliveryClaimId &&
+      (lifecycle.proofDeliveryClaimLeaseExpiresAt ?? 0) > now
+    const proofDeliveryClaimMatches =
+      !lifecycle.proofDeliveryClaimId ||
+      lifecycle.proofDeliveryClaimId === input.proofDeliveryClaimId
+    const recorded = mergeOrderLifecyclePatch(
+      lifecycle,
+      {
+        paymentClaimId: undefined,
+        invoiceStatus: "received",
+        paymentStatus: "paid",
+        proofDeliveryStatus:
+          lifecycle.proofDeliveryStatus === "sent" ||
+          input.proofDeliveryStatus === "sent"
+            ? "sent"
+            : !proofDeliveryClaimMatches
+              ? lifecycle.proofDeliveryStatus
+              : input.proofDeliveryStatus === "pending" &&
+                  lifecycle.proofDeliveryStatus === "pending" &&
+                  lifecycle.zapReceiptStatus === "observed" &&
+                  hasLiveProofDeliveryClaim
+                ? "pending"
+                : "retry_needed",
+        invoice: input.invoice,
+        paymentHash: input.paymentHash,
+        preimage: input.preimage,
+        feeMsats: input.feeMsats,
+        zapRequestId: input.zapRequestId,
+        lastError: undefined,
+      },
+      now
+    )
     await db.orderLifecycles.put(recorded)
     return { status: "recorded", lifecycle: recorded }
   })
@@ -1025,15 +1147,72 @@ export async function reconcileInterruptedOrderPayment(
   )
 }
 
+/** Recover proof publication abandoned after its renewable lease expires. */
+export async function reconcileInterruptedOrderProofDelivery(
+  orderId: string,
+  proofDeliveryClaimId: string,
+  now = Date.now()
+): Promise<InterruptedOrderProofDeliveryReconciliation> {
+  return db.transaction(
+    "rw",
+    [db.orderLifecycles, db.paymentAttempts],
+    async () => {
+      const lifecycle = await db.orderLifecycles.get(orderId)
+      if (!lifecycle) return { status: "missing", lifecycle: null }
+      if (
+        lifecycle.paymentStatus !== "paid" ||
+        lifecycle.proofDeliveryStatus !== "pending" ||
+        !lifecycle.proofDeliveryClaimId
+      ) {
+        return { status: "not_interrupted", lifecycle }
+      }
+      if (
+        !proofDeliveryClaimId ||
+        lifecycle.proofDeliveryClaimId !== proofDeliveryClaimId
+      ) {
+        return { status: "claim_mismatch", lifecycle }
+      }
+      if ((lifecycle.proofDeliveryClaimLeaseExpiresAt ?? 0) > now) {
+        return { status: "claim_active", lifecycle }
+      }
+      if (
+        lifecycle.paymentClaimId === lifecycle.proofDeliveryClaimId &&
+        (lifecycle.paymentClaimLeaseExpiresAt ?? 0) > now
+      ) {
+        return { status: "claim_active", lifecycle }
+      }
+
+      const attempt = await db.paymentAttempts.get(orderId)
+      const proofWasSent =
+        isConclusivePaymentAttemptForLifecycle(attempt, lifecycle) &&
+        attempt.proofDeliveryStatus === "sent"
+      const recovered = mergeOrderLifecyclePatch(
+        lifecycle,
+        {
+          paymentClaimId: undefined,
+          proofDeliveryClaimId: undefined,
+          proofDeliveryStatus: proofWasSent ? "sent" : "retry_needed",
+        },
+        now
+      )
+      await db.orderLifecycles.put(recovered)
+      return { status: "recovered", lifecycle: recovered }
+    }
+  )
+}
+
 /**
  * Bounded migration for payment rows created before durable claim tokens were
  * introduced. Only stale states that the previous payment service could leave
- * mid-flight are eligible; current claimed rows use the renewable lease above.
+ * mid-flight are eligible; current claimed rows use renewable leases above.
  */
 export function isLegacyInterruptedOrderPayment(
   lifecycle: Pick<
     OrderLifecycle,
-    "paymentStatus" | "invoiceStatus" | "proofDeliveryStatus"
+    | "paymentStatus"
+    | "invoiceStatus"
+    | "proofDeliveryStatus"
+    | "proofDeliveryClaimId"
   >
 ): boolean {
   return (
@@ -1041,7 +1220,8 @@ export function isLegacyInterruptedOrderPayment(
       (lifecycle.invoiceStatus === "requesting" ||
         lifecycle.invoiceStatus === "received")) ||
     (lifecycle.paymentStatus === "paid" &&
-      lifecycle.proofDeliveryStatus === "pending")
+      lifecycle.proofDeliveryStatus === "pending" &&
+      !lifecycle.proofDeliveryClaimId)
   )
 }
 
@@ -1056,6 +1236,9 @@ export async function reconcileLegacyInterruptedOrderPayment(
       const lifecycle = await db.orderLifecycles.get(orderId)
       if (!lifecycle) return { status: "missing", lifecycle: null }
       if (lifecycle.paymentClaimId) {
+        return { status: "not_legacy_interrupted", lifecycle }
+      }
+      if (lifecycle.proofDeliveryClaimId) {
         return { status: "not_legacy_interrupted", lifecycle }
       }
 

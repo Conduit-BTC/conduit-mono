@@ -113,7 +113,10 @@ import {
   subscribeOrderPayment,
   type OrderPaymentContext,
 } from "../lib/order-payment-service"
-import { reconcileOrderPaymentForDisplay } from "../lib/order-payment-recovery"
+import {
+  getNextOrderPaymentLeaseExpiry,
+  reconcileOrderPaymentForDisplay,
+} from "../lib/order-payment-recovery"
 
 type PriceFormatter = (price: CommercePriceLike) => ShopperPriceDisplay
 import {
@@ -1635,15 +1638,7 @@ function OrdersPage() {
   const refetchLifecycles = lifecyclesQuery.refetch
 
   useEffect(() => {
-    const now = Date.now()
-    const nextLeaseExpiry = lifecycles.reduce<number | null>(
-      (earliest, lifecycle) => {
-        const expiresAt = lifecycle.paymentClaimLeaseExpiresAt
-        if (typeof expiresAt !== "number" || expiresAt <= now) return earliest
-        return earliest === null ? expiresAt : Math.min(earliest, expiresAt)
-      },
-      null
-    )
+    const nextLeaseExpiry = getNextOrderPaymentLeaseExpiry(lifecycles)
     if (nextLeaseExpiry === null) return
 
     const timer = window.setTimeout(

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "bun:test"
 
-import { reconcileOrderPaymentForDisplay } from "../apps/market/src/lib/order-payment-recovery"
+import {
+  getNextOrderPaymentLeaseExpiry,
+  reconcileOrderPaymentForDisplay,
+} from "../apps/market/src/lib/order-payment-recovery"
 import type { OrderLifecycle } from "../packages/core/src/db"
 
 function lifecycle(
@@ -33,6 +36,109 @@ function lifecycle(
 }
 
 describe("Orders payment recovery", () => {
+  it("schedules the next live lease when another lease is already expired", () => {
+    const now = 1_700_000_000_000
+    expect(
+      getNextOrderPaymentLeaseExpiry(
+        [
+          lifecycle("mixed-leases", {
+            paymentClaimLeaseExpiresAt: now - 1,
+            proofDeliveryClaimLeaseExpiresAt: now + 10_000,
+          }),
+        ],
+        now
+      )
+    ).toBe(now + 10_000)
+  })
+
+  it("schedules the later lease when payment and proof share one owner", () => {
+    const now = 1_700_000_000_000
+    expect(
+      getNextOrderPaymentLeaseExpiry(
+        [
+          lifecycle("shared-owner-leases", {
+            paymentClaimId: "shared-owner",
+            paymentClaimLeaseExpiresAt: now + 15_000,
+            proofDeliveryClaimId: "shared-owner",
+            proofDeliveryClaimLeaseExpiresAt: now + 5_000,
+          }),
+        ],
+        now
+      )
+    ).toBe(now + 15_000)
+  })
+
+  it("preserves a live proof owner before reconciling its payment claim", async () => {
+    const claimed = lifecycle("mixed-claim", {
+      invoiceStatus: "received",
+      paymentStatus: "paid",
+      proofDeliveryStatus: "pending",
+      paymentClaimId: "shared-owner",
+      paymentClaimLeaseExpiresAt: 1_700_000_000_000,
+      proofDeliveryClaimId: "shared-owner",
+      proofDeliveryClaimLeaseExpiresAt: 1_700_000_030_000,
+    })
+    let paymentRecoveryCalls = 0
+    let proofRecoveryCalls = 0
+
+    const result = await reconcileOrderPaymentForDisplay(claimed, {
+      readOrderPaymentClaim: () => null,
+      isOrderPaymentRunning: () => false,
+      reconcileInterruptedOrderPayment: async () => {
+        paymentRecoveryCalls += 1
+        return { status: "restored_paid", lifecycle: claimed }
+      },
+      reconcileInterruptedOrderProofDelivery: async () => {
+        proofRecoveryCalls += 1
+        return { status: "claim_active", lifecycle: claimed }
+      },
+    })
+
+    expect(result).toEqual(claimed)
+    expect(proofRecoveryCalls).toBe(1)
+    expect(paymentRecoveryCalls).toBe(0)
+  })
+
+  it("recovers an expired proof lease before the legacy payment gate", async () => {
+    const claimed = lifecycle("proof-lease", {
+      invoiceStatus: "received",
+      paymentStatus: "paid",
+      proofDeliveryStatus: "pending",
+      proofDeliveryClaimId: "proof-owner",
+      proofDeliveryClaimLeaseExpiresAt: 1_700_000_000_100,
+    })
+    const recovered = {
+      ...claimed,
+      proofDeliveryStatus: "retry_needed" as const,
+      proofDeliveryClaimId: undefined,
+      proofDeliveryClaimLeaseExpiresAt: undefined,
+    }
+    let proofRecoveryCalls = 0
+    let legacyRecoveryCalls = 0
+
+    const result = await reconcileOrderPaymentForDisplay(claimed, {
+      readOrderPaymentClaim: () => null,
+      isOrderPaymentRunning: () => false,
+      reconcileInterruptedOrderProofDelivery: async (
+        orderId,
+        proofDeliveryClaimId
+      ) => {
+        proofRecoveryCalls += 1
+        expect(orderId).toBe(claimed.orderId)
+        expect(proofDeliveryClaimId).toBe("proof-owner")
+        return { status: "recovered", lifecycle: recovered }
+      },
+      reconcileLegacyInterruptedOrderPayment: async () => {
+        legacyRecoveryCalls += 1
+        return { status: "not_legacy_interrupted", lifecycle: claimed }
+      },
+    })
+
+    expect(result).toEqual(recovered)
+    expect(proofRecoveryCalls).toBe(1)
+    expect(legacyRecoveryCalls).toBe(0)
+  })
+
   it("keeps every readable row visible when one reconciliation write fails", async () => {
     const failed = lifecycle("failed-write", { paymentClaimId: "claim-a" })
     const recovered = lifecycle("recovered", { paymentClaimId: "claim-b" })

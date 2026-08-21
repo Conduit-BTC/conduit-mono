@@ -1,6 +1,7 @@
 import {
   isLegacyInterruptedOrderPayment,
   reconcileInterruptedOrderPayment,
+  reconcileInterruptedOrderProofDelivery,
   reconcileLegacyInterruptedOrderPayment,
   type OrderLifecycle,
 } from "@conduit/core"
@@ -16,6 +17,7 @@ export interface OrderPaymentRecoveryDependencies {
   clearOrderPaymentClaim: typeof clearOrderPaymentClaim
   isOrderPaymentRunning: typeof isOrderPaymentRunning
   reconcileInterruptedOrderPayment: typeof reconcileInterruptedOrderPayment
+  reconcileInterruptedOrderProofDelivery: typeof reconcileInterruptedOrderProofDelivery
   reconcileLegacyInterruptedOrderPayment: typeof reconcileLegacyInterruptedOrderPayment
 }
 
@@ -24,7 +26,44 @@ const defaultDependencies: OrderPaymentRecoveryDependencies = {
   clearOrderPaymentClaim,
   isOrderPaymentRunning,
   reconcileInterruptedOrderPayment,
+  reconcileInterruptedOrderProofDelivery,
   reconcileLegacyInterruptedOrderPayment,
+}
+
+export function getNextOrderPaymentLeaseExpiry(
+  lifecycles: OrderLifecycle[],
+  now = Date.now()
+): number | null {
+  return lifecycles.reduce<number | null>((earliest, lifecycle) => {
+    const sharesOwner =
+      !!lifecycle.paymentClaimId &&
+      lifecycle.paymentClaimId === lifecycle.proofDeliveryClaimId
+    const candidateExpiries =
+      sharesOwner &&
+      typeof lifecycle.paymentClaimLeaseExpiresAt === "number" &&
+      typeof lifecycle.proofDeliveryClaimLeaseExpiresAt === "number"
+        ? [
+            Math.max(
+              lifecycle.paymentClaimLeaseExpiresAt,
+              lifecycle.proofDeliveryClaimLeaseExpiresAt
+            ),
+          ]
+        : [
+            lifecycle.paymentClaimLeaseExpiresAt,
+            lifecycle.proofDeliveryClaimLeaseExpiresAt,
+          ]
+    const futureExpiries = candidateExpiries.filter(
+      (expiresAt): expiresAt is number =>
+        typeof expiresAt === "number" &&
+        Number.isFinite(expiresAt) &&
+        expiresAt > now
+    )
+    if (futureExpiries.length === 0) return earliest
+    const lifecycleExpiry = Math.min(...futureExpiries)
+    return earliest === null
+      ? lifecycleExpiry
+      : Math.min(earliest, lifecycleExpiry)
+  }, null)
 }
 
 /**
@@ -42,6 +81,22 @@ export async function reconcileOrderPaymentForDisplay(
       dependencies.clearOrderPaymentClaim(lifecycle.orderId, localClaimId)
     }
     if (dependencies.isOrderPaymentRunning(lifecycle.orderId)) return lifecycle
+
+    if (lifecycle.proofDeliveryClaimId) {
+      const result = await dependencies.reconcileInterruptedOrderProofDelivery(
+        lifecycle.orderId,
+        lifecycle.proofDeliveryClaimId
+      )
+      if (
+        localClaimId &&
+        localClaimId === lifecycle.paymentClaimId &&
+        result.status !== "claim_active" &&
+        result.status !== "not_interrupted"
+      ) {
+        dependencies.clearOrderPaymentClaim(lifecycle.orderId, localClaimId)
+      }
+      return result.lifecycle ?? lifecycle
+    }
 
     if (lifecycle.paymentClaimId) {
       const result = await dependencies.reconcileInterruptedOrderPayment(
