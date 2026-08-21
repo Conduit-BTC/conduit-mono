@@ -24,6 +24,7 @@ import {
   type ShopperPresetsDocument,
   type ShopperPresetsValue,
 } from "@conduit/core"
+import { attachEventSourceRelayUrl } from "@conduit/core/protocol/ndk"
 
 const nowMs = 1_770_000_000_000
 const password = "correct horse battery staple 7"
@@ -337,21 +338,26 @@ describe("NIP-78 shopper presets", () => {
         readRelayUrls: ["wss://relay.example", "wss://offline.example"],
         now: () => nowMs,
         getRelayLists: async () => new Map(),
-        fetchEvents: async () => ({
-          events: published ? [published] : [],
-          relays: [
-            {
-              relayUrl: "wss://relay.example",
-              status: "success",
-              eventCount: published ? 1 : 0,
-            },
-            {
-              relayUrl: "wss://offline.example",
-              status: "failed",
-              eventCount: 0,
-            },
-          ],
-        }),
+        fetchEvents: async () => {
+          if (published) {
+            attachEventSourceRelayUrl(published, "wss://relay.example")
+          }
+          return {
+            events: published ? [published] : [],
+            relays: [
+              {
+                relayUrl: "wss://relay.example",
+                status: "success",
+                eventCount: published ? 1 : 0,
+              },
+              {
+                relayUrl: "wss://offline.example",
+                status: "failed",
+                eventCount: 0,
+              },
+            ],
+          }
+        },
         publishEvent: async (event, options) => {
           published = event
           publishOptions = options
@@ -384,5 +390,77 @@ describe("NIP-78 shopper presets", () => {
     expect(
       await decryptShopperPresetsDocument(result.envelope, password)
     ).toEqual(result.document)
+  })
+
+  it("requires complete convergence on every attempted write relay", async () => {
+    for (const relayB of [
+      { status: "failed" as const, storesEvent: true },
+      { status: "success" as const, storesEvent: false },
+    ]) {
+      const { signer, pubkey, ndk } = await signerFixture()
+      let published: NDKEvent | null = null
+
+      await expect(
+        publishShopperPresets({
+          pubkey,
+          value: preset,
+          password,
+          appId: "market",
+          dependencies: {
+            signer,
+            ndk,
+            now: () => nowMs,
+            getRelayLists: async () => new Map(),
+            fetchEvents: async () => {
+              if (published) {
+                attachEventSourceRelayUrl(published, "wss://relay-a.example")
+                if (relayB.storesEvent) {
+                  attachEventSourceRelayUrl(published, "wss://relay-b.example")
+                }
+              }
+              return {
+                events: published ? [published] : [],
+                relays: [
+                  {
+                    relayUrl: "wss://relay-a.example",
+                    status: "success",
+                    eventCount: published ? 1 : 0,
+                  },
+                  {
+                    relayUrl: "wss://relay-b.example",
+                    status: relayB.status,
+                    eventCount: published && relayB.storesEvent ? 1 : 0,
+                  },
+                ],
+              }
+            },
+            publishEvent: async (event) => {
+              published = event
+              return {
+                plan: {
+                  intent: "author_event",
+                  primaryRelayUrls: [
+                    "wss://relay-a.example",
+                    "wss://relay-b.example",
+                  ],
+                  broadcastRelayUrls: [],
+                  parkedRelayUrls: [],
+                  hintRelayUrls: [],
+                },
+                attemptedRelayUrls: [
+                  "wss://relay-a.example",
+                  "wss://relay-b.example",
+                ],
+                successfulRelayUrls: ["wss://relay-a.example"],
+                failedRelayUrls: ["wss://relay-b.example"],
+                relayFailureMessages: {},
+              } as PublishWithPlannerResult
+            },
+          },
+        })
+      ).rejects.toThrow(
+        "The published shopper preset did not converge on relay storage."
+      )
+    }
   })
 })

@@ -436,6 +436,9 @@ describe("Market shopper preset integration", () => {
     expect(source).toMatch(
       /result\.reason === "invalid_envelope"[\s\S]*acceptedReadRef\.current = result[\s\S]*setRemotePreset\(null\)[\s\S]*setDecryptedPreset\(null\)/u
     )
+    expect(source).toMatch(
+      /setUnlockState\(\(current\) =>[\s\S]*current === "unlocked" \? "unlocked" : "error"/u
+    )
   })
 
   it("settles no-op refreshes while retaining the accepted preset", async () => {
