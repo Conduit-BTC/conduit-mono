@@ -1255,9 +1255,15 @@ export function planInboxReadRelays(
 export function deriveInboxReadCoverage(diagnostics: {
   successfulRelayUrls: readonly string[]
   failedRelayUrls: readonly string[]
+  cappedRelayUrls?: readonly string[]
 }): InboxReadCoverage {
   if (diagnostics.successfulRelayUrls.length === 0) return "unavailable"
-  if (diagnostics.failedRelayUrls.length > 0) return "partial"
+  if (
+    diagnostics.failedRelayUrls.length > 0 ||
+    (diagnostics.cappedRelayUrls?.length ?? 0) > 0
+  ) {
+    return "partial"
+  }
   return "complete"
 }
 

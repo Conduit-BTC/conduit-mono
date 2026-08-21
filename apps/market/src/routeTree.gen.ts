@@ -21,6 +21,7 @@ import { Route as ProfileRouteImport } from './routes/profile'
 import { Route as TermsOfServiceRouteImport } from './routes/terms-of-service'
 import { Route as WalletRouteImport } from './routes/wallet'
 import { Route as ZapoutsRouteImport } from './routes/zapouts'
+import { Route as EventsCollectionRefRouteImport } from './routes/events/$collectionRef'
 import { Route as ProductsIndexRouteImport } from './routes/products/index'
 import { Route as ProductsProductIdRouteImport } from './routes/products/$productId'
 import { Route as StorePubkeyRouteImport } from './routes/store/$pubkey'
@@ -86,6 +87,11 @@ const ZapoutsRoute = ZapoutsRouteImport.update({
   path: '/zapouts',
   getParentRoute: () => rootRouteImport,
 } as any)
+const EventsCollectionRefRoute = EventsCollectionRefRouteImport.update({
+  id: '/events/$collectionRef',
+  path: '/events/$collectionRef',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ProductsIndexRoute = ProductsIndexRouteImport.update({
   id: '/products/',
   path: '/products/',
@@ -120,6 +126,7 @@ export interface FileRoutesByFullPath {
   '/terms-of-service': typeof TermsOfServiceRoute
   '/wallet': typeof WalletRoute
   '/zapouts': typeof ZapoutsRoute
+  '/events/$collectionRef': typeof EventsCollectionRefRoute
   '/products/$productId': typeof ProductsProductIdRoute
   '/store/$pubkey': typeof StorePubkeyRoute
   '/u/$profileRef': typeof UProfileRefRoute
@@ -138,6 +145,7 @@ export interface FileRoutesByTo {
   '/terms-of-service': typeof TermsOfServiceRoute
   '/wallet': typeof WalletRoute
   '/zapouts': typeof ZapoutsRoute
+  '/events/$collectionRef': typeof EventsCollectionRefRoute
   '/products/$productId': typeof ProductsProductIdRoute
   '/store/$pubkey': typeof StorePubkeyRoute
   '/u/$profileRef': typeof UProfileRefRoute
@@ -157,6 +165,7 @@ export interface FileRoutesById {
   '/terms-of-service': typeof TermsOfServiceRoute
   '/wallet': typeof WalletRoute
   '/zapouts': typeof ZapoutsRoute
+  '/events/$collectionRef': typeof EventsCollectionRefRoute
   '/products/$productId': typeof ProductsProductIdRoute
   '/store/$pubkey': typeof StorePubkeyRoute
   '/u/$profileRef': typeof UProfileRefRoute
@@ -177,6 +186,7 @@ export interface FileRouteTypes {
     | '/terms-of-service'
     | '/wallet'
     | '/zapouts'
+    | '/events/$collectionRef'
     | '/products/$productId'
     | '/store/$pubkey'
     | '/u/$profileRef'
@@ -195,6 +205,7 @@ export interface FileRouteTypes {
     | '/terms-of-service'
     | '/wallet'
     | '/zapouts'
+    | '/events/$collectionRef'
     | '/products/$productId'
     | '/store/$pubkey'
     | '/u/$profileRef'
@@ -213,6 +224,7 @@ export interface FileRouteTypes {
     | '/terms-of-service'
     | '/wallet'
     | '/zapouts'
+    | '/events/$collectionRef'
     | '/products/$productId'
     | '/store/$pubkey'
     | '/u/$profileRef'
@@ -232,6 +244,7 @@ export interface RootRouteChildren {
   TermsOfServiceRoute: typeof TermsOfServiceRoute
   WalletRoute: typeof WalletRoute
   ZapoutsRoute: typeof ZapoutsRoute
+  EventsCollectionRefRoute: typeof EventsCollectionRefRoute
   ProductsProductIdRoute: typeof ProductsProductIdRoute
   StorePubkeyRoute: typeof StorePubkeyRoute
   UProfileRefRoute: typeof UProfileRefRoute
@@ -324,6 +337,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ZapoutsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/events/$collectionRef': {
+      id: '/events/$collectionRef'
+      path: '/events/$collectionRef'
+      fullPath: '/events/$collectionRef'
+      preLoaderRoute: typeof EventsCollectionRefRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/products/': {
       id: '/products/'
       path: '/products'
@@ -368,6 +388,7 @@ const rootRouteChildren: RootRouteChildren = {
   TermsOfServiceRoute: TermsOfServiceRoute,
   WalletRoute: WalletRoute,
   ZapoutsRoute: ZapoutsRoute,
+  EventsCollectionRefRoute: EventsCollectionRefRoute,
   ProductsProductIdRoute: ProductsProductIdRoute,
   StorePubkeyRoute: StorePubkeyRoute,
   UProfileRefRoute: UProfileRefRoute,

@@ -23,20 +23,18 @@ import {
 import { SignerSwitch } from "../../components/SignerSwitch"
 import { MerchantAvatarFallback } from "../../components/MerchantIdentity"
 import {
-  ProductGridCard,
+  PRODUCT_GRID_CLASS_NAME,
   ProductGridCardSkeleton,
 } from "../../components/ProductGridCard"
+import { ResolvedProductGridCard } from "../../components/ResolvedProductGridCard"
 import { useShopperPricing } from "../../hooks/useShopperPricing"
-import { useCart } from "../../hooks/useCart"
 import { useMarketBrowseModel } from "../../hooks/useMarketBrowseModel"
 import { normalizeFacetValues } from "../../lib/facets"
-import { selectCartItem } from "../../lib/cart-model"
 import {
   type MarketBrowseSearch,
   type MarketBrowseSortOption,
 } from "../../lib/marketBrowseModel"
 import type { ProductCatalogSourceMode } from "../../lib/productCatalogRead"
-import { cartItemInputFromProductSelection } from "../../lib/productVariations"
 
 const PAGE_SIZE = 12
 const COLLAPSED_TAG_CLOUD_HEIGHT = 76
@@ -159,7 +157,6 @@ function CatalogSourceControl({
 }
 
 function ProductsPage() {
-  const cart = useCart()
   const search = Route.useSearch()
   const navigate = useNavigate({ from: Route.fullPath })
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
@@ -682,7 +679,7 @@ function ProductsPage() {
 
       {/* Loading */}
       {productsQuery.isInitialLoading && (
-        <ul className="grid items-start list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
+        <ul className={PRODUCT_GRID_CLASS_NAME}>
           {Array.from({ length: PAGE_SIZE }).map((_, idx) => (
             <li key={idx}>
               <ProductGridCardSkeleton />
@@ -738,7 +735,7 @@ function ProductsPage() {
 
       {/* Product grid */}
       {productCards.length > 0 && (
-        <ul className="grid items-start list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
+        <ul className={PRODUCT_GRID_CLASS_NAME}>
           {productCards.map(({ product, family, merchant }, index) => {
             return (
               <li
@@ -752,7 +749,7 @@ function ProductsPage() {
                     : "",
                 ].join(" ")}
               >
-                <ProductGridCard
+                <ResolvedProductGridCard
                   product={product}
                   family={family}
                   familyHydrating={productsQuery.isHydrating}
@@ -761,47 +758,6 @@ function ProductsPage() {
                   imageLoading={index < 4 ? "eager" : "lazy"}
                   btcUsdRate={btcUsdRate}
                   pricePreference={shopperPricing.preference}
-                  getCartQuantity={(selectedProduct) =>
-                    selectCartItem(cart.items, {
-                      merchantPubkey: selectedProduct.pubkey,
-                      productId: selectedProduct.id,
-                    })?.quantity ?? 0
-                  }
-                  onAddToCart={(selectedProduct) =>
-                    cart.addItem(
-                      {
-                        ...cartItemInputFromProductSelection(
-                          product,
-                          selectedProduct
-                        ),
-                      },
-                      1
-                    )
-                  }
-                  onIncrement={(selectedProduct) =>
-                    cart.addItem(
-                      {
-                        ...cartItemInputFromProductSelection(
-                          product,
-                          selectedProduct
-                        ),
-                      },
-                      1
-                    )
-                  }
-                  onDecrement={(selectedProduct) => {
-                    const identity = {
-                      merchantPubkey: selectedProduct.pubkey,
-                      productId: selectedProduct.id,
-                    }
-                    const existing = selectCartItem(cart.items, identity)
-                    if (!existing) return
-                    if (existing.quantity <= 1) {
-                      cart.removeItem(identity)
-                      return
-                    }
-                    cart.setQuantity(identity, existing.quantity - 1)
-                  }}
                 />
               </li>
             )

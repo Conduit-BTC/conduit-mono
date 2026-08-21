@@ -1,4 +1,9 @@
-import type { KnownOrderStatus, ProductZapMessagePolicy } from "../schemas"
+import type {
+  KnownOrderStatus,
+  OrderItemFulfillmentSchema,
+  ProductShippingOptionReference,
+  ProductZapMessagePolicy,
+} from "../schemas"
 
 // Nostr primitives
 export type Pubkey = string
@@ -24,6 +29,8 @@ export interface Product {
     currency: string
     normalizedCurrency: string
   }
+  /** Signed kind-30402 price-tag evidence was missing or malformed. */
+  priceEvidenceMalformed?: true
   type: "simple" | "variable" | "variation"
   /** Full kind-30402 coordinate of this variation's variable parent. */
   parentProductId?: string
@@ -41,6 +48,10 @@ export interface Product {
   /** Addressable kind-30406 shipping option reference attached by the merchant. */
   shippingOptionId?: string
   shippingOptionDTag?: string
+  /** Repeated Gamma shipping_option references in signed tag order. */
+  shippingOptionRefs?: ProductShippingOptionReference[]
+  /** Repeated kind-30405 collection references in signed tag order. */
+  collectionRefs?: string[]
   /** Product-level snapshot of the referenced shipping option for checkout. */
   shippingCountries?: string[]
   shippingCountryRules?: Array<{
@@ -100,6 +111,7 @@ export interface OrderItem {
   familyProductId?: string
   selectedSpecifications?: ProductSpecification[]
   format: "physical" | "digital"
+  fulfillment?: OrderItemFulfillmentSchema
   quantity: number
   priceAtPurchase: number
   currency: string

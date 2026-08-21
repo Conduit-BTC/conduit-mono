@@ -19,7 +19,8 @@ describe("merchant shopper trust route contract", () => {
 
     const trustCardPosition = source.indexOf("<ShopperTrustCard")
     const shippingPosition = source.indexOf(
-      "{orderSummary.shippingAddress && ("
+      "orderFulfillment.requiresShipping &&",
+      trustCardPosition
     )
     expect(trustCardPosition).toBeGreaterThan(-1)
     expect(trustCardPosition).toBeLessThan(shippingPosition)

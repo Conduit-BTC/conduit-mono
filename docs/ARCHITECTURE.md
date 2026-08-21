@@ -137,7 +137,10 @@ anchors so navigation re-enters that boot boundary.
 | `10002` | Relay list                   | NIP-65                            |
 | `10050` | Private message relays       | NIP-17 recipient relay hints      |
 | `30402` | Product listing              | NIP-99 + GammaMarkets market-spec |
-| `30406` | Shipping option              | Conduit commerce extension        |
+| `30405` | Product collection           | Open Markets / Gamma market-spec  |
+| `30406` | Shipping or pickup option    | Open Markets / Gamma market-spec  |
+| `31922` | Date-based calendar event    | NIP-52                            |
+| `31923` | Time-based calendar event    | NIP-52                            |
 | `31989` | Application recommendation   | NIP-89                            |
 | `31990` | Application handler metadata | NIP-89                            |
 
@@ -160,6 +163,27 @@ Product listings are replaceable addressable events:
 
 Routes should prefer shared product parsing, dedupe, relay-planning, and cache helpers instead of inventing per-route event semantics. Current code may still use NDK as the edge library.
 
+### Event Markets And Pickup
+
+Organizer-authored event catalogs compose a NIP-52 `31922`/`31923` calendar
+event, an organizer-owned `30405` collection, and an optional organizer-authored
+Open Markets `30406` pickup standing offer. Products remain merchant-authored
+`30402` events and may instead select merchant-authored booth pickup. The
+organizer collection is authoritative for catalog membership; a product
+reference to the collection is only a discoverability claim or request. Pickup
+authorship plus the exact two-sided graph determines whether the merchant or
+organizer performs handoff; there is no booth registry event.
+
+Shared parsing, publishing, evidence resolution, coordinate/`naddr` handling,
+and deletion semantics belong in `@conduit/core`. Market and Merchant routes
+compose those prepared states. See `docs/specs/event-markets.md`.
+
+The buyer's encrypted order remains buyer-to-merchant. Organizer handoff uses a
+separate minimal merchant-to-organizer NIP-17 fulfillment receipt and a narrowly
+scoped organizer-to-merchant handoff acknowledgement. Core owns their strict
+schemas, authority checks, kind-10050 routing, and immutable delivery retry;
+routes never fan out or redact full orders themselves.
+
 ### Orders And Messages
 
 Buyer-merchant communication uses NIP-17 encrypted messages. A Conduit order message payload is kind `16`, encrypted/sealed/wrapped before publishing. General buyer/merchant DMs use kind `14` inside the same private-message transport and should stay distinct from order-linked kind `16` conversations in product state.
@@ -168,14 +192,17 @@ New private-message work should use a Conduit-owned private-message boundary in 
 
 Standard order message types:
 
-| Type              | Direction         | Meaning                           |
-| ----------------- | ----------------- | --------------------------------- |
-| `order`           | buyer -> merchant | Initial order intent/details      |
-| `payment_request` | merchant -> buyer | Lightning invoice/payment request |
-| `payment_proof`   | buyer -> merchant | Buyer payment evidence            |
-| `status_update`   | merchant -> buyer | Order state transition            |
-| `shipping_update` | merchant -> buyer | Tracking or shipping update       |
-| `receipt`         | merchant -> buyer | Final receipt/confirmation        |
+| Type                               | Direction             | Meaning                             |
+| ---------------------------------- | --------------------- | ----------------------------------- |
+| `order`                            | buyer -> merchant     | Initial order intent/details        |
+| `payment_request`                  | merchant -> buyer     | Lightning invoice/payment request   |
+| `payment_proof`                    | buyer -> merchant     | Buyer payment evidence              |
+| `status_update`                    | merchant -> buyer     | Order state transition              |
+| `shipping_update`                  | merchant -> buyer     | Tracking or shipping update         |
+| `receipt`                          | merchant -> buyer     | Final receipt/confirmation          |
+| `organizer_fulfillment_receipt`    | merchant -> organizer | Minimal ready-for-pickup delegation |
+| `organizer_fulfillment_revocation` | merchant -> organizer | Revoke one ready receipt            |
+| `organizer_handoff_ack`            | organizer -> merchant | Scoped handed-out evidence          |
 
 Order status values currently include:
 

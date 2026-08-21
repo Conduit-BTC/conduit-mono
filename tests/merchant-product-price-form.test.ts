@@ -84,6 +84,23 @@ describe("merchant product price form", () => {
     expect(() => assertPublishableProductPrice(0.0025, "BTC")).not.toThrow()
   })
 
+  it("allows exact zero only through the explicit BTC-native pickup price lane", () => {
+    for (const currency of ["SAT", "SATS", "MSATS", "BTC"]) {
+      expect(
+        normalizePublishableProductPrice(0, currency, { allowZero: true })
+      ).toBe(0)
+    }
+
+    expect(() => normalizePublishableProductPrice(0, "SATS")).toThrow(
+      "greater than zero"
+    )
+    for (const currency of ["USD", "EUR", "POINTS", ""]) {
+      expect(() =>
+        normalizePublishableProductPrice(0, currency, { allowZero: true })
+      ).toThrow("BTC-native")
+    }
+  })
+
   it("preserves valid publishable prices at the selected precision", () => {
     expect(normalizePublishableProductPrice(6.66, "USD")).toBe(6.66)
     expect(normalizePublishableProductPrice(6, "JPY")).toBe(6)

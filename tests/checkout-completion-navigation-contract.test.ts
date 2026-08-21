@@ -90,7 +90,7 @@ describe("checkout completion navigation contracts", () => {
     )
     const payNowSource = checkoutRoute.slice(payNowStart, payNowEnd)
     const paymentAvailability = payNowSource.indexOf(
-      "await assertCheckoutItemsAvailable(requestedCheckoutMode)"
+      "const freshCheckoutItems = await assertCheckoutItemsAvailable("
     )
     const signedOrderReady = payNowSource.indexOf(
       "orderRumor.content = JSON.stringify(orderPayload)"
@@ -114,10 +114,10 @@ describe("checkout completion navigation contracts", () => {
     expect(payNowSource).toContain("let directPaymentStarted = false")
     expect(
       payNowSource.match(
-        /await assertCheckoutItemsAvailable\(requestedCheckoutMode\)/g
+        /await assertCheckoutItemsAvailable\(\s*requestedCheckoutMode\s*\)/g
       )
     ).toHaveLength(1)
-    expect(paymentAvailability).toBeGreaterThan(signedOrderReady)
+    expect(signedOrderReady).toBeGreaterThan(paymentAvailability)
     expect(orderPublish).toBeGreaterThan(paymentAvailability)
     expect(paymentStarted).toBeGreaterThan(paymentAvailability)
     expect(paymentStartedTelemetry).toBeGreaterThan(paymentStarted)
@@ -180,7 +180,7 @@ describe("checkout completion navigation contracts", () => {
     )
     const payNowSource = checkoutRoute.slice(payNowIndex, payNowEnd)
     const availabilityIndex = payNowSource.indexOf(
-      "await assertCheckoutItemsAvailable(requestedCheckoutMode)"
+      "const freshCheckoutItems = await assertCheckoutItemsAvailable("
     )
     const authorizationIndex = payNowSource.indexOf(
       "assertClaimedZapAuthorization(",
@@ -266,7 +266,12 @@ describe("checkout completion navigation contracts", () => {
       "apps/market/src/routes/checkout.tsx"
     ).text()
 
-    expect(checkoutRoute).toContain("!guestManualInvoiceEligible && (")
+    expect(checkoutRoute).toContain("{isGuestCheckout &&")
+    expect(checkoutRoute).toContain("!fastEligible &&")
+    expect(checkoutRoute).toContain("verifiedZeroCostPickup ? (")
+    expect(checkoutRoute).toContain("onClick={placeOrder}")
+    expect(checkoutRoute).toContain('"Send order"')
+    expect(checkoutRoute).toContain("!guestManualInvoiceEligible")
     expect(checkoutRoute).toContain("Connect signer to send order")
     expect(checkoutRoute).toContain("Send order and show invoice")
     expect(checkoutRoute).toContain(
@@ -288,7 +293,9 @@ describe("checkout completion navigation contracts", () => {
     )
     expect(ordersRoute).toContain("Closing it ends")
     expect(ordersRoute).toContain("local access to this guest order")
-    expect(ordersRoute).toContain("merchant will follow up")
+    expect(ordersRoute).toContain(
+      "merchant can use the private recovery contact"
+    )
     expect(ordersRoute).toContain("disabled={!activeBuyerPubkey}")
   })
 })

@@ -10,6 +10,11 @@ import {
 
 export type ProductFulfillmentFormat = "physical" | "digital"
 export type ProductShippingPricingMode = "fixed" | "coordinate_after_order"
+export interface PublishableProductPriceOptions {
+  allowZero?: boolean
+}
+
+const ZERO_PRICE_NATIVE_CURRENCIES = new Set(["SAT", "SATS", "MSATS", "BTC"])
 
 const PLAIN_DECIMAL_INPUT_PATTERN = /^\d*(?:\.\d*)?$/
 const COMPLETE_PLAIN_DECIMAL_PATTERN = /^\d+(?:\.\d+)?$/
@@ -70,7 +75,8 @@ export function parsePlainDecimalAmount(value: string, label: string): number {
 
 export function normalizePublishableProductPrice(
   price: number,
-  currency: string
+  currency: string,
+  options: PublishableProductPriceOptions = {}
 ): number {
   if (!Number.isFinite(price) || price < 0) {
     throw new Error("Price must be greater than zero")
@@ -88,6 +94,22 @@ export function normalizePublishableProductPrice(
     )
   }
 
+  if (amount.amount === 0 && options.allowZero) {
+    const normalized = normalizeCommercePrice(amount.amount, currency, null, {
+      allowZero: true,
+    })
+    if (
+      normalized.status === "ok" &&
+      normalized.sats === 0 &&
+      ZERO_PRICE_NATIVE_CURRENCIES.has(normalized.source.normalizedCurrency)
+    ) {
+      return amount.amount
+    }
+    throw new Error(
+      "Zero-price pickup listings require a BTC-native SAT, SATS, MSATS, or BTC currency."
+    )
+  }
+
   if (amount.amount <= 0) {
     throw new Error("Price must be greater than zero")
   }
@@ -102,9 +124,10 @@ export function normalizePublishableProductPrice(
 
 export function assertPublishableProductPrice(
   price: number,
-  currency: string
+  currency: string,
+  options: PublishableProductPriceOptions = {}
 ): void {
-  normalizePublishableProductPrice(price, currency)
+  normalizePublishableProductPrice(price, currency, options)
 }
 
 export function getProductShippingCurrencyLabel(currency: string): string {

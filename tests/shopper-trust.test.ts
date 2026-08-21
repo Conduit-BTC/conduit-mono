@@ -159,24 +159,27 @@ function createCache(
 }
 
 describe("shopper trust evidence", () => {
-  it("registers the combined cache, deletion, declaration, and wallet stores", () => {
-    expect(db.verno).toBe(13)
+  it("registers the combined cache, deletion, declaration, wallet, and event-market stores", () => {
+    expect(db.verno).toBe(14)
     expect(db.tables.map(({ name }) => name)).toEqual(
       expect.arrayContaining([
         "shopperTrustSnapshots",
         "productDeletionOutbox",
         "inboxDeclarationEvidence",
         "ownContactListSnapshots",
+        "eventMarketEvidence",
         "wallets",
         "walletCredentials",
       ])
     )
     expect(db.inboxDeclarationEvidence.schema.primKey.name).toBe("pubkey")
     expect(db.ownContactListSnapshots.schema.primKey.name).toBe("pubkey")
+    expect(db.eventMarketEvidence.schema.primKey.name).toBe("id")
     expect(db.wallets.schema.primKey.name).toBe("id")
     expect(db.wallets.schema.indexes).toHaveLength(0)
     expect(db.walletCredentials.schema.primKey.name).toBe("walletId")
     expect(db.walletCredentials.schema.indexes).toHaveLength(0)
+    expect(db.eventMarketEvidence.schema.primKey.name).toBe("id")
   })
 
   it("keeps both divergent version-9 stores in the upgrade history", async () => {

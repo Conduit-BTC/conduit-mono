@@ -1,4 +1,5 @@
 export { Avatar, AvatarImage, AvatarFallback } from "./Avatar"
+export { QRCodeSVG } from "qrcode.react"
 export { AccountMenu, type AccountMenuProps } from "./AccountMenu"
 export { Badge, badgeVariants, type BadgeProps } from "./Badge"
 export { Button, buttonVariants, type ButtonProps } from "./Button"

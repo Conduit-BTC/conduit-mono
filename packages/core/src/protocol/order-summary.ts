@@ -4,6 +4,7 @@ import {
   isPaymentProofEvidenceMessage,
   type ParsedOrderMessage,
 } from "./orders"
+import type { OrderItemFulfillmentSchema } from "../schemas"
 
 export type OrderSummary = {
   buyerIdentityKind: "signed_in" | "guest_ephemeral" | null
@@ -13,9 +14,18 @@ export type OrderSummary = {
     selectedSpecifications?: Array<{ key: string; value: string }>
     title?: string
     format: "physical" | "digital"
+    fulfillment?: OrderItemFulfillmentSchema
     quantity: number
     priceAtPurchase: number
     currency: string
+    shippingCostSats?: number
+    sourceShippingCost?: {
+      amount: number
+      currency: string
+      normalizedCurrency: string
+    }
+    shippingOptionId?: string
+    shippingOptionDTag?: string
     sourcePrice?: {
       amount: number
       currency: string
@@ -36,8 +46,8 @@ export type OrderSummary = {
     country: string
   } | null
   guestContact: {
-    email: string
-    phone: string
+    email?: string
+    phone?: string
   } | null
   orderNote: string | null
   invoiceSent: boolean
@@ -187,9 +197,14 @@ export function extractOrderSummary(
           ),
           title: item.title,
           format: item.format,
+          fulfillment: item.fulfillment,
           quantity: item.quantity,
           priceAtPurchase: item.priceAtPurchase,
           currency: item.currency,
+          shippingCostSats: item.shippingCostSats,
+          sourceShippingCost: item.sourceShippingCost,
+          shippingOptionId: item.shippingOptionId,
+          shippingOptionDTag: item.shippingOptionDTag,
           sourcePrice: item.sourcePrice,
         }))
       : []

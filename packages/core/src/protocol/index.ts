@@ -55,6 +55,10 @@ export * from "./relay-executor"
 export * from "./protected-inbox-read"
 export * from "./protected-read-state"
 export * from "./shipping"
+export * from "./event-market"
+export * from "./event-market-fulfillment"
+export * from "./event-market-handoff"
+export * from "./event-market-merchandise"
 export * from "./signed-event"
 export {
   getNdk,

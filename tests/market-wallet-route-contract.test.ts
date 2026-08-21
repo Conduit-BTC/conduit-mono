@@ -304,10 +304,10 @@ describe("Market wallet route contracts", () => {
     expect(content).toContain("{wallets.initializationError}")
     expect(content).toContain("wallets.retryInitialization()")
     expect(content).toMatch(
-      /const canAttemptLightningPayment =\s+!wallets\.loading/
+      /const canAttemptLightningPayment =\s+paymentPathEnabled &&\s+!wallets\.loading/
     )
     expect(content).toMatch(
-      /const allowsManualLightningFallback =\s+!wallets\.loading/
+      /const allowsManualLightningFallback =\s+paymentPathEnabled &&\s+!wallets\.loading/
     )
   })
 

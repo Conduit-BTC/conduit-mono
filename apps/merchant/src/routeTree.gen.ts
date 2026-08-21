@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AboutRouteImport } from './routes/about'
+import { Route as EventsRouteImport } from './routes/events'
 import { Route as MessagesRouteImport } from './routes/messages'
 import { Route as NetworkRouteImport } from './routes/network'
 import { Route as OrdersRouteImport } from './routes/orders'
@@ -29,6 +30,11 @@ const IndexRoute = IndexRouteImport.update({
 const AboutRoute = AboutRouteImport.update({
   id: '/about',
   path: '/about',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const EventsRoute = EventsRouteImport.update({
+  id: '/events',
+  path: '/events',
   getParentRoute: () => rootRouteImport,
 } as any)
 const MessagesRoute = MessagesRouteImport.update({
@@ -80,6 +86,7 @@ const TermsOfServiceRoute = TermsOfServiceRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/about': typeof AboutRoute
+  '/events': typeof EventsRoute
   '/messages': typeof MessagesRoute
   '/network': typeof NetworkRoute
   '/orders': typeof OrdersRoute
@@ -93,6 +100,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/about': typeof AboutRoute
+  '/events': typeof EventsRoute
   '/messages': typeof MessagesRoute
   '/network': typeof NetworkRoute
   '/orders': typeof OrdersRoute
@@ -107,6 +115,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/about': typeof AboutRoute
+  '/events': typeof EventsRoute
   '/messages': typeof MessagesRoute
   '/network': typeof NetworkRoute
   '/orders': typeof OrdersRoute
@@ -122,6 +131,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/about'
+    | '/events'
     | '/messages'
     | '/network'
     | '/orders'
@@ -135,6 +145,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/about'
+    | '/events'
     | '/messages'
     | '/network'
     | '/orders'
@@ -148,6 +159,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/about'
+    | '/events'
     | '/messages'
     | '/network'
     | '/orders'
@@ -162,6 +174,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AboutRoute: typeof AboutRoute
+  EventsRoute: typeof EventsRoute
   MessagesRoute: typeof MessagesRoute
   NetworkRoute: typeof NetworkRoute
   OrdersRoute: typeof OrdersRoute
@@ -187,6 +200,13 @@ declare module '@tanstack/react-router' {
       path: '/about'
       fullPath: '/about'
       preLoaderRoute: typeof AboutRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/events': {
+      id: '/events'
+      path: '/events'
+      fullPath: '/events'
+      preLoaderRoute: typeof EventsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/messages': {
@@ -258,6 +278,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AboutRoute: AboutRoute,
+  EventsRoute: EventsRoute,
   MessagesRoute: MessagesRoute,
   NetworkRoute: NetworkRoute,
   OrdersRoute: OrdersRoute,

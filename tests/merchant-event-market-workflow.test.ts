@@ -1,0 +1,270 @@
+import { describe, expect, it } from "bun:test"
+import {
+  decodeEventMarketReference,
+  encodeEventMarketNaddr,
+} from "@conduit/core"
+import {
+  findSavedOrganizerEventMarketReference,
+  forgetOrganizerEventMarket,
+  getOrganizerEventMarketDisplayState,
+  getOrganizerEventMarketStorageKey,
+  loadSavedOrganizerEventMarkets,
+  rememberOrganizerEventMarket,
+  updateOrganizerCollectionProducts,
+} from "../apps/merchant/src/lib/event-market-workflow"
+import {
+  isParticipationHandoffVerified,
+  isParticipationProductPreviewVerified,
+} from "../apps/merchant/src/lib/event-market"
+
+const ORGANIZER = "a".repeat(64)
+const OTHER_ORGANIZER = "b".repeat(64)
+const PRODUCT_ONE = `30402:${"c".repeat(64)}:bread`
+const PRODUCT_TWO = `30402:${"d".repeat(64)}:coffee`
+const COLLECTION = `30405:${ORGANIZER}:market`
+const MERCHANT = "c".repeat(64)
+const MERCHANT_PICKUP = `30406:${MERCHANT}:market-booth`
+
+class MemoryStorage {
+  private readonly values = new Map<string, string>()
+
+  getItem(key: string): string | null {
+    return this.values.get(key) ?? null
+  }
+
+  setItem(key: string, value: string): void {
+    this.values.set(key, value)
+  }
+}
+
+describe("merchant organizer event workflow", () => {
+  it("keeps saved public event references scoped to the organizer signer", () => {
+    const storage = new MemoryStorage()
+    rememberOrganizerEventMarket(
+      ORGANIZER,
+      { reference: COLLECTION, title: "Market", savedAt: 10 },
+      storage
+    )
+
+    expect(loadSavedOrganizerEventMarkets(ORGANIZER, storage)).toEqual([
+      { reference: COLLECTION, title: "Market", savedAt: 10 },
+    ])
+    expect(loadSavedOrganizerEventMarkets(OTHER_ORGANIZER, storage)).toEqual([])
+    expect(getOrganizerEventMarketStorageKey(ORGANIZER)).not.toBe(
+      getOrganizerEventMarketStorageKey(OTHER_ORGANIZER)
+    )
+  })
+
+  it("deduplicates references and keeps the newest local label", () => {
+    const storage = new MemoryStorage()
+    rememberOrganizerEventMarket(
+      ORGANIZER,
+      { reference: COLLECTION, title: "Old", savedAt: 10 },
+      storage
+    )
+    rememberOrganizerEventMarket(
+      ORGANIZER,
+      { reference: COLLECTION, title: "Updated", savedAt: 20 },
+      storage
+    )
+
+    expect(loadSavedOrganizerEventMarkets(ORGANIZER, storage)).toEqual([
+      { reference: COLLECTION, title: "Updated", savedAt: 20 },
+    ])
+  })
+
+  it("keeps the in-session reference when browser storage rejects writes", () => {
+    const storage = {
+      getItem: () => null,
+      setItem: () => {
+        throw new Error("storage disabled")
+      },
+    }
+
+    expect(
+      rememberOrganizerEventMarket(
+        ORGANIZER,
+        { reference: COLLECTION, savedAt: 10 },
+        storage
+      )
+    ).toEqual([{ reference: COLLECTION, savedAt: 10 }])
+  })
+
+  it("merges same-coordinate relay hints across imports and reload", () => {
+    const storage = new MemoryStorage()
+    const first = encodeEventMarketNaddr(COLLECTION, ["wss://one.example"])
+    const second = encodeEventMarketNaddr(COLLECTION, ["wss://two.example"])
+
+    rememberOrganizerEventMarket(
+      ORGANIZER,
+      { reference: first, title: "First", savedAt: 10 },
+      storage
+    )
+    rememberOrganizerEventMarket(
+      ORGANIZER,
+      { reference: second, title: "Second", savedAt: 20 },
+      storage
+    )
+
+    const reloaded = loadSavedOrganizerEventMarkets(ORGANIZER, storage)
+    expect(reloaded).toHaveLength(1)
+    expect(reloaded[0]).toMatchObject({ title: "Second", savedAt: 20 })
+    expect(
+      decodeEventMarketReference(reloaded[0]!.reference, [30405])?.relayHints
+    ).toEqual(["wss://two.example", "wss://one.example"])
+    expect(
+      findSavedOrganizerEventMarketReference(reloaded, COLLECTION)?.reference
+    ).toBe(reloaded[0]!.reference)
+  })
+
+  it("keeps a hinted selection through bare edit and publish references for sharing", () => {
+    const storage = new MemoryStorage()
+    const imported = encodeEventMarketNaddr(COLLECTION, [
+      "wss://hint.example/events",
+    ])
+    rememberOrganizerEventMarket(
+      ORGANIZER,
+      { reference: imported, title: "Imported", savedAt: 10 },
+      storage
+    )
+
+    const afterPublish = rememberOrganizerEventMarket(
+      ORGANIZER,
+      { reference: COLLECTION, title: "Edited", savedAt: 20 },
+      storage
+    )
+    const selected = findSavedOrganizerEventMarketReference(
+      afterPublish,
+      COLLECTION
+    )
+
+    expect(selected).toMatchObject({ title: "Edited", savedAt: 20 })
+    expect(
+      decodeEventMarketReference(selected!.reference, [30405])
+    ).toMatchObject({
+      coordinate: COLLECTION,
+      relayHints: ["wss://hint.example/events"],
+    })
+    expect(
+      loadSavedOrganizerEventMarkets(ORGANIZER, storage)[0]?.reference
+    ).toBe(selected!.reference)
+
+    expect(forgetOrganizerEventMarket(ORGANIZER, imported, storage)).toEqual([])
+  })
+
+  it("accepts and removes exact products without changing other membership", () => {
+    expect(
+      updateOrganizerCollectionProducts(
+        [PRODUCT_ONE, PRODUCT_ONE],
+        PRODUCT_TWO,
+        "accept"
+      )
+    ).toEqual([PRODUCT_ONE, PRODUCT_TWO])
+    expect(
+      updateOrganizerCollectionProducts(
+        [PRODUCT_ONE, PRODUCT_TWO],
+        PRODUCT_ONE,
+        "remove"
+      )
+    ).toEqual([PRODUCT_TWO])
+  })
+
+  it("refuses non-product references in organizer membership updates", () => {
+    expect(() =>
+      updateOrganizerCollectionProducts(
+        [PRODUCT_ONE],
+        `31923:${ORGANIZER}:market`,
+        "accept"
+      )
+    ).toThrow("kind-30402")
+  })
+
+  it("accepts only a Core-resolved handoff whose pickup and handler authority match", () => {
+    const request = {
+      productCoordinate: `30402:${MERCHANT}:bread`,
+      merchantPubkey: MERCHANT,
+      fulfillmentStatus: "resolved" as const,
+      pickupCoordinate: MERCHANT_PICKUP,
+      pickupAuthorPubkey: MERCHANT,
+      handoffMode: "merchant_handoff" as const,
+      handlerPubkey: MERCHANT,
+      status: "pending" as const,
+    }
+
+    expect(isParticipationHandoffVerified(request, ORGANIZER)).toBe(true)
+    expect(
+      isParticipationHandoffVerified(
+        { ...request, fulfillmentStatus: "ambiguous" },
+        ORGANIZER
+      )
+    ).toBe(false)
+    expect(
+      isParticipationHandoffVerified(
+        { ...request, handoffMode: "organizer_handoff" },
+        ORGANIZER
+      )
+    ).toBe(false)
+  })
+
+  it("accepts only a revision-bound Core product preview with usable canonical price evidence", () => {
+    const eventId = "e".repeat(64)
+    const request = {
+      productCoordinate: `30402:${MERCHANT}:bread`,
+      eventId,
+      createdAt: 1_000,
+      merchantPubkey: MERCHANT,
+      productPreview: {
+        coordinate: `30402:${MERCHANT}:bread`,
+        eventId,
+        createdAt: 1_000,
+        title: "Fresh bread",
+        summary: "A signed product description.",
+        images: [{ url: "https://images.example/bread.jpg" }],
+        type: "simple" as const,
+        format: "physical" as const,
+        stock: 4,
+        priceStatus: "resolved" as const,
+        price: 25,
+        currency: "SAT",
+      },
+      status: "pending" as const,
+    }
+
+    expect(isParticipationProductPreviewVerified(request)).toBe(true)
+    expect(
+      isParticipationProductPreviewVerified({
+        ...request,
+        eventId: "f".repeat(64),
+      })
+    ).toBe(false)
+    expect(
+      isParticipationProductPreviewVerified({
+        ...request,
+        productPreview: {
+          ...request.productPreview,
+          priceStatus: "malformed" as const,
+        },
+      })
+    ).toBe(false)
+    expect(
+      isParticipationProductPreviewVerified({
+        ...request,
+        productPreview: {
+          ...request.productPreview,
+          coordinate: `30402:${MERCHANT}:another-product`,
+        },
+      })
+    ).toBe(false)
+  })
+
+  it("keeps network evidence states distinct in the organizer view", () => {
+    expect(getOrganizerEventMarketDisplayState("active")).toBe("active")
+    expect(getOrganizerEventMarketDisplayState("ended")).toBe("ended")
+    expect(getOrganizerEventMarketDisplayState("deleted")).toBe("deleted")
+    expect(getOrganizerEventMarketDisplayState("partial")).toBe("degraded")
+    expect(getOrganizerEventMarketDisplayState("stale")).toBe("degraded")
+    expect(getOrganizerEventMarketDisplayState("unavailable")).toBe(
+      "unavailable"
+    )
+  })
+})
