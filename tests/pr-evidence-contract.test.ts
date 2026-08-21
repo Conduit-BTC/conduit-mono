@@ -89,7 +89,7 @@ describe("pull request evidence contract", () => {
       "stubbed signers do not prove signatures, encryption, relay delivery"
     )
     expect(reviewWorkflow).toContain(
-      "Do not accept stubbed signer evidence as proof of signatures"
+      ".github/instructions/pr-review.instructions.md"
     )
     expect(reviewInstructions).toContain("No actionable findings.")
     expect(reviewWorkflow).toContain("No actionable findings.")

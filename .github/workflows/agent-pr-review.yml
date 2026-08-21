@@ -144,8 +144,9 @@ jobs:
             diff. Do not edit files, push commits, create branches, change
             labels, merge, deploy, request reviewers, or update external systems.
 
-            Read AGENTS.md, contributor guidance, the changed files, their
-            callers, and applicable public implementation context before
+            Read AGENTS.md, CONTRIBUTING.md,
+            .github/instructions/pr-review.instructions.md, the changed files,
+            their callers, and applicable public implementation context before
             judging the diff.
 
             Review priorities:
@@ -156,28 +157,7 @@ jobs:
                verifiability.
             5. Maintainability.
 
-            Mandatory constraints:
-            - User authentication remains external-signer-only. Service-signer
-              exceptions must be documented and narrowly scoped.
-            - Do not introduce behavioral tracking, profiling, or message,
-              order, payment, address, signer, or wallet secret inspection.
-            - Payments remain non-custodial.
-            - Telemetry follows docs/analytics/events.md.
-            - Public repository content excludes private runbooks, credentials,
-              dashboard exports, and private company planning context.
-            - Verify that observable acceptance criteria map to current-head
-              evidence or an explicit gap. Generic CI checkboxes are not
-              behavioral evidence.
-            - Verify that selected smoke shards include the named tests and
-              cannot pass with zero matching tests.
-            - Do not accept stubbed signer evidence as proof of signatures,
-              encryption, relay delivery, extension UX, or mobile handoff.
-            - Confirm exactly one QA disposition using this vocabulary:
-              `Evidence sign-off`, `Targeted human QA`, or
-              `Maintainer-owned validation`.
-            - `Evidence sign-off` still requires human code review. Reject
-              that disposition for protocol, auth, payment, privacy, security,
-              migration, secret, destructive-state, or release changes.
+            Workflow-specific constraint:
             - Automatic Ponytail review is intentionally once per pull request.
               New heads do not rearm it. Maintainers use `/agent simplify` for
               an explicit rerun.

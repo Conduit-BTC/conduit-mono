@@ -52,13 +52,7 @@ function assignedAreasForSpec(spec: PlaywrightJsonSpec): SmokeArea[] {
   const tags = new Set(
     (spec.tags ?? []).map((tag) => (tag.startsWith("@") ? tag : `@${tag}`))
   )
-  return smokeAreas.filter(
-    (area) =>
-      tags.has(smokeAreaTags[area]) ||
-      new RegExp(`(?:^|\\s)${smokeAreaTags[area]}(?:\\s|$)`).test(
-        spec.title ?? ""
-      )
-  )
+  return smokeAreas.filter((area) => tags.has(smokeAreaTags[area]))
 }
 
 function manifestFile(file?: string): string {
