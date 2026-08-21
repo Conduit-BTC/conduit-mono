@@ -454,12 +454,15 @@ and verification of the matching kind `9735` on an approved relay.
 
 The manual-only `Guest Checkout Order Smoke` workflow enters the protected
 `guest-checkout-smoke` GitHub environment, verifies that the dedicated merchant
-signer owns the configured merchant and product, and asks the deployed checkout
-product query for the current signed listing. It then generates a fresh
-`guest_ephemeral` identity, publishes one encrypted order through the shared
-Market delivery path, switches to the merchant signer, and polls Merchant's
-shared conversation query until that exact order decrypts with the expected
-guest identity and product.
+signer owns the configured merchant and product, and asks the shared
+exact-coordinate product query for the current signed listing. The listing and
+kind `5` deletion reads must have complete bounded coverage before publication.
+The runner then generates a fresh `guest_ephemeral` identity, publishes one
+encrypted order through the shared Market delivery path, switches to the
+merchant signer, and polls Merchant's shared conversation query until a
+current, complete inbox read decrypts that exact order with the expected guest
+identity and product. Stale, degraded, partial, and cache-backed recovery reads
+do not pass the canary.
 
 Merchant recovery uses a NIP-07-shaped CI adapter over the dedicated test
 signer. The adapter performs real event signing and protected-read

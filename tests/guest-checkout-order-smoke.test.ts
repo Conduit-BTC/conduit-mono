@@ -154,7 +154,7 @@ function productRead(
         sortModes: ["newest", "price_asc", "price_desc", "updated_at_desc"],
         textSearch: true,
         protectedSummaries: false,
-        canonicalFreshness: overrides.canonicalFreshness ?? true,
+        canonicalFreshness: overrides.canonicalFreshness ?? false,
         cursorPagination: false,
       },
       fetchedAt: 1_700_000_000_000,
@@ -298,7 +298,7 @@ describe("guest checkout order smoke", () => {
     expect(payload.items[0]).not.toHaveProperty("sourceShippingCost")
   })
 
-  it("fails closed when canonical revalidation falls back to cached product data", async () => {
+  it("fails closed when the exact listing read falls back to cached product data", async () => {
     const config = parseGuestCheckoutOrderSmokeConfig(environment())
     let published = false
     let failure: unknown
@@ -327,7 +327,7 @@ describe("guest checkout order smoke", () => {
     expect(published).toBe(false)
   })
 
-  it("fails closed when the canonical product read has partial relay coverage", async () => {
+  it("fails closed when the exact listing read has incomplete deletion coverage", async () => {
     const config = parseGuestCheckoutOrderSmokeConfig(environment())
     let published = false
     let failure: unknown
@@ -447,7 +447,7 @@ describe("guest checkout order smoke", () => {
     }
   })
 
-  it("requires a canonical product read before publishing and recovering the order", async () => {
+  it("requires exact product and complete merchant inbox reads", async () => {
     const config = parseGuestCheckoutOrderSmokeConfig(environment())
     let productQuery: {
       productId: string
@@ -461,6 +461,7 @@ describe("guest checkout order smoke", () => {
         >[0]
       | null = null
     let recoveryAuthorizationMethod: string | null = null
+    let recoveryCalls = 0
 
     const result = await runGuestCheckoutOrderSmoke(config, {
       getProduct: async (query) => {
@@ -481,11 +482,44 @@ describe("guest checkout order smoke", () => {
         return { buyerSelfCopyError: null, localCacheError: null }
       },
       getMerchantOrders: async () => {
+        recoveryCalls += 1
         recoveryAuthorizationMethod =
           getProtectedReadAuthorization(MERCHANT_PUBKEY)?.signer.authMethod ??
           null
         if (!published) throw new Error("Order was not published")
         const payload = JSON.parse(published.content)
+        const recoveryMeta = [
+          {
+            source: "local_cache",
+            stale: true,
+            degraded: true,
+            inbox: {
+              declarationState: "lookup_unavailable",
+              coverage: "unavailable",
+              readSource: "cache",
+            },
+          },
+          {
+            source: "commerce",
+            stale: false,
+            degraded: true,
+            inbox: {
+              declarationState: "declared",
+              coverage: "partial",
+              readSource: "mixed",
+            },
+          },
+          {
+            source: "commerce",
+            stale: false,
+            degraded: false,
+            inbox: {
+              declarationState: "declared",
+              coverage: "complete",
+              readSource: "declared",
+            },
+          },
+        ][Math.min(recoveryCalls - 1, 2)]!
         return {
           data: [
             {
@@ -515,10 +549,8 @@ describe("guest checkout order smoke", () => {
           ],
           meta: {
             plan: "protected_conversation_list",
-            source: "commerce",
             fetchedAt: 1_700_000_000_000,
-            stale: false,
-            degraded: false,
+            ...recoveryMeta,
             capabilities: [],
           },
         } as never
@@ -530,8 +562,8 @@ describe("guest checkout order smoke", () => {
     expect(result).toEqual({ status: "passed" })
     expect(productQuery).toEqual({
       productId: `30402:${MERCHANT_PUBKEY}:fixture`,
-      revalidateCanonical: true,
     })
+    expect(recoveryCalls).toBe(3)
     expect(published).not.toBeNull()
     const payload = JSON.parse(published!.content)
     expect(payload.items[0].priceAtPurchase).toBe(1_000)

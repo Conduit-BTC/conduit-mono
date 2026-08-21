@@ -4,9 +4,9 @@ import { getPublicKey } from "nostr-tools"
 import {
   createProtectedReadSessionLifecycle,
   fetchBtcUsdRate,
+  getAtomicProductDetail,
   getMerchantConversationList,
   getNdk,
-  getProductDetail,
   removeSigner,
   setSigner,
   type BtcUsdRateQuote,
@@ -67,7 +67,7 @@ export type GuestCheckoutOrderSmokeConfig = {
 type GuestIdentity = ReturnType<typeof createGuestOrderSigningIdentity>
 
 export type GuestCheckoutOrderSmokeDependencies = {
-  getProduct?: typeof getProductDetail
+  getProduct?: typeof getAtomicProductDetail
   getPricingRate?: () => Promise<BtcUsdRateQuote>
   createOrderId?: () => string
   createGuestIdentity?: (
@@ -333,6 +333,11 @@ async function recoverOrderAsMerchant(
         limit: 200,
       })
       if (
+        result.meta.source === "commerce" &&
+        !result.meta.stale &&
+        !result.meta.degraded &&
+        !result.meta.capped &&
+        result.meta.inbox?.coverage === "complete" &&
         hasRecoveredGuestOrder(result.data, {
           ...input,
           merchantPubkey: config.merchantPubkey,
@@ -341,6 +346,9 @@ async function recoverOrderAsMerchant(
       ) {
         return
       }
+      lastError = new Error(
+        "Merchant recovery requires a current complete inbox read."
+      )
     } catch (error) {
       lastError = error
     }
@@ -356,7 +364,7 @@ export async function runGuestCheckoutOrderSmoke(
   config: GuestCheckoutOrderSmokeConfig,
   dependencies: GuestCheckoutOrderSmokeDependencies = {}
 ): Promise<{ status: "passed" }> {
-  const getProduct = dependencies.getProduct ?? getProductDetail
+  const getProduct = dependencies.getProduct ?? getAtomicProductDetail
   const createOrderId =
     dependencies.createOrderId ?? (() => `smoke-${crypto.randomUUID()}`)
   const createGuestIdentity =
@@ -372,16 +380,12 @@ export async function runGuestCheckoutOrderSmoke(
 
   let pricing: ReadyCheckoutPricing
   try {
-    const product = await getProduct({
-      productId: config.productAddress,
-      revalidateCanonical: true,
-    })
+    const product = await getProduct({ productId: config.productAddress })
     if (
-      product.meta.source === "local_cache" ||
+      product.meta.source !== "commerce" ||
       product.meta.stale ||
       product.meta.degraded ||
-      product.meta.capped ||
-      !product.meta.capabilities.canonicalFreshness
+      product.meta.capped
     ) {
       throw new Error(
         "Guest checkout smoke requires current product data from a complete network read."
