@@ -18,6 +18,18 @@ export type PlaywrightJsonReport = {
   suites?: PlaywrightJsonSuite[]
 }
 
+export type PlaywrightSmokeManifest = {
+  schemaVersion: 1
+  selectedTags: string[]
+  selectedTestCount: number
+  tests: Array<{
+    file: string
+    line: number | null
+    name: string
+    tags: string[]
+  }>
+}
+
 const smokeAreas = Object.keys(smokeAreaTags) as SmokeArea[]
 
 function collectSpecs(
@@ -36,6 +48,72 @@ function formatSpec(spec: PlaywrightJsonSpec): string {
   return `${location} (${spec.title ?? "untitled test"})`
 }
 
+function assignedAreasForSpec(spec: PlaywrightJsonSpec): SmokeArea[] {
+  const tags = new Set(
+    (spec.tags ?? []).map((tag) => (tag.startsWith("@") ? tag : `@${tag}`))
+  )
+  return smokeAreas.filter(
+    (area) =>
+      tags.has(smokeAreaTags[area]) ||
+      new RegExp(`(?:^|\\s)${smokeAreaTags[area]}(?:\\s|$)`).test(
+        spec.title ?? ""
+      )
+  )
+}
+
+function manifestFile(file?: string): string {
+  if (!file) return "unknown"
+  const normalized = file.replaceAll("\\", "/")
+  const e2eIndex = normalized.lastIndexOf("/e2e/")
+  if (e2eIndex >= 0) return normalized.slice(e2eIndex + 1)
+  return normalized.startsWith("e2e/") ? normalized : `e2e/${normalized}`
+}
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0
+}
+
+export function buildPlaywrightSmokeManifest(
+  report: PlaywrightJsonReport,
+  selectedAreas: readonly SmokeArea[] = smokeAreas
+): PlaywrightSmokeManifest {
+  const selectedAreaSet = new Set(selectedAreas)
+  const canonicalSelectedAreas = smokeAreas.filter((area) =>
+    selectedAreaSet.has(area)
+  )
+  const tests: PlaywrightSmokeManifest["tests"] = []
+
+  for (const spec of collectSpecs(report.suites ?? [])) {
+    const areas = assignedAreasForSpec(spec).filter((area) =>
+      selectedAreaSet.has(area)
+    )
+    if (areas.length === 0) continue
+
+    // Keep the manifest content-free and stable across runner workspaces.
+    tests.push({
+      file: manifestFile(spec.file),
+      line: spec.line ?? null,
+      name: spec.title ?? "untitled test",
+      tags: areas.map((area) => smokeAreaTags[area]),
+    })
+  }
+
+  tests.sort(
+    (left, right) =>
+      compareText(left.file, right.file) ||
+      (left.line ?? 0) - (right.line ?? 0) ||
+      compareText(left.name, right.name) ||
+      compareText(left.tags.join(","), right.tags.join(","))
+  )
+
+  return {
+    schemaVersion: 1,
+    selectedTags: canonicalSelectedAreas.map((area) => smokeAreaTags[area]),
+    selectedTestCount: tests.length,
+    tests,
+  }
+}
+
 export function validatePlaywrightSmokeAreas(
   report: PlaywrightJsonReport,
   selectedAreas: readonly SmokeArea[] = smokeAreas
@@ -45,16 +123,7 @@ export function validatePlaywrightSmokeAreas(
   const orphaned: PlaywrightJsonSpec[] = []
 
   for (const spec of specs) {
-    const tags = new Set(
-      (spec.tags ?? []).map((tag) => (tag.startsWith("@") ? tag : `@${tag}`))
-    )
-    const assignedAreas = smokeAreas.filter(
-      (area) =>
-        tags.has(smokeAreaTags[area]) ||
-        new RegExp(`(?:^|\\s)${smokeAreaTags[area]}(?:\\s|$)`).test(
-          spec.title ?? ""
-        )
-    )
+    const assignedAreas = assignedAreasForSpec(spec)
 
     if (assignedAreas.length === 0) {
       orphaned.push(spec)
@@ -132,9 +201,11 @@ function discoverPlaywrightTests(): PlaywrightJsonReport {
 
 if (import.meta.main) {
   const selectedAreas = readSelectedAreas()
-  const counts = validatePlaywrightSmokeAreas(
-    discoverPlaywrightTests(),
-    selectedAreas
+  const report = discoverPlaywrightTests()
+  const counts = validatePlaywrightSmokeAreas(report, selectedAreas)
+  const manifest = buildPlaywrightSmokeManifest(report, selectedAreas)
+  process.stdout.write(
+    `Playwright smoke manifest:\n${JSON.stringify(manifest, null, 2)}\n`
   )
   process.stdout.write(
     `Validated Playwright smoke areas: market=${counts.market}, merchant=${counts.merchant}\n`

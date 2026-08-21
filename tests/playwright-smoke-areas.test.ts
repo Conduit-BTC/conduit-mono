@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 
 import {
+  buildPlaywrightSmokeManifest,
   type PlaywrightJsonReport,
   validatePlaywrightSmokeAreas,
 } from "../scripts/ci/validate_playwright_smoke_areas"
@@ -52,6 +53,46 @@ describe("Playwright smoke area validation", () => {
     )
 
     expect(counts).toEqual({ market: 1, merchant: 1 })
+  })
+
+  it("builds a deterministic content-free selected-spec manifest", () => {
+    const manifest = buildPlaywrightSmokeManifest(
+      reportWithSpecs([
+        {
+          file: "/home/runner/work/conduit/e2e/zeta.playwright.ts",
+          line: 20,
+          tags: ["merchant"],
+          title: "seller fulfills an order",
+        },
+        {
+          file: "alpha.playwright.ts",
+          line: 10,
+          tags: ["market"],
+          title: "buyer checkout completes",
+        },
+      ]),
+      ["merchant", "market"]
+    )
+
+    expect(manifest).toEqual({
+      schemaVersion: 1,
+      selectedTags: ["@market", "@merchant"],
+      selectedTestCount: 2,
+      tests: [
+        {
+          file: "e2e/alpha.playwright.ts",
+          line: 10,
+          name: "buyer checkout completes",
+          tags: ["@market"],
+        },
+        {
+          file: "e2e/zeta.playwright.ts",
+          line: 20,
+          name: "seller fulfills an order",
+          tags: ["@merchant"],
+        },
+      ],
+    })
   })
 
   it("rejects orphaned Playwright smoke tests", () => {
