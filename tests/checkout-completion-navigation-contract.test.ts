@@ -261,6 +261,19 @@ describe("checkout completion navigation contracts", () => {
     )
   })
 
+  it("does not classify an interactively connecting signer as a guest checkout", async () => {
+    const checkoutRoute = await Bun.file(
+      "apps/market/src/routes/checkout.tsx"
+    ).text()
+
+    expect(checkoutRoute).toContain(
+      'authSignerReadiness === "pending" || restorePendingPubkey !== null'
+    )
+    expect(checkoutRoute).toContain(
+      'const isGuestCheckout = !authPending && authSignerReadiness === "disconnected"'
+    )
+  })
+
   it("offers guest shoppers a signer path when invoice checkout is unavailable", async () => {
     const checkoutRoute = await Bun.file(
       "apps/market/src/routes/checkout.tsx"

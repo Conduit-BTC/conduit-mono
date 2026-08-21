@@ -1045,7 +1045,8 @@ function CheckoutPage() {
   })
   const signerConnected = authSignerReadiness === "ready"
   const signedBuyerPubkey = signerConnected ? pubkey : null
-  const authPending = restorePendingPubkey !== null
+  const authPending =
+    authSignerReadiness === "pending" || restorePendingPubkey !== null
   const isGuestCheckout = !authPending && authSignerReadiness === "disconnected"
   const signerBlockedMessage =
     authSignerReadiness === "unavailable"
