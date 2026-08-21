@@ -4,6 +4,9 @@
  */
 import { describe, expect, it, mock, afterEach } from "bun:test"
 import {
+  buildShippingAddressFromForm,
+  getShippingRecipientName,
+  hasPreservedShippingRecipientName,
   validateGuestContactFields,
   validateGuestShippingFields,
   validateShippingFields,
@@ -154,6 +157,71 @@ describe("validateShippingFields", () => {
   it("requires lastName", () => {
     const errors = validateShippingFields(validShipping({ lastName: "" }))
     expect(errors.some((e) => e.field === "lastName")).toBe(true)
+  })
+
+  it("accepts a hydrated one-token recipient name and preserves it for orders", () => {
+    const shipping = validShipping({
+      firstName: "Madonna",
+      lastName: "",
+      name: "Madonna",
+    })
+
+    expect(validateShippingFields(shipping)).toEqual([])
+    expect(hasPreservedShippingRecipientName(shipping)).toBe(true)
+    expect(getShippingRecipientName(shipping)).toBe("Madonna")
+    expect(buildShippingAddressFromForm(shipping).name).toBe("Madonna")
+  })
+
+  it("preserves a hydrated organization recipient name", () => {
+    const shipping = validShipping({
+      firstName: "Acme Trading",
+      lastName: "Company",
+      name: "Acme Trading Company",
+    })
+
+    expect(validateShippingFields(shipping)).toEqual([])
+    expect(buildShippingAddressFromForm(shipping).name).toBe(
+      "Acme Trading Company"
+    )
+  })
+
+  it("uses normal first and last names when no preset marker is present", () => {
+    const shipping = validShipping({ name: "" })
+
+    expect(getShippingRecipientName(shipping)).toBe("Alice Smith")
+    expect(buildShippingAddressFromForm(shipping).name).toBe("Alice Smith")
+  })
+
+  it("requires a last name after a one-token preset recipient marker is invalidated", () => {
+    const shipping = validShipping({
+      firstName: "Cher",
+      lastName: "",
+      name: "Madonna",
+    })
+
+    expect(hasPreservedShippingRecipientName(shipping)).toBe(false)
+    expect(validateShippingFields(shipping)).toContainEqual({
+      field: "lastName",
+      message: "Last name is required",
+    })
+  })
+
+  it("keeps fast checkout eligible with a valid one-token preset recipient", () => {
+    const shipping = validShipping({
+      firstName: "Madonna",
+      lastName: "",
+      name: "Madonna",
+    })
+
+    expect(
+      isFastCheckoutEligible({
+        walletPayCapable: true,
+        merchantLud16: "merchant@wallet.conduit.market",
+        lnurlAllowsNostr: true,
+        addressValidForDirectPayment:
+          validateShippingFields(shipping).length === 0,
+      })
+    ).toBe(true)
   })
 
   it("rejects lastName longer than 50 chars", () => {

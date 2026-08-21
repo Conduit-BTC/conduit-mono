@@ -10,8 +10,12 @@ import { useShopperPricePreference } from "./useShopperPricePreference"
 
 export function useShopperPricing() {
   const rateQuery = useBtcUsdRate()
-  const { preference, setCurrency, setSatsStandard } =
-    useShopperPricePreference()
+  const {
+    preference,
+    setCurrency,
+    setSatsStandard,
+    updateExistingDevicePriceOverrideAfterPresetSave,
+  } = useShopperPricePreference()
   const quote = rateQuery.data ?? null
 
   const formatPrice = useCallback(
@@ -32,5 +36,6 @@ export function useShopperPricing() {
     formatSatsAmount,
     setCurrency,
     setSatsStandard,
+    updateExistingDevicePriceOverrideAfterPresetSave,
   }
 }

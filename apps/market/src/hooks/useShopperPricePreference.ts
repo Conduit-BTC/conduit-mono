@@ -71,6 +71,19 @@ export function persistShopperPricePreference(
   return normalized
 }
 
+/**
+ * Updates a deliberately stored device override after its matching encrypted
+ * preset has been saved. A clean device remains governed by the remote preset.
+ */
+export function updateExistingDevicePriceOverrideAfterPresetSaveInStorage(
+  pubkey: string,
+  preference: ShopperPricePreference,
+  storage: PreferenceStorage
+): ShopperPricePreference | null {
+  if (!readStoredShopperPricePreference(pubkey, storage)) return null
+  return persistShopperPricePreference(pubkey, preference, storage)
+}
+
 function readStoredPreference(
   pubkey: string | null
 ): ShopperPricePreference | null {
@@ -205,6 +218,31 @@ export function useShopperPricePreference() {
     },
     [identityPubkey, preset.display, unlockState]
   )
+  const updateExistingDevicePriceOverrideAfterPresetSave = useCallback(
+    (display: ShopperPricePreference): boolean => {
+      if (!identityPubkey || typeof window === "undefined") return false
+      try {
+        const updated =
+          updateExistingDevicePriceOverrideAfterPresetSaveInStorage(
+            identityPubkey,
+            display,
+            window.localStorage
+          )
+        if (!updated) return false
+        cachedPreferences.set(identityPubkey, updated)
+        notify(identityPubkey)
+        return true
+      } catch {
+        return false
+      }
+    },
+    [identityPubkey]
+  )
 
-  return { preference, setCurrency, setSatsStandard }
+  return {
+    preference,
+    setCurrency,
+    setSatsStandard,
+    updateExistingDevicePriceOverrideAfterPresetSave,
+  }
 }
