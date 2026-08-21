@@ -93,7 +93,7 @@ describe("checkout completion navigation contracts", () => {
       "await assertCheckoutItemsAvailable(requestedCheckoutMode)"
     )
     const signedOrderReady = payNowSource.indexOf(
-      "orderRumor.content = JSON.stringify(orderPayload)"
+      "const orderRumor = buildCheckoutOrderRumor({"
     )
     const orderPublish = payNowSource.indexOf("await publishBuyerOrderMessage(")
     const paymentStarted = payNowSource.indexOf("directPaymentStarted = true")
@@ -117,6 +117,9 @@ describe("checkout completion navigation contracts", () => {
         /await assertCheckoutItemsAvailable\(requestedCheckoutMode\)/g
       )
     ).toHaveLength(1)
+    expect(signedOrderReady).toBeGreaterThan(-1)
+    expect(paymentAvailability).toBeGreaterThan(-1)
+    expect(orderPublish).toBeGreaterThan(-1)
     expect(paymentAvailability).toBeGreaterThan(signedOrderReady)
     expect(orderPublish).toBeGreaterThan(paymentAvailability)
     expect(paymentStarted).toBeGreaterThan(paymentAvailability)
