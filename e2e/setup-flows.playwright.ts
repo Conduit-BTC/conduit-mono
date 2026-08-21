@@ -543,6 +543,207 @@ test("market checkout country combobox supports search and selection", async ({
   )
 })
 
+test("market authenticated initial checkout claims a guest draft", async ({
+  page,
+}) => {
+  await installTestSigner(page, TEST_BUYER_PUBKEY)
+  await seedMarketCart(page)
+  await page.addInitScript(() => {
+    sessionStorage.setItem(
+      "conduit:checkout-shipping",
+      JSON.stringify({
+        ownerPubkey: null,
+        updatedAt: Date.now(),
+        value: {
+          firstName: "Guest",
+          street: "123 Guest Street",
+          postalCode: "10001",
+          city: "New York",
+          country: "US",
+        },
+      })
+    )
+  })
+
+  await page.goto(`${marketUrl}/checkout`)
+
+  await expect(
+    page.getByRole("button", { name: "Open account menu" })
+  ).toBeVisible()
+  await expect(page.getByLabel("First name")).toHaveValue("Guest")
+  await expect(page.getByLabel("Street address")).toHaveValue(
+    "123 Guest Street"
+  )
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const raw = sessionStorage.getItem("conduit:checkout-shipping")
+        if (!raw) return null
+        return (JSON.parse(raw) as { ownerPubkey?: string | null }).ownerPubkey
+      })
+    )
+    .toBe(TEST_BUYER_PUBKEY)
+})
+
+test("market guest initial checkout clears a signed draft", async ({
+  page,
+}) => {
+  await seedMarketCart(page)
+  await page.addInitScript((ownerPubkey) => {
+    sessionStorage.setItem(
+      "conduit:checkout-shipping",
+      JSON.stringify({
+        ownerPubkey,
+        updatedAt: Date.now(),
+        value: {
+          firstName: "Private",
+          street: "456 Hidden Street",
+          postalCode: "10002",
+          city: "New York",
+          country: "US",
+        },
+      })
+    )
+  }, TEST_BUYER_PUBKEY)
+
+  await page.goto(`${marketUrl}/checkout`)
+
+  await expect(page.getByRole("heading", { name: "Shipping" })).toBeVisible()
+  await expect(page.getByLabel("First name")).toHaveValue("")
+  await expect(page.getByLabel("Street address")).toHaveValue("")
+  await expect
+    .poll(() =>
+      page.evaluate(() => sessionStorage.getItem("conduit:checkout-shipping"))
+    )
+    .toBeNull()
+})
+
+test("market initial checkout clears a foreign signed draft", async ({
+  page,
+}) => {
+  await installTestSigner(page, TEST_BUYER_PUBKEY)
+  await seedMarketCart(page)
+  await page.addInitScript((ownerPubkey) => {
+    sessionStorage.setItem(
+      "conduit:checkout-shipping",
+      JSON.stringify({
+        ownerPubkey,
+        updatedAt: Date.now(),
+        value: {
+          firstName: "Private",
+          street: "456 Hidden Street",
+          postalCode: "10002",
+          city: "New York",
+          country: "US",
+        },
+      })
+    )
+  }, "c".repeat(64))
+
+  await page.goto(`${marketUrl}/checkout`)
+
+  await expect(
+    page.getByRole("button", { name: "Open account menu" })
+  ).toBeVisible()
+  await expect(page.getByLabel("First name")).toHaveValue("")
+  await expect(page.getByLabel("Street address")).toHaveValue("")
+  await expect
+    .poll(() =>
+      page.evaluate(() => sessionStorage.getItem("conduit:checkout-shipping"))
+    )
+    .toBeNull()
+})
+
+test("market checkout claims a guest draft when a signer connects", async ({
+  page,
+}) => {
+  await installTestSigner(page, TEST_BUYER_PUBKEY, { rememberAuth: false })
+  await seedMarketCart(page)
+  await page.goto(`${marketUrl}/checkout`)
+
+  await expect(page.getByRole("heading", { name: "Shipping" })).toBeVisible()
+  const firstName = page.getByLabel("First name")
+  const lastName = page.getByLabel("Last name")
+  const street = page.getByLabel("Street address")
+  const postalCode = page.getByLabel("Postal/ZIP code")
+  const city = page.getByLabel("City")
+  await firstName.fill("Guest")
+  await lastName.fill("Buyer")
+  await street.fill("123 Guest Street")
+  await postalCode.fill("10001")
+  await city.fill("New York")
+
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const raw = sessionStorage.getItem("conduit:checkout-shipping")
+        if (!raw) return null
+        const stored = JSON.parse(raw) as {
+          ownerPubkey?: string | null
+          updatedAt?: number
+          value?: { street?: string }
+        }
+        return {
+          ownerPubkey: stored.ownerPubkey,
+          updatedAt: stored.updatedAt,
+          street: stored.value?.street,
+        }
+      })
+    )
+    .toEqual({
+      ownerPubkey: null,
+      updatedAt: expect.any(Number),
+      street: "123 Guest Street",
+    })
+  const guestDraft = await page.evaluate(() => {
+    const raw = sessionStorage.getItem("conduit:checkout-shipping")
+    if (!raw) return null
+    const stored = JSON.parse(raw) as { updatedAt?: number }
+    return stored.updatedAt
+  })
+  if (guestDraft === null)
+    throw new Error("Guest checkout draft was not stored")
+
+  await page
+    .getByRole("button", { name: /^Connect$/ })
+    .first()
+    .click()
+  await page
+    .getByRole("button", { name: /Connect Extension \(NIP-07\)/i })
+    .click()
+
+  await expect(
+    page.getByRole("button", { name: "Open account menu" })
+  ).toBeVisible()
+  await expect(firstName).toHaveValue("Guest")
+  await expect(lastName).toHaveValue("Buyer")
+  await expect(street).toHaveValue("123 Guest Street")
+  await expect(postalCode).toHaveValue("10001")
+  await expect(city).toHaveValue("New York")
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const raw = sessionStorage.getItem("conduit:checkout-shipping")
+        if (!raw) return null
+        const stored = JSON.parse(raw) as {
+          ownerPubkey?: string | null
+          updatedAt?: number
+          value?: { street?: string }
+        }
+        return {
+          ownerPubkey: stored.ownerPubkey,
+          updatedAt: stored.updatedAt,
+          street: stored.value?.street,
+        }
+      })
+    )
+    .toEqual({
+      ownerPubkey: TEST_BUYER_PUBKEY,
+      updatedAt: guestDraft,
+      street: "123 Guest Street",
+    })
+})
+
 test("market authenticated checkout draft survives reload and clears across identities", async ({
   page,
 }) => {

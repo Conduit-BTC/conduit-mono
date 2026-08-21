@@ -28,6 +28,14 @@ type StoredCheckoutShipping = {
   ownerPubkey: string | null
 }
 
+export type CheckoutShippingDraftOwnership = {
+  hasValidDraft: boolean
+  ownerPubkey: string | null
+}
+
+export type CheckoutShippingDraftOwnershipAction =
+  "claim" | "clear" | "defer" | "restore" | "seed"
+
 let checkoutShippingExpiryTimer: number | null = null
 
 function getSessionStorage(): SessionStorageLike | null {
@@ -82,6 +90,34 @@ function scheduleCheckoutShippingExpiry(
   )
 }
 
+function parseStoredCheckoutShipping(
+  raw: string,
+  nowMs: number
+): StoredCheckoutShipping | null {
+  try {
+    const parsed = JSON.parse(raw) as Partial<StoredCheckoutShipping>
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      Array.isArray(parsed) ||
+      !parsed.value ||
+      typeof parsed.value !== "object" ||
+      Array.isArray(parsed.value) ||
+      !("ownerPubkey" in parsed) ||
+      (parsed.ownerPubkey !== null && typeof parsed.ownerPubkey !== "string") ||
+      !Number.isFinite(parsed.updatedAt) ||
+      (parsed.updatedAt ?? 0) <= 0 ||
+      (parsed.updatedAt ?? 0) > nowMs ||
+      nowMs - (parsed.updatedAt ?? 0) >= GUEST_ORDER_LOCAL_RETENTION_MS
+    ) {
+      return null
+    }
+    return parsed as StoredCheckoutShipping
+  } catch {
+    return null
+  }
+}
+
 function readStoredCheckoutShipping(
   storage: SessionStorageLike | null,
   nowMs: number,
@@ -91,23 +127,14 @@ function readStoredCheckoutShipping(
   try {
     const raw = storage.getItem(CHECKOUT_SHIPPING_STORAGE_KEY)
     if (!raw) return null
-    const parsed = JSON.parse(raw) as Partial<StoredCheckoutShipping>
-    if (
-      !parsed.value ||
-      typeof parsed.value !== "object" ||
-      Array.isArray(parsed.value) ||
-      !("ownerPubkey" in parsed) ||
-      (parsed.ownerPubkey !== null && typeof parsed.ownerPubkey !== "string") ||
-      (ownerPubkey !== undefined && parsed.ownerPubkey !== ownerPubkey) ||
-      !Number.isFinite(parsed.updatedAt) ||
-      (parsed.updatedAt ?? 0) <= 0 ||
-      (parsed.updatedAt ?? 0) > nowMs ||
-      nowMs - (parsed.updatedAt ?? 0) >= GUEST_ORDER_LOCAL_RETENTION_MS
-    ) {
+    const stored = parseStoredCheckoutShipping(raw, nowMs)
+    if (!stored) {
       removeCheckoutShippingStorage(storage)
       return null
     }
-    const stored = parsed as StoredCheckoutShipping
+    if (ownerPubkey !== undefined && stored.ownerPubkey !== ownerPubkey) {
+      return null
+    }
     scheduleCheckoutShippingExpiry(
       storage,
       stored.updatedAt + GUEST_ORDER_LOCAL_RETENTION_MS
@@ -116,6 +143,84 @@ function readStoredCheckoutShipping(
   } catch {
     removeCheckoutShippingStorage(storage)
     return null
+  }
+}
+
+/**
+ * Inspects only draft validity and ownership before any address or contact value
+ * is read. Invalid local data retains the existing bounded cleanup behavior.
+ */
+export function inspectCheckoutShippingDraftOwnership(
+  storage: SessionStorageLike | null = getSessionStorage(),
+  nowMs = Date.now()
+): CheckoutShippingDraftOwnership {
+  if (!storage) return { hasValidDraft: false, ownerPubkey: null }
+  try {
+    const raw = storage.getItem(CHECKOUT_SHIPPING_STORAGE_KEY)
+    if (!raw) return { hasValidDraft: false, ownerPubkey: null }
+    const stored = parseStoredCheckoutShipping(raw, nowMs)
+    if (!stored) {
+      removeCheckoutShippingStorage(storage)
+      return { hasValidDraft: false, ownerPubkey: null }
+    }
+    return { hasValidDraft: true, ownerPubkey: stored.ownerPubkey }
+  } catch {
+    return { hasValidDraft: false, ownerPubkey: null }
+  }
+}
+
+/**
+ * Selects a storage action without receiving checkout address or contact data.
+ * Pending restoration deliberately defers even ownership inspection decisions.
+ */
+export function getCheckoutShippingDraftOwnershipAction(input: {
+  identityPubkey: string | null
+  isRestorePending: boolean
+  ownership: CheckoutShippingDraftOwnership
+}): CheckoutShippingDraftOwnershipAction {
+  if (input.isRestorePending) return "defer"
+  if (!input.ownership.hasValidDraft) return "seed"
+
+  if (input.identityPubkey) {
+    if (input.ownership.ownerPubkey === input.identityPubkey) return "restore"
+    return input.ownership.ownerPubkey === null ? "claim" : "clear"
+  }
+
+  return input.ownership.ownerPubkey === null ? "restore" : "clear"
+}
+
+export function initializeCheckoutShippingSession(
+  preset: ShopperShippingPreset | null,
+  identityPubkey: string | null,
+  storage: SessionStorageLike | null = getSessionStorage(),
+  nowMs = Date.now()
+): { value: ShippingFormState; hasActiveDraft: boolean } {
+  const action = getCheckoutShippingDraftOwnershipAction({
+    identityPubkey,
+    isRestorePending: false,
+    ownership: inspectCheckoutShippingDraftOwnership(storage, nowMs),
+  })
+
+  if (action === "clear") {
+    clearCheckoutShippingSession(storage)
+  } else if (action === "claim" && identityPubkey) {
+    claimGuestCheckoutShippingSession(identityPubkey, storage, nowMs)
+  }
+
+  if (action === "restore" || action === "claim") {
+    return readCheckoutShippingInitialization(
+      preset,
+      storage,
+      nowMs,
+      identityPubkey
+    )
+  }
+
+  return {
+    value: preset
+      ? getShippingFormFromPreset(preset)
+      : DEFAULT_CHECKOUT_SHIPPING,
+    hasActiveDraft: false,
   }
 }
 
@@ -180,6 +285,30 @@ export function getIdentityBoundShippingPreset(
   preset: ShopperShippingPreset | null
 ): ShopperShippingPreset | null {
   return identityPubkey && identityPubkey === presetOwnerPubkey ? preset : null
+}
+
+export function claimGuestCheckoutShippingSession(
+  ownerPubkey: string,
+  storage: SessionStorageLike | null = getSessionStorage(),
+  nowMs = Date.now()
+): boolean {
+  if (!ownerPubkey) return false
+  const stored = readStoredCheckoutShipping(storage, nowMs)
+  if (!stored || stored.ownerPubkey !== null) return false
+
+  try {
+    storage?.setItem(
+      CHECKOUT_SHIPPING_STORAGE_KEY,
+      JSON.stringify({ ...stored, ownerPubkey })
+    )
+    scheduleCheckoutShippingExpiry(
+      storage,
+      stored.updatedAt + GUEST_ORDER_LOCAL_RETENTION_MS
+    )
+    return true
+  } catch {
+    return false
+  }
 }
 
 export function writeCheckoutShippingSession(
