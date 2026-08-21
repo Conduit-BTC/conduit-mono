@@ -28,8 +28,8 @@ export const CART_READINESS_MAX_CONCURRENT_READS = 3
 /**
  * Explicit per-merchant readiness states. Initial loading and background
  * refresh are never collapsed into one boolean: `checking` means the merchant
- * has no usable evidence yet, while `refreshing` keeps current evidence
- * actionable during a nonblocking revalidation.
+ * has no usable evidence yet, while `refreshing` keeps current complete
+ * evidence actionable during a nonblocking revalidation.
  */
 export type MerchantCartReadinessState =
   | "not_started"
@@ -62,8 +62,8 @@ export function deriveMerchantCartReadinessState(
       : "degraded"
   }
   if (input.blocked) return "blocked"
-  if (input.backgroundRefreshing) return "refreshing"
   if (!input.fresh) return "degraded"
+  if (input.backgroundRefreshing) return "refreshing"
   if (
     input.evidenceAgeMs !== null &&
     input.evidenceAgeMs > CART_READINESS_LEASE_MS

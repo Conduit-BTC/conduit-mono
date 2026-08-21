@@ -77,6 +77,7 @@ import {
   PaymentTargetSelectContent,
   PaymentTargetSelectValue,
 } from "../components/PaymentTargetSelectContent"
+import { CheckoutAvailabilityNotice } from "../components/CheckoutAvailabilityNotice"
 import { SignerSwitch } from "../components/SignerSwitch"
 import { type CartItem, useCart } from "../hooks/useCart"
 import {
@@ -108,6 +109,7 @@ import {
   cartItemsMatchCurrentProducts,
   isCartProductAvailabilityBlocking,
   selectMerchantCartItems,
+  type CartAvailabilityReadDecision,
   type CartProductAvailability,
 } from "../lib/cart-model"
 import { LightningStrikeOverlay } from "../components/LightningStrikeOverlay"
@@ -1048,6 +1050,13 @@ function CheckoutPage() {
   const checkoutAvailability = {
     availabilityByProductId:
       selectedMerchantReadiness?.availabilityByProductId ?? emptyAvailability,
+    readDecision:
+      selectedMerchantReadiness?.readDecision ??
+      ({
+        status: "unverified",
+        reason: "query_failed",
+        diagnostics: [],
+      } satisfies CartAvailabilityReadDecision),
     // Initial no-evidence read only; a background refresh keeps the prepared
     // evidence actionable instead of blocking every control.
     isChecking: selectedMerchantReadiness?.isChecking ?? false,
@@ -1056,13 +1065,34 @@ function CheckoutPage() {
       (async (): Promise<MerchantCartRefreshResult> => ({
         availability: [],
         products: [],
-        fresh: false,
-        diagnostics: [],
+        decision: {
+          status: "unverified",
+          reason: "query_failed",
+          diagnostics: [],
+        },
       })),
   }
   const checkoutAvailabilityMessage =
     selectedMerchantReadiness?.blockingMessage ?? null
   const hasUnavailableCheckoutItems = checkoutAvailabilityMessage !== null
+  const checkoutAvailabilityVerified =
+    checkoutAvailability.readDecision.status === "verified_at_read"
+  const checkoutAvailabilityPartial =
+    checkoutAvailability.readDecision.status === "verified_at_read" &&
+    checkoutAvailability.readDecision.coverage === "partial"
+  const checkoutUsesLastReportedQuantity =
+    checkoutAvailabilityVerified &&
+    checkoutItems.some((item) => {
+      const availability = checkoutAvailability.availabilityByProductId.get(
+        item.productId
+      )
+      return (
+        availability?.refreshed === true &&
+        typeof availability.stock === "number" &&
+        availability.stock > 0 &&
+        item.quantity === availability.stock
+      )
+    })
   const publicZapPolicy = useMemo(
     () => getCartPublicZapPolicy(checkoutItems),
     [checkoutItems]
@@ -1559,13 +1589,20 @@ function CheckoutPage() {
       : validateShippingFields(nextShipping)
   }
 
-  async function assertCheckoutItemsAvailable(): Promise<void> {
+  async function assertCheckoutItemsAvailable(
+    checkoutMode: CheckoutTelemetryMode
+  ): Promise<void> {
     const refreshResult = await checkoutAvailability.refresh()
-    if (!refreshResult.fresh) {
+    if (refreshResult.decision.status === "unverified") {
+      recordCheckoutStepResult({
+        checkoutMode,
+        status: "blocked",
+        stepName: "availability",
+      })
       throw new Error(
         getCartAvailabilityVerificationMessage(
           checkoutItems,
-          refreshResult.diagnostics
+          refreshResult.decision
         ) ??
           "Current product availability could not be verified. Check your connection and try again."
       )
@@ -1580,13 +1617,29 @@ function CheckoutPage() {
     )
 
     if (refreshedAvailabilityMessage) {
+      recordCheckoutStepResult({
+        checkoutMode,
+        status: "blocked",
+        stepName: "availability",
+      })
       throw new Error(refreshedAvailabilityMessage)
     }
     if (!cartItemsMatchCurrentProducts(checkoutItems, refreshResult.products)) {
+      recordCheckoutStepResult({
+        checkoutMode,
+        status: "blocked",
+        stepName: "availability",
+      })
       throw new Error(
         "Product price or fulfillment details changed. Review the updated listing before ordering."
       )
     }
+
+    recordCheckoutStepResult({
+      checkoutMode,
+      status: "success",
+      stepName: "availability",
+    })
   }
 
   function updateShipping<K extends keyof ShippingFormState>(
@@ -1814,18 +1867,20 @@ function CheckoutPage() {
     let publishedOrderId: string | null = null
     let orderDelivered = false
     let orderTotalSats = total
+    let orderSubmitStarted = false
 
     setError(null)
     setPaidNotice(null)
     setStep("signing")
 
     try {
-      await assertCheckoutItemsAvailable()
+      await assertCheckoutItemsAvailable("order_first")
       const checkoutPricing = await getFreshPricingIntent()
       if (checkoutPricing.status !== "ok") {
         throw new Error(checkoutPricing.reason)
       }
       orderTotalSats = checkoutPricing.totalSats
+      orderSubmitStarted = true
       recordCheckoutStepResult({
         checkoutMode: "order_first",
         status: "started",
@@ -1970,16 +2025,18 @@ function CheckoutPage() {
         return
       }
 
-      recordCheckoutStepResult({
-        amountSats: orderTotalSats,
-        checkoutMode: "order_first",
-        status: "failed",
-        stepName: "order_submit",
-      })
+      if (orderSubmitStarted) {
+        recordCheckoutStepResult({
+          amountSats: orderTotalSats,
+          checkoutMode: "order_first",
+          status: "failed",
+          stepName: "order_submit",
+        })
+      }
       recordCheckoutResult({
         amountSats: orderTotalSats,
         checkoutMode: "order_first",
-        status: "failed",
+        status: orderSubmitStarted ? "failed" : "blocked",
       })
       setError(e instanceof Error ? e.message : "Failed to send order")
       setStep("payment")
@@ -2082,6 +2139,7 @@ function CheckoutPage() {
     let publishedTotalSats: number | null = null
     let orderDelivered = false
     let guestOrderIdToClear: string | null = null
+    let directPaymentStarted = false
 
     const webLnAvailableNow = hasWebLN()
     if (webLnAvailableNow !== weblnAvailable)
@@ -2110,12 +2168,6 @@ function CheckoutPage() {
     setError(null)
     setPaidNotice(null)
     setStep("sending")
-    recordCheckoutStepResult({
-      amountSats: total,
-      checkoutMode: requestedCheckoutMode,
-      status: "started",
-      stepName: "direct_payment",
-    })
 
     try {
       // One authoritative live listing refresh runs immediately before order
@@ -2257,11 +2309,18 @@ function CheckoutPage() {
       orderRumor.tags = appendConduitClientTag(orderRumor.tags, "market")
       orderRumor.content = JSON.stringify(orderPayload)
 
-      await assertCheckoutItemsAvailable()
+      await assertCheckoutItemsAvailable(requestedCheckoutMode)
       assertClaimedZapAuthorization(
         zapAuthorization,
         checkoutPricing.totalMsats
       )
+      directPaymentStarted = true
+      recordCheckoutStepResult({
+        amountSats: checkoutPricing.totalSats,
+        checkoutMode: requestedCheckoutMode,
+        status: "started",
+        stepName: "direct_payment",
+      })
       const orderDelivery = await publishBuyerOrderMessage(
         orderRumor,
         ndk,
@@ -2436,17 +2495,19 @@ function CheckoutPage() {
 
       // Failure before the order reached the merchant. No order was published,
       // so a full retry can't create a duplicate.
-      recordCheckoutStepResult({
-        amountSats: total,
-        checkoutMode: requestedCheckoutMode,
-        status: "failed",
-        stepName: "direct_payment",
-      })
+      if (directPaymentStarted) {
+        recordCheckoutStepResult({
+          amountSats: total,
+          checkoutMode: requestedCheckoutMode,
+          status: "failed",
+          stepName: "direct_payment",
+        })
+      }
       recordCheckoutResult({
         amountSats: total,
         checkoutMode: requestedCheckoutMode,
         rail: "lightning",
-        status: "failed",
+        status: directPaymentStarted ? "failed" : "blocked",
       })
       if (!orderDelivered && guestOrderIdToClear) {
         clearSessionGuestOrderSigningIdentity(guestOrderIdToClear)
@@ -2812,6 +2873,13 @@ function CheckoutPage() {
           </Button>
         </div>
       ) : null}
+
+      {!checkoutAvailability.isChecking && !hasUnavailableCheckoutItems && (
+        <CheckoutAvailabilityNotice
+          lastQuantityReported={checkoutUsesLastReportedQuantity}
+          partialCoverage={checkoutAvailabilityPartial}
+        />
+      )}
 
       <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(320px,520px)]">
         <section className="space-y-5">

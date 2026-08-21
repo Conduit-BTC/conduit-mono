@@ -870,6 +870,27 @@ describe("browser telemetry", () => {
     expect(
       sanitizeTelemetryEventProperties({
         app: "market",
+        eventName: "checkout_step_result",
+        properties: {
+          amount_bucket: "unknown",
+          count_bucket: "1",
+          mode: "checkout",
+          product_type: "physical",
+          rail: "none",
+          status: "success",
+          step: "availability",
+          surface: "checkout",
+        },
+      })
+    ).toMatchObject({
+      event_name: "checkout_step_result",
+      status: "success",
+      step: "availability",
+    })
+
+    expect(
+      sanitizeTelemetryEventProperties({
+        app: "market",
         eventName: "cart_add",
         properties: {
           action: "ADD",

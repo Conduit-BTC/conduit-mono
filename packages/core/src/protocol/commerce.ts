@@ -3758,6 +3758,23 @@ export interface ProductsByIdsResult extends CommerceResult<
 
 export type ProductAvailabilityCoverage = "complete" | "partial" | "unavailable"
 
+/**
+ * Positive live evidence for one exact listing coordinate. This does not claim
+ * complete relay coverage, global freshness, or an inventory reservation.
+ */
+export function hasExactLiveProductAvailabilityEvidence(
+  diagnostic: ProductAvailabilityDiagnostic | undefined,
+  expectedAddressId: string
+): boolean {
+  return (
+    expectedAddressId.length > 0 &&
+    diagnostic?.addressId === expectedAddressId &&
+    diagnostic.issue === null &&
+    diagnostic.coverage !== undefined &&
+    diagnostic.coverage.listing !== "unavailable"
+  )
+}
+
 function productAvailabilityCoverageFromFanout(
   result: Awaited<ReturnType<typeof fetchEventsFanoutWithDiagnostics>>,
   expectedRelayUrls: readonly string[] = []

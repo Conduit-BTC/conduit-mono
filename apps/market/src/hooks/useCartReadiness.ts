@@ -4,7 +4,6 @@ import {
   fetchLnurlPayMetadata,
   getProductsByIds,
   isValidLud16Address,
-  type ProductAvailabilityDiagnostic,
 } from "@conduit/core"
 import {
   CART_READINESS_LEASE_MS,
@@ -18,10 +17,12 @@ import {
 } from "../lib/cart-readiness"
 import {
   getCartAvailabilityBlockingMessage,
+  getCartAvailabilityReadDecision,
   getCartProductAvailability,
   groupCartItems,
-  isCartAvailabilityReadFresh,
+  isCartAvailabilityReadComplete,
   type CartItem,
+  type CartAvailabilityReadDecision,
   type CartProductAvailability,
 } from "../lib/cart-model"
 
@@ -31,8 +32,7 @@ type PreparedProduct = CommerceReadResult["data"][number]["product"]
 export type MerchantCartRefreshResult = {
   availability: CartProductAvailability[]
   products: PreparedProduct[]
-  fresh: boolean
-  diagnostics: ProductAvailabilityDiagnostic[]
+  decision: CartAvailabilityReadDecision
 }
 
 export type MerchantCartReadiness = {
@@ -40,7 +40,7 @@ export type MerchantCartReadiness = {
   state: MerchantCartReadinessState
   availabilityByProductId: ReadonlyMap<string, CartProductAvailability>
   products: PreparedProduct[]
-  fresh: boolean
+  readDecision: CartAvailabilityReadDecision
   /** Initial read with no usable evidence yet. */
   isChecking: boolean
   /** Nonblocking background revalidation while evidence stays actionable. */
@@ -48,7 +48,6 @@ export type MerchantCartReadiness = {
   blockingMessage: string | null
   hasInsufficientStockItems: boolean
   hasUnavailableItems: boolean
-  diagnostics: ProductAvailabilityDiagnostic[]
   refresh: () => Promise<MerchantCartRefreshResult>
 }
 
@@ -118,9 +117,17 @@ export function useCartReadiness(items: CartItem[]): CartReadiness {
       )
       const diagnostics = query.data?.diagnostics ?? []
       const hasEvidence = query.data !== undefined
-      const fresh =
-        hasEvidence &&
-        isCartAvailabilityReadFresh(availability, query.data?.meta)
+      const productIds = Array.from(
+        new Set(group.items.map((item) => item.productId))
+      ).sort()
+      const readDecision = getCartAvailabilityReadDecision({
+        productIds,
+        availability,
+        meta: query.data?.meta,
+        diagnostics,
+        querySucceeded: query.isSuccess,
+      })
+      const fresh = isCartAvailabilityReadComplete(readDecision)
       const blockingMessage = hasEvidence
         ? getCartAvailabilityBlockingMessage(
             group.items,
@@ -150,15 +157,17 @@ export function useCartReadiness(items: CartItem[]): CartReadiness {
           refreshedProducts
         )
         const refreshedDiagnostics = commerceResult?.diagnostics ?? []
+        const decision = getCartAvailabilityReadDecision({
+          productIds,
+          availability: refreshedAvailability,
+          meta: commerceResult?.meta,
+          diagnostics: refreshedDiagnostics,
+          querySucceeded: result.isSuccess,
+        })
         return {
           availability: refreshedAvailability,
           products: refreshedProducts,
-          fresh: isCartAvailabilityReadFresh(
-            refreshedAvailability,
-            commerceResult?.meta,
-            refreshedDiagnostics
-          ),
-          diagnostics: refreshedDiagnostics,
+          decision,
         }
       }
       byMerchant.set(group.merchantPubkey, {
@@ -166,13 +175,12 @@ export function useCartReadiness(items: CartItem[]): CartReadiness {
         state,
         availabilityByProductId,
         products,
-        fresh,
+        readDecision,
         isChecking: state === "checking",
         isRefreshing: state === "refreshing",
         blockingMessage,
         hasInsufficientStockItems,
         hasUnavailableItems,
-        diagnostics,
         refresh,
       })
     }
