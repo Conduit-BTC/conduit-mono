@@ -40,6 +40,7 @@ function NetworkPage() {
   const inboxDeclaration = useInboxDeclaration(pubkey, {
     enabled: session.relaySettingsReady,
     relayScope: session.relayScope,
+    telemetryApp: "merchant",
   })
   const mediaServerPreferences = useMediaServerPreferences(pubkey, {
     enabled: session.relaySettingsReady,

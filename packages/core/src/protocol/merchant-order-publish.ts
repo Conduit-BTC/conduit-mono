@@ -135,6 +135,7 @@ export async function publishMerchantOrderMessage(
     // Merchant replies, invoices, and proofs belong to a validated inbound
     // order lifecycle, so they qualify for compatibility routing (CND-208).
     validatedOrderScope: target.validatedOrderScope,
+    telemetryApp: "merchant",
   })
   if (selfCopyError) {
     console.warn("Merchant order self-copy publish failed", selfCopyError)

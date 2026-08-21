@@ -27,6 +27,7 @@ function SettingsPage() {
   const inboxDeclaration = useInboxDeclaration(pubkey, {
     enabled: session.relaySettingsReady,
     relayScope: session.relayScope,
+    telemetryApp: "market",
   })
   const mediaServerPreferences = useMediaServerPreferences(pubkey, {
     enabled: session.relaySettingsReady,

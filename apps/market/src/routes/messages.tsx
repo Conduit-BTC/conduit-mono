@@ -496,6 +496,7 @@ function MessagesPage() {
           senderPubkey: pubkey,
           recipientPubkey: selectedConversation.merchantPubkey,
         }),
+        telemetryApp: "market",
       })
       if (selfCopyError) {
         console.warn("Buyer message self-copy publish failed", selfCopyError)

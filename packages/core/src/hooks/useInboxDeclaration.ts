@@ -23,6 +23,14 @@ import {
   normalizeSecureOrIsolatedE2eRelayUrls,
   subscribeRelaySettingsChanges,
 } from "../protocol/relay-settings"
+import {
+  recordBrowserTelemetryEvent,
+  type ConduitTelemetryApp,
+} from "../telemetry"
+import {
+  buildNip17CompatibilityResultTelemetryProperties,
+  type Nip17DeclarationTelemetryClass,
+} from "../telemetry-event-properties"
 
 /**
  * NIP-17 inbox declaration readiness + repair (CND-208).
@@ -119,6 +127,14 @@ export interface UseInboxDeclarationOptions {
   enabled?: boolean
   /** Account relay-settings scope used to refresh discovery after relay import. */
   relayScope?: string | null
+  /** Emit fixed-label repair outcomes only from the explicit Network surface. */
+  telemetryApp?: ConduitTelemetryApp
+}
+
+function getDeclarationTelemetryClass(
+  state: OwnPrivateMessageRelayReadiness["state"] | null
+): Nip17DeclarationTelemetryClass {
+  return state === "ready" ? "declared" : (state ?? "unknown")
 }
 
 export type InboxDeclarationStatus =
@@ -360,9 +376,42 @@ export function useInboxDeclaration(
         sharedConfirmationRelayUrls: sharedRelayUrls,
         allowLocalRelayUrlsForPubkey: pubkey,
       })
-      return verifyDeclarationReadBack(resolution, {
+      const readBack = verifyDeclarationReadBack(resolution, {
         eventId: publishedEvent.id,
         relayUrls: expectedRelayUrls,
+      })
+      return { ...readBack, declarationClass: resolution.state }
+    },
+    onSuccess: (result) => {
+      if (!options.telemetryApp) return
+      recordBrowserTelemetryEvent({
+        app: options.telemetryApp,
+        eventName: "nip17_compatibility_result",
+        properties: buildNip17CompatibilityResultTelemetryProperties({
+          action: "declaration_repair",
+          declarationClass: result.declarationClass,
+          deliveryRoute: "not_applicable",
+          ackOutcome: "not_applicable",
+          repairOutcome: result.confirmed
+            ? "discoverable"
+            : "confirmation_pending",
+          blockReason: "not_applicable",
+        }),
+      })
+    },
+    onError: (_error, intent) => {
+      if (!options.telemetryApp) return
+      recordBrowserTelemetryEvent({
+        app: options.telemetryApp,
+        eventName: "nip17_compatibility_result",
+        properties: buildNip17CompatibilityResultTelemetryProperties({
+          action: "declaration_repair",
+          declarationClass: getDeclarationTelemetryClass(intent.reviewedState),
+          deliveryRoute: "not_applicable",
+          ackOutcome: "not_applicable",
+          repairOutcome: "failed",
+          blockReason: "not_applicable",
+        }),
       })
     },
     onSettled: async () => {
