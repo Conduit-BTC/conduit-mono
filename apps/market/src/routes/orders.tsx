@@ -22,6 +22,7 @@ import {
   pruneExpiredGuestOrderData,
   prepareProtectedReadRefreshState,
   pubkeyToNpub,
+  retryOrderRelayDelivery,
   replaceOrderPaymentTarget,
   resolveWalletPaymentInstance,
   selectProtectedReadRows,
@@ -94,9 +95,11 @@ import {
   buildOrderTimeline,
   buildOrderViewModel,
   deriveOrderHeaderStatus,
+  getOrderDeliveryEvidenceLabel,
   getOrderFilterPhase,
   getOrderPaymentMethodLabel,
   isZeroCostPickupOrder,
+  shouldOfferOrderPaymentContinuation,
   type OrderHeaderStatus,
   type OrderViewModel,
 } from "../lib/order-view"
@@ -961,7 +964,18 @@ function OrderDetail({
     })
   }
 
+  async function retryOrderDelivery(): Promise<void> {
+    if (!row.lifecycle?.orderRelayDelivery) return
+    await retryOrderRelayDelivery(vm.orderId, buyerPubkey, {
+      allowGuestExplicitRetry: !!guestIdentity,
+    })
+    await queryClient.invalidateQueries({ queryKey: ["order-lifecycles"] })
+  }
+
   const showRetryPayment = !zeroCostPickupOrder && vm.paymentStatus === "failed"
+  const showContinuePayment = shouldOfferOrderPaymentContinuation(vm)
+  const showRetryOrderDelivery =
+    vm.orderDeliveryStatus === "pending" && !!row.lifecycle?.orderRelayDelivery
   const showAnonPaymentRecovery =
     showRetryPayment &&
     vm.publicZapSigner === "anon" &&
@@ -1094,6 +1108,38 @@ function OrderDetail({
         </section>
       </>
 
+      {showRetryOrderDelivery && (
+        <StatusNotice
+          variant="neutral"
+          title="Queued locally"
+          detail="Waiting for relay acceptance"
+        >
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              variant="outline"
+              className="h-10 px-4 text-sm"
+              disabled={busy}
+              onClick={() => void withBusy(retryOrderDelivery)}
+            >
+              <RotateCw className="h-4 w-4" />
+              Retry delivery
+            </Button>
+            <span className="text-xs text-[var(--text-secondary)]">
+              The exact encrypted order is saved on this device. Retrying does
+              not create a new order or add relay destinations.
+            </span>
+            {recoveryError && (
+              <p
+                role="alert"
+                className="w-full text-sm text-[var(--destructive)]"
+              >
+                {recoveryError}
+              </p>
+            )}
+          </div>
+        </StatusNotice>
+      )}
+
       {showExternalWallet && (
         <div className="space-y-3">
           <StatusNotice
@@ -1138,14 +1184,17 @@ function OrderDetail({
         </div>
       )}
 
-      {(showRetryPayment || showAmbiguousPayment || showResendProof) && (
+      {(showContinuePayment ||
+        showRetryPayment ||
+        showAmbiguousPayment ||
+        showResendProof) && (
         <StatusNotice
           variant={TONE_VARIANT[headerStatus.tone]}
           title={headerStatus.primaryLabel}
           detail={headerStatus.detailLabel}
         >
           <div className="flex flex-wrap items-end gap-3">
-            {showRetryPayment && (
+            {(showContinuePayment || showRetryPayment) && (
               <div className="grid min-w-[15rem] gap-1.5">
                 <label
                   htmlFor={`retry-wallet-${vm.orderId}`}
@@ -1194,7 +1243,7 @@ function OrderDetail({
                 </Select>
               </div>
             )}
-            {showRetryPayment && (
+            {(showContinuePayment || showRetryPayment) && (
               <Button
                 className="h-10 px-4 text-sm"
                 disabled={
@@ -1206,7 +1255,7 @@ function OrderDetail({
                 onClick={() => void withBusy(retryPayment)}
               >
                 <RotateCw className="h-4 w-4" />
-                Try payment again
+                {showContinuePayment ? "Continue payment" : "Try payment again"}
               </Button>
             )}
             {showAnonPaymentRecovery && (
@@ -1246,17 +1295,22 @@ function OrderDetail({
                   ? "Conduit did not observe the matching public receipt. If your wallet shows payment, do not pay again. The receipt can still reconcile if it reaches the configured relays during this guest session."
                   : showAmbiguousPayment
                     ? "Your wallet may have received the payment request, but Conduit couldn't confirm whether funds moved. Check your wallet and merchant messages before trying again."
-                    : showRetryPayment && retryWalletTargetIsStale
+                    : (showContinuePayment || showRetryPayment) &&
+                        retryWalletTargetIsStale
                       ? "The previously selected saved wallet is unavailable. Explicitly choose another wallet, browser wallet, or manual payment."
-                      : showRetryPayment && !selectedStoredPaymentTarget
+                      : (showContinuePayment || showRetryPayment) &&
+                          !selectedStoredPaymentTarget
                         ? "Choose the exact wallet or manual payment path for this retry."
-                        : showRetryPayment && !buildServiceCtx()
+                        : (showContinuePayment || showRetryPayment) &&
+                            !buildServiceCtx()
                           ? "The saved payment target is unavailable. Unlock or reconnect it, or explicitly choose another option."
-                          : showRetryPayment
-                            ? showAnonPaymentRecovery
-                              ? "This older anonymous zap attempt failed before automatic fallback was available. No funds moved; retry it or continue with a private invoice."
-                              : "No funds moved. You can retry payment for this order."
-                            : "Payment went through; the receipt didn't reach the merchant."}
+                          : showContinuePayment
+                            ? "The order reached a relay. Continue when you are ready to request and pay the Lightning invoice."
+                            : showRetryPayment
+                              ? showAnonPaymentRecovery
+                                ? "This older anonymous zap attempt failed before automatic fallback was available. No funds moved; retry it or continue with a private invoice."
+                                : "No funds moved. You can retry payment for this order."
+                              : "Payment went through; the receipt didn't reach the merchant."}
             </span>
             {recoveryError && (
               <p
@@ -1266,36 +1320,37 @@ function OrderDetail({
                 {recoveryError}
               </p>
             )}
-            {showRetryPayment && wallets.initializationError && (
-              <div
-                role="alert"
-                className="w-full rounded-xl border border-[color-mix(in_srgb,var(--error)_40%,transparent)] bg-[color-mix(in_srgb,var(--error)_6%,transparent)] p-3 text-sm leading-6 text-[var(--text-secondary)]"
-              >
-                <p className="font-medium text-[var(--text-primary)]">
-                  Saved wallets could not be loaded
-                </p>
-                <p className="mt-1">
-                  {wallets.initializationError} Browser wallet and manual
-                  payment remain available.
-                </p>
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="mt-2 h-9 px-3 text-xs"
-                  disabled={wallets.loading}
-                  onClick={() => void wallets.retryInitialization()}
+            {(showContinuePayment || showRetryPayment) &&
+              wallets.initializationError && (
+                <div
+                  role="alert"
+                  className="w-full rounded-xl border border-[color-mix(in_srgb,var(--error)_40%,transparent)] bg-[color-mix(in_srgb,var(--error)_6%,transparent)] p-3 text-sm leading-6 text-[var(--text-secondary)]"
                 >
-                  {wallets.loading ? (
-                    <>
-                      <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-                      Retrying
-                    </>
-                  ) : (
-                    "Retry saved wallets"
-                  )}
-                </Button>
-              </div>
-            )}
+                  <p className="font-medium text-[var(--text-primary)]">
+                    Saved wallets could not be loaded
+                  </p>
+                  <p className="mt-1">
+                    {wallets.initializationError} Browser wallet and manual
+                    payment remain available.
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="mt-2 h-9 px-3 text-xs"
+                    disabled={wallets.loading}
+                    onClick={() => void wallets.retryInitialization()}
+                  >
+                    {wallets.loading ? (
+                      <>
+                        <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                        Retrying
+                      </>
+                    ) : (
+                      "Retry saved wallets"
+                    )}
+                  </Button>
+                </div>
+              )}
           </div>
         </StatusNotice>
       )}
@@ -1593,6 +1648,11 @@ function OrderDetail({
                 </DetailRow>
                 <DetailRow label="Ordered">
                   <span>{new Date(vm.createdAt).toLocaleString()}</span>
+                </DetailRow>
+                <DetailRow label="Delivery">
+                  <span>
+                    {getOrderDeliveryEvidenceLabel(vm.orderDeliveryEvidence)}
+                  </span>
                 </DetailRow>
               </div>
             )}

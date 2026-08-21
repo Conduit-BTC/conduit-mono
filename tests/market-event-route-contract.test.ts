@@ -128,7 +128,7 @@ describe("Market event catalog route", () => {
     expect(checkout).not.toContain(
       "publishBuyerOrderMessage(\n          orderRumor,\n          ndk,\n          pickupHandoff.handlerPubkey"
     )
-    expect(checkout.match(/publishBuyerOrderMessage\(/g)?.length).toBe(2)
+    expect(checkout.match(/submitBuyerOrderMessage\(/g)?.length).toBe(2)
   })
 
   it("keeps organizer-pickup evidence inside the fixed order sidebar", async () => {

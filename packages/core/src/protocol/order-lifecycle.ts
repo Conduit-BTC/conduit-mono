@@ -85,7 +85,7 @@ export function deriveOrderLifecyclePhase(
   return "pending"
 }
 
-type CreateOrderLifecycleInput = Omit<
+export type CreateOrderLifecycleInput = Omit<
   OrderLifecycle,
   "createdAt" | "updatedAt" | "phase"
 > & {

@@ -88,6 +88,22 @@ function wrap(id: string): NDKEvent {
   return { id } as unknown as NDKEvent
 }
 
+function signedGiftWrap(recipientPubkey = "recipient"): NDKEvent {
+  const signed = finalizeEvent(
+    {
+      kind: EVENT_KINDS.GIFT_WRAP,
+      created_at: 1_700_000_000,
+      tags: [["p", recipientPubkey]],
+      content: "encrypted-gift-wrap",
+    },
+    new Uint8Array(32).fill(14)
+  )
+  return {
+    id: signed.id,
+    rawEvent: () => signed,
+  } as unknown as NDKEvent
+}
+
 function rumor(kind: number, overrides: Partial<NDKEvent> = {}): NDKEvent {
   return {
     id: "rumor-id",
@@ -1003,6 +1019,139 @@ describe("publishPrivateMessage", () => {
     expect(JSON.stringify(result.deliveryRelaySources)).not.toContain(
       "Order update"
     )
+  })
+
+  it("stages the exact order wrap and immutable relay plan before publishing", async () => {
+    const steps: string[] = []
+    const preparedRecords: unknown[] = []
+    const settledRecords: unknown[] = []
+    const relayUrls = ["wss://one.conduit.market", "wss://two.conduit.market"]
+
+    const result = await publishPrivateMessage({
+      ...validatedOrderInput(),
+      senderPubkey: "sender",
+      recipientPubkey: "recipient",
+      signer,
+      rumorKind: EVENT_KINDS.ORDER,
+      selfCopy: false,
+      recipientInboxRelays: relayUrls,
+      giftWrapFn: (async () => signedGiftWrap()) as never,
+      onWrapped: async (prepared) => {
+        steps.push("persist")
+        preparedRecords.push(prepared.orderRelayDelivery)
+      },
+      onOrderRelayDeliveryUpdated: async (delivery) => {
+        steps.push("settle")
+        settledRecords.push(delivery)
+      },
+      publishFn: (async (_event, options) => {
+        steps.push("publish")
+        expect(options.exclusiveRelayUrls).toEqual(relayUrls)
+        return {
+          attemptedRelayUrls: relayUrls,
+          successfulRelayUrls: [relayUrls[0]],
+          failedRelayUrls: [relayUrls[1]],
+          relayFailureMessages: {
+            [relayUrls[1]]: "No acknowledgement before timeout",
+          },
+        }
+      }) as never,
+    })
+
+    expect(steps).toEqual(["persist", "publish", "settle"])
+    expect(preparedRecords).toEqual([
+      expect.objectContaining({
+        signedRecipientWrap: expect.objectContaining({
+          id: result.wrappedToRecipient.id,
+          content: "encrypted-gift-wrap",
+        }),
+        route: "declared_inbox",
+        deliveryAttemptCount: 0,
+        relayDelivery: [
+          expect.objectContaining({
+            relayUrl: relayUrls[0],
+            source: "declared",
+            status: "pending",
+            attemptCount: 0,
+          }),
+          expect.objectContaining({
+            relayUrl: relayUrls[1],
+            source: "declared",
+            status: "pending",
+            attemptCount: 0,
+          }),
+        ],
+      }),
+    ])
+    expect(settledRecords).toEqual([
+      expect.objectContaining({
+        deliveryAttemptCount: 1,
+        relayDelivery: [
+          expect.objectContaining({
+            relayUrl: relayUrls[0],
+            status: "acked",
+            attemptCount: 1,
+          }),
+          expect.objectContaining({
+            relayUrl: relayUrls[1],
+            status: "timed_out",
+            attemptCount: 1,
+          }),
+        ],
+      }),
+    ])
+  })
+
+  it("persists zero-ACK outcomes before surfacing the delivery failure", async () => {
+    const relayUrls = ["wss://unavailable.conduit.market"]
+    const settledRecords: Array<{
+      relayDelivery: Array<{ status: string }>
+    }> = []
+    const diagnostics = {
+      plan: {
+        intent: "recipient_event" as const,
+        primaryRelayUrls: relayUrls,
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      },
+      attemptedRelayUrls: relayUrls,
+      successfulRelayUrls: [],
+      failedRelayUrls: relayUrls,
+      relayFailureMessages: {
+        [relayUrls[0]]: "No acknowledgement before timeout",
+      },
+    }
+
+    await expect(
+      publishPrivateMessage({
+        ...validatedOrderInput(),
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer,
+        rumorKind: EVENT_KINDS.ORDER,
+        selfCopy: false,
+        recipientInboxRelays: relayUrls,
+        giftWrapFn: (async () => signedGiftWrap()) as never,
+        onWrapped: async (prepared) => {
+          expect(prepared.orderRelayDelivery?.relayDelivery[0]?.status).toBe(
+            "pending"
+          )
+        },
+        onOrderRelayDeliveryUpdated: async (delivery) => {
+          settledRecords.push(delivery)
+        },
+        publishFn: (async () => {
+          throw new RelayPublishDiagnosticsError(
+            "No relay accepted the order.",
+            diagnostics,
+            new Error("relay delivery failed")
+          )
+        }) as never,
+      })
+    ).rejects.toBeInstanceOf(RelayPublishDiagnosticsError)
+
+    expect(settledRecords).toHaveLength(1)
+    expect(settledRecords[0]?.relayDelivery[0]?.status).toBe("timed_out")
   })
 
   it("fails explicitly when every compatibility relay fails", async () => {

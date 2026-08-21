@@ -15,7 +15,7 @@ describe("checkout completion navigation contracts", () => {
 
     expect(checkoutRoute).toContain("const navigate = useNavigate()")
     expect(ordersNavigations.length).toBeGreaterThanOrEqual(2)
-    expect(checkoutRoute).toContain("createOrderLifecycle(")
+    expect(checkoutRoute).toContain("submitBuyerOrderMessage(")
   })
 
   it("does not offer cart as a terminal paid-checkout action", async () => {
@@ -95,7 +95,7 @@ describe("checkout completion navigation contracts", () => {
     const signedOrderReady = payNowSource.indexOf(
       "orderRumor.content = JSON.stringify(orderPayload)"
     )
-    const orderPublish = payNowSource.indexOf("await publishBuyerOrderMessage(")
+    const orderPublish = payNowSource.indexOf("await submitBuyerOrderMessage(")
     const paymentStarted = payNowSource.indexOf("directPaymentStarted = true")
     const paymentStartedTelemetry = payNowSource.indexOf(
       'stepName: "direct_payment"',
@@ -187,16 +187,12 @@ describe("checkout completion navigation contracts", () => {
       availabilityIndex
     )
     const orderPublishIndex = payNowSource.indexOf(
-      "await publishBuyerOrderMessage(",
+      "await submitBuyerOrderMessage(",
       authorizationIndex
-    )
-    const lifecycleIndex = payNowSource.indexOf(
-      "await createOrderLifecycle(",
-      orderPublishIndex
     )
     const sparkFeeApprovalIndex = payNowSource.indexOf(
       "sparkFeeApproval.requestApproval",
-      lifecycleIndex
+      orderPublishIndex
     )
     const sparkPaymentIndex = payNowSource.indexOf(
       "await runOrderPayment(serviceCtx)",
@@ -211,8 +207,7 @@ describe("checkout completion navigation contracts", () => {
     expect(payNowEnd).toBeGreaterThan(payNowIndex)
     expect(authorizationIndex).toBeGreaterThan(availabilityIndex)
     expect(orderPublishIndex).toBeGreaterThan(authorizationIndex)
-    expect(lifecycleIndex).toBeGreaterThan(orderPublishIndex)
-    expect(sparkFeeApprovalIndex).toBeGreaterThan(lifecycleIndex)
+    expect(sparkFeeApprovalIndex).toBeGreaterThan(orderPublishIndex)
     expect(sparkPaymentIndex).toBeGreaterThan(sparkFeeApprovalIndex)
     expect(otherPaymentIndex).toBeGreaterThan(sparkPaymentIndex)
     expect(checkoutRoute).not.toContain("prepareAnonZapCheckout")
