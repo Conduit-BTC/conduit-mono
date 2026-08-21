@@ -91,7 +91,7 @@ const validBrowserEventProperties = {
     product_type: "physical",
     rail: "none",
     status: "started",
-    step: "shipping",
+    step: "availability",
     surface: "checkout",
   },
   checkout_success: {

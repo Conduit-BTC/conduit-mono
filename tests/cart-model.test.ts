@@ -1,4 +1,9 @@
 import { describe, expect, it } from "bun:test"
+import type {
+  Product,
+  ProductAvailabilityDiagnostic,
+  ProductAvailabilityIssue,
+} from "@conduit/core"
 import {
   addCartItem,
   cartItemsMatchCurrentProducts,
@@ -13,8 +18,9 @@ import {
   getCartTotals,
   getProductAddAvailability,
   groupCartItems,
+  getCartAvailabilityReadDecision,
   getCartAvailabilityVerificationMessage,
-  isCartAvailabilityReadFresh,
+  isCartAvailabilityReadComplete,
   isCartProductAvailabilityBlocking,
   parsePersistedCart,
   removeCartItem,
@@ -23,7 +29,6 @@ import {
   setCartItemQuantity,
   type CartItem,
 } from "../apps/market/src/lib/cart-model"
-import type { Product } from "@conduit/core"
 
 function item(overrides: Partial<CartItem> = {}): CartItem {
   return {
@@ -34,6 +39,54 @@ function item(overrides: Partial<CartItem> = {}): CartItem {
     currency: "SATS",
     quantity: 1,
     ...overrides,
+  }
+}
+
+function refreshedProduct(
+  cartItem: CartItem,
+  overrides: Partial<Product> = {}
+): Product {
+  return {
+    id: cartItem.productId,
+    pubkey: cartItem.merchantPubkey,
+    title: cartItem.title,
+    price: cartItem.price,
+    currency: cartItem.currency,
+    type: "simple",
+    format: "physical",
+    visibility: "public",
+    stock: cartItem.stock,
+    images: [],
+    tags: [],
+    publicZapEnabled: true,
+    zapMessagePolicy: "generic_only",
+    publicZapPolicyKnown: true,
+    createdAt: 1,
+    updatedAt: 3,
+    ...overrides,
+  }
+}
+
+function exactLiveDiagnostic(
+  productId: string,
+  listing: "complete" | "partial" = "complete"
+): ProductAvailabilityDiagnostic {
+  return {
+    productId,
+    addressId: productId,
+    issue: null,
+    coverage: { listing, deletion: "complete" },
+  }
+}
+
+function unverifiedDecision(
+  reason: ProductAvailabilityIssue | "query_failed" | "evidence_mismatch",
+  diagnostics: ProductAvailabilityDiagnostic[]
+) {
+  return {
+    status: "unverified" as const,
+    reason,
+    diagnostics,
   }
 }
 
@@ -333,91 +386,287 @@ describe("cart model", () => {
     })
   })
 
-  it("requires typed positive live evidence before checkout can proceed", () => {
-    const cartItems = [item({ stock: 2 })]
-    const refreshedProduct: Product = {
-      id: cartItems[0]!.productId,
-      pubkey: cartItems[0]!.merchantPubkey,
-      title: cartItems[0]!.title,
-      price: cartItems[0]!.price,
-      currency: cartItems[0]!.currency,
-      type: "simple",
-      format: "physical",
-      visibility: "public",
-      stock: 2,
-      images: [],
-      tags: [],
-      publicZapEnabled: true,
-      zapMessagePolicy: "generic_only",
-      publicZapPolicyKnown: true,
-      createdAt: 1,
-      updatedAt: 3,
-    }
-    const refreshedAvailability = getCartProductAvailability(cartItems, [
-      refreshedProduct,
-    ])
-    const freshMeta = {
+  describe("checkout availability read decisions", () => {
+    const partialMeta = {
       source: "commerce" as const,
-      stale: false,
-      degraded: false,
+      stale: true,
+      degraded: true,
     }
 
-    expect(isCartAvailabilityReadFresh(refreshedAvailability, freshMeta)).toBe(
-      true
-    )
-    expect(
-      isCartAvailabilityReadFresh(refreshedAvailability, {
-        source: "local_cache",
-        stale: true,
-        degraded: true,
+    it("verifies the exact live final unit despite partial relay coverage", () => {
+      const cartItems = [item({ stock: 1, quantity: 1 })]
+      const availability = getCartProductAvailability(cartItems, [
+        refreshedProduct(cartItems[0]!, { stock: 1 }),
+      ])
+
+      const decision = getCartAvailabilityReadDecision({
+        productIds: [cartItems[0]!.productId],
+        availability,
+        meta: partialMeta,
+        diagnostics: [exactLiveDiagnostic(cartItems[0]!.productId, "partial")],
+        querySucceeded: true,
       })
-    ).toBe(false)
-    expect(
-      isCartAvailabilityReadFresh(refreshedAvailability, {
-        ...freshMeta,
-        degraded: true,
+
+      expect(decision).toEqual({
+        status: "verified_at_read",
+        coverage: "partial",
       })
-    ).toBe(false)
-    expect(
-      isCartAvailabilityReadFresh(
-        refreshedAvailability,
-        { ...freshMeta, degraded: true },
-        [
-          {
-            productId: cartItems[0]!.productId,
-            addressId: cartItems[0]!.productId,
-            issue: null,
-            coverage: { listing: "complete", deletion: "partial" },
-          },
-        ]
+      expect(isCartAvailabilityReadComplete(decision)).toBe(false)
+      expect(
+        isCartAvailabilityReadComplete({
+          status: "verified_at_read",
+          coverage: "complete",
+        })
+      ).toBe(true)
+      expect(
+        getCartAvailabilityBlockingMessage(
+          cartItems,
+          new Map(availability.map((entry) => [entry.productId, entry]))
+        )
+      ).toBeNull()
+    })
+
+    it("keeps sold-out and over-quantity inventory blocks after verification", () => {
+      const soldOutItems = [item({ stock: 1, quantity: 1 })]
+      const soldOutAvailability = getCartProductAvailability(soldOutItems, [
+        refreshedProduct(soldOutItems[0]!, { stock: 0 }),
+      ])
+      const soldOutDecision = getCartAvailabilityReadDecision({
+        productIds: [soldOutItems[0]!.productId],
+        availability: soldOutAvailability,
+        meta: partialMeta,
+        diagnostics: [
+          exactLiveDiagnostic(soldOutItems[0]!.productId, "partial"),
+        ],
+        querySucceeded: true,
+      })
+
+      expect(soldOutDecision).toEqual({
+        status: "verified_at_read",
+        coverage: "partial",
+      })
+      expect(
+        getCartAvailabilityBlockingMessage(
+          soldOutItems,
+          new Map(soldOutAvailability.map((entry) => [entry.productId, entry]))
+        )
+      ).toBe(
+        "Notebook is sold out. Remove it from your cart before sending the order."
       )
-    ).toBe(true)
-    expect(
-      isCartAvailabilityReadFresh(
+
+      const overQuantityItems = [item({ stock: 1, quantity: 2 })]
+      const overQuantityAvailability = getCartProductAvailability(
+        overQuantityItems,
+        [refreshedProduct(overQuantityItems[0]!, { stock: 1 })]
+      )
+      const overQuantityDecision = getCartAvailabilityReadDecision({
+        productIds: [overQuantityItems[0]!.productId],
+        availability: overQuantityAvailability,
+        meta: partialMeta,
+        diagnostics: [
+          exactLiveDiagnostic(overQuantityItems[0]!.productId, "partial"),
+        ],
+        querySucceeded: true,
+      })
+
+      expect(overQuantityDecision).toEqual({
+        status: "verified_at_read",
+        coverage: "partial",
+      })
+      expect(
+        getCartAvailabilityBlockingMessage(
+          overQuantityItems,
+          new Map(
+            overQuantityAvailability.map((entry) => [entry.productId, entry])
+          )
+        )
+      ).toBe(
+        "Notebook has only 1 available, but your cart contains 2. Reduce the quantity before sending the order."
+      )
+    })
+
+    it("fails closed when the availability query fails", () => {
+      const cartItems = [item({ stock: 1 })]
+
+      expect(
+        getCartAvailabilityReadDecision({
+          productIds: [cartItems[0]!.productId],
+          availability: getCartProductAvailability(cartItems, []),
+          meta: undefined,
+          diagnostics: [],
+          querySucceeded: false,
+        })
+      ).toEqual({
+        status: "unverified",
+        reason: "query_failed",
+        diagnostics: [],
+      })
+    })
+
+    it("requires live commerce records while allowing incomplete deletion discovery", () => {
+      const cartItems = [item({ stock: 1 })]
+      const productId = cartItems[0]!.productId
+      const availability = getCartProductAvailability(cartItems, [
+        refreshedProduct(cartItems[0]!, { stock: 1 }),
+      ])
+      const diagnostic = {
+        ...exactLiveDiagnostic(productId),
+        coverage: {
+          listing: "complete" as const,
+          deletion: "partial" as const,
+        },
+      }
+      const decide = (
+        meta: Parameters<typeof getCartAvailabilityReadDecision>[0]["meta"],
+        nextAvailability = availability
+      ) =>
+        getCartAvailabilityReadDecision({
+          productIds: [productId],
+          availability: nextAvailability,
+          meta,
+          diagnostics: [diagnostic],
+          querySucceeded: true,
+        })
+
+      expect(decide(partialMeta)).toEqual({
+        status: "verified_at_read",
+        coverage: "partial",
+      })
+      expect(
+        decide({ source: "local_cache", stale: true, degraded: true })
+      ).toEqual({
+        status: "unverified",
+        reason: "evidence_mismatch",
+        diagnostics: [diagnostic],
+      })
+      expect(
+        decide(partialMeta, [{ ...availability[0]!, refreshed: false }])
+      ).toEqual({
+        status: "unverified",
+        reason: "evidence_mismatch",
+        diagnostics: [diagnostic],
+      })
+    })
+
+    it("rejects missing, extra, duplicate, and mismatched diagnostics", () => {
+      const cartItems = [item({ stock: 1 })]
+      const productId = cartItems[0]!.productId
+      const availability = getCartProductAvailability(cartItems, [
+        refreshedProduct(cartItems[0]!, { stock: 1 }),
+      ])
+      const decide = (diagnostics: ProductAvailabilityDiagnostic[]) =>
+        getCartAvailabilityReadDecision({
+          productIds: [productId],
+          availability,
+          meta: partialMeta,
+          diagnostics,
+          querySucceeded: true,
+        })
+      const extraProductId = "30402:merchant-a:extra-product"
+
+      for (const diagnostics of [
+        [],
         [
-          ...refreshedAvailability,
+          exactLiveDiagnostic(productId, "partial"),
+          exactLiveDiagnostic(extraProductId, "partial"),
+        ],
+        [
+          exactLiveDiagnostic(productId, "partial"),
+          exactLiveDiagnostic(productId, "partial"),
+        ],
+        [exactLiveDiagnostic(extraProductId, "partial")],
+      ]) {
+        expect(decide(diagnostics)).toEqual({
+          status: "unverified",
+          reason: "evidence_mismatch",
+          diagnostics,
+        })
+      }
+    })
+
+    it("rejects live evidence for a different address coordinate", () => {
+      const cartItems = [item({ stock: 1 })]
+      const productId = cartItems[0]!.productId
+      const availability = getCartProductAvailability(cartItems, [
+        refreshedProduct(cartItems[0]!, { stock: 1 }),
+      ])
+      const diagnostics = [
+        {
+          ...exactLiveDiagnostic(productId, "partial"),
+          addressId: "30402:merchant-b:different-product",
+        },
+      ]
+
+      expect(
+        getCartAvailabilityReadDecision({
+          productIds: [productId],
+          availability,
+          meta: partialMeta,
+          diagnostics,
+          querySucceeded: true,
+        })
+      ).toEqual({
+        status: "unverified",
+        reason: "evidence_mismatch",
+        diagnostics,
+      })
+    })
+
+    it("requires an exact live diagnostic for every item in a multi-item cart", () => {
+      const secondProductId = "30402:merchant-b:product-b"
+      const cartItems = [
+        item({ stock: 1 }),
+        item({
+          productId: secondProductId,
+          merchantPubkey: "merchant-b",
+          title: "Poster",
+          stock: 3,
+        }),
+      ]
+      const availability = getCartProductAvailability(
+        cartItems,
+        cartItems.map((cartItem) => refreshedProduct(cartItem))
+      )
+      const diagnostics = cartItems.map((cartItem) =>
+        exactLiveDiagnostic(cartItem.productId)
+      )
+
+      expect(
+        getCartAvailabilityReadDecision({
+          productIds: cartItems.map((cartItem) => cartItem.productId),
+          availability,
+          meta: partialMeta,
+          diagnostics,
+          querySucceeded: true,
+        })
+      ).toEqual({ status: "verified_at_read", coverage: "complete" })
+
+      expect(
+        getCartAvailabilityReadDecision({
+          productIds: cartItems.map((cartItem) => cartItem.productId),
+          availability,
+          meta: partialMeta,
+          diagnostics: [
+            diagnostics[0]!,
+            {
+              ...diagnostics[1]!,
+              issue: "lookup_partial",
+            },
+          ],
+          querySucceeded: true,
+        })
+      ).toEqual({
+        status: "unverified",
+        reason: "lookup_partial",
+        diagnostics: [
+          diagnostics[0]!,
           {
-            ...refreshedAvailability[0]!,
-            productId: "30402:merchant:missing-live-evidence",
+            ...diagnostics[1]!,
+            issue: "lookup_partial",
           },
         ],
-        { ...freshMeta, degraded: true },
-        [
-          {
-            productId: cartItems[0]!.productId,
-            addressId: cartItems[0]!.productId,
-            issue: null,
-            coverage: { listing: "complete", deletion: "partial" },
-          },
-        ]
-      )
-    ).toBe(false)
-    expect(
-      isCartAvailabilityReadFresh(
-        getCartProductAvailability(cartItems, []),
-        freshMeta
-      )
-    ).toBe(false)
+      })
+    })
   })
 
   it("keeps equal product identifiers from different merchants separate", () => {
@@ -608,59 +857,6 @@ describe("cart model", () => {
       )
     ).toBe(false)
     expect(cartItemsMatchCurrentProducts([cartItem], [])).toBe(false)
-  })
-
-  it("requires a fresh complete commerce read before checkout can proceed", () => {
-    const cartItems = [item({ stock: 2 })]
-    const refreshedProduct: Product = {
-      id: cartItems[0]!.productId,
-      pubkey: cartItems[0]!.merchantPubkey,
-      title: cartItems[0]!.title,
-      price: cartItems[0]!.price,
-      currency: cartItems[0]!.currency,
-      type: "simple",
-      format: "physical",
-      visibility: "public",
-      stock: 2,
-      images: [],
-      tags: [],
-      publicZapEnabled: true,
-      zapMessagePolicy: "generic_only",
-      publicZapPolicyKnown: true,
-      createdAt: 1,
-      updatedAt: 3,
-    }
-    const refreshedAvailability = getCartProductAvailability(cartItems, [
-      refreshedProduct,
-    ])
-    const freshMeta = {
-      source: "commerce" as const,
-      stale: false,
-      degraded: false,
-    }
-
-    expect(isCartAvailabilityReadFresh(refreshedAvailability, freshMeta)).toBe(
-      true
-    )
-    expect(
-      isCartAvailabilityReadFresh(refreshedAvailability, {
-        source: "local_cache",
-        stale: true,
-        degraded: true,
-      })
-    ).toBe(false)
-    expect(
-      isCartAvailabilityReadFresh(refreshedAvailability, {
-        ...freshMeta,
-        degraded: true,
-      })
-    ).toBe(false)
-    expect(
-      isCartAvailabilityReadFresh(
-        getCartProductAvailability(cartItems, []),
-        freshMeta
-      )
-    ).toBe(false)
   })
 
   it("keeps refreshed availability merchant-scoped for legacy identifiers", () => {
@@ -967,10 +1163,10 @@ describe("getCartAvailabilityVerificationMessage", () => {
 
   it("returns null when every coordinate has an exact live match", () => {
     expect(
-      getCartAvailabilityVerificationMessage(
-        [item()],
-        [{ productId, addressId: productId, issue: null }]
-      )
+      getCartAvailabilityVerificationMessage([item()], {
+        status: "verified_at_read",
+        coverage: "complete",
+      })
     ).toBeNull()
   })
 
@@ -978,13 +1174,13 @@ describe("getCartAvailabilityVerificationMessage", () => {
     expect(
       getCartAvailabilityVerificationMessage(
         [item()],
-        [
+        unverifiedDecision("invalid_product_reference", [
           {
             productId,
             addressId: null,
             issue: "invalid_product_reference",
           },
-        ]
+        ])
       )
     ).toBe(
       "Notebook has an invalid product reference. Remove it from your cart and add it again."
@@ -992,7 +1188,9 @@ describe("getCartAvailabilityVerificationMessage", () => {
     expect(
       getCartAvailabilityVerificationMessage(
         [item()],
-        [{ productId, addressId: productId, issue: "product_missing" }]
+        unverifiedDecision("product_missing", [
+          { productId, addressId: productId, issue: "product_missing" },
+        ])
       )
     ).toBe(
       "Notebook could not be found on the configured relays. The listing may have been removed."
@@ -1000,7 +1198,9 @@ describe("getCartAvailabilityVerificationMessage", () => {
     expect(
       getCartAvailabilityVerificationMessage(
         [item()],
-        [{ productId, addressId: productId, issue: "listing_filtered" }]
+        unverifiedDecision("listing_filtered", [
+          { productId, addressId: productId, issue: "listing_filtered" },
+        ])
       )
     ).toBe("Notebook is not publicly listed right now.")
   })
@@ -1009,7 +1209,9 @@ describe("getCartAvailabilityVerificationMessage", () => {
     expect(
       getCartAvailabilityVerificationMessage(
         [item()],
-        [{ productId, addressId: productId, issue: "lookup_unavailable" }]
+        unverifiedDecision("lookup_unavailable", [
+          { productId, addressId: productId, issue: "lookup_unavailable" },
+        ])
       )
     ).toBe(
       "Product availability could not be checked because no relay responded. Check your connection and try again."
@@ -1017,7 +1219,9 @@ describe("getCartAvailabilityVerificationMessage", () => {
     expect(
       getCartAvailabilityVerificationMessage(
         [item()],
-        [{ productId, addressId: productId, issue: "lookup_partial" }]
+        unverifiedDecision("lookup_partial", [
+          { productId, addressId: productId, issue: "lookup_partial" },
+        ])
       )
     ).toBe(
       "Some relays did not respond, so availability for Notebook could not be confirmed. Try again."
@@ -1025,7 +1229,9 @@ describe("getCartAvailabilityVerificationMessage", () => {
     expect(
       getCartAvailabilityVerificationMessage(
         [item()],
-        [{ productId, addressId: productId, issue: "cached_only" }]
+        unverifiedDecision("cached_only", [
+          { productId, addressId: productId, issue: "cached_only" },
+        ])
       )
     ).toBe(
       "Notebook was confirmed only from a local snapshot. Try again to verify current availability."
@@ -1037,14 +1243,14 @@ describe("getCartAvailabilityVerificationMessage", () => {
     expect(
       getCartAvailabilityVerificationMessage(
         [item(), item({ productId: secondId, title: "Poster" })],
-        [
+        unverifiedDecision("product_missing", [
           { productId, addressId: productId, issue: "lookup_partial" },
           {
             productId: secondId,
             addressId: secondId,
             issue: "product_missing",
           },
-        ]
+        ])
       )
     ).toBe(
       "Poster could not be found on the configured relays. The listing may have been removed."

@@ -2,6 +2,7 @@ import {
   EVENT_KINDS,
   extractFollowPubkeys,
   isValidSignedPublicNostrEvent,
+  type FollowListResult,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
 import {
@@ -209,6 +210,21 @@ export function parseVerifiedFollowListEventSnapshot(
   return snapshot && isPlausibleFollowListSnapshot(snapshot, options.now)
     ? snapshot
     : undefined
+}
+
+export function getObservedDefaultMarketPerspectiveFollowCandidate(
+  result:
+    | {
+        event?: FollowListResult["event"]
+        meta: Pick<FollowListResult["meta"], "eventObserved">
+      }
+    | undefined,
+  options: { expectedPubkey?: string; now?: number } = {}
+): FollowListSnapshot | null {
+  if (!result?.meta.eventObserved) return null
+  // Relay coverage qualifies freshness, not whether a complete verified event
+  // can seed the read-only guest catalog.
+  return parseVerifiedFollowListEventSnapshot(result.event, options) ?? null
 }
 
 function normalizeFollowPubkeys(pubkeys: readonly string[]): string[] {
