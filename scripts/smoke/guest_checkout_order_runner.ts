@@ -295,8 +295,25 @@ async function buildGuestOrderPricing(
     !hasPhysicalItemsMissingShippingZone([item])
   if (requiresMerchantShippingOptions) {
     try {
-      merchantShippingOptions = await getShippingOptions(config.merchantPubkey)
+      const fetchedMerchantShippingOptions = await getShippingOptions(
+        config.merchantPubkey
+      )
+      merchantShippingOptions = fetchedMerchantShippingOptions.filter(
+        (option) =>
+          option.pubkey === config.merchantPubkey &&
+          (!item.shippingOptionId || option.id === item.shippingOptionId) &&
+          (!item.shippingOptionDTag || option.dTag === item.shippingOptionDTag)
+      )
+      if (
+        (!item.shippingOptionId && !item.shippingOptionDTag) ||
+        merchantShippingOptions.length !== 1
+      ) {
+        throw new GuestCheckoutOrderSmokeInconclusive(
+          "Guest checkout smoke requires one exact merchant shipping option."
+        )
+      }
     } catch (error) {
+      if (error instanceof GuestCheckoutOrderSmokeInconclusive) throw error
       throw new GuestCheckoutOrderSmokeInconclusive(
         "Guest checkout smoke could not read the merchant shipping options.",
         { cause: error }

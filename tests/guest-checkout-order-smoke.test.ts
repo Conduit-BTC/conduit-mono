@@ -758,11 +758,65 @@ describe("guest checkout order smoke", () => {
     )
   })
 
-  it("reports missing merchant shipping evidence as inconclusive", async () => {
+  it("does not let an unrelated merchant shipping zone authorize the fixture", async () => {
+    const config = parseGuestCheckoutOrderSmokeConfig(environment())
+    const referencedOption = {
+      ...merchantShippingOptions()[0]!,
+      countries: ["CA"],
+      countryRules: [
+        {
+          code: "CA",
+          name: "Canada",
+          restrictTo: [],
+          exclude: [],
+        },
+      ],
+    }
+    const unrelatedOption = {
+      ...merchantShippingOptions()[0]!,
+      id: `30406:${MERCHANT_PUBKEY}:unrelated`,
+      dTag: "unrelated",
+    }
+    let published = false
+    let failure: unknown
+
+    try {
+      await runGuestCheckoutOrderSmoke(config, {
+        getProduct: async () =>
+          productRead({
+            product: {
+              format: "physical",
+              shippingOptionId: `30406:${MERCHANT_PUBKEY}:shipping`,
+              shippingOptionDTag: "shipping",
+              shippingCountries: [],
+              shippingCountryRules: [],
+            },
+          }),
+        getShippingOptions: async () => [referencedOption, unrelatedOption],
+        publishOrder: async () => {
+          published = true
+          throw new Error("An unrelated shipping zone must not authorize.")
+        },
+      })
+    } catch (error) {
+      failure = error
+    }
+
+    expect(formatGuestCheckoutOrderSmokeFailure(failure)).toBe(
+      "Guest checkout order smoke failed at product_read."
+    )
+    expect(published).toBe(false)
+  })
+
+  it("reports missing or ambiguous merchant shipping evidence as inconclusive", async () => {
     const config = parseGuestCheckoutOrderSmokeConfig(environment())
 
     for (const getShippingOptions of [
       async () => [],
+      async () => [
+        merchantShippingOptions()[0]!,
+        { ...merchantShippingOptions()[0]! },
+      ],
       async () => {
         throw new Error("Shipping relay lookup failed.")
       },
