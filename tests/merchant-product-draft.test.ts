@@ -1,11 +1,15 @@
 import { describe, expect, it } from "bun:test"
 import {
   clearProductDraft,
+  clearProductVariationAuthoringState,
   getProductDraftStorageKey,
+  loadProductVariationAuthoringState,
   loadProductDraft,
   ProductDraftStore,
+  saveProductVariationAuthoringState,
   saveProductDraft,
   type ProductDraftTarget,
+  type ProductVariationAuthoringTarget,
 } from "../apps/merchant/src/lib/productDraft"
 import type { MerchantProductFormValues } from "../apps/merchant/src/lib/productForm"
 import {
@@ -163,6 +167,44 @@ describe("merchant product drafts", () => {
     expect(loadProductDraft(draftTarget, storage).draft?.variations).toEqual(
       variations
     )
+  })
+
+  it("keeps published option authoring state separate and root-scoped", () => {
+    const storage = new MemoryStorage()
+    const authoringTarget: ProductVariationAuthoringTarget = {
+      merchantPubkey: "a".repeat(64),
+      productAddressId: `30402:${"a".repeat(64)}:pocket-relay`,
+      rootEventId: "root-event-1",
+    }
+    const state = generateProductVariationRows({
+      ...createEmptyProductVariationForm(),
+      enabled: true,
+      axes: [createProductVariationAxis("size", "S, M")],
+    })
+    const sparse = setProductVariationCombinationIncluded(
+      state,
+      state.rows[0]!.identity,
+      false
+    )
+
+    expect(
+      saveProductVariationAuthoringState(authoringTarget, sparse, storage)
+    ).toBe(true)
+    expect(
+      loadProductVariationAuthoringState(authoringTarget, storage)
+    ).toEqual({ state: sparse, storageAvailable: true })
+    expect(
+      loadProductVariationAuthoringState(
+        { ...authoringTarget, rootEventId: "root-event-2" },
+        storage
+      )
+    ).toEqual({ state: null, storageAvailable: true })
+    expect(clearProductVariationAuthoringState(authoringTarget, storage)).toBe(
+      true
+    )
+    expect(
+      loadProductVariationAuthoringState(authoringTarget, storage).state
+    ).toBeNull()
   })
 
   it("migrates legacy blank shipping drafts to explicit coordination", () => {

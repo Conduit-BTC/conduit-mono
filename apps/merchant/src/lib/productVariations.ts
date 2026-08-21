@@ -456,12 +456,7 @@ export function generateProductVariationRows(
   state: ProductVariationFormState
 ): ProductVariationFormState {
   const combinations = buildAxisCombinations(state.axes)
-  if (
-    combinations.length === 0 ||
-    combinations.length > MAX_PRODUCT_VARIATION_COUNT
-  ) {
-    return state
-  }
+  if (combinations.length === 0) return state
   const candidateIdentities = new Set(
     combinations.map((specifications) => getCombinationIdentity(specifications))
   )
@@ -549,18 +544,10 @@ export function removeProductVariationAxis(
   })
 }
 
-export function removeProductVariationRow(
-  state: ProductVariationFormState,
-  identity: string
-): ProductVariationFormState {
-  return setProductVariationCombinationIncluded(state, identity, false)
-}
-
 export function getProductVariationMatrix(
   state: ProductVariationFormState
 ): ProductVariationCombination[] {
   const combinations = buildAxisCombinations(state.axes)
-  if (combinations.length > MAX_PRODUCT_VARIATION_COUNT) return []
 
   const rowsByIdentity = new Map(
     state.rows.map((row) => [getCombinationIdentity(row.specifications), row])
@@ -614,56 +601,32 @@ export function setProductVariationCombinationIncluded(
   included: boolean
 ): ProductVariationFormState {
   const reconciled = reconcileProductVariationAvailability(state)
-  const matchingRowIndexes = reconciled.rows.flatMap((row, index) =>
-    getCombinationIdentity(row.specifications) === identity ? [index] : []
+  const rowIdentities = reconciled.rows.map((row) =>
+    getCombinationIdentity(row.specifications)
   )
-  if (matchingRowIndexes.length > 0) {
-    if (!included) {
-      if (
-        matchingRowIndexes.every(
-          (index) => reconciled.rows[index]?.included === false
-        )
-      ) {
-        return reconciled
-      }
-      const matchingIndexes = new Set(matchingRowIndexes)
-      return {
-        ...reconciled,
-        rows: reconciled.rows.map((row, index) =>
-          matchingIndexes.has(index) ? { ...row, included: false } : row
-        ),
-      }
-    }
-
+  const lastMatchingIndex = rowIdentities.lastIndexOf(identity)
+  if (lastMatchingIndex >= 0) {
     const usableAxes = getUsableVariationAxes(reconciled.axes)
     if (
+      included &&
       usableAxes &&
       !isVariationCombinationCompatible(
-        reconciled.rows[matchingRowIndexes[0]]!.specifications,
+        reconciled.rows[lastMatchingIndex]!.specifications,
         usableAxes
       )
     ) {
       return reconciled
     }
 
-    const includedRowIndex = matchingRowIndexes[matchingRowIndexes.length - 1]!
-    const matchingIndexes = new Set(matchingRowIndexes)
-    if (
-      matchingRowIndexes.every(
-        (index) =>
-          reconciled.rows[index]?.included === (index === includedRowIndex)
-      )
-    ) {
-      return reconciled
-    }
-    return {
-      ...reconciled,
-      rows: reconciled.rows.map((row, index) =>
-        matchingIndexes.has(index)
-          ? { ...row, included: index === includedRowIndex }
-          : row
-      ),
-    }
+    let changed = false
+    const rows = reconciled.rows.map((row, index) => {
+      if (rowIdentities[index] !== identity) return row
+      const nextIncluded = included && index === lastMatchingIndex
+      if (row.included === nextIncluded) return row
+      changed = true
+      return { ...row, included: nextIncluded }
+    })
+    return changed ? { ...reconciled, rows } : reconciled
   }
 
   if (!included) return reconciled
@@ -1097,6 +1060,54 @@ export function getProductVariationFormState<
   return {
     supported: true,
     state: reconcileProductVariationForm({ enabled: true, axes, rows }),
+  }
+}
+
+export function mergeProductVariationAuthoringState(
+  published: ProductVariationFormResult,
+  authored: ProductVariationFormState | null
+): ProductVariationFormResult {
+  if (!authored || !published.supported) return published
+
+  const authoredState = reconcileProductVariationForm(authored)
+  if (authoredState.enabled !== published.state.enabled) return published
+
+  if (authoredState.enabled) {
+    const usableAxes = getUsableVariationAxes(authoredState.axes)
+    if (
+      !usableAxes ||
+      published.state.rows.some(
+        (row) =>
+          !isVariationCombinationCompatible(row.specifications, usableAxes)
+      )
+    ) {
+      return published
+    }
+  }
+
+  const publishedRows = new Map(
+    published.state.rows.map((row) => [
+      getCombinationIdentity(row.specifications),
+      row,
+    ])
+  )
+  const mergedIdentities = new Set<string>()
+  const rows = authoredState.rows.map((row) => {
+    const identity = getCombinationIdentity(row.specifications)
+    const publishedRow = publishedRows.get(identity)
+    if (!publishedRow) {
+      return row.included ? { ...row, included: false } : row
+    }
+    mergedIdentities.add(identity)
+    return { ...row, ...publishedRow, included: true }
+  })
+  for (const [identity, publishedRow] of publishedRows) {
+    if (!mergedIdentities.has(identity)) rows.push(publishedRow)
+  }
+
+  return {
+    supported: true,
+    state: { ...authoredState, rows },
   }
 }
 

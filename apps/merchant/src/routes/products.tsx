@@ -59,7 +59,14 @@ import { ProductTagEditor } from "../components/ProductTagEditor"
 import { ShippingDestinationsEditor } from "../components/ShippingDestinationsEditor"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { requireAuth } from "../lib/auth"
-import { ProductDraftStore, type ProductDraftTarget } from "../lib/productDraft"
+import {
+  clearProductVariationAuthoringState,
+  loadProductVariationAuthoringState,
+  ProductDraftStore,
+  saveProductVariationAuthoringState,
+  type ProductDraftTarget,
+  type ProductVariationAuthoringTarget,
+} from "../lib/productDraft"
 import {
   buildProductShippingMetadata,
   canSubmitProductForm,
@@ -128,6 +135,7 @@ import {
   groupProductVariationRecords,
   MAX_PRODUCT_VARIATION_AXES,
   MAX_PRODUCT_VARIATION_COUNT,
+  mergeProductVariationAuthoringState,
   reconcileProductVariationForm,
   removeProductVariationAxis,
   setProductVariationCombinationIncluded,
@@ -222,6 +230,17 @@ function getProductDraftTarget(
     merchantPubkey,
     productAddressId: product?.addressId ?? null,
     baseEventId: familyEventId,
+  }
+}
+
+function getProductVariationAuthoringTarget(
+  merchantPubkey: string,
+  product: MerchantProductFamily
+): ProductVariationAuthoringTarget {
+  return {
+    merchantPubkey,
+    productAddressId: product.addressId,
+    rootEventId: product.eventId,
   }
 }
 
@@ -641,7 +660,10 @@ async function publishProduct(
   merchantPubkey: string,
   form: ProductFormState,
   dTag: string,
-  onSignedLocal: (events: readonly NDKEvent[]) => Promise<void>,
+  onSignedLocal: (
+    events: readonly NDKEvent[],
+    authoringTarget: ProductVariationAuthoringTarget
+  ) => Promise<void>,
   existing?: MerchantProductFamily
 ): Promise<PublishWithPlannerResult> {
   const formValidation = validateProductPublishForm(form, {
@@ -760,7 +782,23 @@ async function publishProduct(
       eventId: target.eventId,
       addressId: target.addressId,
     })),
-    onSignedLocal,
+    onSignedLocal: async (events) => {
+      const rootPublishIndex = plan.publish.findIndex(
+        (target) => target.dTag === dTag
+      )
+      const rootEventId =
+        rootPublishIndex >= 0
+          ? events[rootPublishIndex]?.id
+          : plan.desired[0]?.existing?.eventId
+      if (!rootEventId) {
+        throw new Error("Published product root event is missing")
+      }
+      await onSignedLocal(events, {
+        merchantPubkey,
+        productAddressId: plan.desired[0]!.product.id,
+        rootEventId,
+      })
+    },
   })
 }
 
@@ -947,7 +985,8 @@ function ProductsPage() {
   }
 
   function completeLocalProductSave(
-    variables: ProductPublishMutationPayload
+    variables: ProductPublishMutationPayload,
+    authoringTarget: ProductVariationAuthoringTarget
   ): void {
     const draftCleared = productDraftStoreRef.current.clear(
       getProductDraftTarget(
@@ -955,11 +994,15 @@ function ProductsPage() {
         variables.existing ?? null
       )
     )
+    const authoringSaved = saveProductVariationAuthoringState(
+      authoringTarget,
+      variables.form.variations
+    )
     setEditing(null)
     setActiveProductDraftTarget(null)
     setForm(createEmptyProductForm(hasPresetShippingZone))
     setProductDialogOpen(false)
-    setDraftStorageAvailable(draftCleared)
+    setDraftStorageAvailable(draftCleared && authoringSaved)
   }
 
   const saveMutation = useMutation({
@@ -975,12 +1018,12 @@ function ProductsPage() {
         payload.merchantPubkey,
         payload.form,
         payload.dTag,
-        async (events) => {
+        async (events, authoringTarget) => {
           setProductDeliveryRetry({
             action: "publish",
             payload: { ...payload, signedEvents: events },
           })
-          completeLocalProductSave(payload)
+          completeLocalProductSave(payload, authoringTarget)
           await showLocalProductProjection("publish", payload.merchantPubkey)
         },
         payload.existing
@@ -1095,11 +1138,14 @@ function ProductsPage() {
         const draftCleared = productDraftStoreRef.current.clear(
           getProductDraftTarget(product.product.pubkey, product)
         )
+        const authoringCleared = clearProductVariationAuthoringState(
+          getProductVariationAuthoringTarget(product.product.pubkey, product)
+        )
         if (activeProductDraftTarget?.productAddressId === product.addressId) {
           setEditing(null)
           setActiveProductDraftTarget(null)
           setForm(createEmptyProductForm(hasPresetShippingZone))
-          setDraftStorageAvailable(draftCleared)
+          setDraftStorageAvailable(draftCleared && authoringCleared)
         }
       }
       const notice = buildProductDeliveryNotice(
@@ -1458,7 +1504,21 @@ function ProductsPage() {
     const loaded = draftTarget
       ? productDraftStoreRef.current.load(draftTarget)
       : { draft: null, storageAvailable: false }
-    setEditing(item)
+    const authored = pubkey
+      ? loadProductVariationAuthoringState(
+          getProductVariationAuthoringTarget(pubkey, item)
+        )
+      : { state: null, storageAvailable: false }
+    const editingItem = authored.state
+      ? {
+          ...item,
+          variationForm: mergeProductVariationAuthoringState(
+            item.variationForm,
+            authored.state
+          ),
+        }
+      : item
+    setEditing(editingItem)
     setActiveProductDraftTarget(draftTarget)
     setForm(
       loaded.draft
@@ -1466,9 +1526,11 @@ function ProductsPage() {
             loaded.draft,
             hasPresetShippingZone
           )
-        : productToForm(item, hasPresetShippingZone)
+        : productToForm(editingItem, hasPresetShippingZone)
     )
-    setDraftStorageAvailable(loaded.storageAvailable)
+    setDraftStorageAvailable(
+      loaded.storageAvailable && authored.storageAvailable
+    )
     setProductDialogOpen(true)
   }
 

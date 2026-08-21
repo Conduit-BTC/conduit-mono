@@ -7,12 +7,16 @@ import { parseShippingConfig } from "./readiness"
 import {
   createEmptyProductVariationForm,
   parseProductVariationFormState,
+  type ProductVariationFormState,
 } from "./productVariations"
 
 // Keep the storage key stable so version 1 drafts can be migrated in place.
 const PRODUCT_DRAFT_STORAGE_PREFIX = "conduit:merchant:product_draft:v1"
 const PRODUCT_DRAFT_VERSION = 5
 const CLEARED_PRODUCT_DRAFT_MARKER = "conduit:product-draft-cleared:v1"
+const PRODUCT_VARIATION_AUTHORING_STORAGE_PREFIX =
+  "conduit:merchant:product_variation_authoring:v1"
+const PRODUCT_VARIATION_AUTHORING_VERSION = 1
 const LEGACY_SCIENTIFIC_AMOUNT_PATTERN = /^\d+(?:\.\d+)?e[+-]?\d+$/i
 
 export interface ProductDraftTarget {
@@ -30,6 +34,23 @@ interface StoredProductDraft {
 
 export interface ProductDraftLoadResult {
   draft: MerchantProductFormValues | null
+  storageAvailable: boolean
+}
+
+export interface ProductVariationAuthoringTarget {
+  merchantPubkey: string
+  productAddressId: string
+  rootEventId: string
+}
+
+interface StoredProductVariationAuthoringState {
+  version: typeof PRODUCT_VARIATION_AUTHORING_VERSION
+  rootEventId: string
+  state: ProductVariationFormState
+}
+
+export interface ProductVariationAuthoringLoadResult {
+  state: ProductVariationFormState | null
   storageAvailable: boolean
 }
 
@@ -252,6 +273,111 @@ export function clearProductDraft(
     } catch {
       return false
     }
+  }
+}
+
+export function getProductVariationAuthoringStorageKey(
+  target: Pick<
+    ProductVariationAuthoringTarget,
+    "merchantPubkey" | "productAddressId"
+  >
+): string | null {
+  const merchantPubkey = target.merchantPubkey.trim()
+  const productAddressId = target.productAddressId.trim()
+  if (!merchantPubkey || !productAddressId) return null
+
+  return `${PRODUCT_VARIATION_AUTHORING_STORAGE_PREFIX}:${normalizeTargetPart(merchantPubkey)}:${normalizeTargetPart(productAddressId)}`
+}
+
+function parseStoredProductVariationAuthoringState(
+  raw: string
+): StoredProductVariationAuthoringState | null {
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== "object") return null
+    const candidate = parsed as {
+      version?: unknown
+      rootEventId?: unknown
+      state?: unknown
+    }
+    if (
+      candidate.version !== PRODUCT_VARIATION_AUTHORING_VERSION ||
+      typeof candidate.rootEventId !== "string"
+    ) {
+      return null
+    }
+    const state = parseProductVariationFormState(candidate.state)
+    if (!state) return null
+
+    return {
+      version: PRODUCT_VARIATION_AUTHORING_VERSION,
+      rootEventId: candidate.rootEventId,
+      state,
+    }
+  } catch {
+    return null
+  }
+}
+
+export function loadProductVariationAuthoringState(
+  target: ProductVariationAuthoringTarget,
+  storage: Storage | null = getBrowserStorage()
+): ProductVariationAuthoringLoadResult {
+  const storageKey = getProductVariationAuthoringStorageKey(target)
+  if (!storageKey || !storage) {
+    return { state: null, storageAvailable: false }
+  }
+
+  try {
+    const raw = storage.getItem(storageKey)
+    if (!raw) return { state: null, storageAvailable: true }
+    const stored = parseStoredProductVariationAuthoringState(raw)
+    if (!stored || stored.rootEventId !== target.rootEventId.trim()) {
+      return { state: null, storageAvailable: true }
+    }
+    return { state: stored.state, storageAvailable: true }
+  } catch {
+    return { state: null, storageAvailable: false }
+  }
+}
+
+export function saveProductVariationAuthoringState(
+  target: ProductVariationAuthoringTarget,
+  state: ProductVariationFormState,
+  storage: Storage | null = getBrowserStorage()
+): boolean {
+  const storageKey = getProductVariationAuthoringStorageKey(target)
+  const rootEventId = target.rootEventId.trim()
+  if (!storageKey || !rootEventId || !storage) return false
+
+  try {
+    const stored: StoredProductVariationAuthoringState = {
+      version: PRODUCT_VARIATION_AUTHORING_VERSION,
+      rootEventId,
+      state,
+    }
+    storage.setItem(storageKey, JSON.stringify(stored))
+    return true
+  } catch {
+    return false
+  }
+}
+
+export function clearProductVariationAuthoringState(
+  target: Pick<
+    ProductVariationAuthoringTarget,
+    "merchantPubkey" | "productAddressId"
+  >,
+  storage: Storage | null = getBrowserStorage()
+): boolean {
+  const storageKey = getProductVariationAuthoringStorageKey(target)
+  if (!storageKey || !storage) return false
+
+  try {
+    storage.removeItem(storageKey)
+    return true
+  } catch {
+    return false
   }
 }
 

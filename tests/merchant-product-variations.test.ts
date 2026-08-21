@@ -13,10 +13,10 @@ import {
   getProductVariationMatrix,
   getProductVariationRemovalCount,
   groupProductVariationRecords,
+  mergeProductVariationAuthoringState,
   parseProductVariationFormState,
   reconcileProductVariationForm,
   removeProductVariationAxis,
-  removeProductVariationRow,
   setProductVariationCombinationIncluded,
   updateProductVariationAxis,
   updateProductVariationOverride,
@@ -298,7 +298,11 @@ describe("merchant product variation planning", () => {
       family.variations
     )
     const removedIdentity = restored.state.rows[2]!.identity
-    const reduced = removeProductVariationRow(restored.state, removedIdentity)
+    const reduced = setProductVariationCombinationIncluded(
+      restored.state,
+      removedIdentity,
+      false
+    )
     const plan = buildProductFamilyChangePlan({
       parentDTag: "conduit-tee",
       baseProduct: family.root.product,
@@ -386,6 +390,74 @@ describe("merchant product variation planning", () => {
       dTag: target.dTag,
       title: "Retained title",
     })
+  })
+
+  it("restores excluded option values after publish and reopen", () => {
+    const authored = variationForm([
+      { key: "size", values: "S, M" },
+      { key: "color", values: "Red, Blue" },
+    ])
+    const availableRow = authored.rows.find(
+      ({ specifications }) =>
+        specifications[0]?.value === "M" && specifications[1]?.value === "Red"
+    )!
+    const sparse = {
+      ...authored,
+      rows: authored.rows.map((row) => ({
+        ...row,
+        included: row.identity === availableRow.identity,
+      })),
+    }
+    const initial = buildProductFamilyChangePlan({
+      parentDTag: "sparse-shirt",
+      baseProduct: baseProduct({ title: "Sparse Shirt" }),
+      variations: sparse,
+      currency: "USD",
+      now: NOW,
+    })
+    const family = toFamily(initial)
+    const published = getProductVariationFormState(
+      family.root,
+      family.variations
+    )
+
+    expect(published.state.axes.map(({ values }) => values)).toEqual([
+      "M",
+      "Red",
+    ])
+
+    const reopened = mergeProductVariationAuthoringState(published, sparse)
+    const matrix = getProductVariationMatrix(reopened.state)
+    expect(reopened.state.axes.map(({ values }) => values)).toEqual([
+      "S, M",
+      "Red, Blue",
+    ])
+    expect(matrix).toHaveLength(4)
+    expect(matrix.filter(({ included }) => included)).toHaveLength(1)
+
+    const restoredRow = matrix.find(
+      ({ specifications }) =>
+        specifications[0]?.value === "S" && specifications[1]?.value === "Blue"
+    )!
+    const restored = setProductVariationCombinationIncluded(
+      reopened.state,
+      restoredRow.identity,
+      true
+    )
+    const updated = buildProductFamilyChangePlan({
+      parentDTag: "sparse-shirt",
+      baseProduct: family.root.product,
+      variations: restored,
+      currency: "USD",
+      existing: family,
+      now: NOW + 60_000,
+    })
+
+    expect(updated.desired).toHaveLength(3)
+    expect(updated.publish).toHaveLength(1)
+    expect(updated.publish[0]?.product.specifications).toEqual(
+      restoredRow.specifications
+    )
   })
 
   it("takes obsolete rows out of availability when definitions change", () => {
