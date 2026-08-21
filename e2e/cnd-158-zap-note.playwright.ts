@@ -12,6 +12,20 @@ const productDTag = "cnd-158-e2e-shirt"
 const productId = `30402:${TEST_MERCHANT_PUBKEY}:${productDTag}`
 const evidenceDir = process.env.CND158_EVIDENCE_DIR
 
+async function installTestWebLn(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    window.webln = {
+      enable: async () => undefined,
+      makeInvoice: async () => {
+        throw new Error("The presentation fixture must not request an invoice.")
+      },
+      sendPayment: async () => {
+        throw new Error("The presentation fixture must not send a payment.")
+      },
+    }
+  })
+}
+
 async function seedCustomZapCheckout(page: Page): Promise<void> {
   await page.routeWebSocket(/.*/, (socket) => {
     socket.onMessage((message) => {
@@ -185,6 +199,7 @@ test("market shopper custom product zap note presentation is accessible at check
 
   await page.setViewportSize({ width: 1280, height: 900 })
   await installTestSigner(page, TEST_BUYER_PUBKEY, { relays: {} })
+  await installTestWebLn(page)
   await seedCustomZapCheckout(page)
 
   await page.goto(`${marketUrl}/products`)
@@ -266,9 +281,9 @@ test("market shopper custom product zap note presentation is accessible at check
   await expect(
     page.getByRole("link", { name: "View zapped product" })
   ).toBeVisible()
-  await expect(page.getByRole("status")).toContainText(
-    "Public receipt observed"
-  )
+  await expect(
+    page.getByRole("status").filter({ hasText: "Public receipt observed" })
+  ).toContainText("Public receipt observed")
   await expectHealthyPage(page)
   if (evidenceDir) {
     await page.screenshot({
