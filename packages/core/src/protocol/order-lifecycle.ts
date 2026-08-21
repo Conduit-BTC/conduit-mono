@@ -944,7 +944,7 @@ export async function recordOrderPaymentWalletSuccessRecovery(
   })
 }
 
-function isConclusivePaymentAttemptForLifecycle(
+function isMatchingPaymentAttemptForLifecycle(
   attempt: StoredPaymentAttempt | undefined,
   lifecycle: OrderLifecycle
 ): attempt is StoredPaymentAttempt & { invoice: string } {
@@ -960,6 +960,15 @@ function isConclusivePaymentAttemptForLifecycle(
   ) {
     return false
   }
+
+  return true
+}
+
+function isConclusivePaymentAttemptForLifecycle(
+  attempt: StoredPaymentAttempt | undefined,
+  lifecycle: OrderLifecycle
+): attempt is StoredPaymentAttempt & { invoice: string } {
+  if (!isMatchingPaymentAttemptForLifecycle(attempt, lifecycle)) return false
 
   const hasPreimage =
     typeof attempt.preimage === "string" && attempt.preimage.length > 0
@@ -1184,7 +1193,7 @@ export async function reconcileInterruptedOrderProofDelivery(
 
       const attempt = await db.paymentAttempts.get(orderId)
       const proofWasSent =
-        isConclusivePaymentAttemptForLifecycle(attempt, lifecycle) &&
+        isMatchingPaymentAttemptForLifecycle(attempt, lifecycle) &&
         attempt.proofDeliveryStatus === "sent"
       const recovered = mergeOrderLifecyclePatch(
         lifecycle,

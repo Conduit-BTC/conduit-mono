@@ -1662,6 +1662,22 @@ export async function submitExternalPaymentProof(
       orderId,
       proofDeliveryClaimId
     )
+    try {
+      await savePaymentAttempt({
+        id: orderId,
+        orderId,
+        buyerPubkey: locked.buyerPubkey,
+        merchantPubkey: locked.merchantPubkey,
+        amountMsats: locked.totalMsats,
+        currency: "SATS",
+        invoice: locked.invoice!,
+        proofDeliveryStatus: "pending",
+        createdAt: locked.createdAt,
+        updatedAt: Date.now(),
+      })
+    } catch {
+      // Lifecycle persistence remains authoritative for this local flow.
+    }
 
     const content = buildLifecyclePaymentProofContentJson(locked, {
       action: "external_invoice",
@@ -1690,6 +1706,11 @@ export async function submitExternalPaymentProof(
       // Buyer attestation remains durable; proof delivery may be retried.
     }
     const proofDeliveryStatus = proofPublished ? "sent" : "retry_needed"
+    await updatePaymentAttempt(orderId, { proofDeliveryStatus }).catch(() =>
+      console.warn(
+        "Failed to persist the local payment-proof delivery outcome."
+      )
+    )
     try {
       const recorded = await recordOrderPaymentProofDelivery(
         orderId,

@@ -738,10 +738,11 @@ describe("order payment admission", () => {
     })
   })
 
-  it("restores a sent proof checkpoint when its publisher lease expires", async () => {
+  it("restores a sent external proof checkpoint when its publisher lease expires", async () => {
     const now = 1_800_000_000_000
     const pending: OrderLifecycle = {
       ...lifecycle,
+      checkoutMode: "external_wallet",
       invoiceStatus: "received",
       paymentStatus: "paid",
       proofDeliveryStatus: "pending",
@@ -750,7 +751,6 @@ describe("order payment admission", () => {
       proofDeliveryClaimedAt: now - ORDER_PROOF_DELIVERY_CLAIM_LEASE_MS,
       proofDeliveryClaimLeaseExpiresAt: now,
       invoice: "lnbc1private",
-      preimage: "payment-preimage",
     }
     const paymentAttempt: StoredPaymentAttempt = {
       id: pending.orderId,
@@ -760,7 +760,6 @@ describe("order payment admission", () => {
       amountMsats: pending.totalMsats,
       currency: "SATS",
       invoice: pending.invoice!,
-      preimage: pending.preimage,
       proofDeliveryStatus: "sent",
       createdAt: pending.createdAt,
       updatedAt: now,
