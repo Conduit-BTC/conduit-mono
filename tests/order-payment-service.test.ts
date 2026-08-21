@@ -21,19 +21,25 @@ import type { OrderLifecycle } from "../packages/core/src/db"
 import { getNdk } from "../packages/core/src/protocol/ndk"
 import { buildZapRequestContent } from "../packages/core/src/protocol/zap-content"
 import {
-  bolt11PaymentHashField,
   bolt11PlainDescriptionField,
+  bytesToBolt11Words,
   makeBolt11Fixture,
 } from "./support/bolt11-fixture"
 
 const ANON_SIGNER_SECRET = Uint8Array.from([...new Uint8Array(31), 13])
 const ANON_SIGNER_PUBKEY = getPublicKey(ANON_SIGNER_SECRET)
 
-function privateInvoice(amountHrp = "lnbc10n"): string {
+function privateInvoice(amountHrp = "lnbc10n", paymentHashByte = 7): string {
   return makeBolt11Fixture({
     hrp: amountHrp,
     createdAt: Math.floor(Date.now() / 1000),
-    fields: [bolt11PaymentHashField(), bolt11PlainDescriptionField()],
+    fields: [
+      {
+        tag: "p",
+        words: bytesToBolt11Words(new Uint8Array(32).fill(paymentHashByte)),
+      },
+      bolt11PlainDescriptionField(),
+    ],
   })
 }
 
@@ -50,8 +56,7 @@ function basePaymentContext(
     totalSats: 1,
     totalMsats: 1_000,
     items: [],
-    walletConnection: null,
-    tryNwc: false,
+    paymentTarget: { type: "manual" },
     ...overrides,
   }
 }
@@ -63,6 +68,7 @@ function lifecycle(overrides: Partial<OrderLifecycle> = {}): OrderLifecycle {
     merchantPubkey: "merchant",
     checkoutMode: "external_wallet",
     publicZapSigner: "anon",
+    paymentTarget: { type: "manual" },
     items: [],
     itemSubtotalSats: 1,
     shippingCostSats: 0,
@@ -115,6 +121,13 @@ function paymentDependencies(
         zapTargetAddress: input.zapTargetAddress,
         totalSats: input.totalSats,
         totalMsats: input.totalMsats,
+        walletPaymentAttemptId:
+          input.paymentTarget.type === "wallet"
+            ? lifecycle.walletPaymentAttemptId &&
+              lifecycle.walletPaymentAttemptId !== lifecycle.orderId
+              ? lifecycle.walletPaymentAttemptId
+              : crypto.randomUUID()
+            : undefined,
         invoiceStatus: "requesting",
         paymentStatus: "paying",
         proofDeliveryStatus: "not_started",
@@ -176,6 +189,21 @@ describe("shopper zap signing authority", () => {
     ).rejects.toThrow("invalid public zap request")
   })
 })
+
+function mockImmediateOrderLifecycleTransaction(): () => void {
+  const database = db as typeof db & {
+    transaction: typeof db.transaction
+  }
+  const originalTransaction = database.transaction
+  database.transaction = (async (
+    _mode: string,
+    _table: unknown,
+    callback: () => Promise<unknown>
+  ) => callback()) as typeof database.transaction
+  return () => {
+    database.transaction = originalTransaction
+  }
+}
 
 describe("runOrderPayment", () => {
   it("only accepts the first private manual-wallet payment report", () => {
@@ -712,6 +740,85 @@ describe("runOrderPayment", () => {
       expect(retried.error).toBeNull()
       expect(retried.lifecycle?.paymentStatus).toBe("manual_required")
       expect(retried.lifecycle?.zapTargetAddress).toBe(productAddress)
+    } finally {
+      table.get = originalGet
+      table.put = originalPut
+    }
+  })
+
+  it("keeps a confirmed no-send wallet failure retryable", async () => {
+    const orderId = "provider-pre-publish-failure"
+    const invoice = privateInvoice()
+    const paymentRequests: Array<
+      Parameters<OrderPaymentDependencies["payCheckoutInvoice"]>[0]
+    > = []
+    const paymentTarget = {
+      type: "wallet" as const,
+      walletId: "wallet-spark",
+      providerId: "spark" as const,
+    }
+    let stored = lifecycle({
+      orderId,
+      checkoutMode: "private_checkout",
+      publicZapSigner: undefined,
+      paymentTarget,
+      invoice: undefined,
+      invoiceStatus: "not_requested",
+      paymentStatus: "not_started",
+      phase: "pending",
+    })
+    const table = db.orderLifecycles as typeof db.orderLifecycles & {
+      get: typeof db.orderLifecycles.get
+      put: typeof db.orderLifecycles.put
+    }
+    const originalGet = table.get
+    const originalPut = table.put
+
+    table.get = (async () => stored) as typeof table.get
+    table.put = (async (next: OrderLifecycle) => {
+      stored = next
+      return next.orderId
+    }) as typeof table.put
+
+    try {
+      const context = basePaymentContext({
+        orderId,
+        merchantLud16: "merchant@wallet.example",
+        zapMode: "private_checkout",
+        paymentTarget,
+      })
+      const dependencies = paymentDependencies({
+        fetchLnurlPayMetadata: async () => lnurlMetadata(),
+        requestCheckoutLnurlInvoice: async () => ({
+          invoice,
+          zapRelayUrls: [],
+          shouldWaitForZapReceipt: false,
+        }),
+        payCheckoutInvoice: async (request) => {
+          paymentRequests.push(request)
+          return {
+            status: "retryable_failure",
+            reason: "Spark payment was not approved.",
+          }
+        },
+      })
+      const state = await runOrderPayment(context, dependencies)
+      const retryState = await runOrderPayment(context, dependencies)
+
+      expect(state.lifecycle?.invoiceStatus).toBe("failed")
+      expect(state.lifecycle?.paymentStatus).toBe("failed")
+      expect(state.lifecycle?.lastError).toBe("Spark payment was not approved.")
+      expect(state.error).toBe("Spark payment was not approved.")
+      expect(canSubmitExternalPaymentReport(state.lifecycle)).toBe(false)
+      expect(retryState.lifecycle?.paymentStatus).toBe("failed")
+      expect(paymentRequests).toHaveLength(2)
+      expect(paymentRequests[0]?.paymentTarget).toEqual(paymentTarget)
+      expect(paymentRequests[1]?.paymentTarget).toEqual(paymentTarget)
+      expect(paymentRequests[0]?.walletPaymentAttemptId).not.toBe(orderId)
+      expect(paymentRequests[0]?.walletPaymentAttemptId).not.toContain(orderId)
+      expect(paymentRequests[1]?.walletPaymentAttemptId).toBe(
+        paymentRequests[0]?.walletPaymentAttemptId
+      )
     } finally {
       table.get = originalGet
       table.put = originalPut
@@ -1345,6 +1452,7 @@ describe("runOrderPayment", () => {
     }
     const originalGet = table.get
     const originalPut = table.put
+    const restoreTransaction = mockImmediateOrderLifecycleTransaction()
     const requestedVisibilities: string[] = []
     const requestedTargets: Array<string | undefined> = []
 
@@ -1388,6 +1496,83 @@ describe("runOrderPayment", () => {
     } finally {
       table.get = originalGet
       table.put = originalPut
+      restoreTransaction()
+    }
+  })
+
+  it("rotates the wallet attempt when private recovery requests a new invoice", async () => {
+    const orderId = "anon-zap-private-wallet-attempt-rotation"
+    const previousWalletPaymentAttemptId =
+      "11111111-1111-4111-8111-111111111111"
+    const paymentTarget = {
+      type: "wallet" as const,
+      walletId: "wallet-spark",
+      providerId: "spark" as const,
+    }
+    let stored = lifecycle({
+      orderId,
+      checkoutMode: "anonymous_public_zap",
+      publicZapSigner: "anon",
+      paymentTarget,
+      walletPaymentAttemptId: previousWalletPaymentAttemptId,
+      invoice: privateInvoice("lnbc10n", 7),
+      invoiceStatus: "failed",
+      paymentStatus: "failed",
+      lastError: "Anonymous zap payment failed.",
+    })
+    const table = db.orderLifecycles as typeof db.orderLifecycles & {
+      get: typeof db.orderLifecycles.get
+      put: typeof db.orderLifecycles.put
+    }
+    const originalGet = table.get
+    const originalPut = table.put
+    const restoreTransaction = mockImmediateOrderLifecycleTransaction()
+    const walletPaymentAttemptIds: string[] = []
+
+    table.get = (async () => stored) as typeof table.get
+    table.put = (async (next: OrderLifecycle) => {
+      stored = next
+      return next.orderId
+    }) as typeof table.put
+
+    try {
+      const state = await runOrderPrivateFallback(
+        basePaymentContext({
+          orderId,
+          merchantLud16: "merchant@wallet.example",
+          zapMode: "anonymous_public_zap",
+          paymentTarget,
+        }),
+        paymentDependencies({
+          fetchLnurlPayMetadata: async () => lnurlMetadata(),
+          requestCheckoutLnurlInvoice: async () => ({
+            invoice: privateInvoice("lnbc10n", 8),
+            zapRelayUrls: [],
+            shouldWaitForZapReceipt: false,
+          }),
+          payCheckoutInvoice: async (request) => {
+            walletPaymentAttemptIds.push(request.walletPaymentAttemptId ?? "")
+            return {
+              status: "retryable_failure",
+              reason: "Payment declined.",
+            }
+          },
+        })
+      )
+
+      expect(walletPaymentAttemptIds).toHaveLength(1)
+      expect(walletPaymentAttemptIds[0]).not.toBe(
+        previousWalletPaymentAttemptId
+      )
+      expect(walletPaymentAttemptIds[0]).toBeTruthy()
+      expect(state.lifecycle?.checkoutMode).toBe("private_checkout")
+      expect(state.lifecycle?.walletPaymentAttemptId).toBe(
+        walletPaymentAttemptIds[0]
+      )
+    } finally {
+      table.get = originalGet
+      table.put = originalPut
+      restoreTransaction()
     }
   })
 
@@ -1408,6 +1593,7 @@ describe("runOrderPayment", () => {
     }
     const originalGet = table.get
     const originalPut = table.put
+    const restoreTransaction = mockImmediateOrderLifecycleTransaction()
     const requestedVisibilities: string[] = []
 
     table.get = (async () => stored) as typeof table.get
@@ -1441,6 +1627,7 @@ describe("runOrderPayment", () => {
     } finally {
       table.get = originalGet
       table.put = originalPut
+      restoreTransaction()
     }
   })
 

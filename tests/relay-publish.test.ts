@@ -451,6 +451,78 @@ describe("planPublishRelays", () => {
     expect(planned).toBe(false)
   })
 
+  it("cancels before relay publication when the signer session changes", async () => {
+    let current = true
+    let publishes = 0
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => {
+        current = false
+        return {
+          intent: "author_event",
+          primaryRelayUrls: ["wss://relay.example"],
+          broadcastRelayUrls: [],
+          parkedRelayUrls: [],
+        }
+      },
+    })
+
+    await expect(
+      publishWithPlanner(
+        signedTestEvent({
+          publish: async () => {
+            publishes += 1
+            return new Set()
+          },
+        }),
+        {
+          intent: "author_event",
+          authorPubkey: AUTHOR_PUBKEY,
+          shouldContinue: () => current,
+        }
+      )
+    ).rejects.toThrow("signer session changed")
+    expect(publishes).toBe(0)
+  })
+
+  it("keeps a primary-accepted publish successful when the session changes before broadcast", async () => {
+    const primaryRelay = "wss://primary.conduit.market"
+    const broadcastRelay = "wss://broadcast.conduit.market"
+    const attempts: string[][] = []
+    let current = true
+
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "author_event",
+        primaryRelayUrls: [primaryRelay],
+        broadcastRelayUrls: [broadcastRelay],
+        parkedRelayUrls: [],
+      }),
+    })
+
+    const result = await publishWithPlanner(
+      signedTestEvent({
+        publish: async (relaySet: unknown) => {
+          const relayUrls = [
+            ...((relaySet as { relayUrls?: Set<string> | string[] })
+              .relayUrls ?? []),
+          ]
+          attempts.push(relayUrls)
+          current = false
+          return new Set(relayUrls.map((url) => ({ url })))
+        },
+      }),
+      {
+        intent: "author_event",
+        authorPubkey: AUTHOR_PUBKEY,
+        shouldContinue: () => current,
+      }
+    )
+
+    expect(attempts).toEqual([[`${primaryRelay}/`]])
+    expect(result.successfulRelayUrls).toEqual([primaryRelay])
+    expect(result.attemptedRelayUrls).not.toContain(broadcastRelay)
+  })
+
   it("does not let broadcast success mask recipient primary failure", async () => {
     const primaryRelay = "wss://recipient.conduit.market"
     const broadcastRelay = "wss://sender.conduit.market"

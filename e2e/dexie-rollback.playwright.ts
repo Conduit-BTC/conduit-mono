@@ -19,6 +19,11 @@ type BrowserDexieDatabase = {
   open(): Promise<unknown>
   table(name: string): BrowserDexieTable
   tables: Array<{ name: string }>
+  transaction<T>(
+    mode: "r",
+    tableNames: string[],
+    scope: () => Promise<T>
+  ): Promise<T>
   verno: number
   version(version: number): {
     stores(schema: Record<string, string>): unknown
@@ -184,12 +189,20 @@ test("market Dexie 4 preserves additive v12 data across a declared-v11 rollback"
       declareV12(v12Restored)
       await v12Restored.open()
       const restoredDeclaredVersion = v12Restored.verno
-      const contactListReadByV12 = await v12Restored
-        .table("ownContactListSnapshots")
-        .get<OwnContactListSnapshot>(contactListSnapshot.pubkey)
-      const inboxReadByV12 = await v12Restored
-        .table("inboxDeclarationEvidence")
-        .get<InboxEvidenceRecord>(inboxBefore.pubkey)
+      const [contactListReadByV12, inboxReadByV12] =
+        await v12Restored.transaction(
+          "r",
+          ["ownContactListSnapshots", "inboxDeclarationEvidence"],
+          () =>
+            Promise.all([
+              v12Restored
+                .table("ownContactListSnapshots")
+                .get<OwnContactListSnapshot>(contactListSnapshot.pubkey),
+              v12Restored
+                .table("inboxDeclarationEvidence")
+                .get<InboxEvidenceRecord>(inboxBefore.pubkey),
+            ])
+        )
 
       return {
         contactListReadByV12,

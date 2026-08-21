@@ -55,15 +55,22 @@ import {
 } from "../components/MerchantIdentity"
 import { ProductVariationSelector } from "../components/ProductVariationSelector"
 import { type CartItem, useCart } from "../hooks/useCart"
-import { useCartProductAvailability } from "../hooks/useCartProductAvailability"
+import {
+  useCartReadiness,
+  type MerchantCartReadiness,
+} from "../hooks/useCartReadiness"
+import { useMerchantCheckoutCapability } from "../hooks/useMerchantCheckoutCapability"
 import { useShopperPricing } from "../hooks/useShopperPricing"
+import { useWallets, type UseWalletsReturn } from "../hooks/useWallets"
 import { buildCheckoutPricingIntent } from "../lib/checkout-payment"
 import {
   getCartCostSummary,
   getCartItemStockForAvailability,
+  getCartItemKey,
   getProductAddAvailability,
   groupCartItems,
   isCartProductAvailabilityBlocking,
+  selectCartItemQuantity,
   type CartProductAvailability,
   type MerchantCartGroup,
 } from "../lib/cart-model"
@@ -84,7 +91,6 @@ type CartSearch = {
 type CartSummaryPrice = {
   primary: string
   secondary?: string | null
-  canZapOut: boolean
 }
 
 type SuggestedProduct = {
@@ -137,7 +143,6 @@ function getCartSummaryPrice(
           ? "Price conversion is stale"
           : "Price conversion unavailable",
       secondary: `${summary.count} item${summary.count === 1 ? "" : "s"}`,
-      canZapOut: false,
     }
   }
 
@@ -147,10 +152,7 @@ function getCartSummaryPrice(
     priceSats: pricing.totalSats,
   })
 
-  return {
-    ...display,
-    canZapOut: summary.canZapOut,
-  }
+  return display
 }
 
 function getCartTelemetryProductType(items: CartItem[]): string {
@@ -582,8 +584,8 @@ function CartLineItem({
 
 function MerchantCartCard({
   group,
-  availabilityByProductId,
-  availabilityChecking,
+  readiness,
+  wallets,
   expanded,
   forceExpanded,
   btcUsdRate,
@@ -596,8 +598,8 @@ function MerchantCartCard({
   onRemove,
 }: {
   group: MerchantCartGroup
-  availabilityByProductId: ReadonlyMap<string, CartProductAvailability>
-  availabilityChecking: boolean
+  readiness: MerchantCartReadiness | undefined
+  wallets: UseWalletsReturn
   expanded: boolean
   forceExpanded: boolean
   btcUsdRate: BtcUsdRateQuote | null
@@ -611,6 +613,9 @@ function MerchantCartCard({
 }) {
   const { data: profile } = useProfile(group.merchantPubkey)
   const summary = getCartSummaryPrice(group.items, btcUsdRate, formatPrice)
+  const availabilityByProductId =
+    readiness?.availabilityByProductId ??
+    (new Map() as ReadonlyMap<string, CartProductAvailability>)
   const hasSoldOutItems = group.items.some(
     (item) => availabilityByProductId.get(item.productId)?.status === "sold_out"
   )
@@ -620,8 +625,18 @@ function MerchantCartCard({
       "insufficient_stock"
   )
   const hasUnavailableItems = hasSoldOutItems || hasInsufficientStockItems
-  const canZapOut =
-    !hasUnavailableItems && Boolean(profile?.lud16) && summary.canZapOut
+  // Same shared derivation as the HUD, so cart cards cannot advertise Zap
+  // Out from weaker gates (stock + lud16 only) than checkout applies.
+  const { capability } = useMerchantCheckoutCapability({
+    items: group.items,
+    readiness,
+    merchantLud16: profile?.lud16,
+    wallets,
+  })
+  const canZapOut = capability.outcome === "zap_candidate"
+  // Only the initial no-evidence read blocks the card; a background refresh
+  // keeps the prepared state actionable.
+  const availabilityChecking = readiness?.isChecking === true
   const primaryActionLabel = availabilityChecking
     ? "Checking stock"
     : hasSoldOutItems && hasInsufficientStockItems
@@ -708,7 +723,7 @@ function MerchantCartCard({
             <div className="divide-y divide-[var(--border)]">
               {group.items.map((item) => (
                 <CartLineItem
-                  key={item.productId}
+                  key={getCartItemKey(item)}
                   item={item}
                   availability={availabilityByProductId.get(item.productId)}
                   formatPrice={formatPrice}
@@ -727,7 +742,8 @@ function MerchantCartCard({
 
 function CartPage() {
   const cart = useCart()
-  const cartAvailability = useCartProductAvailability(cart.items)
+  const wallets = useWallets()
+  const cartReadiness = useCartReadiness(cart.items)
   const search = Route.useSearch()
   const navigate = useNavigate()
   const shopperPricing = useShopperPricing()
@@ -785,13 +801,7 @@ function CartPage() {
     const group = merchantGroups.find(
       (entry) => entry.merchantPubkey === merchant
     )
-    if (
-      group?.items.some((item) =>
-        isCartProductAvailabilityBlocking(
-          cartAvailability.availabilityByProductId.get(item.productId)
-        )
-      )
-    ) {
+    if (cartReadiness.byMerchant.get(merchant)?.hasUnavailableItems) {
       return
     }
     recordBrowserTelemetryEvent({
@@ -982,7 +992,7 @@ function CartPage() {
             </div>
           </div>
 
-          {cartAvailability.hasUnavailableItems ? (
+          {cartReadiness.hasUnavailableItems ? (
             <div
               role="alert"
               className="flex flex-col gap-4 rounded-2xl border border-warning/40 bg-warning/10 p-4 text-sm text-[var(--text-secondary)] sm:flex-row sm:items-center sm:justify-between"
@@ -994,12 +1004,12 @@ function CartPage() {
                 />
                 <div>
                   <div className="font-medium text-[var(--text-primary)]">
-                    {cartAvailability.hasInsufficientStockItems
+                    {cartReadiness.hasInsufficientStockItems
                       ? "Some cart quantities exceed available stock"
                       : "Your cart contains a sold-out item"}
                   </div>
                   <p className="mt-1 leading-6">
-                    {cartAvailability.hasInsufficientStockItems
+                    {cartReadiness.hasInsufficientStockItems
                       ? "Reduce affected quantities to the current available stock, and remove any sold-out items before sending this order."
                       : "Remove sold-out items before sending this order. Other store carts remain available."}
                   </p>
@@ -1008,15 +1018,15 @@ function CartPage() {
               <Button
                 variant="outline"
                 className="shrink-0"
-                disabled={cartAvailability.isChecking}
-                onClick={() => void cartAvailability.refresh()}
+                disabled={cartReadiness.anyChecking}
+                onClick={() => void cartReadiness.refreshAll()}
               >
                 <RefreshIcon
                   className={`h-4 w-4 ${
-                    cartAvailability.isChecking ? "animate-spin" : ""
+                    cartReadiness.anyChecking ? "animate-spin" : ""
                   }`}
                 />
-                {cartAvailability.isChecking
+                {cartReadiness.anyChecking
                   ? "Checking availability"
                   : "Check again"}
               </Button>
@@ -1038,10 +1048,8 @@ function CartPage() {
               <MerchantCartCard
                 key={group.merchantPubkey}
                 group={group}
-                availabilityByProductId={
-                  cartAvailability.availabilityByProductId
-                }
-                availabilityChecking={cartAvailability.isChecking}
+                readiness={cartReadiness.byMerchant.get(group.merchantPubkey)}
+                wallets={wallets}
                 expanded={expanded}
                 forceExpanded={forceExpanded}
                 btcUsdRate={shopperPricing.quote}
@@ -1079,9 +1087,9 @@ function CartPage() {
                       publicZapPolicyKnown: item.publicZapPolicyKnown,
                       stock: getCartItemStockForAvailability(
                         item,
-                        cartAvailability.availabilityByProductId.get(
-                          item.productId
-                        )
+                        cartReadiness.byMerchant
+                          .get(group.merchantPubkey)
+                          ?.availabilityByProductId.get(item.productId)
                       ),
                     },
                     1
@@ -1089,12 +1097,12 @@ function CartPage() {
                 }
                 onDecrement={(item) => {
                   if (item.quantity <= 1) {
-                    cart.removeItem(item.productId)
+                    cart.removeItem(item)
                     return
                   }
-                  cart.setQuantity(item.productId, item.quantity - 1)
+                  cart.setQuantity(item, item.quantity - 1)
                 }}
-                onRemove={(item) => cart.removeItem(item.productId)}
+                onRemove={(item) => cart.removeItem(item)}
               />
             )
           })}
@@ -1162,17 +1170,18 @@ function CartPage() {
                     suggestion={suggestion}
                     formatPrice={shopperPricing.formatPrice}
                     getCartQuantity={(selectedProduct) =>
-                      cart.items.find(
-                        (item) => item.productId === selectedProduct.id
-                      )?.quantity ?? 0
+                      selectCartItemQuantity(cart.items, {
+                        merchantPubkey: selectedProduct.pubkey,
+                        productId: selectedProduct.id,
+                      })
                     }
                     onAdd={(selectedProduct) =>
-                      cart.addItem(
-                        cartItemInputFromProductSelection(
+                      cart.addItem({
+                        ...cartItemInputFromProductSelection(
                           product,
                           selectedProduct
-                        )
-                      )
+                        ),
+                      })
                     }
                   />
                 )

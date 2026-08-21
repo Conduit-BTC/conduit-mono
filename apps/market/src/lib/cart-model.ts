@@ -2,6 +2,8 @@ import {
   getPriceSats,
   getProductImageCandidates,
   getShippingCostSats,
+  hasExactLiveProductAvailabilityEvidence,
+  normalizeProductCoordinate,
   resolveCartShippingCost,
   type CommerceQueryMeta,
   type ProductAvailabilityDiagnostic,
@@ -11,6 +13,8 @@ import {
   type Product,
   type ProductSpecification,
 } from "@conduit/core"
+
+export const CART_STORAGE_VERSION = 2
 
 export type CartItem = {
   productId: string
@@ -61,6 +65,21 @@ export type CartState = {
   items: CartItem[]
 }
 
+export type CartItemIdentity = Pick<CartItem, "merchantPubkey" | "productId">
+
+export type CartItemInput = Omit<CartItem, "merchantAddedAt" | "quantity">
+
+export type PersistedCartState = {
+  version: typeof CART_STORAGE_VERSION
+  items: CartItem[]
+}
+
+export type ParsedPersistedCart = {
+  state: CartState
+  shouldPersist: boolean
+  writable: boolean
+}
+
 export type MerchantCartGroup = {
   merchantPubkey: string
   items: CartItem[]
@@ -80,7 +99,6 @@ export type CartCostSummary = {
   totalSats: number
   itemPricesAvailable: boolean
   shippingReadyForZap: boolean
-  canZapOut: boolean
 }
 
 export type CartPublicZapPolicy = {
@@ -92,6 +110,7 @@ export type CartPublicZapPolicy = {
 
 export type CartProductAvailability = {
   productId: string
+  merchantPubkey: string
   status: "available" | "sold_out" | "insufficient_stock" | "untracked"
   stock?: number
   refreshed: boolean
@@ -101,6 +120,17 @@ type CartAvailabilityReadMeta = Pick<
   CommerceQueryMeta,
   "source" | "stale" | "degraded"
 >
+
+export type CartAvailabilityReadDecision =
+  | {
+      status: "verified_at_read"
+      coverage: "complete" | "partial"
+    }
+  | {
+      status: "unverified"
+      reason: ProductAvailabilityIssue | "query_failed" | "evidence_mismatch"
+      diagnostics: readonly ProductAvailabilityDiagnostic[]
+    }
 
 export type ProductAddAvailability = {
   remainingStock?: number
@@ -164,16 +194,23 @@ export function getCartProductAvailability(
   items: CartItem[],
   refreshedProducts: Product[]
 ): CartProductAvailability[] {
-  const productsById = new Map(
-    refreshedProducts.map((product) => [product.id, product])
+  const productsByItemKey = new Map(
+    refreshedProducts.map((product) => [
+      getCartItemKey({
+        merchantPubkey: product.pubkey,
+        productId: product.id,
+      }),
+      product,
+    ])
   )
 
   return items.map((item) => {
-    const refreshedProduct = productsById.get(item.productId)
+    const refreshedProduct = productsByItemKey.get(getCartItemKey(item))
     const stock = refreshedProduct ? refreshedProduct.stock : item.stock
 
     return {
       productId: item.productId,
+      merchantPubkey: item.merchantPubkey,
       status:
         stock === 0
           ? "sold_out"
@@ -268,71 +305,123 @@ function describeAvailabilityIssue(
   }
 }
 
+export function getCartAvailabilityReadDecision(input: {
+  productIds: readonly string[]
+  availability: readonly CartProductAvailability[]
+  meta: CartAvailabilityReadMeta | undefined
+  diagnostics: readonly ProductAvailabilityDiagnostic[]
+  querySucceeded: boolean
+}): CartAvailabilityReadDecision {
+  if (!input.querySucceeded) {
+    return {
+      status: "unverified",
+      reason: "query_failed",
+      diagnostics: input.diagnostics,
+    }
+  }
+
+  const requestedProductIds = Array.from(new Set(input.productIds))
+  const requestedProductIdSet = new Set(requestedProductIds)
+  const diagnosticsByProductId = new Map(
+    input.diagnostics.map((diagnostic) => [diagnostic.productId, diagnostic])
+  )
+  const availabilityByProductId = new Map(
+    input.availability.map((entry) => [entry.productId, entry])
+  )
+  const exactEvidenceShape =
+    requestedProductIds.length > 0 &&
+    input.diagnostics.length === requestedProductIds.length &&
+    diagnosticsByProductId.size === requestedProductIds.length &&
+    input.availability.length === requestedProductIds.length &&
+    availabilityByProductId.size === requestedProductIds.length &&
+    input.diagnostics.every((diagnostic) =>
+      requestedProductIdSet.has(diagnostic.productId)
+    ) &&
+    input.availability.every((entry) =>
+      requestedProductIdSet.has(entry.productId)
+    )
+
+  if (!exactEvidenceShape) {
+    return {
+      status: "unverified",
+      reason: "evidence_mismatch",
+      diagnostics: input.diagnostics,
+    }
+  }
+
+  const issue = AVAILABILITY_ISSUE_PRIORITY.find((candidate) =>
+    input.diagnostics.some((diagnostic) => diagnostic.issue === candidate)
+  )
+  if (issue) {
+    return {
+      status: "unverified",
+      reason: issue,
+      diagnostics: input.diagnostics,
+    }
+  }
+
+  const hasExactLiveEvidence = input.diagnostics.every((diagnostic) =>
+    hasExactLiveProductAvailabilityEvidence(diagnostic, diagnostic.productId)
+  )
+  const hasRefreshedAvailability = input.availability.every(
+    (entry) => entry.refreshed
+  )
+  if (
+    input.meta?.source !== "commerce" ||
+    !hasExactLiveEvidence ||
+    !hasRefreshedAvailability
+  ) {
+    return {
+      status: "unverified",
+      reason: "evidence_mismatch",
+      diagnostics: input.diagnostics,
+    }
+  }
+
+  const partialCoverage = input.diagnostics.some(
+    (diagnostic) =>
+      diagnostic.coverage?.listing !== "complete" ||
+      diagnostic.coverage.deletion !== "complete"
+  )
+
+  return {
+    status: "verified_at_read",
+    coverage: partialCoverage ? "partial" : "complete",
+  }
+}
+
 /**
- * Map typed product lookup diagnostics to a checkout-blocking message. Returns
- * null when every requested coordinate had an exact live match. The cart is
- * never cleared by these states; the buyer retries or edits the cart.
+ * Map a typed checkout read decision to a blocking message. The cart is never
+ * cleared by these states; the buyer retries or edits the cart.
  */
 export function getCartAvailabilityVerificationMessage(
   items: CartItem[],
-  diagnostics: readonly ProductAvailabilityDiagnostic[]
+  decision: CartAvailabilityReadDecision
 ): string | null {
-  const issues = diagnostics.filter(
-    (
-      diagnostic
-    ): diagnostic is ProductAvailabilityDiagnostic & {
-      issue: ProductAvailabilityIssue
-    } => diagnostic.issue !== null
-  )
-  if (issues.length === 0) return null
+  if (decision.status === "verified_at_read") return null
+  if (decision.reason === "query_failed") {
+    return "Product availability could not be checked. Check your connection and try again."
+  }
+  if (decision.reason === "evidence_mismatch") {
+    return "Current product availability could not be verified. Check your connection and try again."
+  }
 
   const titleByProductId = new Map(
     items.map((item) => [item.productId, item.title])
   )
-  const issue =
-    AVAILABILITY_ISSUE_PRIORITY.find((candidate) =>
-      issues.some((entry) => entry.issue === candidate)
-    ) ?? issues[0]!.issue
-  const titles = issues
-    .filter((entry) => entry.issue === issue)
-    .map(
-      (entry) => titleByProductId.get(entry.productId) ?? "A product in cart"
-    )
-  return describeAvailabilityIssue(issue, titles)
+  const titles: string[] = []
+  for (const entry of decision.diagnostics) {
+    if (entry.issue !== decision.reason) continue
+    titles.push(titleByProductId.get(entry.productId) ?? "A product in cart")
+  }
+  return describeAvailabilityIssue(decision.reason, titles)
 }
 
-export function isCartAvailabilityReadFresh(
-  availability: CartProductAvailability[],
-  meta: CartAvailabilityReadMeta | undefined,
-  diagnostics?: readonly ProductAvailabilityDiagnostic[]
+export function isCartAvailabilityReadComplete(
+  decision: CartAvailabilityReadDecision
 ): boolean {
-  const positiveLiveProductIds = new Set(
-    diagnostics
-      ?.filter(
-        (diagnostic) =>
-          diagnostic.issue === null &&
-          diagnostic.coverage !== undefined &&
-          diagnostic.coverage.listing !== "unavailable"
-      )
-      .map((diagnostic) => diagnostic.productId) ?? []
-  )
-  const typedLiveEvidence =
-    diagnostics !== undefined &&
-    diagnostics.length > 0 &&
-    diagnostics.every(
-      (diagnostic) =>
-        diagnostic.issue === null &&
-        diagnostic.coverage !== undefined &&
-        diagnostic.coverage.listing !== "unavailable"
-    ) &&
-    availability.every((entry) => positiveLiveProductIds.has(entry.productId))
   return (
-    availability.length > 0 &&
-    !!meta &&
-    meta.source !== "local_cache" &&
-    !meta.stale &&
-    (!meta.degraded || typedLiveEvidence) &&
-    availability.every((entry) => entry.refreshed)
+    decision.status === "verified_at_read" && decision.coverage === "complete"
   )
 }
 
@@ -346,6 +435,301 @@ export function getCartItemStockForAvailability(
 const ZAP_MESSAGE_POLICY_RANK: Record<ProductZapMessagePolicy, number> = {
   generic_only: 0,
   custom: 1,
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function nonemptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined
+}
+
+function finiteNonnegativeNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : undefined
+}
+
+function optionalStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const strings = value.filter(
+    (entry): entry is string => typeof entry === "string" && entry.length > 0
+  )
+  return strings.length === value.length ? strings : undefined
+}
+
+function parseSourcePrice(value: unknown): CartItem["sourcePrice"] {
+  if (!isRecord(value)) return undefined
+  const amount = finiteNonnegativeNumber(value.amount)
+  const currency = nonemptyString(value.currency)
+  const normalizedCurrency = nonemptyString(value.normalizedCurrency)
+  if (amount === undefined || !currency || !normalizedCurrency) return undefined
+  return { amount, currency, normalizedCurrency }
+}
+
+function parseShippingRules(value: unknown): CartItem["shippingCountryRules"] {
+  if (!Array.isArray(value)) return undefined
+  const rules: NonNullable<CartItem["shippingCountryRules"]> = []
+  for (const candidate of value) {
+    if (!isRecord(candidate)) return undefined
+    const code = nonemptyString(candidate.code)
+    const name = nonemptyString(candidate.name)
+    const restrictTo = optionalStringArray(candidate.restrictTo)
+    const exclude = optionalStringArray(candidate.exclude)
+    if (!code || !name || !restrictTo || !exclude) return undefined
+    rules.push({ code, name, restrictTo, exclude })
+  }
+  return rules
+}
+
+function parseSpecifications(
+  value: unknown
+): CartItem["selectedSpecifications"] {
+  if (!Array.isArray(value)) return undefined
+  const specifications: NonNullable<CartItem["selectedSpecifications"]> = []
+  for (const candidate of value) {
+    if (!isRecord(candidate)) return undefined
+    const key = nonemptyString(candidate.key)
+    const specificationValue = nonemptyString(candidate.value)
+    if (!key || !specificationValue) return undefined
+    specifications.push({ key, value: specificationValue })
+  }
+  return specifications
+}
+
+function parseCartItem(value: unknown): CartItem | null {
+  if (!isRecord(value)) return null
+  const storedProductId = nonemptyString(value.productId)
+  const merchantPubkey = nonemptyString(value.merchantPubkey)
+  const title = nonemptyString(value.title)
+  const currency = nonemptyString(value.currency)
+  const price = finiteNonnegativeNumber(value.price)
+  const quantityValue = finiteNonnegativeNumber(value.quantity)
+  if (
+    !storedProductId ||
+    !merchantPubkey ||
+    !title ||
+    !currency ||
+    price === undefined ||
+    quantityValue === undefined ||
+    quantityValue <= 0
+  ) {
+    return null
+  }
+  const productId = normalizeProductCoordinate(storedProductId, merchantPubkey)
+  if (!productId) return null
+
+  const quantity = Math.max(1, Math.floor(quantityValue))
+  const merchantAddedAt = finiteNonnegativeNumber(value.merchantAddedAt)
+  const priceSats = finiteNonnegativeNumber(value.priceSats)
+  const shippingCostSats = finiteNonnegativeNumber(value.shippingCostSats)
+  const stock = finiteNonnegativeNumber(value.stock)
+  const selectedSpecifications = parseSpecifications(
+    value.selectedSpecifications
+  )
+  const sourcePrice = parseSourcePrice(value.sourcePrice)
+  const sourceShippingCost = parseSourcePrice(value.sourceShippingCost)
+  const tags = optionalStringArray(value.tags)
+  const shippingCountries = optionalStringArray(value.shippingCountries)
+  const shippingCountryRules = parseShippingRules(value.shippingCountryRules)
+  const format =
+    value.format === "digital" || value.format === "physical"
+      ? value.format
+      : undefined
+  const zapMessagePolicy = normalizeCartZapMessagePolicy(value.zapMessagePolicy)
+
+  return {
+    productId,
+    merchantPubkey,
+    title,
+    price,
+    currency,
+    quantity,
+    ...(merchantAddedAt !== undefined ? { merchantAddedAt } : {}),
+    ...(nonemptyString(value.familyProductId)
+      ? { familyProductId: String(value.familyProductId) }
+      : {}),
+    ...(selectedSpecifications ? { selectedSpecifications } : {}),
+    ...(priceSats !== undefined ? { priceSats } : {}),
+    ...(sourcePrice ? { sourcePrice } : {}),
+    ...(nonemptyString(value.image) ? { image: String(value.image) } : {}),
+    ...(tags ? { tags } : {}),
+    ...(format ? { format } : {}),
+    ...(shippingCostSats !== undefined ? { shippingCostSats } : {}),
+    ...(stock !== undefined ? { stock } : {}),
+    ...(sourceShippingCost ? { sourceShippingCost } : {}),
+    ...(nonemptyString(value.shippingOptionId)
+      ? { shippingOptionId: String(value.shippingOptionId) }
+      : {}),
+    ...(nonemptyString(value.shippingOptionDTag)
+      ? { shippingOptionDTag: String(value.shippingOptionDTag) }
+      : {}),
+    ...(shippingCountries ? { shippingCountries } : {}),
+    ...(shippingCountryRules ? { shippingCountryRules } : {}),
+    ...(typeof value.publicZapEnabled === "boolean"
+      ? { publicZapEnabled: value.publicZapEnabled }
+      : {}),
+    ...(zapMessagePolicy ? { zapMessagePolicy } : {}),
+    ...(typeof value.publicZapPolicyKnown === "boolean"
+      ? { publicZapPolicyKnown: value.publicZapPolicyKnown }
+      : {}),
+  }
+}
+
+export function getCartItemKey(identity: CartItemIdentity): string {
+  return JSON.stringify([identity.merchantPubkey, identity.productId])
+}
+
+export function isSameCartItem(
+  item: CartItemIdentity,
+  identity: CartItemIdentity
+): boolean {
+  return (
+    item.merchantPubkey === identity.merchantPubkey &&
+    item.productId === identity.productId
+  )
+}
+
+export function selectCartItem(
+  items: readonly CartItem[],
+  identity: CartItemIdentity
+): CartItem | undefined {
+  return items.find((item) => isSameCartItem(item, identity))
+}
+
+export function selectCartItemQuantity(
+  items: readonly CartItem[],
+  identity: CartItemIdentity
+): number {
+  return selectCartItem(items, identity)?.quantity ?? 0
+}
+
+export function selectMerchantCartItems(
+  items: readonly CartItem[],
+  merchantPubkey: string
+): CartItem[] {
+  return items.filter((item) => item.merchantPubkey === merchantPubkey)
+}
+
+export function getCartCommerceFingerprint(items: readonly CartItem[]): string {
+  return JSON.stringify(
+    items
+      .map((item) => ({
+        merchantPubkey: item.merchantPubkey,
+        productId: item.productId,
+        quantity: item.quantity,
+        price: item.price,
+        currency: item.currency,
+        priceSats: item.priceSats ?? null,
+        sourcePrice: item.sourcePrice ?? null,
+        format: item.format ?? "physical",
+        shippingCostSats: item.shippingCostSats ?? null,
+        sourceShippingCost: item.sourceShippingCost ?? null,
+        shippingOptionId: item.shippingOptionId ?? null,
+        shippingOptionDTag: item.shippingOptionDTag ?? null,
+        shippingCountries: item.shippingCountries ?? null,
+        shippingCountryRules: item.shippingCountryRules ?? null,
+        publicZapEnabled: item.publicZapEnabled ?? null,
+        zapMessagePolicy: item.zapMessagePolicy ?? null,
+        publicZapPolicyKnown: item.publicZapPolicyKnown ?? null,
+      }))
+      .sort((a, b) =>
+        `${a.merchantPubkey}:${a.productId}`.localeCompare(
+          `${b.merchantPubkey}:${b.productId}`
+        )
+      )
+  )
+}
+
+export function cartItemsMatchCurrentProducts(
+  items: readonly CartItem[],
+  products: readonly Product[]
+): boolean {
+  const productsByKey = new Map(
+    products.map((product) => [
+      getCartItemKey({
+        merchantPubkey: product.pubkey,
+        productId: product.id,
+      }),
+      product,
+    ])
+  )
+  const currentItems = items.map((item) => {
+    const product = productsByKey.get(getCartItemKey(item))
+    return product
+      ? { ...createCartItemFromProduct(product), quantity: item.quantity }
+      : null
+  })
+  return (
+    currentItems.every((item) => item !== null) &&
+    getCartCommerceFingerprint(currentItems) ===
+      getCartCommerceFingerprint(items)
+  )
+}
+
+export function parsePersistedCart(value: unknown): ParsedPersistedCart {
+  if (
+    isRecord(value) &&
+    "version" in value &&
+    value.version !== CART_STORAGE_VERSION
+  ) {
+    return {
+      state: { items: [] },
+      shouldPersist: false,
+      writable: false,
+    }
+  }
+  if (!isRecord(value) || !Array.isArray(value.items)) {
+    return {
+      state: { items: [] },
+      shouldPersist: false,
+      writable: true,
+    }
+  }
+
+  const parsedItems = value.items
+    .map(parseCartItem)
+    .filter((item): item is CartItem => item !== null)
+  const deduplicated = new Map<string, CartItem>()
+  for (const parsedItem of parsedItems) {
+    const key = getCartItemKey(parsedItem)
+    const current = deduplicated.get(key)
+    if (!current) {
+      deduplicated.set(key, parsedItem)
+      continue
+    }
+    const merchantAddedAt = [
+      current.merchantAddedAt,
+      parsedItem.merchantAddedAt,
+    ].filter((entry): entry is number => entry !== undefined)
+    deduplicated.set(key, {
+      ...current,
+      ...parsedItem,
+      ...(merchantAddedAt.length > 0
+        ? { merchantAddedAt: Math.min(...merchantAddedAt) }
+        : {}),
+      quantity: current.quantity + parsedItem.quantity,
+    })
+  }
+
+  const hasLegacyProductIds = value.items.some(
+    (item) =>
+      isRecord(item) &&
+      typeof item.productId === "string" &&
+      !item.productId.startsWith("30402:")
+  )
+
+  return {
+    state: { items: Array.from(deduplicated.values()) },
+    shouldPersist:
+      value.version !== CART_STORAGE_VERSION || hasLegacyProductIds,
+    writable: true,
+  }
+}
+
+export function serializeCartState(state: CartState): PersistedCartState {
+  return { version: CART_STORAGE_VERSION, items: state.items }
 }
 
 function normalizeCartZapMessagePolicy(
@@ -541,27 +925,30 @@ export function getCartCostSummary(
     totalSats: itemSubtotalSats + shippingCost.totalSats,
     itemPricesAvailable,
     shippingReadyForZap,
-    canZapOut: itemPricesAvailable && shippingReadyForZap,
   }
 }
 
 export function addCartItem(
   items: CartItem[],
-  item: Omit<CartItem, "quantity">,
+  item: CartItemInput & { merchantAddedAt?: number },
   quantity = 1
 ): CartItem[] {
   if (item.stock === 0) return items
 
   const q = Math.max(1, Math.floor(quantity))
-  const existing = items.find((current) => current.productId === item.productId)
+  const existing = selectCartItem(items, item)
   const merchantAddedAt =
     getMerchantAddedAt(items, item.merchantPubkey) ??
     item.merchantAddedAt ??
     nextMerchantAddedAt(items)
 
   if (existing) {
+    const nextQuantity = currentCartQuantity(existing) + q
+    if (typeof item.stock === "number" && nextQuantity > item.stock) {
+      return items
+    }
     return items.map((current) =>
-      current.productId === item.productId
+      isSameCartItem(current, item)
         ? {
             ...current,
             ...item,
@@ -572,25 +959,30 @@ export function addCartItem(
     )
   }
 
+  if (typeof item.stock === "number" && q > item.stock) return items
   return [...items, { ...item, merchantAddedAt, quantity: q }]
+}
+
+function currentCartQuantity(item: CartItem): number {
+  return Math.max(1, Math.floor(item.quantity))
 }
 
 export function setCartItemQuantity(
   items: CartItem[],
-  productId: string,
+  identity: CartItemIdentity,
   quantity: number
 ): CartItem[] {
   const q = Math.max(1, Math.floor(quantity))
   return items.map((item) =>
-    item.productId === productId ? { ...item, quantity: q } : item
+    isSameCartItem(item, identity) ? { ...item, quantity: q } : item
   )
 }
 
 export function removeCartItem(
   items: CartItem[],
-  productId: string
+  identity: CartItemIdentity
 ): CartItem[] {
-  return items.filter((item) => item.productId !== productId)
+  return items.filter((item) => !isSameCartItem(item, identity))
 }
 
 export function clearMerchantCart(

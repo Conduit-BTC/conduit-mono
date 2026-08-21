@@ -21,14 +21,17 @@ names above.
 ## Shared Source And Releases
 
 `packages/ui/src/legal/versions/` contains released, append-only legal prose.
-`packages/ui/src/components/ProductLegalVersion.ts` selects one stable version,
-effective date, and last-updated date for both apps. Thin app routes render the
-shared components; they must not copy legal prose into app-local files.
+`ProductPrivacyPolicy.tsx` and `ProductTermsOfService.tsx` select the released
+archived prose for both apps. `ProductLegalVersion.ts` supplies the matching
+stable version identifier, dates, canonical URLs, host rules, and append-only
+release history. Thin app routes render the shared components; they must not
+copy legal prose into app-local files.
 
 A wording change is a proposal until a maintainer creates a new archived source,
-assigns its effective date, updates the shared selector, and publishes both apps.
-Do not edit an archived version in place or allow a merge alone to imply a new
-effective version.
+assigns its effective date, preserves every prior history entry and archive hash,
+updates both shared document wrappers and the matching version metadata, and
+publishes both apps. Do not edit an archived version in place or allow a merge
+alone to imply a new effective version.
 
 The legal prose is excluded from the repository's MIT grant. Forks and other
 hosts must provide documents appropriate to their operator. At runtime, unknown

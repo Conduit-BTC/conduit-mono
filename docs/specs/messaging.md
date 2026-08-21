@@ -11,7 +11,10 @@ References:
 - Buyer surface: `docs/specs/market.md`
 - Merchant surface: `docs/specs/merchant.md`
 - Privacy rules: `docs/specs/privacy-observability.md`
-- External sources: `docs/knowledge/external-nostr-references.md` (NIP-17, NIP-44, NIP-07)
+- External sources: `docs/knowledge/external-nostr-references.md` (NIP-17,
+  NIP-42, NIP-44, NIP-07)
+- Protected-read contract and rollout:
+  `docs/knowledge/nip42-protected-read-rollout.md`
 
 Non-goals (per CND-57): public social inbox, comments, follows, reactions,
 notifications, discovery feeds, NIP-29 groups, NIP-04 sending, message-content
@@ -147,6 +150,16 @@ The boundary provides:
   messages stay visible under partial failure. Reads report `complete`,
   `partial`, or `unavailable` coverage and `declared`, `local_in`,
   `compatibility`, `mixed`, or `cache` source.
+- **Protected inbox execution.** The shared inbox path executes the principal's
+  own `kind:1059`, `#p`-scoped filters through the NDK-neutral protected relay
+  executor. The explicit account/session authorization boundary accepts only
+  the active NIP-07 or NIP-46 signer; guest and anonymous sessions are rejected
+  before connecting or signing. Public reads carry no NIP-42 account proof and
+  never prompt a signer, but queried relays still see request filters and
+  ordinary connection metadata. Authentication challenge/OK/retry state and
+  per-relay failures are preserved as typed observations without putting
+  challenge or account identifiers in logs or telemetry. NDK remains only at
+  the existing signer and gift-unwrap edges.
 - **Validated-order compatibility routing (temporary, CND-208).** When a validated
   kind-16 order-lifecycle send finds no usable recipient declaration, the write
   may use a maximum of three relays from the explicit private-inbox
@@ -209,6 +222,14 @@ Messaging surfaces must render explicit states, never silent gaps:
   failures should recover without a full refetch).
 - **Empty** as a distinct terminal state from loading and error.
 
+An inbox is empty only when every required relay attempt in its bounded read
+plan reaches successful EOSE with no unresolved auth, connection, or protocol
+failure. One success plus one auth or transport failure is degraded/partial;
+all failures are unavailable. Cached conversations remain visible as
+stale/degraded in either case. An auth rejection, missing challenge, signer
+failure, `restricted:` close, or reconnect failure must never render "No
+messages" or "No orders" by itself.
+
 Raw Nostr event detail (gift-wrap ids, seal internals, ciphertext) must not be
 the primary UX. Prepared conversation state is rendered instead.
 
@@ -219,6 +240,13 @@ ciphertext, plaintext, order contents, invoices, shipping/contact data, NWC URIs
 signer secrets, or pubkeys beyond local UI need. Decrypt-failure reporting is
 limited to wrap event ids, coarse reason categories, and retry state. This
 follows `docs/specs/privacy-observability.md`.
+
+Protected-read diagnostics additionally exclude NIP-42 challenges, auth events,
+signatures, full filters, authenticated socket material, and stable
+account-derived session identifiers. Auth capability presentation must
+distinguish untested, NIP-11-advertised, challenge-observed, succeeded, and
+rejected/unavailable evidence. NIP-11 advertisement is not proof of successful
+authentication or recipient enforcement.
 
 ## Validation / testing
 
@@ -253,3 +281,13 @@ follows `docs/specs/privacy-observability.md`.
 - General conversations group by transport and counterparty pubkey.
 - No message text or encrypted payload reaches any telemetry/log path.
 - Slow/missing relay readback still leaves cached conversations understandable.
+- Public reads never call the auth signer; protected reads accept NIP-07 and
+  NIP-46 and reject guest/cross-recipient filters before connection. When a
+  current challenge exists, they authenticate, wait for the matching `OK`, and
+  retry with a new subscription id. Under `when_challenged`, a relay that sends
+  no challenge may complete the initial protected request without NIP-42.
+- Deterministic relay tests cover challenge timing, negative/unrelated/missing
+  `OK`, signer failures, reconnect, bounded challenge loops, `restricted:`
+  responses, multi-relay partial success, account isolation, cleanup, and the
+  complete-empty versus unavailable distinction. The canonical matrix lives in
+  `docs/knowledge/nip42-protected-read-rollout.md`.
