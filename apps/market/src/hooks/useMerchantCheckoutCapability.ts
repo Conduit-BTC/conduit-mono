@@ -31,7 +31,7 @@ import { resolveCheckoutPaymentTarget } from "../lib/checkout-payment-target"
 import {
   DEFAULT_CHECKOUT_SHIPPING,
   getIdentityBoundShippingPreset,
-  readCheckoutShippingInitialization,
+  readCheckoutShippingCapabilityInitialization,
 } from "../lib/checkout-session"
 import {
   buildShippingAddressFromForm,
@@ -104,7 +104,7 @@ export function useMerchantCheckoutCapability(input: {
   const identityPubkey = authStatus === "connected" ? pubkey : null
   const shippingPreset = restorePendingPubkey
     ? DEFAULT_CHECKOUT_SHIPPING
-    : readCheckoutShippingInitialization(
+    : readCheckoutShippingCapabilityInitialization(
         shopperPresets.unlockState === "unlocked"
           ? getIdentityBoundShippingPreset(
               identityPubkey,
@@ -112,8 +112,6 @@ export function useMerchantCheckoutCapability(input: {
               shopperPresets.preset.shipping
             )
           : null,
-        undefined,
-        undefined,
         identityPubkey
       ).value
   const shippingAddress = buildShippingAddressFromForm(shippingPreset)
