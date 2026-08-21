@@ -88,13 +88,15 @@ describe("shopper price preference storage", () => {
     ).toEqual({ currency: "EUR", bitcoinUnit: "sats" })
   })
 
-  it("keeps wallet setters device-local and wires successful preset saves through them", async () => {
-    const [pricePreference, pricing, wallet, preferences] = await Promise.all([
-      Bun.file("apps/market/src/hooks/useShopperPricePreference.ts").text(),
-      Bun.file("apps/market/src/hooks/useShopperPricing.ts").text(),
-      Bun.file("apps/market/src/routes/wallet.tsx").text(),
-      Bun.file("apps/market/src/routes/preferences.tsx").text(),
-    ])
+  it("keeps wallet setters device-local without creating overrides on preset saves", async () => {
+    const [pricePreference, pricing, wallet, preferences, presets] =
+      await Promise.all([
+        Bun.file("apps/market/src/hooks/useShopperPricePreference.ts").text(),
+        Bun.file("apps/market/src/hooks/useShopperPricing.ts").text(),
+        Bun.file("apps/market/src/routes/wallet.tsx").text(),
+        Bun.file("apps/market/src/routes/preferences.tsx").text(),
+        Bun.file("apps/market/src/hooks/useShopperPresets.tsx").text(),
+      ])
 
     expect(pricePreference).toContain(
       "return { preference, setCurrency, setSatsStandard }"
@@ -110,9 +112,11 @@ describe("shopper price preference storage", () => {
     expect(wallet).toContain("shopperPricing.setSatsStandard")
     expect(preferences).toContain('id="preset-display-currency"')
     expect(preferences).toContain("presets.save(value, password, policy)")
-    expect(preferences).toContain("setCurrency(value.display.currency)")
-    expect(preferences).toContain(
-      'setSatsStandard(value.display.bitcoinUnit === "sats")'
+    expect(preferences).not.toContain("useShopperPricePreference")
+    expect(preferences).not.toContain("setCurrency(")
+    expect(preferences).not.toContain("setSatsStandard(")
+    expect(presets).toContain(
+      "setDecryptedPreset({ ownerPubkey: identity, value })"
     )
   })
 })

@@ -8,6 +8,7 @@ import { getShopperPreferencesSaveBlockers } from "../apps/market/src/lib/shoppe
 import { getCartShippingDestinationEligibility } from "../apps/market/src/lib/cart-shipping-options"
 import {
   DEFAULT_CHECKOUT_SHIPPING,
+  clearCheckoutShippingSession,
   getIdentityBoundShippingPreset,
   readCheckoutShippingInitialization,
   writeCheckoutShippingSession,
@@ -224,7 +225,7 @@ describe("Market shopper preset integration", () => {
     )
   })
 
-  it("drops identity-scoped checkout data after account switch or logout", () => {
+  it("does not expose identity-scoped drafts to another identity before transition cleanup", () => {
     const buyerSwitchStorage = memoryStorage()
     writeCheckoutShippingSession(
       readCheckoutShippingInitialization(preset).value,
@@ -240,6 +241,8 @@ describe("Market shopper preset integration", () => {
         "buyer-b"
       )
     ).toEqual({ value: DEFAULT_CHECKOUT_SHIPPING, hasActiveDraft: false })
+    expect(buyerSwitchStorage.length).toBe(1)
+    clearCheckoutShippingSession(buyerSwitchStorage)
     expect(buyerSwitchStorage.length).toBe(0)
 
     const logoutStorage = memoryStorage()
@@ -252,6 +255,8 @@ describe("Market shopper preset integration", () => {
     expect(
       readCheckoutShippingInitialization(null, logoutStorage, 1_001, null)
     ).toEqual({ value: DEFAULT_CHECKOUT_SHIPPING, hasActiveDraft: false })
+    expect(logoutStorage.length).toBe(1)
+    clearCheckoutShippingSession(logoutStorage)
     expect(logoutStorage.length).toBe(0)
   })
 
@@ -263,24 +268,60 @@ describe("Market shopper preset integration", () => {
       readCheckoutShippingInitialization(null, guestStorage, 1_001, null)
     ).toEqual({ value: guestDraft, hasActiveDraft: true })
 
-    // Checkout must initialize a real guest from the stored guest draft.
-    // Only a pending signed-in session restore may defer that read, because
-    // a null-owner read deletes an owner-bound draft before recovery runs.
+    // A pending signed-in session restore defers all draft storage reads until
+    // the owner is known, so an identity-bound draft cannot render in between.
     const source = await Bun.file("apps/market/src/routes/checkout.tsx").text()
     expect(source).toContain("restorePendingPubkey")
-    expect(source).toContain("const pendingDraftOwner = restorePendingPubkey")
     expect(source).toContain(
       'authSignerReadiness === "pending" || restorePendingPubkey !== null'
     )
     expect(source).not.toContain('authStatus === "restoring"')
-    expect(source).toContain(
-      ": pendingDraftOwner\n" +
-        "        ? { value: DEFAULT_CHECKOUT_SHIPPING, hasActiveDraft: false }\n" +
-        "        : readCheckoutShippingInitialization(null, undefined, undefined, null)"
-    )
+    expect(source).toContain("if (authPending) return")
+    expect(source).toContain("initializeCheckoutShippingSession(")
+    expect(source).not.toContain("readCheckoutShippingInitialization(")
     expect(source).not.toContain("readAuthSession")
     expect(source).not.toContain("AUTH_STORAGE_KEY")
     expect(source).not.toContain("authStorageRevision")
+  })
+
+  it("delegates ownership decisions to checkout session initialization before preset seeding", async () => {
+    const [checkout, session] = await Promise.all([
+      Bun.file("apps/market/src/routes/checkout.tsx").text(),
+      Bun.file("apps/market/src/lib/checkout-session.ts").text(),
+    ])
+    const initializationIndex = checkout.indexOf(
+      "initializeCheckoutShippingSession("
+    )
+    const presetSeedIndex = checkout.indexOf(
+      "if (!presetMaySeedShippingRef.current) return"
+    )
+
+    expect(initializationIndex).toBeGreaterThan(-1)
+    expect(presetSeedIndex).toBeGreaterThan(initializationIndex)
+    expect(session).toContain("getCheckoutShippingDraftOwnershipAction")
+    expect(session).toContain("inspectCheckoutShippingDraftOwnership")
+  })
+
+  it("uses the connected auth identity for checkout draft ownership independently of signer readiness", async () => {
+    const checkout = await Bun.file(
+      "apps/market/src/routes/checkout.tsx"
+    ).text()
+
+    expect(checkout).toContain(
+      'const draftOwnerIdentity = authStatus === "connected" ? pubkey : null'
+    )
+    expect(checkout).toContain(
+      "getIdentityBoundShippingPreset(\n      draftOwnerIdentity,"
+    )
+    expect(checkout).toContain(
+      "initializeCheckoutShippingSession(\n        preset,\n        draftOwnerIdentity"
+    )
+    expect(checkout).toContain(
+      "if (previousIdentity === draftOwnerIdentity) return"
+    )
+    expect(checkout).toContain(
+      "writeCheckoutShippingSession(next, undefined, undefined, draftOwnerIdentity)"
+    )
   })
 
   it("uses country and postal code for local shipping compatibility", () => {
