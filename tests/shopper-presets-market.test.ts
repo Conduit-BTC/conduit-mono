@@ -7,8 +7,10 @@ import {
 } from "@conduit/core"
 import { fetchShopperPresetsForSession } from "../apps/market/src/hooks/useShopperPresets"
 import {
+  isCurrentShopperPresetsRevision,
   isCurrentShopperPresetsRelayLifecycle,
   shopperPresetsQueryKey,
+  shouldApplyShopperPresetsReadResult,
   shouldRefetchShopperPresetsAfterRelayActivation,
 } from "../apps/market/src/lib/shopper-presets-relay-lifecycle"
 import { getShopperPreferencesSaveBlockers } from "../apps/market/src/lib/shopper-preferences-validation"
@@ -304,9 +306,147 @@ describe("Market shopper preset integration", () => {
     ).toBe(false)
   })
 
+  it("keeps accepted preset revisions monotonic across stale relay reads", () => {
+    const acceptedRevision = { eventId: "b", createdAt: 200 }
+
+    expect(
+      shouldApplyShopperPresetsReadResult(
+        { state: "not_found" },
+        acceptedRevision
+      )
+    ).toBe(false)
+    expect(
+      shouldApplyShopperPresetsReadResult(
+        { state: "unavailable", reason: "relay_read" },
+        acceptedRevision
+      )
+    ).toBe(false)
+    expect(
+      shouldApplyShopperPresetsReadResult(
+        {
+          state: "found",
+          envelope: {} as never,
+          revision: { eventId: "a", createdAt: 199 },
+        },
+        acceptedRevision
+      )
+    ).toBe(false)
+    expect(
+      shouldApplyShopperPresetsReadResult(
+        {
+          state: "found",
+          envelope: {} as never,
+          revision: acceptedRevision,
+        },
+        acceptedRevision
+      )
+    ).toBe(false)
+    expect(
+      shouldApplyShopperPresetsReadResult(
+        {
+          state: "found",
+          envelope: {} as never,
+          revision: { eventId: "c", createdAt: 200 },
+        },
+        acceptedRevision
+      )
+    ).toBe(false)
+    expect(
+      shouldApplyShopperPresetsReadResult(
+        {
+          state: "found",
+          envelope: {} as never,
+          revision: { eventId: "a", createdAt: 200 },
+        },
+        acceptedRevision
+      )
+    ).toBe(true)
+    expect(
+      shouldApplyShopperPresetsReadResult(
+        {
+          state: "found",
+          envelope: {} as never,
+          revision: { eventId: "c", createdAt: 201 },
+        },
+        acceptedRevision
+      )
+    ).toBe(true)
+    expect(
+      isCurrentShopperPresetsRevision(acceptedRevision, acceptedRevision)
+    ).toBe(true)
+    expect(
+      isCurrentShopperPresetsRevision(
+        { eventId: "a", createdAt: 200 },
+        acceptedRevision
+      )
+    ).toBe(false)
+  })
+
+  it("gates remote preset state before applying stale query results", async () => {
+    const source = await Bun.file(
+      "apps/market/src/hooks/useShopperPresets.tsx"
+    ).text()
+    const effectStart = source.indexOf("const result = remote.data")
+    const gate = source.indexOf(
+      "shouldApplyShopperPresetsReadResult(result, acceptedRevisionRef.current)",
+      effectStart
+    )
+    const notFound = source.indexOf(
+      'if (result.state === "not_found")',
+      effectStart
+    )
+
+    expect(effectStart).toBeGreaterThan(-1)
+    expect(gate).toBeGreaterThan(effectStart)
+    expect(gate).toBeLessThan(notFound)
+    expect(source).not.toContain("handledRemoteRef")
+    expect(
+      source.match(/acceptedRevisionRef\.current = result\.revision/gu)
+    ).toHaveLength(3)
+    const decryptStart = source.indexOf("const decryptRemote = useCallback")
+    const remoteEffect = source.indexOf("const result = remote.data")
+    expect(
+      source.indexOf("isCurrentShopperPresetsRevision(", decryptStart)
+    ).toBeLessThan(remoteEffect)
+    expect(source).toMatch(
+      /isCurrentShopperPresetsRevision\(\s*acceptedRevisionRef\.current,\s*result\.revision\s*\)/u
+    )
+  })
+
+  it("keeps capability drafts and clear policy bound to connected auth state", async () => {
+    const [capability, preferences, presets] = await Promise.all([
+      Bun.file("apps/market/src/hooks/useMerchantCheckoutCapability.ts").text(),
+      Bun.file("apps/market/src/routes/preferences.tsx").text(),
+      Bun.file("apps/market/src/hooks/useShopperPresets.tsx").text(),
+    ])
+
+    expect(capability).toContain(
+      'const identityPubkey = authStatus === "connected" ? pubkey : null'
+    )
+    expect(capability).toContain(
+      "undefined,\n        undefined,\n        identityPubkey\n      ).value"
+    )
+    expect(preferences).toContain("presets.clear(password, policy)")
+    expect(presets).toContain(
+      "password: string,\n      policy: ShopperPresetsUnlockPolicy"
+    )
+    expect(presets).toContain("rememberPassword(password, policy)")
+  })
+
   it("stores an unlock password only after an explicit policy choice", () => {
     const local = memoryStorage()
     const session = memoryStorage()
+    persistShopperPresetsUnlock(
+      "buyer",
+      "password one",
+      "device",
+      local,
+      session
+    )
+    expect(
+      readRememberedShopperPresetsPassword("buyer", local, session)
+    ).toEqual({ password: "password one", policy: "device" })
+
     persistShopperPresetsUnlock(
       "buyer",
       "password one",
@@ -317,6 +457,7 @@ describe("Market shopper preset integration", () => {
     expect(
       readRememberedShopperPresetsPassword("buyer", local, session)
     ).toBeNull()
+    expect(readShopperPresetsUnlockPolicy("buyer", local)).toBe("always")
 
     persistShopperPresetsUnlock(
       "buyer",
@@ -420,7 +561,7 @@ describe("Market shopper preset integration", () => {
       source.indexOf("rememberPassword(password, policy)", saveIndex)
     ).toBeGreaterThan(saveIndex)
     expect(
-      source.indexOf("rememberPassword(password, unlockPolicy)", clearIndex)
+      source.indexOf("rememberPassword(password, policy)", clearIndex)
     ).toBeGreaterThan(clearIndex)
     expect(
       source.indexOf("clearShopperPresetsUnlock(", lockIndex)

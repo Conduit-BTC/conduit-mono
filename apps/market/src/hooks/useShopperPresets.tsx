@@ -20,6 +20,7 @@ import {
   useConduitSession,
   type ShopperPresetsEnvelope,
   type ShopperPresetsReadResult,
+  type ShopperPresetsRevision,
   type ShopperPresetsValue,
 } from "@conduit/core"
 import {
@@ -32,8 +33,10 @@ import {
   type ShopperPresetsUnlockPolicy,
 } from "../lib/shopper-presets-store"
 import {
+  isCurrentShopperPresetsRevision,
   isCurrentShopperPresetsRelayLifecycle,
   shopperPresetsQueryKey,
+  shouldApplyShopperPresetsReadResult,
   shouldRefetchShopperPresetsAfterRelayActivation,
   type ShopperPresetsRelayLifecycle,
 } from "../lib/shopper-presets-relay-lifecycle"
@@ -74,7 +77,10 @@ type ShopperPresetsContextValue = {
     password: string,
     policy: ShopperPresetsUnlockPolicy
   ) => Promise<boolean>
-  clear: (password: string) => Promise<boolean>
+  clear: (
+    password: string,
+    policy: ShopperPresetsUnlockPolicy
+  ) => Promise<boolean>
   lock: () => void
   refresh: () => Promise<void>
 }
@@ -117,7 +123,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
   const previousRelayLifecycleRef = useRef<ShopperPresetsRelayLifecycle | null>(
     null
   )
-  const handledRemoteRef = useRef<string | null>(null)
+  const acceptedRevisionRef = useRef<ShopperPresetsRevision | null>(null)
   const [decryptedPreset, setDecryptedPreset] =
     useState<DecryptedPreset | null>(null)
   const [remotePreset, setRemotePreset] =
@@ -178,10 +184,15 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
     async (
       encrypted: ShopperPresetsEnvelope,
       password: string,
-      policy: ShopperPresetsUnlockPolicy
+      policy: ShopperPresetsUnlockPolicy,
+      revision: ShopperPresetsRevision
     ): Promise<boolean> => {
       const lifecycle = relayLifecycle
-      if (!lifecycle.identityPubkey) return false
+      if (
+        !lifecycle.identityPubkey ||
+        !isCurrentShopperPresetsRevision(acceptedRevisionRef.current, revision)
+      )
+        return false
       setUnlockState("unlocking")
       try {
         const document = await decryptShopperPresetsDocument(
@@ -192,6 +203,10 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
           !isCurrentShopperPresetsRelayLifecycle(
             relayLifecycleRef.current,
             lifecycle
+          ) ||
+          !isCurrentShopperPresetsRevision(
+            acceptedRevisionRef.current,
+            revision
           )
         )
           return false
@@ -208,7 +223,8 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
           isCurrentShopperPresetsRelayLifecycle(
             relayLifecycleRef.current,
             lifecycle
-          )
+          ) &&
+          isCurrentShopperPresetsRevision(acceptedRevisionRef.current, revision)
         )
           setUnlockState("error")
         return false
@@ -218,7 +234,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
   )
 
   useEffect(() => {
-    handledRemoteRef.current = null
+    acceptedRevisionRef.current = null
     setDecryptedPreset(null)
     setRemotePreset(null)
     if (!identityPubkey) {
@@ -241,6 +257,10 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
     const result = remote.data
     if (!identityPubkey || !result) return
     const lifecycle = relayLifecycle
+    if (
+      !shouldApplyShopperPresetsReadResult(result, acceptedRevisionRef.current)
+    )
+      return
     if (result.state === "not_found") {
       setRemotePreset(null)
       setDecryptedPreset(null)
@@ -253,8 +273,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
       setSyncState("unavailable")
       return
     }
-    if (handledRemoteRef.current === result.revision.eventId) return
-    handledRemoteRef.current = result.revision.eventId
+    acceptedRevisionRef.current = result.revision
     const encrypted = result.envelope
     setRemotePreset(encrypted)
     setDecryptedPreset(null)
@@ -271,37 +290,46 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
       setUnlockState("locked")
       return
     }
-    void decryptRemote(encrypted, remembered.password, remembered.policy).then(
-      (unlocked) => {
-        if (
-          unlocked ||
-          !storage ||
-          !isCurrentShopperPresetsRelayLifecycle(
-            relayLifecycleRef.current,
-            lifecycle
-          )
+    void decryptRemote(
+      encrypted,
+      remembered.password,
+      remembered.policy,
+      result.revision
+    ).then((unlocked) => {
+      if (
+        unlocked ||
+        !storage ||
+        !isCurrentShopperPresetsRelayLifecycle(
+          relayLifecycleRef.current,
+          lifecycle
+        ) ||
+        !isCurrentShopperPresetsRevision(
+          acceptedRevisionRef.current,
+          result.revision
         )
-          return
-        clearShopperPresetsUnlock(
-          identityPubkey,
-          storage.local,
-          storage.session
-        )
-        setUnlockState("locked")
-      }
-    )
+      )
+        return
+      clearShopperPresetsUnlock(identityPubkey, storage.local, storage.session)
+      setUnlockState("locked")
+    })
   }, [decryptRemote, identityPubkey, relayLifecycle, remote.data])
 
   useEffect(() => {
-    if (!identityPubkey || !remote.isError) return
+    if (
+      !identityPubkey ||
+      !remote.isError ||
+      acceptedRevisionRef.current !== null
+    )
+      return
     setUnlockState("error")
     setSyncState("error")
   }, [identityPubkey, remote.isError])
 
   const unlock = useCallback(
     async (password: string, policy: ShopperPresetsUnlockPolicy) => {
-      if (!remotePreset) return false
-      return decryptRemote(remotePreset, password, policy)
+      const revision = acceptedRevisionRef.current
+      if (!remotePreset || !revision) return false
+      return decryptRemote(remotePreset, password, policy, revision)
     },
     [decryptRemote, remotePreset]
   )
@@ -343,7 +371,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
           envelope: result.envelope,
           revision: result.revision,
         }
-        handledRemoteRef.current = result.revision.eventId
+        acceptedRevisionRef.current = result.revision
         setRemotePreset(result.envelope)
         setDecryptedPreset({ ownerPubkey: identity, value })
         setUnlockState("unlocked")
@@ -377,7 +405,10 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
   )
 
   const clear = useCallback(
-    async (password: string): Promise<boolean> => {
+    async (
+      password: string,
+      policy: ShopperPresetsUnlockPolicy
+    ): Promise<boolean> => {
       if (
         !identityPubkey ||
         !relayScope ||
@@ -408,7 +439,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
           envelope: result.envelope,
           revision: result.revision,
         }
-        handledRemoteRef.current = result.revision.eventId
+        acceptedRevisionRef.current = result.revision
         setRemotePreset(result.envelope)
         setDecryptedPreset({
           ownerPubkey: identity,
@@ -416,7 +447,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
         })
         setUnlockState("unlocked")
         setSyncState("synced")
-        rememberPassword(password, unlockPolicy)
+        rememberPassword(password, policy)
         queryClient.setQueryData(
           shopperPresetsQueryKey(identity, lifecycle.relayScope),
           next
@@ -441,7 +472,6 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
       relayScope,
       relaySettingsReady,
       rememberPassword,
-      unlockPolicy,
     ]
   )
 
@@ -460,7 +490,6 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
     const lifecycle = relayLifecycle
     const identity = lifecycle.identityPubkey
     if (!identity) return
-    handledRemoteRef.current = null
     setSyncState("syncing")
     try {
       const result = await fetchShopperPresets(identity)
