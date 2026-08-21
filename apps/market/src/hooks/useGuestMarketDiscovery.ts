@@ -6,7 +6,7 @@ import {
   useSyncExternalStore,
 } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { getFollowPubkeys, type FollowListResult } from "@conduit/core"
+import { getFollowPubkeys } from "@conduit/core"
 import {
   DEFAULT_MARKET_PERSPECTIVE_NPUB,
   DEFAULT_MARKET_PERSPECTIVE_PUBKEY,
@@ -14,8 +14,8 @@ import {
   getDefaultMarketPerspectiveFollowReconciliation,
   getDefaultMarketPerspectiveFollowSnapshot,
   getDefaultMarketPerspectiveFollowStorageSnapshot,
+  getObservedDefaultMarketPerspectiveFollowCandidate,
   isDefaultMarketPerspectiveFollowDiscoveryStale,
-  parseVerifiedFollowListEventSnapshot,
   resolveDefaultMarketPerspectiveFollowRefresh,
   selectDefaultMarketPerspectiveFollowSnapshot,
   storeDefaultMarketPerspectiveFollowSnapshot,
@@ -24,7 +24,6 @@ import {
 import {
   isProductDiscoveryReadIncomplete,
   isSameFollowListSnapshot,
-  type FollowListSnapshot,
 } from "../lib/productCatalogRead"
 
 export interface GuestMarketDiscovery {
@@ -34,17 +33,6 @@ export interface GuestMarketDiscovery {
   isRefreshing: boolean
   stale: boolean
   refetch: () => Promise<boolean>
-}
-
-function getObservedGuestFollowCandidate(
-  result: FollowListResult | undefined
-): FollowListSnapshot | null {
-  if (
-    !result?.meta.eventObserved ||
-    isProductDiscoveryReadIncomplete(result.meta)
-  )
-    return null
-  return parseVerifiedFollowListEventSnapshot(result.event) ?? null
 }
 
 export function useGuestMarketDiscovery(input: {
@@ -107,7 +95,9 @@ export function useGuestMarketDiscovery(input: {
   const observedGuestFollowSnapshot = useMemo(
     () =>
       input.enabled
-        ? getObservedGuestFollowCandidate(followRefreshQuery.data)
+        ? getObservedDefaultMarketPerspectiveFollowCandidate(
+            followRefreshQuery.data
+          )
         : null,
     [followRefreshQuery.data, input.enabled]
   )
@@ -181,7 +171,8 @@ export function useGuestMarketDiscovery(input: {
         return reconciled.catalogWillRekey
       }
       const latestRetainedSnapshot = reconciled.retained
-      const observedCandidate = getObservedGuestFollowCandidate(result.data)
+      const observedCandidate =
+        getObservedDefaultMarketPerspectiveFollowCandidate(result.data)
       const refreshResolution = resolveDefaultMarketPerspectiveFollowRefresh({
         readAvailable: true,
         retainedSnapshot: latestRetainedSnapshot,

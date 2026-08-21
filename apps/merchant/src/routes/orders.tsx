@@ -112,8 +112,11 @@ import {
 } from "../lib/product-publishing"
 import {
   buildOrderStockAdjustments,
+  getOrderStockAdjustmentForDisplay,
+  isOrderStockAdjustmentMutationDisabled,
   PendingProductStockDeliveryStore,
   ProductStockDecisionStore,
+  shouldShowOrderStockAdjustment,
   type OrderStockAdjustment,
 } from "../lib/productStock"
 import { Check, ChevronRight, Copy, MessageCircle, Search } from "lucide-react"
@@ -352,6 +355,10 @@ function OrdersPage() {
   const [sessionStockDecisionKeys, setSessionStockDecisionKeys] = useState(
     () => new Set<string>()
   )
+  const [
+    stockDecisionHydratedSelectionId,
+    setStockDecisionHydratedSelectionId,
+  ] = useState<string | null>(null)
   const [stockDelivery, setStockDelivery] = useState<StockDeliveryState | null>(
     null
   )
@@ -653,6 +660,9 @@ function OrdersPage() {
     filteredConversations.find(
       (conversation) => conversation.id === selectedConversationId
     ) ?? null
+  const selectedStockDecisionId = selected
+    ? `${pubkey ?? "none"}:${selected.id}`
+    : null
   const selectedOrderMessage = selected?.messages?.find(
     (message) => message.type === "order"
   )
@@ -665,7 +675,7 @@ function OrdersPage() {
     normalizeInvoiceCurrencyChoice(selectedOrderCurrency) === ""
 
   useEffect(() => {
-    const selectedId = selected ? `${pubkey ?? "none"}:${selected.id}` : null
+    const selectedId = selectedStockDecisionId
     if (selectedOrderResetRef.current === selectedId) return
     selectedOrderResetRef.current = selectedId
 
@@ -697,6 +707,7 @@ function OrdersPage() {
         return next
       })
     }
+    setStockDecisionHydratedSelectionId(selectedId)
     setOrderDetailsOpen(false)
     setMessagesOpen(false)
     setInvoice("")
@@ -716,29 +727,12 @@ function OrdersPage() {
     setInvoiceCurrency(
       normalizeInvoiceCurrencyChoice(firstOrder.payload.currency)
     )
-  }, [pubkey, selected])
+  }, [pubkey, selected, selectedStockDecisionId])
 
   const orderSummary = useMemo(
     () => (selected ? getMerchantOrderSummary(selected) : null),
     [selected]
   )
-  const stockAdjustments =
-    !selected || !orderSummary || !pubkey
-      ? []
-      : buildOrderStockAdjustments({
-          orderId: selected.orderId,
-          merchantPubkey: pubkey,
-          items: orderSummary.items,
-          productRecords: orderProductsQuery.data?.data ?? [],
-        }).filter(
-          (adjustment) =>
-            !sessionStockDecisionKeys.has(`${pubkey}:${adjustment.key}`) &&
-            !stockDecisionStoreRef.current.get(
-              pubkey,
-              selected.orderId,
-              adjustment.addressId
-            )
-        )
   const selectedStatusDisplay = useMemo(
     () =>
       selected ? getMerchantConversationStatusDisplay(selected) : undefined,
@@ -775,6 +769,86 @@ function OrdersPage() {
         ),
       }
     : { status: null }
+  const stockAdjustments =
+    !selected ||
+    !orderSummary ||
+    !pubkey ||
+    stockDecisionHydratedSelectionId !== selectedStockDecisionId
+      ? []
+      : buildOrderStockAdjustments({
+          orderId: selected.orderId,
+          merchantPubkey: pubkey,
+          items: orderSummary.items,
+          productRecords: orderProductsQuery.data?.data ?? [],
+        }).flatMap((adjustment) => {
+          const pendingAdjustment =
+            stockDelivery?.notice.state !== "delivered" &&
+            stockDelivery?.orderId === selected.orderId &&
+            stockDelivery.adjustment.key === adjustment.key
+              ? stockDelivery.adjustment
+              : null
+          const storedDecision = stockDecisionStoreRef.current.get(
+            pubkey,
+            selected.orderId,
+            adjustment.addressId
+          )
+          const persistedDecision = pendingAdjustment
+            ? {
+                kind: "applied" as const,
+                decidedAt: 0,
+                adjustment: pendingAdjustment,
+              }
+            : storedDecision
+          const adjustmentForDecision = pendingAdjustment ?? adjustment
+          if (
+            !shouldShowOrderStockAdjustment({
+              adjustment: adjustmentForDecision,
+              orderStatus: merchantOrderState.status,
+              hasSessionDecision: sessionStockDecisionKeys.has(
+                `${pubkey}:${adjustment.key}`
+              ),
+              persistedDecision,
+            })
+          ) {
+            return []
+          }
+          return [
+            getOrderStockAdjustmentForDisplay({
+              adjustment: adjustmentForDecision,
+              persistedDecision,
+            }),
+          ]
+        })
+  const stockMutationDisabledKeys = new Set<string>()
+  for (const adjustment of stockAdjustments) {
+    const hasPendingDelivery = Boolean(
+      stockDelivery &&
+      stockDelivery.notice.state !== "delivered" &&
+      selected &&
+      stockDelivery.orderId === selected.orderId &&
+      stockDelivery.adjustment.key === adjustment.key
+    )
+    const persistedDecision =
+      pubkey && selected
+        ? stockDecisionStoreRef.current.get(
+            pubkey,
+            selected.orderId,
+            adjustment.addressId
+          )
+        : null
+    if (
+      isOrderStockAdjustmentMutationDisabled({
+        adjustment,
+        persistedDecision,
+        hasPendingDelivery,
+        hasSessionDecision: sessionStockDecisionKeys.has(
+          `${pubkey}:${adjustment.key}`
+        ),
+      })
+    ) {
+      stockMutationDisabledKeys.add(adjustment.key)
+    }
+  }
   const merchantPaid = isMerchantOrderPaid(merchantOrderState)
   const safeTrackingUrl = normalizeSafeHttpUrl(orderSummary?.trackingUrl)
   const assertPaidForFulfillment = useCallback(() => {
@@ -1054,13 +1128,19 @@ function OrdersPage() {
           merchantPubkey,
           payload.orderId,
           payload.adjustment.addressId,
-          "applied"
+          "applied",
+          payload.adjustment
         )
         pendingStockDeliveryStoreRef.current.delete(
           merchantPubkey,
           payload.orderId,
           payload.adjustment.addressId
         )
+        setSessionStockDecisionKeys((current) => {
+          const next = new Set(current)
+          next.delete(`${merchantPubkey}:${payload.adjustment.key}`)
+          return next
+        })
         const nextPendingDelivery =
           pendingStockDeliveryStoreRef.current.getForOrder(
             merchantPubkey,
@@ -1384,11 +1464,12 @@ function OrdersPage() {
       pubkey,
       selected.orderId,
       adjustment.addressId,
-      "declined"
+      "declined",
+      adjustment
     )
     setSessionStockDecisionKeys((current) => {
       const next = new Set(current)
-      next.add(`${pubkey}:${adjustment.key}`)
+      next.delete(`${pubkey}:${adjustment.key}`)
       return next
     })
     stockUpdateMutation.reset()
@@ -1652,13 +1733,18 @@ function OrdersPage() {
 
                           <OrderStockPanel
                             adjustments={stockAdjustments}
+                            stockMutationDisabledKeys={
+                              stockMutationDisabledKeys
+                            }
                             delivery={selectedStockDelivery}
                             deliveryNeedsAttention={stockDeliveryCanRetry}
                             pending={orderActionPending}
                             updatePending={stockUpdateMutation.isPending}
                             errorMessage={stockUpdateErrorMessage}
+                            canMessageBuyer={buyerInboxKnown}
                             onUpdate={updateStock}
                             onDecline={keepCurrentStock}
+                            onMessageBuyer={() => setMessagesOpen(true)}
                             onRetry={retryStockDelivery}
                             onDismissDelivery={dismissStockDelivery}
                           />

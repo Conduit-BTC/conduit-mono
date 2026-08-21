@@ -326,6 +326,7 @@ const browserTelemetryLabelValues = {
     "view_cart",
   ],
   step: [
+    "availability",
     "profile",
     "payments",
     "shipping",

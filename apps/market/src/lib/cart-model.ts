@@ -2,6 +2,7 @@ import {
   getPriceSats,
   getProductImageCandidates,
   getShippingCostSats,
+  hasExactLiveProductAvailabilityEvidence,
   normalizeProductCoordinate,
   resolveCartShippingCost,
   type CommerceQueryMeta,
@@ -119,6 +120,17 @@ type CartAvailabilityReadMeta = Pick<
   CommerceQueryMeta,
   "source" | "stale" | "degraded"
 >
+
+export type CartAvailabilityReadDecision =
+  | {
+      status: "verified_at_read"
+      coverage: "complete" | "partial"
+    }
+  | {
+      status: "unverified"
+      reason: ProductAvailabilityIssue | "query_failed" | "evidence_mismatch"
+      diagnostics: readonly ProductAvailabilityDiagnostic[]
+    }
 
 export type ProductAddAvailability = {
   remainingStock?: number
@@ -293,71 +305,123 @@ function describeAvailabilityIssue(
   }
 }
 
+export function getCartAvailabilityReadDecision(input: {
+  productIds: readonly string[]
+  availability: readonly CartProductAvailability[]
+  meta: CartAvailabilityReadMeta | undefined
+  diagnostics: readonly ProductAvailabilityDiagnostic[]
+  querySucceeded: boolean
+}): CartAvailabilityReadDecision {
+  if (!input.querySucceeded) {
+    return {
+      status: "unverified",
+      reason: "query_failed",
+      diagnostics: input.diagnostics,
+    }
+  }
+
+  const requestedProductIds = Array.from(new Set(input.productIds))
+  const requestedProductIdSet = new Set(requestedProductIds)
+  const diagnosticsByProductId = new Map(
+    input.diagnostics.map((diagnostic) => [diagnostic.productId, diagnostic])
+  )
+  const availabilityByProductId = new Map(
+    input.availability.map((entry) => [entry.productId, entry])
+  )
+  const exactEvidenceShape =
+    requestedProductIds.length > 0 &&
+    input.diagnostics.length === requestedProductIds.length &&
+    diagnosticsByProductId.size === requestedProductIds.length &&
+    input.availability.length === requestedProductIds.length &&
+    availabilityByProductId.size === requestedProductIds.length &&
+    input.diagnostics.every((diagnostic) =>
+      requestedProductIdSet.has(diagnostic.productId)
+    ) &&
+    input.availability.every((entry) =>
+      requestedProductIdSet.has(entry.productId)
+    )
+
+  if (!exactEvidenceShape) {
+    return {
+      status: "unverified",
+      reason: "evidence_mismatch",
+      diagnostics: input.diagnostics,
+    }
+  }
+
+  const issue = AVAILABILITY_ISSUE_PRIORITY.find((candidate) =>
+    input.diagnostics.some((diagnostic) => diagnostic.issue === candidate)
+  )
+  if (issue) {
+    return {
+      status: "unverified",
+      reason: issue,
+      diagnostics: input.diagnostics,
+    }
+  }
+
+  const hasExactLiveEvidence = input.diagnostics.every((diagnostic) =>
+    hasExactLiveProductAvailabilityEvidence(diagnostic, diagnostic.productId)
+  )
+  const hasRefreshedAvailability = input.availability.every(
+    (entry) => entry.refreshed
+  )
+  if (
+    input.meta?.source !== "commerce" ||
+    !hasExactLiveEvidence ||
+    !hasRefreshedAvailability
+  ) {
+    return {
+      status: "unverified",
+      reason: "evidence_mismatch",
+      diagnostics: input.diagnostics,
+    }
+  }
+
+  const partialCoverage = input.diagnostics.some(
+    (diagnostic) =>
+      diagnostic.coverage?.listing !== "complete" ||
+      diagnostic.coverage.deletion !== "complete"
+  )
+
+  return {
+    status: "verified_at_read",
+    coverage: partialCoverage ? "partial" : "complete",
+  }
+}
+
 /**
- * Map typed product lookup diagnostics to a checkout-blocking message. Returns
- * null when every requested coordinate had an exact live match. The cart is
- * never cleared by these states; the buyer retries or edits the cart.
+ * Map a typed checkout read decision to a blocking message. The cart is never
+ * cleared by these states; the buyer retries or edits the cart.
  */
 export function getCartAvailabilityVerificationMessage(
   items: CartItem[],
-  diagnostics: readonly ProductAvailabilityDiagnostic[]
+  decision: CartAvailabilityReadDecision
 ): string | null {
-  const issues = diagnostics.filter(
-    (
-      diagnostic
-    ): diagnostic is ProductAvailabilityDiagnostic & {
-      issue: ProductAvailabilityIssue
-    } => diagnostic.issue !== null
-  )
-  if (issues.length === 0) return null
+  if (decision.status === "verified_at_read") return null
+  if (decision.reason === "query_failed") {
+    return "Product availability could not be checked. Check your connection and try again."
+  }
+  if (decision.reason === "evidence_mismatch") {
+    return "Current product availability could not be verified. Check your connection and try again."
+  }
 
   const titleByProductId = new Map(
     items.map((item) => [item.productId, item.title])
   )
-  const issue =
-    AVAILABILITY_ISSUE_PRIORITY.find((candidate) =>
-      issues.some((entry) => entry.issue === candidate)
-    ) ?? issues[0]!.issue
-  const titles = issues
-    .filter((entry) => entry.issue === issue)
-    .map(
-      (entry) => titleByProductId.get(entry.productId) ?? "A product in cart"
-    )
-  return describeAvailabilityIssue(issue, titles)
+  const titles: string[] = []
+  for (const entry of decision.diagnostics) {
+    if (entry.issue !== decision.reason) continue
+    titles.push(titleByProductId.get(entry.productId) ?? "A product in cart")
+  }
+  return describeAvailabilityIssue(decision.reason, titles)
 }
 
-export function isCartAvailabilityReadFresh(
-  availability: CartProductAvailability[],
-  meta: CartAvailabilityReadMeta | undefined,
-  diagnostics?: readonly ProductAvailabilityDiagnostic[]
+export function isCartAvailabilityReadComplete(
+  decision: CartAvailabilityReadDecision
 ): boolean {
-  const positiveLiveProductIds = new Set(
-    diagnostics
-      ?.filter(
-        (diagnostic) =>
-          diagnostic.issue === null &&
-          diagnostic.coverage !== undefined &&
-          diagnostic.coverage.listing !== "unavailable"
-      )
-      .map((diagnostic) => diagnostic.productId) ?? []
-  )
-  const typedLiveEvidence =
-    diagnostics !== undefined &&
-    diagnostics.length > 0 &&
-    diagnostics.every(
-      (diagnostic) =>
-        diagnostic.issue === null &&
-        diagnostic.coverage !== undefined &&
-        diagnostic.coverage.listing !== "unavailable"
-    ) &&
-    availability.every((entry) => positiveLiveProductIds.has(entry.productId))
   return (
-    availability.length > 0 &&
-    !!meta &&
-    meta.source !== "local_cache" &&
-    !meta.stale &&
-    (!meta.degraded || typedLiveEvidence) &&
-    availability.every((entry) => entry.refreshed)
+    decision.status === "verified_at_read" && decision.coverage === "complete"
   )
 }
 

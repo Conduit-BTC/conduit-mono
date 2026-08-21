@@ -11,6 +11,7 @@ import {
   getDefaultMarketPerspectiveFollowSnapshot,
   getDefaultMarketPerspectiveFollowStorageSnapshot,
   getDefaultMarketPerspectiveRefreshThreshold,
+  getObservedDefaultMarketPerspectiveFollowCandidate,
   isDefaultMarketPerspectiveFollowDiscoveryStale,
   parseVerifiedFollowListEventSnapshot,
   resolveSafeDefaultMarketPerspectiveFollowRefresh,
@@ -20,6 +21,7 @@ import {
   subscribeDefaultMarketPerspectiveFollowStorage,
 } from "../apps/market/src/lib/defaultMarketPerspective"
 import {
+  isProductDiscoveryReadIncomplete,
   isSameFollowListSnapshot,
   type FollowListSnapshot,
 } from "../apps/market/src/lib/productCatalogRead"
@@ -100,6 +102,52 @@ describe("default Market perspective follow-list safety", () => {
         DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS
       )
     ).toEqual([...refreshed].sort())
+  })
+
+  it("uses verified guest follow evidence when relay coverage is incomplete", () => {
+    const retained = getDefaultMarketPerspectiveFollowSnapshot()
+    const addedMerchant = "0".repeat(64)
+    const observed = createVerifiedFollowSnapshot(
+      [...retained.pubkeys, addedMerchant],
+      retained.eventCreatedAt + 1
+    )
+    const readMeta = {
+      eventObserved: true,
+      stale: true,
+      degraded: true,
+      capped: true,
+    }
+    const candidate = getObservedDefaultMarketPerspectiveFollowCandidate(
+      { event: observed.signedEvent, meta: readMeta },
+      {
+        expectedPubkey: TEST_FOLLOW_PUBKEY,
+        now: observed.eventCreatedAt,
+      }
+    )
+    const refresh = resolveDefaultMarketPerspectiveFollowRefresh({
+      readAvailable: true,
+      retainedSnapshot: retained,
+      observedCandidate: candidate,
+    })
+
+    expect(isProductDiscoveryReadIncomplete(readMeta)).toBe(true)
+    expect(refresh.disposition).toBe("accepted")
+    expect(refresh.selectedSnapshot.pubkeys).toContain(addedMerchant)
+    expect(
+      getDefaultMarketPerspectiveCatalogAuthorKey(
+        refresh.selectedSnapshot.pubkeys
+      )
+    ).not.toBe(getDefaultMarketPerspectiveCatalogAuthorKey(retained.pubkeys))
+    expect(
+      isDefaultMarketPerspectiveFollowDiscoveryStale({
+        enabled: true,
+        queryError: false,
+        queryPaused: false,
+        readIncomplete: true,
+        selectedSnapshot: refresh.selectedSnapshot,
+        refreshDisposition: refresh.disposition,
+      })
+    ).toBe(true)
   })
 
   it("keeps guest catalog identity stable for order and self-only changes", () => {

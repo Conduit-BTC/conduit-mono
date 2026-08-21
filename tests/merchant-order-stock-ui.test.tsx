@@ -36,6 +36,8 @@ describe("merchant order stock UI", () => {
         pending={false}
         updatePending={false}
         errorMessage={null}
+        canMessageBuyer
+        onMessageBuyer={() => undefined}
         {...handlers}
       />
     )
@@ -47,6 +49,7 @@ describe("merchant order stock UI", () => {
     expect(markup).toContain("12 → 10")
     expect(markup).toContain("Update to 10")
     expect(markup).toContain("Keep 12")
+    expect(markup).not.toContain("Message buyer")
     expect(markup).toContain('aria-labelledby="order-stock-heading"')
   })
 
@@ -70,15 +73,110 @@ describe("merchant order stock UI", () => {
       />
     )
 
+    expect(markup).toContain("Restocking required")
     expect(markup).toContain("exceeds tracked stock by 3")
     expect(markup).toContain("Update to 0")
+    expect(markup).not.toContain("Keep 2")
+    expect(markup).not.toContain("Message buyer")
   })
 
-  it("keeps signed relay delivery status and retry visible", () => {
-    const item = adjustment()
+  it("shows merchant resolution options when tracked stock is already zero", () => {
     const markup = renderToStaticMarkup(
       <OrderStockPanel
-        adjustments={[]}
+        adjustments={[
+          adjustment({
+            quantity: 1,
+            currentStock: 0,
+            nextStock: 0,
+            shortfall: 1,
+          }),
+        ]}
+        delivery={null}
+        deliveryNeedsAttention={false}
+        pending={false}
+        updatePending={false}
+        errorMessage={null}
+        canMessageBuyer
+        onMessageBuyer={() => undefined}
+        {...handlers}
+      />
+    )
+
+    expect(markup).toContain("Restocking required")
+    expect(markup).toContain("tracked stock is already 0")
+    expect(markup).toContain("fulfill it after restocking")
+    expect(markup).toContain("if they are first in line")
+    expect(markup).toContain("coordinate a refund")
+    expect(markup).toContain("Message buyer")
+    expect(markup).not.toContain("Keep stock at 0")
+    expect(markup).not.toContain("Update to 0")
+  })
+
+  it("keeps restocking guidance without offering an already-applied update", () => {
+    const applied = adjustment({
+      quantity: 5,
+      currentStock: 2,
+      nextStock: 0,
+      shortfall: 3,
+    })
+    const markup = renderToStaticMarkup(
+      <OrderStockPanel
+        adjustments={[applied]}
+        stockMutationDisabledKeys={new Set([applied.key])}
+        delivery={null}
+        deliveryNeedsAttention={false}
+        pending={false}
+        updatePending={false}
+        errorMessage={null}
+        canMessageBuyer
+        onMessageBuyer={() => undefined}
+        {...handlers}
+      />
+    )
+
+    expect(markup).toContain("Restocking required")
+    expect(markup).toContain("exceeds tracked stock by 3")
+    expect(markup).toContain("Message buyer")
+    expect(markup).not.toContain("Update to 0")
+  })
+
+  it("keeps merchant stock mutation verification strict", async () => {
+    const source = await Bun.file("apps/merchant/src/routes/orders.tsx").text()
+
+    expect(source).toContain("latest.meta.degraded || latest.meta.stale")
+    expect(source).not.toContain("hasExactLiveProductAvailabilityEvidence")
+  })
+
+  it("clears transient blockers only after a stock decision is durable", async () => {
+    const source = await Bun.file("apps/merchant/src/routes/orders.tsx").text()
+
+    expect(source).toContain(
+      "next.delete(`${merchantPubkey}:${payload.adjustment.key}`)"
+    )
+    expect(source).toContain("next.delete(`${pubkey}:${adjustment.key}`)")
+    expect(source).toContain("hasSessionDecision: sessionStockDecisionKeys.has")
+    expect(source).toContain('stockDelivery.notice.state !== "delivered"')
+    expect(source).toContain(
+      "stockDecisionHydratedSelectionId !== selectedStockDecisionId"
+    )
+    expect(
+      source.indexOf("pendingStockDeliveryStoreRef.current.getForOrder")
+    ).toBeLessThan(
+      source.indexOf("setStockDecisionHydratedSelectionId(selectedId)")
+    )
+  })
+
+  it("keeps a pending oversold snapshot retryable without another update", () => {
+    const item = adjustment({
+      quantity: 5,
+      currentStock: 2,
+      nextStock: 0,
+      shortfall: 3,
+    })
+    const markup = renderToStaticMarkup(
+      <OrderStockPanel
+        adjustments={[item]}
+        stockMutationDisabledKeys={new Set([item.key])}
         delivery={{
           adjustment: item,
           notice: {
@@ -103,5 +201,7 @@ describe("merchant order stock UI", () => {
     expect(markup).toContain("Retry needed")
     expect(markup).toContain("Retry delivery")
     expect(markup).toContain("Hide for now")
+    expect(markup).toContain("exceeds tracked stock by 3")
+    expect(markup).not.toContain("Update to 0")
   })
 })

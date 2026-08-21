@@ -106,6 +106,26 @@ describe("shared merchant checkout capability", () => {
     })
   })
 
+  it("keeps incomplete listing evidence checkout-only during a refetch", () => {
+    const readiness = deriveMerchantCartReadinessState({
+      ...baseStateInput,
+      backgroundRefreshing: true,
+      fresh: false,
+    })
+
+    expect(readiness).toBe("degraded")
+    expect(
+      deriveMerchantCheckoutCapability({
+        ...readyCapabilityInput,
+        readiness,
+      })
+    ).toEqual({
+      outcome: "checkout_required",
+      blockers: ["listing_freshness_unavailable"],
+      blockedReason: null,
+    })
+  })
+
   it("stays a candidate during a nonblocking background refresh", () => {
     expect(
       deriveMerchantCheckoutCapability({
