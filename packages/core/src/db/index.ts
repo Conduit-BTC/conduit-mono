@@ -652,6 +652,22 @@ export interface OrderLifecycle {
   orderDeliveryRoute?: OrderDeliveryRoute
   /** Exact encrypted wrap + per-relay ACK state for bounded retry. */
   orderRelayDelivery?: OrderRelayDeliveryRecord
+  /**
+   * Opaque owner token for the currently claimed payment flow. The token fences
+   * pre-wallet lifecycle writes so a resumed stale flow cannot cross the wallet
+   * handoff after another document has recovered the order.
+   */
+  paymentClaimId?: string
+  /** Wall-clock start for bounded stale-claim and legacy recovery. */
+  paymentClaimedAt?: number
+  /** Renewed while the owning document is alive; stale claims may recover. */
+  paymentClaimLeaseExpiresAt?: number
+  /** Opaque owner token for the current payment-proof publication attempt. */
+  proofDeliveryClaimId?: string
+  /** Wall-clock start for bounded stale proof-delivery recovery. */
+  proofDeliveryClaimedAt?: number
+  /** Renewed while proof publication is active; stale claims may recover. */
+  proofDeliveryClaimLeaseExpiresAt?: number
   invoiceStatus: OrderInvoiceStatus
   paymentStatus: OrderPaymentStatus
   proofDeliveryStatus: OrderProofDeliveryStatus

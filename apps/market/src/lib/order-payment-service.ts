@@ -1,11 +1,15 @@
 import { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk"
 import {
   buildLightningPaymentProofMessage,
+  claimExternalOrderPaymentProof,
   claimOrderLifecyclePayment,
+  claimOrderLifecyclePrivateFallbackPayment,
+  claimOrderPaymentProofDelivery,
   config,
   fetchLnurlInvoice,
   fetchLnurlPayMetadata,
   fetchZapInvoice,
+  generateId,
   getAnonZapDraftTag,
   getOrderPublicZapSigner,
   getNdk,
@@ -13,13 +17,23 @@ import {
   isValidSignedPublicNostrEvent,
   isGuestOrderDataExpired,
   normalizePubkey,
-  patchOrderLifecycle,
+  ORDER_PAYMENT_CLAIM_LEASE_MS,
+  ORDER_PROOF_DELIVERY_CLAIM_LEASE_MS,
+  patchClaimedOrderLifecyclePayment,
+  recordObservedOrderPaymentReceipt,
+  recordOrderPaymentProofDelivery,
+  recordOrderPaymentReceiptTimeout,
+  recordOrderPaymentWalletSuccessRecovery,
+  recordOrderPaymentPreparationFailure,
+  renewOrderLifecyclePaymentClaim,
+  renewOrderPaymentProofDeliveryClaim,
   signNdkEventWithTransientNip07Retry,
-  transitionOrderPrivateFallback,
   validateAnonZapRequestDraft,
   validateLightningInvoiceForPayment,
   waitForZapReceipt,
   type OrderLifecycle,
+  type OrderPaymentClaimResult,
+  type OrderPaymentWalletSuccessRecoveryInput,
   type SignedPublicNostrEvent,
   type WalletPaymentFeeApproval,
 } from "@conduit/core"
@@ -41,6 +55,10 @@ import {
 } from "./order-publish"
 import { payCheckoutInvoice, type CheckoutPaymentTarget } from "./payment-rails"
 import { savePaymentAttempt, updatePaymentAttempt } from "./payment-attempts"
+import {
+  clearOrderPaymentClaim,
+  rememberOrderPaymentClaim,
+} from "./order-payment-session"
 
 export function getLifecyclePaymentProofAction(
   lifecycle: Pick<OrderLifecycle, "checkoutMode" | "publicZapSigner">
@@ -101,6 +119,9 @@ export async function signShopperCheckoutZapRequest(
  */
 
 const ZAP_RECEIPT_SCAN_MS = 5_000
+const PROOF_DELIVERY_HEARTBEAT_MS = Math.floor(
+  ORDER_PROOF_DELIVERY_CLAIM_LEASE_MS / 3
+)
 const ZAP_RECEIPT_RESCAN_DELAY_MS = 10_000
 const ZAP_RECEIPT_EXPIRY_GRACE_SECONDS = 10 * 60
 const DEFAULT_INVOICE_EXPIRY_SECONDS = 60 * 60
@@ -259,6 +280,25 @@ export interface OrderPaymentDependencies {
   payCheckoutInvoice: typeof payCheckoutInvoice
   prepareAnonZapCheckout: typeof prepareAnonZapCheckout
   claimOrderLifecyclePayment: typeof claimOrderLifecyclePayment
+  claimOrderLifecyclePrivateFallbackPayment: typeof claimOrderLifecyclePrivateFallbackPayment
+  claimOrderPaymentProofDelivery: typeof claimOrderPaymentProofDelivery
+  claimExternalOrderPaymentProof: typeof claimExternalOrderPaymentProof
+  patchClaimedOrderLifecyclePayment: typeof patchClaimedOrderLifecyclePayment
+  recordOrderPaymentPreparationFailure: typeof recordOrderPaymentPreparationFailure
+  recordOrderPaymentProofDelivery: typeof recordOrderPaymentProofDelivery
+  recordOrderPaymentWalletSuccessRecovery: typeof recordOrderPaymentWalletSuccessRecovery
+  renewOrderLifecyclePaymentClaim: typeof renewOrderLifecyclePaymentClaim
+  publishBuyerOrderMessage: typeof publishBuyerOrderMessage
+  savePaymentAttempt: typeof savePaymentAttempt
+  updatePaymentAttempt: typeof updatePaymentAttempt
+  rememberOrderPaymentClaim: typeof rememberOrderPaymentClaim
+  clearOrderPaymentClaim: typeof clearOrderPaymentClaim
+  schedulePaymentClaimHeartbeat: (
+    handler: () => void,
+    timeoutMs: number
+  ) => ReturnType<typeof setInterval>
+  cancelPaymentClaimHeartbeat: (timer: ReturnType<typeof setInterval>) => void
+  reportPaymentClaimHeartbeatError: () => void
 }
 
 const defaultOrderPaymentDependencies: OrderPaymentDependencies = {
@@ -268,7 +308,43 @@ const defaultOrderPaymentDependencies: OrderPaymentDependencies = {
   payCheckoutInvoice,
   prepareAnonZapCheckout,
   claimOrderLifecyclePayment,
+  claimOrderLifecyclePrivateFallbackPayment,
+  claimOrderPaymentProofDelivery,
+  claimExternalOrderPaymentProof,
+  patchClaimedOrderLifecyclePayment,
+  recordOrderPaymentPreparationFailure,
+  recordOrderPaymentProofDelivery,
+  recordOrderPaymentWalletSuccessRecovery,
+  renewOrderLifecyclePaymentClaim,
+  publishBuyerOrderMessage,
+  savePaymentAttempt,
+  updatePaymentAttempt,
+  rememberOrderPaymentClaim,
+  clearOrderPaymentClaim,
+  schedulePaymentClaimHeartbeat: (handler, timeoutMs) =>
+    setInterval(handler, timeoutMs),
+  cancelPaymentClaimHeartbeat: (timer) => clearInterval(timer),
+  reportPaymentClaimHeartbeatError: () => {
+    console.warn(
+      "Payment recovery lease renewal failed; guarded payment checkpoints remain active."
+    )
+  },
 }
+
+export interface OrderReceiptObservationDependencies {
+  getOrderLifecycle: typeof getOrderLifecycle
+  waitForZapReceipt: typeof waitForZapReceipt
+  recordObservedOrderPaymentReceipt: typeof recordObservedOrderPaymentReceipt
+  recordOrderPaymentReceiptTimeout: typeof recordOrderPaymentReceiptTimeout
+}
+
+const defaultOrderReceiptObservationDependencies: OrderReceiptObservationDependencies =
+  {
+    getOrderLifecycle,
+    waitForZapReceipt,
+    recordObservedOrderPaymentReceipt,
+    recordOrderPaymentReceiptTimeout,
+  }
 
 function requirePreparedAnonZap(
   ctx: Pick<
@@ -340,6 +416,23 @@ const inFlight = new Set<string>()
 /** Serializes the explicit anonymous-to-private recovery transition. */
 const privateFallbackTransitions = new Set<string>()
 const receiptObservers = new Set<string>()
+
+function startProofDeliveryClaimHeartbeat(
+  orderId: string,
+  proofDeliveryClaimId: string
+): () => void {
+  const timer = setInterval(() => {
+    void renewOrderPaymentProofDeliveryClaim(
+      orderId,
+      proofDeliveryClaimId
+    ).catch(() => {
+      console.warn(
+        "Payment-proof delivery lease renewal failed; guarded delivery remains recoverable."
+      )
+    })
+  }, PROOF_DELIVERY_HEARTBEAT_MS)
+  return () => clearInterval(timer)
+}
 const receiptRescanTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 export function canSubmitExternalPaymentReport(
@@ -374,14 +467,35 @@ function emit(orderId: string, partial: Partial<OrderPaymentRuntimeState>) {
   if (set) for (const fn of set) fn(next)
 }
 
-async function patchAndEmit(
+class PaymentClaimSupersededError extends Error {
+  readonly lifecycle: OrderLifecycle | null
+
+  constructor(lifecycle: OrderLifecycle | null) {
+    super("This payment attempt was superseded by browser recovery.")
+    this.name = "PaymentClaimSupersededError"
+    this.lifecycle = lifecycle
+  }
+}
+
+async function patchClaimAndEmit(
   orderId: string,
-  patch: Parameters<typeof patchOrderLifecycle>[1],
-  runtime?: Partial<OrderPaymentRuntimeState>
-) {
-  const lifecycle = await patchOrderLifecycle(orderId, patch)
-  emit(orderId, { ...runtime, lifecycle: lifecycle ?? null })
-  return lifecycle
+  paymentClaimId: string,
+  patch: Parameters<typeof patchClaimedOrderLifecyclePayment>[2],
+  runtime: Partial<OrderPaymentRuntimeState> | undefined,
+  patchClaimedPayment: typeof patchClaimedOrderLifecyclePayment
+): Promise<OrderLifecycle> {
+  const result = await patchClaimedPayment(orderId, paymentClaimId, patch)
+  if (result.status !== "patched") {
+    emit(orderId, {
+      ...runtime,
+      running: false,
+      stage: null,
+      lifecycle: result.lifecycle,
+    })
+    throw new PaymentClaimSupersededError(result.lifecycle)
+  }
+  emit(orderId, { ...runtime, lifecycle: result.lifecycle })
+  return result.lifecycle
 }
 
 export function getOrderPaymentState(
@@ -467,65 +581,98 @@ async function deliverReceiptLinkedProof(
     zapRequestCreatedAt: number
     zapReceiptId: string
   },
-  buyerIdentity?: BuyerOrderSigningIdentity
+  buyerIdentity?: BuyerOrderSigningIdentity,
+  proofDeliveryClaimId?: string
 ): Promise<void> {
   if (lifecycle.proofDeliveryStatus === "sent") return
 
-  const locked = await patchOrderLifecycle(lifecycle.orderId, {
-    proofDeliveryStatus: "pending",
-  })
-  if (!locked || locked.proofDeliveryStatus !== "pending") return
-
-  const content = buildLifecyclePaymentProofContentJson(locked, {
-    action: "zap",
-    source: "external",
-    verificationState: "verified",
-    note: `Public zap receipt observed for order ${lifecycle.orderId}`,
-  })
-  const ndk = getNdk()
-  const proofRumor = buildPaymentProofRumor({
-    merchantPubkey: locked.merchantPubkey,
-    orderId: locked.orderId,
-    amountSats: locked.totalSats,
-    currency: "SATS",
-    content,
-    createdAt: locked.zapRequestCreatedAt,
-  })
-
-  try {
-    await publishBuyerOrderMessage(
-      proofRumor,
-      ndk,
-      locked.merchantPubkey,
-      buyerIdentity ?? locked.buyerPubkey
+  const claimId = proofDeliveryClaimId ?? generateId()
+  let locked = lifecycle
+  if (!proofDeliveryClaimId) {
+    const lockedResult = await claimOrderPaymentProofDelivery(
+      lifecycle.orderId,
+      claimId
     )
-    await updatePaymentAttempt(locked.orderId, {
-      proofDeliveryStatus: "sent",
-    }).catch(() => {})
-    await patchAndEmit(locked.orderId, {
-      proofDeliveryStatus: "sent",
+    emit(lifecycle.orderId, { lifecycle: lockedResult.lifecycle })
+    if (lockedResult.status !== "claimed") return
+    locked = lockedResult.lifecycle as typeof lifecycle
+  }
+  if (locked.proofDeliveryClaimId !== claimId) return
+
+  const stopHeartbeat = startProofDeliveryClaimHeartbeat(
+    locked.orderId,
+    claimId
+  )
+  try {
+    const content = buildLifecyclePaymentProofContentJson(locked, {
+      action: "zap",
+      source: "external",
+      verificationState: "verified",
+      note: `Public zap receipt observed for order ${lifecycle.orderId}`,
     })
-  } catch {
-    await updatePaymentAttempt(locked.orderId, {
-      proofDeliveryStatus: "retry_needed",
-    }).catch(() => {})
-    await patchAndEmit(locked.orderId, {
-      proofDeliveryStatus: "retry_needed",
+    const ndk = getNdk()
+    const proofRumor = buildPaymentProofRumor({
+      merchantPubkey: locked.merchantPubkey,
+      orderId: locked.orderId,
+      amountSats: locked.totalSats,
+      currency: "SATS",
+      content,
+      createdAt: locked.zapRequestCreatedAt,
     })
+
+    let proofPublished = false
+    try {
+      await publishBuyerOrderMessage(
+        proofRumor,
+        ndk,
+        locked.merchantPubkey,
+        buyerIdentity ?? locked.buyerPubkey
+      )
+      proofPublished = true
+    } catch {
+      // Payment remains proven by the exact receipt; delivery can be retried.
+    }
+    const proofDeliveryStatus = proofPublished ? "sent" : "retry_needed"
+    await updatePaymentAttempt(locked.orderId, { proofDeliveryStatus }).catch(
+      () =>
+        console.warn(
+          "Failed to persist the local payment-proof delivery outcome."
+        )
+    )
+    try {
+      const recorded = await recordOrderPaymentProofDelivery(
+        locked.orderId,
+        proofDeliveryStatus,
+        {},
+        claimId
+      )
+      emit(locked.orderId, { lifecycle: recorded.lifecycle })
+    } catch {
+      console.warn(
+        "Failed to persist the order payment-proof delivery outcome."
+      )
+    }
+  } finally {
+    stopHeartbeat()
   }
 }
 
 export async function observeOrderPublicZapReceipt(
   orderId: string,
-  buyerIdentity?: BuyerOrderSigningIdentity
+  buyerIdentity?: BuyerOrderSigningIdentity,
+  dependencyOverrides: Partial<OrderReceiptObservationDependencies> = {}
 ): Promise<void> {
+  const dependencies = {
+    ...defaultOrderReceiptObservationDependencies,
+    ...dependencyOverrides,
+  }
   if (receiptObservers.has(orderId)) return
   receiptObservers.add(orderId)
   clearReceiptRescan(orderId)
   let scheduleRescan = false
 
   try {
-    const lifecycle = await getOrderLifecycle(orderId)
+    const lifecycle = await dependencies.getOrderLifecycle(orderId)
     if (!lifecycle || !canObserveOrderPublicZapReceipt(lifecycle)) return
     if (!hasPublicReceiptContext(lifecycle)) return
 
@@ -549,73 +696,80 @@ export async function observeOrderPublicZapReceipt(
           lifecycle.zapReceiptObservationDeadline - nowMs
         )
       : 0
-    const receipt = await waitForZapReceipt({
-      zapRequestId: lifecycle.zapRequestId,
-      requestCreatedAt: lifecycle.zapRequestCreatedAt,
-      recipientPubkey: lifecycle.merchantPubkey,
-      expectedAmountMsats: lifecycle.totalMsats,
-      expectedLnurl: lifecycle.zapLnurl,
-      expectedInvoice: lifecycle.invoice,
-      lnurlNostrPubkey: lifecycle.zapReceiptPubkey,
-      relayUrls: lifecycle.zapReceiptRelayUrls,
-      receiptNotAfterSeconds: Math.floor(
-        lifecycle.zapReceiptObservationDeadline / 1000
-      ),
-      timeoutMs,
-    }).catch(() => null)
+    const receipt = await dependencies
+      .waitForZapReceipt({
+        zapRequestId: lifecycle.zapRequestId,
+        requestCreatedAt: lifecycle.zapRequestCreatedAt,
+        recipientPubkey: lifecycle.merchantPubkey,
+        expectedAmountMsats: lifecycle.totalMsats,
+        expectedLnurl: lifecycle.zapLnurl,
+        expectedInvoice: lifecycle.invoice,
+        lnurlNostrPubkey: lifecycle.zapReceiptPubkey,
+        relayUrls: lifecycle.zapReceiptRelayUrls,
+        receiptNotAfterSeconds: Math.floor(
+          lifecycle.zapReceiptObservationDeadline / 1000
+        ),
+        timeoutMs,
+      })
+      .catch(() => null)
 
     if (receipt) {
-      const shouldDeliverProof = lifecycle.proofDeliveryStatus !== "sent"
-      try {
-        await savePaymentAttempt({
-          id: orderId,
-          orderId,
-          buyerPubkey: lifecycle.buyerPubkey,
-          merchantPubkey: lifecycle.merchantPubkey,
-          amountMsats: lifecycle.totalMsats,
-          currency: "SATS",
-          invoice: lifecycle.invoice,
+      const proofDeliveryStatus =
+        lifecycle.proofDeliveryStatus === "sent" ? "sent" : "pending"
+      const proofDeliveryClaimId =
+        proofDeliveryStatus === "pending" ? generateId() : undefined
+      const receiptRecord =
+        await dependencies.recordObservedOrderPaymentReceipt(orderId, {
           zapRequestId: lifecycle.zapRequestId,
           zapReceiptId: receipt.id,
-          proofDeliveryStatus: shouldDeliverProof ? "pending" : "sent",
-          createdAt: lifecycle.createdAt,
-          updatedAt: Date.now(),
+          proofDeliveryStatus,
+          proofDeliveryClaimId,
         })
-      } catch {
-        // Lifecycle persistence remains authoritative for this local flow.
-      }
-      const updated = await patchOrderLifecycle(orderId, {
-        invoiceStatus: "received",
-        paymentStatus: "paid",
-        zapReceiptStatus: "observed",
-        zapReceiptId: receipt.id,
-        lastError: undefined,
-      })
-      emit(orderId, { lifecycle: updated ?? null })
-      if (updated && shouldDeliverProof && hasPublicReceiptContext(updated)) {
+      emit(orderId, { lifecycle: receiptRecord.lifecycle })
+      if (receiptRecord.status === "recorded") {
+        const updated = receiptRecord.lifecycle
+        const shouldDeliverProof = updated.proofDeliveryStatus !== "sent"
+        try {
+          await savePaymentAttempt({
+            id: orderId,
+            orderId,
+            buyerPubkey: updated.buyerPubkey,
+            merchantPubkey: updated.merchantPubkey,
+            amountMsats: updated.totalMsats,
+            currency: "SATS",
+            invoice: updated.invoice!,
+            zapRequestId: updated.zapRequestId,
+            zapReceiptId: updated.zapReceiptId,
+            proofDeliveryStatus: shouldDeliverProof ? "pending" : "sent",
+            createdAt: updated.createdAt,
+            updatedAt: Date.now(),
+          })
+        } catch {
+          // Lifecycle persistence remains authoritative for this local flow.
+        }
+        if (
+          !shouldDeliverProof ||
+          !receiptRecord.proofDeliveryClaimed ||
+          !hasPublicReceiptContext(updated)
+        )
+          return
         await deliverReceiptLinkedProof(
           updated as typeof updated & {
             zapReceiptId: string
           },
-          buyerIdentity
+          buyerIdentity,
+          proofDeliveryClaimId
         )
       }
       return
     }
 
     if (Date.now() >= lifecycle.zapReceiptObservationDeadline) {
-      await patchAndEmit(orderId, {
-        ...(lifecycle.paymentStatus === "paid"
-          ? {}
-          : { paymentStatus: "ambiguous" as const }),
-        zapReceiptStatus: "receipt_not_observed",
-        ...(lifecycle.paymentStatus === "paid"
-          ? {}
-          : {
-              lastError:
-                "A matching public receipt was not observed. Do not pay again if your wallet shows payment.",
-            }),
-      })
+      const timeout = await dependencies.recordOrderPaymentReceiptTimeout(
+        orderId,
+        lifecycle.zapRequestId
+      )
+      emit(orderId, { lifecycle: timeout.lifecycle })
       return
     }
     scheduleRescan = true
@@ -630,7 +784,7 @@ export async function observeOrderPublicZapReceipt(
     ) {
       const timer = setTimeout(() => {
         receiptRescanTimers.delete(orderId)
-        void observeOrderPublicZapReceipt(orderId, buyerIdentity)
+        void observeOrderPublicZapReceipt(orderId, buyerIdentity, dependencies)
       }, ZAP_RECEIPT_RESCAN_DELAY_MS)
       receiptRescanTimers.set(orderId, timer)
     }
@@ -647,10 +801,53 @@ export async function runOrderPayment(
   ctx: OrderPaymentContext,
   dependencyOverrides: Partial<OrderPaymentDependencies> = {}
 ): Promise<OrderPaymentRuntimeState> {
+  return runOrderPaymentInternal(ctx, dependencyOverrides)
+}
+
+type PreparedOrderPaymentClaim = {
+  paymentClaimId: string
+  lifecycle: OrderLifecycle
+}
+
+async function runOrderPaymentInternal(
+  ctx: OrderPaymentContext,
+  dependencyOverrides: Partial<OrderPaymentDependencies>,
+  preparedClaim?: PreparedOrderPaymentClaim
+): Promise<OrderPaymentRuntimeState> {
   const { orderId } = ctx
+  const paymentClaimId = preparedClaim?.paymentClaimId ?? generateId()
   const dependencies = {
     ...defaultOrderPaymentDependencies,
     ...dependencyOverrides,
+  }
+  let clearSessionClaim = false
+  let claimHeartbeat: ReturnType<typeof setInterval> | null = null
+  let stopProofDeliveryHeartbeat: (() => void) | null = null
+  const patchClaim = async (
+    patch: Parameters<typeof patchClaimedOrderLifecyclePayment>[2],
+    runtime?: Partial<OrderPaymentRuntimeState>
+  ) => {
+    try {
+      const lifecycle = await patchClaimAndEmit(
+        orderId,
+        paymentClaimId,
+        patch,
+        runtime,
+        dependencies.patchClaimedOrderLifecyclePayment
+      )
+      if (
+        Object.prototype.hasOwnProperty.call(patch, "paymentClaimId") &&
+        patch.paymentClaimId === undefined
+      ) {
+        clearSessionClaim = true
+      }
+      return lifecycle
+    } catch (error) {
+      if (error instanceof PaymentClaimSupersededError) {
+        clearSessionClaim = true
+      }
+      throw error
+    }
   }
   if (inFlight.has(orderId) || privateFallbackTransitions.has(orderId)) {
     return (
@@ -663,22 +860,53 @@ export async function runOrderPayment(
       }
     )
   }
+  const claimInput = {
+    orderId,
+    paymentClaimId,
+    buyerPubkey: ctx.buyerPubkey,
+    merchantPubkey: ctx.merchantPubkey,
+    merchantLightningAddress: ctx.merchantLud16,
+    checkoutMode: ctx.zapMode,
+    zapContent: ctx.zapContent,
+    totalSats: ctx.totalSats,
+    totalMsats: ctx.totalMsats,
+    items: ctx.items,
+    paymentTarget: ctx.paymentTarget,
+  }
+  if (
+    !preparedClaim &&
+    !dependencies.rememberOrderPaymentClaim(orderId, paymentClaimId)
+  ) {
+    const message = "Recoverable payment storage is unavailable."
+    inFlight.add(orderId)
+    let lifecycle: OrderLifecycle | null = null
+    try {
+      const failure = await dependencies.recordOrderPaymentPreparationFailure(
+        claimInput,
+        message
+      )
+      lifecycle = failure.lifecycle
+    } catch {
+      // The runtime error remains visible even when local persistence is down.
+    } finally {
+      inFlight.delete(orderId)
+    }
+    emit(orderId, {
+      running: false,
+      stage: null,
+      error: message,
+      lifecycle,
+    })
+    return runtimeStates.get(orderId)!
+  }
   inFlight.add(orderId)
 
   try {
-    const claim = await dependencies.claimOrderLifecyclePayment({
-      orderId,
-      buyerPubkey: ctx.buyerPubkey,
-      merchantPubkey: ctx.merchantPubkey,
-      merchantLightningAddress: ctx.merchantLud16,
-      checkoutMode: ctx.zapMode,
-      zapContent: ctx.zapContent,
-      totalSats: ctx.totalSats,
-      totalMsats: ctx.totalMsats,
-      items: ctx.items,
-      paymentTarget: ctx.paymentTarget,
-    })
+    const claim: OrderPaymentClaimResult = preparedClaim
+      ? { status: "claimed", lifecycle: preparedClaim.lifecycle }
+      : await dependencies.claimOrderLifecyclePayment(claimInput)
     if (claim.status !== "claimed") {
+      clearSessionClaim = true
       const message =
         claim.status === "missing"
           ? "Order payment state is unavailable."
@@ -695,6 +923,14 @@ export async function runOrderPayment(
     }
 
     const lifecycle = claim.lifecycle
+    claimHeartbeat = dependencies.schedulePaymentClaimHeartbeat(
+      () => {
+        void dependencies
+          .renewOrderLifecyclePaymentClaim(orderId, paymentClaimId)
+          .catch(() => dependencies.reportPaymentClaimHeartbeatError())
+      },
+      Math.max(1_000, Math.floor(ORDER_PAYMENT_CLAIM_LEASE_MS / 3))
+    )
     ctx = {
       ...ctx,
       buyerPubkey: lifecycle.buyerPubkey,
@@ -716,9 +952,9 @@ export async function runOrderPayment(
     })
 
     if (!ctx.merchantLud16) {
-      await patchAndEmit(
-        orderId,
+      await patchClaim(
         {
+          paymentClaimId: undefined,
           invoiceStatus: "failed",
           paymentStatus: "failed",
           lastError: "Merchant does not have a Lightning address.",
@@ -735,6 +971,11 @@ export async function runOrderPayment(
     const currency = "SATS"
     let paymentMoved = false
     let invoiceReceived = false
+    let walletSuccess: Omit<
+      OrderPaymentWalletSuccessRecoveryInput,
+      "proofDeliveryStatus"
+    > | null = null
+    let proofDeliveryOutcome: "pending" | "retry_needed" | "sent" = "pending"
 
     try {
       const ndk = getNdk()
@@ -815,8 +1056,9 @@ export async function runOrderPayment(
         }
       }
 
-      const requestInvoice = (requestedVisibility: typeof visibility) =>
-        dependencies.requestCheckoutLnurlInvoice(
+      const requestInvoice = async (requestedVisibility: typeof visibility) => {
+        await patchClaim({}, { stage: "requesting_invoice" })
+        return dependencies.requestCheckoutLnurlInvoice(
           {
             visibility: requestedVisibility,
             lnurlCallback: lnurlMeta.callback,
@@ -855,6 +1097,7 @@ export async function runOrderPayment(
             },
           }
         )
+      }
       const requestValidatedInvoice = async (
         requestedVisibility: typeof visibility
       ) => {
@@ -892,7 +1135,7 @@ export async function runOrderPayment(
       }
 
       if (publicZapFallback) {
-        await patchAndEmit(orderId, {
+        await patchClaim({
           checkoutMode: "private_checkout",
           publicZapSigner: undefined,
           publicZapFallback: true,
@@ -930,10 +1173,10 @@ export async function runOrderPayment(
       const zapReceiptObservationDeadline =
         (invoiceExpiresAt + ZAP_RECEIPT_EXPIRY_GRACE_SECONDS) * 1000
 
-      await patchAndEmit(
-        orderId,
+      await patchClaim(
         {
           invoiceStatus: "received",
+          paymentStatus: "paying",
           invoice,
           zapRequestId,
           ...(isPublicZap
@@ -952,6 +1195,7 @@ export async function runOrderPayment(
       )
       invoiceReceived = true
 
+      await patchClaim({}, { stage: "paying_invoice" })
       const payResult = await dependencies.payCheckoutInvoice({
         invoice,
         amountMsats: ctx.totalMsats,
@@ -971,9 +1215,9 @@ export async function runOrderPayment(
       })
 
       if (payResult.status === "retryable_failure") {
-        await patchAndEmit(
-          orderId,
+        await patchClaim(
           {
+            paymentClaimId: undefined,
             invoiceStatus: "failed",
             paymentStatus: "failed",
             invoice,
@@ -993,9 +1237,9 @@ export async function runOrderPayment(
         // No automatic rail. Private invoices retain the buyer-attested report
         // flow. Public anon-zap invoices are observed by exact NIP-57 receipt
         // context instead, so the buyer never needs a manual confirmation step.
-        await patchAndEmit(
-          orderId,
+        await patchClaim(
           {
+            paymentClaimId: undefined,
             invoiceStatus: "manual_required",
             paymentStatus: "manual_required",
             invoice,
@@ -1010,9 +1254,16 @@ export async function runOrderPayment(
         return runtimeStates.get(orderId)!
       }
 
+      walletSuccess = {
+        invoice,
+        paymentHash: payResult.paymentHash,
+        preimage: payResult.preimage,
+        feeMsats: payResult.feeMsats,
+        zapRequestId,
+      }
       paymentMoved = true
       try {
-        await savePaymentAttempt({
+        await dependencies.savePaymentAttempt({
           id: orderId,
           orderId,
           buyerPubkey: ctx.buyerPubkey,
@@ -1032,11 +1283,15 @@ export async function runOrderPayment(
         console.warn("Failed to persist payment attempt", e)
       }
 
-      await patchAndEmit(
-        orderId,
+      const proofDeliveryClaimedAt = Date.now()
+      await patchClaim(
         {
           paymentStatus: "paid",
           proofDeliveryStatus: "pending",
+          proofDeliveryClaimId: paymentClaimId,
+          proofDeliveryClaimedAt,
+          proofDeliveryClaimLeaseExpiresAt:
+            proofDeliveryClaimedAt + ORDER_PROOF_DELIVERY_CLAIM_LEASE_MS,
           invoice,
           paymentHash: payResult.paymentHash,
           preimage: payResult.preimage,
@@ -1044,6 +1299,10 @@ export async function runOrderPayment(
           zapRequestId,
         },
         { stage: "sending_receipt" }
+      )
+      stopProofDeliveryHeartbeat = startProofDeliveryClaimHeartbeat(
+        orderId,
+        paymentClaimId
       )
 
       const proofPayload = buildLightningPaymentProofMessage({
@@ -1070,26 +1329,47 @@ export async function runOrderPayment(
       })
 
       let deliveryNotice: string | null = null
+      let proofPublished = false
       try {
-        const proofDelivery = await publishBuyerOrderMessage(
+        const proofDelivery = await dependencies.publishBuyerOrderMessage(
           proofRumor,
           ndk,
           ctx.merchantPubkey,
           ctx.buyerIdentity ?? ctx.buyerPubkey
         )
+        proofPublished = true
         deliveryNotice = getDeliveryNotice(proofDelivery, "Payment proof")
-        await updatePaymentAttempt(orderId, {
-          proofDeliveryStatus: "sent",
-        }).catch((e) => console.warn("Failed to update proof status", e))
-        await patchAndEmit(orderId, {
-          proofDeliveryStatus: "sent",
-          deliveryNotice: deliveryNotice ?? undefined,
-        })
       } catch {
-        await updatePaymentAttempt(orderId, {
-          proofDeliveryStatus: "retry_needed",
-        }).catch((e) => console.warn("Failed to mark proof retry", e))
-        await patchAndEmit(orderId, { proofDeliveryStatus: "retry_needed" })
+        // Payment is already durable; a failed transport only needs a retry.
+      }
+
+      const proofDeliveryStatus = proofPublished ? "sent" : "retry_needed"
+      proofDeliveryOutcome = proofDeliveryStatus
+      await dependencies
+        .updatePaymentAttempt(orderId, { proofDeliveryStatus })
+        .catch((e) => console.warn("Failed to update proof status", e))
+      try {
+        await patchClaim({
+          paymentClaimId: undefined,
+          proofDeliveryStatus,
+          ...(proofPublished
+            ? { deliveryNotice: deliveryNotice ?? undefined }
+            : {}),
+        })
+      } catch (error) {
+        if (!(error instanceof PaymentClaimSupersededError)) throw error
+        const recorded = await dependencies.recordOrderPaymentProofDelivery(
+          orderId,
+          proofDeliveryStatus,
+          proofPublished
+            ? {
+                deliveryNotice: deliveryNotice ?? undefined,
+                lastError: undefined,
+              }
+            : {},
+          paymentClaimId
+        )
+        emit(orderId, { lifecycle: recorded.lifecycle })
       }
 
       if (validatedInvoice.request.shouldWaitForZapReceipt && zapRequestId) {
@@ -1101,38 +1381,84 @@ export async function runOrderPayment(
       return runtimeStates.get(orderId)!
     } catch (e) {
       const message = e instanceof Error ? e.message : "Payment failed"
-      if (paymentMoved) {
-        // Funds moved but a tail step threw — still terminal success for the
-        // buyer; only the best-effort proof needs retry.
-        await patchAndEmit(
-          orderId,
-          { paymentStatus: "paid", proofDeliveryStatus: "retry_needed" },
-          { running: false, stage: null }
-        )
-      } else if (isAmbiguousPaymentError(e)) {
-        await patchAndEmit(
-          orderId,
-          {
-            ...(invoiceReceived ? {} : { invoiceStatus: "failed" as const }),
-            paymentStatus: "ambiguous",
-            lastError: message,
-          },
-          { running: false, stage: null, error: message }
-        )
-      } else {
-        await patchAndEmit(
-          orderId,
-          {
-            ...(invoiceReceived ? {} : { invoiceStatus: "failed" as const }),
-            paymentStatus: "failed",
-            lastError: message,
-          },
-          { running: false, stage: null, error: message }
-        )
+      if (e instanceof PaymentClaimSupersededError && !paymentMoved) {
+        emit(orderId, {
+          running: false,
+          stage: null,
+          error: null,
+          lifecycle: e.lifecycle,
+        })
+        return runtimeStates.get(orderId)!
+      }
+
+      try {
+        if (paymentMoved) {
+          // A successful wallet result is authoritative even if browser
+          // recovery already cleared the claim. Persist paid without exposing
+          // another payment action; only proof delivery may need a retry.
+          if (!walletSuccess) {
+            throw new Error(
+              "Successful wallet proof is unavailable for recovery.",
+              { cause: e }
+            )
+          }
+          const recovered =
+            await dependencies.recordOrderPaymentWalletSuccessRecovery(
+              orderId,
+              {
+                ...walletSuccess,
+                proofDeliveryStatus: proofDeliveryOutcome,
+                proofDeliveryClaimId: paymentClaimId,
+              }
+            )
+          emit(orderId, {
+            running: false,
+            stage: null,
+            lifecycle: recovered.lifecycle,
+          })
+          clearSessionClaim = true
+        } else if (isAmbiguousPaymentError(e)) {
+          await patchClaim(
+            {
+              paymentClaimId: undefined,
+              ...(invoiceReceived ? {} : { invoiceStatus: "failed" as const }),
+              paymentStatus: "ambiguous",
+              lastError: message,
+            },
+            { running: false, stage: null, error: message }
+          )
+        } else {
+          await patchClaim(
+            {
+              paymentClaimId: undefined,
+              ...(invoiceReceived ? {} : { invoiceStatus: "failed" as const }),
+              paymentStatus: "failed",
+              lastError: message,
+            },
+            { running: false, stage: null, error: message }
+          )
+        }
+      } catch (claimError) {
+        if (!(claimError instanceof PaymentClaimSupersededError)) {
+          throw claimError
+        }
+        emit(orderId, {
+          running: false,
+          stage: null,
+          error: null,
+          lifecycle: claimError.lifecycle,
+        })
       }
       return runtimeStates.get(orderId)!
     }
   } finally {
+    stopProofDeliveryHeartbeat?.()
+    if (claimHeartbeat) {
+      dependencies.cancelPaymentClaimHeartbeat(claimHeartbeat)
+    }
+    if (clearSessionClaim) {
+      dependencies.clearOrderPaymentClaim(orderId, paymentClaimId)
+    }
     inFlight.delete(orderId)
   }
 }
@@ -1155,75 +1481,155 @@ export async function runOrderPrivateFallback(
   ) {
     throw new Error("Payment is already in progress for this order.")
   }
+  const dependencies = {
+    ...defaultOrderPaymentDependencies,
+    ...dependencyOverrides,
+  }
+  const paymentClaimId = generateId()
+  const claimInput = {
+    orderId: ctx.orderId,
+    paymentClaimId,
+    buyerPubkey: ctx.buyerPubkey,
+    merchantPubkey: ctx.merchantPubkey,
+    merchantLightningAddress: ctx.merchantLud16,
+    checkoutMode: "private_checkout" as const,
+    zapContent: "",
+    totalSats: ctx.totalSats,
+    totalMsats: ctx.totalMsats,
+    items: ctx.items,
+    paymentTarget: ctx.paymentTarget,
+  }
+  if (!dependencies.rememberOrderPaymentClaim(ctx.orderId, paymentClaimId)) {
+    const message = "Recoverable payment storage is unavailable."
+    const lifecycle = await getOrderLifecycle(ctx.orderId).catch(() => null)
+    emit(ctx.orderId, {
+      running: false,
+      stage: null,
+      error: message,
+      lifecycle,
+    })
+    return runtimeStates.get(ctx.orderId)!
+  }
+
   privateFallbackTransitions.add(ctx.orderId)
 
+  let claim: OrderPaymentClaimResult
   try {
-    const transition = await transitionOrderPrivateFallback(ctx.orderId)
-    if (transition.status !== "transitioned") {
-      throw new Error(
-        "A private invoice is only available after a failed anonymous zap attempt."
-      )
-    }
-    emit(ctx.orderId, { lifecycle: transition.lifecycle })
+    claim =
+      await dependencies.claimOrderLifecyclePrivateFallbackPayment(claimInput)
   } finally {
     privateFallbackTransitions.delete(ctx.orderId)
   }
 
-  return runOrderPayment(
+  if (claim.status !== "claimed") {
+    dependencies.clearOrderPaymentClaim(ctx.orderId, paymentClaimId)
+    const message =
+      claim.status === "missing"
+        ? "Order payment state is no longer available."
+        : claim.status === "snapshot_mismatch"
+          ? "Payment details no longer match the delivered order."
+          : "A private invoice is only available after a failed anonymous zap attempt."
+    emit(ctx.orderId, {
+      running: false,
+      stage: null,
+      error: message,
+      lifecycle: claim.lifecycle,
+    })
+    return runtimeStates.get(ctx.orderId)!
+  }
+
+  return runOrderPaymentInternal(
     {
       ...ctx,
       zapMode: "private_checkout",
       zapContent: "",
     },
-    dependencyOverrides
+    dependencyOverrides,
+    { paymentClaimId, lifecycle: claim.lifecycle }
   )
 }
 
 /**
  * Re-publish the payment proof for an order whose proof delivery is
- * `retry_needed`. Only valid after funds have moved (a stored payment attempt
- * exists); never re-pays.
+ * `retry_needed` or `failed`. Only valid after funds have moved; never re-pays.
  */
 export async function resendOrderProof(
   orderId: string,
   buyerIdentity?: BuyerOrderSigningIdentity
 ): Promise<OrderPaymentRuntimeState | undefined> {
   const lifecycle = await getOrderLifecycle(orderId)
-  if (!lifecycle || lifecycle.paymentStatus !== "paid" || !lifecycle.invoice) {
+  if (
+    !lifecycle ||
+    lifecycle.paymentStatus !== "paid" ||
+    !lifecycle.invoice ||
+    (lifecycle.proofDeliveryStatus !== "retry_needed" &&
+      lifecycle.proofDeliveryStatus !== "failed")
+  ) {
     return runtimeStates.get(orderId)
   }
-  const content = buildLifecycleResendProofContentJson(lifecycle)
-  const ndk = getNdk()
-  const proofRumor = buildPaymentProofRumor({
-    merchantPubkey: lifecycle.merchantPubkey,
+  const proofDeliveryClaimId = generateId()
+  const proofClaim = await claimOrderPaymentProofDelivery(
     orderId,
-    amountSats: lifecycle.totalSats,
-    currency: "SATS",
-    content,
-    createdAt:
-      lifecycle.zapRequestId && lifecycle.zapReceiptId
-        ? lifecycle.zapRequestCreatedAt
-        : undefined,
-  })
-  await patchAndEmit(orderId, { proofDeliveryStatus: "pending" })
+    proofDeliveryClaimId
+  )
+  emit(orderId, { lifecycle: proofClaim.lifecycle })
+  if (proofClaim.status !== "claimed") return runtimeStates.get(orderId)
+  const locked = proofClaim.lifecycle
+  const stopHeartbeat = startProofDeliveryClaimHeartbeat(
+    orderId,
+    proofDeliveryClaimId
+  )
   try {
-    await publishBuyerOrderMessage(
-      proofRumor,
-      ndk,
-      lifecycle.merchantPubkey,
-      buyerIdentity ?? lifecycle.buyerPubkey
-    )
-    await updatePaymentAttempt(orderId, { proofDeliveryStatus: "sent" }).catch(
-      () => {}
-    )
-    await patchAndEmit(orderId, { proofDeliveryStatus: "sent" })
-  } catch (e) {
-    await patchAndEmit(orderId, {
-      proofDeliveryStatus: "retry_needed",
-      lastError: e instanceof Error ? e.message : "Proof delivery failed",
+    const content = buildLifecycleResendProofContentJson(locked)
+    const ndk = getNdk()
+    const proofRumor = buildPaymentProofRumor({
+      merchantPubkey: locked.merchantPubkey,
+      orderId,
+      amountSats: locked.totalSats,
+      currency: "SATS",
+      content,
+      createdAt:
+        locked.zapRequestId && locked.zapReceiptId
+          ? locked.zapRequestCreatedAt
+          : undefined,
     })
+    let proofPublished = false
+    try {
+      await publishBuyerOrderMessage(
+        proofRumor,
+        ndk,
+        locked.merchantPubkey,
+        buyerIdentity ?? locked.buyerPubkey
+      )
+      proofPublished = true
+    } catch {
+      // The payment remains paid; only proof delivery needs another attempt.
+    }
+    const proofDeliveryStatus = proofPublished ? "sent" : "retry_needed"
+    await updatePaymentAttempt(orderId, { proofDeliveryStatus }).catch(() =>
+      console.warn(
+        "Failed to persist the local payment-proof delivery outcome."
+      )
+    )
+    try {
+      const recorded = await recordOrderPaymentProofDelivery(
+        orderId,
+        proofDeliveryStatus,
+        proofPublished
+          ? { lastError: undefined }
+          : { lastError: "Proof delivery failed" },
+        proofDeliveryClaimId
+      )
+      emit(orderId, { lifecycle: recorded.lifecycle })
+    } catch {
+      console.warn(
+        "Failed to persist the order payment-proof delivery outcome."
+      )
+    }
+    return runtimeStates.get(orderId)
+  } finally {
+    stopHeartbeat()
   }
-  return runtimeStates.get(orderId)
 }
 
 /**
@@ -1237,18 +1643,43 @@ export async function submitExternalPaymentProof(
 ): Promise<OrderPaymentRuntimeState | undefined> {
   if (inFlight.has(orderId)) return runtimeStates.get(orderId)
   inFlight.add(orderId)
+  let stopProofDeliveryHeartbeat: (() => void) | null = null
   try {
     const lifecycle = await getOrderLifecycle(orderId)
     if (!canSubmitExternalPaymentReport(lifecycle)) {
       return runtimeStates.get(orderId)
     }
 
-    await patchAndEmit(orderId, {
-      paymentStatus: "paid",
-      proofDeliveryStatus: "pending",
-    })
+    const proofDeliveryClaimId = generateId()
+    const proofClaim = await claimExternalOrderPaymentProof(
+      orderId,
+      proofDeliveryClaimId
+    )
+    emit(orderId, { lifecycle: proofClaim.lifecycle })
+    if (proofClaim.status !== "claimed") return runtimeStates.get(orderId)
+    const locked = proofClaim.lifecycle
+    stopProofDeliveryHeartbeat = startProofDeliveryClaimHeartbeat(
+      orderId,
+      proofDeliveryClaimId
+    )
+    try {
+      await savePaymentAttempt({
+        id: orderId,
+        orderId,
+        buyerPubkey: locked.buyerPubkey,
+        merchantPubkey: locked.merchantPubkey,
+        amountMsats: locked.totalMsats,
+        currency: "SATS",
+        invoice: locked.invoice!,
+        proofDeliveryStatus: "pending",
+        createdAt: locked.createdAt,
+        updatedAt: Date.now(),
+      })
+    } catch {
+      // Lifecycle persistence remains authoritative for this local flow.
+    }
 
-    const content = buildLifecyclePaymentProofContentJson(lifecycle, {
+    const content = buildLifecyclePaymentProofContentJson(locked, {
       action: "external_invoice",
       source: "external",
       verificationState: "needs_merchant_verification",
@@ -1256,28 +1687,48 @@ export async function submitExternalPaymentProof(
     })
     const ndk = getNdk()
     const proofRumor = buildPaymentProofRumor({
-      merchantPubkey: lifecycle.merchantPubkey,
+      merchantPubkey: locked.merchantPubkey,
       orderId,
-      amountSats: lifecycle.totalSats,
+      amountSats: locked.totalSats,
       currency: "SATS",
       content,
     })
+    let proofPublished = false
     try {
       await publishBuyerOrderMessage(
         proofRumor,
         ndk,
-        lifecycle.merchantPubkey,
-        buyerIdentity ?? lifecycle.buyerPubkey
+        locked.merchantPubkey,
+        buyerIdentity ?? locked.buyerPubkey
       )
-      await patchAndEmit(orderId, { proofDeliveryStatus: "sent" })
-    } catch (e) {
-      await patchAndEmit(orderId, {
-        proofDeliveryStatus: "retry_needed",
-        lastError: e instanceof Error ? e.message : "Proof delivery failed",
-      })
+      proofPublished = true
+    } catch {
+      // Buyer attestation remains durable; proof delivery may be retried.
+    }
+    const proofDeliveryStatus = proofPublished ? "sent" : "retry_needed"
+    await updatePaymentAttempt(orderId, { proofDeliveryStatus }).catch(() =>
+      console.warn(
+        "Failed to persist the local payment-proof delivery outcome."
+      )
+    )
+    try {
+      const recorded = await recordOrderPaymentProofDelivery(
+        orderId,
+        proofDeliveryStatus,
+        proofPublished
+          ? { lastError: undefined }
+          : { lastError: "Proof delivery failed" },
+        proofDeliveryClaimId
+      )
+      emit(orderId, { lifecycle: recorded.lifecycle })
+    } catch {
+      console.warn(
+        "Failed to persist the order payment-proof delivery outcome."
+      )
     }
     return runtimeStates.get(orderId)
   } finally {
+    stopProofDeliveryHeartbeat?.()
     inFlight.delete(orderId)
   }
 }
