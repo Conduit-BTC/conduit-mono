@@ -1059,9 +1059,7 @@ function CheckoutPage() {
       checkoutShippingInitializedRef.current = true
       presetIdentityRef.current = draftOwnerIdentity
       presetMaySeedShippingRef.current = !initialized.hasActiveDraft
-      if (JSON.stringify(shipping) !== JSON.stringify(initialized.value)) {
-        setShipping(initialized.value)
-      }
+      setShipping(initialized.value)
       return
     }
 
@@ -1075,9 +1073,7 @@ function CheckoutPage() {
         draftOwnerIdentity
       )
       presetMaySeedShippingRef.current = !initialized.hasActiveDraft
-      if (JSON.stringify(shipping) !== JSON.stringify(initialized.value)) {
-        setShipping(initialized.value)
-      }
+      setShipping(initialized.value)
       return
     }
 
@@ -1086,7 +1082,6 @@ function CheckoutPage() {
     const next = preset
       ? getShippingFormFromPreset(preset)
       : DEFAULT_CHECKOUT_SHIPPING
-    if (JSON.stringify(shipping) === JSON.stringify(next)) return
     setShipping(next)
     if (preset) {
       writeCheckoutShippingSession(
@@ -1097,7 +1092,6 @@ function CheckoutPage() {
       )
     }
   }, [
-    shipping,
     shopperPresets.preset.shipping,
     shopperPresets.presetOwnerPubkey,
     authPending,
@@ -1114,11 +1108,9 @@ function CheckoutPage() {
     if (!preset) return
     presetMaySeedShippingRef.current = false
     const next = getShippingFormFromPreset(preset)
-    if (JSON.stringify(shipping) === JSON.stringify(next)) return
     setShipping(next)
     writeCheckoutShippingSession(next, undefined, undefined, draftOwnerIdentity)
   }, [
-    shipping,
     shopperPresets.preset.shipping,
     shopperPresets.presetOwnerPubkey,
     draftOwnerIdentity,
