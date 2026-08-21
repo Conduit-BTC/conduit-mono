@@ -775,6 +775,7 @@ describe("publishPrivateMessage", () => {
 
   it("delivers a validated order over the compatibility route when the recipient has no declaration", async () => {
     const publishes: Array<{ id: string; relays: readonly string[] }> = []
+    const outcomes: unknown[] = []
 
     const result = await publishPrivateMessage({
       ...validatedOrderInput(),
@@ -788,6 +789,7 @@ describe("publishPrivateMessage", () => {
         enabled: true,
         relayUrls: ["wss://compatibility.conduit.market"],
       },
+      onNip17CompatibilityOutcome: (outcome) => outcomes.push(outcome),
       giftWrapFn: (async (_rumor, recipient) =>
         wrap(`wrap-${recipient.pubkey}`)) as never,
       publishFn: (async (event, options) => {
@@ -806,9 +808,20 @@ describe("publishPrivateMessage", () => {
       },
     ])
     expect(result.deliveryRoute).toBe("compatibility_order")
+    expect(outcomes).toEqual([
+      {
+        action: "order_delivery",
+        declarationClass: "not_observed",
+        deliveryRoute: "compatibility_order",
+        ackOutcome: "positive",
+        repairOutcome: "not_applicable",
+        blockReason: "not_applicable",
+      },
+    ])
   })
 
   it("accepts one compatibility ACK, surfaces partial delivery, and keeps NIP-65 bounded", async () => {
+    const outcomes: unknown[] = []
     const result = await publishPrivateMessage({
       ...validatedOrderInput(),
       senderPubkey: "sender",
@@ -829,6 +842,7 @@ describe("publishPrivateMessage", () => {
         "wss://arbitrary.conduit.market",
         "wss://inbox.conduit.market/",
       ],
+      onNip17CompatibilityOutcome: (outcome) => outcomes.push(outcome),
       giftWrapFn: (async () => wrap("recipient-wrap")) as never,
       publishFn: (async (_event, options) => {
         const relayUrls = [...(options.exclusiveRelayUrls ?? [])]
@@ -871,9 +885,20 @@ describe("publishPrivateMessage", () => {
     expect(JSON.stringify(result.deliveryRelaySources)).not.toContain(
       "Order update"
     )
+    expect(outcomes).toEqual([
+      {
+        action: "order_delivery",
+        declarationClass: "not_observed",
+        deliveryRoute: "compatibility_order",
+        ackOutcome: "partial",
+        repairOutcome: "not_applicable",
+        blockReason: "not_applicable",
+      },
+    ])
   })
 
   it("fails explicitly when every compatibility relay fails", async () => {
+    const outcomes: unknown[] = []
     const diagnostics = {
       plan: {
         intent: "recipient_event" as const,
@@ -909,6 +934,7 @@ describe("publishPrivateMessage", () => {
           enabled: true,
           relayUrls: ["wss://one.conduit.market", "wss://two.conduit.market"],
         },
+        onNip17CompatibilityOutcome: (outcome) => outcomes.push(outcome),
         giftWrapFn: (async () => wrap("recipient-wrap")) as never,
         publishFn: (async () => {
           throw new RelayPublishDiagnosticsError(
@@ -919,10 +945,21 @@ describe("publishPrivateMessage", () => {
         }) as never,
       })
     ).rejects.toBeInstanceOf(RelayPublishDiagnosticsError)
+    expect(outcomes).toEqual([
+      {
+        action: "order_delivery",
+        declarationClass: "not_observed",
+        deliveryRoute: "compatibility_order",
+        ackOutcome: "zero",
+        repairOutcome: "not_applicable",
+        blockReason: "not_applicable",
+      },
+    ])
   })
 
   it("keeps a declared inbox exclusive even when compatibility is enabled", async () => {
     const publishes: Array<readonly string[]> = []
+    const outcomes: unknown[] = []
 
     const result = await publishPrivateMessage({
       ...validatedOrderInput(),
@@ -936,6 +973,7 @@ describe("publishPrivateMessage", () => {
         enabled: true,
         relayUrls: ["wss://compatibility.conduit.market"],
       },
+      onNip17CompatibilityOutcome: (outcome) => outcomes.push(outcome),
       giftWrapFn: (async (_rumor, recipient) =>
         wrap(`wrap-${recipient.pubkey}`)) as never,
       publishFn: (async (_event, options) => {
@@ -946,11 +984,22 @@ describe("publishPrivateMessage", () => {
 
     expect(publishes).toEqual([["wss://recipient.inbox.conduit.market"]])
     expect(result.deliveryRoute).toBe("declared_inbox")
+    expect(outcomes).toEqual([
+      {
+        action: "order_delivery",
+        declarationClass: "declared",
+        deliveryRoute: "declared_inbox",
+        ackOutcome: "positive",
+        repairOutcome: "not_applicable",
+        blockReason: "not_applicable",
+      },
+    ])
   })
 
   it("never routes kind-14 direct messages through the compatibility lane", async () => {
     let published = false
     let thrown: unknown
+    const outcomes: unknown[] = []
 
     try {
       await publishPrivateMessage({
@@ -966,6 +1015,7 @@ describe("publishPrivateMessage", () => {
           enabled: true,
           relayUrls: ["wss://compatibility.conduit.market"],
         },
+        onNip17CompatibilityOutcome: (outcome) => outcomes.push(outcome),
         giftWrapFn: (async () => wrap("unexpected")) as never,
         publishFn: (async () => {
           published = true
@@ -981,11 +1031,13 @@ describe("publishPrivateMessage", () => {
       "recipient_not_ready"
     )
     expect(published).toBe(false)
+    expect(outcomes).toEqual([])
   })
 
   it("blocks unvalidated orders from the compatibility lane", async () => {
     let published = false
     let thrown: unknown
+    const outcomes: unknown[] = []
 
     try {
       await publishPrivateMessage({
@@ -1000,6 +1052,7 @@ describe("publishPrivateMessage", () => {
           enabled: true,
           relayUrls: ["wss://compatibility.conduit.market"],
         },
+        onNip17CompatibilityOutcome: (outcome) => outcomes.push(outcome),
         giftWrapFn: (async () => wrap("unexpected")) as never,
         publishFn: (async () => {
           published = true
@@ -1015,6 +1068,7 @@ describe("publishPrivateMessage", () => {
       "recipient_not_ready"
     )
     expect(published).toBe(false)
+    expect(outcomes).toEqual([])
   })
 
   it("keeps compatibility writes disabled by default for validated orders", async () => {
@@ -1050,6 +1104,7 @@ describe("publishPrivateMessage", () => {
   it("blocks a malformed recipient declaration instead of using compatibility", async () => {
     let published = false
     let thrown: unknown
+    const outcomes: unknown[] = []
 
     try {
       await publishPrivateMessage({
@@ -1069,6 +1124,7 @@ describe("publishPrivateMessage", () => {
           enabled: true,
           relayUrls: ["wss://compatibility.conduit.market"],
         },
+        onNip17CompatibilityOutcome: (outcome) => outcomes.push(outcome),
         giftWrapFn: (async () => wrap("unexpected")) as never,
         publishFn: (async () => {
           published = true
@@ -1084,6 +1140,16 @@ describe("publishPrivateMessage", () => {
       "recipient_declaration_malformed"
     )
     expect(published).toBe(false)
+    expect(outcomes).toEqual([
+      {
+        action: "order_delivery",
+        declarationClass: "malformed",
+        deliveryRoute: "blocked",
+        ackOutcome: "not_applicable",
+        repairOutcome: "not_applicable",
+        blockReason: "recipient_declaration_malformed",
+      },
+    ])
   })
 
   it("reports a signed empty recipient distinctly while keeping compatibility closed", async () => {

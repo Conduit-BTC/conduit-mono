@@ -1,8 +1,9 @@
 # NIP-17 Inbox Bootstrap Migration (CND-208)
 
-Status: active migration exception; preview enabled, production and staging
-disabled. Owner: Conduit maintainers. Started: 2026-08. Next review: 2026-09-09
-and before any production activation.
+Status: active migration exception; preview and staging enabled as of
+2026-08-21, production disabled pending the reviewed synthetic staging smoke.
+Owner: Conduit release maintainer. Started: 2026-08. Next review: 2026-09-09
+and before production activation.
 
 ## Why this exists
 
@@ -138,8 +139,8 @@ cannot establish which frontier the omitted sources hold.
 
 This convergence work does not widen compatibility to general DMs, arbitrary
 relays, plaintext delivery, or unvalidated sender/recipient relationships. The
-removal metrics below remain unimplemented and keep the compatibility lane out
-of production.
+bounded rollout counters below are implemented, but field evidence and the
+required staging smoke still keep the compatibility lane out of production.
 
 Relay-side recipient auth enforcement remains client-first rollout work and is
 not implied by this document. NIP-11 advertisement alone is not proof that a
@@ -165,10 +166,10 @@ relay has challenged, accepted auth, or enforced `#p` authorization.
 - Order provenance: `orderLifecycles.orderDeliveryRoute`
   (`declared_inbox` | `compatibility_order`), with the exact encrypted wrap and
   per-relay outcomes in `orderLifecycles.orderRelayDelivery`
-- Public build policy: `deploy/pages-profiles.json`. Preview enables the lane;
-  production and staging are independently false by default. Vite compiles the
-  legacy `VITE_DM_BOOTSTRAP_WRITES` input from that profile rather than trusting
-  a Cloudflare dashboard override.
+- Public build policy: `deploy/pages-profiles.json`. Preview and staging enable
+  the lane; production remains independently false until the reviewed smoke
+  gate passes. Vite compiles the legacy `VITE_DM_BOOTSTRAP_WRITES` input from
+  that profile rather than trusting a Cloudflare dashboard override.
 - QA manifest: `/.well-known/conduit-deployment.json` exposes only app/profile,
   source commit/branch, build time, public feature values, and their SHA-256
   digest.
@@ -209,9 +210,32 @@ The lane is removed by an explicit maintainer PR (no silent expiry) after:
 
 Required aggregate measurements are declared-ready rate, route lane, ACK
 outcome, read source/coverage, and missing-order incident count. They are not
-yet implemented, so the removal gate is not measurable and the lane must not be
-activated in production on the strength of this document alone. No identifiers
-or message content may enter these aggregates.
+all part of this narrow rollout slice: CND-219 adds declaration class, route,
+ACK, repair discoverability, and block-reason counters; broader read-source and
+incident measurement remains with CND-210. The removal gate is therefore not
+yet measurable and the lane must not be activated in production on the strength
+of this document alone. No identifiers or message content may enter these
+aggregates.
+
+## Activation and rollback
+
+- Staging activation date: 2026-08-21. Production activation: not yet active.
+- Manual gate: dedicated synthetic buyer and merchant identities must prove one
+  declared-inbox receipt and one compatibility-route receipt in staging. The
+  deployed manifest must report the staging profile and compatibility enabled.
+- Observation window: the first 24 hours after each environment activation,
+  using only the fixed-label aggregate event documented in
+  `docs/analytics/events.md`.
+- Rollback owner: the Conduit release maintainer performing the activation.
+- Rollback trigger: any strict declaration routed through compatibility, any
+  kind-14 or unvalidated write reaching compatibility, any plaintext exposure,
+  or failure of either synthetic receipt. After production activation, also
+  roll back if the 24-hour zero-ACK share is at least twice the staging baseline
+  with at least 20 eligible delivery attempts.
+- Rollback action: change only
+  `profiles.<environment>.publicFeatures.dmCompatibilityOrderRoutingEnabled` to
+  `false`, rebuild, and verify the public deployment manifest. No dashboard
+  checkbox or relay-list edit is an activation or rollback mechanism.
 
 ## Public references
 

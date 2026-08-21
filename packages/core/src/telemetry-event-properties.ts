@@ -14,6 +14,39 @@ export type MerchantSetupTelemetryStep =
   "profile" | "payments" | "shipping" | "network"
 export type ProductDetailTelemetryAction = "add_to_cart" | "view_cart"
 
+export type Nip17DeclarationTelemetryClass =
+  | "declared"
+  | "distribution_pending"
+  | "signed_empty"
+  | "not_observed"
+  | "lookup_partial"
+  | "lookup_unavailable"
+  | "malformed"
+  | "unknown"
+export type Nip17DeliveryTelemetryRoute =
+  "declared_inbox" | "compatibility_order" | "blocked" | "not_applicable"
+export type Nip17AckTelemetryOutcome =
+  "zero" | "partial" | "positive" | "not_applicable"
+export type Nip17RepairTelemetryOutcome =
+  "discoverable" | "confirmation_pending" | "failed" | "not_applicable"
+export type Nip17BlockTelemetryReason =
+  | "sender_not_ready"
+  | "recipient_not_ready"
+  | "recipient_lookup_failed"
+  | "recipient_declaration_distribution_pending"
+  | "recipient_declaration_signed_empty"
+  | "recipient_declaration_malformed"
+  | "not_applicable"
+
+export interface Nip17CompatibilityResultTelemetryInput {
+  action: "order_delivery" | "declaration_repair"
+  declarationClass: Nip17DeclarationTelemetryClass
+  deliveryRoute: Nip17DeliveryTelemetryRoute
+  ackOutcome: Nip17AckTelemetryOutcome
+  repairOutcome: Nip17RepairTelemetryOutcome
+  blockReason: Nip17BlockTelemetryReason
+}
+
 export function getTelemetryLatencyBucket(
   durationMs: number | null | undefined
 ): string {
@@ -87,5 +120,19 @@ export function buildProductDetailActionTelemetryProperties(input: {
     action: input.action,
     product_type: input.productType,
     surface: "product_detail",
+  }
+}
+
+/** Build the fixed-label, content-free CND-219 rollout counter. */
+export function buildNip17CompatibilityResultTelemetryProperties(
+  input: Nip17CompatibilityResultTelemetryInput
+): BrowserTelemetryEventProperties {
+  return {
+    action: input.action,
+    declaration_class: input.declarationClass,
+    delivery_route: input.deliveryRoute,
+    ack_outcome: input.ackOutcome,
+    repair_outcome: input.repairOutcome,
+    block_reason: input.blockReason,
   }
 }

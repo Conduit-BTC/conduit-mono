@@ -8,7 +8,7 @@ import {
 } from "../scripts/vite/deployment_profile"
 
 describe("deployment profiles", () => {
-  it("enables compatibility order routing in preview only", () => {
+  it("enables compatibility order routing in preview and staging only", () => {
     const preview = resolveDeploymentProfile({
       CONDUIT_DEPLOYMENT_PROFILE: "preview",
     })
@@ -23,9 +23,22 @@ describe("deployment profiles", () => {
     expect(production.publicFeatures.dmCompatibilityOrderRoutingEnabled).toBe(
       false
     )
-    expect(staging.publicFeatures.dmCompatibilityOrderRoutingEnabled).toBe(
-      false
-    )
+    expect(staging.publicFeatures.dmCompatibilityOrderRoutingEnabled).toBe(true)
+  })
+
+  it("keeps rollback to one explicit staging profile value", () => {
+    const profiles = loadPagesProfiles()
+    const rollback = structuredClone(profiles)
+    rollback.profiles.staging.publicFeatures.dmCompatibilityOrderRoutingEnabled = false
+
+    const parsed = parsePagesProfiles(rollback)
+    expect(
+      parsed.profiles.staging.publicFeatures.dmCompatibilityOrderRoutingEnabled
+    ).toBe(false)
+    expect(
+      parsed.profiles.production.publicFeatures
+        .dmCompatibilityOrderRoutingEnabled
+    ).toBe(false)
   })
 
   it("selects Cloudflare preview and production without dashboard feature vars", () => {
