@@ -186,11 +186,17 @@ fi
 }
 
 describe("agent review handoff", () => {
-  it("isolates uncommanded comments from PR review concurrency", () => {
+  it("shares PR review concurrency only with trusted commands", () => {
     expect(reviewWorkflow).toContain("github.event_name == 'pull_request' &&")
     expect(reviewWorkflow).not.toContain("github.event.pull_request ||")
     expect(reviewConcurrency).toContain(
       "github.event.comment.body != '/agent review'"
+    )
+    expect(reviewConcurrency).toContain(
+      '!contains(fromJSON(\'["OWNER","MEMBER","COLLABORATOR"]\'),'
+    )
+    expect(reviewConcurrency).toContain(
+      "github.event.comment.author_association"
     )
     expect(reviewConcurrency).toContain(
       "format('non-review-comment-{0}', github.run_id)"
