@@ -295,7 +295,11 @@ describe("NIP-78 shopper presets", () => {
       }),
     })
 
-    expect(result).toEqual({ state: "unavailable", reason: "invalid_envelope" })
+    expect(result).toEqual({
+      state: "unavailable",
+      reason: "invalid_envelope",
+      revision: { eventId: "a".repeat(64), createdAt: 11 },
+    })
   })
 
   it("gives the signer ciphertext only", async () => {

@@ -9,16 +9,27 @@ export type ShopperPresetsRelayLifecycle = {
   relaySettingsReady: boolean
 }
 
+export function getShopperPresetsReadResultRevision(
+  result: ShopperPresetsReadResult
+): ShopperPresetsRevision | null {
+  if (result.state === "found") return result.revision
+  if (result.state === "unavailable" && result.reason === "invalid_envelope") {
+    return result.revision
+  }
+  return null
+}
+
 export function shouldApplyShopperPresetsReadResult(
   result: ShopperPresetsReadResult,
   acceptedRevision: ShopperPresetsRevision | null
 ): boolean {
   if (!acceptedRevision) return true
-  if (result.state !== "found") return false
-  if (result.revision.createdAt !== acceptedRevision.createdAt) {
-    return result.revision.createdAt > acceptedRevision.createdAt
+  const resultRevision = getShopperPresetsReadResultRevision(result)
+  if (!resultRevision) return false
+  if (resultRevision.createdAt !== acceptedRevision.createdAt) {
+    return resultRevision.createdAt > acceptedRevision.createdAt
   }
-  return result.revision.eventId < acceptedRevision.eventId
+  return resultRevision.eventId < acceptedRevision.eventId
 }
 
 export function isCurrentShopperPresetsRevision(

@@ -173,7 +173,12 @@ export type ShopperPresetsReadResult =
       revision: ShopperPresetsRevision
     }
   | { state: "not_found" }
-  | { state: "unavailable"; reason: "relay_read" | "invalid_envelope" }
+  | { state: "unavailable"; reason: "relay_read" }
+  | {
+      state: "unavailable"
+      reason: "invalid_envelope"
+      revision: ShopperPresetsRevision
+    }
 
 export type ShopperPresetsWriteResult = {
   document: ShopperPresetsDocument
@@ -522,7 +527,14 @@ export async function fetchShopperPresets(
       },
     }
   } catch {
-    return { state: "unavailable", reason: "invalid_envelope" }
+    return {
+      state: "unavailable",
+      reason: "invalid_envelope",
+      revision: {
+        eventId: latest.id,
+        createdAt: latest.created_at ?? 0,
+      },
+    }
   }
 }
 

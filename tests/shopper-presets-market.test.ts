@@ -324,6 +324,26 @@ describe("Market shopper preset integration", () => {
     expect(
       shouldApplyShopperPresetsReadResult(
         {
+          state: "unavailable",
+          reason: "invalid_envelope",
+          revision: { eventId: "a", createdAt: 199 },
+        },
+        acceptedRevision
+      )
+    ).toBe(false)
+    expect(
+      shouldApplyShopperPresetsReadResult(
+        {
+          state: "unavailable",
+          reason: "invalid_envelope",
+          revision: { eventId: "a", createdAt: 201 },
+        },
+        acceptedRevision
+      )
+    ).toBe(true)
+    expect(
+      shouldApplyShopperPresetsReadResult(
+        {
           state: "found",
           envelope: {} as never,
           revision: { eventId: "a", createdAt: 199 },
@@ -401,16 +421,20 @@ describe("Market shopper preset integration", () => {
     expect(gate).toBeLessThan(notFound)
     expect(source).not.toContain("handledRemoteRef")
     expect(source).not.toContain("acceptedRevisionRef")
+    expect(source).not.toContain("acceptedRemoteRef")
     expect(
-      source.match(/acceptedRemoteRef\.current = (?:result|next)/gu)
-    ).toHaveLength(3)
+      source.match(/acceptedReadRef\.current = (?:result|next)/gu)
+    ).toHaveLength(4)
     const decryptStart = source.indexOf("const decryptRemote = useCallback")
     const remoteEffect = source.indexOf("const result = remote.data")
     expect(
       source.indexOf("isCurrentShopperPresetsRevision(", decryptStart)
     ).toBeLessThan(remoteEffect)
     expect(source).toMatch(
-      /isCurrentShopperPresetsRevision\(\s*acceptedRemoteRef\.current\?\.revision \?\? null,\s*result\.revision\s*\)/u
+      /isCurrentShopperPresetsRevision\(\s*acceptedReadRef\.current\?\.revision \?\? null,\s*result\.revision\s*\)/u
+    )
+    expect(source).toMatch(
+      /result\.reason === "invalid_envelope"[\s\S]*acceptedReadRef\.current = result[\s\S]*setRemotePreset\(null\)[\s\S]*setDecryptedPreset\(null\)/u
     )
   })
 
@@ -425,10 +449,10 @@ describe("Market shopper preset integration", () => {
       "!shouldApplyShopperPresetsReadResult("
     )
     const restoreAccepted = refresh.indexOf(
-      "shopperPresetsQueryKey(identity, lifecycle.relayScope),\n            acceptedRemote",
+      "shopperPresetsQueryKey(identity, lifecycle.relayScope),\n            acceptedRead",
       monotonicGate
     )
-    const settle = refresh.indexOf('setSyncState("synced")', monotonicGate)
+    const settle = refresh.indexOf("setSyncState(", restoreAccepted)
     const earlyReturn = refresh.indexOf("return", settle)
 
     expect(refreshStart).toBeGreaterThan(-1)
@@ -436,6 +460,9 @@ describe("Market shopper preset integration", () => {
     expect(restoreAccepted).toBeGreaterThan(monotonicGate)
     expect(settle).toBeGreaterThan(restoreAccepted)
     expect(earlyReturn).toBeGreaterThan(settle)
+    expect(refresh).toContain(
+      'acceptedRead?.state === "found" ? "synced" : "unavailable"'
+    )
     expect(refresh).toContain('result.state === "not_found"')
     expect(refresh).toContain('? "ready"')
     expect(refresh).toContain(': "unavailable"')
@@ -455,10 +482,20 @@ describe("Market shopper preset integration", () => {
       "undefined,\n        undefined,\n        identityPubkey\n      ).value"
     )
     expect(preferences).toContain("presets.clear(password, policy)")
+    expect(preferences).toContain("const policyEditedRef = useRef(false)")
+    expect(preferences).toMatch(
+      /draftIdentityRef\.current !== presets\.identityPubkey[\s\S]*policyEditedRef\.current = false[\s\S]*setPolicy\(presets\.unlockPolicy\)[\s\S]*clearPlaintextDraft\(\)/u
+    )
+    expect(preferences).toMatch(
+      /if \(plaintextBecameUnavailable\)[\s\S]*policyEditedRef\.current = false[\s\S]*setPolicy\(presets\.unlockPolicy\)[\s\S]*clearPlaintextDraft\(\)/u
+    )
     expect(presets).toContain(
       "password: string,\n      policy: ShopperPresetsUnlockPolicy"
     )
     expect(presets).toContain("rememberPassword(password, policy)")
+    expect(presets).toContain(
+      "unlockPolicyState.ownerPubkey === identityPubkey"
+    )
   })
 
   it("stores an unlock password only after an explicit policy choice", () => {
@@ -560,7 +597,9 @@ describe("Market shopper preset integration", () => {
     const source = await Bun.file(
       "apps/market/src/hooks/useShopperPresets.tsx"
     ).text()
-    const setPolicyIndex = source.indexOf("setUnlockPolicy(policy)")
+    const setPolicyIndex = source.indexOf(
+      "setUnlockPolicyState({ ownerPubkey: identityPubkey, policy })"
+    )
     const persistIndex = source.indexOf(
       "persistShopperPresetsUnlock(",
       setPolicyIndex
