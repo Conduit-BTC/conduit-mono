@@ -192,6 +192,7 @@ describe("guest checkout order smoke", () => {
     const workflow = await Bun.file(
       ".github/workflows/guest-checkout-order-smoke.yml"
     ).text()
+    expect(workflow).toContain("timeout-minutes: 10")
     const smokeStepStart = workflow.indexOf(
       "- name: Create and recover encrypted guest order"
     )

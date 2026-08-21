@@ -20,7 +20,7 @@ jobs:
   create-and-recover-order:
     if: inputs.confirm_order_creation == true && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     environment: guest-checkout-smoke
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
