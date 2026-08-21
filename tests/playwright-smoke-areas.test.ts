@@ -6,6 +6,11 @@ import {
   validatePlaywrightSmokeAreas,
 } from "../scripts/ci/validate_playwright_smoke_areas"
 
+const playwrightConfig = await Bun.file("playwright.config.ts").text()
+const smokeAreaValidator = await Bun.file(
+  "scripts/ci/validate_playwright_smoke_areas.ts"
+).text()
+
 function reportWithSpecs(
   specs: NonNullable<
     NonNullable<PlaywrightJsonReport["suites"]>[number]["specs"]
@@ -21,6 +26,16 @@ function reportWithSpecs(
 }
 
 describe("Playwright smoke area validation", () => {
+  it("disables app servers during all-area tag discovery", () => {
+    expect(smokeAreaValidator).toContain('PLAYWRIGHT_SMOKE_DISCOVERY: "true"')
+    expect(playwrightConfig).toContain(
+      'process.env.PLAYWRIGHT_SMOKE_DISCOVERY === "true"'
+    )
+    expect(playwrightConfig).toContain(
+      "webServer: smokeDiscovery ? undefined : webServer"
+    )
+  })
+
   it("counts structured tags when titles contain no area token", () => {
     const counts = validatePlaywrightSmokeAreas(
       reportWithSpecs([

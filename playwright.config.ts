@@ -3,6 +3,7 @@ import { defineConfig, devices } from "@playwright/test"
 import { smokeAreaTags } from "./e2e/helpers/smoke-areas"
 
 const CI = !!process.env.CI
+const smokeDiscovery = process.env.PLAYWRIGHT_SMOKE_DISCOVERY === "true"
 const marketPort = process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"
 const merchantPort = process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"
 const e2eEnv = [
@@ -63,5 +64,5 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"] },
     },
   ],
-  webServer,
+  webServer: smokeDiscovery ? undefined : webServer,
 })

@@ -169,6 +169,7 @@ function discoverPlaywrightTests(): PlaywrightJsonReport {
       encoding: "utf8",
       env: {
         ...process.env,
+        PLAYWRIGHT_SMOKE_DISCOVERY: "true",
         PLAYWRIGHT_SMOKE_AREA: "all",
       },
     }
