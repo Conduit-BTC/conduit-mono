@@ -43,6 +43,7 @@ import {
   Switch,
 } from "@conduit/ui"
 import { useShopperPresets } from "../hooks/useShopperPresets"
+import { useShopperPricing } from "../hooks/useShopperPricing"
 import { requireAuth } from "../lib/auth"
 import { getShopperPreferencesSaveBlockers } from "../lib/shopper-preferences-validation"
 import type { ShopperPresetsUnlockPolicy } from "../lib/shopper-presets-store"
@@ -233,6 +234,7 @@ function UnlockPolicySelect({
 
 function PreferencesPage() {
   const presets = useShopperPresets()
+  const shopperPricing = useShopperPricing()
   const [draft, setDraft] = useState<ShopperPreferencesDraft>(
     normalizeShopperPreferencesDraft(presets.preset)
   )
@@ -335,6 +337,9 @@ function PreferencesPage() {
     const synced = await presets.save(value, password, policy)
     if (currentIdentityRef.current !== identity) return
     if (synced) {
+      shopperPricing.updateExistingDevicePriceOverrideAfterPresetSave(
+        value.display
+      )
       setDraft(normalizeShopperPreferencesDraft(value))
       setDirty(false)
       setResetMode(false)

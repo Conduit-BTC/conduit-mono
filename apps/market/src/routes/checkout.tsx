@@ -1690,7 +1690,11 @@ function CheckoutPage() {
       field === "phone"
         ? (sanitizeShippingPhoneInput(String(value)) as ShippingFormState[K])
         : value
-    const next = { ...shipping, [field]: normalizedValue }
+    const next = {
+      ...shipping,
+      [field]: normalizedValue,
+      ...(field === "firstName" || field === "lastName" ? { name: "" } : {}),
+    }
     setShipping(next)
     writeCheckoutShippingSession(next, undefined, undefined, draftOwnerIdentity)
     setShippingErrors(validateCheckoutDetails(next))

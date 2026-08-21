@@ -12,9 +12,14 @@ import {
 import { getShopperPreferencesSaveBlockers } from "../apps/market/src/lib/shopper-preferences-validation"
 import { getCartShippingDestinationEligibility } from "../apps/market/src/lib/cart-shipping-options"
 import {
+  buildShippingAddressFromForm,
+  validateShippingFields,
+} from "../apps/market/src/lib/checkout-validation"
+import {
   DEFAULT_CHECKOUT_SHIPPING,
   clearCheckoutShippingSession,
   getIdentityBoundShippingPreset,
+  getShippingFormFromPreset,
   readCheckoutShippingInitialization,
   writeCheckoutShippingSession,
 } from "../apps/market/src/lib/checkout-session"
@@ -428,6 +433,35 @@ describe("Market shopper preset integration", () => {
       value: draft,
       hasActiveDraft: true,
     })
+  })
+
+  it("hydrates single-name and organization recipients without changing their order names", () => {
+    const cases = [
+      {
+        recipientName: "Madonna",
+        firstName: "Madonna",
+        lastName: "",
+      },
+      {
+        recipientName: "Acme Trading Company",
+        firstName: "Acme Trading",
+        lastName: "Company",
+      },
+    ]
+
+    for (const expected of cases) {
+      const shipping = getShippingFormFromPreset({
+        ...preset,
+        recipientName: expected.recipientName,
+      })
+
+      expect(shipping.firstName).toBe(expected.firstName)
+      expect(shipping.lastName).toBe(expected.lastName)
+      expect(validateShippingFields(shipping)).toEqual([])
+      expect(buildShippingAddressFromForm(shipping).name).toBe(
+        expected.recipientName
+      )
+    }
   })
 
   it("does not expose one identity's preset after an identity transition", () => {
