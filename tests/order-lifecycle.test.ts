@@ -451,14 +451,15 @@ describe("order payment admission", () => {
     })
   })
 
-  it("lets exact zap receipt evidence supersede and fence an active claim", async () => {
+  it("transfers pending proof work when exact receipt evidence fences a payment claim", async () => {
     const claimed: OrderLifecycle = {
       ...lifecycle,
       paymentClaimId: input.paymentClaimId,
       paymentClaimedAt: Date.now(),
       paymentClaimLeaseExpiresAt: Date.now() + ORDER_PAYMENT_CLAIM_LEASE_MS,
       invoiceStatus: "received",
-      paymentStatus: "paying",
+      paymentStatus: "paid",
+      proofDeliveryStatus: "pending",
       invoice: "lnbc1public",
       zapRequestId: "zap-request-current",
       zapReceiptStatus: "waiting",
@@ -488,6 +489,27 @@ describe("order payment admission", () => {
       )
       expect(staleFailure.status).toBe("claim_mismatch")
       expect(state.lifecycle()?.paymentStatus).toBe("paid")
+
+      const duplicateReceipt = await recordObservedOrderPaymentReceipt(
+        claimed.orderId,
+        {
+          zapRequestId: "zap-request-current",
+          zapReceiptId: "zap-receipt-current",
+          proofDeliveryStatus: "pending",
+        }
+      )
+      expect(duplicateReceipt.status).toBe("recorded")
+      if (duplicateReceipt.status !== "recorded") {
+        throw new Error("duplicate receipt not recorded")
+      }
+      expect(duplicateReceipt.proofDeliveryClaimed).toBe(false)
+
+      await recordOrderPaymentWalletSuccessRecovery(claimed.orderId, {
+        proofDeliveryStatus: "pending",
+        invoice: claimed.invoice!,
+        preimage: "payment-preimage",
+      })
+      expect(state.lifecycle()?.proofDeliveryStatus).toBe("pending")
     })
   })
 

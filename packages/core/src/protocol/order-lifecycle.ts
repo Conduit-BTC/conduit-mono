@@ -649,10 +649,13 @@ export async function recordObservedOrderPaymentReceipt(
       return { status: "request_mismatch", lifecycle }
     }
 
+    // Exact receipt evidence fences the payment owner below, so transfer any
+    // pending proof work it held without stealing another proof publisher's lock.
     const proofDeliveryClaimed =
-      lifecycle.proofDeliveryStatus !== "pending" &&
       lifecycle.proofDeliveryStatus !== "sent" &&
-      input.proofDeliveryStatus === "pending"
+      input.proofDeliveryStatus === "pending" &&
+      (lifecycle.proofDeliveryStatus !== "pending" ||
+        !!lifecycle.paymentClaimId)
 
     const recorded = mergeOrderLifecyclePatch(lifecycle, {
       paymentClaimId: undefined,
