@@ -354,6 +354,10 @@ The target shape is:
 - `@commerce`: shared buyer-to-merchant signing, relay, messaging, checkout,
   order, invoice, and payment behavior.
 
+`@commerce` remains reserved until AC-SELECT-2, tracked by CND-193, is
+implemented. Until then, shared commerce changes must run the applicable
+current `@market` and `@merchant` shards.
+
 Use explicit Playwright tags or projects. Do not route a test through
 human-readable title capitalization.
 
@@ -365,7 +369,7 @@ The selector and validator must:
 - run every applicable tag for shared Playwright and runtime changes;
 - keep docs-only changes eligible to skip browser installation.
 
-Run `@commerce` for changes to:
+After AC-SELECT-2 is implemented, run `@commerce` for changes to:
 
 - checkout or order creation;
 - product publish and discovery contracts;
