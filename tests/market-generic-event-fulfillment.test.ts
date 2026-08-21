@@ -65,8 +65,11 @@ describe("generic Market event fulfillment", () => {
       "useProductCartFulfillment(selectedProduct, btcUsdRate)"
     )
     expect(resolvedCard).toContain("cartItemInputFromProductSelection(")
-    expect(resolvedCard).toContain("item.productId === selectedProduct.id")
-    expect(resolvedCard).toContain("cart.removeItem(selectedProduct.id)")
+    expect(resolvedCard).toContain(
+      "selectCartItem(cart.items, selectedIdentity)"
+    )
+    expect(resolvedCard).toContain("cart.removeItem(selectedIdentity)")
+    expect(resolvedCard).toContain("cart.setQuantity(selectedIdentity")
     expect(resolvedCard).toContain("selectedProductId={selectedProduct.id}")
     expect(variations).toContain("familyProductId:")
     expect(variations).toContain("selectedSpecifications:")
@@ -90,10 +93,9 @@ describe("generic Market event fulfillment", () => {
     expect(checkout).toContain("resolveProductCartFulfillment")
     expect(checkout).toContain("refreshResult.products.map")
     expect(checkout).toContain("bindCartItemsToFreshProductPricing")
+    expect(checkout.match(/const freshCheckoutItems =/g)).toHaveLength(2)
     expect(
-      checkout.match(
-        /const freshCheckoutItems = await assertCheckoutItemsAvailable\(\)/g
-      )
+      checkout.match(/await assertCheckoutItemsAvailable\(/g)
     ).toHaveLength(2)
     expect(
       checkout.match(/getFreshPricingIntent\(freshCheckoutItems\)/g)

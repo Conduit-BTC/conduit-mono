@@ -350,7 +350,7 @@ describe("Market event pickup fulfillment", () => {
       itemSubtotalSats: 0,
       shippingTotalSats: 0,
       totalSats: 0,
-      canZapOut: false,
+      shippingReadyForZap: true,
     })
     const intent = buildCheckoutPricingIntent(binding.items, null)
     expect(intent).toMatchObject({
