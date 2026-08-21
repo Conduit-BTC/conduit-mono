@@ -97,4 +97,19 @@ describe("pull request evidence contract", () => {
     expect(reviewInstructions).toContain("No actionable findings.")
     expect(reviewWorkflow).toContain("No actionable findings.")
   })
+
+  it("keeps the commerce shard reserved until its selector is implemented", () => {
+    expect(testingSpec).toContain(
+      "`@commerce` remains reserved until AC-SELECT-2, tracked by CND-193, is"
+    )
+    expect(testingSpec).toContain(
+      "shared commerce changes must run the applicable"
+    )
+    expect(testingSpec).toContain(
+      "After AC-SELECT-2 is implemented, run `@commerce` for changes to:"
+    )
+    expect(contributing).toContain(
+      "Reserve `@commerce` for the cross-app\ncommerce shard defined in the testing specification."
+    )
+  })
 })
