@@ -21,7 +21,19 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: agent-pr-review-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number || github.ref }}
+  group: >-
+    agent-pr-review-${{
+      ((github.event_name == 'issue_comment' ||
+        github.event_name == 'pull_request_review_comment') &&
+        (github.event.comment.body != '/agent review' ||
+          !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'),
+            github.event.comment.author_association)) &&
+        format('non-review-comment-{0}', github.run_id)) ||
+      github.event.pull_request.number ||
+      github.event.issue.number ||
+      inputs.pr_number ||
+      github.ref
+    }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
 
 jobs:

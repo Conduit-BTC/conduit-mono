@@ -17,6 +17,10 @@ const reviewWorkflow = await Bun.file(
 const simplifyWorkflow = await Bun.file(
   ".github/workflows/agent-simplify-review.yml"
 ).text()
+const reviewConcurrency = reviewWorkflow.slice(
+  reviewWorkflow.indexOf("concurrency:"),
+  reviewWorkflow.indexOf("\njobs:")
+)
 const workflowDirectory = ".github/workflows"
 const workflows = await Promise.all(
   (await readdir(workflowDirectory))
@@ -182,9 +186,24 @@ fi
 }
 
 describe("agent review handoff", () => {
-  it("does not treat uncommanded review comments as pull request events", () => {
+  it("shares PR review concurrency only with trusted commands", () => {
     expect(reviewWorkflow).toContain("github.event_name == 'pull_request' &&")
     expect(reviewWorkflow).not.toContain("github.event.pull_request ||")
+    expect(reviewConcurrency).toContain(
+      "github.event.comment.body != '/agent review'"
+    )
+    expect(reviewConcurrency).toContain(
+      '!contains(fromJSON(\'["OWNER","MEMBER","COLLABORATOR"]\'),'
+    )
+    expect(reviewConcurrency).toContain(
+      "github.event.comment.author_association"
+    )
+    expect(reviewConcurrency).toContain(
+      "format('non-review-comment-{0}', github.run_id)"
+    )
+    expect(reviewConcurrency).toContain("github.event.pull_request.number ||")
+    expect(reviewConcurrency).toContain("github.event.issue.number ||")
+    expect(reviewConcurrency).toContain("inputs.pr_number ||")
     expect(reviewWorkflow).toContain(
       "cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}"
     )
