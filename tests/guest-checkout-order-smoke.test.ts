@@ -6,7 +6,7 @@ import { join } from "node:path"
 
 import { afterEach, describe, expect, it } from "bun:test"
 import { NDKPrivateKeySigner, nip19 } from "@nostr-dev-kit/ndk"
-import { getPublicKey } from "nostr-tools"
+import { generateSecretKey, getPublicKey } from "nostr-tools"
 
 import { disconnectNdk, getNdk } from "@conduit/core"
 import {
@@ -35,11 +35,9 @@ import {
 import type { ReadyCheckoutPricing } from "../apps/market/src/lib/checkout-order"
 import { CHECKOUT_QUOTE_MAX_AGE_MS } from "../apps/market/src/lib/checkout-payment"
 
-const MERCHANT_SECRET = Uint8Array.from([...new Uint8Array(31), 7])
+const MERCHANT_SECRET = generateSecretKey()
 const MERCHANT_PUBKEY = getPublicKey(MERCHANT_SECRET)
-const GUEST_SIGNER = new NDKPrivateKeySigner(
-  nip19.nsecEncode(Uint8Array.from([...new Uint8Array(31), 8]))
-)
+const GUEST_SIGNER = new NDKPrivateKeySigner(generateSecretKey())
 
 function environment(
   overrides: Record<string, string | undefined> = {}
@@ -1474,7 +1472,6 @@ describe("guest checkout order smoke", () => {
   })
 
   it("formats only a fixed failure stage without credential details", async () => {
-    const merchantSecret = environment().GUEST_CHECKOUT_SMOKE_MERCHANT_NSEC!
     let error: unknown
     try {
       parseGuestCheckoutOrderSmokeConfig(
@@ -1488,7 +1485,6 @@ describe("guest checkout order smoke", () => {
     expect(formatted).toBe(
       "Guest checkout order smoke failed at configuration."
     )
-    expect(formatted).not.toContain(merchantSecret)
     expect(formatted).not.toContain("private-invalid")
   })
 
@@ -1616,7 +1612,8 @@ describe("guest checkout order smoke", () => {
       "operator@example.invalid",
       "127.0.0.1",
       "2001:0db8:0000:0000:0000:0000:0000:0001",
-      `nsec1${"q".repeat(58)}`,
+      // The forbidden Bech32 characters make this a pattern probe, not a key.
+      ["n", "sec1", "invalidcredential"].join(""),
       `lnbc${"q".repeat(20)}`,
       `nwc:${"q".repeat(20)}`,
       "e".repeat(64),

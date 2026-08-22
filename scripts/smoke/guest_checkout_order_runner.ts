@@ -665,9 +665,7 @@ export async function runGuestCheckoutOrderSmoke(
     throw stageFailure("order_publish", error)
   }
 
-  const merchantSigner = new NDKPrivateKeySigner(
-    nip19.nsecEncode(config.merchantPrivateKey)
-  )
+  const merchantSigner = new NDKPrivateKeySigner(config.merchantPrivateKey)
   const merchantSignerLease = setSigner(merchantSigner)
   const protectedReadSession = createProtectedReadSessionLifecycle()
   let merchantSignerAuthorityCurrent = true

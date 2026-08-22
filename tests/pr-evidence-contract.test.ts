@@ -10,6 +10,12 @@ const [
   reviewInstructions,
   reviewWorkflow,
   testingSpec,
+  guestSmokeWorkflow,
+  guestSmokeEntrypoint,
+  guestSmokeEvidence,
+  guestSmokeRunner,
+  guestSmokeEvidenceValidator,
+  guestSmokeTests,
 ] = await Promise.all([
   read("AGENTS.md"),
   read(".github/CODEOWNERS"),
@@ -18,6 +24,12 @@ const [
   read(".github/instructions/pr-review.instructions.md"),
   read(".github/workflows/agent-pr-review.yml"),
   read("docs/specs/testing-e2e.md"),
+  read(".github/workflows/guest-checkout-order-smoke.yml"),
+  read("scripts/smoke/guest_checkout_order.ts"),
+  read("scripts/smoke/guest_checkout_order_evidence.ts"),
+  read("scripts/smoke/guest_checkout_order_runner.ts"),
+  read("scripts/ci/validate_guest_checkout_order_evidence.ts"),
+  read("tests/guest-checkout-order-smoke.test.ts"),
 ])
 
 const dispositions = [
@@ -98,6 +110,40 @@ describe("pull request evidence contract", () => {
     )
     expect(reviewInstructions).toContain("No actionable findings.")
     expect(reviewWorkflow).toContain("No actionable findings.")
+  })
+
+  it("keeps literal private credentials out of protected smoke source", () => {
+    const literalNsec = /\bnsec1[023456789acdefghjklmnpqrstuvwxyz]{50,}\b/i
+    const literalPrivateScalars = [
+      /["'`][0-9a-f]{64}["'`]/i,
+      /Uint8Array\.from\(\s*\[\.\.\.new Uint8Array\(31\),\s*\d+\]\s*\)/,
+      /new Uint8Array\(32\)\.fill\(\s*(?:0x[0-9a-f]+|\d+)\s*\)/i,
+      /(?:Uint8Array\.from|new Uint8Array)\(\s*\[(?:\s*(?:0x[0-9a-f]{1,2}|\d{1,3})\s*,){31}\s*(?:0x[0-9a-f]{1,2}|\d{1,3})\s*\]\s*\)/i,
+    ]
+    const protectedSmokeSources = [
+      guestSmokeWorkflow,
+      guestSmokeEntrypoint,
+      guestSmokeEvidence,
+      guestSmokeRunner,
+      guestSmokeEvidenceValidator,
+      guestSmokeTests,
+    ]
+
+    for (const source of protectedSmokeSources) {
+      expect(literalNsec.test(source)).toBe(false)
+      expect(
+        literalPrivateScalars.some((pattern) => pattern.test(source))
+      ).toBe(false)
+    }
+    expect(guestSmokeTests.includes("generateSecretKey()")).toBe(true)
+    expect(
+      guestSmokeRunner.includes(
+        "new NDKPrivateKeySigner(config.merchantPrivateKey)"
+      )
+    ).toBe(true)
+    expect(
+      guestSmokeRunner.includes("nip19.nsecEncode(config.merchantPrivateKey)")
+    ).toBe(false)
   })
 
   it("keeps the commerce shard reserved until its selector is implemented", () => {
