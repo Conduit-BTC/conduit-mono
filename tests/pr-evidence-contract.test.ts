@@ -6,18 +6,32 @@ const [
   agents,
   codeowners,
   contributing,
+  envExample,
   prTemplate,
   reviewInstructions,
   reviewWorkflow,
   testingSpec,
+  guestSmokeWorkflow,
+  guestSmokeEntrypoint,
+  guestSmokeEvidence,
+  guestSmokeRunner,
+  guestSmokeEvidenceValidator,
+  guestSmokeTests,
 ] = await Promise.all([
   read("AGENTS.md"),
   read(".github/CODEOWNERS"),
   read("CONTRIBUTING.md"),
+  read(".env.example"),
   read(".github/pull_request_template.md"),
   read(".github/instructions/pr-review.instructions.md"),
   read(".github/workflows/agent-pr-review.yml"),
   read("docs/specs/testing-e2e.md"),
+  read(".github/workflows/guest-checkout-order-smoke.yml"),
+  read("scripts/smoke/guest_checkout_order.ts"),
+  read("scripts/smoke/guest_checkout_order_evidence.ts"),
+  read("scripts/smoke/guest_checkout_order_runner.ts"),
+  read("scripts/ci/validate_guest_checkout_order_evidence.ts"),
+  read("tests/guest-checkout-order-smoke.test.ts"),
 ])
 
 const dispositions = [
@@ -66,9 +80,11 @@ describe("pull request evidence contract", () => {
       "playwright.config.ts",
       "scripts/smoke/**",
       "scripts/ci/select_smoke_shards.ts",
+      "scripts/ci/validate_guest_checkout_order_evidence.ts",
       "scripts/ci/validate_playwright_smoke_areas.ts",
       "docs/specs/testing-e2e.md",
       "tests/agent-review-handoff.test.ts",
+      "tests/guest-checkout-order-smoke.test.ts",
       "tests/playwright-smoke-credential-fixtures.test.ts",
       "tests/playwright-smoke-content-safety.test.ts",
       "tests/playwright-smoke-areas.test.ts",
@@ -161,6 +177,68 @@ describe("pull request evidence contract", () => {
       "Merge-readiness verdict: READY FOR HUMAN APPROVAL"
     )
     expect(reviewWorkflow).toContain("Merge-readiness verdict: BLOCKED")
+  })
+
+  it("keeps literal private credentials out of protected smoke source", () => {
+    const literalNsec = /\bnsec1[023456789acdefghjklmnpqrstuvwxyz]{50,}\b/i
+    const literalPrivateScalars = [
+      /["'`][0-9a-f]{64}["'`]/i,
+      /Uint8Array\.from\(\s*\[\.\.\.new Uint8Array\(31\),\s*\d+\]\s*\)/,
+      /new Uint8Array\(32\)\.fill\(\s*(?:0x[0-9a-f]+|\d+)\s*\)/i,
+      /(?:Uint8Array\.from|new Uint8Array)\(\s*\[(?:\s*(?:0x[0-9a-f]{1,2}|\d{1,3})\s*,){31}\s*(?:0x[0-9a-f]{1,2}|\d{1,3})\s*\]\s*\)/i,
+    ]
+    const protectedSmokeSources = [
+      guestSmokeWorkflow,
+      guestSmokeEntrypoint,
+      guestSmokeEvidence,
+      guestSmokeRunner,
+      guestSmokeEvidenceValidator,
+      guestSmokeTests,
+    ]
+
+    for (const source of protectedSmokeSources) {
+      expect(literalNsec.test(source)).toBe(false)
+      expect(
+        literalPrivateScalars.some((pattern) => pattern.test(source))
+      ).toBe(false)
+    }
+    expect(guestSmokeTests.includes("generateSecretKey()")).toBe(true)
+    expect(
+      guestSmokeRunner.includes(
+        "new NDKPrivateKeySigner(config.merchantPrivateKey)"
+      )
+    ).toBe(false)
+    expect(guestSmokeRunner.includes("restoreRemoteSigner")).toBe(true)
+    expect(
+      guestSmokeRunner.includes("GUEST_CHECKOUT_SMOKE_MERCHANT_NSEC")
+    ).toBe(false)
+    expect(
+      guestSmokeWorkflow.includes("GUEST_CHECKOUT_SMOKE_MERCHANT_NSEC")
+    ).toBe(false)
+    expect(envExample.includes("GUEST_CHECKOUT_SMOKE_MERCHANT_NSEC")).toBe(
+      false
+    )
+    expect(envExample.includes("Put the nsec")).toBe(false)
+    expect(envExample).toContain(
+      "Never place the merchant account nsec or private key"
+    )
+    const accountKeyEncodingCall = [
+      "nip19.",
+      "nsec",
+      "Encode(config.merchantPrivateKey)",
+    ].join("")
+    expect(guestSmokeRunner.includes(accountKeyEncodingCall)).toBe(false)
+  })
+
+  it("binds the protected live canary to the requested main commit", () => {
+    expect(guestSmokeWorkflow).toContain("expected_candidate_sha:")
+    expect(guestSmokeWorkflow).toContain(
+      "EXPECTED_CANDIDATE_SHA: ${{ inputs.expected_candidate_sha }}"
+    )
+    expect(guestSmokeWorkflow).toContain(
+      '"$EXPECTED_CANDIDATE_SHA" != "$CANDIDATE_SHA"'
+    )
+    expect(guestSmokeWorkflow).toContain("queue: max")
   })
 
   it("keeps the commerce shard reserved until its selector is implemented", () => {

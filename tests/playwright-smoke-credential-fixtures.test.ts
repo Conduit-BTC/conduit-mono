@@ -499,15 +499,33 @@ describe("Playwright smoke credential fixtures", () => {
     ).toEqual([])
   })
 
-  it("keeps static credential-shaped material out of E2E sources", async () => {
+  it("keeps static credential-shaped material out of smoke sources", async () => {
     const findings: CredentialFixtureFinding[] = []
     const glob = new Bun.Glob("e2e/**/*.ts")
-    let scannedSourceCount = 0
+    const files = new Set([
+      ".env.example",
+      ".github/workflows/guest-checkout-order-smoke.yml",
+      "scripts/ci/validate_guest_checkout_order_evidence.ts",
+      "scripts/smoke/guest_checkout_order.ts",
+      "scripts/smoke/guest_checkout_order_evidence.ts",
+      "scripts/smoke/guest_checkout_order_runner.ts",
+      "tests/guest-checkout-order-smoke.test.ts",
+    ])
 
     for await (const file of glob.scan({ cwd: ".", onlyFiles: true })) {
+      files.add(file)
+    }
+    for (const file of files) {
       const source = await Bun.file(file).text()
-      scannedSourceCount += 1
-      findings.push(...findStaticCredentialFixtures(file, source))
+      findings.push(
+        ...findStaticCredentialFixtures(
+          file,
+          source,
+          undefined,
+          1,
+          credentialRulesForFile(file)
+        )
+      )
     }
 
     findings.sort(
@@ -517,7 +535,7 @@ describe("Playwright smoke credential fixtures", () => {
         left.rule.localeCompare(right.rule)
     )
 
-    expect(scannedSourceCount).toBeGreaterThan(0)
+    expect(files.size).toBeGreaterThan(7)
     expect(findings).toEqual([])
   })
 

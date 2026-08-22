@@ -12,9 +12,11 @@ e2e/** @dylangolow @ericfj2140
 playwright.config.ts @dylangolow @ericfj2140
 scripts/smoke/** @dylangolow @ericfj2140
 scripts/ci/select_smoke_shards.ts @dylangolow @ericfj2140
+scripts/ci/validate_guest_checkout_order_evidence.ts @dylangolow @ericfj2140
 scripts/ci/validate_playwright_smoke_areas.ts @dylangolow @ericfj2140
 docs/specs/testing-e2e.md @dylangolow @ericfj2140
 tests/agent-review-handoff.test.ts @dylangolow @ericfj2140
+tests/guest-checkout-order-smoke.test.ts @dylangolow @ericfj2140
 tests/playwright-smoke-credential-fixtures.test.ts @dylangolow @ericfj2140
 tests/playwright-smoke-content-safety.test.ts @dylangolow @ericfj2140
 tests/playwright-smoke-areas.test.ts @dylangolow @ericfj2140

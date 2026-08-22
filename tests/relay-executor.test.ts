@@ -2144,6 +2144,35 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
     ).toBeUndefined()
   })
 
+  it("marks a protected inbox read capped when 200 events fill its limit", async () => {
+    const events = Array.from({ length: 200 }, (_, index) =>
+      giftWrap(`bounded-gift-wrap-${index}`)
+    )
+    const harness = new FakeRelayHarness().at("wss://protected.example", {
+      onSend: (socket, frame) => {
+        if (frame[0] !== "REQ") return
+        for (const event of events) {
+          socket.relay(["EVENT", frame[1], event])
+        }
+        socket.relay(["EOSE", frame[1]])
+      },
+    })
+    const { authorization } = authorize()
+
+    const inbox = await readProtectedInbox({
+      principalPubkey: PUBKEY_A,
+      relayUrls: ["wss://protected.example"],
+      limit: 200,
+      authorization,
+      executor: createExecutor(harness),
+    })
+
+    expect(inbox.events).toHaveLength(200)
+    expect(inbox.relayResult.status).toBe("success")
+    expect(inbox.capped).toBe(true)
+    expect(inbox.coverage).toBe("partial")
+  })
+
   it("bounds unmatched frames, event floods, and per-relay bytes", async () => {
     const unmatchedHarness = new FakeRelayHarness().at(
       "wss://protected.example",
