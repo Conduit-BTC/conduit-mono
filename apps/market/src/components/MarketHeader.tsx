@@ -23,6 +23,7 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
+  Input,
   cn,
 } from "@conduit/ui"
 
@@ -472,7 +473,7 @@ export function MarketHeader() {
             }}
           >
             <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--text-muted)]" />
-            <input
+            <Input
               ref={searchInputRef}
               value={searchValue}
               onChange={(event) => {
@@ -481,7 +482,7 @@ export function MarketHeader() {
               }}
               placeholder="Search"
               aria-label="Search products"
-              className="h-10 w-full rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] pl-9 pr-9 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-0"
+              className="h-11 bg-[var(--surface-elevated)] pl-9 pr-9 focus-visible:ring-offset-0"
             />
             <div className="pointer-events-none absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-2 text-[var(--text-muted)]">
               {pendingSearch ? (

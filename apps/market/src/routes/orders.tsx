@@ -18,6 +18,7 @@ import {
   hasWebLN,
   listOrderLifecycles,
   normalizeLightningInvoice,
+  ORDER_PAYMENT_INTERRUPTED_BEFORE_WALLET_ERROR,
   pruneExpiredGuestOrderData,
   prepareProtectedReadRefreshState,
   pubkeyToNpub,
@@ -44,6 +45,7 @@ import {
   DecryptFailureNotice,
   LiveReadNotice,
   OrderMessagesWidget,
+  SearchInput,
   RefreshChip,
   Select,
   SelectTrigger,
@@ -63,7 +65,6 @@ import {
   MessageCircle,
   ReceiptText,
   RotateCw,
-  Search,
   ShoppingBag,
 } from "lucide-react"
 import { QRCodeSVG } from "qrcode.react"
@@ -103,6 +104,7 @@ import {
 } from "../lib/anon-zap-signer"
 import {
   canObserveOrderPublicZapReceipt,
+  getOrderPaymentState,
   observeOrderPublicZapReceipt,
   resendOrderProof,
   runOrderPrivateFallback,
@@ -111,6 +113,10 @@ import {
   subscribeOrderPayment,
   type OrderPaymentContext,
 } from "../lib/order-payment-service"
+import {
+  getNextOrderPaymentLeaseExpiry,
+  reconcileOrderPaymentForDisplay,
+} from "../lib/order-payment-recovery"
 
 type PriceFormatter = (price: CommercePriceLike) => ShopperPriceDisplay
 import {
@@ -924,6 +930,8 @@ function OrderDetail({
   }
 
   const showRetryPayment = vm.paymentStatus === "failed"
+  const recoveredBeforeWallet =
+    row.lifecycle?.lastError === ORDER_PAYMENT_INTERRUPTED_BEFORE_WALLET_ERROR
   const showAnonPaymentRecovery =
     showRetryPayment &&
     vm.publicZapSigner === "anon" &&
@@ -1151,7 +1159,7 @@ function OrderDetail({
             )}
             {showRetryPayment && (
               <Button
-                className="h-10 px-4 text-sm"
+                className="h-11 px-4 text-sm"
                 disabled={
                   busy ||
                   wallets.loading ||
@@ -1161,7 +1169,9 @@ function OrderDetail({
                 onClick={() => void withBusy(retryPayment)}
               >
                 <RotateCw className="h-4 w-4" />
-                Try payment again
+                {recoveredBeforeWallet
+                  ? "Continue payment"
+                  : "Try payment again"}
               </Button>
             )}
             {showAnonPaymentRecovery && (
@@ -1208,9 +1218,11 @@ function OrderDetail({
                         : showRetryPayment && !buildServiceCtx()
                           ? "The saved payment target is unavailable. Unlock or reconnect it, or explicitly choose another option."
                           : showRetryPayment
-                            ? showAnonPaymentRecovery
-                              ? "This older anonymous zap attempt failed before automatic fallback was available. No funds moved; retry it or continue with a private invoice."
-                              : "No funds moved. You can retry payment for this order."
+                            ? recoveredBeforeWallet
+                              ? "Conduit closed before the invoice reached a wallet. Continuing reuses this order; no funds moved."
+                              : showAnonPaymentRecovery
+                                ? "This older anonymous zap attempt failed before automatic fallback was available. No funds moved; retry it or continue with a private invoice."
+                                : "No funds moved. You can retry payment for this order."
                             : "Payment went through; the receipt didn't reach the merchant."}
             </span>
             {recoveryError && (
@@ -1541,12 +1553,17 @@ function OrdersPage() {
     ],
     enabled: !!activeBuyerPubkey,
     queryFn: async () => {
-      if (signerConnected) return listOrderLifecycles(activeBuyerPubkey!)
+      if (signerConnected) {
+        const rows = await listOrderLifecycles(activeBuyerPubkey!)
+        return Promise.all(
+          rows.map((lifecycle) => reconcileOrderPaymentForDisplay(lifecycle))
+        )
+      }
       if (!selectedFromUrl || !guestIdentity) return []
       const lifecycle = await db.orderLifecycles.get(selectedFromUrl)
       if (!lifecycle || lifecycle.buyerPubkey !== guestIdentity.pubkey)
         return []
-      return [lifecycle]
+      return [await reconcileOrderPaymentForDisplay(lifecycle)]
     },
     refetchInterval: 30_000,
   })
@@ -1571,6 +1588,22 @@ function OrdersPage() {
     }
     void lifecyclesQuery.refetch()
   }, [activeBuyerPubkey, lifecyclesQuery, messagesQuery, signerConnected])
+
+  useEffect(() => {
+    const refetchAfterResume = () => {
+      if (document.visibilityState === "hidden") return
+      refetchAll()
+    }
+
+    window.addEventListener("focus", refetchAfterResume)
+    window.addEventListener("online", refetchAfterResume)
+    document.addEventListener("visibilitychange", refetchAfterResume)
+    return () => {
+      window.removeEventListener("focus", refetchAfterResume)
+      window.removeEventListener("online", refetchAfterResume)
+      document.removeEventListener("visibilitychange", refetchAfterResume)
+    }
+  }, [refetchAll])
 
   const conversations = useMemo(
     () =>
@@ -1602,6 +1635,20 @@ function OrdersPage() {
     () => lifecyclesQuery.data ?? [],
     [lifecyclesQuery.data]
   )
+  const refetchLifecycles = lifecyclesQuery.refetch
+
+  useEffect(() => {
+    const nextLeaseExpiry = getNextOrderPaymentLeaseExpiry(lifecycles)
+    if (nextLeaseExpiry === null) return
+
+    const timer = window.setTimeout(
+      () => {
+        void refetchLifecycles()
+      },
+      Math.max(0, nextLeaseExpiry - Date.now() + 50)
+    )
+    return () => window.clearTimeout(timer)
+  }, [lifecycles, refetchLifecycles])
 
   useEffect(() => {
     const resumeReceiptObservers = () => {
@@ -1735,14 +1782,16 @@ function OrdersPage() {
   })
   useEffect(() => {
     if (!selected?.orderId) return
-    const unsub = subscribeOrderPayment(selected.orderId, () => {
-      void lifecyclesQuery.refetch()
+    const refreshPaymentState = () => {
+      void refetchLifecycles()
       void queryClient.invalidateQueries({
         queryKey: ["buyer-payment-attempt", selected.orderId],
       })
-    })
+    }
+    const unsub = subscribeOrderPayment(selected.orderId, refreshPaymentState)
+    if (getOrderPaymentState(selected.orderId)) refreshPaymentState()
     return unsub
-  }, [lifecyclesQuery, queryClient, selected?.orderId])
+  }, [queryClient, refetchLifecycles, selected?.orderId])
 
   const selectedRow = useMemo<OrderRow | null>(() => {
     if (!selected) return null
@@ -1939,16 +1988,14 @@ function SearchBox({
   onChange: (value: string) => void
 }) {
   return (
-    <div className="relative mt-3">
-      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
-      <input
-        aria-label="Search orders"
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        placeholder="Search orders"
-        className="h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] pl-9 pr-3 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-primary-500 focus:ring-2 focus:ring-primary-500/30"
-      />
-    </div>
+    <SearchInput
+      aria-label="Search orders"
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      placeholder="Search orders"
+      containerClassName="mt-3"
+      className="bg-[var(--surface-elevated)]"
+    />
   )
 }
 

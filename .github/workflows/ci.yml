@@ -193,10 +193,10 @@ jobs:
             ${{ runner.os }}-playwright-
       - name: Install Playwright system dependencies
         if: matrix.area != 'none'
-        run: bunx playwright install-deps chromium
-      - name: Install Playwright browser
+        run: bunx playwright install-deps chromium webkit
+      - name: Install Playwright browsers
         if: matrix.area != 'none'
-        run: bunx playwright install chromium
+        run: bunx playwright install chromium webkit
       - name: Run ${{ matrix.area }} Playwright smoke tests
         if: matrix.area != 'none'
         env:
