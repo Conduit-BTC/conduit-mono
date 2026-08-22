@@ -552,7 +552,10 @@ export async function runGuestCheckoutOrderSmoke(
   let productFingerprint: string
   let referencedShippingOption: ParsedShippingOption | null
   try {
-    const product = await getProduct({ productId: config.productAddress })
+    const product = await getProduct({
+      productId: config.productAddress,
+      revalidateCanonical: true,
+    })
     requireCurrentProductRead(product.meta)
     const item = requireGuestOrderCartItem(product.data, config)
     productFingerprint = getGuestOrderCartItemFingerprint(item)
@@ -591,7 +594,10 @@ export async function runGuestCheckoutOrderSmoke(
   }
 
   try {
-    const product = await getProduct({ productId: config.productAddress })
+    const product = await getProduct({
+      productId: config.productAddress,
+      revalidateCanonical: true,
+    })
     requireCurrentProductRead(product.meta)
     const refreshedItem = requireGuestOrderCartItem(product.data, config)
     if (

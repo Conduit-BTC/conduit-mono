@@ -455,8 +455,11 @@ and verification of the matching kind `9735` on an approved relay.
 The manual-only `Guest Checkout Order Smoke` workflow enters the protected
 `guest-checkout-smoke` GitHub environment, verifies that the dedicated merchant
 signer owns the configured merchant and product, and asks the shared
-exact-coordinate product query for the current signed listing. The listing and
-kind `5` deletion reads must have complete bounded coverage before publication.
+exact-coordinate product query for the current signed listing. Each product
+read refreshes the merchant's NIP-65 relay hints. Relay-list discovery, the
+bounded hint plan, the listing read, and the kind `5` deletion read must all be
+complete before publication. The runner repeats this check immediately before
+publish.
 The runner then generates a fresh `guest_ephemeral` identity, publishes one
 encrypted order through the shared Market delivery path, switches to the
 merchant signer, and polls Merchant's shared conversation query until a

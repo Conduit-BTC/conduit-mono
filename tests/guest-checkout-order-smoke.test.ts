@@ -1141,10 +1141,10 @@ describe("guest checkout order smoke", () => {
 
   it("requires exact product and complete merchant inbox reads", async () => {
     const config = parseGuestCheckoutOrderSmokeConfig(environment())
-    let productQuery: {
+    const productQueries: Array<{
       productId: string
       revalidateCanonical?: boolean
-    } | null = null
+    }> = []
     let published:
       | Parameters<
           NonNullable<
@@ -1160,7 +1160,7 @@ describe("guest checkout order smoke", () => {
     const result = await runGuestCheckoutOrderSmoke(config, {
       getProduct: async (query) => {
         productReads += 1
-        productQuery = query
+        productQueries.push(query)
         return productRead({
           product: {
             specifications: [
@@ -1249,9 +1249,12 @@ describe("guest checkout order smoke", () => {
     })
 
     expect(result).toEqual({ status: "passed" })
-    expect(productQuery).toEqual({
-      productId: `30402:${MERCHANT_PUBKEY}:fixture`,
-    })
+    expect(productQueries).toEqual(
+      Array.from({ length: 2 }, () => ({
+        productId: `30402:${MERCHANT_PUBKEY}:fixture`,
+        revalidateCanonical: true,
+      }))
+    )
     expect(productReads).toBe(2)
     expect(relayEvidence).toEqual({
       relayAttemptCount: 3,
