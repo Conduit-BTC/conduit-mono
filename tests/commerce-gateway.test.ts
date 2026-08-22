@@ -223,6 +223,21 @@ function makeSignedProductEvent(params: {
   return new NDKEvent(undefined, signed)
 }
 
+function makeRelayListEvent(params: {
+  pubkey: string
+  createdAt: number
+  writeRelayUrls: readonly string[]
+}): NDKEvent {
+  return {
+    id: `relay-list-${params.createdAt}`,
+    kind: EVENT_KINDS.RELAY_LIST,
+    pubkey: params.pubkey,
+    created_at: params.createdAt,
+    content: "",
+    tags: params.writeRelayUrls.map((relayUrl) => ["r", relayUrl, "write"]),
+  } as NDKEvent
+}
+
 function composeCheckoutAvailability(
   result: Awaited<ReturnType<typeof getProductsByIds>>,
   input: {
@@ -1627,6 +1642,156 @@ describe("commerce gateway", () => {
     expect(batch.meta.stale).toBe(true)
     expect(batch.meta.degraded).toBe(true)
     expect(cachedProducts[0]?.eventId).toBe(localProduct.id)
+  })
+
+  it("keeps exact-coordinate revalidation non-canonical without deletion coverage", async () => {
+    const product = makeSignedProductEvent({
+      dTag: "canonical-detail",
+      createdAt: 100,
+      title: "Canonical detail",
+      stock: 1,
+    })
+    const addressId = `30402:${product.pubkey}:canonical-detail`
+    let productFilter: Record<string, unknown> | null = null
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () => [],
+      fetchEventsFanoutDetailed: async (filter, options) => {
+        const relayUrls = options?.relayUrls?.length
+          ? options.relayUrls
+          : ["wss://canonical.example"]
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          productFilter = filter as Record<string, unknown>
+          return {
+            events: [product],
+            relays: relayUrls.map((relayUrl) => ({
+              relayUrl,
+              status: "success" as const,
+              eventCount: 1,
+            })),
+          }
+        }
+        return {
+          events: [],
+          relays: relayUrls.map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: 0,
+          })),
+        }
+      },
+    })
+
+    const result = await getProductDetail({
+      productId: addressId,
+      revalidateCanonical: true,
+    })
+
+    expect(productFilter).toMatchObject({
+      authors: [product.pubkey],
+      "#d": ["canonical-detail"],
+    })
+    expect(result.data?.eventId).toBe(product.id)
+    expect(result.meta).toMatchObject({
+      source: "commerce",
+      stale: false,
+      degraded: false,
+      capped: false,
+    })
+    expect(result.meta.capabilities.canonicalFreshness).toBe(false)
+  })
+
+  it("does not certify partial exact-coordinate relay coverage as canonical", async () => {
+    const product = makeSignedProductEvent({
+      dTag: "partial-detail",
+      createdAt: 100,
+      title: "Partial detail",
+      stock: 1,
+    })
+    const addressId = `30402:${product.pubkey}:partial-detail`
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () => [],
+      fetchEventsFanoutDetailed: async (_filter, options) => {
+        const relayUrls = options?.relayUrls?.length
+          ? options.relayUrls
+          : ["wss://complete.example", "wss://partial.example"]
+        const [completeRelayUrl, ...remainingRelayUrls] = relayUrls
+        const partialRelayUrls =
+          remainingRelayUrls.length > 0
+            ? remainingRelayUrls
+            : ["wss://partial.example"]
+        return {
+          events: [product],
+          relays: [
+            {
+              relayUrl: completeRelayUrl!,
+              status: "success" as const,
+              eventCount: 1,
+            },
+            ...partialRelayUrls.map((relayUrl) => ({
+              relayUrl,
+              status: "partial" as const,
+              eventCount: 0,
+            })),
+          ],
+        }
+      },
+    })
+
+    const result = await getProductDetail({
+      productId: addressId,
+      revalidateCanonical: true,
+    })
+
+    expect(result.data?.eventId).toBe(product.id)
+    expect(result.meta).toMatchObject({
+      source: "commerce",
+      stale: true,
+      degraded: true,
+    })
+    expect(result.meta.capabilities.canonicalFreshness).toBe(false)
+  })
+
+  it("keeps cached fallback stale when canonical revalidation is unavailable", async () => {
+    const cachedProduct = makeSignedProductEvent({
+      dTag: "cached-canonical-detail",
+      createdAt: 100,
+      title: "Cached canonical detail",
+      stock: 1,
+    })
+    const addressId = `30402:${cachedProduct.pubkey}:cached-canonical-detail`
+    await cacheSignedProductListingEvent(cachedProduct)
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () => [],
+      fetchEventsFanoutDetailed: async (_filter, options) => {
+        const relayUrls = options?.relayUrls?.length
+          ? options.relayUrls
+          : ["wss://unavailable.example"]
+        return {
+          events: [],
+          relays: relayUrls.map((relayUrl) => ({
+            relayUrl,
+            status: "failed" as const,
+            eventCount: 0,
+          })),
+        }
+      },
+    })
+
+    const result = await getProductDetail({
+      productId: addressId,
+      revalidateCanonical: true,
+    })
+
+    expect(result.data?.eventId).toBe(cachedProduct.id)
+    expect(result.meta).toMatchObject({
+      source: "local_cache",
+      stale: true,
+      degraded: true,
+    })
+    expect(result.meta.capabilities.canonicalFreshness).toBe(false)
   })
 
   it("uses the lower event id to resolve same-timestamp product versions", async () => {
@@ -3914,6 +4079,285 @@ describe("getProductsByIds diagnostics", () => {
     expect(result.meta.degraded).toBe(false)
   })
 
+  it("refreshes canonical relay hints before an atomic product read", async () => {
+    const cachedRelayUrl = "wss://cached-product-hint.conduit.market"
+    const currentRelayUrl = "wss://current-product-hint.conduit.market"
+    const oldProduct = makeSignedProductEvent({
+      dTag,
+      createdAt: 100,
+      title: "Old cached relay terms",
+      stock: 1,
+    })
+    const currentProduct = makeSignedProductEvent({
+      dTag,
+      createdAt: 200,
+      title: "Current relay terms",
+      stock: 0,
+    })
+    const currentRelayList = makeRelayListEvent({
+      pubkey: merchantPubkey,
+      createdAt: 200,
+      writeRelayUrls: [currentRelayUrl],
+    })
+    const productReadPlans: string[][] = []
+    const deletionReadPlans: string[][] = []
+    let productReadSkippedHealthFilter = false
+
+    __setRelayListTestOverrides({
+      loadCached: async (pubkey) =>
+        pubkey === merchantPubkey
+          ? {
+              pubkey,
+              readRelayUrls: [],
+              writeRelayUrls: [cachedRelayUrl],
+              eventCreatedAt: 100,
+              cachedAt: FIXED_NOW,
+            }
+          : undefined,
+      putCached: async () => {},
+      fetchEventsFanoutDetailed: async (_filter, options) => {
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        return {
+          events: [currentRelayList],
+          relays: relayUrls.map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: 1,
+          })),
+          eventsVerified: true,
+        }
+      },
+    })
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () => [],
+      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          productReadPlans.push(relayUrls)
+          productReadSkippedHealthFilter ||= options?.skipHealthFilter === true
+          return {
+            events: relayUrls.includes(currentRelayUrl)
+              ? [oldProduct, currentProduct]
+              : [oldProduct],
+            attemptedRelayUrls: relayUrls,
+            successfulRelayUrls: relayUrls,
+            failedRelayUrls: [],
+          }
+        }
+        deletionReadPlans.push(relayUrls)
+        return {
+          events: [],
+          attemptedRelayUrls: relayUrls,
+          successfulRelayUrls: relayUrls,
+          failedRelayUrls: [],
+        }
+      },
+    })
+
+    const result = await getAtomicProductDetail({
+      productId: addressId,
+      revalidateCanonical: true,
+    })
+
+    expect(productReadPlans).toHaveLength(1)
+    expect(productReadPlans[0]).toContain(currentRelayUrl)
+    expect(productReadPlans[0]).not.toContain(cachedRelayUrl)
+    expect(productReadSkippedHealthFilter).toBe(true)
+    expect(deletionReadPlans.length).toBeGreaterThan(0)
+    expect(
+      deletionReadPlans.every(
+        (relayUrls) =>
+          relayUrls.includes(currentRelayUrl) &&
+          !relayUrls.includes(cachedRelayUrl)
+      )
+    ).toBe(true)
+    expect(result.data?.eventId).toBe(currentProduct.id)
+    expect(result.data?.product.stock).toBe(0)
+    expect(result.meta).toMatchObject({ stale: false, degraded: false })
+  })
+
+  it("degrades canonical product reads when relay-hint refresh is unavailable", async () => {
+    const cachedRelayUrl = "wss://retained-product-hint.conduit.market"
+    const oldProduct = makeSignedProductEvent({
+      dTag,
+      createdAt: 100,
+      title: "Retained relay terms",
+      stock: 1,
+    })
+
+    __setRelayListTestOverrides({
+      loadCached: async (pubkey) =>
+        pubkey === merchantPubkey
+          ? {
+              pubkey,
+              readRelayUrls: [],
+              writeRelayUrls: [cachedRelayUrl],
+              eventCreatedAt: 100,
+              cachedAt: FIXED_NOW,
+            }
+          : undefined,
+      fetchEventsFanoutDetailed: async (_filter, options) => ({
+        events: [],
+        relays: [...(options?.relayUrls ?? [])].map((relayUrl) => ({
+          relayUrl,
+          status: "failed" as const,
+          eventCount: 0,
+        })),
+        eventsVerified: true,
+      }),
+    })
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () => [],
+      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        return {
+          events: filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+            ? [oldProduct]
+            : [],
+          attemptedRelayUrls: relayUrls,
+          successfulRelayUrls: relayUrls,
+          failedRelayUrls: [],
+        }
+      },
+    })
+
+    const result = await getProductsByIds([addressId], {
+      revalidateCanonical: true,
+    })
+
+    expect(result.data[0]?.eventId).toBe(oldProduct.id)
+    expect(result.diagnostics[0]).toMatchObject({
+      issue: null,
+      coverage: { listing: "partial", deletion: "partial" },
+    })
+    expect(result.meta).toMatchObject({ stale: true, degraded: true })
+  })
+
+  it("degrades canonical product reads when author hints exceed the bounded plan", async () => {
+    const writeRelayUrls = Array.from(
+      { length: 13 },
+      (_, index) => `wss://product-hint-${index}.conduit.market`
+    )
+    const product = makeSignedProductEvent({
+      dTag,
+      createdAt: 200,
+      title: "Hint-clamped terms",
+      stock: 1,
+    })
+    const relayList = makeRelayListEvent({
+      pubkey: merchantPubkey,
+      createdAt: 200,
+      writeRelayUrls,
+    })
+
+    __setRelayListTestOverrides({
+      loadCached: async () => undefined,
+      putCached: async () => {},
+      fetchEventsFanoutDetailed: async (_filter, options) => {
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        return {
+          events: [relayList],
+          relays: relayUrls.map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: 1,
+          })),
+          eventsVerified: true,
+        }
+      },
+    })
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () => [],
+      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        return {
+          events: filter.kinds?.includes(EVENT_KINDS.PRODUCT) ? [product] : [],
+          attemptedRelayUrls: relayUrls,
+          successfulRelayUrls: relayUrls,
+          failedRelayUrls: [],
+        }
+      },
+    })
+
+    const result = await getProductsByIds([addressId], {
+      revalidateCanonical: true,
+    })
+
+    expect(result.data[0]?.eventId).toBe(product.id)
+    expect(result.diagnostics[0]?.coverage).toEqual({
+      listing: "partial",
+      deletion: "partial",
+    })
+    expect(result.meta).toMatchObject({ stale: true, degraded: true })
+  })
+
+  it("keeps ordinary atomic product reads cache-first", async () => {
+    const cachedRelayUrl = "wss://cache-first-product-hint.conduit.market"
+    const networkRelayUrl = "wss://unused-network-product-hint.conduit.market"
+    const product = makeSignedProductEvent({
+      dTag,
+      createdAt: 100,
+      title: "Cache-first terms",
+      stock: 1,
+    })
+    let relayListNetworkReads = 0
+    let productReadPlan: string[] = []
+
+    __setRelayListTestOverrides({
+      loadCached: async (pubkey) =>
+        pubkey === merchantPubkey
+          ? {
+              pubkey,
+              readRelayUrls: [],
+              writeRelayUrls: [cachedRelayUrl],
+              eventCreatedAt: 100,
+              cachedAt: FIXED_NOW,
+            }
+          : undefined,
+      fetchEventsFanoutDetailed: async (_filter, options) => {
+        relayListNetworkReads += 1
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        return {
+          events: [
+            makeRelayListEvent({
+              pubkey: merchantPubkey,
+              createdAt: 200,
+              writeRelayUrls: [networkRelayUrl],
+            }),
+          ],
+          relays: relayUrls.map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: 1,
+          })),
+          eventsVerified: true,
+        }
+      },
+    })
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () => [],
+      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          productReadPlan = relayUrls
+        }
+        return {
+          events: filter.kinds?.includes(EVENT_KINDS.PRODUCT) ? [product] : [],
+          attemptedRelayUrls: relayUrls,
+          successfulRelayUrls: relayUrls,
+          failedRelayUrls: [],
+        }
+      },
+    })
+
+    const result = await getAtomicProductDetail({ productId: addressId })
+
+    expect(relayListNetworkReads).toBe(0)
+    expect(productReadPlan).toContain(cachedRelayUrl)
+    expect(productReadPlan).not.toContain(networkRelayUrl)
+    expect(result.data?.eventId).toBe(product.id)
+  })
+
   it("types malformed references without dropping valid coordinates", async () => {
     __setCommerceTestOverrides({
       fetchEventsFanout: async (filter) =>
@@ -4222,6 +4666,62 @@ describe("getProductsByIds diagnostics", () => {
     })
     expect(result.meta.source).toBe("commerce")
     expect(result.meta.degraded).toBe(true)
+  })
+
+  it("marks limit-saturated deletion evidence as partial", async () => {
+    const liveEvent = makeSignedProductEvent({
+      dTag: "diagnosed-deletion-saturated",
+      createdAt: 100,
+      title: "Deletion Coverage Saturated",
+    })
+    const liveAddressId = `30402:${liveEvent.pubkey}:diagnosed-deletion-saturated`
+    const saturatedDeletionEvents = Array.from({ length: 300 }, (_, index) =>
+      makeSignedDeletionEvent({
+        createdAt: 1_000 + index,
+        tags: [["a", `30402:${liveEvent.pubkey}:other-${index}`]],
+      })
+    )
+
+    __setCommerceTestOverrides({
+      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        return {
+          events: filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+            ? [liveEvent]
+            : [],
+          attemptedRelayUrls: relayUrls,
+          successfulRelayUrls: relayUrls,
+          failedRelayUrls: [],
+        }
+      },
+      fetchEventsFanoutDetailed: async (_filter, options) => {
+        const requestedRelayUrls = [...(options?.relayUrls ?? [])]
+        const relayUrls =
+          requestedRelayUrls.length > 0
+            ? requestedRelayUrls
+            : ["wss://relay.conduit.market"]
+        return {
+          events: saturatedDeletionEvents,
+          relays: relayUrls.map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: saturatedDeletionEvents.length,
+          })),
+          eventsVerified: true,
+        }
+      },
+    })
+
+    const result = await getProductsByIds([liveAddressId], {
+      revalidateCanonical: true,
+    })
+
+    expect(result.data[0]?.eventId === liveEvent.id).toBe(true)
+    expect(result.diagnostics[0]).toMatchObject({
+      issue: null,
+      coverage: { listing: "complete", deletion: "partial" },
+    })
+    expect(result.meta).toMatchObject({ stale: true, degraded: true })
   })
 
   it("allows positive live evidence when deletion discovery is unavailable", async () => {

@@ -93,7 +93,7 @@ describe("checkout completion navigation contracts", () => {
       "await assertCheckoutItemsAvailable(requestedCheckoutMode)"
     )
     const signedOrderReady = payNowSource.indexOf(
-      "orderRumor.content = JSON.stringify(orderPayload)"
+      "const orderRumor = buildCheckoutOrderRumor({"
     )
     const orderPublish = payNowSource.indexOf("await publishBuyerOrderMessage(")
     const paymentStarted = payNowSource.indexOf("directPaymentStarted = true")
@@ -117,6 +117,9 @@ describe("checkout completion navigation contracts", () => {
         /await assertCheckoutItemsAvailable\(requestedCheckoutMode\)/g
       )
     ).toHaveLength(1)
+    expect(signedOrderReady).toBeGreaterThan(-1)
+    expect(paymentAvailability).toBeGreaterThan(-1)
+    expect(orderPublish).toBeGreaterThan(-1)
     expect(paymentAvailability).toBeGreaterThan(signedOrderReady)
     expect(orderPublish).toBeGreaterThan(paymentAvailability)
     expect(paymentStarted).toBeGreaterThan(paymentAvailability)
@@ -173,6 +176,9 @@ describe("checkout completion navigation contracts", () => {
     const checkoutRoute = await Bun.file(
       "apps/market/src/routes/checkout.tsx"
     ).text()
+    const checkoutOrder = await Bun.file(
+      "apps/market/src/lib/checkout-order.ts"
+    ).text()
     const payNowIndex = checkoutRoute.indexOf("async function payNow(")
     const payNowEnd = checkoutRoute.indexOf(
       "// --- Full-screen transition states",
@@ -217,7 +223,9 @@ describe("checkout completion navigation contracts", () => {
     expect(otherPaymentIndex).toBeGreaterThan(sparkPaymentIndex)
     expect(checkoutRoute).not.toContain("prepareAnonZapCheckout")
     expect(checkoutRoute).not.toContain("pendingAnonAuthorization")
-    expect(checkoutRoute).toContain("for (const item of checkoutPricing.items)")
+    expect(checkoutRoute).toContain("buildCheckoutOrderRumor({")
+    expect(checkoutRoute).toContain("pricing: checkoutPricing")
+    expect(checkoutOrder).toContain("for (const item of input.pricing.items)")
     expect(checkoutRoute).toContain(
       "items: buildLifecycleItems(checkoutPricing.items)"
     )

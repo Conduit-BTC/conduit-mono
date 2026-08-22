@@ -186,10 +186,11 @@ function cachedOrderRow(): CachedOrderMessage {
   }
 }
 
-function emptyProtectedRead() {
+function emptyProtectedRead(capped = false) {
   return {
     events: [],
-    coverage: "complete" as const,
+    coverage: capped ? ("partial" as const) : ("complete" as const),
+    capped,
     auth: {
       state: "not_challenged" as const,
       challengedCount: 0,
@@ -365,6 +366,30 @@ describe("Market and Merchant protected inbox integration", () => {
       state: "unavailable",
       failure: "authentication_rejected",
     })
+  })
+
+  it("propagates bounded inbox saturation into commerce metadata", async () => {
+    __setCommerceTestOverrides({
+      getNdk: async () => ({ signer: {} }) as never,
+      resolveInboxRelayUrls: async () => [RELAY_URL],
+      readProtectedInbox: async () => emptyProtectedRead(true),
+      getCachedOrderMessages: async () => [],
+      putCachedOrderMessages: async () => undefined,
+      getCachedDirectMessages: async () => [],
+      putCachedDirectMessages: async () => undefined,
+    })
+    installProtectedReadSigner(signer(MERCHANT_KEY), MERCHANT, () => true)
+
+    const result = await getMerchantConversationList({
+      principalPubkey: MERCHANT,
+    })
+
+    expect(result.meta.inbox).toMatchObject({
+      coverage: "partial",
+      capped: true,
+    })
+    expect(result.meta.capped).toBe(true)
+    expect(result.meta.degraded).toBe(true)
   })
 
   it("does not return decrypted inbox data when session authority changes during unwrap", async () => {

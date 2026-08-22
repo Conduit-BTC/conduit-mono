@@ -1,6 +1,13 @@
-import { defineConfig, devices } from "@playwright/test"
+import {
+  defineConfig,
+  devices,
+  type ReporterDescription,
+} from "@playwright/test"
+
+import { smokeAreaTags } from "./e2e/helpers/smoke-areas"
 
 const CI = !!process.env.CI
+const smokeDiscovery = process.env.PLAYWRIGHT_SMOKE_DISCOVERY === "true"
 const marketPort = process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"
 const merchantPort = process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"
 const e2eEnv = [
@@ -11,6 +18,29 @@ const e2eEnv = [
   "VITE_PLAUSIBLE_SRC=data:text/javascript,",
 ].join(" ")
 const smokeArea = process.env.PLAYWRIGHT_SMOKE_AREA ?? "all"
+const smokeResultFile = process.env.PLAYWRIGHT_SMOKE_RESULT_FILE
+const smokeEvidenceValues = {
+  baseSha: process.env.PLAYWRIGHT_SMOKE_BASE_SHA ?? "",
+  sourceHeadSha: process.env.PLAYWRIGHT_SMOKE_SOURCE_HEAD_SHA ?? "",
+  testedSha: process.env.PLAYWRIGHT_SMOKE_TESTED_SHA ?? "",
+}
+const smokeEvidenceValueCount =
+  Object.values(smokeEvidenceValues).filter(Boolean).length
+if (smokeEvidenceValueCount > 0 && smokeEvidenceValueCount < 3) {
+  throw new Error(
+    "Playwright smoke evidence requires source, base, and tested SHAs"
+  )
+}
+const smokeEvidence =
+  smokeEvidenceValueCount === 3 ? smokeEvidenceValues : undefined
+if (CI && !smokeDiscovery && !smokeResultFile) {
+  throw new Error(
+    "CI Playwright smoke execution requires PLAYWRIGHT_SMOKE_RESULT_FILE"
+  )
+}
+const ciReporters: ReporterDescription[] = smokeResultFile
+  ? [["json", { outputFile: smokeResultFile }]]
+  : [["null"]]
 
 if (!new Set(["all", "market", "merchant"]).has(smokeArea)) {
   throw new Error(`Unknown Playwright smoke area: ${smokeArea}`)
@@ -40,16 +70,22 @@ const webServer = [
 ]
 
 export default defineConfig({
+  metadata: smokeEvidence ? { smokeEvidence } : undefined,
   testDir: "./e2e",
   testMatch: "**/*.playwright.ts",
   fullyParallel: true,
   forbidOnly: CI,
   retries: CI ? 1 : 0,
   workers: CI ? 2 : undefined,
-  reporter: CI ? [["list"], ["html", { open: "never" }]] : "list",
+  reporter: CI ? ciReporters : "list",
+  grep:
+    smokeArea === "all"
+      ? undefined
+      : new RegExp(smokeAreaTags[smokeArea as keyof typeof smokeAreaTags]),
   use: {
-    trace: "on-first-retry",
-    screenshot: "only-on-failure",
+    trace: CI ? "off" : "on-first-retry",
+    screenshot: CI ? "off" : "only-on-failure",
+    video: "off",
   },
   projects: [
     {
@@ -57,5 +93,5 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"] },
     },
   ],
-  webServer,
+  webServer: smokeDiscovery ? undefined : webServer,
 })

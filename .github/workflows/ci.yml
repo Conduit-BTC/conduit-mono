@@ -16,7 +16,6 @@ concurrency:
 
 jobs:
   format:
-    if: github.event_name != 'pull_request' || github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -54,7 +53,6 @@ jobs:
           bun scripts/ci/prettier_changed.ts --check --base "$base_sha" --head "$head_sha"
 
   lint:
-    if: github.event_name != 'pull_request' || github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -68,7 +66,6 @@ jobs:
       - run: bun run lint
 
   typecheck:
-    if: github.event_name != 'pull_request' || github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -82,21 +79,23 @@ jobs:
       - run: bun run typecheck
 
   test:
-    if: github.event_name != 'pull_request' || github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.5"
       - run: bun install --frozen-lockfile
       - run: bun test
+        env:
+          SMOKE_CREDENTIAL_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          SMOKE_CREDENTIAL_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
   color-policy:
-    if: github.event_name != 'pull_request' || github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -111,7 +110,6 @@ jobs:
         run: bun test tests/no-hardcoded-colors.test.ts
 
   telemetry-policy:
-    if: github.event_name != 'pull_request' || github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -126,7 +124,6 @@ jobs:
         run: bun run telemetry:check
 
   smoke-changes:
-    if: github.event_name != 'pull_request' || github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -161,7 +158,6 @@ jobs:
 
   e2e-smoke-shard:
     name: e2e-smoke / ${{ matrix.area }}
-    if: github.event_name != 'pull_request' || github.actor != 'github-actions[bot]'
     needs: [smoke-changes]
     strategy:
       fail-fast: false
@@ -183,6 +179,26 @@ jobs:
           bun-version: "1.3.5"
       - if: matrix.area != 'none'
         run: bun install --frozen-lockfile
+      - name: Validate Playwright smoke area assignments
+        if: matrix.area != 'none'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          PLAYWRIGHT_SMOKE_MANIFEST: playwright-smoke-${{ matrix.area }}-manifest.json
+          SOURCE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          TESTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          checkout_sha="$(git rev-parse HEAD)"
+          if [[ "$checkout_sha" != "$TESTED_SHA" ]]; then
+            echo "The checked-out SHA does not match the workflow-tested SHA." >&2
+            exit 1
+          fi
+          bun run test:e2e:areas \
+            --area '${{ matrix.area }}' \
+            --manifest-output "$PLAYWRIGHT_SMOKE_MANIFEST" \
+            --source-head-sha "$SOURCE_HEAD_SHA" \
+            --base-sha "$BASE_SHA" \
+            --tested-sha "$checkout_sha"
       - name: Cache Playwright browsers
         if: matrix.area != 'none'
         uses: actions/cache@v6
@@ -201,21 +217,46 @@ jobs:
         if: matrix.area != 'none'
         env:
           PLAYWRIGHT_SMOKE_AREA: ${{ matrix.area }}
-        run: bunx playwright test --grep '${{ matrix.area }} '
-      - name: Upload Playwright artifacts
-        if: failure() && matrix.area != 'none'
-        uses: actions/upload-artifact@v7
-        with:
-          name: playwright-e2e-${{ matrix.area }}-artifacts
-          path: |
-            playwright-report/
-            test-results/
-          if-no-files-found: ignore
-          retention-days: 7
-
+          PLAYWRIGHT_SMOKE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          PLAYWRIGHT_SMOKE_RESULT_FILE: ${{ runner.temp }}/playwright-smoke-${{ matrix.area }}-results.json
+          PLAYWRIGHT_SMOKE_SOURCE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PLAYWRIGHT_SMOKE_TESTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          umask 077
+          bunx playwright test >/dev/null 2>&1
+      - name: Verify executed ${{ matrix.area }} Playwright smoke evidence
+        if: always() && matrix.area != 'none'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          PLAYWRIGHT_SMOKE_MANIFEST: playwright-smoke-${{ matrix.area }}-manifest.json
+          PLAYWRIGHT_SMOKE_RESULT_FILE: ${{ runner.temp }}/playwright-smoke-${{ matrix.area }}-results.json
+          SOURCE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          TESTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          checkout_sha="$(git rev-parse HEAD)"
+          if [[ "$checkout_sha" != "$TESTED_SHA" ]]; then
+            echo "The checked-out SHA changed during Playwright execution." >&2
+            exit 1
+          fi
+          bun run test:e2e:areas \
+            --area '${{ matrix.area }}' \
+            --expected-manifest "$PLAYWRIGHT_SMOKE_MANIFEST" \
+            --execution-report "$PLAYWRIGHT_SMOKE_RESULT_FILE" \
+            --source-head-sha "$SOURCE_HEAD_SHA" \
+            --base-sha "$BASE_SHA" \
+            --tested-sha "$checkout_sha"
+      - name: Remove raw Playwright output
+        if: always() && matrix.area != 'none'
+        env:
+          PLAYWRIGHT_SMOKE_RESULT_FILE: ${{ runner.temp }}/playwright-smoke-${{ matrix.area }}-results.json
+        run: |
+          rm -f -- "$PLAYWRIGHT_SMOKE_RESULT_FILE"
+          rm -rf -- "$GITHUB_WORKSPACE/playwright-report" "$GITHUB_WORKSPACE/test-results"
   e2e-smoke:
     name: e2e-smoke
-    if: always() && (github.event_name != 'pull_request' || github.actor != 'github-actions[bot]')
+    if: always()
     needs: [smoke-changes, e2e-smoke-shard]
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -240,7 +281,6 @@ jobs:
           echo "Smoke shard result: $SHARD_RESULT for $SHARDS"
 
   build-mainnet:
-    if: github.event_name != 'pull_request' || github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: [format, lint, typecheck, test, color-policy, telemetry-policy]
@@ -265,26 +305,32 @@ jobs:
         run: bun scripts/ci/verify_deployment_artifacts.ts "$CONDUIT_DEPLOYMENT_PROFILE"
 
   preview-links:
-    if: github.event_name == 'pull_request' && github.actor != 'github-actions[bot]'
+    name: >-
+      ${{
+        github.event.pull_request.user.type != 'Bot' &&
+          'preview-links' ||
+          format('preview-links-ineligible-{0}', github.run_id)
+      }}
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     needs: [build-mainnet]
     timeout-minutes: 15
     permissions:
       contents: read
-      issues: write
-      pull-requests: write
+      issues: read
+      pull-requests: read
     steps:
       - name: Skip preview links for fork PRs
         if: github.event.pull_request.head.repo.full_name != github.repository
         run: |
-          echo "Preview link comments are skipped for fork PRs because GitHub provides a read-only token and Cloudflare Pages does not publish same-repository preview checks for fork heads."
+          echo "Preview link verification is skipped for fork PRs because Cloudflare Pages does not publish same-repository preview checks for fork heads."
 
       - uses: actions/checkout@v7.0.1
         if: github.event.pull_request.head.repo.full_name == github.repository
         with:
           persist-credentials: false
 
-      - name: Post mainnet preview links
+      - name: Verify mainnet preview links
         if: github.event.pull_request.head.repo.full_name == github.repository
         id: preview-links
         uses: actions/github-script@v9
@@ -296,7 +342,6 @@ jobs:
               `${process.env.GITHUB_WORKSPACE}/scripts/ci/preview_links.mjs`
             );
             const headSha = context.payload.pull_request.head.sha;
-            const shortSha = headSha.slice(0, 7);
             const prBody = context.payload.pull_request.body || "";
             const markerPattern = /<!--\s*preview:show-commit-links-cloudflare\s*-->\s*-\s*\[(x|X)\]/i;
             const preferredPattern = /-\s*\[(x|X)\]\s*Show commit-level mainnet preview links \(Cloudflare creates deployments automatically\)\b/i;
@@ -329,7 +374,7 @@ jobs:
               });
             }
 
-            const { comments, rows } = await waitForProjectRows({
+            const { rows } = await waitForProjectRows({
               listComments: listIssueComments,
               projects: PROJECTS,
               headSha,
@@ -386,8 +431,8 @@ jobs:
 
             core.info(
               commitPreviewEnabled
-                ? "Posting mainnet preview links with available Cloudflare comment URLs; missing commit URLs remain pending."
-                : "Posting verified Cloudflare branch preview URLs; commit preview links hidden by PR setting."
+                ? "Publishing verified mainnet preview links in the job summary; missing commit URLs remain pending."
+                : "Publishing verified Cloudflare branch preview URLs in the job summary; commit preview links hidden by PR setting."
             );
 
             const branchTable = [
@@ -412,10 +457,7 @@ jobs:
                 ].join("\n")
               : "_Commit-level preview links are hidden by PR setting (`- [ ] Show commit-level mainnet preview links (Cloudflare creates deployments automatically)`)._";
 
-            const MARKER_START = "<!-- conduit:preview_links -->";
-            const MARKER_END = "<!-- /conduit:preview_links -->";
-            const previewCommentBlock = [
-              MARKER_START,
+            const previewSummary = [
               "## Preview Deploys",
               "",
               `- Source commit: ${headSha}`,
@@ -427,42 +469,5 @@ jobs:
               branchTable,
               "",
               commitDetailsBlock,
-              MARKER_END,
             ].join("\n");
-
-            const commentBody = `${previewCommentBlock}\n\n_Mainnet preview links for latest commit ${shortSha}_`;
-
-            const previewComments = comments
-              .filter((comment) =>
-                comment.user?.login === "github-actions[bot]"
-                && comment.body?.includes(MARKER_START)
-                && comment.body?.includes(MARKER_END)
-              )
-              .reverse();
-
-            const [existingPreviewComment, ...stalePreviewComments] = previewComments;
-
-            for (const staleComment of stalePreviewComments) {
-              await github.rest.issues.deleteComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: staleComment.id,
-              });
-            }
-
-            if (existingPreviewComment) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existingPreviewComment.id,
-                body: commentBody,
-              });
-              return;
-            }
-
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: commentBody,
-            });
+            await core.summary.addRaw(previewSummary).write();

@@ -20,6 +20,8 @@ export interface ProtectedInboxAuthSummary {
 export interface ProtectedInboxReadResult {
   events: SignedNostrEvent[]
   coverage: ProtectedInboxCoverage
+  /** True when the bounded result window may have omitted more events. */
+  capped: boolean
   auth: ProtectedInboxAuthSummary
   relayResult: Omit<RelayQueryResult, "events">
 }
@@ -44,6 +46,7 @@ function emptyUnavailableResult(
   return {
     events: [],
     coverage: "unavailable",
+    capped: false,
     auth: {
       state: "unavailable",
       challengedCount: 0,
@@ -153,12 +156,17 @@ export async function readProtectedInbox(
     }
   )
   const { events, ...relayDiagnostics } = relayResult
+  const capped =
+    options.limit > 0 &&
+    (events.length >= options.limit ||
+      relayResult.relays.some((relay) => relay.eventCount >= options.limit))
   return {
     events,
+    capped,
     coverage:
-      relayResult.status === "success"
+      relayResult.status === "success" && !capped
         ? "complete"
-        : relayResult.status === "partial"
+        : relayResult.status === "success" || relayResult.status === "partial"
           ? "partial"
           : "unavailable",
     auth: summarizeAuthentication(relayResult),
