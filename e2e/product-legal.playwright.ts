@@ -245,7 +245,7 @@ const legalCases = [
 ] as const
 
 for (const legalCase of legalCases) {
-  test(`${legalCase.app} ${legalCase.path} is public and isolated`, async ({
+  test(`${legalCase.app} ${legalCase.path} is public and isolated @${legalCase.app}`, async ({
     context,
     page,
   }) => {
@@ -278,7 +278,7 @@ for (const legalCase of legalCases) {
 }
 
 for (const legalCase of legalCases) {
-  test(`${legalCase.app} ${legalCase.path}/ keeps the legal startup boundary`, async ({
+  test(`${legalCase.app} ${legalCase.path}/ keeps the legal startup boundary @${legalCase.app}`, async ({
     context,
     page,
   }) => {
@@ -312,7 +312,7 @@ for (const legalCase of legalCases) {
 
 for (const authFixture of ["restoring", "signed_in"] as const) {
   for (const path of ["/privacy-policy", "/terms-of-service"] as const) {
-    test(`merchant ${path} bypasses ${authFixture} signer state`, async ({
+    test(`merchant ${path} bypasses ${authFixture} signer state @merchant`, async ({
       context,
       page,
     }) => {
@@ -347,7 +347,7 @@ for (const authFixture of ["restoring", "signed_in"] as const) {
 }
 
 for (const legalCase of legalCases) {
-  test(`${legalCase.app} ${legalCase.path} remains usable at a mobile viewport`, async ({
+  test(`${legalCase.app} ${legalCase.path} remains usable at a mobile viewport @${legalCase.app}`, async ({
     context,
     page,
   }) => {
@@ -368,7 +368,7 @@ for (const legalCase of legalCases) {
   })
 }
 
-test("market Product legal links use full navigation and suppress cross-origin referrers", async ({
+test("market Product legal links use full navigation and suppress cross-origin referrers @market", async ({
   context,
   page,
 }) => {
@@ -414,7 +414,7 @@ test("market Product legal links use full navigation and suppress cross-origin r
   expect(websiteReferer).toBeUndefined()
 })
 
-test("market footer opens the host-local Product Terms with full navigation", async ({
+test("market footer opens the host-local Product Terms with full navigation @market", async ({
   context,
   page,
 }) => {
@@ -443,7 +443,7 @@ test("market footer opens the host-local Product Terms with full navigation", as
   expect(termsDocumentRequests).toBe(1)
 })
 
-test("merchant ConnectGate opens the host-local Product Privacy Policy with full navigation", async ({
+test("merchant ConnectGate opens the host-local Product Privacy Policy with full navigation @merchant", async ({
   context,
   page,
 }) => {
@@ -473,7 +473,7 @@ test("merchant ConnectGate opens the host-local Product Privacy Policy with full
   expect(privacyDocumentRequests).toBe(1)
 })
 
-test("merchant signed menu opens the host-local Product Terms with full navigation", async ({
+test("merchant signed menu opens the host-local Product Terms with full navigation @merchant", async ({
   context,
   page,
 }) => {

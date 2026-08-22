@@ -121,6 +121,11 @@ async function seedCachedMerchantTagCatalog(page: Page): Promise<void> {
 
 async function seedPortableWalletDescriptor(page: Page): Promise<void> {
   await page.evaluate(() => {
+    const randomBase64 = (byteLength: number): string => {
+      const bytes = crypto.getRandomValues(new Uint8Array(byteLength))
+      return btoa(String.fromCharCode(...bytes))
+    }
+
     return new Promise<void>((resolve, reject) => {
       const request = indexedDB.open("conduit")
       request.onerror = () => reject(request.error)
@@ -163,9 +168,9 @@ async function seedPortableWalletDescriptor(page: Page): Promise<void> {
               kdf: "PBKDF2-SHA-256",
               cipher: "AES-GCM",
               iterations: 100_000,
-              salt: "AAAAAAAAAAAAAAAAAAAAAA==",
-              iv: "AAAAAAAAAAAAAAAA",
-              ciphertext: "AAAAAAAAAAAAAAAAAAAAAA==",
+              salt: randomBase64(16),
+              iv: randomBase64(12),
+              ciphertext: randomBase64(48),
             },
           }),
           createdAt: timestamp,
@@ -179,7 +184,7 @@ async function seedPortableWalletDescriptor(page: Page): Promise<void> {
   })
 }
 
-test("merchant shipping country combobox supports search and selection", async ({
+test("merchant shipping country combobox supports search and selection @merchant", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 375, height: 667 })
@@ -225,7 +230,7 @@ test("merchant shipping country combobox supports search and selection", async (
   await expect(countryPicker).toHaveValue("")
 })
 
-test("merchant product tags suggest the loaded catalog without blocking freeform entry", async ({
+test("merchant product tags suggest the loaded catalog without blocking freeform entry @merchant", async ({
   browser,
 }) => {
   const context = await browser.newContext({
@@ -315,7 +320,7 @@ test("merchant product tags suggest the loaded catalog without blocking freeform
   await context.close()
 })
 
-test("merchant product options provide a generic availability matrix", async ({
+test("merchant product options provide a generic availability matrix @merchant", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_MERCHANT_PUBKEY)
@@ -393,7 +398,7 @@ test("merchant product options provide a generic availability matrix", async ({
   )
 })
 
-test("merchant product drafts survive safe dialog dismissal", async ({
+test("merchant product drafts survive safe dialog dismissal @merchant", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_MERCHANT_PUBKEY)
@@ -541,7 +546,7 @@ test("merchant product drafts survive safe dialog dismissal", async ({
   await expect(title).toHaveValue("Published Pocket Relay")
 })
 
-test("market checkout country combobox supports search and selection", async ({
+test("market checkout country combobox supports search and selection @market", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_BUYER_PUBKEY)
@@ -559,7 +564,7 @@ test("market checkout country combobox supports search and selection", async ({
   )
 })
 
-test("market authenticated initial checkout claims a guest draft", async ({
+test("market authenticated initial checkout claims a guest draft @market", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_BUYER_PUBKEY)
@@ -601,7 +606,7 @@ test("market authenticated initial checkout claims a guest draft", async ({
     .toBe(TEST_BUYER_PUBKEY)
 })
 
-test("market guest initial checkout clears a signed draft", async ({
+test("market guest initial checkout clears a signed draft @market", async ({
   page,
 }) => {
   await seedMarketCart(page)
@@ -634,7 +639,7 @@ test("market guest initial checkout clears a signed draft", async ({
     .toBeNull()
 })
 
-test("market initial checkout clears a foreign signed draft", async ({
+test("market initial checkout clears a foreign signed draft @market", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_BUYER_PUBKEY)
@@ -670,7 +675,7 @@ test("market initial checkout clears a foreign signed draft", async ({
     .toBeNull()
 })
 
-test("market checkout claims a guest draft when a signer connects", async ({
+test("market checkout claims a guest draft when a signer connects @market", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_BUYER_PUBKEY, { rememberAuth: false })
@@ -760,7 +765,7 @@ test("market checkout claims a guest draft when a signer connects", async ({
     })
 })
 
-test("market authenticated checkout draft survives reload and clears across identities", async ({
+test("market authenticated checkout draft survives reload and clears across identities @market", async ({
   page,
 }) => {
   const secondBuyerPubkey = "c".repeat(64)
@@ -856,7 +861,7 @@ test("market authenticated checkout draft survives reload and clears across iden
   await expect(street).toHaveValue("")
 })
 
-test("market checkout clears an identity draft after signer restoration fails", async ({
+test("market checkout clears an identity draft after signer restoration fails @market", async ({
   page,
 }) => {
   await seedStoredAuth(page, TEST_BUYER_PUBKEY)
@@ -916,7 +921,7 @@ test("market checkout clears an identity draft after signer restoration fails", 
     .toBeNull()
 })
 
-test("market checkout clears an identity draft after cross-tab auth replacement", async ({
+test("market checkout clears an identity draft after cross-tab auth replacement @market", async ({
   page,
 }) => {
   const replacementPubkey = "c".repeat(64)
@@ -964,7 +969,7 @@ test("market checkout clears an identity draft after cross-tab auth replacement"
     .toBeNull()
 })
 
-test("market wallets route renders portable and connected wallet groups", async ({
+test("market wallets route renders portable and connected wallet groups @market", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_BUYER_PUBKEY)
@@ -1018,7 +1023,7 @@ test("market wallets route renders portable and connected wallet groups", async 
   await expect(satsStandard).toBeChecked()
 })
 
-test("portable wallet restore keeps derivation advanced and device-only fields clear", async ({
+test("portable wallet restore keeps derivation advanced and device-only fields clear @market", async ({
   page,
 }) => {
   await page.goto(`${marketUrl}/wallet`)
@@ -1052,7 +1057,7 @@ test("portable wallet restore keeps derivation advanced and device-only fields c
   ).toBeVisible()
 })
 
-test("market wallets remain available without a Nostr signer", async ({
+test("market wallets remain available without a Nostr signer @market", async ({
   page,
 }) => {
   await page.goto(marketUrl)
@@ -1074,7 +1079,7 @@ test("market wallets remain available without a Nostr signer", async ({
   ).toBeVisible()
 })
 
-test("wallet dialog dismissal clears device-local sensitive state", async ({
+test("wallet dialog dismissal clears device-local sensitive state @market", async ({
   page,
 }) => {
   await page.goto(`${marketUrl}/wallet`)
@@ -1095,13 +1100,29 @@ test("wallet dialog dismissal clears device-local sensitive state", async ({
     name: "Unlock QA Portable",
   })
   const unlockPassword = unlockDialog.getByLabel("Wallet password")
-  await unlockPassword.fill("ephemeral QA value")
+  await unlockPassword.evaluate((element) => {
+    if (!(element instanceof HTMLInputElement)) {
+      throw new Error("Expected the wallet password control to be an input.")
+    }
+    const setValue = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value"
+    )?.set
+    if (!setValue) throw new Error("The input value setter is unavailable.")
+    setValue.call(element, crypto.randomUUID())
+    element.dispatchEvent(new Event("input", { bubbles: true }))
+  })
   await page.keyboard.press("Escape")
   await expect(unlockDialog).not.toBeVisible()
   await expect(unlockButton).toBeFocused()
 
   await unlockButton.click()
-  await expect(unlockPassword).toHaveValue("")
+  expect(
+    await unlockPassword.evaluate(
+      (element) =>
+        element instanceof HTMLInputElement && element.value.length === 0
+    )
+  ).toBe(true)
   await unlockDialog.getByRole("button", { name: "Cancel" }).click()
 
   await page
@@ -1130,7 +1151,7 @@ test("wallet dialog dismissal clears device-local sensitive state", async ({
   ).toBeDisabled()
 })
 
-test("market shopper preferences remove legacy plaintext and render the complete form", async ({
+test("market shopper preferences remove legacy plaintext and render the complete form @market", async ({
   page,
 }) => {
   test.setTimeout(60_000)
