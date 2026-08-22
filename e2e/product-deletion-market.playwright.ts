@@ -161,7 +161,7 @@ async function seedValidatedTombstones(page: Page): Promise<void> {
   )
 }
 
-test("Market hides a stale cached product after durable tombstone evidence", async ({
+test("Market hides a stale cached product after durable tombstone evidence @market", async ({
   page,
 }) => {
   await installValidTestSigner(page)

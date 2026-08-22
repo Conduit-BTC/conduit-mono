@@ -99,7 +99,11 @@ import {
   normalizePublicRelayHints,
   normalizeUntrustedRelayHintsForContext,
 } from "./relay-settings"
-import { getRelayLists, isInsecureRelayUrl } from "./relay-list"
+import {
+  getRelayLists,
+  getRelayListsDetailed,
+  isInsecureRelayUrl,
+} from "./relay-list"
 import { planRelayReads, type RelayReadIntent } from "./relay-planner"
 import {
   readProtectedInbox,
@@ -125,6 +129,7 @@ const PRODUCT_RAW_EVENT_LIMIT_FLOOR = 100
 const PRODUCT_RAW_EVENT_LIMIT_MAX = 1_200
 const PRODUCT_RAW_EVENT_OVERFETCH_FACTOR = 6
 const PRODUCT_VARIATION_EVENT_LIMIT = 200
+const PRODUCT_CANONICAL_READ_MAX_RELAYS = 12
 const PROFILE_CACHE_TTL_MS = 5 * 60_000
 
 export type CommerceReadSource = "commerce" | "public" | "local_cache"
@@ -255,6 +260,7 @@ export interface MerchantStorefrontQuery {
 
 export interface ProductDetailQuery {
   productId: string
+  /** Force current, complete NIP-65 author-hint discovery before the read. */
   revalidateCanonical?: boolean
   includeMarketHidden?: boolean
 }
@@ -532,6 +538,7 @@ function hasCommerceFetchTestOverride(): boolean {
 type CommerceReadRelayPlan = {
   relayUrls: string[]
   parkedRelayUrls: string[]
+  relayHintsComplete: boolean
 }
 
 async function planCommerceReadRelayPlan(input: {
@@ -541,6 +548,7 @@ async function planCommerceReadRelayPlan(input: {
   authenticatedPubkey?: string | null
   maxRelays?: number
   relayHintMode?: "auto" | "skip" | "force"
+  strictRelayHints?: boolean
   /** Untrusted hints that must independently resolve to public WSS targets. */
   extraRelayUrls?: readonly string[]
   /** Hints belonging to the exact authenticated author. */
@@ -556,22 +564,42 @@ async function planCommerceReadRelayPlan(input: {
 
   const shouldFetchRelayHints =
     hintPubkeys.length > 0 &&
-    (input.relayHintMode === "force" ||
+    (input.strictRelayHints === true ||
+      input.relayHintMode === "force" ||
       (input.relayHintMode !== "skip" &&
         hintPubkeys.length <= BROAD_AUTHOR_HINT_LIMIT))
-  const relayLists = shouldFetchRelayHints
-    ? await getRelayLists(
-        hintPubkeys,
-        hasCommerceFetchTestOverride()
-          ? {
-              cacheOnly: true,
-              allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
-            }
-          : {
-              allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
-            }
-      )
-    : undefined
+  let relayLists: Awaited<ReturnType<typeof getRelayLists>> | undefined
+  let relayListResolutionComplete = true
+  if (shouldFetchRelayHints && input.strictRelayHints) {
+    const result = await getRelayListsDetailed(hintPubkeys, {
+      cacheOnly: false,
+      skipCache: true,
+      allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
+    })
+    relayLists = result.relayLists
+    relayListResolutionComplete = hintPubkeys.every((pubkey) => {
+      const state = result.resolutionStates.get(pubkey)
+      return state === "network" || state === "missing"
+    })
+  } else if (shouldFetchRelayHints) {
+    relayLists = await getRelayLists(
+      hintPubkeys,
+      hasCommerceFetchTestOverride()
+        ? {
+            cacheOnly: true,
+            allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
+          }
+        : {
+            allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
+          }
+    )
+  }
+
+  const maxRelays =
+    input.maxRelays ??
+    (input.strictRelayHints === true
+      ? PRODUCT_CANONICAL_READ_MAX_RELAYS
+      : undefined)
 
   const plan = planRelayReads({
     intent: input.intent,
@@ -579,7 +607,8 @@ async function planCommerceReadRelayPlan(input: {
     recipients: input.recipients,
     relayLists,
     authenticatedPubkey: input.authenticatedPubkey,
-    maxRelays: input.maxRelays,
+    maxRelays,
+    skipHealthFilter: input.strictRelayHints === true,
   })
 
   const fallbackRelayUrls = (() => {
@@ -594,6 +623,7 @@ async function planCommerceReadRelayPlan(input: {
     }
   })()
   const preferFallbackFirst =
+    input.strictRelayHints !== true &&
     input.relayHintMode !== "force" &&
     (input.intent === "commerce_products" ||
       (input.intent === "author_products" && (input.authors?.length ?? 0) > 1))
@@ -621,9 +651,16 @@ async function planCommerceReadRelayPlan(input: {
         ...fallbackRelayUrls,
       ])
   const expandedRelayUrls =
-    input.maxRelays === undefined
+    maxRelays === undefined
       ? plannedRelayUrls
-      : plannedRelayUrls.slice(0, input.maxRelays)
+      : plannedRelayUrls.slice(0, maxRelays)
+  const relayHintsComplete =
+    input.strictRelayHints !== true ||
+    (relayListResolutionComplete &&
+      plan.parkedRelayUrls.length === 0 &&
+      plan.hintRelayUrls.every((relayUrl) =>
+        expandedRelayUrls.includes(relayUrl)
+      ))
 
   if (expandedRelayUrls.length > 0) {
     return {
@@ -631,6 +668,7 @@ async function planCommerceReadRelayPlan(input: {
       parkedRelayUrls: plan.parkedRelayUrls.filter(
         (relayUrl) => !expandedRelayUrls.includes(relayUrl)
       ),
+      relayHintsComplete,
     }
   }
 
@@ -638,9 +676,17 @@ async function planCommerceReadRelayPlan(input: {
   switch (input.intent) {
     case "commerce_products":
     case "author_products":
-      return { relayUrls: commerceReadRelayUrls(), parkedRelayUrls: [] }
+      return {
+        relayUrls: commerceReadRelayUrls(),
+        parkedRelayUrls: [],
+        relayHintsComplete,
+      }
     default:
-      return { relayUrls: publicReadRelayUrls(), parkedRelayUrls: [] }
+      return {
+        relayUrls: publicReadRelayUrls(),
+        parkedRelayUrls: [],
+        relayHintsComplete,
+      }
   }
 }
 
@@ -2258,6 +2304,8 @@ async function fetchProductDeletionTimestamps(
     authenticatedPubkey?: string | null
     fetchEvents?: typeof runFetchEventsFanout
     onSkippedRelayUrls?: (relayUrls: readonly string[]) => void
+    onIncompleteRelayHints?: () => void
+    strictRelayHints?: boolean
   } = {}
 ): Promise<DeletionTimestamps> {
   const authors = uniqueStrings(candidates.map((candidate) => candidate.pubkey))
@@ -2306,7 +2354,11 @@ async function fetchProductDeletionTimestamps(
         authors: authorChunk,
         authenticatedPubkey: options.authenticatedPubkey,
         maxRelays: options.readPolicy?.maxRelays,
+        strictRelayHints: options.strictRelayHints,
       })
+      if (!deletionRelayPlan.relayHintsComplete) {
+        options.onIncompleteRelayHints?.()
+      }
       const authenticatedOwnerSourceRelayUrls =
         normalizeUntrustedRelayHintsForContext({
           relayUrls: sourceRelayHints.authenticatedAuthorRelayUrls,
@@ -2348,6 +2400,7 @@ async function fetchProductDeletionTimestamps(
                 relayUrls,
                 connectTimeoutMs: options.readPolicy?.connectTimeoutMs ?? 4_000,
                 fetchTimeoutMs: options.readPolicy?.fetchTimeoutMs ?? 10_000,
+                skipHealthFilter: options.strictRelayHints === true,
               })
           )
         ).flat()
@@ -3823,7 +3876,10 @@ function aggregateProductAvailabilityCoverage(
 // missing listings instead of one generic failure.
 export async function getProductsByIds(
   productIds: string[],
-  options: { includeMarketHidden?: boolean } = {}
+  options: {
+    includeMarketHidden?: boolean
+    revalidateCanonical?: boolean
+  } = {}
 ): Promise<ProductsByIdsResult> {
   const lookups = productIds.map((productId) => {
     const { address, addressId } = getProductLookupIds(productId)
@@ -3888,6 +3944,7 @@ export async function getProductsByIds(
       const relayPlan = await planCommerceReadRelayPlan({
         intent: "author_products",
         authors: [author],
+        strictRelayHints: options.revalidateCanonical,
       })
       const result = await runFetchEventsFanoutWithDiagnostics(
         {
@@ -3899,13 +3956,20 @@ export async function getProductsByIds(
           relayUrls: relayPlan.relayUrls,
           connectTimeoutMs: 4_000,
           fetchTimeoutMs: 8_000,
+          skipHealthFilter: options.revalidateCanonical === true,
         }
       )
       return {
         events: result.events,
-        coverage: productAvailabilityCoverageFromFanout(
-          result,
-          uniqueStrings([...relayPlan.relayUrls, ...relayPlan.parkedRelayUrls])
+        coverage: mergeProductAvailabilityCoverage(
+          productAvailabilityCoverageFromFanout(
+            result,
+            uniqueStrings([
+              ...relayPlan.relayUrls,
+              ...relayPlan.parkedRelayUrls,
+            ])
+          ),
+          relayPlan.relayHintsComplete ? "complete" : "partial"
         ),
       }
     })
@@ -3982,6 +4046,7 @@ export async function getProductsByIds(
   ) {
     let deletionReadAttempted = false
     let deletionPlanSkippedRelay = false
+    let deletionRelayHintsIncomplete = false
     const fetchDeletionEventsWithCoverage: typeof runFetchEventsFanout = async (
       filter,
       fetchOptions
@@ -4014,11 +4079,15 @@ export async function getProductsByIds(
             onSkippedRelayUrls: (relayUrls) => {
               deletionPlanSkippedRelay ||= relayUrls.length > 0
             },
+            onIncompleteRelayHints: () => {
+              deletionRelayHintsIncomplete = true
+            },
+            strictRelayHints: options.revalidateCanonical,
           }
         )
       )
       if (!deletionReadAttempted) deletionCoverage = "unavailable"
-      else if (deletionPlanSkippedRelay) {
+      else if (deletionPlanSkippedRelay || deletionRelayHintsIncomplete) {
         deletionCoverage = mergeProductAvailabilityCoverage(
           deletionCoverage,
           "partial"
@@ -4232,6 +4301,7 @@ export async function getAtomicProductDetail(
 
   const result = await getProductsByIds([addressId], {
     includeMarketHidden: query.includeMarketHidden,
+    revalidateCanonical: query.revalidateCanonical,
   })
   return {
     data: result.data.find((record) => record.addressId === addressId) ?? null,

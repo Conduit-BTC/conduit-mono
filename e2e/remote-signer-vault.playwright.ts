@@ -4,7 +4,7 @@ const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "700
 const vaultModuleUrl = `/@fs${process.cwd()}/packages/core/src/protocol/remote-signer-vault.ts`
 const remoteSignerModuleUrl = `/@fs${process.cwd()}/packages/core/src/protocol/remote-signer.ts`
 
-test("remote signer reconnect key is encrypted and restorable in browser storage", async ({
+test("remote signer reconnect key is encrypted and restorable in browser storage @market", async ({
   page,
 }) => {
   await page.goto(`${marketUrl}/products`)
@@ -59,7 +59,7 @@ test("remote signer reconnect key is encrypted and restorable in browser storage
   expect(result.rawRecord).not.toContain(result.privateKey)
 })
 
-test("concurrent tabs share one atomic vault wrapping key", async ({
+test("concurrent tabs share one atomic vault wrapping key @market", async ({
   context,
 }) => {
   const firstPage = await context.newPage()
@@ -121,7 +121,7 @@ test("concurrent tabs share one atomic vault wrapping key", async ({
   expect(restored).toEqual(["11".repeat(32), "22".repeat(32)])
 })
 
-test("auth operations serialize across tabs without Web Locks", async ({
+test("auth operations serialize across tabs without Web Locks @market", async ({
   context,
 }) => {
   await context.addInitScript(() => {
@@ -170,7 +170,7 @@ test("auth operations serialize across tabs without Web Locks", async ({
     .toBe("2")
 })
 
-test("remote signer storage works without crypto.randomUUID", async ({
+test("remote signer storage works without crypto.randomUUID @market", async ({
   page,
 }) => {
   await page.addInitScript(() => {
@@ -202,7 +202,7 @@ test("remote signer storage works without crypto.randomUUID", async ({
   expect(result.lockResult).toBe("ready")
 })
 
-test("remote signer storage fails before pairing on an insecure page context", async ({
+test("remote signer storage fails before pairing on an insecure page context @market", async ({
   page,
 }) => {
   await page.addInitScript(() => {

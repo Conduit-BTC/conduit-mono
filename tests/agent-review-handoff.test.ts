@@ -17,6 +17,10 @@ const reviewWorkflow = await Bun.file(
 const simplifyWorkflow = await Bun.file(
   ".github/workflows/agent-simplify-review.yml"
 ).text()
+const reviewConcurrency = reviewWorkflow.slice(
+  reviewWorkflow.indexOf("concurrency:"),
+  reviewWorkflow.indexOf("\njobs:")
+)
 const workflowDirectory = ".github/workflows"
 const workflows = await Promise.all(
   (await readdir(workflowDirectory))
@@ -110,7 +114,7 @@ const runGate = async (
     expectedHead = headSha,
     reviewCommit = headSha,
     reviewer = "conduit-sudden-agent[bot]",
-    reviewBody = `<!-- conduit:sudden-review clean head=${headSha} -->\nNo actionable findings.`,
+    reviewBody = `<!-- conduit:sudden-review clean head=${headSha} -->\nNo actionable findings.\nReviewer-confirmed QA disposition: Maintainer-owned validation`,
     reviewComments = "[]",
     previousReviews = "[]",
   }: GateFixture = {},
@@ -182,9 +186,24 @@ fi
 }
 
 describe("agent review handoff", () => {
-  it("does not treat uncommanded review comments as pull request events", () => {
+  it("shares PR review concurrency only with trusted commands", () => {
     expect(reviewWorkflow).toContain("github.event_name == 'pull_request' &&")
     expect(reviewWorkflow).not.toContain("github.event.pull_request ||")
+    expect(reviewConcurrency).toContain(
+      "github.event.comment.body != '/agent review'"
+    )
+    expect(reviewConcurrency).toContain(
+      '!contains(fromJSON(\'["OWNER","MEMBER","COLLABORATOR"]\'),'
+    )
+    expect(reviewConcurrency).toContain(
+      "github.event.comment.author_association"
+    )
+    expect(reviewConcurrency).toContain(
+      "format('non-review-comment-{0}', github.run_id)"
+    )
+    expect(reviewConcurrency).toContain("github.event.pull_request.number ||")
+    expect(reviewConcurrency).toContain("github.event.issue.number ||")
+    expect(reviewConcurrency).toContain("inputs.pr_number ||")
     expect(reviewWorkflow).toContain(
       "cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}"
     )
@@ -199,6 +218,9 @@ describe("agent review handoff", () => {
     )
     expect(reviewWorkflow).toContain(
       "A clean review must have zero inline comments"
+    )
+    expect(reviewWorkflow).toContain(
+      "Reviewer-confirmed QA disposition: <disposition>"
     )
     expect(reviewWorkflow).toContain(
       '`commit_id: "${{ steps.pr.outputs.head_sha }}"`'
@@ -363,6 +385,9 @@ describe("agent review handoff", () => {
     )
     expect(
       countOccurrences(simplifyWorkflow, 'grep -Fqx "$clean_summary"')
+    ).toBe(2)
+    expect(
+      countOccurrences(simplifyWorkflow, 'grep -Ecx "$qa_disposition_pattern"')
     ).toBe(2)
     expect(simplifyWorkflow).toContain(
       '`commit_id: "${{ steps.pr.outputs.head_sha }}"`'
@@ -719,17 +744,44 @@ while IFS= read -r _line; do :; done
 
     const mismatchedMarker = await runGate({
       headSha,
-      reviewBody: `<!-- conduit:sudden-review clean head=${"f".repeat(40)} -->\nNo actionable findings.`,
+      reviewBody: `<!-- conduit:sudden-review clean head=${"f".repeat(40)} -->\nNo actionable findings.\nReviewer-confirmed QA disposition: Maintainer-owned validation`,
     })
     expect(mismatchedMarker.exitCode).not.toBe(0)
     expect(mismatchedMarker.stderr).toContain("exact clean-review marker")
 
     const missingSummary = await runGate({
       headSha,
-      reviewBody: `<!-- conduit:sudden-review clean head=${headSha} -->\nReview delivery blocked.`,
+      reviewBody: `<!-- conduit:sudden-review clean head=${headSha} -->\nReviewer-confirmed QA disposition: Maintainer-owned validation`,
     })
     expect(missingSummary.exitCode).not.toBe(0)
     expect(missingSummary.stderr).toContain("exact clean-review summary")
+
+    const missingDisposition = await runGate({
+      headSha,
+      reviewBody: `<!-- conduit:sudden-review clean head=${headSha} -->\nNo actionable findings.`,
+    })
+    expect(missingDisposition.exitCode).not.toBe(0)
+    expect(missingDisposition.stderr).toContain(
+      "exactly one allowed QA disposition"
+    )
+
+    const invalidDisposition = await runGate({
+      headSha,
+      reviewBody: `<!-- conduit:sudden-review clean head=${headSha} -->\nNo actionable findings.\nReviewer-confirmed QA disposition: Automated QA`,
+    })
+    expect(invalidDisposition.exitCode).not.toBe(0)
+    expect(invalidDisposition.stderr).toContain(
+      "exactly one allowed QA disposition"
+    )
+
+    const duplicateDisposition = await runGate({
+      headSha,
+      reviewBody: `<!-- conduit:sudden-review clean head=${headSha} -->\nNo actionable findings.\nReviewer-confirmed QA disposition: Evidence sign-off\nReviewer-confirmed QA disposition: Targeted human QA`,
+    })
+    expect(duplicateDisposition.exitCode).not.toBe(0)
+    expect(duplicateDisposition.stderr).toContain(
+      "exactly one allowed QA disposition"
+    )
 
     const manual = await runGate({
       eventName: "workflow_dispatch",
@@ -805,12 +857,24 @@ while IFS= read -r _line; do :; done
     const missingSummary = await runGate(
       {
         headSha,
-        reviewBody: `<!-- conduit:sudden-review clean head=${headSha} -->\nReview delivery blocked.`,
+        reviewBody: `<!-- conduit:sudden-review clean head=${headSha} -->\nReviewer-confirmed QA disposition: Maintainer-owned validation`,
       },
       revalidationScript
     )
     expect(missingSummary.exitCode).not.toBe(0)
     expect(missingSummary.stderr).toContain("exact clean-review summary")
+
+    const missingDisposition = await runGate(
+      {
+        headSha,
+        reviewBody: `<!-- conduit:sudden-review clean head=${headSha} -->\nNo actionable findings.`,
+      },
+      revalidationScript
+    )
+    expect(missingDisposition.exitCode).not.toBe(0)
+    expect(missingDisposition.stderr).toContain(
+      "exactly one allowed QA disposition"
+    )
 
     const manual = await runGate(
       {

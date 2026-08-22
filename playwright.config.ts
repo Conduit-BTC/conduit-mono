@@ -1,6 +1,9 @@
 import { defineConfig, devices } from "@playwright/test"
 
+import { smokeAreaTags } from "./e2e/helpers/smoke-areas"
+
 const CI = !!process.env.CI
+const smokeDiscovery = process.env.PLAYWRIGHT_SMOKE_DISCOVERY === "true"
 const marketPort = process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"
 const merchantPort = process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"
 const e2eEnv = [
@@ -47,6 +50,10 @@ export default defineConfig({
   retries: CI ? 1 : 0,
   workers: CI ? 2 : undefined,
   reporter: CI ? [["list"], ["html", { open: "never" }]] : "list",
+  grep:
+    smokeArea === "all"
+      ? undefined
+      : new RegExp(smokeAreaTags[smokeArea as keyof typeof smokeAreaTags]),
   use: {
     trace: "on-first-retry",
     screenshot: "only-on-failure",
@@ -57,5 +64,5 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"] },
     },
   ],
-  webServer,
+  webServer: smokeDiscovery ? undefined : webServer,
 })

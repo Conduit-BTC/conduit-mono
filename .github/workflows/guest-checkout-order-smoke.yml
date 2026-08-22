@@ -1,0 +1,100 @@
+name: Guest Checkout Order Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_order_creation:
+        description: Create one persistent encrypted test order
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: guest-checkout-order-smoke
+  cancel-in-progress: false
+
+jobs:
+  validate-dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Validate protected smoke dispatch
+        env:
+          CONFIRM_ORDER_CREATION: ${{ inputs.confirm_order_creation }}
+          DISPATCH_REF: ${{ github.ref }}
+          CANDIDATE_SHA: ${{ github.sha }}
+        run: |
+          if [[ "$CONFIRM_ORDER_CREATION" != "true" ]]; then
+            echo "Guest checkout order smoke requires explicit confirmation." >&2
+            exit 1
+          fi
+          if [[ "$DISPATCH_REF" != "refs/heads/main" ]]; then
+            echo "Guest checkout order smoke requires the main branch." >&2
+            exit 1
+          fi
+          if [[ ! "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Guest checkout order smoke requires an immutable candidate SHA." >&2
+            exit 1
+          fi
+
+  create-and-recover-order:
+    needs: validate-dispatch
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: guest-checkout-smoke
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Verify immutable candidate checkout
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          actual_sha="$(git rev-parse HEAD)"
+          if [[ "$actual_sha" != "$EXPECTED_SHA" ]]; then
+            echo "Guest checkout order smoke candidate checkout did not match." >&2
+            exit 1
+          fi
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.3.5"
+      - run: bun install --frozen-lockfile
+      - name: Create and recover encrypted guest order
+        env:
+          GUEST_CHECKOUT_SMOKE_MERCHANT_PUBKEY: ${{ vars.GUEST_CHECKOUT_SMOKE_MERCHANT_PUBKEY }}
+          GUEST_CHECKOUT_SMOKE_PRODUCT_ADDRESS: ${{ vars.GUEST_CHECKOUT_SMOKE_PRODUCT_ADDRESS }}
+          GUEST_CHECKOUT_SMOKE_SHIPPING_COUNTRY: ${{ vars.GUEST_CHECKOUT_SMOKE_SHIPPING_COUNTRY }}
+          GUEST_CHECKOUT_SMOKE_SHIPPING_POSTAL_CODE: ${{ vars.GUEST_CHECKOUT_SMOKE_SHIPPING_POSTAL_CODE }}
+          GUEST_CHECKOUT_SMOKE_RECOVERY_TIMEOUT_MS: ${{ vars.GUEST_CHECKOUT_SMOKE_RECOVERY_TIMEOUT_MS }}
+          GUEST_CHECKOUT_SMOKE_RECOVERY_POLL_MS: ${{ vars.GUEST_CHECKOUT_SMOKE_RECOVERY_POLL_MS }}
+          GUEST_CHECKOUT_SMOKE_MERCHANT_NSEC: ${{ secrets.GUEST_CHECKOUT_SMOKE_MERCHANT_NSEC }}
+          GUEST_CHECKOUT_SMOKE_CANDIDATE_SHA: ${{ github.sha }}
+          GUEST_CHECKOUT_SMOKE_WORKFLOW_RUN_ID: ${{ github.run_id }}
+          GUEST_CHECKOUT_SMOKE_WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
+          GUEST_CHECKOUT_SMOKE_EVIDENCE_PATH: ${{ runner.temp }}/guest-checkout-order-evidence.json
+        run: bun run smoke:guest-checkout-order
+      - name: Validate redacted smoke evidence
+        id: validate_evidence
+        if: always()
+        env:
+          EVIDENCE_PATH: ${{ runner.temp }}/guest-checkout-order-evidence.json
+          EXPECTED_SHA: ${{ github.sha }}
+          EXPECTED_RUN_ID: ${{ github.run_id }}
+          EXPECTED_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: >-
+          bun scripts/ci/validate_guest_checkout_order_evidence.ts
+          "$EVIDENCE_PATH" "$EXPECTED_SHA" "$EXPECTED_RUN_ID"
+          "$EXPECTED_RUN_ATTEMPT"
+      - name: Upload redacted smoke evidence
+        if: always() && steps.validate_evidence.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: guest-checkout-order-evidence
+          path: ${{ runner.temp }}/guest-checkout-order-evidence.json
+          if-no-files-found: error
+          retention-days: 7

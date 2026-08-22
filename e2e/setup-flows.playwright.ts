@@ -176,7 +176,7 @@ async function seedPortableWalletDescriptor(page: Page): Promise<void> {
   })
 }
 
-test("merchant shipping country combobox supports search and selection", async ({
+test("merchant shipping country combobox supports search and selection @merchant", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 375, height: 667 })
@@ -222,7 +222,7 @@ test("merchant shipping country combobox supports search and selection", async (
   await expect(countryPicker).toHaveValue("")
 })
 
-test("merchant product tags suggest the loaded catalog without blocking freeform entry", async ({
+test("merchant product tags suggest the loaded catalog without blocking freeform entry @merchant", async ({
   browser,
 }) => {
   const context = await browser.newContext({
@@ -312,7 +312,7 @@ test("merchant product tags suggest the loaded catalog without blocking freeform
   await context.close()
 })
 
-test("merchant product options support generic three-axis sparse rows", async ({
+test("merchant product options support generic three-axis sparse rows @merchant", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_MERCHANT_PUBKEY)
@@ -374,7 +374,7 @@ test("merchant product options support generic three-axis sparse rows", async ({
   )
 })
 
-test("merchant product drafts survive safe dialog dismissal", async ({
+test("merchant product drafts survive safe dialog dismissal @merchant", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_MERCHANT_PUBKEY)
@@ -522,7 +522,7 @@ test("merchant product drafts survive safe dialog dismissal", async ({
   await expect(title).toHaveValue("Published Pocket Relay")
 })
 
-test("market checkout country combobox supports search and selection", async ({
+test("market checkout country combobox supports search and selection @market", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_BUYER_PUBKEY)
@@ -540,7 +540,7 @@ test("market checkout country combobox supports search and selection", async ({
   )
 })
 
-test("market wallets route renders portable and connected wallet groups", async ({
+test("market wallets route renders portable and connected wallet groups @market", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_BUYER_PUBKEY)
@@ -578,7 +578,7 @@ test("market wallets route renders portable and connected wallet groups", async 
   await expect(connectWalletButton).toBeFocused()
 })
 
-test("portable wallet restore keeps derivation advanced and device-only fields clear", async ({
+test("portable wallet restore keeps derivation advanced and device-only fields clear @market", async ({
   page,
 }) => {
   await page.goto(`${marketUrl}/wallet`)
@@ -612,7 +612,7 @@ test("portable wallet restore keeps derivation advanced and device-only fields c
   ).toBeVisible()
 })
 
-test("market wallets remain available without a Nostr signer", async ({
+test("market wallets remain available without a Nostr signer @market", async ({
   page,
 }) => {
   await page.goto(marketUrl)
@@ -634,7 +634,7 @@ test("market wallets remain available without a Nostr signer", async ({
   ).toBeVisible()
 })
 
-test("wallet dialog dismissal clears device-local sensitive state", async ({
+test("wallet dialog dismissal clears device-local sensitive state @market", async ({
   page,
 }) => {
   await page.goto(`${marketUrl}/wallet`)
@@ -671,7 +671,7 @@ test("wallet dialog dismissal clears device-local sensitive state", async ({
     name: "Remove from this device?",
   })
   const recoveryConfirmation = removeDialog.getByRole("switch", {
-    name: "I have the recovery phrase and Spark account number",
+    name: "I have the recovery details required to restore this Portable Wallet",
   })
   await recoveryConfirmation.click()
   await expect(recoveryConfirmation).toBeChecked()

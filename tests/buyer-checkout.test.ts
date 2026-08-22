@@ -60,7 +60,9 @@ import {
 } from "../packages/core/src/protocol/lightning"
 import { parseNwcUri } from "../packages/core/src/protocol/nwc"
 import {
+  deriveShippingOptionsReadCoverage,
   getShippingDestinationEligibility,
+  parseLatestShippingOptions,
   parseShippingOptionEvent,
 } from "../packages/core/src/protocol/shipping"
 import { parseProductEvent } from "../packages/core/src/protocol/products"
@@ -2683,6 +2685,87 @@ describe("shipping destination eligibility", () => {
         ],
       })
     ).toBeNull()
+  })
+
+  it("requires verified success from every planned shipping relay", () => {
+    const plannedRelays = ["wss://one.example", "wss://two.example"]
+    const result = (
+      statuses: Array<"success" | "partial" | "failed">,
+      eventsVerified = true
+    ) => ({
+      events: [],
+      eventsVerified,
+      relays: plannedRelays.map((relayUrl, index) => ({
+        relayUrl,
+        status: statuses[index] ?? "failed",
+        eventCount: 0,
+      })),
+    })
+
+    expect(
+      deriveShippingOptionsReadCoverage(
+        plannedRelays,
+        result(["success", "success"])
+      )
+    ).toBe("complete")
+    expect(
+      deriveShippingOptionsReadCoverage(
+        plannedRelays,
+        result(["success", "partial"])
+      )
+    ).toBe("partial")
+    expect(
+      deriveShippingOptionsReadCoverage(
+        plannedRelays,
+        result(["failed", "failed"])
+      )
+    ).toBe("unavailable")
+    expect(
+      deriveShippingOptionsReadCoverage(
+        plannedRelays,
+        result(["success", "success"], false)
+      )
+    ).toBe("unavailable")
+  })
+
+  it("selects the raw NIP-01 shipping winner before parsing", () => {
+    const baseTags = [
+      ["d", "standard"],
+      ["price", "0", "SATS"],
+      ["country", "US"],
+    ]
+    const olderValid = {
+      id: "f".repeat(64),
+      pubkey: FAKE_PUBKEY,
+      created_at: 1,
+      tags: baseTags,
+    }
+    const newerInvalid = {
+      id: "e".repeat(64),
+      pubkey: FAKE_PUBKEY,
+      created_at: 2,
+      tags: baseTags.map((tag) =>
+        tag[0] === "price" ? ["price", "Infinity", "SATS"] : tag
+      ),
+    }
+
+    expect(parseLatestShippingOptions([olderValid, newerInvalid])).toEqual([])
+
+    const tiedHigherId = {
+      ...olderValid,
+      id: "b".repeat(64),
+      created_at: 3,
+      tags: [...baseTags, ["title", "Higher id"]],
+    }
+    const tiedLowerId = {
+      ...olderValid,
+      id: "a".repeat(64),
+      created_at: 3,
+      tags: [...baseTags, ["title", "Lower id"]],
+    }
+    expect(
+      parseLatestShippingOptions([tiedHigherId, tiedLowerId])[0]?.title
+    ).toBe("Lower id")
   })
 
   it("parses empty replacement shipping options as no destinations", () => {

@@ -450,6 +450,111 @@ does not prove settlement or receipt publication. A funded smoke still needs a
 capped NWC credential in a protected deployment environment, explicit approval,
 and verification of the matching kind `9735` on an approved relay.
 
+### Protected Guest Checkout Order Fixture
+
+The manual-only `Guest Checkout Order Smoke` workflow enters the protected
+`guest-checkout-smoke` GitHub environment, verifies that the dedicated merchant
+signer owns the configured merchant and product, and asks the shared
+exact-coordinate product query for the current signed listing. Each product
+read refreshes the merchant's NIP-65 relay hints. Relay-list discovery, the
+bounded hint plan, the listing read, and the kind `5` deletion read must all be
+complete before publication. The runner repeats this check immediately before
+publish.
+The runner then generates a fresh `guest_ephemeral` identity, publishes one
+encrypted order through the shared Market delivery path, switches to the
+merchant signer, and polls Merchant's shared conversation query until a
+current, complete inbox read decrypts that exact order with the expected guest
+identity and product. Stale, degraded, partial, and cache-backed recovery reads
+do not pass the canary.
+
+The runner emits a redacted `passed`, `failed`, or `inconclusive` outcome.
+Exhausted partial or degraded product and inbox evidence is `inconclusive` and
+still returns a nonzero job result. Fixture, construction, publication, and
+complete-read recovery failures remain `failed`.
+
+The workflow fails dispatch validation before it requests protected environment
+access. The confirmation must be true, the ref must be `main`, and the
+candidate must be a 40-character commit SHA. The workflow checks out that exact
+SHA and verifies the checkout before it loads the fixture.
+
+Each attempt uploads one `guest-checkout-order-evidence` artifact after a strict
+privacy check. The fixed schema binds the result to the candidate SHA and
+workflow run. It includes only the status, fixed stage, duration bucket, and
+aggregate relay counts. It excludes identities, product data, order data,
+relay URLs, contacts, invoices, and signer material. A missing, unsafe, or
+misbound artifact fails the job. This protected live canary is source-run
+evidence. It is not deployed-preview, browser-extension, or mobile-wallet UX
+evidence.
+
+Merchant recovery uses a NIP-07-shaped CI adapter over the dedicated test
+signer. The adapter performs real event signing and protected-read
+authorization, but it is not evidence for extension approval UX, browser
+injection behavior, or mobile NIP-46 flows.
+
+Each run leaves one persistent order for the dedicated test merchant. The order
+uses synthetic `.invalid` contact data and is visibly marked as an automated
+test that must not be fulfilled. Keep the workflow manual-only and use only a
+dedicated simple product. Variable parents and variation children are outside
+this canary's fidelity claim. Local development may load the same names from an
+ignored `.env.local`. Store `GUEST_CHECKOUT_SMOKE_MERCHANT_NSEC` only as a
+protected environment secret in GitHub; all other fixture fields are public
+variables. Do not add a static buyer key because every run must create a new
+guest identity.
+
+Before the first dispatch, create the `guest-checkout-smoke` GitHub environment
+with required reviewers and a deployment-branch policy restricted to `main`.
+The workflow also rejects non-`main` refs so a selected feature branch cannot
+receive the merchant secret. Configure:
+
+- environment secret `GUEST_CHECKOUT_SMOKE_MERCHANT_NSEC`
+- environment variable `GUEST_CHECKOUT_SMOKE_MERCHANT_PUBKEY`
+- environment variable `GUEST_CHECKOUT_SMOKE_PRODUCT_ADDRESS`
+- for a physical fixture, environment variables
+  `GUEST_CHECKOUT_SMOKE_SHIPPING_COUNTRY` and
+  `GUEST_CHECKOUT_SMOKE_SHIPPING_POSTAL_CODE`
+- optional environment variables `GUEST_CHECKOUT_SMOKE_RECOVERY_TIMEOUT_MS` and
+  `GUEST_CHECKOUT_SMOKE_RECOVERY_POLL_MS` for slower relay recovery, within the
+  runner's enforced limits
+
+Local runs must also set an absolute `GUEST_CHECKOUT_SMOKE_EVIDENCE_PATH`, a
+40-character `GUEST_CHECKOUT_SMOKE_CANDIDATE_SHA`, and positive numeric workflow
+run identifiers. Use synthetic local values. Do not copy protected workflow
+credentials into a local environment.
+
+The secret must match the public merchant key. The product coordinate must be a
+current signed, Market-visible simple kind `30402` listing owned by that
+merchant and available on the configured commerce relays. The merchant must
+also publish the kind `10050` inbox-relay declaration required for NIP-17
+delivery, and those relays must be reachable by both the Market publisher and
+Merchant recovery query. A physical fixture's country and postal code must
+satisfy its current signed kind `30406` shipping rules.
+
+When a physical listing references kind `30406` without an embedded shipping
+snapshot, the canary refreshes the merchant relay list and attempts the complete
+bounded shipping read plan. It repeats that strict read immediately before
+publish and requires the exact option snapshot to match. It accepts only a
+verified EOSE-complete response from every planned relay and the current NIP-01
+replacement winner. Partial or unavailable coverage, a missing or ambiguous
+exact option, and conflicting references make the run inconclusive before
+publish. Changed shipping terms or an ineligible destination fail before
+publish. The canary also rejects a pricing quote that expires during the final
+product and shipping reads.
+
+The physical listing must also include shipping cost data that production
+guest checkout can price. Kind `30406` supplies destination rules but does not
+make a manual shipping total eligible for the guest order-and-invoice path.
+
+For the workflow's initial introduction, the live dispatch is post-merge
+validation: GitHub only accepts `workflow_dispatch` for a workflow present on
+the default branch, and this workflow intentionally runs only the `main` ref.
+Deterministic payload, publishing, recovery, and redacted-error tests remain in
+normal pull-request CI.
+
+This order-only smoke does not request an invoice, use a payer credential, move
+funds, wait for a kind `9735`, or send a payment proof. Those assertions belong
+in a separately approved funded slice after the dedicated wallet fixture and
+spend controls are configured.
+
 ## Protocol Sources
 
 - NIP-57 defines zap requests as kind `9734` events sent to the receiver's
