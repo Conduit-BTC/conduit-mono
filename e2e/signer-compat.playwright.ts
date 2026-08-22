@@ -39,21 +39,24 @@ async function connectFromMarketDialog(page: Page): Promise<void> {
     .click()
 }
 
-async function storedAuthPubkey(page: Page): Promise<string | null> {
-  return page.evaluate(() => {
+async function storedAuthMatches(
+  page: Page,
+  expectedPubkey: string
+): Promise<boolean> {
+  return page.evaluate((expected) => {
     const raw = localStorage.getItem("conduit:auth")
-    if (!raw) return null
-    if (/^[0-9a-f]{64}$/i.test(raw)) return raw
+    if (!raw) return false
+    if (/^[0-9a-f]{64}$/i.test(raw)) return raw === expected
     try {
       const parsed = JSON.parse(raw) as { userPubkey?: unknown }
-      return typeof parsed.userPubkey === "string" ? parsed.userPubkey : null
+      return parsed.userPubkey === expected
     } catch {
-      return null
+      return false
     }
-  })
+  }, expectedPubkey)
 }
 
-test("market connect tolerates late NIP-07 signer injection", async ({
+test("market connect tolerates late NIP-07 signer injection @market", async ({
   page,
 }) => {
   await installLateTestSigner(page, TEST_BUYER_PUBKEY)
@@ -66,13 +69,15 @@ test("market connect tolerates late NIP-07 signer injection", async ({
   await connectButton.click()
 
   await expect
-    .poll(() => storedAuthPubkey(page), {
+    .poll(() => storedAuthMatches(page, TEST_BUYER_PUBKEY), {
       timeout: 10_000,
     })
-    .toBe(TEST_BUYER_PUBKEY)
+    .toBe(true)
 })
 
-test("market rejected signer keeps retry path visible", async ({ page }) => {
+test("market rejected signer keeps retry path visible @market", async ({
+  page,
+}) => {
   await installRejectingTestSigner(page)
   await openMarketSignerDialog(page)
 
@@ -87,7 +92,7 @@ test("market rejected signer keeps retry path visible", async ({ page }) => {
   ).toBeEnabled()
 })
 
-test("market getRelays failure does not block signer connect", async ({
+test("market getRelays failure does not block signer connect @market", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_BUYER_PUBKEY, {
@@ -99,13 +104,13 @@ test("market getRelays failure does not block signer connect", async ({
   await connectFromMarketDialog(page)
 
   await expect
-    .poll(() => storedAuthPubkey(page), {
+    .poll(() => storedAuthMatches(page, TEST_BUYER_PUBKEY), {
       timeout: 10_000,
     })
-    .toBe(TEST_BUYER_PUBKEY)
+    .toBe(true)
 })
 
-test("market trust ignores a remembered viewer until auth is connected", async ({
+test("market trust ignores a remembered viewer until auth is connected @market", async ({
   page,
 }) => {
   await seedStoredAuth(page, TEST_BUYER_PUBKEY)
@@ -139,7 +144,7 @@ test("market trust ignores a remembered viewer until auth is connected", async (
   await expect(probe).toHaveAttribute("data-viewer-follows", "null")
 })
 
-test("market owner profile drops the public placeholder after connect", async ({
+test("market owner profile drops the public placeholder after connect @market", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_BUYER_PUBKEY, { rememberAuth: false })
@@ -186,7 +191,7 @@ test("market owner profile drops the public placeholder after connect", async ({
   )
 })
 
-test("market signer authority storage failure remains retryable", async ({
+test("market signer authority storage failure remains retryable @market", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_BUYER_PUBKEY, { rememberAuth: false })
@@ -210,7 +215,7 @@ test("market signer authority storage failure remains retryable", async ({
   await expect(connectButton).toBeEnabled()
 })
 
-test("market signer authority read failure remains retryable", async ({
+test("market signer authority read failure remains retryable @market", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_BUYER_PUBKEY, { rememberAuth: false })
@@ -273,13 +278,13 @@ test("market signer authority read failure remains retryable", async ({
   })
   await connectButton.click()
   await expect
-    .poll(() => storedAuthPubkey(page), {
+    .poll(() => storedAuthMatches(page, TEST_BUYER_PUBKEY), {
       timeout: 10_000,
     })
-    .toBe(TEST_BUYER_PUBKEY)
+    .toBe(true)
 })
 
-test("market does not publish a NIP-07 signer after a late authority read failure", async ({
+test("market does not publish a NIP-07 signer after a late authority read failure @market", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_BUYER_PUBKEY, { rememberAuth: false })
@@ -331,13 +336,13 @@ test("market does not publish a NIP-07 signer after a late authority read failur
   await expect(reconnectButton).toBeEnabled()
   await connectFromMarketDialog(page)
   await expect
-    .poll(() => storedAuthPubkey(page), {
+    .poll(() => storedAuthMatches(page, TEST_BUYER_PUBKEY), {
       timeout: 10_000,
     })
-    .toBe(TEST_BUYER_PUBKEY)
+    .toBe(true)
 })
 
-test("merchant locked signer shows waiting state then connects after unlock", async ({
+test("merchant locked signer shows waiting state then connects after unlock @merchant", async ({
   page,
 }) => {
   await installLockedTestSigner(page)
@@ -355,13 +360,13 @@ test("merchant locked signer shows waiting state then connects after unlock", as
   await unlockTestSigner(page, TEST_MERCHANT_PUBKEY)
 
   await expect
-    .poll(() => storedAuthPubkey(page), {
+    .poll(() => storedAuthMatches(page, TEST_MERCHANT_PUBKEY), {
       timeout: 10_000,
     })
-    .toBe(TEST_MERCHANT_PUBKEY)
+    .toBe(true)
 })
 
-test("merchant remembered auth falls back to explicit retry when signer needs activation", async ({
+test("merchant remembered auth falls back to explicit retry when signer needs activation @merchant", async ({
   page,
 }) => {
   await seedStoredAuth(page, TEST_MERCHANT_PUBKEY)
@@ -390,7 +395,7 @@ test("merchant remembered auth falls back to explicit retry when signer needs ac
   ).toBeVisible({ timeout: 10_000 })
 })
 
-test("market restored session keeps a usable signer attached", async ({
+test("market restored session keeps a usable signer attached @market", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_BUYER_PUBKEY)

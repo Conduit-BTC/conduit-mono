@@ -95,7 +95,7 @@ async function expectInsideHud(page: Page): Promise<void> {
     .toBe("contained")
 }
 
-test("market cart HUD keeps every fixed control inside the HUD across merchant-count and width variants", async ({
+test("market cart HUD keeps every fixed control inside the HUD across merchant-count and width variants @market", async ({
   page,
 }) => {
   test.setTimeout(120_000)
@@ -155,7 +155,7 @@ test("market cart HUD keeps every fixed control inside the HUD across merchant-c
   }
 })
 
-test("market cart HUD is route-aware and layered above the fixed footer", async ({
+test("market cart HUD is route-aware and layered above the fixed footer @market", async ({
   page,
 }) => {
   await seedCart(page, 2)
@@ -213,7 +213,7 @@ test("market cart HUD is route-aware and layered above the fixed footer", async 
   ).toHaveCount(0)
 })
 
-test("market cart HUD rail activation expands a collapsed HUD for pointer and keyboard", async ({
+test("market cart HUD rail activation expands a collapsed HUD for pointer and keyboard @market", async ({
   page,
 }) => {
   await seedCart(page, 2)
@@ -271,7 +271,7 @@ test("market cart HUD rail activation expands a collapsed HUD for pointer and ke
   await expect(toggle).toHaveAttribute("aria-expanded", "true")
 })
 
-test("market cart HUD collapse restores focus from the panel to the disclosure toggle", async ({
+test("market cart HUD collapse restores focus from the panel to the disclosure toggle @market", async ({
   page,
 }) => {
   await seedCart(page, 2)
@@ -291,7 +291,7 @@ test("market cart HUD collapse restores focus from the panel to the disclosure t
   await expect(toggle).toBeFocused()
 })
 
-test("market cart HUD restore is quiet while a real first increase announces and expands", async ({
+test("market cart HUD restore is quiet while a real first increase announces and expands @market", async ({
   page,
 }) => {
   await seedCart(page, 1)
@@ -323,7 +323,7 @@ test("market cart HUD restore is quiet while a real first increase announces and
   await expect(liveRegion).toContainText("Cart updated")
 })
 
-test("market cart presence starts one shared merchant-scoped LNURL preflight without payment data", async ({
+test("market cart presence starts one shared merchant-scoped LNURL preflight without payment data @market", async ({
   page,
 }) => {
   const lnurlRequests: Array<{
@@ -355,7 +355,7 @@ test("market cart presence starts one shared merchant-scoped LNURL preflight wit
   // Plain product visits without a cart create no LNURL requests.
   await page.goto(`${marketUrl}/products`)
   await page.waitForTimeout(1_000)
-  expect(lnurlRequests).toEqual([])
+  expect(lnurlRequests.length).toBe(0)
 
   // Restoring a cart for the merchant starts the preflight once the profile
   // resolves the Lightning address.
@@ -381,11 +381,12 @@ test("market cart presence starts one shared merchant-scoped LNURL preflight wit
   // identity, invoice, or payment data leave the app, and the invoice
   // callback is never contacted without explicit payment intent.
   for (const request of lnurlRequests) {
-    expect(request.method).toBe("GET")
-    expect(request.body).toBeNull()
-    expect(request.url).toBe(
-      "https://merchant-fixture.dev/.well-known/lnurlp/payments"
-    )
+    expect(
+      request.method === "GET" &&
+        request.body === null &&
+        request.url ===
+          "https://merchant-fixture.dev/.well-known/lnurlp/payments"
+    ).toBe(true)
   }
 
   // Route handoff inside the lease reuses the same result: an in-app
@@ -403,7 +404,7 @@ test("market cart presence starts one shared merchant-scoped LNURL preflight wit
   expect(lnurlRequests.length).toBe(requestsBeforeNavigation)
 })
 
-test("market cart HUD isolates a failed merchant-scoped LNURL endpoint and stays interactive", async ({
+test("market cart HUD isolates a failed merchant-scoped LNURL endpoint and stays interactive @market", async ({
   page,
 }) => {
   await page.route("https://merchant-fixture.dev/**", (route) => route.abort())
@@ -427,7 +428,9 @@ test("market cart HUD isolates a failed merchant-scoped LNURL endpoint and stays
   ).toBeVisible()
 })
 
-test("market cart HUD does not present a partial total", async ({ page }) => {
+test("market cart HUD does not present a partial total @market", async ({
+  page,
+}) => {
   await page.addInitScript(
     ({ merchant }) => {
       localStorage.setItem(
@@ -466,12 +469,21 @@ test("market cart HUD does not present a partial total", async ({ page }) => {
   await expect(hud).not.toContainText("1,200 sats")
   await expect
     .poll(() =>
-      page.evaluate(() => {
-        const stored = JSON.parse(localStorage.getItem("conduit:cart") ?? "{}")
-        return stored.items?.map(
-          (item: { productId: string }) => item.productId
-        )
-      })
+      page.evaluate(
+        (expectedProductIds) => {
+          const stored = JSON.parse(
+            localStorage.getItem("conduit:cart") ?? "{}"
+          )
+          const storedProductIds = stored.items?.map(
+            (item: { productId: string }) => item.productId
+          )
+          return (
+            JSON.stringify(storedProductIds) ===
+            JSON.stringify(expectedProductIds)
+          )
+        },
+        [`30402:${MERCHANT_A}:priced`, `30402:${MERCHANT_A}:unpriced`]
+      )
     )
-    .toEqual([`30402:${MERCHANT_A}:priced`, `30402:${MERCHANT_A}:unpriced`])
+    .toBe(true)
 })

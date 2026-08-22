@@ -4,7 +4,7 @@ const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "700
 const vaultModuleUrl = `/@fs${process.cwd()}/packages/core/src/protocol/remote-signer-vault.ts`
 const remoteSignerModuleUrl = `/@fs${process.cwd()}/packages/core/src/protocol/remote-signer.ts`
 
-test("remote signer reconnect key is encrypted and restorable in browser storage", async ({
+test("remote signer reconnect key is encrypted and restorable in browser storage @market", async ({
   page,
 }) => {
   await page.goto(`${marketUrl}/products`)
@@ -19,7 +19,10 @@ test("remote signer reconnect key is encrypted and restorable in browser storage
     }
     const vault = createBrowserRemoteSignerKeyVault()
     const id = crypto.randomUUID()
-    const privateKey = "04".repeat(32)
+    const privateKey = Array.from(
+      crypto.getRandomValues(new Uint8Array(32)),
+      (byte) => byte.toString(16).padStart(2, "0")
+    ).join("")
 
     await vault.store(id, privateKey)
     const restored = await vault.load(id)
@@ -45,21 +48,22 @@ test("remote signer reconnect key is encrypted and restorable in browser storage
     })
     database.close()
 
+    const restoredMatches = restored === privateKey
+    const plaintextAbsent = !JSON.stringify(stored).includes(privateKey)
     await vault.remove(id)
     return {
-      restored,
+      restoredMatches,
       removed: (await vault.load(id)) === null,
-      rawRecord: JSON.stringify(stored),
-      privateKey,
+      plaintextAbsent,
     }
   }, vaultModuleUrl)
 
-  expect(result.restored).toBe(result.privateKey)
+  expect(result.restoredMatches).toBe(true)
   expect(result.removed).toBe(true)
-  expect(result.rawRecord).not.toContain(result.privateKey)
+  expect(result.plaintextAbsent).toBe(true)
 })
 
-test("concurrent tabs share one atomic vault wrapping key", async ({
+test("concurrent tabs share one atomic vault wrapping key @market", async ({
   context,
 }) => {
   const firstPage = await context.newPage()
@@ -79,9 +83,13 @@ test("concurrent tabs share one atomic vault wrapping key", async ({
       })
   )
 
-  const store = (page: typeof firstPage, id: string, value: string) =>
+  const storeAndVerify = (
+    page: typeof firstPage,
+    id: string,
+    otherId: string
+  ) =>
     page.evaluate(
-      async ({ moduleUrl, id: keyId, value: privateKey }) => {
+      async ({ moduleUrl, id: keyId, otherId: otherKeyId }) => {
         const { createBrowserRemoteSignerKeyVault } = (await import(
           moduleUrl
         )) as {
@@ -91,37 +99,47 @@ test("concurrent tabs share one atomic vault wrapping key", async ({
           }
         }
         const vault = createBrowserRemoteSignerKeyVault()
+        const privateKey = Array.from(
+          crypto.getRandomValues(new Uint8Array(32)),
+          (byte) => byte.toString(16).padStart(2, "0")
+        ).join("")
         await vault.store(keyId, privateKey)
-        return vault.load(keyId)
+
+        let other: string | null = null
+        for (let attempt = 0; attempt < 100 && other === null; attempt += 1) {
+          other = await vault.load(otherKeyId)
+          if (other === null) {
+            await new Promise((resolve) => setTimeout(resolve, 10))
+          }
+        }
+
+        return {
+          ownMatches: (await vault.load(keyId)) === privateKey,
+          otherLoaded: other !== null,
+          valuesDiffer: other !== privateKey,
+        }
       },
-      { moduleUrl: vaultModuleUrl, id, value }
+      { moduleUrl: vaultModuleUrl, id, otherId }
     )
 
-  const [first, second] = await Promise.all([
-    store(firstPage, "first", "11".repeat(32)),
-    store(secondPage, "second", "22".repeat(32)),
+  const [firstResult, secondResult] = await Promise.all([
+    storeAndVerify(firstPage, "first", "second"),
+    storeAndVerify(secondPage, "second", "first"),
   ])
 
-  expect(first).toBe("11".repeat(32))
-  expect(second).toBe("22".repeat(32))
-  const restored = await firstPage.evaluate(
-    async ({ moduleUrl }) => {
-      const { createBrowserRemoteSignerKeyVault } = (await import(
-        moduleUrl
-      )) as {
-        createBrowserRemoteSignerKeyVault: () => {
-          load(id: string): Promise<string | null>
-        }
-      }
-      const vault = createBrowserRemoteSignerKeyVault()
-      return Promise.all([vault.load("first"), vault.load("second")])
-    },
-    { moduleUrl: vaultModuleUrl }
-  )
-  expect(restored).toEqual(["11".repeat(32), "22".repeat(32)])
+  expect(firstResult).toEqual({
+    ownMatches: true,
+    otherLoaded: true,
+    valuesDiffer: true,
+  })
+  expect(secondResult).toEqual({
+    ownMatches: true,
+    otherLoaded: true,
+    valuesDiffer: true,
+  })
 })
 
-test("auth operations serialize across tabs without Web Locks", async ({
+test("auth operations serialize across tabs without Web Locks @market", async ({
   context,
 }) => {
   await context.addInitScript(() => {
@@ -170,7 +188,7 @@ test("auth operations serialize across tabs without Web Locks", async ({
     .toBe("2")
 })
 
-test("remote signer storage works without crypto.randomUUID", async ({
+test("remote signer storage works without crypto.randomUUID @market", async ({
   page,
 }) => {
   await page.addInitScript(() => {
@@ -196,13 +214,15 @@ test("remote signer storage works without crypto.randomUUID", async ({
     { signerModuleUrl: remoteSignerModuleUrl, vaultUrl: vaultModuleUrl }
   )
 
-  expect(result.revision).toMatch(
-    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
-  )
+  expect(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+      result.revision
+    )
+  ).toBe(true)
   expect(result.lockResult).toBe("ready")
 })
 
-test("remote signer storage fails before pairing on an insecure page context", async ({
+test("remote signer storage fails before pairing on an insecure page context @market", async ({
   page,
 }) => {
   await page.addInitScript(() => {
@@ -227,6 +247,6 @@ test("remote signer storage fails before pairing on an insecure page context", a
     }
   }, vaultModuleUrl)
 
-  expect(message).toContain("HTTPS")
-  expect(message).not.toContain("crypto.subtle")
+  expect(message?.includes("HTTPS")).toBe(true)
+  expect(message?.includes("crypto.subtle")).toBe(false)
 })

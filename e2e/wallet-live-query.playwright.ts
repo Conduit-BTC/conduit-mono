@@ -15,9 +15,30 @@ interface BrowserDexieConstructor {
   new (databaseName: string): Dexie
 }
 
-test("market wallet descriptors converge across tabs through Dexie liveQuery", async ({
+test("market wallet descriptors converge across tabs through Dexie liveQuery @market", async ({
   context,
 }) => {
+  // This test covers browser-local Dexie behavior only. Keep every socket in
+  // process so public relay health cannot affect the liveQuery signal.
+  await context.routeWebSocket(/^(?:ws|wss):\/\//, (socket) => {
+    socket.onMessage((message) => {
+      if (typeof message !== "string") return
+      let frame: unknown
+      try {
+        frame = JSON.parse(message)
+      } catch {
+        return
+      }
+      if (
+        Array.isArray(frame) &&
+        frame[0] === "REQ" &&
+        typeof frame[1] === "string"
+      ) {
+        socket.send(JSON.stringify(["EOSE", frame[1]]))
+      }
+    })
+  })
+
   const firstPage = await context.newPage()
   const secondPage = await context.newPage()
   const runtimeErrors: string[] = []
