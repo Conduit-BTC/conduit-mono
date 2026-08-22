@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 import { EVENT_KINDS, type CommerceProductRecord } from "@conduit/core"
 import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
+  applyOrderStockTarget,
   buildOrderStockAdjustments,
   doesOrderStockDecisionCoverAdjustment,
   getOrderStockAdjustmentForDisplay,
@@ -678,6 +679,54 @@ describe("merchant product stock", () => {
       doesOrderStockDecisionCoverAdjustment({
         adjustment: ample,
         persistedDecision: { kind: "declined", decidedAt: 3 },
+      })
+    ).toBe(true)
+  })
+
+  it("treats a custom published stock value as the merchant's final assertion", () => {
+    const storage = new MemoryStorage()
+    const merchant = "a".repeat(64)
+    const orderId = "order-custom-stock"
+    const record = productRecord({ stock: 5 })
+    const adjustment = buildOrderStockAdjustments({
+      orderId,
+      merchantPubkey: merchant,
+      items: [{ productId: record.addressId, quantity: 2 }],
+      productRecords: [record],
+    })[0]!
+    const custom = applyOrderStockTarget(adjustment, 4)
+
+    expect(custom).toMatchObject({
+      currentStock: 5,
+      nextStock: 4,
+      targetMode: "custom",
+    })
+
+    const store = new ProductStockDecisionStore(storage)
+    expect(
+      store.set(merchant, orderId, custom.addressId, "applied", custom)
+    ).toBe(true)
+    const persistedDecision = new ProductStockDecisionStore(storage).get(
+      merchant,
+      orderId,
+      custom.addressId
+    )
+    expect(persistedDecision?.adjustment).toEqual(custom)
+
+    const laterRecord = {
+      ...productRecord({ stock: 10 }),
+      eventId: "f".repeat(64),
+    }
+    const laterAdjustment = buildOrderStockAdjustments({
+      orderId,
+      merchantPubkey: merchant,
+      items: [{ productId: laterRecord.addressId, quantity: 2 }],
+      productRecords: [laterRecord],
+    })[0]!
+    expect(
+      doesOrderStockDecisionCoverAdjustment({
+        adjustment: laterAdjustment,
+        persistedDecision,
       })
     ).toBe(true)
   })

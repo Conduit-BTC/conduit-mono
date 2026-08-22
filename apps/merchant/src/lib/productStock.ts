@@ -56,6 +56,8 @@ export interface OrderStockAdjustment {
   currentStock: number
   nextStock: number
   shortfall: number
+  /** Custom targets are final merchant assertions and do not carry a residual decrement. */
+  targetMode?: "custom"
 }
 
 export interface ProductStockDisplay {
@@ -204,6 +206,7 @@ function parseOrderStockAdjustment(
     currentStock,
     nextStock: storedNextStock,
     shortfall: storedShortfall,
+    targetMode,
   } = value as Record<string, unknown>
   if (
     typeof key !== "string" ||
@@ -221,14 +224,18 @@ function parseOrderStockAdjustment(
     storedNextStock < 0 ||
     typeof storedShortfall !== "number" ||
     !Number.isSafeInteger(storedShortfall) ||
-    storedShortfall < 0
+    storedShortfall < 0 ||
+    (targetMode !== undefined && targetMode !== "custom")
   ) {
     return null
   }
 
   const nextStock = Math.max(0, currentStock - quantity)
   const shortfall = Math.max(0, quantity - currentStock)
-  if (storedNextStock !== nextStock || storedShortfall !== shortfall)
+  if (
+    (targetMode !== "custom" && storedNextStock !== nextStock) ||
+    storedShortfall !== shortfall
+  )
     return null
 
   return {
@@ -238,8 +245,9 @@ function parseOrderStockAdjustment(
     title,
     quantity,
     currentStock,
-    nextStock,
+    nextStock: storedNextStock,
     shortfall,
+    ...(targetMode === "custom" ? { targetMode } : {}),
   }
 }
 
@@ -405,6 +413,22 @@ export function getOrderStockDecisionKey(
   )}`
 }
 
+export function applyOrderStockTarget(
+  adjustment: OrderStockAdjustment,
+  stock: number
+): OrderStockAdjustment {
+  if (!Number.isSafeInteger(stock) || stock < 0) {
+    throw new Error("Stock must be a non-negative safe integer.")
+  }
+
+  if (stock === adjustment.nextStock) return adjustment
+  return {
+    ...adjustment,
+    nextStock: stock,
+    targetMode: "custom",
+  }
+}
+
 export function doesOrderStockDecisionCoverAdjustment(input: {
   adjustment: OrderStockAdjustment
   persistedDecision: ProductStockDecision | null
@@ -432,6 +456,7 @@ export function getOrderStockDecisionFollowUpAdjustment(input: {
     !persistedAdjustment ||
     persistedAdjustment.key !== input.adjustment.key ||
     persistedAdjustment.addressId !== input.adjustment.addressId ||
+    persistedAdjustment.targetMode === "custom" ||
     persistedAdjustment.shortfall <= 0 ||
     input.adjustment.sourceEventId === persistedAdjustment.sourceEventId ||
     input.adjustment.currentStock <= persistedAdjustment.nextStock
