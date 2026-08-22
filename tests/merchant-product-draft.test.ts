@@ -1,17 +1,22 @@
 import { describe, expect, it } from "bun:test"
 import {
   clearProductDraft,
+  clearProductVariationAuthoringState,
   getProductDraftStorageKey,
+  loadProductVariationAuthoringState,
   loadProductDraft,
   ProductDraftStore,
+  saveProductVariationAuthoringState,
   saveProductDraft,
   type ProductDraftTarget,
+  type ProductVariationAuthoringTarget,
 } from "../apps/merchant/src/lib/productDraft"
 import type { MerchantProductFormValues } from "../apps/merchant/src/lib/productForm"
 import {
   createProductVariationAxis,
   createEmptyProductVariationForm,
   generateProductVariationRows,
+  setProductVariationCombinationIncluded,
   updateProductVariationOverride,
 } from "../apps/merchant/src/lib/productVariations"
 
@@ -141,13 +146,20 @@ describe("merchant product drafts", () => {
       enabled: true,
       axes: [createProductVariationAxis("size", "S, M, L, XL")],
     })
-    const medium = generated.rows.find((row) => row.identity === "size:m")
+    const medium = generated.rows.find(
+      (row) => row.specifications[0]?.value === "M"
+    )
     if (!medium) throw new Error("Expected M row")
-    const variations = updateProductVariationOverride(
+    const customized = updateProductVariationOverride(
       updateProductVariationOverride(generated, medium.identity, "price", "30"),
       medium.identity,
       "stock",
       "4"
+    )
+    const variations = setProductVariationCombinationIncluded(
+      customized,
+      medium.identity,
+      false
     )
     const values = form({ variations })
 
@@ -155,6 +167,44 @@ describe("merchant product drafts", () => {
     expect(loadProductDraft(draftTarget, storage).draft?.variations).toEqual(
       variations
     )
+  })
+
+  it("keeps published option authoring state separate and root-scoped", () => {
+    const storage = new MemoryStorage()
+    const authoringTarget: ProductVariationAuthoringTarget = {
+      merchantPubkey: "a".repeat(64),
+      productAddressId: `30402:${"a".repeat(64)}:pocket-relay`,
+      rootEventId: "root-event-1",
+    }
+    const state = generateProductVariationRows({
+      ...createEmptyProductVariationForm(),
+      enabled: true,
+      axes: [createProductVariationAxis("size", "S, M")],
+    })
+    const sparse = setProductVariationCombinationIncluded(
+      state,
+      state.rows[0]!.identity,
+      false
+    )
+
+    expect(
+      saveProductVariationAuthoringState(authoringTarget, sparse, storage)
+    ).toBe(true)
+    expect(
+      loadProductVariationAuthoringState(authoringTarget, storage)
+    ).toEqual({ state: sparse, storageAvailable: true })
+    expect(
+      loadProductVariationAuthoringState(
+        { ...authoringTarget, rootEventId: "root-event-2" },
+        storage
+      )
+    ).toEqual({ state: null, storageAvailable: true })
+    expect(clearProductVariationAuthoringState(authoringTarget, storage)).toBe(
+      true
+    )
+    expect(
+      loadProductVariationAuthoringState(authoringTarget, storage).state
+    ).toBeNull()
   })
 
   it("migrates legacy blank shipping drafts to explicit coordination", () => {
@@ -254,6 +304,38 @@ describe("merchant product drafts", () => {
     expect(loadProductDraft(draftTarget, storage).draft?.variations).toEqual(
       createEmptyProductVariationForm()
     )
+  })
+
+  it("migrates version 4 variation rows as included", () => {
+    const storage = new MemoryStorage()
+    const draftTarget = target()
+    const storageKey = getProductDraftStorageKey(draftTarget)
+    if (!storageKey) throw new Error("Expected a product draft storage key")
+    const variations = generateProductVariationRows({
+      ...createEmptyProductVariationForm(),
+      enabled: true,
+      axes: [createProductVariationAxis("option", "one, two")],
+    })
+    const legacyRows: Array<Record<string, unknown>> = variations.rows.map(
+      (row) => ({ ...row })
+    )
+    for (const row of legacyRows) delete row.included
+    const storedForm: Record<string, unknown> = { ...form() }
+    storedForm.variations = { ...variations, rows: legacyRows }
+
+    storage.setItem(
+      storageKey,
+      JSON.stringify({
+        version: 4,
+        baseEventId: null,
+        savedAt: Date.now(),
+        form: storedForm,
+      })
+    )
+
+    const restored = loadProductDraft(draftTarget, storage).draft?.variations
+    expect(restored?.rows).toHaveLength(2)
+    expect(restored?.rows.every(({ included }) => included)).toBe(true)
   })
 
   it("does not restore an edit draft after the source event changes", () => {
