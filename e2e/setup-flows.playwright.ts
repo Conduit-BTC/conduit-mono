@@ -312,31 +312,37 @@ test("merchant product tags suggest the loaded catalog without blocking freeform
   await context.close()
 })
 
-test("merchant product options support generic three-axis sparse rows", async ({
+test("merchant product options provide a generic availability matrix", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_MERCHANT_PUBKEY)
   await page.goto(`${merchantUrl}/products`)
   await page.getByRole("button", { name: "Add product" }).first().click()
 
-  await page
-    .getByRole("checkbox", { name: /This product has variations/ })
-    .check()
-  await page.getByRole("button", { name: "Add custom axis" }).click()
-  await page.getByRole("button", { name: "Add custom axis" }).click()
+  await page.getByRole("checkbox", { name: /This product has options/ }).check()
+  await page.getByRole("button", { name: "Add option" }).click()
+  await page.getByRole("button", { name: "Add option" }).click()
 
-  const axisNames = page.getByLabel("Axis name")
-  const axisValues = page.getByLabel("Values")
-  await axisNames.nth(0).fill("screen-size")
-  await axisValues.nth(0).fill('13", 15"')
-  await axisNames.nth(1).fill("license-tier")
-  await axisValues.nth(1).fill("Personal, Business")
-  await axisNames.nth(2).fill("theme")
-  await axisValues.nth(2).fill("Light, Dark")
+  const optionNames = page.getByLabel("Option name", { exact: true })
+  const optionValues = page.getByLabel("Values", { exact: true })
+  await optionNames.nth(0).fill("option-a")
+  await optionValues.nth(0).fill("a1, a2")
+  await optionNames.nth(1).fill("option-b")
+  await optionValues.nth(1).fill("b1, b2")
+  await optionNames.nth(2).fill("option-c")
+  await optionValues.nth(2).fill("c1, c2")
 
-  await page.getByRole("button", { name: "Generate combinations" }).click()
-  await expect(page.getByRole("button", { name: "Remove row" })).toHaveCount(8)
-  await expect(page.getByText('13" / Personal / Light')).toBeVisible()
+  const matrix = page.getByRole("region", {
+    name: "Combination availability matrix",
+  })
+  const availability = matrix.getByRole("checkbox")
+  await expect(availability).toHaveCount(8)
+  await expect(availability.first()).not.toBeChecked()
+  await page.getByRole("button", { name: "Make all available" }).click()
+  await expect(
+    page.getByRole("button", { name: "Mark unavailable" })
+  ).toHaveCount(8)
+  await expect(page.getByText("a1 / b1 / c1")).toBeVisible()
 
   const dialogOverflow = await page
     .getByRole("dialog", { name: "Add product" })
@@ -366,11 +372,21 @@ test("merchant product options support generic three-axis sparse rows", async ({
   )
   expect(dialogOverflow.excessScrollHeight).toBeLessThanOrEqual(32)
 
-  await page.getByRole("button", { name: "Remove row" }).first().click()
-  await expect(page.getByRole("button", { name: "Remove row" })).toHaveCount(7)
-  await page.getByLabel("Child title").first().fill("Studio License")
-  await expect(page.getByLabel("Child title").first()).toHaveValue(
-    "Studio License"
+  await page
+    .getByLabel("Combination title")
+    .first()
+    .fill("Retained combination title")
+  await page.getByRole("button", { name: "Mark unavailable" }).first().click()
+  await expect(
+    page.getByRole("button", { name: "Mark unavailable" })
+  ).toHaveCount(7)
+  await expect(availability.first()).not.toBeChecked()
+  await availability.first().check()
+  await expect(
+    page.getByRole("button", { name: "Mark unavailable" })
+  ).toHaveCount(8)
+  await expect(page.getByLabel("Combination title").first()).toHaveValue(
+    "Retained combination title"
   )
 })
 
