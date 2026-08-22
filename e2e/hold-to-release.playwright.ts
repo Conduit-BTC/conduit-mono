@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test"
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 
-test("market hold-to-release supports cancellation, keyboard, assistive activation, and optional haptics", async ({
+test("market hold-to-release supports cancellation, keyboard, assistive activation, and optional haptics @market", async ({
   page,
 }) => {
   await page.goto(`${marketUrl}/products`)

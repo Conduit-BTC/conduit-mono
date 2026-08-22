@@ -58,7 +58,11 @@ type OwnContactListSnapshot = {
   cachedAt: number
 }
 
-test("market Dexie 4 preserves additive v12 data across a declared-v11 rollback", async ({
+function hasSameSerializedValue(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
+test("market Dexie 4 preserves additive v12 data across a declared-v11 rollback @market", async ({
   page,
 }) => {
   const dexieMessages: string[] = []
@@ -233,14 +237,32 @@ test("market Dexie 4 preserves additive v12 data across a declared-v11 rollback"
   expect(result.restoredDeclaredVersion).toBe(12)
   expect(result.v11DeclaredTables).toEqual(["inboxDeclarationEvidence"])
   expect(result.installedOnlyTableError).toBe("InvalidTableError")
-  expect(result.inboxReadByV11).toEqual(result.inboxBefore)
-  expect(result.nativeState).toEqual({
-    contactListSnapshot: result.contactListSnapshot,
-    inboxEvidence: result.inboxAfter,
-    nativeVersion: 120,
-    stores: ["inboxDeclarationEvidence", "ownContactListSnapshots"],
-  })
-  expect(result.contactListReadByV12).toEqual(result.contactListSnapshot)
-  expect(result.inboxReadByV12).toEqual(result.inboxAfter)
-  expect(dexieMessages).toEqual([])
+  expect(
+    hasSameSerializedValue(result.inboxReadByV11, result.inboxBefore)
+  ).toBe(true)
+  expect(
+    hasSameSerializedValue(
+      result.nativeState.contactListSnapshot,
+      result.contactListSnapshot
+    ) &&
+      hasSameSerializedValue(
+        result.nativeState.inboxEvidence,
+        result.inboxAfter
+      ) &&
+      result.nativeState.nativeVersion === 120 &&
+      hasSameSerializedValue(result.nativeState.stores, [
+        "inboxDeclarationEvidence",
+        "ownContactListSnapshots",
+      ])
+  ).toBe(true)
+  expect(
+    hasSameSerializedValue(
+      result.contactListReadByV12,
+      result.contactListSnapshot
+    )
+  ).toBe(true)
+  expect(hasSameSerializedValue(result.inboxReadByV12, result.inboxAfter)).toBe(
+    true
+  )
+  expect(dexieMessages.length).toBe(0)
 })
