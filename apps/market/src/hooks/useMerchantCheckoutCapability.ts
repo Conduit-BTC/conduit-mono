@@ -145,9 +145,28 @@ export function useMerchantCheckoutCapability(input: {
       wallet.network === configuredWalletNetwork &&
       wallet.capabilities.includes("pay_invoice")
   )
+  const readyWalletIds = new Set(
+    eligibleWallets
+      .filter((wallet) => {
+        if (wallet.providerId === "spark") {
+          return wallets.runtime[wallet.id]?.status === "ready"
+        }
+        const snapshot = wallets.nwcSnapshots[wallet.id]
+        return Boolean(
+          snapshot &&
+          getNwcPaymentReadiness({
+            snapshot,
+            walletNetwork: wallet.network,
+            configuredNetwork: configuredWalletNetwork,
+          }).ready
+        )
+      })
+      .map((wallet) => wallet.id)
+  )
   const paymentTarget = resolveCheckoutPaymentTarget({
     selection: null,
     eligibleWallets,
+    readyWalletIds,
     weblnAvailable: webLnAvailable,
   })
   const selectedWallet =

@@ -268,6 +268,42 @@ describe("Market shopper preset integration", () => {
     )
   })
 
+  it("retains unlocked preset state across same-identity relay scope changes", async () => {
+    const source = await Bun.file(
+      "apps/market/src/hooks/useShopperPresets.tsx"
+    ).text()
+    const lifecycleEffectStart = source.indexOf(
+      "useEffect(() => {",
+      source.indexOf("stateOwnerPubkeyRef")
+    )
+    const lifecycleEffect = source.slice(
+      lifecycleEffectStart,
+      source.indexOf("const result = remote.data", lifecycleEffectStart)
+    )
+
+    const sameIdentityBranch = lifecycleEffect.indexOf(
+      "if (stateOwnerPubkeyRef.current === identityPubkey)"
+    )
+    const sameIdentityReturn = lifecycleEffect.indexOf(
+      "return",
+      sameIdentityBranch
+    )
+    const newIdentityAssignment = lifecycleEffect.indexOf(
+      "stateOwnerPubkeyRef.current = identityPubkey",
+      sameIdentityReturn
+    )
+    const clearDecryptedPreset = lifecycleEffect.indexOf(
+      "setDecryptedPreset(null)",
+      newIdentityAssignment
+    )
+
+    expect(sameIdentityBranch).toBeGreaterThan(-1)
+    expect(lifecycleEffect).toContain('setSyncState("syncing")')
+    expect(sameIdentityReturn).toBeGreaterThan(sameIdentityBranch)
+    expect(newIdentityAssignment).toBeGreaterThan(sameIdentityReturn)
+    expect(clearDecryptedPreset).toBeGreaterThan(newIdentityAssignment)
+  })
+
   it("does not refetch repeatedly while relay settings remain ready", () => {
     const lifecycle = {
       identityPubkey: "buyer",
@@ -920,6 +956,7 @@ describe("Market shopper preset integration", () => {
     expect(checkout).toContain(
       "preferredRail: shopperPresets.preset.preferredRail"
     )
+    expect(checkout).toContain("readyWalletIds,")
     expect(capability).toContain(
       'import { useShopperPresets } from "./useShopperPresets"'
     )
@@ -929,6 +966,7 @@ describe("Market shopper preset integration", () => {
     )
     expect(capability).toContain("resolveCheckoutPaymentTarget({")
     expect(capability).toContain("selection: null")
+    expect(capability).toContain("readyWalletIds,")
   })
 
   it("uses only an unlocked identity-owned preset for Zap Out shipping readiness", async () => {

@@ -142,6 +142,37 @@ describe("checkout payment target selection", () => {
     })
   })
 
+  it("falls back to a ready automatic target when the preferred NWC wallet is not ready", () => {
+    expect(
+      resolveCheckoutPaymentTarget({
+        selection: null,
+        preferredRail: "nwc",
+        eligibleWallets: [
+          wallet("nwc-default", "nwc", { isDefault: true }),
+          wallet("spark-ready", "spark"),
+        ],
+        readyWalletIds: new Set(["spark-ready"]),
+        weblnAvailable: true,
+      })
+    ).toEqual({
+      type: "wallet",
+      walletId: "spark-ready",
+      providerId: "spark",
+    })
+  })
+
+  it("falls back to ready WebLN when no registered wallet is ready", () => {
+    expect(
+      resolveCheckoutPaymentTarget({
+        selection: null,
+        preferredRail: "nwc",
+        eligibleWallets: [wallet("nwc-default", "nwc", { isDefault: true })],
+        readyWalletIds: new Set(),
+        weblnAvailable: true,
+      })
+    ).toEqual({ type: "webln" })
+  })
+
   it("selects WebLN for a WebLN preference when it is available", () => {
     expect(
       resolveCheckoutPaymentTarget({

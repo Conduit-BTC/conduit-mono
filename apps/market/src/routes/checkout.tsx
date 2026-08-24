@@ -926,6 +926,19 @@ function CheckoutPage() {
       candidate.network === checkoutWalletNetwork &&
       candidate.capabilities.includes("pay_invoice")
   )
+  const readyWalletIds = new Set(
+    eligibleWallets
+      .filter(
+        (wallet) =>
+          getCheckoutWalletState({
+            wallet,
+            runtime: wallets.runtime[wallet.id],
+            nwcSnapshot: wallets.nwcSnapshots[wallet.id],
+            configuredNetwork: checkoutWalletNetwork,
+          }).status === "pay-capable"
+      )
+      .map((wallet) => wallet.id)
+  )
   const eligibleWalletDisplayLabels = getWalletDisplayLabels(eligibleWallets)
   const [weblnAvailable, setWeblnAvailable] = useState(false)
   const [paymentTargetSelection, setPaymentTargetSelection] =
@@ -934,6 +947,7 @@ function CheckoutPage() {
     selection: paymentTargetSelection,
     preferredRail: shopperPresets.preset.preferredRail,
     eligibleWallets,
+    readyWalletIds,
     weblnAvailable,
   })
   const paymentTargetOptions = getCheckoutPaymentTargetOptions({

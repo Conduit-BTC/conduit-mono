@@ -131,6 +131,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
   )
   const relayLifecycleRef = useRef(relayLifecycle)
   relayLifecycleRef.current = relayLifecycle
+  const stateOwnerPubkeyRef = useRef<string | null>(null)
   const previousRelayLifecycleRef = useRef<ShopperPresetsRelayLifecycle | null>(
     null
   )
@@ -263,15 +264,24 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
   )
 
   useEffect(() => {
-    acceptedReadRef.current = null
-    setDecryptedPreset(null)
-    setRemotePreset(null)
     if (!identityPubkey) {
+      stateOwnerPubkeyRef.current = null
+      acceptedReadRef.current = null
+      setDecryptedPreset(null)
+      setRemotePreset(null)
       setUnlockPolicyState({ ownerPubkey: null, policy: "always" })
       setUnlockState("disconnected")
       setSyncState("disconnected")
       return
     }
+    if (stateOwnerPubkeyRef.current === identityPubkey) {
+      setSyncState("syncing")
+      return
+    }
+    stateOwnerPubkeyRef.current = identityPubkey
+    acceptedReadRef.current = null
+    setDecryptedPreset(null)
+    setRemotePreset(null)
     setUnlockState("loading")
     setSyncState("syncing")
     const storage = getBrowserShopperPresetsStorage()

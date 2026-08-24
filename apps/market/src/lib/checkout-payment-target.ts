@@ -59,18 +59,25 @@ export function resolveCheckoutPaymentTarget(input: {
   selection: CheckoutPaymentTarget | null
   preferredRail?: ShopperPaymentRail
   eligibleWallets: readonly WalletDescriptor[]
+  readyWalletIds?: ReadonlySet<string>
   weblnAvailable: boolean
 }): CheckoutPaymentTarget {
   if (input.selection) {
     return input.selection
   }
 
+  const readyWallets = input.readyWalletIds
+    ? input.eligibleWallets.filter((wallet) =>
+        input.readyWalletIds?.has(wallet.id)
+      )
+    : input.eligibleWallets
+
   if (input.preferredRail === "manual") return { type: "manual" }
   if (input.preferredRail === "webln") {
     if (input.weblnAvailable) return { type: "webln" }
   }
   if (input.preferredRail === "nwc") {
-    const preferredNwcWallet = getPreferredNwcWallet(input.eligibleWallets)
+    const preferredNwcWallet = getPreferredNwcWallet(readyWallets)
     if (preferredNwcWallet) {
       return {
         type: "wallet",
@@ -80,7 +87,10 @@ export function resolveCheckoutPaymentTarget(input: {
     }
   }
 
-  return getAutomaticPaymentTarget(input)
+  return getAutomaticPaymentTarget({
+    eligibleWallets: readyWallets,
+    weblnAvailable: input.weblnAvailable,
+  })
 }
 
 export function getCheckoutPaymentTargetValue(
