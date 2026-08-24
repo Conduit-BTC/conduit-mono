@@ -24,6 +24,7 @@ import {
   normalizePubkey,
   pubkeyToNpub,
   recordBrowserTelemetryEvent,
+  SHIPPING_COUNTRIES,
   useProfile,
   type BtcUsdRateQuote,
   type CommercePriceLike,
@@ -62,6 +63,8 @@ import {
 import { useMerchantCheckoutCapability } from "../hooks/useMerchantCheckoutCapability"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import { useWallets, type UseWalletsReturn } from "../hooks/useWallets"
+import { useShopperPresets } from "../hooks/useShopperPresets"
+import { getCartShippingDestinationEligibility } from "../lib/cart-shipping-options"
 import { buildCheckoutPricingIntent } from "../lib/checkout-payment"
 import {
   getCartCostSummary,
@@ -747,6 +750,7 @@ function CartPage() {
   const search = Route.useSearch()
   const navigate = useNavigate()
   const shopperPricing = useShopperPricing()
+  const shopperPresets = useShopperPresets()
   const [confirmClearTarget, setConfirmClearTarget] = useState<
     "all" | string | null
   >(null)
@@ -891,6 +895,15 @@ function CartPage() {
     shopperPricing.quote,
     shopperPricing.formatPrice
   )
+  const presetDestination = shopperPresets.discoveryDestination
+  const presetCountry = presetDestination?.country ?? null
+  const presetCountryLabel = presetCountry
+    ? (SHIPPING_COUNTRIES.find((country) => country.code === presetCountry)
+        ?.name ?? presetCountry)
+    : null
+  const presetShippingEligibility = presetDestination
+    ? getCartShippingDestinationEligibility(presetDestination, cart.items, [])
+    : null
   const clearCartDialog = (
     <Dialog
       open={confirmClearTarget !== null}
@@ -1032,6 +1045,29 @@ function CartPage() {
               </Button>
             </div>
           ) : null}
+
+          {presetCountryLabel && presetShippingEligibility && (
+            <div className="flex items-start gap-3 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+              {presetShippingEligibility.eligible === true ? (
+                <Check
+                  className="mt-0.5 size-4 shrink-0 text-[var(--success)]"
+                  aria-hidden="true"
+                />
+              ) : (
+                <AlertTriangle
+                  className="mt-0.5 size-4 shrink-0 text-warning"
+                  aria-hidden="true"
+                />
+              )}
+              <p>
+                {presetShippingEligibility.eligible === true
+                  ? `These items list shipping to ${presetCountryLabel}.`
+                  : presetShippingEligibility.eligible === false
+                    ? `Some items do not list shipping to ${presetCountryLabel}. Confirm another destination at checkout.`
+                    : `Shipping to ${presetCountryLabel} needs your full address at checkout.`}
+              </p>
+            </div>
+          )}
 
           {search.merchant && !expandedGroup && (
             <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
