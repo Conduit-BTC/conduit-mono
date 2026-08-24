@@ -9,6 +9,25 @@ export type ShopperPresetsRelayLifecycle = {
   relaySettingsReady: boolean
 }
 
+export type SerialOperationQueue = {
+  enqueue<T>(operation: () => Promise<T>): Promise<T>
+}
+
+export function createSerialOperationQueue(): SerialOperationQueue {
+  let tail = Promise.resolve()
+
+  return {
+    enqueue<T>(operation: () => Promise<T>): Promise<T> {
+      const next = tail.then(operation, operation)
+      tail = next.then(
+        () => undefined,
+        () => undefined
+      )
+      return next
+    },
+  }
+}
+
 export function getShopperPresetsReadResultRevision(
   result: ShopperPresetsReadResult
 ): ShopperPresetsRevision | null {

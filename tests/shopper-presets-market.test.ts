@@ -7,6 +7,7 @@ import {
 } from "@conduit/core"
 import { fetchShopperPresetsForSession } from "../apps/market/src/hooks/useShopperPresets"
 import {
+  createSerialOperationQueue,
   isCurrentShopperPresetsRevision,
   isCurrentShopperPresetsRelayLifecycle,
   shopperPresetsQueryKey,
@@ -680,6 +681,73 @@ describe("Market shopper preset integration", () => {
     expect(
       source.indexOf("clearShopperPresetsUnlock(", lockIndex)
     ).toBeGreaterThan(lockIndex)
+  })
+
+  it("passes the accepted found revision when saving or clearing presets", async () => {
+    const source = await Bun.file(
+      "apps/market/src/hooks/useShopperPresets.tsx"
+    ).text()
+    const saveStart = source.indexOf("const save = useCallback")
+    const clearStart = source.indexOf("const clear = useCallback")
+    const lockStart = source.indexOf("const lock = useCallback")
+    const save = source.slice(saveStart, clearStart)
+    const clear = source.slice(clearStart, lockStart)
+
+    expect(source).toContain("const writeQueueRef = useRef")
+    expect(source).toContain("createSerialOperationQueue()")
+
+    for (const operation of [save, clear]) {
+      const queueIndex = operation.indexOf("writeQueueRef.current!.enqueue")
+      const acceptedRevisionIndex = operation.indexOf("const acceptedRevision")
+      expect(operation).toContain('acceptedReadRef.current?.state === "found"')
+      expect(operation).toContain("acceptedRevision,")
+      expect(queueIndex).toBeGreaterThan(-1)
+      expect(acceptedRevisionIndex).toBeGreaterThan(queueIndex)
+    }
+  })
+
+  it("serializes operations after a successful predecessor", async () => {
+    const queue = createSerialOperationQueue()
+    const order: string[] = []
+    let releaseFirst: (() => void) | undefined
+    const first = queue.enqueue(
+      () =>
+        new Promise<void>((resolve) => {
+          order.push("first:start")
+          releaseFirst = () => {
+            order.push("first:end")
+            resolve()
+          }
+        })
+    )
+    const second = queue.enqueue(async () => {
+      order.push("second:start")
+      return "second"
+    })
+
+    await Promise.resolve()
+    expect(order).toEqual(["first:start"])
+    releaseFirst!()
+    await expect(first).resolves.toBeUndefined()
+    await expect(second).resolves.toBe("second")
+    expect(order).toEqual(["first:start", "first:end", "second:start"])
+  })
+
+  it("serializes operations after a rejected predecessor", async () => {
+    const queue = createSerialOperationQueue()
+    const order: string[] = []
+    const first = queue.enqueue(async () => {
+      order.push("first:start")
+      throw new Error("first failed")
+    })
+    const second = queue.enqueue(async () => {
+      order.push("second:start")
+      return "second"
+    })
+
+    await expect(first).rejects.toThrow("first failed")
+    await expect(second).resolves.toBe("second")
+    expect(order).toEqual(["first:start", "second:start"])
   })
 
   it("does not require password persistence for the always policy", () => {

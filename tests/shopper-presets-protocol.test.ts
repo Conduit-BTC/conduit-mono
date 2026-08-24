@@ -392,75 +392,771 @@ describe("NIP-78 shopper presets", () => {
     ).toEqual(result.document)
   })
 
-  it("requires complete convergence on every attempted write relay", async () => {
-    for (const relayB of [
-      { status: "failed" as const, storesEvent: true },
-      { status: "success" as const, storesEvent: false },
-    ]) {
-      const { signer, pubkey, ndk } = await signerFixture()
-      let published: NDKEvent | null = null
+  it("accepts readback from one acknowledged relay when another attempted relay failed", async () => {
+    const { signer, pubkey, ndk } = await signerFixture()
+    let published: NDKEvent | null = null
 
-      await expect(
-        publishShopperPresets({
-          pubkey,
-          value: preset,
-          password,
-          appId: "market",
-          dependencies: {
-            signer,
-            ndk,
-            now: () => nowMs,
-            getRelayLists: async () => new Map(),
-            fetchEvents: async () => {
-              if (published) {
-                attachEventSourceRelayUrl(published, "wss://relay-a.example")
-                if (relayB.storesEvent) {
-                  attachEventSourceRelayUrl(published, "wss://relay-b.example")
-                }
-              }
+    await expect(
+      publishShopperPresets({
+        pubkey,
+        value: preset,
+        password,
+        appId: "market",
+        dependencies: {
+          signer,
+          ndk,
+          now: () => nowMs,
+          getRelayLists: async () => new Map(),
+          fetchEvents: async () => {
+            if (published) {
+              attachEventSourceRelayUrl(published, "wss://relay-a.example")
+            }
+            return {
+              events: published ? [published] : [],
+              relays: [
+                {
+                  relayUrl: "wss://relay-a.example",
+                  status: "success",
+                  eventCount: published ? 1 : 0,
+                },
+              ],
+            }
+          },
+          publishEvent: async (event) => {
+            published = event
+            return {
+              plan: {
+                intent: "author_event",
+                primaryRelayUrls: ["wss://relay-a.example"],
+                broadcastRelayUrls: [],
+                parkedRelayUrls: [],
+                hintRelayUrls: [],
+              },
+              attemptedRelayUrls: [
+                "wss://relay-a.example",
+                "wss://relay-b.example",
+              ],
+              successfulRelayUrls: ["wss://relay-a.example"],
+              failedRelayUrls: ["wss://relay-b.example"],
+              relayFailureMessages: {},
+            } as PublishWithPlannerResult
+          },
+        },
+      })
+    ).resolves.toMatchObject({ revision: { createdAt: nowMs / 1_000 } })
+  })
+
+  it("accepts one complete acknowledged target when another acknowledged target is unavailable", async () => {
+    const { signer, pubkey, ndk } = await signerFixture()
+    let published: NDKEvent | null = null
+
+    await expect(
+      publishShopperPresets({
+        pubkey,
+        value: preset,
+        password,
+        appId: "market",
+        dependencies: {
+          signer,
+          ndk,
+          now: () => nowMs,
+          getRelayLists: async () => new Map(),
+          fetchEvents: async () => {
+            if (published) {
+              attachEventSourceRelayUrl(published, "wss://relay-b.example")
+            }
+            return {
+              events: published ? [published] : [],
+              relays: [
+                {
+                  relayUrl: "wss://relay-a.example",
+                  status: "failed",
+                  eventCount: 0,
+                },
+                {
+                  relayUrl: "wss://relay-b.example",
+                  status: "success",
+                  eventCount: published ? 1 : 0,
+                },
+              ],
+            }
+          },
+          publishEvent: async (event) => {
+            published = event
+            return {
+              plan: {
+                intent: "author_event",
+                primaryRelayUrls: ["wss://relay-a.example"],
+                broadcastRelayUrls: ["wss://relay-b.example"],
+                parkedRelayUrls: [],
+                hintRelayUrls: [],
+              },
+              attemptedRelayUrls: [
+                "wss://relay-a.example",
+                "wss://relay-b.example",
+              ],
+              successfulRelayUrls: [
+                "wss://relay-a.example",
+                "wss://relay-b.example",
+              ],
+              failedRelayUrls: [],
+              relayFailureMessages: {},
+            } as PublishWithPlannerResult
+          },
+        },
+      })
+    ).resolves.toBeDefined()
+  })
+
+  it("accepts exact acknowledged readback from a partially completed source", async () => {
+    const { signer, pubkey, ndk } = await signerFixture()
+    let published: NDKEvent | null = null
+
+    await expect(
+      publishShopperPresets({
+        pubkey,
+        value: preset,
+        password,
+        appId: "market",
+        dependencies: {
+          signer,
+          ndk,
+          now: () => nowMs,
+          getRelayLists: async () => new Map(),
+          fetchEvents: async () => {
+            if (published) {
+              attachEventSourceRelayUrl(published, "wss://relay.example")
+            }
+            return {
+              events: published ? [published] : [],
+              relays: [
+                {
+                  relayUrl: "wss://relay.example",
+                  status: published ? "partial" : "success",
+                  eventCount: published ? 1 : 0,
+                },
+              ],
+            }
+          },
+          publishEvent: async (event) => {
+            published = event
+            return {
+              plan: {
+                intent: "author_event",
+                primaryRelayUrls: ["wss://relay.example"],
+                broadcastRelayUrls: [],
+                parkedRelayUrls: [],
+                hintRelayUrls: [],
+              },
+              attemptedRelayUrls: ["wss://relay.example"],
+              successfulRelayUrls: ["wss://relay.example"],
+              failedRelayUrls: [],
+              relayFailureMessages: {},
+            } as PublishWithPlannerResult
+          },
+        },
+      })
+    ).resolves.toMatchObject({ revision: { createdAt: nowMs / 1_000 } })
+  })
+
+  it("fails when publishing has no acknowledged relay targets", async () => {
+    const { signer, pubkey, ndk } = await signerFixture()
+    await expect(
+      publishShopperPresets({
+        pubkey,
+        value: preset,
+        password,
+        appId: "market",
+        dependencies: {
+          signer,
+          ndk,
+          getRelayLists: async () => new Map(),
+          fetchEvents: async () => ({
+            events: [],
+            relays: [
+              {
+                relayUrl: "wss://relay.example",
+                status: "success",
+                eventCount: 0,
+              },
+            ],
+          }),
+          publishEvent: async () => ({
+            plan: {
+              intent: "author_event",
+              primaryRelayUrls: [],
+              broadcastRelayUrls: [],
+              parkedRelayUrls: [],
+              hintRelayUrls: [],
+            },
+            attemptedRelayUrls: ["wss://relay.example"],
+            successfulRelayUrls: [],
+            failedRelayUrls: ["wss://relay.example"],
+            relayFailureMessages: {},
+          }),
+        },
+      })
+    ).rejects.toThrow("did not converge")
+  })
+
+  it("fails closed when readback selects a newer competing winner", async () => {
+    const { signer, pubkey, ndk } = await signerFixture()
+    let published = false
+    let waits = 0
+    await expect(
+      publishShopperPresets({
+        pubkey,
+        value: preset,
+        password,
+        appId: "market",
+        dependencies: {
+          signer,
+          ndk,
+          now: () => nowMs,
+          getRelayLists: async () => new Map(),
+          waitForConvergenceRetry: async () => {
+            waits += 1
+          },
+          fetchEvents: async () => ({
+            events: published
+              ? [
+                  eventFixture(pubkey, {
+                    id: "b".repeat(64),
+                    createdAt: nowMs / 1_000 + 1,
+                  }),
+                ]
+              : [],
+            relays: [
+              {
+                relayUrl: "wss://relay.example",
+                status: "success",
+                eventCount: published ? 1 : 0,
+              },
+            ],
+          }),
+          publishEvent: async () => {
+            published = true
+            return {
+              plan: {
+                intent: "author_event",
+                primaryRelayUrls: ["wss://relay.example"],
+                broadcastRelayUrls: [],
+                parkedRelayUrls: [],
+                hintRelayUrls: [],
+              },
+              attemptedRelayUrls: ["wss://relay.example"],
+              successfulRelayUrls: ["wss://relay.example"],
+              failedRelayUrls: [],
+              relayFailureMessages: {},
+            } as PublishWithPlannerResult
+          },
+        },
+      })
+    ).rejects.toThrow("did not converge")
+    expect(waits).toBe(0)
+  })
+
+  it("fails closed when an equal-timestamp competitor wins the event ID tie-break", async () => {
+    const { signer, pubkey, ndk } = await signerFixture()
+    let published = false
+    let waits = 0
+
+    await expect(
+      publishShopperPresets({
+        pubkey,
+        value: preset,
+        password,
+        appId: "market",
+        dependencies: {
+          signer,
+          ndk,
+          now: () => nowMs,
+          getRelayLists: async () => new Map(),
+          waitForConvergenceRetry: async () => {
+            waits += 1
+          },
+          fetchEvents: async () => ({
+            events: published
+              ? [
+                  eventFixture(pubkey, {
+                    id: "0".repeat(64),
+                    createdAt: nowMs / 1_000,
+                  }),
+                ]
+              : [],
+            relays: [
+              {
+                relayUrl: "wss://relay.example",
+                status: "success",
+                eventCount: published ? 1 : 0,
+              },
+            ],
+          }),
+          publishEvent: async () => {
+            published = true
+            return {
+              plan: {
+                intent: "author_event",
+                primaryRelayUrls: ["wss://relay.example"],
+                broadcastRelayUrls: [],
+                parkedRelayUrls: [],
+                hintRelayUrls: [],
+              },
+              attemptedRelayUrls: ["wss://relay.example"],
+              successfulRelayUrls: ["wss://relay.example"],
+              failedRelayUrls: [],
+              relayFailureMessages: {},
+            } as PublishWithPlannerResult
+          },
+        },
+      })
+    ).rejects.toThrow("did not converge")
+
+    expect(waits).toBe(0)
+  })
+
+  it("retries a thrown convergence read before accepting exact readback", async () => {
+    const { signer, pubkey, ndk } = await signerFixture()
+    let published: NDKEvent | null = null
+    let readbackAttempts = 0
+    let waits = 0
+
+    await expect(
+      publishShopperPresets({
+        pubkey,
+        value: preset,
+        password,
+        appId: "market",
+        dependencies: {
+          signer,
+          ndk,
+          now: () => nowMs,
+          getRelayLists: async () => new Map(),
+          waitForConvergenceRetry: async () => {
+            waits += 1
+          },
+          fetchEvents: async () => {
+            if (!published) {
               return {
-                events: published ? [published] : [],
+                events: [],
                 relays: [
                   {
-                    relayUrl: "wss://relay-a.example",
-                    status: "success",
-                    eventCount: published ? 1 : 0,
-                  },
-                  {
-                    relayUrl: "wss://relay-b.example",
-                    status: relayB.status,
-                    eventCount: published && relayB.storesEvent ? 1 : 0,
+                    relayUrl: "wss://relay.example",
+                    status: "success" as const,
+                    eventCount: 0,
                   },
                 ],
               }
-            },
-            publishEvent: async (event) => {
-              published = event
-              return {
-                plan: {
-                  intent: "author_event",
-                  primaryRelayUrls: [
-                    "wss://relay-a.example",
-                    "wss://relay-b.example",
-                  ],
-                  broadcastRelayUrls: [],
-                  parkedRelayUrls: [],
-                  hintRelayUrls: [],
+            }
+            readbackAttempts += 1
+            if (readbackAttempts === 1) throw new Error("Temporary relay error")
+            attachEventSourceRelayUrl(published, "wss://relay.example")
+            return {
+              events: [published],
+              relays: [
+                {
+                  relayUrl: "wss://relay.example",
+                  status: "success" as const,
+                  eventCount: 1,
                 },
-                attemptedRelayUrls: [
-                  "wss://relay-a.example",
-                  "wss://relay-b.example",
-                ],
-                successfulRelayUrls: ["wss://relay-a.example"],
-                failedRelayUrls: ["wss://relay-b.example"],
-                relayFailureMessages: {},
-              } as PublishWithPlannerResult
-            },
+              ],
+            }
           },
-        })
-      ).rejects.toThrow(
-        "The published shopper preset did not converge on relay storage."
-      )
+          publishEvent: async (event) => {
+            published = event
+            return {
+              plan: {
+                intent: "author_event",
+                primaryRelayUrls: ["wss://relay.example"],
+                broadcastRelayUrls: [],
+                parkedRelayUrls: [],
+                hintRelayUrls: [],
+              },
+              attemptedRelayUrls: ["wss://relay.example"],
+              successfulRelayUrls: ["wss://relay.example"],
+              failedRelayUrls: [],
+              relayFailureMessages: {},
+            } as PublishWithPlannerResult
+          },
+        },
+      })
+    ).resolves.toBeDefined()
+
+    expect(readbackAttempts).toBe(2)
+    expect(waits).toBe(1)
+  })
+
+  it("exhausts the bounded convergence retries when every read throws", async () => {
+    const { signer, pubkey, ndk } = await signerFixture()
+    let published = false
+    let readbackAttempts = 0
+    let waits = 0
+
+    await expect(
+      publishShopperPresets({
+        pubkey,
+        value: preset,
+        password,
+        appId: "market",
+        dependencies: {
+          signer,
+          ndk,
+          now: () => nowMs,
+          getRelayLists: async () => new Map(),
+          waitForConvergenceRetry: async () => {
+            waits += 1
+          },
+          fetchEvents: async () => {
+            if (published) {
+              readbackAttempts += 1
+              throw new Error("Relay unavailable")
+            }
+            return {
+              events: [],
+              relays: [
+                {
+                  relayUrl: "wss://relay.example",
+                  status: "success" as const,
+                  eventCount: 0,
+                },
+              ],
+            }
+          },
+          publishEvent: async () => {
+            published = true
+            return {
+              plan: {
+                intent: "author_event",
+                primaryRelayUrls: ["wss://relay.example"],
+                broadcastRelayUrls: [],
+                parkedRelayUrls: [],
+                hintRelayUrls: [],
+              },
+              attemptedRelayUrls: ["wss://relay.example"],
+              successfulRelayUrls: ["wss://relay.example"],
+              failedRelayUrls: [],
+              relayFailureMessages: {},
+            } as PublishWithPlannerResult
+          },
+        },
+      })
+    ).rejects.toThrow("did not converge")
+
+    expect(readbackAttempts).toBe(3)
+    expect(waits).toBe(2)
+  })
+
+  it("retries bounded readback for indexing lag and fails after exhaustion", async () => {
+    const { signer, pubkey, ndk } = await signerFixture()
+    let published: NDKEvent | null = null
+    let readbackAttempts = 0
+    let waits = 0
+    const dependencies = {
+      signer,
+      ndk,
+      now: () => nowMs,
+      getRelayLists: async () => new Map(),
+      waitForConvergenceRetry: async () => {
+        waits += 1
+      },
+      fetchEvents: async () => {
+        if (!published) {
+          return {
+            events: [],
+            relays: [
+              {
+                relayUrl: "wss://relay.example",
+                status: "success" as const,
+                eventCount: 0,
+              },
+            ],
+          }
+        }
+        readbackAttempts += 1
+        if (readbackAttempts < 2) {
+          return {
+            events: [],
+            relays: [
+              {
+                relayUrl: "wss://relay.example",
+                status: "success" as const,
+                eventCount: 0,
+              },
+            ],
+          }
+        }
+        attachEventSourceRelayUrl(published, "wss://relay.example")
+        return {
+          events: [published],
+          relays: [
+            {
+              relayUrl: "wss://relay.example",
+              status: "success" as const,
+              eventCount: 1,
+            },
+          ],
+        }
+      },
+      publishEvent: async (event: NDKEvent) => {
+        published = event
+        return {
+          plan: {
+            intent: "author_event" as const,
+            primaryRelayUrls: ["wss://relay.example"],
+            broadcastRelayUrls: [],
+            parkedRelayUrls: [],
+            hintRelayUrls: [],
+          },
+          attemptedRelayUrls: ["wss://relay.example"],
+          successfulRelayUrls: ["wss://relay.example"],
+          failedRelayUrls: [],
+          relayFailureMessages: {},
+        } as PublishWithPlannerResult
+      },
     }
+
+    await expect(
+      publishShopperPresets({
+        pubkey,
+        value: preset,
+        password,
+        appId: "market",
+        dependencies,
+      })
+    ).resolves.toBeDefined()
+    expect(readbackAttempts).toBe(2)
+    expect(waits).toBe(1)
+
+    published = null
+    readbackAttempts = 0
+    waits = 0
+    dependencies.fetchEvents = async () => ({
+      events: [],
+      relays: [
+        {
+          relayUrl: "wss://relay.example",
+          status: "success" as const,
+          eventCount: 0,
+        },
+      ],
+    })
+    await expect(
+      publishShopperPresets({
+        pubkey,
+        value: preset,
+        password,
+        appId: "market",
+        dependencies,
+      })
+    ).rejects.toThrow("did not converge")
+    expect(waits).toBe(2)
+  })
+
+  it("floors a clear revision above the locally accepted revision", async () => {
+    const { signer, pubkey, ndk } = await signerFixture()
+    let published: NDKEvent | null = null
+    const acceptedCreatedAt = nowMs / 1_000 + 20
+    const result = await publishShopperPresets({
+      pubkey,
+      value: null,
+      password,
+      appId: "market",
+      acceptedRevision: {
+        eventId: "a".repeat(64),
+        createdAt: acceptedCreatedAt,
+      },
+      dependencies: {
+        signer,
+        ndk,
+        now: () => nowMs,
+        getRelayLists: async () => new Map(),
+        fetchEvents: async () => {
+          if (published)
+            attachEventSourceRelayUrl(published, "wss://relay.example")
+          return {
+            events: published ? [published] : [],
+            relays: [
+              {
+                relayUrl: "wss://relay.example",
+                status: "success",
+                eventCount: published ? 1 : 0,
+              },
+            ],
+          }
+        },
+        publishEvent: async (event) => {
+          published = event
+          return {
+            plan: {
+              intent: "author_event",
+              primaryRelayUrls: ["wss://relay.example"],
+              broadcastRelayUrls: [],
+              parkedRelayUrls: [],
+              hintRelayUrls: [],
+            },
+            attemptedRelayUrls: ["wss://relay.example"],
+            successfulRelayUrls: ["wss://relay.example"],
+            failedRelayUrls: [],
+            relayFailureMessages: {},
+          } as PublishWithPlannerResult
+        },
+      },
+    })
+
+    expect(result.document.enabled).toBe(false)
+    expect(result.document.updatedAt).toBe(acceptedCreatedAt + 1)
+  })
+
+  it("rejects an accepted revision timestamp that cannot be incremented", async () => {
+    const { signer: realSigner, pubkey, ndk } = await signerFixture()
+    let signed = false
+    let published = false
+    const signer = {
+      user: () => realSigner.user(),
+      sign: async () => {
+        signed = true
+        throw new Error("The signer must not be called")
+      },
+    } as unknown as NDKSigner
+
+    await expect(
+      publishShopperPresets({
+        pubkey,
+        value: preset,
+        password,
+        appId: "market",
+        acceptedRevision: {
+          eventId: "a".repeat(64),
+          createdAt: Number.MAX_SAFE_INTEGER,
+        },
+        dependencies: {
+          signer,
+          ndk,
+          getRelayLists: async () => new Map(),
+          fetchEvents: async () => ({
+            events: [],
+            relays: [
+              {
+                relayUrl: "wss://relay.example",
+                status: "success",
+                eventCount: 0,
+              },
+            ],
+          }),
+          publishEvent: async () => {
+            published = true
+            throw new Error("Publishing must not be attempted")
+          },
+        },
+      })
+    ).rejects.toThrow("The accepted shopper preset revision is invalid.")
+
+    expect(signed).toBe(false)
+    expect(published).toBe(false)
+  })
+
+  it("rejects a fetched revision that would derive the final safe timestamp", async () => {
+    const { signer: realSigner, pubkey, ndk } = await signerFixture()
+    const envelope = await encryptShopperPresetsDocument(
+      presetDocument(),
+      password
+    )
+    const previous = eventFixture(pubkey, {
+      id: "a".repeat(64),
+      createdAt: Number.MAX_SAFE_INTEGER - 1,
+      content: serializeShopperPresetsEnvelope(envelope),
+    })
+    let signed = false
+    let published = false
+    const signer = {
+      user: () => realSigner.user(),
+      sign: async () => {
+        signed = true
+        throw new Error("The signer must not be called")
+      },
+    } as unknown as NDKSigner
+
+    await expect(
+      publishShopperPresets({
+        pubkey,
+        value: preset,
+        password,
+        appId: "market",
+        dependencies: {
+          signer,
+          ndk,
+          now: () => nowMs,
+          randomBytes: () => {
+            throw new Error("Encryption must not be attempted")
+          },
+          getRelayLists: async () => new Map(),
+          fetchEvents: async () => ({
+            events: [previous],
+            relays: [
+              {
+                relayUrl: "wss://relay.example",
+                status: "success",
+                eventCount: 1,
+              },
+            ],
+          }),
+          publishEvent: async () => {
+            published = true
+            throw new Error("Publishing must not be attempted")
+          },
+        },
+      })
+    ).rejects.toThrow("The shopper preset revision timestamp is invalid.")
+
+    expect(signed).toBe(false)
+    expect(published).toBe(false)
+  })
+
+  it("rejects a clock value that would derive the final safe timestamp", async () => {
+    const { signer: realSigner, pubkey, ndk } = await signerFixture()
+    let signed = false
+    let published = false
+    const signer = {
+      user: () => realSigner.user(),
+      sign: async () => {
+        signed = true
+        throw new Error("The signer must not be called")
+      },
+    } as unknown as NDKSigner
+
+    await expect(
+      publishShopperPresets({
+        pubkey,
+        value: preset,
+        password,
+        appId: "market",
+        dependencies: {
+          signer,
+          ndk,
+          now: () => Number.MAX_SAFE_INTEGER * 1_000,
+          randomBytes: () => {
+            throw new Error("Encryption must not be attempted")
+          },
+          getRelayLists: async () => new Map(),
+          fetchEvents: async () => ({
+            events: [],
+            relays: [
+              {
+                relayUrl: "wss://relay.example",
+                status: "success",
+                eventCount: 0,
+              },
+            ],
+          }),
+          publishEvent: async () => {
+            published = true
+            throw new Error("Publishing must not be attempted")
+          },
+        },
+      })
+    ).rejects.toThrow("The shopper preset revision timestamp is invalid.")
+
+    expect(signed).toBe(false)
+    expect(published).toBe(false)
   })
 })

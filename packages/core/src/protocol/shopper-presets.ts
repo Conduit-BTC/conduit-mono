@@ -48,6 +48,8 @@ export const SHOPPER_PRESET_PASSWORD_MAX_BYTES = 1_024
 const SHOPPER_PRESETS_MAX_READ_RELAYS = 6
 const SHOPPER_PRESETS_CONNECT_TIMEOUT_MS = 2_000
 const SHOPPER_PRESETS_FETCH_TIMEOUT_MS = 3_000
+const SHOPPER_PRESETS_CONVERGENCE_ATTEMPTS = 3
+const SHOPPER_PRESETS_CONVERGENCE_RETRY_MS = 100
 
 export const SHOPPER_PAYMENT_RAILS = [
   "automatic",
@@ -200,6 +202,7 @@ export type ShopperPresetsProtocolDependencies = {
   readRelayUrls?: readonly string[]
   now?: () => number
   randomBytes?: (length: number) => Uint8Array
+  waitForConvergenceRetry?: () => Promise<void>
 }
 
 function normalizePubkey(pubkey: string): string {
@@ -545,70 +548,110 @@ export async function fetchShopperPresets(
 async function verifyShopperPresetsConvergence({
   owner,
   eventId,
+  createdAt,
   relayUrls,
   fetchEvents,
+  waitForRetry,
 }: {
   owner: string
   eventId: string
+  createdAt: number
   relayUrls: readonly string[]
   fetchEvents: typeof fetchEventsFanoutDetailed
+  waitForRetry: () => Promise<void>
 }): Promise<Extract<ShopperPresetsReadResult, { state: "found" }> | null> {
   const targets = Array.from(
     new Set(relayUrls.map((relayUrl) => normalizeRelayUrl(relayUrl)))
   )
   if (targets.length === 0) return null
 
-  let result: Awaited<ReturnType<typeof fetchEventsFanoutDetailed>>
-  try {
-    result = await fetchEvents(
-      {
-        kinds: [EVENT_KINDS.APPLICATION_DATA],
-        authors: [owner],
-        "#d": [SHOPPER_PRESETS_D_TAG],
-        limit: 12,
-      },
-      {
-        relayUrls: targets,
-        connectTimeoutMs: SHOPPER_PRESETS_CONNECT_TIMEOUT_MS,
-        fetchTimeoutMs: SHOPPER_PRESETS_FETCH_TIMEOUT_MS,
-      }
-    )
-  } catch {
-    return null
-  }
-
-  const relayStatusByUrl = new Map(
-    result.relays.map((relay) => [normalizeRelayUrl(relay.relayUrl), relay])
-  )
-  if (
-    targets.some(
-      (relayUrl) => relayStatusByUrl.get(relayUrl)?.status !== "success"
-    )
+  for (
+    let attempt = 0;
+    attempt < SHOPPER_PRESETS_CONVERGENCE_ATTEMPTS;
+    attempt += 1
   ) {
-    return null
-  }
-
-  const latest = selectLatestShopperPresetsEvent(result.events, owner)
-  if (!latest || latest.id !== eventId) return null
-  const sourceRelayUrls = new Set(
-    getEventSourceRelayUrls(latest).map((relayUrl) =>
-      normalizeRelayUrl(relayUrl)
-    )
-  )
-  if (targets.some((relayUrl) => !sourceRelayUrls.has(relayUrl))) return null
-
-  try {
-    return {
-      state: "found",
-      envelope: parseShopperPresetsEnvelope(latest.content),
-      revision: {
-        eventId: latest.id,
-        createdAt: latest.created_at ?? 0,
-      },
+    let result: Awaited<ReturnType<typeof fetchEventsFanoutDetailed>>
+    try {
+      result = await fetchEvents(
+        {
+          kinds: [EVENT_KINDS.APPLICATION_DATA],
+          authors: [owner],
+          "#d": [SHOPPER_PRESETS_D_TAG],
+          limit: 12,
+        },
+        {
+          relayUrls: targets,
+          connectTimeoutMs: SHOPPER_PRESETS_CONNECT_TIMEOUT_MS,
+          fetchTimeoutMs: SHOPPER_PRESETS_FETCH_TIMEOUT_MS,
+        }
+      )
+    } catch {
+      if (attempt < SHOPPER_PRESETS_CONVERGENCE_ATTEMPTS - 1) {
+        await waitForRetry()
+      }
+      continue
     }
-  } catch {
-    return null
+
+    const latest = selectLatestShopperPresetsEvent(result.events, owner)
+    if (latest) {
+      if (latest.id !== eventId) {
+        if ((latest.created_at ?? 0) >= createdAt) return null
+      } else {
+        try {
+          const envelope = parseShopperPresetsEnvelope(latest.content)
+          const sourceRelayUrls = new Set(
+            getEventSourceRelayUrls(latest).map((relayUrl) =>
+              normalizeRelayUrl(relayUrl)
+            )
+          )
+          const completedTargets = new Set(
+            result.relays
+              .filter(
+                ({ status }) => status === "success" || status === "partial"
+              )
+              .map(({ relayUrl }) => normalizeRelayUrl(relayUrl))
+          )
+          if (
+            targets.some(
+              (relayUrl) =>
+                completedTargets.has(relayUrl) && sourceRelayUrls.has(relayUrl)
+            )
+          ) {
+            return {
+              state: "found",
+              envelope,
+              revision: {
+                eventId: latest.id,
+                createdAt: latest.created_at ?? 0,
+              },
+            }
+          }
+        } catch {
+          return null
+        }
+      }
+    }
+
+    if (attempt < SHOPPER_PRESETS_CONVERGENCE_ATTEMPTS - 1) {
+      await waitForRetry()
+    }
   }
+
+  return null
+}
+
+function getAcceptedRevisionTimestampFloor(
+  acceptedRevision: ShopperPresetsRevision | null | undefined
+): number {
+  if (!acceptedRevision) return 0
+  if (
+    !Number.isSafeInteger(acceptedRevision.createdAt) ||
+    acceptedRevision.createdAt < 0 ||
+    acceptedRevision.createdAt === Number.MAX_SAFE_INTEGER
+  ) {
+    throw new Error("The accepted shopper preset revision is invalid.")
+  }
+  return acceptedRevision.createdAt
 }
 
 export async function publishShopperPresets({
@@ -616,12 +659,14 @@ export async function publishShopperPresets({
   value,
   password,
   appId,
+  acceptedRevision,
   dependencies = {},
 }: {
   pubkey: string
   value: ShopperPresetsValue | null
   password: string
   appId: ConduitAppId
+  acceptedRevision?: ShopperPresetsRevision | null
   dependencies?: ShopperPresetsProtocolDependencies
 }): Promise<ShopperPresetsWriteResult> {
   const owner = normalizePubkey(pubkey)
@@ -641,7 +686,15 @@ export async function publishShopperPresets({
   const now = Math.floor((dependencies.now?.() ?? Date.now()) / 1_000)
   const previousCreatedAt =
     current.state === "found" ? current.revision.createdAt : 0
-  const createdAt = Math.max(now, previousCreatedAt + 1)
+  const acceptedCreatedAt = getAcceptedRevisionTimestampFloor(acceptedRevision)
+  const createdAt = Math.max(now, previousCreatedAt + 1, acceptedCreatedAt + 1)
+  if (
+    !Number.isSafeInteger(createdAt) ||
+    createdAt < 0 ||
+    createdAt >= Number.MAX_SAFE_INTEGER
+  ) {
+    throw new Error("The shopper preset revision timestamp is invalid.")
+  }
   const document = buildShopperPresetsDocument({ value, updatedAt: createdAt })
   const envelope = await encryptShopperPresetsDocument(
     document,
@@ -669,8 +722,15 @@ export async function publishShopperPresets({
   const convergence = await verifyShopperPresetsConvergence({
     owner,
     eventId: event.id,
-    relayUrls: publish.attemptedRelayUrls,
+    createdAt,
+    relayUrls: publish.successfulRelayUrls,
     fetchEvents: dependencies.fetchEvents ?? fetchEventsFanoutDetailed,
+    waitForRetry:
+      dependencies.waitForConvergenceRetry ??
+      (() =>
+        new Promise<void>((resolve) => {
+          globalThis.setTimeout(resolve, SHOPPER_PRESETS_CONVERGENCE_RETRY_MS)
+        })),
   })
   if (!convergence) {
     throw new Error(
