@@ -55,6 +55,7 @@ import { useShopperPricing } from "../hooks/useShopperPricing"
 import { requireAuth } from "../lib/auth"
 import { getShopperPreferencesSaveBlockers } from "../lib/shopper-preferences-validation"
 import type { ShopperPresetsUnlockPolicy } from "../lib/shopper-presets-store"
+import { isClearedRemoteShopperPreset } from "../lib/shopper-presets-ui"
 
 export const Route = createFileRoute("/preferences")({
   beforeLoad: () => {
@@ -269,7 +270,10 @@ function PreferencesPage() {
     setConfirmPassword("")
     setClearOpen(false)
   }, [])
-  const status = syncStatus(presets.syncState)
+  const clearedRemotePreset = isClearedRemoteShopperPreset(presets)
+  const status = clearedRemotePreset
+    ? { label: "Preset cleared", variant: "info" as const }
+    : syncStatus(presets.syncState)
   const busy = presets.syncState === "syncing"
   const locked =
     presets.hasRemotePreset &&
@@ -376,7 +380,7 @@ function PreferencesPage() {
     setResultMessage(
       synced
         ? "Preset encrypted and saved on your relays."
-        : "The preset could not be saved. Check relay access and try again."
+        : "No new preset was confirmed. Refresh may still find an older encrypted record."
     )
   }
 
@@ -428,6 +432,15 @@ function PreferencesPage() {
             Discovery uses only country and postal code. Checkout can prefill
             the complete address.
           </p>
+          {clearedRemotePreset && (
+            <div
+              className="mt-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-sm text-[var(--text-secondary)]"
+              role="status"
+            >
+              No checkout preset is currently saved. Enter new defaults to
+              replace the cleared record.
+            </div>
+          )}
         </div>
         <div className="mt-3 rounded-[1.75rem] border border-[var(--border)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)] p-5 shadow-[var(--shadow-glass-inset)]">
           <div className="grid gap-4 sm:grid-cols-2">
