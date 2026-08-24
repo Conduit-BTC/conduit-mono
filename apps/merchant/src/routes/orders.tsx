@@ -10,6 +10,7 @@ import {
   deriveProtectedReadPresentationState,
   formatNpub,
   getCachedMerchantConversationList,
+  getCachedMerchantStorefront,
   getCurrencyAmountStep,
   getLightningNetworkMismatchMessage,
   getMerchantConversationList,
@@ -1017,7 +1018,11 @@ function OrdersPage() {
         }
       }
 
-      const record = orderProductsQuery.data?.data.find(
+      const latestLocal = await getCachedMerchantStorefront({
+        merchantPubkey: pubkey,
+        includeMarketHidden: true,
+      })
+      const record = latestLocal.data.find(
         (candidate) => candidate.addressId === payload.adjustment.addressId
       )
       if (!record || record.product.pubkey !== pubkey || !record.dTag) {

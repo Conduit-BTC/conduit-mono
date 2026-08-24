@@ -143,12 +143,16 @@ describe("merchant order stock UI", () => {
     expect(markup).not.toContain("Publish stock 0")
   })
 
-  it("publishes from known local listing state without a blocking relay read", async () => {
+  it("publishes from the latest local listing without a blocking relay read", async () => {
     const source = await Bun.file("apps/merchant/src/routes/orders.tsx").text()
 
     expect(source).not.toContain("getAtomicProductDetail")
     expect(source).not.toContain("latest.meta.degraded || latest.meta.stale")
-    expect(source).toContain("orderProductsQuery.data?.data.find")
+    expect(source).toContain("await getCachedMerchantStorefront")
+    expect(source).not.toContain("orderProductsQuery.data?.data.find")
+    expect(source).toContain(
+      "(candidate) => candidate.addressId === payload.adjustment.addressId"
+    )
     expect(source).toContain("stock: payload.stock")
   })
 
