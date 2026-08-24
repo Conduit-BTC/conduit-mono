@@ -645,6 +645,8 @@ function requireRemoteSignerPubkey(pubkey: string, operation: string): string {
   return normalized
 }
 
+// Remote signer sessions retain this already-connected relay set. nostr-tools
+// relay migration cannot be canceled and may mutate after a local timeout.
 function requireSignerRelayUrls(
   bunkerSigner: RemoteBunkerSigner,
   operation: string
@@ -730,6 +732,7 @@ export async function pairRemoteSigner(
       )
     }
     connected = true
+    const relayUrls = requireSignerRelayUrls(bunkerSigner, "session setup")
     const userPubkey = requireUserPubkey(
       await withRemoteSignerTimeout(
         "get public key",
@@ -738,12 +741,6 @@ export async function pairRemoteSigner(
       ),
       "get public key"
     )
-    await withRemoteSignerTimeout(
-      "relay migration",
-      () => bunkerSigner.switchRelays(),
-      options
-    )
-    const relayUrls = requireSignerRelayUrls(bunkerSigner, "relay migration")
     return createRemoteSignerConnection(
       bunkerSigner,
       clientPrivateKey,
@@ -885,7 +882,10 @@ export async function pairRemoteSignerFromNostrConnect(
       bunkerSigner.bp.pubkey,
       "nostrconnect pairing"
     )
-    requireSignerRelayUrls(bunkerSigner, "nostrconnect pairing")
+    const connectedRelayUrls = requireSignerRelayUrls(
+      bunkerSigner,
+      "nostrconnect pairing"
+    )
     bunkerSigner.bp.secret = null
     const userPubkey = requireUserPubkey(
       await withRemoteSignerTimeout(
@@ -895,20 +895,11 @@ export async function pairRemoteSignerFromNostrConnect(
       ),
       "get public key"
     )
-    await withRemoteSignerTimeout(
-      "relay migration",
-      () => bunkerSigner!.switchRelays(),
-      options
-    )
-    const relayUrlsAfterSwitch = requireSignerRelayUrls(
-      bunkerSigner,
-      "relay migration"
-    )
     return createRemoteSignerConnection(
       bunkerSigner,
       clientPrivateKey,
       remoteSignerPubkey,
-      relayUrlsAfterSwitch,
+      connectedRelayUrls,
       userPubkey,
       options
     )
@@ -954,12 +945,7 @@ export async function restoreRemoteSigner(
       () => bunkerSigner.ping(),
       options
     )
-    await withRemoteSignerTimeout(
-      "relay migration",
-      () => bunkerSigner.switchRelays(),
-      options
-    )
-    const relayUrls = requireSignerRelayUrls(bunkerSigner, "relay migration")
+    const relayUrls = requireSignerRelayUrls(bunkerSigner, "restore session")
     const actualPubkey = requireUserPubkey(
       await withRemoteSignerTimeout(
         "restore identity",
