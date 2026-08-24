@@ -4,6 +4,9 @@
  */
 import { describe, expect, it, mock, afterEach } from "bun:test"
 import {
+  buildShippingAddressFromForm,
+  getShippingRecipientName,
+  hasPreservedShippingRecipientName,
   validateGuestContactFields,
   validateGuestShippingFields,
   validateShippingFields,
@@ -59,6 +62,7 @@ import {
   OMF_ZAPOUT_MARKER_TAG,
 } from "../packages/core/src/protocol/lightning"
 import { parseNwcUri } from "../packages/core/src/protocol/nwc"
+import { WeblnPaymentError } from "../packages/core/src/protocol/webln"
 import {
   getShippingDestinationEligibility,
   parseShippingOptionEvent,
@@ -153,6 +157,71 @@ describe("validateShippingFields", () => {
   it("requires lastName", () => {
     const errors = validateShippingFields(validShipping({ lastName: "" }))
     expect(errors.some((e) => e.field === "lastName")).toBe(true)
+  })
+
+  it("accepts a hydrated one-token recipient name and preserves it for orders", () => {
+    const shipping = validShipping({
+      firstName: "Madonna",
+      lastName: "",
+      name: "Madonna",
+    })
+
+    expect(validateShippingFields(shipping)).toEqual([])
+    expect(hasPreservedShippingRecipientName(shipping)).toBe(true)
+    expect(getShippingRecipientName(shipping)).toBe("Madonna")
+    expect(buildShippingAddressFromForm(shipping).name).toBe("Madonna")
+  })
+
+  it("preserves a hydrated organization recipient name", () => {
+    const shipping = validShipping({
+      firstName: "Acme Trading",
+      lastName: "Company",
+      name: "Acme Trading Company",
+    })
+
+    expect(validateShippingFields(shipping)).toEqual([])
+    expect(buildShippingAddressFromForm(shipping).name).toBe(
+      "Acme Trading Company"
+    )
+  })
+
+  it("uses normal first and last names when no preset marker is present", () => {
+    const shipping = validShipping({ name: "" })
+
+    expect(getShippingRecipientName(shipping)).toBe("Alice Smith")
+    expect(buildShippingAddressFromForm(shipping).name).toBe("Alice Smith")
+  })
+
+  it("requires a last name after a one-token preset recipient marker is invalidated", () => {
+    const shipping = validShipping({
+      firstName: "Cher",
+      lastName: "",
+      name: "Madonna",
+    })
+
+    expect(hasPreservedShippingRecipientName(shipping)).toBe(false)
+    expect(validateShippingFields(shipping)).toContainEqual({
+      field: "lastName",
+      message: "Last name is required",
+    })
+  })
+
+  it("keeps fast checkout eligible with a valid one-token preset recipient", () => {
+    const shipping = validShipping({
+      firstName: "Madonna",
+      lastName: "",
+      name: "Madonna",
+    })
+
+    expect(
+      isFastCheckoutEligible({
+        walletPayCapable: true,
+        merchantLud16: "merchant@wallet.conduit.market",
+        lnurlAllowsNostr: true,
+        addressValidForDirectPayment:
+          validateShippingFields(shipping).length === 0,
+      })
+    ).toBe(true)
   })
 
   it("rejects lastName longer than 50 chars", () => {
@@ -2530,7 +2599,64 @@ describe("payCheckoutInvoice", () => {
     ).rejects.toThrow(/Check your wallet/)
   })
 
-  it("treats every WebLN invocation failure as ambiguous", async () => {
+  it.each([
+    ["unavailable", "Browser wallet is unavailable", "unavailable"],
+    ["enable", "Browser wallet connection was rejected", "failure"],
+  ] as const)(
+    "keeps typed WebLN %s failures retryable without marking them ambiguous",
+    async (phase, reason, telemetryStatus) => {
+      const telemetryResults: Array<Record<string, unknown>> = []
+      const result = await payCheckoutInvoice(
+        {
+          invoice: "lnbc1test",
+          amountMsats: 1000,
+          paymentTarget: { type: "webln" },
+          timeoutMs: 60_000,
+          appId: "market",
+        },
+        {
+          walletPaymentCoordinator: {
+            payInvoice: mock(async () => {
+              throw new Error("should not use wallet provider")
+            }) as never,
+          },
+          hasWebLN: () => true,
+          weblnSendPayment: mock(async () => {
+            throw new WeblnPaymentError(reason, phase)
+          }) as never,
+          recordPaymentAttemptResult: (input) => telemetryResults.push(input),
+        }
+      )
+
+      expect(result).toEqual({ status: "retryable_failure", reason })
+      expect(telemetryResults).toEqual([
+        {
+          amountSats: 1,
+          latencyMs: expect.any(Number),
+          rail: "webln",
+          status: telemetryStatus,
+        },
+      ])
+    }
+  )
+
+  it.each([
+    [
+      "submitted",
+      new WeblnPaymentError(
+        "Browser wallet may have accepted the payment",
+        "submitted"
+      ),
+    ],
+    [
+      "missing proof",
+      new WeblnPaymentError(
+        "WebLN payment did not return a payment proof",
+        "settled_without_proof"
+      ),
+    ],
+    ["raw unknown", new Error("Browser wallet request failed")],
+  ] as const)("keeps WebLN %s failures ambiguous", async (_caseName, error) => {
     await expect(
       payCheckoutInvoice(
         {
@@ -2548,13 +2674,11 @@ describe("payCheckoutInvoice", () => {
           },
           hasWebLN: () => true,
           weblnSendPayment: mock(async () => {
-            throw new Error("Browser wallet request failed")
+            throw error
           }) as never,
         }
       )
-    ).rejects.toThrow(
-      "Browser wallet request failed Check your wallet before trying another payment path."
-    )
+    ).rejects.toThrow("Check your wallet before trying another payment path.")
   })
 })
 
