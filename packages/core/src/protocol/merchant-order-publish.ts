@@ -7,7 +7,6 @@ import { parseOrderMessageRumorEvent, type ParsedOrderMessage } from "./orders"
 import {
   createValidatedOrderRouteScope,
   publishPrivateMessage,
-  type ValidatedOrderRouteScope,
 } from "./messaging"
 import type { PrivateMessageDeliveryRoute } from "./private-message-routing"
 
@@ -81,19 +80,13 @@ export interface PublishMerchantOrderMessageResult {
   deliveryRoute: Exclude<PrivateMessageDeliveryRoute, "blocked">
 }
 
-export interface MerchantOrderPublishTarget {
-  recipientPubkey: string
-  selfCopy: boolean
-  validatedOrderScope: ValidatedOrderRouteScope
-}
-
 export function getMerchantOrderPublishTarget(
   input: Pick<
     PublishMerchantOrderMessageInput,
     "merchantPubkey" | "buyerPubkey" | "orderId" | "delivery"
   >,
   rumor: NDKEvent
-): MerchantOrderPublishTarget {
+) {
   const recipientPubkey =
     input.delivery === "self_only" ? input.merchantPubkey : input.buyerPubkey
   return {
