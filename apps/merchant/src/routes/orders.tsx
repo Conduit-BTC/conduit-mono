@@ -118,6 +118,7 @@ import {
   ProductStockDecisionStore,
   shouldShowOrderStockAdjustment,
   type OrderStockAdjustment,
+  type OrderStockTargetMode,
 } from "../lib/productStock"
 import { Check, ChevronRight, Copy, MessageCircle, Search } from "lucide-react"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
@@ -1417,12 +1418,16 @@ function OrdersPage() {
         : "Failed to update listing stock"
       : null
 
-  function updateStock(adjustment: OrderStockAdjustment, stock: number): void {
+  function updateStock(
+    adjustment: OrderStockAdjustment,
+    stock: number,
+    targetMode: OrderStockTargetMode
+  ): void {
     if (!selected) return
     stockUpdateMutation.mutate({
       action: "update",
       orderId: selected.orderId,
-      adjustment: applyOrderStockTarget(adjustment, stock),
+      adjustment: applyOrderStockTarget(adjustment, stock, targetMode),
       stock,
     })
   }

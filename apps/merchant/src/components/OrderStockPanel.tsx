@@ -8,6 +8,7 @@ import {
   getProductStockInputError,
   parseProductStockInput,
   type OrderStockAdjustment,
+  type OrderStockTargetMode,
 } from "../lib/productStock"
 
 interface OrderStockDeliveryView {
@@ -24,7 +25,11 @@ interface OrderStockPanelProps {
   updatePending: boolean
   errorMessage: string | null
   canMessageBuyer?: boolean
-  onUpdate: (adjustment: OrderStockAdjustment, stock: number) => void
+  onUpdate: (
+    adjustment: OrderStockAdjustment,
+    stock: number,
+    targetMode: OrderStockTargetMode
+  ) => void
   onMessageBuyer?: () => void
   onRetry: () => void
   onDismissDelivery: () => void
@@ -41,7 +46,11 @@ function StockPublishActions({
   pending: boolean
   updatePending: boolean
   showCalculated: boolean
-  onUpdate: (adjustment: OrderStockAdjustment, stock: number) => void
+  onUpdate: (
+    adjustment: OrderStockAdjustment,
+    stock: number,
+    targetMode: OrderStockTargetMode
+  ) => void
 }) {
   const fieldIdentity = useId()
   const [customStock, setCustomStock] = useState("")
@@ -63,7 +72,7 @@ function StockPublishActions({
     const stock = parseProductStockInput(customStock)
     if (stock === undefined) return
     setCustomError(null)
-    onUpdate(adjustment, stock)
+    onUpdate(adjustment, stock, "custom")
   }
 
   return (
@@ -74,7 +83,9 @@ function StockPublishActions({
           size="sm"
           className="min-h-10 w-full px-3 text-xs sm:w-auto"
           disabled={pending}
-          onClick={() => onUpdate(adjustment, adjustment.nextStock)}
+          onClick={() =>
+            onUpdate(adjustment, adjustment.nextStock, "calculated")
+          }
         >
           {updatePending
             ? "Waiting for signer…"

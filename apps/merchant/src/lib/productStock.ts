@@ -60,6 +60,8 @@ export interface OrderStockAdjustment {
   targetMode?: "custom"
 }
 
+export type OrderStockTargetMode = "calculated" | "custom"
+
 export interface ProductStockDisplay {
   label: string
   variant: "success" | "warning" | "error" | "neutral"
@@ -415,13 +417,19 @@ export function getOrderStockDecisionKey(
 
 export function applyOrderStockTarget(
   adjustment: OrderStockAdjustment,
-  stock: number
+  stock: number,
+  targetMode: OrderStockTargetMode
 ): OrderStockAdjustment {
   if (!Number.isSafeInteger(stock) || stock < 0) {
     throw new Error("Stock must be a non-negative safe integer.")
   }
 
-  if (stock === adjustment.nextStock) return adjustment
+  if (targetMode === "calculated") {
+    if (stock !== adjustment.nextStock) {
+      throw new Error("Calculated stock must match the order adjustment.")
+    }
+    return adjustment
+  }
   return {
     ...adjustment,
     nextStock: stock,
@@ -513,6 +521,7 @@ export function shouldShowOrderStockAdjustment(input: {
   ) {
     return (
       input.persistedDecision.kind === "applied" &&
+      input.persistedDecision.adjustment?.targetMode !== "custom" &&
       (input.persistedDecision.adjustment?.shortfall ?? 0) > 0
     )
   }
@@ -529,6 +538,7 @@ export function getOrderStockAdjustmentForDisplay(input: {
   if (
     input.persistedDecision?.kind === "applied" &&
     persistedAdjustment &&
+    persistedAdjustment.targetMode !== "custom" &&
     persistedAdjustment.shortfall > 0 &&
     doesOrderStockDecisionCoverAdjustment(input)
   ) {
