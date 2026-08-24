@@ -80,10 +80,22 @@ export function createValidatedOrderRouteScope(input: {
   orderId: string
   senderPubkey: string
   recipientPubkey: string
+  /**
+   * Logical order counterparty named by the rumor's `p` tag when the encrypted
+   * delivery recipient is the sender itself. This supports merchant-only
+   * operational records for outbound-only guest orders without treating the
+   * guest key as a reply inbox.
+   */
+  rumorRecipientPubkey?: string
 }): ValidatedOrderRouteScope {
   const orderId = input.orderId.trim()
   const senderPubkey = input.senderPubkey.trim().toLowerCase()
   const recipientPubkey = input.recipientPubkey.trim().toLowerCase()
+  const expectedRumorRecipient = (
+    input.rumorRecipientPubkey ?? input.recipientPubkey
+  )
+    .trim()
+    .toLowerCase()
   const rumorOrderId = input.rumor.tags.find((tag) => tag[0] === "order")?.[1]
   const rumorRecipient = input.rumor.tags
     .find((tag) => tag[0] === "p")?.[1]
@@ -93,7 +105,9 @@ export function createValidatedOrderRouteScope(input: {
     input.rumor.kind !== EVENT_KINDS.ORDER ||
     !input.rumor.id ||
     input.rumor.pubkey?.trim().toLowerCase() !== senderPubkey ||
-    rumorRecipient !== recipientPubkey ||
+    rumorRecipient !== expectedRumorRecipient ||
+    (expectedRumorRecipient !== recipientPubkey &&
+      recipientPubkey !== senderPubkey) ||
     rumorOrderId !== orderId ||
     classifyLegacyOrderRumor(input.rumor) !== "ok"
   ) {
