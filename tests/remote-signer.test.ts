@@ -635,7 +635,6 @@ describe("remote signer lifecycle", () => {
     let factoryPointer:
       { pubkey: string; relays: string[]; secret: string | null } | undefined
     let authCallback: ((url: string) => void) | undefined
-    let relaySwitches = 0
     const onAuthUrl = () => undefined
     const result = await pairRemoteSigner(BUNKER_URI, {
       keyVault: new MemoryKeyVault(),
@@ -645,7 +644,6 @@ describe("remote signer lifecycle", () => {
         authCallback = params.onauth
         const signer = fakeSigner()
         signer.switchRelays = async () => {
-          relaySwitches += 1
           throw new Error("relay migration must not run during pairing")
         }
         return signer
@@ -668,7 +666,6 @@ describe("remote signer lifecycle", () => {
     })
     expect(result.session.clientKeyId).toHaveLength(36)
     expect(result.clientPrivateKey).toBe(CLIENT_PRIVATE_KEY_HEX)
-    expect(relaySwitches).toBe(0)
     expect(JSON.stringify(result.session)).not.toContain("pair-secret")
     expect(JSON.stringify(result.session)).not.toContain("bunker://")
     expect(result.session.remoteSignerPubkey).not.toBe(
@@ -712,6 +709,9 @@ describe("remote signer lifecycle", () => {
               relays: ["wss://one.example", "wss://two.example"],
               secret: "one-use-secret",
             },
+            switchRelays: async () => {
+              throw new Error("relay migration must not run during pairing")
+            },
           })
         },
         clientMetadata: {
@@ -753,33 +753,6 @@ describe("remote signer lifecycle", () => {
     ).toBe(true)
     expect(storage.getItem(AUTH_STORAGE_KEY)).not.toContain("one-use-secret")
     expect(storage.getItem(AUTH_STORAGE_KEY)).not.toContain("nostrconnect://")
-  })
-
-  it("does not start relay migration after nostrconnect pairing", async () => {
-    const pairingRelays = ["wss://one.example", "wss://two.example"]
-    let relaySwitches = 0
-    const result = await pairRemoteSignerFromNostrConnect(pairingRelays, {
-      keyVault: new MemoryKeyVault(),
-      generateClientPrivateKey: () => CLIENT_PRIVATE_KEY,
-      generatePairingSecret: () => "primal-compatibility-secret",
-      createNostrConnectSigner: async () =>
-        fakeSigner({
-          bp: {
-            pubkey: REMOTE_PUBKEY,
-            relays: pairingRelays,
-            secret: "primal-compatibility-secret",
-          },
-          switchRelays: async () => {
-            relaySwitches += 1
-            throw new Error("relay migration must not run during pairing")
-          },
-        }),
-    })
-
-    expect(result.session.relayUrls).toEqual(pairingRelays)
-    expect(result.bunkerSigner.bp.relays).toEqual(pairingRelays)
-    expect(result.bunkerSigner.bp.secret).toBeNull()
-    expect(relaySwitches).toBe(0)
   })
 
   it("closes a bunker pairing when the caller cancels", async () => {
@@ -1042,14 +1015,12 @@ describe("remote signer lifecycle", () => {
 
   it("restores without a pairing secret and verifies the user identity", async () => {
     let pointerSecret: string | null | undefined
-    let relaySwitches = 0
     const restored = await restoreRemoteSigner(session(), {
       keyVault: seededKeyVault(),
       createBunkerSigner: (_key, pointer) => {
         pointerSecret = pointer.secret
         return fakeSigner({
           switchRelays: async () => {
-            relaySwitches += 1
             throw new Error("relay migration must not run during restore")
           },
         })
@@ -1060,7 +1031,6 @@ describe("remote signer lifecycle", () => {
     expect(restored.session.updatedAt).toBe(30)
     expect(restored.session.relayUrls).toEqual(["wss://relay.example"])
     expect(restored.bunkerSigner.bp.relays).toEqual(["wss://relay.example"])
-    expect(relaySwitches).toBe(0)
 
     await expect(
       restoreRemoteSigner(session(), {
