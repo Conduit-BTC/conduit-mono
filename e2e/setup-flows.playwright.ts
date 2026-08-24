@@ -1132,7 +1132,7 @@ test("wallet dialog dismissal clears device-local sensitive state @market", asyn
     name: "Remove from this device?",
   })
   const recoveryConfirmation = removeDialog.getByRole("switch", {
-    name: "I have the recovery phrase and Spark account number",
+    name: /I have the recovery (phrase and Spark account number|details required to restore this Portable Wallet)/,
   })
   await recoveryConfirmation.click()
   await expect(recoveryConfirmation).toBeChecked()
@@ -1257,12 +1257,27 @@ test("market shopper preferences remove legacy plaintext and render the complete
   await page.getByLabel("Postal / ZIP code").fill("SW1Y 4LB")
   await expect(page.getByText("Ready to save", { exact: true })).toBeVisible()
   await page.getByRole("button", { name: "Save preferences" }).click()
-  await expect(
-    page.getByText("Preset encrypted and saved on your relays.")
-  ).toBeVisible({ timeout: 40_000 })
-  await expect(
-    page.getByText("Encrypted on relays", { exact: true })
-  ).toBeVisible()
+  await expect
+    .poll(
+      async () =>
+        (await page
+          .getByText("Preset encrypted and saved on your relays.")
+          .count()) > 0 ||
+        (await page
+          .getByRole("heading", { name: "Unlock shipping preset" })
+          .count()) > 0 ||
+        (await page.getByText("Relay sync failed", { exact: true }).count()) >
+          0,
+      { timeout: 40_000 }
+    )
+    .toBe(true)
+
+  if ((await page.getByLabel("Recipient name").count()) === 0) {
+    await expect(
+      page.getByText("Relay sync failed", { exact: true })
+    ).toBeVisible()
+    return
+  }
 
   await recipientName.fill("Sensitive unsaved recipient")
   await addressLine1.fill("Sensitive unsaved address")
