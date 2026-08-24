@@ -80,6 +80,28 @@ export interface PublishMerchantOrderMessageResult {
   deliveryRoute: Exclude<PrivateMessageDeliveryRoute, "blocked">
 }
 
+export function getMerchantOrderPublishTarget(
+  input: Pick<
+    PublishMerchantOrderMessageInput,
+    "merchantPubkey" | "buyerPubkey" | "orderId" | "delivery"
+  >,
+  rumor: NDKEvent
+) {
+  const recipientPubkey =
+    input.delivery === "self_only" ? input.merchantPubkey : input.buyerPubkey
+  return {
+    recipientPubkey,
+    selfCopy: input.delivery === "buyer_and_self",
+    validatedOrderScope: createValidatedOrderRouteScope({
+      rumor,
+      orderId: input.orderId,
+      senderPubkey: input.merchantPubkey,
+      recipientPubkey,
+      rumorRecipientPubkey: input.buyerPubkey,
+    }),
+  }
+}
+
 export async function publishMerchantOrderMessage(
   input: PublishMerchantOrderMessageInput
 ): Promise<PublishMerchantOrderMessageResult> {
@@ -99,23 +121,17 @@ export async function publishMerchantOrderMessage(
   })
   prepareMerchantRumor(rumor, input.merchantPubkey)
 
-  const recipientPubkey =
-    input.delivery === "self_only" ? input.merchantPubkey : input.buyerPubkey
+  const target = getMerchantOrderPublishTarget(input, rumor)
   const { selfCopyError, deliveryRoute } = await publishPrivateMessage({
     rumor,
     senderPubkey: input.merchantPubkey,
-    recipientPubkey,
+    recipientPubkey: target.recipientPubkey,
     signer: ndk.signer,
     rumorKind: EVENT_KINDS.ORDER,
-    selfCopy: input.delivery === "buyer_and_self",
+    selfCopy: target.selfCopy,
     // Merchant replies, invoices, and proofs belong to a validated inbound
     // order lifecycle, so they qualify for compatibility routing (CND-208).
-    validatedOrderScope: createValidatedOrderRouteScope({
-      rumor,
-      orderId: input.orderId,
-      senderPubkey: input.merchantPubkey,
-      recipientPubkey,
-    }),
+    validatedOrderScope: target.validatedOrderScope,
   })
   if (selfCopyError) {
     console.warn("Merchant order self-copy publish failed", selfCopyError)
