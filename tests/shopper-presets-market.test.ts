@@ -15,6 +15,7 @@ import {
   shouldRefetchShopperPresetsAfterRelayActivation,
 } from "../apps/market/src/lib/shopper-presets-relay-lifecycle"
 import { getShopperPreferencesSaveBlockers } from "../apps/market/src/lib/shopper-preferences-validation"
+import { isClearedRemoteShopperPreset } from "../apps/market/src/lib/shopper-presets-ui"
 import { getCartShippingDestinationEligibility } from "../apps/market/src/lib/cart-shipping-options"
 import {
   buildShippingAddressFromForm,
@@ -146,6 +147,68 @@ describe("Market shopper preset integration", () => {
         relayState: "ready",
       })
     ).toEqual([])
+  })
+
+  it("identifies only an unlocked remote preset without shipping as cleared", () => {
+    const clearedPreset = {
+      preferredRail: "automatic" as const,
+      display: {
+        currency: "BITCOIN" as const,
+        bitcoinUnit: "bitcoin" as const,
+      },
+    }
+
+    expect(
+      isClearedRemoteShopperPreset({
+        hasRemotePreset: true,
+        unlockState: "unlocked",
+        preset: clearedPreset,
+      })
+    ).toBe(true)
+    expect(
+      isClearedRemoteShopperPreset({
+        hasRemotePreset: false,
+        unlockState: "unlocked",
+        preset: clearedPreset,
+      })
+    ).toBe(false)
+    expect(
+      isClearedRemoteShopperPreset({
+        hasRemotePreset: true,
+        unlockState: "locked",
+        preset: clearedPreset,
+      })
+    ).toBe(false)
+    expect(
+      isClearedRemoteShopperPreset({
+        hasRemotePreset: true,
+        unlockState: "unlocked",
+        preset: { ...clearedPreset, shipping: preset },
+      })
+    ).toBe(false)
+  })
+
+  it("shows the cleared-record notice and scopes the replacement save failure", async () => {
+    const preferences = await Bun.file(
+      "apps/market/src/routes/preferences.tsx"
+    ).text()
+    const saveStart = preferences.indexOf("async function save")
+    const clearStart = preferences.indexOf("async function clear")
+    const save = preferences.slice(saveStart, clearStart)
+
+    expect(preferences).toContain('label: "Preset cleared"')
+    expect(preferences).toContain(
+      "No checkout preset is currently saved. Enter new defaults to\n              replace the cleared record."
+    )
+    expect(save).toContain(
+      "No new preset was confirmed. Refresh may still find an older encrypted record."
+    )
+    expect(save).not.toContain(
+      "The preset could not be saved. Check relay access and try again."
+    )
+    expect(preferences.slice(clearStart)).toContain(
+      '"The preset could not be cleared."'
+    )
   })
 
   it("accepts protocol-valid passwords through the 1024-byte boundary", () => {
