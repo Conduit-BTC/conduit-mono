@@ -362,7 +362,10 @@ describe("agent review handoff", () => {
       'if [[ "$review_body" != *"$clean_marker"* ]]'
     )
     expect(
-      countOccurrences(simplifyWorkflow, 'grep -Fqx "$clean_summary"')
+      countOccurrences(
+        simplifyWorkflow,
+        "grep -Eq '^No actionable findings\\.([[:space:]]|$)'"
+      )
     ).toBe(2)
     expect(simplifyWorkflow).toContain(
       '`commit_id: "${{ steps.pr.outputs.head_sha }}"`'
@@ -650,6 +653,15 @@ while IFS= read -r _line; do :; done
     const clean = await runGate({ headSha })
     expect(clean.exitCode).toBe(0)
     expect(getOutputValue(clean.output, "should_run")).toBe("true")
+
+    const cleanWithSameLineResidual = await runGate({
+      headSha,
+      reviewBody: `<!-- conduit:sudden-review clean head=${headSha} -->\nNo actionable findings. Residual verification risk: physical-device coverage remains pending.`,
+    })
+    expect(cleanWithSameLineResidual.exitCode).toBe(0)
+    expect(getOutputValue(cleanWithSameLineResidual.output, "should_run")).toBe(
+      "true"
+    )
 
     const stale = await runGate({
       headSha,

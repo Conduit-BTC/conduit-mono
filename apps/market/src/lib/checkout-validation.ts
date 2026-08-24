@@ -51,6 +51,34 @@ export const SHIPPING_EMAIL_ERROR_ID = "ship-email-error"
 export const SHIPPING_PHONE_HELP_COPY =
   "Use + country code if this number is outside the delivery country."
 
+function normalizeRecipientName(value: string): string {
+  return value.trim().replace(/\s+/gu, " ")
+}
+
+/**
+ * A hydrated preset retains its original recipient value in `name`. It remains
+ * authoritative only while the editable name fields still represent it.
+ */
+export function getShippingRecipientName(shipping: ShippingFormState): string {
+  const marker = shipping.name.trim()
+  const enteredName =
+    `${shipping.firstName.trim()} ${shipping.lastName.trim()}`.trim()
+  return marker && normalizeRecipientName(marker) === enteredName
+    ? marker
+    : enteredName
+}
+
+export function hasPreservedShippingRecipientName(
+  shipping: ShippingFormState
+): boolean {
+  const marker = shipping.name.trim()
+  return (
+    marker.length > 0 &&
+    normalizeRecipientName(marker) ===
+      `${shipping.firstName.trim()} ${shipping.lastName.trim()}`.trim()
+  )
+}
+
 export function getShippingPhoneDescribedBy(hasError: boolean): string {
   return hasError
     ? `${SHIPPING_PHONE_HELP_ID} ${SHIPPING_PHONE_ERROR_ID}`
@@ -72,7 +100,7 @@ export function buildShippingAddressFromForm(
   shipping: ShippingFormState
 ): ShippingAddressSchema {
   return {
-    name: `${shipping.firstName.trim()} ${shipping.lastName.trim()}`.trim(),
+    name: getShippingRecipientName(shipping),
     street: [shipping.street.trim(), shipping.line2.trim()]
       .filter(Boolean)
       .join(", "),
@@ -109,7 +137,7 @@ export function validateShippingFields(
   }
 
   const lastName = shipping.lastName.trim()
-  if (lastName.length === 0) {
+  if (lastName.length === 0 && !hasPreservedShippingRecipientName(shipping)) {
     errors.push({ field: "lastName", message: "Last name is required" })
   } else if (lastName.length > 50) {
     errors.push({
@@ -119,7 +147,7 @@ export function validateShippingFields(
   }
 
   const addressResult = validateAddressConsistency({
-    name: `${firstName} ${lastName}`.trim(),
+    name: getShippingRecipientName(shipping),
     street: shipping.street,
     city: shipping.city,
     state: shipping.state,
@@ -149,7 +177,7 @@ function validateContactFields(
   const errors: ShippingValidationError[] = []
   const country = shipping.country.trim().toUpperCase()
   const addressResult = validateAddressConsistency({
-    name: `${shipping.firstName.trim()} ${shipping.lastName.trim()}`.trim(),
+    name: getShippingRecipientName(shipping),
     street: shipping.street,
     city: shipping.city,
     state: shipping.state,
