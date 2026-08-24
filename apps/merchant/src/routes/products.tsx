@@ -891,9 +891,10 @@ function ProductsPage() {
 
   // Product publishing stays permissive. This readiness check only provides
   // guidance before a new listing; it never changes order delivery routing.
+  const inboxReadinessEnabled =
+    !!pubkey && productDialogOpen && !editing && session.relaySettingsReady
   const inboxReadiness = useInboxDeclaration(pubkey, {
-    enabled:
-      !!pubkey && productDialogOpen && !editing && session.relaySettingsReady,
+    enabled: inboxReadinessEnabled,
     relayScope: session.relayScope,
   })
 
@@ -1423,7 +1424,8 @@ function ProductsPage() {
     if (
       !needsProductInboxPublishGuidance(
         inboxReadiness.status,
-        !!payload.existing
+        !!payload.existing,
+        inboxReadinessEnabled
       )
     ) {
       saveMutation.mutate(payload)
@@ -1498,7 +1500,6 @@ function ProductsPage() {
 
   function openCreateDialog(): void {
     rememberProductDialogTrigger()
-    setPendingProductPublish(null)
     saveMutation.reset()
     if (
       activeProductDraftTarget &&
@@ -1537,7 +1538,6 @@ function ProductsPage() {
   function openEditDialog(item: MerchantProductFamily): void {
     if (!item.variationForm.supported) return
     rememberProductDialogTrigger()
-    setPendingProductPublish(null)
     saveMutation.reset()
     if (
       activeProductDraftTarget?.productAddressId === item.addressId &&

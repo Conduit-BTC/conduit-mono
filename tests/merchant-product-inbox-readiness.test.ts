@@ -16,16 +16,22 @@ const NON_READY_STATUSES: InboxDeclarationStatus[] = [
 ]
 
 describe("merchant product private-inbox guidance", () => {
-  it("warns for every non-ready state before a new product publish", () => {
+  it("warns for every non-ready state while the readiness check is enabled", () => {
     for (const status of NON_READY_STATUSES) {
-      expect(needsProductInboxPublishGuidance(status, false)).toBe(true)
+      expect(needsProductInboxPublishGuidance(status, false, true)).toBe(true)
     }
-    expect(needsProductInboxPublishGuidance("ready", false)).toBe(false)
+    expect(needsProductInboxPublishGuidance("ready", false, true)).toBe(false)
+  })
+
+  it("does not interrupt publish before the readiness check is enabled", () => {
+    expect(needsProductInboxPublishGuidance("loading", false, false)).toBe(
+      false
+    )
   })
 
   it("does not interrupt an existing listing update", () => {
     for (const status of ["ready", ...NON_READY_STATUSES] as const) {
-      expect(needsProductInboxPublishGuidance(status, true)).toBe(false)
+      expect(needsProductInboxPublishGuidance(status, true, true)).toBe(false)
     }
   })
 

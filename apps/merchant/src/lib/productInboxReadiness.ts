@@ -11,9 +11,10 @@ export interface ProductInboxPublishGuidance {
 
 export function needsProductInboxPublishGuidance(
   status: InboxDeclarationStatus,
-  existingProduct: boolean
+  existingProduct: boolean,
+  readinessCheckEnabled: boolean
 ): boolean {
-  return !existingProduct && status !== "ready"
+  return readinessCheckEnabled && !existingProduct && status !== "ready"
 }
 
 export function getProductInboxPublishGuidance(
