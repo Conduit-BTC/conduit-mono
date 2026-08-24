@@ -53,7 +53,11 @@ import {
   publishBuyerOrderMessage,
   type BuyerOrderSigningIdentity,
 } from "./order-publish"
-import { payCheckoutInvoice, type CheckoutPaymentTarget } from "./payment-rails"
+import {
+  isAmbiguousCheckoutPaymentError,
+  payCheckoutInvoice,
+  type CheckoutPaymentTarget,
+} from "./payment-rails"
 import { savePaymentAttempt, updatePaymentAttempt } from "./payment-attempts"
 import {
   clearOrderPaymentClaim,
@@ -398,13 +402,6 @@ function requirePreparedAnonZap(
   }
 
   return prepared
-}
-
-function isAmbiguousPaymentError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false
-  return /Check your wallet before trying another payment path\./i.test(
-    error.message
-  )
 }
 
 type Listener = (state: OrderPaymentRuntimeState) => void
@@ -1417,7 +1414,7 @@ async function runOrderPaymentInternal(
             lifecycle: recovered.lifecycle,
           })
           clearSessionClaim = true
-        } else if (isAmbiguousPaymentError(e)) {
+        } else if (isAmbiguousCheckoutPaymentError(e)) {
           await patchClaim(
             {
               paymentClaimId: undefined,

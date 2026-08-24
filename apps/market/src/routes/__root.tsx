@@ -264,6 +264,9 @@ function getPageTitle(pathname: string): string {
   if (pathname === "/profile") {
     return "Profile"
   }
+  if (pathname === "/preferences") {
+    return "Preferences"
+  }
   if (pathname === "/network") {
     return "Relay Settings"
   }
