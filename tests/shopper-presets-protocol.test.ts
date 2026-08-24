@@ -514,9 +514,11 @@ describe("NIP-78 shopper presets", () => {
     ).resolves.toBeDefined()
   })
 
-  it("accepts exact acknowledged readback from a partially completed source", async () => {
+  it("does not converge exact readback from a partially completed source", async () => {
     const { signer, pubkey, ndk } = await signerFixture()
     let published: NDKEvent | null = null
+    let readbackAttempts = 0
+    let waits = 0
 
     await expect(
       publishShopperPresets({
@@ -529,8 +531,12 @@ describe("NIP-78 shopper presets", () => {
           ndk,
           now: () => nowMs,
           getRelayLists: async () => new Map(),
+          waitForConvergenceRetry: async () => {
+            waits += 1
+          },
           fetchEvents: async () => {
             if (published) {
+              readbackAttempts += 1
               attachEventSourceRelayUrl(published, "wss://relay.example")
             }
             return relayResult(published ? [published] : [], [
@@ -552,7 +558,10 @@ describe("NIP-78 shopper presets", () => {
           },
         },
       })
-    ).resolves.toMatchObject({ revision: { createdAt: nowMs / 1_000 } })
+    ).rejects.toThrow("did not converge")
+
+    expect(readbackAttempts).toBe(3)
+    expect(waits).toBe(2)
   })
 
   it("fails when publishing has no acknowledged relay targets", async () => {
@@ -640,7 +649,7 @@ describe("NIP-78 shopper presets", () => {
     expect(waits).toBe(0)
   })
 
-  it("fails closed when an equal-timestamp competitor wins the event ID tie-break", async () => {
+  it("fails immediately when an equal-timestamp lower-ID competitor wins", async () => {
     const { signer, pubkey, ndk } = await signerFixture()
     let published = false
     let waits = 0
@@ -677,7 +686,8 @@ describe("NIP-78 shopper presets", () => {
                 },
               ]
             ),
-          publishEvent: async () => {
+          publishEvent: async (event) => {
+            event.id = "b".repeat(64)
             published = true
             return publishResult({
               primaryRelayUrls: ["wss://relay.example"],
@@ -691,6 +701,89 @@ describe("NIP-78 shopper presets", () => {
     ).rejects.toThrow("did not converge")
 
     expect(waits).toBe(0)
+  })
+
+  it("retries when an equal-timestamp higher-ID competitor is observed before our event", async () => {
+    const { signer, pubkey, ndk } = await signerFixture()
+    let published: NDKEvent | null = null
+    let readbackAttempts = 0
+    let waits = 0
+
+    await expect(
+      publishShopperPresets({
+        pubkey,
+        value: preset,
+        password,
+        appId: "market",
+        dependencies: {
+          signer,
+          ndk,
+          now: () => nowMs,
+          getRelayLists: async () => new Map(),
+          waitForConvergenceRetry: async () => {
+            waits += 1
+          },
+          fetchEvents: async () => {
+            if (!published) {
+              return relayResult(
+                [],
+                [
+                  {
+                    relayUrl: "wss://relay.example",
+                    status: "success",
+                    eventCount: 0,
+                  },
+                ]
+              )
+            }
+
+            readbackAttempts += 1
+            if (readbackAttempts === 1) {
+              return relayResult(
+                [
+                  eventFixture(pubkey, {
+                    id: "b".repeat(64),
+                    createdAt: nowMs / 1_000,
+                  }),
+                ],
+                [
+                  {
+                    relayUrl: "wss://relay.example",
+                    status: "success",
+                    eventCount: 1,
+                  },
+                ]
+              )
+            }
+
+            attachEventSourceRelayUrl(published, "wss://relay.example")
+            return relayResult(
+              [published],
+              [
+                {
+                  relayUrl: "wss://relay.example",
+                  status: "success",
+                  eventCount: 1,
+                },
+              ]
+            )
+          },
+          publishEvent: async (event) => {
+            event.id = "a".repeat(64)
+            published = event
+            return publishResult({
+              primaryRelayUrls: ["wss://relay.example"],
+              attemptedRelayUrls: ["wss://relay.example"],
+              successfulRelayUrls: ["wss://relay.example"],
+              failedRelayUrls: [],
+            })
+          },
+        },
+      })
+    ).resolves.toMatchObject({ revision: { eventId: "a".repeat(64) } })
+
+    expect(readbackAttempts).toBe(2)
+    expect(waits).toBe(1)
   })
 
   it("retries a thrown convergence read before accepting exact readback", async () => {

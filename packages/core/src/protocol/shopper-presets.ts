@@ -595,7 +595,13 @@ async function verifyShopperPresetsConvergence({
     const latest = selectLatestShopperPresetsEvent(result.events, owner)
     if (latest) {
       if (latest.id !== eventId) {
-        if ((latest.created_at ?? 0) >= createdAt) return null
+        const latestCreatedAt = latest.created_at ?? 0
+        if (
+          latestCreatedAt > createdAt ||
+          (latestCreatedAt === createdAt && latest.id < eventId)
+        ) {
+          return null
+        }
       } else {
         try {
           const envelope = parseShopperPresetsEnvelope(latest.content)
@@ -606,9 +612,7 @@ async function verifyShopperPresetsConvergence({
           )
           const completedTargets = new Set(
             result.relays
-              .filter(
-                ({ status }) => status === "success" || status === "partial"
-              )
+              .filter(({ status }) => status === "success")
               .map(({ relayUrl }) => normalizeRelayUrl(relayUrl))
           )
           if (
