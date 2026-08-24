@@ -422,9 +422,9 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
     [decryptRemote, remotePreset]
   )
 
-  const save = useCallback(
+  const write = useCallback(
     async (
-      value: ShopperPresetsValue,
+      value: ShopperPresetsValue | null,
       password: string,
       policy: ShopperPresetsUnlockPolicy
     ): Promise<boolean> => {
@@ -432,8 +432,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
         !identityPubkey ||
         !relayScope ||
         !identityReady ||
-        !relaySettingsReady ||
-        !value.shipping
+        !relaySettingsReady
       )
         return false
       const lifecycle = relayLifecycle
@@ -474,7 +473,10 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
           }
           acceptedReadRef.current = next
           setRemotePreset(result.envelope)
-          setDecryptedPreset({ ownerPubkey: identity, value })
+          setDecryptedPreset({
+            ownerPubkey: identity,
+            value: value ?? DEFAULT_SHOPPER_PRESETS,
+          })
           setUnlockState("unlocked")
           setSyncState("synced")
           rememberPassword(password, policy)
@@ -506,89 +508,26 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
     ]
   )
 
+  const save = useCallback(
+    async (
+      value: ShopperPresetsValue,
+      password: string,
+      policy: ShopperPresetsUnlockPolicy
+    ): Promise<boolean> => {
+      if (!value.shipping) return false
+      return write(value, password, policy)
+    },
+    [write]
+  )
+
   const clear = useCallback(
     async (
       password: string,
       policy: ShopperPresetsUnlockPolicy
     ): Promise<boolean> => {
-      if (
-        !identityPubkey ||
-        !relayScope ||
-        !identityReady ||
-        !relaySettingsReady
-      )
-        return false
-      const lifecycle = relayLifecycle
-      const identity = lifecycle.identityPubkey
-      if (!identity) return false
-      return writeQueueRef.current!.enqueue(async () => {
-        if (
-          !isCurrentShopperPresetsRelayLifecycle(
-            relayLifecycleRef.current,
-            lifecycle
-          )
-        )
-          return false
-        const acceptedRevision =
-          acceptedReadRef.current?.state === "found"
-            ? acceptedReadRef.current.revision
-            : null
-        setSyncState("syncing")
-        try {
-          const result = await publishShopperPresets({
-            pubkey: identity,
-            value: null,
-            password,
-            appId: "market",
-            acceptedRevision,
-          })
-          if (
-            !isCurrentShopperPresetsRelayLifecycle(
-              relayLifecycleRef.current,
-              lifecycle
-            )
-          )
-            return false
-          const next: ShopperPresetsReadResult = {
-            state: "found",
-            envelope: result.envelope,
-            revision: result.revision,
-          }
-          acceptedReadRef.current = next
-          setRemotePreset(result.envelope)
-          setDecryptedPreset({
-            ownerPubkey: identity,
-            value: DEFAULT_SHOPPER_PRESETS,
-          })
-          setUnlockState("unlocked")
-          setSyncState("synced")
-          rememberPassword(password, policy)
-          queryClient.setQueryData(
-            shopperPresetsQueryKey(identity, lifecycle.relayScope),
-            next
-          )
-          return true
-        } catch {
-          if (
-            isCurrentShopperPresetsRelayLifecycle(
-              relayLifecycleRef.current,
-              lifecycle
-            )
-          )
-            setSyncState("error")
-          return false
-        }
-      })
+      return write(null, password, policy)
     },
-    [
-      identityPubkey,
-      identityReady,
-      queryClient,
-      relayLifecycle,
-      relayScope,
-      relaySettingsReady,
-      rememberPassword,
-    ]
+    [write]
   )
 
   const lock = useCallback(() => {

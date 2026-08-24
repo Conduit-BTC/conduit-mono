@@ -20,7 +20,6 @@ import {
   publishShopperPresets,
   selectLatestShopperPresetsEvent,
   serializeShopperPresetsEnvelope,
-  type PublishWithPlannerResult,
   type ShopperPresetsDocument,
   type ShopperPresetsValue,
 } from "@conduit/core"
@@ -72,6 +71,39 @@ function eventFixture(
   event.tags = [["d", SHOPPER_PRESETS_D_TAG]]
   event.content = input.content ?? "invalid"
   return event
+}
+
+function relayResult(
+  events: NDKEvent[],
+  relays: Array<{
+    relayUrl: string
+    status: "success" | "partial" | "failed"
+    eventCount: number
+  }>
+) {
+  return { events, relays }
+}
+
+function publishResult(input: {
+  primaryRelayUrls?: string[]
+  broadcastRelayUrls?: string[]
+  attemptedRelayUrls: string[]
+  successfulRelayUrls: string[]
+  failedRelayUrls: string[]
+}) {
+  return {
+    plan: {
+      intent: "author_event" as const,
+      primaryRelayUrls: input.primaryRelayUrls ?? [],
+      broadcastRelayUrls: input.broadcastRelayUrls ?? [],
+      parkedRelayUrls: [],
+      hintRelayUrls: [],
+    },
+    attemptedRelayUrls: input.attemptedRelayUrls,
+    successfulRelayUrls: input.successfulRelayUrls,
+    failedRelayUrls: input.failedRelayUrls,
+    relayFailureMessages: {},
+  }
 }
 
 describe("NIP-78 shopper presets", () => {
@@ -169,16 +201,17 @@ describe("NIP-78 shopper presets", () => {
     const result = await fetchShopperPresets(pubkey, {
       readRelayUrls: ["wss://relay.example"],
       getRelayLists: async () => new Map(),
-      fetchEvents: async () => ({
-        events: [],
-        relays: [
-          {
-            relayUrl: "wss://relay.example",
-            status: "partial",
-            eventCount: 0,
-          },
-        ],
-      }),
+      fetchEvents: async () =>
+        relayResult(
+          [],
+          [
+            {
+              relayUrl: "wss://relay.example",
+              status: "partial",
+              eventCount: 0,
+            },
+          ]
+        ),
     })
     expect(result).toEqual({ state: "unavailable", reason: "relay_read" })
   })
@@ -188,21 +221,22 @@ describe("NIP-78 shopper presets", () => {
     const result = await fetchShopperPresets(pubkey, {
       readRelayUrls: ["wss://healthy.example", "wss://offline.example"],
       getRelayLists: async () => new Map(),
-      fetchEvents: async () => ({
-        events: [],
-        relays: [
-          {
-            relayUrl: "wss://healthy.example",
-            status: "success",
-            eventCount: 0,
-          },
-          {
-            relayUrl: "wss://offline.example",
-            status: "failed",
-            eventCount: 0,
-          },
-        ],
-      }),
+      fetchEvents: async () =>
+        relayResult(
+          [],
+          [
+            {
+              relayUrl: "wss://healthy.example",
+              status: "success",
+              eventCount: 0,
+            },
+            {
+              relayUrl: "wss://offline.example",
+              status: "failed",
+              eventCount: 0,
+            },
+          ]
+        ),
     })
     expect(result).toEqual({ state: "not_found" })
   })
@@ -231,16 +265,16 @@ describe("NIP-78 shopper presets", () => {
       },
       fetchEvents: async (_filter, options) => {
         fetchOptions = options
-        return {
-          events: [],
-          relays: [
+        return relayResult(
+          [],
+          [
             {
               relayUrl: options.relayUrls![0]!,
               status: "success",
               eventCount: 0,
             },
-          ],
-        }
+          ]
+        )
       },
     })
 
@@ -284,16 +318,17 @@ describe("NIP-78 shopper presets", () => {
     const result = await fetchShopperPresets(pubkey, {
       readRelayUrls: ["wss://relay.example"],
       getRelayLists: async () => new Map(),
-      fetchEvents: async () => ({
-        events: [older, newer],
-        relays: [
-          {
-            relayUrl: "wss://relay.example",
-            status: "success",
-            eventCount: 2,
-          },
-        ],
-      }),
+      fetchEvents: async () =>
+        relayResult(
+          [older, newer],
+          [
+            {
+              relayUrl: "wss://relay.example",
+              status: "success",
+              eventCount: 2,
+            },
+          ]
+        ),
     })
 
     expect(result).toEqual({
@@ -342,38 +377,28 @@ describe("NIP-78 shopper presets", () => {
           if (published) {
             attachEventSourceRelayUrl(published, "wss://relay.example")
           }
-          return {
-            events: published ? [published] : [],
-            relays: [
-              {
-                relayUrl: "wss://relay.example",
-                status: "success",
-                eventCount: published ? 1 : 0,
-              },
-              {
-                relayUrl: "wss://offline.example",
-                status: "failed",
-                eventCount: 0,
-              },
-            ],
-          }
+          return relayResult(published ? [published] : [], [
+            {
+              relayUrl: "wss://relay.example",
+              status: "success",
+              eventCount: published ? 1 : 0,
+            },
+            {
+              relayUrl: "wss://offline.example",
+              status: "failed",
+              eventCount: 0,
+            },
+          ])
         },
         publishEvent: async (event, options) => {
           published = event
           publishOptions = options
-          return {
-            plan: {
-              intent: "author_event",
-              primaryRelayUrls: ["wss://relay.example"],
-              broadcastRelayUrls: [],
-              parkedRelayUrls: [],
-              hintRelayUrls: [],
-            },
+          return publishResult({
+            primaryRelayUrls: ["wss://relay.example"],
             attemptedRelayUrls: ["wss://relay.example"],
             successfulRelayUrls: ["wss://relay.example"],
             failedRelayUrls: [],
-            relayFailureMessages: {},
-          } as PublishWithPlannerResult
+          })
         },
       },
     })
@@ -411,35 +436,25 @@ describe("NIP-78 shopper presets", () => {
             if (published) {
               attachEventSourceRelayUrl(published, "wss://relay-a.example")
             }
-            return {
-              events: published ? [published] : [],
-              relays: [
-                {
-                  relayUrl: "wss://relay-a.example",
-                  status: "success",
-                  eventCount: published ? 1 : 0,
-                },
-              ],
-            }
+            return relayResult(published ? [published] : [], [
+              {
+                relayUrl: "wss://relay-a.example",
+                status: "success",
+                eventCount: published ? 1 : 0,
+              },
+            ])
           },
           publishEvent: async (event) => {
             published = event
-            return {
-              plan: {
-                intent: "author_event",
-                primaryRelayUrls: ["wss://relay-a.example"],
-                broadcastRelayUrls: [],
-                parkedRelayUrls: [],
-                hintRelayUrls: [],
-              },
+            return publishResult({
+              primaryRelayUrls: ["wss://relay-a.example"],
               attemptedRelayUrls: [
                 "wss://relay-a.example",
                 "wss://relay-b.example",
               ],
               successfulRelayUrls: ["wss://relay-a.example"],
               failedRelayUrls: ["wss://relay-b.example"],
-              relayFailureMessages: {},
-            } as PublishWithPlannerResult
+            })
           },
         },
       })
@@ -465,32 +480,24 @@ describe("NIP-78 shopper presets", () => {
             if (published) {
               attachEventSourceRelayUrl(published, "wss://relay-b.example")
             }
-            return {
-              events: published ? [published] : [],
-              relays: [
-                {
-                  relayUrl: "wss://relay-a.example",
-                  status: "failed",
-                  eventCount: 0,
-                },
-                {
-                  relayUrl: "wss://relay-b.example",
-                  status: "success",
-                  eventCount: published ? 1 : 0,
-                },
-              ],
-            }
+            return relayResult(published ? [published] : [], [
+              {
+                relayUrl: "wss://relay-a.example",
+                status: "failed",
+                eventCount: 0,
+              },
+              {
+                relayUrl: "wss://relay-b.example",
+                status: "success",
+                eventCount: published ? 1 : 0,
+              },
+            ])
           },
           publishEvent: async (event) => {
             published = event
-            return {
-              plan: {
-                intent: "author_event",
-                primaryRelayUrls: ["wss://relay-a.example"],
-                broadcastRelayUrls: ["wss://relay-b.example"],
-                parkedRelayUrls: [],
-                hintRelayUrls: [],
-              },
+            return publishResult({
+              primaryRelayUrls: ["wss://relay-a.example"],
+              broadcastRelayUrls: ["wss://relay-b.example"],
               attemptedRelayUrls: [
                 "wss://relay-a.example",
                 "wss://relay-b.example",
@@ -500,8 +507,7 @@ describe("NIP-78 shopper presets", () => {
                 "wss://relay-b.example",
               ],
               failedRelayUrls: [],
-              relayFailureMessages: {},
-            } as PublishWithPlannerResult
+            })
           },
         },
       })
@@ -527,32 +533,22 @@ describe("NIP-78 shopper presets", () => {
             if (published) {
               attachEventSourceRelayUrl(published, "wss://relay.example")
             }
-            return {
-              events: published ? [published] : [],
-              relays: [
-                {
-                  relayUrl: "wss://relay.example",
-                  status: published ? "partial" : "success",
-                  eventCount: published ? 1 : 0,
-                },
-              ],
-            }
+            return relayResult(published ? [published] : [], [
+              {
+                relayUrl: "wss://relay.example",
+                status: published ? "partial" : "success",
+                eventCount: published ? 1 : 0,
+              },
+            ])
           },
           publishEvent: async (event) => {
             published = event
-            return {
-              plan: {
-                intent: "author_event",
-                primaryRelayUrls: ["wss://relay.example"],
-                broadcastRelayUrls: [],
-                parkedRelayUrls: [],
-                hintRelayUrls: [],
-              },
+            return publishResult({
+              primaryRelayUrls: ["wss://relay.example"],
               attemptedRelayUrls: ["wss://relay.example"],
               successfulRelayUrls: ["wss://relay.example"],
               failedRelayUrls: [],
-              relayFailureMessages: {},
-            } as PublishWithPlannerResult
+            })
           },
         },
       })
@@ -571,29 +567,23 @@ describe("NIP-78 shopper presets", () => {
           signer,
           ndk,
           getRelayLists: async () => new Map(),
-          fetchEvents: async () => ({
-            events: [],
-            relays: [
-              {
-                relayUrl: "wss://relay.example",
-                status: "success",
-                eventCount: 0,
-              },
-            ],
-          }),
-          publishEvent: async () => ({
-            plan: {
-              intent: "author_event",
-              primaryRelayUrls: [],
-              broadcastRelayUrls: [],
-              parkedRelayUrls: [],
-              hintRelayUrls: [],
-            },
-            attemptedRelayUrls: ["wss://relay.example"],
-            successfulRelayUrls: [],
-            failedRelayUrls: ["wss://relay.example"],
-            relayFailureMessages: {},
-          }),
+          fetchEvents: async () =>
+            relayResult(
+              [],
+              [
+                {
+                  relayUrl: "wss://relay.example",
+                  status: "success",
+                  eventCount: 0,
+                },
+              ]
+            ),
+          publishEvent: async () =>
+            publishResult({
+              attemptedRelayUrls: ["wss://relay.example"],
+              successfulRelayUrls: [],
+              failedRelayUrls: ["wss://relay.example"],
+            }),
         },
       })
     ).rejects.toThrow("did not converge")
@@ -617,38 +607,32 @@ describe("NIP-78 shopper presets", () => {
           waitForConvergenceRetry: async () => {
             waits += 1
           },
-          fetchEvents: async () => ({
-            events: published
-              ? [
-                  eventFixture(pubkey, {
-                    id: "b".repeat(64),
-                    createdAt: nowMs / 1_000 + 1,
-                  }),
-                ]
-              : [],
-            relays: [
-              {
-                relayUrl: "wss://relay.example",
-                status: "success",
-                eventCount: published ? 1 : 0,
-              },
-            ],
-          }),
+          fetchEvents: async () =>
+            relayResult(
+              published
+                ? [
+                    eventFixture(pubkey, {
+                      id: "b".repeat(64),
+                      createdAt: nowMs / 1_000 + 1,
+                    }),
+                  ]
+                : [],
+              [
+                {
+                  relayUrl: "wss://relay.example",
+                  status: "success",
+                  eventCount: published ? 1 : 0,
+                },
+              ]
+            ),
           publishEvent: async () => {
             published = true
-            return {
-              plan: {
-                intent: "author_event",
-                primaryRelayUrls: ["wss://relay.example"],
-                broadcastRelayUrls: [],
-                parkedRelayUrls: [],
-                hintRelayUrls: [],
-              },
+            return publishResult({
+              primaryRelayUrls: ["wss://relay.example"],
               attemptedRelayUrls: ["wss://relay.example"],
               successfulRelayUrls: ["wss://relay.example"],
               failedRelayUrls: [],
-              relayFailureMessages: {},
-            } as PublishWithPlannerResult
+            })
           },
         },
       })
@@ -675,38 +659,32 @@ describe("NIP-78 shopper presets", () => {
           waitForConvergenceRetry: async () => {
             waits += 1
           },
-          fetchEvents: async () => ({
-            events: published
-              ? [
-                  eventFixture(pubkey, {
-                    id: "0".repeat(64),
-                    createdAt: nowMs / 1_000,
-                  }),
-                ]
-              : [],
-            relays: [
-              {
-                relayUrl: "wss://relay.example",
-                status: "success",
-                eventCount: published ? 1 : 0,
-              },
-            ],
-          }),
+          fetchEvents: async () =>
+            relayResult(
+              published
+                ? [
+                    eventFixture(pubkey, {
+                      id: "0".repeat(64),
+                      createdAt: nowMs / 1_000,
+                    }),
+                  ]
+                : [],
+              [
+                {
+                  relayUrl: "wss://relay.example",
+                  status: "success",
+                  eventCount: published ? 1 : 0,
+                },
+              ]
+            ),
           publishEvent: async () => {
             published = true
-            return {
-              plan: {
-                intent: "author_event",
-                primaryRelayUrls: ["wss://relay.example"],
-                broadcastRelayUrls: [],
-                parkedRelayUrls: [],
-                hintRelayUrls: [],
-              },
+            return publishResult({
+              primaryRelayUrls: ["wss://relay.example"],
               attemptedRelayUrls: ["wss://relay.example"],
               successfulRelayUrls: ["wss://relay.example"],
               failedRelayUrls: [],
-              relayFailureMessages: {},
-            } as PublishWithPlannerResult
+            })
           },
         },
       })
@@ -737,46 +715,39 @@ describe("NIP-78 shopper presets", () => {
           },
           fetchEvents: async () => {
             if (!published) {
-              return {
-                events: [],
-                relays: [
+              return relayResult(
+                [],
+                [
                   {
                     relayUrl: "wss://relay.example",
                     status: "success" as const,
                     eventCount: 0,
                   },
-                ],
-              }
+                ]
+              )
             }
             readbackAttempts += 1
             if (readbackAttempts === 1) throw new Error("Temporary relay error")
             attachEventSourceRelayUrl(published, "wss://relay.example")
-            return {
-              events: [published],
-              relays: [
+            return relayResult(
+              [published],
+              [
                 {
                   relayUrl: "wss://relay.example",
                   status: "success" as const,
                   eventCount: 1,
                 },
-              ],
-            }
+              ]
+            )
           },
           publishEvent: async (event) => {
             published = event
-            return {
-              plan: {
-                intent: "author_event",
-                primaryRelayUrls: ["wss://relay.example"],
-                broadcastRelayUrls: [],
-                parkedRelayUrls: [],
-                hintRelayUrls: [],
-              },
+            return publishResult({
+              primaryRelayUrls: ["wss://relay.example"],
               attemptedRelayUrls: ["wss://relay.example"],
               successfulRelayUrls: ["wss://relay.example"],
               failedRelayUrls: [],
-              relayFailureMessages: {},
-            } as PublishWithPlannerResult
+            })
           },
         },
       })
@@ -811,32 +782,25 @@ describe("NIP-78 shopper presets", () => {
               readbackAttempts += 1
               throw new Error("Relay unavailable")
             }
-            return {
-              events: [],
-              relays: [
+            return relayResult(
+              [],
+              [
                 {
                   relayUrl: "wss://relay.example",
                   status: "success" as const,
                   eventCount: 0,
                 },
-              ],
-            }
+              ]
+            )
           },
           publishEvent: async () => {
             published = true
-            return {
-              plan: {
-                intent: "author_event",
-                primaryRelayUrls: ["wss://relay.example"],
-                broadcastRelayUrls: [],
-                parkedRelayUrls: [],
-                hintRelayUrls: [],
-              },
+            return publishResult({
+              primaryRelayUrls: ["wss://relay.example"],
               attemptedRelayUrls: ["wss://relay.example"],
               successfulRelayUrls: ["wss://relay.example"],
               failedRelayUrls: [],
-              relayFailureMessages: {},
-            } as PublishWithPlannerResult
+            })
           },
         },
       })
@@ -861,57 +825,50 @@ describe("NIP-78 shopper presets", () => {
       },
       fetchEvents: async () => {
         if (!published) {
-          return {
-            events: [],
-            relays: [
+          return relayResult(
+            [],
+            [
               {
                 relayUrl: "wss://relay.example",
                 status: "success" as const,
                 eventCount: 0,
               },
-            ],
-          }
+            ]
+          )
         }
         readbackAttempts += 1
         if (readbackAttempts < 2) {
-          return {
-            events: [],
-            relays: [
+          return relayResult(
+            [],
+            [
               {
                 relayUrl: "wss://relay.example",
                 status: "success" as const,
                 eventCount: 0,
               },
-            ],
-          }
+            ]
+          )
         }
         attachEventSourceRelayUrl(published, "wss://relay.example")
-        return {
-          events: [published],
-          relays: [
+        return relayResult(
+          [published],
+          [
             {
               relayUrl: "wss://relay.example",
               status: "success" as const,
               eventCount: 1,
             },
-          ],
-        }
+          ]
+        )
       },
       publishEvent: async (event: NDKEvent) => {
         published = event
-        return {
-          plan: {
-            intent: "author_event" as const,
-            primaryRelayUrls: ["wss://relay.example"],
-            broadcastRelayUrls: [],
-            parkedRelayUrls: [],
-            hintRelayUrls: [],
-          },
+        return publishResult({
+          primaryRelayUrls: ["wss://relay.example"],
           attemptedRelayUrls: ["wss://relay.example"],
           successfulRelayUrls: ["wss://relay.example"],
           failedRelayUrls: [],
-          relayFailureMessages: {},
-        } as PublishWithPlannerResult
+        })
       },
     }
 
@@ -930,16 +887,17 @@ describe("NIP-78 shopper presets", () => {
     published = null
     readbackAttempts = 0
     waits = 0
-    dependencies.fetchEvents = async () => ({
-      events: [],
-      relays: [
-        {
-          relayUrl: "wss://relay.example",
-          status: "success" as const,
-          eventCount: 0,
-        },
-      ],
-    })
+    dependencies.fetchEvents = async () =>
+      relayResult(
+        [],
+        [
+          {
+            relayUrl: "wss://relay.example",
+            status: "success" as const,
+            eventCount: 0,
+          },
+        ]
+      )
     await expect(
       publishShopperPresets({
         pubkey,
@@ -973,32 +931,22 @@ describe("NIP-78 shopper presets", () => {
         fetchEvents: async () => {
           if (published)
             attachEventSourceRelayUrl(published, "wss://relay.example")
-          return {
-            events: published ? [published] : [],
-            relays: [
-              {
-                relayUrl: "wss://relay.example",
-                status: "success",
-                eventCount: published ? 1 : 0,
-              },
-            ],
-          }
+          return relayResult(published ? [published] : [], [
+            {
+              relayUrl: "wss://relay.example",
+              status: "success",
+              eventCount: published ? 1 : 0,
+            },
+          ])
         },
         publishEvent: async (event) => {
           published = event
-          return {
-            plan: {
-              intent: "author_event",
-              primaryRelayUrls: ["wss://relay.example"],
-              broadcastRelayUrls: [],
-              parkedRelayUrls: [],
-              hintRelayUrls: [],
-            },
+          return publishResult({
+            primaryRelayUrls: ["wss://relay.example"],
             attemptedRelayUrls: ["wss://relay.example"],
             successfulRelayUrls: ["wss://relay.example"],
             failedRelayUrls: [],
-            relayFailureMessages: {},
-          } as PublishWithPlannerResult
+          })
         },
       },
     })
@@ -1033,16 +981,17 @@ describe("NIP-78 shopper presets", () => {
           signer,
           ndk,
           getRelayLists: async () => new Map(),
-          fetchEvents: async () => ({
-            events: [],
-            relays: [
-              {
-                relayUrl: "wss://relay.example",
-                status: "success",
-                eventCount: 0,
-              },
-            ],
-          }),
+          fetchEvents: async () =>
+            relayResult(
+              [],
+              [
+                {
+                  relayUrl: "wss://relay.example",
+                  status: "success",
+                  eventCount: 0,
+                },
+              ]
+            ),
           publishEvent: async () => {
             published = true
             throw new Error("Publishing must not be attempted")
@@ -1090,16 +1039,17 @@ describe("NIP-78 shopper presets", () => {
             throw new Error("Encryption must not be attempted")
           },
           getRelayLists: async () => new Map(),
-          fetchEvents: async () => ({
-            events: [previous],
-            relays: [
-              {
-                relayUrl: "wss://relay.example",
-                status: "success",
-                eventCount: 1,
-              },
-            ],
-          }),
+          fetchEvents: async () =>
+            relayResult(
+              [previous],
+              [
+                {
+                  relayUrl: "wss://relay.example",
+                  status: "success",
+                  eventCount: 1,
+                },
+              ]
+            ),
           publishEvent: async () => {
             published = true
             throw new Error("Publishing must not be attempted")
@@ -1138,16 +1088,17 @@ describe("NIP-78 shopper presets", () => {
             throw new Error("Encryption must not be attempted")
           },
           getRelayLists: async () => new Map(),
-          fetchEvents: async () => ({
-            events: [],
-            relays: [
-              {
-                relayUrl: "wss://relay.example",
-                status: "success",
-                eventCount: 0,
-              },
-            ],
-          }),
+          fetchEvents: async () =>
+            relayResult(
+              [],
+              [
+                {
+                  relayUrl: "wss://relay.example",
+                  status: "success",
+                  eventCount: 0,
+                },
+              ]
+            ),
           publishEvent: async () => {
             published = true
             throw new Error("Publishing must not be attempted")

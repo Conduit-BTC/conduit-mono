@@ -463,7 +463,7 @@ describe("Market shopper preset integration", () => {
     expect(source).not.toContain("acceptedRemoteRef")
     expect(
       source.match(/acceptedReadRef\.current = (?:result|next)/gu)
-    ).toHaveLength(4)
+    ).toHaveLength(3)
     const decryptStart = source.indexOf("const decryptRemote = useCallback")
     const remoteEffect = source.indexOf("const result = remote.data")
     expect(
@@ -665,6 +665,7 @@ describe("Market shopper preset integration", () => {
       "apps/market/src/hooks/useShopperPresets.tsx"
     ).text()
     const unlockIndex = source.indexOf("const decryptRemote = useCallback")
+    const writeIndex = source.indexOf("const write = useCallback")
     const saveIndex = source.indexOf("const save = useCallback")
     const clearIndex = source.indexOf("const clear = useCallback")
     const lockIndex = source.indexOf("const lock = useCallback")
@@ -673,11 +674,8 @@ describe("Market shopper preset integration", () => {
       source.indexOf("rememberPassword(password, policy)", unlockIndex)
     ).toBeGreaterThan(unlockIndex)
     expect(
-      source.indexOf("rememberPassword(password, policy)", saveIndex)
-    ).toBeGreaterThan(saveIndex)
-    expect(
-      source.indexOf("rememberPassword(password, policy)", clearIndex)
-    ).toBeGreaterThan(clearIndex)
+      source.indexOf("rememberPassword(password, policy)", writeIndex)
+    ).toBeGreaterThan(writeIndex)
     expect(
       source.indexOf("clearShopperPresetsUnlock(", lockIndex)
     ).toBeGreaterThan(lockIndex)
@@ -687,23 +685,26 @@ describe("Market shopper preset integration", () => {
     const source = await Bun.file(
       "apps/market/src/hooks/useShopperPresets.tsx"
     ).text()
+    const writeStart = source.indexOf("const write = useCallback")
     const saveStart = source.indexOf("const save = useCallback")
     const clearStart = source.indexOf("const clear = useCallback")
     const lockStart = source.indexOf("const lock = useCallback")
+    const write = source.slice(writeStart, saveStart)
     const save = source.slice(saveStart, clearStart)
     const clear = source.slice(clearStart, lockStart)
 
     expect(source).toContain("const writeQueueRef = useRef")
     expect(source).toContain("createSerialOperationQueue()")
 
-    for (const operation of [save, clear]) {
-      const queueIndex = operation.indexOf("writeQueueRef.current!.enqueue")
-      const acceptedRevisionIndex = operation.indexOf("const acceptedRevision")
-      expect(operation).toContain('acceptedReadRef.current?.state === "found"')
-      expect(operation).toContain("acceptedRevision,")
-      expect(queueIndex).toBeGreaterThan(-1)
-      expect(acceptedRevisionIndex).toBeGreaterThan(queueIndex)
-    }
+    const queueIndex = write.indexOf("writeQueueRef.current!.enqueue")
+    const acceptedRevisionIndex = write.indexOf("const acceptedRevision")
+    expect(write).toContain('acceptedReadRef.current?.state === "found"')
+    expect(write).toContain("acceptedRevision,")
+    expect(queueIndex).toBeGreaterThan(-1)
+    expect(acceptedRevisionIndex).toBeGreaterThan(queueIndex)
+    expect(save).toContain("if (!value.shipping) return false")
+    expect(save).toContain("write(value, password, policy)")
+    expect(clear).toContain("write(null, password, policy)")
   })
 
   it("serializes operations after a successful predecessor", async () => {
