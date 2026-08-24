@@ -13,6 +13,7 @@ import {
   type MerchantCartReadiness,
 } from "./useCartReadiness"
 import { useShopperPricing } from "./useShopperPricing"
+import { useShopperPresets } from "./useShopperPresets"
 import { useWallets, type UseWalletsReturn } from "./useWallets"
 import {
   deriveMerchantCheckoutCapability,
@@ -27,7 +28,11 @@ import {
 } from "../lib/cart-model"
 import { buildCheckoutPricingIntent } from "../lib/checkout-payment"
 import { resolveCheckoutPaymentTarget } from "../lib/checkout-payment-target"
-import { readCheckoutShippingSession } from "../lib/checkout-session"
+import {
+  DEFAULT_CHECKOUT_SHIPPING,
+  getIdentityBoundShippingPreset,
+  readCheckoutShippingCapabilityInitialization,
+} from "../lib/checkout-session"
 import {
   buildShippingAddressFromForm,
   validateShippingFields,
@@ -61,13 +66,20 @@ export function useMerchantCheckoutCapability(input: {
   enabled?: boolean
   wallets?: UseWalletsReturn
 }): MerchantCheckoutCapabilityView {
-  const { pubkey, signer, capabilities, status: authStatus } = useAuth()
+  const {
+    pubkey,
+    restorePendingPubkey,
+    signer,
+    capabilities,
+    status: authStatus,
+  } = useAuth()
   const enabled = input.enabled ?? true
   const ownedWallets = useWallets({
     enabled: !input.wallets && enabled && input.items.length > 0,
   })
   const wallets = input.wallets ?? ownedWallets
   const shopperPricing = useShopperPricing()
+  const shopperPresets = useShopperPresets()
   const [webLnAvailable, setWebLnAvailable] = useState(false)
   useEffect(() => {
     const check = () => setWebLnAvailable(hasWebLN())
@@ -89,7 +101,19 @@ export function useMerchantCheckoutCapability(input: {
   const isAllDigital = Boolean(
     items.length && items.every((item) => item.format === "digital")
   )
-  const shippingPreset = readCheckoutShippingSession()
+  const identityPubkey = authStatus === "connected" ? pubkey : null
+  const shippingPreset = restorePendingPubkey
+    ? DEFAULT_CHECKOUT_SHIPPING
+    : readCheckoutShippingCapabilityInitialization(
+        shopperPresets.unlockState === "unlocked"
+          ? getIdentityBoundShippingPreset(
+              identityPubkey,
+              shopperPresets.presetOwnerPubkey,
+              shopperPresets.preset.shipping
+            )
+          : null,
+        identityPubkey
+      ).value
   const shippingAddress = buildShippingAddressFromForm(shippingPreset)
   const shippingPresetReady =
     isAllDigital ||
@@ -121,9 +145,28 @@ export function useMerchantCheckoutCapability(input: {
       wallet.network === configuredWalletNetwork &&
       wallet.capabilities.includes("pay_invoice")
   )
+  const readyWalletIds = new Set(
+    eligibleWallets
+      .filter((wallet) => {
+        if (wallet.providerId === "spark") {
+          return wallets.runtime[wallet.id]?.status === "ready"
+        }
+        const snapshot = wallets.nwcSnapshots[wallet.id]
+        return Boolean(
+          snapshot &&
+          getNwcPaymentReadiness({
+            snapshot,
+            walletNetwork: wallet.network,
+            configuredNetwork: configuredWalletNetwork,
+          }).ready
+        )
+      })
+      .map((wallet) => wallet.id)
+  )
   const paymentTarget = resolveCheckoutPaymentTarget({
     selection: null,
     eligibleWallets,
+    readyWalletIds,
     weblnAvailable: webLnAvailable,
   })
   const selectedWallet =

@@ -1,5 +1,6 @@
 import {
   buildPaymentAttemptResultTelemetryProperties,
+  getWeblnPaymentFailurePhase,
   hasWebLN,
   recordBrowserTelemetryEvent,
   weblnSendPayment,
@@ -22,6 +23,16 @@ export type CheckoutPaymentRail = "wallet" | "webln"
  * must return to buyer review before changing this target.
  */
 export type CheckoutPaymentTarget = OrderPaymentTarget
+
+/** Marks a payment outcome that must be checked in the selected wallet first. */
+export const AMBIGUOUS_PAYMENT_WARNING =
+  "Check your wallet before trying another payment path."
+
+export function isAmbiguousCheckoutPaymentError(error: unknown): boolean {
+  return (
+    error instanceof Error && error.message.includes(AMBIGUOUS_PAYMENT_WARNING)
+  )
+}
 
 export type CheckoutInvoicePaymentResult =
   | {
@@ -158,9 +169,7 @@ export async function payCheckoutInvoice(
     })
 
     if (result.status === "ambiguous") {
-      throw new Error(
-        `${result.reason} Check your wallet before trying another payment path.`
-      )
+      throw new Error(`${result.reason} ${AMBIGUOUS_PAYMENT_WARNING}`)
     }
     const reason = diagnostic
       ? `${diagnostic.title}: ${diagnostic.action}`
@@ -206,16 +215,28 @@ export async function payCheckoutInvoice(
       }
     } catch (error) {
       const message = getErrorMessage(error, "Browser wallet payment failed")
+      const phase = getWeblnPaymentFailurePhase(error)
+      if (phase === "unavailable" || phase === "enable") {
+        recordPaymentAttemptResult({
+          amountSats,
+          latencyMs: Date.now() - startedAt,
+          rail: "webln",
+          status: phase === "unavailable" ? "unavailable" : "failure",
+        })
+        return {
+          status: "retryable_failure",
+          reason: message,
+        }
+      }
       recordPaymentAttemptResult({
         amountSats,
         latencyMs: Date.now() - startedAt,
         rail: "webln",
         status: "ambiguous",
       })
-      throw new Error(
-        `${message} Check your wallet before trying another payment path.`,
-        { cause: error }
-      )
+      throw new Error(`${message} ${AMBIGUOUS_PAYMENT_WARNING}`, {
+        cause: error,
+      })
     }
   }
 

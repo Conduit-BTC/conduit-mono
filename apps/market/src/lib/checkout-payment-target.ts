@@ -1,4 +1,8 @@
-import type { OrderPaymentTarget, WalletDescriptor } from "@conduit/core"
+import type {
+  OrderPaymentTarget,
+  ShopperPaymentRail,
+  WalletDescriptor,
+} from "@conduit/core"
 import type { CheckoutPaymentTarget } from "./payment-rails"
 
 export interface CheckoutPaymentTargetOption {
@@ -28,15 +32,19 @@ function getPreferredWallet(
   )
 }
 
-export function resolveCheckoutPaymentTarget(input: {
-  selection: CheckoutPaymentTarget | null
+function getPreferredNwcWallet(
+  eligibleWallets: readonly WalletDescriptor[]
+): WalletDescriptor | null {
+  return getPreferredWallet(
+    eligibleWallets.filter((wallet) => wallet.providerId === "nwc")
+  )
+}
+
+function getAutomaticPaymentTarget(input: {
   eligibleWallets: readonly WalletDescriptor[]
   weblnAvailable: boolean
 }): CheckoutPaymentTarget {
   const preferredWallet = getPreferredWallet(input.eligibleWallets)
-  if (input.selection) {
-    return input.selection
-  }
   if (preferredWallet) {
     return {
       type: "wallet",
@@ -45,6 +53,44 @@ export function resolveCheckoutPaymentTarget(input: {
     }
   }
   return input.weblnAvailable ? { type: "webln" } : { type: "manual" }
+}
+
+export function resolveCheckoutPaymentTarget(input: {
+  selection: CheckoutPaymentTarget | null
+  preferredRail?: ShopperPaymentRail
+  eligibleWallets: readonly WalletDescriptor[]
+  readyWalletIds?: ReadonlySet<string>
+  weblnAvailable: boolean
+}): CheckoutPaymentTarget {
+  if (input.selection) {
+    return input.selection
+  }
+
+  const readyWallets = input.readyWalletIds
+    ? input.eligibleWallets.filter((wallet) =>
+        input.readyWalletIds?.has(wallet.id)
+      )
+    : input.eligibleWallets
+
+  if (input.preferredRail === "manual") return { type: "manual" }
+  if (input.preferredRail === "webln") {
+    if (input.weblnAvailable) return { type: "webln" }
+  }
+  if (input.preferredRail === "nwc") {
+    const preferredNwcWallet = getPreferredNwcWallet(readyWallets)
+    if (preferredNwcWallet) {
+      return {
+        type: "wallet",
+        walletId: preferredNwcWallet.id,
+        providerId: preferredNwcWallet.providerId,
+      }
+    }
+  }
+
+  return getAutomaticPaymentTarget({
+    eligibleWallets: readyWallets,
+    weblnAvailable: input.weblnAvailable,
+  })
 }
 
 export function getCheckoutPaymentTargetValue(

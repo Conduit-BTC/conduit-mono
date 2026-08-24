@@ -1,7 +1,10 @@
 import {
   classifyNwcPaymentError,
   config,
+  getNwcErrorCode,
   getWalletNetworkFromLightningConfig,
+  isNwcPrePublishDiagnosticCode,
+  isNwcWalletRefusalErrorCode,
   isWalletNetwork,
   resolveWalletPaymentInstance,
   type NwcConnection,
@@ -158,13 +161,23 @@ function getNwcFailureResult(
       diagnostics: [diagnostic],
     }
   }
-  if (!diagnostic.safeManualFallback) {
+
+  if (result.status === "wallet_error") {
+    if (isNwcWalletRefusalErrorCode(result.errorCode)) {
+      return {
+        status: "failed",
+        phase: result.phase,
+        reason: result.reason,
+        diagnostics: [diagnostic],
+      }
+    }
     return {
       status: "ambiguous",
       reason: result.reason,
       diagnostics: [diagnostic],
     }
   }
+
   return {
     status: "failed",
     phase: result.phase,
@@ -222,7 +235,10 @@ async function payInvoiceWithNwcProvider(
     return getNwcFailureResult(result, connection)
   } catch (error) {
     const diagnostic = classifyNwcPaymentError(error, connection)
-    if (!diagnostic.safeManualFallback) {
+    if (
+      !isNwcWalletRefusalErrorCode(getNwcErrorCode(error)) &&
+      !isNwcPrePublishDiagnosticCode(diagnostic.code)
+    ) {
       return {
         status: "ambiguous",
         reason: diagnostic.detail,

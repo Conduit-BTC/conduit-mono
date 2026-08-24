@@ -2685,7 +2685,9 @@ function PriceDisplaySettings() {
             <SelectContent>
               {SUPPORTED_SHOPPER_DISPLAY_CURRENCIES.map((currency) => (
                 <SelectItem key={currency} value={currency}>
-                  {currency === "BITCOIN" ? "Bitcoin (₿ base units)" : currency}
+                  {currency === "BITCOIN"
+                    ? "Bitcoin (BTC base units)"
+                    : currency}
                 </SelectItem>
               ))}
             </SelectContent>
