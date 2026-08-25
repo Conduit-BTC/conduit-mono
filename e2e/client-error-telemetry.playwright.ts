@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util"
+
 import { expect, test, type Page } from "@playwright/test"
 
 type TelemetryProperties = Record<string, string | boolean>
@@ -6,6 +8,10 @@ type CapturedTelemetryEvent = {
   eventName: string
   properties: TelemetryProperties
   url?: string
+}
+
+function hasSameValue(left: unknown, right: unknown): boolean {
+  return isDeepStrictEqual(left, right)
 }
 
 const appCases = [
@@ -75,7 +81,7 @@ async function dispatchRuntimeErrors(page: Page): Promise<void> {
 }
 
 for (const { app, url } of appCases) {
-  test(`${app} client-error telemetry covers runtime, boundary, and host gates`, async ({
+  test(`${app} client-error telemetry covers runtime, boundary, and host gates @${app}`, async ({
     page,
   }) => {
     await page.goto(`${url}/about`)
@@ -87,39 +93,41 @@ for (const { app, url } of appCases) {
       .toBe(2)
 
     const runtimeEvents = await readClientErrorEvents(page)
-    expect(runtimeEvents).toEqual([
-      {
-        eventName: "client_error_result",
-        properties: {
-          action: "window_error",
-          app,
-          event_family: "type_error",
-          event_name: "client_error_result",
-          mode: "unhandled",
-          page_path: "/about",
-          page_url: `${url}/about`,
-          status: "failure",
-          surface: "browser",
+    expect(
+      hasSameValue(runtimeEvents, [
+        {
+          eventName: "client_error_result",
+          properties: {
+            action: "window_error",
+            app,
+            event_family: "type_error",
+            event_name: "client_error_result",
+            mode: "unhandled",
+            page_path: "/about",
+            page_url: `${url}/about`,
+            status: "failure",
+            surface: "browser",
+          },
+          url: `${url}/about`,
         },
-        url: `${url}/about`,
-      },
-      {
-        eventName: "client_error_result",
-        properties: {
-          action: "unhandled_rejection",
-          app,
-          event_family: "reference_error",
-          event_name: "client_error_result",
-          mode: "unhandled",
-          page_path: "/about",
-          page_url: `${url}/about`,
-          status: "failure",
-          surface: "browser",
+        {
+          eventName: "client_error_result",
+          properties: {
+            action: "unhandled_rejection",
+            app,
+            event_family: "reference_error",
+            event_name: "client_error_result",
+            mode: "unhandled",
+            page_path: "/about",
+            page_url: `${url}/about`,
+            status: "failure",
+            surface: "browser",
+          },
+          url: `${url}/about`,
         },
-        url: `${url}/about`,
-      },
-    ])
-    expect(JSON.stringify(runtimeEvents)).not.toContain("private")
+      ])
+    ).toBe(true)
+    expect(JSON.stringify(runtimeEvents).includes("private")).toBe(false)
 
     await page.goto(
       `${url}/about?__conduit_telemetry_test=react_error_boundary&secret=private-checkout-token`
@@ -132,26 +140,28 @@ for (const { app, url } of appCases) {
       .toBe(1)
 
     const boundaryEvents = await readClientErrorEvents(page)
-    expect(boundaryEvents).toEqual([
-      {
-        eventName: "client_error_result",
-        properties: {
-          action: "react_error_boundary",
-          app,
-          event_family: "type_error",
-          event_name: "client_error_result",
-          mode: "handled",
-          page_path: "/about",
-          page_url: `${url}/about`,
-          status: "failure",
-          surface: "browser",
+    expect(
+      hasSameValue(boundaryEvents, [
+        {
+          eventName: "client_error_result",
+          properties: {
+            action: "react_error_boundary",
+            app,
+            event_family: "type_error",
+            event_name: "client_error_result",
+            mode: "handled",
+            page_path: "/about",
+            page_url: `${url}/about`,
+            status: "failure",
+            surface: "browser",
+          },
+          url: `${url}/about`,
         },
-        url: `${url}/about`,
-      },
-    ])
-    expect(JSON.stringify(boundaryEvents)).not.toContain(
-      "private-checkout-token"
-    )
+      ])
+    ).toBe(true)
+    expect(
+      JSON.stringify(boundaryEvents).includes("private-checkout-token")
+    ).toBe(false)
 
     const disallowedUrl = url.replace("127.0.0.1", "localhost")
     await page.goto(`${disallowedUrl}/about`)
@@ -159,7 +169,7 @@ for (const { app, url } of appCases) {
     await dispatchRuntimeErrors(page)
     await waitForClientEffects(page)
 
-    expect(await readClientErrorEvents(page)).toEqual([])
+    expect((await readClientErrorEvents(page)).length).toBe(0)
     expect(
       await page.locator('script[data-conduit-telemetry="plausible"]').count()
     ).toBe(0)
