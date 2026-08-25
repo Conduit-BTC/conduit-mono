@@ -46,10 +46,12 @@ async function withMockOrderPaymentDb<T>(
   run: (state: {
     lifecycle: () => OrderLifecycle | undefined
     paymentAttempt: () => StoredPaymentAttempt | undefined
+    lifecyclePutCount: () => number
   }) => Promise<T>
 ): Promise<T> {
   let lifecycle = initial.lifecycle
   let paymentAttempt = initial.paymentAttempt
+  let lifecyclePutCount = 0
   const lifecycleTable = db.orderLifecycles as typeof db.orderLifecycles & {
     get: typeof db.orderLifecycles.get
     put: typeof db.orderLifecycles.put
@@ -71,6 +73,7 @@ async function withMockOrderPaymentDb<T>(
       ? lifecycle
       : undefined) as typeof lifecycleTable.get
   lifecycleTable.put = (async (next: OrderLifecycle) => {
+    lifecyclePutCount += 1
     lifecycle = next
     return next.orderId
   }) as typeof lifecycleTable.put
@@ -91,6 +94,7 @@ async function withMockOrderPaymentDb<T>(
     return await run({
       lifecycle: () => lifecycle,
       paymentAttempt: () => paymentAttempt,
+      lifecyclePutCount: () => lifecyclePutCount,
     })
   } finally {
     lifecycleTable.get = originalLifecycleGet
@@ -673,6 +677,40 @@ describe("order payment admission", () => {
     })
   })
 
+  it("clears a degraded relay warning once paid receipt coverage is complete", async () => {
+    const paidDegraded: OrderLifecycle = {
+      ...lifecycle,
+      invoiceStatus: "received",
+      paymentStatus: "paid",
+      proofDeliveryStatus: "sent",
+      invoice: "lnbc1public",
+      preimage: "payment-preimage",
+      zapRequestId: "zap-request-current",
+      zapReceiptStatus: "timed_out",
+      zapReceiptObservationCoverage: "unavailable",
+      lastError:
+        "Public receipt relays were unavailable. Check your wallet before trying to pay again.",
+    }
+
+    await withMockOrderPaymentDb({ lifecycle: paidDegraded }, async (state) => {
+      const timeout = await recordOrderPaymentReceiptTimeout(
+        paidDegraded.orderId,
+        paidDegraded.zapRequestId!,
+        "complete"
+      )
+
+      expect(timeout.status).toBe("recorded")
+      expect(state.lifecycle()).toMatchObject({
+        paymentStatus: "paid",
+        proofDeliveryStatus: "sent",
+        preimage: "payment-preimage",
+        zapReceiptStatus: "receipt_not_observed",
+      })
+      expect(state.lifecycle()?.zapReceiptObservationCoverage).toBeUndefined()
+      expect(state.lifecycle()?.lastError).toBeUndefined()
+    })
+  })
+
   it.each(["partial", "unavailable"] as const)(
     "persists %s relay coverage without claiming the receipt was absent",
     async (coverage) => {
@@ -747,6 +785,33 @@ describe("order payment admission", () => {
       )
       expect(degradedAfterDefinitive.status).toBe("preserved")
       expect(state.lifecycle()?.zapReceiptStatus).toBe("receipt_not_observed")
+    })
+  })
+
+  it("does not rewrite an unchanged degraded receipt timeout", async () => {
+    const timedOut: OrderLifecycle = {
+      ...lifecycle,
+      invoiceStatus: "received",
+      paymentStatus: "ambiguous",
+      invoice: "lnbc1public",
+      zapRequestId: "zap-request-current",
+      zapReceiptStatus: "timed_out",
+      zapReceiptObservationCoverage: "unavailable",
+      lastError:
+        "Public receipt relays were unavailable. Check your wallet before trying to pay again.",
+      updatedAt: 1_800_000_000_000,
+    }
+
+    await withMockOrderPaymentDb({ lifecycle: timedOut }, async (state) => {
+      const repeated = await recordOrderPaymentReceiptTimeout(
+        timedOut.orderId,
+        timedOut.zapRequestId!,
+        "unavailable"
+      )
+
+      expect(repeated.status).toBe("preserved")
+      expect(state.lifecyclePutCount()).toBe(0)
+      expect(state.lifecycle()?.updatedAt).toBe(timedOut.updatedAt)
     })
   })
 

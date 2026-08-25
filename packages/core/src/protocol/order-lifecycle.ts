@@ -750,36 +750,62 @@ export async function recordOrderPaymentReceiptTimeout(
       if (hasStrongerNegativeEvidence) {
         return { status: "preserved", lifecycle }
       }
+      const paymentStatus =
+        lifecycle.paymentStatus === "paid" ? "paid" : "ambiguous"
+      const lastError =
+        coverage === "partial"
+          ? "The public receipt check was incomplete. Check your wallet before trying to pay again."
+          : "Public receipt relays were unavailable. Check your wallet before trying to pay again."
+      if (
+        lifecycle.zapReceiptStatus === "timed_out" &&
+        lifecycle.zapReceiptObservationCoverage === coverage &&
+        lifecycle.paymentStatus === paymentStatus &&
+        lifecycle.lastError === lastError
+      ) {
+        return { status: "preserved", lifecycle }
+      }
       const recorded = mergeOrderLifecyclePatch(lifecycle, {
-        ...(lifecycle.paymentStatus === "paid"
-          ? {}
-          : { paymentStatus: "ambiguous" as const }),
+        paymentStatus,
         zapReceiptStatus: "timed_out",
         zapReceiptObservationCoverage: coverage,
-        lastError:
-          coverage === "partial"
-            ? "The public receipt check was incomplete. Check your wallet before trying to pay again."
-            : "Public receipt relays were unavailable. Check your wallet before trying to pay again.",
+        lastError,
       })
       await db.orderLifecycles.put(recorded)
       return { status: "recorded", lifecycle: recorded }
     }
 
     if (lifecycle.paymentStatus === "paid") {
+      if (
+        lifecycle.zapReceiptStatus === "receipt_not_observed" &&
+        lifecycle.zapReceiptObservationCoverage === undefined &&
+        lifecycle.lastError === undefined
+      ) {
+        return { status: "preserved", lifecycle }
+      }
       const recorded = mergeOrderLifecyclePatch(lifecycle, {
         zapReceiptStatus: "receipt_not_observed",
         zapReceiptObservationCoverage: undefined,
+        lastError: undefined,
       })
       await db.orderLifecycles.put(recorded)
       return { status: "recorded", lifecycle: recorded }
     }
 
+    const lastError =
+      "A matching public receipt was not observed. Do not pay again if your wallet shows payment."
+    if (
+      lifecycle.paymentStatus === "ambiguous" &&
+      lifecycle.zapReceiptStatus === "receipt_not_observed" &&
+      lifecycle.zapReceiptObservationCoverage === undefined &&
+      lifecycle.lastError === lastError
+    ) {
+      return { status: "preserved", lifecycle }
+    }
     const recorded = mergeOrderLifecyclePatch(lifecycle, {
       paymentStatus: "ambiguous",
       zapReceiptStatus: "receipt_not_observed",
       zapReceiptObservationCoverage: undefined,
-      lastError:
-        "A matching public receipt was not observed. Do not pay again if your wallet shows payment.",
+      lastError,
     })
     await db.orderLifecycles.put(recorded)
     return { status: "recorded", lifecycle: recorded }

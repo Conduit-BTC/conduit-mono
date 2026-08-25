@@ -574,6 +574,44 @@ export function canObserveOrderPublicZapReceipt(
   )
 }
 
+export type OrderPublicZapReceiptObserverTrigger =
+  "lifecycle_change" | "foreground_resume"
+
+/**
+ * Start normal waiting/proof work when lifecycle state changes, but only retry
+ * a post-deadline negative/degraded read after an explicit foreground event.
+ * This prevents an observer write from immediately retriggering itself through
+ * the Orders subscription while still allowing bounded late-receipt recovery.
+ */
+export function shouldResumeOrderPublicZapReceiptObserver(
+  lifecycle: OrderLifecycle,
+  trigger: OrderPublicZapReceiptObserverTrigger,
+  nowMs = Date.now()
+): boolean {
+  if (!canObserveOrderPublicZapReceipt(lifecycle, nowMs)) return false
+  if (trigger === "foreground_resume") return true
+  return (
+    lifecycle.zapReceiptStatus !== "timed_out" &&
+    lifecycle.zapReceiptStatus !== "receipt_not_observed"
+  )
+}
+
+function didReceiptObservationStateChange(
+  before: OrderLifecycle,
+  after: OrderLifecycle | null
+): boolean {
+  if (!after) return false
+  return (
+    after.paymentStatus !== before.paymentStatus ||
+    after.proofDeliveryStatus !== before.proofDeliveryStatus ||
+    after.zapReceiptStatus !== before.zapReceiptStatus ||
+    after.zapReceiptObservationCoverage !==
+      before.zapReceiptObservationCoverage ||
+    after.zapReceiptId !== before.zapReceiptId ||
+    after.lastError !== before.lastError
+  )
+}
+
 async function deliverReceiptLinkedProof(
   lifecycle: OrderLifecycle & {
     invoice: string
@@ -774,7 +812,12 @@ export async function observeOrderPublicZapReceipt(
         lifecycle.zapRequestId,
         observation.coverage
       )
-      emit(orderId, { lifecycle: timeout.lifecycle })
+      if (
+        timeout.status === "recorded" ||
+        didReceiptObservationStateChange(lifecycle, timeout.lifecycle)
+      ) {
+        emit(orderId, { lifecycle: timeout.lifecycle })
+      }
       return
     }
     scheduleRescan = true

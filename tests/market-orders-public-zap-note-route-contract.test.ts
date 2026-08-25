@@ -47,4 +47,17 @@ describe("Market order history public zap note contract", () => {
     expect(route).toContain("supportsPublicReceiptObservation")
     expect(route).toContain('vm.publicZapSigner === "shopper"')
   })
+
+  it("bounds post-deadline receipt rescans to foreground and online resumes", async () => {
+    const route = await readFile("apps/market/src/routes/orders.tsx", "utf8")
+
+    expect(route).toContain(
+      "shouldResumeOrderPublicZapReceiptObserver(lifecycle, reason)"
+    )
+    expect(route).toContain('resumeReceiptObservers("lifecycle_change")')
+    expect(route).toContain('resumeReceiptObservers("foreground_resume")')
+    expect(route).toContain(
+      'window.addEventListener("online", resumeAfterForegroundEvent)'
+    )
+  })
 })

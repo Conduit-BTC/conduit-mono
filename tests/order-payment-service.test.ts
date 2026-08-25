@@ -13,7 +13,9 @@ import {
   observeOrderPublicZapReceipt,
   runOrderPayment,
   runOrderPrivateFallback,
+  shouldResumeOrderPublicZapReceiptObserver,
   signShopperCheckoutZapRequest,
+  subscribeOrderPayment,
   type OrderPaymentDependencies,
   type OrderPaymentContext,
 } from "../apps/market/src/lib/order-payment-service"
@@ -2395,6 +2397,79 @@ describe("runOrderPayment", () => {
       zapReceiptId: "zap-receipt-late",
     })
     expect(current.zapReceiptObservationCoverage).toBeUndefined()
+  })
+
+  it.each(["timed_out", "receipt_not_observed"] as const)(
+    "bounds %s receipt recovery to foreground resume triggers",
+    (zapReceiptStatus) => {
+      const terminal = lifecycle({
+        checkoutMode: "public_zap_as_shopper",
+        publicZapSigner: "shopper",
+        invoice: privateInvoice(),
+        invoiceStatus: "manual_required",
+        paymentStatus: "ambiguous",
+        proofDeliveryStatus: "not_started",
+        zapReceiptStatus,
+        zapReceiptObservationCoverage:
+          zapReceiptStatus === "timed_out" ? "unavailable" : undefined,
+        zapRequestId: "zap-request-bounded",
+        zapRequestCreatedAt: Math.floor(Date.now() / 1_000) - 5,
+        zapLnurl: "lnurl1test",
+        zapReceiptPubkey: "a".repeat(64),
+        zapReceiptRelayUrls: ["wss://relay.example"],
+        zapReceiptObservationDeadline: Date.now() - 1,
+      })
+
+      expect(
+        shouldResumeOrderPublicZapReceiptObserver(terminal, "lifecycle_change")
+      ).toBe(false)
+      expect(
+        shouldResumeOrderPublicZapReceiptObserver(terminal, "foreground_resume")
+      ).toBe(true)
+    }
+  )
+
+  it("does not notify Orders subscribers for an unchanged degraded timeout", async () => {
+    const orderId = "degraded-timeout-idempotent"
+    const current = lifecycle({
+      orderId,
+      checkoutMode: "public_zap_as_shopper",
+      publicZapSigner: "shopper",
+      invoice: privateInvoice(),
+      invoiceStatus: "manual_required",
+      paymentStatus: "ambiguous",
+      proofDeliveryStatus: "not_started",
+      zapReceiptStatus: "timed_out",
+      zapReceiptObservationCoverage: "unavailable",
+      zapRequestId: "zap-request-idempotent",
+      zapRequestCreatedAt: Math.floor(Date.now() / 1_000) - 5,
+      zapLnurl: "lnurl1test",
+      zapReceiptPubkey: "a".repeat(64),
+      zapReceiptRelayUrls: ["wss://relay.example"],
+      zapReceiptObservationDeadline: Date.now() - 1,
+    })
+    let notifications = 0
+    const unsubscribe = subscribeOrderPayment(orderId, () => {
+      notifications += 1
+    })
+
+    try {
+      await observeOrderPublicZapReceipt(orderId, undefined, {
+        getOrderLifecycle: async () => current,
+        waitForZapReceiptDetailed: async () => ({
+          receipt: null,
+          coverage: "unavailable",
+        }),
+        recordOrderPaymentReceiptTimeout: async () => ({
+          status: "preserved",
+          lifecycle: current,
+        }),
+      })
+    } finally {
+      unsubscribe()
+    }
+
+    expect(notifications).toBe(0)
   })
 
   it("releases the order in-flight lock when lifecycle patching fails", async () => {

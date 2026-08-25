@@ -114,12 +114,12 @@ import {
   signAuthorizedAnonZapCheckout,
 } from "../lib/anon-zap-signer"
 import {
-  canObserveOrderPublicZapReceipt,
   getOrderPaymentState,
   observeOrderPublicZapReceipt,
   resendOrderProof,
   runOrderPrivateFallback,
   runOrderPayment,
+  shouldResumeOrderPublicZapReceiptObserver,
   submitExternalPaymentProof,
   subscribeOrderPayment,
   type OrderPaymentContext,
@@ -1967,10 +1967,14 @@ function OrdersPage() {
   }, [lifecycles, refetchLifecycles])
 
   useEffect(() => {
-    const resumeReceiptObservers = () => {
+    const resumeReceiptObservers = (
+      reason: "lifecycle_change" | "foreground_resume"
+    ) => {
       if (document.visibilityState === "hidden") return
       for (const lifecycle of lifecycles) {
-        if (!canObserveOrderPublicZapReceipt(lifecycle)) continue
+        if (!shouldResumeOrderPublicZapReceiptObserver(lifecycle, reason)) {
+          continue
+        }
         const identity =
           guestIdentity?.orderId === lifecycle.orderId
             ? guestIdentity
@@ -1979,12 +1983,21 @@ function OrdersPage() {
       }
     }
 
-    resumeReceiptObservers()
-    window.addEventListener("focus", resumeReceiptObservers)
-    document.addEventListener("visibilitychange", resumeReceiptObservers)
+    const resumeAfterForegroundEvent = () => {
+      resumeReceiptObservers("foreground_resume")
+    }
+
+    resumeReceiptObservers("lifecycle_change")
+    window.addEventListener("focus", resumeAfterForegroundEvent)
+    window.addEventListener("online", resumeAfterForegroundEvent)
+    document.addEventListener("visibilitychange", resumeAfterForegroundEvent)
     return () => {
-      window.removeEventListener("focus", resumeReceiptObservers)
-      document.removeEventListener("visibilitychange", resumeReceiptObservers)
+      window.removeEventListener("focus", resumeAfterForegroundEvent)
+      window.removeEventListener("online", resumeAfterForegroundEvent)
+      document.removeEventListener(
+        "visibilitychange",
+        resumeAfterForegroundEvent
+      )
     }
   }, [guestIdentity, lifecycles])
 
