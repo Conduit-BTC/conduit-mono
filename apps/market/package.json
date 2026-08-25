@@ -17,7 +17,7 @@
     "@conduit/ui": "workspace:*",
     "@getalby/sdk": "^8.0.3",
     "@nostr-dev-kit/ndk": "^3.0.3",
-    "@scure/bip39": "2.0.1",
+    "@scure/bip39": "2.3.0",
     "@tanstack/react-query": "^5.101.4",
     "@tanstack/react-router": "^1.170.19",
     "lucide-react": "^1.31.0",
