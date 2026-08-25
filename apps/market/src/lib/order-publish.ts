@@ -3,6 +3,7 @@ import {
   EVENT_KINDS,
   appendConduitClientTag,
   cacheParsedOrderMessage,
+  createValidatedGuestOrderCompanion,
   createValidatedOrderRouteScope,
   getNdk,
   parseOrderMessageRumorEvent,
@@ -27,8 +28,8 @@ export type BuyerMessageDeliveryResult = {
   deliveryRoute: OrderDeliveryRoute
   /** Exact encrypted recipient wrap + per-relay outcomes for bounded retry. */
   orderRelayDelivery?: OrderRelayDeliveryRecord
-  /** Content-free outcome for the advisory external-client notification. */
-  companionNotificationStatus: OrderCompanionNotificationStatus
+  /** Non-blocking, content-free outcome for the advisory notification. */
+  companionNotification: Promise<OrderCompanionNotificationStatus>
 }
 
 export type OrderCompanionNotificationStatus =
@@ -61,9 +62,6 @@ const ORDER_NOTIFICATION_SUBJECT = "conduit-order-notification"
 const MERCHANT_ORDERS_URL = "https://sell.conduit.market/orders?order="
 const SIGNED_IN_ORDER_NOTIFICATION_COPY =
   "A new order was sent to you through Conduit Market."
-const GUEST_ORDER_NOTIFICATION_COPY =
-  "A new guest order was sent to you through Conduit Market.\n" +
-  "This buyer does not receive Nostr replies. Review the order and follow up using the email or phone provided there."
 
 function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
@@ -132,8 +130,7 @@ function isConduitMarketClientTag(tag: string[]): boolean {
 export function buildOrderCompanionNotificationRumor(
   authoritativeOrder: NDKEvent,
   buyerPubkey: string,
-  merchantPubkey: string,
-  buyerIdentityKind: "signed_in" | "guest_ephemeral" = "signed_in"
+  merchantPubkey: string
 ): NDKEvent {
   const orderId = authoritativeOrder.tags.find((tag) => tag[0] === "order")?.[1]
   if (!orderId) throw new Error("Order notification requires an order tag.")
@@ -166,12 +163,8 @@ export function buildOrderCompanionNotificationRumor(
     }
   }
 
-  const notificationCopy =
-    buyerIdentityKind === "guest_ephemeral"
-      ? GUEST_ORDER_NOTIFICATION_COPY
-      : SIGNED_IN_ORDER_NOTIFICATION_COPY
   companion.content =
-    `${notificationCopy}\n` +
+    `${SIGNED_IN_ORDER_NOTIFICATION_COPY}\n` +
     `Review it at: ${MERCHANT_ORDERS_URL}${encodeURIComponent(orderId)}`
   companion.id = companion.getEventHash()
   return companion
@@ -193,12 +186,21 @@ async function publishOrderCompanionNotification(input: {
   }
 
   try {
-    const companion = buildOrderCompanionNotificationRumor(
-      input.authoritativeOrder,
-      input.buyerIdentity.pubkey,
-      input.merchantPubkey,
-      input.buyerIdentity.kind ?? "signed_in"
-    )
+    const guestCompanion =
+      input.buyerIdentity.kind === "guest_ephemeral"
+        ? createValidatedGuestOrderCompanion({
+            authoritativeOrder: input.authoritativeOrder,
+            senderPubkey: input.buyerIdentity.pubkey,
+            recipientPubkey: input.merchantPubkey,
+          })
+        : undefined
+    const companion =
+      guestCompanion?.companion ??
+      buildOrderCompanionNotificationRumor(
+        input.authoritativeOrder,
+        input.buyerIdentity.pubkey,
+        input.merchantPubkey
+      )
     await input.publish({
       rumor: companion,
       senderPubkey: input.buyerIdentity.pubkey,
@@ -206,6 +208,9 @@ async function publishOrderCompanionNotification(input: {
       signer: input.buyerIdentity.signer,
       rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
       selfCopy: false,
+      ...(guestCompanion
+        ? { validatedGuestOrderCompanionScope: guestCompanion.scope }
+        : {}),
     })
     return "sent"
   } catch {
@@ -284,28 +289,28 @@ export async function publishBuyerOrderMessage(
     }),
   })
 
-  // publishPrivateMessage only resolves the critical recipient leg after at
-  // least one relay ACK. The advisory kind-14 attempt therefore cannot precede
-  // authoritative order acceptance and cannot authorize order/payment retry.
-  const companionNotificationStatus = await publishOrderCompanionNotification({
-    authoritativeOrder: rumor,
-    buyerIdentity,
-    merchantPubkey,
-    deliveryRoute,
-    publish,
-  })
-
   const localCacheError =
     buyerIdentity.kind === "guest_ephemeral"
       ? null
       : await (dependencies.cacheBuyerOrderRumorFn ?? cacheBuyerOrderRumor)(
           rumor
         )
+  // Start the advisory attempt only after the authoritative order has a relay
+  // ACK and any signed-in local recovery copy is committed. Do not await it:
+  // a slow or unavailable notification path must never keep checkout in a
+  // retryable state after the order itself was accepted.
+  const companionNotification = publishOrderCompanionNotification({
+    authoritativeOrder: rumor,
+    buyerIdentity,
+    merchantPubkey,
+    deliveryRoute,
+    publish,
+  })
   return {
     buyerSelfCopyError,
     localCacheError,
     deliveryRoute,
-    companionNotificationStatus,
+    companionNotification,
     ...(orderRelayDelivery ? { orderRelayDelivery } : {}),
   }
 }

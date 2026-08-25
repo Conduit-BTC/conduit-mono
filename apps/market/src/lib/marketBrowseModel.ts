@@ -1,8 +1,11 @@
 import {
   formatNpub,
   getProfileName,
+  getShippingDestinationEligibility,
+  isCommerceReadIncomplete,
   normalizePublicMediaUrl,
   type CommerceProductRecord,
+  type CommerceFreshnessMeta,
   type PreparedProductFamily,
   type PricingRateInput,
   type Product,
@@ -39,6 +42,53 @@ export function allowsGlobalProductSearch(input: {
   return input.anonymous || input.catalogSource === "combined"
 }
 
+export async function refreshMarketBrowseData(input: {
+  globalSearchEnabled: boolean
+  refreshDiscovery?: () => Promise<boolean>
+  refreshCatalog: () => void
+  refreshGlobalSearch: () => unknown
+}): Promise<void> {
+  if (!input.refreshDiscovery) {
+    input.refreshCatalog()
+    if (input.globalSearchEnabled) void input.refreshGlobalSearch()
+    return
+  }
+
+  const discoveryRefresh = input.refreshDiscovery()
+  if (input.globalSearchEnabled) void input.refreshGlobalSearch()
+  let authorSetChanged = false
+  try {
+    authorSetChanged = await discoveryRefresh
+  } catch {
+    // The catalog still refreshes against the retained safe author set.
+  }
+  if (!authorSetChanged) input.refreshCatalog()
+}
+
+type BrowseFreshnessMeta = CommerceFreshnessMeta
+
+export function isMarketBrowseRefreshStale(input: {
+  catalogMeta: BrowseFreshnessMeta | null | undefined
+  catalogError: unknown
+  catalogPaused: boolean
+  discoveryStale: boolean
+  globalSearchEnabled: boolean
+  globalSearchMeta: BrowseFreshnessMeta | null | undefined
+  globalSearchError: unknown
+  globalSearchPaused: boolean
+}): boolean {
+  return (
+    isCommerceReadIncomplete(input.catalogMeta) ||
+    !!input.catalogError ||
+    input.catalogPaused ||
+    input.discoveryStale ||
+    (input.globalSearchEnabled &&
+      (isCommerceReadIncomplete(input.globalSearchMeta) ||
+        !!input.globalSearchError ||
+        input.globalSearchPaused))
+  )
+}
+
 export function getGlobalProductSearchQueryKey(input: {
   query: string
   pubkey: string | null
@@ -72,6 +122,46 @@ function getBrowsePriceProduct(
   return (
     familiesByProductId[product.id]?.priceSummary.minimum?.product ?? product
   )
+}
+
+export type ProductShippingPresetEligibility =
+  "eligible" | "unknown" | "ineligible"
+
+export function getProductShippingPresetEligibility(
+  product: Product,
+  destination: { country: string; postalCode: string }
+): ProductShippingPresetEligibility {
+  if (product.format === "digital") return "eligible"
+  const country = destination.country.trim().toUpperCase()
+  const countryRules = product.shippingCountryRules ?? []
+  const matchingRules = countryRules.filter(
+    (rule) => rule.code.trim().toUpperCase() === country
+  )
+  const advertisedCountries = new Set(
+    (product.shippingCountries ?? countryRules.map((rule) => rule.code)).map(
+      (code) => code.trim().toUpperCase()
+    )
+  )
+  if (advertisedCountries.size === 0) return "unknown"
+  if (!advertisedCountries.has(country)) return "ineligible"
+  if (matchingRules.length === 0) return "eligible"
+  const result = getShippingDestinationEligibility(destination, [
+    {
+      id: product.id,
+      pubkey: product.pubkey,
+      dTag: product.id,
+      title: product.title,
+      currency: product.currency,
+      price: product.price,
+      countries: Array.from(advertisedCountries),
+      countryRules,
+      service: "standard",
+      createdAt: product.createdAt,
+    },
+  ])
+  if (result.eligible === false) return "ineligible"
+  if (result.eligible === null) return "unknown"
+  return "eligible"
 }
 
 export function mergeProductSearchResults(
@@ -133,7 +223,8 @@ export function sortBrowseProducts(
   products: Product[],
   sort: MarketBrowseSortOption | undefined,
   btcUsdRate: PricingRateInput,
-  familiesByProductId: ProductFamiliesById = {}
+  familiesByProductId: ProductFamiliesById = {},
+  destination?: { country: string; postalCode: string } | null
 ): Product[] {
   switch (sort) {
     case "price_asc":
@@ -157,10 +248,22 @@ export function sortBrowseProducts(
           ) || b.createdAt - a.createdAt
       )
     case "newest":
-    default:
-      return diversifyMerchantProductOrder(
-        Array.from(products).sort((a, b) => b.createdAt - a.createdAt)
+    default: {
+      const newest = Array.from(products).sort(
+        (a, b) => b.createdAt - a.createdAt
       )
+      if (!destination) return diversifyMerchantProductOrder(newest)
+      return (["eligible", "unknown", "ineligible"] as const).flatMap(
+        (eligibility) =>
+          diversifyMerchantProductOrder(
+            newest.filter(
+              (product) =>
+                getProductShippingPresetEligibility(product, destination) ===
+                eligibility
+            )
+          )
+      )
+    }
   }
 }
 

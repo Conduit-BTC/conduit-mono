@@ -51,6 +51,34 @@ export const SHIPPING_EMAIL_ERROR_ID = "ship-email-error"
 export const SHIPPING_PHONE_HELP_COPY =
   "Use + country code if this number is outside the delivery country."
 
+function normalizeRecipientName(value: string): string {
+  return value.trim().replace(/\s+/gu, " ")
+}
+
+/**
+ * A hydrated preset retains its original recipient value in `name`. It remains
+ * authoritative only while the editable name fields still represent it.
+ */
+export function getShippingRecipientName(shipping: ShippingFormState): string {
+  const marker = shipping.name.trim()
+  const enteredName =
+    `${shipping.firstName.trim()} ${shipping.lastName.trim()}`.trim()
+  return marker && normalizeRecipientName(marker) === enteredName
+    ? marker
+    : enteredName
+}
+
+export function hasPreservedShippingRecipientName(
+  shipping: ShippingFormState
+): boolean {
+  const marker = shipping.name.trim()
+  return (
+    marker.length > 0 &&
+    normalizeRecipientName(marker) ===
+      `${shipping.firstName.trim()} ${shipping.lastName.trim()}`.trim()
+  )
+}
+
 export function getShippingPhoneDescribedBy(hasError: boolean): string {
   return hasError
     ? `${SHIPPING_PHONE_HELP_ID} ${SHIPPING_PHONE_ERROR_ID}`
@@ -61,6 +89,26 @@ export function getShippingRegionRequirement(
   country: string
 ): AddressRegionRequirement {
   return getAddressRegionRequirement(country)
+}
+
+/**
+ * Single normalization from the shipping form state to the order address
+ * schema. Checkout and the cart HUD must share this mapping so the
+ * payment-sensitive field list cannot drift between surfaces.
+ */
+export function buildShippingAddressFromForm(
+  shipping: ShippingFormState
+): ShippingAddressSchema {
+  return {
+    name: getShippingRecipientName(shipping),
+    street: [shipping.street.trim(), shipping.line2.trim()]
+      .filter(Boolean)
+      .join(", "),
+    city: shipping.city.trim(),
+    state: (shipping.state ?? "").trim() || undefined,
+    postalCode: shipping.postalCode.trim(),
+    country: shipping.country.trim().toUpperCase(),
+  }
 }
 
 // ─── Validation ───────────────────────────────────────────────────────────────
@@ -89,7 +137,7 @@ export function validateShippingFields(
   }
 
   const lastName = shipping.lastName.trim()
-  if (lastName.length === 0) {
+  if (lastName.length === 0 && !hasPreservedShippingRecipientName(shipping)) {
     errors.push({ field: "lastName", message: "Last name is required" })
   } else if (lastName.length > 50) {
     errors.push({
@@ -99,7 +147,7 @@ export function validateShippingFields(
   }
 
   const addressResult = validateAddressConsistency({
-    name: `${firstName} ${lastName}`.trim(),
+    name: getShippingRecipientName(shipping),
     street: shipping.street,
     city: shipping.city,
     state: shipping.state,
@@ -129,7 +177,7 @@ function validateContactFields(
   const errors: ShippingValidationError[] = []
   const country = shipping.country.trim().toUpperCase()
   const addressResult = validateAddressConsistency({
-    name: `${shipping.firstName.trim()} ${shipping.lastName.trim()}`.trim(),
+    name: getShippingRecipientName(shipping),
     street: shipping.street,
     city: shipping.city,
     state: shipping.state,
@@ -269,8 +317,9 @@ export function getShippingStepBlockingMessage(params: {
 export function isFastCheckoutEligible(params: {
   walletPayCapable: boolean
   merchantLud16: string | undefined | null
+  merchantProfileUnavailable?: boolean
   lnurlAllowsNostr: boolean
-  allowsManualFallback?: boolean
+  lnurlAmountWithinRange?: boolean
   requiresNostrZap?: boolean
   pricingReady?: boolean
   shippingEligible?: boolean
@@ -280,6 +329,44 @@ export function isFastCheckoutEligible(params: {
   addressValidForDirectPayment?: boolean
 }): boolean {
   return getFastCheckoutUnavailableReasons(params).length === 0
+}
+
+export type FastCheckoutPendingInput = {
+  authPending: boolean
+  walletConnecting: boolean
+  merchantProfileLoading: boolean
+  lnurlProbing: boolean
+  /**
+   * True while checkout still has to downgrade a public zap mode to a private
+   * invoice because the merchant endpoint does not advertise Nostr zaps. The
+   * downgrade lands one render later, so eligibility is not yet decided.
+   */
+  privateZapFallbackPending: boolean
+  shippingLookupPending: boolean
+  shippingState: ShippingCheckoutState
+  availabilityChecking: boolean
+  pricingRefreshing: boolean
+}
+
+/**
+ * True while any fast-checkout eligibility input is still being resolved.
+ * An armed zap out must wait for this to clear before it is declined, otherwise
+ * a transient gap becomes a terminal decline.
+ */
+export function isFastCheckoutInputPending(
+  params: FastCheckoutPendingInput
+): boolean {
+  return (
+    params.authPending ||
+    params.walletConnecting ||
+    params.merchantProfileLoading ||
+    params.lnurlProbing ||
+    params.privateZapFallbackPending ||
+    params.shippingLookupPending ||
+    params.shippingState === "loading" ||
+    params.availabilityChecking ||
+    params.pricingRefreshing
+  )
 }
 
 export type ShippingCheckoutState =
@@ -321,8 +408,9 @@ export function getShippingCheckoutState(params: {
 export function getFastCheckoutUnavailableReasons(params: {
   walletPayCapable: boolean
   merchantLud16: string | undefined | null
+  merchantProfileUnavailable?: boolean
   lnurlAllowsNostr: boolean
-  allowsManualFallback?: boolean
+  lnurlAmountWithinRange?: boolean
   requiresNostrZap?: boolean
   pricingReady?: boolean
   shippingEligible?: boolean
@@ -332,16 +420,17 @@ export function getFastCheckoutUnavailableReasons(params: {
   addressValidForDirectPayment?: boolean
 }): string[] {
   const reasons: string[] = []
-  const canStartLightningFlow =
-    params.walletPayCapable || params.allowsManualFallback === true
-
-  if (!canStartLightningFlow) {
+  if (!params.walletPayCapable) {
     reasons.push(
       "Connect a Lightning wallet or enable browser Lightning payments."
     )
   }
   if (!params.merchantLud16) {
-    reasons.push("Merchant has not added a Lightning Address.")
+    reasons.push(
+      params.merchantProfileUnavailable
+        ? "Merchant profile could not be loaded from relays."
+        : "Merchant has not added a Lightning Address."
+    )
   }
   if (params.merchantLud16 && !params.lnurlAllowsNostr) {
     if (params.requiresNostrZap ?? true) {
@@ -351,6 +440,13 @@ export function getFastCheckoutUnavailableReasons(params: {
     } else {
       reasons.push("Merchant Lightning Address could not be checked.")
     }
+  }
+  if (
+    params.merchantLud16 &&
+    params.lnurlAllowsNostr &&
+    params.lnurlAmountWithinRange === false
+  ) {
+    reasons.push("Merchant Lightning Address cannot accept this order amount.")
   }
   if (params.pricingReady === false) {
     reasons.push("Refresh price conversion before paying.")

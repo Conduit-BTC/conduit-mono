@@ -13,7 +13,10 @@ import {
   allowsGlobalProductSearch,
   getGlobalProductSearchQueryKey,
   getMerchantIdentityView,
+  getProductShippingPresetEligibility,
+  isMarketBrowseRefreshStale,
   mergeProductSearchResults,
+  refreshMarketBrowseData,
   sortBrowseProducts,
   sortStoreFacetOptionsByRecentPublisher,
 } from "../apps/market/src/lib/marketBrowseModel"
@@ -48,6 +51,115 @@ const products = [
 ]
 
 describe("market browse model helpers", () => {
+  const freshMeta = {
+    stale: false,
+    degraded: false,
+    capped: false,
+  }
+
+  it("refreshes dependent browse sources after discovery settles", async () => {
+    const refreshes: string[] = []
+    await refreshMarketBrowseData({
+      globalSearchEnabled: false,
+      refreshCatalog: () => refreshes.push("catalog"),
+      refreshGlobalSearch: () => refreshes.push("global-search"),
+    })
+    expect(refreshes).toEqual(["catalog"])
+
+    let settleDiscovery: ((changed: boolean) => void) | undefined
+    const refresh = refreshMarketBrowseData({
+      globalSearchEnabled: true,
+      refreshDiscovery: () => {
+        refreshes.push("discovery")
+        return new Promise<boolean>((resolve) => {
+          settleDiscovery = resolve
+        })
+      },
+      refreshCatalog: () => refreshes.push("catalog"),
+      refreshGlobalSearch: () => refreshes.push("global-search"),
+    })
+    expect(refreshes).toEqual(["catalog", "discovery", "global-search"])
+    settleDiscovery?.(false)
+    await refresh
+    expect(refreshes).toEqual([
+      "catalog",
+      "discovery",
+      "global-search",
+      "catalog",
+    ])
+
+    await refreshMarketBrowseData({
+      globalSearchEnabled: false,
+      refreshDiscovery: async () => true,
+      refreshCatalog: () => refreshes.push("obsolete-catalog"),
+      refreshGlobalSearch: () => refreshes.push("global-search"),
+    })
+    expect(refreshes).not.toContain("obsolete-catalog")
+  })
+
+  it("treats stale or incomplete active browse sources as not updated", () => {
+    expect(
+      isMarketBrowseRefreshStale({
+        catalogMeta: { ...freshMeta, degraded: true },
+        catalogError: null,
+        catalogPaused: false,
+        discoveryStale: false,
+        globalSearchEnabled: false,
+        globalSearchMeta: null,
+        globalSearchError: null,
+        globalSearchPaused: false,
+      })
+    ).toBe(true)
+    expect(
+      isMarketBrowseRefreshStale({
+        catalogMeta: freshMeta,
+        catalogError: null,
+        catalogPaused: false,
+        discoveryStale: false,
+        globalSearchEnabled: true,
+        globalSearchMeta: { ...freshMeta, stale: true },
+        globalSearchError: null,
+        globalSearchPaused: false,
+      })
+    ).toBe(true)
+    expect(
+      isMarketBrowseRefreshStale({
+        catalogMeta: freshMeta,
+        catalogError: null,
+        catalogPaused: false,
+        discoveryStale: false,
+        globalSearchEnabled: false,
+        globalSearchMeta: { ...freshMeta, stale: true },
+        globalSearchError: null,
+        globalSearchPaused: true,
+      })
+    ).toBe(false)
+    expect(
+      isMarketBrowseRefreshStale({
+        catalogMeta: freshMeta,
+        catalogError: null,
+        catalogPaused: true,
+        discoveryStale: false,
+        globalSearchEnabled: false,
+        globalSearchMeta: null,
+        globalSearchError: null,
+        globalSearchPaused: false,
+      })
+    ).toBe(true)
+    expect(
+      isMarketBrowseRefreshStale({
+        catalogMeta: freshMeta,
+        catalogError: null,
+        catalogPaused: false,
+        discoveryStale: false,
+        globalSearchEnabled: true,
+        globalSearchMeta: freshMeta,
+        globalSearchError: null,
+        globalSearchPaused: true,
+      })
+    ).toBe(true)
+  })
+
   it("keeps global search out of explicit connected catalog scopes", () => {
     expect(
       allowsGlobalProductSearch({
@@ -218,5 +330,52 @@ describe("market browse model helpers", () => {
     expect(resolved.displayName).toBe("Alice Market")
     expect(resolved.status).toBe("resolved")
     expect(resolved.relayHints).toEqual([])
+  })
+
+  it("prioritizes preset-eligible products without hiding unknown coverage", () => {
+    const eligible = {
+      ...product("eligible", "merchant-a", [], 100),
+      shippingCountries: ["US"],
+      shippingCountryRules: [
+        { code: "US", name: "US", restrictTo: [], exclude: [] },
+      ],
+    }
+    const unknown = {
+      ...product("unknown", "merchant-b", [], 300),
+      shippingCountries: [],
+      shippingCountryRules: [],
+    }
+    const ineligible = {
+      ...product("ineligible", "merchant-c", [], 500),
+      shippingCountries: ["CA"],
+      shippingCountryRules: [
+        { code: "CA", name: "CA", restrictTo: [], exclude: [] },
+      ],
+    }
+
+    expect(
+      getProductShippingPresetEligibility(unknown, {
+        country: "US",
+        postalCode: "94559",
+      })
+    ).toBe("unknown")
+    expect(
+      sortBrowseProducts(
+        [ineligible, unknown, eligible],
+        "newest",
+        null,
+        {},
+        { country: "US", postalCode: "94559" }
+      ).map((item) => item.id)
+    ).toEqual(["eligible", "unknown", "ineligible"])
+    expect(
+      sortBrowseProducts(
+        [ineligible, unknown, eligible],
+        "price_asc",
+        null,
+        {},
+        { country: "US", postalCode: "94559" }
+      ).map((item) => item.id)
+    ).toEqual(["ineligible", "unknown", "eligible"])
   })
 })

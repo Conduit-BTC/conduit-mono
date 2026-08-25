@@ -16,6 +16,7 @@ import { Route as CheckoutRouteImport } from './routes/checkout'
 import { Route as MessagesRouteImport } from './routes/messages'
 import { Route as NetworkRouteImport } from './routes/network'
 import { Route as OrdersRouteImport } from './routes/orders'
+import { Route as PreferencesRouteImport } from './routes/preferences'
 import { Route as PrivacyPolicyRouteImport } from './routes/privacy-policy'
 import { Route as ProfileRouteImport } from './routes/profile'
 import { Route as TermsOfServiceRouteImport } from './routes/terms-of-service'
@@ -59,6 +60,11 @@ const NetworkRoute = NetworkRouteImport.update({
 const OrdersRoute = OrdersRouteImport.update({
   id: '/orders',
   path: '/orders',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PreferencesRoute = PreferencesRouteImport.update({
+  id: '/preferences',
+  path: '/preferences',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PrivacyPolicyRoute = PrivacyPolicyRouteImport.update({
@@ -115,6 +121,7 @@ export interface FileRoutesByFullPath {
   '/messages': typeof MessagesRoute
   '/network': typeof NetworkRoute
   '/orders': typeof OrdersRoute
+  '/preferences': typeof PreferencesRoute
   '/privacy-policy': typeof PrivacyPolicyRoute
   '/profile': typeof ProfileRoute
   '/terms-of-service': typeof TermsOfServiceRoute
@@ -133,6 +140,7 @@ export interface FileRoutesByTo {
   '/messages': typeof MessagesRoute
   '/network': typeof NetworkRoute
   '/orders': typeof OrdersRoute
+  '/preferences': typeof PreferencesRoute
   '/privacy-policy': typeof PrivacyPolicyRoute
   '/profile': typeof ProfileRoute
   '/terms-of-service': typeof TermsOfServiceRoute
@@ -152,6 +160,7 @@ export interface FileRoutesById {
   '/messages': typeof MessagesRoute
   '/network': typeof NetworkRoute
   '/orders': typeof OrdersRoute
+  '/preferences': typeof PreferencesRoute
   '/privacy-policy': typeof PrivacyPolicyRoute
   '/profile': typeof ProfileRoute
   '/terms-of-service': typeof TermsOfServiceRoute
@@ -172,6 +181,7 @@ export interface FileRouteTypes {
     | '/messages'
     | '/network'
     | '/orders'
+    | '/preferences'
     | '/privacy-policy'
     | '/profile'
     | '/terms-of-service'
@@ -190,6 +200,7 @@ export interface FileRouteTypes {
     | '/messages'
     | '/network'
     | '/orders'
+    | '/preferences'
     | '/privacy-policy'
     | '/profile'
     | '/terms-of-service'
@@ -208,6 +219,7 @@ export interface FileRouteTypes {
     | '/messages'
     | '/network'
     | '/orders'
+    | '/preferences'
     | '/privacy-policy'
     | '/profile'
     | '/terms-of-service'
@@ -227,6 +239,7 @@ export interface RootRouteChildren {
   MessagesRoute: typeof MessagesRoute
   NetworkRoute: typeof NetworkRoute
   OrdersRoute: typeof OrdersRoute
+  PreferencesRoute: typeof PreferencesRoute
   PrivacyPolicyRoute: typeof PrivacyPolicyRoute
   ProfileRoute: typeof ProfileRoute
   TermsOfServiceRoute: typeof TermsOfServiceRoute
@@ -287,6 +300,13 @@ declare module '@tanstack/react-router' {
       path: '/orders'
       fullPath: '/orders'
       preLoaderRoute: typeof OrdersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/preferences': {
+      id: '/preferences'
+      path: '/preferences'
+      fullPath: '/preferences'
+      preLoaderRoute: typeof PreferencesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/privacy-policy': {
@@ -363,6 +383,7 @@ const rootRouteChildren: RootRouteChildren = {
   MessagesRoute: MessagesRoute,
   NetworkRoute: NetworkRoute,
   OrdersRoute: OrdersRoute,
+  PreferencesRoute: PreferencesRoute,
   PrivacyPolicyRoute: PrivacyPolicyRoute,
   ProfileRoute: ProfileRoute,
   TermsOfServiceRoute: TermsOfServiceRoute,

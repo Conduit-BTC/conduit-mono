@@ -26,6 +26,7 @@ import {
   nwcMakeInvoice,
   publishMerchantOrderMessage,
   pubkeyToNpub,
+  prepareProtectedReadRefreshState,
   selectProtectedReadRows,
   weblnMakeInvoice,
   type MerchantConversationSummary,
@@ -55,6 +56,7 @@ import {
   MessagingReadinessNotice,
   toMessagingReadinessNoticeState,
   OrderMessagesWidget,
+  RefreshChip,
   Select,
   SelectContent,
   SelectItem,
@@ -110,19 +112,14 @@ import {
 } from "../lib/product-publishing"
 import {
   buildOrderStockAdjustments,
+  getOrderStockAdjustmentForDisplay,
+  isOrderStockAdjustmentMutationDisabled,
   PendingProductStockDeliveryStore,
   ProductStockDecisionStore,
+  shouldShowOrderStockAdjustment,
   type OrderStockAdjustment,
 } from "../lib/productStock"
-import {
-  Check,
-  CheckCircle2,
-  ChevronRight,
-  Copy,
-  MessageCircle,
-  RotateCw,
-  Search,
-} from "lucide-react"
+import { Check, ChevronRight, Copy, MessageCircle, Search } from "lucide-react"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { useMerchantPaymentAutomation } from "../hooks/useMerchantPaymentAutomation"
 import { OrderStockPanel } from "../components/OrderStockPanel"
@@ -358,6 +355,10 @@ function OrdersPage() {
   const [sessionStockDecisionKeys, setSessionStockDecisionKeys] = useState(
     () => new Set<string>()
   )
+  const [
+    stockDecisionHydratedSelectionId,
+    setStockDecisionHydratedSelectionId,
+  ] = useState<string | null>(null)
   const [stockDelivery, setStockDelivery] = useState<StockDeliveryState | null>(
     null
   )
@@ -371,13 +372,7 @@ function OrdersPage() {
     new PendingProductStockDeliveryStore()
   )
   const [weblnAvailable, setWeblnAvailable] = useState(false)
-  const [refreshButtonState, setRefreshButtonState] = useState<
-    "idle" | "refreshing" | "done"
-  >("idle")
   const selectedOrderResetRef = useRef<string | null>(null)
-  const refreshResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null
-  )
   const signerConnected = status === "connected" && !!pubkey
   const invoiceAmountNumber = useMemo(() => {
     const amount = Number(invoiceAmount)
@@ -441,43 +436,11 @@ function OrdersPage() {
       getCachedMerchantConversationList({ principalPubkey: pubkey! }),
     staleTime: 5_000,
   })
-  const isOrdersFetching = ordersQuery.isFetching
-  const isOrdersInitialHydration = ordersQuery.isLoading
+  const isOrdersInitialHydration = signerConnected && ordersQuery.isPending
   const refetchOrders = ordersQuery.refetch
-
-  useEffect(() => {
-    if (isOrdersFetching) {
-      if (refreshResetTimerRef.current) {
-        clearTimeout(refreshResetTimerRef.current)
-        refreshResetTimerRef.current = null
-      }
-      setRefreshButtonState("refreshing")
-      return
-    }
-
-    if (refreshButtonState === "refreshing") {
-      setRefreshButtonState("done")
-      refreshResetTimerRef.current = setTimeout(() => {
-        setRefreshButtonState("idle")
-        refreshResetTimerRef.current = null
-      }, 900)
-    }
-  }, [isOrdersFetching, refreshButtonState])
-
-  useEffect(() => {
-    return () => {
-      if (refreshResetTimerRef.current)
-        clearTimeout(refreshResetTimerRef.current)
-    }
-  }, [])
 
   const handleRefresh = useCallback(() => {
     if (!signerConnected || !pubkey) return
-    if (refreshResetTimerRef.current) {
-      clearTimeout(refreshResetTimerRef.current)
-      refreshResetTimerRef.current = null
-    }
-    setRefreshButtonState("refreshing")
     clearProtectedReadAuthenticationSuppression(pubkey)
     void refetchOrders()
   }, [pubkey, refetchOrders, signerConnected])
@@ -493,9 +456,14 @@ function OrdersPage() {
   const ordersMeta = ordersQuery.data?.meta
   const protectedOrdersReadState = deriveProtectedReadPresentationState({
     visibleCount: conversations.length,
-    pending: ordersQuery.isLoading,
+    pending: signerConnected && ordersQuery.isPending,
     error: ordersQuery.error,
     meta: ordersMeta,
+  })
+  const ordersRefreshState = prepareProtectedReadRefreshState({
+    protectedReadState: protectedOrdersReadState,
+    protectedReadRefreshing: ordersQuery.isFetching,
+    protectedReadPaused: ordersQuery.isPaused,
   })
   const protectedOrderCountsUnavailable =
     conversations.length === 0 && protectedOrdersReadState !== "complete"
@@ -692,6 +660,9 @@ function OrdersPage() {
     filteredConversations.find(
       (conversation) => conversation.id === selectedConversationId
     ) ?? null
+  const selectedStockDecisionId = selected
+    ? `${pubkey ?? "none"}:${selected.id}`
+    : null
   const selectedOrderMessage = selected?.messages?.find(
     (message) => message.type === "order"
   )
@@ -704,7 +675,7 @@ function OrdersPage() {
     normalizeInvoiceCurrencyChoice(selectedOrderCurrency) === ""
 
   useEffect(() => {
-    const selectedId = selected ? `${pubkey ?? "none"}:${selected.id}` : null
+    const selectedId = selectedStockDecisionId
     if (selectedOrderResetRef.current === selectedId) return
     selectedOrderResetRef.current = selectedId
 
@@ -736,6 +707,7 @@ function OrdersPage() {
         return next
       })
     }
+    setStockDecisionHydratedSelectionId(selectedId)
     setOrderDetailsOpen(false)
     setMessagesOpen(false)
     setInvoice("")
@@ -755,29 +727,12 @@ function OrdersPage() {
     setInvoiceCurrency(
       normalizeInvoiceCurrencyChoice(firstOrder.payload.currency)
     )
-  }, [pubkey, selected])
+  }, [pubkey, selected, selectedStockDecisionId])
 
   const orderSummary = useMemo(
     () => (selected ? getMerchantOrderSummary(selected) : null),
     [selected]
   )
-  const stockAdjustments =
-    !selected || !orderSummary || !pubkey
-      ? []
-      : buildOrderStockAdjustments({
-          orderId: selected.orderId,
-          merchantPubkey: pubkey,
-          items: orderSummary.items,
-          productRecords: orderProductsQuery.data?.data ?? [],
-        }).filter(
-          (adjustment) =>
-            !sessionStockDecisionKeys.has(`${pubkey}:${adjustment.key}`) &&
-            !stockDecisionStoreRef.current.get(
-              pubkey,
-              selected.orderId,
-              adjustment.addressId
-            )
-        )
   const selectedStatusDisplay = useMemo(
     () =>
       selected ? getMerchantConversationStatusDisplay(selected) : undefined,
@@ -814,6 +769,86 @@ function OrdersPage() {
         ),
       }
     : { status: null }
+  const stockAdjustments =
+    !selected ||
+    !orderSummary ||
+    !pubkey ||
+    stockDecisionHydratedSelectionId !== selectedStockDecisionId
+      ? []
+      : buildOrderStockAdjustments({
+          orderId: selected.orderId,
+          merchantPubkey: pubkey,
+          items: orderSummary.items,
+          productRecords: orderProductsQuery.data?.data ?? [],
+        }).flatMap((adjustment) => {
+          const pendingAdjustment =
+            stockDelivery?.notice.state !== "delivered" &&
+            stockDelivery?.orderId === selected.orderId &&
+            stockDelivery.adjustment.key === adjustment.key
+              ? stockDelivery.adjustment
+              : null
+          const storedDecision = stockDecisionStoreRef.current.get(
+            pubkey,
+            selected.orderId,
+            adjustment.addressId
+          )
+          const persistedDecision = pendingAdjustment
+            ? {
+                kind: "applied" as const,
+                decidedAt: 0,
+                adjustment: pendingAdjustment,
+              }
+            : storedDecision
+          const adjustmentForDecision = pendingAdjustment ?? adjustment
+          if (
+            !shouldShowOrderStockAdjustment({
+              adjustment: adjustmentForDecision,
+              orderStatus: merchantOrderState.status,
+              hasSessionDecision: sessionStockDecisionKeys.has(
+                `${pubkey}:${adjustment.key}`
+              ),
+              persistedDecision,
+            })
+          ) {
+            return []
+          }
+          return [
+            getOrderStockAdjustmentForDisplay({
+              adjustment: adjustmentForDecision,
+              persistedDecision,
+            }),
+          ]
+        })
+  const stockMutationDisabledKeys = new Set<string>()
+  for (const adjustment of stockAdjustments) {
+    const hasPendingDelivery = Boolean(
+      stockDelivery &&
+      stockDelivery.notice.state !== "delivered" &&
+      selected &&
+      stockDelivery.orderId === selected.orderId &&
+      stockDelivery.adjustment.key === adjustment.key
+    )
+    const persistedDecision =
+      pubkey && selected
+        ? stockDecisionStoreRef.current.get(
+            pubkey,
+            selected.orderId,
+            adjustment.addressId
+          )
+        : null
+    if (
+      isOrderStockAdjustmentMutationDisabled({
+        adjustment,
+        persistedDecision,
+        hasPendingDelivery,
+        hasSessionDecision: sessionStockDecisionKeys.has(
+          `${pubkey}:${adjustment.key}`
+        ),
+      })
+    ) {
+      stockMutationDisabledKeys.add(adjustment.key)
+    }
+  }
   const merchantPaid = isMerchantOrderPaid(merchantOrderState)
   const safeTrackingUrl = normalizeSafeHttpUrl(orderSummary?.trackingUrl)
   const assertPaidForFulfillment = useCallback(() => {
@@ -1093,13 +1128,19 @@ function OrdersPage() {
           merchantPubkey,
           payload.orderId,
           payload.adjustment.addressId,
-          "applied"
+          "applied",
+          payload.adjustment
         )
         pendingStockDeliveryStoreRef.current.delete(
           merchantPubkey,
           payload.orderId,
           payload.adjustment.addressId
         )
+        setSessionStockDecisionKeys((current) => {
+          const next = new Set(current)
+          next.delete(`${merchantPubkey}:${payload.adjustment.key}`)
+          return next
+        })
         const nextPendingDelivery =
           pendingStockDeliveryStoreRef.current.getForOrder(
             merchantPubkey,
@@ -1423,11 +1464,12 @@ function OrdersPage() {
       pubkey,
       selected.orderId,
       adjustment.addressId,
-      "declined"
+      "declined",
+      adjustment
     )
     setSessionStockDecisionKeys((current) => {
       const next = new Set(current)
-      next.add(`${pubkey}:${adjustment.key}`)
+      next.delete(`${pubkey}:${adjustment.key}`)
       return next
     })
     stockUpdateMutation.reset()
@@ -1468,61 +1510,12 @@ function OrdersPage() {
             share shipping details.
           </p>
           <div className="mt-3">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={!signerConnected || isOrdersFetching}
-              onClick={handleRefresh}
-            >
-              <span className="inline-flex items-center gap-1">
-                <span
-                  className={`inline-flex h-4 w-4 items-center justify-center transition-colors duration-200 ${
-                    refreshButtonState === "refreshing"
-                      ? "animate-pulse text-[var(--secondary-500)]"
-                      : refreshButtonState === "done"
-                        ? "text-[var(--success)]"
-                        : "text-[var(--text-secondary)]"
-                  }`}
-                >
-                  {refreshButtonState === "done" ? (
-                    <CheckCircle2 className="h-3.5 w-3.5" />
-                  ) : (
-                    <RotateCw
-                      className={`h-3.5 w-3.5 ${refreshButtonState === "refreshing" ? "animate-spin" : ""}`}
-                    />
-                  )}
-                </span>
-                <span className="relative inline-flex h-4 min-w-[7rem] items-center justify-center">
-                  <span
-                    className={`absolute transition-opacity duration-200 ${
-                      refreshButtonState === "idle"
-                        ? "opacity-100 text-[var(--text-primary)]"
-                        : "opacity-0"
-                    }`}
-                  >
-                    Refresh
-                  </span>
-                  <span
-                    className={`absolute transition-opacity duration-200 ${
-                      refreshButtonState === "refreshing"
-                        ? "animate-pulse opacity-100 text-[var(--secondary-500)]"
-                        : "opacity-0"
-                    }`}
-                  >
-                    Refreshing...
-                  </span>
-                  <span
-                    className={`absolute transition-opacity duration-200 ${
-                      refreshButtonState === "done"
-                        ? "opacity-100 text-[var(--success)]"
-                        : "opacity-0"
-                    }`}
-                  >
-                    Updated
-                  </span>
-                </span>
-              </span>
-            </Button>
+            <RefreshChip
+              refreshing={ordersRefreshState.refreshing}
+              stale={ordersRefreshState.stale}
+              onRefresh={handleRefresh}
+              disabled={!signerConnected}
+            />
           </div>
         </div>
       </div>
@@ -1740,13 +1733,18 @@ function OrdersPage() {
 
                           <OrderStockPanel
                             adjustments={stockAdjustments}
+                            stockMutationDisabledKeys={
+                              stockMutationDisabledKeys
+                            }
                             delivery={selectedStockDelivery}
                             deliveryNeedsAttention={stockDeliveryCanRetry}
                             pending={orderActionPending}
                             updatePending={stockUpdateMutation.isPending}
                             errorMessage={stockUpdateErrorMessage}
+                            canMessageBuyer={buyerInboxKnown}
                             onUpdate={updateStock}
                             onDecline={keepCurrentStock}
+                            onMessageBuyer={() => setMessagesOpen(true)}
                             onRetry={retryStockDelivery}
                             onDismissDelivery={dismissStockDelivery}
                           />

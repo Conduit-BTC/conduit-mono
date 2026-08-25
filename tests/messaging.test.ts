@@ -10,6 +10,7 @@ import {
   buildDirectMessageRumor,
   classifyPrivateMessageKind,
   createInMemoryInboxDeclarationEvidenceRepository,
+  createValidatedGuestOrderCompanion,
   createValidatedOrderRouteScope,
   decryptLegacyDirectMessage,
   detectNip44Capabilities,
@@ -120,6 +121,49 @@ function validatedOrderInput(order = orderRumor()) {
       orderId: "order-id",
       senderPubkey: "sender",
       recipientPubkey: "recipient",
+    }),
+  }
+}
+
+function guestOrderCompanionFixture() {
+  const authoritativeOrder = new NDKEvent()
+  authoritativeOrder.id = "guest-order-rumor"
+  authoritativeOrder.kind = EVENT_KINDS.ORDER
+  authoritativeOrder.pubkey = "guest"
+  authoritativeOrder.created_at = 1000
+  authoritativeOrder.tags = [
+    ["p", "merchant"],
+    ["type", "order"],
+    ["order", "guest-order-id"],
+  ]
+  authoritativeOrder.content = JSON.stringify({
+    id: "guest-order-id",
+    merchantPubkey: "merchant",
+    buyerPubkey: "guest",
+    buyerIdentityKind: "guest_ephemeral",
+    items: [
+      {
+        productId: "product-id",
+        quantity: 1,
+        priceAtPurchase: 1,
+        currency: "SATS",
+      },
+    ],
+    subtotal: 1,
+    currency: "SATS",
+    guestContact: {
+      email: "guest@example.com",
+      phone: "+1-555-0100",
+    },
+    createdAt: 1_000_000,
+  })
+
+  return {
+    authoritativeOrder,
+    ...createValidatedGuestOrderCompanion({
+      authoritativeOrder,
+      senderPubkey: "guest",
+      recipientPubkey: "merchant",
     }),
   }
 }
@@ -627,6 +671,126 @@ describe("publishPrivateMessage", () => {
     }
   })
 
+  it("delivers one scoped guest order companion without inspecting a guest inbox", async () => {
+    const { companion, scope } = guestOrderCompanionFixture()
+    const wrappedRecipients: string[] = []
+    const publishRelays: Array<readonly string[]> = []
+    let senderReadinessChecks = 0
+
+    const result = await publishPrivateMessage({
+      rumor: companion,
+      senderPubkey: "guest",
+      recipientPubkey: "merchant",
+      signer: {
+        user: async () => ({ pubkey: "guest" }),
+      } as unknown as NDKSigner,
+      rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+      selfCopy: false,
+      recipientInboxRelays: ["wss://merchant.inbox.conduit.market"],
+      validatedGuestOrderCompanionScope: scope,
+      inspectOwnInboxReadiness: async () => {
+        senderReadinessChecks += 1
+        return { state: "lookup_unavailable" }
+      },
+      giftWrapFn: (async (_rumor, recipient) => {
+        wrappedRecipients.push(recipient.pubkey)
+        return wrap(`wrap-${recipient.pubkey}`)
+      }) as never,
+      publishFn: (async (_event, options) => {
+        const relays = options.exclusiveRelayUrls ?? []
+        publishRelays.push(relays)
+        return {
+          successfulRelayUrls: [relays[0]],
+          failedRelayUrls: [],
+        } as never
+      }) as never,
+    })
+
+    expect(senderReadinessChecks).toBe(0)
+    expect(wrappedRecipients).toEqual(["merchant"])
+    expect(publishRelays).toEqual([["wss://merchant.inbox.conduit.market"]])
+    expect(result.wrappedToSelf).toBeNull()
+    expect(result.deliveryRoute).toBe("declared_inbox")
+    expect(result.recipientDelivery.successfulRelayUrls).toEqual([
+      "wss://merchant.inbox.conduit.market",
+    ])
+  })
+
+  it("keeps the guest companion capability one-use and recipient-inbox strict", async () => {
+    const first = guestOrderCompanionFixture()
+    const input = {
+      rumor: first.companion,
+      senderPubkey: "guest",
+      recipientPubkey: "merchant",
+      signer: {
+        user: async () => ({ pubkey: "guest" }),
+      } as unknown as NDKSigner,
+      rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+      selfCopy: false,
+      recipientInboxRelays: ["wss://merchant.inbox.conduit.market"],
+      validatedGuestOrderCompanionScope: first.scope,
+      inspectOwnInboxReadiness: async () =>
+        ({ state: "lookup_unavailable" }) as const,
+      giftWrapFn: (async () => wrap("wrap-merchant")) as never,
+      publishFn: (async () =>
+        ({
+          successfulRelayUrls: ["wss://merchant.inbox.conduit.market"],
+        }) as never) as never,
+    }
+
+    await expect(publishPrivateMessage(input)).resolves.toMatchObject({
+      deliveryRoute: "declared_inbox",
+    })
+    await expect(publishPrivateMessage(input)).rejects.toMatchObject({
+      reason: "sender_not_ready",
+    })
+
+    const second = guestOrderCompanionFixture()
+    await expect(
+      publishPrivateMessage({
+        ...input,
+        rumor: second.companion,
+        recipientInboxRelays: [],
+        validatedGuestOrderCompanionScope: second.scope,
+      })
+    ).rejects.toMatchObject({ reason: "recipient_not_ready" })
+  })
+
+  it("does not authorize mutated guest companion content or tags", async () => {
+    for (const mutate of [
+      (companion: NDKEvent) => {
+        companion.content = JSON.stringify({
+          contact: "guest@example.com",
+          payment: "lnbc-sensitive",
+        })
+      },
+      (companion: NDKEvent) => {
+        companion.tags.push(["order", "conflicting-order"])
+      },
+    ]) {
+      const fixture = guestOrderCompanionFixture()
+      mutate(fixture.companion)
+      fixture.companion.id = fixture.companion.getEventHash()
+
+      await expect(
+        publishPrivateMessage({
+          rumor: fixture.companion,
+          senderPubkey: "guest",
+          recipientPubkey: "merchant",
+          signer: {
+            user: async () => ({ pubkey: "guest" }),
+          } as unknown as NDKSigner,
+          rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+          selfCopy: false,
+          recipientInboxRelays: ["wss://merchant.inbox.conduit.market"],
+          validatedGuestOrderCompanionScope: fixture.scope,
+          inspectOwnInboxReadiness: async () =>
+            ({ state: "lookup_unavailable" }) as const,
+        })
+      ).rejects.toMatchObject({ reason: "sender_not_ready" })
+    }
+  })
+
   it("routes recipient and self-copy publishes through their kind-10050 relays", async () => {
     const resolved: string[] = []
     const wrappedRecipients: string[] = []
@@ -806,6 +970,76 @@ describe("publishPrivateMessage", () => {
       },
     ])
     expect(result.deliveryRoute).toBe("compatibility_order")
+  })
+
+  it("records a guest order update to the merchant without treating the guest as an inbox", async () => {
+    const guestOrderUpdate = orderRumor({
+      pubkey: "merchant",
+      tags: [
+        ["p", "guest"],
+        ["type", "status_update"],
+        ["order", "guest-order-id"],
+        ["status", "paid"],
+      ],
+      content: JSON.stringify({
+        orderId: "guest-order-id",
+        merchantPubkey: "merchant",
+        buyerPubkey: "guest",
+        status: "paid",
+      }),
+    })
+
+    const result = await publishPrivateMessage({
+      rumor: guestOrderUpdate,
+      senderPubkey: "merchant",
+      recipientPubkey: "merchant",
+      signer: {
+        user: async () => ({ pubkey: "merchant" }),
+      } as unknown as NDKSigner,
+      rumorKind: EVENT_KINDS.ORDER,
+      selfCopy: false,
+      recipientInboxRelays: [],
+      validatedOrderScope: createValidatedOrderRouteScope({
+        rumor: guestOrderUpdate,
+        orderId: "guest-order-id",
+        senderPubkey: "merchant",
+        recipientPubkey: "merchant",
+        rumorRecipientPubkey: "guest",
+      }),
+      compatibilityOrderRoute: {
+        enabled: true,
+        relayUrls: ["wss://compatibility.conduit.market"],
+      },
+      giftWrapFn: (async (_rumor, recipient) =>
+        wrap(`wrap-${recipient.pubkey}`)) as never,
+      publishFn: (async () => ({})) as never,
+    })
+
+    expect(result.wrappedToRecipient.id).toBe("wrap-merchant")
+    expect(result.deliveryRoute).toBe("compatibility_order")
+  })
+
+  it("does not authorize a mismatched order rumor for third-party delivery", () => {
+    const mismatchedOrder = orderRumor({
+      pubkey: "merchant",
+      tags: [
+        ["p", "guest"],
+        ["type", "status_update"],
+        ["order", "guest-order-id"],
+        ["status", "paid"],
+      ],
+      content: JSON.stringify({ status: "paid" }),
+    })
+
+    expect(() =>
+      createValidatedOrderRouteScope({
+        rumor: mismatchedOrder,
+        orderId: "guest-order-id",
+        senderPubkey: "merchant",
+        recipientPubkey: "third-party",
+        rumorRecipientPubkey: "guest",
+      })
+    ).toThrow("Cannot authorize compatibility routing for this rumor.")
   })
 
   it("accepts one compatibility ACK, surfaces partial delivery, and keeps NIP-65 bounded", async () => {

@@ -3,7 +3,7 @@ import { cacheParsedOrderMessage } from "./commerce"
 import { EVENT_KINDS } from "./kinds"
 import { getNdk } from "./ndk"
 import { appendConduitClientTag } from "./nip89"
-import { parseOrderMessageRumorEvent } from "./orders"
+import { parseOrderMessageRumorEvent, type ParsedOrderMessage } from "./orders"
 import {
   createValidatedOrderRouteScope,
   publishPrivateMessage,
@@ -55,6 +55,21 @@ export function buildMerchantOrderRumorTags(
   )
 }
 
+export async function cachePublishedMerchantOrderMessage(
+  message: ParsedOrderMessage,
+  cacheMessage: (
+    message: ParsedOrderMessage
+  ) => Promise<void> = cacheParsedOrderMessage
+): Promise<boolean> {
+  try {
+    await cacheMessage(message)
+    return true
+  } catch {
+    console.warn("Published merchant order message could not be cached locally")
+    return false
+  }
+}
+
 function prepareMerchantRumor(rumor: NDKEvent, merchantPubkey: string): void {
   rumor.pubkey = merchantPubkey
   if (!rumor.id) rumor.id = rumor.getEventHash()
@@ -63,6 +78,28 @@ function prepareMerchantRumor(rumor: NDKEvent, merchantPubkey: string): void {
 export interface PublishMerchantOrderMessageResult {
   /** Lane used for the critical recipient leg (route-lane provenance). */
   deliveryRoute: Exclude<PrivateMessageDeliveryRoute, "blocked">
+}
+
+export function getMerchantOrderPublishTarget(
+  input: Pick<
+    PublishMerchantOrderMessageInput,
+    "merchantPubkey" | "buyerPubkey" | "orderId" | "delivery"
+  >,
+  rumor: NDKEvent
+) {
+  const recipientPubkey =
+    input.delivery === "self_only" ? input.merchantPubkey : input.buyerPubkey
+  return {
+    recipientPubkey,
+    selfCopy: input.delivery === "buyer_and_self",
+    validatedOrderScope: createValidatedOrderRouteScope({
+      rumor,
+      orderId: input.orderId,
+      senderPubkey: input.merchantPubkey,
+      recipientPubkey,
+      rumorRecipientPubkey: input.buyerPubkey,
+    }),
+  }
 }
 
 export async function publishMerchantOrderMessage(
@@ -84,29 +121,23 @@ export async function publishMerchantOrderMessage(
   })
   prepareMerchantRumor(rumor, input.merchantPubkey)
 
-  const recipientPubkey =
-    input.delivery === "self_only" ? input.merchantPubkey : input.buyerPubkey
+  const target = getMerchantOrderPublishTarget(input, rumor)
   const { selfCopyError, deliveryRoute } = await publishPrivateMessage({
     rumor,
     senderPubkey: input.merchantPubkey,
-    recipientPubkey,
+    recipientPubkey: target.recipientPubkey,
     signer: ndk.signer,
     rumorKind: EVENT_KINDS.ORDER,
-    selfCopy: input.delivery === "buyer_and_self",
+    selfCopy: target.selfCopy,
     // Merchant replies, invoices, and proofs belong to a validated inbound
     // order lifecycle, so they qualify for compatibility routing (CND-208).
-    validatedOrderScope: createValidatedOrderRouteScope({
-      rumor,
-      orderId: input.orderId,
-      senderPubkey: input.merchantPubkey,
-      recipientPubkey,
-    }),
+    validatedOrderScope: target.validatedOrderScope,
   })
   if (selfCopyError) {
     console.warn("Merchant order self-copy publish failed", selfCopyError)
   }
 
   const parsed = parseOrderMessageRumorEvent(rumor)
-  await cacheParsedOrderMessage(parsed)
+  await cachePublishedMerchantOrderMessage(parsed)
   return { deliveryRoute }
 }

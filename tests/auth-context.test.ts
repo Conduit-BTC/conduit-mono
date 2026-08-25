@@ -1,13 +1,19 @@
 import { afterEach, describe, expect, it, mock } from "bun:test"
+import { readFileSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
 import { finalizeEvent, getPublicKey, verifyEvent } from "nostr-tools/pure"
 import {
   connectNip07SignerForAuth,
+  beginAuthRestorePending,
   getNip07Capabilities,
+  getAuthSignerReadiness,
   hasNip07,
+  isAuthRestoreAttemptCurrent,
   isTransientNip07ConnectError,
   resolveFailedAuthAttempt,
+  settleAuthRestorePending,
+  shouldReuseConnectedAuthSession,
   type AuthConnectOptions,
   type AuthContextValue,
 } from "../packages/core/src/context/AuthContext"
@@ -375,6 +381,115 @@ describe("NIP-07 availability", () => {
   })
 })
 
+describe("restore attempt isolation", () => {
+  const source = readFileSync(
+    new URL("../packages/core/src/context/AuthContext.tsx", import.meta.url),
+    "utf8"
+  )
+
+  it("never clears the global signer when a restore attempt fails", () => {
+    expect(source).toContain(
+      'void connect({ mode: "restore" }).catch(() => undefined)'
+    )
+    const bareRemoveSignerCalls = source.match(/\n\s*removeSigner\(\)/g) ?? []
+    expect(bareRemoveSignerCalls).toHaveLength(0)
+  })
+
+  it("returns silently when a queued restore finds an already connected session", () => {
+    expect(source).toContain('if (mode === "restore") return')
+  })
+
+  it("releases the connecting flag inside the epoch-owned finally block", () => {
+    const fenceIndex = source.indexOf("if (attemptOwnsEpoch()) {")
+    expect(fenceIndex).toBeGreaterThan(-1)
+    const fencedBlock = source.slice(
+      fenceIndex,
+      source.indexOf("}", fenceIndex)
+    )
+    expect(fencedBlock).toContain("connecting.current = false")
+  })
+
+  it("keeps the initial restore owner through generic cleanup and settles only owned attempts", () => {
+    const restoreOwner: AuthContextValue["restorePendingPubkey"] = null
+    const deactivateStart = source.indexOf("const deactivateLocalSigner")
+    const deactivateEnd = source.indexOf(
+      "const handleSignerSessionInvalidated",
+      deactivateStart
+    )
+    const deactivate = source.slice(deactivateStart, deactivateEnd)
+
+    expect(restoreOwner).toBeNull()
+    expect(source).toContain("restorePendingPubkey: string | null")
+    expect(source).toContain("initialSessionRef.current?.userPubkey ?? null")
+    expect(source).toContain("const beginRestorePending")
+    expect(source).toContain("const settleRestorePending")
+    expect(deactivate).not.toContain("settleRestorePending")
+    expect(source).toContain("settleRestorePending(restoreAttempt)")
+    expect(source).toContain("restorePending.current.active")
+  })
+
+  it("settles a pending restore when a cross-tab revision or session replacement arrives", () => {
+    const storageStart = source.indexOf("function handleStorage")
+    const storage = source.slice(storageStart)
+
+    expect(storage).toContain("event.key === AUTH_REVISION_STORAGE_KEY")
+    expect(storage).toContain("event.key !== AUTH_STORAGE_KEY")
+    expect(
+      storage.match(/settleRestorePending\(\)/g)?.length
+    ).toBeGreaterThanOrEqual(2)
+  })
+
+  it("invalidates a pending restore before a queued disconnect and rejects its stale settlement", () => {
+    const pending = beginAuthRestorePending(
+      { attempt: 0, active: false, owner: null },
+      ACCOUNT_A_PUBKEY
+    )
+    const invalidated = settleAuthRestorePending(pending)
+    const newer = beginAuthRestorePending(invalidated.state, ACCOUNT_B_PUBKEY)
+    const staleSettlement = settleAuthRestorePending(newer, pending.attempt)
+
+    expect(isAuthRestoreAttemptCurrent(pending, pending.attempt)).toBe(true)
+    expect(
+      isAuthRestoreAttemptCurrent(invalidated.state, pending.attempt)
+    ).toBe(false)
+    expect(isAuthRestoreAttemptCurrent(newer, pending.attempt)).toBe(false)
+    expect(invalidated).toEqual({
+      settled: true,
+      state: { attempt: 2, active: false, owner: null },
+    })
+    expect(staleSettlement).toEqual({ state: newer, settled: false })
+  })
+
+  it("performs pending-restore invalidation before queuing disconnect cleanup", () => {
+    const invalidationStart = source.indexOf(
+      "const invalidatePendingRestoreForDisconnect"
+    )
+    const disconnectStart = source.indexOf("const disconnect = useCallback")
+    const disconnectEnd = source.indexOf(
+      "const dismissAuthUrl",
+      disconnectStart
+    )
+    const invalidation = source.slice(invalidationStart, disconnectStart)
+    const disconnect = source.slice(disconnectStart, disconnectEnd)
+
+    expect(invalidation).toContain("authEpoch.current += 1")
+    expect(invalidation).toContain("connecting.current = false")
+    expect(invalidation).toContain("settleRestorePending()")
+    expect(invalidation).toContain('setStatus("disconnected")')
+    expect(
+      disconnect.indexOf("invalidatePendingRestoreForDisconnect()")
+    ).toBeLessThan(disconnect.indexOf("withBrowserAuthOperationLock"))
+
+    const connectStart = source.indexOf("const connectWithoutLock")
+    const attemptStart = source.indexOf(
+      "connecting.current = true",
+      connectStart
+    )
+    const connectPreflight = source.slice(connectStart, attemptStart)
+    expect(connectPreflight).toContain("isAuthRestoreAttemptCurrent(")
+  })
+})
+
 describe("NIP-46 AuthContext API", () => {
   it("replaces and clears the exact protected-read session lease idempotently", () => {
     const installed: string[] = []
@@ -441,9 +556,11 @@ describe("NIP-46 AuthContext API", () => {
       nip46Flow: "nostrconnect",
     } satisfies AuthConnectOptions
     const uri: AuthContextValue["nostrConnectUri"] = null
+    const authGeneration: AuthContextValue["authGeneration"] = 0
 
     expect(options.nip46Flow).toBe("nostrconnect")
     expect(uri).toBeNull()
+    expect(authGeneration).toBe(0)
   })
 
   it("preflights the client before persistence and installs before ownership commit", async () => {
@@ -663,5 +780,82 @@ describe("NIP-46 AuthContext API", () => {
     releaseRollback?.()
 
     expect(await resolution).toEqual({ kind: "ignore" })
+  })
+})
+
+describe("authenticated signer readiness", () => {
+  const capabilities = {
+    signEvent: true,
+    nip44: true,
+    nip04: false,
+  }
+  const signer = {} as NonNullable<AuthContextValue["signer"]>
+
+  it("requires the live signer behind a connected pubkey", () => {
+    expect(
+      getAuthSignerReadiness({
+        status: "connected",
+        pubkey: "a".repeat(64),
+        signer: null,
+        capabilities,
+      })
+    ).toBe("unavailable")
+
+    expect(
+      getAuthSignerReadiness({
+        status: "connected",
+        pubkey: "a".repeat(64),
+        signer,
+        capabilities,
+      })
+    ).toBe("ready")
+  })
+
+  it("requires NIP-44 encryption for private order delivery", () => {
+    expect(
+      getAuthSignerReadiness({
+        status: "connected",
+        pubkey: "a".repeat(64),
+        signer,
+        capabilities: { ...capabilities, nip44: false },
+      })
+    ).toBe("incompatible")
+  })
+
+  it("does not silently downgrade pending auth to disconnected", () => {
+    expect(
+      getAuthSignerReadiness({
+        status: "restoring",
+        pubkey: "a".repeat(64),
+        signer: null,
+        capabilities,
+      })
+    ).toBe("pending")
+  })
+
+  it("does not silently downgrade a failed authenticated session to guest checkout", () => {
+    expect(
+      getAuthSignerReadiness({
+        status: "error",
+        pubkey: "a".repeat(64),
+        signer: null,
+        capabilities,
+      })
+    ).toBe("unavailable")
+
+    expect(
+      getAuthSignerReadiness({
+        status: "error",
+        pubkey: null,
+        signer: null,
+        capabilities,
+      })
+    ).toBe("disconnected")
+  })
+
+  it("makes duplicate automatic restores idempotent", () => {
+    expect(shouldReuseConnectedAuthSession("restore", true)).toBe(true)
+    expect(shouldReuseConnectedAuthSession("restore", false)).toBe(false)
+    expect(shouldReuseConnectedAuthSession("interactive", true)).toBe(false)
   })
 })

@@ -12,9 +12,11 @@
     "./protocol/*": "./src/protocol/*.ts",
     "./pricing": "./src/pricing/index.ts",
     "./pricing/trusted-rate-provider": "./src/pricing/trusted-rate-provider.ts",
+    "./wallets": "./src/wallets/index.ts",
     "./schemas": "./src/schemas/index.ts",
     "./utils": "./src/utils/index.ts",
     "./config": "./src/config.ts",
+    "./telemetry-contract": "./src/telemetry-contract.ts",
     "./db": "./src/db/index.ts",
     "./context/*": "./src/context/*.tsx",
     "./hooks/*": "./src/hooks/*.ts"
@@ -26,6 +28,7 @@
   },
   "dependencies": {
     "@getalby/sdk": "^8.0.3",
+    "@noble/ciphers": "^2.1.1",
     "@noble/curves": "^2.3.0",
     "@noble/hashes": "^2.2.0",
     "@nostr-dev-kit/ndk": "^3.0.3",

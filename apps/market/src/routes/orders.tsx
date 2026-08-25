@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   appendConduitClientTag,
   clearProtectedReadAuthenticationSuppression,
+  config,
   db,
   deriveProtectedReadPresentationState,
   EVENT_KINDS,
@@ -12,16 +13,24 @@ import {
   getNdk,
   getProductImageCandidates,
   getOrderPublicZapSigner,
+  getWalletDisplayLabels,
+  getWalletNetworkFromLightningConfig,
+  hasWebLN,
   listOrderLifecycles,
   normalizeLightningInvoice,
+  ORDER_PAYMENT_INTERRUPTED_BEFORE_WALLET_ERROR,
   pruneExpiredGuestOrderData,
+  prepareProtectedReadRefreshState,
   pubkeyToNpub,
+  replaceOrderPaymentTarget,
+  resolveWalletPaymentInstance,
   selectProtectedReadRows,
   useAuth,
   useProfile,
   useProfiles,
   type CommercePriceLike,
   type OrderLifecycle,
+  type OrderPaymentTarget,
   type ShopperPriceDisplay,
 } from "@conduit/core"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
@@ -36,6 +45,10 @@ import {
   DecryptFailureNotice,
   LiveReadNotice,
   OrderMessagesWidget,
+  SearchInput,
+  RefreshChip,
+  Select,
+  SelectTrigger,
   Sheet,
   SheetContent,
   SheetHeader,
@@ -45,7 +58,6 @@ import {
   StatusStepper,
 } from "@conduit/ui"
 import {
-  CheckCircle2,
   ChevronRight,
   Copy,
   ExternalLink,
@@ -53,7 +65,6 @@ import {
   MessageCircle,
   ReceiptText,
   RotateCw,
-  Search,
   ShoppingBag,
 } from "lucide-react"
 import { QRCodeSVG } from "qrcode.react"
@@ -61,13 +72,22 @@ import { ConversationProfilePicture } from "../components/ConversationProfilePic
 import { CopyButton } from "../components/CopyButton"
 import { getMerchantDisplayName } from "../components/MerchantIdentity"
 import {
+  PAYMENT_TARGET_SELECT_TRIGGER_CLASS_NAME,
+  PaymentTargetSelectContent,
+  PaymentTargetSelectValue,
+} from "../components/PaymentTargetSelectContent"
+import {
+  SparkFeeApprovalDialog,
+  useSparkFeeApproval,
+} from "../components/SparkFeeApprovalDialog"
+import {
   fetchBuyerConversations,
   fetchCachedBuyerConversations,
   type BuyerConversation,
 } from "../lib/orderConversations"
 import { fetchStoreProducts } from "../lib/storeProducts"
 import { useShopperPricing } from "../hooks/useShopperPricing"
-import { useWallet } from "../hooks/useWallet"
+import { useWallets } from "../hooks/useWallets"
 import {
   buildOrderTimeline,
   buildOrderViewModel,
@@ -77,12 +97,14 @@ import {
   type OrderHeaderStatus,
   type OrderViewModel,
 } from "../lib/order-view"
+import { getNwcPaymentReadiness } from "../lib/wallet-payment-coordinator"
 import {
   authorizeCheckoutWithAnonSigner,
   signAuthorizedAnonZapCheckout,
 } from "../lib/anon-zap-signer"
 import {
   canObserveOrderPublicZapReceipt,
+  getOrderPaymentState,
   observeOrderPublicZapReceipt,
   resendOrderProof,
   runOrderPrivateFallback,
@@ -91,6 +113,10 @@ import {
   subscribeOrderPayment,
   type OrderPaymentContext,
 } from "../lib/order-payment-service"
+import {
+  getNextOrderPaymentLeaseExpiry,
+  reconcileOrderPaymentForDisplay,
+} from "../lib/order-payment-recovery"
 
 type PriceFormatter = (price: CommercePriceLike) => ShopperPriceDisplay
 import {
@@ -103,6 +129,10 @@ import {
   type CheckoutZapMode,
 } from "../lib/checkout-payment"
 import { publishBuyerOrderMessage } from "../lib/order-publish"
+import {
+  getCheckoutPaymentTargetOptions,
+  getCheckoutPaymentTargetValue,
+} from "../lib/checkout-payment-target"
 
 const ORDERS_SEARCH_DEFAULT: { order?: string } = {}
 
@@ -599,8 +629,8 @@ function ExternalWalletPanel({
       </h2>
       <p className="mt-1 text-sm text-[var(--text-secondary)]">
         {autoDetectReceipt
-          ? "Scan or copy this invoice and pay it once. Conduit will match the public Lightning receipt and notify the merchant automatically."
-          : "No automatic wallet was available. Scan or copy this invoice and pay it in your wallet. After the wallet confirms payment, report it to the merchant for verification."}
+          ? "Check your wallet first if an automatic payment was already attempted. Otherwise scan or copy this invoice and pay it once. Conduit will match the public Lightning receipt and notify the merchant automatically."
+          : "Automatic payment did not complete. Check your wallet first, then pay this same invoice once and report it to the merchant for verification. This invoice can only settle once, so paying it again is safe if nothing was sent."}
       </p>
       {guestSession && (
         <p className="mt-3 rounded-xl border border-warning/30 bg-warning/10 p-3 text-xs leading-5 text-warning">
@@ -670,7 +700,7 @@ function OrderDetail({
   guestIdentity?: GuestOrderSigningIdentity | null
 }) {
   const { vm, headerStatus } = row
-  const wallet = useWallet()
+  const wallets = useWallets()
   const shopperPricing = useShopperPricing()
   const formatSats = (sats: number) =>
     shopperPricing.formatSatsAmount(sats).primary
@@ -684,7 +714,50 @@ function OrderDetail({
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [messagesOpen, setMessagesOpen] = useState(false)
   const [replyText, setReplyText] = useState("")
+  const persistedRetryTarget = row.lifecycle?.paymentTarget ?? null
+  const persistedRetryTargetType = persistedRetryTarget?.type ?? null
+  const persistedRetryWalletId =
+    persistedRetryTarget?.type === "wallet"
+      ? persistedRetryTarget.walletId
+      : null
+  const persistedRetryProviderId =
+    persistedRetryTarget?.type === "wallet"
+      ? persistedRetryTarget.providerId
+      : null
+  const [retryTarget, setRetryTarget] = useState<OrderPaymentTarget | null>(
+    persistedRetryTarget
+  )
+  const sparkFeeApproval = useSparkFeeApproval()
   const queryClient = useQueryClient()
+
+  useEffect(() => {
+    if (
+      persistedRetryTargetType === "wallet" &&
+      persistedRetryWalletId !== null &&
+      persistedRetryProviderId !== null
+    ) {
+      setRetryTarget({
+        type: "wallet",
+        walletId: persistedRetryWalletId,
+        providerId: persistedRetryProviderId,
+      })
+      return
+    }
+    if (persistedRetryTargetType === "manual") {
+      setRetryTarget({ type: "manual" })
+      return
+    }
+    if (persistedRetryTargetType === "webln") {
+      setRetryTarget({ type: "webln" })
+      return
+    }
+    setRetryTarget(null)
+  }, [
+    persistedRetryProviderId,
+    persistedRetryTargetType,
+    persistedRetryWalletId,
+    vm.orderId,
+  ])
 
   const productsQuery = useQuery({
     queryKey: ["selected-order-products", row.merchantPubkey],
@@ -701,16 +774,70 @@ function OrderDetail({
     return map
   }, [productsQuery.data])
 
+  const walletNetwork = getWalletNetworkFromLightningConfig(
+    config.lightningNetwork
+  )
+  const eligibleWallets = wallets.wallets.filter(
+    (candidate) =>
+      candidate.network === walletNetwork &&
+      candidate.capabilities.includes("pay_invoice")
+  )
+  const eligibleWalletDisplayLabels = getWalletDisplayLabels(eligibleWallets)
+  const weblnAvailable = !guestIdentity && hasWebLN()
+  const retryTargetOptions = getCheckoutPaymentTargetOptions({
+    eligibleWallets,
+    selectedTarget: retryTarget ?? { type: "manual" },
+    weblnAvailable,
+  })
+  const retryTargetValue = retryTarget
+    ? getCheckoutPaymentTargetValue(retryTarget)
+    : ""
+  const retryWalletTarget = retryTarget?.type === "wallet" ? retryTarget : null
+  const paymentWallet = resolveWalletPaymentInstance(wallets.wallets, {
+    walletId: retryWalletTarget?.walletId,
+    providerId: retryWalletTarget?.providerId,
+    network: walletNetwork,
+  })
+  const retryWalletTargetIsStale =
+    retryWalletTarget !== null && paymentWallet === null
+  const nwcSnapshot =
+    paymentWallet?.providerId === "nwc"
+      ? wallets.nwcSnapshots[paymentWallet.id]
+      : null
+  const nwcReadiness =
+    paymentWallet?.providerId === "nwc" && nwcSnapshot
+      ? getNwcPaymentReadiness({
+          snapshot: nwcSnapshot,
+          walletNetwork: paymentWallet.network,
+          configuredNetwork: walletNetwork,
+        })
+      : null
   const canTryNwc =
     !guestIdentity &&
-    !!wallet.connection &&
-    wallet.status !== "unsupported" &&
-    wallet.status !== "error"
+    paymentWallet?.providerId === "nwc" &&
+    nwcReadiness?.ready === true
+  const canTrySpark =
+    !guestIdentity &&
+    paymentWallet?.providerId === "spark" &&
+    wallets.runtime[paymentWallet.id]?.status === "ready"
+  const selectedStoredPaymentTarget: OrderPaymentTarget | null =
+    retryTarget?.type === "wallet" && !paymentWallet ? null : retryTarget
 
   function buildServiceCtx(): OrderPaymentContext | null {
     const lc = row.lifecycle
     if (!lc) return null
     if (!lc.merchantLightningAddress) return null
+    const paymentTarget =
+      retryTarget?.type === "wallet" &&
+      paymentWallet &&
+      (canTryNwc || canTrySpark)
+        ? retryTarget
+        : retryTarget?.type === "webln" && weblnAvailable
+          ? retryTarget
+          : retryTarget?.type === "manual"
+            ? retryTarget
+            : null
+    if (!paymentTarget) return null
     return {
       orderId: vm.orderId,
       buyerPubkey,
@@ -725,11 +852,37 @@ function OrderDetail({
         productAddress: item.productId,
         quantity: item.quantity,
       })),
-      walletConnection: wallet.connection,
-      tryNwc: canTryNwc,
-      tryWebln: !guestIdentity,
+      paymentTarget,
+      approveFee:
+        paymentWallet?.providerId === "spark"
+          ? sparkFeeApproval.requestApproval
+          : undefined,
       formatSatsAmount: formatSats,
     }
+  }
+
+  async function persistTargetAndBuildServiceCtx(): Promise<OrderPaymentContext> {
+    if (!selectedStoredPaymentTarget) {
+      throw new Error("Choose how to pay before trying again.")
+    }
+    const replacement = await replaceOrderPaymentTarget(
+      vm.orderId,
+      selectedStoredPaymentTarget
+    )
+    if (replacement.status !== "updated") {
+      throw new Error(
+        replacement.status === "missing"
+          ? "Order payment state is unavailable."
+          : "Payment state changed in another tab. Refresh before trying again."
+      )
+    }
+    const ctx = buildServiceCtx()
+    if (!ctx) {
+      throw new Error(
+        "The selected payment target is unavailable. Choose another option."
+      )
+    }
+    return ctx
   }
 
   const withBusy = useCallback(async (fn: () => Promise<unknown>) => {
@@ -747,8 +900,7 @@ function OrderDetail({
   }, [])
 
   async function retryPayment(): Promise<void> {
-    const ctx = buildServiceCtx()
-    if (!ctx) return
+    const ctx = await persistTargetAndBuildServiceCtx()
     if (ctx.zapMode !== "anonymous_public_zap") {
       await runOrderPayment(ctx)
       return
@@ -778,6 +930,8 @@ function OrderDetail({
   }
 
   const showRetryPayment = vm.paymentStatus === "failed"
+  const recoveredBeforeWallet =
+    row.lifecycle?.lastError === ORDER_PAYMENT_INTERRUPTED_BEFORE_WALLET_ERROR
   const showAnonPaymentRecovery =
     showRetryPayment &&
     vm.publicZapSigner === "anon" &&
@@ -953,22 +1107,83 @@ function OrderDetail({
           title={headerStatus.primaryLabel}
           detail={headerStatus.detailLabel}
         >
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-end gap-3">
+            {showRetryPayment && (
+              <div className="grid min-w-[15rem] gap-1.5">
+                <label
+                  htmlFor={`retry-wallet-${vm.orderId}`}
+                  className="text-xs font-medium text-[var(--text-secondary)]"
+                >
+                  Pay with
+                </label>
+                <Select
+                  value={retryTargetValue}
+                  onValueChange={(value) => {
+                    const option = retryTargetOptions.find(
+                      (candidate) => candidate.value === value
+                    )
+                    if (option) setRetryTarget(option.target)
+                  }}
+                  disabled={busy || wallets.loading}
+                >
+                  <SelectTrigger
+                    id={`retry-wallet-${vm.orderId}`}
+                    className={PAYMENT_TARGET_SELECT_TRIGGER_CLASS_NAME}
+                  >
+                    {wallets.loading ? (
+                      <span className="flex items-center gap-2 text-[var(--text-muted)]">
+                        <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                        Loading saved wallets
+                      </span>
+                    ) : (
+                      <PaymentTargetSelectValue
+                        target={retryTarget}
+                        eligibleWallets={eligibleWallets}
+                        walletDisplayLabels={eligibleWalletDisplayLabels}
+                        weblnAvailable={weblnAvailable}
+                        placeholder="Choose a payment target"
+                      />
+                    )}
+                  </SelectTrigger>
+                  <PaymentTargetSelectContent
+                    options={retryTargetOptions}
+                    eligibleWallets={eligibleWallets}
+                    walletDisplayLabels={eligibleWalletDisplayLabels}
+                    staleWalletValue={
+                      retryWalletTargetIsStale ? retryTargetValue : null
+                    }
+                    weblnAvailable={weblnAvailable}
+                  />
+                </Select>
+              </div>
+            )}
             {showRetryPayment && (
               <Button
-                className="h-10 px-4 text-sm"
-                disabled={busy || !buildServiceCtx()}
+                className="h-11 px-4 text-sm"
+                disabled={
+                  busy ||
+                  wallets.loading ||
+                  !selectedStoredPaymentTarget ||
+                  !buildServiceCtx()
+                }
                 onClick={() => void withBusy(retryPayment)}
               >
                 <RotateCw className="h-4 w-4" />
-                Try payment again
+                {recoveredBeforeWallet
+                  ? "Continue payment"
+                  : "Try payment again"}
               </Button>
             )}
             {showAnonPaymentRecovery && (
               <Button
                 variant="outline"
                 className="h-10 px-4 text-sm"
-                disabled={busy || !buildServiceCtx()}
+                disabled={
+                  busy ||
+                  wallets.loading ||
+                  !selectedStoredPaymentTarget ||
+                  !buildServiceCtx()
+                }
                 onClick={() => setPrivateFallbackOpen(true)}
               >
                 Use private invoice
@@ -990,17 +1205,25 @@ function OrderDetail({
               </Button>
             )}
             <span className="text-xs text-[var(--text-secondary)]">
-              {publicReceiptNotObserved
-                ? "Conduit did not observe the matching public receipt. If your wallet shows payment, do not pay again. The receipt can still reconcile if it reaches the configured relays during this guest session."
-                : showAmbiguousPayment
-                  ? "Your wallet may have received the payment request, but Conduit couldn't confirm whether funds moved. Check your wallet and merchant messages before trying again."
-                  : showRetryPayment && !buildServiceCtx()
-                    ? "This order did not keep a checkout-time Lightning target, so retry is unavailable from Orders. Message the merchant before attempting another payment path."
-                    : showRetryPayment
-                      ? showAnonPaymentRecovery
-                        ? "This older anonymous zap attempt failed before automatic fallback was available. No funds moved; retry it or continue with a private invoice."
-                        : "No funds moved. You can retry payment for this order."
-                      : "Payment went through; the receipt didn't reach the merchant."}
+              {wallets.loading
+                ? "Wait while Conduit checks the Portable and Connected Wallets saved on this device."
+                : publicReceiptNotObserved
+                  ? "Conduit did not observe the matching public receipt. If your wallet shows payment, do not pay again. The receipt can still reconcile if it reaches the configured relays during this guest session."
+                  : showAmbiguousPayment
+                    ? "Your wallet may have received the payment request, but Conduit couldn't confirm whether funds moved. Check your wallet and merchant messages before trying again."
+                    : showRetryPayment && retryWalletTargetIsStale
+                      ? "The previously selected saved wallet is unavailable. Explicitly choose another wallet, browser wallet, or manual payment."
+                      : showRetryPayment && !selectedStoredPaymentTarget
+                        ? "Choose the exact wallet or manual payment path for this retry."
+                        : showRetryPayment && !buildServiceCtx()
+                          ? "The saved payment target is unavailable. Unlock or reconnect it, or explicitly choose another option."
+                          : showRetryPayment
+                            ? recoveredBeforeWallet
+                              ? "Conduit closed before the invoice reached a wallet. Continuing reuses this order; no funds moved."
+                              : showAnonPaymentRecovery
+                                ? "This older anonymous zap attempt failed before automatic fallback was available. No funds moved; retry it or continue with a private invoice."
+                                : "No funds moved. You can retry payment for this order."
+                            : "Payment went through; the receipt didn't reach the merchant."}
             </span>
             {recoveryError && (
               <p
@@ -1009,6 +1232,36 @@ function OrderDetail({
               >
                 {recoveryError}
               </p>
+            )}
+            {showRetryPayment && wallets.initializationError && (
+              <div
+                role="alert"
+                className="w-full rounded-xl border border-[color-mix(in_srgb,var(--error)_40%,transparent)] bg-[color-mix(in_srgb,var(--error)_6%,transparent)] p-3 text-sm leading-6 text-[var(--text-secondary)]"
+              >
+                <p className="font-medium text-[var(--text-primary)]">
+                  Saved wallets could not be loaded
+                </p>
+                <p className="mt-1">
+                  {wallets.initializationError} Browser wallet and manual
+                  payment remain available.
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="mt-2 h-9 px-3 text-xs"
+                  disabled={wallets.loading}
+                  onClick={() => void wallets.retryInitialization()}
+                >
+                  {wallets.loading ? (
+                    <>
+                      <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                      Retrying
+                    </>
+                  ) : (
+                    "Retry saved wallets"
+                  )}
+                </Button>
+              </div>
             )}
           </div>
         </StatusNotice>
@@ -1038,12 +1291,15 @@ function OrderDetail({
             </Button>
             <Button
               type="button"
-              disabled={busy || !buildServiceCtx()}
+              disabled={
+                busy || !selectedStoredPaymentTarget || !buildServiceCtx()
+              }
               onClick={() => {
-                const ctx = buildServiceCtx()
-                if (!ctx) return
-                setPrivateFallbackOpen(false)
-                void withBusy(() => runOrderPrivateFallback(ctx))
+                void withBusy(async () => {
+                  const ctx = await persistTargetAndBuildServiceCtx()
+                  setPrivateFallbackOpen(false)
+                  return runOrderPrivateFallback(ctx)
+                })
               }}
             >
               Continue privately
@@ -1051,6 +1307,15 @@ function OrderDetail({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      <SparkFeeApprovalDialog
+        controller={sparkFeeApproval}
+        walletLabel={
+          paymentWallet?.providerId === "spark"
+            ? (eligibleWalletDisplayLabels.get(paymentWallet.id) ??
+              paymentWallet.label)
+            : undefined
+        }
+      />
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
         <OrderTimeline vm={vm} formatSats={formatSats} />
@@ -1280,13 +1545,6 @@ function OrdersPage() {
     }, delayMs)
     return () => window.clearTimeout(timer)
   }, [guestIdentity])
-  const [refreshButtonState, setRefreshButtonState] = useState<
-    "idle" | "refreshing" | "done"
-  >("idle")
-  const refreshResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null
-  )
-
   const lifecyclesQuery = useQuery({
     queryKey: [
       "order-lifecycles",
@@ -1295,12 +1553,17 @@ function OrdersPage() {
     ],
     enabled: !!activeBuyerPubkey,
     queryFn: async () => {
-      if (signerConnected) return listOrderLifecycles(activeBuyerPubkey!)
+      if (signerConnected) {
+        const rows = await listOrderLifecycles(activeBuyerPubkey!)
+        return Promise.all(
+          rows.map((lifecycle) => reconcileOrderPaymentForDisplay(lifecycle))
+        )
+      }
       if (!selectedFromUrl || !guestIdentity) return []
       const lifecycle = await db.orderLifecycles.get(selectedFromUrl)
       if (!lifecycle || lifecycle.buyerPubkey !== guestIdentity.pubkey)
         return []
-      return [lifecycle]
+      return [await reconcileOrderPaymentForDisplay(lifecycle)]
     },
     refetchInterval: 30_000,
   })
@@ -1318,7 +1581,6 @@ function OrdersPage() {
     staleTime: 5_000,
   })
 
-  const isFetching = messagesQuery.isFetching || lifecyclesQuery.isFetching
   const refetchAll = useCallback(() => {
     if (signerConnected && activeBuyerPubkey) {
       clearProtectedReadAuthenticationSuppression(activeBuyerPubkey)
@@ -1328,36 +1590,20 @@ function OrdersPage() {
   }, [activeBuyerPubkey, lifecyclesQuery, messagesQuery, signerConnected])
 
   useEffect(() => {
-    if (isFetching) {
-      if (refreshResetTimerRef.current) {
-        clearTimeout(refreshResetTimerRef.current)
-        refreshResetTimerRef.current = null
-      }
-      setRefreshButtonState("refreshing")
-      return
+    const refetchAfterResume = () => {
+      if (document.visibilityState === "hidden") return
+      refetchAll()
     }
-    if (refreshButtonState === "refreshing") {
-      setRefreshButtonState("done")
-      refreshResetTimerRef.current = setTimeout(() => {
-        setRefreshButtonState("idle")
-        refreshResetTimerRef.current = null
-      }, 900)
+
+    window.addEventListener("focus", refetchAfterResume)
+    window.addEventListener("online", refetchAfterResume)
+    document.addEventListener("visibilitychange", refetchAfterResume)
+    return () => {
+      window.removeEventListener("focus", refetchAfterResume)
+      window.removeEventListener("online", refetchAfterResume)
+      document.removeEventListener("visibilitychange", refetchAfterResume)
     }
-  }, [isFetching, refreshButtonState])
-
-  useEffect(
-    () => () => {
-      if (refreshResetTimerRef.current)
-        clearTimeout(refreshResetTimerRef.current)
-    },
-    []
-  )
-
-  const handleRefresh = useCallback(() => {
-    if (!activeBuyerPubkey) return
-    setRefreshButtonState("refreshing")
-    refetchAll()
-  }, [activeBuyerPubkey, refetchAll])
+  }, [refetchAll])
 
   const conversations = useMemo(
     () =>
@@ -1370,14 +1616,39 @@ function OrdersPage() {
   const messagesMeta = messagesQuery.data?.meta
   const protectedOrdersReadState = deriveProtectedReadPresentationState({
     visibleCount: conversations.length,
-    pending: messagesQuery.isLoading,
+    pending: signerConnected && messagesQuery.isPending,
     error: messagesQuery.error,
     meta: messagesMeta,
+  })
+  const ordersRefreshState = prepareProtectedReadRefreshState({
+    protectedReadState: protectedOrdersReadState,
+    protectedReadRefreshing: messagesQuery.isFetching,
+    protectedReadPaused: messagesQuery.isPaused,
+    additionalSources: [
+      {
+        refreshing: lifecyclesQuery.isFetching,
+        stale: lifecyclesQuery.isError || lifecyclesQuery.isPaused,
+      },
+    ],
   })
   const lifecycles = useMemo(
     () => lifecyclesQuery.data ?? [],
     [lifecyclesQuery.data]
   )
+  const refetchLifecycles = lifecyclesQuery.refetch
+
+  useEffect(() => {
+    const nextLeaseExpiry = getNextOrderPaymentLeaseExpiry(lifecycles)
+    if (nextLeaseExpiry === null) return
+
+    const timer = window.setTimeout(
+      () => {
+        void refetchLifecycles()
+      },
+      Math.max(0, nextLeaseExpiry - Date.now() + 50)
+    )
+    return () => window.clearTimeout(timer)
+  }, [lifecycles, refetchLifecycles])
 
   useEffect(() => {
     const resumeReceiptObservers = () => {
@@ -1511,14 +1782,16 @@ function OrdersPage() {
   })
   useEffect(() => {
     if (!selected?.orderId) return
-    const unsub = subscribeOrderPayment(selected.orderId, () => {
-      void lifecyclesQuery.refetch()
+    const refreshPaymentState = () => {
+      void refetchLifecycles()
       void queryClient.invalidateQueries({
         queryKey: ["buyer-payment-attempt", selected.orderId],
       })
-    })
+    }
+    const unsub = subscribeOrderPayment(selected.orderId, refreshPaymentState)
+    if (getOrderPaymentState(selected.orderId)) refreshPaymentState()
     return unsub
-  }, [lifecyclesQuery, queryClient, selected?.orderId])
+  }, [queryClient, refetchLifecycles, selected?.orderId])
 
   const selectedRow = useMemo<OrderRow | null>(() => {
     if (!selected) return null
@@ -1553,27 +1826,13 @@ function OrdersPage() {
               : "Finish this guest payment and review locally saved checkout status. Merchant follow-up uses your submitted phone and email contact details."}
           </p>
         </div>
-        <Button
-          variant="outline"
-          className="h-11 px-4 text-sm"
-          disabled={!activeBuyerPubkey || isFetching}
-          onClick={handleRefresh}
-        >
-          <span className="inline-flex items-center gap-2">
-            {refreshButtonState === "done" ? (
-              <CheckCircle2 className="h-4 w-4 text-emerald-400" />
-            ) : (
-              <RotateCw
-                className={`h-4 w-4 ${refreshButtonState === "refreshing" ? "animate-spin text-amber-300" : ""}`}
-              />
-            )}
-            {refreshButtonState === "refreshing"
-              ? "Refreshing…"
-              : refreshButtonState === "done"
-                ? "Updated"
-                : "Refresh"}
-          </span>
-        </Button>
+        <RefreshChip
+          refreshing={ordersRefreshState.refreshing}
+          stale={ordersRefreshState.stale}
+          onRefresh={refetchAll}
+          doneDurationMs={900}
+          disabled={!activeBuyerPubkey}
+        />
       </div>
 
       {!activeBuyerPubkey && (
@@ -1610,7 +1869,7 @@ function OrdersPage() {
       )}
 
       {activeBuyerPubkey &&
-        !lifecyclesQuery.isLoading &&
+        !lifecyclesQuery.isPending &&
         !hasOrders &&
         protectedOrdersReadState === "complete" && (
           <EmptyState
@@ -1729,16 +1988,14 @@ function SearchBox({
   onChange: (value: string) => void
 }) {
   return (
-    <div className="relative mt-3">
-      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
-      <input
-        aria-label="Search orders"
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        placeholder="Search orders"
-        className="h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] pl-9 pr-3 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-primary-500 focus:ring-2 focus:ring-primary-500/30"
-      />
-    </div>
+    <SearchInput
+      aria-label="Search orders"
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      placeholder="Search orders"
+      containerClassName="mt-3"
+      className="bg-[var(--surface-elevated)]"
+    />
   )
 }
 

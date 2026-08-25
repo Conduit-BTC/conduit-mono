@@ -11,7 +11,9 @@ import {
   disconnectNdk,
   extractFollowPubkeys,
   fetchMerchantTrustSocialSummary,
+  peekRetainedOwnFollowListSnapshot,
   publishContactListUpdate,
+  readRetainedOwnFollowListSnapshot,
   readLatestFollowLists,
   recordRelayFailure,
   requirePublishableContactListSnapshot,
@@ -110,6 +112,132 @@ describe("NIP-02 merchant trust helpers", () => {
     ])
 
     expect(latest?.id).toBe("a".repeat(64))
+  })
+
+  it("reads a verified retained owner snapshot without relay discovery", async () => {
+    const retained = followListEvent({
+      secret: viewerSecret,
+      createdAt: 200,
+      follows: [merchantPubkey],
+    })
+    let loadCalls = 0
+    __setFollowListTestOverrides({
+      loadOwnContactListSnapshot: async () => {
+        loadCalls += 1
+        return {
+          pubkey: viewerPubkey,
+          event: retained,
+          sourceRelayUrls: ["wss://retained.example"],
+          state: "observed",
+          cachedAt: Date.now(),
+        }
+      },
+    })
+
+    const snapshot = await readRetainedOwnFollowListSnapshot(viewerPubkey)
+
+    expect(loadCalls).toBe(1)
+    expect(snapshot?.event.id).toBe(retained.id)
+    expect(extractFollowPubkeys(snapshot?.event.tags)).toEqual([merchantPubkey])
+    expect(snapshot?.state).toBe("observed")
+
+    snapshot?.event.tags.push(["p", mutualPubkey])
+    snapshot?.sourceRelayUrls.push("wss://mutated.example")
+    const inMemory = peekRetainedOwnFollowListSnapshot(viewerPubkey)
+    expect(loadCalls).toBe(1)
+    expect(extractFollowPubkeys(inMemory?.event.tags)).toEqual([merchantPubkey])
+    expect(inMemory?.sourceRelayUrls).toEqual(["wss://retained.example"])
+  })
+
+  it("preserves a verified retained signed-empty owner snapshot", async () => {
+    const retained = followListEvent({
+      secret: viewerSecret,
+      createdAt: 200,
+      follows: [],
+    })
+    __setFollowListTestOverrides({
+      loadOwnContactListSnapshot: async () => ({
+        pubkey: viewerPubkey,
+        event: retained,
+        sourceRelayUrls: [],
+        state: "observed",
+        cachedAt: Date.now(),
+      }),
+    })
+
+    const snapshot = await readRetainedOwnFollowListSnapshot(viewerPubkey)
+
+    expect(snapshot?.event.id).toBe(retained.id)
+    expect(extractFollowPubkeys(snapshot?.event.tags)).toEqual([])
+  })
+
+  it("withholds a future retained snapshot without discarding its frontier", async () => {
+    const now = 1_700_000_000_000
+    const future = followListEvent({
+      secret: viewerSecret,
+      createdAt: now / 1_000 + 301,
+      follows: [merchantPubkey],
+    })
+    __setFollowListTestOverrides({
+      loadOwnContactListSnapshot: async () => ({
+        pubkey: viewerPubkey,
+        event: future,
+        sourceRelayUrls: [],
+        state: "observed",
+        cachedAt: now,
+      }),
+    })
+
+    expect(
+      await readRetainedOwnFollowListSnapshot(viewerPubkey, { now: () => now })
+    ).toBeNull()
+    expect(
+      peekRetainedOwnFollowListSnapshot(viewerPubkey, { now: () => now })
+    ).toBeUndefined()
+
+    const caughtUp = await readRetainedOwnFollowListSnapshot(viewerPubkey, {
+      now: () => now + 1_000,
+    })
+    expect(caughtUp?.event.id).toBe(future.id)
+  })
+
+  it("rejects invalid retained owner snapshots", async () => {
+    const valid = followListEvent({
+      secret: viewerSecret,
+      createdAt: 200,
+      follows: [merchantPubkey],
+    })
+    const invalidSnapshots: CachedOwnContactListSnapshot[] = [
+      {
+        pubkey: merchantPubkey,
+        event: valid,
+        sourceRelayUrls: [],
+        state: "observed",
+        cachedAt: Date.now(),
+      },
+      {
+        pubkey: viewerPubkey,
+        event: { ...valid, kind: 1 },
+        sourceRelayUrls: [],
+        state: "observed",
+        cachedAt: Date.now(),
+      },
+      {
+        pubkey: viewerPubkey,
+        event: { ...valid, sig: "0".repeat(128) },
+        sourceRelayUrls: [],
+        state: "observed",
+        cachedAt: Date.now(),
+      },
+    ]
+
+    for (const invalid of invalidSnapshots) {
+      __resetFollowListTestState()
+      __setFollowListTestOverrides({
+        loadOwnContactListSnapshot: async () => invalid,
+      })
+      expect(await readRetainedOwnFollowListSnapshot(viewerPubkey)).toBeNull()
+    }
   })
 
   it("derives bounded merchant social context without follower crawling", () => {
@@ -287,6 +415,50 @@ describe("NIP-02 merchant trust helpers", () => {
     )
   })
 
+  it("rejects capped exact owner-local evidence before replacing a follow list", async () => {
+    const ownerLocalRelay = "wss://127.0.0.1:7447"
+    const event = followListEvent({
+      secret: viewerSecret,
+      createdAt: 100,
+      follows: [merchantPubkey],
+    })
+
+    const read = await readLatestFollowLists(
+      {
+        pubkeys: [viewerPubkey],
+        authenticatedPubkey: viewerPubkey,
+      },
+      {
+        refreshRelayLists: true,
+        resolveRelayLists: async () =>
+          new Map([
+            [viewerPubkey, relayList(viewerPubkey, [], [ownerLocalRelay])],
+          ]),
+        fetchEvents: async (_filter, options) => ({
+          events: [event],
+          eventSourceRelayUrls: { [event.id]: [ownerLocalRelay] },
+          relays: options.relayUrls.map((relayUrl) => ({
+            relayUrl,
+            status:
+              relayUrl === ownerLocalRelay
+                ? ("success" as const)
+                : ("failed" as const),
+            eventCount: relayUrl === ownerLocalRelay ? 1 : 0,
+            rejectedEventCount: relayUrl === ownerLocalRelay ? 9 : 0,
+          })),
+          eventsVerified: false,
+        }),
+      }
+    )
+
+    expect(read.authors[0]?.relayHintTruncated).toBe(false)
+    expect(read.authors[0]?.capped).toBe(true)
+    expect(read.authors[0]?.coverage).toBe("limited")
+    expect(() =>
+      requirePublishableContactListSnapshot(read, viewerPubkey)
+    ).toThrow("completed the read")
+  })
+
   it("marks a bounded author-hint overflow non-publishable", async () => {
     const hints = [
       "wss://hint-one.example",
@@ -323,10 +495,46 @@ describe("NIP-02 merchant trust helpers", () => {
     )
 
     expect(read.authors[0]?.relayHintTruncated).toBe(true)
+    expect(read.authors[0]?.capped).toBe(true)
     expect(read.authors[0]?.coverage).toBe("limited")
     expect(() =>
       requirePublishableContactListSnapshot(read, viewerPubkey)
     ).toThrow("completed the read")
+  })
+
+  it("marks a relay response capped when rejected events fill the result limit", async () => {
+    const publicRelay = "wss://saturated-follow-response.example"
+    const event = followListEvent({
+      secret: viewerSecret,
+      createdAt: 100,
+      follows: [merchantPubkey],
+    })
+
+    const read = await readLatestFollowLists(
+      {
+        pubkeys: [viewerPubkey],
+        authenticatedPubkey: viewerPubkey,
+      },
+      {
+        resolveRelayLists: async () =>
+          new Map([[viewerPubkey, relayList(viewerPubkey, [], [publicRelay])]]),
+        fetchEvents: async (_filter, options) => ({
+          events: [event],
+          eventSourceRelayUrls: { [event.id]: [publicRelay] },
+          relays: options.relayUrls.map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: relayUrl === publicRelay ? 1 : 0,
+            rejectedEventCount: relayUrl === publicRelay ? 9 : 0,
+          })),
+          eventsVerified: false,
+        }),
+      }
+    )
+
+    expect(read.authors[0]?.event?.id).toBe(event.id)
+    expect(read.authors[0]?.capped).toBe(true)
+    expect(read.authors[0]?.coverage).toBe("limited")
   })
 
   it("ignores far-future and forged contact-list snapshots", async () => {
@@ -573,6 +781,79 @@ describe("NIP-02 merchant trust helpers", () => {
     expect(regressed.authors[0]?.event?.id).toBe(newer.id)
     expect(regressed.authors[0]?.coverage).toBe("limited")
     expect(regressed.authors[0]?.snapshotState).toBe("observed")
+  })
+
+  it("retains a future authenticated-owner observation across a later complete omission", async () => {
+    const now = 1_700_000_000_000
+    const publicRelay = "wss://future-owner-observation.example"
+    const visible = followListEvent({
+      secret: viewerSecret,
+      createdAt: now / 1_000,
+      follows: [mutualPubkey],
+    })
+    const future = followListEvent({
+      secret: viewerSecret,
+      createdAt: now / 1_000 + 301,
+      follows: [merchantPubkey],
+    })
+    let returnedEvents: SignedPublicNostrEvent[] = [visible, future]
+    const options: FollowListReadOptions = {
+      now: () => now,
+      resolveRelayLists: async () =>
+        new Map([[viewerPubkey, relayList(viewerPubkey, [], [publicRelay])]]),
+      fetchEvents: async (_filter, fetchOptions) => ({
+        events: returnedEvents,
+        eventSourceRelayUrls: Object.fromEntries(
+          returnedEvents.map((event) => [event.id, [publicRelay]])
+        ),
+        relays: fetchOptions.relayUrls.map((relayUrl) => ({
+          relayUrl,
+          status: "success" as const,
+          eventCount: returnedEvents.length,
+        })),
+        eventsVerified: false,
+      }),
+    }
+    const snapshotCache = createOwnContactListSnapshotCache()
+    __setFollowListTestOverrides(snapshotCache.overrides)
+
+    const observed = await readLatestFollowLists(
+      {
+        pubkeys: [viewerPubkey],
+        authenticatedPubkey: viewerPubkey,
+      },
+      options
+    )
+
+    expect(snapshotCache.get()?.event.id).toBe(future.id)
+    expect(observed.events.map((event) => event.id)).toEqual([visible.id])
+    expect(observed.authors[0]?.event?.id).toBe(visible.id)
+    expect(observed.authors[0]?.ownerSafetySnapshot?.event.id).toBe(future.id)
+    expect(observed.authors[0]?.coverage).toBe("limited")
+    expect(observed.authors[0]?.snapshotState).toBe("network")
+    expect(() =>
+      requirePublishableContactListSnapshot(observed, viewerPubkey)
+    ).toThrow("completed the read")
+
+    __resetFollowListTestState()
+    __setFollowListTestOverrides(snapshotCache.overrides)
+    returnedEvents = []
+    const omitted = await readLatestFollowLists(
+      {
+        pubkeys: [viewerPubkey],
+        authenticatedPubkey: viewerPubkey,
+      },
+      options
+    )
+
+    expect(omitted.events).toEqual([])
+    expect(omitted.authors[0]?.event).toBeUndefined()
+    expect(omitted.authors[0]?.ownerSafetySnapshot?.event.id).toBe(future.id)
+    expect(omitted.authors[0]?.coverage).toBe("limited")
+    expect(omitted.authors[0]?.snapshotState).toBe("none")
+    expect(() =>
+      requirePublishableContactListSnapshot(omitted, viewerPubkey)
+    ).toThrow("completed the read")
   })
 
   it("returns the transactional owner winner when another tab writes during persistence", async () => {
@@ -891,6 +1172,7 @@ describe("NIP-02 merchant trust helpers", () => {
             coverage: "complete",
             relayListState: "network",
             relayHintTruncated: false,
+            capped: false,
             snapshotState: "none",
           },
         ],
@@ -1225,6 +1507,7 @@ describe("NIP-02 merchant trust helpers", () => {
           coverage: "limited" as const,
           relayListState: "network" as const,
           relayHintTruncated: false,
+          capped: false,
           snapshotState: "network" as const,
         },
       ],
@@ -1300,6 +1583,7 @@ describe("NIP-02 merchant trust helpers", () => {
           coverage: "complete" as const,
           relayListState: "network" as const,
           relayHintTruncated: false,
+          capped: false,
           snapshotState: "none" as const,
         },
       ],

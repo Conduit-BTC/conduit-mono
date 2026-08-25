@@ -13,8 +13,8 @@ References:
 
 Non-goals for the current client repository:
 
-- durable user account key custody or generation, escrow, refunds, or balance
-  management
+- durable Nostr user account-key custody or generation, server-side wallet
+  custody, escrow, or refunds
 - server-managed NIP-46 account custody or signer recovery beyond the current
   external-signer flow
 - service-operated checkout automation, except the scoped Anon Conduit Shopper public zap signer described below
@@ -77,6 +77,11 @@ The exact state machine, observation/privacy constraints, recipient-scoped
 relay policy, validation matrix, and client-first rollout/rollback contract are
 defined in `docs/knowledge/nip42-protected-read-rollout.md`.
 
+Portable Wallet credentials are not Nostr authentication keys. A client-side
+Portable Wallet provider may create or restore a separate self-custodial wallet
+seed under the requirements in `docs/specs/wallets.md`; this does not authorize
+generation, storage, or access to a user's Nostr account key.
+
 ### Client Ephemeral Guest Order Key Exception
 
 Guest external-wallet checkout may create a per-order browser-generated key to
@@ -97,9 +102,13 @@ The exception is constrained as follows:
 - The guest contact/address draft must remain in expiring same-tab storage and
   be cleared as soon as the encrypted order reaches the merchant.
 - The client may expose the key only to the signing path for the initial private
-  order and same-order payment reports addressed to that order's merchant. This
-  is an application boundary; the extractable raw key is not cryptographically
-  restricted to those events.
+  order, same-order payment reports, and one fixed, recipient-only advisory
+  `kind:14` order notification addressed to that order's merchant after the
+  authoritative order receives a relay acknowledgement. The advisory requires
+  the merchant's declared inbox, must not use compatibility routing, and must
+  contain no order, payment, contact, address, or item details. This is an
+  application boundary;
+  the extractable raw key is not cryptographically restricted to those events.
 - Guest clients must not publish a buyer self-copy, advertise a `kind:10050`
   inbox, poll for merchant replies, or cache the decrypted order payload as
   durable order history.

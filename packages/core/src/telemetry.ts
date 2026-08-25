@@ -2,57 +2,31 @@ import { normalizePubkey, pubkeyToNpub } from "./utils"
 
 export type ConduitTelemetryApp = "market" | "merchant"
 
-export const browserTelemetryEventNames = [
-  "app_load_result",
-  "client_error_result",
-  "signer_connected",
-  "signer_disconnected",
-  "cart_add",
-  "cart_remove",
-  "cart_clear",
-  "checkout_initiated",
-  "checkout_step_result",
-  "checkout_success",
-  "checkout_result",
-  "relay_connect_result",
-  "relay_publish_result",
-  "wallet_connect_result",
-  "payment_attempt_result",
-  "merchant_setup_step_result",
-  "product_publish_result",
-  "shipping_publish_result",
-  "market_browse_action",
-  "product_detail_action",
-] as const
-
-export type BrowserTelemetryEventName =
-  (typeof browserTelemetryEventNames)[number]
-
-export const browserTelemetryPropertyNames = [
-  "event_name",
-  "app",
-  "network",
-  "status",
-  "latency_bucket",
-  "count",
-  "time_bucket",
-  "surface",
-  "action",
-  "step",
-  "mode",
-  "rail",
-  "method",
-  "event_family",
-  "count_bucket",
-  "result_count_bucket",
-  "amount_bucket",
-  "product_type",
-  "page_url",
-  "page_path",
-] as const
-
-export type BrowserTelemetryPropertyName =
-  (typeof browserTelemetryPropertyNames)[number]
+export {
+  browserTelemetryEventPropertyContracts,
+  browserTelemetryEventNames,
+  browserTelemetryPropertyNames,
+  hasRequiredBrowserTelemetryEventProperties,
+  isAllowedBrowserTelemetryEventApp,
+  isAllowedBrowserTelemetryEventProperty,
+  isAllowedBrowserTelemetryLabelValue,
+} from "./telemetry-contract"
+export type {
+  BrowserTelemetryEventName,
+  BrowserTelemetryPropertyName,
+} from "./telemetry-contract"
+import {
+  browserTelemetryEventNames,
+  browserTelemetryPropertyNames,
+  hasRequiredBrowserTelemetryEventProperties,
+  isAllowedBrowserTelemetryEventApp,
+  isAllowedBrowserTelemetryEventProperty,
+  isAllowedBrowserTelemetryLabelValue,
+} from "./telemetry-contract"
+import type {
+  BrowserTelemetryEventName,
+  BrowserTelemetryPropertyName,
+} from "./telemetry-contract"
 
 export type BrowserTelemetryEventProperties = Partial<
   Record<BrowserTelemetryPropertyName, string | boolean>
@@ -147,6 +121,7 @@ export interface ConduitPostHogConfig {
   capture_heatmaps: false
   capture_pageview: false
   capture_pageleave: true
+  disable_compression: true
   capture_performance: {
     network_timing: false
     web_vitals: true
@@ -234,25 +209,35 @@ const staticTelemetryRouteSegments = new Set([
 export const sensitiveTelemetryPropertyNames = [
   "address",
   "content",
+  "credential",
+  "derivedKey",
   "fingerprint",
   "invoice",
   "lnurl",
   "message",
+  "mnemonic",
   "npub",
   "nwcUri",
   "nwc_uri",
   "orderId",
   "order_id",
   "paymentHash",
+  "paymentTarget",
   "preimage",
   "productTitle",
   "pubkey",
   "secret",
+  "seed",
+  "recoveryPhrase",
   "shippingAddress",
   "signer",
   "title",
   "userAgent",
   "wallet",
+  "walletBalance",
+  "walletId",
+  "wallet_id",
+  "balance",
 ] as const
 
 const browserTelemetryEventNameSet = new Set<string>(browserTelemetryEventNames)
@@ -411,7 +396,11 @@ export function isBrowserTelemetryEventName(
 
 export function sanitizeTelemetryEventProperties(
   input: TelemetryEventInput
-): Record<string, string | boolean> {
+): Record<string, string | boolean> | null {
+  if (!isAllowedBrowserTelemetryEventApp(input.eventName, input.app)) {
+    return null
+  }
+
   const sanitized: Record<string, string | boolean> = {
     event_name: input.eventName,
     app: input.app,
@@ -421,16 +410,21 @@ export function sanitizeTelemetryEventProperties(
     if (
       !browserTelemetryPropertyNameSet.has(key) ||
       key === "event_name" ||
-      key === "app"
+      key === "app" ||
+      key === "page_path" ||
+      key === "page_url" ||
+      !isAllowedBrowserTelemetryEventProperty(input.eventName, key)
     ) {
-      continue
+      return null
     }
-    if (typeof value === "boolean") {
-      sanitized[key] = value
-      continue
-    }
-    const normalized = sanitizeTelemetryPropertyValue(value)
-    if (normalized) sanitized[key] = normalized
+    if (typeof value !== "string") return null
+    const normalized = sanitizeTelemetryPropertyValue(
+      key,
+      value,
+      input.eventName
+    )
+    if (!normalized) return null
+    sanitized[key] = normalized
   }
 
   return sanitized
@@ -462,6 +456,7 @@ export function getConduitPostHogConfig(
     capture_heatmaps: false,
     capture_pageview: false,
     capture_pageleave: true,
+    disable_compression: true,
     capture_performance: {
       network_timing: false,
       web_vitals: true,
@@ -503,19 +498,31 @@ export function sanitizePostHogCaptureEvent(
   const sourceProperties = event.properties ?? {}
   const sanitizedProperties: Record<string, PostHogPropertyValue> =
     getPostHogIngestionProperties(sourceProperties)
+  const isBrowserEvent = isBrowserTelemetryEventName(eventName)
 
   for (const [key, value] of Object.entries(sourceProperties)) {
     if (!browserTelemetryPropertyNameSet.has(key)) continue
-
-    if (typeof value === "boolean") {
-      sanitizedProperties[key] = value
-      continue
+    if (
+      isBrowserEvent &&
+      !isAllowedBrowserTelemetryEventProperty(eventName, key)
+    ) {
+      return null
     }
-    if (typeof value !== "string") continue
+    if (
+      !isBrowserEvent &&
+      key !== "app" &&
+      key !== "page_path" &&
+      key !== "page_url"
+    ) {
+      return null
+    }
+
+    if (typeof value !== "string") return null
 
     if (key === "page_url") {
       const pageUrl = sanitizeTelemetryRouteUrl(value)
-      if (pageUrl) sanitizedProperties[key] = pageUrl
+      if (!pageUrl) return null
+      sanitizedProperties[key] = pageUrl
       continue
     }
     if (key === "page_path") {
@@ -523,8 +530,9 @@ export function sanitizePostHogCaptureEvent(
       continue
     }
 
-    const normalized = sanitizeTelemetryPropertyValue(value)
-    if (normalized) sanitizedProperties[key] = normalized
+    const normalized = sanitizeTelemetryPropertyValue(key, value, eventName)
+    if (!normalized) return null
+    sanitizedProperties[key] = normalized
   }
 
   addPostHogSessionContext(sanitizedProperties, sourceProperties)
@@ -573,6 +581,12 @@ export function sanitizePostHogCaptureEvent(
   const inferredApp = getTelemetryAppForPageUrl(pageUrl)
   if (typeof sanitizedProperties.app !== "string" && inferredApp !== null) {
     sanitizedProperties.app = inferredApp
+  }
+  if (
+    isBrowserEvent &&
+    !hasRequiredBrowserTelemetryEventProperties(eventName, sanitizedProperties)
+  ) {
+    return null
   }
 
   const sanitizedEvent: PostHogCaptureEvent = {
@@ -732,12 +746,20 @@ function recordBrowserTelemetryEventUnsafe(input: TelemetryEventInput): void {
   if (!isTelemetryAllowedForCurrentHost(config)) return
   if (isGlobalPrivacyControlEnabled()) return
 
+  const sanitizedProperties = sanitizeTelemetryEventProperties(input)
+  if (!sanitizedProperties) return
+
   const properties = {
-    ...sanitizeTelemetryEventProperties(input),
+    ...sanitizedProperties,
     ...buildTelemetryEventPageContext({
       origin: window.location.origin,
       pathname: window.location.pathname,
     }),
+  }
+  if (
+    !hasRequiredBrowserTelemetryEventProperties(input.eventName, properties)
+  ) {
+    return
   }
 
   if (config.plausible) {
@@ -841,15 +863,19 @@ function sanitizeTelemetryRouteUrl(value: string | null): string | null {
   }
 }
 
-function sanitizeTelemetryPropertyValue(value: string): string | null {
+function sanitizeTelemetryPropertyValue(
+  propertyName: string,
+  value: string,
+  eventName?: string
+): string | null {
   const normalized = value.trim().toLowerCase()
-  if (!normalized) return null
-  if (normalized.length > 64) return null
-  if (/^https?:\/\//.test(normalized) || normalized.includes("://")) return null
-  if (/^[0-9a-f]{64}$/i.test(normalized)) return null
-  if (/^(naddr|nevent|note|nprofile|npub|nsec)1/i.test(normalized)) return null
-  if (!/^[a-z0-9_:-]+$/.test(normalized)) return null
-  return normalized
+  return isAllowedBrowserTelemetryLabelValue(
+    propertyName,
+    normalized,
+    eventName
+  )
+    ? normalized
+    : null
 }
 
 function parseAllowedTelemetryHosts(raw: string | undefined): string[] {

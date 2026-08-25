@@ -7,6 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react"
+import type { NDKSigner } from "@nostr-dev-kit/ndk"
 import { CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS } from "../config"
 import {
   getNdk,
@@ -59,6 +60,9 @@ export type AuthStatus =
 
 export interface AuthContextValue {
   pubkey: string | null
+  restorePendingPubkey: string | null
+  signer: NDKSigner | null
+  authGeneration: number
   method: AuthMethod | null
   rememberedMethod: AuthMethod | null
   status: AuthStatus
@@ -78,7 +82,83 @@ export interface AuthSignerCapabilities {
   nip44: boolean
   nip04: boolean
 }
+
+export type AuthSignerReadiness =
+  | "disconnected"
+  | "pending"
+  | "ready"
+  | "unavailable"
+  | "incompatible"
+
+export function getAuthSignerReadiness(input: {
+  status: AuthStatus
+  pubkey: string | null
+  signer: NDKSigner | null
+  capabilities: AuthSignerCapabilities
+}): AuthSignerReadiness {
+  if (input.status === "restoring" || input.status === "connecting") {
+    return "pending"
+  }
+  if (input.status !== "connected") {
+    return input.pubkey ? "unavailable" : "disconnected"
+  }
+  if (!input.pubkey || !input.signer) return "unavailable"
+  if (!input.capabilities.signEvent || !input.capabilities.nip44) {
+    return "incompatible"
+  }
+  return "ready"
+}
+
 export type AuthConnectMode = "interactive" | "restore"
+
+export function shouldReuseConnectedAuthSession(
+  mode: AuthConnectMode,
+  connected: boolean
+): boolean {
+  return mode === "restore" && connected
+}
+
+export interface AuthRestorePendingState {
+  attempt: number
+  active: boolean
+  owner: string | null
+}
+
+export function beginAuthRestorePending(
+  state: AuthRestorePendingState,
+  owner: string
+): AuthRestorePendingState {
+  return {
+    attempt: state.attempt + 1,
+    active: true,
+    owner,
+  }
+}
+
+export function isAuthRestoreAttemptCurrent(
+  state: AuthRestorePendingState,
+  attempt: number
+): boolean {
+  return state.active && state.attempt === attempt
+}
+
+export function settleAuthRestorePending(
+  state: AuthRestorePendingState,
+  attempt?: number
+): { state: AuthRestorePendingState; settled: boolean } {
+  if (attempt !== undefined && attempt !== state.attempt) {
+    return { state, settled: false }
+  }
+
+  return {
+    state: {
+      attempt: state.attempt + 1,
+      active: false,
+      owner: null,
+    },
+    settled: true,
+  }
+}
 
 export interface AuthConnectOptions {
   mode?: AuthConnectMode
@@ -89,6 +169,7 @@ export interface AuthConnectOptions {
 
 type AuthConnectAttemptOptions = AuthConnectOptions & {
   pairingSignal?: AbortSignal
+  restorePendingAttempt?: number
 }
 
 const INTERACTIVE_INJECTION_WAIT_MS = 2_000
@@ -345,6 +426,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [pubkey, setPubkey] = useState<string | null>(
     () => initialSessionRef.current?.userPubkey ?? null
   )
+  const [restorePendingPubkey, setRestorePendingPubkey] = useState<
+    string | null
+  >(() => initialSessionRef.current?.userPubkey ?? null)
+  const [signer, setAuthSigner] = useState<NDKSigner | null>(null)
   const [method, setMethod] = useState<AuthMethod | null>(
     () => initialSessionRef.current?.type ?? null
   )
@@ -360,6 +445,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [capabilities, setCapabilities] = useState<AuthSignerCapabilities>(
     NO_SIGNER_CAPABILITIES
   )
+  const [authGeneration, setAuthGeneration] = useState(0)
   const connecting = useRef(false)
   const connected = useRef(false)
   const authEpoch = useRef(0)
@@ -371,11 +457,56 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const activeSessionSigner = useRef<SessionSigner | null>(null)
   const activeSession = useRef<AuthSession | null>(null)
   const activePairing = useRef<AbortController | null>(null)
+  const restorePending = useRef<AuthRestorePendingState>({
+    attempt: 0,
+    active: !!initialSessionRef.current,
+    owner: initialSessionRef.current?.userPubkey ?? null,
+  })
+
+  const beginRestorePending = useCallback((owner: string): number => {
+    const next = beginAuthRestorePending(restorePending.current, owner)
+    restorePending.current = next
+    setRestorePendingPubkey(next.owner)
+    return next.attempt
+  }, [])
+
+  const settleRestorePending = useCallback((attempt?: number): boolean => {
+    const result = settleAuthRestorePending(restorePending.current, attempt)
+    if (!result.settled) return false
+    restorePending.current = result.state
+    setRestorePendingPubkey(result.state.owner)
+    return true
+  }, [])
+
+  const invalidatePendingRestoreForDisconnect = useCallback((): boolean => {
+    if (!restorePending.current.active) return false
+
+    // A restore cannot install a local or remote signer until after its final
+    // authority fence. JavaScript cannot interleave this handler with that
+    // synchronous success settlement, so an active pending restore owns no
+    // connection that this local reset could discard.
+    authEpoch.current += 1
+    setAuthGeneration(authEpoch.current)
+    connecting.current = false
+    connected.current = false
+    settleRestorePending()
+    setAuthSigner(null)
+    setPubkey(null)
+    setMethod(null)
+    setRememberedMethod(null)
+    setStatus("disconnected")
+    setError(null)
+    setAuthUrl(null)
+    setNostrConnectUri(null)
+    setCapabilities(NO_SIGNER_CAPABILITIES)
+    return true
+  }, [settleRestorePending])
 
   const deactivateLocalSigner = useCallback(() => {
     activePairing.current?.abort()
     activePairing.current = null
     authEpoch.current += 1
+    setAuthGeneration(authEpoch.current)
     connecting.current = false
     connected.current = false
     const connection = remoteConnection.current
@@ -389,6 +520,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     sessionSigner?.invalidateLocal()
     connection?.signer.invalidate()
     if (signerLease) removeSigner(signerLease)
+    setAuthSigner(null)
     setPubkey(null)
     setMethod(null)
     setRememberedMethod(null)
@@ -443,11 +575,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const storedSession = readAuthSession()
     const requestedMethod =
       options.method ?? (mode === "restore" ? storedSession?.type : "nip07")
+    if (
+      mode === "restore" &&
+      options.restorePendingAttempt !== undefined &&
+      !isAuthRestoreAttemptCurrent(
+        restorePending.current,
+        options.restorePendingAttempt
+      )
+    ) {
+      return
+    }
     if (connecting.current) return
+    // StrictMode and overlapping restore callers can queue behind the browser
+    // lock. If another restore connected first, this request is satisfied.
+    if (shouldReuseConnectedAuthSession(mode, connected.current)) {
+      if (mode === "restore") {
+        settleRestorePending(options.restorePendingAttempt)
+      }
+      return
+    }
     if (connected.current) {
+      if (mode === "restore") return
       throw new Error("Disconnect the current signer before connecting another.")
     }
     if (!requestedMethod) {
+      if (mode === "restore") {
+        settleRestorePending(options.restorePendingAttempt)
+      }
       const missingSessionError = new Error(
         mode === "restore"
           ? "The saved signer session is no longer available. Connect again."
@@ -462,10 +616,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     connecting.current = true
     const epoch = authEpoch.current + 1
     authEpoch.current = epoch
+    setAuthGeneration(epoch)
+    const restoreAttempt =
+      mode === "restore" && storedSession
+        ? (options.restorePendingAttempt ??
+          beginRestorePending(storedSession.userPubkey))
+        : undefined
     let authRevision = readAuthRevision()
     const attemptOwnsEpoch = () => epoch === authEpoch.current
+    const restoreAttemptIsCurrent = () =>
+      mode !== "restore" ||
+      (restoreAttempt !== undefined &&
+        isAuthRestoreAttemptCurrent(restorePending.current, restoreAttempt))
     const attemptIsCurrent = () =>
-      attemptOwnsEpoch() && authRevision === readAuthRevision()
+      attemptOwnsEpoch() &&
+      authRevision === readAuthRevision() &&
+      restoreAttemptIsCurrent()
     let uncommittedRemote: RemoteSignerConnection | null = null
     let remotePersistenceStarted = false
     let sessionPersisted = false
@@ -655,6 +821,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       remoteConnection.current = connectedRemote
       uncommittedRemote = null
       activeSession.current = session
+      setAuthSigner(sessionSigner)
       setPubkey(pk)
       setMethod(session.type)
       setRememberedMethod(session.type)
@@ -667,6 +834,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       )
       setAuthUrl(null)
       setNostrConnectUri(null)
+      if (mode === "restore" && attemptIsCurrent()) {
+        settleRestorePending(restoreAttempt)
+      }
     } catch (err) {
       const resolution = await resolveFailedAuthAttempt({
         failure: err,
@@ -691,6 +861,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         resolution.kind === "authority-retry" ||
         resolution.kind === "cleanup-error"
       ) {
+        if (mode === "restore" && attemptIsCurrent()) {
+          settleRestorePending(restoreAttempt)
+        }
         setStatus("error")
         setError(resolution.message)
         setNostrConnectUri(null)
@@ -700,6 +873,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return
       }
       const failure = resolution.failure
+      if (mode === "restore" && attemptIsCurrent()) {
+        settleRestorePending(restoreAttempt)
+      }
       const normalizedError =
         requestedMethod === "nip07"
           ? normalizeSignerConnectError(failure, mode)
@@ -718,21 +894,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         connecting.current = false
       }
     }
-  }, [handleSignerSessionInvalidated])
+  }, [beginRestorePending, handleSignerSessionInvalidated, settleRestorePending])
 
   const connect = useCallback(
     async (options: AuthConnectOptions = {}) => {
+      const mode = options.mode ?? "interactive"
+      if (shouldReuseConnectedAuthSession(mode, connected.current)) return
+      if (connecting.current) return
       activePairing.current?.abort()
       activePairing.current = null
       setNostrConnectUri(null)
       if (connected.current) {
         throw new Error("Disconnect the current signer before connecting another.")
       }
-      const mode = options.mode ?? "interactive"
+      const storedSession = mode === "restore" ? readAuthSession() : null
       const requestedMethod =
         options.method ??
-        (mode === "restore" ? readAuthSession()?.type ?? null : "nip07")
+        (mode === "restore" ? storedSession?.type ?? null : "nip07")
+      const pendingRestoreAttempt =
+        mode === "restore" && storedSession
+          ? beginRestorePending(storedSession.userPubkey)
+          : restorePending.current.attempt
       if (!requestedMethod) {
+        if (mode === "restore") settleRestorePending(pendingRestoreAttempt)
         const missingSessionError = new Error(
           "The saved signer session is no longer available. Connect again."
         )
@@ -755,8 +939,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           : null
       activePairing.current = pairingController
       const attemptOptions: AuthConnectAttemptOptions = pairingController
-        ? { ...options, pairingSignal: pairingController.signal }
-        : options
+        ? {
+            ...options,
+            pairingSignal: pairingController.signal,
+            ...(mode === "restore"
+              ? { restorePendingAttempt: pendingRestoreAttempt }
+              : {}),
+          }
+        : mode === "restore"
+          ? { ...options, restorePendingAttempt: pendingRestoreAttempt }
+          : options
 
       let operationStarted = false
       try {
@@ -778,6 +970,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             ? cause.message
             : "This browser could not start the signer connection. Check site storage permissions, then try again."
         )
+        if (pendingRestoreAttempt !== undefined) {
+          settleRestorePending(pendingRestoreAttempt)
+        }
         setStatus("error")
         setError(lockError.message)
         setAuthUrl(null)
@@ -789,12 +984,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
       }
     },
-    [connectWithoutLock]
+    [connectWithoutLock, settleRestorePending]
   )
 
   const cancelConnect = useCallback(() => {
     if (!activePairing.current) return
     authEpoch.current += 1
+    setAuthGeneration(authEpoch.current)
     activePairing.current.abort()
     activePairing.current = null
     connecting.current = false
@@ -807,6 +1003,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const disconnectWithoutLock = useCallback(async (broadcast = true) => {
     if (broadcast) bumpAuthRevision()
+    settleRestorePending()
     const storedSession = readAuthSession()
     const connection = deactivateLocalSigner()
     let cleanupFailed = !forgetAuthSession()
@@ -835,16 +1032,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         "Disconnected, but this browser could not erase the saved remote signer connection. Clear this site's storage before reconnecting."
       )
     }
-  }, [deactivateLocalSigner])
+  }, [deactivateLocalSigner, settleRestorePending])
 
   const disconnect = useCallback(
     () => {
+      invalidatePendingRestoreForDisconnect()
       activePairing.current?.abort()
       activePairing.current = null
       setNostrConnectUri(null)
       return withBrowserAuthOperationLock(() => disconnectWithoutLock(true))
     },
-    [disconnectWithoutLock]
+    [disconnectWithoutLock, invalidatePendingRestoreForDisconnect]
   )
 
   const dismissAuthUrl = useCallback(() => setAuthUrl(null), [])
@@ -873,7 +1071,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         event.key === AUTH_REVISION_STORAGE_KEY ||
         event.key === null
       ) {
-        if (!connected.current && !connecting.current) return
+        if (
+          !connected.current &&
+          !connecting.current &&
+          !restorePending.current.active
+        ) {
+          return
+        }
         if (
           event.key === AUTH_REVISION_STORAGE_KEY &&
           event.newValue === activeSession.current?.authClaim
@@ -881,6 +1085,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           return
         }
         const connection = deactivateLocalSigner()
+        settleRestorePending()
         if (connection) void connection.bunkerSigner.close()
         setStatus("error")
         setError(
@@ -892,13 +1097,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const replacement = readAuthSession()
       const previous = activeSession.current
       if (
-        JSON.stringify(replacement) === JSON.stringify(previous) ||
-        (!connected.current && !connecting.current)
+        (JSON.stringify(replacement) === JSON.stringify(previous) &&
+          !restorePending.current.active) ||
+        (!connected.current &&
+          !connecting.current &&
+          !restorePending.current.active)
       ) {
         return
       }
       const currentConnection = deactivateLocalSigner()
-      if (!currentConnection) return
+      settleRestorePending()
+      if (!currentConnection) {
+        setStatus("error")
+        setError(
+          "This signer session changed in another tab. Reconnect the intended account to continue."
+        )
+        return
+      }
       if (
         replacement?.type === "nip46" &&
         replacement.clientKeyId === currentConnection.session.clientKeyId
@@ -925,12 +1140,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     window.addEventListener("storage", handleStorage)
     return () => window.removeEventListener("storage", handleStorage)
-  }, [deactivateLocalSigner])
+  }, [deactivateLocalSigner, settleRestorePending])
 
   return (
     <AuthContext.Provider
       value={{
         pubkey,
+        restorePendingPubkey,
+        signer,
+        authGeneration,
         method,
         rememberedMethod,
         status,

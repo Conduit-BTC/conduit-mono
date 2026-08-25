@@ -7,6 +7,7 @@ import {
   Radio,
   ReceiptText,
   Search,
+  Settings2,
   ShoppingCart,
   Wallet,
 } from "lucide-react"
@@ -23,12 +24,12 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
+  Input,
   cn,
 } from "@conduit/ui"
 
 import { SignerSwitch } from "./SignerSwitch"
 import { useCart } from "../hooks/useCart"
-import { useWallet } from "../hooks/useWallet"
 
 type NavState = "top" | "scrolled" | "hidden"
 
@@ -61,7 +62,7 @@ function Logo() {
         fetchPriority="high"
         className="h-8 w-[6.75rem] shrink-0 object-contain"
       />
-      <span className="border-l border-[var(--border)] pl-2 font-display text-2xl font-medium text-[var(--text-primary)]">
+      <span className="hidden border-l border-[var(--border)] pl-2 font-display text-2xl font-medium text-[var(--text-primary)] min-[400px]:inline">
         market
       </span>
     </Link>
@@ -73,6 +74,7 @@ function HeaderAction({
   icon,
   active = false,
   enabled = true,
+  ariaLabel,
   className,
   labelClassName = "hidden xl:inline",
   count,
@@ -82,6 +84,7 @@ function HeaderAction({
   icon: ReactNode
   active?: boolean
   enabled?: boolean
+  ariaLabel?: string
   className?: string
   labelClassName?: string
   count?: number
@@ -90,7 +93,9 @@ function HeaderAction({
   return (
     <button
       type="button"
+      aria-label={ariaLabel ?? label}
       aria-disabled={!enabled}
+      aria-current={active ? "page" : undefined}
       title={enabled ? label : `Connect to use ${label.toLowerCase()}`}
       onClick={onClick}
       className={cn(
@@ -155,7 +160,7 @@ function AccountMenuLink({
   icon: ReactNode
   label: string
   detail?: string
-  to: "/profile" | "/network" | "/wallet"
+  to: "/profile" | "/preferences" | "/network" | "/wallet"
   onClick: () => void
 }) {
   return (
@@ -182,7 +187,6 @@ function AccountControl({
   displayName,
   npub,
   avatarUrl,
-  walletStatusLabel,
   authPending,
   onConnect,
   onDisconnect,
@@ -191,7 +195,6 @@ function AccountControl({
   displayName: string
   npub?: string
   avatarUrl?: string | null
-  walletStatusLabel?: string
   authPending: boolean
   onConnect: () => void
   onDisconnect: () => void
@@ -257,6 +260,12 @@ function AccountControl({
           onClick={() => setOpen(false)}
         />
         <AccountMenuLink
+          icon={<Settings2 className="size-4" />}
+          label="Preferences"
+          to="/preferences"
+          onClick={() => setOpen(false)}
+        />
+        <AccountMenuLink
           icon={<Radio className="size-4" />}
           label="Network"
           to="/network"
@@ -264,8 +273,7 @@ function AccountControl({
         />
         <AccountMenuLink
           icon={<Wallet className="size-4" />}
-          label="Wallet"
-          detail={walletStatusLabel}
+          label="Wallets"
           to="/wallet"
           onClick={() => setOpen(false)}
         />
@@ -289,7 +297,6 @@ export function MarketHeader() {
   const { data: profile } = useProfile(pubkey, {
     authenticatedPubkey: pubkey,
   })
-  const wallet = useWallet()
   const cart = useCart()
   const navigate = useNavigate()
   const { pathname, search } = useRouterState({
@@ -310,14 +317,6 @@ export function MarketHeader() {
   const displayName = connected
     ? (profile?.displayName ?? profile?.name ?? formatNpub(pubkey, 6))
     : "Connect"
-  const walletStatusLabel =
-    wallet.status === "pay-capable"
-      ? "Ready"
-      : wallet.status === "unreachable"
-        ? "Saved"
-        : wallet.status === "disconnected"
-          ? "Not connected"
-          : undefined
   const normalizedSearchValue = searchValue.trim()
   const pendingSearch = useMemo(
     () =>
@@ -461,7 +460,7 @@ export function MarketHeader() {
             <Badge
               variant="secondary"
               className={cn(
-                "border text-[10px] uppercase tracking-wider",
+                "hidden border text-[10px] uppercase tracking-wider min-[400px]:inline-flex",
                 config.lightningNetwork === "mock"
                   ? "border-yellow-500/30 bg-yellow-500/10 text-yellow-400"
                   : "border-blue-500/30 bg-blue-500/10 text-blue-400"
@@ -481,7 +480,7 @@ export function MarketHeader() {
             }}
           >
             <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--text-muted)]" />
-            <input
+            <Input
               ref={searchInputRef}
               value={searchValue}
               onChange={(event) => {
@@ -490,7 +489,7 @@ export function MarketHeader() {
               }}
               placeholder="Search"
               aria-label="Search products"
-              className="h-10 w-full rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] pl-9 pr-9 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-0"
+              className="h-11 bg-[var(--surface-elevated)] pl-9 pr-9 focus-visible:ring-offset-0"
             />
             <div className="pointer-events-none absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-2 text-[var(--text-muted)]">
               {pendingSearch ? (
@@ -517,6 +516,13 @@ export function MarketHeader() {
           className="market-header-utility-nav flex min-w-0 items-center gap-1.5"
         >
           <HeaderAction
+            label="Wallets"
+            icon={<Wallet className="size-4" aria-hidden="true" />}
+            active={pathname === "/wallet"}
+            labelClassName="hidden xl:inline"
+            onClick={() => void navigate({ to: "/wallet" })}
+          />
+          <HeaderAction
             label="Messages"
             icon={<MessagesSquare className="size-4" aria-hidden="true" />}
             enabled={connected}
@@ -534,6 +540,9 @@ export function MarketHeader() {
           />
           <HeaderAction
             label="Cart"
+            ariaLabel={`Cart, ${cart.totals.count} ${
+              cart.totals.count === 1 ? "item" : "items"
+            }`}
             icon={<ShoppingCart className="size-4" aria-hidden="true" />}
             active={pathname === "/cart"}
             labelClassName="hidden sm:inline"
@@ -548,7 +557,6 @@ export function MarketHeader() {
             displayName={displayName}
             npub={pubkey ? formatNpub(pubkey, 8) : undefined}
             avatarUrl={profile?.picture}
-            walletStatusLabel={walletStatusLabel}
             authPending={authPending}
             onConnect={() => setConnectOpen(true)}
             onDisconnect={disconnect}
