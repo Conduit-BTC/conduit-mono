@@ -328,6 +328,8 @@ export type PaymentRequestMessageSchema = z.infer<
 export const statusUpdateMessageSchema = z.object({
   status: orderStatusSchema,
   note: z.string().max(2000).optional(),
+  /** Event id of the cancellation this explicit correction reopens. */
+  reopens: z.string().min(1).optional(),
 })
 
 export type StatusUpdateMessageSchema = z.infer<

@@ -2405,6 +2405,78 @@ describe("commerce gateway", () => {
     expect(detailResult.data?.messages).toHaveLength(2)
   })
 
+  it("projects buyer summaries through the merchant cancellation reducer", async () => {
+    const row = (
+      id: string,
+      type: CachedOrderMessage["type"],
+      createdAt: number,
+      payload: Record<string, unknown>
+    ): CachedOrderMessage => ({
+      id,
+      orderId: "order-cancelled",
+      type,
+      senderPubkey: type === "order" ? "buyer" : "merchant",
+      recipientPubkey: type === "order" ? "merchant" : "buyer",
+      createdAt,
+      rawContent: JSON.stringify({
+        id,
+        orderId: "order-cancelled",
+        type,
+        createdAt,
+        senderPubkey: type === "order" ? "buyer" : "merchant",
+        recipientPubkey: type === "order" ? "merchant" : "buyer",
+        rawContent: "",
+        payload,
+      }),
+      cachedAt: createdAt,
+    })
+
+    cachedOrderMessages.push(
+      row("order", "order", FIXED_NOW - 5_000, {
+        id: "order-cancelled",
+        merchantPubkey: "merchant",
+        buyerPubkey: "buyer",
+        items: [
+          {
+            productId: "30402:merchant:item",
+            quantity: 1,
+            priceAtPurchase: 25,
+            currency: "USD",
+          },
+        ],
+        subtotal: 25,
+        currency: "USD",
+        createdAt: FIXED_NOW - 5_000,
+      }),
+      row("accepted", "status_update", FIXED_NOW - 4_000, {
+        status: "accepted",
+      }),
+      row("cancel", "status_update", FIXED_NOW - 3_000, {
+        status: "cancelled",
+      }),
+      row("stale-shipping", "shipping_update", FIXED_NOW - 2_000, {
+        carrier: "Stale",
+        trackingNumber: "STALE",
+      }),
+      row("stale-processing", "status_update", FIXED_NOW - 1_000, {
+        status: "processing",
+      })
+    )
+
+    const result = await getCachedBuyerConversationList({
+      principalPubkey: "buyer",
+    })
+
+    expect(result.data).toHaveLength(1)
+    expect(result.data[0]).toMatchObject({
+      status: "cancelled",
+      latestType: "status_update",
+      preview: "Status updated to cancelled",
+      messageCount: 5,
+    })
+    expect(result.data[0]?.messages).toHaveLength(5)
+  })
+
   it("separates buyer-placed and merchant-received orders by role", async () => {
     const orderRow = (
       orderId: string,

@@ -568,11 +568,27 @@ Tags:
 - `["type", "status_update"]`
 - `["order", order_id]`
 - `["status", "pending" | "invoiced" | "paid" | "processing" | "shipped" | "complete" | "cancelled"]`
+- `["reopens", cancellation_event_id]` only for a cancellation correction
 
 Content:
 
-- legacy JSON payload defined by the shared Conduit schema, including any
-  optional status message
+```json
+{
+  "status": "<status tag value>",
+  "note": "optional",
+  "reopens": "optional cancellation event id"
+}
+```
+
+`reopens` is a narrow correction contract. It is valid only on a
+merchant-authored `status_update`, must be present with the same value in the
+tag and JSON payload emitted by Conduit, and must reference the currently
+effective merchant-authored `cancelled` event for the same order and buyer.
+The correction status must exactly resume the last known nonterminal status
+from before that cancellation. Unknown, stale, replayed, mismatched, or
+otherwise invalid references do not move the lifecycle. `complete`, `delivered`,
+and `refund_requested` histories are not reopenable through this mechanism.
+The deterministic replay rules are defined in `docs/specs/order-lifecycle.md`.
 
 ### `shipping_update`
 

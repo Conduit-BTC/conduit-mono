@@ -28,6 +28,7 @@ export interface ReadProtectedInboxOptions {
   principalPubkey: string
   relayUrls: string[]
   limit: number
+  until?: number
   authorization: ProtectedReadAuthorization | null
   executor?: CommerceRelayExecutor
   signal?: AbortSignal
@@ -140,6 +141,7 @@ export async function readProtectedInbox(
           kinds: [1_059],
           "#p": [principalPubkey],
           limit: options.limit,
+          ...(options.until === undefined ? {} : { until: options.until }),
         },
       ],
       operation: "private_inbox_read",

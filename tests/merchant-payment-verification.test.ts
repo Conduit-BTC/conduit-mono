@@ -198,13 +198,19 @@ describe("merchant NWC payment verification", () => {
   })
 
   it("requires exact order invoices and rejects replay across orders", () => {
-    expect(getMerchantPaymentVerificationCandidates([conversation()])).toEqual([
+    const matchingConversation = conversation()
+    const candidates = getMerchantPaymentVerificationCandidates([
+      matchingConversation,
+    ])
+    expect(candidates).toEqual([
       expect.objectContaining({
         orderId: "order-1",
         invoice,
         expectedAmountMsats: 100_000,
+        inboundOrder: matchingConversation.messages[0],
       }),
     ])
+    expect(candidates[0]?.inboundOrder.type).toBe("order")
 
     expect(
       getMerchantPaymentVerificationCandidates([
@@ -217,6 +223,68 @@ describe("merchant NWC payment verification", () => {
         conversation("order-1"),
         invoiceOnlyConversation("order-2"),
       ])
+    ).toEqual([])
+  })
+
+  it("does not authorize a fiat payment from an invoice inside cancellation", () => {
+    const base = conversation()
+    const order = {
+      ...base.messages![0]!,
+      payload: {
+        ...(base.messages![0] as Extract<ParsedOrderMessage, { type: "order" }>)
+          .payload,
+        subtotal: 1,
+        currency: "USD",
+      },
+    } as ParsedOrderMessage
+    const paymentRequest = {
+      id: "invoice-inside-cancellation",
+      orderId: base.orderId,
+      type: "payment_request",
+      createdAt: createdAt + 2_000,
+      senderPubkey: "merchant",
+      recipientPubkey: "buyer",
+      rawContent: "",
+      payload: {
+        orderId: base.orderId,
+        invoice,
+        amount: 1,
+        currency: "USD",
+      },
+    } as ParsedOrderMessage
+    const cancellation = {
+      id: "cancel-pending",
+      orderId: base.orderId,
+      type: "status_update",
+      createdAt: createdAt + 1_000,
+      senderPubkey: "merchant",
+      recipientPubkey: "buyer",
+      rawContent: "",
+      payload: { orderId: base.orderId, status: "cancelled" },
+    } as ParsedOrderMessage
+    const reopen = {
+      ...cancellation,
+      id: "reopen-pending",
+      createdAt: createdAt + 3_000,
+      payload: {
+        orderId: base.orderId,
+        status: "pending",
+        reopens: cancellation.id,
+      },
+    } as ParsedOrderMessage
+    const proof = {
+      ...base.messages![1]!,
+      createdAt: createdAt + 4_000,
+    } as ParsedOrderMessage
+    const reopenedConversation: MerchantConversationSummary = {
+      ...base,
+      status: "pending",
+      latestAt: createdAt + 4_000,
+      messages: [order, cancellation, paymentRequest, reopen, proof],
+    }
+
+    expect(
+      getMerchantPaymentVerificationCandidates([reopenedConversation])
     ).toEqual([])
   })
 

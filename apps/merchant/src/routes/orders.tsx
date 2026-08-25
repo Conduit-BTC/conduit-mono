@@ -15,6 +15,7 @@ import {
   getLightningNetworkMismatchMessage,
   getMerchantConversationList,
   getMerchantOrderActions,
+  getMerchantOrderReopenTransition,
   getProductImageCandidates,
   getProductsByIds,
   hasWebLN,
@@ -30,9 +31,13 @@ import {
   selectProtectedReadRows,
   weblnMakeInvoice,
   type MerchantConversationSummary,
+  type ConversationListSortMode,
   type MerchantOrderAction,
+  type MerchantOrderPriorityBucket,
+  type MerchantOrderReopenTransition,
   type MerchantOrderState,
   type KnownOrderStatus,
+  type ParsedOrderMessage,
   type Profile,
   type SignedPublicNostrEvent,
   useAuth,
@@ -92,6 +97,8 @@ import {
 } from "../lib/order-phase"
 import {
   buildMerchantOrderActionView,
+  getMerchantOrderActionErrorMessage,
+  getMerchantOrderActionLabel,
   getMerchantOrderCancellationCopy,
   isMerchantOrderActionSurfacePending,
   runExclusiveOrderAction,
@@ -125,6 +132,7 @@ import { Check, ChevronRight, Copy, MessageCircle, Search } from "lucide-react"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { useMerchantPaymentAutomation } from "../hooks/useMerchantPaymentAutomation"
 import { OrderStockPanel } from "../components/OrderStockPanel"
+import { GuestOrderNotice } from "../components/GuestOrderNotice"
 
 type OrdersSearch = { order?: string; queue?: OrderQueueTab }
 
@@ -150,6 +158,11 @@ type StockUpdateMutationPayload =
     }
 
 const ORDERS_SEARCH_DEFAULT: OrdersSearch = {}
+const ORDER_QUEUE_OPTIONS = ORDER_PHASE_OPTIONS.map((option) =>
+  option.value === "unpaid_review"
+    ? { ...option, label: "Unpaid / waiting" }
+    : option
+)
 
 export const Route = createFileRoute("/orders")({
   validateSearch: (search: Record<string, unknown>): OrdersSearch => {
@@ -245,11 +258,11 @@ function SearchBox({
 const ORDER_SEARCH_PRODUCT_CAP = 100
 
 function emptyOrdersLabel(query: string, phase: OrderQueueTab): string {
-  if (query) return `No orders match "${query}".`
+  if (query) return `No shown orders match "${query}".`
   if (phase !== "all") {
     const label =
-      ORDER_PHASE_OPTIONS.find((option) => option.value === phase)?.label ?? ""
-    return `No ${label.toLowerCase()} orders.`
+      ORDER_QUEUE_OPTIONS.find((option) => option.value === phase)?.label ?? ""
+    return `No orders in ${label}.`
   }
   return "No orders yet."
 }
@@ -265,7 +278,7 @@ function OrderPhaseFilter({
     <Select
       value={value}
       onValueChange={(nextValue) => {
-        const selectedOption = ORDER_PHASE_OPTIONS.find(
+        const selectedOption = ORDER_QUEUE_OPTIONS.find(
           (option) => option.value === nextValue
         )
         if (selectedOption) onChange(selectedOption.value)
@@ -278,13 +291,53 @@ function OrderPhaseFilter({
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
-        {ORDER_PHASE_OPTIONS.map((option) => (
+        {ORDER_QUEUE_OPTIONS.map((option) => (
           <SelectItem key={option.value} value={option.value}>
             {option.label}
           </SelectItem>
         ))}
       </SelectContent>
     </Select>
+  )
+}
+
+function OrderSortSelect({
+  value,
+  onChange,
+}: {
+  value: ConversationListSortMode
+  onChange: (value: ConversationListSortMode) => void
+}) {
+  return (
+    <div>
+      <Select
+        value={value}
+        onValueChange={(nextValue) => {
+          if (
+            nextValue === "merchant_priority" ||
+            nextValue === "recent_activity"
+          ) {
+            onChange(nextValue)
+          }
+        }}
+      >
+        <SelectTrigger
+          aria-label="Sort orders"
+          className="mt-2 h-11 rounded-xl bg-[var(--surface)] px-3 shadow-none"
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="merchant_priority">Needs action</SelectItem>
+          <SelectItem value="recent_activity">Recent activity</SelectItem>
+        </SelectContent>
+      </Select>
+      <p className="mt-1 px-1 text-xs leading-5 text-[var(--text-muted)]">
+        {value === "merchant_priority"
+          ? "Paid and payment-review orders first; oldest tasks first."
+          : "Newest conversation activity first."}
+      </p>
+    </div>
   )
 }
 
@@ -341,6 +394,13 @@ function OrdersPage() {
   >(null)
   const [orderSearch, setOrderSearch] = useState("")
   const [phaseTab, setPhaseTab] = useState<OrderQueueTab>(selectedQueueFromUrl)
+  const [orderSort, setOrderSort] =
+    useState<ConversationListSortMode>("merchant_priority")
+  const selectedMerchantQueue: MerchantOrderPriorityBucket | undefined =
+    phaseTab === "all" ? undefined : phaseTab
+  const selectedQueueLabel =
+    ORDER_QUEUE_OPTIONS.find((option) => option.value === phaseTab)?.label ??
+    "All"
   const [ordersSheetOpen, setOrdersSheetOpen] = useState(false)
   const [orderDetailsOpen, setOrderDetailsOpen] = useState(false)
   const [messagesOpen, setMessagesOpen] = useState(false)
@@ -368,6 +428,7 @@ function OrdersPage() {
     useState<MerchantOrderAction | null>(null)
   const [confirmingOutOfBandPayment, setConfirmingOutOfBandPayment] =
     useState(false)
+  const [confirmingReopen, setConfirmingReopen] = useState(false)
   const orderActionLockRef = useRef(false)
   const stockDecisionStoreRef = useRef(new ProductStockDecisionStore())
   const pendingStockDeliveryStoreRef = useRef(
@@ -375,6 +436,9 @@ function OrdersPage() {
   )
   const [weblnAvailable, setWeblnAvailable] = useState(false)
   const selectedOrderResetRef = useRef<string | null>(null)
+  const successFlashResetTimerRef = useRef<ReturnType<
+    typeof setTimeout
+  > | null>(null)
   const signerConnected = status === "connected" && !!pubkey
   const invoiceAmountNumber = useMemo(() => {
     const amount = Number(invoiceAmount)
@@ -408,7 +472,14 @@ function OrdersPage() {
   }, [])
 
   const flash = useCallback((message: string) => {
+    if (successFlashResetTimerRef.current) {
+      clearTimeout(successFlashResetTimerRef.current)
+    }
     setSuccessFlash(message)
+    successFlashResetTimerRef.current = setTimeout(() => {
+      setSuccessFlash(null)
+      successFlashResetTimerRef.current = null
+    }, 5_000)
   }, [])
 
   const nwc = useMerchantPaymentAutomation()
@@ -424,22 +495,49 @@ function OrdersPage() {
   )
 
   const ordersQuery = useQuery({
-    queryKey: ["merchant-order-messages-live", pubkey ?? "none"],
+    queryKey: [
+      "merchant-order-messages-live",
+      pubkey ?? "none",
+      orderSort,
+      selectedMerchantQueue ?? "all",
+    ],
     enabled: signerConnected,
-    queryFn: () => getMerchantConversationList({ principalPubkey: pubkey! }),
+    queryFn: () =>
+      getMerchantConversationList({
+        principalPubkey: pubkey!,
+        sort: orderSort,
+        ...(selectedMerchantQueue ? { queue: selectedMerchantQueue } : {}),
+      }),
     staleTime: 30_000,
     refetchInterval: 30_000,
     refetchIntervalInBackground: true,
   })
   const cachedOrdersQuery = useQuery({
-    queryKey: ["merchant-order-messages", pubkey ?? "none"],
+    queryKey: [
+      "merchant-order-messages",
+      pubkey ?? "none",
+      orderSort,
+      selectedMerchantQueue ?? "all",
+    ],
     enabled: signerConnected,
     queryFn: () =>
-      getCachedMerchantConversationList({ principalPubkey: pubkey! }),
+      getCachedMerchantConversationList({
+        principalPubkey: pubkey!,
+        sort: orderSort,
+        ...(selectedMerchantQueue ? { queue: selectedMerchantQueue } : {}),
+      }),
     staleTime: 5_000,
   })
   const isOrdersInitialHydration = signerConnected && ordersQuery.isPending
   const refetchOrders = ordersQuery.refetch
+
+  useEffect(() => {
+    return () => {
+      if (successFlashResetTimerRef.current) {
+        clearTimeout(successFlashResetTimerRef.current)
+      }
+    }
+  }, [])
 
   const handleRefresh = useCallback(() => {
     if (!signerConnected || !pubkey) return
@@ -469,6 +567,33 @@ function OrdersPage() {
   })
   const protectedOrderCountsUnavailable =
     conversations.length === 0 && protectedOrdersReadState !== "complete"
+  const ordersHistoryCoverage = ordersMeta?.inbox?.historyCoverage
+  const ordersHistoryComplete =
+    ordersHistoryCoverage === "complete_within_scope"
+  const ordersViewLoading =
+    signerConnected &&
+    conversations.length === 0 &&
+    protectedOrdersReadState === "pending"
+  const ordersMetricsUnknown = protectedOrderCountsUnavailable
+  const canClaimEmptyOrders =
+    protectedOrdersReadState === "complete" &&
+    ordersHistoryComplete &&
+    phaseTab === "all" &&
+    conversations.length === 0
+  const emptyConversationMessage = orderSearch.trim()
+    ? emptyOrdersLabel(orderSearch.trim(), phaseTab)
+    : canClaimEmptyOrders
+      ? emptyOrdersLabel("", phaseTab)
+      : ordersHistoryCoverage === "recent_only"
+        ? "No orders in the loaded recent history. Older orders may exist."
+        : "Couldn’t confirm whether this queue is empty."
+  const showOrderWorkspace =
+    signerConnected &&
+    !ordersViewLoading &&
+    (phaseTab !== "all" ||
+      conversations.length > 0 ||
+      protectedOrdersReadState !== "complete" ||
+      !canClaimEmptyOrders)
   const buyerPubkeys = useMemo(
     () =>
       Array.from(
@@ -561,12 +686,6 @@ function OrdersPage() {
   const filteredConversations = useMemo(() => {
     const query = orderSearch.trim().toLowerCase()
     return conversations.filter((conversation) => {
-      if (
-        phaseTab !== "all" &&
-        getMerchantConversationQueue(conversation) !== phaseTab
-      ) {
-        return false
-      }
       if (!query) return true
       const buyerName = getMerchantBuyerDisplayName(
         conversation,
@@ -597,7 +716,7 @@ function OrdersPage() {
         .toLowerCase()
         .includes(query)
     })
-  }, [conversations, orderSearch, phaseTab, buyerProfiles, productSearchIndex])
+  }, [conversations, orderSearch, buyerProfiles, productSearchIndex])
 
   const selectConversation = useCallback(
     (conversationId: string) => {
@@ -666,7 +785,8 @@ function OrdersPage() {
     ? `${pubkey ?? "none"}:${selected.id}`
     : null
   const selectedOrderMessage = selected?.messages?.find(
-    (message) => message.type === "order"
+    (message): message is Extract<ParsedOrderMessage, { type: "order" }> =>
+      message.type === "order"
   )
   const selectedOrderCurrency =
     selectedOrderMessage?.type === "order"
@@ -681,7 +801,6 @@ function OrdersPage() {
     if (selectedOrderResetRef.current === selectedId) return
     selectedOrderResetRef.current = selectedId
 
-    setSuccessFlash(null)
     const pendingStockDeliveries =
       pubkey && selected
         ? pendingStockDeliveryStoreRef.current.getForOrder(
@@ -712,6 +831,7 @@ function OrdersPage() {
     setStockDecisionHydratedSelectionId(selectedId)
     setOrderDetailsOpen(false)
     setMessagesOpen(false)
+    setConfirmingReopen(false)
     setInvoice("")
     setInvoiceAmount("")
     setInvoiceCurrency("USD")
@@ -746,6 +866,13 @@ function OrdersPage() {
     : "unknown"
   const buyerInboxKnown = communicationState === "nostr_replyable"
   const operationalDelivery = buyerInboxKnown ? "buyer_and_self" : "self_only"
+  const assertOrderActionHistoryReady = useCallback(() => {
+    if (operationalDelivery === "self_only" && !selectedOrderMessage) {
+      throw new Error(
+        "The original order is missing. Refresh the order history before recording an update."
+      )
+    }
+  }, [operationalDelivery, selectedOrderMessage])
   const assertBuyerHasNostrInbox = useCallback(() => {
     if (!buyerInboxKnown) {
       throw new Error(
@@ -860,9 +987,13 @@ function OrdersPage() {
       )
     }
   }, [merchantPaid])
-  const orderActions = selected
-    ? getMerchantOrderActions(merchantOrderState)
-    : []
+  const orderActions =
+    selected && selectedOrderMessage
+      ? getMerchantOrderActions(merchantOrderState)
+      : []
+  const reopenTransition = selectedOrderMessage
+    ? getMerchantOrderReopenTransition(merchantOrderState)
+    : null
   const selectedQueue = selected ? getMerchantConversationQueue(selected) : null
   const canSendInvoice =
     buyerInboxKnown &&
@@ -871,6 +1002,7 @@ function OrdersPage() {
     !merchantOrderState.paymentObserved &&
     !!merchantOrderState.accepted
   const canRecordShipping =
+    !!selectedOrderMessage &&
     selectedQueue === "paid_fulfill" &&
     merchantPaid &&
     merchantOrderState.requiresShipping !== false &&
@@ -1195,6 +1327,7 @@ function OrdersPage() {
     mutationFn: () =>
       runExclusiveOrderAction(orderActionLockRef, async () => {
         if (!pubkey || !selected) throw new Error("No conversation selected")
+        assertOrderActionHistoryReady()
         assertBuyerHasNostrInbox()
         if (!canSendInvoice) {
           throw new Error("This order is not eligible for another invoice.")
@@ -1261,6 +1394,9 @@ function OrdersPage() {
             currency: actualCurrency,
             note: invoiceNote.trim() || undefined,
           },
+          ...(operationalDelivery === "self_only"
+            ? { inboundOrder: selectedOrderMessage }
+            : {}),
           delivery: operationalDelivery,
         })
 
@@ -1278,6 +1414,7 @@ function OrdersPage() {
     mutationFn: () =>
       runExclusiveOrderAction(orderActionLockRef, async () => {
         if (!pubkey || !selected) throw new Error("No conversation selected")
+        assertOrderActionHistoryReady()
         assertBuyerHasNostrInbox()
         if (!canSendInvoice) {
           throw new Error("This order is not eligible for another invoice.")
@@ -1309,6 +1446,9 @@ function OrdersPage() {
             currency: decoded.currency,
             note: invoiceNote.trim() || undefined,
           },
+          ...(operationalDelivery === "self_only"
+            ? { inboundOrder: selectedOrderMessage }
+            : {}),
           delivery: operationalDelivery,
         })
       }),
@@ -1324,6 +1464,7 @@ function OrdersPage() {
     mutationFn: (nextStatus: KnownOrderStatus) =>
       runExclusiveOrderAction(orderActionLockRef, async () => {
         if (!pubkey || !selected) throw new Error("No conversation selected")
+        assertOrderActionHistoryReady()
         if (nextStatus === "shipped" || nextStatus === "complete") {
           assertPaidForFulfillment()
         }
@@ -1334,6 +1475,9 @@ function OrdersPage() {
           type: "status_update",
           tags: [["status", nextStatus]],
           payload: { status: nextStatus },
+          ...(operationalDelivery === "self_only"
+            ? { inboundOrder: selectedOrderMessage }
+            : {}),
           delivery: operationalDelivery,
         })
       }),
@@ -1343,10 +1487,39 @@ function OrdersPage() {
     },
   })
 
+  const reopenOrderMutation = useMutation({
+    mutationFn: (transition: MerchantOrderReopenTransition) =>
+      runExclusiveOrderAction(orderActionLockRef, async () => {
+        if (!pubkey || !selected) throw new Error("No conversation selected")
+        assertOrderActionHistoryReady()
+        await publishMerchantOrderMessage({
+          merchantPubkey: pubkey,
+          buyerPubkey: selected.buyerPubkey,
+          orderId: selected.orderId,
+          type: "status_update",
+          tags: transition.tags,
+          payload: transition.payload,
+          ...(operationalDelivery === "self_only"
+            ? { inboundOrder: selectedOrderMessage }
+            : {}),
+          delivery: operationalDelivery,
+        })
+      }),
+    onSuccess: async () => {
+      flash(
+        buyerInboxKnown
+          ? "Order reopened and update sent to buyer"
+          : "Order reopened in your private history"
+      )
+      await invalidateOrderQueries()
+    },
+  })
+
   const shippingMutation = useMutation({
     mutationFn: () =>
       runExclusiveOrderAction(orderActionLockRef, async () => {
         if (!pubkey || !selected) throw new Error("No conversation selected")
+        assertOrderActionHistoryReady()
         assertPaidForFulfillment()
         const prepared = prepareShippingUpdate({
           trackingNumber,
@@ -1369,6 +1542,9 @@ function OrdersPage() {
             trackingUrl: prepared.trackingUrl,
             note: prepared.note,
           },
+          ...(operationalDelivery === "self_only"
+            ? { inboundOrder: selectedOrderMessage }
+            : {}),
           delivery: operationalDelivery,
         })
       }),
@@ -1389,6 +1565,7 @@ function OrdersPage() {
   const noteMutation = useMutation({
     mutationFn: async () => {
       if (!pubkey || !selected) throw new Error("No conversation selected")
+      assertOrderActionHistoryReady()
       assertBuyerHasNostrInbox()
       if (!replyNote.trim()) throw new Error("Message is required")
       await publishMerchantOrderMessage({
@@ -1399,6 +1576,9 @@ function OrdersPage() {
         payload: {
           note: replyNote.trim(),
         },
+        ...(operationalDelivery === "self_only"
+          ? { inboundOrder: selectedOrderMessage }
+          : {}),
         delivery: operationalDelivery,
       })
     },
@@ -1411,6 +1591,7 @@ function OrdersPage() {
 
   const orderActionPending =
     stockUpdateMutation.isPending ||
+    reopenOrderMutation.isPending ||
     isMerchantOrderActionSurfacePending({
       generateInvoice: generateInvoiceMutation.isPending,
       sendInvoice: invoiceMutation.isPending,
@@ -1451,7 +1632,7 @@ function OrdersPage() {
 
   function dismissStockDelivery(): void {
     if (stockDeliveryCanRetry) {
-      flash("Relay retry hidden for now. Reopen this order to resume delivery.")
+      flash("Listing sync retry hidden for now. Return to this order to retry.")
     }
     setStockDelivery(null)
   }
@@ -1478,32 +1659,47 @@ function OrdersPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-2 md:gap-4 xl:shrink-0">
-        <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-3 md:p-4">
-          <div className="text-[10px] uppercase tracking-[0.1em] text-[var(--text-muted)] md:text-xs md:tracking-[0.18em]">
-            Open threads
+      <div aria-busy={ordersViewLoading}>
+        <p className="mb-2 text-xs text-[var(--text-muted)]">
+          Showing up to 200 orders in {selectedQueueLabel}.
+        </p>
+        <div className="grid grid-cols-3 gap-2 md:gap-4 xl:shrink-0">
+          <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-3 md:p-4">
+            <div className="text-[10px] uppercase tracking-[0.1em] text-[var(--text-muted)] md:text-xs md:tracking-[0.18em]">
+              Loaded orders
+            </div>
+            <div className="mt-2 text-2xl font-semibold tabular-nums text-[var(--text-primary)] md:mt-3 md:text-3xl">
+              {ordersMetricsUnknown ? "—" : conversations.length}
+            </div>
           </div>
-          <div className="mt-2 text-2xl font-semibold text-[var(--text-primary)] md:mt-3 md:text-3xl">
-            {protectedOrderCountsUnavailable ? "—" : conversations.length}
+          <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-3 md:p-4">
+            <div className="text-[10px] uppercase tracking-[0.1em] text-[var(--text-muted)] md:text-xs md:tracking-[0.18em]">
+              Awaiting invoice
+            </div>
+            <div className="mt-2 text-2xl font-semibold tabular-nums text-[var(--text-primary)] md:mt-3 md:text-3xl">
+              {ordersMetricsUnknown ? "—" : awaitingInvoiceCount}
+            </div>
           </div>
-        </div>
-        <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-3 md:p-4">
-          <div className="text-[10px] uppercase tracking-[0.1em] text-[var(--text-muted)] md:text-xs md:tracking-[0.18em]">
-            Awaiting invoice
-          </div>
-          <div className="mt-2 text-2xl font-semibold text-[var(--text-primary)] md:mt-3 md:text-3xl">
-            {protectedOrderCountsUnavailable ? "—" : awaitingInvoiceCount}
-          </div>
-        </div>
-        <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-3 md:p-4">
-          <div className="text-[10px] uppercase tracking-[0.1em] text-[var(--text-muted)] md:text-xs md:tracking-[0.18em]">
-            Active fulfillment
-          </div>
-          <div className="mt-2 text-2xl font-semibold text-[var(--text-primary)] md:mt-3 md:text-3xl">
-            {protectedOrderCountsUnavailable ? "—" : activeFulfillmentCount}
+          <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-3 md:p-4">
+            <div className="text-[10px] uppercase tracking-[0.1em] text-[var(--text-muted)] md:text-xs md:tracking-[0.18em]">
+              Active fulfillment
+            </div>
+            <div className="mt-2 text-2xl font-semibold tabular-nums text-[var(--text-primary)] md:mt-3 md:text-3xl">
+              {ordersMetricsUnknown ? "—" : activeFulfillmentCount}
+            </div>
           </div>
         </div>
       </div>
+
+      {successFlash && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="rounded-md border border-green-500/30 bg-green-500/10 p-3 text-sm text-green-400"
+        >
+          {successFlash}
+        </div>
+      )}
 
       {!signerConnected && (
         <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
@@ -1541,16 +1737,32 @@ function OrdersPage() {
         )}
 
       {signerConnected &&
-        !cachedOrdersQuery.isLoading &&
-        conversations.length === 0 &&
-        protectedOrdersReadState === "complete" && (
-          <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
-            No orders yet. Place an order from the Market app targeting this
-            merchant pubkey.
+        protectedOrdersReadState === "complete" &&
+        ordersHistoryCoverage === "recent_only" && (
+          <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+            Showing recent history only. Older orders may not be loaded.
           </div>
         )}
 
-      {signerConnected && conversations.length > 0 && (
+      {signerConnected && canClaimEmptyOrders && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+          <span>
+            No orders found in your connected inboxes. New orders will appear
+            here.
+          </span>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={ordersRefreshState.refreshing}
+            onClick={() => void handleRefresh()}
+          >
+            Check again
+          </Button>
+        </div>
+      )}
+
+      {showOrderWorkspace && (
         <div className="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)] xl:items-start">
           <aside className="hidden rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 xl:sticky xl:top-4 xl:flex xl:max-h-[calc(100vh-2rem)] xl:flex-col xl:overflow-hidden">
             <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)] xl:shrink-0">
@@ -1559,11 +1771,12 @@ function OrdersPage() {
             <div className="xl:shrink-0">
               <SearchBox value={orderSearch} onChange={setOrderSearch} />
               <OrderPhaseFilter value={phaseTab} onChange={changePhaseTab} />
+              <OrderSortSelect value={orderSort} onChange={setOrderSort} />
             </div>
             <div className="mt-4 space-y-2 xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:pr-1">
               {filteredConversations.length === 0 && (
                 <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface)] px-4 py-5 text-sm text-[var(--text-secondary)]">
-                  {emptyOrdersLabel(orderSearch.trim(), phaseTab)}
+                  {emptyConversationMessage}
                 </div>
               )}
               {filteredConversations.map((conversation) => (
@@ -1609,10 +1822,11 @@ function OrdersPage() {
                 </SheetHeader>
                 <SearchBox value={orderSearch} onChange={setOrderSearch} />
                 <OrderPhaseFilter value={phaseTab} onChange={changePhaseTab} />
+                <OrderSortSelect value={orderSort} onChange={setOrderSort} />
                 <div className="mt-4 space-y-2">
                   {filteredConversations.length === 0 && (
                     <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface)] px-4 py-5 text-sm text-[var(--text-secondary)]">
-                      {emptyOrdersLabel(orderSearch.trim(), phaseTab)}
+                      {emptyConversationMessage}
                     </div>
                   )}
                   {filteredConversations.map((conversation) => (
@@ -1669,14 +1883,18 @@ function OrdersPage() {
                         {isGuestOrder ? "Guest order" : "Actions"}
                       </h3>
                       <>
-                        {!buyerInboxKnown && (
+                        {!buyerInboxKnown && !isGuestOrder && (
                           <p className="mt-4 rounded-md border border-warning/30 bg-warning/10 p-3 text-sm leading-6 text-warning">
-                            {isGuestOrder
-                              ? orderSummary.guestContact
-                                ? "This guest has no Nostr reply inbox. Contact them by phone or email; fulfillment actions below are recorded to your encrypted order history."
-                                : "This guest has no Nostr reply inbox and the order is missing required contact details. Fulfillment actions below are recorded only to your encrypted order history."
-                              : "This partial order history does not prove the buyer has a Nostr reply inbox. Actions are recorded to your encrypted order history until the order identity is recovered."}
+                            This partial history identifies a buyer but does not
+                            include the original order or confirm a reply inbox.
+                            Order actions are unavailable until the original
+                            order is recovered.
                           </p>
+                        )}
+                        {isGuestOrder && (
+                          <GuestOrderNotice
+                            contact={orderSummary.guestContact ?? undefined}
+                          />
                         )}
                         <div className="mt-4 space-y-5">
                           {successFlash && (
@@ -1705,7 +1923,6 @@ function OrdersPage() {
                             onRetry={retryStockDelivery}
                             onDismissDelivery={dismissStockDelivery}
                           />
-
                           {hasNextStep && (
                             <h4 className="text-sm font-semibold text-[var(--text-primary)]">
                               Next step
@@ -1742,6 +1959,10 @@ function OrdersPage() {
                                         setConfirmingOutOfBandPayment(true)
                                         return
                                       }
+                                      if (action.action === "reopen") {
+                                        setConfirmingReopen(true)
+                                        return
+                                      }
                                       if (action.status) {
                                         advanceStatusMutation.mutate(
                                           action.status
@@ -1755,7 +1976,10 @@ function OrdersPage() {
                                       ? buyerInboxKnown
                                         ? "Sending…"
                                         : "Recording…"
-                                      : action.label}
+                                      : getMerchantOrderActionLabel(
+                                          action,
+                                          buyerInboxKnown
+                                        )}
                                   </Button>
                                 ))}
                               </div>
@@ -1765,6 +1989,7 @@ function OrdersPage() {
                           {(canSendInvoice ||
                             canRecordShipping ||
                             advanceStatusMutation.error ||
+                            reopenOrderMutation.error ||
                             invoiceMutation.error ||
                             shippingMutation.error ||
                             noteMutation.error) && (
@@ -1877,11 +2102,9 @@ function OrdersPage() {
                                       </Button>
                                       {generateInvoiceMutation.error && (
                                         <div className="text-xs text-error">
-                                          {generateInvoiceMutation.error instanceof
-                                          Error
-                                            ? generateInvoiceMutation.error
-                                                .message
-                                            : "Failed"}
+                                          {getMerchantOrderActionErrorMessage(
+                                            generateInvoiceMutation.error
+                                          )}
                                         </div>
                                       )}
                                     </div>
@@ -2033,6 +2256,7 @@ function OrdersPage() {
                               )}
 
                               {(advanceStatusMutation.error ||
+                                reopenOrderMutation.error ||
                                 invoiceMutation.error ||
                                 shippingMutation.error ||
                                 noteMutation.error) && (
@@ -2042,16 +2266,13 @@ function OrdersPage() {
                                 >
                                   {[
                                     advanceStatusMutation.error,
+                                    reopenOrderMutation.error,
                                     invoiceMutation.error,
                                     shippingMutation.error,
                                     noteMutation.error,
                                   ]
                                     .filter(Boolean)
-                                    .map((error) =>
-                                      error instanceof Error
-                                        ? error.message
-                                        : "Failed to send message"
-                                    )
+                                    .map(getMerchantOrderActionErrorMessage)
                                     .join(" • ")}
                                 </div>
                               )}
@@ -2208,8 +2429,24 @@ function OrdersPage() {
                           Guest contact
                         </h3>
                         <div className="mt-3 space-y-1 text-sm text-[var(--text-secondary)]">
-                          <div>Phone: {orderSummary.guestContact.phone}</div>
-                          <div>Email: {orderSummary.guestContact.email}</div>
+                          <div>
+                            Phone:{" "}
+                            <a
+                              href={`tel:${orderSummary.guestContact.phone.replace(/[^\d+*#,;]/g, "")}`}
+                              className="inline-flex min-h-11 items-center rounded-md underline underline-offset-4 hover:no-underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/40"
+                            >
+                              {orderSummary.guestContact.phone}
+                            </a>
+                          </div>
+                          <div>
+                            Email:{" "}
+                            <a
+                              href={`mailto:${orderSummary.guestContact.email}`}
+                              className="inline-flex min-h-11 items-center rounded-md break-all underline underline-offset-4 hover:no-underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/40"
+                            >
+                              {orderSummary.guestContact.email}
+                            </a>
+                          </div>
                         </div>
                       </section>
                     )}
@@ -2334,11 +2571,9 @@ function OrdersPage() {
                   onSend={() => noteMutation.mutate()}
                   sending={noteMutation.isPending}
                   error={
-                    noteMutation.error instanceof Error
-                      ? noteMutation.error.message
-                      : noteMutation.error
-                        ? "Failed to send message"
-                        : null
+                    noteMutation.error
+                      ? getMerchantOrderActionErrorMessage(noteMutation.error)
+                      : null
                   }
                   placeholder="Message the buyer, then press Enter"
                   readOnly={!buyerInboxKnown}
@@ -2397,7 +2632,7 @@ function OrdersPage() {
                   <AlertDialogContent>
                     <AlertDialogHeader>
                       <AlertDialogTitle>
-                        Confirm payment received?
+                        Record payment received?
                       </AlertDialogTitle>
                       <AlertDialogDescription>
                         Continue only after verifying the buyer's payment
@@ -2423,7 +2658,49 @@ function OrdersPage() {
                       >
                         {advanceStatusMutation.isPending
                           ? "Recording…"
-                          : "Confirm payment"}
+                          : "Record payment received"}
+                      </Button>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+
+                <AlertDialog
+                  open={confirmingReopen}
+                  onOpenChange={setConfirmingReopen}
+                >
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Reopen this order?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        {communicationState === "nostr_replyable"
+                          ? "This restores the order workflow and sends the correction to the buyer. Payment, shipping, refund, and inventory history stay unchanged. Review any refund or stock changes separately."
+                          : communicationState === "guest_out_of_band"
+                            ? "This restores the order in your private history. It does not notify the guest. Payment, shipping, refund, and inventory history stay unchanged; contact the guest separately."
+                            : "This restores the order in your private history. This partial history has no confirmed reply inbox, so the buyer is not notified. Payment, shipping, refund, and inventory history stay unchanged."}
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => setConfirmingReopen(false)}
+                      >
+                        Keep cancelled
+                      </Button>
+                      <Button
+                        type="button"
+                        disabled={orderActionPending || !reopenTransition}
+                        onClick={() => {
+                          if (!reopenTransition) return
+                          reopenOrderMutation.mutate(reopenTransition)
+                          setConfirmingReopen(false)
+                        }}
+                      >
+                        {reopenOrderMutation.isPending
+                          ? buyerInboxKnown
+                            ? "Sending…"
+                            : "Recording…"
+                          : "Reopen order"}
                       </Button>
                     </AlertDialogFooter>
                   </AlertDialogContent>

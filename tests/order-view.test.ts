@@ -199,6 +199,75 @@ describe("buildOrderViewModel", () => {
     expect(vm.paymentStatus).toBe("not_started")
     expect(vm.items[0].displayTitle).toBe("Sticker Pack")
   })
+
+  it("uses the shared cancellation projection for buyer status and tracking", () => {
+    const status = (
+      id: string,
+      createdAt: number,
+      value: KnownOrderStatus,
+      reopens?: string
+    ) =>
+      ({
+        id,
+        orderId: "order-1",
+        createdAt,
+        authoredAt: createdAt,
+        senderPubkey: "merchant",
+        recipientPubkey: "buyer",
+        rawContent: "{}",
+        type: "status_update",
+        payload: { status: value, reopens },
+      }) as const
+    const staleShipping = {
+      id: "stale-shipping",
+      orderId: "order-1",
+      createdAt: 3_000,
+      senderPubkey: "merchant",
+      recipientPubkey: "buyer",
+      rawContent: "{}",
+      type: "shipping_update",
+      payload: { carrier: "Stale", trackingNumber: "STALE" },
+    } as const
+    const cancelledMessages = [
+      status("accepted", 1_000, "accepted"),
+      status("z-cancel", 2_000, "cancelled"),
+      staleShipping,
+      status("generic-processing", 4_000, "processing"),
+    ]
+
+    const cancelled = buildOrderViewModel({
+      orderId: "order-1",
+      lifecycle: baseLifecycle(),
+      messages: cancelledMessages,
+    })
+
+    expect(cancelled.merchantStatus).toBe("cancelled")
+    expect(cancelled.phase).toBe("cancelled")
+    expect(cancelled.tracking).toBeNull()
+
+    const reopened = buildOrderViewModel({
+      orderId: "order-1",
+      lifecycle: baseLifecycle(),
+      messages: [
+        ...cancelledMessages,
+        status("a-reopen", 5_000, "accepted", "z-cancel"),
+        {
+          ...staleShipping,
+          id: "current-shipping",
+          createdAt: 6_000,
+          payload: { carrier: "Current", trackingNumber: "CURRENT" },
+        },
+      ],
+    })
+
+    expect(reopened.merchantStatus).toBe("accepted")
+    expect(reopened.phase).toBe("in_progress")
+    expect(reopened.tracking).toEqual({
+      carrier: "Current",
+      number: "CURRENT",
+      url: null,
+    })
+  })
 })
 
 describe("computeOrderTimelineStatuses", () => {

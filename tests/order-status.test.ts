@@ -3,11 +3,14 @@ import {
   buildOrderStatusTimeline,
   deriveOrderFlow,
   getMerchantOrderActions,
+  getMerchantOrderReopenTransition,
   getOrderStatusDisplay,
   KNOWN_ORDER_STATUSES,
   normalizeSafeHttpUrl,
   orderStatusEnum,
   orderStatusSchema,
+  parseOrderMessageRumorEvent,
+  statusUpdateMessageSchema,
   type KnownOrderStatus,
   type OrderStatus,
 } from "@conduit/core"
@@ -39,6 +42,51 @@ describe("canonical order statuses", () => {
     expect(orderStatusSchema.parse("future_merchant_status")).toBe(
       "future_merchant_status"
     )
+  })
+
+  it("parses an explicit reopen marker without requiring it from legacy updates", () => {
+    expect(statusUpdateMessageSchema.parse({ status: "accepted" })).toEqual({
+      status: "accepted",
+    })
+
+    const parsed = parseOrderMessageRumorEvent({
+      id: "reopen-event",
+      pubkey: "merchant",
+      created_at: 3,
+      content: JSON.stringify({ status: "processing", reopens: "content-id" }),
+      tags: [
+        ["p", "buyer"],
+        ["type", "status_update"],
+        ["order", "order-1"],
+        ["status", "accepted"],
+        ["reopens", "cancel-event"],
+      ],
+    } as never)
+
+    expect(parsed).toMatchObject({
+      type: "status_update",
+      payload: { status: "accepted", reopens: "cancel-event" },
+    })
+  })
+
+  it("accepts an authenticated millisecond hint only inside the rumor second", () => {
+    const parse = (createdAt: number) =>
+      parseOrderMessageRumorEvent({
+        id: `status-${createdAt}`,
+        pubkey: "merchant",
+        created_at: 3,
+        content: JSON.stringify({ status: "paid", createdAt }),
+        tags: [
+          ["p", "buyer"],
+          ["type", "status_update"],
+          ["order", "order-1"],
+          ["status", "paid"],
+        ],
+      } as never)
+
+    expect(parse(3_456)).toMatchObject({ createdAt: 3_000, authoredAt: 3_456 })
+    expect(parse(2_999)).not.toHaveProperty("authoredAt")
+    expect(parse(4_000)).not.toHaveProperty("authoredAt")
   })
 })
 
@@ -269,6 +317,44 @@ describe("deriveOrderFlow", () => {
 })
 
 describe("getMerchantOrderActions", () => {
+  it("prepares a referenced correction only for a safely cancelled order", () => {
+    const cancelled = {
+      status: "cancelled",
+      paid: true,
+      shippingUpdated: true,
+      cancellation: { eventId: "cancel-event", resumeStatus: "paid" as const },
+    }
+
+    expect(getMerchantOrderActions(cancelled)).toEqual([
+      {
+        action: "reopen",
+        status: "paid",
+        label: "Reopen order",
+        kind: "primary",
+      },
+    ])
+    expect(getMerchantOrderReopenTransition(cancelled)).toEqual({
+      cancellationEventId: "cancel-event",
+      status: "paid",
+      tags: [
+        ["status", "paid"],
+        ["reopens", "cancel-event"],
+      ],
+      payload: { status: "paid", reopens: "cancel-event" },
+    })
+
+    expect(
+      getMerchantOrderReopenTransition({
+        status: "complete",
+        cancellation: {
+          eventId: "cancel-event",
+          resumeStatus: "paid",
+        },
+      })
+    ).toBeNull()
+    expect(getMerchantOrderReopenTransition({ status: "cancelled" })).toBeNull()
+  })
+
   it("offers decline + accept before acceptance", () => {
     expect(getMerchantOrderActions("pending")).toEqual([
       {

@@ -166,6 +166,7 @@ export function MerchantPaymentAutomationProvider({
             type: "status_update",
             tags: [["status", "paid"]],
             payload: { status: "paid" },
+            inboundOrder: candidate.inboundOrder,
             delivery: candidate.delivery,
           })
         },

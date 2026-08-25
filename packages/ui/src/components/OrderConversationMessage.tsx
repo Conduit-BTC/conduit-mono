@@ -5,6 +5,7 @@ import {
   getLightningInvoiceNetwork,
   getLightningNetworkMismatchMessage,
   getOrderStatusDisplay,
+  isExternalPaymentReportMessage,
   isInvoiceCompatibleWithCurrentNetwork,
   normalizeLightningInvoice,
   normalizePublicMediaUrl,
@@ -194,7 +195,9 @@ export function getConversationPreview(
     case "message":
       return message.payload.note
     case "payment_proof":
-      return "Payment proof shared"
+      return isExternalPaymentReportMessage(message)
+        ? "Payment reported"
+        : "Payment proof shared"
     default:
       return "Order update"
   }
@@ -228,6 +231,7 @@ export function OrderConversationMessage({
   ) => { title?: string; imageUrl?: string } | undefined
   formatAmount?: OrderAmountFormatter
 }) {
+  const externalPaymentReport = isExternalPaymentReportMessage(message)
   return (
     <div className={`flex ${mine ? "justify-end" : "justify-start"}`}>
       <div
@@ -416,7 +420,9 @@ export function OrderConversationMessage({
           <div className="space-y-2">
             <div className="flex items-center gap-2">
               <span className="text-sm font-medium text-[var(--text-primary)]">
-                Lightning payment sent
+                {externalPaymentReport
+                  ? "Payment reported — verify settlement"
+                  : "Lightning payment sent"}
               </span>
             </div>
             <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-3 space-y-2 text-xs">

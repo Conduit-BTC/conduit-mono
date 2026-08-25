@@ -426,11 +426,13 @@ describe("general direct-message gateway", () => {
                     ? "Reply on Signal, not here."
                     : "This remains a normal conversation message.",
           createdAt:
-            event.id === "wrap-unmatched-companion"
-              ? 100
-              : event.id === "wrap-human-marker"
-                ? 99
-                : 101,
+            event.id === "wrap-normal-subject"
+              ? 102
+              : event.id === "wrap-unmatched-companion"
+                ? 100
+                : event.id === "wrap-human-marker"
+                  ? 99
+                  : 101,
           subject:
             event.id !== "wrap-normal-subject"
               ? "conduit-order-notification"
@@ -473,9 +475,9 @@ describe("general direct-message gateway", () => {
       "This remains a normal conversation message."
     )
     expect(directRows.map((row) => row.id)).toEqual([
-      "dm-subject-only",
-      "dm-normal-subject",
       "dm-human-marker",
+      "dm-normal-subject",
+      "dm-subject-only",
       "dm-unmatched-companion",
     ])
     expect(

@@ -47,6 +47,9 @@ describe("guest order UI contracts", () => {
     const publisher = await Bun.file(
       "packages/core/src/protocol/merchant-order-publish.ts"
     ).text()
+    const guestNotice = await Bun.file(
+      "apps/merchant/src/components/GuestOrderNotice.tsx"
+    ).text()
 
     expect(source).toContain("assertBuyerHasNostrInbox()")
     expect(source).toContain("delivery: operationalDelivery")
@@ -55,14 +58,17 @@ describe("guest order UI contracts", () => {
     expect(source).toContain("isMerchantGuestOrder")
     expect(orderIdentity).toContain('"guest_ephemeral"')
     expect(source).toContain("return false")
-    expect(source).toContain("This guest has no Nostr reply inbox")
+    expect(source).toContain("<GuestOrderNotice")
+    expect(guestNotice).toContain("Conduit can’t message this guest")
+    expect(guestNotice).toContain("they do not notify")
     expect(source).toContain("assertPaidForFulfillment()")
     expect(source).not.toContain("{!isGuestOrder && (")
     expect(publisher).toContain(
       'export type MerchantOrderDelivery = "buyer_and_self" | "self_only"'
     )
-    expect(publisher).toContain("publishPrivateMessage({")
-    expect(publisher).toContain('selfCopy: input.delivery === "buyer_and_self"')
+    expect(publisher).toContain("await publishMessage({")
+    expect(publisher).toContain("selfCopy: target.selfCopy")
+    expect(publisher).toContain("validatedOrderSelfRecordScope")
     expect(publisher).not.toContain("giftWrap(")
   })
 

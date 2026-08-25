@@ -141,6 +141,36 @@ Status vocabulary is unified across schema and presentation: `pending`,
 `invoiced`, `paid`, `accepted`/`processing`, `shipped`, `complete`/`delivered`,
 `cancelled`, `refund_requested`; unknown strings remain forward-compatible.
 
+### Deterministic merchant lifecycle replay
+
+Market and Merchant use the same reducer for merchant-authored
+`status_update` history. The reducer deduplicates by event id and accepts only
+events whose sender is the order merchant and whose `p` recipient is the order
+buyer. It orders events by the millisecond `createdAt` carried in the JSON
+payload only when that value falls within the signed event's authoritative
+second; otherwise it uses the signed event second. Equal positions are ordered
+by event id. For a same-position cancellation and a valid correction that
+references it, the cancellation is forced before that correction regardless of
+their lexical ids.
+
+A `cancelled` event creates a barrier and records the last applied nonterminal
+status as its possible resume status. Later generic status updates cannot
+resurrect the order. Reopening requires a merchant-authored `status_update`
+whose `reopens` tag and payload reference the currently effective cancellation
+and whose status exactly matches that recorded resume status. Invalid, stale,
+or replayed corrections are retained as history but ignored by the projection.
+`complete`, `delivered`, and `refund_requested` are non-reopenable terminal
+states.
+
+Merchant-authored payment requests, shipping updates, and receipts, plus
+buyer-authored payment proofs or external payment reports, positioned inside
+an effective cancellation barrier do not affect the operational projection.
+They remain visible in raw history. Once a valid correction reopens the order,
+later operational messages apply normally. Conversation summaries, buyer order
+views, Merchant queues, payment automation, tracking, totals, and action
+availability must all consume this applied projection while preserving the raw
+message list for audit and display.
+
 ## Merchant operational projection
 
 Merchant order handling is derived from independent operational axes rather

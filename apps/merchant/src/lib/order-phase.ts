@@ -1,6 +1,8 @@
 import {
   extractOrderSummary,
   formatNpub,
+  getAppliedMerchantOrderMessages,
+  getEffectiveMerchantOrderStatus,
   getOrderStatusDisplay,
   getProfileName,
   isMerchantOrderPaid,
@@ -67,10 +69,19 @@ export function getMerchantOrderPhase(
 export function getMerchantOrderSummary(
   conversation: MerchantConversationSummary
 ): OrderSummary {
-  return extractOrderSummary(conversation.messages ?? [], {
+  const messages = conversation.messages ?? []
+  const participants = {
     buyerPubkey: conversation.buyerPubkey,
     merchantPubkey: conversation.merchantPubkey,
-  })
+  }
+  return extractOrderSummary(
+    getAppliedMerchantOrderMessages(
+      messages,
+      participants,
+      conversation.status
+    ),
+    participants
+  )
 }
 
 export function isMerchantGuestOrder(
@@ -118,21 +129,17 @@ export function getMerchantConversationState(
   conversation: MerchantConversationSummary
 ): MerchantOrderState {
   const summary = getMerchantOrderSummary(conversation)
-  const terminalStatus = [...(conversation.messages ?? [])]
-    .reverse()
-    .find(
-      (message) =>
-        message.type === "status_update" &&
-        message.senderPubkey === conversation.merchantPubkey &&
-        ["cancelled", "complete", "delivered", "refund_requested"].includes(
-          message.payload.status
-        )
-    )
+  const effective = getEffectiveMerchantOrderStatus(
+    conversation.messages ?? [],
+    {
+      buyerPubkey: conversation.buyerPubkey,
+      merchantPubkey: conversation.merchantPubkey,
+    },
+    conversation.status
+  )
   return {
-    status:
-      terminalStatus?.type === "status_update"
-        ? terminalStatus.payload.status
-        : conversation.status,
+    status: effective.status,
+    cancellation: effective.cancellation,
     paid: summary.paymentConfirmed,
     paymentObserved:
       summary.paymentProofReceived || summary.paymentReportReceived,

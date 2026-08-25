@@ -1,6 +1,8 @@
 import {
   deriveOrderFlow,
   extractOrderSummary,
+  getAppliedMerchantOrderMessages,
+  getEffectiveMerchantOrderStatus,
   getOrderPublicZapSigner,
   isKnownOrderStatus,
   isMerchantOrderAccepted,
@@ -171,19 +173,18 @@ export function deriveItemDisplayTitle(productId: string): string {
     .join(" ")
 }
 
-function latestMerchantStatus(
+function effectiveMerchantStatus(
   messages: ParsedOrderMessage[] | undefined,
+  buyerPubkey: string | undefined,
   merchantPubkey: string | undefined,
   fallback: string | null
 ): OrderViewModel["merchantStatus"] {
-  if (messages && messages.length > 0) {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const message = messages[i]
-      if (message.type !== "status_update") continue
-      if (merchantPubkey && message.senderPubkey !== merchantPubkey) continue
-      const status = message.payload.status
-      if (isKnownOrderStatus(status)) return status
-    }
+  if (messages?.length && buyerPubkey && merchantPubkey) {
+    const status = getEffectiveMerchantOrderStatus(messages, {
+      buyerPubkey,
+      merchantPubkey,
+    }).status
+    if (status && isKnownOrderStatus(status)) return status
   }
   if (fallback && isKnownOrderStatus(fallback)) return fallback
   return null
@@ -194,15 +195,32 @@ export function buildOrderViewModel(
 ): OrderViewModel {
   const { lifecycle, conversation, paymentAttempt } = input
   const messages = input.messages ?? conversation?.messages ?? undefined
-  const summary: OrderSummary | null = messages
-    ? extractOrderSummary(messages)
-    : null
 
   const merchantPubkey =
     lifecycle?.merchantPubkey ??
     input.merchantPubkey ??
     conversation?.merchantPubkey ??
     ""
+  const buyerPubkey =
+    lifecycle?.buyerPubkey ??
+    conversation?.buyerPubkey ??
+    messages?.find((message) => message.type === "order")?.senderPubkey ??
+    messages?.find((message) => message.senderPubkey === merchantPubkey)
+      ?.recipientPubkey ??
+    ""
+  const projectedMessages =
+    messages && buyerPubkey && merchantPubkey
+      ? getAppliedMerchantOrderMessages(messages, {
+          buyerPubkey,
+          merchantPubkey,
+        })
+      : messages
+  const summary: OrderSummary | null = projectedMessages
+    ? extractOrderSummary(projectedMessages, {
+        buyerPubkey,
+        merchantPubkey,
+      })
+    : null
 
   // --- Items / totals -----------------------------------------------------
   const items: OrderViewItem[] = lifecycle
@@ -259,8 +277,9 @@ export function buildOrderViewModel(
   const zapReceiptStatus: OrderZapReceiptStatus =
     lifecycle?.zapReceiptStatus ?? "not_applicable"
 
-  const merchantStatus = latestMerchantStatus(
+  const merchantStatus = effectiveMerchantStatus(
     messages,
+    buyerPubkey,
     merchantPubkey,
     conversation?.status ?? null
   )

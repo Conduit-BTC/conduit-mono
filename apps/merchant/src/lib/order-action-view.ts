@@ -123,3 +123,26 @@ export async function runExclusiveOrderAction<T>(
     lock.current = false
   }
 }
+
+export function getMerchantOrderActionLabel(
+  action: MerchantOrderAction,
+  buyerInboxKnown: boolean
+): string {
+  if (!buyerInboxKnown && action.action === "confirm_payment") {
+    return "Record payment received"
+  }
+  return action.label
+}
+
+const TECHNICAL_ORDER_ACTION_ERROR =
+  /compatibility routing|rumor|gift wrap|nip-17|relay|publish/i
+
+export function getMerchantOrderActionErrorMessage(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return "Couldn’t confirm whether this order update was saved. Refresh before trying again."
+  }
+  if (TECHNICAL_ORDER_ACTION_ERROR.test(error.message)) {
+    return "Couldn’t confirm whether this order update was saved. Check your connection, then refresh before trying again."
+  }
+  return error.message
+}

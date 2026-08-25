@@ -159,8 +159,15 @@ function cachedOrderRow(): CachedOrderMessage {
       id: "cached-order",
       merchantPubkey: MERCHANT,
       buyerPubkey: BUYER,
-      items: [],
-      subtotal: 0,
+      items: [
+        {
+          productId: `30402:${MERCHANT}:cached-item`,
+          quantity: 1,
+          priceAtPurchase: 1,
+          currency: "SATS",
+        },
+      ],
+      subtotal: 1,
       currency: "SATS",
       createdAt: 1_700_000_050_000,
     }),
@@ -168,8 +175,15 @@ function cachedOrderRow(): CachedOrderMessage {
       id: "cached-order",
       merchantPubkey: MERCHANT,
       buyerPubkey: BUYER,
-      items: [],
-      subtotal: 0,
+      items: [
+        {
+          productId: `30402:${MERCHANT}:cached-item`,
+          quantity: 1,
+          priceAtPurchase: 1,
+          currency: "SATS",
+        },
+      ],
+      subtotal: 1,
       currency: "SATS",
       createdAt: 1_700_000_050_000,
     },
@@ -248,6 +262,140 @@ afterEach(() => {
 })
 
 describe("Market and Merchant protected inbox integration", () => {
+  it("keeps per-relay backfill interruption sticky until its retry completes", async () => {
+    const relayA = "wss://protected-a.example"
+    const relayB = "wss://protected-b.example"
+    const firstPages = new Map([
+      [
+        relayA,
+        Array.from({ length: 400 }, (_, index) => ({
+          id: `relay-a-${index}`,
+          kind: 1_059,
+          pubkey: `ephemeral-a-${index}`,
+          created_at: 1_000 - index,
+          content: "wrapped",
+          tags: [["p", MERCHANT]],
+        })),
+      ],
+      [
+        relayB,
+        Array.from({ length: 400 }, (_, index) => ({
+          id: `relay-b-${index}`,
+          kind: 1_059,
+          pubkey: `ephemeral-b-${index}`,
+          created_at: 900 - index,
+          content: "wrapped",
+          tags: [["p", MERCHANT]],
+        })),
+      ],
+    ])
+    const seenUntil = new Map<string, Array<number | undefined>>([
+      [relayA, []],
+      [relayB, []],
+    ])
+    let currentNow = 0
+    let interruptRelayB = true
+
+    __setCommerceTestOverrides({
+      now: () => currentNow,
+      getNdk: async () => ({ signer: {} }) as never,
+      resolveInboxRelayUrls: async () => [relayA, relayB],
+      getCachedOrderMessages: async () => [],
+      putCachedOrderMessages: async () => undefined,
+      getCachedDirectMessages: async () => [],
+      putCachedDirectMessages: async () => undefined,
+      readProtectedInbox: async (options) => {
+        const relayUrl = options.relayUrls[0]!
+        seenUntil.get(relayUrl)?.push(options.until)
+        const firstPage = options.until === undefined
+        const interrupted = !firstPage && relayUrl === relayB && interruptRelayB
+        const configuredFirstPage = firstPages.get(relayUrl)
+        return {
+          events: firstPage
+            ? (configuredFirstPage ?? [])
+            : [
+                {
+                  id: `${relayUrl}-boundary`,
+                  kind: 1_059,
+                  pubkey: "ephemeral-boundary",
+                  created_at: options.until ?? 0,
+                  content: "wrapped",
+                  tags: [["p", MERCHANT]],
+                },
+              ],
+          coverage: interrupted ? "partial" : "complete",
+          auth: {
+            state: "not_challenged",
+            challengedCount: 0,
+            succeededCount: 0,
+            failedCount: 0,
+          },
+          relayResult: {
+            status: interrupted ? "partial" : "success",
+            observations: [],
+            relays: [],
+            attemptedCount: 1,
+            completedCount: interrupted ? 0 : 1,
+            failedCount: interrupted ? 1 : 0,
+            authoritativeEmpty: false,
+          },
+        } as never
+      },
+      giftUnwrap: async (event) =>
+        ({
+          id: `ignored-${event.id}`,
+          kind: 1,
+          pubkey: BUYER,
+          created_at: event.created_at,
+          content: "ignored",
+          tags: [],
+        }) as never,
+    })
+    installProtectedReadSigner(signer(MERCHANT_KEY), MERCHANT, () => true)
+
+    const first = await getMerchantConversationList({
+      principalPubkey: MERCHANT,
+      sort: "merchant_priority",
+    })
+    interruptRelayB = false
+    const second = await getMerchantConversationList({
+      principalPubkey: MERCHANT,
+      sort: "merchant_priority",
+    })
+    currentNow = 120_001
+    const third = await getMerchantConversationList({
+      principalPubkey: MERCHANT,
+      sort: "merchant_priority",
+    })
+
+    expect(first.meta.inbox).toMatchObject({
+      coverage: "partial",
+      historyCoverage: "interrupted",
+    })
+    expect(second.meta.inbox).toMatchObject({
+      coverage: "complete",
+      historyCoverage: "interrupted",
+    })
+    expect(third.meta.inbox).toMatchObject({
+      coverage: "complete",
+      historyCoverage: "complete_within_scope",
+    })
+    expect(seenUntil.get(relayA)).toEqual([
+      undefined,
+      601,
+      undefined,
+      undefined,
+      601,
+    ])
+    expect(seenUntil.get(relayB)).toEqual([
+      undefined,
+      501,
+      undefined,
+      undefined,
+      501,
+    ])
+  })
+
   it("keeps both account roles working on relays that do not challenge", async () => {
     challengeAuthentication = false
     __setCommerceTestOverrides({

@@ -43,8 +43,25 @@ import {
   type InboxReadCoverage,
   type InboxReadSource,
 } from "./private-message-routing"
-import { extractOrderSummary } from "./order-summary"
-import { parseOrderMessageRumorEvent, type ParsedOrderMessage } from "./orders"
+import {
+  compareMerchantConversationsByPriority,
+  deriveMerchantConversationPriority,
+  type MerchantOrderPriorityBucket,
+} from "./merchant-conversation-priority"
+import {
+  extractOrderSummary,
+  isExternalPaymentReportMessage,
+} from "./order-summary"
+import {
+  getAppliedMerchantOrderMessages,
+  getEffectiveMerchantOrderStatus,
+  sortMerchantOrderMessagesForReplay,
+} from "./order-status"
+import { type ParsedOrderMessage } from "./orders"
+import {
+  parseAuthenticatedInboundOrderRumor,
+  parseValidatedCachedOrderMessageEnvelope,
+} from "./inbound-order-provenance"
 import {
   __resetInboxRelayCache,
   createNdkLegacyDmDecrypt,
@@ -116,6 +133,12 @@ import {
 const PRODUCT_CACHE_TTL_MS = 24 * 60 * 60_000
 const BROAD_AUTHOR_HINT_LIMIT = 16
 const DM_INBOX_READ_FANOUT = 24
+const INBOX_WRAP_PAGE_SIZE = 400
+const INBOX_WRAP_BACKFILL_MAX_PAGES = 4
+const INBOX_WRAP_BACKFILL_MAX_EVENTS =
+  INBOX_WRAP_PAGE_SIZE * INBOX_WRAP_BACKFILL_MAX_PAGES
+const INBOX_HISTORY_INTERRUPTED_RETRY_MS = 2 * 60_000
+const INBOX_HISTORY_DEEP_RESCAN_MS = 5 * 60_000
 // Keep author-scoped product filters small enough for public relays that
 // reject or truncate very large authors arrays. This is a transport batch
 // size, not a product truth cap.
@@ -129,8 +152,10 @@ const PRODUCT_VARIATION_EVENT_LIMIT = 200
 const PROFILE_CACHE_TTL_MS = 5 * 60_000
 
 export type CommerceReadSource = "commerce" | "public" | "local_cache"
-export type CommerceSortMode =
+export type ProductSortMode =
   "newest" | "price_asc" | "price_desc" | "updated_at_desc"
+export type ConversationListSortMode = "recent_activity" | "merchant_priority"
+export type CommerceSortMode = ProductSortMode | ConversationListSortMode
 export type CommerceReadPlanName =
   | "marketplace_products"
   | "merchant_storefront"
@@ -156,9 +181,22 @@ export interface PrivateInboxReadStatus {
   declarationState: InboxDeclarationState
   coverage: InboxReadCoverage
   readSource: InboxReadSource
+  /**
+   * Temporal depth of this bounded read, kept separate from relay coverage.
+   * NIP-01 pagination has no event-id cursor, so an overloaded timestamp must
+   * stop safely rather than skip same-second events.
+   */
+  historyCoverage: PrivateInboxHistoryCoverage
   /** Current-session relay-auth evidence; never persisted with messages. */
   authentication?: ProtectedInboxAuthSummary
 }
+
+export type PrivateInboxHistoryCoverage =
+  | "recent_only"
+  | "complete_within_scope"
+  | "bounded"
+  | "cursor_stalled"
+  | "interrupted"
 
 export interface CommerceQueryMeta {
   source: CommerceReadSource
@@ -234,7 +272,7 @@ export interface MarketplaceProductsQuery {
   authenticatedPubkey?: string | null
   textQuery?: string
   tags?: string[]
-  sort?: CommerceSortMode
+  sort?: ProductSortMode
   limit?: number
   cursor?: string
   readPolicy?: CommerceReadPolicy
@@ -245,7 +283,7 @@ export interface MerchantStorefrontQuery {
   authenticatedPubkey?: string | null
   textQuery?: string
   tag?: string
-  sort?: CommerceSortMode
+  sort?: ProductSortMode
   limit?: number
   cursor?: string
   includeMarketHidden?: boolean
@@ -282,6 +320,13 @@ export interface ConversationListQuery {
   counterpartyPubkey?: string
 }
 
+export interface MerchantConversationListQuery extends ConversationListQuery {
+  /** Defaults to recent activity so non-orders consumers retain their order. */
+  sort?: ConversationListSortMode
+  /** Applied before sorting and limiting the merchant's operational queue. */
+  queue?: MerchantOrderPriorityBucket
+}
+
 export interface ConversationDetailQuery {
   principalPubkey: string
   orderId: string
@@ -313,6 +358,7 @@ export interface CommerceReadPolicy {
 }
 
 export interface BuyerConversationSummary extends ConversationSummaryBase {
+  buyerPubkey: string
   merchantPubkey: string
 }
 
@@ -430,7 +476,15 @@ const PRODUCT_CAPABILITIES: CommerceCapabilities = {
 }
 
 const CONVERSATION_CAPABILITIES: CommerceCapabilities = {
-  sortModes: ["updated_at_desc"],
+  sortModes: ["recent_activity"],
+  textSearch: true,
+  protectedSummaries: true,
+  canonicalFreshness: false,
+  cursorPagination: false,
+}
+
+const MERCHANT_CONVERSATION_CAPABILITIES: CommerceCapabilities = {
+  sortModes: ["recent_activity", "merchant_priority"],
   textSearch: true,
   protectedSummaries: true,
   canonicalFreshness: false,
@@ -462,7 +516,23 @@ const retryWrapsByPrincipal = new Map<
   string,
   Map<string, { event: NDKEvent; failure?: DecryptFailure }>
 >()
-const inboxSyncPromises = new Map<string, Promise<PrivateInboxSyncResult>>()
+type InboxHistoryReadMode = "recent" | "backfill"
+
+type PrivateInboxSyncTask = {
+  mode: InboxHistoryReadMode
+  promise: Promise<PrivateInboxSyncResult>
+}
+
+type InboxHistoryCheckpoint = {
+  planFingerprint: string
+  historyCoverage: Exclude<PrivateInboxHistoryCoverage, "recent_only">
+  firstPageIdsByRelay: Map<string, Set<string>>
+  deepRescanAt?: number
+  interruptedRetryAt?: number
+}
+
+const inboxSyncPromises = new Map<string, PrivateInboxSyncTask>()
+const inboxHistoryCheckpoints = new Map<string, InboxHistoryCheckpoint>()
 const successfulLegacyDmIdsByPrincipal = new Map<string, Set<string>>()
 const MAX_LEGACY_DM_DECRYPT_ATTEMPTS = 2
 const retryLegacyDmsByPrincipal = new Map<
@@ -807,6 +877,7 @@ function unavailableInboxStatus(
     declarationState: "lookup_unavailable",
     coverage: "unavailable",
     readSource: "cache",
+    historyCoverage: "recent_only",
     authentication: {
       state: "unavailable",
       challengedCount: 0,
@@ -837,6 +908,7 @@ export function __resetCommerceTestOverrides(): void {
   successfulWrapIdsByPrincipal.clear()
   retryWrapsByPrincipal.clear()
   inboxSyncPromises.clear()
+  inboxHistoryCheckpoints.clear()
   __resetInboxRelayCache()
   successfulLegacyDmIdsByPrincipal.clear()
   retryLegacyDmsByPrincipal.clear()
@@ -878,8 +950,13 @@ function createMeta(
         decryptFailures !== undefined ||
         legacyDecryptFailures !== undefined ||
         // Declaration setup state is reported separately via meta.inbox;
-        // only incomplete read coverage degrades the data itself.
-        (options.inbox !== undefined && options.inbox.coverage !== "complete")),
+        // relay coverage and requested history depth stay distinct. A shallow
+        // recent-only read is healthy for recent surfaces, while a bounded or
+        // stalled backfill cannot claim a complete priority projection.
+        (options.inbox !== undefined &&
+          (options.inbox.coverage !== "complete" ||
+            (options.inbox.historyCoverage !== "recent_only" &&
+              options.inbox.historyCoverage !== "complete_within_scope")))),
     capabilities,
     fetchedAt: now(),
     nextCursor: options.nextCursor,
@@ -1068,7 +1145,7 @@ function productMatchesQuery(
 
 function sortProducts(
   records: CommerceProductRecord[],
-  sort: CommerceSortMode | undefined
+  sort: ProductSortMode | undefined
 ): CommerceProductRecord[] {
   const items = [...records]
   const familySummaryPrice = (record: CommerceProductRecord): Product =>
@@ -2192,6 +2269,12 @@ function cachedOrderMessageRow(
     rawContent: JSON.stringify(message),
     cachedAt: now(),
   }
+}
+
+function parseCachedOrderMessageRow(
+  row: CachedOrderMessage
+): ParsedOrderMessage | null {
+  return parseValidatedCachedOrderMessageEnvelope(row)
 }
 
 export async function cacheParsedOrderMessage(
@@ -4493,7 +4576,9 @@ function getConversationPreview(message: ParsedOrderMessage): string {
     case "message":
       return message.payload.note
     case "payment_proof":
-      return "Payment proof shared"
+      return isExternalPaymentReportMessage(message)
+        ? "Payment reported"
+        : "Payment proof shared"
     default:
       return "Order update"
   }
@@ -4507,7 +4592,8 @@ function unwrapOptions(): UnwrapGiftWrapOptions {
 }
 
 async function fetchParsedOrderMessages(
-  principalPubkey: string
+  principalPubkey: string,
+  historyMode: InboxHistoryReadMode = "recent"
 ): Promise<RawMessageFetchResult> {
   const authorization = resolveInboxSyncAuthorization(principalPubkey)
   assertInboxSyncAuthority(authorization)
@@ -4516,11 +4602,8 @@ async function fetchParsedOrderMessages(
 
   const cachedById = new Map<string, ParsedOrderMessage>()
   for (const row of cached) {
-    try {
-      cachedById.set(row.id, JSON.parse(row.rawContent) as ParsedOrderMessage)
-    } catch {
-      // skip corrupt cache rows
-    }
+    const message = parseCachedOrderMessageRow(row)
+    if (message) cachedById.set(message.id, message)
   }
 
   try {
@@ -4545,7 +4628,8 @@ async function fetchParsedOrderMessages(
     const sync = await syncPrivateMessageInbox(
       principalPubkey,
       signer,
-      authorization
+      authorization,
+      historyMode
     )
     for (const parsed of sync.orderMessages) cachedById.set(parsed.id, parsed)
 
@@ -4620,6 +4704,153 @@ type InboxWrapFetchResult = {
   inbox: PrivateInboxReadStatus
 }
 
+type InboxPageBoundary =
+  | { state: "complete" }
+  | { state: "cursor"; until: number }
+  | { state: "unknown" }
+
+type InboxPageEvidence = {
+  boundary: InboxPageBoundary
+  idsByRelay: Map<string, Set<string>>
+  saturatedRelayUrls: Set<string>
+}
+
+/**
+ * Find a cursor that cannot skip a saturated relay's unseen events.
+ *
+ * Fanout limits apply per relay. Taking the globally oldest event is unsafe:
+ * one relay can fill its page at a newer timestamp while another returns much
+ * older history, and a global-oldest cursor would jump past the first relay's
+ * unseen range. Source annotations let us choose the newest saturated-relay
+ * boundary instead. Test/legacy overrides with one successful relay can use
+ * the merged page directly; ambiguous multi-relay pages stop conservatively.
+ */
+function getInboxPageEvidence(
+  events: readonly NDKEvent[],
+  successfulRelayUrls: readonly string[]
+): InboxPageEvidence {
+  const idsByRelay = new Map<string, Set<string>>()
+  if (successfulRelayUrls.length === 1) {
+    const relayUrl = successfulRelayUrls[0]!
+    idsByRelay.set(relayUrl, new Set(events.map((event) => event.id)))
+    const saturatedRelayUrls = new Set<string>()
+    if (events.length >= INBOX_WRAP_PAGE_SIZE) {
+      saturatedRelayUrls.add(relayUrl)
+    }
+    return {
+      boundary:
+        events.length < INBOX_WRAP_PAGE_SIZE
+          ? { state: "complete" }
+          : {
+              state: "cursor",
+              until: Math.min(
+                ...events.map((event) => Math.max(0, event.created_at ?? 0))
+              ),
+            },
+      idsByRelay,
+      saturatedRelayUrls,
+    }
+  }
+
+  const successfulRelays = new Set(successfulRelayUrls)
+  const eventsByRelay = new Map<string, NDKEvent[]>()
+  for (const relayUrl of successfulRelayUrls) {
+    idsByRelay.set(relayUrl, new Set())
+  }
+  let allEventsAttributed = true
+  for (const event of events) {
+    const sources = getEventSourceRelayUrls(event).filter((relayUrl) =>
+      successfulRelays.has(relayUrl)
+    )
+    if (sources.length === 0) allEventsAttributed = false
+    for (const relayUrl of sources) {
+      const bucket = eventsByRelay.get(relayUrl) ?? []
+      bucket.push(event)
+      eventsByRelay.set(relayUrl, bucket)
+      const ids = idsByRelay.get(relayUrl) ?? new Set<string>()
+      ids.add(event.id)
+      idsByRelay.set(relayUrl, ids)
+    }
+  }
+  if (!allEventsAttributed) {
+    return {
+      boundary: { state: "unknown" },
+      idsByRelay,
+      saturatedRelayUrls: new Set(),
+    }
+  }
+  if (events.length < INBOX_WRAP_PAGE_SIZE) {
+    return {
+      boundary: { state: "complete" },
+      idsByRelay,
+      saturatedRelayUrls: new Set(),
+    }
+  }
+
+  const saturatedBoundaries: number[] = []
+  const saturatedRelayUrls = new Set<string>()
+  for (const relayUrl of successfulRelayUrls) {
+    const relayEvents = eventsByRelay.get(relayUrl) ?? []
+    if (relayEvents.length < INBOX_WRAP_PAGE_SIZE) continue
+    saturatedRelayUrls.add(relayUrl)
+    saturatedBoundaries.push(
+      Math.min(
+        ...relayEvents.map((event) => Math.max(0, event.created_at ?? 0))
+      )
+    )
+  }
+  return {
+    boundary:
+      saturatedBoundaries.length === 0
+        ? { state: "complete" }
+        : { state: "cursor", until: Math.max(...saturatedBoundaries) },
+    idsByRelay,
+    saturatedRelayUrls,
+  }
+}
+
+function inboxReadPlanFingerprint(input: {
+  declaration: InboxDeclarationResolution
+  readPlan: ReturnType<typeof planInboxReadRelays>
+}): string {
+  return JSON.stringify([
+    input.declaration.state,
+    input.readPlan.source,
+    input.readPlan.relayUrls,
+  ])
+}
+
+function setsOverlap(left: ReadonlySet<string>, right: ReadonlySet<string>) {
+  for (const value of left) {
+    if (right.has(value)) return true
+  }
+  return false
+}
+
+function canReuseInboxHistoryCheckpoint(input: {
+  checkpoint: InboxHistoryCheckpoint
+  planFingerprint: string
+  successfulRelayUrls: readonly string[]
+  evidence: InboxPageEvidence
+}): boolean {
+  if (input.checkpoint.planFingerprint !== input.planFingerprint) return false
+  if (input.evidence.boundary.state === "unknown") return false
+
+  for (const relayUrl of input.successfulRelayUrls) {
+    const previousIds = input.checkpoint.firstPageIdsByRelay.get(relayUrl)
+    const currentIds = input.evidence.idsByRelay.get(relayUrl)
+    // A relay newly entering successful coverage changes the observed scope.
+    if (!previousIds || !currentIds) return false
+    if (
+      input.evidence.saturatedRelayUrls.has(relayUrl) &&
+      !setsOverlap(previousIds, currentIds)
+    ) {
+      return false
+    }
+  }
+  return true
+}
+
 /**
  * Permissive inbox read (CND-208): union of declared inbox relays, locally
  * enabled secure IN relays, and the bounded compatibility read set. All-failed
@@ -4627,69 +4858,418 @@ type InboxWrapFetchResult = {
  */
 async function fetchNewInboxWraps(
   principalPubkey: string,
-  limit: number,
+  historyMode: InboxHistoryReadMode,
   authorization: ProtectedReadAuthorization | null
 ): Promise<InboxWrapFetchResult> {
-  const filter: NDKFilter = {
-    kinds: [EVENT_KINDS.GIFT_WRAP],
-    "#p": [principalPubkey],
-    limit,
-  }
-
   const declaration = await resolvePrincipalInboxDeclaration(principalPubkey)
   const readPlan = planInboxReadRelays({
     declaration,
     authenticatedPubkey: principalPubkey,
     maxRelays: DM_INBOX_READ_FANOUT,
   })
-
-  if (
+  const planFingerprint = inboxReadPlanFingerprint({ declaration, readPlan })
+  const checkpoint = inboxHistoryCheckpoints.get(principalPubkey)
+  const maxPages =
+    historyMode === "backfill" ? INBOX_WRAP_BACKFILL_MAX_PAGES : 1
+  const observedWraps = new Map<string, NDKEvent>()
+  const successfulRelayUrls = new Set<string>()
+  const failedRelayUrls = new Set<string>()
+  let until: number | undefined
+  let historyCoverage: PrivateInboxHistoryCoverage =
+    historyMode === "backfill" ? "bounded" : "recent_only"
+  let firstPageEvidence: InboxPageEvidence | undefined
+  let carriedCheckpoint = false
+  const authenticationSummaries: ProtectedInboxAuthSummary[] = []
+  const useFanoutTestSeam = Boolean(
     testOverrides.fetchEventsFanoutWithDiagnostics ||
     testOverrides.fetchEventsFanout
-  ) {
-    const result = await runFetchEventsFanoutWithDiagnostics(filter, {
-      relayUrls: readPlan.relayUrls,
-      connectTimeoutMs: 4_000,
-      fetchTimeoutMs: 12_000,
-    })
-    const successful = successfulWrapIdsByPrincipal.get(principalPubkey)
-    return {
-      wraps: result.events.filter((event) => !successful?.has(event.id)),
-      inbox: {
-        declarationState: declaration.state,
-        coverage: deriveInboxReadCoverage(result),
-        readSource: readPlan.source,
-        authentication: {
-          state: "not_challenged",
-          challengedCount: 0,
-          succeededCount: 0,
-          failedCount: 0,
-        },
-      },
+  )
+
+  if (useFanoutTestSeam) {
+    for (let page = 0; page < maxPages; page += 1) {
+      const filter: NDKFilter = {
+        kinds: [EVENT_KINDS.GIFT_WRAP],
+        "#p": [principalPubkey],
+        limit: INBOX_WRAP_PAGE_SIZE,
+        ...(until === undefined ? {} : { until }),
+      }
+
+      let result: Awaited<
+        ReturnType<typeof runFetchEventsFanoutWithDiagnostics>
+      >
+      try {
+        result = await runFetchEventsFanoutWithDiagnostics(filter, {
+          relayUrls: readPlan.relayUrls,
+          connectTimeoutMs: 4_000,
+          fetchTimeoutMs: 12_000,
+        })
+      } catch (error) {
+        if (page === 0) throw error
+        for (const relayUrl of readPlan.relayUrls) {
+          failedRelayUrls.add(relayUrl)
+        }
+        historyCoverage = "interrupted"
+        break
+      }
+
+      const attemptedRelayUrls = new Set(result.attemptedRelayUrls)
+      const pageSuccessfulRelayUrls = new Set(result.successfulRelayUrls)
+      const pageFailedRelayUrls = new Set(result.failedRelayUrls)
+      // A relay may appear in both diagnostic arrays when it returns some
+      // evidence but never completes. That is spatially partial and temporally
+      // interrupted; it must not mint a complete history checkpoint.
+      const pageInterrupted = readPlan.relayUrls.some(
+        (relayUrl) =>
+          !attemptedRelayUrls.has(relayUrl) ||
+          !pageSuccessfulRelayUrls.has(relayUrl) ||
+          pageFailedRelayUrls.has(relayUrl)
+      )
+      for (const relayUrl of readPlan.relayUrls) {
+        if (!attemptedRelayUrls.has(relayUrl)) {
+          failedRelayUrls.add(relayUrl)
+        }
+      }
+      for (const relayUrl of result.successfulRelayUrls) {
+        successfulRelayUrls.add(relayUrl)
+      }
+      for (const relayUrl of result.failedRelayUrls) {
+        failedRelayUrls.add(relayUrl)
+      }
+
+      if (result.successfulRelayUrls.length === 0) {
+        for (const relayUrl of readPlan.relayUrls) {
+          failedRelayUrls.add(relayUrl)
+        }
+        if (page === 0) {
+          firstPageEvidence = {
+            boundary: { state: "unknown" },
+            idsByRelay: new Map(),
+            saturatedRelayUrls: new Set(),
+          }
+        }
+        historyCoverage = "interrupted"
+        break
+      }
+
+      const orderedEvents = [...result.events].sort((left, right) => {
+        const timeOrder = (right.created_at ?? 0) - (left.created_at ?? 0)
+        return timeOrder || left.id.localeCompare(right.id)
+      })
+      let unseenOnPage = 0
+      for (const event of orderedEvents) {
+        if (observedWraps.has(event.id)) continue
+        unseenOnPage += 1
+        if (observedWraps.size < INBOX_WRAP_BACKFILL_MAX_EVENTS) {
+          observedWraps.set(event.id, event)
+        }
+      }
+
+      const evidence = getInboxPageEvidence(
+        orderedEvents,
+        result.successfulRelayUrls
+      )
+      if (page === 0) {
+        firstPageEvidence = pageInterrupted
+          ? { ...evidence, boundary: { state: "unknown" } }
+          : evidence
+        if (
+          !pageInterrupted &&
+          historyMode === "backfill" &&
+          checkpoint &&
+          canReuseInboxHistoryCheckpoint({
+            checkpoint,
+            planFingerprint,
+            successfulRelayUrls: result.successfulRelayUrls,
+            evidence,
+          })
+        ) {
+          if (evidence.boundary.state === "complete") {
+            historyCoverage =
+              checkpoint.historyCoverage === "bounded" ||
+              checkpoint.historyCoverage === "cursor_stalled"
+                ? checkpoint.historyCoverage
+                : "complete_within_scope"
+            carriedCheckpoint = historyCoverage === checkpoint.historyCoverage
+            break
+          }
+
+          const deepRescanDue = now() >= (checkpoint.deepRescanAt ?? 0)
+          const interruptedRetryDue =
+            checkpoint.historyCoverage === "interrupted" &&
+            now() >= (checkpoint.interruptedRetryAt ?? 0)
+          if (!deepRescanDue && !interruptedRetryDue) {
+            historyCoverage = checkpoint.historyCoverage
+            carriedCheckpoint = true
+            break
+          }
+        }
+      }
+
+      if (pageInterrupted) {
+        historyCoverage = "interrupted"
+        break
+      }
+
+      if (observedWraps.size >= INBOX_WRAP_BACKFILL_MAX_EVENTS) {
+        historyCoverage = historyMode === "backfill" ? "bounded" : "recent_only"
+        break
+      }
+
+      const boundary = evidence.boundary
+      if (boundary.state === "complete") {
+        historyCoverage =
+          historyMode === "backfill" ? "complete_within_scope" : "recent_only"
+        break
+      }
+      if (boundary.state === "unknown") {
+        historyCoverage =
+          historyMode === "backfill" ? "cursor_stalled" : "recent_only"
+        break
+      }
+      if (page + 1 >= maxPages) {
+        historyCoverage = historyMode === "backfill" ? "bounded" : "recent_only"
+        break
+      }
+
+      const nextUntil =
+        until === undefined ? boundary.until : Math.min(until, boundary.until)
+      if (until !== undefined && unseenOnPage === 0 && nextUntil === until) {
+        historyCoverage =
+          historyMode === "backfill" ? "cursor_stalled" : "recent_only"
+        break
+      }
+      until = nextUntil
+    }
+  } else {
+    const activeRelays = new Set(readPlan.relayUrls)
+    const untilByRelay = new Map<string, number>()
+    const previousPageIdsByRelay = new Map<string, Set<string>>()
+
+    for (let page = 0; page < maxPages; page += 1) {
+      const pageResults = await Promise.all(
+        [...activeRelays].map(async (relayUrl) => {
+          try {
+            const result = await (
+              testOverrides.readProtectedInbox ?? readProtectedInbox
+            )({
+              principalPubkey,
+              relayUrls: [relayUrl],
+              limit: INBOX_WRAP_PAGE_SIZE,
+              until: untilByRelay.get(relayUrl),
+              authorization,
+              connectTimeoutMs: 4_000,
+              queryTimeoutMs: 12_000,
+            })
+            return { relayUrl, result }
+          } catch {
+            return { relayUrl, result: null }
+          }
+        })
+      )
+
+      const pageIdsByRelay = new Map<string, Set<string>>()
+      const saturatedRelayUrls = new Set<string>()
+      const saturatedBoundaries: number[] = []
+      let pageInterrupted = false
+      let cursorStalled = false
+
+      for (const { relayUrl, result } of pageResults) {
+        if (!result) {
+          failedRelayUrls.add(relayUrl)
+          pageInterrupted = true
+          continue
+        }
+        authenticationSummaries.push(result.auth)
+        if (result.coverage === "complete") {
+          successfulRelayUrls.add(relayUrl)
+        } else {
+          failedRelayUrls.add(relayUrl)
+          if (
+            result.events.length > 0 ||
+            result.relayResult.completedCount > 0
+          ) {
+            successfulRelayUrls.add(relayUrl)
+          }
+          pageInterrupted = true
+        }
+
+        const events = result.events
+          .map((event) => new NDKEvent(undefined, event))
+          .sort((left, right) => {
+            const timeOrder = (right.created_at ?? 0) - (left.created_at ?? 0)
+            return timeOrder || left.id.localeCompare(right.id)
+          })
+        const pageIds = new Set(events.map((event) => event.id))
+        pageIdsByRelay.set(relayUrl, pageIds)
+        let unseenForRelay = 0
+        for (const event of events) {
+          if (observedWraps.has(event.id)) continue
+          unseenForRelay += 1
+          if (observedWraps.size < INBOX_WRAP_BACKFILL_MAX_EVENTS) {
+            observedWraps.set(event.id, event)
+          }
+        }
+
+        if (result.coverage !== "complete") continue
+        if (events.length < INBOX_WRAP_PAGE_SIZE) {
+          activeRelays.delete(relayUrl)
+          continue
+        }
+
+        saturatedRelayUrls.add(relayUrl)
+        const nextUntil = Math.min(
+          ...events.map((event) => Math.max(0, event.created_at ?? 0))
+        )
+        saturatedBoundaries.push(nextUntil)
+        const previousUntil = untilByRelay.get(relayUrl)
+        const previousPageIds = previousPageIdsByRelay.get(relayUrl)
+        if (
+          previousUntil === nextUntil &&
+          unseenForRelay === 0 &&
+          previousPageIds &&
+          setsOverlap(previousPageIds, pageIds)
+        ) {
+          cursorStalled = true
+          continue
+        }
+        untilByRelay.set(relayUrl, nextUntil)
+        previousPageIdsByRelay.set(relayUrl, pageIds)
+      }
+
+      const evidence: InboxPageEvidence = {
+        boundary: pageInterrupted
+          ? { state: "unknown" }
+          : saturatedRelayUrls.size === 0
+            ? { state: "complete" }
+            : {
+                state: "cursor",
+                until: Math.max(...saturatedBoundaries),
+              },
+        idsByRelay: pageIdsByRelay,
+        saturatedRelayUrls,
+      }
+      if (page === 0) {
+        firstPageEvidence = evidence
+        if (
+          !pageInterrupted &&
+          historyMode === "backfill" &&
+          checkpoint &&
+          canReuseInboxHistoryCheckpoint({
+            checkpoint,
+            planFingerprint,
+            successfulRelayUrls: [...successfulRelayUrls],
+            evidence,
+          })
+        ) {
+          const deepRescanDue = now() >= (checkpoint.deepRescanAt ?? 0)
+          const interruptedRetryDue =
+            checkpoint.historyCoverage === "interrupted" &&
+            now() >= (checkpoint.interruptedRetryAt ?? 0)
+          if (!deepRescanDue && !interruptedRetryDue) {
+            historyCoverage = checkpoint.historyCoverage
+            carriedCheckpoint = true
+            break
+          }
+        }
+      }
+
+      if (pageInterrupted) {
+        historyCoverage =
+          historyMode === "backfill" ? "interrupted" : "recent_only"
+        break
+      }
+      if (cursorStalled) {
+        historyCoverage =
+          historyMode === "backfill" ? "cursor_stalled" : "recent_only"
+        break
+      }
+      if (observedWraps.size >= INBOX_WRAP_BACKFILL_MAX_EVENTS) {
+        historyCoverage = historyMode === "backfill" ? "bounded" : "recent_only"
+        break
+      }
+      if (activeRelays.size === 0) {
+        historyCoverage =
+          historyMode === "backfill" ? "complete_within_scope" : "recent_only"
+        break
+      }
+      if (page + 1 >= maxPages) {
+        historyCoverage = historyMode === "backfill" ? "bounded" : "recent_only"
+      }
     }
   }
 
-  const protectedResult = await (
-    testOverrides.readProtectedInbox ?? readProtectedInbox
-  )({
-    principalPubkey,
-    relayUrls: readPlan.relayUrls,
-    limit,
-    authorization,
-    connectTimeoutMs: 4_000,
-    queryTimeoutMs: 12_000,
-  })
+  if (historyMode === "backfill" && firstPageEvidence) {
+    const temporalOutcome: Exclude<PrivateInboxHistoryCoverage, "recent_only"> =
+      historyCoverage === "recent_only" ? "bounded" : historyCoverage
+    inboxHistoryCheckpoints.set(principalPubkey, {
+      planFingerprint,
+      historyCoverage: temporalOutcome,
+      firstPageIdsByRelay: firstPageEvidence.idsByRelay,
+      ...(firstPageEvidence.saturatedRelayUrls.size > 0
+        ? {
+            deepRescanAt:
+              carriedCheckpoint && checkpoint?.deepRescanAt
+                ? checkpoint.deepRescanAt
+                : now() + INBOX_HISTORY_DEEP_RESCAN_MS,
+          }
+        : {}),
+      ...(temporalOutcome === "interrupted"
+        ? {
+            interruptedRetryAt:
+              carriedCheckpoint && checkpoint?.interruptedRetryAt
+                ? checkpoint.interruptedRetryAt
+                : now() + INBOX_HISTORY_INTERRUPTED_RETRY_MS,
+          }
+        : {}),
+    })
+  }
 
+  const coverage = deriveInboxReadCoverage({
+    successfulRelayUrls: [...successfulRelayUrls],
+    failedRelayUrls: [...failedRelayUrls],
+  })
   const successful = successfulWrapIdsByPrincipal.get(principalPubkey)
+  const authentication =
+    authenticationSummaries.reduce<ProtectedInboxAuthSummary>(
+      (summary, current) => {
+        const challengedCount =
+          summary.challengedCount + current.challengedCount
+        const succeededCount = summary.succeededCount + current.succeededCount
+        const failedCount = summary.failedCount + current.failedCount
+        return {
+          state:
+            failedCount === 0 && succeededCount === 0 && challengedCount === 0
+              ? "not_challenged"
+              : failedCount === 0 && succeededCount > 0
+                ? "authenticated"
+                : succeededCount > 0
+                  ? "partial"
+                  : "unavailable",
+          challengedCount,
+          succeededCount,
+          failedCount,
+          ...(summary.failure || current.failure
+            ? { failure: summary.failure ?? current.failure }
+            : {}),
+        }
+      },
+      {
+        state: "not_challenged",
+        challengedCount: 0,
+        succeededCount: 0,
+        failedCount: 0,
+      }
+    )
   return {
-    wraps: protectedResult.events
-      .filter((event) => !successful?.has(event.id))
-      .map((event) => new NDKEvent(undefined, event)),
+    wraps: Array.from(observedWraps.values()).filter(
+      (event) => !successful?.has(event.id)
+    ),
     inbox: {
       declarationState: declaration.state,
-      coverage: protectedResult.coverage,
+      coverage,
       readSource: readPlan.source,
-      authentication: protectedResult.auth,
+      historyCoverage,
+      authentication,
     },
   }
 }
@@ -5046,15 +5626,21 @@ function retryWraps(
 async function runPrivateMessageInboxSync(
   principalPubkey: string,
   signer: NDKSigner,
-  authorization: ProtectedReadAuthorization | null
+  authorization: ProtectedReadAuthorization | null,
+  historyMode: InboxHistoryReadMode
 ): Promise<PrivateInboxSyncResult> {
   const [cachedOrders, cachedDirect, fetched] = await Promise.all([
     loadCachedOrderMessages(principalPubkey),
     loadCachedDirectMessages(principalPubkey),
-    fetchNewInboxWraps(principalPubkey, 400, authorization),
+    fetchNewInboxWraps(principalPubkey, historyMode, authorization),
   ])
   assertInboxSyncAuthority(authorization)
-  const cachedOrderIds = new Set(cachedOrders.map((row) => row.id))
+  const cachedOrderIds = new Set(
+    cachedOrders.flatMap((row) => {
+      const message = parseCachedOrderMessageRow(row)
+      return message ? [message.id] : []
+    })
+  )
   const cachedDirectIds = new Set(cachedDirect.map((row) => row.id))
   const successful = successfulWrapIds(principalPubkey)
   const retry = retryWraps(principalPubkey)
@@ -5105,7 +5691,7 @@ async function runPrivateMessageInboxSync(
 
     try {
       if (outcome.category === "order") {
-        const message = parseOrderMessageRumorEvent(outcome.rumor)
+        const message = parseAuthenticatedInboundOrderRumor(outcome.rumor)
         orderEntries.push({
           wrapId: outcome.wrapId,
           message,
@@ -5251,22 +5837,49 @@ async function runPrivateMessageInboxSync(
 async function syncPrivateMessageInbox(
   principalPubkey: string,
   signer: NDKSigner,
-  authorization: ProtectedReadAuthorization | null
+  authorization: ProtectedReadAuthorization | null,
+  historyMode: InboxHistoryReadMode = "recent"
 ): Promise<PrivateInboxSyncResult> {
   const syncKey = `${authorization?.sessionScope ?? "legacy-test"}:${principalPubkey}`
   const existing = inboxSyncPromises.get(syncKey)
-  if (existing) return await existing
+  if (existing) {
+    if (historyMode === "recent" || existing.mode === "backfill") {
+      return await existing.promise
+    }
+    // Do not run two decrypt/cache pipelines concurrently for one principal.
+    // A deep request arriving behind a shallow sync waits, then starts (or
+    // joins) the single deep task.
+    try {
+      await existing.promise
+    } catch (error) {
+      if (error instanceof ProtectedInboxAuthorityChangedError) throw error
+      assertInboxSyncAuthority(authorization)
+    } finally {
+      if (inboxSyncPromises.get(syncKey) === existing) {
+        inboxSyncPromises.delete(syncKey)
+      }
+    }
+    assertInboxSyncAuthority(authorization)
+    return await syncPrivateMessageInbox(
+      principalPubkey,
+      signer,
+      authorization,
+      historyMode
+    )
+  }
 
   const pending = runPrivateMessageInboxSync(
     principalPubkey,
     signer,
-    authorization
+    authorization,
+    historyMode
   )
-  inboxSyncPromises.set(syncKey, pending)
+  const task: PrivateInboxSyncTask = { mode: historyMode, promise: pending }
+  inboxSyncPromises.set(syncKey, task)
   try {
     return await pending
   } finally {
-    if (inboxSyncPromises.get(syncKey) === pending) {
+    if (inboxSyncPromises.get(syncKey) === task) {
       inboxSyncPromises.delete(syncKey)
     }
   }
@@ -5528,6 +6141,16 @@ function resolvePrincipal(
   return role && counterpartyPubkey ? { role, counterpartyPubkey } : null
 }
 
+function compareConversationsByRecentActivity(
+  left: ConversationSummaryBase,
+  right: ConversationSummaryBase
+): number {
+  return (
+    right.latestAt - left.latestAt ||
+    (left.orderId < right.orderId ? -1 : left.orderId > right.orderId ? 1 : 0)
+  )
+}
+
 function buildBuyerConversationSummaries(
   messages: ParsedOrderMessage[],
   buyerPubkey: string
@@ -5542,23 +6165,26 @@ function buildBuyerConversationSummaries(
 
   const conversations: BuyerConversationSummary[] = []
   for (const [orderId, bucket] of grouped.entries()) {
-    bucket.sort((a, b) => a.createdAt - b.createdAt)
-    const latest = bucket[bucket.length - 1]
-    if (!latest) continue
-
     const principal = resolvePrincipal(bucket, buyerPubkey)
     if (!principal || principal.role !== "buyer") continue
     const merchantPubkey = principal.counterpartyPubkey
 
-    const latestStatus = [...bucket]
-      .reverse()
-      .find(
-        (message) =>
-          message.type === "status_update" &&
-          message.senderPubkey === merchantPubkey &&
-          message.recipientPubkey === buyerPubkey
-      )
-    const summary = extractOrderSummary(bucket, {
+    const participants = { buyerPubkey, merchantPubkey }
+    const replayMessages = sortMerchantOrderMessagesForReplay(
+      bucket,
+      participants
+    )
+    const effectiveStatus = getEffectiveMerchantOrderStatus(
+      replayMessages,
+      participants
+    )
+    const appliedMessages = getAppliedMerchantOrderMessages(
+      replayMessages,
+      participants
+    )
+    const projectedLatest = appliedMessages[appliedMessages.length - 1]
+    if (!projectedLatest) continue
+    const summary = extractOrderSummary(appliedMessages, {
       buyerPubkey,
       merchantPubkey,
     })
@@ -5566,27 +6192,25 @@ function buildBuyerConversationSummaries(
     conversations.push({
       id: orderId,
       orderId,
+      buyerPubkey,
       merchantPubkey,
-      latestAt: latest.createdAt,
-      latestType: latest.type,
-      status:
-        latestStatus?.type === "status_update"
-          ? latestStatus.payload.status
-          : null,
+      latestAt: projectedLatest.authoredAt ?? projectedLatest.createdAt,
+      latestType: projectedLatest.type,
+      status: effectiveStatus.status,
       totalSummary:
         summary.items.length > 0
           ? `${summary.subtotal} ${summary.currency}`
           : null,
-      preview: getConversationPreview(latest),
+      preview: getConversationPreview(projectedLatest),
       messageCount: bucket.length,
-      messages: bucket,
-      context: bucket.some((message) => message.type === "order")
+      messages: replayMessages,
+      context: replayMessages.some((message) => message.type === "order")
         ? "complete"
         : "missing_order",
     })
   }
 
-  conversations.sort((a, b) => b.latestAt - a.latestAt)
+  conversations.sort(compareConversationsByRecentActivity)
   return conversations
 }
 
@@ -5604,23 +6228,26 @@ function buildMerchantConversationSummaries(
 
   const conversations: MerchantConversationSummary[] = []
   for (const [orderId, bucket] of grouped.entries()) {
-    bucket.sort((a, b) => a.createdAt - b.createdAt)
-    const latest = bucket[bucket.length - 1]
-    if (!latest) continue
-
     const principal = resolvePrincipal(bucket, merchantPubkey)
     if (!principal || principal.role !== "merchant") continue
     const buyerPubkey = principal.counterpartyPubkey
 
-    const latestStatus = [...bucket]
-      .reverse()
-      .find(
-        (message) =>
-          message.type === "status_update" &&
-          message.senderPubkey === merchantPubkey &&
-          message.recipientPubkey === buyerPubkey
-      )
-    const summary = extractOrderSummary(bucket, {
+    const participants = { buyerPubkey, merchantPubkey }
+    const replayMessages = sortMerchantOrderMessagesForReplay(
+      bucket,
+      participants
+    )
+    const effectiveStatus = getEffectiveMerchantOrderStatus(
+      replayMessages,
+      participants
+    )
+    const appliedMessages = getAppliedMerchantOrderMessages(
+      replayMessages,
+      participants
+    )
+    const projectedLatest = appliedMessages[appliedMessages.length - 1]
+    if (!projectedLatest) continue
+    const summary = extractOrderSummary(appliedMessages, {
       buyerPubkey,
       merchantPubkey,
     })
@@ -5630,27 +6257,57 @@ function buildMerchantConversationSummaries(
       orderId,
       buyerPubkey,
       merchantPubkey,
-      latestAt: latest.createdAt,
-      latestType: latest.type,
-      status:
-        latestStatus?.type === "status_update"
-          ? latestStatus.payload.status
-          : null,
+      latestAt: projectedLatest.authoredAt ?? projectedLatest.createdAt,
+      latestType: projectedLatest.type,
+      status: effectiveStatus.status,
       totalSummary:
         summary.items.length > 0
           ? `${summary.subtotal} ${summary.currency}`
           : null,
-      preview: getConversationPreview(latest),
+      preview: getConversationPreview(projectedLatest),
       messageCount: bucket.length,
-      messages: bucket,
-      context: bucket.some((message) => message.type === "order")
+      messages: replayMessages,
+      context: replayMessages.some((message) => message.type === "order")
         ? "complete"
         : "missing_order",
     })
   }
 
-  conversations.sort((a, b) => b.latestAt - a.latestAt)
+  conversations.sort(compareConversationsByRecentActivity)
   return conversations
+}
+
+function selectMerchantConversationSummaries(
+  messages: ParsedOrderMessage[],
+  query: MerchantConversationListQuery
+): MerchantConversationSummary[] {
+  const conversations = buildMerchantConversationSummaries(
+    messages,
+    query.principalPubkey
+  ).filter((conversation) => {
+    if (
+      query.counterpartyPubkey &&
+      conversation.buyerPubkey !== query.counterpartyPubkey
+    ) {
+      return false
+    }
+    if (!query.queue) return true
+
+    const bucket = deriveMerchantConversationPriority(conversation).bucket
+    // Unpaid review is the aggregate queue for orders that have not produced
+    // payment evidence. Waiting-on-buyer remains a distinct priority rank.
+    return (
+      bucket === query.queue ||
+      (query.queue === "unpaid_review" && bucket === "waiting_payment")
+    )
+  })
+
+  conversations.sort(
+    query.sort === "merchant_priority"
+      ? compareMerchantConversationsByPriority
+      : compareConversationsByRecentActivity
+  )
+  return conversations.slice(0, query.limit ?? 200)
 }
 
 export async function getBuyerConversationList(
@@ -5687,11 +6344,8 @@ export async function getCachedBuyerConversationList(
   const cached = await loadCachedOrderMessages(query.principalPubkey)
   const messages = cached
     .flatMap((row) => {
-      try {
-        return [JSON.parse(row.rawContent) as ParsedOrderMessage]
-      } catch {
-        return []
-      }
+      const message = parseCachedOrderMessageRow(row)
+      return message ? [message] : []
     })
     .sort((a, b) => a.createdAt - b.createdAt)
   const conversations = buildBuyerConversationSummaries(
@@ -5717,24 +6371,20 @@ export async function getCachedBuyerConversationList(
 }
 
 export async function getMerchantConversationList(
-  query: ConversationListQuery
+  query: MerchantConversationListQuery
 ): Promise<CommerceResult<MerchantConversationSummary[]>> {
-  const result = await fetchParsedOrderMessages(query.principalPubkey)
+  const needsPriorityHistory =
+    query.sort === "merchant_priority" || query.queue !== undefined
+  const result = await fetchParsedOrderMessages(
+    query.principalPubkey,
+    needsPriorityHistory ? "backfill" : "recent"
+  )
   return {
-    data: buildMerchantConversationSummaries(
-      result.messages,
-      query.principalPubkey
-    )
-      .filter(
-        (conversation) =>
-          !query.counterpartyPubkey ||
-          conversation.buyerPubkey === query.counterpartyPubkey
-      )
-      .slice(0, query.limit ?? 200),
+    data: selectMerchantConversationSummaries(result.messages, query),
     meta: createMeta(
       "protected_conversation_list",
       result.source,
-      CONVERSATION_CAPABILITIES,
+      MERCHANT_CONVERSATION_CAPABILITIES,
       {
         stale: result.stale,
         decryptFailures: result.decryptFailures,
@@ -5745,35 +6395,23 @@ export async function getMerchantConversationList(
 }
 
 export async function getCachedMerchantConversationList(
-  query: ConversationListQuery
+  query: MerchantConversationListQuery
 ): Promise<CommerceResult<MerchantConversationSummary[]>> {
   const cached = await loadCachedOrderMessages(query.principalPubkey)
   const messages = cached
     .flatMap((row) => {
-      try {
-        return [JSON.parse(row.rawContent) as ParsedOrderMessage]
-      } catch {
-        return []
-      }
+      const message = parseCachedOrderMessageRow(row)
+      return message ? [message] : []
     })
     .sort((a, b) => a.createdAt - b.createdAt)
-  const conversations = buildMerchantConversationSummaries(
-    messages,
-    query.principalPubkey
-  )
-    .filter(
-      (conversation) =>
-        !query.counterpartyPubkey ||
-        conversation.buyerPubkey === query.counterpartyPubkey
-    )
-    .slice(0, query.limit ?? 200)
+  const conversations = selectMerchantConversationSummaries(messages, query)
 
   return {
     data: conversations,
     meta: createMeta(
       "protected_conversation_list",
       "local_cache",
-      CONVERSATION_CAPABILITIES,
+      MERCHANT_CONVERSATION_CAPABILITIES,
       { stale: true, degraded: conversations.length > 0 }
     ),
   }
