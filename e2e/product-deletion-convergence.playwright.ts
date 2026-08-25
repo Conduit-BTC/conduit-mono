@@ -1,10 +1,14 @@
 import { expect, test, type Page } from "@playwright/test"
-import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
 
 const merchantUrl = `http://127.0.0.1:${
   process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"
 }`
-const MERCHANT_SECRET = new Uint8Array(32).fill(41)
+const MERCHANT_SECRET = generateSecretKey()
 const MERCHANT_PUBKEY = getPublicKey(MERCHANT_SECRET)
 const PRODUCT_EVENT_ID = "9".repeat(64)
 const PRODUCT_D_TAG = "durable-delete-browser"
@@ -16,6 +20,10 @@ type UnsignedBrowserEvent = {
   created_at: number
   tags: string[][]
   content: string
+}
+
+function hasSameSerializedValue(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right)
 }
 
 async function installValidTestSigner(
@@ -505,7 +513,7 @@ async function readDatabaseMigrationState(page: Page): Promise<{
   )
 }
 
-test("Merchant upgrades v8 cache data to the durable v13 cache stores", async ({
+test("Merchant upgrades v8 cache data to the durable v13 cache stores @merchant", async ({
   page,
 }) => {
   await page.route(
@@ -552,8 +560,10 @@ test("Merchant upgrades v8 cache data to the durable v13 cache stores", async ({
     })
 
   const migrated = await readDatabaseMigrationState(page)
-  expect(migrated.product).toEqual(fixture.product)
-  expect(migrated.tombstone).toEqual(fixture.tombstone)
+  expect(hasSameSerializedValue(migrated.product, fixture.product)).toBe(true)
+  expect(hasSameSerializedValue(migrated.tombstone, fixture.tombstone)).toBe(
+    true
+  )
   expect(migrated.outboxCount).toBe(0)
   expect(migrated.outboxIndexes).toEqual([
     "createdAt",
@@ -572,7 +582,7 @@ test("Merchant upgrades v8 cache data to the durable v13 cache stores", async ({
   ])
 })
 
-test("Merchant persists one exact deletion and restores it after reload", async ({
+test("Merchant persists one exact deletion and restores it after reload @merchant", async ({
   page,
 }) => {
   const publishes: ObservedRelayPublish[] = []
@@ -603,28 +613,29 @@ test("Merchant persists one exact deletion and restores it after reload", async 
 
   const beforeReload = await readDeletionState(page)
   const [job] = beforeReload.jobs
-  expect(job?.signedEvent.kind).toBe(5)
-  expect(job?.signedEvent.pubkey).toBe(MERCHANT_PUBKEY)
-  expect(job?.signedEvent.tags).toContainEqual(["e", PRODUCT_EVENT_ID])
-  expect(job?.signedEvent.tags).toContainEqual(["a", PRODUCT_ADDRESS])
-  expect(job?.signedEvent.sig).toMatch(/^[0-9a-f]{128}$/)
+  expect(
+    job?.signedEvent.kind === 5 &&
+      job.signedEvent.pubkey === MERCHANT_PUBKEY &&
+      job.signedEvent.tags.some(
+        ([tagName, value]) => tagName === "e" && value === PRODUCT_EVENT_ID
+      ) &&
+      job.signedEvent.tags.some(
+        ([tagName, value]) => tagName === "a" && value === PRODUCT_ADDRESS
+      ) &&
+      /^[0-9a-f]{128}$/.test(job.signedEvent.sig)
+  ).toBe(true)
   expect(beforeReload.tombstoneCount).toBeGreaterThan(0)
-  expect(job?.relayPlan).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({
-        relayUrl: "wss://relay.conduit.market",
-        roles: expect.arrayContaining(["conduit"]),
-      }),
-      expect.objectContaining({
-        relayUrl: "wss://source-browser.conduit.market",
-        roles: expect.arrayContaining(["source"]),
-      }),
-      expect.objectContaining({
-        relayUrl: "wss://write-browser.example",
-        roles: expect.arrayContaining(["author_write"]),
-      }),
-    ])
-  )
+  expect(
+    [
+      ["wss://relay.conduit.market", "conduit"],
+      ["wss://source-browser.conduit.market", "source"],
+      ["wss://write-browser.example", "author_write"],
+    ].every(([relayUrl, role]) =>
+      job?.relayPlan.some(
+        (target) => target.relayUrl === relayUrl && target.roles.includes(role)
+      )
+    )
+  ).toBe(true)
 
   const exactSignedEvent = structuredClone(job?.signedEvent)
   await page.reload()
@@ -636,11 +647,13 @@ test("Merchant persists one exact deletion and restores it after reload", async 
   ).toHaveCount(0)
 
   const afterReload = await readDeletionState(page)
-  expect(afterReload.jobs[0]?.signedEvent).toEqual(exactSignedEvent)
+  expect(
+    hasSameSerializedValue(afterReload.jobs[0]?.signedEvent, exactSignedEvent)
+  ).toBe(true)
   expect(afterReload.tombstoneCount).toBeGreaterThan(0)
 })
 
-test("Merchant resumes a partial deletion after browser restart without signing again", async ({
+test("Merchant resumes a partial deletion after browser restart without signing again @merchant", async ({
   browser,
 }) => {
   let signerCalls = 0
@@ -683,16 +696,13 @@ test("Merchant resumes a partial deletion after browser restart without signing 
     const beforeRestart = await readDeletionState(firstPage)
     const [partialJob] = beforeRestart.jobs
     expect(signerCalls).toBe(1)
-    expect(
-      partialJob?.relayDelivery.find(
-        ({ relayUrl }) => relayUrl === "wss://write-browser.example"
-      )
-    ).toEqual(
-      expect.objectContaining({
-        status: "rejected",
-        attemptCount: 1,
-      })
+    const rejectedDelivery = partialJob?.relayDelivery.find(
+      ({ relayUrl }) => relayUrl === "wss://write-browser.example"
     )
+    expect(
+      rejectedDelivery?.status === "rejected" &&
+        rejectedDelivery.attemptCount === 1
+    ).toBe(true)
     expect(
       partialJob?.relayDelivery
         .filter(({ relayUrl }) => relayUrl !== "wss://write-browser.example")
@@ -757,20 +767,31 @@ test("Merchant resumes a partial deletion after browser restart without signing 
         )
         .toBe("delivered")
       const afterRestart = await readDeletionState(restartedPage)
-      expect(afterRestart.jobs[0]?.signedEvent).toEqual(exactSignedEvent)
+      expect(
+        hasSameSerializedValue(
+          afterRestart.jobs[0]?.signedEvent,
+          exactSignedEvent
+        )
+      ).toBe(true)
       expect(afterRestart.tombstoneCount).toBeGreaterThan(0)
       expect(signerCalls).toBe(1)
-      expect(
-        restartedPage.getByText("Durable delete browser fixture", {
-          exact: true,
-        })
-      ).toHaveCount(0)
+      await expect
+        .poll(
+          async () =>
+            (await restartedPage
+              .getByText("Durable delete browser fixture", { exact: true })
+              .count()) === 0,
+          { timeout: 20_000 }
+        )
+        .toBe(true)
 
       expect(retryPublishes.map(({ relayUrl }) => relayUrl)).toEqual([
         "wss://write-browser.example",
       ])
-      expect(retryPublishes[0]?.event).toEqual(exactSignedEvent)
-      expect(retryResponseErrors).toEqual([])
+      expect(
+        hasSameSerializedValue(retryPublishes[0]?.event, exactSignedEvent)
+      ).toBe(true)
+      expect(retryResponseErrors.length).toBe(0)
       for (const relayUrl of ackedBeforeRestart) {
         expect(retryPublishes.some((item) => item.relayUrl === relayUrl)).toBe(
           false

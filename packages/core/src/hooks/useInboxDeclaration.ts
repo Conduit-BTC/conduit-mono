@@ -16,11 +16,13 @@ import {
   MAX_DECLARED_INBOX_WRITE_RELAYS,
   readRetainedInboxDeclarationEvidence,
   resolveInboxDeclaration,
-  secureRelayUrls,
   sharedInboxDiscoveryRelayUrls,
   type InboxDeclarationResolution,
 } from "../protocol/private-message-routing"
-import { subscribeRelaySettingsChanges } from "../protocol/relay-settings"
+import {
+  normalizeSecureOrIsolatedE2eRelayUrls,
+  subscribeRelaySettingsChanges,
+} from "../protocol/relay-settings"
 
 /**
  * NIP-17 inbox declaration readiness + repair (CND-208).
@@ -78,18 +80,24 @@ export function verifyDeclarationReadBack(
   }
   if (!expected) return { confirmed: !resolution.stale }
 
-  const actualRelays = [...secureRelayUrls(resolution.relayUrls)].sort()
-  const expectedRelays = [...secureRelayUrls(expected.relayUrls)].sort()
+  const actualRelays = [
+    ...normalizeSecureOrIsolatedE2eRelayUrls(resolution.relayUrls),
+  ].sort()
+  const expectedRelays = [
+    ...normalizeSecureOrIsolatedE2eRelayUrls(expected.relayUrls),
+  ].sort()
   const successfulSources = new Set(
-    secureRelayUrls(resolution.observation?.successfulRelayUrls ?? [])
+    normalizeSecureOrIsolatedE2eRelayUrls(
+      resolution.observation?.successfulRelayUrls ?? []
+    )
   )
   const canonicalSharedSources = new Set(sharedInboxDiscoveryRelayUrls())
   const durableSharedSources = new Set(
-    secureRelayUrls(resolution.sharedSourceRelayUrls ?? []).filter((relayUrl) =>
-      canonicalSharedSources.has(relayUrl)
-    )
+    normalizeSecureOrIsolatedE2eRelayUrls(
+      resolution.sharedSourceRelayUrls ?? []
+    ).filter((relayUrl) => canonicalSharedSources.has(relayUrl))
   )
-  const exactSourceObservedThisRun = secureRelayUrls(
+  const exactSourceObservedThisRun = normalizeSecureOrIsolatedE2eRelayUrls(
     resolution.observation?.eventSourceRelayUrls ?? []
   ).some(
     (relayUrl) =>
@@ -272,10 +280,12 @@ export function useInboxDeclaration(
             "The retained declaration is unavailable. Retry the readiness check."
           )
         }
-        const effectiveRelays = secureRelayUrls(
+        const effectiveRelays = normalizeSecureOrIsolatedE2eRelayUrls(
           durableEvidence.current.secureRelayUrls
         ).slice(0, MAX_DECLARED_INBOX_WRITE_RELAYS)
-        const selected = [...secureRelayUrls(relayUrls)].sort()
+        const selected = [
+          ...normalizeSecureOrIsolatedE2eRelayUrls(relayUrls),
+        ].sort()
         const effective = [...effectiveRelays].sort()
         if (
           selected.length !== effective.length ||

@@ -4,6 +4,15 @@ export type SmokeShard = "market" | "merchant"
 
 const shardOrder: SmokeShard[] = ["market", "merchant"]
 
+const bothShardSmokeInfrastructure = new Set([
+  "scripts/ci/select_smoke_shards.ts",
+  "scripts/ci/validate_playwright_smoke_areas.ts",
+  "tests/agent-review-handoff.test.ts",
+  "tests/playwright-smoke-areas.test.ts",
+  "tests/pr-evidence-contract.test.ts",
+  "tests/select-smoke-shards.test.ts",
+])
+
 function isPublicContextOnly(path: string): boolean {
   return (
     path === "AGENTS.md" ||
@@ -30,6 +39,7 @@ export function selectSmokeShards(paths: readonly string[]): SmokeShard[] {
       path === "package.json" ||
       path === "bun.lock" ||
       path === "tsconfig.json" ||
+      bothShardSmokeInfrastructure.has(path) ||
       path.startsWith("e2e/") ||
       path.startsWith("packages/core/") ||
       path.startsWith("packages/ui/")

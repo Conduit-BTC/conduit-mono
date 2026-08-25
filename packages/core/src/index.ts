@@ -11,6 +11,7 @@ export * from "./schemas"
 // Utils
 export * from "./utils"
 export * from "./network-target-safety"
+export * from "./app-links"
 
 // Wallets
 export * from "./wallets"
@@ -156,6 +157,7 @@ export type {
 
 // Config
 export {
+  applyE2eRelayIsolation,
   CANONICAL_APP_BACKPLANE_RELAYS,
   CANONICAL_APP_WRITE_RELAYS,
   CANONICAL_COMMERCE_DISCOVERY_RELAYS,
@@ -170,6 +172,7 @@ export {
   config,
   getRelayBucketConfigs,
   isRetiredDefaultRelayUrl,
+  resolveE2eRelayIsolation,
   isMockPayments,
   isSignet,
   isTestnet,

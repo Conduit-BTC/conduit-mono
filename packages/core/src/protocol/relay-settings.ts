@@ -548,6 +548,39 @@ export function normalizeSecureRelayUrls(
   return normalizedUrls
 }
 
+function configuredIsolatedE2eRelayUrl(): string | null {
+  if (!config.e2eRelayIsolationEnabled) return null
+  const normalized = tryNormalizeRelayUrl(config.relayUrl)
+  if (!normalized.ok || !normalized.url.startsWith("ws://")) return null
+  const hostname = new URL(normalized.url).hostname
+  return ["127.0.0.1", "localhost", "[::1]"].includes(hostname)
+    ? normalized.url
+    : null
+}
+
+/**
+ * Preserve the hermetic loopback relay only in the explicit mock E2E mode.
+ * Production and ordinary development retain the secure-wss-only invariant.
+ */
+export function normalizeSecureOrIsolatedE2eRelayUrls(
+  relayUrls: readonly string[]
+): string[] {
+  const secureRelayUrls = normalizeSecureRelayUrls(relayUrls)
+  const isolatedRelayUrl = configuredIsolatedE2eRelayUrl()
+  if (!isolatedRelayUrl) return secureRelayUrls
+
+  const seen = new Set(secureRelayUrls)
+  const normalizedUrls = [...secureRelayUrls]
+  for (const relayUrl of relayUrls) {
+    const normalized = tryNormalizeRelayUrl(relayUrl)
+    if (!normalized.ok || normalized.url !== isolatedRelayUrl) continue
+    if (seen.has(normalized.url)) continue
+    seen.add(normalized.url)
+    normalizedUrls.push(normalized.url)
+  }
+  return normalizedUrls
+}
+
 /**
  * Normalize relay URLs learned from untrusted provenance or protocol hints.
  * Public WSS destinations are accepted directly. A private/local destination
@@ -592,6 +625,18 @@ export function normalizePublicRelayHints(
     relayUrls,
     approvedRelayUrls: [],
     allowApprovedPrivate: false,
+  })
+}
+
+/** Preserve only the exact configured loopback in explicit mock E2E mode. */
+export function normalizePublicOrIsolatedE2eRelayHints(
+  relayUrls: readonly string[]
+): string[] {
+  const isolatedRelayUrl = configuredIsolatedE2eRelayUrl()
+  return normalizeUntrustedRelayHintsForContext({
+    relayUrls,
+    approvedRelayUrls: isolatedRelayUrl ? [isolatedRelayUrl] : [],
+    allowApprovedPrivate: isolatedRelayUrl !== null,
   })
 }
 
@@ -1414,16 +1459,16 @@ export function getInboxRelayCandidates(
   >()
 
   for (const relayUrl of declaredRelayUrls) {
-    const normalized = tryNormalizeRelayUrl(relayUrl)
-    if (!normalized.ok || !normalized.url.startsWith("wss://")) continue
-    byUrl.set(normalized.url, { declared: true, retained: false })
+    const normalized = normalizeSecureOrIsolatedE2eRelayUrls([relayUrl])[0]
+    if (!normalized) continue
+    byUrl.set(normalized, { declared: true, retained: false })
   }
 
   for (const relayUrl of retainedRelayUrls) {
-    const normalized = tryNormalizeRelayUrl(relayUrl)
-    if (!normalized.ok || !normalized.url.startsWith("wss://")) continue
-    const existing = byUrl.get(normalized.url)
-    byUrl.set(normalized.url, {
+    const normalized = normalizeSecureOrIsolatedE2eRelayUrls([relayUrl])[0]
+    if (!normalized) continue
+    const existing = byUrl.get(normalized)
+    byUrl.set(normalized, {
       ...existing,
       declared: existing?.declared ?? false,
       retained: true,
@@ -1431,10 +1476,10 @@ export function getInboxRelayCandidates(
   }
 
   for (const entry of entries) {
-    const normalized = tryNormalizeRelayUrl(entry.url)
-    if (!normalized.ok || !normalized.url.startsWith("wss://")) continue
-    const existing = byUrl.get(normalized.url)
-    byUrl.set(normalized.url, {
+    const normalized = normalizeSecureOrIsolatedE2eRelayUrls([entry.url])[0]
+    if (!normalized) continue
+    const existing = byUrl.get(normalized)
+    byUrl.set(normalized, {
       entry,
       declared: existing?.declared ?? false,
       retained: existing?.retained ?? false,

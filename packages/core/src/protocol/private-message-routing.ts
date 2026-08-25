@@ -18,8 +18,8 @@ import {
 import {
   getGeneralReadRelayUrls,
   getGeneralWriteRelayUrls,
-  normalizePublicRelayHints,
-  normalizeSecureRelayUrls as secureRelayUrls,
+  normalizePublicOrIsolatedE2eRelayHints,
+  normalizeSecureOrIsolatedE2eRelayUrls,
 } from "./relay-settings"
 import {
   isValidSignedPublicNostrEvent,
@@ -367,7 +367,7 @@ function backfillLegacySharedSourceProvenance(
   const migrated = cloneInboxDeclarationEvidenceRecord(record)
   const backfill = (evidence: InboxDeclarationEvidenceRecord["current"]) => {
     if (evidence.sharedSourceRelayUrls !== undefined) return
-    evidence.sharedSourceRelayUrls = secureRelayUrls(
+    evidence.sharedSourceRelayUrls = ownerRelayUrls(
       evidence.sourceRelayUrls
     ).filter((relayUrl) => sharedRelayUrlSet.has(relayUrl))
   }
@@ -455,11 +455,11 @@ async function reconcileInboxDeclarationEvidenceBatch(
               ? record.lastUsable
               : undefined
         const retainedSharedSourceRelayUrlSet = new Set(
-          secureRelayUrls(existingEvidence?.sharedSourceRelayUrls ?? [])
+          ownerRelayUrls(existingEvidence?.sharedSourceRelayUrls ?? [])
         )
         const fallbackInput = {
           ...input,
-          sharedSourceRelayUrls: secureRelayUrls(
+          sharedSourceRelayUrls: ownerRelayUrls(
             input.sharedSourceRelayUrls ?? []
           ).filter((relayUrl) => retainedSharedSourceRelayUrlSet.has(relayUrl)),
         }
@@ -562,8 +562,12 @@ function allowsLocalRelayUrls(
   return !!allowedOwner && allowedOwner === cacheKey(pubkey)
 }
 
+function ownerRelayUrls(relayUrls: readonly string[]): string[] {
+  return normalizeSecureOrIsolatedE2eRelayUrls(relayUrls)
+}
+
 export function publicRelayHintUrls(relayUrls: readonly string[]): string[] {
-  return normalizePublicRelayHints(relayUrls)
+  return normalizePublicOrIsolatedE2eRelayHints(relayUrls)
 }
 
 function declarationForContext(
@@ -571,7 +575,7 @@ function declarationForContext(
   allowLocalRelayUrls: boolean
 ): InboxDeclarationResolution {
   const projectRelayUrls = allowLocalRelayUrls
-    ? secureRelayUrls
+    ? ownerRelayUrls
     : publicRelayHintUrls
   const projected = {
     ...declaration,
@@ -606,7 +610,7 @@ export function sharedInboxDiscoveryRelayUrls(): string[] {
 }
 
 function inboxDiscoveryRelayCandidates(): string[] {
-  return secureRelayUrls([
+  return ownerRelayUrls([
     ...sharedInboxDiscoveryRelayUrls(),
     ...getGeneralReadRelayUrls({ fallbackRelayUrls: [] }),
   ]).slice(0, MAX_INBOX_DISCOVERY_RELAYS)
@@ -621,7 +625,7 @@ export function inboxDiscoveryRelayUrls(): string[] {
 export function inboxDeclarationPublishRelayUrls(
   ownerWriteRelayUrls: readonly string[] = getGeneralWriteRelayUrls({})
 ): string[] {
-  return secureRelayUrls([
+  return ownerRelayUrls([
     ...sharedInboxDiscoveryRelayUrls(),
     ...ownerWriteRelayUrls,
   ]).slice(0, MAX_INBOX_DISCOVERY_RELAYS)
@@ -685,15 +689,15 @@ function resolutionFromEvidence(
     ? "distribution_pending"
     : current.state
   const declaredRelayUrls =
-    state === "declared" ? secureRelayUrls(current.secureRelayUrls) : []
+    state === "declared" ? ownerRelayUrls(current.secureRelayUrls) : []
   const pendingRelayUrls =
     state === "distribution_pending" && current.state === "declared"
-      ? secureRelayUrls(current.secureRelayUrls)
+      ? ownerRelayUrls(current.secureRelayUrls)
       : []
   const retainedReadRelayUrls =
     state === "declared"
       ? []
-      : secureRelayUrls([
+      : ownerRelayUrls([
           ...pendingRelayUrls,
           ...(record.lastUsable?.secureRelayUrls ?? []),
         ])
@@ -793,9 +797,9 @@ function declarationEventSourceRelayUrls(
   event: NDKEvent,
   successfulRelayUrls: readonly string[]
 ): string[] {
-  const successful = secureRelayUrls(successfulRelayUrls)
+  const successful = ownerRelayUrls(successfulRelayUrls)
   const successfulSet = new Set(successful)
-  const attached = secureRelayUrls(getEventSourceRelayUrls(event))
+  const attached = ownerRelayUrls(getEventSourceRelayUrls(event))
   if (attached.length > 0) {
     return attached.filter((url) => successfulSet.has(url))
   }
@@ -808,18 +812,18 @@ function reconcileInboxReadDiagnostics(
   result: Awaited<ReturnType<typeof fetchEventsFanoutWithDiagnostics>>,
   relayUrls: readonly string[]
 ): Awaited<ReturnType<typeof fetchEventsFanoutWithDiagnostics>> {
-  const planned = secureRelayUrls(relayUrls)
+  const planned = ownerRelayUrls(relayUrls)
   const plannedSet = new Set(planned)
   const successfulSet = new Set(
-    secureRelayUrls(result.successfulRelayUrls).filter((url) =>
+    ownerRelayUrls(result.successfulRelayUrls).filter((url) =>
       plannedSet.has(url)
     )
   )
   const reportedFailedSet = new Set(
-    secureRelayUrls(result.failedRelayUrls).filter((url) => plannedSet.has(url))
+    ownerRelayUrls(result.failedRelayUrls).filter((url) => plannedSet.has(url))
   )
   const attemptedSet = new Set(
-    secureRelayUrls([
+    ownerRelayUrls([
       ...result.attemptedRelayUrls,
       ...result.successfulRelayUrls,
       ...result.failedRelayUrls,
@@ -863,7 +867,7 @@ export async function resolveInboxDeclaration(
   const repository = options.evidenceRepository
   const canonicalSharedRelayUrlSet = new Set(sharedInboxDiscoveryRelayUrls())
   const sharedConfirmationRelayUrlSet = new Set(
-    secureRelayUrls(
+    ownerRelayUrls(
       options.sharedConfirmationRelayUrls ?? [...canonicalSharedRelayUrlSet]
     ).filter((relayUrl) => canonicalSharedRelayUrlSet.has(relayUrl))
   )
@@ -953,10 +957,10 @@ export async function resolveInboxDeclaration(
     options.fetchEventsWithDiagnostics ?? fetchEventsFanoutWithDiagnostics
   const relayCandidates =
     options.relayUrls && options.relayUrls.length > 0
-      ? secureRelayUrls(options.relayUrls)
+      ? ownerRelayUrls(options.relayUrls)
       : inboxDiscoveryRelayCandidates()
   const relayUrls = allowLocal
-    ? secureRelayUrls(relayCandidates)
+    ? ownerRelayUrls(relayCandidates)
     : publicRelayHintUrls(relayCandidates)
 
   let result: Awaited<ReturnType<typeof fetchEventsFanoutWithDiagnostics>>
@@ -986,9 +990,9 @@ export async function resolveInboxDeclaration(
 
   const observationBase: InboxDeclarationObservation = {
     coverage: deriveInboxReadCoverage(result),
-    attemptedRelayUrls: secureRelayUrls(result.attemptedRelayUrls),
-    successfulRelayUrls: secureRelayUrls(result.successfulRelayUrls),
-    failedRelayUrls: secureRelayUrls(result.failedRelayUrls),
+    attemptedRelayUrls: ownerRelayUrls(result.attemptedRelayUrls),
+    successfulRelayUrls: ownerRelayUrls(result.successfulRelayUrls),
+    failedRelayUrls: ownerRelayUrls(result.failedRelayUrls),
     eventSourceRelayUrls: [],
   }
 
@@ -1187,7 +1191,7 @@ export function planInboxReadRelays(
     input.authenticatedPubkey
   )
   const projectOwnerRelayUrls = allowOwnerLocalRelays
-    ? secureRelayUrls
+    ? ownerRelayUrls
     : publicRelayHintUrls
   const declared = projectOwnerRelayUrls(
     input.declaration.state === "declared" ? input.declaration.relayUrls : []
@@ -1203,7 +1207,7 @@ export function planInboxReadRelays(
     input.localReadRelayUrls ??
     getGeneralReadRelayUrls({ fallbackRelayUrls: [] })
   const localIn = allowOwnerLocalRelays
-    ? secureRelayUrls(rawLocalIn)
+    ? ownerRelayUrls(rawLocalIn)
     : publicRelayHintUrls(rawLocalIn)
   const compatibility = publicRelayHintUrls(
     input.compatibilityRelayUrls ?? config.commerceDmFallbackRelayUrls
@@ -1306,9 +1310,9 @@ export function planCompatibilityOrderRelays(input: {
   recipientReadRelayUrls?: readonly string[]
   maxRelays?: number
 }): CompatibilityOrderRelayPlan {
-  const approved = secureRelayUrls(input.approvedRelayUrls)
+  const approved = ownerRelayUrls(input.approvedRelayUrls)
   const approvedSet = new Set(approved)
-  const recipientMatches = secureRelayUrls(
+  const recipientMatches = ownerRelayUrls(
     input.recipientReadRelayUrls ?? []
   ).filter((url) => approvedSet.has(url))
   const recipientMatchSet = new Set(recipientMatches)
@@ -1350,7 +1354,7 @@ export function selectPrivateMessageDeliveryRoute(
 ): DeliveryRouteSelection {
   const declaration = input.declaration
   if (declaration.state === "declared") {
-    const declaredRelayUrls = secureRelayUrls(declaration.relayUrls)
+    const declaredRelayUrls = ownerRelayUrls(declaration.relayUrls)
     const relayUrls = declaredRelayUrls.slice(
       0,
       MAX_DECLARED_INBOX_WRITE_RELAYS

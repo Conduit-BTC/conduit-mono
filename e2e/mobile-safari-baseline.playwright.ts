@@ -1,9 +1,11 @@
 import { expect, test, type Locator, type Page } from "@playwright/test"
+import { generateSecretKey, getPublicKey } from "nostr-tools/pure"
 
 import {
   TEST_BUYER_PUBKEY,
   TEST_MERCHANT_PUBKEY,
   installTestSigner,
+  seedTestRelayIdentity,
   seedMarketCart,
 } from "./helpers/auth"
 
@@ -40,31 +42,11 @@ async function expectMobileTouchTarget(control: Locator): Promise<void> {
   expect(box?.height).toBeGreaterThanOrEqual(44)
 }
 
-async function installEmptyRelay(page: Page): Promise<void> {
-  await page.routeWebSocket(/^(?:ws|wss):\/\//, (socket) => {
-    socket.onMessage((message) => {
-      if (typeof message !== "string") return
-      let frame: unknown
-      try {
-        frame = JSON.parse(message)
-      } catch {
-        return
-      }
-      if (
-        Array.isArray(frame) &&
-        frame[0] === "REQ" &&
-        typeof frame[1] === "string"
-      ) {
-        socket.send(JSON.stringify(["EOSE", frame[1]]))
-      }
-    })
-  })
-}
-
 async function seedInterruptedPayment(
   page: Page,
   input: {
     orderId: string
+    buyerPubkey?: string
     paymentClaimId: string
     invoice?: string
     preimage?: string
@@ -147,9 +129,9 @@ async function seedInterruptedPayment(
       }
     },
     {
-      buyerPubkey: TEST_BUYER_PUBKEY,
-      merchantPubkey: TEST_MERCHANT_PUBKEY,
       ...input,
+      buyerPubkey: input.buyerPubkey ?? TEST_BUYER_PUBKEY,
+      merchantPubkey: TEST_MERCHANT_PUBKEY,
     }
   )
 }
@@ -192,7 +174,7 @@ async function readRecoveredPayment(
 }
 
 test.describe("CND-162 mobile browser baseline", () => {
-  test("market viewport, touch navigation, and cart survive history and refresh", async ({
+  test("market viewport, touch navigation, and cart survive history and refresh @market", async ({
     page,
   }) => {
     await page.goto(`${marketUrl}/products`)
@@ -244,7 +226,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     await expectMobileTouchTarget(page.locator('button[title="Cart"]'))
   })
 
-  test("market checkout keeps form semantics and draft values after refresh", async ({
+  test("market checkout keeps form semantics and draft values after refresh @market", async ({
     page,
   }) => {
     await page.goto(`${marketUrl}/products`)
@@ -287,7 +269,7 @@ test.describe("CND-162 mobile browser baseline", () => {
   })
 
   test.describe("signer handoff without retained connection artifacts", () => {
-    test("market mobile signer exposes NIP-46 handoff and cancel recovery", async ({
+    test("market mobile signer exposes NIP-46 handoff and cancel recovery @market", async ({
       page,
     }) => {
       await page.routeWebSocket(/.*/, () => {})
@@ -382,7 +364,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     })
   })
 
-  test("market wallet route keeps mobile-safe input and recoverable validation", async ({
+  test("market wallet route keeps mobile-safe input and recoverable validation @market", async ({
     page,
   }) => {
     await installTestSigner(page, TEST_BUYER_PUBKEY)
@@ -414,12 +396,14 @@ test.describe("CND-162 mobile browser baseline", () => {
     await expect(connectionString).toBeVisible()
   })
 
-  test("market reload safely recovers an expired tokenless pre-wallet payment", async ({
+  test("market reload safely recovers an expired tokenless pre-wallet payment @market", async ({
     page,
   }) => {
     const orderId = "mobile-pre-wallet-recovery"
-    await installEmptyRelay(page)
-    await installTestSigner(page, TEST_BUYER_PUBKEY)
+    const secretKey = generateSecretKey()
+    const buyerPubkey = getPublicKey(secretKey)
+    await seedTestRelayIdentity(secretKey)
+    await installTestSigner(page, buyerPubkey, { secretKey })
     await page.goto(`${marketUrl}/orders`)
     await expect(
       page.getByRole("heading", { name: "Orders", exact: true })
@@ -429,6 +413,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     ).toBeVisible()
     await seedInterruptedPayment(page, {
       orderId,
+      buyerPubkey,
       paymentClaimId: "pre-wallet-claim",
       storeMarker: false,
     })
@@ -450,12 +435,14 @@ test.describe("CND-162 mobile browser baseline", () => {
     })
   })
 
-  test("market reload blocks repayment after an unproven wallet handoff", async ({
+  test("market reload blocks repayment after an unproven wallet handoff @market", async ({
     page,
   }) => {
     const orderId = "mobile-wallet-handoff-recovery"
-    await installEmptyRelay(page)
-    await installTestSigner(page, TEST_BUYER_PUBKEY)
+    const secretKey = generateSecretKey()
+    const buyerPubkey = getPublicKey(secretKey)
+    await seedTestRelayIdentity(secretKey)
+    await installTestSigner(page, buyerPubkey, { secretKey })
     await page.goto(`${marketUrl}/orders`)
     await expect(
       page.getByRole("heading", { name: "Orders", exact: true })
@@ -465,6 +452,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     ).toBeVisible()
     await seedInterruptedPayment(page, {
       orderId,
+      buyerPubkey,
       paymentClaimId: "wallet-handoff-claim",
       invoice: "lnbc1mobilefixture",
     })
@@ -488,18 +476,21 @@ test.describe("CND-162 mobile browser baseline", () => {
     })
   })
 
-  test("market reload restores paid state and receipt retry without repaying", async ({
+  test("market reload restores paid state and receipt retry without repaying @market", async ({
     page,
   }) => {
     const orderId = "mobile-paid-proof-recovery"
-    await installEmptyRelay(page)
-    await installTestSigner(page, TEST_BUYER_PUBKEY)
+    const secretKey = generateSecretKey()
+    const buyerPubkey = getPublicKey(secretKey)
+    await seedTestRelayIdentity(secretKey)
+    await installTestSigner(page, buyerPubkey, { secretKey })
     await page.goto(`${marketUrl}/orders`)
     await expect(
       page.getByRole("heading", { name: "No orders yet" })
     ).toBeVisible()
     await seedInterruptedPayment(page, {
       orderId,
+      buyerPubkey,
       paymentClaimId: "paid-proof-claim",
       invoice: "lnbc1paidmobilefixture",
       preimage: "fixture-payment-preimage",
@@ -523,7 +514,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     })
   })
 
-  test("merchant current auth metadata restores through protected navigation and refresh", async ({
+  test("merchant current auth metadata restores through protected navigation and refresh @merchant", async ({
     page,
   }) => {
     await installTestSigner(page, TEST_BUYER_PUBKEY, { rememberAuth: false })
@@ -558,7 +549,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     await expect(page.getByRole("heading", { name: "Shipping" })).toBeVisible()
   })
 
-  test("merchant mobile signer gate remains touch-safe without NIP-07", async ({
+  test("merchant mobile signer gate remains touch-safe without NIP-07 @merchant", async ({
     page,
   }) => {
     await page.goto(`${merchantUrl}/`)

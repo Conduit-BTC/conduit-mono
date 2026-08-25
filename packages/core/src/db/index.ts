@@ -59,6 +59,11 @@ export interface StoredMessage {
   recipientPubkey: string
   content: string
   decrypted?: string
+  /** Typed provenance retained only for a validated pending order companion. */
+  orderCompanion?: {
+    orderId: string
+    orderRumorId: string
+  }
   kind: number
   createdAt: number
   read: 0 | 1

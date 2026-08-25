@@ -1,10 +1,14 @@
 import { expect, test, type Page } from "@playwright/test"
-import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
 
 const marketUrl = `http://127.0.0.1:${
   process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"
 }`
-const MERCHANT_SECRET = new Uint8Array(32).fill(42)
+const MERCHANT_SECRET = generateSecretKey()
 const MERCHANT_PUBKEY = getPublicKey(MERCHANT_SECRET)
 const PRODUCT_EVENT_ID = "8".repeat(64)
 const PRODUCT_D_TAG = "market-cache-tombstone"
@@ -161,7 +165,7 @@ async function seedValidatedTombstones(page: Page): Promise<void> {
   )
 }
 
-test("Market hides a stale cached product after durable tombstone evidence", async ({
+test("Market hides a stale cached product after durable tombstone evidence @market", async ({
   page,
 }) => {
   await installValidTestSigner(page)
