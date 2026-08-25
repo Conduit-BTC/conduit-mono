@@ -198,8 +198,7 @@ describe("shopper price preference storage", () => {
       `if (synced) {
       shopperPricing.updateExistingDevicePriceOverrideAfterPresetSave(`
     )
-    expect(presets).toContain(
-      "setDecryptedPreset({ ownerPubkey: identity, value })"
-    )
+    expect(presets).toContain("setDecryptedPreset({")
+    expect(presets).toContain("value: value ?? DEFAULT_SHOPPER_PRESETS")
   })
 })

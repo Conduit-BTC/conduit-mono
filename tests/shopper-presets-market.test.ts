@@ -7,6 +7,7 @@ import {
 } from "@conduit/core"
 import { fetchShopperPresetsForSession } from "../apps/market/src/hooks/useShopperPresets"
 import {
+  createSerialOperationQueue,
   isCurrentShopperPresetsRevision,
   isCurrentShopperPresetsRelayLifecycle,
   shopperPresetsQueryKey,
@@ -14,6 +15,7 @@ import {
   shouldRefetchShopperPresetsAfterRelayActivation,
 } from "../apps/market/src/lib/shopper-presets-relay-lifecycle"
 import { getShopperPreferencesSaveBlockers } from "../apps/market/src/lib/shopper-preferences-validation"
+import { isClearedRemoteShopperPreset } from "../apps/market/src/lib/shopper-presets-ui"
 import { getCartShippingDestinationEligibility } from "../apps/market/src/lib/cart-shipping-options"
 import {
   buildShippingAddressFromForm,
@@ -145,6 +147,68 @@ describe("Market shopper preset integration", () => {
         relayState: "ready",
       })
     ).toEqual([])
+  })
+
+  it("identifies only an unlocked remote preset without shipping as cleared", () => {
+    const clearedPreset = {
+      preferredRail: "automatic" as const,
+      display: {
+        currency: "BITCOIN" as const,
+        bitcoinUnit: "bitcoin" as const,
+      },
+    }
+
+    expect(
+      isClearedRemoteShopperPreset({
+        hasRemotePreset: true,
+        unlockState: "unlocked",
+        preset: clearedPreset,
+      })
+    ).toBe(true)
+    expect(
+      isClearedRemoteShopperPreset({
+        hasRemotePreset: false,
+        unlockState: "unlocked",
+        preset: clearedPreset,
+      })
+    ).toBe(false)
+    expect(
+      isClearedRemoteShopperPreset({
+        hasRemotePreset: true,
+        unlockState: "locked",
+        preset: clearedPreset,
+      })
+    ).toBe(false)
+    expect(
+      isClearedRemoteShopperPreset({
+        hasRemotePreset: true,
+        unlockState: "unlocked",
+        preset: { ...clearedPreset, shipping: preset },
+      })
+    ).toBe(false)
+  })
+
+  it("shows the cleared-record notice and scopes the replacement save failure", async () => {
+    const preferences = await Bun.file(
+      "apps/market/src/routes/preferences.tsx"
+    ).text()
+    const saveStart = preferences.indexOf("async function save")
+    const clearStart = preferences.indexOf("async function clear")
+    const save = preferences.slice(saveStart, clearStart)
+
+    expect(preferences).toContain('label: "Preset cleared"')
+    expect(preferences).toContain(
+      "No checkout preset is currently saved. Enter new defaults to\n              replace the cleared record."
+    )
+    expect(save).toContain(
+      "No new preset was confirmed. Refresh may still find an older encrypted record."
+    )
+    expect(save).not.toContain(
+      "The preset could not be saved. Check relay access and try again."
+    )
+    expect(preferences.slice(clearStart)).toContain(
+      '"The preset could not be cleared."'
+    )
   })
 
   it("accepts protocol-valid passwords through the 1024-byte boundary", () => {
@@ -462,7 +526,7 @@ describe("Market shopper preset integration", () => {
     expect(source).not.toContain("acceptedRemoteRef")
     expect(
       source.match(/acceptedReadRef\.current = (?:result|next)/gu)
-    ).toHaveLength(4)
+    ).toHaveLength(3)
     const decryptStart = source.indexOf("const decryptRemote = useCallback")
     const remoteEffect = source.indexOf("const result = remote.data")
     expect(
@@ -664,6 +728,7 @@ describe("Market shopper preset integration", () => {
       "apps/market/src/hooks/useShopperPresets.tsx"
     ).text()
     const unlockIndex = source.indexOf("const decryptRemote = useCallback")
+    const writeIndex = source.indexOf("const write = useCallback")
     const saveIndex = source.indexOf("const save = useCallback")
     const clearIndex = source.indexOf("const clear = useCallback")
     const lockIndex = source.indexOf("const lock = useCallback")
@@ -672,14 +737,81 @@ describe("Market shopper preset integration", () => {
       source.indexOf("rememberPassword(password, policy)", unlockIndex)
     ).toBeGreaterThan(unlockIndex)
     expect(
-      source.indexOf("rememberPassword(password, policy)", saveIndex)
-    ).toBeGreaterThan(saveIndex)
-    expect(
-      source.indexOf("rememberPassword(password, policy)", clearIndex)
-    ).toBeGreaterThan(clearIndex)
+      source.indexOf("rememberPassword(password, policy)", writeIndex)
+    ).toBeGreaterThan(writeIndex)
     expect(
       source.indexOf("clearShopperPresetsUnlock(", lockIndex)
     ).toBeGreaterThan(lockIndex)
+  })
+
+  it("passes the accepted found revision when saving or clearing presets", async () => {
+    const source = await Bun.file(
+      "apps/market/src/hooks/useShopperPresets.tsx"
+    ).text()
+    const writeStart = source.indexOf("const write = useCallback")
+    const saveStart = source.indexOf("const save = useCallback")
+    const clearStart = source.indexOf("const clear = useCallback")
+    const lockStart = source.indexOf("const lock = useCallback")
+    const write = source.slice(writeStart, saveStart)
+    const save = source.slice(saveStart, clearStart)
+    const clear = source.slice(clearStart, lockStart)
+
+    expect(source).toContain("const writeQueueRef = useRef")
+    expect(source).toContain("createSerialOperationQueue()")
+
+    const queueIndex = write.indexOf("writeQueueRef.current!.enqueue")
+    const acceptedRevisionIndex = write.indexOf("const acceptedRevision")
+    expect(write).toContain('acceptedReadRef.current?.state === "found"')
+    expect(write).toContain("acceptedRevision,")
+    expect(queueIndex).toBeGreaterThan(-1)
+    expect(acceptedRevisionIndex).toBeGreaterThan(queueIndex)
+    expect(save).toContain("if (!value.shipping) return false")
+    expect(save).toContain("write(value, password, policy)")
+    expect(clear).toContain("write(null, password, policy)")
+  })
+
+  it("serializes operations after a successful predecessor", async () => {
+    const queue = createSerialOperationQueue()
+    const order: string[] = []
+    let releaseFirst: (() => void) | undefined
+    const first = queue.enqueue(
+      () =>
+        new Promise<void>((resolve) => {
+          order.push("first:start")
+          releaseFirst = () => {
+            order.push("first:end")
+            resolve()
+          }
+        })
+    )
+    const second = queue.enqueue(async () => {
+      order.push("second:start")
+      return "second"
+    })
+
+    await Promise.resolve()
+    expect(order).toEqual(["first:start"])
+    releaseFirst!()
+    await expect(first).resolves.toBeUndefined()
+    await expect(second).resolves.toBe("second")
+    expect(order).toEqual(["first:start", "first:end", "second:start"])
+  })
+
+  it("serializes operations after a rejected predecessor", async () => {
+    const queue = createSerialOperationQueue()
+    const order: string[] = []
+    const first = queue.enqueue(async () => {
+      order.push("first:start")
+      throw new Error("first failed")
+    })
+    const second = queue.enqueue(async () => {
+      order.push("second:start")
+      return "second"
+    })
+
+    await expect(first).rejects.toThrow("first failed")
+    await expect(second).resolves.toBe("second")
+    expect(order).toEqual(["first:start", "second:start"])
   })
 
   it("does not require password persistence for the always policy", () => {

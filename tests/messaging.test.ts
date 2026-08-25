@@ -808,6 +808,76 @@ describe("publishPrivateMessage", () => {
     expect(result.deliveryRoute).toBe("compatibility_order")
   })
 
+  it("records a guest order update to the merchant without treating the guest as an inbox", async () => {
+    const guestOrderUpdate = orderRumor({
+      pubkey: "merchant",
+      tags: [
+        ["p", "guest"],
+        ["type", "status_update"],
+        ["order", "guest-order-id"],
+        ["status", "paid"],
+      ],
+      content: JSON.stringify({
+        orderId: "guest-order-id",
+        merchantPubkey: "merchant",
+        buyerPubkey: "guest",
+        status: "paid",
+      }),
+    })
+
+    const result = await publishPrivateMessage({
+      rumor: guestOrderUpdate,
+      senderPubkey: "merchant",
+      recipientPubkey: "merchant",
+      signer: {
+        user: async () => ({ pubkey: "merchant" }),
+      } as unknown as NDKSigner,
+      rumorKind: EVENT_KINDS.ORDER,
+      selfCopy: false,
+      recipientInboxRelays: [],
+      validatedOrderScope: createValidatedOrderRouteScope({
+        rumor: guestOrderUpdate,
+        orderId: "guest-order-id",
+        senderPubkey: "merchant",
+        recipientPubkey: "merchant",
+        rumorRecipientPubkey: "guest",
+      }),
+      compatibilityOrderRoute: {
+        enabled: true,
+        relayUrls: ["wss://compatibility.conduit.market"],
+      },
+      giftWrapFn: (async (_rumor, recipient) =>
+        wrap(`wrap-${recipient.pubkey}`)) as never,
+      publishFn: (async () => ({})) as never,
+    })
+
+    expect(result.wrappedToRecipient.id).toBe("wrap-merchant")
+    expect(result.deliveryRoute).toBe("compatibility_order")
+  })
+
+  it("does not authorize a mismatched order rumor for third-party delivery", () => {
+    const mismatchedOrder = orderRumor({
+      pubkey: "merchant",
+      tags: [
+        ["p", "guest"],
+        ["type", "status_update"],
+        ["order", "guest-order-id"],
+        ["status", "paid"],
+      ],
+      content: JSON.stringify({ status: "paid" }),
+    })
+
+    expect(() =>
+      createValidatedOrderRouteScope({
+        rumor: mismatchedOrder,
+        orderId: "guest-order-id",
+        senderPubkey: "merchant",
+        recipientPubkey: "third-party",
+        rumorRecipientPubkey: "guest",
+      })
+    ).toThrow("Cannot authorize compatibility routing for this rumor.")
+  })
+
   it("accepts one compatibility ACK, surfaces partial delivery, and keeps NIP-65 bounded", async () => {
     const result = await publishPrivateMessage({
       ...validatedOrderInput(),

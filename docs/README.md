@@ -49,6 +49,9 @@ Reviewers may request a durable contract update when the behavior has broad or l
 - `docs/knowledge/nip17-inbox-bootstrap-migration.md`: temporary validated-order
   compatibility routing while users migrate to discoverable NIP-17 inbox
   declarations
+- `docs/knowledge/nip46-connected-relay-retention.md`: temporary retention of
+  established secure NIP-46 relays until relay migration can complete or cancel
+  without mutating a returned signer after timeout
 
 ## Where To Put New Docs
 
