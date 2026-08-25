@@ -127,6 +127,7 @@ export type OrderPaymentClaimInput = {
   merchantLightningAddress: string | null
   checkoutMode: OrderCheckoutMode
   zapContent: string
+  zapTargetAddress?: string
   totalSats: number
   totalMsats: number
   items: Array<{ productAddress: string; quantity: number }>
@@ -255,7 +256,8 @@ function paymentClaimMatchesLifecycle(
   return (
     paymentClaimIdentityMatchesLifecycle(lifecycle, input) &&
     checkoutModesMatchForPayment(lifecycle, input.checkoutMode) &&
-    (lifecycle.zapContent ?? "") === input.zapContent
+    (lifecycle.zapContent ?? "") === input.zapContent &&
+    (lifecycle.zapTargetAddress ?? null) === (input.zapTargetAddress ?? null)
   )
 }
 
@@ -317,6 +319,7 @@ type ClaimedOrderLifecycleOverrides = Partial<
     | "publicZapSigner"
     | "publicZapFallback"
     | "zapContent"
+    | "zapTargetAddress"
     | "walletPaymentAttemptId"
   >
 >
@@ -517,6 +520,7 @@ export async function claimOrderLifecyclePrivateFallbackPayment(
       publicZapSigner: undefined,
       publicZapFallback: true,
       zapContent: "",
+      zapTargetAddress: undefined,
       walletPaymentAttemptId:
         input.paymentTarget.type === "wallet"
           ? createWalletPaymentAttemptId()

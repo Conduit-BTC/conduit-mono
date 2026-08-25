@@ -248,6 +248,7 @@ describe("order payment admission", () => {
     totalMsats: 2_000,
     currency: "SATS",
     zapContent: "Zapped out 2 items at https://shop.conduit.market/",
+    zapTargetAddress: undefined,
     addressValidity: "not_required",
     shippingZoneEligibility: "not_required",
     orderDeliveryStatus: "sent",
@@ -267,6 +268,7 @@ describe("order payment admission", () => {
     merchantLightningAddress: lifecycle.merchantLightningAddress ?? null,
     checkoutMode: "anonymous_public_zap",
     zapContent: lifecycle.zapContent ?? "",
+    zapTargetAddress: lifecycle.zapTargetAddress,
     totalSats: lifecycle.totalSats,
     totalMsats: lifecycle.totalMsats,
     items: lifecycle.items.map((item) => ({
@@ -298,6 +300,24 @@ describe("order payment admission", () => {
           providerId: "spark",
         },
       })
+    ).toBe("snapshot_mismatch")
+  })
+
+  it("rejects a product-target mismatch before signer or payment work", () => {
+    expect(
+      getOrderLifecyclePaymentAdmission(
+        {
+          ...lifecycle,
+          checkoutMode: "public_zap_as_shopper",
+          publicZapSigner: "shopper",
+          zapTargetAddress: `30402:${"a".repeat(64)}:shirt`,
+        },
+        {
+          ...input,
+          checkoutMode: "public_zap_as_shopper",
+          zapTargetAddress: `30402:${"a".repeat(64)}:hat`,
+        }
+      )
     ).toBe("snapshot_mismatch")
   })
 

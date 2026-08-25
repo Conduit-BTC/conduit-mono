@@ -256,6 +256,7 @@ export interface OrderPaymentContext {
   merchantLud16: string | null
   zapMode: CheckoutZapMode
   zapContent: string
+  zapTargetAddress?: string
   totalSats: number
   totalMsats: number
   items: Array<{ productAddress: string; quantity: number }>
@@ -538,7 +539,8 @@ function hasPublicReceiptContext(
   const publicZapSigner =
     lifecycle.publicZapSigner ?? getOrderPublicZapSigner(lifecycle.checkoutMode)
   return (
-    publicZapSigner === "anon" &&
+    (publicZapSigner === "anon" || publicZapSigner === "shopper") &&
+    lifecycle.publicZapFallback !== true &&
     !!lifecycle.invoice &&
     !!lifecycle.zapRequestId &&
     Number.isSafeInteger(lifecycle.zapRequestCreatedAt) &&
@@ -865,6 +867,7 @@ async function runOrderPaymentInternal(
     merchantLightningAddress: ctx.merchantLud16,
     checkoutMode: ctx.zapMode,
     zapContent: ctx.zapContent,
+    zapTargetAddress: ctx.zapTargetAddress,
     totalSats: ctx.totalSats,
     totalMsats: ctx.totalMsats,
     items: ctx.items,
@@ -934,6 +937,7 @@ async function runOrderPaymentInternal(
       merchantPubkey: lifecycle.merchantPubkey,
       merchantLud16: lifecycle.merchantLightningAddress ?? null,
       zapContent: lifecycle.zapContent ?? "",
+      zapTargetAddress: lifecycle.zapTargetAddress,
       totalSats: lifecycle.totalSats,
       totalMsats: lifecycle.totalMsats,
       items: lifecycle.items.map((item) => ({
@@ -1064,6 +1068,7 @@ async function runOrderPaymentInternal(
             lnurlNostrPubkey: providerReceiptPubkey ?? undefined,
             recipientPubkey: ctx.merchantPubkey,
             zapContent: ctx.zapContent,
+            zapTargetAddress: ctx.zapTargetAddress,
             // Receipt relays are an explicit public payment policy. The shared
             // NDK compatibility context intentionally has no ambient pool.
             explicitRelayUrls: [],
@@ -1137,6 +1142,7 @@ async function runOrderPaymentInternal(
           publicZapSigner: undefined,
           publicZapFallback: true,
           zapContent: "",
+          zapTargetAddress: undefined,
           zapReceiptStatus: "not_applicable",
           zapRequestId: undefined,
           zapRequestCreatedAt: undefined,
@@ -1540,6 +1546,7 @@ export async function runOrderPrivateFallback(
       ...ctx,
       zapMode: "private_checkout",
       zapContent: "",
+      zapTargetAddress: undefined,
     },
     dependencyOverrides,
     { paymentClaimId, lifecycle: claim.lifecycle }
