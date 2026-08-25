@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react"
-import { createFileRoute } from "@tanstack/react-router"
+import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { Plus, Search } from "lucide-react"
@@ -29,6 +29,8 @@ import {
   type ProductZapMessagePolicy,
   type PublishWithPlannerResult,
   useAuth,
+  useConduitSession,
+  useInboxDeclaration,
 } from "@conduit/core"
 import {
   Badge,
@@ -55,6 +57,7 @@ import {
   cn,
 } from "@conduit/ui"
 import { ProductCombinationMatrix } from "../components/ProductCombinationMatrix"
+import { ProductInboxReadinessDialog } from "../components/ProductInboxReadinessDialog"
 import { ProductTagEditor } from "../components/ProductTagEditor"
 import { ShippingDestinationsEditor } from "../components/ShippingDestinationsEditor"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
@@ -103,6 +106,7 @@ import {
   loadShippingConfig,
   type ShippingConfig,
 } from "../lib/readiness"
+import { needsProductInboxPublishGuidance } from "../lib/productInboxReadiness"
 import {
   deliverQueuedProductDeletion,
   getPendingProductDeletionJobs,
@@ -862,6 +866,8 @@ async function deleteProduct(
 
 function ProductsPage() {
   const { pubkey } = useAuth()
+  const session = useConduitSession()
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const btcUsdRateQuery = useBtcUsdRate()
   const productDialogReturnFocusRef = useRef<HTMLElement | null>(null)
@@ -880,6 +886,17 @@ function ProductsPage() {
     useState<ProductDeliveryNotice | null>(null)
   const [productDeliveryRetry, setProductDeliveryRetry] =
     useState<ProductDeliveryRetryState | null>(null)
+  const [pendingProductPublish, setPendingProductPublish] =
+    useState<ProductPublishMutationPayload | null>(null)
+
+  // Product publishing stays permissive. This readiness check only provides
+  // guidance before a new listing; it never changes order delivery routing.
+  const inboxReadinessEnabled =
+    !!pubkey && productDialogOpen && !editing && session.relaySettingsReady
+  const inboxReadiness = useInboxDeclaration(pubkey, {
+    enabled: inboxReadinessEnabled,
+    relayScope: session.relayScope,
+  })
 
   const productsQuery = useQuery({
     queryKey: ["merchant-products-live", pubkey ?? "none"],
@@ -1403,6 +1420,40 @@ function ProductsPage() {
     return saved
   }
 
+  function requestProductPublish(payload: ProductPublishMutationPayload): void {
+    if (
+      !needsProductInboxPublishGuidance(
+        inboxReadiness.status,
+        !!payload.existing,
+        inboxReadinessEnabled
+      )
+    ) {
+      saveMutation.mutate(payload)
+      return
+    }
+
+    setPendingProductPublish(payload)
+  }
+
+  function publishPendingProduct(): void {
+    if (!pendingProductPublish) return
+    const payload = pendingProductPublish
+    setPendingProductPublish(null)
+    saveMutation.mutate(payload)
+  }
+
+  function openPrivateInboxSetup(): void {
+    if (!persistCurrentProductDraft()) {
+      setPendingProductPublish(null)
+      return
+    }
+
+    setPendingProductPublish(null)
+    setProductDialogOpen(false)
+    saveMutation.reset()
+    void navigate({ to: "/network" })
+  }
+
   function rememberProductDialogTrigger(): void {
     const activeElement = document.activeElement
     productDialogReturnFocusRef.current =
@@ -1412,6 +1463,7 @@ function ProductsPage() {
   function requestCloseProductDialog(): void {
     if (isSaving) return
     persistCurrentProductDraft()
+    setPendingProductPublish(null)
     setProductDialogOpen(false)
     saveMutation.reset()
   }
@@ -1437,6 +1489,7 @@ function ProductsPage() {
         return
       }
     }
+    setPendingProductPublish(null)
     setProductDialogOpen(false)
     setEditing(null)
     setActiveProductDraftTarget(null)
@@ -1911,7 +1964,7 @@ function ProductsPage() {
             onSubmit={(event) => {
               event.preventDefault()
               if (!pubkey || !productCanSubmit) return
-              saveMutation.mutate({
+              requestProductPublish({
                 merchantPubkey: pubkey,
                 form,
                 dTag:
@@ -2966,6 +3019,17 @@ function ProductsPage() {
           </form>
         </DialogContent>
       </Dialog>
+
+      <ProductInboxReadinessDialog
+        open={pendingProductPublish !== null}
+        status={inboxReadiness.status}
+        checking={inboxReadiness.isLoading || inboxReadiness.isRefetching}
+        error={inboxReadiness.error}
+        onKeepEditing={() => setPendingProductPublish(null)}
+        onPublish={publishPendingProduct}
+        onRetry={inboxReadiness.refetch}
+        onSetup={openPrivateInboxSetup}
+      />
     </div>
   )
 }

@@ -542,8 +542,8 @@ describe("PrivateInboxSection relay evidence", () => {
     )
 
     expect(markup).toContain("Declared")
-    expect(markup).toContain("IN enabled")
-    expect(markup).toContain("IN off")
+    expect(markup).toContain("Read enabled")
+    expect(markup).toContain("Read off")
     expect(markup).toContain("Relay unreachable")
     expect(markup).toContain("Relay info reached")
     expect(markup).toContain("NIP-59 advertised")

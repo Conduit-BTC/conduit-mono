@@ -11,6 +11,7 @@ export * from "./schemas"
 // Utils
 export * from "./utils"
 export * from "./network-target-safety"
+export * from "./app-links"
 
 // Wallets
 export * from "./wallets"
