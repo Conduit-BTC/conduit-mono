@@ -43,6 +43,7 @@ function directRumor(params: {
   recipient: string
   content: string
   createdAt: number
+  subject?: string
 }) {
   return {
     id: params.id,
@@ -50,7 +51,10 @@ function directRumor(params: {
     pubkey: params.sender,
     created_at: params.createdAt,
     content: params.content,
-    tags: [["p", params.recipient]],
+    tags: [
+      ["p", params.recipient],
+      ...(params.subject ? [["subject", params.subject]] : []),
+    ],
   }
 }
 
@@ -363,6 +367,54 @@ describe("general direct-message gateway", () => {
     expect(result.data[0]?.preview).toBe("do you ship to NZ?")
     expect(result.data[0]?.unreadFromCounterparty).toBe(1)
     expect(orderRows).toHaveLength(1)
+  })
+
+  it("keeps exact order companions out of the generic messages inbox", async () => {
+    const unwrapCalls: Record<string, number> = {}
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
+          ? ([
+              giftWrapEvent("wrap-order-companion"),
+              giftWrapEvent("wrap-normal-subject"),
+            ] as never)
+          : [],
+      giftUnwrap: async (event) => {
+        unwrapCalls[event.id] = (unwrapCalls[event.id] ?? 0) + 1
+        return directRumor({
+          id: event.id.replace("wrap-", "dm-"),
+          sender: MERCHANT,
+          recipient: BUYER,
+          content:
+            event.id === "wrap-order-companion"
+              ? "A new order was sent to you through Conduit Market."
+              : "This remains a normal conversation message.",
+          createdAt: 101,
+          subject:
+            event.id === "wrap-order-companion"
+              ? "conduit-order-notification"
+              : "conduit-order-notification-followup",
+        }) as never
+      },
+    })
+
+    const first = await getDirectMessageConversationList({
+      principalPubkey: BUYER,
+    })
+    const second = await getDirectMessageConversationList({
+      principalPubkey: BUYER,
+    })
+
+    expect(first.data).toHaveLength(1)
+    expect(first.data[0]?.preview).toBe(
+      "This remains a normal conversation message."
+    )
+    expect(directRows.map((row) => row.id)).toEqual(["dm-normal-subject"])
+    expect(unwrapCalls).toEqual({
+      "wrap-order-companion": 1,
+      "wrap-normal-subject": 1,
+    })
+    expect(second.data).toEqual(first.data)
   })
 
   it("preserves complete preview content for presentation-time formatting", async () => {

@@ -82,7 +82,24 @@ export interface ValidatedGuestOrderCompanionScope {
 const validatedGuestOrderCompanionScopes =
   new WeakSet<ValidatedGuestOrderCompanionScope>()
 
-export const GUEST_ORDER_COMPANION_SUBJECT = "conduit-order-notification"
+export const ORDER_COMPANION_NOTIFICATION_SUBJECT = "conduit-order-notification"
+
+/**
+ * Identify the exact app-level marker used for advisory order notifications.
+ * Transport remains generic: callers can still unwrap the rumor, while
+ * Conduit's inbox projection can keep this machine notification out of human
+ * conversation threads.
+ */
+export function isOrderCompanionNotificationRumor(rumor: NDKEvent): boolean {
+  if (rumor.kind !== EVENT_KINDS.DIRECT_MESSAGE) return false
+  const subjects = rumor.tags
+    .filter((tag) => tag[0] === "subject")
+    .map((tag) => tag[1])
+  return (
+    subjects.length === 1 &&
+    subjects[0] === ORDER_COMPANION_NOTIFICATION_SUBJECT
+  )
+}
 
 const GUEST_ORDER_COMPANION_COPY =
   "A new guest order was sent to you through Conduit Market.\n" +
@@ -190,7 +207,7 @@ export function createValidatedGuestOrderCompanion(input: {
   companion.tags = appendConduitClientTag(
     [
       ["p", recipientPubkey],
-      ["subject", GUEST_ORDER_COMPANION_SUBJECT],
+      ["subject", ORDER_COMPANION_NOTIFICATION_SUBJECT],
       ["order", parsedOrder.orderId],
     ],
     "market"
@@ -204,7 +221,7 @@ export function createValidatedGuestOrderCompanion(input: {
     rumorId: companion.id,
     orderRumorId: input.authoritativeOrder.id,
     orderId: parsedOrder.orderId,
-    subject: GUEST_ORDER_COMPANION_SUBJECT,
+    subject: ORDER_COMPANION_NOTIFICATION_SUBJECT,
     senderPubkey,
     recipientPubkey,
   })

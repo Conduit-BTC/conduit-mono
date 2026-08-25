@@ -49,6 +49,7 @@ import {
   __resetInboxRelayCache,
   createNdkLegacyDmDecrypt,
   decryptLegacyDirectMessage,
+  isOrderCompanionNotificationRumor,
   parseDirectMessageRumor,
   unwrapGiftWraps,
   type DecryptFailure,
@@ -5063,6 +5064,11 @@ async function runPrivateMessageInboxSync(
     }
 
     try {
+      if (isOrderCompanionNotificationRumor(outcome.rumor)) {
+        successful.add(outcome.wrapId)
+        retry.delete(outcome.wrapId)
+        continue
+      }
       if (outcome.category === "order") {
         const message = parseOrderMessageRumorEvent(outcome.rumor)
         orderEntries.push({

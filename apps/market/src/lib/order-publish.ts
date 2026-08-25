@@ -1,6 +1,7 @@
 import { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk"
 import {
   EVENT_KINDS,
+  ORDER_COMPANION_NOTIFICATION_SUBJECT,
   appendConduitClientTag,
   cacheParsedOrderMessage,
   createValidatedGuestOrderCompanion,
@@ -58,7 +59,6 @@ type BuyerOrderPublishDependencies = {
   cacheBuyerOrderRumorFn?: typeof cacheBuyerOrderRumor
 }
 
-const ORDER_NOTIFICATION_SUBJECT = "conduit-order-notification"
 const MERCHANT_ORDERS_URL = "https://sell.conduit.market/orders?order="
 const SIGNED_IN_ORDER_NOTIFICATION_COPY =
   "A new order was sent to you through Conduit Market."
@@ -145,7 +145,7 @@ export function buildOrderCompanionNotificationRumor(
   companion.tags = appendConduitClientTag(
     [
       ["p", merchantPubkey],
-      ["subject", ORDER_NOTIFICATION_SUBJECT],
+      ["subject", ORDER_COMPANION_NOTIFICATION_SUBJECT],
       ["order", orderId],
     ],
     "market"

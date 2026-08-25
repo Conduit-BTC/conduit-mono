@@ -109,6 +109,10 @@ The exception is constrained as follows:
   contain no order, payment, contact, address, or item details. This is an
   application boundary;
   the extractable raw key is not cryptographically restricted to those events.
+- Conduit clients must not project exact
+  `subject=conduit-order-notification` advisories into the generic Messages
+  inbox or cache them as conversations. The encrypted relay event remains
+  available to external clients for local notification behavior.
 - Guest clients must not publish a buyer self-copy, advertise a `kind:10050`
   inbox, poll for merchant replies, or cache the decrypted order payload as
   durable order history.
