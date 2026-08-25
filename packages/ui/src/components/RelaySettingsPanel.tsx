@@ -170,86 +170,36 @@ function getRelayWarningText(entry: RelaySettingsPanelEntry): string | null {
 }
 
 function getRelayCompatibilityText(entry: RelaySettingsPanelEntry): string {
-  if (entry.warnings.unreachable) {
-    return "Compatibility is unknown because the latest relay-information check failed."
-  }
   if (entry.capabilities.commerce) {
     return "Conduit has enough advertised or configured evidence to use its commerce profile. Protected access is reported separately."
-  }
-  if (entry.warnings.commercePartialSupport) {
-    return "Commerce-related support was detected, but the full listing, protected-message, cleanup, and authentication profile is not confirmed."
   }
   if (entry.capabilities.nip11) {
     return "Relay information is available. Conduit can use this relay for reading or publishing when enabled; metadata does not prove protected access."
   }
-  if (entry.warnings.staleRelayInfo) {
-    return "Compatibility has not been freshly verified. Refresh this relay to update detected capabilities."
-  }
   return "Compatibility has not been checked yet."
 }
 
-function getAuthEvidenceMeta(
+function getAuthEvidenceLabel(
   entry: RelaySettingsPanelEntry,
   evidence: RelayAuthEvidenceState | undefined
-): {
-  label: string
-  description: string
-  active: boolean
-  warning: boolean
-} {
+): string {
   const resolved =
     evidence ?? (entry.capabilities.auth ? "advertised" : "untested")
 
   switch (resolved) {
     case "succeeded":
-      return {
-        label: "Auth succeeded",
-        description:
-          "This session received a matching relay acknowledgement for NIP-42 authentication. A later connection may require a new challenge and signature.",
-        active: true,
-        warning: false,
-      }
+      return "Auth succeeded"
     case "challenge_observed":
-      return {
-        label: "Auth challenge observed",
-        description:
-          "This relay requested NIP-42 authentication, but Conduit has not observed a successful acknowledgement for this session yet.",
-        active: false,
-        warning: false,
-      }
+      return "Auth challenge observed"
     case "rejected":
-      return {
-        label: "Auth rejected",
-        description:
-          "The relay rejected this session's NIP-42 authentication. Protected reads are unavailable until a retry succeeds.",
-        active: false,
-        warning: true,
-      }
+      return "Auth rejected"
     case "unavailable":
-      return {
-        label: "Auth unavailable",
-        description:
-          "Conduit could not complete NIP-42 authentication with this relay. Protected reads are unavailable until a retry succeeds.",
-        active: false,
-        warning: true,
-      }
+      return "Auth unavailable"
     case "advertised":
-      return {
-        label: "Auth advertised",
-        description:
-          "The relay's NIP-11 metadata advertises NIP-42. This has not been confirmed by a successful authenticated read in this session.",
-        active: false,
-        warning: false,
-      }
+      return "Auth advertised"
     case "untested":
     default:
-      return {
-        label: "Auth untested",
-        description:
-          "Conduit has no successful runtime NIP-42 evidence for this relay. Public reads do not require NIP-42 account proof, but relays still see request filters and connection metadata. Protected-read access is unknown.",
-        active: false,
-        warning: false,
-      }
+      return "Auth untested"
   }
 }
 
@@ -319,8 +269,10 @@ const relayCheckDateTimeFormatter = new Intl.DateTimeFormat(undefined, {
 })
 
 function formatRelayCheckTime(scannedAt?: number): string {
-  if (!scannedAt) return "Not recorded"
-  return relayCheckDateTimeFormatter.format(new Date(scannedAt))
+  if (!scannedAt || !Number.isFinite(scannedAt)) return "Not recorded"
+  const checkedAt = new Date(scannedAt)
+  if (Number.isNaN(checkedAt.getTime())) return "Not recorded"
+  return relayCheckDateTimeFormatter.format(checkedAt)
 }
 
 function RelayCapabilityDetails({
@@ -333,12 +285,15 @@ function RelayCapabilityDetails({
   const warningText = getRelayWarningText(entry)
   const compatibilityText = getRelayCompatibilityText(entry)
   const supportsProtectedMessages = hasProtectedMessageCapability(entry)
-  const authEvidenceMeta = getAuthEvidenceMeta(entry, authEvidence)
+  const authEvidenceLabel = getAuthEvidenceLabel(entry, authEvidence)
 
   return (
     <details className="group/details rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)]">
       <summary className="flex min-h-9 cursor-pointer list-none items-center justify-between gap-2 rounded-xl px-3 py-2 text-xs font-medium text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 [&::-webkit-details-marker]:hidden">
-        Relay details
+        <span>
+          Relay details
+          <span className="sr-only"> for {entry.url}</span>
+        </span>
         <ChevronDown
           className="size-3.5 group-open/details:rotate-180"
           aria-hidden="true"
@@ -373,7 +328,7 @@ function RelayCapabilityDetails({
           <div>
             <dt className="text-[var(--text-muted)]">Protected access</dt>
             <dd className="mt-1 font-medium text-[var(--text-primary)]">
-              {authEvidenceMeta.label}
+              {authEvidenceLabel}
             </dd>
           </div>
           <div>
@@ -689,10 +644,21 @@ function getPrivateInboxSummary(
 } {
   if (!privateInbox) return { label: "Not available", variant: "neutral" }
 
+  if (
+    privateInbox.stale &&
+    !privateInbox.distributionRepairable &&
+    (privateInbox.status === "ready" ||
+      privateInbox.status === "distribution_pending" ||
+      privateInbox.status === "signed_empty" ||
+      privateInbox.status === "malformed")
+  ) {
+    return { label: "Needs a fresh check", variant: "warning" }
+  }
+
   switch (privateInbox.status) {
     case "ready":
-      return privateInbox.stale
-        ? { label: "Needs a fresh check", variant: "warning" }
+      return privateInbox.distributionRepairable
+        ? { label: "Redistribution needed", variant: "warning" }
         : { label: "Ready", variant: "success" }
     case "loading":
       return { label: "Checking", variant: "info" }

@@ -137,4 +137,113 @@ describe("RelaySettingsPanel", () => {
     expect(markup).toContain("Partial support detected")
     expect(markup).toContain("This is not a reason to remove the relay")
   })
+
+  it("names each relay disclosure for assistive technology", () => {
+    const markup = renderToStaticMarkup(
+      <RelaySettingsPanel
+        settings={{
+          entries: [
+            relayEntry({ url: "wss://first.example" }),
+            relayEntry({ url: "wss://second.example" }),
+          ],
+        }}
+        onAddRelay={() => undefined}
+        onRefreshRelay={() => undefined}
+        onRemoveRelay={() => undefined}
+        onToggleRead={() => undefined}
+        onToggleWrite={() => undefined}
+      />
+    )
+
+    expect(markup).toContain(
+      'Relay details<span class="sr-only"> for wss://first.example</span>'
+    )
+    expect(markup).toContain(
+      'Relay details<span class="sr-only"> for wss://second.example</span>'
+    )
+  })
+
+  it("does not crash when a persisted relay check time is malformed", () => {
+    const markup = renderToStaticMarkup(
+      <RelaySettingsPanel
+        settings={{
+          entries: [
+            relayEntry({
+              scannedAt: "not-a-timestamp" as unknown as number,
+            }),
+          ],
+        }}
+        onAddRelay={() => undefined}
+        onRefreshRelay={() => undefined}
+        onRemoveRelay={() => undefined}
+        onToggleRead={() => undefined}
+        onToggleWrite={() => undefined}
+      />
+    )
+
+    expect(markup).toContain("Not recorded")
+  })
+
+  it("keeps the inbox summary aligned with degraded and repairable evidence", () => {
+    const redistribution = renderToStaticMarkup(
+      <RelaySettingsPanel
+        settings={{ entries: [relayEntry()] }}
+        onAddRelay={() => undefined}
+        onRefreshRelay={() => undefined}
+        onRemoveRelay={() => undefined}
+        onToggleRead={() => undefined}
+        onToggleWrite={() => undefined}
+        privateInbox={{
+          status: "ready",
+          stale: true,
+          distributionRepairable: true,
+          candidateRelays: [],
+          onPublish: () => undefined,
+          onRetryLookup: () => undefined,
+        }}
+      />
+    )
+    expect(redistribution).toContain("Redistribution needed")
+    expect(redistribution).toContain("Redistribute your private inbox")
+
+    const degradedSignedEmpty = renderToStaticMarkup(
+      <RelaySettingsPanel
+        settings={{ entries: [relayEntry()] }}
+        onAddRelay={() => undefined}
+        onRefreshRelay={() => undefined}
+        onRemoveRelay={() => undefined}
+        onToggleRead={() => undefined}
+        onToggleWrite={() => undefined}
+        privateInbox={{
+          status: "signed_empty",
+          stale: true,
+          candidateRelays: [],
+          onPublish: () => undefined,
+          onRetryLookup: () => undefined,
+        }}
+      />
+    )
+    expect(degradedSignedEmpty).toContain("Needs a fresh check")
+    expect(degradedSignedEmpty).toContain("latest shared lookup was degraded")
+    expect(degradedSignedEmpty).not.toContain("No relays declared")
+
+    const partialLookup = renderToStaticMarkup(
+      <RelaySettingsPanel
+        settings={{ entries: [relayEntry()] }}
+        onAddRelay={() => undefined}
+        onRefreshRelay={() => undefined}
+        onRemoveRelay={() => undefined}
+        onToggleRead={() => undefined}
+        onToggleWrite={() => undefined}
+        privateInbox={{
+          status: "lookup_partial",
+          stale: true,
+          candidateRelays: [],
+          onPublish: () => undefined,
+          onRetryLookup: () => undefined,
+        }}
+      />
+    )
+    expect(partialLookup).toContain("Status unknown")
+  })
 })
