@@ -212,6 +212,16 @@ describe("isOrderCompanionNotificationRumor", () => {
         })
       )
     ).toBe(false)
+    expect(
+      isOrderCompanionNotificationRumor(
+        rumor(EVENT_KINDS.DIRECT_MESSAGE, {
+          tags: canonicalTags,
+          content:
+            "A new order was sent to you through Conduit Market.\n" +
+            "Review it at: https://attacker.example/orders?order=order-id",
+        })
+      )
+    ).toBe(false)
   })
 
   it.each([

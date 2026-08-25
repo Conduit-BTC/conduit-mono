@@ -18,6 +18,10 @@ type Row = {
   senderPubkey: string
   recipientPubkey: string
   content: string
+  orderCompanion?: {
+    orderId: string
+    orderRumorId: string
+  }
   kind: number
   createdAt: number
   read: 0 | 1
@@ -472,10 +476,20 @@ describe("general direct-message gateway", () => {
       "dm-subject-only",
       "dm-normal-subject",
       "dm-human-marker",
+      "dm-unmatched-companion",
     ])
+    expect(
+      directRows.find((row) => row.id === "dm-unmatched-companion")
+    ).toMatchObject({
+      read: 1,
+      orderCompanion: {
+        orderId: "missing-order",
+        orderRumorId: "missing-order-event",
+      },
+    })
     expect(unwrapCalls).toEqual({
       "wrap-order-companion": 1,
-      "wrap-unmatched-companion": 2,
+      "wrap-unmatched-companion": 1,
       "wrap-subject-only": 1,
       "wrap-normal-subject": 1,
       "wrap-human-marker": 1,
@@ -520,7 +534,16 @@ describe("general direct-message gateway", () => {
       "A new order was sent to you through Conduit Market.\n" +
         "Review it at: https://sell.conduit.market/orders?order=late-order"
     )
-    expect(directRows).toHaveLength(0)
+    expect(directRows).toMatchObject([
+      {
+        id: "dm-late-companion",
+        read: 1,
+        orderCompanion: {
+          orderId: "late-order",
+          orderRumorId: "late-order-event",
+        },
+      },
+    ])
 
     expect(
       await markDirectMessageConversationRead({
@@ -551,7 +574,7 @@ describe("general direct-message gateway", () => {
     expect(afterOrder.data).toHaveLength(0)
     expect(directRows).toHaveLength(0)
     expect(orderRows).toHaveLength(1)
-    expect(unwrapCalls).toBe(3)
+    expect(unwrapCalls).toBe(1)
   })
 
   it("scrubs a previously cached canonical companion after order evidence exists", async () => {
@@ -563,8 +586,23 @@ describe("general direct-message gateway", () => {
         content:
           "A new order was sent to you through Conduit Market.\n" +
           "Review it at: https://sell.conduit.market/orders?order=cached-order",
+        orderCompanion: {
+          orderId: "cached-order",
+          orderRumorId: "cached-order-event",
+        },
         kind: EVENT_KINDS.DIRECT_MESSAGE,
         createdAt: 100,
+        read: 0,
+      },
+      {
+        id: "ambiguous-legacy-copy",
+        senderPubkey: MERCHANT,
+        recipientPubkey: BUYER,
+        content:
+          "A new order was sent to you through Conduit Market.\n" +
+          "Review it at: https://sell.conduit.market/orders?order=cached-order",
+        kind: EVENT_KINDS.DIRECT_MESSAGE,
+        createdAt: 99,
         read: 0,
       },
       {
@@ -595,8 +633,11 @@ describe("general direct-message gateway", () => {
 
     expect(result.data).toHaveLength(1)
     expect(result.data[0]?.preview).toBe("Reply on Signal, not here.")
-    expect(result.data[0]?.unreadFromCounterparty).toBe(1)
-    expect(directRows.map((row) => row.id)).toEqual(["cached-human-message"])
+    expect(result.data[0]?.unreadFromCounterparty).toBe(2)
+    expect(directRows.map((row) => row.id)).toEqual([
+      "ambiguous-legacy-copy",
+      "cached-human-message",
+    ])
   })
 
   it("preserves complete preview content for presentation-time formatting", async () => {

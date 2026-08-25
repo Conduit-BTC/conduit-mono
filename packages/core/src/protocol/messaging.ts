@@ -580,6 +580,8 @@ export interface ParsedDirectMessage {
   senderPubkey: string
   recipientPubkey: string
   content: string
+  /** Present only for an exact canonical companion awaiting order evidence. */
+  orderCompanionIdentity?: OrderCompanionNotificationIdentity
   /** Milliseconds, matching ParsedOrderMessage.createdAt. */
   createdAt: number
   transport: DirectMessageTransport

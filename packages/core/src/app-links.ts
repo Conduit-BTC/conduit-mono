@@ -21,6 +21,38 @@ const LOCAL_PORT_PAIRS = [
   ["3000", "3001"],
 ] as const
 
+export function isConduitMerchantOrigin(origin: string | URL): boolean {
+  let url: URL
+  try {
+    url = typeof origin === "string" ? new URL(origin) : origin
+  } catch {
+    return false
+  }
+  if (
+    url.username ||
+    url.password ||
+    (url.pathname !== "/" && url.pathname !== "") ||
+    url.search ||
+    url.hash
+  ) {
+    return false
+  }
+  if (url.origin === PRODUCTION_ORIGINS.merchant) return true
+  if (
+    APP_HOST_PAIRS.some(
+      ([, merchantHost]) =>
+        url.hostname === merchantHost ||
+        url.hostname.endsWith(`.${merchantHost}`)
+    )
+  ) {
+    return url.protocol === "https:"
+  }
+  return (
+    (url.protocol === "http:" || url.protocol === "https:") &&
+    LOCAL_PORT_PAIRS.some((pair) => url.port === pair[1])
+  )
+}
+
 function replaceHostSuffix(
   hostname: string,
   sourceHost: string,
@@ -76,17 +108,7 @@ export function buildMerchantOrderReviewUrl(
   } catch {
     throw new Error("Order review URL requires an absolute merchant origin.")
   }
-  const isDevHttp =
-    url.protocol === "http:" &&
-    LOCAL_PORT_PAIRS.some((pair) => url.port === pair[1])
-  if (
-    (url.protocol !== "https:" && !isDevHttp) ||
-    url.username ||
-    url.password ||
-    (url.pathname !== "/" && url.pathname !== "") ||
-    url.search ||
-    url.hash
-  ) {
+  if (!isConduitMerchantOrigin(url)) {
     throw new Error("Order review URL requires a safe merchant origin.")
   }
 

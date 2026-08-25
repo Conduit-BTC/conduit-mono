@@ -79,6 +79,9 @@ describe("Merchant order review URLs", () => {
     expect(() =>
       buildMerchantOrderReviewUrl("http://example.com", "order-id")
     ).toThrow("safe merchant origin")
+    expect(() =>
+      buildMerchantOrderReviewUrl("https://attacker.example", "order-id")
+    ).toThrow("safe merchant origin")
   })
 
   it("accepts a forwarded local Merchant dev origin", () => {
