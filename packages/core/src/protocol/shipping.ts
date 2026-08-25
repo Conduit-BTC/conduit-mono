@@ -7,7 +7,11 @@
  * Gamma kind-30406 before its referencing kind-30402.
  */
 import { NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
-import { db, type CachedProductTombstone } from "../db"
+import {
+  db,
+  type CachedProductTombstone,
+  type CachedShippingOptionFrontier,
+} from "../db"
 import {
   canonicalizeShippingCost,
   getShippingCostSats,
@@ -39,6 +43,7 @@ export const SHIPPING_OPTION_READ_BATCH_SIZE = 50
 const SHIPPING_OPTION_READ_LIMIT = 100
 const SHIPPING_DELETION_READ_LIMIT = 300
 const SHIPPING_OPTION_READ_CONCURRENCY = 3
+const SHIPPING_OPTION_FRONTIER_CONFLICT_LIMIT = 2
 const SHIPPING_TOMBSTONE_PREFIX = "shipping:"
 const HEX_64 = /^[0-9a-f]{64}$/i
 
@@ -50,6 +55,12 @@ export interface ShippingTestOverrides {
   putCachedDeletionTombstones?: (
     rows: CachedProductTombstone[]
   ) => Promise<void>
+  getCachedOptionFrontiers?: (
+    coordinates: readonly string[]
+  ) => Promise<CachedShippingOptionFrontier[]>
+  putCachedOptionFrontiers?: (
+    rows: CachedShippingOptionFrontier[]
+  ) => Promise<void>
   now?: () => number
 }
 
@@ -57,6 +68,10 @@ let shippingTestOverrides: ShippingTestOverrides = {}
 const volatileShippingDeletionTombstones = new Map<
   string,
   CachedProductTombstone
+>()
+const volatileShippingOptionFrontiers = new Map<
+  string,
+  CachedShippingOptionFrontier
 >()
 
 export function __setShippingTestOverrides(
@@ -68,6 +83,7 @@ export function __setShippingTestOverrides(
 export function __resetShippingTestOverrides(): void {
   shippingTestOverrides = {}
   volatileShippingDeletionTombstones.clear()
+  volatileShippingOptionFrontiers.clear()
 }
 
 const FIXED_STANDARD_UNSUPPORTED_TAGS = new Set([
@@ -539,6 +555,292 @@ function cloneSignedEvent(
   }
 }
 
+function getShippingEventCoordinate(
+  event: Pick<SignedPublicNostrEvent, "pubkey" | "tags">
+): { coordinate: string; pubkey: string; dTag: string } | null {
+  const pubkey = event.pubkey.toLowerCase()
+  const dTag = event.tags.find((tag) => tag[0] === "d")?.[1]?.trim()
+  if (!dTag) return null
+  return {
+    coordinate: getShippingOptionAddress(pubkey, dTag),
+    pubkey,
+    dTag,
+  }
+}
+
+function validateCachedShippingOptionFrontier(
+  row: CachedShippingOptionFrontier
+): SignedPublicNostrEvent[] {
+  const address = parseShippingOptionAddress(row.coordinate)
+  if (
+    !address ||
+    row.pubkey !== address.pubkey ||
+    row.dTag !== address.dTag ||
+    !Number.isSafeInteger(row.strongestCreatedAt) ||
+    row.strongestCreatedAt < 0 ||
+    row.signedEvents.length === 0
+  ) {
+    throw new Error("Invalid cached fixed shipping option frontier")
+  }
+
+  const validated = new Map<string, SignedPublicNostrEvent>()
+  for (const event of row.signedEvents) {
+    const eventAddress = getShippingEventCoordinate(event)
+    if (
+      event.kind !== EVENT_KINDS.SHIPPING_OPTION ||
+      !isValidSignedPublicNostrEvent(event) ||
+      eventAddress?.coordinate !== row.coordinate ||
+      event.created_at !== row.strongestCreatedAt
+    ) {
+      throw new Error("Invalid cached fixed shipping option frontier")
+    }
+    validated.set(event.id, cloneSignedEvent(event))
+  }
+
+  return Array.from(validated.values()).sort((a, b) => a.id.localeCompare(b.id))
+}
+
+function observedShippingOptionEvents(
+  events: readonly NDKEvent[],
+  coordinates: ReadonlySet<string>
+): SignedPublicNostrEvent[] {
+  const observed = new Map<string, SignedPublicNostrEvent>()
+  for (const event of events) {
+    const rawEvent = event.rawEvent() as SignedPublicNostrEvent
+    const address = getShippingEventCoordinate(rawEvent)
+    if (
+      rawEvent.kind !== EVENT_KINDS.SHIPPING_OPTION ||
+      !isValidSignedPublicNostrEvent(rawEvent) ||
+      !address ||
+      !coordinates.has(address.coordinate)
+    ) {
+      continue
+    }
+    observed.set(rawEvent.id, cloneSignedEvent(rawEvent))
+  }
+  return Array.from(observed.values())
+}
+
+function selectShippingOptionFrontierUpdates(
+  coordinates: readonly string[],
+  observedEvents: readonly SignedPublicNostrEvent[],
+  existingRows: readonly CachedShippingOptionFrontier[]
+): {
+  selectedRows: CachedShippingOptionFrontier[]
+  updatedRows: CachedShippingOptionFrontier[]
+} {
+  const existingByCoordinate = new Map(
+    existingRows.map((row) => [row.coordinate, row] as const)
+  )
+  const observedByCoordinate = new Map<string, SignedPublicNostrEvent[]>()
+  for (const event of observedEvents) {
+    const address = getShippingEventCoordinate(event)
+    if (!address) continue
+    const current = observedByCoordinate.get(address.coordinate) ?? []
+    current.push(event)
+    observedByCoordinate.set(address.coordinate, current)
+  }
+
+  const selectedRows: CachedShippingOptionFrontier[] = []
+  const updatedRows: CachedShippingOptionFrontier[] = []
+  for (const coordinate of uniqueStrings(coordinates)) {
+    const existing = existingByCoordinate.get(coordinate)
+    const existingEvents = existing
+      ? validateCachedShippingOptionFrontier(existing)
+      : []
+    const candidates = [
+      ...existingEvents,
+      ...(observedByCoordinate.get(coordinate) ?? []),
+    ]
+    if (candidates.length === 0) continue
+
+    const strongestCreatedAt = Math.max(
+      ...candidates.map((event) => event.created_at)
+    )
+    const strongestEvents = Array.from(
+      new Map(
+        candidates
+          .filter((event) => event.created_at === strongestCreatedAt)
+          .map((event) => [event.id, cloneSignedEvent(event)] as const)
+      ).values()
+    )
+      .sort((a, b) => a.id.localeCompare(b.id))
+      // One signed event proves the revision; two prove ambiguity. Retaining
+      // more equal-timestamp conflicts cannot make payment safer and would
+      // let rotating relay subsets grow one IndexedDB row without bound.
+      .slice(0, SHIPPING_OPTION_FRONTIER_CONFLICT_LIMIT)
+    const address = getShippingEventCoordinate(strongestEvents[0]!)!
+    const existingIds = existingEvents.map((event) => event.id).sort()
+    const strongestIds = strongestEvents.map((event) => event.id)
+    const changed =
+      !existing ||
+      existing.strongestCreatedAt !== strongestCreatedAt ||
+      existingIds.length !== strongestIds.length ||
+      existingIds.some((id, index) => id !== strongestIds[index])
+    const selected = changed
+      ? {
+          coordinate,
+          pubkey: address.pubkey,
+          dTag: address.dTag,
+          strongestCreatedAt,
+          signedEvents: strongestEvents,
+          cachedAt: shippingNow(),
+        }
+      : existing
+    selectedRows.push(selected)
+    if (changed) updatedRows.push(selected)
+  }
+
+  return { selectedRows, updatedRows }
+}
+
+function signedEventsFromShippingOptionFrontiers(
+  rows: readonly CachedShippingOptionFrontier[]
+): SignedPublicNostrEvent[] {
+  return rows.flatMap(validateCachedShippingOptionFrontier)
+}
+
+function getVolatileShippingOptionFrontiers(
+  coordinates: readonly string[]
+): CachedShippingOptionFrontier[] {
+  return uniqueStrings(coordinates).flatMap((coordinate) => {
+    const row = volatileShippingOptionFrontiers.get(coordinate)
+    return row ? [row] : []
+  })
+}
+
+function rememberVolatileShippingOptionFrontiers(
+  coordinates: readonly string[],
+  observedEvents: readonly SignedPublicNostrEvent[]
+): CachedShippingOptionFrontier[] {
+  const existing = getVolatileShippingOptionFrontiers(coordinates)
+  const selected = selectShippingOptionFrontierUpdates(
+    coordinates,
+    observedEvents,
+    existing
+  )
+  for (const row of selected.updatedRows) {
+    volatileShippingOptionFrontiers.set(row.coordinate, row)
+  }
+  return selected.selectedRows
+}
+
+async function mergeObservedShippingOptionFrontiers(
+  coordinates: readonly string[],
+  observedEvents: readonly NDKEvent[]
+): Promise<{
+  shippingEvents: NDKEvent[]
+  retainedEventIds: string[]
+}> {
+  const requested = new Set(coordinates)
+  const observed = observedShippingOptionEvents(observedEvents, requested)
+  let selectedRows: CachedShippingOptionFrontier[]
+
+  try {
+    // Record signed positive evidence before touching durable storage. A
+    // transient write failure must not let a later relay omission roll the
+    // same runtime back to an older replaceable event.
+    const volatileRows = rememberVolatileShippingOptionFrontiers(
+      coordinates,
+      observed
+    )
+    const volatileEvents = signedEventsFromShippingOptionFrontiers(volatileRows)
+    const usesOverrides =
+      shippingTestOverrides.getCachedOptionFrontiers !== undefined ||
+      shippingTestOverrides.putCachedOptionFrontiers !== undefined
+    if (usesOverrides) {
+      if (
+        !shippingTestOverrides.getCachedOptionFrontiers ||
+        !shippingTestOverrides.putCachedOptionFrontiers
+      ) {
+        throw new Error("Incomplete fixed shipping option cache override")
+      }
+      const existing =
+        await shippingTestOverrides.getCachedOptionFrontiers(coordinates)
+      const selected = selectShippingOptionFrontierUpdates(
+        coordinates,
+        volatileEvents,
+        existing
+      )
+      if (selected.updatedRows.length > 0) {
+        await shippingTestOverrides.putCachedOptionFrontiers(
+          selected.updatedRows
+        )
+      }
+      selectedRows = selected.selectedRows
+    } else {
+      selectedRows = await db.transaction(
+        "rw",
+        db.shippingOptionFrontiers,
+        async () => {
+          const existing = (
+            await db.shippingOptionFrontiers.bulkGet([...coordinates])
+          ).filter(
+            (row): row is CachedShippingOptionFrontier => row !== undefined
+          )
+          const selected = selectShippingOptionFrontierUpdates(
+            coordinates,
+            volatileEvents,
+            existing
+          )
+          if (selected.updatedRows.length > 0) {
+            await db.shippingOptionFrontiers.bulkPut(selected.updatedRows)
+          }
+          return selected.selectedRows
+        }
+      )
+    }
+  } catch {
+    throw new Error("Fixed shipping option evidence could not be verified")
+  }
+
+  // Keep the monotonic runtime frontier for the page lifetime. Another
+  // overlapping call can observe a stronger event while this call awaits
+  // IndexedDB; merge that current authority synchronously before gating so
+  // this call cannot return the older event.
+  selectedRows = selectShippingOptionFrontierUpdates(
+    coordinates,
+    signedEventsFromShippingOptionFrontiers(
+      getVolatileShippingOptionFrontiers(coordinates)
+    ),
+    selectedRows
+  ).selectedRows
+
+  const liveRows = selectShippingOptionFrontierUpdates(
+    coordinates,
+    observed,
+    []
+  ).selectedRows
+  const liveByCoordinate = new Map(
+    liveRows.map((row) => [row.coordinate, row] as const)
+  )
+  const retainedEventIds = uniqueStrings(
+    signedEventsFromShippingOptionFrontiers(selectedRows).map(
+      (event) => event.id
+    )
+  )
+
+  const shippingEvents = selectedRows.flatMap((row) => {
+    const live = liveByCoordinate.get(row.coordinate)
+    if (!live || live.strongestCreatedAt !== row.strongestCreatedAt) return []
+    const retainedEvents = validateCachedShippingOptionFrontier(row)
+    const retainedIds = retainedEvents.map((event) => event.id).sort()
+    const liveEvents = validateCachedShippingOptionFrontier(live)
+    const liveIds = liveEvents.map((event) => event.id).sort()
+    if (
+      retainedIds.length !== liveIds.length ||
+      retainedIds.some((id, index) => id !== liveIds[index])
+    ) {
+      return []
+    }
+    // The retained frontier is only an authority gate. Pricing always comes
+    // from the complete, currently verified relay observation.
+    return liveEvents.map((event) => new NDKEvent(undefined, event))
+  })
+
+  return { shippingEvents, retainedEventIds }
+}
+
 function shippingTombstonesFromDeletionEvent(
   event: NDKEvent
 ): CachedProductTombstone[] {
@@ -759,13 +1061,11 @@ async function getMergedShippingDeletionEvidence(
   const volatileRows = Array.from(
     volatileShippingDeletionTombstones.values()
   ).filter((row) => targetIdSet.has(row.id))
-  let persistedRows: CachedProductTombstone[] = []
+  let persistedRows: CachedProductTombstone[]
   try {
     persistedRows = await loadCachedShippingTombstones(targetIds)
   } catch {
-    if (volatileRows.length === 0) {
-      throw new Error("Fixed shipping deletion evidence could not be verified")
-    }
+    throw new Error("Fixed shipping deletion evidence could not be verified")
   }
 
   return signedDeletionEventsFromShippingTombstones([
@@ -971,7 +1271,7 @@ export async function getShippingOptionsByCoordinates(
         relayLists,
         maxRelays: 12,
       })
-      const shippingEvents = requireCompleteShippingRead(
+      const observedShippingEvents = requireCompleteShippingRead(
         await runShippingFetchEventsFanoutDetailed(
           {
             kinds: [EVENT_KINDS.SHIPPING_OPTION as number],
@@ -984,6 +1284,11 @@ export async function getShippingOptionsByCoordinates(
         readPlan.relayUrls,
         SHIPPING_OPTION_READ_LIMIT
       )
+      const { shippingEvents, retainedEventIds } =
+        await mergeObservedShippingOptionFrontiers(
+          batch.coordinates,
+          observedShippingEvents
+        )
       const addressDeletionResult = await runShippingFetchEventsFanoutDetailed(
         {
           kinds: [EVENT_KINDS.DELETION as number],
@@ -1002,9 +1307,13 @@ export async function getShippingOptionsByCoordinates(
         readPlan.relayUrls,
         SHIPPING_DELETION_READ_LIMIT
       )
-      const eventIds = Array.from(
-        new Set(shippingEvents.map((event) => event.id).filter(Boolean))
-      )
+      const eventIds = uniqueStrings([
+        ...retainedEventIds,
+        ...observedShippingOptionEvents(
+          observedShippingEvents,
+          new Set(batch.coordinates)
+        ).map((event) => event.id),
+      ])
       if (eventIds.length > 0) {
         const eventDeletionResult = await runShippingFetchEventsFanoutDetailed(
           {
@@ -1029,6 +1338,8 @@ export async function getShippingOptionsByCoordinates(
       }
       return {
         shippingEvents,
+        deletionEventIds: eventIds,
+        pubkey: batch.pubkey,
       }
     }
   )
@@ -1036,8 +1347,10 @@ export async function getShippingOptionsByCoordinates(
   const shippingEvents = batchResults.flatMap((result) => result.shippingEvents)
   const deletionTargetIds = uniqueStrings([
     ...Array.from(requested, shippingTombstoneIdForAddress),
-    ...shippingEvents.flatMap((event) =>
-      event.id ? [shippingTombstoneIdForEvent(event.pubkey, event.id)] : []
+    ...batchResults.flatMap((result) =>
+      result.deletionEventIds.map((eventId) =>
+        shippingTombstoneIdForEvent(result.pubkey, eventId)
+      )
     ),
   ])
   const deletionEvents =

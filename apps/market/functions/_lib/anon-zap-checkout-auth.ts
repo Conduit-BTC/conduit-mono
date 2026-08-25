@@ -1040,6 +1040,15 @@ export async function authorizeAnonZapRequest(
       intent,
       productEvents
     )
+    if (shippingCoordinates.length > 0) {
+      // This Pages boundary has no trusted durable store for monotonic
+      // kind-30406 revisions and NIP-09 withdrawals. Keep irreversible
+      // anonymous public-zap payment disabled until that server authority
+      // exists; normal order/private-invoice checkout remains available.
+      throw new Error(
+        "Anonymous public-zap checkout does not support fixed shipping."
+      )
+    }
     const shippingDTags = shippingCoordinates.map(
       (coordinate) => parseShippingOptionAddress(coordinate)!.dTag
     )

@@ -24,6 +24,7 @@ import {
   selectLatestShippingOptions,
   type ParsedShippingOption,
   type ProductSchema,
+  type CachedShippingOptionFrontier,
   type CachedProductTombstone,
 } from "@conduit/core"
 
@@ -630,6 +631,7 @@ describe("canonical fixed product shipping", () => {
     let partialDeletionCoverage = false
     let failWrites = false
     let cachedTombstones: CachedProductTombstone[] = []
+    let cachedFrontiers: CachedShippingOptionFrontier[] = []
 
     __setRelayListTestOverrides({
       loadCached: async (author) => ({
@@ -673,6 +675,18 @@ describe("canonical fixed product shipping", () => {
           ]
         }
       },
+      getCachedOptionFrontiers: async (coordinates) =>
+        cachedFrontiers.filter((row) => coordinates.includes(row.coordinate)),
+      putCachedOptionFrontiers: async (rows) => {
+        for (const row of rows) {
+          cachedFrontiers = [
+            ...cachedFrontiers.filter(
+              (current) => current.coordinate !== row.coordinate
+            ),
+            row,
+          ]
+        }
+      },
     })
 
     try {
@@ -700,6 +714,524 @@ describe("canonical fixed product shipping", () => {
       expect(await getShippingOptionsByCoordinates([coordinate])).toEqual([])
       expect(cachedTombstones.length).toBeGreaterThan(0)
     } finally {
+      __resetShippingTestOverrides()
+      __resetRelayListTestOverrides()
+    }
+  }, 15_000)
+
+  it("fails closed when an unrelated volatile withdrawal cannot cover a durable tombstone read failure", async () => {
+    const secretKey = generateSecretKey()
+    const pubkey = getPublicKey(secretKey)
+    const dTagA = "field-notes-a-shipping-standard"
+    const dTagB = "field-notes-b-shipping-standard"
+    const coordinateA = `30406:${pubkey}:${dTagA}`
+    const coordinateB = `30406:${pubkey}:${dTagB}`
+    const makeShippingEvent = (dTag: string, createdAt: number) =>
+      new NDKEvent(
+        undefined,
+        finalizeEvent(
+          {
+            kind: 30406,
+            created_at: createdAt,
+            content: "",
+            tags: [
+              ["d", dTag],
+              ["title", "Standard Shipping"],
+              ["price", "5", "USD"],
+              ["country", "US"],
+              ["service", "standard"],
+            ],
+          },
+          secretKey
+        )
+      )
+    const shippingA = makeShippingEvent(dTagA, 100)
+    const shippingB = makeShippingEvent(dTagB, 100)
+    const makeDeletion = (coordinate: string, createdAt: number) =>
+      new NDKEvent(
+        undefined,
+        finalizeEvent(
+          {
+            kind: 5,
+            created_at: createdAt,
+            content: "",
+            tags: [["a", coordinate]],
+          },
+          secretKey
+        )
+      )
+    const deletionA = makeDeletion(coordinateA, 120)
+    const deletionB = makeDeletion(coordinateB, 110)
+    const activeAddressDeletions = new Set<string>()
+    let failDeletionReads = false
+    let failDeletionWrites = false
+    let cachedTombstones: CachedProductTombstone[] = []
+    let cachedFrontiers: CachedShippingOptionFrontier[] = []
+
+    __setRelayListTestOverrides({
+      loadCached: async (author) => ({
+        pubkey: author,
+        readRelayUrls: ["wss://read.example"],
+        writeRelayUrls: ["wss://write.example"],
+        eventCreatedAt: 1,
+        cachedAt: 1,
+      }),
+    })
+    __setShippingTestOverrides({
+      fetchEventsFanoutDetailed: async (filter, options) => {
+        let events: NDKEvent[] = []
+        if (filter.kinds?.includes(30406)) {
+          const requestedDTags = new Set(filter["#d"] ?? [])
+          events = [shippingA, shippingB].filter((event) =>
+            requestedDTags.has(
+              event.tags.find((tag) => tag[0] === "d")?.[1] ?? ""
+            )
+          )
+        } else if (filter["#a"]) {
+          const requestedCoordinates = new Set(filter["#a"])
+          events = [deletionA, deletionB].filter((event) => {
+            const coordinate = event.tags.find((tag) => tag[0] === "a")?.[1]
+            return (
+              coordinate !== undefined &&
+              requestedCoordinates.has(coordinate) &&
+              activeAddressDeletions.has(coordinate)
+            )
+          })
+        }
+        return {
+          events,
+          relays: (options?.relayUrls ?? []).map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: events.length,
+          })),
+          eventsVerified: true,
+        }
+      },
+      getCachedDeletionTombstones: async (targetIds) => {
+        if (failDeletionReads) throw new Error("IndexedDB read unavailable")
+        return cachedTombstones.filter((row) => targetIds.includes(row.id))
+      },
+      putCachedDeletionTombstones: async (rows) => {
+        if (failDeletionWrites) throw new Error("IndexedDB write unavailable")
+        for (const row of rows) {
+          cachedTombstones = [
+            ...cachedTombstones.filter((current) => current.id !== row.id),
+            row,
+          ]
+        }
+      },
+      getCachedOptionFrontiers: async (coordinates) =>
+        cachedFrontiers.filter((row) => coordinates.includes(row.coordinate)),
+      putCachedOptionFrontiers: async (rows) => {
+        for (const row of rows) {
+          cachedFrontiers = [
+            ...cachedFrontiers.filter(
+              (current) => current.coordinate !== row.coordinate
+            ),
+            row,
+          ]
+        }
+      },
+    })
+
+    try {
+      activeAddressDeletions.add(coordinateB)
+      expect(await getShippingOptionsByCoordinates([coordinateB])).toEqual([])
+      expect(
+        cachedTombstones.some((row) => row.addressId === coordinateB)
+      ).toBe(true)
+
+      activeAddressDeletions.clear()
+      activeAddressDeletions.add(coordinateA)
+      failDeletionWrites = true
+      expect(await getShippingOptionsByCoordinates([coordinateA])).toEqual([])
+
+      activeAddressDeletions.clear()
+      failDeletionReads = true
+      await expect(
+        getShippingOptionsByCoordinates([coordinateA, coordinateB])
+      ).rejects.toThrow(
+        "Fixed shipping deletion evidence could not be verified"
+      )
+    } finally {
+      __resetShippingTestOverrides()
+      __resetRelayListTestOverrides()
+    }
+  }, 15_000)
+
+  it("retains the strongest signed shipping frontier across later relay omission", async () => {
+    const secretKey = generateSecretKey()
+    const pubkey = getPublicKey(secretKey)
+    const dTag = "field-notes-shipping-standard"
+    const coordinate = `30406:${pubkey}:${dTag}`
+    const makeShippingEvent = (input: {
+      createdAt: number
+      price: string
+      title?: string
+    }) =>
+      new NDKEvent(
+        undefined,
+        finalizeEvent(
+          {
+            kind: 30406,
+            created_at: input.createdAt,
+            content: "",
+            tags: [
+              ["d", dTag],
+              ...(input.title === undefined ? [] : [["title", input.title]]),
+              ["price", input.price, "USD"],
+              ["country", "US"],
+              ["service", "standard"],
+            ],
+          },
+          secretKey
+        )
+      )
+    const older = makeShippingEvent({
+      createdAt: 100,
+      price: "1",
+      title: "Older Shipping",
+    })
+    const newer = makeShippingEvent({
+      createdAt: 200,
+      price: "2",
+      title: "Newer Shipping",
+    })
+    const malformedStrongest = makeShippingEvent({
+      createdAt: 300,
+      price: "3",
+    })
+    const conflictingA = makeShippingEvent({
+      createdAt: 400,
+      price: "4",
+      title: "Conflicting A",
+    })
+    const conflictingB = makeShippingEvent({
+      createdAt: 400,
+      price: "5",
+      title: "Conflicting B",
+    })
+    const conflictingC = makeShippingEvent({
+      createdAt: 400,
+      price: "6",
+      title: "Conflicting C",
+    })
+    const conflictingD = makeShippingEvent({
+      createdAt: 400,
+      price: "7",
+      title: "Conflicting D",
+    })
+    let visibleShippingEvents = [older, newer]
+    let cachedFrontiers: CachedShippingOptionFrontier[] = []
+
+    __setRelayListTestOverrides({
+      loadCached: async (author) => ({
+        pubkey: author,
+        readRelayUrls: ["wss://read.example"],
+        writeRelayUrls: ["wss://write.example"],
+        eventCreatedAt: 1,
+        cachedAt: 1,
+      }),
+    })
+    __setShippingTestOverrides({
+      fetchEventsFanoutDetailed: async (filter, options) => {
+        const events = filter.kinds?.includes(30406)
+          ? visibleShippingEvents
+          : []
+        return {
+          events,
+          relays: (options?.relayUrls ?? []).map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: events.length,
+          })),
+          eventsVerified: true,
+        }
+      },
+      getCachedDeletionTombstones: async () => [],
+      putCachedDeletionTombstones: async () => undefined,
+      getCachedOptionFrontiers: async (coordinates) =>
+        cachedFrontiers.filter((row) => coordinates.includes(row.coordinate)),
+      putCachedOptionFrontiers: async (rows) => {
+        for (const row of rows) {
+          cachedFrontiers = [
+            ...cachedFrontiers.filter(
+              (current) => current.coordinate !== row.coordinate
+            ),
+            row,
+          ]
+        }
+      },
+    })
+
+    try {
+      expect(await getShippingOptionsByCoordinates([coordinate])).toMatchObject(
+        [{ eventId: newer.id, price: 2 }]
+      )
+
+      visibleShippingEvents = [older]
+      expect(await getShippingOptionsByCoordinates([coordinate])).toEqual([])
+
+      visibleShippingEvents = [newer, malformedStrongest]
+      expect(await getShippingOptionsByCoordinates([coordinate])).toEqual([])
+      visibleShippingEvents = [newer]
+      expect(await getShippingOptionsByCoordinates([coordinate])).toEqual([])
+
+      visibleShippingEvents = [conflictingA, conflictingB]
+      expect(await getShippingOptionsByCoordinates([coordinate])).toEqual([])
+      expect(cachedFrontiers[0]?.signedEvents).toHaveLength(2)
+
+      visibleShippingEvents = [conflictingC, conflictingD]
+      expect(await getShippingOptionsByCoordinates([coordinate])).toEqual([])
+      expect(cachedFrontiers[0]?.signedEvents).toHaveLength(2)
+
+      visibleShippingEvents = [conflictingC]
+      expect(await getShippingOptionsByCoordinates([coordinate])).toEqual([])
+      expect(cachedFrontiers[0]?.signedEvents).toHaveLength(2)
+    } finally {
+      __resetShippingTestOverrides()
+      __resetRelayListTestOverrides()
+    }
+  }, 15_000)
+
+  it("retains a newer shipping frontier in memory when durable persistence fails", async () => {
+    const secretKey = generateSecretKey()
+    const pubkey = getPublicKey(secretKey)
+    const dTag = "field-notes-shipping-standard"
+    const coordinate = `30406:${pubkey}:${dTag}`
+    const makeShippingEvent = (createdAt: number, price: string) =>
+      new NDKEvent(
+        undefined,
+        finalizeEvent(
+          {
+            kind: 30406,
+            created_at: createdAt,
+            content: "",
+            tags: [
+              ["d", dTag],
+              ["title", "Standard Shipping"],
+              ["price", price, "USD"],
+              ["country", "US"],
+              ["service", "standard"],
+            ],
+          },
+          secretKey
+        )
+      )
+    const older = makeShippingEvent(100, "1")
+    const newer = makeShippingEvent(200, "2")
+    let visibleShippingEvents = [newer]
+    let failFrontierReads = false
+    let failFrontierWrites = true
+    let cachedFrontiers: CachedShippingOptionFrontier[] = []
+    const exactDeletionQueries: string[][] = []
+
+    __setRelayListTestOverrides({
+      loadCached: async (author) => ({
+        pubkey: author,
+        readRelayUrls: ["wss://read.example"],
+        writeRelayUrls: ["wss://write.example"],
+        eventCreatedAt: 1,
+        cachedAt: 1,
+      }),
+    })
+    __setShippingTestOverrides({
+      fetchEventsFanoutDetailed: async (filter, options) => {
+        if (filter["#e"]) {
+          exactDeletionQueries.push([...filter["#e"]])
+        }
+        const events = filter.kinds?.includes(30406)
+          ? visibleShippingEvents
+          : []
+        return {
+          events,
+          relays: (options?.relayUrls ?? []).map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: events.length,
+          })),
+          eventsVerified: true,
+        }
+      },
+      getCachedDeletionTombstones: async () => [],
+      putCachedDeletionTombstones: async () => undefined,
+      getCachedOptionFrontiers: async (coordinates) => {
+        if (failFrontierReads) {
+          throw new Error("transient IndexedDB read failure")
+        }
+        return cachedFrontiers.filter((row) =>
+          coordinates.includes(row.coordinate)
+        )
+      },
+      putCachedOptionFrontiers: async (rows) => {
+        if (failFrontierWrites) {
+          throw new Error("transient IndexedDB write failure")
+        }
+        for (const row of rows) {
+          cachedFrontiers = [
+            ...cachedFrontiers.filter(
+              (current) => current.coordinate !== row.coordinate
+            ),
+            row,
+          ]
+        }
+      },
+    })
+
+    try {
+      await expect(
+        getShippingOptionsByCoordinates([coordinate])
+      ).rejects.toThrow("Fixed shipping option evidence could not be verified")
+      expect(cachedFrontiers).toEqual([])
+
+      visibleShippingEvents = [older]
+      failFrontierWrites = false
+      failFrontierReads = true
+      await expect(
+        getShippingOptionsByCoordinates([coordinate])
+      ).rejects.toThrow("Fixed shipping option evidence could not be verified")
+      expect(cachedFrontiers).toEqual([])
+
+      failFrontierReads = false
+      expect(await getShippingOptionsByCoordinates([coordinate])).toEqual([])
+      expect(cachedFrontiers).toMatchObject([
+        {
+          coordinate,
+          strongestCreatedAt: 200,
+          signedEvents: [{ id: newer.id }],
+        },
+      ])
+      expect(exactDeletionQueries).toContainEqual([older.id, newer.id].sort())
+    } finally {
+      __resetShippingTestOverrides()
+      __resetRelayListTestOverrides()
+    }
+  }, 15_000)
+
+  it("blocks an overlapping read after another call observes a stronger shipping frontier", async () => {
+    const secretKey = generateSecretKey()
+    const pubkey = getPublicKey(secretKey)
+    const dTag = "field-notes-shipping-standard"
+    const coordinate = `30406:${pubkey}:${dTag}`
+    const makeShippingEvent = (createdAt: number, price: string) =>
+      new NDKEvent(
+        undefined,
+        finalizeEvent(
+          {
+            kind: 30406,
+            created_at: createdAt,
+            content: "",
+            tags: [
+              ["d", dTag],
+              ["title", "Standard Shipping"],
+              ["price", price, "USD"],
+              ["country", "US"],
+              ["service", "standard"],
+            ],
+          },
+          secretKey
+        )
+      )
+    const firstRevision = makeShippingEvent(200, "2")
+    const strongerRevision = makeShippingEvent(300, "3")
+    let shippingReadCount = 0
+    let frontierReadCount = 0
+    let cachedFrontiers: CachedShippingOptionFrontier[] = []
+    let signalFirstReadStarted = () => undefined
+    let releaseFirstRead = () => undefined
+    let signalStrongerWriteStarted = () => undefined
+    let releaseStrongerWrite = () => undefined
+    const firstReadStarted = new Promise<void>((resolve) => {
+      signalFirstReadStarted = resolve
+    })
+    const firstReadRelease = new Promise<void>((resolve) => {
+      releaseFirstRead = resolve
+    })
+    const strongerWriteStarted = new Promise<void>((resolve) => {
+      signalStrongerWriteStarted = resolve
+    })
+    const strongerWriteRelease = new Promise<void>((resolve) => {
+      releaseStrongerWrite = resolve
+    })
+    let firstCall: Promise<ParsedShippingOption[]> | undefined
+    let strongerCall: Promise<ParsedShippingOption[]> | undefined
+
+    __setRelayListTestOverrides({
+      loadCached: async (author) => ({
+        pubkey: author,
+        readRelayUrls: ["wss://read.example"],
+        writeRelayUrls: ["wss://write.example"],
+        eventCreatedAt: 1,
+        cachedAt: 1,
+      }),
+    })
+    __setShippingTestOverrides({
+      fetchEventsFanoutDetailed: async (filter, options) => {
+        const events = filter.kinds?.includes(30406)
+          ? [shippingReadCount++ === 0 ? firstRevision : strongerRevision]
+          : []
+        return {
+          events,
+          relays: (options?.relayUrls ?? []).map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: events.length,
+          })),
+          eventsVerified: true,
+        }
+      },
+      getCachedDeletionTombstones: async () => [],
+      putCachedDeletionTombstones: async () => undefined,
+      getCachedOptionFrontiers: async (coordinates) => {
+        const snapshot = cachedFrontiers.filter((row) =>
+          coordinates.includes(row.coordinate)
+        )
+        frontierReadCount += 1
+        if (frontierReadCount === 1) {
+          signalFirstReadStarted()
+          await firstReadRelease
+        }
+        return snapshot
+      },
+      putCachedOptionFrontiers: async (rows) => {
+        if (rows.some((row) => row.strongestCreatedAt === 300)) {
+          signalStrongerWriteStarted()
+          await strongerWriteRelease
+        }
+        for (const row of rows) {
+          cachedFrontiers = [
+            ...cachedFrontiers.filter(
+              (current) => current.coordinate !== row.coordinate
+            ),
+            row,
+          ]
+        }
+      },
+    })
+
+    try {
+      firstCall = getShippingOptionsByCoordinates([coordinate])
+      await firstReadStarted
+
+      strongerCall = getShippingOptionsByCoordinates([coordinate])
+      await strongerWriteStarted
+
+      releaseFirstRead()
+      expect(await firstCall).toEqual([])
+
+      releaseStrongerWrite()
+      expect(await strongerCall).toMatchObject([
+        { eventId: strongerRevision.id, price: 3 },
+      ])
+    } finally {
+      releaseFirstRead()
+      releaseStrongerWrite()
+      await Promise.allSettled(
+        [firstCall, strongerCall].filter(
+          (call): call is Promise<ParsedShippingOption[]> => call !== undefined
+        )
+      )
       __resetShippingTestOverrides()
       __resetRelayListTestOverrides()
     }
@@ -741,6 +1273,7 @@ describe("canonical fixed product shipping", () => {
     )
     let includeDeletion = true
     let cachedTombstones: CachedProductTombstone[] = []
+    let cachedFrontiers: CachedShippingOptionFrontier[] = []
 
     __setRelayListTestOverrides({
       loadCached: async (author) => ({
@@ -774,6 +1307,18 @@ describe("canonical fixed product shipping", () => {
         for (const row of rows) {
           cachedTombstones = [
             ...cachedTombstones.filter((current) => current.id !== row.id),
+            row,
+          ]
+        }
+      },
+      getCachedOptionFrontiers: async (coordinates) =>
+        cachedFrontiers.filter((row) => coordinates.includes(row.coordinate)),
+      putCachedOptionFrontiers: async (rows) => {
+        for (const row of rows) {
+          cachedFrontiers = [
+            ...cachedFrontiers.filter(
+              (current) => current.coordinate !== row.coordinate
+            ),
             row,
           ]
         }

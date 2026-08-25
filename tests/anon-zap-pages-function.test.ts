@@ -1114,25 +1114,18 @@ describe("Anon zap Pages proxy", () => {
         product: productEvent({
           price: 10,
           currency: "USD",
-          canonicalShipping: true,
-          shippingCost: 5,
-          shippingCurrency: "USD",
-        }),
-        shippingOption: shippingEvent({
-          price: 5,
-          currency: "USD",
         }),
         pricingRateCalls,
       })
     )
 
     expect(pricingRateCalls).toEqual([["USD"]])
-    expect(authorization.draft.tags).toContainEqual(["amount", "15000000"])
+    expect(authorization.draft.tags).toContainEqual(["amount", "10000000"])
     expect(authorization.pricing).toMatchObject({
       itemSubtotalSats: 10_000,
-      shippingCostSats: 5_000,
-      totalSats: 15_000,
-      totalMsats: 15_000_000,
+      shippingCostSats: 0,
+      totalSats: 10_000,
+      totalMsats: 10_000_000,
       quote: {
         rate: 100_000,
         fetchedAt: NOW_SECONDS * 1000,
@@ -1141,146 +1134,61 @@ describe("Anon zap Pages proxy", () => {
     })
   })
 
-  it("fetches and prices the exact canonical fixed-shipping option", async () => {
-    const publicEventFilters: unknown[] = []
-    const authorization = await issueAuthorization(
-      createDependencies({
-        product: productEvent({
-          price: 10,
-          currency: "USD",
-          canonicalShipping: true,
-        }),
-        shippingOption: shippingEvent({ price: 5, currency: "USD" }),
-        publicEventFilters,
-      })
-    )
-
-    expect(publicEventFilters).toContainEqual({
-      kinds: [30406],
-      authors: [MERCHANT_PUBKEY],
-      "#d": [`${PRODUCT_D_TAG}-shipping-standard`],
-      limit: 100,
-    })
-    expect(publicEventFilters).toContainEqual({
-      kinds: [5],
-      authors: [MERCHANT_PUBKEY],
-      "#a": [`30406:${MERCHANT_PUBKEY}:${PRODUCT_D_TAG}-shipping-standard`],
-      limit: 300,
-    })
-    expect(publicEventFilters).toContainEqual({
-      kinds: [5],
-      authors: [MERCHANT_PUBKEY],
-      "#e": [shippingEvent({ price: 5, currency: "USD" }).id],
-      limit: 300,
-    })
-    expect(authorization.pricing).toMatchObject({
-      itemSubtotalSats: 10_000,
-      shippingCostSats: 5_000,
-      totalSats: 15_000,
-      items: [
-        {
-          shippingOptionId: `30406:${MERCHANT_PUBKEY}:${PRODUCT_D_TAG}-shipping-standard`,
-          unitShippingSats: 5_000,
-        },
-      ],
-    })
-  })
-
-  it("rejects a canonical shipping option deleted on the public relays", async () => {
-    const shippingOption = shippingEvent()
-    const shippingDeletion = signMerchantEvent({
-      kind: 5,
-      tags: [["e", shippingOption.id]],
-    })
-    const response = await authorizeAnonZapRequest(
-      post(
-        "https://shop.conduit.market/api/anon-zap-authorize",
-        checkoutIntent()
-      ),
-      env(),
-      createDependencies({
-        product: productEvent({ canonicalShipping: true }),
-        shippingOption,
-        shippingDeletion,
-      })
-    )
-
-    expect(response.status).toBe(403)
-    await expect(response.json()).resolves.toEqual({
-      error: "Checkout product requires merchant-coordinated shipping.",
-    })
-  })
-
-  it("does not resurrect an older option when the exact-id-deleted latest revision is omitted", async () => {
-    const shippingCoordinate = `30406:${MERCHANT_PUBKEY}:${PRODUCT_D_TAG}-shipping-standard`
-    const visibleOlder = shippingEvent({
-      price: 4,
-      currency: "USD",
-      createdAt: NOW_SECONDS - 120,
-    })
-    const omittedLatest = shippingEvent({
-      price: 5,
-      currency: "USD",
-    })
+  it("keeps fixed-shipping anonymous authorization disabled when a later relay view omits a withdrawal", async () => {
+    const shippingOption = shippingEvent({ price: 5, currency: "USD" })
     const deletionDraft = buildShippingOptionDeletionEventDraft({
       merchantPubkey: MERCHANT_PUBKEY,
-      coordinate: shippingCoordinate,
-      eventId: omittedLatest.id,
+      coordinate: `30406:${MERCHANT_PUBKEY}:${PRODUCT_D_TAG}-shipping-standard`,
+      eventId: shippingOption.id,
     })
     const shippingDeletion = signMerchantEvent({
       kind: deletionDraft.kind,
       tags: deletionDraft.tags,
       content: deletionDraft.content,
-      createdAt: NOW_SECONDS - 30,
     })
-    const publicEventFilters: unknown[] = []
     const pricingRateCalls: string[][] = []
-
-    const response = await authorizeAnonZapRequest(
+    const request = () =>
       post(
         "https://shop.conduit.market/api/anon-zap-authorize",
         checkoutIntent()
-      ),
+      )
+    const product = productEvent({
+      price: 10,
+      currency: "USD",
+      canonicalShipping: true,
+    })
+
+    const first = await authorizeAnonZapRequest(
+      request(),
       env(),
       createDependencies({
-        product: productEvent({
-          price: 10,
-          currency: "SATS",
-          canonicalShipping: true,
-        }),
-        shippingOption: visibleOlder,
+        product,
+        shippingOption,
         shippingDeletion,
-        publicEventFilters,
+        pricingRateCalls,
+      })
+    )
+    const second = await authorizeAnonZapRequest(
+      request(),
+      env(),
+      createDependencies({
+        product,
+        shippingOption,
         pricingRateCalls,
       })
     )
 
-    expect(response.status).toBe(403)
-    await expect(response.json()).resolves.toEqual({
-      error: "Checkout product requires merchant-coordinated shipping.",
-    })
+    for (const response of [first, second]) {
+      expect(response.status).toBe(403)
+      await expect(response.json()).resolves.toEqual({
+        error: "Anonymous public-zap checkout does not support fixed shipping.",
+      })
+    }
     expect(pricingRateCalls).toEqual([])
-    expect(publicEventFilters).toContainEqual({
-      kinds: [5],
-      authors: [MERCHANT_PUBKEY],
-      "#a": [shippingCoordinate],
-      limit: 300,
-    })
-    expect(publicEventFilters).toContainEqual({
-      kinds: [5],
-      authors: [MERCHANT_PUBKEY],
-      "#e": [visibleOlder.id],
-      limit: 300,
-    })
-    expect(publicEventFilters).not.toContainEqual({
-      kinds: [5],
-      authors: [MERCHANT_PUBKEY],
-      "#e": [omittedLatest.id],
-      limit: 300,
-    })
   })
 
-  it("fails closed when the canonical shipping relay read is incomplete", async () => {
+  it("does not wait on shipping relays when anonymous fixed shipping is disabled", async () => {
+    const publicEventFilters: unknown[] = []
     const response = await authorizeAnonZapRequest(
       post(
         "https://shop.conduit.market/api/anon-zap-authorize",
@@ -1291,18 +1199,27 @@ describe("Anon zap Pages proxy", () => {
         product: productEvent({ canonicalShipping: true }),
         shippingOption: shippingEvent(),
         incompleteRead: "shipping",
+        publicEventFilters,
       })
     )
 
-    expect(response.status).toBe(503)
+    expect(response.status).toBe(403)
     await expect(response.json()).resolves.toEqual({
-      error: "Checkout public relay reads are temporarily unavailable.",
+      error: "Anonymous public-zap checkout does not support fixed shipping.",
     })
+    expect(publicEventFilters).not.toContainEqual(
+      expect.objectContaining({ kinds: [30406] })
+    )
   })
 
   it("does not fetch a rate for zero-cost shipping", async () => {
     const pricingRateCalls: string[][] = []
-    const authorization = await issueAuthorization(
+    const response = await authorizeAnonZapRequest(
+      post(
+        "https://shop.conduit.market/api/anon-zap-authorize",
+        checkoutIntent()
+      ),
+      env(),
       createDependencies({
         product: productEvent({
           price: 10,
@@ -1318,10 +1235,9 @@ describe("Anon zap Pages proxy", () => {
     )
 
     expect(pricingRateCalls).toEqual([])
-    expect(authorization.pricing).toMatchObject({
-      itemSubtotalSats: 10,
-      shippingCostSats: 0,
-      totalSats: 10,
+    expect(response.status).toBe(403)
+    await expect(response.json()).resolves.toEqual({
+      error: "Anonymous public-zap checkout does not support fixed shipping.",
     })
   })
 
@@ -1417,9 +1333,11 @@ describe("Anon zap Pages proxy", () => {
         })
       )
 
-      expect(response.status).toBe(503)
+      expect(response.status).toBe(canonicalShipping ? 403 : 503)
       await expect(response.json()).resolves.toEqual({
-        error: "Checkout public relay reads are temporarily unavailable.",
+        error: canonicalShipping
+          ? "Anonymous public-zap checkout does not support fixed shipping."
+          : "Checkout public relay reads are temporarily unavailable.",
       })
     }
   })
@@ -1449,9 +1367,11 @@ describe("Anon zap Pages proxy", () => {
         })
       )
 
-      expect(response.status).toBe(503)
+      expect(response.status).toBe(canonicalShipping ? 403 : 503)
       await expect(response.json()).resolves.toEqual({
-        error: "Checkout public relay reads are temporarily unavailable.",
+        error: canonicalShipping
+          ? "Anonymous public-zap checkout does not support fixed shipping."
+          : "Checkout public relay reads are temporarily unavailable.",
       })
     }
   })

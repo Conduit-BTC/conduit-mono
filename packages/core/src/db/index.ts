@@ -131,6 +131,20 @@ export interface CachedProductTombstone {
   cachedAt: number
 }
 
+/**
+ * Strongest validated kind-30406 revision(s) observed for one coordinate.
+ * Equal-timestamp conflicts remain together so relay omission cannot turn an
+ * ambiguous frontier into an older or arbitrarily selected payable option.
+ */
+export interface CachedShippingOptionFrontier {
+  coordinate: string
+  pubkey: string
+  dTag: string
+  strongestCreatedAt: number
+  signedEvents: SignedPublicNostrEvent[]
+  cachedAt: number
+}
+
 export type ProductDeletionRelayRole = "author_write" | "source" | "conduit"
 
 export type ProductDeletionRelayDeliveryStatus =
@@ -706,6 +720,10 @@ class ConduitDB extends Dexie {
   messages!: EntityTable<StoredMessage, "id">
   products!: EntityTable<CachedProduct, "id">
   productTombstones!: EntityTable<CachedProductTombstone, "id">
+  shippingOptionFrontiers!: EntityTable<
+    CachedShippingOptionFrontier,
+    "coordinate"
+  >
   profiles!: EntityTable<CachedProfile, "pubkey">
   orderMessages!: EntityTable<CachedOrderMessage, "id">
   relayLists!: EntityTable<CachedRelayList, "pubkey">
@@ -870,6 +888,13 @@ class ConduitDB extends Dexie {
       wallets: "id",
       walletCredentials: "walletId",
     })
+
+    this.version(14).stores({
+      // Signed positive protocol evidence is retained independently from the
+      // relay-scoped product cache and monotonic deletion tombstones.
+      shippingOptionFrontiers:
+        "coordinate, pubkey, dTag, strongestCreatedAt, cachedAt",
+    })
   }
 }
 
@@ -926,6 +951,8 @@ export async function ensureCommerceCacheScope(): Promise<void> {
     // Signed tombstones are monotonic protocol evidence, not a relay-scoped
     // cache. Keep them across relay/config scope changes so a later omission
     // cannot resurrect a product that was already observed as deleted.
+    // Shipping option frontiers are likewise intentionally absent here: a
+    // relay/config change cannot erase a previously observed stronger price.
     db.profiles.clear(),
     db.orderMessages.clear(),
     db.relayLists.clear(),
