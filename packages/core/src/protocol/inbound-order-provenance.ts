@@ -61,7 +61,14 @@ export function parseAuthenticatedInboundOrderRumor(
     : message
 }
 
-/** Parse and brand an order only after its durable cache envelope matches. */
+/**
+ * Parse a durable cache row after its storage envelope matches.
+ *
+ * Cache self-consistency is sufficient for display projection, but it is not
+ * authenticated NIP-59 provenance and must never mint lifecycle write
+ * authority. A live authenticated unwrap replaces this projection before an
+ * order can authorize a merchant self-record.
+ */
 export function parseValidatedCachedOrderMessageEnvelope(
   row: CachedOrderMessage
 ): ParsedOrderMessage | null {
@@ -77,9 +84,7 @@ export function parseValidatedCachedOrderMessageEnvelope(
     ) {
       return null
     }
-    return message.type === "order"
-      ? bindInboundOrderProvenance(message)
-      : message
+    return message
   } catch {
     return null
   }

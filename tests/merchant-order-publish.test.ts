@@ -10,7 +10,10 @@ import {
   type ParsedOrderMessage,
   type PublishPrivateMessageInput,
 } from "@conduit/core"
-import { parseValidatedCachedOrderMessageEnvelope } from "@conduit/core/protocol/inbound-order-provenance"
+import {
+  parseAuthenticatedInboundOrderRumor,
+  parseValidatedCachedOrderMessageEnvelope,
+} from "@conduit/core/protocol/inbound-order-provenance"
 
 const merchantPubkey = "merchant"
 const buyerPubkey = "buyer"
@@ -70,18 +73,20 @@ function inboundOrder(
 function validatedInboundOrder(
   order: Extract<ParsedOrderMessage, { type: "order" }>
 ): Extract<ParsedOrderMessage, { type: "order" }> {
-  const validated = parseValidatedCachedOrderMessageEnvelope({
-    id: order.id,
-    orderId: order.orderId,
-    type: order.type,
-    senderPubkey: order.senderPubkey,
-    recipientPubkey: order.recipientPubkey,
-    createdAt: order.createdAt,
-    rawContent: JSON.stringify(order),
-    cachedAt: order.createdAt,
-  })
+  const rumor = new NDKEvent()
+  rumor.id = order.id
+  rumor.kind = EVENT_KINDS.ORDER
+  rumor.pubkey = order.senderPubkey
+  rumor.created_at = Math.floor(order.createdAt / 1_000)
+  rumor.tags = [
+    ["p", order.recipientPubkey],
+    ["type", "order"],
+    ["order", order.orderId],
+  ]
+  rumor.content = JSON.stringify(order.payload)
+  const validated = parseAuthenticatedInboundOrderRumor(rumor)
   if (!validated || validated.type !== "order") {
-    throw new Error("Expected a validated cached inbound order")
+    throw new Error("Expected an authenticated inbound order")
   }
   return validated
 }
@@ -236,6 +241,37 @@ describe("publishMerchantOrderMessage", () => {
           payload: { status: "paid" },
           delivery: "self_only",
           inboundOrder: fabricatedInboundOrder(),
+        },
+        dependencies
+      )
+    ).rejects.toThrow("without a validated inbound order")
+    const fabricated = fabricatedInboundOrder()
+    const envelopeConsistentCached = parseValidatedCachedOrderMessageEnvelope({
+      id: fabricated.id,
+      orderId: fabricated.orderId,
+      type: fabricated.type,
+      senderPubkey: fabricated.senderPubkey,
+      recipientPubkey: fabricated.recipientPubkey,
+      createdAt: fabricated.createdAt,
+      rawContent: JSON.stringify(fabricated),
+      cachedAt: fabricated.createdAt,
+    })
+    if (
+      !envelopeConsistentCached ||
+      envelopeConsistentCached.type !== "order"
+    ) {
+      throw new Error("Expected a displayable cached order")
+    }
+    await expect(
+      publishMerchantOrderMessage(
+        {
+          merchantPubkey,
+          buyerPubkey,
+          orderId,
+          type: "status_update",
+          payload: { status: "paid" },
+          delivery: "self_only",
+          inboundOrder: envelopeConsistentCached,
         },
         dependencies
       )

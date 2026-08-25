@@ -91,8 +91,9 @@ function normalizeStatus(status: string | null | undefined): string {
  * guest orders accept merchant-addressed self-copy records, matching the
  * guest operational-history contract without changing their priority.
  */
-export function deriveMerchantConversationPriority(
-  conversation: MerchantConversationPriorityInput
+function deriveMerchantConversationPriorityInternal(
+  conversation: MerchantConversationPriorityInput,
+  useReopenClock: boolean
 ): MerchantConversationPriority {
   const allMessages = [...(conversation.messages ?? [])].sort(compareMessages)
   const fallbackAt = safeTimestamp(conversation.latestAt)
@@ -153,6 +154,34 @@ export function deriveMerchantConversationPriority(
     .reverse()
     .find((message) => Boolean(message.payload.reopens))
   const reopenedAt = latestReopen?.createdAt
+  const latestReopenIndex = latestReopen
+    ? allMessages.findIndex((message) => message.id === latestReopen.id)
+    : -1
+  const reopenRestoredBucket =
+    useReopenClock && latestReopen && latestReopenIndex >= 0
+      ? deriveMerchantConversationPriorityInternal(
+          {
+            ...conversation,
+            latestAt: latestReopen.createdAt,
+            status: null,
+            messages: allMessages.slice(0, latestReopenIndex + 1),
+          },
+          false
+        ).bucket
+      : undefined
+  const taskAtForBucket = (
+    bucket: MerchantOrderPriorityBucket,
+    candidates: readonly ParsedOrderMessage[],
+    fallback: number
+  ): number => {
+    if (latestReopen && reopenRestoredBucket === bucket) {
+      return safeTimestamp(reopenedAt ?? fallback, orderCreatedAt)
+    }
+    const candidate = latestReopen
+      ? candidates.find((message) => compareMessages(message, latestReopen) > 0)
+      : candidates[0]
+    return safeTimestamp(candidate?.createdAt ?? fallback, orderCreatedAt)
+  }
 
   if (CLOSED_STATUSES.has(effectiveStatus)) {
     return {
@@ -166,7 +195,7 @@ export function deriveMerchantConversationPriority(
     }
   }
 
-  const shippingMessage = messages.find(
+  const shippingMessages = messages.filter(
     (message) =>
       isMerchantRecord(message) &&
       (message.type === "shipping_update" ||
@@ -174,52 +203,50 @@ export function deriveMerchantConversationPriority(
           appliedStatusEventIds.has(message.id) &&
           normalizeStatus(message.payload.status) === "shipped"))
   )
-  if (shippingMessage || effectiveStatus === "shipped") {
+  if (shippingMessages.length > 0 || effectiveStatus === "shipped") {
     return {
       bucket: "shipped",
       rank: PRIORITY_RANK.shipped,
-      taskAt: safeTimestamp(
-        reopenedAt ?? shippingMessage?.createdAt ?? fallbackAt,
-        orderCreatedAt
-      ),
+      taskAt: taskAtForBucket("shipped", shippingMessages, fallbackAt),
       orderCreatedAt,
     }
   }
 
-  const paidMessage = merchantStatuses.find((message) =>
+  const paidMessages = merchantStatuses.filter((message) =>
     isMerchantOrderPaid({ status: normalizeStatus(message.payload.status) })
   )
-  if (paidMessage || isMerchantOrderPaid({ status: effectiveStatus })) {
+  if (
+    paidMessages.length > 0 ||
+    isMerchantOrderPaid({ status: effectiveStatus })
+  ) {
     return {
       bucket: "paid_fulfill",
       rank: PRIORITY_RANK.paid_fulfill,
-      taskAt: safeTimestamp(
-        reopenedAt ?? paidMessage?.createdAt ?? fallbackAt,
-        orderCreatedAt
-      ),
+      taskAt: taskAtForBucket("paid_fulfill", paidMessages, fallbackAt),
       orderCreatedAt,
     }
   }
 
-  const paymentEvidence = messages.find(
+  const paymentEvidenceMessages = messages.filter(
     (message) =>
       isBuyerToMerchant(message) &&
       (isPaymentProofEvidenceMessage(message) ||
         isExternalPaymentReportMessage(message))
   )
-  if (paymentEvidence) {
+  if (paymentEvidenceMessages.length > 0) {
     return {
       bucket: "verify_payment",
       rank: PRIORITY_RANK.verify_payment,
-      taskAt: safeTimestamp(
-        reopenedAt ?? paymentEvidence.createdAt,
-        orderCreatedAt
+      taskAt: taskAtForBucket(
+        "verify_payment",
+        paymentEvidenceMessages,
+        fallbackAt
       ),
       orderCreatedAt,
     }
   }
 
-  const waitingMessage = messages.find(
+  const waitingMessages = messages.filter(
     (message) =>
       isMerchantRecord(message) &&
       (message.type === "payment_request" ||
@@ -231,17 +258,14 @@ export function deriveMerchantConversationPriority(
             }))))
   )
   if (
-    waitingMessage ||
+    waitingMessages.length > 0 ||
     effectiveStatus === "invoiced" ||
     isMerchantOrderAccepted({ status: effectiveStatus })
   ) {
     return {
       bucket: "waiting_payment",
       rank: PRIORITY_RANK.waiting_payment,
-      taskAt: safeTimestamp(
-        reopenedAt ?? waitingMessage?.createdAt ?? fallbackAt,
-        orderCreatedAt
-      ),
+      taskAt: taskAtForBucket("waiting_payment", waitingMessages, fallbackAt),
       orderCreatedAt,
     }
   }
@@ -252,6 +276,12 @@ export function deriveMerchantConversationPriority(
     taskAt: safeTimestamp(reopenedAt ?? orderCreatedAt, orderCreatedAt),
     orderCreatedAt,
   }
+}
+
+export function deriveMerchantConversationPriority(
+  conversation: MerchantConversationPriorityInput
+): MerchantConversationPriority {
+  return deriveMerchantConversationPriorityInternal(conversation, true)
 }
 
 export function compareMerchantConversationsByPriority(

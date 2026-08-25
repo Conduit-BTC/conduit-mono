@@ -5070,6 +5070,7 @@ async function fetchNewInboxWraps(
       const pageIdsByRelay = new Map<string, Set<string>>()
       const saturatedRelayUrls = new Set<string>()
       const saturatedBoundaries: number[] = []
+      const pageEvents: NDKEvent[] = []
       let pageInterrupted = false
       let cursorStalled = false
 
@@ -5101,14 +5102,10 @@ async function fetchNewInboxWraps(
           })
         const pageIds = new Set(events.map((event) => event.id))
         pageIdsByRelay.set(relayUrl, pageIds)
-        let unseenForRelay = 0
-        for (const event of events) {
-          if (observedWraps.has(event.id)) continue
-          unseenForRelay += 1
-          if (observedWraps.size < INBOX_WRAP_BACKFILL_MAX_EVENTS) {
-            observedWraps.set(event.id, event)
-          }
-        }
+        const unseenForRelay = events.filter(
+          (event) => !observedWraps.has(event.id)
+        ).length
+        pageEvents.push(...events)
 
         if (result.coverage !== "complete") continue
         if (events.length < INBOX_WRAP_PAGE_SIZE) {
@@ -5134,6 +5131,21 @@ async function fetchNewInboxWraps(
         }
         untilByRelay.set(relayUrl, nextUntil)
         previousPageIdsByRelay.set(relayUrl, pageIds)
+      }
+
+      // The bound is global, so relay-plan order must not decide which wraps
+      // survive it. Deduplicate and order the whole cross-relay page by signed
+      // outer position before retaining any event.
+      const orderedPageEvents = [
+        ...new Map(pageEvents.map((event) => [event.id, event])).values(),
+      ].sort((left, right) => {
+        const timeOrder = (right.created_at ?? 0) - (left.created_at ?? 0)
+        return timeOrder || left.id.localeCompare(right.id)
+      })
+      for (const event of orderedPageEvents) {
+        if (observedWraps.has(event.id)) continue
+        if (observedWraps.size >= INBOX_WRAP_BACKFILL_MAX_EVENTS) break
+        observedWraps.set(event.id, event)
       }
 
       const evidence: InboxPageEvidence = {

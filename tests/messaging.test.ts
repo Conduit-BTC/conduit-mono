@@ -46,7 +46,7 @@ import {
 } from "@conduit/core"
 import {
   getValidatedInboundOrderLifecycleAnchor,
-  parseValidatedCachedOrderMessageEnvelope,
+  parseAuthenticatedInboundOrderRumor,
 } from "@conduit/core/protocol/inbound-order-provenance"
 import { attachEventSourceRelayUrl } from "@conduit/core/protocol/ndk"
 
@@ -200,18 +200,20 @@ function inboundOrderMessage(
 }
 
 function validatedInboundOrderAnchor(order = inboundOrderMessage()) {
-  const validated = parseValidatedCachedOrderMessageEnvelope({
-    id: order.id,
-    orderId: order.orderId,
-    type: order.type,
-    senderPubkey: order.senderPubkey,
-    recipientPubkey: order.recipientPubkey,
-    createdAt: order.createdAt,
-    rawContent: JSON.stringify(order),
-    cachedAt: order.createdAt,
-  })
+  const rumor = new NDKEvent()
+  rumor.id = order.id
+  rumor.kind = EVENT_KINDS.ORDER
+  rumor.pubkey = order.senderPubkey
+  rumor.created_at = Math.floor(order.createdAt / 1_000)
+  rumor.tags = [
+    ["p", order.recipientPubkey],
+    ["type", "order"],
+    ["order", order.orderId],
+  ]
+  rumor.content = JSON.stringify(order.payload)
+  const validated = parseAuthenticatedInboundOrderRumor(rumor)
   if (!validated || validated.type !== "order") {
-    throw new Error("Expected a validated cached inbound order")
+    throw new Error("Expected an authenticated inbound order")
   }
   return getValidatedInboundOrderLifecycleAnchor({
     order: validated,

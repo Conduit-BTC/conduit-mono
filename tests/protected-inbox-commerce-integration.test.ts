@@ -262,6 +262,80 @@ afterEach(() => {
 })
 
 describe("Market and Merchant protected inbox integration", () => {
+  it("applies the wrap bound after ordering a cross-relay page", async () => {
+    const relayUrls = Array.from(
+      { length: 5 },
+      (_, index) => `wss://bounded-${index + 1}.example`
+    )
+    const targetWrapId = "relay-5-newest-order"
+    const eventsByRelay = new Map(
+      relayUrls.map((relayUrl, relayIndex) => [
+        relayUrl,
+        Array.from({ length: 400 }, (_, eventIndex) => ({
+          id:
+            relayIndex === 4 && eventIndex === 0
+              ? targetWrapId
+              : `relay-${relayIndex + 1}-wrap-${eventIndex}`,
+          kind: 1_059,
+          pubkey: `ephemeral-${relayIndex + 1}-${eventIndex}`,
+          created_at: (relayIndex + 1) * 10_000 - eventIndex,
+          content: "wrapped",
+          tags: [["p", MERCHANT]],
+        })),
+      ])
+    )
+
+    __setCommerceTestOverrides({
+      allowMissingProtectedReadAuthorization: true,
+      getNdk: async () => ({ signer: {} }) as never,
+      resolveInboxRelayUrls: async () => relayUrls,
+      getCachedOrderMessages: async () => [],
+      putCachedOrderMessages: async () => undefined,
+      getCachedDirectMessages: async () => [],
+      putCachedDirectMessages: async () => undefined,
+      readProtectedInbox: async (options) => ({
+        events: eventsByRelay.get(options.relayUrls[0]!) ?? [],
+        coverage: "complete",
+        auth: {
+          state: "not_challenged",
+          challengedCount: 0,
+          succeededCount: 0,
+          failedCount: 0,
+        },
+        relayResult: {
+          status: "success",
+          observations: [],
+          relays: [],
+          attemptedCount: 1,
+          completedCount: 1,
+          failedCount: 0,
+          authoritativeEmpty: false,
+        },
+      }),
+      giftUnwrap: async (event) =>
+        (event.id === targetWrapId
+          ? orderRumor(MERCHANT)
+          : {
+              id: `ignored-${event.id}`,
+              kind: 1,
+              pubkey: BUYER,
+              created_at: event.created_at,
+              content: "ignored",
+              tags: [],
+            }) as never,
+    })
+
+    const result = await getMerchantConversationList({
+      principalPubkey: MERCHANT,
+      sort: "merchant_priority",
+    })
+
+    expect(result.data.map(({ orderId }) => orderId)).toEqual([
+      `order-${MERCHANT}`,
+    ])
+    expect(result.meta.inbox?.historyCoverage).toBe("bounded")
+  })
+
   it("keeps per-relay backfill interruption sticky until its retry completes", async () => {
     const relayA = "wss://protected-a.example"
     const relayB = "wss://protected-b.example"
