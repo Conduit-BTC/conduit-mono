@@ -200,6 +200,53 @@ export function resolveProductFulfillmentIntentForTarget(input: {
   })
 }
 
+export function resolvePublishedProductFulfillmentIntentForTarget(
+  product: Pick<
+    ProductSchema,
+    | "format"
+    | "shippingCostSats"
+    | "sourceShippingCost"
+    | "shippingOptionId"
+    | "shippingOptionLaunchUnsupported"
+    | "shippingCountries"
+    | "shippingCountryRules"
+    | "canonicalShippingResolved"
+  >
+): ProductFulfillmentIntent | null {
+  if (product.format === "digital") return { kind: "digital" }
+  if (product.shippingOptionLaunchUnsupported) return null
+  if (product.shippingOptionId && product.canonicalShippingResolved !== true) {
+    return null
+  }
+
+  const amount = product.sourceShippingCost?.amount ?? product.shippingCostSats
+  if (typeof amount !== "number") {
+    return product.shippingOptionId ? null : { kind: "coordinate_after_order" }
+  }
+
+  const projectedCountries = product.shippingCountries?.length
+    ? product.shippingCountries
+    : product.shippingCountryRules?.map((rule) => rule.code)
+  if (!projectedCountries?.length) return null
+
+  try {
+    return compileProductFulfillmentIntent({
+      format: "physical",
+      shippingPricingMode: "fixed",
+      amount,
+      currency: product.sourceShippingCost?.currency ?? "SATS",
+      destinations: projectedCountries.map((code) => ({
+        code,
+        name: code,
+        restrictTo: [],
+        exclude: [],
+      })),
+    })
+  } catch {
+    return null
+  }
+}
+
 export async function publishCanonicalProductEvents(
   input: {
     writes: readonly SignedProductWrite[]
@@ -273,6 +320,39 @@ export function applyProductFulfillmentIntentForPublication(input: {
       exclude: [],
     })),
   }
+}
+
+export function getCanonicalProductWriteFingerprint(
+  listing: Pick<
+    ProductListingPublishTarget,
+    "product" | "dTag" | "fulfillmentIntent"
+  >
+): string {
+  const product = applyProductFulfillmentIntentForPublication({
+    product: listing.product,
+    merchantPubkey: listing.product.pubkey,
+    productDTag: listing.dTag,
+    intent: listing.fulfillmentIntent,
+  })
+  const productDraft = buildProductListingEventDraft({
+    product,
+    dTag: listing.dTag,
+    clientAppId: "merchant",
+  })
+  const shippingDraft =
+    listing.fulfillmentIntent.kind === "fixed_standard"
+      ? buildFixedShippingOptionEventDraft({
+          productDTag: listing.dTag,
+          intent: listing.fulfillmentIntent,
+          clientAppId: "merchant",
+        })
+      : null
+  return JSON.stringify([
+    [productDraft.kind, productDraft.content, productDraft.tags],
+    shippingDraft
+      ? [shippingDraft.kind, shippingDraft.content, shippingDraft.tags]
+      : null,
+  ])
 }
 
 async function signProductWrite(

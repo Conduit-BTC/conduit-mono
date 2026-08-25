@@ -140,6 +140,9 @@ describe("checkout completion navigation contracts", () => {
     )
     const availabilitySuccess = assertionSource.lastIndexOf('status: "success"')
     expect(termsCheck).toBeGreaterThan(-1)
+    expect(assertionSource).toMatch(
+      /mode:\s*checkoutMode === "order_first"\s*\? "order_first"\s*:\s*"direct_payment"/
+    )
     expect(availabilitySuccess).toBeGreaterThan(termsCheck)
   })
 

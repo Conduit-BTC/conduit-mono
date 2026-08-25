@@ -1,8 +1,12 @@
 import { describe, expect, it } from "bun:test"
-import { canonicalizeProductPrice, type ProductSchema } from "@conduit/core"
+import {
+  canonicalizeProductPrice,
+  type ProductFulfillmentIntent,
+  type ProductSchema,
+} from "@conduit/core"
 import {
   addProductVariationAxis,
-  buildProductFamilyChangePlan,
+  buildProductFamilyChangePlan as buildProductFamilyChangePlanWithFulfillment,
   createEmptyProductVariationForm,
   createProductVariationAxis,
   generateProductVariationRows,
@@ -19,6 +23,7 @@ import {
   removeProductVariationAxis,
   setProductVariationCombinationIncluded,
   updateProductVariationAxis,
+  updateProductVariationInheritance,
   updateProductVariationOverride,
   type ProductListingFamily,
   type ProductListingRecordLike,
@@ -54,6 +59,43 @@ function baseProduct(overrides: Partial<ProductSchema> = {}): ProductSchema {
   })
 }
 
+type ProductFamilyPlanInput = Omit<
+  Parameters<typeof buildProductFamilyChangePlanWithFulfillment>[0],
+  "fulfillmentIntent" | "authoringCountries"
+>
+
+function buildProductFamilyChangePlan(input: ProductFamilyPlanInput) {
+  const product = input.baseProduct
+  const amount = product.sourceShippingCost?.amount ?? product.shippingCostSats
+  const projectedCountries = product.shippingCountries?.length
+    ? product.shippingCountries
+    : product.shippingCountryRules?.map((rule) => rule.code)
+  const authoringCountries = Array.from(
+    new Set(
+      (projectedCountries ?? []).map((country) => country.trim().toUpperCase())
+    )
+  ).sort()
+  const fulfillmentIntent: ProductFulfillmentIntent =
+    product.format === "digital"
+      ? { kind: "digital" }
+      : typeof amount !== "number"
+        ? { kind: "coordinate_after_order" }
+        : {
+            kind: "fixed_standard",
+            amount,
+            currency:
+              product.sourceShippingCost?.currency.trim().toUpperCase() ??
+              "SATS",
+            countries: authoringCountries,
+          }
+
+  return buildProductFamilyChangePlanWithFulfillment({
+    ...input,
+    fulfillmentIntent,
+    authoringCountries,
+  })
+}
+
 function variationForm(
   axes: Array<{ key: string; values: string }>
 ): ProductVariationFormState {
@@ -74,12 +116,22 @@ function toRecord(
   target: ReturnType<typeof buildProductFamilyChangePlan>["desired"][number],
   index: number
 ): ProductListingRecordLike {
+  const product =
+    target.fulfillmentIntent.kind === "fixed_standard"
+      ? {
+          ...target.product,
+          shippingOptionId: `30406:${MERCHANT_PUBKEY}:${target.dTag}-shipping-standard`,
+          shippingOptionDTag: `${target.dTag}-shipping-standard`,
+          shippingCountries: [...target.fulfillmentIntent.countries],
+          canonicalShippingResolved: true,
+        }
+      : target.product
   return {
     eventId: `event-${index}`,
-    addressId: target.product.id,
+    addressId: product.id,
     dTag: target.dTag,
     eventCreatedAt: 1_800_000_000 + index,
-    product: target.product,
+    product,
   }
 }
 
@@ -232,6 +284,437 @@ describe("merchant product variation planning", () => {
     expect(editedPlan.publish[0]?.product.price).toBe(30)
   })
 
+  it("publishes the root when only its canonical fixed shipping amount changes", () => {
+    const initialPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct({
+        shippingCostSats: undefined,
+        sourceShippingCost: {
+          amount: 5,
+          currency: "USD",
+          normalizedCurrency: "USD",
+        },
+        shippingOptionId: `30406:${MERCHANT_PUBKEY}:conduit-tee-shipping-standard`,
+        shippingOptionDTag: "conduit-tee-shipping-standard",
+      }),
+      variations: createEmptyProductVariationForm(),
+      currency: "USD",
+      now: NOW,
+    })
+    const existing = toFamily(initialPlan)
+
+    const editedPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: {
+        ...existing.root.product,
+        sourceShippingCost: {
+          amount: 8,
+          currency: "USD",
+          normalizedCurrency: "USD",
+        },
+      },
+      variations: createEmptyProductVariationForm(),
+      currency: "USD",
+      existing,
+      now: NOW + 60_000,
+    })
+
+    expect(editedPlan.publish.map(({ dTag }) => dTag)).toEqual(["conduit-tee"])
+  })
+
+  it("publishes only the variation whose fixed shipping amount changes", () => {
+    const variations = sizeVariationForm("S, M")
+    const medium = getProductVariationCombinations(variations).find(
+      ({ label }) => label === "M"
+    )!
+    const withShippingOverride = updateProductVariationOverride(
+      variations,
+      medium.identity,
+      "shippingCost",
+      "7"
+    )
+    const initialPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct({
+        shippingCostSats: undefined,
+        sourceShippingCost: {
+          amount: 5,
+          currency: "USD",
+          normalizedCurrency: "USD",
+        },
+      }),
+      variations: withShippingOverride,
+      currency: "USD",
+      now: NOW,
+    })
+    const existing = toFamily(initialPlan)
+    const restored = getProductVariationFormState(
+      existing.root,
+      existing.variations
+    ).state
+    const restoredMedium = getProductVariationCombinations(restored).find(
+      ({ label }) => label === "M"
+    )!
+
+    const editedPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: existing.root.product,
+      variations: updateProductVariationOverride(
+        restored,
+        restoredMedium.identity,
+        "shippingCost",
+        "9"
+      ),
+      currency: "USD",
+      existing,
+      now: NOW + 60_000,
+    })
+
+    expect(editedPlan.publish).toHaveLength(1)
+    expect(editedPlan.publish[0]?.product.specifications).toEqual([
+      { key: "size", value: "M" },
+    ])
+    expect(editedPlan.publish[0]?.product.sourceShippingCost?.amount).toBe(9)
+  })
+
+  it("keeps a blank non-inherited physical child order-first", () => {
+    const variations = sizeVariationForm("S, M")
+    const medium = getProductVariationCombinations(variations).find(
+      ({ label }) => label === "M"
+    )!
+    const withManualChild = updateProductVariationInheritance(
+      variations,
+      medium.identity,
+      "inheritShipping",
+      false
+    )
+
+    const plan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct({
+        shippingCostSats: undefined,
+        sourceShippingCost: {
+          amount: 5,
+          currency: "USD",
+          normalizedCurrency: "USD",
+        },
+      }),
+      variations: withManualChild,
+      currency: "USD",
+      now: NOW,
+    })
+    const mediumTarget = plan.desired.find(
+      ({ product }) => product.specifications[0]?.value === "M"
+    )
+
+    expect(plan.desired[0]?.fulfillmentIntent).toEqual({
+      kind: "fixed_standard",
+      amount: 5,
+      currency: "USD",
+      countries: ["US"],
+    })
+    expect(mediumTarget?.product.format).toBe("physical")
+    expect(mediumTarget?.fulfillmentIntent).toEqual({
+      kind: "coordinate_after_order",
+    })
+  })
+
+  it("publishes the canonical family when only its destinations change", () => {
+    const initialPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct({
+        shippingCostSats: undefined,
+        sourceShippingCost: {
+          amount: 5,
+          currency: "USD",
+          normalizedCurrency: "USD",
+        },
+      }),
+      variations: sizeVariationForm("S, M"),
+      currency: "USD",
+      now: NOW,
+    })
+    const existing = toFamily(initialPlan)
+    for (const record of [existing.root, ...existing.variations]) {
+      record.product = {
+        ...record.product,
+        shippingOptionId: `30406:${MERCHANT_PUBKEY}:${record.dTag}-shipping-standard`,
+        shippingOptionDTag: `${record.dTag}-shipping-standard`,
+      }
+    }
+    const restored = getProductVariationFormState(
+      existing.root,
+      existing.variations
+    ).state
+
+    expect(restored.rows.every(({ inheritShipping }) => inheritShipping)).toBe(
+      true
+    )
+
+    const editedPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: {
+        ...existing.root.product,
+        shippingCountries: ["ca", "US", "CA"],
+      },
+      variations: restored,
+      currency: "USD",
+      existing,
+      now: NOW + 60_000,
+    })
+
+    expect(editedPlan.publish.map(({ dTag }) => dTag)).toEqual(
+      editedPlan.desired.map(({ dTag }) => dTag)
+    )
+    expect(
+      editedPlan.publish.map(({ fulfillmentIntent }) => fulfillmentIntent)
+    ).toEqual([
+      {
+        kind: "fixed_standard",
+        amount: 5,
+        currency: "USD",
+        countries: ["CA", "US"],
+      },
+      {
+        kind: "fixed_standard",
+        amount: 5,
+        currency: "USD",
+        countries: ["CA", "US"],
+      },
+      {
+        kind: "fixed_standard",
+        amount: 5,
+        currency: "USD",
+        countries: ["CA", "US"],
+      },
+    ])
+  })
+
+  it("preserves a child with custom destinations outside root inheritance", () => {
+    const initialPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct({
+        shippingCostSats: undefined,
+        sourceShippingCost: {
+          amount: 5,
+          currency: "USD",
+          normalizedCurrency: "USD",
+        },
+      }),
+      variations: sizeVariationForm("S"),
+      currency: "USD",
+      now: NOW,
+    })
+    const existing = toFamily(initialPlan)
+    existing.root.product = {
+      ...existing.root.product,
+      shippingOptionId: `30406:${MERCHANT_PUBKEY}:conduit-tee-shipping-standard`,
+      shippingOptionDTag: "conduit-tee-shipping-standard",
+    }
+    existing.variations[0]!.product = {
+      ...existing.variations[0]!.product,
+      shippingOptionId: `30406:${MERCHANT_PUBKEY}:${existing.variations[0]!.dTag}-shipping-standard`,
+      shippingOptionDTag: `${existing.variations[0]!.dTag}-shipping-standard`,
+      shippingCountries: ["CA"],
+    }
+    const restored = getProductVariationFormState(
+      existing.root,
+      existing.variations
+    ).state
+
+    expect(restored.rows[0]?.inheritShipping).toBe(false)
+
+    const editedPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: {
+        ...existing.root.product,
+        shippingCountries: ["MX", "US"],
+      },
+      variations: restored,
+      currency: "USD",
+      existing,
+      now: NOW + 60_000,
+    })
+
+    expect(editedPlan.publish.map(({ dTag }) => dTag)).toEqual(["conduit-tee"])
+    expect(editedPlan.desired[1]?.fulfillmentIntent).toEqual({
+      kind: "fixed_standard",
+      amount: 5,
+      currency: "USD",
+      countries: ["CA"],
+    })
+  })
+
+  it("does not republish equivalent normalized fixed shipping intent", () => {
+    const initialPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct({
+        shippingCostSats: undefined,
+        sourceShippingCost: {
+          amount: 5,
+          currency: "USD",
+          normalizedCurrency: "USD",
+        },
+        shippingOptionId: `30406:${MERCHANT_PUBKEY}:conduit-tee-shipping-standard`,
+        shippingOptionDTag: "conduit-tee-shipping-standard",
+        shippingCountries: ["CA", "US"],
+      }),
+      variations: createEmptyProductVariationForm(),
+      currency: "USD",
+      now: NOW,
+    })
+    const existing = toFamily(initialPlan)
+
+    const unchangedPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: {
+        ...existing.root.product,
+        sourceShippingCost: {
+          amount: 5,
+          currency: "usd",
+          normalizedCurrency: "USD",
+        },
+        shippingCountries: ["us", "CA", "US"],
+      },
+      variations: createEmptyProductVariationForm(),
+      currency: "USD",
+      existing,
+      now: NOW + 60_000,
+    })
+
+    expect(unchangedPlan.publish).toEqual([])
+  })
+
+  it("publishes a canonical pair when the existing listing is inline-only", () => {
+    const initialPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct({
+        shippingCostSats: undefined,
+        sourceShippingCost: {
+          amount: 5,
+          currency: "USD",
+          normalizedCurrency: "USD",
+        },
+        shippingOptionId: undefined,
+        shippingOptionDTag: undefined,
+      }),
+      variations: createEmptyProductVariationForm(),
+      currency: "USD",
+      now: NOW,
+    })
+    const existing = toFamily(initialPlan)
+    existing.root.product = {
+      ...existing.root.product,
+      shippingOptionId: undefined,
+      shippingOptionDTag: undefined,
+    }
+
+    const upgradePlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: {
+        ...existing.root.product,
+        shippingOptionId: `30406:${MERCHANT_PUBKEY}:conduit-tee-shipping-standard`,
+        shippingOptionDTag: "conduit-tee-shipping-standard",
+      },
+      variations: createEmptyProductVariationForm(),
+      currency: "USD",
+      existing,
+      now: NOW + 60_000,
+    })
+
+    expect(upgradePlan.publish.map(({ dTag }) => dTag)).toEqual(["conduit-tee"])
+  })
+
+  it("repairs an unresolved canonical reference with inline shipping fields", () => {
+    const initialPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct({
+        shippingCostSats: undefined,
+        sourceShippingCost: {
+          amount: 5,
+          currency: "USD",
+          normalizedCurrency: "USD",
+        },
+      }),
+      variations: createEmptyProductVariationForm(),
+      currency: "USD",
+      now: NOW,
+    })
+    const existing = toFamily(initialPlan)
+    existing.root.product = {
+      ...existing.root.product,
+      canonicalShippingResolved: false,
+    }
+
+    const repairPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: existing.root.product,
+      variations: createEmptyProductVariationForm(),
+      currency: "USD",
+      existing,
+      now: NOW + 60_000,
+    })
+
+    expect(repairPlan.publish.map(({ dTag }) => dTag)).toEqual(["conduit-tee"])
+  })
+
+  it("publishes the family when fixed shipping becomes order-first or digital", () => {
+    const initialPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct({
+        shippingCostSats: undefined,
+        sourceShippingCost: {
+          amount: 5,
+          currency: "USD",
+          normalizedCurrency: "USD",
+        },
+      }),
+      variations: sizeVariationForm("S, M"),
+      currency: "USD",
+      now: NOW,
+    })
+    const existing = toFamily(initialPlan)
+    const restored = getProductVariationFormState(
+      existing.root,
+      existing.variations
+    ).state
+    const withoutFixedShipping = {
+      ...existing.root.product,
+      shippingCostSats: undefined,
+      sourceShippingCost: undefined,
+      shippingOptionId: undefined,
+      shippingOptionDTag: undefined,
+      shippingCountries: undefined,
+      shippingCountryRules: undefined,
+    }
+
+    const orderFirstPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: withoutFixedShipping,
+      variations: restored,
+      currency: "USD",
+      existing,
+      now: NOW + 60_000,
+    })
+    const digitalPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: { ...withoutFixedShipping, format: "digital" },
+      variations: restored,
+      currency: "USD",
+      existing,
+      now: NOW + 120_000,
+    })
+
+    expect(
+      orderFirstPlan.publish.map(({ fulfillmentIntent }) => fulfillmentIntent)
+    ).toEqual(
+      orderFirstPlan.desired.map(() => ({ kind: "coordinate_after_order" }))
+    )
+    expect(
+      digitalPlan.publish.map(({ fulfillmentIntent }) => fulfillmentIntent)
+    ).toEqual(digitalPlan.desired.map(() => ({ kind: "digital" })))
+  })
+
   it("round-trips sparse imported custom child fields without rewriting them", () => {
     const initial = buildProductFamilyChangePlan({
       parentDTag: "workspace",
@@ -253,6 +736,8 @@ describe("merchant product variation planning", () => {
         images: [{ url: "https://example.com/studio.png", alt: "Studio" }],
         format: "digital",
         shippingCostSats: undefined,
+        shippingOptionId: undefined,
+        shippingOptionDTag: undefined,
         shippingCountries: undefined,
       },
     }

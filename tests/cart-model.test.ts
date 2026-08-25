@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import type {
+  ParsedShippingOption,
   Product,
   ProductAvailabilityDiagnostic,
   ProductAvailabilityIssue,
@@ -26,9 +27,11 @@ import {
   removeCartItem,
   selectCartItem,
   selectCartItemQuantity,
+  serializeCartState,
   setCartItemQuantity,
   type CartItem,
 } from "../apps/market/src/lib/cart-model"
+import { prepareCartFulfillment } from "../apps/market/src/lib/cart-shipping-options"
 
 function item(overrides: Partial<CartItem> = {}): CartItem {
   return {
@@ -944,6 +947,95 @@ describe("cart model", () => {
         items: [item({ productId: "product-a", stock: 7 })],
       }).state.items[0]
     ).toMatchObject({ stock: 7 })
+  })
+
+  it("preserves canonical shipping authorization through persisted cart parsing", () => {
+    const merchantPubkey = "a".repeat(64)
+    const cartItem = item({
+      productId: `30402:${merchantPubkey}:field-notes`,
+      merchantPubkey,
+      shippingOptionLaunchUnsupported: true,
+      productUpdatedAt: 2_000,
+      canonicalShippingResolved: true,
+    })
+
+    const parsed = parsePersistedCart(serializeCartState({ items: [cartItem] }))
+      .state.items[0]
+
+    expect(parsed).toMatchObject({
+      shippingOptionLaunchUnsupported: true,
+      productUpdatedAt: 2_000,
+      canonicalShippingResolved: true,
+    })
+
+    const malformed = parsePersistedCart({
+      version: 2,
+      items: [
+        {
+          ...cartItem,
+          shippingOptionLaunchUnsupported: "true",
+          productUpdatedAt: Number.NaN,
+          canonicalShippingResolved: 1,
+        },
+      ],
+    }).state.items[0]
+
+    expect(malformed?.shippingOptionLaunchUnsupported).toBeUndefined()
+    expect(malformed?.productUpdatedAt).toBeUndefined()
+    expect(malformed?.canonicalShippingResolved).toBeUndefined()
+  })
+
+  it("keeps fixed shipping ready after a serialize and parse round trip", () => {
+    const merchantPubkey = "a".repeat(64)
+    const productDTag = "field-notes"
+    const shippingOptionId = `30406:${merchantPubkey}:${productDTag}-shipping-standard`
+    const cartItem = item({
+      productId: `30402:${merchantPubkey}:${productDTag}`,
+      merchantPubkey,
+      currency: "USD",
+      format: "physical",
+      shippingOptionId,
+      shippingOptionDTag: `${productDTag}-shipping-standard`,
+      shippingOptionLaunchUnsupported: false,
+      productUpdatedAt: 2_000,
+      canonicalShippingResolved: true,
+    })
+    const shippingOption: ParsedShippingOption = {
+      eventId: "shipping-event",
+      id: shippingOptionId,
+      pubkey: merchantPubkey,
+      dTag: `${productDTag}-shipping-standard`,
+      title: "Standard Shipping",
+      currency: "USD",
+      price: 5,
+      countries: ["US"],
+      countryRules: [
+        {
+          code: "US",
+          name: "United States",
+          restrictTo: [],
+          exclude: [],
+        },
+      ],
+      service: "standard",
+      createdAt: 2_000,
+      launchUnsupportedTags: [],
+    }
+
+    const restoredItems = parsePersistedCart(
+      serializeCartState({ items: [cartItem] })
+    ).state.items
+    const prepared = prepareCartFulfillment(restoredItems, [shippingOption])
+
+    expect(prepared.resolutions.get(cartItem.productId)).toMatchObject({
+      intent: "fixed_standard",
+      status: "ready",
+    })
+    expect(prepared.items[0]).toMatchObject({
+      shippingOptionId,
+      productUpdatedAt: 2_000,
+      canonicalShippingResolved: true,
+    })
   })
 
   it("does not add beyond finite tracked stock", () => {

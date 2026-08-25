@@ -1749,6 +1749,7 @@ function CheckoutPage() {
     let authorization: Awaited<ReturnType<typeof authorizeCurrentCheckoutItems>>
     try {
       authorization = await authorizeCurrentCheckoutItems({
+        mode: checkoutMode === "order_first" ? "order_first" : "direct_payment",
         reviewedItems: checkoutItems,
         rawItems: rawCheckoutItems,
         refreshedProducts: refreshResult.products,

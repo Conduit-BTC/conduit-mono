@@ -1,6 +1,7 @@
 import {
-  buildProductListingEventDraft,
   canonicalizeProductPrice,
+  getProductShippingOptionAddress,
+  type ProductFulfillmentIntent,
   type ProductImage,
   type ProductSchema,
 } from "@conduit/core"
@@ -14,6 +15,11 @@ import {
   getProductStockInputError,
   parseProductStockInput,
 } from "./productStock"
+import {
+  getCanonicalProductWriteFingerprint,
+  resolveProductFulfillmentIntentForTarget,
+  resolvePublishedProductFulfillmentIntentForTarget,
+} from "./product-publishing"
 
 export const MAX_PRODUCT_VARIATION_AXES = 3
 export const MAX_PRODUCT_VARIATION_COUNT = 64
@@ -82,6 +88,7 @@ export interface ProductFamilyPublishTarget<
 > {
   dTag: string
   product: ProductSchema
+  fulfillmentIntent: ProductFulfillmentIntent
   existing?: TRecord
 }
 
@@ -956,7 +963,8 @@ export function getProductVariationFormState<
   const seenValuesByKey = new Map<string, Set<string>>()
   const seenRows = new Set<string>()
   const parentPrice = getProductPriceInput(parent.product)
-  const parentShipping = JSON.stringify(getShippingProjection(parent.product))
+  const parentShippingIntent =
+    resolvePublishedProductFulfillmentIntentForTarget(parent.product)
   const rows: ProductVariationRow[] = []
 
   for (const variation of variations) {
@@ -1015,9 +1023,13 @@ export function getProductVariationFormState<
       variation.product.images,
       parent.product.images
     )
+    const variationShippingIntent =
+      resolvePublishedProductFulfillmentIntentForTarget(variation.product)
     const inheritShipping =
-      JSON.stringify(getShippingProjection(variation.product)) ===
-      parentShipping
+      parentShippingIntent !== null &&
+      variationShippingIntent !== null &&
+      JSON.stringify(variationShippingIntent) ===
+        JSON.stringify(parentShippingIntent)
     const shippingAmount =
       variation.product.sourceShippingCost?.amount ??
       variation.product.shippingCostSats
@@ -1144,17 +1156,6 @@ export function groupProductVariationRecords<
       variations: variationsByParent.get(record.addressId) ?? [],
       orphanVariation: record.product.type === "variation",
     }))
-}
-
-function getListingDraftFingerprint(
-  record: Pick<ProductFamilyPublishTarget, "dTag" | "product">
-): string {
-  const draft = buildProductListingEventDraft({
-    product: record.product,
-    dTag: record.dTag,
-    clientAppId: "merchant",
-  })
-  return JSON.stringify([draft.kind, draft.content, draft.tags])
 }
 
 function copyShippingProjection(
@@ -1291,6 +1292,8 @@ export function buildProductFamilyChangePlan<
   baseProduct: ProductSchema
   variations: ProductVariationFormState
   currency: string
+  fulfillmentIntent: ProductFulfillmentIntent
+  authoringCountries: readonly string[]
   existing?: ProductListingFamily<TRecord>
   now?: number
 }): ProductFamilyChangePlan<TRecord> {
@@ -1306,6 +1309,22 @@ export function buildProductFamilyChangePlan<
     if (variation.dTag) existingByDTag.set(variation.dTag, variation)
   }
 
+  const buildPublishTarget = (
+    dTag: string,
+    product: ProductSchema,
+    existing: TRecord | undefined,
+    fallbackIntent: ProductFulfillmentIntent = input.fulfillmentIntent
+  ): ProductFamilyPublishTarget<TRecord> => ({
+    dTag,
+    product,
+    fulfillmentIntent: resolveProductFulfillmentIntentForTarget({
+      product,
+      fallbackIntent,
+      authoringCountries: input.authoringCountries,
+    }),
+    existing,
+  })
+
   const parentProduct: ProductSchema = {
     ...input.baseProduct,
     id: `30402:${input.baseProduct.pubkey}:${parentDTag}`,
@@ -1316,11 +1335,11 @@ export function buildProductFamilyChangePlan<
       : [],
   }
   const desired: ProductFamilyPublishTarget<TRecord>[] = [
-    {
-      dTag: parentDTag,
-      product: parentProduct,
-      existing: existingByDTag.get(parentDTag),
-    },
+    buildPublishTarget(
+      parentDTag,
+      parentProduct,
+      existingByDTag.get(parentDTag)
+    ),
   ]
 
   if (input.variations.enabled) {
@@ -1332,18 +1351,23 @@ export function buildProductFamilyChangePlan<
           specifications: row.specifications,
         })
       const existing = existingByDTag.get(dTag)
-      desired.push({
-        dTag,
-        product: buildVariationProduct(
-          parentProduct,
-          parentDTag,
-          { ...row, dTag },
-          input.currency,
+      desired.push(
+        buildPublishTarget(
+          dTag,
+          buildVariationProduct(
+            parentProduct,
+            parentDTag,
+            { ...row, dTag },
+            input.currency,
+            existing,
+            now
+          ),
           existing,
-          now
-        ),
-        existing,
-      })
+          !row.inheritShipping && !row.shippingCost.trim()
+            ? { kind: "coordinate_after_order" }
+            : input.fulfillmentIntent
+        )
+      )
     }
   }
 
@@ -1353,11 +1377,34 @@ export function buildProductFamilyChangePlan<
   )
   const publish = desired.filter((target) => {
     if (!target.existing?.dTag) return true
+    const existingFulfillmentIntent =
+      resolvePublishedProductFulfillmentIntentForTarget(target.existing.product)
+    if (!existingFulfillmentIntent) return true
+    if (existingFulfillmentIntent.kind === "fixed_standard") {
+      if (
+        target.existing.product.shippingOptionId !==
+        getProductShippingOptionAddress(
+          target.existing.product.pubkey,
+          target.existing.dTag
+        )
+      ) {
+        return true
+      }
+    } else if (
+      target.existing.product.shippingOptionId ||
+      typeof target.existing.product.sourceShippingCost?.amount === "number" ||
+      typeof target.existing.product.shippingCostSats === "number" ||
+      (target.existing.product.shippingCountries?.length ?? 0) > 0 ||
+      (target.existing.product.shippingCountryRules?.length ?? 0) > 0
+    ) {
+      return true
+    }
     return (
-      getListingDraftFingerprint(target) !==
-      getListingDraftFingerprint({
+      getCanonicalProductWriteFingerprint(target) !==
+      getCanonicalProductWriteFingerprint({
         dTag: target.existing.dTag,
         product: target.existing.product,
+        fulfillmentIntent: existingFulfillmentIntent,
       })
     )
   })

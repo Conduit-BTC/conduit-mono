@@ -12,6 +12,8 @@ import {
 export type CheckoutAuthorizationResult =
   { status: "ok"; items: CartItem[] } | { status: "changed" }
 
+export type CheckoutAuthorizationMode = "direct_payment" | "order_first"
+
 export type CheckoutShippingOptionReader = (
   coordinates: readonly string[]
 ) => Promise<ParsedShippingOption[]>
@@ -22,6 +24,7 @@ export type CheckoutShippingOptionReader = (
  * destination, payload, and lifecycle decision in the submit attempt.
  */
 export async function authorizeCurrentCheckoutItems(input: {
+  mode: CheckoutAuthorizationMode
   reviewedItems: readonly CartItem[]
   rawItems: readonly CartItem[]
   refreshedProducts: readonly Product[]
@@ -41,10 +44,23 @@ export async function authorizeCurrentCheckoutItems(input: {
 
   const shippingCoordinates =
     getCartShippingOptionCoordinates(refreshedRawItems)
-  const shippingOptions =
-    shippingCoordinates.length === 0
-      ? []
-      : await input.readShippingOptions(shippingCoordinates)
+  let shippingOptions: ParsedShippingOption[]
+  try {
+    shippingOptions =
+      shippingCoordinates.length === 0
+        ? []
+        : await input.readShippingOptions(shippingCoordinates)
+  } catch (error) {
+    if (input.mode === "direct_payment") throw error
+
+    // Order-first is the safe fallback for incomplete or unavailable 30406
+    // evidence. Keep the fresh 30402 terms, but clear every prepared shipping
+    // field so the order cannot claim a stale coordinate, destination, or cost.
+    return {
+      status: "ok",
+      items: prepareCartFulfillment(refreshedRawItems, []).items,
+    }
+  }
   const prepared = prepareCartFulfillment(refreshedRawItems, shippingOptions)
 
   if (

@@ -98,6 +98,7 @@ describe("checkout authorization refresh", () => {
     }
 
     const result = await authorizeCurrentCheckoutItems({
+      mode: "direct_payment",
       reviewedItems: [reviewed],
       rawItems: [original],
       refreshedProducts: [product()],
@@ -126,45 +127,52 @@ describe("checkout authorization refresh", () => {
       canonicalShippingResolved: true,
     }
 
-    const result = await authorizeCurrentCheckoutItems({
-      reviewedItems: [reviewed],
-      rawItems: [original],
-      refreshedProducts: [product()],
-      readShippingOptions: async () => [shippingOption({ price: 6 })],
-    })
+    for (const mode of ["direct_payment", "order_first"] as const) {
+      const result = await authorizeCurrentCheckoutItems({
+        mode,
+        reviewedItems: [reviewed],
+        rawItems: [original],
+        refreshedProducts: [product()],
+        readShippingOptions: async () => [shippingOption({ price: 6 })],
+      })
 
-    expect(result).toEqual({ status: "changed" })
+      expect(result).toEqual({ status: "changed" })
+    }
   })
 
   it("blocks when the referenced shipping option is withdrawn", async () => {
     const original = rawItem()
     const option = shippingOption()
-    const result = await authorizeCurrentCheckoutItems({
-      reviewedItems: [
-        {
-          ...original,
-          shippingCostSats: undefined,
-          sourceShippingCost: {
-            amount: 5,
-            currency: "USD",
-            normalizedCurrency: "USD",
+    for (const mode of ["direct_payment", "order_first"] as const) {
+      const result = await authorizeCurrentCheckoutItems({
+        mode,
+        reviewedItems: [
+          {
+            ...original,
+            shippingCostSats: undefined,
+            sourceShippingCost: {
+              amount: 5,
+              currency: "USD",
+              normalizedCurrency: "USD",
+            },
+            shippingCountries: ["US"],
+            shippingCountryRules: option.countryRules,
+            canonicalShippingResolved: true,
           },
-          shippingCountries: ["US"],
-          shippingCountryRules: option.countryRules,
-          canonicalShippingResolved: true,
-        },
-      ],
-      rawItems: [original],
-      refreshedProducts: [product()],
-      readShippingOptions: async () => [],
-    })
+        ],
+        rawItems: [original],
+        refreshedProducts: [product()],
+        readShippingOptions: async () => [],
+      })
 
-    expect(result).toEqual({ status: "changed" })
+      expect(result).toEqual({ status: "changed" })
+    }
   })
 
   it("blocks changed raw listing terms before reading shipping", async () => {
     let shippingRead = false
     const result = await authorizeCurrentCheckoutItems({
+      mode: "direct_payment",
       reviewedItems: [rawItem()],
       rawItems: [rawItem()],
       refreshedProducts: [product({ price: 21 })],
@@ -178,18 +186,71 @@ describe("checkout authorization refresh", () => {
     expect(shippingRead).toBe(false)
   })
 
-  it("fails closed when the exact shipping read is unavailable", async () => {
+  it("fails closed for direct payment when the shipping read is incomplete or unavailable", async () => {
     const original = rawItem()
-    await expect(
-      authorizeCurrentCheckoutItems({
-        reviewedItems: [original],
+    for (const message of [
+      "Fixed shipping relay coverage was partial",
+      "Fixed shipping could not be verified",
+    ]) {
+      await expect(
+        authorizeCurrentCheckoutItems({
+          mode: "direct_payment",
+          reviewedItems: [original],
+          rawItems: [original],
+          refreshedProducts: [product()],
+          readShippingOptions: async () => {
+            throw new Error(message)
+          },
+        })
+      ).rejects.toThrow(message)
+    }
+  })
+
+  it("degrades incomplete or unavailable shipping reads to an unpriced order-first snapshot", async () => {
+    const original = rawItem()
+    const option = shippingOption()
+    const reviewed = {
+      ...original,
+      shippingCostSats: 5,
+      sourceShippingCost: {
+        amount: 5,
+        currency: "USD",
+        normalizedCurrency: "USD",
+      },
+      shippingCountries: ["US"],
+      shippingCountryRules: option.countryRules,
+      canonicalShippingResolved: true,
+    }
+
+    for (const message of [
+      "Fixed shipping relay coverage was partial",
+      "Fixed shipping could not be verified",
+    ]) {
+      const result = await authorizeCurrentCheckoutItems({
+        mode: "order_first",
+        reviewedItems: [reviewed],
         rawItems: [original],
         refreshedProducts: [product()],
         readShippingOptions: async () => {
-          throw new Error("Fixed shipping could not be verified")
+          throw new Error(message)
         },
       })
-    ).rejects.toThrow("Fixed shipping could not be verified")
+
+      expect(result.status).toBe("ok")
+      if (result.status !== "ok") throw new Error("Expected order-first items")
+      expect(result.items[0]).toMatchObject({
+        productId: PRODUCT_ID,
+        price: 20,
+        quantity: 2,
+        canonicalShippingResolved: false,
+      })
+      expect(result.items[0]?.shippingCostSats).toBeUndefined()
+      expect(result.items[0]?.sourceShippingCost).toBeUndefined()
+      expect(result.items[0]?.shippingOptionId).toBeUndefined()
+      expect(result.items[0]?.shippingOptionDTag).toBeUndefined()
+      expect(result.items[0]?.shippingCountries).toBeUndefined()
+      expect(result.items[0]?.shippingCountryRules).toBeUndefined()
+    }
   })
 
   it("does not request 30406 data for digital or coordinate-after-order items", async () => {
@@ -201,6 +262,7 @@ describe("checkout authorization refresh", () => {
       })
       let shippingRead = false
       const result = await authorizeCurrentCheckoutItems({
+        mode: "direct_payment",
         reviewedItems: [item],
         rawItems: [item],
         refreshedProducts: [
@@ -233,6 +295,7 @@ describe("checkout authorization refresh", () => {
     })
 
     const result = await authorizeCurrentCheckoutItems({
+      mode: "direct_payment",
       reviewedItems: [item],
       rawItems: [item],
       refreshedProducts: [
@@ -291,6 +354,7 @@ describe("checkout authorization refresh", () => {
       { ...refreshedVariation, type: "variable" as const },
     ]) {
       const result = await authorizeCurrentCheckoutItems({
+        mode: "direct_payment",
         reviewedItems: [item],
         rawItems: [item],
         refreshedProducts: [changedProduct],

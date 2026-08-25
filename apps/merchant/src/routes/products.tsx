@@ -122,7 +122,6 @@ import {
 import {
   deliverSignedProductEventBundle,
   getRelayPublishDiagnosticsError,
-  resolveProductFulfillmentIntentForTarget,
   signAndPublishProductWriteBundle,
   SignedProductDeliveryError,
 } from "../lib/product-publishing"
@@ -770,6 +769,8 @@ async function publishProduct(
     baseProduct: product,
     variations: form.variations,
     currency,
+    fulfillmentIntent: fulfillment.intent,
+    authoringCountries: fulfillment.authoringCountries,
     existing: existing
       ? {
           root: existing,
@@ -786,11 +787,7 @@ async function publishProduct(
       product: target.product,
       dTag: target.dTag,
       previousEventCreatedAt: target.existing?.eventCreatedAt,
-      fulfillmentIntent: resolveProductFulfillmentIntentForTarget({
-        product: target.product,
-        fallbackIntent: fulfillment.intent,
-        authoringCountries: fulfillment.authoringCountries,
-      }),
+      fulfillmentIntent: target.fulfillmentIntent,
     })),
     deletions: plan.remove.map((target) => ({
       eventId: target.eventId,

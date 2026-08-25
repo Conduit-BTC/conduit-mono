@@ -533,6 +533,7 @@ function parseCartItem(value: unknown): CartItem | null {
   const merchantAddedAt = finiteNonnegativeNumber(value.merchantAddedAt)
   const priceSats = finiteNonnegativeNumber(value.priceSats)
   const shippingCostSats = finiteNonnegativeNumber(value.shippingCostSats)
+  const productUpdatedAt = finiteNonnegativeNumber(value.productUpdatedAt)
   const stock = finiteNonnegativeNumber(value.stock)
   const selectedSpecifications = parseSpecifications(
     value.selectedSpecifications
@@ -574,8 +575,18 @@ function parseCartItem(value: unknown): CartItem | null {
     ...(nonemptyString(value.shippingOptionDTag)
       ? { shippingOptionDTag: String(value.shippingOptionDTag) }
       : {}),
+    ...(typeof value.shippingOptionLaunchUnsupported === "boolean"
+      ? {
+          shippingOptionLaunchUnsupported:
+            value.shippingOptionLaunchUnsupported,
+        }
+      : {}),
     ...(shippingCountries ? { shippingCountries } : {}),
     ...(shippingCountryRules ? { shippingCountryRules } : {}),
+    ...(productUpdatedAt !== undefined ? { productUpdatedAt } : {}),
+    ...(typeof value.canonicalShippingResolved === "boolean"
+      ? { canonicalShippingResolved: value.canonicalShippingResolved }
+      : {}),
     ...(typeof value.publicZapEnabled === "boolean"
       ? { publicZapEnabled: value.publicZapEnabled }
       : {}),
