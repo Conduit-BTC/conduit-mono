@@ -1,9 +1,15 @@
-import { Button, cn, StatusPill } from "@conduit/ui"
+import { useId, useState, type FormEvent } from "react"
+import { Button, cn, Input, Label, StatusPill } from "@conduit/ui"
 import {
   getProductDeliveryNoticeVariant,
   type ProductDeliveryNotice,
 } from "../lib/product-delivery"
-import type { OrderStockAdjustment } from "../lib/productStock"
+import {
+  getProductStockInputError,
+  parseProductStockInput,
+  type OrderStockAdjustment,
+  type OrderStockTargetMode,
+} from "../lib/productStock"
 
 interface OrderStockDeliveryView {
   adjustment: OrderStockAdjustment
@@ -19,11 +25,122 @@ interface OrderStockPanelProps {
   updatePending: boolean
   errorMessage: string | null
   canMessageBuyer?: boolean
-  onUpdate: (adjustment: OrderStockAdjustment) => void
-  onDecline: (adjustment: OrderStockAdjustment) => void
+  onUpdate: (
+    adjustment: OrderStockAdjustment,
+    stock: number,
+    targetMode: OrderStockTargetMode
+  ) => void
   onMessageBuyer?: () => void
   onRetry: () => void
   onDismissDelivery: () => void
+}
+
+function StockPublishActions({
+  adjustment,
+  pending,
+  updatePending,
+  showCalculated,
+  onUpdate,
+}: {
+  adjustment: OrderStockAdjustment
+  pending: boolean
+  updatePending: boolean
+  showCalculated: boolean
+  onUpdate: (
+    adjustment: OrderStockAdjustment,
+    stock: number,
+    targetMode: OrderStockTargetMode
+  ) => void
+}) {
+  const fieldIdentity = useId()
+  const [customStock, setCustomStock] = useState("")
+  const [customError, setCustomError] = useState<string | null>(null)
+  const fieldId = `custom-stock-${fieldIdentity}`
+  const helpId = `custom-stock-help-${fieldIdentity}`
+  const errorId = `custom-stock-error-${fieldIdentity}`
+
+  function publishCustomStock(event: FormEvent<HTMLFormElement>): void {
+    event.preventDefault()
+    const error = customStock.trim()
+      ? getProductStockInputError(customStock)
+      : "Enter the available quantity to publish."
+    if (error) {
+      setCustomError(error)
+      return
+    }
+
+    const stock = parseProductStockInput(customStock)
+    if (stock === undefined) return
+    setCustomError(null)
+    onUpdate(adjustment, stock, "custom")
+  }
+
+  return (
+    <div className="space-y-3">
+      {showCalculated && (
+        <Button
+          type="button"
+          size="sm"
+          className="min-h-10 w-full px-3 text-xs sm:w-auto"
+          disabled={pending}
+          onClick={() =>
+            onUpdate(adjustment, adjustment.nextStock, "calculated")
+          }
+        >
+          {updatePending
+            ? "Waiting for signer…"
+            : `Publish stock ${adjustment.nextStock}`}
+        </Button>
+      )}
+      <form
+        className="flex flex-wrap items-end gap-2"
+        aria-busy={updatePending}
+        onSubmit={publishCustomStock}
+      >
+        <div className="min-w-40 flex-1 space-y-1 sm:max-w-52">
+          <Label htmlFor={fieldId}>Custom updated stock</Label>
+          <Input
+            id={fieldId}
+            type="text"
+            inputMode="numeric"
+            autoComplete="off"
+            value={customStock}
+            disabled={pending}
+            aria-invalid={customError ? true : undefined}
+            aria-describedby={`${helpId}${customError ? ` ${errorId}` : ""}`}
+            onChange={(event) => {
+              setCustomStock(event.target.value)
+              if (customError) setCustomError(null)
+            }}
+          />
+        </div>
+        <Button
+          type="submit"
+          variant="outline"
+          size="sm"
+          className="min-h-10 flex-1 px-3 text-xs sm:flex-none"
+          disabled={pending}
+        >
+          {updatePending ? "Waiting for signer…" : "Publish custom stock"}
+        </Button>
+        <p
+          id={helpId}
+          className="w-full text-pretty text-xs leading-5 text-[var(--text-secondary)]"
+        >
+          Enter the available quantity you want to publish for this listing.
+        </p>
+        {customError && (
+          <p
+            id={errorId}
+            role="alert"
+            className="w-full text-pretty text-xs leading-5 text-error"
+          >
+            {customError}
+          </p>
+        )}
+      </form>
+    </div>
+  )
 }
 
 function getDeliveryStateLabel(state: ProductDeliveryNotice["state"]): string {
@@ -43,7 +160,6 @@ export function OrderStockPanel({
   errorMessage,
   canMessageBuyer = false,
   onUpdate,
-  onDecline,
   onMessageBuyer,
   onRetry,
   onDismissDelivery,
@@ -113,13 +229,12 @@ export function OrderStockPanel({
 
       {adjustments.map((adjustment) => {
         const restockingRequired = adjustment.shortfall > 0
-        const canUpdateStock =
-          !stockMutationDisabledKeys.has(adjustment.key) &&
-          adjustment.currentStock > adjustment.nextStock
+        const canPublishStock = !stockMutationDisabledKeys.has(adjustment.key)
+        const showCalculatedStock =
+          adjustment.currentStock !== adjustment.nextStock
         const showMessageBuyer =
           restockingRequired && canMessageBuyer && Boolean(onMessageBuyer)
-        const showActions =
-          canUpdateStock || showMessageBuyer || !restockingRequired
+        const showActions = canPublishStock || showMessageBuyer
 
         return (
           <div
@@ -176,19 +291,15 @@ export function OrderStockPanel({
               </p>
             )}
             {showActions && (
-              <div className="mt-3 flex flex-wrap gap-2">
-                {canUpdateStock && (
-                  <Button
-                    type="button"
-                    size="sm"
-                    className="min-h-10 flex-1 px-3 text-xs sm:flex-none"
-                    disabled={pending || deliveryNeedsAttention}
-                    onClick={() => onUpdate(adjustment)}
-                  >
-                    {updatePending
-                      ? "Waiting for signer…"
-                      : `Update to ${adjustment.nextStock}`}
-                  </Button>
+              <div className="mt-3 space-y-3">
+                {canPublishStock && (
+                  <StockPublishActions
+                    adjustment={adjustment}
+                    pending={pending || deliveryNeedsAttention}
+                    updatePending={updatePending}
+                    showCalculated={showCalculatedStock}
+                    onUpdate={onUpdate}
+                  />
                 )}
                 {showMessageBuyer && (
                   <Button
@@ -200,18 +311,6 @@ export function OrderStockPanel({
                     onClick={onMessageBuyer}
                   >
                     Message buyer
-                  </Button>
-                )}
-                {!restockingRequired && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="min-h-10 flex-1 px-3 text-xs sm:flex-none"
-                    disabled={pending}
-                    onClick={() => onDecline(adjustment)}
-                  >
-                    Keep {adjustment.currentStock}
                   </Button>
                 )}
               </div>

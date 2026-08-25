@@ -9,8 +9,8 @@ import {
   decodeLightningInvoiceAmount,
   deriveProtectedReadPresentationState,
   formatNpub,
-  getAtomicProductDetail,
   getCachedMerchantConversationList,
+  getCachedMerchantStorefront,
   getCurrencyAmountStep,
   getLightningNetworkMismatchMessage,
   getMerchantConversationList,
@@ -111,6 +111,7 @@ import {
   SignedProductDeliveryError,
 } from "../lib/product-publishing"
 import {
+  applyOrderStockTarget,
   buildOrderStockAdjustments,
   getOrderStockAdjustmentForDisplay,
   isOrderStockAdjustmentMutationDisabled,
@@ -118,6 +119,7 @@ import {
   ProductStockDecisionStore,
   shouldShowOrderStockAdjustment,
   type OrderStockAdjustment,
+  type OrderStockTargetMode,
 } from "../lib/productStock"
 import { Check, ChevronRight, Copy, MessageCircle, Search } from "lucide-react"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
@@ -1015,20 +1017,16 @@ function OrdersPage() {
         }
       }
 
-      const latest = await getAtomicProductDetail({
-        productId: payload.adjustment.addressId,
+      const latestLocal = await getCachedMerchantStorefront({
+        merchantPubkey: pubkey,
         includeMarketHidden: true,
       })
-      if (latest.meta.degraded || latest.meta.stale) {
-        throw new Error(
-          "Could not verify current relay stock. Check your connection and try again."
-        )
-      }
-
-      const record = latest.data
+      const record = latestLocal.data.find(
+        (candidate) => candidate.addressId === payload.adjustment.addressId
+      )
       if (!record || record.product.pubkey !== pubkey || !record.dTag) {
         throw new Error(
-          "The current merchant listing could not be verified. Refresh orders and try again."
+          "The merchant listing is not available on this device. Refresh orders and try again."
         )
       }
       if (
@@ -1039,33 +1037,11 @@ function OrdersPage() {
           "Automatic stock updates require a purchasable product listing."
         )
       }
-      if (record.eventId !== payload.adjustment.sourceEventId) {
-        await invalidateProductQueries()
-        throw new Error(
-          "This listing changed after the stock prompt loaded. Review the refreshed quantity before updating."
-        )
-      }
-
-      const currentStock = record.product.stock
       if (
-        typeof currentStock !== "number" ||
-        !Number.isSafeInteger(currentStock) ||
-        currentStock < 0
+        !Number.isSafeInteger(payload.adjustment.nextStock) ||
+        payload.adjustment.nextStock < 0
       ) {
-        await invalidateProductQueries()
-        throw new Error("This listing no longer tracks stock.")
-      }
-      if (currentStock !== payload.adjustment.currentStock) {
-        await invalidateProductQueries()
-        throw new Error(
-          "The listing stock changed after the prompt loaded. Review the refreshed quantity before updating."
-        )
-      }
-
-      const nextStock = Math.max(0, currentStock - payload.adjustment.quantity)
-      if (nextStock === currentStock) {
-        await invalidateProductQueries()
-        throw new Error("The listing stock is already zero.")
+        throw new Error("Stock must be a non-negative safe integer.")
       }
 
       let signedEvent: SignedPublicNostrEvent | null = null
@@ -1073,7 +1049,7 @@ function OrdersPage() {
         merchantPubkey: pubkey,
         product: {
           ...record.product,
-          stock: nextStock,
+          stock: payload.adjustment.nextStock,
           updatedAt: Date.now(),
         },
         dTag: record.dTag,
@@ -1449,35 +1425,17 @@ function OrdersPage() {
         : "Failed to update listing stock"
       : null
 
-  function updateStock(adjustment: OrderStockAdjustment): void {
+  function updateStock(
+    adjustment: OrderStockAdjustment,
+    stock: number,
+    targetMode: OrderStockTargetMode
+  ): void {
     if (!selected) return
     stockUpdateMutation.mutate({
       action: "update",
       orderId: selected.orderId,
-      adjustment,
+      adjustment: applyOrderStockTarget(adjustment, stock, targetMode),
     })
-  }
-
-  function keepCurrentStock(adjustment: OrderStockAdjustment): void {
-    if (!pubkey || !selected) return
-    const persisted = stockDecisionStoreRef.current.set(
-      pubkey,
-      selected.orderId,
-      adjustment.addressId,
-      "declined",
-      adjustment
-    )
-    setSessionStockDecisionKeys((current) => {
-      const next = new Set(current)
-      next.delete(`${pubkey}:${adjustment.key}`)
-      return next
-    })
-    stockUpdateMutation.reset()
-    flash(
-      persisted
-        ? `Stock left at ${adjustment.currentStock} for ${adjustment.title}`
-        : `Stock left unchanged for ${adjustment.title}; this device could not remember the decision after reload.`
-    )
   }
 
   function retryStockDelivery(): void {
@@ -1743,7 +1701,6 @@ function OrdersPage() {
                             errorMessage={stockUpdateErrorMessage}
                             canMessageBuyer={buyerInboxKnown}
                             onUpdate={updateStock}
-                            onDecline={keepCurrentStock}
                             onMessageBuyer={() => setMessagesOpen(true)}
                             onRetry={retryStockDelivery}
                             onDismissDelivery={dismissStockDelivery}
