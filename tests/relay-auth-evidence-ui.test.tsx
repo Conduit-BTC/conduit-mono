@@ -109,7 +109,7 @@ describe("relay authentication evidence", () => {
       />
     )
 
-    expect(markup).toContain("Metadata available")
+    expect(markup).toContain("Relay info available")
     expect(markup).toContain("Auth untested")
     expect(markup).toContain("Auth advertised")
     expect(markup).toContain("Auth challenge observed")
