@@ -10,6 +10,7 @@ import { bytesToHex } from "@noble/hashes/utils.js"
 import { buildMerchantOrderReviewUrl } from "../app-links"
 import { config, type ConduitConfig } from "../config"
 import type { OrderRelayDeliveryRecord, OrderRelayDeliveryStatus } from "../db"
+import { isValidatedInboundOrderLifecycleAnchor } from "../internal/inbound-order-provenance"
 import {
   getInboxDeclarationEvidence,
   InboxDeclarationDistributionConflictError,
@@ -25,10 +26,7 @@ import {
 } from "./ndk"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 import { parseOrderMessageRumorEvent } from "./orders"
-import {
-  isValidatedInboundOrderLifecycleAnchor,
-  type ValidatedInboundOrderLifecycleAnchor,
-} from "./inbound-order-provenance"
+import type { ValidatedInboundOrderLifecycleAnchor } from "./inbound-order-provenance"
 import {
   __resetInboxDeclarationCache,
   inboxDeclarationPublishRelayUrls,

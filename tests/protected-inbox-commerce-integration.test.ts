@@ -18,6 +18,7 @@ import type {
   NostrEventSigner,
   SignedNostrEvent,
 } from "../packages/core/src/protocol/nostr-event-signer"
+import { authorizeGiftUnwrapTestOverride } from "../packages/core/src/internal/inbound-order-provenance"
 
 const BUYER_KEY = new Uint8Array(32).fill(21)
 const MERCHANT_KEY = new Uint8Array(32).fill(22)
@@ -697,10 +698,10 @@ describe("Market and Merchant protected inbox integration", () => {
       },
       getCachedDirectMessages: async () => [],
       putCachedDirectMessages: async () => undefined,
-      giftUnwrap: async (event) => {
+      giftUnwrap: authorizeGiftUnwrapTestOverride(async (event) => {
         const recipient = event.tags.find((tag) => tag[0] === "p")?.[1]
         return recipient ? (guestOrderRumor(recipient) as never) : null
-      },
+      }),
     })
     installProtectedReadSigner(signer(MERCHANT_KEY), MERCHANT, () => true)
 
@@ -749,6 +750,122 @@ describe("Market and Merchant protected inbox integration", () => {
     expect(second.data).toHaveLength(1)
     expect(transported).toBe(1)
     expect(published.deliveryRoute).toBe("compatibility_order")
+  })
+
+  it("restarts deep inbox history after same-pubkey signer replacement", async () => {
+    const persistedRows = new Map<string, CachedOrderMessage>()
+    const recentWraps = Array.from({ length: 400 }, (_, index) => ({
+      id: `recent-wrap-${index}`,
+      kind: 1_059,
+      pubkey: `ephemeral-${index}`,
+      created_at: 1_000 - index,
+      content: "wrapped",
+      tags: [["p", MERCHANT]],
+    }))
+    const olderOrderWrap = {
+      id: "older-authenticated-order-wrap",
+      kind: 1_059,
+      pubkey: "older-ephemeral",
+      created_at: 600,
+      content: "wrapped",
+      tags: [["p", MERCHANT]],
+    }
+    const seenUntil: Array<number | undefined> = []
+
+    __setCommerceTestOverrides({
+      getNdk: async () => ({ signer: {} }) as never,
+      resolveInboxRelayUrls: async () => [RELAY_URL],
+      getCachedOrderMessages: async () => [...persistedRows.values()],
+      putCachedOrderMessages: async (rows) => {
+        for (const row of rows) persistedRows.set(row.id, row)
+      },
+      getCachedDirectMessages: async () => [],
+      putCachedDirectMessages: async () => undefined,
+      readProtectedInbox: async (options) => {
+        const isTargetRelay = options.relayUrls[0] === RELAY_URL
+        if (isTargetRelay) seenUntil.push(options.until)
+        const events = isTargetRelay
+          ? options.until === undefined
+            ? recentWraps
+            : [olderOrderWrap]
+          : []
+        return {
+          events,
+          coverage: "complete",
+          auth: {
+            state: "not_challenged",
+            challengedCount: 0,
+            succeededCount: 0,
+            failedCount: 0,
+          },
+          relayResult: {
+            status: "success",
+            observations: [],
+            relays: [],
+            attemptedCount: 1,
+            completedCount: 1,
+            failedCount: 0,
+            authoritativeEmpty: events.length === 0,
+          },
+        } as never
+      },
+      giftUnwrap: authorizeGiftUnwrapTestOverride(
+        async (event) =>
+          (event.id === olderOrderWrap.id
+            ? guestOrderRumor(MERCHANT)
+            : {
+                id: `ignored-${event.id}`,
+                kind: 1,
+                pubkey: BUYER,
+                created_at: event.created_at,
+                content: "ignored",
+                tags: [],
+              }) as never
+      ),
+    })
+
+    installProtectedReadSigner(signer(MERCHANT_KEY), MERCHANT, () => true)
+    const first = await getMerchantConversationList({
+      principalPubkey: MERCHANT,
+      sort: "merchant_priority",
+    })
+    expect(first.data).toHaveLength(1)
+    expect(persistedRows.size).toBe(1)
+
+    installProtectedReadSigner(signer(MERCHANT_KEY), MERCHANT, () => true)
+    const second = await getMerchantConversationList({
+      principalPubkey: MERCHANT,
+      sort: "merchant_priority",
+    })
+    const inboundOrder = second.data[0]?.messages.find(
+      (message) => message.type === "order"
+    )
+    if (!inboundOrder || inboundOrder.type !== "order") {
+      throw new Error("Expected the reauthenticated older inbound order")
+    }
+
+    await expect(
+      publishMerchantOrderMessage(
+        {
+          merchantPubkey: MERCHANT,
+          buyerPubkey: BUYER,
+          orderId: inboundOrder.orderId,
+          type: "status_update",
+          tags: [["status", "accepted"]],
+          payload: { status: "accepted" },
+          delivery: "self_only",
+          inboundOrder,
+        },
+        {
+          getNdk: () =>
+            ({ signer: { user: async () => ({ pubkey: MERCHANT }) } }) as never,
+          publishPrivateMessage: async () =>
+            ({ deliveryRoute: "compatibility_order" }) as never,
+          cacheParsedOrderMessage: async () => undefined,
+        }
+      )
+    ).resolves.toMatchObject({ deliveryRoute: "compatibility_order" })
+    expect(seenUntil).toEqual([undefined, 601, undefined, 601])
   })
 
   it("keeps cached orders visible when every relay rejects authentication", async () => {

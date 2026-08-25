@@ -18,6 +18,7 @@ import {
   EVENT_KINDS,
   fetchInboxRelayUrls,
   getInboxDeclarationEvidence,
+  getMerchantOrderPublishTarget,
   InboxDeclarationPublishSafetyError,
   inspectOwnPrivateMessageRelayReadiness,
   inspectRetainedOwnPrivateMessageRelayReadiness,
@@ -44,11 +45,8 @@ import {
   type InboxDeclarationEvidenceRepository,
   type OwnPrivateMessageRelayReadiness,
 } from "@conduit/core"
-import {
-  getValidatedInboundOrderLifecycleAnchor,
-  parseAuthenticatedInboundOrderRumor,
-} from "@conduit/core/protocol/inbound-order-provenance"
 import { attachEventSourceRelayUrl } from "@conduit/core/protocol/ndk"
+import { loadAuthenticatedInboundOrderFromInbox } from "./support/authenticated-inbound-order"
 
 const INBOX_OWNER_SECRET = new Uint8Array(32).fill(11)
 const INBOX_PEER_SECRET = new Uint8Array(32).fill(12)
@@ -199,28 +197,25 @@ function inboundOrderMessage(
   }
 }
 
-function validatedInboundOrderAnchor(order = inboundOrderMessage()) {
-  const rumor = new NDKEvent()
-  rumor.id = order.id
-  rumor.kind = EVENT_KINDS.ORDER
-  rumor.pubkey = order.senderPubkey
-  rumor.created_at = Math.floor(order.createdAt / 1_000)
-  rumor.tags = [
-    ["p", order.recipientPubkey],
-    ["type", "order"],
-    ["order", order.orderId],
-  ]
-  rumor.content = JSON.stringify(order.payload)
-  const validated = parseAuthenticatedInboundOrderRumor(rumor)
-  if (!validated || validated.type !== "order") {
-    throw new Error("Expected an authenticated inbound order")
+async function validatedSelfRecordScope(
+  rumor: NDKEvent,
+  order = inboundOrderMessage()
+) {
+  const authenticated = await loadAuthenticatedInboundOrderFromInbox(order)
+  const target = getMerchantOrderPublishTarget(
+    {
+      merchantPubkey: authenticated.recipientPubkey,
+      buyerPubkey: authenticated.senderPubkey,
+      orderId: authenticated.orderId,
+      delivery: "self_only",
+      inboundOrder: authenticated,
+    },
+    rumor
+  )
+  if (!target.validatedOrderSelfRecordScope) {
+    throw new Error("Expected a validated self-record scope")
   }
-  return getValidatedInboundOrderLifecycleAnchor({
-    order: validated,
-    orderId: validated.orderId,
-    buyerPubkey: validated.payload.buyerPubkey,
-    merchantPubkey: validated.payload.merchantPubkey,
-  })
+  return target.validatedOrderSelfRecordScope
 }
 
 function guestOrderCompanionFixture(
@@ -672,14 +667,7 @@ describe("publishPrivateMessage", () => {
       signer,
       rumorKind: EVENT_KINDS.ORDER,
       selfCopy: false,
-      validatedOrderSelfRecordScope: createValidatedOrderSelfRecordRouteScope({
-        rumor: selfRecord,
-        orderId: "order-id",
-        senderPubkey: "sender",
-        recipientPubkey: "sender",
-        counterpartyPubkey: "buyer",
-        anchor: validatedInboundOrderAnchor(),
-      }),
+      validatedOrderSelfRecordScope: await validatedSelfRecordScope(selfRecord),
       recipientInboxRelays: [],
       compatibilityOrderRoute: {
         enabled: true,
@@ -716,38 +704,42 @@ describe("publishPrivateMessage", () => {
     ).toThrow("Cannot authorize compatibility routing for this rumor.")
   })
 
-  it("rejects sender self-record scopes with the wrong counterparty, author, or order id", () => {
+  it("rejects sender self-record scopes with the wrong counterparty, author, or order id", async () => {
     const selfRecord = senderSelfRecordRumor()
+    const authenticated = await loadAuthenticatedInboundOrderFromInbox(
+      inboundOrderMessage()
+    )
     const createScope = (
       overrides: Partial<
-        Parameters<typeof createValidatedOrderSelfRecordRouteScope>[0]
-      > = {}
+        Parameters<typeof getMerchantOrderPublishTarget>[0]
+      > = {},
+      rumor = selfRecord
     ) =>
-      createValidatedOrderSelfRecordRouteScope({
-        rumor: selfRecord,
-        orderId: "order-id",
-        senderPubkey: "sender",
-        recipientPubkey: "sender",
-        counterpartyPubkey: "buyer",
-        anchor: validatedInboundOrderAnchor(),
-        ...overrides,
-      })
+      getMerchantOrderPublishTarget(
+        {
+          merchantPubkey: "sender",
+          buyerPubkey: "buyer",
+          orderId: "order-id",
+          delivery: "self_only",
+          inboundOrder: authenticated,
+          ...overrides,
+        },
+        rumor
+      )
 
-    expect(() => createScope({ counterpartyPubkey: "other" })).toThrow(
-      "Cannot authorize sender self-record compatibility routing for this rumor."
+    expect(() => createScope({ buyerPubkey: "other" })).toThrow(
+      "Cannot authorize a self-record without a validated inbound order."
     )
-    expect(() => createScope({ senderPubkey: "other" })).toThrow(
-      "Cannot authorize sender self-record compatibility routing for this rumor."
+    expect(() => createScope({ merchantPubkey: "other" })).toThrow(
+      "Cannot authorize a self-record without a validated inbound order."
     )
     expect(() => createScope({ orderId: "other-order" })).toThrow(
-      "Cannot authorize sender self-record compatibility routing for this rumor."
-    )
-    expect(() => createScope({ recipientPubkey: "buyer" })).toThrow(
-      "Cannot authorize sender self-record compatibility routing for this rumor."
+      "Cannot authorize a self-record without a validated inbound order."
     )
     expect(() =>
-      createScope({
-        rumor: senderSelfRecordRumor({
+      createScope(
+        {},
+        senderSelfRecordRumor({
           tags: [
             ["p", "buyer"],
             ["type", "message"],
@@ -760,8 +752,8 @@ describe("publishPrivateMessage", () => {
             buyerPubkey: "buyer",
             createdAt: 1_000,
           }),
-        }),
-      })
+        })
+      )
     ).toThrow(
       "Cannot authorize sender self-record compatibility routing for this rumor."
     )
@@ -769,14 +761,7 @@ describe("publishPrivateMessage", () => {
 
   it("consumes sender self-record scopes once and revalidates a mutated rumor", async () => {
     const selfRecord = senderSelfRecordRumor()
-    const scope = createValidatedOrderSelfRecordRouteScope({
-      rumor: selfRecord,
-      orderId: "order-id",
-      senderPubkey: "sender",
-      recipientPubkey: "sender",
-      counterpartyPubkey: "buyer",
-      anchor: validatedInboundOrderAnchor(),
-    })
+    const scope = await validatedSelfRecordScope(selfRecord)
     const publish = () =>
       publishPrivateMessage({
         rumor: selfRecord,
@@ -803,14 +788,7 @@ describe("publishPrivateMessage", () => {
     )
 
     const mutatedRecord = senderSelfRecordRumor({ id: "mutated-rumor-id" })
-    const mutatedScope = createValidatedOrderSelfRecordRouteScope({
-      rumor: mutatedRecord,
-      orderId: "order-id",
-      senderPubkey: "sender",
-      recipientPubkey: "sender",
-      counterpartyPubkey: "buyer",
-      anchor: validatedInboundOrderAnchor(),
-    })
+    const mutatedScope = await validatedSelfRecordScope(mutatedRecord)
     mutatedRecord.content = JSON.stringify({
       status: "cancelled",
       orderId: "order-id",
@@ -842,14 +820,7 @@ describe("publishPrivateMessage", () => {
   it("rejects a sender self-record scope used with a different rumor or outer recipient", async () => {
     const scopedRecord = senderSelfRecordRumor()
     const mismatchedRecord = senderSelfRecordRumor({ id: "other-rumor-id" })
-    const mismatchedRumorScope = createValidatedOrderSelfRecordRouteScope({
-      rumor: scopedRecord,
-      orderId: "order-id",
-      senderPubkey: "sender",
-      recipientPubkey: "sender",
-      counterpartyPubkey: "buyer",
-      anchor: validatedInboundOrderAnchor(),
-    })
+    const mismatchedRumorScope = await validatedSelfRecordScope(scopedRecord)
     let wrapped = false
     const publish = (
       rumor: NDKEvent,
@@ -881,14 +852,7 @@ describe("publishPrivateMessage", () => {
     ).rejects.toBeInstanceOf(PrivateMessageRelayReadinessError)
     expect(wrapped).toBe(false)
 
-    const recipientScope = createValidatedOrderSelfRecordRouteScope({
-      rumor: scopedRecord,
-      orderId: "order-id",
-      senderPubkey: "sender",
-      recipientPubkey: "sender",
-      counterpartyPubkey: "buyer",
-      anchor: validatedInboundOrderAnchor(),
-    })
+    const recipientScope = await validatedSelfRecordScope(scopedRecord)
     await expect(
       publish(scopedRecord, "buyer", recipientScope)
     ).rejects.toBeInstanceOf(PrivateMessageRelayReadinessError)
@@ -1443,20 +1407,14 @@ describe("publishPrivateMessage", () => {
       rumorKind: EVENT_KINDS.ORDER,
       selfCopy: false,
       recipientInboxRelays: [],
-      validatedOrderSelfRecordScope: createValidatedOrderSelfRecordRouteScope({
-        rumor: guestOrderUpdate,
-        orderId: "guest-order-id",
-        senderPubkey: "merchant",
-        recipientPubkey: "merchant",
-        counterpartyPubkey: "guest",
-        anchor: validatedInboundOrderAnchor(
-          inboundOrderMessage({
-            orderId: "guest-order-id",
-            buyerPubkey: "guest",
-            merchantPubkey: "merchant",
-          })
-        ),
-      }),
+      validatedOrderSelfRecordScope: await validatedSelfRecordScope(
+        guestOrderUpdate,
+        inboundOrderMessage({
+          orderId: "guest-order-id",
+          buyerPubkey: "guest",
+          merchantPubkey: "merchant",
+        })
+      ),
       compatibilityOrderRoute: {
         enabled: true,
         relayUrls: ["wss://compatibility.conduit.market"],

@@ -10,10 +10,8 @@ import {
   type ParsedOrderMessage,
   type PublishPrivateMessageInput,
 } from "@conduit/core"
-import {
-  parseAuthenticatedInboundOrderRumor,
-  parseValidatedCachedOrderMessageEnvelope,
-} from "@conduit/core/protocol/inbound-order-provenance"
+import { parseValidatedCachedOrderMessageEnvelope } from "@conduit/core/protocol/inbound-order-provenance"
+import { loadAuthenticatedInboundOrderFromInbox } from "./support/authenticated-inbound-order"
 
 const merchantPubkey = "merchant"
 const buyerPubkey = "buyer"
@@ -63,32 +61,11 @@ function fabricatedInboundOrder(
   }
 }
 
-function inboundOrder(
+async function inboundOrder(
   buyerIdentityKind: "guest_ephemeral" | "signed_in" = "guest_ephemeral"
-): Extract<ParsedOrderMessage, { type: "order" }> {
+): Promise<Extract<ParsedOrderMessage, { type: "order" }>> {
   const order = fabricatedInboundOrder(buyerIdentityKind)
-  return validatedInboundOrder(order)
-}
-
-function validatedInboundOrder(
-  order: Extract<ParsedOrderMessage, { type: "order" }>
-): Extract<ParsedOrderMessage, { type: "order" }> {
-  const rumor = new NDKEvent()
-  rumor.id = order.id
-  rumor.kind = EVENT_KINDS.ORDER
-  rumor.pubkey = order.senderPubkey
-  rumor.created_at = Math.floor(order.createdAt / 1_000)
-  rumor.tags = [
-    ["p", order.recipientPubkey],
-    ["type", "order"],
-    ["order", order.orderId],
-  ]
-  rumor.content = JSON.stringify(order.payload)
-  const validated = parseAuthenticatedInboundOrderRumor(rumor)
-  if (!validated || validated.type !== "order") {
-    throw new Error("Expected an authenticated inbound order")
-  }
-  return validated
+  return await loadAuthenticatedInboundOrderFromInbox(order)
 }
 
 async function publishThroughTestTransport(
@@ -133,7 +110,7 @@ describe("publishMerchantOrderMessage", () => {
         tags: [["status", "paid"]],
         payload: { status: "paid" },
         delivery: "self_only",
-        inboundOrder: inboundOrder(),
+        inboundOrder: await inboundOrder(),
       },
       {
         getNdk: () => ({ signer }) as unknown as NDK,
@@ -178,7 +155,7 @@ describe("publishMerchantOrderMessage", () => {
           tags: [["status", "paid"]],
           payload: { status: "paid" },
           delivery: "self_only",
-          inboundOrder: inboundOrder("signed_in"),
+          inboundOrder: await inboundOrder("signed_in"),
         },
         {
           getNdk: () => ({ signer }) as unknown as NDK,
@@ -226,7 +203,7 @@ describe("publishMerchantOrderMessage", () => {
           type: "status_update",
           payload: { status: "paid" },
           delivery: "self_only",
-          inboundOrder: inboundOrder(),
+          inboundOrder: await inboundOrder(),
         },
         dependencies
       )
@@ -313,7 +290,7 @@ describe("publishMerchantOrderMessage", () => {
 })
 
 describe("merchant order publish", () => {
-  it("targets the merchant for a guest-only operational record", () => {
+  it("targets the merchant for a guest-only operational record", async () => {
     const rumor = new NDKEvent()
     rumor.id = "guest-status-rumor"
     rumor.kind = EVENT_KINDS.ORDER
@@ -337,7 +314,7 @@ describe("merchant order publish", () => {
         buyerPubkey: "guest",
         orderId: "guest-order",
         delivery: "self_only",
-        inboundOrder: validatedInboundOrder({
+        inboundOrder: await loadAuthenticatedInboundOrderFromInbox({
           ...fabricatedInboundOrder(),
           id: "guest-order-rumor",
           orderId: "guest-order",

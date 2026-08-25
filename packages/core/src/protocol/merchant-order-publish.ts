@@ -1,4 +1,5 @@
 import { NDKEvent } from "@nostr-dev-kit/ndk"
+import { getValidatedInboundOrderLifecycleAnchor } from "../internal/inbound-order-provenance"
 import { cacheParsedOrderMessage } from "./commerce"
 import { EVENT_KINDS } from "./kinds"
 import { getNdk } from "./ndk"
@@ -9,7 +10,6 @@ import {
   createValidatedOrderSelfRecordRouteScope,
   publishPrivateMessage,
 } from "./messaging"
-import { getValidatedInboundOrderLifecycleAnchor } from "./inbound-order-provenance"
 import type { PrivateMessageDeliveryRoute } from "./private-message-routing"
 
 export type MerchantOrderDelivery = "buyer_and_self" | "self_only"

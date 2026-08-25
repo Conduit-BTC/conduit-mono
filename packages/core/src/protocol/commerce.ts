@@ -17,6 +17,10 @@ import { CANONICAL_APP_BACKPLANE_RELAYS, config } from "../config"
 import { compareCommercePrices } from "../pricing"
 import type { Product, Profile } from "../types"
 import { normalizePublicMediaUrl } from "../network-target-safety"
+import {
+  isAuthorizedGiftUnwrapTestOverride,
+  parseAuthenticatedInboundOrderRumor,
+} from "../internal/inbound-order-provenance"
 import { EVENT_KINDS } from "./kinds"
 import {
   extractFollowPubkeys,
@@ -57,11 +61,8 @@ import {
   getEffectiveMerchantOrderStatus,
   sortMerchantOrderMessagesForReplay,
 } from "./order-status"
-import { type ParsedOrderMessage } from "./orders"
-import {
-  parseAuthenticatedInboundOrderRumor,
-  parseValidatedCachedOrderMessageEnvelope,
-} from "./inbound-order-provenance"
+import { parseOrderMessageRumorEvent, type ParsedOrderMessage } from "./orders"
+import { parseValidatedCachedOrderMessageEnvelope } from "./inbound-order-provenance"
 import {
   __resetInboxRelayCache,
   createNdkLegacyDmDecrypt,
@@ -556,6 +557,7 @@ subscribeProtectedReadSignerRevocation((sessionScope) => {
   // lease must re-authenticate and re-unwrap before it can recover authority.
   successfulWrapIdsByPrincipal.clear()
   retryWrapsByPrincipal.clear()
+  inboxHistoryCheckpoints.clear()
 })
 
 class ProtectedInboxAuthorityChangedError extends Error {
@@ -5799,7 +5801,12 @@ async function runPrivateMessageInboxSync(
 
     try {
       if (outcome.category === "order") {
-        const message = parseAuthenticatedInboundOrderRumor(outcome.rumor)
+        const mayMintLifecycleAuthority =
+          !testOverrides.giftUnwrap ||
+          isAuthorizedGiftUnwrapTestOverride(testOverrides.giftUnwrap)
+        const message = mayMintLifecycleAuthority
+          ? parseAuthenticatedInboundOrderRumor(outcome.rumor)
+          : parseOrderMessageRumorEvent(outcome.rumor)
         orderEntries.push({
           wrapId: outcome.wrapId,
           message,
