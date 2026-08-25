@@ -5252,10 +5252,9 @@ async function fetchParsedDirectMessages(
 ): Promise<RawDirectMessageFetchResult> {
   const authorization = resolveInboxSyncAuthorization(principalPubkey)
   assertInboxSyncAuthority(authorization)
-  let [cached, cachedOrders] = await Promise.all([
-    loadCachedDirectMessages(principalPubkey),
-    loadCachedOrderMessages(principalPubkey),
-  ])
+  let cached = await loadCachedDirectMessages(principalPubkey)
+  assertInboxSyncAuthority(authorization)
+  const cachedOrders = await loadCachedOrderMessages(principalPubkey)
   assertInboxSyncAuthority(authorization)
   const authoritativeOrderParties = new Set(
     cachedOrders
