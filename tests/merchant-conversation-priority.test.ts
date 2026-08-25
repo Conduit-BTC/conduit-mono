@@ -476,6 +476,41 @@ describe("merchant conversation priority", () => {
     ])
   })
 
+  it("orders same-second post-reopen tasks by authenticated replay time", async () => {
+    useCachedMessages([
+      orderMessage("reopened-later", 10),
+      merchantStatus("reopened-later", "accepted", 1_000),
+      merchantStatus("reopened-later", "cancelled", 2_000, {
+        id: "z-reopened-later-cancel",
+        authoredAt: 2_100,
+      }),
+      merchantStatus("reopened-later", "accepted", 2_000, {
+        id: "a-reopened-later-reopen",
+        reopens: "z-reopened-later-cancel",
+        authoredAt: 2_200,
+      }),
+      merchantStatus("reopened-later", "paid", 2_000, {
+        id: "m-reopened-later-paid",
+        authoredAt: 2_900,
+      }),
+      orderMessage("paid-earlier-same-second", 11),
+      merchantStatus("paid-earlier-same-second", "paid", 2_000, {
+        authoredAt: 2_500,
+      }),
+    ])
+
+    const result = await getCachedMerchantConversationList({
+      principalPubkey: MERCHANT_PUBKEY,
+      sort: "merchant_priority",
+      queue: "paid_fulfill",
+    })
+
+    expect(result.data.map(({ orderId }) => orderId)).toEqual([
+      "paid-earlier-same-second",
+      "reopened-later",
+    ])
+  })
+
   it("projects both list roles in authored replay order", async () => {
     useCachedMessages([
       orderMessage("same-second", 1_000),

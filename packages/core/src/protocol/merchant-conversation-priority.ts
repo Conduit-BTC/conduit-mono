@@ -3,6 +3,7 @@ import {
   getEffectiveMerchantOrderStatus,
   isMerchantOrderAccepted,
   isMerchantOrderPaid,
+  sortMerchantOrderMessagesForReplay,
 } from "./order-status"
 import { isExternalPaymentReportMessage } from "./order-summary"
 import {
@@ -66,16 +67,8 @@ function safeTimestamp(value: number, fallback = 0): number {
   return Number.isFinite(value) ? value : fallback
 }
 
-function compareMessages(
-  left: ParsedOrderMessage,
-  right: ParsedOrderMessage
-): number {
-  return (
-    compareNumberAscending(
-      safeTimestamp(left.createdAt),
-      safeTimestamp(right.createdAt)
-    ) || compareText(left.id, right.id)
-  )
+function messageReplayTimestamp(message: ParsedOrderMessage): number {
+  return safeTimestamp(message.authoredAt ?? message.createdAt)
 }
 
 function normalizeStatus(status: string | null | undefined): string {
@@ -95,7 +88,17 @@ function deriveMerchantConversationPriorityInternal(
   conversation: MerchantConversationPriorityInput,
   useReopenClock: boolean
 ): MerchantConversationPriority {
-  const allMessages = [...(conversation.messages ?? [])].sort(compareMessages)
+  const participants = {
+    buyerPubkey: conversation.buyerPubkey,
+    merchantPubkey: conversation.merchantPubkey,
+  }
+  const allMessages = sortMerchantOrderMessagesForReplay(
+    conversation.messages ?? [],
+    participants
+  )
+  const replayIndexById = new Map(
+    allMessages.map((message, index) => [message.id, index])
+  )
   const fallbackAt = safeTimestamp(conversation.latestAt)
   const orderMessage = allMessages.find(
     (message) =>
@@ -104,7 +107,11 @@ function deriveMerchantConversationPriorityInternal(
       message.recipientPubkey === conversation.merchantPubkey
   )
   const orderCreatedAt = safeTimestamp(
-    orderMessage?.createdAt ?? allMessages[0]?.createdAt ?? fallbackAt,
+    orderMessage
+      ? messageReplayTimestamp(orderMessage)
+      : allMessages[0]
+        ? messageReplayTimestamp(allMessages[0])
+        : fallbackAt,
     fallbackAt
   )
   const guestOrder =
@@ -119,20 +126,17 @@ function deriveMerchantConversationPriorityInternal(
       (guestOrder && message.recipientPubkey === conversation.merchantPubkey))
   const effective = getEffectiveMerchantOrderStatus(
     allMessages,
-    {
-      buyerPubkey: conversation.buyerPubkey,
-      merchantPubkey: conversation.merchantPubkey,
-    },
+    participants,
     conversation.status
   )
-  const messages = getAppliedMerchantOrderMessages(
-    allMessages,
-    {
-      buyerPubkey: conversation.buyerPubkey,
-      merchantPubkey: conversation.merchantPubkey,
-    },
-    conversation.status
-  ).sort(compareMessages)
+  const messages = sortMerchantOrderMessagesForReplay(
+    getAppliedMerchantOrderMessages(
+      allMessages,
+      participants,
+      conversation.status
+    ),
+    participants
+  )
   const appliedStatusEventIds = new Set(effective.appliedStatusEventIds)
   const merchantStatuses = messages.filter(
     (
@@ -153,7 +157,9 @@ function deriveMerchantConversationPriorityInternal(
   const latestReopen = [...merchantStatuses]
     .reverse()
     .find((message) => Boolean(message.payload.reopens))
-  const reopenedAt = latestReopen?.createdAt
+  const reopenedAt = latestReopen
+    ? messageReplayTimestamp(latestReopen)
+    : undefined
   const latestReopenIndex = latestReopen
     ? allMessages.findIndex((message) => message.id === latestReopen.id)
     : -1
@@ -162,7 +168,7 @@ function deriveMerchantConversationPriorityInternal(
       ? deriveMerchantConversationPriorityInternal(
           {
             ...conversation,
-            latestAt: latestReopen.createdAt,
+            latestAt: messageReplayTimestamp(latestReopen),
             status: null,
             messages: allMessages.slice(0, latestReopenIndex + 1),
           },
@@ -178,9 +184,15 @@ function deriveMerchantConversationPriorityInternal(
       return safeTimestamp(reopenedAt ?? fallback, orderCreatedAt)
     }
     const candidate = latestReopen
-      ? candidates.find((message) => compareMessages(message, latestReopen) > 0)
+      ? candidates.find(
+          (message) =>
+            (replayIndexById.get(message.id) ?? -1) > latestReopenIndex
+        )
       : candidates[0]
-    return safeTimestamp(candidate?.createdAt ?? fallback, orderCreatedAt)
+    return safeTimestamp(
+      candidate ? messageReplayTimestamp(candidate) : fallback,
+      orderCreatedAt
+    )
   }
 
   if (CLOSED_STATUSES.has(effectiveStatus)) {
@@ -188,7 +200,9 @@ function deriveMerchantConversationPriorityInternal(
       bucket: "closed",
       rank: PRIORITY_RANK.closed,
       taskAt: safeTimestamp(
-        effectiveTerminal?.createdAt ?? fallbackAt,
+        effectiveTerminal
+          ? messageReplayTimestamp(effectiveTerminal)
+          : fallbackAt,
         orderCreatedAt
       ),
       orderCreatedAt,
