@@ -4,6 +4,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -22,6 +23,7 @@ import {
 import {
   getMerchantNwcAddressStatus,
   getMerchantPaymentVerificationCandidates,
+  MerchantPaymentVerificationAuthority,
   verifyMerchantPaymentCandidates,
   type MerchantNwcAddressStatus,
 } from "../lib/merchant-payment-verification"
@@ -63,8 +65,12 @@ export function MerchantPaymentAutomationProvider({
   const queryClient = useQueryClient()
   const profileQuery = useProfile(pubkey, { authenticatedPubkey: pubkey })
   const nwc = useNwcConnection()
+  const setNwcUri = nwc.setUri
+  const disconnectNwc = nwc.disconnect
   const confirmedEvidenceRef = useRef(new Set<string>())
-  const runningRef = useRef(false)
+  const verificationAuthorityRef = useRef(
+    new MerchantPaymentVerificationAuthority()
+  )
   const [run, setRun] = useState<VerificationRunState>({
     status: "idle",
     checked: 0,
@@ -118,10 +124,23 @@ export function MerchantPaymentAutomationProvider({
     (conversationsQuery.data?.meta.degraded === true &&
       conversationsQuery.data.data.length === 0)
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    const verificationAuthority = verificationAuthorityRef.current
+    verificationAuthority.revoke()
     confirmedEvidenceRef.current.clear()
     setRun({ status: "idle", checked: 0, verified: 0 })
-  }, [addressStatus, authGeneration, nwc.connection])
+
+    return () => {
+      verificationAuthority.revoke()
+    }
+  }, [
+    addressStatus,
+    authGeneration,
+    canVerifyPayments,
+    connectionKey,
+    pubkey,
+    signerConnected,
+  ])
 
   useEffect(() => {
     if (!conversationReadUnavailable || conversationsQuery.isFetching) return
@@ -141,12 +160,16 @@ export function MerchantPaymentAutomationProvider({
       !signerConnected ||
       !connection ||
       !canVerifyPayments ||
-      conversationReadUnavailable ||
-      runningRef.current
+      conversationReadUnavailable
     ) {
       return
     }
-    runningRef.current = true
+    const authorityRun = verificationAuthorityRef.current.begin({
+      authGeneration,
+      connectionKey,
+    })
+    if (!authorityRun) return
+    const { isCurrent } = authorityRun
     setRun({ status: "checking", checked: 0, verified: 0 })
     let checked = 0
     let verified = 0
@@ -155,14 +178,26 @@ export function MerchantPaymentAutomationProvider({
       const result = await verifyMerchantPaymentCandidates({
         candidates,
         confirmedEvidence: confirmedEvidenceRef.current,
-        lookupInvoice: (candidate) =>
-          nwcLookupInvoice(
+        isCurrent,
+        lookupInvoice: async (candidate) => {
+          if (!isCurrent()) {
+            throw new Error("Payment verification authority was revoked")
+          }
+          const settlement = await nwcLookupInvoice(
             connection,
             { invoice: candidate.invoice },
             10_000,
             "merchant"
-          ),
+          )
+          if (!isCurrent()) {
+            throw new Error("Payment verification authority was revoked")
+          }
+          return settlement
+        },
         publishConfirmation: async (candidate) => {
+          if (!isCurrent()) {
+            throw new Error("Payment verification authority was revoked")
+          }
           await publishMerchantOrderMessage({
             merchantPubkey: pubkey,
             buyerPubkey: candidate.buyerPubkey,
@@ -173,8 +208,12 @@ export function MerchantPaymentAutomationProvider({
             inboundOrder: candidate.inboundOrder,
             delivery: candidate.delivery,
           })
+          if (!isCurrent()) {
+            throw new Error("Payment verification authority was revoked")
+          }
         },
       })
+      if (!isCurrent()) return
       checked = result.checked
       verified = result.verified
 
@@ -188,25 +227,20 @@ export function MerchantPaymentAutomationProvider({
           : {}),
       })
       if (verified > 0) {
-        await Promise.all([
-          queryClient.invalidateQueries({
-            queryKey: ["merchant-order-messages", pubkey],
-          }),
-          queryClient.invalidateQueries({
-            queryKey: ["merchant-order-messages-live", pubkey],
-          }),
-          queryClient.invalidateQueries({
-            queryKey: ["merchant-conversations-live", pubkey],
-          }),
-          queryClient.invalidateQueries({
-            queryKey: ["merchant-dashboard-live", pubkey],
-          }),
-          queryClient.invalidateQueries({
-            queryKey: ["merchant-payment-verification", pubkey],
-          }),
-        ])
+        const queryKeys = [
+          ["merchant-order-messages", pubkey],
+          ["merchant-order-messages-live", pubkey],
+          ["merchant-conversations-live", pubkey],
+          ["merchant-dashboard-live", pubkey],
+          ["merchant-payment-verification", pubkey],
+        ]
+        for (const queryKey of queryKeys) {
+          if (!isCurrent()) return
+          await queryClient.invalidateQueries({ queryKey })
+        }
       }
     } catch (error) {
+      if (!isCurrent()) return
       setRun({
         status: "error",
         checked,
@@ -217,11 +251,13 @@ export function MerchantPaymentAutomationProvider({
             : "Automatic payment verification stopped.",
       })
     } finally {
-      runningRef.current = false
+      authorityRun.finish()
     }
   }, [
+    authGeneration,
     canVerifyPayments,
     candidates,
+    connectionKey,
     conversationReadUnavailable,
     nwc.connection,
     pubkey,
@@ -257,12 +293,24 @@ export function MerchantPaymentAutomationProvider({
     void conversationsQuery.refetch()
   }, [conversationsQuery, infoQuery, pubkey])
 
+  const setUri = useCallback(
+    (uri: string) => {
+      verificationAuthorityRef.current.revoke()
+      setNwcUri(uri)
+    },
+    [setNwcUri]
+  )
+  const disconnect = useCallback(() => {
+    verificationAuthorityRef.current.revoke()
+    disconnectNwc()
+  }, [disconnectNwc])
+
   const value = useMemo<MerchantPaymentAutomationState>(
     () => ({
       connection: nwc.connection,
       connectionError: nwc.error,
-      setUri: nwc.setUri,
-      disconnect: nwc.disconnect,
+      setUri,
+      disconnect,
       info,
       infoPending: infoQuery.isFetching,
       infoError:
@@ -279,15 +327,15 @@ export function MerchantPaymentAutomationProvider({
       canLookupInvoices,
       canCreateInvoices,
       canVerifyPayments,
+      disconnect,
       info,
       infoQuery.error,
       infoQuery.isFetching,
       nwc.connection,
-      nwc.disconnect,
       nwc.error,
-      nwc.setUri,
       retry,
       run,
+      setUri,
     ]
   )
 

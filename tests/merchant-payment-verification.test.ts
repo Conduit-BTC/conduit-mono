@@ -1,12 +1,14 @@
 import { describe, expect, it } from "bun:test"
 import type {
   MerchantConversationSummary,
+  NwcLookupInvoiceResult,
   ParsedOrderMessage,
 } from "@conduit/core"
 import {
   getMerchantNwcAddressStatus,
   getMerchantPaymentVerificationCandidates,
   isNwcSettlementMatch,
+  MerchantPaymentVerificationAuthority,
   verifyMerchantPaymentCandidates,
 } from "../apps/merchant/src/lib/merchant-payment-verification"
 
@@ -100,7 +102,103 @@ function invoiceOnlyConversation(orderId: string): MerchantConversationSummary {
   }
 }
 
+function delayedSettlement(): {
+  promise: Promise<NwcLookupInvoiceResult>
+  resolve: (result: NwcLookupInvoiceResult) => void
+} {
+  let resolve!: (result: NwcLookupInvoiceResult) => void
+  return {
+    promise: new Promise<NwcLookupInvoiceResult>((settle) => {
+      resolve = settle
+    }),
+    resolve: (result) => resolve(result),
+  }
+}
+
+function settledInvoice(): NwcLookupInvoiceResult {
+  return {
+    type: "incoming",
+    state: "settled",
+    invoice,
+    paymentHash: "payment-hash",
+    amountMsats: 100_000,
+    settledAt: 1_700_000_010,
+  }
+}
+
 describe("merchant NWC payment verification", () => {
+  it("does not publish after the wallet disconnects during a delayed lookup", async () => {
+    const candidate = getMerchantPaymentVerificationCandidates([
+      conversation(),
+    ])[0]!
+    const lookup = delayedSettlement()
+    let published = 0
+    const confirmedEvidence = new Set<string>()
+    const authority = new MerchantPaymentVerificationAuthority()
+    const authorityRun = authority.begin({
+      authGeneration: 7,
+      connectionKey: "wallet-a",
+    })!
+    const verification = verifyMerchantPaymentCandidates({
+      candidates: [candidate],
+      confirmedEvidence,
+      isCurrent: authorityRun.isCurrent,
+      lookupInvoice: () => lookup.promise,
+      publishConfirmation: async () => {
+        published += 1
+      },
+    })
+
+    authority.revoke()
+    lookup.resolve(settledInvoice())
+
+    await expect(verification).rejects.toThrow(
+      "Payment verification authority was revoked"
+    )
+    expect(published).toBe(0)
+    expect(confirmedEvidence.size).toBe(0)
+  })
+
+  it("does not publish after same-pubkey auth churn during a delayed lookup", async () => {
+    const candidate = getMerchantPaymentVerificationCandidates([
+      conversation(),
+    ])[0]!
+    const lookup = delayedSettlement()
+    let authGeneration = 7
+    let published = 0
+    const confirmedEvidence = new Set<string>()
+    const authority = new MerchantPaymentVerificationAuthority()
+    const authorityRun = authority.begin({
+      authGeneration,
+      connectionKey: "wallet-a",
+    })!
+    const verification = verifyMerchantPaymentCandidates({
+      candidates: [candidate],
+      confirmedEvidence,
+      isCurrent: authorityRun.isCurrent,
+      lookupInvoice: () => lookup.promise,
+      publishConfirmation: async () => {
+        published += 1
+      },
+    })
+
+    authGeneration += 1
+    authority.revoke()
+    const replacementRun = authority.begin({
+      authGeneration,
+      connectionKey: "wallet-a",
+    })!
+    lookup.resolve(settledInvoice())
+
+    await expect(verification).rejects.toThrow(
+      "Payment verification authority was revoked"
+    )
+    expect(published).toBe(0)
+    expect(confirmedEvidence.size).toBe(0)
+    authorityRun.finish()
+    expect(replacementRun.isCurrent()).toBe(true)
+  })
+
   it("retries pending evidence and suppresses a published confirmation", async () => {
     const candidate = getMerchantPaymentVerificationCandidates([
       conversation(),

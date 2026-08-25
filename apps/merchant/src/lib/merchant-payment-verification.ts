@@ -31,6 +31,61 @@ export type MerchantPaymentVerificationResult = {
   lookupFailures: number
 }
 
+export class MerchantPaymentVerificationAuthorityRevokedError extends Error {
+  constructor() {
+    super("Payment verification authority was revoked")
+    this.name = "MerchantPaymentVerificationAuthorityRevokedError"
+  }
+}
+
+export type MerchantPaymentVerificationAuthorityKey = {
+  authGeneration: number
+  connectionKey: string
+}
+
+export type MerchantPaymentVerificationAuthorityRun =
+  MerchantPaymentVerificationAuthorityKey & {
+    isCurrent: () => boolean
+    finish: () => void
+  }
+
+export class MerchantPaymentVerificationAuthority {
+  private generation = 0
+  private activeRun: symbol | null = null
+
+  revoke(): void {
+    this.generation += 1
+    this.activeRun = null
+  }
+
+  begin({
+    authGeneration,
+    connectionKey,
+  }: MerchantPaymentVerificationAuthorityKey): MerchantPaymentVerificationAuthorityRun | null {
+    if (this.activeRun) return null
+
+    const generation = this.generation
+    const token = Symbol("merchant-payment-verification")
+    this.activeRun = token
+
+    return {
+      authGeneration,
+      connectionKey,
+      isCurrent: () =>
+        this.generation === generation && this.activeRun === token,
+      finish: () => {
+        if (this.activeRun === token) this.activeRun = null
+      },
+    }
+  }
+}
+
+function assertVerificationAuthority(isCurrent: () => boolean): void {
+  if (!isCurrent()) {
+    throw new MerchantPaymentVerificationAuthorityRevokedError()
+  }
+}
+
 function getMerchantPaymentEvidenceKey(
   candidate: MerchantPaymentVerificationCandidate
 ): string {
@@ -42,6 +97,7 @@ export async function verifyMerchantPaymentCandidates({
   confirmedEvidence,
   lookupInvoice,
   publishConfirmation,
+  isCurrent = () => true,
 }: {
   candidates: MerchantPaymentVerificationCandidate[]
   confirmedEvidence: Set<string>
@@ -51,6 +107,7 @@ export async function verifyMerchantPaymentCandidates({
   publishConfirmation: (
     candidate: MerchantPaymentVerificationCandidate
   ) => Promise<void>
+  isCurrent?: () => boolean
 }): Promise<MerchantPaymentVerificationResult> {
   const pendingCandidates = candidates.filter(
     (candidate) =>
@@ -65,8 +122,10 @@ export async function verifyMerchantPaymentCandidates({
   }> = []
 
   for (const candidate of pendingCandidates) {
+    assertVerificationAuthority(isCurrent)
     try {
       const settlement = await lookupInvoice(candidate)
+      assertVerificationAuthority(isCurrent)
       checked += 1
       if (isNwcSettlementMatch(candidate, settlement)) {
         matches.push({
@@ -75,6 +134,7 @@ export async function verifyMerchantPaymentCandidates({
         })
       }
     } catch {
+      assertVerificationAuthority(isCurrent)
       lookupFailures += 1
     }
   }
@@ -89,11 +149,14 @@ export async function verifyMerchantPaymentCandidates({
 
   for (const match of matches) {
     if (paymentHashCounts.get(match.paymentHash) !== 1) continue
+    assertVerificationAuthority(isCurrent)
     await publishConfirmation(match.candidate)
+    assertVerificationAuthority(isCurrent)
     confirmedEvidence.add(getMerchantPaymentEvidenceKey(match.candidate))
     verified += 1
   }
 
+  assertVerificationAuthority(isCurrent)
   return { checked, verified, lookupFailures }
 }
 
