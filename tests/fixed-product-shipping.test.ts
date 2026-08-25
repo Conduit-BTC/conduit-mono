@@ -383,6 +383,10 @@ describe("canonical fixed product shipping", () => {
       ["hex price", replaceTag("price", ["price", "0x10", "USD"])],
       ["scientific price", replaceTag("price", ["price", "5e1", "USD"])],
       [
+        "nonzero price that underflows to zero",
+        replaceTag("price", ["price", `0.${"0".repeat(400)}1`, "USD"]),
+      ],
+      [
         "extra price component",
         replaceTag("price", ["price", "5", "USD", "ignored"]),
       ],

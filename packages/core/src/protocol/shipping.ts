@@ -475,7 +475,14 @@ export function parseShippingOptionEvent(
   if (!priceCurrency || priceCurrency !== priceCurrency.trim()) return null
   const price = Number(priceAmount)
   const currency = normalizeCurrencyCode(priceCurrency)
-  if (!Number.isFinite(price) || price < 0 || !currency) return null
+  if (
+    !Number.isFinite(price) ||
+    price < 0 ||
+    (price === 0 && /[1-9]/.test(priceAmount)) ||
+    !currency
+  ) {
+    return null
+  }
 
   // ["country", code1, code2, ...] or repeated ["country", code]
   const countryTags = tags.filter((tag) => tag[0] === "country")
