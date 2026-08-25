@@ -13,7 +13,7 @@ import {
   type NDKRelay,
 } from "@nostr-dev-kit/ndk"
 import { getNdk } from "./ndk"
-import { getRelayLists, isInsecureRelayUrl } from "./relay-list"
+import { getRelayLists } from "./relay-list"
 import { recordRelayFailure, recordRelaySuccess } from "./relay-health"
 import {
   planRelayWrites,
@@ -23,6 +23,7 @@ import {
 import { EVENT_KINDS } from "./kinds"
 import {
   assertSafeNip65RelayTags,
+  normalizeSecureOrIsolatedE2eRelayUrls,
   normalizeUntrustedRelayHintsForContext,
   tryNormalizeRelayUrl,
 } from "./relay-settings"
@@ -571,14 +572,8 @@ export async function planPublishRelays(
   input: PublishWithPlannerInput
 ): Promise<RelayWritePlan> {
   if (input.exclusiveRelayUrls) {
-    const primaryRelayUrls = Array.from(
-      new Set(
-        input.exclusiveRelayUrls
-          .map((url) => tryNormalizeRelayUrl(url))
-          .flatMap((result) =>
-            result.ok && !isInsecureRelayUrl(result.url) ? [result.url] : []
-          )
-      )
+    const primaryRelayUrls = normalizeSecureOrIsolatedE2eRelayUrls(
+      input.exclusiveRelayUrls
     )
     return {
       intent: input.intent,

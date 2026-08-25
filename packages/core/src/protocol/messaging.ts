@@ -30,7 +30,6 @@ import {
   publicRelayHintUrls,
   readRetainedInboxDeclaration,
   resolveInboxDeclaration,
-  secureRelayUrls,
   selectPrivateMessageDeliveryRoute,
   sharedInboxDiscoveryRelayUrls,
   type DeliveryRouteSelection,
@@ -39,8 +38,11 @@ import {
   type ResolveInboxDeclarationOptions,
 } from "./private-message-routing"
 import { publishWithPlanner } from "./relay-publish"
-import { getRelayLists, isInsecureRelayUrl } from "./relay-list"
-import { tryNormalizeRelayUrl } from "./relay-settings"
+import { getRelayLists } from "./relay-list"
+import {
+  normalizeSecureOrIsolatedE2eRelayUrls,
+  tryNormalizeRelayUrl,
+} from "./relay-settings"
 import {
   withTransientNip07Retry,
   type TransientNip07RetryOptions,
@@ -1195,7 +1197,7 @@ function declarationFromKnownRelays(
   allowLocalRelayUrls: boolean
 ): InboxDeclarationResolution {
   const secure = allowLocalRelayUrls
-    ? secureRelayUrls(relayUrls)
+    ? normalizeSecureOrIsolatedE2eRelayUrls(relayUrls)
     : publicRelayHintUrls(relayUrls)
   const state =
     secure.length > 0
@@ -1340,7 +1342,7 @@ function projectOwnPrivateMessageRelayReadiness(
   } = {}
 ): OwnPrivateMessageRelayReadiness {
   const sharedPlanRelayUrlSet = new Set(
-    secureRelayUrls(
+    normalizeSecureOrIsolatedE2eRelayUrls(
       options.sharedPlanRelayUrls ?? sharedInboxDiscoveryRelayUrls()
     )
   )
@@ -1349,9 +1351,9 @@ function projectOwnPrivateMessageRelayReadiness(
     case "declared":
       if (!resolution.eventId) return { state: "lookup_unavailable" }
       if (
-        !secureRelayUrls(resolution.sharedSourceRelayUrls ?? []).some(
-          (relayUrl) => sharedPlanRelayUrlSet.has(relayUrl)
-        )
+        !normalizeSecureOrIsolatedE2eRelayUrls(
+          resolution.sharedSourceRelayUrls ?? []
+        ).some((relayUrl) => sharedPlanRelayUrlSet.has(relayUrl))
       ) {
         return {
           state: "distribution_pending",
@@ -1502,7 +1504,7 @@ export async function inspectOwnPrivateMessageRelayReadiness(
   options: FetchInboxRelayOptions = {}
 ): Promise<OwnPrivateMessageRelayReadiness> {
   const declarationOptions = toDeclarationOptions(options)
-  const readPlanRelayUrls = secureRelayUrls(
+  const readPlanRelayUrls = normalizeSecureOrIsolatedE2eRelayUrls(
     options.relayUrls && options.relayUrls.length > 0
       ? options.relayUrls
       : sharedInboxDiscoveryRelayUrls()
@@ -1635,12 +1637,17 @@ function requireSecureRelayUrls(
     throw new Error(`${label} must include at least one relay URL`)
   }
 
+  const acceptedRelayUrls = new Set(
+    normalizeSecureOrIsolatedE2eRelayUrls(relayUrls)
+  )
   const normalizedRelayUrls: string[] = []
   const seen = new Set<string>()
   for (const relayUrl of relayUrls) {
     const normalized = tryNormalizeRelayUrl(relayUrl)
-    if (!normalized.ok || isInsecureRelayUrl(normalized.url)) {
-      throw new Error(`${label} must contain only secure wss:// relay URLs`)
+    if (!normalized.ok || !acceptedRelayUrls.has(normalized.url)) {
+      throw new Error(
+        `${label} must contain only secure wss:// relay URLs or the configured isolated E2E relay`
+      )
     }
     if (seen.has(normalized.url)) continue
     seen.add(normalized.url)

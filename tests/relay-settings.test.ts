@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test"
 import {
   assertSafeNip65RelayList,
+  applyE2eRelayIsolation,
   CANONICAL_APP_BACKPLANE_RELAYS,
   CANONICAL_APP_WRITE_RELAYS,
   CANONICAL_COMMERCE_DM_FALLBACK_RELAYS,
@@ -29,6 +30,7 @@ import {
   normalizeRelaySettingsState,
   normalizeRelayUrl,
   parseNip65RelayTags,
+  resolveE2eRelayIsolation,
   saveRelaySettings,
   scanRelaySettingsEntry,
   secureRelayUrls,
@@ -128,6 +130,30 @@ function entry(
 }
 
 describe("relay settings protocol helpers", () => {
+  it("isolates every configured relay role to one loopback relay in mock mode", () => {
+    const relayUrls = resolveE2eRelayIsolation("mock", "ws://127.0.0.1:7777")
+    const isolated = applyE2eRelayIsolation(config, relayUrls)
+
+    expect(relayUrls).toEqual(["ws://127.0.0.1:7777"])
+    expect(isolated.relayUrl).toBe(relayUrls[0])
+    expect(isolated.e2eRelayIsolationEnabled).toBe(true)
+    expect(isolated.defaultRelays).toEqual(relayUrls)
+    expect(isolated.appWriteRelayUrls).toEqual(relayUrls)
+    expect(isolated.commerceRelayUrls).toEqual(relayUrls)
+    expect(isolated.publicRelayUrls).toEqual(relayUrls)
+    expect(isolated.nip89RelayHint).toBe(relayUrls[0])
+    for (const bucket of getRelayBucketConfigs(isolated)) {
+      expect(bucket.relayUrls).toEqual(relayUrls)
+    }
+
+    expect(() => resolveE2eRelayIsolation("production", relayUrls[0])).toThrow(
+      "only allowed in Vite mock mode"
+    )
+    expect(() =>
+      resolveE2eRelayIsolation("mock", "wss://relay.example.com")
+    ).toThrow("must use a loopback host")
+  })
+
   it("keeps relay defaults canonical and excludes legacy default domains", () => {
     expect(CANONICAL_APP_BACKPLANE_RELAYS).toEqual([
       "wss://relay.conduit.market",

@@ -85,6 +85,7 @@ const CONDUIT_RELAY_DEBUG_BANNER = [
 ].join("\n")
 
 export interface ConduitConfig {
+  e2eRelayIsolationEnabled: boolean
   relayUrl: string
   defaultRelays: string[]
   appBackplaneRelayUrls: string[]
@@ -114,6 +115,8 @@ export interface ConduitConfig {
 // Dynamic access like import.meta.env[key] returns undefined in production builds.
 // Use direct access for each variable so Vite can inline them at build time.
 function getViteEnv(): {
+  mode: string
+  e2eRelayUrl: string
   relayUrl: string
   defaultRelayUrl: string
   defaultRelays: string
@@ -133,6 +136,8 @@ function getViteEnv(): {
 } {
   if (typeof import.meta !== "undefined" && import.meta.env) {
     return {
+      mode: import.meta.env.MODE ?? "",
+      e2eRelayUrl: import.meta.env.VITE_E2E_RELAY_URL ?? "",
       relayUrl: import.meta.env.VITE_RELAY_URL ?? "",
       defaultRelayUrl: import.meta.env.VITE_DEFAULT_RELAY_URL ?? "",
       defaultRelays: import.meta.env.VITE_DEFAULT_RELAYS ?? "",
@@ -153,6 +158,8 @@ function getViteEnv(): {
     }
   }
   return {
+    mode: "",
+    e2eRelayUrl: "",
     relayUrl: "",
     defaultRelayUrl: "",
     defaultRelays: "",
@@ -217,6 +224,55 @@ function uniqueConfiguredRelayUrls(urls: readonly string[]): string[] {
 
 function parseRelayList(raw: string): string[] {
   return uniqueConfiguredRelayUrls(raw.split(","))
+}
+
+export function resolveE2eRelayIsolation(
+  mode: string,
+  rawRelayUrl: string
+): string[] {
+  if (!rawRelayUrl.trim()) return []
+  if (mode !== "mock") {
+    throw new Error("VITE_E2E_RELAY_URL is only allowed in Vite mock mode")
+  }
+
+  const relayUrls = uniqueConfiguredRelayUrls([rawRelayUrl])
+  if (relayUrls.length !== 1) {
+    throw new Error("VITE_E2E_RELAY_URL must contain one valid relay URL")
+  }
+  const hostname = new URL(relayUrls[0]).hostname
+  if (!new Set(["127.0.0.1", "localhost", "[::1]"]).has(hostname)) {
+    throw new Error("VITE_E2E_RELAY_URL must use a loopback host")
+  }
+  return relayUrls
+}
+
+export function applyE2eRelayIsolation(
+  input: ConduitConfig,
+  relayUrls: readonly string[]
+): ConduitConfig {
+  if (relayUrls.length === 0) return input
+  if (relayUrls.length !== 1) {
+    throw new Error("E2E relay isolation requires exactly one relay")
+  }
+  const isolatedRelayUrls = [...relayUrls]
+  const relayUrl = isolatedRelayUrls[0]
+  return {
+    ...input,
+    e2eRelayIsolationEnabled: true,
+    relayUrl,
+    defaultRelays: [...isolatedRelayUrls],
+    appBackplaneRelayUrls: [...isolatedRelayUrls],
+    appWriteRelayUrls: [...isolatedRelayUrls],
+    commerceRelayUrls: [...isolatedRelayUrls],
+    publicRelayUrls: [...isolatedRelayUrls],
+    corePublicFallbackRelayUrls: [...isolatedRelayUrls],
+    searchIndexRelayUrls: [...isolatedRelayUrls],
+    commerceDmFallbackRelayUrls: [...isolatedRelayUrls],
+    dmInboxDefaultRelayUrls: [...isolatedRelayUrls],
+    dmCompatibilityOrderRelayUrls: [...isolatedRelayUrls],
+    zapRelayUrls: [...isolatedRelayUrls],
+    nip89RelayHint: relayUrl,
+  }
 }
 
 function getConfiguredRelayUrl(raw: string, fallback: string): string {
@@ -307,6 +363,7 @@ function logRelayDebugConfig(input: {
 }
 
 const env = getViteEnv()
+const e2eRelayUrls = resolveE2eRelayIsolation(env.mode, env.e2eRelayUrl)
 
 const relayUrl = getConfiguredRelayUrl(env.relayUrl, FALLBACK_RELAY_URL)
 const envRelayUrl = uniqueConfiguredRelayUrls([env.relayUrl])
@@ -367,7 +424,8 @@ const nip89RelayHint = getConfiguredRelayUrl(
   CANONICAL_APP_WRITE_RELAYS[0] ?? relayUrl
 )
 
-export const config: ConduitConfig = {
+const configuredRelayConfig: ConduitConfig = {
+  e2eRelayIsolationEnabled: false,
   relayUrl,
   defaultRelays: resolvedDefaultRelays,
   appBackplaneRelayUrls,
@@ -393,9 +451,19 @@ export const config: ConduitConfig = {
   anonZapSignerPubkey: env.anonZapSignerPubkey.trim() || null,
 }
 
+export const config = applyE2eRelayIsolation(
+  configuredRelayConfig,
+  e2eRelayUrls
+)
+
 logRelayDebugConfig({
   codeDefaults: defaultRelays,
   envSources: [
+    {
+      label: "VITE_E2E_RELAY_URL",
+      raw: env.e2eRelayUrl,
+      relays: e2eRelayUrls,
+    },
     {
       label: "VITE_RELAY_URL",
       raw: env.relayUrl,
