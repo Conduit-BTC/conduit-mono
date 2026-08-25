@@ -10,6 +10,7 @@ import {
   buildDirectMessageRumor,
   classifyPrivateMessageKind,
   createInMemoryInboxDeclarationEvidenceRepository,
+  createValidatedGuestOrderCompanion,
   createValidatedOrderRouteScope,
   decryptLegacyDirectMessage,
   detectNip44Capabilities,
@@ -19,6 +20,7 @@ import {
   InboxDeclarationPublishSafetyError,
   inspectOwnPrivateMessageRelayReadiness,
   inspectRetainedOwnPrivateMessageRelayReadiness,
+  isOrderCompanionNotificationRumor,
   mergeInboxDeclarationEvidenceInMemory,
   mergeInboxDeclarationEvidence,
   parseDirectMessageRumor,
@@ -123,6 +125,160 @@ function validatedOrderInput(order = orderRumor()) {
     }),
   }
 }
+
+function guestOrderCompanionFixture(
+  merchantOrigin = "https://sell.conduit.market"
+) {
+  const authoritativeOrder = new NDKEvent()
+  authoritativeOrder.id = "guest-order-rumor"
+  authoritativeOrder.kind = EVENT_KINDS.ORDER
+  authoritativeOrder.pubkey = "guest"
+  authoritativeOrder.created_at = 1000
+  authoritativeOrder.tags = [
+    ["p", "merchant"],
+    ["type", "order"],
+    ["order", "guest-order-id"],
+  ]
+  authoritativeOrder.content = JSON.stringify({
+    id: "guest-order-id",
+    merchantPubkey: "merchant",
+    buyerPubkey: "guest",
+    buyerIdentityKind: "guest_ephemeral",
+    items: [
+      {
+        productId: "product-id",
+        quantity: 1,
+        priceAtPurchase: 1,
+        currency: "SATS",
+      },
+    ],
+    subtotal: 1,
+    currency: "SATS",
+    guestContact: {
+      email: "guest@example.com",
+      phone: "+1-555-0100",
+    },
+    createdAt: 1_000_000,
+  })
+
+  return {
+    authoritativeOrder,
+    ...createValidatedGuestOrderCompanion({
+      authoritativeOrder,
+      senderPubkey: "guest",
+      recipientPubkey: "merchant",
+      merchantOrigin,
+    }),
+  }
+}
+
+describe("isOrderCompanionNotificationRumor", () => {
+  const canonicalContent =
+    "A new order was sent to you through Conduit Market.\n" +
+    "Review it at: https://sell.conduit.market/orders?order=order-id"
+  const canonicalTags = [
+    ["p", "merchant"],
+    ["subject", "conduit-order-notification"],
+    ["order", "order-id"],
+    ["conduit", "order-companion", "1", "authoritative-order-id"],
+    ["client", "Conduit Market"],
+  ]
+
+  it("recognizes only the complete v1 app marker", () => {
+    expect(
+      isOrderCompanionNotificationRumor(
+        rumor(EVENT_KINDS.DIRECT_MESSAGE, {
+          tags: canonicalTags,
+          content: canonicalContent,
+        })
+      )
+    ).toBe(true)
+  })
+
+  it("fails open for arbitrary content and extra tags", () => {
+    expect(
+      isOrderCompanionNotificationRumor(
+        rumor(EVENT_KINDS.DIRECT_MESSAGE, {
+          tags: canonicalTags,
+          content: "Reply on Signal, not here.",
+        })
+      )
+    ).toBe(false)
+    expect(
+      isOrderCompanionNotificationRumor(
+        rumor(EVENT_KINDS.DIRECT_MESSAGE, {
+          tags: [...canonicalTags, ["extra", "tag"]],
+          content: canonicalContent,
+        })
+      )
+    ).toBe(false)
+    expect(
+      isOrderCompanionNotificationRumor(
+        rumor(EVENT_KINDS.DIRECT_MESSAGE, {
+          tags: canonicalTags,
+          content:
+            "A new order was sent to you through Conduit Market.\n" +
+            "Review it at: https://attacker.example/orders?order=order-id",
+        })
+      )
+    ).toBe(false)
+  })
+
+  it.each([
+    ["subject only", canonicalTags.slice(0, 3)],
+    [
+      "unknown marker version",
+      canonicalTags.map((tag) =>
+        tag[0] === "conduit" ? ["conduit", "order-companion", "2"] : tag
+      ),
+    ],
+    ["missing recipient", canonicalTags.filter((tag) => tag[0] !== "p")],
+    ["missing order", canonicalTags.filter((tag) => tag[0] !== "order")],
+    ["missing client", canonicalTags.filter((tag) => tag[0] !== "client")],
+    [
+      "duplicate marker",
+      [
+        ...canonicalTags,
+        ["conduit", "order-companion", "1", "authoritative-order-id"],
+      ],
+    ],
+    ["duplicate subject", [...canonicalTags, canonicalTags[1]!]],
+    ["duplicate order", [...canonicalTags, canonicalTags[2]!]],
+    ["duplicate recipient", [...canonicalTags, canonicalTags[0]!]],
+  ])("fails open for %s", (_label, tags) => {
+    expect(
+      isOrderCompanionNotificationRumor(
+        rumor(EVENT_KINDS.DIRECT_MESSAGE, {
+          tags,
+          content: canonicalContent,
+        })
+      )
+    ).toBe(false)
+  })
+
+  it("does not classify an order rumor as an inbox notification", () => {
+    expect(
+      isOrderCompanionNotificationRumor(
+        rumor(EVENT_KINDS.ORDER, {
+          tags: canonicalTags,
+          content: canonicalContent,
+        })
+      )
+    ).toBe(false)
+  })
+})
+
+describe("order companion deployment links", () => {
+  it("builds the fixed guest copy on the selected Merchant origin", () => {
+    const { companion } = guestOrderCompanionFixture(
+      "https://fix-293.conduit-merchant-33n.pages.dev"
+    )
+    expect(companion.content).toContain(
+      "https://fix-293.conduit-merchant-33n.pages.dev/orders?order=guest-order-id"
+    )
+    expect(companion.tags).toContainEqual(["client", "Conduit Market"])
+  })
+})
 
 describe("classifyPrivateMessageKind", () => {
   it("maps kind 14 to direct and kind 16 to order", () => {
@@ -624,6 +780,126 @@ describe("publishPrivateMessage", () => {
       )
       expect(wraps).toBe(0)
       expect(publishes).toBe(0)
+    }
+  })
+
+  it("delivers one scoped guest order companion without inspecting a guest inbox", async () => {
+    const { companion, scope } = guestOrderCompanionFixture()
+    const wrappedRecipients: string[] = []
+    const publishRelays: Array<readonly string[]> = []
+    let senderReadinessChecks = 0
+
+    const result = await publishPrivateMessage({
+      rumor: companion,
+      senderPubkey: "guest",
+      recipientPubkey: "merchant",
+      signer: {
+        user: async () => ({ pubkey: "guest" }),
+      } as unknown as NDKSigner,
+      rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+      selfCopy: false,
+      recipientInboxRelays: ["wss://merchant.inbox.conduit.market"],
+      validatedGuestOrderCompanionScope: scope,
+      inspectOwnInboxReadiness: async () => {
+        senderReadinessChecks += 1
+        return { state: "lookup_unavailable" }
+      },
+      giftWrapFn: (async (_rumor, recipient) => {
+        wrappedRecipients.push(recipient.pubkey)
+        return wrap(`wrap-${recipient.pubkey}`)
+      }) as never,
+      publishFn: (async (_event, options) => {
+        const relays = options.exclusiveRelayUrls ?? []
+        publishRelays.push(relays)
+        return {
+          successfulRelayUrls: [relays[0]],
+          failedRelayUrls: [],
+        } as never
+      }) as never,
+    })
+
+    expect(senderReadinessChecks).toBe(0)
+    expect(wrappedRecipients).toEqual(["merchant"])
+    expect(publishRelays).toEqual([["wss://merchant.inbox.conduit.market"]])
+    expect(result.wrappedToSelf).toBeNull()
+    expect(result.deliveryRoute).toBe("declared_inbox")
+    expect(result.recipientDelivery.successfulRelayUrls).toEqual([
+      "wss://merchant.inbox.conduit.market",
+    ])
+  })
+
+  it("keeps the guest companion capability one-use and recipient-inbox strict", async () => {
+    const first = guestOrderCompanionFixture()
+    const input = {
+      rumor: first.companion,
+      senderPubkey: "guest",
+      recipientPubkey: "merchant",
+      signer: {
+        user: async () => ({ pubkey: "guest" }),
+      } as unknown as NDKSigner,
+      rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+      selfCopy: false,
+      recipientInboxRelays: ["wss://merchant.inbox.conduit.market"],
+      validatedGuestOrderCompanionScope: first.scope,
+      inspectOwnInboxReadiness: async () =>
+        ({ state: "lookup_unavailable" }) as const,
+      giftWrapFn: (async () => wrap("wrap-merchant")) as never,
+      publishFn: (async () =>
+        ({
+          successfulRelayUrls: ["wss://merchant.inbox.conduit.market"],
+        }) as never) as never,
+    }
+
+    await expect(publishPrivateMessage(input)).resolves.toMatchObject({
+      deliveryRoute: "declared_inbox",
+    })
+    await expect(publishPrivateMessage(input)).rejects.toMatchObject({
+      reason: "sender_not_ready",
+    })
+
+    const second = guestOrderCompanionFixture()
+    await expect(
+      publishPrivateMessage({
+        ...input,
+        rumor: second.companion,
+        recipientInboxRelays: [],
+        validatedGuestOrderCompanionScope: second.scope,
+      })
+    ).rejects.toMatchObject({ reason: "recipient_not_ready" })
+  })
+
+  it("does not authorize mutated guest companion content or tags", async () => {
+    for (const mutate of [
+      (companion: NDKEvent) => {
+        companion.content = JSON.stringify({
+          contact: "guest@example.com",
+          payment: "lnbc-sensitive",
+        })
+      },
+      (companion: NDKEvent) => {
+        companion.tags.push(["order", "conflicting-order"])
+      },
+    ]) {
+      const fixture = guestOrderCompanionFixture()
+      mutate(fixture.companion)
+      fixture.companion.id = fixture.companion.getEventHash()
+
+      await expect(
+        publishPrivateMessage({
+          rumor: fixture.companion,
+          senderPubkey: "guest",
+          recipientPubkey: "merchant",
+          signer: {
+            user: async () => ({ pubkey: "guest" }),
+          } as unknown as NDKSigner,
+          rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+          selfCopy: false,
+          recipientInboxRelays: ["wss://merchant.inbox.conduit.market"],
+          validatedGuestOrderCompanionScope: fixture.scope,
+          inspectOwnInboxReadiness: async () =>
+            ({ state: "lookup_unavailable" }) as const,
+        })
+      ).rejects.toMatchObject({ reason: "sender_not_ready" })
     }
   })
 

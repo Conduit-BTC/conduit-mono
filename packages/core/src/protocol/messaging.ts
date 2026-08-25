@@ -5,6 +5,7 @@ import {
   NDKUser,
   type NDKSigner,
 } from "@nostr-dev-kit/ndk"
+import { buildMerchantOrderReviewUrl } from "../app-links"
 import { config, type ConduitConfig } from "../config"
 import type { OrderRelayDeliveryRecord, OrderRelayDeliveryStatus } from "../db"
 import {
@@ -70,6 +71,191 @@ export interface ValidatedOrderRouteScope {
 
 const validatedOrderRouteScopes = new WeakSet<ValidatedOrderRouteScope>()
 
+export interface ValidatedGuestOrderCompanionScope {
+  readonly rumorId: string
+  readonly orderRumorId: string
+  readonly orderId: string
+  readonly subject: string
+  readonly senderPubkey: string
+  readonly recipientPubkey: string
+}
+
+const validatedGuestOrderCompanionScopes =
+  new WeakSet<ValidatedGuestOrderCompanionScope>()
+
+export const ORDER_COMPANION_NOTIFICATION_SUBJECT = "conduit-order-notification"
+export const ORDER_COMPANION_NOTIFICATION_MARKER = "order-companion"
+export const ORDER_COMPANION_NOTIFICATION_VERSION = "1"
+
+export function buildOrderCompanionNotificationMarkerTag(
+  authoritativeOrderId: string
+): string[] {
+  const orderRumorId = authoritativeOrderId.trim()
+  if (!orderRumorId) {
+    throw new Error(
+      "Order companion marker requires an authoritative event id."
+    )
+  }
+  return [
+    "conduit",
+    ORDER_COMPANION_NOTIFICATION_MARKER,
+    ORDER_COMPANION_NOTIFICATION_VERSION,
+    orderRumorId,
+  ]
+}
+
+export interface OrderCompanionNotificationIdentity {
+  orderId: string
+  orderRumorId: string
+  senderPubkey: string
+  recipientPubkey: string
+}
+
+const GUEST_ORDER_COMPANION_COPY =
+  "A new guest order was sent to you through Conduit Market.\n" +
+  "This buyer does not receive Nostr replies. Review the order and follow up using the email or phone provided there."
+const SIGNED_IN_ORDER_COMPANION_COPY =
+  "A new order was sent to you through Conduit Market."
+
+export function getOrderCompanionNotificationContentOrderId(
+  content: string
+): string | null {
+  for (const copy of [
+    GUEST_ORDER_COMPANION_COPY,
+    SIGNED_IN_ORDER_COMPANION_COPY,
+  ]) {
+    const prefix = `${copy}\nReview it at: `
+    if (!content.startsWith(prefix)) continue
+    const reviewUrl = content.slice(prefix.length)
+    if (!reviewUrl || reviewUrl.includes("\n")) return null
+    try {
+      const parsed = new URL(reviewUrl)
+      const orderIds = parsed.searchParams.getAll("order")
+      const orderId = orderIds.length === 1 ? orderIds[0]?.trim() : null
+      if (!orderId) return null
+      return buildMerchantOrderReviewUrl(parsed.origin, orderId) === reviewUrl
+        ? orderId
+        : null
+    } catch {
+      return null
+    }
+  }
+  return null
+}
+
+/**
+ * Identify the exact app-level marker used for advisory order notifications.
+ * Transport remains generic: callers can still unwrap the rumor, while
+ * Conduit's inbox projection can keep this machine notification out of human
+ * conversation threads.
+ */
+export function getOrderCompanionNotificationIdentity(
+  rumor: NDKEvent
+): OrderCompanionNotificationIdentity | null {
+  if (rumor.kind !== EVENT_KINDS.DIRECT_MESSAGE) return null
+  const subjects = rumor.tags.filter((tag) => tag[0] === "subject")
+  const orders = rumor.tags.filter((tag) => tag[0] === "order")
+  const recipients = rumor.tags.filter((tag) => tag[0] === "p")
+  const clients = rumor.tags.filter(isConduitMarketClientTag)
+  const markers = rumor.tags.filter(
+    (tag) =>
+      tag[0] === "conduit" && tag[1] === ORDER_COMPANION_NOTIFICATION_MARKER
+  )
+  const isCanonical =
+    rumor.tags.length === 5 &&
+    subjects.length === 1 &&
+    subjects[0]?.length === 2 &&
+    subjects[0]?.[1] === ORDER_COMPANION_NOTIFICATION_SUBJECT &&
+    orders.length === 1 &&
+    orders[0]?.length === 2 &&
+    Boolean(orders[0]?.[1]?.trim()) &&
+    recipients.length === 1 &&
+    recipients[0]?.length === 2 &&
+    Boolean(recipients[0]?.[1]?.trim()) &&
+    markers.length === 1 &&
+    markers[0]?.length === 4 &&
+    markers[0]?.[2] === ORDER_COMPANION_NOTIFICATION_VERSION &&
+    Boolean(markers[0]?.[3]?.trim()) &&
+    clients.length === 1 &&
+    getOrderCompanionNotificationContentOrderId(rumor.content) ===
+      orders[0]?.[1]?.trim()
+  if (!isCanonical) return null
+
+  return {
+    orderId: orders[0]![1]!.trim(),
+    orderRumorId: markers[0]![3]!.trim(),
+    senderPubkey: rumor.pubkey.trim().toLowerCase(),
+    recipientPubkey: recipients[0]![1]!.trim().toLowerCase(),
+  }
+}
+
+export function isOrderCompanionNotificationRumor(rumor: NDKEvent): boolean {
+  return getOrderCompanionNotificationIdentity(rumor) !== null
+}
+
+function isConduitMarketClientTag(tag: string[]): boolean {
+  return (
+    tag[0] === "client" &&
+    (tag[1] === "Conduit Market" ||
+      tag[2]?.endsWith(":conduit-market") === true)
+  )
+}
+
+export function createOrderCompanionNotificationRumor(input: {
+  authoritativeOrder: NDKEvent
+  senderPubkey: string
+  recipientPubkey: string
+  buyerIdentityKind: "signed_in" | "guest_ephemeral"
+  merchantOrigin: string
+}): NDKEvent {
+  const orderId = input.authoritativeOrder.tags.find(
+    (tag) => tag[0] === "order"
+  )?.[1]
+  if (!orderId) throw new Error("Order notification requires an order tag.")
+  if (!input.authoritativeOrder.id) {
+    throw new Error("Order notification requires the authoritative event id.")
+  }
+  if (input.authoritativeOrder.created_at === undefined) {
+    throw new Error("Order notification requires the order timestamp.")
+  }
+
+  const companion = new NDKEvent()
+  companion.kind = EVENT_KINDS.DIRECT_MESSAGE
+  companion.pubkey = input.senderPubkey
+  companion.created_at = input.authoritativeOrder.created_at
+  companion.tags = appendConduitClientTag(
+    [
+      ["p", input.recipientPubkey],
+      ["subject", ORDER_COMPANION_NOTIFICATION_SUBJECT],
+      ["order", orderId],
+      buildOrderCompanionNotificationMarkerTag(input.authoritativeOrder.id),
+    ],
+    "market"
+  )
+
+  if (!companion.tags.some((tag) => tag[0] === "client")) {
+    const authoritativeClientTag = input.authoritativeOrder.tags.find(
+      isConduitMarketClientTag
+    )
+    if (authoritativeClientTag) {
+      companion.tags.push([...authoritativeClientTag])
+    }
+  }
+  if (!companion.tags.some(isConduitMarketClientTag)) {
+    companion.tags.push(["client", "Conduit Market"])
+  }
+
+  const copy =
+    input.buyerIdentityKind === "guest_ephemeral"
+      ? GUEST_ORDER_COMPANION_COPY
+      : SIGNED_IN_ORDER_COMPANION_COPY
+  companion.content =
+    `${copy}\n` +
+    `Review it at: ${buildMerchantOrderReviewUrl(input.merchantOrigin, orderId)}`
+  companion.id = companion.getEventHash()
+  return companion
+}
+
 /**
  * Issue a one-use compatibility-routing capability bound to one validated
  * kind-16 rumor, order id, sender, and recipient. Relay URLs are deliberately
@@ -121,6 +307,68 @@ export function createValidatedOrderRouteScope(input: {
   })
   validatedOrderRouteScopes.add(scope)
   return scope
+}
+
+/**
+ * Build the fixed, PII-free recipient-only kind-14 notification that follows an
+ * authoritative guest order, together with its one-use transport capability.
+ * Keeping construction inside this boundary prevents callers from authorizing
+ * arbitrary guest-authored kind-14 content. Guests intentionally have no reply
+ * inbox, so the capability skips only the sender-readiness check. The recipient
+ * must still have a declared inbox and kind-14 compatibility routing remains
+ * unavailable.
+ */
+export function createValidatedGuestOrderCompanion(input: {
+  authoritativeOrder: NDKEvent
+  senderPubkey: string
+  recipientPubkey: string
+  merchantOrigin: string
+}): {
+  companion: NDKEvent
+  scope: ValidatedGuestOrderCompanionScope
+} {
+  const senderPubkey = input.senderPubkey.trim().toLowerCase()
+  const recipientPubkey = input.recipientPubkey.trim().toLowerCase()
+  let parsedOrder: ReturnType<typeof parseOrderMessageRumorEvent>
+  try {
+    parsedOrder = parseOrderMessageRumorEvent(input.authoritativeOrder)
+  } catch {
+    throw new Error("Cannot authorize a one-way guest order companion.")
+  }
+
+  if (
+    parsedOrder.type !== "order" ||
+    parsedOrder.payload.buyerIdentityKind !== "guest_ephemeral" ||
+    parsedOrder.payload.buyerPubkey.trim().toLowerCase() !== senderPubkey ||
+    parsedOrder.payload.merchantPubkey.trim().toLowerCase() !==
+      recipientPubkey ||
+    input.authoritativeOrder.kind !== EVENT_KINDS.ORDER ||
+    !input.authoritativeOrder.id ||
+    input.authoritativeOrder.pubkey.trim().toLowerCase() !== senderPubkey ||
+    parsedOrder.recipientPubkey.trim().toLowerCase() !== recipientPubkey ||
+    input.authoritativeOrder.created_at === undefined
+  ) {
+    throw new Error("Cannot authorize a one-way guest order companion.")
+  }
+
+  const companion = createOrderCompanionNotificationRumor({
+    authoritativeOrder: input.authoritativeOrder,
+    senderPubkey,
+    recipientPubkey,
+    buyerIdentityKind: "guest_ephemeral",
+    merchantOrigin: input.merchantOrigin,
+  })
+
+  const scope = Object.freeze({
+    rumorId: companion.id,
+    orderRumorId: input.authoritativeOrder.id,
+    orderId: parsedOrder.orderId,
+    subject: ORDER_COMPANION_NOTIFICATION_SUBJECT,
+    senderPubkey,
+    recipientPubkey,
+  })
+  validatedGuestOrderCompanionScopes.add(scope)
+  return { companion, scope }
 }
 
 /** Coarse, content-free decrypt-failure reason (docs/specs/messaging.md). */
@@ -332,6 +580,8 @@ export interface ParsedDirectMessage {
   senderPubkey: string
   recipientPubkey: string
   content: string
+  /** Present only for an exact canonical companion awaiting order evidence. */
+  orderCompanionIdentity?: OrderCompanionNotificationIdentity
   /** Milliseconds, matching ParsedOrderMessage.createdAt. */
   createdAt: number
   transport: DirectMessageTransport
@@ -473,6 +723,11 @@ export interface PublishPrivateMessageInput {
   inspectOwnInboxReadiness?: (
     pubkey: string
   ) => Promise<OwnPrivateMessageRelayReadiness>
+  /**
+   * One-use capability for a recipient-only guest-order notification. It may
+   * skip sender readiness, but cannot bypass recipient declaration routing.
+   */
+  validatedGuestOrderCompanionScope?: ValidatedGuestOrderCompanionScope
   /** Injectable relay publisher for focused transport tests. */
   publishFn?: typeof publishWithPlanner
   /**
@@ -586,6 +841,15 @@ export async function publishPrivateMessage(
   const refreshRelayLists = input.refreshRelayLists ?? true
   const wrapParams = { rumorKind: input.rumorKind }
   const publishFn = input.publishFn ?? publishWithPlanner
+  const validatedGuestOrderCompanion = consumeValidatedGuestOrderCompanionScope(
+    {
+      scope: input.validatedGuestOrderCompanionScope,
+      rumor: input.rumor,
+      senderPubkey,
+      recipientPubkey,
+      selfCopy,
+    }
+  )
 
   // NIP-17 delivery is exclusive to the recipient's declared inbox. The only
   // exception is the temporary compatibility route for validated kind-16
@@ -631,7 +895,10 @@ export async function publishPrivateMessage(
 
   let senderRoute: ReturnType<typeof selectPrivateMessageDeliveryRoute> | null =
     null
-  if (input.rumorKind === EVENT_KINDS.DIRECT_MESSAGE) {
+  if (
+    input.rumorKind === EVENT_KINDS.DIRECT_MESSAGE &&
+    !validatedGuestOrderCompanion
+  ) {
     const senderReadiness = await (
       input.inspectOwnInboxReadiness ??
       inspectRetainedOwnPrivateMessageRelayReadiness
@@ -782,6 +1049,45 @@ function consumeValidatedOrderRouteScope(input: {
     scope.orderId === rumorOrderId &&
     scope.senderPubkey === input.senderPubkey &&
     scope.recipientPubkey === input.recipientPubkey
+  )
+}
+
+function consumeValidatedGuestOrderCompanionScope(input: {
+  scope: ValidatedGuestOrderCompanionScope | undefined
+  rumor: NDKEvent
+  senderPubkey: string
+  recipientPubkey: string
+  selfCopy: boolean
+}): boolean {
+  const scope = input.scope
+  if (!scope || !validatedGuestOrderCompanionScopes.has(scope)) return false
+  validatedGuestOrderCompanionScopes.delete(scope)
+
+  let rumorHash = ""
+  try {
+    rumorHash = input.rumor.getEventHash()
+  } catch {
+    return false
+  }
+  const rumorOrderId = input.rumor.tags.find((tag) => tag[0] === "order")?.[1]
+  const rumorSubjects = input.rumor.tags
+    .filter((tag) => tag[0] === "subject")
+    .map((tag) => tag[1])
+  const rumorRecipients = input.rumor.tags
+    .filter((tag) => tag[0] === "p")
+    .map((tag) => tag[1]?.trim().toLowerCase())
+  return (
+    input.rumor.kind === EVENT_KINDS.DIRECT_MESSAGE &&
+    input.selfCopy === false &&
+    scope.rumorId === input.rumor.id &&
+    scope.rumorId === rumorHash &&
+    scope.orderId === rumorOrderId &&
+    rumorSubjects.length === 1 &&
+    rumorSubjects[0] === scope.subject &&
+    scope.senderPubkey === input.senderPubkey &&
+    scope.recipientPubkey === input.recipientPubkey &&
+    rumorRecipients.length === 1 &&
+    rumorRecipients[0] === input.recipientPubkey
   )
 }
 
