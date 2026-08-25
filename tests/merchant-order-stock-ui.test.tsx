@@ -153,7 +153,8 @@ describe("merchant order stock UI", () => {
     expect(source).toContain(
       "(candidate) => candidate.addressId === payload.adjustment.addressId"
     )
-    expect(source).toContain("stock: payload.stock")
+    expect(source).toContain("stock: payload.adjustment.nextStock")
+    expect(source).not.toContain("stock: payload.stock")
   })
 
   it("clears transient blockers only after a stock decision is durable", async () => {

@@ -140,7 +140,6 @@ type StockUpdateMutationPayload =
       action: "update"
       orderId: string
       adjustment: OrderStockAdjustment
-      stock: number
     }
   | {
       action: "retry"
@@ -1038,7 +1037,10 @@ function OrdersPage() {
           "Automatic stock updates require a purchasable product listing."
         )
       }
-      if (!Number.isSafeInteger(payload.stock) || payload.stock < 0) {
+      if (
+        !Number.isSafeInteger(payload.adjustment.nextStock) ||
+        payload.adjustment.nextStock < 0
+      ) {
         throw new Error("Stock must be a non-negative safe integer.")
       }
 
@@ -1047,7 +1049,7 @@ function OrdersPage() {
         merchantPubkey: pubkey,
         product: {
           ...record.product,
-          stock: payload.stock,
+          stock: payload.adjustment.nextStock,
           updatedAt: Date.now(),
         },
         dTag: record.dTag,
@@ -1433,7 +1435,6 @@ function OrdersPage() {
       action: "update",
       orderId: selected.orderId,
       adjustment: applyOrderStockTarget(adjustment, stock, targetMode),
-      stock,
     })
   }
 
