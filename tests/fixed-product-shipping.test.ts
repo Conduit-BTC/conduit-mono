@@ -363,6 +363,54 @@ describe("canonical fixed product shipping", () => {
     ).toBeNull()
   })
 
+  it("fails closed on every unknown launch tag while allowing client metadata", () => {
+    const base = {
+      id: "shipping-with-constraints",
+      pubkey: MERCHANT,
+      created_at: 1,
+      tags: [
+        ["d", `${PRODUCT_D_TAG}-shipping-standard`],
+        ["title", "Standard Shipping"],
+        ["price", "5", "USD"],
+        ["country", "US"],
+        ["service", "standard"],
+        ["client", "31990:conduit:market"],
+      ],
+    }
+
+    expect(parseShippingOptionEvent(base)?.launchUnsupportedTags).toEqual([])
+
+    const unknownConstraint = parseShippingOptionEvent({
+      ...base,
+      id: "shipping-with-future-constraint",
+      tags: [...base.tags, ["future_constraint", "merchant-defined"]],
+    })
+    expect(unknownConstraint?.launchUnsupportedTags).toEqual([
+      "future_constraint",
+    ])
+    expect(
+      resolveProductFulfillment(product(), [unknownConstraint!])
+    ).toMatchObject({ status: "order_first", reason: "unsupported" })
+
+    const draftDestinationConstraint = parseShippingOptionEvent({
+      ...base,
+      id: "shipping-with-draft-destination",
+      tags: [
+        ...base.tags,
+        ["destination_schema", "1"],
+        ["destination", "include", "country", "US"],
+        ["destination", "exclude", "subdivision", "US-HI"],
+      ],
+    })
+    expect(draftDestinationConstraint?.launchUnsupportedTags).toEqual([
+      "destination",
+      "destination_schema",
+    ])
+    expect(
+      resolveProductFulfillment(product(), [draftDestinationConstraint!])
+    ).toMatchObject({ status: "order_first", reason: "unsupported" })
+  })
+
   it("does not resolve a latest shipping option deleted by address or event id", () => {
     const older = {
       id: "older",

@@ -230,13 +230,13 @@ test("maps published shipping options back into readiness config", () => {
   })
 })
 
-test("selects the Conduit default shipping option before other published options", () => {
-  const customOption = {
+test("selects only the exact Conduit default shipping option", () => {
+  const firstProductOption = {
     eventId: "custom-zone-event",
-    id: "30406:merchant:custom-zone",
+    id: "30406:merchant:first-product-shipping-standard",
     pubkey: "merchant",
-    dTag: "custom-zone",
-    title: "Custom zone",
+    dTag: "first-product-shipping-standard",
+    title: "First product shipping",
     currency: "USD",
     price: 0,
     countries: ["CA"],
@@ -252,8 +252,15 @@ test("selects the Conduit default shipping option before other published options
     createdAt: 2,
     launchUnsupportedTags: [],
   } satisfies ParsedShippingOption
+  const secondProductOption = {
+    ...firstProductOption,
+    eventId: "second-product-event",
+    id: "30406:merchant:second-product-shipping-standard",
+    dTag: "second-product-shipping-standard",
+    title: "Second product shipping",
+  } satisfies ParsedShippingOption
   const conduitOption = {
-    ...customOption,
+    ...firstProductOption,
     id: "30406:merchant:conduit-default",
     dTag: "conduit-default",
     countries: ["US"],
@@ -267,10 +274,19 @@ test("selects the Conduit default shipping option before other published options
     ],
   } satisfies ParsedShippingOption
 
-  expect(selectConduitShippingOption([customOption, conduitOption])).toBe(
+  expect(selectConduitShippingOption([firstProductOption, conduitOption])).toBe(
     conduitOption
   )
-  expect(selectConduitShippingOption([customOption])).toBe(customOption)
+  expect(selectConduitShippingOption([conduitOption, firstProductOption])).toBe(
+    conduitOption
+  )
+  expect(selectConduitShippingOption([firstProductOption])).toBe(null)
+  expect(
+    selectConduitShippingOption([secondProductOption, firstProductOption])
+  ).toBe(null)
+  expect(
+    selectConduitShippingOption([firstProductOption, secondProductOption])
+  ).toBe(null)
   expect(selectConduitShippingOption([])).toBe(null)
 })
 

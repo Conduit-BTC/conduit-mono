@@ -86,21 +86,13 @@ export function __resetShippingTestOverrides(): void {
   volatileShippingOptionFrontiers.clear()
 }
 
-const FIXED_STANDARD_UNSUPPORTED_TAGS = new Set([
-  "carrier",
-  "region",
-  "duration",
-  "location",
-  "g",
-  "weight-min",
-  "weight-max",
-  "dim-min",
-  "dim-max",
-  "price-weight",
-  "price-volume",
-  "price-distance",
-  "restrict",
-  "exclude",
+const FIXED_STANDARD_SUPPORTED_TAGS = new Set([
+  "d",
+  "title",
+  "price",
+  "country",
+  "service",
+  "client",
 ])
 
 export function getShippingOptionAddress(
@@ -514,8 +506,8 @@ export function parseShippingOptionEvent(
     launchUnsupportedTags: Array.from(
       new Set(
         tags
-          .map((tag) => tag[0])
-          .filter((name) => FIXED_STANDARD_UNSUPPORTED_TAGS.has(name))
+          .map((tag) => tag[0] ?? "")
+          .filter((name) => !FIXED_STANDARD_SUPPORTED_TAGS.has(name))
       )
     ).sort(),
   }

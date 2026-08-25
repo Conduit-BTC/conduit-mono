@@ -2,7 +2,11 @@ import { useEffect, useMemo, useState } from "react"
 import { AlertCircle } from "lucide-react"
 import { createFileRoute } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
-import { getShippingOptions, useAuth } from "@conduit/core"
+import {
+  getShippingOptionAddress,
+  getShippingOptionsByCoordinates,
+  useAuth,
+} from "@conduit/core"
 import { Badge, Button, SignedActionStatus } from "@conduit/ui"
 import { ShippingDestinationsEditor } from "../components/ShippingDestinationsEditor"
 import { requireAuth } from "../lib/auth"
@@ -69,7 +73,8 @@ function ShippingPage() {
   const remoteShippingQuery = useQuery({
     queryKey: ["merchant-shipping-options", pubkey ?? "none"],
     enabled: !!pubkey,
-    queryFn: () => getShippingOptions(pubkey!),
+    queryFn: () =>
+      getShippingOptionsByCoordinates([getShippingOptionAddress(pubkey!)]),
     staleTime: 60_000,
   })
 
