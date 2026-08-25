@@ -20,6 +20,7 @@ import {
   InboxDeclarationPublishSafetyError,
   inspectOwnPrivateMessageRelayReadiness,
   inspectRetainedOwnPrivateMessageRelayReadiness,
+  isOrderCompanionNotificationRumor,
   mergeInboxDeclarationEvidenceInMemory,
   mergeInboxDeclarationEvidence,
   parseDirectMessageRumor,
@@ -125,7 +126,9 @@ function validatedOrderInput(order = orderRumor()) {
   }
 }
 
-function guestOrderCompanionFixture() {
+function guestOrderCompanionFixture(
+  merchantOrigin = "https://sell.conduit.market"
+) {
   const authoritativeOrder = new NDKEvent()
   authoritativeOrder.id = "guest-order-rumor"
   authoritativeOrder.kind = EVENT_KINDS.ORDER
@@ -164,9 +167,71 @@ function guestOrderCompanionFixture() {
       authoritativeOrder,
       senderPubkey: "guest",
       recipientPubkey: "merchant",
+      merchantOrigin,
     }),
   }
 }
+
+describe("isOrderCompanionNotificationRumor", () => {
+  const canonicalTags = [
+    ["p", "merchant"],
+    ["subject", "conduit-order-notification"],
+    ["order", "order-id"],
+    ["conduit", "order-companion", "1"],
+  ]
+
+  it("recognizes only the complete v1 app marker", () => {
+    expect(
+      isOrderCompanionNotificationRumor(
+        rumor(EVENT_KINDS.DIRECT_MESSAGE, { tags: canonicalTags })
+      )
+    ).toBe(true)
+  })
+
+  it.each([
+    ["subject only", canonicalTags.slice(0, 3)],
+    [
+      "unknown marker version",
+      canonicalTags.map((tag) =>
+        tag[0] === "conduit" ? ["conduit", "order-companion", "2"] : tag
+      ),
+    ],
+    ["missing recipient", canonicalTags.filter((tag) => tag[0] !== "p")],
+    ["missing order", canonicalTags.filter((tag) => tag[0] !== "order")],
+    [
+      "duplicate marker",
+      [...canonicalTags, ["conduit", "order-companion", "1"]],
+    ],
+    ["duplicate subject", [...canonicalTags, canonicalTags[1]!]],
+    ["duplicate order", [...canonicalTags, canonicalTags[2]!]],
+    ["duplicate recipient", [...canonicalTags, canonicalTags[0]!]],
+  ])("fails open for %s", (_label, tags) => {
+    expect(
+      isOrderCompanionNotificationRumor(
+        rumor(EVENT_KINDS.DIRECT_MESSAGE, { tags })
+      )
+    ).toBe(false)
+  })
+
+  it("does not classify an order rumor as an inbox notification", () => {
+    expect(
+      isOrderCompanionNotificationRumor(
+        rumor(EVENT_KINDS.ORDER, { tags: canonicalTags })
+      )
+    ).toBe(false)
+  })
+})
+
+describe("order companion deployment links", () => {
+  it("builds the fixed guest copy on the selected Merchant origin", () => {
+    const { companion } = guestOrderCompanionFixture(
+      "https://fix-293.conduit-merchant-33n.pages.dev"
+    )
+    expect(companion.content).toContain(
+      "https://fix-293.conduit-merchant-33n.pages.dev/orders?order=guest-order-id"
+    )
+  })
+})
 
 describe("classifyPrivateMessageKind", () => {
   it("maps kind 14 to direct and kind 16 to order", () => {

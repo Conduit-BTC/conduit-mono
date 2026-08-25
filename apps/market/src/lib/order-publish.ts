@@ -1,9 +1,9 @@
 import { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk"
 import {
   EVENT_KINDS,
-  ORDER_COMPANION_NOTIFICATION_SUBJECT,
   appendConduitClientTag,
   cacheParsedOrderMessage,
+  createOrderCompanionNotificationRumor,
   createValidatedGuestOrderCompanion,
   createValidatedOrderRouteScope,
   getNdk,
@@ -12,6 +12,8 @@ import {
   type OrderDeliveryRoute,
   type OrderRelayDeliveryRecord,
 } from "@conduit/core"
+
+import { inferMerchantOrigin } from "./merchant-links"
 
 /**
  * Shared buyer order-message publishing (extracted from `checkout.tsx` so the
@@ -58,10 +60,6 @@ type BuyerOrderPublishDependencies = {
   publishPrivateMessageFn?: typeof publishPrivateMessage
   cacheBuyerOrderRumorFn?: typeof cacheBuyerOrderRumor
 }
-
-const MERCHANT_ORDERS_URL = "https://sell.conduit.market/orders?order="
-const SIGNED_IN_ORDER_NOTIFICATION_COPY =
-  "A new order was sent to you through Conduit Market."
 
 function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
@@ -114,14 +112,6 @@ export function prepareBuyerRumor(rumor: NDKEvent, buyerPubkey: string): void {
   }
 }
 
-function isConduitMarketClientTag(tag: string[]): boolean {
-  return (
-    tag[0] === "client" &&
-    (tag[1] === "Conduit Market" ||
-      tag[2]?.endsWith(":conduit-market") === true)
-  )
-}
-
 /**
  * Build the advisory kind-14 rumor from the authoritative order identity.
  * Reusing the order id and timestamp keeps the inner rumor stable if a caller
@@ -130,44 +120,16 @@ function isConduitMarketClientTag(tag: string[]): boolean {
 export function buildOrderCompanionNotificationRumor(
   authoritativeOrder: NDKEvent,
   buyerPubkey: string,
-  merchantPubkey: string
+  merchantPubkey: string,
+  merchantOrigin = inferMerchantOrigin()
 ): NDKEvent {
-  const orderId = authoritativeOrder.tags.find((tag) => tag[0] === "order")?.[1]
-  if (!orderId) throw new Error("Order notification requires an order tag.")
-  if (authoritativeOrder.created_at === undefined) {
-    throw new Error("Order notification requires the order timestamp.")
-  }
-
-  const companion = new NDKEvent()
-  companion.kind = EVENT_KINDS.DIRECT_MESSAGE
-  companion.pubkey = buyerPubkey
-  companion.created_at = authoritativeOrder.created_at
-  companion.tags = appendConduitClientTag(
-    [
-      ["p", merchantPubkey],
-      ["subject", ORDER_COMPANION_NOTIFICATION_SUBJECT],
-      ["order", orderId],
-    ],
-    "market"
-  )
-
-  // Test and local builds can omit NIP-89 deployment metadata. The locally
-  // constructed authoritative order already carries the canonical Market tag,
-  // so retain it when the config-backed helper cannot reconstruct it.
-  if (!companion.tags.some((tag) => tag[0] === "client")) {
-    const authoritativeClientTag = authoritativeOrder.tags.find(
-      isConduitMarketClientTag
-    )
-    if (authoritativeClientTag) {
-      companion.tags.push([...authoritativeClientTag])
-    }
-  }
-
-  companion.content =
-    `${SIGNED_IN_ORDER_NOTIFICATION_COPY}\n` +
-    `Review it at: ${MERCHANT_ORDERS_URL}${encodeURIComponent(orderId)}`
-  companion.id = companion.getEventHash()
-  return companion
+  return createOrderCompanionNotificationRumor({
+    authoritativeOrder,
+    senderPubkey: buyerPubkey,
+    recipientPubkey: merchantPubkey,
+    buyerIdentityKind: "signed_in",
+    merchantOrigin,
+  })
 }
 
 async function publishOrderCompanionNotification(input: {
@@ -192,6 +154,7 @@ async function publishOrderCompanionNotification(input: {
             authoritativeOrder: input.authoritativeOrder,
             senderPubkey: input.buyerIdentity.pubkey,
             recipientPubkey: input.merchantPubkey,
+            merchantOrigin: inferMerchantOrigin(),
           })
         : undefined
     const companion =

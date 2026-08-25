@@ -107,12 +107,17 @@ The exception is constrained as follows:
   authoritative order receives a relay acknowledgement. The advisory requires
   the merchant's declared inbox, must not use compatibility routing, and must
   contain no order, payment, contact, address, or item details. This is an
-  application boundary;
-  the extractable raw key is not cryptographically restricted to those events.
-- Conduit clients must not project exact
-  `subject=conduit-order-notification` advisories into the generic Messages
-  inbox or cache them as conversations. The encrypted relay event remains
-  available to external clients for local notification behavior.
+  application boundary; the extractable raw key is not cryptographically
+  restricted to those events. Its review link must target the Merchant
+  deployment paired with the Market deployment that created it; production,
+  preview, signet, and supported local environments must not cross-link.
+- Conduit clients must not project canonical advisory rumors carrying the exact
+  versioned `["conduit", "order-companion", "1"]` marker, the
+  `subject=conduit-order-notification` marker, and one non-empty `order` and `p`
+  tag into the generic Messages inbox or cache them as conversations. Missing,
+  malformed, duplicated, or unknown-version markers fail open to the generic
+  Messages inbox. The encrypted relay event remains available to external
+  clients for local notification behavior.
 - Guest clients must not publish a buyer self-copy, advertise a `kind:10050`
   inbox, poll for merchant replies, or cache the decrypted order payload as
   durable order history.

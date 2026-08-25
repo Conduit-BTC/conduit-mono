@@ -44,6 +44,7 @@ function directRumor(params: {
   content: string
   createdAt: number
   subject?: string
+  extraTags?: string[][]
 }) {
   return {
     id: params.id,
@@ -54,6 +55,7 @@ function directRumor(params: {
     tags: [
       ["p", params.recipient],
       ...(params.subject ? [["subject", params.subject]] : []),
+      ...(params.extraTags ?? []),
     ],
   }
 }
@@ -376,6 +378,7 @@ describe("general direct-message gateway", () => {
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
           ? ([
               giftWrapEvent("wrap-order-companion"),
+              giftWrapEvent("wrap-subject-only"),
               giftWrapEvent("wrap-normal-subject"),
             ] as never)
           : [],
@@ -388,12 +391,21 @@ describe("general direct-message gateway", () => {
           content:
             event.id === "wrap-order-companion"
               ? "A new order was sent to you through Conduit Market."
-              : "This remains a normal conversation message.",
+              : event.id === "wrap-subject-only"
+                ? "A normal message can use the same subject."
+                : "This remains a normal conversation message.",
           createdAt: 101,
           subject:
-            event.id === "wrap-order-companion"
+            event.id !== "wrap-normal-subject"
               ? "conduit-order-notification"
               : "conduit-order-notification-followup",
+          extraTags:
+            event.id === "wrap-order-companion"
+              ? [
+                  ["order", "order-1"],
+                  ["conduit", "order-companion", "1"],
+                ]
+              : [],
         }) as never
       },
     })
@@ -409,9 +421,13 @@ describe("general direct-message gateway", () => {
     expect(first.data[0]?.preview).toBe(
       "This remains a normal conversation message."
     )
-    expect(directRows.map((row) => row.id)).toEqual(["dm-normal-subject"])
+    expect(directRows.map((row) => row.id)).toEqual([
+      "dm-subject-only",
+      "dm-normal-subject",
+    ])
     expect(unwrapCalls).toEqual({
       "wrap-order-companion": 1,
+      "wrap-subject-only": 1,
       "wrap-normal-subject": 1,
     })
     expect(second.data).toEqual(first.data)

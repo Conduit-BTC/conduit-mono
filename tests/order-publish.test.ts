@@ -70,6 +70,19 @@ describe("buyer order rumor preparation", () => {
     expect(first.created_at).toBe(authoritativeOrder.created_at)
     expect(retry.id).toBe(first.id)
   })
+
+  it("uses the selected Merchant deployment for signed-in companions", () => {
+    const companion = buildOrderCompanionNotificationRumor(
+      orderRumor(),
+      "buyer-pubkey",
+      "merchant-pubkey",
+      "https://fix-293.conduit-merchant-33n.pages.dev"
+    )
+
+    expect(companion.content).toContain(
+      "https://fix-293.conduit-merchant-33n.pages.dev/orders?order=guest-order"
+    )
+  })
 })
 
 function orderRumor(overrides: Record<string, unknown> = {}) {
@@ -234,6 +247,7 @@ describe("buyer order publishing", () => {
       ["p", "merchant-pubkey"],
       ["subject", "conduit-order-notification"],
       ["order", "guest-order"],
+      ["conduit", "order-companion", "1"],
       [
         "client",
         "Conduit Market",
@@ -325,12 +339,13 @@ describe("buyer order publishing", () => {
     const companion = calls[1]?.rumor
     expect(companion?.content).toBe(
       "A new order was sent to you through Conduit Market.\n" +
-        `Review it at: https://sell.conduit.market/orders?order=${encodeURIComponent(orderId)}`
+        "Review it at: https://sell.conduit.market/orders?order=order+%2F%3F%26%3D%E2%9C%93"
     )
     expect(companion?.tags?.map((tag) => tag[0])).toEqual([
       "p",
       "subject",
       "order",
+      "conduit",
       "client",
     ])
     for (const sensitiveValue of [
@@ -574,6 +589,11 @@ describe("buyer order publishing", () => {
     expect(companionOutcome.rumor.tags).toContainEqual([
       "subject",
       "conduit-order-notification",
+    ])
+    expect(companionOutcome.rumor.tags).toContainEqual([
+      "conduit",
+      "order-companion",
+      "1",
     ])
     for (const sensitiveValue of [
       "guest-private@example.com",

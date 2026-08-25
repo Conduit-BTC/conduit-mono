@@ -5,6 +5,7 @@ import {
   NDKUser,
   type NDKSigner,
 } from "@nostr-dev-kit/ndk"
+import { buildMerchantOrderReviewUrl } from "../app-links"
 import { config, type ConduitConfig } from "../config"
 import type { OrderRelayDeliveryRecord, OrderRelayDeliveryStatus } from "../db"
 import {
@@ -83,6 +84,16 @@ const validatedGuestOrderCompanionScopes =
   new WeakSet<ValidatedGuestOrderCompanionScope>()
 
 export const ORDER_COMPANION_NOTIFICATION_SUBJECT = "conduit-order-notification"
+export const ORDER_COMPANION_NOTIFICATION_MARKER = "order-companion"
+export const ORDER_COMPANION_NOTIFICATION_VERSION = "1"
+
+export function buildOrderCompanionNotificationMarkerTag(): string[] {
+  return [
+    "conduit",
+    ORDER_COMPANION_NOTIFICATION_MARKER,
+    ORDER_COMPANION_NOTIFICATION_VERSION,
+  ]
+}
 
 /**
  * Identify the exact app-level marker used for advisory order notifications.
@@ -92,19 +103,91 @@ export const ORDER_COMPANION_NOTIFICATION_SUBJECT = "conduit-order-notification"
  */
 export function isOrderCompanionNotificationRumor(rumor: NDKEvent): boolean {
   if (rumor.kind !== EVENT_KINDS.DIRECT_MESSAGE) return false
-  const subjects = rumor.tags
-    .filter((tag) => tag[0] === "subject")
-    .map((tag) => tag[1])
+  const subjects = rumor.tags.filter((tag) => tag[0] === "subject")
+  const orders = rumor.tags.filter((tag) => tag[0] === "order")
+  const recipients = rumor.tags.filter((tag) => tag[0] === "p")
+  const markers = rumor.tags.filter(
+    (tag) =>
+      tag[0] === "conduit" && tag[1] === ORDER_COMPANION_NOTIFICATION_MARKER
+  )
   return (
     subjects.length === 1 &&
-    subjects[0] === ORDER_COMPANION_NOTIFICATION_SUBJECT
+    subjects[0]?.length === 2 &&
+    subjects[0]?.[1] === ORDER_COMPANION_NOTIFICATION_SUBJECT &&
+    orders.length === 1 &&
+    orders[0]?.length === 2 &&
+    Boolean(orders[0]?.[1]?.trim()) &&
+    recipients.length === 1 &&
+    recipients[0]?.length === 2 &&
+    Boolean(recipients[0]?.[1]?.trim()) &&
+    markers.length === 1 &&
+    markers[0]?.length === 3 &&
+    markers[0]?.[2] === ORDER_COMPANION_NOTIFICATION_VERSION
   )
 }
 
 const GUEST_ORDER_COMPANION_COPY =
   "A new guest order was sent to you through Conduit Market.\n" +
   "This buyer does not receive Nostr replies. Review the order and follow up using the email or phone provided there."
-const MERCHANT_ORDERS_URL = "https://sell.conduit.market/orders?order="
+const SIGNED_IN_ORDER_COMPANION_COPY =
+  "A new order was sent to you through Conduit Market."
+
+function isConduitMarketClientTag(tag: string[]): boolean {
+  return (
+    tag[0] === "client" &&
+    (tag[1] === "Conduit Market" ||
+      tag[2]?.endsWith(":conduit-market") === true)
+  )
+}
+
+export function createOrderCompanionNotificationRumor(input: {
+  authoritativeOrder: NDKEvent
+  senderPubkey: string
+  recipientPubkey: string
+  buyerIdentityKind: "signed_in" | "guest_ephemeral"
+  merchantOrigin: string
+}): NDKEvent {
+  const orderId = input.authoritativeOrder.tags.find(
+    (tag) => tag[0] === "order"
+  )?.[1]
+  if (!orderId) throw new Error("Order notification requires an order tag.")
+  if (input.authoritativeOrder.created_at === undefined) {
+    throw new Error("Order notification requires the order timestamp.")
+  }
+
+  const companion = new NDKEvent()
+  companion.kind = EVENT_KINDS.DIRECT_MESSAGE
+  companion.pubkey = input.senderPubkey
+  companion.created_at = input.authoritativeOrder.created_at
+  companion.tags = appendConduitClientTag(
+    [
+      ["p", input.recipientPubkey],
+      ["subject", ORDER_COMPANION_NOTIFICATION_SUBJECT],
+      ["order", orderId],
+      buildOrderCompanionNotificationMarkerTag(),
+    ],
+    "market"
+  )
+
+  if (!companion.tags.some((tag) => tag[0] === "client")) {
+    const authoritativeClientTag = input.authoritativeOrder.tags.find(
+      isConduitMarketClientTag
+    )
+    if (authoritativeClientTag) {
+      companion.tags.push([...authoritativeClientTag])
+    }
+  }
+
+  const copy =
+    input.buyerIdentityKind === "guest_ephemeral"
+      ? GUEST_ORDER_COMPANION_COPY
+      : SIGNED_IN_ORDER_COMPANION_COPY
+  companion.content =
+    `${copy}\n` +
+    `Review it at: ${buildMerchantOrderReviewUrl(input.merchantOrigin, orderId)}`
+  companion.id = companion.getEventHash()
+  return companion
+}
 
 /**
  * Issue a one-use compatibility-routing capability bound to one validated
@@ -172,6 +255,7 @@ export function createValidatedGuestOrderCompanion(input: {
   authoritativeOrder: NDKEvent
   senderPubkey: string
   recipientPubkey: string
+  merchantOrigin: string
 }): {
   companion: NDKEvent
   scope: ValidatedGuestOrderCompanionScope
@@ -200,22 +284,13 @@ export function createValidatedGuestOrderCompanion(input: {
     throw new Error("Cannot authorize a one-way guest order companion.")
   }
 
-  const companion = new NDKEvent()
-  companion.kind = EVENT_KINDS.DIRECT_MESSAGE
-  companion.pubkey = senderPubkey
-  companion.created_at = input.authoritativeOrder.created_at
-  companion.tags = appendConduitClientTag(
-    [
-      ["p", recipientPubkey],
-      ["subject", ORDER_COMPANION_NOTIFICATION_SUBJECT],
-      ["order", parsedOrder.orderId],
-    ],
-    "market"
-  )
-  companion.content =
-    `${GUEST_ORDER_COMPANION_COPY}\n` +
-    `Review it at: ${MERCHANT_ORDERS_URL}${encodeURIComponent(parsedOrder.orderId)}`
-  companion.id = companion.getEventHash()
+  const companion = createOrderCompanionNotificationRumor({
+    authoritativeOrder: input.authoritativeOrder,
+    senderPubkey,
+    recipientPubkey,
+    buyerIdentityKind: "guest_ephemeral",
+    merchantOrigin: input.merchantOrigin,
+  })
 
   const scope = Object.freeze({
     rumorId: companion.id,
