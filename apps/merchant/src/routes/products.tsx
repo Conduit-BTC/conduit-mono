@@ -122,6 +122,7 @@ import {
 import {
   deliverSignedProductEventBundle,
   getRelayPublishDiagnosticsError,
+  resolveProductFulfillmentIntentForTarget,
   signAndPublishProductWriteBundle,
   SignedProductDeliveryError,
 } from "../lib/product-publishing"
@@ -354,6 +355,13 @@ function buildShippingMetadata(
   })
   return {
     intent,
+    authoringCountries: Array.from(
+      new Set(
+        shippingConfig.countries.map((country) =>
+          country.code.trim().toUpperCase()
+        )
+      )
+    ).sort(),
     metadata: buildProductShippingMetadata(merchantPubkey, productDTag, intent),
   }
 }
@@ -778,25 +786,11 @@ async function publishProduct(
       product: target.product,
       dTag: target.dTag,
       previousEventCreatedAt: target.existing?.eventCreatedAt,
-      fulfillmentIntent:
-        target.product.format === "digital"
-          ? { kind: "digital" }
-          : fulfillment.intent.kind === "fixed_standard"
-            ? {
-                kind: "fixed_standard",
-                amount:
-                  target.product.sourceShippingCost?.amount ??
-                  target.product.shippingCostSats ??
-                  fulfillment.intent.amount,
-                currency:
-                  target.product.sourceShippingCost?.currency ??
-                  fulfillment.intent.currency,
-                countries:
-                  target.product.shippingCountries?.length
-                    ? [...target.product.shippingCountries]
-                    : [...fulfillment.intent.countries],
-              }
-            : fulfillment.intent,
+      fulfillmentIntent: resolveProductFulfillmentIntentForTarget({
+        product: target.product,
+        fallbackIntent: fulfillment.intent,
+        authoringCountries: fulfillment.authoringCountries,
+      }),
     })),
     deletions: plan.remove.map((target) => ({
       eventId: target.eventId,

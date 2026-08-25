@@ -1043,7 +1043,6 @@ describe("cart model", () => {
       totalSats: 200,
       itemPricesAvailable: true,
       shippingReadyForZap: false,
-      canZapOut: false,
     })
   })
 

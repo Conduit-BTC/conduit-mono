@@ -902,7 +902,7 @@ function CartPage() {
         ?.name ?? presetCountry)
     : null
   const presetShippingEligibility = presetDestination
-    ? getCartShippingDestinationEligibility(presetDestination, cart.items, [])
+    ? getCartShippingDestinationEligibility(presetDestination, cart.items)
     : null
   const clearCartDialog = (
     <Dialog

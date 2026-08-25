@@ -5,6 +5,7 @@ import {
   buildProductListingEventDraft,
   cacheSignedProductDeletionEvent,
   cacheSignedProductListingEvent,
+  compileProductFulfillmentIntent,
   EVENT_KINDS,
   getNdk,
   getProductShippingOptionAddress,
@@ -137,6 +138,100 @@ type SignedProductWrite = {
   shippingEvent: NDKEvent | null
 }
 
+export interface CanonicalProductPublishDependencies {
+  publishShippingEvent: (
+    event: NDKEvent,
+    merchantPubkey: string
+  ) => Promise<PublishWithPlannerResult>
+  cacheEvent: (event: NDKEvent) => Promise<void>
+  deliverEvents: (
+    events: readonly NDKEvent[],
+    merchantPubkey: string
+  ) => Promise<PublishWithPlannerResult>
+}
+
+export function resolveProductFulfillmentIntentForTarget(input: {
+  product: Pick<
+    ProductSchema,
+    | "format"
+    | "shippingCostSats"
+    | "sourceShippingCost"
+    | "shippingCountries"
+    | "shippingCountryRules"
+  >
+  fallbackIntent: ProductFulfillmentIntent
+  authoringCountries: readonly string[]
+}): ProductFulfillmentIntent {
+  if (input.product.format === "digital") return { kind: "digital" }
+
+  const amount =
+    input.product.sourceShippingCost?.amount ?? input.product.shippingCostSats
+  if (typeof amount !== "number") return input.fallbackIntent
+
+  const projectedCountries =
+    input.product.shippingCountries?.length
+      ? input.product.shippingCountries
+      : input.product.shippingCountryRules?.map((rule) => rule.code)
+  const countries =
+    projectedCountries?.length ? projectedCountries : input.authoringCountries
+  if (
+    !countries.some((country) =>
+      /^[A-Z]{2}$/.test(country.trim().toUpperCase())
+    )
+  ) {
+    throw new Error(
+      "Fixed variation shipping requires at least one valid country destination"
+    )
+  }
+
+  return compileProductFulfillmentIntent({
+    format: "physical",
+    shippingPricingMode: "fixed",
+    amount,
+    currency: input.product.sourceShippingCost?.currency ?? "SATS",
+    destinations: countries.map((code) => ({
+      code,
+      name: code,
+      restrictTo: [],
+      exclude: [],
+    })),
+  })
+}
+
+export async function publishCanonicalProductEvents(
+  input: {
+    writes: readonly SignedProductWrite[]
+    events: readonly NDKEvent[]
+    merchantPubkey: string
+    onSignedLocal: (events: readonly NDKEvent[]) => Promise<void>
+  },
+  dependencies: CanonicalProductPublishDependencies
+): Promise<PublishWithPlannerResult> {
+  for (const write of input.writes) {
+    if (!write.shippingEvent) continue
+    const delivery = await dependencies.publishShippingEvent(
+      write.shippingEvent,
+      input.merchantPubkey
+    )
+    if (delivery.successfulRelayUrls.length === 0) {
+      throw new Error(
+        "Fixed shipping was not acknowledged by a relay. Product publication was stopped."
+      )
+    }
+  }
+
+  for (const event of input.events) {
+    await dependencies.cacheEvent(event)
+  }
+
+  try {
+    await input.onSignedLocal(input.events)
+    return await dependencies.deliverEvents(input.events, input.merchantPubkey)
+  } catch (error) {
+    throw asSignedProductDeliveryError(error)
+  }
+}
+
 export function applyProductFulfillmentIntentForPublication(input: {
   product: ProductSchema
   merchantPubkey: string
@@ -227,23 +322,6 @@ async function signProductWrite(
   return { productEvent, shippingEvent }
 }
 
-async function acknowledgeShippingEvent(
-  event: NDKEvent,
-  merchantPubkey: string
-): Promise<void> {
-  const delivery = await publishWithPlanner(event, {
-    intent: "author_event",
-    authorPubkey: merchantPubkey,
-    authenticatedPubkey: merchantPubkey,
-    deliveryMode: "critical",
-  })
-  if (delivery.successfulRelayUrls.length === 0) {
-    throw new Error(
-      "Fixed shipping was not acknowledged by a relay. Product publication was stopped."
-    )
-  }
-}
-
 export async function signAndPublishProductWriteBundle(input: {
   merchantPubkey: string
   listings: readonly ProductListingPublishTarget[]
@@ -266,17 +344,7 @@ export async function signAndPublishProductWriteBundle(input: {
       signProductWrite(ndk, signer, signerPubkey, listing, Date.now())
     )
   )
-  for (const write of writes) {
-    if (write.shippingEvent) {
-      await acknowledgeShippingEvent(write.shippingEvent, signerPubkey)
-    }
-  }
-
   const productEvents = writes.map((write) => write.productEvent)
-  for (const event of productEvents) {
-    await cacheSignedProductListingEvent(event)
-  }
-
   const events: NDKEvent[] = [...productEvents]
   if ((input.deletions?.length ?? 0) > 0) {
     const draft = buildProductDeletionEventDraft({
@@ -290,16 +358,34 @@ export async function signAndPublishProductWriteBundle(input: {
     deletion.content = draft.content
     deletion.tags = draft.tags
     await deletion.sign(signer)
-    await cacheSignedProductDeletionEvent(deletion)
     events.push(deletion)
   }
 
-  try {
-    await input.onSignedLocal(events)
-    return await deliverSignedProductEventBundle(events, signerPubkey)
-  } catch (error) {
-    throw asSignedProductDeliveryError(error)
-  }
+  return publishCanonicalProductEvents(
+    {
+      writes,
+      events,
+      merchantPubkey: signerPubkey,
+      onSignedLocal: input.onSignedLocal,
+    },
+    {
+      publishShippingEvent: async (event, merchantPubkey) =>
+        publishWithPlanner(event, {
+          intent: "author_event",
+          authorPubkey: merchantPubkey,
+          authenticatedPubkey: merchantPubkey,
+          deliveryMode: "critical",
+        }),
+      cacheEvent: async (event) => {
+        if (event.kind === EVENT_KINDS.DELETION) {
+          await cacheSignedProductDeletionEvent(event)
+          return
+        }
+        await cacheSignedProductListingEvent(event)
+      },
+      deliverEvents: deliverSignedProductEventBundle,
+    }
+  )
 }
 
 export async function signAndPublishProductListing(input: {

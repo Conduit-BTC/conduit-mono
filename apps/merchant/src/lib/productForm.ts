@@ -1,7 +1,6 @@
 import {
   canonicalizeProductTags,
   CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG,
-  getShippingOptionAddress,
   normalizePublicMediaUrl,
   getProductShippingOptionAddress,
   getProductShippingOptionDTag,

@@ -10,6 +10,7 @@ import {
   applyProductFulfillmentIntentForPublication,
   isDeliverableMerchantProductEvent,
   publishCanonicalProductEvents,
+  resolveProductFulfillmentIntentForTarget,
   type CanonicalProductPublishDependencies,
 } from "../apps/merchant/src/lib/product-publishing"
 
@@ -124,16 +125,18 @@ describe("canonical product publication ordering", () => {
   it("requires a shipping ACK before caching or publishing the product", async () => {
     const calls: string[] = []
     const productEvent = event(30402)
+    const variationEvent = event(30402)
     const shippingEvent = event(30406)
+    const variationShippingEvent = event(30406)
     const dependencies: CanonicalProductPublishDependencies = {
       publishShippingEvent: async () => {
         calls.push("shipping_ack")
         return publishResult(["wss://relay.example"])
       },
-      cacheProductEvent: async () => {
+      cacheEvent: async () => {
         calls.push("product_cache")
       },
-      deliverProductEvent: async () => {
+      deliverEvents: async () => {
         calls.push("product_publish")
         return publishResult(["wss://relay.example"])
       },
@@ -141,8 +144,14 @@ describe("canonical product publication ordering", () => {
 
     await publishCanonicalProductEvents(
       {
-        productEvent,
-        shippingEvent,
+        writes: [
+          { productEvent, shippingEvent },
+          {
+            productEvent: variationEvent,
+            shippingEvent: variationShippingEvent,
+          },
+        ],
+        events: [productEvent, variationEvent],
         merchantPubkey: "merchant",
         onSignedLocal: async () => {
           calls.push("product_local")
@@ -153,6 +162,8 @@ describe("canonical product publication ordering", () => {
 
     expect(calls).toEqual([
       "shipping_ack",
+      "shipping_ack",
+      "product_cache",
       "product_cache",
       "product_local",
       "product_publish",
@@ -166,10 +177,10 @@ describe("canonical product publication ordering", () => {
         calls.push("shipping_attempt")
         return publishResult([])
       },
-      cacheProductEvent: async () => {
+      cacheEvent: async () => {
         calls.push("product_cache")
       },
-      deliverProductEvent: async () => {
+      deliverEvents: async () => {
         calls.push("product_publish")
         return publishResult(["wss://relay.example"])
       },
@@ -178,8 +189,8 @@ describe("canonical product publication ordering", () => {
     await expect(
       publishCanonicalProductEvents(
         {
-          productEvent: event(30402),
-          shippingEvent: event(30406),
+          writes: [{ productEvent: event(30402), shippingEvent: event(30406) }],
+          events: [event(30402)],
           merchantPubkey: "merchant",
           onSignedLocal: async () => {
             calls.push("product_local")
@@ -198,10 +209,10 @@ describe("canonical product publication ordering", () => {
         calls.push("unexpected_shipping")
         return publishResult([])
       },
-      cacheProductEvent: async () => {
+      cacheEvent: async () => {
         calls.push("product_cache")
       },
-      deliverProductEvent: async () => {
+      deliverEvents: async () => {
         calls.push("product_publish")
         return publishResult(["wss://relay.example"])
       },
@@ -209,8 +220,8 @@ describe("canonical product publication ordering", () => {
 
     await publishCanonicalProductEvents(
       {
-        productEvent: event(30402),
-        shippingEvent: null,
+        writes: [{ productEvent: event(30402), shippingEvent: null }],
+        events: [event(30402)],
         merchantPubkey: "merchant",
         onSignedLocal: async () => {
           calls.push("product_local")
@@ -252,5 +263,37 @@ describe("canonical product publication ordering", () => {
       shippingCountries: undefined,
       canonicalShippingResolved: false,
     })
+  })
+
+  it("uses a variation's fixed shipping override under an order-first root", () => {
+    expect(
+      resolveProductFulfillmentIntentForTarget({
+        product: {
+          format: "physical",
+          sourceShippingCost: {
+            amount: 12.34,
+            currency: "USD",
+            normalizedCurrency: "USD",
+          },
+        },
+        fallbackIntent: { kind: "coordinate_after_order" },
+        authoringCountries: ["CA"],
+      })
+    ).toEqual({
+      kind: "fixed_standard",
+      amount: 12.34,
+      currency: "USD",
+      countries: ["CA"],
+    })
+  })
+
+  it("fails closed when a fixed variation has no shipping destinations", () => {
+    expect(() =>
+      resolveProductFulfillmentIntentForTarget({
+        product: { format: "physical", shippingCostSats: 250 },
+        fallbackIntent: { kind: "coordinate_after_order" },
+        authoringCountries: [],
+      })
+    ).toThrow("Fixed variation shipping requires at least one valid country")
   })
 })

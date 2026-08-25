@@ -2681,7 +2681,7 @@ function CheckoutPage() {
       lnurlPayAvailable &&
       !lnurlAllowsNostr &&
       isCheckoutPublicZapMode(selectedZapMode),
-    shippingLookupPending: shippingOptionsIsLoading,
+    shippingLookupPending: shippingOptionsIsFetching,
     shippingState: shippingCheckoutState,
     availabilityChecking: checkoutAvailability.isChecking,
     pricingRefreshing: pricingRefreshState === "refreshing",
