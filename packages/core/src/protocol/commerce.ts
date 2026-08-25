@@ -127,6 +127,7 @@ import {
 import {
   getProtectedReadAuthorization,
   hasProtectedReadAuthority,
+  subscribeProtectedReadSignerRevocation,
   type ProtectedReadAuthorization,
 } from "./protected-read-authorization"
 
@@ -512,6 +513,11 @@ let testOverrides: CommerceTestOverrides = {}
 let testProfileCacheWriteLock: Promise<void> = Promise.resolve()
 const volatileProductTombstones = new Map<string, CachedProductTombstone>()
 const successfulWrapIdsByPrincipal = new Map<string, Set<string>>()
+type AuthenticatedInboundOrder = Extract<ParsedOrderMessage, { type: "order" }>
+const authenticatedInboundOrdersBySession = new Map<
+  string,
+  Map<string, { wrapId: string; order: AuthenticatedInboundOrder }>
+>()
 const retryWrapsByPrincipal = new Map<
   string,
   Map<string, { event: NDKEvent; failure?: DecryptFailure }>
@@ -543,6 +549,14 @@ const retryLegacyDmsByPrincipal = new Map<
   >
 >()
 const legacyDmSyncPromises = new Map<string, Promise<LegacyDmSyncResult>>()
+
+subscribeProtectedReadSignerRevocation((sessionScope) => {
+  authenticatedInboundOrdersBySession.delete(sessionScope)
+  // Wrap success/retry state is decrypt-session state. A replacement signer
+  // lease must re-authenticate and re-unwrap before it can recover authority.
+  successfulWrapIdsByPrincipal.clear()
+  retryWrapsByPrincipal.clear()
+})
 
 class ProtectedInboxAuthorityChangedError extends Error {
   constructor() {
@@ -906,6 +920,7 @@ export function __resetCommerceTestOverrides(): void {
   testProfileCacheWriteLock = Promise.resolve()
   volatileProductTombstones.clear()
   successfulWrapIdsByPrincipal.clear()
+  authenticatedInboundOrdersBySession.clear()
   retryWrapsByPrincipal.clear()
   inboxSyncPromises.clear()
   inboxHistoryCheckpoints.clear()
@@ -2275,6 +2290,49 @@ function parseCachedOrderMessageRow(
   row: CachedOrderMessage
 ): ParsedOrderMessage | null {
   return parseValidatedCachedOrderMessageEnvelope(row)
+}
+
+function inboundOrderIdentityKey(input: {
+  id: string
+  orderId: string
+  senderPubkey: string
+  recipientPubkey: string
+}): string {
+  return `${input.id.trim()}\u0000${input.orderId.trim()}\u0000${input.senderPubkey.trim().toLowerCase()}\u0000${input.recipientPubkey.trim().toLowerCase()}`
+}
+
+function rememberAuthenticatedInboundOrder(input: {
+  authorization: ProtectedReadAuthorization | null
+  wrapId: string
+  order: AuthenticatedInboundOrder
+}): void {
+  if (!input.authorization) return
+  let orders = authenticatedInboundOrdersBySession.get(
+    input.authorization.sessionScope
+  )
+  if (!orders) {
+    orders = new Map()
+    authenticatedInboundOrdersBySession.set(
+      input.authorization.sessionScope,
+      orders
+    )
+  }
+  orders.set(inboundOrderIdentityKey(input.order), {
+    wrapId: input.wrapId,
+    order: input.order,
+  })
+}
+
+function restoreAuthenticatedInboundOrder(
+  message: ParsedOrderMessage,
+  authorization: ProtectedReadAuthorization | null
+): ParsedOrderMessage {
+  if (message.type !== "order" || !authorization) return message
+  return (
+    authenticatedInboundOrdersBySession
+      .get(authorization.sessionScope)
+      ?.get(inboundOrderIdentityKey(message))?.order ?? message
+  )
 }
 
 export async function cacheParsedOrderMessage(
@@ -4603,7 +4661,12 @@ async function fetchParsedOrderMessages(
   const cachedById = new Map<string, ParsedOrderMessage>()
   for (const row of cached) {
     const message = parseCachedOrderMessageRow(row)
-    if (message) cachedById.set(message.id, message)
+    if (message) {
+      cachedById.set(
+        message.id,
+        restoreAuthenticatedInboundOrder(message, authorization)
+      )
+    }
   }
 
   try {
@@ -4827,6 +4890,43 @@ function setsOverlap(left: ReadonlySet<string>, right: ReadonlySet<string>) {
   return false
 }
 
+function compareInboxWrapPosition(left: NDKEvent, right: NDKEvent): number {
+  const timeOrder = (right.created_at ?? 0) - (left.created_at ?? 0)
+  return timeOrder || left.id.localeCompare(right.id)
+}
+
+function retainNewestInboxWraps(
+  retained: Map<string, NDKEvent>,
+  candidates: readonly NDKEvent[]
+): void {
+  const newest = [
+    ...new Map(
+      [...retained.values(), ...candidates].map((event) => [event.id, event])
+    ).values(),
+  ]
+    .sort(compareInboxWrapPosition)
+    .slice(0, INBOX_WRAP_BACKFILL_MAX_EVENTS)
+  retained.clear()
+  for (const event of newest) retained.set(event.id, event)
+}
+
+function inboxCursorCanImproveRetainedFrontier(
+  retained: ReadonlyMap<string, NDKEvent>,
+  cursorBounds: readonly (number | undefined)[]
+): boolean {
+  if (retained.size < INBOX_WRAP_BACKFILL_MAX_EVENTS) return true
+  const oldestRetained = [...retained.values()].sort(compareInboxWrapPosition)[
+    retained.size - 1
+  ]
+  if (!oldestRetained) return true
+  const oldestCreatedAt = oldestRetained.created_at ?? 0
+  // `until` is inclusive. An equal-second page can still improve the lexical
+  // event-id tie break, so only a strictly older cursor is safely dominated.
+  return cursorBounds.some(
+    (cursor) => cursor === undefined || cursor >= oldestCreatedAt
+  )
+}
+
 function canReuseInboxHistoryCheckpoint(input: {
   checkpoint: InboxHistoryCheckpoint
   planFingerprint: string
@@ -4872,6 +4972,7 @@ async function fetchNewInboxWraps(
   const maxPages =
     historyMode === "backfill" ? INBOX_WRAP_BACKFILL_MAX_PAGES : 1
   const observedWraps = new Map<string, NDKEvent>()
+  const seenWrapIds = new Set<string>()
   const successfulRelayUrls = new Set<string>()
   const failedRelayUrls = new Set<string>()
   let until: number | undefined
@@ -4951,18 +5052,14 @@ async function fetchNewInboxWraps(
         break
       }
 
-      const orderedEvents = [...result.events].sort((left, right) => {
-        const timeOrder = (right.created_at ?? 0) - (left.created_at ?? 0)
-        return timeOrder || left.id.localeCompare(right.id)
-      })
+      const orderedEvents = [...result.events].sort(compareInboxWrapPosition)
       let unseenOnPage = 0
       for (const event of orderedEvents) {
-        if (observedWraps.has(event.id)) continue
+        if (seenWrapIds.has(event.id)) continue
         unseenOnPage += 1
-        if (observedWraps.size < INBOX_WRAP_BACKFILL_MAX_EVENTS) {
-          observedWraps.set(event.id, event)
-        }
+        seenWrapIds.add(event.id)
       }
+      retainNewestInboxWraps(observedWraps, orderedEvents)
 
       const evidence = getInboxPageEvidence(
         orderedEvents,
@@ -5010,11 +5107,6 @@ async function fetchNewInboxWraps(
         break
       }
 
-      if (observedWraps.size >= INBOX_WRAP_BACKFILL_MAX_EVENTS) {
-        historyCoverage = historyMode === "backfill" ? "bounded" : "recent_only"
-        break
-      }
-
       const boundary = evidence.boundary
       if (boundary.state === "complete") {
         historyCoverage =
@@ -5024,6 +5116,13 @@ async function fetchNewInboxWraps(
       if (boundary.state === "unknown") {
         historyCoverage =
           historyMode === "backfill" ? "cursor_stalled" : "recent_only"
+        break
+      }
+      if (
+        observedWraps.size >= INBOX_WRAP_BACKFILL_MAX_EVENTS &&
+        !inboxCursorCanImproveRetainedFrontier(observedWraps, [boundary.until])
+      ) {
+        historyCoverage = historyMode === "backfill" ? "bounded" : "recent_only"
         break
       }
       if (page + 1 >= maxPages) {
@@ -5096,14 +5195,11 @@ async function fetchNewInboxWraps(
 
         const events = result.events
           .map((event) => new NDKEvent(undefined, event))
-          .sort((left, right) => {
-            const timeOrder = (right.created_at ?? 0) - (left.created_at ?? 0)
-            return timeOrder || left.id.localeCompare(right.id)
-          })
+          .sort(compareInboxWrapPosition)
         const pageIds = new Set(events.map((event) => event.id))
         pageIdsByRelay.set(relayUrl, pageIds)
         const unseenForRelay = events.filter(
-          (event) => !observedWraps.has(event.id)
+          (event) => !seenWrapIds.has(event.id)
         ).length
         pageEvents.push(...events)
 
@@ -5138,15 +5234,9 @@ async function fetchNewInboxWraps(
       // outer position before retaining any event.
       const orderedPageEvents = [
         ...new Map(pageEvents.map((event) => [event.id, event])).values(),
-      ].sort((left, right) => {
-        const timeOrder = (right.created_at ?? 0) - (left.created_at ?? 0)
-        return timeOrder || left.id.localeCompare(right.id)
-      })
-      for (const event of orderedPageEvents) {
-        if (observedWraps.has(event.id)) continue
-        if (observedWraps.size >= INBOX_WRAP_BACKFILL_MAX_EVENTS) break
-        observedWraps.set(event.id, event)
-      }
+      ].sort(compareInboxWrapPosition)
+      for (const event of orderedPageEvents) seenWrapIds.add(event.id)
+      retainNewestInboxWraps(observedWraps, orderedPageEvents)
 
       const evidence: InboxPageEvidence = {
         boundary: pageInterrupted
@@ -5195,7 +5285,13 @@ async function fetchNewInboxWraps(
           historyMode === "backfill" ? "cursor_stalled" : "recent_only"
         break
       }
-      if (observedWraps.size >= INBOX_WRAP_BACKFILL_MAX_EVENTS) {
+      if (
+        observedWraps.size >= INBOX_WRAP_BACKFILL_MAX_EVENTS &&
+        !inboxCursorCanImproveRetainedFrontier(
+          observedWraps,
+          [...activeRelays].map((relayUrl) => untilByRelay.get(relayUrl))
+        )
+      ) {
         historyCoverage = historyMode === "backfill" ? "bounded" : "recent_only"
         break
       }
@@ -5720,34 +5816,13 @@ async function runPrivateMessageInboxSync(
     }
   }
 
-  const orderIdentityKey = (
-    orderRumorId: string,
-    orderId: string,
-    senderPubkey: string,
-    recipientPubkey: string
-  ) =>
-    `${orderRumorId.trim()}\u0000${orderId.trim()}\u0000${senderPubkey.trim().toLowerCase()}\u0000${recipientPubkey.trim().toLowerCase()}`
   const authoritativeOrders = new Set([
     ...cachedOrders
       .filter((row) => row.type === "order")
-      .map((row) =>
-        orderIdentityKey(
-          row.id,
-          row.orderId,
-          row.senderPubkey,
-          row.recipientPubkey
-        )
-      ),
+      .map((row) => inboundOrderIdentityKey(row)),
     ...orderEntries
       .filter((entry) => entry.message.type === "order")
-      .map((entry) =>
-        orderIdentityKey(
-          entry.message.id,
-          entry.message.orderId,
-          entry.message.senderPubkey,
-          entry.message.recipientPubkey
-        )
-      ),
+      .map((entry) => inboundOrderIdentityKey(entry.message)),
   ])
 
   for (const entry of directRumors) {
@@ -5758,12 +5833,12 @@ async function runPrivateMessageInboxSync(
       if (
         companion &&
         authoritativeOrders.has(
-          orderIdentityKey(
-            companion.orderRumorId,
-            companion.orderId,
-            companion.senderPubkey,
-            companion.recipientPubkey
-          )
+          inboundOrderIdentityKey({
+            id: companion.orderRumorId,
+            orderId: companion.orderId,
+            senderPubkey: companion.senderPubkey,
+            recipientPubkey: companion.recipientPubkey,
+          })
         )
       ) {
         successful.add(entry.wrapId)
@@ -5830,6 +5905,14 @@ async function runPrivateMessageInboxSync(
   }
 
   assertInboxSyncAuthority(authorization)
+  for (const entry of orderEntries) {
+    if (entry.message.type !== "order") continue
+    rememberAuthenticatedInboundOrder({
+      authorization,
+      wrapId: entry.wrapId,
+      order: entry.message,
+    })
+  }
 
   return {
     orderMessages: orderEntries.map((entry) => entry.message),

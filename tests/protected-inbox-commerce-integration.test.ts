@@ -7,6 +7,7 @@ import {
   getBuyerConversationList,
   getDirectMessageConversationList,
   getMerchantConversationList,
+  publishMerchantOrderMessage,
   type CachedOrderMessage,
 } from "@conduit/core"
 import {
@@ -71,6 +72,19 @@ function orderRumor(recipient: string) {
       ["amount", "2100"],
       ["currency", "SATS"],
     ],
+  }
+}
+
+function guestOrderRumor(recipient: string) {
+  const rumor = orderRumor(recipient)
+  const payload = JSON.parse(rumor.content) as Record<string, unknown>
+  return {
+    ...rumor,
+    content: JSON.stringify({
+      ...payload,
+      buyerIdentityKind: "guest_ephemeral",
+      guestContact: { email: "buyer@example.com", phone: "+1-555-0100" },
+    }),
   }
 }
 
@@ -294,7 +308,10 @@ describe("Market and Merchant protected inbox integration", () => {
       getCachedDirectMessages: async () => [],
       putCachedDirectMessages: async () => undefined,
       readProtectedInbox: async (options) => ({
-        events: eventsByRelay.get(options.relayUrls[0]!) ?? [],
+        events:
+          options.until === undefined
+            ? (eventsByRelay.get(options.relayUrls[0]!) ?? [])
+            : [],
         coverage: "complete",
         auth: {
           state: "not_challenged",
@@ -330,6 +347,115 @@ describe("Market and Merchant protected inbox integration", () => {
       sort: "merchant_priority",
     })
 
+    expect(result.data.map(({ orderId }) => orderId)).toEqual([
+      `order-${MERCHANT}`,
+    ])
+    expect(result.meta.inbox?.historyCoverage).toBe("bounded")
+  })
+
+  it("keeps the global wrap frontier ordered across relay pagination rounds", async () => {
+    const relayA = "wss://multi-page-a.example"
+    const relayB = "wss://multi-page-b.example"
+    const relayC = "wss://multi-page-c.example"
+    const targetWrapId = "relay-a-page-four-order"
+    const relayAPages = Array.from({ length: 4 }, (_, pageIndex) =>
+      Array.from({ length: 400 }, (_, eventIndex) => ({
+        id:
+          pageIndex === 3 && eventIndex === 200
+            ? targetWrapId
+            : `relay-a-page-${pageIndex + 1}-wrap-${eventIndex}`,
+        kind: 1_059,
+        pubkey: `ephemeral-a-${pageIndex}-${eventIndex}`,
+        created_at: 4_000 - pageIndex * 400 - eventIndex,
+        content: "wrapped",
+        tags: [["p", MERCHANT]],
+      }))
+    )
+    const pagesByRelay = new Map([
+      [relayA, relayAPages],
+      [
+        relayB,
+        [
+          Array.from({ length: 400 }, (_, index) => ({
+            id: `relay-b-wrap-${index}`,
+            kind: 1_059,
+            pubkey: `ephemeral-b-${index}`,
+            created_at: 2_000 - index,
+            content: "wrapped",
+            tags: [["p", MERCHANT]],
+          })),
+          [],
+        ],
+      ],
+      [
+        relayC,
+        [
+          Array.from({ length: 400 }, (_, index) => ({
+            id: `relay-c-wrap-${index}`,
+            kind: 1_059,
+            pubkey: `ephemeral-c-${index}`,
+            created_at: 1_500 - index,
+            content: "wrapped",
+            tags: [["p", MERCHANT]],
+          })),
+          [],
+        ],
+      ],
+    ])
+    const callsByRelay = new Map<string, number>()
+
+    __setCommerceTestOverrides({
+      allowMissingProtectedReadAuthorization: true,
+      getNdk: async () => ({ signer: {} }) as never,
+      resolveInboxRelayUrls: async () => [relayA, relayB, relayC],
+      getCachedOrderMessages: async () => [],
+      putCachedOrderMessages: async () => undefined,
+      getCachedDirectMessages: async () => [],
+      putCachedDirectMessages: async () => undefined,
+      readProtectedInbox: async (options) => {
+        const relayUrl = options.relayUrls[0]!
+        const pageIndex = callsByRelay.get(relayUrl) ?? 0
+        callsByRelay.set(relayUrl, pageIndex + 1)
+        const events = pagesByRelay.get(relayUrl)?.[pageIndex] ?? []
+        return {
+          events,
+          coverage: "complete",
+          auth: {
+            state: "not_challenged",
+            challengedCount: 0,
+            succeededCount: 0,
+            failedCount: 0,
+          },
+          relayResult: {
+            status: "success",
+            observations: [],
+            relays: [],
+            attemptedCount: 1,
+            completedCount: 1,
+            failedCount: 0,
+            authoritativeEmpty: events.length === 0,
+          },
+        } as never
+      },
+      giftUnwrap: async (event) =>
+        (event.id === targetWrapId
+          ? orderRumor(MERCHANT)
+          : {
+              id: `ignored-${event.id}`,
+              kind: 1,
+              pubkey: BUYER,
+              created_at: event.created_at,
+              content: "ignored",
+              tags: [],
+            }) as never,
+    })
+
+    const result = await getMerchantConversationList({
+      principalPubkey: MERCHANT,
+      sort: "merchant_priority",
+    })
+
+    expect(callsByRelay.get(relayA)).toBe(4)
     expect(result.data.map(({ orderId }) => orderId)).toEqual([
       `order-${MERCHANT}`,
     ])
@@ -558,6 +684,71 @@ describe("Market and Merchant protected inbox integration", () => {
     expect(persisted).not.toContain("challenge-")
     expect(persisted).not.toContain("22242")
     expect(persisted).not.toContain("authentication")
+  })
+
+  it("preserves authenticated order authority across a cache-only refresh", async () => {
+    const persistedRows = new Map<string, CachedOrderMessage>()
+    __setCommerceTestOverrides({
+      getNdk: async () => ({ signer: {} }) as never,
+      resolveInboxRelayUrls: async () => [RELAY_URL],
+      getCachedOrderMessages: async () => [...persistedRows.values()],
+      putCachedOrderMessages: async (rows) => {
+        for (const row of rows) persistedRows.set(row.id, row)
+      },
+      getCachedDirectMessages: async () => [],
+      putCachedDirectMessages: async () => undefined,
+      giftUnwrap: async (event) => {
+        const recipient = event.tags.find((tag) => tag[0] === "p")?.[1]
+        return recipient ? (guestOrderRumor(recipient) as never) : null
+      },
+    })
+    installProtectedReadSigner(signer(MERCHANT_KEY), MERCHANT, () => true)
+
+    const first = await getMerchantConversationList({
+      principalPubkey: MERCHANT,
+    })
+    expect(first.data).toHaveLength(1)
+    expect(persistedRows.size).toBe(1)
+    const second = await getMerchantConversationList({
+      principalPubkey: MERCHANT,
+    })
+    const inboundOrder = second.data[0]?.messages.find(
+      (message) => message.type === "order"
+    )
+    if (!inboundOrder || inboundOrder.type !== "order") {
+      throw new Error("Expected the refreshed authenticated inbound order")
+    }
+    let transported = 0
+
+    const published = await publishMerchantOrderMessage(
+      {
+        merchantPubkey: MERCHANT,
+        buyerPubkey: BUYER,
+        orderId: inboundOrder.orderId,
+        type: "status_update",
+        tags: [["status", "accepted"]],
+        payload: { status: "accepted" },
+        delivery: "self_only",
+        inboundOrder,
+      },
+      {
+        getNdk: () =>
+          ({ signer: { user: async () => ({ pubkey: MERCHANT }) } }) as never,
+        now: () => 1_700_000_200_000,
+        publishPrivateMessage: async () => {
+          transported += 1
+          return {
+            selfCopyError: null,
+            deliveryRoute: "compatibility_order",
+          } as never
+        },
+        cacheParsedOrderMessage: async () => undefined,
+      }
+    )
+
+    expect(second.data).toHaveLength(1)
+    expect(transported).toBe(1)
+    expect(published.deliveryRoute).toBe("compatibility_order")
   })
 
   it("keeps cached orders visible when every relay rejects authentication", async () => {

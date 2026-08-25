@@ -184,8 +184,9 @@ than forcing every event into one strictly linear status:
 
 Explicit signed-in orders and loaded legacy order rumors without an identity
 marker are `nostr_replyable`; explicit guest orders are `guest_out_of_band`;
-orderless partial reads remain `unknown` and may write merchant self-copies but
-must not claim buyer delivery.
+orderless partial reads remain `unknown` and display-only. They must recover the
+authenticated inbound order rumor before minting a merchant self-record scope
+or publishing any lifecycle write, and they must not claim buyer delivery.
 
 These axes drive a single contextual next-action surface rather than exposing a
 general-purpose status console as the primary workflow:
