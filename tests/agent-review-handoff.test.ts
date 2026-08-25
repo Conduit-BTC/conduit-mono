@@ -62,7 +62,7 @@ const sourceRunMarker = (headSha: string, runId = "321", runAttempt = "1") =>
   `<!-- conduit:sudden-review run=${runId} attempt=${runAttempt} head=${headSha} -->`
 
 const cleanReviewBody = (headSha: string, runId = "321", runAttempt = "1") =>
-  `${sourceRunMarker(headSha, runId, runAttempt)}\n<!-- conduit:sudden-review clean head=${headSha} -->\n## Verdict\n**Ready for human approval**\nMerge-readiness verdict: READY FOR HUMAN APPROVAL\nNo actionable findings.\n\n## Summary\n- Current-head review is clean.\n\n## Evidence\nNo public context update needed\nReviewer-confirmed QA disposition: Maintainer-owned validation\n\n<details>\n<summary>Residual risks and automation limits</summary>\n\nWhat can still be wrong if all visible checks are green?\n- Deployment behavior remains maintainer-owned.\n\n${automationResidual}\n</details>`
+  `${sourceRunMarker(headSha, runId, runAttempt)}\n<!-- conduit:sudden-review clean head=${headSha} -->\n## Verdict\n**Ready for human approval**\nMerge-readiness verdict: READY FOR HUMAN APPROVAL\nNo actionable findings.\n\n## Summary\n- Current-head review is clean.\n\n## Evidence\nNo public context update needed.\nReviewer-confirmed QA disposition: Maintainer-owned validation\n\n<details>\n<summary>Residual risks and automation limits</summary>\n\nWhat can still be wrong if all visible checks are green?\n- Deployment behavior remains maintainer-owned.\n\n${automationResidual}\n</details>`
 
 const getNamedJob = (workflow: string, name: string) => {
   const start = workflow.indexOf(`  ${name}:\n`)
