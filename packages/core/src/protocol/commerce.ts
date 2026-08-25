@@ -508,9 +508,17 @@ function publicReadRelayUrls(): string[] {
   })
 }
 
+function commerceFallbackRelayUrls(): string[] {
+  return uniqueStrings([
+    ...config.appBackplaneRelayUrls,
+    ...config.commerceDiscoveryRelayUrls,
+    ...config.corePublicFallbackRelayUrls,
+  ])
+}
+
 function commerceReadRelayUrls(): string[] {
   return getCommerceReadRelayUrls({
-    fallbackRelayUrls: config.defaultRelays,
+    fallbackRelayUrls: commerceFallbackRelayUrls(),
   })
 }
 
@@ -586,7 +594,7 @@ async function planCommerceReadRelayPlan(input: {
     switch (input.intent) {
       case "commerce_products":
       case "author_products":
-        return config.defaultRelays
+        return commerceFallbackRelayUrls()
       default:
         return config.corePublicFallbackRelayUrls.length > 0
           ? config.corePublicFallbackRelayUrls

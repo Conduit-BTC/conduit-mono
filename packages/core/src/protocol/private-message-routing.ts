@@ -599,7 +599,7 @@ function declarationForContext(
 
 /** Stable shared relays used to make declarations discoverable cross-client. */
 export function sharedInboxDiscoveryRelayUrls(): string[] {
-  return publicRelayHintUrls(config.commerceDmFallbackRelayUrls).slice(
+  return publicRelayHintUrls(config.dmDeclarationDiscoveryRelayUrls).slice(
     0,
     MAX_SHARED_INBOX_DISCOVERY_RELAYS
   )

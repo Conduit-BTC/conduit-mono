@@ -7,6 +7,7 @@ import {
   __setRelayListTestOverrides,
   __setRelayPublishTestOverrides,
   CANONICAL_APP_WRITE_RELAYS,
+  CANONICAL_COMMERCE_DISCOVERY_RELAYS,
   deriveRelayOutcomes,
   EVENT_KINDS,
   planPublishRelays,
@@ -1080,6 +1081,9 @@ describe("planPublishRelays", () => {
     expect(attempts[0]).toEqual([normalizedPrimaryRelay])
     expect(attempts[1]?.length).toBeGreaterThan(0)
     expect(attempts[1]).not.toContain(normalizedPrimaryRelay)
+    for (const relayUrl of CANONICAL_COMMERCE_DISCOVERY_RELAYS) {
+      expect(attempts[1]).toContain(`${relayUrl}/`)
+    }
     expect(result.successfulRelayUrls.length).toBe(1)
     expect(result.failedRelayUrls).toContain(primaryRelay)
   })

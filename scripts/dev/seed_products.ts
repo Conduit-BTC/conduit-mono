@@ -14,7 +14,7 @@ function parseRelayUrls(): string[] {
   const raw =
     process.env.SEED_RELAY_URLS ||
     process.env.VITE_DEFAULT_RELAY_URL ||
-    "wss://relay.damus.io,wss://relay.primal.net"
+    "ws://127.0.0.1:7777"
 
   const urls = raw
     .split(",")
@@ -121,7 +121,8 @@ function defaultProducts(): SeedProduct[] {
           dim: "1200x800",
         },
       ],
-      content: "Includes relay setup, listing basics, and payment handle check.",
+      content:
+        "Includes relay setup, listing basics, and payment handle check.",
       tags: ["service"],
     },
     {
@@ -150,7 +151,7 @@ async function main() {
   if (!nsec) {
     throw new Error(
       "Missing SEED_NSEC. For safety we require an explicit Nostr nsec for publishing sample listings.\n" +
-        "Create a fresh test key and keep it out of apps; use this script only for seeding." 
+        "Create a fresh test key and keep it out of apps; use this script only for seeding."
     )
   }
 
@@ -199,7 +200,9 @@ async function main() {
   }
 
   console.log("Done.")
-  console.log("Tip: point your app's VITE_DEFAULT_RELAY_URL to one of the relays above to see the seeded listings.")
+  console.log(
+    "Tip: point your app's VITE_DEFAULT_RELAY_URL to one of the relays above to see the seeded listings."
+  )
 }
 
 await main()

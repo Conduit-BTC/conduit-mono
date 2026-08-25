@@ -3,9 +3,11 @@ import {
   assertSafeNip65RelayList,
   CANONICAL_APP_BACKPLANE_RELAYS,
   CANONICAL_APP_WRITE_RELAYS,
+  CANONICAL_COMMERCE_DISCOVERY_RELAYS,
   CANONICAL_COMMERCE_DM_FALLBACK_RELAYS,
   CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS,
   CANONICAL_DEFAULT_RELAYS,
+  CANONICAL_DM_DECLARATION_DISCOVERY_RELAYS,
   CANONICAL_DM_COMPATIBILITY_ORDER_RELAYS,
   CANONICAL_DM_INBOX_DEFAULT_RELAYS,
   CANONICAL_SEARCH_INDEX_RELAYS,
@@ -135,33 +137,41 @@ describe("relay settings protocol helpers", () => {
     expect(CANONICAL_APP_WRITE_RELAYS).toEqual(["wss://relay.conduit.market"])
     expect(CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS).toEqual([
       "wss://nos.lol",
-      "wss://relay.damus.io",
-      "wss://relay.nostr.net",
+      "wss://relay.ditto.pub",
+      "wss://relay.primal.net",
     ])
-    expect(CANONICAL_SEARCH_INDEX_RELAYS).toEqual(["wss://relay.nostr.band"])
+    expect(CANONICAL_COMMERCE_DISCOVERY_RELAYS).toEqual([
+      "wss://relay.plebeian.market",
+      "wss://relay.ditto.pub",
+    ])
+    expect(CANONICAL_SEARCH_INDEX_RELAYS).toEqual(["wss://relay.ditto.pub"])
+    expect(CANONICAL_DM_DECLARATION_DISCOVERY_RELAYS).toEqual([
+      "wss://relay.conduit.market",
+      "wss://relay.ditto.pub",
+      "wss://nos.lol",
+      "wss://relay.primal.net",
+    ])
     expect(CANONICAL_COMMERCE_DM_FALLBACK_RELAYS).toEqual([
       "wss://relay.conduit.market",
+      "wss://relay.ditto.pub",
       "wss://inbox.azzamo.net",
       "wss://nos.lol",
-      "wss://relay.damus.io",
-      "wss://relay.nostr.net",
     ])
     expect(CANONICAL_DM_INBOX_DEFAULT_RELAYS).toEqual([
-      "wss://nos.lol",
-      "wss://relay.damus.io",
-      "wss://relay.nostr.net",
+      "wss://relay.conduit.market",
+      "wss://relay.ditto.pub",
     ])
     expect(CANONICAL_ZAP_PUBLIC_RELAYS).toEqual([
       "wss://nos.lol",
-      "wss://relay.damus.io",
-      "wss://relay.nostr.net",
-      "wss://relay.nostr.band",
+      "wss://relay.ditto.pub",
+      "wss://relay.primal.net",
+      "wss://relay.plebeian.market",
     ])
     expect(CANONICAL_DEFAULT_RELAYS).toEqual([
       "wss://relay.conduit.market",
       "wss://nos.lol",
-      "wss://relay.damus.io",
-      "wss://relay.nostr.net",
+      "wss://relay.ditto.pub",
+      "wss://relay.primal.net",
     ])
     for (const relay of CANONICAL_DEFAULT_RELAYS) {
       expect(config.defaultRelays).toContain(relay)
@@ -171,7 +181,13 @@ describe("relay settings protocol helpers", () => {
     expect(config.corePublicFallbackRelayUrls).toEqual(
       CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS
     )
+    expect(config.commerceDiscoveryRelayUrls).toEqual(
+      CANONICAL_COMMERCE_DISCOVERY_RELAYS
+    )
     expect(config.searchIndexRelayUrls).toEqual(CANONICAL_SEARCH_INDEX_RELAYS)
+    expect(config.dmDeclarationDiscoveryRelayUrls).toEqual(
+      CANONICAL_DM_DECLARATION_DISCOVERY_RELAYS
+    )
     expect(config.commerceDmFallbackRelayUrls).toEqual(
       CANONICAL_COMMERCE_DM_FALLBACK_RELAYS
     )
@@ -191,7 +207,9 @@ describe("relay settings protocol helpers", () => {
     expect(getRelayBucketConfigs().map((bucket) => bucket.id)).toEqual([
       "app_backplane",
       "core_public_fallback",
+      "commerce_discovery",
       "search_index",
+      "dm_declaration_discovery",
       "commerce_dm_fallback",
       "dm_inbox_default",
       "dm_compatibility_order",
@@ -201,8 +219,13 @@ describe("relay settings protocol helpers", () => {
     expect(config.nip89RelayHint).toBe("wss://relay.conduit.market")
     expect(config.defaultRelays).not.toContain("wss://conduitl2.fly.dev")
     expect(config.defaultRelays).not.toContain("wss://relay.plebeian.market")
-    expect(config.defaultRelays).not.toContain("wss://relay.primal.net")
     expect(config.defaultRelays).not.toContain("wss://nostr.mom")
+    const canonicalRelays = getRelayBucketConfigs().flatMap(
+      (bucket) => bucket.relayUrls
+    )
+    expect(canonicalRelays).not.toContain("wss://relay.damus.io")
+    expect(canonicalRelays).not.toContain("wss://relay.nostr.band")
+    expect(canonicalRelays).not.toContain("wss://relay.nostr.net")
     expect(config.defaultRelays).not.toContain("wss://relay.minibits.cash")
 
     const settings = createDefaultRelaySettings({
