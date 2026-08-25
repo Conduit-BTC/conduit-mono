@@ -18,13 +18,24 @@ type Row = {
   senderPubkey: string
   recipientPubkey: string
   content: string
+  orderCompanion?: {
+    orderId: string
+    orderRumorId: string
+  }
   kind: number
   createdAt: number
   read: 0 | 1
 }
 
 let directRows: Row[] = []
-let orderRows: Array<{ id: string; rawContent: string }> = []
+let orderRows: Array<{
+  id: string
+  orderId?: string
+  type?: string
+  senderPubkey?: string
+  recipientPubkey?: string
+  rawContent: string
+}> = []
 
 function giftWrapEvent(id: string, recipient = BUYER) {
   return {
@@ -43,6 +54,8 @@ function directRumor(params: {
   recipient: string
   content: string
   createdAt: number
+  subject?: string
+  extraTags?: string[][]
 }) {
   return {
     id: params.id,
@@ -50,7 +63,11 @@ function directRumor(params: {
     pubkey: params.sender,
     created_at: params.createdAt,
     content: params.content,
-    tags: [["p", params.recipient]],
+    tags: [
+      ["p", params.recipient],
+      ...(params.subject ? [["subject", params.subject]] : []),
+      ...(params.extraTags ?? []),
+    ],
   }
 }
 
@@ -108,6 +125,10 @@ beforeEach(() => {
           row,
         ]
       }
+    },
+    deleteCachedDirectMessages: async (ids) => {
+      const deleted = new Set(ids)
+      directRows = directRows.filter((row) => !deleted.has(row.id))
     },
     getCachedOrderMessages: async () => orderRows as never,
     putCachedOrderMessages: async (rows) => {
@@ -363,6 +384,260 @@ describe("general direct-message gateway", () => {
     expect(result.data[0]?.preview).toBe("do you ship to NZ?")
     expect(result.data[0]?.unreadFromCounterparty).toBe(1)
     expect(orderRows).toHaveLength(1)
+  })
+
+  it("keeps exact order companions out of the generic messages inbox", async () => {
+    const unwrapCalls: Record<string, number> = {}
+    orderRows = [
+      {
+        id: "cached-authoritative-order",
+        orderId: "order-1",
+        type: "order",
+        senderPubkey: MERCHANT,
+        recipientPubkey: BUYER,
+        rawContent: "{}",
+      },
+    ]
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
+          ? ([
+              giftWrapEvent("wrap-order-companion"),
+              giftWrapEvent("wrap-unmatched-companion"),
+              giftWrapEvent("wrap-subject-only"),
+              giftWrapEvent("wrap-normal-subject"),
+              giftWrapEvent("wrap-human-marker"),
+            ] as never)
+          : [],
+      giftUnwrap: async (event) => {
+        unwrapCalls[event.id] = (unwrapCalls[event.id] ?? 0) + 1
+        return directRumor({
+          id: event.id.replace("wrap-", "dm-"),
+          sender: MERCHANT,
+          recipient: BUYER,
+          content:
+            event.id === "wrap-order-companion"
+              ? "A new order was sent to you through Conduit Market.\nReview it at: https://sell.conduit.market/orders?order=order-1"
+              : event.id === "wrap-unmatched-companion"
+                ? "A new order was sent to you through Conduit Market.\nReview it at: https://sell.conduit.market/orders?order=missing-order"
+                : event.id === "wrap-subject-only"
+                  ? "A normal message can use the same subject."
+                  : event.id === "wrap-human-marker"
+                    ? "Reply on Signal, not here."
+                    : "This remains a normal conversation message.",
+          createdAt:
+            event.id === "wrap-unmatched-companion"
+              ? 100
+              : event.id === "wrap-human-marker"
+                ? 99
+                : 101,
+          subject:
+            event.id !== "wrap-normal-subject"
+              ? "conduit-order-notification"
+              : "conduit-order-notification-followup",
+          extraTags:
+            event.id === "wrap-order-companion" ||
+            event.id === "wrap-unmatched-companion" ||
+            event.id === "wrap-human-marker"
+              ? [
+                  [
+                    "order",
+                    event.id === "wrap-unmatched-companion"
+                      ? "missing-order"
+                      : "order-1",
+                  ],
+                  [
+                    "conduit",
+                    "order-companion",
+                    "1",
+                    event.id === "wrap-unmatched-companion"
+                      ? "missing-order-event"
+                      : "cached-authoritative-order",
+                  ],
+                  ["client", "Conduit Market"],
+                ]
+              : [],
+        }) as never
+      },
+    })
+
+    const first = await getDirectMessageConversationList({
+      principalPubkey: BUYER,
+    })
+    const second = await getDirectMessageConversationList({
+      principalPubkey: BUYER,
+    })
+
+    expect(first.data).toHaveLength(1)
+    expect(first.data[0]?.preview).toBe(
+      "This remains a normal conversation message."
+    )
+    expect(directRows.map((row) => row.id)).toEqual([
+      "dm-subject-only",
+      "dm-normal-subject",
+      "dm-human-marker",
+      "dm-unmatched-companion",
+    ])
+    expect(
+      directRows.find((row) => row.id === "dm-unmatched-companion")
+    ).toMatchObject({
+      read: 1,
+      orderCompanion: {
+        orderId: "missing-order",
+        orderRumorId: "missing-order-event",
+      },
+    })
+    expect(unwrapCalls).toEqual({
+      "wrap-order-companion": 1,
+      "wrap-unmatched-companion": 1,
+      "wrap-subject-only": 1,
+      "wrap-normal-subject": 1,
+      "wrap-human-marker": 1,
+    })
+    expect(second.data).toEqual(first.data)
+  })
+
+  it("reconciles a pending companion when its authoritative order arrives later", async () => {
+    let unwrapCalls = 0
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
+          ? ([giftWrapEvent("wrap-late-companion")] as never)
+          : [],
+      giftUnwrap: async () => {
+        unwrapCalls += 1
+        return directRumor({
+          id: "dm-late-companion",
+          sender: MERCHANT,
+          recipient: BUYER,
+          content:
+            "A new order was sent to you through Conduit Market.\n" +
+            "Review it at: https://sell.conduit.market/orders?order=late-order",
+          createdAt: 101,
+          subject: "conduit-order-notification",
+          extraTags: [
+            ["order", "late-order"],
+            ["conduit", "order-companion", "1", "late-order-event"],
+            ["client", "Conduit Market"],
+          ],
+        }) as never
+      },
+    })
+
+    const beforeOrder = await getDirectMessageConversationList({
+      principalPubkey: BUYER,
+    })
+
+    expect(beforeOrder.data).toHaveLength(1)
+    expect(beforeOrder.data[0]?.unreadFromCounterparty).toBe(0)
+    expect(beforeOrder.data[0]?.preview).toBe(
+      "A new order was sent to you through Conduit Market.\n" +
+        "Review it at: https://sell.conduit.market/orders?order=late-order"
+    )
+    expect(directRows).toMatchObject([
+      {
+        id: "dm-late-companion",
+        read: 1,
+        orderCompanion: {
+          orderId: "late-order",
+          orderRumorId: "late-order-event",
+        },
+      },
+    ])
+
+    expect(
+      await markDirectMessageConversationRead({
+        principalPubkey: BUYER,
+        counterpartyPubkey: MERCHANT,
+        transport: "nip17",
+      })
+    ).toBe(0)
+    const beforeOrderRefresh = await getDirectMessageConversationList({
+      principalPubkey: BUYER,
+    })
+    expect(beforeOrderRefresh.data[0]?.unreadFromCounterparty).toBe(0)
+
+    orderRows = [
+      {
+        id: "late-order-event",
+        orderId: "late-order",
+        type: "order",
+        senderPubkey: MERCHANT,
+        recipientPubkey: BUYER,
+        rawContent: "{}",
+      },
+    ]
+    const afterOrder = await getDirectMessageConversationList({
+      principalPubkey: BUYER,
+    })
+
+    expect(afterOrder.data).toHaveLength(0)
+    expect(directRows).toHaveLength(0)
+    expect(orderRows).toHaveLength(1)
+    expect(unwrapCalls).toBe(1)
+  })
+
+  it("scrubs a previously cached canonical companion after order evidence exists", async () => {
+    directRows = [
+      {
+        id: "cached-companion",
+        senderPubkey: MERCHANT,
+        recipientPubkey: BUYER,
+        content:
+          "A new order was sent to you through Conduit Market.\n" +
+          "Review it at: https://sell.conduit.market/orders?order=cached-order",
+        orderCompanion: {
+          orderId: "cached-order",
+          orderRumorId: "cached-order-event",
+        },
+        kind: EVENT_KINDS.DIRECT_MESSAGE,
+        createdAt: 100,
+        read: 0,
+      },
+      {
+        id: "ambiguous-legacy-copy",
+        senderPubkey: MERCHANT,
+        recipientPubkey: BUYER,
+        content:
+          "A new order was sent to you through Conduit Market.\n" +
+          "Review it at: https://sell.conduit.market/orders?order=cached-order",
+        kind: EVENT_KINDS.DIRECT_MESSAGE,
+        createdAt: 99,
+        read: 0,
+      },
+      {
+        id: "cached-human-message",
+        senderPubkey: MERCHANT,
+        recipientPubkey: BUYER,
+        content: "Reply on Signal, not here.",
+        kind: EVENT_KINDS.DIRECT_MESSAGE,
+        createdAt: 101,
+        read: 0,
+      },
+    ]
+    orderRows = [
+      {
+        id: "cached-order-event",
+        orderId: "cached-order",
+        type: "order",
+        senderPubkey: MERCHANT,
+        recipientPubkey: BUYER,
+        rawContent: "{}",
+      },
+    ]
+    __setCommerceTestOverrides({ fetchEventsFanout: async () => [] })
+
+    const result = await getDirectMessageConversationList({
+      principalPubkey: BUYER,
+    })
+
+    expect(result.data).toHaveLength(1)
+    expect(result.data[0]?.preview).toBe("Reply on Signal, not here.")
+    expect(result.data[0]?.unreadFromCounterparty).toBe(2)
+    expect(directRows.map((row) => row.id)).toEqual([
+      "ambiguous-legacy-copy",
+      "cached-human-message",
+    ])
   })
 
   it("preserves complete preview content for presentation-time formatting", async () => {

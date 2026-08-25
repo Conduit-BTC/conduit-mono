@@ -3,6 +3,8 @@ import {
   EVENT_KINDS,
   appendConduitClientTag,
   cacheParsedOrderMessage,
+  createOrderCompanionNotificationRumor,
+  createValidatedGuestOrderCompanion,
   createValidatedOrderRouteScope,
   getNdk,
   parseOrderMessageRumorEvent,
@@ -10,6 +12,8 @@ import {
   type OrderDeliveryRoute,
   type OrderRelayDeliveryRecord,
 } from "@conduit/core"
+
+import { inferMerchantOrigin } from "./merchant-links"
 
 /**
  * Shared buyer order-message publishing (extracted from `checkout.tsx` so the
@@ -27,7 +31,12 @@ export type BuyerMessageDeliveryResult = {
   deliveryRoute: OrderDeliveryRoute
   /** Exact encrypted recipient wrap + per-relay outcomes for bounded retry. */
   orderRelayDelivery?: OrderRelayDeliveryRecord
+  /** Non-blocking, content-free outcome for the advisory notification. */
+  companionNotification: Promise<OrderCompanionNotificationStatus>
 }
+
+export type OrderCompanionNotificationStatus =
+  "sent" | "skipped_non_declared_route" | "skipped_non_order" | "failed"
 
 export type BuyerOrderSigningIdentity =
   | {
@@ -100,6 +109,77 @@ export function prepareBuyerRumor(rumor: NDKEvent, buyerPubkey: string): void {
     rumor.id = rumor.getEventHash()
   } catch (error) {
     console.warn("Failed to derive buyer order rumor id", error)
+  }
+}
+
+/**
+ * Build the advisory kind-14 rumor from the authoritative order identity.
+ * Reusing the order id and timestamp keeps the inner rumor stable if a caller
+ * legitimately reconstructs it, while NIP-59 still randomizes each outer wrap.
+ */
+export function buildOrderCompanionNotificationRumor(
+  authoritativeOrder: NDKEvent,
+  buyerPubkey: string,
+  merchantPubkey: string,
+  merchantOrigin = inferMerchantOrigin()
+): NDKEvent {
+  return createOrderCompanionNotificationRumor({
+    authoritativeOrder,
+    senderPubkey: buyerPubkey,
+    recipientPubkey: merchantPubkey,
+    buyerIdentityKind: "signed_in",
+    merchantOrigin,
+  })
+}
+
+async function publishOrderCompanionNotification(input: {
+  authoritativeOrder: NDKEvent
+  buyerIdentity: BuyerOrderSigningIdentity & { signer: NDKSigner }
+  merchantPubkey: string
+  deliveryRoute: OrderDeliveryRoute
+  publish: typeof publishPrivateMessage
+}): Promise<OrderCompanionNotificationStatus> {
+  const messageType = input.authoritativeOrder.tags.find(
+    (tag) => tag[0] === "type"
+  )?.[1]
+  if (messageType !== "order") return "skipped_non_order"
+  if (input.deliveryRoute !== "declared_inbox") {
+    return "skipped_non_declared_route"
+  }
+
+  try {
+    const guestCompanion =
+      input.buyerIdentity.kind === "guest_ephemeral"
+        ? createValidatedGuestOrderCompanion({
+            authoritativeOrder: input.authoritativeOrder,
+            senderPubkey: input.buyerIdentity.pubkey,
+            recipientPubkey: input.merchantPubkey,
+            merchantOrigin: inferMerchantOrigin(),
+          })
+        : undefined
+    const companion =
+      guestCompanion?.companion ??
+      buildOrderCompanionNotificationRumor(
+        input.authoritativeOrder,
+        input.buyerIdentity.pubkey,
+        input.merchantPubkey
+      )
+    await input.publish({
+      rumor: companion,
+      senderPubkey: input.buyerIdentity.pubkey,
+      recipientPubkey: input.merchantPubkey,
+      signer: input.buyerIdentity.signer,
+      rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+      selfCopy: false,
+      ...(guestCompanion
+        ? { validatedGuestOrderCompanionScope: guestCompanion.scope }
+        : {}),
+    })
+    return "sent"
+  } catch {
+    // The companion is advisory. Its content and failure details must not enter
+    // checkout delivery state, relay retry records, or buyer-facing errors.
+    return "failed"
   }
 }
 
@@ -178,10 +258,22 @@ export async function publishBuyerOrderMessage(
       : await (dependencies.cacheBuyerOrderRumorFn ?? cacheBuyerOrderRumor)(
           rumor
         )
+  // Start the advisory attempt only after the authoritative order has a relay
+  // ACK and any signed-in local recovery copy is committed. Do not await it:
+  // a slow or unavailable notification path must never keep checkout in a
+  // retryable state after the order itself was accepted.
+  const companionNotification = publishOrderCompanionNotification({
+    authoritativeOrder: rumor,
+    buyerIdentity,
+    merchantPubkey,
+    deliveryRoute,
+    publish,
+  })
   return {
     buyerSelfCopyError,
     localCacheError,
     deliveryRoute,
+    companionNotification,
     ...(orderRelayDelivery ? { orderRelayDelivery } : {}),
   }
 }

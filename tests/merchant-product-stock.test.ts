@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 import { EVENT_KINDS, type CommerceProductRecord } from "@conduit/core"
 import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
+  applyOrderStockTarget,
   buildOrderStockAdjustments,
   doesOrderStockDecisionCoverAdjustment,
   getOrderStockAdjustmentForDisplay,
@@ -680,6 +681,190 @@ describe("merchant product stock", () => {
         persistedDecision: { kind: "declined", decidedAt: 3 },
       })
     ).toBe(true)
+  })
+
+  it("preserves calculated and custom target intent when both publish the same stock", () => {
+    const merchant = "a".repeat(64)
+    const orderId = "order-matching-custom-stock"
+    const record = productRecord({ stock: 2 })
+    const adjustment = buildOrderStockAdjustments({
+      orderId,
+      merchantPubkey: merchant,
+      items: [{ productId: record.addressId, quantity: 5 }],
+      productRecords: [record],
+    })[0]!
+
+    const calculated = applyOrderStockTarget(
+      adjustment,
+      adjustment.nextStock,
+      "calculated"
+    )
+    const custom = applyOrderStockTarget(
+      adjustment,
+      adjustment.nextStock,
+      "custom"
+    )
+
+    expect(calculated).toBe(adjustment)
+    expect(calculated.targetMode).toBeUndefined()
+    expect(custom).toMatchObject({
+      nextStock: 0,
+      targetMode: "custom",
+    })
+
+    const storage = new MemoryStorage()
+    const store = new ProductStockDecisionStore(storage)
+    expect(
+      store.set(merchant, orderId, custom.addressId, "applied", custom)
+    ).toBe(true)
+    const restoredCustomDecision = new ProductStockDecisionStore(storage).get(
+      merchant,
+      orderId,
+      custom.addressId
+    )
+    const replenishedRecord = {
+      ...productRecord({ stock: 10 }),
+      eventId: "f".repeat(64),
+    }
+    const afterRestock = buildOrderStockAdjustments({
+      orderId,
+      merchantPubkey: merchant,
+      items: [{ productId: replenishedRecord.addressId, quantity: 5 }],
+      productRecords: [replenishedRecord],
+    })[0]!
+
+    expect(
+      doesOrderStockDecisionCoverAdjustment({
+        adjustment: afterRestock,
+        persistedDecision: restoredCustomDecision,
+      })
+    ).toBe(true)
+    expect(
+      getOrderStockAdjustmentForDisplay({
+        adjustment: afterRestock,
+        persistedDecision: restoredCustomDecision,
+      })
+    ).toBe(afterRestock)
+
+    const calculatedDecision = {
+      kind: "applied" as const,
+      decidedAt: 1,
+      adjustment: calculated,
+    }
+    expect(
+      doesOrderStockDecisionCoverAdjustment({
+        adjustment: afterRestock,
+        persistedDecision: calculatedDecision,
+      })
+    ).toBe(false)
+    expect(
+      getOrderStockAdjustmentForDisplay({
+        adjustment: afterRestock,
+        persistedDecision: calculatedDecision,
+      })
+    ).toMatchObject({
+      quantity: 3,
+      currentStock: 10,
+      nextStock: 7,
+      shortfall: 0,
+    })
+  })
+
+  it("treats a custom published stock value as the merchant's final assertion", () => {
+    const storage = new MemoryStorage()
+    const merchant = "a".repeat(64)
+    const orderId = "order-custom-stock"
+    const record = productRecord({ stock: 5 })
+    const adjustment = buildOrderStockAdjustments({
+      orderId,
+      merchantPubkey: merchant,
+      items: [{ productId: record.addressId, quantity: 2 }],
+      productRecords: [record],
+    })[0]!
+    const custom = applyOrderStockTarget(adjustment, 4, "custom")
+
+    expect(custom).toMatchObject({
+      currentStock: 5,
+      nextStock: 4,
+      targetMode: "custom",
+    })
+
+    const store = new ProductStockDecisionStore(storage)
+    expect(
+      store.set(merchant, orderId, custom.addressId, "applied", custom)
+    ).toBe(true)
+    const persistedDecision = new ProductStockDecisionStore(storage).get(
+      merchant,
+      orderId,
+      custom.addressId
+    )
+    expect(persistedDecision?.adjustment).toEqual(custom)
+
+    const laterRecord = {
+      ...productRecord({ stock: 10 }),
+      eventId: "f".repeat(64),
+    }
+    const laterAdjustment = buildOrderStockAdjustments({
+      orderId,
+      merchantPubkey: merchant,
+      items: [{ productId: laterRecord.addressId, quantity: 2 }],
+      productRecords: [laterRecord],
+    })[0]!
+    expect(
+      doesOrderStockDecisionCoverAdjustment({
+        adjustment: laterAdjustment,
+        persistedDecision,
+      })
+    ).toBe(true)
+  })
+
+  it("dismisses an oversold custom assertion after delivery", () => {
+    const merchant = "a".repeat(64)
+    const orderId = "order-custom-oversold-stock"
+    const record = productRecord({ stock: 2 })
+    const adjustment = buildOrderStockAdjustments({
+      orderId,
+      merchantPubkey: merchant,
+      items: [{ productId: record.addressId, quantity: 5 }],
+      productRecords: [record],
+    })[0]!
+    const custom = applyOrderStockTarget(adjustment, 1, "custom")
+    const persistedDecision = {
+      kind: "applied" as const,
+      decidedAt: 1,
+      adjustment: custom,
+    }
+    const deliveredRecord = {
+      ...productRecord({ stock: 1 }),
+      eventId: "f".repeat(64),
+    }
+    const afterDelivery = buildOrderStockAdjustments({
+      orderId,
+      merchantPubkey: merchant,
+      items: [{ productId: deliveredRecord.addressId, quantity: 5 }],
+      productRecords: [deliveredRecord],
+    })[0]!
+
+    expect(
+      doesOrderStockDecisionCoverAdjustment({
+        adjustment: afterDelivery,
+        persistedDecision,
+      })
+    ).toBe(true)
+    expect(
+      shouldShowOrderStockAdjustment({
+        adjustment: afterDelivery,
+        orderStatus: "processing",
+        hasSessionDecision: false,
+        persistedDecision,
+      })
+    ).toBe(false)
+    expect(
+      getOrderStockAdjustmentForDisplay({
+        adjustment: afterDelivery,
+        persistedDecision,
+      })
+    ).toBe(afterDelivery)
   })
 
   it("keeps a session decision when browser storage is unavailable", () => {
