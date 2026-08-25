@@ -55,6 +55,7 @@
     "smoke:anon-zap": "bun scripts/smoke/anon_zap_authorization.ts",
     "smoke:anon-zap-provider": "bun scripts/smoke/anon_zap_provider.ts",
     "smoke:nip42": "bun scripts/smoke/nip42_protected_read.ts",
+    "smoke:production-relay": "bun scripts/smoke/production_relay_canary.ts",
     "test": "bun test",
     "test:e2e": "playwright test",
     "test:e2e:mobile": "playwright test e2e/mobile-safari-baseline.playwright.ts --project=mobile-chromium --project=mobile-webkit",

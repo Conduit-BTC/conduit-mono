@@ -43,6 +43,9 @@ Reviewers may request a durable contract update when the behavior has broad or l
 
 - `docs/knowledge/mobile-safari-qa-baseline.md`: repeatable mobile browser and
   physical-device matrix for Market, Merchant, Wallet, and booth flows
+- `docs/knowledge/production-relay-canary.md`: separate post-merge and scheduled
+  production-health signal for relay availability, NIP-17 delivery, and
+  recipient-scoped privacy
 
 ### Active Compatibility Exceptions
 
