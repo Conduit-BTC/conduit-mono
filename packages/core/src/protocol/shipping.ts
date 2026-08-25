@@ -94,6 +94,7 @@ const FIXED_STANDARD_SUPPORTED_TAGS = new Set([
   "service",
   "client",
 ])
+const FIXED_STANDARD_PRICE_AMOUNT = /^\d+(?:\.\d+)?$/
 
 export function getShippingOptionAddress(
   pubkey: string,
@@ -443,25 +444,51 @@ export function parseShippingOptionEvent(
     return matches.length === 1 ? matches[0]! : null
   }
 
-  const dTag = getUniqueTag("d")?.[1]?.trim() ?? ""
-  const title = getUniqueTag("title")?.[1]?.trim() ?? ""
-  const service = getUniqueTag("service")?.[1]?.trim().toLowerCase() ?? ""
+  const dTagEntry = getUniqueTag("d")
+  const titleTag = getUniqueTag("title")
+  const priceTag = getUniqueTag("price")
+  const serviceTag = getUniqueTag("service")
+  const clientTags = tags.filter((tag) => tag[0] === "client")
+  if (
+    dTagEntry?.length !== 2 ||
+    titleTag?.length !== 2 ||
+    priceTag?.length !== 3 ||
+    serviceTag?.length !== 2 ||
+    clientTags.length > 1 ||
+    clientTags.some(
+      (tag) => tag.length !== 4 || tag.slice(1).some((value) => !value.trim())
+    )
+  ) {
+    return null
+  }
+
+  const dTag = dTagEntry[1] ?? ""
+  const title = titleTag[1]?.trim() ?? ""
+  const serviceValue = serviceTag[1] ?? ""
+  const service = serviceValue.toLowerCase()
+  if (dTag !== dTag.trim() || serviceValue !== serviceValue.trim()) return null
 
   // ["price", amount, currency]
-  const priceTag = getUniqueTag("price")
-  const price = priceTag ? Number(priceTag[1]) : NaN
-  const currency = normalizeCurrencyCode(priceTag?.[2] ?? "")
+  const priceAmount = priceTag[1] ?? ""
+  const priceCurrency = priceTag[2] ?? ""
+  if (!FIXED_STANDARD_PRICE_AMOUNT.test(priceAmount)) return null
+  if (!priceCurrency || priceCurrency !== priceCurrency.trim()) return null
+  const price = Number(priceAmount)
+  const currency = normalizeCurrencyCode(priceCurrency)
   if (!Number.isFinite(price) || price < 0 || !currency) return null
 
   // ["country", code1, code2, ...] or repeated ["country", code]
+  const countryTags = tags.filter((tag) => tag[0] === "country")
+  const countryValues = countryTags.flatMap((tag) => tag.slice(1))
+  if (
+    countryTags.length === 0 ||
+    countryTags.some((tag) => tag.length < 2) ||
+    countryValues.some((country) => !/^[A-Za-z]{2}$/.test(country))
+  ) {
+    return null
+  }
   const countries = Array.from(
-    new Set(
-      tags
-        .filter((t) => t[0] === "country")
-        .flatMap((t) => t.slice(1))
-        .map((country) => country.trim().toUpperCase())
-        .filter(Boolean)
-    )
+    new Set(countryValues.map((country) => country.toUpperCase()))
   )
 
   if (

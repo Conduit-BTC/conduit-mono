@@ -363,6 +363,84 @@ describe("canonical fixed product shipping", () => {
     ).toBeNull()
   })
 
+  it("rejects malformed required tag shapes and non-decimal prices without reviving older state", () => {
+    const valid = {
+      id: "valid-required-tag-shapes",
+      pubkey: MERCHANT,
+      created_at: 1,
+      tags: [
+        ["d", `${PRODUCT_D_TAG}-shipping-standard`],
+        ["title", "Standard Shipping"],
+        ["price", "5.00", "USD"],
+        ["country", "US"],
+        ["service", "standard"],
+      ],
+    }
+    const replaceTag = (name: string, replacement: string[]) =>
+      valid.tags.map((tag) => (tag[0] === name ? replacement : tag))
+    const malformedCases = [
+      ["whitespace price", replaceTag("price", ["price", " ", "USD"])],
+      ["hex price", replaceTag("price", ["price", "0x10", "USD"])],
+      ["scientific price", replaceTag("price", ["price", "5e1", "USD"])],
+      [
+        "extra price component",
+        replaceTag("price", ["price", "5", "USD", "ignored"]),
+      ],
+      [
+        "extra d component",
+        replaceTag("d", ["d", `${PRODUCT_D_TAG}-shipping-standard`, "ignored"]),
+      ],
+      [
+        "d coordinate whitespace",
+        replaceTag("d", ["d", ` ${PRODUCT_D_TAG}-shipping-standard`]),
+      ],
+      [
+        "extra title component",
+        replaceTag("title", ["title", "Standard Shipping", "ignored"]),
+      ],
+      [
+        "extra service component",
+        replaceTag("service", ["service", "standard", "ignored"]),
+      ],
+      ["service whitespace", replaceTag("service", ["service", " standard "])],
+      ["currency whitespace", replaceTag("price", ["price", "5", " USD "])],
+      [
+        "non-canonical country whitespace",
+        replaceTag("country", ["country", " US "]),
+      ],
+      ["country without a value", replaceTag("country", ["country"])],
+      [
+        "truncated client metadata",
+        [...valid.tags, ["client", "Conduit Market"]],
+      ],
+      [
+        "extended client metadata",
+        [
+          ...valid.tags,
+          [
+            "client",
+            "Conduit Market",
+            `31990:${MERCHANT}:market`,
+            "wss://relay.conduit.market",
+            "ignored",
+          ],
+        ],
+      ],
+    ] as const
+
+    expect(parseShippingOptionEvent(valid)).not.toBeNull()
+    for (const [name, tags] of malformedCases) {
+      const malformedLatest = {
+        ...valid,
+        id: `malformed-${name}`,
+        created_at: 2,
+        tags,
+      }
+      expect(parseShippingOptionEvent(malformedLatest)).toBeNull()
+      expect(selectLatestShippingOptions([valid, malformedLatest])).toEqual([])
+    }
+  })
+
   it("fails closed on every unknown launch tag while allowing client metadata", () => {
     const base = {
       id: "shipping-with-constraints",
@@ -374,7 +452,12 @@ describe("canonical fixed product shipping", () => {
         ["price", "5", "USD"],
         ["country", "US"],
         ["service", "standard"],
-        ["client", "31990:conduit:market"],
+        [
+          "client",
+          "Conduit Market",
+          `31990:${MERCHANT}:market`,
+          "wss://relay.conduit.market",
+        ],
       ],
     }
 
