@@ -122,6 +122,10 @@ beforeEach(() => {
         ]
       }
     },
+    deleteCachedDirectMessages: async (ids) => {
+      const deleted = new Set(ids)
+      directRows = directRows.filter((row) => !deleted.has(row.id))
+    },
     getCachedOrderMessages: async () => orderRows as never,
     putCachedOrderMessages: async (rows) => {
       for (const row of rows as Array<{ id: string; rawContent: string }>) {
@@ -548,6 +552,51 @@ describe("general direct-message gateway", () => {
     expect(directRows).toHaveLength(0)
     expect(orderRows).toHaveLength(1)
     expect(unwrapCalls).toBe(3)
+  })
+
+  it("scrubs a previously cached canonical companion after order evidence exists", async () => {
+    directRows = [
+      {
+        id: "cached-companion",
+        senderPubkey: MERCHANT,
+        recipientPubkey: BUYER,
+        content:
+          "A new order was sent to you through Conduit Market.\n" +
+          "Review it at: https://sell.conduit.market/orders?order=cached-order",
+        kind: EVENT_KINDS.DIRECT_MESSAGE,
+        createdAt: 100,
+        read: 0,
+      },
+      {
+        id: "cached-human-message",
+        senderPubkey: MERCHANT,
+        recipientPubkey: BUYER,
+        content: "Reply on Signal, not here.",
+        kind: EVENT_KINDS.DIRECT_MESSAGE,
+        createdAt: 101,
+        read: 0,
+      },
+    ]
+    orderRows = [
+      {
+        id: "cached-order-event",
+        orderId: "cached-order",
+        type: "order",
+        senderPubkey: MERCHANT,
+        recipientPubkey: BUYER,
+        rawContent: "{}",
+      },
+    ]
+    __setCommerceTestOverrides({ fetchEventsFanout: async () => [] })
+
+    const result = await getDirectMessageConversationList({
+      principalPubkey: BUYER,
+    })
+
+    expect(result.data).toHaveLength(1)
+    expect(result.data[0]?.preview).toBe("Reply on Signal, not here.")
+    expect(result.data[0]?.unreadFromCounterparty).toBe(1)
+    expect(directRows.map((row) => row.id)).toEqual(["cached-human-message"])
   })
 
   it("preserves complete preview content for presentation-time formatting", async () => {

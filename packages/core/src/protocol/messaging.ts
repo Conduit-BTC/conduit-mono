@@ -117,10 +117,9 @@ const GUEST_ORDER_COMPANION_COPY =
 const SIGNED_IN_ORDER_COMPANION_COPY =
   "A new order was sent to you through Conduit Market."
 
-function hasCanonicalOrderCompanionContent(
-  content: string,
-  orderId: string
-): boolean {
+export function getOrderCompanionNotificationContentOrderId(
+  content: string
+): string | null {
   for (const copy of [
     GUEST_ORDER_COMPANION_COPY,
     SIGNED_IN_ORDER_COMPANION_COPY,
@@ -128,15 +127,20 @@ function hasCanonicalOrderCompanionContent(
     const prefix = `${copy}\nReview it at: `
     if (!content.startsWith(prefix)) continue
     const reviewUrl = content.slice(prefix.length)
-    if (!reviewUrl || reviewUrl.includes("\n")) return false
+    if (!reviewUrl || reviewUrl.includes("\n")) return null
     try {
       const parsed = new URL(reviewUrl)
+      const orderIds = parsed.searchParams.getAll("order")
+      const orderId = orderIds.length === 1 ? orderIds[0]?.trim() : null
+      if (!orderId) return null
       return buildMerchantOrderReviewUrl(parsed.origin, orderId) === reviewUrl
+        ? orderId
+        : null
     } catch {
-      return false
+      return null
     }
   }
-  return false
+  return null
 }
 
 /**
@@ -173,7 +177,8 @@ export function getOrderCompanionNotificationIdentity(
     markers[0]?.[2] === ORDER_COMPANION_NOTIFICATION_VERSION &&
     Boolean(markers[0]?.[3]?.trim()) &&
     clients.length === 1 &&
-    hasCanonicalOrderCompanionContent(rumor.content, orders[0]?.[1] ?? "")
+    getOrderCompanionNotificationContentOrderId(rumor.content) ===
+      orders[0]?.[1]?.trim()
   if (!isCanonical) return null
 
   return {

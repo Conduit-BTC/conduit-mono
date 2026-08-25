@@ -49,6 +49,7 @@ import {
   __resetInboxRelayCache,
   createNdkLegacyDmDecrypt,
   decryptLegacyDirectMessage,
+  getOrderCompanionNotificationContentOrderId,
   getOrderCompanionNotificationIdentity,
   parseDirectMessageRumor,
   unwrapGiftWraps,
@@ -403,6 +404,7 @@ type CommerceTestOverrides = {
     principalPubkey: string
   ) => Promise<StoredMessage[]>
   putCachedDirectMessages?: (rows: StoredMessage[]) => Promise<void>
+  deleteCachedDirectMessages?: (ids: string[]) => Promise<void>
   persistProtectedInboxMessages?: (
     orderRows: CachedOrderMessage[],
     directRows: StoredMessage[],
@@ -4722,6 +4724,26 @@ async function storeCachedDirectMessages(rows: StoredMessage[]): Promise<void> {
   await db.messages.bulkPut(rows)
 }
 
+async function deleteCachedDirectMessages(
+  ids: string[],
+  authorization: ProtectedReadAuthorization | null
+): Promise<void> {
+  if (ids.length === 0) return
+  const assertAuthority = () => assertInboxSyncAuthority(authorization)
+  assertAuthority()
+  if (testOverrides.deleteCachedDirectMessages) {
+    await testOverrides.deleteCachedDirectMessages(ids)
+    assertAuthority()
+    return
+  }
+  await db.transaction("rw", db.messages, async () => {
+    assertAuthority()
+    await db.messages.bulkDelete(ids)
+    assertAuthority()
+  })
+  assertAuthority()
+}
+
 async function persistLegacyDirectMessages(
   rows: StoredMessage[],
   authorization: ProtectedReadAuthorization | null
@@ -5230,8 +5252,33 @@ async function fetchParsedDirectMessages(
 ): Promise<RawDirectMessageFetchResult> {
   const authorization = resolveInboxSyncAuthorization(principalPubkey)
   assertInboxSyncAuthority(authorization)
-  const cached = await loadCachedDirectMessages(principalPubkey)
+  let [cached, cachedOrders] = await Promise.all([
+    loadCachedDirectMessages(principalPubkey),
+    loadCachedOrderMessages(principalPubkey),
+  ])
   assertInboxSyncAuthority(authorization)
+  const authoritativeOrderParties = new Set(
+    cachedOrders
+      .filter((row) => row.type === "order")
+      .map(
+        (row) =>
+          `${row.orderId}\u0000${row.senderPubkey.toLowerCase()}\u0000${row.recipientPubkey.toLowerCase()}`
+      )
+  )
+  const staleCompanionIds = cached.flatMap((row) => {
+    if (row.kind !== EVENT_KINDS.DIRECT_MESSAGE) return []
+    const orderId = getOrderCompanionNotificationContentOrderId(
+      row.decrypted ?? row.content
+    )
+    if (!orderId) return []
+    const identity = `${orderId}\u0000${row.senderPubkey.toLowerCase()}\u0000${row.recipientPubkey.toLowerCase()}`
+    return authoritativeOrderParties.has(identity) ? [row.id] : []
+  })
+  if (staleCompanionIds.length > 0) {
+    await deleteCachedDirectMessages(staleCompanionIds, authorization)
+    const staleIds = new Set(staleCompanionIds)
+    cached = cached.filter((row) => !staleIds.has(row.id))
+  }
   const cachedById = new Map<string, ParsedDirectMessage>()
   const unreadMessageIds = new Set<string>()
   for (const row of cached) {

@@ -122,8 +122,10 @@ The exception is constrained as follows:
   inbox and cache. A complete canonical marker without its matching order is
   visible but remains pending rather than being committed to the conversation
   cache or counted as unread, so independent relay propagation can reconcile it
-  when the order arrives later. The encrypted relay event remains available to external
-  clients for local notification behavior.
+  when the order arrives later. Clients must also remove an exact fixed
+  companion left in the conversation cache by an older release once matching
+  authoritative order evidence exists. The encrypted relay event remains
+  available to external clients for local notification behavior.
 - Guest clients must not publish a buyer self-copy, advertise a `kind:10050`
   inbox, poll for merchant replies, or cache the decrypted order payload as
   durable order history.
