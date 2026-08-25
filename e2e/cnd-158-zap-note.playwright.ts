@@ -185,7 +185,7 @@ async function expectHealthyPage(page: Page): Promise<void> {
   ).toHaveCount(0)
 }
 
-test("market shopper custom product zap note presentation is accessible at checkout and in seeded history", async ({
+test("market shopper custom product zap note presentation is accessible at checkout and in seeded history @market", async ({
   page,
 }) => {
   const consoleErrors: string[] = []
