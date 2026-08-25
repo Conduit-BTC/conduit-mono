@@ -22,7 +22,8 @@ Use this order in the review body:
 3. `## Summary`
    - Use at most three short bullets.
 4. `## Evidence`
-   - Include the public-context decision and QA disposition.
+   - Include the exact public-context decision and QA disposition, each on its
+     own unprefixed line.
    - Summarize current-head checks and provenance.
    - Keep the exact QA disposition line unprefixed by a bullet, quote, or code
      fence.
@@ -30,8 +31,11 @@ Use this order in the review body:
    - Include `What can still be wrong if all visible checks are green?`
    - Include the exact mandatory automation residual.
 
-Put provenance markers in HTML comments. Do not repeat actionable finding detail
-in the review body.
+Put provenance markers in HTML comments before the visible body. In a clean
+review, use an exact six-line preamble with no blank lines: run marker, clean
+marker, `## Verdict`, the bold ready verdict, the canonical ready verdict, and
+`No actionable findings.` Put `Reviewed head: <40-character SHA>` inside
+`## Evidence`. Do not repeat actionable finding detail in the review body.
 
 Order inline findings by severity (`P0`, `P1`, `P2`). Each finding includes:
 

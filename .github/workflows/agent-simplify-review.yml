@@ -212,6 +212,72 @@ jobs:
               exit 1
             fi
 
+            summary_heading_line="$(grep -nFx '## Summary' <<< "$review_body" | cut -d: -f1 || true)"
+            evidence_heading_line="$(grep -nFx '## Evidence' <<< "$review_body" | cut -d: -f1 || true)"
+            details_line="$(grep -nFx '<details>' <<< "$review_body" | cut -d: -f1 || true)"
+            details_summary_line="$(grep -nFx '<summary>Residual risks and automation limits</summary>' <<< "$review_body" | cut -d: -f1 || true)"
+            residual_question_line="$(grep -nFx 'What can still be wrong if all visible checks are green?' <<< "$review_body" | cut -d: -f1 || true)"
+            public_context_line="$(grep -nE '^(Public context updated in this PR|No public context update needed|Durable contract or external decision needed)$' <<< "$review_body" | cut -d: -f1 || true)"
+            qa_disposition_line="$(grep -nE '^Reviewer-confirmed QA disposition: (Evidence sign-off|Targeted human QA|Maintainer-owned validation)$' <<< "$review_body" | cut -d: -f1 || true)"
+            reviewed_head_line="$(grep -nFx "Reviewed head: $head_sha" <<< "$review_body" | cut -d: -f1 || true)"
+            automation_residual_line="$(grep -nFx "$automation_residual" <<< "$review_body" | cut -d: -f1 || true)"
+            details_close_line="$(grep -nFx '</details>' <<< "$review_body" | cut -d: -f1 || true)"
+            required_actions_count="$(grep -Fxc '## Required actions' <<< "$review_body" || true)"
+            last_nonempty_line="$(awk 'NF { line = $0 } END { print line }' <<< "$review_body")"
+            if [[ "$(sed -n '1p' <<< "$review_body")" != "$run_marker" ||
+              "$(sed -n '2p' <<< "$review_body")" != "$clean_marker" ||
+              "$(sed -n '3p' <<< "$review_body")" != '## Verdict' ||
+              "$(sed -n '4p' <<< "$review_body")" != '**Ready for human approval**' ||
+              "$(sed -n '5p' <<< "$review_body")" != "$ready_verdict" ||
+              "$(sed -n '6p' <<< "$review_body")" != "$clean_summary" ||
+              "$(grep -Fxc '## Summary' <<< "$review_body" || true)" != "1" ||
+              "$(grep -Fxc '## Evidence' <<< "$review_body" || true)" != "1" ||
+              "$(grep -Fxc '<details>' <<< "$review_body" || true)" != "1" ||
+              "$(grep -Fxc '<summary>Residual risks and automation limits</summary>' <<< "$review_body" || true)" != "1" ||
+              "$(grep -Fxc '</details>' <<< "$review_body" || true)" != "1" ||
+              "$(grep -Fxc 'What can still be wrong if all visible checks are green?' <<< "$review_body" || true)" != "1" ||
+              "$(grep -Ecx '(Public context updated in this PR|No public context update needed|Durable contract or external decision needed)' <<< "$review_body" || true)" != "1" ||
+              "$required_actions_count" != "0" ||
+              ! "$summary_heading_line" =~ ^[0-9]+$ ||
+              ! "$evidence_heading_line" =~ ^[0-9]+$ ||
+              ! "$details_line" =~ ^[0-9]+$ ||
+              ! "$details_summary_line" =~ ^[0-9]+$ ||
+              ! "$residual_question_line" =~ ^[0-9]+$ ||
+              ! "$public_context_line" =~ ^[0-9]+$ ||
+              ! "$qa_disposition_line" =~ ^[0-9]+$ ||
+              ! "$reviewed_head_line" =~ ^[0-9]+$ ||
+              ! "$automation_residual_line" =~ ^[0-9]+$ ||
+              ! "$details_close_line" =~ ^[0-9]+$ ||
+              "$evidence_heading_line" -le "$summary_heading_line" ||
+              "$details_line" -le "$evidence_heading_line" ||
+              "$public_context_line" -le "$evidence_heading_line" ||
+              "$public_context_line" -ge "$details_line" ||
+              "$qa_disposition_line" -le "$evidence_heading_line" ||
+              "$qa_disposition_line" -ge "$details_line" ||
+              "$reviewed_head_line" -le "$evidence_heading_line" ||
+              "$reviewed_head_line" -ge "$details_line" ||
+              "$details_summary_line" -ne $((details_line + 1)) ||
+              "$residual_question_line" -le "$details_summary_line" ||
+              "$automation_residual_line" -le "$residual_question_line" ||
+              "$automation_residual_line" -ge "$details_close_line" ||
+              "$last_nonempty_line" != '</details>' ]]; then
+              echo "The source review does not match the required presentation schema." >&2
+              exit 1
+            fi
+
+            summary_body="$(sed -n "$((summary_heading_line + 1)),$((evidence_heading_line - 1))p" <<< "$review_body")"
+            summary_bullet_count="$(grep -Ec '^- ' <<< "$summary_body" || true)"
+            summary_invalid_count="$(grep -Evc '^$|^- ' <<< "$summary_body" || true)"
+            residual_body="$(sed -n "$((residual_question_line + 1)),$((automation_residual_line - 1))p" <<< "$review_body")"
+            residual_bullet_count="$(grep -Ec '^- ' <<< "$residual_body" || true)"
+            residual_invalid_count="$(grep -Evc '^$|^- ' <<< "$residual_body" || true)"
+            if [[ "$summary_bullet_count" -lt 1 || "$summary_bullet_count" -gt 3 ||
+              "$summary_invalid_count" != "0" || "$residual_bullet_count" -lt 1 ||
+              "$residual_invalid_count" != "0" ]]; then
+              echo "The source review does not match the required presentation schema." >&2
+              exit 1
+            fi
+
             review_comment_count="$(
               gh api --paginate \
                 "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews/$source_review_id/comments?per_page=100" |
@@ -409,6 +475,72 @@ jobs:
             fi
             if [[ "$(grep -Fxc "$automation_residual" <<< "$review_body" || true)" != "1" ]]; then
               echo "The queued source review lacks the exact automation residual." >&2
+              exit 1
+            fi
+
+            summary_heading_line="$(grep -nFx '## Summary' <<< "$review_body" | cut -d: -f1 || true)"
+            evidence_heading_line="$(grep -nFx '## Evidence' <<< "$review_body" | cut -d: -f1 || true)"
+            details_line="$(grep -nFx '<details>' <<< "$review_body" | cut -d: -f1 || true)"
+            details_summary_line="$(grep -nFx '<summary>Residual risks and automation limits</summary>' <<< "$review_body" | cut -d: -f1 || true)"
+            residual_question_line="$(grep -nFx 'What can still be wrong if all visible checks are green?' <<< "$review_body" | cut -d: -f1 || true)"
+            public_context_line="$(grep -nE '^(Public context updated in this PR|No public context update needed|Durable contract or external decision needed)$' <<< "$review_body" | cut -d: -f1 || true)"
+            qa_disposition_line="$(grep -nE '^Reviewer-confirmed QA disposition: (Evidence sign-off|Targeted human QA|Maintainer-owned validation)$' <<< "$review_body" | cut -d: -f1 || true)"
+            reviewed_head_line="$(grep -nFx "Reviewed head: $head_sha" <<< "$review_body" | cut -d: -f1 || true)"
+            automation_residual_line="$(grep -nFx "$automation_residual" <<< "$review_body" | cut -d: -f1 || true)"
+            details_close_line="$(grep -nFx '</details>' <<< "$review_body" | cut -d: -f1 || true)"
+            required_actions_count="$(grep -Fxc '## Required actions' <<< "$review_body" || true)"
+            last_nonempty_line="$(awk 'NF { line = $0 } END { print line }' <<< "$review_body")"
+            if [[ "$(sed -n '1p' <<< "$review_body")" != "$run_marker" ||
+              "$(sed -n '2p' <<< "$review_body")" != "$clean_marker" ||
+              "$(sed -n '3p' <<< "$review_body")" != '## Verdict' ||
+              "$(sed -n '4p' <<< "$review_body")" != '**Ready for human approval**' ||
+              "$(sed -n '5p' <<< "$review_body")" != "$ready_verdict" ||
+              "$(sed -n '6p' <<< "$review_body")" != "$clean_summary" ||
+              "$(grep -Fxc '## Summary' <<< "$review_body" || true)" != "1" ||
+              "$(grep -Fxc '## Evidence' <<< "$review_body" || true)" != "1" ||
+              "$(grep -Fxc '<details>' <<< "$review_body" || true)" != "1" ||
+              "$(grep -Fxc '<summary>Residual risks and automation limits</summary>' <<< "$review_body" || true)" != "1" ||
+              "$(grep -Fxc '</details>' <<< "$review_body" || true)" != "1" ||
+              "$(grep -Fxc 'What can still be wrong if all visible checks are green?' <<< "$review_body" || true)" != "1" ||
+              "$(grep -Ecx '(Public context updated in this PR|No public context update needed|Durable contract or external decision needed)' <<< "$review_body" || true)" != "1" ||
+              "$required_actions_count" != "0" ||
+              ! "$summary_heading_line" =~ ^[0-9]+$ ||
+              ! "$evidence_heading_line" =~ ^[0-9]+$ ||
+              ! "$details_line" =~ ^[0-9]+$ ||
+              ! "$details_summary_line" =~ ^[0-9]+$ ||
+              ! "$residual_question_line" =~ ^[0-9]+$ ||
+              ! "$public_context_line" =~ ^[0-9]+$ ||
+              ! "$qa_disposition_line" =~ ^[0-9]+$ ||
+              ! "$reviewed_head_line" =~ ^[0-9]+$ ||
+              ! "$automation_residual_line" =~ ^[0-9]+$ ||
+              ! "$details_close_line" =~ ^[0-9]+$ ||
+              "$evidence_heading_line" -le "$summary_heading_line" ||
+              "$details_line" -le "$evidence_heading_line" ||
+              "$public_context_line" -le "$evidence_heading_line" ||
+              "$public_context_line" -ge "$details_line" ||
+              "$qa_disposition_line" -le "$evidence_heading_line" ||
+              "$qa_disposition_line" -ge "$details_line" ||
+              "$reviewed_head_line" -le "$evidence_heading_line" ||
+              "$reviewed_head_line" -ge "$details_line" ||
+              "$details_summary_line" -ne $((details_line + 1)) ||
+              "$residual_question_line" -le "$details_summary_line" ||
+              "$automation_residual_line" -le "$residual_question_line" ||
+              "$automation_residual_line" -ge "$details_close_line" ||
+              "$last_nonempty_line" != '</details>' ]]; then
+              echo "The queued source review does not match the required presentation schema." >&2
+              exit 1
+            fi
+
+            summary_body="$(sed -n "$((summary_heading_line + 1)),$((evidence_heading_line - 1))p" <<< "$review_body")"
+            summary_bullet_count="$(grep -Ec '^- ' <<< "$summary_body" || true)"
+            summary_invalid_count="$(grep -Evc '^$|^- ' <<< "$summary_body" || true)"
+            residual_body="$(sed -n "$((residual_question_line + 1)),$((automation_residual_line - 1))p" <<< "$review_body")"
+            residual_bullet_count="$(grep -Ec '^- ' <<< "$residual_body" || true)"
+            residual_invalid_count="$(grep -Evc '^$|^- ' <<< "$residual_body" || true)"
+            if [[ "$summary_bullet_count" -lt 1 || "$summary_bullet_count" -gt 3 ||
+              "$summary_invalid_count" != "0" || "$residual_bullet_count" -lt 1 ||
+              "$residual_invalid_count" != "0" ]]; then
+              echo "The queued source review does not match the required presentation schema." >&2
               exit 1
             fi
 
@@ -699,8 +831,10 @@ jobs:
             - Add `## Simplification` with
               `Net simplification: <signed line estimate> lines possible.`
             - For `FINDINGS`, add `## Required actions` with the number of inline
-              suggestions. For `DELIVERY BLOCKED`, state the delivery blocker.
-              Do not duplicate inline finding detail.
+              suggestions on an exact line:
+              `Inline suggestions: <positive integer>.`
+              For `DELIVERY BLOCKED`, state the delivery blocker. Do not
+              duplicate inline finding detail.
             - End with `<details>` and the summary
               `Residual risks and automation limits`. Put short residual-risk
               bullets and the exact automation residual inside it.
@@ -791,6 +925,59 @@ jobs:
             exit 1
           fi
 
+          simplify_heading_count="$(grep -Fxc '## Simplification' <<< "$review_body" || true)"
+          details_count="$(grep -Fxc '<details>' <<< "$review_body" || true)"
+          details_summary_count="$(grep -Fxc '<summary>Residual risks and automation limits</summary>' <<< "$review_body" || true)"
+          details_close_count="$(grep -Fxc '</details>' <<< "$review_body" || true)"
+          simplify_heading_line="$(grep -nFx '## Simplification' <<< "$review_body" | cut -d: -f1 || true)"
+          estimate_line="$(grep -nE '^Net simplification: [+-]?[0-9]+ lines possible\.$' <<< "$review_body" | cut -d: -f1 || true)"
+          details_line="$(grep -nFx '<details>' <<< "$review_body" | cut -d: -f1 || true)"
+          details_summary_line="$(grep -nFx '<summary>Residual risks and automation limits</summary>' <<< "$review_body" | cut -d: -f1 || true)"
+          automation_residual_line="$(grep -nFx "$automation_residual" <<< "$review_body" | cut -d: -f1 || true)"
+          details_close_line="$(grep -nFx '</details>' <<< "$review_body" | cut -d: -f1 || true)"
+          required_actions_count="$(grep -Fxc '## Required actions' <<< "$review_body" || true)"
+          required_actions_line="$(grep -nFx '## Required actions' <<< "$review_body" | cut -d: -f1 || true)"
+          inline_suggestion_count_line="$(grep -nE '^Inline suggestions: [1-9][0-9]*\.$' <<< "$review_body" | cut -d: -f1 || true)"
+          declared_inline_suggestion_count="$(grep -E '^Inline suggestions: [1-9][0-9]*\.$' <<< "$review_body" | sed -E 's/^Inline suggestions: ([1-9][0-9]*)\.$/\1/' || true)"
+          last_nonempty_line="$(awk 'NF { line = $0 } END { print line }' <<< "$review_body")"
+          if [[ "$(sed -n '1p' <<< "$review_body")" != "$final_marker" ||
+            "$(sed -n '2p' <<< "$review_body")" != '## Ponytail verdict' ||
+            ! "$(sed -n '3p' <<< "$review_body")" =~ ^\*\*[^*].*\*\*$ ||
+            "$(sed -n '4p' <<< "$review_body")" != "$(grep -E '^Ponytail outcome:' <<< "$review_body" || true)" ||
+            "$simplify_heading_count" != "1" ||
+            "$details_count" != "1" || "$details_summary_count" != "1" ||
+            "$details_close_count" != "1" ||
+            ! "$simplify_heading_line" =~ ^[0-9]+$ ||
+            ! "$estimate_line" =~ ^[0-9]+$ ||
+            ! "$details_line" =~ ^[0-9]+$ ||
+            ! "$details_summary_line" =~ ^[0-9]+$ ||
+            ! "$automation_residual_line" =~ ^[0-9]+$ ||
+            ! "$details_close_line" =~ ^[0-9]+$ ||
+            "$simplify_heading_line" -le 4 ||
+            "$estimate_line" -le "$simplify_heading_line" ||
+            "$details_line" -le "$estimate_line" ||
+            "$details_summary_line" -ne $((details_line + 1)) ||
+            "$automation_residual_line" -le "$details_summary_line" ||
+            "$automation_residual_line" -ge "$details_close_line" ||
+            "$last_nonempty_line" != '</details>' ]]; then
+            echo "The Ponytail review does not match the required presentation schema." >&2
+            exit 1
+          fi
+
+          visible_word_count="$(sed -n "1,$((details_line - 1))p" <<< "$review_body" | wc -w | tr -d ' ')"
+          if [[ ! "$visible_word_count" =~ ^[0-9]+$ || "$visible_word_count" -gt 120 ]]; then
+            echo "The Ponytail review does not match the required presentation schema." >&2
+            exit 1
+          fi
+
+          residual_body="$(sed -n "$((details_summary_line + 1)),$((automation_residual_line - 1))p" <<< "$review_body")"
+          residual_bullet_count="$(grep -Ec '^- ' <<< "$residual_body" || true)"
+          residual_invalid_count="$(grep -Evc '^$|^- ' <<< "$residual_body" || true)"
+          if [[ "$residual_bullet_count" -lt 1 || "$residual_invalid_count" != "0" ]]; then
+            echo "The Ponytail review does not match the required presentation schema." >&2
+            exit 1
+          fi
+
           outcome_prefix_count="$(
             grep -Ec "$outcome_prefix_pattern" <<< "$review_body" || true
           )"
@@ -813,18 +1000,42 @@ jobs:
             exit 1
           fi
           if [[ "$blocked_outcome_count" == "1" ]]; then
+            if [[ "$required_actions_count" != "1" ||
+              ! "$required_actions_line" =~ ^[0-9]+$ ||
+              "$required_actions_line" -le "$estimate_line" ||
+              "$required_actions_line" -ge "$details_line" ]]; then
+              echo "The Ponytail review does not match the required presentation schema." >&2
+              exit 1
+            fi
             echo "The Ponytail review reports blocked inline delivery." >&2
             exit 1
           fi
           if [[ "$lean_outcome_count" == "1" ]]; then
             if [[ "$(grep -Fxc "$lean_summary" <<< "$review_body" || true)" != "1" ||
-              "$inline_comment_count" != "0" ]]; then
+              "$inline_comment_count" != "0" || "$required_actions_count" != "0" ]]; then
               echo "A lean Ponytail outcome requires the exact lean summary and zero inline comments." >&2
               exit 1
             fi
-          elif [[ "$inline_comment_count" == "0" ]]; then
-            echo "A findings Ponytail outcome requires an actionable inline comment." >&2
-            exit 1
+          else
+            if [[ "$required_actions_count" != "1" ||
+              ! "$required_actions_line" =~ ^[0-9]+$ ||
+              ! "$inline_suggestion_count_line" =~ ^[0-9]+$ ||
+              ! "$declared_inline_suggestion_count" =~ ^[1-9][0-9]*$ ||
+              "$required_actions_line" -le "$estimate_line" ||
+              "$required_actions_line" -ge "$details_line" ||
+              "$inline_suggestion_count_line" -le "$required_actions_line" ||
+              "$inline_suggestion_count_line" -ge "$details_line" ]]; then
+              echo "The Ponytail review does not match the required presentation schema." >&2
+              exit 1
+            fi
+            if [[ "$inline_comment_count" == "0" ]]; then
+              echo "A findings Ponytail outcome requires an actionable inline comment." >&2
+              exit 1
+            fi
+            if [[ "$declared_inline_suggestion_count" != "$inline_comment_count" ]]; then
+              echo "The Ponytail review inline-suggestion count does not match its inline comments." >&2
+              exit 1
+            fi
           fi
 
           echo "Current Ponytail review is valid at $EXPECTED_HEAD_SHA."
