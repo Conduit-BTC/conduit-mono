@@ -102,9 +102,30 @@ The exception is constrained as follows:
 - The guest contact/address draft must remain in expiring same-tab storage and
   be cleared as soon as the encrypted order reaches the merchant.
 - The client may expose the key only to the signing path for the initial private
-  order and same-order payment reports addressed to that order's merchant. This
-  is an application boundary; the extractable raw key is not cryptographically
-  restricted to those events.
+  order, same-order payment reports, and one fixed, recipient-only advisory
+  `kind:14` order notification addressed to that order's merchant after the
+  authoritative order receives a relay acknowledgement. The advisory requires
+  the merchant's declared inbox, must not use compatibility routing, and must
+  contain no order, payment, contact, address, or item details. This is an
+  application boundary; the extractable raw key is not cryptographically
+  restricted to those events. Its review link must target the Merchant
+  deployment paired with the Market deployment that created it; production,
+  preview, signet, and supported local environments must not cross-link.
+- Conduit clients must not project canonical advisory rumors carrying the exact
+  versioned `["conduit", "order-companion", "1", "<kind-16-id>"]` marker, the
+  `subject=conduit-order-notification` marker, and one non-empty `order` and `p`
+  tag, exact fixed notification copy and review URL, and no extra tags into the
+  generic Messages inbox or cache them as conversations only when
+  they also carry Conduit Market client attribution and match an authoritative
+  order event from the same sender to the same recipient. Missing, malformed,
+  duplicated, unknown-version, or non-Conduit Merchant review URLs fail open to
+  the generic Messages inbox and cache. A complete canonical marker without its
+  matching order is visible but remains pending and is not counted as unread,
+  so independent relay propagation can reconcile it when the order arrives
+  later. It may be cached read-only with typed canonical provenance, then
+  removed when matching authoritative order evidence exists; ambiguous legacy
+  plaintext-only rows remain visible. The encrypted relay event remains
+  available to external clients for local notification behavior.
 - Guest clients must not publish a buyer self-copy, advertise a `kind:10050`
   inbox, poll for merchant replies, or cache the decrypted order payload as
   durable order history.

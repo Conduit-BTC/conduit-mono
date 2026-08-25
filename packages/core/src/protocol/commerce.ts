@@ -49,6 +49,7 @@ import {
   __resetInboxRelayCache,
   createNdkLegacyDmDecrypt,
   decryptLegacyDirectMessage,
+  getOrderCompanionNotificationIdentity,
   parseDirectMessageRumor,
   unwrapGiftWraps,
   type DecryptFailure,
@@ -354,6 +355,7 @@ type RawDirectMessageFetchResult = {
 type PrivateInboxSyncResult = {
   orderMessages: ParsedOrderMessage[]
   directMessages: ParsedDirectMessage[]
+  pendingDirectMessageIds: Set<string>
   decryptFailures: DecryptFailure[]
   inbox: PrivateInboxReadStatus
 }
@@ -401,6 +403,7 @@ type CommerceTestOverrides = {
     principalPubkey: string
   ) => Promise<StoredMessage[]>
   putCachedDirectMessages?: (rows: StoredMessage[]) => Promise<void>
+  deleteCachedDirectMessages?: (ids: string[]) => Promise<void>
   persistProtectedInboxMessages?: (
     orderRows: CachedOrderMessage[],
     directRows: StoredMessage[],
@@ -4720,6 +4723,26 @@ async function storeCachedDirectMessages(rows: StoredMessage[]): Promise<void> {
   await db.messages.bulkPut(rows)
 }
 
+async function deleteCachedDirectMessages(
+  ids: string[],
+  authorization: ProtectedReadAuthorization | null
+): Promise<void> {
+  if (ids.length === 0) return
+  const assertAuthority = () => assertInboxSyncAuthority(authorization)
+  assertAuthority()
+  if (testOverrides.deleteCachedDirectMessages) {
+    await testOverrides.deleteCachedDirectMessages(ids)
+    assertAuthority()
+    return
+  }
+  await db.transaction("rw", db.messages, async () => {
+    assertAuthority()
+    await db.messages.bulkDelete(ids)
+    assertAuthority()
+  })
+  assertAuthority()
+}
+
 async function persistLegacyDirectMessages(
   rows: StoredMessage[],
   authorization: ProtectedReadAuthorization | null
@@ -4747,18 +4770,27 @@ async function persistLegacyDirectMessages(
   assertAuthority()
 }
 
-function cachedDirectMessageRow(message: ParsedDirectMessage): StoredMessage {
+function cachedDirectMessageRow(
+  message: ParsedDirectMessage,
+  read: 0 | 1 = 0
+): StoredMessage {
   return {
     id: message.id,
     senderPubkey: message.senderPubkey,
     recipientPubkey: message.recipientPubkey,
     content: message.content,
+    orderCompanion: message.orderCompanionIdentity
+      ? {
+          orderId: message.orderCompanionIdentity.orderId,
+          orderRumorId: message.orderCompanionIdentity.orderRumorId,
+        }
+      : undefined,
     kind:
       message.transport === "nip04"
         ? EVENT_KINDS.DM_LEGACY
         : EVENT_KINDS.DIRECT_MESSAGE,
     createdAt: message.createdAt,
-    read: 0,
+    read,
   }
 }
 
@@ -4808,6 +4840,13 @@ function parseCachedDirectMessage(row: StoredMessage): ParsedDirectMessage {
     senderPubkey: row.senderPubkey,
     recipientPubkey: row.recipientPubkey,
     content: row.decrypted ?? row.content,
+    orderCompanionIdentity: row.orderCompanion
+      ? {
+          ...row.orderCompanion,
+          senderPubkey: row.senderPubkey,
+          recipientPubkey: row.recipientPubkey,
+        }
+      : undefined,
     createdAt: row.createdAt,
     transport: row.kind === EVENT_KINDS.DM_LEGACY ? "nip04" : "nip17",
   }
@@ -4932,7 +4971,7 @@ async function runLegacyDmSync(
 
   try {
     await persistLegacyDirectMessages(
-      messages.map(cachedDirectMessageRow),
+      messages.map((message) => cachedDirectMessageRow(message)),
       authorization
     )
     for (const message of messages) {
@@ -5044,7 +5083,9 @@ async function runPrivateMessageInboxSync(
     wrapId: string
     message: ParsedDirectMessage
     isCached: boolean
+    pendingOrderCompanion: boolean
   }> = []
+  const directRumors: Array<{ wrapId: string; rumor: NDKEvent }> = []
 
   for (const outcome of outcomes) {
     const pending = retry.get(outcome.wrapId)
@@ -5071,18 +5112,80 @@ async function runPrivateMessageInboxSync(
           isCached: cachedOrderIds.has(message.id),
         })
       } else {
-        const message = parseDirectMessageRumor(outcome.rumor)
-        if (!message.id) throw new Error("Missing direct-message id")
-        directEntries.push({
-          wrapId: outcome.wrapId,
-          message,
-          isCached: cachedDirectIds.has(message.id),
-        })
+        directRumors.push({ wrapId: outcome.wrapId, rumor: outcome.rumor })
       }
     } catch {
       retry.set(outcome.wrapId, {
         event: pending.event,
         failure: { wrapId: outcome.wrapId, reason: "malformed" },
+      })
+    }
+  }
+
+  const orderIdentityKey = (
+    orderRumorId: string,
+    orderId: string,
+    senderPubkey: string,
+    recipientPubkey: string
+  ) =>
+    `${orderRumorId.trim()}\u0000${orderId.trim()}\u0000${senderPubkey.trim().toLowerCase()}\u0000${recipientPubkey.trim().toLowerCase()}`
+  const authoritativeOrders = new Set([
+    ...cachedOrders
+      .filter((row) => row.type === "order")
+      .map((row) =>
+        orderIdentityKey(
+          row.id,
+          row.orderId,
+          row.senderPubkey,
+          row.recipientPubkey
+        )
+      ),
+    ...orderEntries
+      .filter((entry) => entry.message.type === "order")
+      .map((entry) =>
+        orderIdentityKey(
+          entry.message.id,
+          entry.message.orderId,
+          entry.message.senderPubkey,
+          entry.message.recipientPubkey
+        )
+      ),
+  ])
+
+  for (const entry of directRumors) {
+    const pending = retry.get(entry.wrapId)
+    if (!pending) continue
+    try {
+      const companion = getOrderCompanionNotificationIdentity(entry.rumor)
+      if (
+        companion &&
+        authoritativeOrders.has(
+          orderIdentityKey(
+            companion.orderRumorId,
+            companion.orderId,
+            companion.senderPubkey,
+            companion.recipientPubkey
+          )
+        )
+      ) {
+        successful.add(entry.wrapId)
+        retry.delete(entry.wrapId)
+        continue
+      }
+
+      const message = parseDirectMessageRumor(entry.rumor)
+      if (!message.id) throw new Error("Missing direct-message id")
+      if (companion) message.orderCompanionIdentity = companion
+      directEntries.push({
+        wrapId: entry.wrapId,
+        message,
+        isCached: cachedDirectIds.has(message.id),
+        pendingOrderCompanion: companion !== null,
+      })
+    } catch {
+      retry.set(entry.wrapId, {
+        event: pending.event,
+        failure: { wrapId: entry.wrapId, reason: "malformed" },
       })
     }
   }
@@ -5094,18 +5197,34 @@ async function runPrivateMessageInboxSync(
   const cachedOrderEntries = orderEntries.filter((entry) => entry.isCached)
   const newOrderEntries = orderEntries.filter((entry) => !entry.isCached)
   for (const entry of cachedOrderEntries) persisted(entry.wrapId)
-  const cachedDirectEntries = directEntries.filter((entry) => entry.isCached)
-  const newDirectEntries = directEntries.filter((entry) => !entry.isCached)
+  const committedDirectEntries = directEntries.filter(
+    (entry) => !entry.pendingOrderCompanion
+  )
+  const cachedDirectEntries = committedDirectEntries.filter(
+    (entry) => entry.isCached
+  )
+  const newDirectEntries = committedDirectEntries.filter(
+    (entry) => !entry.isCached
+  )
+  const pendingDirectEntries = directEntries.filter(
+    (entry) => entry.pendingOrderCompanion && !entry.isCached
+  )
   for (const entry of cachedDirectEntries) persisted(entry.wrapId)
 
   try {
     await persistProtectedInboxMessages(
       newOrderEntries.map((entry) => cachedOrderMessageRow(entry.message)),
-      newDirectEntries.map((entry) => cachedDirectMessageRow(entry.message)),
+      [...newDirectEntries, ...pendingDirectEntries].map((entry) =>
+        cachedDirectMessageRow(
+          entry.message,
+          entry.pendingOrderCompanion ? 1 : 0
+        )
+      ),
       authorization
     )
     for (const entry of newOrderEntries) persisted(entry.wrapId)
     for (const entry of newDirectEntries) persisted(entry.wrapId)
+    for (const entry of pendingDirectEntries) persisted(entry.wrapId)
   } catch (error) {
     if (error instanceof ProtectedInboxAuthorityChangedError) throw error
     assertInboxSyncAuthority(authorization)
@@ -5117,6 +5236,11 @@ async function runPrivateMessageInboxSync(
   return {
     orderMessages: orderEntries.map((entry) => entry.message),
     directMessages: directEntries.map((entry) => entry.message),
+    pendingDirectMessageIds: new Set(
+      directEntries
+        .filter((entry) => entry.pendingOrderCompanion)
+        .map((entry) => entry.message.id)
+    ),
     decryptFailures: Array.from(retry.values()).flatMap(({ failure }) =>
       failure ? [failure] : []
     ),
@@ -5153,8 +5277,57 @@ async function fetchParsedDirectMessages(
 ): Promise<RawDirectMessageFetchResult> {
   const authorization = resolveInboxSyncAuthorization(principalPubkey)
   assertInboxSyncAuthority(authorization)
-  const cached = await loadCachedDirectMessages(principalPubkey)
+  let cached = await loadCachedDirectMessages(principalPubkey)
   assertInboxSyncAuthority(authorization)
+  const cachedOrders = await loadCachedOrderMessages(principalPubkey)
+  assertInboxSyncAuthority(authorization)
+  const cachedOrderIdentityKey = (
+    eventId: string,
+    orderId: string,
+    senderPubkey: string,
+    recipientPubkey: string
+  ) =>
+    `${eventId}\u0000${orderId}\u0000${senderPubkey.toLowerCase()}\u0000${recipientPubkey.toLowerCase()}`
+  const collectAuthoritativeOrderIdentities = (
+    rows: readonly {
+      type: string
+      id: string
+      orderId: string
+      senderPubkey: string
+      recipientPubkey: string
+    }[]
+  ): Set<string> => {
+    const identities = new Set<string>()
+    for (const row of rows) {
+      if (row.type !== "order") continue
+      identities.add(
+        cachedOrderIdentityKey(
+          row.id,
+          row.orderId,
+          row.senderPubkey,
+          row.recipientPubkey
+        )
+      )
+    }
+    return identities
+  }
+  const authoritativeOrders = collectAuthoritativeOrderIdentities(cachedOrders)
+  const staleCompanionIds = cached.flatMap((row) => {
+    if (row.kind !== EVENT_KINDS.DIRECT_MESSAGE || !row.orderCompanion)
+      return []
+    const identity = cachedOrderIdentityKey(
+      row.orderCompanion.orderRumorId,
+      row.orderCompanion.orderId,
+      row.senderPubkey,
+      row.recipientPubkey
+    )
+    return authoritativeOrders.has(identity) ? [row.id] : []
+  })
+  if (staleCompanionIds.length > 0) {
+    await deleteCachedDirectMessages(staleCompanionIds, authorization)
+    const staleIds = new Set(staleCompanionIds)
+    cached = cached.filter((row) => !staleIds.has(row.id))
+  }
   const cachedById = new Map<string, ParsedDirectMessage>()
   const unreadMessageIds = new Set<string>()
   for (const row of cached) {
@@ -5204,18 +5377,54 @@ async function fetchParsedDirectMessages(
     const current =
       currentResult.status === "fulfilled"
         ? currentResult.value
-        : { directMessages: [], decryptFailures: [], inbox: undefined }
+        : {
+            orderMessages: [],
+            directMessages: [],
+            pendingDirectMessageIds: new Set<string>(),
+            decryptFailures: [],
+            inbox: undefined,
+          }
     const legacy =
       legacyResult.status === "fulfilled"
         ? legacyResult.value
         : { directMessages: [], decryptFailures: [] }
+    const currentAuthoritativeOrders = collectAuthoritativeOrderIdentities(
+      current.orderMessages
+    )
+    const reconciledCachedCompanionIds = Array.from(
+      cachedById.entries()
+    ).flatMap(([id, message]) => {
+      const companion = message.orderCompanionIdentity
+      if (!companion) return []
+      const identity = cachedOrderIdentityKey(
+        companion.orderRumorId,
+        companion.orderId,
+        companion.senderPubkey,
+        companion.recipientPubkey
+      )
+      return currentAuthoritativeOrders.has(identity) ? [id] : []
+    })
+    if (reconciledCachedCompanionIds.length > 0) {
+      await deleteCachedDirectMessages(
+        reconciledCachedCompanionIds,
+        authorization
+      )
+      for (const id of reconciledCachedCompanionIds) {
+        cachedById.delete(id)
+        unreadMessageIds.delete(id)
+      }
+    }
     for (const parsed of [
       ...current.directMessages,
       ...legacy.directMessages,
     ]) {
       const isNew = !cachedById.has(parsed.id)
       cachedById.set(parsed.id, parsed)
-      if (isNew && parsed.senderPubkey !== principalPubkey) {
+      if (
+        isNew &&
+        parsed.senderPubkey !== principalPubkey &&
+        !current.pendingDirectMessageIds.has(parsed.id)
+      ) {
         unreadMessageIds.add(parsed.id)
       }
     }
