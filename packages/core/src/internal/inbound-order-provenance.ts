@@ -3,15 +3,25 @@ import {
   parseOrderMessageRumorEvent,
   type ParsedOrderMessage,
 } from "../protocol/orders"
+import {
+  hasProtectedReadAuthority,
+  type ProtectedReadAuthorization,
+} from "../protocol/protected-read-authorization"
 import type { ValidatedInboundOrderLifecycleAnchor } from "../protocol/inbound-order-provenance"
 
 type ParsedInboundOrder = Extract<ParsedOrderMessage, { type: "order" }>
 
 const anchorsByOrder = new WeakMap<
   ParsedInboundOrder,
-  ValidatedInboundOrderLifecycleAnchor
+  {
+    anchor: ValidatedInboundOrderLifecycleAnchor
+    authorization: ProtectedReadAuthorization | null
+  }
 >()
-const validatedAnchors = new WeakSet<ValidatedInboundOrderLifecycleAnchor>()
+const authorizationsByAnchor = new WeakMap<
+  ValidatedInboundOrderLifecycleAnchor,
+  ProtectedReadAuthorization | null
+>()
 type GiftUnwrapOverride = (
   event: NDKEvent,
   signer: NDKSigner
@@ -33,7 +43,8 @@ export function isAuthorizedGiftUnwrapTestOverride(
 }
 
 function bindInboundOrderProvenance(
-  order: ParsedInboundOrder
+  order: ParsedInboundOrder,
+  authorization: ProtectedReadAuthorization | null
 ): ParsedInboundOrder {
   const orderId = order.orderId.trim()
   const buyerPubkey = order.senderPubkey.trim().toLowerCase()
@@ -57,18 +68,19 @@ function bindInboundOrderProvenance(
     buyerPubkey,
     merchantPubkey,
   })
-  anchorsByOrder.set(order, anchor)
-  validatedAnchors.add(anchor)
+  anchorsByOrder.set(order, { anchor, authorization })
+  authorizationsByAnchor.set(anchor, authorization)
   return order
 }
 
 /** Package-internal minting boundary. Call only after authenticated unwrap. */
 export function parseAuthenticatedInboundOrderRumor(
-  rumor: NDKEvent
+  rumor: NDKEvent,
+  authorization: ProtectedReadAuthorization | null
 ): ParsedOrderMessage {
   const message = parseOrderMessageRumorEvent(rumor)
   return message.type === "order"
-    ? bindInboundOrderProvenance(message)
+    ? bindInboundOrderProvenance(message, authorization)
     : message
 }
 
@@ -78,9 +90,12 @@ export function getValidatedInboundOrderLifecycleAnchor(input: {
   buyerPubkey: string
   merchantPubkey: string
 }): ValidatedInboundOrderLifecycleAnchor {
-  const anchor = anchorsByOrder.get(input.order)
+  const binding = anchorsByOrder.get(input.order)
+  const anchor = binding?.anchor
   if (
     !anchor ||
+    (binding.authorization !== null &&
+      !hasProtectedReadAuthority(binding.authorization)) ||
     anchor.orderId !== input.orderId.trim() ||
     anchor.buyerPubkey !== input.buyerPubkey.trim().toLowerCase() ||
     anchor.merchantPubkey !== input.merchantPubkey.trim().toLowerCase()
@@ -92,8 +107,23 @@ export function getValidatedInboundOrderLifecycleAnchor(input: {
   return anchor
 }
 
+export function hasValidatedInboundOrderLifecycleAnchor(
+  order: ParsedInboundOrder
+): boolean {
+  const binding = anchorsByOrder.get(order)
+  return (
+    !!binding &&
+    (binding.authorization === null ||
+      hasProtectedReadAuthority(binding.authorization))
+  )
+}
+
 export function isValidatedInboundOrderLifecycleAnchor(
   anchor: ValidatedInboundOrderLifecycleAnchor
 ): boolean {
-  return validatedAnchors.has(anchor)
+  const authorization = authorizationsByAnchor.get(anchor)
+  return (
+    authorization !== undefined &&
+    (authorization === null || hasProtectedReadAuthority(authorization))
+  )
 }

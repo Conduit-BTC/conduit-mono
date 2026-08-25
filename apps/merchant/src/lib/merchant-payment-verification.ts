@@ -144,6 +144,14 @@ function findCandidate(
   )
   if (order?.type !== "order") return null
 
+  const delivery =
+    getMerchantConversationCommunication(conversation) === "nostr_replyable"
+      ? "buyer_and_self"
+      : "self_only"
+  if (delivery === "self_only" && !conversation.lifecycleWriteReady) {
+    return null
+  }
+
   const evidence = [...messages]
     .reverse()
     .find(
@@ -193,10 +201,7 @@ function findCandidate(
     paymentHash: evidence.payload.paymentHash?.trim() || undefined,
     expectedAmountMsats: decoded.msats,
     orderCreatedAt: order.createdAt,
-    delivery:
-      getMerchantConversationCommunication(conversation) === "nostr_replyable"
-        ? "buyer_and_self"
-        : "self_only",
+    delivery,
   }
 }
 

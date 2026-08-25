@@ -11,6 +11,16 @@ describe("merchant order reopen UI", () => {
     expect(source).toContain(
       "The original order is missing. Refresh the order history before recording an update."
     )
+    expect(source).toContain("selected?.lifecycleWriteReady !== true")
+    expect(source).toContain(
+      "const { pubkey, status, authGeneration } = useAuth()"
+    )
+    expect(source).toContain(
+      "Recover the original order from authenticated history before recording an update."
+    )
+    expect(source).toContain(
+      "authenticated order history recovers the original"
+    )
     expect(source).toContain("Order actions are unavailable until the original")
     expect(source).toContain(
       "<AlertDialogTitle>Reopen this order?</AlertDialogTitle>"

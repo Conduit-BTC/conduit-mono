@@ -18,6 +18,7 @@ import { compareCommercePrices } from "../pricing"
 import type { Product, Profile } from "../types"
 import { normalizePublicMediaUrl } from "../network-target-safety"
 import {
+  hasValidatedInboundOrderLifecycleAnchor,
   isAuthorizedGiftUnwrapTestOverride,
   parseAuthenticatedInboundOrderRumor,
 } from "../internal/inbound-order-provenance"
@@ -367,6 +368,8 @@ export interface BuyerConversationSummary extends ConversationSummaryBase {
 export interface MerchantConversationSummary extends ConversationSummaryBase {
   buyerPubkey: string
   merchantPubkey: string
+  /** The current signer lease authenticated this conversation's inbound order. */
+  lifecycleWriteReady: boolean
 }
 
 export type ConversationSummary =
@@ -5805,7 +5808,7 @@ async function runPrivateMessageInboxSync(
           !testOverrides.giftUnwrap ||
           isAuthorizedGiftUnwrapTestOverride(testOverrides.giftUnwrap)
         const message = mayMintLifecycleAuthority
-          ? parseAuthenticatedInboundOrderRumor(outcome.rumor)
+          ? parseAuthenticatedInboundOrderRumor(outcome.rumor, authorization)
           : parseOrderMessageRumorEvent(outcome.rumor)
         orderEntries.push({
           wrapId: outcome.wrapId,
@@ -6290,7 +6293,6 @@ function buildBuyerConversationSummaries(
       buyerPubkey,
       merchantPubkey,
     })
-
     conversations.push({
       id: orderId,
       orderId,
@@ -6353,6 +6355,12 @@ function buildMerchantConversationSummaries(
       buyerPubkey,
       merchantPubkey,
     })
+    const inboundOrder = replayMessages.find(
+      (message): message is Extract<ParsedOrderMessage, { type: "order" }> =>
+        message.type === "order" &&
+        message.senderPubkey === buyerPubkey &&
+        message.recipientPubkey === merchantPubkey
+    )
 
     conversations.push({
       id: orderId,
@@ -6369,6 +6377,8 @@ function buildMerchantConversationSummaries(
       preview: getConversationPreview(projectedLatest),
       messageCount: bucket.length,
       messages: replayMessages,
+      lifecycleWriteReady:
+        !!inboundOrder && hasValidatedInboundOrderLifecycleAnchor(inboundOrder),
       context: replayMessages.some((message) => message.type === "order")
         ? "complete"
         : "missing_order",

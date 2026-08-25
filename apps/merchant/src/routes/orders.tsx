@@ -381,7 +381,7 @@ function MobileOrdersScroller({
 }
 
 function OrdersPage() {
-  const { pubkey, status } = useAuth()
+  const { pubkey, status, authGeneration } = useAuth()
   const session = useConduitSession()
   const navigate = useNavigate()
   const { order: selectedFromUrl, queue: queueFromUrl } = Route.useSearch()
@@ -498,6 +498,7 @@ function OrdersPage() {
     queryKey: [
       "merchant-order-messages-live",
       pubkey ?? "none",
+      authGeneration,
       orderSort,
       selectedMerchantQueue ?? "all",
     ],
@@ -516,6 +517,7 @@ function OrdersPage() {
     queryKey: [
       "merchant-order-messages",
       pubkey ?? "none",
+      authGeneration,
       orderSort,
       selectedMerchantQueue ?? "all",
     ],
@@ -866,13 +868,22 @@ function OrdersPage() {
     : "unknown"
   const buyerInboxKnown = communicationState === "nostr_replyable"
   const operationalDelivery = buyerInboxKnown ? "buyer_and_self" : "self_only"
+  const lifecycleWriteBlocked =
+    operationalDelivery === "self_only" &&
+    !!selectedOrderMessage &&
+    selected?.lifecycleWriteReady !== true
   const assertOrderActionHistoryReady = useCallback(() => {
     if (operationalDelivery === "self_only" && !selectedOrderMessage) {
       throw new Error(
         "The original order is missing. Refresh the order history before recording an update."
       )
     }
-  }, [operationalDelivery, selectedOrderMessage])
+    if (lifecycleWriteBlocked) {
+      throw new Error(
+        "Recover the original order from authenticated history before recording an update."
+      )
+    }
+  }, [lifecycleWriteBlocked, operationalDelivery, selectedOrderMessage])
   const assertBuyerHasNostrInbox = useCallback(() => {
     if (!buyerInboxKnown) {
       throw new Error(
@@ -1896,6 +1907,13 @@ function OrdersPage() {
                             contact={orderSummary.guestContact ?? undefined}
                           />
                         )}
+                        {lifecycleWriteBlocked && (
+                          <p className="mt-4 rounded-md border border-warning/30 bg-warning/10 p-3 text-sm leading-6 text-warning">
+                            Order actions are temporarily unavailable until the
+                            authenticated order history recovers the original
+                            order.
+                          </p>
+                        )}
                         <div className="mt-4 space-y-5">
                           {successFlash && (
                             <div
@@ -1950,7 +1968,10 @@ function OrdersPage() {
                                     key={action.action}
                                     size="sm"
                                     variant="primary"
-                                    disabled={orderActionPending}
+                                    disabled={
+                                      orderActionPending ||
+                                      lifecycleWriteBlocked
+                                    }
                                     onClick={() => {
                                       if (
                                         action.action === "confirm_payment" &&
@@ -2244,7 +2265,10 @@ function OrdersPage() {
                                     type="submit"
                                     size="sm"
                                     className="w-full"
-                                    disabled={orderActionPending}
+                                    disabled={
+                                      orderActionPending ||
+                                      lifecycleWriteBlocked
+                                    }
                                   >
                                     {shippingMutation.isPending
                                       ? "Sending…"
@@ -2301,7 +2325,10 @@ function OrdersPage() {
                                     key={action.action}
                                     size="sm"
                                     variant="destructive"
-                                    disabled={orderActionPending}
+                                    disabled={
+                                      orderActionPending ||
+                                      lifecycleWriteBlocked
+                                    }
                                     onClick={() => {
                                       if (action.status) {
                                         setPendingDestructiveAction(action)
@@ -2606,7 +2633,7 @@ function OrdersPage() {
                       <Button
                         type="button"
                         variant="destructive"
-                        disabled={orderActionPending}
+                        disabled={orderActionPending || lifecycleWriteBlocked}
                         onClick={() => {
                           if (!pendingDestructiveAction?.status) return
                           advanceStatusMutation.mutate(
@@ -2650,7 +2677,7 @@ function OrdersPage() {
                       </Button>
                       <Button
                         type="button"
-                        disabled={orderActionPending}
+                        disabled={orderActionPending || lifecycleWriteBlocked}
                         onClick={() => {
                           advanceStatusMutation.mutate("paid")
                           setConfirmingOutOfBandPayment(false)
@@ -2689,7 +2716,11 @@ function OrdersPage() {
                       </Button>
                       <Button
                         type="button"
-                        disabled={orderActionPending || !reopenTransition}
+                        disabled={
+                          orderActionPending ||
+                          lifecycleWriteBlocked ||
+                          !reopenTransition
+                        }
                         onClick={() => {
                           if (!reopenTransition) return
                           reopenOrderMutation.mutate(reopenTransition)

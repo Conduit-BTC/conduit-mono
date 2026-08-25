@@ -59,7 +59,7 @@ export function MerchantPaymentAutomationProvider({
 }: {
   children: ReactNode
 }) {
-  const { pubkey, status } = useAuth()
+  const { pubkey, status, authGeneration } = useAuth()
   const queryClient = useQueryClient()
   const profileQuery = useProfile(pubkey, { authenticatedPubkey: pubkey })
   const nwc = useNwcConnection()
@@ -97,7 +97,11 @@ export function MerchantPaymentAutomationProvider({
     addressStatus !== "missing_profile"
 
   const conversationsQuery = useQuery({
-    queryKey: ["merchant-payment-verification", pubkey ?? "none"],
+    queryKey: [
+      "merchant-payment-verification",
+      pubkey ?? "none",
+      authGeneration,
+    ],
     enabled: signerConnected && canVerifyPayments,
     queryFn: () => getMerchantConversationList({ principalPubkey: pubkey! }),
     refetchInterval: 30_000,
@@ -117,7 +121,7 @@ export function MerchantPaymentAutomationProvider({
   useEffect(() => {
     confirmedEvidenceRef.current.clear()
     setRun({ status: "idle", checked: 0, verified: 0 })
-  }, [addressStatus, nwc.connection])
+  }, [addressStatus, authGeneration, nwc.connection])
 
   useEffect(() => {
     if (!conversationReadUnavailable || conversationsQuery.isFetching) return

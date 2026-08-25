@@ -709,6 +709,7 @@ describe("Market and Merchant protected inbox integration", () => {
       principalPubkey: MERCHANT,
     })
     expect(first.data).toHaveLength(1)
+    expect(first.data[0]?.lifecycleWriteReady).toBe(true)
     expect(persistedRows.size).toBe(1)
     const second = await getMerchantConversationList({
       principalPubkey: MERCHANT,
@@ -748,8 +749,50 @@ describe("Market and Merchant protected inbox integration", () => {
     )
 
     expect(second.data).toHaveLength(1)
+    expect(second.data[0]?.lifecycleWriteReady).toBe(true)
     expect(transported).toBe(1)
     expect(published.deliveryRoute).toBe("compatibility_order")
+  })
+
+  it("keeps a reloaded cache-only order display-only until authenticated recovery", async () => {
+    const persistedRows = new Map<string, CachedOrderMessage>()
+    __setCommerceTestOverrides({
+      getNdk: async () => ({ signer: {} }) as never,
+      resolveInboxRelayUrls: async () => [RELAY_URL],
+      getCachedOrderMessages: async () => [...persistedRows.values()],
+      putCachedOrderMessages: async (rows) => {
+        for (const row of rows) persistedRows.set(row.id, row)
+      },
+      getCachedDirectMessages: async () => [],
+      putCachedDirectMessages: async () => undefined,
+      giftUnwrap: authorizeGiftUnwrapTestOverride(async (event) => {
+        const recipient = event.tags.find((tag) => tag[0] === "p")?.[1]
+        return recipient ? (guestOrderRumor(recipient) as never) : null
+      }),
+    })
+    installProtectedReadSigner(signer(MERCHANT_KEY), MERCHANT, () => true)
+
+    const live = await getMerchantConversationList({
+      principalPubkey: MERCHANT,
+    })
+    expect(live.data[0]?.lifecycleWriteReady).toBe(true)
+
+    __resetCommerceTestOverrides()
+    __resetProtectedReadSigner()
+    closeAllProtectedRelayConnections()
+    __setCommerceTestOverrides({
+      getNdk: async () => ({ signer: undefined }) as never,
+      getCachedOrderMessages: async () => [...persistedRows.values()],
+      putCachedOrderMessages: async () => undefined,
+    })
+    installProtectedReadSigner(signer(MERCHANT_KEY), MERCHANT, () => true)
+
+    const reloaded = await getMerchantConversationList({
+      principalPubkey: MERCHANT,
+    })
+    expect(reloaded.data).toHaveLength(1)
+    expect(reloaded.meta.source).toBe("local_cache")
+    expect(reloaded.data[0]?.lifecycleWriteReady).toBe(false)
   })
 
   it("restarts deep inbox history after same-pubkey signer replacement", async () => {
@@ -830,13 +873,49 @@ describe("Market and Merchant protected inbox integration", () => {
       sort: "merchant_priority",
     })
     expect(first.data).toHaveLength(1)
+    expect(first.data[0]?.lifecycleWriteReady).toBe(true)
     expect(persistedRows.size).toBe(1)
+    const staleInboundOrder = first.data[0]?.messages.find(
+      (message) => message.type === "order"
+    )
+    if (!staleInboundOrder || staleInboundOrder.type !== "order") {
+      throw new Error("Expected the first signer lease's inbound order")
+    }
 
     installProtectedReadSigner(signer(MERCHANT_KEY), MERCHANT, () => true)
+    await expect(
+      publishMerchantOrderMessage(
+        {
+          merchantPubkey: MERCHANT,
+          buyerPubkey: BUYER,
+          orderId: staleInboundOrder.orderId,
+          type: "status_update",
+          tags: [["status", "accepted"]],
+          payload: { status: "accepted" },
+          delivery: "self_only",
+          inboundOrder: staleInboundOrder,
+        },
+        {
+          getNdk: () =>
+            ({ signer: { user: async () => ({ pubkey: MERCHANT }) } }) as never,
+          publishPrivateMessage: async () =>
+            ({ deliveryRoute: "compatibility_order" }) as never,
+          cacheParsedOrderMessage: async () => undefined,
+        }
+      )
+    ).rejects.toThrow("without a validated inbound order")
+
+    const recent = await getMerchantConversationList({
+      principalPubkey: MERCHANT,
+    })
+    expect(recent.data).toHaveLength(1)
+    expect(recent.data[0]?.lifecycleWriteReady).toBe(false)
+
     const second = await getMerchantConversationList({
       principalPubkey: MERCHANT,
       sort: "merchant_priority",
     })
+    expect(second.data[0]?.lifecycleWriteReady).toBe(true)
     const inboundOrder = second.data[0]?.messages.find(
       (message) => message.type === "order"
     )
@@ -865,7 +944,7 @@ describe("Market and Merchant protected inbox integration", () => {
         }
       )
     ).resolves.toMatchObject({ deliveryRoute: "compatibility_order" })
-    expect(seenUntil).toEqual([undefined, 601, undefined, 601])
+    expect(seenUntil).toEqual([undefined, 601, undefined, undefined, 601])
   })
 
   it("keeps cached orders visible when every relay rejects authentication", async () => {
@@ -888,6 +967,7 @@ describe("Market and Merchant protected inbox integration", () => {
     expect(result.data.map((conversation) => conversation.orderId)).toEqual([
       "cached-order",
     ])
+    expect(result.data[0]?.lifecycleWriteReady).toBe(false)
     expect(result.meta.stale).toBe(true)
     expect(result.meta.degraded).toBe(true)
     expect(result.meta.inbox?.coverage).toBe("unavailable")

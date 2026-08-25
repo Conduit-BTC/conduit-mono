@@ -70,6 +70,7 @@ function conversation(
     preview: "Payment proof",
     messageCount: 2,
     messages: [order, proof],
+    lifecycleWriteReady: true,
   }
 }
 
@@ -224,6 +225,32 @@ describe("merchant NWC payment verification", () => {
         invoiceOnlyConversation("order-2"),
       ])
     ).toEqual([])
+  })
+
+  it("does not look up a guest payment until lifecycle write authority is recovered", () => {
+    const cachedGuest = conversation()
+    const order = cachedGuest.messages![0] as Extract<
+      ParsedOrderMessage,
+      { type: "order" }
+    >
+    cachedGuest.messages = [
+      {
+        ...order,
+        payload: { ...order.payload, buyerIdentityKind: "guest_ephemeral" },
+      },
+      cachedGuest.messages![1]!,
+    ]
+    cachedGuest.lifecycleWriteReady = false
+
+    expect(getMerchantPaymentVerificationCandidates([cachedGuest])).toEqual([])
+
+    cachedGuest.lifecycleWriteReady = true
+    expect(getMerchantPaymentVerificationCandidates([cachedGuest])).toEqual([
+      expect.objectContaining({
+        orderId: cachedGuest.orderId,
+        delivery: "self_only",
+      }),
+    ])
   })
 
   it("does not authorize a fiat payment from an invoice inside cancellation", () => {
