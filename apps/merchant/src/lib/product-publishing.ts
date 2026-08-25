@@ -75,12 +75,18 @@ export async function deliverSignedProductEvent(
       publishableEvent = new NDKEvent(getNdk(), event)
     }
 
-    return await publishWithPlanner(publishableEvent, {
+    const delivery = await publishWithPlanner(publishableEvent, {
       intent: "author_event",
       authorPubkey: merchantPubkey,
       authenticatedPubkey: merchantPubkey,
       deliveryMode: "critical",
     })
+    if (rawEvent.kind === EVENT_KINDS.PRODUCT) {
+      await cacheSignedProductListingEvent(publishableEvent, {
+        sourceRelayUrls: delivery.successfulRelayUrls,
+      })
+    }
+    return delivery
   } catch (error) {
     throw asSignedProductDeliveryError(error)
   }

@@ -26,6 +26,7 @@ import {
   type FollowListCoverageState,
 } from "./follows"
 import {
+  attachEventSourceRelayUrl,
   fetchEventsFanout,
   fetchEventsFanoutDetailed,
   fetchEventsFanoutProgressive,
@@ -1912,7 +1913,8 @@ function filterDeletedProductRecords(
 }
 
 export async function cacheSignedProductListingEvent(
-  event: NDKEvent
+  event: NDKEvent,
+  options: { sourceRelayUrls?: readonly string[] } = {}
 ): Promise<CommerceProductRecord> {
   if (
     event.kind !== EVENT_KINDS.PRODUCT ||
@@ -1921,6 +1923,10 @@ export async function cacheSignedProductListingEvent(
     !isValidSignedPublicNostrEvent(event.rawEvent() as SignedPublicNostrEvent)
   ) {
     throw new Error("Expected a valid signed product listing event")
+  }
+
+  for (const relayUrl of options.sourceRelayUrls ?? []) {
+    attachEventSourceRelayUrl(event, relayUrl)
   }
 
   const [record] = dedupeProductEvents([event])
