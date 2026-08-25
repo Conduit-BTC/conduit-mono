@@ -229,7 +229,7 @@ test("market shopper custom product zap note presentation is accessible at check
   await note.fill("sick shirt 🔥")
   await expect(note).toHaveValue("sick shirt 🔥")
   await expect(page.locator("#zap-content-help")).toContainText(
-    "also adds a public link to this product"
+    "sends the note and a product link to the merchant's Lightning provider"
   )
   await expect(page.locator("#zap-content-count")).toHaveText(
     /^12\/\d+ note characters; product link reserved$/
@@ -241,7 +241,7 @@ test("market shopper custom product zap note presentation is accessible at check
     "0/280 characters"
   )
   await expect(page.locator("#zap-content-help")).not.toContainText(
-    "adds a public link"
+    "sends the note and a product link"
   )
 
   await note.fill("sick shirt 🔥")

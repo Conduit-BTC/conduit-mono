@@ -120,15 +120,15 @@ function InboxRelayEvidence({ candidate }: { candidate: InboxRelayCandidate }) {
         label={
           candidate.configured
             ? candidate.enabled
-              ? "IN enabled"
-              : "IN off"
+              ? "Read enabled"
+              : "Read off"
             : "Not configured"
         }
         description={
           candidate.configured
             ? candidate.enabled
-              ? "Enabled as a local read relay. This does not prove private inbox delivery."
-              : "Configured locally, but IN is not enabled."
+              ? "Enabled for reads in Conduit. This does not prove private inbox delivery."
+              : "Configured in Conduit, but Read is not enabled."
             : "Declared by the account, but not present in this device's relay settings."
         }
         tone={candidate.enabled ? "info" : "neutral"}
@@ -320,7 +320,7 @@ export function PrivateInboxSection({
                 ? "No relay responded to the declaration lookup. Retry when your connection recovers."
                 : status === "loading"
                   ? "Looking up your inbox relay declaration."
-                  : "No usable signed declaration was observed within this bounded lookup. That does not prove one is absent everywhere. Pick up to three IN relays below and publish."
+                  : "No usable signed declaration was observed within this bounded lookup. That does not prove one is absent everywhere. Pick up to three Read-enabled relays below and publish."
 
   return (
     <div
@@ -363,7 +363,7 @@ export function PrivateInboxSection({
         <div className="mt-4 space-y-3">
           {candidateRelays.length === 0 ? (
             <p className="text-sm leading-6 text-[var(--text-muted)]">
-              No eligible inbox relays yet. Add a relay above and enable IN on
+              No eligible inbox relays yet. Add a relay above and enable Read on
               it to make it an inbox candidate.
             </p>
           ) : (

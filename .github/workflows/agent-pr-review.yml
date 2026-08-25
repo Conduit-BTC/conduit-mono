@@ -192,9 +192,9 @@ jobs:
             - If and only if there are zero actionable P0, P1, or P2 findings,
               include this exact marker in the review body:
               `<!-- conduit:sudden-review clean head=${{ steps.pr.outputs.head_sha }} -->`
-            - A clean review must have zero inline comments. State
-              `No actionable findings.` and list only residual verification
-              risks after the marker.
+            - A clean review must have zero inline comments. Immediately after
+              the marker, start a new line with `No actionable findings.` Any
+              residual verification risks may follow that sentence.
             - Never include the clean marker when any actionable finding exists
               or review delivery is blocked.
         run: |

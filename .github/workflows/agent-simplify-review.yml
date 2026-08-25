@@ -97,7 +97,6 @@ jobs:
             review_commit="$(jq -r '.commit_id // ""' <<< "$review")"
             review_body="$(jq -r '.body // ""' <<< "$review")"
             clean_marker="<!-- conduit:sudden-review clean head=$head_sha -->"
-            clean_summary="No actionable findings."
 
             if [[ "$review_commit" != "$head_sha" ]]; then
               skip_automatic_handoff "The source review is stale; skipping Ponytail."
@@ -110,7 +109,7 @@ jobs:
               echo "The source review does not contain the exact clean-review marker." >&2
               exit 1
             fi
-            if ! grep -Fqx "$clean_summary" <<< "$review_body"; then
+            if ! grep -Eq '^No actionable findings\.([[:space:]]|$)' <<< "$review_body"; then
               echo "The source review does not contain the exact clean-review summary." >&2
               exit 1
             fi
@@ -196,7 +195,6 @@ jobs:
             review_commit="$(jq -r '.commit_id // ""' <<< "$review")"
             review_body="$(jq -r '.body // ""' <<< "$review")"
             clean_marker="<!-- conduit:sudden-review clean head=$head_sha -->"
-            clean_summary="No actionable findings."
 
             if [[ "$reviewer" != "conduit-sudden-agent[bot]" ||
               "$review_commit" != "$head_sha" ||
@@ -204,7 +202,7 @@ jobs:
               echo "The queued clean-review handoff failed revalidation." >&2
               exit 1
             fi
-            if ! grep -Fqx "$clean_summary" <<< "$review_body"; then
+            if ! grep -Eq '^No actionable findings\.([[:space:]]|$)' <<< "$review_body"; then
               echo "The queued source review lacks the exact clean-review summary." >&2
               exit 1
             fi

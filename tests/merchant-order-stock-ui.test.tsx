@@ -21,13 +21,12 @@ function adjustment(
 
 const handlers = {
   onUpdate: () => undefined,
-  onDecline: () => undefined,
   onRetry: () => undefined,
   onDismissDelivery: () => undefined,
 }
 
 describe("merchant order stock UI", () => {
-  it("shows explicit update math and a decline action", () => {
+  it("shows the calculated publish action and a custom stock field", () => {
     const markup = renderToStaticMarkup(
       <OrderStockPanel
         adjustments={[adjustment()]}
@@ -47,8 +46,12 @@ describe("merchant order stock UI", () => {
     expect(markup).toContain("Pocket Relay")
     expect(markup).toContain("sold. Update stock")
     expect(markup).toContain("12 → 10")
-    expect(markup).toContain("Update to 10")
-    expect(markup).toContain("Keep 12")
+    expect(markup).toContain("Publish stock 10")
+    expect(markup).toContain("Custom updated stock")
+    expect(markup).toContain("Publish custom stock")
+    expect(markup).toContain('inputMode="numeric"')
+    expect(markup).toContain('aria-describedby="custom-stock-help-')
+    expect(markup).not.toContain("Keep 12")
     expect(markup).not.toContain("Message buyer")
     expect(markup).toContain('aria-labelledby="order-stock-heading"')
   })
@@ -75,7 +78,7 @@ describe("merchant order stock UI", () => {
 
     expect(markup).toContain("Restocking required")
     expect(markup).toContain("exceeds tracked stock by 3")
-    expect(markup).toContain("Update to 0")
+    expect(markup).toContain("Publish stock 0")
     expect(markup).not.toContain("Keep 2")
     expect(markup).not.toContain("Message buyer")
   })
@@ -109,7 +112,7 @@ describe("merchant order stock UI", () => {
     expect(markup).toContain("coordinate a refund")
     expect(markup).toContain("Message buyer")
     expect(markup).not.toContain("Keep stock at 0")
-    expect(markup).not.toContain("Update to 0")
+    expect(markup).not.toContain("Publish stock 0")
   })
 
   it("keeps restocking guidance without offering an already-applied update", () => {
@@ -137,14 +140,21 @@ describe("merchant order stock UI", () => {
     expect(markup).toContain("Restocking required")
     expect(markup).toContain("exceeds tracked stock by 3")
     expect(markup).toContain("Message buyer")
-    expect(markup).not.toContain("Update to 0")
+    expect(markup).not.toContain("Publish stock 0")
   })
 
-  it("keeps merchant stock mutation verification strict", async () => {
+  it("publishes from the latest local listing without a blocking relay read", async () => {
     const source = await Bun.file("apps/merchant/src/routes/orders.tsx").text()
 
-    expect(source).toContain("latest.meta.degraded || latest.meta.stale")
-    expect(source).not.toContain("hasExactLiveProductAvailabilityEvidence")
+    expect(source).not.toContain("getAtomicProductDetail")
+    expect(source).not.toContain("latest.meta.degraded || latest.meta.stale")
+    expect(source).toContain("await getCachedMerchantStorefront")
+    expect(source).not.toContain("orderProductsQuery.data?.data.find")
+    expect(source).toContain(
+      "(candidate) => candidate.addressId === payload.adjustment.addressId"
+    )
+    expect(source).toContain("stock: payload.adjustment.nextStock")
+    expect(source).not.toContain("stock: payload.stock")
   })
 
   it("clears transient blockers only after a stock decision is durable", async () => {
@@ -153,7 +163,6 @@ describe("merchant order stock UI", () => {
     expect(source).toContain(
       "next.delete(`${merchantPubkey}:${payload.adjustment.key}`)"
     )
-    expect(source).toContain("next.delete(`${pubkey}:${adjustment.key}`)")
     expect(source).toContain("hasSessionDecision: sessionStockDecisionKeys.has")
     expect(source).toContain('stockDelivery.notice.state !== "delivered"')
     expect(source).toContain(
@@ -202,6 +211,6 @@ describe("merchant order stock UI", () => {
     expect(markup).toContain("Retry delivery")
     expect(markup).toContain("Hide for now")
     expect(markup).toContain("exceeds tracked stock by 3")
-    expect(markup).not.toContain("Update to 0")
+    expect(markup).not.toContain("Publish stock 0")
   })
 })

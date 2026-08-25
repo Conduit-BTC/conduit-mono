@@ -55,6 +55,17 @@ export default defineConfig({
     {
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
+      testIgnore: "**/mobile-safari-baseline.playwright.ts",
+    },
+    {
+      name: "mobile-chromium",
+      testMatch: "**/mobile-safari-baseline.playwright.ts",
+      use: { ...devices["Pixel 7"] },
+    },
+    {
+      name: "mobile-webkit",
+      testMatch: "**/mobile-safari-baseline.playwright.ts",
+      use: { ...devices["iPhone 13"] },
     },
   ],
   webServer,

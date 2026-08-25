@@ -769,6 +769,34 @@ describe("BuyerNwcSession", () => {
       status: "wallet_error",
       phase: "after_publish",
       reason: "QUOTA_EXCEEDED: budget exceeded",
+      errorCode: "QUOTA_EXCEEDED",
+    })
+  })
+
+  it("reports a null error code when the wallet omits one", async () => {
+    __buyerNwcSessionTestInternals.__setClientFactory(() =>
+      fakeClient({
+        payInvoice: async () => {
+          throw new Nip47WalletError("something went wrong")
+        },
+      })
+    )
+
+    const session = new BuyerNwcSession()
+    session.setConnection(connection)
+
+    await expect(
+      session.payInvoice({
+        invoice: "lnbc1test",
+        amountMsats: 1_000,
+        timeoutMs: 100,
+        appId: "market",
+      })
+    ).resolves.toEqual({
+      status: "wallet_error",
+      phase: "after_publish",
+      reason: "something went wrong",
+      errorCode: null,
     })
   })
 

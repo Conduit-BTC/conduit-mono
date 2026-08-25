@@ -27,6 +27,7 @@ import {
 } from "../lib/marketBrowseModel"
 import type { ProductCatalogSourceMode } from "../lib/productCatalogRead"
 import { useGuestMarketDiscovery } from "./useGuestMarketDiscovery"
+import { useShopperPresets } from "./useShopperPresets"
 import { useMerchantIdentities } from "./useMerchantIdentities"
 import { useProgressiveProducts } from "./useProgressiveProducts"
 
@@ -46,6 +47,7 @@ export function useMarketBrowseModel({
   visibleCount,
 }: UseMarketBrowseModelInput) {
   const { pubkey, status } = useAuth()
+  const shopperPresets = useShopperPresets()
   const selectedMerchants = useMemo(
     () =>
       (search.merchant ?? []).map((merchant) => {
@@ -201,9 +203,16 @@ export function useMarketBrowseModel({
         filteredProducts,
         search.sort,
         btcUsdRate,
-        familiesByProductId
+        familiesByProductId,
+        shopperPresets.discoveryDestination
       ),
-    [btcUsdRate, familiesByProductId, filteredProducts, search.sort]
+    [
+      btcUsdRate,
+      familiesByProductId,
+      filteredProducts,
+      search.sort,
+      shopperPresets.discoveryDestination,
+    ]
   )
   const visibleProducts = useMemo(
     () => filtered.slice(0, visibleCount),
