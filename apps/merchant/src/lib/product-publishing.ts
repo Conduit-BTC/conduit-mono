@@ -30,7 +30,9 @@ export class SignedProductDeliveryError extends Error {
   }
 }
 
-function asSignedProductDeliveryError(error: unknown): SignedProductDeliveryError {
+function asSignedProductDeliveryError(
+  error: unknown
+): SignedProductDeliveryError {
   return error instanceof SignedProductDeliveryError
     ? error
     : new SignedProductDeliveryError(error)
@@ -168,12 +170,12 @@ export function resolveProductFulfillmentIntentForTarget(input: {
     input.product.sourceShippingCost?.amount ?? input.product.shippingCostSats
   if (typeof amount !== "number") return input.fallbackIntent
 
-  const projectedCountries =
-    input.product.shippingCountries?.length
-      ? input.product.shippingCountries
-      : input.product.shippingCountryRules?.map((rule) => rule.code)
-  const countries =
-    projectedCountries?.length ? projectedCountries : input.authoringCountries
+  const projectedCountries = input.product.shippingCountries?.length
+    ? input.product.shippingCountries
+    : input.product.shippingCountryRules?.map((rule) => rule.code)
+  const countries = projectedCountries?.length
+    ? projectedCountries
+    : input.authoringCountries
   if (
     !countries.some((country) =>
       /^[A-Z]{2}$/.test(country.trim().toUpperCase())
