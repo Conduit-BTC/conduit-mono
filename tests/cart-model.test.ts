@@ -862,6 +862,48 @@ describe("cart model", () => {
     expect(cartItemsMatchCurrentProducts([cartItem], [])).toBe(false)
   })
 
+  it("binds refreshed variation identity before authorizing HUD checkout", () => {
+    const familyProductId = "30402:merchant-a:shirt"
+    const specifications = [{ key: "size", value: "M" }]
+    const product = refreshedProduct(item(), {
+      type: "variation",
+      parentProductId: familyProductId,
+      specifications,
+      format: "digital",
+    })
+    const cartItem: CartItem = {
+      ...createCartItemFromProduct(product),
+      familyProductId,
+      selectedSpecifications: specifications,
+      quantity: 2,
+    }
+
+    expect(cartItemsMatchCurrentProducts([cartItem], [product])).toBe(true)
+    expect(
+      cartItemsMatchCurrentProducts(
+        [cartItem],
+        [{ ...product, parentProductId: "30402:merchant-a:other-shirt" }]
+      )
+    ).toBe(false)
+    expect(
+      cartItemsMatchCurrentProducts(
+        [cartItem],
+        [
+          {
+            ...product,
+            specifications: [{ key: "size", value: "L" }],
+          },
+        ]
+      )
+    ).toBe(false)
+    expect(
+      cartItemsMatchCurrentProducts(
+        [cartItem],
+        [{ ...product, type: "simple", parentProductId: undefined }]
+      )
+    ).toBe(false)
+  })
+
   it("keeps refreshed availability merchant-scoped for legacy identifiers", () => {
     const cartItems = [
       item({ productId: "shared", merchantPubkey: "merchant-a", stock: 1 }),

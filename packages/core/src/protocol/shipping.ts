@@ -7,6 +7,7 @@
  * Gamma kind-30406 before its referencing kind-30402.
  */
 import { NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
+import { db, type CachedProductTombstone } from "../db"
 import {
   canonicalizeShippingCost,
   getShippingCostSats,
@@ -19,12 +20,17 @@ import { EVENT_KINDS } from "./kinds"
 import {
   fetchEventsFanout,
   fetchEventsFanoutDetailed,
+  getEventSourceRelayUrls,
   type FetchEventsFanoutResult,
 } from "./ndk"
 import { getRelayLists } from "./relay-list"
 import { planRelayReads } from "./relay-planner"
 import type { ConduitAppId } from "./nip89"
 import { appendConduitClientTag } from "./nip89"
+import {
+  isValidSignedPublicNostrEvent,
+  type SignedPublicNostrEvent,
+} from "./signed-event"
 
 export const CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG = "conduit-default"
 export const FIXED_PRODUCT_SHIPPING_D_TAG_SUFFIX = "-shipping-standard"
@@ -33,6 +39,36 @@ export const SHIPPING_OPTION_READ_BATCH_SIZE = 50
 const SHIPPING_OPTION_READ_LIMIT = 100
 const SHIPPING_DELETION_READ_LIMIT = 300
 const SHIPPING_OPTION_READ_CONCURRENCY = 3
+const SHIPPING_TOMBSTONE_PREFIX = "shipping:"
+const HEX_64 = /^[0-9a-f]{64}$/i
+
+export interface ShippingTestOverrides {
+  fetchEventsFanoutDetailed?: typeof fetchEventsFanoutDetailed
+  getCachedDeletionTombstones?: (
+    targetIds: readonly string[]
+  ) => Promise<CachedProductTombstone[]>
+  putCachedDeletionTombstones?: (
+    rows: CachedProductTombstone[]
+  ) => Promise<void>
+  now?: () => number
+}
+
+let shippingTestOverrides: ShippingTestOverrides = {}
+const volatileShippingDeletionTombstones = new Map<
+  string,
+  CachedProductTombstone
+>()
+
+export function __setShippingTestOverrides(
+  overrides: Partial<ShippingTestOverrides>
+): void {
+  shippingTestOverrides = { ...shippingTestOverrides, ...overrides }
+}
+
+export function __resetShippingTestOverrides(): void {
+  shippingTestOverrides = {}
+  volatileShippingDeletionTombstones.clear()
+}
 
 const FIXED_STANDARD_UNSUPPORTED_TAGS = new Set([
   "carrier",
@@ -470,6 +506,284 @@ export function parseShippingOptionEvent(
 }
 
 // ---------------------------------------------------------------------------
+// Durable deletion evidence
+// ---------------------------------------------------------------------------
+
+function shippingNow(): number {
+  return shippingTestOverrides.now?.() ?? Date.now()
+}
+
+function uniqueStrings(values: readonly string[]): string[] {
+  return Array.from(new Set(values)).sort()
+}
+
+function shippingTombstoneIdForAddress(addressId: string): string {
+  return `${SHIPPING_TOMBSTONE_PREFIX}a:${addressId}`
+}
+
+function shippingTombstoneIdForEvent(pubkey: string, eventId: string): string {
+  return `${SHIPPING_TOMBSTONE_PREFIX}e:${pubkey}:${eventId}`
+}
+
+function cloneSignedEvent(
+  event: SignedPublicNostrEvent
+): SignedPublicNostrEvent {
+  return {
+    id: event.id,
+    pubkey: event.pubkey,
+    created_at: event.created_at,
+    kind: event.kind,
+    tags: event.tags.map((tag) => [...tag]),
+    content: event.content,
+    sig: event.sig,
+  }
+}
+
+function shippingTombstonesFromDeletionEvent(
+  event: NDKEvent
+): CachedProductTombstone[] {
+  const rawEvent = event.rawEvent() as SignedPublicNostrEvent
+  if (
+    event.kind !== EVENT_KINDS.DELETION ||
+    !isValidSignedPublicNostrEvent(rawEvent)
+  ) {
+    throw new Error("Expected a valid signed shipping deletion event")
+  }
+
+  const signedEvent = cloneSignedEvent(rawEvent)
+  const pubkey = signedEvent.pubkey.toLowerCase()
+  const deletionEventId = signedEvent.id.toLowerCase()
+  const sourceRelayUrls = getEventSourceRelayUrls(event)
+  const cachedAt = shippingNow()
+  const rows = new Map<string, CachedProductTombstone>()
+
+  for (const [tagName, tagValue] of signedEvent.tags) {
+    if (tagName === "e" && tagValue && HEX_64.test(tagValue)) {
+      const eventId = tagValue.toLowerCase()
+      const id = shippingTombstoneIdForEvent(pubkey, eventId)
+      rows.set(id, {
+        id,
+        pubkey,
+        eventId,
+        deletedAt: signedEvent.created_at,
+        deletionEventId,
+        signedEvent,
+        sourceRelayUrls,
+        observedLocally: false,
+        cachedAt,
+      })
+      continue
+    }
+
+    if (tagName === "a") {
+      const address = parseShippingOptionAddress(tagValue)
+      if (!address || address.pubkey !== pubkey) continue
+      const id = shippingTombstoneIdForAddress(address.coordinate)
+      rows.set(id, {
+        id,
+        pubkey,
+        addressId: address.coordinate,
+        deletedAt: signedEvent.created_at,
+        deletionEventId,
+        signedEvent,
+        sourceRelayUrls,
+        observedLocally: false,
+        cachedAt,
+      })
+    }
+  }
+
+  return Array.from(rows.values())
+}
+
+function selectShippingTombstoneUpdates(
+  rows: readonly CachedProductTombstone[],
+  existingRows: readonly CachedProductTombstone[]
+): CachedProductTombstone[] {
+  const selected = new Map(existingRows.map((row) => [row.id, row] as const))
+  const changed = new Map<string, CachedProductTombstone>()
+
+  for (const row of rows) {
+    const existing = selected.get(row.id)
+    if (!existing) {
+      selected.set(row.id, row)
+      changed.set(row.id, row)
+      continue
+    }
+
+    const candidateWins =
+      row.deletedAt > existing.deletedAt ||
+      (row.deletedAt === existing.deletedAt &&
+        row.deletionEventId <= existing.deletionEventId)
+    const winner = candidateWins ? row : existing
+    const sourceRelayUrls = uniqueStrings([
+      ...(existing.sourceRelayUrls ?? []),
+      ...(row.sourceRelayUrls ?? []),
+    ])
+    const merged: CachedProductTombstone = {
+      ...winner,
+      sourceRelayUrls,
+      observedLocally:
+        existing.observedLocally === true || row.observedLocally === true,
+      cachedAt: Math.max(existing.cachedAt, row.cachedAt),
+    }
+    if (
+      candidateWins ||
+      sourceRelayUrls.length !== (existing.sourceRelayUrls?.length ?? 0) ||
+      merged.observedLocally !== existing.observedLocally
+    ) {
+      selected.set(row.id, merged)
+      changed.set(row.id, merged)
+    }
+  }
+
+  return Array.from(changed.values())
+}
+
+async function loadCachedShippingTombstones(
+  targetIds: readonly string[]
+): Promise<CachedProductTombstone[]> {
+  if (shippingTestOverrides.getCachedDeletionTombstones) {
+    return (
+      await shippingTestOverrides.getCachedDeletionTombstones(targetIds)
+    ).filter((row) => row.id.startsWith(SHIPPING_TOMBSTONE_PREFIX))
+  }
+  return (await db.productTombstones.bulkGet([...targetIds])).filter(
+    (row): row is CachedProductTombstone =>
+      row !== undefined && row.id.startsWith(SHIPPING_TOMBSTONE_PREFIX)
+  )
+}
+
+async function storeCachedShippingTombstones(
+  rows: CachedProductTombstone[]
+): Promise<void> {
+  if (rows.length === 0) return
+  if (shippingTestOverrides.putCachedDeletionTombstones) {
+    const ids = uniqueStrings(rows.map((row) => row.id))
+    const existingRows = shippingTestOverrides.getCachedDeletionTombstones
+      ? await shippingTestOverrides.getCachedDeletionTombstones(ids)
+      : []
+    const rowsToStore = selectShippingTombstoneUpdates(rows, existingRows)
+    if (rowsToStore.length > 0) {
+      await shippingTestOverrides.putCachedDeletionTombstones(rowsToStore)
+    }
+    return
+  }
+
+  const ids = uniqueStrings(rows.map((row) => row.id))
+  await db.transaction("rw", db.productTombstones, async () => {
+    const existingRows = (await db.productTombstones.bulkGet(ids)).filter(
+      (row): row is CachedProductTombstone => row !== undefined
+    )
+    const rowsToStore = selectShippingTombstoneUpdates(rows, existingRows)
+    if (rowsToStore.length > 0) {
+      await db.productTombstones.bulkPut(rowsToStore)
+    }
+  })
+}
+
+function rememberVolatileShippingTombstones(
+  rows: readonly CachedProductTombstone[]
+): void {
+  const updates = selectShippingTombstoneUpdates(
+    rows,
+    Array.from(volatileShippingDeletionTombstones.values())
+  )
+  for (const row of updates) {
+    volatileShippingDeletionTombstones.set(row.id, row)
+  }
+}
+
+async function flushVolatileShippingTombstones(): Promise<boolean> {
+  const pendingRows = Array.from(volatileShippingDeletionTombstones.values())
+  if (pendingRows.length === 0) return true
+  try {
+    await storeCachedShippingTombstones(pendingRows)
+  } catch {
+    return false
+  }
+  for (const row of pendingRows) {
+    if (volatileShippingDeletionTombstones.get(row.id) === row) {
+      volatileShippingDeletionTombstones.delete(row.id)
+    }
+  }
+  return true
+}
+
+async function rememberObservedShippingDeletionEvidence(
+  observedDeletionEvents: readonly NDKEvent[],
+  targetIds: readonly string[]
+): Promise<CachedProductTombstone[]> {
+  const targetIdSet = new Set(targetIds)
+  const observedRows: CachedProductTombstone[] = []
+  for (const event of observedDeletionEvents) {
+    try {
+      observedRows.push(
+        ...shippingTombstonesFromDeletionEvent(event).filter((row) =>
+          targetIdSet.has(row.id)
+        )
+      )
+    } catch {
+      // Relay data is untrusted. Invalid signatures and malformed targets do
+      // not become durable deletion evidence.
+    }
+  }
+  rememberVolatileShippingTombstones(observedRows)
+  await flushVolatileShippingTombstones()
+  return observedRows
+}
+
+function signedDeletionEventsFromShippingTombstones(
+  rows: readonly CachedProductTombstone[]
+): SignedPublicNostrEvent[] {
+  const events = new Map<string, SignedPublicNostrEvent>()
+  for (const row of rows) {
+    if (!row.id.startsWith(SHIPPING_TOMBSTONE_PREFIX) || !row.signedEvent) {
+      continue
+    }
+    const signedEvent = row.signedEvent
+    if (!isValidSignedPublicNostrEvent(signedEvent)) continue
+    const validatedRows = shippingTombstonesFromDeletionEvent(
+      new NDKEvent(undefined, signedEvent)
+    )
+    if (!validatedRows.some((validated) => validated.id === row.id)) continue
+    events.set(signedEvent.id, cloneSignedEvent(signedEvent))
+  }
+  return Array.from(events.values())
+}
+
+async function getMergedShippingDeletionEvidence(
+  targetIds: readonly string[]
+): Promise<SignedPublicNostrEvent[]> {
+  const targetIdSet = new Set(targetIds)
+  const volatileRows = Array.from(
+    volatileShippingDeletionTombstones.values()
+  ).filter((row) => targetIdSet.has(row.id))
+  let persistedRows: CachedProductTombstone[] = []
+  try {
+    persistedRows = await loadCachedShippingTombstones(targetIds)
+  } catch {
+    if (volatileRows.length === 0) {
+      throw new Error("Fixed shipping deletion evidence could not be verified")
+    }
+  }
+
+  return signedDeletionEventsFromShippingTombstones([
+    ...persistedRows,
+    ...volatileRows,
+  ])
+}
+
+async function runShippingFetchEventsFanoutDetailed(
+  filter: NDKFilter,
+  options: Parameters<typeof fetchEventsFanoutDetailed>[1]
+): Promise<FetchEventsFanoutResult> {
+  const impl =
+    shippingTestOverrides.fetchEventsFanoutDetailed ?? fetchEventsFanoutDetailed
+  return await impl(filter, options)
+}
+
+// ---------------------------------------------------------------------------
 // Fetch
 // ---------------------------------------------------------------------------
 
@@ -493,8 +807,13 @@ export async function getShippingOptions(
   const events = (await fetchEventsFanout(filter, {
     relayUrls: readPlan.relayUrls,
   })) as NDKEvent[]
-
-  return selectLatestShippingOptions(events)
+  const coordinates = events.flatMap((event) => {
+    const dTag = event.tags.find((tag) => tag[0] === "d")?.[1]?.trim()
+    return event.pubkey && dTag
+      ? [getShippingOptionAddress(event.pubkey, dTag)]
+      : []
+  })
+  return await getShippingOptionsByCoordinates(coordinates)
 }
 
 export function selectLatestShippingOptions(
@@ -532,11 +851,12 @@ export function selectLatestShippingOptions(
     const deleted = deletionEvents.some(
       (deletion) =>
         deletion.pubkey === event.pubkey &&
-        (deletion.created_at ?? 0) >= (event.created_at ?? 0) &&
         deletion.tags.some(
           (tag) =>
             (tag[0] === "e" && tag[1] === event.id) ||
-            (tag[0] === "a" && tag[1] === coordinate)
+            (tag[0] === "a" &&
+              tag[1] === coordinate &&
+              (deletion.created_at ?? 0) >= (event.created_at ?? 0))
         )
     )
     if (deleted) continue
@@ -597,6 +917,7 @@ function requireCompleteShippingRead(
     result.relays.map((relay) => [relay.relayUrl, relay])
   )
   if (
+    result.eventsVerified !== true ||
     relayStatuses.size !== relayUrls.length ||
     relayUrls.some(
       (relayUrl) => relayStatuses.get(relayUrl)?.status !== "success"
@@ -651,7 +972,7 @@ export async function getShippingOptionsByCoordinates(
         maxRelays: 12,
       })
       const shippingEvents = requireCompleteShippingRead(
-        await fetchEventsFanoutDetailed(
+        await runShippingFetchEventsFanoutDetailed(
           {
             kinds: [EVENT_KINDS.SHIPPING_OPTION as number],
             authors: [batch.pubkey],
@@ -663,49 +984,67 @@ export async function getShippingOptionsByCoordinates(
         readPlan.relayUrls,
         SHIPPING_OPTION_READ_LIMIT
       )
-      const addressDeletionEvents = requireCompleteShippingRead(
-        await fetchEventsFanoutDetailed(
-          {
-            kinds: [EVENT_KINDS.DELETION as number],
-            authors: [batch.pubkey],
-            "#a": batch.coordinates,
-            limit: SHIPPING_DELETION_READ_LIMIT,
-          },
-          { relayUrls: readPlan.relayUrls }
-        ),
+      const addressDeletionResult = await runShippingFetchEventsFanoutDetailed(
+        {
+          kinds: [EVENT_KINDS.DELETION as number],
+          authors: [batch.pubkey],
+          "#a": batch.coordinates,
+          limit: SHIPPING_DELETION_READ_LIMIT,
+        },
+        { relayUrls: readPlan.relayUrls }
+      )
+      await rememberObservedShippingDeletionEvidence(
+        addressDeletionResult.events,
+        batch.coordinates.map(shippingTombstoneIdForAddress)
+      )
+      requireCompleteShippingRead(
+        addressDeletionResult,
         readPlan.relayUrls,
         SHIPPING_DELETION_READ_LIMIT
       )
       const eventIds = Array.from(
         new Set(shippingEvents.map((event) => event.id).filter(Boolean))
       )
-      const eventDeletionEvents =
-        eventIds.length === 0
-          ? []
-          : requireCompleteShippingRead(
-              await fetchEventsFanoutDetailed(
-                {
-                  kinds: [EVENT_KINDS.DELETION as number],
-                  authors: [batch.pubkey],
-                  "#e": eventIds,
-                  limit: SHIPPING_DELETION_READ_LIMIT,
-                },
-                { relayUrls: readPlan.relayUrls }
-              ),
-              readPlan.relayUrls,
-              SHIPPING_DELETION_READ_LIMIT
-            )
+      if (eventIds.length > 0) {
+        const eventDeletionResult = await runShippingFetchEventsFanoutDetailed(
+          {
+            kinds: [EVENT_KINDS.DELETION as number],
+            authors: [batch.pubkey],
+            "#e": eventIds,
+            limit: SHIPPING_DELETION_READ_LIMIT,
+          },
+          { relayUrls: readPlan.relayUrls }
+        )
+        await rememberObservedShippingDeletionEvidence(
+          eventDeletionResult.events,
+          eventIds.map((eventId) =>
+            shippingTombstoneIdForEvent(batch.pubkey, eventId)
+          )
+        )
+        requireCompleteShippingRead(
+          eventDeletionResult,
+          readPlan.relayUrls,
+          SHIPPING_DELETION_READ_LIMIT
+        )
+      }
       return {
         shippingEvents,
-        deletionEvents: [...addressDeletionEvents, ...eventDeletionEvents],
       }
     }
   )
 
-  return selectLatestShippingOptions(
-    batchResults.flatMap((result) => result.shippingEvents),
-    batchResults.flatMap((result) => result.deletionEvents)
-  ).filter((option) => requested.has(option.id))
+  const shippingEvents = batchResults.flatMap((result) => result.shippingEvents)
+  const deletionTargetIds = uniqueStrings([
+    ...Array.from(requested, shippingTombstoneIdForAddress),
+    ...shippingEvents.flatMap((event) =>
+      event.id ? [shippingTombstoneIdForEvent(event.pubkey, event.id)] : []
+    ),
+  ])
+  const deletionEvents =
+    await getMergedShippingDeletionEvidence(deletionTargetIds)
+  return selectLatestShippingOptions(shippingEvents, deletionEvents).filter(
+    (option) => requested.has(option.id)
+  )
 }
 
 export function resolveProductFulfillment(

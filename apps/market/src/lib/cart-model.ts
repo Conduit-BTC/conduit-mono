@@ -627,6 +627,12 @@ export function getCartCommerceFingerprint(items: readonly CartItem[]): string {
       .map((item) => ({
         merchantPubkey: item.merchantPubkey,
         productId: item.productId,
+        familyProductId: item.familyProductId ?? null,
+        selectedSpecifications:
+          item.selectedSpecifications?.map((specification) => ({
+            key: specification.key,
+            value: specification.value,
+          })) ?? null,
         quantity: item.quantity,
         price: item.price,
         currency: item.currency,
@@ -651,10 +657,10 @@ export function getCartCommerceFingerprint(items: readonly CartItem[]): string {
   )
 }
 
-export function cartItemsMatchCurrentProducts(
+export function rebuildCurrentCartItems(
   items: readonly CartItem[],
   products: readonly Product[]
-): boolean {
+): CartItem[] | null {
   const productsByKey = new Map(
     products.map((product) => [
       getCartItemKey({
@@ -664,14 +670,33 @@ export function cartItemsMatchCurrentProducts(
       product,
     ])
   )
-  const currentItems = items.map((item) => {
+  const currentItems: CartItem[] = []
+  for (const item of items) {
     const product = productsByKey.get(getCartItemKey(item))
-    return product
-      ? { ...createCartItemFromProduct(product), quantity: item.quantity }
-      : null
-  })
+    if (!product || product.type === "variable") return null
+    currentItems.push({
+      ...createCartItemFromProduct(product),
+      familyProductId:
+        product.type === "variation" ? product.parentProductId : undefined,
+      selectedSpecifications:
+        product.type === "variation"
+          ? product.specifications.map((specification) => ({
+              ...specification,
+            }))
+          : undefined,
+      quantity: item.quantity,
+    })
+  }
+  return currentItems
+}
+
+export function cartItemsMatchCurrentProducts(
+  items: readonly CartItem[],
+  products: readonly Product[]
+): boolean {
+  const currentItems = rebuildCurrentCartItems(items, products)
   return (
-    currentItems.every((item) => item !== null) &&
+    currentItems !== null &&
     getCartCommerceFingerprint(currentItems) ===
       getCartCommerceFingerprint(items)
   )

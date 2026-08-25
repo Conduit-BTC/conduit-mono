@@ -1,10 +1,21 @@
+import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { describe, expect, it } from "bun:test"
 import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
+import {
+  __resetRelayListTestOverrides,
+  __resetShippingTestOverrides,
+  __setRelayListTestOverrides,
+  __setShippingTestOverrides,
   buildFixedShippingOptionEventDraft,
   buildProductListingEventDraft,
   buildShippingOptionDeletionEventDraft,
   buildShippingOptionReadBatches,
   compileProductFulfillmentIntent,
+  getShippingOptionsByCoordinates,
   getProductShippingOptionAddress,
   isBuyerCountryEligible,
   parseProductEvent,
@@ -13,6 +24,7 @@ import {
   selectLatestShippingOptions,
   type ParsedShippingOption,
   type ProductSchema,
+  type CachedProductTombstone,
 } from "@conduit/core"
 
 const MERCHANT = "a".repeat(64)
@@ -401,6 +413,13 @@ describe("canonical fixed product shipping", () => {
             created_at: 3,
             tags: [["a", SHIPPING_COORDINATE]],
           },
+        ]
+      )
+    ).toHaveLength(1)
+    expect(
+      selectLatestShippingOptions(
+        [latest],
+        [
           {
             id: "older-delete",
             pubkey: MERCHANT,
@@ -409,7 +428,49 @@ describe("canonical fixed product shipping", () => {
           },
         ]
       )
+    ).toEqual([])
+  })
+
+  it("applies address deletions only to revisions at or before their cutoff", () => {
+    const option = {
+      id: "latest",
+      pubkey: MERCHANT,
+      created_at: 2,
+      tags: [
+        ["d", `${PRODUCT_D_TAG}-shipping-standard`],
+        ["title", "Standard Shipping"],
+        ["price", "5", "USD"],
+        ["country", "US"],
+        ["service", "standard"],
+      ],
+    }
+
+    expect(
+      selectLatestShippingOptions(
+        [option],
+        [
+          {
+            id: "older-address-delete",
+            pubkey: MERCHANT,
+            created_at: 1,
+            tags: [["a", SHIPPING_COORDINATE]],
+          },
+        ]
+      )
     ).toHaveLength(1)
+    expect(
+      selectLatestShippingOptions(
+        [option],
+        [
+          {
+            id: "equal-address-delete",
+            pubkey: MERCHANT,
+            created_at: 2,
+            tags: [["a", SHIPPING_COORDINATE]],
+          },
+        ]
+      )
+    ).toEqual([])
   })
 
   it("keeps an omitted exact-id-deleted revision withdrawn by canonical address provenance", () => {
@@ -488,6 +549,249 @@ describe("canonical fixed product shipping", () => {
       dTags: ["other-option"],
     })
   })
+
+  it("fails closed for unverified or saturated authoritative relay reads", async () => {
+    let mode: "unverified" | "saturated" = "unverified"
+    __setRelayListTestOverrides({
+      loadCached: async (author) => ({
+        pubkey: author,
+        readRelayUrls: ["wss://read.example"],
+        writeRelayUrls: ["wss://write.example"],
+        eventCreatedAt: 1,
+        cachedAt: 1,
+      }),
+    })
+    __setShippingTestOverrides({
+      fetchEventsFanoutDetailed: async (_filter, options) => ({
+        events: [],
+        relays: (options?.relayUrls ?? []).map((relayUrl) => ({
+          relayUrl,
+          status: "success" as const,
+          eventCount: mode === "saturated" ? 100 : 0,
+        })),
+        eventsVerified: mode !== "unverified",
+      }),
+    })
+
+    try {
+      await expect(
+        getShippingOptionsByCoordinates([SHIPPING_COORDINATE])
+      ).rejects.toThrow(
+        "Fixed shipping could not be verified across the planned relays"
+      )
+
+      mode = "saturated"
+      await expect(
+        getShippingOptionsByCoordinates([SHIPPING_COORDINATE])
+      ).rejects.toThrow(
+        "Fixed shipping could not be verified across the planned relays"
+      )
+    } finally {
+      __resetShippingTestOverrides()
+      __resetRelayListTestOverrides()
+    }
+  })
+
+  it("retains only validated shipping deletion evidence across relay omission and persistence retry", async () => {
+    const secretKey = generateSecretKey()
+    const pubkey = getPublicKey(secretKey)
+    const coordinate = `30406:${pubkey}:field-notes-shipping-standard`
+    const shippingEvent = new NDKEvent(
+      undefined,
+      finalizeEvent(
+        {
+          kind: 30406,
+          created_at: 100,
+          content: "",
+          tags: [
+            ["d", "field-notes-shipping-standard"],
+            ["title", "Standard Shipping"],
+            ["price", "5", "USD"],
+            ["country", "US"],
+            ["service", "standard"],
+          ],
+        },
+        secretKey
+      )
+    )
+    const deletion = new NDKEvent(
+      undefined,
+      finalizeEvent(
+        {
+          kind: 5,
+          created_at: 110,
+          content: "",
+          tags: [["a", coordinate]],
+        },
+        secretKey
+      )
+    )
+    let includeDeletion = true
+    let partialDeletionCoverage = false
+    let failWrites = false
+    let cachedTombstones: CachedProductTombstone[] = []
+
+    __setRelayListTestOverrides({
+      loadCached: async (author) => ({
+        pubkey: author,
+        readRelayUrls: ["wss://read.example"],
+        writeRelayUrls: ["wss://write.example"],
+        eventCreatedAt: 1,
+        cachedAt: 1,
+      }),
+    })
+    __setShippingTestOverrides({
+      fetchEventsFanoutDetailed: async (filter, options) => {
+        const events = filter.kinds?.includes(30406)
+          ? [shippingEvent]
+          : filter["#a"] && includeDeletion
+            ? [deletion]
+            : []
+        const relayUrls = options?.relayUrls ?? []
+        const observedRelayUrls =
+          filter["#a"] && partialDeletionCoverage
+            ? relayUrls.slice(1)
+            : relayUrls
+        return {
+          events,
+          relays: observedRelayUrls.map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: events.length,
+          })),
+          eventsVerified: true,
+        }
+      },
+      getCachedDeletionTombstones: async (targetIds) =>
+        cachedTombstones.filter((row) => targetIds.includes(row.id)),
+      putCachedDeletionTombstones: async (rows) => {
+        if (failWrites) throw new Error("IndexedDB unavailable")
+        for (const row of rows) {
+          cachedTombstones = [
+            ...cachedTombstones.filter((current) => current.id !== row.id),
+            row,
+          ]
+        }
+      },
+    })
+
+    try {
+      const validSignature = deletion.sig
+      deletion.sig = "0".repeat(128)
+      expect(await getShippingOptionsByCoordinates([coordinate])).toHaveLength(
+        1
+      )
+      expect(cachedTombstones).toEqual([])
+
+      deletion.sig = validSignature
+      failWrites = true
+      partialDeletionCoverage = true
+      await expect(
+        getShippingOptionsByCoordinates([coordinate])
+      ).rejects.toThrow(
+        "Fixed shipping could not be verified across the planned relays"
+      )
+      includeDeletion = false
+      partialDeletionCoverage = false
+      expect(await getShippingOptionsByCoordinates([coordinate])).toEqual([])
+      expect(cachedTombstones).toEqual([])
+
+      failWrites = false
+      expect(await getShippingOptionsByCoordinates([coordinate])).toEqual([])
+      expect(cachedTombstones.length).toBeGreaterThan(0)
+    } finally {
+      __resetShippingTestOverrides()
+      __resetRelayListTestOverrides()
+    }
+  }, 15_000)
+
+  it("retains an exact-event deletion even when its timestamp predates the shipping event", async () => {
+    const secretKey = generateSecretKey()
+    const pubkey = getPublicKey(secretKey)
+    const coordinate = `30406:${pubkey}:field-notes-shipping-standard`
+    const shippingEvent = new NDKEvent(
+      undefined,
+      finalizeEvent(
+        {
+          kind: 30406,
+          created_at: 100,
+          content: "",
+          tags: [
+            ["d", "field-notes-shipping-standard"],
+            ["title", "Standard Shipping"],
+            ["price", "5", "USD"],
+            ["country", "US"],
+            ["service", "standard"],
+          ],
+        },
+        secretKey
+      )
+    )
+    const deletion = new NDKEvent(
+      undefined,
+      finalizeEvent(
+        {
+          kind: 5,
+          created_at: 90,
+          content: "",
+          tags: [["e", shippingEvent.id]],
+        },
+        secretKey
+      )
+    )
+    let includeDeletion = true
+    let cachedTombstones: CachedProductTombstone[] = []
+
+    __setRelayListTestOverrides({
+      loadCached: async (author) => ({
+        pubkey: author,
+        readRelayUrls: ["wss://read.example"],
+        writeRelayUrls: ["wss://write.example"],
+        eventCreatedAt: 1,
+        cachedAt: 1,
+      }),
+    })
+    __setShippingTestOverrides({
+      fetchEventsFanoutDetailed: async (filter, options) => {
+        const events = filter.kinds?.includes(30406)
+          ? [shippingEvent]
+          : filter["#e"] && includeDeletion
+            ? [deletion]
+            : []
+        return {
+          events,
+          relays: (options?.relayUrls ?? []).map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: events.length,
+          })),
+          eventsVerified: true,
+        }
+      },
+      getCachedDeletionTombstones: async (targetIds) =>
+        cachedTombstones.filter((row) => targetIds.includes(row.id)),
+      putCachedDeletionTombstones: async (rows) => {
+        for (const row of rows) {
+          cachedTombstones = [
+            ...cachedTombstones.filter((current) => current.id !== row.id),
+            row,
+          ]
+        }
+      },
+    })
+
+    try {
+      expect(await getShippingOptionsByCoordinates([coordinate])).toEqual([])
+      expect(cachedTombstones).toHaveLength(1)
+
+      includeDeletion = false
+      expect(await getShippingOptionsByCoordinates([coordinate])).toEqual([])
+      expect(cachedTombstones[0]?.id).toContain(shippingEvent.id)
+    } finally {
+      __resetShippingTestOverrides()
+      __resetRelayListTestOverrides()
+    }
+  }, 15_000)
 
   it("keeps legacy inline listings readable but fail-closed for direct payment", () => {
     const legacy = parseProductEvent({
