@@ -177,7 +177,8 @@ describe("isOrderCompanionNotificationRumor", () => {
     ["p", "merchant"],
     ["subject", "conduit-order-notification"],
     ["order", "order-id"],
-    ["conduit", "order-companion", "1"],
+    ["conduit", "order-companion", "1", "authoritative-order-id"],
+    ["client", "Conduit Market"],
   ]
 
   it("recognizes only the complete v1 app marker", () => {
@@ -198,9 +199,13 @@ describe("isOrderCompanionNotificationRumor", () => {
     ],
     ["missing recipient", canonicalTags.filter((tag) => tag[0] !== "p")],
     ["missing order", canonicalTags.filter((tag) => tag[0] !== "order")],
+    ["missing client", canonicalTags.filter((tag) => tag[0] !== "client")],
     [
       "duplicate marker",
-      [...canonicalTags, ["conduit", "order-companion", "1"]],
+      [
+        ...canonicalTags,
+        ["conduit", "order-companion", "1", "authoritative-order-id"],
+      ],
     ],
     ["duplicate subject", [...canonicalTags, canonicalTags[1]!]],
     ["duplicate order", [...canonicalTags, canonicalTags[2]!]],
@@ -230,6 +235,7 @@ describe("order companion deployment links", () => {
     expect(companion.content).toContain(
       "https://fix-293.conduit-merchant-33n.pages.dev/orders?order=guest-order-id"
     )
+    expect(companion.tags).toContainEqual(["client", "Conduit Market"])
   })
 })
 

@@ -53,11 +53,9 @@ export function inferConduitAppOrigin(
     if (pairedHostname) return `${protocol}//${pairedHostname}`
   }
 
-  if (hostname === "localhost" || hostname === "127.0.0.1") {
-    for (const pair of LOCAL_PORT_PAIRS) {
-      if (port === pair[sourceIndex]) {
-        return `${protocol}//${hostname}:${pair[targetIndex]}`
-      }
+  for (const pair of LOCAL_PORT_PAIRS) {
+    if (port === pair[sourceIndex]) {
+      return `${protocol}//${hostname}:${pair[targetIndex]}`
     }
   }
 
@@ -78,11 +76,11 @@ export function buildMerchantOrderReviewUrl(
   } catch {
     throw new Error("Order review URL requires an absolute merchant origin.")
   }
-  const isLocalHttp =
+  const isDevHttp =
     url.protocol === "http:" &&
-    (url.hostname === "localhost" || url.hostname === "127.0.0.1")
+    LOCAL_PORT_PAIRS.some((pair) => url.port === pair[1])
   if (
-    (url.protocol !== "https:" && !isLocalHttp) ||
+    (url.protocol !== "https:" && !isDevHttp) ||
     url.username ||
     url.password ||
     (url.pathname !== "/" && url.pathname !== "") ||

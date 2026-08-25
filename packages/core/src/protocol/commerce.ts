@@ -49,7 +49,7 @@ import {
   __resetInboxRelayCache,
   createNdkLegacyDmDecrypt,
   decryptLegacyDirectMessage,
-  isOrderCompanionNotificationRumor,
+  getOrderCompanionNotificationIdentity,
   parseDirectMessageRumor,
   unwrapGiftWraps,
   type DecryptFailure,
@@ -5045,7 +5045,9 @@ async function runPrivateMessageInboxSync(
     wrapId: string
     message: ParsedDirectMessage
     isCached: boolean
+    pendingOrderCompanion: boolean
   }> = []
+  const directRumors: Array<{ wrapId: string; rumor: NDKEvent }> = []
 
   for (const outcome of outcomes) {
     const pending = retry.get(outcome.wrapId)
@@ -5064,11 +5066,6 @@ async function runPrivateMessageInboxSync(
     }
 
     try {
-      if (isOrderCompanionNotificationRumor(outcome.rumor)) {
-        successful.add(outcome.wrapId)
-        retry.delete(outcome.wrapId)
-        continue
-      }
       if (outcome.category === "order") {
         const message = parseOrderMessageRumorEvent(outcome.rumor)
         orderEntries.push({
@@ -5077,18 +5074,79 @@ async function runPrivateMessageInboxSync(
           isCached: cachedOrderIds.has(message.id),
         })
       } else {
-        const message = parseDirectMessageRumor(outcome.rumor)
-        if (!message.id) throw new Error("Missing direct-message id")
-        directEntries.push({
-          wrapId: outcome.wrapId,
-          message,
-          isCached: cachedDirectIds.has(message.id),
-        })
+        directRumors.push({ wrapId: outcome.wrapId, rumor: outcome.rumor })
       }
     } catch {
       retry.set(outcome.wrapId, {
         event: pending.event,
         failure: { wrapId: outcome.wrapId, reason: "malformed" },
+      })
+    }
+  }
+
+  const orderIdentityKey = (
+    orderRumorId: string,
+    orderId: string,
+    senderPubkey: string,
+    recipientPubkey: string
+  ) =>
+    `${orderRumorId.trim()}\u0000${orderId.trim()}\u0000${senderPubkey.trim().toLowerCase()}\u0000${recipientPubkey.trim().toLowerCase()}`
+  const authoritativeOrders = new Set([
+    ...cachedOrders
+      .filter((row) => row.type === "order")
+      .map((row) =>
+        orderIdentityKey(
+          row.id,
+          row.orderId,
+          row.senderPubkey,
+          row.recipientPubkey
+        )
+      ),
+    ...orderEntries
+      .filter((entry) => entry.message.type === "order")
+      .map((entry) =>
+        orderIdentityKey(
+          entry.message.id,
+          entry.message.orderId,
+          entry.message.senderPubkey,
+          entry.message.recipientPubkey
+        )
+      ),
+  ])
+
+  for (const entry of directRumors) {
+    const pending = retry.get(entry.wrapId)
+    if (!pending) continue
+    try {
+      const companion = getOrderCompanionNotificationIdentity(entry.rumor)
+      if (
+        companion &&
+        authoritativeOrders.has(
+          orderIdentityKey(
+            companion.orderRumorId,
+            companion.orderId,
+            companion.senderPubkey,
+            companion.recipientPubkey
+          )
+        )
+      ) {
+        successful.add(entry.wrapId)
+        retry.delete(entry.wrapId)
+        continue
+      }
+
+      const message = parseDirectMessageRumor(entry.rumor)
+      if (!message.id) throw new Error("Missing direct-message id")
+      directEntries.push({
+        wrapId: entry.wrapId,
+        message,
+        isCached: cachedDirectIds.has(message.id),
+        pendingOrderCompanion: companion !== null,
+      })
+    } catch {
+      retry.set(entry.wrapId, {
+        event: pending.event,
+        failure: { wrapId: entry.wrapId, reason: "malformed" },
       })
     }
   }
@@ -5100,8 +5158,15 @@ async function runPrivateMessageInboxSync(
   const cachedOrderEntries = orderEntries.filter((entry) => entry.isCached)
   const newOrderEntries = orderEntries.filter((entry) => !entry.isCached)
   for (const entry of cachedOrderEntries) persisted(entry.wrapId)
-  const cachedDirectEntries = directEntries.filter((entry) => entry.isCached)
-  const newDirectEntries = directEntries.filter((entry) => !entry.isCached)
+  const committedDirectEntries = directEntries.filter(
+    (entry) => !entry.pendingOrderCompanion
+  )
+  const cachedDirectEntries = committedDirectEntries.filter(
+    (entry) => entry.isCached
+  )
+  const newDirectEntries = committedDirectEntries.filter(
+    (entry) => !entry.isCached
+  )
   for (const entry of cachedDirectEntries) persisted(entry.wrapId)
 
   try {

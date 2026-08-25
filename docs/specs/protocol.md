@@ -112,11 +112,16 @@ The exception is constrained as follows:
   deployment paired with the Market deployment that created it; production,
   preview, signet, and supported local environments must not cross-link.
 - Conduit clients must not project canonical advisory rumors carrying the exact
-  versioned `["conduit", "order-companion", "1"]` marker, the
+  versioned `["conduit", "order-companion", "1", "<kind-16-id>"]` marker, the
   `subject=conduit-order-notification` marker, and one non-empty `order` and `p`
-  tag into the generic Messages inbox or cache them as conversations. Missing,
-  malformed, duplicated, or unknown-version markers fail open to the generic
-  Messages inbox. The encrypted relay event remains available to external
+  tag into the generic Messages inbox or cache them as conversations only when
+  they also carry Conduit Market client attribution and match an authoritative
+  order event from the same sender to the same recipient. Missing, malformed,
+  duplicated, or unknown-version markers fail open to the generic Messages
+  inbox and cache. A complete canonical marker without its matching order is
+  visible but remains pending rather than being committed to the conversation
+  cache, so independent relay propagation can reconcile it when the order
+  arrives later. The encrypted relay event remains available to external
   clients for local notification behavior.
 - Guest clients must not publish a buyer self-copy, advertise a `kind:10050`
   inbox, poll for merchant replies, or cache the decrypted order payload as

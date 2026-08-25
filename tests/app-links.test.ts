@@ -47,6 +47,13 @@ describe("paired Conduit app origins", () => {
         port: "7001",
       })
     ).toBe("http://127.0.0.1:7000")
+    expect(
+      inferConduitAppOrigin("merchant", {
+        hostname: "mybox.tailnet.ts.net",
+        protocol: "http:",
+        port: "7000",
+      })
+    ).toBe("http://mybox.tailnet.ts.net:7001")
   })
 })
 
@@ -72,5 +79,14 @@ describe("Merchant order review URLs", () => {
     expect(() =>
       buildMerchantOrderReviewUrl("http://example.com", "order-id")
     ).toThrow("safe merchant origin")
+  })
+
+  it("accepts a forwarded local Merchant dev origin", () => {
+    expect(
+      buildMerchantOrderReviewUrl(
+        "http://mybox.tailnet.ts.net:7001",
+        "order-id"
+      )
+    ).toBe("http://mybox.tailnet.ts.net:7001/orders?order=order-id")
   })
 })

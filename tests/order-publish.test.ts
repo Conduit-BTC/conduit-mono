@@ -247,7 +247,7 @@ describe("buyer order publishing", () => {
       ["p", "merchant-pubkey"],
       ["subject", "conduit-order-notification"],
       ["order", "guest-order"],
-      ["conduit", "order-companion", "1"],
+      ["conduit", "order-companion", "1", "order-rumor"],
       [
         "client",
         "Conduit Market",
@@ -594,6 +594,7 @@ describe("buyer order publishing", () => {
       "conduit",
       "order-companion",
       "1",
+      orderOutcome.rumor.id,
     ])
     for (const sensitiveValue of [
       "guest-private@example.com",

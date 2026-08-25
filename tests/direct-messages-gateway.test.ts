@@ -24,7 +24,14 @@ type Row = {
 }
 
 let directRows: Row[] = []
-let orderRows: Array<{ id: string; rawContent: string }> = []
+let orderRows: Array<{
+  id: string
+  orderId?: string
+  type?: string
+  senderPubkey?: string
+  recipientPubkey?: string
+  rawContent: string
+}> = []
 
 function giftWrapEvent(id: string, recipient = BUYER) {
   return {
@@ -373,11 +380,22 @@ describe("general direct-message gateway", () => {
 
   it("keeps exact order companions out of the generic messages inbox", async () => {
     const unwrapCalls: Record<string, number> = {}
+    orderRows = [
+      {
+        id: "cached-authoritative-order",
+        orderId: "order-1",
+        type: "order",
+        senderPubkey: MERCHANT,
+        recipientPubkey: BUYER,
+        rawContent: "{}",
+      },
+    ]
     __setCommerceTestOverrides({
       fetchEventsFanout: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
           ? ([
               giftWrapEvent("wrap-order-companion"),
+              giftWrapEvent("wrap-unmatched-companion"),
               giftWrapEvent("wrap-subject-only"),
               giftWrapEvent("wrap-normal-subject"),
             ] as never)
@@ -391,19 +409,35 @@ describe("general direct-message gateway", () => {
           content:
             event.id === "wrap-order-companion"
               ? "A new order was sent to you through Conduit Market."
-              : event.id === "wrap-subject-only"
-                ? "A normal message can use the same subject."
-                : "This remains a normal conversation message.",
-          createdAt: 101,
+              : event.id === "wrap-unmatched-companion"
+                ? "A canonical marker without its order remains visible."
+                : event.id === "wrap-subject-only"
+                  ? "A normal message can use the same subject."
+                  : "This remains a normal conversation message.",
+          createdAt: event.id === "wrap-unmatched-companion" ? 100 : 101,
           subject:
             event.id !== "wrap-normal-subject"
               ? "conduit-order-notification"
               : "conduit-order-notification-followup",
           extraTags:
-            event.id === "wrap-order-companion"
+            event.id === "wrap-order-companion" ||
+            event.id === "wrap-unmatched-companion"
               ? [
-                  ["order", "order-1"],
-                  ["conduit", "order-companion", "1"],
+                  [
+                    "order",
+                    event.id === "wrap-order-companion"
+                      ? "order-1"
+                      : "missing-order",
+                  ],
+                  [
+                    "conduit",
+                    "order-companion",
+                    "1",
+                    event.id === "wrap-order-companion"
+                      ? "cached-authoritative-order"
+                      : "missing-order-event",
+                  ],
+                  ["client", "Conduit Market"],
                 ]
               : [],
         }) as never
@@ -427,10 +461,66 @@ describe("general direct-message gateway", () => {
     ])
     expect(unwrapCalls).toEqual({
       "wrap-order-companion": 1,
+      "wrap-unmatched-companion": 2,
       "wrap-subject-only": 1,
       "wrap-normal-subject": 1,
     })
     expect(second.data).toEqual(first.data)
+  })
+
+  it("reconciles a pending companion when its authoritative order arrives later", async () => {
+    let unwrapCalls = 0
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
+          ? ([giftWrapEvent("wrap-late-companion")] as never)
+          : [],
+      giftUnwrap: async () => {
+        unwrapCalls += 1
+        return directRumor({
+          id: "dm-late-companion",
+          sender: MERCHANT,
+          recipient: BUYER,
+          content: "A new order was sent to you through Conduit Market.",
+          createdAt: 101,
+          subject: "conduit-order-notification",
+          extraTags: [
+            ["order", "late-order"],
+            ["conduit", "order-companion", "1", "late-order-event"],
+            ["client", "Conduit Market"],
+          ],
+        }) as never
+      },
+    })
+
+    const beforeOrder = await getDirectMessageConversationList({
+      principalPubkey: BUYER,
+    })
+
+    expect(beforeOrder.data).toHaveLength(1)
+    expect(beforeOrder.data[0]?.preview).toBe(
+      "A new order was sent to you through Conduit Market."
+    )
+    expect(directRows).toHaveLength(0)
+
+    orderRows = [
+      {
+        id: "late-order-event",
+        orderId: "late-order",
+        type: "order",
+        senderPubkey: MERCHANT,
+        recipientPubkey: BUYER,
+        rawContent: "{}",
+      },
+    ]
+    const afterOrder = await getDirectMessageConversationList({
+      principalPubkey: BUYER,
+    })
+
+    expect(afterOrder.data).toHaveLength(0)
+    expect(directRows).toHaveLength(0)
+    expect(orderRows).toHaveLength(1)
+    expect(unwrapCalls).toBe(2)
   })
 
   it("preserves complete preview content for presentation-time formatting", async () => {

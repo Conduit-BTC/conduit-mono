@@ -87,12 +87,28 @@ export const ORDER_COMPANION_NOTIFICATION_SUBJECT = "conduit-order-notification"
 export const ORDER_COMPANION_NOTIFICATION_MARKER = "order-companion"
 export const ORDER_COMPANION_NOTIFICATION_VERSION = "1"
 
-export function buildOrderCompanionNotificationMarkerTag(): string[] {
+export function buildOrderCompanionNotificationMarkerTag(
+  authoritativeOrderId: string
+): string[] {
+  const orderRumorId = authoritativeOrderId.trim()
+  if (!orderRumorId) {
+    throw new Error(
+      "Order companion marker requires an authoritative event id."
+    )
+  }
   return [
     "conduit",
     ORDER_COMPANION_NOTIFICATION_MARKER,
     ORDER_COMPANION_NOTIFICATION_VERSION,
+    orderRumorId,
   ]
+}
+
+export interface OrderCompanionNotificationIdentity {
+  orderId: string
+  orderRumorId: string
+  senderPubkey: string
+  recipientPubkey: string
 }
 
 /**
@@ -101,16 +117,19 @@ export function buildOrderCompanionNotificationMarkerTag(): string[] {
  * Conduit's inbox projection can keep this machine notification out of human
  * conversation threads.
  */
-export function isOrderCompanionNotificationRumor(rumor: NDKEvent): boolean {
-  if (rumor.kind !== EVENT_KINDS.DIRECT_MESSAGE) return false
+export function getOrderCompanionNotificationIdentity(
+  rumor: NDKEvent
+): OrderCompanionNotificationIdentity | null {
+  if (rumor.kind !== EVENT_KINDS.DIRECT_MESSAGE) return null
   const subjects = rumor.tags.filter((tag) => tag[0] === "subject")
   const orders = rumor.tags.filter((tag) => tag[0] === "order")
   const recipients = rumor.tags.filter((tag) => tag[0] === "p")
+  const clients = rumor.tags.filter(isConduitMarketClientTag)
   const markers = rumor.tags.filter(
     (tag) =>
       tag[0] === "conduit" && tag[1] === ORDER_COMPANION_NOTIFICATION_MARKER
   )
-  return (
+  const isCanonical =
     subjects.length === 1 &&
     subjects[0]?.length === 2 &&
     subjects[0]?.[1] === ORDER_COMPANION_NOTIFICATION_SUBJECT &&
@@ -121,9 +140,22 @@ export function isOrderCompanionNotificationRumor(rumor: NDKEvent): boolean {
     recipients[0]?.length === 2 &&
     Boolean(recipients[0]?.[1]?.trim()) &&
     markers.length === 1 &&
-    markers[0]?.length === 3 &&
-    markers[0]?.[2] === ORDER_COMPANION_NOTIFICATION_VERSION
-  )
+    markers[0]?.length === 4 &&
+    markers[0]?.[2] === ORDER_COMPANION_NOTIFICATION_VERSION &&
+    Boolean(markers[0]?.[3]?.trim()) &&
+    clients.length === 1
+  if (!isCanonical) return null
+
+  return {
+    orderId: orders[0]![1]!.trim(),
+    orderRumorId: markers[0]![3]!.trim(),
+    senderPubkey: rumor.pubkey.trim().toLowerCase(),
+    recipientPubkey: recipients[0]![1]!.trim().toLowerCase(),
+  }
+}
+
+export function isOrderCompanionNotificationRumor(rumor: NDKEvent): boolean {
+  return getOrderCompanionNotificationIdentity(rumor) !== null
 }
 
 const GUEST_ORDER_COMPANION_COPY =
@@ -151,6 +183,9 @@ export function createOrderCompanionNotificationRumor(input: {
     (tag) => tag[0] === "order"
   )?.[1]
   if (!orderId) throw new Error("Order notification requires an order tag.")
+  if (!input.authoritativeOrder.id) {
+    throw new Error("Order notification requires the authoritative event id.")
+  }
   if (input.authoritativeOrder.created_at === undefined) {
     throw new Error("Order notification requires the order timestamp.")
   }
@@ -164,7 +199,7 @@ export function createOrderCompanionNotificationRumor(input: {
       ["p", input.recipientPubkey],
       ["subject", ORDER_COMPANION_NOTIFICATION_SUBJECT],
       ["order", orderId],
-      buildOrderCompanionNotificationMarkerTag(),
+      buildOrderCompanionNotificationMarkerTag(input.authoritativeOrder.id),
     ],
     "market"
   )
@@ -176,6 +211,9 @@ export function createOrderCompanionNotificationRumor(input: {
     if (authoritativeClientTag) {
       companion.tags.push([...authoritativeClientTag])
     }
+  }
+  if (!companion.tags.some(isConduitMarketClientTag)) {
+    companion.tags.push(["client", "Conduit Market"])
   }
 
   const copy =
