@@ -53,7 +53,10 @@ describe("canonical order statuses", () => {
       id: "reopen-event",
       pubkey: "merchant",
       created_at: 3,
-      content: JSON.stringify({ status: "processing", reopens: "content-id" }),
+      content: JSON.stringify({
+        status: "processing",
+        reopens: "cancel-event",
+      }),
       tags: [
         ["p", "buyer"],
         ["type", "status_update"],
@@ -67,6 +70,25 @@ describe("canonical order statuses", () => {
       type: "status_update",
       payload: { status: "accepted", reopens: "cancel-event" },
     })
+
+    expect(() =>
+      parseOrderMessageRumorEvent({
+        id: "conflicting-reopen-event",
+        pubkey: "merchant",
+        created_at: 3,
+        content: JSON.stringify({
+          status: "accepted",
+          reopens: "content-id",
+        }),
+        tags: [
+          ["p", "buyer"],
+          ["type", "status_update"],
+          ["order", "order-1"],
+          ["status", "accepted"],
+          ["reopens", "cancel-event"],
+        ],
+      } as never)
+    ).toThrow("Conflicting order status correction markers")
   })
 
   it("accepts an authenticated millisecond hint only inside the rumor second", () => {

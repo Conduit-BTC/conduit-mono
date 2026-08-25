@@ -455,6 +455,35 @@ describe("merchant order phase", () => {
     expect(reverse).toEqual(forward)
   })
 
+  it("does not let an invalid same-position correction rewrite replay order", () => {
+    const participants = { buyerPubkey: "buyer", merchantPubkey: "merchant" }
+    const accepted = merchantStatus("accepted", 2)
+    const paid = merchantStatus("paid", 3, { id: "m-paid" })
+    const cancellation = merchantStatus("cancelled", 3, { id: "z-cancel" })
+    const invalidCorrection = merchantStatus("processing", 3, {
+      id: "a-invalid",
+      reopens: "z-cancel",
+    })
+    const expected = {
+      status: "cancelled",
+      appliedStatusEventIds: [accepted.id, paid.id, cancellation.id],
+      cancellation: { eventId: "z-cancel", resumeStatus: "paid" },
+    }
+
+    expect(
+      getEffectiveMerchantOrderStatus(
+        [order, accepted, invalidCorrection, paid, cancellation],
+        participants
+      )
+    ).toEqual(expected)
+    expect(
+      getEffectiveMerchantOrderStatus(
+        [order, accepted, paid, cancellation],
+        participants
+      )
+    ).toEqual(expected)
+  })
+
   it("keeps same-second work after reopen while rejecting work inside its barrier", () => {
     const staleShipping = {
       ...shippingUpdate,

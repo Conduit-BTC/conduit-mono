@@ -173,7 +173,7 @@ function compareMerchantOrderMessagePosition(
   )
 }
 
-function sameSecondReopenPairs(
+function candidateSameSecondReopenPairs(
   messages: readonly MerchantStatusMessage[]
 ): SameSecondReopenPair[] {
   const byId = new Map(messages.map((message) => [message.id, message]))
@@ -202,80 +202,11 @@ function sameSecondReopenPairs(
     )
 }
 
-function uniqueMerchantStatusMessages(
-  messages: readonly ParsedOrderMessage[],
-  participants: MerchantOrderParticipants
-): MerchantStatusMessage[] {
-  const unique = new Map<string, MerchantStatusMessage>()
-  for (const message of messages) {
-    if (
-      message.type !== "status_update" ||
-      message.senderPubkey !== participants.merchantPubkey ||
-      message.recipientPubkey !== participants.buyerPubkey ||
-      unique.has(message.id)
-    ) {
-      continue
-    }
-    unique.set(message.id, message)
-  }
-
-  return [...unique.values()]
-}
-
-function orderStatusMessages(
-  messages: readonly ParsedOrderMessage[],
-  participants: MerchantOrderParticipants
-): MerchantStatusMessage[] {
-  const statuses = uniqueMerchantStatusMessages(messages, participants)
-  const reopenPairs = sameSecondReopenPairs(statuses)
-  return statuses.sort((left, right) =>
-    compareMerchantOrderMessagePosition(left, right, reopenPairs)
-  )
-}
-
-/** Order a raw conversation by the same deterministic position as replay. */
-export function sortMerchantOrderMessagesForReplay(
-  messages: readonly ParsedOrderMessage[],
-  participants: MerchantOrderParticipants
-): ParsedOrderMessage[] {
-  const reopenPairs = sameSecondReopenPairs(
-    uniqueMerchantStatusMessages(messages, participants)
-  )
-  return [...messages].sort((left, right) =>
-    compareMerchantOrderMessagePosition(left, right, reopenPairs)
-  )
-}
-
-function safeOperationalStatus(status: string | null): KnownOrderStatus | null {
-  const normalized = normalizeStatus(status)
-  if (!isKnownOrderStatus(normalized)) return null
-  return TERMINAL_ACTION_STATUSES.has(normalized) ? null : normalized
-}
-
-/**
- * Resolve immutable merchant status history. A cancellation remains effective
- * until a merchant-authored correction explicitly references that exact event.
- */
-export function getEffectiveMerchantOrderStatus(
-  messages: readonly ParsedOrderMessage[],
-  participants: MerchantOrderParticipants,
-  fallbackStatus: string | null = null
+function reduceSortedMerchantStatusMessages(
+  statuses: readonly MerchantStatusMessage[],
+  initialStatus: string | null
 ): EffectiveMerchantOrderStatus {
-  const statuses = orderStatusMessages(messages, participants)
-  const hasOrder = messages.some(
-    (message) =>
-      message.type === "order" &&
-      message.senderPubkey === participants.buyerPubkey &&
-      message.recipientPubkey === participants.merchantPubkey
-  )
-  if (statuses.length === 0) {
-    return {
-      status: fallbackStatus ?? (hasOrder ? "pending" : null),
-      appliedStatusEventIds: [],
-    }
-  }
-
-  let status: string | null = hasOrder ? "pending" : null
+  let status = initialStatus
   const appliedStatusEventIds: string[] = []
   let cancellation:
     { eventId: string; resumeStatus: KnownOrderStatus | null } | undefined
@@ -344,6 +275,117 @@ export function getEffectiveMerchantOrderStatus(
         }
       : {}),
   }
+}
+
+function sameSecondReopenPairs(
+  messages: readonly MerchantStatusMessage[],
+  initialStatus: string | null
+): SameSecondReopenPair[] {
+  const accepted: SameSecondReopenPair[] = []
+  for (const candidate of candidateSameSecondReopenPairs(messages)) {
+    const proposed = [...accepted, candidate]
+    const ordered = [...messages].sort((left, right) =>
+      compareMerchantOrderMessagePosition(left, right, proposed)
+    )
+    const appliedIds = new Set(
+      reduceSortedMerchantStatusMessages(ordered, initialStatus)
+        .appliedStatusEventIds
+    )
+    if (proposed.every((pair) => appliedIds.has(pair.reopenId))) {
+      accepted.push(candidate)
+    }
+  }
+  return accepted
+}
+
+function uniqueMerchantStatusMessages(
+  messages: readonly ParsedOrderMessage[],
+  participants: MerchantOrderParticipants
+): MerchantStatusMessage[] {
+  const unique = new Map<string, MerchantStatusMessage>()
+  for (const message of messages) {
+    if (
+      message.type !== "status_update" ||
+      message.senderPubkey !== participants.merchantPubkey ||
+      message.recipientPubkey !== participants.buyerPubkey ||
+      unique.has(message.id)
+    ) {
+      continue
+    }
+    unique.set(message.id, message)
+  }
+
+  return [...unique.values()]
+}
+
+function orderStatusMessages(
+  messages: readonly ParsedOrderMessage[],
+  participants: MerchantOrderParticipants
+): MerchantStatusMessage[] {
+  const statuses = uniqueMerchantStatusMessages(messages, participants)
+  const reopenPairs = sameSecondReopenPairs(
+    statuses,
+    hasMerchantOrder(messages, participants) ? "pending" : null
+  )
+  return statuses.sort((left, right) =>
+    compareMerchantOrderMessagePosition(left, right, reopenPairs)
+  )
+}
+
+/** Order a raw conversation by the same deterministic position as replay. */
+export function sortMerchantOrderMessagesForReplay(
+  messages: readonly ParsedOrderMessage[],
+  participants: MerchantOrderParticipants
+): ParsedOrderMessage[] {
+  const reopenPairs = sameSecondReopenPairs(
+    uniqueMerchantStatusMessages(messages, participants),
+    hasMerchantOrder(messages, participants) ? "pending" : null
+  )
+  return [...messages].sort((left, right) =>
+    compareMerchantOrderMessagePosition(left, right, reopenPairs)
+  )
+}
+
+function safeOperationalStatus(status: string | null): KnownOrderStatus | null {
+  const normalized = normalizeStatus(status)
+  if (!isKnownOrderStatus(normalized)) return null
+  return TERMINAL_ACTION_STATUSES.has(normalized) ? null : normalized
+}
+
+function hasMerchantOrder(
+  messages: readonly ParsedOrderMessage[],
+  participants: MerchantOrderParticipants
+): boolean {
+  return messages.some(
+    (message) =>
+      message.type === "order" &&
+      message.senderPubkey === participants.buyerPubkey &&
+      message.recipientPubkey === participants.merchantPubkey
+  )
+}
+
+/**
+ * Resolve immutable merchant status history. A cancellation remains effective
+ * until a merchant-authored correction explicitly references that exact event.
+ */
+export function getEffectiveMerchantOrderStatus(
+  messages: readonly ParsedOrderMessage[],
+  participants: MerchantOrderParticipants,
+  fallbackStatus: string | null = null
+): EffectiveMerchantOrderStatus {
+  const statuses = orderStatusMessages(messages, participants)
+  const hasOrder = hasMerchantOrder(messages, participants)
+  if (statuses.length === 0) {
+    return {
+      status: fallbackStatus ?? (hasOrder ? "pending" : null),
+      appliedStatusEventIds: [],
+    }
+  }
+
+  return reduceSortedMerchantStatusMessages(
+    statuses,
+    hasOrder ? "pending" : null
+  )
 }
 
 const MERCHANT_OPERATIONAL_MESSAGE_TYPES = new Set([
