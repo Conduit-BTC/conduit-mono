@@ -1,4 +1,5 @@
 interface ImportMetaEnv {
+  readonly VITE_E2E_RELAY_URL?: string
   readonly VITE_RELAY_URL?: string
   readonly VITE_DEFAULT_RELAY_URL?: string
   readonly VITE_DEFAULT_RELAYS?: string

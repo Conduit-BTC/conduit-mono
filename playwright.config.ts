@@ -10,7 +10,10 @@ const CI = !!process.env.CI
 const smokeDiscovery = process.env.PLAYWRIGHT_SMOKE_DISCOVERY === "true"
 const marketPort = process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"
 const merchantPort = process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"
+const relayPort = process.env.PLAYWRIGHT_RELAY_PORT ?? "7777"
+const relayUrl = `ws://127.0.0.1:${relayPort}`
 const e2eEnv = [
+  `VITE_E2E_RELAY_URL=${relayUrl}`,
   "VITE_DISABLE_DEVTOOLS=true",
   "VITE_ENABLE_TELEMETRY=true",
   "VITE_ENABLE_TELEMETRY_TEST_HOOKS=true",
@@ -47,6 +50,12 @@ if (!new Set(["all", "market", "merchant"]).has(smokeArea)) {
 }
 
 const webServer = [
+  {
+    command: `RELAY_EPHEMERAL=true RELAY_FAULT_MODE=none RELAY_PORT=${relayPort} bun scripts/dev/relay_bun.ts`,
+    url: `http://127.0.0.1:${relayPort}/health`,
+    reuseExistingServer: false,
+    timeout: 30_000,
+  },
   ...(smokeArea === "all" || smokeArea === "market"
     ? [
         {

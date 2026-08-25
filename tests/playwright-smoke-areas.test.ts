@@ -47,6 +47,14 @@ describe("Playwright smoke area validation", () => {
     )
   })
 
+  it("runs smoke against an ephemeral loopback relay", () => {
+    expect(playwrightConfig).toContain("VITE_E2E_RELAY_URL=${relayUrl}")
+    expect(playwrightConfig).toContain("RELAY_EPHEMERAL=true")
+    expect(playwrightConfig).toContain("RELAY_FAULT_MODE=none")
+    expect(playwrightConfig).toContain("PLAYWRIGHT_RELAY_PORT")
+    expect(playwrightConfig).toContain("reuseExistingServer: false")
+  })
+
   it("runs read-only CI jobs for bot-authored pull requests", () => {
     expect(ciWorkflow).not.toContain("github.actor != 'github-actions[bot]'")
     expect(prTitleWorkflow).not.toContain(

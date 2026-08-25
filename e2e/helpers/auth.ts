@@ -1,8 +1,79 @@
 import type { Page } from "@playwright/test"
-import { finalizeEvent, type EventTemplate } from "nostr-tools/pure"
+import { SimplePool, type Filter } from "nostr-tools"
+import { finalizeEvent, type Event, type EventTemplate } from "nostr-tools/pure"
 
 export const TEST_BUYER_PUBKEY = "b".repeat(64)
 export const TEST_MERCHANT_PUBKEY = "a".repeat(64)
+export const TEST_RELAY_URL = `ws://127.0.0.1:${process.env.PLAYWRIGHT_RELAY_PORT ?? "7777"}`
+
+export async function publishTestRelayEvents(events: Event[]): Promise<void> {
+  const pool = new SimplePool()
+
+  try {
+    for (const event of events) {
+      await Promise.all(
+        pool.publish([TEST_RELAY_URL], event, { maxWait: 2_000 })
+      )
+    }
+  } finally {
+    pool.close([TEST_RELAY_URL])
+  }
+}
+
+type SeedTestRelayIdentityOptions = {
+  inboxDeclaration?: "ready" | "empty" | "omit"
+}
+
+export async function seedTestRelayIdentity(
+  secretKey: Uint8Array,
+  options: SeedTestRelayIdentityOptions = {}
+): Promise<void> {
+  const createdAt = Math.floor(Date.now() / 1_000)
+  const events = [
+    finalizeEvent(
+      { kind: 0, created_at: createdAt, tags: [], content: "{}" },
+      secretKey
+    ),
+    finalizeEvent(
+      {
+        kind: 10_002,
+        created_at: createdAt,
+        tags: [["r", TEST_RELAY_URL]],
+        content: "",
+      },
+      secretKey
+    ),
+  ]
+  if (options.inboxDeclaration !== "omit") {
+    events.push(
+      finalizeEvent(
+        {
+          kind: 10_050,
+          created_at: createdAt,
+          tags:
+            options.inboxDeclaration === "empty"
+              ? []
+              : [["relay", TEST_RELAY_URL]],
+          content: "",
+        },
+        secretKey
+      )
+    )
+  }
+  await publishTestRelayEvents(events)
+}
+
+export async function readTestRelayEvents(filter: Filter): Promise<Event[]> {
+  const pool = new SimplePool()
+
+  try {
+    return await pool.querySync([TEST_RELAY_URL], filter, {
+      maxWait: 2_000,
+    })
+  } finally {
+    pool.close([TEST_RELAY_URL])
+  }
+}
 
 type TestSignerOptions = {
   rememberAuth?: boolean
@@ -18,6 +89,12 @@ export async function installTestSigner(
   options: TestSignerOptions = {}
 ): Promise<void> {
   const { secretKey, ...browserOptions } = options
+  const signerOptions = {
+    ...browserOptions,
+    relays: browserOptions.relays ?? {
+      [TEST_RELAY_URL]: { read: true, write: true },
+    },
+  }
   const signEventBinding = `__conduitSignEvent${pubkey.slice(0, 12)}`
   if (secretKey) {
     await page.exposeFunction(signEventBinding, (event: EventTemplate) =>
@@ -40,11 +117,7 @@ export async function installTestSigner(
             if (signerOptions.getRelaysThrows) {
               throw new Error("getRelays not supported")
             }
-            return (
-              signerOptions.relays ?? {
-                "ws://127.0.0.1:7777": { read: true, write: true },
-              }
-            )
+            return signerOptions.relays
           },
           async signEvent(event: Record<string, unknown>) {
             if (signerBinding) {
@@ -85,7 +158,7 @@ export async function installTestSigner(
         },
       })
     },
-    [pubkey, browserOptions, secretKey ? signEventBinding : null] as const
+    [pubkey, signerOptions, secretKey ? signEventBinding : null] as const
   )
 }
 

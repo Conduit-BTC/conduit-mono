@@ -157,6 +157,7 @@ export type {
 
 // Config
 export {
+  applyE2eRelayIsolation,
   CANONICAL_APP_BACKPLANE_RELAYS,
   CANONICAL_APP_WRITE_RELAYS,
   CANONICAL_COMMERCE_DM_FALLBACK_RELAYS,
@@ -169,6 +170,7 @@ export {
   config,
   getRelayBucketConfigs,
   isRetiredDefaultRelayUrl,
+  resolveE2eRelayIsolation,
   isMockPayments,
   isSignet,
   isTestnet,

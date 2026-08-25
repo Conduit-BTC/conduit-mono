@@ -1,9 +1,11 @@
 import { expect, test, type Locator, type Page } from "@playwright/test"
+import { generateSecretKey, getPublicKey } from "nostr-tools/pure"
 
 import {
   TEST_BUYER_PUBKEY,
   TEST_MERCHANT_PUBKEY,
   installTestSigner,
+  seedTestRelayIdentity,
   seedMarketCart,
 } from "./helpers/auth"
 
@@ -40,31 +42,11 @@ async function expectMobileTouchTarget(control: Locator): Promise<void> {
   expect(box?.height).toBeGreaterThanOrEqual(44)
 }
 
-async function installEmptyRelay(page: Page): Promise<void> {
-  await page.routeWebSocket(/^(?:ws|wss):\/\//, (socket) => {
-    socket.onMessage((message) => {
-      if (typeof message !== "string") return
-      let frame: unknown
-      try {
-        frame = JSON.parse(message)
-      } catch {
-        return
-      }
-      if (
-        Array.isArray(frame) &&
-        frame[0] === "REQ" &&
-        typeof frame[1] === "string"
-      ) {
-        socket.send(JSON.stringify(["EOSE", frame[1]]))
-      }
-    })
-  })
-}
-
 async function seedInterruptedPayment(
   page: Page,
   input: {
     orderId: string
+    buyerPubkey?: string
     paymentClaimId: string
     invoice?: string
     preimage?: string
@@ -147,9 +129,9 @@ async function seedInterruptedPayment(
       }
     },
     {
-      buyerPubkey: TEST_BUYER_PUBKEY,
-      merchantPubkey: TEST_MERCHANT_PUBKEY,
       ...input,
+      buyerPubkey: input.buyerPubkey ?? TEST_BUYER_PUBKEY,
+      merchantPubkey: TEST_MERCHANT_PUBKEY,
     }
   )
 }
@@ -418,8 +400,10 @@ test.describe("CND-162 mobile browser baseline", () => {
     page,
   }) => {
     const orderId = "mobile-pre-wallet-recovery"
-    await installEmptyRelay(page)
-    await installTestSigner(page, TEST_BUYER_PUBKEY)
+    const secretKey = generateSecretKey()
+    const buyerPubkey = getPublicKey(secretKey)
+    await seedTestRelayIdentity(secretKey)
+    await installTestSigner(page, buyerPubkey, { secretKey })
     await page.goto(`${marketUrl}/orders`)
     await expect(
       page.getByRole("heading", { name: "Orders", exact: true })
@@ -429,6 +413,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     ).toBeVisible()
     await seedInterruptedPayment(page, {
       orderId,
+      buyerPubkey,
       paymentClaimId: "pre-wallet-claim",
       storeMarker: false,
     })
@@ -454,8 +439,10 @@ test.describe("CND-162 mobile browser baseline", () => {
     page,
   }) => {
     const orderId = "mobile-wallet-handoff-recovery"
-    await installEmptyRelay(page)
-    await installTestSigner(page, TEST_BUYER_PUBKEY)
+    const secretKey = generateSecretKey()
+    const buyerPubkey = getPublicKey(secretKey)
+    await seedTestRelayIdentity(secretKey)
+    await installTestSigner(page, buyerPubkey, { secretKey })
     await page.goto(`${marketUrl}/orders`)
     await expect(
       page.getByRole("heading", { name: "Orders", exact: true })
@@ -465,6 +452,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     ).toBeVisible()
     await seedInterruptedPayment(page, {
       orderId,
+      buyerPubkey,
       paymentClaimId: "wallet-handoff-claim",
       invoice: "lnbc1mobilefixture",
     })
@@ -492,14 +480,17 @@ test.describe("CND-162 mobile browser baseline", () => {
     page,
   }) => {
     const orderId = "mobile-paid-proof-recovery"
-    await installEmptyRelay(page)
-    await installTestSigner(page, TEST_BUYER_PUBKEY)
+    const secretKey = generateSecretKey()
+    const buyerPubkey = getPublicKey(secretKey)
+    await seedTestRelayIdentity(secretKey)
+    await installTestSigner(page, buyerPubkey, { secretKey })
     await page.goto(`${marketUrl}/orders`)
     await expect(
       page.getByRole("heading", { name: "No orders yet" })
     ).toBeVisible()
     await seedInterruptedPayment(page, {
       orderId,
+      buyerPubkey,
       paymentClaimId: "paid-proof-claim",
       invoice: "lnbc1paidmobilefixture",
       preimage: "fixture-payment-preimage",
