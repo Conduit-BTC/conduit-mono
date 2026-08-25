@@ -1116,28 +1116,17 @@ function normalizeZapAddressCoordinate(value: string): string | null {
   return `${kind}:${pubkey.toLowerCase()}:${identifier}`
 }
 
-function getZapAddressTagAgreement(
-  requestTags: readonly string[][],
-  receiptTags: readonly string[][]
+function getZapRequestAddress(
+  requestTags: readonly string[][]
 ): { address: string | null } | null {
   const requestAddressTags = requestTags.filter((tag) => tag[0] === "a")
-  const receiptAddressTags = receiptTags.filter((tag) => tag[0] === "a")
-  if (
-    requestAddressTags.length > 1 ||
-    receiptAddressTags.length > 1 ||
-    requestAddressTags.length !== receiptAddressTags.length
-  ) {
-    return null
-  }
+  if (requestAddressTags.length > 1) return null
   if (requestAddressTags.length === 0) return { address: null }
 
   const requestAddress = normalizeZapAddressCoordinate(
     requestAddressTags[0]?.[1] ?? ""
   )
-  const receiptAddress = normalizeZapAddressCoordinate(
-    receiptAddressTags[0]?.[1] ?? ""
-  )
-  if (!requestAddress || requestAddress !== receiptAddress) return null
+  if (!requestAddress) return null
 
   const requestKindTags = requestTags.filter((tag) => tag[0] === "k")
   const addressKind = requestAddress.slice(0, requestAddress.indexOf(":"))
@@ -1149,6 +1138,19 @@ function getZapAddressTagAgreement(
   }
 
   return { address: requestAddress }
+}
+
+function getMatchingReceiptZapAddress(
+  requestAddress: string | null,
+  receiptTags: readonly string[][]
+): string | null {
+  if (!requestAddress) return null
+  const receiptAddressTags = receiptTags.filter((tag) => tag[0] === "a")
+  if (receiptAddressTags.length !== 1) return null
+  const receiptAddress = normalizeZapAddressCoordinate(
+    receiptAddressTags[0]?.[1] ?? ""
+  )
+  return receiptAddress === requestAddress ? requestAddress : null
 }
 
 function getProductZapTargetAuthor(address: string | null): string | null {
@@ -1198,16 +1200,18 @@ export function parseOmfZapoutReceipt(
   const requestTags = signedRequest.tags
   if (!hasOmfZapoutMarker(requestTags)) return null
 
-  const addressAgreement = getZapAddressTagAgreement(requestTags, receiptTags)
-  if (!addressAgreement) return null
+  const requestAddress = getZapRequestAddress(requestTags)
+  if (!requestAddress) return null
+  const matchingReceiptAddress = getMatchingReceiptZapAddress(
+    requestAddress.address,
+    receiptTags
+  )
 
   const senderPubkey = normalizePubkey(signedRequest.pubkey)
   const requestRecipientPubkey = normalizePubkey(
     getSingleTagValue(requestTags, "p")
   )
-  const productTargetAuthor = getProductZapTargetAuthor(
-    addressAgreement.address
-  )
+  const productTargetAuthor = getProductZapTargetAuthor(requestAddress.address)
   const receiptRecipientPubkey = normalizePubkey(
     getSingleTagValue(receiptTags, "p")
   )
@@ -1257,7 +1261,7 @@ export function parseOmfZapoutReceipt(
 
   const parsedContent = parseZapRequestContent(
     signedRequest.content,
-    addressAgreement.address
+    requestAddress.address
   )
   const note =
     truncateZapNoteInput(parsedContent.note, ZAP_NOTE_MAX_CODE_POINTS) || null
@@ -1273,7 +1277,7 @@ export function parseOmfZapoutReceipt(
     amountMsats: requestAmountMsats,
     note,
     comment: note ? getPublicZapComment(note) : null,
-    productNaddr: parsedContent.productNaddr,
+    productNaddr: matchingReceiptAddress ? parsedContent.productNaddr : null,
     sourceRelayUrls: getEventSourceRelayUrls(event as NDKEvent),
   }
 }
@@ -1477,12 +1481,10 @@ export function validateZapReceiptEvent({
 
   const requestTags = signedRequest.tags
   const receiptTags = signedReceipt.tags
-  const addressAgreement = getZapAddressTagAgreement(requestTags, receiptTags)
-  if (!addressAgreement) return false
+  const requestAddress = getZapRequestAddress(requestTags)
+  if (!requestAddress) return false
   const normalizedRecipientPubkey = normalizePubkey(recipientPubkey)
-  const productTargetAuthor = getProductZapTargetAuthor(
-    addressAgreement.address
-  )
+  const productTargetAuthor = getProductZapTargetAuthor(requestAddress.address)
   if (
     productTargetAuthor !== null &&
     productTargetAuthor !== normalizedRecipientPubkey

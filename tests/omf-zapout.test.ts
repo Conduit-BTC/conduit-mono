@@ -201,7 +201,7 @@ describe("parseOmfZapoutReceipt", () => {
     })
   })
 
-  it("requires request and receipt a tags to agree", () => {
+  it("accepts receipt a-tag interoperability gaps without associating the product", () => {
     const content = buildZapRequestContent({
       note: "sick shirt 🔥",
       productAddress: PRODUCT_ADDRESS,
@@ -232,13 +232,17 @@ describe("parseOmfZapoutReceipt", () => {
       tags: [...baseTags, ["a", PRODUCT_ADDRESS], ["a", PRODUCT_ADDRESS]],
     })
 
-    expect(parseOmfZapoutReceipt(missingAddress as ZapReceiptInput)).toBeNull()
-    expect(
-      parseOmfZapoutReceipt(mismatchedAddress as ZapReceiptInput)
-    ).toBeNull()
-    expect(
-      parseOmfZapoutReceipt(duplicateAddress as ZapReceiptInput)
-    ).toBeNull()
+    for (const receipt of [
+      missingAddress,
+      mismatchedAddress,
+      duplicateAddress,
+    ]) {
+      expect(parseOmfZapoutReceipt(receipt as ZapReceiptInput)).toMatchObject({
+        note: "sick shirt 🔥",
+        comment: "sick shirt 🔥",
+        productNaddr: null,
+      })
+    }
   })
 
   it("allows an absent request k tag but rejects mismatched or duplicate values", () => {

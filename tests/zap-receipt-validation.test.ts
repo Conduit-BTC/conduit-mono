@@ -216,7 +216,7 @@ describe("strict zap receipt validation", () => {
     }
   })
 
-  it("requires product a tags to agree and target the zap recipient", () => {
+  it("validates product targets from the signed request without requiring a receipt echo", () => {
     const productAddress = `30402:${MERCHANT_PUBKEY}:sick-shirt`
     const request = zapRequest({
       tags: [...zapRequest().tags, ["a", productAddress], ["k", "30402"]],
@@ -284,7 +284,7 @@ describe("strict zap receipt validation", () => {
 
     expect(
       validate(zapReceipt({ request, invoice: expectedInvoice }), overrides)
-    ).toBe(false)
+    ).toBe(true)
     expect(
       validate(
         zapReceipt({
@@ -294,7 +294,7 @@ describe("strict zap receipt validation", () => {
         }),
         overrides
       )
-    ).toBe(false)
+    ).toBe(true)
 
     const otherMerchantAddress = `30402:${getPublicKey(OTHER_PROVIDER_SECRET)}:sick-shirt`
     const wrongAuthorRequest = zapRequest({
