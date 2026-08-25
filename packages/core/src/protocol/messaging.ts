@@ -111,6 +111,34 @@ export interface OrderCompanionNotificationIdentity {
   recipientPubkey: string
 }
 
+const GUEST_ORDER_COMPANION_COPY =
+  "A new guest order was sent to you through Conduit Market.\n" +
+  "This buyer does not receive Nostr replies. Review the order and follow up using the email or phone provided there."
+const SIGNED_IN_ORDER_COMPANION_COPY =
+  "A new order was sent to you through Conduit Market."
+
+function hasCanonicalOrderCompanionContent(
+  content: string,
+  orderId: string
+): boolean {
+  for (const copy of [
+    GUEST_ORDER_COMPANION_COPY,
+    SIGNED_IN_ORDER_COMPANION_COPY,
+  ]) {
+    const prefix = `${copy}\nReview it at: `
+    if (!content.startsWith(prefix)) continue
+    const reviewUrl = content.slice(prefix.length)
+    if (!reviewUrl || reviewUrl.includes("\n")) return false
+    try {
+      const parsed = new URL(reviewUrl)
+      return buildMerchantOrderReviewUrl(parsed.origin, orderId) === reviewUrl
+    } catch {
+      return false
+    }
+  }
+  return false
+}
+
 /**
  * Identify the exact app-level marker used for advisory order notifications.
  * Transport remains generic: callers can still unwrap the rumor, while
@@ -130,6 +158,7 @@ export function getOrderCompanionNotificationIdentity(
       tag[0] === "conduit" && tag[1] === ORDER_COMPANION_NOTIFICATION_MARKER
   )
   const isCanonical =
+    rumor.tags.length === 5 &&
     subjects.length === 1 &&
     subjects[0]?.length === 2 &&
     subjects[0]?.[1] === ORDER_COMPANION_NOTIFICATION_SUBJECT &&
@@ -143,7 +172,8 @@ export function getOrderCompanionNotificationIdentity(
     markers[0]?.length === 4 &&
     markers[0]?.[2] === ORDER_COMPANION_NOTIFICATION_VERSION &&
     Boolean(markers[0]?.[3]?.trim()) &&
-    clients.length === 1
+    clients.length === 1 &&
+    hasCanonicalOrderCompanionContent(rumor.content, orders[0]?.[1] ?? "")
   if (!isCanonical) return null
 
   return {
@@ -157,12 +187,6 @@ export function getOrderCompanionNotificationIdentity(
 export function isOrderCompanionNotificationRumor(rumor: NDKEvent): boolean {
   return getOrderCompanionNotificationIdentity(rumor) !== null
 }
-
-const GUEST_ORDER_COMPANION_COPY =
-  "A new guest order was sent to you through Conduit Market.\n" +
-  "This buyer does not receive Nostr replies. Review the order and follow up using the email or phone provided there."
-const SIGNED_IN_ORDER_COMPANION_COPY =
-  "A new order was sent to you through Conduit Market."
 
 function isConduitMarketClientTag(tag: string[]): boolean {
   return (

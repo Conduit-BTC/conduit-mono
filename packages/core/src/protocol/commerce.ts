@@ -355,6 +355,7 @@ type RawDirectMessageFetchResult = {
 type PrivateInboxSyncResult = {
   orderMessages: ParsedOrderMessage[]
   directMessages: ParsedDirectMessage[]
+  pendingDirectMessageIds: Set<string>
   decryptFailures: DecryptFailure[]
   inbox: PrivateInboxReadStatus
 }
@@ -5188,6 +5189,11 @@ async function runPrivateMessageInboxSync(
   return {
     orderMessages: orderEntries.map((entry) => entry.message),
     directMessages: directEntries.map((entry) => entry.message),
+    pendingDirectMessageIds: new Set(
+      directEntries
+        .filter((entry) => entry.pendingOrderCompanion)
+        .map((entry) => entry.message.id)
+    ),
     decryptFailures: Array.from(retry.values()).flatMap(({ failure }) =>
       failure ? [failure] : []
     ),
@@ -5275,7 +5281,12 @@ async function fetchParsedDirectMessages(
     const current =
       currentResult.status === "fulfilled"
         ? currentResult.value
-        : { directMessages: [], decryptFailures: [], inbox: undefined }
+        : {
+            directMessages: [],
+            pendingDirectMessageIds: new Set<string>(),
+            decryptFailures: [],
+            inbox: undefined,
+          }
     const legacy =
       legacyResult.status === "fulfilled"
         ? legacyResult.value
@@ -5286,7 +5297,11 @@ async function fetchParsedDirectMessages(
     ]) {
       const isNew = !cachedById.has(parsed.id)
       cachedById.set(parsed.id, parsed)
-      if (isNew && parsed.senderPubkey !== principalPubkey) {
+      if (
+        isNew &&
+        parsed.senderPubkey !== principalPubkey &&
+        !current.pendingDirectMessageIds.has(parsed.id)
+      ) {
         unreadMessageIds.add(parsed.id)
       }
     }

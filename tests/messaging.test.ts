@@ -173,6 +173,9 @@ function guestOrderCompanionFixture(
 }
 
 describe("isOrderCompanionNotificationRumor", () => {
+  const canonicalContent =
+    "A new order was sent to you through Conduit Market.\n" +
+    "Review it at: https://sell.conduit.market/orders?order=order-id"
   const canonicalTags = [
     ["p", "merchant"],
     ["subject", "conduit-order-notification"],
@@ -184,9 +187,31 @@ describe("isOrderCompanionNotificationRumor", () => {
   it("recognizes only the complete v1 app marker", () => {
     expect(
       isOrderCompanionNotificationRumor(
-        rumor(EVENT_KINDS.DIRECT_MESSAGE, { tags: canonicalTags })
+        rumor(EVENT_KINDS.DIRECT_MESSAGE, {
+          tags: canonicalTags,
+          content: canonicalContent,
+        })
       )
     ).toBe(true)
+  })
+
+  it("fails open for arbitrary content and extra tags", () => {
+    expect(
+      isOrderCompanionNotificationRumor(
+        rumor(EVENT_KINDS.DIRECT_MESSAGE, {
+          tags: canonicalTags,
+          content: "Reply on Signal, not here.",
+        })
+      )
+    ).toBe(false)
+    expect(
+      isOrderCompanionNotificationRumor(
+        rumor(EVENT_KINDS.DIRECT_MESSAGE, {
+          tags: [...canonicalTags, ["extra", "tag"]],
+          content: canonicalContent,
+        })
+      )
+    ).toBe(false)
   })
 
   it.each([
@@ -213,7 +238,10 @@ describe("isOrderCompanionNotificationRumor", () => {
   ])("fails open for %s", (_label, tags) => {
     expect(
       isOrderCompanionNotificationRumor(
-        rumor(EVENT_KINDS.DIRECT_MESSAGE, { tags })
+        rumor(EVENT_KINDS.DIRECT_MESSAGE, {
+          tags,
+          content: canonicalContent,
+        })
       )
     ).toBe(false)
   })
@@ -221,7 +249,10 @@ describe("isOrderCompanionNotificationRumor", () => {
   it("does not classify an order rumor as an inbox notification", () => {
     expect(
       isOrderCompanionNotificationRumor(
-        rumor(EVENT_KINDS.ORDER, { tags: canonicalTags })
+        rumor(EVENT_KINDS.ORDER, {
+          tags: canonicalTags,
+          content: canonicalContent,
+        })
       )
     ).toBe(false)
   })

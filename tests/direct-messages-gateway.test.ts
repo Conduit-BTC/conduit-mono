@@ -398,6 +398,7 @@ describe("general direct-message gateway", () => {
               giftWrapEvent("wrap-unmatched-companion"),
               giftWrapEvent("wrap-subject-only"),
               giftWrapEvent("wrap-normal-subject"),
+              giftWrapEvent("wrap-human-marker"),
             ] as never)
           : [],
       giftUnwrap: async (event) => {
@@ -408,34 +409,42 @@ describe("general direct-message gateway", () => {
           recipient: BUYER,
           content:
             event.id === "wrap-order-companion"
-              ? "A new order was sent to you through Conduit Market."
+              ? "A new order was sent to you through Conduit Market.\nReview it at: https://sell.conduit.market/orders?order=order-1"
               : event.id === "wrap-unmatched-companion"
-                ? "A canonical marker without its order remains visible."
+                ? "A new order was sent to you through Conduit Market.\nReview it at: https://sell.conduit.market/orders?order=missing-order"
                 : event.id === "wrap-subject-only"
                   ? "A normal message can use the same subject."
-                  : "This remains a normal conversation message.",
-          createdAt: event.id === "wrap-unmatched-companion" ? 100 : 101,
+                  : event.id === "wrap-human-marker"
+                    ? "Reply on Signal, not here."
+                    : "This remains a normal conversation message.",
+          createdAt:
+            event.id === "wrap-unmatched-companion"
+              ? 100
+              : event.id === "wrap-human-marker"
+                ? 99
+                : 101,
           subject:
             event.id !== "wrap-normal-subject"
               ? "conduit-order-notification"
               : "conduit-order-notification-followup",
           extraTags:
             event.id === "wrap-order-companion" ||
-            event.id === "wrap-unmatched-companion"
+            event.id === "wrap-unmatched-companion" ||
+            event.id === "wrap-human-marker"
               ? [
                   [
                     "order",
-                    event.id === "wrap-order-companion"
-                      ? "order-1"
-                      : "missing-order",
+                    event.id === "wrap-unmatched-companion"
+                      ? "missing-order"
+                      : "order-1",
                   ],
                   [
                     "conduit",
                     "order-companion",
                     "1",
-                    event.id === "wrap-order-companion"
-                      ? "cached-authoritative-order"
-                      : "missing-order-event",
+                    event.id === "wrap-unmatched-companion"
+                      ? "missing-order-event"
+                      : "cached-authoritative-order",
                   ],
                   ["client", "Conduit Market"],
                 ]
@@ -458,12 +467,14 @@ describe("general direct-message gateway", () => {
     expect(directRows.map((row) => row.id)).toEqual([
       "dm-subject-only",
       "dm-normal-subject",
+      "dm-human-marker",
     ])
     expect(unwrapCalls).toEqual({
       "wrap-order-companion": 1,
       "wrap-unmatched-companion": 2,
       "wrap-subject-only": 1,
       "wrap-normal-subject": 1,
+      "wrap-human-marker": 1,
     })
     expect(second.data).toEqual(first.data)
   })
@@ -481,7 +492,9 @@ describe("general direct-message gateway", () => {
           id: "dm-late-companion",
           sender: MERCHANT,
           recipient: BUYER,
-          content: "A new order was sent to you through Conduit Market.",
+          content:
+            "A new order was sent to you through Conduit Market.\n" +
+            "Review it at: https://sell.conduit.market/orders?order=late-order",
           createdAt: 101,
           subject: "conduit-order-notification",
           extraTags: [
@@ -498,10 +511,24 @@ describe("general direct-message gateway", () => {
     })
 
     expect(beforeOrder.data).toHaveLength(1)
+    expect(beforeOrder.data[0]?.unreadFromCounterparty).toBe(0)
     expect(beforeOrder.data[0]?.preview).toBe(
-      "A new order was sent to you through Conduit Market."
+      "A new order was sent to you through Conduit Market.\n" +
+        "Review it at: https://sell.conduit.market/orders?order=late-order"
     )
     expect(directRows).toHaveLength(0)
+
+    expect(
+      await markDirectMessageConversationRead({
+        principalPubkey: BUYER,
+        counterpartyPubkey: MERCHANT,
+        transport: "nip17",
+      })
+    ).toBe(0)
+    const beforeOrderRefresh = await getDirectMessageConversationList({
+      principalPubkey: BUYER,
+    })
+    expect(beforeOrderRefresh.data[0]?.unreadFromCounterparty).toBe(0)
 
     orderRows = [
       {
@@ -520,7 +547,7 @@ describe("general direct-message gateway", () => {
     expect(afterOrder.data).toHaveLength(0)
     expect(directRows).toHaveLength(0)
     expect(orderRows).toHaveLength(1)
-    expect(unwrapCalls).toBe(2)
+    expect(unwrapCalls).toBe(3)
   })
 
   it("preserves complete preview content for presentation-time formatting", async () => {
