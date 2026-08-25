@@ -693,8 +693,21 @@ jobs:
               `<!-- conduit:ponytail-final head=${{ steps.pr.outputs.head_sha }} -->`
               in the review body. This marker makes the automatic handoff run
               once for this pull request. The head records review provenance.
-            - If there is nothing to cut, include the marker, say
-              `Lean already. Ship.`, and stop.
+            - Put the hidden provenance marker first. Start the visible body
+              with `## Ponytail verdict`, a plain-language bold verdict, and the
+              exact machine-readable outcome line.
+            - Add `## Simplification` with
+              `Net simplification: <signed line estimate> lines possible.`
+            - For `FINDINGS`, add `## Required actions` with the number of inline
+              suggestions. For `DELIVERY BLOCKED`, state the delivery blocker.
+              Do not duplicate inline finding detail.
+            - End with `<details>` and the summary
+              `Residual risks and automation limits`. Put short residual-risk
+              bullets and the exact automation residual inside it.
+            - Keep the visible body under 120 words, excluding the collapsed
+              residual section.
+            - If there is nothing to cut, still use the required body format.
+              Put `Lean already. Ship.` in the verdict section.
 
       - name: Enforce current Ponytail review
         if: always() && steps.pr.outputs.should_run == 'true'

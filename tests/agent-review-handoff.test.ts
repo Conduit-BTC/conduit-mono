@@ -62,7 +62,7 @@ const sourceRunMarker = (headSha: string, runId = "321", runAttempt = "1") =>
   `<!-- conduit:sudden-review run=${runId} attempt=${runAttempt} head=${headSha} -->`
 
 const cleanReviewBody = (headSha: string, runId = "321", runAttempt = "1") =>
-  `${sourceRunMarker(headSha, runId, runAttempt)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo actionable findings.\nReviewer-confirmed QA disposition: Maintainer-owned validation\nMerge-readiness verdict: READY FOR HUMAN APPROVAL\n${automationResidual}`
+  `${sourceRunMarker(headSha, runId, runAttempt)}\n<!-- conduit:sudden-review clean head=${headSha} -->\n## Verdict\n**Ready for human approval**\nMerge-readiness verdict: READY FOR HUMAN APPROVAL\nNo actionable findings.\n\n## Summary\n- Current-head review is clean.\n\n## Evidence\nNo public context update needed.\nReviewer-confirmed QA disposition: Maintainer-owned validation\n\n<details>\n<summary>Residual risks and automation limits</summary>\n\nWhat can still be wrong if all visible checks are green?\n- Deployment behavior remains maintainer-owned.\n\n${automationResidual}\n</details>`
 
 const getNamedJob = (workflow: string, name: string) => {
   const start = workflow.indexOf(`  ${name}:\n`)
@@ -432,7 +432,7 @@ const runPonytailVerdictGate = async ({
   currentBase = baseSha,
   headSha = "a".repeat(40),
   currentHead = headSha,
-  reviewBody = `<!-- conduit:ponytail-final head=${headSha} -->\nPonytail outcome: LEAN\nLean already. Ship.\n${automationResidual}`,
+  reviewBody = `<!-- conduit:ponytail-final head=${headSha} -->\n## Ponytail verdict\n**Lean already**\nPonytail outcome: LEAN\nLean already. Ship.\n\n## Simplification\nNet simplification: 0 lines possible.\n\n<details>\n<summary>Residual risks and automation limits</summary>\n\n- Candidate code was not executed by this read-only review.\n\n${automationResidual}\n</details>`,
   reviewCommit = headSha,
   reviewComments = "[]",
   reviewState = "COMMENTED",
@@ -546,6 +546,12 @@ describe("agent review handoff", () => {
       "Merge-readiness verdict: READY FOR HUMAN APPROVAL"
     )
     expect(reviewWorkflow).toContain("Merge-readiness verdict: BLOCKED")
+    expect(reviewWorkflow).toContain("Review body presentation contract")
+    expect(reviewWorkflow).toContain("## Verdict")
+    expect(reviewWorkflow).toContain("## Required actions")
+    expect(reviewWorkflow).toContain("## Summary")
+    expect(reviewWorkflow).toContain("## Evidence")
+    expect(reviewWorkflow).toContain("Residual risks and automation limits")
     expect(reviewWorkflow).toContain(
       "<!-- conduit:sudden-review run=${{ github.run_id }} attempt=${{ github.run_attempt }} head=${{ steps.pr.outputs.head_sha }} -->"
     )
@@ -932,7 +938,7 @@ describe("agent review handoff", () => {
 
     const findingsWithInlineComment = await runPonytailVerdictGate({
       headSha,
-      reviewBody: `<!-- conduit:ponytail-final head=${headSha} -->\nPonytail outcome: FINDINGS\n${automationResidual}`,
+      reviewBody: `<!-- conduit:ponytail-final head=${headSha} -->\n## Ponytail verdict\n**Simplifications found**\nPonytail outcome: FINDINGS\n\n## Simplification\nNet simplification: -12 lines possible.\n\n## Required actions\nReview 1 inline suggestion.\n\n<details>\n<summary>Residual risks and automation limits</summary>\n\n${automationResidual}\n</details>`,
       reviewComments: "[{}]",
     })
     expect(findingsWithInlineComment.exitCode).toBe(0)
@@ -1222,6 +1228,13 @@ describe("agent review handoff", () => {
     expect(simplifyWorkflow).toContain("Ponytail outcome: LEAN")
     expect(simplifyWorkflow).toContain("Ponytail outcome: FINDINGS")
     expect(simplifyWorkflow).toContain("Ponytail outcome: DELIVERY BLOCKED")
+    expect(simplifyWorkflow).toContain("## Ponytail verdict")
+    expect(simplifyWorkflow).toContain("## Simplification")
+    expect(simplifyWorkflow).toContain("## Required actions")
+    expect(simplifyWorkflow).toContain(
+      "Net simplification: <signed line estimate> lines possible."
+    )
+    expect(simplifyWorkflow).toContain("Residual risks and automation limits")
     expect(simplifyWorkflow).toContain(
       '"repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews/$review_id/comments?per_page=100"'
     )

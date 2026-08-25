@@ -344,6 +344,28 @@ jobs:
             - If an inline review cannot be submitted, leave no top-level
               finding and state the delivery blocker in the review body.
 
+            Review body presentation contract:
+            - Put the provenance marker first. It stays hidden as an HTML
+              comment.
+            - Start the visible body with `## Verdict`, followed by
+              `**Ready for human approval**` or `**Blocked**`, then the exact
+              canonical merge-readiness verdict line.
+            - For a clean review, put `No actionable findings.` in the Verdict
+              section. For a blocked review, add `## Required actions` with a
+              count or delivery blocker. Do not repeat inline finding detail.
+            - Add `## Summary` with at most three short bullets.
+            - Add `## Evidence`. Put the reviewer-owned public-context decision,
+              the exact reviewer-confirmed QA disposition line, current-head
+              checks, and SHA provenance there.
+            - Keep every exact machine-readable line unprefixed by a Markdown
+              bullet, quote, or code fence.
+            - End with `<details>` and the summary
+              `Residual risks and automation limits`. Inside it, include
+              `What can still be wrong if all visible checks are green?`, short
+              residual-risk bullets, and the exact automation residual.
+            - Keep the visible body concise. Do not repeat boilerplate outside
+              the collapsed residual section.
+
             Clean-review handoff contract:
             - If and only if there are zero actionable P0, P1, or P2 findings,
               include this exact marker in the review body:

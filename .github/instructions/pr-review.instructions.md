@@ -10,23 +10,50 @@ Apply these instructions when generating pull request reviews.
 
 ## Required Review Output Format
 
-1. Findings first, ordered by severity (`P0`, `P1`, `P2`)
-2. Each finding includes:
-   - one-sentence impact statement
-   - file path and line reference
-   - concrete recommendation
-3. Reviewer public-context decision:
+Use this order in the review body:
+
+1. `## Verdict`
+   - Start with `**Ready for human approval**` or `**Blocked**`.
+   - Put the exact machine-readable merge-readiness verdict on the next line.
+   - State `No actionable findings.` here when the review is clean.
+2. `## Required actions` only when blocked
+   - Give the finding count or delivery blocker.
+   - Keep finding details in inline review threads.
+3. `## Summary`
+   - Use at most three short bullets.
+4. `## Evidence`
+   - Include the public-context decision and QA disposition.
+   - Summarize current-head checks and provenance.
+   - Keep the exact QA disposition line unprefixed by a bullet, quote, or code
+     fence.
+5. A collapsed `<details>` section named `Residual risks and automation limits`
+   - Include `What can still be wrong if all visible checks are green?`
+   - Include the exact mandatory automation residual.
+
+Put provenance markers in HTML comments. Do not repeat actionable finding detail
+in the review body.
+
+Order inline findings by severity (`P0`, `P1`, `P2`). Each finding includes:
+
+1. one-sentence impact statement
+2. file path and line reference
+3. concrete recommendation
+
+The review body must also include:
+
+1. Reviewer public-context decision:
    - `Public context updated in this PR`
    - `No public context update needed`
    - `Durable contract or external decision needed`
-4. Reviewer-confirmed QA disposition:
+2. Reviewer-confirmed QA disposition:
    - `Evidence sign-off`
    - `Targeted human QA`
    - `Maintainer-owned validation`
-5. Exactly one merge-readiness verdict:
+3. Exactly one merge-readiness verdict:
    - `Merge-readiness verdict: READY FOR HUMAN APPROVAL`
    - `Merge-readiness verdict: BLOCKED`
-6. Short summary only after findings
+
+Do not add a second summary after the residual-risk section.
 
 Use `BLOCKED` when findings, unresolved threads, policy conflicts, missing
 evidence, or unsafe merge order prevent a clean handoff. Record unavailable
