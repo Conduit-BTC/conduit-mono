@@ -62,10 +62,7 @@ const sourceRunMarker = (headSha: string, runId = "321", runAttempt = "1") =>
   `<!-- conduit:sudden-review run=${runId} attempt=${runAttempt} head=${headSha} -->`
 
 const cleanReviewBody = (headSha: string, runId = "321", runAttempt = "1") =>
-  `${sourceRunMarker(headSha, runId, runAttempt)}\n<!-- conduit:sudden-review clean head=${headSha} -->\n## Verdict\n**Ready for human approval**\nMerge-readiness verdict: READY FOR HUMAN APPROVAL\nNo actionable findings.\n\n## Summary\n- Current-head review is clean.\n\n## Evidence\nNo public context update needed\nReviewer-confirmed QA disposition: Maintainer-owned validation\nReviewed head: ${headSha}\n\n<details>\n<summary>Residual risks and automation limits</summary>\n\nWhat can still be wrong if all visible checks are green?\n- Deployment behavior remains maintainer-owned.\n\n${automationResidual}\n</details>`
-
-const leanPonytailReviewBody = (headSha: string) =>
-  `<!-- conduit:ponytail-final head=${headSha} -->\n## Ponytail verdict\n**Lean already**\nPonytail outcome: LEAN\nLean already. Ship.\n\n## Simplification\nNet simplification: 0 lines possible.\n\n<details>\n<summary>Residual risks and automation limits</summary>\n\n- Candidate code was not executed by this read-only review.\n\n${automationResidual}\n</details>`
+  `${sourceRunMarker(headSha, runId, runAttempt)}\n<!-- conduit:sudden-review clean head=${headSha} -->\n## Verdict\n**Ready for human approval**\nMerge-readiness verdict: READY FOR HUMAN APPROVAL\nNo actionable findings.\n\n## Summary\n- Current-head review is clean.\n\n## Evidence\nNo public context update needed\nReviewer-confirmed QA disposition: Maintainer-owned validation\n\n<details>\n<summary>Residual risks and automation limits</summary>\n\nWhat can still be wrong if all visible checks are green?\n- Deployment behavior remains maintainer-owned.\n\n${automationResidual}\n</details>`
 
 const getNamedJob = (workflow: string, name: string) => {
   const start = workflow.indexOf(`  ${name}:\n`)
@@ -435,7 +432,7 @@ const runPonytailVerdictGate = async ({
   currentBase = baseSha,
   headSha = "a".repeat(40),
   currentHead = headSha,
-  reviewBody = leanPonytailReviewBody(headSha),
+  reviewBody = `<!-- conduit:ponytail-final head=${headSha} -->\n## Ponytail verdict\n**Lean already**\nPonytail outcome: LEAN\nLean already. Ship.\n\n## Simplification\nNet simplification: 0 lines possible.\n\n<details>\n<summary>Residual risks and automation limits</summary>\n\n- Candidate code was not executed by this read-only review.\n\n${automationResidual}\n</details>`,
   reviewCommit = headSha,
   reviewComments = "[]",
   reviewState = "COMMENTED",
@@ -683,46 +680,6 @@ describe("agent review handoff", () => {
     expect(clean.exitCode).toBe(0)
     expect(clean.stdout).toContain("ready for required human approval")
 
-    const legacyBody = await runReviewVerdictGate({
-      headSha,
-      reviewBody: `${sourceRunMarker(headSha, runId)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo actionable findings.\nReviewer-confirmed QA disposition: Maintainer-owned validation\nMerge-readiness verdict: READY FOR HUMAN APPROVAL\n${automationResidual}`,
-      runId,
-    })
-    expect(legacyBody.exitCode).not.toBe(0)
-    expect(legacyBody.stderr).toContain("presentation schema")
-
-    for (const malformedBody of [
-      cleanReviewBody(headSha, runId).replace(
-        "## Summary",
-        "## Summary renamed"
-      ),
-      cleanReviewBody(headSha, runId).replace(
-        "## Summary",
-        "## Summary\n## Summary"
-      ),
-      cleanReviewBody(headSha, runId).replace(
-        "\n## Summary",
-        "\n## Required actions\nUnexpected action.\n\n## Summary"
-      ),
-      cleanReviewBody(headSha, runId).replace(
-        `Reviewed head: ${headSha}\n`,
-        ""
-      ),
-      cleanReviewBody(headSha, runId).replace(
-        "- Current-head review is clean.",
-        "- One\n- Two\n- Three\n- Four"
-      ),
-      cleanReviewBody(headSha, runId).replace("</details>", ""),
-    ]) {
-      const malformedSchema = await runReviewVerdictGate({
-        headSha,
-        reviewBody: malformedBody,
-        runId,
-      })
-      expect(malformedSchema.exitCode).not.toBe(0)
-      expect(malformedSchema.stderr).toContain("presentation schema")
-    }
-
     const cleanBody = cleanReviewBody(headSha, runId)
     const concurrentPonytail = await runReviewVerdictGate({
       headSha,
@@ -860,7 +817,9 @@ describe("agent review handoff", () => {
         reviewBody: `${sourceRunMarker(headSha, runId)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo actionable findings.\nReviewer-confirmed QA disposition: Maintainer-owned validation\n${verdictLines}\n${automationResidual}`,
       })
       expect(malformedVerdict.exitCode).not.toBe(0)
-      expect(malformedVerdict.stderr).toContain("presentation schema")
+      expect(malformedVerdict.stderr).toContain(
+        "missing, blocked, duplicate, or malformed verdict contract"
+      )
     }
 
     const inlineFinding = await runReviewVerdictGate({
@@ -922,36 +881,6 @@ describe("agent review handoff", () => {
     expect(clean.exitCode).toBe(0)
     expect(clean.stdout).toContain("Current Ponytail review is valid")
 
-    const legacyBody = await runPonytailVerdictGate({
-      headSha,
-      reviewBody: `<!-- conduit:ponytail-final head=${headSha} -->\nPonytail outcome: LEAN\nLean already. Ship.\n${automationResidual}`,
-    })
-    expect(legacyBody.exitCode).not.toBe(0)
-    expect(legacyBody.stderr).toContain("presentation schema")
-
-    for (const malformedBody of [
-      leanPonytailReviewBody(headSha).replace("</details>", ""),
-      leanPonytailReviewBody(headSha).replace(
-        "## Simplification",
-        "## Simplification\n## Simplification"
-      ),
-      leanPonytailReviewBody(headSha).replace(
-        "\n<details>",
-        "\n## Required actions\nUnexpected action.\n\n<details>"
-      ),
-    ]) {
-      const malformedSchema = await runPonytailVerdictGate({
-        headSha,
-        reviewBody: malformedBody,
-      })
-      expect(malformedSchema.exitCode).not.toBe(0)
-      expect(malformedSchema.stderr).toContain(
-        malformedBody.includes("## Required actions")
-          ? "zero inline comments"
-          : "presentation schema"
-      )
-    }
-
     const missingReview = await runPonytailVerdictGate({
       headSha,
       reviews: "[]",
@@ -996,11 +925,11 @@ describe("agent review handoff", () => {
       reviewBody: `<!-- conduit:ponytail-final head=${headSha} -->\nLean already. Ship.\n${automationResidual}`,
     })
     expect(missingOutcome.exitCode).not.toBe(0)
-    expect(missingOutcome.stderr).toContain("presentation schema")
+    expect(missingOutcome.stderr).toContain("exactly one allowed outcome")
 
     const topLevelOnlyFinding = await runPonytailVerdictGate({
       headSha,
-      reviewBody: `<!-- conduit:ponytail-final head=${headSha} -->\n## Ponytail verdict\n**Simplifications found**\nPonytail outcome: FINDINGS\n\n## Simplification\nNet simplification: -12 lines possible.\n\n## Required actions\nInline suggestions: 1.\n\n<details>\n<summary>Residual risks and automation limits</summary>\n\n- Candidate code was not executed by this read-only review.\n\n${automationResidual}\n</details>`,
+      reviewBody: `<!-- conduit:ponytail-final head=${headSha} -->\nPonytail outcome: FINDINGS\nP1: Finding delivered only in the review body.\n${automationResidual}`,
     })
     expect(topLevelOnlyFinding.exitCode).not.toBe(0)
     expect(topLevelOnlyFinding.stderr).toContain(
@@ -1009,30 +938,10 @@ describe("agent review handoff", () => {
 
     const findingsWithInlineComment = await runPonytailVerdictGate({
       headSha,
-      reviewBody: `<!-- conduit:ponytail-final head=${headSha} -->\n## Ponytail verdict\n**Simplifications found**\nPonytail outcome: FINDINGS\n\n## Simplification\nNet simplification: -12 lines possible.\n\n## Required actions\nInline suggestions: 1.\n\n<details>\n<summary>Residual risks and automation limits</summary>\n\n- Candidate code was not executed by this read-only review.\n\n${automationResidual}\n</details>`,
+      reviewBody: `<!-- conduit:ponytail-final head=${headSha} -->\n## Ponytail verdict\n**Simplifications found**\nPonytail outcome: FINDINGS\n\n## Simplification\nNet simplification: -12 lines possible.\n\n## Required actions\nReview 1 inline suggestion.\n\n<details>\n<summary>Residual risks and automation limits</summary>\n\n${automationResidual}\n</details>`,
       reviewComments: "[{}]",
     })
     expect(findingsWithInlineComment.exitCode).toBe(0)
-
-    const mismatchedFindingCount = await runPonytailVerdictGate({
-      headSha,
-      reviewBody: `<!-- conduit:ponytail-final head=${headSha} -->\n## Ponytail verdict\n**Simplifications found**\nPonytail outcome: FINDINGS\n\n## Simplification\nNet simplification: -12 lines possible.\n\n## Required actions\nInline suggestions: 2.\n\n<details>\n<summary>Residual risks and automation limits</summary>\n\n- Candidate code was not executed by this read-only review.\n\n${automationResidual}\n</details>`,
-      reviewComments: "[{}]",
-    })
-    expect(mismatchedFindingCount.exitCode).not.toBe(0)
-    expect(mismatchedFindingCount.stderr).toContain(
-      "count does not match its inline comments"
-    )
-
-    for (const invalidCountLine of ["", "Inline suggestions: many."]) {
-      const invalidFindingCount = await runPonytailVerdictGate({
-        headSha,
-        reviewBody: `<!-- conduit:ponytail-final head=${headSha} -->\n## Ponytail verdict\n**Simplifications found**\nPonytail outcome: FINDINGS\n\n## Simplification\nNet simplification: -12 lines possible.\n\n## Required actions\n${invalidCountLine}\n\n<details>\n<summary>Residual risks and automation limits</summary>\n\n- Candidate code was not executed by this read-only review.\n\n${automationResidual}\n</details>`,
-        reviewComments: "[{}]",
-      })
-      expect(invalidFindingCount.exitCode).not.toBe(0)
-      expect(invalidFindingCount.stderr).toContain("presentation schema")
-    }
 
     const leanWithInlineComment = await runPonytailVerdictGate({
       headSha,
@@ -1043,7 +952,7 @@ describe("agent review handoff", () => {
 
     const blockedDelivery = await runPonytailVerdictGate({
       headSha,
-      reviewBody: `<!-- conduit:ponytail-final head=${headSha} -->\n## Ponytail verdict\n**Delivery blocked**\nPonytail outcome: DELIVERY BLOCKED\n\n## Simplification\nNet simplification: 0 lines possible.\n\n## Required actions\nInline delivery failed.\n\n<details>\n<summary>Residual risks and automation limits</summary>\n\n- Candidate code was not executed by this read-only review.\n\n${automationResidual}\n</details>`,
+      reviewBody: `<!-- conduit:ponytail-final head=${headSha} -->\nPonytail outcome: DELIVERY BLOCKED\n${automationResidual}`,
     })
     expect(blockedDelivery.exitCode).not.toBe(0)
     expect(blockedDelivery.stderr).toContain("blocked inline delivery")
@@ -1627,25 +1536,6 @@ while IFS= read -r _line; do :; done
     expect(getOutputValue(clean.output, "should_run")).toBe("true")
     expect(getOutputValue(clean.output, "source_run_attempt")).toBe("1")
 
-    const legacySourceBody = await runGate({
-      headSha,
-      reviewBody: `${sourceRunMarker(headSha)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo actionable findings.\nReviewer-confirmed QA disposition: Maintainer-owned validation\nMerge-readiness verdict: READY FOR HUMAN APPROVAL\n${automationResidual}`,
-    })
-    expect(legacySourceBody.exitCode).not.toBe(0)
-    expect(legacySourceBody.stderr).toContain("presentation schema")
-
-    const sourceWithCleanRequiredActions = await runGate({
-      headSha,
-      reviewBody: cleanReviewBody(headSha).replace(
-        "\n## Summary",
-        "\n## Required actions\nUnexpected action.\n\n## Summary"
-      ),
-    })
-    expect(sourceWithCleanRequiredActions.exitCode).not.toBe(0)
-    expect(sourceWithCleanRequiredActions.stderr).toContain(
-      "presentation schema"
-    )
-
     const untrustedSourceWorkflow = await runGate({
       headSha,
       sourceRunPath: ".github/workflows/candidate-review.yml",
@@ -1980,31 +1870,6 @@ while IFS= read -r _line; do :; done
     const clean = await runGate({ headSha }, revalidationScript)
     expect(clean.exitCode).toBe(0)
     expect(getOutputValue(clean.output, "should_run")).toBe("true")
-
-    const legacySourceBody = await runGate(
-      {
-        headSha,
-        reviewBody: `${sourceRunMarker(headSha)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo actionable findings.\nReviewer-confirmed QA disposition: Maintainer-owned validation\nMerge-readiness verdict: READY FOR HUMAN APPROVAL\n${automationResidual}`,
-      },
-      revalidationScript
-    )
-    expect(legacySourceBody.exitCode).not.toBe(0)
-    expect(legacySourceBody.stderr).toContain("presentation schema")
-
-    const sourceWithCleanRequiredActions = await runGate(
-      {
-        headSha,
-        reviewBody: cleanReviewBody(headSha).replace(
-          "\n## Summary",
-          "\n## Required actions\nUnexpected action.\n\n## Summary"
-        ),
-      },
-      revalidationScript
-    )
-    expect(sourceWithCleanRequiredActions.exitCode).not.toBe(0)
-    expect(sourceWithCleanRequiredActions.stderr).toContain(
-      "presentation schema"
-    )
 
     const changedSourceRun = await runGate(
       {
