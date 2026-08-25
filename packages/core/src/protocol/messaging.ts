@@ -906,6 +906,29 @@ export interface PublishPrivateMessageInput {
   resolveCompatibilityRecipientReadRelays?: (
     pubkey: string
   ) => Promise<readonly string[]>
+  /** Revocable authority for signing and relay delivery of this message. */
+  publishAuthority?: PrivateMessagePublishAuthority
+}
+
+export interface PrivateMessagePublishAuthority {
+  isCurrent: () => boolean
+  /** Called immediately before each critical recipient relay attempt. */
+  onRecipientPublishStarted?: () => void
+}
+
+export class PrivateMessagePublishAuthorityRevokedError extends Error {
+  constructor() {
+    super("Private message publish authority was revoked")
+    this.name = "PrivateMessagePublishAuthorityRevokedError"
+  }
+}
+
+function assertPrivateMessagePublishAuthority(
+  authority: PrivateMessagePublishAuthority | undefined
+): void {
+  if (authority?.isCurrent() === false) {
+    throw new PrivateMessagePublishAuthorityRevokedError()
+  }
 }
 
 export interface PublishPrivateMessageResult {
@@ -965,6 +988,7 @@ export class PrivateMessageRelayReadinessError extends Error {
 export async function publishPrivateMessage(
   input: PublishPrivateMessageInput
 ): Promise<PublishPrivateMessageResult> {
+  assertPrivateMessagePublishAuthority(input.publishAuthority)
   if (input.rumor.kind !== input.rumorKind) {
     throw new Error("Private message rumor kind does not match requested kind")
   }
@@ -974,7 +998,9 @@ export async function publishPrivateMessage(
   if (input.rumor.pubkey?.trim().toLowerCase() !== senderPubkey) {
     throw new Error("Private message rumor author does not match sender")
   }
+  assertPrivateMessagePublishAuthority(input.publishAuthority)
   const signerPubkey = (await input.signer.user()).pubkey.trim().toLowerCase()
+  assertPrivateMessagePublishAuthority(input.publishAuthority)
   if (signerPubkey !== senderPubkey) {
     throw new Error("Private message signer does not match sender")
   }
@@ -1101,16 +1127,16 @@ export async function publishPrivateMessage(
   // shared instance before wrapping; attaching only at publish time is too late.
   input.rumor.ndk ??= getNdk()
 
-  const wrappedToRecipient = await withTransientNip07Retry(
-    () =>
-      giftWrapFn(
-        input.rumor,
-        new NDKUser({ pubkey: input.recipientPubkey }),
-        input.signer,
-        wrapParams
-      ),
-    input.retry
-  )
+  const wrappedToRecipient = await withTransientNip07Retry(() => {
+    assertPrivateMessagePublishAuthority(input.publishAuthority)
+    return giftWrapFn(
+      input.rumor,
+      new NDKUser({ pubkey: input.recipientPubkey }),
+      input.signer,
+      wrapParams
+    )
+  }, input.retry)
+  assertPrivateMessagePublishAuthority(input.publishAuthority)
 
   // The self-copy is a non-critical local-recovery leg: a signer failure while
   // wrapping it must never block the critical recipient delivery below.
@@ -1118,22 +1144,23 @@ export async function publishPrivateMessage(
   let wrappedToSelf: NDKEvent | null = null
   if (selfCopy) {
     try {
-      wrappedToSelf = await withTransientNip07Retry(
-        () =>
-          giftWrapFn(
-            input.rumor,
-            new NDKUser({ pubkey: input.senderPubkey }),
-            input.signer,
-            wrapParams
-          ),
-        input.retry
-      )
+      wrappedToSelf = await withTransientNip07Retry(() => {
+        assertPrivateMessagePublishAuthority(input.publishAuthority)
+        return giftWrapFn(
+          input.rumor,
+          new NDKUser({ pubkey: input.senderPubkey }),
+          input.signer,
+          wrapParams
+        )
+      }, input.retry)
+      assertPrivateMessagePublishAuthority(input.publishAuthority)
     } catch (error) {
       selfCopyError =
         error instanceof Error ? error.message : "Self-copy wrap failed"
     }
   }
 
+  assertPrivateMessagePublishAuthority(input.publishAuthority)
   const recipientDelivery = await publishFn(wrappedToRecipient, {
     intent: "recipient_event",
     authorPubkey: input.senderPubkey,
@@ -1142,6 +1169,10 @@ export async function publishPrivateMessage(
     exclusiveRelayUrls: recipientRoute.relayUrls,
     refreshRelayLists,
     deliveryMode: "critical",
+    shouldContinue: input.publishAuthority?.isCurrent,
+    onAttempt: input.publishAuthority?.onRecipientPublishStarted
+      ? () => input.publishAuthority?.onRecipientPublishStarted?.()
+      : undefined,
   })
   if (
     Array.isArray(recipientDelivery.successfulRelayUrls) &&
@@ -1166,6 +1197,8 @@ export async function publishPrivateMessage(
   if (wrappedToSelf) {
     if (!senderRoute || senderRoute.route === "blocked") {
       selfCopyError = "Sender has no usable NIP-17 inbox relay declaration."
+    } else if (input.publishAuthority?.isCurrent() === false) {
+      selfCopyError = "Private message publish authority was revoked."
     } else {
       try {
         await publishFn(wrappedToSelf, {
@@ -1176,6 +1209,7 @@ export async function publishPrivateMessage(
           exclusiveRelayUrls: senderRoute.relayUrls,
           refreshRelayLists,
           deliveryMode: "critical",
+          shouldContinue: input.publishAuthority?.isCurrent,
         })
       } catch (error) {
         selfCopyError =

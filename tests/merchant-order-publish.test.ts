@@ -287,6 +287,51 @@ describe("publishMerchantOrderMessage", () => {
       observations.rumors[0]?.tags.find((tag) => tag[0] === "p")?.[1]
     ).toBe(buyerPubkey)
   })
+
+  it("threads revocable authority into transport and skips a revoked cache commit", async () => {
+    let current = true
+    let cached = 0
+    let attemptRecorded = 0
+    const publishAuthority = {
+      isCurrent: () => current,
+      onRecipientPublishStarted: () => {
+        attemptRecorded += 1
+      },
+    }
+
+    await expect(
+      publishMerchantOrderMessage(
+        {
+          merchantPubkey,
+          buyerPubkey,
+          orderId,
+          type: "status_update",
+          tags: [["status", "paid"]],
+          payload: { status: "paid" },
+          delivery: "buyer_and_self",
+          publishAuthority,
+        },
+        {
+          getNdk: () => ({ signer }) as unknown as NDK,
+          now: () => 1_000,
+          publishPrivateMessage: async (input) => {
+            expect(input.publishAuthority).toBe(publishAuthority)
+            input.publishAuthority?.onRecipientPublishStarted?.()
+            current = false
+            return {
+              selfCopyError: null,
+              deliveryRoute: "declared_inbox",
+            } as never
+          },
+          cacheParsedOrderMessage: async () => {
+            cached += 1
+          },
+        }
+      )
+    ).resolves.toEqual({ deliveryRoute: "declared_inbox" })
+    expect(attemptRecorded).toBe(1)
+    expect(cached).toBe(0)
+  })
 })
 
 describe("merchant order publish", () => {

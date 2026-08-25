@@ -484,6 +484,42 @@ describe("planPublishRelays", () => {
     expect(publishes).toBe(0)
   })
 
+  it("rechecks authority after recording an exact relay attempt", async () => {
+    let current = true
+    let publishes = 0
+    const attemptedRelaySets: string[][] = []
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "author_event",
+        primaryRelayUrls: ["wss://relay.example"],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+
+    await expect(
+      publishWithPlanner(
+        signedTestEvent({
+          publish: async () => {
+            publishes += 1
+            return new Set()
+          },
+        }),
+        {
+          intent: "author_event",
+          authorPubkey: AUTHOR_PUBKEY,
+          shouldContinue: () => current,
+          onAttempt: (relayUrls) => {
+            attemptedRelaySets.push([...relayUrls])
+            current = false
+          },
+        }
+      )
+    ).rejects.toThrow("signer session changed")
+    expect(attemptedRelaySets).toEqual([["wss://relay.example"]])
+    expect(publishes).toBe(0)
+  })
+
   it("keeps a primary-accepted publish successful when the session changes before broadcast", async () => {
     const primaryRelay = "wss://primary.conduit.market"
     const broadcastRelay = "wss://broadcast.conduit.market"

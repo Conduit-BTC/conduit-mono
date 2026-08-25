@@ -655,6 +655,51 @@ describe("decryptLegacyDirectMessage", () => {
 })
 
 describe("publishPrivateMessage", () => {
+  it("does not reach relay publication when authority changes during gift wrapping", async () => {
+    const selfRecord = senderSelfRecordRumor()
+    let current = true
+    let releaseGiftWrap!: (event: NDKEvent) => void
+    let giftWrapStarted!: () => void
+    const started = new Promise<void>((resolve) => {
+      giftWrapStarted = resolve
+    })
+    const giftWrap = new Promise<NDKEvent>((resolve) => {
+      releaseGiftWrap = resolve
+    })
+    let publishCalls = 0
+
+    const publication = publishPrivateMessage({
+      rumor: selfRecord,
+      senderPubkey: "sender",
+      recipientPubkey: "sender",
+      signer,
+      rumorKind: EVENT_KINDS.ORDER,
+      selfCopy: false,
+      validatedOrderSelfRecordScope: await validatedSelfRecordScope(selfRecord),
+      recipientInboxRelays: [],
+      compatibilityOrderRoute: {
+        enabled: true,
+        relayUrls: ["wss://compatibility.conduit.example"],
+      },
+      publishAuthority: { isCurrent: () => current },
+      giftWrapFn: (async () => {
+        giftWrapStarted()
+        return await giftWrap
+      }) as never,
+      publishFn: (async () => {
+        publishCalls += 1
+        return {} as never
+      }) as never,
+    })
+
+    await started
+    current = false
+    releaseGiftWrap(wrap("delayed-wrap"))
+
+    await expect(publication).rejects.toThrow("authority was revoked")
+    expect(publishCalls).toBe(0)
+  })
+
   it("routes a narrowly validated sender self-record over compatibility while preserving the buyer p tag", async () => {
     const selfRecord = senderSelfRecordRumor()
     const wrappedRecipients: string[] = []

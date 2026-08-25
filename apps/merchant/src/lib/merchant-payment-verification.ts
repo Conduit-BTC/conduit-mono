@@ -89,7 +89,7 @@ function assertVerificationAuthority(isCurrent: () => boolean): void {
 function getMerchantPaymentEvidenceKey(
   candidate: MerchantPaymentVerificationCandidate
 ): string {
-  return `${candidate.orderId}:${candidate.evidenceMessageId}`
+  return `${candidate.buyerPubkey}:${candidate.orderId}:${candidate.invoice.toLowerCase()}`
 }
 
 export async function verifyMerchantPaymentCandidates({
@@ -105,7 +105,8 @@ export async function verifyMerchantPaymentCandidates({
     candidate: MerchantPaymentVerificationCandidate
   ) => Promise<NwcLookupInvoiceResult>
   publishConfirmation: (
-    candidate: MerchantPaymentVerificationCandidate
+    candidate: MerchantPaymentVerificationCandidate,
+    controls: { markPublishStarted: () => void }
   ) => Promise<void>
   isCurrent?: () => boolean
 }): Promise<MerchantPaymentVerificationResult> {
@@ -150,9 +151,15 @@ export async function verifyMerchantPaymentCandidates({
   for (const match of matches) {
     if (paymentHashCounts.get(match.paymentHash) !== 1) continue
     assertVerificationAuthority(isCurrent)
-    await publishConfirmation(match.candidate)
+    const evidenceKey = getMerchantPaymentEvidenceKey(match.candidate)
+    await publishConfirmation(match.candidate, {
+      // Once the signed event reaches a relay attempt, ACK loss or authority
+      // churn is ambiguous. Retain the evidence key so a replacement run does
+      // not emit a second paid status for the same proof.
+      markPublishStarted: () => confirmedEvidence.add(evidenceKey),
+    })
     assertVerificationAuthority(isCurrent)
-    confirmedEvidence.add(getMerchantPaymentEvidenceKey(match.candidate))
+    confirmedEvidence.add(evidenceKey)
     verified += 1
   }
 

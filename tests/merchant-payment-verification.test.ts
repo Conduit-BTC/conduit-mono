@@ -10,6 +10,7 @@ import {
   isNwcSettlementMatch,
   MerchantPaymentVerificationAuthority,
   verifyMerchantPaymentCandidates,
+  type MerchantPaymentVerificationAuthorityKey,
 } from "../apps/merchant/src/lib/merchant-payment-verification"
 
 const BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
@@ -115,6 +116,19 @@ function delayedSettlement(): {
   }
 }
 
+function deferred<T>(): {
+  promise: Promise<T>
+  resolve: (result: T) => void
+} {
+  let resolve!: (result: T) => void
+  return {
+    promise: new Promise<T>((settle) => {
+      resolve = settle
+    }),
+    resolve: (result) => resolve(result),
+  }
+}
+
 function settledInvoice(): NwcLookupInvoiceResult {
   return {
     type: "incoming",
@@ -126,7 +140,80 @@ function settledInvoice(): NwcLookupInvoiceResult {
   }
 }
 
+async function exerciseDelayedPublishRevocation(
+  replacement: MerchantPaymentVerificationAuthorityKey
+): Promise<{ initialPublishes: number; replacementPublishes: number }> {
+  const candidate = getMerchantPaymentVerificationCandidates([
+    conversation(),
+  ])[0]!
+  const authority = new MerchantPaymentVerificationAuthority()
+  const initialRun = authority.begin({
+    authGeneration: 7,
+    connectionKey: "wallet-a",
+  })!
+  const handledEvidence = new Set<string>()
+  const publishStarted = deferred<void>()
+  const publishCompletion = deferred<void>()
+  let initialPublishes = 0
+  const verification = verifyMerchantPaymentCandidates({
+    candidates: [candidate],
+    confirmedEvidence: handledEvidence,
+    isCurrent: initialRun.isCurrent,
+    lookupInvoice: async () => settledInvoice(),
+    publishConfirmation: async (_candidate, controls) => {
+      controls.markPublishStarted()
+      initialPublishes += 1
+      publishStarted.resolve(undefined)
+      await publishCompletion.promise
+    },
+  })
+
+  await publishStarted.promise
+  authority.revoke()
+  const replacementRun = authority.begin(replacement)!
+  publishCompletion.resolve(undefined)
+  await expect(verification).rejects.toThrow(
+    "Payment verification authority was revoked"
+  )
+  initialRun.finish()
+  expect(replacementRun.isCurrent()).toBe(true)
+  expect(handledEvidence.size).toBe(1)
+
+  let replacementPublishes = 0
+  expect(
+    await verifyMerchantPaymentCandidates({
+      candidates: [candidate],
+      confirmedEvidence: handledEvidence,
+      isCurrent: replacementRun.isCurrent,
+      lookupInvoice: async () => settledInvoice(),
+      publishConfirmation: async () => {
+        replacementPublishes += 1
+      },
+    })
+  ).toEqual({ checked: 0, verified: 0, lookupFailures: 0 })
+
+  return { initialPublishes, replacementPublishes }
+}
+
 describe("merchant NWC payment verification", () => {
+  it("retains an ambiguous attempt after wallet disconnect during publication", async () => {
+    expect(
+      await exerciseDelayedPublishRevocation({
+        authGeneration: 7,
+        connectionKey: "wallet-b",
+      })
+    ).toEqual({ initialPublishes: 1, replacementPublishes: 0 })
+  })
+
+  it("retains an ambiguous attempt after same-pubkey churn during publication", async () => {
+    expect(
+      await exerciseDelayedPublishRevocation({
+        authGeneration: 8,
+        connectionKey: "wallet-a",
+      })
+    ).toEqual({ initialPublishes: 1, replacementPublishes: 0 })
+  })
+
   it("does not publish after the wallet disconnects during a delayed lookup", async () => {
     const candidate = getMerchantPaymentVerificationCandidates([
       conversation(),

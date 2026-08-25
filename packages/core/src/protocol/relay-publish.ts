@@ -78,6 +78,8 @@ export interface PublishWithPlannerInput {
   replaceableSafety?: ReplaceablePublishSafetyOptions
   /** Abort before a relay attempt when the caller's authenticated session changed. */
   shouldContinue?: () => boolean
+  /** Record the exact relay set immediately before each network attempt. */
+  onAttempt?: (relayUrls: readonly string[]) => void
 }
 
 function hasAuthenticatedAuthorRelayContext(
@@ -648,6 +650,11 @@ export async function publishWithPlanner(
       throw new Error("Publish cancelled because the signer session changed.")
     }
   }
+  const beginAttempt = (relayUrls: readonly string[]) => {
+    assertShouldContinue()
+    if (relayUrls.length > 0) input.onAttempt?.(relayUrls)
+    assertShouldContinue()
+  }
 
   const basePlan = input.exclusiveRelayUrls
     ? await planPublishRelays(input)
@@ -692,7 +699,7 @@ export async function publishWithPlanner(
       attemptedRelayUrls,
     })
     if (fallbackRelayUrls.length > 0) {
-      assertShouldContinue()
+      beginAttempt(fallbackRelayUrls)
       attemptedRelayUrls = fallbackRelayUrls
       const fallback = await publishToRelayUrls({
         event,
@@ -739,7 +746,7 @@ export async function publishWithPlanner(
     input.deliveryMode === "critical"
       ? CRITICAL_PUBLISH_TIMEOUT_MS
       : STANDARD_PUBLISH_TIMEOUT_MS
-  assertShouldContinue()
+  beginAttempt(plan.primaryRelayUrls)
   const primary = await publishToRelayUrls({
     event,
     ndk,
@@ -752,7 +759,7 @@ export async function publishWithPlanner(
     let retry: Awaited<ReturnType<typeof publishToRelayUrls>> | null = null
 
     if (input.deliveryMode === "critical" && primary.failedRelayUrls.length) {
-      assertShouldContinue()
+      beginAttempt(primary.failedRelayUrls)
       retry = await publishToRelayUrls({
         event,
         ndk,
@@ -819,11 +826,11 @@ export async function publishWithPlanner(
       fallbackRelayUrls.length > 0 ||
       criticalRecipientFallbackRelayUrls.length > 0
     ) {
-      assertShouldContinue()
       const fallbackAttemptRelayUrls = mergeUnique([
         fallbackRelayUrls,
         criticalRecipientFallbackRelayUrls,
       ])
+      beginAttempt(fallbackAttemptRelayUrls)
       attemptedRelayUrls = mergeUnique([
         attemptedRelayUrls,
         primary.failedRelayUrls,
@@ -899,6 +906,7 @@ export async function publishWithPlanner(
       relayFailureMessages: primary.relayFailureMessages,
     }
   }
+  beginAttempt(plan.broadcastRelayUrls)
   const broadcast = await publishToRelayUrls({
     event,
     ndk,

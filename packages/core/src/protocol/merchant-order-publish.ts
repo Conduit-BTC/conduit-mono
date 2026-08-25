@@ -9,6 +9,7 @@ import {
   createValidatedOrderRouteScope,
   createValidatedOrderSelfRecordRouteScope,
   publishPrivateMessage,
+  type PrivateMessagePublishAuthority,
 } from "./messaging"
 import type { PrivateMessageDeliveryRoute } from "./private-message-routing"
 
@@ -31,6 +32,8 @@ export interface PublishMerchantOrderMessageInput {
   delivery: MerchantOrderDelivery
   /** Required provenance for merchant-only compatibility records. */
   inboundOrder?: ParsedInboundOrder
+  /** Revocable authority for automated lifecycle publication. */
+  publishAuthority?: PrivateMessagePublishAuthority
 }
 
 export function getMerchantOrderDeliveryRecipients(
@@ -143,6 +146,9 @@ export async function publishMerchantOrderMessage(
   input: PublishMerchantOrderMessageInput,
   dependencies: MerchantOrderPublishDependencies = {}
 ): Promise<PublishMerchantOrderMessageResult> {
+  if (input.publishAuthority?.isCurrent() === false) {
+    throw new Error("Merchant order publish authority was revoked")
+  }
   const ndk = (dependencies.getNdk ?? getNdk)()
   if (!ndk.signer) throw new Error("Signer not connected")
   const now = dependencies.now ?? Date.now
@@ -176,12 +182,16 @@ export async function publishMerchantOrderMessage(
     // self-record keeps its inner p tag bound to the buyer counterparty.
     validatedOrderScope: target.validatedOrderScope,
     validatedOrderSelfRecordScope: target.validatedOrderSelfRecordScope,
+    publishAuthority: input.publishAuthority,
   })
   if (selfCopyError) {
     console.warn("Merchant order self-copy publish failed", selfCopyError)
   }
 
   const parsed = parseOrderMessageRumorEvent(rumor)
+  if (input.publishAuthority?.isCurrent() === false) {
+    return { deliveryRoute }
+  }
   await cachePublishedMerchantOrderMessage(
     parsed,
     dependencies.cacheParsedOrderMessage ?? cacheParsedOrderMessage

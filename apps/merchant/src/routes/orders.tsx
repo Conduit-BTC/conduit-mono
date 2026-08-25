@@ -1915,16 +1915,6 @@ function OrdersPage() {
                           </p>
                         )}
                         <div className="mt-4 space-y-5">
-                          {successFlash && (
-                            <div
-                              role="status"
-                              aria-live="polite"
-                              className="rounded-md border border-green-500/30 bg-green-500/10 p-3 text-sm text-green-400"
-                            >
-                              {successFlash}
-                            </div>
-                          )}
-
                           <OrderStockPanel
                             adjustments={stockAdjustments}
                             stockMutationDisabledKeys={

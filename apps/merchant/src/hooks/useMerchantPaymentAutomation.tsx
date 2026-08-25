@@ -67,7 +67,7 @@ export function MerchantPaymentAutomationProvider({
   const nwc = useNwcConnection()
   const setNwcUri = nwc.setUri
   const disconnectNwc = nwc.disconnect
-  const confirmedEvidenceRef = useRef(new Set<string>())
+  const attemptedOrConfirmedEvidenceRef = useRef(new Set<string>())
   const verificationAuthorityRef = useRef(
     new MerchantPaymentVerificationAuthority()
   )
@@ -127,7 +127,6 @@ export function MerchantPaymentAutomationProvider({
   useLayoutEffect(() => {
     const verificationAuthority = verificationAuthorityRef.current
     verificationAuthority.revoke()
-    confirmedEvidenceRef.current.clear()
     setRun({ status: "idle", checked: 0, verified: 0 })
 
     return () => {
@@ -177,7 +176,7 @@ export function MerchantPaymentAutomationProvider({
     try {
       const result = await verifyMerchantPaymentCandidates({
         candidates,
-        confirmedEvidence: confirmedEvidenceRef.current,
+        confirmedEvidence: attemptedOrConfirmedEvidenceRef.current,
         isCurrent,
         lookupInvoice: async (candidate) => {
           if (!isCurrent()) {
@@ -194,7 +193,7 @@ export function MerchantPaymentAutomationProvider({
           }
           return settlement
         },
-        publishConfirmation: async (candidate) => {
+        publishConfirmation: async (candidate, controls) => {
           if (!isCurrent()) {
             throw new Error("Payment verification authority was revoked")
           }
@@ -207,6 +206,10 @@ export function MerchantPaymentAutomationProvider({
             payload: { status: "paid" },
             inboundOrder: candidate.inboundOrder,
             delivery: candidate.delivery,
+            publishAuthority: {
+              isCurrent,
+              onRecipientPublishStarted: controls.markPublishStarted,
+            },
           })
           if (!isCurrent()) {
             throw new Error("Payment verification authority was revoked")

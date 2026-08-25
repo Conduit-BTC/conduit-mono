@@ -42,6 +42,8 @@ describe("merchant order reopen UI", () => {
     expect(source.indexOf("{successFlash && (")).toBeLessThan(
       source.indexOf("{showOrderWorkspace && (")
     )
+    expect(source.match(/\{successFlash && \(/g)).toHaveLength(1)
+    expect(source.match(/role="status"/g)).toHaveLength(1)
     expect(source.match(/setSuccessFlash\(null\)/g)).toHaveLength(1)
   })
 })
