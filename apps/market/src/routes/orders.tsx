@@ -630,10 +630,10 @@ function PublicZapNoteCard({ vm }: { vm: OrderViewModel }) {
   if (!hasLocalZapRecord) return null
 
   const receiptObserved = vm.zapReceiptStatus === "observed"
+  const receiptCheckDegraded = vm.zapReceiptStatus === "timed_out"
   const receiptNotObserved =
     vm.zapReceiptStatus === "receipt_not_observed" ||
-    vm.zapReceiptStatus === "timed_out" ||
-    vm.paymentStatus === "ambiguous"
+    (vm.paymentStatus === "ambiguous" && !receiptCheckDegraded)
   const stoppedBeforeReceipt =
     vm.paymentStatus === "failed" || vm.publicZapFallback
   const publicDetail = vm.publicZapNote ? "The note" : "The product link"
@@ -650,20 +650,32 @@ function PublicZapNoteCard({ vm }: { vm: OrderViewModel }) {
           variant: "neutral" as const,
           description: `The public zap did not complete. ${publicDetail} remains in local order history and was not published in a receipt observed by Conduit.`,
         }
-      : receiptNotObserved
-        ? {
-            label: "Receipt not observed",
-            variant: "warning" as const,
-            description: `Conduit has not observed a public receipt. ${publicDetail} is from local order history and is not confirmed as published.`,
-          }
-        : {
-            label: "Waiting for receipt",
-            variant: "info" as const,
-            description:
-              vm.paymentStatus === "paid"
-                ? `Payment was sent. ${publicDetail} becomes public only when a matching zap receipt is published.`
-                : `${publicDetail} is saved with your order. It becomes public only if payment succeeds and a zap receipt is published.`,
-          }
+      : receiptCheckDegraded
+        ? vm.zapReceiptObservationCoverage === "unavailable"
+          ? {
+              label: "Receipt relays unavailable",
+              variant: "warning" as const,
+              description: `Conduit could not reach the receipt relays. ${publicDetail} remains local until a matching receipt is observed.`,
+            }
+          : {
+              label: "Receipt check incomplete",
+              variant: "warning" as const,
+              description: `Some receipt relays did not complete the check. ${publicDetail} remains local until a matching receipt is observed.`,
+            }
+        : receiptNotObserved
+          ? {
+              label: "Receipt not observed",
+              variant: "warning" as const,
+              description: `Conduit has not observed a public receipt. ${publicDetail} is from local order history and is not confirmed as published.`,
+            }
+          : {
+              label: "Waiting for receipt",
+              variant: "info" as const,
+              description:
+                vm.paymentStatus === "paid"
+                  ? `Payment was sent. ${publicDetail} becomes public only when a matching zap receipt is published.`
+                  : `${publicDetail} is saved with your order. It becomes public only if payment succeeds and a zap receipt is published.`,
+            }
 
   return (
     <section
@@ -1097,7 +1109,7 @@ function OrderDetail({
   const autoDetectPublicReceipt =
     !zeroCostPickupOrder &&
     supportsPublicReceiptObservation &&
-    vm.zapReceiptStatus === "waiting"
+    (vm.zapReceiptStatus === "waiting" || vm.zapReceiptStatus === "timed_out")
   const publicReceiptNotObserved =
     !zeroCostPickupOrder &&
     supportsPublicReceiptObservation &&

@@ -2209,7 +2209,7 @@ describe("runOrderPayment", () => {
     let waitCalled = false
     await observeOrderPublicZapReceipt(orderId, undefined, {
       getOrderLifecycle: async () => stored,
-      waitForZapReceipt: async (input) => {
+      waitForZapReceiptDetailed: async (input) => {
         waitCalled = true
         expect(input.zapRequestId).toBe("shopper-zap-request-id")
         expect(input.recipientPubkey).toBe(merchantPubkey)
@@ -2217,7 +2217,10 @@ describe("runOrderPayment", () => {
         expect(input.expectedAmountMsats).toBe(1_000)
         expect(input.expectedLnurl).toBe("lnurl1shopper")
         expect(input.lnurlNostrPubkey).toBe("c".repeat(64))
-        return { id: "shopper-zap-receipt-id" } as never
+        return {
+          receipt: { id: "shopper-zap-receipt-id" } as never,
+          coverage: "complete",
+        }
       },
       recordObservedOrderPaymentReceipt: async (_id, input) => {
         stored = {
@@ -2270,9 +2273,12 @@ describe("runOrderPayment", () => {
 
     const observation = observeOrderPublicZapReceipt(orderId, undefined, {
       getOrderLifecycle: async () => current,
-      waitForZapReceipt: async () => {
+      waitForZapReceiptDetailed: async () => {
         waitStarted = true
-        return receiptWait
+        return {
+          receipt: await receiptWait,
+          coverage: "complete",
+        }
       },
       recordOrderPaymentReceiptTimeout: async () => {
         timeoutCalls += 1
@@ -2309,6 +2315,86 @@ describe("runOrderPayment", () => {
       zapReceiptId: "zap-receipt-current",
     })
     expect(current.lastError).toBeUndefined()
+  })
+
+  it("keeps degraded relay reads distinct and accepts a later exact receipt", async () => {
+    const orderId = "degraded-then-late-receipt"
+    let current = lifecycle({
+      orderId,
+      checkoutMode: "public_zap_as_shopper",
+      publicZapSigner: "shopper",
+      invoice: privateInvoice(),
+      invoiceStatus: "manual_required",
+      paymentStatus: "manual_required",
+      proofDeliveryStatus: "not_started",
+      zapReceiptStatus: "waiting",
+      zapRequestId: "zap-request-late",
+      zapRequestCreatedAt: Math.floor(Date.now() / 1_000) - 5,
+      zapLnurl: "lnurl1test",
+      zapReceiptPubkey: "a".repeat(64),
+      zapReceiptRelayUrls: ["wss://relay.example"],
+      zapReceiptObservationDeadline: Date.now() - 1,
+    })
+    let reads = 0
+    let timeoutCoverage: string | undefined
+
+    const dependencies = {
+      getOrderLifecycle: async () => current,
+      waitForZapReceiptDetailed: async () => {
+        reads += 1
+        return reads === 1
+          ? { receipt: null, coverage: "unavailable" as const }
+          : {
+              receipt: { id: "zap-receipt-late" } as never,
+              coverage: "partial" as const,
+            }
+      },
+      recordOrderPaymentReceiptTimeout: async (
+        _id: string,
+        _requestId: string,
+        coverage: "complete" | "partial" | "unavailable"
+      ) => {
+        timeoutCoverage = coverage
+        current = {
+          ...current,
+          paymentStatus: "ambiguous",
+          zapReceiptStatus: "timed_out",
+          zapReceiptObservationCoverage: "unavailable",
+        }
+        return { status: "recorded" as const, lifecycle: current }
+      },
+      recordObservedOrderPaymentReceipt: async (_id: string, input: never) => {
+        current = {
+          ...current,
+          paymentStatus: "paid",
+          zapReceiptStatus: "observed",
+          zapReceiptId: (input as { zapReceiptId: string }).zapReceiptId,
+          zapReceiptObservationCoverage: undefined,
+        }
+        return {
+          status: "recorded" as const,
+          lifecycle: current,
+          proofDeliveryClaimed: false,
+        }
+      },
+    }
+
+    await observeOrderPublicZapReceipt(orderId, undefined, dependencies)
+    expect(timeoutCoverage).toBe("unavailable")
+    expect(current).toMatchObject({
+      paymentStatus: "ambiguous",
+      zapReceiptStatus: "timed_out",
+      zapReceiptObservationCoverage: "unavailable",
+    })
+    expect(canObserveOrderPublicZapReceipt(current)).toBe(true)
+
+    await observeOrderPublicZapReceipt(orderId, undefined, dependencies)
+    expect(current).toMatchObject({
+      paymentStatus: "paid",
+      zapReceiptStatus: "observed",
+      zapReceiptId: "zap-receipt-late",
+    })
+    expect(current.zapReceiptObservationCoverage).toBeUndefined()
   })
 
   it("releases the order in-flight lock when lifecycle patching fails", async () => {

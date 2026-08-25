@@ -239,6 +239,7 @@ export {
   type OrderPaymentStatus,
   type OrderPaymentTarget,
   type OrderProofDeliveryStatus,
+  type OrderZapReceiptObservationCoverage,
   type OrderZapReceiptStatus,
 } from "./db"
 

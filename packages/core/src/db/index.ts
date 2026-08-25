@@ -601,6 +601,8 @@ export type OrderZapReceiptStatus =
   | "receipt_not_observed"
   | "timed_out"
 
+export type OrderZapReceiptObservationCoverage = "partial" | "unavailable"
+
 /** Coarse bucket used for Orders list filtering (All/Pending/In progress/...). */
 export type OrderLifecyclePhase =
   "pending" | "in_progress" | "completed" | "failed" | "cancelled"
@@ -757,6 +759,8 @@ export interface OrderLifecycle {
   paymentStatus: OrderPaymentStatus
   proofDeliveryStatus: OrderProofDeliveryStatus
   zapReceiptStatus: OrderZapReceiptStatus
+  /** Why a receipt observation timed out without complete negative evidence. */
+  zapReceiptObservationCoverage?: OrderZapReceiptObservationCoverage
 
   invoice?: string
   paymentHash?: string

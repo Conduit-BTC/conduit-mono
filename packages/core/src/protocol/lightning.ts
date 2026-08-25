@@ -17,7 +17,11 @@ import {
   type SignedPublicNostrEvent,
 } from "./signed-event"
 import { EVENT_KINDS } from "./kinds"
-import { fetchEventsFanout, getEventSourceRelayUrls } from "./ndk"
+import {
+  fetchEventsFanoutDetailed,
+  getEventSourceRelayUrls,
+  type FetchEventsFanoutResult,
+} from "./ndk"
 import {
   parseZapRequestContent,
   truncateZapNoteInput,
@@ -1541,18 +1545,7 @@ export function validateZapReceiptEvent({
   return true
 }
 
-export async function waitForZapReceipt({
-  zapRequestId,
-  requestCreatedAt,
-  recipientPubkey,
-  expectedAmountMsats,
-  expectedLnurl,
-  expectedInvoice,
-  lnurlNostrPubkey,
-  relayUrls,
-  receiptNotAfterSeconds,
-  timeoutMs = 5_000,
-}: {
+export interface WaitForZapReceiptInput {
   zapRequestId: string
   requestCreatedAt: number
   recipientPubkey: string
@@ -1563,12 +1556,88 @@ export async function waitForZapReceipt({
   relayUrls: string[]
   receiptNotAfterSeconds?: number
   timeoutMs?: number
-}): Promise<NDKEvent | null> {
-  const startedAt = Date.now()
+}
+
+export type ZapReceiptRelayCoverage = "complete" | "partial" | "unavailable"
+
+export interface WaitForZapReceiptDetailedResult {
+  receipt: NDKEvent | null
+  coverage: ZapReceiptRelayCoverage
+}
+
+export interface WaitForZapReceiptDependencies {
+  fetchEventsFanoutDetailed: typeof fetchEventsFanoutDetailed
+  now: () => number
+  sleep: (delayMs: number) => Promise<void>
+}
+
+const defaultWaitForZapReceiptDependencies: WaitForZapReceiptDependencies = {
+  fetchEventsFanoutDetailed,
+  now: () => Date.now(),
+  sleep: (delayMs) =>
+    new Promise((resolve) => {
+      setTimeout(resolve, delayMs)
+    }),
+}
+
+function normalizeReceiptRelayPlan(relayUrls: string[]): string[] {
+  return relayUrls
+    .map((relayUrl) => relayUrl.trim())
+    .filter(Boolean)
+    .filter((relayUrl, index, all) => all.indexOf(relayUrl) === index)
+}
+
+function getZapReceiptRelayCoverage(
+  result: FetchEventsFanoutResult,
+  relayUrls: string[]
+): ZapReceiptRelayCoverage {
+  const relayPlan = normalizeReceiptRelayPlan(relayUrls)
+  if (relayPlan.length === 0) return "unavailable"
+
+  const statusByRelay = new Map(
+    result.relays.map(({ relayUrl, status }) => [relayUrl, status] as const)
+  )
+  const plannedStatuses = relayPlan.map((relayUrl) =>
+    statusByRelay.get(relayUrl)
+  )
+  if (plannedStatuses.every((status) => status === "success")) {
+    return "complete"
+  }
+  if (
+    plannedStatuses.some(
+      (status) => status === "success" || status === "partial"
+    )
+  ) {
+    return "partial"
+  }
+  return "unavailable"
+}
+
+export async function waitForZapReceiptDetailed(
+  {
+    zapRequestId,
+    requestCreatedAt,
+    recipientPubkey,
+    expectedAmountMsats,
+    expectedLnurl,
+    expectedInvoice,
+    lnurlNostrPubkey,
+    relayUrls,
+    receiptNotAfterSeconds,
+    timeoutMs = 5_000,
+  }: WaitForZapReceiptInput,
+  dependencyOverrides: Partial<WaitForZapReceiptDependencies> = {}
+): Promise<WaitForZapReceiptDetailedResult> {
+  const dependencies = {
+    ...defaultWaitForZapReceiptDependencies,
+    ...dependencyOverrides,
+  }
+  const startedAt = dependencies.now()
   const stopAt = startedAt + Math.max(0, timeoutMs)
+  let coverage: ZapReceiptRelayCoverage
 
   do {
-    const events = (await fetchEventsFanout(
+    const result = await dependencies.fetchEventsFanoutDetailed(
       {
         kinds: [EVENT_KINDS.ZAP_RECEIPT],
         authors: [lnurlNostrPubkey],
@@ -1583,9 +1652,11 @@ export async function waitForZapReceipt({
         connectTimeoutMs: 1_500,
         fetchTimeoutMs: 2_000,
       }
-    )) as NDKEvent[]
+    )
+    const currentCoverage = getZapReceiptRelayCoverage(result, relayUrls)
+    coverage = currentCoverage
 
-    const receipt = events.find((event) =>
+    const receipt = result.events.find((event) =>
       validateZapReceiptEvent({
         event,
         zapRequestId,
@@ -1598,15 +1669,19 @@ export async function waitForZapReceipt({
         receiptNotAfterSeconds,
       })
     )
-    if (receipt) return receipt
+    if (receipt) return { receipt, coverage: currentCoverage }
 
-    const remainingMs = stopAt - Date.now()
+    const remainingMs = stopAt - dependencies.now()
     if (remainingMs > 0) {
-      await new Promise((resolve) =>
-        setTimeout(resolve, Math.min(800, remainingMs))
-      )
+      await dependencies.sleep(Math.min(800, remainingMs))
     }
-  } while (Date.now() < stopAt)
+  } while (dependencies.now() < stopAt)
 
-  return null
+  return { receipt: null, coverage }
+}
+
+export async function waitForZapReceipt(
+  input: WaitForZapReceiptInput
+): Promise<NDKEvent | null> {
+  return (await waitForZapReceiptDetailed(input)).receipt
 }

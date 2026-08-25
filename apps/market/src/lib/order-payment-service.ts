@@ -30,7 +30,7 @@ import {
   signNdkEventWithTransientNip07Retry,
   validateAnonZapRequestDraft,
   validateLightningInvoiceForPayment,
-  waitForZapReceipt,
+  waitForZapReceiptDetailed,
   type OrderLifecycle,
   type OrderPaymentClaimResult,
   type OrderPaymentWalletSuccessRecoveryInput,
@@ -338,7 +338,7 @@ const defaultOrderPaymentDependencies: OrderPaymentDependencies = {
 
 export interface OrderReceiptObservationDependencies {
   getOrderLifecycle: typeof getOrderLifecycle
-  waitForZapReceipt: typeof waitForZapReceipt
+  waitForZapReceiptDetailed: typeof waitForZapReceiptDetailed
   recordObservedOrderPaymentReceipt: typeof recordObservedOrderPaymentReceipt
   recordOrderPaymentReceiptTimeout: typeof recordOrderPaymentReceiptTimeout
 }
@@ -346,7 +346,7 @@ export interface OrderReceiptObservationDependencies {
 const defaultOrderReceiptObservationDependencies: OrderReceiptObservationDependencies =
   {
     getOrderLifecycle,
-    waitForZapReceipt,
+    waitForZapReceiptDetailed,
     recordObservedOrderPaymentReceipt,
     recordOrderPaymentReceiptTimeout,
   }
@@ -569,6 +569,7 @@ export function canObserveOrderPublicZapReceipt(
   return (
     lifecycle.zapReceiptStatus === "waiting" ||
     lifecycle.zapReceiptStatus === "receipt_not_observed" ||
+    lifecycle.zapReceiptStatus === "timed_out" ||
     lifecycle.zapReceiptStatus === "observed"
   )
 }
@@ -695,8 +696,8 @@ export async function observeOrderPublicZapReceipt(
           lifecycle.zapReceiptObservationDeadline - nowMs
         )
       : 0
-    const receipt = await dependencies
-      .waitForZapReceipt({
+    const observation = await dependencies
+      .waitForZapReceiptDetailed({
         zapRequestId: lifecycle.zapRequestId,
         requestCreatedAt: lifecycle.zapRequestCreatedAt,
         recipientPubkey: lifecycle.merchantPubkey,
@@ -710,7 +711,11 @@ export async function observeOrderPublicZapReceipt(
         ),
         timeoutMs,
       })
-      .catch(() => null)
+      .catch(() => ({
+        receipt: null,
+        coverage: "unavailable" as const,
+      }))
+    const receipt = observation.receipt
 
     if (receipt) {
       const proofDeliveryStatus =
@@ -766,7 +771,8 @@ export async function observeOrderPublicZapReceipt(
     if (Date.now() >= lifecycle.zapReceiptObservationDeadline) {
       const timeout = await dependencies.recordOrderPaymentReceiptTimeout(
         orderId,
-        lifecycle.zapRequestId
+        lifecycle.zapRequestId,
+        observation.coverage
       )
       emit(orderId, { lifecycle: timeout.lifecycle })
       return
@@ -1144,6 +1150,7 @@ async function runOrderPaymentInternal(
           zapContent: "",
           zapTargetAddress: undefined,
           zapReceiptStatus: "not_applicable",
+          zapReceiptObservationCoverage: undefined,
           zapRequestId: undefined,
           zapRequestCreatedAt: undefined,
           zapReceiptId: undefined,
@@ -1191,6 +1198,7 @@ async function runOrderPaymentInternal(
                 invoiceExpiresAt,
                 zapReceiptObservationDeadline,
                 zapReceiptStatus: "waiting" as const,
+                zapReceiptObservationCoverage: undefined,
               }
             : {}),
         },
@@ -1225,6 +1233,7 @@ async function runOrderPaymentInternal(
             paymentStatus: "failed",
             invoice,
             zapReceiptStatus: "not_applicable",
+            zapReceiptObservationCoverage: undefined,
             lastError: payResult.reason,
           },
           {
@@ -1247,6 +1256,7 @@ async function runOrderPaymentInternal(
             paymentStatus: "manual_required",
             invoice,
             zapReceiptStatus: isPublicZap ? "waiting" : "not_applicable",
+            zapReceiptObservationCoverage: undefined,
             lastError: isPublicZap ? undefined : payResult.reason,
           },
           { running: false, stage: null }

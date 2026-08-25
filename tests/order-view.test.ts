@@ -661,6 +661,30 @@ describe("buildOrderTimeline", () => {
     expect(paymentRow?.subtitle).toContain("do not pay again")
   })
 
+  it.each([
+    ["partial", "Receipt check incomplete"],
+    ["unavailable", "Receipt relays unavailable"],
+  ] as const)(
+    "surfaces %s receipt coverage without claiming an empty result",
+    (coverage, title) => {
+      const vm = vmFromLifecycle({
+        paymentStatus: "ambiguous",
+        proofDeliveryStatus: "not_started",
+        zapReceiptStatus: "timed_out",
+        zapReceiptObservationCoverage: coverage,
+      })
+      const paymentRow = buildOrderTimeline(vm).find(
+        (row) => row.key === "payment"
+      )
+      const header = deriveOrderHeaderStatus(vm)
+
+      expect(vm.zapReceiptObservationCoverage).toBe(coverage)
+      expect(paymentRow?.title).toBe(title)
+      expect(paymentRow?.subtitle).toContain("Check your wallet")
+      expect(header.detailLabel).toBe(title)
+    }
+  )
+
   it("stops guest timelines at outbound receipt delivery", () => {
     const rows = buildOrderTimeline(
       vmFromLifecycle({ buyerIdentityKind: "guest_ephemeral" })

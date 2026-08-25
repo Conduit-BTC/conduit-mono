@@ -5,6 +5,7 @@ import {
   type OrderLifecyclePhase,
   type OrderPaymentTarget,
   type OrderPublicZapSigner,
+  type OrderZapReceiptObservationCoverage,
   type StoredPaymentAttempt,
 } from "../db"
 
@@ -350,6 +351,7 @@ function buildClaimedOrderLifecycle(
       paymentStatus: "not_started",
       proofDeliveryStatus: "not_started",
       zapReceiptStatus: "not_applicable",
+      zapReceiptObservationCoverage: undefined,
       invoice: undefined,
       paymentHash: undefined,
       preimage: undefined,
@@ -554,6 +556,7 @@ export async function recordOrderPaymentPreparationFailure(
       paymentStatus: "failed",
       proofDeliveryStatus: "not_started",
       zapReceiptStatus: "not_applicable",
+      zapReceiptObservationCoverage: undefined,
       lastError,
     })
     await db.orderLifecycles.put(recorded)
@@ -709,6 +712,7 @@ export async function recordObservedOrderPaymentReceipt(
             }
           : {}),
         zapReceiptStatus: "observed",
+        zapReceiptObservationCoverage: undefined,
         zapReceiptId: input.zapReceiptId,
         lastError: undefined,
       },
@@ -722,10 +726,13 @@ export async function recordObservedOrderPaymentReceipt(
 /**
  * Record the end of an exact-receipt observation window without allowing a
  * stale observer to overwrite payment or receipt evidence recorded elsewhere.
+ * Only complete relay coverage proves a negative observation; degraded reads
+ * remain distinguishable and recoverable by a later exact receipt.
  */
 export async function recordOrderPaymentReceiptTimeout(
   orderId: string,
-  zapRequestId: string
+  zapRequestId: string,
+  coverage: "complete" | OrderZapReceiptObservationCoverage = "complete"
 ): Promise<OrderPaymentReceiptTimeoutResult> {
   return db.transaction("rw", db.orderLifecycles, async () => {
     const lifecycle = await db.orderLifecycles.get(orderId)
@@ -737,9 +744,31 @@ export async function recordOrderPaymentReceiptTimeout(
       return { status: "preserved", lifecycle }
     }
 
+    if (coverage !== "complete") {
+      const hasStrongerNegativeEvidence =
+        lifecycle.zapReceiptStatus === "receipt_not_observed"
+      if (hasStrongerNegativeEvidence) {
+        return { status: "preserved", lifecycle }
+      }
+      const recorded = mergeOrderLifecyclePatch(lifecycle, {
+        ...(lifecycle.paymentStatus === "paid"
+          ? {}
+          : { paymentStatus: "ambiguous" as const }),
+        zapReceiptStatus: "timed_out",
+        zapReceiptObservationCoverage: coverage,
+        lastError:
+          coverage === "partial"
+            ? "The public receipt check was incomplete. Check your wallet before trying to pay again."
+            : "Public receipt relays were unavailable. Check your wallet before trying to pay again.",
+      })
+      await db.orderLifecycles.put(recorded)
+      return { status: "recorded", lifecycle: recorded }
+    }
+
     if (lifecycle.paymentStatus === "paid") {
       const recorded = mergeOrderLifecyclePatch(lifecycle, {
         zapReceiptStatus: "receipt_not_observed",
+        zapReceiptObservationCoverage: undefined,
       })
       await db.orderLifecycles.put(recorded)
       return { status: "recorded", lifecycle: recorded }
@@ -748,6 +777,7 @@ export async function recordOrderPaymentReceiptTimeout(
     const recorded = mergeOrderLifecyclePatch(lifecycle, {
       paymentStatus: "ambiguous",
       zapReceiptStatus: "receipt_not_observed",
+      zapReceiptObservationCoverage: undefined,
       lastError:
         "A matching public receipt was not observed. Do not pay again if your wallet shows payment.",
     })
@@ -1057,6 +1087,7 @@ export async function reconcileInterruptedOrderPayment(
               ? {
                   zapReceiptId: attempt.zapReceiptId,
                   zapReceiptStatus: "observed" as const,
+                  zapReceiptObservationCoverage: undefined,
                 }
               : {}),
             lastError: undefined,
@@ -1112,6 +1143,7 @@ export async function reconcileInterruptedOrderPayment(
             paymentStatus: "failed",
             proofDeliveryStatus: "not_started",
             zapReceiptStatus: "not_applicable",
+            zapReceiptObservationCoverage: undefined,
             invoice: undefined,
             paymentHash: undefined,
             preimage: undefined,

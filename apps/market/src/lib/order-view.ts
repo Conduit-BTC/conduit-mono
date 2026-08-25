@@ -22,6 +22,7 @@ import {
   type OrderProofDeliveryStatus,
   type OrderPublicZapSigner,
   type OrderSummary,
+  type OrderZapReceiptObservationCoverage,
   type OrderZapReceiptStatus,
   type ParsedOrderMessage,
   type StoredPaymentAttempt,
@@ -88,6 +89,7 @@ export interface OrderViewModel {
   paymentStatus: OrderPaymentStatus
   proofDeliveryStatus: OrderProofDeliveryStatus
   zapReceiptStatus: OrderZapReceiptStatus
+  zapReceiptObservationCoverage: OrderZapReceiptObservationCoverage | null
   addressValidity: OrderAddressValidity
 
   // Merchant-driven state, observed from the conversation.
@@ -358,6 +360,8 @@ export function buildOrderViewModel(
 
   const zapReceiptStatus: OrderZapReceiptStatus =
     lifecycle?.zapReceiptStatus ?? "not_applicable"
+  const zapReceiptObservationCoverage =
+    lifecycle?.zapReceiptObservationCoverage ?? null
 
   const merchantStatus = latestMerchantStatus(
     messages,
@@ -463,6 +467,7 @@ export function buildOrderViewModel(
     paymentStatus,
     proofDeliveryStatus,
     zapReceiptStatus,
+    zapReceiptObservationCoverage,
     addressValidity: lifecycle?.addressValidity ?? "not_required",
     merchantStatus,
     tracking,
@@ -778,6 +783,18 @@ export function buildOrderTimeline(
     } else if (
       key === "payment" &&
       vm.paymentStatus === "ambiguous" &&
+      vm.zapReceiptStatus === "timed_out"
+    ) {
+      const unavailable = vm.zapReceiptObservationCoverage === "unavailable"
+      title = unavailable
+        ? "Receipt relays unavailable"
+        : "Receipt check incomplete"
+      subtitle = unavailable
+        ? "Conduit could not reach the receipt relays. Check your wallet before trying to pay again."
+        : "Some receipt relays did not complete the check. Check your wallet before trying to pay again."
+    } else if (
+      key === "payment" &&
+      vm.paymentStatus === "ambiguous" &&
       !isBuyerOrderPaid(vm)
     ) {
       if (vm.zapReceiptStatus === "receipt_not_observed") {
@@ -895,6 +912,22 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
       tone: "error",
       primaryLabel: "Payment failed",
       detailLabel: "Try payment again",
+      actionNeeded: true,
+      showSpinner: false,
+    }
+  }
+  if (
+    vm.paymentStatus === "ambiguous" &&
+    vm.zapReceiptStatus === "timed_out" &&
+    !paid
+  ) {
+    return {
+      tone: "warning",
+      primaryLabel: "Payment unclear",
+      detailLabel:
+        vm.zapReceiptObservationCoverage === "unavailable"
+          ? "Receipt relays unavailable"
+          : "Receipt check incomplete",
       actionNeeded: true,
       showSpinner: false,
     }

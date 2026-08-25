@@ -494,6 +494,7 @@ describe("order payment admission", () => {
       invoice: "lnbc1public",
       zapRequestId: "zap-request-current",
       zapReceiptStatus: "waiting",
+      zapReceiptObservationCoverage: "partial",
     }
 
     await withMockOrderPaymentDb({ lifecycle: claimed }, async (state) => {
@@ -514,6 +515,7 @@ describe("order payment admission", () => {
         zapReceiptId: "zap-receipt-current",
       })
       expect(state.lifecycle()?.paymentClaimId).toBeUndefined()
+      expect(state.lifecycle()?.zapReceiptObservationCoverage).toBeUndefined()
 
       const staleFailure = await patchClaimedOrderLifecyclePayment(
         claimed.orderId,
@@ -668,6 +670,83 @@ describe("order payment admission", () => {
         zapReceiptStatus: "receipt_not_observed",
       })
       expect(state.lifecycle()?.lastError).toBeUndefined()
+    })
+  })
+
+  it.each(["partial", "unavailable"] as const)(
+    "persists %s relay coverage without claiming the receipt was absent",
+    async (coverage) => {
+      const waiting: OrderLifecycle = {
+        ...lifecycle,
+        invoiceStatus: "manual_required",
+        paymentStatus: "manual_required",
+        invoice: "lnbc1public",
+        zapRequestId: "zap-request-current",
+        zapReceiptStatus: "waiting",
+      }
+
+      await withMockOrderPaymentDb({ lifecycle: waiting }, async (state) => {
+        const timeout = await recordOrderPaymentReceiptTimeout(
+          waiting.orderId,
+          waiting.zapRequestId!,
+          coverage
+        )
+
+        expect(timeout.status).toBe("recorded")
+        expect(state.lifecycle()).toMatchObject({
+          paymentStatus: "ambiguous",
+          zapReceiptStatus: "timed_out",
+          zapReceiptObservationCoverage: coverage,
+        })
+        expect(state.lifecycle()?.zapReceiptStatus).not.toBe(
+          "receipt_not_observed"
+        )
+        expect(state.lifecycle()?.lastError).toContain(
+          coverage === "partial" ? "incomplete" : "unavailable"
+        )
+      })
+    }
+  )
+
+  it("refreshes degraded coverage but preserves complete negative evidence", async () => {
+    const partial: OrderLifecycle = {
+      ...lifecycle,
+      invoiceStatus: "received",
+      paymentStatus: "ambiguous",
+      invoice: "lnbc1public",
+      zapRequestId: "zap-request-current",
+      zapReceiptStatus: "timed_out",
+      zapReceiptObservationCoverage: "partial",
+    }
+
+    await withMockOrderPaymentDb({ lifecycle: partial }, async (state) => {
+      const latest = await recordOrderPaymentReceiptTimeout(
+        partial.orderId,
+        partial.zapRequestId!,
+        "unavailable"
+      )
+
+      expect(latest.status).toBe("recorded")
+      expect(state.lifecycle()).toMatchObject({
+        zapReceiptStatus: "timed_out",
+        zapReceiptObservationCoverage: "unavailable",
+      })
+
+      await recordOrderPaymentReceiptTimeout(
+        partial.orderId,
+        partial.zapRequestId!,
+        "complete"
+      )
+      const definitive = state.lifecycle()!
+      expect(definitive.zapReceiptStatus).toBe("receipt_not_observed")
+
+      const degradedAfterDefinitive = await recordOrderPaymentReceiptTimeout(
+        definitive.orderId,
+        definitive.zapRequestId!,
+        "partial"
+      )
+      expect(degradedAfterDefinitive.status).toBe("preserved")
+      expect(state.lifecycle()?.zapReceiptStatus).toBe("receipt_not_observed")
     })
   })
 
