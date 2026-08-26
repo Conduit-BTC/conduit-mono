@@ -11,6 +11,7 @@ import {
 import { isProductLegalPath } from "@conduit/ui"
 import { routeTree } from "./routeTree.gen"
 import { startProductDeletionDeliveryWorker } from "./lib/product-deletion-delivery"
+import { isMerchantPublicAboutPath } from "./lib/publicRoutes"
 import "@conduit/ui/styles/site.css"
 import "./styles/index.css"
 
@@ -19,7 +20,9 @@ const queryClient = new QueryClient()
 const router = createRouter({ routeTree })
 const SHOW_DEVTOOLS =
   import.meta.env.DEV && import.meta.env.VITE_DISABLE_DEVTOOLS !== "true"
-const isProductLegalEntry = isProductLegalPath(window.location.pathname)
+const isPublicEntry =
+  isProductLegalPath(window.location.pathname) ||
+  isMerchantPublicAboutPath(window.location.pathname)
 
 declare module "@tanstack/react-router" {
   interface Register {
@@ -29,7 +32,7 @@ declare module "@tanstack/react-router" {
 
 const root = createRoot(document.getElementById("root")!)
 
-if (isProductLegalEntry) {
+if (isPublicEntry) {
   root.render(
     <StrictMode>
       <RouterProvider router={router} />

@@ -42,15 +42,19 @@ describe("Product legal routing contract", () => {
     const marketMain = await Bun.file(APP_SOURCES.market.main).text()
     const merchantMain = await Bun.file(APP_SOURCES.merchant.main).text()
 
-    for (const source of [marketMain, merchantMain]) {
-      expect(source).toContain(
-        "const isProductLegalEntry = isProductLegalPath(window.location.pathname)"
-      )
-      expect(source).toContain("if (isProductLegalEntry)")
-      expect(source).toMatch(
-        /if \(isProductLegalEntry\) \{[\s\S]*?<RouterProvider router=\{router\} \/>[\s\S]*?\} else \{/
-      )
-    }
+    expect(marketMain).toContain(
+      "const isProductLegalEntry = isProductLegalPath(window.location.pathname)"
+    )
+    expect(marketMain).toMatch(
+      /if \(isProductLegalEntry\) \{[\s\S]*?<RouterProvider router=\{router\} \/>[\s\S]*?\} else \{/
+    )
+    expect(merchantMain).toContain("const isPublicEntry =")
+    expect(merchantMain).toContain(
+      "isMerchantPublicAboutPath(window.location.pathname)"
+    )
+    expect(merchantMain).toMatch(
+      /if \(isPublicEntry\) \{[\s\S]*?<RouterProvider router=\{router\} \/>[\s\S]*?\} else \{/
+    )
 
     const marketElse = marketMain.slice(marketMain.indexOf("} else {"))
     expect(marketElse).toContain("pruneCommerceCaches")

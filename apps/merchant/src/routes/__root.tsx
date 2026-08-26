@@ -29,8 +29,10 @@ import {
   MerchantMobileNav,
   MerchantSidebar,
 } from "../components/MerchantHeader"
+import { MerchantPublicAboutShell } from "../components/MerchantPublicAboutShell"
 import { MerchantReadinessProvider } from "../hooks/useMerchantReadinessContext"
 import { MerchantPaymentAutomationProvider } from "../hooks/useMerchantPaymentAutomation"
+import { isMerchantPublicAboutPath } from "../lib/publicRoutes"
 
 export const Route = createRootRoute({
   component: RootLayout,
@@ -74,6 +76,13 @@ function RootLayout() {
   })
 
   if (isProductLegalPath(pathname)) return <Outlet />
+  if (isMerchantPublicAboutPath(pathname)) {
+    return (
+      <MerchantPublicAboutShell>
+        <Outlet />
+      </MerchantPublicAboutShell>
+    )
+  }
 
   return <MerchantProductRoot pathname={pathname} />
 }
@@ -247,12 +256,12 @@ function RootErrorComponent({ error }: ErrorComponentProps) {
     select: (state) => state.location.pathname,
   })
 
-  if (isProductLegalPath(pathname)) {
+  if (isProductLegalPath(pathname) || isMerchantPublicAboutPath(pathname)) {
     return (
       <div className="min-h-dvh bg-[var(--background)] px-4 py-12 text-[var(--text-primary)]">
         <ErrorPage
-          title="This legal page could not be displayed"
-          message="Reload the page. If the problem continues, use the canonical Shop legal URL."
+          title="This public page could not be displayed"
+          message="Reload the page. If the problem continues, use the public Conduit repository for support."
           showReload
         />
       </div>
@@ -411,9 +420,15 @@ function ConnectGate() {
         />
       </main>
       <nav
-        aria-label="Product legal documents"
+        aria-label="Merchant information and legal documents"
         className="flex items-center justify-center gap-4 text-sm text-[var(--text-secondary)]"
       >
+        <a
+          href="/about"
+          className="rounded-sm underline underline-offset-4 hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        >
+          About
+        </a>
         <a
           href="/terms-of-service"
           className="rounded-sm underline underline-offset-4 hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"

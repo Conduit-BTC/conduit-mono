@@ -201,6 +201,8 @@ export { ProductTermsOfService } from "./ProductTermsOfService"
 export {
   AboutPagePanel,
   type AboutPageBuildInfo,
+  type AboutPageContributor,
+  type AboutPageContributorSnapshot,
   type AboutPageIdentity,
   type AboutPagePanelProps,
 } from "./AboutPagePanel"
