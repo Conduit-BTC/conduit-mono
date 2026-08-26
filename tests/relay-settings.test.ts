@@ -29,6 +29,9 @@ import {
   loadRelaySettings,
   mergeRelayPreferencesIntoSettings,
   normalizeSecureRelayUrls,
+  normalizeSecureOrIsolatedE2eRelayUrls,
+  normalizePublicOrIsolatedE2eRelayHints,
+  normalizeUntrustedRelayHintsForContext,
   normalizeRelaySettingsState,
   normalizeRelayUrl,
   parseNip65RelayTags,
@@ -58,6 +61,7 @@ class MemoryStorage {
 }
 
 const originalWindow = globalThis.window
+const originalConfig = structuredClone(config)
 
 function installWindowStorage(storage: MemoryStorage): void {
   Object.defineProperty(globalThis, "window", {
@@ -67,6 +71,7 @@ function installWindowStorage(storage: MemoryStorage): void {
 }
 
 afterEach(() => {
+  Object.assign(config, structuredClone(originalConfig))
   Object.defineProperty(globalThis, "window", {
     value: originalWindow,
     configurable: true,
@@ -154,6 +159,41 @@ describe("relay settings protocol helpers", () => {
     expect(() =>
       resolveE2eRelayIsolation("mock", "wss://relay.example.com")
     ).toThrow("must use a loopback host")
+    expect(() =>
+      resolveE2eRelayIsolation("mock", "wss://localhost:7777")
+    ).toThrow("must use ws://")
+  })
+
+  it("treats E2E isolation as an allowlist instead of retaining public relays", () => {
+    const isolatedRelayUrl = "ws://127.0.0.1:7777"
+    Object.assign(config, applyE2eRelayIsolation(config, [isolatedRelayUrl]))
+
+    expect(
+      normalizeSecureOrIsolatedE2eRelayUrls([
+        "wss://relay.damus.io",
+        isolatedRelayUrl,
+        "wss://relay.primal.net",
+      ])
+    ).toEqual([isolatedRelayUrl])
+    expect(
+      normalizeSecureOrIsolatedE2eRelayUrls(["wss://relay.damus.io"])
+    ).toEqual([])
+    expect(
+      normalizePublicOrIsolatedE2eRelayHints([
+        "wss://relay.damus.io",
+        isolatedRelayUrl,
+      ])
+    ).toEqual([isolatedRelayUrl])
+    expect(
+      normalizePublicOrIsolatedE2eRelayHints(["wss://relay.damus.io"])
+    ).toEqual([])
+    expect(
+      normalizeUntrustedRelayHintsForContext({
+        relayUrls: ["wss://relay.damus.io", isolatedRelayUrl],
+        approvedRelayUrls: ["wss://relay.damus.io"],
+        allowApprovedPrivate: true,
+      })
+    ).toEqual(["wss://relay.damus.io"])
   })
 
   it("keeps relay defaults canonical and excludes legacy default domains", () => {

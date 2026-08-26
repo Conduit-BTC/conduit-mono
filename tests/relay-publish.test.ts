@@ -6,8 +6,10 @@ import {
   __resetRelayPublishTestOverrides,
   __setRelayListTestOverrides,
   __setRelayPublishTestOverrides,
+  applyE2eRelayIsolation,
   CANONICAL_APP_WRITE_RELAYS,
   CANONICAL_COMMERCE_DISCOVERY_RELAYS,
+  config,
   deriveRelayOutcomes,
   EVENT_KINDS,
   planPublishRelays,
@@ -29,6 +31,7 @@ const OTHER_AUTHOR_PUBKEY = getPublicKey(OTHER_AUTHOR_SECRET)
 const APP_WRITE_ATTEMPT_RELAYS = CANONICAL_APP_WRITE_RELAYS.map(
   (url) => `${url}/`
 )
+const originalConfig = structuredClone(config)
 
 function signedTestEvent(input: {
   kind?: number
@@ -203,6 +206,7 @@ describe("planPublishRelays", () => {
   })
 
   afterEach(() => {
+    Object.assign(config, structuredClone(originalConfig))
     __resetRelayListTestOverrides()
     __resetRelayPublishTestOverrides()
     __resetNdkTestState()
@@ -636,6 +640,41 @@ describe("planPublishRelays", () => {
     expect(result.attemptedRelayUrls).not.toContain(privateExtraRelay)
   })
 
+  it("drops post-planner public write hints during E2E isolation", async () => {
+    const isolatedRelayUrl = "ws://127.0.0.1:7777"
+    const attemptedRelaySets: string[][] = []
+    Object.assign(config, applyE2eRelayIsolation(config, [isolatedRelayUrl]))
+    const fakeEvent = signedTestEvent({
+      publish: async (relaySet: unknown) => {
+        const relayUrls = [
+          ...((relaySet as { relayUrls?: Set<string> | string[] }).relayUrls ??
+            []),
+        ]
+        attemptedRelaySets.push(relayUrls)
+        return new Set(relayUrls.map((url) => ({ url })))
+      },
+    })
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "author_event",
+        primaryRelayUrls: ["wss://planner-bypass.example"],
+        broadcastRelayUrls: ["wss://broadcast-bypass.example"],
+        parkedRelayUrls: [],
+      }),
+    })
+
+    const result = await publishWithPlanner(fakeEvent, {
+      intent: "author_event",
+      authorPubkey: AUTHOR_PUBKEY,
+      extraRelayUrls: ["wss://relay.damus.io"],
+    })
+
+    expect(result.plan.primaryRelayUrls).toEqual([isolatedRelayUrl])
+    expect(result.plan.broadcastRelayUrls).toEqual([])
+    expect(attemptedRelaySets).toEqual([[`${isolatedRelayUrl}/`]])
+    expect(result.attemptedRelayUrls).toEqual([isolatedRelayUrl])
+  })
+
   it("preserves a private extra hint already selected for the authenticated user", async () => {
     const recipientRelay = "wss://recipient.conduit.market"
     const authenticatedLocalRelay = "wss://127.0.0.1:7447"
@@ -873,6 +912,33 @@ describe("planPublishRelays", () => {
         })
       ).resolves.toBe("acked")
       expect(fakeWebSocket.openedUrls).toEqual([relayUrl])
+    } finally {
+      fakeWebSocket.restore()
+    }
+  })
+
+  it("publishes only to the configured loopback during E2E isolation", async () => {
+    const fakeWebSocket = installRelayPublishWebSocket()
+    const isolatedRelayUrl = "ws://127.0.0.1:7777"
+    Object.assign(config, applyE2eRelayIsolation(config, [isolatedRelayUrl]))
+
+    try {
+      await expect(
+        publishSignedEventToRelay({
+          signedEvent: signedRawTestEvent({ kind: EVENT_KINDS.DELETION }),
+          relayUrl: isolatedRelayUrl,
+          authorPubkey: AUTHOR_PUBKEY,
+        })
+      ).resolves.toBe("acked")
+      await expect(
+        publishSignedEventToRelay({
+          signedEvent: signedRawTestEvent({ kind: EVENT_KINDS.DELETION }),
+          relayUrl: "wss://relay.damus.io",
+          authorPubkey: AUTHOR_PUBKEY,
+          authenticatedPubkey: AUTHOR_PUBKEY,
+        })
+      ).rejects.toThrow("configured E2E loopback relay target")
+      expect(fakeWebSocket.openedUrls).toEqual([isolatedRelayUrl])
     } finally {
       fakeWebSocket.restore()
     }

@@ -23,6 +23,7 @@ import {
 import { EVENT_KINDS } from "./kinds"
 import {
   assertSafeNip65RelayTags,
+  getConfiguredIsolatedE2eRelayUrl,
   normalizeSecureOrIsolatedE2eRelayUrls,
   normalizeUntrustedRelayHintsForContext,
   tryNormalizeRelayUrl,
@@ -429,12 +430,25 @@ async function publishToRelayUrls(input: {
   rejectedRelayUrls: string[]
   thrown: unknown
 }> {
+  const relayUrls =
+    config.e2eRelayIsolationEnabled && input.relayUrls.length > 0
+      ? (() => {
+          const isolatedRelayUrl = getConfiguredIsolatedE2eRelayUrl()
+          if (!isolatedRelayUrl) {
+            throw new Error(
+              "E2E relay isolation requires one configured loopback relay"
+            )
+          }
+          return [isolatedRelayUrl]
+        })()
+      : [...input.relayUrls]
+
   // NDKEvent.publish() reads the instance from the event itself even when the
   // relay set was built with an NDK instance. Gift-wrap helpers can return an
   // unattached event, so bind it at the shared publish boundary.
   input.event.ndk ??= input.ndk
 
-  if (input.relayUrls.length === 0) {
+  if (relayUrls.length === 0) {
     return {
       successfulRelayUrls: [],
       failedRelayUrls: [],
@@ -444,7 +458,7 @@ async function publishToRelayUrls(input: {
     }
   }
 
-  const relaySet = NDKRelaySet.fromRelayUrls([...input.relayUrls], input.ndk)
+  const relaySet = NDKRelaySet.fromRelayUrls(relayUrls, input.ndk)
   let publishedUrls = new Set<string>()
   let explicitFailedUrls = new Set<string>()
   const rejectedRelayUrls = new Set<string>()
@@ -484,8 +498,8 @@ async function publishToRelayUrls(input: {
         }
       }
     } else {
-      explicitFailedUrls = new Set(input.relayUrls)
-      for (const url of input.relayUrls) {
+      explicitFailedUrls = new Set(relayUrls)
+      for (const url of relayUrls) {
         explicitFailureMessages.set(
           normalizeOutcomeRelayUrl(url),
           getPublishErrorMessage(err)
@@ -495,7 +509,7 @@ async function publishToRelayUrls(input: {
   }
 
   const outcome = deriveRelayOutcomes({
-    attemptedRelayUrls: input.relayUrls,
+    attemptedRelayUrls: relayUrls,
     publishedUrls,
     failedUrls: explicitFailedUrls,
   })
@@ -533,6 +547,13 @@ export interface ExactRelayPublishInput extends ExactRelayTargetInput {
 
 function resolveExactRelayTarget(input: ExactRelayTargetInput): string {
   const normalized = tryNormalizeRelayUrl(input.relayUrl)
+  const isolatedRelayUrl = getConfiguredIsolatedE2eRelayUrl()
+  if (config.e2eRelayIsolationEnabled) {
+    if (!normalized.ok || normalized.url !== isolatedRelayUrl) {
+      throw new Error("Expected the configured E2E loopback relay target.")
+    }
+    return normalized.url
+  }
   const allowAuthenticatedAuthorLocalRelay = hasAuthenticatedAuthorRelayContext(
     {
       authorPubkey: input.authorPubkey,
@@ -675,7 +696,7 @@ export async function publishWithPlanner(
         ],
         allowApprovedPrivate: !!input.authenticatedPubkey,
       })
-  const plan =
+  const expandedPlan =
     extraPrimaryRelayUrls.length > 0
       ? {
           ...basePlan,
@@ -685,6 +706,22 @@ export async function publishWithPlanner(
           ]),
         }
       : basePlan
+  const plan = config.e2eRelayIsolationEnabled
+    ? (() => {
+        const isolatedRelayUrl = getConfiguredIsolatedE2eRelayUrl()
+        if (!isolatedRelayUrl) {
+          throw new Error(
+            "E2E relay isolation requires one configured loopback relay"
+          )
+        }
+        return {
+          ...expandedPlan,
+          primaryRelayUrls: [isolatedRelayUrl],
+          broadcastRelayUrls: [],
+          parkedRelayUrls: [],
+        }
+      })()
+    : expandedPlan
   const plannedRelayUrls = Array.from(
     new Set([...plan.primaryRelayUrls, ...plan.broadcastRelayUrls])
   )

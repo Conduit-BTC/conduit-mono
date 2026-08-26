@@ -10,8 +10,10 @@ import { bytesToHex } from "@noble/hashes/utils.js"
 import { matchFilter, validateEvent, type Filter } from "nostr-tools"
 import { config } from "../config"
 import {
+  getConfiguredIsolatedE2eRelayUrl,
   getGeneralReadRelayUrls,
   setActiveRelaySettingsScope,
+  tryNormalizeRelayUrl,
 } from "./relay-settings"
 import {
   partitionByHealth,
@@ -692,6 +694,18 @@ function getRelayConnection(
   url: string,
   connections: Map<string, RelayConnection>
 ): RelayConnection {
+  if (config.e2eRelayIsolationEnabled) {
+    const isolatedRelayUrl = getConfiguredIsolatedE2eRelayUrl()
+    const normalized = tryNormalizeRelayUrl(url)
+    if (
+      !isolatedRelayUrl ||
+      !normalized.ok ||
+      normalized.url !== isolatedRelayUrl
+    ) {
+      throw new Error("Expected the configured E2E loopback relay target.")
+    }
+  }
+
   const existing = connections.get(url)
   if (existing && !existing.closed) return existing
 
@@ -1041,6 +1055,11 @@ async function fetchEventsFromRelay(
 }
 
 function resolveFanoutRelayUrls(options: FetchEventsFanoutOptions): string[] {
+  if (config.e2eRelayIsolationEnabled) {
+    const isolatedRelayUrl = getConfiguredIsolatedE2eRelayUrl()
+    return isolatedRelayUrl ? [isolatedRelayUrl] : []
+  }
+
   const dedupedUrls = (
     options.relayUrls && options.relayUrls.length > 0
       ? options.relayUrls

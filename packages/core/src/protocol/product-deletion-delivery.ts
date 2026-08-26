@@ -11,9 +11,11 @@ import { normalizePublicWebSocketUrl } from "../network-target-safety"
 import { validateProductDeletionEvent } from "./product-deletion"
 import type { SignedPublicNostrEvent } from "./signed-event"
 import {
+  getConfiguredIsolatedE2eRelayUrl,
   normalizeUntrustedRelayHintsForContext,
   tryNormalizeRelayUrl,
 } from "./relay-settings"
+import { config } from "../config"
 
 const DEFAULT_RETRY_DELAY_MS = 30_000
 const DEFAULT_DELIVERY_LEASE_MS = 30_000
@@ -126,14 +128,28 @@ function addRelayRole(
   targets.set(relayUrl, roles)
 }
 
+function normalizeConfiguredE2eLoopbackRelayUrl(
+  rawRelayUrl: string
+): string | null {
+  const normalized = tryNormalizeRelayUrl(rawRelayUrl)
+  if (!normalized.ok || !normalized.url.startsWith("ws://")) return null
+  return normalized.url === getConfiguredIsolatedE2eRelayUrl()
+    ? normalized.url
+    : null
+}
+
 function isApprovedPersistedRelayTarget(
   target: ProductDeletionRelayTarget | undefined
 ): target is ProductDeletionRelayTarget {
   if (!target) return false
   const normalized = tryNormalizeRelayUrl(target.relayUrl)
   if (!normalized.ok) return false
+  if (config.e2eRelayIsolationEnabled) {
+    return !!normalizeConfiguredE2eLoopbackRelayUrl(normalized.url)
+  }
   return (
     !!normalizePublicWebSocketUrl(normalized.url) ||
+    !!normalizeConfiguredE2eLoopbackRelayUrl(normalized.url) ||
     target.roles.includes("author_write")
   )
 }
@@ -144,17 +160,60 @@ function isApprovedPersistedRelayTarget(
  * Author write targets are already approved by the authenticated planner, so
  * its intentional local `ws://` relays remain valid. Untrusted source hints
  * must be public WSS or match that plan. The canonical Conduit target remains
- * mandatory and public-WSS-only.
+ * mandatory and public-WSS-only except for the exact configured loopback relay
+ * in explicit E2E isolation.
  */
 export function planProductDeletionRelays(
   input: ProductDeletionRelayPlanInput
 ): ProductDeletionRelayTarget[] {
-  const canonicalRelayUrl = normalizePublicWebSocketUrl(
-    input.canonicalConduitRelayUrl
-  )
+  const isolatedRelayUrl = getConfiguredIsolatedE2eRelayUrl()
+  if (config.e2eRelayIsolationEnabled) {
+    if (!isolatedRelayUrl) {
+      throw new Error(
+        "E2E relay isolation requires one configured loopback relay"
+      )
+    }
+    const canonicalRelayUrl = normalizeConfiguredE2eLoopbackRelayUrl(
+      input.canonicalConduitRelayUrl
+    )
+    if (!canonicalRelayUrl) {
+      throw new Error(
+        "Canonical Conduit relay must match the configured E2E loopback relay"
+      )
+    }
+
+    const roles = new Set<ProductDeletionRelayRole>(["conduit"])
+    if (
+      input.currentWriteRelayUrls.some(
+        (relayUrl) =>
+          normalizeConfiguredE2eLoopbackRelayUrl(relayUrl) === isolatedRelayUrl
+      )
+    ) {
+      roles.add("author_write")
+    }
+    if (
+      input.sourceRelayUrls.some(
+        (relayUrl) =>
+          normalizeConfiguredE2eLoopbackRelayUrl(relayUrl) === isolatedRelayUrl
+      )
+    ) {
+      roles.add("source")
+    }
+
+    return [
+      {
+        relayUrl: isolatedRelayUrl,
+        roles: ROLE_ORDER.filter((role) => roles.has(role)),
+      },
+    ]
+  }
+
+  const canonicalRelayUrl =
+    normalizePublicWebSocketUrl(input.canonicalConduitRelayUrl) ??
+    normalizeConfiguredE2eLoopbackRelayUrl(input.canonicalConduitRelayUrl)
   if (!canonicalRelayUrl) {
     throw new Error(
-      "Canonical Conduit relay must use a public secure wss:// URL"
+      "Canonical Conduit relay must use a public secure wss:// URL or the configured E2E loopback relay"
     )
   }
 
