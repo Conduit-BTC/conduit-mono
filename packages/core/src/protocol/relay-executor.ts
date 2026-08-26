@@ -1,4 +1,5 @@
 import { isValidSignedPublicNostrEvent } from "./signed-event"
+import { config } from "../config"
 import {
   assertProtectedReadAuthorization,
   getProtectedReadAuthenticationSuppression,
@@ -14,7 +15,10 @@ import {
   type SignedNostrEvent,
   type UnsignedNostrEvent,
 } from "./nostr-event-signer"
-import { normalizeRelayUrl } from "./relay-settings"
+import {
+  getConfiguredIsolatedE2eRelayUrl,
+  normalizeRelayUrl,
+} from "./relay-settings"
 
 export interface PlainNostrFilter {
   ids?: string[]
@@ -1041,6 +1045,10 @@ function evidenceForOutcome(outcome: RelayAuthOutcome): RelayAuthEvidenceState {
 }
 
 function uniqueNormalizedRelayUrls(relayUrls: readonly string[]): string[] {
+  if (config.e2eRelayIsolationEnabled) {
+    const isolatedRelayUrl = getConfiguredIsolatedE2eRelayUrl()
+    return isolatedRelayUrl && relayUrls.length > 0 ? [isolatedRelayUrl] : []
+  }
   return Array.from(new Set(relayUrls.map((url) => normalizeRelayUrl(url))))
 }
 

@@ -260,6 +260,9 @@ export function resolveE2eRelayIsolation(
   if (!new Set(["127.0.0.1", "localhost", "[::1]"]).has(hostname)) {
     throw new Error("VITE_E2E_RELAY_URL must use a loopback host")
   }
+  if (!relayUrls[0].startsWith("ws://")) {
+    throw new Error("VITE_E2E_RELAY_URL must use ws:// on a loopback host")
+  }
   return relayUrls
 }
 

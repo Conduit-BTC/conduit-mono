@@ -548,7 +548,7 @@ export function normalizeSecureRelayUrls(
   return normalizedUrls
 }
 
-function configuredIsolatedE2eRelayUrl(): string | null {
+export function getConfiguredIsolatedE2eRelayUrl(): string | null {
   if (!config.e2eRelayIsolationEnabled) return null
   const normalized = tryNormalizeRelayUrl(config.relayUrl)
   if (!normalized.ok || !normalized.url.startsWith("ws://")) return null
@@ -565,20 +565,18 @@ function configuredIsolatedE2eRelayUrl(): string | null {
 export function normalizeSecureOrIsolatedE2eRelayUrls(
   relayUrls: readonly string[]
 ): string[] {
-  const secureRelayUrls = normalizeSecureRelayUrls(relayUrls)
-  const isolatedRelayUrl = configuredIsolatedE2eRelayUrl()
-  if (!isolatedRelayUrl) return secureRelayUrls
-
-  const seen = new Set(secureRelayUrls)
-  const normalizedUrls = [...secureRelayUrls]
-  for (const relayUrl of relayUrls) {
-    const normalized = tryNormalizeRelayUrl(relayUrl)
-    if (!normalized.ok || normalized.url !== isolatedRelayUrl) continue
-    if (seen.has(normalized.url)) continue
-    seen.add(normalized.url)
-    normalizedUrls.push(normalized.url)
+  if (config.e2eRelayIsolationEnabled) {
+    const isolatedRelayUrl = getConfiguredIsolatedE2eRelayUrl()
+    if (!isolatedRelayUrl) return []
+    return relayUrls.some((relayUrl) => {
+      const normalized = tryNormalizeRelayUrl(relayUrl)
+      return normalized.ok && normalized.url === isolatedRelayUrl
+    })
+      ? [isolatedRelayUrl]
+      : []
   }
-  return normalizedUrls
+
+  return normalizeSecureRelayUrls(relayUrls)
 }
 
 /**
@@ -632,11 +630,20 @@ export function normalizePublicRelayHints(
 export function normalizePublicOrIsolatedE2eRelayHints(
   relayUrls: readonly string[]
 ): string[] {
-  const isolatedRelayUrl = configuredIsolatedE2eRelayUrl()
+  const isolatedRelayUrl = getConfiguredIsolatedE2eRelayUrl()
+  if (config.e2eRelayIsolationEnabled) {
+    if (!isolatedRelayUrl) return []
+    return relayUrls.some((relayUrl) => {
+      const normalized = tryNormalizeRelayUrl(relayUrl)
+      return normalized.ok && normalized.url === isolatedRelayUrl
+    })
+      ? [isolatedRelayUrl]
+      : []
+  }
   return normalizeUntrustedRelayHintsForContext({
     relayUrls,
-    approvedRelayUrls: isolatedRelayUrl ? [isolatedRelayUrl] : [],
-    allowApprovedPrivate: isolatedRelayUrl !== null,
+    approvedRelayUrls: [],
+    allowApprovedPrivate: false,
   })
 }
 

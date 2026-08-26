@@ -6,6 +6,7 @@ import {
   __resetRelayListTestOverrides,
   __setCommerceTestOverrides,
   __setRelayListTestOverrides,
+  applyE2eRelayIsolation,
   cacheSignedProductDeletionEvent,
   cacheSignedProductListingEvent,
   EVENT_KINDS,
@@ -17,6 +18,7 @@ import {
   getMerchantStorefront,
   getProductDetail,
   getProductsByIds,
+  config,
 } from "@conduit/core"
 import type {
   CachedProduct,
@@ -32,6 +34,7 @@ const MERCHANT_B_PUBKEY = getPublicKey(MERCHANT_B_SECRET)
 
 let cachedProducts: CachedProduct[] = []
 let cachedProductTombstones: CachedProductTombstone[] = []
+const originalConfig = structuredClone(config)
 
 function makeSignedProduct(params: {
   secretKey?: Uint8Array
@@ -162,6 +165,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  Object.assign(config, structuredClone(originalConfig))
   __resetCommerceTestOverrides()
   __resetRelayListTestOverrides()
   cachedProducts = []
@@ -169,6 +173,38 @@ afterEach(() => {
 })
 
 describe("product deletion convergence regression matrix", () => {
+  it("keeps product and deletion evidence reads on loopback in E2E isolation", async () => {
+    const isolatedRelayUrl = "ws://127.0.0.1:7777"
+    const product = makeSignedProduct({
+      dTag: "isolated-read",
+      createdAt: 100,
+      title: "Isolated product",
+    })
+    const deletionRelayPlans: string[][] = []
+    Object.assign(config, applyE2eRelayIsolation(config, [isolatedRelayUrl]))
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter, options) => {
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          return [product] as never
+        }
+        if (filter.kinds?.includes(EVENT_KINDS.DELETION)) {
+          deletionRelayPlans.push(options?.relayUrls ?? [])
+        }
+        return []
+      },
+    })
+
+    await getMerchantStorefront({ merchantPubkey: MERCHANT_A_PUBKEY })
+
+    expect(deletionRelayPlans.length).toBeGreaterThan(0)
+    expect(
+      deletionRelayPlans.every(
+        (relayUrls) =>
+          relayUrls.length === 1 && relayUrls[0] === isolatedRelayUrl
+      )
+    ).toBe(true)
+  })
+
   it("keeps equal d-tags author-scoped", async () => {
     const merchantAProduct = makeSignedProduct({
       dTag: "shared-d",

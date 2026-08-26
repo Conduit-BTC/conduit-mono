@@ -1,7 +1,7 @@
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   cacheSignedProductDeletionEvent,
-  CANONICAL_APP_BACKPLANE_RELAYS,
+  config,
   deliverProductDeletionJob,
   getProductDeletionDelivery,
   getPendingProductDeletionDeliveries,
@@ -70,7 +70,7 @@ export async function persistSignedProductDeletion(
   },
   options: ProductDeletionDeliveryOptions = {}
 ): Promise<ProductDeletionDeliveryJob> {
-  const canonicalConduitRelayUrl = CANONICAL_APP_BACKPLANE_RELAYS[0]
+  const canonicalConduitRelayUrl = config.appBackplaneRelayUrls[0]
   if (!canonicalConduitRelayUrl) {
     throw new Error("Canonical Conduit relay is not configured")
   }

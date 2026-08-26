@@ -1,9 +1,19 @@
 import type { Page } from "@playwright/test"
 import { SimplePool, type Filter } from "nostr-tools"
-import { finalizeEvent, type Event, type EventTemplate } from "nostr-tools/pure"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+  type Event,
+  type EventTemplate,
+} from "nostr-tools/pure"
 
 export const TEST_BUYER_PUBKEY = "b".repeat(64)
 export const TEST_MERCHANT_PUBKEY = "a".repeat(64)
+const TEST_LOCKED_SIGNER_SECRET_KEY = generateSecretKey()
+export const TEST_LOCKED_SIGNER_PUBKEY = getPublicKey(
+  TEST_LOCKED_SIGNER_SECRET_KEY
+)
 export const TEST_RELAY_URL = `ws://127.0.0.1:${process.env.PLAYWRIGHT_RELAY_PORT ?? "7777"}`
 
 export async function publishTestRelayEvents(events: Event[]): Promise<void> {
@@ -182,7 +192,11 @@ export async function installRejectingTestSigner(page: Page): Promise<void> {
 }
 
 export async function installLockedTestSigner(page: Page): Promise<void> {
-  await page.addInitScript(() => {
+  const signEventBinding = "__conduitSignLockedTestEvent"
+  await page.exposeFunction(signEventBinding, (event: EventTemplate) =>
+    finalizeEvent(event, TEST_LOCKED_SIGNER_SECRET_KEY)
+  )
+  await page.addInitScript((signerBinding) => {
     let resolvePublicKey: ((pubkey: string) => void) | null = null
     let unlockedPubkey: string | null = null
 
@@ -206,11 +220,16 @@ export async function installLockedTestSigner(page: Page): Promise<void> {
           return {}
         },
         async signEvent(event: Record<string, unknown>) {
-          return event
+          return (
+            window as unknown as Record<
+              string,
+              (event: Record<string, unknown>) => Promise<unknown>
+            >
+          )[signerBinding]!(event)
         },
       },
     })
-  })
+  }, signEventBinding)
 }
 
 export async function unlockTestSigner(

@@ -24,6 +24,7 @@
 
 import { config } from "../config"
 import {
+  getConfiguredIsolatedE2eRelayUrl,
   getCommerceReadRelayUrls,
   getCommerceWriteRelayUrls,
   getGeneralReadRelayUrls,
@@ -272,6 +273,21 @@ function clampFanout(urls: string[], limit: number | undefined): string[] {
  * The result is deduplicated and capped at `maxRelays`.
  */
 export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
+  const isolatedRelayUrl = getConfiguredIsolatedE2eRelayUrl()
+  if (config.e2eRelayIsolationEnabled) {
+    if (!isolatedRelayUrl) {
+      throw new Error(
+        "E2E relay isolation requires one configured loopback relay"
+      )
+    }
+    return {
+      intent: input.intent,
+      relayUrls: [isolatedRelayUrl],
+      parkedRelayUrls: [],
+      hintRelayUrls: [],
+    }
+  }
+
   const baseRelays = (() => {
     switch (input.intent) {
       case "commerce_products":
@@ -352,6 +368,21 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
  * recipient delivery.
  */
 export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
+  const isolatedRelayUrl = getConfiguredIsolatedE2eRelayUrl()
+  if (config.e2eRelayIsolationEnabled) {
+    if (!isolatedRelayUrl) {
+      throw new Error(
+        "E2E relay isolation requires one configured loopback relay"
+      )
+    }
+    return {
+      intent: input.intent,
+      primaryRelayUrls: [isolatedRelayUrl],
+      broadcastRelayUrls: [],
+      parkedRelayUrls: [],
+    }
+  }
+
   const userWriteRelays =
     input.intent === "author_event"
       ? getCommerceWriteRelayUrls(

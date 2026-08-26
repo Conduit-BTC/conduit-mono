@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { getPublicKey, finalizeEvent, verifyEvent } from "nostr-tools"
+import { applyE2eRelayIsolation, config } from "@conduit/core"
 import {
   __resetProtectedReadSigner,
   clearProtectedReadAuthenticationSuppression,
@@ -113,6 +114,7 @@ class FakeRelayHarness {
 }
 
 const executors: WebSocketCommerceRelayExecutor[] = []
+const originalConfig = structuredClone(config)
 
 function createExecutor(
   harness: FakeRelayHarness,
@@ -222,11 +224,28 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  Object.assign(config, structuredClone(originalConfig))
   for (const executor of executors.splice(0)) executor.dispose()
   __resetProtectedReadSigner()
 })
 
 describe("NDK-neutral relay executor NIP-42 state machine", () => {
+  it("forces explicit executor reads onto loopback during E2E isolation", async () => {
+    const isolatedRelayUrl = "ws://127.0.0.1:7777"
+    Object.assign(config, applyE2eRelayIsolation(config, [isolatedRelayUrl]))
+    const harness = new FakeRelayHarness().at(isolatedRelayUrl, {
+      onSend: (socket, frame) => {
+        if (frame[0] === "REQ") socket.relay(["EOSE", frame[1]])
+      },
+    })
+    const executor = createExecutor(harness)
+
+    const result = await executor.query(publicRequest(["wss://relay.damus.io"]))
+
+    expect(result.relays).toHaveLength(1)
+    expect(harness.sockets.map(({ url }) => url)).toEqual([isolatedRelayUrl])
+  })
+
   it("authenticates an immediate challenge before issuing the protected REQ", async () => {
     const harness = new FakeRelayHarness().at("wss://protected.example", {
       onOpen: (socket) => socket.relay(["AUTH", "challenge-immediate"]),
