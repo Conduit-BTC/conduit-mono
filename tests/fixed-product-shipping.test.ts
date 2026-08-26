@@ -238,6 +238,36 @@ describe("canonical fixed product shipping", () => {
     }
   })
 
+  it("serializes fixed shipping prices as parser-compatible plain decimals", () => {
+    const cases = [
+      { amount: 0.00000001, currency: "BTC", wireAmount: "0.00000001" },
+      { amount: 5.99, currency: "USD", wireAmount: "5.99" },
+      { amount: 5, currency: "SATS", wireAmount: "5" },
+    ] as const
+
+    for (const { amount, currency, wireAmount } of cases) {
+      const draft = buildFixedShippingOptionEventDraft({
+        productDTag: PRODUCT_D_TAG,
+        intent: {
+          kind: "fixed_standard",
+          amount,
+          currency,
+          countries: ["US"],
+        },
+      })
+
+      expect(draft.tags).toContainEqual(["price", wireAmount, currency])
+      expect(
+        parseShippingOptionEvent({
+          id: `shipping-${currency.toLowerCase()}`,
+          pubkey: MERCHANT,
+          created_at: 1,
+          tags: draft.tags,
+        })
+      ).toMatchObject({ price: amount, currency })
+    }
+  })
+
   it("resolves only an exact merchant-owned, supported, current option", () => {
     expect(resolveProductFulfillment(product(), [shippingOption()])).toEqual({
       intent: "fixed_standard",

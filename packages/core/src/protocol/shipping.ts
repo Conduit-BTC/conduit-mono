@@ -96,6 +96,30 @@ const FIXED_STANDARD_SUPPORTED_TAGS = new Set([
 ])
 const FIXED_STANDARD_PRICE_AMOUNT = /^\d+(?:\.\d+)?$/
 
+function serializePlainDecimalAmount(amount: number): string {
+  const value = String(amount)
+  if (!/[eE]/.test(value)) return value
+
+  const [coefficient, exponentText] = value.toLowerCase().split("e")
+  const exponent = Number(exponentText)
+  if (!coefficient || !Number.isInteger(exponent)) return value
+
+  const negative = coefficient.startsWith("-")
+  const unsignedCoefficient = negative ? coefficient.slice(1) : coefficient
+  const decimalIndex = unsignedCoefficient.indexOf(".")
+  const digits = unsignedCoefficient.replace(".", "")
+  const integerDigits = decimalIndex === -1 ? digits.length : decimalIndex
+  const expandedDecimalIndex = integerDigits + exponent
+  const expanded =
+    expandedDecimalIndex <= 0
+      ? `0.${"0".repeat(-expandedDecimalIndex)}${digits}`
+      : expandedDecimalIndex >= digits.length
+        ? `${digits}${"0".repeat(expandedDecimalIndex - digits.length)}`
+        : `${digits.slice(0, expandedDecimalIndex)}.${digits.slice(expandedDecimalIndex)}`
+
+  return negative ? `-${expanded}` : expanded
+}
+
 export function getShippingOptionAddress(
   pubkey: string,
   dTag = CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG
@@ -200,7 +224,11 @@ export function buildFixedShippingOptionEventDraft(input: {
   let tags: string[][] = [
     ["d", getProductShippingOptionDTag(input.productDTag)],
     ["title", "Standard Shipping"],
-    ["price", String(input.intent.amount), input.intent.currency],
+    [
+      "price",
+      serializePlainDecimalAmount(input.intent.amount),
+      input.intent.currency,
+    ],
     ["country", ...input.intent.countries],
     ["service", "standard"],
   ]
