@@ -4,6 +4,8 @@ import {
   __resetNdkTestState,
   __setNdkVerifyTimeoutMsForTests,
   __resetRelayHealth,
+  applyE2eRelayIsolation,
+  config,
   disconnectNdk,
   EVENT_KINDS,
   fetchEventsFanout,
@@ -113,6 +115,7 @@ function sequencedRelayWebSocket(
 describe("NDK relay worker verification fallback", () => {
   const originalWebSocket = globalThis.WebSocket
   const originalWorker = globalThis.Worker
+  const originalConfig = structuredClone(config)
   let workerPostMessages = 0
   let workerTerminates = 0
 
@@ -124,6 +127,7 @@ describe("NDK relay worker verification fallback", () => {
   })
 
   afterEach(() => {
+    Object.assign(config, structuredClone(originalConfig))
     disconnectNdk()
     __resetNdkTestState()
     __resetRelayHealth()
@@ -137,6 +141,65 @@ describe("NDK relay worker verification fallback", () => {
       writable: true,
       value: originalWorker,
     })
+  })
+
+  it("forces explicit fanout reads onto loopback during E2E isolation", async () => {
+    const isolatedRelayUrl = "ws://127.0.0.1:7777"
+    const openedRelayUrls: string[] = []
+    Object.assign(config, applyE2eRelayIsolation(config, [isolatedRelayUrl]))
+
+    class RecordingWebSocket {
+      static CONNECTING = 0
+      static OPEN = 1
+      static CLOSING = 2
+      static CLOSED = 3
+
+      readyState = RecordingWebSocket.CONNECTING
+      onopen: ((event: Event) => void) | null = null
+      onmessage: ((event: MessageEvent<string>) => void) | null = null
+      onerror: ((event: Event) => void) | null = null
+      onclose: ((event: Event) => void) | null = null
+
+      constructor(readonly url: string) {
+        openedRelayUrls.push(url)
+        queueMicrotask(() => {
+          this.readyState = RecordingWebSocket.OPEN
+          this.onopen?.(new Event("open"))
+        })
+      }
+
+      send(payload: string): void {
+        const frame = JSON.parse(payload) as [string, string]
+        if (frame[0] !== "REQ") return
+        queueMicrotask(() => {
+          this.onmessage?.({
+            data: JSON.stringify(["EOSE", frame[1]]),
+          } as MessageEvent<string>)
+        })
+      }
+
+      close(): void {
+        this.readyState = RecordingWebSocket.CLOSED
+        this.onclose?.(new Event("close"))
+      }
+    }
+
+    Object.defineProperty(globalThis, "WebSocket", {
+      configurable: true,
+      writable: true,
+      value: RecordingWebSocket,
+    })
+
+    await fetchEventsFanoutDetailed(
+      { kinds: [EVENT_KINDS.PROFILE] },
+      {
+        relayUrls: ["wss://relay.damus.io"],
+        skipHealthFilter: true,
+        reuseRelayConnections: false,
+      }
+    )
+
+    expect(openedRelayUrls).toEqual([isolatedRelayUrl])
   })
 
   it("fails closed when the verification worker errors after postMessage", async () => {

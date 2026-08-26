@@ -8,6 +8,9 @@ import {
 const merchantUrl = `http://127.0.0.1:${
   process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"
 }`
+const isolatedRelayUrl = `ws://127.0.0.1:${
+  process.env.PLAYWRIGHT_RELAY_PORT ?? "7777"
+}`
 const MERCHANT_SECRET = generateSecretKey()
 const MERCHANT_PUBKEY = getPublicKey(MERCHANT_SECRET)
 const PRODUCT_EVENT_ID = "9".repeat(64)
@@ -89,7 +92,7 @@ async function installRelayMock(
   accept: (relayUrl: string, event: Record<string, unknown>) => boolean,
   responseGate?: RelayResponseGate
 ): Promise<void> {
-  await page.routeWebSocket(/^wss:\/\//, (socket) => {
+  await page.routeWebSocket(/^wss?:\/\//, (socket) => {
     const relayUrl = normalizeRelayUrl(socket.url())
     socket.onMessage((message) => {
       if (typeof message !== "string") return
@@ -626,15 +629,12 @@ test("Merchant persists one exact deletion and restores it after reload @merchan
   ).toBe(true)
   expect(beforeReload.tombstoneCount).toBeGreaterThan(0)
   expect(
-    [
-      ["wss://relay.conduit.market", "conduit"],
-      ["wss://source-browser.conduit.market", "source"],
-      ["wss://write-browser.example", "author_write"],
-    ].every(([relayUrl, role]) =>
-      job?.relayPlan.some(
-        (target) => target.relayUrl === relayUrl && target.roles.includes(role)
-      )
-    )
+    job?.relayPlan.length === 1 &&
+      job.relayPlan[0]?.relayUrl === isolatedRelayUrl &&
+      hasSameSerializedValue(job.relayPlan[0]?.roles, [
+        "author_write",
+        "conduit",
+      ])
   ).toBe(true)
 
   const exactSignedEvent = structuredClone(job?.signedEvent)
@@ -665,7 +665,7 @@ test("Merchant resumes a partial deletion after browser restart without signing 
     await installRelayMock(
       firstPage,
       firstPublishes,
-      (relayUrl) => relayUrl !== "wss://write-browser.example"
+      (relayUrl) => relayUrl !== isolatedRelayUrl
     )
     await installValidTestSigner(firstPage, () => {
       signerCalls += 1
@@ -687,7 +687,7 @@ test("Merchant resumes a partial deletion after browser restart without signing 
       .poll(
         async () =>
           (await readDeletionState(firstPage)).jobs[0]?.relayDelivery.find(
-            ({ relayUrl }) => relayUrl === "wss://write-browser.example"
+            ({ relayUrl }) => relayUrl === isolatedRelayUrl
           )?.status,
         { timeout: 20_000 }
       )
@@ -697,7 +697,7 @@ test("Merchant resumes a partial deletion after browser restart without signing 
     const [partialJob] = beforeRestart.jobs
     expect(signerCalls).toBe(1)
     const rejectedDelivery = partialJob?.relayDelivery.find(
-      ({ relayUrl }) => relayUrl === "wss://write-browser.example"
+      ({ relayUrl }) => relayUrl === isolatedRelayUrl
     )
     expect(
       rejectedDelivery?.status === "rejected" &&
@@ -705,7 +705,7 @@ test("Merchant resumes a partial deletion after browser restart without signing 
     ).toBe(true)
     expect(
       partialJob?.relayDelivery
-        .filter(({ relayUrl }) => relayUrl !== "wss://write-browser.example")
+        .filter(({ relayUrl }) => relayUrl !== isolatedRelayUrl)
         .every(({ status }) => status === "acked")
     ).toBe(true)
 
@@ -731,7 +731,7 @@ test("Merchant resumes a partial deletion after browser restart without signing 
       await installRelayMock(restartedPage, retryPublishes, () => true, {
         errors: retryResponseErrors,
         wait: async (relayUrl) => {
-          if (relayUrl === "wss://write-browser.example") {
+          if (relayUrl === isolatedRelayUrl) {
             await retryAcknowledgementGate
           }
         },
@@ -786,7 +786,7 @@ test("Merchant resumes a partial deletion after browser restart without signing 
         .toBe(true)
 
       expect(retryPublishes.map(({ relayUrl }) => relayUrl)).toEqual([
-        "wss://write-browser.example",
+        isolatedRelayUrl,
       ])
       expect(
         hasSameSerializedValue(retryPublishes[0]?.event, exactSignedEvent)

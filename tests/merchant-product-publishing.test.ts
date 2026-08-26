@@ -5,10 +5,12 @@ import {
   __resetRelayPublishTestOverrides,
   __setCommerceTestOverrides,
   __setRelayPublishTestOverrides,
+  applyE2eRelayIsolation,
   buildProductListingEventDraft,
   cacheSignedProductListingEvent,
   CANONICAL_APP_BACKPLANE_RELAYS,
   CANONICAL_COMMERCE_DISCOVERY_RELAYS,
+  config,
   EVENT_KINDS,
   getCachedMerchantStorefront,
   planProductDeletionRelays,
@@ -441,6 +443,90 @@ describe("merchant product event delivery", () => {
     expect(resumedRelayUrls).toEqual([deletionPendingRelayUrl])
     expect(resumedEventIds).toEqual([signedDeletionId])
     expect((await afterReload.get(signedDeletionId))?.state).toBe("delivered")
+  })
+
+  it("keeps durable family-removal delivery on loopback in E2E isolation", async () => {
+    const loopbackRelayUrl = "ws://127.0.0.1:7777"
+    const previousConfig = structuredClone(config)
+    const durableStorage = new Map<string, ProductDeletionDeliveryJob>()
+    const repository = new MemoryProductDeletionOutbox(durableStorage)
+    const attemptedDeletionRelayUrls: string[] = []
+    let deletionDeliveryJobId = ""
+
+    try {
+      Object.assign(config, applyE2eRelayIsolation(config, [loopbackRelayUrl]))
+      __setRelayPublishTestOverrides({
+        planPublishRelays: async () => ({
+          intent: "author_event",
+          primaryRelayUrls: ["wss://saved-public.example", loopbackRelayUrl],
+          broadcastRelayUrls: [],
+          parkedRelayUrls: [],
+        }),
+      })
+      setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
+
+      await signAndPublishProductWriteBundle({
+        merchantPubkey: MERCHANT_PUBKEY,
+        listings: [{ product: makeProduct("root"), dTag: "root" }],
+        deletions: buildProductRemovalDeletionTargets([
+          {
+            eventId: "e".repeat(64),
+            addressId: `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:variation`,
+            sourceRelayUrls: ["wss://source-public.example"],
+          },
+        ]),
+        onSignedLocal: async (bundle) => {
+          deletionDeliveryJobId = bundle.deletionDeliveryJobId ?? ""
+          const listing = bundle.events.find(
+            (event) => event.kind === EVENT_KINDS.PRODUCT
+          )
+          if (!listing) throw new Error("Expected a signed listing event")
+          listing.publish = (async () =>
+            new Set([{ url: `${loopbackRelayUrl}/` }])) as never
+        },
+        deletionDeliveryOptions: {
+          repository,
+          now: () => NOW,
+          retryDelayMs: 1,
+          restoreLocalEvidence: async () => {},
+          publisher: async ({ relayUrl }) => {
+            attemptedDeletionRelayUrls.push(relayUrl)
+            return { status: "timed_out" }
+          },
+        },
+      })
+
+      const job = await repository.get(deletionDeliveryJobId)
+      expect(config.e2eRelayIsolationEnabled).toBe(true)
+      expect(config.appBackplaneRelayUrls).toEqual([loopbackRelayUrl])
+      expect(job?.relayPlan.map((target) => target.relayUrl)).toEqual([
+        loopbackRelayUrl,
+      ])
+      expect(job?.state).toBe("partial")
+
+      const afterReload = new MemoryProductDeletionOutbox(durableStorage)
+      await resumePendingProductDeletionDeliveries({
+        repository: afterReload,
+        now: () => NOW + 10_000,
+        retryDelayMs: 1,
+        deliveryLeaseOwner: "after-isolated-reload",
+        restoreLocalEvidence: async () => {},
+        publisher: async ({ relayUrl }) => {
+          attemptedDeletionRelayUrls.push(relayUrl)
+          return { status: "acked" }
+        },
+      })
+
+      expect(attemptedDeletionRelayUrls).toEqual([
+        loopbackRelayUrl,
+        loopbackRelayUrl,
+      ])
+      expect((await afterReload.get(deletionDeliveryJobId))?.state).toBe(
+        "delivered"
+      )
+    } finally {
+      Object.assign(config, previousConfig)
+    }
   })
 
   it("does not arm durable removal delivery before replacement listings are cached", async () => {

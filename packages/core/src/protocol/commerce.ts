@@ -13,7 +13,7 @@ import {
   type CachedProfile,
   type StoredMessage,
 } from "../db"
-import { CANONICAL_APP_BACKPLANE_RELAYS, config } from "../config"
+import { config } from "../config"
 import { compareCommercePrices } from "../pricing"
 import type { Product, Profile } from "../types"
 import { normalizePublicMediaUrl } from "../network-target-safety"
@@ -98,6 +98,7 @@ import {
 import {
   getCommerceReadRelayUrls,
   getGeneralReadRelayUrls,
+  normalizePublicOrIsolatedE2eRelayHints,
   normalizePublicRelayHints,
   normalizeUntrustedRelayHintsForContext,
 } from "./relay-settings"
@@ -637,12 +638,16 @@ async function planCommerceReadRelayPlan(input: {
     input.maxRelays === undefined
       ? plannedRelayUrls
       : plannedRelayUrls.slice(0, input.maxRelays)
+  const executableRelayUrls = config.e2eRelayIsolationEnabled
+    ? normalizePublicOrIsolatedE2eRelayHints(expandedRelayUrls)
+    : expandedRelayUrls
+  const executableRelayUrlSet = new Set(executableRelayUrls)
 
-  if (expandedRelayUrls.length > 0) {
+  if (config.e2eRelayIsolationEnabled || executableRelayUrls.length > 0) {
     return {
-      relayUrls: expandedRelayUrls,
+      relayUrls: executableRelayUrls,
       parkedRelayUrls: plan.parkedRelayUrls.filter(
-        (relayUrl) => !expandedRelayUrls.includes(relayUrl)
+        (relayUrl) => !executableRelayUrlSet.has(relayUrl)
       ),
     }
   }
@@ -2435,7 +2440,7 @@ async function fetchProductDeletionTimestamps(
       ])
       const preferredDeletionRelayUrls = uniqueStrings([
         ...sourceRelayUrls,
-        ...CANONICAL_APP_BACKPLANE_RELAYS,
+        ...config.appBackplaneRelayUrls,
         ...deletionRelayPlan.relayUrls,
       ])
       options.onSkippedRelayUrls?.(

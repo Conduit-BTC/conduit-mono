@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { finalizeEvent } from "nostr-tools/pure"
 
+import { applyE2eRelayIsolation, config } from "@conduit/core"
 import type { ProductDeletionDeliveryJob } from "@conduit/core/db"
 import {
   deliverProductDeletionJob,
@@ -155,6 +156,32 @@ describe("product deletion relay plan", () => {
       })
     ).toThrow("public secure wss://")
   })
+
+  it("drops public provenance and planner targets during E2E isolation", () => {
+    const previousConfig = structuredClone(config)
+    const isolatedRelayUrl = "ws://127.0.0.1:7777"
+
+    try {
+      Object.assign(config, applyE2eRelayIsolation(config, [isolatedRelayUrl]))
+      expect(
+        planProductDeletionRelays({
+          currentWriteRelayUrls: [
+            "wss://saved-public.example",
+            isolatedRelayUrl,
+          ],
+          sourceRelayUrls: ["wss://source-public.example"],
+          canonicalConduitRelayUrl: isolatedRelayUrl,
+        })
+      ).toEqual([
+        {
+          relayUrl: isolatedRelayUrl,
+          roles: ["author_write", "conduit"],
+        },
+      ])
+    } finally {
+      Object.assign(config, previousConfig)
+    }
+  })
 })
 
 describe("durable product deletion delivery", () => {
@@ -258,6 +285,57 @@ describe("durable product deletion delivery", () => {
     expect(await getPendingProductDeletionDeliveries({ repository })).toEqual(
       []
     )
+  })
+
+  it("retires persisted public targets before an E2E retry can publish", async () => {
+    const previousConfig = structuredClone(config)
+    const isolatedRelayUrl = "ws://127.0.0.1:7777"
+    const durableStorage = new Map<string, ProductDeletionDeliveryJob>()
+    const beforeReload = new MemoryProductDeletionOutbox(durableStorage)
+
+    try {
+      Object.assign(config, applyE2eRelayIsolation(config, [isolatedRelayUrl]))
+      const created = await persistProductDeletionDelivery(
+        {
+          signedEvent: signedDeletionEvent(),
+          currentWriteRelayUrls: [isolatedRelayUrl],
+          sourceRelayUrls: [],
+          canonicalConduitRelayUrl: isolatedRelayUrl,
+        },
+        { repository: beforeReload, now: () => NOW }
+      )
+      const publicRelayUrl = "wss://source-before-isolation.example"
+      await beforeReload.update(created.id, (current) => ({
+        ...current,
+        relayPlan: [
+          ...current.relayPlan,
+          { relayUrl: publicRelayUrl, roles: ["source"] },
+        ],
+        relayDelivery: [
+          ...current.relayDelivery,
+          { relayUrl: publicRelayUrl, status: "pending", attemptCount: 0 },
+        ],
+      }))
+
+      const afterReload = new MemoryProductDeletionOutbox(durableStorage)
+      const attemptedRelayUrls: string[] = []
+      const result = await deliverProductDeletionJob(
+        created.id,
+        async ({ relayUrl }) => {
+          attemptedRelayUrls.push(relayUrl)
+          return { status: "acked" }
+        },
+        { repository: afterReload, now: () => NOW }
+      )
+
+      expect(attemptedRelayUrls).toEqual([isolatedRelayUrl])
+      expect(result.relayPlan.map(({ relayUrl }) => relayUrl)).toEqual([
+        isolatedRelayUrl,
+      ])
+      expect(result.state).toBe("delivered")
+    } finally {
+      Object.assign(config, previousConfig)
+    }
   })
 
   it("persists the exact signed event and plan before publisher I/O", async () => {
