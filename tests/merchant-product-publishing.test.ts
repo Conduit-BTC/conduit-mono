@@ -13,9 +13,13 @@ import {
   getCachedMerchantStorefront,
   planProductDeletionRelays,
   setSigner,
+  type ProductDeletionOutboxRepository,
   type ProductSchema,
 } from "@conduit/core"
-import type { CachedProduct } from "@conduit/core/db"
+import type {
+  CachedProduct,
+  ProductDeletionDeliveryJob,
+} from "@conduit/core/db"
 import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
   buildProductRemovalDeletionTargets,
@@ -26,6 +30,7 @@ import {
   signAndPublishProductWriteBundle,
   type SignedProductWriteBundle,
 } from "../apps/merchant/src/lib/product-publishing"
+import { resumePendingProductDeletionDeliveries } from "../apps/merchant/src/lib/product-deletion-delivery"
 import { __resetNdkTestState } from "../packages/core/src/protocol/ndk"
 
 const MERCHANT_SECRET = new Uint8Array(32).fill(4)
@@ -34,6 +39,48 @@ const MERCHANT_PUBKEY = getPublicKey(MERCHANT_SECRET)
 const NOW = 1_700_000_100_000
 
 let cachedProducts: CachedProduct[] = []
+
+function cloneDeletionJob(
+  job: ProductDeletionDeliveryJob
+): ProductDeletionDeliveryJob {
+  return structuredClone(job)
+}
+
+class MemoryProductDeletionOutbox implements ProductDeletionOutboxRepository {
+  constructor(
+    private readonly storage: Map<
+      string,
+      ProductDeletionDeliveryJob
+    > = new Map()
+  ) {}
+
+  async add(job: ProductDeletionDeliveryJob): Promise<void> {
+    if (this.storage.has(job.id)) throw new Error("duplicate")
+    this.storage.set(job.id, cloneDeletionJob(job))
+  }
+
+  async get(id: string): Promise<ProductDeletionDeliveryJob | undefined> {
+    const job = this.storage.get(id)
+    return job ? cloneDeletionJob(job) : undefined
+  }
+
+  async listUndelivered(): Promise<ProductDeletionDeliveryJob[]> {
+    return Array.from(this.storage.values())
+      .filter((job) => job.state !== "delivered")
+      .map(cloneDeletionJob)
+  }
+
+  async update(
+    id: string,
+    updater: (current: ProductDeletionDeliveryJob) => ProductDeletionDeliveryJob
+  ): Promise<ProductDeletionDeliveryJob> {
+    const current = this.storage.get(id)
+    if (!current) throw new Error("missing")
+    const next = updater(cloneDeletionJob(current))
+    this.storage.set(id, cloneDeletionJob(next))
+    return cloneDeletionJob(next)
+  }
+}
 
 function makeSignedEvent(kind: number) {
   return finalizeEvent(
@@ -54,25 +101,7 @@ function makeSignedProductEvent(input: {
   dTag: string
   acceptedRelayUrl: string
 }): NDKEvent {
-  const product: ProductSchema = {
-    id: `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:${input.dTag}`,
-    pubkey: MERCHANT_PUBKEY,
-    title: `Listing ${input.dTag}`,
-    summary: "Fallback provenance regression listing.",
-    price: 10,
-    currency: "USD",
-    type: "simple",
-    specifications: [],
-    format: "physical",
-    visibility: "public",
-    images: [{ url: "https://example.com/product.png" }],
-    tags: ["test"],
-    publicZapEnabled: false,
-    zapMessagePolicy: "generic_only",
-    publicZapPolicyKnown: true,
-    createdAt: NOW,
-    updatedAt: NOW,
-  }
+  const product = makeProduct(input.dTag)
   const draft = buildProductListingEventDraft({
     product,
     dTag: input.dTag,
@@ -98,6 +127,28 @@ function makeSignedProductEvent(input: {
     return new Set([{ url: `${input.acceptedRelayUrl}/` }])
   }) as never
   return event
+}
+
+function makeProduct(dTag: string): ProductSchema {
+  return {
+    id: `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:${dTag}`,
+    pubkey: MERCHANT_PUBKEY,
+    title: `Listing ${dTag}`,
+    summary: "Fallback provenance regression listing.",
+    price: 10,
+    currency: "USD",
+    type: "simple",
+    specifications: [],
+    format: "physical",
+    visibility: "public",
+    images: [{ url: "https://example.com/product.png" }],
+    tags: ["test"],
+    publicZapEnabled: false,
+    zapMessagePolicy: "generic_only",
+    publicZapPolicyKnown: true,
+    createdAt: NOW,
+    updatedAt: NOW,
+  }
 }
 
 beforeEach(() => {
@@ -290,55 +341,189 @@ describe("merchant product event delivery", () => {
     expect(deletionRelayUrls).toContain(secondFallbackRelayUrl)
   })
 
-  it("retains a removed variation source through delivery and retry", async () => {
-    const fallbackRelayUrl = CANONICAL_COMMERCE_DISCOVERY_RELAYS[0]!
+  it("durably resumes a mixed family edit without misclassifying exclusive relay ACKs", async () => {
+    const deletionAckRelayUrl = "wss://relay.damus.io"
+    const deletionPendingRelayUrl = "wss://relay.nostr.net"
+    const durableStorage = new Map<string, ProductDeletionDeliveryJob>()
+    const beforeReload = new MemoryProductDeletionOutbox(durableStorage)
     const signer = new NDKPrivateKeySigner(MERCHANT_SECRET)
     setSigner(signer)
     const deletionTargets = buildProductRemovalDeletionTargets([
       {
         eventId: "b".repeat(64),
         addressId: `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:variation`,
-        sourceRelayUrls: [fallbackRelayUrl],
+        sourceRelayUrls: [deletionAckRelayUrl, deletionPendingRelayUrl],
       },
     ])
     let signedBundle: SignedProductWriteBundle | null = null
-    let publishAttempts = 0
+    let signedDeletionId = ""
     const delivery = await signAndPublishProductWriteBundle({
       merchantPubkey: MERCHANT_PUBKEY,
-      listings: [],
+      listings: [
+        {
+          product: makeProduct("root"),
+          dTag: "root",
+        },
+      ],
       deletions: deletionTargets,
       onSignedLocal: async (bundle) => {
         signedBundle = bundle
+        const listing = bundle.events.find(
+          (event) => event.kind === EVENT_KINDS.PRODUCT
+        )
         const deletion = bundle.events.find(
           (event) => event.kind === EVENT_KINDS.DELETION
         )
+        if (!listing) throw new Error("Expected a signed listing event")
         if (!deletion) throw new Error("Expected a signed deletion event")
-        deletion.publish = (async (relaySet: unknown) => {
-          publishAttempts += 1
+        signedDeletionId = deletion.id
+        listing.publish = (async (relaySet: unknown) => {
           const attemptedRelayUrls = [
             ...((relaySet as { relayUrls?: Set<string> | string[] })
               .relayUrls ?? []),
           ]
-          expect(attemptedRelayUrls).toContain(`${fallbackRelayUrl}/`)
-          return new Set([{ url: `${fallbackRelayUrl}/` }])
+          return new Set(attemptedRelayUrls.map((url) => ({ url })))
         }) as never
+        deletion.publish = (async () => new Set()) as never
+      },
+      deletionDeliveryOptions: {
+        repository: beforeReload,
+        now: () => NOW,
+        retryDelayMs: 1,
+        restoreLocalEvidence: async () => {},
+        publisher: async ({ relayUrl }) =>
+          relayUrl === deletionPendingRelayUrl
+            ? { status: "timed_out" }
+            : { status: "acked" },
       },
     })
     if (!signedBundle) throw new Error("Expected the signed retry bundle")
-    const retry = await deliverSignedProductWriteBundle(
-      signedBundle,
-      MERCHANT_PUBKEY
-    )
+    const stagedDeletion = await beforeReload.get(signedDeletionId)
 
-    expect(signedBundle.deliveryOptions.deletionSourceRelayUrls).toEqual([
-      fallbackRelayUrl,
-    ])
-    expect(signedBundle.events[0]?.tags).toContainEqual([
+    expect(signedBundle.deletionDeliveryJobId).toBe(signedDeletionId)
+    expect(signedBundle.events[0]?.tags).toContainEqual(["d", "root"])
+    expect(
+      delivery.successfulRelayUrls.includes(CANONICAL_APP_BACKPLANE_RELAYS[0]!)
+    ).toBe(true)
+    expect(delivery.successfulRelayUrls).toContain(deletionAckRelayUrl)
+    expect(delivery.failedRelayUrls).toEqual([deletionPendingRelayUrl])
+    expect(stagedDeletion?.state).toBe("partial")
+    expect(stagedDeletion?.signedEvent.id).toBe(signedDeletionId)
+    expect(stagedDeletion?.signedEvent.tags).toContainEqual([
       "a",
       `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:variation`,
     ])
-    expect(delivery.successfulRelayUrls).toEqual([fallbackRelayUrl])
-    expect(retry.successfulRelayUrls).toEqual([fallbackRelayUrl])
-    expect(publishAttempts).toBe(2)
+    expect(stagedDeletion?.relayPlan).toContainEqual({
+      relayUrl: deletionAckRelayUrl,
+      roles: ["source"],
+    })
+    expect(stagedDeletion?.relayPlan).toContainEqual({
+      relayUrl: deletionPendingRelayUrl,
+      roles: ["source"],
+    })
+
+    const afterReload = new MemoryProductDeletionOutbox(durableStorage)
+    const resumedRelayUrls: string[] = []
+    const resumedEventIds: string[] = []
+    await resumePendingProductDeletionDeliveries({
+      repository: afterReload,
+      now: () => NOW + 10_000,
+      retryDelayMs: 1,
+      deliveryLeaseOwner: "after-reload",
+      restoreLocalEvidence: async () => {},
+      publisher: async ({ relayUrl, signedEvent }) => {
+        resumedRelayUrls.push(relayUrl)
+        resumedEventIds.push(signedEvent.id)
+        return { status: "acked" }
+      },
+    })
+
+    expect(resumedRelayUrls).toEqual([deletionPendingRelayUrl])
+    expect(resumedEventIds).toEqual([signedDeletionId])
+    expect((await afterReload.get(signedDeletionId))?.state).toBe("delivered")
+  })
+
+  it("does not arm durable removal delivery before replacement listings are cached", async () => {
+    const repository = new MemoryProductDeletionOutbox()
+    const signer = new NDKPrivateKeySigner(MERCHANT_SECRET)
+    setSigner(signer)
+    __setCommerceTestOverrides({
+      putCachedProducts: async () => {
+        throw new Error("listing cache unavailable")
+      },
+    })
+    let onSignedLocalCalls = 0
+    let deletionPublishAttempts = 0
+
+    await expect(
+      signAndPublishProductWriteBundle({
+        merchantPubkey: MERCHANT_PUBKEY,
+        listings: [{ product: makeProduct("root"), dTag: "root" }],
+        deletions: buildProductRemovalDeletionTargets([
+          {
+            eventId: "c".repeat(64),
+            addressId: `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:variation`,
+            sourceRelayUrls: ["wss://relay.damus.io"],
+          },
+        ]),
+        onSignedLocal: async () => {
+          onSignedLocalCalls += 1
+        },
+        deletionDeliveryOptions: {
+          repository,
+          restoreLocalEvidence: async () => {},
+          publisher: async () => {
+            deletionPublishAttempts += 1
+            return { status: "acked" }
+          },
+        },
+      })
+    ).rejects.toThrow("listing cache unavailable")
+
+    expect(await repository.listUndelivered()).toEqual([])
+    expect(onSignedLocalCalls).toBe(0)
+    expect(deletionPublishAttempts).toBe(0)
+  })
+
+  it("rejects a durable deletion job without the exact merchant event", async () => {
+    const repository = new MemoryProductDeletionOutbox()
+
+    await expect(
+      deliverSignedProductWriteBundle(
+        {
+          events: [],
+          deletionDeliveryJobId: "d".repeat(64),
+        },
+        MERCHANT_PUBKEY,
+        { repository }
+      )
+    ).rejects.toThrow("exact signed merchant deletion")
+
+    const otherMerchantPubkey = getPublicKey(OTHER_MERCHANT_SECRET)
+    const wrongMerchantDeletion = new NDKEvent(
+      undefined,
+      finalizeEvent(
+        {
+          kind: EVENT_KINDS.DELETION,
+          created_at: Math.floor(NOW / 1000),
+          content: "Listing removed",
+          tags: [
+            ["a", `${EVENT_KINDS.PRODUCT}:${otherMerchantPubkey}:variation`],
+          ],
+        },
+        OTHER_MERCHANT_SECRET
+      )
+    )
+
+    await expect(
+      deliverSignedProductWriteBundle(
+        {
+          events: [wrongMerchantDeletion],
+          deletionDeliveryJobId: wrongMerchantDeletion.id,
+        },
+        MERCHANT_PUBKEY,
+        { repository }
+      )
+    ).rejects.toThrow("exact signed merchant deletion")
   })
 })

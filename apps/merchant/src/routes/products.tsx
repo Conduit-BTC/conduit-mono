@@ -98,6 +98,7 @@ import {
   buildQueuedProductDeletionNotice,
   formatProductRelayUrls,
   getProductDeliveryNoticeVariant,
+  reconcilePendingProductDeletionRetry,
   type ProductDeliveryNotice,
   type ProductWriteAction,
 } from "../lib/product-delivery"
@@ -1221,10 +1222,12 @@ function ProductsPage() {
       return
     }
 
-    setProductDeliveryRetry({
-      action: "delete",
-      payload: { deliveryJobId: job.id },
-    })
+    setProductDeliveryRetry((current) =>
+      reconcilePendingProductDeletionRetry<ProductDeliveryRetryState>(current, {
+        action: "delete",
+        payload: { deliveryJobId: job.id },
+      })
+    )
     setProductDeliveryNotice((current) => {
       if (current?.action === "publish") return current
       return job.deliveryAttemptCount === 0

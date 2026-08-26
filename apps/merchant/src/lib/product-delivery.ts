@@ -2,6 +2,12 @@ import type { PublishWithPlannerResult } from "@conduit/core"
 
 export type ProductWriteAction = "publish" | "delete"
 
+export function reconcilePendingProductDeletionRetry<
+  TState extends { action: ProductWriteAction },
+>(current: TState | null, pendingDeletionRetry: TState): TState {
+  return current?.action === "publish" ? current : pendingDeletionRetry
+}
+
 export type ProductDeliveryNotice = {
   action: ProductWriteAction
   state: "delivering" | "delivered" | "partial" | "retry_needed"
