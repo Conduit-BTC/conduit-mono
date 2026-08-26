@@ -84,6 +84,7 @@ export async function deliverSignedProductEvent(
     if (rawEvent.kind === EVENT_KINDS.PRODUCT) {
       await cacheSignedProductListingEvent(publishableEvent, {
         sourceRelayUrls: delivery.successfulRelayUrls,
+        persistence: "best_effort",
       })
     }
     return delivery

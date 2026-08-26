@@ -10,6 +10,7 @@ import {
   CANONICAL_APP_BACKPLANE_RELAYS,
   CANONICAL_COMMERCE_DISCOVERY_RELAYS,
   EVENT_KINDS,
+  getCachedMerchantStorefront,
   planProductDeletionRelays,
   type ProductSchema,
 } from "@conduit/core"
@@ -102,6 +103,7 @@ beforeEach(() => {
   __setCommerceTestOverrides({
     now: () => NOW,
     getCachedProducts: async () => cachedProducts,
+    getCachedProductTombstones: async () => [],
     putCachedProducts: async (rows) => {
       for (const row of rows) {
         cachedProducts = [
@@ -180,6 +182,66 @@ describe("merchant product event delivery", () => {
       relayUrl: fallbackRelayUrl,
       roles: ["source"],
     })
+  })
+
+  it("preserves fallback provenance when its post-ACK cache write fails", async () => {
+    const fallbackRelayUrl = CANONICAL_COMMERCE_DISCOVERY_RELAYS[0]!
+    const event = makeSignedProductEvent({
+      dTag: "fallback-volatile",
+      acceptedRelayUrl: fallbackRelayUrl,
+    })
+    await cacheSignedProductListingEvent(event)
+    __setCommerceTestOverrides({
+      putCachedProducts: async () => {
+        throw new Error("IndexedDB write failed")
+      },
+    })
+
+    const delivery = await deliverSignedProductEvent(event, MERCHANT_PUBKEY)
+    const volatileCached = await getCachedMerchantStorefront({
+      merchantPubkey: MERCHANT_PUBKEY,
+      includeMarketHidden: true,
+    })
+    const volatileRecord = volatileCached.data.find(
+      (record) => record.dTag === "fallback-volatile"
+    )
+
+    expect(delivery.successfulRelayUrls).toEqual([fallbackRelayUrl])
+    expect(volatileRecord?.sourceRelayUrls).toEqual([fallbackRelayUrl])
+    expect(
+      planProductDeletionRelays({
+        currentWriteRelayUrls: [],
+        sourceRelayUrls: volatileRecord?.sourceRelayUrls ?? [],
+        canonicalConduitRelayUrl: CANONICAL_APP_BACKPLANE_RELAYS[0]!,
+      })
+    ).toContainEqual({
+      relayUrl: fallbackRelayUrl,
+      roles: ["source"],
+    })
+
+    __setCommerceTestOverrides({
+      putCachedProducts: async (rows) => {
+        for (const row of rows) {
+          cachedProducts = [
+            ...cachedProducts.filter((existing) => existing.id !== row.id),
+            row,
+          ]
+        }
+      },
+    })
+    const durableCached = await getCachedMerchantStorefront({
+      merchantPubkey: MERCHANT_PUBKEY,
+      includeMarketHidden: true,
+    })
+
+    expect(
+      durableCached.data.find((record) => record.dTag === "fallback-volatile")
+        ?.sourceRelayUrls
+    ).toEqual([fallbackRelayUrl])
+    expect(
+      cachedProducts.find((product) => product.dTag === "fallback-volatile")
+        ?.sourceRelayUrls
+    ).toEqual([fallbackRelayUrl])
   })
 
   it("retains per-listing fallback ACKs outside the bundle intersection", async () => {
