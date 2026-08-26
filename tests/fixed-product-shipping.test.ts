@@ -26,6 +26,7 @@ import {
   type ProductSchema,
   type CachedShippingOptionFrontier,
   type CachedProductTombstone,
+  type ShippingDeletionFallbackStorage,
 } from "@conduit/core"
 
 const MERCHANT = "a".repeat(64)
@@ -868,11 +869,15 @@ describe("canonical fixed product shipping", () => {
       await expect(
         getShippingOptionsByCoordinates([coordinate])
       ).rejects.toThrow(
-        "Fixed shipping could not be verified across the planned relays"
+        "Fixed shipping deletion evidence could not be retained"
       )
       includeDeletion = false
       partialDeletionCoverage = false
-      expect(await getShippingOptionsByCoordinates([coordinate])).toEqual([])
+      await expect(
+        getShippingOptionsByCoordinates([coordinate])
+      ).rejects.toThrow(
+        "Fixed shipping deletion evidence could not be retained"
+      )
       expect(cachedTombstones).toEqual([])
 
       failWrites = false
@@ -1010,9 +1015,15 @@ describe("canonical fixed product shipping", () => {
       activeAddressDeletions.clear()
       activeAddressDeletions.add(coordinateA)
       failDeletionWrites = true
-      expect(await getShippingOptionsByCoordinates([coordinateA])).toEqual([])
+      await expect(
+        getShippingOptionsByCoordinates([coordinateA])
+      ).rejects.toThrow(
+        "Fixed shipping deletion evidence could not be retained"
+      )
 
       activeAddressDeletions.clear()
+      failDeletionWrites = false
+      expect(await getShippingOptionsByCoordinates([coordinateA])).toEqual([])
       failDeletionReads = true
       await expect(
         getShippingOptionsByCoordinates([coordinateA, coordinateB])
@@ -1563,5 +1574,632 @@ describe("canonical fixed product shipping", () => {
 
   it("does not infer country eligibility when no option resolved", () => {
     expect(isBuyerCountryEligible("US", [])).toBe(false)
+  })
+})
+
+const FALLBACK_EVENT_PREFIX = "conduit:shipping-tombstone-fallback:v1:event:"
+const FALLBACK_PENDING_PREFIX =
+  "conduit:shipping-tombstone-fallback:v1:pending:"
+
+class MemoryFallbackStorage implements ShippingDeletionFallbackStorage {
+  readonly entries = new Map<string, string>()
+  failWrites = false
+  failEventWriteAt: number | null = null
+  removeFirstKeyDuringNextEnumeration = false
+  private eventWriteCount = 0
+  private enumerationMutationApplied = false
+
+  get length(): number {
+    return this.entries.size
+  }
+
+  key(index: number): string | null {
+    const key = Array.from(this.entries.keys()).sort()[index] ?? null
+    if (
+      index === 0 &&
+      key !== null &&
+      this.removeFirstKeyDuringNextEnumeration &&
+      !this.enumerationMutationApplied
+    ) {
+      this.enumerationMutationApplied = true
+      this.entries.delete(key)
+    }
+    return key
+  }
+
+  getItem(key: string): string | null {
+    return this.entries.get(key) ?? null
+  }
+
+  setItem(key: string, value: string): void {
+    if (this.failWrites) throw new Error("fallback storage unavailable")
+    if (key.startsWith(FALLBACK_EVENT_PREFIX)) {
+      this.eventWriteCount += 1
+      if (this.eventWriteCount === this.failEventWriteAt) {
+        throw new Error("interrupted fallback event batch")
+      }
+    }
+    this.entries.set(key, value)
+  }
+
+  removeItem(key: string): void {
+    this.entries.delete(key)
+  }
+}
+
+function createShippingReadHarness(
+  target: "address" | "event",
+  options: {
+    includeSecondAddress?: boolean
+    includeSecondDeletionEvent?: boolean
+  } = {}
+) {
+  const secretKey = generateSecretKey()
+  const pubkey = getPublicKey(secretKey)
+  const dTag = `durable-${target}-shipping-standard`
+  const coordinate = `30406:${pubkey}:${dTag}`
+  const secondCoordinate = `30406:${pubkey}:${dTag}-second`
+  const shippingEvent = new NDKEvent(
+    undefined,
+    finalizeEvent(
+      {
+        kind: 30406,
+        created_at: 100,
+        content: "",
+        tags: [
+          ["d", dTag],
+          ["title", "Standard Shipping"],
+          ["price", "5", "USD"],
+          ["country", "US"],
+          ["service", "standard"],
+        ],
+      },
+      secretKey
+    )
+  )
+  const secondShippingEvent = new NDKEvent(
+    undefined,
+    finalizeEvent(
+      {
+        kind: 30406,
+        created_at: 100,
+        content: "",
+        tags: [
+          ["d", `${dTag}-second`],
+          ["title", "Second Standard Shipping"],
+          ["price", "7", "USD"],
+          ["country", "US"],
+          ["service", "standard"],
+        ],
+      },
+      secretKey
+    )
+  )
+  const deletion = new NDKEvent(
+    undefined,
+    finalizeEvent(
+      {
+        kind: 5,
+        // Exact event deletion is intentionally older: NIP-09 exact-id
+        // evidence does not have an address-replacement freshness gate.
+        created_at: target === "event" ? 90 : 110,
+        content: "",
+        tags:
+          target === "address"
+            ? [
+                ["a", coordinate],
+                ...(options.includeSecondAddress
+                  ? [["a", secondCoordinate]]
+                  : []),
+              ]
+            : [["e", shippingEvent.id]],
+      },
+      secretKey
+    )
+  )
+  const secondDeletion = new NDKEvent(
+    undefined,
+    finalizeEvent(
+      {
+        kind: 5,
+        created_at: 111,
+        content: "",
+        tags: [["a", secondCoordinate]],
+      },
+      secretKey
+    )
+  )
+  const strongerAddressDeletion = new NDKEvent(
+    undefined,
+    finalizeEvent(
+      {
+        kind: 5,
+        created_at: 120,
+        content: "",
+        tags: [["a", coordinate]],
+      },
+      secretKey
+    )
+  )
+  const fallbackStorage = new MemoryFallbackStorage()
+  let includeDeletion = true
+  let failPrimaryWrites = true
+  let ignorePrimaryWrites = false
+  let deferredPrimaryWrite: Promise<void> | null = null
+  let releaseDeferredPrimaryWrite: (() => void) | null = null
+  let primaryWriteStarted: Promise<void> = Promise.resolve()
+  let markPrimaryWriteStarted: (() => void) | null = null
+  let cachedTombstones: CachedProductTombstone[] = []
+  let cachedFrontiers: CachedShippingOptionFrontier[] = []
+
+  const install = () => {
+    __setRelayListTestOverrides({
+      loadCached: async (author) => ({
+        pubkey: author,
+        readRelayUrls: ["wss://read.example"],
+        writeRelayUrls: ["wss://write.example"],
+        eventCreatedAt: 1,
+        cachedAt: 1,
+      }),
+    })
+    __setShippingTestOverrides({
+      fetchEventsFanoutDetailed: async (filter, fetchOptions) => {
+        let events: NDKEvent[] = []
+        if (filter.kinds?.includes(30406)) {
+          const requestedDTags = new Set(filter["#d"] ?? [])
+          events = [
+            shippingEvent,
+            ...(options.includeSecondDeletionEvent
+              ? [secondShippingEvent]
+              : []),
+          ].filter((event) =>
+            requestedDTags.has(
+              event.tags.find((tag) => tag[0] === "d")?.[1] ?? ""
+            )
+          )
+        } else if (
+          includeDeletion &&
+          ((target === "address" && filter["#a"]) ||
+            (target === "event" && filter["#e"]))
+        ) {
+          events = [
+            deletion,
+            ...(options.includeSecondDeletionEvent ? [secondDeletion] : []),
+          ]
+        }
+        return {
+          events,
+          relays: (fetchOptions?.relayUrls ?? []).map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: events.length,
+          })),
+          eventsVerified: true,
+        }
+      },
+      getCachedDeletionTombstones: async (targetIds) =>
+        cachedTombstones.filter((row) => targetIds.includes(row.id)),
+      putCachedDeletionTombstones: async (rows) => {
+        if (failPrimaryWrites) throw new Error("IndexedDB unavailable")
+        if (ignorePrimaryWrites) return
+        if (deferredPrimaryWrite) {
+          const gate = deferredPrimaryWrite
+          deferredPrimaryWrite = null
+          markPrimaryWriteStarted?.()
+          markPrimaryWriteStarted = null
+          await gate
+        }
+        for (const row of rows) {
+          cachedTombstones = [
+            ...cachedTombstones.filter((current) => current.id !== row.id),
+            row,
+          ]
+        }
+      },
+      getCachedOptionFrontiers: async (coordinates) =>
+        cachedFrontiers.filter((row) => coordinates.includes(row.coordinate)),
+      putCachedOptionFrontiers: async (rows) => {
+        for (const row of rows) {
+          cachedFrontiers = [
+            ...cachedFrontiers.filter(
+              (current) => current.coordinate !== row.coordinate
+            ),
+            row,
+          ]
+        }
+      },
+      deletionFallbackStorage: fallbackStorage,
+    })
+  }
+
+  return {
+    coordinate,
+    coordinates: [
+      coordinate,
+      ...(options.includeSecondDeletionEvent ? [secondCoordinate] : []),
+    ],
+    secondCoordinate,
+    deletion,
+    fallbackStorage,
+    install,
+    omitDeletion: () => {
+      includeDeletion = false
+    },
+    restorePrimaryWrites: () => {
+      failPrimaryWrites = false
+    },
+    ignorePrimaryWrites: () => {
+      ignorePrimaryWrites = true
+    },
+    deferNextPrimaryWrite: () => {
+      primaryWriteStarted = new Promise<void>((resolve) => {
+        markPrimaryWriteStarted = resolve
+      })
+      deferredPrimaryWrite = new Promise<void>((resolve) => {
+        releaseDeferredPrimaryWrite = resolve
+      })
+    },
+    waitForPrimaryWrite: () => primaryWriteStarted,
+    releasePrimaryWrite: () => {
+      releaseDeferredPrimaryWrite?.()
+      releaseDeferredPrimaryWrite = null
+    },
+    seedStrongerAddressTombstone: () => {
+      cachedTombstones = [
+        {
+          id: `shipping:a:${coordinate}`,
+          pubkey,
+          addressId: coordinate,
+          deletedAt: strongerAddressDeletion.created_at!,
+          deletionEventId: strongerAddressDeletion.id,
+          signedEvent: strongerAddressDeletion.rawEvent(),
+          sourceRelayUrls: [],
+          observedLocally: false,
+          cachedAt: 1,
+        },
+      ]
+    },
+    seedInvalidAddressTombstone: () => {
+      cachedTombstones = [
+        {
+          id: `shipping:a:${coordinate}`,
+          pubkey,
+          addressId: coordinate,
+          deletedAt: 999,
+          deletionEventId: "f".repeat(64),
+          sourceRelayUrls: [],
+          observedLocally: false,
+          cachedAt: 1,
+        },
+      ]
+    },
+    cachedTombstones: () => cachedTombstones,
+  }
+}
+
+describe("fixed shipping deletion durable fallback", () => {
+  for (const target of ["address", "event"] as const) {
+    it(`retains a signed ${target} withdrawal across a fresh runtime`, async () => {
+      const harness = createShippingReadHarness(target)
+      harness.install()
+
+      try {
+        expect(
+          await getShippingOptionsByCoordinates([harness.coordinate])
+        ).toEqual([])
+        expect(harness.cachedTombstones()).toEqual([])
+        expect(
+          harness.fallbackStorage.entries.has(
+            `${FALLBACK_EVENT_PREFIX}${harness.deletion.id}`
+          )
+        ).toBe(true)
+
+        // Simulate a browser restart: volatile protocol state is gone, while
+        // the independent journal and primary IndexedDB variables remain.
+        __resetShippingTestOverrides()
+        __resetRelayListTestOverrides()
+        harness.omitDeletion()
+        harness.install()
+        expect(
+          await getShippingOptionsByCoordinates([harness.coordinate])
+        ).toEqual([])
+        expect(harness.fallbackStorage.length).toBe(1)
+
+        // Once IndexedDB recovers, the next read verifies durable target
+        // coverage before removing the journal entry.
+        harness.restorePrimaryWrites()
+        expect(
+          await getShippingOptionsByCoordinates([harness.coordinate])
+        ).toEqual([])
+        expect(harness.cachedTombstones()).toHaveLength(1)
+        expect(harness.fallbackStorage.length).toBe(0)
+
+        __resetShippingTestOverrides()
+        __resetRelayListTestOverrides()
+        harness.install()
+        expect(
+          await getShippingOptionsByCoordinates([harness.coordinate])
+        ).toEqual([])
+      } finally {
+        __resetShippingTestOverrides()
+        __resetRelayListTestOverrides()
+      }
+    }, 15_000)
+  }
+
+  it("blocks fixed shipping when neither durable store can retain a withdrawal", async () => {
+    const harness = createShippingReadHarness("address")
+    harness.fallbackStorage.failWrites = true
+    harness.install()
+
+    try {
+      await expect(
+        getShippingOptionsByCoordinates([harness.coordinate])
+      ).rejects.toThrow(
+        "Fixed shipping deletion evidence could not be retained"
+      )
+      expect(harness.cachedTombstones()).toEqual([])
+      expect(harness.fallbackStorage.length).toBe(0)
+    } finally {
+      __resetShippingTestOverrides()
+      __resetRelayListTestOverrides()
+    }
+  })
+
+  it("journals a withdrawal before an IndexedDB write can stall", async () => {
+    const harness = createShippingReadHarness("address")
+    harness.restorePrimaryWrites()
+    harness.deferNextPrimaryWrite()
+    harness.install()
+
+    try {
+      const pendingRead = getShippingOptionsByCoordinates([harness.coordinate])
+      await harness.waitForPrimaryWrite()
+      expect(
+        harness.fallbackStorage.entries.has(
+          `${FALLBACK_EVENT_PREFIX}${harness.deletion.id}`
+        )
+      ).toBe(true)
+
+      // A fresh runtime can authorize from the journal while the original
+      // IndexedDB request is still pending and has not cached any tombstone.
+      __resetShippingTestOverrides()
+      __resetRelayListTestOverrides()
+      harness.omitDeletion()
+      harness.ignorePrimaryWrites()
+      harness.install()
+      expect(
+        await getShippingOptionsByCoordinates([harness.coordinate])
+      ).toEqual([])
+      expect(harness.fallbackStorage.length).toBe(1)
+
+      harness.releasePrimaryWrite()
+      await expect(pendingRead).resolves.toEqual([])
+      expect(harness.fallbackStorage.length).toBe(0)
+    } finally {
+      harness.releasePrimaryWrite()
+      __resetShippingTestOverrides()
+      __resetRelayListTestOverrides()
+    }
+  })
+
+  it("fails closed for malformed fallback evidence", async () => {
+    const harness = createShippingReadHarness("address")
+    harness.omitDeletion()
+    harness.fallbackStorage.entries.set(
+      `${FALLBACK_EVENT_PREFIX}${harness.deletion.id}`,
+      "{truncated"
+    )
+    harness.install()
+
+    try {
+      await expect(
+        getShippingOptionsByCoordinates([harness.coordinate])
+      ).rejects.toThrow(
+        "Fixed shipping deletion evidence could not be verified"
+      )
+    } finally {
+      __resetShippingTestOverrides()
+      __resetRelayListTestOverrides()
+    }
+  })
+
+  it("fails closed when a valid journal event is stored under the wrong key", async () => {
+    const harness = createShippingReadHarness("address")
+    harness.omitDeletion()
+    harness.fallbackStorage.entries.set(
+      `${FALLBACK_EVENT_PREFIX}${"0".repeat(64)}`,
+      JSON.stringify(harness.deletion.rawEvent())
+    )
+    harness.install()
+
+    try {
+      await expect(
+        getShippingOptionsByCoordinates([harness.coordinate])
+      ).rejects.toThrow(
+        "Fixed shipping deletion evidence could not be verified"
+      )
+    } finally {
+      __resetShippingTestOverrides()
+      __resetRelayListTestOverrides()
+    }
+  })
+
+  it("fails closed when fallback keys change during enumeration", async () => {
+    const harness = createShippingReadHarness("address")
+    harness.omitDeletion()
+    harness.fallbackStorage.entries.set("a-unrelated-key", "unrelated")
+    harness.fallbackStorage.entries.set(
+      `${FALLBACK_EVENT_PREFIX}${harness.deletion.id}`,
+      JSON.stringify(harness.deletion.rawEvent())
+    )
+    harness.fallbackStorage.removeFirstKeyDuringNextEnumeration = true
+    harness.install()
+
+    try {
+      await expect(
+        getShippingOptionsByCoordinates([harness.coordinate])
+      ).rejects.toThrow(
+        "Fixed shipping deletion evidence could not be verified"
+      )
+    } finally {
+      __resetShippingTestOverrides()
+      __resetRelayListTestOverrides()
+    }
+  })
+
+  it("keeps the journal when primary write readback does not cover the target", async () => {
+    const harness = createShippingReadHarness("address")
+    harness.install()
+
+    try {
+      expect(
+        await getShippingOptionsByCoordinates([harness.coordinate])
+      ).toEqual([])
+      __resetShippingTestOverrides()
+      __resetRelayListTestOverrides()
+
+      harness.omitDeletion()
+      harness.restorePrimaryWrites()
+      harness.ignorePrimaryWrites()
+      harness.install()
+      expect(
+        await getShippingOptionsByCoordinates([harness.coordinate])
+      ).toEqual([])
+      expect(harness.cachedTombstones()).toEqual([])
+      expect(harness.fallbackStorage.length).toBe(1)
+    } finally {
+      __resetShippingTestOverrides()
+      __resetRelayListTestOverrides()
+    }
+  })
+
+  it("prefers valid fallback evidence over a corrupt newer primary row", async () => {
+    const harness = createShippingReadHarness("address")
+    harness.install()
+
+    try {
+      expect(
+        await getShippingOptionsByCoordinates([harness.coordinate])
+      ).toEqual([])
+      expect(harness.fallbackStorage.length).toBe(1)
+
+      __resetShippingTestOverrides()
+      __resetRelayListTestOverrides()
+      harness.omitDeletion()
+      harness.seedInvalidAddressTombstone()
+      harness.install()
+
+      expect(
+        await getShippingOptionsByCoordinates([harness.coordinate])
+      ).toEqual([])
+      expect(harness.fallbackStorage.length).toBe(1)
+
+      harness.restorePrimaryWrites()
+      expect(
+        await getShippingOptionsByCoordinates([harness.coordinate])
+      ).toEqual([])
+      expect(harness.cachedTombstones()[0]?.deletionEventId).toBe(
+        harness.deletion.id
+      )
+      expect(harness.cachedTombstones()[0]?.signedEvent?.id).toBe(
+        harness.deletion.id
+      )
+      expect(harness.fallbackStorage.length).toBe(0)
+    } finally {
+      __resetShippingTestOverrides()
+      __resetRelayListTestOverrides()
+    }
+  })
+
+  it("cleans the journal when a stronger primary address cutoff covers it", async () => {
+    const harness = createShippingReadHarness("address")
+    harness.install()
+
+    try {
+      expect(
+        await getShippingOptionsByCoordinates([harness.coordinate])
+      ).toEqual([])
+      __resetShippingTestOverrides()
+      __resetRelayListTestOverrides()
+
+      harness.omitDeletion()
+      harness.restorePrimaryWrites()
+      harness.seedStrongerAddressTombstone()
+      harness.install()
+      expect(
+        await getShippingOptionsByCoordinates([harness.coordinate])
+      ).toEqual([])
+      expect(harness.cachedTombstones()[0]?.deletedAt).toBe(120)
+      expect(harness.fallbackStorage.length).toBe(0)
+    } finally {
+      __resetShippingTestOverrides()
+      __resetRelayListTestOverrides()
+    }
+  })
+
+  it("persists every target in a journal event before cleaning its key", async () => {
+    const harness = createShippingReadHarness("address", {
+      includeSecondAddress: true,
+    })
+    harness.install()
+
+    try {
+      expect(
+        await getShippingOptionsByCoordinates([harness.coordinate])
+      ).toEqual([])
+      expect(harness.fallbackStorage.length).toBe(1)
+      __resetShippingTestOverrides()
+      __resetRelayListTestOverrides()
+
+      harness.omitDeletion()
+      harness.restorePrimaryWrites()
+      harness.install()
+      expect(
+        await getShippingOptionsByCoordinates([harness.coordinate])
+      ).toEqual([])
+      expect(
+        harness
+          .cachedTombstones()
+          .map((row) => row.addressId)
+          .sort()
+      ).toEqual([harness.coordinate, harness.secondCoordinate].sort())
+      expect(harness.fallbackStorage.length).toBe(0)
+    } finally {
+      __resetShippingTestOverrides()
+      __resetRelayListTestOverrides()
+    }
+  })
+
+  it("survives a fresh runtime when the second event journal write fails", async () => {
+    const harness = createShippingReadHarness("address", {
+      includeSecondDeletionEvent: true,
+    })
+    harness.fallbackStorage.failEventWriteAt = 2
+    harness.install()
+
+    try {
+      await expect(
+        getShippingOptionsByCoordinates(harness.coordinates)
+      ).rejects.toThrow(
+        "Fixed shipping deletion evidence could not be retained"
+      )
+      expect(
+        Array.from(harness.fallbackStorage.entries.keys()).some((key) =>
+          key.startsWith(FALLBACK_PENDING_PREFIX)
+        )
+      ).toBe(true)
+
+      __resetShippingTestOverrides()
+      __resetRelayListTestOverrides()
+      harness.omitDeletion()
+      harness.install()
+      expect(
+        await getShippingOptionsByCoordinates(harness.coordinates)
+      ).toEqual([])
+    } finally {
+      __resetShippingTestOverrides()
+      __resetRelayListTestOverrides()
+    }
   })
 })

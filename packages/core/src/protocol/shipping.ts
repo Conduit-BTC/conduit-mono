@@ -45,7 +45,20 @@ const SHIPPING_DELETION_READ_LIMIT = 300
 const SHIPPING_OPTION_READ_CONCURRENCY = 3
 const SHIPPING_OPTION_FRONTIER_CONFLICT_LIMIT = 2
 const SHIPPING_TOMBSTONE_PREFIX = "shipping:"
+const SHIPPING_TOMBSTONE_FALLBACK_BASE =
+  "conduit:shipping-tombstone-fallback:v1:"
+const SHIPPING_TOMBSTONE_FALLBACK_EVENT_PREFIX = `${SHIPPING_TOMBSTONE_FALLBACK_BASE}event:`
+const SHIPPING_TOMBSTONE_FALLBACK_PENDING_PREFIX = `${SHIPPING_TOMBSTONE_FALLBACK_BASE}pending:`
 const HEX_64 = /^[0-9a-f]{64}$/i
+let shippingFallbackBatchSequence = 0
+
+export interface ShippingDeletionFallbackStorage {
+  readonly length: number
+  key(index: number): string | null
+  getItem(key: string): string | null
+  setItem(key: string, value: string): void
+  removeItem(key: string): void
+}
 
 export interface ShippingTestOverrides {
   fetchEventsFanoutDetailed?: typeof fetchEventsFanoutDetailed
@@ -61,6 +74,7 @@ export interface ShippingTestOverrides {
   putCachedOptionFrontiers?: (
     rows: CachedShippingOptionFrontier[]
   ) => Promise<void>
+  deletionFallbackStorage?: ShippingDeletionFallbackStorage | null
   now?: () => number
 }
 
@@ -952,6 +966,203 @@ function shippingTombstonesFromDeletionEvent(
   return Array.from(rows.values())
 }
 
+function getShippingDeletionFallbackStorage(): ShippingDeletionFallbackStorage | null {
+  if (shippingTestOverrides.deletionFallbackStorage !== undefined) {
+    return shippingTestOverrides.deletionFallbackStorage
+  }
+  if (typeof window === "undefined") return null
+  return window.localStorage
+}
+
+function parseShippingDeletionFallbackEvent(
+  value: unknown,
+  expectedEventId?: string
+): SignedPublicNostrEvent {
+  const event = value as SignedPublicNostrEvent
+  if (
+    !isValidSignedPublicNostrEvent(event) ||
+    event.kind !== EVENT_KINDS.DELETION ||
+    (expectedEventId !== undefined && event.id !== expectedEventId)
+  ) {
+    throw new Error("Invalid fixed shipping deletion fallback")
+  }
+  const cloned = cloneSignedEvent(event)
+  if (
+    shippingTombstonesFromDeletionEvent(new NDKEvent(undefined, cloned))
+      .length === 0
+  ) {
+    throw new Error("Invalid fixed shipping deletion fallback")
+  }
+  return cloned
+}
+
+function parseShippingDeletionFallbackJson(raw: string): unknown {
+  try {
+    return JSON.parse(raw)
+  } catch {
+    throw new Error("Invalid fixed shipping deletion fallback")
+  }
+}
+
+function snapshotShippingDeletionFallbackKeys(
+  storage: ShippingDeletionFallbackStorage
+): string[] {
+  const expectedLength = storage.length
+  const keys: string[] = []
+  for (let index = 0; index < expectedLength; index += 1) {
+    const key = storage.key(index)
+    if (key === null) {
+      throw new Error("Fixed shipping deletion fallback changed during read")
+    }
+    keys.push(key)
+  }
+  if (storage.length !== expectedLength) {
+    throw new Error("Fixed shipping deletion fallback changed during read")
+  }
+  return keys.sort()
+}
+
+function loadShippingDeletionFallback(): {
+  events: SignedPublicNostrEvent[]
+  pendingKeys: string[]
+} {
+  const storage = getShippingDeletionFallbackStorage()
+  if (!storage) return { events: [], pendingKeys: [] }
+
+  const firstKeySnapshot = snapshotShippingDeletionFallbackKeys(storage)
+  const secondKeySnapshot = snapshotShippingDeletionFallbackKeys(storage)
+  if (
+    firstKeySnapshot.length !== secondKeySnapshot.length ||
+    firstKeySnapshot.some((key, index) => key !== secondKeySnapshot[index])
+  ) {
+    throw new Error("Fixed shipping deletion fallback changed during read")
+  }
+
+  const eventKeys: string[] = []
+  const pendingKeys: string[] = []
+  for (const key of secondKeySnapshot) {
+    if (key.startsWith(SHIPPING_TOMBSTONE_FALLBACK_EVENT_PREFIX)) {
+      eventKeys.push(key)
+    } else if (key.startsWith(SHIPPING_TOMBSTONE_FALLBACK_PENDING_PREFIX)) {
+      pendingKeys.push(key)
+    }
+  }
+
+  const events = new Map<string, SignedPublicNostrEvent>()
+  for (const key of uniqueStrings(eventKeys)) {
+    const raw = storage.getItem(key)
+    // A concurrent writer may replace a pending snapshot with per-event keys,
+    // or a migrator may remove a covered key. Never authorize from a torn
+    // enumeration; a later read can retry against the stable journal/DB state.
+    if (raw === null) {
+      throw new Error("Fixed shipping deletion fallback changed during read")
+    }
+    const eventId = key.slice(SHIPPING_TOMBSTONE_FALLBACK_EVENT_PREFIX.length)
+    if (!HEX_64.test(eventId)) {
+      throw new Error("Invalid fixed shipping deletion fallback")
+    }
+    const event = parseShippingDeletionFallbackEvent(
+      parseShippingDeletionFallbackJson(raw),
+      eventId
+    )
+    events.set(event.id, event)
+  }
+
+  for (const key of uniqueStrings(pendingKeys)) {
+    const raw = storage.getItem(key)
+    if (raw === null) {
+      throw new Error("Fixed shipping deletion fallback changed during read")
+    }
+    const parsed = parseShippingDeletionFallbackJson(raw) as {
+      version?: unknown
+      events?: unknown
+    }
+    if (
+      parsed === null ||
+      typeof parsed !== "object" ||
+      parsed.version !== 1 ||
+      !Array.isArray(parsed.events) ||
+      parsed.events.length === 0
+    ) {
+      throw new Error("Invalid fixed shipping deletion fallback")
+    }
+    for (const candidate of parsed.events) {
+      const event = parseShippingDeletionFallbackEvent(candidate)
+      events.set(event.id, event)
+    }
+  }
+
+  return {
+    events: Array.from(events.values()).sort((a, b) =>
+      a.id.localeCompare(b.id)
+    ),
+    pendingKeys: uniqueStrings(pendingKeys),
+  }
+}
+
+function createShippingDeletionFallbackPendingKey(): string {
+  shippingFallbackBatchSequence += 1
+  const random =
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `${shippingNow()}-${shippingFallbackBatchSequence}-${Math.random().toString(36).slice(2)}`
+  return `${SHIPPING_TOMBSTONE_FALLBACK_PENDING_PREFIX}${random}`
+}
+
+function storeShippingDeletionFallback(
+  rows: readonly CachedProductTombstone[]
+): void {
+  const storage = getShippingDeletionFallbackStorage()
+  if (!storage) {
+    throw new Error("Fixed shipping deletion fallback is unavailable")
+  }
+
+  const events = signedDeletionEventsFromShippingTombstones(rows)
+  const expectedEventIds = uniqueStrings(rows.map((row) => row.deletionEventId))
+  if (
+    events.length !== expectedEventIds.length ||
+    events.some((event) => !expectedEventIds.includes(event.id))
+  ) {
+    throw new Error("Invalid fixed shipping deletion fallback")
+  }
+
+  // The snapshot is one atomic localStorage write containing the complete
+  // batch. If any later per-event write fails, a fresh runtime can still
+  // recover every signed withdrawal instead of seeing a partial journal.
+  const pendingKey = createShippingDeletionFallbackPendingKey()
+  storage.setItem(
+    pendingKey,
+    JSON.stringify({
+      version: 1,
+      events: events.map(cloneSignedEvent),
+    })
+  )
+  for (const event of events) {
+    storage.setItem(
+      `${SHIPPING_TOMBSTONE_FALLBACK_EVENT_PREFIX}${event.id}`,
+      JSON.stringify(cloneSignedEvent(event))
+    )
+  }
+  storage.removeItem(pendingKey)
+}
+
+function removeShippingDeletionFallback(
+  eventIds: readonly string[],
+  pendingKeys: readonly string[] = []
+): void {
+  const storage = getShippingDeletionFallbackStorage()
+  if (!storage) return
+  for (const eventId of uniqueStrings(eventIds)) {
+    storage.removeItem(`${SHIPPING_TOMBSTONE_FALLBACK_EVENT_PREFIX}${eventId}`)
+  }
+  for (const key of uniqueStrings(pendingKeys)) {
+    if (!key.startsWith(SHIPPING_TOMBSTONE_FALLBACK_PENDING_PREFIX)) {
+      throw new Error("Invalid fixed shipping deletion fallback key")
+    }
+    storage.removeItem(key)
+  }
+}
+
 function selectShippingTombstoneUpdates(
   rows: readonly CachedProductTombstone[],
   existingRows: readonly CachedProductTombstone[]
@@ -999,15 +1210,121 @@ function selectShippingTombstoneUpdates(
 async function loadCachedShippingTombstones(
   targetIds: readonly string[]
 ): Promise<CachedProductTombstone[]> {
-  if (shippingTestOverrides.getCachedDeletionTombstones) {
-    return (
-      await shippingTestOverrides.getCachedDeletionTombstones(targetIds)
-    ).filter((row) => row.id.startsWith(SHIPPING_TOMBSTONE_PREFIX))
-  }
-  return (await db.productTombstones.bulkGet([...targetIds])).filter(
-    (row): row is CachedProductTombstone =>
-      row !== undefined && row.id.startsWith(SHIPPING_TOMBSTONE_PREFIX)
+  // Read and validate the independent journal before consulting IndexedDB. A
+  // prior tab may have observed a withdrawal while the primary write path was
+  // transiently unavailable.
+  const fallback = loadShippingDeletionFallback()
+  const fallbackEvents = fallback.events
+  const fallbackRows = fallbackEvents.flatMap((event) =>
+    shippingTombstonesFromDeletionEvent(new NDKEvent(undefined, event))
   )
+  if (fallbackRows.length > 0) {
+    try {
+      await persistPrimaryShippingTombstones(fallbackRows)
+      removeShippingDeletionFallback(
+        fallbackEvents.map((event) => event.id),
+        fallback.pendingKeys
+      )
+    } catch {
+      // The validated fallback remains restart-durable and participates in the
+      // current authorization decision until the primary cache recovers.
+    }
+  }
+
+  const persistedRows = await loadPrimaryShippingTombstones(targetIds)
+  return selectShippingTombstoneUpdates(
+    [
+      ...persistedRows.filter(isValidCachedShippingTombstone),
+      ...fallbackRows.filter((row) => targetIds.includes(row.id)),
+    ],
+    []
+  )
+}
+
+async function loadPrimaryShippingTombstones(
+  targetIds: readonly string[]
+): Promise<CachedProductTombstone[]> {
+  const rows = shippingTestOverrides.getCachedDeletionTombstones
+    ? await shippingTestOverrides.getCachedDeletionTombstones(targetIds)
+    : (await db.productTombstones.bulkGet([...targetIds])).filter(
+        (row): row is CachedProductTombstone => row !== undefined
+      )
+  return rows.filter((row) => row.id.startsWith(SHIPPING_TOMBSTONE_PREFIX))
+}
+
+function isValidCachedShippingTombstone(row: CachedProductTombstone): boolean {
+  if (!row.signedEvent || !isValidSignedPublicNostrEvent(row.signedEvent)) {
+    return false
+  }
+  try {
+    return shippingTombstonesFromDeletionEvent(
+      new NDKEvent(undefined, row.signedEvent)
+    ).some(
+      (derived) =>
+        derived.id === row.id &&
+        derived.pubkey === row.pubkey &&
+        derived.deletedAt === row.deletedAt &&
+        derived.deletionEventId === row.deletionEventId
+    )
+  } catch {
+    return false
+  }
+}
+
+function primaryShippingTombstoneCovers(
+  expected: CachedProductTombstone,
+  persisted: CachedProductTombstone
+): boolean {
+  if (
+    expected.id !== persisted.id ||
+    expected.pubkey !== persisted.pubkey ||
+    !isValidCachedShippingTombstone(persisted)
+  ) {
+    return false
+  }
+  return expected.addressId
+    ? persisted.addressId === expected.addressId &&
+        persisted.deletedAt >= expected.deletedAt
+    : persisted.eventId === expected.eventId
+}
+
+async function persistPrimaryShippingTombstones(
+  rows: CachedProductTombstone[]
+): Promise<void> {
+  const events = signedDeletionEventsFromShippingTombstones(rows)
+  const expectedEventIds = uniqueStrings(rows.map((row) => row.deletionEventId))
+  if (
+    events.length !== expectedEventIds.length ||
+    events.some((event) => !expectedEventIds.includes(event.id))
+  ) {
+    throw new Error("Invalid fixed shipping deletion evidence")
+  }
+  // A journal key owns the complete signed event, not only the target that
+  // happened to be queried. Persist every valid shipping target before that
+  // key can be removed so a multi-target withdrawal cannot be partially lost.
+  const rowsToPersist = selectShippingTombstoneUpdates(
+    [
+      ...events.flatMap((event) =>
+        shippingTombstonesFromDeletionEvent(new NDKEvent(undefined, event))
+      ),
+      ...rows,
+    ],
+    []
+  )
+  await storeCachedShippingTombstones(rowsToPersist)
+  const persistedRows = await loadPrimaryShippingTombstones(
+    uniqueStrings(rowsToPersist.map((row) => row.id))
+  )
+  if (
+    rowsToPersist.some(
+      (expected) =>
+        !persistedRows.some((persisted) =>
+          primaryShippingTombstoneCovers(expected, persisted)
+        )
+    )
+  ) {
+    throw new Error("Fixed shipping deletion evidence was not retained")
+  }
 }
 
 async function storeCachedShippingTombstones(
@@ -1019,7 +1336,10 @@ async function storeCachedShippingTombstones(
     const existingRows = shippingTestOverrides.getCachedDeletionTombstones
       ? await shippingTestOverrides.getCachedDeletionTombstones(ids)
       : []
-    const rowsToStore = selectShippingTombstoneUpdates(rows, existingRows)
+    const rowsToStore = selectShippingTombstoneUpdates(
+      rows,
+      existingRows.filter(isValidCachedShippingTombstone)
+    )
     if (rowsToStore.length > 0) {
       await shippingTestOverrides.putCachedDeletionTombstones(rowsToStore)
     }
@@ -1031,7 +1351,10 @@ async function storeCachedShippingTombstones(
     const existingRows = (await db.productTombstones.bulkGet(ids)).filter(
       (row): row is CachedProductTombstone => row !== undefined
     )
-    const rowsToStore = selectShippingTombstoneUpdates(rows, existingRows)
+    const rowsToStore = selectShippingTombstoneUpdates(
+      rows,
+      existingRows.filter(isValidCachedShippingTombstone)
+    )
     if (rowsToStore.length > 0) {
       await db.productTombstones.bulkPut(rowsToStore)
     }
@@ -1053,10 +1376,34 @@ function rememberVolatileShippingTombstones(
 async function flushVolatileShippingTombstones(): Promise<boolean> {
   const pendingRows = Array.from(volatileShippingDeletionTombstones.values())
   if (pendingRows.length === 0) return true
+  let fallbackStored = false
   try {
-    await storeCachedShippingTombstones(pendingRows)
+    // This must happen before the first async IndexedDB operation. A tab can
+    // close or another tab can read while IndexedDB is stalled, so the exact
+    // signed withdrawal needs an independent write-ahead record first.
+    storeShippingDeletionFallback(pendingRows)
+    fallbackStored = true
   } catch {
-    return false
+    // IndexedDB may still retain and verify the evidence below.
+  }
+  let primaryStored = false
+  try {
+    await persistPrimaryShippingTombstones(pendingRows)
+    primaryStored = true
+  } catch {
+    // The write-ahead journal remains authoritative until primary storage
+    // recovers. If neither store retained the evidence, fail closed below.
+  }
+  if (!fallbackStored && !primaryStored) return false
+  if (primaryStored && fallbackStored) {
+    try {
+      removeShippingDeletionFallback(
+        pendingRows.map((row) => row.deletionEventId)
+      )
+    } catch {
+      // The primary cache already retained exact signed evidence. Cleanup
+      // failure can only leave a safe duplicate.
+    }
   }
   for (const row of pendingRows) {
     if (volatileShippingDeletionTombstones.get(row.id) === row) {
@@ -1085,7 +1432,9 @@ async function rememberObservedShippingDeletionEvidence(
     }
   }
   rememberVolatileShippingTombstones(observedRows)
-  await flushVolatileShippingTombstones()
+  if (!(await flushVolatileShippingTombstones())) {
+    throw new Error("Fixed shipping deletion evidence could not be retained")
+  }
   return observedRows
 }
 
