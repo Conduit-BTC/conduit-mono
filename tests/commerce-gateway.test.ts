@@ -26,6 +26,7 @@ import {
   __resetRelayHealth,
   __resetRelayListTestOverrides,
   __setRelayListTestOverrides,
+  applyE2eRelayIsolation,
   recordRelayFailure,
 } from "@conduit/core"
 import { config, EVENT_KINDS } from "@conduit/core"
@@ -53,6 +54,7 @@ let cachedProducts: CachedProduct[] = []
 let cachedProductTombstones: CachedProductTombstone[] = []
 let cachedProfiles = new Map<string, CachedProfile>()
 let cachedOrderMessages: CachedOrderMessage[] = []
+const originalConfig = structuredClone(config)
 
 function makeFollowListRead(input: {
   pubkey: string
@@ -357,6 +359,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  Object.assign(config, structuredClone(originalConfig))
   __resetCommerceTestOverrides()
   __resetRelayHealth()
   __resetRelayListTestOverrides()
@@ -3461,6 +3464,28 @@ describe("commerce gateway", () => {
       "wss://second-product-source.conduit.market/path",
     ])
     expect(result.data["live-merchant"]?.displayName).toBe("Live Merchant")
+  })
+
+  it("drops public profile hints after planning during E2E isolation", async () => {
+    const isolatedRelayUrl = "ws://127.0.0.1:7777"
+    let seenRelayUrls: string[] | undefined
+    Object.assign(config, applyE2eRelayIsolation(config, [isolatedRelayUrl]))
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (_filter, options) => {
+        seenRelayUrls = options?.relayUrls
+        return []
+      },
+    })
+
+    await getProfiles({
+      pubkeys: ["isolated-merchant"],
+      skipCache: true,
+      relayHintsByPubkey: {
+        "isolated-merchant": ["wss://relay.damus.io"],
+      },
+    })
+
+    expect(seenRelayUrls).toEqual([isolatedRelayUrl])
   })
 
   it("bounds broad progressive product author chunk fanout", async () => {

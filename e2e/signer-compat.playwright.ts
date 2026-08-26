@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test"
 import {
   TEST_BUYER_PUBKEY,
+  TEST_LOCKED_SIGNER_PUBKEY,
   TEST_MERCHANT_PUBKEY,
   installLateTestSigner,
   installLockedTestSigner,
@@ -357,10 +358,10 @@ test("merchant locked signer shows waiting state then connects after unlock @mer
     timeout: 5_000,
   })
 
-  await unlockTestSigner(page, TEST_MERCHANT_PUBKEY)
+  await unlockTestSigner(page, TEST_LOCKED_SIGNER_PUBKEY)
 
   await expect
-    .poll(() => storedAuthMatches(page, TEST_MERCHANT_PUBKEY), {
+    .poll(() => storedAuthMatches(page, TEST_LOCKED_SIGNER_PUBKEY), {
       timeout: 10_000,
     })
     .toBe(true)
@@ -369,7 +370,7 @@ test("merchant locked signer shows waiting state then connects after unlock @mer
 test("merchant remembered auth falls back to explicit retry when signer needs activation @merchant", async ({
   page,
 }) => {
-  await seedStoredAuth(page, TEST_MERCHANT_PUBKEY)
+  await seedStoredAuth(page, TEST_LOCKED_SIGNER_PUBKEY)
   await installLockedTestSigner(page)
   await page.goto(merchantUrl)
 
@@ -388,7 +389,7 @@ test("merchant remembered auth falls back to explicit retry when signer needs ac
     timeout: 5_000,
   })
 
-  await unlockTestSigner(page, TEST_MERCHANT_PUBKEY)
+  await unlockTestSigner(page, TEST_LOCKED_SIGNER_PUBKEY)
 
   await expect(
     page.getByRole("heading", { name: "Merchant Portal" })

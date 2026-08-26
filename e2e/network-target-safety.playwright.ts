@@ -3,8 +3,10 @@ import { randomUUID } from "node:crypto"
 import { expect, test } from "@playwright/test"
 
 const marketPort = process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"
+const relayPort = process.env.PLAYWRIGHT_RELAY_PORT ?? "7777"
 const marketOrigin = `http://127.0.0.1:${marketPort}`
 const marketWebSocketOrigin = `ws://127.0.0.1:${marketPort}`
+const relayWebSocketUrl = `ws://127.0.0.1:${relayPort}`
 const auditPathPrefix = "/__conduit_network_audit__/"
 const harnessUrl = "/src/test-fixtures/network-target-audit-harness.tsx"
 
@@ -151,7 +153,10 @@ test("market blocks untrusted media, fetch, and relay targets before browser dis
 
   await context.routeWebSocket(/^(?:ws|wss):\/\//, async (socket) => {
     const socketUrl = new URL(socket.url())
-    if (socketUrl.origin === marketWebSocketOrigin) {
+    if (
+      socketUrl.origin === marketWebSocketOrigin ||
+      socketUrl.origin === relayWebSocketUrl
+    ) {
       const server = socket.connectToServer()
       socket.onMessage((message) => server.send(message))
       server.onMessage((message) => socket.send(message))
@@ -229,7 +234,7 @@ test("market blocks untrusted media, fetch, and relay targets before browser dis
   ])
   expect(auditResult.acceptedRelayUrls).toEqual([publicRelayUrl])
   expect(auditResult.relayStatuses).toEqual([
-    { relayUrl: publicRelayUrl, status: "success" },
+    { relayUrl: relayWebSocketUrl, status: "success" },
   ])
 
   const auditRoot = page.getByTestId("network-target-audit-root")
@@ -250,7 +255,7 @@ test("market blocks untrusted media, fetch, and relay targets before browser dis
       { url: publicMediaUrl, resourceType: "image" },
     ].sort((left, right) => left.url.localeCompare(right.url))
   )
-  expect(observedWebSockets).toEqual([publicRelayUrl])
+  expect(observedWebSockets).toEqual([])
   expect(
     observedHttp.every(({ url }) =>
       new URL(url).pathname.startsWith(auditPathPrefix)

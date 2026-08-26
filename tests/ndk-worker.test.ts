@@ -4,6 +4,8 @@ import {
   __resetNdkTestState,
   __setNdkVerifyTimeoutMsForTests,
   __resetRelayHealth,
+  applyE2eRelayIsolation,
+  config,
   disconnectNdk,
   EVENT_KINDS,
   fetchEventsFanout,
@@ -113,6 +115,7 @@ function sequencedRelayWebSocket(
 describe("NDK relay worker verification fallback", () => {
   const originalWebSocket = globalThis.WebSocket
   const originalWorker = globalThis.Worker
+  const originalConfig = structuredClone(config)
   let workerPostMessages = 0
   let workerTerminates = 0
 
@@ -124,6 +127,7 @@ describe("NDK relay worker verification fallback", () => {
   })
 
   afterEach(() => {
+    Object.assign(config, structuredClone(originalConfig))
     disconnectNdk()
     __resetNdkTestState()
     __resetRelayHealth()
@@ -137,6 +141,65 @@ describe("NDK relay worker verification fallback", () => {
       writable: true,
       value: originalWorker,
     })
+  })
+
+  it("forces explicit fanout reads onto loopback during E2E isolation", async () => {
+    const isolatedRelayUrl = "ws://127.0.0.1:7777"
+    const openedRelayUrls: string[] = []
+    Object.assign(config, applyE2eRelayIsolation(config, [isolatedRelayUrl]))
+
+    class RecordingWebSocket {
+      static CONNECTING = 0
+      static OPEN = 1
+      static CLOSING = 2
+      static CLOSED = 3
+
+      readyState = RecordingWebSocket.CONNECTING
+      onopen: ((event: Event) => void) | null = null
+      onmessage: ((event: MessageEvent<string>) => void) | null = null
+      onerror: ((event: Event) => void) | null = null
+      onclose: ((event: Event) => void) | null = null
+
+      constructor(readonly url: string) {
+        openedRelayUrls.push(url)
+        queueMicrotask(() => {
+          this.readyState = RecordingWebSocket.OPEN
+          this.onopen?.(new Event("open"))
+        })
+      }
+
+      send(payload: string): void {
+        const frame = JSON.parse(payload) as [string, string]
+        if (frame[0] !== "REQ") return
+        queueMicrotask(() => {
+          this.onmessage?.({
+            data: JSON.stringify(["EOSE", frame[1]]),
+          } as MessageEvent<string>)
+        })
+      }
+
+      close(): void {
+        this.readyState = RecordingWebSocket.CLOSED
+        this.onclose?.(new Event("close"))
+      }
+    }
+
+    Object.defineProperty(globalThis, "WebSocket", {
+      configurable: true,
+      writable: true,
+      value: RecordingWebSocket,
+    })
+
+    await fetchEventsFanoutDetailed(
+      { kinds: [EVENT_KINDS.PROFILE] },
+      {
+        relayUrls: ["wss://relay.damus.io"],
+        skipHealthFilter: true,
+        reuseRelayConnections: false,
+      }
+    )
+
+    expect(openedRelayUrls).toEqual([isolatedRelayUrl])
   })
 
   it("fails closed when the verification worker errors after postMessage", async () => {
@@ -891,6 +954,137 @@ describe("NDK relay worker verification fallback", () => {
 
     activeController.abort()
     await expect(activeRead).rejects.toMatchObject({ name: "AbortError" })
+  })
+
+  it("degrades queue-capacity rejection per relay without poisoning later reads", async () => {
+    const constructedUrls: string[] = []
+    const retainedEvent = {
+      kind: EVENT_KINDS.PROFILE,
+      created_at: 10,
+      tags: [],
+      content: JSON.stringify({ name: "retained during saturation" }),
+      pubkey:
+        "fcc22954ef7f44a34c04c3bae8ed496284c62a50eafa93afb0f33ba8fbc09c24",
+      id: "ba28098af19de7a52fb993aa7d81357e88bc0570e6f8485d1fbc2a2a3fd86efa",
+      sig: "ddc645e1c37b458803e1a455296465382979f3629f550fbef1eafbc167b11078b52848d739d4b2fc55c1da36900e4060a24d15b76a6d32d968ee7afc564316d4",
+    } satisfies NostrEvent
+    let liveRequests = 0
+    let maximumLiveRequests = 0
+
+    class CapacityWebSocket {
+      static CONNECTING = 0
+      static OPEN = 1
+      static CLOSING = 2
+      static CLOSED = 3
+
+      readyState = CapacityWebSocket.CONNECTING
+      onopen: ((event: Event) => void) | null = null
+      onmessage: ((event: MessageEvent<string>) => void) | null = null
+      onerror: ((event: Event) => void) | null = null
+      onclose: ((event: Event) => void) | null = null
+      private readonly liveSubIds = new Set<string>()
+
+      constructor(private readonly url: string) {
+        constructedUrls.push(url)
+        queueMicrotask(() => {
+          this.readyState = CapacityWebSocket.OPEN
+          this.onopen?.(new Event("open"))
+        })
+      }
+
+      send(payload: string): void {
+        const parsed = JSON.parse(payload) as [string, string]
+        const [type, subId] = parsed
+        if (type === "CLOSE") {
+          if (this.liveSubIds.delete(subId)) liveRequests -= 1
+          return
+        }
+        if (type !== "REQ") return
+
+        if (!this.liveSubIds.has(subId)) {
+          this.liveSubIds.add(subId)
+          liveRequests += 1
+          maximumLiveRequests = Math.max(maximumLiveRequests, liveRequests)
+        }
+        const relayEvent =
+          this.url === "wss://capacity-0.example" ? retainedEvent : undefined
+        if (!relayEvent && this.url !== "wss://normal-read.example") return
+
+        queueMicrotask(() => {
+          if (relayEvent) {
+            this.onmessage?.({
+              data: JSON.stringify(["EVENT", subId, relayEvent]),
+            } as MessageEvent<string>)
+          }
+          this.onmessage?.({
+            data: JSON.stringify(["EOSE", subId]),
+          } as MessageEvent<string>)
+        })
+      }
+
+      close(): void {
+        this.readyState = CapacityWebSocket.CLOSED
+        this.onclose?.(new Event("close"))
+      }
+    }
+
+    Object.defineProperty(globalThis, "WebSocket", {
+      configurable: true,
+      writable: true,
+      value: CapacityWebSocket,
+    })
+    Object.defineProperty(globalThis, "Worker", {
+      configurable: true,
+      writable: true,
+      value: undefined,
+    })
+
+    const relayUrls = Array.from(
+      { length: 137 },
+      (_, index) => `wss://capacity-${index}.example`
+    )
+    const result = await fetchEventsFanoutDetailed(
+      { kinds: [EVENT_KINDS.PROFILE] },
+      {
+        relayUrls,
+        connectTimeoutMs: 5,
+        fetchTimeoutMs: 5,
+        reuseRelayConnections: false,
+      }
+    )
+
+    expect(result.events.map(({ id }) => id)).toEqual([retainedEvent.id])
+    expect(result.relays.map(({ relayUrl }) => relayUrl)).toEqual(relayUrls)
+    expect(result.relays).toContainEqual({
+      relayUrl: "wss://capacity-0.example",
+      status: "success",
+      eventCount: 1,
+    })
+    expect(constructedUrls).not.toContain("wss://capacity-136.example")
+    expect(result.relays).toContainEqual({
+      relayUrl: "wss://capacity-136.example",
+      status: "failed",
+      eventCount: 0,
+    })
+    expect(getRelayHealth("wss://capacity-136.example")).toBeUndefined()
+    expect(maximumLiveRequests).toBeLessThanOrEqual(8)
+
+    const laterRead = await fetchEventsFanoutDetailed(
+      { kinds: [EVENT_KINDS.PROFILE] },
+      {
+        relayUrls: ["wss://normal-read.example"],
+        connectTimeoutMs: 5,
+        fetchTimeoutMs: 5,
+        reuseRelayConnections: false,
+      }
+    )
+    expect(laterRead.relays).toEqual([
+      {
+        relayUrl: "wss://normal-read.example",
+        status: "success",
+        eventCount: 0,
+      },
+    ])
   })
 
   it("cancels pending worker verification and clears stale crypto work", async () => {

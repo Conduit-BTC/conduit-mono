@@ -1,3 +1,5 @@
+import { config } from "../config"
+import { getConfiguredIsolatedE2eRelayUrl } from "./relay-settings"
 import type { SignedPublicNostrEvent } from "./signed-event"
 
 export type ExactRelayWriteStatus = "acked" | "rejected" | "timed_out"
@@ -32,6 +34,11 @@ export function publishSignedEventFrameToRelay(input: {
   timeoutMs: number
   createWebSocket?: (relayUrl: string) => WebSocket
 }): Promise<ExactRelayWriteStatus> {
+  const relayUrl = config.e2eRelayIsolationEnabled
+    ? getConfiguredIsolatedE2eRelayUrl()
+    : input.relayUrl
+  if (!relayUrl) return Promise.resolve("timed_out")
+
   const eventId = input.signedEvent.id
   const frame = serializeEventFrame(input.signedEvent)
 
@@ -63,8 +70,8 @@ export function publishSignedEventFrameToRelay(input: {
 
     try {
       socket = input.createWebSocket
-        ? input.createWebSocket(input.relayUrl)
-        : new WebSocket(input.relayUrl)
+        ? input.createWebSocket(relayUrl)
+        : new WebSocket(relayUrl)
     } catch {
       resolve("timed_out")
       return
