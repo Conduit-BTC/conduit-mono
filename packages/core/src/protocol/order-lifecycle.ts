@@ -723,6 +723,20 @@ export async function recordObservedOrderPaymentReceipt(
   })
 }
 
+const PARTIAL_RECEIPT_OBSERVATION_WARNING =
+  "The public receipt check was incomplete. Check your wallet before trying to pay again."
+const UNAVAILABLE_RECEIPT_OBSERVATION_WARNING =
+  "Public receipt relays were unavailable. Check your wallet before trying to pay again."
+
+function isReceiptObservationCoverageWarning(
+  lastError: string | undefined
+): boolean {
+  return (
+    lastError === PARTIAL_RECEIPT_OBSERVATION_WARNING ||
+    lastError === UNAVAILABLE_RECEIPT_OBSERVATION_WARNING
+  )
+}
+
 /**
  * Record the end of an exact-receipt observation window without allowing a
  * stale observer to overwrite payment or receipt evidence recorded elsewhere.
@@ -754,8 +768,8 @@ export async function recordOrderPaymentReceiptTimeout(
         lifecycle.paymentStatus === "paid" ? "paid" : "ambiguous"
       const lastError =
         coverage === "partial"
-          ? "The public receipt check was incomplete. Check your wallet before trying to pay again."
-          : "Public receipt relays were unavailable. Check your wallet before trying to pay again."
+          ? PARTIAL_RECEIPT_OBSERVATION_WARNING
+          : UNAVAILABLE_RECEIPT_OBSERVATION_WARNING
       if (
         lifecycle.zapReceiptStatus === "timed_out" &&
         lifecycle.zapReceiptObservationCoverage === coverage &&
@@ -775,17 +789,20 @@ export async function recordOrderPaymentReceiptTimeout(
     }
 
     if (lifecycle.paymentStatus === "paid") {
+      const lastError = isReceiptObservationCoverageWarning(lifecycle.lastError)
+        ? undefined
+        : lifecycle.lastError
       if (
         lifecycle.zapReceiptStatus === "receipt_not_observed" &&
         lifecycle.zapReceiptObservationCoverage === undefined &&
-        lifecycle.lastError === undefined
+        lifecycle.lastError === lastError
       ) {
         return { status: "preserved", lifecycle }
       }
       const recorded = mergeOrderLifecyclePatch(lifecycle, {
         zapReceiptStatus: "receipt_not_observed",
         zapReceiptObservationCoverage: undefined,
-        lastError: undefined,
+        lastError,
       })
       await db.orderLifecycles.put(recorded)
       return { status: "recorded", lifecycle: recorded }

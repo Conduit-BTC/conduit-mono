@@ -711,6 +711,50 @@ describe("order payment admission", () => {
     })
   })
 
+  it("preserves an unrelated paid proof-delivery error after complete receipt coverage", async () => {
+    const paidProofRetry: OrderLifecycle = {
+      ...lifecycle,
+      invoiceStatus: "received",
+      paymentStatus: "paid",
+      proofDeliveryStatus: "retry_needed",
+      invoice: "lnbc1public",
+      preimage: "payment-preimage",
+      zapRequestId: "zap-request-current",
+      zapReceiptStatus: "timed_out",
+      zapReceiptObservationCoverage: "partial",
+      lastError: "Proof delivery failed",
+    }
+
+    await withMockOrderPaymentDb(
+      { lifecycle: paidProofRetry },
+      async (state) => {
+        const timeout = await recordOrderPaymentReceiptTimeout(
+          paidProofRetry.orderId,
+          paidProofRetry.zapRequestId!,
+          "complete"
+        )
+
+        expect(timeout.status).toBe("recorded")
+        expect(state.lifecycle()).toMatchObject({
+          paymentStatus: "paid",
+          proofDeliveryStatus: "retry_needed",
+          zapReceiptStatus: "receipt_not_observed",
+          lastError: "Proof delivery failed",
+        })
+        expect(state.lifecycle()?.zapReceiptObservationCoverage).toBeUndefined()
+        expect(state.lifecyclePutCount()).toBe(1)
+
+        const repeated = await recordOrderPaymentReceiptTimeout(
+          paidProofRetry.orderId,
+          paidProofRetry.zapRequestId!,
+          "complete"
+        )
+        expect(repeated.status).toBe("preserved")
+        expect(state.lifecyclePutCount()).toBe(1)
+      }
+    )
+  })
+
   it.each(["partial", "unavailable"] as const)(
     "persists %s relay coverage without claiming the receipt was absent",
     async (coverage) => {
