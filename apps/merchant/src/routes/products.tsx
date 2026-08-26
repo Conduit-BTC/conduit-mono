@@ -103,6 +103,7 @@ import {
   buildQueuedProductDeletionNotice,
   formatProductRelayUrls,
   getProductDeliveryNoticeVariant,
+  reconcilePendingProductDeletionRetry,
   type ProductDeliveryNotice,
   type ProductWriteAction,
 } from "../lib/product-delivery"
@@ -120,10 +121,12 @@ import {
   productDeletionJobToPublishResult,
 } from "../lib/product-deletion-delivery"
 import {
-  deliverSignedProductEventBundle,
+  buildProductRemovalDeletionTargets,
+  deliverSignedProductWriteBundle,
   getRelayPublishDiagnosticsError,
   signAndPublishProductWriteBundle,
   SignedProductDeliveryError,
+  type SignedProductWriteBundle,
 } from "../lib/product-publishing"
 import {
   getProductFamilyStockDisplay,
@@ -185,7 +188,7 @@ type ProductPublishMutationPayload = {
   form: ProductFormState
   dTag: string
   existing?: MerchantProductFamily
-  signedEvents?: readonly NDKEvent[]
+  signedBundle?: SignedProductWriteBundle
   previousNotice?: ProductDeliveryNotice
 }
 
@@ -689,7 +692,7 @@ async function publishProduct(
   form: ProductFormState,
   dTag: string,
   onSignedLocal: (
-    events: readonly NDKEvent[],
+    bundle: SignedProductWriteBundle,
     authoringTarget: ProductVariationAuthoringTarget
   ) => Promise<void>,
   existing?: MerchantProductFamily
@@ -789,22 +792,19 @@ async function publishProduct(
       previousEventCreatedAt: target.existing?.eventCreatedAt,
       fulfillmentIntent: target.fulfillmentIntent,
     })),
-    deletions: plan.remove.map((target) => ({
-      eventId: target.eventId,
-      addressId: target.addressId,
-    })),
-    onSignedLocal: async (events) => {
+    deletions: buildProductRemovalDeletionTargets(plan.remove),
+    onSignedLocal: async (bundle) => {
       const rootPublishIndex = plan.publish.findIndex(
         (target) => target.dTag === dTag
       )
       const rootEventId =
         rootPublishIndex >= 0
-          ? events[rootPublishIndex]?.id
+          ? bundle.events[rootPublishIndex]?.id
           : plan.desired[0]?.existing?.eventId
       if (!rootEventId) {
         throw new Error("Published product root event is missing")
       }
-      await onSignedLocal(events, {
+      await onSignedLocal(bundle, {
         merchantPubkey,
         productAddressId: plan.desired[0]!.product.id,
         rootEventId,
@@ -1031,9 +1031,9 @@ function ProductsPage() {
 
   const saveMutation = useMutation({
     mutationFn: async (payload: ProductPublishMutationPayload) => {
-      if (payload.signedEvents) {
-        return deliverSignedProductEventBundle(
-          payload.signedEvents,
+      if (payload.signedBundle) {
+        return deliverSignedProductWriteBundle(
+          payload.signedBundle,
           payload.merchantPubkey
         )
       }
@@ -1042,10 +1042,10 @@ function ProductsPage() {
         payload.merchantPubkey,
         payload.form,
         payload.dTag,
-        async (events, authoringTarget) => {
+        async (signedBundle, authoringTarget) => {
           setProductDeliveryRetry({
             action: "publish",
-            payload: { ...payload, signedEvents: events },
+            payload: { ...payload, signedBundle },
           })
           completeLocalProductSave(payload, authoringTarget)
           await showLocalProductProjection("publish", payload.merchantPubkey)
@@ -1055,9 +1055,9 @@ function ProductsPage() {
     },
     onMutate: (payload) => {
       productPublishStartedAtRef.current = Date.now()
-      if (!payload.signedEvents) setProductDeliveryRetry(null)
+      if (!payload.signedBundle) setProductDeliveryRetry(null)
       setProductDeliveryNotice(
-        payload.signedEvents ? buildLocalProductDeliveryNotice("publish") : null
+        payload.signedBundle ? buildLocalProductDeliveryNotice("publish") : null
       )
     },
     onSuccess: async (data, variables) => {
@@ -1070,7 +1070,7 @@ function ProductsPage() {
         app: "merchant",
         eventName: "product_publish_result",
         properties: buildProductPublishResultTelemetryProperties({
-          eventFamily: variables.signedEvents
+          eventFamily: variables.signedBundle
             ? "delivery_retry"
             : variables.existing
               ? "update"
@@ -1090,7 +1090,7 @@ function ProductsPage() {
         app: "merchant",
         eventName: "product_publish_result",
         properties: buildProductPublishResultTelemetryProperties({
-          eventFamily: variables.signedEvents
+          eventFamily: variables.signedBundle
             ? "delivery_retry"
             : variables.existing
               ? "update"
@@ -1229,10 +1229,12 @@ function ProductsPage() {
       return
     }
 
-    setProductDeliveryRetry({
-      action: "delete",
-      payload: { deliveryJobId: job.id },
-    })
+    setProductDeliveryRetry((current) =>
+      reconcilePendingProductDeletionRetry<ProductDeliveryRetryState>(current, {
+        action: "delete",
+        payload: { deliveryJobId: job.id },
+      })
+    )
     setProductDeliveryNotice((current) => {
       if (current?.action === "publish") return current
       return job.deliveryAttemptCount === 0
@@ -1262,7 +1264,7 @@ function ProductsPage() {
 
     if (
       productDeliveryRetry?.action === "publish" &&
-      productDeliveryRetry.payload.signedEvents
+      productDeliveryRetry.payload.signedBundle
     ) {
       saveMutation.mutate({
         ...productDeliveryRetry.payload,

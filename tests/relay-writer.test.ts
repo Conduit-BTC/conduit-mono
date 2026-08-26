@@ -1,8 +1,10 @@
-import { describe, expect, it } from "bun:test"
+import { afterEach, describe, expect, it } from "bun:test"
 import { finalizeEvent } from "nostr-tools/pure"
+import { applyE2eRelayIsolation, config } from "@conduit/core"
 import { publishSignedEventFrameToRelay } from "../packages/core/src/protocol/relay-writer"
 
 const SECRET = Uint8Array.from([...new Uint8Array(31), 23])
+const originalConfig = structuredClone(config)
 
 function signedEvent() {
   return finalizeEvent(
@@ -47,6 +49,51 @@ class WriterTestSocket {
 }
 
 describe("exact relay writer", () => {
+  afterEach(() => {
+    Object.assign(config, structuredClone(originalConfig))
+  })
+
+  it("forces explicit writer targets onto loopback during E2E isolation", async () => {
+    const isolatedRelayUrl = "ws://127.0.0.1:7777"
+    const socket = new WriterTestSocket()
+    let openedRelayUrl: string | undefined
+    Object.assign(config, applyE2eRelayIsolation(config, [isolatedRelayUrl]))
+
+    const result = publishSignedEventFrameToRelay({
+      relayUrl: "wss://relay.damus.io",
+      signedEvent: signedEvent(),
+      timeoutMs: 10,
+      createWebSocket: (relayUrl) => {
+        openedRelayUrl = relayUrl
+        return socket as unknown as WebSocket
+      },
+    })
+
+    expect(openedRelayUrl).toBe(isolatedRelayUrl)
+    socket.onerror?.(new Event("error"))
+    await expect(result).resolves.toBe("timed_out")
+  })
+
+  it("preserves an explicit secure writer target outside E2E isolation", async () => {
+    const publicRelayUrl = "wss://relay.damus.io"
+    const socket = new WriterTestSocket()
+    let openedRelayUrl: string | undefined
+
+    const result = publishSignedEventFrameToRelay({
+      relayUrl: publicRelayUrl,
+      signedEvent: signedEvent(),
+      timeoutMs: 10,
+      createWebSocket: (relayUrl) => {
+        openedRelayUrl = relayUrl
+        return socket as unknown as WebSocket
+      },
+    })
+
+    expect(openedRelayUrl).toBe(publicRelayUrl)
+    socket.onerror?.(new Event("error"))
+    await expect(result).resolves.toBe("timed_out")
+  })
+
   it("turns constructor failures into a retryable result", async () => {
     await expect(
       publishSignedEventFrameToRelay({

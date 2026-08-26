@@ -6,6 +6,7 @@ import {
   buildProductDeliveryNotice,
   buildQueuedProductDeletionNotice,
   formatProductRelayUrls,
+  reconcilePendingProductDeletionRetry,
 } from "../apps/merchant/src/lib/product-delivery"
 
 function deliveryResult(
@@ -132,5 +133,29 @@ describe("merchant product delivery notices", () => {
         "wss://five",
       ])
     ).toBe("wss://one, wss://two, wss://three, wss://four, +1 more")
+  })
+
+  it("keeps a mixed publish retry paired while a deletion job is pending", () => {
+    type RetryState =
+      | { action: "publish"; payload: { signedBundleId: string } }
+      | { action: "delete"; payload: { deliveryJobId: string } }
+    const publishRetry: RetryState = {
+      action: "publish",
+      payload: { signedBundleId: "publish-bundle" },
+    }
+    const deletionRetry: RetryState = {
+      action: "delete",
+      payload: { deliveryJobId: "deletion-job" },
+    }
+
+    expect(
+      reconcilePendingProductDeletionRetry<RetryState>(
+        publishRetry,
+        deletionRetry
+      )
+    ).toBe(publishRetry)
+    expect(
+      reconcilePendingProductDeletionRetry<RetryState>(null, deletionRetry)
+    ).toEqual(deletionRetry)
   })
 })

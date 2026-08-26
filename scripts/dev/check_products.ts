@@ -16,14 +16,17 @@ function parseRelayUrls(): string[] {
 
   if (urls.length === 0) {
     throw new Error(
-      "No relay URLs provided. Set CHECK_RELAY_URLS (comma-separated), e.g. CHECK_RELAY_URLS=wss://relay.damus.io"
+      "No relay URLs provided. Set CHECK_RELAY_URLS (comma-separated), e.g. CHECK_RELAY_URLS=ws://127.0.0.1:7777"
     )
   }
 
   return urls
 }
 
-function getTagValue(tags: string[][] | undefined, name: string): string | null {
+function getTagValue(
+  tags: string[][] | undefined,
+  name: string
+): string | null {
   if (!tags) return null
   for (const t of tags) {
     if (t[0] === name && typeof t[1] === "string") return t[1]
@@ -45,7 +48,10 @@ function parsePriceTag(tags: string[][] | undefined): string | null {
 
 async function main() {
   const relayUrls = parseRelayUrls()
-  const limit = Math.min(Math.max(Number(process.env.CHECK_LIMIT ?? 20) || 20, 1), 200)
+  const limit = Math.min(
+    Math.max(Number(process.env.CHECK_LIMIT ?? 20) || 20, 1),
+    200
+  )
 
   const ndk = new NDK({ explicitRelayUrls: relayUrls })
   await ndk.connect(3000)

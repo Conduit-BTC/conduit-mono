@@ -261,8 +261,8 @@ The current canonical fallback/reset relay list lives in `packages/core/src/conf
 ```text
 wss://relay.conduit.market
 wss://nos.lol
-wss://relay.damus.io
-wss://relay.nostr.net
+wss://relay.ditto.pub
+wss://relay.primal.net
 ```
 
 Conduit-hosted deploys should leave relay env vars empty unless an operator intentionally needs an override. This keeps the public code defaults auditable.

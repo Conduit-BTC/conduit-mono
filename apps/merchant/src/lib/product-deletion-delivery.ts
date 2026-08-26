@@ -1,7 +1,7 @@
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   cacheSignedProductDeletionEvent,
-  CANONICAL_APP_BACKPLANE_RELAYS,
+  config,
   deliverProductDeletionJob,
   getProductDeletionDelivery,
   getPendingProductDeletionDeliveries,
@@ -62,21 +62,27 @@ export async function planCurrentProductDeletionWriteRelays(
   ])
 }
 
-export async function persistSignedProductDeletion(input: {
-  signedEvent: SignedPublicNostrEvent
-  currentWriteRelayUrls: readonly string[]
-  sourceRelayUrls: readonly string[]
-}): Promise<ProductDeletionDeliveryJob> {
-  const canonicalConduitRelayUrl = CANONICAL_APP_BACKPLANE_RELAYS[0]
+export async function persistSignedProductDeletion(
+  input: {
+    signedEvent: SignedPublicNostrEvent
+    currentWriteRelayUrls: readonly string[]
+    sourceRelayUrls: readonly string[]
+  },
+  options: ProductDeletionDeliveryOptions = {}
+): Promise<ProductDeletionDeliveryJob> {
+  const canonicalConduitRelayUrl = config.appBackplaneRelayUrls[0]
   if (!canonicalConduitRelayUrl) {
     throw new Error("Canonical Conduit relay is not configured")
   }
-  return await persistProductDeletionDelivery({
-    signedEvent: input.signedEvent,
-    currentWriteRelayUrls: input.currentWriteRelayUrls,
-    sourceRelayUrls: input.sourceRelayUrls,
-    canonicalConduitRelayUrl,
-  })
+  return await persistProductDeletionDelivery(
+    {
+      signedEvent: input.signedEvent,
+      currentWriteRelayUrls: input.currentWriteRelayUrls,
+      sourceRelayUrls: input.sourceRelayUrls,
+      canonicalConduitRelayUrl,
+    },
+    options
+  )
 }
 
 export function productDeletionJobToPublishResult(

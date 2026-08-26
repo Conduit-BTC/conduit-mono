@@ -141,10 +141,12 @@ describe("pull request evidence contract", () => {
       "Privacy telemetry stays allowlisted and non-behavioral."
     )
     expect(reviewWorkflow).toContain("This is a public repository.")
-    expect(contributing).toContain(
+    expect(contributing).not.toContain(
       "After this workflow exists on `main`, maintainers must add"
     )
-    expect(contributing).toContain("`agent-merge-readiness` to the required")
+    expect(contributing).not.toContain(
+      "`agent-merge-readiness` to the required"
+    )
     expect(contributing).toContain(
       "Keep strict up-to-date branch protection enabled"
     )
@@ -156,6 +158,18 @@ describe("pull request evidence contract", () => {
     )
     expect(reviewWorkflow).toContain(
       "only when an acceptance or merge claim depends on them"
+    )
+    expect(reviewWorkflow).toContain(
+      "Do not report a `repository_setting` blocker solely because branch"
+    )
+    expect(reviewWorkflow).not.toContain(
+      "cannot satisfy the required\n            `agent-merge-readiness` context"
+    )
+    expect(reviewWorkflow).toContain(
+      "cannot satisfy the canonical\n            `agent-merge-readiness` context"
+    )
+    expect(reviewInstructions).toContain(
+      "Do not report a `repository_setting` blocker solely because branch"
     )
     expect(reviewWorkflow).toContain(
       "Merge-readiness verdict: READY FOR HUMAN APPROVAL"

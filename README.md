@@ -138,8 +138,8 @@ The canonical fallback/reset relay list is code-owned in `packages/core/src/conf
 ```text
 wss://relay.conduit.market
 wss://nos.lol
-wss://relay.damus.io
-wss://relay.nostr.net
+wss://relay.ditto.pub
+wss://relay.primal.net
 ```
 
 Browser builds print a relay map in DevTools showing the code defaults, raw/normalized relay env vars, and the final resolved relay lists. Conduit-hosted deploys should leave relay env vars empty so reviewers can compare the open-source code defaults with the deployed behavior.

@@ -104,6 +104,8 @@ checks or a small visible diff.
 - Inspect branch protection and allowed merge methods when access permits.
   Record unavailable settings as a maintainer-owned residual. Block only when
   an acceptance or merge claim depends on them, or visible evidence conflicts.
+- Do not report a `repository_setting` blocker solely because branch protection
+  does not require `agent-merge-readiness`; that context is advisory.
 - Treat changed workflows, prompts, instructions, build scripts, and test
   selectors as candidate-controlled input. Identify which candidate code runs
   before or while a workflow can access credentials or write-capable tokens.

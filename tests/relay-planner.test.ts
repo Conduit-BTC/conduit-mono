@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import {
   __resetRelayHealth,
+  applyE2eRelayIsolation,
   config,
   normalizeRelaySettingsState,
   planRelayReads,
@@ -10,6 +11,8 @@ import {
   type RelaySettingsEntry,
   type RelaySettingsState,
 } from "@conduit/core"
+
+const originalConfig = structuredClone(config)
 
 function entry(
   url: string,
@@ -119,6 +122,18 @@ describe("planRelayReads", () => {
     })
     expect(plan.relayUrls[0]).toBe("wss://commerce.conduit.market")
     expect(plan.relayUrls).toContain("wss://public.conduit.market")
+  })
+
+  it("uses commerce discovery defaults when local settings are empty", () => {
+    const plan = planRelayReads({
+      intent: "commerce_products",
+      settings: settings([]),
+    })
+
+    for (const relayUrl of config.commerceDiscoveryRelayUrls) {
+      expect(plan.relayUrls).toContain(relayUrl)
+    }
+    expect(plan.relayUrls).not.toContain("wss://inbox.azzamo.net")
   })
 
   it("prepends author write relays as hints for author_products", () => {
@@ -316,6 +331,53 @@ describe("planRelayWrites", () => {
   })
   afterEach(() => {
     __resetRelayHealth()
+    Object.assign(config, structuredClone(originalConfig))
+  })
+
+  it("keeps saved settings and NIP-65 hints on loopback during E2E isolation", () => {
+    const isolatedRelayUrl = "ws://127.0.0.1:7777"
+    Object.assign(config, applyE2eRelayIsolation(config, [isolatedRelayUrl]))
+    const state = settings([
+      entry("wss://saved-public.example", { writeEnabled: true }),
+    ])
+    const lists = new Map<string, RelayList>([
+      [
+        "alice",
+        relayList(
+          "alice",
+          ["wss://hint-read.example"],
+          ["wss://hint-write.example"]
+        ),
+      ],
+    ])
+
+    expect(
+      planRelayReads({
+        intent: "author_products",
+        authors: ["alice"],
+        relayLists: lists,
+        settings: state,
+      })
+    ).toEqual({
+      intent: "author_products",
+      relayUrls: [isolatedRelayUrl],
+      parkedRelayUrls: [],
+      hintRelayUrls: [],
+    })
+    expect(
+      planRelayWrites({
+        intent: "author_event",
+        authorPubkey: "alice",
+        authenticatedPubkey: "alice",
+        relayLists: lists,
+        settings: state,
+      })
+    ).toEqual({
+      intent: "author_event",
+      primaryRelayUrls: [isolatedRelayUrl],
+      broadcastRelayUrls: [],
+      parkedRelayUrls: [],
+    })
   })
 
   it("author_event uses user-enabled write relays as primary", () => {
@@ -452,7 +514,7 @@ describe("planRelayWrites", () => {
       settings: state,
     })
     expect(plan.primaryRelayUrls).toEqual(
-      config.commerceDmFallbackRelayUrls.slice(0, 4)
+      config.dmInboxDefaultRelayUrls.slice(0, 4)
     )
     expect(plan.primaryRelayUrls).not.toContain("ws://umbrel.local:4848")
   })
@@ -512,7 +574,7 @@ describe("planRelayWrites", () => {
       settings: state,
     })
     expect(plan.primaryRelayUrls).toEqual(
-      config.commerceDmFallbackRelayUrls.slice(0, 4)
+      config.dmInboxDefaultRelayUrls.slice(0, 4)
     )
     expect(plan.primaryRelayUrls).not.toContain("wss://outbox.conduit.market")
     expect(plan.broadcastRelayUrls).toEqual(["wss://outbox.conduit.market"])
@@ -527,7 +589,7 @@ describe("planRelayWrites", () => {
     })
 
     expect(plan.primaryRelayUrls).toEqual(
-      config.commerceDmFallbackRelayUrls.slice(0, 4)
+      config.dmInboxDefaultRelayUrls.slice(0, 4)
     )
     expect(plan.broadcastRelayUrls).toEqual([])
   })

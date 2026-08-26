@@ -932,8 +932,12 @@ function getCommerceCacheScope(): string {
     commerceRelayUrls: config.commerceRelayUrls,
     publicRelayUrls: config.publicRelayUrls,
     corePublicFallbackRelayUrls: config.corePublicFallbackRelayUrls,
+    commerceDiscoveryRelayUrls: config.commerceDiscoveryRelayUrls,
     searchIndexRelayUrls: config.searchIndexRelayUrls,
+    dmDeclarationDiscoveryRelayUrls: config.dmDeclarationDiscoveryRelayUrls,
     commerceDmFallbackRelayUrls: config.commerceDmFallbackRelayUrls,
+    dmInboxDefaultRelayUrls: config.dmInboxDefaultRelayUrls,
+    dmCompatibilityOrderRelayUrls: config.dmCompatibilityOrderRelayUrls,
     zapRelayUrls: config.zapRelayUrls,
   })
 }
