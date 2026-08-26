@@ -15,6 +15,7 @@ import {
   getCachedMerchantStorefront,
   parseProductEvent,
   planProductDeletionRelays,
+  resolveProductFulfillment,
   setSigner,
   type ProductDeletionOutboxRepository,
   type ProductSchema,
@@ -138,6 +139,33 @@ function makeSignedProductEvent(input: {
   return event
 }
 
+function makeSignedProductEventWithShippingTags(input: {
+  dTag: string
+  shippingTags: string[][]
+}): NDKEvent {
+  const product = makeProduct(input.dTag)
+  const draft = buildProductListingEventDraft({
+    product,
+    dTag: input.dTag,
+    clientAppId: "merchant",
+  })
+  return new NDKEvent(
+    undefined,
+    finalizeEvent(
+      {
+        kind: draft.kind,
+        created_at: Math.floor(NOW / 1000),
+        content: draft.content,
+        tags: [
+          ...draft.tags.filter((tag) => tag[0] !== "shipping_option"),
+          ...input.shippingTags,
+        ],
+      },
+      MERCHANT_SECRET
+    )
+  )
+}
+
 function makeProduct(dTag: string): ProductSchema {
   return {
     id: `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:${dTag}`,
@@ -158,6 +186,23 @@ function makeProduct(dTag: string): ProductSchema {
     createdAt: NOW,
     updatedAt: NOW,
   }
+}
+
+async function readProductAfterCacheReload(
+  rows: CachedProduct[],
+  dTag: string
+): Promise<ProductSchema | undefined> {
+  __resetCommerceTestOverrides()
+  __setCommerceTestOverrides({
+    now: () => NOW,
+    getCachedProducts: async () => rows,
+    getCachedProductTombstones: async () => [],
+  })
+  const reloaded = await getCachedMerchantStorefront({
+    merchantPubkey: MERCHANT_PUBKEY,
+    includeMarketHidden: true,
+  })
+  return reloaded.data.find((record) => record.dTag === dTag)?.product
 }
 
 beforeEach(() => {
@@ -196,6 +241,137 @@ afterEach(() => {
 })
 
 describe("merchant product event delivery", () => {
+  for (const scenario of [
+    {
+      name: "multiple shipping option references",
+      dTag: "cached-multiple-shipping-references",
+      shippingTags: [
+        [
+          "shipping_option",
+          `${EVENT_KINDS.SHIPPING_OPTION}:${MERCHANT_PUBKEY}:cached-standard`,
+        ],
+        [
+          "shipping_option",
+          `${EVENT_KINDS.SHIPPING_OPTION}:${MERCHANT_PUBKEY}:cached-express`,
+        ],
+      ],
+    },
+    {
+      name: "product-level shipping extra cost",
+      dTag: "cached-shipping-extra-cost",
+      shippingTags: [
+        [
+          "shipping_option",
+          `${EVENT_KINDS.SHIPPING_OPTION}:${MERCHANT_PUBKEY}:cached-standard`,
+          "5",
+        ],
+      ],
+    },
+  ]) {
+    it(`preserves ${scenario.name} across cache reload before a stock update`, async () => {
+      const event = makeSignedProductEventWithShippingTags(scenario)
+
+      expect(parseProductEvent(event).shippingOptionLaunchUnsupported).toBe(
+        true
+      )
+      await cacheSignedProductListingEvent(event)
+      expect(
+        cachedProducts.find((row) => row.dTag === scenario.dTag)
+          ?.shippingOptionLaunchUnsupported
+      ).toBe(true)
+
+      const product = await readProductAfterCacheReload(
+        structuredClone(cachedProducts),
+        scenario.dTag
+      )
+
+      expect(product?.shippingOptionLaunchUnsupported).toBe(true)
+      if (!product) throw new Error("Expected the cached product after reload")
+      const stockUpdate = { ...product, stock: 1, updatedAt: NOW + 1 }
+      expect(resolveProductFulfillment(stockUpdate, [])).toMatchObject({
+        status: "order_first",
+        reason: "unsupported",
+      })
+      expect(
+        resolvePublishedProductFulfillmentIntentForTarget(stockUpdate)
+      ).toBeNull()
+    })
+  }
+
+  it("round-trips an explicit supported shipping reference cache marker", async () => {
+    const dTag = "cached-supported-shipping-reference"
+    const event = makeSignedProductEventWithShippingTags({
+      dTag,
+      shippingTags: [
+        [
+          "shipping_option",
+          `${EVENT_KINDS.SHIPPING_OPTION}:${MERCHANT_PUBKEY}:cached-standard`,
+        ],
+      ],
+    })
+
+    expect(parseProductEvent(event).shippingOptionLaunchUnsupported).toBe(false)
+    await cacheSignedProductListingEvent(event)
+    expect(cachedProducts[0]?.shippingOptionLaunchUnsupported).toBe(false)
+
+    const product = await readProductAfterCacheReload(
+      structuredClone(cachedProducts),
+      dTag
+    )
+    expect(product?.shippingOptionLaunchUnsupported).toBe(false)
+  })
+
+  it("fails legacy or malformed referenced cache rows closed", async () => {
+    const dTag = "cached-ambiguous-shipping-reference"
+    const event = makeSignedProductEventWithShippingTags({
+      dTag,
+      shippingTags: [
+        [
+          "shipping_option",
+          `${EVENT_KINDS.SHIPPING_OPTION}:${MERCHANT_PUBKEY}:cached-standard`,
+        ],
+      ],
+    })
+    await cacheSignedProductListingEvent(event)
+    const baseline = cachedProducts[0]
+    if (!baseline) throw new Error("Expected the cached product row")
+
+    for (const cachedValue of [undefined, "false"] as const) {
+      const row = structuredClone(baseline)
+      const runtimeRow = row as unknown as Record<string, unknown>
+      if (cachedValue === undefined) {
+        delete runtimeRow.shippingOptionLaunchUnsupported
+      } else {
+        runtimeRow.shippingOptionLaunchUnsupported = cachedValue
+      }
+
+      const product = await readProductAfterCacheReload([row], dTag)
+      expect(product?.shippingOptionLaunchUnsupported).toBe(true)
+      if (!product) throw new Error("Expected the cached product after reload")
+      expect(resolveProductFulfillment(product, [])).toMatchObject({
+        status: "order_first",
+        reason: "unsupported",
+      })
+    }
+  })
+
+  it("leaves cache rows without a shipping reference unaffected", async () => {
+    const dTag = "cached-without-shipping-reference"
+    await cacheSignedProductListingEvent(
+      makeSignedProductEventWithShippingTags({ dTag, shippingTags: [] })
+    )
+    const row = cachedProducts[0]
+    if (!row) throw new Error("Expected the cached product row")
+    expect(row.shippingOptionId).toBeUndefined()
+    expect(row.shippingOptionLaunchUnsupported).toBeUndefined()
+
+    const runtimeRow = row as unknown as Record<string, unknown>
+    runtimeRow.shippingOptionLaunchUnsupported = true
+    const product = await readProductAfterCacheReload([row], dTag)
+    expect(product?.shippingOptionId).toBeUndefined()
+    expect(product?.shippingOptionLaunchUnsupported).toBeUndefined()
+  })
+
   it("accepts signed product listings and NIP-09 deletion events", () => {
     expect(
       isDeliverableMerchantProductEvent(

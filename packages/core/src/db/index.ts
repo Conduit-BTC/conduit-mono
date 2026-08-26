@@ -95,6 +95,8 @@ export interface CachedProduct {
   }
   shippingOptionId?: string
   shippingOptionDTag?: string
+  /** Parsed evidence that the signed product used a launch-unsupported reference shape. */
+  shippingOptionLaunchUnsupported?: boolean
   shippingCountries?: string[]
   shippingCountryRules?: Array<{
     code: string
