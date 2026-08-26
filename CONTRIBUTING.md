@@ -265,11 +265,9 @@ reduce risk, but they do not mechanically eliminate candidate prompt injection.
 Schema and SHA gates fail malformed or stale review results. Human approval
 remains mandatory.
 
-After this workflow exists on `main`, maintainers must add
-`agent-merge-readiness` to the required branch-protection contexts. Do not add
-that context before the default-branch workflow exists; doing so creates a
-bootstrap deadlock. Keep strict up-to-date branch protection enabled so a base
-change invalidates the candidate checks.
+`agent-merge-readiness` remains an advisory review signal and is not a required
+branch-protection context. Keep strict up-to-date branch protection enabled so
+a base change invalidates the candidate checks.
 
 The final Ponytail review must state exactly one of `Ponytail outcome: LEAN`,
 `Ponytail outcome: FINDINGS`, or `Ponytail outcome: DELIVERY BLOCKED`. `LEAN`
