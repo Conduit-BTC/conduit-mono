@@ -46,6 +46,7 @@ export interface ProductVariationRow {
   format: "inherit" | "physical" | "digital"
   shippingCost: string
   inheritShipping: boolean
+  shippingResolution?: "unresolved" | "replacement"
 }
 
 /** Compatibility name retained for draft and call-site locality. */
@@ -293,7 +294,10 @@ function parseNewVariationRow(value: unknown): ProductVariationRow | null {
     !["inherit", "physical", "digital"].includes(String(row.format)) ||
     typeof row.shippingCost !== "string" ||
     !isPlainDecimalInput(row.shippingCost) ||
-    typeof row.inheritShipping !== "boolean"
+    typeof row.inheritShipping !== "boolean" ||
+    (row.shippingResolution !== undefined &&
+      row.shippingResolution !== "unresolved" &&
+      row.shippingResolution !== "replacement")
   ) {
     return null
   }
@@ -322,6 +326,9 @@ function parseNewVariationRow(value: unknown): ProductVariationRow | null {
     format: row.format as ProductVariationRow["format"],
     shippingCost: row.shippingCost,
     inheritShipping: row.inheritShipping,
+    ...(row.shippingResolution
+      ? { shippingResolution: row.shippingResolution }
+      : {}),
   })
 }
 
@@ -652,6 +659,23 @@ export function setProductVariationCombinationIncluded(
   }
 }
 
+function markVariationShippingEdit(
+  row: ProductVariationRow
+): ProductVariationRow {
+  if (!row.shippingResolution) return row
+  const hasExplicitReplacement =
+    row.format === "digital" ||
+    row.inheritShipping ||
+    row.shippingCost.trim().length > 0
+  if (hasExplicitReplacement) {
+    return { ...row, shippingResolution: "replacement" }
+  }
+  return {
+    ...row,
+    shippingResolution: "unresolved",
+  }
+}
+
 export function updateProductVariationOverride(
   state: ProductVariationFormState,
   identity: string,
@@ -669,7 +693,17 @@ export function updateProductVariationOverride(
         return { ...row, imageUrls: value, inheritImages: false }
       }
       if (field === "shippingCost") {
-        return { ...row, shippingCost: value, inheritShipping: false }
+        return markVariationShippingEdit({
+          ...row,
+          shippingCost: value,
+          inheritShipping: false,
+        })
+      }
+      if (field === "format") {
+        return markVariationShippingEdit({
+          ...row,
+          format: value as ProductVariationRow["format"],
+        })
       }
       return { ...row, [field]: value }
     }),
@@ -684,9 +718,16 @@ export function updateProductVariationInheritance(
 ): ProductVariationFormState {
   return {
     ...state,
-    rows: state.rows.map((row) =>
-      row.identity === identity ? { ...row, [field]: value } : row
-    ),
+    rows: state.rows.map((row) => {
+      if (row.identity !== identity) return row
+      if (field === "inheritShipping") {
+        return markVariationShippingEdit({
+          ...row,
+          [field]: value,
+        })
+      }
+      return { ...row, [field]: value }
+    }),
   }
 }
 
@@ -717,6 +758,13 @@ function isSafeImageUrl(value: string): boolean {
   } catch {
     return false
   }
+}
+
+function getUnresolvedVariationShippingError(
+  row: Pick<ProductVariationRow, "specifications">
+): string {
+  const label = getCombinationLabel(row.specifications) || "A variation"
+  return `${label} shipping could not be verified from the current relay read. Refresh products before saving this family.`
 }
 
 export function getProductVariationFormError(
@@ -771,6 +819,15 @@ export function getProductVariationFormError(
 
   const seenIdentities = new Set<string>()
   for (const row of includedRows) {
+    if (
+      row.shippingResolution === "unresolved" ||
+      (row.shippingResolution === "replacement" &&
+        row.format !== "digital" &&
+        !row.inheritShipping &&
+        !row.shippingCost.trim())
+    ) {
+      return getUnresolvedVariationShippingError(row)
+    }
     const rowKeys = row.specifications.map(({ key }) => normalizePart(key))
     if (
       rowKeys.length !== expectedKeys.length ||
@@ -1058,6 +1115,10 @@ export function getProductVariationFormState<
             ? ""
             : formatProductAmountInput(shippingAmount),
         inheritShipping,
+        ...(variation.product.shippingOptionId &&
+        variationShippingIntent === null
+          ? { shippingResolution: "unresolved" as const }
+          : {}),
       })
     )
   }
@@ -1111,7 +1172,22 @@ export function mergeProductVariationAuthoringState(
       return row.included ? { ...row, included: false } : row
     }
     mergedIdentities.add(identity)
-    return { ...row, ...publishedRow, included: true }
+    const keepAuthoredShippingReplacement =
+      publishedRow.shippingResolution === "unresolved" &&
+      row.shippingResolution === "replacement"
+    return {
+      ...row,
+      ...publishedRow,
+      included: true,
+      ...(keepAuthoredShippingReplacement
+        ? {
+            format: row.format,
+            shippingCost: row.shippingCost,
+            inheritShipping: row.inheritShipping,
+            shippingResolution: "replacement" as const,
+          }
+        : { shippingResolution: publishedRow.shippingResolution }),
+    }
   })
   for (const [identity, publishedRow] of publishedRows) {
     if (!mergedIdentities.has(identity)) rows.push(publishedRow)
@@ -1120,6 +1196,52 @@ export function mergeProductVariationAuthoringState(
   return {
     supported: true,
     state: { ...authoredState, rows },
+  }
+}
+
+export function reconcileProductVariationDraftResolution(
+  published: ProductVariationFormResult,
+  draft: ProductVariationFormState
+): ProductVariationFormState {
+  const draftState = reconcileProductVariationForm(draft)
+  if (!published.supported || !published.state.enabled || !draftState.enabled) {
+    return draftState
+  }
+
+  const publishedRows = new Map(
+    published.state.rows.map((row) => [
+      getCombinationIdentity(row.specifications),
+      row,
+    ])
+  )
+  return {
+    ...draftState,
+    rows: draftState.rows.map((row) => {
+      const publishedRow = publishedRows.get(
+        getCombinationIdentity(row.specifications)
+      )
+      if (
+        !publishedRow ||
+        (row.dTag && publishedRow.dTag && row.dTag !== publishedRow.dTag) ||
+        row.shippingResolution === "replacement"
+      ) {
+        return row
+      }
+      if (publishedRow.shippingResolution === "unresolved") {
+        return { ...row, shippingResolution: "unresolved" }
+      }
+      if (row.shippingResolution === "unresolved") {
+        const resolvedRow = {
+          ...row,
+          format: publishedRow.format,
+          shippingCost: publishedRow.shippingCost,
+          inheritShipping: publishedRow.inheritShipping,
+        }
+        delete resolvedRow.shippingResolution
+        return resolvedRow
+      }
+      return row
+    }),
   }
 }
 
@@ -1300,6 +1422,14 @@ export function buildProductFamilyChangePlan<
   const now = input.now ?? Date.now()
   const parentDTag = input.parentDTag.trim()
   if (!parentDTag) throw new Error("Product d tag is required")
+  const unresolvedShippingRow = input.variations.enabled
+    ? input.variations.rows.find(
+        (row) => row.included && row.shippingResolution === "unresolved"
+      )
+    : undefined
+  if (unresolvedShippingRow) {
+    throw new Error(getUnresolvedVariationShippingError(unresolvedShippingRow))
+  }
 
   const existingByDTag = new Map<string, TRecord>()
   if (input.existing?.root.dTag) {
@@ -1341,6 +1471,7 @@ export function buildProductFamilyChangePlan<
       existingByDTag.get(parentDTag)
     ),
   ]
+  const replacementShippingDTags = new Set<string>()
 
   if (input.variations.enabled) {
     for (const row of getProductVariationCombinations(input.variations)) {
@@ -1351,6 +1482,9 @@ export function buildProductFamilyChangePlan<
           specifications: row.specifications,
         })
       const existing = existingByDTag.get(dTag)
+      if (row.shippingResolution === "replacement") {
+        replacementShippingDTags.add(dTag)
+      }
       desired.push(
         buildPublishTarget(
           dTag,
@@ -1375,6 +1509,28 @@ export function buildProductFamilyChangePlan<
   const remove = (input.existing?.variations ?? []).filter(
     (variation) => !!variation.dTag && !desiredDTags.has(variation.dTag)
   )
+  const safeReplacementShippingDTags = new Set(
+    desired
+      .filter(
+        ({ dTag, fulfillmentIntent }) =>
+          replacementShippingDTags.has(dTag) &&
+          fulfillmentIntent.kind !== "coordinate_after_order"
+      )
+      .map(({ dTag }) => dTag)
+  )
+  const unresolvedExistingShipping = input.existing?.variations.find(
+    ({ dTag, product }) =>
+      !!dTag &&
+      desiredDTags.has(dTag) &&
+      !safeReplacementShippingDTags.has(dTag) &&
+      !!product.shippingOptionId &&
+      resolvePublishedProductFulfillmentIntentForTarget(product) === null
+  )
+  if (unresolvedExistingShipping) {
+    throw new Error(
+      getUnresolvedVariationShippingError(unresolvedExistingShipping.product)
+    )
+  }
   const publish = desired.filter((target) => {
     if (!target.existing?.dTag) return true
     const existingFulfillmentIntent =

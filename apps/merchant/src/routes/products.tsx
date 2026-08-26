@@ -148,6 +148,7 @@ import {
   MAX_PRODUCT_VARIATION_AXES,
   MAX_PRODUCT_VARIATION_COUNT,
   mergeProductVariationAuthoringState,
+  reconcileProductVariationDraftResolution,
   reconcileProductVariationForm,
   removeProductVariationAxis,
   setProductVariationCombinationIncluded,
@@ -1584,14 +1585,20 @@ function ProductsPage() {
           ),
         }
       : item
+    const loadedDraft = loaded.draft
+      ? {
+          ...loaded.draft,
+          variations: reconcileProductVariationDraftResolution(
+            item.variationForm,
+            loaded.draft.variations
+          ),
+        }
+      : null
     setEditing(editingItem)
     setActiveProductDraftTarget(draftTarget)
     setForm(
-      loaded.draft
-        ? reconcileProductFormShippingPreset(
-            loaded.draft,
-            hasPresetShippingZone
-          )
+      loadedDraft
+        ? reconcileProductFormShippingPreset(loadedDraft, hasPresetShippingZone)
         : productToForm(editingItem, hasPresetShippingZone)
     )
     setDraftStorageAvailable(

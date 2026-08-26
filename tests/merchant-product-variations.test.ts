@@ -19,6 +19,7 @@ import {
   groupProductVariationRecords,
   mergeProductVariationAuthoringState,
   parseProductVariationFormState,
+  reconcileProductVariationDraftResolution,
   reconcileProductVariationForm,
   removeProductVariationAxis,
   setProductVariationCombinationIncluded,
@@ -417,6 +418,210 @@ describe("merchant product variation planning", () => {
     expect(mediumTarget?.fulfillmentIntent).toEqual({
       kind: "coordinate_after_order",
     })
+  })
+
+  it("blocks an unrelated family edit while a child's exact shipping option is unresolved", () => {
+    const initialPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct({
+        shippingCostSats: undefined,
+        sourceShippingCost: {
+          amount: 5,
+          currency: "USD",
+          normalizedCurrency: "USD",
+        },
+      }),
+      variations: sizeVariationForm("S"),
+      currency: "USD",
+      now: NOW,
+    })
+    const resolvedExisting = toFamily(initialPlan)
+    const existing = toFamily(initialPlan)
+    const child = existing.variations[0]!
+    child.product = {
+      ...child.product,
+      shippingCostSats: undefined,
+      sourceShippingCost: undefined,
+      shippingCountries: undefined,
+      shippingCountryRules: undefined,
+      canonicalShippingResolved: false,
+    }
+
+    const restored = getProductVariationFormState(
+      existing.root,
+      existing.variations
+    )
+    const unresolvedRow = restored.state.rows[0]
+
+    expect(restored.supported).toBe(true)
+    expect(existing.root.product.canonicalShippingResolved).toBe(true)
+    expect(unresolvedRow?.shippingResolution).toBe("unresolved")
+    expect(unresolvedRow?.shippingCost).toBe("")
+    expect(
+      parseProductVariationFormState(JSON.parse(JSON.stringify(restored.state)))
+        ?.rows[0]?.shippingResolution
+    ).toBe("unresolved")
+    expect(getProductVariationFormError(restored.state, "USD")).toBe(
+      "S shipping could not be verified from the current relay read. Refresh products before saving this family."
+    )
+    expect(() =>
+      buildProductFamilyChangePlan({
+        parentDTag: "conduit-tee",
+        baseProduct: {
+          ...existing.root.product,
+          title: "Conduit Tee refreshed",
+        },
+        variations: restored.state,
+        currency: "USD",
+        existing,
+        now: NOW + 60_000,
+      })
+    ).toThrow(
+      "S shipping could not be verified from the current relay read. Refresh products before saving this family."
+    )
+    const staleDraft = {
+      ...restored.state,
+      rows: restored.state.rows.map((row) => {
+        const staleRow = { ...row }
+        delete staleRow.shippingResolution
+        return {
+          ...staleRow,
+          title: "Unsaved Small Tee",
+          price: "29",
+          stock: "3",
+          inheritStock: false,
+          imageUrls: "https://example.com/unsaved-small.png",
+          inheritImages: false,
+          format: "physical" as const,
+        }
+      }),
+    }
+    const rehydratedStaleDraft = reconcileProductVariationDraftResolution(
+      restored,
+      staleDraft
+    )
+    expect(rehydratedStaleDraft.rows[0]?.shippingResolution).toBe("unresolved")
+    expect(rehydratedStaleDraft.rows[0]).toMatchObject({
+      title: "Unsaved Small Tee",
+      price: "29",
+      stock: "3",
+      inheritStock: false,
+      imageUrls: "https://example.com/unsaved-small.png",
+      inheritImages: false,
+      format: "physical",
+    })
+    const resolvedRefresh = getProductVariationFormState(
+      resolvedExisting.root,
+      resolvedExisting.variations
+    )
+    const resolvedRefreshRow = resolvedRefresh.state.rows[0]!
+    const recoveredDraft = reconcileProductVariationDraftResolution(
+      resolvedRefresh,
+      rehydratedStaleDraft
+    )
+    expect(recoveredDraft.rows[0]?.shippingResolution).toBeUndefined()
+    expect(recoveredDraft.rows[0]).toMatchObject({
+      title: "Unsaved Small Tee",
+      price: "29",
+      stock: "3",
+      inheritStock: false,
+      imageUrls: "https://example.com/unsaved-small.png",
+      inheritImages: false,
+      format: resolvedRefreshRow.format,
+      shippingCost: resolvedRefreshRow.shippingCost,
+      inheritShipping: resolvedRefreshRow.inheritShipping,
+    })
+    expect(() =>
+      buildProductFamilyChangePlan({
+        parentDTag: "conduit-tee",
+        baseProduct: {
+          ...existing.root.product,
+          title: "Conduit Tee refreshed",
+        },
+        variations: staleDraft,
+        currency: "USD",
+        existing,
+        now: NOW + 60_000,
+      })
+    ).toThrow(
+      "S shipping could not be verified from the current relay read. Refresh products before saving this family."
+    )
+    const removalPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: existing.root.product,
+      variations: setProductVariationCombinationIncluded(
+        restored.state,
+        unresolvedRow!.identity,
+        false
+      ),
+      currency: "USD",
+      existing,
+      now: NOW + 60_000,
+    })
+    expect(removalPlan.remove.map(({ addressId }) => addressId)).toEqual([
+      child.addressId,
+    ])
+
+    const replacementState = updateProductVariationOverride(
+      rehydratedStaleDraft,
+      unresolvedRow!.identity,
+      "shippingCost",
+      "7"
+    )
+    expect(replacementState.rows[0]?.shippingResolution).toBe("replacement")
+    const persistedReplacement = parseProductVariationFormState(
+      JSON.parse(JSON.stringify(replacementState))
+    )!
+    const mergedReplacement = mergeProductVariationAuthoringState(
+      restored,
+      persistedReplacement
+    ).state
+    expect(mergedReplacement.rows[0]?.shippingCost).toBe("7")
+    expect(mergedReplacement.rows[0]?.inheritShipping).toBe(false)
+    expect(mergedReplacement.rows[0]?.shippingResolution).toBe("replacement")
+    const repairPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: existing.root.product,
+      variations: mergedReplacement,
+      currency: "USD",
+      existing,
+      now: NOW + 60_000,
+    })
+    expect(
+      repairPlan.publish.find(({ dTag }) => dTag === child.dTag)
+        ?.fulfillmentIntent
+    ).toEqual({
+      kind: "fixed_standard",
+      amount: 7,
+      currency: "USD",
+      countries: ["US"],
+    })
+
+    const revertedReplacement = updateProductVariationOverride(
+      replacementState,
+      unresolvedRow!.identity,
+      "shippingCost",
+      ""
+    )
+    expect(revertedReplacement.rows[0]?.shippingResolution).toBe("unresolved")
+    expect(getProductVariationFormError(revertedReplacement, "USD")).toBe(
+      "S shipping could not be verified from the current relay read. Refresh products before saving this family."
+    )
+    expect(() =>
+      buildProductFamilyChangePlan({
+        parentDTag: "conduit-tee",
+        baseProduct: existing.root.product,
+        variations: revertedReplacement,
+        currency: "USD",
+        existing,
+        now: NOW + 60_000,
+      })
+    ).toThrow(
+      "S shipping could not be verified from the current relay read. Refresh products before saving this family."
+    )
+    expect(child.product.shippingOptionId).toBe(
+      `30406:${MERCHANT_PUBKEY}:${child.dTag}-shipping-standard`
+    )
   })
 
   it("publishes the canonical family when only its destinations change", () => {
