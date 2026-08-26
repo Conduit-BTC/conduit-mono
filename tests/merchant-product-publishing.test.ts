@@ -11,6 +11,7 @@ import {
   isDeliverableMerchantProductEvent,
   publishCanonicalProductEvents,
   resolveProductFulfillmentIntentForTarget,
+  resolvePublishedProductFulfillmentIntentForTarget,
   type CanonicalProductPublishDependencies,
 } from "../apps/merchant/src/lib/product-publishing"
 
@@ -285,6 +286,33 @@ describe("canonical product publication ordering", () => {
       currency: "USD",
       countries: ["CA"],
     })
+  })
+
+  it("fails closed instead of widening legacy postal rules to a country", () => {
+    const product = {
+      format: "physical" as const,
+      shippingCostSats: 250,
+      shippingCountries: ["US"],
+      shippingCountryRules: [
+        {
+          code: "US",
+          name: "United States",
+          restrictTo: ["787**"],
+          exclude: ["78799"],
+        },
+      ],
+    }
+
+    expect(() =>
+      resolveProductFulfillmentIntentForTarget({
+        product,
+        fallbackIntent: { kind: "coordinate_after_order" },
+        authoringCountries: ["US"],
+      })
+    ).toThrow("Remove postal restrictions")
+    expect(
+      resolvePublishedProductFulfillmentIntentForTarget(product)
+    ).toBeNull()
   })
 
   it("fails closed when a fixed variation has no shipping destinations", () => {

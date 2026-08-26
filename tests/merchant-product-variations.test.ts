@@ -545,6 +545,58 @@ describe("merchant product variation planning", () => {
     })
   })
 
+  it("does not widen a restricted legacy child during an ordinary family save", () => {
+    const initialPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct({
+        shippingCostSats: undefined,
+        sourceShippingCost: {
+          amount: 5,
+          currency: "USD",
+          normalizedCurrency: "USD",
+        },
+      }),
+      variations: sizeVariationForm("S"),
+      currency: "USD",
+      now: NOW,
+    })
+    const existing = toFamily(initialPlan)
+    existing.variations[0]!.product = {
+      ...existing.variations[0]!.product,
+      shippingOptionId: undefined,
+      shippingOptionDTag: undefined,
+      canonicalShippingResolved: false,
+      shippingCountries: ["US"],
+      shippingCountryRules: [
+        {
+          code: "US",
+          name: "United States",
+          restrictTo: ["787**"],
+          exclude: ["78799"],
+        },
+      ],
+    }
+    const restored = getProductVariationFormState(
+      existing.root,
+      existing.variations
+    ).state
+
+    expect(restored.rows[0]?.inheritShipping).toBe(false)
+    expect(() =>
+      buildProductFamilyChangePlan({
+        parentDTag: "conduit-tee",
+        baseProduct: {
+          ...existing.root.product,
+          title: "Conduit Tee refreshed",
+        },
+        variations: restored,
+        currency: "USD",
+        existing,
+        now: NOW + 60_000,
+      })
+    ).toThrow("Remove postal restrictions")
+  })
+
   it("does not republish equivalent normalized fixed shipping intent", () => {
     const initialPlan = buildProductFamilyChangePlan({
       parentDTag: "conduit-tee",

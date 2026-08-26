@@ -152,6 +152,25 @@ export interface CanonicalProductPublishDependencies {
   ) => Promise<PublishWithPlannerResult>
 }
 
+function getProductShippingDestinations(
+  product: Pick<ProductSchema, "shippingCountries" | "shippingCountryRules">,
+  fallbackCountries: readonly string[] = []
+) {
+  if (product.shippingCountryRules?.length) {
+    return product.shippingCountryRules
+  }
+
+  const countries = product.shippingCountries?.length
+    ? product.shippingCountries
+    : fallbackCountries
+  return countries.map((code) => ({
+    code,
+    name: code,
+    restrictTo: [],
+    exclude: [],
+  }))
+}
+
 export function resolveProductFulfillmentIntentForTarget(input: {
   product: Pick<
     ProductSchema,
@@ -170,15 +189,13 @@ export function resolveProductFulfillmentIntentForTarget(input: {
     input.product.sourceShippingCost?.amount ?? input.product.shippingCostSats
   if (typeof amount !== "number") return input.fallbackIntent
 
-  const projectedCountries = input.product.shippingCountries?.length
-    ? input.product.shippingCountries
-    : input.product.shippingCountryRules?.map((rule) => rule.code)
-  const countries = projectedCountries?.length
-    ? projectedCountries
-    : input.authoringCountries
+  const destinations = getProductShippingDestinations(
+    input.product,
+    input.authoringCountries
+  )
   if (
-    !countries.some((country) =>
-      /^[A-Z]{2}$/.test(country.trim().toUpperCase())
+    !destinations.some((destination) =>
+      /^[A-Z]{2}$/.test(destination.code.trim().toUpperCase())
     )
   ) {
     throw new Error(
@@ -191,12 +208,7 @@ export function resolveProductFulfillmentIntentForTarget(input: {
     shippingPricingMode: "fixed",
     amount,
     currency: input.product.sourceShippingCost?.currency ?? "SATS",
-    destinations: countries.map((code) => ({
-      code,
-      name: code,
-      restrictTo: [],
-      exclude: [],
-    })),
+    destinations,
   })
 }
 
@@ -224,10 +236,8 @@ export function resolvePublishedProductFulfillmentIntentForTarget(
     return product.shippingOptionId ? null : { kind: "coordinate_after_order" }
   }
 
-  const projectedCountries = product.shippingCountries?.length
-    ? product.shippingCountries
-    : product.shippingCountryRules?.map((rule) => rule.code)
-  if (!projectedCountries?.length) return null
+  const destinations = getProductShippingDestinations(product)
+  if (!destinations.length) return null
 
   try {
     return compileProductFulfillmentIntent({
@@ -235,12 +245,7 @@ export function resolvePublishedProductFulfillmentIntentForTarget(
       shippingPricingMode: "fixed",
       amount,
       currency: product.sourceShippingCost?.currency ?? "SATS",
-      destinations: projectedCountries.map((code) => ({
-        code,
-        name: code,
-        restrictTo: [],
-        exclude: [],
-      })),
+      destinations,
     })
   } catch {
     return null
