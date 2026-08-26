@@ -75,6 +75,10 @@ function RootLayout() {
     select: (state) => state.location.pathname,
   })
 
+  useEffect(() => installBrowserClientErrorTelemetry("merchant"), [])
+
+  throwSyntheticClientErrorForTelemetryTest()
+
   if (isProductLegalPath(pathname)) return <Outlet />
   if (isMerchantPublicAboutPath(pathname)) {
     return (
@@ -97,8 +101,6 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
   const signerRestoring = !!pubkey && status === "restoring"
   const shouldDelayAuthFallback =
     !!pubkey && !signerConnected && !authFallbackReady
-
-  useEffect(() => installBrowserClientErrorTelemetry("merchant"), [])
 
   useEffect(() => {
     if (appLoadTelemetrySentRef.current) return
@@ -173,8 +175,6 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
   useEffect(() => {
     recordBrowserTelemetryPageView({ app: "merchant", pathname })
   }, [pathname])
-
-  throwSyntheticClientErrorForTelemetryTest()
 
   if (shouldDelayAuthFallback) {
     return (
@@ -257,18 +257,30 @@ function RootErrorComponent({ error }: ErrorComponentProps) {
   })
 
   if (isProductLegalPath(pathname) || isMerchantPublicAboutPath(pathname)) {
-    return (
-      <div className="min-h-dvh bg-[var(--background)] px-4 py-12 text-[var(--text-primary)]">
-        <ErrorPage
-          title="This public page could not be displayed"
-          message="Reload the page. If the problem continues, use the public Conduit repository for support."
-          showReload
-        />
-      </div>
-    )
+    return <MerchantPublicRootError error={error} />
   }
 
   return <MerchantProductRootError error={error} />
+}
+
+function MerchantPublicRootError({ error }: { error: Error }) {
+  useEffect(() => {
+    recordBrowserClientError({
+      app: "merchant",
+      error,
+      source: "react_error_boundary",
+    })
+  }, [error])
+
+  return (
+    <div className="min-h-dvh bg-[var(--background)] px-4 py-12 text-[var(--text-primary)]">
+      <ErrorPage
+        title="Something went wrong"
+        message="Reload the page. If the problem continues, use the public Conduit repository for support."
+        showReload
+      />
+    </div>
+  )
 }
 
 function MerchantProductRootError({ error }: { error: Error }) {
