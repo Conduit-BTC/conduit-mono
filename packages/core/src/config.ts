@@ -1,7 +1,9 @@
 export type RelayBucketId =
   | "app_backplane"
   | "core_public_fallback"
+  | "commerce_discovery"
   | "search_index"
+  | "dm_declaration_discovery"
   | "commerce_dm_fallback"
   | "dm_inbox_default"
   | "dm_compatibility_order"
@@ -17,21 +19,34 @@ export const CANONICAL_APP_BACKPLANE_RELAYS = ["wss://relay.conduit.market"]
 export const CANONICAL_APP_WRITE_RELAYS = CANONICAL_APP_BACKPLANE_RELAYS
 export const CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS = [
   "wss://nos.lol",
-  "wss://relay.damus.io",
-  "wss://relay.nostr.net",
+  "wss://relay.ditto.pub",
+  "wss://relay.primal.net",
 ]
-export const CANONICAL_SEARCH_INDEX_RELAYS = ["wss://relay.nostr.band"]
+export const CANONICAL_COMMERCE_DISCOVERY_RELAYS = [
+  "wss://relay.plebeian.market",
+  "wss://relay.ditto.pub",
+]
+export const CANONICAL_SEARCH_INDEX_RELAYS = ["wss://relay.ditto.pub"]
+export const CANONICAL_DM_DECLARATION_DISCOVERY_RELAYS = [
+  "wss://relay.conduit.market",
+  "wss://relay.ditto.pub",
+  "wss://nos.lol",
+  "wss://relay.primal.net",
+]
+/**
+ * Bounded compatibility reads for encrypted commerce messages. This includes
+ * the protected default inboxes plus the temporary validated-order registry.
+ * Do not use this broader set when creating a kind-10050 inbox declaration.
+ */
 export const CANONICAL_COMMERCE_DM_FALLBACK_RELAYS = [
   "wss://relay.conduit.market",
+  "wss://relay.ditto.pub",
   "wss://inbox.azzamo.net",
   "wss://nos.lol",
-  "wss://relay.damus.io",
-  "wss://relay.nostr.net",
 ]
 export const CANONICAL_DM_INBOX_DEFAULT_RELAYS = [
-  "wss://nos.lol",
-  "wss://relay.damus.io",
-  "wss://relay.nostr.net",
+  "wss://relay.conduit.market",
+  "wss://relay.ditto.pub",
 ]
 /**
  * Validated-order compatibility routing (CND-208): explicit operator-approved
@@ -46,9 +61,9 @@ export const CANONICAL_DM_COMPATIBILITY_ORDER_RELAYS = [
 ]
 export const CANONICAL_ZAP_PUBLIC_RELAYS = [
   "wss://nos.lol",
-  "wss://relay.damus.io",
-  "wss://relay.nostr.net",
-  "wss://relay.nostr.band",
+  "wss://relay.ditto.pub",
+  "wss://relay.primal.net",
+  "wss://relay.plebeian.market",
 ]
 export const CANONICAL_DEFAULT_RELAYS = [
   ...CANONICAL_APP_BACKPLANE_RELAYS,
@@ -93,7 +108,9 @@ export interface ConduitConfig {
   commerceRelayUrls: string[]
   publicRelayUrls: string[]
   corePublicFallbackRelayUrls: string[]
+  commerceDiscoveryRelayUrls: string[]
   searchIndexRelayUrls: string[]
+  dmDeclarationDiscoveryRelayUrls: string[]
   commerceDmFallbackRelayUrls: string[]
   dmInboxDefaultRelayUrls: string[]
   dmCompatibilityOrderRelayUrls: string[]
@@ -266,7 +283,9 @@ export function applyE2eRelayIsolation(
     commerceRelayUrls: [...isolatedRelayUrls],
     publicRelayUrls: [...isolatedRelayUrls],
     corePublicFallbackRelayUrls: [...isolatedRelayUrls],
+    commerceDiscoveryRelayUrls: [...isolatedRelayUrls],
     searchIndexRelayUrls: [...isolatedRelayUrls],
+    dmDeclarationDiscoveryRelayUrls: [...isolatedRelayUrls],
     commerceDmFallbackRelayUrls: [...isolatedRelayUrls],
     dmInboxDefaultRelayUrls: [...isolatedRelayUrls],
     dmCompatibilityOrderRelayUrls: [...isolatedRelayUrls],
@@ -316,7 +335,9 @@ function logRelayDebugConfig(input: {
     publicRelayUrls: readonly string[]
     commerceRelayUrls: readonly string[]
     corePublicFallbackRelayUrls: readonly string[]
+    commerceDiscoveryRelayUrls: readonly string[]
     searchIndexRelayUrls: readonly string[]
+    dmDeclarationDiscoveryRelayUrls: readonly string[]
     commerceDmFallbackRelayUrls: readonly string[]
     dmInboxDefaultRelayUrls: readonly string[]
     zapRelayUrls: readonly string[]
@@ -348,8 +369,12 @@ function logRelayDebugConfig(input: {
       formatRelayDebugList(input.resolved.commerceRelayUrls),
       "  corePublicFallbackRelayUrls:",
       formatRelayDebugList(input.resolved.corePublicFallbackRelayUrls),
+      "  commerceDiscoveryRelayUrls:",
+      formatRelayDebugList(input.resolved.commerceDiscoveryRelayUrls),
       "  searchIndexRelayUrls:",
       formatRelayDebugList(input.resolved.searchIndexRelayUrls),
+      "  dmDeclarationDiscoveryRelayUrls:",
+      formatRelayDebugList(input.resolved.dmDeclarationDiscoveryRelayUrls),
       "  commerceDmFallbackRelayUrls:",
       formatRelayDebugList(input.resolved.commerceDmFallbackRelayUrls),
       "  dmInboxDefaultRelayUrls:",
@@ -390,8 +415,14 @@ const corePublicFallbackRelayUrls = uniqueConfiguredRelayUrls([
   ...envPublicRelayUrls,
   ...envGeneralRelayUrls,
 ])
+const commerceDiscoveryRelayUrls = uniqueConfiguredRelayUrls(
+  CANONICAL_COMMERCE_DISCOVERY_RELAYS
+)
 const searchIndexRelayUrls = uniqueConfiguredRelayUrls(
   CANONICAL_SEARCH_INDEX_RELAYS
+)
+const dmDeclarationDiscoveryRelayUrls = uniqueConfiguredRelayUrls(
+  CANONICAL_DM_DECLARATION_DISCOVERY_RELAYS
 )
 const commerceDmFallbackRelayUrls = uniqueConfiguredRelayUrls(
   CANONICAL_COMMERCE_DM_FALLBACK_RELAYS
@@ -433,7 +464,9 @@ const configuredRelayConfig: ConduitConfig = {
   commerceRelayUrls,
   publicRelayUrls,
   corePublicFallbackRelayUrls,
+  commerceDiscoveryRelayUrls,
   searchIndexRelayUrls,
+  dmDeclarationDiscoveryRelayUrls,
   commerceDmFallbackRelayUrls,
   dmInboxDefaultRelayUrls,
   dmCompatibilityOrderRelayUrls,
@@ -503,7 +536,9 @@ logRelayDebugConfig({
     publicRelayUrls: config.publicRelayUrls,
     commerceRelayUrls: config.commerceRelayUrls,
     corePublicFallbackRelayUrls: config.corePublicFallbackRelayUrls,
+    commerceDiscoveryRelayUrls: config.commerceDiscoveryRelayUrls,
     searchIndexRelayUrls: config.searchIndexRelayUrls,
+    dmDeclarationDiscoveryRelayUrls: config.dmDeclarationDiscoveryRelayUrls,
     commerceDmFallbackRelayUrls: config.commerceDmFallbackRelayUrls,
     dmInboxDefaultRelayUrls: config.dmInboxDefaultRelayUrls,
     zapRelayUrls: config.zapRelayUrls,
@@ -525,9 +560,19 @@ export function getRelayBucketConfigs(
       relayUrls: cfg.corePublicFallbackRelayUrls,
     },
     {
+      id: "commerce_discovery",
+      label: "Commerce discovery",
+      relayUrls: cfg.commerceDiscoveryRelayUrls,
+    },
+    {
       id: "search_index",
       label: "Search/index",
       relayUrls: cfg.searchIndexRelayUrls,
+    },
+    {
+      id: "dm_declaration_discovery",
+      label: "Private-message declaration discovery",
+      relayUrls: cfg.dmDeclarationDiscoveryRelayUrls,
     },
     {
       id: "commerce_dm_fallback",

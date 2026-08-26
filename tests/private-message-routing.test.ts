@@ -1055,7 +1055,7 @@ describe("inbox declaration discovery planning", () => {
     expect(inboxDeclarationPublishRelayUrls(owner)).toEqual([
       // Production shared relays remain reserved regardless of owner list size.
       ...sharedInboxDiscoveryRelayUrls(),
-      ...owner.slice(0, 3),
+      ...owner,
     ])
   })
 })

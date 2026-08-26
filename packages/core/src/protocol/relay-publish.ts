@@ -302,8 +302,18 @@ function getAuthorEventFallbackRelayUrls(input: {
       : config.corePublicFallbackRelayUrls.filter(
           (url) => !attempted.has(normalizeOutcomeRelayUrl(url))
         )
+  const commerceDiscoveryRelayUrls =
+    input.eventKind === EVENT_KINDS.PRODUCT
+      ? config.commerceDiscoveryRelayUrls.filter(
+          (url) => !attempted.has(normalizeOutcomeRelayUrl(url))
+        )
+      : []
 
-  return mergeUnique([config.appWriteRelayUrls, publicRelayFallbackUrls])
+  return mergeUnique([
+    config.appWriteRelayUrls,
+    commerceDiscoveryRelayUrls,
+    publicRelayFallbackUrls,
+  ])
 }
 
 function getCriticalRecipientFallbackRelayUrls(input: {

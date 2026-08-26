@@ -14,6 +14,12 @@ import {
   type PublishWithPlannerResult,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
+import {
+  deliverQueuedProductDeletion,
+  persistSignedProductDeletion,
+  planCurrentProductDeletionWriteRelays,
+  type DeliverQueuedProductDeletionOptions,
+} from "./product-deletion-delivery"
 
 export class SignedProductDeliveryError extends Error {
   readonly deliveryCause: unknown
@@ -55,7 +61,8 @@ export function isDeliverableMerchantProductEvent(
 
 export async function deliverSignedProductEvent(
   event: NDKEvent | SignedPublicNostrEvent,
-  merchantPubkey: string
+  merchantPubkey: string,
+  options: { extraRelayUrls?: readonly string[] } = {}
 ): Promise<PublishWithPlannerResult> {
   try {
     const rawEvent =
@@ -75,12 +82,20 @@ export async function deliverSignedProductEvent(
       publishableEvent = new NDKEvent(getNdk(), event)
     }
 
-    return await publishWithPlanner(publishableEvent, {
+    const delivery = await publishWithPlanner(publishableEvent, {
       intent: "author_event",
       authorPubkey: merchantPubkey,
       authenticatedPubkey: merchantPubkey,
       deliveryMode: "critical",
+      extraRelayUrls: options.extraRelayUrls,
     })
+    if (rawEvent.kind === EVENT_KINDS.PRODUCT) {
+      await cacheSignedProductListingEvent(publishableEvent, {
+        sourceRelayUrls: delivery.successfulRelayUrls,
+        persistence: "best_effort",
+      })
+    }
+    return delivery
   } catch (error) {
     throw asSignedProductDeliveryError(error)
   }
@@ -101,14 +116,40 @@ export async function deliverSignedProductEventBundle(
   const deliveries = await Promise.all(
     events.map((event) => deliverSignedProductEvent(event, merchantPubkey))
   )
+  return aggregateProductEventDeliveries(deliveries)
+}
+
+function aggregateProductEventDeliveries(
+  deliveries: readonly PublishWithPlannerResult[]
+): PublishWithPlannerResult {
+  if (deliveries.length === 0) {
+    throw new Error("At least one product delivery result is required")
+  }
+
   const attemptedRelayUrls = mergeRelayUrls(
     ...deliveries.map((delivery) => delivery.attemptedRelayUrls)
   )
-  const successfulRelayUrls = attemptedRelayUrls.filter((url) =>
-    deliveries.every((delivery) => delivery.successfulRelayUrls.includes(url))
+  const knownRelayUrls = mergeRelayUrls(
+    attemptedRelayUrls,
+    ...deliveries.map((delivery) => delivery.successfulRelayUrls),
+    ...deliveries.map((delivery) => delivery.failedRelayUrls)
   )
+  const successfulRelayUrls = knownRelayUrls.filter((url) => {
+    const relevantDeliveries = deliveries.filter(
+      (delivery) =>
+        delivery.attemptedRelayUrls.includes(url) ||
+        delivery.successfulRelayUrls.includes(url) ||
+        delivery.failedRelayUrls.includes(url)
+    )
+    return (
+      relevantDeliveries.length > 0 &&
+      relevantDeliveries.every((delivery) =>
+        delivery.successfulRelayUrls.includes(url)
+      )
+    )
+  })
   const successfulRelaySet = new Set(successfulRelayUrls)
-  const failedRelayUrls = attemptedRelayUrls.filter(
+  const failedRelayUrls = knownRelayUrls.filter(
     (url) => !successfulRelaySet.has(url)
   )
 
@@ -130,11 +171,80 @@ export interface ProductListingPublishTarget {
   previousEventCreatedAt?: number
 }
 
+export interface ProductDeletionPublishTarget extends ProductDeletionEventTarget {
+  sourceRelayUrls?: readonly string[]
+}
+
+export function buildProductRemovalDeletionTargets(
+  records: readonly {
+    eventId: string
+    addressId: string
+    sourceRelayUrls: readonly string[]
+  }[]
+): ProductDeletionPublishTarget[] {
+  return records.map((record) => ({
+    eventId: record.eventId,
+    addressId: record.addressId,
+    sourceRelayUrls: [...record.sourceRelayUrls],
+  }))
+}
+
+export interface SignedProductWriteBundle {
+  events: readonly NDKEvent[]
+  deletionDeliveryJobId?: string
+}
+
+export async function deliverSignedProductWriteBundle(
+  bundle: SignedProductWriteBundle,
+  merchantPubkey: string,
+  deletionDeliveryOptions: DeliverQueuedProductDeletionOptions = {}
+): Promise<PublishWithPlannerResult> {
+  const deletionEvents = bundle.events.filter(
+    (event) => event.kind === EVENT_KINDS.DELETION
+  )
+  if (deletionEvents.length > 1) {
+    throw new Error("Expected at most one signed product deletion event")
+  }
+  const deletionEvent = deletionEvents[0]
+  const rawDeletionEvent = deletionEvent
+    ? (deletionEvent.rawEvent() as SignedPublicNostrEvent)
+    : null
+  if (
+    (!!rawDeletionEvent || !!bundle.deletionDeliveryJobId) &&
+    (!rawDeletionEvent ||
+      !bundle.deletionDeliveryJobId ||
+      bundle.deletionDeliveryJobId !== rawDeletionEvent.id ||
+      !isDeliverableMerchantProductEvent(rawDeletionEvent, merchantPubkey))
+  ) {
+    throw new Error(
+      "Expected an exact signed merchant deletion with its durable delivery job"
+    )
+  }
+
+  const deliveryPromises: Promise<PublishWithPlannerResult>[] = []
+  for (const event of bundle.events) {
+    if (event.kind !== EVENT_KINDS.DELETION) {
+      deliveryPromises.push(deliverSignedProductEvent(event, merchantPubkey))
+    }
+  }
+  if (bundle.deletionDeliveryJobId) {
+    deliveryPromises.push(
+      deliverQueuedProductDeletion(
+        bundle.deletionDeliveryJobId,
+        deletionDeliveryOptions
+      )
+    )
+  }
+  const deliveries = await Promise.all(deliveryPromises)
+  return aggregateProductEventDeliveries(deliveries)
+}
+
 export async function signAndPublishProductWriteBundle(input: {
   merchantPubkey: string
   listings: readonly ProductListingPublishTarget[]
-  deletions?: readonly ProductDeletionEventTarget[]
-  onSignedLocal: (events: readonly NDKEvent[]) => Promise<void>
+  deletions?: readonly ProductDeletionPublishTarget[]
+  onSignedLocal: (bundle: SignedProductWriteBundle) => Promise<void>
+  deletionDeliveryOptions?: DeliverQueuedProductDeletionOptions
 }): Promise<PublishWithPlannerResult> {
   const ndk = getNdk()
   if (!ndk.signer) throw new Error("Signer not connected")
@@ -185,17 +295,48 @@ export async function signAndPublishProductWriteBundle(input: {
     signedEvents.push(deletion)
   }
 
-  for (const event of signedEvents) {
-    if (event.kind === EVENT_KINDS.DELETION) {
-      await cacheSignedProductDeletionEvent(event)
-    } else {
-      await cacheSignedProductListingEvent(event)
-    }
+  const deletionEvent = signedEvents.find(
+    (event) => event.kind === EVENT_KINDS.DELETION
+  )
+  const listingEvents = signedEvents.filter(
+    (event) => event.kind === EVENT_KINDS.PRODUCT
+  )
+  await Promise.all(
+    listingEvents.map((event) => cacheSignedProductListingEvent(event))
+  )
+
+  let deletionDeliveryJobId: string | undefined
+  if (deletionEvent) {
+    const currentWriteRelayUrls =
+      await planCurrentProductDeletionWriteRelays(signerPubkey)
+    const sourceRelayUrls = mergeRelayUrls(
+      ...(input.deletions ?? []).map(
+        (deletion) => deletion.sourceRelayUrls ?? []
+      )
+    )
+    const deliveryJob = await persistSignedProductDeletion(
+      {
+        signedEvent: deletionEvent.rawEvent() as SignedPublicNostrEvent,
+        currentWriteRelayUrls,
+        sourceRelayUrls,
+      },
+      input.deletionDeliveryOptions
+    )
+    deletionDeliveryJobId = deliveryJob.id
+    await cacheSignedProductDeletionEvent(deletionEvent)
   }
 
+  const signedBundle: SignedProductWriteBundle = {
+    events: signedEvents,
+    ...(deletionDeliveryJobId ? { deletionDeliveryJobId } : {}),
+  }
   try {
-    await input.onSignedLocal(signedEvents)
-    return await deliverSignedProductEventBundle(signedEvents, signerPubkey)
+    await input.onSignedLocal(signedBundle)
+    return await deliverSignedProductWriteBundle(
+      signedBundle,
+      signerPubkey,
+      input.deletionDeliveryOptions
+    )
   } catch (error) {
     throw asSignedProductDeliveryError(error)
   }

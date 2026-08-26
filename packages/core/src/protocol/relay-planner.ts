@@ -173,13 +173,21 @@ function appAssistedReadFallbackRelayUrls(): string[] {
   ])
 }
 
+function commerceReadFallbackRelayUrls(): string[] {
+  return dedupeOrdered([
+    ...config.appBackplaneRelayUrls,
+    ...config.commerceDiscoveryRelayUrls,
+    ...config.corePublicFallbackRelayUrls,
+  ])
+}
+
 function corePublicReadFallbackRelayUrls(): string[] {
   return dedupeOrdered(config.corePublicFallbackRelayUrls)
 }
 
 function defaultRecipientWriteFallbackRelayUrls(): string[] {
-  return config.commerceDmFallbackRelayUrls.length > 0
-    ? config.commerceDmFallbackRelayUrls
+  return config.dmInboxDefaultRelayUrls.length > 0
+    ? config.dmInboxDefaultRelayUrls
     : appAssistedReadFallbackRelayUrls()
 }
 
@@ -271,7 +279,7 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
         return getCommerceReadRelayUrls(
           settingsPlanOptions({
             settings: input.settings,
-            fallbackRelayUrls: appAssistedReadFallbackRelayUrls(),
+            fallbackRelayUrls: commerceReadFallbackRelayUrls(),
           })
         )
       case "dm_inbox":

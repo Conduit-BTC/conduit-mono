@@ -121,6 +121,18 @@ describe("planRelayReads", () => {
     expect(plan.relayUrls).toContain("wss://public.conduit.market")
   })
 
+  it("uses commerce discovery defaults when local settings are empty", () => {
+    const plan = planRelayReads({
+      intent: "commerce_products",
+      settings: settings([]),
+    })
+
+    for (const relayUrl of config.commerceDiscoveryRelayUrls) {
+      expect(plan.relayUrls).toContain(relayUrl)
+    }
+    expect(plan.relayUrls).not.toContain("wss://inbox.azzamo.net")
+  })
+
   it("prepends author write relays as hints for author_products", () => {
     const state = settings([
       entry("wss://commerce.conduit.market", { section: "commerce" }),
@@ -452,7 +464,7 @@ describe("planRelayWrites", () => {
       settings: state,
     })
     expect(plan.primaryRelayUrls).toEqual(
-      config.commerceDmFallbackRelayUrls.slice(0, 4)
+      config.dmInboxDefaultRelayUrls.slice(0, 4)
     )
     expect(plan.primaryRelayUrls).not.toContain("ws://umbrel.local:4848")
   })
@@ -512,7 +524,7 @@ describe("planRelayWrites", () => {
       settings: state,
     })
     expect(plan.primaryRelayUrls).toEqual(
-      config.commerceDmFallbackRelayUrls.slice(0, 4)
+      config.dmInboxDefaultRelayUrls.slice(0, 4)
     )
     expect(plan.primaryRelayUrls).not.toContain("wss://outbox.conduit.market")
     expect(plan.broadcastRelayUrls).toEqual(["wss://outbox.conduit.market"])
@@ -527,7 +539,7 @@ describe("planRelayWrites", () => {
     })
 
     expect(plan.primaryRelayUrls).toEqual(
-      config.commerceDmFallbackRelayUrls.slice(0, 4)
+      config.dmInboxDefaultRelayUrls.slice(0, 4)
     )
     expect(plan.broadcastRelayUrls).toEqual([])
   })
