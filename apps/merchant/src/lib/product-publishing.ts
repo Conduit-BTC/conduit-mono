@@ -55,7 +55,8 @@ export function isDeliverableMerchantProductEvent(
 
 export async function deliverSignedProductEvent(
   event: NDKEvent | SignedPublicNostrEvent,
-  merchantPubkey: string
+  merchantPubkey: string,
+  options: { extraRelayUrls?: readonly string[] } = {}
 ): Promise<PublishWithPlannerResult> {
   try {
     const rawEvent =
@@ -80,6 +81,7 @@ export async function deliverSignedProductEvent(
       authorPubkey: merchantPubkey,
       authenticatedPubkey: merchantPubkey,
       deliveryMode: "critical",
+      extraRelayUrls: options.extraRelayUrls,
     })
     if (rawEvent.kind === EVENT_KINDS.PRODUCT) {
       await cacheSignedProductListingEvent(publishableEvent, {
@@ -99,14 +101,22 @@ function mergeRelayUrls(...groups: readonly (readonly string[])[]): string[] {
 
 export async function deliverSignedProductEventBundle(
   events: readonly (NDKEvent | SignedPublicNostrEvent)[],
-  merchantPubkey: string
+  merchantPubkey: string,
+  options: ProductWriteBundleDeliveryOptions = {}
 ): Promise<PublishWithPlannerResult> {
   if (events.length === 0) {
     throw new Error("At least one signed product event is required")
   }
 
   const deliveries = await Promise.all(
-    events.map((event) => deliverSignedProductEvent(event, merchantPubkey))
+    events.map((event) =>
+      deliverSignedProductEvent(event, merchantPubkey, {
+        extraRelayUrls:
+          event.kind === EVENT_KINDS.DELETION
+            ? options.deletionSourceRelayUrls
+            : undefined,
+      })
+    )
   )
   const attemptedRelayUrls = mergeRelayUrls(
     ...deliveries.map((delivery) => delivery.attemptedRelayUrls)
@@ -137,11 +147,58 @@ export interface ProductListingPublishTarget {
   previousEventCreatedAt?: number
 }
 
+export interface ProductDeletionPublishTarget extends ProductDeletionEventTarget {
+  sourceRelayUrls?: readonly string[]
+}
+
+export function buildProductRemovalDeletionTargets(
+  records: readonly {
+    eventId: string
+    addressId: string
+    sourceRelayUrls: readonly string[]
+  }[]
+): ProductDeletionPublishTarget[] {
+  return records.map((record) => ({
+    eventId: record.eventId,
+    addressId: record.addressId,
+    sourceRelayUrls: [...record.sourceRelayUrls],
+  }))
+}
+
+export interface ProductWriteBundleDeliveryOptions {
+  deletionSourceRelayUrls?: readonly string[]
+}
+
+export interface SignedProductWriteBundle {
+  events: readonly NDKEvent[]
+  deliveryOptions: ProductWriteBundleDeliveryOptions
+}
+
+export function buildProductWriteBundleDeliveryOptions(
+  deletions: readonly ProductDeletionPublishTarget[]
+): ProductWriteBundleDeliveryOptions {
+  const deletionSourceRelayUrls = mergeRelayUrls(
+    ...deletions.map((deletion) => deletion.sourceRelayUrls ?? [])
+  )
+  return deletionSourceRelayUrls.length > 0 ? { deletionSourceRelayUrls } : {}
+}
+
+export function deliverSignedProductWriteBundle(
+  bundle: SignedProductWriteBundle,
+  merchantPubkey: string
+): Promise<PublishWithPlannerResult> {
+  return deliverSignedProductEventBundle(
+    bundle.events,
+    merchantPubkey,
+    bundle.deliveryOptions
+  )
+}
+
 export async function signAndPublishProductWriteBundle(input: {
   merchantPubkey: string
   listings: readonly ProductListingPublishTarget[]
-  deletions?: readonly ProductDeletionEventTarget[]
-  onSignedLocal: (events: readonly NDKEvent[]) => Promise<void>
+  deletions?: readonly ProductDeletionPublishTarget[]
+  onSignedLocal: (bundle: SignedProductWriteBundle) => Promise<void>
 }): Promise<PublishWithPlannerResult> {
   const ndk = getNdk()
   if (!ndk.signer) throw new Error("Signer not connected")
@@ -200,9 +257,16 @@ export async function signAndPublishProductWriteBundle(input: {
     }
   }
 
+  const deliveryOptions = buildProductWriteBundleDeliveryOptions(
+    input.deletions ?? []
+  )
+  const signedBundle: SignedProductWriteBundle = {
+    events: signedEvents,
+    deliveryOptions,
+  }
   try {
-    await input.onSignedLocal(signedEvents)
-    return await deliverSignedProductEventBundle(signedEvents, signerPubkey)
+    await input.onSignedLocal(signedBundle)
+    return await deliverSignedProductWriteBundle(signedBundle, signerPubkey)
   } catch (error) {
     throw asSignedProductDeliveryError(error)
   }

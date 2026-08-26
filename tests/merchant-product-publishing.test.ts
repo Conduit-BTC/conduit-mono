@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { NDKEvent } from "@nostr-dev-kit/ndk"
+import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import {
   __resetCommerceTestOverrides,
   __resetRelayPublishTestOverrides,
@@ -12,14 +12,19 @@ import {
   EVENT_KINDS,
   getCachedMerchantStorefront,
   planProductDeletionRelays,
+  setSigner,
   type ProductSchema,
 } from "@conduit/core"
 import type { CachedProduct } from "@conduit/core/db"
 import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
+  buildProductRemovalDeletionTargets,
   deliverSignedProductEvent,
   deliverSignedProductEventBundle,
+  deliverSignedProductWriteBundle,
   isDeliverableMerchantProductEvent,
+  signAndPublishProductWriteBundle,
+  type SignedProductWriteBundle,
 } from "../apps/merchant/src/lib/product-publishing"
 import { __resetNdkTestState } from "../packages/core/src/protocol/ndk"
 
@@ -112,6 +117,7 @@ beforeEach(() => {
         ]
       }
     },
+    putCachedProductTombstones: async () => {},
   })
   __setRelayPublishTestOverrides({
     planPublishRelays: async () => ({
@@ -282,5 +288,57 @@ describe("merchant product event delivery", () => {
     }).map(({ relayUrl }) => relayUrl)
     expect(deletionRelayUrls).toContain(firstFallbackRelayUrl)
     expect(deletionRelayUrls).toContain(secondFallbackRelayUrl)
+  })
+
+  it("retains a removed variation source through delivery and retry", async () => {
+    const fallbackRelayUrl = CANONICAL_COMMERCE_DISCOVERY_RELAYS[0]!
+    const signer = new NDKPrivateKeySigner(MERCHANT_SECRET)
+    setSigner(signer)
+    const deletionTargets = buildProductRemovalDeletionTargets([
+      {
+        eventId: "b".repeat(64),
+        addressId: `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:variation`,
+        sourceRelayUrls: [fallbackRelayUrl],
+      },
+    ])
+    let signedBundle: SignedProductWriteBundle | null = null
+    let publishAttempts = 0
+    const delivery = await signAndPublishProductWriteBundle({
+      merchantPubkey: MERCHANT_PUBKEY,
+      listings: [],
+      deletions: deletionTargets,
+      onSignedLocal: async (bundle) => {
+        signedBundle = bundle
+        const deletion = bundle.events.find(
+          (event) => event.kind === EVENT_KINDS.DELETION
+        )
+        if (!deletion) throw new Error("Expected a signed deletion event")
+        deletion.publish = (async (relaySet: unknown) => {
+          publishAttempts += 1
+          const attemptedRelayUrls = [
+            ...((relaySet as { relayUrls?: Set<string> | string[] })
+              .relayUrls ?? []),
+          ]
+          expect(attemptedRelayUrls).toContain(`${fallbackRelayUrl}/`)
+          return new Set([{ url: `${fallbackRelayUrl}/` }])
+        }) as never
+      },
+    })
+    if (!signedBundle) throw new Error("Expected the signed retry bundle")
+    const retry = await deliverSignedProductWriteBundle(
+      signedBundle,
+      MERCHANT_PUBKEY
+    )
+
+    expect(signedBundle.deliveryOptions.deletionSourceRelayUrls).toEqual([
+      fallbackRelayUrl,
+    ])
+    expect(signedBundle.events[0]?.tags).toContainEqual([
+      "a",
+      `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:variation`,
+    ])
+    expect(delivery.successfulRelayUrls).toEqual([fallbackRelayUrl])
+    expect(retry.successfulRelayUrls).toEqual([fallbackRelayUrl])
+    expect(publishAttempts).toBe(2)
   })
 })
