@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test"
-import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
+import {
+  NDKEvent,
+  NDKPrivateKeySigner,
+  type NDKSigner,
+  type NostrEvent,
+} from "@nostr-dev-kit/ndk"
 import {
   __resetCommerceTestOverrides,
   __resetRelayPublishTestOverrides,
@@ -627,6 +632,66 @@ describe("merchant product event delivery", () => {
     expect(resumedRelayUrls).toEqual([deletionPendingRelayUrl])
     expect(resumedEventIds).toEqual([signedDeletionId])
     expect((await afterReload.get(signedDeletionId))?.state).toBe("delivered")
+  })
+
+  it("serializes family event approvals through a non-reentrant signer", async () => {
+    const delegate = new NDKPrivateKeySigner(MERCHANT_SECRET)
+    const signedKinds: number[] = []
+    let signRequestInFlight = false
+    const signer = {
+      user: () => delegate.user(),
+      sign: async (event: NostrEvent) => {
+        if (signRequestInFlight) {
+          throw new Error("signer rejected an overlapping approval request")
+        }
+        signRequestInFlight = true
+        try {
+          await new Promise<void>((resolve) => setTimeout(resolve, 0))
+          signedKinds.push(event.kind)
+          return await delegate.sign(event)
+        } finally {
+          signRequestInFlight = false
+        }
+      },
+    } as NDKSigner
+    setSigner(signer)
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "author_event",
+        primaryRelayUrls: ["wss://relay.example"],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+    const publishSpy = spyOn(NDKEvent.prototype, "publish").mockResolvedValue(
+      new Set([{ url: "wss://relay.example/" }]) as never
+    )
+
+    try {
+      await signAndPublishProductWriteBundle({
+        merchantPubkey: MERCHANT_PUBKEY,
+        listings: ["family-a", "family-b"].map((dTag) => ({
+          product: makeProduct(dTag),
+          dTag,
+          fulfillmentIntent: {
+            kind: "fixed_standard" as const,
+            amount: 5,
+            currency: "SATS",
+            countries: ["US"],
+          },
+        })),
+        onSignedLocal: async () => {},
+      })
+
+      expect(signedKinds).toEqual([
+        EVENT_KINDS.SHIPPING_OPTION,
+        EVENT_KINDS.PRODUCT,
+        EVENT_KINDS.SHIPPING_OPTION,
+        EVENT_KINDS.PRODUCT,
+      ])
+    } finally {
+      publishSpy.mockRestore()
+    }
   })
 
   it("keeps durable family-removal delivery on loopback in E2E isolation", async () => {

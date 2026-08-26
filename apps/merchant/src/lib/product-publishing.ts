@@ -537,11 +537,12 @@ export async function signAndPublishProductWriteBundle(input: {
     throw new Error("No product changes require signing")
   }
 
-  const writes = await Promise.all(
-    input.listings.map((listing) =>
-      signProductWrite(ndk, signer, signerPubkey, listing, Date.now())
+  const writes: SignedProductWrite[] = []
+  for (const listing of input.listings) {
+    writes.push(
+      await signProductWrite(ndk, signer, signerPubkey, listing, Date.now())
     )
-  )
+  }
   const productEvents = writes.map((write) => write.productEvent)
   const events: NDKEvent[] = [...productEvents]
   if ((input.deletions?.length ?? 0) > 0) {
