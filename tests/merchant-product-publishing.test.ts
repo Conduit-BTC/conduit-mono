@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test"
 import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import {
   __resetCommerceTestOverrides,
@@ -589,6 +589,69 @@ describe("merchant product event delivery", () => {
     expect(await repository.listUndelivered()).toEqual([])
     expect(onSignedLocalCalls).toBe(0)
     expect(deletionPublishAttempts).toBe(0)
+  })
+
+  it("stops the production bundle before product side effects when fixed shipping has no ACK", async () => {
+    const repository = new MemoryProductDeletionOutbox()
+    const publishAttempts: number[] = []
+    let onSignedLocalCalls = 0
+    setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "author_event",
+        primaryRelayUrls: ["wss://relay.example"],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+    const publishSpy = spyOn(NDKEvent.prototype, "publish").mockImplementation(
+      async function (this: NDKEvent) {
+        publishAttempts.push(this.kind ?? -1)
+        return new Set()
+      }
+    )
+
+    try {
+      await expect(
+        signAndPublishProductWriteBundle({
+          merchantPubkey: MERCHANT_PUBKEY,
+          listings: [
+            {
+              product: makeProduct("root"),
+              dTag: "root",
+              fulfillmentIntent: {
+                kind: "fixed_standard",
+                amount: 5,
+                currency: "SATS",
+                countries: ["US"],
+              },
+            },
+          ],
+          deletions: buildProductRemovalDeletionTargets([
+            {
+              eventId: "c".repeat(64),
+              addressId: `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:variation`,
+              sourceRelayUrls: ["wss://relay.damus.io"],
+            },
+          ]),
+          onSignedLocal: async () => {
+            onSignedLocalCalls += 1
+          },
+          deletionDeliveryOptions: {
+            repository,
+            restoreLocalEvidence: async () => {},
+            publisher: async () => ({ status: "acked" }),
+          },
+        })
+      ).rejects.toThrow("Product publication was stopped.")
+
+      expect(publishAttempts).toEqual([EVENT_KINDS.SHIPPING_OPTION])
+      expect(cachedProducts).toEqual([])
+      expect(await repository.listUndelivered()).toEqual([])
+      expect(onSignedLocalCalls).toBe(0)
+    } finally {
+      publishSpy.mockRestore()
+    }
   })
 
   it("rejects a durable deletion job without the exact merchant event", async () => {
