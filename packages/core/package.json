@@ -36,7 +36,7 @@
     "country-list": "^2.4.1",
     "dexie": "^4.4.4",
     "libphonenumber-js": "^1.13.11",
-    "nostr-tools": "2.24.1",
+    "nostr-tools": "2.24.3",
     "posthog-js": "^1.391.2",
     "tailwind-merge": "^3.6.0",
     "zod": "^4.4.3"
