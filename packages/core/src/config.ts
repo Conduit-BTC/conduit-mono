@@ -1,7 +1,9 @@
 export type RelayBucketId =
   | "app_backplane"
   | "core_public_fallback"
+  | "commerce_discovery"
   | "search_index"
+  | "dm_declaration_discovery"
   | "commerce_dm_fallback"
   | "dm_inbox_default"
   | "dm_compatibility_order"
@@ -17,21 +19,34 @@ export const CANONICAL_APP_BACKPLANE_RELAYS = ["wss://relay.conduit.market"]
 export const CANONICAL_APP_WRITE_RELAYS = CANONICAL_APP_BACKPLANE_RELAYS
 export const CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS = [
   "wss://nos.lol",
-  "wss://relay.damus.io",
-  "wss://relay.nostr.net",
+  "wss://relay.ditto.pub",
+  "wss://relay.primal.net",
 ]
-export const CANONICAL_SEARCH_INDEX_RELAYS = ["wss://relay.nostr.band"]
+export const CANONICAL_COMMERCE_DISCOVERY_RELAYS = [
+  "wss://relay.plebeian.market",
+  "wss://relay.ditto.pub",
+]
+export const CANONICAL_SEARCH_INDEX_RELAYS = ["wss://relay.ditto.pub"]
+export const CANONICAL_DM_DECLARATION_DISCOVERY_RELAYS = [
+  "wss://relay.conduit.market",
+  "wss://relay.ditto.pub",
+  "wss://nos.lol",
+  "wss://relay.primal.net",
+]
+/**
+ * Bounded compatibility reads for encrypted commerce messages. This includes
+ * the protected default inboxes plus the temporary validated-order registry.
+ * Do not use this broader set when creating a kind-10050 inbox declaration.
+ */
 export const CANONICAL_COMMERCE_DM_FALLBACK_RELAYS = [
   "wss://relay.conduit.market",
+  "wss://relay.ditto.pub",
   "wss://inbox.azzamo.net",
   "wss://nos.lol",
-  "wss://relay.damus.io",
-  "wss://relay.nostr.net",
 ]
 export const CANONICAL_DM_INBOX_DEFAULT_RELAYS = [
-  "wss://nos.lol",
-  "wss://relay.damus.io",
-  "wss://relay.nostr.net",
+  "wss://relay.conduit.market",
+  "wss://relay.ditto.pub",
 ]
 /**
  * Validated-order compatibility routing (CND-208): explicit operator-approved
@@ -46,9 +61,9 @@ export const CANONICAL_DM_COMPATIBILITY_ORDER_RELAYS = [
 ]
 export const CANONICAL_ZAP_PUBLIC_RELAYS = [
   "wss://nos.lol",
-  "wss://relay.damus.io",
-  "wss://relay.nostr.net",
-  "wss://relay.nostr.band",
+  "wss://relay.ditto.pub",
+  "wss://relay.primal.net",
+  "wss://relay.plebeian.market",
 ]
 export const CANONICAL_DEFAULT_RELAYS = [
   ...CANONICAL_APP_BACKPLANE_RELAYS,
@@ -85,6 +100,7 @@ const CONDUIT_RELAY_DEBUG_BANNER = [
 ].join("\n")
 
 export interface ConduitConfig {
+  e2eRelayIsolationEnabled: boolean
   relayUrl: string
   defaultRelays: string[]
   appBackplaneRelayUrls: string[]
@@ -92,7 +108,9 @@ export interface ConduitConfig {
   commerceRelayUrls: string[]
   publicRelayUrls: string[]
   corePublicFallbackRelayUrls: string[]
+  commerceDiscoveryRelayUrls: string[]
   searchIndexRelayUrls: string[]
+  dmDeclarationDiscoveryRelayUrls: string[]
   commerceDmFallbackRelayUrls: string[]
   dmInboxDefaultRelayUrls: string[]
   dmCompatibilityOrderRelayUrls: string[]
@@ -114,6 +132,8 @@ export interface ConduitConfig {
 // Dynamic access like import.meta.env[key] returns undefined in production builds.
 // Use direct access for each variable so Vite can inline them at build time.
 function getViteEnv(): {
+  mode: string
+  e2eRelayUrl: string
   relayUrl: string
   defaultRelayUrl: string
   defaultRelays: string
@@ -133,6 +153,8 @@ function getViteEnv(): {
 } {
   if (typeof import.meta !== "undefined" && import.meta.env) {
     return {
+      mode: import.meta.env.MODE ?? "",
+      e2eRelayUrl: import.meta.env.VITE_E2E_RELAY_URL ?? "",
       relayUrl: import.meta.env.VITE_RELAY_URL ?? "",
       defaultRelayUrl: import.meta.env.VITE_DEFAULT_RELAY_URL ?? "",
       defaultRelays: import.meta.env.VITE_DEFAULT_RELAYS ?? "",
@@ -153,6 +175,8 @@ function getViteEnv(): {
     }
   }
   return {
+    mode: "",
+    e2eRelayUrl: "",
     relayUrl: "",
     defaultRelayUrl: "",
     defaultRelays: "",
@@ -219,6 +243,57 @@ function parseRelayList(raw: string): string[] {
   return uniqueConfiguredRelayUrls(raw.split(","))
 }
 
+export function resolveE2eRelayIsolation(
+  mode: string,
+  rawRelayUrl: string
+): string[] {
+  if (!rawRelayUrl.trim()) return []
+  if (mode !== "mock") {
+    throw new Error("VITE_E2E_RELAY_URL is only allowed in Vite mock mode")
+  }
+
+  const relayUrls = uniqueConfiguredRelayUrls([rawRelayUrl])
+  if (relayUrls.length !== 1) {
+    throw new Error("VITE_E2E_RELAY_URL must contain one valid relay URL")
+  }
+  const hostname = new URL(relayUrls[0]).hostname
+  if (!new Set(["127.0.0.1", "localhost", "[::1]"]).has(hostname)) {
+    throw new Error("VITE_E2E_RELAY_URL must use a loopback host")
+  }
+  return relayUrls
+}
+
+export function applyE2eRelayIsolation(
+  input: ConduitConfig,
+  relayUrls: readonly string[]
+): ConduitConfig {
+  if (relayUrls.length === 0) return input
+  if (relayUrls.length !== 1) {
+    throw new Error("E2E relay isolation requires exactly one relay")
+  }
+  const isolatedRelayUrls = [...relayUrls]
+  const relayUrl = isolatedRelayUrls[0]
+  return {
+    ...input,
+    e2eRelayIsolationEnabled: true,
+    relayUrl,
+    defaultRelays: [...isolatedRelayUrls],
+    appBackplaneRelayUrls: [...isolatedRelayUrls],
+    appWriteRelayUrls: [...isolatedRelayUrls],
+    commerceRelayUrls: [...isolatedRelayUrls],
+    publicRelayUrls: [...isolatedRelayUrls],
+    corePublicFallbackRelayUrls: [...isolatedRelayUrls],
+    commerceDiscoveryRelayUrls: [...isolatedRelayUrls],
+    searchIndexRelayUrls: [...isolatedRelayUrls],
+    dmDeclarationDiscoveryRelayUrls: [...isolatedRelayUrls],
+    commerceDmFallbackRelayUrls: [...isolatedRelayUrls],
+    dmInboxDefaultRelayUrls: [...isolatedRelayUrls],
+    dmCompatibilityOrderRelayUrls: [...isolatedRelayUrls],
+    zapRelayUrls: [...isolatedRelayUrls],
+    nip89RelayHint: relayUrl,
+  }
+}
+
 function getConfiguredRelayUrl(raw: string, fallback: string): string {
   return uniqueConfiguredRelayUrls([raw])[0] ?? fallback
 }
@@ -260,7 +335,9 @@ function logRelayDebugConfig(input: {
     publicRelayUrls: readonly string[]
     commerceRelayUrls: readonly string[]
     corePublicFallbackRelayUrls: readonly string[]
+    commerceDiscoveryRelayUrls: readonly string[]
     searchIndexRelayUrls: readonly string[]
+    dmDeclarationDiscoveryRelayUrls: readonly string[]
     commerceDmFallbackRelayUrls: readonly string[]
     dmInboxDefaultRelayUrls: readonly string[]
     zapRelayUrls: readonly string[]
@@ -292,8 +369,12 @@ function logRelayDebugConfig(input: {
       formatRelayDebugList(input.resolved.commerceRelayUrls),
       "  corePublicFallbackRelayUrls:",
       formatRelayDebugList(input.resolved.corePublicFallbackRelayUrls),
+      "  commerceDiscoveryRelayUrls:",
+      formatRelayDebugList(input.resolved.commerceDiscoveryRelayUrls),
       "  searchIndexRelayUrls:",
       formatRelayDebugList(input.resolved.searchIndexRelayUrls),
+      "  dmDeclarationDiscoveryRelayUrls:",
+      formatRelayDebugList(input.resolved.dmDeclarationDiscoveryRelayUrls),
       "  commerceDmFallbackRelayUrls:",
       formatRelayDebugList(input.resolved.commerceDmFallbackRelayUrls),
       "  dmInboxDefaultRelayUrls:",
@@ -307,6 +388,7 @@ function logRelayDebugConfig(input: {
 }
 
 const env = getViteEnv()
+const e2eRelayUrls = resolveE2eRelayIsolation(env.mode, env.e2eRelayUrl)
 
 const relayUrl = getConfiguredRelayUrl(env.relayUrl, FALLBACK_RELAY_URL)
 const envRelayUrl = uniqueConfiguredRelayUrls([env.relayUrl])
@@ -333,8 +415,14 @@ const corePublicFallbackRelayUrls = uniqueConfiguredRelayUrls([
   ...envPublicRelayUrls,
   ...envGeneralRelayUrls,
 ])
+const commerceDiscoveryRelayUrls = uniqueConfiguredRelayUrls(
+  CANONICAL_COMMERCE_DISCOVERY_RELAYS
+)
 const searchIndexRelayUrls = uniqueConfiguredRelayUrls(
   CANONICAL_SEARCH_INDEX_RELAYS
+)
+const dmDeclarationDiscoveryRelayUrls = uniqueConfiguredRelayUrls(
+  CANONICAL_DM_DECLARATION_DISCOVERY_RELAYS
 )
 const commerceDmFallbackRelayUrls = uniqueConfiguredRelayUrls(
   CANONICAL_COMMERCE_DM_FALLBACK_RELAYS
@@ -367,7 +455,8 @@ const nip89RelayHint = getConfiguredRelayUrl(
   CANONICAL_APP_WRITE_RELAYS[0] ?? relayUrl
 )
 
-export const config: ConduitConfig = {
+const configuredRelayConfig: ConduitConfig = {
+  e2eRelayIsolationEnabled: false,
   relayUrl,
   defaultRelays: resolvedDefaultRelays,
   appBackplaneRelayUrls,
@@ -375,7 +464,9 @@ export const config: ConduitConfig = {
   commerceRelayUrls,
   publicRelayUrls,
   corePublicFallbackRelayUrls,
+  commerceDiscoveryRelayUrls,
   searchIndexRelayUrls,
+  dmDeclarationDiscoveryRelayUrls,
   commerceDmFallbackRelayUrls,
   dmInboxDefaultRelayUrls,
   dmCompatibilityOrderRelayUrls,
@@ -393,9 +484,19 @@ export const config: ConduitConfig = {
   anonZapSignerPubkey: env.anonZapSignerPubkey.trim() || null,
 }
 
+export const config = applyE2eRelayIsolation(
+  configuredRelayConfig,
+  e2eRelayUrls
+)
+
 logRelayDebugConfig({
   codeDefaults: defaultRelays,
   envSources: [
+    {
+      label: "VITE_E2E_RELAY_URL",
+      raw: env.e2eRelayUrl,
+      relays: e2eRelayUrls,
+    },
     {
       label: "VITE_RELAY_URL",
       raw: env.relayUrl,
@@ -435,7 +536,9 @@ logRelayDebugConfig({
     publicRelayUrls: config.publicRelayUrls,
     commerceRelayUrls: config.commerceRelayUrls,
     corePublicFallbackRelayUrls: config.corePublicFallbackRelayUrls,
+    commerceDiscoveryRelayUrls: config.commerceDiscoveryRelayUrls,
     searchIndexRelayUrls: config.searchIndexRelayUrls,
+    dmDeclarationDiscoveryRelayUrls: config.dmDeclarationDiscoveryRelayUrls,
     commerceDmFallbackRelayUrls: config.commerceDmFallbackRelayUrls,
     dmInboxDefaultRelayUrls: config.dmInboxDefaultRelayUrls,
     zapRelayUrls: config.zapRelayUrls,
@@ -457,9 +560,19 @@ export function getRelayBucketConfigs(
       relayUrls: cfg.corePublicFallbackRelayUrls,
     },
     {
+      id: "commerce_discovery",
+      label: "Commerce discovery",
+      relayUrls: cfg.commerceDiscoveryRelayUrls,
+    },
+    {
       id: "search_index",
       label: "Search/index",
       relayUrls: cfg.searchIndexRelayUrls,
+    },
+    {
+      id: "dm_declaration_discovery",
+      label: "Private-message declaration discovery",
+      relayUrls: cfg.dmDeclarationDiscoveryRelayUrls,
     },
     {
       id: "commerce_dm_fallback",

@@ -26,6 +26,7 @@ import {
   type FollowListCoverageState,
 } from "./follows"
 import {
+  attachEventSourceRelayUrl,
   fetchEventsFanout,
   fetchEventsFanoutDetailed,
   fetchEventsFanoutProgressive,
@@ -456,6 +457,7 @@ const READ_PLANS: Record<CommerceReadPlanName, CommerceReadSource[]> = {
 
 let testOverrides: CommerceTestOverrides = {}
 let testProfileCacheWriteLock: Promise<void> = Promise.resolve()
+const volatileProductSourceRelayUrls = new Map<string, string[]>()
 const volatileProductTombstones = new Map<string, CachedProductTombstone>()
 const successfulWrapIdsByPrincipal = new Map<string, Set<string>>()
 const retryWrapsByPrincipal = new Map<
@@ -511,9 +513,17 @@ function publicReadRelayUrls(): string[] {
   })
 }
 
+function commerceFallbackRelayUrls(): string[] {
+  return uniqueStrings([
+    ...config.appBackplaneRelayUrls,
+    ...config.commerceDiscoveryRelayUrls,
+    ...config.corePublicFallbackRelayUrls,
+  ])
+}
+
 function commerceReadRelayUrls(): string[] {
   return getCommerceReadRelayUrls({
-    fallbackRelayUrls: config.defaultRelays,
+    fallbackRelayUrls: commerceFallbackRelayUrls(),
   })
 }
 
@@ -589,7 +599,7 @@ async function planCommerceReadRelayPlan(input: {
     switch (input.intent) {
       case "commerce_products":
       case "author_products":
-        return config.defaultRelays
+        return commerceFallbackRelayUrls()
       default:
         return config.corePublicFallbackRelayUrls.length > 0
           ? config.corePublicFallbackRelayUrls
@@ -833,6 +843,7 @@ export function __setCommerceTestOverrides(
 export function __resetCommerceTestOverrides(): void {
   testOverrides = {}
   testProfileCacheWriteLock = Promise.resolve()
+  volatileProductSourceRelayUrls.clear()
   volatileProductTombstones.clear()
   successfulWrapIdsByPrincipal.clear()
   retryWrapsByPrincipal.clear()
@@ -1400,13 +1411,17 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
     cachedAddress.dTag === row.dTag
       ? row.dTag
       : null
+  const sourceRelayUrls = uniqueStrings([
+    ...(row.sourceRelayUrls ?? []),
+    ...(volatileProductSourceRelayUrls.get(product.id) ?? []),
+  ])
   return withListingSafety({
     product,
     eventId: row.eventId ?? product.id,
     addressId: product.id,
     dTag,
     eventCreatedAt: row.eventCreatedAt ?? Math.floor(product.createdAt / 1000),
-    sourceRelayUrls: row.sourceRelayUrls,
+    sourceRelayUrls: sourceRelayUrls.length > 0 ? sourceRelayUrls : undefined,
   })
 }
 
@@ -1608,6 +1623,61 @@ async function storeCachedProducts(rows: CachedProduct[]): Promise<void> {
       await db.products.bulkPut(rowsToStore)
     }
   })
+}
+
+function clearPersistedVolatileProductSourceRelayUrls(
+  addressId: string,
+  persistedRelayUrls: readonly string[]
+): void {
+  const pendingRelayUrls = volatileProductSourceRelayUrls.get(addressId)
+  if (!pendingRelayUrls) return
+  const persistedRelaySet = new Set(persistedRelayUrls)
+  const remainingRelayUrls = pendingRelayUrls.filter(
+    (relayUrl) => !persistedRelaySet.has(relayUrl)
+  )
+  if (remainingRelayUrls.length > 0) {
+    volatileProductSourceRelayUrls.set(addressId, remainingRelayUrls)
+  } else {
+    volatileProductSourceRelayUrls.delete(addressId)
+  }
+}
+
+async function flushVolatileProductSourceRelayUrls(
+  rows: readonly CachedProduct[]
+): Promise<CachedProduct[]> {
+  const pendingRows = rows.flatMap((row) => {
+    const pendingRelayUrls = volatileProductSourceRelayUrls.get(row.id)
+    if (!pendingRelayUrls || pendingRelayUrls.length === 0) return []
+    return [
+      {
+        row: {
+          ...row,
+          sourceRelayUrls: uniqueStrings([
+            ...(row.sourceRelayUrls ?? []),
+            ...pendingRelayUrls,
+          ]),
+        },
+        pendingRelayUrls: [...pendingRelayUrls],
+      },
+    ]
+  })
+  if (pendingRows.length === 0) return [...rows]
+  const pendingById = new Map(
+    pendingRows.map(({ row }) => [row.id, row] as const)
+  )
+  const rowsWithPendingProvenance = rows.map(
+    (row) => pendingById.get(row.id) ?? row
+  )
+
+  try {
+    await storeCachedProducts(pendingRows.map(({ row }) => row))
+  } catch {
+    return rowsWithPendingProvenance
+  }
+  for (const { row, pendingRelayUrls } of pendingRows) {
+    clearPersistedVolatileProductSourceRelayUrls(row.id, pendingRelayUrls)
+  }
+  return rowsWithPendingProvenance
 }
 
 function productTombstoneIdForAddress(addressId: string): string {
@@ -1904,7 +1974,11 @@ function filterDeletedProductRecords(
 }
 
 export async function cacheSignedProductListingEvent(
-  event: NDKEvent
+  event: NDKEvent,
+  options: {
+    sourceRelayUrls?: readonly string[]
+    persistence?: "required" | "best_effort"
+  } = {}
 ): Promise<CommerceProductRecord> {
   if (
     event.kind !== EVENT_KINDS.PRODUCT ||
@@ -1915,10 +1989,31 @@ export async function cacheSignedProductListingEvent(
     throw new Error("Expected a valid signed product listing event")
   }
 
+  for (const relayUrl of options.sourceRelayUrls ?? []) {
+    attachEventSourceRelayUrl(event, relayUrl)
+  }
+
   const [record] = dedupeProductEvents([event])
   if (!record) throw new Error("Could not parse signed product listing event")
 
-  await cacheProductRecords([record])
+  const sourceRelayUrls = uniqueStrings(record.sourceRelayUrls ?? [])
+  if (sourceRelayUrls.length > 0) {
+    volatileProductSourceRelayUrls.set(
+      record.addressId,
+      uniqueStrings([
+        ...(volatileProductSourceRelayUrls.get(record.addressId) ?? []),
+        ...sourceRelayUrls,
+      ])
+    )
+  }
+
+  try {
+    await cacheProductRecords([record])
+  } catch (error) {
+    if (options.persistence !== "best_effort" || sourceRelayUrls.length === 0) {
+      throw error
+    }
+  }
   return record
 }
 
@@ -1940,7 +2035,9 @@ async function getCachedProductRecords(
   options: CachedProductReadOptions = {},
   authorPubkeys?: readonly string[]
 ): Promise<CommerceProductRecord[]> {
-  const rows = await loadCachedProducts(merchantPubkey, authorPubkeys)
+  const rows = await flushVolatileProductSourceRelayUrls(
+    await loadCachedProducts(merchantPubkey, authorPubkeys)
+  )
   const localDeletionTimestamps = await getLocalProductDeletionTimestamps(
     merchantPubkey,
     authorPubkeys
@@ -1964,7 +2061,23 @@ async function cacheProductRecords(
   records: CommerceProductRecord[]
 ): Promise<void> {
   if (records.length === 0) return
-  await storeCachedProducts(records.map(toCachedProduct))
+  const recordsWithVolatileProvenance = records.map((record) => {
+    const sourceRelayUrls = uniqueStrings([
+      ...(record.sourceRelayUrls ?? []),
+      ...(volatileProductSourceRelayUrls.get(record.addressId) ?? []),
+    ])
+    return {
+      ...record,
+      sourceRelayUrls: sourceRelayUrls.length > 0 ? sourceRelayUrls : undefined,
+    }
+  })
+  await storeCachedProducts(recordsWithVolatileProvenance.map(toCachedProduct))
+  for (const record of recordsWithVolatileProvenance) {
+    clearPersistedVolatileProductSourceRelayUrls(
+      record.addressId,
+      record.sourceRelayUrls ?? []
+    )
+  }
 }
 
 async function loadCachedProfiles(

@@ -18,6 +18,26 @@
 
 -
 
+## Acceptance Criteria and Evidence
+
+<!--
+Use stable IDs. Include success, failure, and regression-sensitive outcomes.
+Every criterion needs evidence or an explicit gap. Generic CI checkboxes are
+not behavioral evidence.
+-->
+
+| ID   | Observable criterion | Evidence / test | Environment and signer fidelity | Current-head result | Gap / owner |
+| ---- | -------------------- | --------------- | ------------------------------- | ------------------- | ----------- |
+| AC-1 |                      |                 |                                 |                     |             |
+
+## Smoke and Playwright Coverage
+
+- Critical flows changed:
+- Playwright or smoke tests added or updated:
+- Existing coverage relied on:
+- Manual-only criteria:
+- If no browser smoke changed, why:
+
 ## PR Checks
 
 - [ ] PR title uses Conventional Commits (`type(scope): description`)
@@ -28,6 +48,22 @@
 
 - App/Package:
 - Layer: `UX` | `Protocol/App Logic` | `Infra/Relay` | `Docs/Policy` | `Support`
+
+## Review and QA Disposition
+
+Author proposal. Select one:
+
+- [ ] Evidence sign-off: human code review is required; no separate product QA
+- [ ] Targeted human QA: complete the named manual checks on this candidate
+- [ ] Maintainer-owned validation: protocol, auth, payment, privacy, security,
+      migration, secret, destructive-state, or release validation is required
+
+- Human code review: Required
+- Required manual routes, devices, or signers:
+- State-changing actions and cleanup:
+- Residual gaps:
+- Evidence head SHA:
+- Reviewer-confirmed QA disposition:
 
 ## Risk Review
 

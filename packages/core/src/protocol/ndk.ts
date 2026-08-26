@@ -945,8 +945,10 @@ async function fetchEventsFromRelay(
   status: FetchEventsRelayStatus["status"]
   rejectedEventCount: number
 }> {
-  await acquireRelayReadSlot(signal)
+  let acquiredRelayReadSlot = false
   try {
+    await acquireRelayReadSlot(signal)
+    acquiredRelayReadSlot = true
     throwIfAborted(signal)
     const { events, complete, truncated } = await readRelayEvents(
       relayUrl,
@@ -1026,7 +1028,7 @@ async function fetchEventsFromRelay(
     return { relayUrl, events: verified, status, rejectedEventCount }
   } catch (error) {
     if (signal?.aborted || isAbortError(error)) throw error
-    recordRelayFailure(relayUrl)
+    if (acquiredRelayReadSlot) recordRelayFailure(relayUrl)
     return {
       relayUrl,
       events: [],
@@ -1034,7 +1036,7 @@ async function fetchEventsFromRelay(
       rejectedEventCount: 0,
     }
   } finally {
-    releaseRelayReadSlot()
+    if (acquiredRelayReadSlot) releaseRelayReadSlot()
   }
 }
 

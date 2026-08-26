@@ -14,7 +14,7 @@ import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
 } from "./signed-event"
-import { normalizeSecureRelayUrls } from "./relay-settings"
+import { normalizeSecureOrIsolatedE2eRelayUrls } from "./relay-settings"
 
 export type {
   DeclaredInboxDeclarationEventEvidence,
@@ -211,7 +211,7 @@ function createEventEvidence(
   assertValidDeclarationEvent(pubkey, input.signedEvent)
 
   const relayTags = input.signedEvent.tags.filter((tag) => tag[0] === "relay")
-  const secureRelayUrls = normalizeSecureRelayUrls(
+  const secureRelayUrls = normalizeSecureOrIsolatedE2eRelayUrls(
     relayTags.map((tag) => tag[1] ?? "")
   )
   const state: InboxDeclarationEvidenceState =
@@ -240,8 +240,10 @@ function createEventEvidence(
     input.cachedAt ?? observedAt,
     "Inbox declaration cachedAt"
   )
-  const sourceRelayUrls = normalizeSecureRelayUrls(input.sourceRelayUrls ?? [])
-  const sharedSourceRelayUrls = normalizeSecureRelayUrls(
+  const sourceRelayUrls = normalizeSecureOrIsolatedE2eRelayUrls(
+    input.sourceRelayUrls ?? []
+  )
+  const sharedSourceRelayUrls = normalizeSecureOrIsolatedE2eRelayUrls(
     input.sharedSourceRelayUrls ?? []
   )
   const sourceRelayUrlSet = new Set(sourceRelayUrls)
@@ -276,7 +278,7 @@ function createEventEvidence(
         "Pending inbox declaration distribution must match its signed frontier"
       )
     }
-    const publishRelayUrls = normalizeSecureRelayUrls(
+    const publishRelayUrls = normalizeSecureOrIsolatedE2eRelayUrls(
       requestedPending.publishRelayUrls
     )
     if (publishRelayUrls.length === 0) {
@@ -339,7 +341,10 @@ function mergeSourceRelayUrls(
   current: readonly string[],
   candidate: readonly string[]
 ): string[] {
-  return normalizeSecureRelayUrls([...current, ...candidate]).sort()
+  return normalizeSecureOrIsolatedE2eRelayUrls([
+    ...current,
+    ...candidate,
+  ]).sort()
 }
 
 function maxOptionalTimestamp(

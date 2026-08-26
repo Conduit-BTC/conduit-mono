@@ -133,6 +133,58 @@ bun run telemetry:check # Must pass when telemetry/analytics surfaces are affect
 - PRs require review before merging to `main`
 - PRs from forks may need a maintainer to approve GitHub Actions before CI runs
 
+### Acceptance Criteria, Evidence, and QA
+
+Define stable acceptance criteria such as `AC-1` before implementation. Make
+each criterion an observable success, failure, or regression-sensitive outcome.
+
+Map every criterion to one evidence row in the pull request template. Include:
+
+- the exact test or manual check;
+- the environment and signer fidelity;
+- a result tied to the current head SHA;
+- any remaining gap and its owner.
+
+Generic CI gate checkboxes are not behavioral evidence. Label evidence by its
+actual layer:
+
+- unit or contract;
+- browser UI with a stubbed signer;
+- browser integration with real local cryptography;
+- local NIP-46 and relay integration;
+- deployed preview;
+- protected live canary;
+- real extension, mobile signer, browser, or device QA.
+
+A mock signer does not prove a valid signature or NIP-44 exchange. A local
+adapter does not prove a third-party extension popup, mobile handoff, public
+relay, or deployed-preview result.
+
+For each critical flow change, add or update the matching Playwright or smoke
+test. If that is not practical, state the uncovered criterion and require the
+named manual QA. New or changed smoke tests must declare an explicit
+`@market` or `@merchant` area. Reserve `@commerce` for the cross-app
+commerce shard defined in the testing specification. Do not use title
+capitalization as test ownership.
+
+The author proposes one review and QA disposition:
+
+- **Evidence sign-off:** human code review is still required, but every
+  criterion has deterministic current-head evidence and no separate product QA
+  is needed.
+- **Targeted human QA:** a person must complete the named visual, interaction,
+  preview, signer, browser, or device checks.
+- **Maintainer-owned validation:** a maintainer must own the plan for protocol,
+  auth, payment, privacy, security, migration, secret, destructive-state, or
+  release changes.
+
+An author or agent cannot downgrade a high-risk change to evidence sign-off.
+The reviewer confirms or raises the disposition. New commits invalidate prior
+candidate-specific manual and preview evidence.
+
+See [the automated smoke testing and pull request evidence specification](docs/specs/testing-e2e.md)
+for the full confidence, signer, artifact, and selection contract.
+
 ### User-Reported Bugs
 
 GitHub bug reports use `.github/ISSUE_TEMPLATE/bug_report.yml`, which applies
@@ -191,13 +243,43 @@ Branch protection on `main` expects GitHub-owned CI gates to pass:
 
 Direct Cloudflare Pages checks are useful preview signals, but they are not
 required branch-protection gates because fork PRs cannot reliably produce them.
-The `preview-links` job posts branch preview links for same-repository PRs and
-skips preview comments for fork PRs with an explicit log message.
+The `preview-links` job verifies branch preview links for same-repository PRs
+and publishes them in the read-only job summary. It skips preview verification
+for fork PRs with an explicit log message. PR comments require separate,
+default-branch-controlled automation; candidate workflows do not receive a
+write token. Bot-authored PRs receive a noncanonical preview check and cannot
+satisfy the required `preview-links` context.
+
+Privileged agent reviews run only from default-branch workflow definitions.
+They check out an immutable base SHA and fetch the candidate SHA as Git object
+data. They do not check out, install, import, or execute candidate content.
+Automatic simplify handoffs must match the exact review run, run attempt,
+repository, pull request, base SHA, and head SHA. Use `/agent simplify` for a
+trusted manual rerun. `/agent review` starts an advisory rerun on `main`; its
+unique job name cannot satisfy the canonical `agent-merge-readiness` context
+for the candidate.
+
+The current Sudden action needs a narrowly scoped pull-request-write token to
+submit inline reviews. Base-trusted workflows and object-only candidate reads
+reduce risk, but they do not mechanically eliminate candidate prompt injection.
+Schema and SHA gates fail malformed or stale review results. Human approval
+remains mandatory.
+
+`agent-merge-readiness` remains an advisory review signal and is not a required
+branch-protection context. Keep strict up-to-date branch protection enabled so
+a base change invalidates the candidate checks.
+
+The final Ponytail review must state exactly one of `Ponytail outcome: LEAN`,
+`Ponytail outcome: FINDINGS`, or `Ponytail outcome: DELIVERY BLOCKED`. `LEAN`
+requires the exact `Lean already. Ship.` line and zero inline comments.
+`FINDINGS` requires one or more actionable inline comments. `DELIVERY BLOCKED`
+fails the workflow.
 
 The required `e2e-smoke` check aggregates path-aware Market and Merchant
 Playwright shards. App-local changes run only that app's shard, shared runtime
 changes run both, docs-only changes skip browser installation, and pushes to
-`main` run both shards.
+`main` run both shards. Playwright area tags select the tests. CI rejects an
+untagged smoke test or a selected area that contains zero tests.
 
 ## Code Conventions
 
@@ -273,9 +355,17 @@ These are non-negotiable across all code:
 
 - Durable account signing uses external signers only (NIP-07, NIP-46)
 - Do not generate, store, or manage a user's durable Nostr account private key.
-  The reviewed exceptions are a temporary order-scoped guest checkout key and
-  an encrypted browser-local NIP-46 client connection key; neither may become a
-  Conduit-custodied account key.
+  A bounded `guest_ephemeral` browser key may serve one guest order and merchant.
+  Keep it only in same-tab session storage for recovery of up to 24 hours. Limit
+  signing to the initial private order and same-order payment reports. It must
+  never become an account key or nsec.
+- A revocable NIP-46 client connection key must use encrypted browser-local
+  storage and must be deleted on logout. Store a CI client key only as a
+  protected Actions environment secret. Use it only in a post-merge, main-only,
+  expected-SHA-verified job behind a GitHub environment with required reviewers.
+  Candidate-controlled code must never receive the CI key. Keep the browser key
+  inside its client-session boundary. Neither client key is an account key or
+  nsec. Do not place either key in source fixtures, logs, or artifacts.
 - Identity = pubkey only
 - Portable Wallet recovery material is a separate, device-local credential
   boundary governed by [the wallets specification](docs/specs/wallets.md); it

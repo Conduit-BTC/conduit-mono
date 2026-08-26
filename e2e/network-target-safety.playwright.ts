@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto"
+
 import { expect, test } from "@playwright/test"
 
 const marketPort = process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"
@@ -12,6 +14,20 @@ const publicFetchUrl =
   "https://pay-audit.conduit.market/__conduit_network_audit__/fetch/public"
 const publicRelayUrl =
   "wss://relay-audit.conduit.market/__conduit_network_audit__/relay/public"
+
+function withRuntimeUserInfo(rawUrl: string): string {
+  const target = new URL(rawUrl)
+  target.username = `audit-${randomUUID()}`
+  target.password = randomUUID()
+  return target.toString()
+}
+
+const credentialHttpTarget = withRuntimeUserInfo(
+  "https://media-audit.conduit.market/__conduit_network_audit__/credentials"
+)
+const credentialRelayTarget = withRuntimeUserInfo(
+  "wss://relay-audit.conduit.market/__conduit_network_audit__/credentials"
+)
 
 const unsafeHttpTargets = [
   {
@@ -44,7 +60,7 @@ const unsafeHttpTargets = [
   },
   {
     id: "credentials",
-    url: "https://audit:secret@media-audit.conduit.market/__conduit_network_audit__/credentials",
+    url: credentialHttpTarget,
   },
   {
     id: "special-use",
@@ -70,7 +86,7 @@ const relayTargets = [
   "wss://[2001:10::1]/__conduit_network_audit__/orchid",
   "wss://[2001:20::1]/__conduit_network_audit__/orchid-v2",
   "wss://2130706433/__conduit_network_audit__/numeric-v4",
-  "wss://audit:secret@relay-audit.conduit.market/__conduit_network_audit__/credentials",
+  credentialRelayTarget,
   "wss://service.test/__conduit_network_audit__/special-use",
   "ws://third-party.conduit.market/__conduit_network_audit__/insecure",
   publicRelayUrl,
@@ -78,7 +94,7 @@ const relayTargets = [
 
 test.use({ serviceWorkers: "block" })
 
-test("market blocks untrusted media, fetch, and relay targets before browser dispatch", async ({
+test("market blocks untrusted media, fetch, and relay targets before browser dispatch @market", async ({
   context,
   page,
 }) => {

@@ -1,16 +1,115 @@
 import { expect, test, type Page } from "@playwright/test"
-import { generateSecretKey, getPublicKey } from "nostr-tools/pure"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
 import {
   TEST_BUYER_PUBKEY,
   TEST_MERCHANT_PUBKEY,
+  TEST_RELAY_URL,
   installRejectingTestSigner,
   installTestSigner,
+  publishTestRelayEvents,
+  readTestRelayEvents,
   seedMarketCart,
+  seedTestRelayIdentity,
   seedStoredAuth,
 } from "./helpers/auth"
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
+const MERCHANT_TAG_CATALOG = [
+  {
+    dTag: "catalog-hardware-one",
+    title: "Catalog Hardware One",
+    tags: [" Hardware ", "HARDWARE", "relay"],
+  },
+  {
+    dTag: "catalog-hardware-two",
+    title: "Catalog Hardware Two",
+    tags: ["hardware", "handmade"],
+  },
+  {
+    dTag: "catalog-hardware-three",
+    title: "Catalog Hardware Three",
+    tags: ["hardware", "nostr"],
+  },
+] as const
+
+async function exerciseNetworkInboxDeclaration(
+  page: Page,
+  appUrl: string,
+  initialDeclaration: "empty" | "omit"
+): Promise<void> {
+  const secretKey = generateSecretKey()
+  const pubkey = getPublicKey(secretKey)
+  await seedTestRelayIdentity(secretKey, {
+    inboxDeclaration: initialDeclaration,
+  })
+  const seededDeclarations = await readTestRelayEvents({
+    kinds: [10_050],
+    authors: [pubkey],
+  })
+  expect(seededDeclarations).toHaveLength(
+    initialDeclaration === "empty" ? 1 : 0
+  )
+  if (initialDeclaration === "empty") {
+    expect(seededDeclarations[0]?.tags).toEqual([])
+  }
+  await installTestSigner(page, pubkey, { secretKey })
+  await page.goto(appUrl === marketUrl ? `${appUrl}/products` : appUrl)
+  await expect(
+    page.getByRole("button", {
+      name:
+        appUrl === marketUrl
+          ? "Open account menu"
+          : "Open merchant account menu",
+    })
+  ).toBeVisible({ timeout: 15_000 })
+  await page.goto(`${appUrl}/network`)
+
+  await expect(
+    page.getByRole("heading", { name: "Network Settings" })
+  ).toBeVisible()
+  await expect(
+    page.getByText(
+      initialDeclaration === "empty"
+        ? "Restore your private inbox"
+        : "Finish private inbox setup",
+      { exact: true }
+    )
+  ).toBeVisible()
+  await expect(
+    page.getByRole("checkbox", { name: TEST_RELAY_URL })
+  ).toBeChecked()
+
+  const publishButton = page.getByRole("button", {
+    name: "Publish inbox declaration",
+  })
+  await expect(publishButton).toBeEnabled()
+  await publishButton.click()
+
+  await expect(
+    page.getByText("Private inbox ready", { exact: true })
+  ).toBeVisible({ timeout: 15_000 })
+  await expect(
+    page.getByText("Inbox declaration published and confirmed.", {
+      exact: true,
+    })
+  ).toBeVisible()
+
+  const declarations = await readTestRelayEvents({
+    kinds: [10_050],
+    authors: [pubkey],
+  })
+  expect(declarations).toHaveLength(1)
+  expect(declarations[0]).toMatchObject({
+    kind: 10_050,
+    pubkey,
+    tags: [["relay", TEST_RELAY_URL]],
+  })
+}
 
 async function seedCachedMerchantProduct(page: Page): Promise<void> {
   await page.evaluate((merchantPubkey) => {
@@ -55,72 +154,91 @@ async function seedCachedMerchantProduct(page: Page): Promise<void> {
   }, TEST_MERCHANT_PUBKEY)
 }
 
-async function seedCachedMerchantTagCatalog(page: Page): Promise<void> {
-  await page.evaluate((merchantPubkey) => {
-    return new Promise<void>((resolve, reject) => {
-      const request = indexedDB.open("conduit")
-      request.onerror = () => reject(request.error)
-      request.onsuccess = () => {
-        const database = request.result
-        const transaction = database.transaction("products", "readwrite")
-        const timestamp = Date.now()
-        const products = [
-          {
-            dTag: "catalog-hardware-one",
-            title: "Catalog Hardware One",
-            tags: [" Hardware ", "HARDWARE", "relay"],
-          },
-          {
-            dTag: "catalog-hardware-two",
-            title: "Catalog Hardware Two",
-            tags: ["hardware", "handmade"],
-          },
-          {
-            dTag: "catalog-hardware-three",
-            title: "Catalog Hardware Three",
-            tags: ["hardware", "nostr"],
-          },
-        ]
+async function seedMerchantTagCatalog(secretKey: Uint8Array): Promise<void> {
+  const createdAt = Math.floor(Date.now() / 1_000)
 
-        for (const [index, product] of products.entries()) {
-          transaction.objectStore("products").put({
-            id: `30402:${merchantPubkey}:${product.dTag}`,
-            pubkey: merchantPubkey,
-            title: product.title,
-            summary: "Catalog tag suggestion fixture",
-            price: 1,
-            currency: "SATS",
-            priceSats: 1,
-            sourcePrice: {
-              amount: 1,
+  await publishTestRelayEvents(
+    MERCHANT_TAG_CATALOG.map((product, index) =>
+      finalizeEvent(
+        {
+          kind: 30_402,
+          created_at: createdAt - index,
+          tags: [
+            ["d", product.dTag],
+            ["title", product.title],
+            ["price", "1", "SATS"],
+            ["type", "simple", "digital"],
+            ["stock", "1"],
+            ["image", `https://example.com/catalog-${index}.png`],
+            ...product.tags.map((tag) => ["t", tag]),
+          ],
+          content: "Catalog tag suggestion fixture",
+        },
+        secretKey
+      )
+    )
+  )
+}
+
+async function seedCachedMerchantTagCatalog(
+  page: Page,
+  merchantPubkey: string
+): Promise<void> {
+  await page.evaluate(
+    ([pubkey, products]) =>
+      new Promise<void>((resolve, reject) => {
+        const request = indexedDB.open("conduit")
+        request.onerror = () => reject(request.error)
+        request.onsuccess = () => {
+          const database = request.result
+          const transaction = database.transaction("products", "readwrite")
+          const timestamp = Date.now()
+
+          for (const [index, product] of products.entries()) {
+            transaction.objectStore("products").put({
+              id: `30402:${pubkey}:${product.dTag}`,
+              pubkey,
+              title: product.title,
+              summary: "Catalog tag suggestion fixture",
+              price: 1,
               currency: "SATS",
-              normalizedCurrency: "SATS",
-            },
-            type: "simple",
-            format: "digital",
-            visibility: "public",
-            stock: 1,
-            images: [{ url: `https://example.com/catalog-${index}.png` }],
-            tags: product.tags,
-            publicZapEnabled: true,
-            zapMessagePolicy: "generic_only",
-            publicZapPolicyKnown: true,
-            createdAt: timestamp - index,
-            updatedAt: timestamp - index,
-            cachedAt: timestamp,
-          })
-        }
+              priceSats: 1,
+              sourcePrice: {
+                amount: 1,
+                currency: "SATS",
+                normalizedCurrency: "SATS",
+              },
+              type: "simple",
+              format: "digital",
+              visibility: "public",
+              stock: 1,
+              images: [{ url: `https://example.com/catalog-${index}.png` }],
+              tags: [...product.tags],
+              publicZapEnabled: true,
+              zapMessagePolicy: "generic_only",
+              publicZapPolicyKnown: true,
+              createdAt: timestamp - index,
+              updatedAt: timestamp - index,
+              cachedAt: timestamp,
+            })
+          }
 
-        transaction.oncomplete = () => resolve()
-        transaction.onerror = () => reject(transaction.error)
-        transaction.onabort = () => reject(transaction.error)
-      }
-    })
-  }, TEST_MERCHANT_PUBKEY)
+          transaction.oncomplete = () => resolve()
+          transaction.onerror = () => reject(transaction.error)
+          transaction.onabort = () => reject(transaction.error)
+        }
+      }),
+    [merchantPubkey, MERCHANT_TAG_CATALOG] as const
+  )
 }
 
 async function seedPortableWalletDescriptor(page: Page): Promise<void> {
   await page.evaluate(() => {
+    const randomBase64 = (byteLength: number): string => {
+      const bytes = crypto.getRandomValues(new Uint8Array(byteLength))
+      return btoa(String.fromCharCode(...bytes))
+    }
+
     return new Promise<void>((resolve, reject) => {
       const request = indexedDB.open("conduit")
       request.onerror = () => reject(request.error)
@@ -163,9 +281,9 @@ async function seedPortableWalletDescriptor(page: Page): Promise<void> {
               kdf: "PBKDF2-SHA-256",
               cipher: "AES-GCM",
               iterations: 100_000,
-              salt: "AAAAAAAAAAAAAAAAAAAAAA==",
-              iv: "AAAAAAAAAAAAAAAA",
-              ciphertext: "AAAAAAAAAAAAAAAAAAAAAA==",
+              salt: randomBase64(16),
+              iv: randomBase64(12),
+              ciphertext: randomBase64(48),
             },
           }),
           createdAt: timestamp,
@@ -179,7 +297,7 @@ async function seedPortableWalletDescriptor(page: Page): Promise<void> {
   })
 }
 
-test("merchant shipping country combobox supports search and selection", async ({
+test("merchant shipping country combobox supports search and selection @merchant", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 375, height: 667 })
@@ -194,15 +312,14 @@ test("merchant shipping country combobox supports search and selection", async (
   const countryPickerTrigger = page
     .locator("[data-combobox-search-trigger]")
     .filter({ has: countryPicker })
-  const triggerBox = await countryPickerTrigger.boundingBox()
-  if (!triggerBox) {
-    throw new Error("Country picker trigger was not visible")
-  }
-
-  await page.mouse.click(
-    triggerBox.x + 12,
-    triggerBox.y + triggerBox.height / 2
-  )
+  const leadingTriggerSize = await countryPickerTrigger.evaluate((element) => ({
+    width: element.clientWidth,
+    height: element.clientHeight,
+  }))
+  await countryPickerTrigger.click({
+    position: { x: 12, y: leadingTriggerSize.height / 2 },
+  })
+  await expect(countryPicker).toBeFocused()
   await page.keyboard.type("un")
   await expect(countryPicker).toHaveValue("un")
   await expect(page.getByRole("option").first()).toContainText("United")
@@ -211,10 +328,19 @@ test("merchant shipping country combobox supports search and selection", async (
   await expect(page.getByRole("option").first()).toContainText("Åland Islands")
 
   await page.getByRole("heading", { name: "Shipping" }).click()
-  await page.mouse.click(
-    triggerBox.x + triggerBox.width - 12,
-    triggerBox.y + triggerBox.height / 2
+  const trailingTriggerSize = await countryPickerTrigger.evaluate(
+    (element) => ({
+      width: element.clientWidth,
+      height: element.clientHeight,
+    })
   )
+  await countryPickerTrigger.click({
+    position: {
+      x: trailingTriggerSize.width - 12,
+      y: trailingTriggerSize.height / 2,
+    },
+  })
+  await expect(countryPicker).toBeFocused()
   await page.keyboard.type("canada")
   await expect(countryPicker).toHaveValue("canada")
   await page.getByRole("option", { name: /CA Canada/i }).click()
@@ -225,22 +351,43 @@ test("merchant shipping country combobox supports search and selection", async (
   await expect(countryPicker).toHaveValue("")
 })
 
-test("merchant product tags suggest the loaded catalog without blocking freeform entry", async ({
+test("Market Network publishes a private inbox through the isolated relay @market", async ({
+  page,
+}) => {
+  await exerciseNetworkInboxDeclaration(page, marketUrl, "omit")
+})
+
+test("Merchant Network repairs a signed-empty private inbox through the isolated relay @merchant", async ({
+  page,
+}) => {
+  await exerciseNetworkInboxDeclaration(page, merchantUrl, "empty")
+})
+
+test("merchant product tags suggest the loaded catalog without blocking freeform entry @merchant", async ({
   browser,
 }) => {
+  const secretKey = generateSecretKey()
+  const merchantPubkey = getPublicKey(secretKey)
+  await seedTestRelayIdentity(secretKey)
+  await seedMerchantTagCatalog(secretKey)
   const context = await browser.newContext({
     hasTouch: true,
     viewport: { width: 375, height: 667 },
   })
   const page = await context.newPage()
-  await installTestSigner(page, TEST_MERCHANT_PUBKEY)
+  await installTestSigner(page, merchantPubkey, { secretKey })
   await page.goto(`${merchantUrl}/products`)
   await expect(
     page.getByRole("heading", { name: "Products", exact: true })
   ).toBeVisible()
-
-  await seedCachedMerchantTagCatalog(page)
+  await seedCachedMerchantTagCatalog(page, merchantPubkey)
   await page.reload()
+  await expect(
+    page.getByRole("heading", { name: "Products", exact: true })
+  ).toBeVisible()
+  await expect(
+    page.getByText("Catalog Hardware One", { exact: true })
+  ).toBeVisible({ timeout: 15_000 })
   await page.getByRole("button", { name: "Add product" }).first().click()
 
   const title = page.locator("#product-title")
@@ -273,7 +420,13 @@ test("merchant product tags suggest the loaded catalog without blocking freeform
   expect(popupBox.x).toBeGreaterThanOrEqual(0)
   expect(popupBox.x + popupBox.width).toBeLessThanOrEqual(375)
 
+  await tags.fill("handm")
+  const handmadeOption = page.getByRole("option", { name: /handmade/i })
+  await expect(handmadeOption).toBeVisible()
+  const handmadeOptionId = await handmadeOption.getAttribute("id")
+  if (!handmadeOptionId) throw new Error("Handmade tag option had no id")
   await tags.press("ArrowDown")
+  await expect(tags).toHaveAttribute("aria-activedescendant", handmadeOptionId)
   await tags.press("Enter")
   await expect(
     page.getByRole("button", { name: "Remove handmade tag" })
@@ -315,7 +468,7 @@ test("merchant product tags suggest the loaded catalog without blocking freeform
   await context.close()
 })
 
-test("merchant product options provide a generic availability matrix", async ({
+test("merchant product options provide a generic availability matrix @merchant", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_MERCHANT_PUBKEY)
@@ -393,7 +546,7 @@ test("merchant product options provide a generic availability matrix", async ({
   )
 })
 
-test("merchant product drafts survive safe dialog dismissal", async ({
+test("merchant product drafts survive safe dialog dismissal @merchant", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_MERCHANT_PUBKEY)
@@ -541,7 +694,7 @@ test("merchant product drafts survive safe dialog dismissal", async ({
   await expect(title).toHaveValue("Published Pocket Relay")
 })
 
-test("market checkout country combobox supports search and selection", async ({
+test("market checkout country combobox supports search and selection @market", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_BUYER_PUBKEY)
@@ -559,7 +712,7 @@ test("market checkout country combobox supports search and selection", async ({
   )
 })
 
-test("market authenticated initial checkout claims a guest draft", async ({
+test("market authenticated initial checkout claims a guest draft @market", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_BUYER_PUBKEY)
@@ -601,7 +754,7 @@ test("market authenticated initial checkout claims a guest draft", async ({
     .toBe(TEST_BUYER_PUBKEY)
 })
 
-test("market guest initial checkout clears a signed draft", async ({
+test("market guest initial checkout clears a signed draft @market", async ({
   page,
 }) => {
   await seedMarketCart(page)
@@ -634,7 +787,7 @@ test("market guest initial checkout clears a signed draft", async ({
     .toBeNull()
 })
 
-test("market initial checkout clears a foreign signed draft", async ({
+test("market initial checkout clears a foreign signed draft @market", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_BUYER_PUBKEY)
@@ -670,7 +823,7 @@ test("market initial checkout clears a foreign signed draft", async ({
     .toBeNull()
 })
 
-test("market checkout claims a guest draft when a signer connects", async ({
+test("market checkout claims a guest draft when a signer connects @market", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_BUYER_PUBKEY, { rememberAuth: false })
@@ -760,7 +913,7 @@ test("market checkout claims a guest draft when a signer connects", async ({
     })
 })
 
-test("market authenticated checkout draft survives reload and clears across identities", async ({
+test("market authenticated checkout draft survives reload and clears across identities @market", async ({
   page,
 }) => {
   const secondBuyerPubkey = "c".repeat(64)
@@ -856,7 +1009,7 @@ test("market authenticated checkout draft survives reload and clears across iden
   await expect(street).toHaveValue("")
 })
 
-test("market checkout clears an identity draft after signer restoration fails", async ({
+test("market checkout clears an identity draft after signer restoration fails @market", async ({
   page,
 }) => {
   await seedStoredAuth(page, TEST_BUYER_PUBKEY)
@@ -916,7 +1069,7 @@ test("market checkout clears an identity draft after signer restoration fails", 
     .toBeNull()
 })
 
-test("market checkout clears an identity draft after cross-tab auth replacement", async ({
+test("market checkout clears an identity draft after cross-tab auth replacement @market", async ({
   page,
 }) => {
   const replacementPubkey = "c".repeat(64)
@@ -964,7 +1117,7 @@ test("market checkout clears an identity draft after cross-tab auth replacement"
     .toBeNull()
 })
 
-test("market wallets route renders portable and connected wallet groups", async ({
+test("market wallets route renders portable and connected wallet groups @market", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_BUYER_PUBKEY)
@@ -1018,7 +1171,7 @@ test("market wallets route renders portable and connected wallet groups", async 
   await expect(satsStandard).toBeChecked()
 })
 
-test("portable wallet restore keeps derivation advanced and device-only fields clear", async ({
+test("portable wallet restore keeps derivation advanced and device-only fields clear @market", async ({
   page,
 }) => {
   await page.goto(`${marketUrl}/wallet`)
@@ -1052,7 +1205,7 @@ test("portable wallet restore keeps derivation advanced and device-only fields c
   ).toBeVisible()
 })
 
-test("market wallets remain available without a Nostr signer", async ({
+test("market wallets remain available without a Nostr signer @market", async ({
   page,
 }) => {
   await page.goto(marketUrl)
@@ -1074,7 +1227,7 @@ test("market wallets remain available without a Nostr signer", async ({
   ).toBeVisible()
 })
 
-test("wallet dialog dismissal clears device-local sensitive state", async ({
+test("wallet dialog dismissal clears device-local sensitive state @market", async ({
   page,
 }) => {
   await page.goto(`${marketUrl}/wallet`)
@@ -1095,13 +1248,29 @@ test("wallet dialog dismissal clears device-local sensitive state", async ({
     name: "Unlock QA Portable",
   })
   const unlockPassword = unlockDialog.getByLabel("Wallet password")
-  await unlockPassword.fill("ephemeral QA value")
+  await unlockPassword.evaluate((element) => {
+    if (!(element instanceof HTMLInputElement)) {
+      throw new Error("Expected the wallet password control to be an input.")
+    }
+    const setValue = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value"
+    )?.set
+    if (!setValue) throw new Error("The input value setter is unavailable.")
+    setValue.call(element, crypto.randomUUID())
+    element.dispatchEvent(new Event("input", { bubbles: true }))
+  })
   await page.keyboard.press("Escape")
   await expect(unlockDialog).not.toBeVisible()
   await expect(unlockButton).toBeFocused()
 
   await unlockButton.click()
-  await expect(unlockPassword).toHaveValue("")
+  expect(
+    await unlockPassword.evaluate(
+      (element) =>
+        element instanceof HTMLInputElement && element.value.length === 0
+    )
+  ).toBe(true)
   await unlockDialog.getByRole("button", { name: "Cancel" }).click()
 
   await page
@@ -1111,7 +1280,7 @@ test("wallet dialog dismissal clears device-local sensitive state", async ({
     name: "Remove from this device?",
   })
   const recoveryConfirmation = removeDialog.getByRole("switch", {
-    name: "I have the recovery phrase and Spark account number",
+    name: /I have the recovery (phrase and Spark account number|details required to restore this Portable Wallet)/,
   })
   await recoveryConfirmation.click()
   await expect(recoveryConfirmation).toBeChecked()
@@ -1130,7 +1299,7 @@ test("wallet dialog dismissal clears device-local sensitive state", async ({
   ).toBeDisabled()
 })
 
-test("market shopper preferences remove legacy plaintext and render the complete form", async ({
+test("market shopper preferences remove legacy plaintext and render the complete form @market", async ({
   page,
 }) => {
   test.setTimeout(60_000)
@@ -1154,7 +1323,7 @@ test("market shopper preferences remove legacy plaintext and render the complete
   await page.goto(`${marketUrl}/preferences`)
   await expect(page.getByRole("heading", { name: "Preferences" })).toBeVisible()
   await expect(page.getByRole("status")).toContainText(
-    /Encrypted on relays|Relay ready|Relay sync unavailable|Relay sync failed/,
+    /Encrypted on relays|Relay ready/,
     { timeout: 20_000 }
   )
   const recipientName = page.getByLabel("Recipient name")
@@ -1240,7 +1409,7 @@ test("market shopper preferences remove legacy plaintext and render the complete
     page.getByText("Preset encrypted and saved on your relays.")
   ).toBeVisible({ timeout: 40_000 })
   await expect(
-    page.getByText("Encrypted on relays", { exact: true })
+    page.getByRole("status").filter({ hasText: "Encrypted on relays" })
   ).toBeVisible()
 
   await recipientName.fill("Sensitive unsaved recipient")
