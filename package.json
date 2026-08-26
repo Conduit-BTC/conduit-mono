@@ -72,7 +72,7 @@
     "@nostr-dev-kit/ndk": "^3.0.3",
     "@playwright/test": "^1.62.1",
     "@tanstack/router-generator": "^1.167.21",
-    "eslint": "^10.8.1",
+    "eslint": "^10.9.0",
     "eslint-plugin-react": "^7.37.4",
     "eslint-plugin-react-hooks": "^7.1.1",
     "husky": "^9.1.7",
