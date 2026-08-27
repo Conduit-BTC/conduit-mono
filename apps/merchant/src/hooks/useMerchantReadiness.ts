@@ -7,7 +7,8 @@ import {
 } from "react"
 import { useQuery } from "@tanstack/react-query"
 import {
-  getShippingOptions,
+  getShippingOptionAddress,
+  getShippingOptionsByCoordinates,
   useAuth,
   useConduitSession,
   useProfile,
@@ -152,7 +153,8 @@ export function useMerchantReadiness() {
   const remoteShippingQuery = useQuery({
     queryKey: ["merchant-shipping-options", pubkey ?? "none"],
     enabled: !!pubkey && !hasAuthoritativeStoredShipping,
-    queryFn: () => getShippingOptions(pubkey!),
+    queryFn: () =>
+      getShippingOptionsByCoordinates([getShippingOptionAddress(pubkey!)]),
     staleTime: 60_000,
   })
   const remoteShippingConfig = useMemo(() => {

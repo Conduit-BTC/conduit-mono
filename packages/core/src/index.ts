@@ -195,6 +195,7 @@ export {
   type StoredMessage,
   type CachedProduct,
   type CachedProductTombstone,
+  type CachedShippingOptionFrontier,
   type ProductDeletionDeliveryJob,
   type ProductDeletionDeliveryState,
   type ProductDeletionRelayDelivery,

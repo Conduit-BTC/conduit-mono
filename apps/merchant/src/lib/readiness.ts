@@ -321,9 +321,7 @@ export function selectConduitShippingOption(
   return (
     options.find(
       (option) => option.dTag === CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG
-    ) ??
-    options[0] ??
-    null
+    ) ?? null
   )
 }
 

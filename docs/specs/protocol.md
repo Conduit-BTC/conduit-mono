@@ -224,7 +224,7 @@ This exception is constrained as follows:
 | `10050` | Private message relays       | both         | NIP-17 secure-message relay declarations                 |
 | `22242` | Relay authentication         | client       | NIP-42 connection-bound auth event                       |
 | `30402` | Product listing              | merchant     | NIP-99 + GammaMarkets market-spec                        |
-| `30406` | Shipping option              | merchant     | Conduit commerce extension                               |
+| `30406` | Shipping option              | merchant     | GammaMarkets market-spec                                 |
 | `31989` | Application recommendation   | both         | NIP-89                                                   |
 | `31990` | Application handler metadata | app/operator | NIP-89                                                   |
 
@@ -237,6 +237,12 @@ Product listings are addressable events:
 ```
 
 Implementations must not dedupe only by `d` tag because different merchants can publish the same `d` value. Product identity, cart references, order item tags, and cache records should preserve the full addressable coordinate.
+
+Fixed physical products follow `docs/specs/fixed-product-shipping.md`: Merchant
+publishes and receives a relay acknowledgement for one complete,
+product-scoped Gamma kind `30406` before publishing the kind `30402` that
+references it. New product writes use an exact two-field `shipping_option` tag
+and do not emit legacy inline shipping tags or product-level extra cost.
 
 ### Product Deletion Frontier
 
@@ -515,6 +521,8 @@ Content:
 
 - legacy JSON payload defined by the shared Conduit schema, including any buyer
   note represented by that schema
+- fixed-shipping orders snapshot the exact selected kind `30406` coordinate and
+  agreed cost from the prepared checkout fulfillment state
 
 ### `payment_request`
 

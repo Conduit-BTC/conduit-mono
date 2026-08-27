@@ -46,6 +46,7 @@ export type CartItem = {
   }
   shippingOptionId?: string
   shippingOptionDTag?: string
+  shippingOptionLaunchUnsupported?: boolean
   shippingCountries?: string[]
   shippingCountryRules?: Array<{
     code: string
@@ -53,6 +54,10 @@ export type CartItem = {
     restrictTo: string[]
     exclude: string[]
   }>
+  /** Signed product event timestamp used by the fixed-shipping staleness guard. */
+  productUpdatedAt?: number
+  /** True only after exact canonical kind-30406 resolution. */
+  canonicalShippingResolved?: boolean
   publicZapEnabled?: boolean
   zapMessagePolicy?: ProductZapMessagePolicy
   publicZapPolicyKnown?: boolean
@@ -162,6 +167,7 @@ export function getProductAddAvailability(
 export function createCartItemFromProduct(
   product: Product
 ): Omit<CartItem, "quantity"> {
+  const canonicalShippingResolved = product.canonicalShippingResolved === true
   return {
     productId: product.id,
     selectedSpecifications:
@@ -181,8 +187,11 @@ export function createCartItemFromProduct(
     sourceShippingCost: product.sourceShippingCost,
     shippingOptionId: product.shippingOptionId,
     shippingOptionDTag: product.shippingOptionDTag,
+    shippingOptionLaunchUnsupported: product.shippingOptionLaunchUnsupported,
     shippingCountries: product.shippingCountries,
     shippingCountryRules: product.shippingCountryRules,
+    productUpdatedAt: product.updatedAt,
+    canonicalShippingResolved,
     publicZapEnabled: product.publicZapEnabled,
     zapMessagePolicy: product.zapMessagePolicy,
     publicZapPolicyKnown: product.publicZapPolicyKnown,
@@ -524,6 +533,7 @@ function parseCartItem(value: unknown): CartItem | null {
   const merchantAddedAt = finiteNonnegativeNumber(value.merchantAddedAt)
   const priceSats = finiteNonnegativeNumber(value.priceSats)
   const shippingCostSats = finiteNonnegativeNumber(value.shippingCostSats)
+  const productUpdatedAt = finiteNonnegativeNumber(value.productUpdatedAt)
   const stock = finiteNonnegativeNumber(value.stock)
   const selectedSpecifications = parseSpecifications(
     value.selectedSpecifications
@@ -565,8 +575,18 @@ function parseCartItem(value: unknown): CartItem | null {
     ...(nonemptyString(value.shippingOptionDTag)
       ? { shippingOptionDTag: String(value.shippingOptionDTag) }
       : {}),
+    ...(typeof value.shippingOptionLaunchUnsupported === "boolean"
+      ? {
+          shippingOptionLaunchUnsupported:
+            value.shippingOptionLaunchUnsupported,
+        }
+      : {}),
     ...(shippingCountries ? { shippingCountries } : {}),
     ...(shippingCountryRules ? { shippingCountryRules } : {}),
+    ...(productUpdatedAt !== undefined ? { productUpdatedAt } : {}),
+    ...(typeof value.canonicalShippingResolved === "boolean"
+      ? { canonicalShippingResolved: value.canonicalShippingResolved }
+      : {}),
     ...(typeof value.publicZapEnabled === "boolean"
       ? { publicZapEnabled: value.publicZapEnabled }
       : {}),
@@ -618,6 +638,12 @@ export function getCartCommerceFingerprint(items: readonly CartItem[]): string {
       .map((item) => ({
         merchantPubkey: item.merchantPubkey,
         productId: item.productId,
+        familyProductId: item.familyProductId ?? null,
+        selectedSpecifications:
+          item.selectedSpecifications?.map((specification) => ({
+            key: specification.key,
+            value: specification.value,
+          })) ?? null,
         quantity: item.quantity,
         price: item.price,
         currency: item.currency,
@@ -642,10 +668,10 @@ export function getCartCommerceFingerprint(items: readonly CartItem[]): string {
   )
 }
 
-export function cartItemsMatchCurrentProducts(
+export function rebuildCurrentCartItems(
   items: readonly CartItem[],
   products: readonly Product[]
-): boolean {
+): CartItem[] | null {
   const productsByKey = new Map(
     products.map((product) => [
       getCartItemKey({
@@ -655,14 +681,33 @@ export function cartItemsMatchCurrentProducts(
       product,
     ])
   )
-  const currentItems = items.map((item) => {
+  const currentItems: CartItem[] = []
+  for (const item of items) {
     const product = productsByKey.get(getCartItemKey(item))
-    return product
-      ? { ...createCartItemFromProduct(product), quantity: item.quantity }
-      : null
-  })
+    if (!product || product.type === "variable") return null
+    currentItems.push({
+      ...createCartItemFromProduct(product),
+      familyProductId:
+        product.type === "variation" ? product.parentProductId : undefined,
+      selectedSpecifications:
+        product.type === "variation"
+          ? product.specifications.map((specification) => ({
+              ...specification,
+            }))
+          : undefined,
+      quantity: item.quantity,
+    })
+  }
+  return currentItems
+}
+
+export function cartItemsMatchCurrentProducts(
+  items: readonly CartItem[],
+  products: readonly Product[]
+): boolean {
+  const currentItems = rebuildCurrentCartItems(items, products)
   return (
-    currentItems.every((item) => item !== null) &&
+    currentItems !== null &&
     getCartCommerceFingerprint(currentItems) ===
       getCartCommerceFingerprint(items)
   )
@@ -884,8 +929,9 @@ export function getCartCostSummary(
   const shippingResolvableItems = items.map((item) => {
     const hasShippingZone =
       item.format === "digital" ||
-      !!item.shippingOptionId ||
-      (item.shippingCountryRules?.length ?? 0) > 0
+      (item.canonicalShippingResolved === true &&
+        !!item.shippingOptionId &&
+        (item.shippingCountryRules?.length ?? 0) > 0)
 
     return hasShippingZone
       ? item
@@ -912,7 +958,10 @@ export function getCartCostSummary(
     }
     if (item.format === "digital") continue
 
-    const hasShippingSnapshot = (item.shippingCountryRules?.length ?? 0) > 0
+    const hasShippingSnapshot =
+      item.canonicalShippingResolved === true &&
+      !!item.shippingOptionId &&
+      (item.shippingCountryRules?.length ?? 0) > 0
     if (!hasShippingSnapshot || getShippingCostSats(item, rateInput) === null) {
       shippingReadyForZap = false
     }

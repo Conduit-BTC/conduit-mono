@@ -389,6 +389,7 @@ export function getShippingCheckoutState(params: {
     | { eligible: null; reason: "unknown" }
 }): ShippingCheckoutState {
   if (params.isAllDigital) return "not_required"
+  if (params.shippingLookupPending) return "loading"
   if (params.physicalItemsMissingShippingZone) return "missing_product_zone"
 
   if (params.shippingOptionsAvailable) {
@@ -401,7 +402,6 @@ export function getShippingCheckoutState(params: {
     }
   }
 
-  if (params.shippingLookupPending) return "loading"
   return "no_published_rule"
 }
 
@@ -460,11 +460,13 @@ export function getFastCheckoutUnavailableReasons(params: {
         break
       case "missing_product_zone":
         reasons.push(
-          "A product in this cart is missing product-level shipping-zone data."
+          "A product in this cart does not have resolved fixed shipping."
         )
         break
       case "no_published_rule":
-        reasons.push("Merchant has not published shipping rules yet.")
+        reasons.push(
+          "The referenced fixed shipping option could not be resolved."
+        )
         break
       case "country_unsupported":
         reasons.push("Merchant shipping zone does not include this country.")

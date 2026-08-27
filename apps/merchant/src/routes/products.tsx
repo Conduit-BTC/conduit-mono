@@ -8,19 +8,23 @@ import {
   SHIPPING_COUNTRIES,
   SUPPORTED_PRODUCT_PRICE_CURRENCIES,
   buildProductDeletionEventDraft,
+  applyPreparedProductFulfillment,
   buildProductPublishResultTelemetryProperties,
   cacheSignedProductDeletionEvent,
   canonicalizeProductPrice,
+  compileProductFulfillmentIntent,
   evaluateListingSafety,
   getCachedMerchantStorefront,
   getListingSafetyDisplay,
   getMerchantStorefront,
+  getShippingOptionsByCoordinates,
   getProductImageCandidates,
   getProductPriceDisplay,
   getNdk,
   isCommerceReadIncomplete,
   prepareProductCatalog,
   recordBrowserTelemetryEvent,
+  resolveProductFulfillment,
   type CommerceResult,
   type ListingSafetyEvaluation,
   type PreparedProductFamily,
@@ -73,6 +77,7 @@ import {
 import {
   buildProductShippingMetadata,
   canSubmitProductForm,
+  getProductShippingPricingMode,
   isProductUsingPresetShippingZone,
   MAX_PRODUCT_TAG_COUNT,
   MAX_PRODUCT_TAG_LENGTH,
@@ -143,6 +148,7 @@ import {
   MAX_PRODUCT_VARIATION_AXES,
   MAX_PRODUCT_VARIATION_COUNT,
   mergeProductVariationAuthoringState,
+  reconcileProductVariationDraftResolution,
   reconcileProductVariationForm,
   removeProductVariationAxis,
   setProductVariationCombinationIncluded,
@@ -301,9 +307,6 @@ function productToForm(
   const source = product.sourcePrice
   const sourceShippingCost = product.sourceShippingCost
   const currency = source?.normalizedCurrency ?? product.currency
-  const hasFixedShippingCost =
-    typeof sourceShippingCost?.amount === "number" ||
-    typeof product.shippingCostSats === "number"
   return {
     title: product.title,
     summary: product.summary ?? "",
@@ -312,10 +315,7 @@ function productToForm(
     variations: family.variationForm.state,
     currency,
     format: product.format,
-    shippingPricingMode:
-      product.format === "physical" && !hasFixedShippingCost
-        ? "coordinate_after_order"
-        : "fixed",
+    shippingPricingMode: getProductShippingPricingMode(product),
     shippingCost:
       typeof sourceShippingCost?.amount === "number"
         ? formatProductAmountInput(sourceShippingCost.amount)
@@ -340,23 +340,33 @@ function productToForm(
 
 function buildShippingMetadata(
   merchantPubkey: string,
-  usePresetShippingZone: boolean,
-  customShippingConfig: ShippingConfig
-): Pick<
-  ProductSchema,
-  | "shippingOptionId"
-  | "shippingOptionDTag"
-  | "shippingCountries"
-  | "shippingCountryRules"
-> {
-  const shippingConfig = usePresetShippingZone
+  productDTag: string,
+  form: ProductFormState
+) {
+  const shippingConfig = form.usePresetShippingZone
     ? loadShippingConfig(merchantPubkey)
-    : customShippingConfig
-  return buildProductShippingMetadata(
-    merchantPubkey,
-    usePresetShippingZone,
-    shippingConfig
-  )
+    : form.customShippingConfig
+  const intent = compileProductFulfillmentIntent({
+    format: form.format,
+    shippingPricingMode: form.shippingPricingMode,
+    amount:
+      form.format === "physical" && form.shippingPricingMode === "fixed"
+        ? parsePlainDecimalAmount(form.shippingCost, "Shipping")
+        : undefined,
+    currency: form.currency,
+    destinations: shippingConfig.countries,
+  })
+  return {
+    intent,
+    authoringCountries: Array.from(
+      new Set(
+        shippingConfig.countries.map((country) =>
+          country.code.trim().toUpperCase()
+        )
+      )
+    ).sort(),
+    metadata: buildProductShippingMetadata(merchantPubkey, productDTag, intent),
+  }
 }
 
 function getPublishErrorMessage(
@@ -627,16 +637,31 @@ async function fetchMerchantProducts(
     sort: "updated_at_desc",
     includeMarketHidden: true,
   })
+  const shippingOptions = await getShippingOptionsByCoordinates(
+    result.data.flatMap((record) =>
+      record.product.shippingOptionId ? [record.product.shippingOptionId] : []
+    )
+  )
   return {
-    data: result.data.map((record) => ({
-      eventId: record.eventId,
-      addressId: record.addressId,
-      dTag: record.dTag,
-      eventCreatedAt: record.eventCreatedAt,
-      sourceRelayUrls: record.sourceRelayUrls ?? [],
-      product: record.product,
-      safety: record.safety ?? evaluateListingSafety(record.product),
-    })),
+    data: result.data.map((record) => {
+      const fulfillment = resolveProductFulfillment(
+        record.product,
+        shippingOptions
+      )
+      const product =
+        fulfillment.status === "ready"
+          ? applyPreparedProductFulfillment(record.product, fulfillment)
+          : record.product
+      return {
+        eventId: record.eventId,
+        addressId: record.addressId,
+        dTag: record.dTag,
+        eventCreatedAt: record.eventCreatedAt,
+        sourceRelayUrls: record.sourceRelayUrls ?? [],
+        product,
+        safety: record.safety ?? evaluateListingSafety(product),
+      }
+    }),
     meta: result.meta,
   }
 }
@@ -677,6 +702,7 @@ async function publishProduct(
     hasPresetShippingZone: isShippingComplete(
       loadShippingConfig(merchantPubkey)
     ),
+    presetShippingConfig: loadShippingConfig(merchantPubkey),
   })
   if (!formValidation.canPublish) {
     throw new Error(
@@ -704,28 +730,7 @@ async function publishProduct(
     shippingCostAmount,
     currency
   )
-  const shippingMetadata =
-    isDigital || !hasFixedShipping
-      ? {}
-      : buildShippingMetadata(
-          signerPubkey,
-          form.usePresetShippingZone,
-          form.customShippingConfig
-        )
-  const hasShippingZone =
-    (shippingMetadata.shippingCountries?.length ?? 0) > 0 ||
-    (shippingMetadata.shippingCountryRules?.length ?? 0) > 0
-  if (
-    !isDigital &&
-    typeof shippingCostAmount === "number" &&
-    !hasShippingZone
-  ) {
-    throw new Error(
-      form.usePresetShippingZone
-        ? "Attach your preset shipping zone before publishing a physical product with a fixed shipping cost."
-        : "Add at least one custom shipping destination before publishing a physical product with a fixed shipping cost."
-    )
-  }
+  const fulfillment = buildShippingMetadata(signerPubkey, dTag, form)
   const summary = form.summary.trim()
   const imageUrl = form.imageUrl.trim()
   if (!imageUrl) {
@@ -750,7 +755,7 @@ async function publishProduct(
     specifications: [],
     format: form.format,
     ...shippingCost,
-    ...shippingMetadata,
+    ...fulfillment.metadata,
     visibility: "public",
     stock: parseProductStockInput(form.stock),
     images: [{ url: imageUrl }],
@@ -768,6 +773,8 @@ async function publishProduct(
     baseProduct: product,
     variations: form.variations,
     currency,
+    fulfillmentIntent: fulfillment.intent,
+    authoringCountries: fulfillment.authoringCountries,
     existing: existing
       ? {
           root: existing,
@@ -784,6 +791,7 @@ async function publishProduct(
       product: target.product,
       dTag: target.dTag,
       previousEventCreatedAt: target.existing?.eventCreatedAt,
+      fulfillmentIntent: target.fulfillmentIntent,
     })),
     deletions: buildProductRemovalDeletionTargets(plan.remove),
     onSignedLocal: async (bundle) => {
@@ -1294,8 +1302,12 @@ function ProductsPage() {
     )
   }, [activeProductDraftTarget, form, hasProductChanges, productDialogOpen])
   const productFormValidation = useMemo(
-    () => validateProductPublishForm(form, { hasPresetShippingZone }),
-    [form, hasPresetShippingZone]
+    () =>
+      validateProductPublishForm(form, {
+        hasPresetShippingZone,
+        presetShippingConfig: shippingConfig,
+      }),
+    [form, hasPresetShippingZone, shippingConfig]
   )
   const productTagFieldError =
     productFormValidation.errors.tags &&
@@ -1573,14 +1585,20 @@ function ProductsPage() {
           ),
         }
       : item
+    const loadedDraft = loaded.draft
+      ? {
+          ...loaded.draft,
+          variations: reconcileProductVariationDraftResolution(
+            item.variationForm,
+            loaded.draft.variations
+          ),
+        }
+      : null
     setEditing(editingItem)
     setActiveProductDraftTarget(draftTarget)
     setForm(
-      loaded.draft
-        ? reconcileProductFormShippingPreset(
-            loaded.draft,
-            hasPresetShippingZone
-          )
+      loadedDraft
+        ? reconcileProductFormShippingPreset(loadedDraft, hasPresetShippingZone)
         : productToForm(editingItem, hasPresetShippingZone)
     )
     setDraftStorageAvailable(
@@ -2225,7 +2243,7 @@ function ProductsPage() {
                   >
                     {productIsDigital
                       ? "Digital products do not need shipping coordination."
-                      : "Only choose this if you cannot set a checkout amount. Fast checkout will be unavailable, and you’ll need to follow up on every order message before the buyer can pay."}
+                      : "Only choose this if you cannot set a checkout amount. Fast checkout will be unavailable, and you'll need to follow up on every order message before the buyer can pay."}
                   </span>
                 </span>
               </label>
@@ -2270,8 +2288,8 @@ function ProductsPage() {
                         ? "Shipping destinations will be agreed with the buyer after the order."
                         : hasPresetShippingZone
                           ? form.usePresetShippingZone
-                            ? "Direct checkout will use your published shipping countries and postal rules."
-                            : "Use custom destinations for this product instead of the published preset."
+                            ? "Direct checkout will use the countries saved in your preset."
+                            : "Use custom destinations for this product instead of the saved preset."
                           : "No preset shipping zone is available. Add custom destinations for this product below."}
                   </span>
                 </span>
@@ -2284,8 +2302,8 @@ function ProductsPage() {
                       Custom shipping destinations
                     </div>
                     <p className="text-xs leading-5 text-[var(--text-muted)]">
-                      These destinations are emitted on this product listing
-                      only and do not change your preset Shipping tab settings.
+                      These destinations are published on this product's fixed
+                      shipping option and do not change your preset.
                     </p>
                   </div>
                   <div className="mt-3 max-h-[22rem] overflow-y-auto p-1">

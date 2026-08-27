@@ -203,10 +203,10 @@ describe("product listing event drafts", () => {
       "summary",
       "Testing **Markdown** product description.",
     ])
-    expectTag(draft.tags, ["shipping_cost", "1"])
     expectTag(draft.tags, ["shipping_option", "30406:merchant:conduit-default"])
-    expectTag(draft.tags, ["shipping_country", "US"])
-    expectTag(draft.tags, ["shipping_exclude", "US", "AK"])
+    expect(draft.tags.some((tag) => tag[0] === "shipping_cost")).toBe(false)
+    expect(draft.tags.some((tag) => tag[0] === "shipping_country")).toBe(false)
+    expect(draft.tags.some((tag) => tag[0] === "shipping_exclude")).toBe(false)
     expectTag(draft.tags, ["image", "https://example.com/product.png"])
     expectTag(draft.tags, ["t", "test"])
     expectTag(draft.tags, ["t", "commerce"])
@@ -242,7 +242,7 @@ describe("product listing event drafts", () => {
     expectTag(draft.tags, ["price", "0.0025", "BTC"])
   })
 
-  it("preserves source shipping currency in the public shipping cost tag", () => {
+  it("keeps source shipping cost out of canonical product tags", () => {
     const product = canonicalizeProductPrice({
       ...baseProduct({
         price: 15,
@@ -264,8 +264,7 @@ describe("product listing event drafts", () => {
     })
     expect(product.shippingCostSats).toBeUndefined()
     expectTag(draft.tags, ["price", "15", "USD"])
-    expectTag(draft.tags, ["shipping_cost", "5", "USD"])
-    expect(draft.tags).not.toContainEqual(["shipping_cost", "5"])
+    expect(draft.tags.some((tag) => tag[0] === "shipping_cost")).toBe(false)
   })
 
   it("emits Open Markets stock tag when stock tracking is set", () => {
@@ -441,7 +440,7 @@ describe("product listing event drafts", () => {
     expectTag(draft.tags, ["k", String(EVENT_KINDS.PRODUCT)])
   })
 
-  it("distinguishes included shipping from post-order coordination", () => {
+  it("does not infer wire shipping intent from inline product cost", () => {
     const includedDraft = buildProductListingEventDraft({
       product: baseProduct({
         shippingCostSats: 0,
@@ -463,8 +462,10 @@ describe("product listing event drafts", () => {
       dTag: "coordinated-shipping-product",
     })
 
-    expectTag(includedDraft.tags, ["shipping_cost", "0"])
     expect(includedDraft.tags.some((tag) => tag[0] === "shipping_option")).toBe(
+      false
+    )
+    expect(includedDraft.tags.some((tag) => tag[0] === "shipping_cost")).toBe(
       false
     )
     expect(
@@ -478,7 +479,7 @@ describe("product listing event drafts", () => {
     ).toBe(false)
   })
 
-  it("emits Open Markets shipping option extra cost when it matches the product currency", () => {
+  it("emits an exact Gamma shipping option coordinate without extra cost", () => {
     const draft = buildProductListingEventDraft({
       product: baseProduct({
         price: 25_000,
@@ -490,11 +491,11 @@ describe("product listing event drafts", () => {
       dTag: "sats-shipping-product",
     })
 
-    expectTag(draft.tags, ["shipping_cost", "500"])
-    expectTag(draft.tags, ["shipping_option", "30406:merchant:standard", "500"])
+    expect(draft.tags.some((tag) => tag[0] === "shipping_cost")).toBe(false)
+    expectTag(draft.tags, ["shipping_option", "30406:merchant:standard"])
   })
 
-  it("keeps fiat shipping option extra cost in the source product currency", () => {
+  it("keeps fiat shipping cost only on the referenced option", () => {
     const product = canonicalizeProductPrice({
       ...baseProduct({
         price: 15,
@@ -511,11 +512,11 @@ describe("product listing event drafts", () => {
       dTag: "usd-shipping-option-product",
     })
 
-    expectTag(draft.tags, ["shipping_cost", "5", "USD"])
-    expectTag(draft.tags, ["shipping_option", "30406:merchant:standard", "5"])
+    expect(draft.tags.some((tag) => tag[0] === "shipping_cost")).toBe(false)
+    expectTag(draft.tags, ["shipping_option", "30406:merchant:standard"])
   })
 
-  it("emits custom product shipping rules without a preset option reference", () => {
+  it("does not emit legacy inline custom shipping rules", () => {
     const product = baseProduct({
       shippingOptionId: undefined,
       shippingOptionDTag: undefined,
@@ -542,9 +543,9 @@ describe("product listing event drafts", () => {
     })
 
     expect(draft.tags.some((tag) => tag[0] === "shipping_option")).toBe(false)
-    expectTag(draft.tags, ["shipping_country", "US", "CA"])
-    expectTag(draft.tags, ["shipping_restrict", "US", "787**"])
-    expectTag(draft.tags, ["shipping_exclude", "US", "78799"])
+    expect(draft.tags.some((tag) => tag[0] === "shipping_country")).toBe(false)
+    expect(draft.tags.some((tag) => tag[0] === "shipping_restrict")).toBe(false)
+    expect(draft.tags.some((tag) => tag[0] === "shipping_exclude")).toBe(false)
   })
 
   it("defaults omitted runtime public zap policy fields to enabled and generic-only when emitting", () => {
@@ -749,6 +750,7 @@ describe("product listing event parsing", () => {
 
     expect(parsed.shippingOptionId).toBe("30406:merchant:standard")
     expect(parsed.shippingOptionDTag).toBe("standard")
+    expect(parsed.shippingOptionLaunchUnsupported).toBe(true)
     expect(parsed.sourceShippingCost).toEqual({
       amount: 5,
       currency: "USD",
@@ -848,6 +850,7 @@ describe("product listing event parsing", () => {
 
     expect(parsed.shippingOptionId).toBe("30406:merchant:standard")
     expect(parsed.shippingOptionDTag).toBe("standard")
+    expect(parsed.shippingOptionLaunchUnsupported).toBe(true)
     expect(parsed.shippingCostSats).toBe(500)
     expect(parsed.sourceShippingCost).toEqual({
       amount: 500,
@@ -872,6 +875,7 @@ describe("product listing event parsing", () => {
     })
 
     expect(parsed.shippingOptionId).toBe("30406:merchant:standard")
+    expect(parsed.shippingOptionLaunchUnsupported).toBe(true)
     expect(parsed.shippingCostSats).toBeUndefined()
     expect(parsed.sourceShippingCost).toEqual({
       amount: 5,
@@ -897,6 +901,7 @@ describe("product listing event parsing", () => {
     })
 
     expect(parsed.shippingOptionId).toBe("30406:merchant:standard")
+    expect(parsed.shippingOptionLaunchUnsupported).toBe(true)
     expect(parsed.shippingCostSats).toBe(250)
   })
 

@@ -41,7 +41,9 @@ export interface Product {
   /** Addressable kind-30406 shipping option reference attached by the merchant. */
   shippingOptionId?: string
   shippingOptionDTag?: string
-  /** Product-level snapshot of the referenced shipping option for checkout. */
+  /** True when the product reference uses a launch-unsupported Gamma shape. */
+  shippingOptionLaunchUnsupported?: boolean
+  /** Read-side shipping details. Canonical checkout requires explicit resolution. */
   shippingCountries?: string[]
   shippingCountryRules?: Array<{
     code: string
@@ -49,6 +51,10 @@ export interface Product {
     restrictTo: string[]
     exclude: string[]
   }>
+  /** True only after exact kind-30406 resolution prepared this product. */
+  canonicalShippingResolved?: boolean
+  /** Timestamp of the exact resolved kind-30406 revision. */
+  shippingOptionCreatedAt?: number
   visibility: "public" | "private"
   stock?: number
   images: ProductImage[]

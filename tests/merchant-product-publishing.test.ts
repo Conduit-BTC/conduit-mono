@@ -1,5 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test"
+import {
+  NDKEvent,
+  NDKPrivateKeySigner,
+  type NDKSigner,
+  type NostrEvent,
+} from "@nostr-dev-kit/ndk"
 import {
   __resetCommerceTestOverrides,
   __resetRelayPublishTestOverrides,
@@ -13,10 +18,13 @@ import {
   config,
   EVENT_KINDS,
   getCachedMerchantStorefront,
+  parseProductEvent,
   planProductDeletionRelays,
+  resolveProductFulfillment,
   setSigner,
   type ProductDeletionOutboxRepository,
   type ProductSchema,
+  type PublishWithPlannerResult,
 } from "@conduit/core"
 import type {
   CachedProduct,
@@ -24,12 +32,17 @@ import type {
 } from "@conduit/core/db"
 import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
+  applyProductFulfillmentIntentForPublication,
   buildProductRemovalDeletionTargets,
   deliverSignedProductEvent,
   deliverSignedProductEventBundle,
   deliverSignedProductWriteBundle,
   isDeliverableMerchantProductEvent,
+  publishCanonicalProductEvents,
+  resolveProductFulfillmentIntentForTarget,
+  resolvePublishedProductFulfillmentIntentForTarget,
   signAndPublishProductWriteBundle,
+  type CanonicalProductPublishDependencies,
   type SignedProductWriteBundle,
 } from "../apps/merchant/src/lib/product-publishing"
 import { resumePendingProductDeletionDeliveries } from "../apps/merchant/src/lib/product-deletion-delivery"
@@ -131,6 +144,33 @@ function makeSignedProductEvent(input: {
   return event
 }
 
+function makeSignedProductEventWithShippingTags(input: {
+  dTag: string
+  shippingTags: string[][]
+}): NDKEvent {
+  const product = makeProduct(input.dTag)
+  const draft = buildProductListingEventDraft({
+    product,
+    dTag: input.dTag,
+    clientAppId: "merchant",
+  })
+  return new NDKEvent(
+    undefined,
+    finalizeEvent(
+      {
+        kind: draft.kind,
+        created_at: Math.floor(NOW / 1000),
+        content: draft.content,
+        tags: [
+          ...draft.tags.filter((tag) => tag[0] !== "shipping_option"),
+          ...input.shippingTags,
+        ],
+      },
+      MERCHANT_SECRET
+    )
+  )
+}
+
 function makeProduct(dTag: string): ProductSchema {
   return {
     id: `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:${dTag}`,
@@ -151,6 +191,23 @@ function makeProduct(dTag: string): ProductSchema {
     createdAt: NOW,
     updatedAt: NOW,
   }
+}
+
+async function readProductAfterCacheReload(
+  rows: CachedProduct[],
+  dTag: string
+): Promise<ProductSchema | undefined> {
+  __resetCommerceTestOverrides()
+  __setCommerceTestOverrides({
+    now: () => NOW,
+    getCachedProducts: async () => rows,
+    getCachedProductTombstones: async () => [],
+  })
+  const reloaded = await getCachedMerchantStorefront({
+    merchantPubkey: MERCHANT_PUBKEY,
+    includeMarketHidden: true,
+  })
+  return reloaded.data.find((record) => record.dTag === dTag)?.product
 }
 
 beforeEach(() => {
@@ -189,6 +246,137 @@ afterEach(() => {
 })
 
 describe("merchant product event delivery", () => {
+  for (const scenario of [
+    {
+      name: "multiple shipping option references",
+      dTag: "cached-multiple-shipping-references",
+      shippingTags: [
+        [
+          "shipping_option",
+          `${EVENT_KINDS.SHIPPING_OPTION}:${MERCHANT_PUBKEY}:cached-standard`,
+        ],
+        [
+          "shipping_option",
+          `${EVENT_KINDS.SHIPPING_OPTION}:${MERCHANT_PUBKEY}:cached-express`,
+        ],
+      ],
+    },
+    {
+      name: "product-level shipping extra cost",
+      dTag: "cached-shipping-extra-cost",
+      shippingTags: [
+        [
+          "shipping_option",
+          `${EVENT_KINDS.SHIPPING_OPTION}:${MERCHANT_PUBKEY}:cached-standard`,
+          "5",
+        ],
+      ],
+    },
+  ]) {
+    it(`preserves ${scenario.name} across cache reload before a stock update`, async () => {
+      const event = makeSignedProductEventWithShippingTags(scenario)
+
+      expect(parseProductEvent(event).shippingOptionLaunchUnsupported).toBe(
+        true
+      )
+      await cacheSignedProductListingEvent(event)
+      expect(
+        cachedProducts.find((row) => row.dTag === scenario.dTag)
+          ?.shippingOptionLaunchUnsupported
+      ).toBe(true)
+
+      const product = await readProductAfterCacheReload(
+        structuredClone(cachedProducts),
+        scenario.dTag
+      )
+
+      expect(product?.shippingOptionLaunchUnsupported).toBe(true)
+      if (!product) throw new Error("Expected the cached product after reload")
+      const stockUpdate = { ...product, stock: 1, updatedAt: NOW + 1 }
+      expect(resolveProductFulfillment(stockUpdate, [])).toMatchObject({
+        status: "order_first",
+        reason: "unsupported",
+      })
+      expect(
+        resolvePublishedProductFulfillmentIntentForTarget(stockUpdate)
+      ).toBeNull()
+    })
+  }
+
+  it("round-trips an explicit supported shipping reference cache marker", async () => {
+    const dTag = "cached-supported-shipping-reference"
+    const event = makeSignedProductEventWithShippingTags({
+      dTag,
+      shippingTags: [
+        [
+          "shipping_option",
+          `${EVENT_KINDS.SHIPPING_OPTION}:${MERCHANT_PUBKEY}:cached-standard`,
+        ],
+      ],
+    })
+
+    expect(parseProductEvent(event).shippingOptionLaunchUnsupported).toBe(false)
+    await cacheSignedProductListingEvent(event)
+    expect(cachedProducts[0]?.shippingOptionLaunchUnsupported).toBe(false)
+
+    const product = await readProductAfterCacheReload(
+      structuredClone(cachedProducts),
+      dTag
+    )
+    expect(product?.shippingOptionLaunchUnsupported).toBe(false)
+  })
+
+  it("fails legacy or malformed referenced cache rows closed", async () => {
+    const dTag = "cached-ambiguous-shipping-reference"
+    const event = makeSignedProductEventWithShippingTags({
+      dTag,
+      shippingTags: [
+        [
+          "shipping_option",
+          `${EVENT_KINDS.SHIPPING_OPTION}:${MERCHANT_PUBKEY}:cached-standard`,
+        ],
+      ],
+    })
+    await cacheSignedProductListingEvent(event)
+    const baseline = cachedProducts[0]
+    if (!baseline) throw new Error("Expected the cached product row")
+
+    for (const cachedValue of [undefined, "false"] as const) {
+      const row = structuredClone(baseline)
+      const runtimeRow = row as unknown as Record<string, unknown>
+      if (cachedValue === undefined) {
+        delete runtimeRow.shippingOptionLaunchUnsupported
+      } else {
+        runtimeRow.shippingOptionLaunchUnsupported = cachedValue
+      }
+
+      const product = await readProductAfterCacheReload([row], dTag)
+      expect(product?.shippingOptionLaunchUnsupported).toBe(true)
+      if (!product) throw new Error("Expected the cached product after reload")
+      expect(resolveProductFulfillment(product, [])).toMatchObject({
+        status: "order_first",
+        reason: "unsupported",
+      })
+    }
+  })
+
+  it("leaves cache rows without a shipping reference unaffected", async () => {
+    const dTag = "cached-without-shipping-reference"
+    await cacheSignedProductListingEvent(
+      makeSignedProductEventWithShippingTags({ dTag, shippingTags: [] })
+    )
+    const row = cachedProducts[0]
+    if (!row) throw new Error("Expected the cached product row")
+    expect(row.shippingOptionId).toBeUndefined()
+    expect(row.shippingOptionLaunchUnsupported).toBeUndefined()
+
+    const runtimeRow = row as unknown as Record<string, unknown>
+    runtimeRow.shippingOptionLaunchUnsupported = true
+    const product = await readProductAfterCacheReload([row], dTag)
+    expect(product?.shippingOptionId).toBeUndefined()
+    expect(product?.shippingOptionLaunchUnsupported).toBeUndefined()
+  })
+
   it("accepts signed product listings and NIP-09 deletion events", () => {
     expect(
       isDeliverableMerchantProductEvent(
@@ -365,6 +553,7 @@ describe("merchant product event delivery", () => {
         {
           product: makeProduct("root"),
           dTag: "root",
+          fulfillmentIntent: { kind: "coordinate_after_order" },
         },
       ],
       deletions: deletionTargets,
@@ -445,6 +634,66 @@ describe("merchant product event delivery", () => {
     expect((await afterReload.get(signedDeletionId))?.state).toBe("delivered")
   })
 
+  it("serializes family event approvals through a non-reentrant signer", async () => {
+    const delegate = new NDKPrivateKeySigner(MERCHANT_SECRET)
+    const signedKinds: number[] = []
+    let signRequestInFlight = false
+    const signer = {
+      user: () => delegate.user(),
+      sign: async (event: NostrEvent) => {
+        if (signRequestInFlight) {
+          throw new Error("signer rejected an overlapping approval request")
+        }
+        signRequestInFlight = true
+        try {
+          await new Promise<void>((resolve) => setTimeout(resolve, 0))
+          signedKinds.push(event.kind)
+          return await delegate.sign(event)
+        } finally {
+          signRequestInFlight = false
+        }
+      },
+    } as NDKSigner
+    setSigner(signer)
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "author_event",
+        primaryRelayUrls: ["wss://relay.example"],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+    const publishSpy = spyOn(NDKEvent.prototype, "publish").mockResolvedValue(
+      new Set([{ url: "wss://relay.example/" }]) as never
+    )
+
+    try {
+      await signAndPublishProductWriteBundle({
+        merchantPubkey: MERCHANT_PUBKEY,
+        listings: ["family-a", "family-b"].map((dTag) => ({
+          product: makeProduct(dTag),
+          dTag,
+          fulfillmentIntent: {
+            kind: "fixed_standard" as const,
+            amount: 5,
+            currency: "SATS",
+            countries: ["US"],
+          },
+        })),
+        onSignedLocal: async () => {},
+      })
+
+      expect(signedKinds).toEqual([
+        EVENT_KINDS.SHIPPING_OPTION,
+        EVENT_KINDS.PRODUCT,
+        EVENT_KINDS.SHIPPING_OPTION,
+        EVENT_KINDS.PRODUCT,
+      ])
+    } finally {
+      publishSpy.mockRestore()
+    }
+  })
+
   it("keeps durable family-removal delivery on loopback in E2E isolation", async () => {
     const loopbackRelayUrl = "ws://127.0.0.1:7777"
     const previousConfig = structuredClone(config)
@@ -467,7 +716,13 @@ describe("merchant product event delivery", () => {
 
       await signAndPublishProductWriteBundle({
         merchantPubkey: MERCHANT_PUBKEY,
-        listings: [{ product: makeProduct("root"), dTag: "root" }],
+        listings: [
+          {
+            product: makeProduct("root"),
+            dTag: "root",
+            fulfillmentIntent: { kind: "coordinate_after_order" },
+          },
+        ],
         deletions: buildProductRemovalDeletionTargets([
           {
             eventId: "e".repeat(64),
@@ -544,7 +799,13 @@ describe("merchant product event delivery", () => {
     await expect(
       signAndPublishProductWriteBundle({
         merchantPubkey: MERCHANT_PUBKEY,
-        listings: [{ product: makeProduct("root"), dTag: "root" }],
+        listings: [
+          {
+            product: makeProduct("root"),
+            dTag: "root",
+            fulfillmentIntent: { kind: "coordinate_after_order" },
+          },
+        ],
         deletions: buildProductRemovalDeletionTargets([
           {
             eventId: "c".repeat(64),
@@ -569,6 +830,69 @@ describe("merchant product event delivery", () => {
     expect(await repository.listUndelivered()).toEqual([])
     expect(onSignedLocalCalls).toBe(0)
     expect(deletionPublishAttempts).toBe(0)
+  })
+
+  it("stops the production bundle before product side effects when fixed shipping has no ACK", async () => {
+    const repository = new MemoryProductDeletionOutbox()
+    const publishAttempts: number[] = []
+    let onSignedLocalCalls = 0
+    setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "author_event",
+        primaryRelayUrls: ["wss://relay.example"],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+    const publishSpy = spyOn(NDKEvent.prototype, "publish").mockImplementation(
+      async function (this: NDKEvent) {
+        publishAttempts.push(this.kind ?? -1)
+        return new Set()
+      }
+    )
+
+    try {
+      await expect(
+        signAndPublishProductWriteBundle({
+          merchantPubkey: MERCHANT_PUBKEY,
+          listings: [
+            {
+              product: makeProduct("root"),
+              dTag: "root",
+              fulfillmentIntent: {
+                kind: "fixed_standard",
+                amount: 5,
+                currency: "SATS",
+                countries: ["US"],
+              },
+            },
+          ],
+          deletions: buildProductRemovalDeletionTargets([
+            {
+              eventId: "c".repeat(64),
+              addressId: `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:variation`,
+              sourceRelayUrls: ["wss://relay.damus.io"],
+            },
+          ]),
+          onSignedLocal: async () => {
+            onSignedLocalCalls += 1
+          },
+          deletionDeliveryOptions: {
+            repository,
+            restoreLocalEvidence: async () => {},
+            publisher: async () => ({ status: "acked" }),
+          },
+        })
+      ).rejects.toThrow("Product publication was stopped.")
+
+      expect(publishAttempts).toEqual([EVENT_KINDS.SHIPPING_OPTION])
+      expect(cachedProducts).toEqual([])
+      expect(await repository.listUndelivered()).toEqual([])
+      expect(onSignedLocalCalls).toBe(0)
+    } finally {
+      publishSpy.mockRestore()
+    }
   })
 
   it("rejects a durable deletion job without the exact merchant event", async () => {
@@ -611,5 +935,268 @@ describe("merchant product event delivery", () => {
         { repository }
       )
     ).rejects.toThrow("exact signed merchant deletion")
+  })
+})
+
+function publishResult(
+  successfulRelayUrls: string[]
+): PublishWithPlannerResult {
+  return {
+    plan: {
+      intent: "author_event",
+      primaryRelayUrls: [],
+      broadcastRelayUrls: [],
+      parkedRelayUrls: [],
+    },
+    attemptedRelayUrls: ["wss://relay.example"],
+    successfulRelayUrls,
+    failedRelayUrls: [],
+    relayFailureMessages: {},
+  }
+}
+
+function event(kind: number): NDKEvent {
+  return { kind } as NDKEvent
+}
+
+describe("canonical product publication ordering", () => {
+  it("upgrades a legacy inline listing to the product-scoped coordinate", () => {
+    const legacy = parseProductEvent({
+      id: "legacy-event",
+      pubkey: MERCHANT_PUBKEY,
+      created_at: 1_700_000_100,
+      content: "Legacy listing",
+      tags: [
+        ["d", "listing"],
+        ["title", "Listing"],
+        ["price", "10", "USD"],
+        ["type", "simple", "physical"],
+        ["shipping_cost", "5", "USD"],
+        ["shipping_country", "US"],
+      ],
+    })
+
+    const prepared = applyProductFulfillmentIntentForPublication({
+      product: legacy,
+      merchantPubkey: MERCHANT_PUBKEY,
+      productDTag: "listing",
+      intent: {
+        kind: "fixed_standard",
+        amount: 5,
+        currency: "USD",
+        countries: ["US"],
+      },
+    })
+
+    expect(prepared).toMatchObject({
+      shippingOptionId: `30406:${MERCHANT_PUBKEY}:listing-shipping-standard`,
+      shippingOptionDTag: "listing-shipping-standard",
+      shippingCountries: ["US"],
+      shippingCountryRules: [
+        { code: "US", name: "US", restrictTo: [], exclude: [] },
+      ],
+    })
+  })
+
+  it("requires a shipping ACK before caching or publishing the product", async () => {
+    const calls: string[] = []
+    const productEvent = event(30402)
+    const variationEvent = event(30402)
+    const shippingEvent = event(30406)
+    const variationShippingEvent = event(30406)
+    const dependencies: CanonicalProductPublishDependencies = {
+      publishShippingEvent: async () => {
+        calls.push("shipping_ack")
+        return publishResult(["wss://relay.example"])
+      },
+      cacheEvent: async () => {
+        calls.push("product_cache")
+      },
+      deliverEvents: async () => {
+        calls.push("product_publish")
+        return publishResult(["wss://relay.example"])
+      },
+    }
+
+    await publishCanonicalProductEvents(
+      {
+        writes: [
+          { productEvent, shippingEvent },
+          {
+            productEvent: variationEvent,
+            shippingEvent: variationShippingEvent,
+          },
+        ],
+        events: [productEvent, variationEvent],
+        merchantPubkey: "merchant",
+        onSignedLocal: async () => {
+          calls.push("product_local")
+        },
+      },
+      dependencies
+    )
+
+    expect(calls).toEqual([
+      "shipping_ack",
+      "shipping_ack",
+      "product_cache",
+      "product_cache",
+      "product_local",
+      "product_publish",
+    ])
+  })
+
+  it("stops before every product side effect when shipping has no ACK", async () => {
+    const calls: string[] = []
+    const dependencies: CanonicalProductPublishDependencies = {
+      publishShippingEvent: async () => {
+        calls.push("shipping_attempt")
+        return publishResult([])
+      },
+      cacheEvent: async () => {
+        calls.push("product_cache")
+      },
+      deliverEvents: async () => {
+        calls.push("product_publish")
+        return publishResult(["wss://relay.example"])
+      },
+    }
+
+    await expect(
+      publishCanonicalProductEvents(
+        {
+          writes: [{ productEvent: event(30402), shippingEvent: event(30406) }],
+          events: [event(30402)],
+          merchantPubkey: "merchant",
+          onSignedLocal: async () => {
+            calls.push("product_local")
+          },
+        },
+        dependencies
+      )
+    ).rejects.toThrow("Product publication was stopped.")
+    expect(calls).toEqual(["shipping_attempt"])
+  })
+
+  it("publishes non-fixed products without a shipping event", async () => {
+    const calls: string[] = []
+    const dependencies: CanonicalProductPublishDependencies = {
+      publishShippingEvent: async () => {
+        calls.push("unexpected_shipping")
+        return publishResult([])
+      },
+      cacheEvent: async () => {
+        calls.push("product_cache")
+      },
+      deliverEvents: async () => {
+        calls.push("product_publish")
+        return publishResult(["wss://relay.example"])
+      },
+    }
+
+    await publishCanonicalProductEvents(
+      {
+        writes: [{ productEvent: event(30402), shippingEvent: null }],
+        events: [event(30402)],
+        merchantPubkey: "merchant",
+        onSignedLocal: async () => {
+          calls.push("product_local")
+        },
+      },
+      dependencies
+    )
+
+    expect(calls).toEqual(["product_cache", "product_local", "product_publish"])
+  })
+
+  it("removes legacy shipping fields from non-fixed publication state", () => {
+    const product = parseProductEvent({
+      id: "legacy-event",
+      pubkey: MERCHANT_PUBKEY,
+      created_at: 1_700_000_100,
+      content: "Legacy listing",
+      tags: [
+        ["d", "listing"],
+        ["title", "Listing"],
+        ["price", "10", "USD"],
+        ["type", "simple", "physical"],
+        ["shipping_cost", "5", "USD"],
+        ["shipping_country", "US"],
+      ],
+    })
+
+    expect(
+      applyProductFulfillmentIntentForPublication({
+        product,
+        merchantPubkey: MERCHANT_PUBKEY,
+        productDTag: "listing",
+        intent: { kind: "coordinate_after_order" },
+      })
+    ).toMatchObject({
+      shippingCostSats: undefined,
+      sourceShippingCost: undefined,
+      shippingOptionId: undefined,
+      shippingCountries: undefined,
+      canonicalShippingResolved: false,
+    })
+  })
+
+  it("uses a variation's fixed shipping override under an order-first root", () => {
+    expect(
+      resolveProductFulfillmentIntentForTarget({
+        product: {
+          format: "physical",
+          sourceShippingCost: {
+            amount: 12.34,
+            currency: "USD",
+            normalizedCurrency: "USD",
+          },
+        },
+        fallbackIntent: { kind: "coordinate_after_order" },
+        authoringCountries: ["CA"],
+      })
+    ).toEqual({
+      kind: "fixed_standard",
+      amount: 12.34,
+      currency: "USD",
+      countries: ["CA"],
+    })
+  })
+
+  it("fails closed instead of widening legacy postal rules to a country", () => {
+    const product = {
+      format: "physical" as const,
+      shippingCostSats: 250,
+      shippingCountries: ["US"],
+      shippingCountryRules: [
+        {
+          code: "US",
+          name: "United States",
+          restrictTo: ["787**"],
+          exclude: ["78799"],
+        },
+      ],
+    }
+
+    expect(() =>
+      resolveProductFulfillmentIntentForTarget({
+        product,
+        fallbackIntent: { kind: "coordinate_after_order" },
+        authoringCountries: ["US"],
+      })
+    ).toThrow("Remove postal restrictions")
+    expect(
+      resolvePublishedProductFulfillmentIntentForTarget(product)
+    ).toBeNull()
+  })
+
+  it("fails closed when a fixed variation has no shipping destinations", () => {
+    expect(() =>
+      resolveProductFulfillmentIntentForTarget({
+        product: { format: "physical", shippingCostSats: 250 },
+        fallbackIntent: { kind: "coordinate_after_order" },
+        authoringCountries: [],
+      })
+    ).toThrow("Fixed variation shipping requires at least one valid country")
   })
 })

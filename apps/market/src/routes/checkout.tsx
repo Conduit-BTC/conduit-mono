@@ -28,7 +28,7 @@ import {
   getTelemetryCountBucket,
   hasWebLN,
   getNdk,
-  getShippingOptions,
+  getShippingOptionsByCoordinates,
   normalizePubkey,
   normalizePublicMediaUrl,
   pubkeyToNpub,
@@ -98,16 +98,17 @@ import {
 } from "../lib/buyer-nwc-session"
 import {
   getCartShippingDestinationEligibility,
+  getCartShippingOptionCoordinates,
   getCartShippingOptionsAvailable,
-  hasPhysicalItemsMissingShippingSnapshot,
   hasPhysicalItemsMissingShippingZone,
+  prepareCartFulfillment,
 } from "../lib/cart-shipping-options"
+import { authorizeCurrentCheckoutItems } from "../lib/checkout-authorization"
 import {
   getCartAvailabilityBlockingMessage,
   getCartAvailabilityVerificationMessage,
   getCartItemKey,
   getCartPublicZapPolicy,
-  cartItemsMatchCurrentProducts,
   isCartProductAvailabilityBlocking,
   selectMerchantCartItems,
   type CartAvailabilityReadDecision,
@@ -1143,7 +1144,7 @@ function CheckoutPage() {
       ? cart.items[0]?.merchantPubkey
       : undefined)
 
-  const checkoutItems = useMemo(() => {
+  const rawCheckoutItems = useMemo(() => {
     if (!selectedMerchant) return []
     return selectMerchantCartItems(cart.items, selectedMerchant)
   }, [cart.items, selectedMerchant])
@@ -1151,7 +1152,7 @@ function CheckoutPage() {
   // cart warmed, so arriving within the freshness lease starts no new
   // blocking read. The authoritative live refresh still happens immediately
   // before order publication.
-  const checkoutReadiness = useCartReadiness(checkoutItems)
+  const checkoutReadiness = useCartReadiness(rawCheckoutItems)
   const selectedMerchantReadiness = selectedMerchant
     ? checkoutReadiness.byMerchant.get(selectedMerchant)
     : undefined
@@ -1159,6 +1160,55 @@ function CheckoutPage() {
     () => new Map<string, CartProductAvailability>(),
     []
   )
+  const isAllDigital = useMemo(
+    () =>
+      rawCheckoutItems.length > 0 &&
+      rawCheckoutItems.every((item) => item.format === "digital"),
+    [rawCheckoutItems]
+  )
+  const shippingOptionCoordinates = useMemo(
+    () => getCartShippingOptionCoordinates(rawCheckoutItems),
+    [rawCheckoutItems]
+  )
+  const shippingRevisionKey = rawCheckoutItems
+    .map((item) => `${item.productId}:${item.productUpdatedAt ?? 0}`)
+    .sort()
+    .join("|")
+  const {
+    data: shippingOptionsData,
+    isFetching: shippingOptionsIsFetching,
+    isError: shippingOptionsIsError,
+  } = useQuery({
+    queryKey: [
+      "canonicalShippingOptions",
+      selectedMerchant,
+      shippingOptionCoordinates,
+      shippingRevisionKey,
+    ],
+    queryFn: () => getShippingOptionsByCoordinates(shippingOptionCoordinates),
+    enabled:
+      !!selectedMerchant &&
+      !isAllDigital &&
+      shippingOptionCoordinates.length > 0,
+    staleTime: 0,
+    refetchOnMount: "always",
+  })
+  const preparedFulfillment = useMemo(
+    () =>
+      prepareCartFulfillment(
+        rawCheckoutItems,
+        shippingOptionsIsFetching || shippingOptionsIsError
+          ? []
+          : (shippingOptionsData ?? [])
+      ),
+    [
+      rawCheckoutItems,
+      shippingOptionsData,
+      shippingOptionsIsError,
+      shippingOptionsIsFetching,
+    ]
+  )
+  const checkoutItems = preparedFulfillment.items
   const checkoutAvailability = {
     availabilityByProductId:
       selectedMerchantReadiness?.availabilityByProductId ?? emptyAvailability,
@@ -1216,13 +1266,6 @@ function CheckoutPage() {
         ? "At least one product is missing public zap policy metadata, so checkout will use a private invoice."
         : null
 
-  // True when every item in the cart is a digital product (no shipping needed)
-  const isAllDigital = useMemo(
-    () =>
-      checkoutItems.length > 0 &&
-      checkoutItems.every((item) => item.format === "digital"),
-    [checkoutItems]
-  )
   const requiresCheckoutDetailsStep = !isAllDigital || isGuestCheckout
   const liveShippingErrors = useMemo(() => {
     if (isAllDigital) {
@@ -1235,30 +1278,8 @@ function CheckoutPage() {
 
   const physicalItemsMissingShippingZone =
     hasPhysicalItemsMissingShippingZone(checkoutItems)
-  const physicalItemsMissingShippingSnapshot =
-    hasPhysicalItemsMissingShippingSnapshot(checkoutItems)
-  const hasCompleteCartShippingSnapshot =
-    !isAllDigital &&
-    checkoutItems.length > 0 &&
-    !physicalItemsMissingShippingSnapshot
-
-  // Fetch merchant's published shipping zones (kind-30406)
-  const { data: shippingOptionsData, isLoading: shippingOptionsIsLoading } =
-    useQuery({
-      queryKey: ["shippingOptions", selectedMerchant],
-      queryFn: () => getShippingOptions(selectedMerchant!),
-      enabled:
-        !!selectedMerchant &&
-        !isAllDigital &&
-        !physicalItemsMissingShippingZone &&
-        !hasCompleteCartShippingSnapshot,
-      staleTime: 5 * 60 * 1000,
-    })
-  const merchantShippingOptions = shippingOptionsData ?? []
-  const shippingOptionsAvailable = getCartShippingOptionsAvailable(
-    checkoutItems,
-    merchantShippingOptions
-  )
+  const shippingOptionsAvailable =
+    getCartShippingOptionsAvailable(checkoutItems)
 
   const checkoutShippingCost = useMemo(
     () => getCheckoutShippingCost(checkoutItems, btcUsdRate),
@@ -1457,14 +1478,13 @@ function CheckoutPage() {
           country: shipping.country,
           postalCode: shipping.postalCode,
         },
-        checkoutItems,
-        merchantShippingOptions
+        checkoutItems
       )
 
   const shippingCheckoutState: ShippingCheckoutState = getShippingCheckoutState(
     {
       isAllDigital,
-      shippingLookupPending: shippingOptionsIsLoading,
+      shippingLookupPending: shippingOptionsIsFetching,
       physicalItemsMissingShippingZone,
       shippingOptionsAvailable,
       destinationEligibility,
@@ -1474,16 +1494,6 @@ function CheckoutPage() {
   const shippingEligibleForFastCheckout =
     shippingCheckoutState === "not_required" ||
     shippingCheckoutState === "allowed"
-
-  // Merchant shipping-zone coverage recorded on the order lifecycle. Distinct
-  // from buyer-input address validity (CND-127); `null` eligibility is unknown.
-  const shippingZoneEligibility: OrderShippingZoneEligibility = isAllDigital
-    ? "not_required"
-    : destinationEligibility.eligible === true
-      ? "eligible"
-      : destinationEligibility.eligible === false
-        ? "ineligible"
-        : "unknown"
 
   const currentAddressValidity = computeAddressValidity(buildShippingAddress())
   const shippingRegionRequirement = getShippingRegionRequirement(
@@ -1605,15 +1615,15 @@ function CheckoutPage() {
       case "not_required":
         return "This cart does not require shipping."
       case "loading":
-        return "Checking merchant shipping rules before direct payment is offered."
+        return "Resolving the product's fixed shipping option before direct payment is offered."
       case "missing_product_zone":
-        return "One product is missing product-level shipping-zone data, so direct payment is disabled."
+        return "One product does not have resolved fixed shipping, so direct payment is disabled."
       case "no_published_rule":
-        return "No published merchant shipping rule was found yet. You can still send the order first."
+        return "The referenced fixed shipping option could not be resolved. You can still send the order first."
       case "allowed":
         return currentAddressValidity.canDirectPay
-          ? "Merchant shipping zone covers this destination."
-          : "Merchant shipping zone may cover this destination, but address validity still needs attention."
+          ? "The product's fixed shipping option covers this destination."
+          : "Fixed shipping may cover this destination, but address validity still needs attention."
       case "country_unsupported":
         return "Zap out is unavailable for this destination. You can still send the order first."
       case "postal_restricted":
@@ -1703,7 +1713,7 @@ function CheckoutPage() {
 
   async function assertCheckoutItemsAvailable(
     checkoutMode: CheckoutTelemetryMode
-  ): Promise<void> {
+  ): Promise<CartItem[]> {
     const refreshResult = await checkoutAvailability.refresh()
     if (refreshResult.decision.status === "unverified") {
       recordCheckoutStepResult({
@@ -1736,7 +1746,24 @@ function CheckoutPage() {
       })
       throw new Error(refreshedAvailabilityMessage)
     }
-    if (!cartItemsMatchCurrentProducts(checkoutItems, refreshResult.products)) {
+    let authorization: Awaited<ReturnType<typeof authorizeCurrentCheckoutItems>>
+    try {
+      authorization = await authorizeCurrentCheckoutItems({
+        mode: checkoutMode === "order_first" ? "order_first" : "direct_payment",
+        reviewedItems: checkoutItems,
+        rawItems: rawCheckoutItems,
+        refreshedProducts: refreshResult.products,
+        readShippingOptions: getShippingOptionsByCoordinates,
+      })
+    } catch (error) {
+      recordCheckoutStepResult({
+        checkoutMode,
+        status: "blocked",
+        stepName: "availability",
+      })
+      throw error
+    }
+    if (authorization.status === "changed") {
       recordCheckoutStepResult({
         checkoutMode,
         status: "blocked",
@@ -1752,6 +1779,7 @@ function CheckoutPage() {
       status: "success",
       stepName: "availability",
     })
+    return authorization.items
   }
 
   function updateShipping<K extends keyof ShippingFormState>(
@@ -1858,6 +1886,23 @@ function CheckoutPage() {
   function buildShippingAddress(): ShippingAddressSchema | undefined {
     if (isAllDigital) return undefined
     return buildShippingAddressFromForm(shipping)
+  }
+
+  function getShippingZoneEligibilityForItems(
+    items: CartItem[]
+  ): OrderShippingZoneEligibility {
+    if (items.every((item) => item.format === "digital")) {
+      return "not_required"
+    }
+    const eligibility = getCartShippingDestinationEligibility(
+      { country: shipping.country, postalCode: shipping.postalCode },
+      items
+    )
+    return eligibility.eligible === true
+      ? "eligible"
+      : eligibility.eligible === false
+        ? "ineligible"
+        : "unknown"
   }
 
   function buildContactNote(): string | undefined {
@@ -1992,8 +2037,13 @@ function CheckoutPage() {
     setStep("signing")
 
     try {
-      await assertCheckoutItemsAvailable("order_first")
-      const checkoutPricing = await getFreshPricingIntent()
+      const freshPricingRate = await getFreshPricingRateInput(checkoutItems)
+      const authoritativeCheckoutItems =
+        await assertCheckoutItemsAvailable("order_first")
+      const checkoutPricing = buildCheckoutPricingIntent(
+        authoritativeCheckoutItems,
+        freshPricingRate
+      )
       if (checkoutPricing.status !== "ok") {
         throw new Error(checkoutPricing.reason)
       }
@@ -2040,7 +2090,7 @@ function CheckoutPage() {
         ["amount", String(orderTotalSats)],
         ["currency", currency],
       ]
-      for (const item of checkoutItems) {
+      for (const item of checkoutPricing.items) {
         rumor.tags.push(["item", item.productId, String(item.quantity)])
         if (item.shippingOptionId) {
           rumor.tags.push(["shipping", item.shippingOptionId])
@@ -2084,7 +2134,9 @@ function CheckoutPage() {
         shippingAddress: shippingAddress ?? undefined,
         contactNote: buildContactNote(),
         addressValidity: addressValidity.status as OrderAddressValidity,
-        shippingZoneEligibility,
+        shippingZoneEligibility: getShippingZoneEligibilityForItems(
+          authoritativeCheckoutItems
+        ),
         orderDeliveryStatus: "sent",
         orderDeliveryRoute: delivery.deliveryRoute,
         orderRelayDelivery: delivery.orderRelayDelivery,
@@ -2164,13 +2216,13 @@ function CheckoutPage() {
 
   // ─── Fast zap path ───────────────────────────────────────────────────────
 
-  async function getFreshPricingIntent() {
-    const initial = buildCheckoutPricingIntent(
-      checkoutItems,
-      btcUsdRateQuery.data ?? null
-    )
+  async function getFreshPricingRateInput(
+    items: CartItem[]
+  ): Promise<PricingRateInput> {
+    const currentRate = btcUsdRateQuery.data ?? null
+    const initial = buildCheckoutPricingIntent(items, currentRate)
     if (initial.status === "ok" || initial.code !== "stale_quote") {
-      return initial
+      return currentRate
     }
 
     const refetched = await Promise.race([
@@ -2183,19 +2235,20 @@ function CheckoutPage() {
       ),
     ])
 
-    return buildCheckoutPricingIntent(checkoutItems, refetched)
+    return refetched
   }
 
   function assertClaimedZapAuthorization(
     zapAuthorization: HudZapAuthorization | null,
-    totalMsats: number
+    totalMsats: number,
+    items: CartItem[]
   ): void {
     if (!zapAuthorization) return
     if (
       getHudZapAuthorizationBindingMismatch(zapAuthorization, {
         merchantPubkey: selectedMerchant,
         buyerPubkey: signedBuyerPubkey,
-        items: checkoutItems,
+        items,
         totalMsats,
       }) !== null
     ) {
@@ -2326,17 +2379,45 @@ function CheckoutPage() {
         )
       }
 
-      const pricingIntent = await getFreshPricingIntent()
-      if (pricingIntent.status !== "ok") {
-        throw new Error(pricingIntent.reason)
-      }
-      assertClaimedZapAuthorization(zapAuthorization, pricingIntent.totalMsats)
       const checkoutMode = requestedCheckoutMode
-      const checkoutPricing = pricingIntent
       const effectiveZapContent =
         checkoutMode === "private_checkout" ? "" : zapContent
       const requiresPublicZap = isCheckoutPublicZapMode(checkoutMode)
       const currentLnurlMetadata = await getFreshLnurlMetadata(merchantLud16)
+      const freshPricingRate = await getFreshPricingRateInput(checkoutItems)
+      const authoritativeCheckoutItems = await assertCheckoutItemsAvailable(
+        requestedCheckoutMode
+      )
+      const authoritativeDestinationEligibility =
+        authoritativeCheckoutItems.every((item) => item.format === "digital")
+          ? ({ eligible: true } as const)
+          : getCartShippingDestinationEligibility(
+              {
+                country: shipping.country,
+                postalCode: shipping.postalCode,
+              },
+              authoritativeCheckoutItems
+            )
+      if (authoritativeDestinationEligibility.eligible !== true) {
+        throw new Error(
+          "Order flow needs current shipping rules before direct payment."
+        )
+      }
+      const authoritativeShippingZoneEligibility =
+        getShippingZoneEligibilityForItems(authoritativeCheckoutItems)
+      const pricingIntent = buildCheckoutPricingIntent(
+        authoritativeCheckoutItems,
+        freshPricingRate
+      )
+      if (pricingIntent.status !== "ok") {
+        throw new Error(pricingIntent.reason)
+      }
+      assertClaimedZapAuthorization(
+        zapAuthorization,
+        pricingIntent.totalMsats,
+        authoritativeCheckoutItems
+      )
+      const checkoutPricing = pricingIntent
       if (
         checkoutPricing.totalMsats < currentLnurlMetadata.minSendable ||
         checkoutPricing.totalMsats > currentLnurlMetadata.maxSendable
@@ -2427,11 +2508,6 @@ function CheckoutPage() {
       orderRumor.tags = appendConduitClientTag(orderRumor.tags, "market")
       orderRumor.content = JSON.stringify(orderPayload)
 
-      await assertCheckoutItemsAvailable(requestedCheckoutMode)
-      assertClaimedZapAuthorization(
-        zapAuthorization,
-        checkoutPricing.totalMsats
-      )
       directPaymentStarted = true
       recordCheckoutStepResult({
         amountSats: checkoutPricing.totalSats,
@@ -2502,7 +2578,7 @@ function CheckoutPage() {
         contactNote: guestIdentity ? undefined : buildContactNote(),
         guestContact: undefined,
         addressValidity: addressValidity.status as OrderAddressValidity,
-        shippingZoneEligibility,
+        shippingZoneEligibility: authoritativeShippingZoneEligibility,
         orderDeliveryStatus: "sent",
         orderDeliveryRoute: orderDelivery.deliveryRoute,
         orderRelayDelivery: orderDelivery.orderRelayDelivery,
@@ -2661,7 +2737,7 @@ function CheckoutPage() {
       lnurlPayAvailable &&
       !lnurlAllowsNostr &&
       isCheckoutPublicZapMode(selectedZapMode),
-    shippingLookupPending: shippingOptionsIsLoading,
+    shippingLookupPending: shippingOptionsIsFetching,
     shippingState: shippingCheckoutState,
     availabilityChecking: checkoutAvailability.isChecking,
     pricingRefreshing: pricingRefreshState === "refreshing",
@@ -3363,7 +3439,7 @@ function CheckoutPage() {
                           )}
                           <div>
                             <div className="font-medium text-[var(--text-primary)]">
-                              Merchant shipping zone
+                              Fixed shipping
                             </div>
                             <div>{shippingStatusMessage}</div>
                           </div>

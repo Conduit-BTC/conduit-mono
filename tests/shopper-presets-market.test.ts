@@ -1058,23 +1058,24 @@ describe("Market shopper preset integration", () => {
 
   it("uses country and postal code for local shipping compatibility", () => {
     const restricted = cartItem("restricted", {
+      shippingOptionId: "30406:merchant:restricted-shipping-standard",
+      shippingOptionDTag: "restricted-shipping-standard",
       shippingCountries: ["US"],
       shippingCountryRules: [
         { code: "US", name: "US", restrictTo: ["94**"], exclude: [] },
       ],
+      canonicalShippingResolved: true,
     })
     expect(
       getCartShippingDestinationEligibility(
         { country: "US", postalCode: "94559" },
-        [restricted],
-        []
+        [restricted]
       )
     ).toEqual({ eligible: true })
     expect(
       getCartShippingDestinationEligibility(
         { country: "US", postalCode: "10001" },
-        [restricted],
-        []
+        [restricted]
       )
     ).toEqual({ eligible: false, reason: "postal_restricted" })
   })

@@ -8,6 +8,11 @@ import { EVENT_KINDS } from "./kinds"
 import { encodeLnurl, isValidLud16Address } from "./lightning"
 import { evaluateListingSafety } from "./listing-safety"
 import { parseProductEvent } from "./products"
+import {
+  applyPreparedProductFulfillment,
+  resolveProductFulfillment,
+  selectLatestShippingOptions,
+} from "./shipping"
 import type { AnonZapRequestDraft } from "./anon-zap"
 import {
   isValidSignedPublicNostrEvent,
@@ -72,6 +77,7 @@ export type AuthorizedAnonZapCheckout = {
 const MAX_CART_ITEMS = 50
 const MAX_ITEM_QUANTITY = 99
 const PRODUCT_KIND = 30402
+const SHIPPING_OPTION_KIND = 30406
 const PROFILE_KIND = 0
 const DELETION_KIND = 5
 const HEX_64 = /^[0-9a-f]{64}$/i
@@ -291,6 +297,7 @@ export function resolveAnonZapMerchantLud16(
 export function authorizeAnonZapCheckout(input: {
   intent: AnonZapCheckoutIntent
   productEvents: SignedPublicNostrEvent[]
+  shippingEvents: SignedPublicNostrEvent[]
   profileEvents: SignedPublicNostrEvent[]
   deletionEvents: SignedPublicNostrEvent[]
   receiptRelayUrls: readonly string[]
@@ -304,6 +311,7 @@ export function authorizeAnonZapCheckout(input: {
   }
   const validEvents = [
     ...input.productEvents,
+    ...input.shippingEvents,
     ...input.profileEvents,
     ...input.deletionEvents,
   ].filter(isValidSignedPublicNostrEvent)
@@ -318,6 +326,14 @@ export function authorizeAnonZapCheckout(input: {
   const deletions = validEvents.filter(
     (event) =>
       event.kind === DELETION_KIND && event.pubkey === intent.merchantPubkey
+  )
+  const shippingOptions = selectLatestShippingOptions(
+    validEvents.filter(
+      (event) =>
+        event.kind === SHIPPING_OPTION_KIND &&
+        event.pubkey === intent.merchantPubkey
+    ),
+    deletions
   )
 
   let itemSubtotalSats = 0
@@ -336,7 +352,12 @@ export function authorizeAnonZapCheckout(input: {
       throw new Error("Checkout product is no longer active.")
     }
 
-    const product = parseProductEvent(event)
+    const parsedProduct = parseProductEvent(event)
+    const fulfillment = resolveProductFulfillment(
+      parsedProduct,
+      shippingOptions
+    )
+    const product = applyPreparedProductFulfillment(parsedProduct, fulfillment)
     const safety = evaluateListingSafety(product)
     if (!safety.purchasable || product.visibility !== "public") {
       throw new Error("Checkout product is not active for purchase.")
@@ -393,6 +414,14 @@ export function authorizeAnonZapCheckout(input: {
           )
         : []
     if (product.format === "physical") {
+      if (
+        fulfillment.intent !== "fixed_standard" ||
+        fulfillment.status !== "ready"
+      ) {
+        throw new Error(
+          "Checkout product requires merchant-coordinated shipping."
+        )
+      }
       const normalizedShipping = getShippingCostSats(
         product,
         input.pricingRate ?? null

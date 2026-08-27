@@ -440,7 +440,7 @@ describe("getShippingStepBlockingMessage", () => {
 // ─── getShippingCheckoutState ────────────────────────────────────────────────
 
 describe("getShippingCheckoutState", () => {
-  it("uses cached cart shipping snapshots before showing a lookup loading state", () => {
+  it("waits for exact option resolution even when a cart snapshot exists", () => {
     expect(
       getShippingCheckoutState({
         isAllDigital: false,
@@ -449,7 +449,7 @@ describe("getShippingCheckoutState", () => {
         shippingOptionsAvailable: true,
         destinationEligibility: { eligible: true },
       })
-    ).toBe("allowed")
+    ).toBe("loading")
   })
 
   it("shows loading only when no cached shipping snapshot is available", () => {
@@ -464,7 +464,7 @@ describe("getShippingCheckoutState", () => {
     ).toBe("loading")
   })
 
-  it("does not wait for lookup when the product lacks a shipping zone", () => {
+  it("reports lookup progress before the unresolved fixed-shipping state", () => {
     expect(
       getShippingCheckoutState({
         isAllDigital: false,
@@ -473,7 +473,7 @@ describe("getShippingCheckoutState", () => {
         shippingOptionsAvailable: false,
         destinationEligibility: { eligible: null, reason: "unknown" },
       })
-    ).toBe("missing_product_zone")
+    ).toBe("loading")
   })
 })
 
@@ -565,9 +565,7 @@ describe("isFastCheckoutEligible", () => {
         shippingEligible: false,
         shippingState: "missing_product_zone",
       })
-    ).toEqual([
-      "A product in this cart is missing product-level shipping-zone data.",
-    ])
+    ).toEqual(["A product in this cart does not have resolved fixed shipping."])
   })
 
   it("separates an unloadable merchant profile from a missing Lightning Address", () => {
@@ -1055,6 +1053,10 @@ describe("checkout payment helpers", () => {
           quantity: 2,
           shippingCostSats: 500,
           shippingOptionId: SHIPPING_OPTION_ID,
+          canonicalShippingResolved: true,
+          shippingCountryRules: [
+            { code: "US", name: "US", restrictTo: [], exclude: [] },
+          ],
         }),
       ],
       null
@@ -1079,6 +1081,10 @@ describe("checkout payment helpers", () => {
         cartItem({
           shippingCostSats: undefined,
           shippingOptionId: SHIPPING_OPTION_ID,
+          canonicalShippingResolved: true,
+          shippingCountryRules: [
+            { code: "US", name: "US", restrictTo: [], exclude: [] },
+          ],
           sourceShippingCost: {
             amount: 10,
             currency: "USD",
@@ -1119,6 +1125,10 @@ describe("checkout payment helpers", () => {
         cartItem({
           shippingCostSats: undefined,
           shippingOptionId: SHIPPING_OPTION_ID,
+          canonicalShippingResolved: true,
+          shippingCountryRules: [
+            { code: "US", name: "US", restrictTo: [], exclude: [] },
+          ],
           sourceShippingCost: {
             amount: 10,
             currency: "USD",
@@ -1151,6 +1161,10 @@ describe("checkout payment helpers", () => {
         cartItem({
           shippingCostSats: 0,
           shippingOptionId: SHIPPING_OPTION_ID,
+          canonicalShippingResolved: true,
+          shippingCountryRules: [
+            { code: "US", name: "US", restrictTo: [], exclude: [] },
+          ],
         }),
       ])
     ).toEqual({
@@ -2715,7 +2729,7 @@ describe("shipping destination eligibility", () => {
     })
   })
 
-  it("uses product-level custom shipping rules without a preset option id", () => {
+  it("does not trust unprepared inline custom shipping rules", () => {
     const item = cartItem({
       shippingCountryRules: [
         {
@@ -2728,27 +2742,28 @@ describe("shipping destination eligibility", () => {
       shippingCountries: ["US"],
     })
 
-    expect(hasPhysicalItemsMissingShippingZone([item])).toBe(false)
-    expect(getCartShippingOptionsAvailable([item], [])).toBe(true)
+    expect(hasPhysicalItemsMissingShippingZone([item])).toBe(true)
+    expect(getCartShippingOptionsAvailable([item])).toBe(false)
     expect(
       getCartShippingDestinationEligibility(
         { country: "US", postalCode: "78704" },
-        [item],
-        []
+        [item]
       )
-    ).toEqual({ eligible: true })
+    ).toEqual({ eligible: null, reason: "unknown" })
     expect(
       getCartShippingDestinationEligibility(
         { country: "US", postalCode: "78799" },
-        [item],
-        []
+        [item]
       )
-    ).toEqual({ eligible: false, reason: "postal_restricted" })
+    ).toEqual({ eligible: null, reason: "unknown" })
   })
 
   it("requires every physical item shipping rule to allow the destination", () => {
     const firstItem = cartItem({
       productId: "product-1",
+      shippingOptionId: SHIPPING_OPTION_ID,
+      shippingOptionDTag: "standard",
+      canonicalShippingResolved: true,
       shippingCountryRules: [
         { code: "US", name: "United States", restrictTo: [], exclude: [] },
       ],
@@ -2756,6 +2771,9 @@ describe("shipping destination eligibility", () => {
     })
     const secondItem = cartItem({
       productId: "product-2",
+      shippingOptionId: `30406:${FAKE_PUBKEY}:canada-standard`,
+      shippingOptionDTag: "canada-standard",
+      canonicalShippingResolved: true,
       shippingCountryRules: [
         { code: "CA", name: "Canada", restrictTo: [], exclude: [] },
       ],
@@ -2765,8 +2783,7 @@ describe("shipping destination eligibility", () => {
     expect(
       getCartShippingDestinationEligibility(
         { country: "US", postalCode: "78704" },
-        [firstItem, secondItem],
-        []
+        [firstItem, secondItem]
       )
     ).toEqual({ eligible: false, reason: "country_unsupported" })
   })
@@ -2778,8 +2795,10 @@ describe("shipping destination eligibility", () => {
       created_at: 1,
       tags: [
         ["d", "conduit-default"],
+        ["title", "Standard Shipping"],
         ["price", "0", "SATS"],
         ["country", "US", "CA"],
+        ["service", "standard"],
         ["restrict", "US", "787**", "94105"],
         ["exclude", "US", "78799"],
       ],
@@ -2809,19 +2828,21 @@ describe("shipping destination eligibility", () => {
     ).toBeNull()
   })
 
-  it("parses empty replacement shipping options as no destinations", () => {
+  it("rejects replacement shipping options without destinations", () => {
     const parsed = parseShippingOptionEvent({
       id: "shipping-event",
       pubkey: FAKE_PUBKEY,
       created_at: 2,
-      tags: [["d", "conduit-default"], ["price", "0", "SATS"], ["country"]],
+      tags: [
+        ["d", "conduit-default"],
+        ["title", "Standard Shipping"],
+        ["price", "0", "SATS"],
+        ["country"],
+        ["service", "standard"],
+      ],
     })
 
-    expect(parsed).toMatchObject({
-      countries: [],
-      countryRules: [],
-      dTag: "conduit-default",
-    })
+    expect(parsed).toBeNull()
   })
 
   it("ignores empty non-default shipping options", () => {
@@ -2845,8 +2866,10 @@ describe("shipping destination eligibility", () => {
       created_at: 1,
       tags: [
         ["d", "conduit-default"],
+        ["title", "Standard Shipping"],
         ["price", "0", "SATS"],
         ["country", "US"],
+        ["service", "standard"],
         ["restrict", "US", "787**"],
         ["exclude", "US", "78799"],
       ],
