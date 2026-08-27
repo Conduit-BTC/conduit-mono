@@ -75,12 +75,10 @@ function RootLayout() {
     select: (state) => state.location.pathname,
   })
 
-  useEffect(() => installBrowserClientErrorTelemetry("merchant"), [])
-
-  throwSyntheticClientErrorForTelemetryTest()
-
   if (isProductLegalPath(pathname)) return <Outlet />
   if (isMerchantPublicAboutPath(pathname)) {
+    throwSyntheticClientErrorForTelemetryTest()
+
     return (
       <MerchantPublicAboutShell>
         <Outlet />
@@ -101,6 +99,8 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
   const signerRestoring = !!pubkey && status === "restoring"
   const shouldDelayAuthFallback =
     !!pubkey && !signerConnected && !authFallbackReady
+
+  useEffect(() => installBrowserClientErrorTelemetry("merchant"), [])
 
   useEffect(() => {
     if (appLoadTelemetrySentRef.current) return
@@ -175,6 +175,8 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
   useEffect(() => {
     recordBrowserTelemetryPageView({ app: "merchant", pathname })
   }, [pathname])
+
+  throwSyntheticClientErrorForTelemetryTest()
 
   if (shouldDelayAuthFallback) {
     return (
@@ -256,7 +258,19 @@ function RootErrorComponent({ error }: ErrorComponentProps) {
     select: (state) => state.location.pathname,
   })
 
-  if (isProductLegalPath(pathname) || isMerchantPublicAboutPath(pathname)) {
+  if (isProductLegalPath(pathname)) {
+    return (
+      <div className="min-h-dvh bg-[var(--background)] px-4 py-12 text-[var(--text-primary)]">
+        <ErrorPage
+          title="This legal page could not be displayed"
+          message="Reload the page. If the problem continues, use the canonical Shop legal URL."
+          showReload
+        />
+      </div>
+    )
+  }
+
+  if (isMerchantPublicAboutPath(pathname)) {
     return <MerchantPublicRootError error={error} />
   }
 

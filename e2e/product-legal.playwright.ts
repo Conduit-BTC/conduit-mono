@@ -174,6 +174,25 @@ async function waitForEffects(page: Page): Promise<void> {
   await page.waitForTimeout(100)
 }
 
+async function dispatchRuntimeErrors(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    window.dispatchEvent(
+      new ErrorEvent("error", {
+        error: new TypeError("legal route telemetry isolation probe"),
+        message: "legal route telemetry isolation probe",
+      })
+    )
+
+    const rejection = new Event("unhandledrejection") as Event & {
+      reason: unknown
+    }
+    rejection.reason = new ReferenceError(
+      "legal route telemetry isolation probe"
+    )
+    window.dispatchEvent(rejection)
+  })
+}
+
 async function assertIsolatedLegalLoad(
   page: Page,
   expectedTitle: string,
@@ -193,6 +212,9 @@ async function assertIsolatedLegalLoad(
     "sell.conduit.market"
   )
 
+  await waitForEffects(page)
+
+  await dispatchRuntimeErrors(page)
   await waitForEffects(page)
 
   const probe = await readProbe(page)

@@ -86,12 +86,70 @@ describe("Product legal routing contract", () => {
       const dispatchStart = root.indexOf("function RootLayout()")
       const productRootStart = root.indexOf("function ", dispatchStart + 1)
       const dispatch = root.slice(dispatchStart, productRootStart)
+      const aboutDispatchStart = dispatch.indexOf(
+        "if (isMerchantPublicAboutPath(pathname))"
+      )
+      const legalDispatch =
+        aboutDispatchStart === -1
+          ? dispatch
+          : dispatch.slice(0, aboutDispatchStart)
 
-      expect(dispatch).toContain("isProductLegalPath(pathname)")
-      expect(dispatch).toContain("return <Outlet />")
-      expect(dispatch).not.toContain("useAuth")
-      expect(dispatch).not.toContain("recordBrowserTelemetry")
+      expect(legalDispatch).toContain("isProductLegalPath(pathname)")
+      expect(legalDispatch).toContain("return <Outlet />")
+      expect(legalDispatch).not.toContain("useAuth")
+      expect(legalDispatch).not.toContain("installBrowserClientErrorTelemetry")
+      expect(legalDispatch).not.toContain(
+        "throwSyntheticClientErrorForTelemetryTest"
+      )
+      expect(legalDispatch).not.toContain("recordBrowserClientError")
+      expect(legalDispatch).not.toContain("recordBrowserTelemetry")
     }
+
+    const merchantRoot = await Bun.file(APP_SOURCES.merchant.root).text()
+    const productRootStart = merchantRoot.indexOf(
+      "function MerchantProductRoot("
+    )
+    const telemetryHelperStart = merchantRoot.indexOf(
+      "function throwSyntheticClientErrorForTelemetryTest("
+    )
+    const errorDispatchStart = merchantRoot.indexOf(
+      "function RootErrorComponent("
+    )
+    const publicErrorStart = merchantRoot.indexOf(
+      "function MerchantPublicRootError("
+    )
+
+    expect(productRootStart).toBeGreaterThan(-1)
+    expect(telemetryHelperStart).toBeGreaterThan(productRootStart)
+    expect(errorDispatchStart).toBeGreaterThan(telemetryHelperStart)
+    expect(publicErrorStart).toBeGreaterThan(errorDispatchStart)
+
+    const productRoot = merchantRoot.slice(
+      productRootStart,
+      telemetryHelperStart
+    )
+    expect(productRoot).toContain(
+      'installBrowserClientErrorTelemetry("merchant")'
+    )
+    expect(productRoot).toContain("throwSyntheticClientErrorForTelemetryTest()")
+
+    const errorDispatch = merchantRoot.slice(
+      errorDispatchStart,
+      publicErrorStart
+    )
+    const aboutErrorStart = errorDispatch.indexOf(
+      "if (isMerchantPublicAboutPath(pathname))"
+    )
+
+    expect(aboutErrorStart).toBeGreaterThan(-1)
+
+    const legalErrorDispatch = errorDispatch.slice(0, aboutErrorStart)
+    expect(legalErrorDispatch).toContain("isProductLegalPath(pathname)")
+    expect(legalErrorDispatch).toContain(
+      'title="This legal page could not be displayed"'
+    )
+    expect(legalErrorDispatch).not.toContain("MerchantPublicRootError")
+    expect(legalErrorDispatch).not.toContain("recordBrowserClientError")
   })
 
   it("keeps Product links local and cross-origin links no-referrer", async () => {

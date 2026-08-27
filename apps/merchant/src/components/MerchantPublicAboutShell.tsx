@@ -1,6 +1,8 @@
 import { TanStackRouterDevtools } from "@tanstack/router-devtools"
 import { useEffect, type ReactNode } from "react"
 
+import { installBrowserClientErrorTelemetry } from "@conduit/core"
+
 const SHOW_DEVTOOLS =
   import.meta.env.DEV && import.meta.env.VITE_DISABLE_DEVTOOLS !== "true"
 
@@ -9,6 +11,8 @@ export function MerchantPublicAboutShell({
 }: {
   children: ReactNode
 }) {
+  useEffect(() => installBrowserClientErrorTelemetry("merchant"), [])
+
   useEffect(() => {
     document.title = "About | Conduit Merchant"
   }, [])

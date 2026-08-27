@@ -37,6 +37,9 @@ describe("About page routing and contributor contracts", () => {
     expect(rootDispatch).toContain("<MerchantPublicAboutShell>")
     expect(rootDispatch).not.toContain("useAuth")
     expect(publicShell).not.toContain("AuthProvider")
+    expect(publicShell).toContain(
+      'installBrowserClientErrorTelemetry("merchant")'
+    )
     expect(publicShell).toContain("Open merchant workspace")
   })
 
