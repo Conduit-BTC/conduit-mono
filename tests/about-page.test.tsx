@@ -51,7 +51,6 @@ function renderAbout(
       identity={identity}
       contributors={contributors}
       supportUrl="https://github.com/Conduit-BTC/conduit-mono/issues/new"
-      networkSettingsHref="/network"
     />
   )
 }
@@ -74,6 +73,7 @@ describe("AboutPagePanel", () => {
     expect(markup).toContain("not proof of the deployed build")
     expect(markup).not.toContain("Authenticity verification")
     expect(markup).not.toContain("App instance")
+    expect(markup).not.toContain("Network settings")
     expect(markup).not.toContain("production build")
   })
 

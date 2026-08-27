@@ -60,7 +60,6 @@ export interface AboutPagePanelProps {
   identity: AboutPageIdentity
   contributors: AboutPageContributorSnapshot
   supportUrl: string
-  networkSettingsHref: string
   logoSrc?: string
   repositoryLabel?: string
   className?: string
@@ -338,11 +337,7 @@ function AboutHero({
   )
 }
 
-function HowConduitWorks({
-  networkSettingsHref,
-}: {
-  networkSettingsHref: string
-}) {
+function HowConduitWorks() {
   return (
     <section aria-labelledby="how-conduit-works" className="space-y-4">
       <div>
@@ -370,12 +365,6 @@ function HowConduitWorks({
             relay.conduit.market is one Conduit-operated default, not a central
             authority.
           </p>
-          <a
-            href={networkSettingsHref}
-            className="mt-4 inline-flex rounded-sm text-sm font-medium text-primary-500 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-          >
-            Network settings
-          </a>
         </Card>
 
         <Card className="p-5">
@@ -659,7 +648,6 @@ export function AboutPagePanel({
   identity,
   contributors,
   supportUrl,
-  networkSettingsHref,
   logoSrc = DEFAULT_LOGO_SRC,
   repositoryLabel,
   className,
@@ -677,7 +665,7 @@ export function AboutPagePanel({
         logoSrc={logoSrc}
         releaseChannel={buildInfo.releaseChannel}
       />
-      <HowConduitWorks networkSettingsHref={networkSettingsHref} />
+      <HowConduitWorks />
 
       <div className="grid items-start gap-5 lg:grid-cols-2">
         <SourceAndSupportCard

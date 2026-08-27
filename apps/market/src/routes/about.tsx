@@ -31,7 +31,6 @@ function AboutPage() {
       commitUrl={getCommitUrl(conduitBuildInfo)}
       contributors={repositoryContributorSnapshot}
       supportUrl={buildBugReportUrl({ app: "market", route: "/about" })}
-      networkSettingsHref="/network"
       identity={{
         sourceName: app.name,
         handlerAddress: getConduitNip89HandlerAddress("market"),
