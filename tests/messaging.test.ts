@@ -1049,6 +1049,119 @@ describe("publishPrivateMessage", () => {
     expect(result.selfCopyError).toBe("self relay rejected")
   })
 
+  it("requires a sender ACK before publishing a cross-device recipient leg", async () => {
+    const published: string[] = []
+    await expect(
+      publishPrivateMessage({
+        rumor: rumor(EVENT_KINDS.ORDER),
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer,
+        rumorKind: EVENT_KINDS.ORDER,
+        selfCopyDelivery: "required_before_recipient",
+        recipientInboxRelays: ["wss://recipient.inbox.conduit.market"],
+        senderInboxRelays: ["wss://sender.inbox.conduit.market"],
+        giftWrapFn: (async (_rumor, recipient) =>
+          wrap(`wrap-${recipient.pubkey}`)) as never,
+        publishFn: (async (event) => {
+          published.push(event.id)
+          if (event.id === "wrap-sender") {
+            throw new Error("self relay rejected")
+          }
+          return {} as never
+        }) as never,
+      })
+    ).rejects.toThrow("self relay rejected")
+    expect(published).toEqual(["wrap-sender"])
+  })
+
+  it("publishes a required sender copy before its recipient leg", async () => {
+    const published: string[] = []
+    await expect(
+      publishPrivateMessage({
+        rumor: rumor(EVENT_KINDS.ORDER),
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer,
+        rumorKind: EVENT_KINDS.ORDER,
+        selfCopyDelivery: "required_before_recipient",
+        recipientInboxRelays: ["wss://recipient.inbox.conduit.market"],
+        senderInboxRelays: ["wss://sender.inbox.conduit.market"],
+        giftWrapFn: (async (_rumor, recipient) =>
+          wrap(`wrap-${recipient.pubkey}`)) as never,
+        publishFn: (async (event) => {
+          published.push(event.id)
+          return {} as never
+        }) as never,
+      })
+    ).resolves.toMatchObject({ selfCopyError: null })
+    expect(published).toEqual(["wrap-sender", "wrap-recipient"])
+  })
+
+  it("revalidates immediately before both required transport legs", async () => {
+    const actions: string[] = []
+    await publishPrivateMessage({
+      rumor: rumor(EVENT_KINDS.ORDER),
+      senderPubkey: "sender",
+      recipientPubkey: "recipient",
+      signer,
+      rumorKind: EVENT_KINDS.ORDER,
+      selfCopyDelivery: "required_before_recipient",
+      recipientInboxRelays: ["wss://recipient.inbox.conduit.market"],
+      senderInboxRelays: ["wss://sender.inbox.conduit.market"],
+      giftWrapFn: (async (_rumor, recipient) =>
+        wrap(`wrap-${recipient.pubkey}`)) as never,
+      beforeCriticalPublish: async (leg) => {
+        actions.push(`guard-${leg}`)
+      },
+      publishFn: (async (event) => {
+        actions.push(`publish-${event.id}`)
+        return {} as never
+      }) as never,
+    })
+
+    expect(actions).toEqual([
+      "guard-sender_self_copy",
+      "publish-wrap-sender",
+      "guard-recipient",
+      "publish-wrap-recipient",
+    ])
+  })
+
+  it("blocks recipient delivery when authority changes during async wrapping", async () => {
+    const expectedAuthority = "wallet-a"
+    let currentAuthority = expectedAuthority
+    const published: string[] = []
+
+    await expect(
+      publishPrivateMessage({
+        rumor: rumor(EVENT_KINDS.ORDER),
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer,
+        rumorKind: EVENT_KINDS.ORDER,
+        recipientInboxRelays: ["wss://recipient.inbox.conduit.market"],
+        senderInboxRelays: ["wss://sender.inbox.conduit.market"],
+        giftWrapFn: (async (_rumor, recipient) => {
+          await Promise.resolve()
+          currentAuthority = "wallet-b"
+          return wrap(`wrap-${recipient.pubkey}`)
+        }) as never,
+        beforeCriticalPublish: () => {
+          if (currentAuthority !== expectedAuthority) {
+            throw new Error("payment authority changed")
+          }
+        },
+        publishFn: (async (event) => {
+          published.push(event.id)
+          return {} as never
+        }) as never,
+      })
+    ).rejects.toThrow("payment authority changed")
+
+    expect(published).toEqual([])
+  })
+
   it("delivers a validated order over the compatibility route when the recipient has no declaration", async () => {
     const publishes: Array<{ id: string; relays: readonly string[] }> = []
 
@@ -2859,6 +2972,92 @@ describe("publishPrivateMessageRelayDeclaration", () => {
     expect(recipientRead.relayUrls).toEqual([
       "wss://recipient-inbox.conduit.market",
     ])
+  })
+
+  it("keeps one prior declared inbox in the bounded read plan after rotation", async () => {
+    __resetInboxRelayCache()
+    const evidenceRepository =
+      createInMemoryInboxDeclarationEvidenceRepository()
+    const prior = signedInboxDeclaration(
+      INBOX_OWNER_SECRET,
+      ["wss://prior-inbox.conduit.market"],
+      1_000
+    )
+    const current = signedInboxDeclaration(
+      INBOX_OWNER_SECRET,
+      ["wss://current-inbox.conduit.market"],
+      2_000
+    )
+    await mergeInboxDeclarationEvidence(
+      { pubkey: INBOX_OWNER, signedEvent: prior },
+      evidenceRepository
+    )
+    await mergeInboxDeclarationEvidence(
+      { pubkey: INBOX_OWNER, signedEvent: current },
+      evidenceRepository
+    )
+
+    const declaration = await resolveInboxDeclaration(INBOX_OWNER, {
+      relayUrls: [SHARED_INBOX_RELAY],
+      evidenceRepository,
+      fetchEventsWithDiagnostics: async () => ({
+        events: [withInboxSource(current)] as never,
+        attemptedRelayUrls: [SHARED_INBOX_RELAY],
+        successfulRelayUrls: [SHARED_INBOX_RELAY],
+        failedRelayUrls: [],
+      }),
+    })
+    const readPlan = planInboxReadRelays({
+      declaration,
+      localReadRelayUrls: [],
+      compatibilityRelayUrls: [],
+    })
+
+    expect(declaration.state).toBe("declared")
+    expect(declaration.relayUrls).toEqual([
+      "wss://current-inbox.conduit.market",
+    ])
+    expect(declaration.retainedReadRelayUrls).toEqual([
+      "wss://prior-inbox.conduit.market",
+    ])
+    expect(readPlan.relayUrls).toEqual([
+      "wss://current-inbox.conduit.market",
+      "wss://prior-inbox.conduit.market",
+    ])
+  })
+
+  it("reserves prior write-plan relays before a 24-relay current tail", () => {
+    const current = Array.from(
+      { length: 24 },
+      (_, index) => `wss://current-${index}.inbox.conduit.market`
+    )
+    const prior = Array.from(
+      { length: 3 },
+      (_, index) => `wss://prior-${index}.inbox.conduit.market`
+    )
+
+    const readPlan = planInboxReadRelays({
+      declaration: {
+        pubkey: INBOX_OWNER,
+        state: "declared",
+        relayUrls: current,
+        retainedReadRelayUrls: prior,
+        stale: false,
+        fetchedAt: 1,
+      },
+      authenticatedPubkey: INBOX_OWNER,
+      localReadRelayUrls: [],
+      compatibilityRelayUrls: [],
+      maxRelays: 24,
+    })
+
+    expect(readPlan.relayUrls).toHaveLength(24)
+    expect(readPlan.relayUrls.slice(0, 6)).toEqual([
+      ...current.slice(0, 3),
+      ...prior,
+    ])
+    expect(readPlan.relayUrls).toContain(current[20]!)
+    expect(readPlan.relayUrls).not.toContain(current[21]!)
   })
 
   it("rejects a signer pubkey mismatch before signing or publishing", async () => {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { useAuth } from "@conduit/core"
 import {
+  MERCHANT_READINESS_STORAGE_EVENT,
   NWC_URI_STORAGE_KEY,
   getNwcUriStorageKey,
   notifyMerchantReadinessStorageChange,
@@ -14,6 +15,7 @@ interface UseNwcConnectionResult {
   error: string | null
   setUri: (uri: string) => void
   disconnect: () => void
+  readCurrentConnection: () => StoredNwcConnection | null
 }
 
 function readStoredUri(storageKey: string | null): string {
@@ -35,11 +37,34 @@ export function useNwcConnection(): UseNwcConnectionResult {
   )
   const [error, setError] = useState<string | null>(null)
 
+  const readCurrentConnection = useCallback(
+    () => parseStoredNwcConnection(readStoredUri(storageKey)),
+    [storageKey]
+  )
+
   useEffect(() => {
-    const storedUri = readStoredUri(storageKey)
-    setRawUri(storedUri)
-    setConnection(parseStoredNwcConnection(storedUri))
-    setError(null)
+    const syncFromStorage = () => {
+      const storedUri = readStoredUri(storageKey)
+      setRawUri(storedUri)
+      setConnection(parseStoredNwcConnection(storedUri))
+      setError(null)
+    }
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key && event.key !== storageKey) return
+      syncFromStorage()
+    }
+
+    syncFromStorage()
+    if (typeof window === "undefined") return
+    window.addEventListener("storage", handleStorage)
+    window.addEventListener(MERCHANT_READINESS_STORAGE_EVENT, syncFromStorage)
+    return () => {
+      window.removeEventListener("storage", handleStorage)
+      window.removeEventListener(
+        MERCHANT_READINESS_STORAGE_EVENT,
+        syncFromStorage
+      )
+    }
   }, [storageKey])
 
   const setUri = useCallback(
@@ -83,5 +108,12 @@ export function useNwcConnection(): UseNwcConnectionResult {
     notifyMerchantReadinessStorageChange()
   }, [storageKey])
 
-  return { connection, rawUri, error, setUri, disconnect }
+  return {
+    connection,
+    rawUri,
+    error,
+    setUri,
+    disconnect,
+    readCurrentConnection,
+  }
 }

@@ -5,10 +5,26 @@ import {
   cachePublishedMerchantOrderMessage,
   EVENT_KINDS,
   getMerchantOrderPublishTarget,
+  getMerchantOrderSelfCopyDelivery,
   type ParsedOrderMessage,
 } from "@conduit/core"
 
 describe("merchant order publish", () => {
+  it("requires merchant self-copy delivery before a buyer invoice", () => {
+    expect(
+      getMerchantOrderSelfCopyDelivery({
+        type: "payment_request",
+        delivery: "buyer_and_self",
+      })
+    ).toBe("required_before_recipient")
+    expect(
+      getMerchantOrderSelfCopyDelivery({
+        type: "status_update",
+        delivery: "buyer_and_self",
+      })
+    ).toBe("best_effort")
+  })
+
   it("targets the merchant for a guest-only operational record", () => {
     const rumor = new NDKEvent()
     rumor.id = "guest-status-rumor"

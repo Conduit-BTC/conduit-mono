@@ -1,5 +1,6 @@
 import {
   decodeLightningInvoiceAmount,
+  isValidLud16Address,
   type MerchantConversationSummary,
   type NwcLookupInvoiceResult,
 } from "@conduit/core"
@@ -28,6 +29,264 @@ export type MerchantPaymentVerificationResult = {
   lookupFailures: number
 }
 
+export interface MerchantPaymentVerificationIdentity {
+  principalPubkey: string | null
+  connectionKey: string
+  confirmedDestination: string | null
+  hasConfirmedDestination: boolean
+}
+
+export interface MerchantPaymentVerificationIdentityObservation {
+  principalPubkey: string | null
+  connectionKey: string
+  /**
+   * `undefined` means the profile authority is currently unavailable or being
+   * refreshed. `null` means a current, confirmed profile has no valid lud16.
+   */
+  confirmedDestination: string | null | undefined
+}
+
+export interface MerchantPaymentStableSnapshot<T extends object> {
+  boundary: string
+  identity: string
+  value: T
+}
+
+/**
+ * Reuse a semantically unchanged complete snapshot across background fetches.
+ * A principal/session boundary change or a completed unavailable read still
+ * clears it immediately, while a changed identity replaces it so active work
+ * observes the lifecycle transition.
+ */
+export function reconcileMerchantPaymentStableSnapshot<
+  T extends object,
+>(input: {
+  current: MerchantPaymentStableSnapshot<T> | null
+  boundary: string | null
+  identity: string | null
+  value: T | null
+  fetching: boolean
+}): MerchantPaymentStableSnapshot<T> | null {
+  if (!input.boundary) return null
+  if (input.value && input.identity) {
+    if (
+      input.current?.boundary === input.boundary &&
+      input.current.identity === input.identity
+    ) {
+      return input.current
+    }
+    return {
+      boundary: input.boundary,
+      identity: input.identity,
+      value: input.value,
+    }
+  }
+  return input.fetching && input.current?.boundary === input.boundary
+    ? input.current
+    : null
+}
+
+/**
+ * Signed event ids commit to every field used to derive payment candidates.
+ * Sorting makes an unchanged complete read stable even when relay ordering or
+ * the query result wrapper changes during a background refresh.
+ */
+export function getMerchantPaymentConversationSnapshotIdentity(
+  conversations: MerchantConversationSummary[]
+): string {
+  return JSON.stringify(
+    conversations
+      .flatMap((conversation) =>
+        (conversation.messages ?? []).map((message) => message.id)
+      )
+      .sort()
+  )
+}
+
+export type MerchantPaymentVerificationRunState = {
+  status: "idle" | "checking" | "complete" | "error"
+  checked: number
+  verified: number
+  message?: string
+  blocker?: "conversation_read"
+}
+
+export class MerchantPaymentConversationSnapshotChangedError extends Error {
+  readonly code = "conversation_snapshot_changed"
+
+  constructor() {
+    super(
+      "Protected order history changed while payment was being checked. Retry with the latest complete history."
+    )
+    this.name = "MerchantPaymentConversationSnapshotChangedError"
+  }
+}
+
+export class MerchantPaymentAuthoritySnapshotChangedError extends Error {
+  readonly code = "payment_authority_snapshot_changed"
+
+  constructor() {
+    super(
+      "Payment verification authority changed while an invoice was checked."
+    )
+    this.name = "MerchantPaymentAuthoritySnapshotChangedError"
+  }
+}
+
+export function assertMerchantPaymentVerificationReadsIdle(input: {
+  conversation?: "fetching" | "paused" | "idle"
+  profile?: "fetching" | "paused" | "idle"
+  info?: "fetching" | "paused" | "idle"
+}): void {
+  if (input.conversation && input.conversation !== "idle") {
+    throw new MerchantPaymentConversationSnapshotChangedError()
+  }
+  if (
+    (input.profile && input.profile !== "idle") ||
+    (input.info && input.info !== "idle")
+  ) {
+    throw new MerchantPaymentAuthoritySnapshotChangedError()
+  }
+}
+
+export function getMerchantPaymentVerificationFailureRunState(input: {
+  error: unknown
+  checked: number
+  verified: number
+}): MerchantPaymentVerificationRunState {
+  if (input.error instanceof MerchantPaymentConversationSnapshotChangedError) {
+    return {
+      status: "error",
+      checked: input.checked,
+      verified: input.verified,
+      blocker: "conversation_read",
+      message:
+        "Protected order history changed while payment was being checked. Retrying with the latest complete history.",
+    }
+  }
+  if (input.error instanceof MerchantPaymentAuthoritySnapshotChangedError) {
+    return { status: "idle", checked: 0, verified: 0 }
+  }
+  return {
+    status: "error",
+    checked: input.checked,
+    verified: input.verified,
+    message: "Automatic payment verification stopped.",
+  }
+}
+
+export function reconcileMerchantPaymentConversationReadRunState(input: {
+  current: MerchantPaymentVerificationRunState
+  eligible: boolean
+  fetching: boolean
+  unavailable: boolean
+  capped: boolean
+}): MerchantPaymentVerificationRunState {
+  if (!input.eligible || (!input.fetching && !input.unavailable)) {
+    return input.current.blocker === "conversation_read"
+      ? { status: "idle", checked: 0, verified: 0 }
+      : input.current
+  }
+  if (input.fetching) return input.current
+  return {
+    status: "error",
+    checked: 0,
+    verified: 0,
+    blocker: "conversation_read",
+    message: input.capped
+      ? "Automatic payment confirmation is paused because order history reached the secure read limit."
+      : "Protected order history is incomplete. Retry before checking pending invoices.",
+  }
+}
+
+export function isMerchantPaymentConversationReadComplete(input: {
+  error?: unknown
+  meta?: {
+    stale?: boolean
+    degraded?: boolean
+    capped?: boolean
+    inbox?: {
+      coverage?: "complete" | "partial" | "unavailable"
+    }
+  } | null
+}): boolean {
+  return (
+    !input.error &&
+    !!input.meta &&
+    !input.meta.stale &&
+    !input.meta.degraded &&
+    !input.meta.capped &&
+    input.meta.inbox?.coverage === "complete"
+  )
+}
+
+export function getMerchantPaymentVerificationCandidatesForRead(input: {
+  conversations: MerchantConversationSummary[]
+  error?: unknown
+  meta?: Parameters<typeof isMerchantPaymentConversationReadComplete>[0]["meta"]
+}): MerchantPaymentVerificationCandidate[] {
+  return isMerchantPaymentConversationReadComplete(input)
+    ? getMerchantPaymentVerificationCandidates(input.conversations)
+    : []
+}
+
+export function assertMerchantPaymentConversationSnapshotCurrent(
+  expected: object,
+  current: object | null
+): void {
+  if (current !== expected) {
+    throw new MerchantPaymentConversationSnapshotChangedError()
+  }
+}
+
+export function assertMerchantPaymentAuthoritySnapshotCurrent(
+  expected: object,
+  current: object | null
+): void {
+  if (current !== expected) {
+    throw new MerchantPaymentAuthoritySnapshotChangedError()
+  }
+}
+
+export function advanceMerchantPaymentVerificationIdentity(
+  previous: MerchantPaymentVerificationIdentity | null,
+  observation: MerchantPaymentVerificationIdentityObservation
+): {
+  identity: MerchantPaymentVerificationIdentity
+  resetEvidence: boolean
+} {
+  const principalChanged =
+    previous !== null &&
+    previous.principalPubkey !== observation.principalPubkey
+  const connectionChanged =
+    previous !== null && previous.connectionKey !== observation.connectionKey
+  const hasConfirmedDestination = observation.confirmedDestination !== undefined
+  const destinationChanged =
+    previous !== null &&
+    !principalChanged &&
+    previous.hasConfirmedDestination &&
+    hasConfirmedDestination &&
+    previous.confirmedDestination !== observation.confirmedDestination
+
+  const preserveConfirmedDestination =
+    previous !== null && !principalChanged && !hasConfirmedDestination
+  const identity: MerchantPaymentVerificationIdentity = {
+    principalPubkey: observation.principalPubkey,
+    connectionKey: observation.connectionKey,
+    confirmedDestination: preserveConfirmedDestination
+      ? previous.confirmedDestination
+      : (observation.confirmedDestination ?? null),
+    hasConfirmedDestination: preserveConfirmedDestination
+      ? previous.hasConfirmedDestination
+      : hasConfirmedDestination,
+  }
+
+  return {
+    identity,
+    resetEvidence: principalChanged || connectionChanged || destinationChanged,
+  }
+}
+
 function getMerchantPaymentEvidenceKey(
   candidate: MerchantPaymentVerificationCandidate
 ): string {
@@ -37,17 +296,21 @@ function getMerchantPaymentEvidenceKey(
 export async function verifyMerchantPaymentCandidates({
   candidates,
   confirmedEvidence,
+  assertAuthorityCurrent,
   lookupInvoice,
   publishConfirmation,
+  onConfirmed,
 }: {
   candidates: MerchantPaymentVerificationCandidate[]
   confirmedEvidence: Set<string>
+  assertAuthorityCurrent?: () => void
   lookupInvoice: (
     candidate: MerchantPaymentVerificationCandidate
   ) => Promise<NwcLookupInvoiceResult>
   publishConfirmation: (
     candidate: MerchantPaymentVerificationCandidate
   ) => Promise<void>
+  onConfirmed?: (candidate: MerchantPaymentVerificationCandidate) => void
 }): Promise<MerchantPaymentVerificationResult> {
   const pendingCandidates = candidates.filter(
     (candidate) =>
@@ -63,7 +326,9 @@ export async function verifyMerchantPaymentCandidates({
 
   for (const candidate of pendingCandidates) {
     try {
+      assertAuthorityCurrent?.()
       const settlement = await lookupInvoice(candidate)
+      assertAuthorityCurrent?.()
       checked += 1
       if (isNwcSettlementMatch(candidate, settlement)) {
         matches.push({
@@ -71,7 +336,16 @@ export async function verifyMerchantPaymentCandidates({
           paymentHash: settlement.paymentHash.toLowerCase(),
         })
       }
-    } catch {
+    } catch (error) {
+      // Snapshot invalidation is a lifecycle boundary, not a wallet lookup
+      // failure. Stop the batch so later private invoices are never queried
+      // through an authorization or protected-read snapshot that went stale.
+      if (
+        error instanceof MerchantPaymentConversationSnapshotChangedError ||
+        error instanceof MerchantPaymentAuthoritySnapshotChangedError
+      ) {
+        throw error
+      }
       lookupFailures += 1
     }
   }
@@ -86,9 +360,11 @@ export async function verifyMerchantPaymentCandidates({
 
   for (const match of matches) {
     if (paymentHashCounts.get(match.paymentHash) !== 1) continue
+    assertAuthorityCurrent?.()
     await publishConfirmation(match.candidate)
     confirmedEvidence.add(getMerchantPaymentEvidenceKey(match.candidate))
     verified += 1
+    onConfirmed?.(match.candidate)
   }
 
   return { checked, verified, lookupFailures }
@@ -97,6 +373,28 @@ export async function verifyMerchantPaymentCandidates({
 function normalizeLud16(value: string | null | undefined): string | null {
   const normalized = value?.trim().toLowerCase()
   return normalized || null
+}
+
+export function selectAuthoritativeMerchantProfileLud16({
+  lud16,
+  frontierConfirmed,
+  degraded,
+  capped,
+  isFetching,
+  hasError,
+}: {
+  lud16: string | null | undefined
+  frontierConfirmed: boolean
+  degraded: boolean
+  capped: boolean
+  isFetching: boolean
+  hasError: boolean
+}): string | null {
+  if (!frontierConfirmed || degraded || capped || isFetching || hasError) {
+    return null
+  }
+  const normalized = normalizeLud16(lud16)
+  return normalized && isValidLud16Address(normalized) ? normalized : null
 }
 
 export function getMerchantNwcAddressStatus({
@@ -111,11 +409,16 @@ export function getMerchantNwcAddressStatus({
   const profile = normalizeLud16(profileLud16)
   if (!profile) return "missing_profile"
 
-  const reported = [connectionLud16, walletLud16]
-    .map(normalizeLud16)
-    .filter((value): value is string => !!value)
-  if (reported.some((value) => value !== profile)) return "mismatch"
-  return reported.length > 0 ? "match" : "unconfirmed"
+  const connection = normalizeLud16(connectionLud16)
+  const liveExtension = normalizeLud16(walletLud16)
+  if (!connection) {
+    return liveExtension && liveExtension !== profile
+      ? "mismatch"
+      : "unconfirmed"
+  }
+  if (connection !== profile) return "mismatch"
+  if (liveExtension && liveExtension !== profile) return "mismatch"
+  return "match"
 }
 
 function findCandidate(

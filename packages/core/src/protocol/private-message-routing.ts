@@ -696,7 +696,9 @@ function resolutionFromEvidence(
       : []
   const retainedReadRelayUrls =
     state === "declared"
-      ? []
+      ? record.lastUsable?.signedEvent.id !== current.signedEvent.id
+        ? ownerRelayUrls(record.lastUsable?.secureRelayUrls ?? [])
+        : []
       : ownerRelayUrls([
           ...pendingRelayUrls,
           ...(record.lastUsable?.secureRelayUrls ?? []),
@@ -1196,8 +1198,11 @@ export function planInboxReadRelays(
   const declared = projectOwnerRelayUrls(
     input.declaration.state === "declared" ? input.declaration.relayUrls : []
   )
+  const retained = projectOwnerRelayUrls(
+    input.declaration.retainedReadRelayUrls ?? []
+  )
   const cachedFallback = projectOwnerRelayUrls([
-    ...(input.declaration.retainedReadRelayUrls ?? []),
+    ...retained.slice(MAX_DECLARED_INBOX_WRITE_RELAYS),
     ...(input.declaration.state === "lookup_partial" ||
     input.declaration.state === "lookup_unavailable"
       ? (getCachedInboxDeclaration(input.declaration.pubkey)?.relayUrls ?? [])
@@ -1233,7 +1238,13 @@ export function planInboxReadRelays(
       orderedUrls.push(url)
     }
   }
-  add(declared, "declared")
+  // Messages are written only to the first bounded declaration relays. Reserve
+  // those current and retained-prior routes before a long current declaration
+  // can consume the whole read fanout; the remaining tags are optional read
+  // breadth for cross-client senders that may choose a wider subset.
+  add(declared.slice(0, MAX_DECLARED_INBOX_WRITE_RELAYS), "declared")
+  add(retained.slice(0, MAX_DECLARED_INBOX_WRITE_RELAYS), "cache")
+  add(declared.slice(MAX_DECLARED_INBOX_WRITE_RELAYS), "declared")
   add(cachedFallback, "cache")
   // Reserve the write/read overlap before optional local and public
   // compatibility sources so a large local IN list cannot make an order

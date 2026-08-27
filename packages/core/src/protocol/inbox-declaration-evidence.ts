@@ -443,7 +443,11 @@ function enrichSameEvent(
     lastUsable.observedAt = observedAt
     lastUsable.completeObservedAt = completeObservedAt
   }
-  if (current.state === "declared" && hasSharedConfirmation(current)) {
+  if (
+    current.state === "declared" &&
+    hasSharedConfirmation(current) &&
+    (!lastUsable || lastUsable.signedEvent.id === current.signedEvent.id)
+  ) {
     lastUsable = cloneInboxDeclarationEventEvidence(current)
   }
 
@@ -542,9 +546,23 @@ function applyEventEvidenceMerge(
     : pendingForCurrent(candidate.pendingDistribution, current.signedEvent.id)
   let lastUsable: DeclaredInboxDeclarationEventEvidence | undefined
   if (current.state === "declared" && !pendingDistribution) {
-    lastUsable = cloneInboxDeclarationEventEvidence(current)
-  } else if (existing?.lastUsable) {
-    lastUsable = cloneInboxDeclarationEventEvidence(existing.lastUsable)
+    if (
+      existing?.current.state === "declared" &&
+      existing.current.signedEvent.id !== current.signedEvent.id &&
+      !pendingForCurrent(
+        existing.pendingDistribution,
+        existing.current.signedEvent.id
+      )
+    ) {
+      lastUsable = cloneInboxDeclarationEventEvidence(existing.current)
+    } else if (
+      existing?.lastUsable &&
+      existing.lastUsable.signedEvent.id !== current.signedEvent.id
+    ) {
+      lastUsable = cloneInboxDeclarationEventEvidence(existing.lastUsable)
+    } else {
+      lastUsable = cloneInboxDeclarationEventEvidence(current)
+    }
   } else if (
     existing?.current.state === "declared" &&
     !pendingForCurrent(
@@ -553,6 +571,8 @@ function applyEventEvidenceMerge(
     )
   ) {
     lastUsable = cloneInboxDeclarationEventEvidence(existing.current)
+  } else if (existing?.lastUsable) {
+    lastUsable = cloneInboxDeclarationEventEvidence(existing.lastUsable)
   }
 
   return {

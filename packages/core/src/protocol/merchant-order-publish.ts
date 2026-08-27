@@ -25,6 +25,10 @@ export interface PublishMerchantOrderMessageInput {
   payload: Record<string, unknown>
   tags?: string[][]
   delivery: MerchantOrderDelivery
+  /** Re-check payment authority immediately before each critical relay leg. */
+  revalidateBeforeDelivery?: (
+    leg: "sender_self_copy" | "recipient"
+  ) => void | Promise<void>
 }
 
 export function getMerchantOrderDeliveryRecipients(
@@ -80,6 +84,14 @@ export interface PublishMerchantOrderMessageResult {
   deliveryRoute: Exclude<PrivateMessageDeliveryRoute, "blocked">
 }
 
+export function getMerchantOrderSelfCopyDelivery(
+  input: Pick<PublishMerchantOrderMessageInput, "type" | "delivery">
+): "best_effort" | "required_before_recipient" {
+  return input.type === "payment_request" && input.delivery === "buyer_and_self"
+    ? "required_before_recipient"
+    : "best_effort"
+}
+
 export function getMerchantOrderPublishTarget(
   input: Pick<
     PublishMerchantOrderMessageInput,
@@ -129,6 +141,10 @@ export async function publishMerchantOrderMessage(
     signer: ndk.signer,
     rumorKind: EVENT_KINDS.ORDER,
     selfCopy: target.selfCopy,
+    selfCopyDelivery: getMerchantOrderSelfCopyDelivery(input),
+    ...(input.revalidateBeforeDelivery
+      ? { beforeCriticalPublish: input.revalidateBeforeDelivery }
+      : {}),
     // Merchant replies, invoices, and proofs belong to a validated inbound
     // order lifecycle, so they qualify for compatibility routing (CND-208).
     validatedOrderScope: target.validatedOrderScope,

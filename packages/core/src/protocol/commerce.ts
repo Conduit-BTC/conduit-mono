@@ -16,6 +16,7 @@ import {
 import { config } from "../config"
 import { compareCommercePrices } from "../pricing"
 import type { Product, Profile } from "../types"
+import { normalizePubkey } from "../utils"
 import { normalizePublicMediaUrl } from "../network-target-safety"
 import { EVENT_KINDS } from "./kinds"
 import {
@@ -78,11 +79,13 @@ import {
   areProfileProjectionsEqual,
   mergeRicherProfile,
   projectCachedProfile,
+  projectProfileContent,
   reduceCachedProfileRows,
   retainStrongestCachedProfiles,
   type CachedProfileRetentionResult,
 } from "./profile-cache"
 import { parseProfileEvent } from "./profiles"
+import { isValidLud16Address } from "./lightning"
 import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
@@ -270,6 +273,38 @@ export interface ProfileBatchQuery {
   readPolicy?: CommerceReadPolicy
   relayHintsByPubkey?: Record<string, string[] | undefined>
   onProgress?: (result: CommerceResult<Record<string, Profile>>) => void
+  /**
+   * Exact kind-0 frontiers observed within this bounded read plan. This is
+   * transport evidence, not a claim of global relay authority.
+   */
+  onObservedProfileFrontiers?: (observation: ObservedProfileFrontiers) => void
+}
+
+export interface ObservedProfileFrontierEvidence {
+  pubkey: string
+  eventId: string
+  eventCreatedAt: number
+  rawContent: string
+}
+
+export interface ObservedProfileFrontiers {
+  frontiers: readonly ObservedProfileFrontierEvidence[]
+  /** True when any planned relay did not complete successfully. */
+  degraded: boolean
+  /** True when the bounded relay response could have hidden a newer event. */
+  capped: boolean
+}
+
+export interface AuthoritativeProfileLud16Result extends CommerceResult<
+  string | null
+> {
+  authority: {
+    frontierConfirmed: boolean
+    degraded: boolean
+    capped: boolean
+    /** Exact signed kind-0 event that established this authority. */
+    frontierEventId?: string
+  }
 }
 
 export interface FollowListQuery {
@@ -282,6 +317,8 @@ export interface ConversationListQuery {
   limit?: number
   textQuery?: string
   counterpartyPubkey?: string
+  /** Start a protected-inbox generation after any sync already in flight. */
+  forceFresh?: boolean
 }
 
 export interface ConversationDetailQuery {
@@ -340,6 +377,7 @@ type RawMessageFetchResult = {
   messages: ParsedOrderMessage[]
   source: CommerceReadSource
   stale: boolean
+  capped: boolean
   decryptFailures: DecryptFailure[]
   inbox?: PrivateInboxReadStatus
 }
@@ -359,6 +397,7 @@ type PrivateInboxSyncResult = {
   directMessages: ParsedDirectMessage[]
   pendingDirectMessageIds: Set<string>
   decryptFailures: DecryptFailure[]
+  capped: boolean
   inbox: PrivateInboxReadStatus
 }
 
@@ -755,7 +794,9 @@ async function runFetchEventsFanoutDetailed(
       capped: isBoundedFanoutSaturated(
         filter,
         result.events,
-        result.relays.map((relay) => relay.eventCount)
+        result.relays.map(
+          (relay) => relay.eventCount + (relay.rejectedEventCount ?? 0)
+        )
       ),
     }
   }
@@ -797,7 +838,9 @@ async function runFetchEventsFanoutDetailed(
     capped: isBoundedFanoutSaturated(
       filter,
       result.events,
-      result.relays.map((relay) => relay.eventCount)
+      result.relays.map(
+        (relay) => relay.eventCount + (relay.rejectedEventCount ?? 0)
+      )
     ),
   }
 }
@@ -4517,14 +4560,28 @@ export async function getProfiles(
         meta: createMeta("profile_batch", "public", PROFILE_CAPABILITIES),
       })
     }
-    const events =
-      query.onProgress && !testOverrides.fetchEventsFanout
-        ? await fetchEventsFanoutProgressive(
-            profileFilter,
-            fanoutOptions,
-            ({ mergedEvents }) => emitProgress(mergedEvents)
-          )
-        : await runFetchEventsFanout(profileFilter, fanoutOptions)
+    let observedRead: { degraded: boolean; capped: boolean } | undefined
+    let events: NDKEvent[]
+    if (query.onObservedProfileFrontiers) {
+      const detailed = await runFetchEventsFanoutDetailed(
+        profileFilter,
+        fanoutOptions
+      )
+      events = detailed.events
+      observedRead = {
+        degraded: detailed.degraded,
+        capped: detailed.capped,
+      }
+    } else {
+      events =
+        query.onProgress && !testOverrides.fetchEventsFanout
+          ? await fetchEventsFanoutProgressive(
+              profileFilter,
+              fanoutOptions,
+              ({ mergedEvents }) => emitProgress(mergedEvents)
+            )
+          : await runFetchEventsFanout(profileFilter, fanoutOptions)
+    }
 
     if (query.onProgress && testOverrides.fetchEventsFanout) {
       emitProgress(events)
@@ -4542,6 +4599,25 @@ export async function getProfiles(
         row,
       ])
     )
+    query.onObservedProfileFrontiers?.({
+      frontiers: Array.from(liveRowsByPubkey.values()).flatMap((row) =>
+        row.eventId &&
+        Number.isSafeInteger(row.eventCreatedAt) &&
+        (row.eventCreatedAt ?? -1) >= 0 &&
+        typeof row.rawContent === "string"
+          ? [
+              {
+                pubkey: row.pubkey,
+                eventId: row.eventId,
+                eventCreatedAt: row.eventCreatedAt!,
+                rawContent: row.rawContent,
+              },
+            ]
+          : []
+      ),
+      degraded: observedRead?.degraded ?? false,
+      capped: observedRead?.capped ?? false,
+    })
     let cacheRetention: CachedProfileRetentionResult | undefined
 
     if (rowsToCache.length > 0) {
@@ -4573,7 +4649,10 @@ export async function getProfiles(
         )
       }) ?? false
     const dependsOnCache = usesFreshCachedResult || usesUnconfirmedCachedResult
-    const stale = displaced || usesUnconfirmedCachedResult
+    const observationIncomplete =
+      (observedRead?.degraded ?? false) || (observedRead?.capped ?? false)
+    const stale =
+      displaced || usesUnconfirmedCachedResult || observationIncomplete
 
     return {
       data: result,
@@ -4584,6 +4663,7 @@ export async function getProfiles(
         {
           stale,
           degraded: stale,
+          capped: observedRead?.capped,
         }
       ),
     }
@@ -4601,6 +4681,94 @@ export async function getProfiles(
       }
     }
     throw error
+  }
+}
+
+/**
+ * Resolve the merchant's current payment destination from the exact retained
+ * kind-0 frontier, never from the richer display projection. A fresh owner read
+ * runs first so a newer signed profile that removes lud16 revokes the old
+ * destination before this function returns.
+ */
+export async function getAuthoritativeProfileLud16(
+  pubkeyInput: string,
+  readPolicy?: CommerceReadPolicy
+): Promise<AuthoritativeProfileLud16Result> {
+  const pubkey = normalizePubkey(pubkeyInput)
+  if (!pubkey) {
+    throw new Error("A valid merchant pubkey is required.")
+  }
+
+  let observation: ObservedProfileFrontiers | undefined
+  const result = await getProfiles({
+    pubkeys: [pubkey],
+    authenticatedPubkey: pubkey,
+    priority: "visible",
+    skipCache: true,
+    readPolicy,
+    onObservedProfileFrontiers: (value) => {
+      observation = value
+    },
+  })
+
+  let row: CachedProfile | undefined
+  try {
+    const [cachedRow] = await loadCachedProfiles([pubkey])
+    row = cachedRow
+  } catch {
+    return {
+      data: null,
+      meta: { ...result.meta, stale: true, degraded: true },
+      authority: {
+        frontierConfirmed: false,
+        degraded: true,
+        capped: observation?.capped ?? result.meta.capped ?? false,
+      },
+    }
+  }
+
+  const hasKnownFrontier =
+    !!row?.eventId &&
+    Number.isSafeInteger(row.eventCreatedAt) &&
+    (row.eventCreatedAt ?? -1) >= 0 &&
+    typeof row.rawContent === "string"
+  const observedFrontier = observation?.frontiers.find(
+    (frontier) => frontier.pubkey === pubkey
+  )
+  const exactFrontierObserved =
+    !!row &&
+    hasKnownFrontier &&
+    !!observedFrontier &&
+    observedFrontier.eventId === row.eventId &&
+    observedFrontier.eventCreatedAt === row.eventCreatedAt &&
+    observedFrontier.rawContent === row.rawContent
+  const authorityDegraded =
+    !exactFrontierObserved || !observation || observation.degraded
+  const authorityCapped = observation?.capped ?? result.meta.capped ?? false
+  if (!row || authorityDegraded || authorityCapped) {
+    return {
+      data: null,
+      meta: { ...result.meta, stale: true, degraded: true },
+      authority: {
+        frontierConfirmed: false,
+        degraded: true,
+        capped: authorityCapped,
+      },
+    }
+  }
+
+  const lud16 = projectProfileContent(pubkey, row.rawContent)
+    .lud16?.trim()
+    .toLowerCase()
+  return {
+    data: lud16 && isValidLud16Address(lud16) ? lud16 : null,
+    meta: result.meta,
+    authority: {
+      frontierConfirmed: true,
+      degraded: false,
+      capped: false,
+      frontierEventId: row.eventId,
+    },
   }
 }
 
@@ -4635,7 +4803,8 @@ function unwrapOptions(): UnwrapGiftWrapOptions {
 }
 
 async function fetchParsedOrderMessages(
-  principalPubkey: string
+  principalPubkey: string,
+  options: { forceFresh?: boolean } = {}
 ): Promise<RawMessageFetchResult> {
   const authorization = resolveInboxSyncAuthorization(principalPubkey)
   assertInboxSyncAuthority(authorization)
@@ -4663,6 +4832,7 @@ async function fetchParsedOrderMessages(
           messages,
           source: "local_cache",
           stale: true,
+          capped: false,
           decryptFailures: [],
           inbox: unavailableInboxStatus(),
         }
@@ -4673,8 +4843,21 @@ async function fetchParsedOrderMessages(
     const sync = await syncPrivateMessageInbox(
       principalPubkey,
       signer,
-      authorization
+      authorization,
+      { forceFresh: options.forceFresh }
     )
+    // A force-fresh generation may first await an older in-flight sync. Reload
+    // the durable cache so events persisted by that older generation are not
+    // omitted when the newer generation correctly suppresses known wrap IDs.
+    const refreshedCached = await loadCachedOrderMessages(principalPubkey)
+    assertInboxSyncAuthority(authorization)
+    for (const row of refreshedCached) {
+      try {
+        cachedById.set(row.id, JSON.parse(row.rawContent) as ParsedOrderMessage)
+      } catch {
+        // skip corrupt cache rows
+      }
+    }
     for (const parsed of sync.orderMessages) cachedById.set(parsed.id, parsed)
 
     const messages = Array.from(cachedById.values()).sort(
@@ -4686,6 +4869,7 @@ async function fetchParsedOrderMessages(
       source:
         sync.inbox.coverage === "unavailable" ? "local_cache" : "commerce",
       stale: sync.inbox.coverage === "unavailable",
+      capped: sync.capped,
       decryptFailures: sync.decryptFailures,
       inbox: sync.inbox,
     }
@@ -4700,6 +4884,7 @@ async function fetchParsedOrderMessages(
         messages,
         source: "local_cache",
         stale: true,
+        capped: false,
         decryptFailures: [],
         inbox: unavailableInboxStatus(),
       }
@@ -4745,6 +4930,7 @@ async function resolvePrincipalInboxDeclaration(
 
 type InboxWrapFetchResult = {
   wraps: NDKEvent[]
+  capped: boolean
   inbox: PrivateInboxReadStatus
 }
 
@@ -4783,6 +4969,7 @@ async function fetchNewInboxWraps(
     const successful = successfulWrapIdsByPrincipal.get(principalPubkey)
     return {
       wraps: result.events.filter((event) => !successful?.has(event.id)),
+      capped: isBoundedFanoutSaturated(filter, result.events),
       inbox: {
         declarationState: declaration.state,
         coverage: deriveInboxReadCoverage(result),
@@ -4813,6 +5000,14 @@ async function fetchNewInboxWraps(
     wraps: protectedResult.events
       .filter((event) => !successful?.has(event.id))
       .map((event) => new NDKEvent(undefined, event)),
+    // A relay that fills its recipient-scoped response limit cannot prove that
+    // older wraps do not exist. Count duplicates before cross-relay dedupe so
+    // one saturated relay still makes the merged read fail closed.
+    capped:
+      protectedResult.events.length >= limit ||
+      protectedResult.relayResult.relays.some(
+        (relay) => relay.eventCount + relay.duplicateCount >= limit
+      ),
     inbox: {
       declarationState: declaration.state,
       coverage: protectedResult.coverage,
@@ -5372,6 +5567,7 @@ async function runPrivateMessageInboxSync(
     decryptFailures: Array.from(retry.values()).flatMap(({ failure }) =>
       failure ? [failure] : []
     ),
+    capped: fetched.capped,
     inbox: fetched.inbox,
   }
 }
@@ -5379,11 +5575,24 @@ async function runPrivateMessageInboxSync(
 async function syncPrivateMessageInbox(
   principalPubkey: string,
   signer: NDKSigner,
-  authorization: ProtectedReadAuthorization | null
+  authorization: ProtectedReadAuthorization | null,
+  options: { forceFresh?: boolean } = {}
 ): Promise<PrivateInboxSyncResult> {
   const syncKey = `${authorization?.sessionScope ?? "legacy-test"}:${principalPubkey}`
   const existing = inboxSyncPromises.get(syncKey)
-  if (existing) return await existing
+  if (existing) {
+    if (!options.forceFresh) return await existing
+    try {
+      await existing
+    } catch (error) {
+      if (error instanceof ProtectedInboxAuthorityChangedError) throw error
+      // The required generation still starts after an older failed attempt.
+    }
+    assertInboxSyncAuthority(authorization)
+    // A generation joined here, if any, necessarily began after the one that
+    // was already active when this force-fresh call started.
+    return await syncPrivateMessageInbox(principalPubkey, signer, authorization)
+  }
 
   const pending = runPrivateMessageInboxSync(
     principalPubkey,
@@ -5784,24 +5993,27 @@ function buildMerchantConversationSummaries(
 export async function getBuyerConversationList(
   query: ConversationListQuery
 ): Promise<CommerceResult<BuyerConversationSummary[]>> {
-  const result = await fetchParsedOrderMessages(query.principalPubkey)
+  const result = await fetchParsedOrderMessages(query.principalPubkey, {
+    forceFresh: query.forceFresh,
+  })
+  const allConversations = buildBuyerConversationSummaries(
+    result.messages,
+    query.principalPubkey
+  ).filter(
+    (conversation) =>
+      !query.counterpartyPubkey ||
+      conversation.merchantPubkey === query.counterpartyPubkey
+  )
+  const conversations = allConversations.slice(0, query.limit ?? 200)
   return {
-    data: buildBuyerConversationSummaries(
-      result.messages,
-      query.principalPubkey
-    )
-      .filter(
-        (conversation) =>
-          !query.counterpartyPubkey ||
-          conversation.merchantPubkey === query.counterpartyPubkey
-      )
-      .slice(0, query.limit ?? 200),
+    data: conversations,
     meta: createMeta(
       "protected_conversation_list",
       result.source,
       CONVERSATION_CAPABILITIES,
       {
         stale: result.stale,
+        capped: result.capped || conversations.length < allConversations.length,
         decryptFailures: result.decryptFailures,
         inbox: result.inbox,
       }
@@ -5847,24 +6059,29 @@ export async function getCachedBuyerConversationList(
 export async function getMerchantConversationList(
   query: ConversationListQuery
 ): Promise<CommerceResult<MerchantConversationSummary[]>> {
-  const result = await fetchParsedOrderMessages(query.principalPubkey)
+  const result = await fetchParsedOrderMessages(query.principalPubkey, {
+    forceFresh: query.forceFresh,
+  })
+  const allConversations = buildMerchantConversationSummaries(
+    result.messages,
+    query.principalPubkey
+  ).filter(
+    (conversation) =>
+      !query.counterpartyPubkey ||
+      conversation.buyerPubkey === query.counterpartyPubkey
+  )
+  const conversations = allConversations.slice(0, query.limit ?? 200)
   return {
-    data: buildMerchantConversationSummaries(
-      result.messages,
-      query.principalPubkey
-    )
-      .filter(
-        (conversation) =>
-          !query.counterpartyPubkey ||
-          conversation.buyerPubkey === query.counterpartyPubkey
-      )
-      .slice(0, query.limit ?? 200),
+    data: conversations,
     meta: createMeta(
       "protected_conversation_list",
       result.source,
       CONVERSATION_CAPABILITIES,
       {
         stale: result.stale,
+        // A caller-level conversation slice is also incomplete evidence, even
+        // when the underlying 400-wrap transport read itself completed.
+        capped: result.capped || conversations.length < allConversations.length,
         decryptFailures: result.decryptFailures,
         inbox: result.inbox,
       }
@@ -5922,6 +6139,7 @@ export async function getConversationDetail(
       CONVERSATION_CAPABILITIES,
       {
         stale: result.stale,
+        capped: result.capped,
         decryptFailures: result.decryptFailures,
         inbox: result.inbox,
       }

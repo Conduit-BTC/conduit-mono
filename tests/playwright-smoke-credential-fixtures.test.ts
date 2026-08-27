@@ -43,6 +43,16 @@ const staticCredentialRules = [
       /\b(?:credential|privateKey|secretKey|clientPrivateKey|clientSecret|pairingSecret|recoveryPhrase|mnemonic|passphrase|password|salt|iv|ciphertext)\s*:\s*["'`][^"'`]+["'`]/gi,
   },
   {
+    rule: "constructed credential property",
+    pattern:
+      /\b(?:credential|privateKey|secretKey|clientPrivateKey|clientSecret|pairingSecret|recoveryPhrase|mnemonic|passphrase|password|salt|iv|ciphertext|secret)\s*:\s*(?:["'`][0-9a-f]["'`]\.repeat\(\s*64\s*\)|["'`][0-9a-f]{2}["'`]\.repeat\(\s*32\s*\))/gi,
+  },
+  {
+    rule: "deterministic derived private scalar",
+    pattern:
+      /\b(?:const|let|var)\s+[A-Za-z0-9_$]*(?:scalar|privateKey|secretKey|signingKey|signerKey)[A-Za-z0-9_$]*\s*=\s*(?:new\s+Uint8Array\s*\(\s*)?createHash\s*\([^)]*\)\s*\.update\s*\(\s*["'`][^"'`\r\n]+["'`](?:\s*,\s*["'`][^"'`\r\n]+["'`])?\s*\)\s*\.digest\s*\(\s*\)\s*\)?/gi,
+  },
+  {
     rule: "fixed credential input",
     pattern:
       /\b(?:password|passphrase|recovery|mnemonic|privateKey|secret)[A-Za-z0-9_]*\.fill\s*\(\s*["'`][^"'`]+["'`]\s*\)/gi,
@@ -314,6 +324,18 @@ describe("Playwright smoke credential fixtures", () => {
         "gi",
       ],
       [
+        "constructed credential property",
+        /\b(?:credential|privateKey|secretKey|clientPrivateKey|clientSecret|pairingSecret|recoveryPhrase|mnemonic|passphrase|password|salt|iv|ciphertext|secret)\s*:\s*(?:["'`][0-9a-f]["'`]\.repeat\(\s*64\s*\)|["'`][0-9a-f]{2}["'`]\.repeat\(\s*32\s*\))/gi
+          .source,
+        "gi",
+      ],
+      [
+        "deterministic derived private scalar",
+        /\b(?:const|let|var)\s+[A-Za-z0-9_$]*(?:scalar|privateKey|secretKey|signingKey|signerKey)[A-Za-z0-9_$]*\s*=\s*(?:new\s+Uint8Array\s*\(\s*)?createHash\s*\([^)]*\)\s*\.update\s*\(\s*["'`][^"'`\r\n]+["'`](?:\s*,\s*["'`][^"'`\r\n]+["'`])?\s*\)\s*\.digest\s*\(\s*\)\s*\)?/gi
+          .source,
+        "gi",
+      ],
+      [
         "fixed credential input",
         /\b(?:password|passphrase|recovery|mnemonic|privateKey|secret)[A-Za-z0-9_]*\.fill\s*\(\s*["'`][^"'`]+["'`]\s*\)/gi
           .source,
@@ -423,6 +445,49 @@ describe("Playwright smoke credential fixtures", () => {
         undefined,
         1,
         credentialRulesForFile("scripts/smoke/guest_checkout_order_runner.ts")
+      )
+    ).toEqual([])
+    const constructedSecretProperty = [
+      'const connection = { secret: "',
+      "d",
+      '".repeat(',
+      "64",
+      ") }",
+    ].join("")
+    expect(
+      findStaticCredentialFixtures(
+        "tests/constructed-credential.ts",
+        constructedSecretProperty
+      )
+    ).toEqual([
+      {
+        file: "tests/constructed-credential.ts",
+        line: 1,
+        rule: "constructed credential property",
+      },
+    ])
+    const deterministicDerivedScalar = [
+      "const fixture",
+      "Scalar = new Uint8Array(create",
+      'Hash("sha256").update("authored label", "utf8").digest())',
+    ].join("")
+    expect(
+      findStaticCredentialFixtures(
+        "tests/deterministic-derived-scalar.ts",
+        deterministicDerivedScalar
+      )
+    ).toEqual([
+      {
+        file: "tests/deterministic-derived-scalar.ts",
+        line: 1,
+        rule: "deterministic derived private scalar",
+      },
+    ])
+
+    expect(
+      findStaticCredentialFixtures(
+        "tests/random-process-scalar.ts",
+        "const fixtureScalar = secp256k1.utils.randomSecretKey()"
       )
     ).toEqual([])
 

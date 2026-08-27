@@ -331,8 +331,9 @@ export interface PendingInboxDeclarationDistribution {
  * Account-scoped, monotonic NIP-17 inbox-declaration evidence.
  *
  * `current` follows the NIP-01 replaceable-event frontier. `lastUsable` keeps
- * the latest validated declaration when a newer signed empty or malformed
- * replacement becomes current, so reads can remain recoverable without
+ * one bounded predecessor while the current event is declared, or the latest
+ * validated declaration when a newer signed empty/malformed replacement is
+ * current. Reads can therefore recover pre-rotation messages without
  * misrepresenting the current write route.
  */
 export interface InboxDeclarationEvidenceRecord {
@@ -457,6 +458,56 @@ export interface StoredPaymentAttempt {
   proofDeliveryStatus: "pending" | "sent" | "retry_needed"
   createdAt: number
   updatedAt: number
+}
+
+/**
+ * Exact merchant-authored invoice retained through delivery. A relay-accepted
+ * row remains as the order-scoped idempotency tombstone; pending rows retain
+ * the exact invoice for safe retry. The composite id is
+ * `merchantPubkey:orderId`. Wallet credentials and connection details never
+ * enter this record.
+ */
+export interface StoredMerchantPendingInvoice {
+  id: string
+  merchantPubkey: string
+  buyerPubkey: string
+  orderId: string
+  invoice: string
+  paymentHash: string
+  amountMsats: number
+  note?: string
+  delivery: "buyer_and_self" | "self_only"
+  source:
+    | "profile_lud16"
+    | "webln"
+    | "nwc"
+    | "manual"
+    | "conversation_recovery"
+    | "mock"
+  /**
+   * Non-secret payment authority captured when the invoice was issued. Pending
+   * retries must still match this exact signed profile/NWC authorization.
+   */
+  paymentAuthority?:
+    | {
+        type: "profile_lud16"
+        lud16: string
+        profileFrontierEventId: string | null
+      }
+    | {
+        type: "nwc"
+        lud16: string
+        profileFrontierEventId: string | null
+        connectionFingerprint: string
+      }
+  invoiceCreatedAt: number
+  invoiceExpiresAt: number
+  deliveryState: "pending" | "relay_accepted"
+  deliveryAttemptCount: number
+  lastDeliveryAttemptAt?: number
+  relayAcceptedAt?: number
+  lastFailureCode?: "relay_delivery_failed"
+  savedAt: number
 }
 
 export interface StoredWalletCredential {
@@ -733,6 +784,7 @@ class ConduitDB extends Dexie {
   nip05Verifications!: EntityTable<CachedNip05Verification, "id">
   shopperTrustSnapshots!: EntityTable<CachedShopperTrustSnapshot, "id">
   paymentAttempts!: EntityTable<StoredPaymentAttempt, "id">
+  merchantPendingInvoices!: EntityTable<StoredMerchantPendingInvoice, "id">
   orderLifecycles!: EntityTable<OrderLifecycle, "orderId">
   productDeletionOutbox!: EntityTable<ProductDeletionDeliveryJob, "id">
   inboxDeclarationEvidence!: EntityTable<
@@ -896,6 +948,11 @@ class ConduitDB extends Dexie {
       // relay-scoped product cache and monotonic deletion tombstones.
       shippingOptionFrontiers:
         "coordinate, pubkey, dTag, strongestCreatedAt, cachedAt",
+    })
+
+    this.version(15).stores({
+      merchantPendingInvoices:
+        "id, merchantPubkey, orderId, deliveryState, invoiceExpiresAt, savedAt",
     })
   }
 }

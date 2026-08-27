@@ -1,6 +1,7 @@
 import type { NDKEvent } from "@nostr-dev-kit/ndk"
+import { secp256k1 } from "@noble/curves/secp256k1.js"
 import { sha256 } from "@noble/hashes/sha2.js"
-import { bytesToHex } from "@noble/hashes/utils.js"
+import { bytesToHex, concatBytes } from "@noble/hashes/utils.js"
 
 import { config } from "../config"
 import { normalizePublicHttpsUrl } from "../network-target-safety"
@@ -473,7 +474,25 @@ const BOLT11_TIMESTAMP_WORD_COUNT = 7
 const BOLT11_SIGNATURE_WORD_COUNT = 104
 const BECH32_CHECKSUM_WORD_COUNT = 6
 const BOLT11_PAYMENT_HASH_WORD_COUNT = 52
+const BOLT11_PAYMENT_SECRET_WORD_COUNT = 52
 const BOLT11_DESCRIPTION_HASH_WORD_COUNT = 52
+const BOLT11_PAYEE_WORD_COUNT = 53
+// Even-numbered pair bases valid in BOLT #11's `9` field. The first two are
+// legacy invoice features that BOLT #9 now marks as assumed.
+const BOLT11_KNOWN_FEATURE_PAIRS = new Set([
+  8, // var_onion_optin
+  14, // payment_secret
+  16, // basic_mpp
+  24, // option_route_blinding
+  36, // option_attribution_data
+  48, // option_payment_metadata
+])
+// BOLT #9 marks these legacy pairs as universally assumed, so they satisfy
+// dependencies without needing to remain set in an invoice feature vector.
+const BOLT11_ASSUMED_FEATURE_PAIRS = new Set([8, 14])
+const BOLT11_FEATURE_DEPENDENCIES = new Map<number, readonly number[]>([
+  [16, [14]], // basic_mpp -> payment_secret
+])
 
 type Bolt11TaggedField = {
   tag: string
@@ -481,8 +500,45 @@ type Bolt11TaggedField = {
 }
 
 type ParsedBolt11Invoice = {
+  hrp: string
   values: number[]
+  signedDataWords: number[]
+  signatureWords: number[]
   taggedFields: Bolt11TaggedField[]
+}
+
+type ParsedBolt11Hrp = {
+  network: Exclude<LightningInvoiceNetwork, "unknown">
+  rawAmount: string | null
+  unit: "" | "m" | "u" | "n" | "p"
+}
+
+function parseBolt11Hrp(hrp: string): ParsedBolt11Hrp | null {
+  const match = hrp.match(/^ln(bcrt|tbs|bc|tb)(?:(\d+)([munp]?))?$/)
+  if (!match) return null
+
+  const [, currencyPrefix, rawAmount, rawUnit = ""] = match
+  const network = (() => {
+    switch (currencyPrefix) {
+      case "bc":
+        return "mainnet"
+      case "tb":
+        return "testnet"
+      case "tbs":
+        return "signet"
+      case "bcrt":
+        return "regtest"
+      default:
+        return null
+    }
+  })()
+
+  if (!network || !["", "m", "u", "n", "p"].includes(rawUnit)) return null
+  return {
+    network,
+    rawAmount: rawAmount ?? null,
+    unit: rawUnit as ParsedBolt11Hrp["unit"],
+  }
 }
 
 export function isSatsCurrency(currency: string): boolean {
@@ -510,7 +566,7 @@ export function isAmountlessLightningInvoice(invoice: string): boolean {
   const normalized = normalizeLightningInvoice(invoice).toLowerCase()
   if (!isValidBech32Invoice(normalized)) return false
   const humanReadablePart = normalized.slice(0, normalized.lastIndexOf("1"))
-  return ["lnbc", "lnbcrt", "lntb", "lnsb"].includes(humanReadablePart)
+  return parseBolt11Hrp(humanReadablePart)?.rawAmount === null
 }
 
 function bech32Polymod(values: number[]): number {
@@ -569,7 +625,7 @@ function parseBolt11Invoice(invoice: string): ParsedBolt11Invoice | null {
 
   const separatorIndex = normalized.lastIndexOf("1")
   const hrp = normalized.slice(0, separatorIndex)
-  if (!/^ln(?:bc|tb|sb|bcrt)(?:\d+[munp]?)?$/.test(hrp)) return null
+  if (!parseBolt11Hrp(hrp)) return null
   const dataPart = normalized.slice(separatorIndex + 1)
   const values = Array.from(dataPart, (char) => BECH32_CHARSET.indexOf(char))
   const minimumWordCount =
@@ -596,7 +652,16 @@ function parseBolt11Invoice(invoice: string): ParsedBolt11Invoice | null {
     index = stop
   }
 
-  return { values, taggedFields }
+  return {
+    hrp,
+    values,
+    signedDataWords: values.slice(0, taggedDataEnd),
+    signatureWords: values.slice(
+      taggedDataEnd,
+      taggedDataEnd + BOLT11_SIGNATURE_WORD_COUNT
+    ),
+    taggedFields,
+  }
 }
 
 function toWords(bytes: Uint8Array): number[] {
@@ -638,6 +703,36 @@ function fromWords(words: number[]): Uint8Array | null {
 
   if (bits >= 5 || value !== 0) return null
   return Uint8Array.from(bytes)
+}
+
+function bolt11WordsToPaddedBytes(words: number[]): Uint8Array | null {
+  const bytes: number[] = []
+  let value = 0
+  let bits = 0
+
+  for (const word of words) {
+    if (!Number.isInteger(word) || word < 0 || word > 31) return null
+    value = (value << 5) | word
+    bits += 5
+    while (bits >= 8) {
+      bits -= 8
+      bytes.push((value >> bits) & 0xff)
+      value &= bits === 0 ? 0 : (1 << bits) - 1
+    }
+  }
+
+  if (bits > 0) bytes.push((value << (8 - bits)) & 0xff)
+  return Uint8Array.from(bytes)
+}
+
+function decodeBolt11Utf8(words: number[]): string | null {
+  const bytes = fromWords(words)
+  if (!bytes) return null
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes)
+  } catch {
+    return null
+  }
 }
 
 function createBech32Checksum(hrp: string, words: number[]): number[] {
@@ -701,13 +796,11 @@ export function getLightningInvoiceNetwork(
   invoice: string
 ): LightningInvoiceNetwork {
   const normalized = normalizeLightningInvoice(invoice).toLowerCase()
-
-  if (normalized.startsWith("lnbcrt")) return "regtest"
-  if (normalized.startsWith("lnbc")) return "mainnet"
-  if (normalized.startsWith("lnsb")) return "signet"
-  if (normalized.startsWith("lntb")) return "testnet"
-
-  return "unknown"
+  const separatorIndex = normalized.lastIndexOf("1")
+  if (separatorIndex <= 0) return "unknown"
+  return (
+    parseBolt11Hrp(normalized.slice(0, separatorIndex))?.network ?? "unknown"
+  )
 }
 
 export function getExpectedLightningNetworks(): LightningInvoiceNetwork[] {
@@ -754,13 +847,13 @@ export function decodeLightningInvoiceAmount(
   if (!isValidBech32Invoice(normalized)) {
     return { msats: null, sats: null, currency: null }
   }
-  const match = normalized.match(/^ln(?:bc|tb|sb|bcrt)(\d+)?([munp]?)1/)
-
-  if (!match) {
+  const separatorIndex = normalized.lastIndexOf("1")
+  const parsedHrp = parseBolt11Hrp(normalized.slice(0, separatorIndex))
+  if (!parsedHrp) {
     return { msats: null, sats: null, currency: null }
   }
 
-  const [, rawAmount, rawUnit] = match
+  const { rawAmount, unit: rawUnit } = parsedHrp
   if (!rawAmount) {
     return { msats: null, sats: null, currency: null }
   }
@@ -847,6 +940,28 @@ function wordsToBytes(
   return Uint8Array.from(bytes)
 }
 
+// BOLT11 readers honor the first repeated field as the preferred value, but
+// must still reject the invoice when any fixed-length occurrence is malformed.
+function decodeBolt11FixedLengthFields(
+  parsed: ParsedBolt11Invoice,
+  tag: string,
+  wordCount: number,
+  byteLength: number
+): Uint8Array[] | null {
+  const decoded: Uint8Array[] = []
+
+  for (const field of parsed.taggedFields) {
+    if (field.tag !== tag) continue
+    if (field.words.length !== wordCount) return null
+
+    const bytes = wordsToBytes(field.words, byteLength)
+    if (!bytes) return null
+    decoded.push(bytes)
+  }
+
+  return decoded
+}
+
 function equalBytesConstantTime(left: Uint8Array, right: Uint8Array): boolean {
   if (left.length !== right.length) return false
   let difference = 0
@@ -862,18 +977,15 @@ export function decodeLightningInvoicePaymentHash(
   const parsed = parseBolt11Invoice(invoice)
   if (!parsed) return null
 
-  const paymentHashes = parsed.taggedFields.filter((field) => field.tag === "p")
-  if (paymentHashes.length !== 1) return null
-  const paymentHash = paymentHashes[0]!
-  if (
-    !paymentHash ||
-    paymentHash.words.length !== BOLT11_PAYMENT_HASH_WORD_COUNT
-  ) {
-    return null
-  }
+  const paymentHashes = decodeBolt11FixedLengthFields(
+    parsed,
+    "p",
+    BOLT11_PAYMENT_HASH_WORD_COUNT,
+    32
+  )
+  if (!paymentHashes || paymentHashes.length === 0) return null
 
-  const paymentHashBytes = wordsToBytes(paymentHash.words, 32)
-  return paymentHashBytes ? bytesToHex(paymentHashBytes) : null
+  return bytesToHex(paymentHashes[0]!)
 }
 
 export type ZapInvoiceBindingErrorCode =
@@ -932,7 +1044,7 @@ export function validateZapInvoiceDescriptionBinding({
     }
   }
 
-  if (descriptionHashes.length !== 1 || plainDescriptions.length > 0) {
+  if (plainDescriptions.length > 0) {
     return {
       ok: false,
       code: "ambiguous_description",
@@ -940,8 +1052,13 @@ export function validateZapInvoiceDescriptionBinding({
     }
   }
 
-  const descriptionHashWords = descriptionHashes[0]!.words
-  if (descriptionHashWords.length !== BOLT11_DESCRIPTION_HASH_WORD_COUNT) {
+  const decodedDescriptionHashes = decodeBolt11FixedLengthFields(
+    parsed,
+    "h",
+    BOLT11_DESCRIPTION_HASH_WORD_COUNT,
+    32
+  )
+  if (!decodedDescriptionHashes) {
     return {
       ok: false,
       code: "invalid_description_hash",
@@ -949,14 +1066,7 @@ export function validateZapInvoiceDescriptionBinding({
     }
   }
 
-  const actualHash = wordsToBytes(descriptionHashWords, 32)
-  if (!actualHash) {
-    return {
-      ok: false,
-      code: "invalid_description_hash",
-      reason: "The zap invoice contains an invalid description hash.",
-    }
-  }
+  const actualHash = decodedDescriptionHashes[0]!
 
   const expectedHash = sha256(new TextEncoder().encode(zapRequestJson))
   if (!equalBytesConstantTime(actualHash, expectedHash)) {
@@ -988,8 +1098,9 @@ export function decodeLightningInvoiceMetadata(
       ? Number(createdAtBig)
       : null
 
-  const expiryFields = parsed.taggedFields.filter((field) => field.tag === "x")
-  const expiryWords = expiryFields.length === 1 ? expiryFields[0]!.words : null
+  const expiryWords = parsed.taggedFields.find(
+    (field) => field.tag === "x"
+  )?.words
   let expiresAt: number | null = null
   if (createdAt !== null) {
     const expirySeconds = expiryWords
@@ -1006,6 +1117,217 @@ export function decodeLightningInvoiceMetadata(
 export type LightningInvoiceValidation =
   | { ok: true; metadata: LightningInvoiceMetadata }
   | { ok: false; reason: string; metadata: LightningInvoiceMetadata }
+
+function decodeBolt11FeatureBits(words: number[]): Set<number> {
+  const featureBits = new Set<number>()
+
+  for (let wordIndex = words.length - 1; wordIndex >= 0; wordIndex -= 1) {
+    const word = words[wordIndex]!
+    const baseBit = (words.length - 1 - wordIndex) * 5
+    for (let bitOffset = 0; bitOffset < 5; bitOffset += 1) {
+      if ((word & (1 << bitOffset)) !== 0) {
+        featureBits.add(baseBit + bitOffset)
+      }
+    }
+  }
+
+  return featureBits
+}
+
+function getBolt11FeatureVectorError(
+  parsed: ParsedBolt11Invoice
+): string | null {
+  const featureFields = parsed.taggedFields.filter((field) => field.tag === "9")
+
+  for (const featureField of featureFields) {
+    const featureBits = decodeBolt11FeatureBits(featureField.words)
+    const offeredPairs = new Set<number>()
+
+    for (const bit of featureBits) {
+      const pair = bit - (bit % 2)
+      if (bit % 2 === 0 && !BOLT11_KNOWN_FEATURE_PAIRS.has(pair)) {
+        return `The invoice requires unsupported BOLT11 feature bit ${bit}.`
+      }
+      if (BOLT11_KNOWN_FEATURE_PAIRS.has(pair)) offeredPairs.add(pair)
+    }
+
+    const visited = new Set<number>()
+    const visitDependencies = (featurePair: number): string | null => {
+      if (visited.has(featurePair)) return null
+      visited.add(featurePair)
+
+      for (const dependency of BOLT11_FEATURE_DEPENDENCIES.get(featurePair) ??
+        []) {
+        if (
+          !offeredPairs.has(dependency) &&
+          !BOLT11_ASSUMED_FEATURE_PAIRS.has(dependency)
+        ) {
+          return "The invoice feature vector is missing a required BOLT11 feature dependency."
+        }
+        if (BOLT11_ASSUMED_FEATURE_PAIRS.has(dependency)) continue
+        const dependencyError = visitDependencies(dependency)
+        if (dependencyError) return dependencyError
+      }
+
+      return null
+    }
+
+    for (const featurePair of offeredPairs) {
+      const dependencyError = visitDependencies(featurePair)
+      if (dependencyError) return dependencyError
+    }
+  }
+
+  return null
+}
+
+function getBolt11PaymentStructureError(invoice: string): string | null {
+  const parsed = parseBolt11Invoice(invoice)
+  if (!parsed) return "The invoice is not a structurally valid BOLT11 invoice."
+
+  const featureVectorError = getBolt11FeatureVectorError(parsed)
+  if (featureVectorError) return featureVectorError
+
+  const paymentHashes = decodeBolt11FixedLengthFields(
+    parsed,
+    "p",
+    BOLT11_PAYMENT_HASH_WORD_COUNT,
+    32
+  )
+  if (!paymentHashes || paymentHashes.length === 0) {
+    return "The invoice must contain at least one valid payment hash."
+  }
+
+  const paymentSecrets = decodeBolt11FixedLengthFields(
+    parsed,
+    "s",
+    BOLT11_PAYMENT_SECRET_WORD_COUNT,
+    32
+  )
+  if (!paymentSecrets || paymentSecrets.length === 0) {
+    return "The invoice must contain at least one valid payment secret."
+  }
+
+  const plainDescriptions = parsed.taggedFields.filter(
+    (field) => field.tag === "d"
+  )
+  const descriptionHashes = parsed.taggedFields.filter(
+    (field) => field.tag === "h"
+  )
+  if (
+    (plainDescriptions.length === 0 && descriptionHashes.length === 0) ||
+    (plainDescriptions.length > 0 && descriptionHashes.length > 0)
+  ) {
+    return "The invoice must contain a description or description hash, but not both."
+  }
+  const decodedDescriptionHashes = decodeBolt11FixedLengthFields(
+    parsed,
+    "h",
+    BOLT11_DESCRIPTION_HASH_WORD_COUNT,
+    32
+  )
+  if (!decodedDescriptionHashes) {
+    return "The invoice contains an invalid description hash."
+  }
+  if (
+    plainDescriptions.length > 0 &&
+    decodeBolt11Utf8(plainDescriptions[0]!.words) === null
+  ) {
+    return "The invoice contains an invalid description."
+  }
+
+  const expiryFields = parsed.taggedFields.filter((field) => field.tag === "x")
+  const expirySecondsByPreference: bigint[] = []
+  for (const expiryField of expiryFields) {
+    if (expiryField.words.length === 0 || expiryField.words[0] === 0) {
+      return "The invoice contains an invalid expiry."
+    }
+    const expirySeconds = wordsToBigInt(expiryField.words)
+    if (
+      expirySeconds <= 0n ||
+      expirySeconds > BigInt(Number.MAX_SAFE_INTEGER)
+    ) {
+      return "The invoice contains an invalid expiry."
+    }
+    expirySecondsByPreference.push(expirySeconds)
+  }
+  const expirySeconds = expirySecondsByPreference[0] ?? 3_600n
+  const createdAt = wordsToBigInt(
+    parsed.values.slice(0, BOLT11_TIMESTAMP_WORD_COUNT)
+  )
+  if (
+    createdAt > BigInt(Number.MAX_SAFE_INTEGER) ||
+    createdAt + expirySeconds > BigInt(Number.MAX_SAFE_INTEGER)
+  ) {
+    return "The invoice contains an invalid expiry."
+  }
+
+  const payeePublicKeys = decodeBolt11FixedLengthFields(
+    parsed,
+    "n",
+    BOLT11_PAYEE_WORD_COUNT,
+    33
+  )
+  if (!payeePublicKeys) {
+    return "The invoice contains an invalid payee public key."
+  }
+
+  return null
+}
+
+function hasValidBolt11Signature(invoice: string): boolean {
+  const parsed = parseBolt11Invoice(invoice)
+  if (!parsed) return false
+
+  const signatureBytes = wordsToBytes(parsed.signatureWords, 65)
+  const signedData = bolt11WordsToPaddedBytes(parsed.signedDataWords)
+  if (!signatureBytes || !signedData) return false
+
+  const recoveryId = signatureBytes[64]
+  if (recoveryId === undefined || recoveryId > 3) return false
+
+  const compactSignature = signatureBytes.slice(0, 64)
+  const signingHash = sha256(
+    concatBytes(new TextEncoder().encode(parsed.hrp), signedData)
+  )
+  const payeePublicKeys = decodeBolt11FixedLengthFields(
+    parsed,
+    "n",
+    BOLT11_PAYEE_WORD_COUNT,
+    33
+  )
+  if (!payeePublicKeys) return false
+
+  try {
+    const signature = secp256k1.Signature.fromBytes(compactSignature, "compact")
+
+    if (payeePublicKeys.length > 0) {
+      if (signature.hasHighS()) return false
+      return secp256k1.verify(
+        compactSignature,
+        signingHash,
+        payeePublicKeys[0]!,
+        {
+          prehash: false,
+          lowS: true,
+          format: "compact",
+        }
+      )
+    }
+
+    const recoveredPublicKey = signature
+      .addRecoveryBit(recoveryId)
+      .recoverPublicKey(signingHash)
+      .toBytes(true)
+    return secp256k1.verify(compactSignature, signingHash, recoveredPublicKey, {
+      prehash: false,
+      lowS: false,
+      format: "compact",
+    })
+  } catch {
+    return false
+  }
+}
 
 export function validateLightningInvoiceForPayment({
   invoice,
@@ -1040,6 +1362,19 @@ export function validateLightningInvoiceForPayment({
     return {
       ok: false,
       reason: "The invoice amount does not match this order total.",
+      metadata,
+    }
+  }
+
+  const structureError = getBolt11PaymentStructureError(invoice)
+  if (structureError) {
+    return { ok: false, reason: structureError, metadata }
+  }
+
+  if (!hasValidBolt11Signature(invoice)) {
+    return {
+      ok: false,
+      reason: "The invoice contains an invalid BOLT11 signature.",
       metadata,
     }
   }

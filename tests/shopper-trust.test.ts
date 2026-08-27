@@ -159,8 +159,8 @@ function createCache(
 }
 
 describe("shopper trust evidence", () => {
-  it("registers the combined cache, deletion, declaration, wallet, and shipping stores", () => {
-    expect(db.verno).toBe(14)
+  it("registers the combined cache, deletion, declaration, wallet, shipping, and invoice stores", () => {
+    expect(db.verno).toBe(15)
     expect(db.tables.map(({ name }) => name)).toEqual(
       expect.arrayContaining([
         "shopperTrustSnapshots",
@@ -170,6 +170,7 @@ describe("shopper trust evidence", () => {
         "wallets",
         "walletCredentials",
         "shippingOptionFrontiers",
+        "merchantPendingInvoices",
       ])
     )
     expect(db.inboxDeclarationEvidence.schema.primKey.name).toBe("pubkey")
@@ -200,6 +201,19 @@ describe("shopper trust evidence", () => {
 
     expect(version9).toContain("shopperTrustSnapshots:")
     expect(version9).toContain("productDeletionOutbox:")
+  })
+
+  it("keeps shipping evidence in v14 and adds pending invoices only in v15", async () => {
+    const source = await Bun.file("packages/core/src/db/index.ts").text()
+    const version14 = source.slice(
+      source.indexOf("this.version(14).stores"),
+      source.indexOf("this.version(15).stores")
+    )
+    const version15 = source.slice(source.indexOf("this.version(15).stores"))
+
+    expect(version14).toContain("shippingOptionFrontiers:")
+    expect(version14).not.toContain("merchantPendingInvoices:")
+    expect(version15).toContain("merchantPendingInvoices:")
   })
 
   it("bounds persisted shopper trust snapshots by age", () => {

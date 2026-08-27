@@ -154,7 +154,15 @@ export function parseNwcUri(uri: string): NwcConnection {
  * connections without retaining secret-bearing material in keys or tooling.
  */
 export function getNwcUriFingerprint(uri: string): string {
-  const connection = parseNwcUri(uri)
+  return getNwcConnectionFingerprint(parseNwcUri(uri))
+}
+
+/**
+ * Produce the same stable, non-secret identifier from an already parsed NWC
+ * authorization. This lets local idempotency records bind an invoice to the
+ * exact authorization without persisting the URI or any credential material.
+ */
+export function getNwcConnectionFingerprint(connection: NwcConnection): string {
   const normalizedRelays = [
     ...new Set(connection.relays.map((relay) => normalizeURL(relay))),
   ].sort()

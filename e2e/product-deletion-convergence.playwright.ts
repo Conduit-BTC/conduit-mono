@@ -16,6 +16,8 @@ const MERCHANT_PUBKEY = getPublicKey(MERCHANT_SECRET)
 const PRODUCT_EVENT_ID = "9".repeat(64)
 const PRODUCT_D_TAG = "durable-delete-browser"
 const PRODUCT_ADDRESS = `30402:${MERCHANT_PUBKEY}:${PRODUCT_D_TAG}`
+const SHIPPING_D_TAG = "durable-shipping-v14"
+const SHIPPING_COORDINATE = `30406:${MERCHANT_PUBKEY}:${SHIPPING_D_TAG}`
 const relayLifecycleHarnessUrl = "/src/test-fixtures/relay-lifecycle-harness.ts"
 
 type UnsignedBrowserEvent = {
@@ -446,6 +448,114 @@ async function seedVersionEightDatabase(page: Page): Promise<{
   )
 }
 
+async function upgradeSeededDatabaseToVersionFourteen(
+  page: Page
+): Promise<Record<string, unknown>> {
+  return await page.evaluate(
+    ({ coordinate, merchantPubkey, dTag }) =>
+      new Promise((resolve, reject) => {
+        const shippingOptionFrontier = {
+          coordinate,
+          pubkey: merchantPubkey,
+          dTag,
+          strongestCreatedAt: 120,
+          signedEvents: [
+            {
+              id: "6".repeat(64),
+              pubkey: merchantPubkey,
+              created_at: 120,
+              kind: 30406,
+              tags: [
+                ["d", dTag],
+                ["cost", "1", "SATS"],
+              ],
+              content: "",
+              sig: "7".repeat(128),
+            },
+          ],
+          cachedAt: 120_000,
+        }
+        const request = indexedDB.open("conduit", 140)
+        request.onerror = () => reject(request.error)
+        request.onupgradeneeded = () => {
+          const database = request.result
+          const stores: Array<{
+            name: string
+            keyPath: string
+            indexes: string[]
+          }> = [
+            {
+              name: "shopperTrustSnapshots",
+              keyPath: "id",
+              indexes: ["merchantPubkey", "shopperPubkey", "cachedAt"],
+            },
+            {
+              name: "productDeletionOutbox",
+              keyPath: "id",
+              indexes: [
+                "state",
+                "nextRetryAt",
+                "deliveryLeaseExpiresAt",
+                "updatedAt",
+                "createdAt",
+              ],
+            },
+            {
+              name: "inboxDeclarationEvidence",
+              keyPath: "pubkey",
+              indexes: ["cachedAt"],
+            },
+            {
+              name: "ownContactListSnapshots",
+              keyPath: "pubkey",
+              indexes: ["state", "cachedAt"],
+            },
+            { name: "wallets", keyPath: "id", indexes: [] },
+            {
+              name: "walletCredentials",
+              keyPath: "walletId",
+              indexes: [],
+            },
+            {
+              name: "shippingOptionFrontiers",
+              keyPath: "coordinate",
+              indexes: ["pubkey", "dTag", "strongestCreatedAt", "cachedAt"],
+            },
+          ]
+          for (const definition of stores) {
+            const store = database.createObjectStore(definition.name, {
+              keyPath: definition.keyPath,
+            })
+            for (const indexName of definition.indexes) {
+              store.createIndex(indexName, indexName)
+            }
+          }
+        }
+        request.onsuccess = () => {
+          const database = request.result
+          const transaction = database.transaction(
+            "shippingOptionFrontiers",
+            "readwrite"
+          )
+          transaction
+            .objectStore("shippingOptionFrontiers")
+            .put(shippingOptionFrontier)
+          transaction.oncomplete = () => {
+            database.close()
+            resolve(shippingOptionFrontier)
+          }
+          transaction.onerror = () => reject(transaction.error)
+          transaction.onabort = () => reject(transaction.error)
+        }
+      }),
+    {
+      coordinate: SHIPPING_COORDINATE,
+      merchantPubkey: MERCHANT_PUBKEY,
+      dTag: SHIPPING_D_TAG,
+    }
+  )
+}
+
 async function readDatabaseMigrationState(page: Page): Promise<{
   nativeVersion: number
   stores: string[]
@@ -454,10 +564,11 @@ async function readDatabaseMigrationState(page: Page): Promise<{
   tombstoneIndexes: string[]
   product: Record<string, unknown> | undefined
   tombstone: Record<string, unknown> | undefined
+  shippingOptionFrontier: Record<string, unknown> | undefined
   outboxCount: number
 }> {
   return await page.evaluate(
-    ({ addressId, merchantPubkey, eventId }) =>
+    ({ addressId, merchantPubkey, eventId, shippingCoordinate }) =>
       new Promise((resolve, reject) => {
         const request = indexedDB.open("conduit")
         request.onerror = () => reject(request.error)
@@ -474,22 +585,33 @@ async function readDatabaseMigrationState(page: Page): Promise<{
               tombstoneIndexes: [],
               product: undefined,
               tombstone: undefined,
+              shippingOptionFrontier: undefined,
               outboxCount: -1,
             })
             return
           }
           const transaction = database.transaction(
-            ["products", "productTombstones", "productDeletionOutbox"],
+            [
+              "products",
+              "productTombstones",
+              "productDeletionOutbox",
+              "shippingOptionFrontiers",
+            ],
             "readonly"
           )
           const products = transaction.objectStore("products")
           const tombstones = transaction.objectStore("productTombstones")
           const outbox = transaction.objectStore("productDeletionOutbox")
+          const shippingOptionFrontiers = transaction.objectStore(
+            "shippingOptionFrontiers"
+          )
           const productRequest = products.get(addressId)
           const tombstoneRequest = tombstones.get(
             `e:${merchantPubkey}:${eventId}`
           )
           const outboxCountRequest = outbox.count()
+          const shippingOptionFrontierRequest =
+            shippingOptionFrontiers.get(shippingCoordinate)
           transaction.oncomplete = () => {
             const state = {
               nativeVersion: database.version,
@@ -499,6 +621,7 @@ async function readDatabaseMigrationState(page: Page): Promise<{
               tombstoneIndexes: Array.from(tombstones.indexNames).sort(),
               product: productRequest.result,
               tombstone: tombstoneRequest.result,
+              shippingOptionFrontier: shippingOptionFrontierRequest.result,
               outboxCount: outboxCountRequest.result,
             }
             database.close()
@@ -512,11 +635,12 @@ async function readDatabaseMigrationState(page: Page): Promise<{
       addressId: PRODUCT_ADDRESS,
       merchantPubkey: MERCHANT_PUBKEY,
       eventId: PRODUCT_EVENT_ID,
+      shippingCoordinate: SHIPPING_COORDINATE,
     }
   )
 }
 
-test("Merchant upgrades v8 cache data to the durable v14 cache stores @merchant", async ({
+test("Merchant upgrades v8 cache data to the durable v15 cache stores @merchant", async ({
   page,
 }) => {
   await page.route(
@@ -551,12 +675,15 @@ test("Merchant upgrades v8 cache data to the durable v14 cache stores @merchant"
           hasShippingOptionFrontiers: state.stores.includes(
             "shippingOptionFrontiers"
           ),
+          hasMerchantPendingInvoices: state.stores.includes(
+            "merchantPendingInvoices"
+          ),
         }
       },
       { timeout: 20_000 }
     )
     .toEqual({
-      nativeVersion: 140,
+      nativeVersion: 150,
       hasOutbox: true,
       hasShopperTrust: true,
       hasInboxDeclarationEvidence: true,
@@ -564,6 +691,7 @@ test("Merchant upgrades v8 cache data to the durable v14 cache stores @merchant"
       hasWallets: true,
       hasWalletCredentials: true,
       hasShippingOptionFrontiers: true,
+      hasMerchantPendingInvoices: true,
     })
 
   const migrated = await readDatabaseMigrationState(page)
@@ -587,6 +715,55 @@ test("Merchant upgrades v8 cache data to the durable v14 cache stores @merchant"
     "eventId",
     "pubkey",
   ])
+})
+
+test("Merchant preserves v14 shipping evidence while adding the v15 invoice store @merchant", async ({
+  page,
+}) => {
+  await page.route(
+    `${merchantUrl}/__shipping-v14-migration-fixture`,
+    async (route) => {
+      await route.fulfill({
+        contentType: "text/html",
+        body: "<!doctype html><title>Shipping v14 migration fixture</title>",
+      })
+    }
+  )
+  await page.goto(`${merchantUrl}/__shipping-v14-migration-fixture`)
+  await seedVersionEightDatabase(page)
+  const shippingOptionFrontier =
+    await upgradeSeededDatabaseToVersionFourteen(page)
+
+  await page.goto(`${merchantUrl}/`)
+  await expect
+    .poll(
+      async () => {
+        const state = await readDatabaseMigrationState(page)
+        return {
+          nativeVersion: state.nativeVersion,
+          hasShippingOptionFrontiers: state.stores.includes(
+            "shippingOptionFrontiers"
+          ),
+          hasMerchantPendingInvoices: state.stores.includes(
+            "merchantPendingInvoices"
+          ),
+        }
+      },
+      { timeout: 20_000 }
+    )
+    .toEqual({
+      nativeVersion: 150,
+      hasShippingOptionFrontiers: true,
+      hasMerchantPendingInvoices: true,
+    })
+
+  const migrated = await readDatabaseMigrationState(page)
+  expect(
+    hasSameSerializedValue(
+      migrated.shippingOptionFrontier,
+      shippingOptionFrontier
+    )
+  ).toBe(true)
 })
 
 test("Merchant persists one exact deletion and restores it after reload @merchant", async ({

@@ -208,6 +208,14 @@ function emptyProtectedRead() {
   }
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve
+  })
+  return { promise, resolve }
+}
+
 function legacyDirectMessage() {
   return {
     id: "legacy-authority-fence",
@@ -248,6 +256,84 @@ afterEach(() => {
 })
 
 describe("Market and Merchant protected inbox integration", () => {
+  it("starts a new inbox generation after a pre-existing sync", async () => {
+    const firstRead = deferred<ReturnType<typeof emptyProtectedRead>>()
+    let readCount = 0
+    const cachedRows: CachedOrderMessage[] = []
+    __setCommerceTestOverrides({
+      getNdk: async () => ({ signer: {} }) as never,
+      resolveInboxRelayUrls: async () => [RELAY_URL],
+      getCachedOrderMessages: async () => [...cachedRows],
+      putCachedOrderMessages: async (rows) => cachedRows.push(...rows),
+      getCachedDirectMessages: async () => [],
+      putCachedDirectMessages: async () => undefined,
+      giftUnwrap: async () => orderRumor(MERCHANT) as never,
+      readProtectedInbox: async () => {
+        readCount += 1
+        return readCount === 1 ? await firstRead.promise : emptyProtectedRead()
+      },
+    })
+    installProtectedReadSigner(signer(MERCHANT_KEY), MERCHANT, () => true)
+
+    const older = getMerchantConversationList({ principalPubkey: MERCHANT })
+    while (readCount === 0) await Promise.resolve()
+    let freshSettled = false
+    const fresh = getMerchantConversationList({
+      principalPubkey: MERCHANT,
+      forceFresh: true,
+    }).finally(() => {
+      freshSettled = true
+    })
+    await Promise.resolve()
+    expect(readCount).toBe(1)
+    expect(freshSettled).toBe(false)
+
+    firstRead.resolve({
+      ...emptyProtectedRead(),
+      events: [wraps.get(MERCHANT)!],
+    })
+    await older
+    const result = await fresh
+    expect(readCount).toBe(2)
+    expect(result.data).toHaveLength(1)
+    expect(result.meta.inbox?.coverage).toBe("complete")
+  })
+
+  it("marks a saturated protected inbox snapshot as capped", async () => {
+    __setCommerceTestOverrides({
+      getNdk: async () => ({ signer: {} }) as never,
+      resolveInboxRelayUrls: async () => [RELAY_URL],
+      getCachedOrderMessages: async () => [],
+      getCachedDirectMessages: async () => [],
+      readProtectedInbox: async () => ({
+        ...emptyProtectedRead(),
+        relayResult: {
+          ...emptyProtectedRead().relayResult,
+          relays: [
+            {
+              relayIndex: 0,
+              status: "success",
+              auth: "not_challenged",
+              eventCount: 399,
+              duplicateCount: 1,
+              malformedCount: 0,
+              unusableCount: 0,
+            },
+          ],
+        },
+      }),
+    })
+    installProtectedReadSigner(signer(MERCHANT_KEY), MERCHANT, () => true)
+
+    const result = await getMerchantConversationList({
+      principalPubkey: MERCHANT,
+    })
+
+    expect(result.data).toEqual([])
+    expect(result.meta.capped).toBe(true)
+    expect(result.meta.degraded).toBe(true)
+  })
+
   it("keeps both account roles working on relays that do not challenge", async () => {
     challengeAuthentication = false
     __setCommerceTestOverrides({

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto"
+import { secp256k1 } from "@noble/curves/secp256k1.js"
 
 const BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
 const BECH32_GENERATORS = [
@@ -11,6 +12,10 @@ export type Bolt11FixtureField = {
   tag: string
   words: number[]
 }
+
+// This key exists only in this test process. Keep fixture assertions focused on
+// invoice semantics rather than a reusable, authored signing credential.
+const fixtureScalar = secp256k1.utils.randomSecretKey()
 
 export function bytesToBolt11Words(bytes: Uint8Array): number[] {
   const words: number[] = []
@@ -77,29 +82,107 @@ function createBech32Checksum(hrp: string, words: number[]): number[] {
   )
 }
 
+function bolt11WordsToPaddedBytes(words: number[]): Uint8Array {
+  const bytes: number[] = []
+  let value = 0
+  let bits = 0
+
+  for (const word of words) {
+    value = (value << 5) | word
+    bits += 5
+    while (bits >= 8) {
+      bits -= 8
+      bytes.push((value >> bits) & 0xff)
+      value &= bits === 0 ? 0 : (1 << bits) - 1
+    }
+  }
+
+  if (bits > 0) bytes.push((value << (8 - bits)) & 0xff)
+  return Uint8Array.from(bytes)
+}
+
+function signBolt11Fixture(
+  hrp: string,
+  signedDataWords: number[],
+  options: { highS: boolean; recoveryId?: number }
+): number[] {
+  const signedData = bolt11WordsToPaddedBytes(signedDataWords)
+  const preimage = new Uint8Array(hrp.length + signedData.length)
+  preimage.set(new TextEncoder().encode(hrp))
+  preimage.set(signedData, hrp.length)
+  const recoveredSignature = secp256k1.sign(preimage, fixtureScalar, {
+    format: "recovered",
+    lowS: true,
+  })
+  let compactSignature = recoveredSignature.slice(1)
+  let recoveryId = recoveredSignature[0]!
+  if (options.highS) {
+    const lowSignature = secp256k1.Signature.fromBytes(
+      compactSignature,
+      "compact"
+    )
+    compactSignature = new secp256k1.Signature(
+      lowSignature.r,
+      secp256k1.Point.Fn.ORDER - lowSignature.s
+    ).toBytes("compact")
+    recoveryId ^= 1
+  }
+  if (options.recoveryId !== undefined) recoveryId = options.recoveryId
+
+  const signature = new Uint8Array(65)
+  signature.set(compactSignature, 0)
+  signature[64] = recoveryId
+  return bytesToBolt11Words(signature)
+}
+
 export function makeBolt11Fixture({
   fields,
-  signatureWords = new Array<number>(BOLT11_SIGNATURE_WORDS).fill(0),
+  includePaymentSecret = true,
+  signatureWords,
+  signatureHighS = false,
+  signatureRecoveryId,
   hrp = "lnbc500n",
   createdAt = 1_800_000_000,
 }: {
   fields: Bolt11FixtureField[]
+  includePaymentSecret?: boolean
   signatureWords?: number[]
+  signatureHighS?: boolean
+  signatureRecoveryId?: number
   hrp?: string
   createdAt?: number
 }): string {
-  if (signatureWords.length !== BOLT11_SIGNATURE_WORDS) {
+  const resolvedFields =
+    includePaymentSecret && !fields.some((field) => field.tag === "s")
+      ? [bolt11PaymentSecretField(), ...fields]
+      : fields
+  const signedDataWords = [
+    ...numberToWords(createdAt, 7),
+    ...resolvedFields.flatMap(encodeBolt11FixtureField),
+  ]
+  const resolvedSignatureWords =
+    signatureWords ??
+    signBolt11Fixture(hrp, signedDataWords, {
+      highS: signatureHighS,
+      ...(signatureRecoveryId !== undefined
+        ? { recoveryId: signatureRecoveryId }
+        : {}),
+    })
+  if (resolvedSignatureWords.length !== BOLT11_SIGNATURE_WORDS) {
     throw new Error("BOLT11 test signature must be 104 words")
   }
-  const words = [
-    ...numberToWords(createdAt, 7),
-    ...fields.flatMap(encodeBolt11FixtureField),
-    ...signatureWords,
-  ]
+  const words = [...signedDataWords, ...resolvedSignatureWords]
   const checksum = createBech32Checksum(hrp, words)
   return `${hrp}1${[...words, ...checksum]
     .map((word) => BECH32_CHARSET[word]!)
     .join("")}`
+}
+
+export function bolt11PayeePubkeyField(): Bolt11FixtureField {
+  return {
+    tag: "n",
+    words: bytesToBolt11Words(secp256k1.getPublicKey(fixtureScalar, true)),
+  }
 }
 
 export function bolt11DescriptionHashWords(description: string): number[] {
@@ -113,6 +196,30 @@ export function bolt11PaymentHashField(): Bolt11FixtureField {
     tag: "p",
     words: bytesToBolt11Words(new Uint8Array(32).fill(7)),
   }
+}
+
+export function bolt11PaymentSecretField(): Bolt11FixtureField {
+  return {
+    tag: "s",
+    words: bytesToBolt11Words(new Uint8Array(32).fill(11)),
+  }
+}
+
+export function bolt11FeatureField(...bits: number[]): Bolt11FixtureField {
+  if (
+    bits.some((bit) => !Number.isSafeInteger(bit) || bit < 0 || bit > 5_114)
+  ) {
+    throw new Error("Invalid BOLT11 test feature bit")
+  }
+
+  const highestBit = bits.length > 0 ? Math.max(...bits) : 0
+  const words = new Array<number>(Math.floor(highestBit / 5) + 1).fill(0)
+  for (const bit of bits) {
+    const wordIndex = words.length - 1 - Math.floor(bit / 5)
+    words[wordIndex] = words[wordIndex]! | (1 << (bit % 5))
+  }
+
+  return { tag: "9", words }
 }
 
 export function bolt11DescriptionHashField(

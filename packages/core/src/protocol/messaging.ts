@@ -706,6 +706,18 @@ export interface PublishPrivateMessageInput {
   rumorKind: typeof EVENT_KINDS.DIRECT_MESSAGE | typeof EVENT_KINDS.ORDER
   /** Wrap a sender self-copy for local recovery. Default true. */
   selfCopy?: boolean
+  /**
+   * Require a sender-inbox relay ACK before publishing the recipient leg.
+   * Reserved for cross-device idempotency records such as payment requests.
+   */
+  selfCopyDelivery?: "best_effort" | "required_before_recipient"
+  /**
+   * Revalidate caller-owned authority at each critical transport boundary.
+   * The callback must not retain or expose message content.
+   */
+  beforeCriticalPublish?: (
+    leg: "sender_self_copy" | "recipient"
+  ) => void | Promise<void>
   refreshRelayLists?: boolean
   retry?: TransientNip07RetryOptions
   giftWrapFn?: typeof giftWrap
@@ -807,7 +819,8 @@ export class PrivateMessageRelayReadinessError extends Error {
 
 /**
  * Gift-wrap a rumor to the recipient (critical) and optionally to the sender as
- * a self-copy (non-critical), publishing both through the shared relay planner.
+ * a self-copy, publishing both through the shared relay planner. Callers may
+ * make the self-copy a required first leg when it is cross-device authority.
  * Kind 14 and kind 16 sends share this primitive; the caller owns local caching.
  */
 export async function publishPrivateMessage(
@@ -840,6 +853,11 @@ export async function publishPrivateMessage(
 
   const giftWrapFn = input.giftWrapFn ?? giftWrap
   const selfCopy = input.selfCopy ?? true
+  const requireSelfCopyFirst =
+    input.selfCopyDelivery === "required_before_recipient"
+  if (requireSelfCopyFirst && !selfCopy) {
+    throw new Error("Required sender self-copy delivery is disabled.")
+  }
   const refreshRelayLists = input.refreshRelayLists ?? true
   const wrapParams = { rumorKind: input.rumorKind }
   const publishFn = input.publishFn ?? publishWithPlanner
@@ -934,6 +952,12 @@ export async function publishPrivateMessage(
       validatedOrder: false,
     })
   }
+  if (
+    requireSelfCopyFirst &&
+    (!senderRoute || senderRoute.route === "blocked")
+  ) {
+    throw new PrivateMessageRelayReadinessError("sender_not_ready")
+  }
 
   // NDK's giftWrap builds and encrypts the seal from rumor.ndk. Attach the
   // shared instance before wrapping; attaching only at publish time is too late.
@@ -950,12 +974,12 @@ export async function publishPrivateMessage(
     input.retry
   )
 
-  // The self-copy is a non-critical local-recovery leg: a signer failure while
-  // wrapping it must never block the critical recipient delivery below.
+  // Most self-copies are a best-effort local-recovery leg. A required copy is
+  // cross-device authority and must wrap successfully before recipient send.
   let selfCopyError: string | null = null
   let wrappedToSelf: NDKEvent | null = null
   if (selfCopy) {
-    try {
+    if (requireSelfCopyFirst) {
       wrappedToSelf = await withTransientNip07Retry(
         () =>
           giftWrapFn(
@@ -966,12 +990,61 @@ export async function publishPrivateMessage(
           ),
         input.retry
       )
-    } catch (error) {
-      selfCopyError =
-        error instanceof Error ? error.message : "Self-copy wrap failed"
+    } else {
+      try {
+        wrappedToSelf = await withTransientNip07Retry(
+          () =>
+            giftWrapFn(
+              input.rumor,
+              new NDKUser({ pubkey: input.senderPubkey }),
+              input.signer,
+              wrapParams
+            ),
+          input.retry
+        )
+      } catch (error) {
+        selfCopyError =
+          error instanceof Error ? error.message : "Self-copy wrap failed"
+      }
     }
   }
 
+  const publishSelfCopy = async (): Promise<void> => {
+    if (!wrappedToSelf) return
+    if (!senderRoute || senderRoute.route === "blocked") {
+      if (requireSelfCopyFirst) {
+        throw new PrivateMessageRelayReadinessError("sender_not_ready")
+      }
+      selfCopyError = "Sender has no usable NIP-17 inbox relay declaration."
+      return
+    }
+    try {
+      await input.beforeCriticalPublish?.("sender_self_copy")
+      const delivery = await publishFn(wrappedToSelf, {
+        intent: "recipient_event",
+        authorPubkey: input.senderPubkey,
+        authenticatedPubkey: input.senderPubkey,
+        recipientPubkeys: [input.senderPubkey],
+        exclusiveRelayUrls: senderRoute.relayUrls,
+        refreshRelayLists,
+        deliveryMode: "critical",
+      })
+      if (
+        Array.isArray(delivery.successfulRelayUrls) &&
+        delivery.successfulRelayUrls.length === 0
+      ) {
+        throw new Error("Sender self-copy completed without a relay ACK.")
+      }
+    } catch (error) {
+      if (requireSelfCopyFirst) throw error
+      selfCopyError =
+        error instanceof Error ? error.message : "Self-copy publish failed"
+    }
+  }
+
+  if (requireSelfCopyFirst) await publishSelfCopy()
+
+  await input.beforeCriticalPublish?.("recipient")
   const recipientDelivery = await publishFn(wrappedToRecipient, {
     intent: "recipient_event",
     authorPubkey: input.senderPubkey,
@@ -1001,26 +1074,7 @@ export async function publishPrivateMessage(
         })
       : undefined
 
-  if (wrappedToSelf) {
-    if (!senderRoute || senderRoute.route === "blocked") {
-      selfCopyError = "Sender has no usable NIP-17 inbox relay declaration."
-    } else {
-      try {
-        await publishFn(wrappedToSelf, {
-          intent: "recipient_event",
-          authorPubkey: input.senderPubkey,
-          authenticatedPubkey: input.senderPubkey,
-          recipientPubkeys: [input.senderPubkey],
-          exclusiveRelayUrls: senderRoute.relayUrls,
-          refreshRelayLists,
-          deliveryMode: "critical",
-        })
-      } catch (error) {
-        selfCopyError =
-          error instanceof Error ? error.message : "Self-copy publish failed"
-      }
-    }
-  }
+  if (!requireSelfCopyFirst) await publishSelfCopy()
 
   return {
     wrappedToRecipient,
@@ -1065,7 +1119,7 @@ function consumeValidatedGuestOrderCompanionScope(input: {
   if (!scope || !validatedGuestOrderCompanionScopes.has(scope)) return false
   validatedGuestOrderCompanionScopes.delete(scope)
 
-  let rumorHash = ""
+  let rumorHash: string
   try {
     rumorHash = input.rumor.getEventHash()
   } catch {
@@ -1864,7 +1918,8 @@ export async function redistributePrivateMessageRelayDeclarationAcrossPlans(
     if (storedAttemptError) {
       throw new AggregateError(
         [storedAttemptError, currentAttemptError],
-        "Inbox declaration retry failed on stored and current shared targets."
+        "Inbox declaration retry failed on stored and current shared targets.",
+        { cause: currentAttemptError }
       )
     }
     throw currentAttemptError

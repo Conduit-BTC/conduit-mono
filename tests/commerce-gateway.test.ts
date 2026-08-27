@@ -22,6 +22,7 @@ import {
   getProductImageCandidates,
   getProductDetail,
   getProductsByIds,
+  getAuthoritativeProfileLud16,
   getProfiles,
   __resetRelayHealth,
   __resetRelayListTestOverrides,
@@ -2472,6 +2473,104 @@ describe("commerce gateway", () => {
     expect(asMerchant.data[0]?.buyerPubkey).toBe("other-buyer")
   })
 
+  it("marks a caller-truncated merchant conversation list as capped", async () => {
+    const merchantPubkey = "merchant"
+    cachedOrderMessages = Array.from({ length: 201 }, (_, index) => {
+      const orderId = `order-${index}`
+      const buyerPubkey = `buyer-${index}`
+      const message = {
+        id: `${orderId}-event`,
+        orderId,
+        type: "order",
+        createdAt: FIXED_NOW - index,
+        senderPubkey: buyerPubkey,
+        recipientPubkey: merchantPubkey,
+        rawContent: "",
+        payload: {
+          id: orderId,
+          merchantPubkey,
+          buyerPubkey,
+          items: [],
+          subtotal: 1,
+          currency: "SATS",
+          createdAt: FIXED_NOW - index,
+        },
+      }
+      return {
+        id: message.id,
+        orderId,
+        type: "order",
+        senderPubkey: buyerPubkey,
+        recipientPubkey: merchantPubkey,
+        createdAt: message.createdAt,
+        rawContent: JSON.stringify(message),
+        cachedAt: FIXED_NOW,
+      }
+    })
+    __setCommerceTestOverrides({
+      allowMissingProtectedReadAuthorization: true,
+      getNdk: async () => ({ signer: undefined }) as never,
+    })
+
+    const result = await getMerchantConversationList({
+      principalPubkey: merchantPubkey,
+      limit: 200,
+    })
+
+    expect(result.data).toHaveLength(200)
+    expect(result.meta.capped).toBe(true)
+    expect(result.meta.degraded).toBe(true)
+  })
+
+  it("marks a caller-truncated buyer conversation list as capped", async () => {
+    const buyerPubkey = "buyer"
+    cachedOrderMessages = Array.from({ length: 201 }, (_, index) => {
+      const orderId = `buyer-order-${index}`
+      const merchantPubkey = `merchant-${index}`
+      const message = {
+        id: `${orderId}-event`,
+        orderId,
+        type: "order",
+        createdAt: FIXED_NOW - index,
+        senderPubkey: buyerPubkey,
+        recipientPubkey: merchantPubkey,
+        rawContent: "",
+        payload: {
+          id: orderId,
+          merchantPubkey,
+          buyerPubkey,
+          items: [],
+          subtotal: 1,
+          currency: "SATS",
+          createdAt: FIXED_NOW - index,
+        },
+      }
+      return {
+        id: message.id,
+        orderId,
+        type: "order",
+        senderPubkey: buyerPubkey,
+        recipientPubkey: merchantPubkey,
+        createdAt: message.createdAt,
+        rawContent: JSON.stringify(message),
+        cachedAt: FIXED_NOW,
+      }
+    })
+    __setCommerceTestOverrides({
+      allowMissingProtectedReadAuthorization: true,
+      getNdk: async () => ({ signer: undefined }) as never,
+    })
+
+    const result = await getBuyerConversationList({
+      principalPubkey: buyerPubkey,
+      limit: 200,
+    })
+
+    expect(result.data).toHaveLength(200)
+    expect(result.meta.capped).toBe(true)
+    expect(result.meta.degraded).toBe(true)
+  })
+
   it("excludes chat-only (ambiguous-role) buckets from both roles", async () => {
     // A `message` can come from either side, so a bucket holding only chat has
     // no determinable role and must not surface in either view.
@@ -3662,6 +3761,287 @@ describe("commerce gateway", () => {
       rawContent: latestContent,
       eventId: "profile-current",
       eventCreatedAt: 20,
+    })
+  })
+
+  it("does not authorize a removed lud16 from the richer profile projection", async () => {
+    const pubkey = MERCHANT_A_PUBKEY
+    cachedProfiles.set(pubkey, {
+      pubkey,
+      name: "Merchant",
+      lud16: "old@pay.example",
+      rawContent: JSON.stringify({
+        name: "Merchant",
+        lud16: "old@pay.example",
+      }),
+      eventId: "profile-old",
+      eventCreatedAt: 10,
+      cachedAt: FIXED_NOW - 1_000,
+    })
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PROFILE)
+          ? ([
+              {
+                id: "profile-new-without-lud16",
+                pubkey,
+                created_at: 20,
+                content: JSON.stringify({ name: "Merchant" }),
+                tags: [],
+              },
+            ] as never)
+          : [],
+    })
+
+    const result = await getAuthoritativeProfileLud16(pubkey)
+
+    expect(result).toMatchObject({
+      data: null,
+      authority: {
+        frontierConfirmed: true,
+        degraded: false,
+        capped: false,
+      },
+    })
+    expect(cachedProfiles.get(pubkey)).toMatchObject({
+      lud16: "old@pay.example",
+      rawContent: JSON.stringify({ name: "Merchant" }),
+      eventId: "profile-new-without-lud16",
+      eventCreatedAt: 20,
+    })
+  })
+
+  it("returns only a valid lud16 from a complete signed profile frontier", async () => {
+    const pubkey = MERCHANT_A_PUBKEY
+    __setCommerceTestOverrides({
+      fetchEventsFanoutDetailed: async (filter) => ({
+        events: filter.kinds?.includes(EVENT_KINDS.PROFILE)
+          ? ([
+              {
+                id: "profile-current-payment-destination",
+                pubkey,
+                created_at: 20,
+                content: JSON.stringify({ lud16: "Merchant@Pay.Example" }),
+                tags: [],
+              },
+            ] as never)
+          : [],
+        relays: [
+          {
+            relayUrl: "wss://profile-a.example",
+            status: "success",
+            eventCount: 1,
+          },
+          {
+            relayUrl: "wss://profile-b.example",
+            status: "success",
+            eventCount: 1,
+          },
+        ],
+      }),
+    })
+
+    await expect(getAuthoritativeProfileLud16(pubkey)).resolves.toMatchObject({
+      data: "merchant@pay.example",
+      authority: {
+        frontierConfirmed: true,
+        degraded: false,
+        capped: false,
+      },
+    })
+  })
+
+  it("authorizes current raw lud16 even when display enrichment is coarse-stale", async () => {
+    const pubkey = MERCHANT_A_PUBKEY
+    cachedProfiles.set(pubkey, {
+      pubkey,
+      displayName: "Cached Merchant",
+      picture: "https://cdn.conduit.market/cached-avatar.png",
+      lud16: "old@pay.example",
+      rawContent: JSON.stringify({
+        display_name: "Cached Merchant",
+        picture: "https://cdn.conduit.market/cached-avatar.png",
+        lud16: "old@pay.example",
+      }),
+      eventId: "profile-old-payment-destination",
+      eventCreatedAt: 10,
+      cachedAt: FIXED_NOW - 1_000,
+    })
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PROFILE)
+          ? ([
+              {
+                id: "profile-current-payment-destination",
+                pubkey,
+                created_at: 20,
+                content: JSON.stringify({
+                  about: "Current relay bio",
+                  lud16: "current@pay.example",
+                }),
+                tags: [],
+              },
+            ] as never)
+          : [],
+    })
+
+    const result = await getAuthoritativeProfileLud16(pubkey)
+
+    expect(result).toMatchObject({
+      data: "current@pay.example",
+      meta: {
+        source: "local_cache",
+        stale: true,
+        degraded: true,
+      },
+      authority: {
+        frontierConfirmed: true,
+        degraded: false,
+        capped: false,
+      },
+    })
+  })
+
+  it("does not authorize a retained lud16 when the bounded read sees only an older frontier", async () => {
+    const pubkey = MERCHANT_A_PUBKEY
+    cachedProfiles.set(pubkey, {
+      pubkey,
+      lud16: "retained@pay.example",
+      rawContent: JSON.stringify({ lud16: "retained@pay.example" }),
+      eventId: "profile-retained-stronger",
+      eventCreatedAt: 30,
+      cachedAt: FIXED_NOW - 1_000,
+    })
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PROFILE)
+          ? ([
+              {
+                id: "profile-live-older",
+                pubkey,
+                created_at: 20,
+                content: JSON.stringify({ lud16: "older@pay.example" }),
+                tags: [],
+              },
+            ] as never)
+          : [],
+    })
+
+    await expect(getAuthoritativeProfileLud16(pubkey)).resolves.toMatchObject({
+      data: null,
+      authority: {
+        frontierConfirmed: false,
+        degraded: true,
+        capped: false,
+      },
+    })
+    expect(cachedProfiles.get(pubkey)).toMatchObject({
+      lud16: "retained@pay.example",
+      eventId: "profile-retained-stronger",
+      eventCreatedAt: 30,
+    })
+  })
+
+  it("does not authorize an exact profile frontier from a partial relay read", async () => {
+    const pubkey = MERCHANT_A_PUBKEY
+    const event = {
+      id: "profile-partial-payment-destination",
+      pubkey,
+      created_at: 20,
+      content: JSON.stringify({ lud16: "partial@pay.example" }),
+      tags: [],
+    }
+    __setCommerceTestOverrides({
+      fetchEventsFanoutDetailed: async () => ({
+        events: [event as never],
+        relays: [
+          {
+            relayUrl: "wss://profile-success.example",
+            status: "success",
+            eventCount: 1,
+          },
+          {
+            relayUrl: "wss://profile-failed.example",
+            status: "failed",
+            eventCount: 0,
+          },
+        ],
+      }),
+    })
+
+    await expect(getAuthoritativeProfileLud16(pubkey)).resolves.toMatchObject({
+      data: null,
+      authority: {
+        frontierConfirmed: false,
+        degraded: true,
+        capped: false,
+      },
+    })
+  })
+
+  it("does not authorize an exact profile frontier from a saturated relay response", async () => {
+    const pubkey = MERCHANT_A_PUBKEY
+    const event = {
+      id: "profile-capped-payment-destination",
+      pubkey,
+      created_at: 20,
+      content: JSON.stringify({ lud16: "capped@pay.example" }),
+      tags: [],
+    }
+    __setCommerceTestOverrides({
+      fetchEventsFanoutDetailed: async () => ({
+        events: [event as never],
+        relays: [
+          {
+            relayUrl: "wss://profile-capped.example",
+            status: "success",
+            eventCount: 1,
+            rejectedEventCount: 9,
+          },
+        ],
+      }),
+    })
+
+    await expect(getAuthoritativeProfileLud16(pubkey)).resolves.toMatchObject({
+      data: null,
+      authority: {
+        frontierConfirmed: false,
+        degraded: true,
+        capped: true,
+      },
+    })
+  })
+
+  it("ignores a rejected forged event when a valid exact frontier is present below the cap", async () => {
+    const pubkey = MERCHANT_A_PUBKEY
+    const event = {
+      id: "profile-accepted-payment-destination",
+      pubkey,
+      created_at: 20,
+      content: JSON.stringify({ lud16: "accepted@pay.example" }),
+      tags: [],
+    }
+    __setCommerceTestOverrides({
+      fetchEventsFanoutDetailed: async () => ({
+        events: [event as never],
+        relays: [
+          {
+            relayUrl: "wss://profile-rejected.example",
+            status: "success",
+            eventCount: 1,
+            rejectedEventCount: 1,
+          },
+        ],
+      }),
+    })
+
+    await expect(getAuthoritativeProfileLud16(pubkey)).resolves.toMatchObject({
+      data: "accepted@pay.example",
+      authority: {
+        frontierConfirmed: true,
+        degraded: false,
+        capped: false,
+      },
     })
   })
 

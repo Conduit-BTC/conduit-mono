@@ -266,6 +266,43 @@ describe("durable inbox declaration evidence", () => {
     expect(merged.lastUsable?.signedEvent.id).toBe(prior.id)
   })
 
+  it("retains exactly one prior usable route across declared rotations", async () => {
+    const repository = createInMemoryInboxDeclarationEvidenceRepository()
+    const first = declarationEvent({
+      createdAt: 100,
+      tags: [["relay", "wss://inbox-one.example"]],
+    })
+    const second = declarationEvent({
+      createdAt: 200,
+      tags: [["relay", "wss://inbox-two.example"]],
+    })
+    const third = declarationEvent({
+      createdAt: 300,
+      tags: [["relay", "wss://inbox-three.example"]],
+    })
+
+    await mergeInboxDeclarationEvidence(
+      { pubkey: ACCOUNT_A, signedEvent: first },
+      repository
+    )
+    const afterSecond = await mergeInboxDeclarationEvidence(
+      { pubkey: ACCOUNT_A, signedEvent: second },
+      repository
+    )
+    expect(afterSecond.current.signedEvent.id).toBe(second.id)
+    expect(afterSecond.lastUsable?.signedEvent.id).toBe(first.id)
+
+    const afterThird = await mergeInboxDeclarationEvidence(
+      { pubkey: ACCOUNT_A, signedEvent: third },
+      repository
+    )
+    expect(afterThird.current.signedEvent.id).toBe(third.id)
+    expect(afterThird.lastUsable?.signedEvent.id).toBe(second.id)
+    expect(afterThird.lastUsable?.secureRelayUrls).toEqual([
+      "wss://inbox-two.example",
+    ])
+  })
+
   it("rejects invalid signatures, kinds, and cross-account authors", async () => {
     const repository = createInMemoryInboxDeclarationEvidenceRepository()
     const valid = declarationEvent({ createdAt: 100 })
