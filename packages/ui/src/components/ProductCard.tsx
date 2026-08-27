@@ -213,6 +213,8 @@ export interface ProductCartActionProps {
   onDecrement?: () => void
   soldOut?: boolean
   atStockLimit?: boolean
+  disabled?: boolean
+  disabledLabel?: string
 }
 
 export function ProductCartAction({
@@ -223,6 +225,8 @@ export function ProductCartAction({
   onDecrement,
   soldOut = false,
   atStockLimit = false,
+  disabled = false,
+  disabledLabel = "Unavailable",
 }: ProductCartActionProps) {
   const [didJustAdd, setDidJustAdd] = useState(false)
   const previousQuantityRef = useRef(cartQuantity)
@@ -242,9 +246,9 @@ export function ProductCartAction({
   return (
     <>
       <Button
-        variant={soldOut || cartQuantity > 0 ? "muted" : "primary"}
+        variant={soldOut || disabled || cartQuantity > 0 ? "muted" : "primary"}
         size="sm"
-        disabled={soldOut || atStockLimit}
+        disabled={soldOut || atStockLimit || disabled}
         className={cn(
           "h-7 shrink-0 gap-1 rounded-md px-2.5 text-xs font-medium transition-all duration-200",
           cartQuantity > 0 && !soldOut
@@ -258,7 +262,7 @@ export function ProductCartAction({
         onClick={(event) => {
           event.preventDefault()
           event.stopPropagation()
-          if (soldOut || atStockLimit) return
+          if (soldOut || atStockLimit || disabled) return
           onAddToCart()
         }}
       >
@@ -269,50 +273,56 @@ export function ProductCartAction({
         )}
         {soldOut
           ? "Sold out"
-          : cartQuantity > 0
-            ? `In cart (${cartQuantity})`
-            : "Add"}
+          : disabled
+            ? disabledLabel
+            : cartQuantity > 0
+              ? `In cart (${cartQuantity})`
+              : "Add"}
       </Button>
 
-      {!soldOut && cartQuantity > 0 && onIncrement && onDecrement && (
-        <div className="pointer-events-auto absolute inset-0 flex items-center justify-center opacity-100 transition-all duration-200 [@media(hover:hover)]:pointer-events-none [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:pointer-events-auto [@media(hover:hover)]:group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
-          <div className="flex h-7 items-center overflow-hidden rounded-md border border-secondary-400/40 bg-[var(--surface)] shadow-md">
-            <button
-              type="button"
-              className="flex h-full w-7 items-center justify-center text-sm text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-elevated)]"
-              aria-label={`Remove one ${title} from cart`}
-              onClick={(event) => {
-                event.preventDefault()
-                event.stopPropagation()
-                onDecrement()
-              }}
-            >
-              -
-            </button>
-            <div className="flex h-full min-w-8 items-center justify-center border-x border-[var(--border)] px-1 text-xs font-medium text-[var(--text-primary)]">
-              {cartQuantity}
+      {!soldOut &&
+        !disabled &&
+        cartQuantity > 0 &&
+        onIncrement &&
+        onDecrement && (
+          <div className="pointer-events-auto absolute inset-0 flex items-center justify-center opacity-100 transition-all duration-200 [@media(hover:hover)]:pointer-events-none [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:pointer-events-auto [@media(hover:hover)]:group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
+            <div className="flex h-7 items-center overflow-hidden rounded-md border border-secondary-400/40 bg-[var(--surface)] shadow-md">
+              <button
+                type="button"
+                className="flex h-full w-7 items-center justify-center text-sm text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-elevated)]"
+                aria-label={`Remove one ${title} from cart`}
+                onClick={(event) => {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  onDecrement()
+                }}
+              >
+                -
+              </button>
+              <div className="flex h-full min-w-8 items-center justify-center border-x border-[var(--border)] px-1 text-xs font-medium text-[var(--text-primary)]">
+                {cartQuantity}
+              </div>
+              <button
+                type="button"
+                disabled={atStockLimit}
+                className="flex h-full w-7 items-center justify-center text-sm text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-elevated)] disabled:cursor-not-allowed disabled:opacity-40"
+                aria-label={
+                  atStockLimit
+                    ? `Stock limit reached for ${title}`
+                    : `Add one more ${title} to cart`
+                }
+                onClick={(event) => {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  if (atStockLimit) return
+                  onIncrement()
+                }}
+              >
+                +
+              </button>
             </div>
-            <button
-              type="button"
-              disabled={atStockLimit}
-              className="flex h-full w-7 items-center justify-center text-sm text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-elevated)] disabled:cursor-not-allowed disabled:opacity-40"
-              aria-label={
-                atStockLimit
-                  ? `Stock limit reached for ${title}`
-                  : `Add one more ${title} to cart`
-              }
-              onClick={(event) => {
-                event.preventDefault()
-                event.stopPropagation()
-                if (atStockLimit) return
-                onIncrement()
-              }}
-            >
-              +
-            </button>
           </div>
-        </div>
-      )}
+        )}
     </>
   )
 }

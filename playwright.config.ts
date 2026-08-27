@@ -56,26 +56,20 @@ const webServer = [
     reuseExistingServer: false,
     timeout: 30_000,
   },
-  ...(smokeArea === "all" || smokeArea === "market"
-    ? [
-        {
-          command: `${e2eEnv} bun run --filter @conduit/market dev --mode mock --host 127.0.0.1 --port ${marketPort}`,
-          url: `http://127.0.0.1:${marketPort}/products`,
-          reuseExistingServer: !CI,
-          timeout: 120_000,
-        },
-      ]
-    : []),
-  ...(smokeArea === "all" || smokeArea === "merchant"
-    ? [
-        {
-          command: `${e2eEnv} bun run --filter @conduit/merchant dev --mode mock --host 127.0.0.1 --port ${merchantPort}`,
-          url: `http://127.0.0.1:${merchantPort}/`,
-          reuseExistingServer: !CI,
-          timeout: 120_000,
-        },
-      ]
-    : []),
+  // Until the dedicated @commerce lane in CND-193 lands, dual-tagged
+  // cross-app smoke runs in both existing shards and needs both apps.
+  {
+    command: `${e2eEnv} bun run --filter @conduit/market dev --mode mock --host 127.0.0.1 --port ${marketPort}`,
+    url: `http://127.0.0.1:${marketPort}/products`,
+    reuseExistingServer: !CI,
+    timeout: 120_000,
+  },
+  {
+    command: `${e2eEnv} bun run --filter @conduit/merchant dev --mode mock --host 127.0.0.1 --port ${merchantPort}`,
+    url: `http://127.0.0.1:${merchantPort}/`,
+    reuseExistingServer: !CI,
+    timeout: 120_000,
+  },
 ]
 
 export default defineConfig({
@@ -85,7 +79,9 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: CI,
   retries: CI ? 1 : 0,
-  workers: CI ? 2 : undefined,
+  // The current area shards share one relay and both app servers for dual-tagged
+  // cross-app smoke. Keep them single-worker until CND-193 isolates @commerce.
+  workers: smokeArea === "all" ? (CI ? 2 : undefined) : 1,
   reporter: CI ? ciReporters : "list",
   grep:
     smokeArea === "all"

@@ -32,6 +32,7 @@ import {
 } from "../apps/merchant/src/lib/productVariations"
 
 const MERCHANT_PUBKEY = "a".repeat(64)
+const ORGANIZER_PUBKEY = "b".repeat(64)
 const NOW = 1_800_000_000_000
 
 function baseProduct(overrides: Partial<ProductSchema> = {}): ProductSchema {

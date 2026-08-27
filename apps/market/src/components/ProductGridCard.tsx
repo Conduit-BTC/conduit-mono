@@ -22,10 +22,16 @@ import {
 import { getPendingMerchantDisplayName } from "./MerchantIdentity"
 import { ProductVariationSelector } from "./ProductVariationSelector"
 
-type ProductGridCardProps = {
+export const PRODUCT_GRID_CLASS_NAME =
+  "grid items-start list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4"
+
+export type ProductGridCardProps = {
   product: Product
   family?: MarketProductFamily
   familyHydrating?: boolean
+  className?: string
+  selectedProductId?: string
+  onSelectedProductChange?: (product: Product) => void
   merchantName?: string
   merchantNamePending?: boolean
   imageLoading?: "eager" | "lazy"
@@ -37,12 +43,21 @@ type ProductGridCardProps = {
   onIncrement?: (product: Product) => void
   onDecrement?: (product: Product) => void
   onInvalidImage?: (productId: string) => void
+  /** Allow an intentional zero price only after exact pickup evidence resolves. */
+  allowZeroPrice?: boolean
+  cartActionDisabled?: boolean
+  cartActionDisabledLabel?: string
+  /** `null` keeps the card on the current workflow surface. */
+  onProductActivate?: (() => void) | null
 }
 
 export function ProductGridCard({
   product,
   family,
   familyHydrating = false,
+  className,
+  selectedProductId: controlledSelectedProductId,
+  onSelectedProductChange,
   merchantName: merchantNameOverride,
   merchantNamePending: merchantNamePendingOverride,
   imageLoading = "lazy",
@@ -54,15 +69,21 @@ export function ProductGridCard({
   onIncrement,
   onDecrement,
   onInvalidImage,
+  allowZeroPrice = false,
+  cartActionDisabled = false,
+  cartActionDisabledLabel,
+  onProductActivate,
 }: ProductGridCardProps) {
   const navigate = useNavigate()
   const defaultSelection = useMemo(
     () => getDefaultProductSelection(product, family),
     [family, product]
   )
-  const [selectedProductId, setSelectedProductId] = useState(
+  const [internalSelectedProductId, setInternalSelectedProductId] = useState(
     defaultSelection.id
   )
+  const selectedProductId =
+    controlledSelectedProductId ?? internalSelectedProductId
   const selectedProduct = getProductSelection(
     product,
     family,
@@ -76,8 +97,10 @@ export function ProductGridCard({
     getCartQuantity?.(selectedProduct) ?? cartQuantity
 
   useEffect(() => {
-    setSelectedProductId(defaultSelection.id)
-  }, [defaultSelection.id])
+    if (controlledSelectedProductId === undefined) {
+      setInternalSelectedProductId(defaultSelection.id)
+    }
+  }, [controlledSelectedProductId, defaultSelection.id])
 
   const merchantNamePending =
     merchantNamePendingOverride ?? !merchantNameOverride
@@ -87,14 +110,16 @@ export function ProductGridCard({
   const selectedPriceDisplay = getShopperPriceDisplay(
     selectedProduct,
     pricePreference,
-    typeof btcUsdRate === "object" ? btcUsdRate : null
+    typeof btcUsdRate === "object" ? btcUsdRate : null,
+    { allowZero: allowZeroPrice }
   )
   const summaryMinimum = family?.priceSummary.minimum?.product
   const summaryPriceDisplay = summaryMinimum
     ? getShopperPriceDisplay(
         summaryMinimum,
         pricePreference,
-        typeof btcUsdRate === "object" ? btcUsdRate : null
+        typeof btcUsdRate === "object" ? btcUsdRate : null,
+        { allowZero: allowZeroPrice }
       )
     : selectedPriceDisplay
   const primary =
@@ -111,7 +136,7 @@ export function ProductGridCard({
 
   return (
     <ProductCard
-      className="h-auto"
+      className={className ?? "h-auto"}
       title={product.title}
       merchantName={merchantName}
       merchantNamePending={merchantNamePending}
@@ -127,18 +152,25 @@ export function ProductGridCard({
           <ProductVariationSelector
             family={family!}
             selectedProduct={selectedProduct}
-            onSelect={(variation) => setSelectedProductId(variation.id)}
+            onSelect={(variation) => {
+              setInternalSelectedProductId(variation.id)
+              onSelectedProductChange?.(variation)
+            }}
             compact
           />
         ) : showVariationSkeleton ? (
           <ProductVariationLoadingSkeleton />
         ) : undefined
       }
-      onActivate={() =>
-        navigate({
-          to: "/products/$productId",
-          params: { productId: selectedProduct.id },
-        })
+      onActivate={
+        onProductActivate === null
+          ? undefined
+          : (onProductActivate ??
+            (() =>
+              navigate({
+                to: "/products/$productId",
+                params: { productId: selectedProduct.id },
+              })))
       }
       onMerchantActivate={() =>
         navigate({
@@ -161,6 +193,8 @@ export function ProductGridCard({
             }
             soldOut={soldOut}
             atStockLimit={atStockLimit}
+            disabled={cartActionDisabled}
+            disabledLabel={cartActionDisabledLabel}
           />
         ) : undefined
       }

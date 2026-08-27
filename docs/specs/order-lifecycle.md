@@ -30,8 +30,9 @@ Fields:
   (`anonymous_public_zap` | `public_zap_as_shopper` | `public_zap` |
   `private_checkout` | `pay_later` | `external_wallet`).
 - Snapshot: `items` (productId, fulfillment format, qty, price-at-purchase,
-  source price, shipping option), `itemSubtotalSats`, `shippingCostSats`,
-  `totalSats`, `totalMsats`, `currency`, `pricingQuote`.
+  source price, fulfillment mode, shipping option, and optional exact pickup
+  provenance), `itemSubtotalSats`, `shippingCostSats`, `totalSats`,
+  `totalMsats`, `currency`, `pricingQuote`.
 - Local-only PII: `shippingAddress`, `contactNote`. **Never** sent to telemetry.
 - Gates: `addressValidity`, `shippingZoneEligibility` (distinct; see below).
 - Progress: `orderDeliveryStatus`, `invoiceStatus`, `paymentStatus`,
@@ -81,7 +82,8 @@ fixed cost.
    completion) is read from the order conversation (`status_update` /
    `shipping_update`) and merged into the interpreted view-model. Guest orders
    stop at local receipt delivery; later merchant coordination occurs through
-   the required phone/email contact fields. Merchant records of guest-order
+   the structured recovery channel required by the exact checkout flow.
+   Merchant records of guest-order
    decisions and fulfillment are self-addressed operational messages, not
    replies to a guest Nostr inbox.
 
@@ -170,6 +172,8 @@ general-purpose status console as the primary workflow:
   cancel the order; no separate disputed wire status is introduced here.
 - confirmed physical or mixed order and not shipped: record shipment or cancel
   and coordinate a manual refund.
+- confirmed pickup order and not complete: mark the handoff picked up/complete;
+  carrier and tracking are not requested.
 - confirmed digital-only order: confirm delivery directly or cancel and
   coordinate a manual refund; no shipping milestone is shown or required.
 - shipped: complete delivery when appropriate.
@@ -189,6 +193,24 @@ backward compatibility, an authentic merchant-authored shipment event also
 backfills the paid and accepted gates when older history lacks the now-required
 explicit confirmation. Requesting extra funds because a displayed price or
 shipping option was insufficient is not part of the ordinary paid-order flow.
+
+Pickup is a separate physical fulfillment mode, not a digital shortcut. A
+pickup action is authorized only by a current exact signed pickup snapshot that
+preserves the pickup, calendar, collection, organizer, merchant, and product
+identities defined in `docs/specs/event-markets.md`. Unknown physical
+fulfillment remains shipment-safe.
+
+The snapshot also preserves `merchant_handoff` or `organizer_handoff` and the
+exact handler identity. Merchant handoff stays inside the buyer/merchant order
+conversation. Organizer handoff creates no organizer authority until the
+merchant has confirmed payment (or the order total is zero) and separately
+publishes a minimal encrypted ready-for-pickup receipt. A valid organizer
+`handed_out` acknowledgement may unlock the merchant's completion workflow, but
+does not itself become payment, cancellation, refund, shipping, or ordinary
+merchant status evidence. An authenticated zero-cost pickup may expose the
+pickup-completion action after merchant acceptance and any required organizer
+acknowledgement, but its payment stage is shown as not required and it never
+sets or implies a paid status.
 
 The Merchant order queue exposes work-oriented filters: **Paid—fulfill**,
 **Payment reported—verify**, **Unpaid—review**, **Shipped**, and **Closed**, with
@@ -295,6 +317,20 @@ syntactically invalid contact data, obvious street/locality junk, invalid postal
 formats, or unavailable merchant shipping/payment gates. Shipping-zone
 eligibility remains a separate fulfillment gate.
 
+An all-pickup order does not collect or validate a buyer delivery address and
+does not run shipping-zone eligibility. A signed-in buyer with a usable private
+reply path does not need a separate pickup contact form. A guest/manual
+order-first flow that cannot receive private replies retains a bounded recovery
+contact for the merchant only. Contact is never copied into an organizer
+fulfillment receipt. Mixed pickup and shipped carts, or pickup lines with
+different exact handoff graphs, must be blocked or explicitly split before
+order creation.
+
+For organizer handoff, the buyer and merchant derive an opaque pickup claim
+from the private order context. Buyer Orders and the organizer receipt display
+the same short pickup code; the organizer never receives the order id or buyer
+identity used to derive it.
+
 ## Privacy
 
 Sensitive fields (invoice, preimage, NWC URI, order contents, shipping address,
@@ -304,8 +340,8 @@ browser, counterparties, relays, signers, wallets, LNURL/payment providers, and
 other services the user or merchant selects; do not describe them as remaining
 only on devices or relays.
 
-Guest checkout is narrower: phone/email and fulfillment details are delivered
-inside the merchant's encrypted order copy, removed from the checkout form after
-successful delivery, and omitted from the buyer's durable lifecycle/message
-cache. The remaining redacted guest lifecycle and invoice are bounded to the
-24-hour guest recovery window.
+Guest checkout is narrower: its required recovery contact and fulfillment
+details are delivered inside the merchant's encrypted order copy, removed from
+the checkout form after successful delivery, and omitted from the buyer's
+durable lifecycle/message cache. The remaining redacted guest lifecycle and
+invoice are bounded to the 24-hour guest recovery window.

@@ -111,6 +111,136 @@ async function exerciseNetworkInboxDeclaration(
   })
 }
 
+type StoredRelayEvent = {
+  id: string
+  pubkey: string
+  created_at: number
+  kind: number
+  tags: string[][]
+  content: string
+  sig: string
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function isStoredRelayEvent(value: unknown): value is StoredRelayEvent {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    typeof value.pubkey === "string" &&
+    typeof value.created_at === "number" &&
+    typeof value.kind === "number" &&
+    Array.isArray(value.tags) &&
+    typeof value.content === "string" &&
+    typeof value.sig === "string"
+  )
+}
+
+function relayEventMatchesFilter(
+  event: StoredRelayEvent,
+  filter: Record<string, unknown>
+): boolean {
+  const ids = filter.ids
+  if (
+    Array.isArray(ids) &&
+    !ids.some((id) => typeof id === "string" && event.id.startsWith(id))
+  ) {
+    return false
+  }
+  const authors = filter.authors
+  if (
+    Array.isArray(authors) &&
+    !authors.some(
+      (author) => typeof author === "string" && event.pubkey.startsWith(author)
+    )
+  ) {
+    return false
+  }
+  const kinds = filter.kinds
+  if (Array.isArray(kinds) && !kinds.includes(event.kind)) return false
+  if (typeof filter.since === "number" && event.created_at < filter.since) {
+    return false
+  }
+  if (typeof filter.until === "number" && event.created_at > filter.until) {
+    return false
+  }
+
+  for (const [key, values] of Object.entries(filter)) {
+    if (!key.startsWith("#") || !Array.isArray(values)) continue
+    const tagName = key.slice(1)
+    if (
+      !event.tags.some(
+        (tag) => tag[0] === tagName && values.includes(tag[1] ?? "")
+      )
+    ) {
+      return false
+    }
+  }
+  return true
+}
+
+function normalizeRelayUrl(relayUrl: string): string {
+  return relayUrl.endsWith("/") ? relayUrl.slice(0, -1) : relayUrl
+}
+
+async function installStoredRelay(page: Page): Promise<void> {
+  const eventsByRelay = new Map<string, Map<string, StoredRelayEvent>>()
+  await page.routeWebSocket(
+    /^(?:ws:\/\/127\.0\.0\.1:7777|wss:\/\/)/,
+    (socket) => {
+      const relayUrl = normalizeRelayUrl(socket.url())
+      const eventsById =
+        eventsByRelay.get(relayUrl) ?? new Map<string, StoredRelayEvent>()
+      eventsByRelay.set(relayUrl, eventsById)
+      socket.onMessage((message) => {
+        if (typeof message !== "string") return
+        let frame: unknown
+        try {
+          frame = JSON.parse(message)
+        } catch {
+          return
+        }
+        if (!Array.isArray(frame)) return
+
+        if (frame[0] === "REQ" && typeof frame[1] === "string") {
+          const subscriptionId = frame[1]
+          const filters = frame.slice(2).filter(isRecord)
+          const limitedMatchesById = new Map<string, StoredRelayEvent>()
+          for (const filter of filters) {
+            const matches = Array.from(eventsById.values())
+              .filter((event) => relayEventMatchesFilter(event, filter))
+              .sort(
+                (left, right) =>
+                  right.created_at - left.created_at ||
+                  left.id.localeCompare(right.id)
+              )
+            const limit =
+              typeof filter.limit === "number"
+                ? Math.max(0, Math.floor(filter.limit))
+                : matches.length
+            for (const event of matches.slice(0, limit)) {
+              limitedMatchesById.set(event.id, event)
+            }
+          }
+          for (const event of limitedMatchesById.values()) {
+            socket.send(JSON.stringify(["EVENT", subscriptionId, event]))
+          }
+          socket.send(JSON.stringify(["EOSE", subscriptionId]))
+          return
+        }
+
+        if (frame[0] === "EVENT" && isStoredRelayEvent(frame[1])) {
+          const event = structuredClone(frame[1])
+          eventsById.set(event.id, event)
+          socket.send(JSON.stringify(["OK", event.id, true, "saved"]))
+        }
+      })
+    }
+  )
+}
+
 async function seedCachedMerchantProduct(page: Page): Promise<void> {
   await page.evaluate((merchantPubkey) => {
     return new Promise<void>((resolve, reject) => {
@@ -1306,6 +1436,7 @@ test("market shopper preferences remove legacy plaintext and render the complete
   await page.setViewportSize({ width: 1280, height: 900 })
   const secretKey = generateSecretKey()
   const buyerPubkey = getPublicKey(secretKey)
+  await installStoredRelay(page)
   await installTestSigner(page, buyerPubkey, { nip44: false, secretKey })
   await page.addInitScript((buyerPubkey) => {
     localStorage.setItem(

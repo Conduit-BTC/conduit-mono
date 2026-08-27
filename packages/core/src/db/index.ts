@@ -1,6 +1,10 @@
 import Dexie, { liveQuery, type EntityTable, type Table } from "dexie"
 import { config } from "../config"
-import type { ProductZapMessagePolicy } from "../schemas"
+import type {
+  OrderItemFulfillmentSchema,
+  ProductShippingOptionReference,
+  ProductZapMessagePolicy,
+} from "../schemas"
 import type { SignedPublicNostrEvent } from "../protocol/signed-event"
 import type { ProductSpecification } from "../types"
 import type { WalletDescriptor, WalletProviderId } from "../wallets"
@@ -14,6 +18,7 @@ export interface StoredOrder {
     familyProductId?: string
     selectedSpecifications?: ProductSpecification[]
     format?: "physical" | "digital"
+    fulfillment?: OrderItemFulfillmentSchema
     quantity: number
     priceAtPurchase: number
     currency: string
@@ -83,6 +88,7 @@ export interface CachedProduct {
     currency: string
     normalizedCurrency: string
   }
+  priceEvidenceMalformed?: true
   type?: "simple" | "variable" | "variation"
   parentProductId?: string
   specifications?: Array<{ key: string; value: string }>
@@ -97,6 +103,8 @@ export interface CachedProduct {
   shippingOptionDTag?: string
   /** Parsed evidence that the signed product used a launch-unsupported reference shape. */
   shippingOptionLaunchUnsupported?: boolean
+  shippingOptionRefs?: ProductShippingOptionReference[]
+  collectionRefs?: string[]
   shippingCountries?: string[]
   shippingCountryRules?: Array<{
     code: string
@@ -144,6 +152,22 @@ export interface CachedShippingOptionFrontier {
   dTag: string
   strongestCreatedAt: number
   signedEvents: SignedPublicNostrEvent[]
+  cachedAt: number
+}
+
+/**
+ * Bounded signed evidence scoped to an organizer's event markets. Besides the
+ * organizer-owned graph, the scope may retain validated merchant product
+ * withdrawals and same-author kind-5 records so a later relay omission cannot
+ * resurrect participation. Cached positive requests are never authorization.
+ */
+export interface CachedEventMarketEvidence {
+  id: string
+  organizerPubkey: string
+  kind: number
+  addressId?: string
+  signedEvent: SignedPublicNostrEvent
+  sourceRelayUrls: string[]
   cachedAt: number
 }
 
@@ -481,8 +505,8 @@ export type OrderPublicZapSigner = "anon" | "shopper"
 export type OrderBuyerIdentityKind = "signed_in" | "guest_ephemeral"
 
 export interface OrderGuestContact {
-  email: string
-  phone: string
+  email?: string
+  phone?: string
 }
 
 /**
@@ -582,10 +606,17 @@ export interface OrderLifecycleItem {
   title?: string
   /** Fulfillment type at purchase time. Missing legacy values require shipping. */
   format?: "physical" | "digital"
+  /** Exact signed pickup graph captured before the order is sent. */
+  fulfillment?: OrderItemFulfillmentSchema
   quantity: number
   priceAtPurchase: number
   currency: string
   shippingCostSats?: number
+  sourceShippingCost?: {
+    amount: number
+    currency: string
+    normalizedCurrency: string
+  }
   shippingOptionId?: string
   shippingOptionDTag?: string
   /** Signed listing shipping-rule snapshot used to guard payment retries. */
@@ -740,6 +771,7 @@ class ConduitDB extends Dexie {
     "pubkey"
   >
   ownContactListSnapshots!: EntityTable<CachedOwnContactListSnapshot, "pubkey">
+  eventMarketEvidence!: EntityTable<CachedEventMarketEvidence, "id">
   wallets!: EntityTable<WalletDescriptor, "id">
   walletCredentials!: EntityTable<StoredWalletCredential, "walletId">
 
@@ -896,6 +928,11 @@ class ConduitDB extends Dexie {
       // relay-scoped product cache and monotonic deletion tombstones.
       shippingOptionFrontiers:
         "coordinate, pubkey, dTag, strongestCreatedAt, cachedAt",
+    })
+
+    this.version(15).stores({
+      // Keep this schema disjoint from the version-13 wallet-store migration.
+      eventMarketEvidence: "id, organizerPubkey, kind, addressId, cachedAt",
     })
   }
 }

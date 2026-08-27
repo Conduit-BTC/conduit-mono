@@ -213,12 +213,28 @@ function getProductShippingDestinations(
   }))
 }
 
+function hasEventPickupReferences(
+  product: Pick<
+    ProductSchema,
+    "canonicalShippingResolved" | "collectionRefs" | "shippingOptionRefs"
+  >
+): boolean {
+  return (
+    product.canonicalShippingResolved !== true &&
+    (product.collectionRefs?.length ?? 0) > 0 &&
+    (product.shippingOptionRefs?.length ?? 0) > 0
+  )
+}
+
 export function resolveProductFulfillmentIntentForTarget(input: {
   product: Pick<
     ProductSchema,
     | "format"
     | "shippingCostSats"
     | "sourceShippingCost"
+    | "canonicalShippingResolved"
+    | "collectionRefs"
+    | "shippingOptionRefs"
     | "shippingCountries"
     | "shippingCountryRules"
   >
@@ -226,6 +242,9 @@ export function resolveProductFulfillmentIntentForTarget(input: {
   authoringCountries: readonly string[]
 }): ProductFulfillmentIntent {
   if (input.product.format === "digital") return { kind: "digital" }
+  if (hasEventPickupReferences(input.product)) {
+    return { kind: "coordinate_after_order" }
+  }
 
   const amount =
     input.product.sourceShippingCost?.amount ?? input.product.shippingCostSats
@@ -262,12 +281,17 @@ export function resolvePublishedProductFulfillmentIntentForTarget(
     | "sourceShippingCost"
     | "shippingOptionId"
     | "shippingOptionLaunchUnsupported"
+    | "shippingOptionRefs"
+    | "collectionRefs"
     | "shippingCountries"
     | "shippingCountryRules"
     | "canonicalShippingResolved"
   >
 ): ProductFulfillmentIntent | null {
   if (product.format === "digital") return { kind: "digital" }
+  if (hasEventPickupReferences(product)) {
+    return { kind: "coordinate_after_order" }
+  }
   if (product.shippingOptionLaunchUnsupported) return null
   if (product.shippingOptionId && product.canonicalShippingResolved !== true) {
     return null
@@ -335,12 +359,25 @@ export function applyProductFulfillmentIntentForPublication(input: {
   intent: ProductFulfillmentIntent
 }): ProductSchema {
   if (input.intent.kind !== "fixed_standard") {
+    const preserveEventPickup =
+      input.intent.kind === "coordinate_after_order" &&
+      hasEventPickupReferences(input.product)
     return {
       ...input.product,
       shippingCostSats: undefined,
       sourceShippingCost: undefined,
-      shippingOptionId: undefined,
-      shippingOptionDTag: undefined,
+      shippingOptionId: preserveEventPickup
+        ? input.product.shippingOptionId
+        : undefined,
+      shippingOptionDTag: preserveEventPickup
+        ? input.product.shippingOptionDTag
+        : undefined,
+      shippingOptionRefs: preserveEventPickup
+        ? input.product.shippingOptionRefs
+        : undefined,
+      collectionRefs: preserveEventPickup
+        ? input.product.collectionRefs
+        : undefined,
       shippingOptionLaunchUnsupported: undefined,
       shippingCountries: undefined,
       shippingCountryRules: undefined,
@@ -358,6 +395,8 @@ export function applyProductFulfillmentIntentForPublication(input: {
       input.productDTag
     ),
     shippingOptionDTag: getProductShippingOptionDTag(input.productDTag),
+    shippingOptionRefs: undefined,
+    collectionRefs: undefined,
     shippingOptionLaunchUnsupported: undefined,
     shippingCountries: [...input.intent.countries],
     shippingCountryRules: input.intent.countries.map((code) => ({

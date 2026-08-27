@@ -2,6 +2,9 @@ import type { NDKEvent } from "@nostr-dev-kit/ndk"
 import { z } from "zod"
 import {
   conversationMessageSchema,
+  eventMarketFulfillmentRevocationSchema,
+  eventMarketHandoffAckSchema,
+  eventMarketReadyReceiptSchema,
   orderMessageTypeSchema,
   orderSchema,
   paymentProofActionSchema,
@@ -13,6 +16,9 @@ import {
   shippingUpdateMessageSchema,
   statusUpdateMessageSchema,
   type ConversationMessageSchema,
+  type EventMarketFulfillmentRevocationSchema,
+  type EventMarketHandoffAckSchema,
+  type EventMarketReadyReceiptSchema,
   type OrderMessageTypeSchema,
   type OrderSchema,
   type PaymentProofMessageSchema,
@@ -76,6 +82,28 @@ export type ParsedOrderMessage =
       type: "payment_proof"
       payload: PaymentProofMessageSchema
     })
+  | (ParsedOrderMessageBase & {
+      type: "organizer_fulfillment_receipt"
+      payload: EventMarketReadyReceiptSchema
+    })
+  | (ParsedOrderMessageBase & {
+      type: "organizer_fulfillment_revocation"
+      payload: EventMarketFulfillmentRevocationSchema
+    })
+  | (ParsedOrderMessageBase & {
+      type: "organizer_handoff_ack"
+      payload: EventMarketHandoffAckSchema
+    })
+
+export type ParsedEventMarketPrivateMessage = Extract<
+  ParsedOrderMessage,
+  {
+    type:
+      | "organizer_fulfillment_receipt"
+      | "organizer_fulfillment_revocation"
+      | "organizer_handoff_ack"
+  }
+>
 
 const lightningPaymentProofInputSchema = z
   .object({
@@ -343,6 +371,21 @@ export function parseOrderMessageRumorEvent(
       note: getString(json?.note),
     })
     return { ...messageBase(event, type, orderId), payload }
+  }
+
+  if (type === "organizer_fulfillment_receipt") {
+    const payload = eventMarketReadyReceiptSchema.parse(json)
+    return { ...messageBase(event, type, payload.claimRef), payload }
+  }
+
+  if (type === "organizer_fulfillment_revocation") {
+    const payload = eventMarketFulfillmentRevocationSchema.parse(json)
+    return { ...messageBase(event, type, payload.claimRef), payload }
+  }
+
+  if (type === "organizer_handoff_ack") {
+    const payload = eventMarketHandoffAckSchema.parse(json)
+    return { ...messageBase(event, type, payload.claimRef), payload }
   }
 
   return {

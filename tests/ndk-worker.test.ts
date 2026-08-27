@@ -261,6 +261,173 @@ describe("NDK relay worker verification fallback", () => {
     expect(workerTerminates).toBe(1)
   })
 
+  it("verifies an EOSE-complete private wrap when the worker queue is saturated", async () => {
+    const validEvent = finalizeEvent(
+      {
+        kind: EVENT_KINDS.GIFT_WRAP,
+        created_at: 10,
+        tags: [["p", "1".repeat(64)]],
+        content: "bounded-test-ciphertext",
+      },
+      Uint8Array.from([...new Uint8Array(31), 1])
+    )
+    const invalidEvent = { ...validEvent, sig: "0".repeat(128) }
+
+    class HoldingWorker {
+      onmessage: ((event: MessageEvent) => void) | null = null
+      onerror: ((event: Event) => void) | null = null
+
+      postMessage(): void {
+        workerPostMessages += 1
+      }
+
+      terminate(): void {
+        workerTerminates += 1
+      }
+    }
+
+    Object.defineProperty(globalThis, "WebSocket", {
+      configurable: true,
+      writable: true,
+      value: sequencedRelayWebSocket([invalidEvent, validEvent]),
+    })
+    Object.defineProperty(globalThis, "Worker", {
+      configurable: true,
+      writable: true,
+      value: HoldingWorker,
+    })
+
+    const saturatedBatches = Array.from({ length: 7 }, () =>
+      verifySignedPublicNostrEvents([validEvent]).catch(() => ({
+        events: [],
+        truncated: false,
+      }))
+    )
+    expect(workerPostMessages).toBe(7)
+
+    try {
+      const result = await fetchEventsFanoutDetailed(
+        {
+          kinds: [EVENT_KINDS.GIFT_WRAP],
+          "#p": ["1".repeat(64)],
+        },
+        {
+          relayUrls: ["wss://saturated-verifier.example"],
+          connectTimeoutMs: 50,
+          fetchTimeoutMs: 50,
+          reuseRelayConnections: false,
+        }
+      )
+
+      expect(result.events.map((event) => event.id)).toEqual([validEvent.id])
+      expect(result.relays).toEqual([
+        {
+          relayUrl: "wss://saturated-verifier.example",
+          status: "success",
+          eventCount: 1,
+          rejectedEventCount: 1,
+        },
+      ])
+    } finally {
+      __resetNdkTestState()
+      await Promise.all(saturatedBatches)
+    }
+  })
+
+  it("reserves relay-read capacity for bounded verification fallback", async () => {
+    const validEvent = finalizeEvent(
+      {
+        kind: EVENT_KINDS.GIFT_WRAP,
+        created_at: 10,
+        tags: [["p", "1".repeat(64)]],
+        content: "reserved-fallback-test",
+      },
+      Uint8Array.from([...new Uint8Array(31), 1])
+    )
+    const invalidEvent = { ...validEvent, sig: "0".repeat(128) }
+
+    class HoldingWorker {
+      onmessage: ((event: MessageEvent) => void) | null = null
+      onerror: ((event: Event) => void) | null = null
+
+      postMessage(): void {
+        workerPostMessages += 1
+      }
+
+      terminate(): void {
+        workerTerminates += 1
+      }
+    }
+
+    Object.defineProperty(globalThis, "WebSocket", {
+      configurable: true,
+      writable: true,
+      value: sequencedRelayWebSocket([invalidEvent, validEvent]),
+    })
+    Object.defineProperty(globalThis, "Worker", {
+      configurable: true,
+      writable: true,
+      value: HoldingWorker,
+    })
+
+    const occupiedReads = Array.from({ length: 7 }, (_, index) =>
+      fetchEventsFanoutDetailed(
+        { kinds: [EVENT_KINDS.GIFT_WRAP], "#p": ["1".repeat(64)] },
+        {
+          relayUrls: [`wss://occupied-verifier-${index}.example`],
+          connectTimeoutMs: 50,
+          fetchTimeoutMs: 50,
+          reuseRelayConnections: false,
+        }
+      )
+    )
+
+    let exactRead: ReturnType<typeof fetchEventsFanoutDetailed> | null = null
+    try {
+      const workerDeadline = Date.now() + 250
+      while (workerPostMessages < 7 && Date.now() < workerDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      }
+      expect(workerPostMessages).toBe(7)
+
+      exactRead = fetchEventsFanoutDetailed(
+        { kinds: [EVENT_KINDS.GIFT_WRAP], "#p": ["1".repeat(64)] },
+        {
+          relayUrls: ["wss://reserved-verifier.example"],
+          connectTimeoutMs: 50,
+          fetchTimeoutMs: 50,
+          reuseRelayConnections: false,
+        }
+      )
+      const result = await Promise.race([
+        exactRead.then((value) => ({ state: "resolved" as const, value })),
+        new Promise<{ state: "timeout" }>((resolve) =>
+          setTimeout(() => resolve({ state: "timeout" }), 250)
+        ),
+      ])
+
+      expect(result.state).toBe("resolved")
+      if (result.state === "resolved") {
+        expect(result.value.events.map((event) => event.id)).toEqual([
+          validEvent.id,
+        ])
+        expect(result.value.relays).toEqual([
+          {
+            relayUrl: "wss://reserved-verifier.example",
+            status: "success",
+            eventCount: 1,
+            rejectedEventCount: 1,
+          },
+        ])
+      }
+    } finally {
+      __resetNdkTestState()
+      await Promise.allSettled(
+        exactRead ? [...occupiedReads, exactRead] : occupiedReads
+      )
+    }
+  })
+
   it("verifies a valid hex-encoded Nostr signature in the sync fallback", async () => {
     const validEvent = finalizeEvent(
       {
@@ -1182,7 +1349,7 @@ describe("NDK relay worker verification fallback", () => {
     expect(recovered.events.map((event) => event.id)).toEqual([validEvent.id])
   })
 
-  it("fails closed when a verification worker times out", async () => {
+  it("falls back to bounded verification when a worker times out", async () => {
     const validEvent = finalizeEvent(
       {
         kind: EVENT_KINDS.PROFILE,
@@ -1208,7 +1375,10 @@ describe("NDK relay worker verification fallback", () => {
     Object.defineProperty(globalThis, "WebSocket", {
       configurable: true,
       writable: true,
-      value: sequencedRelayWebSocket([validEvent]),
+      value: sequencedRelayWebSocket([
+        { ...validEvent, sig: "0".repeat(128) },
+        validEvent,
+      ]),
     })
     Object.defineProperty(globalThis, "Worker", {
       configurable: true,
@@ -1227,12 +1397,13 @@ describe("NDK relay worker verification fallback", () => {
     )
     await Promise.resolve()
 
-    expect(result.events).toEqual([])
+    expect(result.events.map((event) => event.id)).toEqual([validEvent.id])
     expect(result.relays).toEqual([
       {
         relayUrl: "wss://verification-timeout.example",
-        status: "failed",
-        eventCount: 0,
+        status: "success",
+        eventCount: 1,
+        rejectedEventCount: 1,
       },
     ])
     expect(workerTerminates).toBe(1)

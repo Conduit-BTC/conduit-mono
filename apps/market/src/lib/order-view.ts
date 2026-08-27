@@ -1,6 +1,7 @@
 import {
   deriveOrderFlow,
   extractOrderSummary,
+  getPriceSats,
   getOrderPublicZapSigner,
   isKnownOrderStatus,
   isMerchantOrderAccepted,
@@ -26,6 +27,8 @@ import {
   type SourcePriceQuote,
 } from "@conduit/core"
 import type { StatusStepperRow, StatusStepperRowStatus } from "@conduit/ui"
+import type { CartItemFulfillment, CartPickupFulfillment } from "./cart-model"
+import { getPickupHandoffSummary } from "./pickup-handoff"
 
 /**
  * Interpreted, status-first order view-model (CND-122).
@@ -47,6 +50,9 @@ export interface OrderViewItem {
   priceAtPurchase: number
   currency: string
   sourcePrice?: SourcePriceQuote
+  shippingCostSats?: number
+  sourceShippingCost?: SourcePriceQuote
+  fulfillment?: CartItemFulfillment
 }
 
 export interface OrderViewModel {
@@ -64,6 +70,8 @@ export interface OrderViewModel {
   items: OrderViewItem[]
   /** False only when every item was explicitly snapshotted as digital. */
   requiresShipping: boolean
+  requiresPickup: boolean
+  pickupFulfillments: CartPickupFulfillment[]
   totalSats: number | null
   currency: string
   shippingAddress: OrderSummary["shippingAddress"]
@@ -111,9 +119,58 @@ export interface BuildOrderViewModelInput {
   paymentAttempt?: StoredPaymentAttempt | null
 }
 
+export function isZeroCostPickupOrder(
+  vm: Pick<OrderViewModel, "items" | "requiresPickup" | "totalSats">
+): boolean {
+  return (
+    vm.totalSats === 0 &&
+    vm.requiresPickup &&
+    vm.items.length > 0 &&
+    vm.items.every((item) => {
+      const fulfillment = item.fulfillment
+      if (fulfillment?.type !== "pickup") return false
+      const productZero = getPriceSats(
+        {
+          price: item.priceAtPurchase,
+          currency: item.currency,
+          priceSats: item.priceAtPurchase,
+          sourcePrice: item.sourcePrice,
+        },
+        null,
+        { allowZero: true }
+      )
+      const pickupSourceMatchesSnapshot =
+        item.sourceShippingCost?.amount === fulfillment.sourceCost.amount &&
+        item.sourceShippingCost.currency === fulfillment.sourceCost.currency &&
+        item.sourceShippingCost.normalizedCurrency ===
+          fulfillment.sourceCost.normalizedCurrency
+      const exactZeroPickupCost =
+        item.shippingCostSats === 0 &&
+        fulfillment.costSats === 0 &&
+        fulfillment.sourceCost.amount === 0 &&
+        pickupSourceMatchesSnapshot
+      return (
+        fulfillment.handoffMode !== undefined &&
+        fulfillment.handlerPubkey !== undefined &&
+        productZero?.sats === 0 &&
+        productZero.approximate === false &&
+        exactZeroPickupCost
+      )
+    })
+  )
+}
+
 export function getOrderPaymentMethodLabel(
-  vm: Pick<OrderViewModel, "checkoutMode" | "publicZapSigner">
+  vm: Pick<
+    OrderViewModel,
+    | "checkoutMode"
+    | "items"
+    | "publicZapSigner"
+    | "requiresPickup"
+    | "totalSats"
+  >
 ): string {
+  if (isZeroCostPickupOrder(vm)) return "No payment required"
   const signer =
     vm.publicZapSigner ??
     (vm.checkoutMode ? getOrderPublicZapSigner(vm.checkoutMode) : undefined)
@@ -219,6 +276,20 @@ export function buildOrderViewModel(
         priceAtPurchase: item.priceAtPurchase,
         currency: item.currency,
         ...(item.sourcePrice ? { sourcePrice: item.sourcePrice } : {}),
+        ...(item.shippingCostSats !== undefined
+          ? { shippingCostSats: item.shippingCostSats }
+          : {}),
+        ...(item.sourceShippingCost
+          ? { sourceShippingCost: item.sourceShippingCost }
+          : {}),
+        ...((item as typeof item & { fulfillment?: CartItemFulfillment })
+          .fulfillment
+          ? {
+              fulfillment: (
+                item as typeof item & { fulfillment: CartItemFulfillment }
+              ).fulfillment,
+            }
+          : {}),
       }))
     : (summary?.items ?? []).map((item) => ({
         productId: item.productId,
@@ -233,7 +304,31 @@ export function buildOrderViewModel(
         priceAtPurchase: item.priceAtPurchase,
         currency: item.currency,
         ...(item.sourcePrice ? { sourcePrice: item.sourcePrice } : {}),
+        ...(item.shippingCostSats !== undefined
+          ? { shippingCostSats: item.shippingCostSats }
+          : {}),
+        ...(item.sourceShippingCost
+          ? { sourceShippingCost: item.sourceShippingCost }
+          : {}),
+        ...((item as typeof item & { fulfillment?: CartItemFulfillment })
+          .fulfillment
+          ? {
+              fulfillment: (
+                item as typeof item & { fulfillment: CartItemFulfillment }
+              ).fulfillment,
+            }
+          : {}),
       }))
+
+  const pickupFulfillments = Array.from(
+    new Map(
+      items.flatMap((item) =>
+        item.fulfillment?.type === "pickup"
+          ? [[item.fulfillment.option.coordinate, item.fulfillment] as const]
+          : []
+      )
+    ).values()
+  )
 
   const totalSats = lifecycle?.totalSats ?? (summary ? summary.subtotal : null)
 
@@ -290,14 +385,20 @@ export function buildOrderViewModel(
 
   const publicReceiptNotObserved =
     paymentStatus === "ambiguous" && zapReceiptStatus === "receipt_not_observed"
+  const zeroCostPickupOrder = isZeroCostPickupOrder({
+    totalSats,
+    requiresPickup: pickupFulfillments.length > 0,
+    items,
+  })
   const actionNeeded =
-    (!paymentPaid &&
-      (paymentStatus === "manual_required" ||
-        paymentStatus === "failed" ||
-        (paymentStatus === "ambiguous" && !publicReceiptNotObserved))) ||
     orderDeliveryStatus === "failed" ||
-    proofDeliveryStatus === "retry_needed" ||
-    proofDeliveryStatus === "failed"
+    (!zeroCostPickupOrder &&
+      ((!paymentPaid &&
+        (paymentStatus === "manual_required" ||
+          paymentStatus === "failed" ||
+          (paymentStatus === "ambiguous" && !publicReceiptNotObserved))) ||
+        proofDeliveryStatus === "retry_needed" ||
+        proofDeliveryStatus === "failed"))
 
   // Buyer knows the flow authoritatively from checkoutMode; fall back to the
   // merchant-side heuristic when there's no lifecycle record (relay-only view).
@@ -323,7 +424,13 @@ export function buildOrderViewModel(
     updatedAt: lifecycle?.updatedAt ?? conversation?.latestAt ?? Date.now(),
     items,
     requiresShipping:
-      items.length === 0 || items.some((item) => item.format !== "digital"),
+      items.length === 0 ||
+      items.some(
+        (item) =>
+          item.format !== "digital" && item.fulfillment?.type !== "pickup"
+      ),
+    requiresPickup: pickupFulfillments.length > 0,
+    pickupFulfillments,
     totalSats,
     currency: lifecycle?.currency ?? summary?.currency ?? "SATS",
     shippingAddress:
@@ -562,7 +669,7 @@ export function computeOrderTimelineStatuses(
   // 7. Complete
   const complete: StatusStepperRowStatus = completed
     ? "complete"
-    : !vm.requiresShipping && merchantConfirmed
+    : !vm.requiresShipping && !vm.requiresPickup && merchantConfirmed
       ? "in_progress"
       : "waiting"
 
@@ -613,10 +720,14 @@ export function buildOrderTimeline(
     `${sats.toLocaleString()} sats`
 ): StatusStepperRow[] {
   const statuses = computeOrderTimelineStatuses(vm)
-  const rowOrder =
-    vm.buyerIdentityKind === "guest_ephemeral"
+  const pickupHandoff = vm.pickupFulfillments[0]
+    ? getPickupHandoffSummary(vm.pickupFulfillments[0])
+    : null
+  const rowOrder: readonly OrderTimelineRowKey[] = isZeroCostPickupOrder(vm)
+    ? ["order_sent", "merchant_confirmation", "fulfillment", "complete"]
+    : vm.buyerIdentityKind === "guest_ephemeral"
       ? TIMELINE_ROW_ORDER.slice(0, 4)
-      : vm.requiresShipping
+      : vm.requiresShipping || vm.requiresPickup
         ? TIMELINE_ROW_ORDER
         : TIMELINE_ROW_ORDER.filter((key) => key !== "fulfillment")
   return rowOrder.map((key) => {
@@ -629,6 +740,19 @@ export function buildOrderTimeline(
       title = status === "complete" ? "Paid directly" : "Direct payment"
       subtitle =
         "Paid the merchant directly over Lightning — no invoice needed."
+    } else if (key === "fulfillment" && vm.requiresPickup) {
+      title =
+        status === "complete"
+          ? "Pickup complete"
+          : (pickupHandoff?.label ?? "Event pickup")
+      subtitle =
+        status === "complete"
+          ? "The pickup order was marked complete."
+          : pickupHandoff?.mode === "organizer_handoff"
+            ? isZeroCostPickupOrder(vm)
+              ? "No payment is required. The organizer handles pickup after the merchant sends the minimal private pickup receipt."
+              : "The organizer handles pickup after the merchant confirms payment and sends the minimal private pickup receipt."
+            : "The merchant handles pickup at the signed merchant booth location. No organizer receipt is sent."
     } else if (
       key === "payment" &&
       vm.paymentStatus === "ambiguous" &&
@@ -707,6 +831,40 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
       primaryLabel: "Failed",
       detailLabel: "Order not sent",
       actionNeeded: true,
+      showSpinner: false,
+    }
+  }
+  if (isZeroCostPickupOrder(vm)) {
+    if (
+      vm.merchantStatus === "accepted" ||
+      vm.merchantStatus === "processing" ||
+      vm.merchantStatus === "shipped"
+    ) {
+      return {
+        tone: "info",
+        primaryLabel: "In progress",
+        detailLabel:
+          vm.merchantStatus === "shipped"
+            ? "Pickup ready"
+            : "Merchant confirmed",
+        actionNeeded: false,
+        showSpinner: false,
+      }
+    }
+    if (vm.orderDeliveryStatus === "sent") {
+      return {
+        tone: "warning",
+        primaryLabel: "Pending",
+        detailLabel: "Awaiting merchant",
+        actionNeeded: false,
+        showSpinner: false,
+      }
+    }
+    return {
+      tone: "neutral",
+      primaryLabel: "Pending",
+      detailLabel: "Starting order",
+      actionNeeded: false,
       showSpinner: false,
     }
   }
@@ -789,7 +947,9 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
         return {
           tone: "success",
           primaryLabel: "Receipt sent",
-          detailLabel: "Merchant follow-up uses phone and email",
+          detailLabel: vm.requiresPickup
+            ? "Merchant recovery uses email or phone"
+            : "Merchant follow-up uses phone and email",
           actionNeeded: false,
           showSpinner: false,
         }
