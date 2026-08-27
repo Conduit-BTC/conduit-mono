@@ -39,6 +39,12 @@ Order inline findings by severity (`P0`, `P1`, `P2`). Each finding includes:
 2. file path and line reference
 3. concrete recommendation
 
+Create inline findings only for P0-P2 defects introduced or worsened by the
+pull request, or required by explicit acceptance criteria. Ponytail and
+simplicity-review findings are advisory and never affect the correctness
+verdict. Do not repeat them unless the correctness review independently verifies
+such a defect.
+
 The review body must also include:
 
 1. Reviewer public-context decision:
@@ -55,14 +61,14 @@ The review body must also include:
 
 Do not add a second summary after the residual-risk section.
 
-Use `BLOCKED` when findings, unresolved threads, policy conflicts, missing
-evidence, or unsafe merge order prevent a clean handoff. Record unavailable
-branch settings as a maintainer-owned residual. Block for settings only when an
-acceptance or merge claim depends on them, or visible evidence conflicts with
-the documented settings. Name unmet conditions in the review body without
-duplicating the inline finding detail. Use `READY FOR HUMAN APPROVAL` only after
-the complete adversarial pass is clean. This verdict does not replace human
-approval.
+Use `BLOCKED` when actionable correctness findings, unresolved actionable
+correctness threads, policy conflicts, missing evidence, or unsafe merge order
+prevent a clean handoff. Record unavailable branch settings as a
+maintainer-owned residual. Block for settings only when an acceptance or merge
+claim depends on them, or visible evidence conflicts with the documented
+settings. Name unmet conditions in the review body without duplicating the
+inline finding detail. Use `READY FOR HUMAN APPROVAL` only after the complete
+adversarial pass is clean. This verdict does not replace human approval.
 
 ## Mandatory Checks
 
@@ -115,8 +121,12 @@ checks or a small visible diff.
 - Bind automatic review handoffs to the exact source repository, pull request,
   base SHA, head SHA, workflow path, run, run attempt, and review provenance
   marker.
-- Inspect unresolved review threads from all prior reviews. A later clean review
-  does not supersede an unresolved actionable thread.
+- Inspect unresolved review threads from all prior reviews. A later clean
+  review does not supersede an unresolved actionable correctness finding.
+- Treat this verdict as point-in-time evidence for the reviewed head. After the
+  review is submitted, later-created or reopened threads remain GitHub evidence
+  for required human approval. Do not mirror global thread state into a second
+  CI merge-state gate.
 - Distinguish the source head SHA, synthetic merge SHA, base SHA, deployed SHA,
   and artifact SHA. Confirm that cited evidence tested the intended candidate.
 - Verify each acceptance claim against the observed assertion, environment,
@@ -136,9 +146,9 @@ checks or a small visible diff.
 - End with `What can still be wrong if all visible checks are green?` List
   concrete fidelity, environment, deployment, history, and operational gaps.
 
-Do not issue a clean marker until this pass has no actionable finding and the
-pull request has no unresolved review thread. A clean marker requires
-`Merge-readiness verdict: READY FOR HUMAN APPROVAL`.
+Do not issue a clean marker until this pass has no actionable correctness
+finding and the pull request has no unresolved actionable correctness thread. A
+clean marker requires `Merge-readiness verdict: READY FOR HUMAN APPROVAL`.
 
 ## Mandatory Automation Residual
 
