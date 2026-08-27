@@ -1343,6 +1343,9 @@ function toCachedProduct(record: CommerceProductRecord) {
     sourceShippingCost: product.sourceShippingCost,
     shippingOptionId: product.shippingOptionId,
     shippingOptionDTag: product.shippingOptionDTag,
+    shippingOptionLaunchUnsupported: product.shippingOptionId
+      ? product.shippingOptionLaunchUnsupported === true
+      : undefined,
     shippingCountries: product.shippingCountries,
     shippingCountryRules: product.shippingCountryRules,
     visibility: product.visibility,
@@ -1366,6 +1369,8 @@ function toCachedProduct(record: CommerceProductRecord) {
 function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
   const zapMessagePolicy =
     row.zapMessagePolicy === "custom" ? row.zapMessagePolicy : "generic_only"
+  const hasShippingOptionReference =
+    typeof row.shippingOptionId === "string" && row.shippingOptionId.length > 0
   const tags = canonicalizeProductTags(row.tags)
   const summary = normalizeProductSummaryForDisplay(row.summary, {
     title: row.title,
@@ -1392,6 +1397,11 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
     sourceShippingCost: row.sourceShippingCost,
     shippingOptionId: row.shippingOptionId,
     shippingOptionDTag: row.shippingOptionDTag,
+    shippingOptionLaunchUnsupported: hasShippingOptionReference
+      ? typeof row.shippingOptionLaunchUnsupported === "boolean"
+        ? row.shippingOptionLaunchUnsupported
+        : true
+      : undefined,
     shippingCountries: row.shippingCountries,
     shippingCountryRules: row.shippingCountryRules,
     visibility: row.visibility ?? "public",

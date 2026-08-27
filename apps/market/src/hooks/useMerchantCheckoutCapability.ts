@@ -128,8 +128,7 @@ export function useMerchantCheckoutCapability(input: {
           country: shippingAddress.country,
           postalCode: shippingAddress.postalCode,
         },
-        Array.from(items),
-        []
+        Array.from(items)
       ).eligible === true)
   )
   const listingTermsCurrent = Boolean(

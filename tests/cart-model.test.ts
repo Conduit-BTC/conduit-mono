@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import type {
+  ParsedShippingOption,
   Product,
   ProductAvailabilityDiagnostic,
   ProductAvailabilityIssue,
@@ -26,9 +27,11 @@ import {
   removeCartItem,
   selectCartItem,
   selectCartItemQuantity,
+  serializeCartState,
   setCartItemQuantity,
   type CartItem,
 } from "../apps/market/src/lib/cart-model"
+import { prepareCartFulfillment } from "../apps/market/src/lib/cart-shipping-options"
 
 function item(overrides: Partial<CartItem> = {}): CartItem {
   return {
@@ -209,7 +212,7 @@ describe("cart model", () => {
     expect(items).toEqual([])
   })
 
-  it("preserves product stock when creating a cart item snapshot", () => {
+  it("preserves product stock and shipping-shape safety when creating a cart item snapshot", () => {
     const product: Product = {
       id: "30402:merchant-a:sold-out-tee",
       pubkey: "merchant-a",
@@ -218,6 +221,8 @@ describe("cart model", () => {
       currency: "SATS",
       type: "simple",
       format: "physical",
+      shippingOptionId: "30406:merchant-a:sold-out-tee-shipping-standard",
+      shippingOptionLaunchUnsupported: true,
       visibility: "public",
       stock: 0,
       images: [],
@@ -234,6 +239,7 @@ describe("cart model", () => {
       merchantPubkey: product.pubkey,
       title: product.title,
       stock: 0,
+      shippingOptionLaunchUnsupported: true,
     })
   })
 
@@ -859,6 +865,48 @@ describe("cart model", () => {
     expect(cartItemsMatchCurrentProducts([cartItem], [])).toBe(false)
   })
 
+  it("binds refreshed variation identity before authorizing HUD checkout", () => {
+    const familyProductId = "30402:merchant-a:shirt"
+    const specifications = [{ key: "size", value: "M" }]
+    const product = refreshedProduct(item(), {
+      type: "variation",
+      parentProductId: familyProductId,
+      specifications,
+      format: "digital",
+    })
+    const cartItem: CartItem = {
+      ...createCartItemFromProduct(product),
+      familyProductId,
+      selectedSpecifications: specifications,
+      quantity: 2,
+    }
+
+    expect(cartItemsMatchCurrentProducts([cartItem], [product])).toBe(true)
+    expect(
+      cartItemsMatchCurrentProducts(
+        [cartItem],
+        [{ ...product, parentProductId: "30402:merchant-a:other-shirt" }]
+      )
+    ).toBe(false)
+    expect(
+      cartItemsMatchCurrentProducts(
+        [cartItem],
+        [
+          {
+            ...product,
+            specifications: [{ key: "size", value: "L" }],
+          },
+        ]
+      )
+    ).toBe(false)
+    expect(
+      cartItemsMatchCurrentProducts(
+        [cartItem],
+        [{ ...product, type: "simple", parentProductId: undefined }]
+      )
+    ).toBe(false)
+  })
+
   it("keeps refreshed availability merchant-scoped for legacy identifiers", () => {
     const cartItems = [
       item({ productId: "shared", merchantPubkey: "merchant-a", stock: 1 }),
@@ -899,6 +947,95 @@ describe("cart model", () => {
         items: [item({ productId: "product-a", stock: 7 })],
       }).state.items[0]
     ).toMatchObject({ stock: 7 })
+  })
+
+  it("preserves canonical shipping authorization through persisted cart parsing", () => {
+    const merchantPubkey = "a".repeat(64)
+    const cartItem = item({
+      productId: `30402:${merchantPubkey}:field-notes`,
+      merchantPubkey,
+      shippingOptionLaunchUnsupported: true,
+      productUpdatedAt: 2_000,
+      canonicalShippingResolved: true,
+    })
+
+    const parsed = parsePersistedCart(serializeCartState({ items: [cartItem] }))
+      .state.items[0]
+
+    expect(parsed).toMatchObject({
+      shippingOptionLaunchUnsupported: true,
+      productUpdatedAt: 2_000,
+      canonicalShippingResolved: true,
+    })
+
+    const malformed = parsePersistedCart({
+      version: 2,
+      items: [
+        {
+          ...cartItem,
+          shippingOptionLaunchUnsupported: "true",
+          productUpdatedAt: Number.NaN,
+          canonicalShippingResolved: 1,
+        },
+      ],
+    }).state.items[0]
+
+    expect(malformed?.shippingOptionLaunchUnsupported).toBeUndefined()
+    expect(malformed?.productUpdatedAt).toBeUndefined()
+    expect(malformed?.canonicalShippingResolved).toBeUndefined()
+  })
+
+  it("keeps fixed shipping ready after a serialize and parse round trip", () => {
+    const merchantPubkey = "a".repeat(64)
+    const productDTag = "field-notes"
+    const shippingOptionId = `30406:${merchantPubkey}:${productDTag}-shipping-standard`
+    const cartItem = item({
+      productId: `30402:${merchantPubkey}:${productDTag}`,
+      merchantPubkey,
+      currency: "USD",
+      format: "physical",
+      shippingOptionId,
+      shippingOptionDTag: `${productDTag}-shipping-standard`,
+      shippingOptionLaunchUnsupported: false,
+      productUpdatedAt: 2_000,
+      canonicalShippingResolved: true,
+    })
+    const shippingOption: ParsedShippingOption = {
+      eventId: "shipping-event",
+      id: shippingOptionId,
+      pubkey: merchantPubkey,
+      dTag: `${productDTag}-shipping-standard`,
+      title: "Standard Shipping",
+      currency: "USD",
+      price: 5,
+      countries: ["US"],
+      countryRules: [
+        {
+          code: "US",
+          name: "United States",
+          restrictTo: [],
+          exclude: [],
+        },
+      ],
+      service: "standard",
+      createdAt: 2_000,
+      launchUnsupportedTags: [],
+    }
+
+    const restoredItems = parsePersistedCart(
+      serializeCartState({ items: [cartItem] })
+    ).state.items
+    const prepared = prepareCartFulfillment(restoredItems, [shippingOption])
+
+    expect(prepared.resolutions.get(cartItem.productId)).toMatchObject({
+      intent: "fixed_standard",
+      status: "ready",
+    })
+    expect(prepared.items[0]).toMatchObject({
+      shippingOptionId,
+      productUpdatedAt: 2_000,
+      canonicalShippingResolved: true,
+    })
   })
 
   it("does not add beyond finite tracked stock", () => {
@@ -954,7 +1091,8 @@ describe("cart model", () => {
           quantity: 2,
           priceSats: 100,
           shippingCostSats: 25,
-          shippingOptionId: "standard",
+          shippingOptionId: "30406:merchant-a:product-a-shipping-standard",
+          canonicalShippingResolved: true,
           shippingCountryRules: [
             { code: "US", name: "United States", restrictTo: [], exclude: [] },
           ],
@@ -964,7 +1102,8 @@ describe("cart model", () => {
           quantity: 1,
           priceSats: 500,
           shippingCostSats: 50,
-          shippingOptionId: "standard",
+          shippingOptionId: "30406:merchant-a:product-b-shipping-standard",
+          canonicalShippingResolved: true,
           shippingCountryRules: [
             { code: "US", name: "United States", restrictTo: [], exclude: [] },
           ],
@@ -1018,7 +1157,7 @@ describe("cart model", () => {
     })
   })
 
-  it("accepts a product shipping snapshot without a preset reference", () => {
+  it("rejects an unreferenced inline product shipping snapshot", () => {
     expect(
       getCartCostSummary([
         item({
@@ -1034,10 +1173,10 @@ describe("cart model", () => {
     ).toMatchObject({
       count: 2,
       itemSubtotalSats: 200,
-      shippingTotalSats: 50,
-      totalSats: 250,
+      shippingTotalSats: 0,
+      totalSats: 200,
       itemPricesAvailable: true,
-      shippingReadyForZap: true,
+      shippingReadyForZap: false,
     })
   })
 

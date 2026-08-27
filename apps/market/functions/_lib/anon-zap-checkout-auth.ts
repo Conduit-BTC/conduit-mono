@@ -12,6 +12,10 @@ import {
 import { fetchEventsFanoutDetailed } from "@conduit/core/protocol/ndk"
 import { parseProductEvent } from "@conduit/core/protocol/products"
 import {
+  parseShippingOptionAddress,
+  selectLatestShippingOptions,
+} from "@conduit/core/protocol/shipping"
+import {
   createAnonZapProviderAttestation,
   getAnonZapProviderAttestationPublicKey,
   parseAnonZapProviderAttestationPublicKeys,
@@ -167,7 +171,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function getRequiredPricingCurrencies(
   intent: { merchantPubkey: string; items: Array<{ productAddress: string }> },
-  productEvents: SignedPublicNostrEvent[]
+  productEvents: SignedPublicNostrEvent[],
+  shippingEvents: SignedPublicNostrEvent[],
+  deletionEvents: SignedPublicNostrEvent[]
 ): string[] {
   const currencies = new Set<string>()
   const validProducts = productEvents.filter(
@@ -194,22 +200,77 @@ function getRequiredPricingCurrencies(
         if (isFiatCurrencyCode(priceCurrency)) {
           currencies.add(priceCurrency.trim().toUpperCase())
         }
-        const shippingCurrency =
-          product.sourceShippingCost?.normalizedCurrency ??
-          product.sourceShippingCost?.currency
-        if (
-          (product.sourceShippingCost?.amount ?? 0) > 0 &&
-          shippingCurrency &&
-          isFiatCurrencyCode(shippingCurrency)
-        ) {
-          currencies.add(shippingCurrency.trim().toUpperCase())
-        }
       } catch {
         // Authorization below remains responsible for rejecting malformed events.
       }
     }
   }
+  const activeShippingOptions = selectLatestShippingOptions(
+    shippingEvents.filter(
+      (event) =>
+        event.kind === 30406 &&
+        event.pubkey === intent.merchantPubkey &&
+        isValidSignedPublicNostrEvent(event)
+    ),
+    deletionEvents.filter(
+      (event) =>
+        event.kind === 5 &&
+        event.pubkey === intent.merchantPubkey &&
+        isValidSignedPublicNostrEvent(event)
+    )
+  )
+  for (const option of activeShippingOptions) {
+    if (option.price > 0 && isFiatCurrencyCode(option.currency)) {
+      currencies.add(option.currency)
+    }
+  }
   return Array.from(currencies).sort()
+}
+
+function getRequestedShippingCoordinates(
+  intent: { merchantPubkey: string; items: Array<{ productAddress: string }> },
+  productEvents: SignedPublicNostrEvent[]
+): string[] {
+  const requestedDTags = new Set(
+    intent.items.map((item) =>
+      item.productAddress.split(":").slice(2).join(":")
+    )
+  )
+  const candidatesByDTag = new Map<string, SignedPublicNostrEvent[]>()
+  for (const event of productEvents) {
+    if (
+      event.kind !== 30402 ||
+      event.pubkey !== intent.merchantPubkey ||
+      !isValidSignedPublicNostrEvent(event)
+    ) {
+      continue
+    }
+    const dTag = event.tags.find((tag) => tag[0] === "d")?.[1]
+    if (!dTag || !requestedDTags.has(dTag)) continue
+    const candidates = candidatesByDTag.get(dTag) ?? []
+    candidates.push(event)
+    candidatesByDTag.set(dTag, candidates)
+  }
+
+  const coordinates = new Set<string>()
+  for (const candidates of candidatesByDTag.values()) {
+    const newestCreatedAt = Math.max(
+      ...candidates.map((event) => event.created_at)
+    )
+    for (const event of candidates.filter(
+      (candidate) => candidate.created_at === newestCreatedAt
+    )) {
+      for (const tag of event.tags.filter(
+        (candidate) => candidate[0] === "shipping_option" && candidate[1]
+      )) {
+        const address = parseShippingOptionAddress(tag[1]!)
+        if (address && address.pubkey.toLowerCase() === intent.merchantPubkey) {
+          coordinates.add(address.coordinate)
+        }
+      }
+    }
+  }
+  return Array.from(coordinates).sort()
 }
 
 function parseCsv(raw: string | undefined): string[] {
@@ -975,6 +1036,38 @@ export async function authorizeAnonZapRequest(
       commerceRelays,
       100
     )
+    const shippingCoordinates = getRequestedShippingCoordinates(
+      intent,
+      productEvents
+    )
+    if (shippingCoordinates.length > 0) {
+      // This Pages boundary has no trusted durable store for monotonic
+      // kind-30406 revisions and NIP-09 withdrawals. Keep irreversible
+      // anonymous public-zap payment disabled until that server authority
+      // exists; normal order/private-invoice checkout remains available.
+      throw new Error(
+        "Anonymous public-zap checkout does not support fixed shipping."
+      )
+    }
+    const shippingDTags = shippingCoordinates.map(
+      (coordinate) => parseShippingOptionAddress(coordinate)!.dTag
+    )
+    const shippingEvents =
+      shippingDTags.length > 0
+        ? requireCompletePublicRead(
+            await dependencies.fetchPublicEvents(
+              {
+                kinds: [30406],
+                authors: [intent.merchantPubkey],
+                "#d": shippingDTags,
+                limit: 100,
+              },
+              commerceRelays
+            ),
+            commerceRelays,
+            100
+          )
+        : []
     const profileEvents = requireCompletePublicRead(
       profileRead,
       commerceRelays,
@@ -1004,10 +1097,52 @@ export async function authorizeAnonZapRequest(
             300
           )
         : []
-    const deletionEvents = [...addressDeletionEvents, ...eventDeletionEvents]
+    const shippingAddressDeletionEvents =
+      shippingCoordinates.length > 0
+        ? requireCompletePublicRead(
+            await dependencies.fetchPublicEvents(
+              {
+                kinds: [5],
+                authors: [intent.merchantPubkey],
+                "#a": shippingCoordinates,
+                limit: 300,
+              },
+              commerceRelays
+            ),
+            commerceRelays,
+            300
+          )
+        : []
+    const shippingEventIds = Array.from(
+      new Set(shippingEvents.map((event) => event.id).filter(Boolean))
+    )
+    const shippingEventDeletionEvents =
+      shippingEventIds.length > 0
+        ? requireCompletePublicRead(
+            await dependencies.fetchPublicEvents(
+              {
+                kinds: [5],
+                authors: [intent.merchantPubkey],
+                "#e": shippingEventIds,
+                limit: 300,
+              },
+              commerceRelays
+            ),
+            commerceRelays,
+            300
+          )
+        : []
+    const deletionEvents = [
+      ...addressDeletionEvents,
+      ...eventDeletionEvents,
+      ...shippingAddressDeletionEvents,
+      ...shippingEventDeletionEvents,
+    ]
     const requiredPricingCurrencies = getRequiredPricingCurrencies(
       intent,
-      productEvents
+      productEvents,
+      shippingEvents,
+      deletionEvents
     )
     const pricingRate =
       requiredPricingCurrencies.length > 0
@@ -1021,6 +1156,7 @@ export async function authorizeAnonZapRequest(
     const checkout = authorizeAnonZapCheckout({
       intent,
       productEvents,
+      shippingEvents,
       profileEvents,
       deletionEvents,
       receiptRelayUrls: receiptRelays,

@@ -147,6 +147,7 @@ export function getProductShippingPresetEligibility(
   if (matchingRules.length === 0) return "eligible"
   const result = getShippingDestinationEligibility(destination, [
     {
+      eventId: product.id,
       id: product.id,
       pubkey: product.pubkey,
       dTag: product.id,
@@ -157,6 +158,7 @@ export function getProductShippingPresetEligibility(
       countryRules,
       service: "standard",
       createdAt: product.createdAt,
+      launchUnsupportedTags: [],
     },
   ])
   if (result.eligible === false) return "ineligible"

@@ -89,8 +89,8 @@ describe("checkout completion navigation contracts", () => {
       payNowStart
     )
     const payNowSource = checkoutRoute.slice(payNowStart, payNowEnd)
-    const paymentAvailability = payNowSource.indexOf(
-      "await assertCheckoutItemsAvailable(requestedCheckoutMode)"
+    const paymentAvailability = payNowSource.search(
+      /await assertCheckoutItemsAvailable\(\s*requestedCheckoutMode\s*\)/
     )
     const signedOrderReady = payNowSource.indexOf(
       "orderRumor.content = JSON.stringify(orderPayload)"
@@ -114,10 +114,10 @@ describe("checkout completion navigation contracts", () => {
     expect(payNowSource).toContain("let directPaymentStarted = false")
     expect(
       payNowSource.match(
-        /await assertCheckoutItemsAvailable\(requestedCheckoutMode\)/g
+        /await assertCheckoutItemsAvailable\(\s*requestedCheckoutMode\s*\)/g
       )
     ).toHaveLength(1)
-    expect(paymentAvailability).toBeGreaterThan(signedOrderReady)
+    expect(signedOrderReady).toBeGreaterThan(paymentAvailability)
     expect(orderPublish).toBeGreaterThan(paymentAvailability)
     expect(paymentStarted).toBeGreaterThan(paymentAvailability)
     expect(paymentStartedTelemetry).toBeGreaterThan(paymentStarted)
@@ -136,10 +136,13 @@ describe("checkout completion navigation contracts", () => {
     )
     const assertionSource = checkoutRoute.slice(assertionStart, assertionEnd)
     const termsCheck = assertionSource.indexOf(
-      "if (!cartItemsMatchCurrentProducts("
+      "await authorizeCurrentCheckoutItems({"
     )
     const availabilitySuccess = assertionSource.lastIndexOf('status: "success"')
     expect(termsCheck).toBeGreaterThan(-1)
+    expect(assertionSource).toMatch(
+      /mode:\s*checkoutMode === "order_first"\s*\? "order_first"\s*:\s*"direct_payment"/
+    )
     expect(availabilitySuccess).toBeGreaterThan(termsCheck)
   })
 
@@ -179,8 +182,8 @@ describe("checkout completion navigation contracts", () => {
       payNowIndex
     )
     const payNowSource = checkoutRoute.slice(payNowIndex, payNowEnd)
-    const availabilityIndex = payNowSource.indexOf(
-      "await assertCheckoutItemsAvailable(requestedCheckoutMode)"
+    const availabilityIndex = payNowSource.search(
+      /await assertCheckoutItemsAvailable\(\s*requestedCheckoutMode\s*\)/
     )
     const authorizationIndex = payNowSource.indexOf(
       "assertClaimedZapAuthorization(",

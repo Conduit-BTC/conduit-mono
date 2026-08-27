@@ -215,3 +215,17 @@ Add short entries here as they arise:
 - Conduit behavior: Continue accepting an omitted format as `physical` for backward-compatible reads. Merchant emits the explicit `digital` or `physical` format on every new listing.
 - Risk: Level 1 rendering mismatch and Level 2 checkout degradation.
 - Action: compatibility parser fallback; keep emitted events explicit and spec-aligned.
+
+- **[2026-07-28]** Legacy Conduit inline product shipping tags
+- Spec expectation: Gamma fixed shipping is a complete kind `30406` referenced
+  by a product `shipping_option` coordinate. Price and country constraints live
+  on the option; product extra cost is optional and is not used by Conduit's
+  fixed launch path.
+- Observed behavior: Older Conduit listings may contain `shipping_cost`,
+  `shipping_country`, `shipping_restrict`, and `shipping_exclude` directly on
+  kind `30402`.
+- Conduit behavior: Parse those tags only through an explicit compatibility
+  adapter for display and Merchant republishing. They do not authorize direct
+  payment and the canonical writer never emits them.
+- Risk: Level 2 checkout mismatch.
+- Action: adapter.
