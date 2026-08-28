@@ -80,6 +80,12 @@ import {
   type ProductVariationAuthoringTarget,
 } from "../lib/productDraft"
 import {
+  clearProductDraftReturnIntent,
+  consumeProductDraftResumeRequest,
+  loadProductDraftReturnIntent,
+  saveProductDraftReturnIntent,
+} from "../lib/productDraftReturn"
+import {
   buildProductShippingMetadata,
   canUseZeroProductPrice,
   canSubmitProductForm,
@@ -1018,6 +1024,10 @@ function ProductsPage() {
   const queryClient = useQueryClient()
   const btcUsdRateQuery = useBtcUsdRate()
   const productDialogReturnFocusRef = useRef<HTMLElement | null>(null)
+  const productTitleInputRef = useRef<HTMLInputElement | null>(null)
+  const productsHeadingRef = useRef<HTMLHeadingElement | null>(null)
+  const resumeProductDraftButtonRef = useRef<HTMLButtonElement | null>(null)
+  const focusProductTitleOnOpenRef = useRef(false)
   const productDraftStoreRef = useRef(new ProductDraftStore())
   const productPublishStartedAtRef = useRef<number | null>(null)
   const editFulfillmentRequestRef = useRef(0)
@@ -1032,6 +1042,10 @@ function ProductsPage() {
   const [activeProductDraftTarget, setActiveProductDraftTarget] =
     useState<ProductDraftTarget | null>(null)
   const [draftStorageAvailable, setDraftStorageAvailable] = useState(true)
+  const [hasResumableCreateDraft, setHasResumableCreateDraft] = useState(false)
+  const [draftContinuationError, setDraftContinuationError] = useState<
+    string | null
+  >(null)
   const [searchQuery, setSearchQuery] = useState("")
   const [selectedTag, setSelectedTag] = useState("all")
   const [sortOrder, setSortOrder] = useState<ProductSort>("updated_desc")
@@ -1178,6 +1192,53 @@ function ProductsPage() {
   const shippingConfig = loadShippingConfig(pubkey)
   const hasPresetShippingZone = isShippingComplete(shippingConfig)
 
+  useEffect(() => {
+    setDraftContinuationError(null)
+    if (!pubkey) {
+      setHasResumableCreateDraft(false)
+      return
+    }
+
+    const draftTarget = getProductDraftTarget(pubkey)
+    const loadedDraft = productDraftStoreRef.current.load(draftTarget)
+    const loadedReturnIntent = loadProductDraftReturnIntent(pubkey)
+    setHasResumableCreateDraft(!!loadedDraft.draft)
+    setDraftStorageAvailable(
+      loadedDraft.storageAvailable && loadedReturnIntent.storageAvailable
+    )
+
+    if (loadedReturnIntent.intent && !loadedDraft.draft) {
+      clearProductDraftReturnIntent(pubkey)
+      return
+    }
+    if (
+      loadedReturnIntent.intent?.state !== "resume_requested" ||
+      !loadedDraft.draft
+    ) {
+      return
+    }
+    const consumedReturnIntent = consumeProductDraftResumeRequest(pubkey)
+    if (!consumedReturnIntent) {
+      setDraftContinuationError(
+        "Your draft is still saved, but automatic return could not be completed. Use Resume product draft to continue."
+      )
+      return
+    }
+
+    productDialogReturnFocusRef.current = null
+    focusProductTitleOnOpenRef.current = true
+    setEditing(null)
+    setActiveProductDraftTarget(draftTarget)
+    setForm(
+      reconcileProductFormShippingPreset(
+        loadedDraft.draft,
+        hasPresetShippingZone
+      )
+    )
+    setSignerRestoredForDraft(false)
+    setProductDialogOpen(true)
+  }, [hasPresetShippingZone, pubkey])
+
   async function refreshProductQueries(): Promise<void> {
     await Promise.all([
       queryClient.invalidateQueries({
@@ -1227,6 +1288,9 @@ function ProductsPage() {
     variables: ProductPublishMutationPayload,
     authoringTarget: ProductVariationAuthoringTarget
   ): void {
+    const returnIntentCleared = variables.existing
+      ? true
+      : clearProductDraftReturnIntent(variables.merchantPubkey)
     const draftCleared = productDraftStoreRef.current.clear(
       getProductDraftTarget(
         variables.merchantPubkey,
@@ -1244,7 +1308,10 @@ function ProductsPage() {
     setActiveProductDraftTarget(null)
     setForm(createEmptyProductForm(hasPresetShippingZone))
     setProductDialogOpen(false)
-    setDraftStorageAvailable(draftCleared && authoringSaved)
+    if (!variables.existing) setHasResumableCreateDraft(false)
+    setDraftStorageAvailable(
+      returnIntentCleared && draftCleared && authoringSaved
+    )
   }
 
   const saveMutation = useMutation({
@@ -1516,17 +1583,26 @@ function ProductsPage() {
   useEffect(() => {
     if (!productDialogOpen || !activeProductDraftTarget) return
     if (editing && editFulfillmentChoiceRequired) return
+    const isCreateDraft = !activeProductDraftTarget.productAddressId
 
     if (!hasProductChanges) {
+      const returnIntentCleared = isCreateDraft
+        ? clearProductDraftReturnIntent(activeProductDraftTarget.merchantPubkey)
+        : true
       setDraftStorageAvailable(
-        productDraftStoreRef.current.clear(activeProductDraftTarget)
+        returnIntentCleared &&
+          productDraftStoreRef.current.clear(activeProductDraftTarget)
       )
+      if (isCreateDraft) setHasResumableCreateDraft(false)
       return
     }
 
-    setDraftStorageAvailable(
-      productDraftStoreRef.current.save(activeProductDraftTarget, form)
+    const saved = productDraftStoreRef.current.save(
+      activeProductDraftTarget,
+      form
     )
+    setDraftStorageAvailable(saved)
+    if (isCreateDraft && saved) setHasResumableCreateDraft(true)
   }, [
     activeProductDraftTarget,
     editFulfillmentChoiceRequired,
@@ -1749,6 +1825,9 @@ function ProductsPage() {
       form
     )
     setDraftStorageAvailable(saved)
+    if (saved && !activeProductDraftTarget.productAddressId) {
+      setHasResumableCreateDraft(true)
+    }
     return saved
   }
 
@@ -1788,7 +1867,19 @@ function ProductsPage() {
       setPendingProductPublish(null)
       return
     }
+    if (
+      !activeProductDraftTarget ||
+      !!activeProductDraftTarget.productAddressId ||
+      !saveProductDraftReturnIntent(activeProductDraftTarget.merchantPubkey)
+    ) {
+      setPendingProductPublish(null)
+      setDraftContinuationError(
+        "Your draft is saved, but automatic return from Network is unavailable. Keep editing or close this dialog."
+      )
+      return
+    }
 
+    setDraftContinuationError(null)
     setPendingProductPublish(null)
     setProductDialogOpen(false)
     saveMutation.reset()
@@ -1812,6 +1903,8 @@ function ProductsPage() {
   }
 
   function discardProductChanges(): void {
+    const discardingCreateDraft =
+      !!activeProductDraftTarget && !activeProductDraftTarget.productAddressId
     if (
       hasProductChanges &&
       !window.confirm(
@@ -1824,6 +1917,13 @@ function ProductsPage() {
     }
 
     if (activeProductDraftTarget) {
+      const returnIntentCleared = activeProductDraftTarget.productAddressId
+        ? true
+        : clearProductDraftReturnIntent(activeProductDraftTarget.merchantPubkey)
+      if (!returnIntentCleared) {
+        setDraftStorageAvailable(false)
+        return
+      }
       const cleared = productDraftStoreRef.current.clear(
         activeProductDraftTarget
       )
@@ -1840,7 +1940,9 @@ function ProductsPage() {
     setEditFulfillmentMarket(null)
     setActiveProductDraftTarget(null)
     setForm(createEmptyProductForm(hasPresetShippingZone))
+    if (discardingCreateDraft) setHasResumableCreateDraft(false)
     setDraftStorageAvailable(true)
+    setDraftContinuationError(null)
     setSignerRestoredForDraft(false)
     saveMutation.reset()
   }
@@ -1870,6 +1972,9 @@ function ProductsPage() {
 
   function openCreateDialog(): void {
     rememberProductDialogTrigger()
+    if (pubkey) clearProductDraftReturnIntent(pubkey)
+    focusProductTitleOnOpenRef.current = false
+    setDraftContinuationError(null)
     setSignerRestoredForDraft(false)
     saveMutation.reset()
     if (
@@ -1906,6 +2011,34 @@ function ProductsPage() {
         : emptyForm
     )
     setDraftStorageAvailable(loaded.storageAvailable)
+    setHasResumableCreateDraft(!!loaded.draft)
+    setProductDialogOpen(true)
+  }
+
+  function resumeCreateDraft(): void {
+    if (!pubkey) return
+    rememberProductDialogTrigger()
+    clearProductDraftReturnIntent(pubkey)
+    focusProductTitleOnOpenRef.current = true
+    setDraftContinuationError(null)
+    setSignerRestoredForDraft(false)
+    saveMutation.reset()
+
+    const draftTarget = getProductDraftTarget(pubkey)
+    const loaded = productDraftStoreRef.current.load(draftTarget)
+    if (!loaded.draft) {
+      setHasResumableCreateDraft(false)
+      setDraftStorageAvailable(loaded.storageAvailable)
+      return
+    }
+
+    setEditing(null)
+    setActiveProductDraftTarget(draftTarget)
+    setForm(
+      reconcileProductFormShippingPreset(loaded.draft, hasPresetShippingZone)
+    )
+    setDraftStorageAvailable(loaded.storageAvailable)
+    setHasResumableCreateDraft(true)
     setProductDialogOpen(true)
   }
 
@@ -2051,7 +2184,11 @@ function ProductsPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-balance text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
+          <h1
+            ref={productsHeadingRef}
+            tabIndex={-1}
+            className="text-balance text-4xl font-semibold tracking-tight text-[var(--text-primary)] outline-none"
+          >
             Products
           </h1>
           <p className="mt-2 max-w-2xl text-pretty text-sm leading-7 text-[var(--text-secondary)]">
@@ -2077,6 +2214,36 @@ function ProductsPage() {
         <div className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5 text-sm text-[var(--text-secondary)]">
           Connect your signer to create and manage listings.
         </div>
+      )}
+
+      {pubkey && hasResumableCreateDraft && (
+        <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
+          <div className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
+            <div>
+              <h2 className="text-lg font-semibold text-[var(--text-primary)]">
+                Product draft saved
+              </h2>
+              <p className="mt-1 max-w-2xl text-pretty text-sm leading-6 text-[var(--text-secondary)]">
+                This draft exists only in this browser on this device. It is not
+                a public listing until you publish it.
+              </p>
+            </div>
+            <Button
+              ref={resumeProductDraftButtonRef}
+              type="button"
+              variant="outline"
+              className="w-full shrink-0 sm:w-auto"
+              onClick={resumeCreateDraft}
+            >
+              Resume product draft
+            </Button>
+          </div>
+          {draftContinuationError && (
+            <p role="alert" className="mt-3 text-sm text-error">
+              {draftContinuationError}
+            </p>
+          )}
+        </section>
       )}
 
       <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4 shadow-[var(--shadow-glass-inset)]">
@@ -2388,17 +2555,28 @@ function ProductsPage() {
       >
         <DialogContent
           className={cn(
-            "max-h-[90vh] overflow-y-auto",
+            "max-h-[90dvh] overflow-y-auto",
             form.variations.enabled ? "sm:max-w-4xl" : "sm:max-w-2xl"
           )}
+          onOpenAutoFocus={(event) => {
+            if (!focusProductTitleOnOpenRef.current) return
+            event.preventDefault()
+            focusProductTitleOnOpenRef.current = false
+            productTitleInputRef.current?.focus({ preventScroll: true })
+          }}
           onPointerDownOutside={(event) => event.preventDefault()}
           onEscapeKeyDown={(event) => {
             if (isSaving) event.preventDefault()
           }}
           onCloseAutoFocus={(event) => {
             event.preventDefault()
-            const returnTarget = productDialogReturnFocusRef.current
-            if (returnTarget?.isConnected) returnTarget.focus()
+            const rememberedTarget = productDialogReturnFocusRef.current
+            const returnTarget = rememberedTarget?.isConnected
+              ? rememberedTarget
+              : resumeProductDraftButtonRef.current?.isConnected
+                ? resumeProductDraftButtonRef.current
+                : productsHeadingRef.current
+            returnTarget?.focus({ preventScroll: true })
             productDialogReturnFocusRef.current = null
           }}
         >
@@ -2484,6 +2662,7 @@ function ProductsPage() {
               <div className="grid gap-1.5">
                 <Label htmlFor="product-title">Title</Label>
                 <Input
+                  ref={productTitleInputRef}
                   id="product-title"
                   value={form.title}
                   onChange={(event) =>
@@ -3555,8 +3734,14 @@ function ProductsPage() {
                   )}
                 >
                   {draftStorageAvailable
-                    ? "Draft saved on this device. Close this window and reopen it to continue."
+                    ? "Draft saved only in this browser on this device. It is not a public listing until you publish it."
                     : "Local draft storage is unavailable. Keep this page open; switching product forms is blocked to protect these changes."}
+                </p>
+              )}
+
+              {draftContinuationError && (
+                <p role="alert" className="text-pretty text-xs text-error">
+                  {draftContinuationError}
                 </p>
               )}
 

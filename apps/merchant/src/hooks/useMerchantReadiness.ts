@@ -11,6 +11,7 @@ import {
   getShippingOptionsByCoordinates,
   useAuth,
   useConduitSession,
+  useInboxDeclaration,
   useProfile,
   useRelaySettings,
 } from "@conduit/core"
@@ -114,6 +115,11 @@ export function useMerchantReadiness() {
   const { settings } = useRelaySettings(session.relayScope, {
     pubkey,
     bootstrapRelayList: false,
+  })
+  const privateInboxCheckEnabled = !!pubkey && session.relaySettingsReady
+  const privateInbox = useInboxDeclaration(pubkey, {
+    enabled: privateInboxCheckEnabled,
+    relayScope: session.relayScope,
   })
   const [profileCheckExpired, setProfileCheckExpired] = useState(false)
   const nwcStorageKey = useMemo(() => getNwcUriStorageKey(pubkey), [pubkey])
@@ -220,5 +226,8 @@ export function useMerchantReadiness() {
     profileCheckPending,
     paymentsCheckPending,
     shippingCheckPending,
+    privateInboxStatus: privateInbox.status,
+    privateInboxStale: privateInbox.stale,
+    privateInboxCheckEnabled,
   })
 }

@@ -656,6 +656,9 @@ test("a different signer starts a fresh merchant workspace after verified recove
     await expect(
       page.getByRole("heading", { name: "Products", exact: true })
     ).toBeVisible({ timeout: 15_000 })
+    await expect(
+      page.getByRole("button", { name: "Resume product draft" })
+    ).toHaveCount(0)
     await page.getByRole("button", { name: "Add product" }).first().click()
     const accountBDialog = page.getByRole("dialog", { name: "Add product" })
     await expect(accountBDialog.getByLabel("Title")).toHaveValue("")

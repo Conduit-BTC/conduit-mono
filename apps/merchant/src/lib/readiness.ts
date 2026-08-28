@@ -11,6 +11,7 @@ import {
   isValidLud16Address,
   getNwcUriFingerprint,
   parseNwcUri,
+  type InboxDeclarationStatus,
   type ParsedShippingOption,
   type NwcConnection,
   type Profile,
@@ -60,12 +61,62 @@ export interface MerchantSetupReadiness {
   shippingComplete: boolean
   shippingCheckPending: boolean
   networkComplete: boolean
+  privateInboxStatus: InboxDeclarationStatus
+  privateInboxStale: boolean
+  privateInboxCheckEnabled: boolean
+  privateInboxComplete: boolean
+  privateInboxCheckPending: boolean
+  privateInboxCheckDegraded: boolean
+  privateInboxActionRequired: boolean
   setupComplete: boolean
   setupCheckPending: boolean
   operationalReady: boolean
   paymentCapability: MerchantPaymentCapability
   hasNwc: boolean
   missingAreas: Array<"profile" | "payments" | "shipping" | "network">
+}
+
+export function getMerchantPrivateInboxReadinessPresentation(
+  readiness: Pick<
+    MerchantSetupReadiness,
+    "privateInboxCheckEnabled" | "privateInboxStatus" | "privateInboxStale"
+  >
+): {
+  label: string
+  variant: "success" | "warning" | "info" | "neutral"
+} {
+  if (!readiness.privateInboxCheckEnabled) {
+    return { label: "Set up network", variant: "neutral" }
+  }
+
+  if (
+    readiness.privateInboxStale &&
+    (readiness.privateInboxStatus === "ready" ||
+      readiness.privateInboxStatus === "distribution_pending" ||
+      readiness.privateInboxStatus === "signed_empty" ||
+      readiness.privateInboxStatus === "malformed")
+  ) {
+    return { label: "Needs a fresh check", variant: "warning" }
+  }
+
+  switch (readiness.privateInboxStatus) {
+    case "ready":
+      return { label: "Ready", variant: "success" }
+    case "loading":
+      return { label: "Checking", variant: "info" }
+    case "distribution_pending":
+      return { label: "Distribution pending", variant: "warning" }
+    case "not_observed":
+      return { label: "Needs setup", variant: "warning" }
+    case "signed_empty":
+      return { label: "Needs restore", variant: "warning" }
+    case "malformed":
+      return { label: "Needs repair", variant: "warning" }
+    case "lookup_partial":
+      return { label: "Check incomplete", variant: "neutral" }
+    case "lookup_unavailable":
+      return { label: "Check unavailable", variant: "neutral" }
+  }
 }
 
 /**
@@ -130,6 +181,9 @@ export function getMerchantSetupReadiness({
   profileCheckPending = false,
   paymentsCheckPending = false,
   shippingCheckPending = false,
+  privateInboxStatus = "loading",
+  privateInboxStale = false,
+  privateInboxCheckEnabled = false,
 }: {
   profile: Profile | null | undefined
   shippingConfig: ShippingConfig
@@ -138,11 +192,30 @@ export function getMerchantSetupReadiness({
   profileCheckPending?: boolean
   paymentsCheckPending?: boolean
   shippingCheckPending?: boolean
+  privateInboxStatus?: InboxDeclarationStatus
+  privateInboxStale?: boolean
+  privateInboxCheckEnabled?: boolean
 }): MerchantSetupReadiness {
   const profileComplete = isProfileComplete(profile)
   const paymentsComplete = isPaymentsComplete(profile)
   const shippingComplete = isShippingComplete(shippingConfig)
   const networkComplete = isNetworkComplete(relaySettings)
+  const privateInboxComplete =
+    privateInboxCheckEnabled && privateInboxStatus === "ready"
+  const privateInboxCheckPending =
+    privateInboxCheckEnabled && privateInboxStatus === "loading"
+  const privateInboxEvidenceStale =
+    privateInboxCheckEnabled && privateInboxStale
+  const privateInboxCheckDegraded =
+    privateInboxCheckEnabled &&
+    (privateInboxEvidenceStale ||
+      privateInboxStatus === "lookup_partial" ||
+      privateInboxStatus === "lookup_unavailable")
+  const privateInboxActionRequired =
+    privateInboxCheckEnabled &&
+    !privateInboxComplete &&
+    !privateInboxCheckPending &&
+    !privateInboxCheckDegraded
   const setupComplete =
     profileComplete && paymentsComplete && shippingComplete && networkComplete
   const operationalReady =
@@ -170,6 +243,13 @@ export function getMerchantSetupReadiness({
     shippingComplete,
     shippingCheckPending,
     networkComplete,
+    privateInboxStatus,
+    privateInboxStale: privateInboxEvidenceStale,
+    privateInboxCheckEnabled,
+    privateInboxComplete,
+    privateInboxCheckPending,
+    privateInboxCheckDegraded,
+    privateInboxActionRequired,
     setupComplete,
     setupCheckPending,
     operationalReady,

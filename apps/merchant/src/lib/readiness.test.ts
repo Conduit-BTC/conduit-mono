@@ -1,5 +1,6 @@
 import {
   createDefaultRelaySettings,
+  type InboxDeclarationStatus,
   type ParsedShippingOption,
   type Profile,
   type RelaySettingsState,
@@ -9,6 +10,7 @@ import {
   getNwcConnectionCacheKey,
   getShippingStorageKey,
   getMerchantSetupReadiness,
+  getMerchantPrivateInboxReadinessPresentation,
   hasNwcConfigured,
   isStoredShippingConfigAuthoritative,
   loadShippingConfig,
@@ -375,5 +377,129 @@ describe("merchant setup readiness", () => {
     expect(readiness.shippingCheckPending).toBe(true)
     expect(readiness.setupCheckPending).toBe(true)
     expect(readiness.missingAreas).toEqual([])
+  })
+
+  test("keeps private inbox guidance separate from operational readiness", () => {
+    const readiness = getMerchantSetupReadiness({
+      profile: completeProfile,
+      shippingConfig,
+      relaySettings: createDefaultRelaySettings(),
+      privateInboxStatus: "not_observed",
+      privateInboxCheckEnabled: true,
+    })
+
+    expect(readiness.networkComplete).toBe(true)
+    expect(readiness.privateInboxComplete).toBe(false)
+    expect(readiness.privateInboxActionRequired).toBe(true)
+    expect(readiness.setupComplete).toBe(true)
+    expect(readiness.operationalReady).toBe(true)
+    expect(readiness.paymentCapability).toBe("direct_payment")
+    expect(readiness.missingAreas).toEqual([])
+  })
+
+  test("keeps retained ready inbox evidence usable while marking the lookup stale", () => {
+    const readiness = getMerchantSetupReadiness({
+      profile: completeProfile,
+      shippingConfig,
+      relaySettings: createDefaultRelaySettings(),
+      privateInboxStatus: "ready",
+      privateInboxStale: true,
+      privateInboxCheckEnabled: true,
+    })
+
+    expect(readiness.privateInboxComplete).toBe(true)
+    expect(readiness.privateInboxActionRequired).toBe(false)
+    expect(readiness.privateInboxStale).toBe(true)
+    expect(readiness.privateInboxCheckDegraded).toBe(true)
+    expect(readiness.setupComplete).toBe(true)
+    expect(readiness.operationalReady).toBe(true)
+    expect(getMerchantPrivateInboxReadinessPresentation(readiness)).toEqual({
+      label: "Needs a fresh check",
+      variant: "warning",
+    })
+  })
+
+  test("preserves every private inbox evidence state", () => {
+    const cases: Array<{
+      status: InboxDeclarationStatus
+      complete: boolean
+      pending: boolean
+      degraded: boolean
+      actionRequired: boolean
+    }> = [
+      {
+        status: "loading",
+        complete: false,
+        pending: true,
+        degraded: false,
+        actionRequired: false,
+      },
+      {
+        status: "ready",
+        complete: true,
+        pending: false,
+        degraded: false,
+        actionRequired: false,
+      },
+      {
+        status: "distribution_pending",
+        complete: false,
+        pending: false,
+        degraded: false,
+        actionRequired: true,
+      },
+      {
+        status: "not_observed",
+        complete: false,
+        pending: false,
+        degraded: false,
+        actionRequired: true,
+      },
+      {
+        status: "signed_empty",
+        complete: false,
+        pending: false,
+        degraded: false,
+        actionRequired: true,
+      },
+      {
+        status: "malformed",
+        complete: false,
+        pending: false,
+        degraded: false,
+        actionRequired: true,
+      },
+      {
+        status: "lookup_partial",
+        complete: false,
+        pending: false,
+        degraded: true,
+        actionRequired: false,
+      },
+      {
+        status: "lookup_unavailable",
+        complete: false,
+        pending: false,
+        degraded: true,
+        actionRequired: false,
+      },
+    ]
+
+    for (const testCase of cases) {
+      const readiness = getMerchantSetupReadiness({
+        profile: completeProfile,
+        shippingConfig,
+        relaySettings: createDefaultRelaySettings(),
+        privateInboxStatus: testCase.status,
+        privateInboxCheckEnabled: true,
+      })
+
+      expect(readiness.privateInboxStatus).toBe(testCase.status)
+      expect(readiness.privateInboxComplete).toBe(testCase.complete)
+      expect(readiness.privateInboxCheckPending).toBe(testCase.pending)
+      expect(readiness.privateInboxCheckDegraded).toBe(testCase.degraded)
+      expect(readiness.privateInboxActionRequired).toBe(testCase.actionRequired)
+      expect(readiness.missingAreas).toEqual([])
+    }
   })
 })
