@@ -255,7 +255,8 @@ export function MerchantPaymentAutomationProvider({
     [completeConversationSnapshot]
   )
   const conversationReadUnavailable = !conversationReadComplete
-  const conversationReadCapped = conversationsQuery.data?.meta.capped === true
+  const conversationReadCapped =
+    conversationsQuery.data?.meta.inbox?.declaredWritePlan.capped === true
 
   useEffect(() => {
     const transition = advanceMerchantPaymentVerificationIdentity(

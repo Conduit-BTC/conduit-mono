@@ -2826,18 +2826,19 @@ describe("merchant invoice route contract", () => {
     expect(source).toContain("if (!canCreateInvoice)")
   })
 
-  it("surfaces a capped-history payment pause without a misleading retry", async () => {
+  it("surfaces a required-route history cap without treating optional relay caps as a payment pause", async () => {
     const source = await Bun.file("apps/merchant/src/routes/orders.tsx").text()
 
     expect(source).toContain(
-      "const ordersHistoryCapped = ordersMeta?.capped === true"
+      "ordersMeta?.inbox?.declaredWritePlan.capped === true"
     )
+    expect(source).not.toContain("ordersMeta?.capped === true")
     expect(source).toContain(
       "Order history reached the current secure read limit"
     )
     expect(source).toContain(
       "generation and automatic payment confirmation are paused"
     )
-    expect(source).toContain("!ordersHistoryCapped &&")
+    expect(source).toContain("!invoiceHistoryCapped &&")
   })
 })

@@ -38,11 +38,14 @@ import {
 } from "./ndk"
 import {
   deriveInboxReadCoverage,
+  deriveScopedInboxReadStatus,
+  invalidateInboxDeclaration,
   planInboxReadRelays,
   resolveInboxDeclaration,
   type InboxDeclarationResolution,
   type InboxDeclarationState,
   type InboxReadCoverage,
+  type InboxReadScopeStatus,
   type InboxReadSource,
 } from "./private-message-routing"
 import { extractOrderSummary } from "./order-summary"
@@ -159,8 +162,15 @@ export interface CommerceCapabilities {
  */
 export interface PrivateInboxReadStatus {
   declarationState: InboxDeclarationState
+  /** True when discovery retained an older, not-currently-confirmed frontier. */
+  declarationStale: boolean
   coverage: InboxReadCoverage
   readSource: InboxReadSource
+  /**
+   * Coverage of current and retained declared write routes. This excludes
+   * compatibility, local-IN, and other discovery-only relays.
+   */
+  declaredWritePlan: InboxReadScopeStatus
   /** Current-session relay-auth evidence; never persisted with messages. */
   authentication?: ProtectedInboxAuthSummary
 }
@@ -195,6 +205,34 @@ export function isCommerceReadIncomplete(
   meta: CommerceFreshnessMeta | null | undefined
 ): boolean {
   return !!(meta?.stale || meta?.degraded || meta?.capped)
+}
+
+export type PrivateInboxDeclaredWriteHistoryMeta = {
+  stale?: boolean
+  decryptFailures?: readonly unknown[]
+  inbox?: {
+    declarationStale?: boolean
+    declaredWritePlan?: InboxReadScopeStatus
+  }
+}
+
+/**
+ * True only when every known current/retained inbox write route completed
+ * without truncation and every fetched wrap was usable. Optional discovery
+ * relay degradation remains visible in aggregate metadata but does not veto
+ * actions that depend solely on signed history from declared write routes.
+ */
+export function isPrivateInboxDeclaredWriteHistoryComplete(
+  meta: PrivateInboxDeclaredWriteHistoryMeta | null | undefined
+): boolean {
+  return !!(
+    meta &&
+    !meta.stale &&
+    !meta.decryptFailures?.length &&
+    meta.inbox?.declarationStale === false &&
+    meta.inbox?.declaredWritePlan?.coverage === "complete" &&
+    !meta.inbox.declaredWritePlan.capped
+  )
 }
 
 export interface CommerceResult<T> {
@@ -863,8 +901,10 @@ function unavailableInboxStatus(
 ): PrivateInboxReadStatus {
   return {
     declarationState: "lookup_unavailable",
+    declarationStale: true,
     coverage: "unavailable",
     readSource: "cache",
+    declaredWritePlan: { coverage: "unavailable", capped: false },
     authentication: {
       state: "unavailable",
       challengedCount: 0,
@@ -4868,7 +4908,8 @@ async function fetchParsedOrderMessages(
       messages,
       source:
         sync.inbox.coverage === "unavailable" ? "local_cache" : "commerce",
-      stale: sync.inbox.coverage === "unavailable",
+      stale:
+        sync.inbox.coverage === "unavailable" || sync.inbox.declarationStale,
       capped: sync.capped,
       decryptFailures: sync.decryptFailures,
       inbox: sync.inbox,
@@ -4967,13 +5008,25 @@ async function fetchNewInboxWraps(
       fetchTimeoutMs: 12_000,
     })
     const successful = successfulWrapIdsByPrincipal.get(principalPubkey)
+    const capped = isBoundedFanoutSaturated(filter, result.events)
     return {
       wraps: result.events.filter((event) => !successful?.has(event.id)),
-      capped: isBoundedFanoutSaturated(filter, result.events),
+      capped,
       inbox: {
         declarationState: declaration.state,
+        declarationStale: declaration.stale,
         coverage: deriveInboxReadCoverage(result),
         readSource: readPlan.source,
+        // This legacy test seam has no per-relay event counts. Treat a bounded
+        // response conservatively as saturated on every attempted route.
+        declaredWritePlan: deriveScopedInboxReadStatus(
+          readPlan.declaredWritePlanRelayUrls,
+          {
+            successfulRelayUrls: result.successfulRelayUrls,
+            failedRelayUrls: result.failedRelayUrls,
+            saturatedRelayUrls: capped ? result.attemptedRelayUrls : [],
+          }
+        ),
         authentication: {
           state: "not_challenged",
           challengedCount: 0,
@@ -4996,6 +5049,28 @@ async function fetchNewInboxWraps(
   })
 
   const successful = successfulWrapIdsByPrincipal.get(principalPubkey)
+  const relayUrlAt = (relayIndex: number): string | undefined =>
+    readPlan.relayUrls[relayIndex]
+  const successfulRelayUrls = protectedResult.relayResult.relays.flatMap(
+    (relay) => {
+      const relayUrl = relayUrlAt(relay.relayIndex)
+      return relay.status === "success" && relayUrl ? [relayUrl] : []
+    }
+  )
+  const failedRelayUrls = protectedResult.relayResult.relays.flatMap(
+    (relay) => {
+      const relayUrl = relayUrlAt(relay.relayIndex)
+      return relay.status !== "success" && relayUrl ? [relayUrl] : []
+    }
+  )
+  const saturatedRelayUrls = protectedResult.relayResult.relays.flatMap(
+    (relay) => {
+      const relayUrl = relayUrlAt(relay.relayIndex)
+      return relayUrl && relay.eventCount + relay.duplicateCount >= limit
+        ? [relayUrl]
+        : []
+    }
+  )
   return {
     wraps: protectedResult.events
       .filter((event) => !successful?.has(event.id))
@@ -5010,8 +5085,17 @@ async function fetchNewInboxWraps(
       ),
     inbox: {
       declarationState: declaration.state,
+      declarationStale: declaration.stale,
       coverage: protectedResult.coverage,
       readSource: readPlan.source,
+      declaredWritePlan: deriveScopedInboxReadStatus(
+        readPlan.declaredWritePlanRelayUrls,
+        {
+          successfulRelayUrls,
+          failedRelayUrls,
+          saturatedRelayUrls,
+        }
+      ),
       authentication: protectedResult.auth,
     },
   }
@@ -5589,10 +5673,16 @@ async function syncPrivateMessageInbox(
       // The required generation still starts after an older failed attempt.
     }
     assertInboxSyncAuthority(authorization)
+    // Critical force-fresh reads (for example, invoice issuance) must also
+    // rediscover kind-10050. Reusing the normal five-minute declaration cache
+    // could miss a relay rotation performed by another client.
+    invalidateInboxDeclaration(principalPubkey)
     // A generation joined here, if any, necessarily began after the one that
     // was already active when this force-fresh call started.
     return await syncPrivateMessageInbox(principalPubkey, signer, authorization)
   }
+
+  if (options.forceFresh) invalidateInboxDeclaration(principalPubkey)
 
   const pending = runPrivateMessageInboxSync(
     principalPubkey,
@@ -6071,6 +6161,19 @@ export async function getMerchantConversationList(
       conversation.buyerPubkey === query.counterpartyPubkey
   )
   const conversations = allConversations.slice(0, query.limit ?? 200)
+  const conversationSliceCapped = conversations.length < allConversations.length
+  const inbox =
+    conversationSliceCapped && result.inbox
+      ? {
+          ...result.inbox,
+          // Even complete relay reads cannot authorize an invoice when the
+          // caller omitted conversations from the evidence snapshot.
+          declaredWritePlan: {
+            ...result.inbox.declaredWritePlan,
+            capped: true,
+          },
+        }
+      : result.inbox
   return {
     data: conversations,
     meta: createMeta(
@@ -6081,9 +6184,9 @@ export async function getMerchantConversationList(
         stale: result.stale,
         // A caller-level conversation slice is also incomplete evidence, even
         // when the underlying 400-wrap transport read itself completed.
-        capped: result.capped || conversations.length < allConversations.length,
+        capped: result.capped || conversationSliceCapped,
         decryptFailures: result.decryptFailures,
-        inbox: result.inbox,
+        inbox,
       }
     ),
   }

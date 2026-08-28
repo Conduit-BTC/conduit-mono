@@ -22,6 +22,7 @@ import {
   getShippingOptionsByCoordinates,
   hasWebLN,
   isInvoiceCompatibleWithCurrentNetwork,
+  isPrivateInboxDeclaredWriteHistoryComplete,
   isMerchantOrderPaid,
   normalizeCurrencyAmount,
   normalizeSafeHttpUrl,
@@ -578,7 +579,8 @@ function OrdersPage() {
     [cachedOrdersQuery.data, ordersQuery.data]
   )
   const ordersMeta = ordersQuery.data?.meta
-  const ordersHistoryCapped = ordersMeta?.capped === true
+  const invoiceHistoryCapped =
+    ordersMeta?.inbox?.declaredWritePlan.capped === true
   const protectedOrdersReadState = deriveProtectedReadPresentationState({
     visibleCount: conversations.length,
     pending: signerConnected && ordersQuery.isPending,
@@ -803,12 +805,14 @@ function OrdersPage() {
       selected
         ? getMerchantConversationInvoiceEvidence(
             selected,
-            protectedOrdersReadState === "complete" && !ordersQuery.isFetching
+            !ordersQuery.error &&
+              isPrivateInboxDeclaredWriteHistoryComplete(ordersMeta) &&
+              !ordersQuery.isFetching
               ? "complete"
               : "incomplete"
           )
         : { readState: "incomplete" as const, paymentRequests: [] },
-    [ordersQuery.isFetching, protectedOrdersReadState, selected]
+    [ordersMeta, ordersQuery.error, ordersQuery.isFetching, selected]
   )
   const pendingInvoiceQueryScope = useMemo(
     () =>
@@ -1694,7 +1698,7 @@ function OrdersPage() {
           />
         )}
 
-      {signerConnected && ordersHistoryCapped && (
+      {signerConnected && invoiceHistoryCapped && (
         <div
           role="alert"
           className="rounded-md border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-3 py-2 text-sm text-[var(--text-primary)]"
@@ -1707,7 +1711,7 @@ function OrdersPage() {
       )}
 
       {signerConnected &&
-        !ordersHistoryCapped &&
+        !invoiceHistoryCapped &&
         protectedOrdersReadState !== "complete" &&
         protectedOrdersReadState !== "pending" && (
           <LiveReadNotice

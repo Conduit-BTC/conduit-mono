@@ -1,5 +1,6 @@
 import {
   decodeLightningInvoiceAmount,
+  isPrivateInboxDeclaredWriteHistoryComplete,
   isValidLud16Address,
   type MerchantConversationSummary,
   type NwcLookupInvoiceResult,
@@ -205,19 +206,18 @@ export function isMerchantPaymentConversationReadComplete(input: {
     stale?: boolean
     degraded?: boolean
     capped?: boolean
+    decryptFailures?: readonly unknown[]
     inbox?: {
       coverage?: "complete" | "partial" | "unavailable"
+      declarationStale?: boolean
+      declaredWritePlan?: {
+        coverage: "complete" | "partial" | "unavailable"
+        capped: boolean
+      }
     }
   } | null
 }): boolean {
-  return (
-    !input.error &&
-    !!input.meta &&
-    !input.meta.stale &&
-    !input.meta.degraded &&
-    !input.meta.capped &&
-    input.meta.inbox?.coverage === "complete"
-  )
+  return !input.error && isPrivateInboxDeclaredWriteHistoryComplete(input.meta)
 }
 
 export function getMerchantPaymentVerificationCandidatesForRead(input: {

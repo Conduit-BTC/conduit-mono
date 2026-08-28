@@ -248,12 +248,16 @@ describe("merchant NWC payment verification", () => {
     ).not.toBe(first)
   })
 
-  it("fails closed for nonempty payment history whenever protected evidence is incomplete", () => {
+  it("uses declared write-route completeness without hiding optional degradation", () => {
     const complete = {
       stale: false,
       degraded: false,
       capped: false,
-      inbox: { coverage: "complete" as const },
+      inbox: {
+        coverage: "complete" as const,
+        declarationStale: false,
+        declaredWritePlan: { coverage: "complete" as const, capped: false },
+      },
     }
     expect(isMerchantPaymentConversationReadComplete({ meta: complete })).toBe(
       true
@@ -265,12 +269,74 @@ describe("merchant NWC payment verification", () => {
       })
     ).toHaveLength(1)
 
+    const optionalDiscoveryDegraded = {
+      ...complete,
+      degraded: true,
+      capped: true,
+      inbox: { ...complete.inbox, coverage: "partial" as const },
+    }
+    expect(
+      isMerchantPaymentConversationReadComplete({
+        meta: optionalDiscoveryDegraded,
+      })
+    ).toBe(true)
+    expect(
+      getMerchantPaymentVerificationCandidatesForRead({
+        conversations: [conversation()],
+        meta: optionalDiscoveryDegraded,
+      })
+    ).toHaveLength(1)
+
     for (const input of [
       { meta: { ...complete, stale: true } },
-      { meta: { ...complete, degraded: true } },
-      { meta: { ...complete, capped: true } },
-      { meta: { ...complete, inbox: { coverage: "partial" as const } } },
-      { meta: { ...complete, inbox: { coverage: "unavailable" as const } } },
+      {
+        meta: {
+          ...complete,
+          decryptFailures: [{ reason: "decrypt_failed" }],
+        },
+      },
+      {
+        meta: {
+          ...complete,
+          inbox: { ...complete.inbox, declarationStale: true },
+        },
+      },
+      {
+        meta: {
+          ...complete,
+          inbox: {
+            ...complete.inbox,
+            declaredWritePlan: {
+              coverage: "partial" as const,
+              capped: false,
+            },
+          },
+        },
+      },
+      {
+        meta: {
+          ...complete,
+          inbox: {
+            ...complete.inbox,
+            declaredWritePlan: {
+              coverage: "unavailable" as const,
+              capped: false,
+            },
+          },
+        },
+      },
+      {
+        meta: {
+          ...complete,
+          inbox: {
+            ...complete.inbox,
+            declaredWritePlan: {
+              coverage: "complete" as const,
+              capped: true,
+            },
+          },
+        },
+      },
       { meta: null },
       { meta: complete, error: new Error("read failed") },
     ]) {

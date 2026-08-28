@@ -4,6 +4,7 @@ import {
   __resetInboxDeclarationCache,
   createInMemoryInboxDeclarationEvidenceRepository,
   deriveInboxReadCoverage,
+  deriveScopedInboxReadStatus,
   EVENT_KINDS,
   getInboxDeclarationEvidence,
   getCachedInboxDeclaration,
@@ -1081,7 +1082,85 @@ describe("planInboxReadRelays", () => {
     expect(plan.relaySources["wss://compat.conduit.market"]).toBe(
       "compatibility"
     )
+    expect(plan.declaredWritePlanRelayUrls).toEqual([
+      "wss://inbox.conduit.market",
+    ])
     expect(plan.source).toBe("mixed")
+  })
+
+  it("keeps only bounded current and retained write routes in the required history plan", () => {
+    const plan = planInboxReadRelays({
+      declaration: resolution({
+        relayUrls: [
+          "wss://current-one.conduit.market",
+          "wss://current-two.conduit.market",
+          "wss://current-three.conduit.market",
+          "wss://current-read-only.conduit.market",
+        ],
+        retainedReadRelayUrls: [
+          "wss://prior-one.conduit.market",
+          "wss://prior-two.conduit.market",
+          "wss://prior-three.conduit.market",
+          "wss://prior-read-only.conduit.market",
+        ],
+      }),
+      localReadRelayUrls: ["wss://local.conduit.market"],
+      compatibilityRelayUrls: ["wss://inbox.azzamo.net"],
+      requiredCompatibilityRelayUrls: ["wss://inbox.azzamo.net"],
+      maxRelays: 4,
+    })
+
+    expect(plan.declaredWritePlanRelayUrls).toEqual([
+      "wss://current-one.conduit.market",
+      "wss://current-two.conduit.market",
+      "wss://current-three.conduit.market",
+      "wss://prior-one.conduit.market",
+      "wss://prior-two.conduit.market",
+      "wss://prior-three.conduit.market",
+    ])
+    expect(plan.declaredWritePlanRelayUrls).not.toContain(
+      "wss://current-read-only.conduit.market"
+    )
+    expect(plan.declaredWritePlanRelayUrls).not.toContain(
+      "wss://prior-read-only.conduit.market"
+    )
+    expect(plan.declaredWritePlanRelayUrls).not.toContain(
+      "wss://inbox.azzamo.net"
+    )
+    // Preserve omitted required routes so downstream coverage fails closed.
+    expect(plan.relayUrls).toEqual([
+      "wss://current-one.conduit.market",
+      "wss://current-two.conduit.market",
+      "wss://current-three.conduit.market",
+      "wss://prior-one.conduit.market",
+    ])
+  })
+
+  it("requires both staged and prior write generations during declaration distribution", () => {
+    const pending = [
+      "wss://pending-one.conduit.market",
+      "wss://pending-two.conduit.market",
+      "wss://pending-three.conduit.market",
+    ]
+    const prior = [
+      "wss://prior-one.conduit.market",
+      "wss://prior-two.conduit.market",
+      "wss://prior-three.conduit.market",
+    ]
+    const plan = planInboxReadRelays({
+      declaration: resolution({
+        state: "distribution_pending",
+        relayUrls: [],
+        pendingRelayUrls: pending,
+        retainedReadRelayUrls: [...pending, ...prior],
+      }),
+      localReadRelayUrls: [],
+      compatibilityRelayUrls: [],
+      maxRelays: 6,
+    })
+
+    expect(plan.declaredWritePlanRelayUrls).toEqual([...pending, ...prior])
+    expect(plan.relayUrls).toEqual([...pending, ...prior])
   })
 
   it("keeps compatibility reads when local settings are nonempty", () => {
@@ -1219,6 +1298,31 @@ describe("deriveInboxReadCoverage", () => {
         failedRelayUrls: ["wss://a"],
       })
     ).toBe("unavailable")
+  })
+
+  it("scopes completeness and saturation to required write routes", () => {
+    const required = ["wss://current.example", "wss://prior.example"]
+
+    expect(
+      deriveScopedInboxReadStatus(required, {
+        successfulRelayUrls: [...required, "wss://inbox.azzamo.net"],
+        failedRelayUrls: ["wss://inbox.azzamo.net"],
+        saturatedRelayUrls: ["wss://inbox.azzamo.net"],
+      })
+    ).toEqual({ coverage: "complete", capped: false })
+    expect(
+      deriveScopedInboxReadStatus(required, {
+        successfulRelayUrls: ["wss://current.example"],
+        failedRelayUrls: ["wss://prior.example"],
+      })
+    ).toEqual({ coverage: "partial", capped: false })
+    expect(
+      deriveScopedInboxReadStatus(required, {
+        successfulRelayUrls: required,
+        failedRelayUrls: [],
+        saturatedRelayUrls: ["wss://prior.example"],
+      })
+    ).toEqual({ coverage: "complete", capped: true })
   })
 })
 

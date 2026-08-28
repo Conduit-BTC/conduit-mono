@@ -8,6 +8,7 @@ import {
   getAuthoritativeProfileLud16,
   getMerchantConversationList,
   getNwcConnectionFingerprint,
+  isPrivateInboxDeclaredWriteHistoryComplete,
   isValidLud16Address,
   mockMakeInvoice,
   normalizeLightningInvoice,
@@ -299,13 +300,9 @@ async function loadCurrentMerchantConversationInvoiceEvidence(
     limit: MERCHANT_INVOICE_HISTORY_LIMIT,
     forceFresh: true,
   })
-  const readState =
-    !result.meta.stale &&
-    !result.meta.degraded &&
-    !result.meta.capped &&
-    result.meta.inbox?.coverage === "complete"
-      ? "complete"
-      : "incomplete"
+  const readState = isPrivateInboxDeclaredWriteHistoryComplete(result.meta)
+    ? "complete"
+    : "incomplete"
   const conversation = result.data.find(
     (candidate) =>
       candidate.orderId === scope.orderId &&

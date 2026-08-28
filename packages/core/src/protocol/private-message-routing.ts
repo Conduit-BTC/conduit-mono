@@ -1157,10 +1157,21 @@ export async function resolveInboxDeclaration(
 
 export interface InboxReadPlan {
   relayUrls: string[]
+  /**
+   * Current and retained declaration targets that could hold messages written
+   * to this inbox. Optional discovery sources must not widen this set.
+   */
+  declaredWritePlanRelayUrls: string[]
   /** Per-relay provenance for diagnostics (content-free). */
   relaySources: Record<string, Exclude<InboxReadSource, "mixed">>
   /** Aggregate provenance of the plan. */
   source: InboxReadSource
+}
+
+export interface InboxReadScopeStatus {
+  coverage: InboxReadCoverage
+  /** True when a required relay may have truncated older matching events. */
+  capped: boolean
 }
 
 export interface PlanInboxReadRelaysInput {
@@ -1201,8 +1212,15 @@ export function planInboxReadRelays(
   const retained = projectOwnerRelayUrls(
     input.declaration.retainedReadRelayUrls ?? []
   )
+  const pending = projectOwnerRelayUrls(
+    input.declaration.pendingRelayUrls ?? []
+  )
+  const pendingSet = new Set(pending)
+  // A staged declaration is projected into retainedReadRelayUrls before the
+  // last usable declaration. Split them so each three-relay write generation
+  // remains independently required for invoice-history reads.
+  const priorRetained = retained.filter((url) => !pendingSet.has(url))
   const cachedFallback = projectOwnerRelayUrls([
-    ...retained.slice(MAX_DECLARED_INBOX_WRITE_RELAYS),
     ...(input.declaration.state === "lookup_partial" ||
     input.declaration.state === "lookup_unavailable"
       ? (getCachedInboxDeclaration(input.declaration.pubkey)?.relayUrls ?? [])
@@ -1225,6 +1243,13 @@ export function planInboxReadRelays(
   const remainingCompatibility = compatibility.filter(
     (url) => !requiredCompatibilitySet.has(url)
   )
+  const declaredWritePlanRelayUrls = Array.from(
+    new Set([
+      ...declared.slice(0, MAX_DECLARED_INBOX_WRITE_RELAYS),
+      ...pending.slice(0, MAX_DECLARED_INBOX_WRITE_RELAYS),
+      ...priorRetained.slice(0, MAX_DECLARED_INBOX_WRITE_RELAYS),
+    ])
+  )
 
   const relaySources: InboxReadPlan["relaySources"] = {}
   const orderedUrls: string[] = []
@@ -1243,8 +1268,11 @@ export function planInboxReadRelays(
   // can consume the whole read fanout; the remaining tags are optional read
   // breadth for cross-client senders that may choose a wider subset.
   add(declared.slice(0, MAX_DECLARED_INBOX_WRITE_RELAYS), "declared")
-  add(retained.slice(0, MAX_DECLARED_INBOX_WRITE_RELAYS), "cache")
+  add(pending.slice(0, MAX_DECLARED_INBOX_WRITE_RELAYS), "cache")
+  add(priorRetained.slice(0, MAX_DECLARED_INBOX_WRITE_RELAYS), "cache")
   add(declared.slice(MAX_DECLARED_INBOX_WRITE_RELAYS), "declared")
+  add(pending.slice(MAX_DECLARED_INBOX_WRITE_RELAYS), "cache")
+  add(priorRetained.slice(MAX_DECLARED_INBOX_WRITE_RELAYS), "cache")
   add(cachedFallback, "cache")
   // Reserve the write/read overlap before optional local and public
   // compatibility sources so a large local IN list cannot make an order
@@ -1263,7 +1291,12 @@ export function planInboxReadRelays(
       ? "mixed"
       : (limited[0] && relaySources[limited[0]]) || "compatibility"
 
-  return { relayUrls: limited, relaySources, source }
+  return {
+    relayUrls: limited,
+    declaredWritePlanRelayUrls,
+    relaySources,
+    source,
+  }
 }
 
 /** Derive read coverage from fanout diagnostics. */
@@ -1274,6 +1307,41 @@ export function deriveInboxReadCoverage(diagnostics: {
   if (diagnostics.successfulRelayUrls.length === 0) return "unavailable"
   if (diagnostics.failedRelayUrls.length > 0) return "partial"
   return "complete"
+}
+
+/**
+ * Derive fail-closed coverage for a required subset of a wider inbox read.
+ * A relay reported in both lists completed only partially and is not complete.
+ */
+export function deriveScopedInboxReadStatus(
+  requiredRelayUrls: readonly string[],
+  diagnostics: {
+    successfulRelayUrls: readonly string[]
+    failedRelayUrls: readonly string[]
+    saturatedRelayUrls?: readonly string[]
+  }
+): InboxReadScopeStatus {
+  const required = Array.from(new Set(requiredRelayUrls))
+  if (required.length === 0) {
+    return { coverage: "unavailable", capped: false }
+  }
+
+  const successful = new Set(diagnostics.successfulRelayUrls)
+  const failed = new Set(diagnostics.failedRelayUrls)
+  const saturated = new Set(diagnostics.saturatedRelayUrls ?? [])
+  const completedCount = required.filter(
+    (url) => successful.has(url) && !failed.has(url)
+  ).length
+
+  return {
+    coverage:
+      completedCount === required.length
+        ? "complete"
+        : completedCount > 0
+          ? "partial"
+          : "unavailable",
+    capped: required.some((url) => saturated.has(url)),
+  }
 }
 
 export interface DeliveryRouteSelection {
