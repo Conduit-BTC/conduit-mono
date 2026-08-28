@@ -29,8 +29,10 @@ import {
   MerchantMobileNav,
   MerchantSidebar,
 } from "../components/MerchantHeader"
+import { MerchantPublicAboutShell } from "../components/MerchantPublicAboutShell"
 import { MerchantReadinessProvider } from "../hooks/useMerchantReadinessContext"
 import { MerchantPaymentAutomationProvider } from "../hooks/useMerchantPaymentAutomation"
+import { isMerchantPublicAboutPath } from "../lib/publicRoutes"
 
 export const Route = createRootRoute({
   component: RootLayout,
@@ -74,6 +76,15 @@ function RootLayout() {
   })
 
   if (isProductLegalPath(pathname)) return <Outlet />
+  if (isMerchantPublicAboutPath(pathname)) {
+    throwSyntheticClientErrorForTelemetryTest()
+
+    return (
+      <MerchantPublicAboutShell>
+        <Outlet />
+      </MerchantPublicAboutShell>
+    )
+  }
 
   return <MerchantProductRoot pathname={pathname} />
 }
@@ -259,7 +270,31 @@ function RootErrorComponent({ error }: ErrorComponentProps) {
     )
   }
 
+  if (isMerchantPublicAboutPath(pathname)) {
+    return <MerchantPublicRootError error={error} />
+  }
+
   return <MerchantProductRootError error={error} />
+}
+
+function MerchantPublicRootError({ error }: { error: Error }) {
+  useEffect(() => {
+    recordBrowserClientError({
+      app: "merchant",
+      error,
+      source: "react_error_boundary",
+    })
+  }, [error])
+
+  return (
+    <div className="min-h-dvh bg-[var(--background)] px-4 py-12 text-[var(--text-primary)]">
+      <ErrorPage
+        title="Something went wrong"
+        message="Reload the page. If the problem continues, use the public Conduit repository for support."
+        showReload
+      />
+    </div>
+  )
 }
 
 function MerchantProductRootError({ error }: { error: Error }) {
@@ -411,9 +446,15 @@ function ConnectGate() {
         />
       </main>
       <nav
-        aria-label="Product legal documents"
+        aria-label="Merchant information and legal documents"
         className="flex items-center justify-center gap-4 text-sm text-[var(--text-secondary)]"
       >
+        <a
+          href="/about"
+          className="rounded-sm underline underline-offset-4 hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        >
+          About
+        </a>
         <a
           href="/terms-of-service"
           className="rounded-sm underline underline-offset-4 hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"

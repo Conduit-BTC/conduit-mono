@@ -19,6 +19,7 @@
     "seed:products": "bun scripts/dev/seed_products.ts",
     "check:products": "bun scripts/dev/check_products.ts",
     "figma:variables": "bun scripts/figma/get_variable_defs.ts",
+    "contributors:refresh": "bun scripts/vite/refresh_repository_contributors.ts",
     "format:check": "bun scripts/ci/prettier_changed.ts --check",
     "format:fix": "bun scripts/ci/prettier_changed.ts --write",
     "prepare": "husky",

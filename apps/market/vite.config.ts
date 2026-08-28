@@ -4,6 +4,7 @@ import { TanStackRouterVite } from "@tanstack/router-plugin/vite"
 import { resolve } from "path"
 import { fileURLToPath } from "node:url"
 import { createConduitBuildContract } from "../../scripts/vite/build_info.ts"
+import { createRepositoryContributorsPlugin } from "../../scripts/vite/repository_contributors.ts"
 
 const appDir = fileURLToPath(new URL(".", import.meta.url))
 const buildContract = createConduitBuildContract(appDir)
@@ -13,6 +14,7 @@ export default defineConfig({
   plugins: [
     TanStackRouterVite(),
     react(),
+    createRepositoryContributorsPlugin(),
     buildContract.deploymentManifestPlugin,
   ],
   resolve: {
