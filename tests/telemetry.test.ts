@@ -88,27 +88,82 @@ describe("browser telemetry", () => {
     })
   })
 
-  it("pins official Product telemetry to the Conduit PostHog proxy", () => {
-    const configured = resolveBrowserTelemetryConfig("market", {
-      VITE_ENABLE_TELEMETRY: "true",
-      VITE_PLAUSIBLE_SRC: "https://analytics.example/script.js",
-      VITE_POSTHOG_KEY: "ph_project_key",
-      VITE_POSTHOG_HOST: "https://us.i.posthog.com",
-    })
+  it("pins both official Product apps to the Conduit PostHog proxy", () => {
+    for (const [app, hostname] of [
+      ["market", "SHOP.CONDUIT.MARKET"],
+      ["merchant", "SELL.CONDUIT.MARKET"],
+    ] as const) {
+      const configured = resolveBrowserTelemetryConfig(app, {
+        VITE_ENABLE_TELEMETRY: "true",
+        VITE_PLAUSIBLE_SRC: "https://analytics.example/script.js",
+        VITE_POSTHOG_KEY: "ph_project_key",
+        VITE_POSTHOG_HOST: "https://us.i.posthog.com",
+      })
 
-    const official = constrainOfficialBrowserTelemetryConfig(
-      configured,
-      "SHOP.CONDUIT.MARKET"
-    )
-    expect(official.plausible).toBeNull()
-    expect(official.posthog).toEqual({
-      key: "ph_project_key",
-      host: "https://e.conduit.market",
-    })
+      const official = constrainOfficialBrowserTelemetryConfig(
+        configured,
+        hostname
+      )
+      expect(official.plausible).toBeNull()
+      expect(official.posthog).toEqual({
+        key: "ph_project_key",
+        host: "https://e.conduit.market",
+      })
+    }
+  })
 
-    expect(
-      constrainOfficialBrowserTelemetryConfig(configured, "preview.example")
-    ).toBe(configured)
+  it("discards inherited PostHog config on every nonofficial host", () => {
+    for (const [app, hostname] of [
+      ["market", "branch.conduit-market-coo.pages.dev"],
+      ["market", "conduit-market-coo.pages.dev"],
+      ["market", "localhost"],
+      ["market", "127.0.0.1"],
+      ["market", "shop.conduit.market."],
+      ["market", "shop.conduit.market.evil.example"],
+      ["merchant", "abc123.conduit-merchant-33n.pages.dev"],
+      ["merchant", "conduit-merchant-33n.pages.dev"],
+      ["merchant", "localhost"],
+      ["merchant", "127.0.0.1"],
+      ["merchant", "sell.conduit.market."],
+      ["merchant", "sell.conduit.market.evil.example"],
+    ] as const) {
+      const configured = resolveBrowserTelemetryConfig(app, {
+        VITE_ENABLE_TELEMETRY: "true",
+        VITE_TELEMETRY_ALLOWED_HOSTS: hostname,
+        VITE_PLAUSIBLE_SRC: "https://analytics.example/script.js",
+        VITE_POSTHOG_KEY: "ph_project_key",
+        VITE_POSTHOG_HOST: "https://us.i.posthog.com",
+      })
+
+      const constrained = constrainOfficialBrowserTelemetryConfig(
+        configured,
+        hostname
+      )
+      expect(constrained.posthog).toBeNull()
+      expect(constrained.plausible).toEqual(configured.plausible)
+    }
+  })
+
+  it("discards every provider on cross-app official hosts", () => {
+    for (const [app, hostname] of [
+      ["market", "sell.conduit.market"],
+      ["merchant", "shop.conduit.market"],
+    ] as const) {
+      const configured = resolveBrowserTelemetryConfig(app, {
+        VITE_ENABLE_TELEMETRY: "true",
+        VITE_TELEMETRY_ALLOWED_HOSTS: hostname,
+        VITE_PLAUSIBLE_SRC: "https://analytics.example/script.js",
+        VITE_POSTHOG_KEY: "ph_project_key",
+        VITE_POSTHOG_HOST: "https://us.i.posthog.com",
+      })
+
+      const constrained = constrainOfficialBrowserTelemetryConfig(
+        configured,
+        hostname
+      )
+      expect(constrained.plausible).toBeNull()
+      expect(constrained.posthog).toBeNull()
+    }
   })
 
   it("redacts dynamic route identifiers from pageview paths", () => {

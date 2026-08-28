@@ -6,10 +6,12 @@ export {
   browserTelemetryEventPropertyContracts,
   browserTelemetryEventNames,
   browserTelemetryPropertyNames,
+  getOfficialProductTelemetryApp,
   hasRequiredBrowserTelemetryEventProperties,
   isAllowedBrowserTelemetryEventApp,
   isAllowedBrowserTelemetryEventProperty,
   isAllowedBrowserTelemetryLabelValue,
+  officialProductTelemetryHostnames,
 } from "./telemetry-contract"
 export type {
   BrowserTelemetryEventName,
@@ -18,6 +20,7 @@ export type {
 import {
   browserTelemetryEventNames,
   browserTelemetryPropertyNames,
+  getOfficialProductTelemetryApp,
   hasRequiredBrowserTelemetryEventProperties,
   isAllowedBrowserTelemetryEventApp,
   isAllowedBrowserTelemetryEventProperty,
@@ -164,10 +167,6 @@ const DEFAULT_PLAUSIBLE_SCRIPT_SRC = "https://plausible.io/js/script.js"
 const DEFAULT_POSTHOG_HOST = "https://e.conduit.market"
 const DEFAULT_POSTHOG_UI_HOST = "https://us.posthog.com"
 const POSTHOG_ANONYMOUS_DISTINCT_ID = "conduit-browser-telemetry"
-const OFFICIAL_PRODUCT_TELEMETRY_HOSTS = new Set([
-  "shop.conduit.market",
-  "sell.conduit.market",
-])
 const postHogTelemetryEventNames = [
   "$pageleave",
   "$pageview",
@@ -308,19 +307,24 @@ export function constrainOfficialBrowserTelemetryConfig(
   config: BrowserTelemetryConfig,
   hostname: string
 ): BrowserTelemetryConfig {
-  if (!OFFICIAL_PRODUCT_TELEMETRY_HOSTS.has(hostname.trim().toLowerCase())) {
-    return config
+  const officialApp = getOfficialProductTelemetryApp(hostname)
+  if (!officialApp) {
+    return {
+      ...config,
+      posthog: null,
+    }
   }
 
   return {
     ...config,
     plausible: null,
-    posthog: config.posthog
-      ? {
-          ...config.posthog,
-          host: DEFAULT_POSTHOG_HOST,
-        }
-      : null,
+    posthog:
+      officialApp === config.app && config.posthog
+        ? {
+            ...config.posthog,
+            host: DEFAULT_POSTHOG_HOST,
+          }
+        : null,
   }
 }
 
@@ -704,26 +708,10 @@ function getTelemetryAppForPageUrl(
   if (!pageUrl) return null
 
   try {
-    const hostname = new URL(pageUrl).hostname.toLowerCase()
-    if (
-      hostname === "shop.conduit.market" ||
-      hostname === "conduit-market-coo.pages.dev" ||
-      isTelemetryHostnameMatch(hostname, "*.conduit-market-coo.pages.dev")
-    ) {
-      return "market"
-    }
-    if (
-      hostname === "sell.conduit.market" ||
-      hostname === "conduit-merchant-33n.pages.dev" ||
-      isTelemetryHostnameMatch(hostname, "*.conduit-merchant-33n.pages.dev")
-    ) {
-      return "merchant"
-    }
+    return getOfficialProductTelemetryApp(new URL(pageUrl).hostname)
   } catch {
     return null
   }
-
-  return null
 }
 
 export function recordBrowserTelemetryEvent(input: TelemetryEventInput): void {

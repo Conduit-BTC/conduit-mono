@@ -1,6 +1,7 @@
 import {
   browserTelemetryEventNames,
   browserTelemetryPropertyNames,
+  getOfficialProductTelemetryApp,
   hasRequiredBrowserTelemetryEventProperties,
   isAllowedBrowserTelemetryEventProperty,
   isAllowedBrowserTelemetryLabelValue,
@@ -21,18 +22,6 @@ const allowedIngestPaths = new Set([
   "/i/v0/e",
   "/i/v0/e/",
 ])
-
-const allowedOriginApps = new Map<string, BrowserTelemetryApp>([
-  ["conduit-market-coo.pages.dev", "market"],
-  ["conduit-merchant-33n.pages.dev", "merchant"],
-  ["sell.conduit.market", "merchant"],
-  ["shop.conduit.market", "market"],
-])
-
-const allowedPreviewOriginApps = [
-  { app: "market", suffix: "conduit-market-coo.pages.dev" },
-  { app: "merchant", suffix: "conduit-merchant-33n.pages.dev" },
-] as const
 
 export interface AllowedOriginContext {
   app: BrowserTelemetryApp
@@ -566,7 +555,7 @@ function isSanitizedPageUrl(value: unknown): value is string {
   if (!isSanitizedTelemetryRoutePath(url.pathname)) return false
   if (value !== `${url.origin}${url.pathname}`) return false
 
-  return getAllowedTelemetryApp(url.hostname.toLowerCase()) !== null
+  return getOfficialProductTelemetryApp(url.hostname) !== null
 }
 
 async function readBoundedRequestBody(
@@ -621,29 +610,13 @@ function getAllowedOriginContext(
       return null
     }
 
-    const app = getAllowedTelemetryApp(origin.hostname.toLowerCase())
+    const app = getOfficialProductTelemetryApp(origin.hostname)
     if (!app) return null
 
     return { app, origin: origin.origin }
   } catch {
     return null
   }
-}
-
-function getAllowedTelemetryApp(hostname: string): BrowserTelemetryApp | null {
-  const exactApp = allowedOriginApps.get(hostname)
-  if (exactApp) return exactApp
-
-  for (const { app, suffix } of allowedPreviewOriginApps) {
-    if (isSingleLabelSubdomain(hostname, suffix)) return app
-  }
-  return null
-}
-
-function isSingleLabelSubdomain(hostname: string, suffix: string): boolean {
-  if (!hostname.endsWith(`.${suffix}`)) return false
-  const label = hostname.slice(0, -(suffix.length + 1))
-  return !!label && !label.includes(".")
 }
 
 function getCorsHeaders(origin: string): Headers {

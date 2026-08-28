@@ -112,16 +112,22 @@ must not retain campaign parameters or referrer data.
 
 Browser ingestion is routed through the origin-restricted
 `e.conduit.market` Worker. The proxy accepts only PostHog event-ingestion paths
-from the configured Market and Merchant production or single-label preview
-origins. It must not forward cookies, browser user-agent, `CF-Connecting-IP`,
-`X-Forwarded-For`, or other identity headers, and it must not cache or log
-request payloads. It must reject ingest bodies larger than 1 MiB before
-forwarding them upstream.
+from the exact Market and Merchant production origins. Cloudflare Pages
+previews, branch deployments, local apps, and every other nonofficial origin
+must be rejected before payload processing. The proxy must not forward cookies,
+browser user-agent, `CF-Connecting-IP`, `X-Forwarded-For`, or other identity
+headers, and it must not cache or log request payloads. It must reject ingest
+bodies larger than 1 MiB before forwarding them upstream.
 
 The official Shop and Sell hosts disable the legacy Plausible integration and
 pin PostHog ingestion to `e.conduit.market`; build-time provider overrides do
-not widen that official-host boundary. Nonofficial and local test hosts may use
-the legacy provider configuration only within their explicit telemetry host
+not widen that official-host boundary. The browser discards PostHog
+configuration before loading the SDK unless the runtime hostname and app are
+the exact official pair: `shop.conduit.market` for Market or
+`sell.conduit.market` for Merchant. Accidentally inherited enablement,
+allowlists, project keys, or provider hosts therefore cannot activate PostHog
+on a nonofficial or cross-app host. Nonofficial and local test hosts may use the
+legacy Plausible configuration only within their explicit telemetry host
 allowlist.
 
 ## Events
