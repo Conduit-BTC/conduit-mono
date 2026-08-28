@@ -472,7 +472,7 @@ describe("Market and Merchant protected inbox integration", () => {
     expect(isPrivateInboxDeclaredWriteHistoryComplete(result.meta)).toBe(true)
   })
 
-  it("keeps declared write history complete when declaration discovery degrades", async () => {
+  it("keeps declared write history complete only when exact readback succeeds", async () => {
     const declaration = finalizeEvent(
       {
         kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
@@ -484,6 +484,7 @@ describe("Market and Merchant protected inbox integration", () => {
     )
     const cachedRows: CachedOrderMessage[] = []
     let declarationReads = 0
+    let declarationReadbacks = 0
 
     __setCommerceTestOverrides({
       getNdk: async () => ({ signer: {} }) as never,
@@ -497,19 +498,39 @@ describe("Market and Merchant protected inbox integration", () => {
         const declarationRead = filter.kinds?.includes(
           EVENT_KINDS.PRIVATE_MESSAGE_RELAYS
         )
-        if (declarationRead) {
+        const declarationReadback =
+          declarationRead && filter.ids?.includes(declaration.id)
+        if (declarationReadback) {
+          expect(filter).toMatchObject({
+            ids: [declaration.id],
+            kinds: [EVENT_KINDS.PRIVATE_MESSAGE_RELAYS],
+            authors: [MERCHANT],
+            limit: 1,
+          })
+          expect(relayUrls.length).toBeGreaterThan(0)
+          expect(relayUrls.length).toBeLessThanOrEqual(8)
+          declarationReadbacks += 1
+        } else if (declarationRead) {
           declarationReads += 1
         }
         const failedRelayUrls = declarationRead
-          ? declarationReads === 1
-            ? []
-            : relayUrls.slice(-1)
+          ? declarationReadback
+            ? declarationReadbacks === 1
+              ? []
+              : [...relayUrls]
+            : declarationReads === 1
+              ? []
+              : relayUrls.slice(-1)
           : relayUrls.filter((url) => url === "wss://inbox.azzamo.net")
         return {
           events: declarationRead
-            ? declarationReads < 3
-              ? ([declaration] as never)
-              : []
+            ? declarationReadback
+              ? declarationReadbacks === 1
+                ? ([declaration] as never)
+                : []
+              : declarationReads < 3
+                ? ([declaration] as never)
+                : []
             : ([wraps.get(MERCHANT)!] as never),
           attemptedRelayUrls: relayUrls,
           successfulRelayUrls: relayUrls.filter(
@@ -548,18 +569,38 @@ describe("Market and Merchant protected inbox integration", () => {
     })
 
     expect(declarationReads).toBe(3)
+    expect(declarationReadbacks).toBe(1)
     expect(cachedFallbackResult.data).toHaveLength(1)
     expect(cachedFallbackResult.meta.stale).toBe(true)
     expect(cachedFallbackResult.meta.inbox?.declarationStale).toBe(true)
     expect(cachedFallbackResult.meta.inbox?.declarationEvidenceCurrent).toBe(
-      false
+      true
     )
     expect(cachedFallbackResult.meta.inbox?.declaredWritePlan).toEqual({
       coverage: "complete",
       capped: false,
     })
+    expect(cachedFallbackResult.meta.degraded).toBe(true)
     expect(
       isPrivateInboxDeclaredWriteHistoryComplete(cachedFallbackResult.meta)
+    ).toBe(true)
+
+    const unavailableReadbackResult = await getMerchantConversationList({
+      principalPubkey: MERCHANT,
+      forceFresh: true,
+    })
+
+    expect(declarationReads).toBe(4)
+    expect(declarationReadbacks).toBe(2)
+    expect(unavailableReadbackResult.data).toHaveLength(1)
+    expect(unavailableReadbackResult.meta.stale).toBe(true)
+    expect(unavailableReadbackResult.meta.inbox?.declarationStale).toBe(true)
+    expect(unavailableReadbackResult.meta.degraded).toBe(true)
+    expect(
+      unavailableReadbackResult.meta.inbox?.declarationEvidenceCurrent
+    ).toBe(false)
+    expect(
+      isPrivateInboxDeclaredWriteHistoryComplete(unavailableReadbackResult.meta)
     ).toBe(false)
   })
 

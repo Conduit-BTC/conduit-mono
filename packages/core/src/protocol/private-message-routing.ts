@@ -128,13 +128,18 @@ export interface InboxDeclarationResolution {
 }
 
 export interface InboxDeclarationObservation {
+  /** Coverage and relay diagnostics for the primary frontier lookup. */
   coverage: InboxReadCoverage
   attemptedRelayUrls: string[]
   successfulRelayUrls: string[]
   failedRelayUrls: string[]
-  /** Exact event observed during this invocation, before frontier merging. */
+  /**
+   * Exact event observed during this invocation, before frontier merging.
+   * May come from one bounded exact-ID readback after a partial-empty primary
+   * lookup; that proof does not upgrade primary coverage or freshness.
+   */
   eventId?: string
-  /** Relays that returned the exact event during this invocation. */
+  /** Relays that returned the exact event during either observation step. */
   eventSourceRelayUrls: string[]
 }
 
@@ -1020,7 +1025,77 @@ export async function resolveInboxDeclaration(
     }
   }
 
-  const declarations = declarationEventsNewestFirst(result.events, key)
+  let declarations = declarationEventsNewestFirst(result.events, key)
+  let eventSourceSuccessfulRelayUrls = result.successfulRelayUrls
+  if (
+    declarations.length === 0 &&
+    result.failedRelayUrls.length > 0 &&
+    cached?.eventId
+  ) {
+    // Prefer shared/current discovery sources, then retain older proven source
+    // relays for legacy evidence. Project the context before bounding so local
+    // sources cannot consume a peer's public readback budget and leave no plan.
+    const readbackCandidates = ownerRelayUrls([
+      ...(cached.sharedSourceRelayUrls ?? []),
+      ...relayUrls,
+      ...(cached.sourceRelayUrls ?? []),
+    ])
+    const readbackRelayUrls = (
+      allowLocal
+        ? ownerRelayUrls(readbackCandidates)
+        : publicRelayHintUrls(readbackCandidates)
+    ).slice(0, MAX_INBOX_DISCOVERY_RELAYS)
+    let readbackResult: Awaited<
+      ReturnType<typeof fetchEventsFanoutWithDiagnostics>
+    > = {
+      events: [],
+      attemptedRelayUrls: [],
+      successfulRelayUrls: [],
+      failedRelayUrls: [],
+    }
+    // The fanout helper interprets an empty explicit plan as "use defaults".
+    // Never let a projected-empty exact readback escape onto unrelated relays.
+    if (readbackRelayUrls.length > 0) {
+      try {
+        readbackResult = await fetchWithDiagnostics(
+          {
+            ids: [cached.eventId],
+            kinds: [EVENT_KINDS.PRIVATE_MESSAGE_RELAYS],
+            authors: [key],
+            limit: 1,
+          },
+          {
+            relayUrls: readbackRelayUrls,
+            connectTimeoutMs: 3_000,
+            fetchTimeoutMs: 6_000,
+            skipHealthFilter: true,
+          }
+        )
+      } catch {
+        readbackResult = {
+          events: [],
+          attemptedRelayUrls: [...readbackRelayUrls],
+          successfulRelayUrls: [],
+          failedRelayUrls: [...readbackRelayUrls],
+        }
+      }
+    }
+    readbackResult = reconcileInboxReadDiagnostics(
+      readbackResult,
+      readbackRelayUrls
+    )
+    const exactDeclaration = declarationEventsNewestFirst(
+      readbackResult.events,
+      key
+    ).find((event) => {
+      const signedEvent = toSignedDeclarationEvent(event, key)
+      return signedEvent?.id === cached.eventId
+    })
+    if (exactDeclaration) {
+      declarations = [exactDeclaration]
+      eventSourceSuccessfulRelayUrls = readbackResult.successfulRelayUrls
+    }
+  }
   const newest = declarations[0] ?? null
   if (!newest) {
     if (result.failedRelayUrls.length > 0) {
@@ -1102,7 +1177,7 @@ export async function resolveInboxDeclaration(
 
   const eventSourceRelayUrls = declarationEventSourceRelayUrls(
     signedDeclarations[0]!.event,
-    result.successfulRelayUrls
+    eventSourceSuccessfulRelayUrls
   )
   const observation: InboxDeclarationObservation = {
     ...observationBase,
@@ -1114,7 +1189,7 @@ export async function resolveInboxDeclaration(
     signedDeclarations.map((candidate) => {
       const sourceRelayUrls = declarationEventSourceRelayUrls(
         candidate.event,
-        result.successfulRelayUrls
+        eventSourceSuccessfulRelayUrls
       )
       return {
         pubkey: key,
