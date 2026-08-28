@@ -159,8 +159,8 @@ function createCache(
 }
 
 describe("shopper trust evidence", () => {
-  it("registers the combined cache, deletion, declaration, wallet, and shipping stores", () => {
-    expect(db.verno).toBe(14)
+  it("registers the combined cache, deletion, declaration, wallet, shipping, and invoice stores", () => {
+    expect(db.verno).toBe(15)
     expect(db.tables.map(({ name }) => name)).toEqual(
       expect.arrayContaining([
         "shopperTrustSnapshots",
@@ -170,6 +170,7 @@ describe("shopper trust evidence", () => {
         "wallets",
         "walletCredentials",
         "shippingOptionFrontiers",
+        "merchantPendingInvoices",
       ])
     )
     expect(db.inboxDeclarationEvidence.schema.primKey.name).toBe("pubkey")
@@ -187,6 +188,18 @@ describe("shopper trust evidence", () => {
         "dTag",
         "strongestCreatedAt",
         "cachedAt",
+      ])
+    )
+    expect(db.merchantPendingInvoices.schema.primKey.name).toBe("id")
+    expect(
+      db.merchantPendingInvoices.schema.indexes.map(({ name }) => name)
+    ).toEqual(
+      expect.arrayContaining([
+        "merchantPubkey",
+        "orderId",
+        "deliveryState",
+        "invoiceExpiresAt",
+        "updatedAt",
       ])
     )
   })

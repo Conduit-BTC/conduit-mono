@@ -3,7 +3,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   buildOrderStatusTimeline,
-  canMockInvoice,
   clearProtectedReadAuthenticationSuppression,
   compileProductFulfillmentIntent,
   CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG,
@@ -22,17 +21,15 @@ import {
   getShippingOptionsByCoordinates,
   hasWebLN,
   isInvoiceCompatibleWithCurrentNetwork,
+  isValidLud16Address,
   isMerchantOrderPaid,
-  mockMakeInvoice,
   normalizeCurrencyAmount,
   normalizeSafeHttpUrl,
-  nwcMakeInvoice,
   publishMerchantOrderMessage,
   pubkeyToNpub,
   prepareProtectedReadRefreshState,
   selectProtectedReadRows,
   resolveProductFulfillment,
-  weblnMakeInvoice,
   type MerchantConversationSummary,
   type MerchantOrderAction,
   type MerchantOrderState,
@@ -45,6 +42,7 @@ import {
   useConduitSession,
   useInboxDeclaration,
   useNip05Verification,
+  useProfile,
   useProfiles,
   useShopperTrustEvidence,
 } from "@conduit/core"
@@ -104,6 +102,11 @@ import {
 } from "../lib/order-action-view"
 import { prepareShippingUpdate } from "../lib/shipping-update"
 import { formatMerchantOrderAmount } from "../lib/order-summary-display"
+import {
+  createDefaultMerchantInvoiceModule,
+  type MerchantInvoiceActionSource,
+  type MerchantInvoiceSelection,
+} from "../lib/merchant-invoice"
 import {
   buildLocalProductDeliveryNotice,
   buildLocalProductRetryNotice,
@@ -238,6 +241,23 @@ function normalizeInvoiceCurrencyChoice(
   if (normalized === "SAT" || normalized === "SATS") return "SATS"
   if (normalized === "USD") return "USD"
   return ""
+}
+
+const INVOICE_ACTION_ERROR_MESSAGES: Record<
+  MerchantInvoiceActionSource,
+  string
+> = {
+  profile_lud16:
+    "Could not create an invoice from the profile Lightning address. Try again or choose another source.",
+  webln:
+    "Could not create an invoice with the browser wallet. Try again or choose another source.",
+  nwc: "Could not create an invoice with the connected wallet. Check the wallet connection or choose another source.",
+  manual:
+    "Could not validate and send the pasted invoice. Check it and try again.",
+}
+
+function safeInvoiceActionError(source: MerchantInvoiceActionSource): Error {
+  return new Error(INVOICE_ACTION_ERROR_MESSAGES[source])
 }
 
 const panelCard =
@@ -399,6 +419,13 @@ function OrdersPage() {
   const btcUsdRateQuery = useBtcUsdRate()
   const btcUsdRate = btcUsdRateQuery.data ?? null
   const queryClient = useQueryClient()
+  const merchantProfileQuery = useProfile(pubkey, {
+    authenticatedPubkey: pubkey,
+  })
+  const merchantInvoiceModule = useMemo(
+    () => createDefaultMerchantInvoiceModule(),
+    []
+  )
   const [selectedConversationId, setSelectedConversationId] = useState<
     string | null
   >(null)
@@ -408,6 +435,8 @@ function OrdersPage() {
   const [orderDetailsOpen, setOrderDetailsOpen] = useState(false)
   const [messagesOpen, setMessagesOpen] = useState(false)
   const [invoice, setInvoice] = useState("")
+  const [invoiceSource, setInvoiceSource] =
+    useState<MerchantInvoiceActionSource>("profile_lud16")
   const [invoiceAmount, setInvoiceAmount] = useState("")
   const [invoiceCurrency, setInvoiceCurrency] = useState("USD")
   const [invoiceNote, setInvoiceNote] = useState("")
@@ -438,6 +467,10 @@ function OrdersPage() {
   )
   const [weblnAvailable, setWeblnAvailable] = useState(false)
   const selectedOrderResetRef = useRef<string | null>(null)
+  const pendingInvoiceQueryTokensRef = useRef(
+    new WeakMap<MerchantConversationSummary, string>()
+  )
+  const nextPendingInvoiceQueryTokenRef = useRef(0)
   const signerConnected = status === "connected" && !!pubkey
   const invoiceAmountNumber = useMemo(() => {
     const amount = Number(invoiceAmount)
@@ -475,6 +508,18 @@ function OrdersPage() {
   }, [])
 
   const nwc = useMerchantPaymentAutomation()
+  const profileLud16 = merchantProfileQuery.data?.lud16?.trim() ?? ""
+  const profileInvoiceAvailable = isValidLud16Address(profileLud16)
+  const nwcInvoiceAvailable =
+    !!nwc.connection && nwc.canCreateInvoices && nwc.addressStatus === "match"
+  const selectedInvoiceSourceAvailable =
+    invoiceSource === "profile_lud16"
+      ? profileInvoiceAvailable
+      : invoiceSource === "webln"
+        ? weblnAvailable
+        : invoiceSource === "nwc"
+          ? nwcInvoiceAvailable
+          : true
 
   // Orders reads stay permissive without a NIP-17 declaration (CND-208);
   // this banner only reports readiness and links to Network for repair.
@@ -725,6 +770,20 @@ function OrdersPage() {
     filteredConversations.find(
       (conversation) => conversation.id === selectedConversationId
     ) ?? null
+  let pendingInvoiceQueryToken = "none"
+  if (selected) {
+    const existingToken = pendingInvoiceQueryTokensRef.current.get(selected)
+    if (existingToken) {
+      pendingInvoiceQueryToken = existingToken
+    } else {
+      nextPendingInvoiceQueryTokenRef.current += 1
+      pendingInvoiceQueryToken = `selection-${nextPendingInvoiceQueryTokenRef.current}`
+      pendingInvoiceQueryTokensRef.current.set(
+        selected,
+        pendingInvoiceQueryToken
+      )
+    }
+  }
   const selectedStockDecisionId = selected
     ? `${pubkey ?? "none"}:${selected.id}`
     : null
@@ -776,6 +835,7 @@ function OrdersPage() {
     setOrderDetailsOpen(false)
     setMessagesOpen(false)
     setInvoice("")
+    setInvoiceSource("profile_lud16")
     setInvoiceAmount("")
     setInvoiceCurrency("USD")
     setInvoiceNote("")
@@ -933,6 +993,25 @@ function OrdersPage() {
     !merchantPaid &&
     !merchantOrderState.paymentObserved &&
     !!merchantOrderState.accepted
+  const selectedInvoiceScope =
+    pubkey && selected
+      ? {
+          merchantPubkey: pubkey,
+          buyerPubkey: selected.buyerPubkey,
+          orderId: selected.orderId,
+        }
+      : null
+  const pendingInvoiceQuery = useQuery({
+    queryKey: ["merchant-pending-invoice", pendingInvoiceQueryToken],
+    enabled: canSendInvoice && !!selectedInvoiceScope,
+    queryFn: async () => {
+      try {
+        return await merchantInvoiceModule.getStatus(selectedInvoiceScope!)
+      } catch {
+        throw new Error("Could not load the saved invoice status.")
+      }
+    },
+  })
   const canRecordShipping =
     selectedQueue === "paid_fulfill" &&
     merchantPaid &&
@@ -1257,133 +1336,100 @@ function OrdersPage() {
     },
   })
 
-  // Generate invoice via WebLN (Alby) or NWC, then auto-send as payment_request DM
-  const generateInvoiceMutation = useMutation({
-    mutationFn: () =>
-      runExclusiveOrderAction(orderActionLockRef, async () => {
-        if (!pubkey || !selected) throw new Error("No conversation selected")
-        assertBuyerHasNostrInbox()
-        if (!canSendInvoice) {
-          throw new Error("This order is not eligible for another invoice.")
+  function resolveInvoiceSelection(
+    source: MerchantInvoiceActionSource
+  ): MerchantInvoiceSelection {
+    switch (source) {
+      case "profile_lud16":
+        if (!profileInvoiceAvailable) {
+          throw new Error("A valid profile Lightning address is required.")
         }
-
-        const amountSats = invoiceAmountSats ?? 0
-        if (amountSats <= 0) throw new Error("Amount must be greater than 0")
-
-        let bolt11: string
-
-        if (canMockInvoice()) {
-          bolt11 = mockMakeInvoice({
-            amountSats,
-            memo: `Conduit order ${selected.orderId}`,
-          }).invoice
-        } else if (weblnAvailable) {
-          // Primary path: WebLN (Alby browser extension) — zero config
-          const result = await weblnMakeInvoice({
-            amountSats,
-            memo: `Conduit order ${selected.orderId}`,
-          })
-          bolt11 = result.invoice
-        } else if (nwc.connection && nwc.canCreateInvoices) {
-          // Fallback: NWC connection URI
-          const result = await nwcMakeInvoice(
-            nwc.connection,
-            {
-              amountMsats: amountSats * 1000,
-              description: `Conduit order ${selected.orderId}`,
-            },
-            30_000,
-            "merchant"
-          )
-          bolt11 = result.invoice
-        } else {
+        return { type: source }
+      case "webln":
+        if (!weblnAvailable) {
+          throw new Error("A browser wallet is not available.")
+        }
+        return { type: source }
+      case "nwc":
+        if (!nwc.connection || !nwcInvoiceAvailable) {
           throw new Error(
-            "No wallet available. Install Alby extension or connect NWC."
+            "The connected wallet must match the profile Lightning address."
           )
         }
-
-        const mismatch = getLightningNetworkMismatchMessage(bolt11)
-        if (mismatch) {
-          throw new Error(mismatch)
+        return {
+          type: source,
+          connection: nwc.connection,
         }
+      case "manual":
+        if (!invoice.trim()) throw new Error("Invoice is required.")
+        return { type: source, invoice: invoice.trim() }
+    }
+  }
 
-        const decoded = decodeLightningInvoiceAmount(bolt11)
-        const actualAmount = decoded.sats ?? decoded.msats ?? amountSats
-        const actualCurrency = decoded.currency ?? "SATS"
-
-        // Auto-send the invoice DM to the buyer
-        await publishMerchantOrderMessage({
-          merchantPubkey: pubkey,
-          buyerPubkey: selected.buyerPubkey,
-          orderId: selected.orderId,
-          type: "payment_request",
-          tags: [
-            ["amount", String(actualAmount)],
-            ["currency", actualCurrency],
-            ["payment_method", "lightning"],
-          ],
-          payload: {
-            invoice: bolt11,
-            amount: actualAmount,
-            currency: actualCurrency,
+  const createInvoiceMutation = useMutation({
+    mutationFn: (source: MerchantInvoiceActionSource) =>
+      runExclusiveOrderAction(orderActionLockRef, async () => {
+        try {
+          if (!selectedInvoiceScope) {
+            throw new Error("No conversation selected")
+          }
+          assertBuyerHasNostrInbox()
+          if (!canSendInvoice) {
+            throw new Error("This order is not eligible for another invoice.")
+          }
+          const amountSats = invoiceAmountSats ?? 0
+          if (amountSats <= 0) {
+            throw new Error("Amount must be greater than 0")
+          }
+          return await merchantInvoiceModule.createAndDeliver({
+            ...selectedInvoiceScope,
+            amountSats,
             note: invoiceNote.trim() || undefined,
-          },
-          delivery: operationalDelivery,
-        })
-
-        return { invoice: bolt11 }
+            delivery: operationalDelivery,
+            source: resolveInvoiceSelection(source),
+          })
+        } catch {
+          // Provider errors can contain invoices, addresses, relay responses,
+          // or wallet credentials. React Query retains errors, so only expose
+          // an allowlisted content-free message at this boundary.
+          throw safeInvoiceActionError(source)
+        }
       }),
     onSuccess: async () => {
       setInvoice("")
       setInvoiceNote("")
-      flash("Invoice generated and sent to buyer")
+      flash("Invoice generated and sent to the buyer's relay")
       await invalidateOrderQueries()
+    },
+    onSettled: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: ["merchant-pending-invoice"],
+      })
     },
   })
 
-  const invoiceMutation = useMutation({
+  const retryInvoiceMutation = useMutation({
     mutationFn: () =>
       runExclusiveOrderAction(orderActionLockRef, async () => {
-        if (!pubkey || !selected) throw new Error("No conversation selected")
-        assertBuyerHasNostrInbox()
-        if (!canSendInvoice) {
-          throw new Error("This order is not eligible for another invoice.")
-        }
-        if (!invoice.trim()) throw new Error("Invoice is required")
-        const manualInvoice = invoice.trim()
-        const mismatch = getLightningNetworkMismatchMessage(manualInvoice)
-        if (mismatch) throw new Error(mismatch)
-        const decoded = decodeLightningInvoiceAmount(manualInvoice)
-        const actualAmount = decoded.sats ?? decoded.msats
-        if (!actualAmount || !decoded.currency) {
+        try {
+          if (!selectedInvoiceScope) {
+            throw new Error("No conversation selected")
+          }
+          return await merchantInvoiceModule.retryDelivery(selectedInvoiceScope)
+        } catch {
           throw new Error(
-            "Invoice must include a decodable amount before it can be sent."
+            "Could not redeliver the saved invoice. Refresh and try again."
           )
         }
-        await publishMerchantOrderMessage({
-          merchantPubkey: pubkey,
-          buyerPubkey: selected.buyerPubkey,
-          orderId: selected.orderId,
-          type: "payment_request",
-          tags: [
-            ["amount", String(actualAmount)],
-            ["currency", decoded.currency],
-            ["payment_method", "lightning"],
-          ],
-          payload: {
-            invoice: manualInvoice,
-            amount: actualAmount,
-            currency: decoded.currency,
-            note: invoiceNote.trim() || undefined,
-          },
-          delivery: operationalDelivery,
-        })
       }),
     onSuccess: async () => {
-      setInvoice("")
-      setInvoiceNote("")
-      flash("Invoice sent to buyer")
+      flash("Saved invoice sent to the buyer's relay")
       await invalidateOrderQueries()
+    },
+    onSettled: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: ["merchant-pending-invoice"],
+      })
     },
   })
 
@@ -1479,8 +1525,8 @@ function OrdersPage() {
   const orderActionPending =
     stockUpdateMutation.isPending ||
     isMerchantOrderActionSurfacePending({
-      generateInvoice: generateInvoiceMutation.isPending,
-      sendInvoice: invoiceMutation.isPending,
+      generateInvoice: createInvoiceMutation.isPending,
+      sendInvoice: retryInvoiceMutation.isPending,
       advanceStatus: advanceStatusMutation.isPending,
       recordShipping: shippingMutation.isPending,
     })
@@ -1832,190 +1878,310 @@ function OrdersPage() {
                           {(canSendInvoice ||
                             canRecordShipping ||
                             advanceStatusMutation.error ||
-                            invoiceMutation.error ||
+                            createInvoiceMutation.error ||
+                            retryInvoiceMutation.error ||
                             shippingMutation.error ||
                             noteMutation.error) && (
                             <div className="space-y-3">
                               {canSendInvoice && (
                                 <div className="space-y-2">
-                                  <div className="grid grid-cols-2 gap-2">
-                                    <div className="grid gap-1">
-                                      <Label htmlFor="invoice-amount">
-                                        Amount
-                                      </Label>
-                                      <Input
-                                        id="invoice-amount"
-                                        type="number"
-                                        min="0"
-                                        step={getCurrencyAmountStep(
-                                          invoiceCurrency
-                                        )}
-                                        value={invoiceAmount}
-                                        onChange={(event) =>
-                                          setInvoiceAmount(event.target.value)
-                                        }
-                                      />
-                                    </div>
-                                    <div className="grid gap-1">
-                                      <Label htmlFor="invoice-currency">
-                                        Currency
-                                      </Label>
-                                      <Select
-                                        value={invoiceCurrency}
-                                        onValueChange={(value) =>
-                                          setInvoiceCurrency(value)
+                                  {pendingInvoiceQuery.isPending && (
+                                    <p className="text-xs text-[var(--text-secondary)]">
+                                      Checking for a saved invoice…
+                                    </p>
+                                  )}
+
+                                  {pendingInvoiceQuery.error && (
+                                    <div className="space-y-2 rounded-md border border-error/30 bg-error/10 p-3 text-xs text-error">
+                                      <p>
+                                        Could not load the saved invoice status.
+                                        Refresh before creating one.
+                                      </p>
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={() =>
+                                          void pendingInvoiceQuery.refetch()
                                         }
                                       >
-                                        <SelectTrigger id="invoice-currency">
-                                          <SelectValue placeholder="Choose currency" />
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                          {INVOICE_CURRENCY_OPTIONS.map(
-                                            (currency) => (
-                                              <SelectItem
-                                                key={currency}
-                                                value={currency}
-                                              >
-                                                {currency}
-                                              </SelectItem>
-                                            )
-                                          )}
-                                        </SelectContent>
-                                      </Select>
+                                        Retry status check
+                                      </Button>
                                     </div>
-                                  </div>
-                                  <Input
-                                    aria-label="Invoice note"
-                                    value={invoiceNote}
-                                    onChange={(event) =>
-                                      setInvoiceNote(event.target.value)
-                                    }
-                                    placeholder="Optional note"
-                                  />
-                                  <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--text-secondary)]">
-                                    {invoiceCurrencyUnsupported ? (
-                                      <>
-                                        This order was placed in{" "}
-                                        {selectedOrderCurrency}. Choose USD or
-                                        SATS before generating a Lightning
-                                        invoice.
-                                      </>
-                                    ) : invoiceAmountNumber > 0 ? (
-                                      invoiceAmountSats ? (
-                                        <>
-                                          This will generate an invoice for{" "}
-                                          {invoiceAmountSats.toLocaleString()}{" "}
-                                          sats.
-                                        </>
-                                      ) : (
-                                        <>
-                                          BTC/USD conversion is unavailable
-                                          right now, so this amount cannot be
-                                          converted yet.
-                                        </>
-                                      )
-                                    ) : (
-                                      <>
-                                        Enter the order amount to generate a
-                                        Lightning invoice.
-                                      </>
-                                    )}
-                                  </div>
+                                  )}
 
-                                  {weblnAvailable ||
-                                  (nwc.connection && nwc.canCreateInvoices) ? (
-                                    <div className="space-y-2">
+                                  {pendingInvoiceQuery.data?.state ===
+                                    "pending" && (
+                                    <div className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface)] p-3">
+                                      <p className="text-sm font-medium text-[var(--text-primary)]">
+                                        A saved invoice still needs delivery.
+                                      </p>
+                                      <p className="text-xs text-[var(--text-secondary)]">
+                                        Retry sends the exact same invoice; it
+                                        does not create another one.
+                                      </p>
                                       <Button
                                         type="button"
                                         size="sm"
                                         className="w-full"
-                                        disabled={
-                                          orderActionPending ||
-                                          !(invoiceAmountNumber > 0) ||
-                                          !invoiceAmountSats
-                                        }
-                                        onClick={() =>
-                                          generateInvoiceMutation.mutate()
-                                        }
-                                      >
-                                        {generateInvoiceMutation.isPending
-                                          ? "Generating…"
-                                          : "Generate & send invoice"}
-                                      </Button>
-                                      {generateInvoiceMutation.error && (
-                                        <div className="text-xs text-error">
-                                          {generateInvoiceMutation.error instanceof
-                                          Error
-                                            ? generateInvoiceMutation.error
-                                                .message
-                                            : "Failed"}
-                                        </div>
-                                      )}
-                                    </div>
-                                  ) : (
-                                    <form
-                                      onSubmit={(event) => {
-                                        event.preventDefault()
-                                        invoiceMutation.mutate()
-                                      }}
-                                    >
-                                      <div className="mb-2 grid gap-1">
-                                        <Label htmlFor="invoice-bolt11">
-                                          BOLT11 (paste manually)
-                                        </Label>
-                                        <Input
-                                          id="invoice-bolt11"
-                                          value={invoice}
-                                          onChange={(event) =>
-                                            setInvoice(event.target.value)
-                                          }
-                                          placeholder="lnbc..."
-                                        />
-                                        {invoice.trim() &&
-                                          !isInvoiceCompatibleWithCurrentNetwork(
-                                            invoice.trim()
-                                          ) && (
-                                            <div className="text-xs text-error">
-                                              {getLightningNetworkMismatchMessage(
-                                                invoice.trim()
-                                              )}
-                                            </div>
-                                          )}
-                                        {invoice.trim() &&
-                                          isInvoiceCompatibleWithCurrentNetwork(
-                                            invoice.trim()
-                                          ) &&
-                                          manualInvoiceDecoded?.currency && (
-                                            <div className="text-xs text-[var(--text-secondary)]">
-                                              Parsed invoice amount:{" "}
-                                              {manualInvoiceDecoded.sats ??
-                                                manualInvoiceDecoded.msats}{" "}
-                                              {manualInvoiceDecoded.currency}
-                                            </div>
-                                          )}
-                                      </div>
-                                      <Button
-                                        type="submit"
-                                        size="sm"
-                                        className="w-full"
                                         disabled={orderActionPending}
+                                        onClick={() =>
+                                          retryInvoiceMutation.mutate()
+                                        }
                                       >
-                                        {invoiceMutation.isPending
-                                          ? "Sending…"
-                                          : "Send invoice DM"}
+                                        {retryInvoiceMutation.isPending
+                                          ? "Retrying…"
+                                          : "Retry saved invoice"}
                                       </Button>
-                                    </form>
+                                    </div>
                                   )}
 
-                                  <p className="text-xs text-[var(--text-secondary)]">
-                                    {weblnAvailable
-                                      ? "Invoice via Alby extension."
-                                      : nwc.connection && nwc.canCreateInvoices
-                                        ? "Invoice via NWC wallet."
-                                        : "Install Alby or configure NWC on Payments for one-click invoicing."}{" "}
-                                    Conduit shows the parsed amount when the
-                                    invoice format can be verified.
-                                  </p>
+                                  {pendingInvoiceQuery.data?.state ===
+                                    "sent" && (
+                                    <div className="space-y-2 rounded-md border border-success/30 bg-success/10 p-3 text-xs text-success">
+                                      <p>
+                                        Invoice sent to the buyer's relay.
+                                        Waiting for payment.
+                                      </p>
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="outline"
+                                        className="w-full"
+                                        disabled={orderActionPending}
+                                        onClick={() =>
+                                          retryInvoiceMutation.mutate()
+                                        }
+                                      >
+                                        {retryInvoiceMutation.isPending
+                                          ? "Resending…"
+                                          : "Resend same invoice"}
+                                      </Button>
+                                    </div>
+                                  )}
+
+                                  {!pendingInvoiceQuery.isPending &&
+                                    !pendingInvoiceQuery.error &&
+                                    (!pendingInvoiceQuery.data ||
+                                      pendingInvoiceQuery.data.state ===
+                                        "none") && (
+                                      <div className="space-y-2">
+                                        <div className="grid gap-1">
+                                          <Label htmlFor="invoice-source">
+                                            Invoice source
+                                          </Label>
+                                          <Select
+                                            value={invoiceSource}
+                                            onValueChange={(value) =>
+                                              setInvoiceSource(
+                                                value as MerchantInvoiceActionSource
+                                              )
+                                            }
+                                          >
+                                            <SelectTrigger id="invoice-source">
+                                              <SelectValue placeholder="Choose invoice source" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                              <SelectItem
+                                                value="profile_lud16"
+                                                disabled={
+                                                  !profileInvoiceAvailable
+                                                }
+                                              >
+                                                Profile Lightning address
+                                              </SelectItem>
+                                              <SelectItem
+                                                value="webln"
+                                                disabled={!weblnAvailable}
+                                              >
+                                                Browser wallet (WebLN)
+                                              </SelectItem>
+                                              <SelectItem
+                                                value="nwc"
+                                                disabled={!nwcInvoiceAvailable}
+                                              >
+                                                Connected wallet (NWC)
+                                              </SelectItem>
+                                              <SelectItem value="manual">
+                                                Paste BOLT11 manually
+                                              </SelectItem>
+                                            </SelectContent>
+                                          </Select>
+                                        </div>
+
+                                        {invoiceSource === "profile_lud16" && (
+                                          <p className="text-xs text-[var(--text-secondary)]">
+                                            {profileInvoiceAvailable
+                                              ? "Uses the Lightning address in your signed merchant profile."
+                                              : "Add a valid Lightning address to your merchant profile, or choose another source."}
+                                          </p>
+                                        )}
+                                        {invoiceSource === "nwc" &&
+                                          nwc.addressStatus === "mismatch" && (
+                                            <p className="text-xs text-error">
+                                              The connected wallet destination
+                                              does not match your profile
+                                              Lightning address.
+                                            </p>
+                                          )}
+
+                                        <div className="grid grid-cols-2 gap-2">
+                                          <div className="grid gap-1">
+                                            <Label htmlFor="invoice-amount">
+                                              Amount
+                                            </Label>
+                                            <Input
+                                              id="invoice-amount"
+                                              type="number"
+                                              min="0"
+                                              step={getCurrencyAmountStep(
+                                                invoiceCurrency
+                                              )}
+                                              value={invoiceAmount}
+                                              onChange={(event) =>
+                                                setInvoiceAmount(
+                                                  event.target.value
+                                                )
+                                              }
+                                            />
+                                          </div>
+                                          <div className="grid gap-1">
+                                            <Label htmlFor="invoice-currency">
+                                              Currency
+                                            </Label>
+                                            <Select
+                                              value={invoiceCurrency}
+                                              onValueChange={(value) =>
+                                                setInvoiceCurrency(value)
+                                              }
+                                            >
+                                              <SelectTrigger id="invoice-currency">
+                                                <SelectValue placeholder="Choose currency" />
+                                              </SelectTrigger>
+                                              <SelectContent>
+                                                {INVOICE_CURRENCY_OPTIONS.map(
+                                                  (currency) => (
+                                                    <SelectItem
+                                                      key={currency}
+                                                      value={currency}
+                                                    >
+                                                      {currency}
+                                                    </SelectItem>
+                                                  )
+                                                )}
+                                              </SelectContent>
+                                            </Select>
+                                          </div>
+                                        </div>
+                                        <Input
+                                          aria-label="Invoice note"
+                                          value={invoiceNote}
+                                          onChange={(event) =>
+                                            setInvoiceNote(event.target.value)
+                                          }
+                                          placeholder="Optional note"
+                                        />
+
+                                        {invoiceSource === "manual" && (
+                                          <div className="grid gap-1">
+                                            <Label htmlFor="invoice-bolt11">
+                                              BOLT11 (paste manually)
+                                            </Label>
+                                            <Input
+                                              id="invoice-bolt11"
+                                              value={invoice}
+                                              onChange={(event) =>
+                                                setInvoice(event.target.value)
+                                              }
+                                              placeholder="lnbc..."
+                                            />
+                                            {invoice.trim() &&
+                                              !isInvoiceCompatibleWithCurrentNetwork(
+                                                invoice.trim()
+                                              ) && (
+                                                <div className="text-xs text-error">
+                                                  {getLightningNetworkMismatchMessage(
+                                                    invoice.trim()
+                                                  )}
+                                                </div>
+                                              )}
+                                            {invoice.trim() &&
+                                              isInvoiceCompatibleWithCurrentNetwork(
+                                                invoice.trim()
+                                              ) &&
+                                              manualInvoiceDecoded?.currency && (
+                                                <div className="text-xs text-[var(--text-secondary)]">
+                                                  Parsed invoice amount:{" "}
+                                                  {manualInvoiceDecoded.sats ??
+                                                    manualInvoiceDecoded.msats}{" "}
+                                                  {
+                                                    manualInvoiceDecoded.currency
+                                                  }
+                                                </div>
+                                              )}
+                                          </div>
+                                        )}
+
+                                        <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--text-secondary)]">
+                                          {invoiceCurrencyUnsupported ? (
+                                            <>
+                                              This order was placed in{" "}
+                                              {selectedOrderCurrency}. Choose
+                                              USD or SATS before creating an
+                                              invoice.
+                                            </>
+                                          ) : invoiceAmountNumber > 0 ? (
+                                            invoiceAmountSats ? (
+                                              <>
+                                                The invoice must be exactly{" "}
+                                                {invoiceAmountSats.toLocaleString()}{" "}
+                                                sats.
+                                              </>
+                                            ) : (
+                                              <>
+                                                BTC/USD conversion is
+                                                unavailable right now.
+                                              </>
+                                            )
+                                          ) : (
+                                            <>
+                                              Enter the order amount to create
+                                              an invoice.
+                                            </>
+                                          )}
+                                        </div>
+
+                                        <Button
+                                          type="button"
+                                          size="sm"
+                                          className="w-full"
+                                          disabled={
+                                            orderActionPending ||
+                                            !selectedInvoiceSourceAvailable ||
+                                            !(invoiceAmountNumber > 0) ||
+                                            !invoiceAmountSats ||
+                                            (invoiceSource === "manual" &&
+                                              !invoice.trim())
+                                          }
+                                          onClick={() =>
+                                            createInvoiceMutation.mutate(
+                                              invoiceSource
+                                            )
+                                          }
+                                        >
+                                          {createInvoiceMutation.isPending
+                                            ? "Creating…"
+                                            : invoiceSource === "manual"
+                                              ? "Validate & send invoice"
+                                              : "Generate & send invoice"}
+                                        </Button>
+                                        <p className="text-xs text-[var(--text-secondary)]">
+                                          This private order flow does not
+                                          create a public zap request or
+                                          receipt.
+                                        </p>
+                                      </div>
+                                    )}
                                 </div>
                               )}
 
@@ -2100,7 +2266,8 @@ function OrdersPage() {
                               )}
 
                               {(advanceStatusMutation.error ||
-                                invoiceMutation.error ||
+                                createInvoiceMutation.error ||
+                                retryInvoiceMutation.error ||
                                 shippingMutation.error ||
                                 noteMutation.error) && (
                                 <div
@@ -2109,7 +2276,8 @@ function OrdersPage() {
                                 >
                                   {[
                                     advanceStatusMutation.error,
-                                    invoiceMutation.error,
+                                    createInvoiceMutation.error,
+                                    retryInvoiceMutation.error,
                                     shippingMutation.error,
                                     noteMutation.error,
                                   ]

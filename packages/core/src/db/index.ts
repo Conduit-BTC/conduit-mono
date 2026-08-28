@@ -459,6 +459,28 @@ export interface StoredPaymentAttempt {
   updatedAt: number
 }
 
+/**
+ * Device-local checkpoint for a merchant-created order invoice.
+ *
+ * The exact BOLT11 is saved before private delivery so a retry can reuse it
+ * instead of minting another payable invoice. NWC credentials and global
+ * relay-discovery state must never be persisted here.
+ */
+export interface StoredMerchantPendingInvoice {
+  id: string
+  merchantPubkey: string
+  buyerPubkey: string
+  orderId: string
+  invoice: string
+  amountMsats: number
+  note?: string
+  delivery: "buyer_and_self" | "self_only"
+  source: "profile_lud16" | "webln" | "nwc" | "manual" | "mock"
+  invoiceExpiresAt: number
+  deliveryState: "pending" | "sent"
+  updatedAt: number
+}
+
 export interface StoredWalletCredential {
   walletId: string
   providerId: WalletProviderId
@@ -733,6 +755,7 @@ class ConduitDB extends Dexie {
   nip05Verifications!: EntityTable<CachedNip05Verification, "id">
   shopperTrustSnapshots!: EntityTable<CachedShopperTrustSnapshot, "id">
   paymentAttempts!: EntityTable<StoredPaymentAttempt, "id">
+  merchantPendingInvoices!: EntityTable<StoredMerchantPendingInvoice, "id">
   orderLifecycles!: EntityTable<OrderLifecycle, "orderId">
   productDeletionOutbox!: EntityTable<ProductDeletionDeliveryJob, "id">
   inboxDeclarationEvidence!: EntityTable<
@@ -896,6 +919,11 @@ class ConduitDB extends Dexie {
       // relay-scoped product cache and monotonic deletion tombstones.
       shippingOptionFrontiers:
         "coordinate, pubkey, dTag, strongestCreatedAt, cachedAt",
+    })
+
+    this.version(15).stores({
+      merchantPendingInvoices:
+        "id, merchantPubkey, orderId, deliveryState, invoiceExpiresAt, updatedAt",
     })
   }
 }
