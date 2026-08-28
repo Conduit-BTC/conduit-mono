@@ -7,6 +7,7 @@ import {
   isMobileSignerEnvironment,
 } from "../packages/ui/src/components/SignerSwitch"
 import { SignerAuthUrlNotice } from "../packages/ui/src/components/SignerAuthUrlNotice"
+import { ProductSignerRecoveryNotice } from "../apps/merchant/src/components/ProductSignerRecoveryNotice"
 
 const commonProps = {
   description: "Connect to continue.",
@@ -333,5 +334,83 @@ describe("remote signer UI", () => {
         "clientPrivateKey"
       )
     }
+  })
+
+  it("keeps the Merchant product draft mounted for inline signer recovery", async () => {
+    const root = await readFile("apps/merchant/src/routes/__root.tsx", "utf8")
+    const products = await readFile(
+      "apps/merchant/src/routes/products.tsx",
+      "utf8"
+    )
+    const recoveryNotice = await readFile(
+      "apps/merchant/src/components/ProductSignerRecoveryNotice.tsx",
+      "utf8"
+    )
+
+    expect(root).toContain("remoteSignerRecovery")
+    expect(root).toContain("signerWorkspaceAvailable")
+    expect(recoveryNotice).toContain(
+      "Your signing connection stopped responding. Reconnect your signer to continue. Your draft is saved on this device."
+    )
+    expect(recoveryNotice).toContain("Reconnect signer")
+    expect(products).toContain('connect({ mode: "restore" })')
+    expect(products).toContain("await disconnect()")
+    expect(products).toContain("isProductDraftPublishAuthorized")
+    expect(products).not.toContain("<SignerSwitch")
+    expect(root).toContain("<Outlet key={pubkey} />")
+    expect(products.indexOf("remoteSignerRecovery")).toBeLessThan(
+      products.indexOf(
+        '"awaiting_signature"',
+        products.indexOf("remoteSignerRecovery")
+      )
+    )
+  })
+
+  it("renders truthful accessible recovery actions without an awaiting flash", () => {
+    const savedMarkup = renderToStaticMarkup(
+      <ProductSignerRecoveryNotice
+        draftStorageAvailable
+        reconnecting={false}
+        restoreFailed={false}
+        changingSigner={false}
+        changeSignerError={null}
+        onReconnect={async () => undefined}
+        onUseDifferentSigner={async () => undefined}
+      />
+    )
+    const savedFailedMarkup = renderToStaticMarkup(
+      <ProductSignerRecoveryNotice
+        draftStorageAvailable
+        reconnecting={false}
+        restoreFailed
+        changingSigner={false}
+        changeSignerError={null}
+        onReconnect={async () => undefined}
+        onUseDifferentSigner={async () => undefined}
+      />
+    )
+    const unsavedFailedMarkup = renderToStaticMarkup(
+      <ProductSignerRecoveryNotice
+        draftStorageAvailable={false}
+        reconnecting={false}
+        restoreFailed
+        changingSigner={false}
+        changeSignerError={null}
+        onReconnect={async () => undefined}
+        onUseDifferentSigner={async () => undefined}
+      />
+    )
+
+    expect(savedMarkup).toContain('role="alert"')
+    expect(savedMarkup).toContain("Reconnect signer")
+    expect(savedMarkup).toContain("draft is saved on this device")
+    expect(savedMarkup).not.toContain("Waiting for signer")
+    expect(unsavedFailedMarkup).toContain("Keep this page open")
+    expect(savedFailedMarkup).toContain("Use a different signer")
+    expect(savedFailedMarkup).toContain("remain saved for this account")
+    expect(unsavedFailedMarkup).not.toContain("Use a different signer")
+    expect(unsavedFailedMarkup).toContain(
+      "another signer cannot be opened safely"
+    )
   })
 })

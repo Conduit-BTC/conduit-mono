@@ -3,6 +3,8 @@ import {
   clearProductDraft,
   clearProductVariationAuthoringState,
   getProductDraftStorageKey,
+  isProductDraftOwnedBySigner,
+  isProductDraftPublishAuthorized,
   loadProductVariationAuthoringState,
   loadProductDraft,
   ProductDraftStore,
@@ -105,6 +107,24 @@ function form(
 }
 
 describe("merchant product drafts", () => {
+  it("keeps draft publication bound to the original merchant", () => {
+    const accountA = "a".repeat(64)
+    const accountB = "b".repeat(64)
+    const accountATarget = target({ merchantPubkey: accountA })
+
+    expect(isProductDraftOwnedBySigner(accountATarget, accountA)).toBe(true)
+    expect(isProductDraftOwnedBySigner(accountATarget, accountB)).toBe(false)
+    expect(
+      isProductDraftPublishAuthorized(accountATarget, accountA, accountA)
+    ).toBe(true)
+    expect(
+      isProductDraftPublishAuthorized(accountATarget, accountB, accountB)
+    ).toBe(false)
+    expect(
+      isProductDraftPublishAuthorized(accountATarget, accountA, accountB)
+    ).toBe(false)
+  })
+
   it("isolates create and edit drafts by merchant and product", () => {
     expect(getProductDraftStorageKey(target())).not.toBe(
       getProductDraftStorageKey(

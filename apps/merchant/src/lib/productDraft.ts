@@ -25,6 +25,30 @@ export interface ProductDraftTarget {
   baseEventId?: string | null
 }
 
+export function isProductDraftOwnedBySigner(
+  target: ProductDraftTarget | null,
+  signerPubkey: string | null
+): boolean {
+  if (!target || !signerPubkey) return false
+  return (
+    target.merchantPubkey.trim().toLowerCase() ===
+    signerPubkey.trim().toLowerCase()
+  )
+}
+
+export function isProductDraftPublishAuthorized(
+  target: ProductDraftTarget | null,
+  signerPubkey: string | null,
+  payloadMerchantPubkey: string | null
+): boolean {
+  return (
+    isProductDraftOwnedBySigner(target, signerPubkey) &&
+    !!payloadMerchantPubkey &&
+    target!.merchantPubkey.trim().toLowerCase() ===
+      payloadMerchantPubkey.trim().toLowerCase()
+  )
+}
+
 interface StoredProductDraft {
   version: typeof PRODUCT_DRAFT_VERSION
   baseEventId: string | null

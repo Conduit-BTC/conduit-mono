@@ -62,12 +62,15 @@ import {
 } from "@conduit/ui"
 import { ProductCombinationMatrix } from "../components/ProductCombinationMatrix"
 import { ProductInboxReadinessDialog } from "../components/ProductInboxReadinessDialog"
+import { ProductSignerRecoveryNotice } from "../components/ProductSignerRecoveryNotice"
 import { ProductTagEditor } from "../components/ProductTagEditor"
 import { ShippingDestinationsEditor } from "../components/ShippingDestinationsEditor"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { requireAuth } from "../lib/auth"
 import {
   clearProductVariationAuthoringState,
+  isProductDraftOwnedBySigner,
+  isProductDraftPublishAuthorized,
   loadProductVariationAuthoringState,
   ProductDraftStore,
   saveProductVariationAuthoringState,
@@ -873,7 +876,14 @@ async function deleteProduct(
 }
 
 function ProductsPage() {
-  const { pubkey } = useAuth()
+  const {
+    pubkey,
+    signer,
+    status: authStatus,
+    remoteSignerRecovery,
+    connect,
+    disconnect,
+  } = useAuth()
   const session = useConduitSession()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -881,6 +891,7 @@ function ProductsPage() {
   const productDialogReturnFocusRef = useRef<HTMLElement | null>(null)
   const productDraftStoreRef = useRef(new ProductDraftStore())
   const productPublishStartedAtRef = useRef<number | null>(null)
+  const signerRestoredNoticeRef = useRef<HTMLDivElement | null>(null)
   const [form, setForm] = useState<ProductFormState>(EMPTY_FORM)
   const [editing, setEditing] = useState<MerchantProductFamily | null>(null)
   const [productDialogOpen, setProductDialogOpen] = useState(false)
@@ -896,6 +907,22 @@ function ProductsPage() {
     useState<ProductDeliveryRetryState | null>(null)
   const [pendingProductPublish, setPendingProductPublish] =
     useState<ProductPublishMutationPayload | null>(null)
+  const [signerRestoredForDraft, setSignerRestoredForDraft] = useState(false)
+  const [signerChangePending, setSignerChangePending] = useState(false)
+  const [signerChangeError, setSignerChangeError] = useState<string | null>(
+    null
+  )
+
+  const draftOwnerPubkey = activeProductDraftTarget?.merchantPubkey ?? null
+  const signerReady =
+    authStatus === "connected" &&
+    !!signer &&
+    !remoteSignerRecovery &&
+    isProductDraftOwnedBySigner(activeProductDraftTarget, pubkey)
+
+  useEffect(() => {
+    if (signerRestoredForDraft) signerRestoredNoticeRef.current?.focus()
+  }, [signerRestoredForDraft])
 
   // Product publishing stays permissive. This readiness check only provides
   // guidance before a new listing; it never changes order delivery routing.
@@ -1009,6 +1036,24 @@ function ProductsPage() {
     setProductDeliveryNotice(buildLocalProductDeliveryNotice(action))
   }
 
+  function productPublishPayloadIsAuthorized(
+    payload: ProductPublishMutationPayload
+  ): boolean {
+    if (
+      !isProductDraftPublishAuthorized(
+        activeProductDraftTarget,
+        pubkey,
+        payload.merchantPubkey
+      )
+    ) {
+      return false
+    }
+    if (!payload.existing) return true
+    return [payload.existing, ...payload.existing.variations].every(
+      (record) => record.product.pubkey === payload.merchantPubkey
+    )
+  }
+
   function completeLocalProductSave(
     variables: ProductPublishMutationPayload,
     authoringTarget: ProductVariationAuthoringTarget
@@ -1036,6 +1081,12 @@ function ProductsPage() {
         return deliverSignedProductWriteBundle(
           payload.signedBundle,
           payload.merchantPubkey
+        )
+      }
+
+      if (!productPublishPayloadIsAuthorized(payload)) {
+        throw new Error(
+          "The product draft belongs to a different merchant account. Reconnect that account before publishing."
         )
       }
 
@@ -1435,6 +1486,8 @@ function ProductsPage() {
   }
 
   function requestProductPublish(payload: ProductPublishMutationPayload): void {
+    if (!signerReady || !productPublishPayloadIsAuthorized(payload)) return
+    setSignerRestoredForDraft(false)
     if (
       !needsProductInboxPublishGuidance(
         inboxReadiness.status,
@@ -1450,8 +1503,15 @@ function ProductsPage() {
   }
 
   function publishPendingProduct(): void {
-    if (!pendingProductPublish) return
+    if (
+      !pendingProductPublish ||
+      !signerReady ||
+      !productPublishPayloadIsAuthorized(pendingProductPublish)
+    ) {
+      return
+    }
     const payload = pendingProductPublish
+    setSignerRestoredForDraft(false)
     setPendingProductPublish(null)
     saveMutation.mutate(payload)
   }
@@ -1479,6 +1539,7 @@ function ProductsPage() {
     persistCurrentProductDraft()
     setPendingProductPublish(null)
     setProductDialogOpen(false)
+    setSignerRestoredForDraft(false)
     saveMutation.reset()
   }
 
@@ -1509,11 +1570,36 @@ function ProductsPage() {
     setActiveProductDraftTarget(null)
     setForm(createEmptyProductForm(hasPresetShippingZone))
     setDraftStorageAvailable(true)
+    setSignerRestoredForDraft(false)
     saveMutation.reset()
+  }
+
+  async function reconnectProductSigner(): Promise<void> {
+    setSignerChangeError(null)
+    await connect({ mode: "restore" })
+    saveMutation.reset()
+    setSignerRestoredForDraft(true)
+  }
+
+  async function useDifferentProductSigner(): Promise<void> {
+    setSignerChangeError(null)
+    if (!persistCurrentProductDraft()) return
+
+    setSignerChangePending(true)
+    try {
+      await disconnect()
+    } catch {
+      setSignerChangeError(
+        "Your draft is saved, but the old signer connection could not be retired safely. Try again before connecting another signer."
+      )
+    } finally {
+      setSignerChangePending(false)
+    }
   }
 
   function openCreateDialog(): void {
     rememberProductDialogTrigger()
+    setSignerRestoredForDraft(false)
     saveMutation.reset()
     if (
       activeProductDraftTarget &&
@@ -1552,6 +1638,7 @@ function ProductsPage() {
   function openEditDialog(item: MerchantProductFamily): void {
     if (!item.variationForm.supported) return
     rememberProductDialogTrigger()
+    setSignerRestoredForDraft(false)
     saveMutation.reset()
     if (
       activeProductDraftTarget?.productAddressId === item.addressId &&
@@ -1983,9 +2070,11 @@ function ProductsPage() {
             className="grid gap-3"
             onSubmit={(event) => {
               event.preventDefault()
-              if (!pubkey || !productCanSubmit) return
+              if (!draftOwnerPubkey || !signerReady || !productCanSubmit) {
+                return
+              }
               requestProductPublish({
-                merchantPubkey: pubkey,
+                merchantPubkey: draftOwnerPubkey,
                 form,
                 dTag:
                   editing?.dTag ??
@@ -2960,36 +3049,60 @@ function ProductsPage() {
               />
             </div>
 
-            <SignedActionStatus
-              state={
-                isSaving
-                  ? productDeliveryNotice?.action === "publish"
-                    ? "publishing"
-                    : "awaiting_signature"
-                  : saveMutation.error
-                    ? "error"
-                    : !productFormValidation.canPublish || hasProductChanges
-                      ? "dirty"
-                      : "idle"
-              }
-              dirtyMessage={productStatusMessage}
-              awaitingSignatureMessage={
-                form.variations.enabled
-                  ? "Confirm each changed product listing in your signer. The family will save locally before relay delivery runs."
-                  : "Confirm the product listing in your signer. It will save locally while relay delivery runs."
-              }
-              publishingMessage={
-                form.variations.enabled
-                  ? "The signed product family is visible locally. Delivering its changed listings to relays."
-                  : "The signed listing is visible locally. Delivering it to relays."
-              }
-              errorMessage={getPublishErrorMessage(
-                saveMutation.error,
-                "publish"
-              )}
-            />
+            {remoteSignerRecovery ? (
+              <ProductSignerRecoveryNotice
+                draftStorageAvailable={draftStorageAvailable}
+                reconnecting={authStatus === "restoring"}
+                restoreFailed={!!remoteSignerRecovery.restoreError}
+                changingSigner={signerChangePending}
+                changeSignerError={signerChangeError}
+                onReconnect={reconnectProductSigner}
+                onUseDifferentSigner={useDifferentProductSigner}
+              />
+            ) : (
+              <SignedActionStatus
+                state={
+                  isSaving
+                    ? productDeliveryNotice?.action === "publish"
+                      ? "publishing"
+                      : "awaiting_signature"
+                    : saveMutation.error
+                      ? "error"
+                      : !productFormValidation.canPublish || hasProductChanges
+                        ? "dirty"
+                        : "idle"
+                }
+                dirtyMessage={productStatusMessage}
+                awaitingSignatureMessage={
+                  form.variations.enabled
+                    ? "Confirm each changed product listing in your signer. The family will save locally before relay delivery runs."
+                    : "Confirm the product listing in your signer. It will save locally while relay delivery runs."
+                }
+                publishingMessage={
+                  form.variations.enabled
+                    ? "The signed product family is visible locally. Delivering its changed listings to relays."
+                    : "The signed listing is visible locally. Delivering it to relays."
+                }
+                errorMessage={getPublishErrorMessage(
+                  saveMutation.error,
+                  "publish"
+                )}
+              />
+            )}
 
-            {hasProductChanges && (
+            {!remoteSignerRecovery && signerRestoredForDraft && (
+              <div
+                ref={signerRestoredNoticeRef}
+                role="status"
+                tabIndex={-1}
+                className="rounded-xl border border-success/30 bg-success/10 px-4 py-3 text-sm leading-6 text-[var(--text-secondary)] outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+              >
+                Signer reconnected. Review your draft, then choose{" "}
+                {editing ? "Save changes" : "Publish product"} when ready.
+              </div>
+            )}
+
+            {hasProductChanges && !remoteSignerRecovery && (
               <p
                 role="status"
                 aria-live="polite"
@@ -3027,13 +3140,17 @@ function ProductsPage() {
               </Button>
               <Button
                 type="submit"
-                disabled={!pubkey || isSaving || !productCanSubmit}
+                disabled={
+                  !pubkey || !signerReady || isSaving || !productCanSubmit
+                }
               >
-                {isSaving
-                  ? "Waiting for signer..."
-                  : editing
-                    ? "Save changes"
-                    : "Publish product"}
+                {remoteSignerRecovery
+                  ? "Reconnect signer to continue"
+                  : isSaving
+                    ? "Waiting for signer..."
+                    : editing
+                      ? "Save changes"
+                      : "Publish product"}
               </Button>
             </DialogFooter>
           </form>

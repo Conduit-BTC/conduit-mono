@@ -90,15 +90,25 @@ function RootLayout() {
 }
 
 function MerchantProductRoot({ pathname }: { pathname: string }) {
-  const { authUrl, dismissAuthUrl, pubkey, method, status } = useAuth()
+  const {
+    authUrl,
+    dismissAuthUrl,
+    pubkey,
+    method,
+    remoteSignerRecovery,
+    status,
+  } = useAuth()
   const [authFallbackReady, setAuthFallbackReady] = useState(false)
   const appLoadTelemetrySentRef = useRef(false)
   const previousAuthStatusRef = useRef(status)
   const previousAuthMethodRef = useRef(method)
   const signerConnected = status === "connected" && !!pubkey
-  const signerRestoring = !!pubkey && status === "restoring"
+  const signerRecoveryRequired = !!remoteSignerRecovery && !!pubkey
+  const signerWorkspaceAvailable = signerConnected || signerRecoveryRequired
+  const signerRestoring =
+    !!pubkey && status === "restoring" && !signerRecoveryRequired
   const shouldDelayAuthFallback =
-    !!pubkey && !signerConnected && !authFallbackReady
+    !!pubkey && !signerWorkspaceAvailable && !authFallbackReady
 
   useEffect(() => installBrowserClientErrorTelemetry("merchant"), [])
 
@@ -147,7 +157,7 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
   }, [method, status])
 
   useEffect(() => {
-    if (!pubkey || signerConnected) {
+    if (!pubkey || signerWorkspaceAvailable) {
       setAuthFallbackReady(false)
       return
     }
@@ -157,7 +167,7 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
     }, AUTH_GATE_GRACE_MS)
 
     return () => window.clearTimeout(timeoutId)
-  }, [pubkey, signerConnected])
+  }, [pubkey, signerWorkspaceAvailable])
 
   useEffect(() => {
     document
@@ -168,9 +178,11 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
 
   useEffect(() => {
     const title =
-      signerConnected || signerRestoring ? getPageTitle(pathname) : "Connect"
+      signerWorkspaceAvailable || signerRestoring
+        ? getPageTitle(pathname)
+        : "Connect"
     document.title = `${title} | Conduit Merchant`
-  }, [pathname, signerConnected, signerRestoring])
+  }, [pathname, signerRestoring, signerWorkspaceAvailable])
 
   useEffect(() => {
     recordBrowserTelemetryPageView({ app: "merchant", pathname })
@@ -200,13 +212,13 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
     )
   }
 
-  if (!signerConnected) {
+  if (!signerWorkspaceAvailable) {
     return <ConnectGate />
   }
 
   return (
     <RootShell>
-      <Outlet />
+      <Outlet key={pubkey} />
       {authUrl && (
         <SignerAuthUrlNotice authUrl={authUrl} onDismiss={dismissAuthUrl} />
       )}
@@ -371,6 +383,7 @@ function ConnectGate() {
     rememberedMethod,
   } = useAuth()
   const [isWorking, setIsWorking] = useState(false)
+  const connectGateRef = useRef<HTMLElement | null>(null)
   const extensionAvailable = useNip07Availability()
   const authPending = status === "connecting" || status === "restoring"
   const isProbablyMobileBrowser = useMemo(isMobileSignerEnvironment, [])
@@ -378,6 +391,10 @@ function ConnectGate() {
     !extensionAvailable && !isProbablyMobileBrowser
       ? "No complete NIP-07 signer detected yet. Install or unlock a signer such as Alby or nos2x, then try Connect signer again."
       : null
+
+  useEffect(() => {
+    connectGateRef.current?.focus({ preventScroll: true })
+  }, [])
 
   async function handleConnectExtension(): Promise<void> {
     if (authPending) return
@@ -411,7 +428,12 @@ function ConnectGate() {
 
   return (
     <div className="min-h-dvh bg-[var(--background)] pb-24 text-[var(--text-primary)] sm:pb-16">
-      <main className="mx-auto flex min-h-dvh w-full max-w-4xl items-center justify-center px-4 pb-20 pt-8 sm:px-6 lg:px-8">
+      <main
+        ref={connectGateRef}
+        tabIndex={-1}
+        aria-label="Connect a signer"
+        className="mx-auto flex min-h-dvh w-full max-w-4xl items-center justify-center px-4 pb-20 pt-8 outline-none sm:px-6 lg:px-8"
+      >
         <SignerConnectPanel
           title="Connect a signer"
           description="Use your Nostr signer to open your merchant workspace."
