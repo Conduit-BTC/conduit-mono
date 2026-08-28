@@ -116,8 +116,8 @@ bun run dev:merchant:mainnet
 | `VITE_TELEMETRY_ALLOWED_HOSTS` | —                          | Required comma-separated telemetry host allowlist        |
 | `VITE_PLAUSIBLE_DOMAIN`        | —                          | Legacy nonofficial/dev Plausible site domain             |
 | `VITE_PLAUSIBLE_SRC`           | —                          | Legacy nonofficial/dev Plausible script URL              |
-| `VITE_POSTHOG_KEY`             | —                          | Optional deploy-time PostHog browser project key         |
-| `VITE_POSTHOG_HOST`            | `https://e.conduit.market` | Nonofficial/dev override; official hosts pin the proxy   |
+| `VITE_POSTHOG_KEY`             | —                          | Optional official Product browser project key            |
+| `VITE_POSTHOG_HOST`            | `https://e.conduit.market` | Ignored off official hosts; official hosts pin the proxy |
 | `VITE_NIP89_RELAY_HINT`        | `VITE_RELAY_URL`           | Relay hint for Conduit NIP-89 handler metadata           |
 | `VITE_NIP89_MARKET_PUBKEY`     | —                          | Official Conduit Market handler pubkey                   |
 | `VITE_NIP89_MERCHANT_PUBKEY`   | —                          | Official Conduit Merchant Portal handler pubkey          |
@@ -131,7 +131,10 @@ bun run dev:merchant:mainnet
 
 When telemetry is enabled, `VITE_TELEMETRY_ALLOWED_HOSTS` must list every
 permitted hostname. A `*.` prefix allows exactly one preview subdomain label;
-it does not match nested or lookalike domains.
+it does not match nested or lookalike domains. This allowlist may enable the
+legacy Plausible test path, but it cannot enable PostHog. Product PostHog loads
+only when the runtime app and hostname are the exact official pair:
+`shop.conduit.market` for Market or `sell.conduit.market` for Merchant.
 
 The canonical fallback/reset relay list is code-owned in `packages/core/src/config.ts` and currently starts from:
 
