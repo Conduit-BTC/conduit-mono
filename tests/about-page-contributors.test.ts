@@ -2,7 +2,6 @@ import { describe, expect, it } from "bun:test"
 import {
   fetchRepositoryContributorSnapshot,
   loadRepositoryContributorSnapshot,
-  type ContributorFetch,
 } from "../scripts/vite/repository_contributors"
 
 const SOURCE_REVISION = "a".repeat(40)
@@ -71,7 +70,7 @@ const generatedFallback = {
 describe("About page contributor build data", () => {
   it("credits merged PR authors and counts unique non-merge commits", async () => {
     let observedSignal: AbortSignal | null | undefined
-    const fetchImpl: ContributorFetch = async (_input, init) => {
+    const fetchImpl: typeof fetch = async (_input, init) => {
       observedSignal = init?.signal
       return jsonResponse(
         repositoryPage({
@@ -137,7 +136,7 @@ describe("About page contributor build data", () => {
 
   it("paginates commit histories instead of silently truncating large PRs", async () => {
     let requests = 0
-    const fetchImpl: ContributorFetch = async (_input, init) => {
+    const fetchImpl: typeof fetch = async (_input, init) => {
       requests += 1
       const request = JSON.parse(String(init?.body)) as {
         variables: { cursor?: string | null }
@@ -196,7 +195,7 @@ describe("About page contributor build data", () => {
   })
 
   it("falls back after a refresh failure and rejects a stale snapshot", async () => {
-    const fetchImpl: ContributorFetch = async () =>
+    const fetchImpl: typeof fetch = async () =>
       jsonResponse({ message: "rate limited" }, 403)
 
     const recent = await loadRepositoryContributorSnapshot({

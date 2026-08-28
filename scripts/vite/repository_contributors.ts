@@ -4,6 +4,8 @@ import type { Plugin } from "vite"
 const CONTRIBUTOR_MODULE_ID = "virtual:conduit-repository-contributors"
 const RESOLVED_CONTRIBUTOR_MODULE_ID = `\0${CONTRIBUTOR_MODULE_ID}`
 const GITHUB_GRAPHQL_URL = "https://api.github.com/graphql"
+const GITHUB_REPOSITORY_OWNER = "Conduit-BTC"
+const GITHUB_REPOSITORY_NAME = "conduit-mono"
 const CONTRIBUTOR_REFRESH_TIMEOUT_MS = 15_000
 const PULL_REQUESTS_PER_PAGE = 50
 const COMMITS_PER_PAGE = 100
@@ -64,15 +66,8 @@ type MutableContributor = Omit<RepositoryContributor, "commits"> & {
   commitIds: Set<string>
 }
 
-export type ContributorFetch = (
-  input: string | URL | Request,
-  init?: RequestInit
-) => Promise<Response>
-
 interface LoadRepositoryContributorSnapshotOptions {
-  owner?: string
-  repo?: string
-  fetchImpl?: ContributorFetch
+  fetchImpl?: typeof fetch
   generatedAt?: string
   token?: string | null
   fallbackSnapshot?: unknown
@@ -262,7 +257,7 @@ function addNonMergeCommits(
 }
 
 async function requestGraphQl(
-  fetchImpl: ContributorFetch,
+  fetchImpl: typeof fetch,
   token: string,
   query: string,
   variables: Record<string, unknown>
@@ -300,20 +295,16 @@ async function requestGraphQl(
 }
 
 async function loadRemainingPullRequestCommits({
-  owner,
-  repo,
   pullRequestNumber,
   cursor,
   contributor,
   fetchImpl,
   token,
 }: {
-  owner: string
-  repo: string
   pullRequestNumber: number
   cursor: string
   contributor: MutableContributor
-  fetchImpl: ContributorFetch
+  fetchImpl: typeof fetch
   token: string
 }): Promise<void> {
   let nextCursor: string | null = cursor
@@ -324,8 +315,8 @@ async function loadRemainingPullRequestCommits({
       token,
       PULL_REQUEST_COMMITS_QUERY,
       {
-        owner,
-        repo,
+        owner: GITHUB_REPOSITORY_OWNER,
+        repo: GITHUB_REPOSITORY_NAME,
         number: pullRequestNumber,
         cursor: nextCursor,
         commitsPerPage: COMMITS_PER_PAGE,
@@ -358,8 +349,6 @@ function finalizeContributors(
 }
 
 export async function fetchRepositoryContributorSnapshot({
-  owner = "Conduit-BTC",
-  repo = "conduit-mono",
   fetchImpl = fetch,
   generatedAt = new Date().toISOString(),
   token,
@@ -384,8 +373,8 @@ export async function fetchRepositoryContributorSnapshot({
       token,
       PULL_REQUEST_ACTIVITY_QUERY,
       {
-        owner,
-        repo,
+        owner: GITHUB_REPOSITORY_OWNER,
+        repo: GITHUB_REPOSITORY_NAME,
         cursor,
         pullRequestsPerPage: PULL_REQUESTS_PER_PAGE,
         commitsPerPage: COMMITS_PER_PAGE,
@@ -424,8 +413,6 @@ export async function fetchRepositoryContributorSnapshot({
       const commitPage = addNonMergeCommits(contributor, pullRequest.commits)
       if (commitPage.hasNextPage && commitPage.endCursor) {
         await loadRemainingPullRequestCommits({
-          owner,
-          repo,
           pullRequestNumber: pullRequest.number as number,
           cursor: commitPage.endCursor,
           contributor,
@@ -530,8 +517,6 @@ function unavailableSnapshot(): RepositoryContributorSnapshot {
 }
 
 export async function loadRepositoryContributorSnapshot({
-  owner = "Conduit-BTC",
-  repo = "conduit-mono",
   fetchImpl = fetch,
   generatedAt = new Date().toISOString(),
   token = process.env.GITHUB_TOKEN?.trim() ||
@@ -543,8 +528,6 @@ export async function loadRepositoryContributorSnapshot({
   if (token) {
     try {
       return await fetchRepositoryContributorSnapshot({
-        owner,
-        repo,
         fetchImpl,
         generatedAt,
         token,
