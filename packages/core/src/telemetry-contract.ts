@@ -33,6 +33,24 @@ export type BrowserTelemetryEventName =
 
 export type BrowserTelemetryApp = "market" | "merchant"
 
+export const officialProductTelemetryHostnames = {
+  market: "shop.conduit.market",
+  merchant: "sell.conduit.market",
+} as const satisfies Record<BrowserTelemetryApp, string>
+
+export function getOfficialProductTelemetryApp(
+  hostname: string
+): BrowserTelemetryApp | null {
+  const normalizedHostname = hostname.trim().toLowerCase()
+  if (normalizedHostname === officialProductTelemetryHostnames.market) {
+    return "market"
+  }
+  if (normalizedHostname === officialProductTelemetryHostnames.merchant) {
+    return "merchant"
+  }
+  return null
+}
+
 export const browserTelemetryPropertyNames = [
   "event_name",
   "app",
