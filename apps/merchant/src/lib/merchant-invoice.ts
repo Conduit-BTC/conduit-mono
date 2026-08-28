@@ -23,6 +23,7 @@ import {
   type MerchantOrderDelivery,
   type NwcConnection,
   type NwcGetInfoResult,
+  type PrivateInboxDeclaredWriteHistoryMeta,
   type PublishMerchantOrderMessageInput,
   type StoredMerchantPendingInvoice,
 } from "@conduit/core"
@@ -258,6 +259,19 @@ export type MerchantConversationInvoiceRequest = {
 export type MerchantConversationInvoiceEvidence = {
   readState: "complete" | "incomplete"
   paymentRequests: MerchantConversationInvoiceRequest[]
+}
+
+export function getMerchantInvoiceHistoryReadState(input: {
+  error?: unknown
+  meta?: PrivateInboxDeclaredWriteHistoryMeta | null
+  fetching: boolean
+}): MerchantConversationInvoiceEvidence["readState"] {
+  // TanStack retains the last settled result during a background refetch.
+  // Keep that signed-history truth stable while the transport refreshes; the
+  // invoice action still performs its own force-fresh read before publishing.
+  return !input.error && isPrivateInboxDeclaredWriteHistoryComplete(input.meta)
+    ? "complete"
+    : "incomplete"
 }
 
 const MERCHANT_INVOICE_HISTORY_LIMIT = 400

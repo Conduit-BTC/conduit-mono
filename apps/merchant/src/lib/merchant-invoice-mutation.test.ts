@@ -7,6 +7,7 @@ import {
 import {
   createMerchantInvoiceMutationFn,
   createMerchantInvoiceRetryMutationFn,
+  getMerchantInvoiceHistoryReadState,
   createMerchantPendingInvoiceQueryFn,
   createMerchantPendingInvoiceQueryScope,
   merchantPendingInvoiceQueryKey,
@@ -31,6 +32,72 @@ const PRIVATE_PROVIDER_BODY = "private provider response test sentinel"
 const PRIVATE_RELAY_RESPONSE = "private relay response test sentinel"
 const PRIVATE_WALLET_PUBKEY = "private wallet pubkey test sentinel"
 const PRIVATE_RELAY_URL = "wss://private-relay.example"
+
+describe("merchant invoice history availability", () => {
+  test("keeps settled complete history available during a background refresh", async () => {
+    const meta = {
+      decryptFailures: [],
+      inbox: {
+        declarationEvidenceCurrent: true,
+        declaredWritePlan: {
+          coverage: "complete" as const,
+          capped: false,
+        },
+      },
+    }
+
+    expect(
+      getMerchantInvoiceHistoryReadState({
+        error: null,
+        meta,
+        fetching: false,
+      })
+    ).toEqual("complete")
+    expect(
+      getMerchantInvoiceHistoryReadState({
+        error: null,
+        meta,
+        fetching: true,
+      })
+    ).toEqual("complete")
+  })
+
+  test("keeps initial and genuinely unsafe refreshes blocked", async () => {
+    expect(
+      getMerchantInvoiceHistoryReadState({
+        error: null,
+        meta: null,
+        fetching: true,
+      })
+    ).toEqual("incomplete")
+    expect(
+      getMerchantInvoiceHistoryReadState({
+        error: new Error("read failed"),
+        meta: {
+          decryptFailures: [],
+          inbox: {
+            declarationEvidenceCurrent: true,
+            declaredWritePlan: { coverage: "complete", capped: false },
+          },
+        },
+        fetching: true,
+      })
+    ).toEqual("incomplete")
+    expect(
+      getMerchantInvoiceHistoryReadState({
+        error: null,
+        meta: {
+          decryptFailures: [],
+          inbox: {
+            declarationEvidenceCurrent: false,
+            declaredWritePlan: { coverage: "complete", capped: false },
+          },
+        },
+        fetching: true,
+      })
+    ).toEqual("incomplete")
+  })
+})
 
 function acceptedResult(
   source: DeliverMerchantInvoiceResult["source"],

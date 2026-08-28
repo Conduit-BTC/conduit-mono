@@ -22,7 +22,6 @@ import {
   getShippingOptionsByCoordinates,
   hasWebLN,
   isInvoiceCompatibleWithCurrentNetwork,
-  isPrivateInboxDeclaredWriteHistoryComplete,
   isMerchantOrderPaid,
   normalizeCurrencyAmount,
   normalizeSafeHttpUrl,
@@ -137,6 +136,7 @@ import {
   createMerchantPendingInvoiceQueryFn,
   createMerchantPendingInvoiceQueryScope,
   getMerchantConversationInvoiceEvidence,
+  getMerchantInvoiceHistoryReadState,
   merchantPendingInvoiceQueryKey,
   type MerchantInvoiceModule,
   type MerchantInvoiceMutationSource,
@@ -800,19 +800,20 @@ function OrdersPage() {
   const invoiceCurrencyUnsupported =
     !!selectedOrderCurrency &&
     normalizeInvoiceCurrencyChoice(selectedOrderCurrency) === ""
+  const invoiceHistoryReadState = getMerchantInvoiceHistoryReadState({
+    error: ordersQuery.error,
+    meta: ordersMeta,
+    fetching: ordersQuery.isFetching,
+  })
   const selectedInvoiceConversationEvidence = useMemo(
     () =>
       selected
         ? getMerchantConversationInvoiceEvidence(
             selected,
-            !ordersQuery.error &&
-              isPrivateInboxDeclaredWriteHistoryComplete(ordersMeta) &&
-              !ordersQuery.isFetching
-              ? "complete"
-              : "incomplete"
+            invoiceHistoryReadState
           )
         : { readState: "incomplete" as const, paymentRequests: [] },
-    [ordersMeta, ordersQuery.error, ordersQuery.isFetching, selected]
+    [invoiceHistoryReadState, selected]
   )
   const pendingInvoiceQueryScope = useMemo(
     () =>
