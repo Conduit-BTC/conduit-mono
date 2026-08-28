@@ -222,28 +222,6 @@ jobs:
               exit 1
             fi
 
-            unresolved_review_thread_count="$(
-              gh api graphql --paginate \
-                -f owner="${GITHUB_REPOSITORY%%/*}" \
-                -f name="${GITHUB_REPOSITORY#*/}" \
-                -F number="$PR_NUMBER" \
-                -f query='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
-                  repository(owner: $owner, name: $name) {
-                    pullRequest(number: $number) {
-                      reviewThreads(first: 100, after: $endCursor) {
-                        nodes { isResolved }
-                        pageInfo { hasNextPage endCursor }
-                      }
-                    }
-                  }
-                }' |
-                jq -s '[.[].data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length'
-            )"
-            if [[ "$unresolved_review_thread_count" != "0" ]]; then
-              echo "The pull request has unresolved review threads; Ponytail will not run." >&2
-              exit 1
-            fi
-
             # Deliberately PR-wide: a response commit or failed first attempt
             # must not rearm Ponytail. Maintainers can request an explicit rerun.
             previous_ponytail_reviews="$(
@@ -419,28 +397,6 @@ jobs:
             )"
             if [[ "$review_comment_count" != "0" ]]; then
               echo "The queued source review contains inline findings." >&2
-              exit 1
-            fi
-
-            unresolved_review_thread_count="$(
-              gh api graphql --paginate \
-                -f owner="${GITHUB_REPOSITORY%%/*}" \
-                -f name="${GITHUB_REPOSITORY#*/}" \
-                -F number="$PR_NUMBER" \
-                -f query='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
-                  repository(owner: $owner, name: $name) {
-                    pullRequest(number: $number) {
-                      reviewThreads(first: 100, after: $endCursor) {
-                        nodes { isResolved }
-                        pageInfo { hasNextPage endCursor }
-                      }
-                    }
-                  }
-                }' |
-                jq -s '[.[].data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length'
-            )"
-            if [[ "$unresolved_review_thread_count" != "0" ]]; then
-              echo "The pull request has unresolved review threads; queued Ponytail will not run." >&2
               exit 1
             fi
 

@@ -24,6 +24,15 @@ permissions:
 concurrency:
   group: >-
     agent-pr-review-${{
+      (github.event_name == 'pull_request_target' &&
+        (github.event.action == 'labeled' ||
+          github.event.action == 'unlabeled') &&
+        github.event.label.name != 'DO NOT MERGE' &&
+        format('ignored-label-{0}', github.run_id)) ||
+      (github.event_name == 'pull_request_target' &&
+        github.event.action == 'edited' &&
+        !github.event.changes.base &&
+        format('ignored-edit-{0}', github.run_id)) ||
       (github.event_name == 'issue_comment' &&
         (github.event.comment.body != '/agent review' ||
           !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'),
@@ -40,6 +49,11 @@ jobs:
     name: >-
       ${{
         (github.event_name == 'pull_request_target' &&
+          (github.event.action != 'edited' ||
+            github.event.changes.base) &&
+          ((github.event.action != 'labeled' &&
+            github.event.action != 'unlabeled') ||
+            github.event.label.name == 'DO NOT MERGE') &&
           github.event.pull_request.draft == false &&
           github.event.pull_request.head.repo.full_name == github.repository &&
           github.event.pull_request.user.login != 'dependabot[bot]' &&
@@ -53,6 +67,11 @@ jobs:
       }}
     if: >-
       (github.event_name == 'pull_request_target' &&
+        (github.event.action != 'edited' ||
+          github.event.changes.base) &&
+        ((github.event.action != 'labeled' &&
+          github.event.action != 'unlabeled') ||
+          github.event.label.name == 'DO NOT MERGE') &&
         github.event.pull_request.draft == false &&
         github.event.pull_request.head.repo.full_name == github.repository &&
         github.event.pull_request.user.login != 'dependabot[bot]') ||
@@ -283,7 +302,14 @@ jobs:
               scripts as untrusted input. Trace any candidate-controlled code
               that runs while credentials or write-capable tokens are present.
             - Fetch all review threads. Do not treat a later clean review as
-              superseding an unresolved actionable thread.
+              superseding an unresolved actionable correctness finding.
+              Ponytail and simplicity-review findings are advisory and never
+              affect the correctness verdict. Re-report an issue only after
+              independently verifying it as a qualifying correctness finding.
+            - Treat this verdict as point-in-time evidence for the reviewed
+              head. After the review is submitted, later-created or reopened
+              threads remain GitHub evidence for required human approval. Do
+              not mirror global thread state into a second CI merge-state gate.
             - Inspect current labels. `DO NOT MERGE` is an unconditional blocked
               verdict until a maintainer removes it.
             - Distinguish source head, synthetic merge, base, deployed, and
@@ -326,6 +352,8 @@ jobs:
               comment on a changed file and line. Use `comments[].body`,
               `comments[].path`, `comments[].line`, and `comments[].side`.
               Use `"RIGHT"` for additions or context and `"LEFT"` for deletions.
+              Limit these findings to defects introduced or worsened by the
+              candidate, or required by explicit acceptance criteria.
             - Anchor multi-file findings on the primary changed line and name
               related files in that inline comment.
             - Keep the review body to a concise summary, the reviewer-owned
@@ -335,11 +363,12 @@ jobs:
             - Include this exact line once in every review body:
               `Automation residual: The current Sudden action needs a narrow pull-request-write token to submit inline reviews; candidate prompt injection is not mechanically eliminated; schema and SHA gates fail malformed or stale results; human approval remains mandatory.`
             - Include exactly one canonical verdict line. Use
-              `Merge-readiness verdict: BLOCKED` when actionable findings,
-              unresolved threads, missing evidence, policy conflicts, or unsafe
-              merge order remain. Also block when an acceptance or merge claim
-              depends on unverified settings, or visible evidence conflicts.
-              Name those unmet conditions without repeating inline detail.
+              `Merge-readiness verdict: BLOCKED` when actionable correctness
+              findings, unresolved actionable correctness threads, missing
+              evidence, policy conflicts, or unsafe merge order remain. Also
+              block when an acceptance or merge claim depends on unverified
+              settings, or visible evidence conflicts. Name those unmet
+              conditions without repeating inline detail.
             - Use
               `Merge-readiness verdict: READY FOR HUMAN APPROVAL` only after
               the complete adversarial pass is clean. This verdict does not
@@ -383,10 +412,10 @@ jobs:
             - Include exactly one line:
               `Merge-readiness verdict: READY FOR HUMAN APPROVAL`.
             - State only residual verification risks after these required lines.
-            - Never include the clean marker when any actionable finding exists
-              or review delivery is blocked.
-            - Never include the clean marker while any actionable review thread
-              remains unresolved, including a thread from an earlier review.
+            - Never include the clean marker when any actionable correctness
+              finding exists or review delivery is blocked.
+            - Never include the clean marker while an actionable correctness
+              thread remains unresolved, including one from an earlier review.
         run: |
           set -euo pipefail
           delimiter="CONDUIT_REVIEW_PROMPT_EOF"
@@ -564,28 +593,6 @@ jobs:
           )"
           if [[ "$review_comment_count" != "0" ]]; then
             echo "The current-run review contains actionable inline findings." >&2
-            exit 1
-          fi
-
-          unresolved_review_thread_count="$(
-            gh api graphql --paginate \
-              -f owner="${GITHUB_REPOSITORY%%/*}" \
-              -f name="${GITHUB_REPOSITORY#*/}" \
-              -F number="$PR_NUMBER" \
-              -f query='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
-                repository(owner: $owner, name: $name) {
-                  pullRequest(number: $number) {
-                    reviewThreads(first: 100, after: $endCursor) {
-                      nodes { isResolved }
-                      pageInfo { hasNextPage endCursor }
-                    }
-                  }
-                }
-              }' |
-              jq -s '[.[].data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length'
-          )"
-          if [[ "$unresolved_review_thread_count" != "0" ]]; then
-            echo "The pull request still has unresolved review threads." >&2
             exit 1
           fi
 

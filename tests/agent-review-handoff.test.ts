@@ -25,6 +25,10 @@ const reviewConcurrency = reviewWorkflow.slice(
   reviewWorkflow.indexOf("concurrency:"),
   reviewWorkflow.indexOf("\njobs:")
 )
+const reviewWorkflowTriggers = reviewWorkflow.slice(
+  reviewWorkflow.indexOf("  pull_request_target:"),
+  reviewWorkflow.indexOf("  issue_comment:")
+)
 const workflowDirectory = ".github/workflows"
 const workflows = await Promise.all(
   (await readdir(workflowDirectory))
@@ -46,6 +50,11 @@ const countOccurrences = (text: string, value: string) =>
   text.split(value).length - 1
 
 const normalizeWhitespace = (text: string) => text.replace(/\s+/g, " ")
+
+const isBaseRetargetEdit = (event: {
+  action: string
+  changes?: { base?: unknown }
+}) => event.action === "edited" && Boolean(event.changes?.base)
 
 const getOutputValue = (output: string, name: string) =>
   output
@@ -501,7 +510,7 @@ fi
 }
 
 describe("agent review handoff", () => {
-  it("shares PR review concurrency only with trusted commands", () => {
+  it("reviews code boundaries and DO NOT MERGE transitions", () => {
     expect(reviewWorkflow).toContain("pull_request_target:")
     expect(reviewWorkflow).toContain(
       "github.event_name == 'pull_request_target' &&"
@@ -521,15 +530,55 @@ describe("agent review handoff", () => {
     expect(reviewConcurrency).toContain(
       "format('non-review-comment-{0}', github.run_id)"
     )
+    expect(reviewConcurrency).toContain(
+      "github.event.label.name != 'DO NOT MERGE'"
+    )
+    expect(reviewConcurrency).toContain(
+      "format('ignored-label-{0}', github.run_id)"
+    )
+    expect(normalizeWhitespace(reviewConcurrency)).toContain(
+      "github.event.action == 'edited' && !github.event.changes.base && format('ignored-edit-{0}', github.run_id)"
+    )
     expect(reviewConcurrency).toContain("github.event.pull_request.number ||")
     expect(reviewConcurrency).toContain("github.event.issue.number ||")
     expect(reviewConcurrency).not.toContain("inputs.pr_number")
+    expect(reviewWorkflowTriggers).toMatch(
+      /types:\s*\[\s*opened,\s*reopened,\s*edited,\s*synchronize,\s*ready_for_review,\s*labeled,\s*unlabeled,?\s*\]/
+    )
+    expect(
+      countOccurrences(
+        normalizeWhitespace(reviewWorkflow),
+        "(github.event.action != 'edited' || github.event.changes.base) &&"
+      )
+    ).toBe(2)
+    expect(
+      countOccurrences(
+        reviewWorkflow,
+        "github.event.label.name == 'DO NOT MERGE'"
+      )
+    ).toBe(2)
     expect(reviewWorkflow).toContain(
       "cancel-in-progress: ${{ github.event_name == 'pull_request_target' && github.event.action == 'synchronize' }}"
     )
     expect(reviewWorkflow).toContain(
       "github.event.comment.body == '/agent review'"
     )
+
+    const retargetToMain = {
+      action: "edited",
+      changes: { base: { ref: { from: "staging" } } },
+    }
+    const titleEdit = {
+      action: "edited",
+      changes: { title: { from: "Old title" } },
+    }
+    const bodyEdit = {
+      action: "edited",
+      changes: { body: { from: "Old body" } },
+    }
+    expect(isBaseRetargetEdit(retargetToMain)).toBe(true)
+    expect(isBaseRetargetEdit(titleEdit)).toBe(false)
+    expect(isBaseRetargetEdit(bodyEdit)).toBe(false)
   })
 
   it("marks only zero-finding Sudden reviews for the final handoff", () => {
@@ -555,9 +604,7 @@ describe("agent review handoff", () => {
     expect(reviewWorkflow).toContain(
       "<!-- conduit:sudden-review run=${{ github.run_id }} attempt=${{ github.run_attempt }} head=${{ steps.pr.outputs.head_sha }} -->"
     )
-    expect(reviewWorkflow).toContain("ready_for_review,")
-    expect(reviewWorkflow).toContain("labeled,")
-    expect(reviewWorkflow).toContain("unlabeled,")
+    expect(reviewWorkflowTriggers).toContain("ready_for_review")
     expect(reviewWorkflow).toContain("DO NOT MERGE")
     expect(reviewWorkflow).toContain(
       "Enforce current-run merge-readiness verdict"
@@ -625,6 +672,18 @@ describe("agent review handoff", () => {
     expect(reviewWorkflow).toContain("Never include the clean marker")
     expect(reviewWorkflow).toContain(
       "Automatic Ponytail review is intentionally once per pull request."
+    )
+    expect(normalizeWhitespace(reviewWorkflow)).toContain(
+      "Ponytail and simplicity-review findings are advisory and never affect the correctness verdict."
+    )
+    expect(normalizeWhitespace(reviewInstructions)).toContain(
+      "Ponytail and simplicity-review findings are advisory and never affect the correctness verdict."
+    )
+    const pointInTimeVerdict =
+      "Treat this verdict as point-in-time evidence for the reviewed head. After the review is submitted, later-created or reopened threads remain GitHub evidence for required human approval. Do not mirror global thread state into a second CI merge-state gate."
+    expect(normalizeWhitespace(reviewWorkflow)).toContain(pointInTimeVerdict)
+    expect(normalizeWhitespace(reviewInstructions)).toContain(
+      pointInTimeVerdict
     )
     expect(countOccurrences(reviewWorkflow, "resume: false")).toBe(3)
     expect(countOccurrences(reviewWorkflow, "model: gpt-5.6-sol/xhigh")).toBe(3)
@@ -830,14 +889,26 @@ describe("agent review handoff", () => {
     expect(inlineFinding.exitCode).not.toBe(0)
     expect(inlineFinding.stderr).toContain("actionable inline findings")
 
-    const unresolvedThread = await runReviewVerdictGate({
+    const priorAdvisoryThread = await runReviewVerdictGate({
       headSha,
       reviewThreads: JSON.stringify({
         data: {
           repository: {
             pullRequest: {
               reviewThreads: {
-                nodes: [{ isResolved: false }],
+                nodes: [
+                  {
+                    isResolved: false,
+                    comments: {
+                      nodes: [
+                        {
+                          author: { login: "conduit-sudden-agent" },
+                          body: `<!-- conduit:ponytail-final head=${headSha} -->`,
+                        },
+                      ],
+                    },
+                  },
+                ],
                 pageInfo: { hasNextPage: false, endCursor: null },
               },
             },
@@ -846,8 +917,12 @@ describe("agent review handoff", () => {
       }),
       runId,
     })
-    expect(unresolvedThread.exitCode).not.toBe(0)
-    expect(unresolvedThread.stderr).toContain("unresolved review threads")
+    expect(priorAdvisoryThread.exitCode).toBe(0)
+    expect(priorAdvisoryThread.stdout).toContain(
+      "ready for required human approval"
+    )
+    expect(reviewVerdictScript).not.toContain("reviewThreads(first: 100")
+    expect(reviewVerdictScript).not.toContain("unresolved_review_thread_count")
 
     const changedHead = await runReviewVerdictGate({
       currentHead: "8".repeat(40),
@@ -1168,9 +1243,8 @@ describe("agent review handoff", () => {
     expect(
       countOccurrences(simplifyWorkflow, 'grep -Ecx "$qa_disposition_pattern"')
     ).toBe(2)
-    expect(
-      countOccurrences(simplifyWorkflow, "gh api graphql --paginate")
-    ).toBe(2)
+    expect(simplifyWorkflow).not.toContain("gh api graphql --paginate")
+    expect(simplifyWorkflow).not.toContain("unresolved_review_thread_count")
     expect(
       countOccurrences(
         simplifyWorkflow,
@@ -1180,9 +1254,6 @@ describe("agent review handoff", () => {
     expect(
       countOccurrences(simplifyWorkflow, 'grep -Fxc "$ready_verdict"')
     ).toBe(2)
-    expect(simplifyWorkflow).toContain(
-      "The pull request has unresolved review threads"
-    )
     expect(simplifyWorkflow).toContain(automationResidual)
     expect(simplifyWorkflow).toContain("Enforce current Ponytail review")
     expect(simplifyWorkflow).toContain(
@@ -1829,7 +1900,7 @@ while IFS= read -r _line; do :; done
       "exact automation residual"
     )
 
-    const unresolvedThread = await runGate({
+    const unresolvedAdvisoryThread = await runGate({
       headSha,
       reviewThreads: JSON.stringify({
         data: {
@@ -1844,8 +1915,10 @@ while IFS= read -r _line; do :; done
         },
       }),
     })
-    expect(unresolvedThread.exitCode).not.toBe(0)
-    expect(unresolvedThread.stderr).toContain("unresolved review threads")
+    expect(unresolvedAdvisoryThread.exitCode).toBe(0)
+    expect(getOutputValue(unresolvedAdvisoryThread.output, "should_run")).toBe(
+      "true"
+    )
 
     const manual = await runGate({
       eventName: "issue_comment",
@@ -1972,7 +2045,7 @@ while IFS= read -r _line; do :; done
     expect(dirty.exitCode).not.toBe(0)
     expect(dirty.stderr).toContain("contains inline findings")
 
-    const unresolvedThread = await runGate(
+    const unresolvedAdvisoryThread = await runGate(
       {
         headSha,
         reviewThreads: JSON.stringify({
@@ -1990,8 +2063,10 @@ while IFS= read -r _line; do :; done
       },
       revalidationScript
     )
-    expect(unresolvedThread.exitCode).not.toBe(0)
-    expect(unresolvedThread.stderr).toContain("unresolved review threads")
+    expect(unresolvedAdvisoryThread.exitCode).toBe(0)
+    expect(getOutputValue(unresolvedAdvisoryThread.output, "should_run")).toBe(
+      "true"
+    )
 
     const missingSummary = await runGate(
       {

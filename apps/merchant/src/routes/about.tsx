@@ -1,5 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router"
+import { repositoryContributorSnapshot } from "virtual:conduit-repository-contributors"
 import {
+  buildBugReportUrl,
   conduitBuildInfo,
   getCommitUrl,
   getConduitNip89AppDefinition,
@@ -24,10 +26,11 @@ function AboutPage() {
   return (
     <AboutPagePanel
       appName={app.name}
-      appDescription="Manage listings, invoices, fulfillment, and buyer conversations from the Conduit Merchant Portal."
+      appDescription="Publish and manage your storefront, coordinate orders and fulfillment, and communicate privately with shoppers."
       buildInfo={conduitBuildInfo}
       commitUrl={getCommitUrl(conduitBuildInfo)}
-      layout="stacked"
+      contributors={repositoryContributorSnapshot}
+      supportUrl={buildBugReportUrl({ app: "merchant", route: "/about" })}
       identity={{
         sourceName: app.name,
         handlerAddress: getConduitNip89HandlerAddress("merchant"),
