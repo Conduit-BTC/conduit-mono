@@ -8,6 +8,7 @@ import {
   getBuyerConversationList,
   getDirectMessageConversationList,
   getMerchantConversationList,
+  isPrivateInboxDeclaredWriteHistoryComplete,
   type CachedOrderMessage,
 } from "@conduit/core"
 import {
@@ -468,6 +469,133 @@ describe("Market and Merchant protected inbox integration", () => {
       capped: false,
     })
     expect(result.meta.degraded).toBe(true)
+    expect(isPrivateInboxDeclaredWriteHistoryComplete(result.meta)).toBe(true)
+  })
+
+  it("keeps declared write history complete when declaration discovery degrades", async () => {
+    const declaration = finalizeEvent(
+      {
+        kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
+        created_at: 1_700_000_000,
+        tags: [["relay", RELAY_URL]],
+        content: "",
+      },
+      MERCHANT_KEY
+    )
+    const cachedRows: CachedOrderMessage[] = []
+    let declarationReads = 0
+
+    __setCommerceTestOverrides({
+      getNdk: async () => ({ signer: {} }) as never,
+      getCachedOrderMessages: async () => [...cachedRows],
+      putCachedOrderMessages: async (rows) => cachedRows.push(...rows),
+      getCachedDirectMessages: async () => [],
+      putCachedDirectMessages: async () => undefined,
+      giftUnwrap: async () => orderRumor(MERCHANT) as never,
+      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        const declarationRead = filter.kinds?.includes(
+          EVENT_KINDS.PRIVATE_MESSAGE_RELAYS
+        )
+        if (declarationRead) {
+          declarationReads += 1
+        }
+        const failedRelayUrls = declarationRead
+          ? declarationReads === 1
+            ? []
+            : relayUrls.slice(-1)
+          : relayUrls.filter((url) => url === "wss://inbox.azzamo.net")
+        return {
+          events: declarationRead
+            ? declarationReads < 3
+              ? ([declaration] as never)
+              : []
+            : ([wraps.get(MERCHANT)!] as never),
+          attemptedRelayUrls: relayUrls,
+          successfulRelayUrls: relayUrls.filter(
+            (url) => !failedRelayUrls.includes(url)
+          ),
+          failedRelayUrls,
+        }
+      },
+    })
+    installProtectedReadSigner(signer(MERCHANT_KEY), MERCHANT, () => true)
+
+    await getMerchantConversationList({ principalPubkey: MERCHANT })
+    const reobservedResult = await getMerchantConversationList({
+      principalPubkey: MERCHANT,
+      forceFresh: true,
+    })
+
+    expect(declarationReads).toBe(2)
+    expect(reobservedResult.data).toHaveLength(1)
+    expect(reobservedResult.meta.stale).toBe(true)
+    expect(reobservedResult.meta.inbox?.coverage).toBe("partial")
+    expect(reobservedResult.meta.inbox?.declarationStale).toBe(true)
+    expect(reobservedResult.meta.inbox?.declarationEvidenceCurrent).toBe(true)
+    expect(reobservedResult.meta.inbox?.declaredWritePlan).toEqual({
+      coverage: "complete",
+      capped: false,
+    })
+    expect(reobservedResult.meta.degraded).toBe(true)
+    expect(
+      isPrivateInboxDeclaredWriteHistoryComplete(reobservedResult.meta)
+    ).toBe(true)
+
+    const cachedFallbackResult = await getMerchantConversationList({
+      principalPubkey: MERCHANT,
+      forceFresh: true,
+    })
+
+    expect(declarationReads).toBe(3)
+    expect(cachedFallbackResult.data).toHaveLength(1)
+    expect(cachedFallbackResult.meta.stale).toBe(true)
+    expect(cachedFallbackResult.meta.inbox?.declarationStale).toBe(true)
+    expect(cachedFallbackResult.meta.inbox?.declarationEvidenceCurrent).toBe(
+      false
+    )
+    expect(cachedFallbackResult.meta.inbox?.declaredWritePlan).toEqual({
+      coverage: "complete",
+      capped: false,
+    })
+    expect(
+      isPrivateInboxDeclaredWriteHistoryComplete(cachedFallbackResult.meta)
+    ).toBe(false)
+  })
+
+  it("does not mark a complete empty declaration lookup current", async () => {
+    __setCommerceTestOverrides({
+      getNdk: async () => ({ signer: {} }) as never,
+      getCachedOrderMessages: async () => [],
+      putCachedOrderMessages: async () => undefined,
+      getCachedDirectMessages: async () => [],
+      putCachedDirectMessages: async () => undefined,
+      giftUnwrap: async () => orderRumor(MERCHANT) as never,
+      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        const declarationRead = filter.kinds?.includes(
+          EVENT_KINDS.PRIVATE_MESSAGE_RELAYS
+        )
+        return {
+          events: declarationRead ? [] : ([wraps.get(MERCHANT)!] as never),
+          attemptedRelayUrls: relayUrls,
+          successfulRelayUrls: relayUrls,
+          failedRelayUrls: [],
+        }
+      },
+    })
+    installProtectedReadSigner(signer(MERCHANT_KEY), MERCHANT, () => true)
+
+    const result = await getMerchantConversationList({
+      principalPubkey: MERCHANT,
+      forceFresh: true,
+    })
+
+    expect(result.data).toHaveLength(1)
+    expect(result.meta.inbox?.declarationState).toBe("not_observed")
+    expect(result.meta.inbox?.declarationEvidenceCurrent).toBe(false)
+    expect(result.meta.inbox?.declaredWritePlan.coverage).toBe("unavailable")
+    expect(isPrivateInboxDeclaredWriteHistoryComplete(result.meta)).toBe(false)
   })
 
   it("fails declared write history closed when the current write route fails", async () => {
@@ -499,6 +627,7 @@ describe("Market and Merchant protected inbox integration", () => {
       coverage: "unavailable",
       capped: false,
     })
+    expect(isPrivateInboxDeclaredWriteHistoryComplete(result.meta)).toBe(false)
   })
 
   it("marks a caller-truncated Merchant conversation snapshot unsafe for invoice history", async () => {
@@ -533,6 +662,7 @@ describe("Market and Merchant protected inbox integration", () => {
       coverage: "complete",
       capped: true,
     })
+    expect(isPrivateInboxDeclaredWriteHistoryComplete(result.meta)).toBe(false)
   })
 
   it("keeps both account roles working on relays that do not challenge", async () => {

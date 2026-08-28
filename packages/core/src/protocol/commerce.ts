@@ -164,6 +164,12 @@ export interface PrivateInboxReadStatus {
   declarationState: InboxDeclarationState
   /** True when discovery retained an older, not-currently-confirmed frontier. */
   declarationStale: boolean
+  /**
+   * True when the signed declaration is fresh or this read re-observed the
+   * exact current event. A partial/empty lookup backed only by cached routes
+   * remains false so payment actions cannot miss a cross-client rotation.
+   */
+  declarationEvidenceCurrent: boolean
   coverage: InboxReadCoverage
   readSource: InboxReadSource
   /**
@@ -208,10 +214,9 @@ export function isCommerceReadIncomplete(
 }
 
 export type PrivateInboxDeclaredWriteHistoryMeta = {
-  stale?: boolean
   decryptFailures?: readonly unknown[]
   inbox?: {
-    declarationStale?: boolean
+    declarationEvidenceCurrent?: boolean
     declaredWritePlan?: InboxReadScopeStatus
   }
 }
@@ -220,16 +225,16 @@ export type PrivateInboxDeclaredWriteHistoryMeta = {
  * True only when every known current/retained inbox write route completed
  * without truncation and every fetched wrap was usable. Optional discovery
  * relay degradation remains visible in aggregate metadata but does not veto
- * actions that depend solely on signed history from declared write routes.
+ * when the current signed declaration was still observed. A lookup backed
+ * only by cached declaration evidence remains fail-closed.
  */
 export function isPrivateInboxDeclaredWriteHistoryComplete(
   meta: PrivateInboxDeclaredWriteHistoryMeta | null | undefined
 ): boolean {
   return !!(
     meta &&
-    !meta.stale &&
     !meta.decryptFailures?.length &&
-    meta.inbox?.declarationStale === false &&
+    meta.inbox?.declarationEvidenceCurrent === true &&
     meta.inbox?.declaredWritePlan?.coverage === "complete" &&
     !meta.inbox.declaredWritePlan.capped
   )
@@ -902,6 +907,7 @@ function unavailableInboxStatus(
   return {
     declarationState: "lookup_unavailable",
     declarationStale: true,
+    declarationEvidenceCurrent: false,
     coverage: "unavailable",
     readSource: "cache",
     declaredWritePlan: { coverage: "unavailable", capped: false },
@@ -4946,12 +4952,24 @@ async function resolvePrincipalInboxDeclaration(
     try {
       const relays = await testOverrides.resolveInboxRelayUrls(principalPubkey)
       const secure = relays.filter((url) => !isInsecureRelayUrl(url))
+      const eventId = secure.length > 0 ? `test:${principalPubkey}` : undefined
       return {
         pubkey: principalPubkey,
         state: secure.length > 0 ? "declared" : "not_observed",
         relayUrls: secure,
         stale: false,
         fetchedAt: now(),
+        eventId,
+        observation: eventId
+          ? {
+              coverage: "complete",
+              attemptedRelayUrls: secure,
+              successfulRelayUrls: secure,
+              failedRelayUrls: [],
+              eventId,
+              eventSourceRelayUrls: secure,
+            }
+          : undefined,
       }
     } catch {
       return {
@@ -4973,6 +4991,16 @@ type InboxWrapFetchResult = {
   wraps: NDKEvent[]
   capped: boolean
   inbox: PrivateInboxReadStatus
+}
+
+function isInboxDeclarationEvidenceCurrent(
+  declaration: InboxDeclarationResolution
+): boolean {
+  return (
+    !!declaration.eventId &&
+    (!declaration.stale ||
+      declaration.observation?.eventId === declaration.eventId)
+  )
 }
 
 /**
@@ -5015,6 +5043,8 @@ async function fetchNewInboxWraps(
       inbox: {
         declarationState: declaration.state,
         declarationStale: declaration.stale,
+        declarationEvidenceCurrent:
+          isInboxDeclarationEvidenceCurrent(declaration),
         coverage: deriveInboxReadCoverage(result),
         readSource: readPlan.source,
         // This legacy test seam has no per-relay event counts. Treat a bounded
@@ -5086,6 +5116,8 @@ async function fetchNewInboxWraps(
     inbox: {
       declarationState: declaration.state,
       declarationStale: declaration.stale,
+      declarationEvidenceCurrent:
+        isInboxDeclarationEvidenceCurrent(declaration),
       coverage: protectedResult.coverage,
       readSource: readPlan.source,
       declaredWritePlan: deriveScopedInboxReadStatus(

@@ -210,6 +210,7 @@ export function isMerchantPaymentConversationReadComplete(input: {
     inbox?: {
       coverage?: "complete" | "partial" | "unavailable"
       declarationStale?: boolean
+      declarationEvidenceCurrent?: boolean
       declaredWritePlan?: {
         coverage: "complete" | "partial" | "unavailable"
         capped: boolean

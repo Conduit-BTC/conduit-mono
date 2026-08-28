@@ -256,6 +256,7 @@ describe("merchant NWC payment verification", () => {
       inbox: {
         coverage: "complete" as const,
         declarationStale: false,
+        declarationEvidenceCurrent: true,
         declaredWritePlan: { coverage: "complete" as const, capped: false },
       },
     }
@@ -271,9 +272,14 @@ describe("merchant NWC payment verification", () => {
 
     const optionalDiscoveryDegraded = {
       ...complete,
+      stale: true,
       degraded: true,
       capped: true,
-      inbox: { ...complete.inbox, coverage: "partial" as const },
+      inbox: {
+        ...complete.inbox,
+        coverage: "partial" as const,
+        declarationStale: true,
+      },
     }
     expect(
       isMerchantPaymentConversationReadComplete({
@@ -288,17 +294,19 @@ describe("merchant NWC payment verification", () => {
     ).toHaveLength(1)
 
     for (const input of [
-      { meta: { ...complete, stale: true } },
       {
         meta: {
           ...complete,
-          decryptFailures: [{ reason: "decrypt_failed" }],
+          inbox: {
+            ...complete.inbox,
+            declarationEvidenceCurrent: false,
+          },
         },
       },
       {
         meta: {
           ...complete,
-          inbox: { ...complete.inbox, declarationStale: true },
+          decryptFailures: [{ reason: "decrypt_failed" }],
         },
       },
       {
