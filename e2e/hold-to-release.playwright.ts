@@ -118,6 +118,10 @@ test("market hold-to-release supports cancellation, keyboard, assistive activati
   await page.keyboard.up("Enter")
   await expect.poll(() => page.evaluate(() => window.__holdCount)).toBe(3)
 
+  await page.evaluate(
+    () => new Promise<void>((resolve) => window.setTimeout(resolve, 0))
+  )
+
   await button.evaluate((element) => {
     element.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 0 }))
     element.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 0 }))
