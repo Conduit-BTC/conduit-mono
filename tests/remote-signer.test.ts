@@ -693,10 +693,39 @@ describe("remote signer parsing and storage", () => {
     storage.setItem(AUTH_STORAGE_KEY, JSON.stringify(replacement))
 
     await expect(
-      cleanupInvalidatedAuthSession(expected, { storage, keyVault })
+      cleanupInvalidatedAuthSession(expected, {
+        storage,
+        keyVault,
+        retireExpectedKeyOnMetadataFailure: true,
+      })
     ).resolves.toBe("replacement")
     expect(readAuthSession(storage)).toEqual(replacement)
     expect(keyVault.values.has(expected.clientKeyId)).toBe(true)
+  })
+
+  it("retires the exact key on explicit discard when auth metadata is unreadable", async () => {
+    const expected = session()
+    const storage: AuthStorage = {
+      getItem: () => {
+        throw new Error("storage unreadable")
+      },
+      setItem: () => undefined,
+      removeItem: () => undefined,
+    }
+    const keyVault = seededKeyVault()
+
+    await expect(
+      cleanupInvalidatedAuthSession(expected, {
+        storage,
+        keyVault,
+        retireExpectedKeyOnMetadataFailure: true,
+      })
+    ).rejects.toMatchObject({
+      code: "unavailable",
+      message: "The browser could not verify the saved signer session.",
+      operation: "retire invalidated signer session",
+    })
+    expect(await keyVault.load(expected.clientKeyId)).toBeNull()
   })
 
   it("rejects silently blocked metadata removal before deleting the key", async () => {

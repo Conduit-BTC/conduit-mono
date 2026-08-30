@@ -25,7 +25,7 @@ const staticCredentialRules = [
   {
     rule: "fixed private scalar",
     pattern:
-      /\b(?:const|let|var)\s+[A-Z0-9_]*(?:PRIVATE|SECRET)[A-Z0-9_]*\s*=\s*(?:new\s+Uint8Array\s*\(\s*32\s*\)\.fill\s*\(|["'`][0-9a-f]+["'`]\.repeat\s*\(|["'`][0-9a-f]{64}["'`])/gi,
+      /\b(?:const|let|var)\s+[A-Z0-9_]*(?:PRIVATE|SECRET)[A-Z0-9_]*\s*=\s*(?:new\s+Uint8Array\s*\(\s*32\s*\)\.fill\s*\(|Uint8Array\.from\s*\(\s*\{\s*length\s*:\s*32\s*\}\s*,|["'`][0-9a-f]+["'`]\.repeat\s*\(|["'`][0-9a-f]{64}["'`])/gi,
   },
   {
     rule: "fixed credential variable",
@@ -291,7 +291,7 @@ describe("Playwright smoke credential fixtures", () => {
       ["secret-key encoding", /\bnsecEncode\s*\(/g.source, "g"],
       [
         "fixed private scalar",
-        /\b(?:const|let|var)\s+[A-Z0-9_]*(?:PRIVATE|SECRET)[A-Z0-9_]*\s*=\s*(?:new\s+Uint8Array\s*\(\s*32\s*\)\.fill\s*\(|["'`][0-9a-f]+["'`]\.repeat\s*\(|["'`][0-9a-f]{64}["'`])/gi
+        /\b(?:const|let|var)\s+[A-Z0-9_]*(?:PRIVATE|SECRET)[A-Z0-9_]*\s*=\s*(?:new\s+Uint8Array\s*\(\s*32\s*\)\.fill\s*\(|Uint8Array\.from\s*\(\s*\{\s*length\s*:\s*32\s*\}\s*,|["'`][0-9a-f]+["'`]\.repeat\s*\(|["'`][0-9a-f]{64}["'`])/gi
           .source,
         "gi",
       ],
@@ -445,6 +445,28 @@ describe("Playwright smoke credential fixtures", () => {
         file: "example.ts",
         line: 1,
         rule: "synthetic rule",
+      },
+    ])
+    const deterministicConstructor = [
+      "const WRAP_SECRET = Uint8Array",
+      ".from({ length: 32 }, (_, index) => index + 1)",
+    ].join("")
+    expect(
+      scanAddedHunks(
+        "synthetic-commit",
+        [
+          "diff --git a/example.ts b/example.ts",
+          "+++ b/example.ts",
+          "@@ -0,0 +1 @@",
+          `+${deterministicConstructor}`,
+        ].join("\n")
+      )
+    ).toEqual([
+      {
+        commit: "synthetic-commit",
+        file: "example.ts",
+        line: 1,
+        rule: "fixed private scalar",
       },
     ])
     expect(

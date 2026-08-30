@@ -53,8 +53,10 @@ The current product uses focused pages plus dashboard readiness. Do not re-open 
    fulfillment
 6. Record processing, shipment, and completion through contextual actions
 
-For `guest_ephemeral` orders, buyer contact occurs out of band using the required
-phone/email shown in order details. The guest pubkey is an outbound order
+For `guest_ephemeral` orders, buyer contact occurs out of band using the
+structured recovery channel required by that checkout flow and shown in order
+details. Pickup requires at least one of email or phone; shipping retains its
+stricter contact/address contract. The guest pubkey is an outbound order
 sender, not a reply-capable Nostr inbox; Merchant must not claim to send Nostr
 invoice, status, shipping, or reply messages to that key. Merchant may still
 record decisions and fulfillment as encrypted messages addressed to itself so
@@ -88,6 +90,29 @@ The NIP-17 reply path applies to signed-in buyers. Guest order/payment reports
 remain visible as inbound evidence, while follow-up uses the order contact
 fields and merchant self-copy records preserve the operational history.
 
+### Organizer Event Markets
+
+A signed-in merchant may also act as an event organizer without a separate
+Conduit-controlled account. The organizer workspace composes shared Core
+workflows to publish and update the NIP-52 calendar record, optional
+organizer-handoff pickup option, and authoritative product collection with the
+active external signer. It shows record-level relay acknowledgement and retry
+state, participation requests, each accepted merchant booth's handoff party,
+and the canonical collection `naddr` share link.
+
+An accepted merchant chooses either a merchant-authored booth pickup, which
+keeps orders and receipts merchant-only, or the organizer-authored pickup,
+which opts future orders into the minimal private fulfillment-receipt workflow.
+The organizer view exposes only those redacted delegated receipts addressed to
+the active organizer and may issue only the scoped `handed_out`
+acknowledgement. It never grants organizer access to full orders, buyer contact,
+payment material, refunds, price changes, or ordinary merchant status actions.
+The queue displays the same opaque short pickup code that the buyer derives
+locally from the private order; it does not receive the order id or buyer
+identity.
+See
+`docs/specs/event-markets.md`.
+
 ## Pages
 
 | Route               | Description                           |
@@ -99,6 +124,7 @@ fields and merchant self-copy records preserve the operational history.
 | `/profile`          | Merchant/store profile setup          |
 | `/payments`         | Payment and wallet readiness          |
 | `/shipping`         | Shipping readiness/options            |
+| `/events`           | Organizer event markets and requests  |
 | `/network`          | Relay/network settings                |
 | `/about`            | App/source/provenance surface         |
 | `/privacy-policy`   | Public Product Privacy Policy         |
@@ -370,6 +396,13 @@ For fixed physical shipping, Merchant publishes this complete product-scoped
 option and requires a positive relay acknowledgement before publishing the
 referencing product. Preset and custom destination inputs compile to the same
 wire representation. See `docs/specs/fixed-product-shipping.md`.
+
+Pickup options use the same kind with `service=pickup`, a non-negative price,
+country metadata, and a public `location` and/or `g`. Product authoring exposes
+Digital, Ship, and Local pickup as distinct intents. Event pickup references
+and participation state use the shared contract in
+`docs/specs/event-markets.md`; the ordinary shipped-destination editor must not
+hydrate from pickup records.
 
 ## Environment
 

@@ -630,6 +630,8 @@ export interface InvalidatedAuthSessionCleanupOptions {
   storage?: AuthStorage
   keyVault?: RemoteSignerKeyVault
   withLock?: <T>(task: () => Promise<T>) => Promise<T>
+  /** Explicit logout only, when the caller owns the exact expected session. */
+  retireExpectedKeyOnMetadataFailure?: boolean
 }
 
 /**
@@ -647,67 +649,83 @@ export async function cleanupInvalidatedAuthSession(
 
   return withLock(async () => {
     const operation = "retire invalidated signer session"
-    const before = inspectAuthSessionStorage(storage, operation)
-    let status: InvalidatedAuthSessionCleanupStatus
+    let status: InvalidatedAuthSessionCleanupStatus = "absent"
+    let metadataError: unknown = null
+    let replacementUsesExpectedKey = false
 
-    if (before.status === "empty") {
-      status = "absent"
-    } else if (
-      before.status === "session" &&
-      !authSessionsMatch(before.session, expected)
-    ) {
-      status = "replacement"
-    } else {
-      try {
-        storage?.removeItem(AUTH_STORAGE_KEY)
-      } catch (cause) {
-        throw new RemoteSignerError(
-          "unavailable",
-          "The browser could not erase the invalidated signer session.",
-          { cause, operation }
-        )
-      }
-
-      const afterRemoval = inspectAuthSessionStorage(storage, operation)
-      if (afterRemoval.status === "invalid") {
-        throw new RemoteSignerError(
-          "unavailable",
-          "The browser could not verify that the invalidated signer session was erased.",
-          { operation }
-        )
-      }
-      if (
-        afterRemoval.status === "session" &&
-        authSessionsMatch(afterRemoval.session, expected)
+    try {
+      const before = inspectAuthSessionStorage(storage, operation)
+      if (before.status === "empty") {
+        status = "absent"
+      } else if (
+        before.status === "session" &&
+        !authSessionsMatch(before.session, expected)
       ) {
-        throw new RemoteSignerError(
-          "unavailable",
-          "The browser could not verify that the invalidated signer session was erased.",
-          { operation }
-        )
-      }
-      status = afterRemoval.status === "session" ? "replacement" : "removed"
-    }
-
-    if (expected.type === "nip46") {
-      const current = inspectAuthSessionStorage(storage, operation)
-      const replacementUsesExpectedKey =
-        current.status === "session" &&
-        current.session.type === "nip46" &&
-        current.session.clientKeyId === expected.clientKeyId
-      if (!replacementUsesExpectedKey) {
+        status = "replacement"
+        replacementUsesExpectedKey =
+          expected.type === "nip46" &&
+          before.session.type === "nip46" &&
+          before.session.clientKeyId === expected.clientKeyId
+      } else {
         try {
-          await forgetRemoteSignerKey(expected, keyVault)
+          storage?.removeItem(AUTH_STORAGE_KEY)
         } catch (cause) {
           throw new RemoteSignerError(
             "unavailable",
-            "The browser could not erase the invalidated remote signer connection key.",
+            "The browser could not erase the invalidated signer session.",
             { cause, operation }
           )
         }
+
+        const afterRemoval = inspectAuthSessionStorage(storage, operation)
+        if (
+          afterRemoval.status === "invalid" ||
+          (afterRemoval.status === "session" &&
+            authSessionsMatch(afterRemoval.session, expected))
+        ) {
+          throw new RemoteSignerError(
+            "unavailable",
+            "The browser could not verify that the invalidated signer session was erased.",
+            { operation }
+          )
+        }
+        status = afterRemoval.status === "session" ? "replacement" : "removed"
+        replacementUsesExpectedKey =
+          expected.type === "nip46" &&
+          afterRemoval.status === "session" &&
+          afterRemoval.session.type === "nip46" &&
+          afterRemoval.session.clientKeyId === expected.clientKeyId
+      }
+
+      if (expected.type === "nip46") {
+        const current = inspectAuthSessionStorage(storage, operation)
+        replacementUsesExpectedKey =
+          current.status === "session" &&
+          !authSessionsMatch(current.session, expected) &&
+          current.session.type === "nip46" &&
+          current.session.clientKeyId === expected.clientKeyId
+      }
+    } catch (cause) {
+      metadataError = cause
+    }
+
+    if (metadataError && !options.retireExpectedKeyOnMetadataFailure) {
+      throw metadataError
+    }
+
+    if (expected.type === "nip46" && !replacementUsesExpectedKey) {
+      try {
+        await forgetRemoteSignerKey(expected, keyVault)
+      } catch (cause) {
+        throw new RemoteSignerError(
+          "unavailable",
+          "The browser could not erase the invalidated remote signer connection key.",
+          { cause, operation }
+        )
       }
     }
 
+    if (metadataError) throw metadataError
     return status
   })
 }

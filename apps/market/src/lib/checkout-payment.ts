@@ -23,6 +23,7 @@ import {
   type NwcDiagnostic,
   type OrderLifecycle,
   type PricingRateInput,
+  type Product,
   type ResolvedCartShippingCostStatus,
   type ResolvedCartShippingCostSummary,
   type ShippingDestinationEligibility,
@@ -63,6 +64,7 @@ export type CheckoutPricingItem = {
   shippingCountries?: string[]
   shippingCountryRules?: CartItem["shippingCountryRules"]
   sourcePrice?: SourcePriceQuote
+  fulfillment?: CartItem["fulfillment"]
 }
 
 export type CheckoutShippingCostStatus = ResolvedCartShippingCostStatus
@@ -84,12 +86,107 @@ export type CheckoutPricingIntent =
         fiatSource?: BtcUsdRateQuote["fiatSource"]
       }
       approximate: boolean
+      /** False only for an authenticated zero-cost pickup order. */
+      paymentRequired: boolean
     }
   | {
       status: "error"
       reason: string
       code: "unpriced_items" | "stale_quote" | "invalid_total"
     }
+
+export type FreshCartProductPricingBinding =
+  | { status: "ok"; items: CartItem[] }
+  | {
+      status: "error"
+      code: "product_missing" | "merchant_mismatch" | "pricing_mismatch"
+      productId: string
+      reason: string
+    }
+
+function sourcePriceMatches(
+  stored: CartItem["sourcePrice"],
+  current: Product["sourcePrice"]
+): boolean {
+  if (!stored || !current) return stored === current
+  return (
+    stored.amount === current.amount &&
+    stored.currency === current.currency &&
+    stored.normalizedCurrency === current.normalizedCurrency
+  )
+}
+
+/**
+ * Bind consequential checkout pricing to the freshly fetched exact signed
+ * product revision. A cart price is a local snapshot, never independent price
+ * authority. Exact comparison catches stale storage and coordinated tampering;
+ * rebuilding the returned items prevents downstream pricing from reading the
+ * untrusted outer cart fields after the check.
+ */
+export function bindCartItemsToFreshProductPricing(
+  items: readonly CartItem[],
+  freshProducts: readonly Product[]
+): FreshCartProductPricingBinding {
+  const productsByCoordinate = new Map(
+    freshProducts.map((product) => [product.id, product])
+  )
+
+  const boundItems: CartItem[] = []
+  for (const item of items) {
+    const product = productsByCoordinate.get(item.productId)
+    if (!product) {
+      return {
+        status: "error",
+        code: "product_missing",
+        productId: item.productId,
+        reason:
+          "Current signed product pricing could not be verified. Return to the catalog and add the item again.",
+      }
+    }
+    if (product.pubkey !== item.merchantPubkey) {
+      return {
+        status: "error",
+        code: "merchant_mismatch",
+        productId: item.productId,
+        reason:
+          "The product merchant no longer matches this cart line. Remove the item and review the signed listing again.",
+      }
+    }
+    if (product.priceEvidenceMalformed) {
+      return {
+        status: "error",
+        code: "pricing_mismatch",
+        productId: item.productId,
+        reason:
+          "The signed listing contains conflicting product price evidence. Return to the catalog and wait for the merchant to publish one canonical price.",
+      }
+    }
+    if (
+      product.price !== item.price ||
+      product.currency !== item.currency ||
+      product.priceSats !== item.priceSats ||
+      !sourcePriceMatches(item.sourcePrice, product.sourcePrice)
+    ) {
+      return {
+        status: "error",
+        code: "pricing_mismatch",
+        productId: item.productId,
+        reason:
+          "The signed product price changed or does not match this cart snapshot. Return to the catalog and add the item again.",
+      }
+    }
+
+    boundItems.push({
+      ...item,
+      price: product.price,
+      currency: product.currency,
+      priceSats: product.priceSats,
+      sourcePrice: product.sourcePrice ? { ...product.sourcePrice } : undefined,
+    })
+  }
+
+  return { status: "ok", items: boundItems }
+}
 
 function isQuoteObject(
   rateInput: PricingRateInput
@@ -131,6 +228,7 @@ function getKnownShippingCostSats(
 function isCheckoutShippingCostResolvable(item: CartItem): boolean {
   return (
     item.format === "digital" ||
+    item.fulfillment?.type === "pickup" ||
     (item.canonicalShippingResolved === true &&
       !!item.shippingOptionId &&
       (item.shippingCountryRules?.length ?? 0) > 0)
@@ -171,7 +269,10 @@ export function buildCheckoutPricingIntent(
   let needsFreshQuote = false
 
   for (const item of items) {
-    const priced = getPriceSats(item, rateInput)
+    const pickupAllowsZero = item.fulfillment?.type === "pickup"
+    const priced = getPriceSats(item, rateInput, {
+      allowZero: pickupAllowsZero,
+    })
     if (!priced) {
       return {
         status: "error",
@@ -233,6 +334,14 @@ export function buildCheckoutPricingIntent(
           "One or more items cannot be converted to sats right now. Refresh prices before ordering.",
       }
     }
+    if (item.fulfillment?.type === "pickup" && !shippingSats) {
+      return {
+        status: "error",
+        code: "unpriced_items",
+        reason:
+          "The signed pickup cost could not be resolved. Refresh the event catalog before ordering.",
+      }
+    }
     if (
       shippingSats &&
       shippingCostNeedsFreshQuote(shippingItem, shippingSats.approximate)
@@ -276,13 +385,36 @@ export function buildCheckoutPricingIntent(
       shippingCountries: item.shippingCountries,
       shippingCountryRules: item.shippingCountryRules,
       sourcePrice: item.sourcePrice,
+      fulfillment:
+        item.fulfillment?.type === "pickup"
+          ? {
+              ...item.fulfillment,
+              costSats: shippingSats!.sats,
+              sourceCost:
+                shippingItem.sourceShippingCost ?? item.fulfillment.sourceCost,
+            }
+          : item.fulfillment,
     })
   }
 
   const shippingCost = getCheckoutShippingCost(items, rateInput)
   const totalSats = itemSubtotalSats + shippingCost.totalSats
 
-  if (!Number.isSafeInteger(totalSats) || totalSats <= 0) {
+  const zeroCostPickupOrder =
+    totalSats === 0 &&
+    pricedItems.length > 0 &&
+    pricedItems.every(
+      (item) =>
+        item.fulfillment?.type === "pickup" &&
+        item.priceAtPurchase === 0 &&
+        item.shippingCostSats === 0
+    )
+
+  if (
+    !Number.isSafeInteger(totalSats) ||
+    totalSats < 0 ||
+    (totalSats === 0 && !zeroCostPickupOrder)
+  ) {
     return {
       status: "error",
       code: "invalid_total",
@@ -298,6 +430,7 @@ export function buildCheckoutPricingIntent(
     items: pricedItems,
     shippingCost,
     approximate: needsFreshQuote,
+    paymentRequired: totalSats > 0,
     quote: isQuoteObject(rateInput)
       ? {
           rate: rateInput.rate,
@@ -362,6 +495,7 @@ export function applyAuthorizedAnonZapPricing(
     },
     quote: authorized.quote,
     approximate: !!authorized.quote,
+    paymentRequired: authorized.totalSats > 0,
   }
 }
 

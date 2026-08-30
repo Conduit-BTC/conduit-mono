@@ -498,6 +498,7 @@ function ConnectGate() {
 function getPageTitle(pathname: string): string {
   if (pathname === "/") return "Dashboard"
   if (pathname === "/products") return "Products"
+  if (pathname === "/events") return "Events"
   if (pathname === "/orders") return "Orders"
   if (pathname === "/messages") return "Messages"
   if (pathname === "/profile") return "Profile"

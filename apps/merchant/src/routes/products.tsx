@@ -25,6 +25,7 @@ import {
   prepareProductCatalog,
   recordBrowserTelemetryEvent,
   resolveProductFulfillment,
+  resolveEventMarketOrganizerInbox,
   type CommerceResult,
   type ListingSafetyEvaluation,
   type PreparedProductFamily,
@@ -64,6 +65,7 @@ import { ProductCombinationMatrix } from "../components/ProductCombinationMatrix
 import { ProductInboxReadinessDialog } from "../components/ProductInboxReadinessDialog"
 import { ProductSignerRecoveryNotice } from "../components/ProductSignerRecoveryNotice"
 import { ProductTagEditor } from "../components/ProductTagEditor"
+import { ProductFulfillmentEditor } from "../components/ProductFulfillmentEditor"
 import { ShippingDestinationsEditor } from "../components/ShippingDestinationsEditor"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { requireAuth } from "../lib/auth"
@@ -79,6 +81,7 @@ import {
 } from "../lib/productDraft"
 import {
   buildProductShippingMetadata,
+  canUseZeroProductPrice,
   canSubmitProductForm,
   getProductShippingPricingMode,
   isProductUsingPresetShippingZone,
@@ -131,6 +134,19 @@ import {
   SignedProductDeliveryError,
   type SignedProductWriteBundle,
 } from "../lib/product-publishing"
+import {
+  listOrganizerEventMarkets,
+  resolveOrganizerEventMarket,
+  type MerchantOrganizerEventMarket,
+} from "../lib/event-market"
+import { ensureMerchantBoothPickup } from "../lib/event-market-pickup"
+import {
+  buildProductLocalPickupMetadata,
+  getMerchantBoothPickupFormError,
+  getProductEventParticipationState,
+  getProductFulfillmentProjection,
+  getProductLocalPickupEvidenceError,
+} from "../lib/product-local-pickup"
 import {
   getProductFamilyStockDisplay,
   getProductStockDisplay,
@@ -208,6 +224,9 @@ type ProductDeliveryRetryState =
 
 type ProductSort = "updated_desc" | "title_asc" | "price_asc" | "price_desc"
 
+type EditFulfillmentResolution =
+  "ready" | "resolving" | "unresolved" | "verifying_pickup"
+
 function createEmptyProductForm(
   usePresetShippingZone = true
 ): ProductFormState {
@@ -219,6 +238,13 @@ function createEmptyProductForm(
     variations: createEmptyProductVariationForm(),
     currency: "USD",
     format: "physical",
+    fulfillment: "ship",
+    eventMarketReference: "",
+    eventHandoffMode: "merchant_handoff",
+    merchantPickupTitle: "Merchant booth pickup",
+    merchantPickupLocation: "",
+    merchantPickupGeohash: "",
+    merchantPickupCountry: "US",
     shippingPricingMode: "fixed",
     shippingCost: "",
     usePresetShippingZone,
@@ -304,12 +330,14 @@ function productShippingConfigFromProduct(
 
 function productToForm(
   family: MerchantProductFamily,
-  presetAvailable = true
+  presetAvailable = true,
+  verifiedMarket?: MerchantOrganizerEventMarket | null
 ): ProductFormState {
   const product = family.product
   const source = product.sourcePrice
   const sourceShippingCost = product.sourceShippingCost
   const currency = source?.normalizedCurrency ?? product.currency
+  const fulfillment = getProductFulfillmentProjection(product, verifiedMarket)
   return {
     title: product.title,
     summary: product.summary ?? "",
@@ -319,6 +347,13 @@ function productToForm(
     currency,
     format: product.format,
     shippingPricingMode: getProductShippingPricingMode(product),
+    fulfillment: fulfillment.intent,
+    eventMarketReference: fulfillment.eventMarketReference,
+    eventHandoffMode: fulfillment.handoffMode ?? "merchant_handoff",
+    merchantPickupTitle: "Merchant booth pickup",
+    merchantPickupLocation: "",
+    merchantPickupGeohash: "",
+    merchantPickupCountry: "US",
     shippingCost:
       typeof sourceShippingCost?.amount === "number"
         ? formatProductAmountInput(sourceShippingCost.amount)
@@ -701,12 +736,21 @@ async function publishProduct(
   ) => Promise<void>,
   existing?: MerchantProductFamily
 ): Promise<PublishWithPlannerResult> {
-  const formValidation = validateProductPublishForm(form, {
-    hasPresetShippingZone: isShippingComplete(
-      loadShippingConfig(merchantPubkey)
-    ),
-    presetShippingConfig: loadShippingConfig(merchantPubkey),
-  })
+  const localPickup = form.fulfillment === "local_pickup"
+  const presetShippingConfig = loadShippingConfig(merchantPubkey)
+  const formValidation = validateProductPublishForm(
+    localPickup
+      ? { ...form, shippingPricingMode: "coordinate_after_order" }
+      : form,
+    {
+      hasPresetShippingZone: isShippingComplete(presetShippingConfig),
+      presetShippingConfig,
+      allowZeroPrice:
+        localPickup &&
+        (form.eventHandoffMode === "merchant_handoff" ||
+          form.eventHandoffMode === "organizer_handoff"),
+    }
+  )
   if (!formValidation.canPublish) {
     throw new Error(
       formValidation.firstError ?? "Product form is not publishable"
@@ -719,8 +763,9 @@ async function publishProduct(
   if (!title) throw new Error("Title is required")
 
   const price = parsePlainDecimalAmount(form.price, "Price")
-  const isDigital = form.format === "digital"
-  const hasFixedShipping = !isDigital && form.shippingPricingMode === "fixed"
+  const isDigital = form.fulfillment === "digital"
+  const hasFixedShipping =
+    form.fulfillment === "ship" && form.shippingPricingMode === "fixed"
   const shippingCostInput = hasFixedShipping ? form.shippingCost.trim() : ""
   const shippingCostAmount =
     shippingCostInput.length > 0
@@ -728,12 +773,96 @@ async function publishProduct(
       : undefined
 
   const currency = form.currency.trim().toUpperCase() || "USD"
-  const normalizedPrice = normalizePublishableProductPrice(price, currency)
   const shippingCost = canonicalizeProductShippingCost(
     shippingCostAmount,
     currency
   )
-  const fulfillment = buildShippingMetadata(signerPubkey, dTag, form)
+  const publicationFulfillment = localPickup
+    ? {
+        intent: { kind: "coordinate_after_order" as const },
+        authoringCountries: [] as string[],
+        metadata: {},
+      }
+    : buildShippingMetadata(signerPubkey, dTag, form)
+  let shippingMetadata: Pick<
+    ProductSchema,
+    | "shippingOptionId"
+    | "shippingOptionDTag"
+    | "shippingOptionRefs"
+    | "collectionRefs"
+    | "shippingCountries"
+    | "shippingCountryRules"
+  > = publicationFulfillment.metadata
+  let localPickupEvidenceVerified = false
+  let verifiedLocalPickupMarket: MerchantOrganizerEventMarket | null = null
+  if (localPickup) {
+    if (!form.eventMarketReference.trim()) {
+      throw new Error(
+        "Import an organizer event catalog before publishing local pickup."
+      )
+    }
+    const eventMarket = await resolveOrganizerEventMarket(
+      form.eventMarketReference
+    )
+    verifiedLocalPickupMarket = eventMarket
+    localPickupEvidenceVerified = true
+  }
+  const zeroPriceAuthorized = canUseZeroProductPrice({
+    fulfillment: form.fulfillment,
+    handoffMode: form.eventHandoffMode,
+    evidenceVerified: localPickupEvidenceVerified,
+  })
+  const normalizedPrice = normalizePublishableProductPrice(price, currency, {
+    allowZero: zeroPriceAuthorized,
+  })
+  if (localPickup) {
+    const eventMarket = verifiedLocalPickupMarket
+    if (!eventMarket) {
+      throw new Error("Local pickup evidence could not be verified.")
+    }
+    if (form.eventHandoffMode === "organizer_handoff") {
+      shippingMetadata = buildProductLocalPickupMetadata(eventMarket, {
+        handoffMode: "organizer_handoff",
+      })
+    } else {
+      const existingProjection = existing
+        ? getProductFulfillmentProjection(existing.product, eventMarket)
+        : null
+      const existingPickupCoordinate =
+        existingProjection?.handoffMode === "merchant_handoff"
+          ? existingProjection.pickupCoordinate
+          : undefined
+      const pickupDTag = existingPickupCoordinate
+        ? existingPickupCoordinate.split(":").slice(2).join(":")
+        : `${dTag}-event-pickup`
+      const boothPickup = await ensureMerchantBoothPickup({
+        authorPubkey: signerPubkey,
+        dTag: pickupDTag,
+        title: form.merchantPickupTitle.trim(),
+        location: form.merchantPickupLocation.trim() || undefined,
+        geohash: form.merchantPickupGeohash.trim() || undefined,
+        country: form.merchantPickupCountry.trim().toUpperCase(),
+      })
+      shippingMetadata = buildProductLocalPickupMetadata(eventMarket, {
+        handoffMode: "merchant_handoff",
+        merchantPickupCoordinate: boothPickup.coordinate,
+      })
+    }
+  }
+  const hasShippingZone =
+    (shippingMetadata.shippingCountries?.length ?? 0) > 0 ||
+    (shippingMetadata.shippingCountryRules?.length ?? 0) > 0
+  if (
+    form.fulfillment === "ship" &&
+    typeof shippingCostAmount === "number" &&
+    !hasShippingZone
+  ) {
+    throw new Error(
+      form.usePresetShippingZone
+        ? "Attach your preset shipping zone before publishing a physical product with a fixed shipping cost."
+        : "Add at least one custom shipping destination before publishing a physical product with a fixed shipping cost."
+    )
+  }
   const summary = form.summary.trim()
   const imageUrl = form.imageUrl.trim()
   if (!imageUrl) {
@@ -756,9 +885,9 @@ async function publishProduct(
     type: "simple",
     parentProductId: undefined,
     specifications: [],
-    format: form.format,
+    format: isDigital ? "digital" : "physical",
     ...shippingCost,
-    ...fulfillment.metadata,
+    ...shippingMetadata,
     visibility: "public",
     stock: parseProductStockInput(form.stock),
     images: [{ url: imageUrl }],
@@ -776,8 +905,8 @@ async function publishProduct(
     baseProduct: product,
     variations: form.variations,
     currency,
-    fulfillmentIntent: fulfillment.intent,
-    authoringCountries: fulfillment.authoringCountries,
+    fulfillmentIntent: publicationFulfillment.intent,
+    authoringCountries: publicationFulfillment.authoringCountries,
     existing: existing
       ? {
           root: existing,
@@ -891,9 +1020,14 @@ function ProductsPage() {
   const productDialogReturnFocusRef = useRef<HTMLElement | null>(null)
   const productDraftStoreRef = useRef(new ProductDraftStore())
   const productPublishStartedAtRef = useRef<number | null>(null)
+  const editFulfillmentRequestRef = useRef(0)
   const signerRestoredNoticeRef = useRef<HTMLDivElement | null>(null)
   const [form, setForm] = useState<ProductFormState>(EMPTY_FORM)
   const [editing, setEditing] = useState<MerchantProductFamily | null>(null)
+  const [editFulfillmentResolution, setEditFulfillmentResolution] =
+    useState<EditFulfillmentResolution>("ready")
+  const [editFulfillmentMarket, setEditFulfillmentMarket] =
+    useState<MerchantOrganizerEventMarket | null>(null)
   const [productDialogOpen, setProductDialogOpen] = useState(false)
   const [activeProductDraftTarget, setActiveProductDraftTarget] =
     useState<ProductDraftTarget | null>(null)
@@ -938,6 +1072,41 @@ function ProductsPage() {
     enabled: !!pubkey,
     queryFn: () => fetchMerchantProducts(pubkey!),
     refetchInterval: 15_000,
+  })
+  const localPickupQuery = useQuery({
+    queryKey: [
+      "merchant-product-event-market",
+      form.eventMarketReference || "none",
+    ],
+    enabled:
+      productDialogOpen &&
+      form.fulfillment === "local_pickup" &&
+      !!form.eventMarketReference,
+    queryFn: () => resolveOrganizerEventMarket(form.eventMarketReference),
+    retry: false,
+    staleTime: 15_000,
+  })
+  const organizerEventMarketsQuery = useQuery({
+    queryKey: ["merchant-product-organizer-events", pubkey ?? "none"],
+    enabled:
+      productDialogOpen && form.fulfillment === "local_pickup" && !!pubkey,
+    queryFn: () => listOrganizerEventMarkets(pubkey!),
+    retry: false,
+    staleTime: 15_000,
+  })
+  const organizerInboxQuery = useQuery({
+    queryKey: [
+      "merchant-product-organizer-inbox",
+      localPickupQuery.data?.organizerPubkey ?? "none",
+    ],
+    enabled:
+      productDialogOpen &&
+      form.fulfillment === "local_pickup" &&
+      !!localPickupQuery.data?.organizerPubkey,
+    queryFn: () =>
+      resolveEventMarketOrganizerInbox(localPickupQuery.data!.organizerPubkey),
+    retry: false,
+    staleTime: 30_000,
   })
   const cachedProductsQuery = useQuery({
     queryKey: ["merchant-products", pubkey ?? "none"],
@@ -1068,7 +1237,10 @@ function ProductsPage() {
       authoringTarget,
       variables.form.variations
     )
+    editFulfillmentRequestRef.current += 1
     setEditing(null)
+    setEditFulfillmentResolution("ready")
+    setEditFulfillmentMarket(null)
     setActiveProductDraftTarget(null)
     setForm(createEmptyProductForm(hasPresetShippingZone))
     setProductDialogOpen(false)
@@ -1327,12 +1499,15 @@ function ProductsPage() {
 
   const isSaving = saveMutation.isPending
   const isDeleting = deleteMutation.isPending
+  const editFulfillmentChoiceRequired =
+    editFulfillmentResolution === "resolving" ||
+    editFulfillmentResolution === "unresolved"
   const savedProductForm = useMemo(
     () =>
       editing
-        ? productToForm(editing, hasPresetShippingZone)
+        ? productToForm(editing, hasPresetShippingZone, editFulfillmentMarket)
         : createEmptyProductForm(hasPresetShippingZone),
-    [editing, hasPresetShippingZone]
+    [editing, hasPresetShippingZone, editFulfillmentMarket]
   )
   const hasProductChanges = useMemo(
     () => JSON.stringify(form) !== JSON.stringify(savedProductForm),
@@ -1340,6 +1515,7 @@ function ProductsPage() {
   )
   useEffect(() => {
     if (!productDialogOpen || !activeProductDraftTarget) return
+    if (editing && editFulfillmentChoiceRequired) return
 
     if (!hasProductChanges) {
       setDraftStorageAvailable(
@@ -1351,15 +1527,97 @@ function ProductsPage() {
     setDraftStorageAvailable(
       productDraftStoreRef.current.save(activeProductDraftTarget, form)
     )
-  }, [activeProductDraftTarget, form, hasProductChanges, productDialogOpen])
-  const productFormValidation = useMemo(
-    () =>
-      validateProductPublishForm(form, {
+  }, [
+    activeProductDraftTarget,
+    editFulfillmentChoiceRequired,
+    editing,
+    form,
+    hasProductChanges,
+    productDialogOpen,
+  ])
+  const localPickupEvidenceError =
+    form.fulfillment === "local_pickup"
+      ? getProductLocalPickupEvidenceError({
+          reference: form.eventMarketReference,
+          market: localPickupQuery.data,
+          handoffMode: form.eventHandoffMode,
+          resolving: localPickupQuery.isFetching,
+          readFailed: localPickupQuery.isError,
+        })
+      : null
+  const merchantBoothPickupError =
+    form.fulfillment === "local_pickup" &&
+    form.eventHandoffMode === "merchant_handoff" &&
+    localPickupQuery.data
+      ? getMerchantBoothPickupFormError({
+          title: form.merchantPickupTitle,
+          location: form.merchantPickupLocation,
+          geohash: form.merchantPickupGeohash,
+          country: form.merchantPickupCountry,
+        })
+      : null
+  const organizerInboxState = !localPickupQuery.data
+    ? ("idle" as const)
+    : organizerInboxQuery.isFetching || organizerInboxQuery.isPending
+      ? ("checking" as const)
+      : organizerInboxQuery.data?.state === "ready"
+        ? ("ready" as const)
+        : ("unavailable" as const)
+  useEffect(() => {
+    if (
+      editFulfillmentResolution === "verifying_pickup" &&
+      form.fulfillment === "local_pickup" &&
+      !localPickupEvidenceError
+    ) {
+      setEditFulfillmentResolution("ready")
+    }
+  }, [editFulfillmentResolution, form.fulfillment, localPickupEvidenceError])
+  const unresolvedEditFulfillmentError = editing
+    ? editFulfillmentResolution === "resolving"
+      ? "Verifying the listing's existing event and shipping evidence before editing."
+      : editFulfillmentResolution === "unresolved"
+        ? "Existing event and shipping evidence is ambiguous or unavailable. Choose shipping explicitly, or verify local pickup before editing."
+        : editFulfillmentResolution === "verifying_pickup"
+          ? "Verify current local-pickup evidence, or choose shipping explicitly."
+          : null
+    : null
+  const productFulfillmentError =
+    localPickupEvidenceError ??
+    merchantBoothPickupError ??
+    unresolvedEditFulfillmentError
+  const zeroPriceFormAuthorized = canUseZeroProductPrice({
+    fulfillment: form.fulfillment,
+    handoffMode: form.eventHandoffMode,
+    evidenceVerified:
+      form.fulfillment === "local_pickup" &&
+      !!localPickupQuery.data &&
+      !productFulfillmentError,
+  })
+  const productFormValidation = useMemo(() => {
+    const validation = validateProductPublishForm(
+      form.fulfillment === "local_pickup"
+        ? { ...form, shippingPricingMode: "coordinate_after_order" }
+        : form,
+      {
         hasPresetShippingZone,
         presetShippingConfig: shippingConfig,
-      }),
-    [form, hasPresetShippingZone, shippingConfig]
-  )
+        allowZeroPrice: zeroPriceFormAuthorized,
+      }
+    )
+    return productFulfillmentError
+      ? {
+          ...validation,
+          canPublish: false,
+          firstError: validation.firstError ?? productFulfillmentError,
+        }
+      : validation
+  }, [
+    form,
+    hasPresetShippingZone,
+    productFulfillmentError,
+    shippingConfig,
+    zeroPriceFormAuthorized,
+  ])
   const productTagFieldError =
     productFormValidation.errors.tags &&
     (productFormValidation.tags.length > MAX_PRODUCT_TAG_COUNT ||
@@ -1465,17 +1723,26 @@ function ProductsPage() {
     productVariationCartesianCount > MAX_PRODUCT_VARIATION_COUNT
       ? `These options create ${productVariationCartesianCount} combinations. Reduce the values to review at most ${MAX_PRODUCT_VARIATION_COUNT}; existing available combinations are preserved.`
       : null
-  const productIsDigital = form.format === "digital"
+  const productIsDigital = form.fulfillment === "digital"
+  const productIsLocalPickup = form.fulfillment === "local_pickup"
   const productCoordinatesShipping =
-    !productIsDigital && form.shippingPricingMode === "coordinate_after_order"
+    form.fulfillment === "ship" &&
+    form.shippingPricingMode === "coordinate_after_order"
   const customShippingZoneActive =
-    !productIsDigital &&
+    form.fulfillment === "ship" &&
     !productCoordinatesShipping &&
     (!hasPresetShippingZone || !form.usePresetShippingZone)
   const presetShippingZoneUnavailable =
-    productIsDigital || productCoordinatesShipping || !hasPresetShippingZone
+    form.fulfillment !== "ship" ||
+    productCoordinatesShipping ||
+    !hasPresetShippingZone
+  const localPickupParticipation = getProductEventParticipationState(
+    editing?.product ?? null,
+    localPickupQuery.data ?? null
+  )
 
   function persistCurrentProductDraft(): boolean {
+    if (editing && editFulfillmentChoiceRequired) return true
     if (!activeProductDraftTarget || !hasProductChanges) return true
     const saved = productDraftStoreRef.current.save(
       activeProductDraftTarget,
@@ -1536,6 +1803,7 @@ function ProductsPage() {
 
   function requestCloseProductDialog(): void {
     if (isSaving) return
+    editFulfillmentRequestRef.current += 1
     persistCurrentProductDraft()
     setPendingProductPublish(null)
     setProductDialogOpen(false)
@@ -1564,9 +1832,12 @@ function ProductsPage() {
         return
       }
     }
+    editFulfillmentRequestRef.current += 1
     setPendingProductPublish(null)
     setProductDialogOpen(false)
     setEditing(null)
+    setEditFulfillmentResolution("ready")
+    setEditFulfillmentMarket(null)
     setActiveProductDraftTarget(null)
     setForm(createEmptyProductForm(hasPresetShippingZone))
     setDraftStorageAvailable(true)
@@ -1621,7 +1892,10 @@ function ProductsPage() {
     const loaded = draftTarget
       ? productDraftStoreRef.current.load(draftTarget)
       : { draft: null, storageAvailable: false }
+    editFulfillmentRequestRef.current += 1
     setEditing(null)
+    setEditFulfillmentResolution("ready")
+    setEditFulfillmentMarket(null)
     setActiveProductDraftTarget(draftTarget)
     setForm(
       loaded.draft
@@ -1681,17 +1955,96 @@ function ProductsPage() {
           ),
         }
       : null
+    const requestId = editFulfillmentRequestRef.current + 1
+    editFulfillmentRequestRef.current = requestId
+    const restoredForm = loadedDraft
+      ? reconcileProductFormShippingPreset(loadedDraft, hasPresetShippingZone)
+      : null
+    const projection = getProductFulfillmentProjection(item.product)
     setEditing(editingItem)
+    setEditFulfillmentMarket(null)
     setActiveProductDraftTarget(draftTarget)
-    setForm(
-      loadedDraft
-        ? reconcileProductFormShippingPreset(loadedDraft, hasPresetShippingZone)
-        : productToForm(editingItem, hasPresetShippingZone)
+    setForm(restoredForm ?? productToForm(editingItem, hasPresetShippingZone))
+    setEditFulfillmentResolution(
+      projection.verification === "required"
+        ? "resolving"
+        : projection.verification === "ambiguous"
+          ? "unresolved"
+          : "ready"
     )
+
+    if (
+      projection.verification === "required" &&
+      projection.eventMarketReference
+    ) {
+      void resolveOrganizerEventMarket(projection.eventMarketReference)
+        .then((market) => {
+          if (editFulfillmentRequestRef.current !== requestId) return
+          const hydrated = getProductFulfillmentProjection(item.product, market)
+          if (hydrated.verification !== "verified") {
+            setEditFulfillmentResolution("unresolved")
+            return
+          }
+
+          setEditFulfillmentMarket(market)
+          if (
+            restoredForm &&
+            (restoredForm.fulfillment !== hydrated.intent ||
+              (hydrated.handoffMode !== undefined &&
+                restoredForm.eventHandoffMode !== hydrated.handoffMode))
+          ) {
+            setEditFulfillmentResolution("unresolved")
+            return
+          }
+          if (!restoredForm) {
+            setForm((current) => ({
+              ...current,
+              fulfillment: hydrated.intent,
+              eventMarketReference: hydrated.eventMarketReference,
+              eventHandoffMode:
+                hydrated.handoffMode ?? current.eventHandoffMode,
+            }))
+          }
+          setEditFulfillmentResolution("ready")
+        })
+        .catch(() => {
+          if (editFulfillmentRequestRef.current === requestId) {
+            setEditFulfillmentResolution("unresolved")
+          }
+        })
+    }
     setDraftStorageAvailable(
       loaded.storageAvailable && authored.storageAvailable
     )
     setProductDialogOpen(true)
+  }
+
+  function chooseExistingProductShipping(): void {
+    editFulfillmentRequestRef.current += 1
+    setEditFulfillmentMarket(null)
+    setEditFulfillmentResolution("ready")
+    setForm((current) => ({
+      ...current,
+      format: "physical",
+      fulfillment: "ship",
+      eventMarketReference: "",
+    }))
+  }
+
+  function verifyExistingProductLocalPickup(): void {
+    editFulfillmentRequestRef.current += 1
+    setEditFulfillmentMarket(null)
+    setEditFulfillmentResolution("verifying_pickup")
+    const candidateReference = editing
+      ? getProductFulfillmentProjection(editing.product).eventMarketReference
+      : ""
+    setForm((current) => ({
+      ...current,
+      format: "physical",
+      fulfillment: "local_pickup",
+      eventMarketReference: current.eventMarketReference || candidateReference,
+      usePresetShippingZone: false,
+    }))
   }
 
   return (
@@ -2066,1094 +2419,1183 @@ function ProductsPage() {
             </DialogDescription>
           </DialogHeader>
 
-          <form
-            className="grid gap-3"
-            onSubmit={(event) => {
-              event.preventDefault()
-              if (!draftOwnerPubkey || !signerReady || !productCanSubmit) {
-                return
-              }
-              requestProductPublish({
-                merchantPubkey: draftOwnerPubkey,
-                form,
-                dTag:
-                  editing?.dTag ??
-                  `${slugify(form.title.trim()) || "product"}-${randomSuffix()}`,
-                existing: editing ?? undefined,
-              })
-            }}
-          >
-            <div className="grid gap-1.5">
-              <Label htmlFor="product-title">Title</Label>
-              <Input
-                id="product-title"
-                value={form.title}
-                onChange={(event) =>
-                  setForm((prev) => ({ ...prev, title: event.target.value }))
-                }
-                placeholder="Product title"
-                required
-              />
-            </div>
-
-            <div className="grid gap-1.5">
-              <Label htmlFor="product-summary">Summary</Label>
-              <Textarea
-                id="product-summary"
-                className="min-h-28 rounded-xl bg-[var(--surface-elevated)] ring-primary/20 transition"
-                value={form.summary}
-                onChange={(event) =>
-                  setForm((prev) => ({ ...prev, summary: event.target.value }))
-                }
-                placeholder="Short description shown to buyers"
-              />
-            </div>
-
-            <div className="grid gap-3 sm:grid-cols-4">
+          {editing && editFulfillmentChoiceRequired ? (
+            <div
+              className="grid gap-4 rounded-xl border border-warning/30 bg-warning/10 p-4"
+              data-testid="product-fulfillment-resolution-guard"
+            >
               <div className="grid gap-1.5">
-                <Label htmlFor="product-price">
-                  {form.variations.enabled ? "Base price" : "Price"}
-                </Label>
+                <p className="text-sm font-medium text-[var(--text-primary)]">
+                  {editFulfillmentResolution === "resolving"
+                    ? "Verifying existing fulfillment"
+                    : "Choose how this listing is fulfilled"}
+                </p>
+                <p
+                  className="text-xs leading-5 text-[var(--text-secondary)]"
+                  role="status"
+                  aria-live="polite"
+                >
+                  {editFulfillmentResolution === "resolving"
+                    ? "Checking the signed organizer collection and pickup option before this listing can be edited."
+                    : "The existing collection and shipping references could not be classified safely. Confirm shipping to remove the event relationship, or verify a current local-pickup event before editing."}
+                </p>
+              </div>
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={requestCloseProductDialog}
+                >
+                  Close
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={chooseExistingProductShipping}
+                >
+                  Use shipping
+                </Button>
+                <Button
+                  type="button"
+                  onClick={verifyExistingProductLocalPickup}
+                >
+                  Verify local pickup
+                </Button>
+              </DialogFooter>
+            </div>
+          ) : (
+            <form
+              className="grid gap-3"
+              onSubmit={(event) => {
+                event.preventDefault()
+                if (!draftOwnerPubkey || !signerReady || !productCanSubmit) {
+                  return
+                }
+                requestProductPublish({
+                  merchantPubkey: draftOwnerPubkey,
+                  form,
+                  dTag:
+                    editing?.dTag ??
+                    `${slugify(form.title.trim()) || "product"}-${randomSuffix()}`,
+                  existing: editing ?? undefined,
+                })
+              }}
+            >
+              <div className="grid gap-1.5">
+                <Label htmlFor="product-title">Title</Label>
                 <Input
-                  id="product-price"
-                  type="text"
-                  inputMode={getProductAmountInputMode(form.currency)}
-                  autoComplete="off"
-                  className="tabular-nums"
-                  value={form.price}
-                  aria-invalid={!!productFormValidation.errors.price}
-                  aria-describedby={
-                    productFormValidation.errors.price
-                      ? "product-price-error"
-                      : undefined
+                  id="product-title"
+                  value={form.title}
+                  onChange={(event) =>
+                    setForm((prev) => ({ ...prev, title: event.target.value }))
                   }
-                  onChange={(event) => {
-                    if (!isPlainDecimalInput(event.target.value)) return
-                    setForm((prev) => ({
-                      ...prev,
-                      price: event.target.value,
-                    }))
-                  }}
+                  placeholder="Product title"
                   required
                 />
               </div>
 
               <div className="grid gap-1.5">
-                <Label htmlFor="product-currency">Currency</Label>
-                <Select
-                  value={form.currency}
-                  onValueChange={(value) =>
-                    setForm((prev) => ({ ...prev, currency: value }))
+                <Label htmlFor="product-summary">Summary</Label>
+                <Textarea
+                  id="product-summary"
+                  className="min-h-28 rounded-xl bg-[var(--surface-elevated)] ring-primary/20 transition"
+                  value={form.summary}
+                  onChange={(event) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      summary: event.target.value,
+                    }))
                   }
-                >
-                  <SelectTrigger id="product-currency">
-                    <SelectValue placeholder="Choose currency" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {SUPPORTED_PRODUCT_PRICE_CURRENCIES.map((currency) => (
-                      <SelectItem key={currency} value={currency}>
-                        {currency}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  placeholder="Short description shown to buyers"
+                />
               </div>
 
-              <div className="grid gap-1.5">
-                <Label htmlFor="product-format">Fulfillment</Label>
-                <Select
-                  value={form.format}
-                  onValueChange={(value) =>
-                    setForm((prev) => {
-                      const format = value as ProductFormState["format"]
-                      return {
+              <div className="grid gap-3 sm:grid-cols-4">
+                <div className="grid gap-1.5">
+                  <Label htmlFor="product-price">
+                    {form.variations.enabled ? "Base price" : "Price"}
+                  </Label>
+                  <Input
+                    id="product-price"
+                    type="text"
+                    inputMode={getProductAmountInputMode(form.currency)}
+                    autoComplete="off"
+                    className="tabular-nums"
+                    value={form.price}
+                    aria-invalid={!!productFormValidation.errors.price}
+                    aria-describedby={
+                      productFormValidation.errors.price
+                        ? "product-price-error"
+                        : undefined
+                    }
+                    onChange={(event) => {
+                      if (!isPlainDecimalInput(event.target.value)) return
+                      setForm((prev) => ({
                         ...prev,
-                        format,
-                        shippingPricingMode: "fixed",
-                        shippingCost:
-                          format === "digital" ? "" : prev.shippingCost,
-                        usePresetShippingZone:
-                          format === "digital" ? false : hasPresetShippingZone,
-                        customShippingConfig:
-                          format === "digital"
-                            ? { countries: [] }
-                            : prev.customShippingConfig,
-                      }
-                    })
-                  }
-                >
-                  <SelectTrigger id="product-format">
-                    <SelectValue placeholder="Choose fulfillment" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="physical">Physical</SelectItem>
-                    <SelectItem value="digital">Digital</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="grid gap-1.5">
-                <Label htmlFor="product-shipping">
-                  Shipping ({getProductShippingCurrencyLabel(form.currency)})
-                </Label>
-                <Input
-                  id="product-shipping"
-                  type="text"
-                  inputMode={getProductAmountInputMode(form.currency)}
-                  autoComplete="off"
-                  className="tabular-nums"
-                  value={productCoordinatesShipping ? "" : form.shippingCost}
-                  disabled={productIsDigital || productCoordinatesShipping}
-                  aria-invalid={!!productFormValidation.errors.shippingCost}
-                  aria-describedby="product-shipping-help"
-                  onChange={(event) => {
-                    if (!isPlainDecimalInput(event.target.value)) return
-                    setForm((prev) => ({
-                      ...prev,
-                      shippingCost: event.target.value,
-                    }))
-                  }}
-                  placeholder={
-                    productIsDigital
-                      ? "Not required"
-                      : productCoordinatesShipping
-                        ? "Set after order"
-                        : "0 or fixed amount"
-                  }
-                />
-              </div>
-              <div className="grid gap-1.5 sm:col-span-2">
-                <Label htmlFor="product-stock">
-                  {form.variations.enabled
-                    ? "Default stock quantity"
-                    : "Stock quantity"}
-                </Label>
-                <Input
-                  id="product-stock"
-                  type="text"
-                  inputMode="numeric"
-                  autoComplete="off"
-                  className="tabular-nums"
-                  value={form.stock}
-                  aria-invalid={!!productFormValidation.errors.stock}
-                  aria-describedby="product-stock-help"
-                  onChange={(event) => {
-                    if (!isPlainStockInput(event.target.value)) return
-                    setForm((prev) => ({
-                      ...prev,
-                      stock: event.target.value,
-                    }))
-                  }}
-                  placeholder="Not tracked"
-                />
-              </div>
-              <div
-                id="product-stock-help"
-                className={cn(
-                  "self-end text-pretty text-xs leading-5 sm:col-span-2 sm:pb-2",
-                  productFormValidation.errors.stock
-                    ? "text-error"
-                    : "text-[var(--text-muted)]"
-                )}
-              >
-                {productFormValidation.errors.stock ??
-                  (form.variations.enabled
-                    ? "Used by every variation unless you enter a row override. Leave blank to publish without stock tracking."
-                    : "Leave blank to publish without stock tracking. Enter 0 to mark the listing sold out.")}
-              </div>
-              {productFormValidation.errors.price && (
-                <p
-                  id="product-price-error"
-                  className="text-pretty text-xs leading-5 text-error sm:col-span-4"
-                >
-                  {productFormValidation.errors.price}
-                </p>
-              )}
-              <div
-                id="product-shipping-help"
-                className={cn(
-                  "text-pretty text-xs leading-5 sm:col-span-4",
-                  productFormValidation.errors.shippingCost
-                    ? "text-error"
-                    : "text-[var(--text-muted)]"
-                )}
-              >
-                {productFormValidation.errors.shippingCost ??
-                  getProductShippingCostHelpText(
-                    form.shippingCost,
-                    form.format,
-                    form.currency,
-                    form.shippingPricingMode
-                  )}
-              </div>
-              <label
-                className={cn(
-                  "flex items-start gap-3 rounded-xl border p-3 text-sm sm:col-span-4",
-                  productIsDigital
-                    ? "cursor-not-allowed border-dashed border-[var(--border)] bg-[var(--surface-elevated)] opacity-60"
-                    : "cursor-pointer",
-                  productCoordinatesShipping
-                    ? "border-warning/40 bg-warning/10"
-                    : "border-[var(--border)] bg-[var(--surface-elevated)]"
-                )}
-                aria-disabled={productIsDigital}
-              >
-                <input
-                  type="checkbox"
-                  checked={productCoordinatesShipping}
-                  disabled={productIsDigital}
-                  aria-labelledby="product-coordinate-shipping-label"
-                  aria-describedby="product-coordinate-shipping-help"
-                  onChange={(event) =>
-                    setForm((prev) => ({
-                      ...prev,
-                      shippingPricingMode: event.target.checked
-                        ? "coordinate_after_order"
-                        : "fixed",
-                    }))
-                  }
-                  className="mt-1 h-4 w-4 rounded border-[var(--border)] accent-secondary-500 disabled:cursor-not-allowed disabled:opacity-50"
-                />
-                <span className="grid gap-1">
-                  <span
-                    id="product-coordinate-shipping-label"
-                    className="font-medium text-[var(--text-primary)]"
-                  >
-                    Coordinate shipping with the buyer after the order
-                  </span>
-                  <span
-                    id="product-coordinate-shipping-help"
-                    className={cn(
-                      "text-pretty text-xs leading-5",
-                      productCoordinatesShipping
-                        ? "text-warning"
-                        : "text-[var(--text-muted)]"
-                    )}
-                  >
-                    {productIsDigital
-                      ? "Digital products do not need shipping coordination."
-                      : "Only choose this if you cannot set a checkout amount. Fast checkout will be unavailable, and you'll need to follow up on every order message before the buyer can pay."}
-                  </span>
-                </span>
-              </label>
-              <label
-                className={cn(
-                  "flex items-start gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-sm sm:col-span-4",
-                  presetShippingZoneUnavailable
-                    ? "cursor-not-allowed border-dashed opacity-60"
-                    : "cursor-pointer"
-                )}
-                aria-disabled={presetShippingZoneUnavailable}
-              >
-                <input
-                  type="checkbox"
-                  checked={
-                    !productIsDigital &&
-                    !productCoordinatesShipping &&
-                    hasPresetShippingZone &&
-                    form.usePresetShippingZone
-                  }
-                  disabled={presetShippingZoneUnavailable}
-                  aria-describedby="product-preset-shipping-help"
-                  onChange={(event) =>
-                    setForm((prev) => ({
-                      ...prev,
-                      usePresetShippingZone: event.target.checked,
-                    }))
-                  }
-                  className="mt-1 h-4 w-4 rounded border-[var(--border)] accent-secondary-500 disabled:cursor-not-allowed disabled:opacity-50"
-                />
-                <span className="grid gap-1">
-                  <span className="font-medium text-[var(--text-primary)]">
-                    Use my preset shipping zone for this product
-                  </span>
-                  <span
-                    id="product-preset-shipping-help"
-                    className="text-xs leading-5 text-[var(--text-muted)]"
-                  >
-                    {productIsDigital
-                      ? "Digital products do not need shipping zones."
-                      : productCoordinatesShipping
-                        ? "Shipping destinations will be agreed with the buyer after the order."
-                        : hasPresetShippingZone
-                          ? form.usePresetShippingZone
-                            ? "Direct checkout will use the countries saved in your preset."
-                            : "Use custom destinations for this product instead of the saved preset."
-                          : "No preset shipping zone is available. Add custom destinations for this product below."}
-                  </span>
-                </span>
-              </label>
-
-              {customShippingZoneActive && (
-                <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 sm:col-span-4">
-                  <div className="space-y-1">
-                    <div className="text-sm font-medium text-[var(--text-primary)]">
-                      Custom shipping destinations
-                    </div>
-                    <p className="text-xs leading-5 text-[var(--text-muted)]">
-                      These destinations are published on this product's fixed
-                      shipping option and do not change your preset.
-                    </p>
-                  </div>
-                  <div className="mt-3 max-h-[22rem] overflow-y-auto p-1">
-                    <ShippingDestinationsEditor
-                      compact
-                      config={form.customShippingConfig}
-                      emptyText="No custom destinations added yet."
-                      onChange={(customShippingConfig) =>
-                        setForm((prev) => ({
-                          ...prev,
-                          customShippingConfig,
-                        }))
-                      }
-                    />
-                  </div>
+                        price: event.target.value,
+                      }))
+                    }}
+                    required
+                  />
                 </div>
-              )}
-            </div>
 
-            <fieldset className="grid gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4">
-              <legend className="px-1 text-sm font-semibold text-[var(--text-primary)]">
-                Product options
-              </legend>
-              <label className="flex items-start gap-3 text-sm">
-                <input
-                  type="checkbox"
-                  checked={form.variations.enabled}
-                  onChange={(event) =>
-                    setForm((previous) => ({
-                      ...previous,
-                      variations: reconcileProductVariationForm({
-                        ...previous.variations,
-                        enabled: event.target.checked,
-                      }),
+                <div className="grid gap-1.5">
+                  <Label htmlFor="product-currency">Currency</Label>
+                  <Select
+                    value={form.currency}
+                    onValueChange={(value) =>
+                      setForm((prev) => ({ ...prev, currency: value }))
+                    }
+                  >
+                    <SelectTrigger id="product-currency">
+                      <SelectValue placeholder="Choose currency" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {SUPPORTED_PRODUCT_PRICE_CURRENCIES.map((currency) => (
+                        <SelectItem key={currency} value={currency}>
+                          {currency}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <ProductFulfillmentEditor
+                  intent={form.fulfillment}
+                  reference={form.eventMarketReference}
+                  handoffMode={form.eventHandoffMode}
+                  merchantPickupTitle={form.merchantPickupTitle}
+                  merchantPickupLocation={form.merchantPickupLocation}
+                  merchantPickupGeohash={form.merchantPickupGeohash}
+                  merchantPickupCountry={form.merchantPickupCountry}
+                  market={localPickupQuery.data}
+                  organizerInboxState={organizerInboxState}
+                  availableMarkets={(
+                    organizerEventMarketsQuery.data ?? []
+                  ).filter((market) => market.state === "active")}
+                  resolving={localPickupQuery.isFetching}
+                  readFailed={localPickupQuery.isError}
+                  participation={localPickupParticipation}
+                  onIntentChange={(fulfillment) => {
+                    if (
+                      editFulfillmentResolution === "verifying_pickup" &&
+                      fulfillment === "ship"
+                    ) {
+                      chooseExistingProductShipping()
+                      return
+                    }
+                    setForm((prev) => ({
+                      ...prev,
+                      fulfillment,
+                      format:
+                        fulfillment === "digital" ? "digital" : "physical",
+                      usePresetShippingZone:
+                        fulfillment === "ship" && hasPresetShippingZone,
+                      eventHandoffMode:
+                        fulfillment === "local_pickup" &&
+                        prev.fulfillment !== "local_pickup"
+                          ? "merchant_handoff"
+                          : prev.eventHandoffMode,
                     }))
+                  }}
+                  onReferenceChange={(eventMarketReference) =>
+                    setForm((prev) => ({ ...prev, eventMarketReference }))
                   }
-                  className="mt-1 h-4 w-4 rounded border-[var(--border)] accent-secondary-500"
+                  onHandoffModeChange={(eventHandoffMode) =>
+                    setForm((prev) => ({ ...prev, eventHandoffMode }))
+                  }
+                  onMerchantPickupChange={(field, value) =>
+                    setForm((prev) => ({ ...prev, [field]: value }))
+                  }
                 />
-                <span className="grid gap-1">
-                  <span className="font-medium text-[var(--text-primary)]">
-                    This product has options
-                  </span>
-                  <span className="text-pretty text-xs leading-5 text-[var(--text-muted)]">
-                    Define the values that distinguish one listing from another,
-                    then choose which combinations are available.
-                  </span>
-                </span>
-              </label>
 
-              {productVariationRemovalCount > 0 && (
-                <p
-                  role="status"
-                  aria-live="polite"
-                  className="text-pretty text-xs leading-5 text-warning"
+                <div className="grid gap-1.5">
+                  <Label htmlFor="product-shipping">
+                    Shipping ({getProductShippingCurrencyLabel(form.currency)})
+                  </Label>
+                  <Input
+                    id="product-shipping"
+                    type="text"
+                    inputMode={getProductAmountInputMode(form.currency)}
+                    autoComplete="off"
+                    className="tabular-nums"
+                    value={
+                      form.fulfillment === "ship" && !productCoordinatesShipping
+                        ? form.shippingCost
+                        : ""
+                    }
+                    disabled={
+                      productIsDigital ||
+                      productIsLocalPickup ||
+                      productCoordinatesShipping
+                    }
+                    aria-invalid={!!productFormValidation.errors.shippingCost}
+                    aria-describedby="product-shipping-help"
+                    onChange={(event) => {
+                      if (!isPlainDecimalInput(event.target.value)) return
+                      setForm((prev) => ({
+                        ...prev,
+                        shippingCost: event.target.value,
+                      }))
+                    }}
+                    placeholder={
+                      productIsDigital
+                        ? "Not required"
+                        : productIsLocalPickup
+                          ? "Set by event pickup"
+                          : productCoordinatesShipping
+                            ? "Set after order"
+                            : "0 or fixed amount"
+                    }
+                  />
+                </div>
+                <div className="grid gap-1.5 sm:col-span-2">
+                  <Label htmlFor="product-stock">
+                    {form.variations.enabled
+                      ? "Default stock quantity"
+                      : "Stock quantity"}
+                  </Label>
+                  <Input
+                    id="product-stock"
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="off"
+                    className="tabular-nums"
+                    value={form.stock}
+                    aria-invalid={!!productFormValidation.errors.stock}
+                    aria-describedby="product-stock-help"
+                    onChange={(event) => {
+                      if (!isPlainStockInput(event.target.value)) return
+                      setForm((prev) => ({
+                        ...prev,
+                        stock: event.target.value,
+                      }))
+                    }}
+                    placeholder="Not tracked"
+                  />
+                </div>
+                <div
+                  id="product-stock-help"
+                  className={cn(
+                    "self-end text-pretty text-xs leading-5 sm:col-span-2 sm:pb-2",
+                    productFormValidation.errors.stock
+                      ? "text-error"
+                      : "text-[var(--text-muted)]"
+                  )}
                 >
-                  Saving will remove {productVariationRemovalCount} previously
-                  published combination
-                  {productVariationRemovalCount === 1 ? "" : "s"} from this
-                  product.
-                </p>
-              )}
+                  {productFormValidation.errors.stock ??
+                    (form.variations.enabled
+                      ? "Used by every variation unless you enter a row override. Leave blank to publish without stock tracking."
+                      : "Leave blank to publish without stock tracking. Enter 0 to mark the listing sold out.")}
+                </div>
+                {productFormValidation.errors.price && (
+                  <p
+                    id="product-price-error"
+                    className="text-pretty text-xs leading-5 text-error sm:col-span-4"
+                  >
+                    {productFormValidation.errors.price}
+                  </p>
+                )}
+                <div
+                  id="product-shipping-help"
+                  className={cn(
+                    "text-pretty text-xs leading-5 sm:col-span-4",
+                    productFormValidation.errors.shippingCost
+                      ? "text-error"
+                      : "text-[var(--text-muted)]"
+                  )}
+                >
+                  {productFormValidation.errors.shippingCost ??
+                    (productIsLocalPickup
+                      ? "Pickup cost comes from the verified organizer option."
+                      : getProductShippingCostHelpText(
+                          form.shippingCost,
+                          form.format,
+                          form.currency,
+                          form.shippingPricingMode
+                        ))}
+                </div>
+                <label
+                  className={cn(
+                    "flex items-start gap-3 rounded-xl border p-3 text-sm sm:col-span-4",
+                    productIsDigital || productIsLocalPickup
+                      ? "cursor-not-allowed border-dashed border-[var(--border)] bg-[var(--surface-elevated)] opacity-60"
+                      : "cursor-pointer",
+                    productCoordinatesShipping
+                      ? "border-warning/40 bg-warning/10"
+                      : "border-[var(--border)] bg-[var(--surface-elevated)]"
+                  )}
+                  aria-disabled={productIsDigital || productIsLocalPickup}
+                >
+                  <input
+                    type="checkbox"
+                    checked={productCoordinatesShipping}
+                    disabled={productIsDigital || productIsLocalPickup}
+                    aria-labelledby="product-coordinate-shipping-label"
+                    aria-describedby="product-coordinate-shipping-help"
+                    onChange={(event) =>
+                      setForm((prev) => ({
+                        ...prev,
+                        shippingPricingMode: event.target.checked
+                          ? "coordinate_after_order"
+                          : "fixed",
+                      }))
+                    }
+                    className="mt-1 h-4 w-4 rounded border-[var(--border)] accent-secondary-500 disabled:cursor-not-allowed disabled:opacity-50"
+                  />
+                  <span className="grid gap-1">
+                    <span
+                      id="product-coordinate-shipping-label"
+                      className="font-medium text-[var(--text-primary)]"
+                    >
+                      Coordinate shipping with the buyer after the order
+                    </span>
+                    <span
+                      id="product-coordinate-shipping-help"
+                      className={cn(
+                        "text-pretty text-xs leading-5",
+                        productCoordinatesShipping
+                          ? "text-warning"
+                          : "text-[var(--text-muted)]"
+                      )}
+                    >
+                      {productIsDigital
+                        ? "Digital products do not need shipping coordination."
+                        : productIsLocalPickup
+                          ? "Local pickup uses the organizer's signed public option."
+                          : "Only choose this if you cannot set a checkout amount. Fast checkout will be unavailable, and you’ll need to follow up on every order message before the buyer can pay."}
+                    </span>
+                  </span>
+                </label>
+                <label
+                  className={cn(
+                    "flex items-start gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-sm sm:col-span-4",
+                    presetShippingZoneUnavailable
+                      ? "cursor-not-allowed border-dashed opacity-60"
+                      : "cursor-pointer"
+                  )}
+                  aria-disabled={presetShippingZoneUnavailable}
+                >
+                  <input
+                    type="checkbox"
+                    checked={
+                      !productIsDigital &&
+                      !productIsLocalPickup &&
+                      !productCoordinatesShipping &&
+                      hasPresetShippingZone &&
+                      form.usePresetShippingZone
+                    }
+                    disabled={presetShippingZoneUnavailable}
+                    aria-describedby="product-preset-shipping-help"
+                    onChange={(event) =>
+                      setForm((prev) => ({
+                        ...prev,
+                        usePresetShippingZone: event.target.checked,
+                      }))
+                    }
+                    className="mt-1 h-4 w-4 rounded border-[var(--border)] accent-secondary-500 disabled:cursor-not-allowed disabled:opacity-50"
+                  />
+                  <span className="grid gap-1">
+                    <span className="font-medium text-[var(--text-primary)]">
+                      Use my preset shipping zone for this product
+                    </span>
+                    <span
+                      id="product-preset-shipping-help"
+                      className="text-xs leading-5 text-[var(--text-muted)]"
+                    >
+                      {productIsDigital
+                        ? "Digital products do not need shipping zones."
+                        : productIsLocalPickup
+                          ? "Local pickup does not evaluate buyer shipping destinations."
+                          : productCoordinatesShipping
+                            ? "Shipping destinations will be agreed with the buyer after the order."
+                            : hasPresetShippingZone
+                              ? form.usePresetShippingZone
+                                ? "Direct checkout will use your published shipping countries and postal rules."
+                                : "Use custom destinations for this product instead of the published preset."
+                              : "No preset shipping zone is available. Add custom destinations for this product below."}
+                    </span>
+                  </span>
+                </label>
 
-              {form.variations.enabled && (
-                <>
-                  <div className="grid gap-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div>
-                        <div className="text-sm font-medium text-[var(--text-primary)]">
-                          Option definitions
-                        </div>
-                        <p className="mt-1 text-pretty text-xs text-[var(--text-muted)]">
-                          Values within one option are alternatives. Separate
-                          options combine.
-                        </p>
+                {customShippingZoneActive && (
+                  <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 sm:col-span-4">
+                    <div className="space-y-1">
+                      <div className="text-sm font-medium text-[var(--text-primary)]">
+                        Custom shipping destinations
                       </div>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        disabled={
-                          form.variations.axes.length >=
-                          MAX_PRODUCT_VARIATION_AXES
-                        }
-                        onClick={() =>
-                          setForm((previous) => ({
-                            ...previous,
-                            variations: addProductVariationAxis(
-                              previous.variations
-                            ),
+                      <p className="text-xs leading-5 text-[var(--text-muted)]">
+                        These destinations are emitted on this product listing
+                        only and do not change your preset Shipping tab
+                        settings.
+                      </p>
+                    </div>
+                    <div className="mt-3 max-h-[22rem] overflow-y-auto p-1">
+                      <ShippingDestinationsEditor
+                        compact
+                        config={form.customShippingConfig}
+                        emptyText="No custom destinations added yet."
+                        onChange={(customShippingConfig) =>
+                          setForm((prev) => ({
+                            ...prev,
+                            customShippingConfig,
                           }))
                         }
-                      >
-                        Add option
-                      </Button>
+                      />
                     </div>
+                  </div>
+                )}
+              </div>
 
-                    {form.variations.axes.map((axis) => (
-                      <div
-                        key={axis.id}
-                        className="grid gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 sm:grid-cols-[minmax(8rem,0.45fr)_minmax(0,1fr)_auto] sm:items-end"
-                      >
-                        <div className="grid gap-1.5">
-                          <Label htmlFor={`product-variation-axis-${axis.id}`}>
-                            Option name
-                          </Label>
-                          <Input
-                            id={`product-variation-axis-${axis.id}`}
-                            value={axis.key}
-                            aria-invalid={
-                              !axis.key.trim() ||
-                              form.variations.axes.some(
-                                (candidate) =>
-                                  candidate.id !== axis.id &&
-                                  candidate.key
-                                    .trim()
-                                    .toLocaleLowerCase("en-US") ===
-                                    axis.key.trim().toLocaleLowerCase("en-US")
-                              )
-                            }
-                            aria-describedby="product-variations-help"
-                            placeholder="Enter a name"
-                            onChange={(event) =>
-                              setForm((previous) => ({
-                                ...previous,
-                                variations: updateProductVariationAxis(
-                                  previous.variations,
-                                  axis.id,
-                                  "key",
-                                  event.target.value
-                                ),
-                              }))
-                            }
-                          />
-                        </div>
-                        <div className="grid gap-1.5">
-                          <Label
-                            htmlFor={`product-variation-values-${axis.id}`}
-                          >
-                            Values
-                          </Label>
-                          <Input
-                            id={`product-variation-values-${axis.id}`}
-                            value={axis.values}
-                            aria-invalid={
-                              !!productFormValidation.errors.variations
-                            }
-                            aria-describedby="product-variations-help"
-                            placeholder="Separate values with commas"
-                            onChange={(event) =>
-                              setForm((previous) => ({
-                                ...previous,
-                                variations: updateProductVariationAxis(
-                                  previous.variations,
-                                  axis.id,
-                                  "values",
-                                  event.target.value
-                                ),
-                              }))
-                            }
-                          />
+              <div className="grid gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
+                <label className="flex items-start gap-3 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={form.publicZapEnabled}
+                    onChange={(event) =>
+                      setForm((prev) => ({
+                        ...prev,
+                        publicZapEnabled: event.target.checked,
+                      }))
+                    }
+                    className="mt-1 h-4 w-4 rounded border-[var(--border)] accent-secondary-500"
+                  />
+                  <span className="grid gap-1">
+                    <span className="font-medium text-[var(--text-primary)]">
+                      Enable public zaps for purchases
+                    </span>
+                    <span className="text-xs leading-5 text-[var(--text-muted)]">
+                      When disabled, checkout uses a private Lightning invoice
+                      for this product.
+                    </span>
+                  </span>
+                </label>
+
+                <div className="grid gap-1.5">
+                  <Label htmlFor="product-zap-message-policy">
+                    Zap message policy
+                  </Label>
+                  <Select
+                    value={form.zapMessagePolicy}
+                    disabled={!form.publicZapEnabled}
+                    onValueChange={(value) =>
+                      setForm((prev) => ({
+                        ...prev,
+                        zapMessagePolicy: value as ProductZapMessagePolicy,
+                      }))
+                    }
+                  >
+                    <SelectTrigger id="product-zap-message-policy">
+                      <SelectValue placeholder="Choose policy" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="generic_only">Generic only</SelectItem>
+                      <SelectItem value="custom">
+                        Allow shopper custom message
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <div className="text-xs leading-5 text-[var(--text-muted)]">
+                    {form.publicZapEnabled
+                      ? "Generic public zaps may include item count, but never product names, product IDs, order metadata, contact details, private notes, wallet data, payment evidence, or buyer identity."
+                      : "This listing will publish a private-invoice checkout policy; buyers cannot choose public zap checkout for this product."}
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid gap-1.5">
+                <Label htmlFor="product-image">Image URL</Label>
+                <Input
+                  id="product-image"
+                  type="url"
+                  value={form.imageUrl}
+                  onChange={(event) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      imageUrl: event.target.value,
+                    }))
+                  }
+                  placeholder="https://..."
+                  required
+                />
+                <div className="text-xs leading-5 text-[var(--text-muted)]">
+                  Products without images are not shown in Market.
+                </div>
+              </div>
+
+              <div className="grid gap-1.5">
+                <Label htmlFor="product-tags">Tags</Label>
+                <ProductTagEditor
+                  id="product-tags"
+                  value={form.tags}
+                  onChange={(tags) => setForm((prev) => ({ ...prev, tags }))}
+                  catalogTags={tagFilters}
+                  errorMessage={productTagFieldError}
+                  placeholder="gear, hardware, demo"
+                />
+              </div>
+              <fieldset className="grid gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4">
+                <legend className="px-1 text-sm font-semibold text-[var(--text-primary)]">
+                  Product options
+                </legend>
+                <label className="flex items-start gap-3 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={form.variations.enabled}
+                    onChange={(event) =>
+                      setForm((previous) => ({
+                        ...previous,
+                        variations: reconcileProductVariationForm({
+                          ...previous.variations,
+                          enabled: event.target.checked,
+                        }),
+                      }))
+                    }
+                    className="mt-1 h-4 w-4 rounded border-[var(--border)] accent-secondary-500"
+                  />
+                  <span className="grid gap-1">
+                    <span className="font-medium text-[var(--text-primary)]">
+                      This product has options
+                    </span>
+                    <span className="text-pretty text-xs leading-5 text-[var(--text-muted)]">
+                      Define the values that distinguish one listing from
+                      another, then choose which combinations are available.
+                    </span>
+                  </span>
+                </label>
+
+                {productVariationRemovalCount > 0 && (
+                  <p
+                    role="status"
+                    aria-live="polite"
+                    className="text-pretty text-xs leading-5 text-warning"
+                  >
+                    Saving will remove {productVariationRemovalCount} previously
+                    published combination
+                    {productVariationRemovalCount === 1 ? "" : "s"} from this
+                    product.
+                  </p>
+                )}
+
+                {form.variations.enabled && (
+                  <>
+                    <div className="grid gap-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <div className="text-sm font-medium text-[var(--text-primary)]">
+                            Option definitions
+                          </div>
+                          <p className="mt-1 text-pretty text-xs text-[var(--text-muted)]">
+                            Values within one option are alternatives. Separate
+                            options combine.
+                          </p>
                         </div>
                         <Button
                           type="button"
                           size="sm"
                           variant="outline"
-                          aria-label={`Remove ${axis.key.trim() || "unnamed option"}`}
+                          disabled={
+                            form.variations.axes.length >=
+                            MAX_PRODUCT_VARIATION_AXES
+                          }
                           onClick={() =>
                             setForm((previous) => ({
                               ...previous,
-                              variations: removeProductVariationAxis(
-                                previous.variations,
-                                axis.id
+                              variations: addProductVariationAxis(
+                                previous.variations
                               ),
                             }))
                           }
                         >
-                          Remove option
+                          Add option
                         </Button>
                       </div>
-                    ))}
-                  </div>
 
-                  <div
-                    id="product-variations-help"
-                    className={cn(
-                      "text-xs leading-5",
-                      productVariationGenerationMessage
-                        ? "text-warning"
-                        : productFormValidation.errors.variations
-                          ? "text-error"
-                          : "text-[var(--text-muted)]"
-                    )}
-                  >
-                    {productVariationGenerationMessage ??
-                      productFormValidation.errors.variations ??
-                      "Separate values with commas. Every possible combination appears in the availability matrix."}
-                  </div>
-
-                  {productVariationMatrix.length > 0 && (
-                    <ProductCombinationMatrix
-                      axes={form.variations.axes}
-                      combinations={productVariationMatrix}
-                      invalid={productVariationCombinations.length === 0}
-                      onIncludeAll={() =>
-                        setForm((previous) => ({
-                          ...previous,
-                          variations: generateProductVariationRows(
-                            previous.variations
-                          ),
-                        }))
-                      }
-                      onIncludedChange={(identity, included) =>
-                        setForm((previous) => ({
-                          ...previous,
-                          variations: setProductVariationCombinationIncluded(
-                            previous.variations,
-                            identity,
-                            included
-                          ),
-                        }))
-                      }
-                      validationMessageId="product-variations-help"
-                    />
-                  )}
-
-                  {productVariationCombinations.length > 0 && (
-                    <div className="grid gap-2">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="text-sm font-medium text-[var(--text-primary)]">
-                          Available combinations
-                        </div>
-                        <Badge
-                          variant="secondary"
-                          className="border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-secondary)]"
+                      {form.variations.axes.map((axis) => (
+                        <div
+                          key={axis.id}
+                          className="grid gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 sm:grid-cols-[minmax(8rem,0.45fr)_minmax(0,1fr)_auto] sm:items-end"
                         >
-                          {productVariationCombinations.length}
-                        </Badge>
-                      </div>
-                      <p className="text-pretty text-xs leading-5 text-[var(--text-muted)]">
-                        Set fields here only when a combination differs from the
-                        base product. Only available combinations are published.
-                      </p>
-                      <div
-                        data-product-variation-rows
-                        className="relative grid max-h-[32rem] gap-3 overflow-y-auto pr-1"
-                      >
-                        {productVariationCombinations.map(
-                          (combination, index) => (
-                            <div
-                              key={combination.identity}
-                              className="grid gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3"
+                          <div className="grid gap-1.5">
+                            <Label
+                              htmlFor={`product-variation-axis-${axis.id}`}
                             >
-                              <div className="flex flex-wrap items-center justify-between gap-2">
-                                <div className="min-w-0">
-                                  <div className="truncate text-sm font-medium text-[var(--text-primary)]">
-                                    {combination.label}
-                                  </div>
-                                  <div className="mt-0.5 text-xs text-[var(--text-muted)]">
-                                    {combination.specifications
-                                      .map(
-                                        (specification) =>
-                                          `${specification.key}: ${specification.value}`
-                                      )
-                                      .join(" · ")}
-                                  </div>
-                                </div>
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={() =>
-                                    setForm((previous) => ({
-                                      ...previous,
-                                      variations:
-                                        setProductVariationCombinationIncluded(
-                                          previous.variations,
-                                          combination.identity,
-                                          false
-                                        ),
-                                    }))
-                                  }
-                                >
-                                  Mark unavailable
-                                </Button>
-                              </div>
-
-                              <div className="grid gap-3 sm:grid-cols-3">
-                                <div className="grid gap-1">
-                                  <Label
-                                    htmlFor={`product-variation-title-${index}`}
-                                    className="text-xs"
-                                  >
-                                    Combination title
-                                  </Label>
-                                  <Input
-                                    id={`product-variation-title-${index}`}
-                                    value={combination.title}
-                                    placeholder={`${form.title || "Product"} - ${combination.label}`}
-                                    onChange={(event) =>
-                                      setForm((previous) => ({
-                                        ...previous,
-                                        variations:
-                                          updateProductVariationOverride(
-                                            previous.variations,
-                                            combination.identity,
-                                            "title",
-                                            event.target.value
-                                          ),
-                                      }))
-                                    }
-                                  />
-                                </div>
-                                <div className="grid gap-1">
-                                  <Label
-                                    htmlFor={`product-variation-price-${index}`}
-                                    className="text-xs"
-                                  >
-                                    Price ({form.currency})
-                                  </Label>
-                                  <Input
-                                    id={`product-variation-price-${index}`}
-                                    type="text"
-                                    inputMode={getProductAmountInputMode(
-                                      form.currency
-                                    )}
-                                    autoComplete="off"
-                                    className="tabular-nums"
-                                    value={combination.price}
-                                    placeholder={form.price || "Base price"}
-                                    onChange={(event) => {
-                                      if (
-                                        !isPlainDecimalInput(event.target.value)
-                                      ) {
-                                        return
-                                      }
-                                      setForm((previous) => ({
-                                        ...previous,
-                                        variations:
-                                          updateProductVariationOverride(
-                                            previous.variations,
-                                            combination.identity,
-                                            "price",
-                                            event.target.value
-                                          ),
-                                      }))
-                                    }}
-                                  />
-                                </div>
-                                <div className="grid gap-1">
-                                  <div className="flex items-center justify-between gap-2">
-                                    <Label
-                                      htmlFor={`product-variation-stock-${index}`}
-                                      className="text-xs"
-                                    >
-                                      Stock
-                                    </Label>
-                                    <label className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
-                                      <input
-                                        type="checkbox"
-                                        checked={combination.inheritStock}
-                                        onChange={(event) =>
-                                          setForm((previous) => ({
-                                            ...previous,
-                                            variations:
-                                              updateProductVariationInheritance(
-                                                previous.variations,
-                                                combination.identity,
-                                                "inheritStock",
-                                                event.target.checked
-                                              ),
-                                          }))
-                                        }
-                                      />
-                                      Base
-                                    </label>
-                                  </div>
-                                  <Input
-                                    id={`product-variation-stock-${index}`}
-                                    type="text"
-                                    inputMode="numeric"
-                                    autoComplete="off"
-                                    className="tabular-nums"
-                                    value={combination.stock}
-                                    disabled={combination.inheritStock}
-                                    placeholder={form.stock || "Not tracked"}
-                                    onChange={(event) => {
-                                      if (
-                                        !isPlainStockInput(event.target.value)
-                                      ) {
-                                        return
-                                      }
-                                      setForm((previous) => ({
-                                        ...previous,
-                                        variations:
-                                          updateProductVariationOverride(
-                                            previous.variations,
-                                            combination.identity,
-                                            "stock",
-                                            event.target.value
-                                          ),
-                                      }))
-                                    }}
-                                  />
-                                </div>
-                              </div>
-
-                              <div className="grid gap-3 sm:grid-cols-3">
-                                <div className="grid gap-1">
-                                  <div className="flex items-center justify-between gap-2">
-                                    <Label
-                                      htmlFor={`product-variation-images-${index}`}
-                                      className="text-xs"
-                                    >
-                                      Image URLs
-                                    </Label>
-                                    <label className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
-                                      <input
-                                        type="checkbox"
-                                        checked={combination.inheritImages}
-                                        onChange={(event) =>
-                                          setForm((previous) => ({
-                                            ...previous,
-                                            variations:
-                                              updateProductVariationInheritance(
-                                                previous.variations,
-                                                combination.identity,
-                                                "inheritImages",
-                                                event.target.checked
-                                              ),
-                                          }))
-                                        }
-                                      />
-                                      Base
-                                    </label>
-                                  </div>
-                                  <Textarea
-                                    id={`product-variation-images-${index}`}
-                                    value={combination.imageUrls}
-                                    disabled={combination.inheritImages}
-                                    placeholder="One HTTPS URL per line"
-                                    rows={2}
-                                    onChange={(event) =>
-                                      setForm((previous) => ({
-                                        ...previous,
-                                        variations:
-                                          updateProductVariationOverride(
-                                            previous.variations,
-                                            combination.identity,
-                                            "imageUrls",
-                                            event.target.value
-                                          ),
-                                      }))
-                                    }
-                                  />
-                                </div>
-                                <div className="grid gap-1">
-                                  <Label
-                                    htmlFor={`product-variation-format-${index}`}
-                                    className="text-xs"
-                                  >
-                                    Format
-                                  </Label>
-                                  <Select
-                                    value={combination.format}
-                                    onValueChange={(value) =>
-                                      setForm((previous) => ({
-                                        ...previous,
-                                        variations:
-                                          updateProductVariationOverride(
-                                            previous.variations,
-                                            combination.identity,
-                                            "format",
-                                            value
-                                          ),
-                                      }))
-                                    }
-                                  >
-                                    <SelectTrigger
-                                      id={`product-variation-format-${index}`}
-                                    >
-                                      <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                      <SelectItem value="inherit">
-                                        Base format
-                                      </SelectItem>
-                                      <SelectItem value="physical">
-                                        Physical
-                                      </SelectItem>
-                                      <SelectItem value="digital">
-                                        Digital
-                                      </SelectItem>
-                                    </SelectContent>
-                                  </Select>
-                                </div>
-                                <div className="grid gap-1">
-                                  <div className="flex items-center justify-between gap-2">
-                                    <Label
-                                      htmlFor={`product-variation-shipping-${index}`}
-                                      className="text-xs"
-                                    >
-                                      Shipping ({form.currency})
-                                    </Label>
-                                    <label className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
-                                      <input
-                                        type="checkbox"
-                                        checked={combination.inheritShipping}
-                                        onChange={(event) =>
-                                          setForm((previous) => ({
-                                            ...previous,
-                                            variations:
-                                              updateProductVariationInheritance(
-                                                previous.variations,
-                                                combination.identity,
-                                                "inheritShipping",
-                                                event.target.checked
-                                              ),
-                                          }))
-                                        }
-                                      />
-                                      Base
-                                    </label>
-                                  </div>
-                                  <Input
-                                    id={`product-variation-shipping-${index}`}
-                                    value={combination.shippingCost}
-                                    disabled={combination.inheritShipping}
-                                    inputMode={getProductAmountInputMode(
-                                      form.currency
-                                    )}
-                                    placeholder="Coordinate after order"
-                                    onChange={(event) => {
-                                      if (
-                                        !isPlainDecimalInput(event.target.value)
-                                      ) {
-                                        return
-                                      }
-                                      setForm((previous) => ({
-                                        ...previous,
-                                        variations:
-                                          updateProductVariationOverride(
-                                            previous.variations,
-                                            combination.identity,
-                                            "shippingCost",
-                                            event.target.value
-                                          ),
-                                      }))
-                                    }}
-                                  />
-                                </div>
-                              </div>
-                            </div>
-                          )
-                        )}
-                      </div>
-                      <p className="text-xs leading-5 text-[var(--text-muted)]">
-                        First publish requires{" "}
-                        {productVariationCombinations.length + 1} signer
-                        approvals: one parent and{" "}
-                        {productVariationCombinations.length} variation
-                        {productVariationCombinations.length === 1 ? "" : "s"}.
-                      </p>
+                              Option name
+                            </Label>
+                            <Input
+                              id={`product-variation-axis-${axis.id}`}
+                              value={axis.key}
+                              aria-invalid={
+                                !axis.key.trim() ||
+                                form.variations.axes.some(
+                                  (candidate) =>
+                                    candidate.id !== axis.id &&
+                                    candidate.key
+                                      .trim()
+                                      .toLocaleLowerCase("en-US") ===
+                                      axis.key.trim().toLocaleLowerCase("en-US")
+                                )
+                              }
+                              aria-describedby="product-variations-help"
+                              placeholder="Enter a name"
+                              onChange={(event) =>
+                                setForm((previous) => ({
+                                  ...previous,
+                                  variations: updateProductVariationAxis(
+                                    previous.variations,
+                                    axis.id,
+                                    "key",
+                                    event.target.value
+                                  ),
+                                }))
+                              }
+                            />
+                          </div>
+                          <div className="grid gap-1.5">
+                            <Label
+                              htmlFor={`product-variation-values-${axis.id}`}
+                            >
+                              Values
+                            </Label>
+                            <Input
+                              id={`product-variation-values-${axis.id}`}
+                              value={axis.values}
+                              aria-invalid={
+                                !!productFormValidation.errors.variations
+                              }
+                              aria-describedby="product-variations-help"
+                              placeholder="Separate values with commas"
+                              onChange={(event) =>
+                                setForm((previous) => ({
+                                  ...previous,
+                                  variations: updateProductVariationAxis(
+                                    previous.variations,
+                                    axis.id,
+                                    "values",
+                                    event.target.value
+                                  ),
+                                }))
+                              }
+                            />
+                          </div>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            aria-label={`Remove ${axis.key.trim() || "unnamed option"}`}
+                            onClick={() =>
+                              setForm((previous) => ({
+                                ...previous,
+                                variations: removeProductVariationAxis(
+                                  previous.variations,
+                                  axis.id
+                                ),
+                              }))
+                            }
+                          >
+                            Remove option
+                          </Button>
+                        </div>
+                      ))}
                     </div>
-                  )}
-                </>
-              )}
-            </fieldset>
 
-            <div className="grid gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
-              <label className="flex items-start gap-3 text-sm">
-                <input
-                  type="checkbox"
-                  checked={form.publicZapEnabled}
-                  onChange={(event) =>
-                    setForm((prev) => ({
-                      ...prev,
-                      publicZapEnabled: event.target.checked,
-                    }))
-                  }
-                  className="mt-1 h-4 w-4 rounded border-[var(--border)] accent-secondary-500"
+                    <div
+                      id="product-variations-help"
+                      className={cn(
+                        "text-xs leading-5",
+                        productVariationGenerationMessage
+                          ? "text-warning"
+                          : productFormValidation.errors.variations
+                            ? "text-error"
+                            : "text-[var(--text-muted)]"
+                      )}
+                    >
+                      {productVariationGenerationMessage ??
+                        productFormValidation.errors.variations ??
+                        "Separate values with commas. Every possible combination appears in the availability matrix."}
+                    </div>
+
+                    {productVariationMatrix.length > 0 && (
+                      <ProductCombinationMatrix
+                        axes={form.variations.axes}
+                        combinations={productVariationMatrix}
+                        invalid={productVariationCombinations.length === 0}
+                        onIncludeAll={() =>
+                          setForm((previous) => ({
+                            ...previous,
+                            variations: generateProductVariationRows(
+                              previous.variations
+                            ),
+                          }))
+                        }
+                        onIncludedChange={(identity, included) =>
+                          setForm((previous) => ({
+                            ...previous,
+                            variations: setProductVariationCombinationIncluded(
+                              previous.variations,
+                              identity,
+                              included
+                            ),
+                          }))
+                        }
+                        validationMessageId="product-variations-help"
+                      />
+                    )}
+
+                    {productVariationCombinations.length > 0 && (
+                      <div className="grid gap-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="text-sm font-medium text-[var(--text-primary)]">
+                            Available combinations
+                          </div>
+                          <Badge
+                            variant="secondary"
+                            className="border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-secondary)]"
+                          >
+                            {productVariationCombinations.length}
+                          </Badge>
+                        </div>
+                        <p className="text-pretty text-xs leading-5 text-[var(--text-muted)]">
+                          Set fields here only when a combination differs from
+                          the base product. Only available combinations are
+                          published.
+                        </p>
+                        <div
+                          data-product-variation-rows
+                          className="relative grid max-h-[32rem] gap-3 overflow-y-auto pr-1"
+                        >
+                          {productVariationCombinations.map(
+                            (combination, index) => (
+                              <div
+                                key={combination.identity}
+                                className="grid gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3"
+                              >
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <div className="min-w-0">
+                                    <div className="truncate text-sm font-medium text-[var(--text-primary)]">
+                                      {combination.label}
+                                    </div>
+                                    <div className="mt-0.5 text-xs text-[var(--text-muted)]">
+                                      {combination.specifications
+                                        .map(
+                                          (specification) =>
+                                            `${specification.key}: ${specification.value}`
+                                        )
+                                        .join(" · ")}
+                                    </div>
+                                  </div>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() =>
+                                      setForm((previous) => ({
+                                        ...previous,
+                                        variations:
+                                          setProductVariationCombinationIncluded(
+                                            previous.variations,
+                                            combination.identity,
+                                            false
+                                          ),
+                                      }))
+                                    }
+                                  >
+                                    Mark unavailable
+                                  </Button>
+                                </div>
+
+                                <div className="grid gap-3 sm:grid-cols-3">
+                                  <div className="grid gap-1">
+                                    <Label
+                                      htmlFor={`product-variation-title-${index}`}
+                                      className="text-xs"
+                                    >
+                                      Combination title
+                                    </Label>
+                                    <Input
+                                      id={`product-variation-title-${index}`}
+                                      value={combination.title}
+                                      placeholder={`${form.title || "Product"} - ${combination.label}`}
+                                      onChange={(event) =>
+                                        setForm((previous) => ({
+                                          ...previous,
+                                          variations:
+                                            updateProductVariationOverride(
+                                              previous.variations,
+                                              combination.identity,
+                                              "title",
+                                              event.target.value
+                                            ),
+                                        }))
+                                      }
+                                    />
+                                  </div>
+                                  <div className="grid gap-1">
+                                    <Label
+                                      htmlFor={`product-variation-price-${index}`}
+                                      className="text-xs"
+                                    >
+                                      Price ({form.currency})
+                                    </Label>
+                                    <Input
+                                      id={`product-variation-price-${index}`}
+                                      type="text"
+                                      inputMode={getProductAmountInputMode(
+                                        form.currency
+                                      )}
+                                      autoComplete="off"
+                                      className="tabular-nums"
+                                      value={combination.price}
+                                      placeholder={form.price || "Base price"}
+                                      onChange={(event) => {
+                                        if (
+                                          !isPlainDecimalInput(
+                                            event.target.value
+                                          )
+                                        ) {
+                                          return
+                                        }
+                                        setForm((previous) => ({
+                                          ...previous,
+                                          variations:
+                                            updateProductVariationOverride(
+                                              previous.variations,
+                                              combination.identity,
+                                              "price",
+                                              event.target.value
+                                            ),
+                                        }))
+                                      }}
+                                    />
+                                  </div>
+                                  <div className="grid gap-1">
+                                    <div className="flex items-center justify-between gap-2">
+                                      <Label
+                                        htmlFor={`product-variation-stock-${index}`}
+                                        className="text-xs"
+                                      >
+                                        Stock
+                                      </Label>
+                                      <label className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
+                                        <input
+                                          type="checkbox"
+                                          checked={combination.inheritStock}
+                                          onChange={(event) =>
+                                            setForm((previous) => ({
+                                              ...previous,
+                                              variations:
+                                                updateProductVariationInheritance(
+                                                  previous.variations,
+                                                  combination.identity,
+                                                  "inheritStock",
+                                                  event.target.checked
+                                                ),
+                                            }))
+                                          }
+                                        />
+                                        Base
+                                      </label>
+                                    </div>
+                                    <Input
+                                      id={`product-variation-stock-${index}`}
+                                      type="text"
+                                      inputMode="numeric"
+                                      autoComplete="off"
+                                      className="tabular-nums"
+                                      value={combination.stock}
+                                      disabled={combination.inheritStock}
+                                      placeholder={form.stock || "Not tracked"}
+                                      onChange={(event) => {
+                                        if (
+                                          !isPlainStockInput(event.target.value)
+                                        ) {
+                                          return
+                                        }
+                                        setForm((previous) => ({
+                                          ...previous,
+                                          variations:
+                                            updateProductVariationOverride(
+                                              previous.variations,
+                                              combination.identity,
+                                              "stock",
+                                              event.target.value
+                                            ),
+                                        }))
+                                      }}
+                                    />
+                                  </div>
+                                </div>
+
+                                <div className="grid gap-3 sm:grid-cols-3">
+                                  <div className="grid gap-1">
+                                    <div className="flex items-center justify-between gap-2">
+                                      <Label
+                                        htmlFor={`product-variation-images-${index}`}
+                                        className="text-xs"
+                                      >
+                                        Image URLs
+                                      </Label>
+                                      <label className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
+                                        <input
+                                          type="checkbox"
+                                          checked={combination.inheritImages}
+                                          onChange={(event) =>
+                                            setForm((previous) => ({
+                                              ...previous,
+                                              variations:
+                                                updateProductVariationInheritance(
+                                                  previous.variations,
+                                                  combination.identity,
+                                                  "inheritImages",
+                                                  event.target.checked
+                                                ),
+                                            }))
+                                          }
+                                        />
+                                        Base
+                                      </label>
+                                    </div>
+                                    <Textarea
+                                      id={`product-variation-images-${index}`}
+                                      value={combination.imageUrls}
+                                      disabled={combination.inheritImages}
+                                      placeholder="One HTTPS URL per line"
+                                      rows={2}
+                                      onChange={(event) =>
+                                        setForm((previous) => ({
+                                          ...previous,
+                                          variations:
+                                            updateProductVariationOverride(
+                                              previous.variations,
+                                              combination.identity,
+                                              "imageUrls",
+                                              event.target.value
+                                            ),
+                                        }))
+                                      }
+                                    />
+                                  </div>
+                                  <div className="grid gap-1">
+                                    <Label
+                                      htmlFor={`product-variation-format-${index}`}
+                                      className="text-xs"
+                                    >
+                                      Format
+                                    </Label>
+                                    <Select
+                                      value={combination.format}
+                                      onValueChange={(value) =>
+                                        setForm((previous) => ({
+                                          ...previous,
+                                          variations:
+                                            updateProductVariationOverride(
+                                              previous.variations,
+                                              combination.identity,
+                                              "format",
+                                              value
+                                            ),
+                                        }))
+                                      }
+                                    >
+                                      <SelectTrigger
+                                        id={`product-variation-format-${index}`}
+                                      >
+                                        <SelectValue />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        <SelectItem value="inherit">
+                                          Base format
+                                        </SelectItem>
+                                        <SelectItem value="physical">
+                                          Physical
+                                        </SelectItem>
+                                        <SelectItem value="digital">
+                                          Digital
+                                        </SelectItem>
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                  <div className="grid gap-1">
+                                    <div className="flex items-center justify-between gap-2">
+                                      <Label
+                                        htmlFor={`product-variation-shipping-${index}`}
+                                        className="text-xs"
+                                      >
+                                        Shipping ({form.currency})
+                                      </Label>
+                                      <label className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
+                                        <input
+                                          type="checkbox"
+                                          checked={combination.inheritShipping}
+                                          onChange={(event) =>
+                                            setForm((previous) => ({
+                                              ...previous,
+                                              variations:
+                                                updateProductVariationInheritance(
+                                                  previous.variations,
+                                                  combination.identity,
+                                                  "inheritShipping",
+                                                  event.target.checked
+                                                ),
+                                            }))
+                                          }
+                                        />
+                                        Base
+                                      </label>
+                                    </div>
+                                    <Input
+                                      id={`product-variation-shipping-${index}`}
+                                      value={combination.shippingCost}
+                                      disabled={combination.inheritShipping}
+                                      inputMode={getProductAmountInputMode(
+                                        form.currency
+                                      )}
+                                      placeholder="Coordinate after order"
+                                      onChange={(event) => {
+                                        if (
+                                          !isPlainDecimalInput(
+                                            event.target.value
+                                          )
+                                        ) {
+                                          return
+                                        }
+                                        setForm((previous) => ({
+                                          ...previous,
+                                          variations:
+                                            updateProductVariationOverride(
+                                              previous.variations,
+                                              combination.identity,
+                                              "shippingCost",
+                                              event.target.value
+                                            ),
+                                        }))
+                                      }}
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+                            )
+                          )}
+                        </div>
+                        <p className="text-xs leading-5 text-[var(--text-muted)]">
+                          First publish requires{" "}
+                          {productVariationCombinations.length + 1} signer
+                          approvals: one parent and{" "}
+                          {productVariationCombinations.length} variation
+                          {productVariationCombinations.length === 1 ? "" : "s"}
+                          .
+                        </p>
+                      </div>
+                    )}
+                  </>
+                )}
+              </fieldset>
+              {remoteSignerRecovery ? (
+                <ProductSignerRecoveryNotice
+                  draftStorageAvailable={draftStorageAvailable}
+                  reconnecting={authStatus === "restoring"}
+                  restoreFailed={!!remoteSignerRecovery.restoreError}
+                  changingSigner={signerChangePending}
+                  changeSignerError={signerChangeError}
+                  onReconnect={reconnectProductSigner}
+                  onUseDifferentSigner={useDifferentProductSigner}
                 />
-                <span className="grid gap-1">
-                  <span className="font-medium text-[var(--text-primary)]">
-                    Enable public zaps for purchases
-                  </span>
-                  <span className="text-xs leading-5 text-[var(--text-muted)]">
-                    When disabled, checkout uses a private Lightning invoice for
-                    this product.
-                  </span>
-                </span>
-              </label>
-
-              <div className="grid gap-1.5">
-                <Label htmlFor="product-zap-message-policy">
-                  Zap message policy
-                </Label>
-                <Select
-                  value={form.zapMessagePolicy}
-                  disabled={!form.publicZapEnabled}
-                  onValueChange={(value) =>
-                    setForm((prev) => ({
-                      ...prev,
-                      zapMessagePolicy: value as ProductZapMessagePolicy,
-                    }))
+              ) : (
+                <SignedActionStatus
+                  state={
+                    isSaving
+                      ? productDeliveryNotice?.action === "publish"
+                        ? "publishing"
+                        : "awaiting_signature"
+                      : saveMutation.error
+                        ? "error"
+                        : !productFormValidation.canPublish || hasProductChanges
+                          ? "dirty"
+                          : "idle"
                   }
+                  dirtyMessage={productStatusMessage}
+                  awaitingSignatureMessage={
+                    form.variations.enabled
+                      ? "Confirm each changed product listing in your signer. The family will save locally before relay delivery runs."
+                      : "Confirm the product listing in your signer. It will save locally while relay delivery runs."
+                  }
+                  publishingMessage={
+                    form.variations.enabled
+                      ? "The signed product family is visible locally. Delivering its changed listings to relays."
+                      : "The signed listing is visible locally. Delivering it to relays."
+                  }
+                  errorMessage={getPublishErrorMessage(
+                    saveMutation.error,
+                    "publish"
+                  )}
+                />
+              )}
+
+              {!remoteSignerRecovery && signerRestoredForDraft && (
+                <div
+                  ref={signerRestoredNoticeRef}
+                  role="status"
+                  tabIndex={-1}
+                  className="rounded-xl border border-success/30 bg-success/10 px-4 py-3 text-sm leading-6 text-[var(--text-secondary)] outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
                 >
-                  <SelectTrigger id="product-zap-message-policy">
-                    <SelectValue placeholder="Choose policy" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="generic_only">Generic only</SelectItem>
-                    <SelectItem value="custom">
-                      Allow shopper custom message
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
-                <div className="text-xs leading-5 text-[var(--text-muted)]">
-                  {form.publicZapEnabled
-                    ? "Generic public zaps may include item count, but never product names, product IDs, order metadata, contact details, private notes, wallet data, payment evidence, or buyer identity."
-                    : "This listing will publish a private-invoice checkout policy; buyers cannot choose public zap checkout for this product."}
+                  Signer reconnected. Review your draft, then choose{" "}
+                  {editing ? "Save changes" : "Publish product"} when ready.
                 </div>
-              </div>
-            </div>
+              )}
 
-            <div className="grid gap-1.5">
-              <Label htmlFor="product-image">Image URL</Label>
-              <Input
-                id="product-image"
-                type="url"
-                value={form.imageUrl}
-                onChange={(event) =>
-                  setForm((prev) => ({
-                    ...prev,
-                    imageUrl: event.target.value,
-                  }))
-                }
-                placeholder="https://..."
-                required
-              />
-              <div className="text-xs leading-5 text-[var(--text-muted)]">
-                Products without images are not shown in Market.
-              </div>
-            </div>
+              {hasProductChanges && !remoteSignerRecovery && (
+                <p
+                  role="status"
+                  aria-live="polite"
+                  className={cn(
+                    "text-pretty text-xs leading-5",
+                    draftStorageAvailable
+                      ? "text-[var(--text-muted)]"
+                      : "text-error"
+                  )}
+                >
+                  {draftStorageAvailable
+                    ? "Draft saved on this device. Close this window and reopen it to continue."
+                    : "Local draft storage is unavailable. Keep this page open; switching product forms is blocked to protect these changes."}
+                </p>
+              )}
 
-            <div className="grid gap-1.5">
-              <Label htmlFor="product-tags">Tags</Label>
-              <ProductTagEditor
-                id="product-tags"
-                value={form.tags}
-                onChange={(tags) => setForm((prev) => ({ ...prev, tags }))}
-                catalogTags={tagFilters}
-                errorMessage={productTagFieldError}
-                placeholder="gear, hardware, demo"
-              />
-            </div>
-
-            {remoteSignerRecovery ? (
-              <ProductSignerRecoveryNotice
-                draftStorageAvailable={draftStorageAvailable}
-                reconnecting={authStatus === "restoring"}
-                restoreFailed={!!remoteSignerRecovery.restoreError}
-                changingSigner={signerChangePending}
-                changeSignerError={signerChangeError}
-                onReconnect={reconnectProductSigner}
-                onUseDifferentSigner={useDifferentProductSigner}
-              />
-            ) : (
-              <SignedActionStatus
-                state={
-                  isSaving
-                    ? productDeliveryNotice?.action === "publish"
-                      ? "publishing"
-                      : "awaiting_signature"
-                    : saveMutation.error
-                      ? "error"
-                      : !productFormValidation.canPublish || hasProductChanges
-                        ? "dirty"
-                        : "idle"
-                }
-                dirtyMessage={productStatusMessage}
-                awaitingSignatureMessage={
-                  form.variations.enabled
-                    ? "Confirm each changed product listing in your signer. The family will save locally before relay delivery runs."
-                    : "Confirm the product listing in your signer. It will save locally while relay delivery runs."
-                }
-                publishingMessage={
-                  form.variations.enabled
-                    ? "The signed product family is visible locally. Delivering its changed listings to relays."
-                    : "The signed listing is visible locally. Delivering it to relays."
-                }
-                errorMessage={getPublishErrorMessage(
-                  saveMutation.error,
-                  "publish"
+              <DialogFooter>
+                {hasProductChanges && (
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    onClick={discardProductChanges}
+                    disabled={isSaving}
+                  >
+                    Discard changes
+                  </Button>
                 )}
-              />
-            )}
-
-            {!remoteSignerRecovery && signerRestoredForDraft && (
-              <div
-                ref={signerRestoredNoticeRef}
-                role="status"
-                tabIndex={-1}
-                className="rounded-xl border border-success/30 bg-success/10 px-4 py-3 text-sm leading-6 text-[var(--text-secondary)] outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
-              >
-                Signer reconnected. Review your draft, then choose{" "}
-                {editing ? "Save changes" : "Publish product"} when ready.
-              </div>
-            )}
-
-            {hasProductChanges && !remoteSignerRecovery && (
-              <p
-                role="status"
-                aria-live="polite"
-                className={cn(
-                  "text-pretty text-xs leading-5",
-                  draftStorageAvailable
-                    ? "text-[var(--text-muted)]"
-                    : "text-error"
-                )}
-              >
-                {draftStorageAvailable
-                  ? "Draft saved on this device. Close this window and reopen it to continue."
-                  : "Local draft storage is unavailable. Keep this page open; switching product forms is blocked to protect these changes."}
-              </p>
-            )}
-
-            <DialogFooter>
-              {hasProductChanges && (
                 <Button
                   type="button"
-                  variant="destructive"
-                  onClick={discardProductChanges}
+                  variant="outline"
+                  onClick={requestCloseProductDialog}
                   disabled={isSaving}
                 >
-                  Discard changes
+                  Close
                 </Button>
-              )}
-              <Button
-                type="button"
-                variant="outline"
-                onClick={requestCloseProductDialog}
-                disabled={isSaving}
-              >
-                Close
-              </Button>
-              <Button
-                type="submit"
-                disabled={
-                  !pubkey || !signerReady || isSaving || !productCanSubmit
-                }
-              >
-                {remoteSignerRecovery
-                  ? "Reconnect signer to continue"
-                  : isSaving
-                    ? "Waiting for signer..."
-                    : editing
-                      ? "Save changes"
-                      : "Publish product"}
-              </Button>
-            </DialogFooter>
-          </form>
+                <Button
+                  type="submit"
+                  disabled={
+                    !pubkey || !signerReady || isSaving || !productCanSubmit
+                  }
+                >
+                  {remoteSignerRecovery
+                    ? "Reconnect signer to continue"
+                    : isSaving
+                      ? "Waiting for signer..."
+                      : editing
+                        ? "Save changes"
+                        : "Publish product"}
+                </Button>
+              </DialogFooter>
+            </form>
+          )}
         </DialogContent>
       </Dialog>
 

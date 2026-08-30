@@ -2,8 +2,10 @@ import {
   getPriceSats,
   getProductImageCandidates,
   getShippingCostSats,
+  hasSamePickupFulfillmentGraph,
   hasExactLiveProductAvailabilityEvidence,
   normalizeProductCoordinate,
+  orderItemFulfillmentSchema,
   resolveCartShippingCost,
   type CommerceQueryMeta,
   type ProductAvailabilityDiagnostic,
@@ -12,6 +14,8 @@ import {
   type PricingRateInput,
   type Product,
   type ProductSpecification,
+  type OrderPickupFulfillmentSchema,
+  type PickupEvidenceCoordinateSchema,
 } from "@conduit/core"
 
 export const CART_STORAGE_VERSION = 2
@@ -37,6 +41,12 @@ export type CartItem = {
   tags?: string[]
   /** Whether the product requires physical shipping. Defaults to "physical". */
   format?: "physical" | "digital"
+  /**
+   * Fulfillment is snapshotted when the buyer adds an item. Older persisted
+   * carts omit this field and continue to resolve from `format` as shipment or
+   * digital delivery.
+   */
+  fulfillment?: CartItemFulfillment
   /** Per-item shipping cost in sats. Omitted means shipping is coordinated manually. */
   shippingCostSats?: number
   sourceShippingCost?: {
@@ -65,6 +75,17 @@ export type CartItem = {
   stock?: number
   quantity: number
 }
+
+export type PickupEvidenceCoordinate = PickupEvidenceCoordinateSchema
+
+/** Shared protocol snapshot; Market only persists and displays this shape. */
+export type CartPickupFulfillment = OrderPickupFulfillmentSchema
+
+export type CartItemFulfillment =
+  { type: "digital" } | { type: "shipping" } | CartPickupFulfillment
+
+export type CartFulfillmentLane =
+  "empty" | "digital" | "shipping" | "pickup" | "mixed_shipping_pickup"
 
 export type CartState = {
   items: CartItem[]
@@ -165,9 +186,17 @@ export function getProductAddAvailability(
 }
 
 export function createCartItemFromProduct(
-  product: Product
+  product: Product,
+  fulfillment?: CartItemFulfillment
 ): Omit<CartItem, "quantity"> {
   const canonicalShippingResolved = product.canonicalShippingResolved === true
+  const resolvedFulfillment =
+    fulfillment ??
+    (product.format === "digital"
+      ? ({ type: "digital" } as const)
+      : ({ type: "shipping" } as const))
+  const pickup =
+    resolvedFulfillment.type === "pickup" ? resolvedFulfillment : null
   return {
     productId: product.id,
     selectedSpecifications:
@@ -183,20 +212,99 @@ export function createCartItemFromProduct(
     image: getProductImageCandidates(product)[0]?.url,
     tags: product.tags,
     format: product.format,
-    shippingCostSats: product.shippingCostSats,
-    sourceShippingCost: product.sourceShippingCost,
-    shippingOptionId: product.shippingOptionId,
-    shippingOptionDTag: product.shippingOptionDTag,
-    shippingOptionLaunchUnsupported: product.shippingOptionLaunchUnsupported,
-    shippingCountries: product.shippingCountries,
-    shippingCountryRules: product.shippingCountryRules,
+    fulfillment: resolvedFulfillment,
+    shippingCostSats: pickup?.costSats ?? product.shippingCostSats,
+    sourceShippingCost: pickup?.sourceCost ?? product.sourceShippingCost,
+    shippingOptionId: pickup?.option.coordinate ?? product.shippingOptionId,
+    shippingOptionDTag:
+      pickup?.option.coordinate.split(":").slice(2).join(":") ||
+      product.shippingOptionDTag,
+    shippingOptionLaunchUnsupported: pickup
+      ? undefined
+      : product.shippingOptionLaunchUnsupported,
+    shippingCountries: pickup ? [] : product.shippingCountries,
+    shippingCountryRules: pickup ? [] : product.shippingCountryRules,
     productUpdatedAt: product.updatedAt,
-    canonicalShippingResolved,
+    canonicalShippingResolved: pickup ? false : canonicalShippingResolved,
     publicZapEnabled: product.publicZapEnabled,
     zapMessagePolicy: product.zapMessagePolicy,
     publicZapPolicyKnown: product.publicZapPolicyKnown,
     stock: product.stock,
   }
+}
+
+export function getCartItemFulfillmentType(
+  item: Pick<CartItem, "format" | "fulfillment">
+): CartItemFulfillment["type"] {
+  if (item.fulfillment?.type === "pickup") return "pickup"
+  if (item.format === "digital" || item.fulfillment?.type === "digital") {
+    return "digital"
+  }
+  return "shipping"
+}
+
+export function isPickupCartItem(
+  item: Pick<CartItem, "format" | "fulfillment">
+): item is Pick<CartItem, "format" | "fulfillment"> & {
+  fulfillment: CartPickupFulfillment
+} {
+  return item.fulfillment?.type === "pickup"
+}
+
+export function getCartFulfillmentLane(
+  items: Array<Pick<CartItem, "format" | "fulfillment">>
+): CartFulfillmentLane {
+  if (items.length === 0) return "empty"
+
+  let hasShipping = false
+  let hasPickup = false
+  for (const item of items) {
+    const type = getCartItemFulfillmentType(item)
+    if (type === "shipping") hasShipping = true
+    if (type === "pickup") hasPickup = true
+  }
+
+  if (hasShipping && hasPickup) return "mixed_shipping_pickup"
+  if (hasPickup) return "pickup"
+  if (hasShipping) return "shipping"
+  return "digital"
+}
+
+export function getMixedFulfillmentBlockingMessage(
+  items: Array<Pick<CartItem, "format" | "fulfillment">>
+): string | null {
+  if (getCartFulfillmentLane(items) === "mixed_shipping_pickup") {
+    return "Shipping and event pickup cannot be combined in one merchant order yet. Place them as separate orders."
+  }
+
+  const pickupItems = items.filter(isPickupCartItem)
+  const firstPickup = pickupItems[0]?.fulfillment
+  if (
+    firstPickup &&
+    pickupItems.some(
+      (item) => !hasSamePickupFulfillmentGraph(firstPickup, item.fulfillment)
+    )
+  ) {
+    return "These items have different pickup handlers or event pickup records. Place them as separate orders."
+  }
+
+  return null
+}
+
+export function isSameCartFulfillment(
+  left: Pick<CartItem, "format" | "fulfillment">,
+  right: Pick<CartItem, "format" | "fulfillment">
+): boolean {
+  const leftType = getCartItemFulfillmentType(left)
+  const rightType = getCartItemFulfillmentType(right)
+  if (leftType !== rightType) return false
+  if (leftType !== "pickup" || rightType !== "pickup") return true
+
+  return (
+    left.fulfillment?.type === "pickup" &&
+    right.fulfillment?.type === "pickup" &&
+    hasSamePickupFulfillmentGraph(left.fulfillment, right.fulfillment)
+  )
 }
 
 export function getCartProductAvailability(
@@ -547,6 +655,12 @@ function parseCartItem(value: unknown): CartItem | null {
     value.format === "digital" || value.format === "physical"
       ? value.format
       : undefined
+  const fulfillmentResult =
+    value.fulfillment === undefined
+      ? null
+      : orderItemFulfillmentSchema.safeParse(value.fulfillment)
+  if (fulfillmentResult && !fulfillmentResult.success) return null
+  const fulfillment = fulfillmentResult?.data
   const zapMessagePolicy = normalizeCartZapMessagePolicy(value.zapMessagePolicy)
 
   return {
@@ -566,6 +680,7 @@ function parseCartItem(value: unknown): CartItem | null {
     ...(nonemptyString(value.image) ? { image: String(value.image) } : {}),
     ...(tags ? { tags } : {}),
     ...(format ? { format } : {}),
+    ...(fulfillment ? { fulfillment } : {}),
     ...(shippingCostSats !== undefined ? { shippingCostSats } : {}),
     ...(stock !== undefined ? { stock } : {}),
     ...(sourceShippingCost ? { sourceShippingCost } : {}),
@@ -650,6 +765,46 @@ export function getCartCommerceFingerprint(items: readonly CartItem[]): string {
         priceSats: item.priceSats ?? null,
         sourcePrice: item.sourcePrice ?? null,
         format: item.format ?? "physical",
+        fulfillment:
+          item.fulfillment?.type === "pickup"
+            ? {
+                type: "pickup",
+                organizerPubkey: item.fulfillment.organizerPubkey,
+                product: {
+                  coordinate: item.fulfillment.product.coordinate,
+                  eventId: item.fulfillment.product.eventId,
+                  createdAt: item.fulfillment.product.createdAt,
+                  merchantPubkey: item.fulfillment.product.merchantPubkey,
+                },
+                calendar: {
+                  coordinate: item.fulfillment.calendar.coordinate,
+                  eventId: item.fulfillment.calendar.eventId,
+                  createdAt: item.fulfillment.calendar.createdAt,
+                },
+                collection: {
+                  coordinate: item.fulfillment.collection.coordinate,
+                  eventId: item.fulfillment.collection.eventId,
+                  createdAt: item.fulfillment.collection.createdAt,
+                },
+                option: {
+                  coordinate: item.fulfillment.option.coordinate,
+                  eventId: item.fulfillment.option.eventId,
+                  createdAt: item.fulfillment.option.createdAt,
+                  title: item.fulfillment.option.title,
+                  location: item.fulfillment.option.location ?? null,
+                  geohash: item.fulfillment.option.geohash ?? null,
+                },
+                handoffMode: item.fulfillment.handoffMode ?? null,
+                handlerPubkey: item.fulfillment.handlerPubkey ?? null,
+                costSats: item.fulfillment.costSats,
+                sourceCost: {
+                  amount: item.fulfillment.sourceCost.amount,
+                  currency: item.fulfillment.sourceCost.currency,
+                  normalizedCurrency:
+                    item.fulfillment.sourceCost.normalizedCurrency,
+                },
+              }
+            : getCartItemFulfillmentType(item),
         shippingCostSats: item.shippingCostSats ?? null,
         sourceShippingCost: item.sourceShippingCost ?? null,
         shippingOptionId: item.shippingOptionId ?? null,
@@ -670,7 +825,8 @@ export function getCartCommerceFingerprint(items: readonly CartItem[]): string {
 
 export function rebuildCurrentCartItems(
   items: readonly CartItem[],
-  products: readonly Product[]
+  products: readonly Product[],
+  currentFulfillmentByProductId?: ReadonlyMap<string, CartItemFulfillment>
 ): CartItem[] | null {
   const productsByKey = new Map(
     products.map((product) => [
@@ -686,7 +842,10 @@ export function rebuildCurrentCartItems(
     const product = productsByKey.get(getCartItemKey(item))
     if (!product || product.type === "variable") return null
     currentItems.push({
-      ...createCartItemFromProduct(product),
+      ...createCartItemFromProduct(
+        product,
+        currentFulfillmentByProductId?.get(product.id)
+      ),
       familyProductId:
         product.type === "variation" ? product.parentProductId : undefined,
       selectedSpecifications:
@@ -703,13 +862,42 @@ export function rebuildCurrentCartItems(
 
 export function cartItemsMatchCurrentProducts(
   items: readonly CartItem[],
-  products: readonly Product[]
+  products: readonly Product[],
+  currentFulfillmentByProductId?: ReadonlyMap<string, CartItemFulfillment>
 ): boolean {
-  const currentItems = rebuildCurrentCartItems(items, products)
+  const currentItems = rebuildCurrentCartItems(
+    items,
+    products,
+    currentFulfillmentByProductId
+  )
+  const getCurrentTermsFingerprint = (entries: readonly CartItem[]) =>
+    getCartCommerceFingerprint(
+      entries.map((item) => {
+        if (
+          item.fulfillment?.type !== "pickup" ||
+          !item.sourceShippingCost ||
+          item.sourceShippingCost.amount <= 0 ||
+          getShippingCostSats(
+            { sourceShippingCost: item.sourceShippingCost },
+            null
+          )
+        ) {
+          return item
+        }
+        // Fiat pickup conversions are refreshed at checkout. Their signed
+        // source amount remains authoritative while this cached sats value may
+        // legitimately move with the quote.
+        return {
+          ...item,
+          fulfillment: { ...item.fulfillment, costSats: 0 },
+          shippingCostSats: undefined,
+        }
+      })
+    )
   return (
     currentItems !== null &&
-    getCartCommerceFingerprint(currentItems) ===
-      getCartCommerceFingerprint(items)
+    getCurrentTermsFingerprint(currentItems) ===
+      getCurrentTermsFingerprint(items)
   )
 }
 
@@ -929,6 +1117,7 @@ export function getCartCostSummary(
   const shippingResolvableItems = items.map((item) => {
     const hasShippingZone =
       item.format === "digital" ||
+      isPickupCartItem(item) ||
       (item.canonicalShippingResolved === true &&
         !!item.shippingOptionId &&
         (item.shippingCountryRules?.length ?? 0) > 0)
@@ -950,7 +1139,9 @@ export function getCartCostSummary(
   for (const item of items) {
     count += item.quantity
 
-    const price = getPriceSats(item, rateInput)
+    const price = getPriceSats(item, rateInput, {
+      allowZero: isPickupCartItem(item),
+    })
     if (price) {
       itemSubtotalSats += price.sats * item.quantity
     } else {
@@ -959,9 +1150,10 @@ export function getCartCostSummary(
     if (item.format === "digital") continue
 
     const hasShippingSnapshot =
-      item.canonicalShippingResolved === true &&
-      !!item.shippingOptionId &&
-      (item.shippingCountryRules?.length ?? 0) > 0
+      isPickupCartItem(item) ||
+      (item.canonicalShippingResolved === true &&
+        !!item.shippingOptionId &&
+        (item.shippingCountryRules?.length ?? 0) > 0)
     if (!hasShippingSnapshot || getShippingCostSats(item, rateInput) === null) {
       shippingReadyForZap = false
     }
@@ -992,6 +1184,10 @@ export function addCartItem(
     nextMerchantAddedAt(items)
 
   if (existing) {
+    // A product coordinate is one cart line. Never silently replace a stored
+    // event-pickup snapshot with shipment (or another event's pickup) when the
+    // same listing is added from a different catalog surface.
+    if (!isSameCartFulfillment(existing, item)) return items
     const nextQuantity = currentCartQuantity(existing) + q
     if (typeof item.stock === "number" && nextQuantity > item.stock) {
       return items

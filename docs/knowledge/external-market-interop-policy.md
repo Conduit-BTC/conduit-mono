@@ -229,3 +229,27 @@ Add short entries here as they arise:
   payment and the canonical writer never emits them.
 - Risk: Level 2 checkout mismatch.
 - Action: adapter.
+
+- **[2026-08-10]** Event-backed product collections
+- Spec expectation: The current Open Markets / Gamma collection text defines
+  product `a` references and `shipping_option` references; it does not yet
+  normatively define NIP-52 event links, empty upcoming collections, or
+  organizer-authoritative two-sided membership.
+- Observed behavior: Event commerce needs an organizer-owned catalog before any
+  products are accepted and must distinguish merchant inclusion requests from
+  organizer approval.
+- Conduit behavior: Keep NIP-52 `a` linkage, empty collections, and membership
+  resolution inside the explicit event-market boundary in
+  `docs/specs/event-markets.md`. Emit only existing kinds and generic
+  coordinates, exclude one-sided requests from the official catalog, and keep
+  an upstream-ready proposal in
+  `docs/knowledge/open-markets-event-commerce-proposal.md`. Pickup authorship
+  remains public provenance: merchant-authored options represent merchant booth
+  handoff, while an organizer-authored option advertised by the collection is
+  an optional standing offer. The separate redacted organizer fulfillment
+  receipt is a Conduit private-commerce message and is not presented as Gamma
+  order-message interoperability.
+- Risk: Level 1 catalog membership and Level 2 checkout provenance.
+- Action: upstream proposal plus narrow, removable parser/writer boundary.
+  Governance and removal criteria are tracked in
+  `docs/knowledge/event-market-collection-extension.md`.

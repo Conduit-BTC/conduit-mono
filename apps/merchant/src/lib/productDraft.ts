@@ -12,7 +12,7 @@ import {
 
 // Keep the storage key stable so version 1 drafts can be migrated in place.
 const PRODUCT_DRAFT_STORAGE_PREFIX = "conduit:merchant:product_draft:v1"
-const PRODUCT_DRAFT_VERSION = 5
+const PRODUCT_DRAFT_VERSION = 6
 const CLEARED_PRODUCT_DRAFT_MARKER = "conduit:product-draft-cleared:v1"
 const PRODUCT_VARIATION_AUTHORING_STORAGE_PREFIX =
   "conduit:merchant:product_variation_authoring:v1"
@@ -130,6 +130,7 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
         candidate.version !== 2 &&
         candidate.version !== 3 &&
         candidate.version !== 4 &&
+        candidate.version !== 5 &&
         candidate.version !== PRODUCT_DRAFT_VERSION) ||
       typeof candidate.savedAt !== "number" ||
       !Number.isFinite(candidate.savedAt) ||
@@ -176,6 +177,56 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
           : null
     if (!shippingPricingMode) return null
 
+    // Versions 4 and 5 existed independently on main (product variations and
+    // availability) and on the event-market branch. Distinguish the
+    // event-market shape by its explicit fulfillment field, but never trust
+    // those fields on older versions.
+    const hasEventMarketDraftFields =
+      candidate.version === PRODUCT_DRAFT_VERSION ||
+      ((candidate.version === 4 || candidate.version === 5) &&
+        typeof form.fulfillment === "string")
+    const fulfillment = hasEventMarketDraftFields
+      ? form.fulfillment === "digital" ||
+        form.fulfillment === "ship" ||
+        form.fulfillment === "local_pickup"
+        ? form.fulfillment
+        : null
+      : form.format === "digital"
+        ? "digital"
+        : "ship"
+    const eventMarketReference = hasEventMarketDraftFields
+      ? typeof form.eventMarketReference === "string"
+        ? form.eventMarketReference
+        : null
+      : ""
+    if (!fulfillment || eventMarketReference === null) return null
+    const eventHandoffMode =
+      hasEventMarketDraftFields && candidate.version >= 5
+        ? form.eventHandoffMode === "merchant_handoff" ||
+          form.eventHandoffMode === "organizer_handoff"
+          ? form.eventHandoffMode
+          : form.eventHandoffMode === undefined
+            ? "merchant_handoff"
+            : null
+        : "merchant_handoff"
+    const merchantPickupFields = [
+      "merchantPickupTitle",
+      "merchantPickupLocation",
+      "merchantPickupGeohash",
+      "merchantPickupCountry",
+    ] as const
+    if (
+      !eventHandoffMode ||
+      (hasEventMarketDraftFields &&
+        candidate.version >= 5 &&
+        merchantPickupFields.some(
+          (field) =>
+            form[field] !== undefined && typeof form[field] !== "string"
+        ))
+    ) {
+      return null
+    }
+
     const price =
       candidate.version === 1
         ? migrateLegacyAmountInput(form.price as string)
@@ -191,7 +242,8 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
       candidate.version >= 3 && typeof form.stock === "string" ? form.stock : ""
     if (!/^\d*$/.test(stock)) return null
     const variations =
-      candidate.version >= 4
+      candidate.version === PRODUCT_DRAFT_VERSION ||
+      form.variations !== undefined
         ? parseProductVariationFormState(form.variations)
         : createEmptyProductVariationForm()
     if (!variations) return null
@@ -208,6 +260,28 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
         variations,
         currency: form.currency as string,
         format: form.format,
+        fulfillment,
+        eventMarketReference,
+        eventHandoffMode,
+        merchantPickupTitle:
+          candidate.version >= 5 && typeof form.merchantPickupTitle === "string"
+            ? (form.merchantPickupTitle as string)
+            : "Merchant booth pickup",
+        merchantPickupLocation:
+          candidate.version >= 5 &&
+          typeof form.merchantPickupLocation === "string"
+            ? (form.merchantPickupLocation as string)
+            : "",
+        merchantPickupGeohash:
+          candidate.version >= 5 &&
+          typeof form.merchantPickupGeohash === "string"
+            ? (form.merchantPickupGeohash as string)
+            : "",
+        merchantPickupCountry:
+          candidate.version >= 5 &&
+          typeof form.merchantPickupCountry === "string"
+            ? (form.merchantPickupCountry as string)
+            : "US",
         shippingPricingMode,
         shippingCost,
         usePresetShippingZone: form.usePresetShippingZone,

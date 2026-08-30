@@ -216,12 +216,10 @@ describe("PostHog reverse proxy", () => {
     expect(await response.json()).toEqual({ status: "ok" })
   })
 
-  it("accepts production and single-label preview origins", async () => {
+  it("accepts both exact production origins", async () => {
     for (const origin of [
       "https://shop.conduit.market",
       "https://sell.conduit.market",
-      "https://branch.conduit-market-coo.pages.dev",
-      "https://abc123.conduit-merchant-33n.pages.dev",
     ]) {
       const response = await handlePostHogProxyRequest(
         new Request("https://e.conduit.market/e/", {
@@ -238,9 +236,17 @@ describe("PostHog reverse proxy", () => {
     }
   })
 
-  it("rejects missing, nested, and unrelated origins", async () => {
+  it("rejects preview, local, missing, and unrelated origins", async () => {
     for (const origin of [
       null,
+      "https://conduit-market-coo.pages.dev",
+      "https://conduit-merchant-33n.pages.dev",
+      "https://branch.conduit-market-coo.pages.dev",
+      "https://abc123.conduit-merchant-33n.pages.dev",
+      "https://branch.conduit-market-signet.pages.dev",
+      "http://localhost:7000",
+      "http://127.0.0.1:7001",
+      "https://shop.conduit.market.",
       "https://nested.branch.conduit-market-coo.pages.dev",
       "https://shop.conduit.market.evil.example",
       "https://shop.conduit.market/",
@@ -258,6 +264,36 @@ describe("PostHog reverse proxy", () => {
 
       expect(response.status).toBe(403)
     }
+  })
+
+  it("does not contact PostHog when previews inherit production configuration", async () => {
+    let upstreamCalls = 0
+    const fetcher = async (): Promise<Response> => {
+      upstreamCalls += 1
+      return new Response("ok")
+    }
+
+    for (const [origin, app] of [
+      ["https://branch.conduit-market-coo.pages.dev", "market"],
+      ["https://abc123.conduit-merchant-33n.pages.dev", "merchant"],
+    ] as const) {
+      const response = await handlePostHogProxyRequest(
+        ingestRequest(
+          makeBrowserTelemetryEvent("app_load_result", {
+            app,
+            page_url: `${origin}/products/:productId`,
+          }),
+          origin
+        ),
+        fetcher,
+        { POSTHOG_PROJECT_TOKEN: PROJECT_TOKEN }
+      )
+
+      expect(response.status).toBe(403)
+      expect(response.headers.get("access-control-allow-origin")).toBeNull()
+      expect(await response.json()).toEqual({ error: "origin_not_allowed" })
+    }
+    expect(upstreamCalls).toBe(0)
   })
 
   it("rejects non-ingest paths, methods, and encoded bodies", async () => {
@@ -433,10 +469,6 @@ describe("PostHog reverse proxy", () => {
     for (const [origin, app] of [
       ["https://shop.conduit.market", "market"],
       ["https://sell.conduit.market", "merchant"],
-      ["https://conduit-market-coo.pages.dev", "market"],
-      ["https://conduit-merchant-33n.pages.dev", "merchant"],
-      ["https://branch.conduit-market-coo.pages.dev", "market"],
-      ["https://branch.conduit-merchant-33n.pages.dev", "merchant"],
     ] as const) {
       const callsBefore = upstreamCalls
       const response = await handlePostHogProxyRequest(
@@ -447,7 +479,8 @@ describe("PostHog reverse proxy", () => {
           }),
           origin
         ),
-        fetcher
+        fetcher,
+        { POSTHOG_PROJECT_TOKEN: PROJECT_TOKEN }
       )
 
       expect(response.status).toBe(200)
@@ -502,42 +535,17 @@ describe("PostHog reverse proxy", () => {
       expect(await response.json()).toEqual({ status: "dropped" })
     }
 
-    for (const [origin, properties] of [
-      [
-        "https://shop.conduit.market",
-        {
+    const previewPageContext = await handlePostHogProxyRequest(
+      ingestRequest(
+        makeBrowserTelemetryEvent("app_load_result", {
           app: "market",
           page_url: "https://conduit-market-coo.pages.dev/products/:productId",
-        },
-      ],
-      [
-        "https://branch-a.conduit-market-coo.pages.dev",
-        {
-          app: "market",
-          page_url:
-            "https://branch-b.conduit-market-coo.pages.dev/products/:productId",
-        },
-      ],
-      [
-        "https://branch.conduit-market-coo.pages.dev",
-        {
-          app: "merchant",
-          page_url:
-            "https://branch.conduit-merchant-33n.pages.dev/products/:productId",
-        },
-      ],
-    ] as const) {
-      const response = await handlePostHogProxyRequest(
-        ingestRequest(
-          makeBrowserTelemetryEvent("app_load_result", properties),
-          origin
-        ),
-        fetcher
-      )
-
-      expect(response.status).toBe(200)
-      expect(await response.json()).toEqual({ status: "dropped" })
-    }
+        })
+      ),
+      fetcher
+    )
+    expect(previewPageContext.status).toBe(200)
+    expect(await previewPageContext.json()).toEqual({ status: "dropped" })
 
     for (const event of [
       makeEvent({ event: "$pageleave" }, { $prev_pageview_pathname: "/cart" }),

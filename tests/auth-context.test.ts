@@ -523,6 +523,16 @@ describe("NIP-46 AuthContext API", () => {
     expect(source).toContain('sessionDisposition: "discard"')
     expect(source).toContain("revocation?.freshRevisionPersisted === true")
     expect(source).toContain("cleanupInvalidatedAuthSession(options.session")
+    const explicitDisconnect = source.slice(
+      source.indexOf("const disconnectWithoutLock"),
+      source.indexOf(
+        "const disconnect =",
+        source.indexOf("const disconnectWithoutLock")
+      )
+    )
+    expect(explicitDisconnect).toContain(
+      "retireExpectedKeyOnMetadataFailure: true"
+    )
     expect(source).toContain("recoverySession.current")
     expect(source).toContain("authorityDisplacedSession.current")
     expect(source).toContain("REMOTE_SIGNER_RECOVERY_REPLACED_MESSAGE")

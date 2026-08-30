@@ -959,6 +959,8 @@ function getShippingProjection(product: ProductSchema) {
     sourceShippingCost: product.sourceShippingCost,
     shippingOptionId: product.shippingOptionId,
     shippingOptionDTag: product.shippingOptionDTag,
+    shippingOptionRefs: product.shippingOptionRefs,
+    collectionRefs: product.collectionRefs,
     shippingCountries: product.shippingCountries,
     shippingCountryRules: product.shippingCountryRules,
   }
@@ -1290,6 +1292,8 @@ function copyShippingProjection(
     "sourceShippingCost",
     "shippingOptionId",
     "shippingOptionDTag",
+    "shippingOptionRefs",
+    "collectionRefs",
     "shippingCountries",
     "shippingCountryRules",
   ] as const) {
@@ -1399,6 +1403,8 @@ function buildVariationProduct(
       sourceShippingCost: undefined,
       shippingOptionId: undefined,
       shippingOptionDTag: undefined,
+      shippingOptionRefs: undefined,
+      collectionRefs: undefined,
       shippingCountries: undefined,
       shippingCountryRules: undefined,
     })

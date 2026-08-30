@@ -1327,6 +1327,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         try {
           await cleanupInvalidatedAuthSession(expectedSession, {
             withLock: async (task) => task(),
+            retireExpectedKeyOnMetadataFailure: true,
           })
         } catch (cause) {
           const message = authorityWasRevoked

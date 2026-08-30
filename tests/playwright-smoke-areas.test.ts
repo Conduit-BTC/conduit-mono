@@ -55,6 +55,29 @@ describe("Playwright smoke area validation", () => {
     expect(playwrightConfig).toContain("reuseExistingServer: false")
   })
 
+  it("starts both apps for current dual-tagged cross-app smoke", () => {
+    expect(playwrightConfig).toContain(
+      "dual-tagged\n  // cross-app smoke runs in both existing shards"
+    )
+    expect(playwrightConfig).toContain("bun run --filter @conduit/market dev")
+    expect(playwrightConfig).toContain("bun run --filter @conduit/merchant dev")
+    expect(playwrightConfig).not.toContain(
+      '...(smokeArea === "all" || smokeArea === "market"'
+    )
+    expect(playwrightConfig).not.toContain(
+      '...(smokeArea === "all" || smokeArea === "merchant"'
+    )
+  })
+
+  it("serializes current area shards while they share cross-app state", () => {
+    expect(playwrightConfig).toContain(
+      'workers: smokeArea === "all" ? (CI ? 2 : undefined) : 1'
+    )
+    expect(playwrightConfig).toContain(
+      "Keep them single-worker until CND-193 isolates @commerce"
+    )
+  })
+
   it("runs read-only CI jobs for bot-authored pull requests", () => {
     expect(ciWorkflow).not.toContain("github.actor != 'github-actions[bot]'")
     expect(prTitleWorkflow).not.toContain(
