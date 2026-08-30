@@ -18,6 +18,15 @@ export type BtcUsdRateQuote = {
 
 export type PricingRateInput = number | BtcUsdRateQuote | null
 
+export interface CommercePriceNormalizationOptions {
+  /**
+   * Admit an exact zero only for Bitcoin-native denominations. Callers must
+   * supply separate, authenticated fulfillment authority before using this to
+   * create a zero-cost order; ordinary commerce pricing remains positive-only.
+   */
+  allowZero?: boolean
+}
+
 export type CommercePriceNormalization =
   | {
       status: "ok"
@@ -365,7 +374,8 @@ function toSafeShippingSats(value: unknown): number | null {
 export function normalizeCommercePrice(
   amount: number,
   currency: string,
-  rateInput: PricingRateInput = null
+  rateInput: PricingRateInput = null,
+  options: CommercePriceNormalizationOptions = {}
 ): CommercePriceNormalization {
   const source = sourceQuote(amount, currency)
   const btcUsdRate = getBtcUsdRate(rateInput)
@@ -379,7 +389,7 @@ export function normalizeCommercePrice(
   }
 
   if (isSatsLikeCurrency(source.normalizedCurrency)) {
-    const sats = toSafeIntegerSats(amount)
+    const sats = toSafeIntegerSats(amount, options.allowZero ? 0 : 1)
     if (sats === null) {
       return invalidPrice(
         amount,
@@ -391,7 +401,10 @@ export function normalizeCommercePrice(
   }
 
   if (isMsatsLikeCurrency(source.normalizedCurrency)) {
-    const sats = toSafeIntegerSats(amount / MSATS_PER_SAT)
+    const sats = toSafeIntegerSats(
+      amount / MSATS_PER_SAT,
+      options.allowZero ? 0 : 1
+    )
     if (sats === null) {
       return invalidPrice(
         amount,
@@ -403,7 +416,11 @@ export function normalizeCommercePrice(
   }
 
   if (isBtcLikeCurrency(source.normalizedCurrency)) {
-    const sats = toSafeIntegerSats(amount * SATS_PER_BTC, 1, 1e-6)
+    const sats = toSafeIntegerSats(
+      amount * SATS_PER_BTC,
+      options.allowZero ? 0 : 1,
+      1e-6
+    )
     if (sats === null) {
       return invalidPrice(
         amount,
@@ -466,7 +483,11 @@ export function canonicalizeProductPrice<T extends CommercePriceLike>(
   const normalized = normalizeCommercePrice(
     product.price,
     product.currency,
-    rateInput
+    rateInput,
+    // Canonical projection records an exact native zero without authorizing a
+    // payment or checkout. Consequential callers still need explicit
+    // `allowZero` plus authenticated pickup evidence.
+    { allowZero: true }
   )
 
   const sourcePrice = product.sourcePrice ?? normalized.source
@@ -498,8 +519,37 @@ export function canonicalizeProductPrice<T extends CommercePriceLike>(
 
 export function getPriceSats(
   price: CommercePriceLike,
-  rateInput: PricingRateInput = null
+  rateInput: PricingRateInput = null,
+  options: CommercePriceNormalizationOptions = {}
 ): { sats: number; approximate: boolean } | null {
+  if (options.allowZero && price.priceSats === 0) {
+    const source = price.sourcePrice
+    const sourceCurrency =
+      source?.normalizedCurrency || source?.currency || price.currency
+    const sourceIsCanonical =
+      !!source &&
+      source.amount === 0 &&
+      normalizeCurrencyCode(source.currency) ===
+        normalizeCurrencyCode(source.normalizedCurrency)
+    const normalized = normalizeCommercePrice(
+      source?.amount ?? price.price,
+      sourceCurrency,
+      rateInput,
+      options
+    )
+    if (
+      sourceIsCanonical &&
+      price.price === 0 &&
+      isSatsLikeCurrency(normalizeCurrencyCode(price.currency)) &&
+      normalized.status === "ok" &&
+      normalized.sats === 0 &&
+      !normalized.approximate
+    ) {
+      return { sats: 0, approximate: false }
+    }
+    return null
+  }
+
   if (
     typeof price.priceSats === "number" &&
     Number.isSafeInteger(price.priceSats) &&
@@ -516,9 +566,11 @@ export function getPriceSats(
   const normalized = normalizeCommercePrice(
     price.price,
     price.currency,
-    rateInput
+    rateInput,
+    options
   )
   if (normalized.status !== "ok") return null
+  if (normalized.sats === 0) return null
   return { sats: normalized.sats, approximate: normalized.approximate }
 }
 
@@ -712,6 +764,8 @@ export interface ShopperPriceDisplayOptions {
   nowMs?: number
   maxRateAgeMs?: number
   settledSatsAreAuthoritative?: boolean
+  /** Display a canonical native zero only after the caller verifies pickup. */
+  allowZero?: boolean
 }
 
 function getApproximateUsdReference(
@@ -746,8 +800,23 @@ export function getShopperPriceDisplay(
   const locale = options.locale ?? "en-US"
   const source = getDisplaySource(price)
   const sourceCurrency = source?.normalizedCurrency ?? price.currency
+  const allowedZero = options.allowZero
+    ? getPriceSats(price, quote, { allowZero: true })
+    : null
+  if (allowedZero?.sats === 0) {
+    return {
+      state: "ready",
+      primary: "Free",
+      secondary: formatBitcoinBaseUnits(0, "sats", locale),
+      approximateUsd: null,
+      displayCurrency: normalizedPreference.currency,
+      sats: 0,
+      approximate: false,
+      source,
+    }
+  }
   const recordedSats = options.settledSatsAreAuthoritative
-    ? getPriceSats(price)
+    ? getPriceSats(price, null, { allowZero: options.allowZero })
     : null
   const authoritativeSats = recordedSats
     ? { sats: recordedSats.sats, approximate: false }
@@ -951,8 +1020,34 @@ export function getShopperSatsDisplay(
     maxRateAgeMs?: number
   } = {}
 ): ShopperPriceDisplay {
+  if (sats === 0) {
+    const preferenceValue = normalizeShopperPricePreference(preference)
+    return {
+      state: "ready",
+      primary: formatBitcoinBaseUnits(0, "sats", options.locale ?? "en-US"),
+      secondary: null,
+      approximateUsd: null,
+      displayCurrency: preferenceValue.currency,
+      sats: 0,
+      approximate: false,
+      source: {
+        amount: 0,
+        currency: "SATS",
+        normalizedCurrency: "SATS",
+      },
+    }
+  }
   const display = getShopperPriceDisplay(
-    { price: sats, currency: "SATS", priceSats: sats },
+    {
+      price: sats,
+      currency: "SATS",
+      priceSats: sats,
+      sourcePrice: {
+        amount: sats,
+        currency: "SATS",
+        normalizedCurrency: "SATS",
+      },
+    },
     preference,
     quote,
     options

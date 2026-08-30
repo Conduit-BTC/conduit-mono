@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 import {
   addProductTags,
   buildProductShippingMetadata,
+  canUseZeroProductPrice,
   canSubmitProductForm,
   formatProductTags,
   getProductShippingPricingMode,
@@ -46,9 +47,13 @@ function form(
 
 function validate(
   values: ProductPublishFormValues,
-  hasPresetShippingZone = false
+  hasPresetShippingZone = false,
+  allowZeroPrice = false
 ) {
-  return validateProductPublishForm(values, { hasPresetShippingZone })
+  return validateProductPublishForm(values, {
+    hasPresetShippingZone,
+    allowZeroPrice,
+  })
 }
 
 describe("merchant product form validation", () => {
@@ -128,6 +133,13 @@ describe("merchant product form validation", () => {
     const values: MerchantProductFormValues = {
       ...form({ usePresetShippingZone: true }),
       summary: "",
+      fulfillment: "ship",
+      eventMarketReference: "",
+      eventHandoffMode: "merchant_handoff",
+      merchantPickupTitle: "Merchant booth pickup",
+      merchantPickupLocation: "",
+      merchantPickupGeohash: "",
+      merchantPickupCountry: "US",
       publicZapEnabled: true,
       zapMessagePolicy: "generic_only",
     }
@@ -314,6 +326,64 @@ describe("merchant product form validation", () => {
     expect(privateImage.errors.imageUrl).toBe(
       "Image URL must use a public network destination."
     )
+  })
+
+  it("requires an explicit verified pickup lane before accepting zero", () => {
+    const defaultNative = validate(form({ price: "0", currency: "SATS" }))
+    const verifiedNative = validate(
+      form({ price: "0", currency: "SATS" }),
+      false,
+      true
+    )
+    const verifiedFiat = validate(
+      form({ price: "0", currency: "USD" }),
+      false,
+      true
+    )
+
+    expect(defaultNative.errors.price).toContain("greater than zero")
+    expect(verifiedNative.canPublish).toBe(true)
+    expect(verifiedFiat.errors.price).toContain("BTC-native")
+  })
+
+  it("recognizes only explicit verified merchant or organizer pickup as zero-price eligible", () => {
+    for (const handoffMode of [
+      "merchant_handoff",
+      "organizer_handoff",
+    ] as const) {
+      expect(
+        canUseZeroProductPrice({
+          fulfillment: "local_pickup",
+          handoffMode,
+          evidenceVerified: true,
+        })
+      ).toBe(true)
+    }
+
+    for (const candidate of [
+      {
+        fulfillment: "local_pickup",
+        handoffMode: "merchant_handoff",
+        evidenceVerified: false,
+      },
+      {
+        fulfillment: "ship",
+        handoffMode: "merchant_handoff",
+        evidenceVerified: true,
+      },
+      {
+        fulfillment: "digital",
+        handoffMode: "organizer_handoff",
+        evidenceVerified: true,
+      },
+      {
+        fulfillment: "local_pickup",
+        handoffMode: "unsupported",
+        evidenceVerified: true,
+      },
+    ]) {
+      expect(canUseZeroProductPrice(candidate)).toBe(false)
+    }
   })
 
   it("rejects exponent and signed amount syntax", () => {

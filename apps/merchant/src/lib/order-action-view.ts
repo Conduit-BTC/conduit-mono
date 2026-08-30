@@ -1,4 +1,4 @@
-import type { MerchantOrderAction } from "@conduit/core"
+import type { MerchantOrderAction, OrderSchema } from "@conduit/core"
 
 export type MerchantOrderNextStep =
   "primary_action" | "invoice" | "shipping" | "out_of_band_payment" | null
@@ -15,6 +15,7 @@ interface MerchantOrderActionViewInput {
   canSendInvoice: boolean
   canRecordShipping: boolean
   canRequestPaymentOutOfBand: boolean
+  fulfillmentActionsAuthorized?: boolean
 }
 
 export interface MerchantOrderActionView {
@@ -24,14 +25,51 @@ export interface MerchantOrderActionView {
   hasNextStep: boolean
 }
 
+export interface ZeroCostPickupTermsInput {
+  order: Pick<OrderSchema, "items" | "subtotal" | "shippingCostSats"> | null
+  fulfillmentMode: "shipping" | "pickup" | "digital" | "unknown"
+  requiresShipping: boolean
+}
+
+export function hasExactZeroCostPickupTerms(
+  input: ZeroCostPickupTermsInput
+): boolean {
+  return Boolean(
+    input.order &&
+    input.fulfillmentMode === "pickup" &&
+    !input.requiresShipping &&
+    input.order.items.length > 0 &&
+    input.order.subtotal === 0 &&
+    (input.order.shippingCostSats ?? 0) === 0 &&
+    input.order.items.every(
+      (item) =>
+        item.fulfillment?.type === "pickup" &&
+        item.priceAtPurchase === 0 &&
+        (item.shippingCostSats ?? 0) === 0
+    )
+  )
+}
+
+export function isAuthorizedZeroCostPickup(
+  input: ZeroCostPickupTermsInput & {
+    pickupAuthorizationVerified: boolean
+  }
+): boolean {
+  return input.pickupAuthorizationVerified && hasExactZeroCostPickupTerms(input)
+}
+
 export function buildMerchantOrderActionView({
   actions,
   canSendInvoice,
   canRecordShipping,
   canRequestPaymentOutOfBand,
+  fulfillmentActionsAuthorized = true,
 }: MerchantOrderActionViewInput): MerchantOrderActionView {
   const primaryButtonActions = actions.filter(
-    (action) => action.kind === "primary" && action.action !== "record_shipment"
+    (action) =>
+      action.kind === "primary" &&
+      action.action !== "record_shipment" &&
+      (fulfillmentActionsAuthorized || action.action !== "complete")
   )
   const destructiveActions = actions.filter(
     (action) => action.kind === "destructive"
@@ -39,7 +77,7 @@ export function buildMerchantOrderActionView({
   const nextStep: MerchantOrderNextStep =
     primaryButtonActions.length > 0
       ? "primary_action"
-      : canRecordShipping
+      : canRecordShipping && fulfillmentActionsAuthorized
         ? "shipping"
         : canSendInvoice
           ? "invoice"

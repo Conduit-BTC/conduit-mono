@@ -28,19 +28,26 @@ import {
   getProfileNip05,
 } from "../../components/MerchantIdentity"
 import { ProductDescriptionMarkdown } from "../../components/ProductDescriptionMarkdown"
-import {
-  ProductGridCard,
-  ProductGridCardSkeleton,
-} from "../../components/ProductGridCard"
+import { ProductGridCardSkeleton } from "../../components/ProductGridCard"
+import { ResolvedProductGridCard } from "../../components/ResolvedProductGridCard"
 import { ProductVariationSelector } from "../../components/ProductVariationSelector"
 import { useShopperPricing } from "../../hooks/useShopperPricing"
 import { useCart } from "../../hooks/useCart"
+import { useProductCartFulfillment } from "../../hooks/useProductCartFulfillment"
 import {
   useProgressiveProductDetail,
   useProgressiveProducts,
 } from "../../hooks/useProgressiveProducts"
-import { getProductAddAvailability, selectCartItem } from "../../lib/cart-model"
+import {
+  getProductAddAvailability,
+  isSameCartFulfillment,
+  selectCartItem,
+} from "../../lib/cart-model"
 import { getProductDisplaySummary } from "../../lib/productDisplaySummary"
+import {
+  getPickupHandoffPrivacyCopy,
+  getPickupHandoffSummary,
+} from "../../lib/pickup-handoff"
 import {
   cartItemInputFromProductSelection,
   getProductSelection,
@@ -86,6 +93,10 @@ function ProductPage() {
   const selectedProduct = product
     ? getProductSelection(product, family, selectedProductId)
     : null
+  const productCartFulfillment = useProductCartFulfillment(
+    selectedProduct,
+    shopperPricing.quote
+  )
   const listingSafety = productQuery.listingSafety
   const listingSafetyDisplay = listingSafety
     ? getListingSafetyDisplay(listingSafety)
@@ -139,14 +150,60 @@ function ProductPage() {
         productId: selectedProduct.id,
       })
     : null
-  const cartQuantity = cartItem?.quantity ?? 0
+  const productCartResolution = productCartFulfillment.resolution
+  const productPickupHandoff =
+    productCartResolution?.status === "pickup"
+      ? getPickupHandoffSummary(productCartResolution.fulfillment)
+      : null
+  const productCartCandidate = productCartResolution
+    ? productCartResolution.status === "pickup"
+      ? cartItemInputFromProductSelection(
+          product!,
+          productCartResolution.product,
+          productCartResolution.fulfillment
+        )
+      : productCartResolution.status === "standard"
+        ? cartItemInputFromProductSelection(
+            product!,
+            productCartResolution.product,
+            { type: productCartResolution.type }
+          )
+        : null
+    : null
+  const cartFulfillmentMatches =
+    !!cartItem &&
+    !!productCartCandidate &&
+    isSameCartFulfillment(cartItem, productCartCandidate)
+  const cartFulfillmentConflict = !!cartItem && !cartFulfillmentMatches
+  const productCartBlocked =
+    productCartFulfillment.isChecking ||
+    productCartResolution?.status === "blocked" ||
+    !productCartCandidate ||
+    cartFulfillmentConflict
+  const productEventNaddr =
+    productCartResolution?.status === "pickup" ||
+    productCartResolution?.status === "blocked"
+      ? productCartResolution.canonicalNaddr
+      : productCartFulfillment.candidateNaddr
+  const productFulfillmentNotice = productCartFulfillment.isChecking
+    ? "Checking current signed event pickup evidence before this listing can be added."
+    : cartFulfillmentConflict
+      ? "This listing is already in your cart with different fulfillment. Remove that line before adding it here."
+      : productCartResolution?.status === "blocked"
+        ? productCartResolution.reason
+        : productPickupHandoff
+          ? `${productPickupHandoff.label}. The exact pickup author is ${formatNpub(productPickupHandoff.handlerPubkey, 10)}. No delivery address is requested. ${getPickupHandoffPrivacyCopy(productPickupHandoff)}`
+          : null
+  const cartQuantity = cartFulfillmentMatches ? cartItem.quantity : 0
   const productAddAvailability = getProductAddAvailability(
     selectedProduct?.stock,
     cartQuantity,
     quantity
   )
   const priceDisplay = selectedProduct
-    ? shopperPricing.formatPrice(selectedProduct)
+    ? shopperPricing.formatPrice(selectedProduct, {
+        allowZero: productCartResolution?.status === "pickup",
+      })
     : null
   const updatedLabel = product
     ? new Intl.DateTimeFormat("en-US", {
@@ -267,14 +324,17 @@ function ProductPage() {
   }
 
   function addProductToCart(): void {
-    if (!product || !selectedProduct || !productAddAvailability.canAdd) return
+    if (
+      !product ||
+      !selectedProduct ||
+      !productCartCandidate ||
+      productCartBlocked ||
+      !productAddAvailability.canAdd
+    ) {
+      return
+    }
     recordProductDetailAction("add_to_cart")
-    cart.addItem(
-      {
-        ...cartItemInputFromProductSelection(product, selectedProduct),
-      },
-      quantity
-    )
+    cart.addItem(productCartCandidate, quantity)
   }
 
   const productRefreshing = productQuery.isHydrating
@@ -621,7 +681,7 @@ function ProductPage() {
                   >
                     <button
                       type="button"
-                      disabled={productSoldOut}
+                      disabled={productSoldOut || productCartBlocked}
                       className="flex h-full w-10 items-center justify-center text-lg text-[var(--text-primary)] transition-colors hover:bg-[var(--surface)] disabled:cursor-not-allowed"
                       aria-label="Decrease quantity"
                       onClick={() =>
@@ -636,7 +696,9 @@ function ProductPage() {
                     <button
                       type="button"
                       disabled={
-                        productSoldOut || !productAddAvailability.canIncrement
+                        productSoldOut ||
+                        productCartBlocked ||
+                        !productAddAvailability.canIncrement
                       }
                       className="flex h-full w-10 items-center justify-center text-lg text-[var(--text-primary)] transition-colors hover:bg-[var(--surface)] disabled:cursor-not-allowed disabled:opacity-40"
                       aria-label={
@@ -655,18 +717,41 @@ function ProductPage() {
 
                   <Button
                     className="min-w-[12rem] flex-1"
-                    disabled={!productAddAvailability.canAdd}
+                    disabled={
+                      productCartBlocked || !productAddAvailability.canAdd
+                    }
                     onClick={addProductToCart}
                   >
                     {productSoldOut
                       ? "Sold out"
-                      : productAddAvailability.remainingStock === 0
-                        ? "Stock limit reached"
-                        : cartQuantity > 0
-                          ? `Add more (${cartQuantity} in cart)`
-                          : `Add ${quantity} to cart`}
+                      : productCartFulfillment.isChecking
+                        ? "Checking event pickup"
+                        : cartFulfillmentConflict
+                          ? "Review cart fulfillment"
+                          : productCartResolution?.status === "blocked"
+                            ? "Review event catalog"
+                            : productAddAvailability.remainingStock === 0
+                              ? "Stock limit reached"
+                              : cartQuantity > 0
+                                ? `Add more (${cartQuantity} in cart)`
+                                : `Add ${quantity} to cart`}
                   </Button>
                 </div>
+
+                {productFulfillmentNotice ? (
+                  <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-xs leading-5 text-[var(--text-secondary)]">
+                    <span>{productFulfillmentNotice}</span>{" "}
+                    {productEventNaddr ? (
+                      <Link
+                        to="/events/$collectionRef"
+                        params={{ collectionRef: productEventNaddr }}
+                        className="font-medium text-secondary-400 hover:text-secondary-300"
+                      >
+                        View event catalog
+                      </Link>
+                    ) : null}
+                  </div>
+                ) : null}
 
                 <Button asChild variant="outline" className="w-full">
                   <Link
@@ -843,7 +928,7 @@ function ProductPage() {
                 {relatedProducts.map((relatedProduct, index) => {
                   return (
                     <li key={relatedProduct.id}>
-                      <ProductGridCard
+                      <ResolvedProductGridCard
                         product={relatedProduct}
                         family={
                           relatedProductsQuery.familiesByProductId[
@@ -856,54 +941,6 @@ function ProductPage() {
                         imageLoading={index < 4 ? "eager" : "lazy"}
                         btcUsdRate={shopperPricing.quote}
                         pricePreference={shopperPricing.preference}
-                        getCartQuantity={(relatedSelection) =>
-                          cart.items.find(
-                            (item) =>
-                              item.merchantPubkey === relatedSelection.pubkey &&
-                              item.productId === relatedSelection.id
-                          )?.quantity ?? 0
-                        }
-                        onAddToCart={(relatedSelection) =>
-                          cart.addItem(
-                            {
-                              ...cartItemInputFromProductSelection(
-                                relatedProduct,
-                                relatedSelection
-                              ),
-                            },
-                            1
-                          )
-                        }
-                        onIncrement={(relatedSelection) =>
-                          cart.addItem(
-                            {
-                              ...cartItemInputFromProductSelection(
-                                relatedProduct,
-                                relatedSelection
-                              ),
-                            },
-                            1
-                          )
-                        }
-                        onDecrement={(relatedSelection) => {
-                          const relatedIdentity = {
-                            merchantPubkey: relatedSelection.pubkey,
-                            productId: relatedSelection.id,
-                          }
-                          const relatedCartItem = selectCartItem(
-                            cart.items,
-                            relatedIdentity
-                          )
-                          if (!relatedCartItem) return
-                          if (relatedCartItem.quantity <= 1) {
-                            cart.removeItem(relatedIdentity)
-                            return
-                          }
-                          cart.setQuantity(
-                            relatedIdentity,
-                            relatedCartItem.quantity - 1
-                          )
-                        }}
                       />
                     </li>
                   )

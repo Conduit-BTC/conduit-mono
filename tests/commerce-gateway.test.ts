@@ -10,6 +10,7 @@ import {
   getCachedMerchantConversationList,
   getCachedMerchantStorefront,
   getCachedMarketplaceProducts,
+  getEventMarketPrivateMessageList,
   cacheSignedProductDeletionEvent,
   cacheSignedProductListingEvent,
   getConversationDetail,
@@ -187,6 +188,8 @@ function makeSignedProductEvent(params: {
   createdAt: number
   title: string
   stock?: number
+  contentPrice?: number
+  tagPrice?: number
 }): NDKEvent {
   const secretKey = params.secretKey ?? MERCHANT_A_SECRET
   const pubkey = getPublicKey(secretKey)
@@ -198,7 +201,7 @@ function makeSignedProductEvent(params: {
         id: `30402:${pubkey}:${params.dTag}`,
         pubkey,
         title: params.title,
-        price: 25,
+        price: params.contentPrice ?? 25,
         currency: "USD",
         type: "simple",
         visibility: "public",
@@ -213,7 +216,7 @@ function makeSignedProductEvent(params: {
       tags: [
         ["d", params.dTag],
         ["title", params.title],
-        ["price", "25", "USD"],
+        ["price", String(params.tagPrice ?? 25), "USD"],
         ["t", "test"],
         ...(typeof params.stock === "number"
           ? [["stock", String(params.stock)]]
@@ -1523,6 +1526,34 @@ describe("commerce gateway", () => {
     expect(result.data[0]?.product.title).toBe("Signed Local Item")
   })
 
+  it("retains conflicting signed price evidence across the product cache round trip", async () => {
+    const signedProduct = makeSignedProductEvent({
+      dTag: "conflicting-price-cache",
+      createdAt: 100,
+      title: "Conflicting Price Cache",
+      contentPrice: 25,
+      tagPrice: 30,
+    })
+    await cacheSignedProductListingEvent(signedProduct)
+
+    expect(cachedProducts).toHaveLength(1)
+    expect(cachedProducts[0]).toMatchObject({
+      price: 30,
+      currency: "USD",
+      priceEvidenceMalformed: true,
+    })
+    const result = await getCachedMerchantStorefront({
+      merchantPubkey: signedProduct.pubkey,
+      limit: 10,
+      includeMarketHidden: true,
+    })
+    expect(result.data[0]?.product).toMatchObject({
+      price: 30,
+      currency: "USD",
+      priceEvidenceMalformed: true,
+    })
+  })
+
   it("refuses to project an invalid product signature as local truth", async () => {
     const invalid = makeSignedProductEvent({
       dTag: "invalid-signature-item",
@@ -2703,6 +2734,104 @@ describe("commerce gateway", () => {
     expect(unwrapCalls).toBe(2)
     expect(second.data).toHaveLength(1)
     expect(second.data[0]?.orderId).toBe("order-3")
+  })
+
+  it("keeps organizer handoff rumors out of the generic order cache", async () => {
+    let unwrapCalls = 0
+    const merchantPubkey = "a".repeat(64)
+    const organizerPubkey = "b".repeat(64)
+    const claimRef = "c".repeat(64)
+    const wrappedEvent = {
+      id: "handoff-wrap",
+      kind: EVENT_KINDS.GIFT_WRAP,
+      pubkey: "wrapper",
+      created_at: 100,
+      content: "wrapped",
+      tags: [["p", merchantPubkey]],
+    }
+    const handoffRumor = {
+      id: "d".repeat(64),
+      kind: EVENT_KINDS.ORDER,
+      pubkey: merchantPubkey,
+      created_at: 101,
+      content: JSON.stringify({
+        version: 1,
+        type: "organizer_fulfillment_receipt",
+        state: "ready_for_pickup",
+        paymentConfirmed: true,
+        orderReady: true,
+        releaseAuthorized: true,
+        claimRef,
+        merchantPubkey,
+        organizerPubkey,
+        calendar: {
+          coordinate: `31923:${organizerPubkey}:market-day`,
+          eventId: "e".repeat(64),
+          createdAt: FIXED_NOW,
+        },
+        collection: {
+          coordinate: `30405:${organizerPubkey}:market-catalog`,
+          eventId: "f".repeat(64),
+          createdAt: FIXED_NOW + 1_000,
+        },
+        option: {
+          coordinate: `30406:${organizerPubkey}:market-pickup`,
+          eventId: "1".repeat(64),
+          createdAt: FIXED_NOW + 2_000,
+        },
+        items: [
+          {
+            product: {
+              coordinate: `30402:${merchantPubkey}:coffee`,
+              eventId: "2".repeat(64),
+              createdAt: FIXED_NOW + 3_000,
+            },
+            quantity: 1,
+            variants: [],
+          },
+        ],
+        issuedAt: Math.floor(FIXED_NOW / 1_000),
+      }),
+      tags: [
+        ["p", organizerPubkey],
+        ["type", "organizer_fulfillment_receipt"],
+        ["claim", claimRef],
+      ],
+    }
+
+    __setCommerceTestOverrides({
+      allowMissingProtectedReadAuthorization: true,
+      getNdk: async () => ({ signer: {} }) as never,
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
+          ? ([wrappedEvent] as never)
+          : [],
+      giftUnwrap: async () => {
+        unwrapCalls += 1
+        return handoffRumor as never
+      },
+    })
+
+    const first = await getMerchantConversationList({
+      principalPubkey: merchantPubkey,
+      limit: 50,
+    })
+    const second = await getMerchantConversationList({
+      principalPubkey: merchantPubkey,
+      limit: 50,
+    })
+
+    expect(first.data).toHaveLength(0)
+    expect(second.data).toHaveLength(0)
+    expect(unwrapCalls).toBe(1)
+    expect(cachedOrderMessages).toHaveLength(0)
+
+    const strictHandoffRead =
+      await getEventMarketPrivateMessageList(merchantPubkey)
+    expect(strictHandoffRead.messages.map((message) => message.type)).toEqual([
+      "organizer_fulfillment_receipt",
+    ])
+    expect(unwrapCalls).toBe(2)
   })
 
   it("keeps payment-proof-only merchant conversations visible without marking them paid", async () => {

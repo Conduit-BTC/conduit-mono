@@ -15,6 +15,7 @@ import {
   getCartProductAvailability,
   getCartItemKey,
   getCartCostSummary,
+  getCartCommerceFingerprint,
   getCartPublicZapPolicy,
   getCartTotals,
   getProductAddAvailability,
@@ -29,6 +30,7 @@ import {
   selectCartItemQuantity,
   serializeCartState,
   setCartItemQuantity,
+  type CartPickupFulfillment,
   type CartItem,
 } from "../apps/market/src/lib/cart-model"
 import { prepareCartFulfillment } from "../apps/market/src/lib/cart-shipping-options"
@@ -42,6 +44,42 @@ function item(overrides: Partial<CartItem> = {}): CartItem {
     currency: "SATS",
     quantity: 1,
     ...overrides,
+  }
+}
+
+function pickupFulfillment(): CartPickupFulfillment {
+  const organizer = "a".repeat(64)
+  const merchant = "b".repeat(64)
+  return {
+    type: "pickup",
+    organizerPubkey: organizer,
+    product: {
+      coordinate: `30402:${merchant}:product-a`,
+      eventId: "1".repeat(64),
+      createdAt: 100,
+      merchantPubkey: merchant,
+    },
+    calendar: {
+      coordinate: `31922:${organizer}:event-a`,
+      eventId: "2".repeat(64),
+      createdAt: 101,
+    },
+    collection: {
+      coordinate: `30405:${organizer}:market-a`,
+      eventId: "3".repeat(64),
+      createdAt: 102,
+    },
+    option: {
+      coordinate: `30406:${organizer}:pickup-a`,
+      eventId: "4".repeat(64),
+      createdAt: 103,
+      title: "Main entrance",
+      location: "Fixture Hall",
+    },
+    handoffMode: "organizer_handoff",
+    handlerPubkey: organizer,
+    costSats: 0,
+    sourceCost: { amount: 0, currency: "SAT", normalizedCurrency: "SAT" },
   }
 }
 
@@ -759,6 +797,48 @@ describe("cart model", () => {
     })
   })
 
+  it("round-trips signed pickup fulfillment through persisted cart storage", () => {
+    const fulfillment = pickupFulfillment()
+    const merchantPubkey = fulfillment.product.merchantPubkey
+    const persisted = serializeCartState({
+      items: [
+        item({
+          productId: fulfillment.product.coordinate,
+          merchantPubkey,
+          format: "physical",
+          fulfillment,
+        }),
+      ],
+    })
+
+    expect(parsePersistedCart(persisted).state.items[0]?.fulfillment).toEqual(
+      fulfillment
+    )
+  })
+
+  it("drops persisted cart rows with malformed pickup authority", () => {
+    const fulfillment = pickupFulfillment()
+    const merchantPubkey = fulfillment.product.merchantPubkey
+    const parsed = parsePersistedCart({
+      version: 2,
+      items: [
+        {
+          ...item({
+            productId: fulfillment.product.coordinate,
+            merchantPubkey,
+            format: "physical",
+          }),
+          fulfillment: {
+            ...fulfillment,
+            handlerPubkey: merchantPubkey,
+          },
+        },
+      ],
+    })
+
+    expect(parsed.state.items).toEqual([])
+  })
+
   it("deduplicates only exact identities using the latest snapshot", () => {
     const merchantHex = "a".repeat(64)
     const parsed = parsePersistedCart({
@@ -903,6 +983,116 @@ describe("cart model", () => {
       cartItemsMatchCurrentProducts(
         [cartItem],
         [{ ...product, type: "simple", parentProductId: undefined }]
+      )
+    ).toBe(false)
+  })
+
+  it("compares pickup cart terms against freshly resolved fulfillment", () => {
+    const fulfillment = pickupFulfillment()
+    const baseItem = item({
+      productId: fulfillment.product.coordinate,
+      merchantPubkey: fulfillment.product.merchantPubkey,
+    })
+    const product = refreshedProduct(baseItem)
+    const cartItem = {
+      ...createCartItemFromProduct(product, fulfillment),
+      quantity: 1,
+    }
+    const reorderedFulfillment: CartPickupFulfillment = {
+      sourceCost: { ...fulfillment.sourceCost },
+      costSats: fulfillment.costSats,
+      handlerPubkey: fulfillment.handlerPubkey,
+      handoffMode: fulfillment.handoffMode,
+      option: { ...fulfillment.option },
+      collection: { ...fulfillment.collection },
+      calendar: { ...fulfillment.calendar },
+      product: { ...fulfillment.product },
+      organizerPubkey: fulfillment.organizerPubkey,
+      type: "pickup",
+    }
+
+    expect(
+      cartItemsMatchCurrentProducts(
+        [cartItem],
+        [product],
+        new Map([[product.id, reorderedFulfillment]])
+      )
+    ).toBe(true)
+    expect(getCartCommerceFingerprint([cartItem])).toBe(
+      getCartCommerceFingerprint([
+        { ...cartItem, fulfillment: reorderedFulfillment },
+      ])
+    )
+  })
+
+  it("ignores only quote-derived pickup sats when signed source terms match", () => {
+    const storedFulfillment: CartPickupFulfillment = {
+      ...pickupFulfillment(),
+      costSats: 1_000,
+      sourceCost: {
+        amount: 1,
+        currency: "USD",
+        normalizedCurrency: "USD",
+      },
+    }
+    const baseItem = item({
+      productId: storedFulfillment.product.coordinate,
+      merchantPubkey: storedFulfillment.product.merchantPubkey,
+    })
+    const product = refreshedProduct(baseItem)
+    const cartItem = {
+      ...createCartItemFromProduct(product, storedFulfillment),
+      quantity: 1,
+    }
+    const refreshedFulfillment: CartPickupFulfillment = {
+      ...storedFulfillment,
+      costSats: 2_000,
+    }
+
+    expect(
+      cartItemsMatchCurrentProducts(
+        [cartItem],
+        [product],
+        new Map([[product.id, refreshedFulfillment]])
+      )
+    ).toBe(true)
+    expect(
+      cartItemsMatchCurrentProducts(
+        [cartItem],
+        [product],
+        new Map([
+          [
+            product.id,
+            {
+              ...refreshedFulfillment,
+              sourceCost: {
+                ...refreshedFulfillment.sourceCost,
+                amount: 2,
+              },
+            },
+          ],
+        ])
+      )
+    ).toBe(false)
+
+    const satsFulfillment: CartPickupFulfillment = {
+      ...storedFulfillment,
+      costSats: 1_000,
+      sourceCost: {
+        amount: 1_000,
+        currency: "SATS",
+        normalizedCurrency: "SATS",
+      },
+    }
+    const satsItem = {
+      ...createCartItemFromProduct(product, satsFulfillment),
+      quantity: 1,
+    }
+    expect(
+      cartItemsMatchCurrentProducts(
+        [satsItem],
+        [product],
+        new Map([[product.id, { ...satsFulfillment, costSats: 2_000 }]])
       )
     ).toBe(false)
   })

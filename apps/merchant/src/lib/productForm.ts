@@ -7,6 +7,7 @@ import {
   type ProductFulfillmentIntent,
   type ProductSchema,
   type ProductZapMessagePolicy,
+  type EventMarketHandoffMode,
 } from "@conduit/core"
 import type { ShippingConfig } from "./readiness"
 import { isShippingComplete } from "./readiness"
@@ -29,6 +30,21 @@ export const RECOMMENDED_MAX_PRODUCT_TAG_COUNT = 12
 export const MAX_PRODUCT_TAG_COUNT = 24
 export const MAX_PRODUCT_TAG_LENGTH = 40
 
+export type ProductFulfillmentChoice = "digital" | "ship" | "local_pickup"
+
+export function canUseZeroProductPrice(input: {
+  fulfillment: unknown
+  handoffMode: unknown
+  evidenceVerified: boolean
+}): boolean {
+  return (
+    input.evidenceVerified &&
+    input.fulfillment === "local_pickup" &&
+    (input.handoffMode === "merchant_handoff" ||
+      input.handoffMode === "organizer_handoff")
+  )
+}
+
 export interface ProductPublishFormValues {
   title: string
   price: string
@@ -47,6 +63,13 @@ export interface ProductPublishFormValues {
 export interface MerchantProductFormValues extends ProductPublishFormValues {
   summary: string
   variations: ProductVariationFormState
+  fulfillment: ProductFulfillmentChoice
+  eventMarketReference: string
+  eventHandoffMode: EventMarketHandoffMode
+  merchantPickupTitle: string
+  merchantPickupLocation: string
+  merchantPickupGeohash: string
+  merchantPickupCountry: string
   publicZapEnabled: boolean
   zapMessagePolicy: ProductZapMessagePolicy
 }
@@ -113,7 +136,9 @@ export function reconcileProductFormShippingPreset(
 ): MerchantProductFormValues {
   if (
     form.usePresetShippingZone &&
-    (!hasPresetShippingZone || form.format === "digital")
+    (!hasPresetShippingZone ||
+      form.format === "digital" ||
+      form.fulfillment !== "ship")
   ) {
     return { ...form, usePresetShippingZone: false }
   }
@@ -249,6 +274,7 @@ export function validateProductPublishForm(
   options: {
     hasPresetShippingZone: boolean
     presetShippingConfig?: ShippingConfig
+    allowZeroPrice?: boolean
   }
 ): ProductPublishFormValidation {
   const errors: Partial<Record<ProductPublishFormField, string>> = {}
@@ -267,7 +293,8 @@ export function validateProductPublishForm(
   try {
     normalizePublishableProductPrice(
       parsePlainDecimalAmount(form.price, "Price"),
-      currency
+      currency,
+      { allowZero: options.allowZeroPrice }
     )
   } catch (error) {
     addError(
