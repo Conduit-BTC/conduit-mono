@@ -70,8 +70,40 @@ const automationResidual =
 const sourceRunMarker = (headSha: string, runId = "321", runAttempt = "1") =>
   `<!-- conduit:sudden-review run=${runId} attempt=${runAttempt} head=${headSha} -->`
 
-const cleanReviewBody = (headSha: string, runId = "321", runAttempt = "1") =>
-  `${sourceRunMarker(headSha, runId, runAttempt)}\n<!-- conduit:sudden-review clean head=${headSha} -->\n## Verdict\n**Ready for human approval**\nMerge-readiness verdict: READY FOR HUMAN APPROVAL\nNo actionable findings.\n\n## Summary\n- Current-head review is clean.\n\n## Evidence\nNo public context update needed.\nReviewer-confirmed QA disposition: Maintainer-owned validation\n\n<details>\n<summary>Residual risks and automation limits</summary>\n\nWhat can still be wrong if all visible checks are green?\n- Deployment behavior remains maintainer-owned.\n\n${automationResidual}\n</details>`
+const nextAction = (
+  owner: string,
+  action: string,
+  evidence: string,
+  completion: string,
+  source: string
+) =>
+  `Next: ${owner} — ${action}; evidence: ${evidence}; done when: ${completion}; source: ${source}.`
+
+const cleanReviewBody = (
+  headSha: string,
+  runId = "321",
+  runAttempt = "1",
+  next = nextAction(
+    "Maintainer",
+    "complete the named payment-flow QA",
+    "the PR description",
+    "the current-head result is recorded",
+    "the PR test plan"
+  )
+) =>
+  `${sourceRunMarker(headSha, runId, runAttempt)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo code changes needed. Ready for human review.\n${next}`
+
+const findingsReviewBody = (headSha: string, runId = "321", runAttempt = "1") =>
+  `${sourceRunMarker(headSha, runId, runAttempt)}\nCode changes required.\n${nextAction(
+    "PR author",
+    "address the inline P2 finding",
+    "the updated code and focused regression test",
+    "a new head resolves the inline comment",
+    "the inline P2 review comment"
+  )}`
+
+const inlineFindingBody = (source = "the changed retry path") =>
+  `[P2] Retrying after reload loses the durable invoice destination.\nOwner: PR author\nAction: preserve the destination in the retry checkpoint\nEvidence: the focused durable-invoice regression test\nComplete when: the test passes at the updated head\nSource: ${source}.`
 
 const getNamedJob = (workflow: string, name: string) => {
   const start = workflow.indexOf(`  ${name}:\n`)
@@ -119,7 +151,7 @@ const reserveAttemptScript = getRunScript(
 )
 const reviewVerdictScript = getRunScript(
   reviewWorkflow,
-  "Enforce current-run merge-readiness verdict"
+  "Validate current review handoff"
 )
 const ponytailVerdictScript = getRunScript(
   simplifyWorkflow,
@@ -308,7 +340,6 @@ type ReviewVerdictFixture = {
   currentBase?: string
   currentBaseRef?: string
   currentHead?: string
-  doNotMerge?: boolean
   headSha?: string
   inlineComments?: string
   reviewBody?: string
@@ -324,7 +355,6 @@ const runReviewVerdictGate = async ({
   currentBase,
   currentBaseRef = "main",
   currentHead,
-  doNotMerge = false,
   headSha = "a".repeat(40),
   inlineComments = "[]",
   reviewBody,
@@ -365,9 +395,8 @@ const runReviewVerdictGate = async ({
 set -euo pipefail
 
 if [[ "$1" == "pr" && "$2" == "view" ]]; then
-  printf '%s\\x1f%s\\x1f%s\\x1f%s\\x1f%s\\n' \\
-    "$FAKE_CURRENT_BASE_REF" "$FAKE_CURRENT_BASE" "$FAKE_CURRENT_HEAD" \\
-    "OPEN" "$FAKE_DO_NOT_MERGE_COUNT"
+  printf '%s\\x1f%s\\x1f%s\\x1f%s\\n' \\
+    "$FAKE_CURRENT_BASE_REF" "$FAKE_CURRENT_BASE" "$FAKE_CURRENT_HEAD" "OPEN"
 elif [[ "$1" == "api" && "$2" == "graphql" ]]; then
   printf '%s\\n' "$FAKE_REVIEW_THREADS"
 elif [[ "$*" == *"/reviews/456/comments?"* ]]; then
@@ -401,7 +430,6 @@ fi
         FAKE_CURRENT_BASE: resolvedCurrentBase,
         FAKE_CURRENT_BASE_REF: currentBaseRef,
         FAKE_CURRENT_HEAD: resolvedCurrentHead,
-        FAKE_DO_NOT_MERGE_COUNT: doNotMerge ? "1" : "0",
         FAKE_INLINE_COMMENTS: inlineComments,
         FAKE_REVIEWS: resolvedReviews,
         FAKE_REVIEW_THREADS: reviewThreads,
@@ -516,6 +544,7 @@ describe("agent review handoff", () => {
       "github.event_name == 'pull_request_target' &&"
     )
     expect(reviewWorkflow).not.toContain("pull_request_review_comment:")
+    expect(reviewWorkflow).not.toContain("pull_request_review:")
     expect(reviewWorkflow).not.toContain("workflow_dispatch:")
     expect(reviewWorkflow).not.toContain("github.event.pull_request ||")
     expect(reviewConcurrency).toContain(
@@ -581,7 +610,7 @@ describe("agent review handoff", () => {
     expect(isBaseRetargetEdit(bodyEdit)).toBe(false)
   })
 
-  it("marks only zero-finding Sudden reviews for the final handoff", () => {
+  it("keeps Sudden in a concise code-review handoff lane", () => {
     expect(reviewWorkflow).toContain(
       "<!-- conduit:sudden-review clean head=${{ steps.pr.outputs.head_sha }} -->"
     )
@@ -589,29 +618,46 @@ describe("agent review handoff", () => {
       "A clean review must have zero inline comments"
     )
     expect(reviewWorkflow).toContain(
-      "Reviewer-confirmed QA disposition: <disposition>"
+      "No code changes needed. Ready for human review."
+    )
+    expect(reviewWorkflow).toContain("Code changes required.")
+    expect(reviewWorkflow).toContain(
+      "Next: <owner> — <action>; evidence: <destination>; done when: <completion signal>; source: <source>."
     )
     expect(reviewWorkflow).toContain(
-      "Merge-readiness verdict: READY FOR HUMAN APPROVAL"
+      "Pending maintainer QA, testing, approval, or other human work"
     )
-    expect(reviewWorkflow).toContain("Merge-readiness verdict: BLOCKED")
-    expect(reviewWorkflow).toContain("Review body presentation contract")
-    expect(reviewWorkflow).toContain("## Verdict")
-    expect(reviewWorkflow).toContain("## Required actions")
-    expect(reviewWorkflow).toContain("## Summary")
-    expect(reviewWorkflow).toContain("## Evidence")
-    expect(reviewWorkflow).toContain("Residual risks and automation limits")
+    expect(reviewWorkflow).toContain(
+      "Unsourced requirements are residual risks, never findings or required actions."
+    )
+    expect(reviewWorkflow).toContain("at most 100 words")
+    for (const forbidden of [
+      "Merge-readiness verdict",
+      "Reviewer-confirmed QA disposition",
+      "**Blocked**",
+    ]) {
+      expect(reviewWorkflow).not.toContain(forbidden)
+      expect(reviewInstructions).not.toContain(forbidden)
+    }
+    for (const forbiddenVisibleLanguage of [
+      "acceptance/evidence mapping",
+      "QA disposition",
+      "PR-only graph",
+      "synthetic merge",
+      "clean-review contract",
+    ]) {
+      expect(reviewWorkflow).toContain(forbiddenVisibleLanguage)
+      expect(reviewInstructions).toContain(forbiddenVisibleLanguage)
+    }
     expect(reviewWorkflow).toContain(
       "<!-- conduit:sudden-review run=${{ github.run_id }} attempt=${{ github.run_attempt }} head=${{ steps.pr.outputs.head_sha }} -->"
     )
     expect(reviewWorkflowTriggers).toContain("ready_for_review")
     expect(reviewWorkflow).toContain("DO NOT MERGE")
-    expect(reviewWorkflow).toContain(
-      "Enforce current-run merge-readiness verdict"
-    )
+    expect(reviewWorkflow).toContain("Validate current review handoff")
     const reviewJob = getNamedJob(reviewWorkflow, "review")
     const reviewJobName = reviewJob.slice(0, reviewJob.indexOf("\n    if:"))
-    expect(reviewJobName).toContain("'agent-merge-readiness' ||")
+    expect(reviewJobName).toContain("'agent-review-handoff' ||")
     expect(reviewJobName).toContain(
       "format('agent-review-advisory-{0}', github.run_id)"
     )
@@ -630,7 +676,7 @@ describe("agent review handoff", () => {
     expect(reviewJobName).toContain(
       'contains(fromJSON(\'["OWNER","MEMBER","COLLABORATOR"]\')'
     )
-    expect(reviewJobName).not.toContain("name: agent-merge-readiness\n")
+    expect(reviewJobName).not.toContain("agent-merge-readiness")
     expect(reviewWorkflow).toContain(
       "Runs started by an exact `/agent review` PR comment are advisory."
     )
@@ -658,7 +704,6 @@ describe("agent review handoff", () => {
     expect(reviewWorkflow).toContain(
       "EXPECTED_RUN_ATTEMPT: ${{ github.run_attempt }}"
     )
-    expect(reviewWorkflow).toContain(automationResidual)
     expect(reviewWorkflow).toContain(
       "--arg attempted_marker_pattern '^<!-- conduit:ponytail-attempted head=[0-9a-f]{40} -->$'"
     )
@@ -679,12 +724,10 @@ describe("agent review handoff", () => {
     expect(normalizeWhitespace(reviewInstructions)).toContain(
       "Ponytail and simplicity-review findings are advisory and never affect the correctness verdict."
     )
-    const pointInTimeVerdict =
-      "Treat this verdict as point-in-time evidence for the reviewed head. After the review is submitted, later-created or reopened threads remain GitHub evidence for required human approval. Do not mirror global thread state into a second CI merge-state gate."
-    expect(normalizeWhitespace(reviewWorkflow)).toContain(pointInTimeVerdict)
-    expect(normalizeWhitespace(reviewInstructions)).toContain(
-      pointInTimeVerdict
-    )
+    const pointInTimeReview =
+      "Treat this review as point-in-time evidence for the reviewed head."
+    expect(normalizeWhitespace(reviewWorkflow)).toContain(pointInTimeReview)
+    expect(normalizeWhitespace(reviewInstructions)).toContain(pointInTimeReview)
     expect(countOccurrences(reviewWorkflow, "resume: false")).toBe(3)
     expect(countOccurrences(reviewWorkflow, "model: gpt-5.6-sol/xhigh")).toBe(3)
     expect(reviewWorkflow).not.toContain("model: gpt-5.4/xhigh")
@@ -724,22 +767,123 @@ describe("agent review handoff", () => {
       expect(/account key or (?:an )?nsec/.test(normalized)).toBe(true)
     }
 
-    expect(reviewWorkflow).toContain(automationResidual)
     expect(simplifyWorkflow).toContain(automationResidual)
-    expect(reviewInstructions).toContain(automationResidual)
     expect(normalizeWhitespace(contributorGuide)).toContain(
       "candidate prompt injection. Schema and SHA gates fail malformed or stale review results. Human approval remains mandatory."
     )
   })
 
-  it("makes the current Sudden run a strict merge-readiness check", async () => {
+  it("accepts clean code with maintainer QA or approval pending", async () => {
     const headSha = "7".repeat(40)
     const runId = "321"
     const clean = await runReviewVerdictGate({ headSha, runId })
     expect(clean.exitCode).toBe(0)
-    expect(clean.stdout).toContain("ready for required human approval")
+    expect(clean.stdout).toContain("review handoff is valid")
 
+    const approvalPending = await runReviewVerdictGate({
+      headSha,
+      reviewBody: cleanReviewBody(
+        headSha,
+        runId,
+        "1",
+        nextAction(
+          "Code owner",
+          "review the exact head and approve or comment",
+          "GitHub Reviews",
+          "one required approval is recorded",
+          "main branch protection"
+        )
+      ),
+      runId,
+    })
+    expect(approvalPending.exitCode).toBe(0)
+
+    const unsourcedRequirement = await runReviewVerdictGate({
+      headSha,
+      reviewBody: `${cleanReviewBody(
+        headSha,
+        runId
+      )}\n\nResidual risk: An extra artifact was suggested without a source, so it is not a required action.`,
+      runId,
+    })
+    expect(unsourcedRequirement.exitCode).toBe(0)
+  })
+
+  it("accepts actionable findings while rejecting failed or stale reviews", async () => {
+    const headSha = "7".repeat(40)
+    const runId = "321"
     const cleanBody = cleanReviewBody(headSha, runId)
+    const findings = await runReviewVerdictGate({
+      headSha,
+      inlineComments: JSON.stringify([
+        {
+          body: inlineFindingBody(),
+          line: 42,
+          path: "apps/merchant/src/lib/example.ts",
+          side: "RIGHT",
+        },
+      ]),
+      reviewBody: findingsReviewBody(headSha, runId),
+      runId,
+    })
+    expect(findings.exitCode).toBe(0)
+    expect(findings.stdout).toContain("review handoff is valid")
+
+    const findingWithoutInlineComment = await runReviewVerdictGate({
+      headSha,
+      reviewBody: findingsReviewBody(headSha, runId),
+      runId,
+    })
+    expect(findingWithoutInlineComment.exitCode).not.toBe(0)
+    expect(findingWithoutInlineComment.stderr).toContain(
+      "Code-change handoffs require inline P0-P2 findings"
+    )
+
+    const incompleteInlineFinding = await runReviewVerdictGate({
+      headSha,
+      inlineComments: '[{"body":"[P2] Preserve the durable retry checkpoint"}]',
+      reviewBody: findingsReviewBody(headSha, runId),
+      runId,
+    })
+    expect(incompleteInlineFinding.exitCode).not.toBe(0)
+    expect(incompleteInlineFinding.stderr).toContain(
+      "Code-change handoffs require inline P0-P2 findings"
+    )
+
+    const unsourcedInlineFinding = await runReviewVerdictGate({
+      headSha,
+      inlineComments: JSON.stringify([{ body: inlineFindingBody("unknown") }]),
+      reviewBody: findingsReviewBody(headSha, runId),
+      runId,
+    })
+    expect(unsourcedInlineFinding.exitCode).not.toBe(0)
+    expect(unsourcedInlineFinding.stderr).toContain(
+      "Code-change handoffs require inline P0-P2 findings"
+    )
+
+    const jargonInlineFinding = await runReviewVerdictGate({
+      headSha,
+      inlineComments: JSON.stringify([
+        { body: inlineFindingBody("the clean-review contract") },
+      ]),
+      reviewBody: findingsReviewBody(headSha, runId),
+      runId,
+    })
+    expect(jargonInlineFinding.exitCode).not.toBe(0)
+    expect(jargonInlineFinding.stderr).toContain(
+      "Code-change handoffs require inline P0-P2 findings"
+    )
+
+    const cleanWithInlineFinding = await runReviewVerdictGate({
+      headSha,
+      inlineComments: '[{"body":"[P2] Finding"}]',
+      runId,
+    })
+    expect(cleanWithInlineFinding.exitCode).not.toBe(0)
+    expect(cleanWithInlineFinding.stderr).toContain(
+      "Clean handoffs must have zero inline comments"
+    )
+
     const concurrentPonytail = await runReviewVerdictGate({
       headSha,
       reviews: JSON.stringify([
@@ -793,7 +937,7 @@ describe("agent review handoff", () => {
       reviewBody: cleanReviewBody(headSha, "320"),
     })
     expect(oldRun.exitCode).not.toBe(0)
-    expect(oldRun.stderr).toContain("exact clean-review contract")
+    expect(oldRun.stderr).toContain("run marker")
 
     const oldAttempt = await runReviewVerdictGate({
       headSha,
@@ -802,15 +946,7 @@ describe("agent review handoff", () => {
       runId,
     })
     expect(oldAttempt.exitCode).not.toBe(0)
-    expect(oldAttempt.stderr).toContain("exact clean-review contract")
-
-    const missingResidual = await runReviewVerdictGate({
-      headSha,
-      reviewBody: `${sourceRunMarker(headSha, runId)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo actionable findings.\nReviewer-confirmed QA disposition: Maintainer-owned validation\nMerge-readiness verdict: READY FOR HUMAN APPROVAL`,
-      runId,
-    })
-    expect(missingResidual.exitCode).not.toBe(0)
-    expect(missingResidual.stderr).toContain("exact clean-review contract")
+    expect(oldAttempt.stderr).toContain("run marker")
 
     const missingCurrentRun = await runReviewVerdictGate({
       headSha,
@@ -857,70 +993,6 @@ describe("agent review handoff", () => {
       "No Sudden review attempt completed successfully"
     )
 
-    const blocked = await runReviewVerdictGate({
-      headSha,
-      runId,
-      reviewBody: `${sourceRunMarker(headSha, runId)}\nReviewer-confirmed QA disposition: Maintainer-owned validation\nMerge-readiness verdict: BLOCKED\n${automationResidual}`,
-    })
-    expect(blocked.exitCode).not.toBe(0)
-    expect(blocked.stderr).toContain("exact clean-review contract")
-
-    for (const verdictLines of [
-      "",
-      "Merge-readiness verdict: MAYBE",
-      "Merge-readiness verdict: READY FOR HUMAN APPROVAL\nMerge-readiness verdict: BLOCKED",
-    ]) {
-      const malformedVerdict = await runReviewVerdictGate({
-        headSha,
-        runId,
-        reviewBody: `${sourceRunMarker(headSha, runId)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo actionable findings.\nReviewer-confirmed QA disposition: Maintainer-owned validation\n${verdictLines}\n${automationResidual}`,
-      })
-      expect(malformedVerdict.exitCode).not.toBe(0)
-      expect(malformedVerdict.stderr).toContain(
-        "missing, blocked, duplicate, or malformed verdict contract"
-      )
-    }
-
-    const inlineFinding = await runReviewVerdictGate({
-      headSha,
-      inlineComments: "[{}]",
-      runId,
-    })
-    expect(inlineFinding.exitCode).not.toBe(0)
-    expect(inlineFinding.stderr).toContain("actionable inline findings")
-
-    const priorAdvisoryThread = await runReviewVerdictGate({
-      headSha,
-      reviewThreads: JSON.stringify({
-        data: {
-          repository: {
-            pullRequest: {
-              reviewThreads: {
-                nodes: [
-                  {
-                    isResolved: false,
-                    comments: {
-                      nodes: [
-                        {
-                          author: { login: "conduit-sudden-agent" },
-                          body: `<!-- conduit:ponytail-final head=${headSha} -->`,
-                        },
-                      ],
-                    },
-                  },
-                ],
-                pageInfo: { hasNextPage: false, endCursor: null },
-              },
-            },
-          },
-        },
-      }),
-      runId,
-    })
-    expect(priorAdvisoryThread.exitCode).toBe(0)
-    expect(priorAdvisoryThread.stdout).toContain(
-      "ready for required human approval"
-    )
     expect(reviewVerdictScript).not.toContain("reviewThreads(first: 100")
     expect(reviewVerdictScript).not.toContain("unresolved_review_thread_count")
 
@@ -940,14 +1012,85 @@ describe("agent review handoff", () => {
     })
     expect(changedBase.exitCode).not.toBe(0)
     expect(changedBase.stderr).toContain("base or head changed")
+  })
 
-    const doNotMerge = await runReviewVerdictGate({
-      doNotMerge: true,
+  it("enforces concise, complete, human-readable clean handoffs", async () => {
+    const headSha = "7".repeat(40)
+    const runId = "321"
+
+    const missingActionSource = await runReviewVerdictGate({
       headSha,
+      reviewBody: `${sourceRunMarker(headSha, runId)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo code changes needed. Ready for human review.\nNext: Maintainer — complete QA; evidence: the PR; done when: results are recorded.`,
       runId,
     })
-    expect(doNotMerge.exitCode).not.toBe(0)
-    expect(doNotMerge.stderr).toContain("DO NOT MERGE label")
+    expect(missingActionSource.exitCode).not.toBe(0)
+    expect(missingActionSource.stderr).toContain("complete Next action")
+
+    const limitNext = nextAction(
+      "Maintainer",
+      "complete QA",
+      "the PR description",
+      "the result is recorded",
+      "the PR test plan"
+    )
+    const limitVisibleBody = `No code changes needed. Ready for human review.\n${limitNext}`
+    const fillerWordCount =
+      100 - limitVisibleBody.trim().split(/\s+/).length - 2
+    const atWordLimitBody = `${sourceRunMarker(
+      headSha,
+      runId
+    )}\n<!-- conduit:sudden-review clean head=${headSha} -->\n${limitVisibleBody}\nResidual risk: ${Array.from(
+      { length: fillerWordCount },
+      () => "bounded"
+    ).join(" ")}`
+    const atWordLimit = await runReviewVerdictGate({
+      headSha,
+      reviewBody: atWordLimitBody,
+      runId,
+    })
+    expect(atWordLimit.exitCode).toBe(0)
+
+    const tooLong = await runReviewVerdictGate({
+      headSha,
+      reviewBody: `${atWordLimitBody} extra`,
+      runId,
+    })
+    expect(tooLong.exitCode).not.toBe(0)
+    expect(tooLong.stderr).toContain("100 visible words")
+
+    for (const jargon of [
+      "Blocked",
+      "acceptance/evidence mapping",
+      "QA disposition",
+      "PR-only graph",
+      "synthetic merge",
+      "clean-review contract",
+    ]) {
+      const result = await runReviewVerdictGate({
+        headSha,
+        reviewBody: `${cleanReviewBody(
+          headSha,
+          runId
+        )}\n\nResidual risk: ${jargon}.`,
+        runId,
+      })
+      expect(result.exitCode).not.toBe(0)
+      expect(result.stderr).toContain("internal workflow language")
+    }
+
+    const wrongFirstLine = await runReviewVerdictGate({
+      headSha,
+      reviewBody: `${sourceRunMarker(headSha, runId)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nReady.\n${nextAction(
+        "Maintainer",
+        "complete QA",
+        "the PR description",
+        "the result is recorded",
+        "the PR test plan"
+      )}`,
+      runId,
+    })
+    expect(wrongFirstLine.exitCode).not.toBe(0)
+    expect(wrongFirstLine.stderr).toContain("first visible line")
   })
 
   it("fails malformed or stale final Ponytail reviews closed", async () => {
@@ -1235,25 +1378,16 @@ describe("agent review handoff", () => {
       countOccurrences(simplifyWorkflow, 'grep -Fqx "$clean_summary"')
     ).toBe(2)
     expect(
-      countOccurrences(
-        simplifyWorkflow,
-        'grep -Ec "$qa_disposition_prefix_pattern"'
-      )
-    ).toBe(2)
-    expect(
-      countOccurrences(simplifyWorkflow, 'grep -Ecx "$qa_disposition_pattern"')
+      countOccurrences(simplifyWorkflow, 'grep -Ec "$next_action_pattern"')
     ).toBe(2)
     expect(simplifyWorkflow).not.toContain("gh api graphql --paginate")
     expect(simplifyWorkflow).not.toContain("unresolved_review_thread_count")
-    expect(
-      countOccurrences(
-        simplifyWorkflow,
-        'grep -Ec "$merge_verdict_prefix_pattern"'
-      )
-    ).toBe(2)
-    expect(
-      countOccurrences(simplifyWorkflow, 'grep -Fxc "$ready_verdict"')
-    ).toBe(2)
+    expect(simplifyWorkflow).toContain(
+      "The source review requires code changes; skipping Ponytail."
+    )
+    expect(simplifyWorkflow).toContain(
+      "The queued source review now requires code changes; skipping Ponytail."
+    )
     expect(simplifyWorkflow).toContain(automationResidual)
     expect(simplifyWorkflow).toContain("Enforce current Ponytail review")
     expect(simplifyWorkflow).toContain(
@@ -1662,7 +1796,7 @@ while IFS= read -r _line; do :; done
           id: 124,
           user: { login: "conduit-sudden-agent[bot]" },
           commit_id: headSha,
-          body: `${sourceRunMarker(headSha)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo actionable findings.\nReviewer-confirmed QA disposition: Maintainer-owned validation\nMerge-readiness verdict: READY FOR HUMAN APPROVAL`,
+          body: cleanReviewBody(headSha),
         },
       ]),
     })
@@ -1687,7 +1821,7 @@ while IFS= read -r _line; do :; done
 
     const cleanWithSameLineResidual = await runGate({
       headSha,
-      reviewBody: `<!-- conduit:sudden-review clean head=${headSha} -->\nNo actionable findings. Residual verification risk: physical-device coverage remains pending.`,
+      reviewBody: `<!-- conduit:sudden-review clean head=${headSha} -->\nNo code changes needed. Ready for human review. Residual risk: physical-device coverage remains pending.`,
     })
     expect(cleanWithSameLineResidual.exitCode).toBe(0)
     expect(getOutputValue(cleanWithSameLineResidual.output, "should_run")).toBe(
@@ -1699,7 +1833,7 @@ while IFS= read -r _line; do :; done
 
     const stale = await runGate({
       headSha,
-      reviewBody: `${sourceRunMarker(headSha, "320")}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo actionable findings.\nReviewer-confirmed QA disposition: Maintainer-owned validation\nMerge-readiness verdict: READY FOR HUMAN APPROVAL`,
+      reviewBody: cleanReviewBody(headSha, "320"),
     })
     expect(stale.exitCode).toBe(0)
     expect(getOutputValue(stale.output, "should_run")).toBe("false")
@@ -1717,7 +1851,13 @@ while IFS= read -r _line; do :; done
 
     const embeddedSourceMarker = await runGate({
       headSha,
-      reviewBody: `not a marker: ${sourceRunMarker(headSha)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo actionable findings.\nReviewer-confirmed QA disposition: Maintainer-owned validation\nMerge-readiness verdict: READY FOR HUMAN APPROVAL\n${automationResidual}`,
+      reviewBody: `not a marker: ${sourceRunMarker(headSha)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo code changes needed. Ready for human review.\n${nextAction(
+        "Maintainer",
+        "complete QA",
+        "the PR description",
+        "the result is recorded",
+        "the PR test plan"
+      )}`,
     })
     expect(embeddedSourceMarker.exitCode).toBe(0)
     expect(getOutputValue(embeddedSourceMarker.output, "should_run")).toBe(
@@ -1807,98 +1947,66 @@ while IFS= read -r _line; do :; done
 
     const mismatchedMarker = await runGate({
       headSha,
-      reviewBody: `${sourceRunMarker(headSha)}\n<!-- conduit:sudden-review clean head=${"f".repeat(40)} -->\nNo actionable findings.\nReviewer-confirmed QA disposition: Maintainer-owned validation\nMerge-readiness verdict: READY FOR HUMAN APPROVAL`,
+      reviewBody: `${sourceRunMarker(headSha)}\n<!-- conduit:sudden-review clean head=${"f".repeat(40)} -->\nNo code changes needed. Ready for human review.\n${nextAction(
+        "Maintainer",
+        "complete QA",
+        "the PR description",
+        "the result is recorded",
+        "the PR test plan"
+      )}`,
     })
-    expect(mismatchedMarker.exitCode).not.toBe(0)
-    expect(mismatchedMarker.stderr).toContain("exact clean-review marker")
+    expect(mismatchedMarker.exitCode).toBe(0)
+    expect(getOutputValue(mismatchedMarker.output, "should_run")).toBe("false")
+    expect(mismatchedMarker.stdout).toContain("requires code changes")
+
+    const qaPending = await runGate({
+      headSha,
+      reviewBody: cleanReviewBody(
+        headSha,
+        "321",
+        "1",
+        nextAction(
+          "Maintainer",
+          "complete payment-flow QA",
+          "the PR description",
+          "the current-head result is recorded",
+          "the PR test plan"
+        )
+      ),
+    })
+    expect(qaPending.exitCode).toBe(0)
+    expect(getOutputValue(qaPending.output, "should_run")).toBe("true")
+
+    const findings = await runGate({
+      headSha,
+      reviewBody: findingsReviewBody(headSha),
+      reviewComments: '[{"body":"[P2] Fix the durable retry"}]',
+    })
+    expect(findings.exitCode).toBe(0)
+    expect(getOutputValue(findings.output, "should_run")).toBe("false")
+    expect(findings.stdout).toContain(
+      "The source review requires code changes; skipping Ponytail."
+    )
 
     const missingSummary = await runGate({
       headSha,
-      reviewBody: `${sourceRunMarker(headSha)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nReviewer-confirmed QA disposition: Maintainer-owned validation\nMerge-readiness verdict: READY FOR HUMAN APPROVAL`,
+      reviewBody: `${sourceRunMarker(headSha)}\n<!-- conduit:sudden-review clean head=${headSha} -->\n${nextAction(
+        "Maintainer",
+        "complete QA",
+        "the PR description",
+        "the result is recorded",
+        "the PR test plan"
+      )}`,
     })
     expect(missingSummary.exitCode).not.toBe(0)
-    expect(missingSummary.stderr).toContain("exact clean-review summary")
+    expect(missingSummary.stderr).toContain("exact clean handoff summary")
 
-    const missingDisposition = await runGate({
+    const missingNextAction = await runGate({
       headSha,
-      reviewBody: `${sourceRunMarker(headSha)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo actionable findings.\nMerge-readiness verdict: READY FOR HUMAN APPROVAL`,
+      reviewBody: `${sourceRunMarker(headSha)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo code changes needed. Ready for human review.`,
     })
-    expect(missingDisposition.exitCode).not.toBe(0)
-    expect(missingDisposition.stderr).toContain(
-      "exactly one allowed QA disposition"
-    )
-
-    const invalidDisposition = await runGate({
-      headSha,
-      reviewBody: `${sourceRunMarker(headSha)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo actionable findings.\nReviewer-confirmed QA disposition: Automated QA\nMerge-readiness verdict: READY FOR HUMAN APPROVAL`,
-    })
-    expect(invalidDisposition.exitCode).not.toBe(0)
-    expect(invalidDisposition.stderr).toContain(
-      "exactly one allowed QA disposition"
-    )
-
-    const duplicateDisposition = await runGate({
-      headSha,
-      reviewBody: `${sourceRunMarker(headSha)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo actionable findings.\nReviewer-confirmed QA disposition: Evidence sign-off\nReviewer-confirmed QA disposition: Targeted human QA\nMerge-readiness verdict: READY FOR HUMAN APPROVAL`,
-    })
-    expect(duplicateDisposition.exitCode).not.toBe(0)
-    expect(duplicateDisposition.stderr).toContain(
-      "exactly one allowed QA disposition"
-    )
-
-    const contradictoryDisposition = await runGate({
-      headSha,
-      reviewBody: `${sourceRunMarker(headSha)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo actionable findings.\nReviewer-confirmed QA disposition: Maintainer-owned validation\nReviewer-confirmed QA disposition: Automated QA\nMerge-readiness verdict: READY FOR HUMAN APPROVAL`,
-    })
-    expect(contradictoryDisposition.exitCode).not.toBe(0)
-    expect(contradictoryDisposition.stderr).toContain(
-      "exactly one allowed QA disposition"
-    )
-
-    const missingVerdict = await runGate({
-      headSha,
-      reviewBody: `${sourceRunMarker(headSha)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo actionable findings.\nReviewer-confirmed QA disposition: Maintainer-owned validation`,
-    })
-    expect(missingVerdict.exitCode).not.toBe(0)
-    expect(missingVerdict.stderr).toContain(
-      "exactly one ready merge-readiness verdict"
-    )
-
-    const invalidVerdict = await runGate({
-      headSha,
-      reviewBody: `${sourceRunMarker(headSha)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo actionable findings.\nReviewer-confirmed QA disposition: Maintainer-owned validation\nMerge-readiness verdict: MAYBE`,
-    })
-    expect(invalidVerdict.exitCode).not.toBe(0)
-    expect(invalidVerdict.stderr).toContain(
-      "exactly one ready merge-readiness verdict"
-    )
-
-    const blockedVerdict = await runGate({
-      headSha,
-      reviewBody: `${sourceRunMarker(headSha)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo actionable findings.\nReviewer-confirmed QA disposition: Maintainer-owned validation\nMerge-readiness verdict: BLOCKED`,
-    })
-    expect(blockedVerdict.exitCode).not.toBe(0)
-    expect(blockedVerdict.stderr).toContain(
-      "exactly one ready merge-readiness verdict"
-    )
-
-    const duplicateVerdict = await runGate({
-      headSha,
-      reviewBody: `${sourceRunMarker(headSha)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo actionable findings.\nReviewer-confirmed QA disposition: Maintainer-owned validation\nMerge-readiness verdict: READY FOR HUMAN APPROVAL\nMerge-readiness verdict: BLOCKED`,
-    })
-    expect(duplicateVerdict.exitCode).not.toBe(0)
-    expect(duplicateVerdict.stderr).toContain(
-      "exactly one ready merge-readiness verdict"
-    )
-
-    const missingAutomationResidual = await runGate({
-      headSha,
-      reviewBody: `${sourceRunMarker(headSha)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo actionable findings.\nReviewer-confirmed QA disposition: Maintainer-owned validation\nMerge-readiness verdict: READY FOR HUMAN APPROVAL`,
-    })
-    expect(missingAutomationResidual.exitCode).not.toBe(0)
-    expect(missingAutomationResidual.stderr).toContain(
-      "exact automation residual"
-    )
+    expect(missingNextAction.exitCode).not.toBe(0)
+    expect(missingNextAction.stderr).toContain("one complete Next action")
 
     const unresolvedAdvisoryThread = await runGate({
       headSha,
@@ -2071,35 +2179,41 @@ while IFS= read -r _line; do :; done
     const missingSummary = await runGate(
       {
         headSha,
-        reviewBody: `${sourceRunMarker(headSha)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nReviewer-confirmed QA disposition: Maintainer-owned validation\nMerge-readiness verdict: READY FOR HUMAN APPROVAL`,
+        reviewBody: `${sourceRunMarker(headSha)}\n<!-- conduit:sudden-review clean head=${headSha} -->\n${nextAction(
+          "Maintainer",
+          "complete QA",
+          "the PR description",
+          "the result is recorded",
+          "the PR test plan"
+        )}`,
       },
       revalidationScript
     )
     expect(missingSummary.exitCode).not.toBe(0)
-    expect(missingSummary.stderr).toContain("exact clean-review summary")
+    expect(missingSummary.stderr).toContain("exact clean handoff summary")
 
-    const missingDisposition = await runGate(
+    const missingNextAction = await runGate(
       {
         headSha,
-        reviewBody: `${sourceRunMarker(headSha)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo actionable findings.\nMerge-readiness verdict: READY FOR HUMAN APPROVAL`,
+        reviewBody: `${sourceRunMarker(headSha)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo code changes needed. Ready for human review.`,
       },
       revalidationScript
     )
-    expect(missingDisposition.exitCode).not.toBe(0)
-    expect(missingDisposition.stderr).toContain(
-      "exactly one allowed QA disposition"
-    )
+    expect(missingNextAction.exitCode).not.toBe(0)
+    expect(missingNextAction.stderr).toContain("one complete Next action")
 
-    const missingAutomationResidual = await runGate(
+    const findings = await runGate(
       {
         headSha,
-        reviewBody: `${sourceRunMarker(headSha)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo actionable findings.\nReviewer-confirmed QA disposition: Maintainer-owned validation\nMerge-readiness verdict: READY FOR HUMAN APPROVAL`,
+        reviewBody: findingsReviewBody(headSha),
+        reviewComments: '[{"body":"[P2] Fix the durable retry"}]',
       },
       revalidationScript
     )
-    expect(missingAutomationResidual.exitCode).not.toBe(0)
-    expect(missingAutomationResidual.stderr).toContain(
-      "exact automation residual"
+    expect(findings.exitCode).toBe(0)
+    expect(getOutputValue(findings.output, "should_run")).toBe("false")
+    expect(findings.stdout).toContain(
+      "The queued source review now requires code changes; skipping Ponytail."
     )
 
     const manual = await runGate(
