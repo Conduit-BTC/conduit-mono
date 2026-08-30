@@ -219,6 +219,7 @@ export {
   type CachedShopperTrustSignalState,
   type CachedShopperTrustSnapshot,
   type StoredPaymentAttempt,
+  type StoredMerchantPendingInvoice,
   type StoredWalletCredential,
   type OrderLifecycle,
   type OrderLifecycleItem,
