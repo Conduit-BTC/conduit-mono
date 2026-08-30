@@ -44,7 +44,6 @@ import {
   type AuthSession,
   type RemoteSignerAdapterInvalidation,
   type RemoteSignerConnection,
-  type RemoteSignerError,
   AUTH_REVISION_STORAGE_KEY,
   AUTH_STORAGE_KEY,
 } from "../protocol/remote-signer"
@@ -83,7 +82,6 @@ export interface AuthContextValue {
 }
 
 export interface RemoteSignerRecoveryState {
-  cause: RemoteSignerError
   restoreError: string | null
 }
 
@@ -730,7 +728,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             : causalMessage,
         remoteSignerRecovery: canRecover
           ? {
-              cause: transition.error,
               restoreError: null,
             }
           : null,
@@ -1317,50 +1314,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const disconnectWithoutLock = useCallback(
-    async (options: {
-      expectedSession: AuthSession | null
-      recoveryRequired: boolean
-      authorityWasRevoked: boolean
-    }): Promise<void> => {
-      const { expectedSession, recoveryRequired, authorityWasRevoked } = options
+    async (expectedSession: AuthSession | null): Promise<void> => {
       if (expectedSession) {
-        try {
-          await cleanupInvalidatedAuthSession(expectedSession, {
-            withLock: async (task) => task(),
-            retireExpectedKeyOnMetadataFailure: true,
-          })
-        } catch (cause) {
-          const message = authorityWasRevoked
-            ? REMOTE_SIGNER_CLEANUP_MESSAGE
-            : REMOTE_SIGNER_REVOCATION_MESSAGE
-          if (recoveryRequired) {
-            setStatus("error")
-            setError(message)
-            updateRemoteSignerRecovery((current) =>
-              current ? { ...current, restoreError: message } : null
-            )
-          } else {
-            const connection = deactivateLocalSigner({
-              status: "error",
-              error: message,
-            })
-            if (connection) void connection.bunkerSigner.close()
-          }
-          throw new Error(message, { cause })
-        }
+        await cleanupInvalidatedAuthSession(expectedSession, {
+          withLock: async (task) => task(),
+          retireExpectedKeyOnMetadataFailure: true,
+        })
         if (
           authSessionsEqual(retirementBlockedSession.current, expectedSession)
         ) {
           retirementBlockedSession.current = null
         }
       } else if (!forgetAuthSession()) {
-        const message = REMOTE_SIGNER_CLEANUP_MESSAGE
-        const connection = deactivateLocalSigner({
-          status: "error",
-          error: message,
-        })
-        if (connection) void connection.bunkerSigner.close()
-        throw new Error(message)
+        throw new Error(REMOTE_SIGNER_CLEANUP_MESSAGE)
       }
 
       settleRestorePending()
@@ -1368,11 +1334,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const connection = deactivateLocalSigner()
       if (connection) await logoutRemoteSigner(connection.bunkerSigner)
     },
-    [
-      deactivateLocalSigner,
-      settleRestorePending,
-      updateRemoteSignerRecovery,
-    ]
+    [deactivateLocalSigner, settleRestorePending]
   )
 
   const disconnect = useCallback(
@@ -1396,32 +1358,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setNostrConnectUri(null)
       try {
         await withBrowserAuthOperationLock(() =>
-          disconnectWithoutLock({
-            expectedSession,
-            recoveryRequired,
-            authorityWasRevoked: revocation?.authorityRevoked ?? false,
-          })
+          disconnectWithoutLock(expectedSession)
         )
       } catch (cause) {
+        const message = revocation?.authorityRevoked
+          ? REMOTE_SIGNER_CLEANUP_MESSAGE
+          : REMOTE_SIGNER_REVOCATION_MESSAGE
         if (recoveryRequired && remoteSignerRecoveryRef.current) {
-          const message = revocation?.authorityRevoked
-            ? REMOTE_SIGNER_CLEANUP_MESSAGE
-            : REMOTE_SIGNER_REVOCATION_MESSAGE
           setStatus("error")
           setError(message)
           updateRemoteSignerRecovery((current) =>
             current ? { ...current, restoreError: message } : null
           )
-          throw new Error(message, { cause })
+        } else {
+          const connection = deactivateLocalSigner({
+            status: "error",
+            error: message,
+          })
+          if (connection) void connection.bunkerSigner.close()
         }
-        const message = revocation?.authorityRevoked
-          ? REMOTE_SIGNER_CLEANUP_MESSAGE
-          : REMOTE_SIGNER_REVOCATION_MESSAGE
-        const connection = deactivateLocalSigner({
-          status: "error",
-          error: message,
-        })
-        if (connection) void connection.bunkerSigner.close()
         throw new Error(message, { cause })
       }
     },

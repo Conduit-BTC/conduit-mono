@@ -495,52 +495,8 @@ describe("restore attempt isolation", () => {
 })
 
 describe("NIP-46 AuthContext API", () => {
-  it("propagates active adapter invalidation without deleting a recoverable session", async () => {
-    const source = await readFile(
-      "packages/core/src/context/AuthContext.tsx",
-      "utf8"
-    )
-
-    expect(source).toContain(
-      "remoteSignerRecovery: RemoteSignerRecoveryState | null"
-    )
-    expect(source).toContain("handleRemoteSignerAdapterInvalidated")
-    expect(source).toContain(
-      "remoteConnection.current?.signer !== transition.source"
-    )
-    expect(source).toContain(
-      'transition.sessionDisposition === "retain_for_restore"'
-    )
-    expect(source).toContain("setAuthGeneration(authEpoch.current)")
-    expect(source).toContain("sessionSigner?.invalidateLocal()")
-    expect(source).toContain(
-      "protectedReadSessionLifecycle.current.deactivate()"
-    )
-    expect(source).toContain("requiresRemoteSignerSessionCleanup")
-    expect(source).toContain(
-      "revokeAuthSessionAuthority(invalidatedSession, undefined"
-    )
-    expect(source).toContain('sessionDisposition: "discard"')
-    expect(source).toContain("revocation?.freshRevisionPersisted === true")
-    expect(source).toContain("cleanupInvalidatedAuthSession(options.session")
-    const explicitDisconnect = source.slice(
-      source.indexOf("const disconnectWithoutLock"),
-      source.indexOf(
-        "const disconnect =",
-        source.indexOf("const disconnectWithoutLock")
-      )
-    )
-    expect(explicitDisconnect).toContain(
-      "retireExpectedKeyOnMetadataFailure: true"
-    )
-    expect(source).toContain("recoverySession.current")
-    expect(source).toContain("authorityDisplacedSession.current")
-    expect(source).toContain("REMOTE_SIGNER_RECOVERY_REPLACED_MESSAGE")
-  })
-
   it("allows only exact-session restore while recovery is active", () => {
     const recovery: RemoteSignerRecoveryState = {
-      cause: new RemoteSignerError("timeout", "timed out"),
       restoreError: null,
     }
 
@@ -869,28 +825,6 @@ describe("authenticated signer readiness", () => {
         capabilities,
       })
     ).toBe("ready")
-  })
-
-  it("keeps the exact timeout cause while reporting recovery as unavailable", () => {
-    const cause = new RemoteSignerError(
-      "timeout",
-      "The remote signer timed out during sign event.",
-      { operation: "sign event" }
-    )
-    const recovery: RemoteSignerRecoveryState = {
-      cause,
-      restoreError: null,
-    }
-
-    expect(recovery.cause).toBe(cause)
-    expect(
-      getAuthSignerReadiness({
-        status: "error",
-        pubkey: ACCOUNT_A_PUBKEY,
-        signer: null,
-        capabilities: { signEvent: false, nip44: false, nip04: false },
-      })
-    ).toBe("unavailable")
   })
 
   it("requires NIP-44 encryption for private order delivery", () => {

@@ -662,10 +662,6 @@ export async function cleanupInvalidatedAuthSession(
         !authSessionsMatch(before.session, expected)
       ) {
         status = "replacement"
-        replacementUsesExpectedKey =
-          expected.type === "nip46" &&
-          before.session.type === "nip46" &&
-          before.session.clientKeyId === expected.clientKeyId
       } else {
         try {
           storage?.removeItem(AUTH_STORAGE_KEY)
@@ -690,11 +686,6 @@ export async function cleanupInvalidatedAuthSession(
           )
         }
         status = afterRemoval.status === "session" ? "replacement" : "removed"
-        replacementUsesExpectedKey =
-          expected.type === "nip46" &&
-          afterRemoval.status === "session" &&
-          afterRemoval.session.type === "nip46" &&
-          afterRemoval.session.clientKeyId === expected.clientKeyId
       }
 
       if (expected.type === "nip46") {

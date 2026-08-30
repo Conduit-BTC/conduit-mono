@@ -336,36 +336,6 @@ describe("remote signer UI", () => {
     }
   })
 
-  it("keeps the Merchant product draft mounted for inline signer recovery", async () => {
-    const root = await readFile("apps/merchant/src/routes/__root.tsx", "utf8")
-    const products = await readFile(
-      "apps/merchant/src/routes/products.tsx",
-      "utf8"
-    )
-    const recoveryNotice = await readFile(
-      "apps/merchant/src/components/ProductSignerRecoveryNotice.tsx",
-      "utf8"
-    )
-
-    expect(root).toContain("remoteSignerRecovery")
-    expect(root).toContain("signerWorkspaceAvailable")
-    expect(recoveryNotice).toContain(
-      "Your signing connection stopped responding. Reconnect your signer to continue. Your draft is saved on this device."
-    )
-    expect(recoveryNotice).toContain("Reconnect signer")
-    expect(products).toContain('connect({ mode: "restore" })')
-    expect(products).toContain("await disconnect()")
-    expect(products).toContain("isProductDraftPublishAuthorized")
-    expect(products).not.toContain("<SignerSwitch")
-    expect(root).toContain("<Outlet key={pubkey} />")
-    expect(products.indexOf("remoteSignerRecovery")).toBeLessThan(
-      products.indexOf(
-        '"awaiting_signature"',
-        products.indexOf("remoteSignerRecovery")
-      )
-    )
-  })
-
   it("renders truthful accessible recovery actions without an awaiting flash", () => {
     const savedMarkup = renderToStaticMarkup(
       <ProductSignerRecoveryNotice

@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test"
+import { expect, test, type Page } from "@playwright/test"
 import { SimplePool } from "nostr-tools"
 import {
   finalizeEvent,
@@ -144,6 +144,42 @@ async function startRemoteSignerHarness(
   }
 }
 
+async function installSignerRelayAlias(page: Page): Promise<void> {
+  await page.addInitScript(
+    ({ alias, loopback }) => {
+      const NativeWebSocket = window.WebSocket
+      class LoopbackSignerWebSocket extends NativeWebSocket {
+        constructor(url: string | URL, protocols?: string | string[]) {
+          const target = String(url).startsWith(alias) ? loopback : url
+          if (protocols === undefined) super(target)
+          else super(target, protocols)
+        }
+      }
+      Object.defineProperty(window, "WebSocket", {
+        configurable: true,
+        value: LoopbackSignerWebSocket,
+      })
+    },
+    { alias: signerRelayAlias, loopback: TEST_RELAY_URL }
+  )
+}
+
+async function connectRemoteSigner(
+  page: Page,
+  remoteSignerPubkey: string
+): Promise<void> {
+  await page.getByRole("tab", { name: "Bunker URL" }).click()
+  await page
+    .getByRole("textbox", { name: "Remote signer bunker URL" })
+    .fill(
+      "bunker://" +
+        remoteSignerPubkey +
+        "?relay=" +
+        encodeURIComponent(signerRelayAlias)
+    )
+  await page.getByRole("button", { name: "Connect Signer (NIP-46)" }).click()
+}
+
 test("remote signer timeout keeps the product draft recoverable and requires an explicit retry @merchant", async ({
   page,
 }, testInfo) => {
@@ -159,35 +195,10 @@ test("remote signer timeout keeps the product draft recoverable and requires an 
 
   try {
     await seedTestRelayIdentity(merchantSecret)
-    await page.addInitScript(
-      ({ alias, loopback }) => {
-        const NativeWebSocket = window.WebSocket
-        class LoopbackSignerWebSocket extends NativeWebSocket {
-          constructor(url: string | URL, protocols?: string | string[]) {
-            const target = String(url).startsWith(alias) ? loopback : url
-            if (protocols === undefined) super(target)
-            else super(target, protocols)
-          }
-        }
-        Object.defineProperty(window, "WebSocket", {
-          configurable: true,
-          value: LoopbackSignerWebSocket,
-        })
-      },
-      { alias: signerRelayAlias, loopback: TEST_RELAY_URL }
-    )
+    await installSignerRelayAlias(page)
 
     await page.goto(merchantUrl + "/products")
-    await page.getByRole("tab", { name: "Bunker URL" }).click()
-    await page
-      .getByRole("textbox", { name: "Remote signer bunker URL" })
-      .fill(
-        "bunker://" +
-          remoteSignerPubkey +
-          "?relay=" +
-          encodeURIComponent(signerRelayAlias)
-      )
-    await page.getByRole("button", { name: "Connect Signer (NIP-46)" }).click()
+    await connectRemoteSigner(page, remoteSignerPubkey)
     await page.getByRole("link", { name: "Products", exact: true }).click()
     await expect(
       page.getByRole("heading", { name: "Products", exact: true })
@@ -298,35 +309,10 @@ test("an authority-only revision keeps exact remote signer reconnect available @
 
   try {
     await seedTestRelayIdentity(merchantSecret)
-    await page.addInitScript(
-      ({ alias, loopback }) => {
-        const NativeWebSocket = window.WebSocket
-        class LoopbackSignerWebSocket extends NativeWebSocket {
-          constructor(url: string | URL, protocols?: string | string[]) {
-            const target = String(url).startsWith(alias) ? loopback : url
-            if (protocols === undefined) super(target)
-            else super(target, protocols)
-          }
-        }
-        Object.defineProperty(window, "WebSocket", {
-          configurable: true,
-          value: LoopbackSignerWebSocket,
-        })
-      },
-      { alias: signerRelayAlias, loopback: TEST_RELAY_URL }
-    )
+    await installSignerRelayAlias(page)
 
     await page.goto(merchantUrl + "/products")
-    await page.getByRole("tab", { name: "Bunker URL" }).click()
-    await page
-      .getByRole("textbox", { name: "Remote signer bunker URL" })
-      .fill(
-        "bunker://" +
-          remoteSignerPubkey +
-          "?relay=" +
-          encodeURIComponent(signerRelayAlias)
-      )
-    await page.getByRole("button", { name: "Connect Signer (NIP-46)" }).click()
+    await connectRemoteSigner(page, remoteSignerPubkey)
     await page.getByRole("link", { name: "Products", exact: true }).click()
     await expect(
       page.getByRole("heading", { name: "Products", exact: true })
@@ -438,35 +424,10 @@ test("a different signer starts a fresh merchant workspace after verified recove
   try {
     await seedTestRelayIdentity(merchantASecret)
     await seedTestRelayIdentity(merchantBSecret)
-    await page.addInitScript(
-      ({ alias, loopback }) => {
-        const NativeWebSocket = window.WebSocket
-        class LoopbackSignerWebSocket extends NativeWebSocket {
-          constructor(url: string | URL, protocols?: string | string[]) {
-            const target = String(url).startsWith(alias) ? loopback : url
-            if (protocols === undefined) super(target)
-            else super(target, protocols)
-          }
-        }
-        Object.defineProperty(window, "WebSocket", {
-          configurable: true,
-          value: LoopbackSignerWebSocket,
-        })
-      },
-      { alias: signerRelayAlias, loopback: TEST_RELAY_URL }
-    )
+    await installSignerRelayAlias(page)
 
     await page.goto(merchantUrl + "/products")
-    await page.getByRole("tab", { name: "Bunker URL" }).click()
-    await page
-      .getByRole("textbox", { name: "Remote signer bunker URL" })
-      .fill(
-        "bunker://" +
-          remoteSignerAPubkey +
-          "?relay=" +
-          encodeURIComponent(signerRelayAlias)
-      )
-    await page.getByRole("button", { name: "Connect Signer (NIP-46)" }).click()
+    await connectRemoteSigner(page, remoteSignerAPubkey)
     await page.getByRole("link", { name: "Products", exact: true }).click()
     await expect(
       page.getByRole("heading", { name: "Products", exact: true })
@@ -569,16 +530,7 @@ test("a different signer starts a fresh merchant workspace after verified recove
       }, retained.clientKeyId)
     ).toBe(true)
 
-    await page.getByRole("tab", { name: "Bunker URL" }).click()
-    await page
-      .getByRole("textbox", { name: "Remote signer bunker URL" })
-      .fill(
-        "bunker://" +
-          remoteSignerBPubkey +
-          "?relay=" +
-          encodeURIComponent(signerRelayAlias)
-      )
-    await page.getByRole("button", { name: "Connect Signer (NIP-46)" }).click()
+    await connectRemoteSigner(page, remoteSignerBPubkey)
     await expect(
       page.getByRole("heading", { name: "Products", exact: true })
     ).toBeVisible({ timeout: 15_000 })
