@@ -20,9 +20,10 @@ import {
 } from "../packages/core/src/context/AuthContext"
 import {
   canStartAuthConnection,
+  parseAuthSession,
   RemoteSignerError,
   shouldRetireAuthSessionAfterAuthorityChange,
-  type AuthSession,
+  type Nip46AuthSession,
   type RemoteSignerConnection,
 } from "../packages/core/src/protocol/remote-signer"
 import { createProtectedReadSessionLifecycle } from "../packages/core/src/protocol/protected-read-session-lifecycle"
@@ -877,17 +878,22 @@ describe("authenticated signer readiness", () => {
 })
 
 describe("cross-tab signer authority retirement", () => {
-  const retainedSession: AuthSession = {
+  const retainedSession: Nip46AuthSession = {
     version: 1,
     type: "nip46",
     userPubkey: ACCOUNT_A_PUBKEY,
-    signerPubkey: ACCOUNT_B_PUBKEY,
-    relays: ["wss://relay.example"],
-    clientKeyId: "client-key-a",
+    remoteSignerPubkey: ACCOUNT_B_PUBKEY,
+    relayUrls: ["wss://relay.example"],
+    clientKeyId: "client-key-a-0001",
+    createdAt: 1,
+    updatedAt: 1,
     authClaim: "claim-a",
   }
 
   it("preserves the exact current session after an authority-only revision", () => {
+    expect(parseAuthSession(JSON.stringify(retainedSession))).toEqual(
+      retainedSession
+    )
     expect(
       shouldRetireAuthSessionAfterAuthorityChange(retainedSession, {
         ...retainedSession,
@@ -903,7 +909,19 @@ describe("cross-tab signer authority retirement", () => {
       shouldRetireAuthSessionAfterAuthorityChange(retainedSession, {
         ...retainedSession,
         userPubkey: ACCOUNT_B_PUBKEY,
-        clientKeyId: "client-key-b",
+        clientKeyId: "client-key-b-0001",
+      })
+    ).toBe(true)
+    expect(
+      shouldRetireAuthSessionAfterAuthorityChange(retainedSession, {
+        ...retainedSession,
+        remoteSignerPubkey: "c".repeat(64),
+      })
+    ).toBe(true)
+    expect(
+      shouldRetireAuthSessionAfterAuthorityChange(retainedSession, {
+        ...retainedSession,
+        relayUrls: ["wss://replacement.example"],
       })
     ).toBe(true)
   })

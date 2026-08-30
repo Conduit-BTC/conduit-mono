@@ -8,6 +8,7 @@ import {
 } from "nostr-tools/pure"
 import { decrypt, encrypt, getConversationKey } from "nostr-tools/nip44"
 
+import type { Nip46AuthSession } from "../packages/core/src/protocol/remote-signer"
 import {
   TEST_RELAY_URL,
   readTestRelayEvents,
@@ -321,14 +322,7 @@ test("an authority-only revision keeps exact remote signer reconnect available @
     const retained = await page.evaluate(() => {
       const rawSession = localStorage.getItem("conduit:auth")
       if (!rawSession) throw new Error("Missing remote signer session")
-      const session = JSON.parse(rawSession) as {
-        version: number
-        type: string
-        userPubkey: string
-        signerPubkey: string
-        relays: string[]
-        clientKeyId: string
-      }
+      const session = JSON.parse(rawSession) as Nip46AuthSession
       const oldRevision = localStorage.getItem("conduit:auth:revision")
       const nextRevision = `${oldRevision ?? "claim"}:other-tab`
       localStorage.setItem("conduit:auth:revision", nextRevision)
@@ -346,12 +340,19 @@ test("an authority-only revision keeps exact remote signer reconnect available @
           version: session.version,
           type: session.type,
           userPubkey: session.userPubkey,
-          signerPubkey: session.signerPubkey,
-          relays: session.relays,
+          remoteSignerPubkey: session.remoteSignerPubkey,
+          relayUrls: session.relayUrls,
           clientKeyId: session.clientKeyId,
+          createdAt: session.createdAt,
         },
+        updatedAt: session.updatedAt,
       }
     })
+
+    expect(retained.identity.remoteSignerPubkey).toBe(remoteSignerPubkey)
+    expect(retained.identity.relayUrls).toEqual([signerRelayAlias])
+    expect(Number.isFinite(retained.identity.createdAt)).toBe(true)
+    expect(Number.isFinite(retained.updatedAt)).toBe(true)
 
     await expect(
       page.locator('main[aria-label="Connect a signer"]')
@@ -374,21 +375,15 @@ test("an authority-only revision keeps exact remote signer reconnect available @
         page.evaluate(() => {
           const rawSession = localStorage.getItem("conduit:auth")
           if (!rawSession) return null
-          const session = JSON.parse(rawSession) as {
-            version: number
-            type: string
-            userPubkey: string
-            signerPubkey: string
-            relays: string[]
-            clientKeyId: string
-          }
+          const session = JSON.parse(rawSession) as Nip46AuthSession
           return {
             version: session.version,
             type: session.type,
             userPubkey: session.userPubkey,
-            signerPubkey: session.signerPubkey,
-            relays: session.relays,
+            remoteSignerPubkey: session.remoteSignerPubkey,
+            relayUrls: session.relayUrls,
             clientKeyId: session.clientKeyId,
+            createdAt: session.createdAt,
           }
         })
       )
