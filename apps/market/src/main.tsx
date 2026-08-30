@@ -72,6 +72,7 @@ function MarketAuthQueryBoundary({ children }: { children: ReactNode }) {
       predicate: (query) => {
         const root = query.queryKey[0]
         return (
+          root === "event-market" ||
           root === "progressive-products" ||
           root === "market-perspective-follows" ||
           root === "visible-product-card-profiles" ||

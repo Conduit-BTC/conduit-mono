@@ -6,6 +6,7 @@ import {
   clearProtectedReadAuthenticationSuppression,
   config,
   db,
+  encodeEventMarketNaddr,
   deriveProtectedReadPresentationState,
   EVENT_KINDS,
   formatNpub,
@@ -32,6 +33,7 @@ import {
   type OrderLifecycle,
   type OrderPaymentTarget,
   type ShopperPriceDisplay,
+  type ShopperPriceDisplayOptions,
 } from "@conduit/core"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
@@ -62,6 +64,7 @@ import {
   Copy,
   ExternalLink,
   LoaderCircle,
+  MapPin,
   MessageCircle,
   ReceiptText,
   RotateCw,
@@ -94,9 +97,17 @@ import {
   deriveOrderHeaderStatus,
   getOrderFilterPhase,
   getOrderPaymentMethodLabel,
+  isZeroCostPickupOrder,
   type OrderHeaderStatus,
   type OrderViewModel,
 } from "../lib/order-view"
+import { verifyPickupCartFreshness } from "../lib/event-market-adapter"
+import {
+  assertCartPickupHandlerReady,
+  getOrganizerPickupClaimCode,
+  getPickupHandoffPrivacyCopy,
+  getPickupHandoffSummary,
+} from "../lib/pickup-handoff"
 import { getNwcPaymentReadiness } from "../lib/wallet-payment-coordinator"
 import {
   authorizeCheckoutWithAnonSigner,
@@ -118,7 +129,10 @@ import {
   reconcileOrderPaymentForDisplay,
 } from "../lib/order-payment-recovery"
 
-type PriceFormatter = (price: CommercePriceLike) => ShopperPriceDisplay
+type PriceFormatter = (
+  price: CommercePriceLike,
+  options?: ShopperPriceDisplayOptions
+) => ShopperPriceDisplay
 import {
   clearSessionGuestOrderSigningIdentity,
   getSessionGuestOrderSigningIdentity,
@@ -181,6 +195,13 @@ interface OrderRow {
   vm: OrderViewModel
   headerStatus: OrderHeaderStatus
   updatedAt: number
+}
+
+function formatOrderTotal(
+  vm: OrderViewModel,
+  formatSats: (sats: number) => string
+): string {
+  return isZeroCostPickupOrder(vm) ? "Free · 0 sats" : formatSats(vm.totalSats!)
 }
 
 function OrderHeaderPill({ status }: { status: OrderHeaderStatus }) {
@@ -301,7 +322,7 @@ function OrderListCard({
           </div>
           {typeof row.vm.totalSats === "number" && (
             <div className="mt-0.5 text-sm font-medium text-secondary-300">
-              {formatSats(row.vm.totalSats)}
+              {formatOrderTotal(row.vm, formatSats)}
             </div>
           )}
           <div className="mt-2 flex items-center gap-2">
@@ -458,7 +479,7 @@ function MobileOrdersScroller({
                     </StatusPill>
                     {typeof row.vm.totalSats === "number" && (
                       <span className="text-xs font-medium text-secondary-300">
-                        {formatSats(row.vm.totalSats)}
+                        {formatOrderTotal(row.vm, formatSats)}
                       </span>
                     )}
                     {row.headerStatus.actionNeeded ? (
@@ -500,13 +521,20 @@ function OrderItemsSection({
           const image = product
             ? getProductImageCandidates(product)[0]
             : undefined
-          const price = formatPrice({
-            price: item.priceAtPurchase,
-            currency: item.currency,
-            priceSats:
-              item.currency === "SATS" ? item.priceAtPurchase : undefined,
-            sourcePrice: item.sourcePrice,
-          })
+          const price = formatPrice(
+            {
+              price: item.priceAtPurchase,
+              currency: item.currency,
+              priceSats:
+                item.currency === "SATS" ? item.priceAtPurchase : undefined,
+              sourcePrice: item.sourcePrice,
+            },
+            {
+              allowZero:
+                isZeroCostPickupOrder(vm) &&
+                item.fulfillment?.type === "pickup",
+            }
+          )
           return (
             <div
               key={`${item.productId}-${index}`}
@@ -561,7 +589,7 @@ function OrderItemsSection({
             Total
           </span>
           <span className="text-base font-semibold text-[var(--text-primary)]">
-            {formatSats(vm.totalSats)}
+            {formatOrderTotal(vm, formatSats)}
           </span>
         </div>
       ) : null}
@@ -636,7 +664,7 @@ function ExternalWalletPanel({
         <p className="mt-3 rounded-xl border border-warning/30 bg-warning/10 p-3 text-xs leading-5 text-warning">
           {autoDetectReceipt
             ? "Return to this same tab after paying so Conduit can finish receipt detection. Closing it ends local access to this guest order."
-            : "Keep this tab open until the payment is reported. Closing it ends local access to this guest order. The merchant will follow up using the phone and email contact details submitted at checkout."}
+            : "Keep this tab open until the payment is reported. Closing it ends local access to this guest order. The merchant can use the private recovery contact submitted at checkout."}
         </p>
       )}
       <div className="mt-4 flex flex-col items-start gap-4 sm:flex-row">
@@ -700,6 +728,7 @@ function OrderDetail({
   guestIdentity?: GuestOrderSigningIdentity | null
 }) {
   const { vm, headerStatus } = row
+  const zeroCostPickupOrder = isZeroCostPickupOrder(vm)
   const wallets = useWallets()
   const shopperPricing = useShopperPricing()
   const formatSats = (sats: number) =>
@@ -824,6 +853,7 @@ function OrderDetail({
     retryTarget?.type === "wallet" && !paymentWallet ? null : retryTarget
 
   function buildServiceCtx(): OrderPaymentContext | null {
+    if (zeroCostPickupOrder) return null
     const lc = row.lifecycle
     if (!lc) return null
     if (!lc.merchantLightningAddress) return null
@@ -900,6 +930,13 @@ function OrderDetail({
   }, [])
 
   async function retryPayment(): Promise<void> {
+    const pickupFreshness = await verifyPickupCartFreshness(
+      row.lifecycle?.items ?? [],
+      row.lifecycle?.merchantPubkey ?? row.merchantPubkey
+    )
+    if (!pickupFreshness.fresh) throw new Error(pickupFreshness.reason)
+    await assertCartPickupHandlerReady(row.lifecycle?.items ?? [])
+
     const ctx = await persistTargetAndBuildServiceCtx()
     if (ctx.zapMode !== "anonymous_public_zap") {
       await runOrderPayment(ctx)
@@ -929,21 +966,39 @@ function OrderDetail({
     })
   }
 
-  const showRetryPayment = vm.paymentStatus === "failed"
+  async function continuePrivateFallback(): Promise<void> {
+    const pickupFreshness = await verifyPickupCartFreshness(
+      row.lifecycle?.items ?? [],
+      row.lifecycle?.merchantPubkey ?? row.merchantPubkey
+    )
+    if (!pickupFreshness.fresh) throw new Error(pickupFreshness.reason)
+    await assertCartPickupHandlerReady(row.lifecycle?.items ?? [])
+    const ctx = await persistTargetAndBuildServiceCtx()
+    setPrivateFallbackOpen(false)
+    await runOrderPrivateFallback(ctx)
+  }
+
+  const showRetryPayment = !zeroCostPickupOrder && vm.paymentStatus === "failed"
   const recoveredBeforeWallet =
     row.lifecycle?.lastError === ORDER_PAYMENT_INTERRUPTED_BEFORE_WALLET_ERROR
   const showAnonPaymentRecovery =
     showRetryPayment &&
     vm.publicZapSigner === "anon" &&
     row.lifecycle?.invoiceStatus === "failed"
-  const showAmbiguousPayment = vm.paymentStatus === "ambiguous"
-  const showExternalWallet = vm.paymentStatus === "manual_required"
+  const showAmbiguousPayment =
+    !zeroCostPickupOrder && vm.paymentStatus === "ambiguous"
+  const showExternalWallet =
+    !zeroCostPickupOrder && vm.paymentStatus === "manual_required"
   const autoDetectPublicReceipt =
-    vm.publicZapSigner === "anon" && vm.zapReceiptStatus === "waiting"
+    !zeroCostPickupOrder &&
+    vm.publicZapSigner === "anon" &&
+    vm.zapReceiptStatus === "waiting"
   const publicReceiptNotObserved =
+    !zeroCostPickupOrder &&
     vm.publicZapSigner === "anon" &&
     vm.zapReceiptStatus === "receipt_not_observed"
   const showResendProof =
+    !zeroCostPickupOrder &&
     vm.paymentStatus === "paid" &&
     (vm.proofDeliveryStatus === "retry_needed" ||
       vm.proofDeliveryStatus === "failed")
@@ -1029,7 +1084,7 @@ function OrderDetail({
                 </div>
                 {typeof vm.totalSats === "number" && (
                   <div className="text-sm font-medium text-secondary-300">
-                    {formatSats(vm.totalSats)}
+                    {formatOrderTotal(vm, formatSats)}
                   </div>
                 )}
                 <div className="mt-2">
@@ -1047,8 +1102,9 @@ function OrderDetail({
           <OrderItemsSection
             vm={vm}
             productsById={productsById}
-            formatPrice={(price) =>
+            formatPrice={(price, options) =>
               shopperPricing.formatPrice(price, {
+                ...options,
                 settledSatsAreAuthoritative: true,
               })
             }
@@ -1295,11 +1351,7 @@ function OrderDetail({
                 busy || !selectedStoredPaymentTarget || !buildServiceCtx()
               }
               onClick={() => {
-                void withBusy(async () => {
-                  const ctx = await persistTargetAndBuildServiceCtx()
-                  setPrivateFallbackOpen(false)
-                  return runOrderPrivateFallback(ctx)
-                })
+                void withBusy(continuePrivateFallback)
               }}
             >
               Continue privately
@@ -1317,7 +1369,7 @@ function OrderDetail({
         }
       />
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
         <OrderTimeline vm={vm} formatSats={formatSats} />
 
         <div className="space-y-4">
@@ -1325,14 +1377,152 @@ function OrderDetail({
             <OrderItemsSection
               vm={vm}
               productsById={productsById}
-              formatPrice={(price) =>
+              formatPrice={(price, options) =>
                 shopperPricing.formatPrice(price, {
+                  ...options,
                   settledSatsAreAuthoritative: true,
                 })
               }
               formatSats={formatSats}
             />
           </div>
+
+          {/* Shipping address */}
+          {vm.pickupFulfillments.map((pickup) => {
+            const handoff = getPickupHandoffSummary(pickup)
+            const pickupClaimCode = getOrganizerPickupClaimCode(
+              row.orderId,
+              pickup
+            )
+            const collectionRef = encodeEventMarketNaddr(
+              pickup.collection.coordinate
+            )
+            const pickupCost =
+              typeof pickup.costSats === "number"
+                ? formatSats(pickup.costSats)
+                : pickup.sourceCost
+                  ? `${pickup.sourceCost.amount.toLocaleString()} ${pickup.sourceCost.currency}`
+                  : "Not available"
+            return (
+              <section
+                key={pickup.option.coordinate}
+                className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5"
+              >
+                <div className="flex items-start gap-3">
+                  <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-secondary-500/30 bg-secondary-500/10 text-secondary-400">
+                    <MapPin className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                      {handoff.label}
+                    </h3>
+                    <div className="mt-2 text-sm font-medium text-[var(--text-primary)]">
+                      {pickup.option.title}
+                    </div>
+                    <div className="mt-1 text-sm leading-6 text-[var(--text-secondary)]">
+                      {pickup.option.location ??
+                        pickup.option.geohash ??
+                        "Public pickup location was not published."}
+                    </div>
+                    <dl className="mt-4 grid grid-cols-1 gap-3 border-t border-[var(--border)] pt-4 text-xs sm:grid-cols-2 xl:grid-cols-1">
+                      <div>
+                        <dt className="text-[var(--text-muted)]">
+                          Resolved pickup cost
+                        </dt>
+                        <dd className="mt-1 font-medium text-[var(--text-primary)]">
+                          {pickupCost}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-[var(--text-muted)]">
+                          Pickup handler
+                        </dt>
+                        <dd className="mt-1 flex items-center gap-2 font-mono text-[var(--text-secondary)]">
+                          <span>{formatNpub(handoff.handlerPubkey, 8)}</span>
+                          <CopyButton
+                            value={handoff.handlerPubkey}
+                            label="Copy pickup handler npub"
+                          />
+                        </dd>
+                      </div>
+                      {pickupClaimCode && (
+                        <div>
+                          <dt className="text-[var(--text-muted)]">
+                            Pickup code
+                          </dt>
+                          <dd className="mt-1 flex items-center gap-2 font-mono font-semibold tracking-wide text-[var(--text-primary)]">
+                            <span>{pickupClaimCode}</span>
+                            <CopyButton
+                              value={pickupClaimCode}
+                              npub={false}
+                              label="Copy organizer pickup code"
+                            />
+                          </dd>
+                        </div>
+                      )}
+                      <div>
+                        <dt className="text-[var(--text-muted)]">
+                          Event organizer
+                        </dt>
+                        <dd className="mt-1 flex items-center gap-2 font-mono text-[var(--text-secondary)]">
+                          <span>{formatNpub(pickup.organizerPubkey, 8)}</span>
+                          <CopyButton
+                            value={pickup.organizerPubkey}
+                            label="Copy event organizer npub"
+                          />
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-[var(--text-muted)]">
+                          Calendar revision
+                        </dt>
+                        <dd className="mt-1 flex items-center gap-2 font-mono text-[var(--text-secondary)]">
+                          <span>
+                            {formatPubkey(pickup.calendar.eventId, 8)}
+                          </span>
+                          <CopyButton
+                            value={pickup.calendar.eventId}
+                            npub={false}
+                            label="Copy calendar event id"
+                          />
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-[var(--text-muted)]">
+                          Pickup revision
+                        </dt>
+                        <dd className="mt-1 flex items-center gap-2 font-mono text-[var(--text-secondary)]">
+                          <span>{formatPubkey(pickup.option.eventId, 8)}</span>
+                          <CopyButton
+                            value={pickup.option.eventId}
+                            npub={false}
+                            label="Copy pickup event id"
+                          />
+                        </dd>
+                      </div>
+                    </dl>
+                    <p className="mt-4 border-t border-[var(--border)] pt-4 text-xs leading-5 text-[var(--text-secondary)]">
+                      {getPickupHandoffPrivacyCopy(handoff)}
+                    </p>
+                    {pickupClaimCode && (
+                      <p className="mt-2 text-xs leading-5 text-[var(--text-secondary)]">
+                        Show this code to the organizer only after the merchant
+                        says your pickup is ready.
+                      </p>
+                    )}
+                    <Button asChild variant="outline" className="mt-4 h-9">
+                      <Link
+                        to="/events/$collectionRef"
+                        params={{ collectionRef }}
+                      >
+                        View event catalog
+                      </Link>
+                    </Button>
+                  </div>
+                </div>
+              </section>
+            )
+          })}
 
           {/* Shipping address */}
           {vm.shippingAddress && (
@@ -1402,11 +1592,13 @@ function OrderDetail({
                   <CopyButton value={row.merchantPubkey} label="Copy pubkey" />
                 </DetailRow>
                 {typeof vm.totalSats === "number" && (
-                  <DetailRow label="Payment">
-                    <span>{formatSats(vm.totalSats)}</span>
+                  <DetailRow label={zeroCostPickupOrder ? "Total" : "Payment"}>
+                    <span>{formatOrderTotal(vm, formatSats)}</span>
                   </DetailRow>
                 )}
-                <DetailRow label="Paid with">
+                <DetailRow
+                  label={zeroCostPickupOrder ? "Payment" : "Paid with"}
+                >
                   <span>{getOrderPaymentMethodLabel(vm)}</span>
                 </DetailRow>
                 <DetailRow label="Ordered">
@@ -1440,7 +1632,9 @@ function OrderDetail({
             </h3>
             <p className="mt-1 text-sm text-[var(--text-secondary)]">
               {guestIdentity
-                ? "The merchant will use the phone and email contact details submitted at checkout for questions and fulfillment updates."
+                ? vm.requiresPickup
+                  ? "The merchant can use the email or phone submitted at checkout only if guest pickup recovery is needed."
+                  : "The merchant will use the phone and email contact details submitted at checkout for questions and fulfillment updates."
                 : "Message the merchant for any questions or issues."}
             </p>
             {messageMerchant && <div className="mt-3">{messageMerchant}</div>}
@@ -1484,7 +1678,10 @@ function OrderDetail({
                 priceSats: currency === "SATS" ? amount : undefined,
                 sourcePrice,
               },
-              { settledSatsAreAuthoritative: true }
+              {
+                allowZero: zeroCostPickupOrder,
+                settledSatsAreAuthoritative: true,
+              }
             )
           }
         />
@@ -1823,7 +2020,7 @@ function OrdersPage() {
           <p className="mt-2 text-sm leading-7 text-[var(--text-secondary)]">
             {signerConnected
               ? "Track your purchases, payment status, and shipping progress."
-              : "Finish this guest payment and review locally saved checkout status. Merchant follow-up uses your submitted phone and email contact details."}
+              : "Review this guest order and its locally saved checkout status. The merchant can use your submitted private recovery contact."}
           </p>
         </div>
         <RefreshChip
@@ -1844,7 +2041,7 @@ function OrdersPage() {
           }
           body={
             selectedFromUrl
-              ? "Guest checkout orders are tied to the browser session that created them. Return from checkout in the same tab before the session expires; merchant follow-up uses the phone and email contact details submitted at checkout."
+              ? "Guest checkout orders are tied to the browser session that created them. Return from checkout in the same tab before the session expires; the merchant can use the private recovery contact submitted at checkout."
               : "Order updates, invoices, and merchant replies are tied to your signer identity."
           }
         />

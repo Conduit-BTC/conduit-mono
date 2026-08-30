@@ -1215,6 +1215,13 @@ describe("deriveInboxReadCoverage", () => {
     ).toBe("partial")
     expect(
       deriveInboxReadCoverage({
+        successfulRelayUrls: ["wss://a"],
+        failedRelayUrls: [],
+        cappedRelayUrls: ["wss://a"],
+      })
+    ).toBe("partial")
+    expect(
+      deriveInboxReadCoverage({
         successfulRelayUrls: [],
         failedRelayUrls: ["wss://a"],
       })

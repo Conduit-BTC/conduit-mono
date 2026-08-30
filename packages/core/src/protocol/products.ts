@@ -1,18 +1,25 @@
 import type { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   canonicalizeProductPrice,
-  canonicalizeShippingCost,
-  type CommerceShippingCostLike,
+  normalizeCurrencyCode,
+  type CommercePriceLike,
 } from "../pricing"
 import {
   productSchema,
   type ProductSchema,
+  type ProductShippingOptionReference,
   type ProductZapMessagePolicy,
 } from "../schemas"
 import { normalizePublicMediaUrl } from "../network-target-safety"
 import { EVENT_KINDS } from "./kinds"
 import { parseLegacyConduitInlineShippingTags } from "./compat/conduit-inline-shipping"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
+import { parseAddressableCoordinate } from "./event-market"
+import {
+  parseSignedProductPriceTag as parsePriceTag,
+  parseSignedProductShippingOptionTags as parseShippingOptionTags,
+  signedProductPriceEvidenceIsMalformed,
+} from "./product-event-evidence"
 
 export const MAX_PRODUCT_IMAGE_CANDIDATES = 12
 const PRODUCT_JSON_DISPLAY_PROJECTION_MAX_DEPTH = 3
@@ -242,6 +249,9 @@ export function buildProductListingEventDraft({
   dTag,
   clientAppId,
 }: BuildProductListingEventDraftInput): ProductListingEventDraft {
+  if (product.priceEvidenceMalformed) {
+    throw new Error("Product price evidence is malformed")
+  }
   const normalizedDTag = dTag.trim()
   if (!normalizedDTag) throw new Error("Product d tag is required")
 
@@ -294,8 +304,18 @@ export function buildProductListingEventDraft({
     tags.push(["stock", String(product.stock)])
   }
 
-  const shippingOptionTag = buildShippingOptionTag(product)
-  if (shippingOptionTag) tags.push(shippingOptionTag)
+  for (const collectionRef of uniqueNonEmptyStrings(
+    product.collectionRefs ?? []
+  )) {
+    const coordinate = parseAddressableCoordinate(collectionRef, [
+      EVENT_KINDS.PRODUCT_COLLECTION,
+    ])
+    if (!coordinate) {
+      throw new Error("Product collection coordinate is invalid")
+    }
+    tags.push(["a", coordinate.coordinate])
+  }
+  tags.push(...buildShippingOptionTags(product, priceCurrency))
   for (const image of getProductProtocolImages(product)) {
     tags.push(["image", image.url])
   }
@@ -393,23 +413,103 @@ function getTagValues(tags: string[][] | undefined, name: string): string[] {
     .map((t) => t[1] as string)
 }
 
-function parsePriceTag(
-  tags: string[][] | undefined
-): { price: number; currency: string } | null {
-  if (!tags) return null
-  for (const t of tags) {
-    if (t[0] !== "price") continue
-    const amount = typeof t[1] === "string" ? Number(t[1]) : NaN
-    const currency = typeof t[2] === "string" ? t[2] : undefined
-    if (!Number.isFinite(amount) || !currency) continue
-    return { price: amount, currency }
+function uniqueNonEmptyStrings(values: readonly string[]): string[] {
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const value of values) {
+    const trimmed = value.trim()
+    if (!trimmed || seen.has(trimmed)) continue
+    seen.add(trimmed)
+    result.push(trimmed)
   }
-  return null
+  return result
 }
 
-function buildShippingOptionTag(product: ProductSchema): string[] | null {
-  if (!product.shippingOptionId) return null
-  return ["shipping_option", product.shippingOptionId]
+type ProductPriceEvidence = {
+  price: number
+  currency: string
+}
+
+function canonicalPriceFields(
+  standardPrice: ProductPriceEvidence
+): CommercePriceLike {
+  return canonicalizeProductPrice<CommercePriceLike>({
+    price: standardPrice.price,
+    currency: standardPrice.currency,
+  })
+}
+
+function applyCanonicalPriceFields(
+  candidate: Partial<ProductSchema>,
+  standardPrice: ProductPriceEvidence
+): void {
+  const canonical = canonicalPriceFields(standardPrice)
+  candidate.price = canonical.price
+  candidate.currency = canonical.currency
+  candidate.sourcePrice = canonical.sourcePrice
+  if (canonical.priceSats === undefined) delete candidate.priceSats
+  else candidate.priceSats = canonical.priceSats
+}
+
+function getShippingReferenceExtraCost(
+  reference: ProductShippingOptionReference,
+  productCurrency: string
+): string | null {
+  if (reference.extraCostMalformed) {
+    throw new Error("Product shipping option extra cost is malformed")
+  }
+  if (!reference.extraCost) return null
+  if (
+    normalizeCurrencyCode(reference.extraCost.currency) !==
+      normalizeCurrencyCode(reference.extraCost.normalizedCurrency) ||
+    normalizeCurrencyCode(reference.extraCost.normalizedCurrency) !==
+      normalizeCurrencyCode(productCurrency)
+  ) {
+    throw new Error("Product shipping option extra cost currency is invalid")
+  }
+  return String(reference.extraCost.amount)
+}
+
+function buildShippingOptionTags(
+  product: ProductSchema,
+  productCurrency: string
+): string[][] {
+  const repeated = product.shippingOptionRefs ?? []
+  if (repeated.length > 0) {
+    const seen = new Map<string, string>()
+    return repeated.flatMap((reference) => {
+      const parsedCoordinate = parseAddressableCoordinate(
+        reference.coordinate,
+        [EVENT_KINDS.SHIPPING_OPTION, EVENT_KINDS.PRODUCT_COLLECTION]
+      )
+      if (!parsedCoordinate) {
+        throw new Error("Product shipping option coordinate is invalid")
+      }
+      const coordinate = parsedCoordinate.coordinate
+      const tag = ["shipping_option", coordinate]
+      const explicitExtraCost = getShippingReferenceExtraCost(
+        reference,
+        productCurrency
+      )
+      const extraCost = explicitExtraCost
+      const previousExtraCost = seen.get(coordinate)
+      if (previousExtraCost !== undefined) {
+        if (previousExtraCost !== (extraCost ?? "")) {
+          throw new Error(
+            "Product shipping option has conflicting repeated extra costs"
+          )
+        }
+        return []
+      }
+      seen.set(coordinate, extraCost ?? "")
+      if (extraCost !== null) tag.push(extraCost)
+      return [tag]
+    })
+  }
+
+  if (!product.shippingOptionId) return []
+
+  return [["shipping_option", product.shippingOptionId]]
 }
 
 function parseStockTag(
@@ -432,40 +532,12 @@ function parseStockTag(
   return {}
 }
 
-function parseShippingOptionTag(
-  tags: string[][] | undefined,
-  productCurrency: string | undefined
-): {
-  shippingOptionId?: string
-  shippingOptionDTag?: string
-  shippingOptionLaunchUnsupported?: boolean
-  extraCost?: CommerceShippingCostLike
-} {
-  const shippingOptionTags =
-    tags?.filter((candidate) => candidate[0] === "shipping_option") ?? []
-  const tag = shippingOptionTags[0]
-  const ref = tag?.[1]
-  if (!ref) return {}
-  const parts = ref.split(":")
-
-  const rawExtraCost = tag?.[2]
-  const amount =
-    typeof rawExtraCost === "string" && rawExtraCost.trim()
-      ? Number(rawExtraCost)
-      : NaN
-  const extraCost =
-    productCurrency && Number.isFinite(amount) && amount >= 0
-      ? canonicalizeShippingCost(amount, productCurrency)
-      : undefined
-
-  return {
-    shippingOptionId: ref,
-    shippingOptionDTag:
-      parts.length >= 3 ? parts.slice(2).join(":") : undefined,
-    shippingOptionLaunchUnsupported:
-      shippingOptionTags.length !== 1 || tag.length > 2,
-    extraCost,
-  }
+function parseProductCollectionRefs(tags: string[][] | undefined): string[] {
+  return uniqueNonEmptyStrings(
+    (tags ?? [])
+      .filter((tag) => tag[0] === "a" && tag[1]?.startsWith("30405:"))
+      .map((tag) => tag[1]!)
+  )
 }
 
 function parseProductShippingTags(
@@ -473,8 +545,14 @@ function parseProductShippingTags(
   productCurrency: string | undefined
 ): Partial<ProductSchema> {
   const legacyInline = parseLegacyConduitInlineShippingTags(tags)
-  const shippingOption = parseShippingOptionTag(tags, productCurrency)
+  const shippingOption = parseShippingOptionTags(tags, productCurrency)
   const { extraCost, ...shippingOptionFields } = shippingOption
+  const shippingOptionLaunchUnsupported =
+    shippingOption.shippingOptionRefs.length > 0
+      ? shippingOption.shippingOptionRefs.length !== 1 ||
+        shippingOption.shippingOptionRefs[0]?.extraCostMalformed === true ||
+        shippingOption.shippingOptionRefs[0]?.extraCost !== undefined
+      : undefined
 
   return {
     ...legacyInline,
@@ -483,7 +561,11 @@ function parseProductShippingTags(
       ? {}
       : (extraCost ?? {})),
     ...shippingOptionFields,
+    ...(shippingOptionLaunchUnsupported !== undefined
+      ? { shippingOptionLaunchUnsupported }
+      : {}),
     canonicalShippingResolved: false,
+    collectionRefs: parseProductCollectionRefs(tags),
   }
 }
 
@@ -813,6 +895,19 @@ export function parseProductEvent(
 ): ProductSchema {
   const createdAtMs = (event.created_at ?? 0) * 1000
   const dTag = getTagValue(event.tags, "d")
+  const standardPrice = parsePriceTag(event.tags)
+  let legacyContent: unknown
+  let legacyContentParsed = false
+  try {
+    legacyContent = JSON.parse(event.content || "{}")
+    legacyContentParsed = true
+  } catch {
+    // Markdown content is the standard kind-30402 representation.
+  }
+  const priceEvidenceMalformed = signedProductPriceEvidenceIsMalformed({
+    standardPrice,
+    legacyContent,
+  })
   const zapPolicy = parseProductZapPolicy(event.tags)
   const stockTag = parseStockTag(event.tags)
   const productTypeTag = parseProductTypeTag(event.tags)
@@ -821,10 +916,11 @@ export function parseProductEvent(
 
   // Try legacy Conduit JSON content first for already-published listings.
   try {
-    const parsed = JSON.parse(event.content || "{}") as Partial<ProductSchema>
+    if (!legacyContentParsed) throw new Error("Legacy content is not JSON")
+    const parsed = legacyContent as Partial<ProductSchema>
     const shippingTags = parseProductShippingTags(
       event.tags,
-      parsed.currency ?? parsePriceTag(event.tags)?.currency
+      standardPrice?.currency ?? parsed.currency
     )
     const candidate: Partial<ProductSchema> = {
       ...parsed,
@@ -853,6 +949,9 @@ export function parseProductEvent(
     candidate.images = getProductProtocolImages({
       images: Array.isArray(parsed.images) ? parsed.images : [],
     })
+    if (standardPrice) applyCanonicalPriceFields(candidate, standardPrice)
+    if (priceEvidenceMalformed) candidate.priceEvidenceMalformed = true
+    else delete candidate.priceEvidenceMalformed
 
     const pricedCandidate =
       typeof candidate.price === "number"
@@ -863,8 +962,11 @@ export function parseProductEvent(
         : candidate
     const res = productSchema.safeParse(pricedCandidate)
     if (res.success) {
+      const displaySummary =
+        res.data.summary ??
+        projectProductJsonDisplayFields(event.content)?.summary
       const normalizedSummary = normalizeProductSummaryForDisplay(
-        res.data.summary,
+        displaySummary,
         {
           title: res.data.title,
           priceInfo: {
@@ -897,7 +999,7 @@ export function parseProductEvent(
     (markdownTitle || undefined) ??
     "Untitled"
 
-  const priceInfo = parsePriceTag(event.tags)
+  const priceInfo = standardPrice
   const shippingTags = parseProductShippingTags(event.tags, priceInfo?.currency)
   const summaryTag = getTagValue(event.tags, "summary")
   const locationTag = getTagValue(event.tags, "location")
@@ -940,6 +1042,7 @@ export function parseProductEvent(
       summary,
       price: priceInfo?.price ?? 0,
       currency: priceInfo?.currency ?? "USD",
+      ...(priceEvidenceMalformed ? { priceEvidenceMalformed: true } : {}),
       type,
       parentProductId,
       specifications,

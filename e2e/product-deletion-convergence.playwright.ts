@@ -516,7 +516,7 @@ async function readDatabaseMigrationState(page: Page): Promise<{
   )
 }
 
-test("Merchant upgrades v8 cache data to the durable v15 cache stores @merchant", async ({
+test("Merchant upgrades v8 cache data to the durable v16 cache stores @merchant", async ({
   page,
 }) => {
   await page.route(
@@ -546,6 +546,7 @@ test("Merchant upgrades v8 cache data to the durable v15 cache stores @merchant"
           hasOwnContactListSnapshots: state.stores.includes(
             "ownContactListSnapshots"
           ),
+          hasEventMarketEvidence: state.stores.includes("eventMarketEvidence"),
           hasWallets: state.stores.includes("wallets"),
           hasWalletCredentials: state.stores.includes("walletCredentials"),
           hasShippingOptionFrontiers: state.stores.includes(
@@ -559,11 +560,12 @@ test("Merchant upgrades v8 cache data to the durable v15 cache stores @merchant"
       { timeout: 20_000 }
     )
     .toEqual({
-      nativeVersion: 150,
+      nativeVersion: 160,
       hasOutbox: true,
       hasShopperTrust: true,
       hasInboxDeclarationEvidence: true,
       hasOwnContactListSnapshots: true,
+      hasEventMarketEvidence: true,
       hasWallets: true,
       hasWalletCredentials: true,
       hasShippingOptionFrontiers: true,

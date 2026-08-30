@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test"
-import { Nip47PublishTimeoutError } from "@getalby/sdk/nwc"
+import {
+  Nip47PublishTimeoutError,
+  Nip47ReplyTimeoutError,
+} from "@getalby/sdk/nwc"
 
 import {
   __nwcTestInternals,
@@ -628,6 +631,91 @@ describe("NWC SDK adapter", () => {
       description: "Order #1",
       expiry: 3_600,
     })
+  })
+
+  it("can keep invoice issuance open without a Conduit wrapper timeout", async () => {
+    let resolveInvoice!: (invoice: {
+      invoice: string
+      payment_hash: string
+      amount: number
+      created_at: number
+      expires_at: number
+    }) => void
+    const invoiceResponse = new Promise<{
+      invoice: string
+      payment_hash: string
+      amount: number
+      created_at: number
+      expires_at: number
+    }>((resolve) => {
+      resolveInvoice = resolve
+    })
+
+    __nwcTestInternals.__setNwcClientFactory(() =>
+      fakeClient({
+        makeInvoice: () => invoiceResponse,
+      })
+    )
+
+    const pending = nwcMakeInvoice(
+      connection,
+      { amountMsats: 50_000, description: "Order #1" },
+      null,
+      "merchant"
+    )
+    let settled = false
+    void pending.finally(() => {
+      settled = true
+    })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    resolveInvoice({
+      invoice: "lnbc1merchant",
+      payment_hash: "payment-hash",
+      amount: 50_000,
+      created_at: 1_700_000_000,
+      expires_at: 1_700_003_600,
+    })
+    await expect(pending).resolves.toMatchObject({
+      invoice: "lnbc1merchant",
+      paymentHash: "payment-hash",
+    })
+  })
+
+  it("does not expose an SDK reply timeout as a retryable invoice failure", async () => {
+    let markStarted!: () => void
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve
+    })
+    __nwcTestInternals.__setNwcClientFactory(() =>
+      fakeClient({
+        makeInvoice: async () => {
+          markStarted()
+          throw new Nip47ReplyTimeoutError("reply timed out", "INTERNAL")
+        },
+      })
+    )
+
+    const pending = nwcMakeInvoice(
+      connection,
+      { amountMsats: 50_000, description: "Order #1" },
+      null,
+      "merchant"
+    )
+    let settled = false
+    void pending.then(
+      () => {
+        settled = true
+      },
+      () => {
+        settled = true
+      }
+    )
+
+    await started
+    await Promise.resolve()
+    expect(settled).toBe(false)
   })
 
   it("times out SDK calls at the Conduit wrapper boundary", async () => {

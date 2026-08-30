@@ -171,11 +171,13 @@ export function getNwcUriFingerprint(uri: string): string {
 
 /**
  * Send a NIP-47 `make_invoice` request and wait for the response.
+ * Pass `null` when a caller must keep an ambiguous issuance request open
+ * instead of making the operation appear safely retryable after a local timer.
  */
 export async function nwcMakeInvoice(
   connection: NwcConnection,
   params: NwcMakeInvoiceParams,
-  timeoutMs = 30_000,
+  timeoutMs: number | null = 30_000,
   clientAppId: ConduitAppId
 ): Promise<NwcMakeInvoiceResult> {
   void clientAppId
@@ -187,14 +189,20 @@ export async function nwcMakeInvoice(
       description: params.description,
       expiry: params.expiry,
     }
-    const result = await withNwcTimeout(
-      client.makeInvoice(request),
-      timeoutMs,
-      "make_invoice"
-    )
+    const requestPromise = client.makeInvoice(request)
+    const result =
+      timeoutMs === null
+        ? await requestPromise
+        : await withNwcTimeout(requestPromise, timeoutMs, "make_invoice")
 
     return parseMakeInvoiceResult(result)
   } catch (error) {
+    if (timeoutMs === null && isNwcTimeoutError(error)) {
+      // The SDK has already submitted (or may have submitted) the request, but
+      // its own timer cannot establish whether the wallet minted an invoice.
+      // Keep the caller's per-order lock pending instead of exposing a retry.
+      return new Promise<NwcMakeInvoiceResult>(() => undefined)
+    }
     throw normalizeNwcError(error)
   } finally {
     client.close()
@@ -564,15 +572,19 @@ function normalizeNwcError(error: unknown): Error {
     return new Error("Failed to connect to NWC relay(s).")
   }
 
-  if (
-    error instanceof Nip47TimeoutError ||
-    error instanceof Nip47PublishTimeoutError ||
-    error instanceof Nip47ReplyTimeoutError
-  ) {
+  if (isNwcTimeoutError(error)) {
     return new Error("NWC request timed out.")
   }
 
   return error instanceof Error ? error : new Error("NWC request failed.")
+}
+
+function isNwcTimeoutError(error: unknown): boolean {
+  return (
+    error instanceof Nip47TimeoutError ||
+    error instanceof Nip47PublishTimeoutError ||
+    error instanceof Nip47ReplyTimeoutError
+  )
 }
 
 export const __nwcTestInternals = {

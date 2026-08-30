@@ -88,8 +88,7 @@ export interface MerchantInvoiceDependencies {
   ): Promise<NwcGetInfoResult>
   makeNwcInvoice(
     connection: NwcConnection,
-    input: { amountMsats: number; description?: string },
-    timeoutMs: number
+    input: { amountMsats: number; description?: string }
   ): Promise<{ invoice: string }>
   makeMockInvoice(input: { amountSats: number; memo?: string }): {
     invoice: string
@@ -97,7 +96,6 @@ export interface MerchantInvoiceDependencies {
   isMockPayments(): boolean
   publish(input: PublishMerchantOrderMessageInput): Promise<unknown>
   now(): number
-  webLnTimeoutMs?: number
   nwcTimeoutMs?: number
   lockManager?: MerchantInvoiceLockManager | null
 }
@@ -260,24 +258,6 @@ function validateGeneratedInvoice(
   }
 }
 
-async function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  message: string
-): Promise<T> {
-  let timeout: ReturnType<typeof setTimeout> | undefined
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_, reject) => {
-        timeout = setTimeout(() => reject(new Error(message)), timeoutMs)
-      }),
-    ])
-  } finally {
-    if (timeout !== undefined) clearTimeout(timeout)
-  }
-}
-
 function assertNwcDestinationMatch(
   profileLud16: string,
   connection: NwcConnection,
@@ -343,13 +323,11 @@ async function acquireInvoice(
     }
     case "webln":
       return {
-        invoice: (
-          await withTimeout(
-            dependencies.makeWeblnInvoice({ amountSats, memo }),
-            dependencies.webLnTimeoutMs ?? 15_000,
-            "The browser-wallet invoice request timed out."
-          )
-        ).invoice,
+        // A local timeout cannot cancel a wallet prompt or invoice request. Keep
+        // this order exclusive until the original issuer response settles so a
+        // late success cannot be followed by a second invoice.
+        invoice: (await dependencies.makeWeblnInvoice({ amountSats, memo }))
+          .invoice,
         source: source.type,
       }
     case "nwc": {
@@ -359,11 +337,10 @@ async function acquireInvoice(
       assertNwcDestinationMatch(profileLud16 ?? "", source.connection, info)
       return {
         invoice: (
-          await dependencies.makeNwcInvoice(
-            source.connection,
-            { amountMsats, description: memo },
-            timeoutMs
-          )
+          await dependencies.makeNwcInvoice(source.connection, {
+            amountMsats,
+            description: memo,
+          })
         ).invoice,
         source: source.type,
       }
@@ -449,10 +426,13 @@ async function deliverSavedInvoice(
   })
 }
 
+// Navigator locks coordinate tabs where supported. This JavaScript-realm
+// fallback also coordinates module instances created by route remounts.
+const inFlightInvoiceOrders = new Set<string>()
+
 export function createMerchantInvoiceModule(
   dependencies: MerchantInvoiceDependencies
 ): MerchantInvoiceModule {
-  const inFlightOrders = new Set<string>()
   const lockManager =
     dependencies.lockManager === undefined
       ? getNavigatorLockManager()
@@ -463,14 +443,14 @@ export function createMerchantInvoiceModule(
     action: () => Promise<T>
   ): Promise<T> {
     const localAction = async (): Promise<T> => {
-      if (inFlightOrders.has(scopeId)) {
+      if (inFlightInvoiceOrders.has(scopeId)) {
         throw new Error("Another invoice action is already in progress.")
       }
-      inFlightOrders.add(scopeId)
+      inFlightInvoiceOrders.add(scopeId)
       try {
         return await action()
       } finally {
-        inFlightOrders.delete(scopeId)
+        inFlightInvoiceOrders.delete(scopeId)
       }
     }
 
@@ -611,8 +591,10 @@ export function createDefaultMerchantInvoiceModule(
     makeWeblnInvoice: weblnMakeInvoice,
     getNwcInfo: (connection, timeoutMs) =>
       nwcGetInfo(connection, timeoutMs, "merchant"),
-    makeNwcInvoice: (connection, input, timeoutMs) =>
-      nwcMakeInvoice(connection, input, timeoutMs, "merchant"),
+    // Invoice issuance is not safely retryable after a client-side timeout.
+    // Keep awaiting the original NWC response while the per-order lock is held.
+    makeNwcInvoice: (connection, input) =>
+      nwcMakeInvoice(connection, input, null, "merchant"),
     makeMockInvoice: mockMakeInvoice,
     isMockPayments: canMockInvoice,
     publish: publishMerchantOrderMessage,

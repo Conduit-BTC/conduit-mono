@@ -23,6 +23,17 @@ const INVOICE = makeBolt11Fixture({
   createdAt: 1_800_000_000,
 })
 
+function deferred<T>(): {
+  promise: Promise<T>
+  resolve: (value: T) => void
+} {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
+}
+
 class MemoryPendingInvoiceStore implements MerchantPendingInvoiceStore {
   readonly rows = new Map<string, MerchantPendingInvoice>()
   readonly operations: string[] = []
@@ -86,7 +97,6 @@ function createDependencies(
     isMockPayments: () => false,
     publish: mock(async () => undefined),
     now: () => NOW_MS,
-    webLnTimeoutMs: 20,
     ...overrides,
   }
 }
@@ -190,7 +200,7 @@ describe("merchant invoice source routing", () => {
     expect(dependencies.publish).toHaveBeenCalledTimes(0)
   })
 
-  it("uses WebLN only when explicitly selected and bounds the request", async () => {
+  it("uses WebLN only when explicitly selected", async () => {
     const store = new MemoryPendingInvoiceStore()
     const makeWeblnInvoice = mock(async () => ({ invoice: INVOICE }))
     const dependencies = createDependencies(store, { makeWeblnInvoice })
@@ -207,21 +217,90 @@ describe("merchant invoice source routing", () => {
       memo: `Conduit order ${ORDER_ID}`,
     })
     expect(dependencies.fetchLnurlPayMetadata).toHaveBeenCalledTimes(0)
+  })
 
-    const hangingModule = createMerchantInvoiceModule(
-      createDependencies(new MemoryPendingInvoiceStore(), {
-        makeWeblnInvoice: mock(
-          () => new Promise<{ invoice: string }>(() => undefined)
-        ),
-        webLnTimeoutMs: 5,
-      })
-    )
+  it("keeps a late WebLN success exclusive until it is checkpointed", async () => {
+    const store = new MemoryPendingInvoiceStore()
+    const response = deferred<{ invoice: string }>()
+    const started = deferred<void>()
+    const makeWeblnInvoice = mock(() => {
+      started.resolve()
+      return response.promise
+    })
+    const dependencies = createDependencies(store, {
+      makeWeblnInvoice,
+      lockManager: null,
+    })
+    const firstModule = createMerchantInvoiceModule(dependencies)
+    const secondModule = createMerchantInvoiceModule(dependencies)
+    const firstAttempt = firstModule.createAndDeliver({
+      ...createInput(),
+      source: { type: "webln" },
+    })
+
+    await started.promise
     await expect(
-      hangingModule.createAndDeliver({
+      secondModule.createAndDeliver({
+        ...createInput(),
+        source: { type: "manual", invoice: INVOICE },
+      })
+    ).rejects.toThrow(/already in progress/i)
+    expect(makeWeblnInvoice).toHaveBeenCalledTimes(1)
+
+    response.resolve({ invoice: INVOICE })
+    await expect(firstAttempt).resolves.toBeUndefined()
+    await expect(
+      secondModule.createAndDeliver({
         ...createInput(),
         source: { type: "webln" },
       })
-    ).rejects.toThrow(/timed out/i)
+    ).rejects.toThrow(/already sent/i)
+    expect(makeWeblnInvoice).toHaveBeenCalledTimes(1)
+  })
+
+  it("keeps a late NWC success exclusive until it is checkpointed", async () => {
+    const connection = {
+      walletPubkey: "d".repeat(64),
+      secret: "test-secret",
+      relays: ["wss://relay.example"],
+      lud16: "merchant@pay.example",
+    }
+    const store = new MemoryPendingInvoiceStore()
+    const response = deferred<{ invoice: string }>()
+    const started = deferred<void>()
+    const makeNwcInvoice = mock(() => {
+      started.resolve()
+      return response.promise
+    })
+    const dependencies = createDependencies(store, {
+      makeNwcInvoice,
+      lockManager: null,
+    })
+    const firstModule = createMerchantInvoiceModule(dependencies)
+    const secondModule = createMerchantInvoiceModule(dependencies)
+    const firstAttempt = firstModule.createAndDeliver({
+      ...createInput(),
+      source: { type: "nwc", connection },
+    })
+
+    await started.promise
+    await expect(
+      secondModule.createAndDeliver({
+        ...createInput(),
+        source: { type: "profile_lud16" },
+      })
+    ).rejects.toThrow(/already in progress/i)
+    expect(makeNwcInvoice).toHaveBeenCalledTimes(1)
+
+    response.resolve({ invoice: INVOICE })
+    await expect(firstAttempt).resolves.toBeUndefined()
+    await expect(
+      secondModule.createAndDeliver({
+        ...createInput(),
+        source: { type: "nwc", connection },
+      })
+    ).rejects.toThrow(/already sent/i)
+    expect(makeNwcInvoice).toHaveBeenCalledTimes(1)
   })
 
   it("requires an explicitly selected NWC destination to match the profile", async () => {

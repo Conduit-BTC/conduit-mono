@@ -159,14 +159,15 @@ function createCache(
 }
 
 describe("shopper trust evidence", () => {
-  it("registers the combined cache, deletion, declaration, wallet, shipping, and invoice stores", () => {
-    expect(db.verno).toBe(15)
+  it("registers the combined cache, deletion, declaration, wallet, shipping, event-market, and invoice stores", () => {
+    expect(db.verno).toBe(16)
     expect(db.tables.map(({ name }) => name)).toEqual(
       expect.arrayContaining([
         "shopperTrustSnapshots",
         "productDeletionOutbox",
         "inboxDeclarationEvidence",
         "ownContactListSnapshots",
+        "eventMarketEvidence",
         "wallets",
         "walletCredentials",
         "shippingOptionFrontiers",
@@ -175,6 +176,7 @@ describe("shopper trust evidence", () => {
     )
     expect(db.inboxDeclarationEvidence.schema.primKey.name).toBe("pubkey")
     expect(db.ownContactListSnapshots.schema.primKey.name).toBe("pubkey")
+    expect(db.eventMarketEvidence.schema.primKey.name).toBe("id")
     expect(db.wallets.schema.primKey.name).toBe("id")
     expect(db.wallets.schema.indexes).toHaveLength(0)
     expect(db.walletCredentials.schema.primKey.name).toBe("walletId")
@@ -213,6 +215,17 @@ describe("shopper trust evidence", () => {
 
     expect(version9).toContain("shopperTrustSnapshots:")
     expect(version9).toContain("productDeletionOutbox:")
+  })
+
+  it("keeps both divergent version-15 stores in the upgrade history", async () => {
+    const source = await Bun.file("packages/core/src/db/index.ts").text()
+    const version15 = source.slice(
+      source.indexOf("this.version(15).stores"),
+      source.indexOf("this.version(16).stores")
+    )
+
+    expect(version15).toContain("merchantPendingInvoices:")
+    expect(version15).toContain("eventMarketEvidence:")
   })
 
   it("bounds persisted shopper trust snapshots by age", () => {

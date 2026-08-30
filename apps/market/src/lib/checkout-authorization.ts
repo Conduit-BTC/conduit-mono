@@ -1,13 +1,24 @@
-import type { ParsedShippingOption, Product } from "@conduit/core"
+import type {
+  ParsedShippingOption,
+  PricingRateInput,
+  Product,
+} from "@conduit/core"
 import {
   getCartCommerceFingerprint,
   rebuildCurrentCartItems,
   type CartItem,
+  type CartItemFulfillment,
 } from "./cart-model"
 import {
   getCartShippingOptionCoordinates,
   prepareCartFulfillment,
 } from "./cart-shipping-options"
+import {
+  getProductEventMarketCandidates,
+  resolveProductCartFulfillment,
+  type ProductCartFulfillmentResolution,
+} from "./event-market-adapter"
+import { assertCartPickupHandlerReady } from "./pickup-handoff"
 
 export type CheckoutAuthorizationResult =
   { status: "ok"; items: CartItem[] } | { status: "changed" }
@@ -17,6 +28,15 @@ export type CheckoutAuthorizationMode = "direct_payment" | "order_first"
 export type CheckoutShippingOptionReader = (
   coordinates: readonly string[]
 ) => Promise<ParsedShippingOption[]>
+
+export type CheckoutProductFulfillmentResolver = (
+  product: Product,
+  rateInput: PricingRateInput
+) => Promise<ProductCartFulfillmentResolution>
+
+export type CheckoutPickupHandlerAuthorizer = (
+  items: readonly CartItem[]
+) => Promise<void>
 
 /**
  * Rebuilds one checkout snapshot from authoritative 30402 and 30406 reads.
@@ -29,10 +49,47 @@ export async function authorizeCurrentCheckoutItems(input: {
   rawItems: readonly CartItem[]
   refreshedProducts: readonly Product[]
   readShippingOptions: CheckoutShippingOptionReader
+  rateInput?: PricingRateInput
+  resolveProductFulfillment?: CheckoutProductFulfillmentResolver
+  authorizePickupHandlers?: CheckoutPickupHandlerAuthorizer
 }): Promise<CheckoutAuthorizationResult> {
+  const resolveFulfillment =
+    input.resolveProductFulfillment ?? resolveProductCartFulfillment
+  const fulfillmentResolutions = await Promise.all(
+    input.refreshedProducts.map(async (product) => {
+      if (getProductEventMarketCandidates(product).length === 0) {
+        return {
+          status: "standard",
+          type: product.format === "digital" ? "digital" : "shipping",
+          product,
+        } satisfies ProductCartFulfillmentResolution
+      }
+      return resolveFulfillment(product, input.rateInput ?? null)
+    })
+  )
+  if (
+    fulfillmentResolutions.some((resolution) => resolution.status === "blocked")
+  ) {
+    return { status: "changed" }
+  }
+
+  const fulfillmentByProductId = new Map<string, CartItemFulfillment>()
+  const resolvedProducts = fulfillmentResolutions.map((resolution) => {
+    if (resolution.status === "blocked") {
+      throw new Error("Blocked fulfillment escaped checkout authorization.")
+    }
+    fulfillmentByProductId.set(
+      resolution.product.id,
+      resolution.status === "pickup"
+        ? resolution.fulfillment
+        : { type: resolution.type }
+    )
+    return resolution.product
+  })
   const refreshedRawItems = rebuildCurrentCartItems(
     input.rawItems,
-    input.refreshedProducts
+    resolvedProducts,
+    fulfillmentByProductId
   )
   if (
     !refreshedRawItems ||
@@ -69,6 +126,10 @@ export async function authorizeCurrentCheckoutItems(input: {
   ) {
     return { status: "changed" }
   }
+
+  await (input.authorizePickupHandlers ?? assertCartPickupHandlerReady)(
+    prepared.items
+  )
 
   return { status: "ok", items: prepared.items }
 }

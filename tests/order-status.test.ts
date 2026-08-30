@@ -4,6 +4,7 @@ import {
   deriveOrderFlow,
   getMerchantOrderActions,
   getOrderStatusDisplay,
+  isMerchantOrderPaid,
   KNOWN_ORDER_STATUSES,
   normalizeSafeHttpUrl,
   orderStatusEnum,
@@ -347,6 +348,163 @@ describe("getMerchantOrderActions", () => {
         kind: "primary",
       },
     ])
+  })
+
+  it("keeps pickup out of carrier tracking and completes it explicitly", () => {
+    const state = {
+      status: "paid",
+      paid: true,
+      fulfillmentMode: "pickup" as const,
+    }
+
+    const timeline = buildOrderStatusTimeline(state)
+    expect(timeline.map((step) => step.key)).toEqual([
+      "placed",
+      "payment",
+      "accepted",
+      "delivered",
+    ])
+    expect(timeline.at(-1)).toMatchObject({
+      title: "Complete pickup",
+      subtitle: "Mark the order complete after the buyer picks it up.",
+    })
+    expect(getMerchantOrderActions(state)).toEqual([
+      {
+        action: "cancel",
+        status: "cancelled",
+        label: "Cancel order",
+        kind: "destructive",
+      },
+      {
+        action: "complete",
+        status: "complete",
+        label: "Mark picked up / complete",
+        kind: "primary",
+      },
+    ])
+  })
+
+  it("completes authenticated zero-cost pickup without fabricating payment", () => {
+    const state = {
+      status: "accepted",
+      accepted: true,
+      paid: false,
+      fulfillmentMode: "pickup" as const,
+      requiresShipping: false,
+      isZeroCostPickup: true,
+    }
+
+    expect(isMerchantOrderPaid(state)).toBe(false)
+    expect(buildOrderStatusTimeline(state)).toEqual([
+      {
+        key: "placed",
+        title: "Order placed",
+        subtitle: "Order received from buyer.",
+        status: "complete",
+      },
+      {
+        key: "payment",
+        title: "No payment required",
+        subtitle: "Verified zero-cost pickup order.",
+        status: "complete",
+      },
+      {
+        key: "accepted",
+        title: "Order accepted",
+        subtitle: "Merchant confirmed the order.",
+        status: "complete",
+      },
+      {
+        key: "delivered",
+        title: "Complete pickup",
+        subtitle: "Mark the order complete after the buyer picks it up.",
+        status: "in_progress",
+      },
+    ])
+    expect(getMerchantOrderActions(state)).toEqual([
+      {
+        action: "cancel",
+        status: "cancelled",
+        label: "Cancel order",
+        kind: "destructive",
+      },
+      {
+        action: "complete",
+        status: "complete",
+        label: "Mark picked up / complete",
+        kind: "primary",
+      },
+    ])
+    expect(
+      buildOrderStatusTimeline({
+        ...state,
+        status: "pending",
+        accepted: false,
+      }).find((step) => step.key === "delivered")?.subtitle
+    ).toBe("Complete pickup after accepting the order.")
+  })
+
+  it("keeps zero-cost pickup gated on acceptance and the exact pickup lane", () => {
+    expect(
+      getMerchantOrderActions({
+        status: "pending",
+        fulfillmentMode: "pickup",
+        requiresShipping: false,
+        isZeroCostPickup: true,
+      }).map((action) => action.action)
+    ).toEqual(["cancel", "accept"])
+
+    for (const state of [
+      {
+        status: "accepted",
+        accepted: true,
+        fulfillmentMode: "pickup" as const,
+        requiresShipping: false,
+        isZeroCostPickup: false,
+      },
+      {
+        status: "accepted",
+        accepted: true,
+        fulfillmentMode: "shipping" as const,
+        requiresShipping: true,
+        isZeroCostPickup: true,
+      },
+      {
+        status: "accepted",
+        accepted: true,
+        fulfillmentMode: "digital" as const,
+        requiresShipping: false,
+        isZeroCostPickup: true,
+      },
+      {
+        status: "accepted",
+        accepted: true,
+        fulfillmentMode: "pickup" as const,
+        requiresShipping: true,
+        isZeroCostPickup: true,
+      },
+    ]) {
+      expect(
+        getMerchantOrderActions(state).some(
+          (action) => action.action === "complete"
+        )
+      ).toBe(false)
+      expect(isMerchantOrderPaid(state)).toBe(false)
+    }
+  })
+
+  it("keeps unknown legacy fulfillment shipping-safe", () => {
+    const state = {
+      status: "paid",
+      paid: true,
+      fulfillmentMode: "unknown" as const,
+    }
+    expect(buildOrderStatusTimeline(state).map((step) => step.key)).toContain(
+      "shipped"
+    )
+    expect(getMerchantOrderActions(state).at(-1)?.action).toBe(
+      "record_shipment"
+    )
   })
 
   it("routes buyer payment evidence to verification before fulfillment", () => {

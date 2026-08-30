@@ -13,13 +13,22 @@ describe("Market cart identity contract", () => {
     const sources = routePaths.map((path) =>
       readFileSync(new URL(path, import.meta.url), "utf8")
     )
+    const resolvedCard = readFileSync(
+      new URL(
+        "../apps/market/src/components/ResolvedProductGridCard.tsx",
+        import.meta.url
+      ),
+      "utf8"
+    )
     expect(sources.join("\n")).not.toContain("item.productId === product.id")
-    expect(
-      sources.filter((source) => source.includes("selectCartItem"))
-    ).toHaveLength(4)
-    expect(
-      sources.filter((source) => source.includes("cartItemInputFromProduct"))
-    ).toHaveLength(4)
+    expect(sources[0]).toContain("<ResolvedProductGridCard")
+    expect(sources[2]).toContain("<ResolvedProductGridCard")
+    expect(resolvedCard).toContain(
+      "selectCartItem(cart.items, selectedIdentity)"
+    )
+    expect(resolvedCard).toContain("cartItemInputFromProductSelection(")
+    expect(resolvedCard).toContain("cart.removeItem(selectedIdentity)")
+    expect(resolvedCard).toContain("cart.setQuantity(selectedIdentity")
   })
 
   it("persists a versioned cart and protects unsupported future versions", () => {

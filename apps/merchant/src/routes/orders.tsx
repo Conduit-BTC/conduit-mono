@@ -10,9 +10,11 @@ import {
   decodeLightningInvoiceAmount,
   deriveProtectedReadPresentationState,
   formatNpub,
+  getNdk,
   getCachedMerchantConversationList,
   getCachedMerchantStorefront,
   getCurrencyAmountStep,
+  getEventMarketOrderCorrelationRef,
   getLightningNetworkMismatchMessage,
   getMerchantConversationList,
   getMerchantOrderActions,
@@ -26,6 +28,8 @@ import {
   normalizeCurrencyAmount,
   normalizeSafeHttpUrl,
   publishMerchantOrderMessage,
+  readEventMarketHandoffAcks,
+  resolveOrderPickupHandoffAuthority,
   pubkeyToNpub,
   prepareProtectedReadRefreshState,
   selectProtectedReadRows,
@@ -33,6 +37,7 @@ import {
   type MerchantConversationSummary,
   type MerchantOrderAction,
   type MerchantOrderState,
+  type EventMarketResolution,
   type KnownOrderStatus,
   type Profile,
   type ProductFulfillmentIntent,
@@ -54,6 +59,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
   Button,
+  Checkbox,
   Input,
   Label,
   LiveReadNotice,
@@ -86,17 +92,23 @@ import {
   getMerchantConversationCommunication,
   getMerchantConversationState,
   getMerchantConversationStatusDisplay,
-  getMerchantOrderRequiresShipping,
+  getMerchantOrderFulfillment,
   getMerchantOrderSummary,
   isMerchantGuestOrder,
   isOrderQueueTab,
   isMerchantConversationActiveFulfillment,
   ORDER_PHASE_OPTIONS,
+  type MerchantOrderPickupContext,
   type OrderQueueTab,
 } from "../lib/order-phase"
 import {
+  getMerchantPickupAuthorizationMessage,
+  verifyMerchantPickupOrderAuthorization,
+} from "../lib/order-pickup-authorization"
+import {
   buildMerchantOrderActionView,
   getMerchantOrderCancellationCopy,
+  isAuthorizedZeroCostPickup,
   isMerchantOrderActionSurfacePending,
   runExclusiveOrderAction,
 } from "../lib/order-action-view"
@@ -130,10 +142,32 @@ import {
   type OrderStockAdjustment,
   type OrderStockTargetMode,
 } from "../lib/productStock"
-import { Check, ChevronRight, Copy, MessageCircle, Search } from "lucide-react"
+import {
+  Check,
+  ChevronRight,
+  Copy,
+  MessageCircle,
+  RotateCw,
+  Search,
+} from "lucide-react"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { useMerchantPaymentAutomation } from "../hooks/useMerchantPaymentAutomation"
 import { OrderStockPanel } from "../components/OrderStockPanel"
+import {
+  eventMarketHandoffDeliveryNeedsRetry,
+  eventMarketHandoffRecipientAcknowledged,
+  issueOrganizerReadyReceipt,
+  loadEventMarketHandoffDeliveries,
+  releaseCompletedEventMarketHandoffReceipt,
+  resolveMerchantHandoffAckReadState,
+  revokeOrganizerReadyReceipt,
+  type MerchantHandoffAckReadBlocker,
+} from "../lib/event-market-handoff"
+import {
+  clearCoordinatedMerchantHandoffFallback,
+  loadCoordinatedMerchantHandoffFallback,
+  rememberCoordinatedMerchantHandoffFallback,
+} from "../lib/event-market-handoff-fallback"
 
 type OrdersSearch = { order?: string; queue?: OrderQueueTab }
 
@@ -260,8 +294,76 @@ function safeInvoiceActionError(source: MerchantInvoiceActionSource): Error {
   return new Error(INVOICE_ACTION_ERROR_MESSAGES[source])
 }
 
+const pendingInvoiceQueryTokens = new WeakMap<
+  MerchantConversationSummary,
+  string
+>()
+let nextPendingInvoiceQueryToken = 0
+
+function getPendingInvoiceQueryToken(
+  conversation: MerchantConversationSummary | null
+): string {
+  if (!conversation) return "none"
+  const existing = pendingInvoiceQueryTokens.get(conversation)
+  if (existing) return existing
+  nextPendingInvoiceQueryToken += 1
+  const token = `selection-${nextPendingInvoiceQueryToken}`
+  pendingInvoiceQueryTokens.set(conversation, token)
+  return token
+}
+
 const panelCard =
   "rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5"
+
+function organizerAckReadCopy(blocker: MerchantHandoffAckReadBlocker): {
+  status: string
+  detail: string
+} {
+  switch (blocker) {
+    case "pending":
+      return {
+        status: "Searching for acknowledgements",
+        detail:
+          "The acknowledgement search is still in progress. A valid acknowledgement already found remains usable.",
+      }
+    case "read_error":
+      return {
+        status: "Acknowledgement search failed",
+        detail:
+          "The acknowledgement inbox could not be read. Retry to improve discovery; no missing acknowledgement is inferred.",
+      }
+    case "stale":
+      return {
+        status: "Acknowledgement search stale",
+        detail:
+          "The acknowledgement search is stale. Refresh to look for newer evidence.",
+      }
+    case "decrypt_failure":
+      return {
+        status: "Some acknowledgement messages unreadable",
+        detail:
+          "Some acknowledgement messages could not be decrypted. Retry to improve discovery.",
+      }
+    case "inbox_not_declared":
+      return {
+        status: "Acknowledgement inbox not declared",
+        detail:
+          "A usable declared acknowledgement inbox is unavailable, so discovery is degraded.",
+      }
+    case "coverage_incomplete":
+      return {
+        status: "Acknowledgement search incomplete",
+        detail:
+          "The bounded inbox search did not exhaust every planned relay. Continue retrying to improve discovery.",
+      }
+    case "unavailable":
+      return {
+        status: "Acknowledgement search unavailable",
+        detail:
+          "Acknowledgement evidence is unavailable. Retry to improve discovery.",
+      }
+  }
+}
 
 function CopyInline({ value, label }: { value: string; label: string }) {
   const [copied, setCopied] = useState(false)
@@ -299,6 +401,97 @@ function DetailRow({
         {children}
       </span>
     </div>
+  )
+}
+
+function PickupFulfillmentCard({
+  pickup,
+}: {
+  pickup: MerchantOrderPickupContext
+}) {
+  const publicPlace =
+    pickup.option.location ??
+    (pickup.option.geohash ? `Geohash ${pickup.option.geohash}` : null)
+
+  return (
+    <section className={panelCard} data-testid="merchant-order-pickup">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+            Event pickup
+          </h3>
+          <p className="mt-1 text-xs text-[var(--text-secondary)]">
+            Current organizer-authored public pickup evidence verified against
+            this order.
+          </p>
+        </div>
+        <StatusPill variant="info" className="shrink-0">
+          Signed snapshot
+        </StatusPill>
+      </div>
+
+      <div className="mt-4 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
+        <div className="font-medium text-[var(--text-primary)]">
+          {pickup.option.title}
+        </div>
+        {publicPlace && (
+          <div className="mt-1 text-sm text-[var(--text-secondary)]">
+            {publicPlace}
+          </div>
+        )}
+      </div>
+
+      <div className="mt-4 space-y-2 text-xs">
+        <DetailRow label="Organizer">
+          <span
+            className="max-w-[9rem] truncate font-mono"
+            title={pickup.organizerPubkey}
+          >
+            {formatNpub(pickup.organizerPubkey, 8)}
+          </span>
+          <CopyInline
+            value={pickup.organizerPubkey}
+            label="Copy pickup organizer pubkey"
+          />
+        </DetailRow>
+        <DetailRow label="Event">
+          <span
+            className="max-w-[9rem] truncate font-mono"
+            title={pickup.calendar.coordinate}
+          >
+            {pickup.calendar.coordinate}
+          </span>
+          <CopyInline
+            value={pickup.calendar.coordinate}
+            label="Copy pickup event coordinate"
+          />
+        </DetailRow>
+        <DetailRow label="Collection">
+          <span
+            className="max-w-[9rem] truncate font-mono"
+            title={pickup.collection.coordinate}
+          >
+            {pickup.collection.coordinate}
+          </span>
+          <CopyInline
+            value={pickup.collection.coordinate}
+            label="Copy pickup collection coordinate"
+          />
+        </DetailRow>
+        <DetailRow label="Pickup option">
+          <span
+            className="max-w-[9rem] truncate font-mono"
+            title={pickup.option.coordinate}
+          >
+            {pickup.option.coordinate}
+          </span>
+          <CopyInline
+            value={pickup.option.coordinate}
+            label="Copy pickup option coordinate"
+          />
+        </DetailRow>
+      </div>
+    </section>
   )
 }
 
@@ -460,17 +653,20 @@ function OrdersPage() {
     useState<MerchantOrderAction | null>(null)
   const [confirmingOutOfBandPayment, setConfirmingOutOfBandPayment] =
     useState(false)
+  const [confirmingOrganizerFallback, setConfirmingOrganizerFallback] =
+    useState(false)
+  const [confirmingOrganizerRelease, setConfirmingOrganizerRelease] =
+    useState(false)
+  const [organizerReleaseConfirmed, setOrganizerReleaseConfirmed] =
+    useState(false)
   const orderActionLockRef = useRef(false)
   const stockDecisionStoreRef = useRef(new ProductStockDecisionStore())
   const pendingStockDeliveryStoreRef = useRef(
     new PendingProductStockDeliveryStore()
   )
   const [weblnAvailable, setWeblnAvailable] = useState(false)
+  const [handoffDeliveryRevision, setHandoffDeliveryRevision] = useState(0)
   const selectedOrderResetRef = useRef<string | null>(null)
-  const pendingInvoiceQueryTokensRef = useRef(
-    new WeakMap<MerchantConversationSummary, string>()
-  )
-  const nextPendingInvoiceQueryTokenRef = useRef(0)
   const signerConnected = status === "connected" && !!pubkey
   const invoiceAmountNumber = useMemo(() => {
     const amount = Number(invoiceAmount)
@@ -770,26 +966,158 @@ function OrdersPage() {
     filteredConversations.find(
       (conversation) => conversation.id === selectedConversationId
     ) ?? null
-  let pendingInvoiceQueryToken = "none"
-  if (selected) {
-    const existingToken = pendingInvoiceQueryTokensRef.current.get(selected)
-    if (existingToken) {
-      pendingInvoiceQueryToken = existingToken
-    } else {
-      nextPendingInvoiceQueryTokenRef.current += 1
-      pendingInvoiceQueryToken = `selection-${nextPendingInvoiceQueryTokenRef.current}`
-      pendingInvoiceQueryTokensRef.current.set(
-        selected,
-        pendingInvoiceQueryToken
-      )
-    }
-  }
+  const pendingInvoiceQueryToken = useMemo(
+    () => getPendingInvoiceQueryToken(selected),
+    [selected]
+  )
   const selectedStockDecisionId = selected
     ? `${pubkey ?? "none"}:${selected.id}`
     : null
   const selectedOrderMessage = selected?.messages?.find(
     (message) => message.type === "order"
   )
+  const selectedOrder =
+    selectedOrderMessage?.type === "order" ? selectedOrderMessage.payload : null
+  const selectedPickupSnapshot = selectedOrder?.items.flatMap((item) =>
+    item.fulfillment?.type === "pickup" ? [item.fulfillment] : []
+  )[0]
+  const selectedPickupAuthority =
+    selectedPickupSnapshot?.type === "pickup"
+      ? resolveOrderPickupHandoffAuthority(selectedPickupSnapshot)
+      : null
+  const selectedUsesOrganizerHandoff =
+    !!selectedPickupAuthority &&
+    !selectedPickupAuthority.legacySafeDefault &&
+    selectedPickupAuthority.mode === "organizer_handoff" &&
+    selectedPickupAuthority.handlerPubkey ===
+      selectedPickupSnapshot?.organizerPubkey.toLowerCase()
+  const handoffDeliveries = useMemo(() => {
+    void handoffDeliveryRevision
+    return pubkey ? loadEventMarketHandoffDeliveries(pubkey) : []
+  }, [handoffDeliveryRevision, pubkey])
+  const selectedOrderCorrelationRef = selectedOrder
+    ? getEventMarketOrderCorrelationRef(selectedOrder.id)
+    : null
+  const selectedReadyDelivery = handoffDeliveries.find(
+    (delivery) =>
+      !!selectedOrderCorrelationRef &&
+      delivery.record.orderCorrelationRef === selectedOrderCorrelationRef &&
+      delivery.record.messageType === "organizer_fulfillment_receipt"
+  )
+  const selectedRevocationDelivery = handoffDeliveries.find(
+    (delivery) =>
+      !!selectedOrderCorrelationRef &&
+      delivery.record.orderCorrelationRef === selectedOrderCorrelationRef &&
+      delivery.record.messageType === "organizer_fulfillment_revocation"
+  )
+  const selectedReadyRecipientAcknowledged = selectedReadyDelivery
+    ? eventMarketHandoffRecipientAcknowledged(selectedReadyDelivery)
+    : false
+  const selectedReadyRetryNeeded = selectedReadyDelivery
+    ? eventMarketHandoffDeliveryNeedsRetry(selectedReadyDelivery)
+    : false
+  const selectedReadySelfCopyFailed =
+    selectedReadyDelivery?.selfCopy.status === "failed"
+  const selectedRevocationRecipientAcknowledged = selectedRevocationDelivery
+    ? eventMarketHandoffRecipientAcknowledged(selectedRevocationDelivery)
+    : false
+  const selectedRevocationRetryNeeded = selectedRevocationDelivery
+    ? eventMarketHandoffDeliveryNeedsRetry(selectedRevocationDelivery)
+    : false
+  const handoffAcksQuery = useQuery({
+    queryKey: [
+      "merchant-organizer-handoff-acks",
+      pubkey ?? "none",
+      selectedPickupSnapshot?.type === "pickup"
+        ? selectedPickupSnapshot.collection.coordinate
+        : "none",
+      selectedReadyDelivery?.record.readyReceiptId ?? "none",
+      selectedReadyDelivery?.record.claimRef ?? "none",
+    ],
+    enabled:
+      signerConnected &&
+      !!pubkey &&
+      selectedUsesOrganizerHandoff &&
+      !!selectedReadyDelivery,
+    queryFn: () =>
+      readEventMarketHandoffAcks({
+        merchantPubkey: pubkey!,
+        collectionCoordinate:
+          selectedPickupSnapshot!.type === "pickup"
+            ? selectedPickupSnapshot!.collection.coordinate
+            : undefined,
+      }),
+    retry: false,
+    staleTime: 0,
+    refetchOnMount: "always",
+    refetchInterval: 30_000,
+  })
+  const selectedReadyGraph = selectedReadyDelivery
+    ? {
+        claimRef: selectedReadyDelivery.record.claimRef,
+        merchantPubkey: selectedReadyDelivery.record.senderPubkey,
+        organizerPubkey: selectedReadyDelivery.record.recipientPubkey,
+        ...selectedReadyDelivery.record.graph,
+      }
+    : null
+  const handoffAckState =
+    selectedReadyGraph && selectedReadyDelivery
+      ? resolveMerchantHandoffAckReadState({
+          read: handoffAcksQuery.data,
+          isError: handoffAcksQuery.isError,
+          isFetching: handoffAcksQuery.isFetching,
+          readyReceiptId: selectedReadyDelivery.record.readyReceiptId,
+          expectedGraph: selectedReadyGraph,
+          hasRevocation: !!selectedRevocationDelivery,
+        })
+      : {
+          exactAck: null,
+          conflicting: false,
+          blocker: null,
+          refreshing: false,
+        }
+  const exactHandoffAck = handoffAckState.exactAck
+  const handoffAckConflicting = handoffAckState.conflicting
+  const handoffAckDiscoveryDegraded =
+    !!selectedReadyDelivery && handoffAckState.blocker !== null
+  const handoffAckBlockerCopy = handoffAckState.blocker
+    ? organizerAckReadCopy(handoffAckState.blocker)
+    : null
+  const coordinatedFallbackMarker = useMemo(() => {
+    void handoffDeliveryRevision
+    if (!pubkey || !selectedOrderCorrelationRef || !selectedReadyDelivery) {
+      return null
+    }
+    return loadCoordinatedMerchantHandoffFallback({
+      merchantPubkey: pubkey,
+      orderCorrelationRef: selectedOrderCorrelationRef,
+      readyReceiptId: selectedReadyDelivery.record.readyReceiptId,
+    })
+  }, [
+    handoffDeliveryRevision,
+    pubkey,
+    selectedOrderCorrelationRef,
+    selectedReadyDelivery,
+  ])
+  const coordinatedMerchantFallbackActive =
+    !!coordinatedFallbackMarker &&
+    selectedRevocationDelivery?.record.readyReceiptId ===
+      coordinatedFallbackMarker.readyReceiptId &&
+    selectedRevocationRecipientAcknowledged &&
+    !selectedRevocationRetryNeeded &&
+    !exactHandoffAck &&
+    !handoffAckConflicting
+  const organizerCompletionBlocked =
+    selectedUsesOrganizerHandoff &&
+    !coordinatedMerchantFallbackActive &&
+    (!exactHandoffAck || handoffAckConflicting)
+  const selectedOrderIsZeroCost =
+    !!selectedOrder &&
+    selectedOrder.subtotal === 0 &&
+    (selectedOrder.shippingCostSats ?? 0) === 0 &&
+    selectedOrder.items.every(
+      (item) => item.priceAtPurchase === 0 && (item.shippingCostSats ?? 0) === 0
+    )
   const selectedOrderCurrency =
     selectedOrderMessage?.type === "order"
       ? selectedOrderMessage.payload.currency
@@ -804,6 +1132,9 @@ function OrdersPage() {
     selectedOrderResetRef.current = selectedId
 
     setSuccessFlash(null)
+    setConfirmingOrganizerFallback(false)
+    setConfirmingOrganizerRelease(false)
+    setOrganizerReleaseConfirmed(false)
     const pendingStockDeliveries =
       pubkey && selected
         ? pendingStockDeliveryStoreRef.current.getForOrder(
@@ -877,8 +1208,48 @@ function OrdersPage() {
     }
   }, [buyerInboxKnown])
 
-  // Buyer evidence still requires verification. Merchant-confirmed settlement
-  // implies acceptance and moves the order directly into fulfillment.
+  // A buyer-authored pickup snapshot is only a claim until the current signed
+  // organizer graph and merchant listing authorize the same semantic terms.
+  const snapshottedOrderFulfillment = getMerchantOrderFulfillment(
+    orderSummary?.items ?? []
+  )
+  const pickupAuthorizationQuery = useQuery({
+    queryKey: [
+      "merchant-order-pickup-authorization",
+      selected?.id ?? "none",
+      snapshottedOrderFulfillment.pickup?.collection.eventId ?? "none",
+      snapshottedOrderFulfillment.pickup?.option.eventId ?? "none",
+      (orderSummary?.items ?? [])
+        .flatMap((item) =>
+          item.fulfillment?.type === "pickup"
+            ? [item.fulfillment.product.eventId]
+            : []
+        )
+        .join(","),
+    ],
+    enabled:
+      signerConnected &&
+      !!pubkey &&
+      !!orderSummary &&
+      snapshottedOrderFulfillment.hasPickupClaim,
+    queryFn: () =>
+      verifyMerchantPickupOrderAuthorization({
+        items: orderSummary!.items,
+        merchantPubkey: pubkey!,
+      }),
+    staleTime: 15_000,
+    refetchInterval: 30_000,
+    refetchIntervalInBackground: true,
+    retry: false,
+  })
+  const pickupAuthorizationVerified =
+    pickupAuthorizationQuery.data?.status === "verified"
+  const pickupFulfillmentActionsAuthorized =
+    !snapshottedOrderFulfillment.hasPickupClaim || pickupAuthorizationVerified
+  // Preserve the buyer's acknowledged pickup lane for presentation while
+  // treating its organizer/product authorization as a separate action gate.
+  // An unverifiable pickup must never silently become a shipment.
+  const orderFulfillment = snapshottedOrderFulfillment
   const merchantOrderState: MerchantOrderState = selected
     ? {
         ...getMerchantConversationState(selected),
@@ -888,10 +1259,14 @@ function OrdersPage() {
             : communicationState === "guest_out_of_band"
               ? false
               : "unknown",
-        requiresShipping: getMerchantOrderRequiresShipping(
-          orderSummary?.items ?? [],
-          productLookup
-        ),
+        fulfillmentMode: orderFulfillment.mode,
+        requiresShipping: orderFulfillment.requiresShipping,
+        isZeroCostPickup: isAuthorizedZeroCostPickup({
+          order: selectedOrder,
+          fulfillmentMode: orderFulfillment.mode,
+          requiresShipping: orderFulfillment.requiresShipping,
+          pickupAuthorizationVerified,
+        }),
       }
     : { status: null }
   const stockAdjustments =
@@ -976,13 +1351,55 @@ function OrdersPage() {
   }
   const merchantPaid = isMerchantOrderPaid(merchantOrderState)
   const safeTrackingUrl = normalizeSafeHttpUrl(orderSummary?.trackingUrl)
-  const assertPaidForFulfillment = useCallback(() => {
-    if (!merchantPaid) {
-      throw new Error(
-        "Confirm payment before sending shipping updates or marking this order shipped."
-      )
+  const assertPaidForFulfillment = useCallback(
+    (allowZeroCostPickup = false) => {
+      if (
+        !merchantPaid &&
+        !(allowZeroCostPickup && merchantOrderState.isZeroCostPickup)
+      ) {
+        throw new Error(
+          "Confirm payment before sending shipping updates or fulfilling a nonzero order."
+        )
+      }
+    },
+    [merchantOrderState.isZeroCostPickup, merchantPaid]
+  )
+  const assertCurrentPickupAuthorization = useCallback(async () => {
+    if (!snapshottedOrderFulfillment.hasPickupClaim) return null
+    if (!pubkey || !orderSummary) {
+      throw new Error("Current signed pickup evidence is unavailable.")
     }
-  }, [merchantPaid])
+    let verifiedMarket: EventMarketResolution | null = null
+    const result = await verifyMerchantPickupOrderAuthorization({
+      items: orderSummary.items,
+      merchantPubkey: pubkey,
+      onVerifiedMarket: (market) => {
+        verifiedMarket = market
+      },
+    })
+    queryClient.setQueriesData(
+      {
+        queryKey: [
+          "merchant-order-pickup-authorization",
+          selected?.id ?? "none",
+        ],
+      },
+      result
+    )
+    if (result.status !== "verified") {
+      throw new Error(getMerchantPickupAuthorizationMessage(result))
+    }
+    if (!verifiedMarket) {
+      throw new Error("Current signed pickup evidence is unavailable.")
+    }
+    return verifiedMarket
+  }, [
+    orderSummary,
+    pubkey,
+    queryClient,
+    selected?.id,
+    snapshottedOrderFulfillment.hasPickupClaim,
+  ])
   const orderActions = selected
     ? getMerchantOrderActions(merchantOrderState)
     : []
@@ -1013,9 +1430,10 @@ function OrdersPage() {
     },
   })
   const canRecordShipping =
+    pickupFulfillmentActionsAuthorized &&
     selectedQueue === "paid_fulfill" &&
     merchantPaid &&
-    merchantOrderState.requiresShipping !== false &&
+    orderFulfillment.requiresShipping &&
     !merchantOrderState.shippingUpdated
   const canRequestPaymentOutOfBand =
     communicationState === "guest_out_of_band" &&
@@ -1028,6 +1446,8 @@ function OrdersPage() {
     canSendInvoice,
     canRecordShipping,
     canRequestPaymentOutOfBand,
+    fulfillmentActionsAuthorized:
+      pickupFulfillmentActionsAuthorized && !organizerCompletionBlocked,
   })
   const { primaryButtonActions, destructiveActions, hasNextStep } = actionView
   const destructiveCancellationCopy = destructiveActions[0]
@@ -1433,12 +1853,216 @@ function OrdersPage() {
     },
   })
 
+  const readCurrentOrganizerHandoffAck = async () => {
+    if (!selectedReadyDelivery || !selectedReadyGraph) {
+      throw new Error("The organizer handoff receipt is unavailable.")
+    }
+    const currentAckRead = await handoffAcksQuery.refetch()
+    const currentAckState = resolveMerchantHandoffAckReadState({
+      read: currentAckRead.data,
+      isError: currentAckRead.isError,
+      isFetching: currentAckRead.isFetching,
+      readyReceiptId: selectedReadyDelivery.record.readyReceiptId,
+      expectedGraph: selectedReadyGraph,
+      hasRevocation: !!selectedRevocationDelivery,
+    })
+    return { currentAckRead, currentAckState }
+  }
+
+  const organizerReceiptMutation = useMutation({
+    mutationFn: (authorizationConfirmed: boolean) =>
+      runExclusiveOrderAction(orderActionLockRef, async () => {
+        if (!pubkey || !selectedOrder) {
+          throw new Error("The authenticated order is unavailable.")
+        }
+        if (!selectedUsesOrganizerHandoff) {
+          throw new Error("This order does not authorize organizer handoff.")
+        }
+        const market = await assertCurrentPickupAuthorization()
+        if (!market) {
+          throw new Error("Current signed pickup evidence is unavailable.")
+        }
+        const ndk = getNdk()
+        if (!ndk.signer) throw new Error("Merchant signer is not connected.")
+        return issueOrganizerReadyReceipt({
+          merchantPubkey: pubkey,
+          order: selectedOrder,
+          paymentAuthenticated: merchantPaid,
+          authorizationConfirmed,
+          market,
+          signer: ndk.signer,
+        })
+      }),
+    onSuccess: async (delivery) => {
+      setConfirmingOrganizerRelease(false)
+      setOrganizerReleaseConfirmed(false)
+      setHandoffDeliveryRevision((revision) => revision + 1)
+      flash(
+        eventMarketHandoffDeliveryNeedsRetry(delivery)
+          ? "Organizer release authorization saved; exact delivery still needs retry"
+          : "Organizer release authorization delivered"
+      )
+      await handoffAcksQuery.refetch()
+    },
+    onError: () => {
+      setHandoffDeliveryRevision((revision) => revision + 1)
+    },
+  })
+
+  const coordinatedFallbackMutation = useMutation({
+    mutationFn: () =>
+      runExclusiveOrderAction(orderActionLockRef, async () => {
+        if (
+          !pubkey ||
+          !selected ||
+          !selectedReadyDelivery ||
+          !selectedOrderCorrelationRef
+        ) {
+          throw new Error("The organizer handoff receipt is unavailable.")
+        }
+        if (!selectedUsesOrganizerHandoff) {
+          throw new Error("This order does not authorize organizer handoff.")
+        }
+        const ndk = getNdk()
+        if (!ndk.signer) throw new Error("Merchant signer is not connected.")
+        const currentAck = await readCurrentOrganizerHandoffAck()
+        if (
+          currentAck.currentAckState.exactAck ||
+          currentAck.currentAckState.conflicting
+        ) {
+          throw new Error(
+            "Organizer handoff acknowledgement exists or conflicts. Review the order manually instead of reclaiming it."
+          )
+        }
+        await revokeOrganizerReadyReceipt({
+          merchantPubkey: pubkey,
+          orderId: selected.orderId,
+          signer: ndk.signer,
+          matchingAckReceiptIds: new Set(
+            (currentAck.currentAckRead.data?.data ?? []).map((ack) =>
+              ack.payload.readyReceiptId.toLowerCase()
+            )
+          ),
+        })
+        const currentRevocation = loadEventMarketHandoffDeliveries(pubkey).find(
+          (delivery) =>
+            delivery.record.orderCorrelationRef ===
+              selectedOrderCorrelationRef &&
+            delivery.record.messageType ===
+              "organizer_fulfillment_revocation" &&
+            delivery.record.readyReceiptId ===
+              selectedReadyDelivery.record.readyReceiptId
+        )
+        if (
+          !currentRevocation ||
+          !eventMarketHandoffRecipientAcknowledged(currentRevocation) ||
+          eventMarketHandoffDeliveryNeedsRetry(currentRevocation)
+        ) {
+          throw new Error(
+            "The exact organizer revocation is not fully delivered. Merchant handoff remains blocked."
+          )
+        }
+        const marker = rememberCoordinatedMerchantHandoffFallback({
+          merchantPubkey: pubkey,
+          orderCorrelationRef: selectedOrderCorrelationRef,
+          readyReceiptId: selectedReadyDelivery.record.readyReceiptId,
+        })
+        if (!marker) {
+          throw new Error(
+            "The coordinated fallback could not be saved on this device. Merchant handoff remains blocked."
+          )
+        }
+      }),
+    onSuccess: () => {
+      setHandoffDeliveryRevision((revision) => revision + 1)
+      setConfirmingOrganizerFallback(false)
+      flash("Organizer handoff revoked; merchant handoff is now active")
+    },
+    onError: () => {
+      setHandoffDeliveryRevision((revision) => revision + 1)
+    },
+  })
+
+  function hasCurrentCoordinatedMerchantFallback(): boolean {
+    if (!pubkey || !selectedOrderCorrelationRef || !selectedReadyDelivery) {
+      return false
+    }
+    const marker = loadCoordinatedMerchantHandoffFallback({
+      merchantPubkey: pubkey,
+      orderCorrelationRef: selectedOrderCorrelationRef,
+      readyReceiptId: selectedReadyDelivery.record.readyReceiptId,
+    })
+    const revocation = loadEventMarketHandoffDeliveries(pubkey).find(
+      (delivery) =>
+        delivery.record.orderCorrelationRef === selectedOrderCorrelationRef &&
+        delivery.record.messageType === "organizer_fulfillment_revocation" &&
+        delivery.record.readyReceiptId === marker?.readyReceiptId
+    )
+    return (
+      !!marker &&
+      !!revocation &&
+      eventMarketHandoffRecipientAcknowledged(revocation) &&
+      !eventMarketHandoffDeliveryNeedsRetry(revocation)
+    )
+  }
+
   const advanceStatusMutation = useMutation({
     mutationFn: (nextStatus: KnownOrderStatus) =>
       runExclusiveOrderAction(orderActionLockRef, async () => {
         if (!pubkey || !selected) throw new Error("No conversation selected")
+        if (nextStatus === "cancelled") {
+          const ndk = getNdk()
+          if (!ndk.signer) throw new Error("Merchant signer is not connected.")
+          const currentFallback =
+            coordinatedMerchantFallbackActive &&
+            hasCurrentCoordinatedMerchantFallback()
+          const currentAck =
+            selectedReadyDelivery && !currentFallback
+              ? await readCurrentOrganizerHandoffAck()
+              : null
+          if (!currentFallback) {
+            await revokeOrganizerReadyReceipt({
+              merchantPubkey: pubkey,
+              orderId: selected.orderId,
+              signer: ndk.signer,
+              matchingAckReceiptIds: new Set(
+                (currentAck?.currentAckRead.data?.data ?? []).map((ack) =>
+                  ack.payload.readyReceiptId.toLowerCase()
+                )
+              ),
+            })
+          }
+          setHandoffDeliveryRevision((revision) => revision + 1)
+        }
         if (nextStatus === "shipped" || nextStatus === "complete") {
-          assertPaidForFulfillment()
+          assertPaidForFulfillment(nextStatus === "complete")
+        }
+        if (
+          nextStatus === "shipped" &&
+          snapshottedOrderFulfillment.hasPickupClaim
+        ) {
+          throw new Error(
+            "Pickup orders do not use carrier or tracking details."
+          )
+        }
+        if (
+          nextStatus === "complete" &&
+          snapshottedOrderFulfillment.hasPickupClaim
+        ) {
+          await assertCurrentPickupAuthorization()
+          if (selectedUsesOrganizerHandoff) {
+            const currentFallback =
+              coordinatedMerchantFallbackActive &&
+              hasCurrentCoordinatedMerchantFallback()
+            if (!currentFallback) {
+              const { currentAckState } = await readCurrentOrganizerHandoffAck()
+              if (currentAckState.conflicting || !currentAckState.exactAck) {
+                throw new Error(
+                  "A valid organizer handed-out acknowledgement is required before completion."
+                )
+              }
+            }
+          }
         }
         await publishMerchantOrderMessage({
           merchantPubkey: pubkey,
@@ -1449,8 +2073,30 @@ function OrdersPage() {
           payload: { status: nextStatus },
           delivery: operationalDelivery,
         })
+        if (
+          nextStatus === "complete" &&
+          selectedReadyDelivery &&
+          selectedOrderCorrelationRef &&
+          releaseCompletedEventMarketHandoffReceipt(
+            pubkey,
+            selectedReadyDelivery.record.readyReceiptId,
+            selectedOrderCorrelationRef
+          )
+        ) {
+          setHandoffDeliveryRevision((revision) => revision + 1)
+        }
       }),
-    onSuccess: async () => {
+    onSuccess: async (_data, nextStatus) => {
+      if (
+        pubkey &&
+        selectedOrderCorrelationRef &&
+        (nextStatus === "complete" || nextStatus === "cancelled")
+      ) {
+        clearCoordinatedMerchantHandoffFallback(
+          pubkey,
+          selectedOrderCorrelationRef
+        )
+      }
       flash(buyerInboxKnown ? "Status update sent to buyer" : "Status recorded")
       await invalidateOrderQueries()
     },
@@ -1460,6 +2106,11 @@ function OrdersPage() {
     mutationFn: () =>
       runExclusiveOrderAction(orderActionLockRef, async () => {
         if (!pubkey || !selected) throw new Error("No conversation selected")
+        if (snapshottedOrderFulfillment.hasPickupClaim) {
+          throw new Error(
+            "Pickup orders do not use carrier or tracking details."
+          )
+        }
         assertPaidForFulfillment()
         const prepared = prepareShippingUpdate({
           trackingNumber,
@@ -1524,6 +2175,8 @@ function OrdersPage() {
 
   const orderActionPending =
     stockUpdateMutation.isPending ||
+    organizerReceiptMutation.isPending ||
+    coordinatedFallbackMutation.isPending ||
     isMerchantOrderActionSurfacePending({
       generateInvoice: createInvoiceMutation.isPending,
       sendInvoice: retryInvoiceMutation.isPending,
@@ -1846,7 +2499,11 @@ function OrdersPage() {
                                     key={action.action}
                                     size="sm"
                                     variant="primary"
-                                    disabled={orderActionPending}
+                                    disabled={
+                                      orderActionPending ||
+                                      (action.status === "complete" &&
+                                        organizerCompletionBlocked)
+                                    }
                                     onClick={() => {
                                       if (
                                         action.action === "confirm_payment" &&
@@ -2415,27 +3072,288 @@ function OrdersPage() {
                       />
                     )}
 
-                    {orderSummary.shippingAddress && (
-                      <section className={panelCard}>
-                        <h3 className="text-sm font-semibold text-[var(--text-primary)]">
-                          Shipping address
-                        </h3>
-                        <div className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
-                          <div className="text-[var(--text-primary)]">
-                            {orderSummary.shippingAddress.name}
+                    {snapshottedOrderFulfillment.hasPickupClaim &&
+                      !pickupAuthorizationVerified && (
+                        <section
+                          className={panelCard}
+                          data-testid="merchant-order-pickup-unverified"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                                Verifying event pickup
+                              </h3>
+                              <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">
+                                {getMerchantPickupAuthorizationMessage(
+                                  pickupAuthorizationQuery.data
+                                )}
+                              </p>
+                            </div>
+                            <StatusPill
+                              variant={
+                                pickupAuthorizationQuery.isFetching
+                                  ? "info"
+                                  : "warning"
+                              }
+                              className="shrink-0"
+                            >
+                              {pickupAuthorizationQuery.isFetching
+                                ? "Checking"
+                                : "Unverified"}
+                            </StatusPill>
                           </div>
-                          <div>{orderSummary.shippingAddress.street}</div>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="mt-3"
+                            disabled={pickupAuthorizationQuery.isFetching}
+                            onClick={() => {
+                              void pickupAuthorizationQuery.refetch()
+                            }}
+                          >
+                            <RotateCw
+                              className={cn(
+                                "size-4",
+                                pickupAuthorizationQuery.isFetching &&
+                                  "animate-spin"
+                              )}
+                              aria-hidden="true"
+                            />
+                            Retry verification
+                          </Button>
+                        </section>
+                      )}
+
+                    {pickupAuthorizationVerified && orderFulfillment.pickup && (
+                      <PickupFulfillmentCard pickup={orderFulfillment.pickup} />
+                    )}
+
+                    {selectedUsesOrganizerHandoff && selectedOrder && (
+                      <section
+                        className={panelCard}
+                        data-testid="merchant-organizer-handoff-receipt"
+                        data-ack-read-state={handoffAckState.blocker ?? "clear"}
+                        data-ack-exact={exactHandoffAck ? "true" : "false"}
+                      >
+                        <div className="flex flex-wrap items-start justify-between gap-3">
                           <div>
-                            {orderSummary.shippingAddress.city}
-                            {orderSummary.shippingAddress.state
-                              ? `, ${orderSummary.shippingAddress.state}`
-                              : ""}{" "}
-                            {orderSummary.shippingAddress.postalCode}
+                            <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                              Organizer release authorization
+                            </h3>
+                            <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">
+                              Shares only the exact event/product evidence and
+                              quantity needed for pickup. Buyer contact,
+                              address, notes, invoices, payment data, and the
+                              full order stay private to you.
+                            </p>
                           </div>
-                          <div>{orderSummary.shippingAddress.country}</div>
+                          <StatusPill
+                            variant={
+                              coordinatedMerchantFallbackActive
+                                ? "info"
+                                : exactHandoffAck && !handoffAckConflicting
+                                  ? "success"
+                                  : handoffAckConflicting ||
+                                      selectedRevocationRecipientAcknowledged
+                                    ? "error"
+                                    : selectedReadyRecipientAcknowledged
+                                      ? "info"
+                                      : "warning"
+                            }
+                          >
+                            {coordinatedMerchantFallbackActive
+                              ? "Merchant handoff active"
+                              : handoffAckConflicting
+                                ? selectedRevocationDelivery
+                                  ? "Revoked / ack conflict"
+                                  : "Conflicting evidence"
+                                : selectedRevocationRecipientAcknowledged
+                                  ? selectedRevocationRetryNeeded
+                                    ? "Revoked / exact retry pending"
+                                    : "Revoked"
+                                  : exactHandoffAck
+                                    ? "Organizer handed out"
+                                    : selectedReadyRecipientAcknowledged
+                                      ? handoffAckDiscoveryDegraded
+                                        ? handoffAckBlockerCopy?.status
+                                        : handoffAckState.refreshing
+                                          ? "Checking acknowledgements"
+                                          : selectedReadySelfCopyFailed
+                                            ? "Sent / recovery copy failed"
+                                            : selectedReadyDelivery?.recipient
+                                                  .status === "partial_success"
+                                              ? "Partially delivered"
+                                              : selectedReadyRetryNeeded
+                                                ? "Sent / exact retry pending"
+                                                : "Release authorized"
+                                      : selectedReadyDelivery
+                                        ? selectedReadyDelivery.recipient
+                                            .status === "zero_ack"
+                                          ? "No relay acknowledged"
+                                          : "Exact retry needed"
+                                        : "Not shared"}
+                          </StatusPill>
                         </div>
+
+                        {!selectedReadyDelivery &&
+                          !merchantPaid &&
+                          !selectedOrderIsZeroCost && (
+                            <p className="mt-3 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs leading-5 text-[var(--text-primary)]">
+                              Verify paid status before sharing an organizer
+                              receipt. Zero-cost orders may be shared
+                              immediately.
+                            </p>
+                          )}
+
+                        {exactHandoffAck && !handoffAckConflicting && (
+                          <p className="mt-3 text-xs leading-5 text-[var(--text-secondary)]">
+                            The scoped organizer acknowledgement is verified.
+                            Use the existing Mark complete action to notify the
+                            buyer; the organizer cannot author that status.
+                          </p>
+                        )}
+
+                        {handoffAckDiscoveryDegraded &&
+                          selectedReadyRecipientAcknowledged && (
+                            <div className="mt-3 rounded-lg border border-warning/30 bg-warning/10 px-3 py-3 text-xs leading-5 text-[var(--text-primary)]">
+                              <p role="alert">
+                                {handoffAckBlockerCopy?.detail}
+                              </p>
+                            </div>
+                          )}
+
+                        {selectedReadyRecipientAcknowledged &&
+                          !coordinatedMerchantFallbackActive &&
+                          !handoffAckConflicting &&
+                          !exactHandoffAck &&
+                          !selectedRevocationDelivery && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="mt-3"
+                              disabled={orderActionPending}
+                              onClick={() =>
+                                setConfirmingOrganizerFallback(true)
+                              }
+                            >
+                              Coordinate and take over handoff
+                            </Button>
+                          )}
+
+                        {coordinatedMerchantFallbackActive && (
+                          <p
+                            className="mt-3 rounded-lg border border-secondary-500/30 bg-secondary-500/10 px-3 py-2 text-xs leading-5 text-[var(--text-primary)]"
+                            role="status"
+                          >
+                            The organizer-ready instruction was revoked on every
+                            planned inbox relay after direct coordination. Hand
+                            the product to the buyer yourself, then use Mark
+                            complete.
+                          </p>
+                        )}
+
+                        {selectedReadyDelivery &&
+                          selectedReadyRetryNeeded &&
+                          !selectedRevocationDelivery && (
+                            <p
+                              className="mt-3 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs leading-5 text-[var(--text-primary)]"
+                              role="status"
+                            >
+                              {selectedReadyRecipientAcknowledged
+                                ? "At least one organizer inbox relay accepted the exact receipt, but delivery is not clean across every encrypted leg. Retry reuses the same signed wraps."
+                                : "No organizer inbox relay has positively acknowledged the exact receipt yet. Retry reuses the same signed wraps."}
+                            </p>
+                          )}
+
+                        {selectedRevocationDelivery &&
+                          selectedRevocationRetryNeeded && (
+                            <p
+                              className="mt-3 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs leading-5 text-[var(--text-primary)]"
+                              role="status"
+                            >
+                              {selectedRevocationRecipientAcknowledged
+                                ? "The revocation reached at least one organizer inbox relay, but exact delivery still needs repair. Retry cancellation to reuse the saved wraps."
+                                : "The revocation has no positive relay acknowledgement. Cancellation remains blocked; retry cancellation to reuse the saved wraps."}
+                            </p>
+                          )}
+
+                        {organizerReceiptMutation.error && (
+                          <p
+                            className="mt-3 text-xs leading-5 text-error"
+                            role="alert"
+                          >
+                            {organizerReceiptMutation.error instanceof Error
+                              ? organizerReceiptMutation.error.message
+                              : "Organizer receipt delivery failed."}
+                          </p>
+                        )}
+
+                        {coordinatedFallbackMutation.error && (
+                          <p
+                            className="mt-3 text-xs leading-5 text-error"
+                            role="alert"
+                          >
+                            {coordinatedFallbackMutation.error instanceof Error
+                              ? coordinatedFallbackMutation.error.message
+                              : "Merchant handoff could not be activated."}
+                          </p>
+                        )}
+
+                        {!exactHandoffAck && !selectedRevocationDelivery && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            className="mt-3"
+                            disabled={
+                              orderActionPending ||
+                              !pickupAuthorizationVerified ||
+                              (!selectedReadyDelivery &&
+                                !merchantPaid &&
+                                !selectedOrderIsZeroCost)
+                            }
+                            onClick={() => {
+                              if (selectedReadyDelivery) {
+                                organizerReceiptMutation.mutate(false)
+                                return
+                              }
+                              setOrganizerReleaseConfirmed(false)
+                              setConfirmingOrganizerRelease(true)
+                            }}
+                          >
+                            {organizerReceiptMutation.isPending
+                              ? "Sending exact receipt..."
+                              : selectedReadyDelivery
+                                ? "Retry exact receipt"
+                                : "Review release authorization"}
+                          </Button>
+                        )}
                       </section>
                     )}
+
+                    {orderFulfillment.requiresShipping &&
+                      orderSummary.shippingAddress && (
+                        <section className={panelCard}>
+                          <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                            Shipping address
+                          </h3>
+                          <div className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
+                            <div className="text-[var(--text-primary)]">
+                              {orderSummary.shippingAddress.name}
+                            </div>
+                            <div>{orderSummary.shippingAddress.street}</div>
+                            <div>
+                              {orderSummary.shippingAddress.city}
+                              {orderSummary.shippingAddress.state
+                                ? `, ${orderSummary.shippingAddress.state}`
+                                : ""}{" "}
+                              {orderSummary.shippingAddress.postalCode}
+                            </div>
+                            <div>{orderSummary.shippingAddress.country}</div>
+                          </div>
+                        </section>
+                      )}
 
                     {orderSummary.guestContact && (
                       <section className={panelCard}>
@@ -2460,37 +3378,38 @@ function OrdersPage() {
                       </section>
                     )}
 
-                    {(orderSummary.trackingCarrier ||
-                      orderSummary.trackingNumber ||
-                      orderSummary.trackingUrl) && (
-                      <section className={panelCard}>
-                        <h3 className="text-sm font-semibold text-[var(--text-primary)]">
-                          Tracking
-                        </h3>
-                        <div className="mt-3 space-y-1 text-sm text-[var(--text-secondary)]">
-                          {orderSummary.trackingCarrier && (
-                            <div className="text-[var(--text-primary)]">
-                              {orderSummary.trackingCarrier}
-                            </div>
-                          )}
-                          {orderSummary.trackingNumber && (
-                            <div className="font-mono text-xs">
-                              {orderSummary.trackingNumber}
-                            </div>
-                          )}
-                          {safeTrackingUrl && (
-                            <a
-                              href={safeTrackingUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-xs text-[var(--accent)] underline-offset-2 hover:underline"
-                            >
-                              Open tracking link
-                            </a>
-                          )}
-                        </div>
-                      </section>
-                    )}
+                    {orderFulfillment.requiresShipping &&
+                      (orderSummary.trackingCarrier ||
+                        orderSummary.trackingNumber ||
+                        orderSummary.trackingUrl) && (
+                        <section className={panelCard}>
+                          <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                            Tracking
+                          </h3>
+                          <div className="mt-3 space-y-1 text-sm text-[var(--text-secondary)]">
+                            {orderSummary.trackingCarrier && (
+                              <div className="text-[var(--text-primary)]">
+                                {orderSummary.trackingCarrier}
+                              </div>
+                            )}
+                            {orderSummary.trackingNumber && (
+                              <div className="font-mono text-xs">
+                                {orderSummary.trackingNumber}
+                              </div>
+                            )}
+                            {safeTrackingUrl && (
+                              <a
+                                href={safeTrackingUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-xs text-[var(--accent)] underline-offset-2 hover:underline"
+                              >
+                                Open tracking link
+                              </a>
+                            )}
+                          </div>
+                        </section>
+                      )}
 
                     <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)]">
                       <button
@@ -2579,6 +3498,119 @@ function OrdersPage() {
                   readOnly={!buyerInboxKnown}
                   resolveItem={(id) => productLookup.get(id)}
                 />
+
+                <AlertDialog
+                  open={confirmingOrganizerRelease}
+                  onOpenChange={(open) => {
+                    if (organizerReceiptMutation.isPending) return
+                    setConfirmingOrganizerRelease(open)
+                    if (!open) setOrganizerReleaseConfirmed(false)
+                  }}
+                >
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>
+                        Confirm organizer release
+                      </AlertDialogTitle>
+                      <AlertDialogDescription className="text-pretty">
+                        This creates a signed authorization for the organizer to
+                        release this product to the buyer. Confirm only after
+                        checking payment and preparing the order.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <div className="flex items-start gap-3 rounded-lg border border-[var(--border)] p-3">
+                      <Checkbox
+                        id="organizer-release-confirmation"
+                        checked={organizerReleaseConfirmed}
+                        onCheckedChange={(checked) =>
+                          setOrganizerReleaseConfirmed(checked === true)
+                        }
+                      />
+                      <Label
+                        htmlFor="organizer-release-confirmation"
+                        className="text-sm leading-6"
+                      >
+                        I confirm payment is settled or nothing is owed, the
+                        order is ready, and the organizer may release it.
+                      </Label>
+                    </div>
+                    <AlertDialogFooter>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={organizerReceiptMutation.isPending}
+                        onClick={() => setConfirmingOrganizerRelease(false)}
+                      >
+                        Go back
+                      </Button>
+                      <Button
+                        type="button"
+                        disabled={
+                          organizerReceiptMutation.isPending ||
+                          !organizerReleaseConfirmed
+                        }
+                        onClick={() => organizerReceiptMutation.mutate(true)}
+                      >
+                        {organizerReceiptMutation.isPending
+                          ? "Sending authorization…"
+                          : "Authorize organizer release"}
+                      </Button>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+
+                <AlertDialog
+                  open={confirmingOrganizerFallback}
+                  onOpenChange={(open) => {
+                    if (!coordinatedFallbackMutation.isPending) {
+                      setConfirmingOrganizerFallback(open)
+                    }
+                  }}
+                >
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>
+                        Take over this pickup handoff?
+                      </AlertDialogTitle>
+                      <AlertDialogDescription className="text-pretty">
+                        Continue only after contacting the organizer directly
+                        and confirming they have not handed out the product.
+                        Your signer will revoke the organizer-ready instruction.
+                        The fallback becomes active only after that exact
+                        revocation reaches every planned organizer inbox relay.
+                        Relay delivery does not prove the organizer saw it
+                        before handoff. You must then hand the product to the
+                        buyer yourself.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    {coordinatedFallbackMutation.error && (
+                      <p className="text-sm leading-6 text-error" role="alert">
+                        {coordinatedFallbackMutation.error instanceof Error
+                          ? coordinatedFallbackMutation.error.message
+                          : "Merchant handoff could not be activated."}
+                      </p>
+                    )}
+                    <AlertDialogFooter>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={coordinatedFallbackMutation.isPending}
+                        onClick={() => setConfirmingOrganizerFallback(false)}
+                      >
+                        Go back
+                      </Button>
+                      <Button
+                        type="button"
+                        disabled={coordinatedFallbackMutation.isPending}
+                        onClick={() => coordinatedFallbackMutation.mutate()}
+                      >
+                        {coordinatedFallbackMutation.isPending
+                          ? "Revoking organizer handoff…"
+                          : "Organizer confirmed — take over"}
+                      </Button>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
 
                 <AlertDialog
                   open={!!pendingDestructiveAction}

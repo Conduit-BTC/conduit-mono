@@ -1,11 +1,19 @@
 import { describe, expect, it } from "bun:test"
 import type { ParsedShippingOption, Product } from "@conduit/core"
 import { authorizeCurrentCheckoutItems } from "../apps/market/src/lib/checkout-authorization"
-import type { CartItem } from "../apps/market/src/lib/cart-model"
+import {
+  createCartItemFromProduct,
+  type CartItem,
+  type CartPickupFulfillment,
+} from "../apps/market/src/lib/cart-model"
 
 const MERCHANT = "a".repeat(64)
 const PRODUCT_ID = `30402:${MERCHANT}:field-notes`
 const SHIPPING_ID = `30406:${MERCHANT}:field-notes-shipping-standard`
+const ORGANIZER = "b".repeat(64)
+const COLLECTION_ID = `30405:${ORGANIZER}:chicago-market`
+const CALENDAR_ID = `31923:${ORGANIZER}:chicago-market`
+const PICKUP_ID = `30406:${ORGANIZER}:chicago-market-pickup`
 
 function rawItem(overrides: Partial<CartItem> = {}): CartItem {
   return {
@@ -78,6 +86,57 @@ function shippingOption(
     launchUnsupportedTags: [],
     ...overrides,
   }
+}
+
+function pickupFulfillment(
+  overrides: Partial<CartPickupFulfillment> = {}
+): CartPickupFulfillment {
+  return {
+    type: "pickup",
+    organizerPubkey: ORGANIZER,
+    product: {
+      coordinate: PRODUCT_ID,
+      eventId: "2".repeat(64),
+      createdAt: 2,
+      merchantPubkey: MERCHANT,
+    },
+    calendar: {
+      coordinate: CALENDAR_ID,
+      eventId: "3".repeat(64),
+      createdAt: 3,
+    },
+    collection: {
+      coordinate: COLLECTION_ID,
+      eventId: "4".repeat(64),
+      createdAt: 4,
+    },
+    option: {
+      coordinate: PICKUP_ID,
+      eventId: "5".repeat(64),
+      createdAt: 5,
+      title: "Chicago pickup",
+      location: "Market entrance",
+    },
+    handoffMode: "organizer_handoff",
+    handlerPubkey: ORGANIZER,
+    costSats: 0,
+    sourceCost: {
+      amount: 0,
+      currency: "SAT",
+      normalizedCurrency: "SAT",
+    },
+    ...overrides,
+  }
+}
+
+function pickupProduct(): Product {
+  return product({
+    shippingOptionId: PICKUP_ID,
+    shippingOptionDTag: "chicago-market-pickup",
+    shippingOptionRefs: [{ coordinate: PICKUP_ID }],
+    collectionRefs: [COLLECTION_ID],
+    canonicalShippingResolved: false,
+  })
 }
 
 describe("checkout authorization refresh", () => {
@@ -363,5 +422,101 @@ describe("checkout authorization refresh", () => {
 
       expect(result).toEqual({ status: "changed" })
     }
+  })
+
+  it("authorizes one exact pickup snapshot through the submit-time seam", async () => {
+    const refreshedProduct = pickupProduct()
+    const fulfillment = pickupFulfillment()
+    const item = {
+      ...createCartItemFromProduct(refreshedProduct, fulfillment),
+      quantity: 2,
+    }
+    let shippingRead = false
+    let handlerAuthorizationCount = 0
+
+    const result = await authorizeCurrentCheckoutItems({
+      mode: "direct_payment",
+      reviewedItems: [item],
+      rawItems: [item],
+      refreshedProducts: [refreshedProduct],
+      readShippingOptions: async () => {
+        shippingRead = true
+        return []
+      },
+      resolveProductFulfillment: async () => ({
+        status: "pickup",
+        product: refreshedProduct,
+        fulfillment,
+      }),
+      authorizePickupHandlers: async (items) => {
+        handlerAuthorizationCount += 1
+        expect(items[0]?.fulfillment).toEqual(fulfillment)
+      },
+    })
+
+    expect(result).toEqual({ status: "ok", items: [item] })
+    expect(shippingRead).toBe(false)
+    expect(handlerAuthorizationCount).toBe(1)
+  })
+
+  it("blocks a changed pickup graph before handler authorization", async () => {
+    const refreshedProduct = pickupProduct()
+    const reviewedFulfillment = pickupFulfillment()
+    const item = {
+      ...createCartItemFromProduct(refreshedProduct, reviewedFulfillment),
+      quantity: 1,
+    }
+    let handlerAuthorized = false
+
+    const result = await authorizeCurrentCheckoutItems({
+      mode: "direct_payment",
+      reviewedItems: [item],
+      rawItems: [item],
+      refreshedProducts: [refreshedProduct],
+      readShippingOptions: async () => [],
+      resolveProductFulfillment: async () => ({
+        status: "pickup",
+        product: refreshedProduct,
+        fulfillment: pickupFulfillment({
+          calendar: {
+            ...reviewedFulfillment.calendar,
+            eventId: "6".repeat(64),
+          },
+        }),
+      }),
+      authorizePickupHandlers: async () => {
+        handlerAuthorized = true
+      },
+    })
+
+    expect(result).toEqual({ status: "changed" })
+    expect(handlerAuthorized).toBe(false)
+  })
+
+  it("propagates fail-closed pickup handler authorization", async () => {
+    const refreshedProduct = pickupProduct()
+    const fulfillment = pickupFulfillment()
+    const item = {
+      ...createCartItemFromProduct(refreshedProduct, fulfillment),
+      quantity: 1,
+    }
+
+    await expect(
+      authorizeCurrentCheckoutItems({
+        mode: "direct_payment",
+        reviewedItems: [item],
+        rawItems: [item],
+        refreshedProducts: [refreshedProduct],
+        readShippingOptions: async () => [],
+        resolveProductFulfillment: async () => ({
+          status: "pickup",
+          product: refreshedProduct,
+          fulfillment,
+        }),
+        authorizePickupHandlers: async () => {
+          throw new Error("Organizer inbox coverage is partial")
+        },
+      })
+    ).rejects.toThrow("Organizer inbox coverage is partial")
   })
 })

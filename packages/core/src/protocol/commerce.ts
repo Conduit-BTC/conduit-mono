@@ -45,7 +45,11 @@ import {
   type InboxReadSource,
 } from "./private-message-routing"
 import { extractOrderSummary } from "./order-summary"
-import { parseOrderMessageRumorEvent, type ParsedOrderMessage } from "./orders"
+import {
+  parseOrderMessageRumorEvent,
+  type ParsedEventMarketPrivateMessage,
+  type ParsedOrderMessage,
+} from "./orders"
 import {
   __resetInboxRelayCache,
   createNdkLegacyDmDecrypt,
@@ -100,9 +104,10 @@ import {
   getGeneralReadRelayUrls,
   normalizePublicOrIsolatedE2eRelayHints,
   normalizePublicRelayHints,
+  normalizeSecureOrIsolatedE2eRelayUrls,
   normalizeUntrustedRelayHintsForContext,
 } from "./relay-settings"
-import { getRelayLists, isInsecureRelayUrl } from "./relay-list"
+import { getRelayLists } from "./relay-list"
 import { planRelayReads, type RelayReadIntent } from "./relay-planner"
 import {
   readProtectedInbox,
@@ -112,6 +117,7 @@ import {
 import {
   getProtectedReadAuthorization,
   hasProtectedReadAuthority,
+  subscribeProtectedReadSignerRevocation,
   type ProtectedReadAuthorization,
 } from "./protected-read-authorization"
 
@@ -129,6 +135,11 @@ const PRODUCT_RAW_EVENT_LIMIT_MAX = 1_200
 const PRODUCT_RAW_EVENT_OVERFETCH_FACTOR = 6
 const PRODUCT_VARIATION_EVENT_LIMIT = 200
 const PROFILE_CACHE_TTL_MS = 5 * 60_000
+const EVENT_MARKET_HANDOFF_PAGE_LIMIT = 400
+// Matches the shared relay reader's per-read signature-verification budget.
+const EVENT_MARKET_HANDOFF_BOUNDARY_LIMIT = 512
+const EVENT_MARKET_HANDOFF_PAGE_BUDGET_PER_READ = 8
+const EVENT_MARKET_HANDOFF_RETAINED_EVIDENCE_LIMIT = 1_024
 
 export type CommerceReadSource = "commerce" | "public" | "local_cache"
 export type CommerceSortMode =
@@ -465,6 +476,43 @@ const retryWrapsByPrincipal = new Map<
   string,
   Map<string, { event: NDKEvent; failure?: DecryptFailure }>
 >()
+type EventMarketInboxRelayScan = {
+  until?: number
+}
+type EventMarketInboxScanCycle = {
+  sessionScope: string
+  principalPubkey: string
+  relayUrls: string[]
+  relays: Map<string, EventMarketInboxRelayScan>
+  messages: Map<string, ParsedEventMarketPrivateMessage>
+  decryptFailures: Map<string, DecryptFailure>
+  evidenceCapped: boolean
+}
+// A strict handoff read may need several bounded calls to walk a large inbox.
+// Retain only cursors, bounded coarse failures, and bounded parsed handoff
+// evidence in process memory. Ciphertext, unrelated plaintext, and unrelated
+// event ids are discarded after each call and nothing is written to storage.
+const eventMarketInboxScanCycles = new Map<string, EventMarketInboxScanCycle>()
+const eventMarketInboxScanPromises = new Map<
+  string,
+  {
+    sessionScope: string
+    principalPubkey: string
+    promise: Promise<EventMarketPrivateMessageListResult>
+  }
+>()
+subscribeProtectedReadSignerRevocation((sessionScope) => {
+  for (const [key, cycle] of eventMarketInboxScanCycles) {
+    if (cycle.sessionScope === sessionScope) {
+      eventMarketInboxScanCycles.delete(key)
+    }
+  }
+  for (const [key, pending] of eventMarketInboxScanPromises) {
+    if (pending.sessionScope === sessionScope) {
+      eventMarketInboxScanPromises.delete(key)
+    }
+  }
+})
 const inboxSyncPromises = new Map<string, Promise<PrivateInboxSyncResult>>()
 const successfulLegacyDmIdsByPrincipal = new Map<string, Set<string>>()
 const MAX_LEGACY_DM_DECRYPT_ATTEMPTS = 2
@@ -709,11 +757,14 @@ async function runFetchEventsFanoutWithDiagnostics(
       options
     )) as NDKEvent[]
     const relayUrls = [...(options?.relayUrls ?? [])]
+    const limit = filter.limit
     return {
       events,
       attemptedRelayUrls: relayUrls,
       successfulRelayUrls: relayUrls,
       failedRelayUrls: [],
+      cappedRelayUrls:
+        typeof limit === "number" && events.length >= limit ? relayUrls : [],
     }
   }
   return await fetchEventsFanoutWithDiagnostics(filter, options)
@@ -852,6 +903,8 @@ export function __resetCommerceTestOverrides(): void {
   volatileProductTombstones.clear()
   successfulWrapIdsByPrincipal.clear()
   retryWrapsByPrincipal.clear()
+  eventMarketInboxScanCycles.clear()
+  eventMarketInboxScanPromises.clear()
   inboxSyncPromises.clear()
   __resetInboxRelayCache()
   successfulLegacyDmIdsByPrincipal.clear()
@@ -1335,6 +1388,7 @@ function toCachedProduct(record: CommerceProductRecord) {
     currency: product.currency,
     priceSats: product.priceSats,
     sourcePrice: product.sourcePrice,
+    priceEvidenceMalformed: product.priceEvidenceMalformed,
     type: product.type,
     parentProductId: product.parentProductId,
     specifications: product.specifications,
@@ -1346,6 +1400,8 @@ function toCachedProduct(record: CommerceProductRecord) {
     shippingOptionLaunchUnsupported: product.shippingOptionId
       ? product.shippingOptionLaunchUnsupported === true
       : undefined,
+    shippingOptionRefs: product.shippingOptionRefs,
+    collectionRefs: product.collectionRefs,
     shippingCountries: product.shippingCountries,
     shippingCountryRules: product.shippingCountryRules,
     visibility: product.visibility,
@@ -1389,6 +1445,7 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
     currency: row.currency,
     priceSats: row.priceSats,
     sourcePrice: row.sourcePrice,
+    priceEvidenceMalformed: row.priceEvidenceMalformed,
     type: row.type ?? "simple",
     parentProductId: row.parentProductId,
     specifications: row.specifications ?? [],
@@ -1402,6 +1459,8 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
         ? row.shippingOptionLaunchUnsupported
         : true
       : undefined,
+    shippingOptionRefs: row.shippingOptionRefs,
+    collectionRefs: row.collectionRefs,
     shippingCountries: row.shippingCountries,
     shippingCountryRules: row.shippingCountryRules,
     visibility: row.visibility ?? "public",
@@ -4627,6 +4686,16 @@ function getConversationPreview(message: ParsedOrderMessage): string {
   }
 }
 
+function isEventMarketPrivateMessage(
+  message: ParsedOrderMessage
+): message is ParsedEventMarketPrivateMessage {
+  return (
+    message.type === "organizer_fulfillment_receipt" ||
+    message.type === "organizer_fulfillment_revocation" ||
+    message.type === "organizer_handoff_ack"
+  )
+}
+
 /** Route the commerce test giftUnwrap override into the shared boundary. */
 function unwrapOptions(): UnwrapGiftWrapOptions {
   return testOverrides.giftUnwrap
@@ -4708,6 +4777,604 @@ async function fetchParsedOrderMessages(
   }
 }
 
+type EventMarketInboxRelayRead = {
+  events: NDKEvent[]
+  complete: boolean
+  singleRequestComplete: boolean
+  successful: boolean
+  capped: boolean
+}
+
+type EventMarketInboxWrapRead = Awaited<
+  ReturnType<typeof fetchEventsFanoutWithDiagnostics>
+> & {
+  scanKey: string
+  scanCycle: EventMarketInboxScanCycle
+  freshComplete: boolean
+}
+
+function hasRelayOutcome(
+  relayUrls: readonly string[] | undefined,
+  relayUrl: string
+): boolean {
+  return relayUrls?.includes(relayUrl) ?? false
+}
+
+function retainInboxEvents(
+  retained: Map<string, NDKEvent>,
+  events: readonly NDKEvent[]
+): void {
+  for (const event of events) {
+    if (event.id) retained.set(event.id, event)
+  }
+}
+
+/**
+ * Advance one declared inbox relay toward EOSE using NIP-01 time windows. An
+ * exact second follow-up closes the inclusive `until` boundary before
+ * advancing, so equal-created_at wraps cannot fall between pages. One call has
+ * a fixed page budget; only the descending cursor remains in the process-local
+ * scan cycle for the next call. A relay that reached EOSE is read fresh on the
+ * next call while another relay continues. Only EOSE from the first request is
+ * eligible for complete coverage: separate paginated subscriptions cannot
+ * prove that a backdated durable retry did not arrive behind their cursor.
+ * Resource exhaustion and stitched multi-call scans stay partial instead of
+ * becoming false negative evidence.
+ */
+async function readEventMarketInboxRelay(
+  principalPubkey: string,
+  relayUrl: string,
+  scan: EventMarketInboxRelayScan,
+  authorization: ProtectedReadAuthorization | null
+): Promise<EventMarketInboxRelayRead> {
+  const retained = new Map<string, NDKEvent>()
+  let successful = false
+
+  for (
+    let pageIndex = 0;
+    pageIndex < EVENT_MARKET_HANDOFF_PAGE_BUDGET_PER_READ;
+    pageIndex += 1
+  ) {
+    assertInboxSyncAuthority(authorization)
+    const page = await runFetchEventsFanoutWithDiagnostics(
+      {
+        kinds: [EVENT_KINDS.GIFT_WRAP],
+        "#p": [principalPubkey],
+        limit: EVENT_MARKET_HANDOFF_PAGE_LIMIT,
+        ...(scan.until === undefined ? {} : { until: scan.until }),
+      },
+      {
+        relayUrls: [relayUrl],
+        connectTimeoutMs: 4_000,
+        fetchTimeoutMs: 12_000,
+      }
+    )
+    assertInboxSyncAuthority(authorization)
+    retainInboxEvents(retained, page.events)
+    const pageSucceeded = hasRelayOutcome(page.successfulRelayUrls, relayUrl)
+    successful ||= pageSucceeded
+    if (!pageSucceeded || hasRelayOutcome(page.failedRelayUrls, relayUrl)) {
+      return {
+        events: Array.from(retained.values()),
+        complete: false,
+        singleRequestComplete: false,
+        successful,
+        capped: false,
+      }
+    }
+    if (!hasRelayOutcome(page.cappedRelayUrls, relayUrl)) {
+      scan.until = undefined
+      return {
+        events: Array.from(retained.values()),
+        complete: true,
+        singleRequestComplete: pageIndex === 0,
+        successful,
+        capped: false,
+      }
+    }
+
+    const createdAts = page.events
+      .map((event) => event.created_at)
+      .filter(
+        (createdAt): createdAt is number =>
+          typeof createdAt === "number" &&
+          Number.isSafeInteger(createdAt) &&
+          createdAt >= 0
+      )
+    if (createdAts.length !== page.events.length || createdAts.length === 0) {
+      return {
+        events: Array.from(retained.values()),
+        complete: false,
+        singleRequestComplete: false,
+        successful,
+        capped: true,
+      }
+    }
+    const boundaryCreatedAt = Math.min(...createdAts)
+    assertInboxSyncAuthority(authorization)
+    const boundary = await runFetchEventsFanoutWithDiagnostics(
+      {
+        kinds: [EVENT_KINDS.GIFT_WRAP],
+        "#p": [principalPubkey],
+        since: boundaryCreatedAt,
+        until: boundaryCreatedAt,
+        limit: EVENT_MARKET_HANDOFF_BOUNDARY_LIMIT,
+      },
+      {
+        relayUrls: [relayUrl],
+        connectTimeoutMs: 4_000,
+        fetchTimeoutMs: 12_000,
+      }
+    )
+    assertInboxSyncAuthority(authorization)
+    retainInboxEvents(retained, boundary.events)
+    const boundarySucceeded = hasRelayOutcome(
+      boundary.successfulRelayUrls,
+      relayUrl
+    )
+    successful ||= boundarySucceeded
+    const boundaryIds = new Set(boundary.events.map((event) => event.id))
+    const preservesObservedBoundary = page.events
+      .filter((event) => event.created_at === boundaryCreatedAt)
+      .every((event) => boundaryIds.has(event.id))
+    if (
+      !boundarySucceeded ||
+      hasRelayOutcome(boundary.failedRelayUrls, relayUrl) ||
+      hasRelayOutcome(boundary.cappedRelayUrls, relayUrl) ||
+      !preservesObservedBoundary
+    ) {
+      return {
+        events: Array.from(retained.values()),
+        complete: false,
+        singleRequestComplete: false,
+        successful,
+        capped: true,
+      }
+    }
+    if (boundaryCreatedAt === 0) {
+      scan.until = undefined
+      return {
+        events: Array.from(retained.values()),
+        complete: true,
+        singleRequestComplete: false,
+        successful,
+        capped: false,
+      }
+    }
+    scan.until = boundaryCreatedAt - 1
+  }
+
+  return {
+    events: Array.from(retained.values()),
+    complete: false,
+    singleRequestComplete: false,
+    successful,
+    capped: true,
+  }
+}
+
+function eventMarketInboxScanKey(
+  sessionScope: string,
+  principalPubkey: string,
+  relayUrls: readonly string[]
+): string {
+  return JSON.stringify([
+    sessionScope,
+    principalPubkey.trim().toLowerCase(),
+    ...[...relayUrls].sort(),
+  ])
+}
+
+function discardEventMarketInboxScanCycles(principalPubkey: string): void {
+  const principal = principalPubkey.trim().toLowerCase()
+  for (const [candidateKey, candidate] of eventMarketInboxScanCycles) {
+    if (candidate.principalPubkey === principal) {
+      eventMarketInboxScanCycles.delete(candidateKey)
+    }
+  }
+  for (const [candidateKey, candidate] of eventMarketInboxScanPromises) {
+    if (candidate.principalPubkey === principal) {
+      eventMarketInboxScanPromises.delete(candidateKey)
+    }
+  }
+}
+
+class EventMarketInboxPlanChangedError extends Error {
+  constructor() {
+    super("Event-market inbox relay plan changed during synchronization")
+    this.name = "EventMarketInboxPlanChangedError"
+  }
+}
+
+function assertEventMarketInboxScanCurrent(
+  key: string,
+  cycle: EventMarketInboxScanCycle
+): void {
+  if (eventMarketInboxScanCycles.get(key) !== cycle) {
+    throw new EventMarketInboxPlanChangedError()
+  }
+}
+
+function eventMarketInboxScanCycle(
+  principalPubkey: string,
+  relayUrls: readonly string[],
+  authorization: ProtectedReadAuthorization | null
+): { key: string; cycle: EventMarketInboxScanCycle } {
+  const principal = principalPubkey.trim().toLowerCase()
+  const sessionScope = authorization?.sessionScope ?? "event-market-test"
+  const key = eventMarketInboxScanKey(sessionScope, principal, relayUrls)
+  const existing = eventMarketInboxScanCycles.get(key)
+  if (existing) return { key, cycle: existing }
+
+  // A relay-plan change starts a new strict cycle and drops parsed handoff
+  // evidence retained for the superseded plan instead of keeping it
+  // process-wide.
+  for (const [candidateKey, candidate] of eventMarketInboxScanCycles) {
+    if (candidate.principalPubkey === principal && candidateKey !== key) {
+      eventMarketInboxScanCycles.delete(candidateKey)
+    }
+  }
+  const relays = new Map<string, EventMarketInboxRelayScan>()
+  for (const relayUrl of relayUrls) {
+    relays.set(relayUrl, {})
+  }
+  const cycle = {
+    sessionScope,
+    principalPubkey: principal,
+    relayUrls: [...relayUrls],
+    relays,
+    messages: new Map<string, ParsedEventMarketPrivateMessage>(),
+    decryptFailures: new Map<string, DecryptFailure>(),
+    evidenceCapped: false,
+  }
+  eventMarketInboxScanCycles.set(key, cycle)
+  return { key, cycle }
+}
+
+async function readEventMarketInboxWraps(
+  principalPubkey: string,
+  relayUrls: readonly string[],
+  authorization: ProtectedReadAuthorization | null
+): Promise<EventMarketInboxWrapRead> {
+  const { key, cycle } = eventMarketInboxScanCycle(
+    principalPubkey,
+    relayUrls,
+    authorization
+  )
+  const startedFresh = relayUrls.every(
+    (relayUrl) => cycle.relays.get(relayUrl)?.until === undefined
+  )
+  assertEventMarketInboxScanCurrent(key, cycle)
+  assertInboxSyncAuthority(authorization)
+  const relayReads = await Promise.all(
+    relayUrls.map((relayUrl) => {
+      const scan = cycle.relays.get(relayUrl)
+      if (!scan) throw new Error("Event-market inbox scan state is invalid.")
+      return readEventMarketInboxRelay(
+        principalPubkey,
+        relayUrl,
+        scan,
+        authorization
+      )
+    })
+  )
+  assertInboxSyncAuthority(authorization)
+  assertEventMarketInboxScanCurrent(key, cycle)
+  const events = new Map<string, NDKEvent>()
+  relayReads.forEach((read) => retainInboxEvents(events, read.events))
+  const freshComplete =
+    startedFresh &&
+    relayReads.every((read) => read.complete && read.singleRequestComplete)
+
+  return {
+    events: Array.from(events.values()),
+    attemptedRelayUrls: [...relayUrls],
+    successfulRelayUrls: relayUrls.filter(
+      (_relayUrl, index) => relayReads[index]?.successful
+    ),
+    failedRelayUrls: relayUrls.filter(
+      (_relayUrl, index) => !relayReads[index]?.complete
+    ),
+    cappedRelayUrls: relayUrls.filter(
+      (_relayUrl, index) => relayReads[index]?.capped
+    ),
+    scanKey: key,
+    scanCycle: cycle,
+    freshComplete,
+  }
+}
+
+function eventMarketTerminalReadyReceiptId(
+  message: ParsedEventMarketPrivateMessage
+): string | null {
+  return message.type === "organizer_fulfillment_receipt"
+    ? null
+    : message.payload.readyReceiptId
+}
+
+/**
+ * Keep private handoff evidence bounded without letting a later terminal
+ * revocation/ACK disappear behind older unresolved receipts. When full,
+ * terminal evidence may evict an unrelated unresolved receipt (or a coarse
+ * decrypt failure), but its matching ready receipt and same-receipt terminal
+ * evidence stay together. Coverage remains partial whenever eviction occurs.
+ */
+function retainBoundedEventMarketMessage(
+  messages: Map<string, ParsedEventMarketPrivateMessage>,
+  decryptFailures: Map<string, DecryptFailure>,
+  message: ParsedEventMarketPrivateMessage
+): { retained: boolean; capped: boolean } {
+  if (messages.has(message.id)) {
+    messages.set(message.id, message)
+    return { retained: true, capped: false }
+  }
+  if (
+    messages.size + decryptFailures.size <
+    EVENT_MARKET_HANDOFF_RETAINED_EVIDENCE_LIMIT
+  ) {
+    messages.set(message.id, message)
+    return { retained: true, capped: false }
+  }
+
+  const firstFailure = decryptFailures.keys().next().value as string | undefined
+  if (firstFailure) {
+    decryptFailures.delete(firstFailure)
+    messages.set(message.id, message)
+    return { retained: true, capped: true }
+  }
+
+  const terminalReadyId = eventMarketTerminalReadyReceiptId(message)
+  const incomingGroupReadyId = terminalReadyId ?? message.id
+  const incomingReadyIsTerminallyReferenced = Array.from(
+    messages.values()
+  ).some(
+    (candidate) => eventMarketTerminalReadyReceiptId(candidate) === message.id
+  )
+  if (!terminalReadyId && !incomingReadyIsTerminallyReferenced) {
+    return { retained: false, capped: true }
+  }
+
+  const protectedReadyIds = new Set<string>()
+  for (const candidate of messages.values()) {
+    const readyId = eventMarketTerminalReadyReceiptId(candidate)
+    if (readyId) protectedReadyIds.add(readyId)
+  }
+  if (terminalReadyId) protectedReadyIds.add(terminalReadyId)
+
+  const candidateId =
+    Array.from(messages.entries()).find(
+      ([id, candidate]) =>
+        candidate.type === "organizer_fulfillment_receipt" &&
+        !protectedReadyIds.has(id) &&
+        id !== incomingGroupReadyId
+    )?.[0] ??
+    Array.from(messages.entries()).find(
+      ([id, candidate]) =>
+        id !== incomingGroupReadyId &&
+        eventMarketTerminalReadyReceiptId(candidate) !== incomingGroupReadyId
+    )?.[0]
+  if (!candidateId) return { retained: false, capped: true }
+
+  messages.delete(candidateId)
+  messages.set(message.id, message)
+  return { retained: true, capped: true }
+}
+
+function retainBoundedEventMarketFailure(
+  messages: Map<string, ParsedEventMarketPrivateMessage>,
+  decryptFailures: Map<string, DecryptFailure>,
+  failure: DecryptFailure
+): boolean {
+  if (decryptFailures.has(failure.wrapId)) {
+    decryptFailures.set(failure.wrapId, failure)
+    return true
+  }
+  if (
+    messages.size + decryptFailures.size >=
+    EVENT_MARKET_HANDOFF_RETAINED_EVIDENCE_LIMIT
+  ) {
+    return false
+  }
+  decryptFailures.set(failure.wrapId, failure)
+  return true
+}
+
+async function advanceEventMarketPrivateMessageScan(input: {
+  principalPubkey: string
+  relayUrls: readonly string[]
+  signer: NDKSigner
+  declaration: Awaited<ReturnType<typeof resolvePrincipalInboxDeclaration>>
+  authorization: ProtectedReadAuthorization | null
+}): Promise<EventMarketPrivateMessageListResult> {
+  assertInboxSyncAuthority(input.authorization)
+  const result = await readEventMarketInboxWraps(
+    input.principalPubkey,
+    input.relayUrls,
+    input.authorization
+  )
+  assertInboxSyncAuthority(input.authorization)
+  const cycle = result.scanCycle
+  const wraps = result.events.filter((event) => {
+    const recipients = event.tags.filter(
+      (tag) => tag[0] === "p" && typeof tag[1] === "string"
+    )
+    return (
+      recipients.length === 1 &&
+      recipients[0]![1]!.toLowerCase() === input.principalPubkey.toLowerCase()
+    )
+  })
+  assertInboxSyncAuthority(input.authorization)
+  const outcomes = await unwrapGiftWraps(wraps, input.signer, unwrapOptions())
+  assertInboxSyncAuthority(input.authorization)
+  assertEventMarketInboxScanCurrent(result.scanKey, cycle)
+  const callMessages = new Map<string, ParsedEventMarketPrivateMessage>()
+  const callDecryptFailures = new Map<string, DecryptFailure>()
+  let callEvidenceCapped = false
+  for (const outcome of outcomes) {
+    if (outcome.status === "decrypt_failed") {
+      const failure = {
+        wrapId: outcome.wrapId,
+        reason: outcome.reason,
+      }
+      if (
+        !retainBoundedEventMarketFailure(
+          callMessages,
+          callDecryptFailures,
+          failure
+        )
+      ) {
+        callEvidenceCapped = true
+      }
+      if (
+        !retainBoundedEventMarketFailure(
+          cycle.messages,
+          cycle.decryptFailures,
+          failure
+        )
+      ) {
+        cycle.evidenceCapped = true
+      }
+      continue
+    }
+    cycle.decryptFailures.delete(outcome.wrapId)
+    if (outcome.status !== "ok" || outcome.category !== "order") continue
+    try {
+      const message = parseOrderMessageRumorEvent(outcome.rumor)
+      if (isEventMarketPrivateMessage(message)) {
+        const callRetention = retainBoundedEventMarketMessage(
+          callMessages,
+          callDecryptFailures,
+          message
+        )
+        callEvidenceCapped ||= callRetention.capped
+        const cycleRetention = retainBoundedEventMarketMessage(
+          cycle.messages,
+          cycle.decryptFailures,
+          message
+        )
+        cycle.evidenceCapped ||= cycleRetention.capped
+      }
+    } catch {
+      const failure: DecryptFailure = {
+        wrapId: outcome.wrapId,
+        reason: "malformed",
+      }
+      if (
+        !retainBoundedEventMarketFailure(
+          callMessages,
+          callDecryptFailures,
+          failure
+        )
+      ) {
+        callEvidenceCapped = true
+      }
+      if (
+        !retainBoundedEventMarketFailure(
+          cycle.messages,
+          cycle.decryptFailures,
+          failure
+        )
+      ) {
+        cycle.evidenceCapped = true
+      }
+    }
+  }
+
+  assertInboxSyncAuthority(input.authorization)
+  const derivedCoverage = deriveInboxReadCoverage(result)
+  const coverage =
+    derivedCoverage === "unavailable"
+      ? "unavailable"
+      : result.freshComplete && !callEvidenceCapped
+        ? derivedCoverage
+        : "partial"
+  const messages = result.freshComplete ? callMessages : cycle.messages
+  const decryptFailures = result.freshComplete
+    ? callDecryptFailures
+    : cycle.decryptFailures
+  const response: EventMarketPrivateMessageListResult = {
+    messages: Array.from(messages.values()).sort(
+      (left, right) => left.createdAt - right.createdAt
+    ),
+    stale: input.declaration.stale || coverage === "unavailable",
+    decryptFailures: Array.from(decryptFailures.values()),
+    inbox: {
+      declarationState: input.declaration.state,
+      coverage,
+      readSource: "declared",
+    },
+  }
+  assertInboxSyncAuthority(input.authorization)
+  assertEventMarketInboxScanCurrent(result.scanKey, cycle)
+  if (coverage === "complete") {
+    eventMarketInboxScanCycles.delete(result.scanKey)
+  }
+  return response
+}
+
+/** Handoff traffic reads declared kind-10050 relays only, never CND-208. */
+async function fetchEventMarketPrivateMessagesStrict(
+  principalPubkey: string
+): Promise<EventMarketPrivateMessageListResult> {
+  const authorization = resolveInboxSyncAuthorization(principalPubkey)
+  assertInboxSyncAuthority(authorization)
+  const signer = await resolveEnvelopeSigner()
+  assertInboxSyncAuthority(authorization)
+  if (!signer) {
+    discardEventMarketInboxScanCycles(principalPubkey)
+    throw new Error("Connect your Nostr signer to view event handoffs.")
+  }
+  const declaration = await resolvePrincipalInboxDeclaration(principalPubkey)
+  assertInboxSyncAuthority(authorization)
+  const relayUrls = normalizeSecureOrIsolatedE2eRelayUrls(
+    declaration.state === "declared" ? declaration.relayUrls : []
+  )
+  if (relayUrls.length === 0) {
+    discardEventMarketInboxScanCycles(principalPubkey)
+    return {
+      messages: [],
+      stale:
+        declaration.state === "lookup_partial" ||
+        declaration.state === "lookup_unavailable" ||
+        declaration.stale,
+      decryptFailures: [],
+      inbox: {
+        declarationState: declaration.state,
+        coverage: "unavailable",
+        readSource: "declared",
+      },
+    }
+  }
+
+  const sessionScope = authorization?.sessionScope ?? "event-market-test"
+  const scanKey = eventMarketInboxScanKey(
+    sessionScope,
+    principalPubkey,
+    relayUrls
+  )
+  const existing = eventMarketInboxScanPromises.get(scanKey)
+  if (existing) return await existing.promise
+  const pending = advanceEventMarketPrivateMessageScan({
+    principalPubkey,
+    relayUrls,
+    signer,
+    declaration,
+    authorization,
+  })
+  eventMarketInboxScanPromises.set(scanKey, {
+    sessionScope,
+    principalPubkey: principalPubkey.trim().toLowerCase(),
+    promise: pending,
+  })
+  try {
+    return await pending
+  } finally {
+    if (eventMarketInboxScanPromises.get(scanKey)?.promise === pending) {
+      eventMarketInboxScanPromises.delete(scanKey)
+    }
+  }
+}
+
 /**
  * Resolve the principal's kind-10050 declaration with typed outcomes.
  * A missing declaration never blocks reading the principal's own gift wraps;
@@ -4719,7 +5386,7 @@ async function resolvePrincipalInboxDeclaration(
   if (testOverrides.resolveInboxRelayUrls) {
     try {
       const relays = await testOverrides.resolveInboxRelayUrls(principalPubkey)
-      const secure = relays.filter((url) => !isInsecureRelayUrl(url))
+      const secure = normalizeSecureOrIsolatedE2eRelayUrls(relays)
       return {
         pubkey: principalPubkey,
         state: secure.length > 0 ? "declared" : "not_observed",
@@ -5234,6 +5901,13 @@ async function runPrivateMessageInboxSync(
     try {
       if (outcome.category === "order") {
         const message = parseOrderMessageRumorEvent(outcome.rumor)
+        if (isEventMarketPrivateMessage(message)) {
+          // Organizer handoff traffic has its own strict kind-10050 reader and
+          // must never enter the buyer/merchant order conversation cache.
+          successful.add(outcome.wrapId)
+          retry.delete(outcome.wrapId)
+          continue
+        }
         orderEntries.push({
           wrapId: outcome.wrapId,
           message,
@@ -5927,6 +6601,23 @@ export async function getConversationDetail(
       }
     ),
   }
+}
+
+export interface EventMarketPrivateMessageListResult {
+  messages: ParsedEventMarketPrivateMessage[]
+  stale: boolean
+  decryptFailures: DecryptFailure[]
+  inbox?: PrivateInboxReadStatus
+}
+
+/**
+ * Read the account-scoped private event-handoff stream without projecting it
+ * into an ordinary buyer/merchant order conversation.
+ */
+export async function getEventMarketPrivateMessageList(
+  principalPubkey: string
+): Promise<EventMarketPrivateMessageListResult> {
+  return await fetchEventMarketPrivateMessagesStrict(principalPubkey)
 }
 
 // --- General direct messages (kind 14), threaded by counterparty pubkey ---

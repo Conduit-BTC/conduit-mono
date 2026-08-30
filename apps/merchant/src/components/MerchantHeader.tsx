@@ -1,4 +1,5 @@
 import {
+  CalendarDays,
   ChevronDown,
   Check,
   CircleHelp,
@@ -61,6 +62,7 @@ type NavRoute =
   | "/orders"
   | "/messages"
   | "/products"
+  | "/events"
   | "/profile"
   | "/payments"
   | "/shipping"
@@ -80,6 +82,7 @@ const mainNavItems: NavItem[] = [
   { to: "/orders", label: "Orders", icon: ShoppingBag },
   { to: "/messages", label: "Messages", icon: MessageCircle },
   { to: "/products", label: "Products", icon: Package },
+  { to: "/events", label: "Events", icon: CalendarDays },
   { to: "/about", label: "About", icon: Info },
 ]
 
@@ -224,6 +227,7 @@ function MerchantNavLinks({
     "/orders": false,
     "/messages": false,
     "/products": false,
+    "/events": false,
   }
 
   function renderItem(item: NavItem) {

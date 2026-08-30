@@ -52,6 +52,13 @@ export interface MerchantOrderState {
   shippingUpdated?: boolean
   /** False only for an explicitly digital-only order. */
   requiresShipping?: boolean
+  /** Exact fulfillment lane when the order snapshot is available. */
+  fulfillmentMode?: "shipping" | "pickup" | "digital" | "unknown"
+  /**
+   * Authenticated order and public pricing evidence prove this pickup has no
+   * product or fulfillment cost. This is not payment evidence.
+   */
+  isZeroCostPickup?: boolean
   /** False for a known out-of-band guest; `unknown` for partial identity reads. */
   buyerReplyable?: boolean | "unknown"
 }
@@ -88,11 +95,27 @@ function toState(
   return input
 }
 
+export function getMerchantOrderFulfillmentMode(
+  state: Pick<MerchantOrderState, "fulfillmentMode" | "requiresShipping">
+): "shipping" | "pickup" | "digital" | "unknown" {
+  if (state.fulfillmentMode) return state.fulfillmentMode
+  if (state.requiresShipping === false) return "digital"
+  return "unknown"
+}
+
 export function isMerchantOrderPaid(state: MerchantOrderState): boolean {
   return (
     !!state.paid ||
     !!state.shippingUpdated ||
     PAID_STATUSES.has(normalizeStatus(state.status))
+  )
+}
+
+function isAuthorizedZeroCostPickup(state: MerchantOrderState): boolean {
+  return (
+    state.isZeroCostPickup === true &&
+    state.fulfillmentMode === "pickup" &&
+    state.requiresShipping !== true
   )
 }
 
@@ -177,9 +200,11 @@ export function buildOrderStatusTimeline(
   const stoppedStatus =
     status === "cancelled" || status === "refund_requested" ? status : null
   const paid = isMerchantOrderPaid(state)
+  const zeroCostPickup = isAuthorizedZeroCostPickup(state)
   const paymentObserved = paid || !!state.paymentObserved
   const acceptedGate = isMerchantOrderAccepted(state)
   const flow = deriveOrderFlow(state)
+  const fulfillmentMode = getMerchantOrderFulfillmentMode(state)
 
   const placed: StageSpec = {
     key: "placed",
@@ -199,11 +224,16 @@ export function buildOrderStatusTimeline(
   }
   const payment: StageSpec = {
     key: "payment",
-    done: paid,
-    complete: {
-      title: "Payment confirmed",
-      subtitle: "Settlement confirmed by merchant.",
-    },
+    done: paid || zeroCostPickup,
+    complete: zeroCostPickup
+      ? {
+          title: "No payment required",
+          subtitle: "Verified zero-cost pickup order.",
+        }
+      : {
+          title: "Payment confirmed",
+          subtitle: "Settlement confirmed by merchant.",
+        },
     active: paymentObserved
       ? {
           title: "Confirm payment",
@@ -281,26 +311,41 @@ export function buildOrderStatusTimeline(
     key: "delivered",
     done: DELIVERED_STATUSES.has(status),
     complete: {
-      title: "Delivered",
-      subtitle: "Order completed.",
+      title: fulfillmentMode === "pickup" ? "Picked up" : "Delivered",
+      subtitle:
+        fulfillmentMode === "pickup" ? "Pickup completed." : "Order completed.",
     },
     active: {
-      title: "Confirm delivery",
-      subtitle: "Mark the order delivered when fulfillment is complete.",
+      title:
+        fulfillmentMode === "pickup" ? "Complete pickup" : "Confirm delivery",
+      subtitle:
+        fulfillmentMode === "pickup"
+          ? "Mark the order complete after the buyer picks it up."
+          : "Mark the order delivered when fulfillment is complete.",
     },
     waiting: {
-      title: "Delivery",
+      title: fulfillmentMode === "pickup" ? "Pickup" : "Delivery",
       subtitle:
-        state.requiresShipping === false
-          ? "Confirm delivery after fulfilling the digital order."
-          : "Confirm delivery after shipment.",
+        fulfillmentMode === "pickup"
+          ? zeroCostPickup
+            ? "Complete pickup after accepting the order."
+            : "Complete pickup after payment is confirmed."
+          : fulfillmentMode === "digital" || state.requiresShipping === false
+            ? "Confirm delivery after fulfilling the digital order."
+            : "Confirm delivery after shipment.",
     },
   }
 
   // Payment and acceptance are ordered by the flow; everything else is shared.
-  const fulfillmentStages = state.requiresShipping === false ? [] : [shipped]
-  const ordered =
-    paymentObserved && !paid
+  const fulfillmentStages =
+    fulfillmentMode === "pickup" ||
+    fulfillmentMode === "digital" ||
+    state.requiresShipping === false
+      ? []
+      : [shipped]
+  const ordered = zeroCostPickup
+    ? [placed, payment, accepted, ...fulfillmentStages, delivered]
+    : paymentObserved && !paid
       ? [placed, payment, accepted, ...fulfillmentStages, delivered]
       : flow === "prepaid"
         ? [placed, payment, accepted, ...fulfillmentStages, delivered]
@@ -380,6 +425,22 @@ export function getMerchantOrderActions(
   if (TERMINAL_ACTION_STATUSES.has(status)) return []
 
   if (isMerchantOrderPaid(state)) {
+    if (state.fulfillmentMode === "pickup") {
+      return [
+        {
+          action: "cancel",
+          status: "cancelled",
+          label: "Cancel order",
+          kind: "destructive",
+        },
+        {
+          action: "complete",
+          status: "complete",
+          label: "Mark picked up / complete",
+          kind: "primary",
+        },
+      ]
+    }
     if (state.requiresShipping === false) {
       return [
         {
@@ -416,6 +477,23 @@ export function getMerchantOrderActions(
       {
         action: "record_shipment",
         label: "Add shipping details",
+        kind: "primary",
+      },
+    ]
+  }
+
+  if (isAuthorizedZeroCostPickup(state) && isMerchantOrderAccepted(state)) {
+    return [
+      {
+        action: "cancel",
+        status: "cancelled",
+        label: "Cancel order",
+        kind: "destructive",
+      },
+      {
+        action: "complete",
+        status: "complete",
+        label: "Mark picked up / complete",
         kind: "primary",
       },
     ]

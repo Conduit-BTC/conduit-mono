@@ -9,6 +9,7 @@ import {
   getCurrencyAmountStep,
   getCurrencyFractionDigits,
   getProductPriceDisplay,
+  getPriceSats,
   getShippingCostSats,
   getShopperPriceDisplay,
   getShopperSatsDisplay,
@@ -357,6 +358,55 @@ describe("commerce pricing", () => {
     )
   })
 
+  it("normalizes an explicitly allowed canonical zero-sat price without widening paid pricing", () => {
+    expect(
+      normalizeCommercePrice(0, "SATS", null, { allowZero: true })
+    ).toMatchObject({
+      status: "ok",
+      sats: 0,
+      approximate: false,
+    })
+    for (const currency of ["SAT", "MSATS", "BTC"] as const) {
+      expect(
+        normalizeCommercePrice(0, currency, null, { allowZero: true })
+      ).toMatchObject({ status: "ok", sats: 0, approximate: false })
+    }
+    expect(
+      getPriceSats(
+        {
+          price: 0,
+          currency: "SATS",
+          priceSats: 0,
+          sourcePrice: {
+            amount: 0,
+            currency: "SATS",
+            normalizedCurrency: "SATS",
+          },
+        },
+        null,
+        { allowZero: true }
+      )
+    ).toEqual({ sats: 0, approximate: false })
+
+    expect(normalizeCommercePrice(0, "SATS").status).toBe("invalid")
+    expect(
+      normalizeCommercePrice(0, "USD", testRates, { allowZero: true }).status
+    ).toBe("invalid")
+    expect(
+      normalizeCommercePrice(-1, "SATS", null, { allowZero: true }).status
+    ).toBe("invalid")
+    expect(
+      normalizeCommercePrice(Number.NaN, "SATS", null, { allowZero: true })
+        .status
+    ).toBe("invalid")
+    expect(
+      normalizeCommercePrice(0, "POINTS", null, { allowZero: true }).status
+    ).toBe("unsupported")
+    expect(
+      normalizeCommercePrice(0, "", null, { allowZero: true }).status
+    ).toBe("invalid")
+  })
+
   it("converts fiat only when reliable fiat and BTC/USD rates are supplied", () => {
     const normalized = normalizeCommercePrice(25, "USD", 100_000)
     expect(normalized.status).toBe("ok")
@@ -432,6 +482,87 @@ describe("commerce pricing", () => {
       currency: "SAT",
       normalizedCurrency: "SAT",
     })
+  })
+
+  it("preserves canonical signed zero-SATS evidence for an authorized pickup flow", () => {
+    const product = parseProductEvent({
+      id: "event-free-pickup",
+      pubkey: "merchant",
+      created_at: 1_700_000_000,
+      content: "Event badge",
+      tags: [
+        ["d", "event-badge"],
+        ["title", "Event Badge"],
+        ["price", "0", "SATS"],
+        ["type", "simple", "physical"],
+      ],
+    })
+
+    expect(product).toMatchObject({
+      price: 0,
+      currency: "SATS",
+      priceSats: 0,
+      sourcePrice: {
+        amount: 0,
+        currency: "SATS",
+        normalizedCurrency: "SATS",
+      },
+    })
+    expect(product.priceEvidenceMalformed).toBeUndefined()
+    expect(getPriceSats(product)).toBeNull()
+    expect(getPriceSats(product, null, { allowZero: true })).toEqual({
+      sats: 0,
+      approximate: false,
+    })
+  })
+
+  it("renders an explicitly authorized zero-sat pickup as free", () => {
+    const price = {
+      price: 0,
+      currency: "SATS",
+      priceSats: 0,
+      sourcePrice: {
+        amount: 0,
+        currency: "SATS",
+        normalizedCurrency: "SATS",
+      },
+    }
+
+    expect(getShopperPriceDisplay(price).primary).toBe("Price unavailable")
+    expect(
+      getShopperPriceDisplay(price, DEFAULT_SHOPPER_PRICE_PREFERENCE, null, {
+        allowZero: true,
+      })
+    ).toMatchObject({
+      state: "ready",
+      primary: "Free",
+      secondary: "0 sats",
+      sats: 0,
+      approximate: false,
+    })
+  })
+
+  it("keeps generic zero wallet and budget amounts monetary", () => {
+    expect(getShopperSatsDisplay(0)).toMatchObject({
+      state: "ready",
+      primary: "0 sats",
+      secondary: null,
+      sats: 0,
+    })
+    expect(
+      getShopperSatsDisplay(
+        0,
+        { currency: "USD", bitcoinUnit: "bitcoin" },
+        testRates
+      )
+    ).toMatchObject({
+      state: "ready",
+      primary: "0 sats",
+      secondary: null,
+      sats: 0,
+      approximate: false,
+    })
+    expect(getShopperSatsDisplay(0).primary).not.toBe("Free")
   })
 
   it("preserves fiat shipping source quotes and converts them with rate input", () => {

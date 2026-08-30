@@ -592,7 +592,7 @@ describe("product listing event drafts", () => {
 })
 
 describe("product listing event parsing", () => {
-  it("keeps parsing legacy Conduit JSON-content product listings", () => {
+  it("prefers the standard price tag when legacy JSON conflicts", () => {
     const product = baseProduct({
       tags: [" Bitcoin ", "bitcoin", "BITCOIN", "Hardware"],
     })
@@ -610,12 +610,201 @@ describe("product listing event parsing", () => {
 
     expect(parsed.title).toBe(product.title)
     expect(parsed.summary).toBe(product.summary)
-    expect(parsed.price).toBe(product.price)
-    expect(parsed.currency).toBe(product.currency)
+    expect(parsed.price).toBe(99)
+    expect(parsed.currency).toBe("USD")
+    expect(parsed.sourcePrice).toEqual({
+      amount: 99,
+      currency: "USD",
+      normalizedCurrency: "USD",
+    })
+    expect(parsed.priceEvidenceMalformed).toBe(true)
     expect(parsed.publicZapEnabled).toBe(true)
     expect(parsed.zapMessagePolicy).toBe("generic_only")
     expect(parsed.publicZapPolicyKnown).toBe(false)
     expect(parsed.tags).toEqual(["bitcoin", "hardware"])
+  })
+
+  it("accepts exact normalized SAT legacy projections and rejects every conflicting projection", () => {
+    const compatible = baseProduct({
+      price: 2_500,
+      currency: "SATS",
+      priceSats: 2_500,
+      sourcePrice: {
+        amount: 2_500,
+        currency: "sats",
+        normalizedCurrency: "SAT",
+      },
+    })
+    const tags = [
+      ["d", "sat-evidence"],
+      ["title", "SAT evidence"],
+      ["price", "2500", "SAT"],
+    ]
+    const exact = parseProductEvent({
+      id: "sat-exact",
+      pubkey: compatible.pubkey,
+      created_at: 1_779_762_725,
+      content: JSON.stringify(compatible),
+      tags,
+    })
+
+    expect(exact).toMatchObject({
+      price: 2_500,
+      currency: "SATS",
+      priceSats: 2_500,
+      sourcePrice: {
+        amount: 2_500,
+        currency: "SAT",
+        normalizedCurrency: "SAT",
+      },
+    })
+    expect(exact.priceEvidenceMalformed).toBeUndefined()
+
+    const conflicts = [
+      { ...compatible, price: 2_499 },
+      {
+        ...compatible,
+        sourcePrice: {
+          amount: 2_499,
+          currency: "SATS",
+          normalizedCurrency: "SATS",
+        },
+      },
+      {
+        ...compatible,
+        sourcePrice: {
+          amount: 0.000025,
+          currency: "BTC",
+          normalizedCurrency: "BTC",
+        },
+      },
+      { ...compatible, priceSats: 2_499 },
+    ]
+    for (const conflict of conflicts) {
+      const forward = parseProductEvent({
+        id: "sat-conflict-forward",
+        pubkey: compatible.pubkey,
+        created_at: 1_779_762_725,
+        content: JSON.stringify(conflict),
+        tags,
+      })
+      const reverse = parseProductEvent({
+        id: "sat-conflict-reverse",
+        pubkey: compatible.pubkey,
+        created_at: 1_779_762_725,
+        content: JSON.stringify(
+          Object.fromEntries(Object.entries(conflict).reverse())
+        ),
+        tags,
+      })
+
+      expect(forward).toMatchObject({
+        price: 2_500,
+        currency: "SATS",
+        priceSats: 2_500,
+        priceEvidenceMalformed: true,
+      })
+      expect(reverse).toMatchObject({
+        price: 2_500,
+        currency: "SATS",
+        priceSats: 2_500,
+        priceEvidenceMalformed: true,
+      })
+    }
+  })
+
+  it("fails closed on conflicting fiat JSON projections while keeping the tag canonical", () => {
+    const compatible = baseProduct({
+      price: 10,
+      currency: "usd",
+      priceSats: undefined,
+      sourcePrice: {
+        amount: 10,
+        currency: "USD",
+        normalizedCurrency: "usd",
+      },
+    })
+    const tags = [
+      ["d", "fiat-evidence"],
+      ["title", "Fiat evidence"],
+      ["price", "10.00", "USD"],
+    ]
+    const exact = parseProductEvent({
+      id: "fiat-exact",
+      pubkey: compatible.pubkey,
+      created_at: 1_779_762_725,
+      content: JSON.stringify(compatible),
+      tags,
+    })
+    expect(exact).toMatchObject({
+      price: 10,
+      currency: "USD",
+      sourcePrice: {
+        amount: 10,
+        currency: "USD",
+        normalizedCurrency: "USD",
+      },
+    })
+    expect(exact.priceEvidenceMalformed).toBeUndefined()
+
+    const conflicts = [
+      { ...compatible, price: 11 },
+      {
+        ...compatible,
+        sourcePrice: {
+          amount: 11,
+          currency: "USD",
+          normalizedCurrency: "USD",
+        },
+      },
+      { ...compatible, priceSats: 1_000 },
+    ]
+    for (const conflict of conflicts) {
+      const parsed = parseProductEvent({
+        id: "fiat-conflict",
+        pubkey: compatible.pubkey,
+        created_at: 1_779_762_725,
+        content: JSON.stringify(conflict),
+        tags,
+      })
+      expect(parsed).toMatchObject({
+        price: 10,
+        currency: "USD",
+        priceEvidenceMalformed: true,
+      })
+      expect(parsed.priceSats).toBeUndefined()
+    }
+  })
+
+  it("treats duplicated standard price tags as malformed independent of order", () => {
+    const legacy = baseProduct({
+      price: 1_000,
+      currency: "SATS",
+      priceSats: 1_000,
+    })
+    const priceTags = [
+      ["price", "1000", "SATS"],
+      ["price", "2000", "SATS"],
+    ]
+
+    for (const orderedPriceTags of [priceTags, [...priceTags].reverse()]) {
+      const parsed = parseProductEvent({
+        id: "duplicate-price-tags",
+        pubkey: legacy.pubkey,
+        created_at: 1_779_762_725,
+        content: JSON.stringify(legacy),
+        tags: [
+          ["d", "duplicate-price-tags"],
+          ["title", "Duplicate price tags"],
+          ...orderedPriceTags,
+        ],
+      })
+      expect(parsed).toMatchObject({
+        price: 1_000,
+        currency: "SATS",
+        priceEvidenceMalformed: true,
+      })
+    }
   })
 
   it("canonicalizes mixed-case tags from external tag-based listings", () => {
