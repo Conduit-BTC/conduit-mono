@@ -1477,13 +1477,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const invalidatedSession =
           activeSession.current ?? recoverySession.current
         const storedSession = readAuthSession()
-        if (
-          invalidatedSession &&
+        const preserveDisplacedSession =
+          !!invalidatedSession &&
           authSessionsEqual(invalidatedSession, storedSession)
-        ) {
+        if (preserveDisplacedSession) {
           authorityDisplacedSession.current = invalidatedSession
         }
-        const connection = deactivateLocalSigner()
+        const connection = deactivateLocalSigner({
+          preserveSessionIdentity: preserveDisplacedSession,
+        })
         settleRestorePending()
         if (connection) void connection.bunkerSigner.close()
         setStatus("error")

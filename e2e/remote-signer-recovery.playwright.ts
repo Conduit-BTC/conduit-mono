@@ -284,6 +284,136 @@ test("remote signer timeout keeps the product draft recoverable and requires an 
   }
 })
 
+test("an authority-only revision keeps exact remote signer reconnect available @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(45_000)
+  const remoteSignerSecret = generateSecretKey()
+  const merchantSecret = generateSecretKey()
+  const remoteSignerPubkey = getPublicKey(remoteSignerSecret)
+  const harness = await startRemoteSignerHarness(
+    remoteSignerSecret,
+    merchantSecret
+  )
+
+  try {
+    await seedTestRelayIdentity(merchantSecret)
+    await page.addInitScript(
+      ({ alias, loopback }) => {
+        const NativeWebSocket = window.WebSocket
+        class LoopbackSignerWebSocket extends NativeWebSocket {
+          constructor(url: string | URL, protocols?: string | string[]) {
+            const target = String(url).startsWith(alias) ? loopback : url
+            if (protocols === undefined) super(target)
+            else super(target, protocols)
+          }
+        }
+        Object.defineProperty(window, "WebSocket", {
+          configurable: true,
+          value: LoopbackSignerWebSocket,
+        })
+      },
+      { alias: signerRelayAlias, loopback: TEST_RELAY_URL }
+    )
+
+    await page.goto(merchantUrl + "/products")
+    await page.getByRole("tab", { name: "Bunker URL" }).click()
+    await page
+      .getByRole("textbox", { name: "Remote signer bunker URL" })
+      .fill(
+        "bunker://" +
+          remoteSignerPubkey +
+          "?relay=" +
+          encodeURIComponent(signerRelayAlias)
+      )
+    await page.getByRole("button", { name: "Connect Signer (NIP-46)" }).click()
+    await page.getByRole("link", { name: "Products", exact: true }).click()
+    await expect(
+      page.getByRole("heading", { name: "Products", exact: true })
+    ).toBeVisible({ timeout: 15_000 })
+
+    const retained = await page.evaluate(() => {
+      const rawSession = localStorage.getItem("conduit:auth")
+      if (!rawSession) throw new Error("Missing remote signer session")
+      const session = JSON.parse(rawSession) as {
+        version: number
+        type: string
+        userPubkey: string
+        signerPubkey: string
+        relays: string[]
+        clientKeyId: string
+      }
+      const oldRevision = localStorage.getItem("conduit:auth:revision")
+      const nextRevision = `${oldRevision ?? "claim"}:other-tab`
+      localStorage.setItem("conduit:auth:revision", nextRevision)
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: "conduit:auth:revision",
+          oldValue: oldRevision,
+          newValue: nextRevision,
+          url: window.location.href,
+        })
+      )
+      return {
+        rawSession,
+        identity: {
+          version: session.version,
+          type: session.type,
+          userPubkey: session.userPubkey,
+          signerPubkey: session.signerPubkey,
+          relays: session.relays,
+          clientKeyId: session.clientKeyId,
+        },
+      }
+    })
+
+    await expect(
+      page.locator('main[aria-label="Connect a signer"]')
+    ).toBeVisible()
+    expect(
+      await page.evaluate(() => localStorage.getItem("conduit:auth"))
+    ).toBe(retained.rawSession)
+
+    const reconnect = page.getByRole("button", {
+      name: "Reconnect NIP-46 signer",
+    })
+    await expect(reconnect).toBeVisible({ timeout: 5_000 })
+    await reconnect.click()
+
+    await expect(
+      page.getByRole("heading", { name: "Products", exact: true })
+    ).toBeVisible({ timeout: 15_000 })
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const rawSession = localStorage.getItem("conduit:auth")
+          if (!rawSession) return null
+          const session = JSON.parse(rawSession) as {
+            version: number
+            type: string
+            userPubkey: string
+            signerPubkey: string
+            relays: string[]
+            clientKeyId: string
+          }
+          return {
+            version: session.version,
+            type: session.type,
+            userPubkey: session.userPubkey,
+            signerPubkey: session.signerPubkey,
+            relays: session.relays,
+            clientKeyId: session.clientKeyId,
+          }
+        })
+      )
+      .toEqual(retained.identity)
+    expect(harness.productSignRequestCount()).toBe(0)
+    expect(harness.responseErrors()).toEqual([])
+  } finally {
+    harness.close()
+  }
+})
+
 test("a different signer starts a fresh merchant workspace after verified recovery retirement @merchant", async ({
   page,
 }) => {
