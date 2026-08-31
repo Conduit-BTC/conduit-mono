@@ -12,7 +12,7 @@
     "lint": "eslint \"src/**/*.{ts,tsx}\""
   },
   "dependencies": {
-    "@buildonspark/spark-sdk": "0.9.0",
+    "@buildonspark/spark-sdk": "0.11.0",
     "@conduit/core": "workspace:*",
     "@conduit/ui": "workspace:*",
     "@getalby/sdk": "^8.0.3",
