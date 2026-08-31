@@ -393,7 +393,7 @@ jobs:
         id: review_codex_auth_json
         if: steps.auth.outputs.has_codex_auth_json == 'true'
         continue-on-error: ${{ steps.auth.outputs.has_auth_file == 'true' || steps.auth.outputs.has_api_key == 'true' }}
-        uses: sudden-network/agent@2afabe84ac9bf58e57f605b41b2c4f87bbe9c579 # v1.14.1
+        uses: sudden-network/agent@f756c9e9cf5c07e866fc6011510c2f6dda389230 # v1.15.0
         with:
           agent_auth_file: ${{ secrets.CODEX_AUTH_JSON }}
           github_token: ${{ steps.app_token.outputs.token }}
@@ -409,7 +409,7 @@ jobs:
           (steps.auth.outputs.has_codex_auth_json != 'true' ||
             steps.review_codex_auth_json.outcome == 'failure')
         continue-on-error: ${{ steps.auth.outputs.has_api_key == 'true' }}
-        uses: sudden-network/agent@2afabe84ac9bf58e57f605b41b2c4f87bbe9c579 # v1.14.1
+        uses: sudden-network/agent@f756c9e9cf5c07e866fc6011510c2f6dda389230 # v1.15.0
         with:
           agent_auth_file: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}
           github_token: ${{ steps.app_token.outputs.token }}
@@ -426,7 +426,7 @@ jobs:
             steps.review_codex_auth_json.outcome == 'failure') &&
           (steps.auth.outputs.has_auth_file != 'true' ||
             steps.review_auth_file.outcome == 'failure')
-        uses: sudden-network/agent@2afabe84ac9bf58e57f605b41b2c4f87bbe9c579 # v1.14.1
+        uses: sudden-network/agent@f756c9e9cf5c07e866fc6011510c2f6dda389230 # v1.15.0
         with:
           agent_api_key: ${{ secrets.SUDDEN_AGENT_API_KEY }}
           github_token: ${{ steps.app_token.outputs.token }}
