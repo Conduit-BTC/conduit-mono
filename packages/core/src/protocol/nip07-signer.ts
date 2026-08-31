@@ -1,13 +1,17 @@
 import {
   NDKNip07Signer,
+  NDKUser,
   type NDKEncryptionScheme,
-  type NDKUser,
   type NostrEvent,
 } from "@nostr-dev-kit/ndk"
 import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
 } from "./signed-event"
+import {
+  withTransientNip07ReadinessRetry,
+  type TransientNip07ReadinessRetryOptions,
+} from "./signing-retry"
 
 export type Nip07SessionSignerErrorCode =
   "identity_changed" | "invalid_response"
@@ -24,9 +28,15 @@ export class Nip07SessionSignerError extends Error {
 
 export interface Nip07SessionSignerOptions {
   onInvalidated?: (error: Nip07SessionSignerError) => void
+  readinessRetryDelaysMs?: readonly number[]
 }
 
-type Nip07SignedEventBridge = {
+type Nip07EncryptionBridge = {
+  encrypt: (pubkey: string, plaintext: string) => Promise<string>
+  decrypt: (pubkey: string, ciphertext: string) => Promise<string>
+}
+
+type Nip07Bridge = {
   getPublicKey: () => Promise<string>
   signEvent: (event: {
     created_at: number
@@ -34,6 +44,8 @@ type Nip07SignedEventBridge = {
     tags: string[][]
     content: string
   }) => Promise<unknown>
+  nip04?: Nip07EncryptionBridge
+  nip44?: Nip07EncryptionBridge
 }
 
 function normalizePubkey(value: unknown): string | null {
@@ -54,23 +66,44 @@ function hasSameTags(a: string[][], b: string[][]): boolean {
  */
 export class Nip07SessionSigner extends NDKNip07Signer {
   private sessionPubkey: string | null = null
+  private sessionUser: NDKUser | null = null
+  private readyPromise: Promise<NDKUser> | null = null
+  private encryptionTail: Promise<void> = Promise.resolve()
   private invalidated = false
   private readonly onInvalidated?: Nip07SessionSignerOptions["onInvalidated"]
+  private readonly readinessRetry: TransientNip07ReadinessRetryOptions
 
   constructor(options: Nip07SessionSignerOptions = {}) {
     super()
     this.onInvalidated = options.onInvalidated
+    this.readinessRetry = {
+      retryDelaysMs: options.readinessRetryDelaysMs,
+    }
+  }
+
+  override get pubkey(): string {
+    if (!this.sessionPubkey) throw new Error("Not ready")
+    return this.sessionPubkey
+  }
+
+  override get userSync(): NDKUser {
+    if (!this.sessionUser) throw new Error("User not ready")
+    return this.sessionUser
+  }
+
+  override async user(): Promise<NDKUser> {
+    this.readyPromise ??= this.blockUntilReady()
+    try {
+      return await this.readyPromise
+    } catch (error) {
+      this.readyPromise = null
+      throw error
+    }
   }
 
   override async blockUntilReady(): Promise<NDKUser> {
-    const user = await super.blockUntilReady()
-    const pubkey = normalizePubkey(user.pubkey)
-    if (!pubkey) {
-      return this.invalidate(
-        "invalid_response",
-        "The signer returned an invalid account. Reconnect it and try again."
-      )
-    }
+    this.assertAvailableSession()
+    const { pubkey } = await this.readReadyBridge()
     if (this.sessionPubkey && this.sessionPubkey !== pubkey) {
       return this.invalidate(
         "identity_changed",
@@ -78,11 +111,12 @@ export class Nip07SessionSigner extends NDKNip07Signer {
       )
     }
     this.sessionPubkey = pubkey
-    return user
+    this.sessionUser ??= new NDKUser({ pubkey })
+    return this.sessionUser
   }
 
   override async sign(event: NostrEvent): Promise<string> {
-    const expectedPubkey = await this.assertLiveIdentity()
+    const { bridge, pubkey: expectedPubkey } = await this.assertLiveIdentity()
     if (
       normalizePubkey(event.pubkey) !== expectedPubkey ||
       !Number.isSafeInteger(event.created_at) ||
@@ -104,8 +138,6 @@ export class Nip07SessionSigner extends NDKNip07Signer {
       )
     }
 
-    const bridge = window.nostr as unknown as Nip07SignedEventBridge | undefined
-    if (!bridge) throw new Error("NIP-07 extension not available")
     const expectedTags = event.tags.map((tag) => [...tag])
     const draft = {
       created_at: event.created_at as number,
@@ -155,10 +187,20 @@ export class Nip07SessionSigner extends NDKNip07Signer {
     value: string,
     scheme?: NDKEncryptionScheme
   ): Promise<string> {
-    await this.assertLiveIdentity()
-    const encrypted = await super.encrypt(recipient, value, scheme)
-    await this.assertLiveIdentity()
-    return encrypted
+    return this.runEncryptionOperation(async () => {
+      const resolvedScheme = scheme ?? "nip04"
+      const { bridge } = await this.assertLiveIdentity()
+      const encryptionBridge = bridge[resolvedScheme]
+      if (typeof encryptionBridge?.encrypt !== "function") {
+        throw new Error(
+          `${resolvedScheme} encryption is not available from your browser extension`
+        )
+      }
+      const encrypted = await encryptionBridge.encrypt(recipient.pubkey, value)
+      if (!encrypted) throw new Error("Failed to encrypt")
+      await this.assertLiveIdentity()
+      return encrypted
+    })
   }
 
   override async decrypt(
@@ -166,19 +208,106 @@ export class Nip07SessionSigner extends NDKNip07Signer {
     value: string,
     scheme?: NDKEncryptionScheme
   ): Promise<string> {
-    await this.assertLiveIdentity()
-    const decrypted = await super.decrypt(sender, value, scheme)
-    await this.assertLiveIdentity()
-    return decrypted
+    return this.runEncryptionOperation(async () => {
+      const resolvedScheme = scheme ?? "nip04"
+      const { bridge } = await this.assertLiveIdentity()
+      const encryptionBridge = bridge[resolvedScheme]
+      if (typeof encryptionBridge?.decrypt !== "function") {
+        throw new Error(
+          `${resolvedScheme} decryption is not available from your browser extension`
+        )
+      }
+      const decrypted = await encryptionBridge.decrypt(sender.pubkey, value)
+      if (!decrypted) throw new Error("Failed to decrypt")
+      await this.assertLiveIdentity()
+      return decrypted
+    })
   }
 
-  private async assertLiveIdentity(): Promise<string> {
+  override async encryptionEnabled(
+    scheme?: NDKEncryptionScheme
+  ): Promise<NDKEncryptionScheme[]> {
+    this.assertAvailableSession()
+    const bridge = await withTransientNip07ReadinessRetry(async () => {
+      const currentBridge = this.getCurrentBridge()
+      if (!currentBridge) throw new Error("NIP-07 extension not available")
+      return currentBridge
+    }, this.readinessRetry)
+    const enabled: NDKEncryptionScheme[] = []
+    if (
+      (!scheme || scheme === "nip04") &&
+      typeof bridge?.nip04?.encrypt === "function" &&
+      typeof bridge.nip04.decrypt === "function"
+    ) {
+      enabled.push("nip04")
+    }
+    if (
+      (!scheme || scheme === "nip44") &&
+      typeof bridge?.nip44?.encrypt === "function" &&
+      typeof bridge.nip44.decrypt === "function"
+    ) {
+      enabled.push("nip44")
+    }
+    return enabled
+  }
+
+  private assertAvailableSession(): void {
     if (this.invalidated) {
       throw new Nip07SessionSignerError(
         "identity_changed",
         "The signer session is no longer available. Reconnect the intended account and try again."
       )
     }
+  }
+
+  private async runEncryptionOperation<T>(
+    operation: () => Promise<T>
+  ): Promise<T> {
+    const previous = this.encryptionTail
+    let release = () => {}
+    this.encryptionTail = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    await previous
+    try {
+      return await operation()
+    } finally {
+      release()
+    }
+  }
+
+  private getCurrentBridge(): Nip07Bridge | undefined {
+    return typeof window === "undefined"
+      ? undefined
+      : (window.nostr as Nip07Bridge | undefined)
+  }
+
+  private async readReadyBridge(): Promise<{
+    bridge: Nip07Bridge
+    pubkey: string
+  }> {
+    const ready = await withTransientNip07ReadinessRetry(async () => {
+      const bridge = this.getCurrentBridge()
+      if (!bridge || typeof bridge.getPublicKey !== "function") {
+        throw new Error("NIP-07 extension not available")
+      }
+      return { bridge, rawPubkey: await bridge.getPublicKey() }
+    }, this.readinessRetry)
+    const pubkey = normalizePubkey(ready.rawPubkey)
+    if (!pubkey) {
+      return this.invalidate(
+        "invalid_response",
+        "The signer returned an invalid account. Reconnect it and try again."
+      )
+    }
+    return { bridge: ready.bridge, pubkey }
+  }
+
+  private async assertLiveIdentity(): Promise<{
+    bridge: Nip07Bridge
+    pubkey: string
+  }> {
+    this.assertAvailableSession()
 
     const expectedPubkey =
       this.sessionPubkey ?? normalizePubkey((await this.user()).pubkey)
@@ -189,14 +318,14 @@ export class Nip07SessionSigner extends NDKNip07Signer {
       )
     }
 
-    const livePubkey = normalizePubkey(await window.nostr?.getPublicKey())
-    if (livePubkey !== expectedPubkey) {
+    const live = await this.readReadyBridge()
+    if (live.pubkey !== expectedPubkey) {
       return this.invalidate(
         "identity_changed",
         "The signer account changed. Conduit disconnected it before continuing. Reconnect the intended account and try again."
       )
     }
-    return expectedPubkey
+    return live
   }
 
   private invalidate(

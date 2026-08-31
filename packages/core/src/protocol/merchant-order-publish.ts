@@ -25,6 +25,8 @@ export interface PublishMerchantOrderMessageInput {
   payload: Record<string, unknown>
   tags?: string[][]
   delivery: MerchantOrderDelivery
+  /** Background automation skips foreground-only interactive coordination. */
+  signerInteraction?: "external" | "background_external"
 }
 
 export function getMerchantOrderDeliveryRecipients(
@@ -129,6 +131,7 @@ export async function publishMerchantOrderMessage(
     signer: ndk.signer,
     rumorKind: EVENT_KINDS.ORDER,
     selfCopy: target.selfCopy,
+    signerInteraction: input.signerInteraction ?? "background_external",
     // Merchant replies, invoices, and proofs belong to a validated inbound
     // order lifecycle, so they qualify for compatibility routing (CND-208).
     validatedOrderScope: target.validatedOrderScope,

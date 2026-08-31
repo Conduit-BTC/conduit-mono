@@ -2072,6 +2072,7 @@ function OrdersPage() {
           tags: [["status", nextStatus]],
           payload: { status: nextStatus },
           delivery: operationalDelivery,
+          signerInteraction: "external",
         })
         if (
           nextStatus === "complete" &&
@@ -2134,6 +2135,7 @@ function OrdersPage() {
             note: prepared.note,
           },
           delivery: operationalDelivery,
+          signerInteraction: "external",
         })
       }),
     onSuccess: async () => {
@@ -2164,6 +2166,7 @@ function OrdersPage() {
           note: replyNote.trim(),
         },
         delivery: operationalDelivery,
+        signerInteraction: "external",
       })
     },
     onSuccess: async () => {

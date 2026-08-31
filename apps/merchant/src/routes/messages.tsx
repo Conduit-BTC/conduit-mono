@@ -313,6 +313,7 @@ function MessagesPage() {
         recipientPubkey: counterpartyPubkey,
         signer: ndk.signer,
         rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+        signerInteraction: "external",
       })
       optimisticMessageQueue.markPublished(message.localId)
       if (selfCopyError) {

@@ -47,10 +47,7 @@ import {
   normalizeSecureOrIsolatedE2eRelayUrls,
   tryNormalizeRelayUrl,
 } from "./relay-settings"
-import {
-  withTransientNip07Retry,
-  type TransientNip07RetryOptions,
-} from "./signing-retry"
+import { waitForVisibleDocument } from "./interactive-signer"
 import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
@@ -726,7 +723,10 @@ export interface PublishPrivateMessageInput {
   /** Wrap a sender self-copy for local recovery. Default true. */
   selfCopy?: boolean
   refreshRelayLists?: boolean
-  retry?: TransientNip07RetryOptions
+  /** Skip foreground coordination for a caller-owned ephemeral guest signer. */
+  signerInteraction?: "external" | "background_external" | "application_owned"
+  /** Controlled visibility seam for interactive external signer workflows. */
+  waitForSignerVisibility?: () => Promise<void>
   giftWrapFn?: typeof giftWrap
   /**
    * Durable exact-retry seam. Runs after wrapping and before the first relay
@@ -778,6 +778,31 @@ export interface PublishPrivateMessageInput {
   resolveCompatibilityRecipientReadRelays?: (
     pubkey: string
   ) => Promise<readonly string[]>
+}
+
+function createVisibilityGatedSigner(
+  signer: NDKSigner,
+  waitForSignerVisibility: () => Promise<void>
+): NDKSigner {
+  return new Proxy(signer, {
+    get(target, property) {
+      if (property === "sign") {
+        return async (...args: Parameters<NDKSigner["sign"]>) => {
+          await waitForSignerVisibility()
+          return target.sign(...args)
+        }
+      }
+      if (property === "encrypt") {
+        return async (...args: Parameters<NDKSigner["encrypt"]>) => {
+          await waitForSignerVisibility()
+          return target.encrypt(...args)
+        }
+      }
+
+      const value = Reflect.get(target, property, target) as unknown
+      return typeof value === "function" ? value.bind(target) : value
+    },
+  })
 }
 
 export interface PreparedPrivateMessageWraps {
@@ -1011,16 +1036,19 @@ export async function publishPrivateMessage(
   // NDK's giftWrap builds and encrypts the seal from rumor.ndk. Attach the
   // shared instance before wrapping; attaching only at publish time is too late.
   input.rumor.ndk ??= getNdk()
+  const externalSignerInteraction =
+    (input.signerInteraction ?? "background_external") === "external"
+  const waitForSignerVisibility =
+    input.waitForSignerVisibility ?? waitForVisibleDocument
+  const giftWrapSigner = externalSignerInteraction
+    ? createVisibilityGatedSigner(input.signer, waitForSignerVisibility)
+    : input.signer
 
-  const wrappedToRecipient = await withTransientNip07Retry(
-    () =>
-      giftWrapFn(
-        input.rumor,
-        new NDKUser({ pubkey: input.recipientPubkey }),
-        input.signer,
-        wrapParams
-      ),
-    input.retry
+  const wrappedToRecipient = await giftWrapFn(
+    input.rumor,
+    new NDKUser({ pubkey: input.recipientPubkey }),
+    giftWrapSigner,
+    wrapParams
   )
 
   // The self-copy is a non-critical local-recovery leg: a signer failure while
@@ -1031,15 +1059,11 @@ export async function publishPrivateMessage(
   let wrappedToSelf: NDKEvent | null = null
   if (selfCopy) {
     try {
-      wrappedToSelf = await withTransientNip07Retry(
-        () =>
-          giftWrapFn(
-            input.rumor,
-            new NDKUser({ pubkey: input.senderPubkey }),
-            input.signer,
-            wrapParams
-          ),
-        input.retry
+      wrappedToSelf = await giftWrapFn(
+        input.rumor,
+        new NDKUser({ pubkey: input.senderPubkey }),
+        giftWrapSigner,
+        wrapParams
       )
     } catch (error) {
       selfCopyError =

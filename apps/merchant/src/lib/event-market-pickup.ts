@@ -22,6 +22,7 @@ export interface EnsureMerchantBoothPickupInput {
   location?: string
   geohash?: string
   country: string
+  onSignerRequest?: () => void
   storage?: Pick<Storage, "getItem" | "setItem"> | null
 }
 
@@ -169,6 +170,7 @@ export async function ensureMerchantBoothPickup(
   }
 
   let signedEvent: SignedPublicNostrEvent | null = null
+  input.onSignerRequest?.()
   const result = await publishEventMarketPickupOption({
     authorPubkey,
     pickup,

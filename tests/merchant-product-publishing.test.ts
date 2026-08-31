@@ -38,6 +38,7 @@ import {
   deliverSignedProductEvent,
   deliverSignedProductEventBundle,
   deliverSignedProductWriteBundle,
+  getProductSignerRequestCount,
   isDeliverableMerchantProductEvent,
   publishCanonicalProductEvents,
   resolveProductFulfillmentIntentForTarget,
@@ -247,6 +248,43 @@ afterEach(() => {
 })
 
 describe("merchant product event delivery", () => {
+  it("counts only the approval-bearing events in each product change bundle", () => {
+    const ordinary = {
+      product: makeProduct("ordinary"),
+      dTag: "ordinary",
+      fulfillmentIntent: { kind: "coordinate_after_order" as const },
+    }
+    const fixed = {
+      product: makeProduct("fixed"),
+      dTag: "fixed",
+      fulfillmentIntent: {
+        kind: "fixed_standard" as const,
+        amount: 5,
+        currency: "SATS",
+        countries: ["US"],
+      },
+    }
+    const deletion = buildProductRemovalDeletionTargets([
+      {
+        eventId: "d".repeat(64),
+        addressId: `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:removed`,
+        sourceRelayUrls: [],
+      },
+    ])
+
+    expect(getProductSignerRequestCount({ listings: [ordinary] })).toBe(1)
+    expect(getProductSignerRequestCount({ listings: [fixed] })).toBe(2)
+    expect(
+      getProductSignerRequestCount({
+        listings: [ordinary, fixed],
+        deletions: deletion,
+      })
+    ).toBe(4)
+    expect(
+      getProductSignerRequestCount({ listings: [], deletions: deletion })
+    ).toBe(1)
+  })
+
   for (const scenario of [
     {
       name: "multiple shipping option references",
@@ -638,6 +676,11 @@ describe("merchant product event delivery", () => {
   it("serializes family event approvals through a non-reentrant signer", async () => {
     const delegate = new NDKPrivateKeySigner(MERCHANT_SECRET)
     const signedKinds: number[] = []
+    const signerProgress: Array<{
+      kind: string
+      current: number
+      total: number
+    }> = []
     let signRequestInFlight = false
     const signer = {
       user: () => delegate.user(),
@@ -667,6 +710,9 @@ describe("merchant product event delivery", () => {
     const publishSpy = spyOn(NDKEvent.prototype, "publish").mockResolvedValue(
       new Set([{ url: "wss://relay.example/" }]) as never
     )
+    let signerRequestsCompleteCalls = 0
+    let signedKindsAtCompletion: number[] = []
+    let publishCallsAtCompletion = -1
 
     try {
       await signAndPublishProductWriteBundle({
@@ -681,6 +727,12 @@ describe("merchant product event delivery", () => {
             countries: ["US"],
           },
         })),
+        onSignerRequest: (progress) => signerProgress.push(progress),
+        onSignerRequestsComplete: () => {
+          signerRequestsCompleteCalls += 1
+          signedKindsAtCompletion = [...signedKinds]
+          publishCallsAtCompletion = publishSpy.mock.calls.length
+        },
         onSignedLocal: async () => {},
       })
 
@@ -690,6 +742,94 @@ describe("merchant product event delivery", () => {
         EVENT_KINDS.SHIPPING_OPTION,
         EVENT_KINDS.PRODUCT,
       ])
+      expect(signerProgress).toEqual([
+        { kind: "shipping", current: 1, total: 4 },
+        { kind: "product", current: 2, total: 4 },
+        { kind: "shipping", current: 3, total: 4 },
+        { kind: "product", current: 4, total: 4 },
+      ])
+      expect(signerRequestsCompleteCalls).toBe(1)
+      expect(signedKindsAtCompletion).toEqual(signedKinds)
+      expect(publishCallsAtCompletion).toBe(0)
+    } finally {
+      publishSpy.mockRestore()
+    }
+  })
+
+  it("does not dispatch the second product approval while the app is hidden", async () => {
+    const delegate = new NDKPrivateKeySigner(MERCHANT_SECRET)
+    const signedKinds: number[] = []
+    const signerProgress: Array<{
+      kind: string
+      current: number
+      total: number
+    }> = []
+    let visible = true
+    let restoreVisibility = () => {}
+    const visibleAgain = new Promise<void>((resolve) => {
+      restoreVisibility = resolve
+    })
+    let visibilityChecks = 0
+    setSigner({
+      user: () => delegate.user(),
+      sign: async (event: NostrEvent) => {
+        signedKinds.push(event.kind)
+        const signature = await delegate.sign(event)
+        if (event.kind === EVENT_KINDS.SHIPPING_OPTION) visible = false
+        return signature
+      },
+    } as NDKSigner)
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "author_event",
+        primaryRelayUrls: ["wss://relay.example"],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+    const publishSpy = spyOn(NDKEvent.prototype, "publish").mockResolvedValue(
+      new Set([{ url: "wss://relay.example/" }]) as never
+    )
+
+    try {
+      const publishing = signAndPublishProductWriteBundle({
+        merchantPubkey: MERCHANT_PUBKEY,
+        listings: [
+          {
+            product: makeProduct("hidden-between-approvals"),
+            dTag: "hidden-between-approvals",
+            fulfillmentIntent: {
+              kind: "fixed_standard",
+              amount: 5,
+              currency: "SATS",
+              countries: ["US"],
+            },
+          },
+        ],
+        onSignerRequest: (progress) => signerProgress.push(progress),
+        waitForSignerVisibility: async () => {
+          visibilityChecks += 1
+          if (!visible) await visibleAgain
+        },
+        onSignedLocal: async () => {},
+      })
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 0))
+      expect(signedKinds).toEqual([EVENT_KINDS.SHIPPING_OPTION])
+      expect(signerProgress).toEqual([
+        { kind: "shipping", current: 1, total: 2 },
+        { kind: "product", current: 2, total: 2 },
+      ])
+
+      visible = true
+      restoreVisibility()
+      await publishing
+
+      expect(signedKinds).toEqual([
+        EVENT_KINDS.SHIPPING_OPTION,
+        EVENT_KINDS.PRODUCT,
+      ])
+      expect(visibilityChecks).toBe(2)
     } finally {
       publishSpy.mockRestore()
     }

@@ -27,6 +27,7 @@ import {
 import {
   deliverSignedProductEvent,
   signAndPublishProductListing,
+  type ProductSignerRequestProgress,
 } from "./product-publishing"
 import { parseProductStockInput } from "./productStock"
 
@@ -181,6 +182,7 @@ export async function publishEventProduct(input: {
   marketReference: string
   form: EventProductPublishFormValues
   onSignedLocal?: (event: NDKEvent) => void | Promise<void>
+  onSignerRequest?: (progress: ProductSignerRequestProgress) => void
 }): Promise<EventProductPublishResult> {
   const validation = validateEventProductPublishForm(input.form)
   if (!validation.canPublish) {
@@ -193,6 +195,7 @@ export async function publishEventProduct(input: {
     input.merchantPubkey
   )
   const dTag = `${slugify(input.form.title) || "product"}-${randomSuffix()}`
+  let signerRequestOffset = 0
   const pickupMetadata =
     input.form.handoffMode === "organizer_handoff"
       ? buildProductLocalPickupMetadata(market, {
@@ -207,6 +210,14 @@ export async function publishEventProduct(input: {
               title: "Merchant pickup",
               location: input.form.merchantPickupLocation.trim(),
               country: input.form.merchantPickupCountry.trim().toUpperCase(),
+              onSignerRequest: () => {
+                signerRequestOffset = 1
+                input.onSignerRequest?.({
+                  kind: "shipping",
+                  current: 1,
+                  total: 2,
+                })
+              },
             })
           ).coordinate,
         })
@@ -242,6 +253,12 @@ export async function publishEventProduct(input: {
     product,
     dTag,
     fulfillmentIntent: { kind: "coordinate_after_order" },
+    onSignerRequest: (progress) =>
+      input.onSignerRequest?.({
+        ...progress,
+        current: progress.current + signerRequestOffset,
+        total: progress.total + signerRequestOffset,
+      }),
     onSignedLocal: async (event) => {
       await input.onSignedLocal?.(event)
     },

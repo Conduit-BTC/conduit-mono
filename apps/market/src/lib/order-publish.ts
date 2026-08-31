@@ -59,6 +59,7 @@ type BuyerOrderIdentityInput = string | BuyerOrderSigningIdentity
 type BuyerOrderPublishDependencies = {
   publishPrivateMessageFn?: typeof publishPrivateMessage
   cacheBuyerOrderRumorFn?: typeof cacheBuyerOrderRumor
+  signerInteraction?: "external" | "background_external"
 }
 
 function getErrorMessage(error: unknown, fallback: string): string {
@@ -171,6 +172,10 @@ async function publishOrderCompanionNotification(input: {
       signer: input.buyerIdentity.signer,
       rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
       selfCopy: false,
+      signerInteraction:
+        input.buyerIdentity.kind === "guest_ephemeral"
+          ? "application_owned"
+          : "background_external",
       ...(guestCompanion
         ? { validatedGuestOrderCompanionScope: guestCompanion.scope }
         : {}),
@@ -240,6 +245,10 @@ export async function publishBuyerOrderMessage(
     signer: buyerIdentity.signer,
     rumorKind: EVENT_KINDS.ORDER,
     selfCopy: buyerIdentity.kind !== "guest_ephemeral",
+    signerInteraction:
+      buyerIdentity.kind === "guest_ephemeral"
+        ? "application_owned"
+        : (dependencies.signerInteraction ?? "external"),
     // Checkout-created kind-16 orders are locally validated, so the merchant
     // leg may use the bounded compatibility route when the merchant has
     // no usable NIP-17 declaration (CND-208). Guest orders gain no reply

@@ -2,6 +2,7 @@ import { NDKEvent, nip19, type NDKFilter } from "@nostr-dev-kit/ndk"
 import { db, type CachedEventMarketEvidence } from "../db"
 import type { ProductSchema } from "../schemas"
 import { EVENT_KINDS } from "./kinds"
+import { waitForVisibleDocument } from "./interactive-signer"
 import {
   fetchEventsFanoutDetailed,
   getEventSourceRelayUrls,
@@ -3943,6 +3944,7 @@ export interface PublishOrganizerEventMarketInput {
     record: OrganizerEventMarketSignedEvent
   ) => void | Promise<void>
   onSignedRecord?: (record: OrganizerEventMarketSignedRecord) => void
+  waitForSignerVisibility?: () => Promise<void>
   now?: () => number
 }
 
@@ -3966,6 +3968,7 @@ export interface PublishEventMarketPickupOptionInput {
     record: OrganizerEventMarketSignedEvent
   ) => void | Promise<void>
   onSignedRecord?: (record: OrganizerEventMarketSignedRecord) => void
+  waitForSignerVisibility?: () => Promise<void>
   now?: () => number
 }
 
@@ -4300,6 +4303,9 @@ export async function publishOrganizerEventMarket(
     input.previousCreatedAtByRecord?.collection ?? input.previousCreatedAt,
     now
   )
+  const waitForSignerVisibility =
+    input.waitForSignerVisibility ?? waitForVisibleDocument
+  await waitForSignerVisibility()
   const calendarSigned = await signEventMarketDraft({
     draft: calendarDraft,
     createdAt: calendarCreatedAt,
@@ -4309,16 +4315,19 @@ export async function publishOrganizerEventMarket(
     record: "calendar",
     signedEvent: calendarSigned,
   })
-  const pickupSigned = pickupDraft
-    ? await signEventMarketDraft({
-        draft: pickupDraft,
-        createdAt: pickupCreatedAt,
-        organizerPubkey,
-      })
-    : null
+  let pickupSigned: SignedPublicNostrEvent | null = null
+  if (pickupDraft) {
+    await waitForSignerVisibility()
+    pickupSigned = await signEventMarketDraft({
+      draft: pickupDraft,
+      createdAt: pickupCreatedAt,
+      organizerPubkey,
+    })
+  }
   if (pickupSigned) {
     await input.onSignedEvent?.({ record: "pickup", signedEvent: pickupSigned })
   }
+  await waitForSignerVisibility()
   const collectionSigned = await signEventMarketDraft({
     draft: collectionDraft,
     createdAt: collectionCreatedAt,
@@ -4393,6 +4402,7 @@ export async function publishEventMarketPickupOption(
 ): Promise<OrganizerEventMarketSignedRecord> {
   const authorPubkey = normalizePubkey(input.authorPubkey)
   if (!authorPubkey) throw new Error("Pickup author pubkey is invalid.")
+  await (input.waitForSignerVisibility ?? waitForVisibleDocument)()
   const signedEvent = await signEventMarketDraft({
     draft: pickupPublishDraft(input.pickup),
     createdAt: nextReplaceableCreatedAt(
