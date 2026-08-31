@@ -18,44 +18,59 @@ Shared product fulfillment intent has exactly three launch states:
 - `digital`: shipping is not required
 - `coordinate_after_order`: the buyer sends an order before shipping and
   payment are agreed
-- `fixed_standard`: one product-scoped standard option has a known price,
-  currency, and country-level destinations
+- `fixed_standard`: one or more product-scoped standard options each have a
+  known price, currency, and destination policy
 
 Merchant's "use preset destinations" and "custom destinations" controls are
-authoring inputs only. Given the same amount, currency, and countries, both
-compile to the same `fixed_standard` intent and the same public event shape.
-Custom destinations do not depend on a merchant preset.
+authoring inputs only. Destinations with the same amount and currency compile
+into one rate group; different rates compile into separate options. Given the
+same complete destination and rate configuration, presets and custom
+destinations compile to the same `fixed_standard` intent and public event
+shape. Custom destinations do not depend on a merchant preset.
 
-Postal-prefix restrictions cannot be represented by this launch writer.
-Merchant must remove those restrictions or use `coordinate_after_order`.
+Production and staging authoring remain country-level. Detailed subdivision or
+postal constraints use the versioned `destination_schema=1` grammar and are
+enabled only in the preview deployment profile. Elsewhere, Merchant must
+remove those constraints or use `coordinate_after_order`.
 
 ## Canonical fixed writer
 
 For a fixed physical product with product `d` tag `<product-d>`, Merchant
-prepares a product-scoped kind `30406` whose `d` tag is
-`<product-d>-shipping-standard`.
-
-The event contains:
+prepares one product-scoped kind `30406` per canonical destination-policy and
+rate group. A single country-level group that uses the product fallback amount
+keeps the legacy-compatible `d` tag `<product-d>-shipping-standard`. Other
+groups use a deterministic `d` tag whose suffix is derived from the canonical
+destination policy:
 
 ```text
-["d", "<product-d>-shipping-standard"]
+<product-d>-shipping-standard-<policy-hash>
+```
+
+Each event contains:
+
+```text
+["d", "<shipping-option-d>"]
 ["title", "Standard Shipping"]
 ["price", "<actual amount>", "<actual currency>"]
 ["country", "<ISO 3166-1 alpha-2>", "..."]
 ["service", "standard"]
 ```
 
-The event does not contain carrier, region, pickup, postal-prefix, package,
-duration, live-rate, or calculated-price fields in this launch slice.
+Preview-only detailed policies additionally contain
+`["destination_schema", "1"]` and typed `destination` tags. Fixed shipping
+does not contain carrier, pickup, package, duration, live-rate, or
+calculated-price fields in this launch slice.
 
-Merchant signs both events, publishes kind `30406` first, and waits for at
-least one positive NIP-01 relay `OK` acknowledgement. Only then may it publish
-the referencing kind `30402`.
+Merchant signs the shipping options and product, publishes every kind `30406`
+sequentially, and waits for at least one positive NIP-01 relay `OK`
+acknowledgement for each option. Merchant durably retains each acknowledged
+signed option and its acknowledgement relay provenance before publishing the
+referencing kind `30402`.
 
-The product event contains exactly:
+The product event contains one exact two-field tag per option:
 
 ```text
-["shipping_option", "30406:<merchant-pubkey>:<product-d>-shipping-standard"]
+["shipping_option", "30406:<merchant-pubkey>:<shipping-option-d>"]
 ```
 
 New product writes do not emit:
@@ -64,9 +79,9 @@ New product writes do not emit:
   `shipping_exclude` tags
 - Gamma's optional product-level shipping extra-cost value
 
-Publishing the fixed option without an acknowledgement fails the product write.
-If the option is acknowledged but the product delivery fails, retry may deliver
-the already-signed product event without creating another option identity.
+Failure to acknowledge or retain any fixed option stops the product write. If
+all options are acknowledged but product delivery fails, retry may deliver the
+already-signed product event without creating another option identity.
 
 ### Canonical withdrawal
 
@@ -74,7 +89,7 @@ A canonical withdrawal of a product-scoped shipping option is a same-author
 NIP-09 kind `5` event containing:
 
 ```text
-["a", "30406:<merchant-pubkey>:<product-d>-shipping-standard"]
+["a", "30406:<merchant-pubkey>:<shipping-option-d>"]
 ["k", "30406"]
 ```
 
@@ -85,6 +100,12 @@ bounded reader cannot recover its coordinate and cannot prove that an older
 event returned for that coordinate remains active. Address provenance lets
 Market keep the coordinate withdrawn even when the latest `30406` itself is no
 longer visible.
+
+An edit, removed variation, or full product-family deletion must withdraw every
+obsolete exact shipping-option coordinate. Merchant freezes the acknowledged
+option relays, observed source relays, and current write relays into the durable
+deletion outbox before delivery so a later reload or relay-list change cannot
+narrow the withdrawal plan.
 
 ## Resolution and prepared state
 
@@ -131,8 +152,8 @@ agreed fixed cost.
 
 This launch slice does not define:
 
-- postal-prefix constraints
-- multiple selectable methods
+- postal-prefix constraints outside the preview-only versioned grammar
+- multiple buyer-selectable service methods
 - carriers or live rates
 - package aggregation or per-order pricing
 - collections or third-party option providers

@@ -1,14 +1,16 @@
 import {
   canonicalizeProductPrice,
-  getProductShippingOptionAddress,
+  getFixedShippingOptionAddresses,
   type ProductFulfillmentIntent,
   type ProductImage,
   type ProductSchema,
 } from "@conduit/core"
 import {
+  canonicalizeProductShippingCost,
   formatProductAmountInput,
   isPlainDecimalInput,
   normalizePublishableProductPrice,
+  normalizePublishableProductShippingCost,
   parsePlainDecimalAmount,
 } from "./productPriceForm"
 import {
@@ -882,9 +884,12 @@ export function getProductVariationFormError(
     }
     if (!row.inheritShipping && row.shippingCost.trim()) {
       try {
-        parsePlainDecimalAmount(
-          row.shippingCost,
-          `${getCombinationLabel(row.specifications)} shipping cost`
+        normalizePublishableProductShippingCost(
+          parsePlainDecimalAmount(
+            row.shippingCost,
+            `${getCombinationLabel(row.specifications)} shipping cost`
+          ),
+          currency
         )
       } catch (error) {
         return error instanceof Error
@@ -961,8 +966,14 @@ function getShippingProjection(product: ProductSchema) {
     shippingOptionDTag: product.shippingOptionDTag,
     shippingOptionRefs: product.shippingOptionRefs,
     collectionRefs: product.collectionRefs,
+    shippingOptionIds: product.shippingOptionIds,
+    shippingOptionDTags: product.shippingOptionDTags,
+    shippingOptionLaunchUnsupported: product.shippingOptionLaunchUnsupported,
     shippingCountries: product.shippingCountries,
     shippingCountryRules: product.shippingCountryRules,
+    shippingZones: product.shippingZones,
+    canonicalShippingResolved: product.canonicalShippingResolved,
+    shippingOptionCreatedAt: product.shippingOptionCreatedAt,
   }
 }
 
@@ -1117,7 +1128,8 @@ export function getProductVariationFormState<
             ? ""
             : formatProductAmountInput(shippingAmount),
         inheritShipping,
-        ...(variation.product.shippingOptionId &&
+        ...((variation.product.shippingOptionId ||
+          variation.product.shippingOptionIds?.length) &&
         variationShippingIntent === null
           ? { shippingResolution: "unresolved" as const }
           : {}),
@@ -1294,8 +1306,14 @@ function copyShippingProjection(
     "shippingOptionDTag",
     "shippingOptionRefs",
     "collectionRefs",
+    "shippingOptionIds",
+    "shippingOptionDTags",
+    "shippingOptionLaunchUnsupported",
     "shippingCountries",
     "shippingCountryRules",
+    "shippingZones",
+    "canonicalShippingResolved",
+    "shippingOptionCreatedAt",
   ] as const) {
     if (projection[key] === undefined) {
       delete next[key]
@@ -1378,25 +1396,27 @@ function buildVariationProduct(
   if (row.inheritShipping) {
     product = copyShippingProjection(product, getShippingProjection(parent))
   } else if (row.shippingCost.trim()) {
-    const amount = parsePlainDecimalAmount(
-      row.shippingCost,
-      `${row.label} shipping cost`
+    const amount = normalizePublishableProductShippingCost(
+      parsePlainDecimalAmount(row.shippingCost, `${row.label} shipping cost`),
+      currency
     )
-    product = {
-      ...product,
-      shippingCostSats:
-        currency.trim().toUpperCase() === "SATS"
-          ? Math.round(amount)
-          : undefined,
-      sourceShippingCost:
-        currency.trim().toUpperCase() === "SATS"
-          ? undefined
-          : {
-              amount,
-              currency,
-              normalizedCurrency: currency.trim().toUpperCase(),
-            },
-    }
+    const shippingCost = canonicalizeProductShippingCost(amount, currency)
+    product = copyShippingProjection(product, {
+      shippingCostSats: shippingCost.shippingCostSats,
+      sourceShippingCost: shippingCost.sourceShippingCost,
+      shippingOptionId: undefined,
+      shippingOptionDTag: undefined,
+      shippingOptionRefs: undefined,
+      collectionRefs: undefined,
+      shippingOptionIds: undefined,
+      shippingOptionDTags: undefined,
+      shippingOptionLaunchUnsupported: undefined,
+      shippingCountries: product.shippingCountries,
+      shippingCountryRules: product.shippingCountryRules,
+      shippingZones: undefined,
+      canonicalShippingResolved: false,
+      shippingOptionCreatedAt: undefined,
+    })
   } else {
     product = copyShippingProjection(product, {
       shippingCostSats: undefined,
@@ -1405,8 +1425,14 @@ function buildVariationProduct(
       shippingOptionDTag: undefined,
       shippingOptionRefs: undefined,
       collectionRefs: undefined,
+      shippingOptionIds: undefined,
+      shippingOptionDTags: undefined,
+      shippingOptionLaunchUnsupported: undefined,
       shippingCountries: undefined,
       shippingCountryRules: undefined,
+      shippingZones: undefined,
+      canonicalShippingResolved: false,
+      shippingOptionCreatedAt: undefined,
     })
   }
 
@@ -1450,16 +1476,32 @@ export function buildProductFamilyChangePlan<
     product: ProductSchema,
     existing: TRecord | undefined,
     fallbackIntent: ProductFulfillmentIntent = input.fulfillmentIntent
-  ): ProductFamilyPublishTarget<TRecord> => ({
-    dTag,
-    product,
-    fulfillmentIntent: resolveProductFulfillmentIntentForTarget({
+  ): ProductFamilyPublishTarget<TRecord> => {
+    const fulfillmentIntent = resolveProductFulfillmentIntentForTarget({
       product,
       fallbackIntent,
       authoringCountries: input.authoringCountries,
-    }),
-    existing,
-  })
+    })
+    const existingFulfillmentIntent = existing
+      ? resolvePublishedProductFulfillmentIntentForTarget(existing.product)
+      : null
+    const publicationProduct =
+      fulfillmentIntent.kind === "fixed_standard" &&
+      existingFulfillmentIntent?.kind === "fixed_standard" &&
+      existing?.product.collectionRefs?.length
+        ? {
+            ...product,
+            collectionRefs: [...existing.product.collectionRefs],
+          }
+        : product
+
+    return {
+      dTag,
+      product: publicationProduct,
+      fulfillmentIntent,
+      existing,
+    }
+  }
 
   const parentProduct: ProductSchema = {
     ...input.baseProduct,
@@ -1529,7 +1571,7 @@ export function buildProductFamilyChangePlan<
       !!dTag &&
       desiredDTags.has(dTag) &&
       !safeReplacementShippingDTags.has(dTag) &&
-      !!product.shippingOptionId &&
+      !!(product.shippingOptionId || product.shippingOptionIds?.length) &&
       resolvePublishedProductFulfillmentIntentForTarget(product) === null
   )
   if (unresolvedExistingShipping) {
@@ -1543,17 +1585,22 @@ export function buildProductFamilyChangePlan<
       resolvePublishedProductFulfillmentIntentForTarget(target.existing.product)
     if (!existingFulfillmentIntent) return true
     if (existingFulfillmentIntent.kind === "fixed_standard") {
-      if (
-        target.existing.product.shippingOptionId !==
-        getProductShippingOptionAddress(
-          target.existing.product.pubkey,
-          target.existing.dTag
-        )
-      ) {
+      const actualIds = target.existing.product.shippingOptionIds?.length
+        ? target.existing.product.shippingOptionIds
+        : target.existing.product.shippingOptionId
+          ? [target.existing.product.shippingOptionId]
+          : []
+      const expectedIds = getFixedShippingOptionAddresses(
+        target.existing.product.pubkey,
+        target.existing.dTag,
+        existingFulfillmentIntent
+      )
+      if (JSON.stringify(actualIds) !== JSON.stringify(expectedIds)) {
         return true
       }
     } else if (
       target.existing.product.shippingOptionId ||
+      target.existing.product.shippingOptionIds?.length ||
       typeof target.existing.product.sourceShippingCost?.amount === "number" ||
       typeof target.existing.product.shippingCostSats === "number" ||
       (target.existing.product.shippingCountries?.length ?? 0) > 0 ||

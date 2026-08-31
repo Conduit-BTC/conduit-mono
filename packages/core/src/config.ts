@@ -116,6 +116,8 @@ export interface ConduitConfig {
   dmCompatibilityOrderRelayUrls: string[]
   /** Redeploy-controlled flag for the validated-order compatibility lane. */
   dmCompatibilityOrderRoutingEnabled: boolean
+  /** Redeploy-controlled preview for versioned destination predicates. */
+  destinationPolicyV1Enabled: boolean
   zapRelayUrls: string[]
   cacheApiUrl: string | null
   lightningNetwork: "mainnet" | "signet" | "testnet" | "mock"
@@ -143,6 +145,7 @@ function getViteEnv(): {
   cacheApiUrl: string
   lightningNetwork: string
   dmCompatibilityOrderRouting: string
+  destinationPolicyV1: string
   nip89RelayHint: string
   nip89MarketPubkey: string
   nip89MerchantPubkey: string
@@ -165,6 +168,7 @@ function getViteEnv(): {
       lightningNetwork: import.meta.env.VITE_LIGHTNING_NETWORK ?? "",
       dmCompatibilityOrderRouting:
         import.meta.env.VITE_DM_BOOTSTRAP_WRITES ?? "",
+      destinationPolicyV1: import.meta.env.VITE_DESTINATION_POLICY_V1 ?? "",
       nip89RelayHint: import.meta.env.VITE_NIP89_RELAY_HINT ?? "",
       nip89MarketPubkey: import.meta.env.VITE_NIP89_MARKET_PUBKEY ?? "",
       nip89MerchantPubkey: import.meta.env.VITE_NIP89_MERCHANT_PUBKEY ?? "",
@@ -186,6 +190,7 @@ function getViteEnv(): {
     cacheApiUrl: "",
     lightningNetwork: "",
     dmCompatibilityOrderRouting: "",
+    destinationPolicyV1: "",
     nip89RelayHint: "",
     nip89MarketPubkey: "",
     nip89MerchantPubkey: "",
@@ -440,6 +445,9 @@ const dmCompatibilityOrderRelayUrls = uniqueConfiguredRelayUrls(
 const dmCompatibilityOrderRoutingEnabled = ["1", "true", "on"].includes(
   env.dmCompatibilityOrderRouting.trim().toLowerCase()
 )
+const destinationPolicyV1Enabled = ["1", "true", "on"].includes(
+  env.destinationPolicyV1.trim().toLowerCase()
+)
 const zapRelayUrls = uniqueConfiguredRelayUrls(CANONICAL_ZAP_PUBLIC_RELAYS)
 const commerceRelayUrls = uniqueConfiguredRelayUrls([
   ...appWriteRelayUrls,
@@ -474,6 +482,7 @@ const configuredRelayConfig: ConduitConfig = {
   dmInboxDefaultRelayUrls,
   dmCompatibilityOrderRelayUrls,
   dmCompatibilityOrderRoutingEnabled,
+  destinationPolicyV1Enabled,
   zapRelayUrls,
   cacheApiUrl: env.cacheApiUrl.trim() || null,
   lightningNetwork: (env.lightningNetwork ||

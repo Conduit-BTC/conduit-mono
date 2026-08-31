@@ -6,6 +6,7 @@ export type DeploymentProfileName = "preview" | "production" | "staging"
 
 export interface PublicDeploymentFeatures {
   dmCompatibilityOrderRoutingEnabled: boolean
+  destinationPolicyV1Enabled: boolean
 }
 
 export interface PublicDeploymentProfile {
@@ -78,12 +79,19 @@ function assertProfile(
       `Deployment profile ${name} has an invalid lightningNetwork.`
     )
   }
+  if (!isRecord(value.publicFeatures)) {
+    throw new Error(`Deployment profile ${name} must define public features.`)
+  }
   if (
-    !isRecord(value.publicFeatures) ||
     typeof value.publicFeatures.dmCompatibilityOrderRoutingEnabled !== "boolean"
   ) {
     throw new Error(
       `Deployment profile ${name} must explicitly set dmCompatibilityOrderRoutingEnabled.`
+    )
+  }
+  if (typeof value.publicFeatures.destinationPolicyV1Enabled !== "boolean") {
+    throw new Error(
+      `Deployment profile ${name} must explicitly set destinationPolicyV1Enabled.`
     )
   }
 }
@@ -147,6 +155,9 @@ export function resolveDeploymentProfile(
       publicFeatures: {
         dmCompatibilityOrderRoutingEnabled: ["1", "true", "on"].includes(
           env.VITE_DM_BOOTSTRAP_WRITES?.trim().toLowerCase() ?? ""
+        ),
+        destinationPolicyV1Enabled: ["1", "true", "on"].includes(
+          env.VITE_DESTINATION_POLICY_V1?.trim().toLowerCase() ?? ""
         ),
       },
     }

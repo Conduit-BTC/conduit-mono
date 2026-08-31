@@ -11,12 +11,16 @@ import {
   __setRelayListTestOverrides,
   __setShippingTestOverrides,
   buildFixedShippingOptionEventDraft,
+  buildFixedShippingOptionEventDrafts,
   buildProductListingEventDraft,
   buildShippingOptionDeletionEventDraft,
   buildShippingOptionReadBatches,
+  cacheSignedShippingOptionEvent,
   compileProductFulfillmentIntent,
+  getCachedShippingOptionSourceRelayUrls,
   getShippingOptionsByCoordinates,
   getProductShippingOptionAddress,
+  getProductShippingZoneAddress,
   isBuyerCountryEligible,
   parseProductEvent,
   parseShippingOptionEvent,
@@ -28,6 +32,7 @@ import {
   type CachedProductTombstone,
   type ShippingDeletionFallbackStorage,
 } from "@conduit/core"
+import { attachEventSourceRelayUrl } from "../packages/core/src/protocol/ndk"
 
 const MERCHANT = "a".repeat(64)
 const OTHER_MERCHANT = "b".repeat(64)
@@ -89,6 +94,223 @@ function shippingOption(
 }
 
 describe("canonical fixed product shipping", () => {
+  it("groups equal destination rates and selects one exact zone", () => {
+    const intent = compileProductFulfillmentIntent({
+      format: "physical",
+      shippingPricingMode: "fixed",
+      currency: "SATS",
+      destinations: [
+        {
+          code: "US",
+          name: "United States",
+          restrictTo: [],
+          exclude: [],
+          rate: { amount: 5_000, currency: "SATS" },
+        },
+        {
+          code: "DE",
+          name: "Germany",
+          restrictTo: [],
+          exclude: [],
+          rate: { amount: 9_000, currency: "SATS" },
+        },
+        {
+          code: "FR",
+          name: "France",
+          restrictTo: [],
+          exclude: [],
+          rate: { amount: 9_000, currency: "SATS" },
+        },
+      ],
+    })
+    if (intent.kind !== "fixed_standard") {
+      throw new Error("Expected fixed shipping")
+    }
+
+    expect(intent.zones).toHaveLength(2)
+    expect(intent.zones).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ amount: 5_000, countries: ["US"] }),
+        expect.objectContaining({ amount: 9_000, countries: ["DE", "FR"] }),
+      ])
+    )
+    const drafts = buildFixedShippingOptionEventDrafts({
+      productDTag: PRODUCT_D_TAG,
+      intent,
+    })
+    expect(drafts).toHaveLength(2)
+
+    const ids = intent.zones.map((zone) =>
+      getProductShippingZoneAddress(MERCHANT, PRODUCT_D_TAG, zone)
+    )
+    const options = intent.zones.map((zone, index) =>
+      shippingOption({
+        eventId: `zone-${index}`,
+        id: ids[index],
+        dTag: ids[index]!.split(":").slice(2).join(":"),
+        currency: zone.currency,
+        price: zone.amount,
+        countries: zone.countries,
+        countryRules: zone.countryRules,
+      })
+    )
+    const zonedProduct = product({
+      currency: "SATS",
+      sourcePrice: {
+        amount: 20_000,
+        currency: "SATS",
+        normalizedCurrency: "SATS",
+      },
+      shippingOptionId: ids[0],
+      shippingOptionIds: ids,
+    })
+    expect(
+      resolveProductFulfillment(zonedProduct, options, {
+        country: "US",
+        postalCode: "02139",
+      })
+    ).toMatchObject({
+      status: "ready",
+      option: { price: 5_000, countries: ["US"] },
+    })
+  })
+
+  it("fails closed when missing destination detail could change the selected rate", () => {
+    const allUsId = getProductShippingOptionAddress(MERCHANT, "field-notes-us")
+    const texasId = getProductShippingOptionAddress(MERCHANT, "field-notes-tx")
+    const options = [
+      shippingOption({
+        eventId: "all-us",
+        id: allUsId,
+        dTag: "field-notes-us",
+        price: 9,
+        countries: ["US"],
+        countryRules: [{ code: "US", name: "US", restrictTo: [], exclude: [] }],
+      }),
+      shippingOption({
+        eventId: "texas",
+        id: texasId,
+        dTag: "field-notes-tx",
+        price: 5,
+        countries: ["US"],
+        countryRules: [
+          {
+            code: "US",
+            name: "US",
+            restrictTo: [],
+            exclude: [],
+            includeSubdivisions: ["US-TX"],
+          },
+        ],
+        destinationSchema: "1",
+      }),
+    ]
+    const zonedProduct = product({
+      shippingOptionId: allUsId,
+      shippingOptionIds: [allUsId, texasId],
+    })
+
+    expect(
+      resolveProductFulfillment(zonedProduct, options, {
+        country: "US",
+        postalCode: "78701",
+      })
+    ).toMatchObject({
+      status: "order_first",
+      reason: "destination_incomplete",
+    })
+    expect(
+      resolveProductFulfillment(zonedProduct, options, {
+        country: "US",
+        state: "TX",
+        postalCode: "78701",
+      })
+    ).toMatchObject({
+      status: "order_first",
+      reason: "ambiguous_destination",
+    })
+  })
+
+  it("selects disjoint postal zones in the same country without guessing", () => {
+    const texasId = getProductShippingOptionAddress(MERCHANT, "field-notes-tx")
+    const californiaId = getProductShippingOptionAddress(
+      MERCHANT,
+      "field-notes-ca"
+    )
+    const options = [
+      shippingOption({
+        eventId: "texas-postal",
+        id: texasId,
+        dTag: "field-notes-tx",
+        price: 5,
+        countries: ["US"],
+        countryRules: [
+          {
+            code: "US",
+            name: "US",
+            restrictTo: ["787*"],
+            exclude: [],
+          },
+        ],
+        destinationSchema: "1",
+      }),
+      shippingOption({
+        eventId: "california-postal",
+        id: californiaId,
+        dTag: "field-notes-ca",
+        price: 9,
+        countries: ["US"],
+        countryRules: [
+          {
+            code: "US",
+            name: "US",
+            restrictTo: ["902*"],
+            exclude: [],
+          },
+        ],
+        destinationSchema: "1",
+      }),
+    ]
+    const zonedProduct = product({
+      shippingOptionId: texasId,
+      shippingOptionIds: [texasId, californiaId],
+    })
+
+    expect(
+      resolveProductFulfillment(zonedProduct, options, {
+        country: "US",
+        postalCode: "78701",
+      })
+    ).toMatchObject({ status: "ready", option: { id: texasId, price: 5 } })
+    expect(
+      resolveProductFulfillment(zonedProduct, options, {
+        country: "US",
+        postalCode: "90210",
+      })
+    ).toMatchObject({
+      status: "ready",
+      option: { id: californiaId, price: 9 },
+    })
+    expect(
+      resolveProductFulfillment(zonedProduct, options, {
+        country: "US",
+        postalCode: "",
+      })
+    ).toMatchObject({
+      status: "order_first",
+      reason: "destination_incomplete",
+    })
+    expect(
+      resolveProductFulfillment(zonedProduct, options, {
+        country: "US",
+        postalCode: "10001",
+      })
+    ).toMatchObject({
+      status: "order_first",
+      reason: "destination_unsupported",
+    })
+  })
+
   it("compiles the three shared fulfillment intents", () => {
     expect(
       compileProductFulfillmentIntent({
@@ -124,10 +346,65 @@ describe("canonical fixed product shipping", () => {
       })
     ).toEqual({
       kind: "fixed_standard",
-      amount: 5,
-      currency: "USD",
-      countries: ["US"],
+      zones: [
+        {
+          amount: 5,
+          currency: "USD",
+          countries: ["US"],
+          countryRules: [
+            {
+              code: "US",
+              name: "United States",
+              restrictTo: [],
+              exclude: [],
+            },
+          ],
+          usesProductFallback: true,
+        },
+      ],
     })
+  })
+
+  it("rejects fixed rates that cannot be represented exactly or safely", () => {
+    const destination = {
+      code: "US",
+      name: "United States",
+      restrictTo: [] as string[],
+      exclude: [] as string[],
+    }
+    for (const [amount, currency] of [
+      [1.5, "SATS"],
+      [1.001, "USD"],
+      [Number.MAX_SAFE_INTEGER, "USD"],
+    ] as const) {
+      expect(() =>
+        compileProductFulfillmentIntent({
+          format: "physical",
+          shippingPricingMode: "fixed",
+          amount,
+          currency,
+          destinations: [destination],
+        })
+      ).toThrow()
+    }
+
+    expect(() =>
+      buildFixedShippingOptionEventDrafts({
+        productDTag: PRODUCT_D_TAG,
+        intent: {
+          kind: "fixed_standard",
+          zones: [
+            {
+              amount: 1.5,
+              currency: "SATS",
+              countries: ["US"],
+              countryRules: [destination],
+              usesProductFallback: true,
+            },
+          ],
+        },
+      })
+    ).toThrow("at most 0 decimal places")
   })
 
   it("canonicalizes equivalent destination sets to one wire order", () => {
@@ -179,7 +456,9 @@ describe("canonical fixed product shipping", () => {
     })
 
     expect(presetIntent).toEqual(customIntent)
-    expect(presetIntent).toMatchObject({ countries: ["CA", "US"] })
+    expect(presetIntent).toMatchObject({
+      zones: [{ countries: ["CA", "US"] }],
+    })
     if (
       presetIntent.kind !== "fixed_standard" ||
       customIntent.kind !== "fixed_standard"
@@ -202,9 +481,18 @@ describe("canonical fixed product shipping", () => {
   it("emits one complete Gamma option and one exact two-field product reference", () => {
     const intent = {
       kind: "fixed_standard" as const,
-      amount: 5,
-      currency: "USD",
-      countries: ["US", "CA"],
+      zones: [
+        {
+          amount: 5,
+          currency: "USD",
+          countries: ["CA", "US"],
+          countryRules: [
+            { code: "CA", name: "CA", restrictTo: [], exclude: [] },
+            { code: "US", name: "US", restrictTo: [], exclude: [] },
+          ],
+          usesProductFallback: true,
+        },
+      ],
     }
     const shippingDraft = buildFixedShippingOptionEventDraft({
       productDTag: PRODUCT_D_TAG,
@@ -219,7 +507,7 @@ describe("canonical fixed product shipping", () => {
       ["d", `${PRODUCT_D_TAG}-shipping-standard`],
       ["title", "Standard Shipping"],
       ["price", "5", "USD"],
-      ["country", "US", "CA"],
+      ["country", "CA", "US"],
       ["service", "standard"],
     ])
     expect(productDraft.tags).toContainEqual([
@@ -251,9 +539,17 @@ describe("canonical fixed product shipping", () => {
         productDTag: PRODUCT_D_TAG,
         intent: {
           kind: "fixed_standard",
-          amount,
-          currency,
-          countries: ["US"],
+          zones: [
+            {
+              amount,
+              currency,
+              countries: ["US"],
+              countryRules: [
+                { code: "US", name: "US", restrictTo: [], exclude: [] },
+              ],
+              usesProductFallback: true,
+            },
+          ],
         },
       })
 
@@ -320,7 +616,7 @@ describe("canonical fixed product shipping", () => {
     ).toMatchObject({ status: "order_first", reason: "conflicting" })
   })
 
-  it("fails closed for product extra-cost and multiple option references", () => {
+  it("rejects extra-cost references and preserves repeated exact options", () => {
     const extraCostProduct = parseProductEvent({
       id: "extra-cost-product",
       pubkey: MERCHANT,
@@ -351,15 +647,33 @@ describe("canonical fixed product shipping", () => {
         ],
       ],
     })
+    const paddedReferenceProduct = parseProductEvent({
+      id: "padded-reference-product",
+      pubkey: MERCHANT,
+      created_at: 2,
+      content: "Padded reference listing",
+      tags: [
+        ["d", PRODUCT_D_TAG],
+        ["title", "Field Notes"],
+        ["price", "20", "USD"],
+        ["type", "simple", "physical"],
+        ["shipping_option", ` ${SHIPPING_COORDINATE}`],
+      ],
+    })
 
     expect(extraCostProduct.shippingOptionLaunchUnsupported).toBe(true)
-    expect(multipleOptionsProduct.shippingOptionLaunchUnsupported).toBe(true)
+    expect(paddedReferenceProduct.shippingOptionLaunchUnsupported).toBe(true)
+    expect(multipleOptionsProduct.shippingOptionLaunchUnsupported).toBe(false)
+    expect(multipleOptionsProduct.shippingOptionIds).toEqual([
+      SHIPPING_COORDINATE,
+      getProductShippingOptionAddress(MERCHANT, "express"),
+    ])
     expect(
       resolveProductFulfillment(extraCostProduct, [shippingOption()])
     ).toMatchObject({ status: "order_first", reason: "unsupported" })
     expect(
       resolveProductFulfillment(multipleOptionsProduct, [shippingOption()])
-    ).toMatchObject({ status: "order_first", reason: "unsupported" })
+    ).toMatchObject({ status: "order_first", reason: "unresolved" })
   })
 
   it("requires all Gamma launch fields and lets malformed latest events mask older state", () => {
@@ -413,6 +727,12 @@ describe("canonical fixed product shipping", () => {
       ["whitespace price", replaceTag("price", ["price", " ", "USD"])],
       ["hex price", replaceTag("price", ["price", "0x10", "USD"])],
       ["scientific price", replaceTag("price", ["price", "5e1", "USD"])],
+      ["fiat overprecision", replaceTag("price", ["price", "5.001", "USD"])],
+      ["fractional sats", replaceTag("price", ["price", "1.5", "SATS"])],
+      [
+        "oversized price",
+        replaceTag("price", ["price", String(Number.MAX_SAFE_INTEGER), "USD"]),
+      ],
       [
         "nonzero price that underflows to zero",
         replaceTag("price", ["price", `0.${"0".repeat(400)}1`, "USD"]),
@@ -520,13 +840,109 @@ describe("canonical fixed product shipping", () => {
         ["destination", "exclude", "subdivision", "US-HI"],
       ],
     })
-    expect(draftDestinationConstraint?.launchUnsupportedTags).toEqual([
-      "destination",
-      "destination_schema",
+    expect(draftDestinationConstraint?.launchUnsupportedTags).toEqual([])
+    expect(draftDestinationConstraint?.destinationPolicyUnsupported).toBe(false)
+    expect(
+      resolveProductFulfillment(product(), [draftDestinationConstraint!], {
+        country: "US",
+        state: "HI",
+        postalCode: "96815",
+      })
+    ).toMatchObject({
+      status: "order_first",
+      reason: "destination_unsupported",
+    })
+
+    const unversionedDestinationConstraint = parseShippingOptionEvent({
+      ...base,
+      id: "shipping-with-unversioned-destination",
+      tags: [...base.tags, ["destination", "include", "country", "US"]],
+    })
+    expect(unversionedDestinationConstraint?.destinationPolicyUnsupported).toBe(
+      true
+    )
+    expect(
+      resolveProductFulfillment(
+        product(),
+        [unversionedDestinationConstraint!],
+        {
+          country: "US",
+          state: "TX",
+          postalCode: "78701",
+        }
+      )
+    ).toMatchObject({ status: "order_first", reason: "unsupported" })
+
+    const unknownDestinationSchema = parseShippingOptionEvent({
+      ...base,
+      id: "shipping-with-unknown-destination-schema",
+      tags: [
+        ...base.tags,
+        ["destination_schema", "2"],
+        ["destination", "include", "country", "US"],
+      ],
+    })
+    expect(unknownDestinationSchema?.destinationPolicyUnsupported).toBe(true)
+    expect(
+      resolveProductFulfillment(product(), [unknownDestinationSchema!], {
+        country: "US",
+        state: "TX",
+        postalCode: "78701",
+      })
+    ).toMatchObject({ status: "order_first", reason: "unsupported" })
+  })
+
+  it("preserves union semantics for mixed country and narrower includes", () => {
+    const mixedIncludes = parseShippingOptionEvent({
+      id: "shipping-with-mixed-includes",
+      pubkey: MERCHANT,
+      created_at: 1,
+      tags: [
+        ["d", `${PRODUCT_D_TAG}-shipping-standard`],
+        ["title", "Standard Shipping"],
+        ["price", "5", "USD"],
+        ["country", "US"],
+        ["service", "standard"],
+        ["destination_schema", "1"],
+        ["destination", "include", "country", "US"],
+        ["destination", "include", "subdivision", "US-TX"],
+        ["destination", "include", "postal", "US", "prefix", "787"],
+      ],
+    })
+    expect(mixedIncludes).not.toBeNull()
+    expect(mixedIncludes?.countryRules).toEqual([
+      expect.objectContaining({ code: "US", includeCountry: true }),
     ])
     expect(
-      resolveProductFulfillment(product(), [draftDestinationConstraint!])
-    ).toMatchObject({ status: "order_first", reason: "unsupported" })
+      resolveProductFulfillment(product(), [mixedIncludes!], {
+        country: "US",
+        state: "CA",
+        postalCode: "90210",
+      })
+    ).toMatchObject({ status: "ready" })
+
+    const republished = buildFixedShippingOptionEventDraft({
+      productDTag: PRODUCT_D_TAG,
+      intent: {
+        kind: "fixed_standard",
+        zones: [
+          {
+            amount: mixedIncludes!.price,
+            currency: mixedIncludes!.currency,
+            countries: mixedIncludes!.countries,
+            countryRules: mixedIncludes!.countryRules,
+            usesProductFallback: true,
+            destinationSchema: "1",
+          },
+        ],
+      },
+    })
+    expect(republished.tags).toContainEqual([
+      "destination",
+      "include",
+      "country",
+      "US",
+    ])
   })
 
   it("does not resolve a latest shipping option deleted by address or event id", () => {
@@ -1035,6 +1451,76 @@ describe("canonical fixed product shipping", () => {
       __resetRelayListTestOverrides()
     }
   }, 15_000)
+
+  it("retains exact option read and publish relay provenance", async () => {
+    const secretKey = generateSecretKey()
+    const pubkey = getPublicKey(secretKey)
+    const dTag = "relay-provenance-shipping-standard"
+    const coordinate = `30406:${pubkey}:${dTag}`
+    const event = new NDKEvent(
+      undefined,
+      finalizeEvent(
+        {
+          kind: 30406,
+          created_at: 100,
+          content: "",
+          tags: [
+            ["d", dTag],
+            ["title", "Standard Shipping"],
+            ["price", "5", "USD"],
+            ["country", "US"],
+            ["service", "standard"],
+          ],
+        },
+        secretKey
+      )
+    )
+    attachEventSourceRelayUrl(event, "wss://shipping-read.example")
+    expect(parseShippingOptionEvent(event)?.sourceRelayUrls).toEqual([
+      "wss://shipping-read.example",
+    ])
+
+    let cachedFrontiers: CachedShippingOptionFrontier[] = []
+    __setShippingTestOverrides({
+      getCachedOptionFrontiers: async (coordinates) =>
+        cachedFrontiers.filter((row) => coordinates.includes(row.coordinate)),
+      putCachedOptionFrontiers: async (rows) => {
+        for (const row of rows) {
+          cachedFrontiers = [
+            ...cachedFrontiers.filter(
+              (existing) => existing.coordinate !== row.coordinate
+            ),
+            structuredClone(row),
+          ]
+        }
+      },
+    })
+
+    try {
+      await cacheSignedShippingOptionEvent(event, [
+        "wss://shipping-ack.example",
+      ])
+      expect(cachedFrontiers).toHaveLength(1)
+      expect(cachedFrontiers[0]).toMatchObject({
+        coordinate,
+        sourceRelayUrls: ["wss://shipping-ack.example"],
+      })
+
+      __resetShippingTestOverrides()
+      __setShippingTestOverrides({
+        getCachedOptionFrontiers: async (coordinates) =>
+          cachedFrontiers.filter((row) => coordinates.includes(row.coordinate)),
+      })
+      const sourcesAfterReload = await getCachedShippingOptionSourceRelayUrls([
+        coordinate,
+      ])
+      expect(sourcesAfterReload.get(coordinate)).toEqual([
+        "wss://shipping-ack.example",
+      ])
+    } finally {
+      __resetShippingTestOverrides()
+    }
+  })
 
   it("retains the strongest signed shipping frontier across later relay omission", async () => {
     const secretKey = generateSecretKey()
@@ -1553,7 +2039,7 @@ describe("canonical fixed product shipping", () => {
     )
   })
 
-  it("rejects postal restrictions in new fixed-shipping authoring", () => {
+  it("gates detailed destination authoring and emits the exact v1 grammar", () => {
     expect(() =>
       compileProductFulfillmentIntent({
         format: "physical",
@@ -1569,7 +2055,42 @@ describe("canonical fixed product shipping", () => {
           },
         ],
       })
-    ).toThrow("Fixed checkout supports country destinations only.")
+    ).toThrow("available only in the preview rollout")
+
+    const intent = compileProductFulfillmentIntent({
+      format: "physical",
+      shippingPricingMode: "fixed",
+      amount: 5,
+      currency: "USD",
+      allowExperimentalDestinationPolicy: true,
+      destinations: [
+        {
+          code: "US",
+          name: "United States",
+          includeSubdivisions: ["US-TX"],
+          excludeSubdivisions: ["US-HI"],
+          restrictTo: ["787*"],
+          exclude: ["78799"],
+        },
+      ],
+    })
+    if (intent.kind !== "fixed_standard") {
+      throw new Error("Expected fixed shipping")
+    }
+    expect(
+      buildFixedShippingOptionEventDraft({
+        productDTag: PRODUCT_D_TAG,
+        intent,
+      }).tags
+    ).toEqual(
+      expect.arrayContaining([
+        ["destination_schema", "1"],
+        ["destination", "include", "subdivision", "US-TX"],
+        ["destination", "include", "postal", "US", "prefix", "787"],
+        ["destination", "exclude", "subdivision", "US-HI"],
+        ["destination", "exclude", "postal", "US", "exact", "78799"],
+      ])
+    )
   })
 
   it("does not infer country eligibility when no option resolved", () => {

@@ -998,6 +998,11 @@ export async function authorizeAnonZapRequest(
       corsHeaders
     )
     if (rateLimitError) return rateLimitError
+    if (intent.items.some((item) => item.shippingOptionId)) {
+      throw new Error(
+        "Anonymous public-zap checkout does not support fixed shipping."
+      )
+    }
 
     const commerceRelays = getAnonZapCommerceRelays(env)
     const receiptRelays = getAnonZapReceiptRelays(env)

@@ -32,7 +32,11 @@ export type AnonZapSignerOptions = {
 
 export type AnonZapCheckoutAuthorizationContext = {
   merchantPubkey: string
-  items: Array<{ productAddress: string; quantity: number }>
+  items: Array<{
+    productAddress: string
+    quantity: number
+    shippingOptionId?: string
+  }>
 }
 
 export type AuthorizedAnonZapCheckoutClient = {
@@ -260,13 +264,34 @@ function isValidAuthorizedShippingCountryRules(
       return false
     }
     const patterns = [...rule.restrictTo, ...rule.exclude]
+    const subdivisions = [
+      ...(Array.isArray(rule.includeSubdivisions)
+        ? rule.includeSubdivisions
+        : []),
+      ...(Array.isArray(rule.excludeSubdivisions)
+        ? rule.excludeSubdivisions
+        : []),
+    ]
     if (
       !patterns.every(
         (pattern) =>
           typeof pattern === "string" &&
           !!pattern.trim() &&
           pattern.length <= 64
-      )
+      ) ||
+      subdivisions.some(
+        (subdivision) =>
+          typeof subdivision !== "string" ||
+          !new RegExp(`^${rule.code}-[A-Z0-9]{1,3}$`).test(subdivision)
+      ) ||
+      (rule.includeSubdivisions !== undefined &&
+        !Array.isArray(rule.includeSubdivisions)) ||
+      (rule.excludeSubdivisions !== undefined &&
+        !Array.isArray(rule.excludeSubdivisions)) ||
+      (rule.includeCountry !== undefined &&
+        typeof rule.includeCountry !== "boolean") ||
+      (rule.excludeCountry !== undefined &&
+        typeof rule.excludeCountry !== "boolean")
     ) {
       return false
     }
@@ -334,7 +359,13 @@ function validateServerDraft(
     throw new Error("Anon zap authorization pricing is invalid.")
   }
   const expectedItems = new Map(
-    context.items.map((item) => [item.productAddress, item.quantity])
+    context.items.map((item) => [
+      item.productAddress,
+      {
+        quantity: item.quantity,
+        shippingOptionId: item.shippingOptionId,
+      },
+    ])
   )
   let itemSubtotalSats = 0
   let shippingCostSats = 0
@@ -342,10 +373,11 @@ function validateServerDraft(
     if (!isRecord(item)) {
       throw new Error("Anon zap authorization pricing is invalid.")
     }
-    const expectedQuantity = expectedItems.get(item.productAddress)
+    const expectedItem = expectedItems.get(item.productAddress)
     if (
       typeof item.productAddress !== "string" ||
-      expectedQuantity !== item.quantity ||
+      expectedItem?.quantity !== item.quantity ||
+      expectedItem.shippingOptionId !== item.shippingOptionId ||
       (item.format !== "physical" && item.format !== "digital") ||
       !Number.isSafeInteger(item.unitPriceSats) ||
       item.unitPriceSats < 1 ||
@@ -356,6 +388,8 @@ function validateServerDraft(
         (typeof item.shippingOptionId !== "string" ||
           !item.shippingOptionId.trim() ||
           item.shippingOptionId.length > 200)) ||
+      (item.shippingDestinationSchema !== undefined &&
+        item.shippingDestinationSchema !== "1") ||
       !isValidAuthorizedShippingCountryRules(
         item.shippingCountryRules,
         item.format
@@ -532,7 +566,7 @@ export async function prepareAnonZapCheckout(input: {
   context: AnonZapCheckoutAuthorizationContext
   localPricing: Extract<CheckoutPricingIntent, { status: "ok" }>
   lnurlMetadata: LnurlPayMetadata
-  destination: { country: string; postalCode: string }
+  destination: { country: string; state?: string; postalCode: string }
   reusableAuthorization?: AuthorizedAnonZapCheckoutClient | null
   options?: AnonZapSignerOptions
   dependencies?: Partial<PrepareAnonZapCheckoutDependencies>

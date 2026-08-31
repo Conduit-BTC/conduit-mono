@@ -128,6 +128,7 @@ bun run dev:merchant:mainnet
 | `VITE_SOURCE_URL`              | GitHub repository URL      | Source repository link surfaced on About pages           |
 | `VITE_RELEASE_CHANNEL`         | local/preview/prod         | Release channel surfaced on About pages                  |
 | `VITE_DM_BOOTSTRAP_WRITES`     | profile-controlled         | Legacy compiled input for validated-order compatibility  |
+| `VITE_DESTINATION_POLICY_V1`   | profile-controlled         | Preview-only detailed shipping destination authoring     |
 
 When telemetry is enabled, `VITE_TELEMETRY_ALLOWED_HOSTS` must list every
 permitted hostname. A `*.` prefix allows exactly one preview subdomain label;

@@ -52,6 +52,11 @@ export async function authorizeCurrentCheckoutItems(input: {
   rateInput?: PricingRateInput
   resolveProductFulfillment?: CheckoutProductFulfillmentResolver
   authorizePickupHandlers?: CheckoutPickupHandlerAuthorizer
+  shippingDestination?: {
+    country: string
+    state?: string
+    postalCode: string
+  }
 }): Promise<CheckoutAuthorizationResult> {
   const resolveFulfillment =
     input.resolveProductFulfillment ?? resolveProductCartFulfillment
@@ -118,7 +123,11 @@ export async function authorizeCurrentCheckoutItems(input: {
       items: prepareCartFulfillment(refreshedRawItems, []).items,
     }
   }
-  const prepared = prepareCartFulfillment(refreshedRawItems, shippingOptions)
+  const prepared = prepareCartFulfillment(
+    refreshedRawItems,
+    shippingOptions,
+    input.shippingDestination
+  )
 
   if (
     getCartCommerceFingerprint(prepared.items) !==

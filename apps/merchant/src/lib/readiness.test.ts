@@ -14,6 +14,7 @@ import {
   loadShippingConfig,
   parseShippingConfig,
   parseStoredNwcConnection,
+  saveShippingConfig,
   selectConduitShippingOption,
   serializeShippingConfig,
   shippingOptionToConfig,
@@ -146,6 +147,36 @@ test("parses stored shipping config defensively", () => {
   expect(parseShippingConfig(JSON.stringify(shippingConfig))).toEqual(
     shippingConfig
   )
+  expect(
+    parseShippingConfig(
+      JSON.stringify({
+        countries: [
+          {
+            code: " us ",
+            includeCountry: true,
+            includeSubdivisions: ["US-TX"],
+            excludeSubdivisions: ["US-AK"],
+            excludeCountry: true,
+            rate: { amount: 12.5, currency: " usd " },
+          },
+        ],
+      })
+    )
+  ).toEqual({
+    countries: [
+      {
+        code: "US",
+        name: "United States",
+        restrictTo: [],
+        exclude: [],
+        includeCountry: true,
+        includeSubdivisions: ["US-TX"],
+        excludeSubdivisions: ["US-AK"],
+        excludeCountry: true,
+        rate: { amount: "12.5", currency: "USD" },
+      },
+    ],
+  })
   expect(parseShippingConfig("not-json")).toEqual({ countries: [] })
   expect(
     parseShippingConfig(
@@ -164,6 +195,34 @@ test("parses stored shipping config defensively", () => {
   expect(serializeShippingConfig(shippingConfig)).toBe(
     JSON.stringify(shippingConfig)
   )
+})
+
+test("saves and reloads destination-specific preset rates", () => {
+  withMockLocalStorage(() => {
+    const ratedConfig = {
+      countries: [
+        {
+          code: "US",
+          name: "United States",
+          restrictTo: [],
+          exclude: [],
+          rate: { amount: "12.50", currency: "USD" },
+        },
+        {
+          code: "CA",
+          name: "Canada",
+          restrictTo: [],
+          exclude: [],
+          rate: { amount: "250", currency: "SATS" },
+        },
+      ],
+    }
+
+    saveShippingConfig(ratedConfig, "merchant-pubkey")
+
+    expect(loadShippingConfig("merchant-pubkey")).toEqual(ratedConfig)
+    expect(loadShippingConfig("other-merchant")).toEqual({ countries: [] })
+  })
 })
 
 test("does not replace an intentionally stored empty shipping config", () => {
@@ -195,7 +254,7 @@ test("recovers published shipping from malformed stored config", () => {
   }
 })
 
-test("maps published shipping options back into readiness config", () => {
+test("hydrates legacy published destinations without inventing preset rates", () => {
   expect(
     shippingOptionToConfig({
       id: "30406:merchant:conduit-default",
@@ -212,6 +271,10 @@ test("maps published shipping options back into readiness config", () => {
           name: "US",
           restrictTo: ["787**"],
           exclude: ["78799"],
+          includeCountry: true,
+          includeSubdivisions: ["US-TX"],
+          excludeSubdivisions: ["US-AK"],
+          excludeCountry: true,
         },
       ],
       service: "standard",
@@ -225,6 +288,10 @@ test("maps published shipping options back into readiness config", () => {
         name: "United States",
         restrictTo: ["787**"],
         exclude: ["78799"],
+        includeCountry: true,
+        includeSubdivisions: ["US-TX"],
+        excludeSubdivisions: ["US-AK"],
+        excludeCountry: true,
       },
     ],
   })

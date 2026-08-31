@@ -3,6 +3,7 @@ import { AlertCircle } from "lucide-react"
 import { createFileRoute } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import {
+  config as conduitConfig,
   getShippingOptionAddress,
   getShippingOptionsByCoordinates,
   useAuth,
@@ -45,6 +46,9 @@ function buildSummary(countries: ShippingCountryConfig[]): string {
       }
       if (c.exclude.length > 0) {
         parts.push(`excluding ${c.exclude.join(", ")}`)
+      }
+      if (c.rate) {
+        parts.push(`at ${c.rate.amount} ${c.rate.currency}`)
       }
       return parts.join(" ")
     })
@@ -176,8 +180,9 @@ function ShippingPage() {
                     DESTINATIONS
                   </div>
                   <div className="mt-1 text-[1rem] text-[var(--text-secondary)]">
-                    Countries you ship to. Postal restrictions require
-                    order-first coordination.
+                    {conduitConfig.destinationPolicyV1Enabled
+                      ? "Countries you ship to, with optional state, region, or postal constraints."
+                      : "Countries you ship to. Detailed destination constraints require order-first coordination."}
                   </div>
                 </div>
 
@@ -185,6 +190,11 @@ function ShippingPage() {
                   <div className="space-y-4">
                     <ShippingDestinationsEditor
                       config={config}
+                      showRates
+                      defaultCurrency="SATS"
+                      enableDestinationPolicies={
+                        conduitConfig.destinationPolicyV1Enabled
+                      }
                       onChange={(updated) => {
                         setConfig(updated)
                         setSaveState({ status: "idle" })

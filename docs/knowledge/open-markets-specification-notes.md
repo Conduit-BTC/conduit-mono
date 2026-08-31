@@ -2,7 +2,7 @@
 
 This is the maintained, implementation-oriented commerce specification note for Conduit engineers and agents.
 
-Last reviewed: 2026-08-16
+Last reviewed: 2026-08-30
 
 ## Active Working And Governance Venue
 
@@ -34,6 +34,13 @@ As of this review, PR #1 is open, non-draft, and unmerged. Those paths do not ex
 - When a proposal is accepted, cite its final stable location and review the behavior change separately from reference-governance cleanup.
 
 [Open Markets PR #13](https://github.com/OpenMarketsFoundation/specification/pull/13) proposes versioned `destination_schema` tags and typed destination constraints. As of this review, it is an open draft stacked on PR #1. It is experimental, branch-only, and non-normative.
+
+Conduit reads only the exact proposed version `1` grammar and fails closed for
+malformed or unknown versions. Detailed subdivision and postal authoring is a
+preview-only deployment feature; production and staging authoring remain off.
+This allows interoperability testing without presenting the proposal as
+accepted public specification behavior. Country-only per-destination rates do
+not depend on the proposal.
 
 ## Conduit Implementation Policy
 

@@ -56,6 +56,8 @@ export type CartItem = {
   }
   shippingOptionId?: string
   shippingOptionDTag?: string
+  shippingOptionIds?: string[]
+  shippingOptionDTags?: string[]
   shippingOptionLaunchUnsupported?: boolean
   shippingCountries?: string[]
   shippingCountryRules?: Array<{
@@ -63,7 +65,12 @@ export type CartItem = {
     name: string
     restrictTo: string[]
     exclude: string[]
+    includeCountry?: boolean
+    includeSubdivisions?: string[]
+    excludeSubdivisions?: string[]
+    excludeCountry?: boolean
   }>
+  shippingDestinationSchema?: string
   /** Signed product event timestamp used by the fixed-shipping staleness guard. */
   productUpdatedAt?: number
   /** True only after exact canonical kind-30406 resolution. */
@@ -219,6 +226,8 @@ export function createCartItemFromProduct(
     shippingOptionDTag:
       pickup?.option.coordinate.split(":").slice(2).join(":") ||
       product.shippingOptionDTag,
+    shippingOptionIds: pickup ? undefined : product.shippingOptionIds,
+    shippingOptionDTags: pickup ? undefined : product.shippingOptionDTags,
     shippingOptionLaunchUnsupported: pickup
       ? undefined
       : product.shippingOptionLaunchUnsupported,
@@ -595,7 +604,26 @@ function parseShippingRules(value: unknown): CartItem["shippingCountryRules"] {
     const restrictTo = optionalStringArray(candidate.restrictTo)
     const exclude = optionalStringArray(candidate.exclude)
     if (!code || !name || !restrictTo || !exclude) return undefined
-    rules.push({ code, name, restrictTo, exclude })
+    const includeSubdivisions = optionalStringArray(
+      candidate.includeSubdivisions
+    )
+    const excludeSubdivisions = optionalStringArray(
+      candidate.excludeSubdivisions
+    )
+    rules.push({
+      code,
+      name,
+      restrictTo,
+      exclude,
+      ...(typeof candidate.includeCountry === "boolean"
+        ? { includeCountry: candidate.includeCountry }
+        : {}),
+      ...(includeSubdivisions ? { includeSubdivisions } : {}),
+      ...(excludeSubdivisions ? { excludeSubdivisions } : {}),
+      ...(typeof candidate.excludeCountry === "boolean"
+        ? { excludeCountry: candidate.excludeCountry }
+        : {}),
+    })
   }
   return rules
 }
@@ -650,6 +678,8 @@ function parseCartItem(value: unknown): CartItem | null {
   const sourceShippingCost = parseSourcePrice(value.sourceShippingCost)
   const tags = optionalStringArray(value.tags)
   const shippingCountries = optionalStringArray(value.shippingCountries)
+  const shippingOptionIds = optionalStringArray(value.shippingOptionIds)
+  const shippingOptionDTags = optionalStringArray(value.shippingOptionDTags)
   const shippingCountryRules = parseShippingRules(value.shippingCountryRules)
   const format =
     value.format === "digital" || value.format === "physical"
@@ -690,6 +720,8 @@ function parseCartItem(value: unknown): CartItem | null {
     ...(nonemptyString(value.shippingOptionDTag)
       ? { shippingOptionDTag: String(value.shippingOptionDTag) }
       : {}),
+    ...(shippingOptionIds ? { shippingOptionIds } : {}),
+    ...(shippingOptionDTags ? { shippingOptionDTags } : {}),
     ...(typeof value.shippingOptionLaunchUnsupported === "boolean"
       ? {
           shippingOptionLaunchUnsupported:
@@ -698,6 +730,9 @@ function parseCartItem(value: unknown): CartItem | null {
       : {}),
     ...(shippingCountries ? { shippingCountries } : {}),
     ...(shippingCountryRules ? { shippingCountryRules } : {}),
+    ...(nonemptyString(value.shippingDestinationSchema)
+      ? { shippingDestinationSchema: String(value.shippingDestinationSchema) }
+      : {}),
     ...(productUpdatedAt !== undefined ? { productUpdatedAt } : {}),
     ...(typeof value.canonicalShippingResolved === "boolean"
       ? { canonicalShippingResolved: value.canonicalShippingResolved }
@@ -745,6 +780,18 @@ export function selectMerchantCartItems(
   merchantPubkey: string
 ): CartItem[] {
   return items.filter((item) => item.merchantPubkey === merchantPubkey)
+}
+
+function canonicalShippingReferences(
+  references: readonly string[] | undefined,
+  legacyReference: string | undefined
+): string[] | null {
+  const resolved = references?.length
+    ? references
+    : legacyReference
+      ? [legacyReference]
+      : []
+  return resolved.length > 0 ? Array.from(new Set(resolved)).sort() : null
 }
 
 export function getCartCommerceFingerprint(items: readonly CartItem[]): string {
@@ -809,8 +856,17 @@ export function getCartCommerceFingerprint(items: readonly CartItem[]): string {
         sourceShippingCost: item.sourceShippingCost ?? null,
         shippingOptionId: item.shippingOptionId ?? null,
         shippingOptionDTag: item.shippingOptionDTag ?? null,
+        shippingOptionIds: canonicalShippingReferences(
+          item.shippingOptionIds,
+          item.shippingOptionId
+        ),
+        shippingOptionDTags: canonicalShippingReferences(
+          item.shippingOptionDTags,
+          item.shippingOptionDTag
+        ),
         shippingCountries: item.shippingCountries ?? null,
         shippingCountryRules: item.shippingCountryRules ?? null,
+        shippingDestinationSchema: item.shippingDestinationSchema ?? null,
         publicZapEnabled: item.publicZapEnabled ?? null,
         zapMessagePolicy: item.zapMessagePolicy ?? null,
         publicZapPolicyKnown: item.publicZapPolicyKnown ?? null,

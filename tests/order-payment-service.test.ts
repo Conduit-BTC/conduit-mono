@@ -824,6 +824,116 @@ describe("runOrderPayment", () => {
     }
   })
 
+  it("bypasses anonymous authorization for a delivered fixed-shipping snapshot", async () => {
+    const orderId = "anon-zap-fixed-shipping-private-fallback"
+    const productAddress = `30402:${"b".repeat(64)}:field-notes`
+    const shippingOptionId = `30406:${"b".repeat(64)}:field-notes-us`
+    const invoice = privateInvoice()
+    let stored = lifecycle({
+      orderId,
+      checkoutMode: "anonymous_public_zap",
+      publicZapSigner: "anon",
+      items: [
+        {
+          productId: productAddress,
+          format: "physical",
+          quantity: 1,
+          priceAtPurchase: 0,
+          currency: "SATS",
+          shippingCostSats: 1,
+          shippingOptionId,
+          shippingOptionDTag: "field-notes-us",
+          shippingDestinationSchema: "1",
+          shippingCountryRules: [{ code: "US", restrictTo: [], exclude: [] }],
+        },
+      ],
+      itemSubtotalSats: 0,
+      shippingCostSats: 1,
+      totalSats: 1,
+      totalMsats: 1_000,
+      invoice: undefined,
+      invoiceStatus: "not_requested",
+      paymentStatus: "not_started",
+    })
+    const table = db.orderLifecycles as typeof db.orderLifecycles & {
+      get: typeof db.orderLifecycles.get
+      put: typeof db.orderLifecycles.put
+    }
+    const originalGet = table.get
+    const originalPut = table.put
+    const requestedVisibilities: string[] = []
+    let preparationCalls = 0
+
+    table.get = (async () => stored) as typeof table.get
+    table.put = (async (next: OrderLifecycle) => {
+      stored = next
+      return next.orderId
+    }) as typeof table.put
+
+    try {
+      const state = await runOrderPayment(
+        basePaymentContext({
+          orderId,
+          merchantLud16: "merchant@wallet.example",
+          zapMode: "anonymous_public_zap",
+          items: [{ productAddress, quantity: 1, shippingOptionId }],
+          anonZapPreparation: {
+            localPricing: {
+              status: "ok",
+              itemSubtotalSats: 0,
+              totalSats: 1,
+              totalMsats: 1_000,
+              items: [],
+              shippingCost: {
+                status: "priced",
+                totalSats: 1,
+                missingProductIds: [],
+              },
+              approximate: false,
+              paymentRequired: true,
+            },
+            destination: {
+              country: "US",
+              state: "TX",
+              postalCode: "78701",
+            },
+          },
+        }),
+        paymentDependencies({
+          anonZapSignerPubkey: ANON_SIGNER_PUBKEY,
+          prepareAnonZapCheckout: async () => {
+            preparationCalls += 1
+            throw new Error("must not authorize fixed shipping anonymously")
+          },
+          fetchLnurlPayMetadata: async () => lnurlMetadata(),
+          requestCheckoutLnurlInvoice: async (params) => {
+            requestedVisibilities.push(params.visibility)
+            return {
+              invoice,
+              zapRelayUrls: [],
+              shouldWaitForZapReceipt: false,
+            }
+          },
+          payCheckoutInvoice: async () => ({
+            status: "manual_required",
+            reason: "Open the invoice in a Lightning wallet.",
+          }),
+        })
+      )
+
+      expect(preparationCalls).toBe(0)
+      expect(requestedVisibilities).toEqual(["private_checkout"])
+      expect(state.lifecycle?.items[0]?.shippingOptionId).toBe(shippingOptionId)
+      expect(state.lifecycle?.checkoutMode).toBe("private_checkout")
+      expect(state.lifecycle?.publicZapSigner).toBeUndefined()
+      expect(state.lifecycle?.publicZapFallback).toBe(true)
+      expect(state.lifecycle?.paymentStatus).toBe("manual_required")
+    } finally {
+      table.get = originalGet
+      table.put = originalPut
+    }
+  })
+
   it("blocks payment when authorized pricing requires buyer review", async () => {
     const orderId = "anon-zap-pricing-review"
     let stored = lifecycle({

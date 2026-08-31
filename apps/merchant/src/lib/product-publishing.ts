@@ -1,25 +1,32 @@
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
-  buildFixedShippingOptionEventDraft,
+  applyPreparedProductFulfillment,
+  buildFixedShippingOptionEventDrafts,
   buildProductDeletionEventDraft,
   buildProductListingEventDraft,
-  cacheSignedProductDeletionEvent,
   cacheSignedProductListingEvent,
+  cacheSignedShippingOptionEvent,
   compileProductFulfillmentIntent,
   EVENT_KINDS,
   getNdk,
-  getProductShippingOptionAddress,
-  getProductShippingOptionDTag,
+  getFixedShippingOptionAddresses,
+  getFixedShippingOptionDTags,
+  getFixedShippingRateZones,
+  getShippingOptionsByCoordinates,
   isValidSignedPublicNostrEvent,
   publishWithPlanner,
   RelayPublishDiagnosticsError,
+  resolveProductFulfillment,
   type ProductDeletionEventTarget,
   type ProductFulfillmentIntent,
+  type ParsedShippingOption,
   type ProductSchema,
+  type PreparedProductFulfillment,
   type PublishWithPlannerResult,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
 import {
+  cacheSignedMerchantDeletionEvent,
   deliverQueuedProductDeletion,
   persistSignedProductDeletion,
   planCurrentProductDeletionWriteRelays,
@@ -110,6 +117,28 @@ function mergeRelayUrls(...groups: readonly (readonly string[])[]): string[] {
   return Array.from(new Set(groups.flat()))
 }
 
+export function getPreviousShippingSourceRelayUrls(input: {
+  previousShippingOptionIds: readonly string[]
+  previousProduct: Pick<ProductSchema, "shippingZones">
+  previousProductSourceRelayUrls: readonly string[]
+  cachedShippingSourceRelayUrls?: readonly string[]
+}): string[] {
+  const previousCoordinates = new Set(input.previousShippingOptionIds)
+  const exactShippingSources =
+    input.previousProduct.shippingZones?.flatMap((zone) =>
+      previousCoordinates.has(zone.shippingOptionId)
+        ? (zone.sourceRelayUrls ?? [])
+        : []
+    ) ?? []
+  // Product sources are retained only as a compatibility fallback for cache
+  // rows written before per-option relay provenance existed.
+  return mergeRelayUrls(
+    exactShippingSources,
+    input.cachedShippingSourceRelayUrls ?? [],
+    input.previousProductSourceRelayUrls
+  )
+}
+
 export async function deliverSignedProductEventBundle(
   events: readonly (NDKEvent | SignedPublicNostrEvent)[],
   merchantPubkey: string
@@ -174,12 +203,17 @@ export interface ProductListingPublishTarget {
   product: ProductSchema
   dTag: string
   previousEventCreatedAt?: number
+  previousShippingOptionCreatedAt?: number
+  previousShippingOptionIds?: readonly string[]
+  previousShippingZones?: ProductSchema["shippingZones"]
+  previousShippingSourceRelayUrls?: readonly string[]
+  previousShippingAuthorWriteRelayUrls?: readonly string[]
   fulfillmentIntent: ProductFulfillmentIntent
 }
 
 type SignedProductWrite = {
   productEvent: NDKEvent
-  shippingEvent: NDKEvent | null
+  shippingEvents: NDKEvent[]
 }
 
 export interface CanonicalProductPublishDependencies {
@@ -213,17 +247,144 @@ function getProductShippingDestinations(
   }))
 }
 
-function hasEventPickupReferences(
+export function hasEventPickupReferences(
   product: Pick<
     ProductSchema,
-    "canonicalShippingResolved" | "collectionRefs" | "shippingOptionRefs"
-  >
+    "collectionRefs" | "shippingOptionRefs" | "shippingZones"
+  > &
+    Partial<Pick<ProductSchema, "id" | "pubkey">>,
+  fixedShippingOwner?: {
+    merchantPubkey: string
+    productDTag: string
+  }
 ): boolean {
-  return (
-    product.canonicalShippingResolved !== true &&
-    (product.collectionRefs?.length ?? 0) > 0 &&
-    (product.shippingOptionRefs?.length ?? 0) > 0
+  const shippingOptionCoordinates =
+    product.shippingOptionRefs?.map((reference) => reference.coordinate) ?? []
+  if (
+    (product.collectionRefs?.length ?? 0) === 0 ||
+    shippingOptionCoordinates.length === 0
+  ) {
+    return false
+  }
+
+  const merchantPubkey = fixedShippingOwner?.merchantPubkey ?? product.pubkey
+  const productDTag =
+    fixedShippingOwner?.productDTag ??
+    (merchantPubkey && product.id
+      ? getAddressDTag(product.id, EVENT_KINDS.PRODUCT, merchantPubkey)
+      : null)
+  if (!merchantPubkey || !productDTag) return true
+
+  const canonicalCoordinates = getCanonicalFixedShippingOptionCoordinates({
+    merchantPubkey,
+    productDTag,
+    shippingZones: product.shippingZones,
+  })
+
+  return shippingOptionCoordinates.some(
+    (coordinate) =>
+      !isMerchantOwnedFixedShippingOption({
+        coordinate,
+        merchantPubkey,
+        productDTag,
+        canonicalCoordinates,
+      })
   )
+}
+
+export function compileResolvedShippingZones(
+  zones: NonNullable<ProductSchema["shippingZones"]>
+): ProductFulfillmentIntent | null {
+  if (zones.length === 0) return null
+
+  try {
+    const compiledZones = zones.map((zone) => {
+      const compiled = compileProductFulfillmentIntent({
+        format: "physical",
+        shippingPricingMode: "fixed",
+        amount: zone.usesProductFallback ? zone.amount : undefined,
+        currency: zone.currency,
+        destinations: zone.countryRules.map((rule) => ({
+          ...rule,
+          ...(zone.usesProductFallback
+            ? {}
+            : { rate: { amount: zone.amount, currency: zone.currency } }),
+        })),
+        allowExperimentalDestinationPolicy: zone.destinationSchema === "1",
+      })
+      if (compiled.kind !== "fixed_standard" || compiled.zones.length !== 1) {
+        throw new Error("Expected one resolved shipping policy")
+      }
+      return {
+        ...compiled.zones[0]!,
+        ...(zone.destinationSchema === "1"
+          ? { destinationSchema: "1" as const }
+          : {}),
+      }
+    })
+    if (new Set(compiledZones.map((zone) => zone.currency)).size !== 1) {
+      return null
+    }
+
+    const intent: Extract<
+      ProductFulfillmentIntent,
+      { kind: "fixed_standard" }
+    > = { kind: "fixed_standard", zones: compiledZones }
+    const policyCoordinates = getFixedShippingOptionDTags(
+      "resolved-policy",
+      intent
+    )
+    if (new Set(policyCoordinates).size !== policyCoordinates.length) {
+      return null
+    }
+    return intent
+  } catch {
+    return null
+  }
+}
+
+export function prepareResolvedFixedShippingRepublish(input: {
+  merchantPubkey: string
+  productDTag: string
+  product: ProductSchema
+  prepared: PreparedProductFulfillment
+  previousProductSourceRelayUrls: readonly string[]
+}): {
+  fulfillmentIntent: ProductFulfillmentIntent
+  previousShippingOptionCreatedAt?: number
+  previousShippingOptionIds: string[]
+  previousShippingZones?: ProductSchema["shippingZones"]
+  previousShippingSourceRelayUrls: string[]
+} {
+  const hydratedProduct = applyPreparedProductFulfillment(
+    input.product,
+    input.prepared
+  )
+  const fulfillmentIntent = compileResolvedShippingZones(
+    hydratedProduct.shippingZones ?? []
+  )
+  if (!fulfillmentIntent || fulfillmentIntent.kind !== "fixed_standard") {
+    throw new Error(
+      "Could not preserve this listing's fixed shipping policies. Review the listing before updating stock."
+    )
+  }
+
+  const previousShippingOptionIds = getMerchantOwnedFixedShippingOptionIds({
+    merchantPubkey: input.merchantPubkey,
+    productDTag: input.productDTag,
+    product: hydratedProduct,
+  })
+  return {
+    fulfillmentIntent,
+    previousShippingOptionCreatedAt: hydratedProduct.shippingOptionCreatedAt,
+    previousShippingOptionIds,
+    previousShippingZones: hydratedProduct.shippingZones,
+    previousShippingSourceRelayUrls: getPreviousShippingSourceRelayUrls({
+      previousShippingOptionIds,
+      previousProduct: hydratedProduct,
+      previousProductSourceRelayUrls: input.previousProductSourceRelayUrls,
+    }),
+  }
 }
 
 export function resolveProductFulfillmentIntentForTarget(input: {
@@ -237,6 +398,7 @@ export function resolveProductFulfillmentIntentForTarget(input: {
     | "shippingOptionRefs"
     | "shippingCountries"
     | "shippingCountryRules"
+    | "shippingZones"
   >
   fallbackIntent: ProductFulfillmentIntent
   authoringCountries: readonly string[]
@@ -244,6 +406,14 @@ export function resolveProductFulfillmentIntentForTarget(input: {
   if (input.product.format === "digital") return { kind: "digital" }
   if (hasEventPickupReferences(input.product)) {
     return { kind: "coordinate_after_order" }
+  }
+
+  if (input.product.shippingZones?.length) {
+    const intent = compileResolvedShippingZones(input.product.shippingZones)
+    if (!intent) {
+      throw new Error("Resolved variation shipping zones are invalid")
+    }
+    return intent
   }
 
   const amount =
@@ -270,6 +440,9 @@ export function resolveProductFulfillmentIntentForTarget(input: {
     amount,
     currency: input.product.sourceShippingCost?.currency ?? "SATS",
     destinations,
+    allowExperimentalDestinationPolicy:
+      input.fallbackIntent.kind === "fixed_standard" &&
+      input.fallbackIntent.zones.some((zone) => zone.destinationSchema === "1"),
   })
 }
 
@@ -280,11 +453,13 @@ export function resolvePublishedProductFulfillmentIntentForTarget(
     | "shippingCostSats"
     | "sourceShippingCost"
     | "shippingOptionId"
+    | "shippingOptionIds"
     | "shippingOptionLaunchUnsupported"
     | "shippingOptionRefs"
     | "collectionRefs"
     | "shippingCountries"
     | "shippingCountryRules"
+    | "shippingZones"
     | "canonicalShippingResolved"
   >
 ): ProductFulfillmentIntent | null {
@@ -293,7 +468,13 @@ export function resolvePublishedProductFulfillmentIntentForTarget(
     return { kind: "coordinate_after_order" }
   }
   if (product.shippingOptionLaunchUnsupported) return null
-  if (product.shippingOptionId && product.canonicalShippingResolved !== true) {
+  if (product.shippingZones?.length) {
+    return compileResolvedShippingZones(product.shippingZones)
+  }
+  if (
+    (product.shippingOptionId || product.shippingOptionIds?.length) &&
+    product.canonicalShippingResolved !== true
+  ) {
     return null
   }
 
@@ -328,15 +509,21 @@ export async function publishCanonicalProductEvents(
   dependencies: CanonicalProductPublishDependencies
 ): Promise<PublishWithPlannerResult> {
   for (const write of input.writes) {
-    if (!write.shippingEvent) continue
-    const delivery = await dependencies.publishShippingEvent(
-      write.shippingEvent,
-      input.merchantPubkey
-    )
-    if (delivery.successfulRelayUrls.length === 0) {
-      throw new Error(
-        "Fixed shipping was not acknowledged by a relay. Product publication was stopped."
+    const legacyShippingEvent = (
+      write as SignedProductWrite & { shippingEvent?: NDKEvent | null }
+    ).shippingEvent
+    const shippingEvents =
+      write.shippingEvents ?? (legacyShippingEvent ? [legacyShippingEvent] : [])
+    for (const shippingEvent of shippingEvents) {
+      const delivery = await dependencies.publishShippingEvent(
+        shippingEvent,
+        input.merchantPubkey
       )
+      if (delivery.successfulRelayUrls.length === 0) {
+        throw new Error(
+          "Fixed shipping was not acknowledged by a relay. Product publication was stopped."
+        )
+      }
     }
   }
 
@@ -361,7 +548,10 @@ export function applyProductFulfillmentIntentForPublication(input: {
   if (input.intent.kind !== "fixed_standard") {
     const preserveEventPickup =
       input.intent.kind === "coordinate_after_order" &&
-      hasEventPickupReferences(input.product)
+      hasEventPickupReferences(input.product, {
+        merchantPubkey: input.merchantPubkey,
+        productDTag: input.productDTag,
+      })
     return {
       ...input.product,
       shippingCostSats: undefined,
@@ -372,6 +562,12 @@ export function applyProductFulfillmentIntentForPublication(input: {
       shippingOptionDTag: preserveEventPickup
         ? input.product.shippingOptionDTag
         : undefined,
+      shippingOptionIds: preserveEventPickup
+        ? input.product.shippingOptionIds
+        : undefined,
+      shippingOptionDTags: preserveEventPickup
+        ? input.product.shippingOptionDTags
+        : undefined,
       shippingOptionRefs: preserveEventPickup
         ? input.product.shippingOptionRefs
         : undefined,
@@ -381,30 +577,56 @@ export function applyProductFulfillmentIntentForPublication(input: {
       shippingOptionLaunchUnsupported: undefined,
       shippingCountries: undefined,
       shippingCountryRules: undefined,
+      shippingZones: undefined,
       canonicalShippingResolved: false,
       shippingOptionCreatedAt: undefined,
     }
   }
 
+  const shippingOptionIds = getFixedShippingOptionAddresses(
+    input.merchantPubkey,
+    input.productDTag,
+    input.intent
+  )
+  const shippingOptionDTags = getFixedShippingOptionDTags(
+    input.productDTag,
+    input.intent
+  )
+  const zones = getFixedShippingRateZones(input.intent)
+  const countries = Array.from(
+    new Set(zones.flatMap((zone) => zone.countries))
+  ).sort()
+
   return {
     ...input.product,
     shippingCostSats: undefined,
     sourceShippingCost: undefined,
-    shippingOptionId: getProductShippingOptionAddress(
-      input.merchantPubkey,
-      input.productDTag
-    ),
-    shippingOptionDTag: getProductShippingOptionDTag(input.productDTag),
+    shippingOptionId: shippingOptionIds[0],
+    shippingOptionDTag: shippingOptionDTags[0],
+    shippingOptionIds,
+    shippingOptionDTags,
     shippingOptionRefs: undefined,
-    collectionRefs: undefined,
+    collectionRefs: input.product.collectionRefs?.length
+      ? [...input.product.collectionRefs]
+      : undefined,
     shippingOptionLaunchUnsupported: undefined,
-    shippingCountries: [...input.intent.countries],
-    shippingCountryRules: input.intent.countries.map((code) => ({
-      code,
-      name: code,
-      restrictTo: [],
-      exclude: [],
-    })),
+    shippingCountries: countries,
+    shippingCountryRules: zones.flatMap((zone) =>
+      zone.countryRules.map((rule) => ({
+        ...rule,
+        restrictTo: [...rule.restrictTo],
+        exclude: [...rule.exclude],
+        ...(rule.includeSubdivisions
+          ? { includeSubdivisions: [...rule.includeSubdivisions] }
+          : {}),
+        ...(rule.excludeSubdivisions
+          ? { excludeSubdivisions: [...rule.excludeSubdivisions] }
+          : {}),
+      }))
+    ),
+    shippingZones: undefined,
+    canonicalShippingResolved: false,
+    shippingOptionCreatedAt: undefined,
   }
 }
 
@@ -425,19 +647,17 @@ export function getCanonicalProductWriteFingerprint(
     dTag: listing.dTag,
     clientAppId: "merchant",
   })
-  const shippingDraft =
+  const shippingDrafts =
     listing.fulfillmentIntent.kind === "fixed_standard"
-      ? buildFixedShippingOptionEventDraft({
+      ? buildFixedShippingOptionEventDrafts({
           productDTag: listing.dTag,
           intent: listing.fulfillmentIntent,
           clientAppId: "merchant",
         })
-      : null
+      : []
   return JSON.stringify([
     [productDraft.kind, productDraft.content, productDraft.tags],
-    shippingDraft
-      ? [shippingDraft.kind, shippingDraft.content, shippingDraft.tags]
-      : null,
+    shippingDrafts.map((draft) => [draft.kind, draft.content, draft.tags]),
   ])
 }
 
@@ -472,40 +692,399 @@ async function signProductWrite(
   productEvent.content = productDraft.content
   productEvent.tags = productDraft.tags
 
-  let shippingEvent: NDKEvent | null = null
+  const shippingEvents: NDKEvent[] = []
   if (listing.fulfillmentIntent.kind === "fixed_standard") {
-    const shippingDraft = buildFixedShippingOptionEventDraft({
+    const shippingDrafts = buildFixedShippingOptionEventDrafts({
       productDTag: listing.dTag,
       intent: listing.fulfillmentIntent,
       clientAppId: "merchant",
     })
-    shippingEvent = new NDKEvent(ndk)
-    shippingEvent.kind = shippingDraft.kind
-    shippingEvent.created_at = createdAt
-    shippingEvent.content = shippingDraft.content
-    shippingEvent.tags = shippingDraft.tags
-    await shippingEvent.sign(signer)
+    for (const shippingDraft of shippingDrafts) {
+      const shippingEvent = new NDKEvent(ndk)
+      shippingEvent.kind = shippingDraft.kind
+      shippingEvent.created_at = createdAt
+      shippingEvent.content = shippingDraft.content
+      shippingEvent.tags = shippingDraft.tags
+      await shippingEvent.sign(signer)
+      shippingEvents.push(shippingEvent)
+    }
   }
   await productEvent.sign(signer)
-  return { productEvent, shippingEvent }
+  return { productEvent, shippingEvents }
 }
 
 export interface ProductDeletionPublishTarget extends ProductDeletionEventTarget {
   sourceRelayUrls?: readonly string[]
+  acknowledgedAuthorWriteRelayUrls?: readonly string[]
+  shippingOptionIds?: readonly string[]
+  previousEventCreatedAt?: number
+  previousShippingOptionCreatedAt?: number
+  previousShippingZones?: ProductSchema["shippingZones"]
+}
+
+function toNostrCreatedAtSeconds(timestampMs: number | undefined): number {
+  return typeof timestampMs === "number" &&
+    Number.isFinite(timestampMs) &&
+    timestampMs >= 0
+    ? Math.floor(timestampMs / 1000)
+    : -1
+}
+
+export function getProductDeletionCreatedAt(input: {
+  nowMs: number
+  newlySignedEvents?: readonly Pick<NDKEvent, "created_at">[]
+  listings?: readonly ProductListingPublishTarget[]
+  deletions?: readonly ProductDeletionPublishTarget[]
+}): number {
+  return Math.max(
+    Math.floor(input.nowMs / 1000),
+    ...(input.newlySignedEvents ?? []).map((event) => event.created_at ?? -1),
+    ...(input.listings ?? []).flatMap((listing) => [
+      listing.previousEventCreatedAt ?? -1,
+      toNostrCreatedAtSeconds(listing.previousShippingOptionCreatedAt),
+    ]),
+    ...(input.deletions ?? []).flatMap((deletion) => [
+      deletion.previousEventCreatedAt ?? -1,
+      toNostrCreatedAtSeconds(deletion.previousShippingOptionCreatedAt),
+    ])
+  )
+}
+
+function getAddressDTag(
+  coordinate: string,
+  kind: number,
+  authorPubkey: string
+): string | null {
+  const prefix = `${kind}:${authorPubkey}:`
+  return coordinate.startsWith(prefix) ? coordinate.slice(prefix.length) : null
+}
+
+export function isMerchantOwnedFixedShippingOption(input: {
+  coordinate: string
+  merchantPubkey: string
+  productDTag: string
+  canonicalCoordinates?: ReadonlySet<string>
+}): boolean {
+  const optionDTag = getAddressDTag(
+    input.coordinate,
+    EVENT_KINDS.SHIPPING_OPTION,
+    input.merchantPubkey
+  )
+  if (!optionDTag) return false
+
+  const legacyDTag = `${input.productDTag}-shipping-standard`
+  if (optionDTag === legacyDTag) return true
+  return input.canonicalCoordinates?.has(input.coordinate) ?? false
+}
+
+function getCanonicalFixedShippingOptionCoordinates(input: {
+  merchantPubkey: string
+  productDTag: string
+  shippingZones: ProductSchema["shippingZones"]
+}): ReadonlySet<string> {
+  const intent = compileResolvedShippingZones(input.shippingZones ?? [])
+  return new Set(
+    intent?.kind === "fixed_standard"
+      ? getFixedShippingOptionAddresses(
+          input.merchantPubkey,
+          input.productDTag,
+          intent
+        )
+      : []
+  )
+}
+
+export function getMerchantOwnedFixedShippingOptionIds(input: {
+  merchantPubkey: string
+  productDTag: string
+  product: Pick<
+    ProductSchema,
+    | "canonicalShippingResolved"
+    | "collectionRefs"
+    | "shippingOptionId"
+    | "shippingOptionIds"
+    | "shippingOptionRefs"
+    | "shippingZones"
+  >
+}): string[] {
+  // Verified event-pickup references have a separate lifecycle and must never
+  // be withdrawn as product-owned fixed shipping. An unrelated collection does
+  // not change the ownership of this product's canonical fixed coordinates.
+  if (
+    hasEventPickupReferences(input.product, {
+      merchantPubkey: input.merchantPubkey,
+      productDTag: input.productDTag,
+    })
+  ) {
+    return []
+  }
+
+  const resolvedFixedCoordinates = getCanonicalFixedShippingOptionCoordinates({
+    merchantPubkey: input.merchantPubkey,
+    productDTag: input.productDTag,
+    shippingZones: input.product.shippingZones,
+  })
+  const referencedCoordinates = input.product.shippingOptionIds?.length
+    ? input.product.shippingOptionIds
+    : input.product.shippingOptionId
+      ? [input.product.shippingOptionId]
+      : []
+
+  // Successful resolution proves that an option is valid and same-author, but
+  // it does not prove that this product owns the coordinate. Only withdraw the
+  // product-scoped coordinates Merchant creates for this listing.
+  return Array.from(
+    new Set([...referencedCoordinates, ...resolvedFixedCoordinates])
+  ).filter((coordinate) =>
+    isMerchantOwnedFixedShippingOption({
+      coordinate,
+      merchantPubkey: input.merchantPubkey,
+      productDTag: input.productDTag,
+      canonicalCoordinates: resolvedFixedCoordinates,
+    })
+  )
+}
+
+function getProductTargetDTag(
+  target: Pick<ProductDeletionPublishTarget, "addressId">,
+  merchantPubkey: string
+): string | null {
+  if (!target.addressId) return null
+  return getAddressDTag(target.addressId, EVENT_KINDS.PRODUCT, merchantPubkey)
+}
+
+export function getObsoleteShippingOptionIds(input: {
+  merchantPubkey: string
+  listings: readonly ProductListingPublishTarget[]
+  deletions?: readonly ProductDeletionPublishTarget[]
+}): string[] {
+  const retainedShippingOptionIds = new Set(
+    input.listings.flatMap((listing) =>
+      listing.fulfillmentIntent.kind === "fixed_standard"
+        ? getFixedShippingOptionAddresses(
+            input.merchantPubkey,
+            listing.dTag,
+            listing.fulfillmentIntent
+          )
+        : []
+    )
+  )
+  return Array.from(
+    new Set([
+      ...input.listings.flatMap((listing) => {
+        const canonicalCoordinates = getCanonicalFixedShippingOptionCoordinates(
+          {
+            merchantPubkey: input.merchantPubkey,
+            productDTag: listing.dTag,
+            shippingZones: listing.previousShippingZones,
+          }
+        )
+        return (listing.previousShippingOptionIds ?? []).filter((coordinate) =>
+          isMerchantOwnedFixedShippingOption({
+            coordinate,
+            merchantPubkey: input.merchantPubkey,
+            productDTag: listing.dTag,
+            canonicalCoordinates,
+          })
+        )
+      }),
+      ...(input.deletions ?? []).flatMap((deletion) => {
+        const productDTag = getProductTargetDTag(deletion, input.merchantPubkey)
+        if (!productDTag) return []
+        const canonicalCoordinates = getCanonicalFixedShippingOptionCoordinates(
+          {
+            merchantPubkey: input.merchantPubkey,
+            productDTag,
+            shippingZones: deletion.previousShippingZones,
+          }
+        )
+        return (deletion.shippingOptionIds ?? []).filter((coordinate) =>
+          isMerchantOwnedFixedShippingOption({
+            coordinate,
+            merchantPubkey: input.merchantPubkey,
+            productDTag,
+            canonicalCoordinates,
+          })
+        )
+      }),
+    ])
+  ).filter((coordinate) => !retainedShippingOptionIds.has(coordinate))
+}
+
+export interface ProductRemovalRecord {
+  eventId: string
+  addressId: string
+  dTag: string | null
+  eventCreatedAt?: number
+  sourceRelayUrls: readonly string[]
+  product?: Pick<
+    ProductSchema,
+    | "canonicalShippingResolved"
+    | "collectionRefs"
+    | "shippingOptionId"
+    | "shippingOptionIds"
+    | "shippingOptionRefs"
+    | "shippingZones"
+    | "shippingOptionCreatedAt"
+  >
+  shippingOptionIds?: readonly string[]
+  shippingOptionSourceRelayUrls?: readonly string[]
+  shippingOptionAuthorWriteRelayUrls?: readonly string[]
+}
+
+export interface HydratableProductRemovalRecord extends Omit<
+  ProductRemovalRecord,
+  "product"
+> {
+  product?: ProductSchema
+}
+
+function getPotentialOwnedShippingOptionIds(
+  record: HydratableProductRemovalRecord
+): string[] {
+  if (!record.dTag || !record.product) return []
+  if (
+    hasEventPickupReferences(record.product, {
+      merchantPubkey: record.product.pubkey,
+      productDTag: record.dTag,
+    })
+  ) {
+    return []
+  }
+  const prefix = `${EVENT_KINDS.SHIPPING_OPTION}:${record.product.pubkey}:${record.dTag}-shipping-standard`
+  const references = record.product.shippingOptionIds?.length
+    ? record.product.shippingOptionIds
+    : record.product.shippingOptionId
+      ? [record.product.shippingOptionId]
+      : []
+  return Array.from(
+    new Set(
+      references.filter(
+        (coordinate) =>
+          coordinate === prefix || coordinate.startsWith(`${prefix}-`)
+      )
+    )
+  )
+}
+
+export async function prepareProductRemovalDeletionTargets(
+  records: readonly HydratableProductRemovalRecord[],
+  options: {
+    readShippingOptions?: (
+      coordinates: readonly string[]
+    ) => Promise<ParsedShippingOption[]>
+  } = {}
+): Promise<ProductDeletionPublishTarget[]> {
+  const coordinates = Array.from(
+    new Set(records.flatMap(getPotentialOwnedShippingOptionIds))
+  )
+  if (coordinates.length === 0) {
+    return buildProductRemovalDeletionTargets(records)
+  }
+
+  let shippingOptions: ParsedShippingOption[]
+  try {
+    shippingOptions = await (
+      options.readShippingOptions ?? getShippingOptionsByCoordinates
+    )(coordinates)
+  } catch {
+    throw new Error(
+      "Fixed shipping ownership could not be verified. Refresh the listing and try deletion again."
+    )
+  }
+
+  const hydratedRecords = records.map((record) => {
+    const candidateIds = getPotentialOwnedShippingOptionIds(record)
+    if (candidateIds.length === 0 || !record.product) return record
+    const candidateIdSet = new Set(candidateIds)
+    const ownershipFrontier = Math.max(
+      record.product.updatedAt,
+      ...shippingOptions
+        .filter((option) => candidateIdSet.has(option.id))
+        .map((option) => option.createdAt)
+    )
+    // Checkout rejects an option newer than the product projection. Deletion
+    // still has to withdraw that exact signed coordinate, so hydrate ownership
+    // against the observed frontier without making it payable.
+    const prepared = resolveProductFulfillment(
+      { ...record.product, updatedAt: ownershipFrontier },
+      shippingOptions
+    )
+    if (prepared.intent !== "fixed_standard" || prepared.status !== "ready") {
+      throw new Error(
+        "Fixed shipping ownership could not be verified. Refresh the listing and try deletion again."
+      )
+    }
+    return {
+      ...record,
+      product: applyPreparedProductFulfillment(record.product, prepared),
+    }
+  })
+  return buildProductRemovalDeletionTargets(hydratedRecords)
 }
 
 export function buildProductRemovalDeletionTargets(
-  records: readonly {
-    eventId: string
-    addressId: string
-    sourceRelayUrls: readonly string[]
-  }[]
+  records: readonly ProductRemovalRecord[]
 ): ProductDeletionPublishTarget[] {
-  return records.map((record) => ({
-    eventId: record.eventId,
-    addressId: record.addressId,
-    sourceRelayUrls: [...record.sourceRelayUrls],
-  }))
+  return records.map((record) => {
+    const [kind, merchantPubkey] = record.addressId.split(":", 2)
+    const addressDTag =
+      kind === String(EVENT_KINDS.PRODUCT) && merchantPubkey
+        ? getAddressDTag(record.addressId, EVENT_KINDS.PRODUCT, merchantPubkey)
+        : null
+    const productDTag =
+      record.dTag && record.dTag === addressDTag ? record.dTag : null
+    const shippingOptionIds =
+      productDTag && merchantPubkey && record.product
+        ? getMerchantOwnedFixedShippingOptionIds({
+            merchantPubkey,
+            productDTag,
+            product: record.product,
+          })
+        : productDTag && merchantPubkey
+          ? Array.from(
+              new Set(
+                (record.shippingOptionIds ?? []).filter((coordinate) =>
+                  isMerchantOwnedFixedShippingOption({
+                    coordinate,
+                    merchantPubkey,
+                    productDTag,
+                  })
+                )
+              )
+            )
+          : []
+    return {
+      eventId: record.eventId,
+      ...(productDTag ? { addressId: record.addressId } : {}),
+      sourceRelayUrls: getPreviousShippingSourceRelayUrls({
+        previousShippingOptionIds: shippingOptionIds,
+        previousProduct: record.product ?? {},
+        previousProductSourceRelayUrls: record.sourceRelayUrls,
+        cachedShippingSourceRelayUrls:
+          record.shippingOptionSourceRelayUrls ?? [],
+      }),
+      ...(record.shippingOptionAuthorWriteRelayUrls?.length
+        ? {
+            acknowledgedAuthorWriteRelayUrls:
+              record.shippingOptionAuthorWriteRelayUrls,
+          }
+        : {}),
+      ...(shippingOptionIds.length > 0 ? { shippingOptionIds } : {}),
+      ...(record.eventCreatedAt !== undefined
+        ? { previousEventCreatedAt: record.eventCreatedAt }
+        : {}),
+      ...(record.product?.shippingOptionCreatedAt !== undefined
+        ? {
+            previousShippingOptionCreatedAt:
+              record.product.shippingOptionCreatedAt,
+          }
+        : {}),
+      ...(shippingOptionIds.length > 0 && record.product?.shippingZones
+        ? { previousShippingZones: record.product.shippingZones }
+        : {}),
+    }
+  })
 }
 
 export interface SignedProductWriteBundle {
@@ -584,15 +1163,32 @@ export async function signAndPublishProductWriteBundle(input: {
   }
   const productEvents = writes.map((write) => write.productEvent)
   const events: NDKEvent[] = [...productEvents]
-  if ((input.deletions?.length ?? 0) > 0) {
+  const obsoleteShippingOptionIds = getObsoleteShippingOptionIds({
+    merchantPubkey: signerPubkey,
+    listings: input.listings,
+    deletions: input.deletions,
+  })
+  if (
+    (input.deletions?.length ?? 0) > 0 ||
+    obsoleteShippingOptionIds.length > 0
+  ) {
     const draft = buildProductDeletionEventDraft({
       merchantPubkey: signerPubkey,
       targets: input.deletions ?? [],
+      shippingOptionCoordinates: obsoleteShippingOptionIds,
       clientAppId: "merchant",
     })
     const deletion = new NDKEvent(ndk)
     deletion.kind = draft.kind
-    deletion.created_at = Math.floor(Date.now() / 1000)
+    deletion.created_at = getProductDeletionCreatedAt({
+      nowMs: Date.now(),
+      newlySignedEvents: writes.flatMap((write) => [
+        write.productEvent,
+        ...write.shippingEvents,
+      ]),
+      listings: input.listings,
+      deletions: input.deletions,
+    })
     deletion.content = draft.content
     deletion.tags = draft.tags
     await deletion.sign(signer)
@@ -600,16 +1196,21 @@ export async function signAndPublishProductWriteBundle(input: {
   }
 
   for (const write of writes) {
-    if (!write.shippingEvent) continue
-    const delivery = await publishWithPlanner(write.shippingEvent, {
-      intent: "author_event",
-      authorPubkey: signerPubkey,
-      authenticatedPubkey: signerPubkey,
-      deliveryMode: "critical",
-    })
-    if (delivery.successfulRelayUrls.length === 0) {
-      throw new Error(
-        "Fixed shipping was not acknowledged by a relay. Product publication was stopped."
+    for (const shippingEvent of write.shippingEvents) {
+      const delivery = await publishWithPlanner(shippingEvent, {
+        intent: "author_event",
+        authorPubkey: signerPubkey,
+        authenticatedPubkey: signerPubkey,
+        deliveryMode: "critical",
+      })
+      if (delivery.successfulRelayUrls.length === 0) {
+        throw new Error(
+          "Fixed shipping was not acknowledged by a relay. Product publication was stopped."
+        )
+      }
+      await cacheSignedShippingOptionEvent(
+        shippingEvent,
+        delivery.successfulRelayUrls
       )
     }
   }
@@ -631,18 +1232,30 @@ export async function signAndPublishProductWriteBundle(input: {
     const sourceRelayUrls = mergeRelayUrls(
       ...(input.deletions ?? []).map(
         (deletion) => deletion.sourceRelayUrls ?? []
+      ),
+      ...input.listings.map(
+        (listing) => listing.previousShippingSourceRelayUrls ?? []
+      )
+    )
+    const acknowledgedAuthorWriteRelayUrls = mergeRelayUrls(
+      ...(input.deletions ?? []).map(
+        (deletion) => deletion.acknowledgedAuthorWriteRelayUrls ?? []
+      ),
+      ...input.listings.map(
+        (listing) => listing.previousShippingAuthorWriteRelayUrls ?? []
       )
     )
     const deliveryJob = await persistSignedProductDeletion(
       {
         signedEvent: deletionEvent.rawEvent() as SignedPublicNostrEvent,
         currentWriteRelayUrls,
+        acknowledgedAuthorWriteRelayUrls,
         sourceRelayUrls,
       },
       input.deletionDeliveryOptions
     )
     deletionDeliveryJobId = deliveryJob.id
-    await cacheSignedProductDeletionEvent(deletionEvent)
+    await cacheSignedMerchantDeletionEvent(deletionEvent)
   }
 
   const signedBundle: SignedProductWriteBundle = {
@@ -666,6 +1279,11 @@ export async function signAndPublishProductListing(input: {
   product: ProductSchema
   dTag: string
   previousEventCreatedAt?: number
+  previousShippingOptionCreatedAt?: number
+  previousShippingOptionIds?: readonly string[]
+  previousShippingZones?: ProductSchema["shippingZones"]
+  previousShippingSourceRelayUrls?: readonly string[]
+  previousShippingAuthorWriteRelayUrls?: readonly string[]
   fulfillmentIntent: ProductFulfillmentIntent
   onSignedLocal: (event: NDKEvent) => Promise<void>
 }): Promise<PublishWithPlannerResult> {
@@ -676,6 +1294,12 @@ export async function signAndPublishProductListing(input: {
         product: input.product,
         dTag: input.dTag,
         previousEventCreatedAt: input.previousEventCreatedAt,
+        previousShippingOptionCreatedAt: input.previousShippingOptionCreatedAt,
+        previousShippingOptionIds: input.previousShippingOptionIds,
+        previousShippingZones: input.previousShippingZones,
+        previousShippingSourceRelayUrls: input.previousShippingSourceRelayUrls,
+        previousShippingAuthorWriteRelayUrls:
+          input.previousShippingAuthorWriteRelayUrls,
         fulfillmentIntent: input.fulfillmentIntent,
       },
     ],

@@ -45,9 +45,12 @@ export interface Product {
     currency: string
     normalizedCurrency: string
   }
-  /** Addressable kind-30406 shipping option reference attached by the merchant. */
+  /** Selected/read-compatible kind-30406 shipping option reference. */
   shippingOptionId?: string
   shippingOptionDTag?: string
+  /** All exact kind-30406 options referenced by the product. */
+  shippingOptionIds?: string[]
+  shippingOptionDTags?: string[]
   /** True when the product reference uses a launch-unsupported Gamma shape. */
   shippingOptionLaunchUnsupported?: boolean
   /** Repeated Gamma shipping_option references in signed tag order. */
@@ -61,10 +64,28 @@ export interface Product {
     name: string
     restrictTo: string[]
     exclude: string[]
+    includeCountry?: boolean
+    includeSubdivisions?: string[]
+    excludeSubdivisions?: string[]
+    excludeCountry?: boolean
+  }>
+  /** Resolved option policies before a buyer destination selects one rate. */
+  shippingZones?: Array<{
+    shippingOptionId: string
+    shippingOptionDTag: string
+    amount: number
+    currency: string
+    countries: string[]
+    countryRules: NonNullable<Product["shippingCountryRules"]>
+    destinationSchema?: string
+    /** Preserves the original single-option coordinate during edit round trips. */
+    usesProductFallback?: boolean
+    /** Relays that returned or acknowledged this exact option coordinate. */
+    sourceRelayUrls?: string[]
   }>
   /** True only after exact kind-30406 resolution prepared this product. */
   canonicalShippingResolved?: boolean
-  /** Timestamp of the exact resolved kind-30406 revision. */
+  /** Timestamp of the newest exact resolved kind-30406 revision. */
   shippingOptionCreatedAt?: number
   visibility: "public" | "private"
   stock?: number
@@ -135,7 +156,12 @@ export interface OrderItem {
     name: string
     restrictTo: string[]
     exclude: string[]
+    includeCountry?: boolean
+    includeSubdivisions?: string[]
+    excludeSubdivisions?: string[]
+    excludeCountry?: boolean
   }>
+  shippingDestinationSchema?: string
   sourcePrice?: {
     amount: number
     currency: string

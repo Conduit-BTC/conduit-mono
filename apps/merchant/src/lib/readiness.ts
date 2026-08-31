@@ -194,6 +194,19 @@ export interface ShippingCountryConfig {
   restrictTo: string[]
   /** Postal code / prefix patterns that are excluded */
   exclude: string[]
+  /** Preserve an explicit whole-country include alongside narrower selectors. */
+  includeCountry?: boolean
+  /** Complete ISO 3166-2 subdivisions included instead of the whole country. */
+  includeSubdivisions?: string[]
+  /** Complete ISO 3166-2 subdivisions excluded from this destination. */
+  excludeSubdivisions?: string[]
+  /** Versioned policies may explicitly subtract the whole country. */
+  excludeCountry?: boolean
+  /** Optional destination-specific flat rate. Blank inherits the product rate. */
+  rate?: {
+    amount: string
+    currency: string
+  }
 }
 
 export interface ShippingConfig {
@@ -230,11 +243,37 @@ function normalizeShippingConfig(value: unknown): ShippingConfig {
           name?: unknown
           restrictTo?: unknown
           exclude?: unknown
+          includeCountry?: unknown
+          includeSubdivisions?: unknown
+          excludeSubdivisions?: unknown
+          excludeCountry?: unknown
+          rate?: unknown
         }
         if (typeof maybeCountry.code !== "string") return []
         const code = maybeCountry.code.trim().toUpperCase()
         if (!code) return []
         const country = SHIPPING_COUNTRIES.find((entry) => entry.code === code)
+        const maybeRate =
+          maybeCountry.rate && typeof maybeCountry.rate === "object"
+            ? (maybeCountry.rate as { amount?: unknown; currency?: unknown })
+            : null
+        const rawAmount = maybeRate?.amount
+        const amount =
+          typeof rawAmount === "number" && Number.isFinite(rawAmount)
+            ? String(rawAmount)
+            : typeof rawAmount === "string"
+              ? rawAmount.trim()
+              : ""
+        const currency =
+          typeof maybeRate?.currency === "string"
+            ? maybeRate.currency.trim().toUpperCase()
+            : ""
+        const includeSubdivisions = toStringArray(
+          maybeCountry.includeSubdivisions
+        )
+        const excludeSubdivisions = toStringArray(
+          maybeCountry.excludeSubdivisions
+        )
         return [
           {
             code,
@@ -244,6 +283,15 @@ function normalizeShippingConfig(value: unknown): ShippingConfig {
                 : (country?.name ?? code),
             restrictTo: toStringArray(maybeCountry.restrictTo),
             exclude: toStringArray(maybeCountry.exclude),
+            ...(maybeCountry.includeCountry === true
+              ? { includeCountry: true }
+              : {}),
+            ...(includeSubdivisions.length > 0 ? { includeSubdivisions } : {}),
+            ...(excludeSubdivisions.length > 0 ? { excludeSubdivisions } : {}),
+            ...(maybeCountry.excludeCountry === true
+              ? { excludeCountry: true }
+              : {}),
+            ...(amount && currency ? { rate: { amount, currency } } : {}),
           },
         ]
       }
@@ -299,6 +347,9 @@ export function isShippingComplete(config: ShippingConfig): boolean {
 export function shippingOptionToConfig(
   option: ParsedShippingOption
 ): ShippingConfig {
+  // `conduit-default` predates per-destination preset rates. Its one option
+  // price cannot be projected onto every country without changing existing
+  // merchants' authoring intent, so remote hydration restores policy only.
   return {
     countries: option.countryRules.map((rule) => {
       const country = SHIPPING_COUNTRIES.find(
@@ -309,6 +360,14 @@ export function shippingOptionToConfig(
         name: country?.name ?? rule.name,
         restrictTo: rule.restrictTo,
         exclude: rule.exclude,
+        ...(rule.includeCountry ? { includeCountry: true } : {}),
+        ...(rule.includeSubdivisions?.length
+          ? { includeSubdivisions: rule.includeSubdivisions }
+          : {}),
+        ...(rule.excludeSubdivisions?.length
+          ? { excludeSubdivisions: rule.excludeSubdivisions }
+          : {}),
+        ...(rule.excludeCountry ? { excludeCountry: true } : {}),
       }
     }),
   }

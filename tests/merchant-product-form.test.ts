@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test"
+import { compileProductFulfillmentIntent } from "@conduit/core"
 import {
   addProductTags,
   buildProductShippingMetadata,
@@ -60,9 +61,17 @@ describe("merchant product form validation", () => {
   it("uses one product-scoped wire identity for preset and custom fixed shipping", () => {
     const fixedIntent = {
       kind: "fixed_standard" as const,
-      amount: 5,
-      currency: "USD",
-      countries: ["US"],
+      zones: [
+        {
+          amount: 5,
+          currency: "USD",
+          countries: ["US"],
+          countryRules: [
+            { code: "US", name: "US", restrictTo: [], exclude: [] },
+          ],
+          usesProductFallback: true,
+        },
+      ],
     }
     const presetMetadata = buildProductShippingMetadata(
       "merchant",
@@ -78,6 +87,8 @@ describe("merchant product form validation", () => {
     expect(presetMetadata).toEqual({
       shippingOptionId: "30406:merchant:pocket-node-shipping-standard",
       shippingOptionDTag: "pocket-node-shipping-standard",
+      shippingOptionIds: ["30406:merchant:pocket-node-shipping-standard"],
+      shippingOptionDTags: ["pocket-node-shipping-standard"],
       shippingCountries: ["US"],
       shippingCountryRules: [
         {
@@ -90,6 +101,92 @@ describe("merchant product form validation", () => {
     })
     expect(customMetadata).toEqual(presetMetadata)
     expect(isProductUsingPresetShippingZone(presetMetadata, true)).toBe(false)
+  })
+
+  it("compiles saved per-destination preset rates into product shipping options", () => {
+    const presetShippingConfig = {
+      countries: [
+        {
+          code: "US",
+          name: "United States",
+          restrictTo: [],
+          exclude: [],
+          rate: { amount: "5", currency: "USD" },
+        },
+        {
+          code: "CA",
+          name: "Canada",
+          restrictTo: [],
+          exclude: [],
+          rate: { amount: "9", currency: "USD" },
+        },
+      ],
+    }
+    const validation = validateProductPublishForm(
+      form({
+        shippingPricingMode: "fixed",
+        shippingCost: "",
+        usePresetShippingZone: true,
+      }),
+      {
+        hasPresetShippingZone: true,
+        presetShippingConfig,
+      }
+    )
+    const intent = compileProductFulfillmentIntent({
+      format: "physical",
+      shippingPricingMode: "fixed",
+      currency: "USD",
+      destinations: presetShippingConfig.countries.map(
+        ({ rate, ...destination }) => ({
+          ...destination,
+          rate: { amount: Number(rate.amount), currency: rate.currency },
+        })
+      ),
+    })
+    const metadata = buildProductShippingMetadata(
+      "merchant",
+      "pocket-node",
+      intent
+    )
+
+    expect(validation.canPublish).toBe(true)
+    expect(metadata.shippingOptionIds).toHaveLength(2)
+    expect(metadata.shippingOptionDTags).toHaveLength(2)
+    expect(metadata.shippingCountries).toEqual(["CA", "US"])
+  })
+
+  it("rejects preset rates that would be rounded for their currency", () => {
+    const validateRate = (amount: string, currency: string) =>
+      validateProductPublishForm(
+        form({
+          currency,
+          shippingPricingMode: "fixed",
+          shippingCost: "",
+          usePresetShippingZone: true,
+        }),
+        {
+          hasPresetShippingZone: true,
+          presetShippingConfig: {
+            countries: [
+              {
+                code: "US",
+                name: "United States",
+                restrictTo: [],
+                exclude: [],
+                rate: { amount, currency },
+              },
+            ],
+          },
+        }
+      )
+
+    expect(validateRate("6.666", "USD").errors.shippingZone).toContain(
+      "USD supports up to 2 decimal places"
+    )
+    expect(validateRate("1.5", "SATS").errors.shippingZone).toContain(
+      "SATS amounts must be whole numbers"
+    )
   })
 
   it("does not emit shipping metadata for order-first fulfillment", () => {

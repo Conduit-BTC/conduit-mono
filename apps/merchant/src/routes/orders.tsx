@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   buildOrderStatusTimeline,
   clearProtectedReadAuthenticationSuppression,
-  compileProductFulfillmentIntent,
   CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG,
   convertCommerceAmountToSats,
   decodeLightningInvoiceAmount,
@@ -126,8 +125,11 @@ import {
   type ProductDeliveryNotice,
 } from "../lib/product-delivery"
 import {
+  compileResolvedShippingZones,
   deliverSignedProductEvent,
   getRelayPublishDiagnosticsError,
+  hasEventPickupReferences,
+  prepareResolvedFixedShippingRepublish,
   signAndPublishProductListing,
   SignedProductDeliveryError,
 } from "../lib/product-publishing"
@@ -171,10 +173,42 @@ import {
 
 type OrdersSearch = { order?: string; queue?: OrderQueueTab }
 
-async function resolveStockUpdateFulfillmentIntent(
+type StockUpdatePublishPlan = {
+  fulfillmentIntent: ProductFulfillmentIntent
+  previousShippingOptionCreatedAt?: number
+  previousShippingOptionIds: readonly string[]
+  previousShippingZones?: ProductSchema["shippingZones"]
+  previousShippingSourceRelayUrls: readonly string[]
+}
+
+function stockUpdatePublishPlan(
+  fulfillmentIntent: ProductFulfillmentIntent
+): StockUpdatePublishPlan {
+  return {
+    fulfillmentIntent,
+    previousShippingOptionIds: [],
+    previousShippingSourceRelayUrls: [],
+  }
+}
+
+async function resolveStockUpdatePublishPlan(input: {
+  merchantPubkey: string
+  productDTag: string
+  productSourceRelayUrls: readonly string[]
   product: ProductSchema
-): Promise<ProductFulfillmentIntent> {
-  if (product.format === "digital") return { kind: "digital" }
+}): Promise<StockUpdatePublishPlan> {
+  const { product } = input
+  if (product.format === "digital") {
+    return stockUpdatePublishPlan({ kind: "digital" })
+  }
+  if (
+    hasEventPickupReferences(product, {
+      merchantPubkey: input.merchantPubkey,
+      productDTag: input.productDTag,
+    })
+  ) {
+    return stockUpdatePublishPlan({ kind: "coordinate_after_order" })
+  }
 
   const legacyShippingAmount =
     product.sourceShippingCost?.amount ?? product.shippingCostSats
@@ -191,41 +225,58 @@ async function resolveStockUpdateFulfillmentIntent(
           restrictTo: [],
           exclude: [],
         }))
-    return compileProductFulfillmentIntent({
-      format: "physical",
-      shippingPricingMode: "fixed",
-      amount: legacyShippingAmount,
-      currency:
-        product.sourceShippingCost?.normalizedCurrency ??
-        product.sourceShippingCost?.currency ??
-        "SATS",
-      destinations,
-    })
+    const legacyZones = [
+      {
+        shippingOptionId: product.shippingOptionId ?? "legacy-inline",
+        shippingOptionDTag: product.shippingOptionDTag ?? "legacy-inline",
+        amount: legacyShippingAmount,
+        currency:
+          product.sourceShippingCost?.normalizedCurrency ??
+          product.sourceShippingCost?.currency ??
+          "SATS",
+        countries: destinations.map((destination) => destination.code),
+        countryRules: destinations,
+      },
+    ]
+    const intent = compileResolvedShippingZones(legacyZones)
+    if (!intent) {
+      throw new Error(
+        "Could not preserve this listing's fixed shipping policy. Review the listing before updating stock."
+      )
+    }
+    return stockUpdatePublishPlan(intent)
   }
 
-  if (product.shippingOptionId) {
-    const shippingOptions = await getShippingOptionsByCoordinates([
-      product.shippingOptionId,
-    ])
+  const shippingOptionIds = product.shippingOptionIds?.length
+    ? product.shippingOptionIds
+    : product.shippingOptionId
+      ? [product.shippingOptionId]
+      : []
+  if (shippingOptionIds.length > 0) {
+    const shippingOptions =
+      await getShippingOptionsByCoordinates(shippingOptionIds)
     const prepared = resolveProductFulfillment(product, shippingOptions)
+    const resolvedOptions =
+      prepared.options ?? (prepared.option ? [prepared.option] : [])
     if (
       prepared.intent !== "fixed_standard" ||
       prepared.status !== "ready" ||
-      !prepared.option
+      resolvedOptions.length === 0
     ) {
       throw new Error(
         "Could not verify this listing's fixed shipping option. Review the listing before updating stock."
       )
     }
-    return {
-      kind: "fixed_standard",
-      amount: prepared.option.price,
-      currency: prepared.option.currency,
-      countries: [...prepared.option.countries],
-    }
+    return prepareResolvedFixedShippingRepublish({
+      merchantPubkey: input.merchantPubkey,
+      productDTag: input.productDTag,
+      product,
+      prepared,
+      previousProductSourceRelayUrls: input.productSourceRelayUrls,
+    })
   }
 
-  return { kind: "coordinate_after_order" }
+  return stockUpdatePublishPlan({ kind: "coordinate_after_order" })
 }
 
 type StockDeliveryState = {
@@ -1606,9 +1657,12 @@ function OrdersPage() {
         throw new Error("Stock must be a non-negative safe integer.")
       }
 
-      const fulfillmentIntent = await resolveStockUpdateFulfillmentIntent(
-        record.product
-      )
+      const publishPlan = await resolveStockUpdatePublishPlan({
+        merchantPubkey: pubkey,
+        productDTag: record.dTag,
+        productSourceRelayUrls: record.sourceRelayUrls ?? [],
+        product: record.product,
+      })
       let signedEvent: SignedPublicNostrEvent | null = null
       const delivery = await signAndPublishProductListing({
         merchantPubkey: pubkey,
@@ -1619,7 +1673,13 @@ function OrdersPage() {
         },
         dTag: record.dTag,
         previousEventCreatedAt: record.eventCreatedAt,
-        fulfillmentIntent,
+        previousShippingOptionCreatedAt:
+          publishPlan.previousShippingOptionCreatedAt,
+        previousShippingOptionIds: publishPlan.previousShippingOptionIds,
+        previousShippingZones: publishPlan.previousShippingZones,
+        previousShippingSourceRelayUrls:
+          publishPlan.previousShippingSourceRelayUrls,
+        fulfillmentIntent: publishPlan.fulfillmentIntent,
         onSignedLocal: async (event) => {
           const rawEvent = event.rawEvent() as SignedPublicNostrEvent
           signedEvent = rawEvent

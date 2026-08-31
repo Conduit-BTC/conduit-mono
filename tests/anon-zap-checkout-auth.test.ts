@@ -44,6 +44,7 @@ function productEvent(
     shippingCurrency?: string
     shippingCountries?: string[]
     canonicalShipping?: boolean
+    shippingDTags?: string[]
     dTag?: string
   } = {}
 ): SignedPublicNostrEvent {
@@ -63,10 +64,11 @@ function productEvent(
   }
   if (shippingCost !== undefined && shippingCost !== null) {
     if (overrides.canonicalShipping) {
-      tags.push([
-        "shipping_option",
-        `30406:${MERCHANT_PUBKEY}:${overrides.dTag ?? PRODUCT_D_TAG}-shipping-standard`,
-      ])
+      for (const dTag of overrides.shippingDTags ?? [
+        `${overrides.dTag ?? PRODUCT_D_TAG}-shipping-standard`,
+      ]) {
+        tags.push(["shipping_option", `30406:${MERCHANT_PUBKEY}:${dTag}`])
+      }
     } else {
       tags.push([
         "shipping_cost",
@@ -96,6 +98,7 @@ function shippingEvent(
     currency?: string
     countries?: string[]
     dTag?: string
+    exactDTag?: string
     omitService?: boolean
   } = {}
 ): SignedPublicNostrEvent {
@@ -103,7 +106,11 @@ function shippingEvent(
     kind: 30406,
     createdAt: overrides.createdAt,
     tags: [
-      ["d", `${overrides.dTag ?? PRODUCT_D_TAG}-shipping-standard`],
+      [
+        "d",
+        overrides.exactDTag ??
+          `${overrides.dTag ?? PRODUCT_D_TAG}-shipping-standard`,
+      ],
       ["title", "Standard Shipping"],
       ["price", String(overrides.price ?? 5), overrides.currency ?? "SATS"],
       ["country", ...(overrides.countries ?? ["US"])],
@@ -142,11 +149,23 @@ describe("anonymous public zap checkout authorization", () => {
     expect(
       parseAnonZapCheckoutIntent({
         merchantPubkey: MERCHANT_PUBKEY.toUpperCase(),
-        items: [{ productAddress: PRODUCT_ADDRESS, quantity: 2 }],
+        items: [
+          {
+            productAddress: PRODUCT_ADDRESS,
+            quantity: 2,
+            shippingOptionId: `30406:${MERCHANT_PUBKEY}:${PRODUCT_D_TAG}-shipping-standard`,
+          },
+        ],
       })
     ).toEqual({
       merchantPubkey: MERCHANT_PUBKEY,
-      items: [{ productAddress: PRODUCT_ADDRESS, quantity: 2 }],
+      items: [
+        {
+          productAddress: PRODUCT_ADDRESS,
+          quantity: 2,
+          shippingOptionId: `30406:${MERCHANT_PUBKEY}:${PRODUCT_D_TAG}-shipping-standard`,
+        },
+      ],
     })
 
     expect(
@@ -154,6 +173,19 @@ describe("anonymous public zap checkout authorization", () => {
         merchantPubkey: MERCHANT_PUBKEY,
         amountMsats: 20_000,
         items: [{ productAddress: PRODUCT_ADDRESS, quantity: 2 }],
+      })
+    ).toBeNull()
+
+    expect(
+      parseAnonZapCheckoutIntent({
+        merchantPubkey: MERCHANT_PUBKEY,
+        items: [
+          {
+            productAddress: PRODUCT_ADDRESS,
+            quantity: 1,
+            shippingOptionId: `30406:${"c".repeat(64)}:other-merchant`,
+          },
+        ],
       })
     ).toBeNull()
 
@@ -281,6 +313,47 @@ describe("anonymous public zap checkout authorization", () => {
         shippingEvents: [shippingEvent({ createdAt: NOW_SECONDS - 59 })],
       })
     ).toThrow("Checkout product requires merchant-coordinated shipping.")
+  })
+
+  it("prices a multi-rate listing from the exact selected public option", () => {
+    const usDTag = `${PRODUCT_D_TAG}-shipping-us`
+    const caDTag = `${PRODUCT_D_TAG}-shipping-ca`
+    const caOptionId = `30406:${MERCHANT_PUBKEY}:${caDTag}`
+    const result = authorize({
+      intent: {
+        merchantPubkey: MERCHANT_PUBKEY,
+        items: [
+          {
+            productAddress: PRODUCT_ADDRESS,
+            quantity: 1,
+            shippingOptionId: caOptionId,
+          },
+        ],
+      },
+      productEvents: [
+        productEvent({
+          shippingCost: 5,
+          canonicalShipping: true,
+          shippingDTags: [usDTag, caDTag],
+        }),
+      ],
+      shippingEvents: [
+        shippingEvent({ exactDTag: usDTag, price: 5, countries: ["US"] }),
+        shippingEvent({ exactDTag: caDTag, price: 9, countries: ["CA"] }),
+      ],
+    })
+
+    expect(result.pricing).toMatchObject({
+      shippingCostSats: 9,
+      totalSats: 19,
+      items: [
+        {
+          shippingOptionId: caOptionId,
+          unitShippingSats: 9,
+          shippingCountryRules: [{ code: "CA", restrictTo: [], exclude: [] }],
+        },
+      ],
+    })
   })
 
   it("rejects a canonical shipping option deleted by address or exact event id", () => {

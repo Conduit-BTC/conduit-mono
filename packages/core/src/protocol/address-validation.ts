@@ -29,11 +29,7 @@ export interface AddressForValidation {
 }
 
 export type AddressValidityStatus =
-  | "not_required"
-  | "valid"
-  | "missing"
-  | "inconsistent"
-  | "unknown"
+  "not_required" | "valid" | "missing" | "inconsistent" | "unknown"
 
 export type AddressConfidenceLevel =
   | "not_required"
@@ -110,7 +106,17 @@ export const ADDRESS_VALIDATION_V1_COUNTRIES = [
   "NZ",
 ] as const
 
-type ProfiledCountryCode = (typeof ADDRESS_VALIDATION_V1_COUNTRIES)[number]
+export type AddressValidationV1Country =
+  (typeof ADDRESS_VALIDATION_V1_COUNTRIES)[number]
+
+export interface AddressSubdivisionOption {
+  /** Complete ISO 3166-2 code, including the country prefix. */
+  code: string
+  /** Human-readable subdivision name from Conduit's local validation profile. */
+  name: string
+}
+
+type ProfiledCountryCode = AddressValidationV1Country
 
 type RegionPrefixRule = {
   prefix: string | RegExp | ((postalCode: string) => boolean)
@@ -411,6 +417,59 @@ const NZ_REGION_CODES = new Set(Object.values(NZ_REGION_NAME_TO_CODE))
 /** Normalize a free-text US state into its 2-letter code, or `null`. */
 export function normalizeUsState(input: string | undefined): string | null {
   return normalizeRegion(input, US_STATE_NAME_TO_CODE, US_STATE_CODES)
+}
+
+function titleCaseWords(value: string): string {
+  return value.replace(/\b\p{L}/gu, (letter) =>
+    letter.toLocaleUpperCase("en-US")
+  )
+}
+
+/**
+ * Return the exact subdivision choices Conduit can validate locally for
+ * destination-policy authoring. An empty list means country-wide and postal
+ * policies may still be supported, but subdivision predicates are not.
+ */
+export function getAddressSubdivisionOptions(
+  country: string
+): AddressSubdivisionOption[] {
+  const normalizedCountry = normalizeHumanText(country).toUpperCase()
+  const profile = getProfile(normalizedCountry)
+  if (!profile || profile.regionCodes.size === 0) return []
+
+  const nameByCode = new Map<string, string>()
+  for (const [name, code] of Object.entries(profile.regionAliases)) {
+    if (!nameByCode.has(code)) nameByCode.set(code, titleCaseWords(name))
+  }
+  return Array.from(profile.regionCodes)
+    .sort()
+    .map((code) => ({
+      code: `${normalizedCountry}-${code}`,
+      name: nameByCode.get(code) ?? code,
+    }))
+}
+
+/** Normalize a buyer-entered region to a complete ISO 3166-2 code. */
+export function normalizeAddressSubdivisionCode(
+  country: string,
+  input: string | undefined
+): string | null {
+  const normalizedCountry = normalizeHumanText(country).toUpperCase()
+  const profile = getProfile(normalizedCountry)
+  if (!profile || profile.regionCodes.size === 0) return null
+  const code = normalizeRegion(
+    input,
+    profile.regionAliases,
+    profile.regionCodes
+  )
+  return code ? `${normalizedCountry}-${code}` : null
+}
+
+export function supportsAddressPostalPolicy(country: string): boolean {
+  const normalizedCountry = normalizeHumanText(country).toUpperCase()
+  return ADDRESS_VALIDATION_V1_COUNTRIES.includes(
+    normalizedCountry as AddressValidationV1Country
+  )
 }
 
 function normalizeRegion(

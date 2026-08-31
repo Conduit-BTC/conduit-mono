@@ -39,6 +39,7 @@ import {
 } from "./signed-event"
 import {
   publishSignedEventFrameToRelay,
+  type ExactRelayAuthSigner,
   type ExactRelayWriteStatus,
 } from "./relay-writer"
 import { normalizePublicWebSocketUrl } from "../network-target-safety"
@@ -543,6 +544,8 @@ interface ExactRelayTargetInput {
 
 export interface ExactRelayPublishInput extends ExactRelayTargetInput {
   signedEvent: SignedPublicNostrEvent
+  signAuthEvent?: ExactRelayAuthSigner
+  createWebSocket?: (relayUrl: string) => WebSocket
 }
 
 function resolveExactRelayTarget(input: ExactRelayTargetInput): string {
@@ -588,6 +591,8 @@ export async function publishSignedEventToRelay(
     signedEvent: input.signedEvent,
     relayUrl,
     timeoutMs: CRITICAL_PUBLISH_TIMEOUT_MS,
+    signAuthEvent: input.signAuthEvent,
+    createWebSocket: input.createWebSocket,
   })
   if (status === "acked") recordRelaySuccess(relayUrl)
   else recordRelayFailure(relayUrl)

@@ -440,6 +440,30 @@ describe("product listing event drafts", () => {
     expectTag(draft.tags, ["k", String(EVENT_KINDS.PRODUCT)])
   })
 
+  it("adds exact same-merchant shipping coordinates to a deletion request", () => {
+    const merchantPubkey = "e".repeat(64)
+    const shippingCoordinate = `30406:${merchantPubkey}:conduit-tee-shipping-old`
+    const draft = buildProductDeletionEventDraft({
+      merchantPubkey,
+      targets: [],
+      shippingOptionCoordinates: [shippingCoordinate, shippingCoordinate],
+      clientAppId: "merchant",
+    })
+
+    expect(draft.tags.filter((tag) => tag[0] === "a")).toEqual([
+      ["a", shippingCoordinate],
+    ])
+    expectTag(draft.tags, ["k", String(EVENT_KINDS.SHIPPING_OPTION)])
+    expect(draft.tags.some((tag) => tag[0] === "e")).toBe(false)
+    expect(() =>
+      buildProductDeletionEventDraft({
+        merchantPubkey,
+        targets: [],
+        shippingOptionCoordinates: [`30406:${"f".repeat(64)}:foreign-shipping`],
+      })
+    ).toThrow("same-merchant kind-30406")
+  })
+
   it("does not infer wire shipping intent from inline product cost", () => {
     const includedDraft = buildProductListingEventDraft({
       product: baseProduct({
@@ -493,6 +517,41 @@ describe("product listing event drafts", () => {
 
     expect(draft.tags.some((tag) => tag[0] === "shipping_cost")).toBe(false)
     expectTag(draft.tags, ["shipping_option", "30406:merchant:standard"])
+  })
+
+  it("keeps signed pickup references authoritative over fixed projections", () => {
+    const merchantPubkey = "a".repeat(64)
+    const organizerPubkey = "b".repeat(64)
+    const pickupCoordinate = `30406:${merchantPubkey}:market-pickup`
+    const projectedFixedCoordinate = `30406:${merchantPubkey}:product-shipping-standard`
+    const collectionCoordinate = `30405:${organizerPubkey}:market`
+    const draft = buildProductListingEventDraft({
+      product: baseProduct({
+        id: `30402:${merchantPubkey}:product`,
+        pubkey: merchantPubkey,
+        collectionRefs: [collectionCoordinate],
+        shippingOptionId: projectedFixedCoordinate,
+        shippingOptionIds: [projectedFixedCoordinate],
+        shippingOptionRefs: [
+          {
+            coordinate: pickupCoordinate,
+            extraCost: {
+              amount: 3,
+              currency: "USD",
+              normalizedCurrency: "USD",
+            },
+          },
+        ],
+      }),
+      dTag: "product",
+    })
+
+    expectTag(draft.tags, ["a", collectionCoordinate])
+    expectTag(draft.tags, ["shipping_option", pickupCoordinate, "3"])
+    expect(draft.tags).not.toContainEqual([
+      "shipping_option",
+      projectedFixedCoordinate,
+    ])
   })
 
   it("keeps fiat shipping cost only on the referenced option", () => {

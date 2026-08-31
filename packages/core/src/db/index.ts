@@ -30,12 +30,17 @@ export interface StoredOrder {
     }
     shippingOptionId?: string
     shippingOptionDTag?: string
+    shippingDestinationSchema?: string
     shippingCountries?: string[]
     shippingCountryRules?: Array<{
       code: string
       name: string
       restrictTo: string[]
       exclude: string[]
+      includeCountry?: boolean
+      includeSubdivisions?: string[]
+      excludeSubdivisions?: string[]
+      excludeCountry?: boolean
     }>
     sourcePrice?: {
       amount: number
@@ -101,6 +106,8 @@ export interface CachedProduct {
   }
   shippingOptionId?: string
   shippingOptionDTag?: string
+  shippingOptionIds?: string[]
+  shippingOptionDTags?: string[]
   /** Parsed evidence that the signed product used a launch-unsupported reference shape. */
   shippingOptionLaunchUnsupported?: boolean
   shippingOptionRefs?: ProductShippingOptionReference[]
@@ -111,6 +118,30 @@ export interface CachedProduct {
     name: string
     restrictTo: string[]
     exclude: string[]
+    includeCountry?: boolean
+    includeSubdivisions?: string[]
+    excludeSubdivisions?: string[]
+    excludeCountry?: boolean
+  }>
+  shippingZones?: Array<{
+    shippingOptionId: string
+    shippingOptionDTag: string
+    amount: number
+    currency: string
+    countries: string[]
+    countryRules: Array<{
+      code: string
+      name: string
+      restrictTo: string[]
+      exclude: string[]
+      includeCountry?: boolean
+      includeSubdivisions?: string[]
+      excludeSubdivisions?: string[]
+      excludeCountry?: boolean
+    }>
+    destinationSchema?: string
+    usesProductFallback?: boolean
+    sourceRelayUrls?: string[]
   }>
   visibility?: "public" | "private"
   stock?: number
@@ -152,6 +183,10 @@ export interface CachedShippingOptionFrontier {
   dTag: string
   strongestCreatedAt: number
   signedEvents: SignedPublicNostrEvent[]
+  /** Relays that returned or acknowledged this option coordinate. */
+  sourceRelayUrls?: string[]
+  /** Relays that positively acknowledged a Merchant-authored option write. */
+  authorWriteRelayUrls?: string[]
   cachedAt: number
 }
 
@@ -641,11 +676,16 @@ export interface OrderLifecycleItem {
   }
   shippingOptionId?: string
   shippingOptionDTag?: string
+  shippingDestinationSchema?: string
   /** Signed listing shipping-rule snapshot used to guard payment retries. */
   shippingCountryRules?: Array<{
     code: string
     restrictTo: string[]
     exclude: string[]
+    includeCountry?: boolean
+    includeSubdivisions?: string[]
+    excludeSubdivisions?: string[]
+    excludeCountry?: boolean
   }>
   sourcePrice?: {
     amount: number

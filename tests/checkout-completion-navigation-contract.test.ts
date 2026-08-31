@@ -222,7 +222,7 @@ describe("checkout completion navigation contracts", () => {
     expect(checkoutRoute).not.toContain("pendingAnonAuthorization")
     expect(checkoutRoute).toContain("for (const item of checkoutPricing.items)")
     expect(checkoutRoute).toContain(
-      "items: buildLifecycleItems(checkoutPricing.items)"
+      "items: buildCheckoutLifecycleItems(checkoutPricing.items)"
     )
   })
 

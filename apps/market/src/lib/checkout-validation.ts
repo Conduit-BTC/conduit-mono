@@ -409,6 +409,7 @@ export type ShippingCheckoutState =
   | "allowed"
   | "country_unsupported"
   | "postal_restricted"
+  | "subdivision_restricted"
 
 export function getShippingCheckoutState(params: {
   isAllDigital: boolean
@@ -417,7 +418,11 @@ export function getShippingCheckoutState(params: {
   shippingOptionsAvailable: boolean
   destinationEligibility:
     | { eligible: true }
-    | { eligible: false; reason: "country_unsupported" | "postal_restricted" }
+    | {
+        eligible: false
+        reason:
+          "country_unsupported" | "postal_restricted" | "subdivision_restricted"
+      }
     | { eligible: null; reason: "unknown" }
 }): ShippingCheckoutState {
   if (params.isAllDigital) return "not_required"
@@ -431,6 +436,9 @@ export function getShippingCheckoutState(params: {
     }
     if (params.destinationEligibility.reason === "postal_restricted") {
       return "postal_restricted"
+    }
+    if (params.destinationEligibility.reason === "subdivision_restricted") {
+      return "subdivision_restricted"
     }
   }
 
@@ -506,6 +514,11 @@ export function getFastCheckoutUnavailableReasons(params: {
       case "postal_restricted":
         reasons.push(
           "Merchant shipping zone does not include this postal code."
+        )
+        break
+      case "subdivision_restricted":
+        reasons.push(
+          "Merchant shipping zone does not include this state or region."
         )
         break
     }

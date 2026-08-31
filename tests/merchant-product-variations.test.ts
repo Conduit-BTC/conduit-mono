@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test"
 import {
   canonicalizeProductPrice,
+  compileProductFulfillmentIntent,
+  getFixedShippingRateZones,
   type ProductFulfillmentIntent,
   type ProductSchema,
 } from "@conduit/core"
@@ -82,14 +84,20 @@ function buildProductFamilyChangePlan(input: ProductFamilyPlanInput) {
       ? { kind: "digital" }
       : typeof amount !== "number"
         ? { kind: "coordinate_after_order" }
-        : {
-            kind: "fixed_standard",
+        : compileProductFulfillmentIntent({
+            format: "physical",
+            shippingPricingMode: "fixed",
             amount,
             currency:
               product.sourceShippingCost?.currency.trim().toUpperCase() ??
               "SATS",
-            countries: authoringCountries,
-          }
+            destinations: authoringCountries.map((code) => ({
+              code,
+              name: code,
+              restrictTo: [],
+              exclude: [],
+            })),
+          })
 
   return buildProductFamilyChangePlanWithFulfillment({
     ...input,
@@ -120,13 +128,18 @@ function toRecord(
 ): ProductListingRecordLike {
   const product =
     target.fulfillmentIntent.kind === "fixed_standard"
-      ? {
-          ...target.product,
-          shippingOptionId: `30406:${MERCHANT_PUBKEY}:${target.dTag}-shipping-standard`,
-          shippingOptionDTag: `${target.dTag}-shipping-standard`,
-          shippingCountries: [...target.fulfillmentIntent.countries],
-          canonicalShippingResolved: true,
-        }
+      ? (() => {
+          const zones = getFixedShippingRateZones(target.fulfillmentIntent)
+          return {
+            ...target.product,
+            shippingOptionId: `30406:${MERCHANT_PUBKEY}:${target.dTag}-shipping-standard`,
+            shippingOptionDTag: `${target.dTag}-shipping-standard`,
+            shippingCountries: Array.from(
+              new Set(zones.flatMap((zone) => zone.countries))
+            ).sort(),
+            canonicalShippingResolved: true,
+          }
+        })()
       : target.product
   return {
     eventId: `event-${index}`,
@@ -324,6 +337,43 @@ describe("merchant product variation planning", () => {
     expect(editedPlan.publish.map(({ dTag }) => dTag)).toEqual(["conduit-tee"])
   })
 
+  it("preserves an unrelated collection when reconstructing a fixed product edit", () => {
+    const collectionCoordinate = `30405:${ORGANIZER_PUBKEY}:catalog`
+    const initialPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct(),
+      variations: createEmptyProductVariationForm(),
+      currency: "USD",
+      now: NOW,
+    })
+    const existing = toFamily(initialPlan)
+    const shippingOptionId = existing.root.product.shippingOptionId!
+    existing.root.product = {
+      ...existing.root.product,
+      collectionRefs: [collectionCoordinate],
+      shippingOptionRefs: [{ coordinate: shippingOptionId }],
+    }
+
+    const editedPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: {
+        ...existing.root.product,
+        title: "Edited Conduit Tee",
+        collectionRefs: undefined,
+        shippingOptionRefs: undefined,
+      },
+      variations: createEmptyProductVariationForm(),
+      currency: "USD",
+      existing,
+      now: NOW + 60_000,
+    })
+
+    expect(editedPlan.publish).toHaveLength(1)
+    expect(editedPlan.publish[0]?.product.collectionRefs).toEqual([
+      collectionCoordinate,
+    ])
+  })
+
   it("publishes only the variation whose fixed shipping amount changes", () => {
     const variations = sizeVariationForm("S, M")
     const medium = getProductVariationCombinations(variations).find(
@@ -411,14 +461,53 @@ describe("merchant product variation planning", () => {
 
     expect(plan.desired[0]?.fulfillmentIntent).toEqual({
       kind: "fixed_standard",
-      amount: 5,
-      currency: "USD",
-      countries: ["US"],
+      zones: [
+        {
+          amount: 5,
+          currency: "USD",
+          countries: ["US"],
+          countryRules: [
+            { code: "US", name: "US", restrictTo: [], exclude: [] },
+          ],
+          usesProductFallback: true,
+        },
+      ],
     })
     expect(mediumTarget?.product.format).toBe("physical")
     expect(mediumTarget?.fulfillmentIntent).toEqual({
       kind: "coordinate_after_order",
     })
+  })
+
+  it("preserves event pickup references for inherited variation fulfillment", () => {
+    const collectionCoordinate = `30405:${ORGANIZER_PUBKEY}:event`
+    const pickupCoordinate = `30406:${MERCHANT_PUBKEY}:conduit-tee-event-pickup`
+    const plan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct({
+        shippingCostSats: undefined,
+        shippingCountries: undefined,
+        collectionRefs: [collectionCoordinate],
+        shippingOptionId: pickupCoordinate,
+        shippingOptionRefs: [{ coordinate: pickupCoordinate }],
+        canonicalShippingResolved: false,
+      }),
+      variations: sizeVariationForm("S"),
+      currency: "USD",
+      now: NOW,
+    })
+
+    expect(plan.desired).toHaveLength(2)
+    for (const target of plan.desired) {
+      expect(target.fulfillmentIntent).toEqual({
+        kind: "coordinate_after_order",
+      })
+      expect(target.product.collectionRefs).toEqual([collectionCoordinate])
+      expect(target.product.shippingOptionId).toBe(pickupCoordinate)
+      expect(target.product.shippingOptionRefs).toEqual([
+        { coordinate: pickupCoordinate },
+      ])
+    }
   })
 
   it("blocks an unrelated family edit while a child's exact shipping option is unresolved", () => {
@@ -593,9 +682,17 @@ describe("merchant product variation planning", () => {
         ?.fulfillmentIntent
     ).toEqual({
       kind: "fixed_standard",
-      amount: 7,
-      currency: "USD",
-      countries: ["US"],
+      zones: [
+        {
+          amount: 7,
+          currency: "USD",
+          countries: ["US"],
+          countryRules: [
+            { code: "US", name: "US", restrictTo: [], exclude: [] },
+          ],
+          usesProductFallback: true,
+        },
+      ],
     })
 
     const revertedReplacement = updateProductVariationOverride(
@@ -677,21 +774,48 @@ describe("merchant product variation planning", () => {
     ).toEqual([
       {
         kind: "fixed_standard",
-        amount: 5,
-        currency: "USD",
-        countries: ["CA", "US"],
+        zones: [
+          {
+            amount: 5,
+            currency: "USD",
+            countries: ["CA", "US"],
+            countryRules: [
+              { code: "CA", name: "CA", restrictTo: [], exclude: [] },
+              { code: "US", name: "US", restrictTo: [], exclude: [] },
+            ],
+            usesProductFallback: true,
+          },
+        ],
       },
       {
         kind: "fixed_standard",
-        amount: 5,
-        currency: "USD",
-        countries: ["CA", "US"],
+        zones: [
+          {
+            amount: 5,
+            currency: "USD",
+            countries: ["CA", "US"],
+            countryRules: [
+              { code: "CA", name: "CA", restrictTo: [], exclude: [] },
+              { code: "US", name: "US", restrictTo: [], exclude: [] },
+            ],
+            usesProductFallback: true,
+          },
+        ],
       },
       {
         kind: "fixed_standard",
-        amount: 5,
-        currency: "USD",
-        countries: ["CA", "US"],
+        zones: [
+          {
+            amount: 5,
+            currency: "USD",
+            countries: ["CA", "US"],
+            countryRules: [
+              { code: "CA", name: "CA", restrictTo: [], exclude: [] },
+              { code: "US", name: "US", restrictTo: [], exclude: [] },
+            ],
+            usesProductFallback: true,
+          },
+        ],
       },
     ])
   })
@@ -745,9 +869,164 @@ describe("merchant product variation planning", () => {
     expect(editedPlan.publish.map(({ dTag }) => dTag)).toEqual(["conduit-tee"])
     expect(editedPlan.desired[1]?.fulfillmentIntent).toEqual({
       kind: "fixed_standard",
+      zones: [
+        {
+          amount: 5,
+          currency: "USD",
+          countries: ["CA"],
+          countryRules: [
+            { code: "CA", name: "CA", restrictTo: [], exclude: [] },
+          ],
+          usesProductFallback: true,
+        },
+      ],
+    })
+  })
+
+  it("applies an edited shipping override to a hydrated child policy", () => {
+    const initialPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct({
+        shippingCostSats: undefined,
+        sourceShippingCost: {
+          amount: 5,
+          currency: "USD",
+          normalizedCurrency: "USD",
+        },
+      }),
+      variations: sizeVariationForm("S"),
+      currency: "USD",
+      now: NOW,
+    })
+    const existing = toFamily(initialPlan)
+    const child = existing.variations[0]!
+    child.product = {
+      ...child.product,
+      shippingCostSats: undefined,
+      sourceShippingCost: {
+        amount: 7,
+        currency: "USD",
+        normalizedCurrency: "USD",
+      },
+      shippingOptionId: `30406:${MERCHANT_PUBKEY}:${child.dTag}-old-policy`,
+      shippingOptionDTag: `${child.dTag}-old-policy`,
+      shippingOptionIds: [`30406:${MERCHANT_PUBKEY}:${child.dTag}-old-policy`],
+      shippingOptionDTags: [`${child.dTag}-old-policy`],
+      shippingCountries: ["CA"],
+      shippingCountryRules: [
+        { code: "CA", name: "CA", restrictTo: [], exclude: [] },
+      ],
+      shippingZones: [
+        {
+          shippingOptionId: `30406:${MERCHANT_PUBKEY}:${child.dTag}-old-policy`,
+          shippingOptionDTag: `${child.dTag}-old-policy`,
+          amount: 7,
+          currency: "USD",
+          countries: ["CA"],
+          countryRules: [
+            { code: "CA", name: "CA", restrictTo: [], exclude: [] },
+          ],
+        },
+      ],
+      canonicalShippingResolved: true,
+    }
+    const restored = getProductVariationFormState(
+      existing.root,
+      existing.variations
+    ).state
+    const edited = updateProductVariationOverride(
+      restored,
+      restored.rows[0]!.identity,
+      "shippingCost",
+      "8"
+    )
+
+    const editedPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: existing.root.product,
+      variations: edited,
+      currency: "USD",
+      existing,
+      now: NOW + 60_000,
+    })
+
+    expect(editedPlan.desired[1]?.product.shippingOptionIds).toBeUndefined()
+    expect(editedPlan.desired[1]?.product.shippingZones).toBeUndefined()
+    expect(editedPlan.desired[1]?.fulfillmentIntent).toMatchObject({
+      kind: "fixed_standard",
+      zones: [{ amount: 8, currency: "USD", countries: ["CA"] }],
+    })
+  })
+
+  it("preserves preview destination policy for a child shipping override", () => {
+    const countryRule = {
+      code: "US",
+      name: "United States",
+      restrictTo: ["787*"],
+      exclude: ["78799"],
+      includeSubdivisions: ["US-TX"],
+    }
+    const previewIntent = compileProductFulfillmentIntent({
+      format: "physical",
+      shippingPricingMode: "fixed",
       amount: 5,
       currency: "USD",
-      countries: ["CA"],
+      destinations: [countryRule],
+      allowExperimentalDestinationPolicy: true,
+    })
+    const initialPlan = buildProductFamilyChangePlanWithFulfillment({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct({
+        shippingCostSats: undefined,
+        sourceShippingCost: {
+          amount: 5,
+          currency: "USD",
+          normalizedCurrency: "USD",
+        },
+        shippingCountries: ["US"],
+        shippingCountryRules: [countryRule],
+      }),
+      variations: sizeVariationForm("S"),
+      currency: "USD",
+      fulfillmentIntent: previewIntent,
+      authoringCountries: ["US"],
+      now: NOW,
+    })
+    const existing = toFamily(initialPlan)
+    const restored = getProductVariationFormState(
+      existing.root,
+      existing.variations
+    ).state
+    const edited = updateProductVariationOverride(
+      restored,
+      restored.rows[0]!.identity,
+      "shippingCost",
+      "8"
+    )
+
+    const editedPlan = buildProductFamilyChangePlanWithFulfillment({
+      parentDTag: "conduit-tee",
+      baseProduct: existing.root.product,
+      variations: edited,
+      currency: "USD",
+      fulfillmentIntent: previewIntent,
+      authoringCountries: ["US"],
+      existing,
+      now: NOW + 60_000,
+    })
+
+    expect(editedPlan.desired[1]?.fulfillmentIntent).toEqual({
+      kind: "fixed_standard",
+      zones: [
+        {
+          amount: 8,
+          currency: "USD",
+          countries: ["US"],
+          countryRules: [countryRule],
+          usesProductFallback: true,
+          destinationSchema: "1",
+        },
+      ],
     })
   })
 
@@ -800,7 +1079,7 @@ describe("merchant product variation planning", () => {
         existing,
         now: NOW + 60_000,
       })
-    ).toThrow("Remove postal restrictions")
+    ).toThrow("Remove subdivision/postal rules")
   })
 
   it("does not republish equivalent normalized fixed shipping intent", () => {

@@ -19,7 +19,11 @@ export function getCartShippingOptionCoordinates(items: CartItem[]): string[] {
         .filter(isPhysicalItem)
         .filter((item) => item.fulfillment?.type !== "pickup")
         .flatMap((item) =>
-          item.shippingOptionId ? [item.shippingOptionId] : []
+          item.shippingOptionIds?.length
+            ? item.shippingOptionIds
+            : item.shippingOptionId
+              ? [item.shippingOptionId]
+              : []
         )
     )
   ).sort()
@@ -35,6 +39,7 @@ function clearPreparedShipping(item: CartItem): CartItem {
     shippingOptionLaunchUnsupported: undefined,
     shippingCountries: undefined,
     shippingCountryRules: undefined,
+    shippingDestinationSchema: undefined,
     canonicalShippingResolved: false,
   }
 }
@@ -46,7 +51,8 @@ export type PreparedCartFulfillment = {
 
 export function prepareCartFulfillment(
   items: CartItem[],
-  shippingOptions: readonly ParsedShippingOption[]
+  shippingOptions: readonly ParsedShippingOption[],
+  destination?: { country: string; state?: string; postalCode: string }
 ): PreparedCartFulfillment {
   const resolutions = new Map<string, PreparedProductFulfillment>()
   const preparedItems = items.map((item) => {
@@ -63,12 +69,15 @@ export function prepareCartFulfillment(
         sourceShippingCost: item.sourceShippingCost,
         shippingOptionId: item.shippingOptionId,
         shippingOptionDTag: item.shippingOptionDTag,
+        shippingOptionIds: item.shippingOptionIds,
+        shippingOptionDTags: item.shippingOptionDTags,
         shippingOptionLaunchUnsupported: item.shippingOptionLaunchUnsupported,
         shippingCountries: item.shippingCountries,
         shippingCountryRules: item.shippingCountryRules,
         updatedAt: item.productUpdatedAt ?? 0,
       },
-      shippingOptions
+      shippingOptions,
+      destination
     )
     resolutions.set(item.productId, resolution)
 
@@ -89,12 +98,21 @@ export function prepareCartFulfillment(
       ...canonicalizeShippingCost(option.price, option.currency),
       shippingOptionId: option.id,
       shippingOptionDTag: option.dTag,
+      shippingOptionIds: resolution.options?.map((entry) => entry.id),
+      shippingOptionDTags: resolution.options?.map((entry) => entry.dTag),
       shippingCountries: [...option.countries],
       shippingCountryRules: option.countryRules.map((rule) => ({
         ...rule,
         restrictTo: [...rule.restrictTo],
         exclude: [...rule.exclude],
+        ...(rule.includeSubdivisions
+          ? { includeSubdivisions: [...rule.includeSubdivisions] }
+          : {}),
+        ...(rule.excludeSubdivisions
+          ? { excludeSubdivisions: [...rule.excludeSubdivisions] }
+          : {}),
       })),
+      shippingDestinationSchema: option.destinationSchema,
       canonicalShippingResolved: true,
     }
   })
@@ -129,6 +147,8 @@ export function getCartShippingOptionSnapshots(
         item.shippingCountryRules?.map((rule) => rule.code) ??
         [],
       countryRules: item.shippingCountryRules ?? [],
+      destinationSchema: item.shippingDestinationSchema,
+      destinationPolicyUnsupported: false,
       service: "standard",
       createdAt: 0,
       launchUnsupportedTags: [],
@@ -162,7 +182,7 @@ export function getCartShippingOptionsAvailable(items: CartItem[]): boolean {
 }
 
 export function getCartShippingDestinationEligibility(
-  destination: { country: string; postalCode: string },
+  destination: { country: string; state?: string; postalCode: string },
   items: CartItem[]
 ): ShippingDestinationEligibility {
   const results = items
@@ -186,6 +206,12 @@ export function getCartShippingDestinationEligibility(
       result.eligible === false && result.reason === "postal_restricted"
   )
   if (postalRestricted) return postalRestricted
+
+  const subdivisionRestricted = results.find(
+    (result) =>
+      result.eligible === false && result.reason === "subdivision_restricted"
+  )
+  if (subdivisionRestricted) return subdivisionRestricted
 
   if (results.some((result) => result.eligible === null)) {
     return { eligible: null, reason: "unknown" }

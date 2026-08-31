@@ -58,6 +58,17 @@ export type ProductShippingOptionReference = z.infer<
   typeof productShippingOptionReferenceSchema
 >
 
+const shippingCountryRuleSchema = z.object({
+  code: z.string(),
+  name: z.string(),
+  restrictTo: z.array(z.string()).default([]),
+  exclude: z.array(z.string()).default([]),
+  includeCountry: z.boolean().optional(),
+  includeSubdivisions: z.array(z.string()).optional(),
+  excludeSubdivisions: z.array(z.string()).optional(),
+  excludeCountry: z.boolean().optional(),
+})
+
 export const productSchema = z.object({
   id: z.string(),
   pubkey: z.string(),
@@ -91,9 +102,12 @@ export const productSchema = z.object({
       normalizedCurrency: z.string(),
     })
     .optional(),
-  /** Addressable kind-30406 shipping option reference attached by the merchant. */
+  /** Selected/read-compatible kind-30406 shipping option reference. */
   shippingOptionId: z.string().optional(),
   shippingOptionDTag: z.string().optional(),
+  /** All exact kind-30406 options referenced by the product. */
+  shippingOptionIds: z.array(z.string()).optional(),
+  shippingOptionDTags: z.array(z.string()).optional(),
   /** True when the product reference uses a launch-unsupported Gamma shape. */
   shippingOptionLaunchUnsupported: z.boolean().optional(),
   /** Every Gamma shipping_option tag, in first-seen order. */
@@ -102,13 +116,19 @@ export const productSchema = z.object({
   collectionRefs: z.array(z.string()).optional(),
   /** Read-side shipping details. Canonical checkout requires explicit resolution. */
   shippingCountries: z.array(z.string()).optional(),
-  shippingCountryRules: z
+  shippingCountryRules: z.array(shippingCountryRuleSchema).optional(),
+  shippingZones: z
     .array(
       z.object({
-        code: z.string(),
-        name: z.string(),
-        restrictTo: z.array(z.string()).default([]),
-        exclude: z.array(z.string()).default([]),
+        shippingOptionId: z.string(),
+        shippingOptionDTag: z.string(),
+        amount: z.number().min(0),
+        currency: z.string(),
+        countries: z.array(z.string()),
+        countryRules: z.array(shippingCountryRuleSchema),
+        destinationSchema: z.string().optional(),
+        usesProductFallback: z.boolean().optional(),
+        sourceRelayUrls: z.array(z.string()).optional(),
       })
     )
     .optional(),
@@ -487,16 +507,8 @@ export const orderItemSchema = z
     shippingOptionId: z.string().optional(),
     shippingOptionDTag: z.string().optional(),
     shippingCountries: z.array(z.string()).optional(),
-    shippingCountryRules: z
-      .array(
-        z.object({
-          code: z.string(),
-          name: z.string(),
-          restrictTo: z.array(z.string()).default([]),
-          exclude: z.array(z.string()).default([]),
-        })
-      )
-      .optional(),
+    shippingCountryRules: z.array(shippingCountryRuleSchema).optional(),
+    shippingDestinationSchema: z.string().optional(),
     sourcePrice: z
       .object({
         amount: z.number().min(0),

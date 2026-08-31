@@ -1,11 +1,21 @@
 import { describe, expect, it } from "bun:test"
-import type { ParsedShippingOption, Product } from "@conduit/core"
+import {
+  orderSchema,
+  type ParsedShippingOption,
+  type Product,
+} from "@conduit/core"
 import { authorizeCurrentCheckoutItems } from "../apps/market/src/lib/checkout-authorization"
 import {
   createCartItemFromProduct,
   type CartItem,
   type CartPickupFulfillment,
 } from "../apps/market/src/lib/cart-model"
+import { prepareCartFulfillment } from "../apps/market/src/lib/cart-shipping-options"
+import {
+  buildCheckoutLifecycleItems,
+  buildCheckoutPricingIntent,
+} from "../apps/market/src/lib/checkout-payment"
+import { buildOrderPaymentItemBindings } from "../apps/market/src/lib/order-payment-service"
 
 const MERCHANT = "a".repeat(64)
 const PRODUCT_ID = `30402:${MERCHANT}:field-notes`
@@ -14,6 +24,8 @@ const ORGANIZER = "b".repeat(64)
 const COLLECTION_ID = `30405:${ORGANIZER}:chicago-market`
 const CALENDAR_ID = `31923:${ORGANIZER}:chicago-market`
 const PICKUP_ID = `30406:${ORGANIZER}:chicago-market-pickup`
+const CA_SHIPPING_ID = `30406:${MERCHANT}:field-notes-shipping-ca`
+const US_DESTINATION = { country: "US", state: "TX", postalCode: "78701" }
 
 function rawItem(overrides: Partial<CartItem> = {}): CartItem {
   return {
@@ -158,6 +170,7 @@ describe("checkout authorization refresh", () => {
 
     const result = await authorizeCurrentCheckoutItems({
       mode: "direct_payment",
+      shippingDestination: US_DESTINATION,
       reviewedItems: [reviewed],
       rawItems: [original],
       refreshedProducts: [product()],
@@ -165,6 +178,39 @@ describe("checkout authorization refresh", () => {
         expect(coordinates).toEqual([SHIPPING_ID])
         return [option]
       },
+    })
+
+    expect(result).toMatchObject({ status: "ok", items: [reviewed] })
+  })
+
+  it("normalizes legacy singular shipping references during submit refresh", async () => {
+    const original = rawItem()
+    const option = shippingOption()
+    const reviewed = {
+      ...original,
+      shippingCostSats: undefined,
+      sourceShippingCost: {
+        amount: 5,
+        currency: "USD",
+        normalizedCurrency: "USD",
+      },
+      shippingCountries: ["US"],
+      shippingCountryRules: option.countryRules,
+      canonicalShippingResolved: true,
+    }
+
+    const result = await authorizeCurrentCheckoutItems({
+      mode: "direct_payment",
+      shippingDestination: US_DESTINATION,
+      reviewedItems: [reviewed],
+      rawItems: [original],
+      refreshedProducts: [
+        product({
+          shippingOptionIds: [SHIPPING_ID],
+          shippingOptionDTags: ["field-notes-shipping-standard"],
+        }),
+      ],
+      readShippingOptions: async () => [option],
     })
 
     expect(result).toMatchObject({ status: "ok", items: [reviewed] })
@@ -189,6 +235,7 @@ describe("checkout authorization refresh", () => {
     for (const mode of ["direct_payment", "order_first"] as const) {
       const result = await authorizeCurrentCheckoutItems({
         mode,
+        shippingDestination: US_DESTINATION,
         reviewedItems: [reviewed],
         rawItems: [original],
         refreshedProducts: [product()],
@@ -199,12 +246,206 @@ describe("checkout authorization refresh", () => {
     }
   })
 
+  it("requires another review when the submit-time destination selects a different zone", async () => {
+    const original = rawItem({
+      shippingOptionIds: [SHIPPING_ID, CA_SHIPPING_ID],
+      shippingOptionDTags: [
+        "field-notes-shipping-standard",
+        "field-notes-shipping-ca",
+      ],
+    })
+    const usOption = shippingOption()
+    const caOption = shippingOption({
+      eventId: "2".repeat(64),
+      id: CA_SHIPPING_ID,
+      dTag: "field-notes-shipping-ca",
+      price: 9,
+      countries: ["CA"],
+      countryRules: [{ code: "CA", name: "CA", restrictTo: [], exclude: [] }],
+    })
+    const reviewedItems = prepareCartFulfillment(
+      [original],
+      [usOption, caOption],
+      US_DESTINATION
+    ).items
+
+    const result = await authorizeCurrentCheckoutItems({
+      mode: "direct_payment",
+      shippingDestination: {
+        country: "CA",
+        state: "ON",
+        postalCode: "M5V3L9",
+      },
+      reviewedItems,
+      rawItems: [original],
+      refreshedProducts: [
+        product({
+          shippingOptionIds: [SHIPPING_ID, CA_SHIPPING_ID],
+          shippingOptionDTags: [
+            "field-notes-shipping-standard",
+            "field-notes-shipping-ca",
+          ],
+        }),
+      ],
+      readShippingOptions: async (coordinates) => {
+        expect(coordinates).toEqual([CA_SHIPPING_ID, SHIPPING_ID])
+        return [usOption, caOption]
+      },
+    })
+
+    expect(result).toEqual({ status: "changed" })
+  })
+
+  it("carries the submit-authorized zone through totals, order, lifecycle, and payment", async () => {
+    const price = {
+      amount: 1_000,
+      currency: "SATS",
+      normalizedCurrency: "SATS",
+    }
+    const original = rawItem({
+      price: 1_000,
+      currency: "SATS",
+      priceSats: 1_000,
+      sourcePrice: price,
+      shippingOptionIds: [SHIPPING_ID, CA_SHIPPING_ID],
+      shippingOptionDTags: [
+        "field-notes-shipping-standard",
+        "field-notes-shipping-ca",
+      ],
+    })
+    const currentProduct = product({
+      price: 1_000,
+      currency: "SATS",
+      priceSats: 1_000,
+      sourcePrice: price,
+      shippingOptionIds: [SHIPPING_ID, CA_SHIPPING_ID],
+      shippingOptionDTags: [
+        "field-notes-shipping-standard",
+        "field-notes-shipping-ca",
+      ],
+    })
+    const usOption = shippingOption({
+      currency: "SATS",
+      price: 100,
+      destinationSchema: "1",
+    })
+    const caOption = shippingOption({
+      eventId: "2".repeat(64),
+      id: CA_SHIPPING_ID,
+      dTag: "field-notes-shipping-ca",
+      currency: "SATS",
+      price: 250,
+      countries: ["CA"],
+      countryRules: [
+        {
+          code: "CA",
+          name: "CA",
+          restrictTo: [],
+          exclude: [],
+          includeSubdivisions: ["CA-ON"],
+        },
+      ],
+      destinationSchema: "1",
+    })
+    const destination = {
+      country: "CA",
+      state: "ON",
+      postalCode: "M5V3L9",
+    }
+    const reviewedItems = prepareCartFulfillment(
+      [original],
+      [usOption, caOption],
+      destination
+    ).items
+
+    const authorization = await authorizeCurrentCheckoutItems({
+      mode: "direct_payment",
+      shippingDestination: destination,
+      reviewedItems,
+      rawItems: [original],
+      refreshedProducts: [currentProduct],
+      readShippingOptions: async () => [usOption, caOption],
+    })
+
+    expect(authorization.status).toBe("ok")
+    if (authorization.status !== "ok") return
+    const pricing = buildCheckoutPricingIntent(authorization.items, null)
+    expect(pricing.status).toBe("ok")
+    if (pricing.status !== "ok") return
+    const lifecycleItems = buildCheckoutLifecycleItems(pricing.items)
+    const paymentItems = buildOrderPaymentItemBindings(pricing.items)
+    const order = orderSchema.parse({
+      id: "zoned-order",
+      merchantPubkey: MERCHANT,
+      buyerPubkey: "b".repeat(64),
+      items: pricing.items,
+      subtotal: pricing.totalSats,
+      currency: "SATS",
+      shippingCostSats: pricing.shippingCost.totalSats,
+      shippingCostStatus: pricing.shippingCost.status,
+      shippingAddress: {
+        name: "Buyer",
+        street: "1 King St",
+        city: "Toronto",
+        state: "ON",
+        postalCode: "M5V3L9",
+        country: "CA",
+      },
+      createdAt: 1_800_000_000_000,
+    })
+
+    expect(pricing).toMatchObject({
+      itemSubtotalSats: 2_000,
+      shippingCost: { status: "priced", totalSats: 500 },
+      totalSats: 2_500,
+      items: [
+        {
+          shippingCostSats: 250,
+          shippingOptionId: CA_SHIPPING_ID,
+          shippingOptionDTag: "field-notes-shipping-ca",
+          shippingDestinationSchema: "1",
+        },
+      ],
+    })
+    expect(order.items[0]).toMatchObject({
+      shippingCostSats: 250,
+      shippingOptionId: CA_SHIPPING_ID,
+      shippingOptionDTag: "field-notes-shipping-ca",
+      shippingDestinationSchema: "1",
+    })
+    expect(lifecycleItems[0]).toMatchObject({
+      productId: PRODUCT_ID,
+      quantity: 2,
+      priceAtPurchase: 1_000,
+      shippingCostSats: 250,
+      shippingOptionId: CA_SHIPPING_ID,
+      shippingOptionDTag: "field-notes-shipping-ca",
+      shippingDestinationSchema: "1",
+      shippingCountryRules: [
+        {
+          code: "CA",
+          restrictTo: [],
+          exclude: [],
+          includeSubdivisions: ["CA-ON"],
+        },
+      ],
+    })
+    expect(paymentItems).toEqual([
+      {
+        productAddress: PRODUCT_ID,
+        quantity: 2,
+        shippingOptionId: CA_SHIPPING_ID,
+      },
+    ])
+  })
+
   it("blocks when the referenced shipping option is withdrawn", async () => {
     const original = rawItem()
     const option = shippingOption()
     for (const mode of ["direct_payment", "order_first"] as const) {
       const result = await authorizeCurrentCheckoutItems({
         mode,
+        shippingDestination: US_DESTINATION,
         reviewedItems: [
           {
             ...original,
@@ -232,6 +473,7 @@ describe("checkout authorization refresh", () => {
     let shippingRead = false
     const result = await authorizeCurrentCheckoutItems({
       mode: "direct_payment",
+      shippingDestination: US_DESTINATION,
       reviewedItems: [rawItem()],
       rawItems: [rawItem()],
       refreshedProducts: [product({ price: 21 })],
@@ -254,6 +496,7 @@ describe("checkout authorization refresh", () => {
       await expect(
         authorizeCurrentCheckoutItems({
           mode: "direct_payment",
+          shippingDestination: US_DESTINATION,
           reviewedItems: [original],
           rawItems: [original],
           refreshedProducts: [product()],
@@ -287,6 +530,7 @@ describe("checkout authorization refresh", () => {
     ]) {
       const result = await authorizeCurrentCheckoutItems({
         mode: "order_first",
+        shippingDestination: US_DESTINATION,
         reviewedItems: [reviewed],
         rawItems: [original],
         refreshedProducts: [product()],
@@ -322,6 +566,7 @@ describe("checkout authorization refresh", () => {
       let shippingRead = false
       const result = await authorizeCurrentCheckoutItems({
         mode: "direct_payment",
+        shippingDestination: US_DESTINATION,
         reviewedItems: [item],
         rawItems: [item],
         refreshedProducts: [
@@ -355,6 +600,7 @@ describe("checkout authorization refresh", () => {
 
     const result = await authorizeCurrentCheckoutItems({
       mode: "direct_payment",
+      shippingDestination: US_DESTINATION,
       reviewedItems: [item],
       rawItems: [item],
       refreshedProducts: [
@@ -414,6 +660,7 @@ describe("checkout authorization refresh", () => {
     ]) {
       const result = await authorizeCurrentCheckoutItems({
         mode: "direct_payment",
+        shippingDestination: US_DESTINATION,
         reviewedItems: [item],
         rawItems: [item],
         refreshedProducts: [changedProduct],

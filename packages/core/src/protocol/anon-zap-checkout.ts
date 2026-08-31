@@ -10,6 +10,7 @@ import { evaluateListingSafety } from "./listing-safety"
 import { parseProductEvent } from "./products"
 import {
   applyPreparedProductFulfillment,
+  parseShippingOptionAddress,
   resolveProductFulfillment,
   selectLatestShippingOptions,
 } from "./shipping"
@@ -27,6 +28,7 @@ export {
 export type AnonZapCheckoutItem = {
   productAddress: string
   quantity: number
+  shippingOptionId?: string
 }
 
 export type AnonZapCheckoutIntent = {
@@ -43,10 +45,15 @@ export type AuthorizedAnonZapPricingLine = {
   unitShippingSats: number
   lineTotalSats: number
   shippingOptionId?: string
+  shippingDestinationSchema?: string
   shippingCountryRules: Array<{
     code: string
     restrictTo: string[]
     exclude: string[]
+    includeCountry?: boolean
+    includeSubdivisions?: string[]
+    excludeSubdivisions?: string[]
+    excludeCountry?: boolean
   }>
 }
 
@@ -148,7 +155,11 @@ export function parseAnonZapCheckoutIntent(
   for (const rawItem of value.items) {
     if (!isRecord(rawItem)) return null
     if (
-      !hasOnlyKeys(rawItem, ["productAddress", "quantity"]) ||
+      !hasOnlyKeys(rawItem, [
+        "productAddress",
+        "quantity",
+        "shippingOptionId",
+      ]) ||
       typeof rawItem.productAddress !== "string" ||
       typeof rawItem.quantity !== "number" ||
       !Number.isSafeInteger(rawItem.quantity) ||
@@ -161,10 +172,35 @@ export function parseAnonZapCheckoutIntent(
     if (!parsedAddress || parsedAddress.merchantPubkey !== merchantPubkey) {
       return null
     }
+    let shippingOptionId: string | undefined
+    if (rawItem.shippingOptionId !== undefined) {
+      if (typeof rawItem.shippingOptionId !== "string") return null
+      const shippingAddress = parseShippingOptionAddress(
+        rawItem.shippingOptionId
+      )
+      if (
+        !shippingAddress ||
+        shippingAddress.coordinate !== rawItem.shippingOptionId ||
+        !HEX_64.test(shippingAddress.pubkey) ||
+        shippingAddress.pubkey !== merchantPubkey ||
+        shippingAddress.dTag.length > 128 ||
+        Array.from(shippingAddress.dTag).some((character) => {
+          const codePoint = character.codePointAt(0)!
+          return codePoint <= 0x1f || codePoint === 0x7f
+        })
+      ) {
+        return null
+      }
+      shippingOptionId = shippingAddress.coordinate
+    }
     const productAddress = `${PRODUCT_KIND}:${merchantPubkey}:${parsedAddress.dTag}`
     if (seen.has(productAddress)) return null
     seen.add(productAddress)
-    items.push({ productAddress, quantity: rawItem.quantity })
+    items.push({
+      productAddress,
+      quantity: rawItem.quantity,
+      ...(shippingOptionId ? { shippingOptionId } : {}),
+    })
   }
 
   return { merchantPubkey, items }
@@ -180,6 +216,10 @@ function normalizeAuthorizedShippingCountryRules(
         code: string
         restrictTo: string[]
         exclude: string[]
+        includeCountry?: boolean
+        includeSubdivisions?: string[]
+        excludeSubdivisions?: string[]
+        excludeCountry?: boolean
       }>
     | undefined
 ): AuthorizedAnonZapPricingLine["shippingCountryRules"] {
@@ -212,8 +252,30 @@ function normalizeAuthorizedShippingCountryRules(
     const restrictTo = normalizePatterns(rule.restrictTo)
     const exclude = normalizePatterns(rule.exclude)
     if (!restrictTo || !exclude) return []
+    const includeSubdivisions = Array.from(
+      new Set(rule.includeSubdivisions ?? [])
+    ).sort()
+    const excludeSubdivisions = Array.from(
+      new Set(rule.excludeSubdivisions ?? [])
+    ).sort()
+    if (
+      [...includeSubdivisions, ...excludeSubdivisions].some(
+        (subdivision) =>
+          !new RegExp(`^${code}-[A-Z0-9]{1,3}$`).test(subdivision)
+      )
+    ) {
+      return []
+    }
     seen.add(code)
-    normalized.push({ code, restrictTo, exclude })
+    normalized.push({
+      code,
+      restrictTo,
+      exclude,
+      ...(rule.includeCountry ? { includeCountry: true } : {}),
+      ...(includeSubdivisions.length > 0 ? { includeSubdivisions } : {}),
+      ...(excludeSubdivisions.length > 0 ? { excludeSubdivisions } : {}),
+      ...(rule.excludeCountry ? { excludeCountry: true } : {}),
+    })
   }
   return normalized
 }
@@ -355,7 +417,10 @@ export function authorizeAnonZapCheckout(input: {
     const parsedProduct = parseProductEvent(event)
     const fulfillment = resolveProductFulfillment(
       parsedProduct,
-      shippingOptions
+      shippingOptions,
+      item.shippingOptionId
+        ? { shippingOptionId: item.shippingOptionId }
+        : undefined
     )
     const product = applyPreparedProductFulfillment(parsedProduct, fulfillment)
     const safety = evaluateListingSafety(product)
@@ -406,11 +471,16 @@ export function authorizeAnonZapCheckout(input: {
       throw new Error("Checkout quantity exceeds available stock.")
     }
 
+    const selectedShippingZone = product.shippingZones?.find(
+      (zone) => zone.shippingOptionId === product.shippingOptionId
+    )
     let unitShippingSats = 0
     const shippingCountryRules =
       product.format === "physical"
         ? normalizeAuthorizedShippingCountryRules(
-            product.shippingCountryRules ?? undefined
+            selectedShippingZone?.countryRules ??
+              product.shippingCountryRules ??
+              undefined
           )
         : []
     if (product.format === "physical") {
@@ -463,6 +533,11 @@ export function authorizeAnonZapCheckout(input: {
       lineTotalSats,
       ...(product.shippingOptionId
         ? { shippingOptionId: product.shippingOptionId }
+        : {}),
+      ...(selectedShippingZone?.destinationSchema
+        ? {
+            shippingDestinationSchema: selectedShippingZone.destinationSchema,
+          }
         : {}),
       shippingCountryRules,
     })

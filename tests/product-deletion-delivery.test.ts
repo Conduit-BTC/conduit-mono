@@ -1,7 +1,8 @@
-import { describe, expect, it } from "bun:test"
-import { finalizeEvent } from "nostr-tools/pure"
+import { afterEach, describe, expect, it } from "bun:test"
+import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
+import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 
-import { applyE2eRelayIsolation, config } from "@conduit/core"
+import { applyE2eRelayIsolation, config, setSigner } from "@conduit/core"
 import type { ProductDeletionDeliveryJob } from "@conduit/core/db"
 import {
   deliverProductDeletionJob,
@@ -15,12 +16,15 @@ import {
 import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
 import {
   deliverQueuedProductDeletion,
+  publishProductDeletionRelay,
   productDeletionJobToPublishResult,
   resumePendingProductDeletionDeliveries,
 } from "../apps/merchant/src/lib/product-deletion-delivery"
 import { buildProductDeliveryNotice } from "../apps/merchant/src/lib/product-delivery"
+import { __resetNdkTestState } from "../packages/core/src/protocol/ndk"
 
 const MERCHANT_SECRET = new Uint8Array(32).fill(7)
+const MERCHANT_PUBKEY = getPublicKey(MERCHANT_SECRET)
 const NOW = 1_700_000_000_000
 
 function signedDeletionEvent(
@@ -43,6 +47,25 @@ function signedDeletionEvent(
     tags: event.tags.map((tag) => [...tag]),
     content: event.content,
     sig: event.sig,
+  }
+}
+
+function signedShippingDeletionEvent(): SignedPublicNostrEvent {
+  const event = finalizeEvent(
+    {
+      kind: 5,
+      created_at: 1_700_000_000,
+      tags: [
+        ["a", `30406:${MERCHANT_PUBKEY}:listing-shipping-standard`],
+        ["k", "30406"],
+      ],
+      content: "",
+    },
+    MERCHANT_SECRET
+  )
+  return {
+    ...event,
+    tags: event.tags.map((tag) => [...tag]),
   }
 }
 
@@ -91,6 +114,62 @@ function tickingClock(start = NOW): () => number {
   return () => timestamp++
 }
 
+class AuthRequiredDeletionSocket {
+  readyState = 0
+  onopen: ((event: Event) => void) | null = null
+  onmessage: ((event: MessageEvent<unknown>) => void) | null = null
+  onerror: ((event: Event) => void) | null = null
+  onclose: ((event: Event) => void) | null = null
+  readonly sentFrames: unknown[][] = []
+
+  constructor(
+    private readonly eventId: string,
+    private readonly challenge: string
+  ) {}
+
+  open(): void {
+    this.readyState = 1
+    this.onopen?.(new Event("open"))
+  }
+
+  send(serialized: string): void {
+    const frame = JSON.parse(serialized) as unknown[]
+    this.sentFrames.push(frame)
+    if (frame[0] === "EVENT" && this.sentFrames.length === 1) {
+      queueMicrotask(() => {
+        this.message(["AUTH", this.challenge])
+        this.message([
+          "OK",
+          this.eventId,
+          false,
+          "auth-required: authentication required",
+        ])
+      })
+      return
+    }
+    if (frame[0] === "AUTH") {
+      const authEvent = frame[1] as SignedPublicNostrEvent
+      queueMicrotask(() => this.message(["OK", authEvent.id, true, ""]))
+      return
+    }
+    if (frame[0] === "EVENT") {
+      queueMicrotask(() => this.message(["OK", this.eventId, true, ""]))
+    }
+  }
+
+  message(frame: unknown[]): void {
+    this.onmessage?.({ data: JSON.stringify(frame) } as MessageEvent<unknown>)
+  }
+
+  close(): void {
+    this.readyState = 3
+  }
+}
+
+afterEach(() => {
+  __resetNdkTestState()
+})
+
 describe("product deletion relay plan", () => {
   it("builds a deterministic secure union and preserves every relay role", () => {
     expect(
@@ -135,6 +214,128 @@ describe("product deletion relay plan", () => {
         roles: ["author_write"],
       },
     ])
+  })
+
+  it("authenticates a prior option ACK relay without authenticating an observed-only source", async () => {
+    const priorAckRelayUrl = "wss://relay.damus.io"
+    const observedSourceRelayUrl = "wss://relay.primal.net"
+    const relayPlan = planProductDeletionRelays({
+      currentWriteRelayUrls: [],
+      acknowledgedAuthorWriteRelayUrls: [priorAckRelayUrl],
+      sourceRelayUrls: [priorAckRelayUrl, observedSourceRelayUrl],
+      canonicalConduitRelayUrl: "wss://relay.conduit.market",
+    })
+    expect(relayPlan).toContainEqual({
+      relayUrl: priorAckRelayUrl,
+      roles: ["author_write", "source"],
+    })
+    expect(relayPlan).toContainEqual({
+      relayUrl: observedSourceRelayUrl,
+      roles: ["source"],
+    })
+    const priorAckTarget = relayPlan.find(
+      (target) => target.relayUrl === priorAckRelayUrl
+    )!
+    const observedSourceTarget = relayPlan.find(
+      (target) => target.relayUrl === observedSourceRelayUrl
+    )!
+
+    const signedEvent = signedShippingDeletionEvent()
+    const unavailableSocket = new AuthRequiredDeletionSocket(
+      signedEvent.id,
+      "signer-unavailable-challenge"
+    )
+    const unavailableDelivery = publishProductDeletionRelay(
+      {
+        relayUrl: priorAckRelayUrl,
+        roles: priorAckTarget.roles,
+        signedEvent,
+      },
+      {
+        createWebSocket: () => unavailableSocket as unknown as WebSocket,
+      }
+    )
+    unavailableSocket.open()
+    await expect(unavailableDelivery).resolves.toEqual({
+      status: "timed_out",
+    })
+    expect(
+      unavailableSocket.sentFrames.some((frame) => frame[0] === "AUTH")
+    ).toBe(false)
+
+    setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
+    const authorSocket = new AuthRequiredDeletionSocket(
+      signedEvent.id,
+      "prior-option-challenge"
+    )
+    const authorDelivery = publishProductDeletionRelay(
+      {
+        relayUrl: priorAckRelayUrl,
+        roles: priorAckTarget.roles,
+        signedEvent,
+      },
+      {
+        createWebSocket: () => authorSocket as unknown as WebSocket,
+      }
+    )
+    authorSocket.open()
+    await expect(authorDelivery).resolves.toEqual({ status: "acked" })
+    const authEvent = authorSocket.sentFrames.find(
+      (frame) => frame[0] === "AUTH"
+    )?.[1] as SignedPublicNostrEvent | undefined
+    expect(authEvent).toMatchObject({
+      kind: 22_242,
+      pubkey: MERCHANT_PUBKEY,
+      content: "",
+    })
+    expect(authEvent?.tags).toContainEqual(["relay", priorAckRelayUrl])
+    expect(authEvent?.tags).toContainEqual([
+      "challenge",
+      "prior-option-challenge",
+    ])
+
+    const sourceSocket = new AuthRequiredDeletionSocket(
+      signedEvent.id,
+      "observed-source-challenge"
+    )
+    const sourceDelivery = publishProductDeletionRelay(
+      {
+        relayUrl: observedSourceRelayUrl,
+        roles: observedSourceTarget.roles,
+        signedEvent,
+      },
+      {
+        createWebSocket: () => sourceSocket as unknown as WebSocket,
+      }
+    )
+    sourceSocket.open()
+    await expect(sourceDelivery).resolves.toEqual({ status: "timed_out" })
+    expect(sourceSocket.sentFrames.some((frame) => frame[0] === "AUTH")).toBe(
+      false
+    )
+
+    const productOnlyEvent = signedDeletionEvent()
+    const productOnlySocket = new AuthRequiredDeletionSocket(
+      productOnlyEvent.id,
+      "product-only-challenge"
+    )
+    const productOnlyDelivery = publishProductDeletionRelay(
+      {
+        relayUrl: priorAckRelayUrl,
+        roles: priorAckTarget.roles,
+        signedEvent: productOnlyEvent,
+      },
+      {
+        createWebSocket: () => productOnlySocket as unknown as WebSocket,
+      }
+    )
+    productOnlySocket.open()
+    await expect(productOnlyDelivery).resolves.toEqual({
+      status: "timed_out",
+    })
+    expect(
+      productOnlySocket.sentFrames.some((frame) => frame[0] === "AUTH")
+    ).toBe(false)
   })
 
   it("requires a secure canonical Conduit relay", () => {
@@ -227,6 +428,53 @@ describe("durable product deletion delivery", () => {
       )
     ).rejects.toThrow("safe product target")
     expect(await repository.listUndelivered()).toEqual([])
+  })
+
+  it("accepts only same-author shipping coordinates as safe outbox targets", async () => {
+    const repository = new MemoryProductDeletionOutbox()
+    const signed = finalizeEvent(
+      {
+        kind: 5,
+        created_at: 1_700_000_000,
+        tags: [
+          ["a", `30406:${MERCHANT_PUBKEY}:listing-shipping-old`],
+          ["k", "30406"],
+        ],
+        content: "",
+      },
+      MERCHANT_SECRET
+    )
+    const created = await persistProductDeletionDelivery(
+      {
+        signedEvent: signed,
+        currentWriteRelayUrls: [],
+        sourceRelayUrls: [],
+        canonicalConduitRelayUrl: "wss://relay.conduit.market",
+      },
+      { repository }
+    )
+    expect(created.signedEvent.id).toBe(signed.id)
+
+    const foreign = finalizeEvent(
+      {
+        kind: 5,
+        created_at: 1_700_000_001,
+        tags: [["a", `30406:${"f".repeat(64)}:foreign-shipping`]],
+        content: "",
+      },
+      MERCHANT_SECRET
+    )
+    await expect(
+      persistProductDeletionDelivery(
+        {
+          signedEvent: foreign,
+          currentWriteRelayUrls: [],
+          sourceRelayUrls: [],
+          canonicalConduitRelayUrl: "wss://relay.conduit.market",
+        },
+        { repository }
+      )
+    ).rejects.toThrow("same-author shipping target")
   })
 
   it("retires a legacy private source-only target without publishing to it", async () => {

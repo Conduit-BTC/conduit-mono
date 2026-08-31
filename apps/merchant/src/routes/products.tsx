@@ -10,11 +10,13 @@ import {
   buildProductDeletionEventDraft,
   applyPreparedProductFulfillment,
   buildProductPublishResultTelemetryProperties,
-  cacheSignedProductDeletionEvent,
   canonicalizeProductPrice,
   compileProductFulfillmentIntent,
+  config as conduitConfig,
   evaluateListingSafety,
+  getCachedShippingOptionAuthorWriteRelayUrls,
   getCachedMerchantStorefront,
+  getCachedShippingOptionSourceRelayUrls,
   getListingSafetyDisplay,
   getMerchantStorefront,
   getShippingOptionsByCoordinates,
@@ -120,6 +122,7 @@ import {
 } from "../lib/readiness"
 import { needsProductInboxPublishGuidance } from "../lib/productInboxReadiness"
 import {
+  cacheSignedMerchantDeletionEvent,
   deliverQueuedProductDeletion,
   getPendingProductDeletionJobs,
   persistSignedProductDeletion,
@@ -129,7 +132,11 @@ import {
 import {
   buildProductRemovalDeletionTargets,
   deliverSignedProductWriteBundle,
+  getMerchantOwnedFixedShippingOptionIds,
+  getProductDeletionCreatedAt,
   getRelayPublishDiagnosticsError,
+  getPreviousShippingSourceRelayUrls,
+  prepareProductRemovalDeletionTargets,
   signAndPublishProductWriteBundle,
   SignedProductDeliveryError,
   type SignedProductWriteBundle,
@@ -304,9 +311,59 @@ function getShippingCountryName(code: string, fallback?: string): string {
   return country?.name ?? fallback?.trim() ?? normalized
 }
 
+function getProductFixedShippingOptionIds(
+  merchantPubkey: string,
+  productDTag: string | null,
+  product: ProductSchema
+): string[] {
+  if (!productDTag) return []
+  return getMerchantOwnedFixedShippingOptionIds({
+    merchantPubkey,
+    productDTag,
+    product,
+  })
+}
+
+function getShippingSourceRelayUrlsForCoordinates(
+  sources: ReadonlyMap<string, readonly string[]>,
+  coordinates: readonly string[]
+): string[] {
+  return Array.from(
+    new Set(coordinates.flatMap((coordinate) => sources.get(coordinate) ?? []))
+  )
+}
+
 function productShippingConfigFromProduct(
   product: ProductSchema
 ): ShippingConfig {
+  if (product.shippingZones?.length) {
+    return {
+      countries: product.shippingZones.flatMap((zone) =>
+        zone.countryRules.map((rule) => ({
+          code: rule.code.trim().toUpperCase(),
+          name: getShippingCountryName(rule.code, rule.name),
+          restrictTo: [...rule.restrictTo],
+          exclude: [...rule.exclude],
+          ...(rule.includeCountry ? { includeCountry: true } : {}),
+          ...(rule.includeSubdivisions
+            ? { includeSubdivisions: [...rule.includeSubdivisions] }
+            : {}),
+          ...(rule.excludeSubdivisions
+            ? { excludeSubdivisions: [...rule.excludeSubdivisions] }
+            : {}),
+          ...(rule.excludeCountry ? { excludeCountry: true } : {}),
+          ...(zone.usesProductFallback
+            ? {}
+            : {
+                rate: {
+                  amount: formatProductAmountInput(zone.amount),
+                  currency: zone.currency,
+                },
+              }),
+        }))
+      ),
+    }
+  }
   if (product.shippingCountryRules && product.shippingCountryRules.length > 0) {
     return {
       countries: product.shippingCountryRules.map((rule) => ({
@@ -314,6 +371,10 @@ function productShippingConfigFromProduct(
         name: getShippingCountryName(rule.code, rule.name),
         restrictTo: rule.restrictTo,
         exclude: rule.exclude,
+        ...(rule.includeCountry ? { includeCountry: true } : {}),
+        includeSubdivisions: rule.includeSubdivisions ?? [],
+        excludeSubdivisions: rule.excludeSubdivisions ?? [],
+        ...(rule.excludeCountry ? { excludeCountry: true } : {}),
       })),
     }
   }
@@ -389,10 +450,27 @@ function buildShippingMetadata(
     shippingPricingMode: form.shippingPricingMode,
     amount:
       form.format === "physical" && form.shippingPricingMode === "fixed"
-        ? parsePlainDecimalAmount(form.shippingCost, "Shipping")
+        ? form.shippingCost.trim()
+          ? parsePlainDecimalAmount(form.shippingCost, "Shipping")
+          : undefined
         : undefined,
     currency: form.currency,
-    destinations: shippingConfig.countries,
+    destinations: shippingConfig.countries.map(({ rate, ...destination }) => ({
+      ...destination,
+      ...(rate
+        ? {
+            rate: {
+              amount: parsePlainDecimalAmount(
+                rate.amount,
+                `${destination.name} shipping`
+              ),
+              currency: rate.currency,
+            },
+          }
+        : {}),
+    })),
+    allowExperimentalDestinationPolicy:
+      conduitConfig.destinationPolicyV1Enabled,
   })
   return {
     intent,
@@ -677,7 +755,11 @@ async function fetchMerchantProducts(
   })
   const shippingOptions = await getShippingOptionsByCoordinates(
     result.data.flatMap((record) =>
-      record.product.shippingOptionId ? [record.product.shippingOptionId] : []
+      record.product.shippingOptionIds?.length
+        ? record.product.shippingOptionIds
+        : record.product.shippingOptionId
+          ? [record.product.shippingOptionId]
+          : []
     )
   )
   return {
@@ -749,6 +831,7 @@ async function publishProduct(
         localPickup &&
         (form.eventHandoffMode === "merchant_handoff" ||
           form.eventHandoffMode === "organizer_handoff"),
+      destinationPolicyV1Enabled: conduitConfig.destinationPolicyV1Enabled,
     }
   )
   if (!formValidation.canPublish) {
@@ -788,6 +871,8 @@ async function publishProduct(
     ProductSchema,
     | "shippingOptionId"
     | "shippingOptionDTag"
+    | "shippingOptionIds"
+    | "shippingOptionDTags"
     | "shippingOptionRefs"
     | "collectionRefs"
     | "shippingCountries"
@@ -916,16 +1001,90 @@ async function publishProduct(
       : undefined,
     now,
   })
+  const priorShippingOptionIds = [
+    ...plan.publish.flatMap((target) =>
+      target.existing
+        ? getProductFixedShippingOptionIds(
+            merchantPubkey,
+            target.dTag,
+            target.existing.product
+          )
+        : []
+    ),
+    ...plan.remove.flatMap((target) =>
+      getProductFixedShippingOptionIds(
+        merchantPubkey,
+        target.dTag,
+        target.product
+      )
+    ),
+  ]
+  const [cachedShippingSourceRelayUrls, cachedShippingAuthorWriteRelayUrls] =
+    await Promise.all([
+      getCachedShippingOptionSourceRelayUrls(priorShippingOptionIds),
+      getCachedShippingOptionAuthorWriteRelayUrls(priorShippingOptionIds),
+    ])
 
   return signAndPublishProductWriteBundle({
     merchantPubkey,
-    listings: plan.publish.map((target) => ({
-      product: target.product,
-      dTag: target.dTag,
-      previousEventCreatedAt: target.existing?.eventCreatedAt,
-      fulfillmentIntent: target.fulfillmentIntent,
-    })),
-    deletions: buildProductRemovalDeletionTargets(plan.remove),
+    listings: plan.publish.map((target) => {
+      const previousShippingOptionIds = target.existing
+        ? getProductFixedShippingOptionIds(
+            merchantPubkey,
+            target.dTag,
+            target.existing.product
+          )
+        : []
+      return {
+        product: target.product,
+        dTag: target.dTag,
+        previousEventCreatedAt: target.existing?.eventCreatedAt,
+        previousShippingOptionCreatedAt:
+          target.existing?.product.shippingOptionCreatedAt,
+        previousShippingOptionIds,
+        previousShippingZones: target.existing?.product.shippingZones,
+        previousShippingSourceRelayUrls: target.existing
+          ? getPreviousShippingSourceRelayUrls({
+              previousShippingOptionIds,
+              previousProduct: target.existing.product,
+              previousProductSourceRelayUrls: target.existing.sourceRelayUrls,
+              cachedShippingSourceRelayUrls:
+                getShippingSourceRelayUrlsForCoordinates(
+                  cachedShippingSourceRelayUrls,
+                  previousShippingOptionIds
+                ),
+            })
+          : [],
+        previousShippingAuthorWriteRelayUrls:
+          getShippingSourceRelayUrlsForCoordinates(
+            cachedShippingAuthorWriteRelayUrls,
+            previousShippingOptionIds
+          ),
+        fulfillmentIntent: target.fulfillmentIntent,
+      }
+    }),
+    deletions: buildProductRemovalDeletionTargets(
+      plan.remove.map((target) => {
+        const shippingOptionIds = getProductFixedShippingOptionIds(
+          merchantPubkey,
+          target.dTag,
+          target.product
+        )
+        return {
+          ...target,
+          shippingOptionSourceRelayUrls:
+            getShippingSourceRelayUrlsForCoordinates(
+              cachedShippingSourceRelayUrls,
+              shippingOptionIds
+            ),
+          shippingOptionAuthorWriteRelayUrls:
+            getShippingSourceRelayUrlsForCoordinates(
+              cachedShippingAuthorWriteRelayUrls,
+              shippingOptionIds
+            ),
+        }
+      })
+    ),
     onSignedLocal: async (bundle) => {
       const rootPublishIndex = plan.publish.findIndex(
         (target) => target.dTag === dTag
@@ -965,12 +1124,38 @@ async function deleteProduct(
       "Product pubkey mismatch; refusing to publish deletion event"
     )
   }
+  const initialDeletionTargets =
+    await prepareProductRemovalDeletionTargets(familyRecords)
+  const shippingOptionIds = initialDeletionTargets.flatMap(
+    (target) => target.shippingOptionIds ?? []
+  )
+  const [cachedShippingSourceRelayUrls, cachedShippingAuthorWriteRelayUrls] =
+    await Promise.all([
+      getCachedShippingOptionSourceRelayUrls(shippingOptionIds),
+      getCachedShippingOptionAuthorWriteRelayUrls(shippingOptionIds),
+    ])
+  const deletionTargets = initialDeletionTargets.map((target) => ({
+    ...target,
+    sourceRelayUrls: Array.from(
+      new Set([
+        ...(target.sourceRelayUrls ?? []),
+        ...getShippingSourceRelayUrlsForCoordinates(
+          cachedShippingSourceRelayUrls,
+          target.shippingOptionIds ?? []
+        ),
+      ])
+    ),
+    acknowledgedAuthorWriteRelayUrls: getShippingSourceRelayUrlsForCoordinates(
+      cachedShippingAuthorWriteRelayUrls,
+      target.shippingOptionIds ?? []
+    ),
+  }))
   const draft = buildProductDeletionEventDraft({
     merchantPubkey,
-    targets: familyRecords.map((record) => ({
-      eventId: record.eventId,
-      addressId: record.dTag ? record.addressId : undefined,
-    })),
+    targets: deletionTargets,
+    shippingOptionCoordinates: deletionTargets.flatMap(
+      (target) => target.shippingOptionIds ?? []
+    ),
     clientAppId: "merchant",
   })
   const currentWriteRelayUrls =
@@ -978,7 +1163,10 @@ async function deleteProduct(
 
   const deletion = new NDKEvent(ndk)
   deletion.kind = EVENT_KINDS.DELETION
-  deletion.created_at = Math.floor(Date.now() / 1000)
+  deletion.created_at = getProductDeletionCreatedAt({
+    nowMs: Date.now(),
+    deletions: deletionTargets,
+  })
   deletion.tags = draft.tags
   deletion.content = draft.content
 
@@ -986,11 +1174,18 @@ async function deleteProduct(
   const deliveryJob = await persistSignedProductDeletion({
     signedEvent: deletion.rawEvent(),
     currentWriteRelayUrls,
+    acknowledgedAuthorWriteRelayUrls: Array.from(
+      new Set(
+        deletionTargets.flatMap(
+          (target) => target.acknowledgedAuthorWriteRelayUrls ?? []
+        )
+      )
+    ),
     sourceRelayUrls: Array.from(
-      new Set(familyRecords.flatMap((record) => record.sourceRelayUrls))
+      new Set(deletionTargets.flatMap((target) => target.sourceRelayUrls ?? []))
     ),
   })
-  await cacheSignedProductDeletionEvent(deletion)
+  await cacheSignedMerchantDeletionEvent(deletion)
   try {
     await onSignedLocal(deletion, deliveryJob.id)
     return {
@@ -1602,6 +1797,7 @@ function ProductsPage() {
         hasPresetShippingZone,
         presetShippingConfig: shippingConfig,
         allowZeroPrice: zeroPriceFormAuthorized,
+        destinationPolicyV1Enabled: conduitConfig.destinationPolicyV1Enabled,
       }
     )
     return productFulfillmentError
@@ -2786,7 +2982,14 @@ function ProductsPage() {
                       form.usePresetShippingZone
                     }
                     disabled={presetShippingZoneUnavailable}
-                    aria-describedby="product-preset-shipping-help"
+                    aria-invalid={
+                      !!productFormValidation.errors.shippingZone || undefined
+                    }
+                    aria-describedby={
+                      productFormValidation.errors.shippingZone
+                        ? "product-preset-shipping-help product-shipping-zone-error"
+                        : "product-preset-shipping-help"
+                    }
                     onChange={(event) =>
                       setForm((prev) => ({
                         ...prev,
@@ -2819,15 +3022,29 @@ function ProductsPage() {
                 </label>
 
                 {customShippingZoneActive && (
-                  <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 sm:col-span-4">
+                  <div
+                    role="group"
+                    aria-labelledby="custom-shipping-destinations-title"
+                    aria-describedby={
+                      productFormValidation.errors.shippingZone
+                        ? "custom-shipping-destinations-help product-shipping-zone-error"
+                        : "custom-shipping-destinations-help"
+                    }
+                    className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 sm:col-span-4"
+                  >
                     <div className="space-y-1">
-                      <div className="text-sm font-medium text-[var(--text-primary)]">
+                      <div
+                        id="custom-shipping-destinations-title"
+                        className="text-sm font-medium text-[var(--text-primary)]"
+                      >
                         Custom shipping destinations
                       </div>
-                      <p className="text-xs leading-5 text-[var(--text-muted)]">
-                        These destinations are emitted on this product listing
-                        only and do not change your preset Shipping tab
-                        settings.
+                      <p
+                        id="custom-shipping-destinations-help"
+                        className="text-pretty text-xs leading-5 text-[var(--text-muted)]"
+                      >
+                        These destinations are published on this product&apos;s
+                        fixed shipping options and do not change your preset.
                       </p>
                     </div>
                     <div className="mt-3 max-h-[22rem] overflow-y-auto p-1">
@@ -2835,6 +3052,11 @@ function ProductsPage() {
                         compact
                         config={form.customShippingConfig}
                         emptyText="No custom destinations added yet."
+                        showRates
+                        defaultCurrency={form.currency}
+                        enableDestinationPolicies={
+                          conduitConfig.destinationPolicyV1Enabled
+                        }
                         onChange={(customShippingConfig) =>
                           setForm((prev) => ({
                             ...prev,
@@ -2844,6 +3066,15 @@ function ProductsPage() {
                       />
                     </div>
                   </div>
+                )}
+                {productFormValidation.errors.shippingZone && (
+                  <p
+                    id="product-shipping-zone-error"
+                    role="alert"
+                    className="text-pretty text-xs leading-5 text-error sm:col-span-4"
+                  >
+                    {productFormValidation.errors.shippingZone}
+                  </p>
                 )}
               </div>
 

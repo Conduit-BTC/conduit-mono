@@ -9,6 +9,7 @@ import {
 } from "../db"
 import { normalizePublicWebSocketUrl } from "../network-target-safety"
 import { validateProductDeletionEvent } from "./product-deletion"
+import { parseShippingOptionAddress } from "./shipping"
 import type { SignedPublicNostrEvent } from "./signed-event"
 import {
   getConfiguredIsolatedE2eRelayUrl,
@@ -28,6 +29,8 @@ const ROLE_ORDER: readonly ProductDeletionRelayRole[] = [
 export interface ProductDeletionRelayPlanInput {
   /** Current relay output from the authenticated author's write planner. */
   currentWriteRelayUrls: readonly string[]
+  /** Prior option-write relays that positively acknowledged this author. */
+  acknowledgedAuthorWriteRelayUrls?: readonly string[]
   /** Untrusted source provenance retained with product observations. */
   sourceRelayUrls: readonly string[]
   canonicalConduitRelayUrl: string
@@ -184,7 +187,10 @@ export function planProductDeletionRelays(
 
     const roles = new Set<ProductDeletionRelayRole>(["conduit"])
     if (
-      input.currentWriteRelayUrls.some(
+      [
+        ...input.currentWriteRelayUrls,
+        ...(input.acknowledgedAuthorWriteRelayUrls ?? []),
+      ].some(
         (relayUrl) =>
           normalizeConfiguredE2eLoopbackRelayUrl(relayUrl) === isolatedRelayUrl
       )
@@ -221,6 +227,15 @@ export function planProductDeletionRelays(
   for (const relayUrl of input.currentWriteRelayUrls) {
     addRelayRole(targets, relayUrl, "author_write")
   }
+  const acknowledgedAuthorWriteRelayUrls =
+    normalizeUntrustedRelayHintsForContext({
+      relayUrls: input.acknowledgedAuthorWriteRelayUrls ?? [],
+      approvedRelayUrls: input.currentWriteRelayUrls,
+      allowApprovedPrivate: true,
+    })
+  for (const relayUrl of acknowledgedAuthorWriteRelayUrls) {
+    addRelayRole(targets, relayUrl, "author_write")
+  }
   const approvedSourceRelayUrls = normalizeUntrustedRelayHintsForContext({
     relayUrls: input.sourceRelayUrls,
     approvedRelayUrls: input.currentWriteRelayUrls,
@@ -241,9 +256,21 @@ export function planProductDeletionRelays(
 
 function assertSignedDeletionEvent(event: SignedPublicNostrEvent): void {
   const validated = validateProductDeletionEvent(event)
-  if (!validated || validated.evidence.length === 0) {
+  const hasSafeShippingTarget = validated?.signedEvent.tags.some((tag) => {
+    if (tag[0] !== "a" || !tag[1]) return false
+    const address = parseShippingOptionAddress(tag[1])
+    return (
+      !!address &&
+      address.coordinate === tag[1] &&
+      address.pubkey === validated.signedEvent.pubkey.toLowerCase()
+    )
+  })
+  if (
+    !validated ||
+    (validated.evidence.length === 0 && !hasSafeShippingTarget)
+  ) {
     throw new Error(
-      "Product deletion outbox requires a valid signed kind-5 event with a safe product target"
+      "Product deletion outbox requires a valid signed kind-5 event with a safe product target or same-author shipping target"
     )
   }
 }

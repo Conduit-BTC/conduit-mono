@@ -22,21 +22,24 @@
       "releaseChannel": "preview",
       "lightningNetwork": "mainnet",
       "publicFeatures": {
-        "dmCompatibilityOrderRoutingEnabled": true
+        "dmCompatibilityOrderRoutingEnabled": true,
+        "destinationPolicyV1Enabled": true
       }
     },
     "production": {
       "releaseChannel": "production",
       "lightningNetwork": "mainnet",
       "publicFeatures": {
-        "dmCompatibilityOrderRoutingEnabled": false
+        "dmCompatibilityOrderRoutingEnabled": false,
+        "destinationPolicyV1Enabled": false
       }
     },
     "staging": {
       "releaseChannel": "staging",
       "lightningNetwork": "signet",
       "publicFeatures": {
-        "dmCompatibilityOrderRoutingEnabled": false
+        "dmCompatibilityOrderRoutingEnabled": false,
+        "destinationPolicyV1Enabled": false
       }
     }
   }

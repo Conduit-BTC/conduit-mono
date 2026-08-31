@@ -41,6 +41,8 @@ Reviewers may request a durable contract update when the behavior has broad or l
   source, versioning, release, and public-route isolation
 - `docs/knowledge/nip42-protected-read-rollout.md`: recipient-scoped protected
   inbox authentication, relay operator contract, and client-first rollout
+- `docs/knowledge/open-markets-specification-notes.md`: current Open Markets
+  source status, proposal boundaries, and Conduit's interoperability posture
 
 ### QA Runbooks
 

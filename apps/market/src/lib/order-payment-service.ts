@@ -258,15 +258,35 @@ export interface OrderPaymentContext {
   zapContent: string
   totalSats: number
   totalMsats: number
-  items: Array<{ productAddress: string; quantity: number }>
+  items: Array<{
+    productAddress: string
+    quantity: number
+    shippingOptionId?: string
+  }>
   preparedAnonZap?: SignedCheckoutZapRequest
   anonZapPreparation?: {
     localPricing: Extract<CheckoutPricingIntent, { status: "ok" }>
-    destination: { country: string; postalCode: string }
+    destination: { country: string; state?: string; postalCode: string }
   }
   paymentTarget: CheckoutPaymentTarget
   approveFee?: WalletPaymentFeeApproval
   formatSatsAmount?: (sats: number) => string
+}
+
+export function buildOrderPaymentItemBindings(
+  items: ReadonlyArray<{
+    productId: string
+    quantity: number
+    shippingOptionId?: string
+  }>
+): OrderPaymentContext["items"] {
+  return items.map((item) => ({
+    productAddress: item.productId,
+    quantity: item.quantity,
+    ...(item.shippingOptionId
+      ? { shippingOptionId: item.shippingOptionId }
+      : {}),
+  }))
 }
 
 export interface OrderPaymentRuntimeState {
@@ -936,10 +956,7 @@ async function runOrderPaymentInternal(
       zapContent: lifecycle.zapContent ?? "",
       totalSats: lifecycle.totalSats,
       totalMsats: lifecycle.totalMsats,
-      items: lifecycle.items.map((item) => ({
-        productAddress: item.productId,
-        quantity: item.quantity,
-      })),
+      items: buildOrderPaymentItemBindings(lifecycle.items),
     }
     emit(orderId, {
       running: true,
@@ -981,6 +998,12 @@ async function runOrderPaymentInternal(
       )
       let visibility = getCheckoutZapVisibility(ctx.zapMode)
       const publicZapSigner = getOrderPublicZapSigner(ctx.zapMode)
+      const fixedShippingRequiresPrivateFallback =
+        publicZapSigner === "anon" &&
+        ctx.items.some((item) => !!item.shippingOptionId)
+      if (fixedShippingRequiresPrivateFallback) {
+        visibility = "private_checkout"
+      }
       if (
         ctx.totalMsats < lnurlMeta.minSendable ||
         ctx.totalMsats > lnurlMeta.maxSendable
@@ -1007,6 +1030,7 @@ async function runOrderPaymentInternal(
 
       if (
         publicZapSigner === "anon" &&
+        !fixedShippingRequiresPrivateFallback &&
         !ctx.preparedAnonZap &&
         ctx.anonZapPreparation
       ) {
@@ -1108,11 +1132,12 @@ async function runOrderPaymentInternal(
       }
 
       let publicZapFallback =
-        visibility === "public_zap" &&
-        publicZapSigner === "anon" &&
-        (!lnurlMeta.allowsNostr ||
-          !providerReceiptPubkey ||
-          !ctx.preparedAnonZap)
+        fixedShippingRequiresPrivateFallback ||
+        (visibility === "public_zap" &&
+          publicZapSigner === "anon" &&
+          (!lnurlMeta.allowsNostr ||
+            !providerReceiptPubkey ||
+            !ctx.preparedAnonZap))
       let validatedInvoice: Awaited<
         ReturnType<typeof requestValidatedInvoice>
       > | null = null

@@ -31,6 +31,7 @@ import {
   buildDefaultZapContent,
   buildPendingCheckoutManualInvoice,
   buildZapRequestContent,
+  canUseAnonymousPublicZapForCart,
   CHECKOUT_QUOTE_MAX_AGE_MS,
   getCheckoutPublicZapSigner,
   getCheckoutZapVisibility,
@@ -1469,6 +1470,59 @@ describe("checkout payment helpers", () => {
     expect(hasAuthorizedAnonZapPricingChanged(local, authorized)).toBe(true)
   })
 
+  it("requires review when server-authorized destination policy changes", () => {
+    const shippingOptionId = `30406:${FAKE_PUBKEY}:standard`
+    const local = buildCheckoutPricingIntent(
+      [
+        cartItem({
+          format: "physical",
+          shippingCostSats: 100,
+          shippingOptionId,
+          shippingOptionDTag: "standard",
+          canonicalShippingResolved: true,
+          shippingDestinationSchema: "1",
+          shippingCountryRules: [
+            {
+              code: "US",
+              name: "US",
+              restrictTo: ["787*"],
+              exclude: [],
+            },
+          ],
+        }),
+      ],
+      null
+    )
+    expect(local.status).toBe("ok")
+    if (local.status !== "ok") return
+
+    const authorized = applyAuthorizedAnonZapPricing(local, {
+      itemSubtotalSats: 1_000,
+      shippingCostSats: 100,
+      totalSats: 1_100,
+      totalMsats: 1_100_000,
+      items: [
+        {
+          productAddress: "product-1",
+          productEventId: "f".repeat(64),
+          format: "physical",
+          quantity: 1,
+          unitPriceSats: 1_000,
+          unitShippingSats: 100,
+          lineTotalSats: 1_100,
+          shippingOptionId,
+          shippingDestinationSchema: "1",
+          shippingCountryRules: [
+            { code: "US", restrictTo: ["902*"], exclude: [] },
+          ],
+        },
+      ],
+    })
+
+    expect(local.totalSats).toBe(authorized.totalSats)
+    expect(hasAuthorizedAnonZapPricingChanged(local, authorized)).toBe(true)
+  })
+
   it("evaluates the destination against the server-authorized shipping snapshot", () => {
     const authorized = {
       itemSubtotalSats: 1_000,
@@ -1513,6 +1567,27 @@ describe("checkout payment helpers", () => {
       getAuthorizedAnonZapDestinationEligibility(
         { country: "US", postalCode: "94107" },
         authorized
+      )
+    ).toEqual({ eligible: true })
+    expect(
+      getAuthorizedAnonZapDestinationEligibility(
+        { country: "US", postalCode: "10001" },
+        {
+          ...authorized,
+          items: [
+            {
+              ...authorized.items[0]!,
+              shippingCountryRules: [
+                {
+                  code: "US",
+                  includeCountry: true,
+                  restrictTo: ["9**"],
+                  exclude: [],
+                },
+              ],
+            },
+          ],
+        }
       )
     ).toEqual({ eligible: true })
   })
@@ -1568,6 +1643,37 @@ describe("checkout payment helpers", () => {
           items: [{ ...lifecycle.items[0]!, format: "digital" }],
         },
         authorized
+      )
+    ).toBe(false)
+    expect(
+      doesAuthorizedAnonZapPricingMatchOrder(
+        {
+          ...lifecycle,
+          items: [
+            {
+              ...lifecycle.items[0]!,
+              shippingCountryRules: [
+                {
+                  code: "US",
+                  includeCountry: true,
+                  restrictTo: ["787*"],
+                  exclude: [],
+                },
+              ],
+            },
+          ],
+        },
+        {
+          ...authorized,
+          items: [
+            {
+              ...authorized.items[0]!,
+              shippingCountryRules: [
+                { code: "US", restrictTo: ["787*"], exclude: [] },
+              ],
+            },
+          ],
+        }
       )
     ).toBe(false)
     expect(
@@ -1740,6 +1846,63 @@ describe("checkout payment helpers", () => {
     expect(getCheckoutPublicZapSigner("private_checkout")).toBeNull()
     expect(isCheckoutPublicZapMode("anonymous_public_zap")).toBe(true)
     expect(isCheckoutPublicZapMode("private_checkout")).toBe(false)
+  })
+
+  it("keeps fixed shipping off the deployed anonymous authorizer", () => {
+    expect(
+      canUseAnonymousPublicZapForCart([
+        cartItem({
+          format: "physical",
+          fulfillment: { type: "shipping" },
+          shippingOptionId: SHIPPING_OPTION_ID,
+        }),
+      ])
+    ).toBe(false)
+    expect(
+      canUseAnonymousPublicZapForCart([
+        cartItem({ format: "digital", shippingOptionId: undefined }),
+      ])
+    ).toBe(true)
+    expect(
+      canUseAnonymousPublicZapForCart([
+        cartItem({
+          format: "physical",
+          fulfillment: {
+            type: "pickup",
+            organizerPubkey: FAKE_PUBKEY,
+            product: {
+              coordinate: `30402:${FAKE_PUBKEY}:product-1`,
+              eventId: "1".repeat(64),
+              createdAt: 1,
+              merchantPubkey: FAKE_PUBKEY,
+            },
+            calendar: {
+              coordinate: `31923:${FAKE_PUBKEY}:calendar`,
+              eventId: "2".repeat(64),
+              createdAt: 1,
+            },
+            collection: {
+              coordinate: `30405:${FAKE_PUBKEY}:collection`,
+              eventId: "3".repeat(64),
+              createdAt: 1,
+            },
+            option: {
+              coordinate: SHIPPING_OPTION_ID,
+              eventId: "4".repeat(64),
+              createdAt: 1,
+              title: "Pickup",
+            },
+            costSats: 0,
+            sourceCost: {
+              amount: 0,
+              currency: "SAT",
+              normalizedCurrency: "SAT",
+            },
+          },
+          shippingOptionId: SHIPPING_OPTION_ID,
+        }),
+      ])
+    ).toBe(true)
   })
 
   it("only allows shopper-signed custom zap comments to be edited", () => {

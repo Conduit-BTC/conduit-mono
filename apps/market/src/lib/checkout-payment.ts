@@ -61,6 +61,7 @@ export type CheckoutPricingItem = {
   sourceShippingCost?: SourcePriceQuote
   shippingOptionId?: string
   shippingOptionDTag?: string
+  shippingDestinationSchema?: string
   shippingCountries?: string[]
   shippingCountryRules?: CartItem["shippingCountryRules"]
   sourcePrice?: SourcePriceQuote
@@ -94,6 +95,45 @@ export type CheckoutPricingIntent =
       reason: string
       code: "unpriced_items" | "stale_quote" | "invalid_total"
     }
+
+export function buildCheckoutLifecycleItems(
+  items: readonly CheckoutPricingItem[]
+): OrderLifecycle["items"] {
+  return items.map((item) => ({
+    productId: item.productId,
+    familyProductId: item.familyProductId,
+    selectedSpecifications: item.selectedSpecifications?.map(
+      (specification) => ({ ...specification })
+    ),
+    title: item.title,
+    format: item.format,
+    quantity: item.quantity,
+    priceAtPurchase: item.priceAtPurchase,
+    currency: item.currency,
+    shippingCostSats: item.shippingCostSats,
+    shippingOptionId: item.shippingOptionId,
+    shippingOptionDTag: item.shippingOptionDTag,
+    shippingDestinationSchema: item.shippingDestinationSchema,
+    shippingCountryRules: item.shippingCountryRules?.map((rule) => ({
+      code: rule.code,
+      restrictTo: [...rule.restrictTo],
+      exclude: [...rule.exclude],
+      ...(rule.includeCountry ? { includeCountry: true } : {}),
+      ...(rule.includeSubdivisions
+        ? { includeSubdivisions: [...rule.includeSubdivisions] }
+        : {}),
+      ...(rule.excludeSubdivisions
+        ? { excludeSubdivisions: [...rule.excludeSubdivisions] }
+        : {}),
+      ...(rule.excludeCountry ? { excludeCountry: true } : {}),
+    })),
+    sourcePrice: item.sourcePrice ? { ...item.sourcePrice } : undefined,
+    sourceShippingCost: item.sourceShippingCost
+      ? { ...item.sourceShippingCost }
+      : undefined,
+    fulfillment: item.fulfillment,
+  }))
+}
 
 export type FreshCartProductPricingBinding =
   | { status: "ok"; items: CartItem[] }
@@ -382,6 +422,7 @@ export function buildCheckoutPricingIntent(
       sourceShippingCost: shippingItem.sourceShippingCost,
       shippingOptionId: item.shippingOptionId,
       shippingOptionDTag: item.shippingOptionDTag,
+      shippingDestinationSchema: item.shippingDestinationSchema,
       shippingCountries: item.shippingCountries,
       shippingCountryRules: item.shippingCountryRules,
       sourcePrice: item.sourcePrice,
@@ -476,7 +517,14 @@ export function applyAuthorizedAnonZapPricing(
         name: rule.code,
         restrictTo: [...rule.restrictTo],
         exclude: [...rule.exclude],
+        ...(rule.includeSubdivisions
+          ? { includeSubdivisions: [...rule.includeSubdivisions] }
+          : {}),
+        ...(rule.excludeSubdivisions
+          ? { excludeSubdivisions: [...rule.excludeSubdivisions] }
+          : {}),
       })),
+      shippingDestinationSchema: line.shippingDestinationSchema,
     }
   })
   if (lines.size > 0) {
@@ -507,16 +555,48 @@ function getShippingOptionDTag(
   return parts.length >= 3 ? parts.slice(2).join(":") : undefined
 }
 
+function comparableShippingCountryRules(
+  rules:
+    | Array<{
+        code: string
+        restrictTo: string[]
+        exclude: string[]
+        includeCountry?: boolean
+        includeSubdivisions?: string[]
+        excludeSubdivisions?: string[]
+        excludeCountry?: boolean
+      }>
+    | undefined
+): string {
+  return JSON.stringify(
+    (rules ?? [])
+      .map((rule) => ({
+        code: rule.code.trim().toUpperCase(),
+        restrictTo: [...rule.restrictTo].sort(),
+        exclude: [...rule.exclude].sort(),
+        includeCountry: rule.includeCountry === true,
+        includeSubdivisions: [...(rule.includeSubdivisions ?? [])].sort(),
+        excludeSubdivisions: [...(rule.excludeSubdivisions ?? [])].sort(),
+        excludeCountry: rule.excludeCountry === true,
+      }))
+      .sort((left, right) =>
+        JSON.stringify(left).localeCompare(JSON.stringify(right))
+      )
+  )
+}
+
 function shippingCountryRulesMatch(
   stored: OrderLifecycle["items"][number]["shippingCountryRules"],
   authorized: AuthorizedAnonZapPricing["items"][number]["shippingCountryRules"]
 ): boolean {
-  if (!stored) return authorized.length === 0
-  return JSON.stringify(stored) === JSON.stringify(authorized)
+  return (
+    comparableShippingCountryRules(stored) ===
+    comparableShippingCountryRules(authorized)
+  )
 }
 
 export function getAuthorizedAnonZapDestinationEligibility(
-  destination: { country: string; postalCode: string },
+  destination: { country: string; state?: string; postalCode: string },
   authorized: AuthorizedAnonZapPricing
 ): ShippingDestinationEligibility {
   const results = authorized.items
@@ -536,6 +616,8 @@ export function getAuthorizedAnonZapDestinationEligibility(
             ...rule,
             name: rule.code,
           })),
+          destinationSchema: item.shippingDestinationSchema,
+          destinationPolicyUnsupported: false,
           service: "standard",
           createdAt: 0,
           launchUnsupportedTags: [],
@@ -559,6 +641,14 @@ export function getAuthorizedAnonZapDestinationEligibility(
     )
   ) {
     return { eligible: false, reason: "postal_restricted" }
+  }
+  if (
+    results.some(
+      (result) =>
+        result.eligible === false && result.reason === "subdivision_restricted"
+    )
+  ) {
+    return { eligible: false, reason: "subdivision_restricted" }
   }
   if (results.some((result) => result.eligible === null)) {
     return { eligible: null, reason: "unknown" }
@@ -606,6 +696,7 @@ export function doesAuthorizedAnonZapPricingMatchOrder(
       line.shippingOptionId !== item.shippingOptionId ||
       getShippingOptionDTag(line.shippingOptionId) !==
         item.shippingOptionDTag ||
+      line.shippingDestinationSchema !== item.shippingDestinationSchema ||
       !shippingCountryRulesMatch(
         item.shippingCountryRules,
         line.shippingCountryRules
@@ -641,7 +732,13 @@ export function hasAuthorizedAnonZapPricingChanged(
       item.quantity !== authorizedItem.quantity ||
       item.priceAtPurchase !== authorizedItem.priceAtPurchase ||
       (item.shippingCostSats ?? 0) !== (authorizedItem.shippingCostSats ?? 0) ||
-      item.shippingOptionId !== authorizedItem.shippingOptionId
+      item.shippingOptionId !== authorizedItem.shippingOptionId ||
+      item.shippingDestinationSchema !==
+        authorizedItem.shippingDestinationSchema ||
+      !shippingCountryRulesMatch(
+        item.shippingCountryRules,
+        authorizedItem.shippingCountryRules ?? []
+      )
     )
   })
 }
@@ -1136,6 +1233,26 @@ export function getCheckoutPublicZapSigner(
     return "shopper"
   }
   return null
+}
+
+/**
+ * The deployed anonymous authorizer intentionally rejects fixed-shipping
+ * checkout until it can verify the selected 30406 snapshot itself. Keep those
+ * carts on a shopper-signed public zap (or private invoice for guests) instead
+ * of depending on an authorization path the deployed edge does not support.
+ */
+export function canUseAnonymousPublicZapForCart(
+  items: readonly Pick<
+    CartItem,
+    "format" | "fulfillment" | "shippingOptionId"
+  >[]
+): boolean {
+  return !items.some(
+    (item) =>
+      item.format !== "digital" &&
+      item.fulfillment?.type !== "pickup" &&
+      !!item.shippingOptionId
+  )
 }
 
 export function isCheckoutPublicZapMode(

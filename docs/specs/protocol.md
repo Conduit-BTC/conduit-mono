@@ -246,10 +246,16 @@ Product listings are addressable events:
 Implementations must not dedupe only by `d` tag because different merchants can publish the same `d` value. Product identity, cart references, order item tags, and cache records should preserve the full addressable coordinate.
 
 Fixed physical products follow `docs/specs/fixed-product-shipping.md`: Merchant
-publishes and receives a relay acknowledgement for one complete,
-product-scoped Gamma kind `30406` before publishing the kind `30402` that
-references it. New product writes use an exact two-field `shipping_option` tag
-and do not emit legacy inline shipping tags or product-level extra cost.
+publishes one complete, product-scoped Gamma kind `30406` per canonical
+destination-policy and rate group. It publishes the options sequentially and
+requires a relay acknowledgement for every option before publishing the kind
+`30402` that references them. New product writes use one exact two-field
+`shipping_option` tag per option and do not emit legacy inline shipping tags or
+product-level extra cost. Production and staging author country-level policies;
+the versioned `destination_schema=1` grammar for detailed subdivision or postal
+constraints is preview-only. Replaced options, removed variations, and deleted
+product families withdraw every obsolete exact `30406` coordinate through the
+durable deletion outbox.
 
 Product parsers preserve repeated Open Markets `shipping_option` and kind-30405
 collection references. A current app workflow may select one fulfillment mode,

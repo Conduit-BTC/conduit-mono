@@ -1116,6 +1116,41 @@ describe("commerce gateway", () => {
     expect(result.data[0]?.product.title).toBe("Cached Item")
   })
 
+  it("restores cached signed shipping references fail-closed", async () => {
+    const shippingCoordinate = "30406:merchant:cached-shipping"
+    const collectionCoordinate = "30405:organizer:cached-market"
+    cachedProducts.push({
+      id: "30402:merchant:cached-shipping-evidence",
+      pubkey: "merchant",
+      title: "Cached Shipping Evidence",
+      price: 25,
+      currency: "USD",
+      type: "simple",
+      visibility: "public",
+      shippingOptionRefs: [{ coordinate: shippingCoordinate }],
+      collectionRefs: [collectionCoordinate],
+      images: [
+        {
+          url: "https://cdn.conduit.market/conduit-test/cached-shipping.png",
+        },
+      ],
+      tags: [],
+      createdAt: FIXED_NOW - 5_000,
+      updatedAt: FIXED_NOW - 5_000,
+      cachedAt: FIXED_NOW - 1_000,
+    })
+
+    const result = await getCachedMarketplaceProducts()
+
+    expect(result.data[0]?.product.shippingOptionRefs).toEqual([
+      { coordinate: shippingCoordinate },
+    ])
+    expect(result.data[0]?.product.collectionRefs).toEqual([
+      collectionCoordinate,
+    ])
+    expect(result.data[0]?.product.shippingOptionLaunchUnsupported).toBe(true)
+  })
+
   it("retains cached product evidence while projecting profile and image requests safely", async () => {
     cachedProducts.push({
       id: "30402:merchant:cached-image-safety",

@@ -82,6 +82,9 @@ describe("Market event catalog route", () => {
     const authorization = await Bun.file(
       "apps/market/src/lib/checkout-authorization.ts"
     ).text()
+    const checkoutPayment = await Bun.file(
+      "apps/market/src/lib/checkout-payment.ts"
+    ).text()
 
     expect(orders).toContain("verifyPickupCartFreshness")
     expect(orders).toContain("assertCartPickupHandlerReady")
@@ -93,7 +96,10 @@ describe("Market event catalog route", () => {
     expect(orders.indexOf("verifyPickupCartFreshness")).toBeLessThan(
       orders.lastIndexOf("runOrderPrivateFallback(ctx)")
     )
-    expect(checkout).toContain("sourceShippingCost: item.sourceShippingCost")
+    expect(checkout).toContain("buildCheckoutLifecycleItems(")
+    expect(checkoutPayment).toContain(
+      "sourceShippingCost: item.sourceShippingCost"
+    )
     expect(authorization).toContain("resolveProductCartFulfillment")
     expect(authorization).toContain("assertCartPickupHandlerReady")
     expect(authorization).toContain("getCartCommerceFingerprint")

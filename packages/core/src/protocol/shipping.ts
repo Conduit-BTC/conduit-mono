@@ -7,6 +7,8 @@
  * Gamma kind-30406 before its referencing kind-30402.
  */
 import { NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
+import { sha256 } from "@noble/hashes/sha2.js"
+import { bytesToHex } from "@noble/hashes/utils.js"
 import {
   db,
   type CachedProductTombstone,
@@ -15,6 +17,7 @@ import {
 import {
   canonicalizeShippingCost,
   getShippingCostSats,
+  normalizeCurrencyAmount,
   normalizeCurrencyCode,
   type CommerceShippingCostLike,
   type PricingRateInput,
@@ -22,6 +25,11 @@ import {
 import type { ProductSchema } from "../schemas"
 import { EVENT_KINDS } from "./kinds"
 import {
+  normalizeAddressSubdivisionCode,
+  supportsAddressPostalPolicy,
+} from "./address-validation"
+import {
+  attachEventSourceRelayUrl,
   fetchEventsFanout,
   fetchEventsFanoutDetailed,
   getEventSourceRelayUrls,
@@ -38,6 +46,7 @@ import {
 
 export const CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG = "conduit-default"
 export const FIXED_PRODUCT_SHIPPING_D_TAG_SUFFIX = "-shipping-standard"
+export const SHIPPING_DESTINATION_SCHEMA_VERSION = "1"
 export const SHIPPING_OPTION_READ_BATCH_SIZE = 50
 
 const SHIPPING_OPTION_READ_LIMIT = 100
@@ -106,9 +115,33 @@ const FIXED_STANDARD_SUPPORTED_TAGS = new Set([
   "price",
   "country",
   "service",
+  "destination_schema",
+  "destination",
   "client",
 ])
 const FIXED_STANDARD_PRICE_AMOUNT = /^\d+(?:\.\d+)?$/
+const SHIPPING_POSTAL_SELECTOR_VALUE = /^[A-Z0-9]+$/
+const SHIPPING_SUBDIVISION_CODE = /^[A-Z]{2}-[A-Z0-9]{1,3}$/
+
+function normalizeFixedShippingAmount(
+  amount: number,
+  currency: string,
+  label: string
+): number {
+  if (!Number.isFinite(amount) || amount < 0) {
+    throw new Error(`${label} requires a non-negative amount`)
+  }
+  const normalized = normalizeCurrencyAmount(amount, currency)
+  if (normalized.status === "invalid") {
+    throw new Error(`${label} is invalid: ${normalized.reason}`)
+  }
+  if (normalized.amount !== amount) {
+    throw new Error(
+      `${label} must use at most ${normalized.fractionDigits} decimal places for ${normalized.normalizedCurrency}`
+    )
+  }
+  return normalized.amount
+}
 
 function serializePlainDecimalAmount(amount: number): string {
   const value = String(amount)
@@ -157,70 +190,364 @@ export function getProductShippingOptionAddress(
   )
 }
 
+export interface FixedShippingRateZone {
+  amount: number
+  currency: string
+  countryRules: ShippingCountryConfig[]
+  countries: string[]
+  /** True when at least one destination inherited the product-level amount. */
+  usesProductFallback: boolean
+  /** Present only for the experimental, versioned destination grammar. */
+  destinationSchema?: typeof SHIPPING_DESTINATION_SCHEMA_VERSION
+}
+
 export type ProductFulfillmentIntent =
   | { kind: "digital" }
   | { kind: "coordinate_after_order" }
   | {
       kind: "fixed_standard"
-      amount: number
-      currency: string
-      countries: string[]
+      zones: FixedShippingRateZone[]
     }
+
+export function getFixedShippingRateZones(
+  intent: Extract<ProductFulfillmentIntent, { kind: "fixed_standard" }>
+): FixedShippingRateZone[] {
+  if (Array.isArray(intent.zones)) {
+    return intent.zones.map((zone) => {
+      const currency = normalizeCurrencyCode(zone.currency)
+      if (!currency) throw new Error("Fixed shipping currency is required")
+      return {
+        ...zone,
+        amount: normalizeFixedShippingAmount(
+          zone.amount,
+          currency,
+          "Fixed shipping rate"
+        ),
+        currency,
+      }
+    })
+  }
+
+  // Runtime compatibility for already-restored drafts created before the
+  // per-zone intent shape. New TypeScript callers cannot construct this shape.
+  const legacy = intent as unknown as {
+    amount?: unknown
+    currency?: unknown
+    countries?: unknown
+  }
+  if (
+    typeof legacy.amount !== "number" ||
+    !Number.isFinite(legacy.amount) ||
+    legacy.amount < 0 ||
+    typeof legacy.currency !== "string" ||
+    !Array.isArray(legacy.countries)
+  ) {
+    throw new Error("Fixed shipping destination policies are invalid")
+  }
+  const countries = Array.from(
+    new Set(
+      legacy.countries.flatMap((country) =>
+        typeof country === "string" && /^[A-Za-z]{2}$/.test(country)
+          ? [country.toUpperCase()]
+          : []
+      )
+    )
+  ).sort()
+  if (countries.length === 0) {
+    throw new Error("Fixed shipping requires a country destination")
+  }
+  const currency = normalizeCurrencyCode(legacy.currency)
+  if (!currency) throw new Error("Fixed shipping currency is required")
+  return [
+    {
+      amount: normalizeFixedShippingAmount(
+        legacy.amount,
+        currency,
+        "Fixed shipping rate"
+      ),
+      currency,
+      countries,
+      countryRules: countries.map((code) => ({
+        code,
+        name: code,
+        restrictTo: [],
+        exclude: [],
+      })),
+      usesProductFallback: true,
+    },
+  ]
+}
+
+type ShippingAuthoringDestination = ShippingCountryConfig & {
+  rate?: {
+    amount: number
+    currency: string
+  }
+}
+
+function normalizeShippingPostalPattern(pattern: string): string {
+  const trimmed = pattern.trim().toUpperCase()
+  const prefix = trimmed.endsWith("*")
+  const withoutWildcard = prefix ? trimmed.replace(/\*+$/, "") : trimmed
+  const value = withoutWildcard.replace(/[ -]/g, "")
+  if (!value || !SHIPPING_POSTAL_SELECTOR_VALUE.test(value)) {
+    throw new Error(
+      "Postal rules must use letters and numbers with an optional trailing * for a prefix"
+    )
+  }
+  return prefix ? `${value}*` : value
+}
+
+function normalizeShippingSubdivision(
+  country: string,
+  subdivision: string
+): string {
+  const normalized = subdivision.trim().toUpperCase()
+  const localCode = normalized.startsWith(`${country}-`)
+    ? normalized.slice(country.length + 1)
+    : normalized
+  const complete = normalizeAddressSubdivisionCode(country, localCode)
+  if (!complete || !SHIPPING_SUBDIVISION_CODE.test(complete)) {
+    throw new Error(
+      `Conduit cannot validate subdivision ${subdivision || "(blank)"} for ${country}`
+    )
+  }
+  return complete
+}
+
+function normalizeShippingCountryRule(
+  destination: ShippingCountryConfig
+): ShippingCountryConfig {
+  const code = destination.code.trim().toUpperCase()
+  if (!/^[A-Z]{2}$/.test(code)) {
+    throw new Error(
+      "Fixed shipping requires at least one valid country destination"
+    )
+  }
+
+  const restrictTo = Array.from(
+    new Set(destination.restrictTo.map(normalizeShippingPostalPattern))
+  ).sort()
+  const exclude = Array.from(
+    new Set(destination.exclude.map(normalizeShippingPostalPattern))
+  ).sort()
+  if (
+    (restrictTo.length > 0 || exclude.length > 0) &&
+    !supportsAddressPostalPolicy(code)
+  ) {
+    throw new Error(
+      `Conduit cannot safely validate postal destination rules for ${code}`
+    )
+  }
+
+  const includeSubdivisions = Array.from(
+    new Set(
+      (destination.includeSubdivisions ?? []).map((subdivision) =>
+        normalizeShippingSubdivision(code, subdivision)
+      )
+    )
+  ).sort()
+  const excludeSubdivisions = Array.from(
+    new Set(
+      (destination.excludeSubdivisions ?? []).map((subdivision) =>
+        normalizeShippingSubdivision(code, subdivision)
+      )
+    )
+  ).sort()
+  const includeCountry =
+    destination.includeCountry === true &&
+    (includeSubdivisions.length > 0 || restrictTo.length > 0)
+
+  return {
+    code,
+    name: destination.name.trim() || code,
+    restrictTo,
+    exclude,
+    ...(includeCountry ? { includeCountry: true } : {}),
+    ...(includeSubdivisions.length > 0 ? { includeSubdivisions } : {}),
+    ...(excludeSubdivisions.length > 0 ? { excludeSubdivisions } : {}),
+    ...(destination.excludeCountry === true ? { excludeCountry: true } : {}),
+  }
+}
+
+function canonicalShippingCountryRule(rule: ShippingCountryConfig): object {
+  return {
+    code: rule.code,
+    ...(rule.includeCountry === true ? { includeCountry: true } : {}),
+    excludeCountry: rule.excludeCountry === true,
+    includeSubdivisions: rule.includeSubdivisions ?? [],
+    excludeSubdivisions: rule.excludeSubdivisions ?? [],
+    restrictTo: rule.restrictTo,
+    exclude: rule.exclude,
+  }
+}
+
+function canonicalShippingPolicy(
+  zone: Pick<FixedShippingRateZone, "countryRules">
+): string {
+  return JSON.stringify(
+    zone.countryRules
+      .map(canonicalShippingCountryRule)
+      .sort((left, right) =>
+        JSON.stringify(left).localeCompare(JSON.stringify(right))
+      )
+  )
+}
+
+function hasDetailedDestinationPolicy(
+  rules: readonly ShippingCountryConfig[]
+): boolean {
+  return rules.some(
+    (rule) =>
+      rule.restrictTo.length > 0 ||
+      rule.exclude.length > 0 ||
+      (rule.includeSubdivisions?.length ?? 0) > 0 ||
+      (rule.excludeSubdivisions?.length ?? 0) > 0 ||
+      rule.excludeCountry === true
+  )
+}
+
+export function getProductShippingZoneDTag(
+  productDTag: string,
+  zone: Pick<FixedShippingRateZone, "countryRules">
+): string {
+  const policyHash = bytesToHex(
+    sha256(new TextEncoder().encode(canonicalShippingPolicy(zone)))
+  ).slice(0, 24)
+  return `${getProductShippingOptionDTag(productDTag)}-${policyHash}`
+}
+
+export function getProductShippingZoneAddress(
+  pubkey: string,
+  productDTag: string,
+  zone: Pick<FixedShippingRateZone, "countryRules">
+): string {
+  return getShippingOptionAddress(
+    pubkey,
+    getProductShippingZoneDTag(productDTag, zone)
+  )
+}
 
 export function compileProductFulfillmentIntent(input: {
   format: "physical" | "digital"
   shippingPricingMode: "fixed" | "coordinate_after_order"
   amount?: number
   currency: string
-  destinations: readonly ShippingCountryConfig[]
+  destinations: readonly ShippingAuthoringDestination[]
+  allowExperimentalDestinationPolicy?: boolean
 }): ProductFulfillmentIntent {
   if (input.format === "digital") return { kind: "digital" }
   if (input.shippingPricingMode === "coordinate_after_order") {
     return { kind: "coordinate_after_order" }
   }
 
-  if (
-    typeof input.amount !== "number" ||
-    !Number.isFinite(input.amount) ||
-    input.amount < 0
-  ) {
-    throw new Error("Fixed shipping requires a non-negative amount")
-  }
-
   const currency = normalizeCurrencyCode(input.currency)
   if (!currency) throw new Error("Fixed shipping currency is required")
 
-  const countries = Array.from(
-    new Set(
-      input.destinations.map((destination) =>
-        destination.code.trim().toUpperCase()
-      )
-    )
-  ).sort()
-  if (
-    countries.length === 0 ||
-    countries.some((country) => !/^[A-Z]{2}$/.test(country))
-  ) {
+  const fallbackAmount =
+    input.amount === undefined
+      ? undefined
+      : normalizeFixedShippingAmount(
+          input.amount,
+          currency,
+          "Fixed shipping fallback"
+        )
+  if (input.destinations.length === 0) {
     throw new Error(
       "Fixed shipping requires at least one valid country destination"
     )
   }
-  if (
-    input.destinations.some(
-      (destination) =>
-        destination.restrictTo.length > 0 || destination.exclude.length > 0
+
+  const zonesByRate = new Map<string, FixedShippingRateZone>()
+  for (const destination of input.destinations) {
+    const rule = normalizeShippingCountryRule(destination)
+    const amount = destination.rate?.amount ?? fallbackAmount
+    const rateCurrency = normalizeCurrencyCode(
+      destination.rate?.currency ?? currency
     )
-  ) {
-    throw new Error(
-      "Fixed checkout supports country destinations only. Remove postal restrictions or coordinate shipping after the order."
+    if (amount === undefined) {
+      throw new Error(
+        `Fixed shipping requires a destination rate or product fallback for ${rule.code}`
+      )
+    }
+    if (!rateCurrency || rateCurrency !== currency) {
+      throw new Error(
+        "Fixed shipping destination currency must match the product currency"
+      )
+    }
+    const normalizedAmount = normalizeFixedShippingAmount(
+      amount,
+      rateCurrency,
+      `Fixed shipping destination rate for ${rule.code}`
     )
+    if (
+      hasDetailedDestinationPolicy([rule]) &&
+      input.allowExperimentalDestinationPolicy !== true
+    ) {
+      throw new Error(
+        "Detailed destination policies are available only in the preview rollout. Remove subdivision/postal rules or coordinate shipping after the order."
+      )
+    }
+
+    const key = JSON.stringify([
+      rateCurrency,
+      serializePlainDecimalAmount(normalizedAmount),
+    ])
+    const zone = zonesByRate.get(key) ?? {
+      amount: normalizedAmount,
+      currency: rateCurrency,
+      countryRules: [],
+      countries: [],
+      usesProductFallback: false,
+    }
+    zone.countryRules.push(rule)
+    zone.countries.push(rule.code)
+    zone.usesProductFallback ||= destination.rate === undefined
+    if (hasDetailedDestinationPolicy([rule])) {
+      zone.destinationSchema = SHIPPING_DESTINATION_SCHEMA_VERSION
+    }
+    zonesByRate.set(key, zone)
+  }
+
+  const zones = Array.from(zonesByRate.values()).map((zone) => ({
+    ...zone,
+    countries: Array.from(new Set(zone.countries)).sort(),
+    countryRules: Array.from(
+      new Map(
+        zone.countryRules.map((rule) => [
+          JSON.stringify(canonicalShippingCountryRule(rule)),
+          rule,
+        ])
+      ).values()
+    ).sort((left, right) =>
+      JSON.stringify(canonicalShippingCountryRule(left)).localeCompare(
+        JSON.stringify(canonicalShippingCountryRule(right))
+      )
+    ),
+  }))
+  const policyRates = new Map<string, string>()
+  for (const zone of zones) {
+    const policy = canonicalShippingPolicy(zone)
+    const rate = JSON.stringify([
+      zone.currency,
+      serializePlainDecimalAmount(zone.amount),
+    ])
+    const existingRate = policyRates.get(policy)
+    if (existingRate && existingRate !== rate) {
+      throw new Error(
+        "Fixed shipping has two different rates for the same destination policy"
+      )
+    }
+    policyRates.set(policy, rate)
   }
 
   return {
     kind: "fixed_standard",
-    amount: input.amount,
-    currency,
-    countries,
+    zones: zones.sort((left, right) =>
+      canonicalShippingPolicy(left).localeCompare(
+        canonicalShippingPolicy(right)
+      )
+    ),
   }
 }
 
@@ -235,25 +562,115 @@ export function buildFixedShippingOptionEventDraft(input: {
   intent: Extract<ProductFulfillmentIntent, { kind: "fixed_standard" }>
   clientAppId?: ConduitAppId
 }): ShippingOptionEventDraft {
-  let tags: string[][] = [
-    ["d", getProductShippingOptionDTag(input.productDTag)],
-    ["title", "Standard Shipping"],
-    [
-      "price",
-      serializePlainDecimalAmount(input.intent.amount),
-      input.intent.currency,
-    ],
-    ["country", ...input.intent.countries],
-    ["service", "standard"],
+  if (getFixedShippingRateZones(input.intent).length !== 1) {
+    throw new Error("Expected exactly one fixed shipping destination policy")
+  }
+  return buildFixedShippingOptionEventDrafts(input)[0]!
+}
+
+export function getFixedShippingOptionDTags(
+  productDTag: string,
+  intent: Extract<ProductFulfillmentIntent, { kind: "fixed_standard" }>
+): string[] {
+  const zones = getFixedShippingRateZones(intent)
+  const preserveLegacyCoordinate =
+    zones.length === 1 &&
+    zones[0]?.destinationSchema === undefined &&
+    zones[0]?.usesProductFallback === true
+
+  return zones.map((zone) =>
+    preserveLegacyCoordinate
+      ? getProductShippingOptionDTag(productDTag)
+      : getProductShippingZoneDTag(productDTag, zone)
+  )
+}
+
+export function getFixedShippingOptionAddresses(
+  pubkey: string,
+  productDTag: string,
+  intent: Extract<ProductFulfillmentIntent, { kind: "fixed_standard" }>
+): string[] {
+  return getFixedShippingOptionDTags(productDTag, intent).map((dTag) =>
+    getShippingOptionAddress(pubkey, dTag)
+  )
+}
+
+function shippingDestinationTags(zone: FixedShippingRateZone): string[][] {
+  if (zone.destinationSchema !== SHIPPING_DESTINATION_SCHEMA_VERSION) return []
+
+  const tags: string[][] = [
+    ["destination_schema", SHIPPING_DESTINATION_SCHEMA_VERSION],
   ]
-  if (input.clientAppId) {
-    tags = appendConduitClientTag(tags, input.clientAppId)
+  for (const rule of zone.countryRules) {
+    const includeSubdivisions = rule.includeSubdivisions ?? []
+    if (
+      rule.includeCountry === true ||
+      (includeSubdivisions.length === 0 && rule.restrictTo.length === 0)
+    ) {
+      tags.push(["destination", "include", "country", rule.code])
+    }
+    for (const subdivision of includeSubdivisions) {
+      tags.push(["destination", "include", "subdivision", subdivision])
+    }
+    for (const postal of rule.restrictTo) {
+      const prefix = postal.endsWith("*")
+      tags.push([
+        "destination",
+        "include",
+        "postal",
+        rule.code,
+        prefix ? "prefix" : "exact",
+        prefix ? postal.slice(0, -1) : postal,
+      ])
+    }
+    for (const subdivision of rule.excludeSubdivisions ?? []) {
+      tags.push(["destination", "exclude", "subdivision", subdivision])
+    }
+    if (rule.excludeCountry) {
+      tags.push(["destination", "exclude", "country", rule.code])
+    }
+    for (const postal of rule.exclude) {
+      const prefix = postal.endsWith("*")
+      tags.push([
+        "destination",
+        "exclude",
+        "postal",
+        rule.code,
+        prefix ? "prefix" : "exact",
+        prefix ? postal.slice(0, -1) : postal,
+      ])
+    }
   }
-  return {
-    kind: EVENT_KINDS.SHIPPING_OPTION,
-    content: "",
-    tags,
-  }
+  return tags
+}
+
+export function buildFixedShippingOptionEventDrafts(input: {
+  productDTag: string
+  intent: Extract<ProductFulfillmentIntent, { kind: "fixed_standard" }>
+  clientAppId?: ConduitAppId
+}): ShippingOptionEventDraft[] {
+  const zones = getFixedShippingRateZones(input.intent)
+  const dTags = getFixedShippingOptionDTags(input.productDTag, input.intent)
+
+  return zones.map((zone, index) => {
+    const dTag = dTags[index]!
+    let tags: string[][] = [
+      ["d", dTag],
+      ["title", "Standard Shipping"],
+      ["price", serializePlainDecimalAmount(zone.amount), zone.currency],
+      ["country", ...zone.countries],
+      ["service", "standard"],
+      ...shippingDestinationTags(zone),
+    ]
+    if (input.clientAppId) {
+      tags = appendConduitClientTag(tags, input.clientAppId)
+    }
+    return {
+      kind: EVENT_KINDS.SHIPPING_OPTION,
+      content: "",
+      tags,
+    }
+  })
 }
 
 export type ShippingOptionAddress = {
@@ -349,6 +766,14 @@ export interface ShippingCountryConfig {
   restrictTo: string[]
   /** Postal code / prefix patterns that are excluded */
   exclude: string[]
+  /** Preserve an explicit whole-country include alongside narrower selectors. */
+  includeCountry?: boolean
+  /** Complete ISO 3166-2 codes included instead of the whole country. */
+  includeSubdivisions?: string[]
+  /** Complete ISO 3166-2 codes removed from this policy. */
+  excludeSubdivisions?: string[]
+  /** A versioned policy may explicitly subtract the whole country. */
+  excludeCountry?: boolean
 }
 
 export interface ShippingConfig {
@@ -371,9 +796,15 @@ export interface ParsedShippingOption {
   countries: string[]
   /** Country-specific postal include/exclude rules from CND-7. */
   countryRules: ShippingCountryConfig[]
+  /** Versioned destination grammar used by this option, when present. */
+  destinationSchema?: string
+  /** True when the versioned destination policy is malformed or unknown. */
+  destinationPolicyUnsupported?: boolean
   /** Service label (e.g. "standard", "express") */
   service: string
   createdAt: number
+  /** Relays that returned or acknowledged this exact option coordinate. */
+  sourceRelayUrls?: string[]
   /** Fields outside Conduit's narrow fixed-standard launch slice. */
   launchUnsupportedTags: string[]
 }
@@ -388,12 +819,16 @@ export type ProductFulfillmentResolutionReason =
   | "unsupported"
   | "currency_mismatch"
   | "stale"
+  | "destination_unsupported"
+  | "ambiguous_destination"
+  | "destination_incomplete"
 
 export type PreparedProductFulfillment = {
   intent: "digital" | "coordinate_after_order" | "fixed_standard"
   status: "ready" | "order_first"
   reason?: ProductFulfillmentResolutionReason
   option?: ParsedShippingOption
+  options?: ParsedShippingOption[]
 }
 
 export type ResolvableProductFulfillment = Pick<
@@ -407,6 +842,8 @@ export type ResolvableProductFulfillment = Pick<
   | "sourceShippingCost"
   | "shippingOptionId"
   | "shippingOptionDTag"
+  | "shippingOptionIds"
+  | "shippingOptionDTags"
   | "shippingOptionLaunchUnsupported"
   | "shippingCountries"
   | "shippingCountryRules"
@@ -476,6 +913,190 @@ export function resolveCartShippingCost(
 // Parse
 // ---------------------------------------------------------------------------
 
+function legacyCountryRules(
+  tags: readonly string[][],
+  countries: readonly string[]
+): ShippingCountryConfig[] {
+  return countries.map((code) => ({
+    code,
+    name: code,
+    restrictTo:
+      tags
+        .find((tag) => tag[0] === "restrict" && tag[1]?.toUpperCase() === code)
+        ?.slice(2)
+        .filter(Boolean) ?? [],
+    exclude:
+      tags
+        .find((tag) => tag[0] === "exclude" && tag[1]?.toUpperCase() === code)
+        ?.slice(2)
+        .filter(Boolean) ?? [],
+  }))
+}
+
+interface ParsedDestinationPolicyResult {
+  countryRules: ShippingCountryConfig[]
+  destinationSchema?: string
+  destinationPolicyUnsupported: boolean
+}
+
+function parseDestinationPolicy(
+  tags: readonly string[][],
+  countries: readonly string[]
+): ParsedDestinationPolicyResult {
+  const schemaTags = tags.filter((tag) => tag[0] === "destination_schema")
+  const destinationTags = tags.filter((tag) => tag[0] === "destination")
+  if (schemaTags.length === 0) {
+    return {
+      countryRules: legacyCountryRules(tags, countries),
+      destinationPolicyUnsupported: destinationTags.length > 0,
+    }
+  }
+
+  const schema = schemaTags[0]?.[1]
+  const unsupported = (): ParsedDestinationPolicyResult => ({
+    countryRules: legacyCountryRules(tags, countries),
+    ...(typeof schema === "string" && schema
+      ? { destinationSchema: schema }
+      : {}),
+    destinationPolicyUnsupported: true,
+  })
+  if (
+    schemaTags.length !== 1 ||
+    schemaTags[0]?.length !== 2 ||
+    schema !== SHIPPING_DESTINATION_SCHEMA_VERSION
+  ) {
+    return unsupported()
+  }
+
+  const ruleByCountry = new Map<string, ShippingCountryConfig>()
+  const includedCountries = new Set<string>()
+  const wholeCountryIncludes = new Set<string>()
+  let includeCount = 0
+  const getRule = (country: string): ShippingCountryConfig => {
+    const current = ruleByCountry.get(country)
+    if (current) return current
+    const created: ShippingCountryConfig = {
+      code: country,
+      name: country,
+      restrictTo: [],
+      exclude: [],
+      includeSubdivisions: [],
+      excludeSubdivisions: [],
+    }
+    ruleByCountry.set(country, created)
+    return created
+  }
+
+  for (const tag of destinationTags) {
+    const effect = tag[1]
+    const selector = tag[2]
+    if (effect !== "include" && effect !== "exclude") return unsupported()
+
+    if (selector === "country") {
+      const country = tag[3] ?? ""
+      if (tag.length !== 4 || !/^[A-Z]{2}$/.test(country)) {
+        return unsupported()
+      }
+      const rule = getRule(country)
+      if (effect === "include") {
+        includeCount += 1
+        includedCountries.add(country)
+        wholeCountryIncludes.add(country)
+      } else {
+        rule.excludeCountry = true
+      }
+      continue
+    }
+
+    if (selector === "subdivision") {
+      const subdivision = tag[3] ?? ""
+      if (tag.length !== 4 || !SHIPPING_SUBDIVISION_CODE.test(subdivision)) {
+        return unsupported()
+      }
+      const country = subdivision.slice(0, 2)
+      if (!normalizeAddressSubdivisionCode(country, subdivision.slice(3))) {
+        return unsupported()
+      }
+      const rule = getRule(country)
+      const target =
+        effect === "include"
+          ? (rule.includeSubdivisions ??= [])
+          : (rule.excludeSubdivisions ??= [])
+      target.push(subdivision)
+      if (effect === "include") {
+        includeCount += 1
+        includedCountries.add(country)
+      }
+      continue
+    }
+
+    if (selector === "postal") {
+      const country = tag[3] ?? ""
+      const mode = tag[4]
+      const value = tag[5] ?? ""
+      if (
+        tag.length !== 6 ||
+        !/^[A-Z]{2}$/.test(country) ||
+        !supportsAddressPostalPolicy(country) ||
+        (mode !== "exact" && mode !== "prefix") ||
+        !SHIPPING_POSTAL_SELECTOR_VALUE.test(value)
+      ) {
+        return unsupported()
+      }
+      const rule = getRule(country)
+      const normalized = mode === "prefix" ? `${value}*` : value
+      const target = effect === "include" ? rule.restrictTo : rule.exclude
+      target.push(normalized)
+      if (effect === "include") {
+        includeCount += 1
+        includedCountries.add(country)
+      }
+      continue
+    }
+
+    return unsupported()
+  }
+
+  const summary = [...countries].sort()
+  const derivedSummary = Array.from(includedCountries).sort()
+  if (
+    destinationTags.length === 0 ||
+    includeCount === 0 ||
+    JSON.stringify(summary) !== JSON.stringify(derivedSummary)
+  ) {
+    return unsupported()
+  }
+
+  const countryRules = Array.from(ruleByCountry.values())
+    .filter((rule) => includedCountries.has(rule.code))
+    .map((rule) => {
+      const restrictTo = Array.from(new Set(rule.restrictTo)).sort()
+      const includeSubdivisions = Array.from(
+        new Set(rule.includeSubdivisions ?? [])
+      ).sort()
+      const includeCountry =
+        wholeCountryIncludes.has(rule.code) &&
+        (includeSubdivisions.length > 0 || restrictTo.length > 0)
+      return {
+        ...rule,
+        restrictTo,
+        exclude: Array.from(new Set(rule.exclude)).sort(),
+        ...(includeCountry ? { includeCountry: true } : {}),
+        includeSubdivisions,
+        excludeSubdivisions: Array.from(
+          new Set(rule.excludeSubdivisions ?? [])
+        ).sort(),
+      }
+    })
+    .sort((left, right) => left.code.localeCompare(right.code))
+
+  return {
+    countryRules,
+    destinationSchema: SHIPPING_DESTINATION_SCHEMA_VERSION,
+    destinationPolicyUnsupported: false,
+  }
+}
+
 export function parseShippingOptionEvent(
   event: Pick<NDKEvent, "id" | "pubkey" | "tags" | "created_at">
 ): ParsedShippingOption | null {
@@ -525,6 +1146,13 @@ export function parseShippingOptionEvent(
   ) {
     return null
   }
+  const normalizedPrice = normalizeCurrencyAmount(price, currency)
+  if (
+    normalizedPrice.status === "invalid" ||
+    normalizedPrice.amount !== price
+  ) {
+    return null
+  }
 
   // ["country", code1, code2, ...] or repeated ["country", code]
   const countryTags = tags.filter((tag) => tag[0] === "country")
@@ -552,20 +1180,7 @@ export function parseShippingOptionEvent(
     return null
   }
 
-  const countryRules = countries.map((code) => ({
-    code,
-    name: code,
-    restrictTo:
-      tags
-        .find((t) => t[0] === "restrict" && t[1]?.toUpperCase() === code)
-        ?.slice(2)
-        .filter(Boolean) ?? [],
-    exclude:
-      tags
-        .find((t) => t[0] === "exclude" && t[1]?.toUpperCase() === code)
-        ?.slice(2)
-        .filter(Boolean) ?? [],
-  }))
+  const destinationPolicy = parseDestinationPolicy(tags, countries)
 
   return {
     eventId: event.id,
@@ -574,11 +1189,17 @@ export function parseShippingOptionEvent(
     dTag,
     title,
     currency,
-    price,
+    price: normalizedPrice.amount,
     countries,
-    countryRules,
+    countryRules: destinationPolicy.countryRules,
+    destinationSchema: destinationPolicy.destinationSchema,
+    destinationPolicyUnsupported:
+      destinationPolicy.destinationPolicyUnsupported,
     service,
     createdAt: (event.created_at ?? 0) * 1000,
+    ...(getEventSourceRelayUrls(event as NDKEvent).length > 0
+      ? { sourceRelayUrls: getEventSourceRelayUrls(event as NDKEvent) }
+      : {}),
     launchUnsupportedTags: Array.from(
       new Set(
         tags
@@ -689,10 +1310,42 @@ function observedShippingOptionEvents(
   return Array.from(observed.values())
 }
 
+function observedShippingOptionSourceRelayUrls(
+  events: readonly NDKEvent[],
+  coordinates: ReadonlySet<string>
+): Map<string, string[]> {
+  const sources = new Map<string, string[]>()
+  for (const event of events) {
+    const rawEvent = event.rawEvent() as SignedPublicNostrEvent
+    const address = getShippingEventCoordinate(rawEvent)
+    if (
+      rawEvent.kind !== EVENT_KINDS.SHIPPING_OPTION ||
+      !isValidSignedPublicNostrEvent(rawEvent) ||
+      !address ||
+      !coordinates.has(address.coordinate)
+    ) {
+      continue
+    }
+    sources.set(
+      address.coordinate,
+      uniqueStrings([
+        ...(sources.get(address.coordinate) ?? []),
+        ...getEventSourceRelayUrls(event),
+      ])
+    )
+  }
+  return sources
+}
+
 function selectShippingOptionFrontierUpdates(
   coordinates: readonly string[],
   observedEvents: readonly SignedPublicNostrEvent[],
-  existingRows: readonly CachedShippingOptionFrontier[]
+  existingRows: readonly CachedShippingOptionFrontier[],
+  observedSourceRelayUrls: ReadonlyMap<string, readonly string[]> = new Map(),
+  acknowledgedAuthorWriteRelayUrls: ReadonlyMap<
+    string,
+    readonly string[]
+  > = new Map()
 ): {
   selectedRows: CachedShippingOptionFrontier[]
   updatedRows: CachedShippingOptionFrontier[]
@@ -740,11 +1393,22 @@ function selectShippingOptionFrontierUpdates(
     const address = getShippingEventCoordinate(strongestEvents[0]!)!
     const existingIds = existingEvents.map((event) => event.id).sort()
     const strongestIds = strongestEvents.map((event) => event.id)
+    const sourceRelayUrls = uniqueStrings([
+      ...(existing?.sourceRelayUrls ?? []),
+      ...(observedSourceRelayUrls.get(coordinate) ?? []),
+    ])
+    const authorWriteRelayUrls = uniqueStrings([
+      ...(existing?.authorWriteRelayUrls ?? []),
+      ...(acknowledgedAuthorWriteRelayUrls.get(coordinate) ?? []),
+    ])
     const changed =
       !existing ||
       existing.strongestCreatedAt !== strongestCreatedAt ||
       existingIds.length !== strongestIds.length ||
-      existingIds.some((id, index) => id !== strongestIds[index])
+      existingIds.some((id, index) => id !== strongestIds[index]) ||
+      sourceRelayUrls.length !== (existing.sourceRelayUrls?.length ?? 0) ||
+      authorWriteRelayUrls.length !==
+        (existing.authorWriteRelayUrls?.length ?? 0)
     const selected = changed
       ? {
           coordinate,
@@ -752,6 +1416,8 @@ function selectShippingOptionFrontierUpdates(
           dTag: address.dTag,
           strongestCreatedAt,
           signedEvents: strongestEvents,
+          ...(sourceRelayUrls.length > 0 ? { sourceRelayUrls } : {}),
+          ...(authorWriteRelayUrls.length > 0 ? { authorWriteRelayUrls } : {}),
           cachedAt: shippingNow(),
         }
       : existing
@@ -768,6 +1434,28 @@ function signedEventsFromShippingOptionFrontiers(
   return rows.flatMap(validateCachedShippingOptionFrontier)
 }
 
+function sourceRelayUrlsFromShippingOptionFrontiers(
+  rows: readonly CachedShippingOptionFrontier[]
+): Map<string, string[]> {
+  return new Map(
+    rows.map((row) => [
+      row.coordinate,
+      uniqueStrings(row.sourceRelayUrls ?? []),
+    ])
+  )
+}
+
+function authorWriteRelayUrlsFromShippingOptionFrontiers(
+  rows: readonly CachedShippingOptionFrontier[]
+): Map<string, string[]> {
+  return new Map(
+    rows.map((row) => [
+      row.coordinate,
+      uniqueStrings(row.authorWriteRelayUrls ?? []),
+    ])
+  )
+}
+
 function getVolatileShippingOptionFrontiers(
   coordinates: readonly string[]
 ): CachedShippingOptionFrontier[] {
@@ -779,13 +1467,20 @@ function getVolatileShippingOptionFrontiers(
 
 function rememberVolatileShippingOptionFrontiers(
   coordinates: readonly string[],
-  observedEvents: readonly SignedPublicNostrEvent[]
+  observedEvents: readonly SignedPublicNostrEvent[],
+  observedSourceRelayUrls: ReadonlyMap<string, readonly string[]>,
+  acknowledgedAuthorWriteRelayUrls: ReadonlyMap<
+    string,
+    readonly string[]
+  > = new Map()
 ): CachedShippingOptionFrontier[] {
   const existing = getVolatileShippingOptionFrontiers(coordinates)
   const selected = selectShippingOptionFrontierUpdates(
     coordinates,
     observedEvents,
-    existing
+    existing,
+    observedSourceRelayUrls,
+    acknowledgedAuthorWriteRelayUrls
   )
   for (const row of selected.updatedRows) {
     volatileShippingOptionFrontiers.set(row.coordinate, row)
@@ -795,13 +1490,21 @@ function rememberVolatileShippingOptionFrontiers(
 
 async function mergeObservedShippingOptionFrontiers(
   coordinates: readonly string[],
-  observedEvents: readonly NDKEvent[]
+  observedEvents: readonly NDKEvent[],
+  acknowledgedAuthorWriteRelayUrls: ReadonlyMap<
+    string,
+    readonly string[]
+  > = new Map()
 ): Promise<{
   shippingEvents: NDKEvent[]
   retainedEventIds: string[]
 }> {
   const requested = new Set(coordinates)
   const observed = observedShippingOptionEvents(observedEvents, requested)
+  const observedSourceRelayUrls = observedShippingOptionSourceRelayUrls(
+    observedEvents,
+    requested
+  )
   let selectedRows: CachedShippingOptionFrontier[]
 
   try {
@@ -810,9 +1513,15 @@ async function mergeObservedShippingOptionFrontiers(
     // same runtime back to an older replaceable event.
     const volatileRows = rememberVolatileShippingOptionFrontiers(
       coordinates,
-      observed
+      observed,
+      observedSourceRelayUrls,
+      acknowledgedAuthorWriteRelayUrls
     )
     const volatileEvents = signedEventsFromShippingOptionFrontiers(volatileRows)
+    const volatileSourceRelayUrls =
+      sourceRelayUrlsFromShippingOptionFrontiers(volatileRows)
+    const volatileAuthorWriteRelayUrls =
+      authorWriteRelayUrlsFromShippingOptionFrontiers(volatileRows)
     const usesOverrides =
       shippingTestOverrides.getCachedOptionFrontiers !== undefined ||
       shippingTestOverrides.putCachedOptionFrontiers !== undefined
@@ -828,7 +1537,9 @@ async function mergeObservedShippingOptionFrontiers(
       const selected = selectShippingOptionFrontierUpdates(
         coordinates,
         volatileEvents,
-        existing
+        existing,
+        volatileSourceRelayUrls,
+        volatileAuthorWriteRelayUrls
       )
       if (selected.updatedRows.length > 0) {
         await shippingTestOverrides.putCachedOptionFrontiers(
@@ -849,7 +1560,9 @@ async function mergeObservedShippingOptionFrontiers(
           const selected = selectShippingOptionFrontierUpdates(
             coordinates,
             volatileEvents,
-            existing
+            existing,
+            volatileSourceRelayUrls,
+            volatileAuthorWriteRelayUrls
           )
           if (selected.updatedRows.length > 0) {
             await db.shippingOptionFrontiers.bulkPut(selected.updatedRows)
@@ -871,13 +1584,20 @@ async function mergeObservedShippingOptionFrontiers(
     signedEventsFromShippingOptionFrontiers(
       getVolatileShippingOptionFrontiers(coordinates)
     ),
-    selectedRows
+    selectedRows,
+    sourceRelayUrlsFromShippingOptionFrontiers(
+      getVolatileShippingOptionFrontiers(coordinates)
+    ),
+    authorWriteRelayUrlsFromShippingOptionFrontiers(
+      getVolatileShippingOptionFrontiers(coordinates)
+    )
   ).selectedRows
 
   const liveRows = selectShippingOptionFrontierUpdates(
     coordinates,
     observed,
-    []
+    [],
+    observedSourceRelayUrls
   ).selectedRows
   const liveByCoordinate = new Map(
     liveRows.map((row) => [row.coordinate, row] as const)
@@ -903,10 +1623,125 @@ async function mergeObservedShippingOptionFrontiers(
     }
     // The retained frontier is only an authority gate. Pricing always comes
     // from the complete, currently verified relay observation.
-    return liveEvents.map((event) => new NDKEvent(undefined, event))
+    return liveEvents.map((event) => {
+      const ndkEvent = new NDKEvent(undefined, event)
+      for (const relayUrl of row.sourceRelayUrls ?? []) {
+        attachEventSourceRelayUrl(ndkEvent, relayUrl)
+      }
+      return ndkEvent
+    })
   })
 
   return { shippingEvents, retainedEventIds }
+}
+
+/**
+ * Retain a signed option and the relays that acknowledged it before the
+ * referencing product is published. Withdrawal delivery later reuses this
+ * per-coordinate provenance even if the merchant's relay list changes.
+ */
+export async function cacheSignedShippingOptionEvent(
+  event: NDKEvent,
+  sourceRelayUrls: readonly string[]
+): Promise<void> {
+  const rawEvent = event.rawEvent() as SignedPublicNostrEvent
+  const address = getShippingEventCoordinate(rawEvent)
+  if (
+    rawEvent.kind !== EVENT_KINDS.SHIPPING_OPTION ||
+    !isValidSignedPublicNostrEvent(rawEvent) ||
+    !address
+  ) {
+    throw new Error("Expected a valid signed fixed shipping option")
+  }
+  if (sourceRelayUrls.length === 0) {
+    throw new Error("Fixed shipping option relay provenance is required")
+  }
+
+  const observed = new NDKEvent(undefined, cloneSignedEvent(rawEvent))
+  for (const relayUrl of uniqueStrings(sourceRelayUrls)) {
+    attachEventSourceRelayUrl(observed, relayUrl)
+  }
+  const merged = await mergeObservedShippingOptionFrontiers(
+    [address.coordinate],
+    [observed],
+    new Map([[address.coordinate, uniqueStrings(sourceRelayUrls)]])
+  )
+  if (!merged.retainedEventIds.includes(rawEvent.id)) {
+    throw new Error("Fixed shipping option evidence could not be retained")
+  }
+}
+
+/**
+ * Read only validated relay provenance for deletion routing. This deliberately
+ * does not expose retained option content for pricing or eligibility when the
+ * current relay plan no longer observes the exact signed event.
+ */
+async function getCachedShippingOptionRelayUrls(
+  coordinates: readonly string[],
+  field: "sourceRelayUrls" | "authorWriteRelayUrls",
+  failureMessage: string
+): Promise<Map<string, string[]>> {
+  const requested = new Set(
+    uniqueStrings(coordinates).flatMap((coordinate) => {
+      const parsed = parseShippingOptionAddress(coordinate)
+      return parsed?.coordinate === coordinate ? [coordinate] : []
+    })
+  )
+  if (requested.size === 0) return new Map()
+
+  try {
+    const requestedCoordinates = Array.from(requested)
+    const durableRows = shippingTestOverrides.getCachedOptionFrontiers
+      ? await shippingTestOverrides.getCachedOptionFrontiers(
+          requestedCoordinates
+        )
+      : (await db.shippingOptionFrontiers.bulkGet(requestedCoordinates)).filter(
+          (row): row is CachedShippingOptionFrontier => row !== undefined
+        )
+    const relayUrls = new Map<string, string[]>()
+    for (const row of [
+      ...durableRows,
+      ...getVolatileShippingOptionFrontiers(requestedCoordinates),
+    ]) {
+      if (!requested.has(row.coordinate)) continue
+      validateCachedShippingOptionFrontier(row)
+      relayUrls.set(
+        row.coordinate,
+        uniqueStrings([
+          ...(relayUrls.get(row.coordinate) ?? []),
+          ...(row[field] ?? []),
+        ])
+      )
+    }
+    return relayUrls
+  } catch {
+    throw new Error(failureMessage)
+  }
+}
+
+export async function getCachedShippingOptionSourceRelayUrls(
+  coordinates: readonly string[]
+): Promise<Map<string, string[]>> {
+  return await getCachedShippingOptionRelayUrls(
+    coordinates,
+    "sourceRelayUrls",
+    "Fixed shipping option relay provenance could not be read"
+  )
+}
+
+/**
+ * Read only relay targets that positively acknowledged a locally authored
+ * option write. Unlike observed source provenance, these targets may answer a
+ * NIP-42 challenge through the current external signer during withdrawal.
+ */
+export async function getCachedShippingOptionAuthorWriteRelayUrls(
+  coordinates: readonly string[]
+): Promise<Map<string, string[]>> {
+  return await getCachedShippingOptionRelayUrls(
+    coordinates,
+    "authorWriteRelayUrls",
+    "Fixed shipping option author-write provenance could not be read"
+  )
 }
 
 function shippingTombstonesFromDeletionEvent(
@@ -1413,6 +2248,23 @@ async function flushVolatileShippingTombstones(): Promise<boolean> {
   return true
 }
 
+export async function cacheSignedShippingDeletionEvent(
+  event: NDKEvent
+): Promise<CachedProductTombstone[]> {
+  const tombstones = shippingTombstonesFromDeletionEvent(event).map((row) => ({
+    ...row,
+    observedLocally: true,
+  }))
+  if (!tombstones.some((row) => row.addressId?.startsWith("30406:"))) {
+    throw new Error("Deletion event does not contain a valid shipping target")
+  }
+  rememberVolatileShippingTombstones(tombstones)
+  if (!(await flushVolatileShippingTombstones())) {
+    throw new Error("Fixed shipping deletion evidence could not be retained")
+  }
+  return tombstones
+}
+
 async function rememberObservedShippingDeletionEvidence(
   observedDeletionEvents: readonly NDKEvent[],
   targetIds: readonly string[]
@@ -1765,7 +2617,13 @@ export async function getShippingOptionsByCoordinates(
 
 export function resolveProductFulfillment(
   product: ResolvableProductFulfillment,
-  shippingOptions: readonly ParsedShippingOption[]
+  shippingOptions: readonly ParsedShippingOption[],
+  destination?: {
+    country?: string
+    state?: string
+    postalCode?: string
+    shippingOptionId?: string
+  }
 ): PreparedProductFulfillment {
   if (product.format === "digital") {
     return { intent: "digital", status: "ready" }
@@ -1775,7 +2633,16 @@ export function resolveProductFulfillment(
     typeof product.shippingCostSats === "number" ||
     (product.shippingCountries?.length ?? 0) > 0 ||
     (product.shippingCountryRules?.length ?? 0) > 0
-  if (!product.shippingOptionId) {
+  const productShippingOptionIds = Array.from(
+    new Set(
+      product.shippingOptionIds?.length
+        ? product.shippingOptionIds
+        : product.shippingOptionId
+          ? [product.shippingOptionId]
+          : []
+    )
+  )
+  if (productShippingOptionIds.length === 0) {
     return hasLegacyInlineShipping
       ? {
           intent: "fixed_standard",
@@ -1789,15 +2656,16 @@ export function resolveProductFulfillment(
         }
   }
 
-  const address = parseShippingOptionAddress(product.shippingOptionId)
-  if (!address) {
+  const addresses = productShippingOptionIds.map(parseShippingOptionAddress)
+  if (addresses.some((address) => !address)) {
     return {
       intent: "fixed_standard",
       status: "order_first",
       reason: "invalid_reference",
     }
   }
-  if (address.pubkey !== product.pubkey) {
+  const parsedAddresses = addresses as ShippingOptionAddress[]
+  if (parsedAddresses.some((address) => address.pubkey !== product.pubkey)) {
     return {
       intent: "fixed_standard",
       status: "order_first",
@@ -1813,46 +2681,15 @@ export function resolveProductFulfillment(
     }
   }
 
-  if (address.dTag === CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG) {
-    return {
-      intent: "fixed_standard",
-      status: "order_first",
-      reason: "legacy_inline",
-    }
-  }
-
-  const candidates = shippingOptions.filter(
-    (option) => option.id === address.coordinate
-  )
-  if (candidates.length === 0) {
-    return {
-      intent: "fixed_standard",
-      status: "order_first",
-      reason: "unresolved",
-    }
-  }
-  const newestCreatedAt = Math.max(
-    ...candidates.map((candidate) => candidate.createdAt)
-  )
-  const newest = candidates.filter(
-    (candidate) => candidate.createdAt === newestCreatedAt
-  )
-  if (new Set(newest.map((candidate) => candidate.eventId)).size !== 1) {
-    return {
-      intent: "fixed_standard",
-      status: "order_first",
-      reason: "conflicting",
-    }
-  }
-  const option = newest[0]!
   if (
-    option.service !== "standard" ||
-    option.launchUnsupportedTags.length > 0
+    parsedAddresses.some(
+      (address) => address.dTag === CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG
+    )
   ) {
     return {
       intent: "fixed_standard",
       status: "order_first",
-      reason: "unsupported",
+      reason: "legacy_inline",
     }
   }
 
@@ -1861,29 +2698,142 @@ export function resolveProductFulfillment(
       product.sourcePrice?.currency ??
       product.currency
   )
-  if (option.currency !== productCurrency) {
+  const resolvedOptions: ParsedShippingOption[] = []
+  for (const address of parsedAddresses) {
+    const candidates = shippingOptions.filter(
+      (option) => option.id === address.coordinate
+    )
+    if (candidates.length === 0) {
+      return {
+        intent: "fixed_standard",
+        status: "order_first",
+        reason: "unresolved",
+      }
+    }
+    const newestCreatedAt = Math.max(
+      ...candidates.map((candidate) => candidate.createdAt)
+    )
+    const newest = candidates.filter(
+      (candidate) => candidate.createdAt === newestCreatedAt
+    )
+    if (new Set(newest.map((candidate) => candidate.eventId)).size !== 1) {
+      return {
+        intent: "fixed_standard",
+        status: "order_first",
+        reason: "conflicting",
+      }
+    }
+    const option = newest[0]!
+    if (
+      option.service !== "standard" ||
+      option.launchUnsupportedTags.length > 0 ||
+      option.destinationPolicyUnsupported
+    ) {
+      return {
+        intent: "fixed_standard",
+        status: "order_first",
+        reason: "unsupported",
+      }
+    }
+    if (option.currency !== productCurrency) {
+      return {
+        intent: "fixed_standard",
+        status: "order_first",
+        reason: "currency_mismatch",
+      }
+    }
+    if (
+      !Number.isFinite(product.updatedAt) ||
+      product.updatedAt <= 0 ||
+      option.createdAt > product.updatedAt
+    ) {
+      return {
+        intent: "fixed_standard",
+        status: "order_first",
+        reason: "stale",
+      }
+    }
+    resolvedOptions.push(option)
+  }
+
+  let matchingOptions = resolvedOptions
+  if (destination?.shippingOptionId) {
+    matchingOptions = resolvedOptions.filter(
+      (option) => option.id === destination.shippingOptionId
+    )
+    if (matchingOptions.length === 1 && destination.country?.trim()) {
+      const eligibility = getShippingDestinationEligibility(
+        {
+          country: destination.country,
+          state: destination.state ?? "",
+          postalCode: destination.postalCode ?? "",
+        },
+        matchingOptions
+      )
+      if (eligibility.eligible === null) {
+        return {
+          intent: "fixed_standard",
+          status: "order_first",
+          reason: "destination_incomplete",
+          options: resolvedOptions,
+        }
+      }
+      if (eligibility.eligible === false) matchingOptions = []
+    }
+  } else if (destination?.country?.trim()) {
+    const eligibility = resolvedOptions.map((option) => ({
+      option,
+      result: getShippingDestinationEligibility(
+        {
+          country: destination.country ?? "",
+          state: destination.state ?? "",
+          postalCode: destination.postalCode ?? "",
+        },
+        [option]
+      ),
+    }))
+    matchingOptions = eligibility.flatMap(({ option, result }) =>
+      result.eligible === true ? [option] : []
+    )
+    if (eligibility.some(({ result }) => result.eligible === null)) {
+      return {
+        intent: "fixed_standard",
+        status: "order_first",
+        reason: "destination_incomplete",
+        options: resolvedOptions,
+      }
+    }
+  } else if (resolvedOptions.length > 1) {
+    return {
+      intent: "fixed_standard",
+      status: "ready",
+      options: resolvedOptions,
+    }
+  }
+
+  if (matchingOptions.length === 0) {
     return {
       intent: "fixed_standard",
       status: "order_first",
-      reason: "currency_mismatch",
+      reason: "destination_unsupported",
+      options: resolvedOptions,
     }
   }
-  if (
-    !Number.isFinite(product.updatedAt) ||
-    product.updatedAt <= 0 ||
-    option.createdAt > product.updatedAt
-  ) {
+  if (matchingOptions.length > 1) {
     return {
       intent: "fixed_standard",
       status: "order_first",
-      reason: "stale",
+      reason: "ambiguous_destination",
+      options: resolvedOptions,
     }
   }
+  const option = matchingOptions[0]!
 
   return {
     intent: "fixed_standard",
     status: "ready",
     option,
+    ...(resolvedOptions.length > 1 ? { options: resolvedOptions } : {}),
   }
 }
 
@@ -1900,36 +2850,97 @@ export function applyPreparedProductFulfillment(
     canonicalShippingResolved: false,
     shippingOptionCreatedAt: undefined,
     shippingOptionLaunchUnsupported: undefined,
+    shippingZones: undefined,
   }
-  if (
-    prepared.intent !== "fixed_standard" ||
-    prepared.status !== "ready" ||
-    !prepared.option
-  ) {
+  if (prepared.intent !== "fixed_standard" || prepared.status !== "ready") {
     return prepared.intent === "digital"
       ? {
           ...withoutShipping,
           shippingOptionId: undefined,
           shippingOptionDTag: undefined,
+          shippingOptionIds: undefined,
+          shippingOptionDTags: undefined,
         }
       : withoutShipping
   }
 
-  const option = prepared.option
-  return {
-    ...withoutShipping,
-    ...canonicalizeShippingCost(option.price, option.currency),
+  const options = prepared.options ?? (prepared.option ? [prepared.option] : [])
+  const firstColon = product.id.indexOf(":")
+  const secondColon = product.id.indexOf(":", firstColon + 1)
+  const productDTag =
+    firstColon > 0 &&
+    secondColon > firstColon + 1 &&
+    product.id.slice(0, firstColon) === String(EVENT_KINDS.PRODUCT)
+      ? product.id.slice(secondColon + 1)
+      : null
+  const shippingZones = options.map((option) => ({
     shippingOptionId: option.id,
     shippingOptionDTag: option.dTag,
-    shippingCountries: [...option.countries],
-    shippingCountryRules: option.countryRules.map((rule) => ({
+    amount: option.price,
+    currency: option.currency,
+    countries: [...option.countries],
+    countryRules: option.countryRules.map((rule) => ({
       ...rule,
       restrictTo: [...rule.restrictTo],
       exclude: [...rule.exclude],
+      ...(rule.includeSubdivisions
+        ? { includeSubdivisions: [...rule.includeSubdivisions] }
+        : {}),
+      ...(rule.excludeSubdivisions
+        ? { excludeSubdivisions: [...rule.excludeSubdivisions] }
+        : {}),
     })),
-    canonicalShippingResolved: true,
-    shippingOptionCreatedAt: option.createdAt,
+    ...(option.destinationSchema
+      ? { destinationSchema: option.destinationSchema }
+      : {}),
+    ...(options.length === 1 &&
+    productDTag &&
+    option.dTag === getProductShippingOptionDTag(productDTag)
+      ? { usesProductFallback: true }
+      : {}),
+    ...(option.sourceRelayUrls?.length
+      ? { sourceRelayUrls: [...option.sourceRelayUrls] }
+      : {}),
+  }))
+  const base: ProductSchema = {
+    ...withoutShipping,
+    shippingOptionIds: options.map((option) => option.id),
+    shippingOptionDTags: options.map((option) => option.dTag),
+    shippingCountries: Array.from(
+      new Set(options.flatMap((option) => option.countries))
+    ).sort(),
+    shippingCountryRules: options.flatMap((option) =>
+      option.countryRules.map((rule) => ({
+        ...rule,
+        restrictTo: [...rule.restrictTo],
+        exclude: [...rule.exclude],
+        ...(rule.includeSubdivisions
+          ? { includeSubdivisions: [...rule.includeSubdivisions] }
+          : {}),
+        ...(rule.excludeSubdivisions
+          ? { excludeSubdivisions: [...rule.excludeSubdivisions] }
+          : {}),
+      }))
+    ),
+    shippingZones,
+    ...(options.length > 0
+      ? {
+          shippingOptionCreatedAt: Math.max(
+            ...options.map((option) => option.createdAt)
+          ),
+        }
+      : {}),
   }
+  const option = prepared.option
+  return option
+    ? {
+        ...base,
+        ...canonicalizeShippingCost(option.price, option.currency),
+        shippingOptionId: option.id,
+        shippingOptionDTag: option.dTag,
+        canonicalShippingResolved: true,
+      }
+    : base
 }
 
 // ---------------------------------------------------------------------------
@@ -1953,26 +2964,30 @@ export function isBuyerCountryEligible(
 }
 
 export function normalizeShippingPostalCode(postalCode: string): string {
-  return postalCode.trim().toUpperCase().replace(/\s+/g, "")
+  return postalCode.trim().toUpperCase().replace(/[ -]/g, "")
 }
 
 function postalPatternMatches(pattern: string, postalCode: string): boolean {
   const normalizedPattern = normalizeShippingPostalCode(pattern)
   const normalizedPostal = normalizeShippingPostalCode(postalCode)
   if (!normalizedPattern) return false
-  if (normalizedPattern.endsWith("**")) {
-    return normalizedPostal.startsWith(normalizedPattern.slice(0, -2))
+  if (normalizedPattern.endsWith("*")) {
+    return normalizedPostal.startsWith(normalizedPattern.replace(/\*+$/, ""))
   }
   return normalizedPostal === normalizedPattern
 }
 
 export type ShippingDestinationEligibility =
   | { eligible: true }
-  | { eligible: false; reason: "country_unsupported" | "postal_restricted" }
+  | {
+      eligible: false
+      reason:
+        "country_unsupported" | "postal_restricted" | "subdivision_restricted"
+    }
   | { eligible: null; reason: "unknown" }
 
 export function getShippingDestinationEligibility(
-  destination: { country: string; postalCode: string },
+  destination: { country: string; state?: string; postalCode: string },
   shippingOptions: ParsedShippingOption[]
 ): ShippingDestinationEligibility {
   if (shippingOptions.length === 0) {
@@ -1980,27 +2995,107 @@ export function getShippingDestinationEligibility(
   }
 
   const country = destination.country.trim().toUpperCase()
-  const rules = shippingOptions
-    .flatMap((option) => option.countryRules)
-    .filter((rule) => rule.code.toUpperCase() === country)
-
-  if (rules.length === 0)
+  const relevantOptions = shippingOptions.filter((option) =>
+    option.countries.includes(country)
+  )
+  if (relevantOptions.length === 0) {
     return { eligible: false, reason: "country_unsupported" }
-
+  }
+  if (
+    relevantOptions.some(
+      (option) =>
+        option.destinationPolicyUnsupported ||
+        (option.destinationSchema !== undefined &&
+          option.destinationSchema !== SHIPPING_DESTINATION_SCHEMA_VERSION)
+    )
+  ) {
+    return { eligible: null, reason: "unknown" }
+  }
   const postalCode = normalizeShippingPostalCode(destination.postalCode)
-  const allowed = rules.some((rule) => {
-    const restrictTo = rule.restrictTo ?? []
-    const exclude = rule.exclude ?? []
+  let unknown = false
+  let sawRules = false
+  let requiresAnyPostal = false
+  let requiresAnySubdivision = false
+  let subdivisionRejected = false
+  let postalRejected = false
+  for (const option of relevantOptions) {
+    const rules = option.countryRules.filter(
+      (rule) => rule.code.toUpperCase() === country
+    )
+    if (rules.length === 0) continue
+    sawRules = true
+    const restrictTo = Array.from(
+      new Set(rules.flatMap((rule) => rule.restrictTo ?? []))
+    )
+    const exclude = Array.from(
+      new Set(rules.flatMap((rule) => rule.exclude ?? []))
+    )
+    const includeSubdivisions = Array.from(
+      new Set(rules.flatMap((rule) => rule.includeSubdivisions ?? []))
+    )
+    const excludeSubdivisions = Array.from(
+      new Set(rules.flatMap((rule) => rule.excludeSubdivisions ?? []))
+    )
+    const includesWholeCountry = rules.some(
+      (rule) =>
+        rule.includeCountry === true ||
+        ((rule.includeSubdivisions?.length ?? 0) === 0 &&
+          rule.restrictTo.length === 0)
+    )
+    const requiresPostal = restrictTo.length > 0 || exclude.length > 0
+    const requiresSubdivision =
+      includeSubdivisions.length > 0 || excludeSubdivisions.length > 0
+    requiresAnyPostal ||= requiresPostal
+    requiresAnySubdivision ||= requiresSubdivision
+    if (
+      requiresPostal &&
+      (!postalCode || !supportsAddressPostalPolicy(country))
+    ) {
+      unknown = true
+      continue
+    }
+    const subdivision = requiresSubdivision
+      ? normalizeAddressSubdivisionCode(country, destination.state)
+      : null
+    if (requiresSubdivision && !subdivision) {
+      unknown = true
+      continue
+    }
+    const hasSpecificIncludes =
+      includeSubdivisions.length > 0 || restrictTo.length > 0
     const included =
-      restrictTo.length === 0 ||
+      includesWholeCountry ||
+      !hasSpecificIncludes ||
+      includeSubdivisions.includes(subdivision ?? "") ||
       restrictTo.some((pattern) => postalPatternMatches(pattern, postalCode))
-    const excluded = exclude.some((pattern) =>
+    const excludedBySubdivision = excludeSubdivisions.includes(
+      subdivision ?? ""
+    )
+    const excludedByPostal = exclude.some((pattern) =>
       postalPatternMatches(pattern, postalCode)
     )
-    return included && !excluded
-  })
+    subdivisionRejected ||= excludedBySubdivision
+    postalRejected ||= excludedByPostal
+    if (
+      included &&
+      !rules.some((rule) => rule.excludeCountry) &&
+      !excludedBySubdivision &&
+      !excludedByPostal
+    ) {
+      return { eligible: true }
+    }
+  }
 
-  return allowed
-    ? { eligible: true }
-    : { eligible: false, reason: "postal_restricted" }
+  if (unknown) return { eligible: null, reason: "unknown" }
+  if (!sawRules) return { eligible: false, reason: "country_unsupported" }
+  if (subdivisionRejected) {
+    return { eligible: false, reason: "subdivision_restricted" }
+  }
+  if (postalRejected || requiresAnyPostal) {
+    return { eligible: false, reason: "postal_restricted" }
+  }
+  if (requiresAnySubdivision) {
+    return { eligible: false, reason: "subdivision_restricted" }
+  }
+  return { eligible: false, reason: "country_unsupported" }
 }

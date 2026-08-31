@@ -8,7 +8,7 @@ import {
 } from "../scripts/vite/deployment_profile"
 
 describe("deployment profiles", () => {
-  it("enables compatibility order routing in preview only", () => {
+  it("enables preview-only commerce features only in preview", () => {
     const preview = resolveDeploymentProfile({
       CONDUIT_DEPLOYMENT_PROFILE: "preview",
     })
@@ -26,6 +26,9 @@ describe("deployment profiles", () => {
     expect(staging.publicFeatures.dmCompatibilityOrderRoutingEnabled).toBe(
       false
     )
+    expect(preview.publicFeatures.destinationPolicyV1Enabled).toBe(true)
+    expect(production.publicFeatures.destinationPolicyV1Enabled).toBe(false)
+    expect(staging.publicFeatures.destinationPolicyV1Enabled).toBe(false)
   })
 
   it("selects Cloudflare preview and production without dashboard feature vars", () => {
@@ -63,6 +66,15 @@ describe("deployment profiles", () => {
       "must explicitly set dmCompatibilityOrderRoutingEnabled"
     )
 
+    const missingDestinationPolicy = structuredClone(profiles) as unknown as {
+      profiles: { preview: { publicFeatures: Record<string, unknown> } }
+    }
+    delete missingDestinationPolicy.profiles.preview.publicFeatures
+      .destinationPolicyV1Enabled
+    expect(() => parsePagesProfiles(missingDestinationPolicy)).toThrow(
+      "must explicitly set destinationPolicyV1Enabled"
+    )
+
     const explicitFalse = structuredClone(profiles)
     explicitFalse.profiles.preview.publicFeatures.dmCompatibilityOrderRoutingEnabled = false
     expect(
@@ -88,6 +100,7 @@ describe("deployment profiles", () => {
     expect(manifest.publicFeatures.dmCompatibilityOrderRoutingEnabled).toBe(
       true
     )
+    expect(manifest.publicFeatures.destinationPolicyV1Enabled).toBe(true)
     expect(manifest.publicConfigDigest).toBe(profile.configDigest)
     expect(Object.keys(manifest).sort()).toEqual([
       "app",

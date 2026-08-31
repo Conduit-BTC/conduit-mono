@@ -20,6 +20,7 @@ import {
   parseSignedProductShippingOptionTags as parseShippingOptionTags,
   signedProductPriceEvidenceIsMalformed,
 } from "./product-event-evidence"
+import { parseShippingOptionAddress } from "./shipping"
 
 export const MAX_PRODUCT_IMAGE_CANDIDATES = 12
 const PRODUCT_JSON_DISPLAY_PROJECTION_MAX_DEPTH = 3
@@ -57,6 +58,7 @@ export interface ProductDeletionEventDraft {
 export interface BuildProductDeletionEventDraftInput {
   merchantPubkey: string
   targets: readonly ProductDeletionEventTarget[]
+  shippingOptionCoordinates?: readonly string[]
   clientAppId?: ConduitAppId
 }
 
@@ -180,6 +182,7 @@ function parseVariationParentProductId(
 export function buildProductDeletionEventDraft({
   merchantPubkey,
   targets,
+  shippingOptionCoordinates = [],
   clientAppId,
 }: BuildProductDeletionEventDraftInput): ProductDeletionEventDraft {
   const normalizedMerchantPubkey = merchantPubkey.trim().toLowerCase()
@@ -198,10 +201,6 @@ export function buildProductDeletionEventDraft({
       ])
     ).values()
   )
-  if (uniqueTargets.length === 0) {
-    throw new Error("At least one product deletion target is required")
-  }
-
   for (const target of uniqueTargets) {
     if (!target.eventId)
       throw new Error("Product deletion event id is required")
@@ -218,9 +217,33 @@ export function buildProductDeletionEventDraft({
     }
   }
 
+  const uniqueShippingOptionCoordinates = Array.from(
+    new Set(shippingOptionCoordinates.map((coordinate) => coordinate.trim()))
+  )
+  for (const coordinate of uniqueShippingOptionCoordinates) {
+    const parsed = parseShippingOptionAddress(coordinate)
+    if (
+      !parsed ||
+      parsed.coordinate !== coordinate ||
+      parsed.pubkey !== normalizedMerchantPubkey
+    ) {
+      throw new Error(
+        "Shipping deletion address must be a same-merchant kind-30406 coordinate"
+      )
+    }
+  }
+  if (
+    uniqueTargets.length === 0 &&
+    uniqueShippingOptionCoordinates.length === 0
+  ) {
+    throw new Error(
+      "At least one product or shipping deletion target is required"
+    )
+  }
+
   let tags: string[][] = [
     ...uniqueTargets.map((target) => ["e", target.eventId]),
-    ["k", String(EVENT_KINDS.PRODUCT)],
+    ...(uniqueTargets.length > 0 ? [["k", String(EVENT_KINDS.PRODUCT)]] : []),
     ["p", normalizedMerchantPubkey],
     ...uniqueTargets
       .filter(
@@ -228,6 +251,10 @@ export function buildProductDeletionEventDraft({
           !!target.addressId
       )
       .map((target) => ["a", target.addressId]),
+    ...uniqueShippingOptionCoordinates.map((coordinate) => ["a", coordinate]),
+    ...(uniqueShippingOptionCoordinates.length > 0
+      ? [["k", String(EVENT_KINDS.SHIPPING_OPTION)]]
+      : []),
   ]
   if (clientAppId) tags = appendConduitClientTag(tags, clientAppId)
 
@@ -507,9 +534,15 @@ function buildShippingOptionTags(
     })
   }
 
-  if (!product.shippingOptionId) return []
-
-  return [["shipping_option", product.shippingOptionId]]
+  const references = product.shippingOptionIds?.length
+    ? product.shippingOptionIds
+    : product.shippingOptionId
+      ? [product.shippingOptionId]
+      : []
+  return Array.from(new Set(references)).map((reference) => [
+    "shipping_option",
+    reference,
+  ])
 }
 
 function parseStockTag(
@@ -547,11 +580,26 @@ function parseProductShippingTags(
   const legacyInline = parseLegacyConduitInlineShippingTags(tags)
   const shippingOption = parseShippingOptionTags(tags, productCurrency)
   const { extraCost, ...shippingOptionFields } = shippingOption
+  const shippingOptionTags =
+    tags?.filter((candidate) => candidate[0] === "shipping_option") ?? []
+  const shippingOptionIds = uniqueNonEmptyStrings(
+    shippingOption.shippingOptionRefs.map((reference) => reference.coordinate)
+  )
+  const shippingOptionDTags = shippingOptionIds.map((coordinate) =>
+    coordinate.split(":").slice(2).join(":")
+  )
   const shippingOptionLaunchUnsupported =
-    shippingOption.shippingOptionRefs.length > 0
-      ? shippingOption.shippingOptionRefs.length !== 1 ||
-        shippingOption.shippingOptionRefs[0]?.extraCostMalformed === true ||
-        shippingOption.shippingOptionRefs[0]?.extraCost !== undefined
+    shippingOptionTags.length > 0
+      ? shippingOptionIds.length !== shippingOptionTags.length ||
+        shippingOptionTags.some(
+          (tag) =>
+            tag.length !== 2 || !tag[1]?.trim() || tag[1] !== tag[1].trim()
+        ) ||
+        shippingOption.shippingOptionRefs.some(
+          (reference) =>
+            reference.extraCostMalformed === true ||
+            reference.extraCost !== undefined
+        )
       : undefined
 
   return {
@@ -561,6 +609,19 @@ function parseProductShippingTags(
       ? {}
       : (extraCost ?? {})),
     ...shippingOptionFields,
+    ...(shippingOptionTags.length > 0
+      ? {
+          shippingOptionId: shippingOption.shippingOptionId,
+          shippingOptionDTag: shippingOption.shippingOptionDTag,
+          shippingOptionIds:
+            shippingOptionIds.length > 0 ? shippingOptionIds : undefined,
+          shippingOptionDTags:
+            shippingOptionDTags.length === shippingOptionIds.length &&
+            shippingOptionDTags.length > 0
+              ? shippingOptionDTags
+              : undefined,
+        }
+      : {}),
     ...(shippingOptionLaunchUnsupported !== undefined
       ? { shippingOptionLaunchUnsupported }
       : {}),

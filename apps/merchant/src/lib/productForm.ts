@@ -1,9 +1,11 @@
 import {
   canonicalizeProductTags,
+  compileProductFulfillmentIntent,
   CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG,
+  getFixedShippingOptionAddresses,
+  getFixedShippingOptionDTags,
+  getFixedShippingRateZones,
   normalizePublicMediaUrl,
-  getProductShippingOptionAddress,
-  getProductShippingOptionDTag,
   type ProductFulfillmentIntent,
   type ProductSchema,
   type ProductZapMessagePolicy,
@@ -87,7 +89,11 @@ export function isProductUsingPresetShippingZone(
 export function getProductShippingPricingMode(
   product: Pick<
     ProductSchema,
-    "format" | "shippingOptionId" | "sourceShippingCost" | "shippingCostSats"
+    | "format"
+    | "shippingOptionId"
+    | "shippingOptionIds"
+    | "sourceShippingCost"
+    | "shippingCostSats"
   >
 ): ProductShippingPricingMode {
   const hasFixedShippingCost =
@@ -95,6 +101,7 @@ export function getProductShippingPricingMode(
     typeof product.shippingCostSats === "number"
   return product.format === "physical" &&
     !product.shippingOptionId &&
+    !product.shippingOptionIds?.length &&
     !hasFixedShippingCost
     ? "coordinate_after_order"
     : "fixed"
@@ -108,25 +115,42 @@ export function buildProductShippingMetadata(
   ProductSchema,
   | "shippingOptionId"
   | "shippingOptionDTag"
+  | "shippingOptionIds"
+  | "shippingOptionDTags"
   | "shippingCountries"
   | "shippingCountryRules"
 > {
   if (intent.kind !== "fixed_standard") return {}
-  const shippingOptionDTag = getProductShippingOptionDTag(productDTag)
+  const shippingOptionIds = getFixedShippingOptionAddresses(
+    merchantPubkey,
+    productDTag,
+    intent
+  )
+  const shippingOptionDTags = getFixedShippingOptionDTags(productDTag, intent)
+  const shippingCountryRules = getFixedShippingRateZones(intent).flatMap(
+    (zone) =>
+      zone.countryRules.map((rule) => ({
+        ...rule,
+        restrictTo: [...rule.restrictTo],
+        exclude: [...rule.exclude],
+        ...(rule.includeSubdivisions
+          ? { includeSubdivisions: [...rule.includeSubdivisions] }
+          : {}),
+        ...(rule.excludeSubdivisions
+          ? { excludeSubdivisions: [...rule.excludeSubdivisions] }
+          : {}),
+      }))
+  )
 
   return {
-    shippingOptionId: getProductShippingOptionAddress(
-      merchantPubkey,
-      productDTag
-    ),
-    shippingOptionDTag,
-    shippingCountries: [...intent.countries],
-    shippingCountryRules: intent.countries.map((code) => ({
-      code,
-      name: code,
-      restrictTo: [],
-      exclude: [],
-    })),
+    shippingOptionId: shippingOptionIds[0],
+    shippingOptionDTag: shippingOptionDTags[0],
+    shippingOptionIds,
+    shippingOptionDTags,
+    shippingCountries: Array.from(
+      new Set(shippingCountryRules.map((rule) => rule.code))
+    ).sort(),
+    shippingCountryRules,
   }
 }
 
@@ -275,6 +299,7 @@ export function validateProductPublishForm(
     hasPresetShippingZone: boolean
     presetShippingConfig?: ShippingConfig
     allowZeroPrice?: boolean
+    destinationPolicyV1Enabled?: boolean
   }
 ): ProductPublishFormValidation {
   const errors: Partial<Record<ProductPublishFormField, string>> = {}
@@ -285,6 +310,14 @@ export function validateProductPublishForm(
   const isDigital = form.format === "digital"
   const hasFixedShipping = !isDigital && form.shippingPricingMode === "fixed"
   const shippingCostInput = hasFixedShipping ? form.shippingCost.trim() : ""
+  const selectedShippingConfig = form.usePresetShippingZone
+    ? options.presetShippingConfig
+    : form.customShippingConfig
+  const allDestinationsHaveRates =
+    (selectedShippingConfig?.countries.length ?? 0) > 0 &&
+    selectedShippingConfig!.countries.every((country) =>
+      country.rate?.amount.trim()
+    )
 
   if (!title) {
     addError(errors, "title", "Add a product title.")
@@ -347,7 +380,7 @@ export function validateProductPublishForm(
     )
   }
 
-  if (hasFixedShipping && !shippingCostInput) {
+  if (hasFixedShipping && !shippingCostInput && !allDestinationsHaveRates) {
     addError(
       errors,
       "shippingCost",
@@ -355,12 +388,14 @@ export function validateProductPublishForm(
     )
   }
 
-  if (shippingCostInput) {
+  if (hasFixedShipping) {
     try {
-      normalizePublishableProductShippingCost(
-        parsePlainDecimalAmount(shippingCostInput, "Shipping"),
-        currency
-      )
+      if (shippingCostInput) {
+        normalizePublishableProductShippingCost(
+          parsePlainDecimalAmount(shippingCostInput, "Shipping"),
+          currency
+        )
+      }
     } catch (error) {
       addError(
         errors,
@@ -383,20 +418,63 @@ export function validateProductPublishForm(
           : "Add at least one custom shipping destination before publishing a physical product with a fixed shipping cost."
       )
     } else {
-      const selectedShippingConfig = form.usePresetShippingZone
-        ? options.presetShippingConfig
-        : form.customShippingConfig
       if (
         selectedShippingConfig?.countries.some(
           (country) =>
-            country.restrictTo.length > 0 || country.exclude.length > 0
-        )
+            country.restrictTo.length > 0 ||
+            country.exclude.length > 0 ||
+            (country.includeSubdivisions?.length ?? 0) > 0 ||
+            (country.excludeSubdivisions?.length ?? 0) > 0
+        ) &&
+        !options.destinationPolicyV1Enabled
       ) {
         addError(
           errors,
           "shippingZone",
-          "Fixed checkout supports country destinations only. Remove postal restrictions or coordinate shipping after the order."
+          "Detailed destination policies are available only in the preview rollout. Remove subdivision/postal rules or coordinate shipping after the order."
         )
+      }
+
+      if (selectedShippingConfig) {
+        try {
+          compileProductFulfillmentIntent({
+            format: "physical",
+            shippingPricingMode: "fixed",
+            amount: shippingCostInput
+              ? parsePlainDecimalAmount(shippingCostInput, "Shipping")
+              : undefined,
+            currency,
+            destinations: selectedShippingConfig.countries.map(
+              ({ rate, ...destination }) => {
+                if (!rate) return destination
+                const amount = parsePlainDecimalAmount(
+                  rate.amount,
+                  `${destination.name} shipping`
+                )
+                return {
+                  ...destination,
+                  rate: {
+                    amount: normalizePublishableProductShippingCost(
+                      amount,
+                      rate.currency
+                    ),
+                    currency: rate.currency,
+                  },
+                }
+              }
+            ),
+            allowExperimentalDestinationPolicy:
+              options.destinationPolicyV1Enabled,
+          })
+        } catch (error) {
+          addError(
+            errors,
+            "shippingZone",
+            error instanceof Error
+              ? error.message
+              : "Shipping destinations and rates are invalid."
+          )
+        }
       }
     }
   }

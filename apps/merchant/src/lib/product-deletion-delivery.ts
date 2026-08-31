@@ -1,10 +1,12 @@
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   cacheSignedProductDeletionEvent,
+  cacheSignedShippingDeletionEvent,
   config,
   deliverProductDeletionJob,
   getProductDeletionDelivery,
   getPendingProductDeletionDeliveries,
+  getNdk,
   persistProductDeletionDelivery,
   planPublishRelays,
   publishSignedEventToRelay,
@@ -21,17 +23,50 @@ function uniqueRelayUrls(urls: readonly string[]): string[] {
   return Array.from(new Set(urls))
 }
 
-async function publishProductDeletionRelay(
-  input: Parameters<ProductDeletionRelayPublisher>[0]
+export async function publishProductDeletionRelay(
+  input: Parameters<ProductDeletionRelayPublisher>[0],
+  options: { createWebSocket?: (relayUrl: string) => WebSocket } = {}
 ): Promise<Awaited<ReturnType<ProductDeletionRelayPublisher>>> {
+  const hasShippingWithdrawal = input.signedEvent.tags.some(
+    (tag) =>
+      tag[0] === "a" && tag[1]?.startsWith(`30406:${input.signedEvent.pubkey}:`)
+  )
+  const canAuthenticate =
+    hasShippingWithdrawal && input.roles.includes("author_write")
   return {
     status: await publishSignedEventToRelay({
       signedEvent: input.signedEvent,
       relayUrl: input.relayUrl,
       authorPubkey: input.signedEvent.pubkey,
-      authenticatedPubkey: input.roles.includes("author_write")
-        ? input.signedEvent.pubkey
-        : null,
+      authenticatedPubkey: canAuthenticate ? input.signedEvent.pubkey : null,
+      ...(canAuthenticate
+        ? {
+            signAuthEvent: async ({ relayUrl, challenge, authorPubkey }) => {
+              const ndk = getNdk()
+              const signer = ndk.signer
+              if (!signer) throw new Error("Signer not connected")
+              const signerPubkey = (await signer.user()).pubkey.toLowerCase()
+              if (signerPubkey !== authorPubkey.toLowerCase()) {
+                throw new Error(
+                  "Active signer does not match product deletion author"
+                )
+              }
+              const authEvent = new NDKEvent(ndk)
+              authEvent.kind = 22_242
+              authEvent.created_at = Math.floor(Date.now() / 1000)
+              authEvent.tags = [
+                ["relay", relayUrl],
+                ["challenge", challenge],
+              ]
+              authEvent.content = ""
+              await authEvent.sign(signer)
+              return authEvent.rawEvent() as SignedPublicNostrEvent
+            },
+          }
+        : {}),
+      ...(options.createWebSocket
+        ? { createWebSocket: options.createWebSocket }
+        : {}),
     }),
   }
 }
@@ -39,9 +74,38 @@ async function publishProductDeletionRelay(
 async function restoreLocalDeletionEvidence(
   job: ProductDeletionDeliveryJob
 ): Promise<void> {
-  await cacheSignedProductDeletionEvent(
+  await cacheSignedMerchantDeletionEvent(
     new NDKEvent(undefined, job.signedEvent)
   )
+}
+
+export async function cacheSignedMerchantDeletionEvent(
+  event: NDKEvent
+): Promise<void> {
+  const addressTargets = event.tags.flatMap((tag) =>
+    tag[0] === "a" && tag[1] ? [tag[1]] : []
+  )
+  const hasExactIdTarget = event.tags.some((tag) => tag[0] === "e")
+  const hasProductKindTarget = event.tags.some(
+    (tag) => tag[0] === "k" && tag[1] === "30402"
+  )
+  const hasProductTarget =
+    addressTargets.some((coordinate) =>
+      coordinate.startsWith(`30402:${event.pubkey}:`)
+    ) ||
+    (hasExactIdTarget && (hasProductKindTarget || addressTargets.length === 0))
+  const hasShippingTarget = event.tags.some(
+    (tag) => tag[0] === "a" && tag[1]?.startsWith(`30406:${event.pubkey}:`)
+  )
+  if (!hasProductTarget && !hasShippingTarget) {
+    throw new Error(
+      "Deletion event does not contain a merchant product or fixed-shipping target"
+    )
+  }
+  await Promise.all([
+    ...(hasProductTarget ? [cacheSignedProductDeletionEvent(event)] : []),
+    ...(hasShippingTarget ? [cacheSignedShippingDeletionEvent(event)] : []),
+  ])
 }
 
 export async function planCurrentProductDeletionWriteRelays(
@@ -66,6 +130,7 @@ export async function persistSignedProductDeletion(
   input: {
     signedEvent: SignedPublicNostrEvent
     currentWriteRelayUrls: readonly string[]
+    acknowledgedAuthorWriteRelayUrls?: readonly string[]
     sourceRelayUrls: readonly string[]
   },
   options: ProductDeletionDeliveryOptions = {}
@@ -78,6 +143,7 @@ export async function persistSignedProductDeletion(
     {
       signedEvent: input.signedEvent,
       currentWriteRelayUrls: input.currentWriteRelayUrls,
+      acknowledgedAuthorWriteRelayUrls: input.acknowledgedAuthorWriteRelayUrls,
       sourceRelayUrls: input.sourceRelayUrls,
       canonicalConduitRelayUrl,
     },

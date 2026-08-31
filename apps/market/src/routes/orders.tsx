@@ -114,6 +114,7 @@ import {
   signAuthorizedAnonZapCheckout,
 } from "../lib/anon-zap-signer"
 import {
+  buildOrderPaymentItemBindings,
   canObserveOrderPublicZapReceipt,
   getOrderPaymentState,
   observeOrderPublicZapReceipt,
@@ -878,10 +879,7 @@ function OrderDetail({
       zapContent: lc.zapContent ?? "",
       totalSats: lc.totalSats,
       totalMsats: lc.totalMsats,
-      items: lc.items.map((item) => ({
-        productAddress: item.productId,
-        quantity: item.quantity,
-      })),
+      items: buildOrderPaymentItemBindings(lc.items),
       paymentTarget,
       approveFee:
         paymentWallet?.providerId === "spark"

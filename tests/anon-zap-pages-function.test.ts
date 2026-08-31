@@ -1187,6 +1187,36 @@ describe("Anon zap Pages proxy", () => {
     expect(pricingRateCalls).toEqual([])
   })
 
+  it("rejects a caller-selected fixed-shipping option before commerce reads", async () => {
+    const publicEventFilters: unknown[] = []
+    const response = await authorizeAnonZapRequest(
+      post(
+        "https://shop.conduit.market/api/anon-zap-authorize",
+        checkoutIntent({
+          items: [
+            {
+              productAddress: PRODUCT_ADDRESS,
+              quantity: 1,
+              shippingOptionId: `30406:${MERCHANT_PUBKEY}:${PRODUCT_D_TAG}-shipping-standard`,
+            },
+          ],
+        })
+      ),
+      env(),
+      createDependencies({
+        product: productEvent({ canonicalShipping: true }),
+        shippingOption: shippingEvent(),
+        publicEventFilters,
+      })
+    )
+
+    expect(response.status).toBe(403)
+    await expect(response.json()).resolves.toEqual({
+      error: "Anonymous public-zap checkout does not support fixed shipping.",
+    })
+    expect(publicEventFilters).toEqual([])
+  })
+
   it("does not wait on shipping relays when anonymous fixed shipping is disabled", async () => {
     const publicEventFilters: unknown[] = []
     const response = await authorizeAnonZapRequest(

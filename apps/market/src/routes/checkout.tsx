@@ -45,7 +45,6 @@ import {
   type CommercePriceLike,
   type OrderAddressValidity,
   type OrderGuestContact,
-  type OrderLifecycleItem,
   type OrderShippingZoneEligibility,
   type NwcConnection,
   type NwcGetInfoResult,
@@ -162,7 +161,9 @@ import {
 } from "../lib/checkout-session"
 import {
   buildCheckoutPricingIntent,
+  buildCheckoutLifecycleItems,
   buildDefaultZapContent,
+  canUseAnonymousPublicZapForCart,
   getCheckoutPublicZapSigner,
   getLnurlReadyForCheckoutPayment,
   getCheckoutShippingCost,
@@ -188,6 +189,7 @@ import {
   type HudZapAuthorization,
 } from "../lib/hud-zap-intent"
 import {
+  buildOrderPaymentItemBindings,
   runOrderPayment,
   type OrderPaymentContext,
 } from "../lib/order-payment-service"
@@ -1271,13 +1273,21 @@ function CheckoutPage() {
         rawCheckoutItems,
         shippingOptionsIsFetching || shippingOptionsIsError
           ? []
-          : (shippingOptionsData ?? [])
+          : (shippingOptionsData ?? []),
+        {
+          country: shipping.country,
+          state: shipping.state,
+          postalCode: shipping.postalCode,
+        }
       ),
     [
       rawCheckoutItems,
       shippingOptionsData,
       shippingOptionsIsError,
       shippingOptionsIsFetching,
+      shipping.country,
+      shipping.postalCode,
+      shipping.state,
     ]
   )
   const checkoutItems = preparedFulfillment.items
@@ -1453,18 +1463,26 @@ function CheckoutPage() {
   const lnurlPayAvailable = lnurlPreflight.status === "ready"
   const lnurlPayMetadata = lnurlPreflight.metadata
   const lnurlAllowsNostr = lnurlPayMetadata?.allowsNostr === true
+  const anonymousPublicZapSupportedForCart =
+    canUseAnonymousPublicZapForCart(checkoutItems)
   const guestZapMode: CheckoutZapMode =
     !isPickupCheckout &&
     anonZapSignerAvailable &&
+    anonymousPublicZapSupportedForCart &&
     lnurlAllowsNostr &&
     publicZapPolicy.publicZapsAllowed
       ? "anonymous_public_zap"
       : "private_checkout"
+  const signedInZapMode: CheckoutZapMode =
+    zapMode === "anonymous_public_zap" &&
+    (!anonZapSignerAvailable || !anonymousPublicZapSupportedForCart)
+      ? "public_zap_as_shopper"
+      : zapMode
   const selectedZapMode = isPickupCheckout
     ? "private_checkout"
     : isGuestCheckout
       ? guestZapMode
-      : zapMode
+      : signedInZapMode
 
   const zapVisibility = getCheckoutZapVisibility(selectedZapMode)
   const zapContentEditable = isPublicZapContentEditable(
@@ -1482,7 +1500,9 @@ function CheckoutPage() {
         : "Use the merchant's generic public zap comment."
   const anonZapModeDescription = !anonZapSignerAvailable
     ? "Anon Conduit Shopper signing is not configured yet."
-    : "Use a fixed item-count message without identifying the shopper."
+    : !anonymousPublicZapSupportedForCart
+      ? "Fixed shipping uses a shopper-signed public zap or a private invoice."
+      : "Use a fixed item-count message without identifying the shopper."
   const merchantName = merchantTrust.merchantName
   const selectZapMode = useCallback(
     (nextMode: CheckoutZapMode) => {
@@ -1522,11 +1542,19 @@ function CheckoutPage() {
 
   useEffect(() => {
     if (isGuestCheckout) return
-    if (zapMode === "anonymous_public_zap" && !anonZapSignerAvailable) {
+    if (
+      zapMode === "anonymous_public_zap" &&
+      (!anonZapSignerAvailable || !anonymousPublicZapSupportedForCart)
+    ) {
       setZapMode("public_zap_as_shopper")
       setZapContentEdited(false)
     }
-  }, [anonZapSignerAvailable, isGuestCheckout, zapMode])
+  }, [
+    anonZapSignerAvailable,
+    anonymousPublicZapSupportedForCart,
+    isGuestCheckout,
+    zapMode,
+  ])
 
   useEffect(() => {
     if (!zapContentEditable && zapContentEdited) {
@@ -1624,6 +1652,7 @@ function CheckoutPage() {
     : getCartShippingDestinationEligibility(
         {
           country: shipping.country,
+          state: shipping.state,
           postalCode: shipping.postalCode,
         },
         checkoutItems
@@ -1796,6 +1825,8 @@ function CheckoutPage() {
         return "Zap out is unavailable for this destination. You can still send the order first."
       case "postal_restricted":
         return "Zap out is unavailable for this postal code. You can still send the order first."
+      case "subdivision_restricted":
+        return "Zap out is unavailable for this state or region. You can still send the order first."
     }
   })()
 
@@ -1929,6 +1960,11 @@ function CheckoutPage() {
         refreshedProducts: refreshResult.products,
         readShippingOptions: getShippingOptionsByCoordinates,
         rateInput,
+        shippingDestination: {
+          country: shipping.country,
+          state: shipping.state,
+          postalCode: shipping.postalCode,
+        },
       })
     } catch (error) {
       recordCheckoutStepResult({
@@ -2076,7 +2112,11 @@ function CheckoutPage() {
       return "not_required"
     }
     const eligibility = getCartShippingDestinationEligibility(
-      { country: shipping.country, postalCode: shipping.postalCode },
+      {
+        country: shipping.country,
+        state: shipping.state,
+        postalCode: shipping.postalCode,
+      },
       items
     )
     return eligibility.eligible === true
@@ -2151,74 +2191,6 @@ function CheckoutPage() {
       email: shipping.email,
       phone: shipping.phone,
     })
-  }
-
-  function buildLifecycleItems(
-    items: Array<{
-      productId: string
-      familyProductId?: string
-      selectedSpecifications?: Array<{ key: string; value: string }>
-      title?: string
-      format: "physical" | "digital"
-      quantity: number
-      priceAtPurchase: number
-      currency: string
-      shippingCostSats?: number
-      shippingOptionId?: string
-      shippingOptionDTag?: string
-      shippingCountryRules?: Array<{
-        code: string
-        restrictTo: string[]
-        exclude: string[]
-      }>
-      sourcePrice?: {
-        amount: number
-        currency: string
-        normalizedCurrency: string
-      }
-      sourceShippingCost?: {
-        amount: number
-        currency: string
-        normalizedCurrency: string
-      }
-      fulfillment?: CartItem["fulfillment"]
-    }>
-  ): OrderLifecycleItem[] {
-    return items.map((item) => ({
-      productId: item.productId,
-      familyProductId: item.familyProductId,
-      selectedSpecifications: item.selectedSpecifications?.map(
-        (specification) => ({ ...specification })
-      ),
-      title: item.title,
-      format: item.format,
-      quantity: item.quantity,
-      priceAtPurchase: item.priceAtPurchase,
-      currency: item.currency,
-      shippingCostSats: item.shippingCostSats,
-      shippingOptionId: item.shippingOptionId,
-      shippingOptionDTag: item.shippingOptionDTag,
-      shippingCountryRules: item.shippingCountryRules?.map((rule) => ({
-        code: rule.code,
-        restrictTo: [...rule.restrictTo],
-        exclude: [...rule.exclude],
-      })),
-      sourcePrice: item.sourcePrice
-        ? {
-            amount: item.sourcePrice.amount,
-            currency: item.sourcePrice.currency,
-            normalizedCurrency: item.sourcePrice.normalizedCurrency,
-          }
-        : undefined,
-      sourceShippingCost: item.sourceShippingCost
-        ? {
-            amount: item.sourceShippingCost.amount,
-            currency: item.sourceShippingCost.currency,
-            normalizedCurrency: item.sourceShippingCost.normalizedCurrency,
-          }
-        : undefined,
-      fulfillment: item.fulfillment,
-    }))
   }
 
   // ─── Order-first path (existing flow) ───────────────────────────────────
@@ -2369,7 +2341,7 @@ function CheckoutPage() {
         merchantLightningAddress: checkoutPricing.paymentRequired
           ? (merchantLud16 ?? undefined)
           : undefined,
-        items: buildLifecycleItems(items),
+        items: buildCheckoutLifecycleItems(items),
         itemSubtotalSats: checkoutPricing.itemSubtotalSats,
         shippingCostSats:
           checkoutPricing.shippingCost.status === "manual"
@@ -2660,6 +2632,7 @@ function CheckoutPage() {
           : getCartShippingDestinationEligibility(
               {
                 country: shipping.country,
+                state: shipping.state,
                 postalCode: shipping.postalCode,
               },
               authoritativeCheckoutItems
@@ -2829,7 +2802,7 @@ function CheckoutPage() {
         publicZapSigner: getCheckoutPublicZapSigner(checkoutMode) ?? undefined,
         merchantLightningAddress: merchantLud16,
         paymentTarget: storedPaymentTarget,
-        items: buildLifecycleItems(checkoutPricing.items),
+        items: buildCheckoutLifecycleItems(checkoutPricing.items),
         itemSubtotalSats: checkoutPricing.itemSubtotalSats,
         shippingCostSats: checkoutPricing.shippingCost.totalSats,
         totalSats: checkoutPricing.totalSats,
@@ -2892,16 +2865,14 @@ function CheckoutPage() {
         zapContent: effectiveZapContent,
         totalSats: checkoutPricing.totalSats,
         totalMsats: checkoutPricing.totalMsats,
-        items: checkoutPricing.items.map((item) => ({
-          productAddress: item.productId,
-          quantity: item.quantity,
-        })),
+        items: buildOrderPaymentItemBindings(checkoutPricing.items),
         anonZapPreparation:
           checkoutMode === "anonymous_public_zap"
             ? {
                 localPricing: checkoutPricing,
                 destination: {
                   country: shippingAddress?.country ?? shipping.country,
+                  state: shippingAddress?.state ?? shipping.state,
                   postalCode:
                     shippingAddress?.postalCode ?? shipping.postalCode,
                 },
@@ -4171,6 +4142,7 @@ function CheckoutPage() {
                           aria-pressed={zapMode === "anonymous_public_zap"}
                           disabled={
                             !anonZapSignerAvailable ||
+                            !anonymousPublicZapSupportedForCart ||
                             !lnurlAllowsNostr ||
                             !publicZapPolicy.publicZapsAllowed
                           }
@@ -4180,6 +4152,7 @@ function CheckoutPage() {
                             zapMode === "anonymous_public_zap"
                               ? "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)] text-[var(--text-primary)]"
                               : !anonZapSignerAvailable ||
+                                  !anonymousPublicZapSupportedForCart ||
                                   !lnurlAllowsNostr ||
                                   !publicZapPolicy.publicZapsAllowed
                                 ? "cursor-not-allowed border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] opacity-70"

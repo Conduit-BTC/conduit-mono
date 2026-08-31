@@ -56,6 +56,19 @@ function context(): AnonZapCheckoutAuthorizationContext {
   }
 }
 
+function selectedShippingContext(): AnonZapCheckoutAuthorizationContext {
+  return {
+    merchantPubkey: MERCHANT_PUBKEY,
+    items: [
+      {
+        productAddress: `30402:${MERCHANT_PUBKEY}:test-product`,
+        quantity: 1,
+        shippingOptionId: `30406:${MERCHANT_PUBKEY}:test-product-shipping-ca`,
+      },
+    ],
+  }
+}
+
 function signerConfig(pubkey = SHOPPER_PUBKEY) {
   return {
     anonZapSignerUrl: "/api/anon-zap-sign",
@@ -289,6 +302,21 @@ describe("Anon zap signer client", () => {
       relayUrls: ["wss://relay.example"],
     })
     expect(JSON.stringify(calls)).not.toContain("private-order-id")
+  })
+
+  it("sends the exact selected shipping coordinate for server pricing", async () => {
+    const selected = selectedShippingContext()
+    const { fetchImpl, calls } = createSignerFetch({
+      shippingOptionId: selected.items[0]!.shippingOptionId,
+    })
+
+    await authorizeCheckoutWithAnonSigner(selected, {
+      fetchImpl,
+      config: signerConfig(),
+    })
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.body).toEqual(selected)
   })
 
   it("rejects a valid event from any identity other than configured Anon Shopper", async () => {

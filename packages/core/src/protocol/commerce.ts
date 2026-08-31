@@ -1397,13 +1397,19 @@ function toCachedProduct(record: CommerceProductRecord) {
     sourceShippingCost: product.sourceShippingCost,
     shippingOptionId: product.shippingOptionId,
     shippingOptionDTag: product.shippingOptionDTag,
-    shippingOptionLaunchUnsupported: product.shippingOptionId
-      ? product.shippingOptionLaunchUnsupported === true
-      : undefined,
+    shippingOptionIds: product.shippingOptionIds,
+    shippingOptionDTags: product.shippingOptionDTags,
+    shippingOptionLaunchUnsupported:
+      product.shippingOptionId ||
+      product.shippingOptionIds?.length ||
+      product.shippingOptionRefs?.length
+        ? product.shippingOptionLaunchUnsupported === true
+        : undefined,
     shippingOptionRefs: product.shippingOptionRefs,
     collectionRefs: product.collectionRefs,
     shippingCountries: product.shippingCountries,
     shippingCountryRules: product.shippingCountryRules,
+    shippingZones: product.shippingZones,
     visibility: product.visibility,
     stock: product.stock,
     images: getProductProtocolImages(product),
@@ -1426,7 +1432,10 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
   const zapMessagePolicy =
     row.zapMessagePolicy === "custom" ? row.zapMessagePolicy : "generic_only"
   const hasShippingOptionReference =
-    typeof row.shippingOptionId === "string" && row.shippingOptionId.length > 0
+    (typeof row.shippingOptionId === "string" &&
+      row.shippingOptionId.length > 0) ||
+    (row.shippingOptionIds?.length ?? 0) > 0 ||
+    (row.shippingOptionRefs?.length ?? 0) > 0
   const tags = canonicalizeProductTags(row.tags)
   const summary = normalizeProductSummaryForDisplay(row.summary, {
     title: row.title,
@@ -1454,6 +1463,8 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
     sourceShippingCost: row.sourceShippingCost,
     shippingOptionId: row.shippingOptionId,
     shippingOptionDTag: row.shippingOptionDTag,
+    shippingOptionIds: row.shippingOptionIds,
+    shippingOptionDTags: row.shippingOptionDTags,
     shippingOptionLaunchUnsupported: hasShippingOptionReference
       ? typeof row.shippingOptionLaunchUnsupported === "boolean"
         ? row.shippingOptionLaunchUnsupported
@@ -1463,6 +1474,7 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
     collectionRefs: row.collectionRefs,
     shippingCountries: row.shippingCountries,
     shippingCountryRules: row.shippingCountryRules,
+    shippingZones: row.shippingZones,
     visibility: row.visibility ?? "public",
     stock: row.stock,
     images: getProductProtocolImages({ images: row.images ?? [] }),
