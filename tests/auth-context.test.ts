@@ -16,9 +16,14 @@ import {
   shouldReuseConnectedAuthSession,
   type AuthConnectOptions,
   type AuthContextValue,
+  type RemoteSignerRecoveryState,
 } from "../packages/core/src/context/AuthContext"
 import {
+  canStartAuthConnection,
+  parseAuthSession,
   RemoteSignerError,
+  shouldRetireAuthSessionAfterAuthorityChange,
+  type Nip46AuthSession,
   type RemoteSignerConnection,
 } from "../packages/core/src/protocol/remote-signer"
 import { createProtectedReadSessionLifecycle } from "../packages/core/src/protocol/protected-read-session-lifecycle"
@@ -491,6 +496,18 @@ describe("restore attempt isolation", () => {
 })
 
 describe("NIP-46 AuthContext API", () => {
+  it("allows only exact-session restore while recovery is active", () => {
+    const recovery: RemoteSignerRecoveryState = {
+      restoreError: null,
+    }
+
+    expect(canStartAuthConnection("restore", !!recovery)).toBe(true)
+    expect(canStartAuthConnection("interactive", !!recovery)).toBe(false)
+    expect(canStartAuthConnection("interactive", false)).toBe(true)
+    expect(canStartAuthConnection("restore", false, true)).toBe(false)
+    expect(canStartAuthConnection("interactive", false, true)).toBe(false)
+  })
+
   it("replaces and clears the exact protected-read session lease idempotently", () => {
     const installed: string[] = []
     const removed: string[] = []
@@ -857,5 +874,55 @@ describe("authenticated signer readiness", () => {
     expect(shouldReuseConnectedAuthSession("restore", true)).toBe(true)
     expect(shouldReuseConnectedAuthSession("restore", false)).toBe(false)
     expect(shouldReuseConnectedAuthSession("interactive", true)).toBe(false)
+  })
+})
+
+describe("cross-tab signer authority retirement", () => {
+  const retainedSession: Nip46AuthSession = {
+    version: 1,
+    type: "nip46",
+    userPubkey: ACCOUNT_A_PUBKEY,
+    remoteSignerPubkey: ACCOUNT_B_PUBKEY,
+    relayUrls: ["wss://relay.example"],
+    clientKeyId: "client-key-a-0001",
+    createdAt: 1,
+    updatedAt: 1,
+    authClaim: "claim-a",
+  }
+
+  it("preserves the exact current session after an authority-only revision", () => {
+    expect(parseAuthSession(JSON.stringify(retainedSession))).toEqual(
+      retainedSession
+    )
+    expect(
+      shouldRetireAuthSessionAfterAuthorityChange(retainedSession, {
+        ...retainedSession,
+      })
+    ).toBe(false)
+  })
+
+  it("retires stale credentials after session removal or replacement", () => {
+    expect(
+      shouldRetireAuthSessionAfterAuthorityChange(retainedSession, null)
+    ).toBe(true)
+    expect(
+      shouldRetireAuthSessionAfterAuthorityChange(retainedSession, {
+        ...retainedSession,
+        userPubkey: ACCOUNT_B_PUBKEY,
+        clientKeyId: "client-key-b-0001",
+      })
+    ).toBe(true)
+    expect(
+      shouldRetireAuthSessionAfterAuthorityChange(retainedSession, {
+        ...retainedSession,
+        remoteSignerPubkey: "c".repeat(64),
+      })
+    ).toBe(true)
+    expect(
+      shouldRetireAuthSessionAfterAuthorityChange(retainedSession, {
+        ...retainedSession,
+        relayUrls: ["wss://replacement.example"],
+      })
+    ).toBe(true)
   })
 })

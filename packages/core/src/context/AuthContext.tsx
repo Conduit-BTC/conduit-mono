@@ -25,9 +25,9 @@ import {
 } from "../protocol/session-signer"
 import {
   abandonRemoteSignerConnection,
+  canStartAuthConnection,
+  cleanupInvalidatedAuthSession,
   forgetAuthSession,
-  forgetRemoteSignerKey,
-  bumpAuthRevision,
   claimAuthRevision,
   logoutRemoteSigner,
   pairRemoteSigner,
@@ -35,10 +35,14 @@ import {
   persistRemoteSignerSession,
   readAuthSession,
   readAuthRevision,
+  requiresRemoteSignerSessionCleanup,
+  revokeAuthSessionAuthority,
   restoreRemoteSigner,
   rollbackAndAbandonRemoteSignerConnection,
+  shouldRetireAuthSessionAfterAuthorityChange,
   writeAuthSession,
   type AuthSession,
+  type RemoteSignerAdapterInvalidation,
   type RemoteSignerConnection,
   AUTH_REVISION_STORAGE_KEY,
   AUTH_STORAGE_KEY,
@@ -67,6 +71,7 @@ export interface AuthContextValue {
   rememberedMethod: AuthMethod | null
   status: AuthStatus
   error: string | null
+  remoteSignerRecovery: RemoteSignerRecoveryState | null
   authUrl: string | null
   nostrConnectUri: string | null
   dismissAuthUrl: () => void
@@ -74,6 +79,10 @@ export interface AuthContextValue {
   capabilities: AuthSignerCapabilities
   connect: (options?: AuthConnectOptions) => Promise<void>
   disconnect: () => Promise<void>
+}
+
+export interface RemoteSignerRecoveryState {
+  restoreError: string | null
 }
 
 export type AuthMethod = "nip07" | "nip46"
@@ -190,6 +199,29 @@ const SIGNER_AUTHORITY_RETRY_MESSAGE =
   "This browser lost signer authority or could not read site storage. Check site storage permissions and reconnect."
 const REMOTE_SIGNER_CLEANUP_MESSAGE =
   "This browser could not erase a stale remote signer connection. Clear this site's storage before reconnecting."
+const REMOTE_SIGNER_REVOCATION_MESSAGE =
+  "This browser could not verify that the old signer authority was revoked. Stop that connection in your signer app and clear this site's storage before reconnecting."
+const REMOTE_SIGNER_RECOVERY_REQUIRED_MESSAGE =
+  "Reconnect or safely forget the saved signer connection before choosing another signer."
+const REMOTE_SIGNER_RECOVERY_REPLACED_MESSAGE =
+  "The saved signer connection changed in another tab. Safely forget this recovery session before reconnecting."
+
+function authSessionsEqual(
+  left: AuthSession | null,
+  right: AuthSession | null
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
+class AuthConnectionInvariantError extends Error {
+  constructor(
+    readonly code: "authority" | "storage",
+    message: string
+  ) {
+    super(message)
+    this.name = "AuthConnectionInvariantError"
+  }
+}
 
 export function hasNip07(): boolean {
   return (
@@ -440,6 +472,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     initialSessionRef.current ? "restoring" : "disconnected"
   )
   const [error, setError] = useState<string | null>(null)
+  const [remoteSignerRecovery, setRemoteSignerRecovery] =
+    useState<RemoteSignerRecoveryState | null>(null)
   const [authUrl, setAuthUrl] = useState<string | null>(null)
   const [nostrConnectUri, setNostrConnectUri] = useState<string | null>(null)
   const [capabilities, setCapabilities] = useState<AuthSignerCapabilities>(
@@ -449,6 +483,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const connecting = useRef(false)
   const connected = useRef(false)
   const authEpoch = useRef(0)
+  const remoteSignerRecoveryRef = useRef<RemoteSignerRecoveryState | null>(
+    null
+  )
+  const recoverySession = useRef<AuthSession | null>(null)
+  const authorityDisplacedSession = useRef<AuthSession | null>(null)
+  const retirementBlockedSession = useRef<AuthSession | null>(null)
   const remoteConnection = useRef<RemoteSignerConnection | null>(null)
   const activeSignerLease = useRef<SignerLease | null>(null)
   const protectedReadSessionLifecycle = useRef<ProtectedReadSessionLifecycle>(
@@ -462,6 +502,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     active: !!initialSessionRef.current,
     owner: initialSessionRef.current?.userPubkey ?? null,
   })
+
+  const updateRemoteSignerRecovery = useCallback(
+    (
+      update:
+        | RemoteSignerRecoveryState
+        | null
+        | ((current: RemoteSignerRecoveryState | null) => RemoteSignerRecoveryState | null)
+    ) => {
+      const next =
+        typeof update === "function"
+          ? update(remoteSignerRecoveryRef.current)
+          : update
+      remoteSignerRecoveryRef.current = next
+      setRemoteSignerRecovery(next)
+    },
+    []
+  )
 
   const beginRestorePending = useCallback((owner: string): number => {
     const next = beginAuthRestorePending(restorePending.current, owner)
@@ -496,13 +553,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setRememberedMethod(null)
     setStatus("disconnected")
     setError(null)
+    recoverySession.current = null
+    updateRemoteSignerRecovery(null)
     setAuthUrl(null)
     setNostrConnectUri(null)
     setCapabilities(NO_SIGNER_CAPABILITIES)
     return true
-  }, [settleRestorePending])
+  }, [settleRestorePending, updateRemoteSignerRecovery])
 
-  const deactivateLocalSigner = useCallback(() => {
+  const deactivateLocalSigner = useCallback((options: {
+    preserveSessionIdentity?: boolean
+    preservedSession?: AuthSession | null
+    status?: AuthStatus
+    error?: string | null
+    remoteSignerRecovery?: RemoteSignerRecoveryState | null
+  } = {}) => {
     activePairing.current?.abort()
     activePairing.current = null
     authEpoch.current += 1
@@ -512,6 +577,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const connection = remoteConnection.current
     const signerLease = activeSignerLease.current
     const sessionSigner = activeSessionSigner.current
+    const session = options.preservedSession ?? activeSession.current
     remoteConnection.current = null
     activeSignerLease.current = null
     activeSessionSigner.current = null
@@ -521,58 +587,198 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     connection?.signer.invalidate()
     if (signerLease) removeSigner(signerLease)
     setAuthSigner(null)
-    setPubkey(null)
+    setPubkey(
+      options.preserveSessionIdentity ? (session?.userPubkey ?? null) : null
+    )
     setMethod(null)
-    setRememberedMethod(null)
-    setStatus("disconnected")
-    setError(null)
+    setRememberedMethod(
+      options.preserveSessionIdentity ? (session?.type ?? null) : null
+    )
+    setStatus(options.status ?? "disconnected")
+    setError(options.error ?? null)
+    const nextRecovery = options.remoteSignerRecovery ?? null
+    recoverySession.current =
+      nextRecovery && session?.type === "nip46" ? session : null
+    updateRemoteSignerRecovery(nextRecovery)
     setAuthUrl(null)
     setNostrConnectUri(null)
     setCapabilities(NO_SIGNER_CAPABILITIES)
     return connection
-  }, [])
+  }, [updateRemoteSignerRecovery])
+
+  const retireInvalidatedSession = useCallback(
+    async (options: {
+      session: AuthSession
+      epoch: number
+      causalMessage: string
+      authorityWasRevoked: boolean
+      lockHeld?: boolean
+    }): Promise<boolean> => {
+      retirementBlockedSession.current = options.session
+      try {
+        await cleanupInvalidatedAuthSession(options.session, {
+          ...(options.lockHeld
+            ? { withLock: async (task) => task() }
+            : {}),
+        })
+        if (
+          !options.authorityWasRevoked &&
+          authEpoch.current === options.epoch
+        ) {
+          setError(options.causalMessage)
+        }
+        if (
+          authSessionsEqual(retirementBlockedSession.current, options.session)
+        ) {
+          retirementBlockedSession.current = null
+        }
+        if (
+          authSessionsEqual(
+            authorityDisplacedSession.current,
+            options.session
+          )
+        ) {
+          authorityDisplacedSession.current = null
+        }
+        return true
+      } catch {
+        if (authEpoch.current === options.epoch) {
+          setStatus("error")
+          setError(
+            `${options.causalMessage} ${
+              options.authorityWasRevoked
+                ? REMOTE_SIGNER_CLEANUP_MESSAGE
+                : REMOTE_SIGNER_REVOCATION_MESSAGE
+            }`
+          )
+        }
+        return false
+      }
+    },
+    []
+  )
 
   const handleSignerSessionInvalidated = useCallback(
     (sessionError: Nip07SessionSignerError | SessionSignerError) => {
       const invalidatedSession = activeSession.current
+      const authorityChanged =
+        sessionError instanceof SessionSignerError &&
+        sessionError.code === "authority_changed"
+      const storedSession = authorityChanged ? readAuthSession() : null
+      const preserveDisplacedSession =
+        authorityChanged &&
+        !!invalidatedSession &&
+        authSessionsEqual(invalidatedSession, storedSession)
+      if (preserveDisplacedSession) {
+        authorityDisplacedSession.current = invalidatedSession
+      }
+      const revocation =
+        invalidatedSession && !authorityChanged
+          ? revokeAuthSessionAuthority(invalidatedSession, undefined, {
+              sessionDisposition: "discard",
+            })
+          : null
+      const causalMessage = sessionError.message
       const connection = deactivateLocalSigner()
       if (connection) void connection.bunkerSigner.close()
       setStatus("error")
-      setError(sessionError.message)
+      setError(
+        revocation && !revocation.authorityRevoked
+          ? `${causalMessage} ${REMOTE_SIGNER_REVOCATION_MESSAGE}`
+          : causalMessage
+      )
 
-      if (
-        !invalidatedSession ||
-        (sessionError instanceof SessionSignerError &&
-          sessionError.code === "authority_changed")
-      ) {
-        return
-      }
+      if (!invalidatedSession || preserveDisplacedSession) return
 
-      void withBrowserAuthOperationLock(async () => {
-        if (
-          JSON.stringify(readAuthSession()) !==
-          JSON.stringify(invalidatedSession)
-        ) {
-          return
-        }
-        bumpAuthRevision()
-        forgetAuthSession()
-        if (invalidatedSession.type === "nip46") {
-          try {
-            await forgetRemoteSignerKey(invalidatedSession)
-          } catch {
-            // The signer is already invalidated locally. Existing disconnect
-            // copy explains how to clear storage if vault cleanup is blocked.
-          }
-        }
-      }).catch(() => undefined)
+      const cleanupEpoch = authEpoch.current
+      void retireInvalidatedSession({
+        session: invalidatedSession,
+        epoch: cleanupEpoch,
+        causalMessage,
+        authorityWasRevoked:
+          authorityChanged || (revocation?.authorityRevoked ?? false),
+      })
     },
-    [deactivateLocalSigner]
+    [deactivateLocalSigner, retireInvalidatedSession]
+  )
+
+  const handleRemoteSignerAdapterInvalidated = useCallback(
+    (transition: RemoteSignerAdapterInvalidation) => {
+      if (remoteConnection.current?.signer !== transition.source) return
+
+      const invalidatedSession = activeSession.current
+      const revocation = invalidatedSession
+        ? revokeAuthSessionAuthority(invalidatedSession, undefined, {
+            sessionDisposition: transition.sessionDisposition,
+          })
+        : null
+      const canRecover =
+        transition.sessionDisposition === "retain_for_restore" &&
+        invalidatedSession?.type === "nip46" &&
+        revocation?.freshRevisionPersisted === true &&
+        revocation.sessionRetained
+      const causalMessage = canRecover
+        ? "Your remote signer stopped responding. Reconnect it to continue."
+        : transition.error.message
+      deactivateLocalSigner({
+        preserveSessionIdentity: canRecover,
+        status: "error",
+        error:
+          revocation && !revocation.authorityRevoked
+            ? `${causalMessage} ${REMOTE_SIGNER_REVOCATION_MESSAGE}`
+            : causalMessage,
+        remoteSignerRecovery: canRecover
+          ? {
+              restoreError: null,
+            }
+          : null,
+      })
+      if (canRecover || !invalidatedSession) return
+
+      const cleanupEpoch = authEpoch.current
+      void retireInvalidatedSession({
+        session: invalidatedSession,
+        epoch: cleanupEpoch,
+        causalMessage,
+        authorityWasRevoked: revocation?.authorityRevoked ?? false,
+      })
+    },
+    [deactivateLocalSigner, retireInvalidatedSession]
   )
 
   const connectWithoutLock = useCallback(async (options: AuthConnectAttemptOptions = {}) => {
     const mode = options.mode ?? "interactive"
+    if (
+      !canStartAuthConnection(
+        mode,
+        remoteSignerRecoveryRef.current !== null,
+        retirementBlockedSession.current !== null
+      )
+    ) {
+      throw new Error(REMOTE_SIGNER_RECOVERY_REQUIRED_MESSAGE)
+    }
+    if (mode === "interactive" && authorityDisplacedSession.current) {
+      const displacedSession = authorityDisplacedSession.current
+      const retired = await retireInvalidatedSession({
+        session: displacedSession,
+        epoch: authEpoch.current,
+        causalMessage:
+          "This signer session changed in another tab. Reconnect the intended account to continue.",
+        authorityWasRevoked: true,
+        lockHeld: true,
+      })
+      if (!retired) throw new Error(REMOTE_SIGNER_CLEANUP_MESSAGE)
+    }
     const storedSession = readAuthSession()
+    const exactRestoreSession =
+      recoverySession.current ?? authorityDisplacedSession.current
+    if (
+      mode === "restore" &&
+      exactRestoreSession &&
+      !authSessionsEqual(storedSession, exactRestoreSession)
+    ) {
+      throw new Error(REMOTE_SIGNER_RECOVERY_REPLACED_MESSAGE)
+    }
     const requestedMethod =
       options.method ?? (mode === "restore" ? storedSession?.type : "nip07")
     if (
@@ -680,7 +886,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const connection =
           mode === "restore"
             ? storedSession?.type === "nip46"
-              ? await restoreRemoteSigner(storedSession, { onAuthUrl })
+              ? await restoreRemoteSigner(storedSession, {
+                  onAuthUrl,
+                  onAdapterInvalidated: handleRemoteSignerAdapterInvalidated,
+                })
               : null
             : nip46Flow === "nostrconnect"
               ? await pairRemoteSignerFromNostrConnect(NOSTR_CONNECT_RELAYS, {
@@ -689,6 +898,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                     if (attemptIsCurrent()) setNostrConnectUri(uri)
                   },
                   onAuthUrl,
+                  onAdapterInvalidated:
+                    handleRemoteSignerAdapterInvalidated,
                   clientMetadata: {
                     name: "Conduit",
                     url:
@@ -701,6 +912,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 ? await pairRemoteSigner(options.bunkerUri, {
                     signal: options.pairingSignal,
                     onAuthUrl,
+                    onAdapterInvalidated:
+                      handleRemoteSignerAdapterInvalidated,
                     clientMetadata: {
                       name: "Conduit",
                       url:
@@ -743,7 +956,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           abandonRemoteSignerConnection(connectedRemote)
           uncommittedRemote = null
         }
-        throw new Error(
+        throw new AuthConnectionInvariantError(
+          "authority",
           "This browser could not establish exclusive signer authority. Check site storage permissions, clear the saved session if needed, and reconnect."
         )
       }
@@ -778,7 +992,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             abandonRemoteSignerConnection(connectedRemote)
             uncommittedRemote = null
           }
-          throw new Error(
+          throw new AuthConnectionInvariantError(
+            "storage",
             "This browser could not save the remote signer session. Check site storage permissions and try again."
           )
         }
@@ -825,6 +1040,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setPubkey(pk)
       setMethod(session.type)
       setRememberedMethod(session.type)
+      recoverySession.current = null
+      authorityDisplacedSession.current = null
+      updateRemoteSignerRecovery(null)
       setStatus("connected")
       connected.current = true
       setCapabilities(
@@ -864,8 +1082,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (mode === "restore" && attemptIsCurrent()) {
           settleRestorePending(restoreAttempt)
         }
-        setStatus("error")
-        setError(resolution.message)
+        if (mode === "restore" && storedSession?.type === "nip46") {
+          deactivateLocalSigner({
+            status: "error",
+            error: resolution.message,
+          })
+        } else {
+          setStatus("error")
+          setError(resolution.message)
+        }
         setNostrConnectUri(null)
         if (resolution.reject) {
           throw new Error(resolution.message, { cause: err })
@@ -883,8 +1108,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             ? failure
             : new Error("Failed to connect remote signer")
       const msg = normalizedError.message
-      setStatus("error")
-      setError(msg)
+      const strictRemoteRestoreFailure =
+        mode === "restore" &&
+        storedSession?.type === "nip46" &&
+        (normalizedError instanceof AuthConnectionInvariantError ||
+          requiresRemoteSignerSessionCleanup(normalizedError))
+      if (strictRemoteRestoreFailure) {
+        const revocation = revokeAuthSessionAuthority(storedSession, undefined, {
+          sessionDisposition: "discard",
+        })
+        deactivateLocalSigner({
+          status: "error",
+          error: revocation.authorityRevoked
+            ? msg
+            : `${msg} ${REMOTE_SIGNER_REVOCATION_MESSAGE}`,
+        })
+        await retireInvalidatedSession({
+          session: storedSession,
+          epoch: authEpoch.current,
+          causalMessage: msg,
+          authorityWasRevoked: revocation.authorityRevoked,
+          lockHeld: true,
+        })
+      } else {
+        setStatus("error")
+        setError(msg)
+      }
+      if (mode === "restore" && !strictRemoteRestoreFailure) {
+        updateRemoteSignerRecovery((current) =>
+          current ? { ...current, restoreError: msg } : null
+        )
+      }
       setNostrConnectUri(null)
       throw normalizedError
     } finally {
@@ -894,11 +1148,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         connecting.current = false
       }
     }
-  }, [beginRestorePending, handleSignerSessionInvalidated, settleRestorePending])
+  }, [
+    beginRestorePending,
+    deactivateLocalSigner,
+    handleRemoteSignerAdapterInvalidated,
+    handleSignerSessionInvalidated,
+    retireInvalidatedSession,
+    settleRestorePending,
+    updateRemoteSignerRecovery,
+  ])
 
   const connect = useCallback(
     async (options: AuthConnectOptions = {}) => {
       const mode = options.mode ?? "interactive"
+      if (
+        !canStartAuthConnection(
+          mode,
+          remoteSignerRecoveryRef.current !== null,
+          retirementBlockedSession.current !== null
+        )
+      ) {
+        const recoveryError = new Error(
+          REMOTE_SIGNER_RECOVERY_REQUIRED_MESSAGE
+        )
+        setError(recoveryError.message)
+        throw recoveryError
+      }
       if (shouldReuseConnectedAuthSession(mode, connected.current)) return
       if (connecting.current) return
       activePairing.current?.abort()
@@ -908,6 +1183,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         throw new Error("Disconnect the current signer before connecting another.")
       }
       const storedSession = mode === "restore" ? readAuthSession() : null
+      const exactRestoreSession =
+        recoverySession.current ?? authorityDisplacedSession.current
+      if (
+        mode === "restore" &&
+        exactRestoreSession &&
+        !authSessionsEqual(storedSession, exactRestoreSession)
+      ) {
+        const replacedError = new Error(
+          REMOTE_SIGNER_RECOVERY_REPLACED_MESSAGE
+        )
+        setError(replacedError.message)
+        updateRemoteSignerRecovery((current) =>
+          current ? { ...current, restoreError: replacedError.message } : null
+        )
+        throw replacedError
+      }
       const requestedMethod =
         options.method ??
         (mode === "restore" ? storedSession?.type ?? null : "nip07")
@@ -920,9 +1211,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const missingSessionError = new Error(
           "The saved signer session is no longer available. Connect again."
         )
-        setMethod(null)
-        setStatus("error")
-        setError(missingSessionError.message)
+        if (mode === "restore") {
+          deactivateLocalSigner({
+            status: "error",
+            error: missingSessionError.message,
+          })
+        } else {
+          setMethod(null)
+          setStatus("error")
+          setError(missingSessionError.message)
+        }
         setAuthUrl(null)
         setNostrConnectUri(null)
         throw missingSessionError
@@ -930,6 +1228,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setMethod(requestedMethod)
       setStatus(mode === "restore" ? "restoring" : "connecting")
       setError(null)
+      if (mode === "restore") {
+        updateRemoteSignerRecovery((current) =>
+          current ? { ...current, restoreError: null } : null
+        )
+      }
       setAuthUrl(null)
       setNostrConnectUri(null)
 
@@ -975,6 +1278,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
         setStatus("error")
         setError(lockError.message)
+        if (mode === "restore") {
+          updateRemoteSignerRecovery((current) =>
+            current ? { ...current, restoreError: lockError.message } : null
+          )
+        }
         setAuthUrl(null)
         setNostrConnectUri(null)
         throw lockError
@@ -984,7 +1292,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
       }
     },
-    [connectWithoutLock, settleRestorePending]
+    [
+      connectWithoutLock,
+      deactivateLocalSigner,
+      settleRestorePending,
+      updateRemoteSignerRecovery,
+    ]
   )
 
   const cancelConnect = useCallback(() => {
@@ -1001,48 +1314,79 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setNostrConnectUri(null)
   }, [])
 
-  const disconnectWithoutLock = useCallback(async (broadcast = true) => {
-    if (broadcast) bumpAuthRevision()
-    settleRestorePending()
-    const storedSession = readAuthSession()
-    const connection = deactivateLocalSigner()
-    let cleanupFailed = !forgetAuthSession()
-    const remoteSessions = [
-      storedSession?.type === "nip46" ? storedSession : null,
-      connection?.session ?? null,
-    ]
-      .filter((session): session is NonNullable<typeof session> => !!session)
-      .filter(
-      (session, index, sessions) =>
-        sessions.findIndex(
-          (candidate) => candidate.clientKeyId === session.clientKeyId
-        ) === index
-      )
-    for (const session of remoteSessions) {
-      try {
-        await forgetRemoteSignerKey(session)
-      } catch {
-        cleanupFailed = true
+  const disconnectWithoutLock = useCallback(
+    async (expectedSession: AuthSession | null): Promise<void> => {
+      if (expectedSession) {
+        await cleanupInvalidatedAuthSession(expectedSession, {
+          withLock: async (task) => task(),
+          retireExpectedKeyOnMetadataFailure: true,
+        })
+        if (
+          authSessionsEqual(retirementBlockedSession.current, expectedSession)
+        ) {
+          retirementBlockedSession.current = null
+        }
+      } else if (!forgetAuthSession()) {
+        throw new Error(REMOTE_SIGNER_CLEANUP_MESSAGE)
       }
-    }
-    if (connection) await logoutRemoteSigner(connection.bunkerSigner)
-    if (cleanupFailed) {
-      setStatus("error")
-      setError(
-        "Disconnected, but this browser could not erase the saved remote signer connection. Clear this site's storage before reconnecting."
-      )
-    }
-  }, [deactivateLocalSigner, settleRestorePending])
+
+      settleRestorePending()
+      authorityDisplacedSession.current = null
+      const connection = deactivateLocalSigner()
+      if (connection) await logoutRemoteSigner(connection.bunkerSigner)
+    },
+    [deactivateLocalSigner, settleRestorePending]
+  )
 
   const disconnect = useCallback(
-    () => {
+    async () => {
+      const expectedSession =
+        recoverySession.current ??
+        authorityDisplacedSession.current ??
+        retirementBlockedSession.current ??
+        activeSession.current ??
+        readAuthSession()
+      const recoveryRequired = remoteSignerRecoveryRef.current !== null
+      if (expectedSession) retirementBlockedSession.current = expectedSession
+      const revocation = expectedSession
+        ? revokeAuthSessionAuthority(expectedSession, undefined, {
+            sessionDisposition: "discard",
+          })
+        : null
       invalidatePendingRestoreForDisconnect()
       activePairing.current?.abort()
       activePairing.current = null
       setNostrConnectUri(null)
-      return withBrowserAuthOperationLock(() => disconnectWithoutLock(true))
+      try {
+        await withBrowserAuthOperationLock(() =>
+          disconnectWithoutLock(expectedSession)
+        )
+      } catch (cause) {
+        const message = revocation?.authorityRevoked
+          ? REMOTE_SIGNER_CLEANUP_MESSAGE
+          : REMOTE_SIGNER_REVOCATION_MESSAGE
+        if (recoveryRequired && remoteSignerRecoveryRef.current) {
+          setStatus("error")
+          setError(message)
+          updateRemoteSignerRecovery((current) =>
+            current ? { ...current, restoreError: message } : null
+          )
+        } else {
+          const connection = deactivateLocalSigner({
+            status: "error",
+            error: message,
+          })
+          if (connection) void connection.bunkerSigner.close()
+        }
+        throw new Error(message, { cause })
+      }
     },
-    [disconnectWithoutLock, invalidatePendingRestoreForDisconnect]
+    [
+      disconnectWithoutLock,
+      deactivateLocalSigner,
+      invalidatePendingRestoreForDisconnect,
+      updateRemoteSignerRecovery,
+    ]
   )
 
   const dismissAuthUrl = useCallback(() => setAuthUrl(null), [])
@@ -1074,7 +1418,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (
           !connected.current &&
           !connecting.current &&
-          !restorePending.current.active
+          !restorePending.current.active &&
+          !remoteSignerRecoveryRef.current &&
+          !authorityDisplacedSession.current
         ) {
           return
         }
@@ -1084,34 +1430,76 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         ) {
           return
         }
-        const connection = deactivateLocalSigner()
+        const invalidatedSession =
+          activeSession.current ?? recoverySession.current
+        const storedSession = readAuthSession()
+        const preserveDisplacedSession =
+          !!invalidatedSession &&
+          authSessionsEqual(invalidatedSession, storedSession)
+        if (preserveDisplacedSession) {
+          authorityDisplacedSession.current = invalidatedSession
+        }
+        const connection = deactivateLocalSigner({
+          preserveSessionIdentity: preserveDisplacedSession,
+          preservedSession: invalidatedSession,
+          remoteSignerRecovery: preserveDisplacedSession
+            ? remoteSignerRecoveryRef.current
+            : null,
+        })
         settleRestorePending()
         if (connection) void connection.bunkerSigner.close()
         setStatus("error")
-        setError(
+        const causalMessage =
           "This signer session changed in another tab. Reconnect the intended account to continue."
-        )
+        setError(causalMessage)
+        if (
+          invalidatedSession &&
+          shouldRetireAuthSessionAfterAuthorityChange(
+            invalidatedSession,
+            storedSession
+          )
+        ) {
+          void retireInvalidatedSession({
+            session: invalidatedSession,
+            epoch: authEpoch.current,
+            causalMessage,
+            authorityWasRevoked: true,
+          })
+        }
         return
       }
       if (event.key !== AUTH_STORAGE_KEY) return
       const replacement = readAuthSession()
-      const previous = activeSession.current
+      const previous =
+        activeSession.current ??
+        recoverySession.current ??
+        authorityDisplacedSession.current
       if (
         (JSON.stringify(replacement) === JSON.stringify(previous) &&
           !restorePending.current.active) ||
         (!connected.current &&
           !connecting.current &&
-          !restorePending.current.active)
+          !restorePending.current.active &&
+          !remoteSignerRecoveryRef.current &&
+          !authorityDisplacedSession.current)
       ) {
         return
       }
       const currentConnection = deactivateLocalSigner()
       settleRestorePending()
+      const causalMessage =
+        "This signer session changed in another tab. Reconnect the intended account to continue."
       if (!currentConnection) {
         setStatus("error")
-        setError(
-          "This signer session changed in another tab. Reconnect the intended account to continue."
-        )
+        setError(causalMessage)
+        if (previous) {
+          void retireInvalidatedSession({
+            session: previous,
+            epoch: authEpoch.current,
+            causalMessage,
+            authorityWasRevoked: true,
+          })
+        }
         return
       }
       if (
@@ -1122,25 +1510,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return
       }
       void (async () => {
-        let cleanupFailed = false
         try {
-          await forgetRemoteSignerKey(currentConnection.session)
-        } catch {
-          cleanupFailed = true
+          await retireInvalidatedSession({
+            session: currentConnection.session,
+            epoch: authEpoch.current,
+            causalMessage,
+            authorityWasRevoked: true,
+          })
         } finally {
           await logoutRemoteSigner(currentConnection.bunkerSigner)
-        }
-        if (cleanupFailed) {
-          setStatus("error")
-          setError(
-            "This tab disconnected, but could not erase its previous remote signer connection. Clear this site's storage before reconnecting."
-          )
         }
       })()
     }
     window.addEventListener("storage", handleStorage)
     return () => window.removeEventListener("storage", handleStorage)
-  }, [deactivateLocalSigner, settleRestorePending])
+  }, [deactivateLocalSigner, retireInvalidatedSession, settleRestorePending])
 
   return (
     <AuthContext.Provider
@@ -1153,6 +1537,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         rememberedMethod,
         status,
         error,
+        remoteSignerRecovery,
         authUrl,
         nostrConnectUri,
         dismissAuthUrl,

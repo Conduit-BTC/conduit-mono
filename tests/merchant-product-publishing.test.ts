@@ -20,6 +20,7 @@ import {
   getCachedMerchantStorefront,
   parseProductEvent,
   planProductDeletionRelays,
+  RemoteSignerError,
   resolveProductFulfillment,
   setSigner,
   type ProductDeletionOutboxRepository,
@@ -689,6 +690,82 @@ describe("merchant product event delivery", () => {
         EVENT_KINDS.SHIPPING_OPTION,
         EVENT_KINDS.PRODUCT,
       ])
+    } finally {
+      publishSpy.mockRestore()
+    }
+  })
+
+  it("requires an explicit retry after signer recovery without duplicate delivery", async () => {
+    const delegate = new NDKPrivateKeySigner(MERCHANT_SECRET)
+    let signRequests = 0
+    let signedLocalCalls = 0
+    const failedSigner = {
+      user: () => delegate.user(),
+      sign: async () => {
+        signRequests += 1
+        throw new RemoteSignerError(
+          "timeout",
+          "The remote signer timed out during sign event.",
+          { operation: "sign event" }
+        )
+      },
+    } as NDKSigner
+    setSigner(failedSigner)
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "author_event",
+        primaryRelayUrls: ["wss://relay.example"],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+    const publishSpy = spyOn(NDKEvent.prototype, "publish").mockResolvedValue(
+      new Set([{ url: "wss://relay.example/" }]) as never
+    )
+    const input = {
+      merchantPubkey: MERCHANT_PUBKEY,
+      listings: [
+        {
+          product: makeProduct("recovery-explicit-retry"),
+          dTag: "recovery-explicit-retry",
+          fulfillmentIntent: { kind: "coordinate_after_order" as const },
+        },
+      ],
+      onSignedLocal: async () => {
+        signedLocalCalls += 1
+      },
+    }
+
+    try {
+      await expect(
+        signAndPublishProductWriteBundle(input)
+      ).rejects.toMatchObject({
+        code: "timeout",
+        operation: "sign event",
+      })
+      expect(signRequests).toBe(1)
+      expect(signedLocalCalls).toBe(0)
+      expect(publishSpy).toHaveBeenCalledTimes(0)
+
+      setSigner({
+        user: () => delegate.user(),
+        sign: async (event: NostrEvent) => {
+          signRequests += 1
+          return delegate.sign(event)
+        },
+      } as NDKSigner)
+
+      // Restoring the signer is state repair only. Publication starts only
+      // after the merchant explicitly submits the draft again.
+      await Promise.resolve()
+      expect(signRequests).toBe(1)
+      expect(signedLocalCalls).toBe(0)
+      expect(publishSpy).toHaveBeenCalledTimes(0)
+
+      await signAndPublishProductWriteBundle(input)
+      expect(signRequests).toBe(2)
+      expect(signedLocalCalls).toBe(1)
+      expect(publishSpy).toHaveBeenCalledTimes(1)
     } finally {
       publishSpy.mockRestore()
     }
