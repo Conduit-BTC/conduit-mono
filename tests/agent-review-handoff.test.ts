@@ -391,6 +391,7 @@ const runReviewVerdictGate = async ({
     ])
   const fixtureDirectory = await mkdtemp(join(tmpdir(), "conduit-verdict-"))
   const ghPath = join(fixtureDirectory, "gh")
+  const summaryPath = join(fixtureDirectory, "github-summary")
   const fakeGh = `#!/usr/bin/env bash
 set -euo pipefail
 
@@ -419,6 +420,7 @@ fi
         GH_TOKEN: "fixture-token",
         GITHUB_REPOSITORY: "Conduit-BTC/conduit-mono",
         GITHUB_RUN_ID: runId,
+        GITHUB_STEP_SUMMARY: summaryPath,
         EXPECTED_RUN_ATTEMPT: runAttempt,
         PR_NUMBER: "245",
         EXPECTED_BASE_SHA: baseSha,
@@ -442,7 +444,9 @@ fi
       new Response(process.stdout).text(),
       new Response(process.stderr).text(),
     ])
-    return { exitCode, stderr, stdout }
+    const summaryFile = Bun.file(summaryPath)
+    const summary = (await summaryFile.exists()) ? await summaryFile.text() : ""
+    return { exitCode, stderr, stdout, summary }
   } finally {
     await rm(fixtureDirectory, { force: true, recursive: true })
   }
@@ -779,6 +783,10 @@ describe("agent review handoff", () => {
     const clean = await runReviewVerdictGate({ headSha, runId })
     expect(clean.exitCode).toBe(0)
     expect(clean.stdout).toContain("review handoff is valid")
+    expect(clean.summary).toContain(automationResidual)
+    expect(clean.summary).toContain("- Automation: completed successfully")
+    expect(clean.summary).toContain("- Code changes: none")
+    expect(clean.summary).toContain("- Human next: Next: Maintainer")
 
     const approvalPending = await runReviewVerdictGate({
       headSha,
@@ -828,6 +836,8 @@ describe("agent review handoff", () => {
     })
     expect(findings.exitCode).toBe(0)
     expect(findings.stdout).toContain("review handoff is valid")
+    expect(findings.summary).toContain(automationResidual)
+    expect(findings.summary).toContain("- Code changes: required")
 
     const findingWithoutInlineComment = await runReviewVerdictGate({
       headSha,
@@ -873,6 +883,35 @@ describe("agent review handoff", () => {
     expect(jargonInlineFinding.stderr).toContain(
       "Code-change handoffs require inline P0-P2 findings"
     )
+
+    for (const body of [
+      inlineFindingBody().replace("Owner: PR author", "Owner:   "),
+      inlineFindingBody().replace(
+        "Action: preserve the destination in the retry checkpoint",
+        "Action:   "
+      ),
+      inlineFindingBody().replace(
+        "Evidence: the focused durable-invoice regression test",
+        "Evidence:   "
+      ),
+      inlineFindingBody().replace(
+        "Complete when: the test passes at the updated head",
+        "Complete when:   "
+      ),
+      inlineFindingBody("   "),
+      inlineFindingBody(" unknown "),
+    ]) {
+      const malformedInlineAction = await runReviewVerdictGate({
+        headSha,
+        inlineComments: JSON.stringify([{ body }]),
+        reviewBody: findingsReviewBody(headSha, runId),
+        runId,
+      })
+      expect(malformedInlineAction.exitCode).not.toBe(0)
+      expect(malformedInlineAction.stderr).toContain(
+        "Code-change handoffs require inline P0-P2 findings"
+      )
+    }
 
     const cleanWithInlineFinding = await runReviewVerdictGate({
       headSha,
@@ -1025,6 +1064,58 @@ describe("agent review handoff", () => {
     })
     expect(missingActionSource.exitCode).not.toBe(0)
     expect(missingActionSource.stderr).toContain("complete Next action")
+
+    for (const next of [
+      nextAction(
+        "   ",
+        "complete QA",
+        "the PR description",
+        "the result is recorded",
+        "the PR test plan"
+      ),
+      nextAction(
+        "Maintainer",
+        "   ",
+        "the PR description",
+        "the result is recorded",
+        "the PR test plan"
+      ),
+      nextAction(
+        "Maintainer",
+        "complete QA",
+        "   ",
+        "the result is recorded",
+        "the PR test plan"
+      ),
+      nextAction(
+        "Maintainer",
+        "complete QA",
+        "the PR description",
+        "   ",
+        "the PR test plan"
+      ),
+      nextAction(
+        "Maintainer",
+        "complete QA",
+        "the PR description",
+        "the result is recorded",
+        "   "
+      ),
+      nextAction(
+        "Maintainer",
+        "complete QA",
+        "the PR description",
+        "the result is recorded",
+        " unknown "
+      ),
+    ]) {
+      const malformedNextAction = await runReviewVerdictGate({
+        headSha,
+        reviewBody: `${sourceRunMarker(headSha, runId)}\n<!-- conduit:sudden-review clean head=${headSha} -->\nNo code changes needed. Ready for human review.\n${next}`,
+        runId,
+      })
+      expect(malformedNextAction.exitCode).not.toBe(0)
+    }
 
     const limitNext = nextAction(
       "Maintainer",

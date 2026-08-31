@@ -533,17 +533,33 @@ jobs:
           first_visible_line="$(awk 'NF { print; exit }' <<< "$visible_body")"
           second_visible_line="$(awk 'NF { count += 1; if (count == 2) { print; exit } }' <<< "$visible_body")"
           next_action_count="$(grep -Ec '^Next:' <<< "$visible_body" || true)"
-          complete_next_action_count="$(
-            grep -Ecx '^Next: [^;]+ — [^;]+; evidence: [^;]+; done when: [^;]+; source: [^;]+\.$' \
-              <<< "$second_visible_line" || true
-          )"
-          if [[ "$next_action_count" != "1" || "$complete_next_action_count" != "1" ]]; then
+          next_action_pattern='^Next: ([^;]+) — ([^;]+); evidence: ([^;]+); done when: ([^;]+); source: ([^;]+)\.$'
+          if [[ "$next_action_count" != "1" ||
+            ! "$second_visible_line" =~ $next_action_pattern ]]; then
             echo "The current-run review lacks one complete Next action." >&2
             exit 1
           fi
 
-          next_source="$(sed -E 's/^.*; source: ([^;]+)\.$/\1/' <<< "$second_visible_line" | tr '[:upper:]' '[:lower:]')"
-          if [[ "$next_source" =~ ^(none|unknown|unsourced|unavailable|n/?a)$ ]]; then
+          trim_field() {
+            local value="$1"
+            value="${value#"${value%%[![:space:]]*}"}"
+            value="${value%"${value##*[![:space:]]}"}"
+            printf '%s' "$value"
+          }
+
+          next_owner="$(trim_field "${BASH_REMATCH[1]}")"
+          next_action="$(trim_field "${BASH_REMATCH[2]}")"
+          next_evidence="$(trim_field "${BASH_REMATCH[3]}")"
+          next_completion="$(trim_field "${BASH_REMATCH[4]}")"
+          next_source="$(trim_field "${BASH_REMATCH[5]}")"
+          if [[ -z "$next_owner" || -z "$next_action" ||
+            -z "$next_evidence" || -z "$next_completion" ||
+            -z "$next_source" ]]; then
+            echo "The current-run review Next action contains a blank field." >&2
+            exit 1
+          fi
+          normalized_next_source="$(tr '[:upper:]' '[:lower:]' <<< "$next_source")"
+          if [[ "$normalized_next_source" =~ ^(none|unknown|unsourced|unavailable|n/?a)$ ]]; then
             echo "The current-run review Next action lacks a concrete source." >&2
             exit 1
           fi
@@ -568,12 +584,21 @@ jobs:
           )"
           review_comment_count="$(jq 'length' <<< "$review_comments")"
           invalid_finding_count="$(
-            jq '[
+            jq '
+              def trim: gsub("^\\s+|\\s+$"; "");
+              [
               .[] |
               (.body // "") as $body |
+              (($body | capture(
+                "^\\[(?<severity>P[0-2])\\] (?<impact>[^\\n]+)\\nOwner: (?<owner>[^\\n]*)\\nAction: (?<action>[^\\n]*)\\nEvidence: (?<evidence>[^\\n]*)\\nComplete when: (?<completion>[^\\n]*)\\nSource: (?<source>[^\\n]*)\\.$"
+              )) // null) as $fields |
               select(
-                (($body | test("^\\[P[0-2]\\] [^\\n]+\\nOwner: [^\\n]+\\nAction: [^\\n]+\\nEvidence: [^\\n]+\\nComplete when: [^\\n]+\\nSource: [^\\n]+\\.$")) | not) or
-                ($body | test("(?im)^Source: (none|unknown|unsourced|unavailable|n/?a)\\.?$")) or
+                ($fields == null) or
+                ([$fields.impact, $fields.owner, $fields.action, $fields.evidence, $fields.completion, $fields.source] |
+                  map(trim) |
+                  any(length == 0)) or
+                (($fields.source | trim | ascii_downcase) |
+                  test("^(none|unknown|unsourced|unavailable|n/?a)$")) or
                 ($body | test("(?i)\\bblocked\\b|acceptance/evidence mapping|qa disposition|pr-only graph|synthetic merge|clean-review contract|merge-readiness"))
               )
             ] | length' \
@@ -616,6 +641,7 @@ jobs:
           fi
 
           if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+            automation_residual='Automation residual: The current Sudden action needs a narrow pull-request-write token to submit inline reviews; candidate prompt injection is not mechanically eliminated; schema and SHA gates fail malformed or stale results; human approval remains mandatory.'
             {
               echo "## Sudden review handoff"
               echo "- Automation: completed successfully"
@@ -623,6 +649,7 @@ jobs:
               echo "- Code changes: $code_change_result"
               echo "- Human next: $second_visible_line"
               echo "- Inline findings: $review_comment_count"
+              echo "- $automation_residual"
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
