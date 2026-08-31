@@ -497,7 +497,7 @@ jobs:
       - name: Run final Ponytail review
         id: ponytail_review
         if: steps.pr.outputs.should_run == 'true'
-        uses: sudden-network/agent@2afabe84ac9bf58e57f605b41b2c4f87bbe9c579 # v1.14.1
+        uses: sudden-network/agent@f756c9e9cf5c07e866fc6011510c2f6dda389230 # v1.15.0
         with:
           agent_auth_file: ${{ secrets.CODEX_AUTH_JSON }}
           github_token: ${{ steps.app_token.outputs.token }}
