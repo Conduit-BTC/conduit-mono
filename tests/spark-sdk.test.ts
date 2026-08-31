@@ -17,6 +17,7 @@ const ZERO_PREIMAGE = "00".repeat(32)
 const ZERO_PREIMAGE_PAYMENT_HASH =
   "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925"
 const ZERO_PREIMAGE_INVOICE = makeLightningInvoice(ZERO_PREIMAGE_PAYMENT_HASH)
+const PAYMENT_ATTEMPT_ID = "c7fb0ad2-c85c-4d93-b542-6dc9d10d8c00"
 
 describe("first-party Spark SDK adapter", () => {
   it("fails closed on networks without first-party production defaults", () => {
@@ -341,6 +342,7 @@ describe("first-party Spark SDK adapter", () => {
       network: "mainnet",
       loadModule: async () => ({
         eventNames: ["balance:update"],
+        parseTransferId: parseTestTransferId,
         createPublicReadonlyClient: createHiddenPublicReadonlyClient,
         decodeSparkAddress: () => ({}),
         getNetworkFromSparkAddress: () => "MAINNET",
@@ -399,6 +401,7 @@ describe("first-party Spark SDK adapter", () => {
       },
       loadModule: async () => ({
         eventNames: ["balance:update"],
+        parseTransferId: parseTestTransferId,
         decodeSparkAddress: () => ({}),
         getNetworkFromSparkAddress: () => "MAINNET",
         isValidSparkAddress: () => true,
@@ -488,6 +491,7 @@ describe("first-party Spark SDK adapter", () => {
       },
       loadModule: async () => ({
         eventNames: ["balance:update"],
+        parseTransferId: parseTestTransferId,
         decodeSparkAddress: () => ({}),
         getNetworkFromSparkAddress: () => "MAINNET",
         isValidSparkAddress: () => true,
@@ -548,6 +552,7 @@ describe("first-party Spark SDK adapter", () => {
       },
       loadModule: async () => ({
         eventNames: ["balance:update"],
+        parseTransferId: parseTestTransferId,
         decodeSparkAddress: () => ({}),
         getNetworkFromSparkAddress: () => "REGTEST",
         isValidSparkAddress: () => true,
@@ -608,6 +613,7 @@ describe("first-party Spark SDK adapter", () => {
       network: "regtest",
       loadModule: async () => ({
         eventNames: ["balance:update"],
+        parseTransferId: parseTestTransferId,
         createPublicReadonlyClient: createHiddenPublicReadonlyClient,
         decodeSparkAddress: () => ({}),
         getNetworkFromSparkAddress: () => "REGTEST",
@@ -703,6 +709,7 @@ describe("first-party Spark SDK adapter", () => {
         network: "mainnet",
         loadModule: async () => ({
           eventNames: ["balance:update"],
+          parseTransferId: parseTestTransferId,
           createPublicReadonlyClient: createHiddenPublicReadonlyClient,
           decodeSparkAddress: () => ({
             sparkInvoiceFields: { version: 1 },
@@ -766,6 +773,7 @@ describe("first-party Spark SDK adapter", () => {
       network: "mainnet",
       loadModule: async () => ({
         eventNames: ["balance:update"],
+        parseTransferId: parseTestTransferId,
         createPublicReadonlyClient: createHiddenPublicReadonlyClient,
         decodeSparkAddress: () => ({}),
         getNetworkFromSparkAddress: () => "MAINNET",
@@ -843,7 +851,7 @@ describe("first-party Spark SDK adapter", () => {
       maxFeeSats: number
       preferSpark: boolean
       amountSatsToSend?: number
-      idempotencyKey?: string
+      transferId?: string
     }> = []
     let requestReads = 0
     const wallet = createNativeWallet({
@@ -851,7 +859,12 @@ describe("first-party Spark SDK adapter", () => {
         return 3
       },
       async payLightningInvoice(input) {
-        payCalls.push(input)
+        payCalls.push({
+          ...input,
+          ...(input.transferId
+            ? { transferId: input.transferId.toString() }
+            : {}),
+        })
         return {
           id: "lightning-request",
           status: "LIGHTNING_PAYMENT_INITIATED",
@@ -881,7 +894,7 @@ describe("first-party Spark SDK adapter", () => {
         preferSpark: false,
         completionTimeoutSecs: 5,
       },
-      idempotencyKey: "order-123",
+      idempotencyKey: PAYMENT_ATTEMPT_ID,
     })
 
     expect(prepared).toEqual({
@@ -894,10 +907,10 @@ describe("first-party Spark SDK adapter", () => {
     expect(payCalls).toEqual([
       {
         amountSatsToSend: 1_000,
-        idempotencyKey: "order-123",
         invoice: ZERO_PREIMAGE_INVOICE,
         maxFeeSats: 5,
         preferSpark: false,
+        transferId: PAYMENT_ATTEMPT_ID,
       },
     ])
     expect(requestReads).toBe(1)
@@ -1062,7 +1075,7 @@ describe("first-party Spark SDK adapter", () => {
           type: "bolt11Invoice",
           preferSpark: false,
         },
-        idempotencyKey: "order-unexpected-transfer",
+        idempotencyKey: PAYMENT_ATTEMPT_ID,
       })
     ).rejects.toThrow(
       "Spark returned an unexpected direct transfer for a Lightning payment."
@@ -1096,13 +1109,13 @@ describe("first-party Spark SDK adapter", () => {
     const first = await manager.payInvoice("wallet-personal", {
       invoice: ZERO_PREIMAGE_INVOICE,
       amountMsats: 1_000_000,
-      idempotencyKey: "order-unexpected-transfer",
+      idempotencyKey: PAYMENT_ATTEMPT_ID,
       approveFee: async () => true,
     })
     const duplicate = await manager.payInvoice("wallet-personal", {
       invoice: ZERO_PREIMAGE_INVOICE,
       amountMsats: 1_000_000,
-      idempotencyKey: "order-unexpected-transfer",
+      idempotencyKey: PAYMENT_ATTEMPT_ID,
       approveFee: async () => true,
     })
 
@@ -1141,7 +1154,7 @@ describe("first-party Spark SDK adapter", () => {
           type: "bolt11Invoice",
           preferSpark: false,
         },
-        idempotencyKey: "order-mismatched-proof",
+        idempotencyKey: PAYMENT_ATTEMPT_ID,
       })
     ).rejects.toThrow(
       "Spark returned a Lightning preimage that does not match the prepared invoice."
@@ -1174,13 +1187,13 @@ describe("first-party Spark SDK adapter", () => {
     const first = await manager.payInvoice("wallet-personal", {
       invoice: ZERO_PREIMAGE_INVOICE,
       amountMsats: 1_000_000,
-      idempotencyKey: "order-mismatched-proof",
+      idempotencyKey: PAYMENT_ATTEMPT_ID,
       approveFee: async () => true,
     })
     const duplicate = await manager.payInvoice("wallet-personal", {
       invoice: ZERO_PREIMAGE_INVOICE,
       amountMsats: 1_000_000,
-      idempotencyKey: "order-mismatched-proof",
+      idempotencyKey: PAYMENT_ATTEMPT_ID,
       approveFee: async () => true,
     })
 
@@ -1222,6 +1235,7 @@ describe("first-party Spark SDK adapter", () => {
       network: "mainnet",
       loadModule: async () => ({
         eventNames: ["balance:update"],
+        parseTransferId: parseTestTransferId,
         createPublicReadonlyClient: createHiddenPublicReadonlyClient,
         decodeSparkAddress: () => ({}),
         getNetworkFromSparkAddress: () => "MAINNET",
@@ -1252,7 +1266,7 @@ describe("first-party Spark SDK adapter", () => {
           preferSpark: false,
           completionTimeoutSecs: 0.25,
         },
-        idempotencyKey: "order-pending",
+        idempotencyKey: PAYMENT_ATTEMPT_ID,
       })
     ).resolves.toMatchObject({
       payment: {
@@ -1286,6 +1300,7 @@ describe("first-party Spark SDK adapter", () => {
       network: "mainnet",
       loadModule: async () => ({
         eventNames: ["balance:update", "transfer:claimed"],
+        parseTransferId: parseTestTransferId,
         createPublicReadonlyClient: createHiddenPublicReadonlyClient,
         decodeSparkAddress: () => ({}),
         getNetworkFromSparkAddress: () => "MAINNET",
@@ -1328,6 +1343,14 @@ function createHiddenPublicReadonlyClient() {
   }
 }
 
+function parseTestTransferId(
+  value: string
+): ReturnType<SparkNativeModule["parseTransferId"]> {
+  return {
+    toString: () => value,
+  } as ReturnType<SparkNativeModule["parseTransferId"]>
+}
+
 async function waitForTestCondition(condition: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     if (condition()) return
@@ -1346,6 +1369,7 @@ function createFactory(
     network,
     loadModule: async () => ({
       eventNames: ["balance:update"],
+      parseTransferId: parseTestTransferId,
       createPublicReadonlyClient: createHiddenPublicReadonlyClient,
       decodeSparkAddress: () => ({}),
       getNetworkFromSparkAddress: () => nativeNetwork,
