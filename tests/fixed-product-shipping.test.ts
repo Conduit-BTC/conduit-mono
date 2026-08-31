@@ -719,7 +719,13 @@ describe("canonical fixed product shipping", () => {
 
   it("fails closed for unverified or saturated authoritative relay reads", async () => {
     let mode: "unverified" | "saturated" = "unverified"
+    let relayListFetches = 0
     __setRelayListTestOverrides({
+      now: () => 1,
+      fetchEventsFanoutDetailed: async () => {
+        relayListFetches += 1
+        return { events: [], relays: [], eventsVerified: true }
+      },
       loadCached: async (author) => ({
         pubkey: author,
         readRelayUrls: ["wss://read.example"],
@@ -753,6 +759,7 @@ describe("canonical fixed product shipping", () => {
       ).rejects.toThrow(
         "Fixed shipping could not be verified across the planned relays"
       )
+      expect(relayListFetches).toBe(0)
     } finally {
       __resetShippingTestOverrides()
       __resetRelayListTestOverrides()
@@ -800,6 +807,7 @@ describe("canonical fixed product shipping", () => {
     let cachedFrontiers: CachedShippingOptionFrontier[] = []
 
     __setRelayListTestOverrides({
+      now: () => 1,
       loadCached: async (author) => ({
         pubkey: author,
         readRelayUrls: ["wss://read.example"],
@@ -939,6 +947,7 @@ describe("canonical fixed product shipping", () => {
     let cachedFrontiers: CachedShippingOptionFrontier[] = []
 
     __setRelayListTestOverrides({
+      now: () => 1,
       loadCached: async (author) => ({
         pubkey: author,
         readRelayUrls: ["wss://read.example"],
@@ -1102,6 +1111,7 @@ describe("canonical fixed product shipping", () => {
     let cachedFrontiers: CachedShippingOptionFrontier[] = []
 
     __setRelayListTestOverrides({
+      now: () => 1,
       loadCached: async (author) => ({
         pubkey: author,
         readRelayUrls: ["wss://read.example"],
@@ -1204,6 +1214,7 @@ describe("canonical fixed product shipping", () => {
     const exactDeletionQueries: string[][] = []
 
     __setRelayListTestOverrides({
+      now: () => 1,
       loadCached: async (author) => ({
         pubkey: author,
         readRelayUrls: ["wss://read.example"],
@@ -1334,6 +1345,7 @@ describe("canonical fixed product shipping", () => {
     let strongerCall: Promise<ParsedShippingOption[]> | undefined
 
     __setRelayListTestOverrides({
+      now: () => 1,
       loadCached: async (author) => ({
         pubkey: author,
         readRelayUrls: ["wss://read.example"],
@@ -1452,6 +1464,7 @@ describe("canonical fixed product shipping", () => {
     let cachedFrontiers: CachedShippingOptionFrontier[] = []
 
     __setRelayListTestOverrides({
+      now: () => 1,
       loadCached: async (author) => ({
         pubkey: author,
         readRelayUrls: ["wss://read.example"],
@@ -1734,6 +1747,7 @@ function createShippingReadHarness(
 
   const install = () => {
     __setRelayListTestOverrides({
+      now: () => 1,
       loadCached: async (author) => ({
         pubkey: author,
         readRelayUrls: ["wss://read.example"],
