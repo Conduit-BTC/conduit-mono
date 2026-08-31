@@ -914,6 +914,8 @@ export function SignerSwitch({
     try {
       await onDisconnect()
       setPendingSwitch(true)
+    } catch {
+      // Keep the current signer view open so its cleanup error stays visible.
     } finally {
       setIsWorking(false)
     }
@@ -926,6 +928,8 @@ export function SignerSwitch({
       await onDisconnect()
       setPendingSwitch(false)
       setOpen(false)
+    } catch {
+      // Keep the dialog open so the inline cleanup error remains visible.
     } finally {
       setIsWorking(false)
     }

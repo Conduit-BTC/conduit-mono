@@ -4,6 +4,15 @@ import {
   SessionSigner,
   type SessionSignerError,
 } from "../packages/core/src/protocol/session-signer"
+import {
+  AUTH_REVISION_STORAGE_KEY,
+  AUTH_STORAGE_KEY,
+  readAuthRevision,
+  readAuthSession,
+  revokeAuthSessionAuthority,
+  type AuthSession,
+  type AuthStorage,
+} from "../packages/core/src/protocol/remote-signer"
 
 const PUBKEY_A = "a".repeat(64)
 const PUBKEY_B = "b".repeat(64)
@@ -40,6 +49,32 @@ function event(pubkey = PUBKEY_A): NostrEvent {
   }
 }
 
+function sharedAuthority(): {
+  session: AuthSession
+  storage: AuthStorage
+} {
+  const session: AuthSession = {
+    version: 1,
+    type: "nip07",
+    userPubkey: PUBKEY_A,
+    authClaim: "account-a-claim",
+  }
+  const values = new Map<string, string>([
+    [AUTH_STORAGE_KEY, JSON.stringify(session)],
+    [AUTH_REVISION_STORAGE_KEY, session.authClaim!],
+  ])
+  return {
+    session,
+    storage: {
+      getItem: (key) => values.get(key) ?? null,
+      setItem: (key, value) => values.set(key, value),
+      removeItem: (key) => {
+        values.delete(key)
+      },
+    },
+  }
+}
+
 describe("session-bound external signer", () => {
   it("rejects a stale auth claim before exposing an event to the signer", async () => {
     let signCalls = 0
@@ -65,6 +100,35 @@ describe("session-bound external signer", () => {
     expect(invalidations.map((error) => error.code)).toEqual([
       "authority_changed",
     ])
+  })
+
+  it("fences another tab before and after signer approval", async () => {
+    const { session, storage } = sharedAuthority()
+    let signCalls = 0
+    let resolveSignature: ((signature: string) => void) | undefined
+    const hasAuthority = () =>
+      readAuthRevision(storage) === session.authClaim &&
+      JSON.stringify(readAuthSession(storage)) === JSON.stringify(session)
+    const signer = new SessionSigner(
+      fakeSigner({
+        onSign: () => {
+          signCalls += 1
+          return new Promise<string>((resolve) => {
+            resolveSignature = resolve
+          })
+        },
+      }),
+      { expectedPubkey: PUBKEY_A, hasAuthority }
+    )
+
+    const inFlight = signer.sign(event())
+    const revocation = revokeAuthSessionAuthority(session, storage)
+    resolveSignature?.("1".repeat(128))
+
+    expect(revocation.freshRevisionPersisted).toBe(true)
+    await expect(inFlight).rejects.toThrow("session was replaced")
+    await expect(signer.sign(event())).rejects.toThrow("session was replaced")
+    expect(signCalls).toBe(1)
   })
 
   it("rejects a signature when auth authority changes during approval", async () => {

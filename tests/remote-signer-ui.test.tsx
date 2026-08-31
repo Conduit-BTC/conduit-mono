@@ -7,6 +7,7 @@ import {
   isMobileSignerEnvironment,
 } from "../packages/ui/src/components/SignerSwitch"
 import { SignerAuthUrlNotice } from "../packages/ui/src/components/SignerAuthUrlNotice"
+import { ProductSignerRecoveryNotice } from "../apps/merchant/src/components/ProductSignerRecoveryNotice"
 
 const commonProps = {
   description: "Connect to continue.",
@@ -333,5 +334,53 @@ describe("remote signer UI", () => {
         "clientPrivateKey"
       )
     }
+  })
+
+  it("renders truthful accessible recovery actions without an awaiting flash", () => {
+    const savedMarkup = renderToStaticMarkup(
+      <ProductSignerRecoveryNotice
+        draftStorageAvailable
+        reconnecting={false}
+        restoreFailed={false}
+        changingSigner={false}
+        changeSignerError={null}
+        onReconnect={async () => undefined}
+        onUseDifferentSigner={async () => undefined}
+      />
+    )
+    const savedFailedMarkup = renderToStaticMarkup(
+      <ProductSignerRecoveryNotice
+        draftStorageAvailable
+        reconnecting={false}
+        restoreFailed
+        changingSigner={false}
+        changeSignerError={null}
+        onReconnect={async () => undefined}
+        onUseDifferentSigner={async () => undefined}
+      />
+    )
+    const unsavedFailedMarkup = renderToStaticMarkup(
+      <ProductSignerRecoveryNotice
+        draftStorageAvailable={false}
+        reconnecting={false}
+        restoreFailed
+        changingSigner={false}
+        changeSignerError={null}
+        onReconnect={async () => undefined}
+        onUseDifferentSigner={async () => undefined}
+      />
+    )
+
+    expect(savedMarkup).toContain('role="alert"')
+    expect(savedMarkup).toContain("Reconnect signer")
+    expect(savedMarkup).toContain("draft is saved on this device")
+    expect(savedMarkup).not.toContain("Waiting for signer")
+    expect(unsavedFailedMarkup).toContain("Keep this page open")
+    expect(savedFailedMarkup).toContain("Use a different signer")
+    expect(savedFailedMarkup).toContain("remain saved for this account")
+    expect(unsavedFailedMarkup).not.toContain("Use a different signer")
+    expect(unsavedFailedMarkup).toContain(
+      "another signer cannot be opened safely"
+    )
   })
 })
