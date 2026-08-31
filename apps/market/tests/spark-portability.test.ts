@@ -1,8 +1,13 @@
 import { describe, expect, it } from "bun:test"
 
-import { DefaultSparkSigner, encodeSparkAddress } from "@buildonspark/spark-sdk"
+import {
+  DefaultSparkSigner,
+  UUID,
+  encodeSparkAddress,
+} from "@buildonspark/spark-sdk"
 
 const PUBLIC_TEST_MNEMONIC = "abandon ".repeat(11) + "about"
+const PAYMENT_ATTEMPT_ID = "c7fb0ad2-c85c-4d93-b542-6dc9d10d8c00"
 const MAINNET_ACCOUNT_ONE = {
   identityPublicKey:
     "0281363910b0dc0015a4a25e758da30f0e28388ea5252c0e3713936f2d4ef7d3d5",
@@ -20,7 +25,7 @@ const MAINNET_ACCOUNT_ZERO = {
  * Public, non-funded portability vector. The expected constants were derived
  * independently from the exact Breez Spark signer versions pinned by Wisp and
  * Primal. Both use m/8797555'/account'/0' for the identity key. The values are
- * cross-checked here against Conduit's pinned @buildonspark/spark-sdk 0.9.0.
+ * cross-checked here against Conduit's pinned @buildonspark/spark-sdk 0.11.0.
  *
  * Wisp Breez 0.11.0 signer:
  * https://github.com/breez/spark-sdk/blob/744b2dd7b036d8fae659b73abc9a09b2d0b9d68b/crates/spark/src/signer/default_signer.rs
@@ -32,6 +37,10 @@ const MAINNET_ACCOUNT_ZERO = {
  * https://github.com/PrimalHQ/primal-android-app/blob/efb88b5af1db9d84eb36b471bf17d49d1c8a8a0c/data/wallet/repository/src/commonMain/kotlin/net/primal/wallet/data/spark/BreezSdkInstanceManager.kt
  */
 describe("Spark portability fixture", () => {
+  it("accepts Conduit payment-attempt UUIDs as Spark transfer IDs", () => {
+    expect(UUID.parse(PAYMENT_ATTEMPT_ID).toString()).toBe(PAYMENT_ATTEMPT_ID)
+  })
+
   it("matches the standard Mainnet account 1 identity and address", async () => {
     const derived = await deriveMainnetWallet(1)
 
