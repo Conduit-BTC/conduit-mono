@@ -78,7 +78,7 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "husky": "^9.1.7",
     "lint-staged": "^17.4.1",
-    "nostr-tools": "2.24.3",
+    "nostr-tools": "2.25.0",
     "prettier": "^3.9.6",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.68.0"
