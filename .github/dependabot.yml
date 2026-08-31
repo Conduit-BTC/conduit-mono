@@ -19,6 +19,10 @@ updates:
       semver-patch-days: 1
       semver-minor-days: 3
       semver-major-days: 14
+    ignore:
+      - dependency-name: "typescript"
+        update-types:
+          - "version-update:semver-major"
     groups:
       ui-leaf-dependencies:
         applies-to: version-updates
