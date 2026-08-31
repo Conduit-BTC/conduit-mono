@@ -1215,7 +1215,7 @@ describe("remote signer lifecycle", () => {
         }
       )
     ).rejects.toMatchObject({
-      code: "unavailable",
+      code: "invalid_response",
       operation: "get public key",
     })
 
@@ -1336,6 +1336,24 @@ describe("remote signer lifecycle", () => {
           fakeSigner({ getPublicKey: async () => OTHER_PUBKEY }),
       })
     ).rejects.toMatchObject({ code: "session_identity_mismatch" })
+
+    let malformedIdentityFailure: unknown
+    try {
+      await restoreRemoteSigner(session(), {
+        keyVault: seededKeyVault(),
+        createBunkerSigner: () =>
+          fakeSigner({ getPublicKey: async () => "malformed-pubkey" }),
+      })
+    } catch (error) {
+      malformedIdentityFailure = error
+    }
+    expect(malformedIdentityFailure).toMatchObject({
+      code: "invalid_response",
+      operation: "restore identity",
+    })
+    expect(requiresRemoteSignerSessionCleanup(malformedIdentityFailure)).toBe(
+      true
+    )
   })
 
   it("retains a timed-out session for explicit restore without signing automatically", async () => {

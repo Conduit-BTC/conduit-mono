@@ -563,6 +563,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const deactivateLocalSigner = useCallback((options: {
     preserveSessionIdentity?: boolean
+    preservedSession?: AuthSession | null
     status?: AuthStatus
     error?: string | null
     remoteSignerRecovery?: RemoteSignerRecoveryState | null
@@ -576,7 +577,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const connection = remoteConnection.current
     const signerLease = activeSignerLease.current
     const sessionSigner = activeSessionSigner.current
-    const session = activeSession.current
+    const session = options.preservedSession ?? activeSession.current
     remoteConnection.current = null
     activeSignerLease.current = null
     activeSessionSigner.current = null
@@ -1440,6 +1441,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
         const connection = deactivateLocalSigner({
           preserveSessionIdentity: preserveDisplacedSession,
+          preservedSession: invalidatedSession,
+          remoteSignerRecovery: preserveDisplacedSession
+            ? remoteSignerRecoveryRef.current
+            : null,
         })
         settleRestorePending()
         if (connection) void connection.bunkerSigner.close()

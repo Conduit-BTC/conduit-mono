@@ -17,6 +17,7 @@ import {
 
 const merchantUrl =
   "http://127.0.0.1:" + (process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001")
+const remoteSignerVaultModuleUrl = `/@fs${process.cwd()}/packages/core/src/protocol/remote-signer-vault.ts`
 const signerRelayAlias = "wss://signer.test"
 const NOSTR_CONNECT_KIND = 24_133
 const PRODUCT_KIND = 30_402
@@ -24,6 +25,8 @@ const PRODUCT_KIND = 30_402
 type RemoteSignerHarness = {
   allowProductSigning(): void
   failPing(): void
+  returnMalformedIdentity(): void
+  identityRequestCount(): number
   productSignRequestCount(): number
   responseErrors(): readonly string[]
   close(): void
@@ -39,6 +42,8 @@ async function startRemoteSignerHarness(
   const errors: string[] = []
   let productSigningAllowed = false
   let pingShouldFail = false
+  let identityShouldBeMalformed = false
+  let identityRequests = 0
   let productSignRequests = 0
 
   await pool.ensureRelay(TEST_RELAY_URL)
@@ -79,7 +84,10 @@ async function startRemoteSignerHarness(
               else result = "pong"
               break
             case "get_public_key":
-              result = getPublicKey(merchantSecret)
+              identityRequests += 1
+              result = identityShouldBeMalformed
+                ? "malformed-pubkey"
+                : getPublicKey(merchantSecret)
               break
             case "sign_event": {
               const template = JSON.parse(
@@ -132,6 +140,12 @@ async function startRemoteSignerHarness(
     failPing() {
       pingShouldFail = true
     },
+    returnMalformedIdentity() {
+      identityShouldBeMalformed = true
+    },
+    identityRequestCount() {
+      return identityRequests
+    },
     productSignRequestCount() {
       return productSignRequests
     },
@@ -162,6 +176,27 @@ async function installSignerRelayAlias(page: Page): Promise<void> {
       })
     },
     { alias: signerRelayAlias, loopback: TEST_RELAY_URL }
+  )
+}
+
+async function isRemoteSignerKeyRemoved(
+  page: Page,
+  clientKeyId: string | null
+): Promise<boolean> {
+  if (!clientKeyId) return false
+
+  return page.evaluate(
+    async ({ moduleUrl, keyId }) => {
+      const { createBrowserRemoteSignerKeyVault } = (await import(
+        moduleUrl
+      )) as {
+        createBrowserRemoteSignerKeyVault: () => {
+          load(id: string): Promise<string | null>
+        }
+      }
+      return (await createBrowserRemoteSignerKeyVault().load(keyId)) === null
+    },
+    { moduleUrl: remoteSignerVaultModuleUrl, keyId: clientKeyId }
   )
 }
 
@@ -242,6 +277,36 @@ test("remote signer timeout keeps the product draft recoverable and requires an 
     )
     await expect(title).toHaveValue("Remote signer recovery fixture")
     await expect(productDialog).toBeVisible()
+
+    const retainedSession = await page.evaluate(() => {
+      const rawSession = localStorage.getItem("conduit:auth")
+      if (!rawSession) throw new Error("Missing recoverable signer session")
+      const oldRevision = localStorage.getItem("conduit:auth:revision")
+      const nextRevision = `${oldRevision ?? "claim"}:other-tab`
+      localStorage.setItem("conduit:auth:revision", nextRevision)
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: "conduit:auth:revision",
+          oldValue: oldRevision,
+          newValue: nextRevision,
+          url: window.location.href,
+        })
+      )
+      return rawSession
+    })
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+        })
+    )
+    await expect(productDialog).toBeVisible()
+    await expect(recoveryNotice).toContainText(
+      "Your signing connection stopped responding."
+    )
+    expect(
+      await page.evaluate(() => localStorage.getItem("conduit:auth"))
+    ).toBe(retainedSession)
     await expect(
       productDialog.getByRole("button", {
         name: "Reconnect signer to continue",
@@ -290,6 +355,68 @@ test("remote signer timeout keeps the product draft recoverable and requires an 
         ).length
       })
       .toBe(1)
+    expect(harness.responseErrors()).toEqual([])
+  } finally {
+    harness.close()
+  }
+})
+
+test("a malformed restored identity retires the saved session across reloads @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(60_000)
+  const remoteSignerSecret = generateSecretKey()
+  const merchantSecret = generateSecretKey()
+  const remoteSignerPubkey = getPublicKey(remoteSignerSecret)
+  const harness = await startRemoteSignerHarness(
+    remoteSignerSecret,
+    merchantSecret
+  )
+
+  try {
+    await seedTestRelayIdentity(merchantSecret)
+    await installSignerRelayAlias(page)
+
+    await page.goto(merchantUrl + "/products")
+    await connectRemoteSigner(page, remoteSignerPubkey)
+    await page.getByRole("link", { name: "Products", exact: true }).click()
+    await expect(
+      page.getByRole("heading", { name: "Products", exact: true })
+    ).toBeVisible({ timeout: 15_000 })
+
+    const clientKeyId = await page.evaluate(() => {
+      const rawSession = localStorage.getItem("conduit:auth")
+      if (!rawSession) throw new Error("Missing remote signer session")
+      return (JSON.parse(rawSession) as Nip46AuthSession).clientKeyId
+    })
+    const identityRequestsBeforeRestore = harness.identityRequestCount()
+    harness.returnMalformedIdentity()
+
+    await page.reload()
+    const connectGate = page.locator('main[aria-label="Connect a signer"]')
+    await expect(connectGate).toBeFocused({ timeout: 15_000 })
+    await expect
+      .poll(() => page.evaluate(() => localStorage.getItem("conduit:auth")))
+      .toBeNull()
+    await expect
+      .poll(() => isRemoteSignerKeyRemoved(page, clientKeyId))
+      .toBe(true)
+    await expect(
+      page.getByRole("button", { name: "Reconnect NIP-46 signer" })
+    ).toHaveCount(0)
+    expect(harness.identityRequestCount()).toBe(
+      identityRequestsBeforeRestore + 1
+    )
+
+    await page.reload()
+    await expect(connectGate).toBeFocused({ timeout: 15_000 })
+    expect(
+      await page.evaluate(() => localStorage.getItem("conduit:auth"))
+    ).toBeNull()
+    expect(await isRemoteSignerKeyRemoved(page, clientKeyId)).toBe(true)
+    expect(harness.identityRequestCount()).toBe(
+      identityRequestsBeforeRestore + 1
+    )
     expect(harness.responseErrors()).toEqual([])
   } finally {
     harness.close()

@@ -959,7 +959,7 @@ function requireUserPubkey(pubkey: string, operation: string): string {
   const normalized = pubkey.toLowerCase()
   if (!isHexKey(normalized)) {
     throw new RemoteSignerError(
-      "unavailable",
+      "invalid_response",
       `The remote signer returned an invalid user pubkey during ${operation}.`,
       { operation }
     )
