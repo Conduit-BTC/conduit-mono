@@ -41,6 +41,7 @@ updates:
       build-tooling:
         applies-to: version-updates
         patterns:
+          - "@tanstack/react-router"
           - "@tanstack/router-*"
           - "@vitejs/*"
           - "vite"
