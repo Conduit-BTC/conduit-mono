@@ -162,12 +162,8 @@ jobs:
             reviewer="$(jq -r '.user.login // ""' <<< "$review")"
             review_commit="$(jq -r '.commit_id // ""' <<< "$review")"
             review_body="$(jq -r '.body // ""' <<< "$review")"
-            clean_summary="No actionable findings."
-            automation_residual='Automation residual: The current Sudden action needs a narrow pull-request-write token to submit inline reviews; candidate prompt injection is not mechanically eliminated; schema and SHA gates fail malformed or stale results; human approval remains mandatory.'
-            qa_disposition_prefix_pattern='^Reviewer-confirmed QA disposition:'
-            qa_disposition_pattern='Reviewer-confirmed QA disposition: (Evidence sign-off|Targeted human QA|Maintainer-owned validation)'
-            merge_verdict_prefix_pattern='^Merge-readiness verdict:'
-            ready_verdict='Merge-readiness verdict: READY FOR HUMAN APPROVAL'
+            clean_summary="No code changes needed. Ready for human review."
+            next_action_pattern='^Next: [^;]+ — [^;]+; evidence: [^;]+; done when: [^;]+; source: [^;]+\.$'
 
             if [[ "$review_commit" != "$head_sha" ]] ||
               ! grep -Fqx "$run_marker" <<< "$review_body"; then
@@ -178,37 +174,14 @@ jobs:
               exit 1
             fi
             if ! grep -Fqx "$clean_marker" <<< "$review_body"; then
-              echo "The source review does not contain the exact clean-review marker." >&2
-              exit 1
+              skip_automatic_handoff "The source review requires code changes; skipping Ponytail."
             fi
             if ! grep -Fqx "$clean_summary" <<< "$review_body"; then
-              echo "The source review does not contain the exact clean-review summary." >&2
+              echo "The source review does not contain the exact clean handoff summary." >&2
               exit 1
             fi
-            qa_disposition_prefix_count="$(
-              grep -Ec "$qa_disposition_prefix_pattern" <<< "$review_body" || true
-            )"
-            allowed_qa_disposition_count="$(
-              grep -Ecx "$qa_disposition_pattern" <<< "$review_body" || true
-            )"
-            if [[ "$qa_disposition_prefix_count" != "1" ||
-              "$allowed_qa_disposition_count" != "1" ]]; then
-              echo "The source review does not contain exactly one allowed QA disposition." >&2
-              exit 1
-            fi
-            merge_verdict_prefix_count="$(
-              grep -Ec "$merge_verdict_prefix_pattern" <<< "$review_body" || true
-            )"
-            ready_verdict_count="$(
-              grep -Fxc "$ready_verdict" <<< "$review_body" || true
-            )"
-            if [[ "$merge_verdict_prefix_count" != "1" ||
-              "$ready_verdict_count" != "1" ]]; then
-              echo "The source review does not contain exactly one ready merge-readiness verdict." >&2
-              exit 1
-            fi
-            if [[ "$(grep -Fxc "$automation_residual" <<< "$review_body" || true)" != "1" ]]; then
-              echo "The source review does not contain the exact automation residual." >&2
+            if [[ "$(grep -Ec "$next_action_pattern" <<< "$review_body" || true)" != "1" ]]; then
+              echo "The source review does not contain one complete Next action." >&2
               exit 1
             fi
 
@@ -345,48 +318,24 @@ jobs:
             review_body="$(jq -r '.body // ""' <<< "$review")"
             run_marker="<!-- conduit:sudden-review run=$SOURCE_RUN_ID attempt=$SOURCE_RUN_ATTEMPT head=$head_sha -->"
             clean_marker="<!-- conduit:sudden-review clean head=$head_sha -->"
-            clean_summary="No actionable findings."
-            automation_residual='Automation residual: The current Sudden action needs a narrow pull-request-write token to submit inline reviews; candidate prompt injection is not mechanically eliminated; schema and SHA gates fail malformed or stale results; human approval remains mandatory.'
-            qa_disposition_prefix_pattern='^Reviewer-confirmed QA disposition:'
-            qa_disposition_pattern='Reviewer-confirmed QA disposition: (Evidence sign-off|Targeted human QA|Maintainer-owned validation)'
-            merge_verdict_prefix_pattern='^Merge-readiness verdict:'
-            ready_verdict='Merge-readiness verdict: READY FOR HUMAN APPROVAL'
+            clean_summary="No code changes needed. Ready for human review."
+            next_action_pattern='^Next: [^;]+ — [^;]+; evidence: [^;]+; done when: [^;]+; source: [^;]+\.$'
 
             if [[ "$reviewer" != "conduit-sudden-agent[bot]" ||
               "$review_commit" != "$head_sha" ]] ||
-              ! grep -Fqx "$run_marker" <<< "$review_body" ||
-              ! grep -Fqx "$clean_marker" <<< "$review_body"; then
-              echo "The queued clean-review handoff failed revalidation." >&2
+              ! grep -Fqx "$run_marker" <<< "$review_body"; then
+              echo "The queued clean handoff failed revalidation." >&2
               exit 1
+            fi
+            if ! grep -Fqx "$clean_marker" <<< "$review_body"; then
+              skip_queued_handoff "The queued source review now requires code changes; skipping Ponytail."
             fi
             if ! grep -Fqx "$clean_summary" <<< "$review_body"; then
-              echo "The queued source review lacks the exact clean-review summary." >&2
+              echo "The queued source review lacks the exact clean handoff summary." >&2
               exit 1
             fi
-            qa_disposition_prefix_count="$(
-              grep -Ec "$qa_disposition_prefix_pattern" <<< "$review_body" || true
-            )"
-            allowed_qa_disposition_count="$(
-              grep -Ecx "$qa_disposition_pattern" <<< "$review_body" || true
-            )"
-            if [[ "$qa_disposition_prefix_count" != "1" ||
-              "$allowed_qa_disposition_count" != "1" ]]; then
-              echo "The queued source review lacks exactly one allowed QA disposition." >&2
-              exit 1
-            fi
-            merge_verdict_prefix_count="$(
-              grep -Ec "$merge_verdict_prefix_pattern" <<< "$review_body" || true
-            )"
-            ready_verdict_count="$(
-              grep -Fxc "$ready_verdict" <<< "$review_body" || true
-            )"
-            if [[ "$merge_verdict_prefix_count" != "1" ||
-              "$ready_verdict_count" != "1" ]]; then
-              echo "The queued source review lacks exactly one ready merge-readiness verdict." >&2
-              exit 1
-            fi
-            if [[ "$(grep -Fxc "$automation_residual" <<< "$review_body" || true)" != "1" ]]; then
-              echo "The queued source review lacks the exact automation residual." >&2
+            if [[ "$(grep -Ec "$next_action_pattern" <<< "$review_body" || true)" != "1" ]]; then
+              echo "The queued source review lacks one complete Next action." >&2
               exit 1
             fi
 

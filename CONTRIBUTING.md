@@ -256,8 +256,8 @@ data. They do not check out, install, import, or execute candidate content.
 Automatic simplify handoffs must match the exact review run, run attempt,
 repository, pull request, base SHA, and head SHA. Use `/agent simplify` for a
 trusted manual rerun. `/agent review` starts an advisory rerun on `main`; its
-unique job name cannot satisfy the canonical `agent-merge-readiness` context
-for the candidate.
+job name is unique so it cannot be confused with the automatic
+`agent-review-handoff` result for the candidate.
 
 The current Sudden action needs a narrowly scoped pull-request-write token to
 submit inline reviews. Base-trusted workflows and object-only candidate reads
@@ -265,9 +265,10 @@ reduce risk, but they do not mechanically eliminate candidate prompt injection.
 Schema and SHA gates fail malformed or stale review results. Human approval
 remains mandatory.
 
-`agent-merge-readiness` remains an advisory review signal and is not a required
-branch-protection context. Keep strict up-to-date branch protection enabled so
-a base change invalidates the candidate checks.
+`agent-review-handoff` remains an advisory review signal and is not a required
+branch-protection context. It reports whether Sudden reviewed the exact head and
+produced a valid code-review handoff; it does not determine mergeability.
+Keep strict up-to-date branch protection enabled so a base change invalidates the candidate checks.
 
 The final Ponytail review must state exactly one of `Ponytail outcome: LEAN`,
 `Ponytail outcome: FINDINGS`, or `Ponytail outcome: DELIVERY BLOCKED`. `LEAN`

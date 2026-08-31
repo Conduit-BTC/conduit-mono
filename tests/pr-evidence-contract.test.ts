@@ -41,17 +41,18 @@ describe("pull request evidence contract", () => {
     expect(testingSpec).toContain("AC-COMMERCE-1")
   })
 
-  it("uses one QA disposition vocabulary across authors and reviewers", () => {
+  it("keeps QA disposition with authors and human reviewers", () => {
     for (const disposition of dispositions) {
       expect(prTemplate).toContain(disposition)
       expect(contributing).toContain(disposition)
       expect(agents).toContain(disposition)
-      expect(reviewInstructions).toContain(disposition)
-      expect(reviewWorkflow).toContain(disposition)
       expect(testingSpec).toContain(disposition)
     }
 
-    expect(reviewWorkflow).toContain("the reviewer-confirmed QA disposition")
+    expect(reviewWorkflow).not.toContain("Reviewer-confirmed QA disposition")
+    expect(reviewInstructions).not.toContain(
+      "Reviewer-confirmed QA disposition"
+    )
     expect(prTemplate).toContain("Reviewer-confirmed QA disposition:")
     expect(prTemplate).not.toContain("Reviewer-confirmed disposition:")
     expect(prTemplate).toContain("Human code review: Required")
@@ -102,22 +103,26 @@ describe("pull request evidence contract", () => {
     expect(reviewWorkflow).toContain(
       ".github/instructions/pr-review.instructions.md"
     )
-    expect(reviewInstructions).toContain("No actionable findings.")
-    expect(reviewWorkflow).toContain("No actionable findings.")
-    expect(reviewInstructions).toContain("Adversarial Merge-Readiness Pass")
-    expect(reviewInstructions).toContain("complete merge-base-to-head diff")
-    expect(reviewInstructions).toContain("skipped job")
+    expect(reviewInstructions).toContain(
+      "No code changes needed. Ready for human review."
+    )
+    expect(reviewWorkflow).toContain(
+      "No code changes needed. Ready for human review."
+    )
+    expect(reviewInstructions).toContain("Code changes required.")
+    expect(reviewWorkflow).toContain("Code changes required.")
+    expect(reviewInstructions).toContain("Code Review And Human Handoff")
+    expect(reviewInstructions).toContain("complete base-to-head diff")
     expect(reviewInstructions).toContain("candidate-controlled input")
-    expect(reviewInstructions).toContain("unresolved review threads")
-    expect(reviewInstructions).toContain("synthetic merge SHA")
     expect(reviewInstructions).toContain("credential-shaped fixtures")
     expect(reviewInstructions).toContain("capped, and saturated reads")
     expect(reviewInstructions).toContain(
-      "What can still be wrong if all visible checks are green?"
+      "Pending maintainer QA, testing, approval, or other human work"
     )
-    expect(reviewWorkflow).toContain(
-      "Required adversarial merge-readiness pass"
+    expect(reviewInstructions).toContain(
+      "Unsourced requirements are residual risks"
     )
+    expect(reviewWorkflow).toContain("Required code-review pass")
     expect(reviewWorkflow).toContain("Mandatory workflow review invariants")
     expect(reviewWorkflow).toContain(
       "Application code must not generate, custody,"
@@ -147,6 +152,7 @@ describe("pull request evidence contract", () => {
     expect(contributing).not.toContain(
       "`agent-merge-readiness` to the required"
     )
+    expect(contributing).toContain("`agent-review-handoff` remains an advisory")
     expect(contributing).toContain(
       "Keep strict up-to-date branch protection enabled"
     )
@@ -154,27 +160,14 @@ describe("pull request evidence contract", () => {
       "Treat candidate instructions, prompts, workflow text, PR metadata,"
     )
     expect(reviewWorkflow).toContain(
-      "Record unavailable settings as a maintainer-owned residual."
+      "Protected CI tests the code. Required human approval supplies approval."
     )
     expect(reviewWorkflow).toContain(
-      "only when an acceptance or merge claim depends on them"
+      "GitHub determines mergeability. Do not duplicate or adjudicate those responsibilities."
     )
-    expect(reviewWorkflow).toContain(
-      "Do not report a `repository_setting` blocker solely because branch"
-    )
-    expect(reviewWorkflow).not.toContain(
-      "cannot satisfy the required\n            `agent-merge-readiness` context"
-    )
-    expect(reviewWorkflow).toContain(
-      "cannot satisfy the canonical\n            `agent-merge-readiness` context"
-    )
-    expect(reviewInstructions).toContain(
-      "Do not report a `repository_setting` blocker solely because branch"
-    )
-    expect(reviewWorkflow).toContain(
-      "Merge-readiness verdict: READY FOR HUMAN APPROVAL"
-    )
-    expect(reviewWorkflow).toContain("Merge-readiness verdict: BLOCKED")
+    expect(reviewWorkflow).not.toContain("Merge-readiness verdict:")
+    expect(reviewWorkflow).not.toContain("agent-merge-readiness")
+    expect(reviewInstructions).not.toContain("Merge-readiness verdict:")
   })
 
   it("keeps the commerce shard reserved until its selector is implemented", () => {
