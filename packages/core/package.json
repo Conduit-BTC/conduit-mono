@@ -39,7 +39,7 @@
     "nostr-tools": "2.24.3",
     "posthog-js": "^1.391.2",
     "tailwind-merge": "^3.6.0",
-    "zod": "^4.4.3"
+    "zod": "^4.5.1"
   },
   "peerDependencies": {
     "@tanstack/react-query": "^5.0.0",

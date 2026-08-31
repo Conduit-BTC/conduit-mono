@@ -18,8 +18,8 @@
     "@tanstack/react-router": "^1.170.32",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "react-hook-form": "^7.85.0",
-    "zod": "^4.4.3"
+    "react-hook-form": "^7.86.0",
+    "zod": "^4.5.1"
   },
   "devDependencies": {
     "@tanstack/react-query-devtools": "^5.101.4",
