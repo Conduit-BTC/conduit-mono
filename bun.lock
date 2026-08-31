@@ -158,7 +158,7 @@
         "@nostr-dev-kit/ndk": "^3.0.3",
         "clsx": "^2.1.1",
         "country-list": "^2.4.1",
-        "dexie": "^4.4.4",
+        "dexie": "^4.4.5",
         "libphonenumber-js": "^1.13.11",
         "nostr-tools": "2.25.0",
         "posthog-js": "^1.391.2",
@@ -953,7 +953,7 @@
 
     "devlop": ["devlop@1.1.0", "", { "dependencies": { "dequal": "^2.0.0" } }, "sha512-RWmIqhcFf1lRYBvNmr7qTNuyCt/7/ns2jbpp1+PalgE/rDQcBT0fioSMUpJ93irlUhC5hrg4cYqe6U+0ImW0rA=="],
 
-    "dexie": ["dexie@4.4.4", "", {}, "sha512-jIwsYI8Os2hgnqc6O49YwFDKGc5v5QjGx0wPVp543ip1F53VFAKMLthV2pQosQcVTv3eAskTWYspOx195PM0FQ=="],
+    "dexie": ["dexie@4.4.5", "", {}, "sha512-wWCHdihT3dmlUSuNhn5mMZDWSpG0suxjAni7YjjiZdzabZcKmy3uNZGZ7AeYYXBoLbpSXX35fikPLkPC44Osiw=="],
 
     "diff": ["diff@8.0.4", "", {}, "sha512-DPi0FmjiSU5EvQV0++GFDOJ9ASQUVFh5kD+OzOnYdi7n3Wpm9hWWGfB/O2blfHcMVTL5WkQXSnRiK9makhrcnw=="],
 
