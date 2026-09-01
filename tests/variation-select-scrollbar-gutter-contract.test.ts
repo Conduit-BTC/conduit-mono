@@ -3,7 +3,8 @@ import { readFile } from "node:fs/promises"
 
 const SITE_STYLES = "packages/ui/src/styles/site.css"
 const MARKET_ENTRYPOINT = "apps/market/src/main.tsx"
-const VARIATION_SELECTOR = "apps/market/src/components/ProductVariationSelector.tsx"
+const VARIATION_SELECTOR =
+  "apps/market/src/components/ProductVariationSelector.tsx"
 const SHARED_SELECT = "packages/ui/src/components/Select.tsx"
 
 describe("variation Select scrollbar gutter contract", () => {
@@ -41,7 +42,9 @@ describe("variation Select scrollbar gutter contract", () => {
     ])
 
     expect(variationSelector).toContain("<SelectContent>")
-    expect(variationSelector).toContain("aria-label={`Choose ${axis.label.toLowerCase()}`}")
+    expect(variationSelector).toContain(
+      "aria-label={`Choose ${axis.label.toLowerCase()}`}"
+    )
     expect(select).toContain("<SelectPrimitive.Portal>")
   })
 })
