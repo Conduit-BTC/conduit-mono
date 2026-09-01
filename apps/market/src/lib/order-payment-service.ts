@@ -38,6 +38,7 @@ import {
 } from "@conduit/core"
 import {
   getCheckoutZapVisibility,
+  recoverCheckoutZapTargetAddress,
   requestCheckoutLnurlInvoice,
   type CheckoutPricingIntent,
   type CheckoutPaymentStage,
@@ -1055,6 +1056,15 @@ async function runOrderPaymentInternal(
 
       const requestInvoice = async (requestedVisibility: typeof visibility) => {
         await patchClaim({}, { stage: "requesting_invoice" })
+        const zapTargetAddress =
+          requestedVisibility === "public_zap"
+            ? recoverCheckoutZapTargetAddress({
+                productAddresses: ctx.items.map((item) => item.productAddress),
+                recipientPubkey: ctx.merchantPubkey,
+                mode: ctx.zapMode,
+                content: ctx.zapContent,
+              })
+            : undefined
         return dependencies.requestCheckoutLnurlInvoice(
           {
             visibility: requestedVisibility,
@@ -1064,6 +1074,7 @@ async function runOrderPaymentInternal(
             lnurlNostrPubkey: providerReceiptPubkey ?? undefined,
             recipientPubkey: ctx.merchantPubkey,
             zapContent: ctx.zapContent,
+            zapTargetAddress,
             // Receipt relays are an explicit public payment policy. The shared
             // NDK compatibility context intentionally has no ambient pool.
             explicitRelayUrls: [],

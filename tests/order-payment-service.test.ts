@@ -17,6 +17,7 @@ import {
   type OrderPaymentDependencies,
   type OrderPaymentContext,
 } from "../apps/market/src/lib/order-payment-service"
+import { buildZapRequestContent } from "../apps/market/src/lib/checkout-payment"
 import { AMBIGUOUS_PAYMENT_WARNING } from "../apps/market/src/lib/payment-rails"
 import type { OrderLifecycle } from "../packages/core/src/db"
 import {
@@ -610,6 +611,84 @@ describe("runOrderPayment", () => {
     expect(state.error).toBe(
       "Payment details no longer match the delivered order."
     )
+  })
+
+  it("keeps the product target when a shopper zap payment resumes", async () => {
+    const orderId = "shopper-product-zap-retry"
+    const merchantPubkey = "b".repeat(64)
+    const productAddress = `30402:${merchantPubkey}:coffee-mug`
+    const zapContent = buildZapRequestContent(
+      "public_zap",
+      "sick shirt",
+      productAddress
+    )
+    const invoice = privateInvoice()
+    let stored = lifecycle({
+      orderId,
+      merchantPubkey,
+      checkoutMode: "public_zap",
+      publicZapSigner: "shopper",
+      zapContent,
+      items: [
+        {
+          productId: productAddress,
+          quantity: 1,
+          priceAtPurchase: 1,
+          currency: "SATS",
+        },
+      ],
+      invoice: undefined,
+      invoiceStatus: "not_requested",
+      paymentStatus: "not_started",
+    })
+    const table = db.orderLifecycles as typeof db.orderLifecycles & {
+      get: typeof db.orderLifecycles.get
+      put: typeof db.orderLifecycles.put
+    }
+    const originalGet = table.get
+    const originalPut = table.put
+    let requestedTarget: string | undefined
+
+    table.get = (async () => stored) as typeof table.get
+    table.put = (async (next: OrderLifecycle) => {
+      stored = next
+      return next.orderId
+    }) as typeof table.put
+
+    try {
+      const state = await runOrderPayment(
+        basePaymentContext({
+          orderId,
+          merchantPubkey,
+          merchantLud16: "merchant@wallet.example",
+          zapMode: "public_zap_as_shopper",
+          zapContent,
+          items: [{ productAddress, quantity: 1 }],
+        }),
+        paymentDependencies({
+          fetchLnurlPayMetadata: async () => lnurlMetadata(),
+          requestCheckoutLnurlInvoice: async (params) => {
+            requestedTarget = params.zapTargetAddress
+            return {
+              invoice,
+              zapRelayUrls: [],
+              shouldWaitForZapReceipt: false,
+            }
+          },
+          payCheckoutInvoice: async () => ({
+            status: "manual_required",
+            reason: "Open the invoice in a Lightning wallet.",
+          }),
+        })
+      )
+
+      expect(requestedTarget).toBe(productAddress)
+      expect(state.lifecycle?.invoiceStatus).toBe("manual_required")
+      expect(state.lifecycle?.paymentStatus).toBe("manual_required")
+    } finally {
+      table.get = originalGet
+      table.put = originalPut
+    }
   })
 
   it("does no invoice or wallet work for persisted unsafe payment states", async () => {
