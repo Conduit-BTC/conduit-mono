@@ -3,7 +3,6 @@ import {
   giftUnwrap,
   type NDKFilter,
   type NDKSigner,
-  nip19,
 } from "@nostr-dev-kit/ndk"
 import {
   db,
@@ -78,6 +77,7 @@ import {
   normalizeProductSummaryForDisplay,
   parseProductEvent,
 } from "./products"
+import { decodeProductReference } from "./product-reference"
 import {
   areProfileProjectionsEqual,
   mergeRicherProfile,
@@ -3448,36 +3448,13 @@ export async function getCachedMerchantStorefront(
 function parseAddress(
   productId: string
 ): { kind: number; pubkey: string; d: string } | null {
-  const decoded = decodeURIComponent(productId)
-  if (/^naddr1/i.test(decoded)) {
-    try {
-      const result = nip19.decode(decoded)
-      if (
-        result.type === "naddr" &&
-        result.data &&
-        typeof result.data === "object" &&
-        "kind" in result.data &&
-        "pubkey" in result.data &&
-        "identifier" in result.data &&
-        typeof result.data.kind === "number" &&
-        typeof result.data.pubkey === "string" &&
-        typeof result.data.identifier === "string"
-      ) {
-        return {
-          kind: result.data.kind,
-          pubkey: result.data.pubkey,
-          d: result.data.identifier,
-        }
-      }
-    } catch {
-      return null
-    }
+  const reference = decodeProductReference(productId)
+  if (!reference) return null
+  return {
+    kind: reference.kind,
+    pubkey: reference.authorPubkey,
+    d: reference.dTag,
   }
-  const [kindStr, pubkey, ...dParts] = decoded.split(":")
-  const d = dParts.join(":")
-  const kind = Number(kindStr)
-  if (!Number.isFinite(kind) || !pubkey || !d) return null
-  return { kind, pubkey, d }
 }
 
 function getProductLookupIds(productId: string): {
@@ -3485,7 +3462,12 @@ function getProductLookupIds(productId: string): {
   addressId: string | null
   address: { kind: number; pubkey: string; d: string } | null
 } {
-  const decodedId = decodeURIComponent(productId)
+  let decodedId = productId
+  try {
+    decodedId = decodeURIComponent(productId)
+  } catch {
+    // Keep malformed percent encoding as an invalid product reference.
+  }
   const address = parseAddress(productId)
   const addressId = address
     ? `${address.kind}:${address.pubkey}:${address.d}`

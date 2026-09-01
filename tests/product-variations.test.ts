@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import {
+  encodeProductNaddr,
   prepareProductCatalog,
   type CommerceProductRecord,
   type PreparedProductFamily,
@@ -124,6 +125,22 @@ describe("product variation selection", () => {
     )
 
     expect(selected.id).toBe(`30402:${MERCHANT_PUBKEY}:shirt-l`)
+    expect(selected.price).toBe(30_000)
+    expect(selected.stock).toBe(2)
+  })
+
+  it("restores the exact child selected by a shared naddr route", () => {
+    const medium = sizeVariation("M", 5)
+    const large = { ...sizeVariation("L", 2), price: 30_000 }
+    const parent = product({ type: "variable" })
+    const prepared = family(parent, [medium, large])
+    const selected = getProductSelection(
+      parent,
+      prepared,
+      encodeProductNaddr(large.id)
+    )
+
+    expect(selected.id).toBe(large.id)
     expect(selected.price).toBe(30_000)
     expect(selected.stock).toBe(2)
   })

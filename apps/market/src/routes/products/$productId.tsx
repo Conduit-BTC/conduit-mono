@@ -1,6 +1,7 @@
 import { ChevronDown, SearchX, ShoppingCart, Store } from "lucide-react"
 import { createFileRoute, Link } from "@tanstack/react-router"
 import {
+  buildMarketProductShareUrl,
   buildProductDetailActionTelemetryProperties,
   formatNpub,
   getListingSafetyDisplay,
@@ -19,6 +20,7 @@ import {
   Badge,
   Button,
   RefreshChip,
+  ShareLinkButton,
 } from "@conduit/ui"
 import { CopyButton } from "../../components/CopyButton"
 import {
@@ -64,6 +66,18 @@ type DescriptionMetrics = {
   canExpand: boolean
   collapsedHeight: number
   expandedHeight: number
+}
+
+function getMarketProductShareUrl(productAddressId: string): string | null {
+  const marketOrigin =
+    typeof window === "undefined"
+      ? "https://shop.conduit.market"
+      : window.location.origin
+  try {
+    return buildMarketProductShareUrl(marketOrigin, productAddressId)
+  } catch {
+    return null
+  }
 }
 
 function ProductPage() {
@@ -216,6 +230,9 @@ function ProductPage() {
     () => (product ? getProductDisplaySummary(product) : null),
     [product]
   )
+  const productShareUrl = selectedProduct
+    ? getMarketProductShareUrl(selectedProduct.id)
+    : null
 
   const visibleTags = useMemo(() => {
     if (!product) return []
@@ -620,13 +637,22 @@ function ProductPage() {
 
               <div className="mt-5 space-y-5 border-t border-[var(--border)] pt-5">
                 <div className="flex flex-wrap items-start gap-3">
-                  <h1 className="min-w-0 flex-1 text-2xl font-semibold leading-tight text-[var(--text-primary)] sm:text-3xl">
+                  <h1 className="min-w-0 flex-1 text-balance text-2xl font-semibold leading-tight text-[var(--text-primary)] sm:text-3xl">
                     {product.title}
                   </h1>
-                  {productSoldOut ? (
-                    <Badge variant="warning" className="shrink-0">
-                      Sold out
-                    </Badge>
+                  {productSoldOut || !!productShareUrl ? (
+                    <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+                      {productSoldOut ? (
+                        <Badge variant="warning">Sold out</Badge>
+                      ) : null}
+                      {productShareUrl && selectedProduct ? (
+                        <ShareLinkButton
+                          url={productShareUrl}
+                          shareTitle={selectedProduct.title}
+                          shareText={`View ${selectedProduct.title} on Conduit Market.`}
+                        />
+                      ) : null}
+                    </div>
                   ) : null}
                 </div>
 

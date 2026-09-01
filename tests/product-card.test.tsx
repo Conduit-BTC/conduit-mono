@@ -1,9 +1,24 @@
 import { describe, expect, it } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import { getProductPriceDisplay, getShopperPriceDisplay } from "@conduit/core"
-import { ProductCard, ProductCartAction } from "@conduit/ui"
+import { ProductCard, ProductCartAction, ShareLinkButton } from "@conduit/ui"
 
 describe("ProductCard", () => {
+  it("renders an accessible product share action and status region", () => {
+    const html = renderToStaticMarkup(
+      <ShareLinkButton
+        url="https://shop.conduit.market/products/naddr1product"
+        shareTitle="Conduit Shirt"
+        aria-label="Share Conduit Shirt"
+      />
+    )
+
+    expect(html).toContain('aria-label="Share Conduit Shirt"')
+    expect(html).toContain('role="status"')
+    expect(html).toContain('aria-live="polite"')
+    expect(html).toContain(">Share</button>")
+  })
+
   it("loads only the first public candidate and does not preload a fallback chain", () => {
     const html = renderToStaticMarkup(
       <ProductCard
