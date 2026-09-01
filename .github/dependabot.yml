@@ -27,6 +27,7 @@ updates:
       ui-leaf-dependencies:
         applies-to: version-updates
         patterns:
+          - "@radix-ui/*"
           - "lucide-react"
           - "tailwind-merge"
 
@@ -49,6 +50,12 @@ updates:
           - "@tanstack/router-*"
           - "@vitejs/*"
           - "vite"
+
+      tanstack-query:
+        applies-to: version-updates
+        patterns:
+          - "@tanstack/react-query"
+          - "@tanstack/react-query-devtools"
 
       typescript-compiler:
         applies-to: version-updates
