@@ -1,3 +1,5 @@
+import { encodeProductNaddr } from "./protocol/product-reference"
+
 export type ConduitBrowserLocation = Pick<
   Location,
   "hostname" | "protocol" | "port"
@@ -21,7 +23,10 @@ const LOCAL_PORT_PAIRS = [
   ["3000", "3001"],
 ] as const
 
-export function isConduitMerchantOrigin(origin: string | URL): boolean {
+function isConduitAppOrigin(
+  origin: string | URL,
+  target: ConduitAppTarget
+): boolean {
   let url: URL
   try {
     url = typeof origin === "string" ? new URL(origin) : origin
@@ -37,20 +42,29 @@ export function isConduitMerchantOrigin(origin: string | URL): boolean {
   ) {
     return false
   }
-  if (url.origin === PRODUCTION_ORIGINS.merchant) return true
+  if (url.origin === PRODUCTION_ORIGINS[target]) return true
+  const targetIndex = target === "market" ? 0 : 1
   if (
     APP_HOST_PAIRS.some(
-      ([, merchantHost]) =>
-        url.hostname === merchantHost ||
-        url.hostname.endsWith(`.${merchantHost}`)
+      (pair) =>
+        url.hostname === pair[targetIndex] ||
+        url.hostname.endsWith(`.${pair[targetIndex]}`)
     )
   ) {
     return url.protocol === "https:"
   }
   return (
     (url.protocol === "http:" || url.protocol === "https:") &&
-    LOCAL_PORT_PAIRS.some((pair) => url.port === pair[1])
+    LOCAL_PORT_PAIRS.some((pair) => url.port === pair[targetIndex])
   )
+}
+
+export function isConduitMarketOrigin(origin: string | URL): boolean {
+  return isConduitAppOrigin(origin, "market")
+}
+
+export function isConduitMerchantOrigin(origin: string | URL): boolean {
+  return isConduitAppOrigin(origin, "merchant")
 }
 
 function replaceHostSuffix(
@@ -114,5 +128,25 @@ export function buildMerchantOrderReviewUrl(
 
   url.pathname = "/orders"
   url.searchParams.set("order", trimmedOrderId)
+  return url.toString()
+}
+
+/** Build a stable Market product URL from a kind-30402 address coordinate. */
+export function buildMarketProductShareUrl(
+  marketOrigin: string,
+  productAddressId: string
+): string {
+  let url: URL
+  try {
+    url = new URL(marketOrigin)
+  } catch {
+    throw new Error("Product share URL requires an absolute Market origin.")
+  }
+  if (!isConduitMarketOrigin(url)) {
+    throw new Error("Product share URL requires a safe Market origin.")
+  }
+
+  const naddr = encodeProductNaddr(productAddressId)
+  url.pathname = `/products/${naddr}`
   return url.toString()
 }
