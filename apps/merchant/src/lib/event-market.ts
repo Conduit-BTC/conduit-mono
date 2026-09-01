@@ -8,8 +8,7 @@ import {
   publishOrganizerCollectionUpdate,
   publishOrganizerEventMarket,
   retryOrganizerEventMarketRecord,
-  type FollowedEventMarketDiscoveryState,
-  type FollowListCoverageState,
+  type FollowedEventMarketDiscoveryResult,
   type OrganizerEventMarketCalendarPublishInput,
   type OrganizerEventMarketCollectionPublishInput,
   type OrganizerEventMarketPickupPublishInput,
@@ -100,17 +99,11 @@ export interface MerchantOrganizerPublishResult {
   naddr: string
 }
 
-export interface MerchantEventMarketDiscovery {
+export type MerchantEventMarketDiscovery = Omit<
+  FollowedEventMarketDiscoveryResult,
+  "markets"
+> & {
   markets: MerchantOrganizerEventMarket[]
-  state: FollowedEventMarketDiscoveryState
-  followListCoverage: FollowListCoverageState
-  followedOrganizerCount: number
-  searchedOrganizerCount: number
-  failedOrganizerCount: number
-  boundedOrganizerCount: number
-  truncated: boolean
-  followListEventObserved: boolean
-  followListSnapshotState: "none" | "network" | "observed" | "pending"
 }
 
 const EVENT_MARKET_DELIVERY_OUTBOX_PREFIX =

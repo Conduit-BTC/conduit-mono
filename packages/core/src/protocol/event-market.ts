@@ -2087,15 +2087,6 @@ async function eventMarketReadPlanDetailed(input: {
   }
 }
 
-async function eventMarketReadPlan(input: {
-  organizerPubkey: string
-  relayHints?: readonly string[]
-  authenticatedPubkey?: string | null
-  signal?: AbortSignal
-}): Promise<string[]> {
-  return (await eventMarketReadPlanDetailed(input)).relayUrls
-}
-
 async function fetchEventMarketRecords(input: {
   organizerPubkey: string
   relayUrls: string[]
@@ -3366,12 +3357,14 @@ export async function getEventMarket(
     }
   }
 
-  const relayUrls = await eventMarketReadPlan({
-    organizerPubkey: decoded.authorPubkey,
-    relayHints: decoded.relayHints,
-    authenticatedPubkey: input.authenticatedPubkey,
-    signal: input.signal,
-  })
+  const relayUrls = (
+    await eventMarketReadPlanDetailed({
+      organizerPubkey: decoded.authorPubkey,
+      relayHints: decoded.relayHints,
+      authenticatedPubkey: input.authenticatedPubkey,
+      signal: input.signal,
+    })
+  ).relayUrls
   const observedAt = input.nowMs ?? Date.now()
   const [recordResult, cachedRecords] = await Promise.all([
     fetchEventMarketRecords({
