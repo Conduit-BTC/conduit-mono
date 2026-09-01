@@ -126,16 +126,20 @@ function orderItem(
   }
 }
 
-function merchantStatus(status: string, createdAt: number): ParsedOrderMessage {
+function merchantStatus(
+  status: string,
+  createdAt: number,
+  targetOrderId = orderId
+): ParsedOrderMessage {
   return {
-    id: `${orderId}-${status}-${createdAt}`,
-    orderId,
+    id: `${targetOrderId}-${status}-${createdAt}`,
+    orderId: targetOrderId,
     type: "status_update",
     createdAt,
     senderPubkey: "merchant",
     recipientPubkey: "buyer",
     rawContent: "",
-    payload: { orderId, status },
+    payload: { orderId: targetOrderId, status },
   } as ParsedOrderMessage
 }
 
@@ -163,42 +167,28 @@ function sortableConversation({
       createdAt: Math.max(0, taskAt - 1),
     },
   } as ParsedOrderMessage
-  const latestMessage = paymentEvidence
-    ? ({
-        ...proof,
-        id: `${id}-proof`,
-        orderId: id,
-        createdAt: taskAt,
-        payload: { ...proof.payload, orderId: id },
-      } as ParsedOrderMessage)
-    : status
-      ? ({
-          ...merchantStatus(status, taskAt),
-          id: `${id}-${status}`,
-          orderId: id,
-          payload: { orderId: id, status },
-        } as ParsedOrderMessage)
-      : sortableOrder
-  const taskMessages =
-    latestMessage === sortableOrder
-      ? [sortableOrder]
-      : [sortableOrder, latestMessage]
-  const messages =
-    latestAt > taskAt
-      ? [
-          ...taskMessages,
-          {
-            id: `${id}-note`,
-            orderId: id,
-            type: "message",
-            createdAt: latestAt,
-            senderPubkey: "merchant",
-            recipientPubkey: "buyer",
-            rawContent: "",
-            payload: { note: "Follow-up note" },
-          } as ParsedOrderMessage,
-        ]
-      : taskMessages
+  const messages: ParsedOrderMessage[] = [sortableOrder]
+  if (paymentEvidence) {
+    messages.push({
+      ...proof,
+      id: `${id}-proof`,
+      orderId: id,
+      createdAt: taskAt,
+      payload: { ...proof.payload, orderId: id },
+    } as ParsedOrderMessage)
+  } else if (status) messages.push(merchantStatus(status, taskAt, id))
+  if (latestAt > taskAt) {
+    messages.push({
+      id: `${id}-note`,
+      orderId: id,
+      type: "message",
+      createdAt: latestAt,
+      senderPubkey: "merchant",
+      recipientPubkey: "buyer",
+      rawContent: "",
+      payload: { note: "Follow-up note" },
+    } as ParsedOrderMessage)
+  }
   const newestMessage = messages[messages.length - 1]!
 
   return {

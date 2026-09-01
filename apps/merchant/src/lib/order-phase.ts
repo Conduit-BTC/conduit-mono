@@ -359,68 +359,23 @@ type MerchantConversationPriority = {
   attentionAt: number
 }
 
-type MerchantAttentionTimestamps = Partial<
-  Record<
-    | "refund"
-    | "paid"
-    | "accepted"
-    | "verify"
-    | "order"
-    | "followUp"
-    | "waiting",
-    number
-  >
->
+type MerchantOrderMessage = NonNullable<
+  MerchantConversationSummary["messages"]
+>[number]
 
-function earlier(current: number | undefined, candidate: number): number {
-  return current === undefined || candidate < current ? candidate : current
-}
-
-function getMerchantAttentionTimestamps(
-  conversation: MerchantConversationSummary
-): MerchantAttentionTimestamps {
-  const timestamps: MerchantAttentionTimestamps = {}
-  for (const message of conversation.messages ?? []) {
-    const observedAt = message.createdAt
-    if (!Number.isFinite(observedAt)) continue
-
-    if (message.type === "order") {
-      timestamps.order = earlier(timestamps.order, observedAt)
-    }
-    if (
-      message.type === "payment_proof" &&
-      message.senderPubkey === conversation.buyerPubkey &&
-      (isPaymentProofEvidenceMessage(message) ||
-        isExternalPaymentReportMessage(message))
-    ) {
-      timestamps.verify = earlier(timestamps.verify, observedAt)
-    }
-    if (message.senderPubkey !== conversation.merchantPubkey) continue
-
-    if (message.type === "shipping_update") {
-      timestamps.followUp = earlier(timestamps.followUp, observedAt)
-    } else if (message.type === "payment_request") {
-      timestamps.waiting = earlier(timestamps.waiting, observedAt)
-    } else if (message.type === "status_update") {
-      const messageStatus = message.payload.status.toLowerCase()
-      if (messageStatus === "refund_requested") {
-        timestamps.refund = earlier(timestamps.refund, observedAt)
-      } else if (messageStatus === "paid") {
-        timestamps.paid = earlier(timestamps.paid, observedAt)
-      } else if (messageStatus === "accepted") {
-        timestamps.accepted = earlier(timestamps.accepted, observedAt)
-        timestamps.waiting = earlier(timestamps.waiting, observedAt)
-      } else if (messageStatus === "invoiced") {
-        timestamps.waiting = earlier(timestamps.waiting, observedAt)
-      } else if (
-        messageStatus === "processing" ||
-        messageStatus === "shipped"
-      ) {
-        timestamps.followUp = earlier(timestamps.followUp, observedAt)
-      }
-    }
+function getEarliestMessageAt(
+  messages: MerchantOrderMessage[],
+  matches: (message: MerchantOrderMessage) => boolean
+): number | undefined {
+  let earliestAt: number | undefined
+  for (const message of messages) {
+    if (!Number.isFinite(message.createdAt) || !matches(message)) continue
+    earliestAt =
+      earliestAt === undefined
+        ? message.createdAt
+        : Math.min(earliestAt, message.createdAt)
   }
-  return timestamps
+  return earliestAt
 }
 
 function getMerchantConversationPriority(
@@ -432,47 +387,71 @@ function getMerchantConversationPriority(
   const observedAt = Number.isFinite(conversation.latestAt)
     ? conversation.latestAt
     : 0
-  const attention = getMerchantAttentionTimestamps(conversation)
+  const messages = conversation.messages ?? []
+  const fromMerchant = (message: MerchantOrderMessage): boolean =>
+    message.senderPubkey === conversation.merchantPubkey
+  const hasMerchantStatus = (
+    message: MerchantOrderMessage,
+    ...statuses: string[]
+  ): boolean =>
+    fromMerchant(message) &&
+    message.type === "status_update" &&
+    statuses.includes(message.payload.status.toLowerCase())
+  let rank = 3
+  let matchesTask: ((message: MerchantOrderMessage) => boolean) | null = (
+    message
+  ) => message.type === "order"
 
   if (status === "refund_requested") {
-    return { rank: 0, attentionAt: attention.refund ?? observedAt }
-  }
-  if (queue === "shipped" || status === "processing" || status === "shipped") {
-    return { rank: 4, attentionAt: attention.followUp ?? observedAt }
-  }
-  if (queue === "paid_fulfill") {
-    return {
-      rank: 1,
-      attentionAt: attention.paid ?? attention.accepted ?? observedAt,
-    }
-  }
-  if (queue === "verify_payment") {
-    return { rank: 2, attentionAt: attention.verify ?? observedAt }
-  }
-  if (
-    queue === "unpaid_review" &&
-    status !== "processing" &&
-    status !== "accepted" &&
-    status !== "invoiced" &&
-    !state.accepted &&
-    !state.invoiceSent
+    rank = 0
+    matchesTask = (message) => hasMerchantStatus(message, "refund_requested")
+  } else if (
+    queue === "shipped" ||
+    status === "processing" ||
+    status === "shipped"
   ) {
-    return { rank: 3, attentionAt: attention.order ?? observedAt }
-  }
-  if (
+    rank = 4
+    matchesTask = (message) =>
+      (fromMerchant(message) && message.type === "shipping_update") ||
+      hasMerchantStatus(message, "processing", "shipped")
+  } else if (queue === "paid_fulfill") {
+    rank = 1
+    const taskStatus = messages.some(
+      (message) =>
+        Number.isFinite(message.createdAt) && hasMerchantStatus(message, "paid")
+    )
+      ? "paid"
+      : "accepted"
+    matchesTask = (message) => hasMerchantStatus(message, taskStatus)
+  } else if (queue === "verify_payment") {
+    rank = 2
+    matchesTask = (message) =>
+      message.type === "payment_proof" &&
+      message.senderPubkey === conversation.buyerPubkey &&
+      (isPaymentProofEvidenceMessage(message) ||
+        isExternalPaymentReportMessage(message))
+  } else if (
     queue === "unpaid_review" &&
     (status === "accepted" ||
       status === "invoiced" ||
       state.accepted ||
       state.invoiceSent)
   ) {
-    return { rank: 5, attentionAt: attention.waiting ?? observedAt }
-  }
-  if (queue === "closed") {
-    return { rank: 6, attentionAt: observedAt }
+    rank = 5
+    matchesTask = (message) =>
+      (fromMerchant(message) && message.type === "payment_request") ||
+      hasMerchantStatus(message, "accepted", "invoiced")
+  } else if (queue === "closed") {
+    rank = 6
+    matchesTask = null
   }
 
-  return { rank: 3, attentionAt: attention.order ?? observedAt }
+  return {
+    rank,
+    attentionAt:
+      (matchesTask && getEarliestMessageAt(messages, matchesTask)) ??
+      observedAt,
+  }
 }
 
 function compareOrderIds(
