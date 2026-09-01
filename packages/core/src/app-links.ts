@@ -158,7 +158,7 @@ export function buildMarketProductShareUrl(
   return url.toString()
 }
 
-function normalizeExactEventCatalogNaddr(value: string): string {
+export function normalizeExactEventCatalogNaddr(value: string): string {
   const trimmed = value.trim()
   if (!/^naddr1[023456789acdefghjklmnpqrstuvwxyz]+$/i.test(trimmed)) {
     throw new Error("Event link requires an exact event catalog naddr.")

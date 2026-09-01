@@ -2,9 +2,8 @@ import {
   buildMarketEventCatalogUrl,
   buildMarketProductShareUrl,
   buildMerchantEventParticipationUrl,
-  decodeEventMarketReference,
-  encodeEventMarketNaddr,
   inferConduitAppOrigin,
+  normalizeExactEventCatalogNaddr,
   pubkeyToNpub,
   type ConduitBrowserLocation,
 } from "@conduit/core"
@@ -70,12 +69,10 @@ export function parseMerchantEventsSearch(
 ): MerchantEventsSearch {
   const value = search.event
   if (typeof value !== "string") return {}
-  const trimmed = value.trim()
-  if (!/^naddr1[023456789acdefghjklmnpqrstuvwxyz]+$/i.test(trimmed)) return {}
-  const decoded = decodeEventMarketReference(trimmed, [30405])
-  if (!decoded) return {}
-  return {
-    event: encodeEventMarketNaddr(decoded.coordinate, decoded.relayHints),
+  try {
+    return { event: normalizeExactEventCatalogNaddr(value) }
+  } catch {
+    return {}
   }
 }
 

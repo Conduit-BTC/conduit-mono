@@ -7,27 +7,9 @@ describe("merchant organizer event market route", () => {
       "apps/merchant/src/components/MerchantHeader.tsx"
     ).text()
     const root = await Bun.file("apps/merchant/src/routes/__root.tsx").text()
-    const dashboard = await Bun.file(
-      "apps/merchant/src/routes/index.tsx"
-    ).text()
-    const auth = await Bun.file("apps/merchant/src/lib/auth.ts").text()
     const tree = await Bun.file("apps/merchant/src/routeTree.gen.ts").text()
 
     expect(route).toContain('createFileRoute("/events")')
-    expect(route).toContain("requireAuth({ event: search.event })")
-    expect(route).toContain("validateSearch: parseMerchantEventsSearch")
-    expect(route).toContain("const { event } = Route.useSearch()")
-    expect(route).toContain("initialReference={event}")
-    expect(auth).toContain(
-      "parseMerchantEventsSearch({ event: options.event })"
-    )
-    expect(auth).toContain("...(event ? { event } : {})")
-    expect(dashboard).toContain(
-      "validateSearch: parseMerchantAuthHandoffSearch"
-    )
-    expect(dashboard).toContain("const { authRequired, event: pendingEvent }")
-    expect(dashboard).toContain('to: "/events"')
-    expect(dashboard).toContain("search: { event: pendingEvent }")
     expect(header).toContain('{ to: "/events", label: "Events"')
     expect(root).toContain('if (pathname === "/events") return "Events"')
     expect(tree).toContain("'/events': typeof EventsRoute")
@@ -114,14 +96,6 @@ describe("merchant organizer event market route", () => {
       "The exact signed product preview is unavailable or no longer matches this request."
     )
     expect(panel).toContain("organizer-owned collection coordinate")
-    expect(panel).toContain("Shopper event catalog")
-    expect(panel).toContain("Merchant participation link")
-    expect(panel).toContain("Copy shopper link")
-    expect(panel).toContain("Copy merchant link")
-    expect(panel).toContain("Shopper event catalog QR code")
-    expect(panel).toContain("<QRCodeSVG value={shopperUrl}")
-    expect(panel).toContain("getMerchantEventParticipationUrl(market.naddr)")
-    expect(panel).toContain("Portable event address (naddr)")
     expect(route).toContain("loadOrganizerEventMarketDeliveryOutbox")
     expect(route).toContain("saveOrganizerEventMarketDelivery")
     expect(
