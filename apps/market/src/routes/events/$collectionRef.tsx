@@ -717,7 +717,7 @@ function EventCatalogPage() {
             this event.
           </div>
         ) : (
-          <ul className={`mt-6 ${PRODUCT_GRID_CLASS_NAME}`}>
+          <ul className={`mt-6 ${PRODUCT_GRID_CLASS_NAME} items-start`}>
             {catalog.products.map((entry, index) => {
               const { product } = entry
               const identity = merchantIdentities.getIdentity(product.pubkey)

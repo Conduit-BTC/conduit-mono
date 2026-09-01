@@ -906,9 +906,9 @@ function ProductPage() {
             </div>
 
             {relatedProductsQuery.isInitialLoading && (
-              <ul className="grid items-start list-none grid-cols-2 gap-3 p-0 md:grid-cols-3 lg:grid-cols-4">
+              <ul className="grid list-none grid-cols-2 gap-3 p-0 md:grid-cols-3 lg:grid-cols-4">
                 {Array.from({ length: 4 }).map((_, index) => (
-                  <li key={index}>
+                  <li key={index} className="h-full">
                     <ProductGridCardSkeleton />
                   </li>
                 ))}
@@ -924,10 +924,10 @@ function ProductPage() {
               )}
 
             {relatedProducts.length > 0 && (
-              <ul className="grid items-start list-none grid-cols-2 gap-3 p-0 md:grid-cols-3 lg:grid-cols-4">
+              <ul className="grid list-none grid-cols-2 gap-3 p-0 md:grid-cols-3 lg:grid-cols-4">
                 {relatedProducts.map((relatedProduct, index) => {
                   return (
-                    <li key={relatedProduct.id}>
+                    <li key={relatedProduct.id} className="h-full">
                       <ResolvedProductGridCard
                         product={relatedProduct}
                         family={

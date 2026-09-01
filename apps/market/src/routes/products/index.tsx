@@ -741,6 +741,7 @@ function ProductsPage() {
               <li
                 key={product.id}
                 className={[
+                  "h-full",
                   // Keep the first page fully rendered (LCP / above the fold).
                   // Let the browser skip layout + paint for the revealed tail
                   // while reserving row height so the scrollbar stays stable.
