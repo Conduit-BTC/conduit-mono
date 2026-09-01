@@ -1,14 +1,15 @@
 import {
   decodeEventMarketReference,
+  discoverFollowedOrganizerEventMarkets,
   encodeEventMarketNaddr,
-  extractFollowPubkeys,
   getEventMarket,
   getOrganizerEventMarkets,
   isValidSignedPublicNostrEvent,
   publishOrganizerCollectionUpdate,
   publishOrganizerEventMarket,
   retryOrganizerEventMarketRecord,
-  readLatestFollowLists,
+  type FollowedEventMarketDiscoveryState,
+  type FollowListCoverageState,
   type OrganizerEventMarketCalendarPublishInput,
   type OrganizerEventMarketCollectionPublishInput,
   type OrganizerEventMarketPickupPublishInput,
@@ -101,11 +102,15 @@ export interface MerchantOrganizerPublishResult {
 
 export interface MerchantEventMarketDiscovery {
   markets: MerchantOrganizerEventMarket[]
+  state: FollowedEventMarketDiscoveryState
+  followListCoverage: FollowListCoverageState
   followedOrganizerCount: number
   searchedOrganizerCount: number
   failedOrganizerCount: number
-  coverage: "complete" | "limited" | "unavailable"
+  boundedOrganizerCount: number
   truncated: boolean
+  followListEventObserved: boolean
+  followListSnapshotState: "none" | "network" | "observed" | "pending"
 }
 
 const EVENT_MARKET_DELIVERY_OUTBOX_PREFIX =
@@ -628,76 +633,34 @@ export async function listOrganizerEventMarkets(
   return projectMarketList(result)
 }
 
-const FOLLOWED_EVENT_ORGANIZER_LIMIT = 8
-
-function eventMarketStartMs(market: MerchantOrganizerEventMarket): number {
-  if (typeof market.start === "number") return market.start * 1_000
-  const parsed = Date.parse(`${market.start}T00:00:00Z`)
-  return Number.isFinite(parsed) ? parsed : Number.MAX_SAFE_INTEGER
-}
-
 export async function discoverFollowedEventMarkets(
-  merchantPubkey: string
+  merchantPubkey: string,
+  options: { signal?: AbortSignal; nowMs?: number } = {}
 ): Promise<MerchantEventMarketDiscovery> {
-  const normalizedMerchantPubkey = merchantPubkey.trim().toLowerCase()
-  const followRead = await readLatestFollowLists({
-    pubkeys: [normalizedMerchantPubkey],
-    authenticatedPubkey: normalizedMerchantPubkey,
+  const discovery = await discoverFollowedOrganizerEventMarkets({
+    merchantPubkey,
+    authenticatedPubkey: merchantPubkey,
+    ...(options.signal ? { signal: options.signal } : {}),
+    ...(options.nowMs !== undefined ? { nowMs: options.nowMs } : {}),
   })
-  const author = followRead.authors.find(
-    (candidate) => candidate.pubkey === normalizedMerchantPubkey
-  )
-  const followedOrganizers = extractFollowPubkeys(author?.event?.tags).filter(
-    (pubkey) => pubkey !== normalizedMerchantPubkey
-  )
-  const selectedOrganizers = followedOrganizers.slice(
-    0,
-    FOLLOWED_EVENT_ORGANIZER_LIMIT
-  )
-  const reads = await Promise.allSettled(
-    selectedOrganizers.map((organizerPubkey) =>
-      getOrganizerEventMarkets({
-        organizerPubkey,
-        authenticatedPubkey: normalizedMerchantPubkey,
-      })
-    )
-  )
-  const failedOrganizerCount = reads.filter(
-    (result) => result.status === "rejected"
-  ).length
-  const byCoordinate = new Map<string, MerchantOrganizerEventMarket>()
-  for (const result of reads) {
-    if (result.status !== "fulfilled") continue
-    for (const market of projectMarketList(result.value)) {
-      byCoordinate.set(market.collectionCoordinate, market)
-    }
-  }
-
   return {
-    markets: Array.from(byCoordinate.values()).sort(
-      (left, right) => eventMarketStartMs(left) - eventMarketStartMs(right)
-    ),
-    followedOrganizerCount: followedOrganizers.length,
-    searchedOrganizerCount: selectedOrganizers.length,
-    failedOrganizerCount,
-    coverage: author?.coverage ?? "unavailable",
-    truncated:
-      followedOrganizers.length > FOLLOWED_EVENT_ORGANIZER_LIMIT ||
-      author?.capped === true ||
-      author?.relayHintTruncated === true,
+    ...discovery,
+    markets: projectMarketList(discovery.markets),
   }
 }
 
 export async function resolveOrganizerEventMarket(
   reference: string,
   organizerPubkey?: string,
-  authenticatedPubkey: string | null = organizerPubkey ?? null
+  authenticatedPubkey: string | null = organizerPubkey ?? null,
+  signal?: AbortSignal
 ): Promise<MerchantOrganizerEventMarket> {
   const parsedReference = parseOrganizerEventMarketReference(reference)
   const result = await getEventMarket({
     reference: parsedReference.naddr,
     ...(organizerPubkey ? { expectedOrganizerPubkey: organizerPubkey } : {}),
     authenticatedPubkey,
+    ...(signal ? { signal } : {}),
   })
   const normalized = projectEventMarket(result)
   if (
