@@ -91,6 +91,25 @@ describe("ProductCard", () => {
     expect(html).toContain(">Store npub1abc...xyz<")
   })
 
+  it("truncates product titles to one line without constraining title badges", () => {
+    const html = renderToStaticMarkup(
+      <ProductCard
+        title="An intentionally long product title that must not take a second line"
+        titleAside={<span>Featured</span>}
+        merchantName="Alice Store"
+        images={[]}
+        primaryPrice="25 sats"
+        soldOut
+      />
+    )
+
+    expect(html).toContain("min-w-0 flex-1 truncate")
+    expect(html).not.toContain("line-clamp-2")
+    expect(html).not.toContain("min-h-[2.5rem]")
+    expect(html).toContain(">Featured<")
+    expect(html).toContain(">Sold out<")
+  })
+
   it("renders sats primary pricing with a USD secondary line", () => {
     const price = getProductPriceDisplay(
       { price: 40_000, currency: "SATS", priceSats: 40_000 },
