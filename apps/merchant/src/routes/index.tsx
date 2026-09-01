@@ -15,6 +15,7 @@ import {
 } from "@conduit/core"
 import {
   ArrowRight,
+  Inbox,
   Package,
   ShoppingBag,
   Truck,
@@ -45,7 +46,10 @@ import {
   isMerchantGuestOrder,
   type OrderQueueTab,
 } from "../lib/order-phase"
-import type { MerchantSetupReadiness } from "../lib/readiness"
+import {
+  getMerchantPrivateInboxReadinessPresentation,
+  type MerchantSetupReadiness,
+} from "../lib/readiness"
 
 export const Route = createFileRoute("/")({
   component: DashboardPage,
@@ -171,14 +175,18 @@ function ReadinessRow({
   label,
   complete,
   pending = false,
+  statusLabel,
+  statusVariant,
   to,
   icon: Icon,
 }: {
   label: string
   complete: boolean
   pending?: boolean
+  statusLabel?: string
+  statusVariant?: "warning" | "success" | "info" | "error" | "neutral"
   to: "/" | "/profile" | "/payments" | "/shipping" | "/network"
-  icon: ComponentType<{ className?: string }>
+  icon: ComponentType<{ className?: string; "aria-hidden"?: boolean }>
 }) {
   return (
     <Link
@@ -187,17 +195,20 @@ function ReadinessRow({
     >
       <span className="flex min-w-0 items-center gap-3">
         <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)]">
-          <Icon className="h-4 w-4" />
+          <Icon aria-hidden={true} className="h-4 w-4" />
         </span>
         <span className="truncate text-sm font-medium text-[var(--text-primary)]">
           {label}
         </span>
       </span>
       <StatusPill
-        variant={complete ? "success" : pending ? "info" : "warning"}
+        variant={
+          statusVariant ?? (complete ? "success" : pending ? "info" : "warning")
+        }
         className="text-[10px]"
       >
-        {complete ? "Ready" : pending ? "Checking" : "Needs completion"}
+        {statusLabel ??
+          (complete ? "Ready" : pending ? "Checking" : "Needs completion")}
       </StatusPill>
     </Link>
   )
@@ -210,6 +221,8 @@ function MerchantReadinessPanel({
 }) {
   const setupPending =
     readiness.setupCheckPending && readiness.missingAreas.length === 0
+  const privateInboxPresentation =
+    getMerchantPrivateInboxReadinessPresentation(readiness)
 
   return (
     <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
@@ -244,7 +257,7 @@ function MerchantReadinessPanel({
         </StatusPill>
       </div>
 
-      <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+      <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         <ReadinessRow
           label="Profile"
           complete={readiness.profileComplete}
@@ -272,7 +285,20 @@ function MerchantReadinessPanel({
           to="/network"
           icon={Wifi}
         />
+        <ReadinessRow
+          label="Private inbox"
+          complete={readiness.privateInboxComplete}
+          pending={readiness.privateInboxCheckPending}
+          statusLabel={privateInboxPresentation.label}
+          statusVariant={privateInboxPresentation.variant}
+          to="/network"
+          icon={Inbox}
+        />
       </div>
+      <p className="mt-4 max-w-3xl text-pretty text-xs leading-5 text-[var(--text-muted)]">
+        A private inbox improves encrypted order and message delivery. It is
+        recommended, but it does not block listing publication.
+      </p>
     </section>
   )
 }
