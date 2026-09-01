@@ -3,8 +3,10 @@ import {
   formatNpub,
   getOrderStatusDisplay,
   getProfileName,
+  isExternalPaymentReportMessage,
   isMerchantOrderAccepted,
   isMerchantOrderPaid,
+  isPaymentProofEvidenceMessage,
   type MerchantConversationSummary,
   type MerchantOrderState,
   type OrderSummary,
@@ -23,6 +25,8 @@ export type OrderQueueTab =
   | "shipped"
   | "closed"
 
+export type MerchantOrderSort = "priority" | "recent"
+
 export const ORDER_PHASE_OPTIONS: Array<{
   value: OrderQueueTab
   label: string
@@ -33,6 +37,14 @@ export const ORDER_PHASE_OPTIONS: Array<{
   { value: "unpaid_review", label: "Unpaid — review" },
   { value: "shipped", label: "Shipped" },
   { value: "closed", label: "Closed" },
+]
+
+export const ORDER_SORT_OPTIONS: Array<{
+  value: MerchantOrderSort
+  label: string
+}> = [
+  { value: "priority", label: "Priority" },
+  { value: "recent", label: "Recent activity" },
 ]
 
 export function isOrderQueueTab(value: unknown): value is OrderQueueTab {
@@ -340,6 +352,166 @@ export function getMerchantConversationQueue(
   }
   if (state.paymentObserved) return "verify_payment"
   return "unpaid_review"
+}
+
+type MerchantConversationPriority = {
+  rank: number
+  attentionAt: number
+}
+
+type MerchantAttentionTimestamps = Partial<
+  Record<
+    | "refund"
+    | "paid"
+    | "accepted"
+    | "verify"
+    | "order"
+    | "followUp"
+    | "waiting",
+    number
+  >
+>
+
+function earlier(current: number | undefined, candidate: number): number {
+  return current === undefined || candidate < current ? candidate : current
+}
+
+function getMerchantAttentionTimestamps(
+  conversation: MerchantConversationSummary
+): MerchantAttentionTimestamps {
+  const timestamps: MerchantAttentionTimestamps = {}
+  for (const message of conversation.messages ?? []) {
+    const observedAt = message.createdAt
+    if (!Number.isFinite(observedAt)) continue
+
+    if (message.type === "order") {
+      timestamps.order = earlier(timestamps.order, observedAt)
+    }
+    if (
+      message.type === "payment_proof" &&
+      message.senderPubkey === conversation.buyerPubkey &&
+      (isPaymentProofEvidenceMessage(message) ||
+        isExternalPaymentReportMessage(message))
+    ) {
+      timestamps.verify = earlier(timestamps.verify, observedAt)
+    }
+    if (message.senderPubkey !== conversation.merchantPubkey) continue
+
+    if (message.type === "shipping_update") {
+      timestamps.followUp = earlier(timestamps.followUp, observedAt)
+    } else if (message.type === "payment_request") {
+      timestamps.waiting = earlier(timestamps.waiting, observedAt)
+    } else if (message.type === "status_update") {
+      const messageStatus = message.payload.status.toLowerCase()
+      if (messageStatus === "refund_requested") {
+        timestamps.refund = earlier(timestamps.refund, observedAt)
+      } else if (messageStatus === "paid") {
+        timestamps.paid = earlier(timestamps.paid, observedAt)
+      } else if (messageStatus === "accepted") {
+        timestamps.accepted = earlier(timestamps.accepted, observedAt)
+        timestamps.waiting = earlier(timestamps.waiting, observedAt)
+      } else if (messageStatus === "invoiced") {
+        timestamps.waiting = earlier(timestamps.waiting, observedAt)
+      } else if (
+        messageStatus === "processing" ||
+        messageStatus === "shipped"
+      ) {
+        timestamps.followUp = earlier(timestamps.followUp, observedAt)
+      }
+    }
+  }
+  return timestamps
+}
+
+function getMerchantConversationPriority(
+  conversation: MerchantConversationSummary
+): MerchantConversationPriority {
+  const state = getMerchantConversationState(conversation)
+  const status = (state.status ?? "pending").toLowerCase()
+  const queue = getMerchantConversationQueue(conversation)
+  const observedAt = Number.isFinite(conversation.latestAt)
+    ? conversation.latestAt
+    : 0
+  const attention = getMerchantAttentionTimestamps(conversation)
+
+  if (status === "refund_requested") {
+    return { rank: 0, attentionAt: attention.refund ?? observedAt }
+  }
+  if (queue === "shipped" || status === "processing" || status === "shipped") {
+    return { rank: 4, attentionAt: attention.followUp ?? observedAt }
+  }
+  if (queue === "paid_fulfill") {
+    return {
+      rank: 1,
+      attentionAt: attention.paid ?? attention.accepted ?? observedAt,
+    }
+  }
+  if (queue === "verify_payment") {
+    return { rank: 2, attentionAt: attention.verify ?? observedAt }
+  }
+  if (
+    queue === "unpaid_review" &&
+    status !== "processing" &&
+    status !== "accepted" &&
+    status !== "invoiced" &&
+    !state.accepted &&
+    !state.invoiceSent
+  ) {
+    return { rank: 3, attentionAt: attention.order ?? observedAt }
+  }
+  if (
+    queue === "unpaid_review" &&
+    (status === "accepted" ||
+      status === "invoiced" ||
+      state.accepted ||
+      state.invoiceSent)
+  ) {
+    return { rank: 5, attentionAt: attention.waiting ?? observedAt }
+  }
+  if (queue === "closed") {
+    return { rank: 6, attentionAt: observedAt }
+  }
+
+  return { rank: 3, attentionAt: attention.order ?? observedAt }
+}
+
+function compareOrderIds(
+  left: MerchantConversationSummary,
+  right: MerchantConversationSummary
+): number {
+  if (left.orderId === right.orderId) return 0
+  return left.orderId < right.orderId ? -1 : 1
+}
+
+export function sortMerchantConversations(
+  conversations: MerchantConversationSummary[],
+  sort: MerchantOrderSort
+): MerchantConversationSummary[] {
+  if (sort === "recent") {
+    return [...conversations].sort(
+      (left, right) =>
+        right.latestAt - left.latestAt || compareOrderIds(left, right)
+    )
+  }
+
+  return conversations
+    .map((conversation) => ({
+      conversation,
+      priority: getMerchantConversationPriority(conversation),
+    }))
+    .sort((left, right) => {
+      const rankDelta = left.priority.rank - right.priority.rank
+      if (rankDelta !== 0) return rankDelta
+
+      const activityDelta =
+        left.priority.rank === 6
+          ? right.priority.attentionAt - left.priority.attentionAt
+          : left.priority.attentionAt - right.priority.attentionAt
+      return (
+        activityDelta || compareOrderIds(left.conversation, right.conversation)
+      )
+    })
+    .map(({ conversation }) => conversation)
 }
 
 export function getMerchantConversationPhase(

@@ -98,6 +98,9 @@ import {
   isOrderQueueTab,
   isMerchantConversationActiveFulfillment,
   ORDER_PHASE_OPTIONS,
+  ORDER_SORT_OPTIONS,
+  sortMerchantConversations,
+  type MerchantOrderSort,
   type MerchantOrderPickupContext,
   type OrderQueueTab,
 } from "../lib/order-phase"
@@ -530,37 +533,95 @@ function emptyOrdersLabel(query: string, phase: OrderQueueTab): string {
   return "No orders yet."
 }
 
-function OrderPhaseFilter({
+function OrderListSelect<T extends string>({
+  id,
+  label,
   value,
+  options,
   onChange,
+  describedBy,
 }: {
-  value: OrderQueueTab
-  onChange: (value: OrderQueueTab) => void
+  id: string
+  label: string
+  value: T
+  options: Array<{ value: T; label: string }>
+  onChange: (value: T) => void
+  describedBy?: string
 }) {
   return (
-    <Select
-      value={value}
-      onValueChange={(nextValue) => {
-        const selectedOption = ORDER_PHASE_OPTIONS.find(
-          (option) => option.value === nextValue
-        )
-        if (selectedOption) onChange(selectedOption.value)
-      }}
-    >
-      <SelectTrigger
-        aria-label="Filter orders by status"
-        className="mt-3 h-11 rounded-xl bg-[var(--surface)] px-3 shadow-none"
+    <div className="space-y-1.5">
+      <Label htmlFor={id} className="text-xs text-[var(--text-secondary)]">
+        {label}
+      </Label>
+      <Select
+        value={value}
+        onValueChange={(nextValue) => {
+          const selected = options.find((option) => option.value === nextValue)
+          if (selected) onChange(selected.value)
+        }}
       >
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>
-        {ORDER_PHASE_OPTIONS.map((option) => (
-          <SelectItem key={option.value} value={option.value}>
-            {option.label}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
+        <SelectTrigger
+          id={id}
+          aria-label={`${label} orders`}
+          aria-describedby={describedBy}
+          className="h-11 rounded-xl bg-[var(--surface)] px-3 shadow-none"
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {options.map((option) => (
+            <SelectItem key={option.value} value={option.value}>
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  )
+}
+
+function OrderListControls({
+  idPrefix,
+  phase,
+  onPhaseChange,
+  sort,
+  onSortChange,
+}: {
+  idPrefix: string
+  phase: OrderQueueTab
+  onPhaseChange: (value: OrderQueueTab) => void
+  sort: MerchantOrderSort
+  onSortChange: (value: MerchantOrderSort) => void
+}) {
+  const filterId = `${idPrefix}-order-filter`
+  const sortId = `${idPrefix}-order-sort`
+  const sortDescriptionId = `${idPrefix}-order-sort-description`
+  return (
+    <div className="mt-3 space-y-2">
+      <OrderListSelect
+        id={filterId}
+        label="Filter"
+        value={phase}
+        options={ORDER_PHASE_OPTIONS}
+        onChange={onPhaseChange}
+      />
+      <OrderListSelect
+        id={sortId}
+        label="Sort"
+        value={sort}
+        options={ORDER_SORT_OPTIONS}
+        onChange={onSortChange}
+        describedBy={sortDescriptionId}
+      />
+      <p
+        id={sortDescriptionId}
+        className="text-pretty text-xs text-[var(--text-muted)]"
+      >
+        {sort === "priority"
+          ? "Orders needing your attention appear first."
+          : "Most recently active orders appear first."}
+      </p>
+    </div>
   )
 }
 
@@ -624,6 +685,7 @@ function OrdersPage() {
   >(null)
   const [orderSearch, setOrderSearch] = useState("")
   const [phaseTab, setPhaseTab] = useState<OrderQueueTab>(selectedQueueFromUrl)
+  const [orderSort, setOrderSort] = useState<MerchantOrderSort>("priority")
   const [ordersSheetOpen, setOrdersSheetOpen] = useState(false)
   const [orderDetailsOpen, setOrderDetailsOpen] = useState(false)
   const [messagesOpen, setMessagesOpen] = useState(false)
@@ -864,7 +926,7 @@ function OrdersPage() {
 
   const filteredConversations = useMemo(() => {
     const query = orderSearch.trim().toLowerCase()
-    return conversations.filter((conversation) => {
+    const matchingConversations = conversations.filter((conversation) => {
       if (
         phaseTab !== "all" &&
         getMerchantConversationQueue(conversation) !== phaseTab
@@ -901,7 +963,15 @@ function OrdersPage() {
         .toLowerCase()
         .includes(query)
     })
-  }, [conversations, orderSearch, phaseTab, buyerProfiles, productSearchIndex])
+    return sortMerchantConversations(matchingConversations, orderSort)
+  }, [
+    conversations,
+    orderSearch,
+    orderSort,
+    phaseTab,
+    buyerProfiles,
+    productSearchIndex,
+  ])
 
   const selectConversation = useCallback(
     (conversationId: string) => {
@@ -2327,7 +2397,13 @@ function OrdersPage() {
             </div>
             <div className="xl:shrink-0">
               <SearchBox value={orderSearch} onChange={setOrderSearch} />
-              <OrderPhaseFilter value={phaseTab} onChange={changePhaseTab} />
+              <OrderListControls
+                idPrefix="desktop"
+                phase={phaseTab}
+                onPhaseChange={changePhaseTab}
+                sort={orderSort}
+                onSortChange={setOrderSort}
+              />
             </div>
             <div className="mt-4 space-y-2 xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:pr-1">
               {filteredConversations.length === 0 && (
@@ -2358,8 +2434,8 @@ function OrdersPage() {
                     type="button"
                     className="inline-flex h-9 shrink-0 items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm font-medium text-[var(--text-primary)] transition-[border-color,background-color] hover:border-[var(--text-secondary)]"
                   >
-                    <Search className="h-4 w-4" />
-                    Search
+                    <Search className="size-4" aria-hidden="true" />
+                    Filter &amp; sort
                   </button>
                 </SheetTrigger>
               </div>
@@ -2377,7 +2453,13 @@ function OrdersPage() {
                   <SheetTitle>Your orders</SheetTitle>
                 </SheetHeader>
                 <SearchBox value={orderSearch} onChange={setOrderSearch} />
-                <OrderPhaseFilter value={phaseTab} onChange={changePhaseTab} />
+                <OrderListControls
+                  idPrefix="mobile"
+                  phase={phaseTab}
+                  onPhaseChange={changePhaseTab}
+                  sort={orderSort}
+                  onSortChange={setOrderSort}
+                />
                 <div className="mt-4 space-y-2">
                   {filteredConversations.length === 0 && (
                     <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface)] px-4 py-5 text-sm text-[var(--text-secondary)]">
