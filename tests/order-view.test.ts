@@ -4,6 +4,7 @@ import type {
   OrderLifecycle,
   OrderPickupFulfillmentSchema,
 } from "@conduit/core"
+import { config } from "@conduit/core"
 import {
   buildOrderTimeline,
   buildOrderViewModel,
@@ -14,6 +15,52 @@ import {
   isZeroCostPickupOrder,
   type OrderViewModel,
 } from "../apps/market/src/lib/order-view"
+import {
+  bolt11PaymentHashField,
+  bolt11PlainDescriptionField,
+  makeBolt11Fixture,
+} from "./support/bolt11-fixture"
+
+function merchantInvoice({
+  paymentHashByte = 7,
+  createdAt = 1_800_000_000,
+  expiryWords,
+}: {
+  paymentHashByte?: number
+  createdAt?: number
+  expiryWords?: number[]
+} = {}): string {
+  return makeBolt11Fixture({
+    hrp: "lnbc1110n",
+    createdAt,
+    fields: [
+      bolt11PaymentHashField(new Uint8Array(32).fill(paymentHashByte)),
+      bolt11PlainDescriptionField("Conduit order order-1"),
+      ...(expiryWords ? [{ tag: "x", words: expiryWords }] : []),
+    ],
+  })
+}
+
+function paymentRequest(
+  invoice: string,
+  overrides: Partial<{
+    id: string
+    createdAt: number
+    senderPubkey: string
+    recipientPubkey: string
+  }> = {}
+) {
+  return {
+    id: overrides.id ?? "invoice-1",
+    orderId: "order-1",
+    createdAt: overrides.createdAt ?? 1_800_000_001_000,
+    senderPubkey: overrides.senderPubkey ?? "merchant",
+    recipientPubkey: overrides.recipientPubkey ?? "buyer",
+    rawContent: "{}",
+    type: "payment_request",
+    payload: { invoice, amount: 111, currency: "SATS" },
+  } as never
+}
 
 function baseLifecycle(
   overrides: Partial<OrderLifecycle> = {}
@@ -288,6 +335,139 @@ describe("buildOrderViewModel", () => {
     expect(vm.orderDeliveryStatus).toBe("sent")
     expect(vm.paymentStatus).toBe("not_started")
     expect(vm.items[0].displayTitle).toBe("Sticker Pack")
+  })
+
+  it("projects the latest merchant invoice for a known pay-later order", () => {
+    const previousNetwork = config.lightningNetwork
+    config.lightningNetwork = "mainnet"
+    try {
+      const olderInvoice = merchantInvoice({ paymentHashByte: 6 })
+      const latestInvoice = merchantInvoice({ paymentHashByte: 8 })
+      const vm = buildOrderViewModel({
+        orderId: "order-1",
+        lifecycle: baseLifecycle({
+          checkoutMode: "pay_later",
+          invoiceStatus: "not_requested",
+          paymentStatus: "not_started",
+          proofDeliveryStatus: "not_started",
+        }),
+        messages: [
+          paymentRequest(olderInvoice, { id: "older", createdAt: 1 }),
+          paymentRequest(latestInvoice, { id: "latest", createdAt: 2 }),
+          paymentRequest(merchantInvoice({ paymentHashByte: 9 }), {
+            id: "buyer-spoof",
+            createdAt: 3,
+            senderPubkey: "buyer",
+            recipientPubkey: "merchant",
+          }),
+        ],
+        nowSeconds: 1_800_000_001,
+      })
+
+      expect(vm.merchantInvoiceAction).toMatchObject({
+        status: "payable",
+        messageId: "latest",
+        invoice: latestInvoice,
+        paymentHash: "08".repeat(32),
+      })
+      expect(vm.invoiceStatus).toBe("manual_required")
+      expect(vm.paymentStatus).toBe("manual_required")
+      expect(vm.actionNeeded).toBe(true)
+      expect(deriveOrderHeaderStatus(vm).primaryLabel).toBe("Action needed")
+    } finally {
+      config.lightningNetwork = previousNetwork
+    }
+  })
+
+  it("keeps invalid and expired message invoices blocked", () => {
+    const previousNetwork = config.lightningNetwork
+    config.lightningNetwork = "mainnet"
+    try {
+      const lifecycle = baseLifecycle({
+        checkoutMode: "pay_later",
+        invoiceStatus: "not_requested",
+        paymentStatus: "not_started",
+        proofDeliveryStatus: "not_started",
+      })
+      const missingPaymentHash = makeBolt11Fixture({
+        hrp: "lnbc1110n",
+        createdAt: 1_800_000_000,
+        fields: [bolt11PlainDescriptionField()],
+      })
+      const invalid = buildOrderViewModel({
+        orderId: "order-1",
+        lifecycle,
+        messages: [paymentRequest(missingPaymentHash)],
+        nowSeconds: 1_800_000_001,
+      })
+      const expired = buildOrderViewModel({
+        orderId: "order-1",
+        lifecycle,
+        messages: [paymentRequest(merchantInvoice())],
+        nowSeconds: 1_800_003_601,
+      })
+      const overflowed = buildOrderViewModel({
+        orderId: "order-1",
+        lifecycle,
+        messages: [
+          paymentRequest(
+            merchantInvoice({
+              expiryWords: new Array<number>(11).fill(31),
+            })
+          ),
+        ],
+        nowSeconds: 1_800_000_001,
+      })
+
+      expect(invalid.merchantInvoiceAction).toMatchObject({
+        status: "blocked",
+        canReport: false,
+      })
+      expect(invalid.paymentStatus).toBe("not_started")
+      expect(expired.merchantInvoiceAction).toMatchObject({
+        status: "blocked",
+        canReport: true,
+      })
+      expect(overflowed.merchantInvoiceAction).toMatchObject({
+        status: "blocked",
+        reason: expect.stringContaining("invalid expiry"),
+        canReport: false,
+      })
+      expect(deriveOrderHeaderStatus(expired).primaryLabel).toBe(
+        "Invoice unavailable"
+      )
+    } finally {
+      config.lightningNetwork = previousNetwork
+    }
+  })
+
+  it("does not create merchant invoice actions without local order state", () => {
+    const vm = buildOrderViewModel({
+      orderId: "order-1",
+      merchantPubkey: "merchant",
+      messages: [paymentRequest(merchantInvoice())],
+      nowSeconds: 1_800_000_001,
+    })
+
+    expect(vm.merchantInvoiceAction).toBeNull()
+  })
+
+  it("does not expose an invoice action for an order that was not sent", () => {
+    const vm = buildOrderViewModel({
+      orderId: "order-1",
+      lifecycle: baseLifecycle({
+        checkoutMode: "pay_later",
+        orderDeliveryStatus: "failed",
+        invoiceStatus: "not_requested",
+        paymentStatus: "not_started",
+        proofDeliveryStatus: "not_started",
+      }),
+      messages: [paymentRequest(merchantInvoice())],
+      nowSeconds: 1_800_000_001,
+    })
+
+    expect(vm.merchantInvoiceAction).toBeNull()
+    expect(vm.invoice).toBeUndefined()
   })
 
   it("preserves checkout snapshot parity for a zero pickup cost in any currency", () => {

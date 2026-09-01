@@ -14,12 +14,14 @@ import {
   runOrderPayment,
   runOrderPrivateFallback,
   signShopperCheckoutZapRequest,
+  validateMerchantInvoicePaymentAction,
   type OrderPaymentDependencies,
   type OrderPaymentContext,
 } from "../apps/market/src/lib/order-payment-service"
 import { AMBIGUOUS_PAYMENT_WARNING } from "../apps/market/src/lib/payment-rails"
 import type { OrderLifecycle } from "../packages/core/src/db"
 import {
+  bolt11PaymentHashField,
   bolt11PlainDescriptionField,
   bytesToBolt11Words,
   makeBolt11Fixture,
@@ -27,6 +29,16 @@ import {
 
 const ANON_SIGNER_SECRET = Uint8Array.from([...new Uint8Array(31), 13])
 const ANON_SIGNER_PUBKEY = getPublicKey(ANON_SIGNER_SECRET)
+function merchantInvoice(): string {
+  return makeBolt11Fixture({
+    hrp: "lnbc10n",
+    createdAt: 1_800_000_000,
+    fields: [
+      bolt11PaymentHashField(),
+      bolt11PlainDescriptionField("Conduit order external-wallet-proof-test"),
+    ],
+  })
+}
 
 function privateInvoice(amountHrp = "lnbc10n", paymentHashByte = 7): string {
   return makeBolt11Fixture({
@@ -442,6 +454,48 @@ describe("runOrderPayment", () => {
         })
       )
     ).toBe(true)
+  })
+
+  it("revalidates projected merchant invoices at the payment boundary", () => {
+    const invoice = merchantInvoice()
+    const order = lifecycle({
+      checkoutMode: "pay_later",
+      publicZapSigner: undefined,
+      invoice: undefined,
+      invoiceStatus: "not_requested",
+      paymentStatus: "not_started",
+    })
+    const action = {
+      orderId: order.orderId,
+      messageId: "invoice-message",
+      createdAt: 1_800_000_001_000,
+      senderPubkey: order.merchantPubkey,
+      recipientPubkey: order.buyerPubkey,
+      invoice,
+    }
+
+    expect(
+      validateMerchantInvoicePaymentAction(order, action, {
+        nowSeconds: 1_800_000_001,
+      })
+    ).toMatchObject({ ok: true, invoice, paymentHash: "07".repeat(32) })
+    expect(
+      validateMerchantInvoicePaymentAction(order, action, {
+        nowSeconds: 1_800_003_601,
+      })
+    ).toMatchObject({ ok: false, reason: expect.stringContaining("expired") })
+    expect(
+      validateMerchantInvoicePaymentAction(order, action, {
+        nowSeconds: 1_800_003_601,
+        allowExpired: true,
+      })
+    ).toMatchObject({ ok: true })
+    expect(
+      validateMerchantInvoicePaymentAction(order, {
+        ...action,
+        senderPubkey: "other-merchant",
+      })
+    ).toMatchObject({ ok: false })
   })
 
   it("keeps public zap proof retries public for external-wallet fallback orders", () => {

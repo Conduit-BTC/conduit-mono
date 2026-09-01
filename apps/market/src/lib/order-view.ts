@@ -1,4 +1,5 @@
 import {
+  decodeLightningInvoicePaymentHash,
   deriveOrderFlow,
   extractOrderSummary,
   getPriceSats,
@@ -6,7 +7,9 @@ import {
   isKnownOrderStatus,
   isMerchantOrderAccepted,
   isMerchantOrderPaid,
+  normalizeLightningInvoice,
   orderFlowFromCheckoutMode,
+  validateLightningInvoiceForPayment,
   type BuyerConversationSummary,
   type OrderFlow,
   type OrderAddressValidity,
@@ -54,6 +57,32 @@ export interface OrderViewItem {
   sourceShippingCost?: SourcePriceQuote
   fulfillment?: CartItemFulfillment
 }
+
+export type MerchantInvoiceAction =
+  | {
+      status: "payable"
+      orderId: string
+      messageId: string
+      createdAt: number
+      senderPubkey: string
+      recipientPubkey: string
+      invoice: string
+      paymentHash: string
+      expiresAt: number
+    }
+  | {
+      status: "blocked"
+      orderId: string
+      messageId: string
+      createdAt: number
+      senderPubkey: string
+      recipientPubkey: string
+      invoice: string
+      paymentHash?: string
+      expiresAt: number | null
+      reason: string
+      canReport: boolean
+    }
 
 export interface OrderViewModel {
   orderId: string
@@ -106,6 +135,9 @@ export interface OrderViewModel {
   /** True when the buyer has a concrete next action (drives the list marker). */
   actionNeeded: boolean
 
+  /** Latest merchant invoice projected into an Orders-owned action. */
+  merchantInvoiceAction: MerchantInvoiceAction | null
+
   /** Whether any durable lifecycle record backs this model. */
   hasLifecycle: boolean
 }
@@ -117,6 +149,7 @@ export interface BuildOrderViewModelInput {
   conversation?: BuyerConversationSummary | null
   messages?: ParsedOrderMessage[] | null
   paymentAttempt?: StoredPaymentAttempt | null
+  nowSeconds?: number
 }
 
 export function isZeroCostPickupOrder(
@@ -246,13 +279,125 @@ function latestMerchantStatus(
   return null
 }
 
+function deriveMerchantInvoiceAction({
+  orderId,
+  lifecycle,
+  summary,
+  merchantStatus,
+  nowSeconds,
+}: {
+  orderId: string
+  lifecycle: OrderLifecycle | null | undefined
+  summary: OrderSummary | null
+  merchantStatus: OrderViewModel["merchantStatus"]
+  nowSeconds: number
+}): MerchantInvoiceAction | null {
+  const evidence = summary?.latestMerchantInvoice
+  if (
+    !lifecycle ||
+    lifecycle.checkoutMode !== "pay_later" ||
+    lifecycle.orderDeliveryStatus !== "sent" ||
+    !evidence ||
+    evidence.orderId !== orderId ||
+    lifecycle.paymentStatus === "paid" ||
+    isMerchantOrderPaid({ status: merchantStatus }) ||
+    lifecycle.phase === "completed" ||
+    lifecycle.phase === "cancelled" ||
+    merchantStatus === "cancelled" ||
+    merchantStatus === "refund_requested" ||
+    isCompletedMerchantStatus(merchantStatus)
+  ) {
+    return null
+  }
+
+  const invoice = normalizeLightningInvoice(evidence.invoice)
+  const sameActiveInvoice =
+    lifecycle.invoiceStatus === "manual_required" &&
+    lifecycle.paymentStatus === "manual_required" &&
+    !!lifecycle.invoice &&
+    normalizeLightningInvoice(lifecycle.invoice).toLowerCase() ===
+      invoice.toLowerCase()
+  const awaitingMerchantInvoice =
+    lifecycle.invoiceStatus === "not_requested" &&
+    lifecycle.paymentStatus === "not_started" &&
+    !lifecycle.invoice
+  if (!awaitingMerchantInvoice && !sameActiveInvoice) return null
+
+  const common = {
+    orderId,
+    messageId: evidence.messageId,
+    createdAt: evidence.createdAt,
+    senderPubkey: evidence.senderPubkey,
+    recipientPubkey: evidence.recipientPubkey,
+    invoice,
+  }
+  if (lifecycle.totalMsats <= 0) {
+    return {
+      ...common,
+      status: "blocked",
+      expiresAt: null,
+      reason: "This order does not require a Lightning payment.",
+      canReport: false,
+    }
+  }
+
+  const paymentHash = decodeLightningInvoicePaymentHash(invoice)
+  if (!paymentHash) {
+    return {
+      ...common,
+      status: "blocked",
+      expiresAt: null,
+      reason:
+        "The invoice returned by the merchant is missing a valid payment hash.",
+      canReport: false,
+    }
+  }
+
+  const validation = validateLightningInvoiceForPayment({
+    invoice,
+    expectedAmountMsats: lifecycle.totalMsats,
+    nowSeconds,
+  })
+  if (!validation.ok) {
+    const reportValidation = validateLightningInvoiceForPayment({
+      invoice,
+      expectedAmountMsats: lifecycle.totalMsats,
+      nowSeconds,
+      allowExpired: true,
+    })
+    return {
+      ...common,
+      status: "blocked",
+      paymentHash,
+      expiresAt: validation.metadata.expiresAt,
+      reason: validation.reason,
+      canReport: reportValidation.ok,
+    }
+  }
+
+  return {
+    ...common,
+    status: "payable",
+    paymentHash,
+    expiresAt: validation.metadata.expiresAt!,
+  }
+}
+
 export function buildOrderViewModel(
   input: BuildOrderViewModelInput
 ): OrderViewModel {
   const { lifecycle, conversation, paymentAttempt } = input
   const messages = input.messages ?? conversation?.messages ?? undefined
   const summary: OrderSummary | null = messages
-    ? extractOrderSummary(messages)
+    ? extractOrderSummary(
+        messages,
+        lifecycle
+          ? {
+              buyerPubkey: lifecycle.buyerPubkey,
+              merchantPubkey: lifecycle.merchantPubkey,
+            }
+          : undefined
+      )
     : null
 
   const merchantPubkey =
@@ -338,12 +483,12 @@ export function buildOrderViewModel(
     lifecycle?.orderDeliveryStatus ?? (hasOrderMessage ? "sent" : "not_started")
 
   const invoiceFromMessages = summary?.invoiceSent ?? false
-  const invoiceStatus: OrderInvoiceStatus =
+  const baseInvoiceStatus: OrderInvoiceStatus =
     lifecycle?.invoiceStatus ??
     (invoiceFromMessages ? "received" : "not_requested")
 
   const proofFromMessages = summary?.paymentProofReceived ?? false
-  const paymentStatus: OrderPaymentStatus =
+  const basePaymentStatus: OrderPaymentStatus =
     lifecycle?.paymentStatus ?? (proofFromMessages ? "paid" : "not_started")
 
   const proofDeliveryStatus: OrderProofDeliveryStatus =
@@ -359,7 +504,10 @@ export function buildOrderViewModel(
     merchantPubkey,
     conversation?.status ?? null
   )
-  const paymentPaid = isBuyerOrderPaid({ paymentStatus, merchantStatus })
+  const basePaymentPaid = isBuyerOrderPaid({
+    paymentStatus: basePaymentStatus,
+    merchantStatus,
+  })
 
   const tracking =
     summary &&
@@ -378,10 +526,29 @@ export function buildOrderViewModel(
         ? "completed"
         : lifecycle?.phase === "completed" || lifecycle?.phase === "cancelled"
           ? lifecycle.phase
-          : paymentPaid
+          : basePaymentPaid
             ? "in_progress"
             : (lifecycle?.phase ??
               (orderDeliveryStatus === "sent" ? "in_progress" : "pending"))
+
+  const merchantInvoiceAction = deriveMerchantInvoiceAction({
+    orderId: input.orderId,
+    lifecycle,
+    summary,
+    merchantStatus,
+    nowSeconds: input.nowSeconds ?? Math.floor(Date.now() / 1_000),
+  })
+  const invoiceStatus: OrderInvoiceStatus =
+    merchantInvoiceAction?.status === "payable"
+      ? "manual_required"
+      : merchantInvoiceAction?.status === "blocked"
+        ? "failed"
+        : baseInvoiceStatus
+  const paymentStatus: OrderPaymentStatus =
+    merchantInvoiceAction?.status === "payable"
+      ? "manual_required"
+      : basePaymentStatus
+  const paymentPaid = isBuyerOrderPaid({ paymentStatus, merchantStatus })
 
   const publicReceiptNotObserved =
     paymentStatus === "ambiguous" && zapReceiptStatus === "receipt_not_observed"
@@ -394,7 +561,8 @@ export function buildOrderViewModel(
     orderDeliveryStatus === "failed" ||
     (!zeroCostPickupOrder &&
       ((!paymentPaid &&
-        (paymentStatus === "manual_required" ||
+        (invoiceStatus === "failed" ||
+          paymentStatus === "manual_required" ||
           paymentStatus === "failed" ||
           (paymentStatus === "ambiguous" && !publicReceiptNotObserved))) ||
         proofDeliveryStatus === "retry_needed" ||
@@ -445,13 +613,20 @@ export function buildOrderViewModel(
     merchantStatus,
     tracking,
     phase,
-    invoice: lifecycle?.invoice ?? paymentAttempt?.invoice,
-    paymentHash: lifecycle?.paymentHash ?? paymentAttempt?.paymentHash,
+    invoice:
+      merchantInvoiceAction?.invoice ??
+      lifecycle?.invoice ??
+      paymentAttempt?.invoice,
+    paymentHash:
+      merchantInvoiceAction?.paymentHash ??
+      lifecycle?.paymentHash ??
+      paymentAttempt?.paymentHash,
     preimage: lifecycle?.preimage ?? paymentAttempt?.preimage,
     feeMsats: lifecycle?.feeMsats ?? paymentAttempt?.feeMsats,
     zapRequestId: lifecycle?.zapRequestId ?? paymentAttempt?.zapRequestId,
     zapReceiptId: lifecycle?.zapReceiptId ?? paymentAttempt?.zapReceiptId,
     actionNeeded,
+    merchantInvoiceAction,
     hasLifecycle: !!lifecycle,
   }
 }
@@ -865,6 +1040,15 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
       primaryLabel: "Pending",
       detailLabel: "Starting order",
       actionNeeded: false,
+      showSpinner: false,
+    }
+  }
+  if (vm.merchantInvoiceAction?.status === "blocked" && !paid) {
+    return {
+      tone: "warning",
+      primaryLabel: "Invoice unavailable",
+      detailLabel: "Review before paying",
+      actionNeeded: true,
       showSpinner: false,
     }
   }

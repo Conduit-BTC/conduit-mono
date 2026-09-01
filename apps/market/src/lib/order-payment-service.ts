@@ -6,6 +6,7 @@ import {
   claimOrderLifecyclePrivateFallbackPayment,
   claimOrderPaymentProofDelivery,
   config,
+  decodeLightningInvoicePaymentHash,
   fetchLnurlInvoice,
   fetchLnurlPayMetadata,
   fetchZapInvoice,
@@ -17,6 +18,7 @@ import {
   isValidSignedPublicNostrEvent,
   isGuestOrderDataExpired,
   normalizePubkey,
+  normalizeLightningInvoice,
   ORDER_PAYMENT_CLAIM_LEASE_MS,
   ORDER_PROOF_DELIVERY_CLAIM_LEASE_MS,
   patchClaimedOrderLifecyclePayment,
@@ -445,6 +447,89 @@ export function canSubmitExternalPaymentReport(
     lifecycle.paymentStatus === "manual_required" &&
     lifecycle.proofDeliveryStatus === "not_started"
   )
+}
+
+export type MerchantInvoicePaymentAction = {
+  orderId: string
+  messageId: string
+  createdAt: number
+  senderPubkey: string
+  recipientPubkey: string
+  invoice: string
+}
+
+export type MerchantInvoicePaymentValidation =
+  | {
+      ok: true
+      invoice: string
+      paymentHash: string
+      expiresAt: number
+    }
+  | { ok: false; reason: string }
+
+/** Revalidate a projected merchant invoice at the Orders payment boundary. */
+export function validateMerchantInvoicePaymentAction(
+  lifecycle: OrderLifecycle | null | undefined,
+  action: MerchantInvoicePaymentAction,
+  options: { nowSeconds?: number; allowExpired?: boolean } = {}
+): MerchantInvoicePaymentValidation {
+  if (
+    !lifecycle ||
+    lifecycle.orderId !== action.orderId ||
+    lifecycle.buyerPubkey !== action.recipientPubkey ||
+    lifecycle.merchantPubkey !== action.senderPubkey ||
+    lifecycle.checkoutMode !== "pay_later" ||
+    lifecycle.orderDeliveryStatus !== "sent" ||
+    lifecycle.phase === "completed" ||
+    lifecycle.phase === "cancelled" ||
+    lifecycle.proofDeliveryStatus !== "not_started"
+  ) {
+    return {
+      ok: false,
+      reason: "This invoice is no longer payable from this order.",
+    }
+  }
+
+  const invoice = normalizeLightningInvoice(action.invoice)
+  const awaitingInvoice =
+    lifecycle.invoiceStatus === "not_requested" &&
+    lifecycle.paymentStatus === "not_started" &&
+    !lifecycle.invoice
+  const sameActiveInvoice =
+    lifecycle.invoiceStatus === "manual_required" &&
+    lifecycle.paymentStatus === "manual_required" &&
+    !!lifecycle.invoice &&
+    normalizeLightningInvoice(lifecycle.invoice).toLowerCase() ===
+      invoice.toLowerCase()
+  if (!awaitingInvoice && !sameActiveInvoice) {
+    return {
+      ok: false,
+      reason: "The order payment state changed. Review it before paying.",
+    }
+  }
+
+  const paymentHash = decodeLightningInvoicePaymentHash(invoice)
+  if (!paymentHash) {
+    return {
+      ok: false,
+      reason:
+        "The invoice returned by the merchant is missing a valid payment hash.",
+    }
+  }
+  const validation = validateLightningInvoiceForPayment({
+    invoice,
+    expectedAmountMsats: lifecycle.totalMsats,
+    nowSeconds: options.nowSeconds,
+    allowExpired: options.allowExpired,
+  })
+  if (!validation.ok) return validation
+
+  return {
+    ok: true,
+    invoice,
+    paymentHash,
+    expiresAt: validation.metadata.expiresAt!,
+  }
 }
 
 function emit(orderId: string, partial: Partial<OrderPaymentRuntimeState>) {
@@ -1638,21 +1723,45 @@ export async function resendOrderProof(
  */
 export async function submitExternalPaymentProof(
   orderId: string,
-  buyerIdentity?: BuyerOrderSigningIdentity
+  buyerIdentity?: BuyerOrderSigningIdentity,
+  merchantInvoiceAction?: MerchantInvoicePaymentAction
 ): Promise<OrderPaymentRuntimeState | undefined> {
   if (inFlight.has(orderId)) return runtimeStates.get(orderId)
   inFlight.add(orderId)
   let stopProofDeliveryHeartbeat: (() => void) | null = null
   try {
+    if (merchantInvoiceAction && merchantInvoiceAction.orderId !== orderId) {
+      throw new Error("The invoice does not belong to this order.")
+    }
     const lifecycle = await getOrderLifecycle(orderId)
-    if (!canSubmitExternalPaymentReport(lifecycle)) {
+    const merchantInvoiceValidation = merchantInvoiceAction
+      ? validateMerchantInvoicePaymentAction(lifecycle, merchantInvoiceAction, {
+          allowExpired: true,
+        })
+      : null
+    if (merchantInvoiceValidation && !merchantInvoiceValidation.ok) {
+      throw new Error(merchantInvoiceValidation.reason)
+    }
+    if (!merchantInvoiceAction && !canSubmitExternalPaymentReport(lifecycle)) {
       return runtimeStates.get(orderId)
     }
 
     const proofDeliveryClaimId = generateId()
     const proofClaim = await claimExternalOrderPaymentProof(
       orderId,
-      proofDeliveryClaimId
+      proofDeliveryClaimId,
+      merchantInvoiceAction && merchantInvoiceValidation?.ok && lifecycle
+        ? {
+            merchantInvoice: {
+              buyerPubkey: merchantInvoiceAction.recipientPubkey,
+              merchantPubkey: merchantInvoiceAction.senderPubkey,
+              totalMsats: lifecycle.totalMsats,
+              invoice: merchantInvoiceValidation.invoice,
+              paymentHash: merchantInvoiceValidation.paymentHash,
+              expiresAt: merchantInvoiceValidation.expiresAt,
+            },
+          }
+        : undefined
     )
     emit(orderId, { lifecycle: proofClaim.lifecycle })
     if (proofClaim.status !== "claimed") return runtimeStates.get(orderId)
