@@ -651,8 +651,7 @@ function OrdersPage() {
   )
   const [pendingDestructiveAction, setPendingDestructiveAction] =
     useState<MerchantOrderAction | null>(null)
-  const [confirmingOutOfBandPayment, setConfirmingOutOfBandPayment] =
-    useState(false)
+  const [confirmingPayment, setConfirmingPayment] = useState(false)
   const [confirmingOrganizerFallback, setConfirmingOrganizerFallback] =
     useState(false)
   const [confirmingOrganizerRelease, setConfirmingOrganizerRelease] =
@@ -2508,11 +2507,8 @@ function OrdersPage() {
                                         organizerCompletionBlocked)
                                     }
                                     onClick={() => {
-                                      if (
-                                        action.action === "confirm_payment" &&
-                                        canRequestPaymentOutOfBand
-                                      ) {
-                                        setConfirmingOutOfBandPayment(true)
+                                      if (action.action === "confirm_payment") {
+                                        setConfirmingPayment(true)
                                         return
                                       }
                                       if (action.status) {
@@ -3661,8 +3657,8 @@ function OrdersPage() {
                 </AlertDialog>
 
                 <AlertDialog
-                  open={confirmingOutOfBandPayment}
-                  onOpenChange={setConfirmingOutOfBandPayment}
+                  open={confirmingPayment}
+                  onOpenChange={setConfirmingPayment}
                 >
                   <AlertDialogContent>
                     <AlertDialogHeader>
@@ -3670,16 +3666,16 @@ function OrdersPage() {
                         Confirm payment received?
                       </AlertDialogTitle>
                       <AlertDialogDescription>
-                        Continue only after verifying the buyer's payment
-                        outside Nostr. This records payment as confirmed in your
-                        encrypted order history and unlocks fulfillment.
+                        {buyerInboxKnown
+                          ? "Continue only after checking your wallet and verifying this order's payment settled. This marks payment as confirmed, notifies the buyer, and unlocks fulfillment."
+                          : "Continue only after independently verifying this order's payment settled. This records payment as confirmed in your encrypted order history and unlocks fulfillment."}
                       </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
                       <Button
                         type="button"
                         variant="outline"
-                        onClick={() => setConfirmingOutOfBandPayment(false)}
+                        onClick={() => setConfirmingPayment(false)}
                       >
                         Keep unpaid
                       </Button>
@@ -3688,12 +3684,16 @@ function OrdersPage() {
                         disabled={orderActionPending}
                         onClick={() => {
                           advanceStatusMutation.mutate("paid")
-                          setConfirmingOutOfBandPayment(false)
+                          setConfirmingPayment(false)
                         }}
                       >
                         {advanceStatusMutation.isPending
-                          ? "Recording…"
-                          : "Confirm payment"}
+                          ? buyerInboxKnown
+                            ? "Sending…"
+                            : "Recording…"
+                          : buyerInboxKnown
+                            ? "Confirm payment"
+                            : "Record payment received"}
                       </Button>
                     </AlertDialogFooter>
                   </AlertDialogContent>
