@@ -4156,211 +4156,211 @@ function CheckoutPage() {
                 {paymentRequired &&
                   !lnurlProbing &&
                   showFastCheckoutSurface && (
-                  <div className="rounded-2xl border border-secondary-500/30 bg-secondary-500/8 p-5">
-                    <div className="flex items-center gap-2">
-                      {pricingOnlyFastCheckoutBlocker ? (
-                        <SpinnerIcon className="h-4 w-4 animate-spin text-secondary-400" />
-                      ) : (
-                        <LightningIcon className="h-4 w-4 text-secondary-400" />
-                      )}
-                      <div className="text-sm font-medium text-[var(--text-primary)]">
-                        {pricingOnlyFastCheckoutBlocker
-                          ? "Refreshing Lightning total"
-                          : "Zap out with Lightning"}
+                    <div className="rounded-2xl border border-secondary-500/30 bg-secondary-500/8 p-5">
+                      <div className="flex items-center gap-2">
+                        {pricingOnlyFastCheckoutBlocker ? (
+                          <SpinnerIcon className="h-4 w-4 animate-spin text-secondary-400" />
+                        ) : (
+                          <LightningIcon className="h-4 w-4 text-secondary-400" />
+                        )}
+                        <div className="text-sm font-medium text-[var(--text-primary)]">
+                          {pricingOnlyFastCheckoutBlocker
+                            ? "Refreshing Lightning total"
+                            : "Zap out with Lightning"}
+                        </div>
                       </div>
+                      <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
+                        {pricingOnlyFastCheckoutBlocker
+                          ? "The cart total is visible, but direct payment needs a fresh conversion before funds can move. Conduit is refreshing it now."
+                          : isGuestCheckout
+                            ? selectedZapMode === "anonymous_public_zap"
+                              ? "Conduit will deliver the private order with a guest key and request an Anon-signed public zap invoice. Payment stays in your Lightning wallet."
+                              : "Conduit will deliver the private order with a guest key and request a Lightning invoice. Payment stays in your Lightning wallet."
+                            : selectedPaymentTargetDescription}
+                      </p>
+                      {!isGuestCheckout &&
+                        selectedWallet &&
+                        !pricingOnlyFastCheckoutBlocker && (
+                          <CheckoutWalletReadiness
+                            balance={wallet.balance}
+                            budget={wallet.budget}
+                            constraint={walletPaymentConstraint}
+                            formatSats={(sats) =>
+                              shopperPricing.formatSatsAmount(sats).primary
+                            }
+                          />
+                        )}
                     </div>
-                    <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
-                      {pricingOnlyFastCheckoutBlocker
-                        ? "The cart total is visible, but direct payment needs a fresh conversion before funds can move. Conduit is refreshing it now."
-                        : isGuestCheckout
-                          ? selectedZapMode === "anonymous_public_zap"
-                            ? "Conduit will deliver the private order with a guest key and request an Anon-signed public zap invoice. Payment stays in your Lightning wallet."
-                            : "Conduit will deliver the private order with a guest key and request a Lightning invoice. Payment stays in your Lightning wallet."
-                          : selectedPaymentTargetDescription}
-                    </p>
-                    {!isGuestCheckout &&
-                      selectedWallet &&
-                      !pricingOnlyFastCheckoutBlocker && (
-                        <CheckoutWalletReadiness
-                          balance={wallet.balance}
-                          budget={wallet.budget}
-                          constraint={walletPaymentConstraint}
-                          formatSats={(sats) =>
-                            shopperPricing.formatSatsAmount(sats).primary
-                          }
-                        />
-                      )}
-                  </div>
-                )}
+                  )}
 
                 {paymentRequired &&
                   !isGuestCheckout &&
                   !lnurlProbing &&
                   fastEligible && (
-                  <div className="mt-5 rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-5">
-                    <div className="text-sm font-medium text-[var(--text-primary)]">
-                      Zap visibility
-                    </div>
-                    <div className="mt-4 grid gap-2 lg:grid-cols-3">
-                      <button
-                        type="button"
-                        aria-pressed={zapMode === "anonymous_public_zap"}
-                        disabled={
-                          !anonZapSignerAvailable ||
-                          !lnurlAllowsNostr ||
-                          !publicZapPolicy.publicZapsAllowed
-                        }
-                        onClick={() => selectZapMode("anonymous_public_zap")}
-                        className={[
-                          "rounded-xl border px-4 py-3 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
-                          zapMode === "anonymous_public_zap"
-                            ? "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)] text-[var(--text-primary)]"
-                            : !anonZapSignerAvailable ||
-                                !lnurlAllowsNostr ||
-                                !publicZapPolicy.publicZapsAllowed
-                              ? "cursor-not-allowed border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] opacity-70"
-                              : "border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]",
-                        ].join(" ")}
-                      >
-                        <span className="block font-medium">
-                          Anonymous public zap
-                        </span>
-                        <span className="mt-1 block text-xs leading-5 text-[var(--text-muted)]">
-                          {anonZapModeDescription}
-                        </span>
-                      </button>
-                      <button
-                        type="button"
-                        aria-pressed={zapMode === "public_zap_as_shopper"}
-                        disabled={
-                          !lnurlAllowsNostr ||
-                          !publicZapPolicy.publicZapsAllowed
-                        }
-                        onClick={() => selectZapMode("public_zap_as_shopper")}
-                        className={[
-                          "rounded-xl border px-4 py-3 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
-                          zapMode === "public_zap_as_shopper"
-                            ? "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)] text-[var(--text-primary)]"
-                            : !lnurlAllowsNostr ||
-                                !publicZapPolicy.publicZapsAllowed
-                              ? "cursor-not-allowed border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] opacity-70"
-                              : "border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]",
-                        ].join(" ")}
-                      >
-                        <span className="block font-medium">
-                          Public zap as shopper
-                        </span>
-                        <span className="mt-1 block text-xs leading-5 text-[var(--text-muted)]">
-                          {publicZapModeDescription}
-                        </span>
-                      </button>
-                      <button
-                        type="button"
-                        aria-pressed={zapMode === "private_checkout"}
-                        onClick={() => selectZapMode("private_checkout")}
-                        className={[
-                          "rounded-xl border px-4 py-3 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
-                          zapMode === "private_checkout"
-                            ? "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)] text-[var(--text-primary)]"
-                            : "border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]",
-                        ].join(" ")}
-                      >
-                        <span className="block font-medium">
-                          Private invoice
-                        </span>
-                        <span className="mt-1 block text-xs leading-5 text-[var(--text-muted)]">
-                          Request a normal LNURL invoice without a public zap
-                          request or public zap receipt.
-                        </span>
-                      </button>
-                    </div>
-                    {requiresPublicZap && (
-                      <div className="mt-4 grid gap-1.5">
-                        {zapContentEditable ? (
-                          <>
-                            <Label htmlFor="zap-content">
-                              Public zap note (optional)
-                            </Label>
-                            <Textarea
-                              id="zap-content"
-                              value={zapContent}
-                              onChange={(e) => {
-                                setZapContent(
-                                  truncatePublicZapNoteDraft(
-                                    e.target.value,
-                                    zapNoteMaxCodePoints
-                                  )
-                                )
-                                setZapContentEdited(true)
-                              }}
-                              rows={3}
-                              aria-describedby="zap-content-help zap-content-count"
-                              className="min-h-24 rounded-xl bg-[var(--surface)] py-2.5 text-base focus-visible:border-primary-500 focus-visible:ring-primary-500/30 sm:text-sm"
-                            />
-                            <div
-                              id="zap-content-help"
-                              className="space-y-1 text-xs leading-5 text-[var(--text-muted)]"
-                            >
-                              <p>
-                                Public zap receipts can expose this comment.
-                                Shipping address, contact details, private
-                                notes, wallet data, payment evidence, and order
-                                IDs are never added here.
-                              </p>
-                              {zapTargetCandidateAddress ? (
-                                <p>
-                                  A non-empty custom note sends the note and a
-                                  product link to the merchant&apos;s Lightning
-                                  provider when requesting an invoice. If
-                                  payment completes, a zap receipt can publish
-                                  both.
-                                </p>
-                              ) : checkoutItems.length > 1 ? (
-                                <p>
-                                  Multi-product checkout notes do not identify
-                                  products in the public receipt.
-                                </p>
-                              ) : null}
-                            </div>
-                            <p
-                              id="zap-content-count"
-                              className="text-right text-xs tabular-nums text-[var(--text-muted)]"
-                            >
-                              {zapNoteCodePointCount}/{zapNoteMaxCodePoints}
-                              {zapTargetCandidateAddress
-                                ? " note characters; product link reserved"
-                                : " characters"}
-                            </p>
-                            <span
-                              className="sr-only"
-                              role="status"
-                              aria-live="polite"
-                              aria-atomic="true"
-                            >
-                              {zapNoteCodePointCount >= zapNoteMaxCodePoints
-                                ? `Public zap note limit reached: ${zapNoteMaxCodePoints} characters.`
-                                : ""}
-                            </span>
-                          </>
-                        ) : (
-                          <>
-                            <span className="text-sm font-medium text-[var(--text-primary)]">
-                              Public zap message
-                            </span>
-                            <p className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm text-[var(--text-secondary)]">
-                              {zapContent}
-                            </p>
-                            <p className="text-xs leading-6 text-[var(--text-muted)]">
-                              {selectedZapMode === "anonymous_public_zap"
-                                ? "Anonymous zaps always use this fixed item-count message."
-                                : "The merchant requires the generic item-count message for this cart."}
-                            </p>
-                          </>
-                        )}
+                    <div className="mt-5 rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-5">
+                      <div className="text-sm font-medium text-[var(--text-primary)]">
+                        Zap visibility
                       </div>
-                    )}
-                  </div>
-                )}
+                      <div className="mt-4 grid gap-2 lg:grid-cols-3">
+                        <button
+                          type="button"
+                          aria-pressed={zapMode === "anonymous_public_zap"}
+                          disabled={
+                            !anonZapSignerAvailable ||
+                            !lnurlAllowsNostr ||
+                            !publicZapPolicy.publicZapsAllowed
+                          }
+                          onClick={() => selectZapMode("anonymous_public_zap")}
+                          className={[
+                            "rounded-xl border px-4 py-3 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
+                            zapMode === "anonymous_public_zap"
+                              ? "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)] text-[var(--text-primary)]"
+                              : !anonZapSignerAvailable ||
+                                  !lnurlAllowsNostr ||
+                                  !publicZapPolicy.publicZapsAllowed
+                                ? "cursor-not-allowed border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] opacity-70"
+                                : "border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]",
+                          ].join(" ")}
+                        >
+                          <span className="block font-medium">
+                            Anonymous public zap
+                          </span>
+                          <span className="mt-1 block text-xs leading-5 text-[var(--text-muted)]">
+                            {anonZapModeDescription}
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          aria-pressed={zapMode === "public_zap_as_shopper"}
+                          disabled={
+                            !lnurlAllowsNostr ||
+                            !publicZapPolicy.publicZapsAllowed
+                          }
+                          onClick={() => selectZapMode("public_zap_as_shopper")}
+                          className={[
+                            "rounded-xl border px-4 py-3 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
+                            zapMode === "public_zap_as_shopper"
+                              ? "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)] text-[var(--text-primary)]"
+                              : !lnurlAllowsNostr ||
+                                  !publicZapPolicy.publicZapsAllowed
+                                ? "cursor-not-allowed border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] opacity-70"
+                                : "border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]",
+                          ].join(" ")}
+                        >
+                          <span className="block font-medium">
+                            Public zap as shopper
+                          </span>
+                          <span className="mt-1 block text-xs leading-5 text-[var(--text-muted)]">
+                            {publicZapModeDescription}
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          aria-pressed={zapMode === "private_checkout"}
+                          onClick={() => selectZapMode("private_checkout")}
+                          className={[
+                            "rounded-xl border px-4 py-3 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
+                            zapMode === "private_checkout"
+                              ? "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)] text-[var(--text-primary)]"
+                              : "border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]",
+                          ].join(" ")}
+                        >
+                          <span className="block font-medium">
+                            Private invoice
+                          </span>
+                          <span className="mt-1 block text-xs leading-5 text-[var(--text-muted)]">
+                            Request a normal LNURL invoice without a public zap
+                            request or public zap receipt.
+                          </span>
+                        </button>
+                      </div>
+                      {requiresPublicZap && (
+                        <div className="mt-4 grid gap-1.5">
+                          {zapContentEditable ? (
+                            <>
+                              <Label htmlFor="zap-content">
+                                Public zap note (optional)
+                              </Label>
+                              <Textarea
+                                id="zap-content"
+                                value={zapContent}
+                                onChange={(e) => {
+                                  setZapContent(
+                                    truncatePublicZapNoteDraft(
+                                      e.target.value,
+                                      zapNoteMaxCodePoints
+                                    )
+                                  )
+                                  setZapContentEdited(true)
+                                }}
+                                rows={3}
+                                aria-describedby="zap-content-help zap-content-count"
+                                className="min-h-24 rounded-xl bg-[var(--surface)] py-2.5 text-base focus-visible:border-primary-500 focus-visible:ring-primary-500/30 sm:text-sm"
+                              />
+                              <div
+                                id="zap-content-help"
+                                className="space-y-1 text-xs leading-5 text-[var(--text-muted)]"
+                              >
+                                <p>
+                                  Public zap receipts can expose this comment.
+                                  Shipping address, contact details, private
+                                  notes, wallet data, payment evidence, and
+                                  order IDs are never added here.
+                                </p>
+                                {zapTargetCandidateAddress ? (
+                                  <p>
+                                    A non-empty custom note sends the note and a
+                                    product link to the merchant&apos;s
+                                    Lightning provider when requesting an
+                                    invoice. If payment completes, a zap receipt
+                                    can publish both.
+                                  </p>
+                                ) : checkoutItems.length > 1 ? (
+                                  <p>
+                                    Multi-product checkout notes do not identify
+                                    products in the public receipt.
+                                  </p>
+                                ) : null}
+                              </div>
+                              <p
+                                id="zap-content-count"
+                                className="text-right text-xs tabular-nums text-[var(--text-muted)]"
+                              >
+                                {zapNoteCodePointCount}/{zapNoteMaxCodePoints}
+                                {zapTargetCandidateAddress
+                                  ? " note characters; product link reserved"
+                                  : " characters"}
+                              </p>
+                              <span
+                                className="sr-only"
+                                role="status"
+                                aria-live="polite"
+                                aria-atomic="true"
+                              >
+                                {zapNoteCodePointCount >= zapNoteMaxCodePoints
+                                  ? `Public zap note limit reached: ${zapNoteMaxCodePoints} characters.`
+                                  : ""}
+                              </span>
+                            </>
+                          ) : (
+                            <>
+                              <span className="text-sm font-medium text-[var(--text-primary)]">
+                                Public zap message
+                              </span>
+                              <p className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm text-[var(--text-secondary)]">
+                                {zapContent}
+                              </p>
+                              <p className="text-xs leading-6 text-[var(--text-muted)]">
+                                {selectedZapMode === "anonymous_public_zap"
+                                  ? "Anonymous zaps always use this fixed item-count message."
+                                  : "The merchant requires the generic item-count message for this cart."}
+                              </p>
+                            </>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 {/* What happens next (order-first) */}
                 {!showFastCheckoutSurface && !lnurlProbing && (
                   <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-5">

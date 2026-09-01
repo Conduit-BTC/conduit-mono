@@ -31,8 +31,8 @@ describe("Market checkout public zap note contract", () => {
   it("explains the product-link and multi-product privacy boundary", async () => {
     const route = await readFile("apps/market/src/routes/checkout.tsx", "utf8")
 
-    expect(route).toContain("product link to the merchant&apos;s Lightning")
-    expect(route).toContain("payment completes, a zap receipt can publish")
+    expect(route).toMatch(/product link to the merchant&apos;s\s+Lightning/)
+    expect(route).toMatch(/payment completes, a zap receipt\s+can publish/)
     expect(route).toContain("Multi-product checkout notes do not identify")
     expect(route).toContain("getCheckoutZapTargetAddress")
     expect(route).toContain("zapTargetAddress: effectiveZapTargetAddress")
