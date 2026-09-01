@@ -37,7 +37,7 @@
     "dexie": "^4.4.5",
     "libphonenumber-js": "^1.13.12",
     "nostr-tools": "2.25.0",
-    "posthog-js": "^1.391.2",
+    "posthog-js": "^1.422.5",
     "tailwind-merge": "^3.6.0",
     "zod": "^4.5.1"
   },

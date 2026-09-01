@@ -954,8 +954,7 @@ async function ensurePostHog(
   posthogInitializedFor = key
   posthogClientPromise = Promise.all([
     import("posthog-js"),
-    // PostHog publishes this side-effect extension without a declaration file.
-    // @ts-expect-error The runtime module is part of the installed posthog-js package.
+    // Load the typed web-vitals extension before initializing the client.
     import("posthog-js/dist/web-vitals"),
   ])
     .then(([mod]) => {
