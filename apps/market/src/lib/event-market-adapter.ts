@@ -3,6 +3,7 @@ import {
   encodeEventMarketNaddr,
   getEventMarket,
   getProductsByIds,
+  hasExactLiveProductAvailabilityEvidence,
   normalizeCommercePrice,
   resolveEventMarketProductFulfillment,
   resolveEventMarketProductParticipation,
@@ -12,6 +13,7 @@ import {
   type PreparedProductFamily,
   type PricingRateInput,
   type Product,
+  type ProductsByIdsResult,
 } from "@conduit/core"
 import type {
   CartItem,
@@ -24,6 +26,7 @@ const EVENT_COLLECTION_KIND = 30405
 export type EventCatalogProduct = {
   product: Product
   family?: PreparedProductFamily<CommerceProductRecord>
+  evidenceState: "live" | "retained"
   participation: ReturnType<typeof resolveEventMarketProductParticipation>
   pickupFulfillment: CartPickupFulfillment | null
   /** Exact child snapshots only; parent acceptance never authorizes a child. */
@@ -40,6 +43,10 @@ export type EventCatalog = {
   pickup?: EventMarketResolution["pickup"]
   pickups: EventMarketResolution["pickups"]
   products: EventCatalogProduct[]
+  /** Organizer-accepted coordinates after stronger known negative evidence. */
+  acceptedProductCount: number
+  /** Accepted coordinates with neither safe retained nor current product data. */
+  unresolvedProductCoordinates: string[]
   productReadState: "not_requested" | "ready" | "partial" | "unavailable"
   purchaseReady: boolean
 }
@@ -94,6 +101,8 @@ function unavailableCatalog(
     state,
     reference,
     products: [],
+    acceptedProductCount: 0,
+    unresolvedProductCoordinates: [],
     pickups: [],
     productReadState: "not_requested",
     purchaseReady: false,
@@ -221,18 +230,41 @@ export function buildEventCatalogFamilyPickupFulfillments(
 }
 
 function productReadIsLive(
-  result: Awaited<ReturnType<typeof getProductsByIds>>,
+  result: ProductsByIdsResult,
   productCoordinate: string
 ): boolean {
   const diagnostic = result.diagnostics.find(
     (entry) => entry.productId === productCoordinate
   )
-  return (
-    result.meta.source !== "local_cache" &&
-    !result.meta.stale &&
-    diagnostic?.issue === null &&
-    diagnostic.coverage?.listing !== "unavailable"
+  return hasExactLiveProductAvailabilityEvidence(diagnostic, productCoordinate)
+}
+
+function productRecordIsKnownWithdrawal(
+  record: CommerceProductRecord,
+  resolution: EventMarketResolution,
+  participation: ReturnType<typeof resolveEventMarketProductParticipation>,
+  live: boolean
+): boolean {
+  if (participation.requested) return false
+
+  const acceptedEvidence = resolution.acceptedProductEvidence?.find(
+    (evidence) => evidence.productCoordinate === record.product.id
   )
+  // A retained no-ref revision can predate an accepted request that this
+  // partial read did not rediscover. Without comparable acceptance evidence,
+  // only current live product evidence is strong enough to call it withdrawn.
+  if (!acceptedEvidence) return live
+
+  const recordCreatedAt = record.eventCreatedAt * 1_000
+  if (recordCreatedAt > acceptedEvidence.createdAt) return true
+  if (recordCreatedAt < acceptedEvidence.createdAt) return false
+
+  const recordEventId = record.eventId.toLowerCase()
+  const acceptedEventId = acceptedEvidence.eventId.toLowerCase()
+  if (recordEventId === acceptedEventId) return false
+
+  // NIP-01 retains the lexicographically lowest id at equal timestamps.
+  return recordEventId < acceptedEventId
 }
 
 export function projectEventCatalogProducts({
@@ -261,10 +293,17 @@ export function projectEventCatalogProducts({
     const record = recordsByCoordinate.get(coordinate)
     if (!record?.family || !liveCoordinates.has(coordinate)) continue
 
-    const familyPickupFulfillments = buildEventCatalogFamilyPickupFulfillments(
-      record.family,
-      resolution,
-      rateInput
+    const familyPickupFulfillments = Object.fromEntries(
+      Object.entries(
+        buildEventCatalogFamilyPickupFulfillments(
+          record.family,
+          resolution,
+          rateInput
+        )
+      ).map(([childCoordinate, fulfillment]) => [
+        childCoordinate,
+        liveCoordinates.has(childCoordinate) ? fulfillment : null,
+      ])
     )
     familyPickupFulfillmentsByParent.set(coordinate, familyPickupFulfillments)
     for (const child of record.family.children) {
@@ -279,29 +318,39 @@ export function projectEventCatalogProducts({
 
   return requested.flatMap<EventCatalogProduct>((coordinate) => {
     const record = recordsByCoordinate.get(coordinate)
-    if (
-      !record ||
-      !liveCoordinates.has(coordinate) ||
-      foldedChildCoordinates.has(coordinate)
-    ) {
+    if (!record || foldedChildCoordinates.has(coordinate)) {
       return []
     }
 
     const { product } = record
+    const live = liveCoordinates.has(coordinate)
+    const participation = resolveEventMarketProductParticipation(
+      product,
+      resolution
+    )
+    // A selected signed listing revision that no longer requests this
+    // collection is stronger negative evidence than older organizer-retained
+    // acceptance, even when the latest relay read could not reconfirm it.
+    if (
+      productRecordIsKnownWithdrawal(record, resolution, participation, live)
+    ) {
+      return []
+    }
+
     return [
       {
         product,
         family: record.family,
-        participation: resolveEventMarketProductParticipation(
-          product,
-          resolution
-        ),
-        pickupFulfillment: buildPickupFulfillmentSnapshot(
-          product,
-          resolution,
-          record,
-          rateInput
-        ),
+        evidenceState: live ? "live" : "retained",
+        participation,
+        pickupFulfillment: live
+          ? buildPickupFulfillmentSnapshot(
+              product,
+              resolution,
+              record,
+              rateInput
+            )
+          : null,
         familyPickupFulfillments:
           familyPickupFulfillmentsByParent.get(coordinate),
       },
@@ -309,16 +358,45 @@ export function projectEventCatalogProducts({
   })
 }
 
-async function hydrateAcceptedProducts(
-  resolution: EventMarketResolution,
-  rateInput: PricingRateInput
-): Promise<Pick<EventCatalog, "products" | "productReadState">> {
-  const requested = resolution.acceptedProductCoordinates
+function productReadIsDefinitivelyAbsent(
+  result: ProductsByIdsResult,
+  productCoordinate: string
+): boolean {
+  const issue = result.diagnostics.find(
+    (entry) => entry.productId === productCoordinate
+  )?.issue
+  return (
+    issue === "invalid_product_reference" ||
+    issue === "product_missing" ||
+    issue === "listing_filtered"
+  )
+}
+
+export function projectEventCatalogHydration({
+  resolution,
+  result,
+  rateInput = null,
+}: {
+  resolution: EventMarketResolution
+  result: ProductsByIdsResult
+  rateInput?: PricingRateInput
+}): Pick<
+  EventCatalog,
+  | "products"
+  | "acceptedProductCount"
+  | "unresolvedProductCoordinates"
+  | "productReadState"
+> {
+  const requested = resolution.organizerProductCoordinates
   if (requested.length === 0) {
-    return { products: [], productReadState: "ready" }
+    return {
+      products: [],
+      acceptedProductCount: 0,
+      unresolvedProductCoordinates: [],
+      productReadState: "ready",
+    }
   }
 
-  const result = await getProductsByIds(requested)
   const recordsByCoordinate = new Map(
     result.data.map((record) => [record.product.id, record])
   )
@@ -328,23 +406,84 @@ async function hydrateAcceptedProducts(
       return !!record && productReadIsLive(result, coordinate)
     })
   )
+  const omittedCoordinates = new Set(
+    requested.filter((coordinate) => {
+      if (productReadIsDefinitivelyAbsent(result, coordinate)) return true
+      const record = recordsByCoordinate.get(coordinate)
+      if (!record) return false
+      const participation = resolveEventMarketProductParticipation(
+        record.product,
+        resolution
+      )
+      return productRecordIsKnownWithdrawal(
+        record,
+        resolution,
+        participation,
+        liveCoordinates.has(coordinate)
+      )
+    })
+  )
+  const displayCoordinates = requested.filter(
+    (coordinate) => !omittedCoordinates.has(coordinate)
+  )
+  const unresolvedProductCoordinates = displayCoordinates.filter(
+    (coordinate) => !recordsByCoordinate.has(coordinate)
+  )
   const products = projectEventCatalogProducts({
-    requested,
+    requested: displayCoordinates,
     records: result.data,
     liveCoordinates,
     resolution,
     rateInput,
   })
+  const uncertainCoordinates = displayCoordinates.filter(
+    (coordinate) => !liveCoordinates.has(coordinate)
+  )
 
   return {
     products,
+    acceptedProductCount: displayCoordinates.length,
+    unresolvedProductCoordinates,
     productReadState:
-      liveCoordinates.size === requested.length
+      uncertainCoordinates.length === 0
         ? "ready"
-        : result.meta.source === "local_cache" || result.meta.stale
+        : liveCoordinates.size === 0 &&
+            (result.meta.source === "local_cache" || result.meta.stale)
           ? "unavailable"
           : "partial",
   }
+}
+
+async function hydrateAcceptedProducts(
+  resolution: EventMarketResolution,
+  rateInput: PricingRateInput
+): Promise<
+  Pick<
+    EventCatalog,
+    | "products"
+    | "acceptedProductCount"
+    | "unresolvedProductCoordinates"
+    | "productReadState"
+  >
+> {
+  const requested = resolution.organizerProductCoordinates
+  if (requested.length === 0) {
+    return {
+      products: [],
+      acceptedProductCount: 0,
+      unresolvedProductCoordinates: [],
+      productReadState: "ready",
+    }
+  }
+
+  const result = await getProductsByIds(requested, {
+    includeMarketHidden: true,
+  })
+  return projectEventCatalogHydration({
+    resolution,
+    result,
+    rateInput,
+  })
 }
 
 export async function loadEventCatalog(
@@ -369,6 +508,8 @@ export async function loadEventCatalog(
     pickup: resolution.pickup,
     pickups: resolution.pickups,
     products: [],
+    acceptedProductCount: resolution.organizerProductCoordinates.length,
+    unresolvedProductCoordinates: [],
     productReadState: "not_requested",
     purchaseReady: false,
   }

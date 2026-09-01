@@ -192,8 +192,18 @@ function EventCatalogProductCard({
       />
       {!pickupFulfillment ? (
         <div className="rounded-lg border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] px-3 py-2 text-xs leading-5 text-[var(--text-secondary)]">
-          Organizer accepted; this selected product or option has no current
-          exact merchant pickup link. Checkout is disabled.
+          {entry.evidenceState === "retained" ? (
+            <>
+              Previously verified product details are shown while current relay
+              evidence is unavailable. Checkout is disabled until the exact
+              product and pickup terms are confirmed again.
+            </>
+          ) : (
+            <>
+              Organizer accepted; this selected product or option has no current
+              exact merchant pickup link. Checkout is disabled.
+            </>
+          )}
         </div>
       ) : handoff ? (
         <details className="group/pickup rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] text-xs leading-5 text-[var(--text-secondary)]">
@@ -685,8 +695,8 @@ function EventCatalogPage() {
             </p>
           </div>
           <Badge variant="outline">
-            {catalog.products.length} product
-            {catalog.products.length === 1 ? "" : "s"}
+            {catalog.acceptedProductCount} product
+            {catalog.acceptedProductCount === 1 ? "" : "s"}
           </Badge>
         </div>
 
@@ -695,9 +705,9 @@ function EventCatalogPage() {
             role="status"
             className="mt-5 rounded-xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] p-4 text-sm leading-6 text-[var(--text-secondary)]"
           >
-            Some accepted products could not be confirmed from live relay
-            evidence. Missing products stay hidden and checkout stays closed for
-            them.
+            Relay coverage is degraded. Previously verified accepted products
+            remain visible, while checkout stays closed for anything without
+            current exact product and pickup evidence.
           </div>
         ) : null}
 
@@ -711,10 +721,9 @@ function EventCatalogPage() {
           </div>
         ) : null}
 
-        {catalog.products.length === 0 ? (
+        {catalog.acceptedProductCount === 0 ? (
           <div className="mt-6 rounded-2xl border border-dashed border-[var(--border)] bg-[var(--surface)] p-8 text-center text-sm leading-6 text-[var(--text-secondary)]">
-            The organizer has not accepted any currently verifiable products for
-            this event.
+            The organizer has not accepted any products for this event.
           </div>
         ) : (
           <ul className={`mt-6 ${PRODUCT_GRID_CLASS_NAME}`}>
@@ -737,6 +746,21 @@ function EventCatalogPage() {
                 </li>
               )
             })}
+            {catalog.unresolvedProductCoordinates.map((coordinate) => (
+              <li
+                key={coordinate}
+                className="min-w-0 rounded-xl border border-dashed border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] p-5 text-sm leading-6 text-[var(--text-secondary)]"
+              >
+                <div className="font-medium text-[var(--text-primary)]">
+                  Accepted product details temporarily unavailable
+                </div>
+                <p className="mt-2">
+                  The organizer's acceptance is still recorded, but no safe
+                  product details are available to show yet. Checkout remains
+                  disabled for this item.
+                </p>
+              </li>
+            ))}
           </ul>
         )}
       </section>

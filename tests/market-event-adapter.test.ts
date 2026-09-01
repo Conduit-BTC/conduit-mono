@@ -5,6 +5,7 @@ import {
   type CommerceProductRecord,
   type EventMarketResolution,
   type Product,
+  type ProductsByIdsResult,
 } from "@conduit/core"
 import {
   buildPickupFulfillmentSnapshot,
@@ -13,6 +14,7 @@ import {
   getCartEventFulfillmentBlock,
   getProductEventMarketCandidates,
   pickupItemMatchesCanonicalSnapshot,
+  projectEventCatalogHydration,
   projectEventCatalogProducts,
   resolveProductCartFulfillment,
   type EventCatalog,
@@ -124,6 +126,58 @@ function product(overrides: Partial<Product> = {}): Product {
   }
 }
 
+function productRead(
+  options: {
+    product?: Product
+    includeRecord?: boolean
+    issue?: ProductsByIdsResult["diagnostics"][number]["issue"]
+    source?: ProductsByIdsResult["meta"]["source"]
+    stale?: boolean
+    listing?: "complete" | "partial" | "unavailable"
+    eventId?: string
+    eventCreatedAt?: number
+  } = {}
+): ProductsByIdsResult {
+  return {
+    data:
+      options.includeRecord === false
+        ? []
+        : [
+            {
+              product: options.product ?? product(),
+              addressId: productCoordinate,
+              eventId: options.eventId ?? "4".repeat(64),
+              eventCreatedAt: options.eventCreatedAt ?? 103,
+              dTag: "coffee",
+            },
+          ],
+    meta: {
+      source: options.source ?? "commerce",
+      degraded: (options.issue ?? null) !== null,
+      stale: options.stale ?? false,
+      capabilities: {
+        sortModes: [],
+        textSearch: false,
+        protectedSummaries: false,
+        canonicalFreshness: true,
+        cursorPagination: false,
+      },
+      fetchedAt: 1,
+    },
+    diagnostics: [
+      {
+        productId: productCoordinate,
+        addressId: productCoordinate,
+        issue: options.issue ?? null,
+        coverage: {
+          listing: options.listing ?? "complete",
+          deletion: "complete",
+        },
+      },
+    ],
+  }
+}
+
 function pickupSnapshot(): CartPickupFulfillment {
   const snapshot = buildPickupFulfillmentSnapshot(
     product(),
@@ -158,6 +212,7 @@ function catalog(
     products: [
       {
         product: catalogProduct,
+        evidenceState: "live",
         participation: resolveEventMarketProductParticipation(
           catalogProduct,
           resolution
@@ -165,6 +220,8 @@ function catalog(
         pickupFulfillment: snapshot,
       },
     ],
+    acceptedProductCount: 1,
+    unresolvedProductCoordinates: [],
     productReadState: "ready",
     purchaseReady: true,
     ...overrides,
@@ -193,6 +250,186 @@ function clonePickupItem(
 }
 
 describe("Market event adapter", () => {
+  it("keeps a retained organizer-accepted product visible without making it purchasable", () => {
+    const projection = projectEventCatalogHydration({
+      resolution: market("stale"),
+      result: productRead({
+        issue: "lookup_unavailable",
+        source: "local_cache",
+        stale: true,
+        listing: "unavailable",
+      }),
+    })
+
+    expect(projection.productReadState).toBe("unavailable")
+    expect(projection.acceptedProductCount).toBe(1)
+    expect(projection.unresolvedProductCoordinates).toEqual([])
+    expect(projection.products).toHaveLength(1)
+    expect(projection.products[0]!.evidenceState).toBe("retained")
+    expect(projection.products[0]!.pickupFulfillment).toBeNull()
+  })
+
+  it("keeps exact per-product live evidence purchasable when the wider batch is stale", () => {
+    const projection = projectEventCatalogHydration({
+      resolution: market(),
+      result: productRead({ stale: true }),
+    })
+
+    expect(projection.productReadState).toBe("ready")
+    expect(projection.products).toHaveLength(1)
+    expect(projection.products[0]!.evidenceState).toBe("live")
+    expect(projection.products[0]!.pickupFulfillment).not.toBeNull()
+  })
+
+  it("preserves unresolved acceptance under an unavailable read without inventing product details", () => {
+    const projection = projectEventCatalogHydration({
+      resolution: market("partial"),
+      result: productRead({
+        includeRecord: false,
+        issue: "lookup_unavailable",
+        source: "local_cache",
+        stale: true,
+        listing: "unavailable",
+      }),
+    })
+
+    expect(projection.productReadState).toBe("unavailable")
+    expect(projection.acceptedProductCount).toBe(1)
+    expect(projection.products).toEqual([])
+    expect(projection.unresolvedProductCoordinates).toEqual([productCoordinate])
+  })
+
+  it("distinguishes a complete empty organizer collection from degraded hydration", () => {
+    const resolution: EventMarketResolution = {
+      ...market(),
+      collection: {
+        ...market().collection!,
+        productCoordinates: [],
+      },
+      organizerProductCoordinates: [],
+      acceptedProductCoordinates: [],
+      organizerOnlyProductCoordinates: [],
+      participationRequests: [],
+    }
+    const projection = projectEventCatalogHydration({
+      resolution,
+      result: { ...productRead({ includeRecord: false }), diagnostics: [] },
+    })
+
+    expect(projection.productReadState).toBe("ready")
+    expect(projection.acceptedProductCount).toBe(0)
+    expect(projection.products).toEqual([])
+    expect(projection.unresolvedProductCoordinates).toEqual([])
+  })
+
+  it("omits products with definitive missing evidence or a live merchant withdrawal", () => {
+    const deleted = projectEventCatalogHydration({
+      resolution: market(),
+      result: productRead({
+        includeRecord: false,
+        issue: "product_missing",
+      }),
+    })
+    expect(deleted.acceptedProductCount).toBe(0)
+    expect(deleted.products).toEqual([])
+
+    const withdrawnResolution: EventMarketResolution = {
+      ...market(),
+      acceptedProductCoordinates: [],
+      organizerOnlyProductCoordinates: [productCoordinate],
+      participationRequests: [],
+    }
+    const withdrawn = projectEventCatalogHydration({
+      resolution: withdrawnResolution,
+      result: productRead({ product: product({ collectionRefs: [] }) }),
+    })
+    expect(withdrawn.acceptedProductCount).toBe(0)
+    expect(withdrawn.products).toEqual([])
+  })
+
+  it("keeps a retained signed merchant withdrawal out of accepted products", () => {
+    const withdrawnResolution: EventMarketResolution = {
+      ...market("partial"),
+      acceptedProductEvidence: [
+        {
+          productCoordinate,
+          eventId: "f".repeat(64),
+          createdAt: 103_000,
+          shippingOptionCoordinates: [pickupCoordinate],
+        },
+      ],
+    }
+    const withdrawn = projectEventCatalogHydration({
+      resolution: withdrawnResolution,
+      result: productRead({
+        product: product({ collectionRefs: [] }),
+        issue: "lookup_unavailable",
+        source: "local_cache",
+        stale: true,
+        listing: "unavailable",
+      }),
+    })
+
+    expect(withdrawn.acceptedProductCount).toBe(0)
+    expect(withdrawn.products).toEqual([])
+    expect(withdrawn.unresolvedProductCoordinates).toEqual([])
+    expect(withdrawn.productReadState).toBe("ready")
+  })
+
+  it("does not let an older retained no-ref revision suppress newer accepted evidence", () => {
+    const retainedAccepted = projectEventCatalogHydration({
+      resolution: {
+        ...market("partial"),
+        acceptedProductEvidence: [
+          {
+            productCoordinate,
+            eventId: "3".repeat(64),
+            createdAt: 104_000,
+            shippingOptionCoordinates: [pickupCoordinate],
+          },
+        ],
+      },
+      result: productRead({
+        product: product({ collectionRefs: [] }),
+        issue: "lookup_unavailable",
+        source: "local_cache",
+        stale: true,
+        listing: "unavailable",
+        eventId: "4".repeat(64),
+        eventCreatedAt: 103,
+      }),
+    })
+
+    expect(retainedAccepted.acceptedProductCount).toBe(1)
+    expect(retainedAccepted.products).toHaveLength(1)
+    expect(retainedAccepted.products[0]!.evidenceState).toBe("retained")
+    expect(retainedAccepted.products[0]!.pickupFulfillment).toBeNull()
+  })
+
+  it("does not infer withdrawal from retained no-ref data without comparable acceptance evidence", () => {
+    const retainedAccepted = projectEventCatalogHydration({
+      resolution: {
+        ...market("partial"),
+        acceptedProductCoordinates: [],
+        acceptedProductEvidence: [],
+        organizerOnlyProductCoordinates: [productCoordinate],
+        participationRequests: [],
+      },
+      result: productRead({
+        product: product({ collectionRefs: [] }),
+        issue: "lookup_unavailable",
+        source: "local_cache",
+        stale: true,
+        listing: "unavailable",
+      }),
+    })
+
+    expect(retainedAccepted.acceptedProductCount).toBe(1)
+    expect(retainedAccepted.products).toHaveLength(1)
+    expect(retainedAccepted.products[0]!.evidenceState).toBe("retained")
+    expect(retainedAccepted.products[0]!.pickupFulfillment).toBeNull()
+  })
+
   it("folds exact accepted children into a requested parent family without reordering atomic children", () => {
     const parent = product({ type: "variable" })
     const childCoordinates = [
@@ -868,6 +1105,8 @@ describe("Market event adapter", () => {
         reference: collectionCoordinate,
         canonicalNaddr: "naddr1test",
         products: [],
+        acceptedProductCount: 0,
+        unresolvedProductCoordinates: [],
         pickups: [],
         productReadState: "not_requested",
         purchaseReady: false,
