@@ -594,7 +594,7 @@ describe("publishPrivateMessage", () => {
         recipientPubkey: "recipient",
         signer,
         rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
-        recipientInboxRelays: ["wss://recipient.inbox.conduit.market"],
+        recipientInboxRelays: ["wss://recipient.inbox.example"],
         giftWrapFn: (async () => {
           wrapped = true
           return wrap("unexpected-wrap")
@@ -654,7 +654,7 @@ describe("publishPrivateMessage", () => {
           user: async () => ({ pubkey: "other" }),
         } as unknown as NDKSigner,
         rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
-        recipientInboxRelays: ["wss://recipient.inbox.example"],
+        recipientInboxRelays: ["wss://recipient.inbox.conduit.market"],
         giftWrapFn: (async () => {
           wrapped = true
           return wrap("unexpected")
@@ -788,6 +788,7 @@ describe("publishPrivateMessage", () => {
     const wrappedRecipients: string[] = []
     const publishRelays: Array<readonly string[]> = []
     let senderReadinessChecks = 0
+    let visibilityChecks = 0
 
     const result = await publishPrivateMessage({
       rumor: companion,
@@ -800,6 +801,10 @@ describe("publishPrivateMessage", () => {
       selfCopy: false,
       recipientInboxRelays: ["wss://merchant.inbox.conduit.market"],
       validatedGuestOrderCompanionScope: scope,
+      signerInteraction: "application_owned",
+      waitForSignerVisibility: async () => {
+        visibilityChecks += 1
+      },
       inspectOwnInboxReadiness: async () => {
         senderReadinessChecks += 1
         return { state: "lookup_unavailable" }
@@ -819,6 +824,7 @@ describe("publishPrivateMessage", () => {
     })
 
     expect(senderReadinessChecks).toBe(0)
+    expect(visibilityChecks).toBe(0)
     expect(wrappedRecipients).toEqual(["merchant"])
     expect(publishRelays).toEqual([["wss://merchant.inbox.conduit.market"]])
     expect(result.wrappedToSelf).toBeNull()
@@ -826,6 +832,157 @@ describe("publishPrivateMessage", () => {
     expect(result.recipientDelivery.successfulRelayUrls).toEqual([
       "wss://merchant.inbox.conduit.market",
     ])
+  })
+
+  it("does not repeat recipient wrapping after an ambiguous bridge error", async () => {
+    let wrapCalls = 0
+
+    await expect(
+      publishPrivateMessage({
+        rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE),
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer,
+        rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+        recipientInboxRelays: ["wss://recipient.inbox.conduit.market"],
+        inspectOwnInboxReadiness: async () => ({
+          state: "ready",
+          eventId: "a".repeat(64),
+          relayUrls: ["wss://sender.inbox.conduit.market"],
+          stale: false,
+        }),
+        giftWrapFn: (async () => {
+          wrapCalls += 1
+          throw new Error(
+            "The message port closed before a response was received."
+          )
+        }) as never,
+      })
+    ).rejects.toThrow("message port closed")
+
+    expect(wrapCalls).toBe(1)
+  })
+
+  it("waits for visibility before dispatching a sequential sender self-copy", async () => {
+    let visible = true
+    let releaseVisibility = () => {}
+    const visibilityRestored = new Promise<void>((resolve) => {
+      releaseVisibility = resolve
+    })
+    const wrappedRecipients: string[] = []
+    let visibilityChecks = 0
+    const interactiveSigner = {
+      user: async () => ({ pubkey: "sender" }),
+      encrypt: async (recipient: { pubkey: string }) => {
+        wrappedRecipients.push(recipient.pubkey)
+        if (recipient.pubkey === "recipient") visible = false
+        return "ciphertext"
+      },
+    } as unknown as NDKSigner
+
+    const publishing = publishPrivateMessage({
+      rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE),
+      senderPubkey: "sender",
+      recipientPubkey: "recipient",
+      signer: interactiveSigner,
+      rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+      signerInteraction: "external",
+      recipientInboxRelays: ["wss://recipient.inbox.conduit.market"],
+      inspectOwnInboxReadiness: async () => ({
+        state: "ready",
+        eventId: "a".repeat(64),
+        relayUrls: ["wss://sender.inbox.conduit.market"],
+        stale: false,
+      }),
+      waitForSignerVisibility: async () => {
+        visibilityChecks += 1
+        if (!visible) await visibilityRestored
+      },
+      giftWrapFn: (async (_rumor, recipient, workflowSigner) => {
+        await workflowSigner.encrypt(recipient, "seal", "nip44")
+        return wrap(`wrap-${recipient.pubkey}`)
+      }) as never,
+      publishFn: (async (_event, options) => ({
+        successfulRelayUrls: [options.exclusiveRelayUrls?.[0]],
+        failedRelayUrls: [],
+      })) as never,
+    })
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(wrappedRecipients).toEqual(["recipient"])
+
+    visible = true
+    releaseVisibility()
+    const result = await publishing
+
+    expect(wrappedRecipients).toEqual(["recipient", "sender"])
+    expect(visibilityChecks).toBe(2)
+    expect(result.wrappedToSelf?.id).toBe("wrap-sender")
+  })
+
+  it("waits between one gift wrap's external encryption and seal signature", async () => {
+    let visible = true
+    let restoreVisibility = () => {}
+    const visibleAgain = new Promise<void>((resolve) => {
+      restoreVisibility = resolve
+    })
+    let encryptCalls = 0
+    let signCalls = 0
+    let visibilityChecks = 0
+    const interactiveSigner = {
+      user: async () => ({ pubkey: "sender" }),
+      encrypt: async () => {
+        encryptCalls += 1
+        visible = false
+        return "ciphertext"
+      },
+      sign: async () => {
+        signCalls += 1
+        return "signature"
+      },
+    } as unknown as NDKSigner
+
+    const publishing = publishPrivateMessage({
+      rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE),
+      senderPubkey: "sender",
+      recipientPubkey: "recipient",
+      signer: interactiveSigner,
+      signerInteraction: "external",
+      rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+      selfCopy: false,
+      recipientInboxRelays: ["wss://recipient.inbox.conduit.market"],
+      inspectOwnInboxReadiness: async () => ({
+        state: "ready",
+        eventId: "a".repeat(64),
+        relayUrls: ["wss://sender.inbox.conduit.market"],
+        stale: false,
+      }),
+      waitForSignerVisibility: async () => {
+        visibilityChecks += 1
+        if (!visible) await visibleAgain
+      },
+      giftWrapFn: (async (_message, recipient, workflowSigner) => {
+        await workflowSigner.encrypt(recipient, "seal", "nip44")
+        await workflowSigner.sign({} as never)
+        return wrap("wrap-recipient")
+      }) as never,
+      publishFn: (async (_event, options) => ({
+        successfulRelayUrls: [options.exclusiveRelayUrls?.[0]],
+        failedRelayUrls: [],
+      })) as never,
+    })
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(encryptCalls).toBe(1)
+    expect(signCalls).toBe(0)
+
+    visible = true
+    restoreVisibility()
+    await publishing
+
+    expect(encryptCalls).toBe(1)
+    expect(signCalls).toBe(1)
+    expect(visibilityChecks).toBe(2)
   })
 
   it("keeps the guest companion capability one-use and recipient-inbox strict", async () => {

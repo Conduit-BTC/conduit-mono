@@ -253,6 +253,26 @@ describe("shopper zap signing authority", () => {
       } as never)
     ).rejects.toThrow("invalid public zap request")
   })
+
+  it("does not repeat shopper zap signing after an ambiguous bridge error", async () => {
+    const delegate = NDKPrivateKeySigner.generate()
+    const shopper = await delegate.user()
+    let signCalls = 0
+
+    await expect(
+      signShopperCheckoutZapRequest(draft, shopper.pubkey, {
+        user: async () => shopper,
+        sign: async () => {
+          signCalls += 1
+          throw new Error(
+            "The message port closed before a response was received."
+          )
+        },
+      } as never)
+    ).rejects.toThrow("message port closed")
+
+    expect(signCalls).toBe(1)
+  })
 })
 
 function mockImmediateOrderLifecycleTransaction(): () => void {

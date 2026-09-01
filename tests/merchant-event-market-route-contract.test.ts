@@ -71,6 +71,9 @@ describe("merchant organizer event market route", () => {
     ).text()
 
     expect(editor).toContain("Confirm each organizer record in your signer")
+    expect(route).toContain(
+      'if (record.record === "collection") setPublishState("publishing")'
+    )
     expect(editor).toContain("Everything here is published publicly")
     expect(route).toContain("Organizer discovery is degraded")
     expect(route).toContain("No missing event is inferred")

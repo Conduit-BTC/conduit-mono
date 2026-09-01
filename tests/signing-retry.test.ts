@@ -1,12 +1,12 @@
 import { describe, expect, it } from "bun:test"
 
+import * as signingRetry from "../packages/core/src/protocol/signing-retry"
 import {
   isTransientNip07BridgeError,
-  signNdkEventWithTransientNip07Retry,
-  withTransientNip07Retry,
+  withTransientNip07ReadinessRetry,
 } from "../packages/core/src/protocol/signing-retry"
 
-describe("transient NIP-07 signing retry", () => {
+describe("transient NIP-07 readiness retry", () => {
   it("recognizes browser extension bridge readiness failures", () => {
     expect(
       isTransientNip07BridgeError(
@@ -18,12 +18,15 @@ describe("transient NIP-07 signing retry", () => {
     expect(isTransientNip07BridgeError(new Error("User rejected access"))).toBe(
       false
     )
+    expect(
+      isTransientNip07BridgeError(new Error("NIP-07 extension not available"))
+    ).toBe(true)
   })
 
-  it("retries transient bridge failures before returning the operation result", async () => {
+  it("retries only a caller-provided readiness probe", async () => {
     let calls = 0
 
-    const result = await withTransientNip07Retry(
+    const result = await withTransientNip07ReadinessRetry(
       async () => {
         calls += 1
         if (calls === 1) {
@@ -44,7 +47,7 @@ describe("transient NIP-07 signing retry", () => {
     let calls = 0
 
     await expect(
-      withTransientNip07Retry(
+      withTransientNip07ReadinessRetry(
         async () => {
           calls += 1
           throw new Error("User rejected access")
@@ -56,25 +59,10 @@ describe("transient NIP-07 signing retry", () => {
     expect(calls).toBe(1)
   })
 
-  it("retries direct NDK event signing on transient bridge failures", async () => {
-    let calls = 0
-    const event = {
-      sign: async () => {
-        calls += 1
-        if (calls === 1) {
-          throw new Error(
-            "The message port closed before a response was received."
-          )
-        }
-        return "sig"
-      },
-    }
-
-    await expect(
-      signNdkEventWithTransientNip07Retry(event as never, undefined, {
-        retryDelaysMs: [0],
-      })
-    ).resolves.toBe("sig")
-    expect(calls).toBe(2)
+  it("does not export helpers that can replay a complete signer operation", () => {
+    expect(signingRetry).not.toHaveProperty("withTransientNip07Retry")
+    expect(signingRetry).not.toHaveProperty(
+      "signNdkEventWithTransientNip07Retry"
+    )
   })
 })

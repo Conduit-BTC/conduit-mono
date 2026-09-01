@@ -27,7 +27,6 @@ import {
   recordOrderPaymentPreparationFailure,
   renewOrderLifecyclePaymentClaim,
   renewOrderPaymentProofDeliveryClaim,
-  signNdkEventWithTransientNip07Retry,
   validateAnonZapRequestDraft,
   validateLightningInvoiceForPayment,
   waitForZapReceipt,
@@ -90,7 +89,7 @@ export async function signShopperCheckoutZapRequest(
   zapRequest.created_at = draft.createdAt
   zapRequest.content = draft.content
   zapRequest.tags = draft.tags
-  await signNdkEventWithTransientNip07Retry(zapRequest, signer)
+  await zapRequest.sign(signer)
   const rawEvent = zapRequest.rawEvent() as SignedPublicNostrEvent
   if (
     rawEvent.pubkey !== expectedBuyerPubkey ||
@@ -623,7 +622,8 @@ async function deliverReceiptLinkedProof(
         proofRumor,
         ndk,
         locked.merchantPubkey,
-        buyerIdentity ?? locked.buyerPubkey
+        buyerIdentity ?? locked.buyerPubkey,
+        { signerInteraction: "background_external" }
       )
       proofPublished = true
     } catch {
@@ -1332,7 +1332,8 @@ async function runOrderPaymentInternal(
           proofRumor,
           ndk,
           ctx.merchantPubkey,
-          ctx.buyerIdentity ?? ctx.buyerPubkey
+          ctx.buyerIdentity ?? ctx.buyerPubkey,
+          { signerInteraction: "background_external" }
         )
         proofPublished = true
         deliveryNotice = getDeliveryNotice(proofDelivery, "Payment proof")
@@ -1596,7 +1597,8 @@ export async function resendOrderProof(
         proofRumor,
         ndk,
         locked.merchantPubkey,
-        buyerIdentity ?? locked.buyerPubkey
+        buyerIdentity ?? locked.buyerPubkey,
+        { signerInteraction: "background_external" }
       )
       proofPublished = true
     } catch {
@@ -1696,7 +1698,8 @@ export async function submitExternalPaymentProof(
         proofRumor,
         ndk,
         locked.merchantPubkey,
-        buyerIdentity ?? locked.buyerPubkey
+        buyerIdentity ?? locked.buyerPubkey,
+        { signerInteraction: "background_external" }
       )
       proofPublished = true
     } catch {

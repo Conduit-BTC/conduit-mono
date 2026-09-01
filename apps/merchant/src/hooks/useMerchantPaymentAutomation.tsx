@@ -167,6 +167,7 @@ export function MerchantPaymentAutomationProvider({
             tags: [["status", "paid"]],
             payload: { status: "paid" },
             delivery: candidate.delivery,
+            signerInteraction: "background_external",
           })
         },
       })

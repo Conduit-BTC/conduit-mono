@@ -28,7 +28,6 @@ import {
   type PublishWithPlannerResult,
 } from "./relay-publish"
 import { getCommerceWriteRelayUrls, normalizeRelayUrl } from "./relay-settings"
-import { signNdkEventWithTransientNip07Retry } from "./signing-retry"
 
 export const SHOPPER_PRESETS_D_TAG = "conduit/shopper-presets"
 export const SHOPPER_PRESETS_FORMAT = "nostr-shopper-presets"
@@ -712,7 +711,7 @@ export async function publishShopperPresets({
   event.tags = appendConduitClientTag([["d", SHOPPER_PRESETS_D_TAG]], appId)
   event.content = serializeShopperPresetsEnvelope(envelope)
   await requireMatchingSigner(owner, signer)
-  await signNdkEventWithTransientNip07Retry(event, signer)
+  await event.sign(signer)
 
   const publishEvent = dependencies.publishEvent ?? publishWithPlanner
   const publish = await publishEvent(event, {

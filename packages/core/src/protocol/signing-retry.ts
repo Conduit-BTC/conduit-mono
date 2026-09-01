@@ -1,8 +1,6 @@
-import type { NDKEvent, NDKSigner } from "@nostr-dev-kit/ndk"
-
 const DEFAULT_TRANSIENT_NIP07_RETRY_DELAYS_MS = [250, 750] as const
 
-export interface TransientNip07RetryOptions {
+export interface TransientNip07ReadinessRetryOptions {
   retryDelaysMs?: readonly number[]
 }
 
@@ -18,19 +16,19 @@ function getErrorMessage(error: unknown): string {
 export function isTransientNip07BridgeError(error: unknown): boolean {
   const message = getErrorMessage(error)
 
-  return /could not establish connection|receiving end does not exist|message port closed|extension context invalidated|chrome\.runtime\.lastError/i.test(
+  return /could not establish connection|receiving end does not exist|message port closed|extension context invalidated|chrome\.runtime\.lastError|nip-07 extension not available/i.test(
     message
   )
 }
 
 /**
- * Retry only browser-extension bridge readiness failures. These happen before a
- * signer operation reaches the user or produces a signed event, and are distinct
- * from user rejection, validation errors, wallet errors, or payment ambiguity.
+ * Retry only a caller-provided browser-extension readiness probe. Authority-
+ * bearing operations must never be passed here because a bridge error does not
+ * prove whether an earlier sign, encrypt, or decrypt request reached the signer.
  */
-export async function withTransientNip07Retry<T>(
-  operation: () => Promise<T>,
-  options: TransientNip07RetryOptions = {}
+export async function withTransientNip07ReadinessRetry<T>(
+  readinessProbe: () => Promise<T>,
+  options: TransientNip07ReadinessRetryOptions = {}
 ): Promise<T> {
   const retryDelaysMs =
     options.retryDelaysMs ?? DEFAULT_TRANSIENT_NIP07_RETRY_DELAYS_MS
@@ -38,7 +36,7 @@ export async function withTransientNip07Retry<T>(
 
   for (let attempt = 0; attempt <= retryDelaysMs.length; attempt += 1) {
     try {
-      return await operation()
+      return await readinessProbe()
     } catch (error) {
       lastError = error
       const retryDelay = retryDelaysMs[attempt]
@@ -51,13 +49,5 @@ export async function withTransientNip07Retry<T>(
 
   throw lastError instanceof Error
     ? lastError
-    : new Error("NIP-07 signer operation failed")
-}
-
-export function signNdkEventWithTransientNip07Retry(
-  event: NDKEvent,
-  signer?: NDKSigner,
-  options?: TransientNip07RetryOptions
-): Promise<string> {
-  return withTransientNip07Retry(() => event.sign(signer), options)
+    : new Error("NIP-07 signer readiness check failed")
 }

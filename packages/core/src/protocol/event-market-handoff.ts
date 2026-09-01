@@ -729,7 +729,7 @@ export type EventMarketPrivateTransportOptions = Pick<
   | "resolveInboxRelays"
   | "giftWrapFn"
   | "publishFn"
-  | "retry"
+  | "waitForSignerVisibility"
   | "refreshRelayLists"
 >
 
@@ -1058,6 +1058,7 @@ async function publishEventMarketPrivatePayload(input: {
     rumorKind: EVENT_KINDS.ORDER,
     selfCopy: true,
     ...input.transport,
+    signerInteraction: "external",
     // Organizer handoff traffic never enters the CND-208 compatibility lane.
     onWrapped: persistPreparedWraps(
       input.payload,

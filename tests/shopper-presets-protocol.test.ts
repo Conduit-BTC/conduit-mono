@@ -417,6 +417,49 @@ describe("NIP-78 shopper presets", () => {
     ).toEqual(result.document)
   })
 
+  it("does not repeat preset signing after an ambiguous bridge error", async () => {
+    const { signer: delegate, pubkey, ndk } = await signerFixture()
+    let signCalls = 0
+    const signer = {
+      user: () => delegate.user(),
+      sign: async () => {
+        signCalls += 1
+        throw new Error(
+          "The message port closed before a response was received."
+        )
+      },
+    } as unknown as NDKSigner
+    ndk.signer = signer
+
+    await expect(
+      publishShopperPresets({
+        pubkey,
+        value: preset,
+        password,
+        appId: "market",
+        dependencies: {
+          signer,
+          ndk,
+          now: () => nowMs,
+          getRelayLists: async () => new Map(),
+          fetchEvents: async () =>
+            relayResult(
+              [],
+              [
+                {
+                  relayUrl: "wss://relay.example",
+                  status: "success",
+                  eventCount: 0,
+                },
+              ]
+            ),
+        },
+      })
+    ).rejects.toThrow("message port closed")
+
+    expect(signCalls).toBe(1)
+  })
+
   it("accepts readback from one acknowledged relay when another attempted relay failed", async () => {
     const { signer, pubkey, ndk } = await signerFixture()
     let published: NDKEvent | null = null

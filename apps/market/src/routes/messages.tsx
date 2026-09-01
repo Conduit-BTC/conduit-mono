@@ -489,6 +489,7 @@ function MessagesPage() {
         recipientPubkey: selectedConversation.merchantPubkey,
         signer: ndk.signer,
         rumorKind: EVENT_KINDS.ORDER,
+        signerInteraction: "external",
         validatedOrderScope: createValidatedOrderRouteScope({
           rumor,
           orderId: selectedConversation.orderId,
@@ -704,6 +705,7 @@ function MessagesPage() {
         recipientPubkey: counterpartyPubkey,
         signer: ndk.signer,
         rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+        signerInteraction: "external",
       })
       optimisticDmQueue.markPublished(message.localId)
       if (selfCopyError) {

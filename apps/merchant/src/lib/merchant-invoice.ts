@@ -371,6 +371,7 @@ function toPublishInput(
       ...(pending.note ? { note: pending.note } : {}),
     },
     delivery: pending.delivery,
+    signerInteraction: "external",
   }
 }
 
