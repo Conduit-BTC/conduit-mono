@@ -58,6 +58,39 @@ When a change spans classes, apply the strongest rule only to the fact it
 protects. A payment-sensitive checkout can require positive live listing terms
 without requiring exhaustive proof that no deletion exists anywhere.
 
+## Reference Identity Is Not Relay Reachability
+
+A product reference can be deterministically valid even when the current relay
+plan cannot resolve it. For an addressable kind `30402` product, identity is the
+exact kind, author public key, and `d` tag. A canonical
+[`naddr`](https://github.com/nostr-protocol/nips/blob/master/19.md) preserves that
+identity.
+
+Relay and source hints are optional discovery aids. They are not part of product
+identity and do not guarantee current availability, complete parent-and-variation
+reconstruction, cart validation, checkout readiness, or global convergence.
+
+Name the product outcome before adding relay behavior:
+
+1. **Reference identity:** create, parse, validate, and share the exact address.
+2. **Discovery or reachability:** attempt bounded resolution and report the
+   observed coverage.
+3. **Presentation completeness:** assemble related events when available and
+   render an honest partial or degraded state when they are not.
+4. **Action readiness:** require the positive current evidence needed for a
+   consequential action such as checkout.
+
+Completing one layer does not silently require the next. A reference-sharing
+feature does not need new relay planning, source provenance, cache, cart, or
+checkout behavior unless its accepted user outcome explicitly includes that
+layer. When optional discovery hardening would expand into another subsystem,
+remove or defer it as a separate capability unless a safety invariant or
+canonical protocol requirement makes it necessary.
+
+Deterministic tests can prove client decisions, bounded planner behavior, and
+degraded-state transitions against controlled fixtures. They cannot prove
+public-relay availability or global convergence.
+
 ## Network Evidence Model
 
 Relay data is evidence with provenance, freshness, and coverage. It is not a
