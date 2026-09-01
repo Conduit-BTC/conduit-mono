@@ -35,7 +35,7 @@
     "clsx": "^2.1.1",
     "country-list": "^2.4.1",
     "dexie": "^4.4.5",
-    "libphonenumber-js": "^1.13.11",
+    "libphonenumber-js": "^1.13.12",
     "nostr-tools": "2.25.0",
     "posthog-js": "^1.391.2",
     "tailwind-merge": "^3.6.0",
