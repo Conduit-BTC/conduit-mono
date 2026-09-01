@@ -23,7 +23,7 @@ import { getPendingMerchantDisplayName } from "./MerchantIdentity"
 import { ProductVariationSelector } from "./ProductVariationSelector"
 
 export const PRODUCT_GRID_CLASS_NAME =
-  "grid items-start list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4"
+  "grid list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4"
 
 export type ProductGridCardProps = {
   product: Product
@@ -136,7 +136,7 @@ export function ProductGridCard({
 
   return (
     <ProductCard
-      className={className ?? "h-auto"}
+      className={className ?? "h-full"}
       title={product.title}
       merchantName={merchantName}
       merchantNamePending={merchantNamePending}

@@ -31,6 +31,7 @@ export function ResolvedProductGridCard({
   product,
   family,
   btcUsdRate = null,
+  className,
   ...props
 }: ResolvedProductGridCardProps) {
   const cart = useCart()
@@ -121,9 +122,10 @@ export function ResolvedProductGridCard({
           : null
 
   return (
-    <div className="h-full space-y-2">
+    <div className="flex h-full flex-col space-y-2">
       <ProductGridCard
         {...props}
+        className={["h-auto flex-1", className].filter(Boolean).join(" ")}
         product={product}
         family={family}
         btcUsdRate={btcUsdRate}
