@@ -33,6 +33,10 @@ import {
   validateEventProductPublishForm,
   type EventProductPublishFormValues,
 } from "../lib/event-product-publishing"
+import {
+  getProductSignerRequestMessage,
+  type ProductSignerRequestProgress,
+} from "../lib/product-publishing"
 
 const BLANK_TEMPLATE = "__blank__"
 
@@ -71,6 +75,8 @@ export function EventProductPublisherDialog({
     useState<SignedActionStatusState>("dirty")
   const [actionError, setActionError] = useState("")
   const [signedEvent, setSignedEvent] = useState<NDKEvent | null>(null)
+  const [signerProgress, setSignerProgress] =
+    useState<ProductSignerRequestProgress | null>(null)
 
   const templatesQuery = useQuery({
     queryKey: ["merchant-event-product-templates", merchantPubkey],
@@ -94,6 +100,7 @@ export function EventProductPublisherDialog({
         merchantPubkey,
         marketReference: market.naddr,
         form,
+        onSignerRequest: setSignerProgress,
         onSignedLocal: (event) => {
           setSignedEvent(event)
           setActionState("publishing")
@@ -102,13 +109,16 @@ export function EventProductPublisherDialog({
     onMutate: () => {
       setActionError("")
       setSignedEvent(null)
+      setSignerProgress(null)
       setActionState("awaiting_signature")
     },
     onSuccess: async (result) => {
+      setSignerProgress(null)
       setActionState("success")
       await onPublished(result.productCoordinate)
     },
     onError: (error) => {
+      setSignerProgress(null)
       setActionState("error")
       setActionError(
         errorMessage(error, "The event product could not be published.")
@@ -448,7 +458,11 @@ export function EventProductPublisherDialog({
             <SignedActionStatus
               state={actionState}
               dirtyMessage="This creates a new product and asks the organizer to include it in the event."
-              awaitingSignatureMessage="Confirm the product in your signer."
+              awaitingSignatureMessage={
+                signerProgress
+                  ? getProductSignerRequestMessage(signerProgress)
+                  : "Confirm the product in your signer."
+              }
               publishingMessage="Publishing the product and pickup reference."
               successMessage="Product published. Organizer acceptance is pending."
               errorMessage={actionError}

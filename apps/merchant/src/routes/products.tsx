@@ -26,6 +26,7 @@ import {
   recordBrowserTelemetryEvent,
   resolveProductFulfillment,
   resolveEventMarketOrganizerInbox,
+  waitForVisibleDocument,
   type CommerceResult,
   type ListingSafetyEvaluation,
   type PreparedProductFamily,
@@ -135,9 +136,12 @@ import {
 import {
   buildProductRemovalDeletionTargets,
   deliverSignedProductWriteBundle,
+  getProductSignerRequestCount,
+  getProductSignerRequestMessage,
   getRelayPublishDiagnosticsError,
   signAndPublishProductWriteBundle,
   SignedProductDeliveryError,
+  type ProductSignerRequestProgress,
   type SignedProductWriteBundle,
 } from "../lib/product-publishing"
 import {
@@ -740,7 +744,9 @@ async function publishProduct(
     bundle: SignedProductWriteBundle,
     authoringTarget: ProductVariationAuthoringTarget
   ) => Promise<void>,
-  existing?: MerchantProductFamily
+  existing?: MerchantProductFamily,
+  onSignerRequest?: (progress: ProductSignerRequestProgress) => void,
+  onSignerRequestsComplete?: () => void
 ): Promise<PublishWithPlannerResult> {
   const localPickup = form.fulfillment === "local_pickup"
   const presetShippingConfig = loadShippingConfig(merchantPubkey)
@@ -801,6 +807,8 @@ async function publishProduct(
   > = publicationFulfillment.metadata
   let localPickupEvidenceVerified = false
   let verifiedLocalPickupMarket: MerchantOrganizerEventMarket | null = null
+  let merchantBoothPickupInput:
+    Parameters<typeof ensureMerchantBoothPickup>[0] | null = null
   if (localPickup) {
     if (!form.eventMarketReference.trim()) {
       throw new Error(
@@ -841,17 +849,17 @@ async function publishProduct(
       const pickupDTag = existingPickupCoordinate
         ? existingPickupCoordinate.split(":").slice(2).join(":")
         : `${dTag}-event-pickup`
-      const boothPickup = await ensureMerchantBoothPickup({
+      merchantBoothPickupInput = {
         authorPubkey: signerPubkey,
         dTag: pickupDTag,
         title: form.merchantPickupTitle.trim(),
         location: form.merchantPickupLocation.trim() || undefined,
         geohash: form.merchantPickupGeohash.trim() || undefined,
         country: form.merchantPickupCountry.trim().toUpperCase(),
-      })
+      }
       shippingMetadata = buildProductLocalPickupMetadata(eventMarket, {
         handoffMode: "merchant_handoff",
-        merchantPickupCoordinate: boothPickup.coordinate,
+        merchantPickupCoordinate: `${EVENT_KINDS.SHIPPING_OPTION}:${signerPubkey}:${pickupDTag}`,
       })
     }
   }
@@ -923,15 +931,43 @@ async function publishProduct(
     now,
   })
 
+  const listings = plan.publish.map((target) => ({
+    product: target.product,
+    dTag: target.dTag,
+    previousEventCreatedAt: target.existing?.eventCreatedAt,
+    fulfillmentIntent: target.fulfillmentIntent,
+  }))
+  const deletions = buildProductRemovalDeletionTargets(plan.remove)
+  const bundleSignerRequestTotal = getProductSignerRequestCount({
+    listings,
+    deletions,
+  })
+  let signerRequestOffset = 0
+  if (merchantBoothPickupInput) {
+    await ensureMerchantBoothPickup({
+      ...merchantBoothPickupInput,
+      onSignerRequest: () => {
+        signerRequestOffset = 1
+        onSignerRequest?.({
+          kind: "shipping",
+          current: 1,
+          total: bundleSignerRequestTotal + 1,
+        })
+      },
+    })
+  }
+
   return signAndPublishProductWriteBundle({
     merchantPubkey,
-    listings: plan.publish.map((target) => ({
-      product: target.product,
-      dTag: target.dTag,
-      previousEventCreatedAt: target.existing?.eventCreatedAt,
-      fulfillmentIntent: target.fulfillmentIntent,
-    })),
-    deletions: buildProductRemovalDeletionTargets(plan.remove),
+    listings,
+    deletions,
+    onSignerRequest: (progress) =>
+      onSignerRequest?.({
+        ...progress,
+        current: progress.current + signerRequestOffset,
+        total: progress.total + signerRequestOffset,
+      }),
+    onSignerRequestsComplete,
     onSignedLocal: async (bundle) => {
       const rootPublishIndex = plan.publish.findIndex(
         (target) => target.dTag === dTag
@@ -955,7 +991,8 @@ async function publishProduct(
 async function deleteProduct(
   merchantPubkey: string,
   product: MerchantProductFamily,
-  onSignedLocal: (event: NDKEvent, deliveryJobId: string) => Promise<void>
+  onSignedLocal: (event: NDKEvent, deliveryJobId: string) => Promise<void>,
+  onSignerRequest?: (progress: ProductSignerRequestProgress) => void
 ): Promise<{ delivery: PublishWithPlannerResult; deliveryJobId: string }> {
   const ndk = getNdk()
   if (!ndk.signer) throw new Error("Signer not connected")
@@ -988,6 +1025,8 @@ async function deleteProduct(
   deletion.tags = draft.tags
   deletion.content = draft.content
 
+  onSignerRequest?.({ kind: "deletion", current: 1, total: 1 })
+  await waitForVisibleDocument()
   await deletion.sign(ndk.signer)
   const deliveryJob = await persistSignedProductDeletion({
     signedEvent: deletion.rawEvent(),
@@ -1030,6 +1069,7 @@ function ProductsPage() {
   const focusProductTitleOnOpenRef = useRef(false)
   const productDraftStoreRef = useRef(new ProductDraftStore())
   const productPublishStartedAtRef = useRef<number | null>(null)
+  const productPublishInFlightRef = useRef(false)
   const editFulfillmentRequestRef = useRef(0)
   const signerRestoredNoticeRef = useRef<HTMLDivElement | null>(null)
   const [form, setForm] = useState<ProductFormState>(EMPTY_FORM)
@@ -1053,6 +1093,10 @@ function ProductsPage() {
     useState<ProductDeliveryNotice | null>(null)
   const [productDeliveryRetry, setProductDeliveryRetry] =
     useState<ProductDeliveryRetryState | null>(null)
+  const [productSignerProgress, setProductSignerProgress] =
+    useState<ProductSignerRequestProgress | null>(null)
+  const [productSignerRequestsComplete, setProductSignerRequestsComplete] =
+    useState(false)
   const [pendingProductPublish, setPendingProductPublish] =
     useState<ProductPublishMutationPayload | null>(null)
   const [signerRestoredForDraft, setSignerRestoredForDraft] = useState(false)
@@ -1341,11 +1385,18 @@ function ProductsPage() {
           completeLocalProductSave(payload, authoringTarget)
           await showLocalProductProjection("publish", payload.merchantPubkey)
         },
-        payload.existing
+        payload.existing,
+        setProductSignerProgress,
+        () => {
+          setProductSignerProgress(null)
+          setProductSignerRequestsComplete(true)
+        }
       )
     },
     onMutate: (payload) => {
       productPublishStartedAtRef.current = Date.now()
+      setProductSignerProgress(null)
+      setProductSignerRequestsComplete(!!payload.signedBundle)
       if (!payload.signedBundle) setProductDeliveryRetry(null)
       setProductDeliveryNotice(
         payload.signedBundle ? buildLocalProductDeliveryNotice("publish") : null
@@ -1372,6 +1423,8 @@ function ProductsPage() {
         }),
       })
       productPublishStartedAtRef.current = null
+      setProductSignerProgress(null)
+      setProductSignerRequestsComplete(false)
       setProductDeliveryNotice(notice)
       if (notice.failedRelayUrls.length === 0) setProductDeliveryRetry(null)
       await refreshProductQueries()
@@ -1392,6 +1445,8 @@ function ProductsPage() {
         }),
       })
       productPublishStartedAtRef.current = null
+      setProductSignerProgress(null)
+      setProductSignerRequestsComplete(false)
       const diagnosticsError = getRelayPublishDiagnosticsError(error)
       if (diagnosticsError) {
         setProductDeliveryNotice(
@@ -1413,6 +1468,9 @@ function ProductsPage() {
         )
       }
       await refreshProductQueries()
+    },
+    onSettled: () => {
+      productPublishInFlightRef.current = false
     },
   })
 
@@ -1436,10 +1494,12 @@ function ProductsPage() {
             payload: { ...payload, deliveryJobId },
           })
           await showLocalProductProjection("delete", pubkey!)
-        }
+        },
+        setProductSignerProgress
       )
     },
     onMutate: (payload) => {
+      setProductSignerProgress(null)
       if (!payload.deliveryJobId) setProductDeliveryRetry(null)
       setProductDeliveryNotice(
         payload.deliveryJobId
@@ -1449,6 +1509,7 @@ function ProductsPage() {
     },
     onSuccess: async (data, variables) => {
       const { product } = variables
+      setProductSignerProgress(null)
       if (product) {
         const draftCleared = productDraftStoreRef.current.clear(
           getProductDraftTarget(product.product.pubkey, product)
@@ -1473,6 +1534,7 @@ function ProductsPage() {
       await refreshProductQueries()
     },
     onError: async (error, variables) => {
+      setProductSignerProgress(null)
       const diagnosticsError = getRelayPublishDiagnosticsError(error)
       if (diagnosticsError) {
         setProductDeliveryNotice(
@@ -1542,6 +1604,12 @@ function ProductsPage() {
       productDeliveryNotice?.state === "retry_needed") &&
     productDeliveryRetry?.action === productDeliveryNotice.action
 
+  function startProductSave(payload: ProductPublishMutationPayload): void {
+    if (productPublishInFlightRef.current) return
+    productPublishInFlightRef.current = true
+    saveMutation.mutate(payload)
+  }
+
   function retryProductDelivery(): void {
     if (productDeliveryRetry?.action === "delete") {
       if (productDeliveryRetry.payload.deliveryJobId) {
@@ -1557,7 +1625,7 @@ function ProductsPage() {
       productDeliveryRetry?.action === "publish" &&
       productDeliveryRetry.payload.signedBundle
     ) {
-      saveMutation.mutate({
+      startProductSave({
         ...productDeliveryRetry.payload,
         previousNotice: productDeliveryNotice ?? undefined,
       })
@@ -1832,7 +1900,13 @@ function ProductsPage() {
   }
 
   function requestProductPublish(payload: ProductPublishMutationPayload): void {
-    if (!signerReady || !productPublishPayloadIsAuthorized(payload)) return
+    if (
+      isSaving ||
+      !signerReady ||
+      !productPublishPayloadIsAuthorized(payload)
+    ) {
+      return
+    }
     setSignerRestoredForDraft(false)
     if (
       !needsProductInboxPublishGuidance(
@@ -1841,7 +1915,7 @@ function ProductsPage() {
         inboxReadinessEnabled
       )
     ) {
-      saveMutation.mutate(payload)
+      startProductSave(payload)
       return
     }
 
@@ -1851,6 +1925,7 @@ function ProductsPage() {
   function publishPendingProduct(): void {
     if (
       !pendingProductPublish ||
+      isSaving ||
       !signerReady ||
       !productPublishPayloadIsAuthorized(pendingProductPublish)
     ) {
@@ -1859,7 +1934,7 @@ function ProductsPage() {
     const payload = pendingProductPublish
     setSignerRestoredForDraft(false)
     setPendingProductPublish(null)
-    saveMutation.mutate(payload)
+    startProductSave(payload)
   }
 
   function openPrivateInboxSetup(): void {
@@ -2337,7 +2412,11 @@ function ProductsPage() {
                 ? "error"
                 : "idle"
           }
-          awaitingSignatureMessage="Confirm the deletion event in your signer. The listing will hide locally while relay delivery runs."
+          awaitingSignatureMessage={
+            productSignerProgress?.kind === "deletion"
+              ? getProductSignerRequestMessage(productSignerProgress)
+              : "Confirm the deletion event in your signer. The listing will hide locally while relay delivery runs."
+          }
           publishingMessage="The signed deletion is saved. Confirming its local tombstone before relay delivery."
           errorMessage={getPublishErrorMessage(deleteMutation.error, "delete")}
           className="mt-2"
@@ -2646,7 +2725,12 @@ function ProductsPage() {
               className="grid gap-3"
               onSubmit={(event) => {
                 event.preventDefault()
-                if (!draftOwnerPubkey || !signerReady || !productCanSubmit) {
+                if (
+                  isSaving ||
+                  !draftOwnerPubkey ||
+                  !signerReady ||
+                  !productCanSubmit
+                ) {
                   return
                 }
                 requestProductPublish({
@@ -3657,12 +3741,8 @@ function ProductsPage() {
                           )}
                         </div>
                         <p className="text-xs leading-5 text-[var(--text-muted)]">
-                          First publish requires{" "}
-                          {productVariationCombinations.length + 1} signer
-                          approvals: one parent and{" "}
-                          {productVariationCombinations.length} variation
-                          {productVariationCombinations.length === 1 ? "" : "s"}
-                          .
+                          Each changed product, shipping detail, or removal may
+                          require its own signer approval.
                         </p>
                       </div>
                     )}
@@ -3683,7 +3763,8 @@ function ProductsPage() {
                 <SignedActionStatus
                   state={
                     isSaving
-                      ? productDeliveryNotice?.action === "publish"
+                      ? productSignerRequestsComplete ||
+                        productDeliveryNotice?.action === "publish"
                         ? "publishing"
                         : "awaiting_signature"
                       : saveMutation.error
@@ -3694,14 +3775,16 @@ function ProductsPage() {
                   }
                   dirtyMessage={productStatusMessage}
                   awaitingSignatureMessage={
-                    form.variations.enabled
-                      ? "Confirm each changed product listing in your signer. The family will save locally before relay delivery runs."
-                      : "Confirm the product listing in your signer. It will save locally while relay delivery runs."
+                    productSignerProgress
+                      ? getProductSignerRequestMessage(productSignerProgress)
+                      : form.variations.enabled
+                        ? "Confirm each changed product listing in your signer. The family will save locally before relay delivery runs."
+                        : "Confirm the product listing in your signer. It will save locally while relay delivery runs."
                   }
                   publishingMessage={
                     form.variations.enabled
-                      ? "The signed product family is visible locally. Delivering its changed listings to relays."
-                      : "The signed listing is visible locally. Delivering it to relays."
+                      ? "All signer approvals are complete. Saving and delivering the signed product family to relays."
+                      : "All signer approvals are complete. Saving and delivering the signed listing to relays."
                   }
                   errorMessage={getPublishErrorMessage(
                     saveMutation.error,

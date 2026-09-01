@@ -13,6 +13,7 @@ import {
   isValidSignedPublicNostrEvent,
   publishWithPlanner,
   RelayPublishDiagnosticsError,
+  waitForVisibleDocument,
   type ProductDeletionEventTarget,
   type ProductFulfillmentIntent,
   type ProductSchema,
@@ -180,6 +181,39 @@ export interface ProductListingPublishTarget {
 type SignedProductWrite = {
   productEvent: NDKEvent
   shippingEvent: NDKEvent | null
+}
+
+export type ProductSignerRequestKind = "shipping" | "product" | "deletion"
+
+export interface ProductSignerRequestProgress {
+  kind: ProductSignerRequestKind
+  current: number
+  total: number
+}
+
+export function getProductSignerRequestMessage(
+  progress: ProductSignerRequestProgress
+): string {
+  const action =
+    progress.kind === "shipping"
+      ? "Approve shipping details"
+      : progress.kind === "deletion"
+        ? "Approve product removal"
+        : "Approve product"
+  return `${action} — ${progress.current} of ${progress.total}`
+}
+
+export function getProductSignerRequestCount(input: {
+  listings: readonly ProductListingPublishTarget[]
+  deletions?: readonly ProductDeletionPublishTarget[]
+}): number {
+  return (
+    input.listings.length +
+    input.listings.filter(
+      (listing) => listing.fulfillmentIntent.kind === "fixed_standard"
+    ).length +
+    ((input.deletions?.length ?? 0) > 0 ? 1 : 0)
+  )
 }
 
 export interface CanonicalProductPublishDependencies {
@@ -443,10 +477,10 @@ export function getCanonicalProductWriteFingerprint(
 
 async function signProductWrite(
   ndk: ReturnType<typeof getNdk>,
-  signer: NonNullable<ReturnType<typeof getNdk>["signer"]>,
   merchantPubkey: string,
   listing: ProductListingPublishTarget,
-  now: number
+  now: number,
+  signEvent: (event: NDKEvent, kind: ProductSignerRequestKind) => Promise<void>
 ): Promise<SignedProductWrite> {
   if (listing.product.pubkey !== merchantPubkey) {
     throw new Error("Product pubkey does not match current merchant pubkey")
@@ -484,9 +518,9 @@ async function signProductWrite(
     shippingEvent.created_at = createdAt
     shippingEvent.content = shippingDraft.content
     shippingEvent.tags = shippingDraft.tags
-    await shippingEvent.sign(signer)
+    await signEvent(shippingEvent, "shipping")
   }
-  await productEvent.sign(signer)
+  await signEvent(productEvent, "product")
   return { productEvent, shippingEvent }
 }
 
@@ -564,6 +598,9 @@ export async function signAndPublishProductWriteBundle(input: {
   deletions?: readonly ProductDeletionPublishTarget[]
   onSignedLocal: (bundle: SignedProductWriteBundle) => Promise<void>
   deletionDeliveryOptions?: DeliverQueuedProductDeletionOptions
+  onSignerRequest?: (progress: ProductSignerRequestProgress) => void
+  onSignerRequestsComplete?: () => void
+  waitForSignerVisibility?: () => Promise<void>
 }): Promise<PublishWithPlannerResult> {
   const ndk = getNdk()
   if (!ndk.signer) throw new Error("Signer not connected")
@@ -575,11 +612,28 @@ export async function signAndPublishProductWriteBundle(input: {
   if (input.listings.length === 0 && (input.deletions?.length ?? 0) === 0) {
     throw new Error("No product changes require signing")
   }
+  const signerRequestTotal = getProductSignerRequestCount(input)
+  const waitForSignerVisibility =
+    input.waitForSignerVisibility ?? waitForVisibleDocument
+  let signerRequestCurrent = 0
+  const signEvent = async (
+    event: NDKEvent,
+    kind: ProductSignerRequestKind
+  ): Promise<void> => {
+    signerRequestCurrent += 1
+    input.onSignerRequest?.({
+      kind,
+      current: signerRequestCurrent,
+      total: signerRequestTotal,
+    })
+    await waitForSignerVisibility()
+    await event.sign(signer)
+  }
 
   const writes: SignedProductWrite[] = []
   for (const listing of input.listings) {
     writes.push(
-      await signProductWrite(ndk, signer, signerPubkey, listing, Date.now())
+      await signProductWrite(ndk, signerPubkey, listing, Date.now(), signEvent)
     )
   }
   const productEvents = writes.map((write) => write.productEvent)
@@ -595,9 +649,11 @@ export async function signAndPublishProductWriteBundle(input: {
     deletion.created_at = Math.floor(Date.now() / 1000)
     deletion.content = draft.content
     deletion.tags = draft.tags
-    await deletion.sign(signer)
+    await signEvent(deletion, "deletion")
     events.push(deletion)
   }
+
+  input.onSignerRequestsComplete?.()
 
   for (const write of writes) {
     if (!write.shippingEvent) continue
@@ -668,6 +724,7 @@ export async function signAndPublishProductListing(input: {
   previousEventCreatedAt?: number
   fulfillmentIntent: ProductFulfillmentIntent
   onSignedLocal: (event: NDKEvent) => Promise<void>
+  onSignerRequest?: (progress: ProductSignerRequestProgress) => void
 }): Promise<PublishWithPlannerResult> {
   return signAndPublishProductWriteBundle({
     merchantPubkey: input.merchantPubkey,
@@ -679,6 +736,7 @@ export async function signAndPublishProductListing(input: {
         fulfillmentIntent: input.fulfillmentIntent,
       },
     ],
+    onSignerRequest: input.onSignerRequest,
     onSignedLocal: async ({ events: [event] }) => {
       if (!event) throw new Error("Signed product event is missing")
       await input.onSignedLocal(event)

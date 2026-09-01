@@ -19,10 +19,15 @@ updates:
       semver-patch-days: 1
       semver-minor-days: 3
       semver-major-days: 14
+    ignore:
+      - dependency-name: "typescript"
+        update-types:
+          - "version-update:semver-major"
     groups:
       ui-leaf-dependencies:
         applies-to: version-updates
         patterns:
+          - "@radix-ui/*"
           - "lucide-react"
           - "tailwind-merge"
 
@@ -41,9 +46,22 @@ updates:
       build-tooling:
         applies-to: version-updates
         patterns:
+          - "@tanstack/react-router"
           - "@tanstack/router-*"
           - "@vitejs/*"
           - "vite"
+
+      tanstack-query:
+        applies-to: version-updates
+        patterns:
+          - "@tanstack/react-query"
+          - "@tanstack/react-query-devtools"
+
+      cryptography-runtime:
+        applies-to: version-updates
+        patterns:
+          - "@noble/*"
+          - "@scure/*"
 
       typescript-compiler:
         applies-to: version-updates

@@ -231,7 +231,7 @@ test("market Dexie 4 preserves additive v12 data across a declared-v11 rollback 
     }
   })
 
-  expect(result.dexieVersion).toBe("4.4.4")
+  expect(result.dexieVersion).toBe("4.4.5")
   expect(result.initialDeclaredVersion).toBe(12)
   expect(result.rollbackDeclaredVersion).toBe(11)
   expect(result.restoredDeclaredVersion).toBe(12)

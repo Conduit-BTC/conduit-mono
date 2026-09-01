@@ -26,6 +26,7 @@ import {
   type Nip46AuthSession,
   type RemoteSignerConnection,
 } from "../packages/core/src/protocol/remote-signer"
+import { Nip07SessionSigner } from "../packages/core/src/protocol/nip07-signer"
 import { createProtectedReadSessionLifecycle } from "../packages/core/src/protocol/protected-read-session-lifecycle"
 import type { NostrEventSigner } from "../packages/core/src/protocol/nostr-event-signer"
 
@@ -383,6 +384,281 @@ describe("NIP-07 availability", () => {
       )
     ).rejects.toThrow("signer account changed")
     expect(encryptCalls).toBe(0)
+  })
+
+  it("waits for a temporarily missing bridge before dispatching signing once", async () => {
+    let signCalls = 0
+    const bridge = {
+      getPublicKey: async () => ACCOUNT_A_PUBKEY,
+      signEvent: async (event: {
+        created_at: number
+        kind: number
+        tags: string[][]
+        content: string
+      }) => {
+        signCalls += 1
+        return finalizeEvent(event, ACCOUNT_A_SECRET)
+      },
+    }
+    setTestWindow({ nostr: bridge })
+    const signer = new Nip07SessionSigner({
+      readinessRetryDelaysMs: [0],
+    })
+    await signer.user()
+
+    let bridgeReads = 0
+    const lateWindow: Record<string, unknown> = {}
+    Object.defineProperty(lateWindow, "nostr", {
+      configurable: true,
+      get: () => {
+        bridgeReads += 1
+        return bridgeReads === 1 ? undefined : bridge
+      },
+    })
+    setTestWindow(lateWindow)
+
+    const event = new NDKEvent()
+    event.kind = 1
+    event.created_at = 1_700_000_000
+    event.tags = []
+    event.content = "public note"
+
+    await event.sign(signer)
+
+    expect(bridgeReads).toBeGreaterThanOrEqual(2)
+    expect(signCalls).toBe(1)
+    expect(verifyEvent(event.rawEvent())).toBe(true)
+  })
+
+  it("waits for bridge availability before reporting encryption capability", async () => {
+    let encryptCalls = 0
+    const bridge = {
+      getPublicKey: async () => ACCOUNT_A_PUBKEY,
+      signEvent: async (event: {
+        created_at: number
+        kind: number
+        tags: string[][]
+        content: string
+      }) => finalizeEvent(event, ACCOUNT_A_SECRET),
+      nip44: {
+        encrypt: async () => {
+          encryptCalls += 1
+          return "ciphertext"
+        },
+        decrypt: async () => "plaintext",
+      },
+    }
+    setTestWindow({ nostr: bridge })
+    const signer = new Nip07SessionSigner({
+      readinessRetryDelaysMs: [0],
+    })
+    await signer.user()
+
+    let bridgeReads = 0
+    const lateWindow: Record<string, unknown> = {}
+    Object.defineProperty(lateWindow, "nostr", {
+      configurable: true,
+      get: () => {
+        bridgeReads += 1
+        return bridgeReads === 1 ? undefined : bridge
+      },
+    })
+    setTestWindow(lateWindow)
+
+    await expect(signer.encryptionEnabled("nip44")).resolves.toEqual(["nip44"])
+    await expect(
+      signer.encrypt(
+        new NDKUser({ pubkey: ACCOUNT_B_PUBKEY }),
+        "private message",
+        "nip44"
+      )
+    ).resolves.toBe("ciphertext")
+
+    expect(bridgeReads).toBeGreaterThanOrEqual(2)
+    expect(encryptCalls).toBe(1)
+  })
+
+  it("retries transient identity readiness before signing exactly once", async () => {
+    let getPublicKeyCalls = 0
+    let signCalls = 0
+    setTestWindow({
+      nostr: {
+        getPublicKey: async () => {
+          getPublicKeyCalls += 1
+          if (getPublicKeyCalls === 2) {
+            throw new Error(
+              "Could not establish connection. Receiving end does not exist."
+            )
+          }
+          return ACCOUNT_A_PUBKEY
+        },
+        signEvent: async (event: {
+          created_at: number
+          kind: number
+          tags: string[][]
+          content: string
+        }) => {
+          signCalls += 1
+          return finalizeEvent(event, ACCOUNT_A_SECRET)
+        },
+      },
+    })
+    const signer = new Nip07SessionSigner({
+      readinessRetryDelaysMs: [0],
+    })
+    await signer.user()
+    const event = new NDKEvent()
+    event.kind = 1
+    event.created_at = 1_700_000_000
+    event.tags = []
+    event.content = "public note"
+
+    await event.sign(signer)
+
+    expect(getPublicKeyCalls).toBe(4)
+    expect(signCalls).toBe(1)
+  })
+
+  it("never repeats NIP-07 signing after a bridge-like dispatch error", async () => {
+    let signCalls = 0
+    setTestWindow({
+      nostr: {
+        getPublicKey: async () => ACCOUNT_A_PUBKEY,
+        signEvent: async () => {
+          signCalls += 1
+          throw new Error(
+            "The message port closed before a response was received."
+          )
+        },
+      },
+    })
+    const signer = new Nip07SessionSigner({
+      readinessRetryDelaysMs: [0, 0],
+    })
+    await signer.user()
+    const event = new NDKEvent()
+    event.kind = 1
+    event.created_at = 1_700_000_000
+    event.tags = []
+    event.content = "public note"
+
+    await expect(event.sign(signer)).rejects.toThrow("message port closed")
+
+    expect(signCalls).toBe(1)
+  })
+
+  it("never repeats NIP-07 encryption or decryption after dispatch", async () => {
+    let encryptCalls = 0
+    let decryptCalls = 0
+    setTestWindow({
+      nostr: {
+        getPublicKey: async () => ACCOUNT_A_PUBKEY,
+        signEvent: async (event: {
+          created_at: number
+          kind: number
+          tags: string[][]
+          content: string
+        }) => finalizeEvent(event, ACCOUNT_A_SECRET),
+        nip44: {
+          encrypt: async () => {
+            encryptCalls += 1
+            throw new Error("call already executing")
+          },
+          decrypt: async () => {
+            decryptCalls += 1
+            throw new Error("call already executing")
+          },
+        },
+      },
+    })
+    const signer = new Nip07SessionSigner({
+      readinessRetryDelaysMs: [0],
+    })
+    await signer.user()
+    const peer = new NDKUser({ pubkey: ACCOUNT_B_PUBKEY })
+
+    await expect(signer.encrypt(peer, "private", "nip44")).rejects.toThrow(
+      "call already executing"
+    )
+    await expect(signer.decrypt(peer, "ciphertext", "nip44")).rejects.toThrow(
+      "call already executing"
+    )
+
+    expect(encryptCalls).toBe(1)
+    expect(decryptCalls).toBe(1)
+  })
+
+  it("does not accept a signature when post-operation readiness is unavailable", async () => {
+    let signCalls = 0
+    const invalidationCodes: string[] = []
+    setTestWindow({
+      nostr: {
+        getPublicKey: async () => ACCOUNT_A_PUBKEY,
+        signEvent: async (event: {
+          created_at: number
+          kind: number
+          tags: string[][]
+          content: string
+        }) => {
+          signCalls += 1
+          setTestWindow({})
+          return finalizeEvent(event, ACCOUNT_A_SECRET)
+        },
+      },
+    })
+    const signer = new Nip07SessionSigner({
+      readinessRetryDelaysMs: [0],
+      onInvalidated: (error) => invalidationCodes.push(error.code),
+    })
+    await signer.user()
+    const event = new NDKEvent()
+    event.kind = 1
+    event.created_at = 1_700_000_000
+    event.tags = []
+    event.content = "public note"
+
+    await expect(event.sign(signer)).rejects.toThrow(
+      "NIP-07 extension not available"
+    )
+
+    expect(signCalls).toBe(1)
+    expect(event.sig).toBeUndefined()
+    expect(invalidationCodes).toEqual([])
+  })
+
+  it("rejects an invalid live pubkey immediately without signing or retrying", async () => {
+    let getPublicKeyCalls = 0
+    let signCalls = 0
+    const invalidationCodes: string[] = []
+    setTestWindow({
+      nostr: {
+        getPublicKey: async () => {
+          getPublicKeyCalls += 1
+          return getPublicKeyCalls === 1 ? ACCOUNT_A_PUBKEY : "not-a-pubkey"
+        },
+        signEvent: async () => {
+          signCalls += 1
+          throw new Error("unexpected sign")
+        },
+      },
+    })
+    const signer = new Nip07SessionSigner({
+      readinessRetryDelaysMs: [0, 0],
+      onInvalidated: (error) => invalidationCodes.push(error.code),
+    })
+    await signer.user()
+    const event = new NDKEvent()
+    event.kind = 1
+    event.created_at = 1_700_000_000
+    event.tags = []
+    event.content = "public note"
+
+    await expect(event.sign(signer)).rejects.toMatchObject({
+      code: "invalid_response",
+    })
+    expect(getPublicKeyCalls).toBe(2)
+    expect(signCalls).toBe(0)
+    expect(invalidationCodes).toEqual(["invalid_response"])
   })
 })
 

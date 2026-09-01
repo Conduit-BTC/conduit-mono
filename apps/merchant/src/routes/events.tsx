@@ -658,7 +658,7 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
         form: input.form,
         existing: input.existing,
         onSignedEvent: (record, reference) => {
-          setPublishState("publishing")
+          if (record.record === "collection") setPublishState("publishing")
           const saved = rememberOrganizerEventMarket(organizerPubkey, {
             reference,
             title: input.form.title,

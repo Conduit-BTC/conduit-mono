@@ -451,6 +451,7 @@ describe("merchant invoice validation and durability", () => {
       buyerPubkey: BUYER_PUBKEY,
       orderId: ORDER_ID,
       type: "payment_request",
+      signerInteraction: "external",
       tags: [
         ["amount", "50"],
         ["currency", "SATS"],

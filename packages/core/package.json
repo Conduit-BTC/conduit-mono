@@ -28,18 +28,18 @@
   },
   "dependencies": {
     "@getalby/sdk": "^8.0.3",
-    "@noble/ciphers": "^2.1.1",
-    "@noble/curves": "^2.3.0",
-    "@noble/hashes": "^2.2.0",
+    "@noble/ciphers": "^2.4.0",
+    "@noble/curves": "^2.4.0",
+    "@noble/hashes": "^2.4.0",
     "@nostr-dev-kit/ndk": "^3.0.3",
     "clsx": "^2.1.1",
     "country-list": "^2.4.1",
-    "dexie": "^4.4.4",
-    "libphonenumber-js": "^1.13.11",
-    "nostr-tools": "2.24.3",
-    "posthog-js": "^1.391.2",
+    "dexie": "^4.4.5",
+    "libphonenumber-js": "^1.13.12",
+    "nostr-tools": "2.25.0",
+    "posthog-js": "^1.422.5",
     "tailwind-merge": "^3.6.0",
-    "zod": "^4.4.3"
+    "zod": "^4.5.1"
   },
   "peerDependencies": {
     "@tanstack/react-query": "^5.0.0",

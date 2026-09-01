@@ -170,6 +170,47 @@ describe("organizer event-market publishing", () => {
     expect(result.pickup).toBeUndefined()
   })
 
+  it("waits before the next organizer approval when the app becomes hidden", async () => {
+    const signedKinds: number[] = []
+    let visible = true
+    let restoreVisibility = () => {}
+    const visibleAgain = new Promise<void>((resolve) => {
+      restoreVisibility = resolve
+    })
+    __setEventMarketTestOverrides({
+      getNdk: connectedNdk,
+      signDraft: async (draftInput) => {
+        signedKinds.push(draftInput.draft.kind)
+        const signed = await signDraft(draftInput)
+        if (draftInput.draft.kind === EVENT_KINDS.CALENDAR_TIME) {
+          visible = false
+        }
+        return signed
+      },
+      publishWithPlanner: async () => publishResult(true),
+    })
+
+    const publishing = publishOrganizerEventMarket({
+      ...input(),
+      waitForSignerVisibility: async () => {
+        if (!visible) await visibleAgain
+      },
+    })
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(signedKinds).toEqual([EVENT_KINDS.CALENDAR_TIME])
+
+    visible = true
+    restoreVisibility()
+    await publishing
+
+    expect(signedKinds).toEqual([
+      EVENT_KINDS.CALENDAR_TIME,
+      EVENT_KINDS.SHIPPING_OPTION,
+      EVENT_KINDS.PRODUCT_COLLECTION,
+    ])
+  })
+
   it("rejects an empty pickup price before relay I/O", async () => {
     let signCalls = 0
     let publishCalls = 0

@@ -21,6 +21,7 @@ import { isSparkWalletSessionCoordinationAvailable } from "./spark-wallet-lease"
 export type SparkNetwork = WalletNetwork
 export type SupportedSparkNetwork = Extract<SparkNetwork, "mainnet" | "regtest">
 export type SparkNativeNetwork = "MAINNET" | "TESTNET" | "SIGNET" | "REGTEST"
+type SparkNativeTransferId = import("@buildonspark/spark-sdk").UUID
 
 interface SparkNativeWalletSettings {
   privateEnabled: boolean
@@ -87,7 +88,7 @@ export interface SparkNativeWallet {
     maxFeeSats: number
     preferSpark: boolean
     amountSatsToSend?: number
-    idempotencyKey?: string
+    transferId?: SparkNativeTransferId
   }): Promise<SparkNativeLightningSendRequest | SparkNativeTransfer>
   getLightningSendRequest(
     id: string
@@ -115,6 +116,7 @@ interface SparkNativeInitializeInput {
 
 export interface SparkNativeModule {
   readonly eventNames: readonly string[]
+  parseTransferId(value: string): SparkNativeTransferId
   createPublicReadonlyClient(options: {
     log: false
     network: SparkNativeNetwork
@@ -567,7 +569,7 @@ function adaptFirstPartySparkWallet(input: {
           ? {}
           : { amountSatsToSend: prepared.amountSatsToSend }),
         ...(request.idempotencyKey
-          ? { idempotencyKey: request.idempotencyKey }
+          ? { transferId: input.module.parseTransferId(request.idempotencyKey) }
           : {}),
       })
       preparedPayments.delete(request.prepareResponse)
@@ -1033,6 +1035,7 @@ async function loadFirstPartySparkModule(): Promise<SparkNativeModule> {
   )
   return {
     eventNames,
+    parseTransferId: (value) => module.UUID.parse(value),
     createPublicReadonlyClient(options) {
       return module.SparkReadonlyClient.createPublic(options)
     },

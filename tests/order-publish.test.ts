@@ -218,6 +218,7 @@ describe("buyer order publishing", () => {
     expect(orderCall?.recipientPubkey).toBe("merchant-pubkey")
     expect(orderCall?.signer).toBe(signer)
     expect(orderCall?.selfCopy).toBe(true)
+    expect(orderCall?.signerInteraction).toBe("external")
     expect(orderCall?.validatedOrderScope).toMatchObject({
       rumorId: "order-rumor",
       orderId: "guest-order",
@@ -230,6 +231,7 @@ describe("buyer order publishing", () => {
     expect(companionCall?.recipientPubkey).toBe("merchant-pubkey")
     expect(companionCall?.signer).toBe(signer)
     expect(companionCall?.selfCopy).toBe(false)
+    expect(companionCall?.signerInteraction).toBe("background_external")
     expect(companionCall?.validatedOrderScope).toBeUndefined()
     expect(companionCall?.validatedGuestOrderCompanionScope).toBeUndefined()
 
@@ -402,6 +404,7 @@ describe("buyer order publishing", () => {
     expect(orderCall?.senderPubkey).toBe("guest-pubkey")
     expect(orderCall?.signer).toBe(guestSigner)
     expect(orderCall?.selfCopy).toBe(false)
+    expect(orderCall?.signerInteraction).toBe("application_owned")
     expect(orderCall?.validatedOrderScope).toMatchObject({
       rumorId: "order-rumor",
       orderId: "guest-order",
@@ -414,6 +417,7 @@ describe("buyer order publishing", () => {
     expect(companionCall?.recipientPubkey).toBe("merchant-pubkey")
     expect(companionCall?.signer).toBe(guestSigner)
     expect(companionCall?.selfCopy).toBe(false)
+    expect(companionCall?.signerInteraction).toBe("application_owned")
     expect(companionCall?.validatedOrderScope).toBeUndefined()
     expect(companionCall?.validatedGuestOrderCompanionScope).toMatchObject({
       rumorId: (companionCall?.rumor as { id: string }).id,

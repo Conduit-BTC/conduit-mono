@@ -262,9 +262,7 @@ test("remote signer timeout keeps the product draft recoverable and requires an 
     await expect(publishButton).toBeEnabled()
     await publishButton.click()
     await expect(
-      productDialog.getByText(
-        "Confirm the product listing in your signer. It will save locally while relay delivery runs."
-      )
+      productDialog.getByText("Approve product — 1 of 1")
     ).toBeVisible()
     await expect(
       productDialog.getByRole("button", { name: "Waiting for signer..." })
