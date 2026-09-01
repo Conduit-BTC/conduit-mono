@@ -57,6 +57,12 @@ updates:
           - "@tanstack/react-query"
           - "@tanstack/react-query-devtools"
 
+      cryptography-runtime:
+        applies-to: version-updates
+        patterns:
+          - "@noble/*"
+          - "@scure/*"
+
       typescript-compiler:
         applies-to: version-updates
         patterns:
