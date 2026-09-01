@@ -39,7 +39,10 @@ import {
   type MerchantOrganizerParticipation,
   type MerchantOrganizerRecordDelivery,
 } from "../lib/event-market"
-import { getEventMarketUrl } from "../lib/market-links"
+import {
+  getEventMarketUrl,
+  getMerchantEventParticipationUrl,
+} from "../lib/market-links"
 
 function statusMeta(state: MerchantOrganizerEventMarket["state"]): {
   label: string
@@ -436,7 +439,7 @@ function ParticipationRow({
 export function OrganizerEventMarketPanel({
   market,
   deliveries,
-  copied,
+  copiedUrl,
   refreshing,
   membershipPending,
   retryingRecord,
@@ -448,11 +451,11 @@ export function OrganizerEventMarketPanel({
 }: {
   market: MerchantOrganizerEventMarket
   deliveries: MerchantOrganizerRecordDelivery[]
-  copied: boolean
+  copiedUrl: string | null
   refreshing: boolean
   membershipPending: boolean
   retryingRecord: MerchantOrganizerRecordDelivery["record"] | null
-  onCopy: () => void
+  onCopy: (url: string) => void
   onEdit: () => void
   onRefresh: () => void
   onMembership: (
@@ -463,7 +466,8 @@ export function OrganizerEventMarketPanel({
 }) {
   const status = statusMeta(market.state)
   const displayState = getOrganizerEventMarketDisplayState(market.state)
-  const shareUrl = getEventMarketUrl(market.naddr)
+  const shopperUrl = getEventMarketUrl(market.naddr)
+  const merchantUrl = getMerchantEventParticipationUrl(market.naddr)
   const canEdit = market.state === "active" || market.state === "ended"
   const canChangeMembership = market.state === "active"
   const pendingRequests = market.participation.filter(
@@ -577,45 +581,114 @@ export function OrganizerEventMarketPanel({
 
       <Card>
         <CardHeader>
-          <CardTitle>Share event catalog</CardTitle>
+          <CardTitle>Share this event</CardTitle>
           <CardDescription>
-            The naddr preserves the organizer-owned collection coordinate. The
-            web link resolves that coordinate; it is not a metadata registry.
+            Use the shopper link for attendees and the merchant link for sellers
+            who want to add a product.
           </CardDescription>
         </CardHeader>
-        <CardContent className="grid gap-4 sm:grid-cols-[12.5rem_minmax(0,1fr)]">
-          <div
-            role="img"
-            aria-label="Canonical event catalog QR code"
-            className="w-fit rounded-xl border border-[var(--border)] bg-white p-3"
+        <CardContent className="space-y-5">
+          <section
+            aria-labelledby="shopper-event-link-title"
+            className="grid gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 sm:grid-cols-[12.5rem_minmax(0,1fr)]"
           >
-            <QRCodeSVG value={shareUrl} size={176} level="M" />
-          </div>
-          <div className="min-w-0 space-y-3">
-            <div className="break-all rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 font-mono text-xs text-[var(--text-secondary)]">
-              {market.naddr}
+            <div
+              role="img"
+              aria-label="Shopper event catalog QR code"
+              className="w-fit rounded-xl border border-[var(--border)] bg-white p-3"
+            >
+              <QRCodeSVG value={shopperUrl} size={176} level="M" />
             </div>
-            <div className="break-all text-xs leading-5 text-[var(--text-muted)]">
-              {shareUrl}
+            <div className="min-w-0 space-y-3">
+              <div>
+                <h3
+                  id="shopper-event-link-title"
+                  className="font-semibold text-[var(--text-primary)]"
+                >
+                  Shopper event catalog
+                </h3>
+                <p className="mt-1 text-sm leading-6 text-[var(--text-secondary)]">
+                  Send this to shoppers so they can browse products accepted for
+                  this event.
+                </p>
+              </div>
+              <div className="break-all font-mono text-xs leading-5 text-[var(--text-muted)]">
+                {shopperUrl}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => onCopy(shopperUrl)}
+                >
+                  {copiedUrl === shopperUrl ? <Check /> : <Copy />}
+                  {copiedUrl === shopperUrl
+                    ? "Shopper link copied"
+                    : "Copy shopper link"}
+                </Button>
+                <Button type="button" size="sm" variant="ghost" asChild>
+                  <a href={shopperUrl} target="_blank" rel="noreferrer">
+                    <ExternalLink />
+                    Open shopper catalog
+                  </a>
+                </Button>
+              </div>
+            </div>
+          </section>
+
+          <section
+            aria-labelledby="merchant-event-link-title"
+            className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4"
+          >
+            <div>
+              <h3
+                id="merchant-event-link-title"
+                className="font-semibold text-[var(--text-primary)]"
+              >
+                Merchant participation link
+              </h3>
+              <p className="mt-1 text-sm leading-6 text-[var(--text-secondary)]">
+                Send this to merchants. It opens Merchant with this exact event
+                selected so they can publish a product request.
+              </p>
+            </div>
+            <div className="break-all font-mono text-xs leading-5 text-[var(--text-muted)]">
+              {merchantUrl}
             </div>
             <div className="flex flex-wrap gap-2">
               <Button
                 type="button"
                 size="sm"
                 variant="outline"
-                onClick={onCopy}
+                onClick={() => onCopy(merchantUrl)}
               >
-                {copied ? <Check /> : <Copy />}
-                {copied ? "Copied" : "Copy share link"}
+                {copiedUrl === merchantUrl ? <Check /> : <Copy />}
+                {copiedUrl === merchantUrl
+                  ? "Merchant link copied"
+                  : "Copy merchant link"}
               </Button>
               <Button type="button" size="sm" variant="ghost" asChild>
-                <a href={shareUrl} target="_blank" rel="noreferrer">
+                <a href={merchantUrl} target="_blank" rel="noreferrer">
                   <ExternalLink />
-                  Open catalog
+                  Open merchant participation
                 </a>
               </Button>
             </div>
-          </div>
+          </section>
+
+          <details className="rounded-xl border border-[var(--border)] px-4 py-3">
+            <summary className="cursor-pointer text-sm font-medium text-[var(--text-secondary)]">
+              Portable event address (naddr)
+            </summary>
+            <p className="mt-2 text-xs leading-5 text-[var(--text-muted)]">
+              Technical detail for Nostr clients and manual import. The naddr
+              preserves the organizer-owned collection coordinate.
+            </p>
+            <div className="mt-2 break-all font-mono text-xs text-[var(--text-secondary)]">
+              {market.naddr}
+            </div>
+          </details>
         </CardContent>
       </Card>
 

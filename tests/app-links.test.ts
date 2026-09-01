@@ -1,9 +1,17 @@
 import { describe, expect, it } from "bun:test"
 
 import {
+  buildMarketEventCatalogUrl,
   buildMerchantOrderReviewUrl,
+  buildMerchantEventParticipationUrl,
+  encodeEventMarketNaddr,
   inferConduitAppOrigin,
 } from "@conduit/core"
+
+const EVENT_COORDINATE = `30405:${"1".repeat(64)}:fall-market`
+const EVENT_NADDR = encodeEventMarketNaddr(EVENT_COORDINATE, [
+  "wss://relay.example/events",
+])
 
 describe("paired Conduit app origins", () => {
   it("falls back to the canonical production apps", () => {
@@ -54,6 +62,69 @@ describe("paired Conduit app origins", () => {
         port: "7000",
       })
     ).toBe("http://mybox.tailnet.ts.net:7001")
+  })
+
+  it("keeps an already-paired target origin unchanged", () => {
+    expect(
+      inferConduitAppOrigin("merchant", {
+        hostname: "fix-265.conduit-merchant-33n.pages.dev",
+        protocol: "https:",
+        port: "",
+      })
+    ).toBe("https://fix-265.conduit-merchant-33n.pages.dev")
+    expect(
+      inferConduitAppOrigin("market", {
+        hostname: "127.0.0.1",
+        protocol: "http:",
+        port: "7000",
+      })
+    ).toBe("http://127.0.0.1:7000")
+  })
+})
+
+describe("event market links", () => {
+  it("builds separate preview shopper and merchant links", () => {
+    expect(
+      buildMarketEventCatalogUrl(
+        "https://fix-265.conduit-market-coo.pages.dev",
+        EVENT_NADDR
+      )
+    ).toBe(`https://fix-265.conduit-market-coo.pages.dev/events/${EVENT_NADDR}`)
+    expect(
+      buildMerchantEventParticipationUrl(
+        "https://fix-265.conduit-merchant-33n.pages.dev",
+        EVENT_NADDR
+      )
+    ).toBe(
+      `https://fix-265.conduit-merchant-33n.pages.dev/events?event=${EVENT_NADDR}`
+    )
+  })
+
+  it("supports the paired local app origins", () => {
+    expect(
+      buildMarketEventCatalogUrl("http://127.0.0.1:7000", EVENT_NADDR)
+    ).toBe(`http://127.0.0.1:7000/events/${EVENT_NADDR}`)
+    expect(
+      buildMerchantEventParticipationUrl("http://127.0.0.1:7001", EVENT_NADDR)
+    ).toBe(`http://127.0.0.1:7001/events?event=${EVENT_NADDR}`)
+  })
+
+  it("rejects attacker origins and non-exact naddr values", () => {
+    expect(() =>
+      buildMarketEventCatalogUrl("https://attacker.example", EVENT_NADDR)
+    ).toThrow("safe Market origin")
+    expect(() =>
+      buildMerchantEventParticipationUrl(
+        "https://attacker.example",
+        EVENT_NADDR
+      )
+    ).toThrow("safe Merchant origin")
+    expect(() =>
+      buildMerchantEventParticipationUrl(
+        "https://sell.conduit.market",
+        `https://attacker.example/${EVENT_NADDR}`
+      )
+    ).toThrow("exact event catalog naddr")
   })
 })
 
