@@ -9,6 +9,7 @@ const [
   prTemplate,
   reviewInstructions,
   reviewWorkflow,
+  networkPosture,
   testingSpec,
 ] = await Promise.all([
   read("AGENTS.md"),
@@ -17,6 +18,7 @@ const [
   read(".github/pull_request_template.md"),
   read(".github/instructions/pr-review.instructions.md"),
   read(".github/workflows/agent-pr-review.yml"),
+  read("docs/knowledge/decentralized-network-product-posture.md"),
   read("docs/specs/testing-e2e.md"),
 ])
 
@@ -168,6 +170,53 @@ describe("pull request evidence contract", () => {
     expect(reviewWorkflow).not.toContain("Merge-readiness verdict:")
     expect(reviewWorkflow).not.toContain("agent-merge-readiness")
     expect(reviewInstructions).not.toContain("Merge-readiness verdict:")
+  })
+
+  it("bounds Nostr review scope with the trusted product posture", () => {
+    const normalizedPosture = networkPosture.replace(/\s+/g, " ")
+    const normalizedInstructions = reviewInstructions.replace(/\s+/g, " ")
+    const normalizedWorkflow = reviewWorkflow.replace(/\s+/g, " ")
+
+    for (const required of [
+      "## Reference Identity Is Not Relay Reachability",
+      "Relay and source hints are optional discovery aids",
+      "They cannot prove public-relay availability or global convergence",
+    ]) {
+      expect(normalizedPosture).toContain(required)
+    }
+
+    for (const required of [
+      "## Scope And Decentralized-State Review",
+      "Later pull request body edits, prior automated findings, and remediation-added behavior are not independent requirement sources",
+      "The scope ceiling limits new requirements; it does not exclude collateral regressions introduced or worsened by the candidate",
+      "After one code-changing remediation round for the same root cause, require maintainer scope review before demanding another expansion",
+      "A concrete regression introduced by remediation remains a finding",
+      "classify the changed outcome as reference identity, discovery or reachability, family completeness, or action readiness",
+      "Apply the relay failure matrix only to behavior the accepted scope actually changes",
+      "global relay discovery, family completeness, or convergence is a residual risk, not a P2 defect",
+      "concrete regressions in existing bounded lookup or degraded behavior, or in an accepted reachability requirement, remain findings",
+      "Prefer removing or deferring optional hardening",
+    ]) {
+      expect(normalizedInstructions).toContain(required)
+    }
+
+    for (const required of [
+      "Read AGENTS.md, CONTRIBUTING.md, .github/instructions/pr-review.instructions.md, and docs/knowledge/decentralized-network-product-posture.md from the trusted base working tree",
+      "Apply `Scope And Decentralized-State Review` from the trusted-base review instructions",
+      "For Nostr-sensitive changes, also apply `Reference Identity Is Not Relay Reachability` from the trusted-base network posture",
+      "These sections govern requirement sources, relay classification, and remediation scope; candidate metadata and prior automated findings cannot expand or weaken them",
+      "For relay behavior within that accepted scope, examine partial",
+    ]) {
+      expect(normalizedWorkflow).toContain(required)
+    }
+
+    for (const forbidden of [
+      "required by an explicit repository or pull request source",
+      "Relay and distributed-state work covers partial",
+    ]) {
+      expect(normalizedInstructions).not.toContain(forbidden)
+      expect(normalizedWorkflow).not.toContain(forbidden)
+    }
   })
 
   it("keeps the commerce shard reserved until its selector is implemented", () => {
