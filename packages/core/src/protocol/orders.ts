@@ -310,10 +310,27 @@ export function parseOrderMessageRumorEvent(
   }
 
   if (type === "status_update") {
+    const reopensTags: string[] = []
+    for (const tag of event.tags ?? []) {
+      if (tag[0] === "reopens" && typeof tag[1] === "string") {
+        reopensTags.push(tag[1])
+      }
+    }
+    const reopensTag = reopensTags[0]
+    const reopensJson = getString(json?.reopens)
+    if (
+      new Set(reopensTags).size > 1 ||
+      (reopensTag !== undefined &&
+        reopensJson !== undefined &&
+        reopensTag !== reopensJson)
+    ) {
+      throw new Error("Conflicting order status correction markers")
+    }
     const payload = statusUpdateMessageSchema.parse({
       status:
         getTagValue(event.tags ?? [], "status") ?? getString(json?.status),
       note: getString(json?.note),
+      reopens: reopensTag ?? reopensJson,
     })
     return { ...messageBase(event, type, orderId), payload }
   }

@@ -1,6 +1,7 @@
 import {
   deriveOrderFlow,
   extractOrderSummary,
+  getEffectiveMerchantOrderStatus,
   getPriceSats,
   getOrderPublicZapSigner,
   isKnownOrderStatus,
@@ -228,22 +229,34 @@ export function deriveItemDisplayTitle(productId: string): string {
     .join(" ")
 }
 
-function latestMerchantStatus(
+type MerchantStatusProjection = {
+  status: OrderViewModel["merchantStatus"]
+  reopenedCancellationId?: string
+}
+
+function projectMerchantStatus(
   messages: ParsedOrderMessage[] | undefined,
   merchantPubkey: string | undefined,
+  buyerPubkey: string | undefined,
   fallback: string | null
-): OrderViewModel["merchantStatus"] {
-  if (messages && messages.length > 0) {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const message = messages[i]
-      if (message.type !== "status_update") continue
-      if (merchantPubkey && message.senderPubkey !== merchantPubkey) continue
-      const status = message.payload.status
-      if (isKnownOrderStatus(status)) return status
+): MerchantStatusProjection {
+  if (messages && merchantPubkey && buyerPubkey) {
+    const projection = getEffectiveMerchantOrderStatus(messages, {
+      merchantPubkey,
+      buyerPubkey,
+    })
+    if (projection.status && isKnownOrderStatus(projection.status)) {
+      return {
+        status: projection.status,
+        ...(projection.reopenedCancellationId
+          ? { reopenedCancellationId: projection.reopenedCancellationId }
+          : {}),
+      }
     }
   }
-  if (fallback && isKnownOrderStatus(fallback)) return fallback
-  return null
+  return {
+    status: fallback && isKnownOrderStatus(fallback) ? fallback : null,
+  }
 }
 
 export function buildOrderViewModel(
@@ -259,6 +272,15 @@ export function buildOrderViewModel(
     lifecycle?.merchantPubkey ??
     input.merchantPubkey ??
     conversation?.merchantPubkey ??
+    ""
+  const buyerPubkey =
+    lifecycle?.buyerPubkey ??
+    messages?.find((message) => message.type === "order")?.senderPubkey ??
+    messages?.find(
+      (message) =>
+        message.type === "status_update" &&
+        message.senderPubkey === merchantPubkey
+    )?.recipientPubkey ??
     ""
 
   // --- Items / totals -----------------------------------------------------
@@ -354,11 +376,13 @@ export function buildOrderViewModel(
   const zapReceiptStatus: OrderZapReceiptStatus =
     lifecycle?.zapReceiptStatus ?? "not_applicable"
 
-  const merchantStatus = latestMerchantStatus(
+  const merchantStatusProjection = projectMerchantStatus(
     messages,
     merchantPubkey,
+    buyerPubkey,
     conversation?.status ?? null
   )
+  const merchantStatus = merchantStatusProjection.status
   const paymentPaid = isBuyerOrderPaid({ paymentStatus, merchantStatus })
 
   const tracking =
@@ -376,12 +400,17 @@ export function buildOrderViewModel(
       ? "cancelled"
       : isCompletedMerchantStatus(merchantStatus)
         ? "completed"
-        : lifecycle?.phase === "completed" || lifecycle?.phase === "cancelled"
-          ? lifecycle.phase
-          : paymentPaid
+        : lifecycle?.phase === "cancelled" &&
+            merchantStatusProjection.reopenedCancellationId
+          ? paymentPaid || merchantStatus !== "pending"
             ? "in_progress"
-            : (lifecycle?.phase ??
-              (orderDeliveryStatus === "sent" ? "in_progress" : "pending"))
+            : "pending"
+          : lifecycle?.phase === "completed" || lifecycle?.phase === "cancelled"
+            ? lifecycle.phase
+            : paymentPaid
+              ? "in_progress"
+              : (lifecycle?.phase ??
+                (orderDeliveryStatus === "sent" ? "in_progress" : "pending"))
 
   const publicReceiptNotObserved =
     paymentStatus === "ambiguous" && zapReceiptStatus === "receipt_not_observed"
