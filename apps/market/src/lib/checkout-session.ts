@@ -1,5 +1,7 @@
 import {
   GUEST_ORDER_LOCAL_RETENTION_MS,
+  type OrderBuyerIdentityKind,
+  type OrderDeliveryStatus,
   type ShopperShippingPreset,
 } from "@conduit/core"
 import type { ShippingFormState } from "./checkout-validation"
@@ -26,6 +28,7 @@ type StoredCheckoutShipping = {
   value: Partial<ShippingFormState>
   updatedAt: number
   ownerPubkey: string | null
+  retainedForOrderId?: string | null
 }
 
 export type CheckoutShippingDraftOwnership = {
@@ -105,6 +108,9 @@ function parseStoredCheckoutShipping(
       Array.isArray(parsed.value) ||
       !("ownerPubkey" in parsed) ||
       (parsed.ownerPubkey !== null && typeof parsed.ownerPubkey !== "string") ||
+      ("retainedForOrderId" in parsed &&
+        parsed.retainedForOrderId !== null &&
+        typeof parsed.retainedForOrderId !== "string") ||
       !Number.isFinite(parsed.updatedAt) ||
       (parsed.updatedAt ?? 0) <= 0 ||
       (parsed.updatedAt ?? 0) > nowMs ||
@@ -347,7 +353,8 @@ export function writeCheckoutShippingSession(
   value: ShippingFormState,
   storage: SessionStorageLike | null = getSessionStorage(),
   nowMs = Date.now(),
-  ownerPubkey: string | null = null
+  ownerPubkey: string | null = null,
+  retainedForOrderId: string | null = null
 ): void {
   if (!storage) return
   try {
@@ -355,6 +362,7 @@ export function writeCheckoutShippingSession(
       value,
       updatedAt: nowMs,
       ownerPubkey,
+      ...(retainedForOrderId ? { retainedForOrderId } : {}),
     }
     storage.setItem(CHECKOUT_SHIPPING_STORAGE_KEY, JSON.stringify(stored))
     scheduleCheckoutShippingExpiry(
@@ -364,6 +372,66 @@ export function writeCheckoutShippingSession(
   } catch {
     // ignore
   }
+}
+
+/**
+ * Keep a queued guest's same-tab recovery draft for the bounded retention
+ * window. Signed-in orders do not need this local exception, and a relay ACK
+ * ends the guest recovery need.
+ */
+export function reconcileCheckoutShippingSessionForOrderDelivery(
+  input: {
+    orderId: string
+    buyerIdentityKind: OrderBuyerIdentityKind
+    orderDeliveryStatus: OrderDeliveryStatus
+    value: ShippingFormState
+  },
+  storage: SessionStorageLike | null = getSessionStorage(),
+  nowMs = Date.now()
+): "cleared" | "preserved" | "retained" {
+  if (
+    input.buyerIdentityKind === "guest_ephemeral" &&
+    input.orderDeliveryStatus === "pending"
+  ) {
+    writeCheckoutShippingSession(
+      input.value,
+      storage,
+      nowMs,
+      null,
+      input.orderId
+    )
+    return "retained"
+  }
+
+  if (input.buyerIdentityKind === "guest_ephemeral") {
+    return clearCheckoutShippingSessionForOrderDelivery(
+      input.orderId,
+      storage,
+      nowMs
+    )
+      ? "cleared"
+      : "preserved"
+  }
+
+  clearCheckoutShippingSession(storage)
+  return "cleared"
+}
+
+/**
+ * Clear only the guest recovery draft retained by this order. A shopper may
+ * have started another checkout while delivery was queued, so a late ACK must
+ * not discard an unbound or differently bound draft.
+ */
+export function clearCheckoutShippingSessionForOrderDelivery(
+  orderId: string,
+  storage: SessionStorageLike | null = getSessionStorage(),
+  nowMs = Date.now()
+): boolean {
+  if (!orderId) return false
+  const stored = readStoredCheckoutShipping(storage, nowMs)
+  if (stored?.retainedForOrderId !== orderId) return false
+  removeCheckoutShippingStorage(storage)
+  return true
 }
 
 export function clearCheckoutShippingSession(

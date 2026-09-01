@@ -1,5 +1,9 @@
 import { describe, expect, it } from "bun:test"
-import { db, type StoredPaymentAttempt } from "../packages/core/src/db"
+import {
+  db,
+  type CachedOrderMessage,
+  type StoredPaymentAttempt,
+} from "../packages/core/src/db"
 import {
   GUEST_ORDER_LOCAL_RETENTION_MS,
   LEGACY_ORDER_PAYMENT_RECOVERY_GRACE_MS,
@@ -42,6 +46,7 @@ async function withMockOrderPaymentDb<T>(
   initial: {
     lifecycle?: OrderLifecycle
     paymentAttempt?: StoredPaymentAttempt
+    orderMessages?: CachedOrderMessage[]
   },
   run: (state: {
     lifecycle: () => OrderLifecycle | undefined
@@ -50,6 +55,7 @@ async function withMockOrderPaymentDb<T>(
 ): Promise<T> {
   let lifecycle = initial.lifecycle
   let paymentAttempt = initial.paymentAttempt
+  const orderMessages = initial.orderMessages ?? []
   const lifecycleTable = db.orderLifecycles as typeof db.orderLifecycles & {
     get: typeof db.orderLifecycles.get
     put: typeof db.orderLifecycles.put
@@ -59,11 +65,15 @@ async function withMockOrderPaymentDb<T>(
       get: typeof db.paymentAttempts.get
       put: typeof db.paymentAttempts.put
     }
+  const orderMessageTable = db.orderMessages as typeof db.orderMessages & {
+    where: typeof db.orderMessages.where
+  }
   const database = db as typeof db & { transaction: typeof db.transaction }
   const originalLifecycleGet = lifecycleTable.get
   const originalLifecyclePut = lifecycleTable.put
   const originalPaymentAttemptGet = paymentAttemptTable.get
   const originalPaymentAttemptPut = paymentAttemptTable.put
+  const originalOrderMessageWhere = orderMessageTable.where
   const originalTransaction = database.transaction
 
   lifecycleTable.get = (async (orderId: string) =>
@@ -82,6 +92,17 @@ async function withMockOrderPaymentDb<T>(
     paymentAttempt = next
     return next.id
   }) as typeof paymentAttemptTable.put
+  orderMessageTable.where = ((index: string) => {
+    if (index !== "orderId") {
+      throw new Error(`Unexpected order-message index: ${index}`)
+    }
+    return {
+      equals: (orderId: string) => ({
+        toArray: async () =>
+          orderMessages.filter((message) => message.orderId === orderId),
+      }),
+    }
+  }) as typeof orderMessageTable.where
   database.transaction = (async (...args: unknown[]) => {
     const scope = args.at(-1) as () => Promise<unknown>
     return await scope()
@@ -97,6 +118,7 @@ async function withMockOrderPaymentDb<T>(
     lifecycleTable.put = originalLifecyclePut
     paymentAttemptTable.get = originalPaymentAttemptGet
     paymentAttemptTable.put = originalPaymentAttemptPut
+    orderMessageTable.where = originalOrderMessageWhere
     database.transaction = originalTransaction
   }
 }
@@ -142,6 +164,17 @@ describe("deriveOrderLifecyclePhase", () => {
       deriveOrderLifecyclePhase({
         ...base,
         orderDeliveryStatus: "sent",
+        paymentStatus: "manual_required",
+      })
+    ).toBe("in_progress")
+  })
+
+  it("keeps a manual invoice in progress without a relay acknowledgement", () => {
+    expect(
+      deriveOrderLifecyclePhase({
+        ...base,
+        orderDeliveryStatus: "failed",
+        invoiceStatus: "manual_required",
         paymentStatus: "manual_required",
       })
     ).toBe("in_progress")
@@ -276,6 +309,67 @@ describe("order payment admission", () => {
     paymentTarget: lifecycle.paymentTarget!,
   }
 
+  function merchantStatusRow(
+    status: string,
+    overrides: Partial<CachedOrderMessage> = {}
+  ): CachedOrderMessage {
+    const row = {
+      id: `status-${status}`,
+      orderId: lifecycle.orderId,
+      type: "status_update",
+      senderPubkey: lifecycle.merchantPubkey,
+      recipientPubkey: lifecycle.buyerPubkey,
+      createdAt: 1_700_000_001,
+      cachedAt: 1_700_000_002,
+      ...overrides,
+    }
+    return {
+      ...row,
+      rawContent:
+        overrides.rawContent ??
+        JSON.stringify({
+          id: row.id,
+          orderId: row.orderId,
+          type: row.type,
+          senderPubkey: row.senderPubkey,
+          recipientPubkey: row.recipientPubkey,
+          createdAt: row.createdAt,
+          rawContent: "authenticated-status-update",
+          payload: { status },
+        }),
+    }
+  }
+
+  function merchantShippingRow(
+    overrides: Partial<CachedOrderMessage> = {}
+  ): CachedOrderMessage {
+    const row = {
+      id: "shipping-update",
+      orderId: lifecycle.orderId,
+      type: "shipping_update",
+      senderPubkey: lifecycle.merchantPubkey,
+      recipientPubkey: lifecycle.buyerPubkey,
+      createdAt: 1_700_000_003,
+      cachedAt: 1_700_000_004,
+      ...overrides,
+    }
+    return {
+      ...row,
+      rawContent:
+        overrides.rawContent ??
+        JSON.stringify({
+          id: row.id,
+          orderId: row.orderId,
+          type: row.type,
+          senderPubkey: row.senderPubkey,
+          recipientPubkey: row.recipientPubkey,
+          createdAt: row.createdAt,
+          rawContent: "authenticated-shipping-update",
+          payload: { carrier: "Parcel carrier" },
+        }),
+    }
+  }
+
   it("admits an exact delivered-order snapshot", () => {
     expect(getOrderLifecyclePaymentAdmission(lifecycle, input)).toBe(
       "admissible"
@@ -332,6 +426,22 @@ describe("order payment admission", () => {
     ).toBe("unsafe_state")
   })
 
+  it("admits a lost-ACK snapshot only with separate recipient evidence", () => {
+    const pending = {
+      ...lifecycle,
+      orderDeliveryStatus: "pending" as const,
+      phase: "pending" as const,
+    }
+
+    expect(getOrderLifecyclePaymentAdmission(pending, input)).toBe(
+      "unsafe_state"
+    )
+    expect(getOrderLifecyclePaymentAdmission(pending, input, true)).toBe(
+      "admissible"
+    )
+    expect(pending.orderDeliveryStatus).toBe("pending")
+  })
+
   it("rejects a second admission while a durable claim exists", () => {
     expect(
       getOrderLifecyclePaymentAdmission(
@@ -358,6 +468,202 @@ describe("order payment admission", () => {
           state.lifecycle()!.paymentClaimedAt!
       ).toBe(ORDER_PAYMENT_CLAIM_LEASE_MS)
     })
+  })
+
+  it("atomically vetoes every payment claim after retained terminal merchant evidence", async () => {
+    for (const status of [
+      "paid",
+      "shipped",
+      "complete",
+      "delivered",
+      "cancelled",
+      "refund_requested",
+    ]) {
+      await withMockOrderPaymentDb(
+        { lifecycle, orderMessages: [merchantStatusRow(status)] },
+        async (state) => {
+          const result = await claimOrderLifecyclePayment(input)
+
+          expect(result.status).toBe("unsafe_state")
+          expect(state.lifecycle()?.paymentClaimId).toBeUndefined()
+        }
+      )
+    }
+  })
+
+  it("atomically vetoes every private fallback claim after retained terminal merchant evidence", async () => {
+    const failed: OrderLifecycle = {
+      ...lifecycle,
+      invoiceStatus: "failed",
+      paymentStatus: "failed",
+      lastError: "Legacy anonymous zap failed.",
+    }
+    const privateInput: OrderPaymentClaimInput = {
+      ...input,
+      checkoutMode: "private_checkout",
+      zapContent: "",
+    }
+
+    for (const status of [
+      "paid",
+      "shipped",
+      "complete",
+      "delivered",
+      "cancelled",
+      "refund_requested",
+    ]) {
+      await withMockOrderPaymentDb(
+        { lifecycle: failed, orderMessages: [merchantStatusRow(status)] },
+        async (state) => {
+          const result =
+            await claimOrderLifecyclePrivateFallbackPayment(privateInput)
+
+          expect(result.status).toBe("unsafe_state")
+          expect(state.lifecycle()?.paymentClaimId).toBeUndefined()
+        }
+      )
+    }
+  })
+
+  it("atomically vetoes normal and private fallback claims after retained merchant shipping evidence", async () => {
+    await withMockOrderPaymentDb(
+      { lifecycle, orderMessages: [merchantShippingRow()] },
+      async (state) => {
+        const result = await claimOrderLifecyclePayment(input)
+
+        expect(result.status).toBe("unsafe_state")
+        expect(state.lifecycle()?.paymentClaimId).toBeUndefined()
+      }
+    )
+
+    const failed: OrderLifecycle = {
+      ...lifecycle,
+      invoiceStatus: "failed",
+      paymentStatus: "failed",
+      lastError: "Legacy anonymous zap failed.",
+    }
+    await withMockOrderPaymentDb(
+      { lifecycle: failed, orderMessages: [merchantShippingRow()] },
+      async (state) => {
+        const result = await claimOrderLifecyclePrivateFallbackPayment({
+          ...input,
+          checkoutMode: "private_checkout",
+          zapContent: "",
+        })
+
+        expect(result.status).toBe("unsafe_state")
+        expect(state.lifecycle()?.paymentClaimId).toBeUndefined()
+      }
+    )
+  })
+
+  it("does not treat malformed or identity-mismatched cache rows as merchant evidence", async () => {
+    const rows = [
+      merchantStatusRow("paid", { rawContent: "not-json" }),
+      merchantStatusRow("cancelled", { senderPubkey: "other-sender" }),
+      merchantStatusRow("refund_requested", {
+        recipientPubkey: "other-recipient",
+      }),
+    ]
+
+    await withMockOrderPaymentDb(
+      { lifecycle, orderMessages: rows },
+      async (state) => {
+        const result = await claimOrderLifecyclePayment(input)
+
+        expect(result.status).toBe("claimed")
+        expect(state.lifecycle()?.paymentClaimId).toBe(input.paymentClaimId)
+      }
+    )
+  })
+
+  it("does not confuse merchant acceptance with merchant-confirmed payment", async () => {
+    for (const status of ["pending", "invoiced", "accepted", "processing"]) {
+      await withMockOrderPaymentDb(
+        { lifecycle, orderMessages: [merchantStatusRow(status)] },
+        async (state) => {
+          const result = await claimOrderLifecyclePayment(input)
+
+          expect(result.status).toBe("claimed")
+          expect(state.lifecycle()?.paymentClaimId).toBe(input.paymentClaimId)
+        }
+      )
+    }
+  })
+
+  it("atomically admits a lost-ACK payment after retained nonterminal merchant evidence", async () => {
+    const pending: OrderLifecycle = {
+      ...lifecycle,
+      orderDeliveryStatus: "pending",
+      phase: "pending",
+    }
+    await withMockOrderPaymentDb(
+      { lifecycle: pending, orderMessages: [merchantStatusRow("accepted")] },
+      async (state) => {
+        const replacement = await replaceOrderPaymentTarget(
+          pending.orderId,
+          input.paymentTarget
+        )
+        expect(replacement.status).toBe("updated")
+
+        const result = await claimOrderLifecyclePayment(input)
+        expect(result.status).toBe("claimed")
+        expect(state.lifecycle()).toMatchObject({
+          orderDeliveryStatus: "pending",
+          phase: "in_progress",
+          paymentClaimId: input.paymentClaimId,
+        })
+      }
+    )
+  })
+
+  it("keeps lost-ACK payment closed for malformed evidence and terminal merchant state", async () => {
+    const pending: OrderLifecycle = {
+      ...lifecycle,
+      orderDeliveryStatus: "pending",
+      phase: "pending",
+    }
+    for (const row of [
+      merchantStatusRow("accepted", { rawContent: "not-json" }),
+      merchantStatusRow("accepted", { senderPubkey: "other-sender" }),
+      merchantStatusRow("paid"),
+    ]) {
+      await withMockOrderPaymentDb(
+        { lifecycle: pending, orderMessages: [row] },
+        async (state) => {
+          const result = await claimOrderLifecyclePayment(input)
+          expect(result.status).toBe("unsafe_state")
+          expect(state.lifecycle()?.paymentClaimId).toBeUndefined()
+        }
+      )
+    }
+  })
+
+  it("admits a lost-ACK private fallback only after retained nonterminal merchant evidence", async () => {
+    const failed: OrderLifecycle = {
+      ...lifecycle,
+      orderDeliveryStatus: "pending",
+      phase: "failed",
+      invoiceStatus: "failed",
+      paymentStatus: "failed",
+      lastError: "Legacy anonymous zap failed.",
+    }
+    await withMockOrderPaymentDb(
+      { lifecycle: failed, orderMessages: [merchantStatusRow("accepted")] },
+      async (state) => {
+        const result = await claimOrderLifecyclePrivateFallbackPayment({
+          ...input,
+          checkoutMode: "private_checkout",
+          zapContent: "",
+        })
+
+        expect(result.status).toBe("claimed")
+        expect(state.lifecycle()).toMatchObject({
+          orderDeliveryStatus: "pending",
+          phase: "in_progress",
+        })
+      }
+    )
   })
 
   it("atomically claims only one legacy anonymous private fallback", async () => {
@@ -1123,6 +1429,16 @@ describe("order payment admission", () => {
         invoiceStatus: "received",
       })
     ).toBe("replaceable")
+    expect(
+      getOrderPaymentTargetReplacementAdmission(
+        {
+          ...lifecycle,
+          orderDeliveryStatus: "pending",
+          phase: "pending",
+        },
+        true
+      )
+    ).toBe("replaceable")
 
     for (const paymentStatus of [
       "paying",
@@ -1149,11 +1465,15 @@ describe("order payment admission", () => {
       get: typeof db.orderLifecycles.get
       put: typeof db.orderLifecycles.put
     }
+    const orderMessageTable = db.orderMessages as typeof db.orderMessages & {
+      where: typeof db.orderMessages.where
+    }
     const database = db as typeof db & {
       transaction: typeof db.transaction
     }
     const originalGet = table.get
     const originalPut = table.put
+    const originalOrderMessageWhere = orderMessageTable.where
     const originalTransaction = database.transaction
 
     table.get = (async () => stored) as typeof table.get
@@ -1161,11 +1481,13 @@ describe("order payment admission", () => {
       stored = next
       return next.orderId
     }) as typeof table.put
-    database.transaction = (async (
-      _mode: string,
-      _table: unknown,
-      callback: () => Promise<unknown>
-    ) => callback()) as typeof database.transaction
+    orderMessageTable.where = (() => ({
+      equals: () => ({ toArray: async () => [] }),
+    })) as typeof orderMessageTable.where
+    database.transaction = (async (...args: unknown[]) => {
+      const callback = args.at(-1) as () => Promise<unknown>
+      return await callback()
+    }) as typeof database.transaction
 
     try {
       const first = await claimOrderLifecyclePayment(input)
@@ -1236,6 +1558,7 @@ describe("order payment admission", () => {
     } finally {
       table.get = originalGet
       table.put = originalPut
+      orderMessageTable.where = originalOrderMessageWhere
       database.transaction = originalTransaction
     }
   })

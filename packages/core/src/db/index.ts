@@ -559,6 +559,8 @@ export interface OrderRelayDelivery {
   relayUrl: string
   source: "declared" | "recipient_nip65" | "compatibility_registry"
   status: OrderRelayDeliveryStatus
+  /** False when replaying the immutable signed bytes cannot change the result. */
+  retryable?: boolean
   attemptCount: number
   lastAttemptAt?: number
   acknowledgedAt?: number
@@ -654,6 +656,23 @@ export interface OrderLifecycleItem {
   }
 }
 
+export interface OrderCartRetirementItem {
+  productId: string
+  quantity: number
+  lineGenerationId: string
+}
+
+/**
+ * Content-minimal journal for retiring only the cart units represented by this
+ * order. It is committed with the pre-publish lifecycle checkpoint and applied
+ * idempotently by Market storage recovery.
+ */
+export interface OrderCartRetirement {
+  status: "pending" | "applied"
+  items: OrderCartRetirementItem[]
+  updatedAt: number
+}
+
 /**
  * Durable buyer-side order lifecycle record (CND-122).
  *
@@ -726,6 +745,8 @@ export interface OrderLifecycle {
   orderDeliveryRoute?: OrderDeliveryRoute
   /** Exact encrypted wrap + per-relay ACK state for bounded retry. */
   orderRelayDelivery?: OrderRelayDeliveryRecord
+  /** Durable intent to retire the exact submitted cart-line generations. */
+  cartRetirement?: OrderCartRetirement
   /**
    * Opaque owner token for the currently claimed payment flow. The token fences
    * pre-wallet lifecycle writes so a resumed stale flow cannot cross the wallet

@@ -734,6 +734,13 @@ export interface PublishPrivateMessageInput {
    */
   onWrapped?: (prepared: PreparedPrivateMessageWraps) => void | Promise<void>
   /**
+   * Durable order-delivery seam. Runs after each first-attempt outcome is
+   * classified and before a zero-ACK failure is surfaced to the caller.
+   */
+  onOrderRelayDeliveryUpdated?: (
+    delivery: OrderRelayDeliveryRecord
+  ) => void | Promise<void>
+  /**
    * Recipient/sender kind-10050 inbox relays. NIP-17 delivery is exclusive to
    * these declarations; an empty recipient list means the peer is not ready.
    */
@@ -809,6 +816,8 @@ export interface PreparedPrivateMessageWraps {
   rumorId: string
   wrappedToRecipient: NDKEvent
   wrappedToSelf: NDKEvent | null
+  /** Immutable kind-16 recipient artifact and relay plan, before relay I/O. */
+  orderRelayDelivery?: OrderRelayDeliveryRecord
 }
 
 export interface PublishPrivateMessageResult {
@@ -1071,10 +1080,21 @@ export async function publishPrivateMessage(
     }
   }
 
+  const stagedOrderRelayDelivery =
+    input.rumorKind === EVENT_KINDS.ORDER
+      ? buildStagedOrderRelayDeliveryRecord({
+          wrappedToRecipient,
+          recipientRoute,
+        })
+      : undefined
+
   await input.onWrapped?.({
     rumorId: input.rumor.id,
     wrappedToRecipient,
     wrappedToSelf,
+    ...(stagedOrderRelayDelivery
+      ? { orderRelayDelivery: stagedOrderRelayDelivery }
+      : {}),
   })
 
   let recipientDelivery: PublishWithPlannerResult
@@ -1090,8 +1110,29 @@ export async function publishPrivateMessage(
     })
   } catch (error) {
     const partial = recoverPartialRelayPublishDiagnostics(error)
-    if (!partial) throw error
-    recipientDelivery = partial
+    if (partial) {
+      recipientDelivery = partial
+    } else {
+      const diagnostics =
+        error instanceof RelayPublishDiagnosticsError
+          ? error.diagnostics
+          : createTimedOutRecipientDelivery(recipientRoute)
+      if (stagedOrderRelayDelivery) {
+        await input.onOrderRelayDeliveryUpdated?.(
+          settleStagedOrderRelayDelivery(stagedOrderRelayDelivery, diagnostics)
+        )
+      }
+      throw error
+    }
+  }
+  const orderRelayDelivery = stagedOrderRelayDelivery
+    ? settleStagedOrderRelayDelivery(
+        stagedOrderRelayDelivery,
+        recipientDelivery
+      )
+    : undefined
+  if (orderRelayDelivery) {
+    await input.onOrderRelayDeliveryUpdated?.(orderRelayDelivery)
   }
   if (
     Array.isArray(recipientDelivery.successfulRelayUrls) &&
@@ -1104,15 +1145,6 @@ export async function publishPrivateMessage(
     recipientDelivery.failedRelayUrls.length > 0
       ? "partial_success"
       : "full_success"
-  const orderRelayDelivery =
-    input.rumorKind === EVENT_KINDS.ORDER
-      ? buildOrderRelayDeliveryRecord({
-          wrappedToRecipient,
-          recipientRoute,
-          recipientDelivery,
-        })
-      : undefined
-
   if (wrappedToSelf) {
     if (!senderRoute || senderRoute.route === "blocked") {
       selfCopyError = "Sender has no usable NIP-17 inbox relay declaration."
@@ -1216,10 +1248,9 @@ function consumeValidatedGuestOrderCompanionScope(input: {
   )
 }
 
-function buildOrderRelayDeliveryRecord(input: {
+function buildStagedOrderRelayDeliveryRecord(input: {
   wrappedToRecipient: NDKEvent
   recipientRoute: DeliveryRouteSelection
-  recipientDelivery: Awaited<ReturnType<typeof publishWithPlanner>>
 }): OrderRelayDeliveryRecord | undefined {
   const route = input.recipientRoute.route
   if (route === "blocked") return undefined
@@ -1233,43 +1264,101 @@ function buildOrderRelayDeliveryRecord(input: {
   if (!isValidSignedPublicNostrEvent(signedRecipientWrap)) return undefined
 
   const now = Date.now()
-  const successful = new Set(input.recipientDelivery.successfulRelayUrls ?? [])
-  const failures = input.recipientDelivery.relayFailureMessages ?? {}
-  const relayDelivery = input.recipientRoute.relayUrls.map((relayUrl) => {
-    const acked = successful.has(relayUrl)
+  const relayDelivery = input.recipientRoute.relayUrls.map((relayUrl) => ({
+    relayUrl,
+    source: input.recipientRoute.relaySources[relayUrl] ?? "declared",
+    status: "pending" as const,
+    attemptCount: 0,
+  }))
+
+  return {
+    signedRecipientWrap,
+    route,
+    relayDelivery,
+    deliveryAttemptCount: 0,
+    retryCount: 0,
+    createdAt: now,
+    updatedAt: now,
+    expiresAt: now + ORDER_RELAY_RETRY_RETENTION_MS,
+  }
+}
+
+function createTimedOutRecipientDelivery(
+  recipientRoute: DeliveryRouteSelection
+): PublishWithPlannerResult {
+  return {
+    plan: {
+      intent: "recipient_event",
+      primaryRelayUrls: [...recipientRoute.relayUrls],
+      broadcastRelayUrls: [],
+      parkedRelayUrls: [],
+    },
+    attemptedRelayUrls: [...recipientRoute.relayUrls],
+    successfulRelayUrls: [],
+    failedRelayUrls: [...recipientRoute.relayUrls],
+    relayFailureMessages: {},
+  }
+}
+
+function settleStagedOrderRelayDelivery(
+  staged: OrderRelayDeliveryRecord,
+  delivery: PublishWithPlannerResult
+): OrderRelayDeliveryRecord {
+  const now = Date.now()
+  const attempted = new Set(
+    Array.isArray(delivery.attemptedRelayUrls)
+      ? delivery.attemptedRelayUrls
+      : staged.relayDelivery.map((target) => target.relayUrl)
+  )
+  const successful = new Set(
+    Array.isArray(delivery.successfulRelayUrls)
+      ? delivery.successfulRelayUrls
+      : staged.relayDelivery.map((target) => target.relayUrl)
+  )
+  const failures = delivery.relayFailureMessages ?? {}
+  const terminalRejected = new Set(delivery.terminalRejectedRelayUrls ?? [])
+  if (delivery.terminalRejectedRelayUrls === undefined) {
+    for (const [relayUrl, message] of Object.entries(failures)) {
+      if (/^(?:invalid|pow):/i.test(message.trim())) {
+        terminalRejected.add(relayUrl)
+      }
+    }
+  }
+  const relayDelivery = staged.relayDelivery.map((target) => {
+    if (!attempted.has(target.relayUrl)) return target
+    const acked = successful.has(target.relayUrl)
     const rejected =
-      /^(?:pow|blocked|rate-limited|invalid|restricted|mute|error):/i.test(
-        failures[relayUrl]?.trim() ?? ""
-      )
+      !acked &&
+      (terminalRejected.has(target.relayUrl) ||
+        /^(?:pow|blocked|rate-limited|invalid|restricted|mute|error):/i.test(
+          failures[target.relayUrl]?.trim() ?? ""
+        ))
     const status: OrderRelayDeliveryStatus = acked
       ? "acked"
       : rejected
         ? "rejected"
         : "timed_out"
+    const retryable = !acked && !terminalRejected.has(target.relayUrl)
     return {
-      relayUrl,
-      source: input.recipientRoute.relaySources[relayUrl] ?? "declared",
+      ...target,
       status,
-      attemptCount: 1,
+      retryable,
+      attemptCount: target.attemptCount + 1,
       lastAttemptAt: now,
       ...(acked ? { acknowledgedAt: now } : {}),
       ...(rejected ? { rejectedAt: now } : {}),
       ...(!acked && !rejected ? { timedOutAt: now } : {}),
     }
   })
-
+  const hasRetryableTarget = relayDelivery.some(
+    (target) => target.status !== "acked" && target.retryable !== false
+  )
   return {
-    signedRecipientWrap,
-    route,
+    ...staged,
     relayDelivery,
-    deliveryAttemptCount: 1,
-    retryCount: 0,
-    nextRetryAt: relayDelivery.every((delivery) => delivery.status === "acked")
-      ? undefined
-      : now + 15_000,
-    createdAt: now,
+    deliveryAttemptCount: staged.deliveryAttemptCount + 1,
+    nextRetryAt: hasRetryableTarget ? now + 15_000 : undefined,
     updatedAt: now,
-    expiresAt: now + ORDER_RELAY_RETRY_RETENTION_MS,
   }
 }
 

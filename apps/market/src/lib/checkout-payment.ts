@@ -1010,9 +1010,9 @@ export interface PaymentTrackerRowCopy {
  *
  * Each row carries three tense-consistent variants so the label never mixes
  * past/present/future across the stepper:
- *  - `complete` -- past tense ("Order sent to merchant")
- *  - `active`   -- present continuous ("Sending order to merchant")
- *  - `waiting`  -- imperative/future ("Send order to merchant")
+ *  - `complete` -- past tense ("Relay accepted order")
+ *  - `active`   -- present continuous ("Sending order to relay")
+ *  - `waiting`  -- future ("Order delivery pending")
  *
  * Source of truth: the CND-89 copy table.
  */
@@ -1022,16 +1022,17 @@ export const PAYMENT_TRACKER_ROW_COPY: Record<
 > = {
   order_delivered: {
     complete: {
-      title: "Order sent to merchant",
-      subtitle: "Encrypted order details were delivered over Nostr.",
+      title: "Relay accepted order",
+      subtitle:
+        "A Nostr relay accepted the encrypted order for merchant pickup.",
     },
     active: {
-      title: "Sending order to merchant",
-      subtitle: "Delivering encrypted order details over Nostr.",
+      title: "Sending order to relay",
+      subtitle: "Waiting for a Nostr relay to accept the encrypted order.",
     },
     waiting: {
-      title: "Send order to merchant",
-      subtitle: "Encrypted order details will be delivered over Nostr.",
+      title: "Order delivery pending",
+      subtitle: "The encrypted order will be sent for merchant pickup.",
     },
   },
   wallet_connecting: {

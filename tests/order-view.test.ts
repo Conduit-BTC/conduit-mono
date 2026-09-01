@@ -7,11 +7,16 @@ import type {
 import {
   buildOrderTimeline,
   buildOrderViewModel,
+  canOfferOrderPaymentAction,
   computeOrderTimelineStatuses,
   deriveOrderHeaderStatus,
+  getOrderDeliveryEvidenceLabel,
   getOrderFilterPhase,
+  getOrderPaymentContinuationCopy,
   getOrderPaymentMethodLabel,
   isZeroCostPickupOrder,
+  shouldOfferOrderDeliveryRetry,
+  shouldOfferOrderPaymentContinuation,
   type OrderViewModel,
 } from "../apps/market/src/lib/order-view"
 
@@ -165,6 +170,70 @@ function zeroPickupVm(
 }
 
 describe("buildOrderViewModel", () => {
+  it("does not let expired relay failure erase stronger payment progress", () => {
+    for (const progress of [
+      { invoiceStatus: "received", paymentStatus: "paying" },
+      { invoiceStatus: "received", paymentStatus: "paid" },
+      { invoiceStatus: "received", paymentStatus: "ambiguous" },
+      { invoiceStatus: "manual_required", paymentStatus: "manual_required" },
+    ] as const) {
+      const vm = vmFromLifecycle({
+        orderDeliveryStatus: "failed",
+        ...progress,
+        phase: "failed",
+      })
+
+      expect(vm.phase).toBe("in_progress")
+      expect(vm.actionNeeded).toBe(
+        progress.paymentStatus === "ambiguous" ||
+          progress.paymentStatus === "manual_required"
+      )
+      expect(computeOrderTimelineStatuses(vm).order_sent).not.toBe("failed")
+      const header = deriveOrderHeaderStatus(vm)
+      expect(header.detailLabel).not.toBe("Order not sent")
+      expect(header.detailLabel).not.toBe("Saved locally; waiting for relay")
+    }
+  })
+
+  it("does not let relay failure erase authenticated merchant observation", () => {
+    const vm = buildOrderViewModel({
+      orderId: "order-1",
+      merchantPubkey: "merchant",
+      lifecycle: baseLifecycle({
+        checkoutMode: "pay_later",
+        orderDeliveryStatus: "failed",
+        invoiceStatus: "not_requested",
+        paymentStatus: "not_started",
+        proofDeliveryStatus: "not_started",
+        phase: "failed",
+      }),
+      messages: [
+        {
+          id: "merchant-response",
+          orderId: "order-1",
+          createdAt: 2,
+          senderPubkey: "merchant",
+          recipientPubkey: "buyer",
+          rawContent: "{}",
+          type: "status_update",
+          payload: { status: "accepted" },
+        } as never,
+      ],
+    })
+
+    expect(vm.orderDeliveryEvidence).toBe("confirmed")
+    expect(vm.phase).toBe("in_progress")
+    expect(vm.actionNeeded).toBe(false)
+    expect(computeOrderTimelineStatuses(vm).order_sent).toBe("complete")
+    expect(deriveOrderHeaderStatus(vm).detailLabel).not.toBe("Order not sent")
+    const orderSent = buildOrderTimeline(vm)[0]
+    expect(orderSent).toMatchObject({
+      title: "Merchant confirmed order",
+      subtitle:
+        "Authenticated merchant activity shows the order reached the merchant; no relay acknowledgement was recorded.",
+    })
+    expect(orderSent?.subtitle).not.toContain("relay accepted")
+  })
   it("renders from a durable lifecycle without any relay messages", () => {
     const vm = vmFromLifecycle()
     expect(vm.hasLifecycle).toBe(true)
@@ -172,6 +241,129 @@ describe("buildOrderViewModel", () => {
     expect(vm.items[0].displayTitle).toBe("Nostr Hoodie")
     expect(vm.totalSats).toBe(111)
     expect(vm.paymentStatus).toBe("paid")
+  })
+
+  it("distinguishes queued, relay-accepted, recipient-observed, and confirmed delivery", () => {
+    const queued = vmFromLifecycle({
+      orderDeliveryStatus: "pending",
+      invoiceStatus: "not_requested",
+      paymentStatus: "not_started",
+      proofDeliveryStatus: "not_started",
+    })
+    expect(queued.orderDeliveryEvidence).toBe("locally_queued")
+    expect(deriveOrderHeaderStatus(queued).detailLabel).toBe(
+      "Saved locally; waiting for relay"
+    )
+
+    const relayAccepted = vmFromLifecycle({
+      invoiceStatus: "not_requested",
+      paymentStatus: "not_started",
+      proofDeliveryStatus: "not_started",
+    })
+    expect(relayAccepted.orderDeliveryEvidence).toBe("relay_accepted")
+
+    const recipientObserved = buildOrderViewModel({
+      orderId: "order-1",
+      merchantPubkey: "merchant",
+      lifecycle: baseLifecycle({
+        invoiceStatus: "not_requested",
+        paymentStatus: "not_started",
+        proofDeliveryStatus: "not_started",
+      }),
+      messages: [
+        {
+          id: "invoice",
+          orderId: "order-1",
+          createdAt: 2,
+          senderPubkey: "merchant",
+          recipientPubkey: "buyer",
+          rawContent: "{}",
+          type: "payment_request",
+          payload: { invoice: "invoice" },
+        } as never,
+      ],
+    })
+    expect(recipientObserved.orderDeliveryEvidence).toBe("recipient_observed")
+
+    expect(vmWithMerchantStatus("accepted").orderDeliveryEvidence).toBe(
+      "confirmed"
+    )
+    expect(vmWithMerchantStatus("cancelled").orderDeliveryEvidence).toBe(
+      "recipient_observed"
+    )
+    expect(
+      getOrderDeliveryEvidenceLabel(
+        vmWithMerchantStatus("cancelled").orderDeliveryEvidence
+      )
+    ).toBe("Merchant responded")
+  })
+
+  it("uses authenticated merchant status after a lost ACK without rewriting relay provenance", () => {
+    const vm = buildOrderViewModel({
+      orderId: "order-1",
+      merchantPubkey: "merchant",
+      lifecycle: baseLifecycle({
+        checkoutMode: "private_checkout",
+        orderDeliveryStatus: "pending",
+        invoiceStatus: "not_requested",
+        paymentStatus: "not_started",
+        proofDeliveryStatus: "not_started",
+        phase: "pending",
+      }),
+      messages: [
+        {
+          id: "status-accepted",
+          orderId: "order-1",
+          createdAt: 2,
+          senderPubkey: "merchant",
+          recipientPubkey: "buyer",
+          rawContent: "{}",
+          type: "status_update",
+          payload: { status: "accepted" },
+        } as never,
+      ],
+    })
+
+    expect(vm.orderDeliveryStatus).toBe("pending")
+    expect(vm.orderDeliveryEvidence).toBe("confirmed")
+    expect(shouldOfferOrderPaymentContinuation(vm)).toBe(true)
+    expect(shouldOfferOrderDeliveryRetry(vm)).toBe(false)
+    expect(vm.actionNeeded).toBe(true)
+    expect(getOrderPaymentContinuationCopy(vm)).toBe(
+      "Authenticated merchant activity shows the order reached the merchant. Continue when you are ready to request and pay the Lightning invoice."
+    )
+  })
+
+  it("does not use a merchant status addressed to another buyer as recipient evidence", () => {
+    const vm = buildOrderViewModel({
+      orderId: "order-1",
+      merchantPubkey: "merchant",
+      lifecycle: baseLifecycle({
+        checkoutMode: "private_checkout",
+        orderDeliveryStatus: "pending",
+        invoiceStatus: "not_requested",
+        paymentStatus: "not_started",
+        proofDeliveryStatus: "not_started",
+        phase: "pending",
+      }),
+      messages: [
+        {
+          id: "status-accepted-other-buyer",
+          orderId: "order-1",
+          createdAt: 2,
+          senderPubkey: "merchant",
+          recipientPubkey: "other-buyer",
+          rawContent: "{}",
+          type: "status_update",
+          payload: { status: "accepted" },
+        } as never,
+      ],
+    })
+
+    expect(vm.merchantStatus).toBeNull()
+    expect(vm.orderDeliveryEvidence).toBe("locally_queued")
+    expect(shouldOfferOrderPaymentContinuation(vm)).toBe(false)
+    expect(shouldOfferOrderDeliveryRetry(vm)).toBe(true)
   })
 
   it("retains the merchant source quote for historical item display", () => {
@@ -641,9 +833,10 @@ describe("deriveOrderHeaderStatus", () => {
     expect(status.showSpinner).toBe(false)
   })
 
-  it("Pending · Awaiting invoice after order send", () => {
+  it("Pending · Awaiting invoice after a pay-later order send", () => {
     const status = deriveOrderHeaderStatus(
       vmFromLifecycle({
+        checkoutMode: "pay_later",
         invoiceStatus: "not_requested",
         paymentStatus: "not_started",
         proofDeliveryStatus: "not_started",
@@ -652,6 +845,105 @@ describe("deriveOrderHeaderStatus", () => {
     expect(status.primaryLabel).toBe("Pending")
     expect(status.detailLabel).toBe("Awaiting invoice")
     expect(status.showSpinner).toBe(false)
+  })
+
+  it("offers payment continuation after a queued pay-now order reaches a relay", () => {
+    const vm = vmFromLifecycle({
+      checkoutMode: "private_checkout",
+      invoiceStatus: "not_requested",
+      paymentStatus: "not_started",
+      proofDeliveryStatus: "not_started",
+    })
+    const status = deriveOrderHeaderStatus(vm)
+
+    expect(shouldOfferOrderPaymentContinuation(vm)).toBe(true)
+    expect(vm.actionNeeded).toBe(true)
+    expect(status.primaryLabel).toBe("Action needed")
+    expect(status.detailLabel).toBe("Continue payment")
+    expect(status.actionNeeded).toBe(true)
+  })
+
+  it("blocks recovered payment after settlement, cancellation, completion, or a refund request", () => {
+    for (const merchantStatus of [
+      "paid",
+      "shipped",
+      "cancelled",
+      "complete",
+      "refund_requested",
+    ] as const) {
+      for (const paymentStatus of ["not_started", "failed"] as const) {
+        const vm = buildOrderViewModel({
+          orderId: "order-1",
+          merchantPubkey: "merchant",
+          lifecycle: baseLifecycle({
+            checkoutMode: "private_checkout",
+            invoiceStatus: "not_requested",
+            paymentStatus,
+            proofDeliveryStatus: "not_started",
+          }),
+          messages: [
+            {
+              id: `status-${merchantStatus}`,
+              orderId: "order-1",
+              createdAt: 2,
+              senderPubkey: "merchant",
+              recipientPubkey: "buyer",
+              rawContent: "{}",
+              type: "status_update",
+              payload: { status: merchantStatus },
+            } as never,
+          ],
+        })
+
+        expect(canOfferOrderPaymentAction(vm)).toBe(false)
+        expect(shouldOfferOrderPaymentContinuation(vm)).toBe(false)
+        expect(vm.actionNeeded).toBe(false)
+      }
+    }
+
+    for (const phase of ["cancelled", "completed"] as const) {
+      const vm = vmFromLifecycle({
+        checkoutMode: "private_checkout",
+        invoiceStatus: "not_requested",
+        paymentStatus: "failed",
+        proofDeliveryStatus: "not_started",
+        phase,
+      })
+      expect(canOfferOrderPaymentAction(vm)).toBe(false)
+      expect(shouldOfferOrderPaymentContinuation(vm)).toBe(false)
+      expect(vm.actionNeeded).toBe(false)
+    }
+  })
+
+  it("blocks recovered payment after an authenticated merchant shipping update", () => {
+    const vm = buildOrderViewModel({
+      orderId: "order-1",
+      merchantPubkey: "merchant",
+      lifecycle: baseLifecycle({
+        checkoutMode: "private_checkout",
+        invoiceStatus: "not_requested",
+        paymentStatus: "not_started",
+        proofDeliveryStatus: "not_started",
+      }),
+      messages: [
+        {
+          id: "shipping-update",
+          orderId: "order-1",
+          createdAt: 2,
+          senderPubkey: "merchant",
+          recipientPubkey: "buyer",
+          rawContent: "{}",
+          type: "shipping_update",
+          payload: { note: "On its way" },
+        } as never,
+      ],
+    })
+
+    expect(vm.merchantShippingUpdated).toBe(true)
+    expect(canOfferOrderPaymentAction(vm)).toBe(false)
+    expect(shouldOfferOrderPaymentContinuation(vm)).toBe(false)
+    expect(vm.actionNeeded).toBe(false)
+    expect(computeOrderTimelineStatuses(vm).fulfillment).toBe("complete")
   })
 
   it("Action needed for manual external payment", () => {

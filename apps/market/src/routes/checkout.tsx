@@ -19,7 +19,6 @@ import {
   SHIPPING_COUNTRIES,
   appendConduitClientTag,
   config,
-  createOrderLifecycle,
   fetchLnurlPayMetadata,
   formatNpub,
   getPriceSats,
@@ -111,6 +110,7 @@ import {
 } from "../lib/cart-shipping-options"
 import { authorizeCurrentCheckoutItems } from "../lib/checkout-authorization"
 import {
+  buildOrderCartRetirement,
   getCartAvailabilityBlockingMessage,
   getCartAvailabilityVerificationMessage,
   getCartFulfillmentLane,
@@ -154,10 +154,12 @@ import {
 } from "../lib/checkout-validation"
 import {
   clearCheckoutShippingSession,
+  clearCheckoutShippingSessionForOrderDelivery,
   DEFAULT_CHECKOUT_SHIPPING,
   getIdentityBoundShippingPreset,
   getShippingFormFromPreset,
   initializeCheckoutShippingSession,
+  reconcileCheckoutShippingSessionForOrderDelivery,
   writeCheckoutShippingSession,
 } from "../lib/checkout-session"
 import {
@@ -174,7 +176,7 @@ import {
 import { isAnonZapSignerConfigured } from "../lib/anon-zap-signer"
 import {
   getDeliveryNotice,
-  publishBuyerOrderMessage,
+  submitBuyerOrderMessage,
   type BuyerOrderSigningIdentity,
 } from "../lib/order-publish"
 import {
@@ -1888,6 +1890,7 @@ function CheckoutPage() {
     checkoutMode: CheckoutTelemetryMode,
     rateInput: PricingRateInput = btcUsdRateQuery.data ?? null
   ): Promise<CartItem[]> {
+    await cart.assertDurableCheckoutItems(rawCheckoutItems)
     const refreshResult = await checkoutAvailability.refresh()
     if (refreshResult.decision.status === "unverified") {
       recordCheckoutStepResult({
@@ -2247,6 +2250,7 @@ function CheckoutPage() {
 
     let publishedOrderId: string | null = null
     let orderDelivered = false
+    let orderStarted = false
     let orderTotalSats = total
     let guestOrderIdToClear: string | null = null
     let orderSubmitStarted = false
@@ -2300,6 +2304,10 @@ function CheckoutPage() {
         throw new Error("Email or phone is required for guest pickup recovery.")
       }
       const orderCreatedAt = guestIdentity?.createdAt ?? Date.now()
+      const cartRetirement = buildOrderCartRetirement(
+        authoritativeCheckoutItems,
+        orderCreatedAt
+      )
       const currency = "SATS"
       const items = checkoutPricing.items
 
@@ -2345,59 +2353,91 @@ function CheckoutPage() {
 
       setStep("sending")
 
+      // The exact encrypted wrap and immutable relay plan are inserted into
+      // this lifecycle before submitBuyerOrderMessage performs relay I/O.
+      const shippingAddress = buildShippingAddress()
+      const addressValidity = computeAddressValidity(shippingAddress)
+
       const [delivery] = await Promise.all([
-        publishBuyerOrderMessage(rumor, ndk, selectedMerchant, buyerIdentity),
+        submitBuyerOrderMessage({
+          rumor,
+          ndk,
+          merchantPubkey: selectedMerchant,
+          buyer: buyerIdentity,
+          lifecycle: {
+            orderId,
+            createdAt: orderCreatedAt,
+            buyerPubkey,
+            buyerIdentityKind,
+            merchantPubkey: selectedMerchant,
+            cartRetirement,
+            checkoutMode: "pay_later",
+            merchantLightningAddress: checkoutPricing.paymentRequired
+              ? (merchantLud16 ?? undefined)
+              : undefined,
+            items: buildLifecycleItems(items),
+            itemSubtotalSats: checkoutPricing.itemSubtotalSats,
+            shippingCostSats:
+              checkoutPricing.shippingCost.status === "manual"
+                ? 0
+                : checkoutPricing.shippingCost.totalSats,
+            totalSats: orderTotalSats,
+            totalMsats: orderTotalSats * 1000,
+            currency: "SATS",
+            shippingAddress: guestIdentity
+              ? undefined
+              : (shippingAddress ?? undefined),
+            contactNote: guestIdentity ? undefined : buildContactNote(),
+            guestContact: undefined,
+            addressValidity: addressValidity.status as OrderAddressValidity,
+            shippingZoneEligibility: getShippingZoneEligibilityForItems(
+              authoritativeCheckoutItems
+            ),
+            invoiceStatus: "not_requested",
+            paymentStatus: "not_started",
+            proofDeliveryStatus: "not_started",
+            zapReceiptStatus: "not_applicable",
+          },
+          onLifecycleCheckpointed: async () => {
+            orderStarted = true
+            await cart.retireOrder({
+              orderId,
+              merchantPubkey: selectedMerchant,
+              retirement: cartRetirement,
+            })
+            reconcileCheckoutShippingSessionForOrderDelivery(
+              {
+                orderId,
+                buyerIdentityKind,
+                orderDeliveryStatus: "pending",
+                value: shipping,
+              },
+              undefined,
+              orderCreatedAt
+            )
+          },
+          onOrderDeliveryCommitted: ({ orderDeliveryStatus }) => {
+            if (
+              buyerIdentityKind === "guest_ephemeral" &&
+              orderDeliveryStatus === "sent"
+            ) {
+              clearCheckoutShippingSessionForOrderDelivery(orderId)
+            }
+          },
+        }),
         new Promise((resolve) => window.setTimeout(resolve, 900)),
       ])
-      orderDelivered = true
-      clearCheckoutShippingSession()
+      orderStarted = true
+      orderDelivered = delivery.orderDeliveryStatus === "sent"
+      reconcileCheckoutShippingSessionForOrderDelivery({
+        orderId,
+        buyerIdentityKind,
+        orderDeliveryStatus: delivery.orderDeliveryStatus,
+        value: shipping,
+      })
       const deliveryNotice = getDeliveryNotice(delivery, "Order")
       if (deliveryNotice) setPaidNotice(deliveryNotice)
 
-      // Pay-later order: create a durable lifecycle so Orders shows it
-      // immediately. Address validity is recorded but not a hard block here —
-      // no funds move at checkout; the merchant requests payment later.
-      const shippingAddress = buildShippingAddress()
-      const addressValidity = computeAddressValidity(shippingAddress)
-      await createOrderLifecycle({
-        orderId,
-        createdAt: orderCreatedAt,
-        buyerPubkey,
-        buyerIdentityKind,
-        merchantPubkey: selectedMerchant,
-        checkoutMode: "pay_later",
-        merchantLightningAddress: checkoutPricing.paymentRequired
-          ? (merchantLud16 ?? undefined)
-          : undefined,
-        items: buildLifecycleItems(items),
-        itemSubtotalSats: checkoutPricing.itemSubtotalSats,
-        shippingCostSats:
-          checkoutPricing.shippingCost.status === "manual"
-            ? 0
-            : checkoutPricing.shippingCost.totalSats,
-        totalSats: orderTotalSats,
-        totalMsats: orderTotalSats * 1000,
-        currency: "SATS",
-        shippingAddress: guestIdentity
-          ? undefined
-          : (shippingAddress ?? undefined),
-        contactNote: guestIdentity ? undefined : buildContactNote(),
-        guestContact: undefined,
-        addressValidity: addressValidity.status as OrderAddressValidity,
-        shippingZoneEligibility: getShippingZoneEligibilityForItems(
-          authoritativeCheckoutItems
-        ),
-        orderDeliveryStatus: "sent",
-        orderDeliveryRoute: delivery.deliveryRoute,
-        orderRelayDelivery: delivery.orderRelayDelivery,
-        invoiceStatus: "not_requested",
-        paymentStatus: "not_started",
-        proofDeliveryStatus: "not_started",
-        zapReceiptStatus: "not_applicable",
-        deliveryNotice: deliveryNotice ?? undefined,
-      })
-
-      cart.clearMerchant(selectedMerchant, { emitTelemetry: false })
       setSentOrderId(orderId)
       setShowSentGlow(true)
       setStep("sent")
@@ -2405,12 +2445,12 @@ function CheckoutPage() {
       recordCheckoutSuccess({
         amountSats: orderTotalSats,
         checkoutMode: "order_first",
-        status: "order_sent",
+        status: orderDelivered ? "order_sent" : "order_queued",
       })
       recordCheckoutResult({
         amountSats: orderTotalSats,
         checkoutMode: "order_first",
-        status: "success",
+        status: orderDelivered ? "success" : "queued",
       })
       void navigate({
         to: "/orders",
@@ -2418,10 +2458,11 @@ function CheckoutPage() {
         replace: true,
       })
     } catch (e) {
-      if (orderDelivered && publishedOrderId) {
-        cart.clearMerchant(selectedMerchant, { emitTelemetry: false })
+      if (orderStarted && publishedOrderId) {
         setPaidNotice(
-          "Your order was sent, but local order tracking could not be saved on this device. Check Orders or message the merchant before trying again."
+          orderDelivered
+            ? "Your order was accepted by a relay. Follow its status in Orders."
+            : "Your order is saved on this device and queued for relay delivery."
         )
         setSentOrderId(publishedOrderId)
         setShowSentGlow(true)
@@ -2430,12 +2471,12 @@ function CheckoutPage() {
         recordCheckoutSuccess({
           amountSats: orderTotalSats,
           checkoutMode: "order_first",
-          status: "order_sent_local_tracking_failed",
+          status: orderDelivered ? "order_sent" : "order_queued",
         })
         recordCheckoutResult({
           amountSats: orderTotalSats,
           checkoutMode: "order_first",
-          status: "success_local_tracking_failed",
+          status: orderDelivered ? "success" : "queued",
         })
         void navigate({
           to: "/orders",
@@ -2459,7 +2500,7 @@ function CheckoutPage() {
         status: orderSubmitStarted ? "failed" : "blocked",
       })
       setError(e instanceof Error ? e.message : "Failed to send order")
-      if (!orderDelivered && guestOrderIdToClear) {
+      if (!orderStarted && guestOrderIdToClear) {
         clearSessionGuestOrderSigningIdentity(guestOrderIdToClear)
       }
       setStep("payment")
@@ -2578,6 +2619,7 @@ function CheckoutPage() {
     let publishedOrderId: string | null = null
     let publishedTotalSats: number | null = null
     let orderDelivered = false
+    let orderStarted = false
     let guestOrderIdToClear: string | null = null
     let directPaymentStarted = false
 
@@ -2745,6 +2787,10 @@ function CheckoutPage() {
         )
       }
       const orderCreatedAt = guestIdentity?.createdAt ?? Date.now()
+      const cartRetirement = buildOrderCartRetirement(
+        authoritativeCheckoutItems,
+        orderCreatedAt
+      )
       const currency = "SATS"
       const ndk = getNdk()
       const orderPayload = {
@@ -2791,16 +2837,6 @@ function CheckoutPage() {
         status: "started",
         stepName: "direct_payment",
       })
-      const orderDelivery = await publishBuyerOrderMessage(
-        orderRumor,
-        ndk,
-        selectedMerchant,
-        buyerIdentity
-      )
-      orderDelivered = true
-      clearCheckoutShippingSession()
-      const orderDeliveryNotice = getDeliveryNotice(orderDelivery, "Order")
-
       const canAutoPay =
         !guestIdentity &&
         (selectedPaymentTarget.type === "wallet"
@@ -2813,70 +2849,107 @@ function CheckoutPage() {
         canAutoPay,
         isGuest: !!guestIdentity,
       })
-      // The order is now durably with the merchant. Persist the lifecycle so
-      // Orders can render it immediately, then hand payment to the service.
-      await createOrderLifecycle({
-        orderId,
-        createdAt: orderCreatedAt,
-        buyerPubkey,
-        buyerIdentityKind,
+      const orderDelivery = await submitBuyerOrderMessage({
+        rumor: orderRumor,
+        ndk,
         merchantPubkey: selectedMerchant,
-        checkoutMode: requiresPublicZap
-          ? checkoutMode
-          : canAutoPay
+        buyer: buyerIdentity,
+        lifecycle: {
+          orderId,
+          createdAt: orderCreatedAt,
+          buyerPubkey,
+          buyerIdentityKind,
+          merchantPubkey: selectedMerchant,
+          cartRetirement,
+          checkoutMode: requiresPublicZap
             ? checkoutMode
-            : "external_wallet",
-        publicZapSigner: getCheckoutPublicZapSigner(checkoutMode) ?? undefined,
-        merchantLightningAddress: merchantLud16,
-        paymentTarget: storedPaymentTarget,
-        items: buildLifecycleItems(checkoutPricing.items),
-        itemSubtotalSats: checkoutPricing.itemSubtotalSats,
-        shippingCostSats: checkoutPricing.shippingCost.totalSats,
-        totalSats: checkoutPricing.totalSats,
-        totalMsats: checkoutPricing.totalMsats,
-        currency: "SATS",
-        pricingQuote: checkoutPricing.quote
-          ? {
-              rate: checkoutPricing.quote.rate,
-              fetchedAt: checkoutPricing.quote.fetchedAt,
-              source: String(checkoutPricing.quote.source),
-              fiatSource: checkoutPricing.quote.fiatSource
-                ? String(checkoutPricing.quote.fiatSource)
-                : undefined,
-            }
-          : undefined,
-        zapContent: effectiveZapContent,
-        // The merchant receives guest fulfillment/contact data inside the
-        // encrypted order. Do not retain another plaintext copy in IndexedDB.
-        shippingAddress: guestIdentity
-          ? undefined
-          : (shippingAddress ?? undefined),
-        contactNote: guestIdentity ? undefined : buildContactNote(),
-        guestContact: undefined,
-        addressValidity: addressValidity.status as OrderAddressValidity,
-        shippingZoneEligibility: authoritativeShippingZoneEligibility,
-        orderDeliveryStatus: "sent",
-        orderDeliveryRoute: orderDelivery.deliveryRoute,
-        orderRelayDelivery: orderDelivery.orderRelayDelivery,
-        invoiceStatus: "not_requested",
-        paymentStatus: "not_started",
-        proofDeliveryStatus: "not_started",
-        zapReceiptStatus: "not_applicable",
-        deliveryNotice: orderDeliveryNotice ?? undefined,
+            : canAutoPay
+              ? checkoutMode
+              : "external_wallet",
+          publicZapSigner:
+            getCheckoutPublicZapSigner(checkoutMode) ?? undefined,
+          merchantLightningAddress: merchantLud16,
+          paymentTarget: storedPaymentTarget,
+          items: buildLifecycleItems(checkoutPricing.items),
+          itemSubtotalSats: checkoutPricing.itemSubtotalSats,
+          shippingCostSats: checkoutPricing.shippingCost.totalSats,
+          totalSats: checkoutPricing.totalSats,
+          totalMsats: checkoutPricing.totalMsats,
+          currency: "SATS",
+          pricingQuote: checkoutPricing.quote
+            ? {
+                rate: checkoutPricing.quote.rate,
+                fetchedAt: checkoutPricing.quote.fetchedAt,
+                source: String(checkoutPricing.quote.source),
+                fiatSource: checkoutPricing.quote.fiatSource
+                  ? String(checkoutPricing.quote.fiatSource)
+                  : undefined,
+              }
+            : undefined,
+          zapContent: effectiveZapContent,
+          // The merchant receives guest fulfillment/contact data inside the
+          // encrypted order. Do not retain another plaintext copy in IndexedDB.
+          shippingAddress: guestIdentity
+            ? undefined
+            : (shippingAddress ?? undefined),
+          contactNote: guestIdentity ? undefined : buildContactNote(),
+          guestContact: undefined,
+          addressValidity: addressValidity.status as OrderAddressValidity,
+          shippingZoneEligibility: authoritativeShippingZoneEligibility,
+          invoiceStatus: "not_requested",
+          paymentStatus: "not_started",
+          proofDeliveryStatus: "not_started",
+          zapReceiptStatus: "not_applicable",
+        },
+        onLifecycleCheckpointed: async () => {
+          orderStarted = true
+          await cart.retireOrder({
+            orderId,
+            merchantPubkey: selectedMerchant,
+            retirement: cartRetirement,
+          })
+          reconcileCheckoutShippingSessionForOrderDelivery(
+            {
+              orderId,
+              buyerIdentityKind,
+              orderDeliveryStatus: "pending",
+              value: shipping,
+            },
+            undefined,
+            orderCreatedAt
+          )
+        },
+        onOrderDeliveryCommitted: ({ orderDeliveryStatus }) => {
+          if (
+            buyerIdentityKind === "guest_ephemeral" &&
+            orderDeliveryStatus === "sent"
+          ) {
+            clearCheckoutShippingSessionForOrderDelivery(orderId)
+          }
+        },
       })
+      orderStarted = true
+      orderDelivered = orderDelivery.orderDeliveryStatus === "sent"
+      reconcileCheckoutShippingSessionForOrderDelivery({
+        orderId,
+        buyerIdentityKind,
+        orderDeliveryStatus: orderDelivery.orderDeliveryStatus,
+        value: shipping,
+      })
+      const orderDeliveryNotice = getDeliveryNotice(orderDelivery, "Order")
+      if (orderDeliveryNotice) setPaidNotice(orderDeliveryNotice)
 
-      cart.clearMerchant(selectedMerchant, { emitTelemetry: false })
       recordCheckoutSuccess({
         amountSats: checkoutPricing.totalSats,
         checkoutMode,
         rail: "lightning",
-        status: "order_sent",
+        status: orderDelivered ? "order_sent" : "order_queued",
       })
       recordCheckoutResult({
         amountSats: checkoutPricing.totalSats,
         checkoutMode,
         rail: "lightning",
-        status: "success",
+        status: orderDelivered ? "success" : "queued",
       })
 
       // Fire-and-forget: the service continues after we navigate away. With no
@@ -2917,10 +2990,12 @@ function CheckoutPage() {
           shopperPricing.formatSatsAmount(sats).primary,
       }
 
-      if (serviceCtx.approveFee) {
-        await runOrderPayment(serviceCtx)
-      } else {
-        void runOrderPayment(serviceCtx)
+      if (orderDelivered) {
+        if (serviceCtx.approveFee) {
+          await runOrderPayment(serviceCtx)
+        } else {
+          void runOrderPayment(serviceCtx)
+        }
       }
 
       paymentInFlightRef.current = false
@@ -2931,13 +3006,14 @@ function CheckoutPage() {
       })
     } catch (e) {
       const message = e instanceof Error ? e.message : "Payment failed"
-      // Once the order is delivered, later failures (like local lifecycle
-      // persistence) must not return the buyer to a retry path that republishes.
-      if (orderDelivered && publishedOrderId) {
+      // Once the durable order checkpoint exists, later failures must not
+      // return the buyer to a checkout path that creates another order.
+      if (orderStarted && publishedOrderId) {
         const deliveredAmountSats = publishedTotalSats ?? total
-        cart.clearMerchant(selectedMerchant, { emitTelemetry: false })
         setPaidNotice(
-          "Your order was sent, but local order tracking could not be saved on this device. Check Orders or message the merchant before trying again."
+          orderDelivered
+            ? "Your order was accepted by a relay. Follow its status in Orders."
+            : "Your order is saved on this device and queued for relay delivery."
         )
         setSentOrderId(publishedOrderId)
         setShowSentGlow(true)
@@ -2947,13 +3023,13 @@ function CheckoutPage() {
           amountSats: deliveredAmountSats,
           checkoutMode: requestedCheckoutMode,
           rail: "lightning",
-          status: "order_sent_local_tracking_failed",
+          status: orderDelivered ? "order_sent" : "order_queued",
         })
         recordCheckoutResult({
           amountSats: deliveredAmountSats,
           checkoutMode: requestedCheckoutMode,
           rail: "lightning",
-          status: "success_local_tracking_failed",
+          status: orderDelivered ? "success" : "queued",
         })
         void navigate({
           to: "/orders",
@@ -2979,7 +3055,7 @@ function CheckoutPage() {
         rail: "lightning",
         status: directPaymentStarted ? "failed" : "blocked",
       })
-      if (!orderDelivered && guestOrderIdToClear) {
+      if (!orderStarted && guestOrderIdToClear) {
         clearSessionGuestOrderSigningIdentity(guestOrderIdToClear)
       }
       setError(message)
@@ -3197,7 +3273,7 @@ function CheckoutPage() {
           <div className="relative mx-auto mt-8 h-1 w-full max-w-sm rounded-full bg-secondary-500/50" />
           <p className="relative mx-auto mt-8 max-w-xl text-lg leading-9 text-[var(--text-primary)]">
             {paidNotice ??
-              "Your order request has been sent to the merchant. They will review it and follow up with confirmation and payment details."}
+              "A Nostr relay accepted your order request for merchant pickup. The merchant will review it and follow up with confirmation and payment details."}
           </p>
           <p className="relative mx-auto mt-4 max-w-lg text-sm leading-7 text-[var(--text-secondary)]">
             You can review this order from Orders, keep browsing products, or
@@ -4291,7 +4367,8 @@ function CheckoutPage() {
                     </div>
                     <ul className="mt-4 space-y-3 text-sm leading-7 text-[var(--text-secondary)]">
                       <li>
-                        1. Your order is sent to the merchant through Nostr.
+                        1. Your encrypted order is sent to Nostr delivery relays
+                        for merchant pickup.
                       </li>
                       <li>
                         {verifiedZeroCostPickup

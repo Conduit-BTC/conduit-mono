@@ -7,6 +7,8 @@ import type {
 } from "@conduit/core"
 import {
   addCartItem,
+  applyOrderCartRetirement,
+  buildOrderCartRetirement,
   cartItemsMatchCurrentProducts,
   clearMerchantCart,
   createCartItemFromProduct,
@@ -18,6 +20,7 @@ import {
   getCartCommerceFingerprint,
   getCartPublicZapPolicy,
   getCartTotals,
+  hasExactDurableCheckoutCart,
   getProductAddAvailability,
   groupCartItems,
   getCartAvailabilityReadDecision,
@@ -861,7 +864,7 @@ describe("cart model", () => {
       ],
     })
 
-    expect(parsed.shouldPersist).toBe(false)
+    expect(parsed.shouldPersist).toBe(true)
     expect(parsed.state.items).toMatchObject([
       { title: "Current title", quantity: 5, merchantAddedAt: 10 },
     ])
@@ -892,16 +895,109 @@ describe("cart model", () => {
       shouldPersist: false,
       writable: true,
     })
-    expect(parsePersistedCart({ version: 3, items: [item()] })).toEqual({
+    expect(parsePersistedCart({ version: 4, items: [item()] })).toEqual({
       state: { items: [] },
       shouldPersist: false,
       writable: false,
     })
-    expect(parsePersistedCart({ version: 3, entries: [item()] })).toEqual({
+    expect(parsePersistedCart({ version: 4, entries: [item()] })).toEqual({
       state: { items: [] },
       shouldPersist: false,
       writable: false,
     })
+  })
+
+  it("retires only submitted units from the same cart-line generation", () => {
+    const submitted = item({
+      lineGenerationId: "line-a",
+      quantity: 2,
+    })
+    const retirement = buildOrderCartRetirement([submitted], 100)
+    const state = {
+      items: [
+        item({ lineGenerationId: "line-a", quantity: 3 }),
+        item({
+          productId: "30402:merchant-a:new-product",
+          lineGenerationId: "line-c",
+          quantity: 1,
+        }),
+        item({
+          productId: "30402:merchant-b:product-b",
+          merchantPubkey: "merchant-b",
+          lineGenerationId: "line-b",
+          quantity: 1,
+        }),
+      ],
+    }
+
+    const reconciled = applyOrderCartRetirement(state, {
+      orderId: "order-a",
+      merchantPubkey: "merchant-a",
+      retirement,
+    })
+
+    expect(reconciled.items).toMatchObject([
+      { productId: submitted.productId, quantity: 1 },
+      { productId: "30402:merchant-a:new-product", quantity: 1 },
+      { productId: "30402:merchant-b:product-b", quantity: 1 },
+    ])
+    expect(reconciled.appliedOrderRetirements).toEqual(["order-a"])
+    expect(
+      applyOrderCartRetirement(reconciled, {
+        orderId: "order-a",
+        merchantPubkey: "merchant-a",
+        retirement,
+      })
+    ).toEqual(reconciled)
+
+    const readded = applyOrderCartRetirement(
+      {
+        items: [item({ lineGenerationId: "line-readded", quantity: 2 })],
+      },
+      {
+        orderId: "order-b",
+        merchantPubkey: "merchant-a",
+        retirement,
+      }
+    )
+    expect(readded.items).toMatchObject([
+      { lineGenerationId: "line-readded", quantity: 2 },
+    ])
+  })
+
+  it("requires an exact durable merchant cart before checkpointing", () => {
+    const reviewed = [item({ lineGenerationId: "line-a", quantity: 2 })]
+    expect(hasExactDurableCheckoutCart(reviewed, reviewed)).toBe(true)
+    expect(
+      hasExactDurableCheckoutCart(
+        [item({ lineGenerationId: "line-a", quantity: 3 })],
+        reviewed
+      )
+    ).toBe(false)
+    expect(
+      hasExactDurableCheckoutCart(
+        [item({ lineGenerationId: "line-readded", quantity: 2 })],
+        reviewed
+      )
+    ).toBe(false)
+    expect(
+      hasExactDurableCheckoutCart(
+        [item({ lineGenerationId: "line-a", quantity: 2, price: 2 })],
+        reviewed
+      )
+    ).toBe(false)
+    expect(
+      hasExactDurableCheckoutCart(
+        [
+          ...reviewed,
+          item({
+            productId: "30402:merchant-a:new-product",
+            lineGenerationId: "line-b",
+          }),
+        ],
+        reviewed
+      )
+    ).toBe(false)
   })
 
   it("requires current product price and fulfillment terms before ordering", () => {

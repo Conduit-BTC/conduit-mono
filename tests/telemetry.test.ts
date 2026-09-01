@@ -921,6 +921,47 @@ describe("browser telemetry", () => {
     })
   })
 
+  it("preserves queued checkout completion statuses through sanitization", () => {
+    expect(
+      sanitizeTelemetryEventProperties({
+        app: "market",
+        eventName: "checkout_success",
+        properties: {
+          amount_bucket: "1k_10k_sats",
+          count_bucket: "1",
+          mode: "order_first",
+          product_type: "physical",
+          rail: "none",
+          status: "order_queued",
+          surface: "checkout",
+        },
+      })
+    ).toMatchObject({
+      event_name: "checkout_success",
+      status: "order_queued",
+    })
+
+    expect(
+      sanitizeTelemetryEventProperties({
+        app: "market",
+        eventName: "checkout_result",
+        properties: {
+          amount_bucket: "1k_10k_sats",
+          count_bucket: "1",
+          mode: "order_first",
+          network: "browser",
+          product_type: "physical",
+          rail: "none",
+          status: "queued",
+          surface: "checkout",
+        },
+      })
+    ).toMatchObject({
+      event_name: "checkout_result",
+      status: "queued",
+    })
+  })
+
   it("drops events with invalid or event-incompatible properties", () => {
     expect(
       sanitizeTelemetryEventProperties({

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { NDKEvent } from "@nostr-dev-kit/ndk"
+import { NDKEvent, NDKPublishError, type NDKRelay } from "@nostr-dev-kit/ndk"
 import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
   __resetRelayListTestOverrides,
@@ -13,7 +13,9 @@ import {
   deriveRelayOutcomes,
   EVENT_KINDS,
   planPublishRelays,
+  RelayPublishDiagnosticsError,
   publishSignedEventToRelay,
+  publishSignedEventToRelayOutcome,
   publishWithPlanner,
   type RelayList,
   type SignedPublicNostrEvent,
@@ -1072,6 +1074,44 @@ describe("planPublishRelays", () => {
     }
   })
 
+  it("keeps only content-safe terminal policy for immutable invalid bytes", async () => {
+    const fakeWebSocket = installRelayPublishWebSocket({
+      accepted: false,
+      reason: "invalid: malformed event",
+    })
+
+    try {
+      await expect(
+        publishSignedEventToRelayOutcome({
+          signedEvent: signedRawTestEvent({ kind: EVENT_KINDS.DELETION }),
+          relayUrl: "wss://durable-invalid.conduit.market",
+          authorPubkey: AUTHOR_PUBKEY,
+        })
+      ).resolves.toEqual({ status: "rejected", retryable: false })
+    } finally {
+      fakeWebSocket.restore()
+    }
+  })
+
+  it("keeps rate-limited exact writes retryable", async () => {
+    const fakeWebSocket = installRelayPublishWebSocket({
+      accepted: false,
+      reason: "rate-limited: try later",
+    })
+
+    try {
+      await expect(
+        publishSignedEventToRelayOutcome({
+          signedEvent: signedRawTestEvent({ kind: EVENT_KINDS.DELETION }),
+          relayUrl: "wss://durable-rate-limit.conduit.market",
+          authorPubkey: AUTHOR_PUBKEY,
+        })
+      ).resolves.toEqual({ status: "rejected", retryable: true })
+    } finally {
+      fakeWebSocket.restore()
+    }
+  })
+
   it("treats a NIP-01 duplicate response as an idempotent acknowledgement", async () => {
     const fakeWebSocket = installRelayPublishWebSocket({
       accepted: false,
@@ -1271,6 +1311,58 @@ describe("planPublishRelays", () => {
     ])
     expect(result.successfulRelayUrls).toEqual([primaryRelay])
     expect(result.failedRelayUrls).toEqual([])
+  })
+
+  it("keeps terminal relay evidence when the critical retry times out", async () => {
+    for (const terminalReason of [
+      "invalid: immutable bytes are malformed",
+      "pow: immutable bytes do not satisfy policy",
+    ]) {
+      const primaryRelay = "wss://terminal-recipient.conduit.market"
+      let attempts = 0
+      const fakeEvent = signedTestEvent({
+        kind: EVENT_KINDS.GIFT_WRAP,
+        publish: async (relaySet: unknown) => {
+          attempts += 1
+          const relay = [...(relaySet as { relays: Set<NDKRelay> }).relays][0]!
+          throw new NDKPublishError(
+            "recipient relay rejected the event",
+            new Map([
+              [
+                relay,
+                new Error(
+                  attempts === 1
+                    ? terminalReason
+                    : "No acknowledgement before timeout"
+                ),
+              ],
+            ]),
+            new Set<NDKRelay>()
+          )
+        },
+      })
+
+      let caught: unknown
+      try {
+        await publishWithPlanner(fakeEvent, {
+          intent: "recipient_event",
+          authorPubkey: "alice",
+          recipientPubkeys: ["bob"],
+          deliveryMode: "critical",
+          exclusiveRelayUrls: [primaryRelay],
+        })
+      } catch (error) {
+        caught = error
+      }
+
+      expect(attempts).toBe(2)
+      expect(caught).toBeInstanceOf(RelayPublishDiagnosticsError)
+      const diagnostics = (caught as RelayPublishDiagnosticsError).diagnostics
+      expect(diagnostics.terminalRejectedRelayUrls).toEqual([primaryRelay])
+      expect(diagnostics.relayFailureMessages[primaryRelay]).toBe(
+        terminalReason
+      )
+    }
   })
 
   it("broadens critical recipient delivery to fallback relays after primary retry fails", async () => {

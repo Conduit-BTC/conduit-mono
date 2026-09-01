@@ -4,13 +4,19 @@ import {
   appendConduitClientTag,
   cacheParsedOrderMessage,
   createOrderCompanionNotificationRumor,
+  createOrderLifecycle,
   createValidatedGuestOrderCompanion,
   createValidatedOrderRouteScope,
   getNdk,
+  getOrderRelayDeliveryStatus,
   parseOrderMessageRumorEvent,
   publishPrivateMessage,
+  recordOrderRelayDeliveryUpdate,
+  type CreateOrderLifecycleInput,
   type OrderDeliveryRoute,
+  type OrderDeliveryStatus,
   type OrderRelayDeliveryRecord,
+  type PreparedPrivateMessageWraps,
 } from "@conduit/core"
 
 import { inferMerchantOrigin } from "./merchant-links"
@@ -36,7 +42,11 @@ export type BuyerMessageDeliveryResult = {
 }
 
 export type OrderCompanionNotificationStatus =
-  "sent" | "skipped_non_declared_route" | "skipped_non_order" | "failed"
+  | "sent"
+  | "skipped_non_declared_route"
+  | "skipped_non_order"
+  | "skipped_order_pending"
+  | "failed"
 
 export type BuyerOrderSigningIdentity =
   | {
@@ -60,6 +70,55 @@ type BuyerOrderPublishDependencies = {
   publishPrivateMessageFn?: typeof publishPrivateMessage
   cacheBuyerOrderRumorFn?: typeof cacheBuyerOrderRumor
   signerInteraction?: "external" | "background_external"
+  onWrapped?: (prepared: PreparedPrivateMessageWraps) => void | Promise<void>
+  onOrderRelayDeliveryUpdated?: (
+    delivery: OrderRelayDeliveryRecord
+  ) => void | Promise<void>
+}
+
+type BuyerOrderLifecycleDraft = Omit<
+  CreateOrderLifecycleInput,
+  "orderDeliveryStatus" | "orderDeliveryRoute" | "orderRelayDelivery"
+>
+
+export type SubmitBuyerOrderMessageInput = {
+  rumor: NDKEvent
+  ndk: ReturnType<typeof getNdk>
+  merchantPubkey: string
+  buyer: BuyerOrderIdentityInput
+  lifecycle: BuyerOrderLifecycleDraft
+  /**
+   * Local cleanup that becomes safe only after the exact signed wrap and relay
+   * plan are durable. This is awaited before first-attempt relay I/O, so closing
+   * the document cannot leave the submitted cart live.
+   */
+  onLifecycleCheckpointed?: (
+    prepared: PreparedPrivateMessageWraps
+  ) => void | Promise<void>
+  /**
+   * Runs only after a first-attempt relay outcome has committed to the durable
+   * lifecycle. Callers may retire order-scoped recovery state here without
+   * racing a later route transition or mistaking an in-memory ACK for truth.
+   */
+  onOrderDeliveryCommitted?: (input: {
+    delivery: OrderRelayDeliveryRecord
+    orderDeliveryStatus: Extract<
+      OrderDeliveryStatus,
+      "pending" | "sent" | "failed"
+    >
+  }) => void | Promise<void>
+}
+
+type SubmitBuyerOrderMessageDependencies = BuyerOrderPublishDependencies & {
+  createOrderLifecycleFn?: typeof createOrderLifecycle
+  recordOrderRelayDeliveryUpdateFn?: typeof recordOrderRelayDeliveryUpdate
+}
+
+export type SubmitBuyerOrderMessageResult = BuyerMessageDeliveryResult & {
+  orderDeliveryStatus: Extract<
+    OrderDeliveryStatus,
+    "pending" | "sent" | "failed"
+  >
 }
 
 function getErrorMessage(error: unknown, fallback: string): string {
@@ -202,14 +261,24 @@ async function cacheBuyerOrderRumor(rumor: NDKEvent): Promise<string | null> {
 
 /**
  * Translate a delivery result into a buyer-facing notice when a non-critical
- * leg (local cache or buyer self-copy) needs retry. The merchant copy is always
- * critical and throws on failure, so reaching here means at least one intended
- * delivery relay accepted the merchant leg for pickup.
+ * leg (local cache or buyer self-copy) needs retry, or when every immutable
+ * merchant target returned a terminal rejection.
  */
 export function getDeliveryNotice(
-  delivery: BuyerMessageDeliveryResult,
+  delivery: BuyerMessageDeliveryResult & {
+    orderDeliveryStatus?: Extract<
+      OrderDeliveryStatus,
+      "pending" | "sent" | "failed"
+    >
+  },
   label: string
 ): string | null {
+  if (delivery.orderDeliveryStatus === "pending") {
+    return `${label} is saved on this device and queued for relay delivery.`
+  }
+  if (delivery.orderDeliveryStatus === "failed") {
+    return `${label} is saved on this device, but every planned relay permanently rejected its immutable message. Review it in Orders before placing another order.`
+  }
   if (delivery.localCacheError && delivery.buyerSelfCopyError) {
     return `${label} was accepted by Nostr delivery relays for merchant pickup, but order history recovery needs retry.`
   }
@@ -259,6 +328,8 @@ export async function publishBuyerOrderMessage(
       senderPubkey: buyerIdentity.pubkey,
       recipientPubkey: merchantPubkey,
     }),
+    onWrapped: dependencies.onWrapped,
+    onOrderRelayDeliveryUpdated: dependencies.onOrderRelayDeliveryUpdated,
   })
 
   const localCacheError =
@@ -284,6 +355,95 @@ export async function publishBuyerOrderMessage(
     deliveryRoute,
     companionNotification,
     ...(orderRelayDelivery ? { orderRelayDelivery } : {}),
+  }
+}
+
+/**
+ * Submit one initial order through a durable pre-publish checkpoint. Once the
+ * exact encrypted wrap and bounded plan are stored, zero-ACK transport failure
+ * becomes a locally queued order instead of an unrepeatable checkout error.
+ */
+export async function submitBuyerOrderMessage(
+  input: SubmitBuyerOrderMessageInput,
+  dependencies: SubmitBuyerOrderMessageDependencies = {}
+): Promise<SubmitBuyerOrderMessageResult> {
+  const rumorOrderId = input.rumor.tags.find((tag) => tag[0] === "order")?.[1]
+  const buyerPubkey =
+    typeof input.buyer === "string" ? input.buyer : input.buyer.pubkey
+  const buyerIdentityKind =
+    typeof input.buyer !== "string" && input.buyer.kind === "guest_ephemeral"
+      ? "guest_ephemeral"
+      : "signed_in"
+  if (
+    rumorOrderId !== input.lifecycle.orderId ||
+    input.lifecycle.buyerPubkey !== buyerPubkey ||
+    input.lifecycle.merchantPubkey !== input.merchantPubkey ||
+    input.lifecycle.buyerIdentityKind !== buyerIdentityKind
+  ) {
+    throw new Error(
+      "Order lifecycle identity does not match the order submission."
+    )
+  }
+
+  const createLifecycle =
+    dependencies.createOrderLifecycleFn ?? createOrderLifecycle
+  const recordDelivery =
+    dependencies.recordOrderRelayDeliveryUpdateFn ??
+    recordOrderRelayDeliveryUpdate
+  let checkpointPersisted = false
+  let latestDelivery: OrderRelayDeliveryRecord | undefined
+
+  try {
+    const result = await publishBuyerOrderMessage(
+      input.rumor,
+      input.ndk,
+      input.merchantPubkey,
+      input.buyer,
+      {
+        ...dependencies,
+        onWrapped: async (prepared) => {
+          const delivery = prepared.orderRelayDelivery
+          if (!delivery) {
+            throw new Error("Initial order wrap could not be staged.")
+          }
+          await createLifecycle({
+            ...input.lifecycle,
+            orderDeliveryStatus: "pending",
+            orderDeliveryRoute: delivery.route,
+            orderRelayDelivery: delivery,
+          })
+          latestDelivery = delivery
+          checkpointPersisted = true
+          await input.onLifecycleCheckpointed?.(prepared)
+          await dependencies.onWrapped?.(prepared)
+        },
+        onOrderRelayDeliveryUpdated: async (delivery) => {
+          await recordDelivery(input.lifecycle.orderId, delivery)
+          latestDelivery = delivery
+          await input.onOrderDeliveryCommitted?.({
+            delivery,
+            orderDeliveryStatus: getOrderRelayDeliveryStatus(delivery),
+          })
+          await dependencies.onOrderRelayDeliveryUpdated?.(delivery)
+        },
+      }
+    )
+    return {
+      ...result,
+      orderDeliveryStatus: result.orderRelayDelivery
+        ? getOrderRelayDeliveryStatus(result.orderRelayDelivery)
+        : "failed",
+    }
+  } catch (error) {
+    if (!checkpointPersisted || !latestDelivery) throw error
+    return {
+      buyerSelfCopyError: null,
+      localCacheError: null,
+      deliveryRoute: latestDelivery.route,
+      orderRelayDelivery: latestDelivery,
+      companionNotification: Promise.resolve("skipped_order_pending"),
+      orderDeliveryStatus: getOrderRelayDeliveryStatus(latestDelivery),
+    }
   }
 }
 

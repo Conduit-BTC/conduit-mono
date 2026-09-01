@@ -141,7 +141,7 @@ function pickupProduct(): Product {
 
 describe("checkout authorization refresh", () => {
   it("accepts unchanged raw listing terms after preparing the fresh shipping option", async () => {
-    const original = rawItem()
+    const original = rawItem({ lineGenerationId: "line-generation-a" })
     const option = shippingOption()
     const reviewed = {
       ...original,

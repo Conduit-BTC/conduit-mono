@@ -22,6 +22,7 @@ import bricolageMediumUrl from "../../../packages/ui/src/assets/fonts/BricolageG
 import bricolageRegularUrl from "../../../packages/ui/src/assets/fonts/BricolageGrotesque-Regular.ttf?url"
 import bricolageSemiBoldUrl from "../../../packages/ui/src/assets/fonts/BricolageGrotesque-SemiBold.ttf?url"
 import { routeTree } from "./routeTree.gen"
+import { reconcilePendingOrderCartRetirements } from "./hooks/useCart"
 import { ShopperPresetsProvider } from "./hooks/useShopperPresets"
 import { pruneExpiredCheckoutShippingSession } from "./lib/checkout-session"
 import { pruneExpiredSessionGuestOrderSigningIdentities } from "./lib/guest-order-identity"
@@ -85,11 +86,14 @@ function MarketAuthQueryBoundary({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (session.mode !== "signed_in" || !session.pubkey) return
     const buyerPubkey = session.pubkey
+    const controller = new AbortController()
     let active = false
     const resume = () => {
-      if (active) return
+      if (active || controller.signal.aborted) return
       active = true
-      void resumePendingOrderRelayDeliveries(buyerPubkey).finally(() => {
+      void resumePendingOrderRelayDeliveries(buyerPubkey, {
+        signal: controller.signal,
+      }).finally(() => {
         active = false
       })
     }
@@ -103,6 +107,7 @@ function MarketAuthQueryBoundary({ children }: { children: ReactNode }) {
     window.addEventListener("focus", resume)
     document.addEventListener("visibilitychange", resumeWhenVisible)
     return () => {
+      controller.abort()
       window.clearInterval(interval)
       window.removeEventListener("online", resume)
       window.removeEventListener("focus", resume)
@@ -130,6 +135,11 @@ function pruneGuestRecoveryState() {
   void pruneExpiredGuestOrderData().catch(() => {})
 }
 
+function reconcileMarketLocalRecoveryState() {
+  pruneGuestRecoveryState()
+  void reconcilePendingOrderCartRetirements()
+}
+
 const root = createRoot(document.getElementById("root")!)
 
 if (isProductLegalEntry) {
@@ -141,27 +151,31 @@ if (isProductLegalEntry) {
 } else {
   void pruneCommerceCaches()
   pruneGuestRecoveryState()
-  window.addEventListener("focus", pruneGuestRecoveryState)
-  window.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") pruneGuestRecoveryState()
+  window.addEventListener("focus", reconcileMarketLocalRecoveryState)
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      reconcileMarketLocalRecoveryState()
+    }
   })
   preloadCriticalMarketFonts()
 
-  root.render(
-    <StrictMode>
-      <QueryClientProvider client={queryClient}>
-        <AuthProvider>
-          <ConduitSessionProvider appId="market">
-            <MarketAuthQueryBoundary>
-              <ShopperPresetsProvider>
-                <MarketPricingWarmup />
-                <RouterProvider router={router} />
-              </ShopperPresetsProvider>
-            </MarketAuthQueryBoundary>
-          </ConduitSessionProvider>
-        </AuthProvider>
-        {SHOW_DEVTOOLS && <ReactQueryDevtools />}
-      </QueryClientProvider>
-    </StrictMode>
-  )
+  void reconcilePendingOrderCartRetirements().then(() => {
+    root.render(
+      <StrictMode>
+        <QueryClientProvider client={queryClient}>
+          <AuthProvider>
+            <ConduitSessionProvider appId="market">
+              <MarketAuthQueryBoundary>
+                <ShopperPresetsProvider>
+                  <MarketPricingWarmup />
+                  <RouterProvider router={router} />
+                </ShopperPresetsProvider>
+              </MarketAuthQueryBoundary>
+            </ConduitSessionProvider>
+          </AuthProvider>
+          {SHOW_DEVTOOLS && <ReactQueryDevtools />}
+        </QueryClientProvider>
+      </StrictMode>
+    )
+  })
 }

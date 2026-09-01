@@ -4,23 +4,123 @@ import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import {
   disconnectNdk,
   EVENT_KINDS,
+  GUEST_ORDER_LOCAL_RETENTION_MS,
   getNdk,
+  getOrderRelayDeliveryStatus,
   publishPrivateMessage,
   removeSigner,
   setSigner,
+  type OrderLifecycle,
+  type OrderRelayDeliveryRecord,
+  type SignedPublicNostrEvent,
   unwrapGiftWrap,
 } from "@conduit/core"
 
 import { createGuestOrderSigningIdentity } from "../apps/market/src/lib/guest-order-identity"
+import {
+  DEFAULT_CHECKOUT_SHIPPING,
+  readCheckoutShippingInitialization,
+  reconcileCheckoutShippingSessionForOrderDelivery,
+} from "../apps/market/src/lib/checkout-session"
 import {
   buildOrderCompanionNotificationRumor,
   buildPaymentProofRumor,
   getDeliveryNotice,
   prepareBuyerRumor,
   publishBuyerOrderMessage,
+  submitBuyerOrderMessage,
 } from "../apps/market/src/lib/order-publish"
 
 let activeSignerLease: ReturnType<typeof setSigner> | null = null
+
+function checkoutSessionStorage(): Pick<
+  Storage,
+  "getItem" | "removeItem" | "setItem"
+> {
+  const values = new Map<string, string>()
+  return {
+    getItem: (key) => values.get(key) ?? null,
+    removeItem: (key) => {
+      values.delete(key)
+    },
+    setItem: (key, value) => {
+      values.set(key, value)
+    },
+  }
+}
+
+describe("queued guest checkout recovery", () => {
+  it("retains the same-tab shipping draft until relay acceptance or bounded expiry", () => {
+    const storage = checkoutSessionStorage()
+    const draft = {
+      ...DEFAULT_CHECKOUT_SHIPPING,
+      street: "Guest recovery street",
+      email: "guest-recovery@example.com",
+    }
+    const checkpointedAt = 1_700_000_000_000
+
+    expect(
+      reconcileCheckoutShippingSessionForOrderDelivery(
+        {
+          orderId: "guest-order",
+          buyerIdentityKind: "guest_ephemeral",
+          orderDeliveryStatus: "pending",
+          value: draft,
+        },
+        storage,
+        checkpointedAt
+      )
+    ).toBe("retained")
+    expect(
+      readCheckoutShippingInitialization(
+        null,
+        storage,
+        checkpointedAt + 1,
+        null
+      )
+    ).toEqual({ value: draft, hasActiveDraft: true })
+
+    expect(
+      readCheckoutShippingInitialization(
+        null,
+        storage,
+        checkpointedAt + GUEST_ORDER_LOCAL_RETENTION_MS,
+        null
+      )
+    ).toEqual({ value: DEFAULT_CHECKOUT_SHIPPING, hasActiveDraft: false })
+
+    reconcileCheckoutShippingSessionForOrderDelivery(
+      {
+        orderId: "guest-order",
+        buyerIdentityKind: "guest_ephemeral",
+        orderDeliveryStatus: "pending",
+        value: draft,
+      },
+      storage,
+      checkpointedAt + 10
+    )
+    expect(
+      reconcileCheckoutShippingSessionForOrderDelivery(
+        {
+          orderId: "guest-order",
+          buyerIdentityKind: "guest_ephemeral",
+          orderDeliveryStatus: "sent",
+          value: draft,
+        },
+        storage,
+        checkpointedAt + 11
+      )
+    ).toBe("cleared")
+    expect(
+      readCheckoutShippingInitialization(
+        null,
+        storage,
+        checkpointedAt + 12,
+        null
+      )
+    ).toEqual({ value: DEFAULT_CHECKOUT_SHIPPING, hasActiveDraft: false })
+  })
+})
 
 describe("buyer order rumor preparation", () => {
   it("recreates the same payment-proof rumor id for receipt retries", () => {
@@ -941,5 +1041,389 @@ describe("buyer order publishing", () => {
     )
 
     expect(publishAttempts).toBe(1)
+  })
+})
+
+const signedRecipientWrap: SignedPublicNostrEvent = {
+  id: "a".repeat(64),
+  pubkey: "b".repeat(64),
+  created_at: 1_700_000_000,
+  kind: EVENT_KINDS.GIFT_WRAP,
+  tags: [["p", "merchant-pubkey"]],
+  content: "encrypted-gift-wrap",
+  sig: "c".repeat(128),
+}
+
+function stagedDelivery(): OrderRelayDeliveryRecord {
+  return {
+    signedRecipientWrap,
+    route: "declared_inbox",
+    relayDelivery: [
+      {
+        relayUrl: "wss://merchant.inbox.conduit.market",
+        source: "declared",
+        status: "pending",
+        attemptCount: 0,
+      },
+    ],
+    deliveryAttemptCount: 0,
+    retryCount: 0,
+    createdAt: 100,
+    updatedAt: 100,
+    expiresAt: 86_400_100,
+  }
+}
+
+function lifecycleDraft() {
+  return {
+    orderId: "guest-order",
+    createdAt: 100_000,
+    buyerPubkey: "buyer-pubkey",
+    buyerIdentityKind: "signed_in" as const,
+    merchantPubkey: "merchant-pubkey",
+    checkoutMode: "pay_later" as const,
+    items: [],
+    itemSubtotalSats: 1,
+    shippingCostSats: 0,
+    totalSats: 1,
+    totalMsats: 1_000,
+    currency: "SATS",
+    addressValidity: "not_required" as const,
+    shippingZoneEligibility: "not_required" as const,
+    invoiceStatus: "not_requested" as const,
+    paymentStatus: "not_started" as const,
+    proofDeliveryStatus: "not_started" as const,
+    zapReceiptStatus: "not_applicable" as const,
+  }
+}
+
+function lifecycleStore() {
+  let value: OrderLifecycle | undefined
+  return {
+    create: async (input: Record<string, unknown>) => {
+      value = {
+        ...input,
+        phase: "pending",
+        updatedAt: 100,
+      } as OrderLifecycle
+      return structuredClone(value)
+    },
+    record: async (_orderId: string, delivery: OrderRelayDeliveryRecord) => {
+      if (!value) throw new Error("missing staged lifecycle")
+      const orderDeliveryStatus = getOrderRelayDeliveryStatus(delivery)
+      value = {
+        ...value,
+        orderDeliveryStatus,
+        phase:
+          orderDeliveryStatus === "sent" ? "in_progress" : orderDeliveryStatus,
+        orderRelayDelivery: structuredClone(delivery),
+      }
+      return structuredClone(value)
+    },
+    read: () => structuredClone(value),
+  }
+}
+
+describe("durable buyer order submission", () => {
+  it("retires the submitted cart when the checkpoint commits before relay delivery settles", async () => {
+    const store = lifecycleStore()
+    const staged = stagedDelivery()
+    let cartRetirementCount = 0
+    let releaseRetirement!: () => void
+    const retirementRelease = new Promise<void>((resolve) => {
+      releaseRetirement = resolve
+    })
+    let markRetirementStarted!: () => void
+    const retirementStarted = new Promise<void>((resolve) => {
+      markRetirementStarted = resolve
+    })
+    let publishHasStarted = false
+    let releasePublish!: () => void
+    const publishRelease = new Promise<void>((resolve) => {
+      releasePublish = resolve
+    })
+    let markPublishStarted!: () => void
+    const publishStarted = new Promise<void>((resolve) => {
+      markPublishStarted = resolve
+    })
+
+    const input: Parameters<typeof submitBuyerOrderMessage>[0] = {
+      rumor: orderRumor(),
+      ndk: { signer: { id: "connected-signer" } } as never,
+      merchantPubkey: "merchant-pubkey",
+      buyer: "buyer-pubkey",
+      lifecycle: lifecycleDraft(),
+      onLifecycleCheckpointed: async () => {
+        cartRetirementCount += 1
+        markRetirementStarted()
+        await retirementRelease
+      },
+    }
+
+    const submission = submitBuyerOrderMessage(input, {
+      createOrderLifecycleFn: store.create as never,
+      recordOrderRelayDeliveryUpdateFn: store.record as never,
+      publishPrivateMessageFn: async (publishInput) => {
+        await publishInput.onWrapped?.({
+          rumorId: "order-rumor",
+          wrappedToRecipient: { id: signedRecipientWrap.id } as never,
+          wrappedToSelf: null,
+          orderRelayDelivery: staged,
+        })
+        publishHasStarted = true
+        markPublishStarted()
+        await publishRelease
+        throw new Error("interrupted first relay delivery")
+      },
+    })
+
+    await retirementStarted
+    expect(publishHasStarted).toBe(false)
+    releaseRetirement()
+    await publishStarted
+    const cartRetirementCountBeforePublishSettled = cartRetirementCount
+    releasePublish()
+    const result = await submission
+
+    expect(cartRetirementCountBeforePublishSettled).toBe(1)
+    expect(cartRetirementCount).toBe(1)
+    expect(result.orderDeliveryStatus).toBe("pending")
+    expect(store.read()?.orderDeliveryStatus).toBe("pending")
+  })
+
+  it("stores the lifecycle checkpoint before the first network call", async () => {
+    const store = lifecycleStore()
+    const steps: string[] = []
+    const staged = stagedDelivery()
+    const settled: OrderRelayDeliveryRecord = {
+      ...staged,
+      relayDelivery: [
+        {
+          ...staged.relayDelivery[0]!,
+          status: "acked",
+          attemptCount: 1,
+          acknowledgedAt: 110,
+        },
+      ],
+      deliveryAttemptCount: 1,
+      updatedAt: 110,
+    }
+
+    const result = await submitBuyerOrderMessage(
+      {
+        rumor: orderRumor(),
+        ndk: { signer: { id: "connected-signer" } } as never,
+        merchantPubkey: "merchant-pubkey",
+        buyer: "buyer-pubkey",
+        lifecycle: lifecycleDraft(),
+        onOrderDeliveryCommitted: ({ orderDeliveryStatus }) => {
+          expect(orderDeliveryStatus).toBe("sent")
+          expect(store.read()?.orderDeliveryStatus).toBe("sent")
+          steps.push("commit-ack")
+        },
+      },
+      {
+        createOrderLifecycleFn: async (input) => {
+          steps.push("persist")
+          return store.create(input)
+        },
+        recordOrderRelayDeliveryUpdateFn: store.record as never,
+        cacheBuyerOrderRumorFn: async () => null,
+        publishPrivateMessageFn: async (input) => {
+          await input.onWrapped?.({
+            rumorId: "order-rumor",
+            wrappedToRecipient: { id: signedRecipientWrap.id } as never,
+            wrappedToSelf: null,
+            orderRelayDelivery: staged,
+          })
+          steps.push(
+            input.rumorKind === EVENT_KINDS.ORDER
+              ? "publish-order"
+              : "publish-companion"
+          )
+          expect(store.read()?.orderRelayDelivery).toEqual(staged)
+          await input.onOrderRelayDeliveryUpdated?.(settled)
+          return {
+            wrappedToRecipient: { id: signedRecipientWrap.id } as never,
+            wrappedToSelf: null,
+            selfCopyError: null,
+            deliveryRoute: "declared_inbox" as const,
+            orderRelayDelivery: settled,
+          } as never
+        },
+      }
+    )
+
+    expect(steps).toEqual([
+      "persist",
+      "publish-order",
+      "commit-ack",
+      "publish-companion",
+    ])
+    expect(result.orderDeliveryStatus).toBe("sent")
+    expect(store.read()?.orderDeliveryStatus).toBe("sent")
+  })
+
+  it("returns a restart-safe queued order after zero ACK", async () => {
+    const store = lifecycleStore()
+    const staged = stagedDelivery()
+    const timedOut: OrderRelayDeliveryRecord = {
+      ...staged,
+      relayDelivery: [
+        {
+          ...staged.relayDelivery[0]!,
+          status: "timed_out",
+          attemptCount: 1,
+          timedOutAt: 110,
+        },
+      ],
+      deliveryAttemptCount: 1,
+      nextRetryAt: 1_000,
+      updatedAt: 110,
+    }
+
+    const result = await submitBuyerOrderMessage(
+      {
+        rumor: orderRumor(),
+        ndk: { signer: { id: "connected-signer" } } as never,
+        merchantPubkey: "merchant-pubkey",
+        buyer: "buyer-pubkey",
+        lifecycle: lifecycleDraft(),
+      },
+      {
+        createOrderLifecycleFn: store.create as never,
+        recordOrderRelayDeliveryUpdateFn: store.record as never,
+        publishPrivateMessageFn: async (input) => {
+          await input.onWrapped?.({
+            rumorId: "order-rumor",
+            wrappedToRecipient: { id: signedRecipientWrap.id } as never,
+            wrappedToSelf: null,
+            orderRelayDelivery: staged,
+          })
+          await input.onOrderRelayDeliveryUpdated?.(timedOut)
+          throw new Error("No relay accepted the order")
+        },
+      }
+    )
+
+    expect(result.orderDeliveryStatus).toBe("pending")
+    expect(result.deliveryRoute).toBe("declared_inbox")
+    expect(await result.companionNotification).toBe("skipped_order_pending")
+    expect(store.read()?.orderDeliveryStatus).toBe("pending")
+    expect(store.read()?.orderRelayDelivery).toEqual(timedOut)
+  })
+
+  it("returns a durable failed order when every immutable target is terminal", async () => {
+    const store = lifecycleStore()
+    const staged = stagedDelivery()
+    const terminal: OrderRelayDeliveryRecord = {
+      ...staged,
+      relayDelivery: [
+        {
+          ...staged.relayDelivery[0]!,
+          status: "rejected",
+          retryable: false,
+          attemptCount: 1,
+          rejectedAt: 110,
+        },
+      ],
+      deliveryAttemptCount: 1,
+      updatedAt: 110,
+    }
+
+    const result = await submitBuyerOrderMessage(
+      {
+        rumor: orderRumor(),
+        ndk: { signer: { id: "connected-signer" } } as never,
+        merchantPubkey: "merchant-pubkey",
+        buyer: "buyer-pubkey",
+        lifecycle: lifecycleDraft(),
+      },
+      {
+        createOrderLifecycleFn: store.create as never,
+        recordOrderRelayDeliveryUpdateFn: store.record as never,
+        publishPrivateMessageFn: async (input) => {
+          await input.onWrapped?.({
+            rumorId: "order-rumor",
+            wrappedToRecipient: { id: signedRecipientWrap.id } as never,
+            wrappedToSelf: null,
+            orderRelayDelivery: staged,
+          })
+          await input.onOrderRelayDeliveryUpdated?.(terminal)
+          throw new Error("Every relay rejected the immutable order")
+        },
+      }
+    )
+
+    expect(result.orderDeliveryStatus).toBe("failed")
+    expect(result.deliveryRoute).toBe("declared_inbox")
+    expect(await result.companionNotification).toBe("skipped_order_pending")
+    expect(store.read()?.orderDeliveryStatus).toBe("failed")
+    expect(store.read()?.phase).toBe("failed")
+  })
+
+  it("does no network work when the pre-publish checkpoint fails", async () => {
+    let networkCalls = 0
+    let checkpointCallbacks = 0
+    await expect(
+      submitBuyerOrderMessage(
+        {
+          rumor: orderRumor(),
+          ndk: { signer: { id: "connected-signer" } } as never,
+          merchantPubkey: "merchant-pubkey",
+          buyer: "buyer-pubkey",
+          lifecycle: lifecycleDraft(),
+          onLifecycleCheckpointed: () => {
+            checkpointCallbacks += 1
+          },
+        },
+        {
+          createOrderLifecycleFn: async () => {
+            throw new Error("IndexedDB unavailable")
+          },
+          publishPrivateMessageFn: async (input) => {
+            await input.onWrapped?.({
+              rumorId: "order-rumor",
+              wrappedToRecipient: { id: signedRecipientWrap.id } as never,
+              wrappedToSelf: null,
+              orderRelayDelivery: stagedDelivery(),
+            })
+            networkCalls += 1
+            throw new Error("unexpected publish")
+          },
+        }
+      )
+    ).rejects.toThrow("IndexedDB unavailable")
+    expect(networkCalls).toBe(0)
+    expect(checkpointCallbacks).toBe(0)
+  })
+
+  it("rejects a guest submission mislabeled as a signed-in lifecycle", async () => {
+    let publishAttempts = 0
+
+    await expect(
+      submitBuyerOrderMessage(
+        {
+          rumor: orderRumor(),
+          ndk: { signer: undefined } as never,
+          merchantPubkey: "merchant-pubkey",
+          buyer: {
+            kind: "guest_ephemeral",
+            pubkey: "buyer-pubkey",
+            signer: { id: "guest-signer" } as never,
+            orderId: "guest-order",
+            merchantPubkey: "merchant-pubkey",
+          },
+          lifecycle: lifecycleDraft(),
+        },
+        {
+          publishPrivateMessageFn: async () => {
+            publishAttempts += 1
+            throw new Error("unexpected publish")
+          },
+        }
+      )
+    ).rejects.toThrow("identity does not match")
+    expect(publishAttempts).toBe(0)
   })
 })

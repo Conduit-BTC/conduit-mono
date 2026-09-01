@@ -223,6 +223,8 @@ export {
   type StoredWalletCredential,
   type OrderLifecycle,
   type OrderLifecycleItem,
+  type OrderCartRetirement,
+  type OrderCartRetirementItem,
   type OrderLifecyclePhase,
   type OrderCheckoutMode,
   type OrderPublicZapSigner,

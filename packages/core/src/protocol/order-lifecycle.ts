@@ -1,5 +1,6 @@
 import {
   db,
+  type CachedOrderMessage,
   type OrderCheckoutMode,
   type OrderLifecycle,
   type OrderLifecyclePhase,
@@ -7,6 +8,11 @@ import {
   type OrderPublicZapSigner,
   type StoredPaymentAttempt,
 } from "../db"
+import {
+  shippingUpdateMessageSchema,
+  statusUpdateMessageSchema,
+} from "../schemas"
+import { isMerchantOrderPaid } from "./order-status"
 
 export const GUEST_ORDER_LOCAL_RETENTION_MS = 24 * 60 * 60 * 1_000
 
@@ -66,18 +72,13 @@ export function deriveOrderLifecyclePhase(
   if (lifecycle.phase === "cancelled") return "cancelled"
   if (lifecycle.phase === "completed") return "completed"
 
-  if (lifecycle.orderDeliveryStatus === "failed") return "failed"
-
-  if (lifecycle.paymentStatus === "paid") return "in_progress"
-
-  if (
-    lifecycle.paymentStatus === "paying" ||
-    lifecycle.invoiceStatus === "requesting" ||
-    lifecycle.invoiceStatus === "received" ||
-    lifecycle.orderDeliveryStatus === "sent"
-  ) {
+  if (hasOrderLifecyclePostDeliveryProgress(lifecycle)) {
     return "in_progress"
   }
+
+  if (lifecycle.orderDeliveryStatus === "failed") return "failed"
+
+  if (lifecycle.orderDeliveryStatus === "sent") return "in_progress"
 
   // A delivered order with moved/paying funds already returned "in_progress"
   // above, so reaching here with a failed payment means nothing landed.
@@ -86,7 +87,33 @@ export function deriveOrderLifecyclePhase(
   return "pending"
 }
 
-type CreateOrderLifecycleInput = Omit<
+/**
+ * Downstream state that is stronger than a missing relay ACK. This does not
+ * rewrite relay provenance; it only prevents transport evidence from erasing
+ * payment or invoice work that is already under way.
+ */
+export function hasOrderLifecyclePostDeliveryProgress(
+  lifecycle: Pick<
+    OrderLifecycle,
+    "invoiceStatus" | "paymentStatus" | "proofDeliveryStatus"
+  >
+): boolean {
+  return (
+    lifecycle.invoiceStatus === "requesting" ||
+    lifecycle.invoiceStatus === "received" ||
+    lifecycle.invoiceStatus === "manual_required" ||
+    lifecycle.paymentStatus === "paying" ||
+    lifecycle.paymentStatus === "paid" ||
+    lifecycle.paymentStatus === "ambiguous" ||
+    lifecycle.paymentStatus === "manual_required" ||
+    lifecycle.proofDeliveryStatus === "pending" ||
+    lifecycle.proofDeliveryStatus === "sent" ||
+    lifecycle.proofDeliveryStatus === "retry_needed" ||
+    lifecycle.proofDeliveryStatus === "failed"
+  )
+}
+
+export type CreateOrderLifecycleInput = Omit<
   OrderLifecycle,
   "createdAt" | "updatedAt" | "phase"
 > & {
@@ -117,6 +144,36 @@ export async function getOrderLifecycle(
   orderId: string
 ): Promise<OrderLifecycle | undefined> {
   return db.orderLifecycles.get(orderId)
+}
+
+export async function listOrderCartRetirements(): Promise<OrderLifecycle[]> {
+  const lifecycles = await db.orderLifecycles.toArray()
+  return lifecycles.filter(
+    (lifecycle) => lifecycle.cartRetirement !== undefined
+  )
+}
+
+export async function markOrderCartRetirementApplied(
+  orderId: string,
+  now = Date.now()
+): Promise<OrderLifecycle | undefined> {
+  return await db.transaction("rw", db.orderLifecycles, async () => {
+    const lifecycle = await db.orderLifecycles.get(orderId)
+    if (!lifecycle || lifecycle.cartRetirement?.status !== "pending") {
+      return lifecycle
+    }
+    const updated: OrderLifecycle = {
+      ...lifecycle,
+      cartRetirement: {
+        ...lifecycle.cartRetirement,
+        status: "applied",
+        updatedAt: now,
+      },
+      updatedAt: Math.max(lifecycle.updatedAt, now),
+    }
+    await db.orderLifecycles.put(updated)
+    return updated
+  })
 }
 
 export type OrderPaymentClaimInput = {
@@ -366,9 +423,12 @@ function buildClaimedOrderLifecycle(
   )
 }
 
-function canStartOrReplaceOrderPayment(lifecycle: OrderLifecycle): boolean {
+function canStartOrReplaceOrderPayment(
+  lifecycle: OrderLifecycle,
+  recipientObserved = false
+): boolean {
   if (
-    lifecycle.orderDeliveryStatus !== "sent" ||
+    (lifecycle.orderDeliveryStatus !== "sent" && !recipientObserved) ||
     lifecycle.phase === "completed" ||
     lifecycle.phase === "cancelled"
   ) {
@@ -383,16 +443,103 @@ function canStartOrReplaceOrderPayment(lifecycle: OrderLifecycle): boolean {
 
 export function getOrderLifecyclePaymentAdmission(
   lifecycle: OrderLifecycle | undefined,
-  input: OrderPaymentClaimInput
+  input: OrderPaymentClaimInput,
+  recipientObserved = false
 ): "admissible" | "missing" | "snapshot_mismatch" | "unsafe_state" {
   if (!lifecycle) return "missing"
   if (lifecycle.paymentClaimId) return "unsafe_state"
   if (!paymentClaimMatchesLifecycle(lifecycle, input)) {
     return "snapshot_mismatch"
   }
-  return canStartOrReplaceOrderPayment(lifecycle)
+  return canStartOrReplaceOrderPayment(lifecycle, recipientObserved)
     ? "admissible"
     : "unsafe_state"
+}
+
+type RetainedMerchantEvidence =
+  { type: "shipping_update" } | { type: "status_update"; status: string }
+
+function parseRetainedMerchantEvidence(
+  lifecycle: OrderLifecycle,
+  row: CachedOrderMessage
+): RetainedMerchantEvidence | null {
+  if (
+    row.orderId !== lifecycle.orderId ||
+    (row.type !== "status_update" && row.type !== "shipping_update") ||
+    row.senderPubkey !== lifecycle.merchantPubkey ||
+    row.recipientPubkey !== lifecycle.buyerPubkey
+  ) {
+    return null
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(row.rawContent)
+  } catch {
+    return null
+  }
+  if (!parsed || typeof parsed !== "object") return null
+
+  const message = parsed as Record<string, unknown>
+  if (
+    message.id !== row.id ||
+    message.orderId !== row.orderId ||
+    message.type !== row.type ||
+    message.senderPubkey !== row.senderPubkey ||
+    message.recipientPubkey !== row.recipientPubkey ||
+    message.createdAt !== row.createdAt
+  ) {
+    return null
+  }
+
+  if (row.type === "shipping_update") {
+    return shippingUpdateMessageSchema.safeParse(message.payload).success
+      ? { type: "shipping_update" }
+      : null
+  }
+
+  const payload = statusUpdateMessageSchema.safeParse(message.payload)
+  return payload.success
+    ? { type: "status_update", status: payload.data.status }
+    : null
+}
+
+function retainedMerchantPaymentVeto(
+  lifecycle: OrderLifecycle,
+  row: CachedOrderMessage
+): boolean {
+  const evidence = parseRetainedMerchantEvidence(lifecycle, row)
+  if (!evidence) return false
+  if (evidence.type === "shipping_update") return true
+  return (
+    isMerchantOrderPaid({ status: evidence.status }) ||
+    evidence.status === "cancelled" ||
+    evidence.status === "refund_requested"
+  )
+}
+
+/**
+ * Positive retained merchant evidence vetoes a new payment claim. Missing,
+ * unavailable, malformed, or identity-mismatched cache rows do not.
+ */
+function hasRetainedMerchantPaymentVeto(
+  lifecycle: OrderLifecycle,
+  rows: CachedOrderMessage[]
+): boolean {
+  return rows.some((row) => retainedMerchantPaymentVeto(lifecycle, row))
+}
+
+/**
+ * A validated merchant status or shipping response proves the merchant-side
+ * read path observed this order even when the sender lost every relay ACK.
+ * Keep that evidence separate from orderDeliveryStatus, which remains the
+ * provenance record for relay acceptance only.
+ */
+function hasRetainedMerchantRecipientEvidence(
+  lifecycle: OrderLifecycle,
+  rows: CachedOrderMessage[]
+): boolean {
+  return rows.some((row) => parseRetainedMerchantEvidence(lifecycle, row))
 }
 
 /**
@@ -410,31 +557,51 @@ export async function claimOrderLifecyclePayment(
     throw new Error("Payment claim ID is required.")
   }
 
-  return db.transaction("rw", db.orderLifecycles, async () => {
-    const lifecycle = await db.orderLifecycles.get(input.orderId)
-    const admission = getOrderLifecyclePaymentAdmission(lifecycle, input)
-    if (!lifecycle || admission === "missing") {
-      return { status: "missing", lifecycle: null }
-    }
-    if (admission !== "admissible") {
-      return { status: admission, lifecycle }
-    }
+  return db.transaction(
+    "rw",
+    db.orderLifecycles,
+    db.orderMessages,
+    async () => {
+      const lifecycle = await db.orderLifecycles.get(input.orderId)
+      if (!lifecycle) {
+        return { status: "missing", lifecycle: null }
+      }
+      const retainedMessages = await db.orderMessages
+        .where("orderId")
+        .equals(input.orderId)
+        .toArray()
+      const admission = getOrderLifecyclePaymentAdmission(
+        lifecycle,
+        input,
+        hasRetainedMerchantRecipientEvidence(lifecycle, retainedMessages)
+      )
+      if (admission === "missing") {
+        return { status: "missing", lifecycle: null }
+      }
+      if (admission !== "admissible") {
+        return { status: admission, lifecycle }
+      }
+      if (hasRetainedMerchantPaymentVeto(lifecycle, retainedMessages)) {
+        return { status: "unsafe_state", lifecycle }
+      }
 
-    const now = Date.now()
-    const claimed = buildClaimedOrderLifecycle(lifecycle, input, now)
-    await db.orderLifecycles.put(claimed)
-    return { status: "claimed", lifecycle: claimed }
-  })
+      const now = Date.now()
+      const claimed = buildClaimedOrderLifecycle(lifecycle, input, now)
+      await db.orderLifecycles.put(claimed)
+      return { status: "claimed", lifecycle: claimed }
+    }
+  )
 }
 
 export type OrderPaymentTargetReplacementAdmission =
   "replaceable" | "missing" | "unsafe_state"
 
 export function getOrderPaymentTargetReplacementAdmission(
-  lifecycle: OrderLifecycle | undefined
+  lifecycle: OrderLifecycle | undefined,
+  recipientObserved = false
 ): OrderPaymentTargetReplacementAdmission {
   if (!lifecycle) return "missing"
-  return canStartOrReplaceOrderPayment(lifecycle)
+  return canStartOrReplaceOrderPayment(lifecycle, recipientObserved)
     ? "replaceable"
     : "unsafe_state"
 }
@@ -455,28 +622,43 @@ export async function replaceOrderPaymentTarget(
   orderId: string,
   paymentTarget: OrderPaymentTarget
 ): Promise<ReplaceOrderPaymentTargetResult> {
-  return db.transaction("rw", db.orderLifecycles, async () => {
-    const lifecycle = await db.orderLifecycles.get(orderId)
-    const admission = getOrderPaymentTargetReplacementAdmission(lifecycle)
-    if (!lifecycle || admission === "missing") {
-      return { status: "missing", lifecycle: null }
+  return db.transaction(
+    "rw",
+    db.orderLifecycles,
+    db.orderMessages,
+    async () => {
+      const lifecycle = await db.orderLifecycles.get(orderId)
+      if (!lifecycle) {
+        return { status: "missing", lifecycle: null }
+      }
+      const retainedMessages = await db.orderMessages
+        .where("orderId")
+        .equals(orderId)
+        .toArray()
+      const admission = getOrderPaymentTargetReplacementAdmission(
+        lifecycle,
+        hasRetainedMerchantRecipientEvidence(lifecycle, retainedMessages)
+      )
+      if (admission !== "replaceable") {
+        return { status: "unsafe_state", lifecycle }
+      }
+      if (hasRetainedMerchantPaymentVeto(lifecycle, retainedMessages)) {
+        return { status: "unsafe_state", lifecycle }
+      }
+      const updated: OrderLifecycle = {
+        ...lifecycle,
+        paymentTarget,
+        walletPaymentAttemptId:
+          paymentTargetsEqual(lifecycle.paymentTarget, paymentTarget) &&
+          paymentTarget.type === "wallet"
+            ? lifecycle.walletPaymentAttemptId
+            : undefined,
+        updatedAt: Date.now(),
+      }
+      await db.orderLifecycles.put(updated)
+      return { status: "updated", lifecycle: updated }
     }
-    if (admission !== "replaceable") {
-      return { status: "unsafe_state", lifecycle }
-    }
-    const updated: OrderLifecycle = {
-      ...lifecycle,
-      paymentTarget,
-      walletPaymentAttemptId:
-        paymentTargetsEqual(lifecycle.paymentTarget, paymentTarget) &&
-        paymentTarget.type === "wallet"
-          ? lifecycle.walletPaymentAttemptId
-          : undefined,
-      updatedAt: Date.now(),
-    }
-    await db.orderLifecycles.put(updated)
-    return { status: "updated", lifecycle: updated }
-  })
+  )
 }
 
 /**
@@ -486,45 +668,62 @@ export async function replaceOrderPaymentTarget(
 export async function claimOrderLifecyclePrivateFallbackPayment(
   input: OrderPaymentClaimInput
 ): Promise<OrderPaymentClaimResult> {
-  return db.transaction("rw", db.orderLifecycles, async () => {
-    const lifecycle = await db.orderLifecycles.get(input.orderId)
-    if (!lifecycle) return { status: "missing", lifecycle: null }
-    if (
-      input.checkoutMode !== "private_checkout" ||
-      !paymentClaimIdentityMatchesLifecycle(lifecycle, input)
-    ) {
-      return { status: "snapshot_mismatch", lifecycle }
-    }
-    const publicZapSigner =
-      lifecycle.publicZapSigner ??
-      getOrderPublicZapSigner(lifecycle.checkoutMode)
-    if (
-      lifecycle.paymentClaimId ||
-      publicZapSigner !== "anon" ||
-      lifecycle.orderDeliveryStatus !== "sent" ||
-      lifecycle.phase === "completed" ||
-      lifecycle.phase === "cancelled" ||
-      lifecycle.invoiceStatus !== "failed" ||
-      lifecycle.paymentStatus !== "failed"
-    ) {
-      return { status: "unsafe_state", lifecycle }
-    }
+  return db.transaction(
+    "rw",
+    db.orderLifecycles,
+    db.orderMessages,
+    async () => {
+      const lifecycle = await db.orderLifecycles.get(input.orderId)
+      if (!lifecycle) return { status: "missing", lifecycle: null }
+      const retainedMessages = await db.orderMessages
+        .where("orderId")
+        .equals(input.orderId)
+        .toArray()
+      const recipientObserved = hasRetainedMerchantRecipientEvidence(
+        lifecycle,
+        retainedMessages
+      )
+      if (
+        input.checkoutMode !== "private_checkout" ||
+        !paymentClaimIdentityMatchesLifecycle(lifecycle, input)
+      ) {
+        return { status: "snapshot_mismatch", lifecycle }
+      }
+      const publicZapSigner =
+        lifecycle.publicZapSigner ??
+        getOrderPublicZapSigner(lifecycle.checkoutMode)
+      if (
+        lifecycle.paymentClaimId ||
+        publicZapSigner !== "anon" ||
+        (lifecycle.orderDeliveryStatus !== "sent" && !recipientObserved) ||
+        lifecycle.phase === "completed" ||
+        lifecycle.phase === "cancelled" ||
+        lifecycle.invoiceStatus !== "failed" ||
+        lifecycle.paymentStatus !== "failed"
+      ) {
+        return { status: "unsafe_state", lifecycle }
+      }
 
-    const now = Date.now()
-    const claimed = buildClaimedOrderLifecycle(lifecycle, input, now, {
-      merchantLightningAddress: input.merchantLightningAddress ?? undefined,
-      checkoutMode: "private_checkout",
-      publicZapSigner: undefined,
-      publicZapFallback: true,
-      zapContent: "",
-      walletPaymentAttemptId:
-        input.paymentTarget.type === "wallet"
-          ? createWalletPaymentAttemptId()
-          : undefined,
-    })
-    await db.orderLifecycles.put(claimed)
-    return { status: "claimed", lifecycle: claimed }
-  })
+      if (hasRetainedMerchantPaymentVeto(lifecycle, retainedMessages)) {
+        return { status: "unsafe_state", lifecycle }
+      }
+
+      const now = Date.now()
+      const claimed = buildClaimedOrderLifecycle(lifecycle, input, now, {
+        merchantLightningAddress: input.merchantLightningAddress ?? undefined,
+        checkoutMode: "private_checkout",
+        publicZapSigner: undefined,
+        publicZapFallback: true,
+        zapContent: "",
+        walletPaymentAttemptId:
+          input.paymentTarget.type === "wallet"
+            ? createWalletPaymentAttemptId()
+            : undefined,
+      })
+      await db.orderLifecycles.put(claimed)
+      return { status: "claimed", lifecycle: claimed }
+    }
+  )
 }
 
 /**
@@ -536,25 +735,41 @@ export async function recordOrderPaymentPreparationFailure(
   input: OrderPaymentClaimInput,
   lastError: string
 ): Promise<OrderPaymentPreparationFailureResult> {
-  return db.transaction("rw", db.orderLifecycles, async () => {
-    const lifecycle = await db.orderLifecycles.get(input.orderId)
-    if (!lifecycle) return { status: "missing", lifecycle: null }
-    const admission = getOrderLifecyclePaymentAdmission(lifecycle, input)
-    if (admission === "snapshot_mismatch" || admission === "unsafe_state") {
-      return { status: admission, lifecycle }
-    }
+  return db.transaction(
+    "rw",
+    db.orderLifecycles,
+    db.orderMessages,
+    async () => {
+      const lifecycle = await db.orderLifecycles.get(input.orderId)
+      if (!lifecycle) return { status: "missing", lifecycle: null }
+      const retainedMessages = await db.orderMessages
+        .where("orderId")
+        .equals(input.orderId)
+        .toArray()
+      const admission = getOrderLifecyclePaymentAdmission(
+        lifecycle,
+        input,
+        hasRetainedMerchantRecipientEvidence(lifecycle, retainedMessages)
+      )
+      if (admission === "snapshot_mismatch" || admission === "unsafe_state") {
+        return { status: admission, lifecycle }
+      }
+      if (hasRetainedMerchantPaymentVeto(lifecycle, retainedMessages)) {
+        return { status: "unsafe_state", lifecycle }
+      }
 
-    const recorded = mergeOrderLifecyclePatch(lifecycle, {
-      paymentClaimId: undefined,
-      invoiceStatus: "failed",
-      paymentStatus: "failed",
-      proofDeliveryStatus: "not_started",
-      zapReceiptStatus: "not_applicable",
-      lastError,
-    })
-    await db.orderLifecycles.put(recorded)
-    return { status: "recorded", lifecycle: recorded }
-  })
+      const recorded = mergeOrderLifecyclePatch(lifecycle, {
+        paymentClaimId: undefined,
+        invoiceStatus: "failed",
+        paymentStatus: "failed",
+        proofDeliveryStatus: "not_started",
+        zapReceiptStatus: "not_applicable",
+        lastError,
+      })
+      await db.orderLifecycles.put(recorded)
+      return { status: "recorded", lifecycle: recorded }
+    }
+  )
 }
 
 type FencedOrderLifecyclePatch = Partial<

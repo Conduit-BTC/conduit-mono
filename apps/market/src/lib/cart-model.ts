@@ -8,6 +8,7 @@ import {
   orderItemFulfillmentSchema,
   resolveCartShippingCost,
   type CommerceQueryMeta,
+  type OrderCartRetirement,
   type ProductAvailabilityDiagnostic,
   type ProductAvailabilityIssue,
   type ProductZapMessagePolicy,
@@ -18,7 +19,7 @@ import {
   type PickupEvidenceCoordinateSchema,
 } from "@conduit/core"
 
-export const CART_STORAGE_VERSION = 2
+export const CART_STORAGE_VERSION = 3
 
 export type CartItem = {
   productId: string
@@ -27,6 +28,8 @@ export type CartItem = {
   /** Human-readable selection snapshot preserved in signed-event order. */
   selectedSpecifications?: ProductSpecification[]
   merchantPubkey: string
+  /** Stable for one add/remove generation; quantity edits preserve it. */
+  lineGenerationId?: string
   merchantAddedAt?: number
   title: string
   price: number
@@ -89,6 +92,8 @@ export type CartFulfillmentLane =
 
 export type CartState = {
   items: CartItem[]
+  /** Written atomically with item subtraction to make replay idempotent. */
+  appliedOrderRetirements?: string[]
 }
 
 export type CartItemIdentity = Pick<CartItem, "merchantPubkey" | "productId">
@@ -98,6 +103,7 @@ export type CartItemInput = Omit<CartItem, "merchantAddedAt" | "quantity">
 export type PersistedCartState = {
   version: typeof CART_STORAGE_VERSION
   items: CartItem[]
+  appliedOrderRetirements: string[]
 }
 
 export type ParsedPersistedCart = {
@@ -615,6 +621,29 @@ function parseSpecifications(
   return specifications
 }
 
+function getLegacyCartLineGenerationId(
+  merchantPubkey: string,
+  productId: string
+): string {
+  return `legacy:${JSON.stringify([merchantPubkey, productId])}`
+}
+
+export function createCartLineGenerationId(): string {
+  return (
+    globalThis.crypto?.randomUUID?.() ??
+    `cart-line-${Date.now()}-${Math.random()}`
+  )
+}
+
+export function getCartLineGenerationId(
+  item: Pick<CartItem, "lineGenerationId" | "merchantPubkey" | "productId">
+): string {
+  return (
+    item.lineGenerationId ??
+    getLegacyCartLineGenerationId(item.merchantPubkey, item.productId)
+  )
+}
+
 function parseCartItem(value: unknown): CartItem | null {
   if (!isRecord(value)) return null
   const storedProductId = nonemptyString(value.productId)
@@ -636,6 +665,9 @@ function parseCartItem(value: unknown): CartItem | null {
   }
   const productId = normalizeProductCoordinate(storedProductId, merchantPubkey)
   if (!productId) return null
+  const lineGenerationId =
+    nonemptyString(value.lineGenerationId) ??
+    getLegacyCartLineGenerationId(merchantPubkey, productId)
 
   const quantity = Math.max(1, Math.floor(quantityValue))
   const merchantAddedAt = finiteNonnegativeNumber(value.merchantAddedAt)
@@ -666,6 +698,7 @@ function parseCartItem(value: unknown): CartItem | null {
   return {
     productId,
     merchantPubkey,
+    lineGenerationId,
     title,
     price,
     currency,
@@ -846,14 +879,20 @@ export function rebuildCurrentCartItems(
         product,
         currentFulfillmentByProductId?.get(product.id)
       ),
-      familyProductId:
-        product.type === "variation" ? product.parentProductId : undefined,
-      selectedSpecifications:
-        product.type === "variation"
-          ? product.specifications.map((specification) => ({
-              ...specification,
-            }))
-          : undefined,
+      ...(product.type === "variation"
+        ? {
+            familyProductId: product.parentProductId,
+            selectedSpecifications: product.specifications.map(
+              (specification) => ({ ...specification })
+            ),
+          }
+        : {}),
+      ...(item.merchantAddedAt !== undefined
+        ? { merchantAddedAt: item.merchantAddedAt }
+        : {}),
+      ...(item.lineGenerationId
+        ? { lineGenerationId: item.lineGenerationId }
+        : {}),
       quantity: item.quantity,
     })
   }
@@ -905,6 +944,7 @@ export function parsePersistedCart(value: unknown): ParsedPersistedCart {
   if (
     isRecord(value) &&
     "version" in value &&
+    value.version !== 2 &&
     value.version !== CART_STORAGE_VERSION
   ) {
     return {
@@ -952,17 +992,38 @@ export function parsePersistedCart(value: unknown): ParsedPersistedCart {
       typeof item.productId === "string" &&
       !item.productId.startsWith("30402:")
   )
+  const hasMissingLineGenerationIds = value.items.some(
+    (item) => isRecord(item) && !nonemptyString(item.lineGenerationId)
+  )
+  const appliedOrderRetirements = Array.isArray(value.appliedOrderRetirements)
+    ? Array.from(
+        new Set(
+          value.appliedOrderRetirements.filter(
+            (entry): entry is string => nonemptyString(entry) !== null
+          )
+        )
+      )
+    : []
 
   return {
-    state: { items: Array.from(deduplicated.values()) },
+    state: {
+      items: Array.from(deduplicated.values()),
+      appliedOrderRetirements,
+    },
     shouldPersist:
-      value.version !== CART_STORAGE_VERSION || hasLegacyProductIds,
+      value.version !== CART_STORAGE_VERSION ||
+      hasLegacyProductIds ||
+      hasMissingLineGenerationIds,
     writable: true,
   }
 }
 
 export function serializeCartState(state: CartState): PersistedCartState {
-  return { version: CART_STORAGE_VERSION, items: state.items }
+  return {
+    version: CART_STORAGE_VERSION,
+    items: state.items,
+    appliedOrderRetirements: state.appliedOrderRetirements ?? [],
+  }
 }
 
 function normalizeCartZapMessagePolicy(
@@ -1198,6 +1259,10 @@ export function addCartItem(
             ...current,
             ...item,
             merchantAddedAt: current.merchantAddedAt ?? merchantAddedAt,
+            lineGenerationId:
+              current.lineGenerationId ??
+              item.lineGenerationId ??
+              createCartLineGenerationId(),
             quantity: current.quantity + q,
           }
         : current
@@ -1205,7 +1270,15 @@ export function addCartItem(
   }
 
   if (typeof item.stock === "number" && q > item.stock) return items
-  return [...items, { ...item, merchantAddedAt, quantity: q }]
+  return [
+    ...items,
+    {
+      ...item,
+      merchantAddedAt,
+      lineGenerationId: item.lineGenerationId ?? createCartLineGenerationId(),
+      quantity: q,
+    },
+  ]
 }
 
 function currentCartQuantity(item: CartItem): number {
@@ -1235,4 +1308,88 @@ export function clearMerchantCart(
   merchantPubkey: string
 ): CartItem[] {
   return items.filter((item) => item.merchantPubkey !== merchantPubkey)
+}
+
+export function buildOrderCartRetirement(
+  items: readonly CartItem[],
+  updatedAt: number
+): OrderCartRetirement {
+  return {
+    status: "pending",
+    items: items.map((item) => ({
+      productId: item.productId,
+      quantity: Math.max(1, Math.floor(item.quantity)),
+      lineGenerationId: getCartLineGenerationId(item),
+    })),
+    updatedAt,
+  }
+}
+
+export function hasExactDurableCheckoutCart(
+  durableItems: readonly CartItem[],
+  reviewedItems: readonly CartItem[]
+): boolean {
+  const merchantPubkeys = new Set(
+    reviewedItems.map((item) => item.merchantPubkey)
+  )
+  if (reviewedItems.length === 0 || merchantPubkeys.size !== 1) return false
+  const [merchantPubkey] = merchantPubkeys
+  const durableMerchantItems = durableItems.filter(
+    (item) => item.merchantPubkey === merchantPubkey
+  )
+  if (
+    durableMerchantItems.length !== reviewedItems.length ||
+    getCartCommerceFingerprint(durableMerchantItems) !==
+      getCartCommerceFingerprint(reviewedItems)
+  ) {
+    return false
+  }
+
+  return reviewedItems.every((reviewed) => {
+    const durable = durableMerchantItems.find(
+      (item) => item.productId === reviewed.productId
+    )
+    return (
+      durable !== undefined &&
+      durable.quantity === reviewed.quantity &&
+      getCartLineGenerationId(durable) === getCartLineGenerationId(reviewed)
+    )
+  })
+}
+
+export function applyOrderCartRetirement(
+  state: CartState,
+  input: {
+    orderId: string
+    merchantPubkey: string
+    retirement: OrderCartRetirement
+  }
+): CartState {
+  const applied = state.appliedOrderRetirements ?? []
+  if (applied.includes(input.orderId)) return state
+
+  const submittedByLine = new Map<string, number>()
+  for (const item of input.retirement.items) {
+    const key = JSON.stringify([item.productId, item.lineGenerationId])
+    submittedByLine.set(
+      key,
+      (submittedByLine.get(key) ?? 0) + Math.max(1, Math.floor(item.quantity))
+    )
+  }
+
+  const items = state.items.flatMap((item) => {
+    if (item.merchantPubkey !== input.merchantPubkey) return [item]
+    const key = JSON.stringify([item.productId, getCartLineGenerationId(item)])
+    const submittedQuantity = submittedByLine.get(key)
+    if (!submittedQuantity) return [item]
+    const remainingQuantity = item.quantity - submittedQuantity
+    return remainingQuantity > 0
+      ? [{ ...item, quantity: remainingQuantity }]
+      : []
+  })
+
+  return {
+    items,
+    appliedOrderRetirements: [...applied, input.orderId],
+  }
 }

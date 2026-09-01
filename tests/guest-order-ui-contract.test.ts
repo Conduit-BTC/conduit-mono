@@ -96,6 +96,22 @@ describe("guest order UI contracts", () => {
     expect(source).toContain("pruneExpiredSessionGuestOrderSigningIdentities()")
     expect(source).toContain("pruneExpiredCheckoutShippingSession()")
     expect(source).toContain('window.addEventListener("focus"')
-    expect(source).toContain('window.addEventListener("visibilitychange"')
+    expect(source).toContain('document.addEventListener("visibilitychange"')
+  })
+
+  it("aborts signed-in delivery recovery when the active session changes", async () => {
+    const [mainSource, ordersSource] = await Promise.all([
+      Bun.file("apps/market/src/main.tsx").text(),
+      Bun.file("apps/market/src/routes/orders.tsx").text(),
+    ])
+
+    expect(mainSource).toContain("const controller = new AbortController()")
+    expect(mainSource).toContain("signal: controller.signal")
+    expect(mainSource).toContain("controller.abort()")
+    expect(ordersSource).toContain("useOrderDeliveryRetryAttempt(")
+    expect(ordersSource).toContain(
+      "const attempt = beginDeliveryRetryAttempt()"
+    )
+    expect(ordersSource).toContain("signal: attempt.signal")
   })
 })

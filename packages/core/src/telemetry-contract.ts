@@ -307,6 +307,8 @@ const browserTelemetryLabelValues = {
     "started",
     "failed",
     "order_sent",
+    "order_queued",
+    "queued",
     "order_sent_local_tracking_failed",
     "success_local_tracking_failed",
   ],

@@ -9,11 +9,13 @@ import {
   canObserveOrderPublicZapReceipt,
   canSubmitExternalPaymentReport,
   getLifecyclePaymentProofAction,
+  getOrderPaymentState,
   isOrderPaymentRunning,
   observeOrderPublicZapReceipt,
   runOrderPayment,
   runOrderPrivateFallback,
   signShopperCheckoutZapRequest,
+  submitExternalPaymentProof,
   type OrderPaymentDependencies,
   type OrderPaymentContext,
 } from "../apps/market/src/lib/order-payment-service"
@@ -336,6 +338,289 @@ describe("runOrderPayment", () => {
     expect(state.lifecycle?.paymentStatus).toBe("failed")
   })
 
+  it("keeps one payment owner while overlapping calls wait at admission and claim", async () => {
+    const orderId = "payment-owner-overlap"
+    let releaseAdmission!: () => void
+    let markAdmissionStarted!: () => void
+    let releaseClaim!: () => void
+    let markClaimStarted!: () => void
+    const admissionGate = new Promise<void>((resolve) => {
+      releaseAdmission = resolve
+    })
+    const admissionStarted = new Promise<void>((resolve) => {
+      markAdmissionStarted = resolve
+    })
+    const claimGate = new Promise<void>((resolve) => {
+      releaseClaim = resolve
+    })
+    const claimStarted = new Promise<void>((resolve) => {
+      markClaimStarted = resolve
+    })
+    let admissionCalls = 0
+    let claimCalls = 0
+    let invoiceCalls = 0
+    let walletCalls = 0
+    let currentMarker: string | null = null
+    const rememberedMarkers: string[] = []
+    const clearedMarkers: string[] = []
+    const context = basePaymentContext({
+      orderId,
+      merchantLud16: "merchant@wallet.example",
+      assertActionTimePaymentAdmission: async () => {
+        admissionCalls += 1
+        markAdmissionStarted()
+        await admissionGate
+      },
+    })
+    const dependencies = paymentDependencies({
+      rememberOrderPaymentClaim: (_orderId, paymentClaimId) => {
+        currentMarker = paymentClaimId
+        rememberedMarkers.push(paymentClaimId)
+        return true
+      },
+      clearOrderPaymentClaim: (_orderId, paymentClaimId) => {
+        clearedMarkers.push(paymentClaimId)
+        if (currentMarker === paymentClaimId) currentMarker = null
+        return true
+      },
+      claimOrderLifecyclePayment: async () => {
+        claimCalls += 1
+        markClaimStarted()
+        await claimGate
+        return {
+          status: "unsafe_state",
+          lifecycle: lifecycle({ orderId }),
+        }
+      },
+      requestCheckoutLnurlInvoice: async () => {
+        invoiceCalls += 1
+        throw new Error("must not request")
+      },
+      payCheckoutInvoice: async () => {
+        walletCalls += 1
+        throw new Error("must not pay")
+      },
+    })
+
+    const winner = runOrderPayment(context, dependencies)
+    await admissionStarted
+
+    const admissionLoser = await runOrderPayment(context, dependencies)
+    expect(admissionLoser.running).toBe(true)
+    expect(isOrderPaymentRunning(orderId)).toBe(true)
+    expect(admissionCalls).toBe(1)
+    expect(rememberedMarkers).toHaveLength(0)
+    expect(claimCalls).toBe(0)
+
+    releaseAdmission()
+    await claimStarted
+    expect(rememberedMarkers).toHaveLength(1)
+    expect(currentMarker).toBe(rememberedMarkers[0])
+
+    const claimLoser = await runOrderPayment(context, dependencies)
+    expect(claimLoser.running).toBe(true)
+    expect(isOrderPaymentRunning(orderId)).toBe(true)
+    expect(admissionCalls).toBe(1)
+    expect(rememberedMarkers).toHaveLength(1)
+    expect(claimCalls).toBe(1)
+    expect(clearedMarkers).toHaveLength(0)
+
+    releaseClaim()
+    const state = await winner
+    expect(state.running).toBe(false)
+    expect(isOrderPaymentRunning(orderId)).toBe(false)
+    expect(currentMarker).toBeNull()
+    expect(clearedMarkers).toEqual(rememberedMarkers)
+    expect(invoiceCalls).toBe(0)
+    expect(walletCalls).toBe(0)
+  })
+
+  it("keeps one payment owner while private fallback awaits admission and claim", async () => {
+    const orderId = "private-fallback-owner-overlap"
+    let releaseAdmission!: () => void
+    let markAdmissionStarted!: () => void
+    let releaseClaim!: () => void
+    let markClaimStarted!: () => void
+    const admissionGate = new Promise<void>((resolve) => {
+      releaseAdmission = resolve
+    })
+    const admissionStarted = new Promise<void>((resolve) => {
+      markAdmissionStarted = resolve
+    })
+    const claimGate = new Promise<void>((resolve) => {
+      releaseClaim = resolve
+    })
+    const claimStarted = new Promise<void>((resolve) => {
+      markClaimStarted = resolve
+    })
+    let admissionCalls = 0
+    let claimCalls = 0
+    let invoiceCalls = 0
+    let walletCalls = 0
+    let currentMarker: string | null = null
+    const rememberedMarkers: string[] = []
+    const clearedMarkers: string[] = []
+    const context = basePaymentContext({
+      orderId,
+      merchantLud16: "merchant@wallet.example",
+      assertActionTimePaymentAdmission: async () => {
+        admissionCalls += 1
+        markAdmissionStarted()
+        await admissionGate
+      },
+    })
+    const dependencies = paymentDependencies({
+      rememberOrderPaymentClaim: (_orderId, paymentClaimId) => {
+        currentMarker = paymentClaimId
+        rememberedMarkers.push(paymentClaimId)
+        return true
+      },
+      clearOrderPaymentClaim: (_orderId, paymentClaimId) => {
+        clearedMarkers.push(paymentClaimId)
+        if (currentMarker === paymentClaimId) currentMarker = null
+        return true
+      },
+      claimOrderLifecyclePrivateFallbackPayment: async () => {
+        claimCalls += 1
+        markClaimStarted()
+        await claimGate
+        return {
+          status: "unsafe_state",
+          lifecycle: lifecycle({ orderId }),
+        }
+      },
+      requestCheckoutLnurlInvoice: async () => {
+        invoiceCalls += 1
+        throw new Error("must not request")
+      },
+      payCheckoutInvoice: async () => {
+        walletCalls += 1
+        throw new Error("must not pay")
+      },
+    })
+
+    const winner = runOrderPrivateFallback(context, dependencies)
+    await admissionStarted
+
+    await expect(
+      runOrderPrivateFallback(context, dependencies)
+    ).rejects.toThrow("Payment is already in progress for this order.")
+    expect(isOrderPaymentRunning(orderId)).toBe(true)
+    expect(admissionCalls).toBe(1)
+    expect(rememberedMarkers).toHaveLength(0)
+    expect(claimCalls).toBe(0)
+
+    releaseAdmission()
+    await claimStarted
+    expect(rememberedMarkers).toHaveLength(1)
+    expect(currentMarker).toBe(rememberedMarkers[0])
+
+    await expect(
+      runOrderPrivateFallback(context, dependencies)
+    ).rejects.toThrow("Payment is already in progress for this order.")
+    expect(isOrderPaymentRunning(orderId)).toBe(true)
+    expect(admissionCalls).toBe(1)
+    expect(rememberedMarkers).toHaveLength(1)
+    expect(claimCalls).toBe(1)
+    expect(clearedMarkers).toHaveLength(0)
+
+    releaseClaim()
+    const state = await winner
+    expect(state.running).toBe(false)
+    expect(isOrderPaymentRunning(orderId)).toBe(false)
+    expect(currentMarker).toBeNull()
+    expect(clearedMarkers).toEqual(rememberedMarkers)
+    expect(invoiceCalls).toBe(0)
+    expect(walletCalls).toBe(0)
+  })
+
+  it("keeps an external proof owner visible and blocks every competing payment entry", async () => {
+    const orderId = "external-proof-owner-overlap"
+    const table = db.orderLifecycles as typeof db.orderLifecycles & {
+      get: typeof db.orderLifecycles.get
+    }
+    const originalGet = table.get
+    let releaseRead!: () => void
+    let markReadStarted!: () => void
+    const readGate = new Promise<void>((resolve) => {
+      releaseRead = resolve
+    })
+    const readStarted = new Promise<void>((resolve) => {
+      markReadStarted = resolve
+    })
+    let lifecycleReads = 0
+    let admissionCalls = 0
+    let markerCalls = 0
+    let claimCalls = 0
+    let invoiceCalls = 0
+    let walletCalls = 0
+    const context = basePaymentContext({
+      orderId,
+      assertActionTimePaymentAdmission: async () => {
+        admissionCalls += 1
+      },
+    })
+    const dependencies = paymentDependencies({
+      rememberOrderPaymentClaim: () => {
+        markerCalls += 1
+        return true
+      },
+      claimOrderLifecyclePayment: async () => {
+        claimCalls += 1
+        return { status: "missing", lifecycle: null }
+      },
+      claimOrderLifecyclePrivateFallbackPayment: async () => {
+        claimCalls += 1
+        return { status: "missing", lifecycle: null }
+      },
+      requestCheckoutLnurlInvoice: async () => {
+        invoiceCalls += 1
+        throw new Error("must not request")
+      },
+      payCheckoutInvoice: async () => {
+        walletCalls += 1
+        throw new Error("must not pay")
+      },
+    })
+
+    table.get = (async () => {
+      lifecycleReads += 1
+      markReadStarted()
+      await readGate
+      return undefined
+    }) as typeof table.get
+
+    const winner = submitExternalPaymentProof(orderId)
+    try {
+      await readStarted
+      expect(getOrderPaymentState(orderId)?.running).toBe(true)
+
+      const externalLoser = await submitExternalPaymentProof(orderId)
+      const paymentLoser = await runOrderPayment(context, dependencies)
+      await expect(
+        runOrderPrivateFallback(context, dependencies)
+      ).rejects.toThrow("Payment is already in progress for this order.")
+
+      expect(externalLoser?.running).toBe(true)
+      expect(paymentLoser.running).toBe(true)
+      expect(isOrderPaymentRunning(orderId)).toBe(true)
+      expect(lifecycleReads).toBe(1)
+      expect(admissionCalls).toBe(0)
+      expect(markerCalls).toBe(0)
+      expect(claimCalls).toBe(0)
+      expect(invoiceCalls).toBe(0)
+      expect(walletCalls).toBe(0)
+    } finally {
+      releaseRead()
+      table.get = originalGet
+    }
+
+    const state = await winner
+    expect(state?.running).toBe(false)
+    expect(getOrderPaymentState(orderId)?.running).toBe(false)
+    expect(isOrderPaymentRunning(orderId)).toBe(false)
+  })
+
   it("renews and cancels the payment claim heartbeat during long work", async () => {
     const orderId = "payment-heartbeat"
     let stored = lifecycle({
@@ -610,6 +895,84 @@ describe("runOrderPayment", () => {
     expect(state.error).toBe(
       "Payment details no longer match the delivered order."
     )
+  })
+
+  it("rechecks retained merchant terminal evidence before payment admission", async () => {
+    const orderId = "merchant-terminal-before-payment-admission"
+    let retainedMerchantStatus: "pending" | "paid" = "pending"
+    let admissionChecks = 0
+    let claimCalls = 0
+    let invoiceCalls = 0
+    let walletCalls = 0
+    const context = basePaymentContext({
+      orderId,
+      merchantLud16: "merchant@wallet.example",
+      assertActionTimePaymentAdmission: async () => {
+        admissionChecks += 1
+        if (retainedMerchantStatus === "paid") {
+          throw new Error("Payment is no longer available for this order.")
+        }
+      },
+    })
+
+    expect(retainedMerchantStatus).toBe("pending")
+    retainedMerchantStatus = "paid"
+
+    await expect(
+      runOrderPayment(context, {
+        ...paymentDependencies(),
+        claimOrderLifecyclePayment: async () => {
+          claimCalls += 1
+          return {
+            status: "unsafe_state",
+            lifecycle: lifecycle({ orderId }),
+          }
+        },
+        requestCheckoutLnurlInvoice: async () => {
+          invoiceCalls += 1
+          throw new Error("must not request")
+        },
+        payCheckoutInvoice: async () => {
+          walletCalls += 1
+          throw new Error("must not pay")
+        },
+      })
+    ).rejects.toThrow("Payment is no longer available for this order.")
+
+    expect(admissionChecks).toBe(1)
+    expect(claimCalls).toBe(0)
+    expect(invoiceCalls).toBe(0)
+    expect(walletCalls).toBe(0)
+  })
+
+  it("rechecks retained merchant terminal evidence before private fallback admission", async () => {
+    let admissionChecks = 0
+    let claimCalls = 0
+
+    await expect(
+      runOrderPrivateFallback(
+        basePaymentContext({
+          orderId: "merchant-terminal-before-private-fallback",
+          assertActionTimePaymentAdmission: async () => {
+            admissionChecks += 1
+            throw new Error("Payment is no longer available for this order.")
+          },
+        }),
+        {
+          ...paymentDependencies(),
+          claimOrderLifecyclePrivateFallbackPayment: async () => {
+            claimCalls += 1
+            return {
+              status: "unsafe_state",
+              lifecycle: lifecycle(),
+            }
+          },
+        }
+      )
+    ).rejects.toThrow("Payment is no longer available for this order.")
+
+    expect(admissionChecks).toBe(1)
+    expect(claimCalls).toBe(0)
   })
 
   it("does no invoice or wallet work for persisted unsafe payment states", async () => {

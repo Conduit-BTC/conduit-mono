@@ -38,7 +38,8 @@ import {
   type SignedPublicNostrEvent,
 } from "./signed-event"
 import {
-  publishSignedEventFrameToRelay,
+  publishSignedEventFrameToRelayOutcome,
+  type ExactRelayWriteOutcome,
   type ExactRelayWriteStatus,
 } from "./relay-writer"
 import { normalizePublicWebSocketUrl } from "../network-target-safety"
@@ -103,6 +104,11 @@ export interface PublishWithPlannerResult {
   failedRelayUrls: string[]
   /** Per-relay failure detail when NDK exposes a rejection reason. */
   relayFailureMessages: Record<string, string>
+  /**
+   * Relays that explicitly rejected these immutable bytes for a terminal
+   * content reason. This evidence is monotonic across ambiguous retries.
+   */
+  terminalRejectedRelayUrls?: string[]
 }
 
 export class RelayPublishDiagnosticsError extends Error {
@@ -256,27 +262,42 @@ function mergePublishResults(
     successfulRelayUrls: readonly string[]
     failedRelayUrls: readonly string[]
     relayFailureMessages: Record<string, string>
+    terminalRejectedRelayUrls?: readonly string[]
   }[]
 ): {
   successfulRelayUrls: string[]
   failedRelayUrls: string[]
   relayFailureMessages: Record<string, string>
+  terminalRejectedRelayUrls: string[]
 } {
   const successful = new Set<string>()
   const failed = new Set<string>()
+  const terminalRejected = new Set<string>()
   const relayFailureMessages: Record<string, string> = {}
 
   for (const result of results) {
     for (const url of result.successfulRelayUrls) {
       successful.add(url)
       failed.delete(url)
+      terminalRejected.delete(url)
       delete relayFailureMessages[url]
+    }
+    for (const url of result.terminalRejectedRelayUrls ?? []) {
+      if (successful.has(url)) continue
+      terminalRejected.add(url)
     }
     for (const url of result.failedRelayUrls) {
       if (successful.has(url)) continue
       failed.add(url)
-      relayFailureMessages[url] =
+      const message =
         result.relayFailureMessages[url] ?? "No acknowledgement before timeout"
+      if (
+        !terminalRejected.has(url) ||
+        isTerminalRelayRejectionMessage(message) ||
+        relayFailureMessages[url] === undefined
+      ) {
+        relayFailureMessages[url] = message
+      }
     }
   }
 
@@ -284,6 +305,7 @@ function mergePublishResults(
     successfulRelayUrls: Array.from(successful),
     failedRelayUrls: Array.from(failed),
     relayFailureMessages,
+    terminalRejectedRelayUrls: Array.from(terminalRejected),
   }
 }
 
@@ -377,6 +399,7 @@ function getPublishErrorMessage(error: unknown): string {
 const NIP_01_DUPLICATE_REASON = /^duplicate:/i
 const NIP_01_REJECTION_REASON =
   /^(?:pow|blocked|rate-limited|invalid|restricted|mute|error):/i
+const NIP_01_TERMINAL_REJECTION_REASON = /^(?:invalid|pow):/i
 
 function isExplicitRelayRejection(error: unknown): boolean {
   return NIP_01_REJECTION_REASON.test(getPublishErrorMessage(error).trim())
@@ -386,6 +409,10 @@ function isDuplicateRelayAcceptance(error: unknown): boolean {
   return NIP_01_DUPLICATE_REASON.test(getPublishErrorMessage(error).trim())
 }
 
+function isTerminalRelayRejectionMessage(message: string): boolean {
+  return NIP_01_TERMINAL_REJECTION_REASON.test(message.trim())
+}
+
 function createPublishDiagnosticsError(input: {
   message: string
   plan: RelayWritePlan
@@ -393,6 +420,7 @@ function createPublishDiagnosticsError(input: {
   successfulRelayUrls: readonly string[]
   failedRelayUrls: readonly string[]
   relayFailureMessages: Record<string, string>
+  terminalRejectedRelayUrls?: readonly string[]
   thrown: unknown
 }): RelayPublishDiagnosticsError {
   const details = [
@@ -412,6 +440,7 @@ function createPublishDiagnosticsError(input: {
       successfulRelayUrls: [...input.successfulRelayUrls],
       failedRelayUrls: [...input.failedRelayUrls],
       relayFailureMessages: { ...input.relayFailureMessages },
+      terminalRejectedRelayUrls: [...(input.terminalRejectedRelayUrls ?? [])],
     },
     input.thrown
   )
@@ -427,7 +456,7 @@ async function publishToRelayUrls(input: {
   successfulRelayUrls: string[]
   failedRelayUrls: string[]
   relayFailureMessages: Record<string, string>
-  rejectedRelayUrls: string[]
+  terminalRejectedRelayUrls: string[]
   thrown: unknown
 }> {
   const relayUrls =
@@ -453,7 +482,7 @@ async function publishToRelayUrls(input: {
       successfulRelayUrls: [],
       failedRelayUrls: [],
       relayFailureMessages: {},
-      rejectedRelayUrls: [],
+      terminalRejectedRelayUrls: [],
       thrown: null,
     }
   }
@@ -461,7 +490,7 @@ async function publishToRelayUrls(input: {
   const relaySet = NDKRelaySet.fromRelayUrls(relayUrls, input.ndk)
   let publishedUrls = new Set<string>()
   let explicitFailedUrls = new Set<string>()
-  const rejectedRelayUrls = new Set<string>()
+  const terminalRejectedRelayUrls = new Set<string>()
   const explicitFailureMessages = new Map<string, string>()
   let thrown: unknown = null
 
@@ -491,10 +520,14 @@ async function publishToRelayUrls(input: {
           // plain Error values in the same map. Only NIP-01's machine-readable
           // rejection prefixes prove a relay explicitly rejected the event;
           // every ambiguous failure remains retryable as timed_out.
-          if (isExplicitRelayRejection(relayError)) {
-            rejectedRelayUrls.add(url)
+          const message = getPublishErrorMessage(relayError)
+          if (
+            isExplicitRelayRejection(relayError) &&
+            isTerminalRelayRejectionMessage(message)
+          ) {
+            terminalRejectedRelayUrls.add(url)
           }
-          explicitFailureMessages.set(url, getPublishErrorMessage(relayError))
+          explicitFailureMessages.set(url, message)
         }
       }
     } else {
@@ -527,12 +560,13 @@ async function publishToRelayUrls(input: {
   return {
     ...outcome,
     relayFailureMessages,
-    rejectedRelayUrls: Array.from(rejectedRelayUrls),
+    terminalRejectedRelayUrls: Array.from(terminalRejectedRelayUrls),
     thrown,
   }
 }
 
 export type ExclusiveRelayPublishStatus = ExactRelayWriteStatus
+export type ExclusiveRelayPublishOutcome = ExactRelayWriteOutcome
 
 interface ExactRelayTargetInput {
   relayUrl: string
@@ -579,19 +613,26 @@ function resolveExactRelayTarget(input: ExactRelayTargetInput): string {
 export async function publishSignedEventToRelay(
   input: ExactRelayPublishInput
 ): Promise<ExclusiveRelayPublishStatus> {
+  return (await publishSignedEventToRelayOutcome(input)).status
+}
+
+/** Content-safe detailed outcome for durable replay policy. */
+export async function publishSignedEventToRelayOutcome(
+  input: ExactRelayPublishInput
+): Promise<ExclusiveRelayPublishOutcome> {
   assertValidSignedPublicPublish(input.signedEvent, {
     intent: "author_event",
     authorPubkey: input.authorPubkey,
   })
   const relayUrl = resolveExactRelayTarget(input)
-  const status = await publishSignedEventFrameToRelay({
+  const outcome = await publishSignedEventFrameToRelayOutcome({
     signedEvent: input.signedEvent,
     relayUrl,
     timeoutMs: CRITICAL_PUBLISH_TIMEOUT_MS,
   })
-  if (status === "acked") recordRelaySuccess(relayUrl)
+  if (outcome.status === "acked") recordRelaySuccess(relayUrl)
   else recordRelayFailure(relayUrl)
-  return status
+  return outcome
 }
 
 /**
@@ -760,6 +801,7 @@ export async function publishWithPlanner(
           successfulRelayUrls: fallback.successfulRelayUrls,
           failedRelayUrls: fallback.failedRelayUrls,
           relayFailureMessages: fallback.relayFailureMessages,
+          terminalRejectedRelayUrls: fallback.terminalRejectedRelayUrls,
           thrown: fallback.thrown,
         })
       }
@@ -769,6 +811,7 @@ export async function publishWithPlanner(
         successfulRelayUrls: fallback.successfulRelayUrls,
         failedRelayUrls: fallback.failedRelayUrls,
         relayFailureMessages: fallback.relayFailureMessages,
+        terminalRejectedRelayUrls: fallback.terminalRejectedRelayUrls,
       }
     }
 
@@ -819,6 +862,7 @@ export async function publishWithPlanner(
           successfulRelayUrls: merged.successfulRelayUrls,
           failedRelayUrls: merged.failedRelayUrls,
           relayFailureMessages: merged.relayFailureMessages,
+          terminalRejectedRelayUrls: merged.terminalRejectedRelayUrls,
         }
       }
     }
@@ -858,6 +902,7 @@ export async function publishWithPlanner(
         successfulRelayUrls: merged.successfulRelayUrls,
         failedRelayUrls: merged.failedRelayUrls,
         relayFailureMessages: merged.relayFailureMessages,
+        terminalRejectedRelayUrls: merged.terminalRejectedRelayUrls,
         thrown: retry?.thrown ?? primary.thrown,
       })
     }
@@ -895,6 +940,7 @@ export async function publishWithPlanner(
           successfulRelayUrls: merged.successfulRelayUrls,
           failedRelayUrls: merged.failedRelayUrls,
           relayFailureMessages: merged.relayFailureMessages,
+          terminalRejectedRelayUrls: merged.terminalRejectedRelayUrls,
         }
       }
 
@@ -908,6 +954,7 @@ export async function publishWithPlanner(
         successfulRelayUrls: merged.successfulRelayUrls,
         failedRelayUrls: merged.failedRelayUrls,
         relayFailureMessages: merged.relayFailureMessages,
+        terminalRejectedRelayUrls: merged.terminalRejectedRelayUrls,
         thrown: fallback.thrown,
       })
     }
@@ -929,6 +976,7 @@ export async function publishWithPlanner(
         Object.keys(merged.relayFailureMessages).length > 0
           ? merged.relayFailureMessages
           : retryRelayFailureMessages,
+      terminalRejectedRelayUrls: merged.terminalRejectedRelayUrls,
       thrown: retry?.thrown ?? primary.thrown,
     })
   }
@@ -944,6 +992,7 @@ export async function publishWithPlanner(
       successfulRelayUrls: primary.successfulRelayUrls,
       failedRelayUrls: primary.failedRelayUrls,
       relayFailureMessages: primary.relayFailureMessages,
+      terminalRejectedRelayUrls: primary.terminalRejectedRelayUrls,
     }
   }
   const broadcast = await publishToRelayUrls({
@@ -954,20 +1003,13 @@ export async function publishWithPlanner(
     timeoutMs: publishTimeoutMs,
   })
 
+  const merged = mergePublishResults([primary, broadcast])
   return {
     plan,
     attemptedRelayUrls,
-    successfulRelayUrls: mergeUnique([
-      primary.successfulRelayUrls,
-      broadcast.successfulRelayUrls,
-    ]),
-    failedRelayUrls: mergeUnique([
-      primary.failedRelayUrls,
-      broadcast.failedRelayUrls,
-    ]),
-    relayFailureMessages: mergeRelayFailureMessages([
-      primary.relayFailureMessages,
-      broadcast.relayFailureMessages,
-    ]),
+    successfulRelayUrls: merged.successfulRelayUrls,
+    failedRelayUrls: merged.failedRelayUrls,
+    relayFailureMessages: merged.relayFailureMessages,
+    terminalRejectedRelayUrls: merged.terminalRejectedRelayUrls,
   }
 }

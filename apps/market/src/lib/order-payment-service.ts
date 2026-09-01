@@ -264,6 +264,11 @@ export interface OrderPaymentContext {
     destination: { country: string; postalCode: string }
   }
   paymentTarget: CheckoutPaymentTarget
+  /**
+   * Recheck retained merchant evidence at the last admission boundary after
+   * route-level pricing, pickup, and signer preparation have completed.
+   */
+  assertActionTimePaymentAdmission?: () => Promise<void>
   approveFee?: WalletPaymentFeeApproval
   formatSatsAmount?: (sats: number) => string
 }
@@ -407,11 +412,24 @@ type Listener = (state: OrderPaymentRuntimeState) => void
 
 const runtimeStates = new Map<string, OrderPaymentRuntimeState>()
 const listeners = new Map<string, Set<Listener>>()
-/** Guards against concurrent payment attempts for the same order. */
-const inFlight = new Set<string>()
-/** Serializes the explicit anonymous-to-private recovery transition. */
-const privateFallbackTransitions = new Set<string>()
+/**
+ * Owns every same-order payment entry path from its first asynchronous
+ * admission check until the winning attempt finishes.
+ */
+const paymentRunOwners = new Map<string, string>()
 const receiptObservers = new Set<string>()
+
+function reserveOrderPaymentRun(orderId: string, ownerId: string): boolean {
+  if (paymentRunOwners.has(orderId)) return false
+  paymentRunOwners.set(orderId, ownerId)
+  return true
+}
+
+function releaseOrderPaymentRun(orderId: string, ownerId: string): boolean {
+  if (paymentRunOwners.get(orderId) !== ownerId) return false
+  paymentRunOwners.delete(orderId)
+  return true
+}
 
 function startProofDeliveryClaimHeartbeat(
   orderId: string,
@@ -501,7 +519,7 @@ export function getOrderPaymentState(
 }
 
 export function isOrderPaymentRunning(orderId: string): boolean {
-  return inFlight.has(orderId) || privateFallbackTransitions.has(orderId)
+  return paymentRunOwners.has(orderId)
 }
 
 export function subscribeOrderPayment(
@@ -798,7 +816,26 @@ export async function runOrderPayment(
   ctx: OrderPaymentContext,
   dependencyOverrides: Partial<OrderPaymentDependencies> = {}
 ): Promise<OrderPaymentRuntimeState> {
-  return runOrderPaymentInternal(ctx, dependencyOverrides)
+  const runOwnerId = generateId()
+  if (!reserveOrderPaymentRun(ctx.orderId, runOwnerId)) {
+    return {
+      ...(runtimeStates.get(ctx.orderId) ?? {
+        orderId: ctx.orderId,
+        stage: null,
+        error: null,
+        lifecycle: null,
+      }),
+      running: true,
+    }
+  }
+  emit(ctx.orderId, { running: true, stage: null, error: null })
+  try {
+    return await runOrderPaymentInternal(ctx, dependencyOverrides)
+  } finally {
+    if (releaseOrderPaymentRun(ctx.orderId, runOwnerId)) {
+      emit(ctx.orderId, { running: false, stage: null })
+    }
+  }
 }
 
 type PreparedOrderPaymentClaim = {
@@ -846,16 +883,8 @@ async function runOrderPaymentInternal(
       throw error
     }
   }
-  if (inFlight.has(orderId) || privateFallbackTransitions.has(orderId)) {
-    return (
-      runtimeStates.get(orderId) ?? {
-        orderId,
-        running: true,
-        stage: null,
-        error: null,
-        lifecycle: null,
-      }
-    )
+  if (!preparedClaim) {
+    await ctx.assertActionTimePaymentAdmission?.()
   }
   const claimInput = {
     orderId,
@@ -875,7 +904,6 @@ async function runOrderPaymentInternal(
     !dependencies.rememberOrderPaymentClaim(orderId, paymentClaimId)
   ) {
     const message = "Recoverable payment storage is unavailable."
-    inFlight.add(orderId)
     let lifecycle: OrderLifecycle | null = null
     try {
       const failure = await dependencies.recordOrderPaymentPreparationFailure(
@@ -885,8 +913,6 @@ async function runOrderPaymentInternal(
       lifecycle = failure.lifecycle
     } catch {
       // The runtime error remains visible even when local persistence is down.
-    } finally {
-      inFlight.delete(orderId)
     }
     emit(orderId, {
       running: false,
@@ -896,8 +922,6 @@ async function runOrderPaymentInternal(
     })
     return runtimeStates.get(orderId)!
   }
-  inFlight.add(orderId)
-
   try {
     const claim: OrderPaymentClaimResult = preparedClaim
       ? { status: "claimed", lifecycle: preparedClaim.lifecycle }
@@ -1457,7 +1481,6 @@ async function runOrderPaymentInternal(
     if (clearSessionClaim) {
       dependencies.clearOrderPaymentClaim(orderId, paymentClaimId)
     }
-    inFlight.delete(orderId)
   }
 }
 
@@ -1473,78 +1496,77 @@ export async function runOrderPrivateFallback(
   ctx: OrderPaymentContext,
   dependencyOverrides: Partial<OrderPaymentDependencies> = {}
 ): Promise<OrderPaymentRuntimeState> {
-  if (
-    inFlight.has(ctx.orderId) ||
-    privateFallbackTransitions.has(ctx.orderId)
-  ) {
+  const runOwnerId = generateId()
+  if (!reserveOrderPaymentRun(ctx.orderId, runOwnerId)) {
     throw new Error("Payment is already in progress for this order.")
   }
-  const dependencies = {
-    ...defaultOrderPaymentDependencies,
-    ...dependencyOverrides,
-  }
-  const paymentClaimId = generateId()
-  const claimInput = {
-    orderId: ctx.orderId,
-    paymentClaimId,
-    buyerPubkey: ctx.buyerPubkey,
-    merchantPubkey: ctx.merchantPubkey,
-    merchantLightningAddress: ctx.merchantLud16,
-    checkoutMode: "private_checkout" as const,
-    zapContent: "",
-    totalSats: ctx.totalSats,
-    totalMsats: ctx.totalMsats,
-    items: ctx.items,
-    paymentTarget: ctx.paymentTarget,
-  }
-  if (!dependencies.rememberOrderPaymentClaim(ctx.orderId, paymentClaimId)) {
-    const message = "Recoverable payment storage is unavailable."
-    const lifecycle = await getOrderLifecycle(ctx.orderId).catch(() => null)
-    emit(ctx.orderId, {
-      running: false,
-      stage: null,
-      error: message,
-      lifecycle,
-    })
-    return runtimeStates.get(ctx.orderId)!
-  }
-
-  privateFallbackTransitions.add(ctx.orderId)
-
-  let claim: OrderPaymentClaimResult
+  emit(ctx.orderId, { running: true, stage: null, error: null })
   try {
-    claim =
-      await dependencies.claimOrderLifecyclePrivateFallbackPayment(claimInput)
-  } finally {
-    privateFallbackTransitions.delete(ctx.orderId)
-  }
-
-  if (claim.status !== "claimed") {
-    dependencies.clearOrderPaymentClaim(ctx.orderId, paymentClaimId)
-    const message =
-      claim.status === "missing"
-        ? "Order payment state is no longer available."
-        : claim.status === "snapshot_mismatch"
-          ? "Payment details no longer match the delivered order."
-          : "A private invoice is only available after a failed anonymous zap attempt."
-    emit(ctx.orderId, {
-      running: false,
-      stage: null,
-      error: message,
-      lifecycle: claim.lifecycle,
-    })
-    return runtimeStates.get(ctx.orderId)!
-  }
-
-  return runOrderPaymentInternal(
-    {
-      ...ctx,
-      zapMode: "private_checkout",
+    await ctx.assertActionTimePaymentAdmission?.()
+    const dependencies = {
+      ...defaultOrderPaymentDependencies,
+      ...dependencyOverrides,
+    }
+    const paymentClaimId = generateId()
+    const claimInput = {
+      orderId: ctx.orderId,
+      paymentClaimId,
+      buyerPubkey: ctx.buyerPubkey,
+      merchantPubkey: ctx.merchantPubkey,
+      merchantLightningAddress: ctx.merchantLud16,
+      checkoutMode: "private_checkout" as const,
       zapContent: "",
-    },
-    dependencyOverrides,
-    { paymentClaimId, lifecycle: claim.lifecycle }
-  )
+      totalSats: ctx.totalSats,
+      totalMsats: ctx.totalMsats,
+      items: ctx.items,
+      paymentTarget: ctx.paymentTarget,
+    }
+    if (!dependencies.rememberOrderPaymentClaim(ctx.orderId, paymentClaimId)) {
+      const message = "Recoverable payment storage is unavailable."
+      const lifecycle = await getOrderLifecycle(ctx.orderId).catch(() => null)
+      emit(ctx.orderId, {
+        running: false,
+        stage: null,
+        error: message,
+        lifecycle,
+      })
+      return runtimeStates.get(ctx.orderId)!
+    }
+
+    const claim =
+      await dependencies.claimOrderLifecyclePrivateFallbackPayment(claimInput)
+
+    if (claim.status !== "claimed") {
+      dependencies.clearOrderPaymentClaim(ctx.orderId, paymentClaimId)
+      const message =
+        claim.status === "missing"
+          ? "Order payment state is no longer available."
+          : claim.status === "snapshot_mismatch"
+            ? "Payment details no longer match the delivered order."
+            : "A private invoice is only available after a failed anonymous zap attempt."
+      emit(ctx.orderId, {
+        running: false,
+        stage: null,
+        error: message,
+        lifecycle: claim.lifecycle,
+      })
+      return runtimeStates.get(ctx.orderId)!
+    }
+
+    return await runOrderPaymentInternal(
+      {
+        ...ctx,
+        zapMode: "private_checkout",
+        zapContent: "",
+      },
+      dependencyOverrides,
+      { paymentClaimId, lifecycle: claim.lifecycle }
+    )
+  } finally {
+    if (releaseOrderPaymentRun(ctx.orderId, runOwnerId)) {
+      emit(ctx.orderId, { running: false, stage: null })
+    }
+  }
 }
 
 /**
@@ -1631,23 +1653,14 @@ export async function resendOrderProof(
   }
 }
 
-/**
- * External-wallet path (CND-120): the buyer paid an invoice in an outside wallet
- * and reports it. We can't verify a preimage, so this records a buyer-attested
- * proof (`external_invoice`) and marks payment moved. The merchant verifies.
- */
-export async function submitExternalPaymentProof(
+async function submitExternalPaymentProofOwned(
   orderId: string,
   buyerIdentity?: BuyerOrderSigningIdentity
-): Promise<OrderPaymentRuntimeState | undefined> {
-  if (inFlight.has(orderId)) return runtimeStates.get(orderId)
-  inFlight.add(orderId)
+): Promise<void> {
   let stopProofDeliveryHeartbeat: (() => void) | null = null
   try {
     const lifecycle = await getOrderLifecycle(orderId)
-    if (!canSubmitExternalPaymentReport(lifecycle)) {
-      return runtimeStates.get(orderId)
-    }
+    if (!canSubmitExternalPaymentReport(lifecycle)) return
 
     const proofDeliveryClaimId = generateId()
     const proofClaim = await claimExternalOrderPaymentProof(
@@ -1655,7 +1668,7 @@ export async function submitExternalPaymentProof(
       proofDeliveryClaimId
     )
     emit(orderId, { lifecycle: proofClaim.lifecycle })
-    if (proofClaim.status !== "claimed") return runtimeStates.get(orderId)
+    if (proofClaim.status !== "claimed") return
     const locked = proofClaim.lifecycle
     stopProofDeliveryHeartbeat = startProofDeliveryClaimHeartbeat(
       orderId,
@@ -1726,9 +1739,32 @@ export async function submitExternalPaymentProof(
         "Failed to persist the order payment-proof delivery outcome."
       )
     }
-    return runtimeStates.get(orderId)
   } finally {
     stopProofDeliveryHeartbeat?.()
-    inFlight.delete(orderId)
   }
+}
+
+/**
+ * External-wallet path (CND-120): the buyer paid an invoice in an outside wallet
+ * and reports it. We can't verify a preimage, so this records a buyer-attested
+ * proof (`external_invoice`) and marks payment moved. The merchant verifies.
+ */
+export async function submitExternalPaymentProof(
+  orderId: string,
+  buyerIdentity?: BuyerOrderSigningIdentity
+): Promise<OrderPaymentRuntimeState | undefined> {
+  const runOwnerId = generateId()
+  if (!reserveOrderPaymentRun(orderId, runOwnerId)) {
+    const state = runtimeStates.get(orderId)
+    return state ? { ...state, running: true } : undefined
+  }
+  emit(orderId, { running: true, stage: null, error: null })
+  try {
+    await submitExternalPaymentProofOwned(orderId, buyerIdentity)
+  } finally {
+    if (releaseOrderPaymentRun(orderId, runOwnerId)) {
+      emit(orderId, { running: false, stage: null })
+    }
+  }
+  return runtimeStates.get(orderId)
 }

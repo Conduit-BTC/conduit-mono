@@ -15,7 +15,27 @@ describe("checkout completion navigation contracts", () => {
 
     expect(checkoutRoute).toContain("const navigate = useNavigate()")
     expect(ordersNavigations.length).toBeGreaterThanOrEqual(2)
-    expect(checkoutRoute).toContain("createOrderLifecycle(")
+    expect(checkoutRoute).toContain("submitBuyerOrderMessage(")
+  })
+
+  it("journals and applies exact cart retirement without discarding guest recovery", async () => {
+    const checkoutRoute = await Bun.file(
+      "apps/market/src/routes/checkout.tsx"
+    ).text()
+    const checkpointRetirements =
+      checkoutRoute.match(
+        /onLifecycleCheckpointed: async \(\) => \{[\s\S]*?await cart\.retireOrder\(\{[\s\S]*?retirement: cartRetirement,[\s\S]*?orderDeliveryStatus: "pending",[\s\S]*?\},/g
+      ) ?? []
+
+    expect(checkpointRetirements).toHaveLength(2)
+    expect(checkoutRoute).toContain("cartRetirement,")
+    expect(checkoutRoute).toContain(
+      "await cart.assertDurableCheckoutItems(rawCheckoutItems)"
+    )
+    expect(checkoutRoute).not.toContain("cart.clearMerchant(selectedMerchant")
+    expect(checkoutRoute).toContain(
+      "reconcileCheckoutShippingSessionForOrderDelivery({"
+    )
   })
 
   it("does not offer cart as a terminal paid-checkout action", async () => {
@@ -95,7 +115,7 @@ describe("checkout completion navigation contracts", () => {
     const signedOrderReady = payNowSource.indexOf(
       "orderRumor.content = JSON.stringify(orderPayload)"
     )
-    const orderPublish = payNowSource.indexOf("await publishBuyerOrderMessage(")
+    const orderPublish = payNowSource.indexOf("await submitBuyerOrderMessage(")
     const paymentStarted = payNowSource.indexOf("directPaymentStarted = true")
     const paymentStartedTelemetry = payNowSource.indexOf(
       'stepName: "direct_payment"',
@@ -176,6 +196,9 @@ describe("checkout completion navigation contracts", () => {
     const checkoutRoute = await Bun.file(
       "apps/market/src/routes/checkout.tsx"
     ).text()
+    const orderPublishModule = await Bun.file(
+      "apps/market/src/lib/order-publish.ts"
+    ).text()
     const payNowIndex = checkoutRoute.indexOf("async function payNow(")
     const payNowEnd = checkoutRoute.indexOf(
       "// --- Full-screen transition states",
@@ -183,26 +206,30 @@ describe("checkout completion navigation contracts", () => {
     )
     const payNowSource = checkoutRoute.slice(payNowIndex, payNowEnd)
     const availabilityIndex = payNowSource.search(
-      /await assertCheckoutItemsAvailable\(\s*requestedCheckoutMode\s*\)/
+      /await assertCheckoutItemsAvailable\(\s*requestedCheckoutMode,\s*freshPricingRate\s*\)/
     )
     const authorizationIndex = payNowSource.indexOf(
       "assertClaimedZapAuthorization(",
       availabilityIndex
     )
     const orderPublishIndex = payNowSource.indexOf(
-      "await publishBuyerOrderMessage(",
+      "await submitBuyerOrderMessage(",
       authorizationIndex
-    )
-    const lifecycleIndex = payNowSource.indexOf(
-      "await createOrderLifecycle(",
-      orderPublishIndex
     )
     const sparkFeeApprovalIndex = payNowSource.indexOf(
       "sparkFeeApproval.requestApproval",
-      lifecycleIndex
+      orderPublishIndex
+    )
+    const paymentServiceIndex = checkoutRoute.indexOf(
+      "void runOrderPayment(serviceCtx)",
+      orderPublishIndex
     )
     const sparkPaymentIndex = payNowSource.indexOf(
       "await runOrderPayment(serviceCtx)",
+      sparkFeeApprovalIndex
+    )
+    const deliveredPaymentGateIndex = payNowSource.indexOf(
+      "if (orderDelivered)",
       sparkFeeApprovalIndex
     )
     const otherPaymentIndex = payNowSource.indexOf(
@@ -214,16 +241,38 @@ describe("checkout completion navigation contracts", () => {
     expect(payNowEnd).toBeGreaterThan(payNowIndex)
     expect(authorizationIndex).toBeGreaterThan(availabilityIndex)
     expect(orderPublishIndex).toBeGreaterThan(authorizationIndex)
-    expect(lifecycleIndex).toBeGreaterThan(orderPublishIndex)
-    expect(sparkFeeApprovalIndex).toBeGreaterThan(lifecycleIndex)
-    expect(sparkPaymentIndex).toBeGreaterThan(sparkFeeApprovalIndex)
+    expect(payNowSource).not.toContain("await createOrderLifecycle(")
+    expect(orderPublishModule).toMatch(
+      /onWrapped: async \(prepared\) => \{[\s\S]*await createLifecycle\(\{[\s\S]*orderDeliveryStatus: "pending"/
+    )
+    expect(sparkFeeApprovalIndex).toBeGreaterThan(orderPublishIndex)
+    expect(deliveredPaymentGateIndex).toBeGreaterThan(sparkFeeApprovalIndex)
+    expect(sparkPaymentIndex).toBeGreaterThan(deliveredPaymentGateIndex)
     expect(otherPaymentIndex).toBeGreaterThan(sparkPaymentIndex)
+    expect(orderPublishIndex).toBeGreaterThan(-1)
+    expect(paymentServiceIndex).toBeGreaterThan(orderPublishIndex)
     expect(checkoutRoute).not.toContain("prepareAnonZapCheckout")
     expect(checkoutRoute).not.toContain("pendingAnonAuthorization")
     expect(checkoutRoute).toContain("for (const item of checkoutPricing.items)")
     expect(checkoutRoute).toContain(
       "items: buildLifecycleItems(checkoutPricing.items)"
     )
+  })
+
+  it("describes relay acceptance separately from merchant confirmation", async () => {
+    const checkoutRoute = await Bun.file(
+      "apps/market/src/routes/checkout.tsx"
+    ).text()
+    const orderView = await Bun.file("apps/market/src/lib/order-view.ts").text()
+
+    expect(checkoutRoute).toContain(
+      "A Nostr relay accepted your order request for merchant pickup."
+    )
+    expect(checkoutRoute).not.toContain(
+      "Your order request has been sent to the merchant."
+    )
+    expect(orderView).toContain('return "Relay accepted"')
+    expect(orderView).toContain('return "Merchant confirmed"')
   })
 
   it("preflights and snapshots the authenticated signer before checkout work", async () => {

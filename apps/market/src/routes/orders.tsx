@@ -94,13 +94,22 @@ import { useWallets } from "../hooks/useWallets"
 import {
   buildOrderTimeline,
   buildOrderViewModel,
+  canOfferOrderPaymentAction,
   deriveOrderHeaderStatus,
+  getOrderDeliveryEvidenceLabel,
   getOrderFilterPhase,
+  getOrderPaymentContinuationCopy,
   getOrderPaymentMethodLabel,
   isZeroCostPickupOrder,
+  shouldOfferOrderDeliveryRetry,
+  shouldOfferOrderPaymentContinuation,
   type OrderHeaderStatus,
   type OrderViewModel,
 } from "../lib/order-view"
+import {
+  retryOrderDeliveryFromOrders,
+  useOrderDeliveryRetryAttempt,
+} from "../lib/order-delivery-retry"
 import { verifyPickupCartFreshness } from "../lib/event-market-adapter"
 import {
   assertCartPickupHandlerReady,
@@ -743,6 +752,13 @@ function OrderDetail({
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [messagesOpen, setMessagesOpen] = useState(false)
   const [replyText, setReplyText] = useState("")
+  const beginDeliveryRetryAttempt = useOrderDeliveryRetryAttempt(
+    JSON.stringify([
+      buyerPubkey,
+      guestIdentity?.orderId ?? null,
+      guestIdentity?.pubkey ?? null,
+    ])
+  )
   const persistedRetryTarget = row.lifecycle?.paymentTarget ?? null
   const persistedRetryTargetType = persistedRetryTarget?.type ?? null
   const persistedRetryWalletId =
@@ -852,6 +868,48 @@ function OrderDetail({
   const selectedStoredPaymentTarget: OrderPaymentTarget | null =
     retryTarget?.type === "wallet" && !paymentWallet ? null : retryTarget
 
+  async function assertActionTimePaymentAdmission(): Promise<void> {
+    const candidates: BuyerConversation[] = []
+    if (row.conversation) candidates.push(row.conversation)
+
+    if (!guestIdentity) {
+      let durableConversations: BuyerConversation[] = []
+      try {
+        durableConversations = (
+          await fetchCachedBuyerConversations(buyerPubkey)
+        ).data
+      } catch {
+        // Unavailable reads do not veto payment without positive evidence.
+      }
+
+      const liveResult = queryClient.getQueryData<
+        Awaited<ReturnType<typeof fetchBuyerConversations>>
+      >(["buyer-messages-live", buyerPubkey])
+      const cachedResult = queryClient.getQueryData<
+        Awaited<ReturnType<typeof fetchCachedBuyerConversations>>
+      >(["buyer-messages", buyerPubkey])
+      candidates.push(
+        ...durableConversations,
+        ...(liveResult?.data ?? []),
+        ...(cachedResult?.data ?? [])
+      )
+    }
+
+    for (const conversation of candidates) {
+      if (conversation.orderId !== row.orderId) continue
+      const currentVm = buildOrderViewModel({
+        orderId: row.orderId,
+        merchantPubkey: row.merchantPubkey,
+        lifecycle: row.lifecycle,
+        conversation,
+        messages: conversation.messages,
+      })
+      if (!canOfferOrderPaymentAction(currentVm)) {
+        throw new Error("Payment is no longer available for this order.")
+      }
+    }
+  }
+
   function buildServiceCtx(): OrderPaymentContext | null {
     if (zeroCostPickupOrder) return null
     const lc = row.lifecycle
@@ -883,6 +941,7 @@ function OrderDetail({
         quantity: item.quantity,
       })),
       paymentTarget,
+      assertActionTimePaymentAdmission,
       approveFee:
         paymentWallet?.providerId === "spark"
           ? sparkFeeApproval.requestApproval
@@ -930,6 +989,9 @@ function OrderDetail({
   }, [])
 
   async function retryPayment(): Promise<void> {
+    if (!canOfferOrderPaymentAction(vm)) {
+      throw new Error("Payment is no longer available for this order.")
+    }
     const pickupFreshness = await verifyPickupCartFreshness(
       row.lifecycle?.items ?? [],
       row.lifecycle?.merchantPubkey ?? row.merchantPubkey
@@ -967,6 +1029,9 @@ function OrderDetail({
   }
 
   async function continuePrivateFallback(): Promise<void> {
+    if (!canOfferOrderPaymentAction(vm)) {
+      throw new Error("Payment is no longer available for this order.")
+    }
     const pickupFreshness = await verifyPickupCartFreshness(
       row.lifecycle?.items ?? [],
       row.lifecycle?.merchantPubkey ?? row.merchantPubkey
@@ -978,9 +1043,32 @@ function OrderDetail({
     await runOrderPrivateFallback(ctx)
   }
 
-  const showRetryPayment = !zeroCostPickupOrder && vm.paymentStatus === "failed"
+  async function retryOrderDelivery(): Promise<void> {
+    if (!row.lifecycle?.orderRelayDelivery) return
+    const attempt = beginDeliveryRetryAttempt()
+    try {
+      await retryOrderDeliveryFromOrders(vm.orderId, buyerPubkey, {
+        allowGuestExplicitRetry: !!guestIdentity,
+        signal: attempt.signal,
+      })
+      if (!attempt.signal.aborted) {
+        await queryClient.invalidateQueries({ queryKey: ["order-lifecycles"] })
+      }
+    } finally {
+      attempt.finish()
+    }
+  }
+
+  const paymentActionAllowed = canOfferOrderPaymentAction(vm)
+  const showRetryPayment =
+    !zeroCostPickupOrder &&
+    paymentActionAllowed &&
+    vm.paymentStatus === "failed"
   const recoveredBeforeWallet =
     row.lifecycle?.lastError === ORDER_PAYMENT_INTERRUPTED_BEFORE_WALLET_ERROR
+  const showContinuePayment = shouldOfferOrderPaymentContinuation(vm)
+  const showRetryOrderDelivery =
+    shouldOfferOrderDeliveryRetry(vm) && !!row.lifecycle?.orderRelayDelivery
   const showAnonPaymentRecovery =
     showRetryPayment &&
     vm.publicZapSigner === "anon" &&
@@ -988,7 +1076,9 @@ function OrderDetail({
   const showAmbiguousPayment =
     !zeroCostPickupOrder && vm.paymentStatus === "ambiguous"
   const showExternalWallet =
-    !zeroCostPickupOrder && vm.paymentStatus === "manual_required"
+    !zeroCostPickupOrder &&
+    paymentActionAllowed &&
+    vm.paymentStatus === "manual_required"
   const autoDetectPublicReceipt =
     !zeroCostPickupOrder &&
     vm.publicZapSigner === "anon" &&
@@ -1113,6 +1203,38 @@ function OrderDetail({
         </section>
       </>
 
+      {showRetryOrderDelivery && (
+        <StatusNotice
+          variant="neutral"
+          title="Queued locally"
+          detail="Waiting for relay acceptance"
+        >
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              variant="outline"
+              className="h-10 px-4 text-sm"
+              disabled={busy}
+              onClick={() => void withBusy(retryOrderDelivery)}
+            >
+              <RotateCw className="h-4 w-4" />
+              Retry delivery
+            </Button>
+            <span className="text-xs text-[var(--text-secondary)]">
+              The exact encrypted order is saved on this device. Retrying does
+              not create a new order or add relay destinations.
+            </span>
+            {recoveryError && (
+              <p
+                role="alert"
+                className="w-full text-sm text-[var(--destructive)]"
+              >
+                {recoveryError}
+              </p>
+            )}
+          </div>
+        </StatusNotice>
+      )}
+
       {showExternalWallet && (
         <div className="space-y-3">
           <StatusNotice
@@ -1157,14 +1279,17 @@ function OrderDetail({
         </div>
       )}
 
-      {(showRetryPayment || showAmbiguousPayment || showResendProof) && (
+      {(showContinuePayment ||
+        showRetryPayment ||
+        showAmbiguousPayment ||
+        showResendProof) && (
         <StatusNotice
           variant={TONE_VARIANT[headerStatus.tone]}
           title={headerStatus.primaryLabel}
           detail={headerStatus.detailLabel}
         >
           <div className="flex flex-wrap items-end gap-3">
-            {showRetryPayment && (
+            {(showContinuePayment || showRetryPayment) && (
               <div className="grid min-w-[15rem] gap-1.5">
                 <label
                   htmlFor={`retry-wallet-${vm.orderId}`}
@@ -1213,7 +1338,7 @@ function OrderDetail({
                 </Select>
               </div>
             )}
-            {showRetryPayment && (
+            {(showContinuePayment || showRetryPayment) && (
               <Button
                 className="h-11 px-4 text-sm"
                 disabled={
@@ -1225,7 +1350,7 @@ function OrderDetail({
                 onClick={() => void withBusy(retryPayment)}
               >
                 <RotateCw className="h-4 w-4" />
-                {recoveredBeforeWallet
+                {showContinuePayment || recoveredBeforeWallet
                   ? "Continue payment"
                   : "Try payment again"}
               </Button>
@@ -1267,19 +1392,24 @@ function OrderDetail({
                   ? "Conduit did not observe the matching public receipt. If your wallet shows payment, do not pay again. The receipt can still reconcile if it reaches the configured relays during this guest session."
                   : showAmbiguousPayment
                     ? "Your wallet may have received the payment request, but Conduit couldn't confirm whether funds moved. Check your wallet and merchant messages before trying again."
-                    : showRetryPayment && retryWalletTargetIsStale
+                    : (showContinuePayment || showRetryPayment) &&
+                        retryWalletTargetIsStale
                       ? "The previously selected saved wallet is unavailable. Explicitly choose another wallet, browser wallet, or manual payment."
-                      : showRetryPayment && !selectedStoredPaymentTarget
+                      : (showContinuePayment || showRetryPayment) &&
+                          !selectedStoredPaymentTarget
                         ? "Choose the exact wallet or manual payment path for this retry."
-                        : showRetryPayment && !buildServiceCtx()
+                        : (showContinuePayment || showRetryPayment) &&
+                            !buildServiceCtx()
                           ? "The saved payment target is unavailable. Unlock or reconnect it, or explicitly choose another option."
-                          : showRetryPayment
-                            ? recoveredBeforeWallet
-                              ? "Conduit closed before the invoice reached a wallet. Continuing reuses this order; no funds moved."
-                              : showAnonPaymentRecovery
-                                ? "This older anonymous zap attempt failed before automatic fallback was available. No funds moved; retry it or continue with a private invoice."
-                                : "No funds moved. You can retry payment for this order."
-                            : "Payment went through; the receipt didn't reach the merchant."}
+                          : showContinuePayment
+                            ? getOrderPaymentContinuationCopy(vm)
+                            : showRetryPayment
+                              ? recoveredBeforeWallet
+                                ? "Conduit closed before the invoice reached a wallet. Continuing reuses this order; no funds moved."
+                                : showAnonPaymentRecovery
+                                  ? "This older anonymous zap attempt failed before automatic fallback was available. No funds moved; retry it or continue with a private invoice."
+                                  : "No funds moved. You can retry payment for this order."
+                              : "Payment went through; the receipt didn't reach the merchant."}
             </span>
             {recoveryError && (
               <p
@@ -1603,6 +1733,11 @@ function OrderDetail({
                 </DetailRow>
                 <DetailRow label="Ordered">
                   <span>{new Date(vm.createdAt).toLocaleString()}</span>
+                </DetailRow>
+                <DetailRow label="Delivery">
+                  <span>
+                    {getOrderDeliveryEvidenceLabel(vm.orderDeliveryEvidence)}
+                  </span>
                 </DetailRow>
               </div>
             )}
