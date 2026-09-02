@@ -5,10 +5,15 @@ const harnessUrl = "/src/test-fixtures/product-variation-panel-harness.tsx"
 
 type Geometry = { x: number; y: number; width: number; height: number }
 type PanelStyle = {
+  backgroundColor: string
+  borderBottomLeftRadius: string
+  borderTopWidth: string
+  boxShadow: string
   opacity: string
   pointerEvents: string
   position: string
   visibility: string
+  transitionProperty: string
 }
 
 async function mountHarness(page: Page): Promise<void> {
@@ -37,10 +42,34 @@ async function panelStyle(panel: Locator): Promise<PanelStyle> {
   return await panel.evaluate((element) => {
     const style = getComputedStyle(element)
     return {
+      backgroundColor: style.backgroundColor,
+      borderBottomLeftRadius: style.borderBottomLeftRadius,
+      borderTopWidth: style.borderTopWidth,
+      boxShadow: style.boxShadow,
       opacity: style.opacity,
       pointerEvents: style.pointerEvents,
       position: style.position,
       visibility: style.visibility,
+      transitionProperty: style.transitionProperty,
+    }
+  })
+}
+
+async function cardStyle(card: Locator): Promise<{
+  backgroundColor: string
+  borderBottomWidth: string
+  boxShadow: string
+  scale: string
+  transitionProperty: string
+}> {
+  return card.evaluate((element) => {
+    const style = getComputedStyle(element)
+    return {
+      backgroundColor: style.backgroundColor,
+      borderBottomWidth: style.borderBottomWidth,
+      boxShadow: style.boxShadow,
+      scale: style.scale,
+      transitionProperty: style.transitionProperty,
     }
   })
 }
@@ -133,15 +162,16 @@ test("market product variation panel preserves grid geometry across desktop mous
   await page.mouse.move(1430, 20)
   await expect
     .poll(() => panelStyle(panel))
-    .toEqual({
+    .toMatchObject({
       opacity: "0",
       pointerEvents: "none",
       position: "absolute",
       visibility: "hidden",
     })
 
-  const initialGeometry = await Promise.all(
-    [variableCard, variableItem, sibling, grid].map(geometry)
+  const initialCardGeometry = await geometry(variableCard)
+  const initialGridGeometry = await Promise.all(
+    [variableItem, sibling, grid].map(geometry)
   )
 
   const variableCardBox = await geometry(variableCard)
@@ -158,9 +188,33 @@ test("market product variation panel preserves grid geometry across desktop mous
       position: "absolute",
       visibility: "visible",
     })
+  const expandedCardGeometry = await geometry(variableCard)
+  expect(expandedCardGeometry.width / initialCardGeometry.width).toBeCloseTo(
+    1.12,
+    2
+  )
+  expect(expandedCardGeometry.height / initialCardGeometry.height).toBeCloseTo(
+    1.12,
+    2
+  )
+  const expandedPanelStyle = await panelStyle(panel)
+  expect(expandedPanelStyle).toMatchObject({
+    borderTopWidth: "0px",
+    boxShadow: "none",
+  })
+  expect(parseFloat(expandedPanelStyle.borderBottomLeftRadius)).toBeGreaterThan(
+    0
+  )
+  const expandedCardStyle = await cardStyle(variableCard)
+  expect(expandedCardStyle).toMatchObject({
+    borderBottomWidth: "0px",
+  })
+  expect(expandedPanelStyle.backgroundColor).toBe(
+    expandedCardStyle.backgroundColor
+  )
   expectUnchangedGeometry(
-    initialGeometry,
-    await Promise.all([variableCard, variableItem, sibling, grid].map(geometry))
+    initialGridGeometry,
+    await Promise.all([variableItem, sibling, grid].map(geometry))
   )
 
   await chooseSize.click()
@@ -175,13 +229,82 @@ test("market product variation panel preserves grid geometry across desktop mous
       pointerEvents: "auto",
       visibility: "visible",
     })
+  expect(await cardStyle(variableCard)).toMatchObject({
+    borderBottomWidth: "0px",
+  })
+  expect((await cardStyle(variableCard)).scale).toBe("1.12")
+  expect((await cardStyle(variableCard)).boxShadow).not.toBe("none")
   expectUnchangedGeometry(
-    initialGeometry,
-    await Promise.all([variableCard, variableItem, sibling, grid].map(geometry))
+    initialGridGeometry,
+    await Promise.all([variableItem, sibling, grid].map(geometry))
   )
 
   await page.keyboard.press("Escape")
   await expect(chooseSize).toHaveAttribute("aria-expanded", "false")
+})
+
+test("market product variation panel joins hydration controls on desktop hover @market", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await mountHarness(page)
+
+  const variableItem = page.getByTestId("hydrating-variable-product-list-item")
+  const variableCard = variableItem.locator(":scope > div")
+  const skeleton = variableItem.getByRole("status", {
+    name: "Loading product options",
+  })
+  const panel = skeleton.locator("xpath=../..")
+
+  await variableCard.scrollIntoViewIfNeeded()
+  const cardBox = await geometry(variableCard)
+  await page.mouse.move(
+    cardBox.x + cardBox.width / 2,
+    cardBox.y + cardBox.height / 2
+  )
+
+  await expect(skeleton).toBeVisible()
+  expect(await cardStyle(variableCard)).toMatchObject({
+    borderBottomWidth: "0px",
+  })
+  expect(await panelStyle(panel)).toMatchObject({
+    borderTopWidth: "0px",
+    opacity: "1",
+    visibility: "visible",
+  })
+})
+
+test("market product variation panel reveals instantly with reduced motion @market", async ({
+  page,
+}) => {
+  await page.emulateMedia({ reducedMotion: "reduce" })
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await mountHarness(page)
+
+  const variableItem = page.getByTestId("variable-product-list-item")
+  const variableCard = variableItem.locator(":scope > div")
+  const chooseSize = variableItem.getByRole("combobox", {
+    name: "Choose size",
+    includeHidden: true,
+  })
+  const panel = await variationPanel(variableItem)
+
+  await variableCard.scrollIntoViewIfNeeded()
+  const cardBox = await geometry(variableCard)
+  await page.mouse.move(
+    cardBox.x + cardBox.width / 2,
+    cardBox.y + cardBox.height / 2
+  )
+
+  await expect(chooseSize).toBeVisible()
+  expect(await cardStyle(variableCard)).toMatchObject({
+    scale: "1.12",
+    transitionProperty: "none",
+  })
+  expect(await panelStyle(panel)).toMatchObject({
+    opacity: "1",
+    transitionProperty: "none",
+  })
 })
 
 test("market product variation panel reveals for desktop keyboard Select interaction @market", async ({
@@ -264,6 +387,10 @@ test("market product variation panel remains inline on touch tablets @market", a
 
     await expect(chooseSize).toBeVisible()
     await expectInlinePanel(panel, variableCard)
+    expect((await cardStyle(variableCard)).scale).toBe("none")
+    await chooseSize.click()
+    await expect(page.getByRole("listbox")).toBeVisible()
+    expect((await cardStyle(variableCard)).scale).toBe("none")
   } finally {
     await context.close()
   }
@@ -285,4 +412,5 @@ test("market product variation panel remains inline on narrow mobile @market", a
 
   await expect(chooseSize).toBeVisible()
   await expectInlinePanel(panel, variableCard)
+  expect((await cardStyle(variableCard)).scale).toBe("none")
 })

@@ -122,6 +122,20 @@ describe("ProductCard", () => {
     expect(html).toContain(">Size<")
   })
 
+  it("can disable image-only hover zoom for parent-level card motion", () => {
+    const html = renderToStaticMarkup(
+      <ProductCard
+        title="Motion Product"
+        merchantName="Alice Store"
+        images={[{ url: "https://cdn.conduit.market/product.png" }]}
+        primaryPrice="25 sats"
+        disableImageHoverZoom
+      />
+    )
+
+    expect(html).not.toContain("group-hover:scale-105")
+  })
+
   it("truncates product titles to one line without constraining title badges", () => {
     const html = renderToStaticMarkup(
       <ProductCard
