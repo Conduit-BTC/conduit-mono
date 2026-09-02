@@ -4,6 +4,8 @@ import {
   appendConduitClientTag,
   appendOmfZapoutMarker,
   buildAnonZapCheckoutContent,
+  decodeProductReference,
+  encodeProductNaddr,
   fetchLnurlInvoice,
   fetchZapInvoice,
   getPriceSats,
@@ -13,6 +15,7 @@ import {
   isMsatsLikeCurrency,
   isPricingRateQuoteFresh,
   isSatsLikeCurrency,
+  normalizePubkey,
   normalizeCommercePrice,
   resolveCartShippingCost,
   type AnonZapRequestDraft,
@@ -1122,6 +1125,85 @@ export function sanitizePublicZapContent(content: string): string {
     .slice(0, 280)
 }
 
+const PRODUCT_ZAP_REFERENCE_SEPARATOR = "\n\n"
+
+function getSingleProductZapReference(params: {
+  productAddresses: readonly string[]
+  recipientPubkey: string
+}): { address: string; uri: string } | null {
+  const uniqueAddresses = Array.from(new Set(params.productAddresses))
+  if (uniqueAddresses.length !== 1) return null
+
+  const product = decodeProductReference(uniqueAddresses[0]!)
+  const recipientPubkey = normalizePubkey(params.recipientPubkey)
+  if (
+    !product ||
+    !recipientPubkey ||
+    product.authorPubkey !== recipientPubkey
+  ) {
+    return null
+  }
+
+  try {
+    return {
+      address: product.addressId,
+      uri: `nostr:${encodeProductNaddr(product.addressId)}`,
+    }
+  } catch {
+    // Keep checkout available for legacy products that cannot be represented
+    // as a bounded NIP-19 address.
+    return null
+  }
+}
+
+/**
+ * Product linking requires an explicit shopper-authored public note. Generic,
+ * anonymous, private, blank, and multi-product checkout remain unchanged.
+ */
+export function getCheckoutZapTargetAddress(params: {
+  productAddresses: readonly string[]
+  recipientPubkey: string
+  mode: CheckoutZapMode
+  policy: "generic_only" | "custom"
+  contentEdited: boolean
+  content: string
+}): string | undefined {
+  if (
+    params.mode !== "public_zap_as_shopper" ||
+    params.policy !== "custom" ||
+    !params.contentEdited ||
+    sanitizePublicZapContent(params.content).length === 0
+  ) {
+    return undefined
+  }
+
+  return (
+    getSingleProductZapReference({
+      productAddresses: params.productAddresses,
+      recipientPubkey: params.recipientPubkey,
+    })?.address ?? undefined
+  )
+}
+
+/** Recover only Conduit's exact trailing product reference on payment retry. */
+export function recoverCheckoutZapTargetAddress(params: {
+  productAddresses: readonly string[]
+  recipientPubkey: string
+  mode: CheckoutZapMode
+  content: string
+}): string | undefined {
+  if (params.mode !== "public_zap_as_shopper") return undefined
+
+  const product = getSingleProductZapReference(params)
+  if (!product) return undefined
+
+  const suffix = `${PRODUCT_ZAP_REFERENCE_SEPARATOR}${product.uri}`
+  if (!params.content.endsWith(suffix)) return undefined
+
+  const note = params.content.slice(0, -suffix.length)
+  return sanitizePublicZapContent(note) ? product.address : undefined
+}
+
 export function getCheckoutZapVisibility(
   mode: CheckoutZapMode | CheckoutZapVisibility
 ): CheckoutZapVisibility {
@@ -1146,10 +1228,23 @@ export function isCheckoutPublicZapMode(
 
 export function buildZapRequestContent(
   visibility: CheckoutZapVisibility,
-  content: string
+  content: string,
+  zapTargetAddress?: string
 ): string {
   if (visibility === "private_checkout") return ""
-  return sanitizePublicZapContent(content)
+
+  let note = content
+  let productUri: string | null = null
+  if (zapTargetAddress) {
+    productUri = `nostr:${encodeProductNaddr(zapTargetAddress)}`
+    const suffix = `${PRODUCT_ZAP_REFERENCE_SEPARATOR}${productUri}`
+    if (note.endsWith(suffix)) note = note.slice(0, -suffix.length)
+  }
+
+  const normalizedNote = sanitizePublicZapContent(note)
+  return normalizedNote && productUri
+    ? `${normalizedNote}${PRODUCT_ZAP_REFERENCE_SEPARATOR}${productUri}`
+    : normalizedNote
 }
 
 export function getLnurlReadyForCheckoutPayment(params: {
@@ -1226,6 +1321,7 @@ export async function requestCheckoutLnurlInvoice(
     lnurlNostrPubkey?: string
     recipientPubkey: string
     zapContent: string
+    zapTargetAddress?: string
     explicitRelayUrls: readonly string[]
     zapRelayUrls: readonly string[]
     nowSeconds?: number
@@ -1247,16 +1343,40 @@ export async function requestCheckoutLnurlInvoice(
   const zapRelayUrls = Array.from(
     new Set([...params.explicitRelayUrls, ...params.zapRelayUrls])
   )
+  const zapTarget = params.zapTargetAddress
+    ? decodeProductReference(params.zapTargetAddress)
+    : null
+  if (
+    params.zapTargetAddress &&
+    (!zapTarget ||
+      zapTarget.addressId !== params.zapTargetAddress ||
+      zapTarget.authorPubkey !== normalizePubkey(params.recipientPubkey))
+  ) {
+    throw new Error(
+      "Product zap target does not belong to the payment recipient. No invoice was requested."
+    )
+  }
+  const zapTargetTags = zapTarget
+    ? [
+        ["a", zapTarget.addressId],
+        ["k", String(EVENT_KINDS.PRODUCT)],
+      ]
+    : []
   const draft: CheckoutZapRequestDraft = {
     kind: EVENT_KINDS.ZAP_REQUEST,
     createdAt: params.nowSeconds ?? Math.floor(Date.now() / 1000),
-    content: buildZapRequestContent(params.visibility, params.zapContent),
+    content: buildZapRequestContent(
+      params.visibility,
+      params.zapContent,
+      zapTarget?.addressId
+    ),
     tags: appendConduitClientTag(
       appendOmfZapoutMarker([
         ["p", params.recipientPubkey],
         ["amount", String(params.amountMsats)],
         ["lnurl", params.lnurl],
         ["relays", ...zapRelayUrls],
+        ...zapTargetTags,
       ]),
       "market"
     ),
