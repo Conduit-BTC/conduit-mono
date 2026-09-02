@@ -107,10 +107,13 @@ import {
 } from "../lib/order-pickup-authorization"
 import {
   buildMerchantOrderActionView,
+  captureMerchantPaymentConfirmationTarget,
   getMerchantOrderCancellationCopy,
   isAuthorizedZeroCostPickup,
   isMerchantOrderActionSurfacePending,
+  resolveMerchantPaymentConfirmationSelection,
   runExclusiveOrderAction,
+  type MerchantPaymentConfirmationTarget,
 } from "../lib/order-action-view"
 import { prepareShippingUpdate } from "../lib/shipping-update"
 import { formatMerchantOrderAmount } from "../lib/order-summary-display"
@@ -651,7 +654,8 @@ function OrdersPage() {
   )
   const [pendingDestructiveAction, setPendingDestructiveAction] =
     useState<MerchantOrderAction | null>(null)
-  const [confirmingPayment, setConfirmingPayment] = useState(false)
+  const [paymentConfirmationTarget, setPaymentConfirmationTarget] =
+    useState<MerchantPaymentConfirmationTarget | null>(null)
   const [confirmingOrganizerFallback, setConfirmingOrganizerFallback] =
     useState(false)
   const [confirmingOrganizerRelease, setConfirmingOrganizerRelease] =
@@ -1131,6 +1135,7 @@ function OrdersPage() {
     selectedOrderResetRef.current = selectedId
 
     setSuccessFlash(null)
+    setPaymentConfirmationTarget(null)
     setConfirmingOrganizerFallback(false)
     setConfirmingOrganizerRelease(false)
     setOrganizerReleaseConfirmed(false)
@@ -1449,6 +1454,12 @@ function OrdersPage() {
       pickupFulfillmentActionsAuthorized && !organizerCompletionBlocked,
   })
   const { primaryButtonActions, destructiveActions, hasNextStep } = actionView
+  const paymentConfirmationSelection =
+    resolveMerchantPaymentConfirmationSelection({
+      target: paymentConfirmationTarget,
+      selected,
+      actions: primaryButtonActions,
+    })
   const destructiveCancellationCopy = destructiveActions[0]
     ? getMerchantOrderCancellationCopy({
         actionLabel: destructiveActions[0].label,
@@ -2006,9 +2017,18 @@ function OrdersPage() {
   }
 
   const advanceStatusMutation = useMutation({
-    mutationFn: (nextStatus: KnownOrderStatus) =>
+    mutationFn: ({
+      nextStatus,
+      conversation,
+    }: {
+      nextStatus: KnownOrderStatus
+      conversation?: MerchantConversationSummary
+    }) =>
       runExclusiveOrderAction(orderActionLockRef, async () => {
-        if (!pubkey || !selected) throw new Error("No conversation selected")
+        const actionConversation = conversation ?? selected
+        if (!pubkey || !actionConversation) {
+          throw new Error("No conversation selected")
+        }
         if (nextStatus === "cancelled") {
           const ndk = getNdk()
           if (!ndk.signer) throw new Error("Merchant signer is not connected.")
@@ -2022,7 +2042,7 @@ function OrdersPage() {
           if (!currentFallback) {
             await revokeOrganizerReadyReceipt({
               merchantPubkey: pubkey,
-              orderId: selected.orderId,
+              orderId: actionConversation.orderId,
               signer: ndk.signer,
               matchingAckReceiptIds: new Set(
                 (currentAck?.currentAckRead.data?.data ?? []).map((ack) =>
@@ -2065,8 +2085,8 @@ function OrdersPage() {
         }
         await publishMerchantOrderMessage({
           merchantPubkey: pubkey,
-          buyerPubkey: selected.buyerPubkey,
-          orderId: selected.orderId,
+          buyerPubkey: actionConversation.buyerPubkey,
+          orderId: actionConversation.orderId,
           type: "status_update",
           tags: [["status", nextStatus]],
           payload: { status: nextStatus },
@@ -2086,7 +2106,7 @@ function OrdersPage() {
           setHandoffDeliveryRevision((revision) => revision + 1)
         }
       }),
-    onSuccess: async (_data, nextStatus) => {
+    onSuccess: async (_data, { nextStatus }) => {
       if (
         pubkey &&
         selectedOrderCorrelationRef &&
@@ -2508,19 +2528,24 @@ function OrdersPage() {
                                     }
                                     onClick={() => {
                                       if (action.action === "confirm_payment") {
-                                        setConfirmingPayment(true)
+                                        if (!selected) return
+                                        setPaymentConfirmationTarget(
+                                          captureMerchantPaymentConfirmationTarget(
+                                            selected
+                                          )
+                                        )
                                         return
                                       }
                                       if (action.status) {
-                                        advanceStatusMutation.mutate(
-                                          action.status
-                                        )
+                                        advanceStatusMutation.mutate({
+                                          nextStatus: action.status,
+                                        })
                                       }
                                     }}
                                   >
                                     {advanceStatusMutation.isPending &&
-                                    advanceStatusMutation.variables ===
-                                      action.status
+                                    advanceStatusMutation.variables
+                                      ?.nextStatus === action.status
                                       ? buyerInboxKnown
                                         ? "Sending…"
                                         : "Recording…"
@@ -3640,9 +3665,9 @@ function OrdersPage() {
                         disabled={orderActionPending}
                         onClick={() => {
                           if (!pendingDestructiveAction?.status) return
-                          advanceStatusMutation.mutate(
-                            pendingDestructiveAction.status
-                          )
+                          advanceStatusMutation.mutate({
+                            nextStatus: pendingDestructiveAction.status,
+                          })
                           setPendingDestructiveAction(null)
                         }}
                       >
@@ -3657,8 +3682,10 @@ function OrdersPage() {
                 </AlertDialog>
 
                 <AlertDialog
-                  open={confirmingPayment}
-                  onOpenChange={setConfirmingPayment}
+                  open={paymentConfirmationSelection !== null}
+                  onOpenChange={(open) => {
+                    if (!open) setPaymentConfirmationTarget(null)
+                  }}
                 >
                   <AlertDialogContent>
                     <AlertDialogHeader>
@@ -3675,16 +3702,25 @@ function OrdersPage() {
                       <Button
                         type="button"
                         variant="outline"
-                        onClick={() => setConfirmingPayment(false)}
+                        onClick={() => setPaymentConfirmationTarget(null)}
                       >
                         Keep unpaid
                       </Button>
                       <Button
                         type="button"
-                        disabled={orderActionPending}
+                        disabled={
+                          orderActionPending || !paymentConfirmationSelection
+                        }
                         onClick={() => {
-                          advanceStatusMutation.mutate("paid")
-                          setConfirmingPayment(false)
+                          if (!paymentConfirmationSelection) {
+                            setPaymentConfirmationTarget(null)
+                            return
+                          }
+                          advanceStatusMutation.mutate({
+                            nextStatus: "paid",
+                            conversation: paymentConfirmationSelection,
+                          })
+                          setPaymentConfirmationTarget(null)
                         }}
                       >
                         {advanceStatusMutation.isPending

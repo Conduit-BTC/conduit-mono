@@ -42,8 +42,9 @@ describe("merchant invoice route contract", () => {
     const source = await Bun.file("apps/merchant/src/routes/orders.tsx").text()
 
     expect(source).toContain('if (action.action === "confirm_payment")')
-    expect(source).toContain("setConfirmingPayment(true)")
-    expect(source).toContain("open={confirmingPayment}")
+    expect(source).toContain("captureMerchantPaymentConfirmationTarget")
+    expect(source).toContain("resolveMerchantPaymentConfirmationSelection")
+    expect(source).toContain("open={paymentConfirmationSelection !== null}")
     expect(source).toContain("checking your wallet")
     expect(source).toContain("notifies the buyer")
     expect(source).not.toMatch(
