@@ -114,6 +114,33 @@ function market(
   }
 }
 
+function marketWithCalendarEnd(
+  organizerPubkey: string,
+  state: EventMarketResolution["state"],
+  suffix: string,
+  end: number
+): EventMarketResolution {
+  const resolution = market(organizerPubkey, state, suffix)
+  const calendarCoordinate = `31923:${organizerPubkey}:${suffix}`
+  return {
+    ...resolution,
+    calendarCoordinate,
+    calendar: {
+      coordinate: calendarCoordinate,
+      eventId: (suffix === "ended" ? "1" : "2").repeat(64),
+      authorPubkey: organizerPubkey,
+      dTag: suffix,
+      kind: 31923,
+      title: `Event ${suffix}`,
+      content: "",
+      locations: [],
+      start: end - 3_600_000,
+      end,
+      createdAt: 1_800_000_000,
+    },
+  }
+}
+
 function organizerRead(
   input: {
     markets?: EventMarketResolution[]
@@ -311,6 +338,39 @@ describe("followed organizer event-market discovery", () => {
       expect(result.markets).toHaveLength(1)
       expect(result.markets[0]?.state).toBe(state)
     }
+  })
+
+  it("omits ended stale graphs while preserving future stale graphs", async () => {
+    const nowMs = 1_800_000_000_000
+    const future = marketWithCalendarEnd(
+      ORGANIZER,
+      "stale",
+      "future",
+      nowMs + 60_000
+    )
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      readFollowLists: async () => followRead({ pubkeys: [ORGANIZER] }),
+      readOrganizerMarkets: async (input) => {
+        expect(input.nowMs).toBe(nowMs)
+        return organizerRead({
+          markets: [
+            marketWithCalendarEnd(ORGANIZER, "stale", "ended", nowMs),
+            future,
+          ],
+          state: "partial",
+        })
+      },
+    })
+
+    const result = await discoverFollowedOrganizerEventMarkets({
+      merchantPubkey: MERCHANT,
+      nowMs,
+    })
+
+    expect(result.state).toBe("partial")
+    expect(result.markets.map((item) => item.reference)).toEqual([
+      future.reference,
+    ])
   })
 
   it("sorts and bounds followed authors with bounded concurrency", async () => {

@@ -173,6 +173,7 @@ export async function discoverFollowedOrganizerEventMarkets(
   }
 
   throwIfAborted(input.signal)
+  const effectiveNowMs = input.nowMs ?? Date.now()
   const readFollowLists = testOverrides.readFollowLists ?? readLatestFollowLists
   const followRead: FollowListReadResult = await readFollowLists(
     {
@@ -181,7 +182,7 @@ export async function discoverFollowedOrganizerEventMarkets(
     },
     {
       signal: input.signal,
-      ...(input.nowMs !== undefined ? { now: () => input.nowMs! } : {}),
+      now: () => effectiveNowMs,
     }
   )
   throwIfAborted(input.signal)
@@ -253,7 +254,7 @@ export async function discoverFollowedOrganizerEventMarkets(
             value: await readOrganizerMarkets({
               organizerPubkey,
               authenticatedPubkey: input.authenticatedPubkey ?? merchantPubkey,
-              nowMs: input.nowMs,
+              nowMs: effectiveNowMs,
               projection: "discovery",
               signal: organizerController.signal,
             }),
@@ -321,9 +322,11 @@ export async function discoverFollowedOrganizerEventMarkets(
     if (read.status !== "fulfilled") continue
     for (const market of read.value.markets) {
       const organizerPubkey = normalizePubkey(market.organizerPubkey)
+      const calendarEndMs = market.calendar?.end
       if (
         !organizerPubkey ||
         !selectedOrganizerSet.has(organizerPubkey) ||
+        (calendarEndMs !== undefined && calendarEndMs <= effectiveNowMs) ||
         (market.state !== "active" &&
           market.state !== "partial" &&
           market.state !== "stale")
