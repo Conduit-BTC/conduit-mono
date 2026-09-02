@@ -18,6 +18,7 @@ import {
   useConduitSession,
 } from "@conduit/core"
 import { isProductLegalPath } from "@conduit/ui"
+import { initializeTheme } from "@conduit/ui/theme"
 import bricolageMediumUrl from "../../../packages/ui/src/assets/fonts/BricolageGrotesque-Medium.ttf?url"
 import bricolageRegularUrl from "../../../packages/ui/src/assets/fonts/BricolageGrotesque-Regular.ttf?url"
 import bricolageSemiBoldUrl from "../../../packages/ui/src/assets/fonts/BricolageGrotesque-SemiBold.ttf?url"
@@ -27,6 +28,8 @@ import { pruneExpiredCheckoutShippingSession } from "./lib/checkout-session"
 import { pruneExpiredSessionGuestOrderSigningIdentities } from "./lib/guest-order-identity"
 import "@conduit/ui/styles/site.css"
 import "./styles/index.css"
+
+initializeTheme()
 
 const queryClient = new QueryClient()
 

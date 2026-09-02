@@ -15,6 +15,7 @@ import {
   getMerchantOrderSummary,
   isOrderQueueTab,
   isMerchantConversationActiveFulfillment,
+  sortMerchantConversations,
 } from "../apps/merchant/src/lib/order-phase"
 
 const orderId = "proof-only"
@@ -125,17 +126,80 @@ function orderItem(
   }
 }
 
-function merchantStatus(status: string, createdAt: number): ParsedOrderMessage {
+function merchantStatus(
+  status: string,
+  createdAt: number,
+  targetOrderId = orderId
+): ParsedOrderMessage {
   return {
-    id: `${orderId}-${status}-${createdAt}`,
-    orderId,
+    id: `${targetOrderId}-${status}-${createdAt}`,
+    orderId: targetOrderId,
     type: "status_update",
     createdAt,
     senderPubkey: "merchant",
     recipientPubkey: "buyer",
     rawContent: "",
-    payload: { orderId, status },
+    payload: { orderId: targetOrderId, status },
   } as ParsedOrderMessage
+}
+
+function sortableConversation({
+  id,
+  latestAt,
+  taskAt = latestAt,
+  status,
+  paymentEvidence = false,
+}: {
+  id: string
+  latestAt: number
+  taskAt?: number
+  status?: string
+  paymentEvidence?: boolean
+}): MerchantConversationSummary {
+  const sortableOrder = {
+    ...order,
+    id: `${id}-order`,
+    orderId: id,
+    createdAt: Math.max(0, taskAt - 1),
+    payload: {
+      ...order.payload,
+      id,
+      createdAt: Math.max(0, taskAt - 1),
+    },
+  } as ParsedOrderMessage
+  const messages: ParsedOrderMessage[] = [sortableOrder]
+  if (paymentEvidence) {
+    messages.push({
+      ...proof,
+      id: `${id}-proof`,
+      orderId: id,
+      createdAt: taskAt,
+      payload: { ...proof.payload, orderId: id },
+    } as ParsedOrderMessage)
+  } else if (status) messages.push(merchantStatus(status, taskAt, id))
+  if (latestAt > taskAt) {
+    messages.push({
+      id: `${id}-note`,
+      orderId: id,
+      type: "message",
+      createdAt: latestAt,
+      senderPubkey: "merchant",
+      recipientPubkey: "buyer",
+      rawContent: "",
+      payload: { note: "Follow-up note" },
+    } as ParsedOrderMessage)
+  }
+  const newestMessage = messages[messages.length - 1]!
+
+  return {
+    ...conversation,
+    id,
+    orderId: id,
+    latestAt,
+    latestType: newestMessage.type,
+    status: status ?? null,
+    messages,
+  }
 }
 
 const externalReport = {
@@ -174,6 +238,220 @@ describe("merchant order phase", () => {
     expect(isOrderQueueTab("paid_fulfill")).toBe(true)
     expect(isOrderQueueTab("awaiting_payment")).toBe(false)
     expect(isOrderQueueTab(undefined)).toBe(false)
+  })
+
+  it("ranks the observed order set by merchant attention", () => {
+    const ranked = sortMerchantConversations(
+      [
+        sortableConversation({
+          id: "closed",
+          latestAt: 80,
+          status: "complete",
+        }),
+        sortableConversation({
+          id: "waiting",
+          latestAt: 70,
+          status: "invoiced",
+        }),
+        sortableConversation({
+          id: "follow-up",
+          latestAt: 60,
+          status: "processing",
+        }),
+        sortableConversation({ id: "new", latestAt: 50 }),
+        sortableConversation({
+          id: "verify",
+          latestAt: 40,
+          paymentEvidence: true,
+        }),
+        sortableConversation({
+          id: "fulfill",
+          latestAt: 30,
+          status: "paid",
+        }),
+        sortableConversation({
+          id: "refund",
+          latestAt: 20,
+          status: "refund_requested",
+        }),
+      ],
+      "priority"
+    )
+
+    expect(ranked.map((item) => item.id)).toEqual([
+      "refund",
+      "fulfill",
+      "verify",
+      "new",
+      "follow-up",
+      "waiting",
+      "closed",
+    ])
+  })
+
+  it("keeps processing follow-up below currently paid fulfillment", () => {
+    const processing = sortableConversation({
+      id: "processing-after-paid",
+      latestAt: 40,
+      status: "processing",
+    })
+    const processingOrder = processing.messages?.[0]
+    if (processingOrder) processingOrder.createdAt = 10
+    processing.messages?.splice(1, 0, {
+      ...merchantStatus("paid", 20),
+      id: "processing-after-paid-paid",
+      orderId: processing.orderId,
+      payload: { orderId: processing.orderId, status: "paid" },
+    } as ParsedOrderMessage)
+    const currentlyPaid = sortableConversation({
+      id: "currently-paid",
+      latestAt: 30,
+      status: "paid",
+    })
+
+    expect(
+      sortMerchantConversations([processing, currentlyPaid], "priority").map(
+        (item) => item.id
+      )
+    ).toEqual(["currently-paid", "processing-after-paid"])
+  })
+
+  it("uses age for active ties, recency for closed ties, and order id last", () => {
+    const paidNewer = sortableConversation({
+      id: "paid-newer",
+      latestAt: 30,
+      status: "paid",
+    })
+    const paidOlderB = sortableConversation({
+      id: "paid-older-b",
+      latestAt: 20,
+      status: "paid",
+    })
+    const paidOlderA = sortableConversation({
+      id: "paid-older-a",
+      latestAt: 20,
+      status: "paid",
+    })
+    const closedOlder = sortableConversation({
+      id: "closed-older",
+      latestAt: 10,
+      status: "cancelled",
+    })
+    const closedNewer = sortableConversation({
+      id: "closed-newer",
+      latestAt: 40,
+      status: "complete",
+    })
+
+    expect(
+      sortMerchantConversations(
+        [paidNewer, closedOlder, paidOlderB, closedNewer, paidOlderA],
+        "priority"
+      ).map((item) => item.id)
+    ).toEqual([
+      "paid-older-a",
+      "paid-older-b",
+      "paid-newer",
+      "closed-newer",
+      "closed-older",
+    ])
+    expect(
+      sortMerchantConversations(
+        [paidOlderA, closedOlder, paidNewer, closedNewer],
+        "recent"
+      ).map((item) => item.id)
+    ).toEqual(["closed-newer", "paid-newer", "paid-older-a", "closed-older"])
+  })
+
+  it("keeps actionable age anchored when a later note arrives", () => {
+    const olderPaidWithNewNote = sortableConversation({
+      id: "older-paid",
+      taskAt: 10,
+      latestAt: 100,
+      status: "paid",
+    })
+    const newerPaid = sortableConversation({
+      id: "newer-paid",
+      latestAt: 20,
+      status: "paid",
+    })
+
+    expect(
+      sortMerchantConversations(
+        [newerPaid, olderPaidWithNewNote],
+        "priority"
+      ).map((item) => item.id)
+    ).toEqual(["older-paid", "newer-paid"])
+    expect(
+      sortMerchantConversations(
+        [newerPaid, olderPaidWithNewNote],
+        "recent"
+      ).map((item) => item.id)
+    ).toEqual(["older-paid", "newer-paid"])
+  })
+
+  it("ignores task messages outside the exact buyer and merchant pair", () => {
+    const expectForeignMessageNotToAgeTask = (
+      olderTask: MerchantConversationSummary,
+      newerTask: MerchantConversationSummary,
+      foreignMessage: ParsedOrderMessage
+    ) => {
+      newerTask.messages?.unshift(foreignMessage)
+      expect(
+        sortMerchantConversations([newerTask, olderTask], "priority").map(
+          (item) => item.id
+        )
+      ).toEqual([olderTask.id, newerTask.id])
+    }
+
+    const olderNewOrder = sortableConversation({
+      id: "older-new-order",
+      latestAt: 20,
+    })
+    const newerNewOrder = sortableConversation({
+      id: "newer-new-order",
+      latestAt: 30,
+    })
+    expectForeignMessageNotToAgeTask(olderNewOrder, newerNewOrder, {
+      ...newerNewOrder.messages![0]!,
+      id: "foreign-order",
+      createdAt: 5,
+      recipientPubkey: "other-merchant",
+    })
+
+    const olderVerification = sortableConversation({
+      id: "older-verification",
+      latestAt: 20,
+      paymentEvidence: true,
+    })
+    const newerVerification = sortableConversation({
+      id: "newer-verification",
+      latestAt: 30,
+      paymentEvidence: true,
+    })
+    expectForeignMessageNotToAgeTask(olderVerification, newerVerification, {
+      ...newerVerification.messages![1]!,
+      id: "foreign-proof",
+      createdAt: 5,
+      recipientPubkey: "other-merchant",
+    })
+
+    const olderFulfillment = sortableConversation({
+      id: "older-fulfillment",
+      latestAt: 20,
+      status: "paid",
+    })
+    const newerFulfillment = sortableConversation({
+      id: "newer-fulfillment",
+      latestAt: 30,
+      status: "paid",
+    })
+    expectForeignMessageNotToAgeTask(olderFulfillment, newerFulfillment, {
+      ...newerFulfillment.messages![1]!,
+      id: "foreign-status",
+      createdAt: 5,
+      recipientPubkey: "other-buyer",
+    })
   })
 
   it("keeps loaded legacy orders replyable but treats orderless reads as unknown", () => {
