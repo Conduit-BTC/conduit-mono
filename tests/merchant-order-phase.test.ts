@@ -390,6 +390,70 @@ describe("merchant order phase", () => {
     ).toEqual(["older-paid", "newer-paid"])
   })
 
+  it("ignores task messages outside the exact buyer and merchant pair", () => {
+    const expectForeignMessageNotToAgeTask = (
+      olderTask: MerchantConversationSummary,
+      newerTask: MerchantConversationSummary,
+      foreignMessage: ParsedOrderMessage
+    ) => {
+      newerTask.messages?.unshift(foreignMessage)
+      expect(
+        sortMerchantConversations([newerTask, olderTask], "priority").map(
+          (item) => item.id
+        )
+      ).toEqual([olderTask.id, newerTask.id])
+    }
+
+    const olderNewOrder = sortableConversation({
+      id: "older-new-order",
+      latestAt: 20,
+    })
+    const newerNewOrder = sortableConversation({
+      id: "newer-new-order",
+      latestAt: 30,
+    })
+    expectForeignMessageNotToAgeTask(olderNewOrder, newerNewOrder, {
+      ...newerNewOrder.messages![0]!,
+      id: "foreign-order",
+      createdAt: 5,
+      recipientPubkey: "other-merchant",
+    })
+
+    const olderVerification = sortableConversation({
+      id: "older-verification",
+      latestAt: 20,
+      paymentEvidence: true,
+    })
+    const newerVerification = sortableConversation({
+      id: "newer-verification",
+      latestAt: 30,
+      paymentEvidence: true,
+    })
+    expectForeignMessageNotToAgeTask(olderVerification, newerVerification, {
+      ...newerVerification.messages![1]!,
+      id: "foreign-proof",
+      createdAt: 5,
+      recipientPubkey: "other-merchant",
+    })
+
+    const olderFulfillment = sortableConversation({
+      id: "older-fulfillment",
+      latestAt: 20,
+      status: "paid",
+    })
+    const newerFulfillment = sortableConversation({
+      id: "newer-fulfillment",
+      latestAt: 30,
+      status: "paid",
+    })
+    expectForeignMessageNotToAgeTask(olderFulfillment, newerFulfillment, {
+      ...newerFulfillment.messages![1]!,
+      id: "foreign-status",
+      createdAt: 5,
+      recipientPubkey: "other-buyer",
+    })
+  })
+
   it("keeps loaded legacy orders replyable but treats orderless reads as unknown", () => {
     expect(getMerchantConversationCommunication(conversation)).toBe(
       "nostr_replyable"

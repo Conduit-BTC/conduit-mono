@@ -388,8 +388,12 @@ function getMerchantConversationPriority(
     ? conversation.latestAt
     : 0
   const messages = conversation.messages ?? []
+  const fromBuyer = (message: MerchantOrderMessage): boolean =>
+    message.senderPubkey === conversation.buyerPubkey &&
+    message.recipientPubkey === conversation.merchantPubkey
   const fromMerchant = (message: MerchantOrderMessage): boolean =>
-    message.senderPubkey === conversation.merchantPubkey
+    message.senderPubkey === conversation.merchantPubkey &&
+    message.recipientPubkey === conversation.buyerPubkey
   const hasMerchantStatus = (
     message: MerchantOrderMessage,
     ...statuses: string[]
@@ -400,7 +404,7 @@ function getMerchantConversationPriority(
   let rank = 3
   let matchesTask: ((message: MerchantOrderMessage) => boolean) | null = (
     message
-  ) => message.type === "order"
+  ) => fromBuyer(message) && message.type === "order"
 
   if (status === "refund_requested") {
     rank = 0
@@ -426,8 +430,8 @@ function getMerchantConversationPriority(
   } else if (queue === "verify_payment") {
     rank = 2
     matchesTask = (message) =>
+      fromBuyer(message) &&
       message.type === "payment_proof" &&
-      message.senderPubkey === conversation.buyerPubkey &&
       (isPaymentProofEvidenceMessage(message) ||
         isExternalPaymentReportMessage(message))
   } else if (
