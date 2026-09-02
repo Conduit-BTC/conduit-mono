@@ -1,8 +1,10 @@
 import {
   AlertCircle,
   CheckCircle2,
+  CircleSlash2,
   Loader2,
   PencilLine,
+  TriangleAlert,
   Upload,
 } from "lucide-react"
 import type { ReactNode } from "react"
@@ -14,6 +16,9 @@ export type SignedActionStatusState =
   | "awaiting_signature"
   | "publishing"
   | "success"
+  | "partial"
+  | "confirmation_pending"
+  | "cancelled"
   | "error"
 
 const defaultMessages: Record<
@@ -24,6 +29,9 @@ const defaultMessages: Record<
   awaiting_signature: "Confirm this request in your signer.",
   publishing: "Publishing the signed event to relays.",
   success: "Signed and saved.",
+  partial: "The signed event was accepted by only part of the relay plan.",
+  confirmation_pending: "Relay acceptance is waiting for fresh read-back.",
+  cancelled: "Signing was cancelled. Local edits were retained.",
   error: "Something went wrong.",
 }
 
@@ -53,6 +61,19 @@ function getStateMeta(state: SignedActionStatusState) {
         className: "text-[var(--success)]",
         iconClassName: "text-[var(--success)]",
       }
+    case "partial":
+    case "confirmation_pending":
+      return {
+        Icon: TriangleAlert,
+        className: "text-[var(--warning)]",
+        iconClassName: "text-[var(--warning)]",
+      }
+    case "cancelled":
+      return {
+        Icon: CircleSlash2,
+        className: "text-[var(--text-secondary)]",
+        iconClassName: "text-[var(--text-muted)]",
+      }
     case "error":
       return {
         Icon: AlertCircle,
@@ -71,6 +92,9 @@ export interface SignedActionStatusProps {
   awaitingSignatureMessage?: ReactNode
   publishingMessage?: ReactNode
   successMessage?: ReactNode
+  partialMessage?: ReactNode
+  confirmationPendingMessage?: ReactNode
+  cancelledMessage?: ReactNode
   errorMessage?: ReactNode
   className?: string
 }
@@ -82,6 +106,9 @@ export function SignedActionStatus({
   awaitingSignatureMessage,
   publishingMessage,
   successMessage,
+  partialMessage,
+  confirmationPendingMessage,
+  cancelledMessage,
   errorMessage,
   className,
 }: SignedActionStatusProps) {
@@ -99,9 +126,15 @@ export function SignedActionStatus({
           ? publishingMessage
           : state === "success"
             ? successMessage
-            : state === "error"
-              ? errorMessage
-              : null) ??
+            : state === "partial"
+              ? partialMessage
+              : state === "confirmation_pending"
+                ? confirmationPendingMessage
+                : state === "cancelled"
+                  ? cancelledMessage
+                  : state === "error"
+                    ? errorMessage
+                    : null) ??
     (state === "idle" ? null : defaultMessages[state])
 
   if (!stateMessage) return null

@@ -1,6 +1,10 @@
 export { Avatar, AvatarImage, AvatarFallback } from "./Avatar"
 export { QRCodeSVG } from "qrcode.react"
 export { AccountMenu, type AccountMenuProps } from "./AccountMenu"
+export {
+  ThemeToggleButton,
+  type ThemeToggleButtonProps,
+} from "./ThemeToggleButton"
 export { Badge, badgeVariants, type BadgeProps } from "./Badge"
 export { Button, buttonVariants, type ButtonProps } from "./Button"
 export { ShareLinkButton, type ShareLinkButtonProps } from "./ShareLinkButton"
@@ -127,6 +131,10 @@ export {
   type PrivateInboxSectionProps,
   type PrivateInboxStatus,
 } from "./PrivateInboxSection"
+export {
+  MediaServerPreferencesSection,
+  type MediaServerPreferencesSectionProps,
+} from "./MediaServerPreferencesSection"
 export { Checkbox, type CheckboxProps } from "./Checkbox"
 export {
   ProductCard,
