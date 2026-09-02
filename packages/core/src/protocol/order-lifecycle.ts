@@ -7,6 +7,11 @@ import {
   type OrderPublicZapSigner,
   type StoredPaymentAttempt,
 } from "../db"
+import {
+  decodeLightningInvoicePaymentHash,
+  normalizeLightningInvoice,
+  validateLightningInvoiceForPayment,
+} from "./lightning"
 
 export const GUEST_ORDER_LOCAL_RETENTION_MS = 24 * 60 * 60 * 1_000
 
@@ -186,6 +191,99 @@ export type OrderPaymentWalletSuccessRecoveryInput = {
 export type ExternalOrderPaymentProofClaimResult =
   | { status: "claimed" | "preserved"; lifecycle: OrderLifecycle }
   | { status: "missing"; lifecycle: null }
+
+export type MerchantInvoicePaymentBindingResult =
+  | { status: "bound" | "preserved"; lifecycle: OrderLifecycle }
+  | { status: "missing"; lifecycle: null }
+
+export type ProjectedMerchantInvoiceClaim = {
+  buyerPubkey: string
+  merchantPubkey: string
+  totalMsats: number
+  invoice: string
+  paymentHash: string
+  expiresAt: number
+}
+
+export type ExternalOrderPaymentProofClaimOptions = {
+  merchantInvoice?: ProjectedMerchantInvoiceClaim
+  nowMs?: number
+}
+
+type AdmittedProjectedMerchantInvoice = {
+  invoice: string
+  paymentHash: string
+  expiresAt: number
+  alreadyBound: boolean
+}
+
+function admitProjectedMerchantInvoice(
+  lifecycle: OrderLifecycle,
+  merchantInvoice: ProjectedMerchantInvoiceClaim,
+  nowMs: number,
+  allowExpired: boolean
+): AdmittedProjectedMerchantInvoice | null {
+  const invoice = normalizeLightningInvoice(merchantInvoice.invoice)
+  const paymentHash = merchantInvoice.paymentHash.trim().toLowerCase()
+  const decodedPaymentHash = decodeLightningInvoicePaymentHash(invoice)
+  const invoiceValidation = validateLightningInvoiceForPayment({
+    invoice,
+    expectedAmountMsats: lifecycle.totalMsats,
+    nowSeconds: Math.floor(nowMs / 1_000),
+    allowExpired,
+  })
+  const awaitingMerchantInvoice =
+    lifecycle.invoiceStatus === "not_requested" &&
+    lifecycle.paymentStatus === "not_started" &&
+    !lifecycle.invoice &&
+    !lifecycle.paymentHash &&
+    lifecycle.invoiceExpiresAt === undefined
+  const sameActiveMerchantInvoice =
+    lifecycle.invoiceStatus === "manual_required" &&
+    lifecycle.paymentStatus === "manual_required" &&
+    !!lifecycle.invoice &&
+    normalizeLightningInvoice(lifecycle.invoice).toLowerCase() ===
+      invoice.toLowerCase() &&
+    (!lifecycle.paymentHash ||
+      lifecycle.paymentHash.toLowerCase() === paymentHash) &&
+    (lifecycle.invoiceExpiresAt === undefined ||
+      lifecycle.invoiceExpiresAt === merchantInvoice.expiresAt)
+  const exactActiveMerchantInvoice =
+    sameActiveMerchantInvoice &&
+    lifecycle.paymentHash?.toLowerCase() === paymentHash &&
+    lifecycle.invoiceExpiresAt === merchantInvoice.expiresAt
+  const publicZapSigner =
+    lifecycle.publicZapSigner ?? getOrderPublicZapSigner(lifecycle.checkoutMode)
+
+  if (
+    publicZapSigner ||
+    lifecycle.checkoutMode !== "pay_later" ||
+    lifecycle.orderDeliveryStatus !== "sent" ||
+    lifecycle.phase === "completed" ||
+    lifecycle.phase === "cancelled" ||
+    lifecycle.proofDeliveryStatus !== "not_started" ||
+    !!lifecycle.paymentClaimId ||
+    lifecycle.buyerPubkey !== merchantInvoice.buyerPubkey ||
+    lifecycle.merchantPubkey !== merchantInvoice.merchantPubkey ||
+    lifecycle.totalMsats !== merchantInvoice.totalMsats ||
+    !/^[0-9a-f]{64}$/.test(paymentHash) ||
+    decodedPaymentHash !== paymentHash ||
+    !invoiceValidation.ok ||
+    invoiceValidation.metadata.expiresAt !== merchantInvoice.expiresAt ||
+    !Number.isSafeInteger(merchantInvoice.expiresAt) ||
+    merchantInvoice.expiresAt <= 0 ||
+    (!awaitingMerchantInvoice && !sameActiveMerchantInvoice)
+  ) {
+    return null
+  }
+
+  return {
+    invoice,
+    paymentHash,
+    expiresAt: merchantInvoice.expiresAt,
+    alreadyBound: exactActiveMerchantInvoice,
+  }
+}
 
 export type InterruptedOrderPaymentReconciliation =
   | { status: "recovered_before_payment"; lifecycle: OrderLifecycle }
@@ -853,31 +951,84 @@ export async function renewOrderPaymentProofDeliveryClaim(
   })
 }
 
+/** Atomically bind one projected merchant invoice before wallet handoff. */
+export async function bindMerchantInvoiceForPayment(
+  orderId: string,
+  merchantInvoice: ProjectedMerchantInvoiceClaim,
+  nowMs = Date.now()
+): Promise<MerchantInvoicePaymentBindingResult> {
+  return db.transaction("rw", db.orderLifecycles, async () => {
+    const lifecycle = await db.orderLifecycles.get(orderId)
+    if (!lifecycle) return { status: "missing", lifecycle: null }
+
+    const admitted = admitProjectedMerchantInvoice(
+      lifecycle,
+      merchantInvoice,
+      nowMs,
+      false
+    )
+    if (!admitted) return { status: "preserved", lifecycle }
+    if (admitted.alreadyBound) return { status: "bound", lifecycle }
+
+    const bound = mergeOrderLifecyclePatch(
+      lifecycle,
+      {
+        invoiceStatus: "manual_required",
+        paymentStatus: "manual_required",
+        invoice: admitted.invoice,
+        paymentHash: admitted.paymentHash,
+        invoiceExpiresAt: admitted.expiresAt,
+        lastError: undefined,
+      },
+      nowMs
+    )
+    await db.orderLifecycles.put(bound)
+    return { status: "bound", lifecycle: bound }
+  })
+}
+
 /** Atomically turn one manual external-payment attestation into proof work. */
 export async function claimExternalOrderPaymentProof(
   orderId: string,
   proofDeliveryClaimId: string,
-  now = Date.now()
+  options: ExternalOrderPaymentProofClaimOptions = {}
 ): Promise<ExternalOrderPaymentProofClaimResult> {
   return db.transaction("rw", db.orderLifecycles, async () => {
     const lifecycle = await db.orderLifecycles.get(orderId)
     if (!lifecycle) return { status: "missing", lifecycle: null }
+    const now = options.nowMs ?? Date.now()
     const publicZapSigner =
       lifecycle.publicZapSigner ??
       getOrderPublicZapSigner(lifecycle.checkoutMode)
     const normalizedClaimId = proofDeliveryClaimId.trim()
+    const merchantInvoice = options.merchantInvoice
+    const admittedMerchantInvoice = merchantInvoice
+      ? admitProjectedMerchantInvoice(lifecycle, merchantInvoice, now, true)
+      : null
+    const existingManualInvoiceIsAdmissible =
+      !merchantInvoice &&
+      !!lifecycle.invoice &&
+      lifecycle.paymentStatus === "manual_required"
+
     if (
       !normalizedClaimId ||
       publicZapSigner ||
-      !lifecycle.invoice ||
-      lifecycle.paymentStatus !== "manual_required" ||
-      lifecycle.proofDeliveryStatus !== "not_started"
+      lifecycle.proofDeliveryStatus !== "not_started" ||
+      (!admittedMerchantInvoice && !existingManualInvoiceIsAdmissible)
     ) {
       return { status: "preserved", lifecycle }
     }
     const claimed = mergeOrderLifecyclePatch(
       lifecycle,
       {
+        ...(admittedMerchantInvoice
+          ? {
+              invoiceStatus: "manual_required" as const,
+              invoice: admittedMerchantInvoice.invoice,
+              paymentHash: admittedMerchantInvoice.paymentHash,
+              invoiceExpiresAt: admittedMerchantInvoice.expiresAt,
+            }
+          : {}),
         paymentStatus: "paid",
         proofDeliveryStatus: "pending",
         proofDeliveryClaimId: normalizedClaimId,
