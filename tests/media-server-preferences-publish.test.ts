@@ -13,6 +13,7 @@ import {
   publishMediaServerPreferences,
   readMediaServerPreferences,
   retryMediaServerPreferencesPublish,
+  saveMediaServerDraft,
   toReviewedMediaServerEvidence,
   type MediaServerPreferencesStorage,
   type PublishMediaServerPreferencesDependencies,
@@ -469,5 +470,132 @@ describe("explicit kind 10063 publication", () => {
       })
     ).rejects.toMatchObject({ code: "evidence_changed" })
     expect(publishCalls).toBe(0)
+  })
+
+  it("preserves a newer partial checkpoint and draft across a delayed read", async () => {
+    const storage = new MemoryStorage()
+    const resolution = await reviewedEmpty(storage)
+    const targets = ["wss://one.conduit.market", "wss://two.conduit.market"]
+    let resolveDelayed!: (value: ReturnType<typeof readResult>) => void
+    const delayedResult = new Promise<ReturnType<typeof readResult>>(
+      (resolve) => {
+        resolveDelayed = resolve
+      }
+    )
+    const delayedRead = readMediaServerPreferences(OWNER, {
+      storage,
+      now: () => NOW + 10,
+      readRelayUrls: targets,
+      fetchEvents: async () => await delayedResult,
+    })
+    let signed: SignedPublicNostrEvent | null = null
+    const published = await publishMediaServerPreferences({
+      owner: OWNER,
+      serverUrls: ["https://partial.conduit.market"],
+      signer: signer(),
+      reviewed: toReviewedMediaServerEvidence(resolution),
+      dependencies: {
+        storage,
+        now: () => NOW + 1,
+        readRelayUrls: targets,
+        publishRelayUrls: targets,
+        publishToRelay: async (input) => {
+          signed = input.signedEvent
+          return input.relayUrl === targets[0] ? "acked" : "rejected"
+        },
+        fetchEvents: async (filter, options) =>
+          filter.ids?.length && signed
+            ? readResult({
+                events: [signed],
+                relayUrls: options.relayUrls,
+                sources: { [signed.id]: [targets[0]!] },
+              })
+            : readResult({ relayUrls: options.relayUrls }),
+      },
+    })
+    expect(published.outcome).toBe("partial")
+    saveMediaServerDraft(
+      OWNER,
+      {
+        serverUrls: ["https://draft.conduit.market"],
+        baseServerUrls: [],
+        baseEventId: null,
+        updatedAt: NOW + 20,
+      },
+      storage
+    )
+
+    resolveDelayed(readResult({ relayUrls: targets }))
+    await delayedRead
+
+    const retained = loadMediaServerPreferenceRecord(OWNER, storage)
+    expect(retained.pending).toMatchObject({
+      signedEvent: { id: signed?.id },
+      acknowledgedRelayUrls: [targets[0]],
+    })
+    expect(retained.frontier?.eventId).toBe(signed?.id)
+    expect(retained.published?.signedEvent.id).toBe(signed?.id)
+    expect(retained.draft?.serverUrls).toEqual(["https://draft.conduit.market"])
+  })
+
+  it("retires a superseded pending update before retry relay I/O", async () => {
+    const storage = new MemoryStorage()
+    const target = "wss://one.conduit.market"
+    const resolution = await reviewedEmpty(storage, [target])
+    const initial = await publishMediaServerPreferences({
+      owner: OWNER,
+      serverUrls: ["https://older.conduit.market"],
+      signer: signer(),
+      reviewed: toReviewedMediaServerEvidence(resolution),
+      dependencies: {
+        storage,
+        now: () => NOW,
+        readRelayUrls: [target],
+        publishRelayUrls: [target],
+        publishToRelay: async () => "timed_out",
+        fetchEvents: async (_filter, options) =>
+          readResult({ relayUrls: options.relayUrls }),
+      },
+    })
+    expect(initial).toMatchObject({ outcome: "failed", retryAvailable: true })
+    const oldPending = loadMediaServerPreferenceRecord(OWNER, storage).pending!
+    const newer = finalizeEvent(
+      {
+        kind: BLOSSOM_SERVER_LIST_KIND,
+        created_at: oldPending.signedEvent.created_at + 1,
+        tags: [["server", "https://newer.conduit.market"]],
+        content: "",
+      },
+      OWNER_KEY
+    )
+    let publishCalls = 0
+
+    await expect(
+      retryMediaServerPreferencesPublish({
+        owner: OWNER,
+        dependencies: {
+          storage,
+          now: () => NOW + 1_000,
+          readRelayUrls: [target],
+          publishRelayUrls: [target],
+          publishToRelay: async () => {
+            publishCalls += 1
+            return "acked"
+          },
+          fetchEvents: async (_filter, options) =>
+            readResult({
+              events: [newer],
+              relayUrls: options.relayUrls,
+              sources: { [newer.id]: [target] },
+            }),
+        },
+      })
+    ).rejects.toMatchObject({ code: "evidence_changed" })
+
+    const record = loadMediaServerPreferenceRecord(OWNER, storage)
+    expect(publishCalls).toBe(0)
+    expect(record.pending).toBeUndefined()
+    expect(record.frontier?.eventId).toBe(newer.id)
+    expect(record.published?.signedEvent.id).toBe(newer.id)
   })
 })

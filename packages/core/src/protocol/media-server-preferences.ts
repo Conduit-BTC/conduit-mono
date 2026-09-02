@@ -410,6 +410,37 @@ function strongerRevision(
   return !current || compareReplaceable(candidate, current) < 0
 }
 
+function frontierRevision(
+  frontier: MediaServerFrontierEvidence | undefined
+): Pick<MediaServerPreferenceEventLike, "created_at" | "id"> | undefined {
+  return frontier
+    ? { id: frontier.eventId, created_at: frontier.createdAt }
+    : undefined
+}
+
+function frontierSupersedesEvent(
+  frontier: MediaServerFrontierEvidence | undefined,
+  event: Pick<MediaServerPreferenceEventLike, "created_at" | "id">
+): boolean {
+  if (!frontier || frontier.eventId === event.id) return false
+  return strongerRevision(
+    { id: frontier.eventId, created_at: frontier.createdAt },
+    event
+  )
+}
+
+function recordSupersedesEvent(
+  record: MediaServerPreferenceEvidenceRecord,
+  event: Pick<MediaServerPreferenceEventLike, "created_at" | "id">
+): boolean {
+  return (
+    frontierSupersedesEvent(record.frontier, event) ||
+    (!!record.published &&
+      record.published.signedEvent.id !== event.id &&
+      strongerRevision(record.published.signedEvent, event))
+  )
+}
+
 export function getMediaServerPreferencesStorageKey(owner: string): string {
   return `${MEDIA_SERVER_STORAGE_PREFIX}:${normalizeMediaServerPreferenceOwner(owner)}`
 }
@@ -786,6 +817,66 @@ function mergeRelaySources(
   return normalizeSecureOrIsolatedE2eRelayUrls([...left, ...right]).sort()
 }
 
+function preserveCurrentRecordState(
+  candidate: MediaServerPreferenceEvidenceRecord,
+  current: MediaServerPreferenceEvidenceRecord
+): void {
+  if (current.pending) candidate.pending = clone(current.pending)
+  else delete candidate.pending
+
+  if (current.draft) candidate.draft = clone(current.draft)
+  else delete candidate.draft
+
+  if (
+    current.frontier &&
+    strongerRevision(
+      {
+        id: current.frontier.eventId,
+        created_at: current.frontier.createdAt,
+      },
+      frontierRevision(candidate.frontier)
+    )
+  ) {
+    candidate.frontier = clone(current.frontier)
+  }
+
+  if (
+    current.published &&
+    strongerRevision(
+      current.published.signedEvent,
+      candidate.published?.signedEvent
+    )
+  ) {
+    candidate.published = clone(current.published)
+  } else if (
+    current.published &&
+    candidate.published?.signedEvent.id === current.published.signedEvent.id
+  ) {
+    candidate.published.sourceRelayUrls = mergeRelaySources(
+      candidate.published.sourceRelayUrls,
+      current.published.sourceRelayUrls
+    )
+    candidate.published.observedAt = Math.max(
+      candidate.published.observedAt,
+      current.published.observedAt
+    )
+    if (current.published.completeObservedAt !== undefined) {
+      candidate.published.completeObservedAt = Math.max(
+        candidate.published.completeObservedAt ?? 0,
+        current.published.completeObservedAt
+      )
+    }
+  }
+
+  if (
+    current.latestLookup &&
+    (!candidate.latestLookup ||
+      current.latestLookup.observedAt > candidate.latestLookup.observedAt)
+  ) {
+    candidate.latestLookup = clone(current.latestLookup)
+  }
+}
+
 function resolutionStatus(
   coverage: MediaServerLookupCoverage,
   frontier: MediaServerFrontierEvidence | undefined,
@@ -854,8 +945,6 @@ export async function readMediaServerPreferences(
     normalizedOwner
   )
   const record = clone(retainedRecord)
-  let networkPublishedSelected = false
-
   if (networkFrontierEvent) {
     const parsed = parseBlossomServerListTags(networkFrontierEvent.tags)
     const frontier: MediaServerFrontierEvidence = {
@@ -893,7 +982,6 @@ export async function readMediaServerPreferences(
         completeObservedAt:
           lookup.coverage === "complete" ? observedAt : undefined,
       }
-      networkPublishedSelected = true
     } else if (record.published?.signedEvent.id === signedEvent.id) {
       record.published.sourceRelayUrls = mergeRelaySources(
         record.published.sourceRelayUrls,
@@ -909,12 +997,17 @@ export async function readMediaServerPreferences(
           observedAt
         )
       }
-      networkPublishedSelected = true
     }
   }
 
   record.latestLookup = lookup
+  preserveCurrentRecordState(
+    record,
+    loadMediaServerPreferenceRecord(normalizedOwner, storage)
+  )
   const saved = saveMediaServerPreferenceRecord(record, storage)
+  const networkPublishedSelected =
+    !!networkValid && saved.published?.signedEvent.id === networkValid.event.id
   const status = resolutionStatus(
     lookup.coverage,
     saved.frontier,
@@ -1198,6 +1291,27 @@ async function deliverPendingPreference(input: {
     [...timedOut],
     pending.publishRelayUrls
   )
+  preserveCurrentRecordState(
+    input.record,
+    loadMediaServerPreferenceRecord(input.owner, input.storage)
+  )
+  if (
+    !input.record.pending ||
+    input.record.pending.signedEvent.id !== pending.signedEvent.id
+  ) {
+    throw new MediaServerPreferencesError(
+      "evidence_changed",
+      "The pending media server update changed during relay delivery. Its current state was preserved."
+    )
+  }
+  if (recordSupersedesEvent(input.record, pending.signedEvent)) {
+    delete input.record.pending
+    saveMediaServerPreferenceRecord(input.record, input.storage)
+    throw new MediaServerPreferencesError(
+      "evidence_changed",
+      "A stronger owner-authored media server preference was observed during relay delivery. The older signed update will not be retried."
+    )
+  }
   input.record.pending = clone(pending)
   saveMediaServerPreferenceRecord(input.record, input.storage)
 
@@ -1209,6 +1323,28 @@ async function deliverPendingPreference(input: {
   const outcome = publishOutcome({ pending, confirmed: readBack.confirmed })
   const allAccepted =
     pending.acknowledgedRelayUrls.length === pending.publishRelayUrls.length
+
+  preserveCurrentRecordState(
+    input.record,
+    loadMediaServerPreferenceRecord(input.owner, input.storage)
+  )
+  if (
+    !input.record.pending ||
+    input.record.pending.signedEvent.id !== pending.signedEvent.id
+  ) {
+    throw new MediaServerPreferencesError(
+      "evidence_changed",
+      "The pending media server update changed during read-back. Its current state was preserved."
+    )
+  }
+  if (recordSupersedesEvent(input.record, pending.signedEvent)) {
+    delete input.record.pending
+    saveMediaServerPreferenceRecord(input.record, input.storage)
+    throw new MediaServerPreferencesError(
+      "evidence_changed",
+      "A stronger owner-authored media server preference was observed during read-back. The stronger evidence was preserved."
+    )
+  }
 
   if (readBack.confirmed) {
     const observedAt = (input.dependencies.now ?? Date.now)()
@@ -1365,7 +1501,27 @@ export async function retryMediaServerPreferencesPublish(
     dependencies.storage === undefined
       ? getDefaultStorage()
       : dependencies.storage
+  const retainedRecord = loadMediaServerPreferenceRecord(owner, storage)
+  if (!retainedRecord.pending) {
+    throw new MediaServerPreferencesError(
+      "missing_pending_publish",
+      "No signed media server update is waiting to be retried."
+    )
+  }
+  dependencies.onPhase?.("checking")
+  await readMediaServerPreferences(owner, dependencies)
   const record = loadMediaServerPreferenceRecord(owner, storage)
+  if (
+    record.pending &&
+    recordSupersedesEvent(record, record.pending.signedEvent)
+  ) {
+    delete record.pending
+    saveMediaServerPreferenceRecord(record, storage)
+    throw new MediaServerPreferencesError(
+      "evidence_changed",
+      "A stronger owner-authored media server preference was observed. The older signed update was not sent again; review the current state before publishing a replacement."
+    )
+  }
   return await deliverPendingPreference({
     owner,
     record,
