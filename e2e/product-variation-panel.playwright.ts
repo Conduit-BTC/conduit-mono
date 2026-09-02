@@ -74,6 +74,17 @@ async function cardStyle(card: Locator): Promise<{
   })
 }
 
+function expectMatchingOpaqueBackgrounds(
+  cardBackground: string,
+  panelBackground: string
+): void {
+  expect(panelBackground).toBe(cardBackground)
+  const components = cardBackground.match(/[\d.]+/g)
+  expect(components?.length).toBeGreaterThanOrEqual(3)
+  expect(components?.length).toBeLessThanOrEqual(4)
+  expect(components?.length === 4 ? Number(components[3]) : 1).toBe(1)
+}
+
 async function variationPanel(variableItem: Locator): Promise<Locator> {
   return variableItem
     .getByText("Size", { exact: true })
@@ -142,6 +153,7 @@ function expectUnchangedGeometry(
 test("market product variation panel preserves grid geometry across desktop mouse reveal and select portal @market", async ({
   page,
 }) => {
+  await page.emulateMedia({ colorScheme: "dark" })
   await page.setViewportSize({ width: 1440, height: 900 })
   await mountHarness(page)
 
@@ -214,8 +226,9 @@ test("market product variation panel preserves grid geometry across desktop mous
       parseFloat(getComputedStyle(element).borderTopRightRadius)
     )
   ).toBeGreaterThan(0)
-  expect(expandedPanelStyle.backgroundColor).toBe(
-    expandedCardStyle.backgroundColor
+  expectMatchingOpaqueBackgrounds(
+    expandedCardStyle.backgroundColor,
+    expandedPanelStyle.backgroundColor
   )
   expectUnchangedGeometry(
     initialGridGeometry,
@@ -239,6 +252,10 @@ test("market product variation panel preserves grid geometry across desktop mous
   })
   expect((await cardStyle(variableCard)).scale).toBe("1.12")
   expect((await cardStyle(variableCard)).boxShadow).not.toBe("none")
+  expectMatchingOpaqueBackgrounds(
+    (await cardStyle(variableCard)).backgroundColor,
+    (await panelStyle(panel)).backgroundColor
+  )
   expectUnchangedGeometry(
     initialGridGeometry,
     await Promise.all([variableItem, sibling, grid].map(geometry))
@@ -246,6 +263,28 @@ test("market product variation panel preserves grid geometry across desktop mous
 
   await page.keyboard.press("Escape")
   await expect(chooseSize).toHaveAttribute("aria-expanded", "false")
+})
+
+test("market product variation panel uses an opaque matching light overlay @market", async ({
+  page,
+}) => {
+  await page.emulateMedia({ colorScheme: "light" })
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await mountHarness(page)
+
+  const variableItem = page.getByTestId("variable-product-list-item")
+  const variableCard = variableItem.locator(":scope > div")
+  const panel = await variationPanel(variableItem)
+
+  await variableCard.hover()
+  await expect(panel).toBeVisible()
+  expectMatchingOpaqueBackgrounds(
+    (await cardStyle(variableCard)).backgroundColor,
+    (await panelStyle(panel)).backgroundColor
+  )
+  expect(
+    parseFloat((await panelStyle(panel)).borderBottomLeftRadius)
+  ).toBeGreaterThan(0)
 })
 
 test("market product variation panel joins hydration controls on desktop hover @market", async ({
