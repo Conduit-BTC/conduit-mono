@@ -1,12 +1,7 @@
-import { useCallback, useState } from "react"
-import { QRCodeSVG } from "qrcode.react"
 import {
   decodeLightningInvoiceAmount,
   getLightningInvoiceNetwork,
-  getLightningNetworkMismatchMessage,
   getOrderStatusDisplay,
-  isInvoiceCompatibleWithCurrentNetwork,
-  normalizeLightningInvoice,
   normalizePublicMediaUrl,
   type ParsedOrderMessage,
 } from "@conduit/core"
@@ -63,33 +58,20 @@ function InvoiceCard({
   amount,
   currency,
   note,
+  orderId,
+  showOrderAction,
   formatAmount,
 }: {
   invoice: string
   amount?: number
   currency?: string
   note?: string
+  orderId: string
+  showOrderAction: boolean
   formatAmount: OrderAmountFormatter
 }) {
-  const [copied, setCopied] = useState(false)
-
-  const copyInvoice = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(invoice)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    } catch {
-      // no-op
-    }
-  }, [invoice])
-
-  const bolt11 = normalizeLightningInvoice(invoice)
   const decodedAmount = decodeLightningInvoiceAmount(invoice)
   const invoiceNetwork = getLightningInvoiceNetwork(invoice)
-  const invoiceMismatch = getLightningNetworkMismatchMessage(invoice)
-  const isCompatible = isInvoiceCompatibleWithCurrentNetwork(invoice)
-  const walletUri =
-    invoiceNetwork !== "unknown" && isCompatible ? `lightning:${bolt11}` : null
   const displayAmount =
     decodedAmount.sats ?? decodedAmount.msats ?? amount ?? null
   const displayCurrency = decodedAmount.currency ?? currency ?? null
@@ -110,7 +92,7 @@ function InvoiceCard({
           Lightning invoice
         </div>
         {displayAmount != null && (
-          <div className="text-right text-sm font-medium text-[var(--text-primary)]">
+          <div className="text-right text-sm font-medium tabular-nums text-[var(--text-primary)]">
             <div>{formattedAmount?.primary ?? `${displayAmount} sats`}</div>
             {formattedAmount?.secondary && (
               <div className="text-xs font-normal text-[var(--text-muted)]">
@@ -124,48 +106,27 @@ function InvoiceCard({
         <Badge variant="outline" className="border-[var(--border)]">
           {invoiceNetwork}
         </Badge>
-        {invoiceMismatch ? (
-          <span className="text-xs text-error">{invoiceMismatch}</span>
-        ) : (
-          <span className="text-xs text-[var(--text-secondary)]">
-            Matches current order environment.
-          </span>
-        )}
+        <Badge variant="outline" className="border-[var(--border)]">
+          Check in Orders
+        </Badge>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-[180px_minmax(0,1fr)]">
-        <div className="w-fit rounded-md border border-[var(--border)] bg-white p-3">
-          <QRCodeSVG value={bolt11} size={156} level="M" />
-        </div>
-        <div className="min-w-0 flex-1 space-y-2">
-          <div className="break-all rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 font-mono text-xs leading-5 text-[var(--text-secondary)]">
-            {invoice}
-          </div>
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              className="flex-1"
-              onClick={copyInvoice}
-            >
-              {copied ? "Copied" : "Copy"}
-            </Button>
-            {walletUri && (
-              <Button asChild size="sm" className="flex-1">
-                <a href={walletUri}>Pay</a>
-              </Button>
-            )}
-            {!walletUri && invoiceMismatch && (
-              <Button size="sm" className="flex-1" disabled>
-                Pay unavailable
-              </Button>
-            )}
-          </div>
-        </div>
-      </div>
+      <p className="text-pretty text-xs leading-5 text-[var(--text-secondary)]">
+        Payment controls are available only from Orders after the invoice is
+        checked against the saved order.
+      </p>
+      {showOrderAction && (
+        <Button asChild variant="outline" size="sm">
+          <a href={`/orders?order=${encodeURIComponent(orderId)}`}>
+            Review in Orders
+          </a>
+        </Button>
+      )}
 
       {note && (
-        <div className="text-xs text-[var(--text-secondary)]">{note}</div>
+        <div className="text-pretty text-xs text-[var(--text-secondary)]">
+          {note}
+        </div>
       )}
     </div>
   )
@@ -342,6 +303,8 @@ export function OrderConversationMessage({
             amount={message.payload.amount}
             currency={message.payload.currency}
             note={message.payload.note}
+            orderId={message.orderId}
+            showOrderAction={!mine}
             formatAmount={formatAmount}
           />
         )}

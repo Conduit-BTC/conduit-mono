@@ -7,6 +7,8 @@ import {
   ORDER_PROOF_DELIVERY_CLAIM_LEASE_MS,
   ORDER_PAYMENT_INTERRUPTED_AFTER_WALLET_ERROR,
   ORDER_PAYMENT_INTERRUPTED_BEFORE_WALLET_ERROR,
+  bindMerchantInvoiceForPayment,
+  config,
   claimExternalOrderPaymentProof,
   claimOrderLifecyclePayment,
   claimOrderLifecyclePrivateFallbackPayment,
@@ -30,6 +32,11 @@ import {
   type OrderLifecycle,
   type OrderPaymentClaimInput,
 } from "@conduit/core"
+import {
+  bolt11PaymentHashField,
+  bolt11PlainDescriptionField,
+  makeBolt11Fixture,
+} from "./support/bolt11-fixture"
 
 const base = {
   orderDeliveryStatus: "not_started" as const,
@@ -65,6 +72,7 @@ async function withMockOrderPaymentDb<T>(
   const originalPaymentAttemptGet = paymentAttemptTable.get
   const originalPaymentAttemptPut = paymentAttemptTable.put
   const originalTransaction = database.transaction
+  let transactionTail: Promise<unknown> = Promise.resolve()
 
   lifecycleTable.get = (async (orderId: string) =>
     lifecycle?.orderId === orderId
@@ -82,9 +90,14 @@ async function withMockOrderPaymentDb<T>(
     paymentAttempt = next
     return next.id
   }) as typeof paymentAttemptTable.put
-  database.transaction = (async (...args: unknown[]) => {
+  database.transaction = ((...args: unknown[]) => {
     const scope = args.at(-1) as () => Promise<unknown>
-    return await scope()
+    const result = transactionTail.then(scope, scope)
+    transactionTail = result.then(
+      () => undefined,
+      () => undefined
+    )
+    return result
   }) as typeof database.transaction
 
   try {
@@ -892,6 +905,101 @@ describe("order payment admission", () => {
         proofDeliveryStatus: "retry_needed",
       })
     })
+  })
+
+  it("atomically binds handoff and reporting to one exact merchant invoice", async () => {
+    const awaiting: OrderLifecycle = {
+      ...lifecycle,
+      checkoutMode: "pay_later",
+      publicZapSigner: undefined,
+      invoiceStatus: "not_requested",
+      paymentStatus: "not_started",
+      proofDeliveryStatus: "not_started",
+      invoice: undefined,
+      paymentHash: undefined,
+      invoiceExpiresAt: undefined,
+    }
+    const previousNetwork = config.lightningNetwork
+    config.lightningNetwork = "mainnet"
+    try {
+      const buildInvoice = (paymentHashByte: number) =>
+        makeBolt11Fixture({
+          hrp: "lnbc20n",
+          createdAt: 1_800_000_000,
+          fields: [
+            bolt11PaymentHashField(new Uint8Array(32).fill(paymentHashByte)),
+            bolt11PlainDescriptionField(),
+          ],
+        })
+      const firstInvoice = {
+        buyerPubkey: awaiting.buyerPubkey,
+        merchantPubkey: awaiting.merchantPubkey,
+        totalMsats: awaiting.totalMsats,
+        invoice: buildInvoice(17),
+        paymentHash: "11".repeat(32),
+        expiresAt: 1_800_003_600,
+      }
+      const competingInvoice = {
+        ...firstInvoice,
+        invoice: buildInvoice(34),
+        paymentHash: "22".repeat(32),
+      }
+
+      await withMockOrderPaymentDb({ lifecycle: awaiting }, async (state) => {
+        const [first, second] = await Promise.all([
+          bindMerchantInvoiceForPayment(
+            awaiting.orderId,
+            firstInvoice,
+            1_800_000_001_000
+          ),
+          bindMerchantInvoiceForPayment(
+            awaiting.orderId,
+            competingInvoice,
+            1_800_000_001_000
+          ),
+        ])
+
+        expect(first.status).toBe("bound")
+        expect(second.status).toBe("preserved")
+        expect(state.lifecycle()).toMatchObject({
+          invoiceStatus: "manual_required",
+          paymentStatus: "manual_required",
+          proofDeliveryStatus: "not_started",
+          invoice: firstInvoice.invoice,
+          paymentHash: firstInvoice.paymentHash,
+          invoiceExpiresAt: firstInvoice.expiresAt,
+        })
+      })
+
+      await withMockOrderPaymentDb({ lifecycle: awaiting }, async (state) => {
+        const [first, second] = await Promise.all([
+          claimExternalOrderPaymentProof(
+            awaiting.orderId,
+            "projected-proof-owner-first",
+            { merchantInvoice: firstInvoice, nowMs: 1_800_000_001_000 }
+          ),
+          claimExternalOrderPaymentProof(
+            awaiting.orderId,
+            "projected-proof-owner-second",
+            { merchantInvoice: competingInvoice, nowMs: 1_800_000_001_000 }
+          ),
+        ])
+
+        expect(first.status).toBe("claimed")
+        expect(second.status).toBe("preserved")
+        expect(state.lifecycle()).toMatchObject({
+          invoiceStatus: "manual_required",
+          paymentStatus: "paid",
+          proofDeliveryStatus: "pending",
+          proofDeliveryClaimId: "projected-proof-owner-first",
+          invoice: firstInvoice.invoice,
+          paymentHash: firstInvoice.paymentHash,
+          invoiceExpiresAt: firstInvoice.expiresAt,
+        })
+      })
+    } finally {
+      config.lightningNetwork = previousNetwork
+    }
   })
 
   it("recovers an owned interruption before any invoice reached a wallet", async () => {
