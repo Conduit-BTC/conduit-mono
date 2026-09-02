@@ -251,6 +251,85 @@ describe("explicit kind 10063 publication", () => {
     ).toBeUndefined()
   })
 
+  it("preserves an authenticated planner local relay through reload and read-back", async () => {
+    const storage = new MemoryStorage()
+    const readRelayUrl = "wss://read.conduit.market"
+    const publishRelayUrl = "ws://127.0.0.1:7777"
+    const resolution = await reviewedEmpty(storage, [readRelayUrl])
+    const attempts: string[] = []
+    let signed: SignedPublicNostrEvent | null = null
+    let acceptPublish = false
+    const dependencies: PublishMediaServerPreferencesDependencies = {
+      storage,
+      now: () => NOW,
+      readRelayUrls: [readRelayUrl],
+      planPublish: async (input) => {
+        expect(input).toMatchObject({
+          intent: "author_event",
+          authorPubkey: OWNER,
+          authenticatedPubkey: OWNER,
+        })
+        return {
+          intent: "author_event",
+          primaryRelayUrls: [publishRelayUrl],
+          broadcastRelayUrls: [],
+          parkedRelayUrls: [],
+        }
+      },
+      publishToRelay: async (input) => {
+        signed = input.signedEvent
+        attempts.push(input.relayUrl)
+        return acceptPublish ? "acked" : "timed_out"
+      },
+      fetchEvents: async (filter, options) =>
+        filter.ids?.length && signed
+          ? readResult({
+              events: [signed],
+              relayUrls: options.relayUrls,
+              sources: { [signed.id]: [publishRelayUrl] },
+            })
+          : readResult({ relayUrls: options.relayUrls }),
+    }
+
+    const first = await publishMediaServerPreferences({
+      owner: OWNER,
+      serverUrls: ["https://media.conduit.market"],
+      signer: signer(),
+      reviewed: toReviewedMediaServerEvidence(resolution),
+      dependencies,
+    })
+    expect(first).toMatchObject({
+      outcome: "failed",
+      targetRelayCount: 1,
+      retryAvailable: true,
+    })
+    expect(attempts).toEqual([publishRelayUrl])
+
+    __resetMediaServerPreferencesForTests()
+    expect(
+      loadMediaServerPreferenceRecord(OWNER, storage).pending?.publishRelayUrls
+    ).toEqual([publishRelayUrl])
+
+    acceptPublish = true
+    const retried = await retryMediaServerPreferencesPublish({
+      owner: OWNER,
+      dependencies,
+    })
+    expect(retried).toMatchObject({
+      outcome: "confirmed",
+      acceptedRelayCount: 1,
+      targetRelayCount: 1,
+      confirmed: true,
+      retryAvailable: false,
+    })
+    expect(attempts).toEqual([publishRelayUrl, publishRelayUrl])
+
+    __resetMediaServerPreferencesForTests()
+    expect(
+      loadMediaServerPreferenceRecord(OWNER, storage).published?.sourceRelayUrls
+    ).toEqual([publishRelayUrl])
+  })
+
   it("distinguishes full rejection from accepted-but-pending confirmation", async () => {
     const rejectedStorage = new MemoryStorage()
     const rejectedResolution = await reviewedEmpty(rejectedStorage, [

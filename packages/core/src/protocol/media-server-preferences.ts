@@ -16,7 +16,10 @@ import {
   type ExclusiveRelayPublishStatus,
   type PublishWithPlannerInput,
 } from "./relay-publish"
-import { normalizeSecureOrIsolatedE2eRelayUrls } from "./relay-settings"
+import {
+  normalizeSecureOrIsolatedE2eRelayUrls,
+  tryNormalizeRelayUrl,
+} from "./relay-settings"
 import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
@@ -231,6 +234,23 @@ const inMemoryRecords = new Map<string, MediaServerPreferenceEvidenceRecord>()
 
 function clone<T>(value: T): T {
   return structuredClone(value)
+}
+
+/**
+ * Canonicalize relay URLs after an authenticated planner or persisted exact
+ * plan has already approved them. Untrusted caller hints still use the
+ * public-or-isolated filter at their input boundary.
+ */
+function normalizeApprovedRelayUrls(relayUrls: readonly string[]): string[] {
+  const normalizedUrls: string[] = []
+  const seen = new Set<string>()
+  for (const relayUrl of relayUrls) {
+    const normalized = tryNormalizeRelayUrl(relayUrl)
+    if (!normalized.ok || seen.has(normalized.url)) continue
+    seen.add(normalized.url)
+    normalizedUrls.push(normalized.url)
+  }
+  return normalizedUrls
 }
 
 function getDefaultStorage(): MediaServerPreferencesStorage | null {
@@ -491,7 +511,7 @@ function sanitizeStoredRecord(
       record.published = {
         signedEvent: valid.event,
         serverUrls: valid.serverUrls,
-        sourceRelayUrls: normalizeSecureOrIsolatedE2eRelayUrls(
+        sourceRelayUrls: normalizeApprovedRelayUrls(
           candidate.published.sourceRelayUrls ?? []
         ),
         observedAt: candidate.published.observedAt,
@@ -514,15 +534,13 @@ function sanitizeStoredRecord(
       candidate.pending.signedEvent,
       owner
     )
-    const publishRelayUrls = normalizeSecureOrIsolatedE2eRelayUrls(
+    const publishRelayUrls = normalizeApprovedRelayUrls(
       candidate.pending.publishRelayUrls ?? []
     )
     if (valid && publishRelayUrls.length > 0) {
       const targetSet = new Set(publishRelayUrls)
       const withinPlan = (urls: readonly string[]) =>
-        normalizeSecureOrIsolatedE2eRelayUrls(urls).filter((url) =>
-          targetSet.has(url)
-        )
+        normalizeApprovedRelayUrls(urls).filter((url) => targetSet.has(url))
       record.pending = {
         signedEvent: valid.event,
         serverUrls: valid.serverUrls,
@@ -814,7 +832,7 @@ function mergeRelaySources(
   left: readonly string[],
   right: readonly string[]
 ): string[] {
-  return normalizeSecureOrIsolatedE2eRelayUrls([...left, ...right]).sort()
+  return normalizeApprovedRelayUrls([...left, ...right]).sort()
 }
 
 function preserveCurrentRecordState(
@@ -970,8 +988,9 @@ export async function readMediaServerPreferences(
 
   if (networkValid) {
     const signedEvent = networkValid.event as SignedPublicNostrEvent
-    const sourceRelayUrls = normalizeSecureOrIsolatedE2eRelayUrls(
-      result?.eventSourceRelayUrls[signedEvent.id] ?? []
+    const sourceRelayUrls = uniqueWithinPlan(
+      result?.eventSourceRelayUrls[signedEvent.id] ?? [],
+      plan.relayUrls
     )
     if (strongerRevision(signedEvent, record.published?.signedEvent)) {
       record.published = {
@@ -1112,7 +1131,7 @@ async function resolvePublishTargets(
     skipHealthFilter: true,
   }
   const plan = await (dependencies.planPublish ?? planPublishRelays)(input)
-  return normalizeSecureOrIsolatedE2eRelayUrls([
+  return normalizeApprovedRelayUrls([
     ...plan.primaryRelayUrls,
     ...plan.broadcastRelayUrls,
   ]).slice(0, MAX_MEDIA_SERVER_PUBLISH_RELAYS)
@@ -1152,10 +1171,8 @@ function uniqueWithinPlan(
   urls: readonly string[],
   plan: readonly string[]
 ): string[] {
-  const planSet = new Set(plan)
-  return normalizeSecureOrIsolatedE2eRelayUrls(urls).filter((url) =>
-    planSet.has(url)
-  )
+  const planSet = new Set(normalizeApprovedRelayUrls(plan))
+  return normalizeApprovedRelayUrls(urls).filter((url) => planSet.has(url))
 }
 
 async function verifyPreferenceReadBack(input: {
