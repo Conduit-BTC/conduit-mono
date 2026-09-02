@@ -738,18 +738,7 @@ function ProductsPage() {
         <ul className={PRODUCT_GRID_CLASS_NAME}>
           {productCards.map(({ product, family, merchant }, index) => {
             return (
-              <li
-                key={product.id}
-                className={[
-                  "h-full",
-                  // Keep the first page fully rendered (LCP / above the fold).
-                  // Let the browser skip layout + paint for the revealed tail
-                  // while reserving row height so the scrollbar stays stable.
-                  index >= PAGE_SIZE && product.type === "simple"
-                    ? "[content-visibility:auto] [contain-intrinsic-size:auto_360px]"
-                    : "",
-                ].join(" ")}
-              >
+              <li key={product.id} className="h-full">
                 <ResolvedProductGridCard
                   product={product}
                   family={family}
