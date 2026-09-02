@@ -9,6 +9,7 @@ import {
   buildOrderTimeline,
   buildOrderViewModel,
   computeOrderTimelineStatuses,
+  deriveBoundMerchantInvoiceAccess,
   deriveOrderHeaderStatus,
   getOrderFilterPhase,
   getOrderPaymentMethodLabel,
@@ -409,6 +410,31 @@ describe("buildOrderViewModel", () => {
       expect(vm.paymentStatus).toBe("manual_required")
     } finally {
       config.lightningNetwork = previousNetwork
+    }
+  })
+
+  it("gates a bound invoice from current merchant state", () => {
+    const lifecycle = baseLifecycle({
+      checkoutMode: "pay_later",
+      invoiceStatus: "manual_required",
+      paymentStatus: "manual_required",
+      proofDeliveryStatus: "not_started",
+      invoice: merchantInvoice(),
+      paymentHash: "07".repeat(32),
+      invoiceExpiresAt: 1_800_003_600,
+    })
+
+    for (const [status, access] of [
+      [null, "pay"],
+      ["accepted", "pay"],
+      ["cancelled", "report_only"],
+      ["refund_requested", "report_only"],
+      ["paid", "closed"],
+      ["shipped", "closed"],
+      ["complete", "closed"],
+      ["delivered", "closed"],
+    ] as const) {
+      expect(deriveBoundMerchantInvoiceAccess(lifecycle, status)).toBe(access)
     }
   })
 

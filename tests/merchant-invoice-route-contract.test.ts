@@ -12,6 +12,9 @@ describe("merchant invoice route contract", () => {
     expect(source).toContain("Use merchant invoice")
     expect(prepareGate).toBeGreaterThan(-1)
     expect(qrControl).toBeGreaterThan(prepareGate)
+    expect(source).toContain("Do not pay this invoice.")
+    expect(source).toContain('boundMerchantInvoiceAccess !== "closed"')
+    expect(source).toContain('boundMerchantInvoiceAccess !== "report_only"')
     expect(source).toContain(
       'action?.status === "blocked" && action.canReport ? action : undefined'
     )

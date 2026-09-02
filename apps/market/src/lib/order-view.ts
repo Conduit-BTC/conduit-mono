@@ -142,6 +142,41 @@ export interface OrderViewModel {
   hasLifecycle: boolean
 }
 
+export type BoundMerchantInvoiceAccess =
+  "none" | "pay" | "report_only" | "closed"
+
+/**
+ * Keep a bound invoice as evidence after the merchant closes the order without
+ * continuing to offer it for payment. Cancellation and refund states retain
+ * the buyer's existing ability to report a payment that already happened.
+ */
+export function deriveBoundMerchantInvoiceAccess(
+  lifecycle: OrderLifecycle | null | undefined,
+  merchantStatus: KnownOrderStatus | null
+): BoundMerchantInvoiceAccess {
+  const hasBoundInvoice =
+    lifecycle?.checkoutMode === "pay_later" &&
+    lifecycle.invoiceStatus === "manual_required" &&
+    lifecycle.paymentStatus === "manual_required" &&
+    !!lifecycle.invoice
+  if (!hasBoundInvoice) return "none"
+
+  if (
+    lifecycle.phase === "completed" ||
+    isMerchantOrderPaid({ status: merchantStatus })
+  ) {
+    return "closed"
+  }
+  if (
+    lifecycle.phase === "cancelled" ||
+    merchantStatus === "cancelled" ||
+    merchantStatus === "refund_requested"
+  ) {
+    return "report_only"
+  }
+  return "pay"
+}
+
 export interface BuildOrderViewModelInput {
   orderId: string
   merchantPubkey?: string

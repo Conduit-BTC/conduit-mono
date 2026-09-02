@@ -94,6 +94,7 @@ import { useWallets } from "../hooks/useWallets"
 import {
   buildOrderTimeline,
   buildOrderViewModel,
+  deriveBoundMerchantInvoiceAccess,
   deriveOrderHeaderStatus,
   getOrderFilterPhase,
   getOrderPaymentMethodLabel,
@@ -1085,7 +1086,19 @@ function OrderDetail({
     await runOrderPrivateFallback(ctx)
   }
 
+  const boundMerchantInvoiceAccess = deriveBoundMerchantInvoiceAccess(
+    row.lifecycle,
+    vm.merchantStatus
+  )
+
   function beginMerchantInvoicePayment(): boolean {
+    if (
+      boundMerchantInvoiceAccess === "report_only" ||
+      boundMerchantInvoiceAccess === "closed"
+    ) {
+      setRecoveryError("This order no longer accepts payment.")
+      return false
+    }
     const action = vm.merchantInvoiceAction
     if (!action) return true
     const validation = validateMerchantInvoicePaymentAction(
@@ -1110,6 +1123,9 @@ function OrderDetail({
   }
 
   async function reportExternalPayment(): Promise<void> {
+    if (boundMerchantInvoiceAccess === "closed") {
+      throw new Error("The merchant already confirmed this payment.")
+    }
     const action = vm.merchantInvoiceAction
     const unboundPaidInvoice =
       action?.status === "blocked" && action.canReport ? action : undefined
@@ -1142,6 +1158,8 @@ function OrderDetail({
     !zeroCostPickupOrder && vm.paymentStatus === "ambiguous"
   const showExternalWallet =
     !zeroCostPickupOrder &&
+    boundMerchantInvoiceAccess !== "closed" &&
+    boundMerchantInvoiceAccess !== "report_only" &&
     (vm.paymentStatus === "manual_required" || !!vm.merchantInvoiceAction)
   const autoDetectPublicReceipt =
     !zeroCostPickupOrder &&
@@ -1266,6 +1284,31 @@ function OrderDetail({
           />
         </section>
       </>
+
+      {boundMerchantInvoiceAccess === "report_only" && (
+        <StatusNotice
+          variant="warning"
+          title="Order no longer accepts payment"
+          detail={
+            vm.merchantStatus === "refund_requested"
+              ? "Refund requested"
+              : "Order cancelled"
+          }
+        >
+          <p className="text-pretty text-sm text-[var(--text-secondary)]">
+            Do not pay this invoice. If your wallet already confirms a payment,
+            report it so the merchant can verify what happened.
+          </p>
+          <Button
+            variant="outline"
+            className="mt-4 h-10 px-4 text-sm"
+            disabled={busy}
+            onClick={() => void withBusy(reportExternalPayment)}
+          >
+            Report a payment already made
+          </Button>
+        </StatusNotice>
+      )}
 
       {showExternalWallet && (
         <div className="space-y-3">
