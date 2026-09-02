@@ -1061,6 +1061,18 @@ describe("inbox declaration discovery planning", () => {
 })
 
 describe("planInboxReadRelays", () => {
+  it("limits canonical compatibility reads to the protected inbox defaults", () => {
+    const plan = planInboxReadRelays({
+      declaration: resolution({ state: "not_observed", relayUrls: [] }),
+      localReadRelayUrls: [],
+    })
+
+    expect(plan.relayUrls).toEqual([
+      "wss://relay.conduit.market",
+      "wss://relay.ditto.pub",
+    ])
+  })
+
   it("unions declared, local IN, and compatibility reads with sources", () => {
     const plan = planInboxReadRelays({
       declaration: resolution({ relayUrls: ["wss://inbox.conduit.market"] }),
@@ -1230,6 +1242,21 @@ describe("deriveInboxReadCoverage", () => {
 })
 
 describe("selectPrivateMessageDeliveryRoute", () => {
+  it("limits canonical compatibility writes to the protected inbox defaults", () => {
+    const selection = selectPrivateMessageDeliveryRoute({
+      rumorKind: EVENT_KINDS.ORDER,
+      declaration: resolution({ state: "not_observed", relayUrls: [] }),
+      validatedOrder: true,
+      compatibilityEnabled: true,
+    })
+
+    expect(selection.route).toBe("compatibility_order")
+    expect(selection.relayUrls).toEqual([
+      "wss://relay.conduit.market",
+      "wss://relay.ditto.pub",
+    ])
+  })
+
   it("always prefers a valid declaration over compatibility", () => {
     const selection = selectPrivateMessageDeliveryRoute({
       rumorKind: EVENT_KINDS.ORDER,
