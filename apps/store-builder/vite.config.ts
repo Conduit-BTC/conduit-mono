@@ -4,6 +4,7 @@ import { TanStackRouterVite } from "@tanstack/router-plugin/vite"
 import { resolve } from "path"
 import { fileURLToPath } from "node:url"
 import { createConduitBuildContract } from "../../scripts/vite/build_info.ts"
+import { createThemeBootstrapPlugin } from "../../scripts/vite/theme_bootstrap.ts"
 
 const appDir = fileURLToPath(new URL(".", import.meta.url))
 const buildContract = createConduitBuildContract(appDir)
@@ -11,6 +12,7 @@ const buildContract = createConduitBuildContract(appDir)
 export default defineConfig({
   define: buildContract.define,
   plugins: [
+    createThemeBootstrapPlugin(),
     TanStackRouterVite(),
     react(),
     buildContract.deploymentManifestPlugin,

@@ -4,8 +4,10 @@
  * Based on Figma: Conduit High-Fi - Website
  */
 
-:root {
+:root,
+:root[data-theme="night-market"] {
   color-scheme: dark;
+  --theme-color: #0a0614;
 
   /* Base hue/saturation for color calculations */
   --base-h: 0;
@@ -200,53 +202,52 @@
   --shadow-dialog: 0 28px 80px rgba(0, 0, 0, 0.6);
 }
 
-/* Light mode (opt-in via OS) */
-@media (prefers-color-scheme: light) {
-  :root {
-    color-scheme: light;
+/* Day Market preserves the current light value set. */
+:root[data-theme="day-market"] {
+  color-scheme: light;
 
-    /*
-     * Surface hierarchy in light mode:
-     *   background (neutral-150, 92%) -> surface/card (white) -> elevated (white)
-     * The deeper background gives white surfaces real contrast to lift against.
-     */
-    --background: var(--neutral-150);
-    --foreground: var(--neutral-900);
+  /*
+   * Surface hierarchy in light mode:
+   *   background (neutral-150, 92%) -> surface/card (white) -> elevated (white)
+   * The deeper background gives white surfaces real contrast to lift against.
+   */
+  --background: var(--neutral-150);
+  --foreground: var(--neutral-900);
+  --theme-color: var(--background);
 
-    /* Tier 1 - base panels / cards */
-    --card: white;
-    --card-foreground: var(--foreground);
+  /* Tier 1 - base panels / cards */
+  --card: white;
+  --card-foreground: var(--foreground);
 
-    /* Tier 2 - popovers / inline elevated panels */
-    --popover: white;
-    --popover-foreground: var(--foreground);
+  /* Tier 2 - popovers / inline elevated panels */
+  --popover: white;
+  --popover-foreground: var(--foreground);
 
-    --muted: var(--neutral-100);
-    --muted-foreground: var(--neutral-700);
+  --muted: var(--neutral-100);
+  --muted-foreground: var(--neutral-700);
 
-    --text-primary: var(--foreground);
-    --text-secondary: var(--muted-foreground);
-    --text-muted: var(--neutral-500);
-    --text-inverse: white;
+  --text-primary: var(--foreground);
+  --text-secondary: var(--muted-foreground);
+  --text-muted: var(--neutral-500);
+  --text-inverse: white;
 
-    /* Semantic surface aliases */
-    --surface: var(--card); /* base panel/card */
-    --surface-elevated: var(--popover); /* inline raised panel */
-    --surface-dialog: white; /* full dialogs */
-    --surface-overlay: white; /* floating menus / dropdowns */
+  /* Semantic surface aliases */
+  --surface: var(--card); /* base panel/card */
+  --surface-elevated: var(--popover); /* inline raised panel */
+  --surface-dialog: white; /* full dialogs */
+  --surface-overlay: white; /* floating menus / dropdowns */
 
-    /* Borders are one step darker so they read against white surfaces */
-    --border: var(--neutral-200);
-    --input: var(--neutral-200);
-    --border-overlay: var(--neutral-300);
+  /* Borders are one step darker so they read against white surfaces */
+  --border: var(--neutral-200);
+  --input: var(--neutral-200);
+  --border-overlay: var(--neutral-300);
 
-    /* Inset highlight visible on white */
-    --shadow-glass-inset:
-      inset 0 1px 0 rgba(255, 255, 255, 0.8), inset 0 -1px 0 var(--neutral-200);
+  /* Inset highlight visible on white */
+  --shadow-glass-inset:
+    inset 0 1px 0 rgba(255, 255, 255, 0.8), inset 0 -1px 0 var(--neutral-200);
 
-    /* Floating element shadows -- softer than dark mode but still visible */
-    --shadow-dialog:
-      0 8px 30px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.08);
-    --shadow-xl: 0 20px 40px rgba(0, 0, 0, 0.1), 0 8px 16px rgba(0, 0, 0, 0.06);
-  }
+  /* Floating element shadows -- softer than dark mode but still visible */
+  --shadow-dialog:
+    0 8px 30px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.08);
+  --shadow-xl: 0 20px 40px rgba(0, 0, 0, 0.1), 0 8px 16px rgba(0, 0, 0, 0.06);
 }
