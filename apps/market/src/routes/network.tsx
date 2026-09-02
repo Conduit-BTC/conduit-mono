@@ -4,6 +4,7 @@ import {
   useAuth,
   useConduitSession,
   useInboxDeclaration,
+  useMediaServerPreferences,
   useRelaySettings,
 } from "@conduit/core"
 import { RelaySettingsPanel } from "@conduit/ui"
@@ -17,7 +18,7 @@ export const Route = createFileRoute("/network")({
 })
 
 function SettingsPage() {
-  const { pubkey } = useAuth()
+  const { pubkey, signer, method, authGeneration } = useAuth()
   const session = useConduitSession()
   const relaySettings = useRelaySettings(session.relayScope, {
     pubkey,
@@ -25,6 +26,13 @@ function SettingsPage() {
   })
   const inboxDeclaration = useInboxDeclaration(pubkey, {
     enabled: session.relaySettingsReady,
+    relayScope: session.relayScope,
+  })
+  const mediaServerPreferences = useMediaServerPreferences(pubkey, {
+    enabled: session.relaySettingsReady,
+    signer,
+    authMethod: method,
+    authGeneration,
     relayScope: session.relayScope,
   })
 
@@ -73,6 +81,19 @@ function SettingsPage() {
                     inboxDeclaration.publishConfirmationPending,
                   onPublish: inboxDeclaration.publishDeclaration,
                   onRetryLookup: inboxDeclaration.refetch,
+                }
+              : undefined
+          }
+          mediaServers={
+            pubkey
+              ? {
+                  view: mediaServerPreferences.view,
+                  onAddServer: mediaServerPreferences.addServer,
+                  onRemoveServer: mediaServerPreferences.removeServer,
+                  onMoveServer: mediaServerPreferences.moveServer,
+                  onPublish: mediaServerPreferences.publish,
+                  onRetryPublish: mediaServerPreferences.retryPublish,
+                  onRetryLookup: mediaServerPreferences.refetch,
                 }
               : undefined
           }

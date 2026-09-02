@@ -298,4 +298,13 @@ export {
   type UseInboxDeclarationOptions,
   type UseInboxDeclarationResult,
 } from "./hooks/useInboxDeclaration"
+export {
+  useMediaServerPreferences,
+  type MediaServerDraftActionResult,
+  type MediaServerPreferenceViewStatus,
+  type MediaServerPreferencesView,
+  type MediaServerPublishPhase,
+  type UseMediaServerPreferencesOptions,
+  type UseMediaServerPreferencesResult,
+} from "./hooks/useMediaServerPreferences"
 export { useUpdateProfile } from "./hooks/useUpdateProfile"
