@@ -63,6 +63,7 @@ export * from "./event-market-handoff"
 export * from "./event-market-merchandise"
 export * from "./signed-event"
 export * from "./shopper-presets"
+export * from "./media-server-preferences"
 export {
   getNdk,
   fetchEventsFanout,

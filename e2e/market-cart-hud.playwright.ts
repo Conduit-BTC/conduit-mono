@@ -134,7 +134,7 @@ test("market cart HUD keeps every fixed control inside the HUD across merchant-c
         clientWidth: document.documentElement.clientWidth,
         scrollWidth: document.documentElement.scrollWidth,
       }))
-      expect(overflow.scrollWidth).toBe(overflow.clientWidth)
+      expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth)
 
       // The expanded panel's CTA must also stay contained.
       const toggle = hud.locator("button[aria-expanded]")

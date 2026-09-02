@@ -34,15 +34,13 @@ export const CANONICAL_DM_DECLARATION_DISCOVERY_RELAYS = [
   "wss://relay.primal.net",
 ]
 /**
- * Bounded compatibility reads for encrypted commerce messages. This includes
- * the protected default inboxes plus the temporary validated-order registry.
- * Do not use this broader set when creating a kind-10050 inbox declaration.
+ * Bounded compatibility reads for encrypted commerce messages, limited to the
+ * protected default inboxes and aligned with the validated-order registry.
+ * Do not use this set when creating a kind-10050 inbox declaration.
  */
 export const CANONICAL_COMMERCE_DM_FALLBACK_RELAYS = [
   "wss://relay.conduit.market",
   "wss://relay.ditto.pub",
-  "wss://inbox.azzamo.net",
-  "wss://nos.lol",
 ]
 export const CANONICAL_DM_INBOX_DEFAULT_RELAYS = [
   "wss://relay.conduit.market",
@@ -56,8 +54,7 @@ export const CANONICAL_DM_INBOX_DEFAULT_RELAYS = [
  */
 export const CANONICAL_DM_COMPATIBILITY_ORDER_RELAYS = [
   "wss://relay.conduit.market",
-  "wss://inbox.azzamo.net",
-  "wss://nos.lol",
+  "wss://relay.ditto.pub",
 ]
 export const CANONICAL_ZAP_PUBLIC_RELAYS = [
   "wss://nos.lol",

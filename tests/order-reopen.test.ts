@@ -117,12 +117,14 @@ describe("merchant cancellation correction", () => {
 
     expect(getEffectiveMerchantOrderStatus(messages, participants)).toEqual({
       status: "paid",
+      knownStatus: "paid",
       reopenedCancellationId: cancellationId,
     })
     expect(
       getEffectiveMerchantOrderStatus([...messages].reverse(), participants)
     ).toEqual({
       status: "paid",
+      knownStatus: "paid",
       reopenedCancellationId: cancellationId,
     })
   })
@@ -167,6 +169,7 @@ describe("merchant cancellation correction", () => {
       )
     ).toEqual({
       status: "cancelled",
+      knownStatus: "cancelled",
       cancellation: {
         eventId: laterCancellationId,
         resumeStatus: "paid",
@@ -182,6 +185,7 @@ describe("merchant cancellation correction", () => {
       })
     ).toEqual({
       status: "paid",
+      knownStatus: "paid",
       reopenedCancellationId: cancellationId,
     })
 
@@ -231,7 +235,7 @@ describe("merchant cancellation correction", () => {
           [order, paid, cancelled, laterTerminal],
           { buyerPubkey, merchantPubkey }
         )
-      ).toEqual({ status: laterStatus })
+      ).toEqual({ status: laterStatus, knownStatus: laterStatus })
     }
   })
 
@@ -241,7 +245,7 @@ describe("merchant cancellation correction", () => {
         buyerPubkey,
         merchantPubkey,
       })
-    ).toEqual({ status: "cancelled" })
+    ).toEqual({ status: "cancelled", knownStatus: "cancelled" })
   })
 
   it("projects the same restored status in Merchant and Market without hiding shipping", () => {

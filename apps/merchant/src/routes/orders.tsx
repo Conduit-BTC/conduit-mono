@@ -101,7 +101,10 @@ import {
   isOrderQueueTab,
   isMerchantConversationActiveFulfillment,
   ORDER_PHASE_OPTIONS,
+  ORDER_SORT_OPTIONS,
+  sortMerchantConversations,
   type MerchantOrderCommunication,
+  type MerchantOrderSort,
   type MerchantOrderPickupContext,
   type OrderQueueTab,
 } from "../lib/order-phase"
@@ -111,10 +114,13 @@ import {
 } from "../lib/order-pickup-authorization"
 import {
   buildMerchantOrderActionView,
+  captureMerchantPaymentConfirmationTarget,
   getMerchantOrderCancellationCopy,
   isAuthorizedZeroCostPickup,
   isMerchantOrderActionSurfacePending,
+  resolveMerchantPaymentConfirmationSelection,
   runExclusiveOrderAction,
+  type MerchantPaymentConfirmationTarget,
 } from "../lib/order-action-view"
 import { prepareShippingUpdate } from "../lib/shipping-update"
 import { formatMerchantOrderAmount } from "../lib/order-summary-display"
@@ -543,37 +549,95 @@ function emptyOrdersLabel(query: string, phase: OrderQueueTab): string {
   return "No orders yet."
 }
 
-function OrderPhaseFilter({
+function OrderListSelect<T extends string>({
+  id,
+  label,
   value,
+  options,
   onChange,
+  describedBy,
 }: {
-  value: OrderQueueTab
-  onChange: (value: OrderQueueTab) => void
+  id: string
+  label: string
+  value: T
+  options: Array<{ value: T; label: string }>
+  onChange: (value: T) => void
+  describedBy?: string
 }) {
   return (
-    <Select
-      value={value}
-      onValueChange={(nextValue) => {
-        const selectedOption = ORDER_PHASE_OPTIONS.find(
-          (option) => option.value === nextValue
-        )
-        if (selectedOption) onChange(selectedOption.value)
-      }}
-    >
-      <SelectTrigger
-        aria-label="Filter orders by status"
-        className="mt-3 h-11 rounded-xl bg-[var(--surface)] px-3 shadow-none"
+    <div className="space-y-1.5">
+      <Label htmlFor={id} className="text-xs text-[var(--text-secondary)]">
+        {label}
+      </Label>
+      <Select
+        value={value}
+        onValueChange={(nextValue) => {
+          const selected = options.find((option) => option.value === nextValue)
+          if (selected) onChange(selected.value)
+        }}
       >
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>
-        {ORDER_PHASE_OPTIONS.map((option) => (
-          <SelectItem key={option.value} value={option.value}>
-            {option.label}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
+        <SelectTrigger
+          id={id}
+          aria-label={`${label} orders`}
+          aria-describedby={describedBy}
+          className="h-11 rounded-xl bg-[var(--surface)] px-3 shadow-none"
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {options.map((option) => (
+            <SelectItem key={option.value} value={option.value}>
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  )
+}
+
+function OrderListControls({
+  idPrefix,
+  phase,
+  onPhaseChange,
+  sort,
+  onSortChange,
+}: {
+  idPrefix: string
+  phase: OrderQueueTab
+  onPhaseChange: (value: OrderQueueTab) => void
+  sort: MerchantOrderSort
+  onSortChange: (value: MerchantOrderSort) => void
+}) {
+  const filterId = `${idPrefix}-order-filter`
+  const sortId = `${idPrefix}-order-sort`
+  const sortDescriptionId = `${idPrefix}-order-sort-description`
+  return (
+    <div className="mt-3 space-y-2">
+      <OrderListSelect
+        id={filterId}
+        label="Filter"
+        value={phase}
+        options={ORDER_PHASE_OPTIONS}
+        onChange={onPhaseChange}
+      />
+      <OrderListSelect
+        id={sortId}
+        label="Sort"
+        value={sort}
+        options={ORDER_SORT_OPTIONS}
+        onChange={onSortChange}
+        describedBy={sortDescriptionId}
+      />
+      <p
+        id={sortDescriptionId}
+        className="text-pretty text-xs text-[var(--text-muted)]"
+      >
+        {sort === "priority"
+          ? "Orders needing your attention appear first."
+          : "Most recently active orders appear first."}
+      </p>
+    </div>
   )
 }
 
@@ -637,6 +701,7 @@ function OrdersPage() {
   >(null)
   const [orderSearch, setOrderSearch] = useState("")
   const [phaseTab, setPhaseTab] = useState<OrderQueueTab>(selectedQueueFromUrl)
+  const [orderSort, setOrderSort] = useState<MerchantOrderSort>("priority")
   const [ordersSheetOpen, setOrdersSheetOpen] = useState(false)
   const [orderDetailsOpen, setOrderDetailsOpen] = useState(false)
   const [messagesOpen, setMessagesOpen] = useState(false)
@@ -664,10 +729,13 @@ function OrdersPage() {
   )
   const [pendingDestructiveAction, setPendingDestructiveAction] =
     useState<MerchantOrderAction | null>(null)
-  const [confirmingOutOfBandPayment, setConfirmingOutOfBandPayment] =
-    useState(false)
   const [reopenConfirmation, setReopenConfirmation] =
     useState<ReopenOrderMutationInput | null>(null)
+  const [reopenConfirmationError, setReopenConfirmationError] = useState<
+    string | null
+  >(null)
+  const [paymentConfirmationTarget, setPaymentConfirmationTarget] =
+    useState<MerchantPaymentConfirmationTarget | null>(null)
   const [confirmingOrganizerFallback, setConfirmingOrganizerFallback] =
     useState(false)
   const [confirmingOrganizerRelease, setConfirmingOrganizerRelease] =
@@ -879,7 +947,7 @@ function OrdersPage() {
 
   const filteredConversations = useMemo(() => {
     const query = orderSearch.trim().toLowerCase()
-    return conversations.filter((conversation) => {
+    const matchingConversations = conversations.filter((conversation) => {
       if (
         phaseTab !== "all" &&
         getMerchantConversationQueue(conversation) !== phaseTab
@@ -916,7 +984,15 @@ function OrdersPage() {
         .toLowerCase()
         .includes(query)
     })
-  }, [conversations, orderSearch, phaseTab, buyerProfiles, productSearchIndex])
+    return sortMerchantConversations(matchingConversations, orderSort)
+  }, [
+    conversations,
+    orderSearch,
+    orderSort,
+    phaseTab,
+    buyerProfiles,
+    productSearchIndex,
+  ])
 
   const selectConversation = useCallback(
     (conversationId: string) => {
@@ -1148,6 +1224,8 @@ function OrdersPage() {
 
     setSuccessFlash(null)
     setReopenConfirmation(null)
+    setReopenConfirmationError(null)
+    setPaymentConfirmationTarget(null)
     setConfirmingOrganizerFallback(false)
     setConfirmingOrganizerRelease(false)
     setOrganizerReleaseConfirmed(false)
@@ -1480,6 +1558,12 @@ function OrdersPage() {
       pickupFulfillmentActionsAuthorized && !organizerCompletionBlocked,
   })
   const { primaryButtonActions, destructiveActions, hasNextStep } = actionView
+  const paymentConfirmationSelection =
+    resolveMerchantPaymentConfirmationSelection({
+      target: paymentConfirmationTarget,
+      selected,
+      actions: primaryButtonActions,
+    })
   const destructiveCancellationCopy = destructiveActions[0]
     ? getMerchantOrderCancellationCopy({
         actionLabel: destructiveActions[0].label,
@@ -2037,9 +2121,18 @@ function OrdersPage() {
   }
 
   const advanceStatusMutation = useMutation({
-    mutationFn: (nextStatus: KnownOrderStatus) =>
+    mutationFn: ({
+      nextStatus,
+      conversation,
+    }: {
+      nextStatus: KnownOrderStatus
+      conversation?: MerchantConversationSummary
+    }) =>
       runExclusiveOrderAction(orderActionLockRef, async () => {
-        if (!pubkey || !selected) throw new Error("No conversation selected")
+        const actionConversation = conversation ?? selected
+        if (!pubkey || !actionConversation) {
+          throw new Error("No conversation selected")
+        }
         if (nextStatus === "cancelled") {
           const ndk = getNdk()
           if (!ndk.signer) throw new Error("Merchant signer is not connected.")
@@ -2053,7 +2146,7 @@ function OrdersPage() {
           if (!currentFallback) {
             await revokeOrganizerReadyReceipt({
               merchantPubkey: pubkey,
-              orderId: selected.orderId,
+              orderId: actionConversation.orderId,
               signer: ndk.signer,
               matchingAckReceiptIds: new Set(
                 (currentAck?.currentAckRead.data?.data ?? []).map((ack) =>
@@ -2096,8 +2189,8 @@ function OrdersPage() {
         }
         await publishMerchantOrderMessage({
           merchantPubkey: pubkey,
-          buyerPubkey: selected.buyerPubkey,
-          orderId: selected.orderId,
+          buyerPubkey: actionConversation.buyerPubkey,
+          orderId: actionConversation.orderId,
           type: "status_update",
           tags: [["status", nextStatus]],
           payload: { status: nextStatus },
@@ -2117,7 +2210,7 @@ function OrdersPage() {
           setHandoffDeliveryRevision((revision) => revision + 1)
         }
       }),
-    onSuccess: async (_data, nextStatus) => {
+    onSuccess: async (_data, { nextStatus }) => {
       if (
         pubkey &&
         selectedOrderCorrelationRef &&
@@ -2149,10 +2242,11 @@ function OrdersPage() {
       }),
     onSuccess: async (_data, input) => {
       setReopenConfirmation(null)
+      setReopenConfirmationError(null)
       flash(
         input.delivery === "buyer_and_self"
-          ? "Order reopened; buyer update submitted"
-          : "Order reopened in your encrypted order history"
+          ? "Reopen update submitted for buyer delivery"
+          : "Reopen update recorded in your encrypted order history"
       )
       await invalidateOrderQueries()
     },
@@ -2383,7 +2477,13 @@ function OrdersPage() {
             </div>
             <div className="xl:shrink-0">
               <SearchBox value={orderSearch} onChange={setOrderSearch} />
-              <OrderPhaseFilter value={phaseTab} onChange={changePhaseTab} />
+              <OrderListControls
+                idPrefix="desktop"
+                phase={phaseTab}
+                onPhaseChange={changePhaseTab}
+                sort={orderSort}
+                onSortChange={setOrderSort}
+              />
             </div>
             <div className="mt-4 space-y-2 xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:pr-1">
               {filteredConversations.length === 0 && (
@@ -2414,8 +2514,8 @@ function OrdersPage() {
                     type="button"
                     className="inline-flex h-9 shrink-0 items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm font-medium text-[var(--text-primary)] transition-[border-color,background-color] hover:border-[var(--text-secondary)]"
                   >
-                    <Search className="h-4 w-4" />
-                    Search
+                    <Search className="size-4" aria-hidden="true" />
+                    Filter &amp; sort
                   </button>
                 </SheetTrigger>
               </div>
@@ -2433,7 +2533,13 @@ function OrdersPage() {
                   <SheetTitle>Your orders</SheetTitle>
                 </SheetHeader>
                 <SearchBox value={orderSearch} onChange={setOrderSearch} />
-                <OrderPhaseFilter value={phaseTab} onChange={changePhaseTab} />
+                <OrderListControls
+                  idPrefix="mobile"
+                  phase={phaseTab}
+                  onPhaseChange={changePhaseTab}
+                  sort={orderSort}
+                  onSortChange={setOrderSort}
+                />
                 <div className="mt-4 space-y-2">
                   {filteredConversations.length === 0 && (
                     <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface)] px-4 py-5 text-sm text-[var(--text-secondary)]">
@@ -2566,30 +2672,33 @@ function OrdersPage() {
                                         organizerCompletionBlocked)
                                     }
                                     onClick={() => {
-                                      if (
-                                        action.action === "confirm_payment" &&
-                                        canRequestPaymentOutOfBand
-                                      ) {
-                                        setConfirmingOutOfBandPayment(true)
+                                      if (action.action === "confirm_payment") {
+                                        if (!selected) return
+                                        setPaymentConfirmationTarget(
+                                          captureMerchantPaymentConfirmationTarget(
+                                            selected
+                                          )
+                                        )
                                         return
                                       }
                                       if (action.action === "reopen") {
                                         reopenOrderMutation.reset()
+                                        setReopenConfirmationError(null)
                                         setReopenConfirmation(
                                           currentReopenInput
                                         )
                                         return
                                       }
                                       if (action.status) {
-                                        advanceStatusMutation.mutate(
-                                          action.status
-                                        )
+                                        advanceStatusMutation.mutate({
+                                          nextStatus: action.status,
+                                        })
                                       }
                                     }}
                                   >
                                     {(advanceStatusMutation.isPending &&
-                                      advanceStatusMutation.variables ===
-                                        action.status) ||
+                                      advanceStatusMutation.variables
+                                        ?.nextStatus === action.status) ||
                                     (action.action === "reopen" &&
                                       reopenOrderMutation.isPending)
                                       ? buyerInboxKnown
@@ -3714,9 +3823,9 @@ function OrdersPage() {
                         disabled={orderActionPending}
                         onClick={() => {
                           if (!pendingDestructiveAction?.status) return
-                          advanceStatusMutation.mutate(
-                            pendingDestructiveAction.status
-                          )
+                          advanceStatusMutation.mutate({
+                            nextStatus: pendingDestructiveAction.status,
+                          })
                           setPendingDestructiveAction(null)
                         }}
                       >
@@ -3735,6 +3844,7 @@ function OrdersPage() {
                   onOpenChange={(open) => {
                     if (!open && !reopenOrderMutation.isPending) {
                       setReopenConfirmation(null)
+                      setReopenConfirmationError(null)
                     }
                   }}
                 >
@@ -3752,13 +3862,17 @@ function OrdersPage() {
                             : "This restores the order in your encrypted order history without claiming buyer notification. Payment, refunds, stock, and shipping are unchanged."}
                       </AlertDialogDescription>
                     </AlertDialogHeader>
-                    {reopenOrderMutation.error && (
+                    {(reopenConfirmationError || reopenOrderMutation.error) && (
                       <p
                         role="alert"
                         className="text-pretty text-sm leading-6 text-error"
                       >
-                        Couldn&apos;t reopen the order. Check your signer and
-                        network, then try again.
+                        {reopenConfirmationError ?? (
+                          <>
+                            Couldn&apos;t reopen the order. Check your signer
+                            and network, then try again.
+                          </>
+                        )}
                       </p>
                     )}
                     <AlertDialogFooter>
@@ -3766,7 +3880,10 @@ function OrdersPage() {
                         type="button"
                         variant="outline"
                         disabled={reopenOrderMutation.isPending}
-                        onClick={() => setReopenConfirmation(null)}
+                        onClick={() => {
+                          setReopenConfirmation(null)
+                          setReopenConfirmationError(null)
+                        }}
                       >
                         Keep cancelled
                       </Button>
@@ -3775,6 +3892,20 @@ function OrdersPage() {
                         disabled={orderActionPending || !reopenConfirmation}
                         onClick={() => {
                           if (reopenConfirmation) {
+                            const frozenCancellationId =
+                              reopenConfirmation.transition.payload.reopens
+                            const currentCancellationId =
+                              currentReopenInput?.transition.payload.reopens ??
+                              null
+                            if (
+                              frozenCancellationId !== currentCancellationId
+                            ) {
+                              setReopenConfirmationError(
+                                "This order changed while the confirmation was open. Close this dialog and refresh Orders, then review the current cancellation before trying again."
+                              )
+                              return
+                            }
+                            setReopenConfirmationError(null)
                             reopenOrderMutation.mutate(reopenConfirmation)
                           }
                         }}
@@ -3790,8 +3921,10 @@ function OrdersPage() {
                 </AlertDialog>
 
                 <AlertDialog
-                  open={confirmingOutOfBandPayment}
-                  onOpenChange={setConfirmingOutOfBandPayment}
+                  open={paymentConfirmationSelection !== null}
+                  onOpenChange={(open) => {
+                    if (!open) setPaymentConfirmationTarget(null)
+                  }}
                 >
                   <AlertDialogContent>
                     <AlertDialogHeader>
@@ -3799,30 +3932,43 @@ function OrdersPage() {
                         Confirm payment received?
                       </AlertDialogTitle>
                       <AlertDialogDescription>
-                        Continue only after verifying the buyer's payment
-                        outside Nostr. This records payment as confirmed in your
-                        encrypted order history and unlocks fulfillment.
+                        {buyerInboxKnown
+                          ? "Continue only after checking your wallet and verifying this order's payment settled. This marks payment as confirmed, notifies the buyer, and unlocks fulfillment."
+                          : "Continue only after independently verifying this order's payment settled. This records payment as confirmed in your encrypted order history and unlocks fulfillment."}
                       </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
                       <Button
                         type="button"
                         variant="outline"
-                        onClick={() => setConfirmingOutOfBandPayment(false)}
+                        onClick={() => setPaymentConfirmationTarget(null)}
                       >
                         Keep unpaid
                       </Button>
                       <Button
                         type="button"
-                        disabled={orderActionPending}
+                        disabled={
+                          orderActionPending || !paymentConfirmationSelection
+                        }
                         onClick={() => {
-                          advanceStatusMutation.mutate("paid")
-                          setConfirmingOutOfBandPayment(false)
+                          if (!paymentConfirmationSelection) {
+                            setPaymentConfirmationTarget(null)
+                            return
+                          }
+                          advanceStatusMutation.mutate({
+                            nextStatus: "paid",
+                            conversation: paymentConfirmationSelection,
+                          })
+                          setPaymentConfirmationTarget(null)
                         }}
                       >
                         {advanceStatusMutation.isPending
-                          ? "Recording…"
-                          : "Confirm payment"}
+                          ? buyerInboxKnown
+                            ? "Sending…"
+                            : "Recording…"
+                          : buyerInboxKnown
+                            ? "Confirm payment"
+                            : "Record payment received"}
                       </Button>
                     </AlertDialogFooter>
                   </AlertDialogContent>

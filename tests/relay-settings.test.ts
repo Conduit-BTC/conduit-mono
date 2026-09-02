@@ -220,10 +220,12 @@ describe("relay settings protocol helpers", () => {
     expect(CANONICAL_COMMERCE_DM_FALLBACK_RELAYS).toEqual([
       "wss://relay.conduit.market",
       "wss://relay.ditto.pub",
-      "wss://inbox.azzamo.net",
-      "wss://nos.lol",
     ])
     expect(CANONICAL_DM_INBOX_DEFAULT_RELAYS).toEqual([
+      "wss://relay.conduit.market",
+      "wss://relay.ditto.pub",
+    ])
+    expect(CANONICAL_DM_COMPATIBILITY_ORDER_RELAYS).toEqual([
       "wss://relay.conduit.market",
       "wss://relay.ditto.pub",
     ])

@@ -100,7 +100,10 @@ type MerchantStatusMessage = Extract<
 >
 
 export interface EffectiveMerchantOrderStatus {
+  /** Latest effective status, including forward-compatible values. */
   status: string | null
+  /** Latest effective status understood by this client. */
+  knownStatus: KnownOrderStatus | null
   cancellation?: MerchantOrderCancellation
   /** Exact cancellation proven corrected within this observed event set. */
   reopenedCancellationId?: string
@@ -113,6 +116,14 @@ export interface MerchantOrderParticipants {
 
 function normalizeStatus(status: string | null | undefined): string {
   return (status ?? "pending").toLowerCase()
+}
+
+function knownOrderStatus(
+  status: string | null | undefined
+): KnownOrderStatus | null {
+  if (status == null) return null
+  const normalized = normalizeStatus(status)
+  return isKnownOrderStatus(normalized) ? normalized : null
 }
 
 function safeOperationalStatus(
@@ -214,10 +225,16 @@ export function getEffectiveMerchantOrderStatus(
   fallbackStatus: string | null = null
 ): EffectiveMerchantOrderStatus {
   const statuses = merchantStatusMessages(messages, participants)
-  if (statuses.length === 0) return { status: fallbackStatus }
+  if (statuses.length === 0) {
+    return {
+      status: fallbackStatus,
+      knownStatus: knownOrderStatus(fallbackStatus),
+    }
+  }
   let status: string | null = hasMerchantOrder(messages, participants)
     ? "pending"
     : fallbackStatus
+  let knownStatus = knownOrderStatus(status)
   let cancellation: MerchantOrderCancellation | undefined
   let reopenedCancellationId: string | undefined
 
@@ -235,6 +252,7 @@ export function getEffectiveMerchantOrderStatus(
         // active status. Another bounded view may not have observed the same
         // pre-cancellation status that this client did.
         status = correctedStatus
+        knownStatus = correctedStatus
         reopenedCancellationId = cancellation.eventId
         cancellation = undefined
       } else if (!reopens && nextStatus === "cancelled") {
@@ -245,6 +263,7 @@ export function getEffectiveMerchantOrderStatus(
         // A later terminal status remains a terminal progression. It can
         // supersede cancellation without reopening the active workflow.
         status = nextStatus
+        knownStatus = knownOrderStatus(nextStatus)
         cancellation = undefined
       }
       continue
@@ -262,8 +281,9 @@ export function getEffectiveMerchantOrderStatus(
     }
 
     if (nextStatus === "cancelled") {
-      const resumeStatus = safeOperationalStatus(status)
+      const resumeStatus = safeOperationalStatus(knownStatus)
       status = "cancelled"
+      knownStatus = "cancelled"
       reopenedCancellationId = undefined
       if (resumeStatus) {
         cancellation = { eventId: message.id, resumeStatus }
@@ -272,10 +292,12 @@ export function getEffectiveMerchantOrderStatus(
     }
 
     status = isKnownOrderStatus(nextStatus) ? nextStatus : messageStatus
+    if (isKnownOrderStatus(nextStatus)) knownStatus = nextStatus
   }
 
   return {
     status,
+    knownStatus,
     ...(status === "cancelled" && cancellation ? { cancellation } : {}),
     ...(reopenedCancellationId ? { reopenedCancellationId } : {}),
   }
@@ -768,7 +790,7 @@ export function getMerchantOrderActions(
   // Accepted-or-beyond, but already shipped → nothing left for the merchant.
   if (SHIPPED_STATUSES.has(status)) return []
 
-  if (state.buyerReplyable === false) {
+  if (state.invoiceSent || state.buyerReplyable === false) {
     return [
       {
         action: "cancel",

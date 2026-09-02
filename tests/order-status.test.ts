@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 import {
   buildOrderStatusTimeline,
   deriveOrderFlow,
+  getEffectiveMerchantOrderStatus,
   getMerchantOrderActions,
   getOrderStatusDisplay,
   isMerchantOrderPaid,
@@ -12,6 +13,29 @@ import {
   type KnownOrderStatus,
   type OrderStatus,
 } from "@conduit/core"
+
+const merchantOrderParticipants = {
+  buyerPubkey: "buyer",
+  merchantPubkey: "merchant",
+}
+
+function merchantStatusMessage(
+  id: string,
+  status: string,
+  createdAt: number,
+  reopens?: string
+) {
+  return {
+    id,
+    orderId: "order-1",
+    createdAt,
+    senderPubkey: merchantOrderParticipants.merchantPubkey,
+    recipientPubkey: merchantOrderParticipants.buyerPubkey,
+    rawContent: "{}",
+    type: "status_update",
+    payload: { status, ...(reopens ? { reopens } : {}) },
+  } as never
+}
 
 describe("canonical order statuses", () => {
   it("keeps schema, domain types, and presentation on one vocabulary", () => {
@@ -40,6 +64,61 @@ describe("canonical order statuses", () => {
     expect(orderStatusSchema.parse("future_merchant_status")).toBe(
       "future_merchant_status"
     )
+  })
+})
+
+describe("effective merchant order status", () => {
+  it("retains the last known projection when a newer status is unknown", () => {
+    const projection = getEffectiveMerchantOrderStatus(
+      [
+        merchantStatusMessage("a", "paid", 1),
+        merchantStatusMessage("b", "future_merchant_status", 2),
+      ],
+      merchantOrderParticipants
+    )
+
+    expect(projection.status).toBe("future_merchant_status")
+    expect(projection.knownStatus).toBe("paid")
+  })
+
+  it("requires an exact correction before a later active status clears cancellation", () => {
+    const cancellationId = "c".repeat(64)
+    const unknown = merchantStatusMessage("b", "future_merchant_status", 2)
+    const cancelled = merchantStatusMessage(cancellationId, "cancelled", 3)
+    const automatedPaid = merchantStatusMessage("d", "paid", 4)
+
+    expect(
+      getEffectiveMerchantOrderStatus(
+        [
+          merchantStatusMessage("a", "accepted", 1),
+          unknown,
+          cancelled,
+          automatedPaid,
+        ],
+        merchantOrderParticipants
+      )
+    ).toMatchObject({
+      status: "cancelled",
+      knownStatus: "cancelled",
+      cancellation: { eventId: cancellationId, resumeStatus: "accepted" },
+    })
+
+    expect(
+      getEffectiveMerchantOrderStatus(
+        [
+          merchantStatusMessage("a", "accepted", 1),
+          unknown,
+          cancelled,
+          automatedPaid,
+          merchantStatusMessage("e", "accepted", 5, cancellationId),
+        ],
+        merchantOrderParticipants
+      )
+    ).toMatchObject({
+      status: "accepted",
+      knownStatus: "accepted",
+      reopenedCancellationId: cancellationId,
+    })
   })
 })
 
@@ -591,6 +670,30 @@ describe("getMerchantOrderActions", () => {
         status: "cancelled",
         label: "Cancel order",
         kind: "destructive",
+      },
+    ])
+  })
+
+  it("lets a merchant confirm a sent invoice without buyer proof", () => {
+    expect(
+      getMerchantOrderActions({
+        status: "accepted",
+        accepted: true,
+        invoiceSent: true,
+        buyerReplyable: true,
+      })
+    ).toEqual([
+      {
+        action: "cancel",
+        status: "cancelled",
+        label: "Cancel order",
+        kind: "destructive",
+      },
+      {
+        action: "confirm_payment",
+        status: "paid",
+        label: "Confirm payment received",
+        kind: "primary",
       },
     ])
   })
