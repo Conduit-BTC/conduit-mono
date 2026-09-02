@@ -98,7 +98,7 @@ export function mountProductVariationPanelHarness(
     return (
       <ul
         data-testid="product-variation-grid"
-        className="grid grid-cols-2 gap-4"
+        className="grid grid-cols-3 gap-4"
       >
         <li data-testid="variable-product-list-item">
           <ProductGridCard
@@ -113,6 +113,14 @@ export function mountProductVariationPanelHarness(
             product={sibling}
             merchantName="Conduit Merchant"
             onProductActivate={null}
+          />
+        </li>
+        <li data-testid="hydrating-variable-product-list-item">
+          <ProductGridCard
+            product={parent}
+            familyHydrating
+            merchantName="Conduit Merchant"
+            onProductActivate={() => undefined}
           />
         </li>
       </ul>

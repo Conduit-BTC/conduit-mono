@@ -21,6 +21,8 @@ export interface ProductCardProps {
   secondaryPrice?: string | null
   approximateUsdPrice?: string | null
   imageLoading?: "eager" | "lazy"
+  /** Disable the image-only hover zoom when a parent supplies card-level motion. */
+  disableImageHoverZoom?: boolean
   cartQuantity?: number
   soldOut?: boolean
   /** Optional product controls rendered between identity and price. */
@@ -44,6 +46,7 @@ export function ProductCard({
   secondaryPrice,
   approximateUsdPrice,
   imageLoading = "lazy",
+  disableImageHoverZoom = false,
   cartQuantity = 0,
   soldOut = false,
   options,
@@ -111,7 +114,8 @@ export function ProductCard({
               width={640}
               height={480}
               className={cn(
-                "h-full w-full object-cover transition-[opacity,transform] duration-300 group-hover:scale-105",
+                "h-full w-full object-cover transition-[opacity,transform] duration-300",
+                !disableImageHoverZoom && "group-hover:scale-105",
                 imageLoaded ? "opacity-100" : "opacity-0",
                 soldOut && "grayscale group-hover:scale-100",
                 soldOut && imageLoaded && "opacity-55"
