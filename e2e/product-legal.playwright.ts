@@ -175,16 +175,6 @@ async function readProbe(page: Page): Promise<LegalProbe> {
   )
 }
 
-async function waitForEffects(page: Page): Promise<void> {
-  await page.evaluate(
-    () =>
-      new Promise<void>((resolve) => {
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
-      })
-  )
-  await page.waitForTimeout(100)
-}
-
 async function dispatchRuntimeErrors(page: Page): Promise<void> {
   await page.evaluate(() => {
     window.dispatchEvent(
@@ -210,12 +200,25 @@ async function assertIsolatedLegalLoad(
   expectedCanonical: string,
   externalWebSockets: string[]
 ): Promise<void> {
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const canonical = document.head.querySelector<HTMLLinkElement>(
+          'link[rel="canonical"]'
+        )
+        return {
+          canonicalHref: canonical?.href ?? null,
+          canonicalLink: canonical?.getAttribute("href") ?? null,
+          title: document.title,
+        }
+      })
+    )
+    .toEqual({
+      canonicalHref: expectedCanonical,
+      canonicalLink: expectedCanonical,
+      title: `${expectedTitle} | Conduit`,
+    })
   await expect(page.getByRole("heading", { name: expectedTitle })).toBeVisible()
-  await expect(page).toHaveTitle(`${expectedTitle} | Conduit`)
-  await expect(page.locator('link[rel="canonical"]')).toHaveAttribute(
-    "href",
-    expectedCanonical
-  )
   await expect(page.getByLabel("Policy scope")).toContainText(
     "shop.conduit.market"
   )
@@ -223,10 +226,7 @@ async function assertIsolatedLegalLoad(
     "sell.conduit.market"
   )
 
-  await waitForEffects(page)
-
   await dispatchRuntimeErrors(page)
-  await waitForEffects(page)
 
   const probe = await readProbe(page)
   expect(probe).toMatchObject({
