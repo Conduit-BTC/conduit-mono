@@ -299,7 +299,7 @@ describe("followed organizer event-market discovery", () => {
     expect(result.markets).toHaveLength(1)
   })
 
-  it("rejects ended, deleted, malformed, conflicting, and unfollowed candidates", async () => {
+  it("treats ended, deleted, and unfollowed candidates as absent", async () => {
     __setFollowedEventMarketDiscoveryTestOverrides({
       readFollowLists: async () => followRead({ pubkeys: [ORGANIZER] }),
       readOrganizerMarkets: async () =>
@@ -307,8 +307,6 @@ describe("followed organizer event-market discovery", () => {
           markets: [
             market(ORGANIZER, "ended", "ended"),
             market(ORGANIZER, "deleted", "deleted"),
-            market(ORGANIZER, "malformed", "malformed"),
-            market(ORGANIZER, "conflicting", "conflicting"),
             market(OTHER_ORGANIZER, "active", "unfollowed"),
           ],
         }),
@@ -319,6 +317,27 @@ describe("followed organizer event-market discovery", () => {
     })
 
     expect(result.state).toBe("complete_empty")
+    expect(result.markets).toEqual([])
+  })
+
+  it("reports unusable followed-organizer evidence as degraded", async () => {
+    __setFollowedEventMarketDiscoveryTestOverrides({
+      readFollowLists: async () => followRead({ pubkeys: [ORGANIZER] }),
+      readOrganizerMarkets: async () =>
+        organizerRead({
+          markets: [
+            market(ORGANIZER, "malformed", "malformed"),
+            market(ORGANIZER, "conflicting", "conflicting"),
+            market(ORGANIZER, "unsupported", "unsupported"),
+          ],
+        }),
+    })
+
+    const result = await discoverFollowedOrganizerEventMarkets({
+      merchantPubkey: MERCHANT,
+    })
+
+    expect(result.state).toBe("partial")
     expect(result.markets).toEqual([])
   })
 
@@ -352,13 +371,21 @@ describe("followed organizer event-market discovery", () => {
       readFollowLists: async () => followRead({ pubkeys: [ORGANIZER] }),
       readOrganizerMarkets: async (input) => {
         expect(input.nowMs).toBe(nowMs)
-        return organizerRead({
-          markets: [
-            marketWithCalendarEnd(ORGANIZER, "stale", "ended", nowMs),
-            future,
-          ],
-          state: "partial",
-        })
+        return {
+          ...organizerRead({
+            markets: [
+              marketWithCalendarEnd(ORGANIZER, "stale", "ended", nowMs),
+              future,
+            ],
+            state: "unavailable",
+          }),
+          coverage: {
+            attemptedRelayCount: 1,
+            completeRelayCount: 0,
+            partialRelayCount: 0,
+            failedRelayCount: 1,
+          },
+        }
       },
     })
 

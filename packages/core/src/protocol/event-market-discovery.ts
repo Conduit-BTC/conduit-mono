@@ -323,13 +323,24 @@ export async function discoverFollowedOrganizerEventMarkets(
     for (const market of read.value.markets) {
       const organizerPubkey = normalizePubkey(market.organizerPubkey)
       const calendarEndMs = market.calendar?.end
+      if (!organizerPubkey || !selectedOrganizerSet.has(organizerPubkey)) {
+        continue
+      }
+      if (calendarEndMs !== undefined && calendarEndMs <= effectiveNowMs) {
+        continue
+      }
       if (
-        !organizerPubkey ||
-        !selectedOrganizerSet.has(organizerPubkey) ||
-        (calendarEndMs !== undefined && calendarEndMs <= effectiveNowMs) ||
-        (market.state !== "active" &&
-          market.state !== "partial" &&
-          market.state !== "stale")
+        market.state === "malformed" ||
+        market.state === "conflicting" ||
+        market.state === "unsupported"
+      ) {
+        hasDegradedMarket = true
+        continue
+      }
+      if (
+        market.state !== "active" &&
+        market.state !== "partial" &&
+        market.state !== "stale"
       ) {
         continue
       }
