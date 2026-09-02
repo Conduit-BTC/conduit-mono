@@ -80,6 +80,12 @@ describe("Market product grid layout", () => {
     expect(content).toContain("origin-center")
     expect(content).toContain(`${desktopHoverMedia}:hover:scale-[1.12]`)
     expect(content).toContain(`${desktopHoverMedia}:focus-within:scale-[1.12]`)
+    expect(content).toContain(
+      `${desktopHoverMedia}:hover:bg-[var(--surface-overlay)]`
+    )
+    expect(content).toContain(
+      `${desktopHoverMedia}:focus-within:bg-[var(--surface-overlay)]`
+    )
     expect(content).toContain("disableImageHoverZoom")
     expect(content).toContain("mediaClassName")
     expect(content).toContain(
@@ -109,7 +115,7 @@ describe("Market product grid layout", () => {
     expect(content).toContain(`${desktopHoverMedia}:border-x`)
     expect(content).toContain(`${desktopHoverMedia}:border-b`)
     expect(content).toContain(
-      `${desktopHoverMedia}:bg-[var(--surface-elevated)]`
+      `${desktopHoverMedia}:bg-[var(--surface-overlay)]`
     )
     const variationPanelSource = content.slice(
       content.indexOf("const variationPanelClassName"),
@@ -121,7 +127,16 @@ describe("Market product grid layout", () => {
     expect(variationPanelSource).not.toContain(
       `${desktopHoverMedia}:shadow-[var(--shadow-lg)]`
     )
-    expect(content).toContain("isVariationMenuOpen &&")
+    expect(variationPanelSource).not.toContain(
+      `${desktopHoverMedia}:bg-[var(--surface-elevated)]`
+    )
+    const variationMenuOpenSource = content.slice(
+      content.indexOf("isVariationMenuOpen &&"),
+      content.indexOf("\n       )}", content.indexOf("isVariationMenuOpen &&"))
+    )
+    expect(variationMenuOpenSource).toContain(
+      `${desktopHoverMedia}:bg-[var(--surface-overlay)]`
+    )
     expect(content).toContain(`${desktopHoverMedia}:rounded-b-none`)
     expect(content).toContain(`${desktopHoverMedia}:border-b-0`)
     expect(content).toContain("onOpenChange={setIsVariationMenuOpen}")

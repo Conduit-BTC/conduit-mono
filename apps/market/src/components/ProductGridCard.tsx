@@ -139,7 +139,7 @@ export function ProductGridCard({
 
   const variationPanelClassName = cn(
     "pt-3",
-    "[@media(min-width:768px)_and_(hover:hover)]:absolute [@media(min-width:768px)_and_(hover:hover)]:inset-x-0 [@media(min-width:768px)_and_(hover:hover)]:top-full [@media(min-width:768px)_and_(hover:hover)]:z-20 [@media(min-width:768px)_and_(hover:hover)]:border-x [@media(min-width:768px)_and_(hover:hover)]:border-b [@media(min-width:768px)_and_(hover:hover)]:border-[var(--border)] [@media(min-width:768px)_and_(hover:hover)]:bg-[var(--surface-elevated)] [@media(min-width:768px)_and_(hover:hover)]:p-3 [@media(min-width:768px)_and_(hover:hover)]:rounded-b-xl",
+    "[@media(min-width:768px)_and_(hover:hover)]:absolute [@media(min-width:768px)_and_(hover:hover)]:inset-x-0 [@media(min-width:768px)_and_(hover:hover)]:top-full [@media(min-width:768px)_and_(hover:hover)]:z-20 [@media(min-width:768px)_and_(hover:hover)]:border-x [@media(min-width:768px)_and_(hover:hover)]:border-b [@media(min-width:768px)_and_(hover:hover)]:border-[var(--border)] [@media(min-width:768px)_and_(hover:hover)]:bg-[var(--surface-overlay)] [@media(min-width:768px)_and_(hover:hover)]:p-3 [@media(min-width:768px)_and_(hover:hover)]:rounded-b-xl",
     "[@media(min-width:768px)_and_(hover:hover)]:pointer-events-none [@media(min-width:768px)_and_(hover:hover)]:invisible [@media(min-width:768px)_and_(hover:hover)]:opacity-0 [@media(min-width:768px)_and_(hover:hover)]:transition-[opacity,visibility] [@media(min-width:768px)_and_(hover:hover)]:duration-200 motion-reduce:!transition-none",
     "[@media(min-width:768px)_and_(hover:hover)]:group-hover:pointer-events-auto [@media(min-width:768px)_and_(hover:hover)]:group-hover:visible [@media(min-width:768px)_and_(hover:hover)]:group-hover:opacity-100",
     "[@media(min-width:768px)_and_(hover:hover)]:group-focus-within:pointer-events-auto [@media(min-width:768px)_and_(hover:hover)]:group-focus-within:visible [@media(min-width:768px)_and_(hover:hover)]:group-focus-within:opacity-100",
@@ -152,11 +152,11 @@ export function ProductGridCard({
       className={cn(
         className ?? "h-full",
         "relative origin-center",
-        "[@media(min-width:768px)_and_(hover:hover)]:overflow-visible [@media(min-width:768px)_and_(hover:hover)]:z-10 [@media(min-width:768px)_and_(hover:hover)]:hover:z-20 [@media(min-width:768px)_and_(hover:hover)]:focus-within:z-20 [@media(min-width:768px)_and_(hover:hover)]:hover:scale-[1.12] [@media(min-width:768px)_and_(hover:hover)]:focus-within:scale-[1.12] motion-reduce:transition-none",
+        "[@media(min-width:768px)_and_(hover:hover)]:overflow-visible [@media(min-width:768px)_and_(hover:hover)]:z-10 [@media(min-width:768px)_and_(hover:hover)]:hover:z-20 [@media(min-width:768px)_and_(hover:hover)]:focus-within:z-20 [@media(min-width:768px)_and_(hover:hover)]:hover:scale-[1.12] [@media(min-width:768px)_and_(hover:hover)]:focus-within:scale-[1.12] [@media(min-width:768px)_and_(hover:hover)]:hover:bg-[var(--surface-overlay)] [@media(min-width:768px)_and_(hover:hover)]:focus-within:bg-[var(--surface-overlay)] motion-reduce:transition-none",
         hasVariationControls &&
           "[@media(min-width:768px)_and_(hover:hover)]:hover:rounded-b-none [@media(min-width:768px)_and_(hover:hover)]:hover:border-b-0 [@media(min-width:768px)_and_(hover:hover)]:focus-within:rounded-b-none [@media(min-width:768px)_and_(hover:hover)]:focus-within:border-b-0",
         isVariationMenuOpen &&
-          "[@media(min-width:768px)_and_(hover:hover)]:z-30 [@media(min-width:768px)_and_(hover:hover)]:scale-[1.12] [@media(min-width:768px)_and_(hover:hover)]:rounded-b-none [@media(min-width:768px)_and_(hover:hover)]:border-b-0 [@media(min-width:768px)_and_(hover:hover)]:shadow-[var(--shadow-lg)]"
+          "[@media(min-width:768px)_and_(hover:hover)]:z-30 [@media(min-width:768px)_and_(hover:hover)]:scale-[1.12] [@media(min-width:768px)_and_(hover:hover)]:rounded-b-none [@media(min-width:768px)_and_(hover:hover)]:border-b-0 [@media(min-width:768px)_and_(hover:hover)]:bg-[var(--surface-overlay)] [@media(min-width:768px)_and_(hover:hover)]:shadow-[var(--shadow-lg)]"
       )}
       title={product.title}
       merchantName={merchantName}
