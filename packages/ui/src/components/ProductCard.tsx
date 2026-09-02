@@ -25,6 +25,8 @@ export interface ProductCardProps {
   soldOut?: boolean
   /** Optional product controls rendered between identity and price. */
   options?: ReactNode
+  /** Optional classes for the product controls wrapper. */
+  optionsClassName?: string
   action?: ReactNode
   onActivate?: () => void
   onMerchantActivate?: () => void
@@ -45,6 +47,7 @@ export function ProductCard({
   cartQuantity = 0,
   soldOut = false,
   options,
+  optionsClassName,
   action,
   onActivate,
   onMerchantActivate,
@@ -169,7 +172,9 @@ export function ProductCard({
           )}
         </div>
 
-        {options ? <div className="pt-3">{options}</div> : null}
+        {options ? (
+          <div className={cn("pt-3", optionsClassName)}>{options}</div>
+        ) : null}
 
         <div className="mt-auto flex items-end justify-between gap-2 pt-3">
           <div className="min-w-0">

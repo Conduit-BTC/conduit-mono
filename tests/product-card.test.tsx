@@ -125,6 +125,22 @@ describe("ProductCard", () => {
     expect(html).toContain(">Sold out<")
   })
 
+  it("merges options wrapper classes without making options behavior app-specific", () => {
+    const html = renderToStaticMarkup(
+      <ProductCard
+        title="Option Product"
+        merchantName="Alice Store"
+        images={[]}
+        primaryPrice="25 sats"
+        options={<span>Size</span>}
+        optionsClassName="test-options-wrapper"
+      />
+    )
+
+    expect(html).toContain('class="pt-3 test-options-wrapper"')
+    expect(html).toContain(">Size<")
+  })
+
   it("renders sats primary pricing with a USD secondary line", () => {
     const price = getProductPriceDisplay(
       { price: 40_000, currency: "SATS", priceSats: 40_000 },

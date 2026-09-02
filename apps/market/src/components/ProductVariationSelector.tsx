@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react"
 import type { Product } from "@conduit/core"
 import {
   Select,
@@ -19,6 +20,7 @@ interface ProductVariationSelectorProps {
   onSelect: (product: Product) => void
   compact?: boolean
   className?: string
+  onOpenChange?: (open: boolean) => void
 }
 
 export function ProductVariationSelector({
@@ -27,8 +29,29 @@ export function ProductVariationSelector({
   onSelect,
   compact = false,
   className,
+  onOpenChange,
 }: ProductVariationSelectorProps) {
   const model = getProductVariationSelectorModel(family, selectedProduct)
+  const [openAxes, setOpenAxes] = useState<ReadonlySet<string>>(() => new Set())
+  const isOpen = openAxes.size > 0
+  const hasModel = model !== null
+  const onOpenChangeRef = useRef(onOpenChange)
+  onOpenChangeRef.current = onOpenChange
+
+  useEffect(() => {
+    onOpenChangeRef.current?.(hasModel && isOpen)
+  }, [hasModel, isOpen])
+
+  useEffect(() => {
+    if (!hasModel && openAxes.size > 0) {
+      setOpenAxes(new Set())
+    }
+  }, [hasModel, openAxes])
+
+  useEffect(() => {
+    return () => onOpenChangeRef.current?.(false)
+  }, [])
+
   if (!model) return null
 
   // Product cards and rows are clickable, so selector interaction must stay
@@ -51,6 +74,18 @@ export function ProductVariationSelector({
           </label>
           <Select
             value={axis.selectedValue}
+            onOpenChange={(open) => {
+              setOpenAxes((current) => {
+                if (current.has(axis.key) === open) return current
+                const next = new Set(current)
+                if (open) {
+                  next.add(axis.key)
+                } else {
+                  next.delete(axis.key)
+                }
+                return next
+              })
+            }}
             onValueChange={(value) => {
               const next = getProductSelectionForAxisValue(
                 family,
