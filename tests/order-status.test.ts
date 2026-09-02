@@ -595,6 +595,30 @@ describe("getMerchantOrderActions", () => {
     ])
   })
 
+  it("lets a merchant confirm a sent invoice without buyer proof", () => {
+    expect(
+      getMerchantOrderActions({
+        status: "accepted",
+        accepted: true,
+        invoiceSent: true,
+        buyerReplyable: true,
+      })
+    ).toEqual([
+      {
+        action: "cancel",
+        status: "cancelled",
+        label: "Cancel order",
+        kind: "destructive",
+      },
+      {
+        action: "confirm_payment",
+        status: "paid",
+        label: "Confirm payment received",
+        kind: "primary",
+      },
+    ])
+  })
+
   it("lets non-replyable accepted orders record verified out-of-band payment", () => {
     expect(
       getMerchantOrderActions({

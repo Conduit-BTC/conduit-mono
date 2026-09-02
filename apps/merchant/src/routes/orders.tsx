@@ -107,10 +107,13 @@ import {
 } from "../lib/order-pickup-authorization"
 import {
   buildMerchantOrderActionView,
+  captureMerchantPaymentConfirmationTarget,
   getMerchantOrderCancellationCopy,
   isAuthorizedZeroCostPickup,
   isMerchantOrderActionSurfacePending,
+  resolveMerchantPaymentConfirmationSelection,
   runExclusiveOrderAction,
+  type MerchantPaymentConfirmationTarget,
 } from "../lib/order-action-view"
 import { prepareShippingUpdate } from "../lib/shipping-update"
 import { formatMerchantOrderAmount } from "../lib/order-summary-display"
@@ -651,8 +654,8 @@ function OrdersPage() {
   )
   const [pendingDestructiveAction, setPendingDestructiveAction] =
     useState<MerchantOrderAction | null>(null)
-  const [confirmingOutOfBandPayment, setConfirmingOutOfBandPayment] =
-    useState(false)
+  const [paymentConfirmationTarget, setPaymentConfirmationTarget] =
+    useState<MerchantPaymentConfirmationTarget | null>(null)
   const [confirmingOrganizerFallback, setConfirmingOrganizerFallback] =
     useState(false)
   const [confirmingOrganizerRelease, setConfirmingOrganizerRelease] =
@@ -1132,6 +1135,7 @@ function OrdersPage() {
     selectedOrderResetRef.current = selectedId
 
     setSuccessFlash(null)
+    setPaymentConfirmationTarget(null)
     setConfirmingOrganizerFallback(false)
     setConfirmingOrganizerRelease(false)
     setOrganizerReleaseConfirmed(false)
@@ -1450,6 +1454,12 @@ function OrdersPage() {
       pickupFulfillmentActionsAuthorized && !organizerCompletionBlocked,
   })
   const { primaryButtonActions, destructiveActions, hasNextStep } = actionView
+  const paymentConfirmationSelection =
+    resolveMerchantPaymentConfirmationSelection({
+      target: paymentConfirmationTarget,
+      selected,
+      actions: primaryButtonActions,
+    })
   const destructiveCancellationCopy = destructiveActions[0]
     ? getMerchantOrderCancellationCopy({
         actionLabel: destructiveActions[0].label,
@@ -2007,9 +2017,18 @@ function OrdersPage() {
   }
 
   const advanceStatusMutation = useMutation({
-    mutationFn: (nextStatus: KnownOrderStatus) =>
+    mutationFn: ({
+      nextStatus,
+      conversation,
+    }: {
+      nextStatus: KnownOrderStatus
+      conversation?: MerchantConversationSummary
+    }) =>
       runExclusiveOrderAction(orderActionLockRef, async () => {
-        if (!pubkey || !selected) throw new Error("No conversation selected")
+        const actionConversation = conversation ?? selected
+        if (!pubkey || !actionConversation) {
+          throw new Error("No conversation selected")
+        }
         if (nextStatus === "cancelled") {
           const ndk = getNdk()
           if (!ndk.signer) throw new Error("Merchant signer is not connected.")
@@ -2023,7 +2042,7 @@ function OrdersPage() {
           if (!currentFallback) {
             await revokeOrganizerReadyReceipt({
               merchantPubkey: pubkey,
-              orderId: selected.orderId,
+              orderId: actionConversation.orderId,
               signer: ndk.signer,
               matchingAckReceiptIds: new Set(
                 (currentAck?.currentAckRead.data?.data ?? []).map((ack) =>
@@ -2066,8 +2085,8 @@ function OrdersPage() {
         }
         await publishMerchantOrderMessage({
           merchantPubkey: pubkey,
-          buyerPubkey: selected.buyerPubkey,
-          orderId: selected.orderId,
+          buyerPubkey: actionConversation.buyerPubkey,
+          orderId: actionConversation.orderId,
           type: "status_update",
           tags: [["status", nextStatus]],
           payload: { status: nextStatus },
@@ -2087,7 +2106,7 @@ function OrdersPage() {
           setHandoffDeliveryRevision((revision) => revision + 1)
         }
       }),
-    onSuccess: async (_data, nextStatus) => {
+    onSuccess: async (_data, { nextStatus }) => {
       if (
         pubkey &&
         selectedOrderCorrelationRef &&
@@ -2508,23 +2527,25 @@ function OrdersPage() {
                                         organizerCompletionBlocked)
                                     }
                                     onClick={() => {
-                                      if (
-                                        action.action === "confirm_payment" &&
-                                        canRequestPaymentOutOfBand
-                                      ) {
-                                        setConfirmingOutOfBandPayment(true)
+                                      if (action.action === "confirm_payment") {
+                                        if (!selected) return
+                                        setPaymentConfirmationTarget(
+                                          captureMerchantPaymentConfirmationTarget(
+                                            selected
+                                          )
+                                        )
                                         return
                                       }
                                       if (action.status) {
-                                        advanceStatusMutation.mutate(
-                                          action.status
-                                        )
+                                        advanceStatusMutation.mutate({
+                                          nextStatus: action.status,
+                                        })
                                       }
                                     }}
                                   >
                                     {advanceStatusMutation.isPending &&
-                                    advanceStatusMutation.variables ===
-                                      action.status
+                                    advanceStatusMutation.variables
+                                      ?.nextStatus === action.status
                                       ? buyerInboxKnown
                                         ? "Sending…"
                                         : "Recording…"
@@ -3644,9 +3665,9 @@ function OrdersPage() {
                         disabled={orderActionPending}
                         onClick={() => {
                           if (!pendingDestructiveAction?.status) return
-                          advanceStatusMutation.mutate(
-                            pendingDestructiveAction.status
-                          )
+                          advanceStatusMutation.mutate({
+                            nextStatus: pendingDestructiveAction.status,
+                          })
                           setPendingDestructiveAction(null)
                         }}
                       >
@@ -3661,8 +3682,10 @@ function OrdersPage() {
                 </AlertDialog>
 
                 <AlertDialog
-                  open={confirmingOutOfBandPayment}
-                  onOpenChange={setConfirmingOutOfBandPayment}
+                  open={paymentConfirmationSelection !== null}
+                  onOpenChange={(open) => {
+                    if (!open) setPaymentConfirmationTarget(null)
+                  }}
                 >
                   <AlertDialogContent>
                     <AlertDialogHeader>
@@ -3670,30 +3693,43 @@ function OrdersPage() {
                         Confirm payment received?
                       </AlertDialogTitle>
                       <AlertDialogDescription>
-                        Continue only after verifying the buyer's payment
-                        outside Nostr. This records payment as confirmed in your
-                        encrypted order history and unlocks fulfillment.
+                        {buyerInboxKnown
+                          ? "Continue only after checking your wallet and verifying this order's payment settled. This marks payment as confirmed, notifies the buyer, and unlocks fulfillment."
+                          : "Continue only after independently verifying this order's payment settled. This records payment as confirmed in your encrypted order history and unlocks fulfillment."}
                       </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
                       <Button
                         type="button"
                         variant="outline"
-                        onClick={() => setConfirmingOutOfBandPayment(false)}
+                        onClick={() => setPaymentConfirmationTarget(null)}
                       >
                         Keep unpaid
                       </Button>
                       <Button
                         type="button"
-                        disabled={orderActionPending}
+                        disabled={
+                          orderActionPending || !paymentConfirmationSelection
+                        }
                         onClick={() => {
-                          advanceStatusMutation.mutate("paid")
-                          setConfirmingOutOfBandPayment(false)
+                          if (!paymentConfirmationSelection) {
+                            setPaymentConfirmationTarget(null)
+                            return
+                          }
+                          advanceStatusMutation.mutate({
+                            nextStatus: "paid",
+                            conversation: paymentConfirmationSelection,
+                          })
+                          setPaymentConfirmationTarget(null)
                         }}
                       >
                         {advanceStatusMutation.isPending
-                          ? "Recording…"
-                          : "Confirm payment"}
+                          ? buyerInboxKnown
+                            ? "Sending…"
+                            : "Recording…"
+                          : buyerInboxKnown
+                            ? "Confirm payment"
+                            : "Record payment received"}
                       </Button>
                     </AlertDialogFooter>
                   </AlertDialogContent>

@@ -536,7 +536,7 @@ export function getMerchantOrderActions(
   // Accepted-or-beyond, but already shipped → nothing left for the merchant.
   if (SHIPPED_STATUSES.has(status)) return []
 
-  if (state.buyerReplyable === false) {
+  if (state.invoiceSent || state.buyerReplyable === false) {
     return [
       {
         action: "cancel",
