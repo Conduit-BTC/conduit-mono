@@ -32,7 +32,6 @@ import {
   useProfile,
 } from "@conduit/core"
 import {
-  AppearanceMenu,
   Avatar,
   AvatarFallback,
   AvatarImage,
@@ -397,10 +396,6 @@ function UserMenu({ className }: { className?: string } = {}) {
             </StatusPill>
           )}
         </div>
-
-        <DropdownMenuSeparator className="mx-0 my-2 bg-[var(--border)]" />
-
-        <AppearanceMenu className="h-10 rounded-xl px-2 text-sm font-medium text-[var(--text-primary)]" />
 
         <DropdownMenuSeparator className="mx-0 my-2 bg-[var(--border)]" />
 

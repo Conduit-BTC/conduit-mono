@@ -1,4 +1,5 @@
 import {
+  DEFAULT_THEME_TOGGLE_CYCLE,
   NAMED_THEMES,
   SYSTEM_THEME_QUERY,
   THEME_ATTRIBUTE,
@@ -9,6 +10,7 @@ import {
 } from "./definitions"
 
 export {
+  DEFAULT_THEME_TOGGLE_CYCLE,
   NAMED_THEMES,
   SYSTEM_THEME_QUERY,
   THEME_ATTRIBUTE,
@@ -52,6 +54,17 @@ export function resolveThemePreference(
 ): ThemeId {
   if (preference !== "system") return preference
   return systemPrefersDark ? "night-market" : "day-market"
+}
+
+export function getNextThemeInCycle(
+  currentTheme: ThemeId,
+  cycle: readonly ThemeId[] = DEFAULT_THEME_TOGGLE_CYCLE
+): ThemeId {
+  if (cycle.length === 0) return currentTheme
+
+  const currentIndex = cycle.indexOf(currentTheme)
+  const nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % cycle.length
+  return cycle[nextIndex]!
 }
 
 export function readThemePreference(

@@ -15,7 +15,6 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router"
 import { config, formatNpub, useAuth, useProfile } from "@conduit/core"
 import {
-  AppearanceMenu,
   Avatar,
   AvatarFallback,
   AvatarImage,
@@ -26,6 +25,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
   Input,
+  ThemeToggleButton,
   cn,
 } from "@conduit/ui"
 
@@ -266,7 +266,6 @@ function AccountControl({
           to="/preferences"
           onClick={() => setOpen(false)}
         />
-        <AppearanceMenu className={accountMenuItemClassName()} />
         <AccountMenuLink
           icon={<Radio className="size-4" />}
           label="Network"
@@ -553,7 +552,8 @@ export function MarketHeader() {
           />
         </nav>
 
-        <div className="market-header-account-slot">
+        <div className="market-header-account-slot flex items-center gap-1.5">
+          <ThemeToggleButton />
           <AccountControl
             connected={connected}
             displayName={displayName}

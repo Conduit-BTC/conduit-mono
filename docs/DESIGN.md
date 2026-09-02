@@ -59,7 +59,9 @@ Conduit uses shadcn-style primitives wrapped and themed in `@conduit/ui`. Produc
 
 Night Market (`night-market`) and Day Market (`day-market`) are Conduit's first two named themes. `system` is a preference resolver, not a theme: it follows `prefers-color-scheme` and resolves to one of those stable theme IDs.
 
-Named theme values live in `packages/ui/src/styles/theme.css` under the root `data-theme` attribute. IDs, labels, local preference persistence, system resolution, document application, and browser metadata behavior live in `packages/ui/src/theme/`. The shared selector is composed through `packages/ui/src/components/AppearanceMenu.tsx`.
+Named theme values live in `packages/ui/src/styles/theme.css` under the root `data-theme` attribute. IDs, labels, local preference persistence, system resolution, document application, and browser metadata behavior live in `packages/ui/src/theme/`. The shared direct control is composed through `packages/ui/src/components/ThemeToggleButton.tsx`.
+
+The header control always performs a direct theme change. Its initial cycle is Night Market and Day Market; `system` remains the default preference before a person makes an explicit choice and is not part of that cycle. Additional preference UI may later configure which named themes participate in the direct cycle without replacing the header interaction.
 
 The current named themes vary color and elevation values only. Typography, spacing, radii, and layout remain shared product-family foundations. Broader custom-theme authoring, scoped previews, and user-authored theme assets remain future work.
 

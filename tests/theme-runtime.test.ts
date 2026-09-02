@@ -1,10 +1,12 @@
 import { describe, expect, it } from "bun:test"
 import {
+  DEFAULT_THEME_TOGGLE_CYCLE,
   NAMED_THEMES,
   THEME_ATTRIBUTE,
   THEME_PREFERENCE_OPTIONS,
   THEME_STORAGE_KEY,
   applyThemeToDocument,
+  getNextThemeInCycle,
   parseThemePreference,
   persistThemePreference,
   readThemePreference,
@@ -91,6 +93,16 @@ describe("named theme vocabulary", () => {
     expect(resolveThemePreference("system", false)).toBe("day-market")
     expect(resolveThemePreference("night-market", false)).toBe("night-market")
     expect(resolveThemePreference("day-market", true)).toBe("day-market")
+  })
+
+  it("direct-toggles through the default named theme cycle", () => {
+    expect(DEFAULT_THEME_TOGGLE_CYCLE).toEqual(["night-market", "day-market"])
+    expect(getNextThemeInCycle("night-market")).toBe("day-market")
+    expect(getNextThemeInCycle("day-market")).toBe("night-market")
+    expect(
+      getNextThemeInCycle("night-market", ["day-market", "night-market"])
+    ).toBe("day-market")
+    expect(getNextThemeInCycle("night-market", [])).toBe("night-market")
   })
 })
 

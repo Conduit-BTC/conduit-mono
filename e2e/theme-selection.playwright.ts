@@ -1,6 +1,6 @@
 import { mkdir } from "node:fs/promises"
 import { join } from "node:path"
-import { expect, test, type Page } from "@playwright/test"
+import { expect, test, type Locator, type Page } from "@playwright/test"
 import { THEME_STORAGE_KEY, type ThemeId } from "@conduit/ui/theme"
 import { generateSecretKey, getPublicKey } from "nostr-tools/pure"
 import { installTestSigner } from "./helpers/auth"
@@ -54,66 +54,76 @@ async function expectResolvedTheme(
     .toBe(true)
 }
 
-async function openAppearanceMenu(
-  page: Page,
-  accountMenuName: string,
-  currentPreferenceLabel: string
-) {
-  await page.getByRole("button", { name: accountMenuName }).click()
-  const appearance = page.getByRole("menuitem", {
-    name: `Appearance: ${currentPreferenceLabel}`,
-  })
-  await expect(appearance).toBeVisible()
-  await appearance.hover()
-  await expect(
-    page.getByRole("menuitemradio", { name: "Use device setting" })
-  ).toBeVisible()
-  return appearance
+async function expectThemeToggleIcon(
+  button: Locator,
+  icon: "moon" | "sun"
+): Promise<void> {
+  const svg = button.locator("svg")
+  await expect(svg).toHaveClass(new RegExp(`lucide-${icon}`))
+  await expect(svg).toHaveClass(/size-5/)
+  await expect(svg.locator("circle")).toHaveCount(icon === "sun" ? 1 : 0)
+  await expect(svg.locator("path")).toHaveCount(icon === "sun" ? 8 : 1)
 }
 
-async function selectThemePreference(
+async function expectFirstFrameTheme(
   page: Page,
-  accountMenuName: string,
-  currentPreferenceLabel: string,
-  nextPreferenceLabel: string
+  theme: ThemeId
 ): Promise<void> {
-  await openAppearanceMenu(page, accountMenuName, currentPreferenceLabel)
-  const item = page.getByRole("menuitemradio", {
-    name: nextPreferenceLabel,
-  })
-  await item.click()
-  await expect(item).toHaveAttribute("aria-checked", "true")
-  await page.keyboard.press("Escape")
-  await page.keyboard.press("Escape")
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (
+            window as Window & {
+              __conduitThemeAtFirstFrame?: string | null
+            }
+          ).__conduitThemeAtFirstFrame
+      )
+    )
+    .toBe(theme)
 }
 
-async function captureMainScreenshot(
-  page: Page,
-  fileName: string
-): Promise<void> {
+async function captureScreenshot(page: Page, fileName: string): Promise<void> {
   if (!screenshotDirectory) return
   await mkdir(screenshotDirectory, { recursive: true })
-  await page
-    .locator("main")
-    .first()
-    .screenshot({
-      path: join(screenshotDirectory, fileName),
-      animations: "disabled",
-    })
+  await page.screenshot({
+    path: join(screenshotDirectory, fileName),
+    animations: "disabled",
+    fullPage: true,
+  })
 }
 
-test("Market selects Night Market by keyboard and preserves it across reload @market", async ({
+test("Market direct theme toggle works while signed out and preserves an explicit choice @market", async ({
   page,
 }) => {
-  const secretKey = generateSecretKey()
   await page.emulateMedia({ colorScheme: "light" })
   await installFirstFrameThemeProbe(page)
-  await installTestSigner(page, getPublicKey(secretKey), { secretKey })
   await page.goto(`${marketUrl}/products`)
 
   await expect(
-    page.getByRole("button", { name: "Open account menu" })
-  ).toBeVisible({ timeout: 15_000 })
+    page.getByRole("button", { name: "Connect", exact: true })
+  ).toBeVisible()
+  await expectResolvedTheme(page, "day-market", "light")
+  await expectFirstFrameTheme(page, "day-market")
+  await expect
+    .poll(() =>
+      page.evaluate((key) => localStorage.getItem(key), THEME_STORAGE_KEY)
+    )
+    .toBeNull()
+
+  const switchToNight = page.getByRole("button", {
+    name: "Switch to Night Market",
+  })
+  await expect(switchToNight).toBeVisible()
+  await expectThemeToggleIcon(switchToNight, "moon")
+
+  await page.emulateMedia({ colorScheme: "dark" })
+  await expectResolvedTheme(page, "night-market", "dark")
+  await expectThemeToggleIcon(
+    page.getByRole("button", { name: "Switch to Day Market" }),
+    "sun"
+  )
+  await page.emulateMedia({ colorScheme: "light" })
   await expectResolvedTheme(page, "day-market", "light")
 
   const syncedPage = await page.context().newPage()
@@ -121,117 +131,100 @@ test("Market selects Night Market by keyboard and preserves it across reload @ma
   await syncedPage.goto(`${marketUrl}/products`)
   await expectResolvedTheme(syncedPage, "day-market", "light")
 
-  const appearance = await openAppearanceMenu(
-    page,
-    "Open account menu",
-    "Use device setting"
-  )
-  await appearance.focus()
-  await page.keyboard.press("ArrowRight")
-  const systemItem = page.getByRole("menuitemradio", {
-    name: "Use device setting",
-  })
-  const nightItem = page.getByRole("menuitemradio", { name: "Night Market" })
-  await expect(systemItem).toBeFocused()
-  await page.keyboard.press("ArrowDown")
-  await expect(nightItem).toBeFocused()
+  await switchToNight.focus()
   await page.keyboard.press("Enter")
-  await expect(nightItem).toHaveAttribute("aria-checked", "true")
   await expectResolvedTheme(page, "night-market", "dark")
   await expectResolvedTheme(syncedPage, "night-market", "dark")
-  await syncedPage.close()
+  await expect
+    .poll(() =>
+      page.evaluate((key) => localStorage.getItem(key), THEME_STORAGE_KEY)
+    )
+    .toBe("night-market")
+  await expectThemeToggleIcon(
+    page.getByRole("button", { name: "Switch to Day Market" }),
+    "sun"
+  )
 
   await page.emulateMedia({ colorScheme: "dark" })
   await page.emulateMedia({ colorScheme: "light" })
   await expectResolvedTheme(page, "night-market", "dark")
-  await page.keyboard.press("Escape")
-  await page.keyboard.press("Escape")
 
   await page.reload()
-  await expect(
-    page.getByRole("button", { name: "Open account menu" })
-  ).toBeVisible({ timeout: 15_000 })
   await expectResolvedTheme(page, "night-market", "dark")
-  await expect
-    .poll(() =>
-      page.evaluate(
-        () =>
-          (
-            window as Window & {
-              __conduitThemeAtFirstFrame?: string | null
-            }
-          ).__conduitThemeAtFirstFrame
-      )
-    )
-    .toBe("night-market")
-  await captureMainScreenshot(page, "market-night-market.png")
-
-  await openAppearanceMenu(page, "Open account menu", "Night Market")
-  await expect(nightItem).toHaveAttribute("aria-checked", "true")
-  const restoredSystemItem = page.getByRole("menuitemradio", {
-    name: "Use device setting",
-  })
-  await restoredSystemItem.focus()
-  await page.keyboard.press("Enter")
-  await expectResolvedTheme(page, "day-market", "light")
-  await page.emulateMedia({ colorScheme: "dark" })
-  await expectResolvedTheme(page, "night-market", "dark")
+  await expectFirstFrameTheme(page, "night-market")
+  await captureScreenshot(page, "market-night-market-direct-toggle.png")
+  await syncedPage.close()
 })
 
-test("Merchant selects Day Market and preserves it across reload @merchant", async ({
+test("Merchant direct theme toggle stays available through sign-in and responsive layouts @merchant", async ({
   page,
 }) => {
-  const secretKey = generateSecretKey()
+  await page.setViewportSize({ width: 390, height: 844 })
   await page.emulateMedia({ colorScheme: "dark" })
   await installFirstFrameThemeProbe(page)
-  await installTestSigner(page, getPublicKey(secretKey), { secretKey })
   await page.goto(merchantUrl)
 
   await expect(
-    page.getByRole("button", { name: "Open merchant account menu" })
-  ).toBeVisible({ timeout: 15_000 })
+    page.getByRole("main", { name: "Connect a signer" })
+  ).toBeVisible()
   await expectResolvedTheme(page, "night-market", "dark")
+  await expectFirstFrameTheme(page, "night-market")
 
-  await selectThemePreference(
-    page,
-    "Open merchant account menu",
-    "Use device setting",
-    "Day Market"
+  const switchToDay = page.getByRole("button", {
+    name: "Switch to Day Market",
+  })
+  await expect(switchToDay).toBeVisible()
+  await expectThemeToggleIcon(switchToDay, "sun")
+  const mobileToggleBox = await switchToDay.boundingBox()
+  expect(mobileToggleBox).not.toBeNull()
+  expect(mobileToggleBox!.x + mobileToggleBox!.width).toBeLessThanOrEqual(390)
+  expect(mobileToggleBox!.y).toBeGreaterThanOrEqual(0)
+
+  await switchToDay.click()
+  await expectResolvedTheme(page, "day-market", "light")
+  await expectThemeToggleIcon(
+    page.getByRole("button", { name: "Switch to Night Market" }),
+    "moon"
   )
-  await expectResolvedTheme(page, "day-market", "light")
-  await page.emulateMedia({ colorScheme: "light" })
-  await page.emulateMedia({ colorScheme: "dark" })
-  await expectResolvedTheme(page, "day-market", "light")
+  await captureScreenshot(page, "merchant-day-market-connect-gate-mobile.png")
 
-  await page.reload()
+  const secretKey = generateSecretKey()
+  const workspacePage = await page.context().newPage()
+  await workspacePage.setViewportSize({ width: 1440, height: 900 })
+  await workspacePage.emulateMedia({ colorScheme: "dark" })
+  await installFirstFrameThemeProbe(workspacePage)
+  await installTestSigner(workspacePage, getPublicKey(secretKey), { secretKey })
+  await workspacePage.goto(merchantUrl)
+
   await expect(
-    page.getByRole("button", { name: "Open merchant account menu" })
+    workspacePage.getByRole("button", { name: "Open merchant account menu" })
   ).toBeVisible({ timeout: 15_000 })
-  await expectResolvedTheme(page, "day-market", "light")
+  await expectResolvedTheme(workspacePage, "day-market", "light")
+  await expectFirstFrameTheme(workspacePage, "day-market")
+  const workspaceToggle = workspacePage.getByRole("button", {
+    name: "Switch to Night Market",
+  })
+  await expect(workspaceToggle).toBeVisible()
+  await expectThemeToggleIcon(workspaceToggle, "moon")
+  await captureScreenshot(
+    workspacePage,
+    "merchant-day-market-direct-toggle-desktop.png"
+  )
+
+  await workspaceToggle.focus()
+  await workspacePage.keyboard.press("Space")
+  await expectResolvedTheme(workspacePage, "night-market", "dark")
+  await expectResolvedTheme(page, "night-market", "dark")
   await expect
     .poll(() =>
-      page.evaluate(
-        () =>
-          (
-            window as Window & {
-              __conduitThemeAtFirstFrame?: string | null
-            }
-          ).__conduitThemeAtFirstFrame
+      workspacePage.evaluate(
+        (key) => localStorage.getItem(key),
+        THEME_STORAGE_KEY
       )
     )
-    .toBe("day-market")
-  await captureMainScreenshot(page, "merchant-day-market.png")
+    .toBe("night-market")
 
-  await openAppearanceMenu(page, "Open merchant account menu", "Day Market")
-  await expect(
-    page.getByRole("menuitemradio", { name: "Day Market" })
-  ).toHaveAttribute("aria-checked", "true")
-  await page.getByRole("menuitemradio", { name: "Use device setting" }).click()
-  await expectResolvedTheme(page, "night-market", "dark")
-  await page.emulateMedia({ colorScheme: "light" })
-  await expectResolvedTheme(page, "day-market", "light")
-
-  expect(
-    await page.evaluate((key) => localStorage.getItem(key), THEME_STORAGE_KEY)
-  ).toBe("system")
+  await workspacePage.reload()
+  await expectResolvedTheme(workspacePage, "night-market", "dark")
+  await expectFirstFrameTheme(workspacePage, "night-market")
 })
