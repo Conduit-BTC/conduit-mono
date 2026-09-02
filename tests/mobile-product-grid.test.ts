@@ -156,17 +156,16 @@ describe("Market product grid layout", () => {
     expect(selector).toContain("onOpenChange={(open) =>")
   })
 
-  it("keeps floating controls out of paint containment and storefront clipping", async () => {
+  it("keeps product grid cards out of paint containment and storefront clipping", async () => {
     const [products, storefront] = await Promise.all([
       readFile("apps/market/src/routes/products/index.tsx", "utf8"),
       readFile("apps/market/src/routes/store/$pubkey.tsx", "utf8"),
     ])
     const desktopHoverMedia = "[@media(min-width:768px)_and_(hover:hover)]"
 
-    expect(products).toContain(
-      'index >= PAGE_SIZE && product.type === "simple"'
-    )
-    expect(products).toContain("[content-visibility:auto]")
+    expect(products).not.toContain("content-visibility")
+    expect(products).not.toContain("contain-intrinsic-size")
+    expect(products).toContain('className="h-full"')
     expect(storefront).toContain(
       `className="min-w-0 max-w-full self-start overflow-hidden ${desktopHoverMedia}:overflow-visible"`
     )

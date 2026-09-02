@@ -7,6 +7,10 @@ type Geometry = { x: number; y: number; width: number; height: number }
 type PanelStyle = {
   backgroundColor: string
   borderBottomLeftRadius: string
+  borderBottomRightRadius: string
+  borderBottomColor: string
+  borderLeftColor: string
+  borderRightColor: string
   borderTopWidth: string
   boxShadow: string
   opacity: string
@@ -44,6 +48,10 @@ async function panelStyle(panel: Locator): Promise<PanelStyle> {
     return {
       backgroundColor: style.backgroundColor,
       borderBottomLeftRadius: style.borderBottomLeftRadius,
+      borderBottomRightRadius: style.borderBottomRightRadius,
+      borderBottomColor: style.borderBottomColor,
+      borderLeftColor: style.borderLeftColor,
+      borderRightColor: style.borderRightColor,
       borderTopWidth: style.borderTopWidth,
       boxShadow: style.boxShadow,
       opacity: style.opacity,
@@ -58,6 +66,8 @@ async function panelStyle(panel: Locator): Promise<PanelStyle> {
 async function cardStyle(card: Locator): Promise<{
   backgroundColor: string
   borderBottomWidth: string
+  borderLeftColor: string
+  borderRightColor: string
   boxShadow: string
   scale: string
   transitionProperty: string
@@ -67,6 +77,8 @@ async function cardStyle(card: Locator): Promise<{
     return {
       backgroundColor: style.backgroundColor,
       borderBottomWidth: style.borderBottomWidth,
+      borderLeftColor: style.borderLeftColor,
+      borderRightColor: style.borderRightColor,
       boxShadow: style.boxShadow,
       scale: style.scale,
       transitionProperty: style.transitionProperty,
@@ -80,6 +92,40 @@ function expectMatchingOpaqueBackgrounds(
 ): void {
   expect(panelBackground).toBe(cardBackground)
   const components = cardBackground.match(/[\d.]+/g)
+  expect(components?.length).toBeGreaterThanOrEqual(3)
+  expect(components?.length).toBeLessThanOrEqual(4)
+  expect(components?.length === 4 ? Number(components[3]) : 1).toBe(1)
+}
+
+function expectJoinedBorderColors(
+  card: Awaited<ReturnType<typeof cardStyle>>,
+  panel: PanelStyle
+): void {
+  expect(card.borderLeftColor).toBe(panel.borderLeftColor)
+  expect(card.borderRightColor).toBe(panel.borderRightColor)
+  expect(card.borderLeftColor).toBe(panel.borderBottomColor)
+}
+
+async function hasJoinedBorderColors(
+  card: Locator,
+  panel: Locator
+): Promise<boolean> {
+  const [cardComputedStyle, panelComputedStyle] = await Promise.all([
+    cardStyle(card),
+    panelStyle(panel),
+  ])
+  return (
+    cardComputedStyle.borderLeftColor === panelComputedStyle.borderLeftColor &&
+    cardComputedStyle.borderRightColor ===
+      panelComputedStyle.borderRightColor &&
+    cardComputedStyle.borderLeftColor === panelComputedStyle.borderBottomColor
+  )
+}
+
+function expectOpaquePanelCorners(panel: PanelStyle): void {
+  expect(parseFloat(panel.borderBottomLeftRadius)).toBeGreaterThan(0)
+  expect(parseFloat(panel.borderBottomRightRadius)).toBeGreaterThan(0)
+  const components = panel.backgroundColor.match(/[\d.]+/g)
   expect(components?.length).toBeGreaterThanOrEqual(3)
   expect(components?.length).toBeLessThanOrEqual(4)
   expect(components?.length === 4 ? Number(components[3]) : 1).toBe(1)
@@ -209,9 +255,7 @@ test("market product variation panel preserves grid geometry across desktop mous
     borderTopWidth: "0px",
     boxShadow: "none",
   })
-  expect(parseFloat(expandedPanelStyle.borderBottomLeftRadius)).toBeGreaterThan(
-    0
-  )
+  expectOpaquePanelCorners(expandedPanelStyle)
   const expandedCardStyle = await cardStyle(variableCard)
   expect(expandedCardStyle).toMatchObject({
     borderBottomWidth: "0px",
@@ -230,6 +274,11 @@ test("market product variation panel preserves grid geometry across desktop mous
     expandedCardStyle.backgroundColor,
     expandedPanelStyle.backgroundColor
   )
+  await expect.poll(() => hasJoinedBorderColors(variableCard, panel)).toBe(true)
+  expectJoinedBorderColors(
+    await cardStyle(variableCard),
+    await panelStyle(panel)
+  )
   expectUnchangedGeometry(
     initialGridGeometry,
     await Promise.all([variableItem, sibling, grid].map(geometry))
@@ -247,14 +296,21 @@ test("market product variation panel preserves grid geometry across desktop mous
       pointerEvents: "auto",
       visibility: "visible",
     })
-  expect(await cardStyle(variableCard)).toMatchObject({
+  const openCardStyle = await cardStyle(variableCard)
+  const openPanelStyle = await panelStyle(panel)
+  expect(openCardStyle).toMatchObject({
     borderBottomWidth: "0px",
   })
-  expect((await cardStyle(variableCard)).scale).toBe("1.12")
-  expect((await cardStyle(variableCard)).boxShadow).not.toBe("none")
+  expect(openCardStyle.scale).toBe("1.12")
+  expect(openCardStyle.boxShadow).not.toBe("none")
   expectMatchingOpaqueBackgrounds(
-    (await cardStyle(variableCard)).backgroundColor,
-    (await panelStyle(panel)).backgroundColor
+    openCardStyle.backgroundColor,
+    openPanelStyle.backgroundColor
+  )
+  await expect.poll(() => hasJoinedBorderColors(variableCard, panel)).toBe(true)
+  expectJoinedBorderColors(
+    await cardStyle(variableCard),
+    await panelStyle(panel)
   )
   expectUnchangedGeometry(
     initialGridGeometry,
@@ -278,13 +334,18 @@ test("market product variation panel uses an opaque matching light overlay @mark
 
   await variableCard.hover()
   await expect(panel).toBeVisible()
+  const expandedCardStyle = await cardStyle(variableCard)
+  const expandedPanelStyle = await panelStyle(panel)
   expectMatchingOpaqueBackgrounds(
-    (await cardStyle(variableCard)).backgroundColor,
-    (await panelStyle(panel)).backgroundColor
+    expandedCardStyle.backgroundColor,
+    expandedPanelStyle.backgroundColor
   )
-  expect(
-    parseFloat((await panelStyle(panel)).borderBottomLeftRadius)
-  ).toBeGreaterThan(0)
+  await expect.poll(() => hasJoinedBorderColors(variableCard, panel)).toBe(true)
+  expectJoinedBorderColors(
+    await cardStyle(variableCard),
+    await panelStyle(panel)
+  )
+  expectOpaquePanelCorners(expandedPanelStyle)
 })
 
 test("market product variation panel joins hydration controls on desktop hover @market", async ({
