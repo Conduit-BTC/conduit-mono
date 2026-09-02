@@ -25,6 +25,52 @@ export interface MerchantOrderActionView {
   hasNextStep: boolean
 }
 
+export interface MerchantPaymentConfirmationSelection {
+  id: string
+  orderId: string
+}
+
+export interface MerchantPaymentConfirmationTarget {
+  conversationId: string
+  orderId: string
+}
+
+export function captureMerchantPaymentConfirmationTarget(
+  selected: MerchantPaymentConfirmationSelection
+): MerchantPaymentConfirmationTarget {
+  return {
+    conversationId: selected.id,
+    orderId: selected.orderId,
+  }
+}
+
+export function resolveMerchantPaymentConfirmationSelection<
+  T extends MerchantPaymentConfirmationSelection,
+>({
+  target,
+  selected,
+  actions,
+}: {
+  target: MerchantPaymentConfirmationTarget | null
+  selected: T | null
+  actions: ReadonlyArray<Pick<MerchantOrderAction, "action" | "status">>
+}): T | null {
+  if (
+    !target ||
+    !selected ||
+    selected.id !== target.conversationId ||
+    selected.orderId !== target.orderId
+  ) {
+    return null
+  }
+
+  return actions.some(
+    (action) => action.action === "confirm_payment" && action.status === "paid"
+  )
+    ? selected
+    : null
+}
+
 export interface ZeroCostPickupTermsInput {
   order: Pick<OrderSchema, "items" | "subtotal" | "shippingCostSats"> | null
   fulfillmentMode: "shipping" | "pickup" | "digital" | "unknown"
