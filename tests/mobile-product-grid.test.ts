@@ -81,6 +81,10 @@ describe("Market product grid layout", () => {
     expect(content).toContain(`${desktopHoverMedia}:hover:scale-[1.12]`)
     expect(content).toContain(`${desktopHoverMedia}:focus-within:scale-[1.12]`)
     expect(content).toContain("disableImageHoverZoom")
+    expect(content).toContain("mediaClassName")
+    expect(content).toContain(
+      `${desktopHoverMedia}:rounded-t-[calc(0.75rem-1px)]`
+    )
     expect(content).not.toContain(`${desktopHoverMedia}:translate-y-2`)
     expect(content).toContain(
       `${desktopHoverMedia}:transition-[opacity,visibility]`

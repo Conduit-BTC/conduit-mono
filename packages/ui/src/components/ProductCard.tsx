@@ -29,6 +29,8 @@ export interface ProductCardProps {
   options?: ReactNode
   /** Optional classes for the product controls wrapper. */
   optionsClassName?: string
+  /** Optional classes for the media wrapper. */
+  mediaClassName?: string
   action?: ReactNode
   onActivate?: () => void
   onMerchantActivate?: () => void
@@ -51,6 +53,7 @@ export function ProductCard({
   soldOut = false,
   options,
   optionsClassName,
+  mediaClassName,
   action,
   onActivate,
   onMerchantActivate,
@@ -97,7 +100,12 @@ export function ProductCard({
         onActivate()
       }}
     >
-      <div className="relative aspect-[4/3] overflow-hidden border-b border-[var(--border)] bg-[var(--background)]">
+      <div
+        className={cn(
+          "relative aspect-[4/3] overflow-hidden border-b border-[var(--border)] bg-[var(--background)]",
+          mediaClassName
+        )}
+      >
         {activeImage && !imageFailed ? (
           <>
             <div
