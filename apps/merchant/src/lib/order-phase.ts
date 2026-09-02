@@ -3,8 +3,10 @@ import {
   formatNpub,
   getOrderStatusDisplay,
   getProfileName,
+  isExternalPaymentReportMessage,
   isMerchantOrderAccepted,
   isMerchantOrderPaid,
+  isPaymentProofEvidenceMessage,
   type MerchantConversationSummary,
   type MerchantOrderState,
   type OrderSummary,
@@ -23,6 +25,8 @@ export type OrderQueueTab =
   | "shipped"
   | "closed"
 
+export type MerchantOrderSort = "priority" | "recent"
+
 export const ORDER_PHASE_OPTIONS: Array<{
   value: OrderQueueTab
   label: string
@@ -33,6 +37,14 @@ export const ORDER_PHASE_OPTIONS: Array<{
   { value: "unpaid_review", label: "Unpaid — review" },
   { value: "shipped", label: "Shipped" },
   { value: "closed", label: "Closed" },
+]
+
+export const ORDER_SORT_OPTIONS: Array<{
+  value: MerchantOrderSort
+  label: string
+}> = [
+  { value: "priority", label: "Priority" },
+  { value: "recent", label: "Recent activity" },
 ]
 
 export function isOrderQueueTab(value: unknown): value is OrderQueueTab {
@@ -340,6 +352,149 @@ export function getMerchantConversationQueue(
   }
   if (state.paymentObserved) return "verify_payment"
   return "unpaid_review"
+}
+
+type MerchantConversationPriority = {
+  rank: number
+  attentionAt: number
+}
+
+type MerchantOrderMessage = NonNullable<
+  MerchantConversationSummary["messages"]
+>[number]
+
+function getEarliestMessageAt(
+  messages: MerchantOrderMessage[],
+  matches: (message: MerchantOrderMessage) => boolean
+): number | undefined {
+  let earliestAt: number | undefined
+  for (const message of messages) {
+    if (!Number.isFinite(message.createdAt) || !matches(message)) continue
+    earliestAt =
+      earliestAt === undefined
+        ? message.createdAt
+        : Math.min(earliestAt, message.createdAt)
+  }
+  return earliestAt
+}
+
+function getMerchantConversationPriority(
+  conversation: MerchantConversationSummary
+): MerchantConversationPriority {
+  const state = getMerchantConversationState(conversation)
+  const status = (state.status ?? "pending").toLowerCase()
+  const queue = getMerchantConversationQueue(conversation)
+  const observedAt = Number.isFinite(conversation.latestAt)
+    ? conversation.latestAt
+    : 0
+  const messages = conversation.messages ?? []
+  const fromBuyer = (message: MerchantOrderMessage): boolean =>
+    message.senderPubkey === conversation.buyerPubkey &&
+    message.recipientPubkey === conversation.merchantPubkey
+  const fromMerchant = (message: MerchantOrderMessage): boolean =>
+    message.senderPubkey === conversation.merchantPubkey &&
+    message.recipientPubkey === conversation.buyerPubkey
+  const hasMerchantStatus = (
+    message: MerchantOrderMessage,
+    ...statuses: string[]
+  ): boolean =>
+    fromMerchant(message) &&
+    message.type === "status_update" &&
+    statuses.includes(message.payload.status.toLowerCase())
+  let rank = 3
+  let matchesTask: ((message: MerchantOrderMessage) => boolean) | null = (
+    message
+  ) => fromBuyer(message) && message.type === "order"
+
+  if (status === "refund_requested") {
+    rank = 0
+    matchesTask = (message) => hasMerchantStatus(message, "refund_requested")
+  } else if (
+    queue === "shipped" ||
+    status === "processing" ||
+    status === "shipped"
+  ) {
+    rank = 4
+    matchesTask = (message) =>
+      (fromMerchant(message) && message.type === "shipping_update") ||
+      hasMerchantStatus(message, "processing", "shipped")
+  } else if (queue === "paid_fulfill") {
+    rank = 1
+    const taskStatus = messages.some(
+      (message) =>
+        Number.isFinite(message.createdAt) && hasMerchantStatus(message, "paid")
+    )
+      ? "paid"
+      : "accepted"
+    matchesTask = (message) => hasMerchantStatus(message, taskStatus)
+  } else if (queue === "verify_payment") {
+    rank = 2
+    matchesTask = (message) =>
+      fromBuyer(message) &&
+      message.type === "payment_proof" &&
+      (isPaymentProofEvidenceMessage(message) ||
+        isExternalPaymentReportMessage(message))
+  } else if (
+    queue === "unpaid_review" &&
+    (status === "accepted" ||
+      status === "invoiced" ||
+      state.accepted ||
+      state.invoiceSent)
+  ) {
+    rank = 5
+    matchesTask = (message) =>
+      (fromMerchant(message) && message.type === "payment_request") ||
+      hasMerchantStatus(message, "accepted", "invoiced")
+  } else if (queue === "closed") {
+    rank = 6
+    matchesTask = null
+  }
+
+  return {
+    rank,
+    attentionAt:
+      (matchesTask && getEarliestMessageAt(messages, matchesTask)) ??
+      observedAt,
+  }
+}
+
+function compareOrderIds(
+  left: MerchantConversationSummary,
+  right: MerchantConversationSummary
+): number {
+  if (left.orderId === right.orderId) return 0
+  return left.orderId < right.orderId ? -1 : 1
+}
+
+export function sortMerchantConversations(
+  conversations: MerchantConversationSummary[],
+  sort: MerchantOrderSort
+): MerchantConversationSummary[] {
+  if (sort === "recent") {
+    return [...conversations].sort(
+      (left, right) =>
+        right.latestAt - left.latestAt || compareOrderIds(left, right)
+    )
+  }
+
+  return conversations
+    .map((conversation) => ({
+      conversation,
+      priority: getMerchantConversationPriority(conversation),
+    }))
+    .sort((left, right) => {
+      const rankDelta = left.priority.rank - right.priority.rank
+      if (rankDelta !== 0) return rankDelta
+
+      const activityDelta =
+        left.priority.rank === 6
+          ? right.priority.attentionAt - left.priority.attentionAt
+          : left.priority.attentionAt - right.priority.attentionAt
+      return (
+        activityDelta || compareOrderIds(left.conversation, right.conversation)
+      )
+    })
+    .map(({ conversation }) => conversation)
 }
 
 export function getMerchantConversationPhase(

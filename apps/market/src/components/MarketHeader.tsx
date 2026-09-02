@@ -25,6 +25,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
   Input,
+  ThemeToggleButton,
   cn,
 } from "@conduit/ui"
 
@@ -551,7 +552,8 @@ export function MarketHeader() {
           />
         </nav>
 
-        <div className="market-header-account-slot">
+        <div className="market-header-account-slot flex items-center gap-1.5">
+          <ThemeToggleButton />
           <AccountControl
             connected={connected}
             displayName={displayName}

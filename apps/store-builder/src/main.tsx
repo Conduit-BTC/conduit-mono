@@ -3,9 +3,12 @@ import { createRoot } from "react-dom/client"
 import { RouterProvider, createRouter } from "@tanstack/react-router"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { ReactQueryDevtools } from "@tanstack/react-query-devtools"
+import { initializeTheme } from "@conduit/ui/theme"
 import { routeTree } from "./routeTree.gen"
 import "@conduit/ui/styles/site.css"
 import "./styles/index.css"
+
+initializeTheme()
 
 const queryClient = new QueryClient()
 
