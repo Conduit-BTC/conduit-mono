@@ -108,10 +108,12 @@ export function bolt11DescriptionHashWords(description: string): number[] {
   )
 }
 
-export function bolt11PaymentHashField(): Bolt11FixtureField {
+export function bolt11PaymentHashField(
+  paymentHash = new Uint8Array(32).fill(7)
+): Bolt11FixtureField {
   return {
     tag: "p",
-    words: bytesToBolt11Words(new Uint8Array(32).fill(7)),
+    words: bytesToBolt11Words(paymentHash),
   }
 }
 

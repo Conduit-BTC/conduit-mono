@@ -54,6 +54,14 @@ export type OrderSummary = {
   invoiceCount: number
   invoiceAmount: number | null
   invoiceCurrency: string | null
+  latestMerchantInvoice: {
+    messageId: string
+    orderId: string
+    createdAt: number
+    senderPubkey: string
+    recipientPubkey: string
+    invoice: string
+  } | null
   paymentProofReceived: boolean
   paymentProofCount: number
   paymentProofAmount: number | null
@@ -120,9 +128,9 @@ export function extractOrderSummary(
 ): OrderSummary {
   const firstOrder = messages.find((m) => m.type === "order")
   const buyerPubkey =
-    firstOrder?.senderPubkey ?? participants?.buyerPubkey ?? ""
+    participants?.buyerPubkey ?? firstOrder?.senderPubkey ?? ""
   const merchantPubkey =
-    firstOrder?.recipientPubkey ?? participants?.merchantPubkey ?? ""
+    participants?.merchantPubkey ?? firstOrder?.recipientPubkey ?? ""
   const isBuyerToMerchant = (message: ParsedOrderMessage) =>
     !!buyerPubkey &&
     !!merchantPubkey &&
@@ -319,6 +327,17 @@ export function extractOrderSummary(
     invoiceCount,
     invoiceAmount,
     invoiceCurrency,
+    latestMerchantInvoice:
+      latestInvoice?.type === "payment_request"
+        ? {
+            messageId: latestInvoice.id,
+            orderId: latestInvoice.orderId,
+            createdAt: latestInvoice.createdAt,
+            senderPubkey: latestInvoice.senderPubkey,
+            recipientPubkey: latestInvoice.recipientPubkey,
+            invoice: latestInvoice.payload.invoice,
+          }
+        : null,
     paymentProofReceived,
     paymentProofCount,
     paymentProofAmount,
