@@ -18,6 +18,10 @@ import {
 } from "./Dialog"
 import { Input } from "./Input"
 import {
+  MediaServerPreferencesSection,
+  type MediaServerPreferencesSectionProps,
+} from "./MediaServerPreferencesSection"
+import {
   PrivateInboxSection,
   type PrivateInboxSectionProps,
 } from "./PrivateInboxSection"
@@ -92,6 +96,8 @@ export interface RelaySettingsPanelProps {
   onPublishRelayList?: () => void | Promise<void>
   /** NIP-17 private inbox declaration status and repair (CND-208). */
   privateInbox?: Omit<PrivateInboxSectionProps, "className">
+  /** BUD-03 ordered Blossom HTTP media server preferences (CND-186). */
+  mediaServers?: Omit<MediaServerPreferencesSectionProps, "className">
   className?: string
 }
 
@@ -930,6 +936,7 @@ export function RelaySettingsPanel({
   onReset,
   onPublishRelayList,
   privateInbox,
+  mediaServers,
   className,
 }: RelaySettingsPanelProps) {
   const [newRelayUrl, setNewRelayUrl] = useState("")
@@ -1053,6 +1060,10 @@ export function RelaySettingsPanel({
         />
 
         {privateInbox ? <PrivateInboxSection {...privateInbox} /> : null}
+
+        {mediaServers ? (
+          <MediaServerPreferencesSection {...mediaServers} />
+        ) : null}
 
         <form
           onSubmit={(event) => void handleAddRelay(event)}
