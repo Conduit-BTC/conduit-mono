@@ -63,7 +63,10 @@ import {
 } from "./messaging"
 import {
   evaluateListingSafety,
+  isMerchantHiddenOnlyListingSafetyAllowed,
   isListingMarketVisible,
+  reconcileContextualListingSafety,
+  type ListingSafetyContext,
   type ListingSafetyEvaluation,
 } from "./listing-safety"
 import {
@@ -271,6 +274,17 @@ export interface ProductDetailQuery {
   productId: string
   revalidateCanonical?: boolean
   includeMarketHidden?: boolean
+}
+
+export interface ProductsByIdsOptions {
+  /** Merchant management only: bypass every Market listing-safety filter. */
+  includeMarketHidden?: boolean
+  /**
+   * Buyer-scoped exception for exact event-pickup coordinates. Only listings
+   * hidden solely by the merchant visibility signal are admitted; blocked,
+   * unsupported, pending, and external decisions remain filtered.
+   */
+  includeMerchantHiddenProductIds?: readonly string[]
 }
 
 export interface ProfileBatchQuery {
@@ -1339,16 +1353,35 @@ function filterProductRecordsForRead(
 function filterExactProductRecordsForRead(
   records: CommerceProductRecord[],
   wanted: ReadonlySet<string>,
-  includeMarketHidden?: boolean
+  options: ProductsByIdsOptions = {}
 ): CommerceProductRecord[] {
   const targets = records.filter((record) => wanted.has(record.addressId))
-  if (includeMarketHidden) return targets
-
   const preparedByAddress = new Map(
     prepareVariationGroups(records).map((record) => [record.addressId, record])
   )
+  if (options.includeMarketHidden) {
+    return targets.map((target) =>
+      target.product.type === "variable"
+        ? (preparedByAddress.get(target.addressId) ?? target)
+        : target
+    )
+  }
+
+  const merchantHiddenAddresses = new Set(
+    (options.includeMerchantHiddenProductIds ?? [])
+      .map((productId) => getProductLookupIds(productId).addressId)
+      .filter((addressId): addressId is string => !!addressId)
+  )
+  const merchantHiddenByAddress =
+    merchantHiddenAddresses.size > 0
+      ? prepareMerchantHiddenExactRecords(records, merchantHiddenAddresses)
+      : new Map<string, CommerceProductRecord>()
 
   return targets.flatMap((target) => {
+    if (merchantHiddenAddresses.has(target.addressId)) {
+      const allowed = merchantHiddenByAddress.get(target.addressId)
+      return allowed ? [allowed] : []
+    }
     if (target.product.type === "simple") {
       return isMarketRenderableRecord(target) ? [target] : []
     }
@@ -1375,6 +1408,125 @@ function filterExactProductRecordsForRead(
       },
     ]
   })
+}
+
+function isMerchantHiddenExactRecordAllowed(
+  record: CommerceProductRecord,
+  context?: ListingSafetyContext
+): boolean {
+  return isMerchantHiddenOnlyListingSafetyAllowed(
+    reconcileContextualListingSafety(record.product, record.safety, context)
+  )
+}
+
+function prepareMerchantHiddenExactRecords(
+  records: CommerceProductRecord[],
+  allowedAddresses: ReadonlySet<string>
+): Map<string, CommerceProductRecord> {
+  const prepared = new Map<string, CommerceProductRecord>()
+  const catalog = prepareProductCatalog(records, {
+    source: records.some((record) => (record.sourceRelayUrls?.length ?? 0) > 0)
+      ? "commerce"
+      : "local_cache",
+    fetchedAt: now(),
+    stale: false,
+    degraded: false,
+    capped: false,
+  })
+
+  for (const item of catalog.items) {
+    if (item.kind === "simple") {
+      if (
+        allowedAddresses.has(item.record.addressId) &&
+        isMerchantHiddenExactRecordAllowed(item.record)
+      ) {
+        prepared.set(item.record.addressId, item.record)
+      }
+      continue
+    }
+
+    const parent = item.family.parent
+    const parentAllowed = allowedAddresses.has(parent.addressId)
+    const structuralContext: ListingSafetyContext = {
+      variationGroupRole: "parent",
+      hasGroupImage: true,
+    }
+    if (!isMerchantHiddenExactRecordAllowed(parent, structuralContext)) {
+      continue
+    }
+
+    const ownImageChildContext: ListingSafetyContext = {
+      variationGroupRole: "variation",
+      hasGroupImage: true,
+    }
+    const structurallyAllowedChildren = item.family.children.filter(
+      (child) =>
+        allowedAddresses.has(child.addressId) &&
+        isMerchantHiddenExactRecordAllowed(child, ownImageChildContext)
+    )
+    const hasGroupImage =
+      (parentAllowed && hasMarketProductImage(parent.product)) ||
+      structurallyAllowedChildren.some((child) =>
+        hasMarketProductImage(child.product)
+      )
+    const childContext: ListingSafetyContext = {
+      variationGroupRole: "variation",
+      hasGroupImage,
+    }
+    const children = structurallyAllowedChildren
+      .filter((child) =>
+        isMerchantHiddenExactRecordAllowed(child, childContext)
+      )
+      .map((child) => ({
+        ...child,
+        safety: reconcileContextualListingSafety(
+          child.product,
+          child.safety,
+          childContext
+        ),
+      }))
+
+    // An accepted child can be rendered atomically without accepting its
+    // parent. The parent still proves family structure and safety, but an
+    // unaccepted parent or sibling cannot donate an image or enter the result.
+    for (const child of children) {
+      prepared.set(child.addressId, child)
+    }
+
+    if (!parentAllowed) continue
+    const parentContext: ListingSafetyContext = {
+      variationGroupRole: "parent",
+      hasGroupImage,
+    }
+    if (!isMerchantHiddenExactRecordAllowed(parent, parentContext)) continue
+
+    const rebuilt = prepareProductCatalog(
+      [
+        {
+          ...parent,
+          family: undefined,
+          safety: reconcileContextualListingSafety(
+            parent.product,
+            parent.safety,
+            parentContext
+          ),
+        },
+        ...children,
+      ],
+      item.family.readEvidence
+    ).items[0]
+    if (rebuilt?.kind !== "family" || rebuilt.family.state !== "ready") {
+      continue
+    }
+
+    const parentRecord: CommerceProductRecord = {
+      ...rebuilt.family.parent,
+      family: rebuilt.family,
+    }
+    prepared.set(parentRecord.addressId, parentRecord)
+  }
+
+  return prepared
 }
 
 function toCachedProduct(record: CommerceProductRecord) {
@@ -3995,7 +4147,7 @@ function aggregateProductAvailabilityCoverage(
 // missing listings instead of one generic failure.
 export async function getProductsByIds(
   productIds: string[],
-  options: { includeMarketHidden?: boolean } = {}
+  options: ProductsByIdsOptions = {}
 ): Promise<ProductsByIdsResult> {
   const lookups = productIds.map((productId) => {
     const { address, addressId } = getProductLookupIds(productId)
@@ -4288,11 +4440,7 @@ export async function getProductsByIds(
   } catch {
     // A cache write failure must not break the availability read itself.
   }
-  const filtered = filterExactProductRecordsForRead(
-    merged,
-    wanted,
-    options.includeMarketHidden
-  )
+  const filtered = filterExactProductRecordsForRead(merged, wanted, options)
 
   const liveByAddress = new Map(
     liveDirectRecords.map((record) => [record.addressId, record] as const)

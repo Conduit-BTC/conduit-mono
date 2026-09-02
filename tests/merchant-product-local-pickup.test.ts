@@ -427,6 +427,16 @@ describe("merchant product local-pickup workflow", () => {
     expect(route).toContain("!productFulfillmentError")
   })
 
+  it("hides explicit event-pickup listings without hiding ordinary products", async () => {
+    const route = await Bun.file("apps/merchant/src/routes/products.tsx").text()
+    const publish = route.slice(
+      route.indexOf("async function publishProduct("),
+      route.indexOf("async function deleteProduct(")
+    )
+
+    expect(publish).toContain('visibility: localPickup ? "private" : "public"')
+  })
+
   it("links local-pickup merchants to the external-signer event creator", async () => {
     const source = await Bun.file(
       "apps/merchant/src/components/ProductFulfillmentEditor.tsx"

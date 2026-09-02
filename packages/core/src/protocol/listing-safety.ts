@@ -704,6 +704,67 @@ export function evaluateListingSafety(
   }
 }
 
+/**
+ * Re-evaluate client-owned safety decisions after commerce has established a
+ * valid variation-family context without discarding unrelated retained gates.
+ */
+export function reconcileContextualListingSafety(
+  product: Product,
+  retained?: ListingSafetyEvaluation,
+  context?: ListingSafetyContext
+): ListingSafetyEvaluation {
+  if (!context || !retained || retained.source !== "client_rules") {
+    return retained ?? evaluateListingSafety(product, undefined, context)
+  }
+
+  const contextual = evaluateListingSafety(product, undefined, context)
+  const contextualCodes = new Set(
+    contextual.reasons.map((reason) => reason.code)
+  )
+  const removableContextReasons = new Set(["unsupported_product_type"])
+  if (context.hasGroupImage) {
+    removableContextReasons.add("missing_market_image")
+  }
+
+  return retained.reasons.every(
+    (reason) =>
+      contextualCodes.has(reason.code) ||
+      removableContextReasons.has(reason.code)
+  )
+    ? contextual
+    : retained
+}
+
+/**
+ * Allow exact reads to recover listings hidden only by merchant visibility
+ * while preserving every other listing-safety decision.
+ */
+export function isMerchantHiddenOnlyListingSafetyAllowed(
+  safety: ListingSafetyEvaluation
+): boolean {
+  if (safety.state === "active" || safety.state === "flagged") return true
+  if (
+    safety.state !== "hidden" ||
+    (safety.source !== "client_rules" &&
+      safety.source !== "merchant_visibility")
+  ) {
+    return false
+  }
+
+  const blockingReasons = safety.reasons.filter(
+    (reason) =>
+      reason.code !== "restricted_tag" && reason.code !== "restricted_term"
+  )
+  return (
+    blockingReasons.length > 0 &&
+    blockingReasons.every(
+      (reason) =>
+        reason.code === "merchant_hidden" &&
+        reason.source === "merchant_visibility"
+    )
+  )
+}
+
 export function isListingMarketVisible(
   evaluation: Pick<ListingSafetyEvaluation, "marketVisible">
 ): boolean {
