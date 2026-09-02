@@ -149,6 +149,7 @@ test("market product variation panel preserves grid geometry across desktop mous
   const variableItem = page.getByTestId("variable-product-list-item")
   const sibling = page.getByTestId("simple-product-sibling")
   const variableCard = variableItem.locator(":scope > div")
+  const media = variableCard.locator(":scope > div:first-child")
   const chooseSize = variableItem.getByRole("combobox", {
     name: "Choose size",
     includeHidden: true,
@@ -158,8 +159,6 @@ test("market product variation panel preserves grid geometry across desktop mous
   await expect(grid).toBeVisible()
   await expect(chooseSize).toBeAttached()
   await variableCard.scrollIntoViewIfNeeded()
-  await page.evaluate(() => window.scrollBy(0, 240))
-  await page.mouse.move(1430, 20)
   await expect
     .poll(() => panelStyle(panel))
     .toMatchObject({
@@ -174,11 +173,7 @@ test("market product variation panel preserves grid geometry across desktop mous
     [variableItem, sibling, grid].map(geometry)
   )
 
-  const variableCardBox = await geometry(variableCard)
-  await page.mouse.move(
-    variableCardBox.x + variableCardBox.width / 2,
-    variableCardBox.y + variableCardBox.height / 2
-  )
+  await variableCard.hover()
   await expect(chooseSize).toBeVisible()
   await expect
     .poll(() => panelStyle(panel))
@@ -209,6 +204,16 @@ test("market product variation panel preserves grid geometry across desktop mous
   expect(expandedCardStyle).toMatchObject({
     borderBottomWidth: "0px",
   })
+  expect(
+    await media.evaluate((element) =>
+      parseFloat(getComputedStyle(element).borderTopLeftRadius)
+    )
+  ).toBeGreaterThan(0)
+  expect(
+    await media.evaluate((element) =>
+      parseFloat(getComputedStyle(element).borderTopRightRadius)
+    )
+  ).toBeGreaterThan(0)
   expect(expandedPanelStyle.backgroundColor).toBe(
     expandedCardStyle.backgroundColor
   )
@@ -339,10 +344,10 @@ test("market product variation panel reveals for desktop keyboard Select interac
   await focusWithKeyboard(page, chooseSize)
   await expect(chooseSize).toBeFocused()
   await chooseSize.press("Enter")
-  await expect(chooseSize).toHaveAttribute("aria-expanded", "true")
 
   const listbox = page.getByRole("listbox")
   await expect(listbox).toBeVisible()
+  await expect(chooseSize).toHaveAttribute("aria-expanded", "true")
   await expect
     .poll(() =>
       listbox.evaluate((element) => element.contains(document.activeElement))

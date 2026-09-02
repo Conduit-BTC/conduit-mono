@@ -167,6 +167,7 @@ export function ProductGridCard({
       approximateUsdPrice={approximateUsd}
       imageLoading={imageLoading}
       disableImageHoverZoom
+      mediaClassName="[@media(min-width:768px)_and_(hover:hover)]:rounded-t-[calc(0.75rem-1px)]"
       cartQuantity={selectedCartQuantity}
       soldOut={soldOut}
       options={

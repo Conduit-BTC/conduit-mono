@@ -37,6 +37,23 @@ describe("ProductCard", () => {
     expect(html).toContain('referrerPolicy="no-referrer"')
   })
 
+  it("merges media wrapper classes without changing the default card media", () => {
+    const html = renderToStaticMarkup(
+      <ProductCard
+        title="Rounded Media Product"
+        merchantName="Alice Store"
+        images={[{ url: "https://cdn.conduit.market/product.png" }]}
+        primaryPrice="25 sats"
+        mediaClassName="test-media-wrapper"
+      />
+    )
+
+    expect(html).toContain(
+      'class="relative aspect-[4/3] overflow-hidden border-b border-[var(--border)] bg-[var(--background)] test-media-wrapper"'
+    )
+    expect(html).not.toContain("rounded-t-xl")
+  })
+
   it("does not render a non-public image destination passed at the UI boundary", () => {
     for (const url of [
       "http://127.0.0.1/private.png",
