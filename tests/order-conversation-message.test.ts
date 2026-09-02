@@ -111,5 +111,18 @@ describe("order conversation status presentation", () => {
 
     expect(html).toContain("999 msats")
     expect(html).not.toContain("Price unavailable")
+    expect(html).toContain("Review in Orders")
+    expect(html).toContain("/orders?order=order-1")
+    expect(html).not.toContain("not-a-decodable-invoice")
+    expect(html).not.toContain(">Pay<")
+    expect(html).not.toContain(">Copy<")
+
+    const merchantHtml = renderToStaticMarkup(
+      createElement(OrderConversationMessage, {
+        message,
+        mine: true,
+      })
+    )
+    expect(merchantHtml).not.toContain("Review in Orders")
   })
 })
