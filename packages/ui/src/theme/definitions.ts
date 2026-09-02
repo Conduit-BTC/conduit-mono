@@ -21,9 +21,10 @@ export type ThemeColorScheme = (typeof NAMED_THEMES)[number]["colorScheme"]
 export type ThemePreference = "system" | ThemeId
 
 export const DEFAULT_THEME_TOGGLE_CYCLE = [
-  "night-market",
+  "system",
   "day-market",
-] as const satisfies readonly ThemeId[]
+  "night-market",
+] as const satisfies readonly ThemePreference[]
 
 export const THEME_PREFERENCE_OPTIONS: readonly {
   id: ThemePreference

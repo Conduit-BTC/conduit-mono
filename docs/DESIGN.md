@@ -61,7 +61,7 @@ Night Market (`night-market`) and Day Market (`day-market`) are Conduit's first 
 
 Named theme values live in `packages/ui/src/styles/theme.css` under the root `data-theme` attribute. IDs, labels, local preference persistence, system resolution, document application, and browser metadata behavior live in `packages/ui/src/theme/`. The shared direct control is composed through `packages/ui/src/components/ThemeToggleButton.tsx`.
 
-The header control always performs a direct theme change. Its initial cycle is Night Market and Day Market; `system` remains the default preference before a person makes an explicit choice and is not part of that cycle. Additional preference UI may later configure which named themes participate in the direct cycle without replacing the header interaction.
+The header control always performs a direct preference change. Its initial cycle is System, Day Market, and Night Market, then back to System. The icon shows the current preference: SunMoon for System, Sun for Day Market, and Moon for Night Market. System is the default and remains selectable so the app can resume following live device changes. Additional preference UI may later configure which preferences participate in the direct cycle without replacing the header interaction.
 
 The current named themes vary color and elevation values only. Typography, spacing, radii, and layout remain shared product-family foundations. Broader custom-theme authoring, scoped previews, and user-authored theme assets remain future work.
 

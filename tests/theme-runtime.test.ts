@@ -6,7 +6,7 @@ import {
   THEME_PREFERENCE_OPTIONS,
   THEME_STORAGE_KEY,
   applyThemeToDocument,
-  getNextThemeInCycle,
+  getNextThemePreferenceInCycle,
   parseThemePreference,
   persistThemePreference,
   readThemePreference,
@@ -95,14 +95,19 @@ describe("named theme vocabulary", () => {
     expect(resolveThemePreference("day-market", true)).toBe("day-market")
   })
 
-  it("direct-toggles through the default named theme cycle", () => {
-    expect(DEFAULT_THEME_TOGGLE_CYCLE).toEqual(["night-market", "day-market"])
-    expect(getNextThemeInCycle("night-market")).toBe("day-market")
-    expect(getNextThemeInCycle("day-market")).toBe("night-market")
+  it("direct-toggles through system and the default named theme cycle", () => {
+    expect(DEFAULT_THEME_TOGGLE_CYCLE).toEqual([
+      "system",
+      "day-market",
+      "night-market",
+    ])
+    expect(getNextThemePreferenceInCycle("system")).toBe("day-market")
+    expect(getNextThemePreferenceInCycle("day-market")).toBe("night-market")
+    expect(getNextThemePreferenceInCycle("night-market")).toBe("system")
     expect(
-      getNextThemeInCycle("night-market", ["day-market", "night-market"])
+      getNextThemePreferenceInCycle("system", ["day-market", "night-market"])
     ).toBe("day-market")
-    expect(getNextThemeInCycle("night-market", [])).toBe("night-market")
+    expect(getNextThemePreferenceInCycle("system", [])).toBe("system")
   })
 })
 

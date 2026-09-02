@@ -56,13 +56,13 @@ export function resolveThemePreference(
   return systemPrefersDark ? "night-market" : "day-market"
 }
 
-export function getNextThemeInCycle(
-  currentTheme: ThemeId,
-  cycle: readonly ThemeId[] = DEFAULT_THEME_TOGGLE_CYCLE
-): ThemeId {
-  if (cycle.length === 0) return currentTheme
+export function getNextThemePreferenceInCycle(
+  currentPreference: ThemePreference,
+  cycle: readonly ThemePreference[] = DEFAULT_THEME_TOGGLE_CYCLE
+): ThemePreference {
+  if (cycle.length === 0) return currentPreference
 
-  const currentIndex = cycle.indexOf(currentTheme)
+  const currentIndex = cycle.indexOf(currentPreference)
   const nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % cycle.length
   return cycle[nextIndex]!
 }
