@@ -142,7 +142,7 @@ export function ProductCard({
       <div className="flex flex-1 flex-col p-3">
         <div className="min-h-[3.25rem] space-y-1">
           <div className="flex items-start justify-between gap-2">
-            <h3 className="line-clamp-2 min-h-[2.5rem] flex-1 text-sm font-semibold leading-snug text-[var(--text-primary)]">
+            <h3 className="min-w-0 flex-1 truncate text-sm font-semibold leading-snug text-[var(--text-primary)]">
               {title}
             </h3>
             {titleAside || soldOut ? (

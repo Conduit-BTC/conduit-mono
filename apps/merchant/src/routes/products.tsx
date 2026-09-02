@@ -57,6 +57,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  ShareLinkButton,
   SignedActionStatus,
   StatusPill,
   Textarea,
@@ -70,6 +71,7 @@ import { ProductFulfillmentEditor } from "../components/ProductFulfillmentEditor
 import { ShippingDestinationsEditor } from "../components/ShippingDestinationsEditor"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { requireAuth } from "../lib/auth"
+import { getProductUrl } from "../lib/market-links"
 import {
   clearProductVariationAuthoringState,
   isProductDraftOwnedBySigner,
@@ -236,6 +238,14 @@ type ProductSort = "updated_desc" | "title_asc" | "price_asc" | "price_desc"
 
 type EditFulfillmentResolution =
   "ready" | "resolving" | "unresolved" | "verifying_pickup"
+
+function getShareableProductUrl(productAddressId: string): string | null {
+  try {
+    return getProductUrl(productAddressId)
+  } catch {
+    return null
+  }
+}
 
 function createEmptyProductForm(
   usePresetShippingZone = true
@@ -2536,6 +2546,7 @@ function ProductsPage() {
             const stockDisplay = item.family
               ? getProductFamilyStockDisplay(item.family.inventorySummary)
               : getProductStockDisplay(item.product.stock)
+            const productUrl = getShareableProductUrl(item.addressId)
 
             return (
               <div key={item.addressId} className="grid gap-2">
@@ -2580,6 +2591,15 @@ function ProductsPage() {
                   imageLoading="lazy"
                   action={
                     <div className="flex gap-1">
+                      {productUrl ? (
+                        <ShareLinkButton
+                          url={productUrl}
+                          shareTitle={item.product.title}
+                          shareText={`View ${item.product.title} on Conduit Market.`}
+                          className="h-7 px-2 text-xs"
+                          onShareClick={(event) => event.stopPropagation()}
+                        />
+                      ) : null}
                       <Button
                         variant="outline"
                         size="sm"

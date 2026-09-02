@@ -1,4 +1,5 @@
 import {
+  decodeProductReference,
   getProductImageCandidates,
   resolvePurchasableSelection,
   type CommerceProductRecord,
@@ -85,14 +86,19 @@ export function getProductSelection(
   } catch {
     // Preserve the raw route value when it is not valid percent encoding.
   }
+  const canonicalProductId = selectedProductId
+    ? (decodeProductReference(selectedProductId)?.addressId ?? decodedProductId)
+    : selectedProductId
 
   return (
     family?.children.find(
       (candidate) =>
         candidate.product.id === selectedProductId ||
         candidate.product.id === decodedProductId ||
+        candidate.product.id === canonicalProductId ||
         candidate.addressId === selectedProductId ||
-        candidate.addressId === decodedProductId
+        candidate.addressId === decodedProductId ||
+        candidate.addressId === canonicalProductId
     )?.product ?? getDefaultProductSelection(product, family)
   )
 }

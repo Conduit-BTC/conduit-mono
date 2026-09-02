@@ -1991,13 +1991,13 @@ describe("commerce gateway", () => {
 
   it("keeps market-hidden products out of batched Market reads", async () => {
     const productEvent = makeProductEvent({
-      pubkey: "merchant",
+      pubkey: MERCHANT_A_PUBKEY,
       dTag: "blocked-batch-item",
       id: "event-blocked-batch",
       createdAt: 100,
       title: "Counterfeit goods display sample",
     })
-    const addressId = "30402:merchant:blocked-batch-item"
+    const addressId = `30402:${MERCHANT_A_PUBKEY}:blocked-batch-item`
 
     __setCommerceTestOverrides({
       fetchEventsFanout: async (filter) =>
@@ -4039,6 +4039,75 @@ describe("getProductsByIds diagnostics", () => {
   const merchantPubkey = MERCHANT_A_PUBKEY
   const addressId = `30402:${merchantPubkey}:${dTag}`
 
+  it("keeps a literal percent sequence exact in a product-coordinate read", async () => {
+    const literalDTag = "offer%2Fblue"
+    const literalAddressId = `30402:${merchantPubkey}:${literalDTag}`
+    const productDTags: string[][] = []
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          productDTags.push([...(filter["#d"] ?? [])])
+        }
+        return []
+      },
+    })
+
+    await getProductDetail({ productId: literalAddressId })
+
+    expect(productDTags).toContainEqual([literalDTag])
+  })
+
+  it("keeps a line terminator exact in a product-coordinate read", async () => {
+    const lineTerminatorDTag = "line\nbreak"
+    const lineTerminatorAddressId = `30402:${merchantPubkey}:${lineTerminatorDTag}`
+    const productDTags: string[][] = []
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          productDTags.push([...(filter["#d"] ?? [])])
+        }
+        return []
+      },
+    })
+
+    await getProductDetail({ productId: lineTerminatorAddressId })
+
+    expect(productDTags).toContainEqual([lineTerminatorDTag])
+  })
+
+  it("rejects malformed coordinates before starting product reads", async () => {
+    const malformedProductIds = [
+      `30402.0:${merchantPubkey}:coercible-kind`,
+      `30403:${merchantPubkey}:wrong-kind`,
+      "30402:short:short-pubkey",
+      `30402:${"g".repeat(64)}:nonhex-pubkey`,
+      `30402%3A${merchantPubkey}%3Aitem%ZZ`,
+    ]
+    let productReads = 0
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) productReads += 1
+        return []
+      },
+    })
+
+    const result = await getProductsByIds(malformedProductIds)
+    const detail = await getProductDetail({
+      productId: malformedProductIds[3]!,
+    })
+
+    expect(result.data).toHaveLength(0)
+    expect(result.diagnostics).toEqual(
+      malformedProductIds.map((productId) => ({
+        productId,
+        addressId: null,
+        issue: "invalid_product_reference",
+      }))
+    )
+    expect(detail.data).toBeNull()
+    expect(productReads).toBe(0)
+  })
+
   it("reports a null issue only for an exact live coordinate match", async () => {
     __setCommerceTestOverrides({
       fetchEventsFanout: async (filter) =>
@@ -4510,13 +4579,13 @@ describe("getProductsByIds diagnostics", () => {
 
   it("types market-filtered listings instead of calling them missing", async () => {
     const productEvent = makeProductEvent({
-      pubkey: "merchant",
+      pubkey: merchantPubkey,
       dTag: "diagnosed-filtered",
       id: "event-diagnosed-filtered",
       createdAt: 100,
       title: "Counterfeit goods display sample",
     })
-    const filteredAddressId = "30402:merchant:diagnosed-filtered"
+    const filteredAddressId = `30402:${merchantPubkey}:diagnosed-filtered`
     __setCommerceTestOverrides({
       fetchEventsFanout: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.PRODUCT)

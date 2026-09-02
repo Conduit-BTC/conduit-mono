@@ -2,12 +2,16 @@ import { afterEach, describe, expect, it, mock } from "bun:test"
 import { createHash } from "node:crypto"
 
 import {
+  decodeLightningInvoiceAmount,
   decodeLightningInvoicePaymentHash,
   decodeLightningInvoiceMetadata,
   fetchZapInvoice,
   getLightningInvoiceNetwork,
+  isAmountlessLightningInvoice,
+  validateLightningInvoiceForPayment,
   validateZapInvoiceDescriptionBinding,
 } from "../packages/core/src/protocol/lightning"
+import { config } from "../packages/core/src/config"
 import {
   BOLT11_SIGNATURE_WORDS,
   bolt11DescriptionHashField as buildDescriptionHashField,
@@ -47,6 +51,52 @@ describe("BOLT11 network decoding", () => {
     expect(getLightningInvoiceNetwork(mainnet)).toBe("mainnet")
     expect(getLightningInvoiceNetwork(regtest)).toBe("regtest")
   })
+
+  it("supports canonical signet while preserving legacy compatibility", () => {
+    const canonicalSignet = makeBolt11Invoice({
+      hrp: "lntbs20n",
+      fields: [paymentHashField()],
+    })
+    const amountlessSignet = makeBolt11Invoice({
+      hrp: "lntbs",
+      fields: [paymentHashField()],
+    })
+    const legacySignet = makeBolt11Invoice({
+      hrp: "lnsb20n",
+      fields: [paymentHashField()],
+    })
+    const legacyTestnet = makeBolt11Invoice({
+      hrp: "lntb20n",
+      fields: [paymentHashField()],
+    })
+
+    expect(getLightningInvoiceNetwork(canonicalSignet)).toBe("signet")
+    expect(getLightningInvoiceNetwork(legacySignet)).toBe("signet")
+    expect(getLightningInvoiceNetwork(legacyTestnet)).toBe("testnet")
+    expect(decodeLightningInvoiceAmount(canonicalSignet).msats).toBe(2_000)
+    expect(isAmountlessLightningInvoice(amountlessSignet)).toBe(true)
+
+    const previousNetwork = config.lightningNetwork
+    config.lightningNetwork = "signet"
+    try {
+      expect(
+        validateLightningInvoiceForPayment({
+          invoice: canonicalSignet,
+          expectedAmountMsats: 2_000,
+          nowSeconds: CREATED_AT,
+        }).ok
+      ).toBe(true)
+      expect(
+        validateLightningInvoiceForPayment({
+          invoice: legacyTestnet,
+          expectedAmountMsats: 2_000,
+          nowSeconds: CREATED_AT,
+        }).ok
+      ).toBe(true)
+    } finally {
+      config.lightningNetwork = previousNetwork
+    }
+  })
 })
 
 describe("BOLT11 payment hash decoding", () => {
@@ -78,6 +128,31 @@ describe("BOLT11 payment hash decoding", () => {
     expect(decodeLightningInvoicePaymentHash(missing)).toBeNull()
     expect(decodeLightningInvoicePaymentHash(duplicate)).toBeNull()
     expect(decodeLightningInvoicePaymentHash(malformed)).toBeNull()
+  })
+})
+
+describe("BOLT11 payment validation", () => {
+  it("rejects an expiry that cannot be represented safely", () => {
+    const invoice = makeBolt11Invoice({
+      fields: [
+        paymentHashField(),
+        plainDescriptionField(),
+        { tag: "x", words: new Array<number>(11).fill(31) },
+      ],
+      createdAt: CREATED_AT,
+    })
+
+    expect(decodeLightningInvoiceMetadata(invoice).expiresAt).toBeNull()
+    expect(
+      validateLightningInvoiceForPayment({
+        invoice,
+        expectedAmountMsats: 50_000,
+        nowSeconds: CREATED_AT,
+      })
+    ).toMatchObject({
+      ok: false,
+      reason: "The invoice returned by the merchant has an invalid expiry.",
+    })
   })
 })
 

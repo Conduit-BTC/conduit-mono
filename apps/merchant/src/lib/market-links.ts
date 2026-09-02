@@ -1,4 +1,5 @@
 import {
+  buildMarketProductShareUrl,
   inferConduitAppOrigin,
   pubkeyToNpub,
   type ConduitBrowserLocation,
@@ -20,6 +21,10 @@ export function getStorefrontUrl(pubkey: string): string {
 
 export function getProfileUrl(pubkey: string): string {
   return `${inferMarketOrigin()}/u/${encodeURIComponent(pubkeyToNpub(pubkey))}`
+}
+
+export function getProductUrl(productAddressId: string): string {
+  return buildMarketProductShareUrl(inferMarketOrigin(), productAddressId)
 }
 
 export function getEventMarketUrl(naddr: string): string {
