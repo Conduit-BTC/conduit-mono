@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { finalizeEvent, type Event as NostrEvent } from "nostr-tools"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  type Event as NostrEvent,
+} from "nostr-tools"
 import {
   __resetNdkTestState,
   __setNdkVerifyTimeoutMsForTests,
@@ -687,6 +691,86 @@ describe("NDK relay worker verification fallback", () => {
 
     expect(sockets).toHaveLength(2)
     expect(sockets.every((socket) => socket.readyState === 3)).toBe(true)
+  })
+
+  it("closes shared relay connections when resetting NDK test state", async () => {
+    const firstEvent = finalizeEvent(
+      {
+        kind: EVENT_KINDS.PROFILE,
+        created_at: 10,
+        tags: [],
+        content: JSON.stringify({ name: "first test connection" }),
+      },
+      generateSecretKey()
+    )
+    const secondEvent = finalizeEvent(
+      {
+        kind: EVENT_KINDS.PROFILE,
+        created_at: 11,
+        tags: [],
+        content: JSON.stringify({ name: "second test connection" }),
+      },
+      generateSecretKey()
+    )
+    const FirstWebSocket = fakeRelayWebSocket(firstEvent)
+    const SecondWebSocket = fakeRelayWebSocket(secondEvent)
+    let firstSocketCount = 0
+    let secondSocketCount = 0
+
+    class TrackingFirstWebSocket extends FirstWebSocket {
+      constructor() {
+        super()
+        firstSocketCount += 1
+      }
+    }
+
+    class TrackingSecondWebSocket extends SecondWebSocket {
+      constructor() {
+        super()
+        secondSocketCount += 1
+      }
+    }
+
+    Object.defineProperty(globalThis, "Worker", {
+      configurable: true,
+      writable: true,
+      value: undefined,
+    })
+    Object.defineProperty(globalThis, "WebSocket", {
+      configurable: true,
+      writable: true,
+      value: TrackingFirstWebSocket,
+    })
+
+    const firstRead = await fetchEventsFanoutDetailed(
+      { kinds: [EVENT_KINDS.PROFILE] },
+      {
+        relayUrls: ["wss://shared-reset.example"],
+        connectTimeoutMs: 50,
+        fetchTimeoutMs: 50,
+      }
+    )
+    expect(firstRead.events.map((event) => event.id)).toEqual([firstEvent.id])
+
+    Object.defineProperty(globalThis, "WebSocket", {
+      configurable: true,
+      writable: true,
+      value: TrackingSecondWebSocket,
+    })
+    __resetNdkTestState()
+
+    const secondRead = await fetchEventsFanoutDetailed(
+      { kinds: [EVENT_KINDS.PROFILE] },
+      {
+        relayUrls: ["wss://shared-reset.example"],
+        connectTimeoutMs: 50,
+        fetchTimeoutMs: 50,
+      }
+    )
+
+    expect(secondRead.events.map((event) => event.id)).toEqual([secondEvent.id])
+    expect(firstSocketCount).toBe(1)
+    expect(secondSocketCount).toBe(1)
   })
 
   it("bounds a capped read when a relay omits EOSE", async () => {

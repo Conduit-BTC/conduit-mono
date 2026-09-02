@@ -22,6 +22,7 @@ import {
   NotFoundPage,
   SignerAuthUrlNotice,
   SignerConnectPanel,
+  ThemeToggleButton,
   isProductLegalPath,
   isMobileSignerEnvironment,
 } from "@conduit/ui"
@@ -57,7 +58,7 @@ function RootShell({ children }: { children: ReactNode }) {
               </div>
               <main
                 data-merchant-main-scroll
-                className="px-4 pb-28 pt-20 sm:px-6 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:px-8 lg:pb-28 lg:pt-8"
+                className="px-4 pb-28 pt-20 sm:px-6 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:px-8 lg:pb-28 lg:pt-20"
               >
                 <div className="mx-auto w-full max-w-[1280px]">{children}</div>
               </main>
@@ -86,7 +87,14 @@ function RootLayout() {
     )
   }
 
-  return <MerchantProductRoot pathname={pathname} />
+  return (
+    <>
+      <div className="fixed right-[max(1rem,env(safe-area-inset-right))] top-[max(1rem,env(safe-area-inset-top))] z-40">
+        <ThemeToggleButton />
+      </div>
+      <MerchantProductRoot pathname={pathname} />
+    </>
+  )
 }
 
 function MerchantProductRoot({ pathname }: { pathname: string }) {
