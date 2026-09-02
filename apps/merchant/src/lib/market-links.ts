@@ -15,7 +15,11 @@ export function inferMarketOrigin(
     ? undefined
     : window.location
 ): string {
-  return inferConduitAppOrigin("market", location)
+  return inferConduitAppOrigin(
+    "market",
+    location,
+    import.meta.env.VITE_BUILD_BRANCH
+  )
 }
 
 export function inferMerchantOrigin(
@@ -23,7 +27,11 @@ export function inferMerchantOrigin(
     ? undefined
     : window.location
 ): string {
-  return inferConduitAppOrigin("merchant", location)
+  return inferConduitAppOrigin(
+    "merchant",
+    location,
+    import.meta.env.VITE_BUILD_BRANCH
+  )
 }
 
 export function getStorefrontUrl(pubkey: string): string {

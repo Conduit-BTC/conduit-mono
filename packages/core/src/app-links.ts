@@ -27,6 +27,23 @@ const LOCAL_PORT_PAIRS = [
   ["3000", "3001"],
 ] as const
 
+const CLOUDFLARE_PAGES_BRANCH_ALIAS_MAX_LENGTH = 28
+
+function cloudflarePagesBranchAlias(
+  branchName: string | undefined
+): string | null {
+  if (!branchName || branchName.trim().toLowerCase() === "main") return null
+
+  const alias = branchName
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, "-")
+    .slice(0, CLOUDFLARE_PAGES_BRANCH_ALIAS_MAX_LENGTH)
+    .replace(/^-+|-+$/g, "")
+
+  return alias || null
+}
+
 function isConduitAppOrigin(
   origin: string | URL,
   target: ConduitAppTarget
@@ -74,10 +91,12 @@ export function isConduitMerchantOrigin(origin: string | URL): boolean {
 function replaceHostSuffix(
   hostname: string,
   sourceHost: string,
-  targetHost: string
+  targetHost: string,
+  previewBranchAlias?: string | null
 ): string | null {
   if (hostname === sourceHost) return targetHost
   if (!hostname.endsWith(`.${sourceHost}`)) return null
+  if (previewBranchAlias) return `${previewBranchAlias}.${targetHost}`
   return `${hostname.slice(0, -sourceHost.length)}${targetHost}`
 }
 
@@ -86,7 +105,8 @@ export function inferConduitAppOrigin(
   target: ConduitAppTarget,
   location: ConduitBrowserLocation | undefined = typeof window === "undefined"
     ? undefined
-    : window.location
+    : window.location,
+  deploymentBranch?: string
 ): string {
   if (!location) return PRODUCTION_ORIGINS[target]
 
@@ -96,12 +116,14 @@ export function inferConduitAppOrigin(
 
   const sourceIndex = target === "merchant" ? 0 : 1
   const targetIndex = target === "merchant" ? 1 : 0
+  const previewBranchAlias = cloudflarePagesBranchAlias(deploymentBranch)
 
   for (const pair of APP_HOST_PAIRS) {
     const pairedHostname = replaceHostSuffix(
       hostname,
       pair[sourceIndex],
-      pair[targetIndex]
+      pair[targetIndex],
+      previewBranchAlias
     )
     if (pairedHostname) return `${protocol}//${pairedHostname}`
   }

@@ -40,6 +40,36 @@ describe("paired Conduit app origins", () => {
     ).toBe("https://fix-293.conduit-market-signet.pages.dev")
   })
 
+  it("uses the shared branch alias when commit preview hashes differ", () => {
+    const branch =
+      "jtsetsekas/cnd-265-show-separate-shopper-and-merchant-event-links-after-publish"
+
+    expect(
+      inferConduitAppOrigin(
+        "market",
+        {
+          hostname: "accfe29b.conduit-merchant-33n.pages.dev",
+          protocol: "https:",
+          port: "",
+        },
+        branch
+      )
+    ).toBe("https://jtsetsekas-cnd-265-show-sepa.conduit-market-coo.pages.dev")
+    expect(
+      inferConduitAppOrigin(
+        "merchant",
+        {
+          hostname: "3bf7e690.conduit-market-coo.pages.dev",
+          protocol: "https:",
+          port: "",
+        },
+        branch
+      )
+    ).toBe(
+      "https://jtsetsekas-cnd-265-show-sepa.conduit-merchant-33n.pages.dev"
+    )
+  })
+
   it("pairs local ports in both directions", () => {
     expect(
       inferConduitAppOrigin("merchant", {
