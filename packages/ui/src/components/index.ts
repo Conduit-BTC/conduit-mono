@@ -127,6 +127,10 @@ export {
   type PrivateInboxSectionProps,
   type PrivateInboxStatus,
 } from "./PrivateInboxSection"
+export {
+  MediaServerPreferencesSection,
+  type MediaServerPreferencesSectionProps,
+} from "./MediaServerPreferencesSection"
 export { Checkbox, type CheckboxProps } from "./Checkbox"
 export {
   ProductCard,
