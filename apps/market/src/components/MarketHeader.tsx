@@ -15,6 +15,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router"
 import { config, formatNpub, useAuth, useProfile } from "@conduit/core"
 import {
+  AppearanceMenu,
   Avatar,
   AvatarFallback,
   AvatarImage,
@@ -265,6 +266,7 @@ function AccountControl({
           to="/preferences"
           onClick={() => setOpen(false)}
         />
+        <AppearanceMenu className={accountMenuItemClassName()} />
         <AccountMenuLink
           icon={<Radio className="size-4" />}
           label="Network"

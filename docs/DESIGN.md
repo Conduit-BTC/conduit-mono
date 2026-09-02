@@ -6,9 +6,9 @@ This document defines the shared visual system for Conduit and where shared UI d
 
 Conduit uses one shared visual system across `apps/market`, `apps/merchant`, `apps/store-builder`, and shared UI in `packages/ui`.
 
-- `market` and `merchant` use the same token set and the same dark-first visual language.
+- `market` and `merchant` use the same token set and named theme vocabulary.
 - `store-builder` should inherit the same shared foundations unless a documented product need requires a scoped variation.
-- Light mode already exists in the token layer through `prefers-color-scheme`, even if not every screen is fully refined for it yet.
+- Night Market and Day Market preserve the existing dark and light value sets.
 - Design decisions should be expressed through tokens in `packages/ui/src/styles/theme.css` and typography variables in `packages/ui/src/styles/typography.css`.
 - New UI should not introduce raw hex, `rgba(...)`, or Tailwind palette colors when a Conduit token already exists.
 
@@ -57,9 +57,15 @@ Conduit uses shadcn-style primitives wrapped and themed in `@conduit/ui`. Produc
 
 ## Themes
 
-### Dark Theme
+Night Market (`night-market`) and Day Market (`day-market`) are Conduit's first two named themes. `system` is a preference resolver, not a theme: it follows `prefers-color-scheme` and resolves to one of those stable theme IDs.
 
-Dark theme is the current default.
+Named theme values live in `packages/ui/src/styles/theme.css` under the root `data-theme` attribute. IDs, labels, local preference persistence, system resolution, document application, and browser metadata behavior live in `packages/ui/src/theme/`. The shared selector is composed through `packages/ui/src/components/AppearanceMenu.tsx`.
+
+The current named themes vary color and elevation values only. Typography, spacing, radii, and layout remain shared product-family foundations. Broader custom-theme authoring, scoped previews, and user-authored theme assets remain future work.
+
+### Night Market
+
+Night Market preserves the current dark values.
 
 - `--background`: global page background
 - `--surface`: primary card and panel surface
@@ -67,9 +73,9 @@ Dark theme is the current default.
 - `--surface-dialog`: modal/dialog background that should pop above page chrome
 - `--border`: default structural border
 
-### Light Theme
+### Day Market
 
-Light theme is already available via `@media (prefers-color-scheme: light)` in `packages/ui/src/styles/theme.css`.
+Day Market preserves the current light values.
 
 - `--background` becomes a light neutral surface
 - `--foreground` and text tokens flip to dark values

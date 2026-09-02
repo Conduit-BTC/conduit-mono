@@ -1,6 +1,7 @@
 export { Avatar, AvatarImage, AvatarFallback } from "./Avatar"
 export { QRCodeSVG } from "qrcode.react"
 export { AccountMenu, type AccountMenuProps } from "./AccountMenu"
+export { AppearanceMenu, type AppearanceMenuProps } from "./AppearanceMenu"
 export { Badge, badgeVariants, type BadgeProps } from "./Badge"
 export { Button, buttonVariants, type ButtonProps } from "./Button"
 export { ShareLinkButton, type ShareLinkButtonProps } from "./ShareLinkButton"
@@ -20,9 +21,15 @@ export {
 export {
   DropdownMenu,
   DropdownMenuTrigger,
+  DropdownMenuPortal,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuCheckboxItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSub,
+  DropdownMenuSubTrigger,
+  DropdownMenuSubContent,
   DropdownMenuSeparator,
   DropdownMenuLabel,
 } from "./DropdownMenu"

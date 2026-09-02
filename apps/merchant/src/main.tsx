@@ -9,11 +9,14 @@ import {
   pruneShopperTrustSnapshots,
 } from "@conduit/core"
 import { isProductLegalPath } from "@conduit/ui"
+import { initializeTheme } from "@conduit/ui/theme"
 import { routeTree } from "./routeTree.gen"
 import { startProductDeletionDeliveryWorker } from "./lib/product-deletion-delivery"
 import { isMerchantPublicAboutPath } from "./lib/publicRoutes"
 import "@conduit/ui/styles/site.css"
 import "./styles/index.css"
+
+initializeTheme()
 
 const queryClient = new QueryClient()
 
