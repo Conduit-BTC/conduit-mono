@@ -507,6 +507,7 @@ export function __setNdkVerifyTimeoutMsForTests(timeoutMs: number): void {
 export function __resetNdkTestState(): void {
   activeSignerLease = null
   if (ndkInstance) ndkInstance.signer = undefined
+  closeAllRelayConnections()
   if (verifyWorker) {
     verifyWorker.onmessage = null
     verifyWorker.onerror = null
