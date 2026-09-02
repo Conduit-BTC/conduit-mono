@@ -9,6 +9,7 @@ import {
   canObserveOrderPublicZapReceipt,
   canSubmitExternalPaymentReport,
   getLifecyclePaymentProofAction,
+  isMerchantInvoicePaymentActionBound,
   isOrderPaymentRunning,
   observeOrderPublicZapReceipt,
   runOrderPayment,
@@ -496,6 +497,22 @@ describe("runOrderPayment", () => {
         senderPubkey: "other-merchant",
       })
     ).toMatchObject({ ok: false })
+
+    expect(isMerchantInvoicePaymentActionBound(order, action)).toBe(false)
+    expect(
+      isMerchantInvoicePaymentActionBound(
+        lifecycle({
+          checkoutMode: "pay_later",
+          publicZapSigner: undefined,
+          invoiceStatus: "manual_required",
+          paymentStatus: "manual_required",
+          invoice,
+          paymentHash: "07".repeat(32),
+          invoiceExpiresAt: 1_800_003_600,
+        }),
+        action
+      )
+    ).toBe(true)
   })
 
   it("keeps public zap proof retries public for external-wallet fallback orders", () => {

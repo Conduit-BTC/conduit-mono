@@ -116,7 +116,9 @@ import {
 import {
   canObserveOrderPublicZapReceipt,
   getOrderPaymentState,
+  isMerchantInvoicePaymentActionBound,
   observeOrderPublicZapReceipt,
+  prepareMerchantInvoicePaymentAction,
   resendOrderProof,
   runOrderPrivateFallback,
   runOrderPayment,
@@ -629,6 +631,9 @@ function ExternalWalletPanel({
   vm,
   onMarkPaid,
   onBeforeInvoiceUse,
+  onPrepareMerchantInvoice,
+  merchantInvoicePrepared,
+  boundMerchantInvoiceExpiresAt,
   busy,
   guestSession,
   autoDetectReceipt,
@@ -636,6 +641,9 @@ function ExternalWalletPanel({
   vm: OrderViewModel
   onMarkPaid: () => void
   onBeforeInvoiceUse: () => boolean
+  onPrepareMerchantInvoice: () => void
+  merchantInvoicePrepared: boolean
+  boundMerchantInvoiceExpiresAt: number | null
   busy: boolean
   guestSession: boolean
   autoDetectReceipt: boolean
@@ -646,7 +654,15 @@ function ExternalWalletPanel({
   )
   const invoice = vm.invoice
   const merchantInvoice = vm.merchantInvoiceAction
-  const merchantInvoiceExpiry = merchantInvoice?.expiresAt ?? null
+  const hasBoundMerchantInvoice =
+    vm.checkoutMode === "pay_later" &&
+    vm.paymentStatus === "manual_required" &&
+    !!invoice &&
+    boundMerchantInvoiceExpiresAt !== null
+  const isMerchantInvoice = !!merchantInvoice || hasBoundMerchantInvoice
+  const merchantInvoiceExpiry =
+    merchantInvoice?.expiresAt ??
+    (hasBoundMerchantInvoice ? boundMerchantInvoiceExpiresAt : null)
   useEffect(() => {
     if (merchantInvoiceExpiry === null) return
     const remainingMs = merchantInvoiceExpiry * 1_000 - Date.now()
@@ -657,9 +673,30 @@ function ExternalWalletPanel({
     return () => window.clearTimeout(timer)
   }, [merchantInvoiceExpiry, nowSeconds])
   if (!invoice) return null
+  if (merchantInvoice?.status === "payable" && !merchantInvoicePrepared) {
+    return (
+      <section className="rounded-[1.5rem] border border-amber-500/40 bg-amber-500/5 p-5">
+        <h2 className="text-balance text-lg font-semibold text-[var(--text-primary)]">
+          Merchant invoice ready
+        </h2>
+        <p className="mt-1 text-pretty text-sm text-[var(--text-secondary)]">
+          Confirm this invoice before opening it. Orders will keep this exact
+          invoice attached to the payment report.
+        </p>
+        <Button
+          className="mt-4 h-10 px-4 text-sm"
+          disabled={busy}
+          onClick={onPrepareMerchantInvoice}
+        >
+          Use merchant invoice
+        </Button>
+      </section>
+    )
+  }
   const merchantInvoiceExpired =
-    merchantInvoice?.status === "payable" &&
-    merchantInvoice.expiresAt <= nowSeconds
+    isMerchantInvoice &&
+    merchantInvoiceExpiry !== null &&
+    merchantInvoiceExpiry <= nowSeconds
   const merchantInvoiceBlocked =
     merchantInvoice?.status === "blocked" || merchantInvoiceExpired
   const merchantInvoiceCanReport =
@@ -714,14 +751,14 @@ function ExternalWalletPanel({
   return (
     <section className="rounded-[1.5rem] border border-amber-500/40 bg-amber-500/5 p-5">
       <h2 className="text-balance text-lg font-semibold text-[var(--text-primary)]">
-        {merchantInvoice
+        {isMerchantInvoice
           ? "Pay merchant invoice"
           : "Pay with an external wallet"}
       </h2>
       <p className="mt-1 text-pretty text-sm text-[var(--text-secondary)]">
         {autoDetectReceipt
           ? "Check your wallet first if an automatic payment was already attempted. Otherwise scan or copy this invoice and pay it once. Conduit will match the public Lightning receipt and notify the merchant automatically."
-          : merchantInvoice
+          : isMerchantInvoice
             ? "Scan, copy, or open this merchant invoice. After your wallet confirms payment, report it to the merchant for verification."
             : "Automatic payment did not complete. Check your wallet first, then pay this same invoice once and report it to the merchant for verification. This invoice can only settle once, so paying it again is safe if nothing was sent."}
       </p>
@@ -1064,6 +1101,36 @@ function OrderDetail({
     return true
   }
 
+  async function prepareCurrentMerchantInvoice(): Promise<void> {
+    const action = vm.merchantInvoiceAction
+    if (!action || action.status !== "payable") {
+      throw new Error("This merchant invoice is no longer payable.")
+    }
+    await prepareMerchantInvoicePaymentAction(action)
+  }
+
+  async function reportExternalPayment(): Promise<void> {
+    const action = vm.merchantInvoiceAction
+    const unboundPaidInvoice =
+      action?.status === "blocked" && action.canReport ? action : undefined
+    await submitExternalPaymentProof(
+      vm.orderId,
+      guestIdentity ?? undefined,
+      unboundPaidInvoice
+    )
+  }
+
+  const merchantInvoicePrepared =
+    !!vm.merchantInvoiceAction &&
+    vm.merchantInvoiceAction.status === "payable" &&
+    isMerchantInvoicePaymentActionBound(row.lifecycle, vm.merchantInvoiceAction)
+  const boundMerchantInvoiceExpiresAt =
+    row.lifecycle?.checkoutMode === "pay_later" &&
+    row.lifecycle.invoiceStatus === "manual_required" &&
+    row.lifecycle.paymentStatus === "manual_required"
+      ? (row.lifecycle.invoiceExpiresAt ?? null)
+      : null
+
   const showRetryPayment = !zeroCostPickupOrder && vm.paymentStatus === "failed"
   const recoveredBeforeWallet =
     row.lifecycle?.lastError === ORDER_PAYMENT_INTERRUPTED_BEFORE_WALLET_ERROR
@@ -1233,7 +1300,7 @@ function OrderDetail({
                 : vm.merchantInvoiceAction?.status === "blocked"
                   ? "Orders checked the latest merchant invoice but could not make it payable."
                   : vm.merchantInvoiceAction
-                    ? "Orders checked the latest merchant invoice against this saved order. Revalidation runs again when you open or copy it."
+                    ? "Orders checked the latest merchant invoice against this saved order. Confirm it once before payment controls appear."
                     : vm.publicZapFallback
                       ? "Your order is still ready. The optional public checkout note was unavailable, so this invoice is private. Pay it once, then report the payment so the merchant can verify it."
                       : "No automatic wallet was available. Pay the invoice below, then report the payment to the merchant for verification."}
@@ -1245,15 +1312,12 @@ function OrderDetail({
             guestSession={!!guestIdentity}
             autoDetectReceipt={autoDetectPublicReceipt}
             onBeforeInvoiceUse={beginMerchantInvoicePayment}
-            onMarkPaid={() =>
-              void withBusy(() =>
-                submitExternalPaymentProof(
-                  vm.orderId,
-                  guestIdentity ?? undefined,
-                  vm.merchantInvoiceAction ?? undefined
-                )
-              )
+            onPrepareMerchantInvoice={() =>
+              void withBusy(prepareCurrentMerchantInvoice)
             }
+            merchantInvoicePrepared={merchantInvoicePrepared}
+            boundMerchantInvoiceExpiresAt={boundMerchantInvoiceExpiresAt}
+            onMarkPaid={() => void withBusy(reportExternalPayment)}
           />
           {recoveryError && (
             <p

@@ -7,6 +7,7 @@ import {
   ORDER_PROOF_DELIVERY_CLAIM_LEASE_MS,
   ORDER_PAYMENT_INTERRUPTED_AFTER_WALLET_ERROR,
   ORDER_PAYMENT_INTERRUPTED_BEFORE_WALLET_ERROR,
+  bindMerchantInvoiceForPayment,
   config,
   claimExternalOrderPaymentProof,
   claimOrderLifecyclePayment,
@@ -906,7 +907,7 @@ describe("order payment admission", () => {
     })
   })
 
-  it("atomically binds a projected payment report to the first exact merchant invoice", async () => {
+  it("atomically binds handoff and reporting to one exact merchant invoice", async () => {
     const awaiting: OrderLifecycle = {
       ...lifecycle,
       checkoutMode: "pay_later",
@@ -943,6 +944,32 @@ describe("order payment admission", () => {
         invoice: buildInvoice(34),
         paymentHash: "22".repeat(32),
       }
+
+      await withMockOrderPaymentDb({ lifecycle: awaiting }, async (state) => {
+        const [first, second] = await Promise.all([
+          bindMerchantInvoiceForPayment(
+            awaiting.orderId,
+            firstInvoice,
+            1_800_000_001_000
+          ),
+          bindMerchantInvoiceForPayment(
+            awaiting.orderId,
+            competingInvoice,
+            1_800_000_001_000
+          ),
+        ])
+
+        expect(first.status).toBe("bound")
+        expect(second.status).toBe("preserved")
+        expect(state.lifecycle()).toMatchObject({
+          invoiceStatus: "manual_required",
+          paymentStatus: "manual_required",
+          proofDeliveryStatus: "not_started",
+          invoice: firstInvoice.invoice,
+          paymentHash: firstInvoice.paymentHash,
+          invoiceExpiresAt: firstInvoice.expiresAt,
+        })
+      })
 
       await withMockOrderPaymentDb({ lifecycle: awaiting }, async (state) => {
         const [first, second] = await Promise.all([

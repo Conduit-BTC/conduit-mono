@@ -379,6 +379,39 @@ describe("buildOrderViewModel", () => {
     }
   })
 
+  it("keeps a bound invoice when a newer merchant invoice arrives", () => {
+    const previousNetwork = config.lightningNetwork
+    config.lightningNetwork = "mainnet"
+    try {
+      const boundInvoice = merchantInvoice({ paymentHashByte: 6 })
+      const newerInvoice = merchantInvoice({ paymentHashByte: 8 })
+      const vm = buildOrderViewModel({
+        orderId: "order-1",
+        lifecycle: baseLifecycle({
+          checkoutMode: "pay_later",
+          invoiceStatus: "manual_required",
+          paymentStatus: "manual_required",
+          proofDeliveryStatus: "not_started",
+          invoice: boundInvoice,
+          paymentHash: "06".repeat(32),
+          invoiceExpiresAt: 1_800_003_600,
+        }),
+        messages: [
+          paymentRequest(boundInvoice, { id: "bound", createdAt: 1 }),
+          paymentRequest(newerInvoice, { id: "newer", createdAt: 2 }),
+        ],
+        nowSeconds: 1_800_000_001,
+      })
+
+      expect(vm.merchantInvoiceAction).toBeNull()
+      expect(vm.invoice).toBe(boundInvoice)
+      expect(vm.paymentHash).toBe("06".repeat(32))
+      expect(vm.paymentStatus).toBe("manual_required")
+    } finally {
+      config.lightningNetwork = previousNetwork
+    }
+  })
+
   it("keeps invalid and expired message invoices blocked", () => {
     const previousNetwork = config.lightningNetwork
     config.lightningNetwork = "mainnet"

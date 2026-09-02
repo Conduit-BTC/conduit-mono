@@ -1,5 +1,6 @@
 import { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk"
 import {
+  bindMerchantInvoiceForPayment,
   buildLightningPaymentProofMessage,
   claimExternalOrderPaymentProof,
   claimOrderLifecyclePayment,
@@ -530,6 +531,61 @@ export function validateMerchantInvoicePaymentAction(
     paymentHash,
     expiresAt: validation.metadata.expiresAt!,
   }
+}
+
+export function isMerchantInvoicePaymentActionBound(
+  lifecycle: OrderLifecycle | null | undefined,
+  action: MerchantInvoicePaymentAction
+): boolean {
+  if (
+    !lifecycle ||
+    lifecycle.invoiceStatus !== "manual_required" ||
+    lifecycle.paymentStatus !== "manual_required" ||
+    !lifecycle.invoice ||
+    !lifecycle.paymentHash ||
+    lifecycle.invoiceExpiresAt === undefined
+  ) {
+    return false
+  }
+
+  const validation = validateMerchantInvoicePaymentAction(lifecycle, action, {
+    allowExpired: true,
+  })
+  return (
+    validation.ok &&
+    normalizeLightningInvoice(lifecycle.invoice).toLowerCase() ===
+      validation.invoice.toLowerCase() &&
+    lifecycle.paymentHash.toLowerCase() === validation.paymentHash &&
+    lifecycle.invoiceExpiresAt === validation.expiresAt
+  )
+}
+
+/** Bind the exact projected invoice before exposing it to an external wallet. */
+export async function prepareMerchantInvoicePaymentAction(
+  action: MerchantInvoicePaymentAction
+): Promise<OrderLifecycle> {
+  const lifecycle = await getOrderLifecycle(action.orderId)
+  const validation = validateMerchantInvoicePaymentAction(lifecycle, action)
+  if (!validation.ok) throw new Error(validation.reason)
+  if (!lifecycle) throw new Error("Order payment state is unavailable.")
+
+  const binding = await bindMerchantInvoiceForPayment(action.orderId, {
+    buyerPubkey: action.recipientPubkey,
+    merchantPubkey: action.senderPubkey,
+    totalMsats: lifecycle.totalMsats,
+    invoice: validation.invoice,
+    paymentHash: validation.paymentHash,
+    expiresAt: validation.expiresAt,
+  })
+  emit(action.orderId, { lifecycle: binding.lifecycle })
+  if (binding.status !== "bound") {
+    throw new Error(
+      binding.status === "missing"
+        ? "Order payment state is unavailable."
+        : "Payment state changed in another tab. Refresh before trying again."
+    )
+  }
+  return binding.lifecycle
 }
 
 function emit(orderId: string, partial: Partial<OrderPaymentRuntimeState>) {
