@@ -510,7 +510,7 @@ export function isAmountlessLightningInvoice(invoice: string): boolean {
   const normalized = normalizeLightningInvoice(invoice).toLowerCase()
   if (!isValidBech32Invoice(normalized)) return false
   const humanReadablePart = normalized.slice(0, normalized.lastIndexOf("1"))
-  return ["lnbc", "lnbcrt", "lntb", "lnsb"].includes(humanReadablePart)
+  return ["lnbc", "lnbcrt", "lntbs", "lntb", "lnsb"].includes(humanReadablePart)
 }
 
 function bech32Polymod(values: number[]): number {
@@ -569,7 +569,7 @@ function parseBolt11Invoice(invoice: string): ParsedBolt11Invoice | null {
 
   const separatorIndex = normalized.lastIndexOf("1")
   const hrp = normalized.slice(0, separatorIndex)
-  if (!/^ln(?:bc|tb|sb|bcrt)(?:\d+[munp]?)?$/.test(hrp)) return null
+  if (!/^ln(?:bcrt|tbs|bc|tb|sb)(?:\d+[munp]?)?$/.test(hrp)) return null
   const dataPart = normalized.slice(separatorIndex + 1)
   const values = Array.from(dataPart, (char) => BECH32_CHARSET.indexOf(char))
   const minimumWordCount =
@@ -704,6 +704,7 @@ export function getLightningInvoiceNetwork(
 
   if (normalized.startsWith("lnbcrt")) return "regtest"
   if (normalized.startsWith("lnbc")) return "mainnet"
+  if (normalized.startsWith("lntbs")) return "signet"
   if (normalized.startsWith("lnsb")) return "signet"
   if (normalized.startsWith("lntb")) return "testnet"
 
@@ -754,7 +755,7 @@ export function decodeLightningInvoiceAmount(
   if (!isValidBech32Invoice(normalized)) {
     return { msats: null, sats: null, currency: null }
   }
-  const match = normalized.match(/^ln(?:bc|tb|sb|bcrt)(\d+)?([munp]?)1/)
+  const match = normalized.match(/^ln(?:bcrt|tbs|bc|tb|sb)(\d+)?([munp]?)1/)
 
   if (!match) {
     return { msats: null, sats: null, currency: null }
@@ -992,12 +993,14 @@ export function decodeLightningInvoiceMetadata(
   const expiryWords = expiryFields.length === 1 ? expiryFields[0]!.words : null
   let expiresAt: number | null = null
   if (createdAt !== null) {
-    const expirySeconds = expiryWords
-      ? Number(wordsToBigInt(expiryWords))
-      : 3600
-    expiresAt = Number.isSafeInteger(expirySeconds)
-      ? createdAt + expirySeconds
-      : null
+    const expirySecondsBig = expiryWords ? wordsToBigInt(expiryWords) : 3600n
+    if (expirySecondsBig <= BigInt(Number.MAX_SAFE_INTEGER)) {
+      const expirySeconds = Number(expirySecondsBig)
+      const candidateExpiresAt = createdAt + expirySeconds
+      expiresAt = Number.isSafeInteger(candidateExpiresAt)
+        ? candidateExpiresAt
+        : null
+    }
   }
 
   return { ...amount, createdAt, expiresAt }
@@ -1011,13 +1014,15 @@ export function validateLightningInvoiceForPayment({
   invoice,
   expectedAmountMsats,
   nowSeconds = Math.floor(Date.now() / 1000),
+  allowExpired = false,
 }: {
   invoice: string
   expectedAmountMsats: number
   nowSeconds?: number
+  /** Payment reports may preserve an invoice after it expired; payment may not. */
+  allowExpired?: boolean
 }): LightningInvoiceValidation {
   const metadata = decodeLightningInvoiceMetadata(invoice)
-
   if (!isInvoiceCompatibleWithCurrentNetwork(invoice)) {
     return {
       ok: false,
@@ -1044,7 +1049,15 @@ export function validateLightningInvoiceForPayment({
     }
   }
 
-  if (metadata.expiresAt !== null && metadata.expiresAt <= nowSeconds) {
+  if (metadata.expiresAt === null) {
+    return {
+      ok: false,
+      reason: "The invoice returned by the merchant has an invalid expiry.",
+      metadata,
+    }
+  }
+
+  if (!allowExpired && metadata.expiresAt <= nowSeconds) {
     return {
       ok: false,
       reason: "The invoice returned by the merchant is already expired.",
