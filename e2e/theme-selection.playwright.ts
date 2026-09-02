@@ -116,6 +116,11 @@ test("Market selects Night Market by keyboard and preserves it across reload @ma
   ).toBeVisible({ timeout: 15_000 })
   await expectResolvedTheme(page, "day-market", "light")
 
+  const syncedPage = await page.context().newPage()
+  await syncedPage.emulateMedia({ colorScheme: "light" })
+  await syncedPage.goto(`${marketUrl}/products`)
+  await expectResolvedTheme(syncedPage, "day-market", "light")
+
   const appearance = await openAppearanceMenu(
     page,
     "Open account menu",
@@ -133,6 +138,8 @@ test("Market selects Night Market by keyboard and preserves it across reload @ma
   await page.keyboard.press("Enter")
   await expect(nightItem).toHaveAttribute("aria-checked", "true")
   await expectResolvedTheme(page, "night-market", "dark")
+  await expectResolvedTheme(syncedPage, "night-market", "dark")
+  await syncedPage.close()
 
   await page.emulateMedia({ colorScheme: "dark" })
   await page.emulateMedia({ colorScheme: "light" })

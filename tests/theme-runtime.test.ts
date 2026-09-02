@@ -5,79 +5,11 @@ import {
   THEME_PREFERENCE_OPTIONS,
   THEME_STORAGE_KEY,
   applyThemeToDocument,
-  createThemeController,
   parseThemePreference,
   persistThemePreference,
   readThemePreference,
   resolveThemePreference,
-  type ThemeId,
-  type ThemeStorageEvent,
 } from "@conduit/ui/theme"
-
-type ControllerHarnessOptions = {
-  stored?: string | null
-  systemDark?: boolean
-  readThrows?: boolean
-  writeThrows?: boolean
-}
-
-function createControllerHarness({
-  stored = null,
-  systemDark = false,
-  readThrows = false,
-  writeThrows = false,
-}: ControllerHarnessOptions = {}) {
-  let storedPreference = stored
-  let prefersDark = systemDark
-  let systemListener = () => undefined
-  let storageListener = (_event: ThemeStorageEvent) => undefined
-  const appliedThemes: ThemeId[] = []
-
-  const controller = createThemeController({
-    storage: {
-      getItem() {
-        if (readThrows) throw new Error("storage unavailable")
-        return storedPreference
-      },
-      setItem(_key, value) {
-        if (writeThrows) throw new Error("storage unavailable")
-        storedPreference = value
-      },
-    },
-    systemPreference: {
-      isDark: () => prefersDark,
-      subscribe(listener) {
-        systemListener = listener
-        return () => {
-          systemListener = () => undefined
-        }
-      },
-    },
-    applyTheme(theme) {
-      appliedThemes.push(theme)
-    },
-    subscribeToStorage(listener) {
-      storageListener = listener
-      return () => {
-        storageListener = () => undefined
-      }
-    },
-  })
-  controller.start()
-
-  return {
-    appliedThemes,
-    controller,
-    emitStorage(event: ThemeStorageEvent) {
-      storageListener(event)
-    },
-    getStoredPreference: () => storedPreference,
-    setSystemDark(value: boolean) {
-      prefersDark = value
-      systemListener()
-    },
-  }
-}
 
 function createDocumentHarness(withThemeColorMeta = true) {
   const rootAttributes = new Map<string, string>()
@@ -189,83 +121,6 @@ describe("theme preference storage", () => {
 
     expect(readThemePreference(storage)).toBe("system")
     expect(persistThemePreference(storage, "night-market")).toBe(false)
-  })
-})
-
-describe("theme controller", () => {
-  it("applies the initial theme synchronously before listeners start", () => {
-    const harness = createControllerHarness({ systemDark: true })
-
-    expect(harness.appliedThemes[0]).toBe("night-market")
-    expect(harness.controller.getSnapshot()).toEqual({
-      preference: "system",
-      resolvedTheme: "night-market",
-    })
-  })
-
-  it("still applies the system fallback when stored preference reads fail", () => {
-    const harness = createControllerHarness({
-      systemDark: false,
-      readThrows: true,
-    })
-
-    expect(harness.controller.getSnapshot()).toEqual({
-      preference: "system",
-      resolvedTheme: "day-market",
-    })
-    expect(harness.appliedThemes[0]).toBe("day-market")
-  })
-
-  it("follows live device changes only while the preference is system", () => {
-    const harness = createControllerHarness({ systemDark: false })
-
-    harness.setSystemDark(true)
-    expect(harness.controller.getSnapshot().resolvedTheme).toBe("night-market")
-
-    harness.controller.setPreference("day-market")
-    harness.setSystemDark(false)
-    harness.setSystemDark(true)
-    expect(harness.controller.getSnapshot()).toEqual({
-      preference: "day-market",
-      resolvedTheme: "day-market",
-    })
-  })
-
-  it("applies a selection even when persistence fails", () => {
-    const harness = createControllerHarness({
-      systemDark: false,
-      writeThrows: true,
-    })
-
-    harness.controller.setPreference("night-market")
-
-    expect(harness.controller.getSnapshot().resolvedTheme).toBe("night-market")
-    expect(harness.appliedThemes.at(-1)).toBe("night-market")
-  })
-
-  it("handles relevant storage events and ignores unrelated keys", () => {
-    const harness = createControllerHarness({ systemDark: true })
-
-    harness.emitStorage({ key: "unrelated", newValue: "day-market" })
-    expect(harness.controller.getSnapshot().preference).toBe("system")
-
-    harness.emitStorage({
-      key: THEME_STORAGE_KEY,
-      newValue: "day-market",
-    })
-    expect(harness.controller.getSnapshot()).toEqual({
-      preference: "day-market",
-      resolvedTheme: "day-market",
-    })
-
-    harness.emitStorage({ key: THEME_STORAGE_KEY, newValue: "malformed" })
-    expect(harness.controller.getSnapshot()).toEqual({
-      preference: "system",
-      resolvedTheme: "night-market",
-    })
-
-    harness.emitStorage({ key: null, newValue: null })
-    expect(harness.controller.getSnapshot().preference).toBe("system")
   })
 })
 

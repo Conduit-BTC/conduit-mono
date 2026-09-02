@@ -28,31 +28,6 @@ export interface ThemeStorage {
   setItem(key: string, value: string): void
 }
 
-export interface ThemeSystemPreference {
-  isDark(): boolean
-  subscribe(listener: () => void): () => void
-}
-
-export type ThemeStorageEvent = Readonly<{
-  key: string | null
-  newValue: string | null
-}>
-
-export interface ThemeControllerEnvironment {
-  storage?: ThemeStorage | null
-  systemPreference: ThemeSystemPreference
-  applyTheme(theme: ThemeId): void
-  subscribeToStorage(listener: (event: ThemeStorageEvent) => void): () => void
-}
-
-export interface ThemeController {
-  getSnapshot(): ThemeSnapshot
-  setPreference(preference: ThemePreference): void
-  start(): void
-  stop(): void
-  subscribe(listener: () => void): () => void
-}
-
 const SERVER_THEME_SNAPSHOT: ThemeSnapshot = {
   preference: "system",
   resolvedTheme: "night-market",
@@ -132,87 +107,15 @@ export function applyThemeToDocument(
   themeColorMeta.setAttribute("content", themeColor)
 }
 
-export function createThemeController(
-  environment: ThemeControllerEnvironment
-): ThemeController {
-  let preference = readThemePreference(environment.storage)
-  let snapshot: ThemeSnapshot = {
-    preference,
-    resolvedTheme: resolveThemePreference(
-      preference,
-      environment.systemPreference.isDark()
-    ),
-  }
-  let started = false
-  let unsubscribeSystem: () => void = () => undefined
-  let unsubscribeStorage: () => void = () => undefined
-  const listeners = new Set<() => void>()
+type ThemeListener = () => void
 
-  function applyPreference(nextPreference: ThemePreference): void {
-    const nextSnapshot: ThemeSnapshot = {
-      preference: nextPreference,
-      resolvedTheme: resolveThemePreference(
-        nextPreference,
-        environment.systemPreference.isDark()
-      ),
-    }
-    const changed =
-      nextSnapshot.preference !== snapshot.preference ||
-      nextSnapshot.resolvedTheme !== snapshot.resolvedTheme
+const themeListeners = new Set<ThemeListener>()
+let browserThemeSnapshot = SERVER_THEME_SNAPSHOT
+let browserThemeInitialized = false
+let browserStorage: Storage | null = null
+let browserSystemPreference: MediaQueryList | null = null
 
-    preference = nextPreference
-    snapshot = nextSnapshot
-    environment.applyTheme(nextSnapshot.resolvedTheme)
-
-    if (changed) {
-      for (const listener of listeners) listener()
-    }
-  }
-
-  function handleSystemPreferenceChange(): void {
-    if (preference === "system") applyPreference(preference)
-  }
-
-  function handleStorageChange(event: ThemeStorageEvent): void {
-    if (event.key !== THEME_STORAGE_KEY && event.key !== null) return
-    applyPreference(parseThemePreference(event.newValue))
-  }
-
-  environment.applyTheme(snapshot.resolvedTheme)
-
-  return {
-    getSnapshot() {
-      return snapshot
-    },
-    setPreference(nextPreference) {
-      const parsedPreference = parseThemePreference(nextPreference)
-      persistThemePreference(environment.storage, parsedPreference)
-      applyPreference(parsedPreference)
-    },
-    start() {
-      if (started) return
-      started = true
-      unsubscribeSystem = environment.systemPreference.subscribe(
-        handleSystemPreferenceChange
-      )
-      unsubscribeStorage = environment.subscribeToStorage(handleStorageChange)
-    },
-    stop() {
-      if (!started) return
-      started = false
-      unsubscribeSystem()
-      unsubscribeStorage()
-      unsubscribeSystem = () => undefined
-      unsubscribeStorage = () => undefined
-    },
-    subscribe(listener) {
-      listeners.add(listener)
-      return () => listeners.delete(listener)
-    },
-  }
-}
-
-function getBrowserStorage(): ThemeStorage | null {
+function getBrowserStorage(): Storage | null {
   try {
     return window.localStorage
   } catch {
@@ -220,68 +123,91 @@ function getBrowserStorage(): ThemeStorage | null {
   }
 }
 
-function createBrowserThemeController(): ThemeController | null {
-  if (typeof window === "undefined" || typeof document === "undefined") {
-    return null
-  }
-
-  const mediaQuery = window.matchMedia(SYSTEM_THEME_QUERY)
-  return createThemeController({
-    storage: getBrowserStorage(),
-    systemPreference: {
-      isDark: () => mediaQuery.matches,
-      subscribe(listener) {
-        mediaQuery.addEventListener("change", listener)
-        return () => mediaQuery.removeEventListener("change", listener)
-      },
-    },
-    applyTheme: (theme) =>
-      applyThemeToDocument(
-        document,
-        theme,
-        window.getComputedStyle.bind(window)
-      ),
-    subscribeToStorage(listener) {
-      const handleStorage = (event: StorageEvent): void => {
-        listener({ key: event.key, newValue: event.newValue })
-      }
-      window.addEventListener("storage", handleStorage)
-      return () => window.removeEventListener("storage", handleStorage)
-    },
-  })
+function getSystemPrefersDark(): boolean {
+  return browserSystemPreference?.matches ?? true
 }
 
-let browserThemeController: ThemeController | null | undefined
+function notifyThemeListeners(): void {
+  themeListeners.forEach((listener) => listener())
+}
 
-function getBrowserThemeController(): ThemeController | null {
-  if (browserThemeController === undefined) {
-    browserThemeController = createBrowserThemeController()
+function applyBrowserTheme(themeId: ThemeId): void {
+  applyThemeToDocument(document, themeId, window.getComputedStyle.bind(window))
+}
+
+function updateBrowserPreference(preference: ThemePreference): void {
+  const nextSnapshot: ThemeSnapshot = {
+    preference,
+    resolvedTheme: resolveThemePreference(preference, getSystemPrefersDark()),
   }
-  return browserThemeController
+  const changed =
+    nextSnapshot.preference !== browserThemeSnapshot.preference ||
+    nextSnapshot.resolvedTheme !== browserThemeSnapshot.resolvedTheme
+
+  browserThemeSnapshot = nextSnapshot
+  applyBrowserTheme(nextSnapshot.resolvedTheme)
+  if (changed) notifyThemeListeners()
+}
+
+function handleSystemPreferenceChange(): void {
+  if (browserThemeSnapshot.preference === "system") {
+    updateBrowserPreference("system")
+  }
+}
+
+function handleStorageChange(event: StorageEvent): void {
+  if (event.storageArea && event.storageArea !== browserStorage) return
+  if (event.key !== THEME_STORAGE_KEY && event.key !== null) return
+  updateBrowserPreference(parseThemePreference(event.newValue))
+}
+
+function createSystemPreferenceQuery(): MediaQueryList | null {
+  try {
+    return window.matchMedia(SYSTEM_THEME_QUERY)
+  } catch {
+    return null
+  }
 }
 
 export function initializeTheme(): void {
-  const controller = getBrowserThemeController()
-  if (!controller) return
-  controller.start()
+  if (
+    browserThemeInitialized ||
+    typeof window === "undefined" ||
+    typeof document === "undefined"
+  ) {
+    return
+  }
+
+  browserThemeInitialized = true
+  browserStorage = getBrowserStorage()
+  browserSystemPreference = createSystemPreferenceQuery()
+  updateBrowserPreference(readThemePreference(browserStorage))
+  browserSystemPreference?.addEventListener(
+    "change",
+    handleSystemPreferenceChange
+  )
+  window.addEventListener("storage", handleStorageChange)
 }
 
 export function setThemePreference(preference: ThemePreference): void {
-  const controller = getBrowserThemeController()
-  if (!controller) return
-  controller.start()
-  controller.setPreference(preference)
+  initializeTheme()
+  if (!browserThemeInitialized) return
+
+  const parsedPreference = parseThemePreference(preference)
+  persistThemePreference(browserStorage, parsedPreference)
+  updateBrowserPreference(parsedPreference)
 }
 
 export function getThemeSnapshot(): ThemeSnapshot {
-  return getBrowserThemeController()?.getSnapshot() ?? SERVER_THEME_SNAPSHOT
+  return browserThemeSnapshot
 }
 
 export function subscribeToTheme(listener: () => void): () => void {
-  const controller = getBrowserThemeController()
-  if (!controller) return () => undefined
-  controller.start()
-  return controller.subscribe(listener)
+  initializeTheme()
+  if (!browserThemeInitialized) return () => undefined
+
+  themeListeners.add(listener)
+  return () => themeListeners.delete(listener)
 }
 
 export function getServerThemeSnapshot(): ThemeSnapshot {
