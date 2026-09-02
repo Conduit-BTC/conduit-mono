@@ -304,7 +304,6 @@ export function getEffectiveMerchantOrderStatus(
 }
 
 export interface MerchantOrderReopenTransition {
-  status: KnownOrderStatus
   tags: string[][]
   payload: { status: KnownOrderStatus; reopens: string }
 }
@@ -318,7 +317,6 @@ export function getMerchantOrderReopenTransition(
   }
   const { eventId, resumeStatus } = state.cancellation
   return {
-    status: resumeStatus,
     tags: [
       ["status", resumeStatus],
       ["reopens", eventId],

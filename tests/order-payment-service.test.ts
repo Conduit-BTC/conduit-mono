@@ -29,6 +29,7 @@ import {
   bytesToBolt11Words,
   makeBolt11Fixture,
 } from "./support/bolt11-fixture"
+import { makeMerchantInvoiceReopenEvidence } from "./support/merchant-invoice-reopen-fixture"
 
 const ANON_SIGNER_SECRET = Uint8Array.from([...new Uint8Array(31), 13])
 const ANON_SIGNER_PUBKEY = getPublicKey(ANON_SIGNER_SECRET)
@@ -101,73 +102,6 @@ function lifecycle(overrides: Partial<OrderLifecycle> = {}): OrderLifecycle {
     createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_000_000,
     ...overrides,
-  }
-}
-
-function merchantInvoiceReopenEvidence(
-  order: OrderLifecycle,
-  options: { laterCancellation?: boolean } = {}
-) {
-  const cancellationEventId = "a".repeat(64)
-  const messages: ParsedOrderMessage[] = [
-    {
-      id: "1".repeat(64),
-      orderId: order.orderId,
-      type: "order",
-      createdAt: 1,
-      senderPubkey: order.buyerPubkey,
-      recipientPubkey: order.merchantPubkey,
-      rawContent: "{}",
-      payload: {},
-    } as ParsedOrderMessage,
-    {
-      id: "9".repeat(64),
-      orderId: order.orderId,
-      type: "status_update",
-      createdAt: 2,
-      senderPubkey: order.merchantPubkey,
-      recipientPubkey: order.buyerPubkey,
-      rawContent: "{}",
-      payload: { status: "pending" },
-    } as ParsedOrderMessage,
-    {
-      id: cancellationEventId,
-      orderId: order.orderId,
-      type: "status_update",
-      createdAt: 3,
-      senderPubkey: order.merchantPubkey,
-      recipientPubkey: order.buyerPubkey,
-      rawContent: "{}",
-      payload: { status: "cancelled" },
-    } as ParsedOrderMessage,
-    {
-      id: "b".repeat(64),
-      orderId: order.orderId,
-      type: "status_update",
-      createdAt: 4,
-      senderPubkey: order.merchantPubkey,
-      recipientPubkey: order.buyerPubkey,
-      rawContent: "{}",
-      payload: { status: "pending", reopens: cancellationEventId },
-    } as ParsedOrderMessage,
-  ]
-  if (options.laterCancellation) {
-    messages.push({
-      id: "f".repeat(64),
-      orderId: order.orderId,
-      type: "status_update",
-      createdAt: 5,
-      senderPubkey: order.merchantPubkey,
-      recipientPubkey: order.buyerPubkey,
-      rawContent: "{}",
-      payload: { status: "cancelled" },
-    } as ParsedOrderMessage)
-  }
-  return {
-    cancellationEventId,
-    buyerPubkey: order.buyerPubkey,
-    merchantPubkey: order.merchantPubkey,
-    messages,
   }
 }
 
@@ -568,7 +502,7 @@ describe("runOrderPayment", () => {
     ).toMatchObject({ ok: false })
 
     const cancelledOrder = { ...order, phase: "cancelled" as const }
-    const reopenEvidence = merchantInvoiceReopenEvidence(cancelledOrder)
+    const reopenEvidence = makeMerchantInvoiceReopenEvidence(cancelledOrder)
     expect(
       validateMerchantInvoicePaymentAction(cancelledOrder, action, {
         nowSeconds: 1_800_000_001,
@@ -583,12 +517,12 @@ describe("runOrderPayment", () => {
     expect(
       validateMerchantInvoicePaymentAction(cancelledOrder, action, {
         nowSeconds: 1_800_000_001,
-        reopenEvidence: merchantInvoiceReopenEvidence(cancelledOrder, {
+        reopenEvidence: makeMerchantInvoiceReopenEvidence(cancelledOrder, {
           laterCancellation: true,
         }),
       })
     ).toMatchObject({ ok: false })
-    const paidAfterReopen = merchantInvoiceReopenEvidence(cancelledOrder)
+    const paidAfterReopen = makeMerchantInvoiceReopenEvidence(cancelledOrder)
     paidAfterReopen.messages.push({
       id: "e".repeat(64),
       orderId: cancelledOrder.orderId,

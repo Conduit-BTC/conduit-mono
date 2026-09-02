@@ -1095,8 +1095,6 @@ function OrderDetail({
     vm.reopenedCancellationId && row.conversation?.messages
       ? {
           cancellationEventId: vm.reopenedCancellationId,
-          buyerPubkey,
-          merchantPubkey: row.merchantPubkey,
           messages: row.conversation.messages,
         }
       : undefined

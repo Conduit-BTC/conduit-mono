@@ -31,86 +31,19 @@ import {
   replaceOrderPaymentTarget,
   type OrderLifecycle,
   type OrderPaymentClaimInput,
-  type ParsedOrderMessage,
 } from "@conduit/core"
 import {
   bolt11PaymentHashField,
   bolt11PlainDescriptionField,
   makeBolt11Fixture,
 } from "./support/bolt11-fixture"
+import { makeMerchantInvoiceReopenEvidence } from "./support/merchant-invoice-reopen-fixture"
 
 const base = {
   orderDeliveryStatus: "not_started" as const,
   invoiceStatus: "not_requested" as const,
   paymentStatus: "not_started" as const,
   proofDeliveryStatus: "not_started" as const,
-}
-
-function merchantInvoiceReopenEvidence(
-  lifecycle: OrderLifecycle,
-  options: { laterCancellation?: boolean } = {}
-) {
-  const cancellationEventId = "a".repeat(64)
-  const messages: ParsedOrderMessage[] = [
-    {
-      id: "1".repeat(64),
-      orderId: lifecycle.orderId,
-      type: "order",
-      createdAt: 1,
-      senderPubkey: lifecycle.buyerPubkey,
-      recipientPubkey: lifecycle.merchantPubkey,
-      rawContent: "{}",
-      payload: {},
-    } as ParsedOrderMessage,
-    {
-      id: "9".repeat(64),
-      orderId: lifecycle.orderId,
-      type: "status_update",
-      createdAt: 2,
-      senderPubkey: lifecycle.merchantPubkey,
-      recipientPubkey: lifecycle.buyerPubkey,
-      rawContent: "{}",
-      payload: { status: "pending" },
-    } as ParsedOrderMessage,
-    {
-      id: cancellationEventId,
-      orderId: lifecycle.orderId,
-      type: "status_update",
-      createdAt: 3,
-      senderPubkey: lifecycle.merchantPubkey,
-      recipientPubkey: lifecycle.buyerPubkey,
-      rawContent: "{}",
-      payload: { status: "cancelled" },
-    } as ParsedOrderMessage,
-    {
-      id: "b".repeat(64),
-      orderId: lifecycle.orderId,
-      type: "status_update",
-      createdAt: 4,
-      senderPubkey: lifecycle.merchantPubkey,
-      recipientPubkey: lifecycle.buyerPubkey,
-      rawContent: "{}",
-      payload: { status: "pending", reopens: cancellationEventId },
-    } as ParsedOrderMessage,
-  ]
-  if (options.laterCancellation) {
-    messages.push({
-      id: "f".repeat(64),
-      orderId: lifecycle.orderId,
-      type: "status_update",
-      createdAt: 5,
-      senderPubkey: lifecycle.merchantPubkey,
-      recipientPubkey: lifecycle.buyerPubkey,
-      rawContent: "{}",
-      payload: { status: "cancelled" },
-    } as ParsedOrderMessage)
-  }
-  return {
-    cancellationEventId,
-    buyerPubkey: lifecycle.buyerPubkey,
-    merchantPubkey: lifecycle.merchantPubkey,
-    messages,
-  }
 }
 
 async function withMockOrderPaymentDb<T>(
@@ -1105,7 +1038,7 @@ describe("order payment admission", () => {
       paymentHash: "11".repeat(32),
       expiresAt: 1_800_003_600,
     }
-    const reopenEvidence = merchantInvoiceReopenEvidence(cancelled)
+    const reopenEvidence = makeMerchantInvoiceReopenEvidence(cancelled)
     const previousNetwork = config.lightningNetwork
     config.lightningNetwork = "mainnet"
     try {
@@ -1143,7 +1076,7 @@ describe("order payment admission", () => {
               cancelled.orderId,
               {
                 ...baseClaim,
-                reopenEvidence: merchantInvoiceReopenEvidence(cancelled, {
+                reopenEvidence: makeMerchantInvoiceReopenEvidence(cancelled, {
                   laterCancellation: true,
                 }),
               },

@@ -203,8 +203,6 @@ export type MerchantInvoicePaymentBindingResult =
 
 export type MerchantInvoiceReopenEvidence = {
   cancellationEventId: string
-  buyerPubkey: string
-  merchantPubkey: string
   messages: readonly ParsedOrderMessage[]
 }
 
@@ -235,12 +233,7 @@ export function hasEffectiveMerchantInvoiceReopenEvidence(
   lifecycle: Pick<OrderLifecycle, "orderId" | "buyerPubkey" | "merchantPubkey">,
   evidence: MerchantInvoiceReopenEvidence | undefined
 ): boolean {
-  if (
-    !evidence ||
-    !/^[0-9a-f]{64}$/.test(evidence.cancellationEventId) ||
-    evidence.buyerPubkey !== lifecycle.buyerPubkey ||
-    evidence.merchantPubkey !== lifecycle.merchantPubkey
-  ) {
+  if (!evidence || !/^[0-9a-f]{64}$/.test(evidence.cancellationEventId)) {
     return false
   }
 
@@ -248,8 +241,8 @@ export function hasEffectiveMerchantInvoiceReopenEvidence(
     (message) => message.orderId === lifecycle.orderId
   )
   const projection = getEffectiveMerchantOrderStatus(exactOrderMessages, {
-    buyerPubkey: evidence.buyerPubkey,
-    merchantPubkey: evidence.merchantPubkey,
+    buyerPubkey: lifecycle.buyerPubkey,
+    merchantPubkey: lifecycle.merchantPubkey,
   })
   return (
     projection.reopenedCancellationId === evidence.cancellationEventId &&

@@ -298,7 +298,6 @@ describe("merchant cancellation correction", () => {
     })
 
     expect(transition).toEqual({
-      status: "paid",
       tags: [
         ["status", "paid"],
         ["reopens", cancellationId],
