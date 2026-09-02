@@ -745,7 +745,7 @@ function ProductsPage() {
                   // Keep the first page fully rendered (LCP / above the fold).
                   // Let the browser skip layout + paint for the revealed tail
                   // while reserving row height so the scrollbar stays stable.
-                  index >= PAGE_SIZE
+                  index >= PAGE_SIZE && product.type === "simple"
                     ? "[content-visibility:auto] [contain-intrinsic-size:auto_360px]"
                     : "",
                 ].join(" ")}

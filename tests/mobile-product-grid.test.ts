@@ -53,7 +53,7 @@ describe("Market product grid layout", () => {
       "utf8"
     )
 
-    expect(content).toContain('className={className ?? "h-full"}')
+    expect(content).toContain('className ?? "h-full"')
     expect(resolvedCard).toContain('className="flex h-full flex-col space-y-2"')
     expect(resolvedCard).toContain(
       'className={["h-auto flex-1", className].filter(Boolean).join(" ")}'
@@ -61,6 +61,62 @@ describe("Market product grid layout", () => {
     expect(eventRoute).toContain('className="h-auto"')
     expect(eventRoute).toContain(
       "`mt-6 ${PRODUCT_GRID_CLASS_NAME} items-start`"
+    )
+  })
+
+  it("floats variable controls only for desktop pointers while retaining touch flow", async () => {
+    const content = await readFile(
+      "apps/market/src/components/ProductGridCard.tsx",
+      "utf8"
+    )
+    const selector = await readFile(
+      "apps/market/src/components/ProductVariationSelector.tsx",
+      "utf8"
+    )
+    const desktopHoverMedia = "[@media(min-width:768px)_and_(hover:hover)]"
+
+    expect(content).toContain(`${desktopHoverMedia}:absolute`)
+    expect(content).toContain(`${desktopHoverMedia}:top-full`)
+    expect(content).not.toContain(`${desktopHoverMedia}:translate-y-2`)
+    expect(content).toContain(
+      `${desktopHoverMedia}:transition-[opacity,visibility]`
+    )
+    expect(content).toContain(`${desktopHoverMedia}:pointer-events-none`)
+    expect(content).toContain(`${desktopHoverMedia}:invisible`)
+    expect(content).toContain(`${desktopHoverMedia}:group-hover:visible`)
+    expect(content).toContain(
+      `${desktopHoverMedia}:group-focus-within:pointer-events-auto`
+    )
+    expect(content).toContain(`${desktopHoverMedia}:group-focus-within:visible`)
+    expect(content).toContain(
+      `${desktopHoverMedia}:group-focus-within:opacity-100`
+    )
+    expect(content).toContain("motion-reduce:transition-none")
+    expect(content).toContain(`${desktopHoverMedia}:overflow-visible`)
+    expect(content).toContain(`${desktopHoverMedia}:hover:z-20`)
+    expect(content).toContain(`${desktopHoverMedia}:focus-within:z-20`)
+    expect(content).toContain("isVariationMenuOpen &&")
+    expect(content).toContain("onOpenChange={setIsVariationMenuOpen}")
+    expect(content).toContain("hasVariations || showVariationSkeleton")
+    expect(selector).toContain("onOpenChange?: (open: boolean) => void")
+    expect(selector).toContain("onOpenChangeRef.current?.(hasModel && isOpen)")
+    expect(selector).toContain("onOpenChangeRef.current?.(false)")
+    expect(selector).toContain("onOpenChange={(open) =>")
+  })
+
+  it("keeps floating controls out of paint containment and storefront clipping", async () => {
+    const [products, storefront] = await Promise.all([
+      readFile("apps/market/src/routes/products/index.tsx", "utf8"),
+      readFile("apps/market/src/routes/store/$pubkey.tsx", "utf8"),
+    ])
+    const desktopHoverMedia = "[@media(min-width:768px)_and_(hover:hover)]"
+
+    expect(products).toContain(
+      'index >= PAGE_SIZE && product.type === "simple"'
+    )
+    expect(products).toContain("[content-visibility:auto]")
+    expect(storefront).toContain(
+      `className="min-w-0 max-w-full self-start overflow-hidden ${desktopHoverMedia}:overflow-visible"`
     )
   })
 })

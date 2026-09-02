@@ -33,11 +33,24 @@ describe("Market event product layout", () => {
       source("apps/market/src/routes/events/$collectionRef.tsx"),
     ])
 
-    expect(card).toContain('className={className ?? "h-full"}')
+    expect(card).toContain('className ?? "h-full"')
     expect(event).toContain('className="h-auto"')
     expect(event).toContain('<details className="group/pickup')
     expect(event).toContain("[&::-webkit-details-marker]:hidden")
     expect(event).toContain("getPickupHandoffPrivacyCopy(handoff)")
     expect(event).toContain('label="Copy pickup handler npub"')
+  })
+
+  it("allows floating variation panels outside the event catalog on hover-capable desktops", async () => {
+    const event = await source(
+      "apps/market/src/routes/events/$collectionRef.tsx"
+    )
+
+    expect(event).toContain(
+      'className="overflow-hidden rounded-3xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-md)] [@media(min-width:768px)_and_(hover:hover)]:overflow-visible"'
+    )
+    expect(event).toContain(
+      'className="h-48 w-full rounded-t-3xl border-b border-[var(--border)] object-cover sm:h-64"'
+    )
   })
 })

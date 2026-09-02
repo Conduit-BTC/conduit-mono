@@ -668,7 +668,7 @@ function StorefrontPage() {
           </div>
         </aside>
 
-        <section className="min-w-0 max-w-full self-start overflow-hidden">
+        <section className="min-w-0 max-w-full self-start overflow-hidden [@media(min-width:768px)_and_(hover:hover)]:overflow-visible">
           {categoryFacetOptions.length > 0 && (
             <div className="mb-4 min-w-0 max-w-full overflow-hidden rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface)] p-4 md:hidden">
               <div className="mb-3 flex items-center justify-between gap-3">

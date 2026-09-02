@@ -530,12 +530,12 @@ function EventCatalogPage() {
         </div>
       ) : null}
 
-      <section className="overflow-hidden rounded-3xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-md)]">
+      <section className="overflow-hidden rounded-3xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-md)] [@media(min-width:768px)_and_(hover:hover)]:overflow-visible">
         {calendar.image || collection.image ? (
           <img
             src={calendar.image ?? collection.image}
             alt=""
-            className="h-48 w-full border-b border-[var(--border)] object-cover sm:h-64"
+            className="h-48 w-full rounded-t-3xl border-b border-[var(--border)] object-cover sm:h-64"
           />
         ) : null}
         <div className="grid gap-8 p-6 sm:p-8 lg:grid-cols-[minmax(0,1fr)_20rem]">
