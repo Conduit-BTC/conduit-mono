@@ -3,6 +3,7 @@ export { QRCodeSVG } from "qrcode.react"
 export { AccountMenu, type AccountMenuProps } from "./AccountMenu"
 export { Badge, badgeVariants, type BadgeProps } from "./Badge"
 export { Button, buttonVariants, type ButtonProps } from "./Button"
+export { ShareLinkButton, type ShareLinkButtonProps } from "./ShareLinkButton"
 export {
   HoldToReleaseButton,
   type HoldToReleaseButtonProps,

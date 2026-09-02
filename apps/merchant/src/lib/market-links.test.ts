@@ -2,6 +2,7 @@ import { pubkeyToNpub } from "@conduit/core"
 import {
   getEventMarketUrl,
   getProfileUrl,
+  getProductUrl,
   getStorefrontUrl,
   inferMarketOrigin,
 } from "./market-links"
@@ -29,4 +30,12 @@ test("builds canonical event catalog links on the Market app", () => {
   expect(getEventMarketUrl("naddr1eventcatalog")).toBe(
     "https://shop.conduit.market/events/naddr1eventcatalog"
   )
+})
+
+test("builds canonical buyer-facing product links on the Market app", () => {
+  const addressId = `30402:${pubkey}:product-one`
+  const productUrl = new URL(getProductUrl(addressId))
+
+  expect(productUrl.origin).toBe("https://shop.conduit.market")
+  expect(productUrl.pathname.startsWith("/products/naddr1")).toBe(true)
 })

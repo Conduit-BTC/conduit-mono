@@ -1,9 +1,24 @@
 import { describe, expect, it } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import { getProductPriceDisplay, getShopperPriceDisplay } from "@conduit/core"
-import { ProductCard, ProductCartAction } from "@conduit/ui"
+import { ProductCard, ProductCartAction, ShareLinkButton } from "@conduit/ui"
 
 describe("ProductCard", () => {
+  it("renders an accessible product share action and status region", () => {
+    const html = renderToStaticMarkup(
+      <ShareLinkButton
+        url="https://shop.conduit.market/products/naddr1product"
+        shareTitle="Conduit Shirt"
+        aria-label="Share Conduit Shirt"
+      />
+    )
+
+    expect(html).toContain('aria-label="Share Conduit Shirt"')
+    expect(html).toContain('role="status"')
+    expect(html).toContain('aria-live="polite"')
+    expect(html).toContain(">Share</button>")
+  })
+
   it("loads only the first public candidate and does not preload a fallback chain", () => {
     const html = renderToStaticMarkup(
       <ProductCard
@@ -89,6 +104,25 @@ describe("ProductCard", () => {
 
     expect(html).toContain("animate-pulse")
     expect(html).toContain(">Store npub1abc...xyz<")
+  })
+
+  it("truncates product titles to one line without constraining title badges", () => {
+    const html = renderToStaticMarkup(
+      <ProductCard
+        title="An intentionally long product title that must not take a second line"
+        titleAside={<span>Featured</span>}
+        merchantName="Alice Store"
+        images={[]}
+        primaryPrice="25 sats"
+        soldOut
+      />
+    )
+
+    expect(html).toContain("min-w-0 flex-1 truncate")
+    expect(html).not.toContain("line-clamp-2")
+    expect(html).not.toContain("min-h-[2.5rem]")
+    expect(html).toContain(">Featured<")
+    expect(html).toContain(">Sold out<")
   })
 
   it("renders sats primary pricing with a USD secondary line", () => {

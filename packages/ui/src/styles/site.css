@@ -4,6 +4,17 @@
 @import "./typography.css";
 
 @layer base {
+  @supports (scrollbar-gutter: stable) {
+    html {
+      scrollbar-gutter: stable;
+    }
+
+    html body[data-scroll-locked] {
+      margin-right: 0 !important;
+      --removed-body-scroll-bar-size: 0px !important;
+    }
+  }
+
   body {
     background-color: var(--background);
     color: var(--text-primary);
