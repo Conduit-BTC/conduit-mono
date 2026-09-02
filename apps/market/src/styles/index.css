@@ -55,10 +55,8 @@ body {
   );
 }
 
-@media (prefers-color-scheme: light) {
-  .market-cart-hud-surface {
-    background: color-mix(in srgb, var(--warning) 1%, var(--surface));
-  }
+:root[data-theme="day-market"] .market-cart-hud-surface {
+  background: color-mix(in srgb, var(--warning) 1%, var(--surface));
 }
 
 @media (prefers-reduced-motion: reduce) {
