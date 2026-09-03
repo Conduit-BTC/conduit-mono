@@ -12,6 +12,9 @@ import {
   normalizeLightningInvoice,
   validateLightningInvoiceForPayment,
 } from "./lightning"
+import { getEffectiveMerchantOrderStatus } from "./order-status"
+import { extractOrderSummary } from "./order-summary"
+import type { ParsedOrderMessage } from "./orders"
 
 export const GUEST_ORDER_LOCAL_RETENTION_MS = 24 * 60 * 60 * 1_000
 
@@ -196,6 +199,11 @@ export type MerchantInvoicePaymentBindingResult =
   | { status: "bound" | "preserved"; lifecycle: OrderLifecycle }
   | { status: "missing"; lifecycle: null }
 
+export type MerchantInvoiceReopenEvidence = {
+  cancellationEventId: string
+  messages: readonly ParsedOrderMessage[]
+}
+
 export type ProjectedMerchantInvoiceClaim = {
   buyerPubkey: string
   merchantPubkey: string
@@ -203,6 +211,7 @@ export type ProjectedMerchantInvoiceClaim = {
   invoice: string
   paymentHash: string
   expiresAt: number
+  reopenEvidence?: MerchantInvoiceReopenEvidence
 }
 
 export type ExternalOrderPaymentProofClaimOptions = {
@@ -215,6 +224,37 @@ type AdmittedProjectedMerchantInvoice = {
   paymentHash: string
   expiresAt: number
   alreadyBound: boolean
+}
+
+/** Recheck exact participant-bound correction evidence at a payment boundary. */
+export function hasEffectiveMerchantInvoiceReopenEvidence(
+  lifecycle: Pick<OrderLifecycle, "orderId" | "buyerPubkey" | "merchantPubkey">,
+  evidence: MerchantInvoiceReopenEvidence | undefined
+): boolean {
+  if (!evidence || !/^[0-9a-f]{64}$/.test(evidence.cancellationEventId)) {
+    return false
+  }
+
+  const exactOrderMessages = evidence.messages.filter(
+    (message) => message.orderId === lifecycle.orderId
+  )
+  const participants = {
+    buyerPubkey: lifecycle.buyerPubkey,
+    merchantPubkey: lifecycle.merchantPubkey,
+  }
+  const projection = getEffectiveMerchantOrderStatus(
+    exactOrderMessages,
+    participants
+  )
+  const summary = extractOrderSummary(exactOrderMessages, participants)
+  return (
+    projection.reopenedCancellationId === evidence.cancellationEventId &&
+    projection.knownStatus !== null &&
+    projection.knownStatus !== "cancelled" &&
+    projection.knownStatus !== "refund_requested" &&
+    !summary.paymentConfirmed &&
+    !summary.shippingUpdateReceived
+  )
 }
 
 function admitProjectedMerchantInvoice(
@@ -254,13 +294,18 @@ function admitProjectedMerchantInvoice(
     lifecycle.invoiceExpiresAt === merchantInvoice.expiresAt
   const publicZapSigner =
     lifecycle.publicZapSigner ?? getOrderPublicZapSigner(lifecycle.checkoutMode)
+  const hasReopenEvidence = hasEffectiveMerchantInvoiceReopenEvidence(
+    lifecycle,
+    merchantInvoice.reopenEvidence
+  )
 
   if (
     publicZapSigner ||
     lifecycle.checkoutMode !== "pay_later" ||
     lifecycle.orderDeliveryStatus !== "sent" ||
     lifecycle.phase === "completed" ||
-    lifecycle.phase === "cancelled" ||
+    (lifecycle.phase === "cancelled" && !hasReopenEvidence) ||
+    (merchantInvoice.reopenEvidence !== undefined && !hasReopenEvidence) ||
     lifecycle.proofDeliveryStatus !== "not_started" ||
     !!lifecycle.paymentClaimId ||
     lifecycle.buyerPubkey !== merchantInvoice.buyerPubkey ||

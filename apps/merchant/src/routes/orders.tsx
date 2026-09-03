@@ -18,6 +18,7 @@ import {
   getLightningNetworkMismatchMessage,
   getMerchantConversationList,
   getMerchantOrderActions,
+  getMerchantOrderReopenTransition,
   getProductImageCandidates,
   getProductsByIds,
   getShippingOptionsByCoordinates,
@@ -35,7 +36,9 @@ import {
   selectProtectedReadRows,
   resolveProductFulfillment,
   type MerchantConversationSummary,
+  type MerchantOrderDelivery,
   type MerchantOrderAction,
+  type MerchantOrderReopenTransition,
   type MerchantOrderState,
   type EventMarketResolution,
   type KnownOrderStatus,
@@ -100,6 +103,7 @@ import {
   ORDER_PHASE_OPTIONS,
   ORDER_SORT_OPTIONS,
   sortMerchantConversations,
+  type MerchantOrderCommunication,
   type MerchantOrderSort,
   type MerchantOrderPickupContext,
   type OrderQueueTab,
@@ -176,6 +180,15 @@ import {
 } from "../lib/event-market-handoff-fallback"
 
 type OrdersSearch = { order?: string; queue?: OrderQueueTab }
+
+type ReopenOrderMutationInput = {
+  merchantPubkey: string
+  buyerPubkey: string
+  orderId: string
+  delivery: MerchantOrderDelivery
+  communication: MerchantOrderCommunication
+  transition: MerchantOrderReopenTransition
+}
 
 async function resolveStockUpdateFulfillmentIntent(
   product: ProductSchema
@@ -716,6 +729,11 @@ function OrdersPage() {
   )
   const [pendingDestructiveAction, setPendingDestructiveAction] =
     useState<MerchantOrderAction | null>(null)
+  const [reopenConfirmation, setReopenConfirmation] =
+    useState<ReopenOrderMutationInput | null>(null)
+  const [reopenConfirmationError, setReopenConfirmationError] = useState<
+    string | null
+  >(null)
   const [paymentConfirmationTarget, setPaymentConfirmationTarget] =
     useState<MerchantPaymentConfirmationTarget | null>(null)
   const [confirmingOrganizerFallback, setConfirmingOrganizerFallback] =
@@ -1205,6 +1223,8 @@ function OrdersPage() {
     selectedOrderResetRef.current = selectedId
 
     setSuccessFlash(null)
+    setReopenConfirmation(null)
+    setReopenConfirmationError(null)
     setPaymentConfirmationTarget(null)
     setConfirmingOrganizerFallback(false)
     setConfirmingOrganizerRelease(false)
@@ -1273,7 +1293,9 @@ function OrdersPage() {
     ? getMerchantConversationCommunication(selected)
     : "unknown"
   const buyerInboxKnown = communicationState === "nostr_replyable"
-  const operationalDelivery = buyerInboxKnown ? "buyer_and_self" : "self_only"
+  const operationalDelivery: MerchantOrderDelivery = buyerInboxKnown
+    ? "buyer_and_self"
+    : "self_only"
   const assertBuyerHasNostrInbox = useCallback(() => {
     if (!buyerInboxKnown) {
       throw new Error(
@@ -1477,6 +1499,18 @@ function OrdersPage() {
   const orderActions = selected
     ? getMerchantOrderActions(merchantOrderState)
     : []
+  const reopenTransition = getMerchantOrderReopenTransition(merchantOrderState)
+  const currentReopenInput: ReopenOrderMutationInput | null =
+    pubkey && selected && reopenTransition
+      ? {
+          merchantPubkey: pubkey,
+          buyerPubkey: selected.buyerPubkey,
+          orderId: selected.orderId,
+          delivery: operationalDelivery,
+          communication: communicationState,
+          transition: reopenTransition,
+        }
+      : null
   const selectedQueue = selected ? getMerchantConversationQueue(selected) : null
   const canSendInvoice =
     buyerInboxKnown &&
@@ -2192,6 +2226,32 @@ function OrdersPage() {
     },
   })
 
+  const reopenOrderMutation = useMutation({
+    mutationFn: (input: ReopenOrderMutationInput) =>
+      runExclusiveOrderAction(orderActionLockRef, async () => {
+        await publishMerchantOrderMessage({
+          merchantPubkey: input.merchantPubkey,
+          buyerPubkey: input.buyerPubkey,
+          orderId: input.orderId,
+          type: "status_update",
+          tags: input.transition.tags,
+          payload: input.transition.payload,
+          delivery: input.delivery,
+          signerInteraction: "external",
+        })
+      }),
+    onSuccess: async (_data, input) => {
+      setReopenConfirmation(null)
+      setReopenConfirmationError(null)
+      flash(
+        input.delivery === "buyer_and_self"
+          ? "Reopen update submitted for buyer delivery"
+          : "Reopen update recorded in your encrypted order history"
+      )
+      await invalidateOrderQueries()
+    },
+  })
+
   const shippingMutation = useMutation({
     mutationFn: () =>
       runExclusiveOrderAction(orderActionLockRef, async () => {
@@ -2269,6 +2329,7 @@ function OrdersPage() {
     stockUpdateMutation.isPending ||
     organizerReceiptMutation.isPending ||
     coordinatedFallbackMutation.isPending ||
+    reopenOrderMutation.isPending ||
     isMerchantOrderActionSurfacePending({
       generateInvoice: createInvoiceMutation.isPending,
       sendInvoice: retryInvoiceMutation.isPending,
@@ -2605,6 +2666,8 @@ function OrdersPage() {
                                     variant="primary"
                                     disabled={
                                       orderActionPending ||
+                                      (action.action === "reopen" &&
+                                        !currentReopenInput) ||
                                       (action.status === "complete" &&
                                         organizerCompletionBlocked)
                                     }
@@ -2618,6 +2681,14 @@ function OrdersPage() {
                                         )
                                         return
                                       }
+                                      if (action.action === "reopen") {
+                                        reopenOrderMutation.reset()
+                                        setReopenConfirmationError(null)
+                                        setReopenConfirmation(
+                                          currentReopenInput
+                                        )
+                                        return
+                                      }
                                       if (action.status) {
                                         advanceStatusMutation.mutate({
                                           nextStatus: action.status,
@@ -2625,9 +2696,11 @@ function OrdersPage() {
                                       }
                                     }}
                                   >
-                                    {advanceStatusMutation.isPending &&
-                                    advanceStatusMutation.variables
-                                      ?.nextStatus === action.status
+                                    {(advanceStatusMutation.isPending &&
+                                      advanceStatusMutation.variables
+                                        ?.nextStatus === action.status) ||
+                                    (action.action === "reopen" &&
+                                      reopenOrderMutation.isPending)
                                       ? buyerInboxKnown
                                         ? "Sending…"
                                         : "Recording…"
@@ -2641,6 +2714,7 @@ function OrdersPage() {
                           {(canSendInvoice ||
                             canRecordShipping ||
                             advanceStatusMutation.error ||
+                            reopenOrderMutation.error ||
                             createInvoiceMutation.error ||
                             retryInvoiceMutation.error ||
                             shippingMutation.error ||
@@ -3029,6 +3103,7 @@ function OrdersPage() {
                               )}
 
                               {(advanceStatusMutation.error ||
+                                reopenOrderMutation.error ||
                                 createInvoiceMutation.error ||
                                 retryInvoiceMutation.error ||
                                 shippingMutation.error ||
@@ -3039,6 +3114,7 @@ function OrdersPage() {
                                 >
                                   {[
                                     advanceStatusMutation.error,
+                                    reopenOrderMutation.error,
                                     createInvoiceMutation.error,
                                     retryInvoiceMutation.error,
                                     shippingMutation.error,
@@ -3758,6 +3834,87 @@ function OrdersPage() {
                             ? "Sending…"
                             : "Recording…"
                           : cancellationCopy?.confirmLabel}
+                      </Button>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+
+                <AlertDialog
+                  open={reopenConfirmation !== null}
+                  onOpenChange={(open) => {
+                    if (!open && !reopenOrderMutation.isPending) {
+                      setReopenConfirmation(null)
+                      setReopenConfirmationError(null)
+                    }
+                  }}
+                >
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle className="text-balance">
+                        Reopen this order?
+                      </AlertDialogTitle>
+                      <AlertDialogDescription className="text-pretty">
+                        {reopenConfirmation?.communication === "nostr_replyable"
+                          ? "This restores the order workflow and submits the correction through the buyer's Nostr inbox. Payment, refunds, stock, and shipping are unchanged. Review any refund or stock changes separately."
+                          : reopenConfirmation?.communication ===
+                              "guest_out_of_band"
+                            ? "This restores the order in your encrypted order history. It does not notify the guest. Payment, refunds, stock, and shipping are unchanged; contact the guest separately."
+                            : "This restores the order in your encrypted order history without claiming buyer notification. Payment, refunds, stock, and shipping are unchanged."}
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    {(reopenConfirmationError || reopenOrderMutation.error) && (
+                      <p
+                        role="alert"
+                        className="text-pretty text-sm leading-6 text-error"
+                      >
+                        {reopenConfirmationError ?? (
+                          <>
+                            Couldn&apos;t reopen the order. Check your signer
+                            and network, then try again.
+                          </>
+                        )}
+                      </p>
+                    )}
+                    <AlertDialogFooter>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={reopenOrderMutation.isPending}
+                        onClick={() => {
+                          setReopenConfirmation(null)
+                          setReopenConfirmationError(null)
+                        }}
+                      >
+                        Keep cancelled
+                      </Button>
+                      <Button
+                        type="button"
+                        disabled={orderActionPending || !reopenConfirmation}
+                        onClick={() => {
+                          if (reopenConfirmation) {
+                            const frozenCancellationId =
+                              reopenConfirmation.transition.payload.reopens
+                            const currentCancellationId =
+                              currentReopenInput?.transition.payload.reopens ??
+                              null
+                            if (
+                              frozenCancellationId !== currentCancellationId
+                            ) {
+                              setReopenConfirmationError(
+                                "This order changed while the confirmation was open. Close this dialog and refresh Orders, then review the current cancellation before trying again."
+                              )
+                              return
+                            }
+                            setReopenConfirmationError(null)
+                            reopenOrderMutation.mutate(reopenConfirmation)
+                          }
+                        }}
+                      >
+                        {reopenOrderMutation.isPending
+                          ? reopenConfirmation?.delivery === "buyer_and_self"
+                            ? "Sending…"
+                            : "Recording…"
+                          : "Reopen order"}
                       </Button>
                     </AlertDialogFooter>
                   </AlertDialogContent>
