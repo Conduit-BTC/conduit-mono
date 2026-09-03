@@ -8,7 +8,8 @@ import {
   type ReactNode,
 } from "react"
 import type { NDKSigner } from "@nostr-dev-kit/ndk"
-import { CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS } from "../config"
+import type { ClientMetadata } from "nostr-tools/nip46"
+import { CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS, CLAVE_PUSH_RELAY } from "../config"
 import {
   getNdk,
   setSigner,
@@ -189,7 +190,15 @@ const INTERACTIVE_TRANSIENT_CONNECT_RETRY_DELAYS_MS = [250, 750] as const
 const RESTORE_TRANSIENT_CONNECT_RETRY_DELAYS_MS = [250] as const
 
 const AuthContext = createContext<AuthContextValue | null>(null)
-const NOSTR_CONNECT_RELAYS = CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS.slice(0, 3)
+/**
+ * Nostr Connect pairing relays (two to three). Clave's push relay leads so a
+ * backgrounded iOS signer still receives later requests; Conduit retains this
+ * set for the session (docs/knowledge/nip46-connected-relay-retention.md).
+ */
+export const NOSTR_CONNECT_RELAYS = [
+  CLAVE_PUSH_RELAY,
+  ...CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS.slice(0, 2),
+]
 const NO_SIGNER_CAPABILITIES: AuthSignerCapabilities = {
   signEvent: false,
   nip44: false,
@@ -211,6 +220,29 @@ function authSessionsEqual(
   right: AuthSession | null
 ): boolean {
   return JSON.stringify(left) === JSON.stringify(right)
+}
+
+export interface AuthProviderProps {
+  children: ReactNode
+  /**
+   * Icon remote signers show beside the Conduit client name. A path is
+   * resolved against the page origin; an absolute URL is used as given.
+   */
+  signerClientIcon?: string
+}
+
+export function resolveSignerClientMetadata(
+  origin: string | undefined,
+  signerClientIcon?: string
+): ClientMetadata {
+  const metadata: ClientMetadata = { name: "Conduit", url: origin }
+  if (!signerClientIcon) return metadata
+  try {
+    metadata.image = new URL(signerClientIcon, origin).href
+  } catch {
+    // An icon that cannot resolve to an absolute URL is left out.
+  }
+  return metadata
 }
 
 class AuthConnectionInvariantError extends Error {
@@ -453,7 +485,7 @@ export async function resolveFailedAuthAttempt(options: {
   return { kind: "continue", failure }
 }
 
-export function AuthProvider({ children }: { children: ReactNode }) {
+export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) {
   const initialSessionRef = useRef<AuthSession | null>(readAuthSession())
   const [pubkey, setPubkey] = useState<string | null>(
     () => initialSessionRef.current?.userPubkey ?? null
@@ -883,6 +915,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           }
         }
         const nip46Flow = options.nip46Flow ?? "bunker"
+        const signerClientMetadata = resolveSignerClientMetadata(
+          typeof window === "undefined" ? undefined : window.location.origin,
+          signerClientIcon
+        )
         const connection =
           mode === "restore"
             ? storedSession?.type === "nip46"
@@ -900,13 +936,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                   onAuthUrl,
                   onAdapterInvalidated:
                     handleRemoteSignerAdapterInvalidated,
-                  clientMetadata: {
-                    name: "Conduit",
-                    url:
-                      typeof window === "undefined"
-                        ? undefined
-                        : window.location.origin,
-                  },
+                  clientMetadata: signerClientMetadata,
                 })
               : options.bunkerUri
                 ? await pairRemoteSigner(options.bunkerUri, {
@@ -914,13 +944,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                     onAuthUrl,
                     onAdapterInvalidated:
                       handleRemoteSignerAdapterInvalidated,
-                    clientMetadata: {
-                      name: "Conduit",
-                      url:
-                        typeof window === "undefined"
-                          ? undefined
-                          : window.location.origin,
-                    },
+                    clientMetadata: signerClientMetadata,
                   })
                 : null
         if (!connection) {
@@ -1155,6 +1179,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     handleSignerSessionInvalidated,
     retireInvalidatedSession,
     settleRestorePending,
+    signerClientIcon,
     updateRemoteSignerRecovery,
   ])
 
