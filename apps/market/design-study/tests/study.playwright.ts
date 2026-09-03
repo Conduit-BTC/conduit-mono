@@ -82,6 +82,7 @@ test("sample catalog and screenshot fit the viewport", async ({
   await page.evaluate(() => document.fonts.ready)
   await page.screenshot({
     path: testInfo.outputPath("catalog.png"),
+    animations: "disabled",
     fullPage: true,
   })
 })
@@ -182,6 +183,7 @@ test("theme cycles and persists without login; both appearances fit", async ({
   await expect(page.locator("html")).toHaveAttribute("data-theme", "day-market")
   await page.screenshot({
     path: testInfo.outputPath("day-market.png"),
+    animations: "disabled",
     fullPage: true,
   })
   await page
@@ -208,6 +210,7 @@ test("theme cycles and persists without login; both appearances fit", async ({
   ).toBe(true)
   await page.screenshot({
     path: testInfo.outputPath("night-market.png"),
+    animations: "disabled",
     fullPage: true,
   })
 })
