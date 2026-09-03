@@ -774,8 +774,9 @@ async function publishMerchantProductFromEvent(
   await editor
     .getByRole("button", { name: "Publish product", exact: true })
     .click()
+  await expect(editor).toBeHidden({ timeout: 30_000 })
   await expect(
-    editor.getByText("Product published. Organizer acceptance is pending.", {
+    page.getByText("Product published. Organizer acceptance is pending.", {
       exact: true,
     })
   ).toBeVisible({ timeout: 30_000 })
@@ -799,8 +800,6 @@ async function publishMerchantProductFromEvent(
         : undefined
   )
 
-  await editor.getByRole("button", { name: "Done", exact: true }).click()
-  await expect(editor).toBeHidden()
   return productEvent!
 }
 
