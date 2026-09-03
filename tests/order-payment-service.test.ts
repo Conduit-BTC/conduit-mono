@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import { finalizeEvent, getPublicKey } from "nostr-tools"
+import type { ParsedOrderMessage } from "@conduit/core"
 
 import { db } from "../packages/core/src/db"
 import {
@@ -9,24 +10,39 @@ import {
   canObserveOrderPublicZapReceipt,
   canSubmitExternalPaymentReport,
   getLifecyclePaymentProofAction,
+  isMerchantInvoicePaymentActionBound,
   isOrderPaymentRunning,
   observeOrderPublicZapReceipt,
   runOrderPayment,
   runOrderPrivateFallback,
   signShopperCheckoutZapRequest,
+  validateMerchantInvoicePaymentAction,
   type OrderPaymentDependencies,
   type OrderPaymentContext,
 } from "../apps/market/src/lib/order-payment-service"
+import { buildZapRequestContent } from "../apps/market/src/lib/checkout-payment"
 import { AMBIGUOUS_PAYMENT_WARNING } from "../apps/market/src/lib/payment-rails"
 import type { OrderLifecycle } from "../packages/core/src/db"
 import {
+  bolt11PaymentHashField,
   bolt11PlainDescriptionField,
   bytesToBolt11Words,
   makeBolt11Fixture,
 } from "./support/bolt11-fixture"
+import { makeMerchantInvoiceReopenEvidence } from "./support/merchant-invoice-reopen-fixture"
 
 const ANON_SIGNER_SECRET = Uint8Array.from([...new Uint8Array(31), 13])
 const ANON_SIGNER_PUBKEY = getPublicKey(ANON_SIGNER_SECRET)
+function merchantInvoice(): string {
+  return makeBolt11Fixture({
+    hrp: "lnbc10n",
+    createdAt: 1_800_000_000,
+    fields: [
+      bolt11PaymentHashField(),
+      bolt11PlainDescriptionField("Conduit order external-wallet-proof-test"),
+    ],
+  })
+}
 
 function privateInvoice(amountHrp = "lnbc10n", paymentHashByte = 7): string {
   return makeBolt11Fixture({
@@ -444,6 +460,139 @@ describe("runOrderPayment", () => {
     ).toBe(true)
   })
 
+  it("revalidates projected merchant invoices at the payment boundary", () => {
+    const invoice = merchantInvoice()
+    const order = lifecycle({
+      checkoutMode: "pay_later",
+      publicZapSigner: undefined,
+      invoice: undefined,
+      invoiceStatus: "not_requested",
+      paymentStatus: "not_started",
+    })
+    const action = {
+      orderId: order.orderId,
+      messageId: "invoice-message",
+      createdAt: 1_800_000_001_000,
+      senderPubkey: order.merchantPubkey,
+      recipientPubkey: order.buyerPubkey,
+      invoice,
+    }
+
+    expect(
+      validateMerchantInvoicePaymentAction(order, action, {
+        nowSeconds: 1_800_000_001,
+      })
+    ).toMatchObject({ ok: true, invoice, paymentHash: "07".repeat(32) })
+    expect(
+      validateMerchantInvoicePaymentAction(order, action, {
+        nowSeconds: 1_800_003_601,
+      })
+    ).toMatchObject({ ok: false, reason: expect.stringContaining("expired") })
+    expect(
+      validateMerchantInvoicePaymentAction(order, action, {
+        nowSeconds: 1_800_003_601,
+        allowExpired: true,
+      })
+    ).toMatchObject({ ok: true })
+    expect(
+      validateMerchantInvoicePaymentAction(order, {
+        ...action,
+        senderPubkey: "other-merchant",
+      })
+    ).toMatchObject({ ok: false })
+
+    const cancelledOrder = { ...order, phase: "cancelled" as const }
+    const reopenEvidence = makeMerchantInvoiceReopenEvidence(cancelledOrder)
+    expect(
+      validateMerchantInvoicePaymentAction(cancelledOrder, action, {
+        nowSeconds: 1_800_000_001,
+      })
+    ).toMatchObject({ ok: false })
+    expect(
+      validateMerchantInvoicePaymentAction(cancelledOrder, action, {
+        nowSeconds: 1_800_000_001,
+        reopenEvidence,
+      })
+    ).toMatchObject({ ok: true })
+    expect(
+      validateMerchantInvoicePaymentAction(cancelledOrder, action, {
+        nowSeconds: 1_800_000_001,
+        reopenEvidence: makeMerchantInvoiceReopenEvidence(cancelledOrder, {
+          laterCancellation: true,
+        }),
+      })
+    ).toMatchObject({ ok: false })
+    for (const merchantPaymentEvidence of [
+      "paid_then_processing",
+      "shipping_update",
+    ] as const) {
+      expect(
+        validateMerchantInvoicePaymentAction(cancelledOrder, action, {
+          nowSeconds: 1_800_000_001,
+          reopenEvidence: makeMerchantInvoiceReopenEvidence(cancelledOrder, {
+            merchantPaymentEvidence,
+          }),
+        })
+      ).toMatchObject({ ok: false })
+    }
+    const paidAfterReopen = makeMerchantInvoiceReopenEvidence(cancelledOrder)
+    paidAfterReopen.messages.push({
+      id: "e".repeat(64),
+      orderId: cancelledOrder.orderId,
+      type: "status_update",
+      createdAt: 5,
+      senderPubkey: cancelledOrder.merchantPubkey,
+      recipientPubkey: cancelledOrder.buyerPubkey,
+      rawContent: "{}",
+      payload: { status: "paid" },
+    } as ParsedOrderMessage)
+    expect(
+      validateMerchantInvoicePaymentAction(cancelledOrder, action, {
+        nowSeconds: 1_800_000_001,
+        reopenEvidence: paidAfterReopen,
+      })
+    ).toMatchObject({ ok: false })
+    expect(
+      validateMerchantInvoicePaymentAction(
+        { ...cancelledOrder, phase: "completed" },
+        action,
+        { nowSeconds: 1_800_000_001, reopenEvidence }
+      )
+    ).toMatchObject({ ok: false })
+
+    expect(isMerchantInvoicePaymentActionBound(order, action)).toBe(false)
+    expect(
+      isMerchantInvoicePaymentActionBound(
+        lifecycle({
+          checkoutMode: "pay_later",
+          publicZapSigner: undefined,
+          invoiceStatus: "manual_required",
+          paymentStatus: "manual_required",
+          invoice,
+          paymentHash: "07".repeat(32),
+          invoiceExpiresAt: 1_800_003_600,
+        }),
+        action
+      )
+    ).toBe(true)
+    expect(
+      isMerchantInvoicePaymentActionBound(
+        lifecycle({
+          checkoutMode: "pay_later",
+          publicZapSigner: undefined,
+          invoiceStatus: "manual_required",
+          paymentStatus: "manual_required",
+          invoice,
+          paymentHash: "07".repeat(32),
+          invoiceExpiresAt: 1_800_003_600,
+          phase: "cancelled",
+        }),
+        action,
+        reopenEvidence
+      )
+    ).toBe(true)
+  })
+
   it("keeps public zap proof retries public for external-wallet fallback orders", () => {
     expect(
       getLifecyclePaymentProofAction({
@@ -610,6 +759,84 @@ describe("runOrderPayment", () => {
     expect(state.error).toBe(
       "Payment details no longer match the delivered order."
     )
+  })
+
+  it("keeps the product target when a shopper zap payment resumes", async () => {
+    const orderId = "shopper-product-zap-retry"
+    const merchantPubkey = "b".repeat(64)
+    const productAddress = `30402:${merchantPubkey}:coffee-mug`
+    const zapContent = buildZapRequestContent(
+      "public_zap",
+      "sick shirt",
+      productAddress
+    )
+    const invoice = privateInvoice()
+    let stored = lifecycle({
+      orderId,
+      merchantPubkey,
+      checkoutMode: "public_zap",
+      publicZapSigner: "shopper",
+      zapContent,
+      items: [
+        {
+          productId: productAddress,
+          quantity: 1,
+          priceAtPurchase: 1,
+          currency: "SATS",
+        },
+      ],
+      invoice: undefined,
+      invoiceStatus: "not_requested",
+      paymentStatus: "not_started",
+    })
+    const table = db.orderLifecycles as typeof db.orderLifecycles & {
+      get: typeof db.orderLifecycles.get
+      put: typeof db.orderLifecycles.put
+    }
+    const originalGet = table.get
+    const originalPut = table.put
+    let requestedTarget: string | undefined
+
+    table.get = (async () => stored) as typeof table.get
+    table.put = (async (next: OrderLifecycle) => {
+      stored = next
+      return next.orderId
+    }) as typeof table.put
+
+    try {
+      const state = await runOrderPayment(
+        basePaymentContext({
+          orderId,
+          merchantPubkey,
+          merchantLud16: "merchant@wallet.example",
+          zapMode: "public_zap_as_shopper",
+          zapContent,
+          items: [{ productAddress, quantity: 1 }],
+        }),
+        paymentDependencies({
+          fetchLnurlPayMetadata: async () => lnurlMetadata(),
+          requestCheckoutLnurlInvoice: async (params) => {
+            requestedTarget = params.zapTargetAddress
+            return {
+              invoice,
+              zapRelayUrls: [],
+              shouldWaitForZapReceipt: false,
+            }
+          },
+          payCheckoutInvoice: async () => ({
+            status: "manual_required",
+            reason: "Open the invoice in a Lightning wallet.",
+          }),
+        })
+      )
+
+      expect(requestedTarget).toBe(productAddress)
+      expect(state.lifecycle?.invoiceStatus).toBe("manual_required")
+      expect(state.lifecycle?.paymentStatus).toBe("manual_required")
+    } finally {
+      table.get = originalGet
+      table.put = originalPut
+    }
   })
 
   it("does no invoice or wallet work for persisted unsafe payment states", async () => {

@@ -163,7 +163,9 @@ import {
 import {
   buildCheckoutPricingIntent,
   buildDefaultZapContent,
+  buildZapRequestContent,
   getCheckoutPublicZapSigner,
+  getCheckoutZapTargetAddress,
   getLnurlReadyForCheckoutPayment,
   getCheckoutShippingCost,
   getCheckoutZapVisibility,
@@ -2645,8 +2647,6 @@ function CheckoutPage() {
       }
 
       const checkoutMode = requestedCheckoutMode
-      const effectiveZapContent =
-        checkoutMode === "private_checkout" ? "" : zapContent
       const requiresPublicZap = isCheckoutPublicZapMode(checkoutMode)
       const currentLnurlMetadata = await getFreshLnurlMetadata(merchantLud16)
       const freshPricingRate = await getFreshPricingRateInput(checkoutItems)
@@ -2689,6 +2689,19 @@ function CheckoutPage() {
         authoritativeCheckoutItems
       )
       const checkoutPricing = pricingIntent
+      const effectiveZapTargetAddress = getCheckoutZapTargetAddress({
+        productAddresses: checkoutPricing.items.map((item) => item.productId),
+        recipientPubkey: selectedMerchant,
+        mode: checkoutMode,
+        policy: publicZapPolicy.effectiveZapMessagePolicy,
+        contentEdited: zapContentEdited,
+        content: zapContent,
+      })
+      const effectiveZapContent = buildZapRequestContent(
+        getCheckoutZapVisibility(checkoutMode),
+        zapContent,
+        effectiveZapTargetAddress
+      )
       if (
         checkoutPricing.totalMsats < currentLnurlMetadata.minSendable ||
         checkoutPricing.totalMsats > currentLnurlMetadata.maxSendable

@@ -1,15 +1,18 @@
 import { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk"
 import {
+  bindMerchantInvoiceForPayment,
   buildLightningPaymentProofMessage,
   claimExternalOrderPaymentProof,
   claimOrderLifecyclePayment,
   claimOrderLifecyclePrivateFallbackPayment,
   claimOrderPaymentProofDelivery,
   config,
+  decodeLightningInvoicePaymentHash,
   fetchLnurlInvoice,
   fetchLnurlPayMetadata,
   fetchZapInvoice,
   generateId,
+  hasEffectiveMerchantInvoiceReopenEvidence,
   getAnonZapDraftTag,
   getOrderPublicZapSigner,
   getNdk,
@@ -17,6 +20,7 @@ import {
   isValidSignedPublicNostrEvent,
   isGuestOrderDataExpired,
   normalizePubkey,
+  normalizeLightningInvoice,
   ORDER_PAYMENT_CLAIM_LEASE_MS,
   ORDER_PROOF_DELIVERY_CLAIM_LEASE_MS,
   patchClaimedOrderLifecyclePayment,
@@ -31,6 +35,7 @@ import {
   validateLightningInvoiceForPayment,
   waitForZapReceipt,
   type OrderLifecycle,
+  type MerchantInvoiceReopenEvidence,
   type OrderPaymentClaimResult,
   type OrderPaymentWalletSuccessRecoveryInput,
   type SignedPublicNostrEvent,
@@ -38,6 +43,7 @@ import {
 } from "@conduit/core"
 import {
   getCheckoutZapVisibility,
+  recoverCheckoutZapTargetAddress,
   requestCheckoutLnurlInvoice,
   type CheckoutPricingIntent,
   type CheckoutPaymentStage,
@@ -445,6 +451,163 @@ export function canSubmitExternalPaymentReport(
     lifecycle.paymentStatus === "manual_required" &&
     lifecycle.proofDeliveryStatus === "not_started"
   )
+}
+
+export type MerchantInvoicePaymentAction = {
+  orderId: string
+  messageId: string
+  createdAt: number
+  senderPubkey: string
+  recipientPubkey: string
+  invoice: string
+}
+
+export type MerchantInvoicePaymentValidation =
+  | {
+      ok: true
+      invoice: string
+      paymentHash: string
+      expiresAt: number
+    }
+  | { ok: false; reason: string }
+
+type MerchantInvoicePaymentValidationOptions = {
+  nowSeconds?: number
+  allowExpired?: boolean
+  reopenEvidence?: MerchantInvoiceReopenEvidence
+}
+
+/** Revalidate a projected merchant invoice at the Orders payment boundary. */
+export function validateMerchantInvoicePaymentAction(
+  lifecycle: OrderLifecycle | null | undefined,
+  action: MerchantInvoicePaymentAction,
+  options: MerchantInvoicePaymentValidationOptions = {}
+): MerchantInvoicePaymentValidation {
+  const hasReopenEvidence = lifecycle
+    ? hasEffectiveMerchantInvoiceReopenEvidence(
+        lifecycle,
+        options.reopenEvidence
+      )
+    : false
+  if (
+    !lifecycle ||
+    lifecycle.orderId !== action.orderId ||
+    lifecycle.buyerPubkey !== action.recipientPubkey ||
+    lifecycle.merchantPubkey !== action.senderPubkey ||
+    lifecycle.checkoutMode !== "pay_later" ||
+    lifecycle.orderDeliveryStatus !== "sent" ||
+    lifecycle.phase === "completed" ||
+    (lifecycle.phase === "cancelled" && !hasReopenEvidence) ||
+    (options.reopenEvidence !== undefined && !hasReopenEvidence) ||
+    lifecycle.proofDeliveryStatus !== "not_started"
+  ) {
+    return {
+      ok: false,
+      reason: "This invoice is no longer payable from this order.",
+    }
+  }
+
+  const invoice = normalizeLightningInvoice(action.invoice)
+  const awaitingInvoice =
+    lifecycle.invoiceStatus === "not_requested" &&
+    lifecycle.paymentStatus === "not_started" &&
+    !lifecycle.invoice
+  const sameActiveInvoice =
+    lifecycle.invoiceStatus === "manual_required" &&
+    lifecycle.paymentStatus === "manual_required" &&
+    !!lifecycle.invoice &&
+    normalizeLightningInvoice(lifecycle.invoice).toLowerCase() ===
+      invoice.toLowerCase()
+  if (!awaitingInvoice && !sameActiveInvoice) {
+    return {
+      ok: false,
+      reason: "The order payment state changed. Review it before paying.",
+    }
+  }
+
+  const paymentHash = decodeLightningInvoicePaymentHash(invoice)
+  if (!paymentHash) {
+    return {
+      ok: false,
+      reason:
+        "The invoice returned by the merchant is missing a valid payment hash.",
+    }
+  }
+  const validation = validateLightningInvoiceForPayment({
+    invoice,
+    expectedAmountMsats: lifecycle.totalMsats,
+    nowSeconds: options.nowSeconds,
+    allowExpired: options.allowExpired,
+  })
+  if (!validation.ok) return validation
+
+  return {
+    ok: true,
+    invoice,
+    paymentHash,
+    expiresAt: validation.metadata.expiresAt!,
+  }
+}
+
+export function isMerchantInvoicePaymentActionBound(
+  lifecycle: OrderLifecycle | null | undefined,
+  action: MerchantInvoicePaymentAction,
+  reopenEvidence?: MerchantInvoiceReopenEvidence
+): boolean {
+  if (
+    !lifecycle ||
+    lifecycle.invoiceStatus !== "manual_required" ||
+    lifecycle.paymentStatus !== "manual_required" ||
+    !lifecycle.invoice ||
+    !lifecycle.paymentHash ||
+    lifecycle.invoiceExpiresAt === undefined
+  ) {
+    return false
+  }
+
+  const validation = validateMerchantInvoicePaymentAction(lifecycle, action, {
+    allowExpired: true,
+    reopenEvidence,
+  })
+  return (
+    validation.ok &&
+    normalizeLightningInvoice(lifecycle.invoice).toLowerCase() ===
+      validation.invoice.toLowerCase() &&
+    lifecycle.paymentHash.toLowerCase() === validation.paymentHash &&
+    lifecycle.invoiceExpiresAt === validation.expiresAt
+  )
+}
+
+/** Bind the exact projected invoice before exposing it to an external wallet. */
+export async function prepareMerchantInvoicePaymentAction(
+  action: MerchantInvoicePaymentAction,
+  reopenEvidence?: MerchantInvoiceReopenEvidence
+): Promise<OrderLifecycle> {
+  const lifecycle = await getOrderLifecycle(action.orderId)
+  const validation = validateMerchantInvoicePaymentAction(lifecycle, action, {
+    reopenEvidence,
+  })
+  if (!validation.ok) throw new Error(validation.reason)
+  if (!lifecycle) throw new Error("Order payment state is unavailable.")
+
+  const binding = await bindMerchantInvoiceForPayment(action.orderId, {
+    buyerPubkey: action.recipientPubkey,
+    merchantPubkey: action.senderPubkey,
+    totalMsats: lifecycle.totalMsats,
+    invoice: validation.invoice,
+    paymentHash: validation.paymentHash,
+    expiresAt: validation.expiresAt,
+    ...(reopenEvidence ? { reopenEvidence } : {}),
+  })
+  emit(action.orderId, { lifecycle: binding.lifecycle })
+  if (binding.status !== "bound") {
+    throw new Error(
+      binding.status === "missing"
+        ? "Order payment state is unavailable."
+        : "Payment state changed in another tab. Refresh before trying again."
+    )
+  }
+  return binding.lifecycle
 }
 
 function emit(orderId: string, partial: Partial<OrderPaymentRuntimeState>) {
@@ -1055,6 +1218,15 @@ async function runOrderPaymentInternal(
 
       const requestInvoice = async (requestedVisibility: typeof visibility) => {
         await patchClaim({}, { stage: "requesting_invoice" })
+        const zapTargetAddress =
+          requestedVisibility === "public_zap"
+            ? recoverCheckoutZapTargetAddress({
+                productAddresses: ctx.items.map((item) => item.productAddress),
+                recipientPubkey: ctx.merchantPubkey,
+                mode: ctx.zapMode,
+                content: ctx.zapContent,
+              })
+            : undefined
         return dependencies.requestCheckoutLnurlInvoice(
           {
             visibility: requestedVisibility,
@@ -1064,6 +1236,7 @@ async function runOrderPaymentInternal(
             lnurlNostrPubkey: providerReceiptPubkey ?? undefined,
             recipientPubkey: ctx.merchantPubkey,
             zapContent: ctx.zapContent,
+            zapTargetAddress,
             // Receipt relays are an explicit public payment policy. The shared
             // NDK compatibility context intentionally has no ambient pool.
             explicitRelayUrls: [],
@@ -1638,21 +1811,48 @@ export async function resendOrderProof(
  */
 export async function submitExternalPaymentProof(
   orderId: string,
-  buyerIdentity?: BuyerOrderSigningIdentity
+  buyerIdentity?: BuyerOrderSigningIdentity,
+  merchantInvoiceAction?: MerchantInvoicePaymentAction,
+  reopenEvidence?: MerchantInvoiceReopenEvidence
 ): Promise<OrderPaymentRuntimeState | undefined> {
   if (inFlight.has(orderId)) return runtimeStates.get(orderId)
   inFlight.add(orderId)
   let stopProofDeliveryHeartbeat: (() => void) | null = null
   try {
+    if (merchantInvoiceAction && merchantInvoiceAction.orderId !== orderId) {
+      throw new Error("The invoice does not belong to this order.")
+    }
     const lifecycle = await getOrderLifecycle(orderId)
-    if (!canSubmitExternalPaymentReport(lifecycle)) {
+    const merchantInvoiceValidation = merchantInvoiceAction
+      ? validateMerchantInvoicePaymentAction(lifecycle, merchantInvoiceAction, {
+          allowExpired: true,
+          reopenEvidence,
+        })
+      : null
+    if (merchantInvoiceValidation && !merchantInvoiceValidation.ok) {
+      throw new Error(merchantInvoiceValidation.reason)
+    }
+    if (!merchantInvoiceAction && !canSubmitExternalPaymentReport(lifecycle)) {
       return runtimeStates.get(orderId)
     }
 
     const proofDeliveryClaimId = generateId()
     const proofClaim = await claimExternalOrderPaymentProof(
       orderId,
-      proofDeliveryClaimId
+      proofDeliveryClaimId,
+      merchantInvoiceAction && merchantInvoiceValidation?.ok && lifecycle
+        ? {
+            merchantInvoice: {
+              buyerPubkey: merchantInvoiceAction.recipientPubkey,
+              merchantPubkey: merchantInvoiceAction.senderPubkey,
+              totalMsats: lifecycle.totalMsats,
+              invoice: merchantInvoiceValidation.invoice,
+              paymentHash: merchantInvoiceValidation.paymentHash,
+              expiresAt: merchantInvoiceValidation.expiresAt,
+              ...(reopenEvidence ? { reopenEvidence } : {}),
+            },
+          }
+        : undefined
     )
     emit(orderId, { lifecycle: proofClaim.lifecycle })
     if (proofClaim.status !== "claimed") return runtimeStates.get(orderId)

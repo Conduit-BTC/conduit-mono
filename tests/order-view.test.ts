@@ -4,16 +4,83 @@ import type {
   OrderLifecycle,
   OrderPickupFulfillmentSchema,
 } from "@conduit/core"
+import { config } from "@conduit/core"
 import {
   buildOrderTimeline,
   buildOrderViewModel,
   computeOrderTimelineStatuses,
+  deriveBoundMerchantInvoiceAccess,
   deriveOrderHeaderStatus,
   getOrderFilterPhase,
   getOrderPaymentMethodLabel,
   isZeroCostPickupOrder,
   type OrderViewModel,
 } from "../apps/market/src/lib/order-view"
+import {
+  bolt11PaymentHashField,
+  bolt11PlainDescriptionField,
+  makeBolt11Fixture,
+} from "./support/bolt11-fixture"
+import { makeMerchantInvoiceReopenEvidence } from "./support/merchant-invoice-reopen-fixture"
+
+function merchantInvoice({
+  paymentHashByte = 7,
+  createdAt = 1_800_000_000,
+  expiryWords,
+}: {
+  paymentHashByte?: number
+  createdAt?: number
+  expiryWords?: number[]
+} = {}): string {
+  return makeBolt11Fixture({
+    hrp: "lnbc1110n",
+    createdAt,
+    fields: [
+      bolt11PaymentHashField(new Uint8Array(32).fill(paymentHashByte)),
+      bolt11PlainDescriptionField("Conduit order order-1"),
+      ...(expiryWords ? [{ tag: "x", words: expiryWords }] : []),
+    ],
+  })
+}
+
+function paymentRequest(
+  invoice: string,
+  overrides: Partial<{
+    id: string
+    createdAt: number
+    senderPubkey: string
+    recipientPubkey: string
+  }> = {}
+) {
+  return {
+    id: overrides.id ?? "invoice-1",
+    orderId: "order-1",
+    createdAt: overrides.createdAt ?? 1_800_000_001_000,
+    senderPubkey: overrides.senderPubkey ?? "merchant",
+    recipientPubkey: overrides.recipientPubkey ?? "buyer",
+    rawContent: "{}",
+    type: "payment_request",
+    payload: { invoice, amount: 111, currency: "SATS" },
+  } as never
+}
+
+function merchantStatusMessage(
+  id: string,
+  status: string,
+  createdAt: number,
+  reopens?: string
+) {
+  return {
+    id,
+    orderId: "order-1",
+    createdAt,
+    senderPubkey: "merchant",
+    recipientPubkey: "buyer",
+    rawContent: "{}",
+    type: "status_update",
+    payload: { status, ...(reopens ? { reopens } : {}) },
+  } as never
+}
 
 function baseLifecycle(
   overrides: Partial<OrderLifecycle> = {}
@@ -288,6 +355,345 @@ describe("buildOrderViewModel", () => {
     expect(vm.orderDeliveryStatus).toBe("sent")
     expect(vm.paymentStatus).toBe("not_started")
     expect(vm.items[0].displayTitle).toBe("Sticker Pack")
+  })
+
+  it("keeps the latest known merchant status when a newer status is unknown", () => {
+    const vm = buildOrderViewModel({
+      orderId: "order-1",
+      lifecycle: baseLifecycle({
+        checkoutMode: "pay_later",
+        invoiceStatus: "not_requested",
+        paymentStatus: "not_started",
+        proofDeliveryStatus: "not_started",
+      }),
+      messages: [
+        merchantStatusMessage("known", "paid", 1),
+        merchantStatusMessage("unknown", "future_merchant_status", 2),
+      ],
+    })
+
+    expect(vm.merchantStatus).toBe("paid")
+    expect(vm.phase).toBe("in_progress")
+  })
+
+  it("requires a positive reopen before a cancelled pay-later order can use a valid invoice", () => {
+    const previousNetwork = config.lightningNetwork
+    config.lightningNetwork = "mainnet"
+    try {
+      const invoice = merchantInvoice()
+      const cancellationId = "c".repeat(64)
+      const lifecycle = baseLifecycle({
+        checkoutMode: "pay_later",
+        invoiceStatus: "not_requested",
+        paymentStatus: "not_started",
+        proofDeliveryStatus: "not_started",
+        phase: "cancelled",
+      })
+      const beforeReopen = [
+        paymentRequest(invoice, { createdAt: 1 }),
+        merchantStatusMessage("accepted", "accepted", 2),
+        merchantStatusMessage(cancellationId, "cancelled", 3),
+      ]
+
+      const cancelled = buildOrderViewModel({
+        orderId: "order-1",
+        lifecycle,
+        messages: beforeReopen,
+        nowSeconds: 1_800_000_001,
+      })
+      expect(cancelled.merchantStatus).toBe("cancelled")
+      expect(cancelled.phase).toBe("cancelled")
+      expect(cancelled.merchantInvoiceAction).toBeNull()
+
+      const reopened = buildOrderViewModel({
+        orderId: "order-1",
+        lifecycle,
+        messages: [
+          ...beforeReopen,
+          merchantStatusMessage("reopened", "accepted", 5, cancellationId),
+        ],
+        nowSeconds: 1_800_000_001,
+      })
+      expect(reopened.merchantStatus).toBe("accepted")
+      expect(reopened.phase).toBe("in_progress")
+      expect(reopened.merchantInvoiceAction).toMatchObject({
+        status: "payable",
+        invoice,
+      })
+      expect(reopened.reopenedCancellationId).toBe(cancellationId)
+      expect(reopened.invoiceStatus).toBe("manual_required")
+      expect(reopened.paymentStatus).toBe("manual_required")
+
+      const invalidInvoice = makeBolt11Fixture({
+        hrp: "lnbc1110n",
+        createdAt: 1_800_000_000,
+        fields: [bolt11PlainDescriptionField()],
+      })
+      const reopenedWithInvalidInvoice = buildOrderViewModel({
+        orderId: "order-1",
+        lifecycle,
+        messages: [
+          paymentRequest(invalidInvoice, { createdAt: 1 }),
+          ...beforeReopen.slice(1),
+          merchantStatusMessage("reopened", "accepted", 5, cancellationId),
+        ],
+        nowSeconds: 1_800_000_001,
+      })
+      expect(reopenedWithInvalidInvoice.merchantInvoiceAction).toMatchObject({
+        status: "blocked",
+        canReport: false,
+      })
+      expect(reopenedWithInvalidInvoice.reopenedCancellationId).toBe(
+        cancellationId
+      )
+      expect(reopenedWithInvalidInvoice.paymentStatus).toBe("not_started")
+    } finally {
+      config.lightningNetwork = previousNetwork
+    }
+  })
+
+  it("keeps merchant-confirmed payment closed across a reopen", () => {
+    const previousNetwork = config.lightningNetwork
+    config.lightningNetwork = "mainnet"
+    try {
+      const invoice = merchantInvoice()
+      const lifecycle = baseLifecycle({
+        checkoutMode: "pay_later",
+        invoiceStatus: "not_requested",
+        paymentStatus: "not_started",
+        proofDeliveryStatus: "not_started",
+        phase: "cancelled",
+      })
+
+      for (const merchantPaymentEvidence of [
+        "paid_then_processing",
+        "shipping_update",
+      ] as const) {
+        const reopenEvidence = makeMerchantInvoiceReopenEvidence(lifecycle, {
+          merchantPaymentEvidence,
+        })
+        const vm = buildOrderViewModel({
+          orderId: lifecycle.orderId,
+          lifecycle,
+          messages: [paymentRequest(invoice), ...reopenEvidence.messages],
+          nowSeconds: 1_800_000_001,
+        })
+
+        expect(vm.phase).toBe("in_progress")
+        expect(vm.paymentStatus).toBe("paid")
+        expect(vm.merchantInvoiceAction).toBeNull()
+        expect(vm.actionNeeded).toBe(false)
+      }
+    } finally {
+      config.lightningNetwork = previousNetwork
+    }
+  })
+
+  it("projects the latest merchant invoice for a known pay-later order", () => {
+    const previousNetwork = config.lightningNetwork
+    config.lightningNetwork = "mainnet"
+    try {
+      const olderInvoice = merchantInvoice({ paymentHashByte: 6 })
+      const latestInvoice = merchantInvoice({ paymentHashByte: 8 })
+      const vm = buildOrderViewModel({
+        orderId: "order-1",
+        lifecycle: baseLifecycle({
+          checkoutMode: "pay_later",
+          invoiceStatus: "not_requested",
+          paymentStatus: "not_started",
+          proofDeliveryStatus: "not_started",
+        }),
+        messages: [
+          paymentRequest(olderInvoice, { id: "older", createdAt: 1 }),
+          paymentRequest(latestInvoice, { id: "latest", createdAt: 2 }),
+          paymentRequest(merchantInvoice({ paymentHashByte: 9 }), {
+            id: "buyer-spoof",
+            createdAt: 3,
+            senderPubkey: "buyer",
+            recipientPubkey: "merchant",
+          }),
+        ],
+        nowSeconds: 1_800_000_001,
+      })
+
+      expect(vm.merchantInvoiceAction).toMatchObject({
+        status: "payable",
+        messageId: "latest",
+        invoice: latestInvoice,
+        paymentHash: "08".repeat(32),
+      })
+      expect(vm.invoiceStatus).toBe("manual_required")
+      expect(vm.paymentStatus).toBe("manual_required")
+      expect(vm.actionNeeded).toBe(true)
+      expect(deriveOrderHeaderStatus(vm).primaryLabel).toBe("Action needed")
+    } finally {
+      config.lightningNetwork = previousNetwork
+    }
+  })
+
+  it("keeps a bound invoice when a newer merchant invoice arrives", () => {
+    const previousNetwork = config.lightningNetwork
+    config.lightningNetwork = "mainnet"
+    try {
+      const boundInvoice = merchantInvoice({ paymentHashByte: 6 })
+      const newerInvoice = merchantInvoice({ paymentHashByte: 8 })
+      const vm = buildOrderViewModel({
+        orderId: "order-1",
+        lifecycle: baseLifecycle({
+          checkoutMode: "pay_later",
+          invoiceStatus: "manual_required",
+          paymentStatus: "manual_required",
+          proofDeliveryStatus: "not_started",
+          invoice: boundInvoice,
+          paymentHash: "06".repeat(32),
+          invoiceExpiresAt: 1_800_003_600,
+        }),
+        messages: [
+          paymentRequest(boundInvoice, { id: "bound", createdAt: 1 }),
+          paymentRequest(newerInvoice, { id: "newer", createdAt: 2 }),
+        ],
+        nowSeconds: 1_800_000_001,
+      })
+
+      expect(vm.merchantInvoiceAction).toBeNull()
+      expect(vm.invoice).toBe(boundInvoice)
+      expect(vm.paymentHash).toBe("06".repeat(32))
+      expect(vm.paymentStatus).toBe("manual_required")
+    } finally {
+      config.lightningNetwork = previousNetwork
+    }
+  })
+
+  it("gates a bound invoice from current merchant state", () => {
+    const lifecycle = baseLifecycle({
+      checkoutMode: "pay_later",
+      invoiceStatus: "manual_required",
+      paymentStatus: "manual_required",
+      proofDeliveryStatus: "not_started",
+      invoice: merchantInvoice(),
+      paymentHash: "07".repeat(32),
+      invoiceExpiresAt: 1_800_003_600,
+    })
+
+    for (const [status, access] of [
+      [null, "pay"],
+      ["accepted", "pay"],
+      ["cancelled", "report_only"],
+      ["refund_requested", "report_only"],
+      ["paid", "closed"],
+      ["shipped", "closed"],
+      ["complete", "closed"],
+      ["delivered", "closed"],
+    ] as const) {
+      expect(deriveBoundMerchantInvoiceAccess(lifecycle, status)).toBe(access)
+    }
+
+    expect(
+      deriveBoundMerchantInvoiceAccess(
+        { ...lifecycle, phase: "cancelled" },
+        "accepted",
+        "in_progress"
+      )
+    ).toBe("pay")
+    expect(
+      deriveBoundMerchantInvoiceAccess(
+        { ...lifecycle, phase: "cancelled" },
+        "processing",
+        "in_progress",
+        true
+      )
+    ).toBe("closed")
+  })
+
+  it("keeps invalid and expired message invoices blocked", () => {
+    const previousNetwork = config.lightningNetwork
+    config.lightningNetwork = "mainnet"
+    try {
+      const lifecycle = baseLifecycle({
+        checkoutMode: "pay_later",
+        invoiceStatus: "not_requested",
+        paymentStatus: "not_started",
+        proofDeliveryStatus: "not_started",
+      })
+      const missingPaymentHash = makeBolt11Fixture({
+        hrp: "lnbc1110n",
+        createdAt: 1_800_000_000,
+        fields: [bolt11PlainDescriptionField()],
+      })
+      const invalid = buildOrderViewModel({
+        orderId: "order-1",
+        lifecycle,
+        messages: [paymentRequest(missingPaymentHash)],
+        nowSeconds: 1_800_000_001,
+      })
+      const expired = buildOrderViewModel({
+        orderId: "order-1",
+        lifecycle,
+        messages: [paymentRequest(merchantInvoice())],
+        nowSeconds: 1_800_003_601,
+      })
+      const overflowed = buildOrderViewModel({
+        orderId: "order-1",
+        lifecycle,
+        messages: [
+          paymentRequest(
+            merchantInvoice({
+              expiryWords: new Array<number>(11).fill(31),
+            })
+          ),
+        ],
+        nowSeconds: 1_800_000_001,
+      })
+
+      expect(invalid.merchantInvoiceAction).toMatchObject({
+        status: "blocked",
+        canReport: false,
+      })
+      expect(invalid.paymentStatus).toBe("not_started")
+      expect(expired.merchantInvoiceAction).toMatchObject({
+        status: "blocked",
+        canReport: true,
+      })
+      expect(overflowed.merchantInvoiceAction).toMatchObject({
+        status: "blocked",
+        reason: expect.stringContaining("invalid expiry"),
+        canReport: false,
+      })
+      expect(deriveOrderHeaderStatus(expired).primaryLabel).toBe(
+        "Invoice unavailable"
+      )
+    } finally {
+      config.lightningNetwork = previousNetwork
+    }
+  })
+
+  it("does not create merchant invoice actions without local order state", () => {
+    const vm = buildOrderViewModel({
+      orderId: "order-1",
+      merchantPubkey: "merchant",
+      messages: [paymentRequest(merchantInvoice())],
+      nowSeconds: 1_800_000_001,
+    })
+
+    expect(vm.merchantInvoiceAction).toBeNull()
+  })
+
+  it("does not expose an invoice action for an order that was not sent", () => {
+    const vm = buildOrderViewModel({
+      orderId: "order-1",
+      lifecycle: baseLifecycle({
+        checkoutMode: "pay_later",
+        orderDeliveryStatus: "failed",
+        invoiceStatus: "not_requested",
+        paymentStatus: "not_started",
+        proofDeliveryStatus: "not_started",
+      }),
+      messages: [paymentRequest(merchantInvoice())],
+      nowSeconds: 1_800_000_001,
+    })
+
+    expect(vm.merchantInvoiceAction).toBeNull()
+    expect(vm.invoice).toBeUndefined()
   })
 
   it("preserves checkout snapshot parity for a zero pickup cost in any currency", () => {
