@@ -4,7 +4,7 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "../utils"
 
 const statusPillVariants = cva(
-  "inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 py-1 text-xs font-medium",
+  "inline-flex w-fit shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 py-1 text-xs font-medium",
   {
     variants: {
       variant: {
@@ -31,7 +31,14 @@ const statusPillVariants = cva(
 
 function FilledWarningIcon({ size }: { size: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 16 16" aria-hidden="true">
+    <svg
+      className="shrink-0"
+      width={size}
+      height={size}
+      style={{ width: size, height: size }}
+      viewBox="0 0 16 16"
+      aria-hidden="true"
+    >
       <path
         fillRule="evenodd"
         fill="currentColor"
@@ -51,8 +58,10 @@ function FilledWarningIcon({ size }: { size: number }) {
 function FilledSuccessIcon({ size }: { size: number }) {
   return (
     <svg
+      className="shrink-0"
       width={size}
       height={size}
+      style={{ width: size, height: size }}
       viewBox="0 0 16 16"
       fill="none"
       aria-hidden="true"
@@ -73,8 +82,10 @@ function FilledSuccessIcon({ size }: { size: number }) {
 function FilledInfoIcon({ size }: { size: number }) {
   return (
     <svg
+      className="shrink-0"
       width={size}
       height={size}
+      style={{ width: size, height: size }}
       viewBox="0 0 16 16"
       fill="none"
       aria-hidden="true"
@@ -91,8 +102,10 @@ function FilledInfoIcon({ size }: { size: number }) {
 function FilledErrorIcon({ size }: { size: number }) {
   return (
     <svg
+      className="shrink-0"
       width={size}
       height={size}
+      style={{ width: size, height: size }}
       viewBox="0 0 16 16"
       fill="none"
       aria-hidden="true"
