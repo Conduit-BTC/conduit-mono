@@ -2624,7 +2624,15 @@ function ProductsPage() {
                         title: eventMarket?.title,
                         savedAt: Date.now(),
                       })
-                      void navigate({ to: "/events" })
+                      const eventUrl = new URL(
+                        "/events",
+                        window.location.origin
+                      )
+                      eventUrl.searchParams.set(
+                        "event",
+                        eventProductContext.naddr
+                      )
+                      window.location.assign(eventUrl)
                     }}
                   />
                   <ProductCard

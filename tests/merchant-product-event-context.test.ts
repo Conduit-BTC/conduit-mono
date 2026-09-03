@@ -99,6 +99,7 @@ describe("merchant event-product management context", () => {
     expect(eventBranch).toBeGreaterThan(-1)
     expect(genericHiddenBranch).toBeGreaterThan(eventBranch)
     expect(route).toContain("EventProductManagementSummary")
+    expect(route).toMatch(/eventUrl\.searchParams\.set\(\s*"event"/)
     expect(route).toContain("Hidden from the ordinary Market")
     expect(route).toMatch(/>\s*Edit\s*<\/Button>/)
     expect(route).toContain('{isDeleting ? "..." : "Delete"}')
