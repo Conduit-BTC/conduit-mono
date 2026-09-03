@@ -2393,6 +2393,15 @@ describe("commerce gateway", () => {
       pickups: [pickup],
       organizerProductCoordinates: [childProductId],
       acceptedProductCoordinates: [childProductId],
+      acceptedProductEvidence: [
+        {
+          productCoordinate: childProductId,
+          eventId: exactChildRead.data[0]!.eventId,
+          createdAt: exactChildRead.data[0]!.eventCreatedAt * 1_000,
+          shippingOptionCoordinates: [eventPickup],
+          merchantPubkey: EVENT_TEST_MERCHANT_PUBKEY,
+        },
+      ],
       organizerOnlyProductCoordinates: [],
       participationRequests: [
         {
@@ -2401,6 +2410,11 @@ describe("commerce gateway", () => {
         },
       ],
       participationBudget: {
+        state: "within_budget",
+        targetCount: 1,
+        targetLimit: 64,
+      },
+      pickupBudget: {
         state: "within_budget",
         targetCount: 1,
         targetLimit: 64,

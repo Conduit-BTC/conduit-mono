@@ -1022,7 +1022,7 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
   ).toBeVisible()
   await expect(
     page.getByText(
-      "The organizer has not accepted any currently verifiable products for this event.",
+      "The organizer has not accepted any products for this event.",
       { exact: true }
     )
   ).toBeVisible()
