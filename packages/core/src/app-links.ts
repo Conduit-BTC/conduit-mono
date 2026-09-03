@@ -1,4 +1,8 @@
 import { encodeProductNaddr } from "./protocol/product-reference"
+import {
+  decodeEventMarketReference,
+  encodeEventMarketNaddr,
+} from "./protocol/event-market"
 
 export type ConduitBrowserLocation = Pick<
   Location,
@@ -22,6 +26,23 @@ const LOCAL_PORT_PAIRS = [
   ["5173", "5174"],
   ["3000", "3001"],
 ] as const
+
+const CLOUDFLARE_PAGES_BRANCH_ALIAS_MAX_LENGTH = 28
+
+function cloudflarePagesBranchAlias(
+  branchName: string | undefined
+): string | null {
+  if (!branchName || branchName.trim().toLowerCase() === "main") return null
+
+  const alias = branchName
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, "-")
+    .slice(0, CLOUDFLARE_PAGES_BRANCH_ALIAS_MAX_LENGTH)
+    .replace(/^-+|-+$/g, "")
+
+  return alias || null
+}
 
 function isConduitAppOrigin(
   origin: string | URL,
@@ -70,10 +91,12 @@ export function isConduitMerchantOrigin(origin: string | URL): boolean {
 function replaceHostSuffix(
   hostname: string,
   sourceHost: string,
-  targetHost: string
+  targetHost: string,
+  previewBranchAlias?: string | null
 ): string | null {
   if (hostname === sourceHost) return targetHost
   if (!hostname.endsWith(`.${sourceHost}`)) return null
+  if (previewBranchAlias) return `${previewBranchAlias}.${targetHost}`
   return `${hostname.slice(0, -sourceHost.length)}${targetHost}`
 }
 
@@ -82,19 +105,25 @@ export function inferConduitAppOrigin(
   target: ConduitAppTarget,
   location: ConduitBrowserLocation | undefined = typeof window === "undefined"
     ? undefined
-    : window.location
+    : window.location,
+  deploymentBranch?: string
 ): string {
   if (!location) return PRODUCTION_ORIGINS[target]
 
   const { hostname, protocol, port } = location
+  const currentOrigin = `${protocol}//${hostname}${port ? `:${port}` : ""}`
+  if (isConduitAppOrigin(currentOrigin, target)) return currentOrigin
+
   const sourceIndex = target === "merchant" ? 0 : 1
   const targetIndex = target === "merchant" ? 1 : 0
+  const previewBranchAlias = cloudflarePagesBranchAlias(deploymentBranch)
 
   for (const pair of APP_HOST_PAIRS) {
     const pairedHostname = replaceHostSuffix(
       hostname,
       pair[sourceIndex],
-      pair[targetIndex]
+      pair[targetIndex],
+      previewBranchAlias
     )
     if (pairedHostname) return `${protocol}//${pairedHostname}`
   }
@@ -148,5 +177,60 @@ export function buildMarketProductShareUrl(
 
   const naddr = encodeProductNaddr(productAddressId)
   url.pathname = `/products/${naddr}`
+  return url.toString()
+}
+
+export function normalizeExactEventCatalogNaddr(value: string): string {
+  const trimmed = value.trim()
+  if (!/^naddr1[023456789acdefghjklmnpqrstuvwxyz]+$/i.test(trimmed)) {
+    throw new Error("Event link requires an exact event catalog naddr.")
+  }
+  const decoded = decodeEventMarketReference(trimmed, [30405])
+  if (!decoded) {
+    throw new Error("Event link requires a kind-30405 event catalog naddr.")
+  }
+  return encodeEventMarketNaddr(decoded.coordinate, decoded.relayHints)
+}
+
+/** Build a canonical Market event-catalog URL on a safe Conduit origin. */
+export function buildMarketEventCatalogUrl(
+  marketOrigin: string,
+  eventNaddr: string
+): string {
+  let url: URL
+  try {
+    url = new URL(marketOrigin)
+  } catch {
+    throw new Error("Event catalog URL requires an absolute Market origin.")
+  }
+  if (!isConduitMarketOrigin(url)) {
+    throw new Error("Event catalog URL requires a safe Market origin.")
+  }
+
+  const naddr = normalizeExactEventCatalogNaddr(eventNaddr)
+  url.pathname = `/events/${naddr}`
+  return url.toString()
+}
+
+/** Build a Merchant participation URL that imports one exact event catalog. */
+export function buildMerchantEventParticipationUrl(
+  merchantOrigin: string,
+  eventNaddr: string
+): string {
+  let url: URL
+  try {
+    url = new URL(merchantOrigin)
+  } catch {
+    throw new Error(
+      "Event participation URL requires an absolute Merchant origin."
+    )
+  }
+  if (!isConduitMerchantOrigin(url)) {
+    throw new Error("Event participation URL requires a safe Merchant origin.")
+  }
+
+  const naddr = normalizeExactEventCatalogNaddr(eventNaddr)
+  url.pathname = "/events"
+  url.searchParams.set("event", naddr)
   return url.toString()
 }
