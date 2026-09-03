@@ -1,6 +1,8 @@
 import type { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   canonicalizeProductPrice,
+  decodeProductReference,
+  getProductImageCandidates,
   getMerchantStorefront,
   type EventMarketHandoffMode,
   type ProductSchema,
@@ -80,6 +82,16 @@ function randomSuffix(): string {
   }
 }
 
+export function createFreshEventProductDTag(
+  title: string,
+  sourceCoordinate = "",
+  suffix = randomSuffix()
+): string {
+  const candidate = `${slugify(title) || "product"}-${suffix}`
+  const sourceDTag = decodeProductReference(sourceCoordinate)?.dTag
+  return candidate === sourceDTag ? `${candidate}-event` : candidate
+}
+
 export function createEmptyEventProductForm(
   market: MerchantOrganizerEventMarket
 ): EventProductPublishFormValues {
@@ -114,7 +126,7 @@ export function eventProductFormFromTemplate(
     price: formatProductAmountInput(source?.amount ?? product.price),
     currency: source?.normalizedCurrency ?? product.currency,
     stock: typeof product.stock === "number" ? String(product.stock) : "",
-    imageUrl: product.images[0]?.url ?? "",
+    imageUrl: getProductImageCandidates(product)[0]?.url ?? "",
     tags: product.tags.join(", "),
     publicZapEnabled: product.publicZapPolicyKnown
       ? product.publicZapEnabled
@@ -194,7 +206,10 @@ export async function publishEventProduct(input: {
     undefined,
     input.merchantPubkey
   )
-  const dTag = `${slugify(input.form.title) || "product"}-${randomSuffix()}`
+  const dTag = createFreshEventProductDTag(
+    input.form.title,
+    input.form.templateCoordinate
+  )
   let signerRequestOffset = 0
   const pickupMetadata =
     input.form.handoffMode === "organizer_handoff"
