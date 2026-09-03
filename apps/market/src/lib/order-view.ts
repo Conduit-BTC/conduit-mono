@@ -156,7 +156,8 @@ export type BoundMerchantInvoiceAccess =
 export function deriveBoundMerchantInvoiceAccess(
   lifecycle: OrderLifecycle | null | undefined,
   merchantStatus: KnownOrderStatus | null,
-  effectivePhase: OrderLifecyclePhase | undefined = lifecycle?.phase
+  effectivePhase: OrderLifecyclePhase | undefined = lifecycle?.phase,
+  paymentConfirmed = false
 ): BoundMerchantInvoiceAccess {
   const hasBoundInvoice =
     lifecycle?.checkoutMode === "pay_later" &&
@@ -166,6 +167,7 @@ export function deriveBoundMerchantInvoiceAccess(
   if (!hasBoundInvoice) return "none"
 
   if (
+    paymentConfirmed ||
     effectivePhase === "completed" ||
     isMerchantOrderPaid({ status: merchantStatus })
   ) {
@@ -335,6 +337,7 @@ function deriveMerchantInvoiceAction({
   lifecycle,
   summary,
   merchantStatus,
+  merchantPaymentConfirmed,
   effectivePhase,
   nowSeconds,
 }: {
@@ -342,6 +345,7 @@ function deriveMerchantInvoiceAction({
   lifecycle: OrderLifecycle | null | undefined
   summary: OrderSummary | null
   merchantStatus: OrderViewModel["merchantStatus"]
+  merchantPaymentConfirmed: boolean
   effectivePhase: OrderLifecyclePhase
   nowSeconds: number
 }): MerchantInvoiceAction | null {
@@ -353,6 +357,7 @@ function deriveMerchantInvoiceAction({
     !evidence ||
     evidence.orderId !== orderId ||
     lifecycle.paymentStatus === "paid" ||
+    merchantPaymentConfirmed ||
     isMerchantOrderPaid({ status: merchantStatus }) ||
     effectivePhase === "completed" ||
     effectivePhase === "cancelled" ||
@@ -550,8 +555,12 @@ export function buildOrderViewModel(
     (invoiceFromMessages ? "received" : "not_requested")
 
   const proofFromMessages = summary?.paymentProofReceived ?? false
-  const basePaymentStatus: OrderPaymentStatus =
-    lifecycle?.paymentStatus ?? (proofFromMessages ? "paid" : "not_started")
+  const merchantPaymentConfirmed =
+    summary?.paymentConfirmed === true ||
+    summary?.shippingUpdateReceived === true
+  const basePaymentStatus: OrderPaymentStatus = merchantPaymentConfirmed
+    ? "paid"
+    : (lifecycle?.paymentStatus ?? (proofFromMessages ? "paid" : "not_started"))
 
   const proofDeliveryStatus: OrderProofDeliveryStatus =
     lifecycle?.proofDeliveryStatus ??
@@ -605,6 +614,7 @@ export function buildOrderViewModel(
     lifecycle,
     summary,
     merchantStatus,
+    merchantPaymentConfirmed,
     effectivePhase: phase,
     nowSeconds: input.nowSeconds ?? Math.floor(Date.now() / 1_000),
   })

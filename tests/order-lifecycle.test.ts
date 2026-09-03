@@ -1054,6 +1054,28 @@ describe("order payment admission", () => {
         ).toBe("preserved")
       })
 
+      for (const merchantPaymentEvidence of [
+        "paid_then_processing",
+        "shipping_update",
+      ] as const) {
+        await withMockOrderPaymentDb({ lifecycle: cancelled }, async () => {
+          expect(
+            (
+              await bindMerchantInvoiceForPayment(
+                cancelled.orderId,
+                {
+                  ...baseClaim,
+                  reopenEvidence: makeMerchantInvoiceReopenEvidence(cancelled, {
+                    merchantPaymentEvidence,
+                  }),
+                },
+                1_800_000_001_000
+              )
+            ).status
+          ).toBe("preserved")
+        })
+      }
+
       await withMockOrderPaymentDb({ lifecycle: cancelled }, async (state) => {
         const result = await bindMerchantInvoiceForPayment(
           cancelled.orderId,

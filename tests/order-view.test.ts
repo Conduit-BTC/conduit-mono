@@ -21,6 +21,7 @@ import {
   bolt11PlainDescriptionField,
   makeBolt11Fixture,
 } from "./support/bolt11-fixture"
+import { makeMerchantInvoiceReopenEvidence } from "./support/merchant-invoice-reopen-fixture"
 
 function merchantInvoice({
   paymentHashByte = 7,
@@ -392,7 +393,6 @@ describe("buildOrderViewModel", () => {
         paymentRequest(invoice, { createdAt: 1 }),
         merchantStatusMessage("accepted", "accepted", 2),
         merchantStatusMessage(cancellationId, "cancelled", 3),
-        merchantStatusMessage("automated-paid", "paid", 4),
       ]
 
       const cancelled = buildOrderViewModel({
@@ -447,6 +447,43 @@ describe("buildOrderViewModel", () => {
         cancellationId
       )
       expect(reopenedWithInvalidInvoice.paymentStatus).toBe("not_started")
+    } finally {
+      config.lightningNetwork = previousNetwork
+    }
+  })
+
+  it("keeps merchant-confirmed payment closed across a reopen", () => {
+    const previousNetwork = config.lightningNetwork
+    config.lightningNetwork = "mainnet"
+    try {
+      const invoice = merchantInvoice()
+      const lifecycle = baseLifecycle({
+        checkoutMode: "pay_later",
+        invoiceStatus: "not_requested",
+        paymentStatus: "not_started",
+        proofDeliveryStatus: "not_started",
+        phase: "cancelled",
+      })
+
+      for (const merchantPaymentEvidence of [
+        "paid_then_processing",
+        "shipping_update",
+      ] as const) {
+        const reopenEvidence = makeMerchantInvoiceReopenEvidence(lifecycle, {
+          merchantPaymentEvidence,
+        })
+        const vm = buildOrderViewModel({
+          orderId: lifecycle.orderId,
+          lifecycle,
+          messages: [paymentRequest(invoice), ...reopenEvidence.messages],
+          nowSeconds: 1_800_000_001,
+        })
+
+        expect(vm.phase).toBe("in_progress")
+        expect(vm.paymentStatus).toBe("paid")
+        expect(vm.merchantInvoiceAction).toBeNull()
+        expect(vm.actionNeeded).toBe(false)
+      }
     } finally {
       config.lightningNetwork = previousNetwork
     }
@@ -558,6 +595,14 @@ describe("buildOrderViewModel", () => {
         "in_progress"
       )
     ).toBe("pay")
+    expect(
+      deriveBoundMerchantInvoiceAccess(
+        { ...lifecycle, phase: "cancelled" },
+        "processing",
+        "in_progress",
+        true
+      )
+    ).toBe("closed")
   })
 
   it("keeps invalid and expired message invoices blocked", () => {

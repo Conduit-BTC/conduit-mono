@@ -522,6 +522,19 @@ describe("runOrderPayment", () => {
         }),
       })
     ).toMatchObject({ ok: false })
+    for (const merchantPaymentEvidence of [
+      "paid_then_processing",
+      "shipping_update",
+    ] as const) {
+      expect(
+        validateMerchantInvoicePaymentAction(cancelledOrder, action, {
+          nowSeconds: 1_800_000_001,
+          reopenEvidence: makeMerchantInvoiceReopenEvidence(cancelledOrder, {
+            merchantPaymentEvidence,
+          }),
+        })
+      ).toMatchObject({ ok: false })
+    }
     const paidAfterReopen = makeMerchantInvoiceReopenEvidence(cancelledOrder)
     paidAfterReopen.messages.push({
       id: "e".repeat(64),

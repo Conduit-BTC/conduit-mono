@@ -1089,7 +1089,8 @@ function OrderDetail({
   const boundMerchantInvoiceAccess = deriveBoundMerchantInvoiceAccess(
     row.lifecycle,
     vm.merchantStatus,
-    vm.phase
+    vm.phase,
+    vm.paymentStatus === "paid"
   )
   const merchantInvoiceReopenEvidence =
     vm.reopenedCancellationId && row.conversation?.messages

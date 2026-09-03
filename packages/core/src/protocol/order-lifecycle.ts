@@ -12,10 +12,8 @@ import {
   normalizeLightningInvoice,
   validateLightningInvoiceForPayment,
 } from "./lightning"
-import {
-  getEffectiveMerchantOrderStatus,
-  isMerchantOrderPaid,
-} from "./order-status"
+import { getEffectiveMerchantOrderStatus } from "./order-status"
+import { extractOrderSummary } from "./order-summary"
 import type { ParsedOrderMessage } from "./orders"
 
 export const GUEST_ORDER_LOCAL_RETENTION_MS = 24 * 60 * 60 * 1_000
@@ -240,16 +238,22 @@ export function hasEffectiveMerchantInvoiceReopenEvidence(
   const exactOrderMessages = evidence.messages.filter(
     (message) => message.orderId === lifecycle.orderId
   )
-  const projection = getEffectiveMerchantOrderStatus(exactOrderMessages, {
+  const participants = {
     buyerPubkey: lifecycle.buyerPubkey,
     merchantPubkey: lifecycle.merchantPubkey,
-  })
+  }
+  const projection = getEffectiveMerchantOrderStatus(
+    exactOrderMessages,
+    participants
+  )
+  const summary = extractOrderSummary(exactOrderMessages, participants)
   return (
     projection.reopenedCancellationId === evidence.cancellationEventId &&
     projection.knownStatus !== null &&
     projection.knownStatus !== "cancelled" &&
     projection.knownStatus !== "refund_requested" &&
-    !isMerchantOrderPaid({ status: projection.knownStatus })
+    !summary.paymentConfirmed &&
+    !summary.shippingUpdateReceived
   )
 }
 
