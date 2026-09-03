@@ -1282,7 +1282,7 @@ describe("commerce gateway", () => {
     ])
   })
 
-  it("keeps merchant storefront reads deletion-aware", async () => {
+  it("keeps event-template storefront reads deletion-aware when hidden products are included", async () => {
     const productEvent = makeSignedProductEvent({
       dTag: "deleted-item",
       createdAt: 100,
@@ -1308,7 +1308,11 @@ describe("commerce gateway", () => {
       },
     })
 
-    const result = await getMerchantStorefront({ merchantPubkey, limit: 10 })
+    const result = await getMerchantStorefront({
+      merchantPubkey,
+      limit: 10,
+      includeMarketHidden: true,
+    })
 
     expect(result.data).toHaveLength(0)
   })
