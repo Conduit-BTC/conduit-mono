@@ -2,6 +2,7 @@ import {
   decodeLightningInvoicePaymentHash,
   deriveOrderFlow,
   extractOrderSummary,
+  getEffectiveMerchantOrderStatus,
   getPriceSats,
   getOrderPublicZapSigner,
   isKnownOrderStatus,
@@ -116,6 +117,8 @@ export interface OrderViewModel {
 
   // Merchant-driven state, observed from the conversation.
   merchantStatus: KnownOrderStatus | null
+  /** Exact cancellation proven corrected within the observed message set. */
+  reopenedCancellationId?: string
   tracking: {
     carrier: string | null
     number: string | null
@@ -152,7 +155,9 @@ export type BoundMerchantInvoiceAccess =
  */
 export function deriveBoundMerchantInvoiceAccess(
   lifecycle: OrderLifecycle | null | undefined,
-  merchantStatus: KnownOrderStatus | null
+  merchantStatus: KnownOrderStatus | null,
+  effectivePhase: OrderLifecyclePhase | undefined = lifecycle?.phase,
+  paymentConfirmed = false
 ): BoundMerchantInvoiceAccess {
   const hasBoundInvoice =
     lifecycle?.checkoutMode === "pay_later" &&
@@ -162,13 +167,14 @@ export function deriveBoundMerchantInvoiceAccess(
   if (!hasBoundInvoice) return "none"
 
   if (
-    lifecycle.phase === "completed" ||
+    paymentConfirmed ||
+    effectivePhase === "completed" ||
     isMerchantOrderPaid({ status: merchantStatus })
   ) {
     return "closed"
   }
   if (
-    lifecycle.phase === "cancelled" ||
+    effectivePhase === "cancelled" ||
     merchantStatus === "cancelled" ||
     merchantStatus === "refund_requested"
   ) {
@@ -296,22 +302,34 @@ export function deriveItemDisplayTitle(productId: string): string {
     .join(" ")
 }
 
-function latestMerchantStatus(
+type MerchantStatusProjection = {
+  status: OrderViewModel["merchantStatus"]
+  reopenedCancellationId?: string
+}
+
+function projectMerchantStatus(
   messages: ParsedOrderMessage[] | undefined,
   merchantPubkey: string | undefined,
+  buyerPubkey: string | undefined,
   fallback: string | null
-): OrderViewModel["merchantStatus"] {
-  if (messages && messages.length > 0) {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const message = messages[i]
-      if (message.type !== "status_update") continue
-      if (merchantPubkey && message.senderPubkey !== merchantPubkey) continue
-      const status = message.payload.status
-      if (isKnownOrderStatus(status)) return status
+): MerchantStatusProjection {
+  if (messages && merchantPubkey && buyerPubkey) {
+    const projection = getEffectiveMerchantOrderStatus(messages, {
+      merchantPubkey,
+      buyerPubkey,
+    })
+    if (projection.knownStatus) {
+      return {
+        status: projection.knownStatus,
+        ...(projection.reopenedCancellationId
+          ? { reopenedCancellationId: projection.reopenedCancellationId }
+          : {}),
+      }
     }
   }
-  if (fallback && isKnownOrderStatus(fallback)) return fallback
-  return null
+  return {
+    status: fallback && isKnownOrderStatus(fallback) ? fallback : null,
+  }
 }
 
 function deriveMerchantInvoiceAction({
@@ -319,12 +337,16 @@ function deriveMerchantInvoiceAction({
   lifecycle,
   summary,
   merchantStatus,
+  merchantPaymentConfirmed,
+  effectivePhase,
   nowSeconds,
 }: {
   orderId: string
   lifecycle: OrderLifecycle | null | undefined
   summary: OrderSummary | null
   merchantStatus: OrderViewModel["merchantStatus"]
+  merchantPaymentConfirmed: boolean
+  effectivePhase: OrderLifecyclePhase
   nowSeconds: number
 }): MerchantInvoiceAction | null {
   const evidence = summary?.latestMerchantInvoice
@@ -335,9 +357,10 @@ function deriveMerchantInvoiceAction({
     !evidence ||
     evidence.orderId !== orderId ||
     lifecycle.paymentStatus === "paid" ||
+    merchantPaymentConfirmed ||
     isMerchantOrderPaid({ status: merchantStatus }) ||
-    lifecycle.phase === "completed" ||
-    lifecycle.phase === "cancelled" ||
+    effectivePhase === "completed" ||
+    effectivePhase === "cancelled" ||
     merchantStatus === "cancelled" ||
     merchantStatus === "refund_requested" ||
     isCompletedMerchantStatus(merchantStatus)
@@ -440,6 +463,15 @@ export function buildOrderViewModel(
     input.merchantPubkey ??
     conversation?.merchantPubkey ??
     ""
+  const buyerPubkey =
+    lifecycle?.buyerPubkey ??
+    messages?.find((message) => message.type === "order")?.senderPubkey ??
+    messages?.find(
+      (message) =>
+        message.type === "status_update" &&
+        message.senderPubkey === merchantPubkey
+    )?.recipientPubkey ??
+    ""
 
   // --- Items / totals -----------------------------------------------------
   const items: OrderViewItem[] = lifecycle
@@ -523,8 +555,12 @@ export function buildOrderViewModel(
     (invoiceFromMessages ? "received" : "not_requested")
 
   const proofFromMessages = summary?.paymentProofReceived ?? false
-  const basePaymentStatus: OrderPaymentStatus =
-    lifecycle?.paymentStatus ?? (proofFromMessages ? "paid" : "not_started")
+  const merchantPaymentConfirmed =
+    summary?.paymentConfirmed === true ||
+    summary?.shippingUpdateReceived === true
+  const basePaymentStatus: OrderPaymentStatus = merchantPaymentConfirmed
+    ? "paid"
+    : (lifecycle?.paymentStatus ?? (proofFromMessages ? "paid" : "not_started"))
 
   const proofDeliveryStatus: OrderProofDeliveryStatus =
     lifecycle?.proofDeliveryStatus ??
@@ -534,11 +570,13 @@ export function buildOrderViewModel(
   const zapReceiptStatus: OrderZapReceiptStatus =
     lifecycle?.zapReceiptStatus ?? "not_applicable"
 
-  const merchantStatus = latestMerchantStatus(
+  const merchantStatusProjection = projectMerchantStatus(
     messages,
     merchantPubkey,
+    buyerPubkey,
     conversation?.status ?? null
   )
+  const merchantStatus = merchantStatusProjection.status
   const basePaymentPaid = isBuyerOrderPaid({
     paymentStatus: basePaymentStatus,
     merchantStatus,
@@ -559,18 +597,25 @@ export function buildOrderViewModel(
       ? "cancelled"
       : isCompletedMerchantStatus(merchantStatus)
         ? "completed"
-        : lifecycle?.phase === "completed" || lifecycle?.phase === "cancelled"
-          ? lifecycle.phase
-          : basePaymentPaid
+        : lifecycle?.phase === "cancelled" &&
+            merchantStatusProjection.reopenedCancellationId
+          ? basePaymentPaid || merchantStatus !== "pending"
             ? "in_progress"
-            : (lifecycle?.phase ??
-              (orderDeliveryStatus === "sent" ? "in_progress" : "pending"))
+            : "pending"
+          : lifecycle?.phase === "completed" || lifecycle?.phase === "cancelled"
+            ? lifecycle.phase
+            : basePaymentPaid
+              ? "in_progress"
+              : (lifecycle?.phase ??
+                (orderDeliveryStatus === "sent" ? "in_progress" : "pending"))
 
   const merchantInvoiceAction = deriveMerchantInvoiceAction({
     orderId: input.orderId,
     lifecycle,
     summary,
     merchantStatus,
+    merchantPaymentConfirmed,
+    effectivePhase: phase,
     nowSeconds: input.nowSeconds ?? Math.floor(Date.now() / 1_000),
   })
   const invoiceStatus: OrderInvoiceStatus =
@@ -646,6 +691,12 @@ export function buildOrderViewModel(
     zapReceiptStatus,
     addressValidity: lifecycle?.addressValidity ?? "not_required",
     merchantStatus,
+    ...(merchantStatusProjection.reopenedCancellationId
+      ? {
+          reopenedCancellationId:
+            merchantStatusProjection.reopenedCancellationId,
+        }
+      : {}),
     tracking,
     phase,
     invoice:
