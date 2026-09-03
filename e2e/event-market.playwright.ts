@@ -612,21 +612,26 @@ async function publishOrganizerMarket(
   const editor = page.getByRole("dialog", { name: "Create event market" })
   await expect(editor).toBeVisible()
 
-  await editor.getByRole("button", { name: "Publish event" }).click()
-  await expect(editor.getByText("Add an event title.")).toBeVisible()
-  await editor.getByLabel("Title", { exact: true }).fill(options.title)
+  const titleInput = editor.getByRole("textbox", {
+    name: "Title Required",
+    exact: true,
+  })
+  await expect(titleInput).toHaveAttribute("required", "")
+  await titleInput.fill(options.title)
   await editor
-    .getByLabel("Public summary")
+    .getByRole("textbox", { name: "Public summary Required", exact: true })
     .fill("Synthetic browser-only organizer catalog.")
   await editor
-    .getByLabel("Image URL")
+    .getByRole("textbox", { name: "Image URL Required", exact: true })
     .fill("https://cdn.conduit.market/conduit-test/synthetic-event-market.svg")
   await editor
-    .getByLabel("Public location", { exact: true })
+    .getByRole("textbox", { name: "Public location Required", exact: true })
     .fill("Synthetic Fixture Hall")
   await editor.locator("#event-market-calendar-type").click()
   await page.getByRole("option", { name: "All day" }).click()
-  await editor.getByLabel("Start").fill("2099-08-10")
+  await editor
+    .getByRole("textbox", { name: "Start Required", exact: true })
+    .fill("2099-08-10")
   await editor.getByLabel("End (optional)").fill("2099-08-11")
 
   const organizerOffer = editor.getByRole("checkbox", {
@@ -638,7 +643,9 @@ async function publishOrganizerMarket(
     await editor
       .getByLabel("Pickup point or area (optional)")
       .fill("Synthetic main entrance")
-    await editor.getByLabel("Event country").fill("US")
+    await editor
+      .getByRole("textbox", { name: "Event country Required", exact: true })
+      .fill("US")
   } else {
     await expect(
       editor.getByLabel("Pickup point or area (optional)")
@@ -857,8 +864,9 @@ async function publishMerchantProductFromEvent(
   await editor
     .getByRole("button", { name: "Publish product", exact: true })
     .click()
+  await expect(editor).toBeHidden({ timeout: 30_000 })
   await expect(
-    editor.getByText("Product published. Organizer acceptance is pending.", {
+    page.getByText("Product published. Organizer acceptance is pending.", {
       exact: true,
     })
   ).toBeVisible({ timeout: 30_000 })
@@ -882,8 +890,6 @@ async function publishMerchantProductFromEvent(
         : undefined
   )
 
-  await editor.getByRole("button", { name: "Done", exact: true }).click()
-  await expect(editor).toBeHidden()
   return productEvent!
 }
 
