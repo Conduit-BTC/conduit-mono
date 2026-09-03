@@ -67,7 +67,7 @@ import {
   type OrganizerCollectionMembershipAction,
   type SavedOrganizerEventMarketReference,
 } from "../lib/event-market-workflow"
-import { getEventMarketUrl } from "../lib/market-links"
+import { parseMerchantEventsSearch } from "../lib/market-links"
 import {
   acknowledgeOrganizerHandoff,
   loadEventMarketHandoffDeliveries,
@@ -77,8 +77,9 @@ import {
 import { requireAuth } from "../lib/auth"
 
 export const Route = createFileRoute("/events")({
-  beforeLoad: () => {
-    requireAuth()
+  validateSearch: parseMerchantEventsSearch,
+  beforeLoad: ({ search }) => {
+    requireAuth({ event: search.event })
   },
   component: EventsPage,
 })
@@ -107,6 +108,7 @@ function referenceLabel(
 
 function EventsPage() {
   const { pubkey } = useAuth()
+  const { event } = Route.useSearch()
   const merchantPubkey = pubkey ?? ""
 
   return (
@@ -134,6 +136,7 @@ function EventsPage() {
           <FindEventsPanel
             key={merchantPubkey}
             merchantPubkey={merchantPubkey}
+            initialReference={event}
           />
         </TabsContent>
         <TabsContent value="mine" className="mt-0">
@@ -147,13 +150,63 @@ function EventsPage() {
   )
 }
 
-function FindEventsPanel({ merchantPubkey }: { merchantPubkey: string }) {
+function loadInitialDiscoveredSelection(
+  merchantPubkey: string,
+  initialReference: string | undefined
+): {
+  references: SavedOrganizerEventMarketReference[]
+  selectedReference: string
+} {
+  const references = loadSavedDiscoveredEventMarkets(merchantPubkey)
+  if (!initialReference) return { references, selectedReference: "" }
+  const saved = findSavedOrganizerEventMarketReference(
+    references,
+    initialReference
+  )
+  if (saved) {
+    return { references, selectedReference: saved.reference }
+  }
+  return {
+    references: [
+      { reference: initialReference, savedAt: Date.now() },
+      ...references,
+    ],
+    selectedReference: initialReference,
+  }
+}
+
+function FindEventsPanel({
+  merchantPubkey,
+  initialReference,
+}: {
+  merchantPubkey: string
+  initialReference?: string
+}) {
+  const [initialSelection] = useState(() =>
+    loadInitialDiscoveredSelection(merchantPubkey, initialReference)
+  )
   const [savedReferences, setSavedReferences] = useState<
     SavedOrganizerEventMarketReference[]
-  >(() => loadSavedDiscoveredEventMarkets(merchantPubkey))
-  const [selectedReferenceOverride, setSelectedReference] = useState("")
+  >(initialSelection.references)
+  const [selectedReferenceOverride, setSelectedReference] = useState(
+    initialSelection.selectedReference
+  )
   const [importValue, setImportValue] = useState("")
   const [importError, setImportError] = useState("")
+
+  useEffect(() => {
+    if (!initialReference) return
+    const saved = rememberDiscoveredEventMarket(merchantPubkey, {
+      reference: initialReference,
+      savedAt: Date.now(),
+    })
+    const selected = findSavedOrganizerEventMarketReference(
+      saved,
+      initialReference
+    )
+    if (saved.length > 0) setSavedReferences(saved)
+    setSelectedReference(selected?.reference ?? initialReference)
+  }, [initialReference, merchantPubkey])
 
   const discoveryQuery = useQuery({
     queryKey: ["merchant-followed-event-markets", merchantPubkey || "none"],
@@ -494,7 +547,7 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
   const [publishState, setPublishState] =
     useState<SignedActionStatusState>("idle")
   const [publishError, setPublishError] = useState("")
-  const [copied, setCopied] = useState(false)
+  const [copiedUrl, setCopiedUrl] = useState<string | null>(null)
   const [handoffDeliveryRevision, setHandoffDeliveryRevision] = useState(0)
   const [deliveriesByReference, setDeliveriesByReference] = useState<
     Record<string, MerchantOrganizerRecordDelivery[]>
@@ -894,13 +947,16 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
     setEditorOpen(true)
   }
 
-  async function copyShareLink(market: MerchantOrganizerEventMarket) {
+  async function copyShareLink(url: string) {
     try {
-      await navigator.clipboard.writeText(getEventMarketUrl(market.naddr))
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 2_000)
+      await navigator.clipboard.writeText(url)
+      setCopiedUrl(url)
+      window.setTimeout(
+        () => setCopiedUrl((current) => (current === url ? null : current)),
+        2_000
+      )
     } catch {
-      setCopied(false)
+      setCopiedUrl(null)
     }
   }
 
@@ -1071,7 +1127,7 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
           <OrganizerEventMarketPanel
             market={selectedMarket}
             deliveries={deliveries}
-            copied={copied}
+            copiedUrl={copiedUrl}
             refreshing={
               marketsQuery.isFetching || selectedMarketQuery.isFetching
             }
@@ -1081,7 +1137,7 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
                 ? (retryMutation.variables?.record ?? null)
                 : null
             }
-            onCopy={() => void copyShareLink(selectedMarket)}
+            onCopy={(url) => void copyShareLink(url)}
             onEdit={openEdit}
             onRefresh={() => {
               void refreshMarketQueries(selectedReference)

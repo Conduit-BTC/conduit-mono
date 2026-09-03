@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import {
+  buildProductListingEventDraft,
   canonicalizeProductPrice,
   type ProductFulfillmentIntent,
   type ProductSchema,
@@ -971,6 +972,103 @@ describe("merchant product variation planning", () => {
     expect(
       digitalPlan.publish.map(({ fulfillmentIntent }) => fulfillmentIntent)
     ).toEqual(digitalPlan.desired.map(() => ({ kind: "digital" })))
+  })
+
+  it("propagates event visibility across an existing variable family in both directions", () => {
+    const initialPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct(),
+      variations: sizeVariationForm("S, M"),
+      currency: "USD",
+      now: NOW,
+    })
+    const publicFamily = toFamily(initialPlan)
+    const publicVariationState = getProductVariationFormState(
+      publicFamily.root,
+      publicFamily.variations
+    ).state
+    const collectionCoordinate = `30405:${ORGANIZER_PUBKEY}:conduit-event`
+    const pickupCoordinate = `30406:${ORGANIZER_PUBKEY}:conduit-event-pickup`
+
+    const eventPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: {
+        ...publicFamily.root.product,
+        visibility: "private",
+        shippingCostSats: undefined,
+        sourceShippingCost: undefined,
+        shippingOptionId: pickupCoordinate,
+        shippingOptionDTag: undefined,
+        shippingOptionRefs: [{ coordinate: pickupCoordinate }],
+        collectionRefs: [collectionCoordinate],
+        shippingCountries: undefined,
+        shippingCountryRules: undefined,
+        canonicalShippingResolved: undefined,
+      },
+      variations: publicVariationState,
+      currency: "USD",
+      existing: publicFamily,
+      now: NOW + 60_000,
+    })
+
+    expect(eventPlan.desired.map(({ product }) => product.visibility)).toEqual(
+      eventPlan.desired.map(() => "private")
+    )
+    expect(eventPlan.publish.map(({ dTag }) => dTag)).toEqual(
+      eventPlan.desired.map(({ dTag }) => dTag)
+    )
+    expect(
+      eventPlan.publish.every(({ dTag, product }) =>
+        buildProductListingEventDraft({ product, dTag }).tags.some(
+          (tag) => tag[0] === "visibility" && tag[1] === "hidden"
+        )
+      )
+    ).toBe(true)
+
+    const eventFamily = toFamily(eventPlan)
+    eventFamily.variations = eventFamily.variations.map((variation) => ({
+      ...variation,
+      product: {
+        ...variation.product,
+        canonicalShippingResolved: undefined,
+      },
+    }))
+    const fixedShippingCoordinate = `30406:${MERCHANT_PUBKEY}:conduit-tee-shipping-standard`
+    const ordinaryPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: {
+        ...eventFamily.root.product,
+        visibility: "public",
+        shippingCostSats: 500,
+        sourceShippingCost: undefined,
+        shippingOptionId: fixedShippingCoordinate,
+        shippingOptionDTag: "conduit-tee-shipping-standard",
+        shippingOptionRefs: [{ coordinate: fixedShippingCoordinate }],
+        collectionRefs: undefined,
+        shippingCountries: ["US"],
+        shippingCountryRules: undefined,
+        canonicalShippingResolved: true,
+      },
+      variations: publicVariationState,
+      currency: "USD",
+      existing: eventFamily,
+      now: NOW + 120_000,
+    })
+
+    expect(
+      ordinaryPlan.desired.map(({ product }) => product.visibility)
+    ).toEqual(ordinaryPlan.desired.map(() => "public"))
+    expect(ordinaryPlan.publish.map(({ dTag }) => dTag)).toEqual(
+      ordinaryPlan.desired.map(({ dTag }) => dTag)
+    )
+    expect(
+      ordinaryPlan.publish.every(
+        ({ dTag, product }) =>
+          !buildProductListingEventDraft({ product, dTag }).tags.some(
+            (tag) => tag[0] === "visibility"
+          )
+      )
+    ).toBe(true)
   })
 
   it("round-trips sparse imported custom child fields without rewriting them", () => {

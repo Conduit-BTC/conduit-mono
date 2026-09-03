@@ -36,10 +36,12 @@ import type {
   CachedProduct,
   CachedProductTombstone,
   CachedProfile,
+  EventMarketResolution,
   FollowListReadResult,
   SignedPublicNostrEvent,
 } from "@conduit/core"
 import { attachEventSourceRelayUrl } from "@conduit/core/protocol/ndk"
+import { projectEventCatalogProducts } from "../apps/market/src/lib/event-market-adapter"
 import {
   getCartAvailabilityBlockingMessage,
   getCartAvailabilityReadDecision,
@@ -51,6 +53,8 @@ const FIXED_NOW = 1_700_000_000_000
 const MERCHANT_A_SECRET = new Uint8Array(32).fill(1)
 const MERCHANT_B_SECRET = new Uint8Array(32).fill(2)
 const MERCHANT_A_PUBKEY = getPublicKey(MERCHANT_A_SECRET)
+const EVENT_TEST_MERCHANT_PUBKEY = "a".repeat(64)
+const EVENT_TEST_ORGANIZER_PUBKEY = "b".repeat(64)
 let cachedProducts: CachedProduct[] = []
 let cachedProductTombstones: CachedProductTombstone[] = []
 let cachedProfiles = new Map<string, CachedProfile>()
@@ -104,6 +108,11 @@ function makeProductEvent(params: {
   createdAt: number
   title: string
   stock?: number
+  visibility?: "public" | "private"
+  visibilityTag?: "public" | "on-sale" | "private" | "hidden"
+  format?: "physical" | "digital"
+  collectionRefs?: string[]
+  shippingOptionRefs?: string[]
 }): {
   id: string
   kind: number
@@ -125,7 +134,16 @@ function makeProductEvent(params: {
       price: 25,
       currency: "USD",
       type: "simple",
-      visibility: "public",
+      format: params.format ?? "physical",
+      visibility:
+        params.visibility ??
+        (params.visibilityTag === "hidden" || params.visibilityTag === "private"
+          ? "private"
+          : "public"),
+      collectionRefs: params.collectionRefs,
+      shippingOptionRefs: params.shippingOptionRefs?.map((coordinate) => ({
+        coordinate,
+      })),
       images: [{ url: "https://cdn.conduit.market/conduit-test/product.png" }],
       tags: ["test"],
       stock: params.stock,
@@ -137,6 +155,17 @@ function makeProductEvent(params: {
       ["d", params.dTag],
       ["title", params.title],
       ["price", "25", "USD"],
+      ...(params.format ? [["type", "simple", params.format]] : []),
+      ...(params.visibilityTag
+        ? [["visibility", params.visibilityTag]]
+        : params.visibility === "private"
+          ? [["visibility", "hidden"]]
+          : []),
+      ...(params.collectionRefs ?? []).map((reference) => ["a", reference]),
+      ...(params.shippingOptionRefs ?? []).map((reference) => [
+        "shipping_option",
+        reference,
+      ]),
       ["t", "test"],
       ...(typeof params.stock === "number"
         ? [["stock", String(params.stock)]]
@@ -157,6 +186,9 @@ function makeGammaProductEvent(params: {
   stock?: number
   image?: boolean
   price?: number
+  visibility?: "public" | "private"
+  collectionRefs?: string[]
+  shippingOptionRefs?: string[]
 }) {
   return {
     id: params.id,
@@ -170,7 +202,13 @@ function makeGammaProductEvent(params: {
       ["title", params.title],
       ["price", String(params.price ?? 25_000), "SATS"],
       ["type", params.type, "physical"],
+      ...(params.visibility === "private" ? [["visibility", "hidden"]] : []),
       ...(params.parentProductId ? [["a", params.parentProductId]] : []),
+      ...(params.collectionRefs ?? []).map((reference) => ["a", reference]),
+      ...(params.shippingOptionRefs ?? []).map((reference) => [
+        "shipping_option",
+        reference,
+      ]),
       ...(params.size ? [["spec", "size", params.size]] : []),
       ...(typeof params.stock === "number"
         ? [["stock", String(params.stock)]]
@@ -2014,6 +2052,458 @@ describe("commerce gateway", () => {
     expect(marketResult.data).toHaveLength(0)
     expect(merchantResult.data).toHaveLength(1)
     expect(merchantResult.data[0]?.safety?.state).toBe("blocked")
+  })
+
+  it("scopes the merchant-hidden buyer exception to exact safe pickup coordinates", async () => {
+    const eventProductId = `30402:${EVENT_TEST_MERCHANT_PUBKEY}:private-event-item`
+    const ordinaryProductId = `30402:${EVENT_TEST_MERCHANT_PUBKEY}:private-ordinary-item`
+    const blockedProductId = `30402:${EVENT_TEST_MERCHANT_PUBKEY}:private-blocked-item`
+    const events = [
+      makeProductEvent({
+        pubkey: EVENT_TEST_MERCHANT_PUBKEY,
+        dTag: "private-event-item",
+        id: "private-event-item-event",
+        createdAt: 103,
+        title: "Private event item",
+        visibilityTag: "hidden",
+      }),
+      makeProductEvent({
+        pubkey: EVENT_TEST_MERCHANT_PUBKEY,
+        dTag: "private-ordinary-item",
+        id: "private-ordinary-item-event",
+        createdAt: 102,
+        title: "Private ordinary item",
+        visibilityTag: "hidden",
+      }),
+      makeProductEvent({
+        pubkey: EVENT_TEST_MERCHANT_PUBKEY,
+        dTag: "private-blocked-item",
+        id: "private-blocked-item-event",
+        createdAt: 101,
+        title: "Counterfeit goods",
+        visibilityTag: "hidden",
+      }),
+    ]
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT) ? (events as never) : [],
+    })
+
+    const result = await getProductsByIds(
+      [eventProductId, ordinaryProductId, blockedProductId],
+      {
+        includeMerchantHiddenProductIds: [eventProductId, blockedProductId],
+      }
+    )
+
+    expect(result.data.map((record) => record.addressId)).toEqual([
+      eventProductId,
+    ])
+    expect(
+      result.diagnostics.find(
+        (diagnostic) => diagnostic.productId === eventProductId
+      )?.issue
+    ).toBeNull()
+    expect(
+      result.diagnostics.find(
+        (diagnostic) => diagnostic.productId === ordinaryProductId
+      )?.issue
+    ).toBe("listing_filtered")
+    expect(
+      result.diagnostics.find(
+        (diagnostic) => diagnostic.productId === blockedProductId
+      )?.issue
+    ).toBe("listing_filtered")
+  })
+
+  it("isolates explicitly hidden event listings without inventing event semantics for public shipping", async () => {
+    const eventCollection = `30405:${EVENT_TEST_ORGANIZER_PUBKEY}:community-market`
+    const eventPickup = `30406:${EVENT_TEST_ORGANIZER_PUBKEY}:community-market-pickup`
+    const distinctOrganizerEventProduct = makeProductEvent({
+      pubkey: EVENT_TEST_MERCHANT_PUBKEY,
+      dTag: "accepted-event-product",
+      id: "accepted-event-product-event",
+      createdAt: 105,
+      title: "Accepted event product",
+      visibilityTag: "hidden",
+      collectionRefs: [eventCollection],
+      shippingOptionRefs: [eventPickup],
+    })
+    const sameAuthorEventProduct = makeGammaProductEvent({
+      pubkey: EVENT_TEST_MERCHANT_PUBKEY,
+      dTag: "same-author-event-product",
+      id: "same-author-event-product-event",
+      createdAt: 104,
+      title: "Same-author event product",
+      type: "simple",
+      visibility: "private",
+      collectionRefs: [
+        `30405:${EVENT_TEST_MERCHANT_PUBKEY}:merchant-owned-event`,
+      ],
+      shippingOptionRefs: [
+        `30406:${EVENT_TEST_MERCHANT_PUBKEY}:merchant-owned-event-pickup`,
+      ],
+    })
+    const ordinaryCollectionProduct = makeProductEvent({
+      pubkey: EVENT_TEST_MERCHANT_PUBKEY,
+      dTag: "ordinary-collection-product",
+      id: "ordinary-collection-product-event",
+      createdAt: 103,
+      title: "Ordinary collection product",
+      collectionRefs: [
+        `30405:${EVENT_TEST_MERCHANT_PUBKEY}:ordinary-collection`,
+      ],
+      shippingOptionRefs: [
+        `30406:${EVENT_TEST_MERCHANT_PUBKEY}:ordinary-shipping-option`,
+      ],
+    })
+    const ordinaryPhysicalProduct = makeProductEvent({
+      pubkey: EVENT_TEST_MERCHANT_PUBKEY,
+      dTag: "ordinary-physical-product",
+      id: "ordinary-physical-product-event",
+      createdAt: 102,
+      title: "Ordinary physical product",
+    })
+    const thirdPartyCollectionWithStandardShipping = makeProductEvent({
+      pubkey: EVENT_TEST_MERCHANT_PUBKEY,
+      dTag: "third-party-collection-standard-shipping",
+      id: "third-party-collection-standard-shipping-event",
+      createdAt: 101,
+      title: "Third-party collection standard shipping",
+      collectionRefs: [eventCollection],
+      shippingOptionRefs: [
+        `30406:${EVENT_TEST_MERCHANT_PUBKEY}:standard-shipping-option`,
+      ],
+    })
+    const collectionShippingProduct = makeProductEvent({
+      pubkey: EVENT_TEST_MERCHANT_PUBKEY,
+      dTag: "collection-shipping-product",
+      id: "collection-shipping-product-event",
+      createdAt: 100,
+      title: "Collection shipping product",
+      collectionRefs: [eventCollection],
+      shippingOptionRefs: [eventCollection],
+    })
+    const digitalProductWithEventReferences = makeProductEvent({
+      pubkey: EVENT_TEST_MERCHANT_PUBKEY,
+      dTag: "digital-event-shaped-product",
+      id: "digital-event-shaped-product-event",
+      createdAt: 99,
+      title: "Digital product with event-shaped references",
+      format: "digital",
+      collectionRefs: [eventCollection],
+      shippingOptionRefs: [eventPickup],
+    })
+    const events = [
+      distinctOrganizerEventProduct,
+      sameAuthorEventProduct,
+      ordinaryCollectionProduct,
+      ordinaryPhysicalProduct,
+      thirdPartyCollectionWithStandardShipping,
+      collectionShippingProduct,
+      digitalProductWithEventReferences,
+    ]
+    const eventCoordinates = [
+      `30402:${EVENT_TEST_MERCHANT_PUBKEY}:accepted-event-product`,
+      `30402:${EVENT_TEST_MERCHANT_PUBKEY}:same-author-event-product`,
+    ]
+    const ordinaryTitles = [
+      "Collection shipping product",
+      "Digital product with event-shaped references",
+      "Ordinary collection product",
+      "Ordinary physical product",
+      "Third-party collection standard shipping",
+    ]
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT) ? (events as never) : [],
+    })
+
+    const ordinaryDiscovery = await getMarketplaceProducts({ sort: "newest" })
+    const cachedDiscovery = await getCachedMarketplaceProducts({
+      sort: "newest",
+    })
+    const ordinaryStorefront = await getMerchantStorefront({
+      merchantPubkey: EVENT_TEST_MERCHANT_PUBKEY,
+    })
+    const merchantManagement = await getMerchantStorefront({
+      merchantPubkey: EVENT_TEST_MERCHANT_PUBKEY,
+      includeMarketHidden: true,
+    })
+    const defaultExactRead = await getProductsByIds(eventCoordinates)
+    const eventExactRead = await getProductsByIds(eventCoordinates, {
+      includeMerchantHiddenProductIds: eventCoordinates,
+    })
+
+    expect(
+      ordinaryDiscovery.data.map((record) => record.product.title).sort()
+    ).toEqual(ordinaryTitles)
+    expect(
+      cachedDiscovery.data.map((record) => record.product.title).sort()
+    ).toEqual(ordinaryTitles)
+    expect(
+      ordinaryStorefront.data.map((record) => record.product.title).sort()
+    ).toEqual(ordinaryTitles)
+    expect(merchantManagement.data).toHaveLength(7)
+    expect(defaultExactRead.data).toHaveLength(0)
+    expect(
+      eventExactRead.data.map((record) => record.product.title).sort()
+    ).toEqual(["Accepted event product", "Same-author event product"])
+    expect(
+      eventExactRead.diagnostics.every(
+        (diagnostic) => diagnostic.issue === null
+      )
+    ).toBe(true)
+  })
+
+  it("prepares hidden event variation families only for authorized exact reads", async () => {
+    const eventCollection = `30405:${EVENT_TEST_ORGANIZER_PUBKEY}:variation-market`
+    const eventPickup = `30406:${EVENT_TEST_ORGANIZER_PUBKEY}:variation-market-pickup`
+    const parentProductId = `30402:${EVENT_TEST_MERCHANT_PUBKEY}:event-shirt`
+    const eventReferences = {
+      visibility: "private" as const,
+      collectionRefs: [eventCollection],
+      shippingOptionRefs: [eventPickup],
+    }
+    const events = [
+      makeGammaProductEvent({
+        pubkey: EVENT_TEST_MERCHANT_PUBKEY,
+        dTag: "event-shirt",
+        id: "event-shirt-parent-event",
+        createdAt: 103,
+        title: "Event shirt",
+        type: "variable",
+        ...eventReferences,
+      }),
+      makeGammaProductEvent({
+        pubkey: EVENT_TEST_MERCHANT_PUBKEY,
+        dTag: "event-shirt-small",
+        id: "event-shirt-small-event",
+        createdAt: 102,
+        title: "Event shirt - Small",
+        type: "variation",
+        parentProductId,
+        size: "S",
+        ...eventReferences,
+      }),
+      makeGammaProductEvent({
+        pubkey: EVENT_TEST_MERCHANT_PUBKEY,
+        dTag: "event-shirt-large",
+        id: "event-shirt-large-event",
+        createdAt: 101,
+        title: "Event shirt - Large",
+        type: "variation",
+        parentProductId,
+        size: "L",
+        ...eventReferences,
+      }),
+    ]
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT) ? (events as never) : [],
+    })
+
+    const ordinaryDiscovery = await getMarketplaceProducts({ sort: "newest" })
+    const defaultExactRead = await getProductsByIds([parentProductId])
+    const childProductIds = [
+      `30402:${EVENT_TEST_MERCHANT_PUBKEY}:event-shirt-large`,
+      `30402:${EVENT_TEST_MERCHANT_PUBKEY}:event-shirt-small`,
+    ]
+    const eventExactRead = await getProductsByIds([parentProductId], {
+      includeMerchantHiddenProductIds: [parentProductId, ...childProductIds],
+    })
+    const childProductId = childProductIds[0]!
+    const exactChildRead = await getProductsByIds([childProductId], {
+      includeMerchantHiddenProductIds: [childProductId],
+    })
+
+    expect(ordinaryDiscovery.data).toHaveLength(0)
+    expect(defaultExactRead.data).toHaveLength(0)
+    expect(eventExactRead.data).toHaveLength(1)
+    expect(eventExactRead.data[0]?.family?.state).toBe("ready")
+    expect(
+      eventExactRead.data[0]?.family?.children.map(
+        (variation) => variation.product.id
+      )
+    ).toEqual(childProductIds)
+    expect(exactChildRead.data).toHaveLength(1)
+    expect(exactChildRead.data[0]?.product).toMatchObject({
+      id: childProductId,
+      type: "variation",
+    })
+    expect(exactChildRead.data[0]?.family).toBeUndefined()
+    expect(exactChildRead.diagnostics[0]?.issue).toBeNull()
+
+    const calendarCoordinate = `31923:${EVENT_TEST_ORGANIZER_PUBKEY}:variation-market`
+    const pickup = {
+      coordinate: eventPickup,
+      eventId: "9".repeat(64),
+      authorPubkey: EVENT_TEST_ORGANIZER_PUBKEY,
+      dTag: "variation-market-pickup",
+      title: "Event pickup",
+      content: "",
+      price: 0,
+      currency: "SATS",
+      countries: [],
+      location: "Main desk",
+      geohash: "dpz83",
+      createdAt: 102,
+    }
+    const resolution: EventMarketResolution = {
+      state: "active",
+      reference: eventCollection,
+      organizerPubkey: EVENT_TEST_ORGANIZER_PUBKEY,
+      collectionCoordinate: eventCollection,
+      calendarCoordinate,
+      pickupCoordinate: eventPickup,
+      collection: {
+        coordinate: eventCollection,
+        eventId: "7".repeat(64),
+        authorPubkey: EVENT_TEST_ORGANIZER_PUBKEY,
+        dTag: "variation-market",
+        title: "Variation market",
+        content: "",
+        eventCoordinates: [calendarCoordinate],
+        pickupCoordinates: [eventPickup],
+        productCoordinates: [childProductId],
+        unsupportedReferences: [],
+        createdAt: 100,
+      },
+      calendar: {
+        coordinate: calendarCoordinate,
+        eventId: "8".repeat(64),
+        authorPubkey: EVENT_TEST_ORGANIZER_PUBKEY,
+        dTag: "variation-market",
+        kind: 31923,
+        title: "Variation market",
+        content: "",
+        locations: ["Main hall"],
+        start: 1_800_000_000_000,
+        end: 1_800_003_600_000,
+        createdAt: 101,
+      },
+      pickup,
+      pickups: [pickup],
+      organizerProductCoordinates: [childProductId],
+      acceptedProductCoordinates: [childProductId],
+      organizerOnlyProductCoordinates: [],
+      participationRequests: [
+        {
+          productCoordinate: childProductId,
+          merchantPubkey: EVENT_TEST_MERCHANT_PUBKEY,
+        },
+      ],
+      participationBudget: {
+        state: "within_budget",
+        targetCount: 1,
+        targetLimit: 64,
+      },
+      coverage: {
+        attemptedRelayCount: 1,
+        completeRelayCount: 1,
+        partialRelayCount: 0,
+        failedRelayCount: 0,
+      },
+    }
+    const projected = projectEventCatalogProducts({
+      requested: [childProductId],
+      records: exactChildRead.data,
+      liveCoordinates: new Set([childProductId]),
+      resolution,
+    })
+
+    expect(projected).toHaveLength(1)
+    expect(projected[0]?.product.id).toBe(childProductId)
+    expect(projected[0]?.family).toBeUndefined()
+    expect(projected[0]?.pickupFulfillment).not.toBeNull()
+  })
+
+  it("does not let unapproved hidden family members donate images or enter exact reads", async () => {
+    const parentProductId = `30402:${EVENT_TEST_MERCHANT_PUBKEY}:scoped-family`
+    const noImageChildId = `30402:${EVENT_TEST_MERCHANT_PUBKEY}:scoped-no-image`
+    const ownImageChildId = `30402:${EVENT_TEST_MERCHANT_PUBKEY}:scoped-own-image`
+    const unapprovedDonorId = `30402:${EVENT_TEST_MERCHANT_PUBKEY}:scoped-donor`
+    const events = [
+      makeGammaProductEvent({
+        pubkey: EVENT_TEST_MERCHANT_PUBKEY,
+        dTag: "scoped-family",
+        id: "scoped-family-event",
+        createdAt: 104,
+        title: "Scoped family",
+        type: "variable",
+        visibility: "private",
+        image: false,
+      }),
+      makeGammaProductEvent({
+        pubkey: EVENT_TEST_MERCHANT_PUBKEY,
+        dTag: "scoped-no-image",
+        id: "scoped-no-image-event",
+        createdAt: 103,
+        title: "Scoped child without image",
+        type: "variation",
+        parentProductId,
+        size: "No image",
+        visibility: "private",
+        image: false,
+      }),
+      makeGammaProductEvent({
+        pubkey: EVENT_TEST_MERCHANT_PUBKEY,
+        dTag: "scoped-own-image",
+        id: "scoped-own-image-event",
+        createdAt: 102,
+        title: "Scoped child with image",
+        type: "variation",
+        parentProductId,
+        size: "Own image",
+        visibility: "private",
+      }),
+      makeGammaProductEvent({
+        pubkey: EVENT_TEST_MERCHANT_PUBKEY,
+        dTag: "scoped-donor",
+        id: "scoped-donor-event",
+        createdAt: 101,
+        title: "Unapproved image donor",
+        type: "variation",
+        parentProductId,
+        size: "Donor",
+        visibility: "private",
+      }),
+    ]
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT) ? (events as never) : [],
+    })
+
+    const noImageRead = await getProductsByIds([noImageChildId], {
+      includeMerchantHiddenProductIds: [noImageChildId],
+    })
+    const scopedFamilyRead = await getProductsByIds(
+      [parentProductId, ownImageChildId, unapprovedDonorId],
+      {
+        includeMerchantHiddenProductIds: [parentProductId, ownImageChildId],
+      }
+    )
+    const family = scopedFamilyRead.data.find(
+      (record) => record.addressId === parentProductId
+    )
+
+    expect(noImageRead.data).toHaveLength(0)
+    expect(noImageRead.diagnostics[0]?.issue).toBe("listing_filtered")
+    expect(
+      scopedFamilyRead.data.map((record) => record.addressId).sort()
+    ).toEqual([ownImageChildId, parentProductId].sort())
+    expect(family?.family?.children.map((child) => child.addressId)).toEqual([
+      ownImageChildId,
+    ])
+    expect(
+      scopedFamilyRead.diagnostics.find(
+        (diagnostic) => diagnostic.addressId === unapprovedDonorId
+      )?.issue
+    ).toBe("listing_filtered")
   })
 
   it("suppresses stale event-id product detail across local signed tombstones", async () => {
