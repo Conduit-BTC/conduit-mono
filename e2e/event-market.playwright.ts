@@ -442,6 +442,19 @@ function createInboxDeclaration(
   })
 }
 
+function createFollowList(
+  identity: SyntheticIdentity,
+  followedPubkeys: readonly string[],
+  createdAt: number
+): SignedEvent {
+  return signEvent(identitySecret(identity), {
+    kind: 3,
+    created_at: createdAt,
+    tags: followedPubkeys.map((pubkey) => ["p", pubkey]),
+    content: "",
+  })
+}
+
 function createCappedInboxNoise(
   recipientPubkey: string,
   count: number
@@ -767,9 +780,15 @@ async function publishMerchantProductFromEvent(
     productTitle: string
     handoffMode: "merchant" | "organizer"
     templateTitle?: string
+    discoveryMode?: "direct" | "followed"
   }
 ): Promise<SignedEvent> {
-  await gotoAs(page, merchantUrl, market.merchantParticipationPath, "merchant")
+  await gotoAs(
+    page,
+    merchantUrl,
+    options.discoveryMode ? "/events" : market.merchantParticipationPath,
+    "merchant"
+  )
   await expect(
     page.getByRole("heading", { name: "Events", exact: true })
   ).toBeVisible()
@@ -777,8 +796,22 @@ async function publishMerchantProductFromEvent(
     page.getByRole("tab", { name: "Find events", exact: true })
   ).toHaveAttribute("data-state", "active")
 
+  if (options.discoveryMode === "followed") {
+    await expect(
+      page.getByRole("heading", {
+        name: "Events from organizers you follow",
+        exact: true,
+      })
+    ).toBeVisible({ timeout: 30_000 })
+    await page
+      .getByRole("button", { name: `View ${options.eventTitle}`, exact: true })
+      .click()
+  } else if (options.discoveryMode === "direct") {
+    await page.getByLabel("Event naddr or link").fill(market.canonicalNaddr)
+    await page.getByRole("button", { name: "Open", exact: true }).click()
+  }
   await expect(
-    page.getByRole("heading", { name: options.eventTitle, exact: true })
+    page.getByRole("button", { name: "Publish product", exact: true })
   ).toBeVisible({ timeout: 30_000 })
 
   await page.getByRole("button", { name: "Publish product" }).click()
@@ -995,7 +1028,23 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
     market.initialCollection.created_at + 1
   )
   expect(eventCoordinate(merchantTemplate)).toBe(MERCHANT_TEMPLATE_COORDINATE)
-  relay.seed(merchantTemplate)
+  relay.seed(
+    merchantTemplate,
+    createFollowList(
+      "merchant",
+      [ORGANIZER_PUBKEY],
+      market.initialCollection.created_at + 2
+    )
+  )
+
+  // Keep the explicit naddr fallback covered alongside the new followed feed.
+  await gotoAs(page, merchantUrl, "/events", "merchant")
+  await page.getByLabel("Event naddr or link").fill(market.canonicalNaddr)
+  await page.getByRole("button", { name: "Open", exact: true }).click()
+  await expect(
+    page.getByRole("button", { name: "Publish product", exact: true })
+  ).toBeVisible({ timeout: 30_000 })
+
   const merchantProduct = await publishMerchantProductFromEvent(
     page,
     relay,
@@ -1005,6 +1054,7 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
       productTitle: MERCHANT_PRODUCT_TITLE,
       handoffMode: "merchant",
       templateTitle: MERCHANT_TEMPLATE_TITLE,
+      discoveryMode: "followed",
     }
   )
   expect(eventCoordinate(merchantProduct)).not.toBe(
