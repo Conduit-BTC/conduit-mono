@@ -23,6 +23,9 @@ data.
   carry this marker.
 - Public zap comments remain the only buyer-editable public text in the current
   zap flow.
+- For an explicitly customized, single-product shopper zap, Conduit appends the
+  product's `nostr:naddr` reference to that comment and adds the canonical
+  product `a`/`k` target tags to the embedded request.
 
 ## Receipt Detection
 
@@ -50,5 +53,9 @@ the public marker and any Conduit-added public checkout fields:
 Normal NIP-57 receipt fields such as `bolt11`, and optional `preimage` tags
 when emitted by the wallet, remain NIP-57 behavior. Conduit should not add
 extra public invoice, settlement, or wallet metadata for checkout.
+
+The appended product reference contains only the public kind `30402` address.
+It does not make the zap receipt purchase, inventory, fulfillment, or settlement
+state.
 
 Order and fulfillment details belong in the encrypted buyer-merchant channel.
