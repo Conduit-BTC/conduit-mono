@@ -394,4 +394,65 @@ describe("Playwright smoke area validation", () => {
       )
     ).toThrow("does not bind the expected source, base, and tested SHAs")
   })
+
+  it("reports bounded first-attempt diagnostics without raw failure content", () => {
+    const retryDependent = {
+      ...reportWithSpecs([
+        {
+          file: "/home/runner/work/conduit/e2e/market.playwright.ts",
+          line: 8,
+          ok: true,
+          tags: ["market"],
+          tests: [
+            {
+              expectedStatus: "passed",
+              status: "flaky",
+              results: [
+                {
+                  duration: 1_234,
+                  error: {
+                    location: {
+                      column: 7,
+                      file: "/home/runner/work/conduit/e2e/market.playwright.ts",
+                      line: 42,
+                    },
+                    message: "sensitive browser output must not survive",
+                  },
+                  retry: 0,
+                  status: "failed",
+                },
+                { duration: 250, retry: 1, status: "passed" },
+              ],
+            },
+          ],
+          title: "buyer checkout completes",
+        },
+      ]),
+      config: { metadata: { smokeEvidence } },
+      stats: { flaky: 1, skipped: 0, unexpected: 0 },
+    } as unknown as PlaywrightJsonReport
+    const manifest = buildPlaywrightSmokeManifest(
+      retryDependent,
+      ["market"],
+      smokeEvidence
+    )
+
+    let errorMessage = ""
+    try {
+      validatePlaywrightSmokeExecution(
+        retryDependent,
+        manifest,
+        ["market"],
+        smokeEvidence
+      )
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error)
+    }
+
+    expect(errorMessage).toContain(
+      "First attempt: retry=0 status=failed duration=1234ms error=e2e/market.playwright.ts:42:7."
+    )
+    expect(errorMessage).not.toContain("/home/runner")
+    expect(errorMessage).not.toContain("sensitive browser output")
+  })
 })
