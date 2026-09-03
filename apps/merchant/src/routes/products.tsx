@@ -151,7 +151,12 @@ import {
   resolveOrganizerEventMarket,
   type MerchantOrganizerEventMarket,
 } from "../lib/event-market"
+import { rememberDiscoveredEventMarket } from "../lib/event-market-workflow"
 import { ensureMerchantBoothPickup } from "../lib/event-market-pickup"
+import {
+  getMerchantProductEventContext,
+  type MerchantProductEventContext,
+} from "../lib/merchant-product-event-context"
 import {
   buildProductLocalPickupMetadata,
   getMerchantBoothPickupFormError,
@@ -683,6 +688,46 @@ function ListingSafetySummary({
           {isPolicyWarning ? "Review listing" : "Fix listing"}
         </Button>
       )}
+    </article>
+  )
+}
+
+function EventProductManagementSummary({
+  context,
+  eventTitle,
+  onOpenEvent,
+}: {
+  context: MerchantProductEventContext
+  eventTitle?: string
+  onOpenEvent: () => void
+}) {
+  return (
+    <article className="rounded-xl border border-primary-500/30 bg-primary-500/10 p-4 text-sm">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="font-semibold text-[var(--text-primary)]">
+            {eventTitle ?? "Linked event catalog"}
+          </div>
+          <p className="mt-2 leading-6 text-[var(--text-secondary)]">
+            Hidden from the ordinary Market. Available through this event after
+            the organizer accepts it.
+          </p>
+        </div>
+        <StatusPill variant="info" className="text-[10px]">
+          Event product
+        </StatusPill>
+      </div>
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+        <span
+          className="font-mono text-xs text-[var(--text-muted)]"
+          title={context.collectionCoordinate}
+        >
+          {context.referenceLabel}
+        </span>
+        <Button variant="outline" size="sm" onClick={onOpenEvent}>
+          View event
+        </Button>
+      </div>
     </article>
   )
 }
@@ -1243,6 +1288,54 @@ function ProductsPage() {
       }),
     [merchantProductReadMeta, merchantProductRecords]
   )
+  const eventProductContexts = useMemo(() => {
+    const contexts = new Map<string, MerchantProductEventContext>()
+    for (const item of merchantProducts) {
+      const context = getMerchantProductEventContext(item.product)
+      if (context) contexts.set(item.addressId, context)
+    }
+    return contexts
+  }, [merchantProducts])
+  const eventProductCollectionCoordinates = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          Array.from(eventProductContexts.values()).map(
+            (context) => context.collectionCoordinate
+          )
+        )
+      ).sort(),
+    [eventProductContexts]
+  )
+  const eventProductMarketsQuery = useQuery({
+    queryKey: [
+      "merchant-product-event-context",
+      pubkey ?? "none",
+      eventProductCollectionCoordinates,
+    ],
+    enabled: !!pubkey && eventProductCollectionCoordinates.length > 0,
+    queryFn: async () => {
+      const markets = await Promise.allSettled(
+        eventProductCollectionCoordinates.map((reference) =>
+          resolveOrganizerEventMarket(reference, undefined, pubkey!)
+        )
+      )
+      return Object.fromEntries(
+        markets.flatMap((result, index) =>
+          result.status === "fulfilled"
+            ? [
+                [
+                  eventProductCollectionCoordinates[index]!,
+                  result.value,
+                ] as const,
+              ]
+            : []
+        )
+      )
+    },
+    retry: false,
+    staleTime: 30_000,
+  })
   const shippingConfig = loadShippingConfig(pubkey)
   const hasPresetShippingZone = isShippingComplete(shippingConfig)
 
@@ -2508,6 +2601,114 @@ function ProductsPage() {
               item.product.type === "variable" &&
               item.variationForm.supported &&
               item.variations.length > 0
+            const zapBadge = getZapPolicyBadge(item.product)
+            const stockDisplay = item.family
+              ? getProductFamilyStockDisplay(item.family.inventorySummary)
+              : getProductStockDisplay(item.product.stock)
+            const eventProductContext = eventProductContexts.get(item.addressId)
+
+            if (!item.safety.marketVisible && eventProductContext) {
+              const eventMarket =
+                eventProductMarketsQuery.data?.[
+                  eventProductContext.collectionCoordinate
+                ]
+              return (
+                <div key={item.addressId} className="grid gap-2">
+                  <EventProductManagementSummary
+                    context={eventProductContext}
+                    eventTitle={eventMarket?.title}
+                    onOpenEvent={() => {
+                      if (!pubkey) return
+                      rememberDiscoveredEventMarket(pubkey, {
+                        reference: eventProductContext.naddr,
+                        title: eventMarket?.title,
+                        savedAt: Date.now(),
+                      })
+                      const eventUrl = new URL(
+                        "/events",
+                        window.location.origin
+                      )
+                      eventUrl.searchParams.set(
+                        "event",
+                        eventProductContext.naddr
+                      )
+                      window.location.assign(eventUrl)
+                    }}
+                  />
+                  <ProductCard
+                    title={item.product.title}
+                    titleAside={
+                      <div className="flex flex-col items-end gap-1">
+                        <StatusPill variant="info" className="text-[10px]">
+                          Event product
+                        </StatusPill>
+                        <StatusPill
+                          variant={stockDisplay.variant}
+                          className="text-[10px]"
+                          noIcon={stockDisplay.variant === "neutral"}
+                        >
+                          {stockDisplay.label}
+                        </StatusPill>
+                        <DoubleSideStatusPill
+                          left={zapBadge.left}
+                          right={zapBadge.right}
+                        />
+                      </div>
+                    }
+                    merchantName={
+                      eventMarket?.title
+                        ? `Event: ${eventMarket.title}`
+                        : "Event-only listing"
+                    }
+                    images={getProductImageCandidates(item.product)}
+                    primaryPrice={
+                      item.family?.priceSummary.varies
+                        ? `From ${primary}`
+                        : primary
+                    }
+                    secondaryPrice={secondary}
+                    imageLoading="lazy"
+                    action={
+                      <div className="flex gap-1">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 px-2 text-xs"
+                          disabled={!item.variationForm.supported}
+                          onClick={(event) => {
+                            event.preventDefault()
+                            event.stopPropagation()
+                            if (!item.variationForm.supported) return
+                            openEditDialog(item)
+                          }}
+                        >
+                          Edit
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 px-2 text-xs"
+                          disabled={isDeleting}
+                          onClick={(event) => {
+                            event.preventDefault()
+                            event.stopPropagation()
+                            const targetCount = 1 + item.variations.length
+                            const ok = window.confirm(
+                              targetCount > 1
+                                ? `Delete "${item.product.title}" and its ${item.variations.length} variations?`
+                                : `Delete "${item.product.title}"?`
+                            )
+                            if (ok) deleteMutation.mutate({ product: item })
+                          }}
+                        >
+                          {isDeleting ? "..." : "Delete"}
+                        </Button>
+                      </div>
+                    }
+                  />
+                </div>
+              )
+            }
 
             if (!item.safety.marketVisible) {
               return (
@@ -2542,10 +2743,6 @@ function ProductsPage() {
 
             const isActive =
               item.safety.state === "active" || isConstrainedVariationFamily
-            const zapBadge = getZapPolicyBadge(item.product)
-            const stockDisplay = item.family
-              ? getProductFamilyStockDisplay(item.family.inventorySummary)
-              : getProductStockDisplay(item.product.stock)
             const productUrl = getShareableProductUrl(item.addressId)
 
             return (
