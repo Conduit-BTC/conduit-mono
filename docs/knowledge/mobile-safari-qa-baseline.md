@@ -173,9 +173,10 @@ bunx playwright test e2e/mobile-safari-baseline.playwright.ts \
       use Back/Forward, rotate once, and confirm no clipped content or horizontal page
       scroll (P1-01, P1-02, P1-04, P2-01).
 - [ ] Open signer setup. Confirm NIP-07 is not presented as an iPhone option, start
-      the NIP-46 Clave handoff, cancel once, then connect and return. Refresh and
-      background/foreground once; confirm a usable restored or reconnecting session
-      (P1-05, P1-06, P2-02). NIP-46 behavior follows [NIP-46][nip-46].
+      the NIP-46 Clave handoff by tapping "Connect with Clave" under the QR code,
+      cancel once, then connect and return. Refresh and background/foreground once;
+      confirm a usable restored or reconnecting session (P1-05, P1-06, P2-02).
+      NIP-46 behavior follows [NIP-46][nip-46].
 - [ ] Load the preconfigured zap-out booth fixture, then initiate zap-out and invoke
       confirm/handoff. Count every Conduit tap after the fixture is loaded;
       wallet-app confirmation steps are outside the two-tap budget. Cancel once and
