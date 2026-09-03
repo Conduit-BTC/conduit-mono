@@ -238,7 +238,7 @@ export async function publishEventProduct(input: {
     type: "simple",
     specifications: [],
     ...pickupMetadata,
-    visibility: "public",
+    visibility: "private",
     stock: parseProductStockInput(input.form.stock),
     images: [{ url: input.form.imageUrl.trim() }],
     tags: validation.product.tags,

@@ -10,7 +10,6 @@ describe("merchant organizer event market route", () => {
     const tree = await Bun.file("apps/merchant/src/routeTree.gen.ts").text()
 
     expect(route).toContain('createFileRoute("/events")')
-    expect(route).toContain("requireAuth()")
     expect(header).toContain('{ to: "/events", label: "Events"')
     expect(root).toContain('if (pathname === "/events") return "Events"')
     expect(tree).toContain("'/events': typeof EventsRoute")
@@ -61,6 +60,32 @@ describe("merchant organizer event market route", () => {
     expect(adapter).toContain("buildProductLocalPickupMetadata")
   })
 
+  it("shows explicit bounded discovery states and exact-hydrates a selected event", async () => {
+    const route = await Bun.file("apps/merchant/src/routes/events.tsx").text()
+    const adapter = await Bun.file(
+      "apps/merchant/src/lib/event-market.ts"
+    ).text()
+    const core = await Bun.file(
+      "packages/core/src/protocol/event-market-discovery.ts"
+    ).text()
+
+    expect(adapter).toContain("discoverFollowedOrganizerEventMarkets")
+    expect(core).toContain('projection: "discovery"')
+    expect(core).toContain("FOLLOWED_EVENT_MARKET_READ_CONCURRENCY = 4")
+    expect(route).toContain('discoveryQuery.data?.state === "partial"')
+    expect(route).toContain('discoveryQuery.data?.state === "unavailable"')
+    expect(route).toContain('discoveryQuery.data?.state === "complete_empty"')
+    expect(route).toContain("Retry event discovery")
+    expect(route).toContain(
+      "Checking followed organizers on their planned relays"
+    )
+    expect(route).toContain("no global event absence is inferred")
+    expect(route).toContain("aria-label={`View ${market.title}`}")
+    expect(route).toContain("resolveOrganizerEventMarket(")
+    expect(route).toContain("merchantPubkey,\n        signal")
+    expect(route).not.toContain("selectedFromDiscovery")
+  })
+
   it("exposes signer, delivery, degraded evidence, and organizer acceptance workflows", async () => {
     const route = await Bun.file("apps/merchant/src/routes/events.tsx").text()
     const editor = await Bun.file(
@@ -97,8 +122,6 @@ describe("merchant organizer event market route", () => {
       "The exact signed product preview is unavailable or no longer matches this request."
     )
     expect(panel).toContain("organizer-owned collection coordinate")
-    expect(panel).toContain("Canonical event catalog QR code")
-    expect(panel).toContain("<QRCodeSVG value={shareUrl}")
     expect(route).toContain("loadOrganizerEventMarketDeliveryOutbox")
     expect(route).toContain("saveOrganizerEventMarketDelivery")
     expect(

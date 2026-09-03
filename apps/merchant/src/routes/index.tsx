@@ -24,7 +24,13 @@ import {
   Wifi,
   type LucideIcon,
 } from "lucide-react"
-import { useCallback, useMemo, useState, type ComponentType } from "react"
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ComponentType,
+} from "react"
 import { Button, LiveReadNotice, StatusPill } from "@conduit/ui"
 import {
   DashboardCharts,
@@ -39,6 +45,7 @@ import {
   resolveDashboardPresetRange,
   type DashboardRangePreset,
 } from "../lib/dashboard-charts"
+import { parseMerchantAuthHandoffSearch } from "../lib/market-links"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { useMerchantReadinessState } from "../hooks/useMerchantReadinessContext"
 import {
@@ -52,6 +59,7 @@ import {
 } from "../lib/readiness"
 
 export const Route = createFileRoute("/")({
+  validateSearch: parseMerchantAuthHandoffSearch,
   component: DashboardPage,
 })
 
@@ -305,6 +313,7 @@ function MerchantReadinessPanel({
 
 function DashboardPage() {
   const { pubkey, status, error } = useAuth()
+  const { authRequired, event: pendingEvent } = Route.useSearch()
   const signerConnected = status === "connected" && !!pubkey
   const navigate = useNavigate()
   const readiness = useMerchantReadinessState()
@@ -314,6 +323,15 @@ function DashboardPage() {
     revenue: DEFAULT_DASHBOARD_RANGE,
     products: DEFAULT_DASHBOARD_RANGE,
   }))
+
+  useEffect(() => {
+    if (!signerConnected || !authRequired || !pendingEvent) return
+    void navigate({
+      to: "/events",
+      search: { event: pendingEvent },
+      replace: true,
+    })
+  }, [authRequired, navigate, pendingEvent, signerConnected])
   const statsQuery = useQuery({
     queryKey: ["merchant-dashboard-live", pubkey ?? "none"],
     enabled: signerConnected,

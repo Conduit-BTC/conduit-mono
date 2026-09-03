@@ -41,6 +41,19 @@ const PRODUCT = {
 } as ProductSchema
 
 describe("merchant event-led product publishing", () => {
+  it("publishes dedicated event products as hidden ordinary-market listings", async () => {
+    const source = await Bun.file(
+      "apps/merchant/src/lib/event-product-publishing.ts"
+    ).text()
+    const publish = source.slice(
+      source.indexOf("export async function publishEventProduct("),
+      source.indexOf("export async function retryEventProductDelivery(")
+    )
+
+    expect(publish).toContain('visibility: "private"')
+    expect(publish).not.toContain('visibility: "public"')
+  })
+
   it("starts blank at the event venue without mutating a source product", () => {
     expect(createEmptyEventProductForm(MARKET)).toMatchObject({
       templateCoordinate: "",
