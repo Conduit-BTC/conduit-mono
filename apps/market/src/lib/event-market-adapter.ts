@@ -296,7 +296,8 @@ function isEventCatalogRecordSafetyAllowed(
 
 function prepareEventCatalogFamily(
   record: CommerceProductRecord,
-  resolution: EventMarketResolution
+  resolution: EventMarketResolution,
+  liveCoordinates: ReadonlySet<string>
 ): CommerceProductRecord | null {
   if (record.product.type !== "variable" || record.family?.state !== "ready") {
     return null
@@ -328,11 +329,14 @@ function prepareEventCatalogFamily(
   )
   const hasEligibleChildImage = acceptedChildren.some(
     (child) =>
+      liveCoordinates.has(child.product.id) &&
       hasMarketVisibleListingImage(child.product) &&
       isEventCatalogRecordSafetyAllowed(child, resolution, ownImageChildContext)
   )
   const hasGroupImage =
-    hasMarketVisibleListingImage(record.product) || hasEligibleChildImage
+    (liveCoordinates.has(record.product.id) &&
+      hasMarketVisibleListingImage(record.product)) ||
+    hasEligibleChildImage
   const parentContext: ListingSafetyContext = {
     variationGroupRole: "parent",
     hasGroupImage,
@@ -428,6 +432,11 @@ export function projectEventCatalogProducts({
   rateInput?: PricingRateInput
 }): EventCatalogProduct[] {
   const recordsByCoordinate = new Map<string, CommerceProductRecord>()
+  const familyChildCoordinates = new Set(
+    records.flatMap(
+      (record) => record.family?.children.map((child) => child.product.id) ?? []
+    )
+  )
   for (const record of records) {
     if (record.product.type === "simple") {
       if (isEventCatalogRecordRenderable(record, resolution)) {
@@ -436,6 +445,10 @@ export function projectEventCatalogProducts({
       continue
     }
     if (record.product.type === "variation") {
+      // When family context is available, only the family projection may
+      // authorize a child. Raw child records can carry safety contextualized
+      // by cache-only siblings that are removed from the exact-live view.
+      if (familyChildCoordinates.has(record.product.id)) continue
       // Buyer-scoped exact reads may return an accepted child without its
       // unaccepted parent. Core has already contextualized family safety for
       // this atomic record; keep the exact child instead of requiring the
@@ -445,7 +458,11 @@ export function projectEventCatalogProducts({
       }
       continue
     }
-    const prepared = prepareEventCatalogFamily(record, resolution)
+    const prepared = prepareEventCatalogFamily(
+      record,
+      resolution,
+      liveCoordinates
+    )
     if (!prepared?.family) continue
     const liveFamily = projectLiveEventCatalogFamily(prepared, liveCoordinates)
     if (!liveFamily?.family) continue

@@ -815,6 +815,76 @@ describe("Market event adapter", () => {
     expect(projection).toEqual([])
   })
 
+  it("does not borrow a group image from a cache-only accepted child", () => {
+    const parent = product({
+      type: "variable",
+      visibility: "private",
+      images: [],
+    })
+    const liveChild = product({
+      id: `30402:${merchant}:coffee-live-no-image`,
+      type: "variation",
+      visibility: "private",
+      images: [],
+      parentProductId: parent.id,
+      specifications: [{ key: "size", value: "Live no image" }],
+      createdAt: 104_000,
+      updatedAt: 104_000,
+    })
+    const cacheOnlyImageDonor = product({
+      id: `30402:${merchant}:coffee-cache-image`,
+      type: "variation",
+      visibility: "private",
+      parentProductId: parent.id,
+      specifications: [{ key: "size", value: "Cached image" }],
+      createdAt: 105_000,
+      updatedAt: 105_000,
+    })
+    const records = [parent, liveChild, cacheOnlyImageDonor].map(
+      (candidate, index) =>
+        commerceRecord(candidate, {
+          eventId: String(4 + index).repeat(64),
+        })
+    )
+    const prepared = prepareProductCatalog(records, {
+      source: "commerce",
+      fetchedAt: 106_000,
+      stale: false,
+      degraded: false,
+      capped: false,
+    }).items[0]
+    if (prepared?.kind !== "family") throw new Error("Expected family")
+
+    const requested = [parent.id, liveChild.id, cacheOnlyImageDonor.id]
+    const resolution: EventMarketResolution = {
+      ...market(),
+      collection: {
+        ...market().collection!,
+        productCoordinates: requested,
+      },
+      organizerProductCoordinates: requested,
+      acceptedProductCoordinates: requested,
+      participationRequests: requested.map((productCoordinate) => ({
+        productCoordinate,
+        merchantPubkey: merchant,
+      })),
+    }
+    const projection = projectEventCatalogProducts({
+      requested,
+      records: [
+        {
+          ...prepared.family.parent,
+          family: prepared.family,
+        },
+        ...prepared.family.children,
+      ],
+      liveCoordinates: new Set([parent.id, liveChild.id]),
+      resolution,
+    })
+
+    expect(projection).toEqual([])
+  })
+
   it("requires exact current child acceptance for family pickup snapshots", () => {
     const parent = product({ type: "variable" })
     const childCoordinate = `30402:${merchant}:coffee-large`
