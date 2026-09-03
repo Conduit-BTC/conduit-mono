@@ -15,6 +15,7 @@
 // depending on @conduit/ui.
 
 import { isKnownOrderStatus, type KnownOrderStatus } from "../schemas"
+import type { ParsedOrderMessage } from "./orders"
 
 export type OrderStatusTone =
   "success" | "info" | "warning" | "error" | "neutral"
@@ -35,9 +36,18 @@ export interface OrderTimelineStep {
   label?: string
 }
 
+export interface MerchantOrderCancellation {
+  /** Immutable id of the currently observed cancellation event. */
+  eventId: string
+  /** Non-terminal status restored by an explicit correction. */
+  resumeStatus: KnownOrderStatus
+}
+
 /** Derived merchant-facing order state, independent of message ordering. */
 export interface MerchantOrderState {
   status: string | null | undefined
+  /** Present only when the effective cancellation can be safely reopened. */
+  cancellation?: MerchantOrderCancellation
   /** Merchant-confirmed payment has been observed. */
   paid?: boolean
   /** Buyer payment evidence has been observed, but may still need verification. */
@@ -83,8 +93,236 @@ const TERMINAL_ACTION_STATUSES = new Set([
   "delivered",
   "refund_requested",
 ])
+
+type MerchantStatusMessage = Extract<
+  ParsedOrderMessage,
+  { type: "status_update" }
+>
+
+export interface EffectiveMerchantOrderStatus {
+  /** Latest effective status, including forward-compatible values. */
+  status: string | null
+  /** Latest effective status understood by this client. */
+  knownStatus: KnownOrderStatus | null
+  cancellation?: MerchantOrderCancellation
+  /** Exact cancellation proven corrected within this observed event set. */
+  reopenedCancellationId?: string
+}
+
+export interface MerchantOrderParticipants {
+  buyerPubkey: string
+  merchantPubkey: string
+}
+
 function normalizeStatus(status: string | null | undefined): string {
   return (status ?? "pending").toLowerCase()
+}
+
+function knownOrderStatus(
+  status: string | null | undefined
+): KnownOrderStatus | null {
+  if (status == null) return null
+  const normalized = normalizeStatus(status)
+  return isKnownOrderStatus(normalized) ? normalized : null
+}
+
+function safeOperationalStatus(
+  status: string | null | undefined
+): KnownOrderStatus | null {
+  if (status == null) return null
+  const normalized = normalizeStatus(status)
+  if (!isKnownOrderStatus(normalized)) return null
+  return TERMINAL_ACTION_STATUSES.has(normalized) ? null : normalized
+}
+
+function hasMerchantOrder(
+  messages: readonly ParsedOrderMessage[],
+  participants: MerchantOrderParticipants
+): boolean {
+  return messages.some(
+    (message) =>
+      message.type === "order" &&
+      message.senderPubkey === participants.buyerPubkey &&
+      message.recipientPubkey === participants.merchantPubkey
+  )
+}
+
+function merchantStatusMessages(
+  messages: readonly ParsedOrderMessage[],
+  participants: MerchantOrderParticipants
+): MerchantStatusMessage[] {
+  const unique = new Map<string, MerchantStatusMessage>()
+  for (const message of messages) {
+    if (
+      message.type !== "status_update" ||
+      message.senderPubkey !== participants.merchantPubkey ||
+      message.recipientPubkey !== participants.buyerPubkey ||
+      unique.has(message.id)
+    ) {
+      continue
+    }
+    unique.set(message.id, message)
+  }
+
+  const ordered = [...unique.values()].sort(
+    (left, right) =>
+      left.createdAt - right.createdAt || left.id.localeCompare(right.id)
+  )
+
+  // An exact cancellation reference is stronger causal evidence than either
+  // second-granularity timestamps or clock skew. Defer only corrections that
+  // would otherwise sort before their referenced cancellation, preserving the
+  // ordinary event order everywhere else. This is a projection of the observed
+  // set, not a claim that a relay view is globally complete.
+  const indexById = new Map(
+    ordered.map((message, index) => [message.id, index] as const)
+  )
+  const deferredByCancellation = new Map<string, MerchantStatusMessage[]>()
+  const deferredIds = new Set<string>()
+
+  for (let index = 0; index < ordered.length; index += 1) {
+    const message = ordered[index]
+    const cancellationId = message?.payload.reopens
+    const cancellationIndex = cancellationId
+      ? indexById.get(cancellationId)
+      : undefined
+    if (
+      !message ||
+      !cancellationId ||
+      cancellationIndex === undefined ||
+      cancellationIndex <= index ||
+      !safeOperationalStatus(message.payload.status) ||
+      normalizeStatus(ordered[cancellationIndex]?.payload.status) !==
+        "cancelled"
+    ) {
+      continue
+    }
+    const bucket = deferredByCancellation.get(cancellationId) ?? []
+    bucket.push(message)
+    deferredByCancellation.set(cancellationId, bucket)
+    deferredIds.add(message.id)
+  }
+
+  if (deferredIds.size === 0) return ordered
+
+  const projected: MerchantStatusMessage[] = []
+  for (const message of ordered) {
+    if (deferredIds.has(message.id)) continue
+    projected.push(message)
+    projected.push(...(deferredByCancellation.get(message.id) ?? []))
+  }
+  return projected
+}
+
+/**
+ * Project the effective merchant status from the currently observed message
+ * set. A cancellation remains active until the merchant appends a correction
+ * that references that exact cancellation and restores its prior active state.
+ */
+export function getEffectiveMerchantOrderStatus(
+  messages: readonly ParsedOrderMessage[],
+  participants: MerchantOrderParticipants,
+  fallbackStatus: string | null = null
+): EffectiveMerchantOrderStatus {
+  const statuses = merchantStatusMessages(messages, participants)
+  if (statuses.length === 0) {
+    return {
+      status: fallbackStatus,
+      knownStatus: knownOrderStatus(fallbackStatus),
+    }
+  }
+  let status: string | null = hasMerchantOrder(messages, participants)
+    ? "pending"
+    : fallbackStatus
+  let knownStatus = knownOrderStatus(status)
+  let cancellation: MerchantOrderCancellation | undefined
+  let reopenedCancellationId: string | undefined
+
+  for (const message of statuses) {
+    const { status: messageStatus, reopens } = message.payload
+    const nextStatus = normalizeStatus(messageStatus)
+
+    if (cancellation) {
+      const correctedStatus =
+        reopens === cancellation.eventId
+          ? safeOperationalStatus(messageStatus)
+          : null
+      if (correctedStatus) {
+        // The merchant-signed correction is authoritative for the restored
+        // active status. Another bounded view may not have observed the same
+        // pre-cancellation status that this client did.
+        status = correctedStatus
+        knownStatus = correctedStatus
+        reopenedCancellationId = cancellation.eventId
+        cancellation = undefined
+      } else if (!reopens && nextStatus === "cancelled") {
+        // A newer independent cancellation supersedes the earlier marker but
+        // preserves the same pre-cancellation state for a possible correction.
+        cancellation = { ...cancellation, eventId: message.id }
+      } else if (!reopens && TERMINAL_ACTION_STATUSES.has(nextStatus)) {
+        // A later terminal status remains a terminal progression. It can
+        // supersede cancellation without reopening the active workflow.
+        status = nextStatus
+        knownStatus = knownOrderStatus(nextStatus)
+        cancellation = undefined
+      }
+      continue
+    }
+
+    // A correction marker is never a generic status transition. Stale,
+    // unknown, and replayed references leave the current projection unchanged.
+    if (reopens) continue
+
+    if (
+      TERMINAL_ACTION_STATUSES.has(normalizeStatus(status)) &&
+      !TERMINAL_ACTION_STATUSES.has(nextStatus)
+    ) {
+      continue
+    }
+
+    if (nextStatus === "cancelled") {
+      const resumeStatus = safeOperationalStatus(knownStatus)
+      status = "cancelled"
+      knownStatus = "cancelled"
+      reopenedCancellationId = undefined
+      if (resumeStatus) {
+        cancellation = { eventId: message.id, resumeStatus }
+      }
+      continue
+    }
+
+    status = isKnownOrderStatus(nextStatus) ? nextStatus : messageStatus
+    if (isKnownOrderStatus(nextStatus)) knownStatus = nextStatus
+  }
+
+  return {
+    status,
+    knownStatus,
+    ...(status === "cancelled" && cancellation ? { cancellation } : {}),
+    ...(reopenedCancellationId ? { reopenedCancellationId } : {}),
+  }
+}
+
+export interface MerchantOrderReopenTransition {
+  tags: string[][]
+  payload: { status: KnownOrderStatus; reopens: string }
+}
+
+/** Canonical status update for correcting the effective cancellation. */
+export function getMerchantOrderReopenTransition(
+  state: MerchantOrderState
+): MerchantOrderReopenTransition | null {
+  if (normalizeStatus(state.status) !== "cancelled" || !state.cancellation) {
+    return null
+  }
+  const { eventId, resumeStatus } = state.cancellation
+  return {
+    tags: [
+      ["status", resumeStatus],
+      ["reopens", eventId],
+    ],
+    payload: { status: resumeStatus, reopens: eventId },
+  }
 }
 
 function toState(
@@ -404,7 +642,12 @@ export type MerchantOrderActionKind = "primary" | "destructive"
 
 export interface MerchantOrderAction {
   action:
-    "accept" | "confirm_payment" | "record_shipment" | "complete" | "cancel"
+    | "accept"
+    | "confirm_payment"
+    | "record_shipment"
+    | "complete"
+    | "cancel"
+    | "reopen"
   /** Status to publish for state transitions; shipment publishes its domain event. */
   status?: KnownOrderStatus
   /** Button label for the action. */
@@ -422,6 +665,15 @@ export function getMerchantOrderActions(
   const status = normalizeStatus(state.status)
 
   if (!isKnownOrderStatus(status)) return []
+  if (status === "cancelled" && state.cancellation) {
+    return [
+      {
+        action: "reopen",
+        label: "Reopen order",
+        kind: "primary",
+      },
+    ]
+  }
   if (TERMINAL_ACTION_STATUSES.has(status)) return []
 
   if (isMerchantOrderPaid(state)) {

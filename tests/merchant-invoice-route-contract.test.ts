@@ -18,6 +18,12 @@ describe("merchant invoice route contract", () => {
     expect(source).toContain(
       'action?.status === "blocked" && action.canReport ? action : undefined'
     )
+    expect(source).toContain("const merchantInvoiceReopenEvidence =")
+    expect(source).toContain("reopenEvidence: merchantInvoiceReopenEvidence")
+    expect(source).toContain(
+      "action,\n      merchantInvoiceReopenEvidence\n    )"
+    )
+    expect(source).not.toContain("allowCancelled")
     expect(source).not.toContain("vm.merchantInvoiceAction ?? undefined")
   })
 
