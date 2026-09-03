@@ -58,6 +58,24 @@ describe("Market event catalog route", () => {
     expect(route).not.toContain("pickupFulfillment ?? undefined")
   })
 
+  it("keeps retained acceptance visible without claiming current purchase evidence", async () => {
+    const [route, adapter] = await Promise.all([
+      Bun.file("apps/market/src/routes/events/$collectionRef.tsx").text(),
+      Bun.file("apps/market/src/lib/event-market-adapter.ts").text(),
+    ])
+
+    expect(adapter).toContain("resolution.acceptedProductCoordinates")
+    expect(adapter).not.toContain(
+      "const requested = resolution.organizerProductCoordinates"
+    )
+    expect(adapter).toContain('evidenceState: live ? "live" : "retained"')
+    expect(adapter).toContain("pickupFulfillment: live")
+    expect(route).toContain("Previously verified accepted products")
+    expect(route).toContain("Accepted product details temporarily unavailable")
+    expect(route).toContain("catalog.acceptedProductCount")
+    expect(route).not.toContain("Missing products stay hidden")
+  })
+
   it("keeps variable parent acceptance separate from exact child authority", async () => {
     const [route, adapter] = await Promise.all([
       Bun.file("apps/market/src/routes/events/$collectionRef.tsx").text(),

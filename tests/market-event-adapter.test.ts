@@ -6,6 +6,7 @@ import {
   type CommerceProductRecord,
   type EventMarketResolution,
   type Product,
+  type ProductsByIdsResult,
 } from "@conduit/core"
 import {
   buildPickupFulfillmentSnapshot,
@@ -14,7 +15,7 @@ import {
   getCartEventFulfillmentBlock,
   getProductEventMarketCandidates,
   pickupItemMatchesCanonicalSnapshot,
-  projectAcceptedEventCatalogProductRead,
+  projectEventCatalogHydration,
   projectEventCatalogProducts,
   resolveProductCartFulfillment,
   type EventCatalog,
@@ -86,9 +87,23 @@ function market(
     pickups: [pickup],
     organizerProductCoordinates: [productCoordinate],
     acceptedProductCoordinates: [productCoordinate],
+    acceptedProductEvidence: [
+      {
+        productCoordinate,
+        eventId: "4".repeat(64),
+        createdAt: 103_000,
+        shippingOptionCoordinates: [pickupCoordinate],
+        merchantPubkey: merchant,
+      },
+    ],
     organizerOnlyProductCoordinates: [],
     participationRequests: [{ productCoordinate, merchantPubkey: merchant }],
     participationBudget: {
+      state: "within_budget",
+      targetCount: 1,
+      targetLimit: 64,
+    },
+    pickupBudget: {
       state: "within_budget",
       targetCount: 1,
       targetLimit: 64,
@@ -178,6 +193,94 @@ function commerceRecord(
   }
 }
 
+function productRead(
+  options: {
+    product?: Product
+    includeRecord?: boolean
+    issue?: ProductsByIdsResult["diagnostics"][number]["issue"]
+    source?: ProductsByIdsResult["meta"]["source"]
+    stale?: boolean
+    listing?: "complete" | "partial" | "unavailable"
+    eventId?: string
+    eventCreatedAt?: number
+  } = {}
+): ProductsByIdsResult {
+  const candidate = options.product ?? product()
+  const record = commerceRecord(candidate, {
+    eventId: options.eventId ?? "4".repeat(64),
+    eventCreatedAt: options.eventCreatedAt ?? 103,
+  })
+  return {
+    data: options.includeRecord === false ? [] : [record],
+    meta: {
+      source: options.source ?? "commerce",
+      degraded: (options.issue ?? null) !== null,
+      stale: options.stale ?? false,
+      capped: false,
+      capabilities: {
+        sortModes: [],
+        textSearch: false,
+        protectedSummaries: false,
+        canonicalFreshness: true,
+        cursorPagination: false,
+      },
+      fetchedAt: 1,
+    },
+    diagnostics: [
+      {
+        productId: candidate.id,
+        addressId: candidate.id,
+        issue: options.issue ?? null,
+        coverage: {
+          listing: options.listing ?? "complete",
+          deletion: "complete",
+        },
+      },
+    ],
+  }
+}
+
+function marketWithAcceptedRecords(
+  records: readonly CommerceProductRecord[],
+  requested: readonly string[] = records.map((record) => record.product.id),
+  base: EventMarketResolution = market()
+): EventMarketResolution {
+  const recordsByCoordinate = new Map(
+    records.map((record) => [record.product.id, record])
+  )
+  return {
+    ...base,
+    collection: {
+      ...base.collection!,
+      productCoordinates: [...requested],
+    },
+    organizerProductCoordinates: [...requested],
+    acceptedProductCoordinates: [...requested],
+    acceptedProductEvidence: requested.map((productCoordinate) => {
+      const record = recordsByCoordinate.get(productCoordinate)
+      if (!record) {
+        throw new Error(`Missing accepted record for ${productCoordinate}`)
+      }
+      return {
+        productCoordinate,
+        eventId: record.eventId,
+        createdAt: record.eventCreatedAt * 1_000,
+        shippingOptionCoordinates:
+          record.product.shippingOptionRefs?.map(
+            (reference) => reference.coordinate
+          ) ?? [],
+        merchantPubkey: record.product.pubkey,
+      }
+    }),
+    organizerOnlyProductCoordinates: [],
+    participationRequests: requested.map((productCoordinate) => ({
+      productCoordinate,
+      merchantPubkey:
+        recordsByCoordinate.get(productCoordinate)!.product.pubkey,
+    })),
+  }
+}
+
 function pickupSnapshot(): CartPickupFulfillment {
   const snapshot = buildPickupFulfillmentSnapshot(
     product(),
@@ -212,6 +315,7 @@ function catalog(
     products: [
       {
         product: catalogProduct,
+        evidenceState: "live",
         participation: resolveEventMarketProductParticipation(
           catalogProduct,
           resolution
@@ -219,6 +323,8 @@ function catalog(
         pickupFulfillment: snapshot,
       },
     ],
+    acceptedProductCount: 1,
+    unresolvedProductCoordinates: [],
     productReadState: "ready",
     purchaseReady: true,
     ...overrides,
@@ -247,53 +353,101 @@ function clonePickupItem(
 }
 
 describe("Market event adapter", () => {
-  it("keeps an exact-live accepted product when other coordinates are partial or cache-only", () => {
-    const liveProduct = product({ visibility: "private" })
-    const unresolvedCoordinate = `30402:${merchant}:tea`
-    const cachedProduct = product({
-      id: `30402:${merchant}:cached-tea`,
-      title: "Cached tea",
-      visibility: "private",
+  it("keeps a retained accepted product visible without making it purchasable", () => {
+    const projection = projectEventCatalogHydration({
+      resolution: market("stale"),
+      result: productRead({
+        issue: "lookup_unavailable",
+        source: "local_cache",
+        stale: true,
+        listing: "unavailable",
+      }),
     })
-    const acceptedCoordinates = [
-      liveProduct.id,
-      unresolvedCoordinate,
-      cachedProduct.id,
-    ]
-    const resolution: EventMarketResolution = {
-      ...market(),
-      collection: {
-        ...market().collection!,
-        productCoordinates: acceptedCoordinates,
-      },
-      organizerProductCoordinates: acceptedCoordinates,
-      acceptedProductCoordinates: acceptedCoordinates,
-      participationRequests: acceptedCoordinates.map((productCoordinate) => ({
-        productCoordinate,
-        merchantPubkey: merchant,
-      })),
-    }
 
-    const projected = projectAcceptedEventCatalogProductRead({
-      requested: resolution.acceptedProductCoordinates,
+    expect(projection.productReadState).toBe("unavailable")
+    expect(projection.acceptedProductCount).toBe(1)
+    expect(projection.unresolvedProductCoordinates).toEqual([])
+    expect(projection.products).toHaveLength(1)
+    expect(projection.products[0]!.evidenceState).toBe("retained")
+    expect(projection.products[0]!.pickupFulfillment).toBeNull()
+  })
+
+  it("keeps exact per-product live evidence purchasable when the wider batch is stale", () => {
+    const projection = projectEventCatalogHydration({
+      resolution: market(),
+      result: productRead({ stale: true }),
+    })
+
+    expect(projection.productReadState).toBe("ready")
+    expect(projection.products).toHaveLength(1)
+    expect(projection.products[0]!.evidenceState).toBe("live")
+    expect(projection.products[0]!.pickupFulfillment).not.toBeNull()
+  })
+
+  it("preserves unresolved acceptance under an unavailable read without inventing product details", () => {
+    const projection = projectEventCatalogHydration({
+      resolution: market("partial"),
+      result: productRead({
+        includeRecord: false,
+        issue: "lookup_unavailable",
+        source: "local_cache",
+        stale: true,
+        listing: "unavailable",
+      }),
+    })
+
+    expect(projection.productReadState).toBe("unavailable")
+    expect(projection.acceptedProductCount).toBe(1)
+    expect(projection.products).toEqual([])
+    expect(projection.unresolvedProductCoordinates).toEqual([productCoordinate])
+  })
+
+  it("retains safe cached products while isolating exact live purchase evidence", () => {
+    const liveRecord = commerceRecord(product({ visibility: "private" }))
+    const unresolvedRecord = commerceRecord(
+      product({
+        id: "30402:" + merchant + ":tea",
+        title: "Tea",
+        visibility: "private",
+      })
+    )
+    const cachedRecord = commerceRecord(
+      product({
+        id: "30402:" + merchant + ":cached-tea",
+        title: "Cached tea",
+        visibility: "private",
+      })
+    )
+    const acceptedCoordinates = [
+      liveRecord.product.id,
+      unresolvedRecord.product.id,
+      cachedRecord.product.id,
+    ]
+    const resolution = marketWithAcceptedRecords(
+      [liveRecord, unresolvedRecord, cachedRecord],
+      acceptedCoordinates
+    )
+
+    const projected = projectEventCatalogHydration({
+      resolution,
       result: {
-        data: [commerceRecord(liveProduct), commerceRecord(cachedProduct)],
+        data: [liveRecord, cachedRecord],
         diagnostics: [
           {
-            productId: liveProduct.id,
-            addressId: liveProduct.id,
+            productId: liveRecord.product.id,
+            addressId: liveRecord.product.id,
             issue: null,
             coverage: { listing: "complete", deletion: "partial" },
           },
           {
-            productId: unresolvedCoordinate,
-            addressId: unresolvedCoordinate,
+            productId: unresolvedRecord.product.id,
+            addressId: unresolvedRecord.product.id,
             issue: "lookup_partial",
             coverage: { listing: "partial", deletion: "partial" },
           },
           {
-            productId: cachedProduct.id,
-            addressId: cachedProduct.id,
+            productId: cachedRecord.product.id,
+            addressId: cachedRecord.product.id,
             issue: "cached_only",
             coverage: { listing: "complete", deletion: "partial" },
           },
@@ -304,22 +458,149 @@ describe("Market event adapter", () => {
           stale: true,
           degraded: true,
           capped: false,
+          capabilities: {
+            sortModes: [],
+            textSearch: false,
+            protectedSummaries: false,
+            canonicalFreshness: true,
+            cursorPagination: false,
+          },
         },
       },
-      resolution,
     })
 
     expect(projected.productReadState).toBe("partial")
-    expect(projected.products.map(({ product }) => product.id)).toEqual([
-      liveProduct.id,
+    expect(projected.acceptedProductCount).toBe(3)
+    expect(projected.unresolvedProductCoordinates).toEqual([
+      unresolvedRecord.product.id,
     ])
-    expect(projected.products[0]?.pickupFulfillment).not.toBeNull()
+    expect(
+      projected.products.map(({ product: candidate }) => candidate.id)
+    ).toEqual([liveRecord.product.id, cachedRecord.product.id])
+    expect(projected.products[0]!.evidenceState).toBe("live")
+    expect(projected.products[0]!.pickupFulfillment).not.toBeNull()
+    expect(projected.products[1]!.evidenceState).toBe("retained")
+    expect(projected.products[1]!.pickupFulfillment).toBeNull()
   })
 
-  it("keeps a live variable parent without reviving a cache-only child", () => {
+  it("distinguishes a complete empty organizer collection from degraded hydration", () => {
+    const resolution: EventMarketResolution = {
+      ...market(),
+      collection: {
+        ...market().collection!,
+        productCoordinates: [],
+      },
+      organizerProductCoordinates: [],
+      acceptedProductCoordinates: [],
+      acceptedProductEvidence: [],
+      organizerOnlyProductCoordinates: [],
+      participationRequests: [],
+    }
+    const projection = projectEventCatalogHydration({
+      resolution,
+      result: { ...productRead({ includeRecord: false }), diagnostics: [] },
+    })
+
+    expect(projection.productReadState).toBe("ready")
+    expect(projection.acceptedProductCount).toBe(0)
+    expect(projection.products).toEqual([])
+    expect(projection.unresolvedProductCoordinates).toEqual([])
+  })
+
+  it("does not erase accepted evidence from a bounded product-missing result", () => {
+    const projection = projectEventCatalogHydration({
+      resolution: market("partial"),
+      result: productRead({
+        includeRecord: false,
+        issue: "product_missing",
+      }),
+    })
+
+    expect(projection.productReadState).toBe("partial")
+    expect(projection.acceptedProductCount).toBe(1)
+    expect(projection.products).toEqual([])
+    expect(projection.unresolvedProductCoordinates).toEqual([productCoordinate])
+  })
+
+  it("never invents acceptance from organizer-only coordinates", () => {
+    const resolution: EventMarketResolution = {
+      ...market("partial"),
+      acceptedProductCoordinates: [],
+      acceptedProductEvidence: [],
+      organizerOnlyProductCoordinates: [productCoordinate],
+      participationRequests: [],
+    }
+    const projection = projectEventCatalogHydration({
+      resolution,
+      result: productRead(),
+    })
+
+    expect(projection.productReadState).toBe("ready")
+    expect(projection.acceptedProductCount).toBe(0)
+    expect(projection.products).toEqual([])
+    expect(projection.unresolvedProductCoordinates).toEqual([])
+  })
+
+  it("honors a newer signed merchant withdrawal", () => {
+    const withdrawnProduct = product({
+      collectionRefs: [],
+      createdAt: 104_000,
+      updatedAt: 104_000,
+    })
+    const projection = projectEventCatalogHydration({
+      resolution: market("partial"),
+      result: productRead({
+        product: withdrawnProduct,
+        issue: "lookup_unavailable",
+        source: "local_cache",
+        stale: true,
+        listing: "unavailable",
+        eventCreatedAt: 104,
+      }),
+    })
+
+    expect(projection.productReadState).toBe("ready")
+    expect(projection.acceptedProductCount).toBe(0)
+    expect(projection.products).toEqual([])
+    expect(projection.unresolvedProductCoordinates).toEqual([])
+  })
+
+  it("does not let an older retained no-ref revision impersonate newer accepted evidence", () => {
+    const resolution: EventMarketResolution = {
+      ...market("partial"),
+      acceptedProductEvidence: [
+        {
+          productCoordinate,
+          eventId: "3".repeat(64),
+          createdAt: 104_000,
+          shippingOptionCoordinates: [pickupCoordinate],
+          merchantPubkey: merchant,
+        },
+      ],
+    }
+    const projection = projectEventCatalogHydration({
+      resolution,
+      result: productRead({
+        product: product({ collectionRefs: [] }),
+        issue: "lookup_unavailable",
+        source: "local_cache",
+        stale: true,
+        listing: "unavailable",
+        eventId: "4".repeat(64),
+        eventCreatedAt: 103,
+      }),
+    })
+
+    expect(projection.productReadState).toBe("unavailable")
+    expect(projection.acceptedProductCount).toBe(1)
+    expect(projection.products).toEqual([])
+    expect(projection.unresolvedProductCoordinates).toEqual([productCoordinate])
+  })
+
+  it("keeps a live variable parent and retained child visible without authorizing the child", () => {
     const parent = product({ type: "variable", visibility: "private" })
     const child = product({
-      id: `30402:${merchant}:coffee-cached-child`,
+      id: "30402:" + merchant + ":coffee-cached-child",
       title: "Coffee - Cached child",
       type: "variation",
       visibility: "private",
@@ -328,40 +609,29 @@ describe("Market event adapter", () => {
       createdAt: 104_000,
       updatedAt: 104_000,
     })
-    const prepared = prepareProductCatalog(
-      [commerceRecord(parent), commerceRecord(child)],
-      {
-        source: "commerce",
-        fetchedAt: 105_000,
-        stale: false,
-        degraded: false,
-        capped: false,
-      }
-    ).items[0]
+    const rawRecords = [
+      commerceRecord(parent),
+      commerceRecord(child, { eventId: "5".repeat(64) }),
+    ]
+    const prepared = prepareProductCatalog(rawRecords, {
+      source: "commerce",
+      fetchedAt: 105_000,
+      stale: false,
+      degraded: false,
+      capped: false,
+    }).items[0]
     if (prepared?.kind !== "family") throw new Error("Expected family")
 
     const requested = [parent.id, child.id]
-    const resolution: EventMarketResolution = {
-      ...market(),
-      collection: {
-        ...market().collection!,
-        productCoordinates: requested,
-      },
-      organizerProductCoordinates: requested,
-      acceptedProductCoordinates: requested,
-      participationRequests: requested.map((productCoordinate) => ({
-        productCoordinate,
-        merchantPubkey: merchant,
-      })),
-    }
+    const resolution = marketWithAcceptedRecords(rawRecords, requested)
     const parentRecord = {
       ...prepared.family.parent,
       family: prepared.family,
     }
     const childRecord = prepared.family.children[0]!
 
-    const projected = projectAcceptedEventCatalogProductRead({
-      requested,
+    const projected = projectEventCatalogHydration({
+      resolution,
       result: {
         data: [parentRecord, childRecord],
         diagnostics: [
@@ -384,30 +654,39 @@ describe("Market event adapter", () => {
           stale: true,
           degraded: true,
           capped: false,
+          capabilities: {
+            sortModes: [],
+            textSearch: false,
+            protectedSummaries: false,
+            canonicalFreshness: true,
+            cursorPagination: false,
+          },
         },
       },
-      resolution,
     })
 
     expect(projected.productReadState).toBe("partial")
+    expect(projected.unresolvedProductCoordinates).toEqual([])
     expect(projected.products).toHaveLength(1)
-    expect(projected.products[0]?.product.id).toBe(parent.id)
-    expect(projected.products[0]?.family).toMatchObject({
-      state: "parent_only",
-      children: [],
-    })
-    expect(projected.products[0]?.familyPickupFulfillments).toEqual({})
+    expect(projected.products[0]!.product.id).toBe(parent.id)
+    expect(projected.products[0]!.family?.state).toBe("ready")
     expect(
-      projected.products.some(({ product }) => product.id === child.id)
-    ).toBe(false)
+      projected.products[0]!.family?.children.map(
+        (candidate) => candidate.product.id
+      )
+    ).toEqual([child.id])
+    expect(projected.products[0]!.familyPickupFulfillments).toEqual({
+      [child.id]: null,
+    })
   })
 
   it("renders an exact merchant-hidden event listing with pickup authorization", async () => {
     const hiddenProduct = product({ visibility: "private" })
-    const resolution = market()
+    const record = commerceRecord(hiddenProduct)
+    const resolution = marketWithAcceptedRecords([record])
     const projected = projectEventCatalogProducts({
       requested: [hiddenProduct.id],
-      records: [commerceRecord(hiddenProduct)],
+      records: [record],
       liveCoordinates: new Set([hiddenProduct.id]),
       resolution,
     })
@@ -430,23 +709,6 @@ describe("Market event adapter", () => {
     expect(cartResolution.status).toBe("pickup")
   })
 
-  it("keeps active and flagged exact event listings renderable", () => {
-    const resolution = market()
-    for (const visibleProduct of [
-      product(),
-      product({ title: "Pocket knife" }),
-    ]) {
-      const projected = projectEventCatalogProducts({
-        requested: [visibleProduct.id],
-        records: [commerceRecord(visibleProduct)],
-        liveCoordinates: new Set([visibleProduct.id]),
-        resolution,
-      })
-      expect(projected).toHaveLength(1)
-      expect(projected[0]!.pickupFulfillment).not.toBeNull()
-    }
-  })
-
   it("rejects other safety-hidden, blocked, and unprepared event listings", async () => {
     const pendingProduct = product()
     const externalProduct = product()
@@ -456,7 +718,7 @@ describe("Market event adapter", () => {
       commerceRecord(
         product({
           type: "variation",
-          parentProductId: `30402:${merchant}:missing-parent`,
+          parentProductId: "30402:" + merchant + ":missing-parent",
           specifications: [{ key: "size", value: "Large" }],
         })
       ),
@@ -497,10 +759,10 @@ describe("Market event adapter", () => {
         },
       }),
     ]
-    const resolution = market()
 
     for (const unsafeRecord of unsafeRecords) {
       const unsafeProduct = unsafeRecord.product
+      const resolution = marketWithAcceptedRecords([unsafeRecord])
       const projected = projectEventCatalogProducts({
         requested: [unsafeProduct.id],
         records: [unsafeRecord],
@@ -578,19 +840,7 @@ describe("Market event adapter", () => {
       unsafeChildCoordinate,
       childCoordinates[0]!,
     ]
-    const resolution: EventMarketResolution = {
-      ...market(),
-      collection: {
-        ...market().collection!,
-        productCoordinates: requested,
-      },
-      organizerProductCoordinates: requested,
-      acceptedProductCoordinates: requested,
-      participationRequests: requested.map((productCoordinate) => ({
-        productCoordinate,
-        merchantPubkey: merchant,
-      })),
-    }
+    const resolution = marketWithAcceptedRecords(records, requested)
     const parentRecord = {
       ...prepared.family.parent,
       family: prepared.family,
@@ -623,19 +873,11 @@ describe("Market event adapter", () => {
       unsafeChildCoordinate,
       childCoordinates[0]!,
     ]
-    const atomicResolution: EventMarketResolution = {
-      ...resolution,
-      collection: {
-        ...resolution.collection!,
-        productCoordinates: atomicRequested,
-      },
-      organizerProductCoordinates: atomicRequested,
-      acceptedProductCoordinates: atomicRequested,
-      participationRequests: atomicRequested.map((productCoordinate) => ({
-        productCoordinate,
-        merchantPubkey: merchant,
-      })),
-    }
+    const atomicResolution = marketWithAcceptedRecords(
+      records,
+      atomicRequested,
+      resolution
+    )
     const atomic = projectEventCatalogProducts({
       requested: atomicRequested,
       records: [parentRecord, ...prepared.family.children].reverse(),
@@ -681,7 +923,7 @@ describe("Market event adapter", () => {
         ...unsafePrepared.family.children,
       ],
       liveCoordinates: new Set(atomicRequested),
-      resolution: atomicResolution,
+      resolution: marketWithAcceptedRecords(unsafeRecords, atomicRequested),
     })
     expect(unsafeProjection).toEqual([])
   })
@@ -696,24 +938,13 @@ describe("Market event adapter", () => {
       parentProductId: parentId,
       specifications: [{ key: "size", value: "Child only" }],
     })
-    const resolution: EventMarketResolution = {
-      ...market(),
-      collection: {
-        ...market().collection!,
-        productCoordinates: [child.id],
-      },
-      organizerProductCoordinates: [child.id],
-      acceptedProductCoordinates: [child.id],
-      participationRequests: [
-        { productCoordinate: child.id, merchantPubkey: merchant },
-      ],
-    }
     const record = commerceRecord(child, {
       safety: evaluateListingSafety(child, undefined, {
         variationGroupRole: "variation",
         hasGroupImage: true,
       }),
     })
+    const resolution = marketWithAcceptedRecords([record])
 
     const projected = projectEventCatalogProducts({
       requested: [child.id],
@@ -783,19 +1014,7 @@ describe("Market event adapter", () => {
     if (prepared?.kind !== "family") throw new Error("Expected family")
 
     const requested = [parent.id, acceptedChild.id, unsafeImageDonor.id]
-    const resolution: EventMarketResolution = {
-      ...market(),
-      collection: {
-        ...market().collection!,
-        productCoordinates: requested,
-      },
-      organizerProductCoordinates: requested,
-      acceptedProductCoordinates: requested,
-      participationRequests: requested.map((productCoordinate) => ({
-        productCoordinate,
-        merchantPubkey: merchant,
-      })),
-    }
+    const resolution = marketWithAcceptedRecords(records, requested)
     const projection = projectEventCatalogProducts({
       requested,
       records: [
@@ -856,19 +1075,7 @@ describe("Market event adapter", () => {
     if (prepared?.kind !== "family") throw new Error("Expected family")
 
     const requested = [parent.id, liveChild.id, cacheOnlyImageDonor.id]
-    const resolution: EventMarketResolution = {
-      ...market(),
-      collection: {
-        ...market().collection!,
-        productCoordinates: requested,
-      },
-      organizerProductCoordinates: requested,
-      acceptedProductCoordinates: requested,
-      participationRequests: requested.map((productCoordinate) => ({
-        productCoordinate,
-        merchantPubkey: merchant,
-      })),
-    }
+    const resolution = marketWithAcceptedRecords(records, requested)
     const projection = projectEventCatalogProducts({
       requested,
       records: [
@@ -930,6 +1137,16 @@ describe("Market event adapter", () => {
       },
       organizerProductCoordinates: [productCoordinate, childCoordinate],
       acceptedProductCoordinates: [productCoordinate, childCoordinate],
+      acceptedProductEvidence: [
+        ...parentOnly.acceptedProductEvidence,
+        {
+          productCoordinate: childCoordinate,
+          eventId: "5".repeat(64),
+          createdAt: 104_000,
+          shippingOptionCoordinates: [pickupCoordinate],
+          merchantPubkey: merchant,
+        },
+      ],
       participationRequests: [
         ...parentOnly.participationRequests,
         { productCoordinate: childCoordinate, merchantPubkey: merchant },
@@ -1578,6 +1795,8 @@ describe("Market event adapter", () => {
         reference: collectionCoordinate,
         canonicalNaddr: "naddr1test",
         products: [],
+        acceptedProductCount: 0,
+        unresolvedProductCoordinates: [],
         pickups: [],
         productReadState: "not_requested",
         purchaseReady: false,
