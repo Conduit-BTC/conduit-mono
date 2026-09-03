@@ -1282,7 +1282,7 @@ describe("commerce gateway", () => {
     ])
   })
 
-  it("keeps merchant storefront reads deletion-aware", async () => {
+  it("keeps event-template storefront reads deletion-aware when hidden products are included", async () => {
     const productEvent = makeSignedProductEvent({
       dTag: "deleted-item",
       createdAt: 100,
@@ -1308,7 +1308,11 @@ describe("commerce gateway", () => {
       },
     })
 
-    const result = await getMerchantStorefront({ merchantPubkey, limit: 10 })
+    const result = await getMerchantStorefront({
+      merchantPubkey,
+      limit: 10,
+      includeMarketHidden: true,
+    })
 
     expect(result.data).toHaveLength(0)
   })
@@ -2389,6 +2393,15 @@ describe("commerce gateway", () => {
       pickups: [pickup],
       organizerProductCoordinates: [childProductId],
       acceptedProductCoordinates: [childProductId],
+      acceptedProductEvidence: [
+        {
+          productCoordinate: childProductId,
+          eventId: exactChildRead.data[0]!.eventId,
+          createdAt: exactChildRead.data[0]!.eventCreatedAt * 1_000,
+          shippingOptionCoordinates: [eventPickup],
+          merchantPubkey: EVENT_TEST_MERCHANT_PUBKEY,
+        },
+      ],
       organizerOnlyProductCoordinates: [],
       participationRequests: [
         {
@@ -2397,6 +2410,11 @@ describe("commerce gateway", () => {
         },
       ],
       participationBudget: {
+        state: "within_budget",
+        targetCount: 1,
+        targetLimit: 64,
+      },
+      pickupBudget: {
         state: "within_budget",
         targetCount: 1,
         targetLimit: 64,

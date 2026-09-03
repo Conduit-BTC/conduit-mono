@@ -60,6 +60,32 @@ describe("merchant organizer event market route", () => {
     expect(adapter).toContain("buildProductLocalPickupMetadata")
   })
 
+  it("shows explicit bounded discovery states and exact-hydrates a selected event", async () => {
+    const route = await Bun.file("apps/merchant/src/routes/events.tsx").text()
+    const adapter = await Bun.file(
+      "apps/merchant/src/lib/event-market.ts"
+    ).text()
+    const core = await Bun.file(
+      "packages/core/src/protocol/event-market-discovery.ts"
+    ).text()
+
+    expect(adapter).toContain("discoverFollowedOrganizerEventMarkets")
+    expect(core).toContain('projection: "discovery"')
+    expect(core).toContain("FOLLOWED_EVENT_MARKET_READ_CONCURRENCY = 4")
+    expect(route).toContain('discoveryQuery.data?.state === "partial"')
+    expect(route).toContain('discoveryQuery.data?.state === "unavailable"')
+    expect(route).toContain('discoveryQuery.data?.state === "complete_empty"')
+    expect(route).toContain("Retry event discovery")
+    expect(route).toContain(
+      "Checking followed organizers on their planned relays"
+    )
+    expect(route).toContain("no global event absence is inferred")
+    expect(route).toContain("aria-label={`View ${market.title}`}")
+    expect(route).toContain("resolveOrganizerEventMarket(")
+    expect(route).toContain("merchantPubkey,\n        signal")
+    expect(route).not.toContain("selectedFromDiscovery")
+  })
+
   it("exposes signer, delivery, degraded evidence, and organizer acceptance workflows", async () => {
     const route = await Bun.file("apps/merchant/src/routes/events.tsx").text()
     const editor = await Bun.file(
@@ -102,6 +128,49 @@ describe("merchant organizer event market route", () => {
       route.match(/findSavedOrganizerEventMarketReference/g)?.length
     ).toBeGreaterThanOrEqual(4)
     expect(route).not.toContain("setSelectedReference(reference)")
+  })
+
+  it("makes event authoring requirements and modal state explicit", async () => {
+    const route = await Bun.file("apps/merchant/src/routes/events.tsx").text()
+    const editor = await Bun.file(
+      "apps/merchant/src/components/OrganizerEventMarketEditor.tsx"
+    ).text()
+    const form = await Bun.file(
+      "apps/merchant/src/lib/event-market-form.ts"
+    ).text()
+    const publisher = await Bun.file(
+      "apps/merchant/src/components/EventProductPublisherDialog.tsx"
+    ).text()
+
+    expect(editor).toContain("Fields marked Required")
+    expect(editor).toContain("RequiredFieldLabel")
+    expect(editor).toContain("Paste a direct HTTPS image URL")
+    expect(editor).toContain("getOrganizerEventTimezoneOptions")
+    expect(editor).toContain("No changes to publish")
+    expect(editor).toContain("isOrganizerEventMarketFormDirty")
+    expect(form).toContain('"America/Chicago"')
+    expect(form).toContain("browserTimezone()")
+
+    const openEdit = route.slice(
+      route.indexOf("function openEdit(): void"),
+      route.indexOf("async function copyShareLink")
+    )
+    expect(openEdit).toContain('setPublishState("idle")')
+
+    const publishSuccess = publisher.slice(
+      publisher.indexOf("onSuccess: async (result) =>"),
+      publisher.indexOf(
+        "onError:",
+        publisher.indexOf("onSuccess: async (result) =>")
+      )
+    )
+    expect(publishSuccess).toContain(
+      "await onPublished(result.productCoordinate)"
+    )
+    expect(publishSuccess).toContain("onOpenChange(false)")
+    expect(publishSuccess.indexOf("onOpenChange(false)")).toBeGreaterThan(
+      publishSuccess.indexOf("await onPublished(result.productCoordinate)")
+    )
   })
 
   it("keeps merchant booth pickup evidence on the merchant product graph", async () => {
