@@ -83,17 +83,41 @@ invoices, order contents, product titles, addresses, message contents, IPs,
 fingerprints, signer connection strings, NWC URIs, raw URLs, raw paths, query
 strings, cross-session identifiers, or SDK window/device identifiers. Browser
 custom events may include only shared-helper route context through `page_url`
-and `page_path`; store route context may include the public store `npub` as the
-page identifier, while product, profile, order, query string, unknown route,
-and active user identifiers stay redacted. Public store npubs must not be
-copied into custom properties or joined to viewer identity.
+and `page_path`. Store route context may include the public store `npub`.
+Product route context may include a canonical public kind-30402 `naddr` with no
+relay hints. The sanitizer derives that `naddr` from a valid raw coordinate or
+existing `naddr`; it redacts invalid product references as `:productId`.
+The ingestion proxy verifies the naddr checksum and requires its relay-free
+canonical re-encoding before it accepts the route.
+Profile, order, query string, unknown route, and active user identifiers stay
+redacted. Public store npubs and product naddrs must not be copied into custom
+properties or joined to viewer identity. Event-specific bans on product or
+store identifiers refer to custom properties outside this permitted route
+context.
+
+## Historical Pageviews and Live Presence
+
+PostHog `$pageview` events provide historical pageview counts. A valid product
+page is attributed to `/products/<canonical-naddr>`, and a valid storefront is
+attributed to `/store/<canonical-npub>`. These retained pageviews are anonymous
+session metrics. They are not an exact concurrent count or a count of unique
+people.
+
+Live product and storefront counts use a separate ephemeral presence path.
+Live presence must not send events to PostHog, reuse PostHog session or
+pageview IDs, or retain a page-level visit history. An exact live count means
+active visible-page connections known to that service, including the current
+page. Separate tabs, browsers, or devices can count separately. The exact-count
+feature is preview-only; production and staging keep it disabled pending
+explicit privacy and abuse-control approval.
 
 ## Provider Lifecycle Events
 
 Three PostHog lifecycle events are allowed through the shared sanitizer:
 
 - `$pageview` uses the static browser-service distinct ID, sanitized route
-  class, app, and ephemeral UUIDv7 session/pageview IDs.
+  context, app, and ephemeral UUIDv7 session/pageview IDs. Permitted public
+  product and store route identifiers support aggregate page-level reporting.
 - `$pageleave` adds bounded duration and scroll/content percentages so bounce
   rate and session duration can be calculated. Its route fields and
   `$prev_pageview_pathname` identify the departing sanitized route class.
@@ -307,8 +331,9 @@ identifiers.
 
 Emitted for the bounded `add_to_cart` and `view_cart` actions on a product
 detail page. It records only the action, product-format class, and the shared
-sanitized route class. It must not include product or merchant identifiers,
-event coordinates, titles, descriptions, tags, prices, quantities, stock,
+sanitized route context. The canonical public product naddr may appear only in
+that route context. It must not include product or merchant identifiers in
+custom properties, titles, descriptions, tags, prices, quantities, stock,
 images, profile data, or cart contents.
 
 <!-- telemetry-event: anon_zap_signer_request_result properties=event_name,app,surface,action,status,latency_bucket -->

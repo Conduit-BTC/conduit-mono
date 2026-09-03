@@ -1,3 +1,4 @@
+import { encodeProductNaddr } from "./protocol/product-reference"
 import { normalizePubkey, pubkeyToNpub } from "./utils"
 
 export type ConduitTelemetryApp = "market" | "merchant"
@@ -347,7 +348,9 @@ export function sanitizeTelemetryPath(pathname: string): string {
 
   const [section] = segments
   if (section === "products") {
-    return segments.length > 1 ? "/products/:productId" : "/products"
+    if (segments.length === 1) return "/products"
+    if (segments.length === 2) return getProductTelemetryPath(segments[1])
+    return "/products/:productId"
   }
   if (section === "store") return getStoreTelemetryPath(segments[1])
   if (section === "u") return "/u/:profileRef"
@@ -356,6 +359,16 @@ export function sanitizeTelemetryPath(pathname: string): string {
   if (!staticTelemetryRouteSegments.has(section)) return "/:param"
   if (segments.length === 1) return `/${section}`
   return `/${section}/:param`
+}
+
+function getProductTelemetryPath(productRef: string | undefined): string {
+  if (!productRef) return "/products/:productId"
+
+  try {
+    return `/products/${encodeProductNaddr(productRef)}`
+  } catch {
+    return "/products/:productId"
+  }
 }
 
 function getStoreTelemetryPath(storeRef: string | undefined): string {
@@ -801,9 +814,9 @@ function recordBrowserTelemetryPageViewUnsafe(
     pathname: input.pathname,
   })
   const sanitizedPath = sanitizeTelemetryPath(input.pathname)
-  // Keep the raw route only in memory for exact duplicate suppression. Using
-  // the sanitized provider URL here would collapse distinct dynamic routes
-  // such as `/products/a` and `/products/b` into one pageview.
+  // Keep the raw route only in memory for exact duplicate suppression.
+  // Invalid dynamic routes share a redacted provider URL, but distinct route
+  // transitions must still count as separate pageviews.
   const pageViewSignature = `${input.app}:${input.origin ?? window.location.origin}:${input.pathname}`
   if (lastPageViewSignature === pageViewSignature) return
   lastPageViewSignature = pageViewSignature

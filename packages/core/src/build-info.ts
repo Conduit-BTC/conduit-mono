@@ -10,6 +10,7 @@ export interface ConduitBuildInfo {
   publicConfigDigest: string | null
   publicFeatures: {
     dmCompatibilityOrderRoutingEnabled: boolean
+    livePresenceEnabled: boolean
   }
 }
 
@@ -46,6 +47,9 @@ export const conduitBuildInfo: ConduitBuildInfo = Object.freeze({
   publicFeatures: Object.freeze({
     dmCompatibilityOrderRoutingEnabled: ["1", "true", "on"].includes(
       (import.meta.env.VITE_DM_BOOTSTRAP_WRITES ?? "").trim().toLowerCase()
+    ),
+    livePresenceEnabled: ["1", "true", "on"].includes(
+      (import.meta.env.VITE_LIVE_PRESENCE_ENABLED ?? "").trim().toLowerCase()
     ),
   }),
 })

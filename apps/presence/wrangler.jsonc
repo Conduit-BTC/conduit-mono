@@ -1,0 +1,38 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "conduit-presence",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-03",
+  "workers_dev": false,
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "PRESENCE_ROOMS",
+        "class_name": "PresenceRoom",
+      },
+    ],
+  },
+  "exports": {
+    "PresenceRoom": {
+      "type": "durable-object",
+      "storage": "sqlite",
+    },
+  },
+  "observability": {
+    "enabled": false,
+  },
+  "env": {
+    "preview": {
+      "name": "conduit-presence-preview",
+      "workers_dev": true,
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "PRESENCE_ROOMS",
+            "class_name": "PresenceRoom",
+          },
+        ],
+      },
+    },
+  },
+}

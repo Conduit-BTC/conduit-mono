@@ -9,7 +9,7 @@ Provide aggregate proof of product usage and reliability without user surveillan
 1. Default-off telemetry in product clients.
 2. Aggregate metrics over user-level tracking.
 3. No persistent identifiers for active users in product analytics.
-4. Public commerce page identifiers may be used only as sanitized page context for aggregate storefront performance reporting.
+4. Public commerce page identifiers may be used only as sanitized page context for aggregate storefront and product performance reporting.
 5. No storage of message/order/payment content in telemetry systems.
 6. Product clients and telemetry stay cookieless.
 
@@ -28,11 +28,12 @@ wallet pubkeys, signer connection strings, NWC URIs, or any stable identifier
 that can reconstruct a viewer journey.
 
 Public page identity means an address already used to render a public commerce
-surface, such as a storefront route identified by a store npub. A public store
-npub may appear only in sanitized route context such as `page_path` or
-`page_url`, and only for aggregate storefront/page reporting. It must not be
-copied into custom identity fields, joined to active user identity, used for
-per-viewer drilldowns, or used to infer what that store owner is doing in an
+surface. This includes a storefront route identified by a store npub and a
+kind-30402 product route identified by a canonical public naddr. A public store
+npub or product naddr may appear only in sanitized route context such as
+`page_path` or `page_url`, and only for aggregate page reporting. It must not
+be copied into custom identity fields, joined to active user identity, used
+for per-viewer drilldowns, or used to infer what a merchant is doing in an
 authenticated session.
 
 ## Data Classes
@@ -57,6 +58,7 @@ Anonymous reliability, performance, and public commerce page counters:
 - Latency buckets (`<100ms`, `100-500ms`, `>500ms`)
 - Error counts by category
 - Storefront pageview and browse-action counts by sanitized public store route
+- Product pageview counts by sanitized canonical public product route
 
 Allowed fields:
 
@@ -78,8 +80,38 @@ Permitted public page context:
 
 - sanitized storefront route context may include the public store npub in
   `page_path` or `page_url`
-- product, profile, order, query string, unknown route, and active user
-  identifiers must remain redacted
+- sanitized product route context may include a canonical kind-30402 naddr in
+  `page_path` or `page_url`; canonicalization must remove relay hints
+- invalid product references must use `/products/:productId`
+- profile, order, query string, unknown route, and active user identifiers must
+  remain redacted
+
+## Historical Analytics and Live Presence
+
+Historical pageview analytics and live presence are separate systems.
+
+- Historical `$pageview` events may retain the permitted public page route
+  under the configured provider retention policy.
+- Historical dashboards must report pageviews or anonymous sessions. They must
+  not describe those metrics as exact concurrent visitors or unique people.
+- Live presence may count active connections for one public product or store
+  page. It must not persist visit history or send presence events to PostHog.
+- Live presence must not receive or reuse telemetry session IDs, pageview IDs,
+  active user identifiers, cookies, IP-derived identifiers, or fingerprints.
+- An exact live value means the current active connection count known to the
+  service, including the current visible page. Multiple tabs, browsers, or
+  devices can count separately.
+- Clients must disconnect when the page is hidden or offline and must honor
+  Global Privacy Control. A failed or unavailable count stays hidden.
+- Clients may send only a deployment-scoped opaque room hash. The service may
+  return only the current integer count and must not use durable storage.
+- The room hash reduces accidental identifier exposure in infrastructure URLs.
+  It is not authentication and does not hide a public page from a determined
+  observer.
+- Exact low counts expose activity timing and unauthenticated sockets can
+  inflate them. Exact presence stays enabled only on previews. Production and
+  staging remain disabled until a maintainer approves explicit privacy and
+  abuse controls, such as a minimum threshold and bounded count buckets.
 
 ## Public Zap Message Boundary
 
@@ -129,6 +161,7 @@ Expose only aggregate KPIs:
 
 - Weekly active merchants (aggregate)
 - Storefront page performance by public store route (aggregate)
+- Product page performance by canonical public product route (aggregate)
 - Weekly order-event count
 - Product catalog growth
 - Checkout success rate (aggregate)

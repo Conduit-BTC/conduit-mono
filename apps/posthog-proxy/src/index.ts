@@ -7,6 +7,7 @@ import {
   isAllowedBrowserTelemetryLabelValue,
 } from "@conduit/core/telemetry-contract"
 import type { BrowserTelemetryApp } from "@conduit/core/telemetry-contract"
+import { encodeProductNaddr } from "@conduit/core/protocol/product-reference"
 
 const POSTHOG_INGEST_ORIGIN = "https://us.i.posthog.com"
 const MAX_INGEST_BODY_BYTES = 1024 * 1024
@@ -113,6 +114,21 @@ const sanitizedStaticRouteSegments = new Set([
 ])
 const storeNpubPathPattern =
   /^\/store\/npub1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}$/
+const productNaddrPathPattern =
+  /^\/products\/naddr1q[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{74,481}$/
+const MAX_SANITIZED_ROUTE_PATH_LENGTH = 512
+const MAX_SANITIZED_PAGE_URL_LENGTH = 640
+
+function isCanonicalProductNaddrPath(value: string): boolean {
+  if (!productNaddrPathPattern.test(value)) return false
+
+  const naddr = value.slice("/products/".length)
+  try {
+    return encodeProductNaddr(naddr) === naddr
+  } catch {
+    return false
+  }
+}
 
 export interface PostHogProxyEnv {
   POSTHOG_PROJECT_TOKEN?: string
@@ -518,7 +534,12 @@ function isCanonicalIsoTimestamp(value: unknown): value is string {
  * must stay redacted and are rejected whole.
  */
 export function isSanitizedTelemetryRoutePath(value: unknown): value is string {
-  if (typeof value !== "string" || value.length > 128) return false
+  if (
+    typeof value !== "string" ||
+    value.length > MAX_SANITIZED_ROUTE_PATH_LENGTH
+  ) {
+    return false
+  }
   if (
     value === "/" ||
     value === "/:param" ||
@@ -530,6 +551,7 @@ export function isSanitizedTelemetryRoutePath(value: unknown): value is string {
   ) {
     return true
   }
+  if (isCanonicalProductNaddrPath(value)) return true
   if (storeNpubPathPattern.test(value)) return true
   const match = /^\/([a-z]+)(\/:param)?$/.exec(value)
   return match !== null && sanitizedStaticRouteSegments.has(match[1] ?? "")
@@ -540,7 +562,12 @@ function isSanitizedPagePath(value: unknown): value is string {
 }
 
 function isSanitizedPageUrl(value: unknown): value is string {
-  if (typeof value !== "string" || value.length > 256) return false
+  if (
+    typeof value !== "string" ||
+    value.length > MAX_SANITIZED_PAGE_URL_LENGTH
+  ) {
+    return false
+  }
 
   let url: URL
   try {
