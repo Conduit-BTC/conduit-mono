@@ -855,7 +855,7 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
   function openEdit(): void {
     if (!selectedMarket) return
     setEditingMarket(selectedMarket)
-    setPublishState("dirty")
+    setPublishState("idle")
     setPublishError("")
     setEditorOpen(true)
   }

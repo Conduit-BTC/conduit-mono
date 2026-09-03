@@ -107,6 +107,49 @@ describe("merchant organizer event market route", () => {
     expect(route).not.toContain("setSelectedReference(reference)")
   })
 
+  it("makes event authoring requirements and modal state explicit", async () => {
+    const route = await Bun.file("apps/merchant/src/routes/events.tsx").text()
+    const editor = await Bun.file(
+      "apps/merchant/src/components/OrganizerEventMarketEditor.tsx"
+    ).text()
+    const form = await Bun.file(
+      "apps/merchant/src/lib/event-market-form.ts"
+    ).text()
+    const publisher = await Bun.file(
+      "apps/merchant/src/components/EventProductPublisherDialog.tsx"
+    ).text()
+
+    expect(editor).toContain("Fields marked Required")
+    expect(editor).toContain("RequiredFieldLabel")
+    expect(editor).toContain("Paste a direct HTTPS image URL")
+    expect(editor).toContain("getOrganizerEventTimezoneOptions")
+    expect(editor).toContain("No changes to publish")
+    expect(editor).toContain("isOrganizerEventMarketFormDirty")
+    expect(form).toContain('"America/Chicago"')
+    expect(form).toContain("browserTimezone()")
+
+    const openEdit = route.slice(
+      route.indexOf("function openEdit(): void"),
+      route.indexOf("async function copyShareLink")
+    )
+    expect(openEdit).toContain('setPublishState("idle")')
+
+    const publishSuccess = publisher.slice(
+      publisher.indexOf("onSuccess: async (result) =>"),
+      publisher.indexOf(
+        "onError:",
+        publisher.indexOf("onSuccess: async (result) =>")
+      )
+    )
+    expect(publishSuccess).toContain(
+      "await onPublished(result.productCoordinate)"
+    )
+    expect(publishSuccess).toContain("onOpenChange(false)")
+    expect(publishSuccess.indexOf("onOpenChange(false)")).toBeGreaterThan(
+      publishSuccess.indexOf("await onPublished(result.productCoordinate)")
+    )
+  })
+
   it("keeps merchant booth pickup evidence on the merchant product graph", async () => {
     const adapter = await Bun.file(
       "apps/merchant/src/lib/event-market.ts"
