@@ -66,6 +66,21 @@ export interface PreparedOrganizerEventMarketForm {
 const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/
 const LOCAL_DATE_TIME_PATTERN =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/
+const DEFAULT_ORGANIZER_EVENT_TIMEZONES = [
+  "UTC",
+  "America/New_York",
+  "America/Chicago",
+  "America/Denver",
+  "America/Phoenix",
+  "America/Los_Angeles",
+  "America/Anchorage",
+  "Pacific/Honolulu",
+  "Europe/London",
+  "Europe/Berlin",
+  "Asia/Tokyo",
+  "Australia/Sydney",
+] as const
+
 function browserTimezone(): string {
   try {
     return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"
@@ -130,6 +145,15 @@ export function createEmptyOrganizerEventMarketForm(): OrganizerEventMarketFormV
   }
 }
 
+export function isOrganizerEventMarketFormDirty(
+  form: OrganizerEventMarketFormValues,
+  initialForm: OrganizerEventMarketFormValues
+): boolean {
+  return (
+    Object.keys(form) as Array<keyof OrganizerEventMarketFormValues>
+  ).some((field) => form[field] !== initialForm[field])
+}
+
 function isValidCalendarDate(value: string): boolean {
   const match = DATE_PATTERN.exec(value)
   if (!match) return false
@@ -150,6 +174,23 @@ function isValidTimezone(timezone: string): boolean {
   } catch {
     return false
   }
+}
+
+export function getOrganizerEventTimezoneOptions(
+  ...preferredTimezones: string[]
+): string[] {
+  const candidates = [
+    ...preferredTimezones,
+    browserTimezone(),
+    ...DEFAULT_ORGANIZER_EVENT_TIMEZONES,
+  ]
+  return Array.from(
+    new Set(
+      candidates
+        .map((timezone) => timezone.trim())
+        .filter((timezone) => timezone && isValidTimezone(timezone))
+    )
+  )
 }
 
 function timezoneParts(epochMs: number, timezone: string) {

@@ -67,7 +67,7 @@ import {
   type OrganizerCollectionMembershipAction,
   type SavedOrganizerEventMarketReference,
 } from "../lib/event-market-workflow"
-import { getEventMarketUrl } from "../lib/market-links"
+import { parseMerchantEventsSearch } from "../lib/market-links"
 import {
   acknowledgeOrganizerHandoff,
   loadEventMarketHandoffDeliveries,
@@ -77,8 +77,9 @@ import {
 import { requireAuth } from "../lib/auth"
 
 export const Route = createFileRoute("/events")({
-  beforeLoad: () => {
-    requireAuth()
+  validateSearch: parseMerchantEventsSearch,
+  beforeLoad: ({ search }) => {
+    requireAuth({ event: search.event })
   },
   component: EventsPage,
 })
@@ -107,6 +108,7 @@ function referenceLabel(
 
 function EventsPage() {
   const { pubkey } = useAuth()
+  const { event } = Route.useSearch()
   const merchantPubkey = pubkey ?? ""
 
   return (
@@ -134,6 +136,7 @@ function EventsPage() {
           <FindEventsPanel
             key={merchantPubkey}
             merchantPubkey={merchantPubkey}
+            initialReference={event}
           />
         </TabsContent>
         <TabsContent value="mine" className="mt-0">
@@ -147,19 +150,71 @@ function EventsPage() {
   )
 }
 
-function FindEventsPanel({ merchantPubkey }: { merchantPubkey: string }) {
+function loadInitialDiscoveredSelection(
+  merchantPubkey: string,
+  initialReference: string | undefined
+): {
+  references: SavedOrganizerEventMarketReference[]
+  selectedReference: string
+} {
+  const references = loadSavedDiscoveredEventMarkets(merchantPubkey)
+  if (!initialReference) return { references, selectedReference: "" }
+  const saved = findSavedOrganizerEventMarketReference(
+    references,
+    initialReference
+  )
+  if (saved) {
+    return { references, selectedReference: saved.reference }
+  }
+  return {
+    references: [
+      { reference: initialReference, savedAt: Date.now() },
+      ...references,
+    ],
+    selectedReference: initialReference,
+  }
+}
+
+function FindEventsPanel({
+  merchantPubkey,
+  initialReference,
+}: {
+  merchantPubkey: string
+  initialReference?: string
+}) {
+  const [initialSelection] = useState(() =>
+    loadInitialDiscoveredSelection(merchantPubkey, initialReference)
+  )
   const [savedReferences, setSavedReferences] = useState<
     SavedOrganizerEventMarketReference[]
-  >(() => loadSavedDiscoveredEventMarkets(merchantPubkey))
-  const [selectedReferenceOverride, setSelectedReference] = useState("")
+  >(initialSelection.references)
+  const [selectedReferenceOverride, setSelectedReference] = useState(
+    initialSelection.selectedReference
+  )
   const [importValue, setImportValue] = useState("")
   const [importError, setImportError] = useState("")
+
+  useEffect(() => {
+    if (!initialReference) return
+    const saved = rememberDiscoveredEventMarket(merchantPubkey, {
+      reference: initialReference,
+      savedAt: Date.now(),
+    })
+    const selected = findSavedOrganizerEventMarketReference(
+      saved,
+      initialReference
+    )
+    if (saved.length > 0) setSavedReferences(saved)
+    setSelectedReference(selected?.reference ?? initialReference)
+  }, [initialReference, merchantPubkey])
 
   const discoveryQuery = useQuery({
     queryKey: ["merchant-followed-event-markets", merchantPubkey || "none"],
     enabled: !!merchantPubkey,
-    queryFn: () => discoverFollowedEventMarkets(merchantPubkey),
+    queryFn: ({ signal }) =>
+      discoverFollowedEventMarkets(merchantPubkey, { signal }),
     refetchInterval: 60_000,
+    retry: false,
   })
   const discoveredMarkets = useMemo(
     () => discoveryQuery.data?.markets ?? [],
@@ -171,32 +226,23 @@ function FindEventsPanel({ merchantPubkey }: { merchantPubkey: string }) {
     savedReferences[0]?.reference ||
     ""
 
-  const selectedIdentity = useMemo(() => {
-    if (!selectedReference) return null
-    try {
-      return parseOrganizerEventMarketReference(selectedReference)
-    } catch {
-      return null
-    }
-  }, [selectedReference])
-  const selectedFromDiscovery = selectedIdentity
-    ? discoveredMarkets.find(
-        (market) => market.collectionCoordinate === selectedIdentity.coordinate
-      )
-    : undefined
   const selectedMarketQuery = useQuery({
     queryKey: [
       "merchant-discovered-event-market",
       merchantPubkey || "none",
       selectedReference || "none",
     ],
-    enabled: !!merchantPubkey && !!selectedReference && !selectedFromDiscovery,
-    queryFn: () =>
-      resolveOrganizerEventMarket(selectedReference, undefined, merchantPubkey),
+    enabled: !!merchantPubkey && !!selectedReference,
+    queryFn: ({ signal }) =>
+      resolveOrganizerEventMarket(
+        selectedReference,
+        undefined,
+        merchantPubkey,
+        signal
+      ),
     retry: false,
   })
-  const selectedMarket =
-    selectedFromDiscovery ?? selectedMarketQuery.data ?? null
+  const selectedMarket = selectedMarketQuery.data ?? null
 
   const allReferences = useMemo(() => {
     const next = [...savedReferences]
@@ -329,20 +375,57 @@ function FindEventsPanel({ merchantPubkey }: { merchantPubkey: string }) {
         </CardContent>
       </Card>
 
-      {discoveryQuery.data &&
-        (discoveryQuery.data.coverage !== "complete" ||
-          discoveryQuery.data.truncated ||
-          discoveryQuery.data.failedOrganizerCount > 0) && (
-          <div className="rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 text-sm leading-6 text-[var(--text-primary)]">
+      {discoveryQuery.isPending && (
+        <div
+          className="flex items-center gap-2 rounded-xl border border-[var(--border-subtle)] px-4 py-3 text-sm text-[var(--text-muted)]"
+          role="status"
+          aria-live="polite"
+        >
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Checking followed organizers on their planned relays…
+        </div>
+      )}
+
+      {discoveryQuery.data?.state === "partial" && (
+        <div
+          className="flex flex-col gap-3 rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 text-sm leading-6 text-[var(--text-primary)] sm:flex-row sm:items-center sm:justify-between"
+          role="status"
+        >
+          <span>
             Event discovery is a partial relay view. Open a known event link if
             it is not listed; no missing event is inferred from this result.
-          </div>
-        )}
+          </span>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={discoveryQuery.isFetching}
+            onClick={() => void discoveryQuery.refetch()}
+          >
+            Retry event discovery
+          </Button>
+        </div>
+      )}
 
-      {discoveryQuery.isError && (
-        <div className="rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 text-sm leading-6 text-[var(--text-primary)]">
-          Followed-event discovery is unavailable. Saved event links can still
-          be opened directly.
+      {(discoveryQuery.isError ||
+        discoveryQuery.data?.state === "unavailable") && (
+        <div
+          className="flex flex-col gap-3 rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 text-sm leading-6 text-[var(--text-primary)] sm:flex-row sm:items-center sm:justify-between"
+          role="alert"
+        >
+          <span>
+            Followed-event discovery is unavailable. Saved event links can still
+            be opened directly.
+          </span>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={discoveryQuery.isFetching}
+            onClick={() => void discoveryQuery.refetch()}
+          >
+            Retry event discovery
+          </Button>
         </div>
       )}
 
@@ -370,6 +453,7 @@ function FindEventsPanel({ merchantPubkey }: { merchantPubkey: string }) {
                     type="button"
                     variant="outline"
                     className="w-full"
+                    aria-label={`View ${market.title}`}
                     onClick={() => rememberAndSelect(market)}
                   >
                     View event
@@ -388,11 +472,14 @@ function FindEventsPanel({ merchantPubkey }: { merchantPubkey: string }) {
             <CardContent className="flex flex-col items-center px-6 py-12 text-center">
               <Search className="h-8 w-8 text-[var(--text-muted)]" />
               <h2 className="mt-4 text-balance text-lg font-semibold text-[var(--text-primary)]">
-                No events opened yet
+                {discoveryQuery.data?.state === "complete_empty"
+                  ? "No current followed-organizer events found"
+                  : "No followed events found in this relay view"}
               </h2>
               <p className="mt-2 max-w-lg text-pretty text-sm leading-6 text-[var(--text-muted)]">
-                Follow an organizer or paste an event link above. This bounded
-                view does not claim that no other events exist.
+                {discoveryQuery.data?.state === "complete_empty"
+                  ? "This bounded followed-organizer check completed. Paste a known event link above to open it directly; no global event absence is inferred."
+                  : "This bounded view is incomplete. Retry discovery or paste a known event link above; no missing event is inferred from this result."}
               </p>
             </CardContent>
           </Card>
@@ -460,7 +547,7 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
   const [publishState, setPublishState] =
     useState<SignedActionStatusState>("idle")
   const [publishError, setPublishError] = useState("")
-  const [copied, setCopied] = useState(false)
+  const [copiedUrl, setCopiedUrl] = useState<string | null>(null)
   const [handoffDeliveryRevision, setHandoffDeliveryRevision] = useState(0)
   const [deliveriesByReference, setDeliveriesByReference] = useState<
     Record<string, MerchantOrganizerRecordDelivery[]>
@@ -855,18 +942,21 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
   function openEdit(): void {
     if (!selectedMarket) return
     setEditingMarket(selectedMarket)
-    setPublishState("dirty")
+    setPublishState("idle")
     setPublishError("")
     setEditorOpen(true)
   }
 
-  async function copyShareLink(market: MerchantOrganizerEventMarket) {
+  async function copyShareLink(url: string) {
     try {
-      await navigator.clipboard.writeText(getEventMarketUrl(market.naddr))
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 2_000)
+      await navigator.clipboard.writeText(url)
+      setCopiedUrl(url)
+      window.setTimeout(
+        () => setCopiedUrl((current) => (current === url ? null : current)),
+        2_000
+      )
     } catch {
-      setCopied(false)
+      setCopiedUrl(null)
     }
   }
 
@@ -1037,7 +1127,7 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
           <OrganizerEventMarketPanel
             market={selectedMarket}
             deliveries={deliveries}
-            copied={copied}
+            copiedUrl={copiedUrl}
             refreshing={
               marketsQuery.isFetching || selectedMarketQuery.isFetching
             }
@@ -1047,7 +1137,7 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
                 ? (retryMutation.variables?.record ?? null)
                 : null
             }
-            onCopy={() => void copyShareLink(selectedMarket)}
+            onCopy={(url) => void copyShareLink(url)}
             onEdit={openEdit}
             onRefresh={() => {
               void refreshMarketQueries(selectedReference)

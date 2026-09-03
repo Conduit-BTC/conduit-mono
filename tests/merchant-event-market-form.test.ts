@@ -3,6 +3,8 @@ import {
   createEmptyOrganizerEventMarketForm,
   getOrganizerEventEndMinimum,
   getOrganizerEventStartMinimum,
+  getOrganizerEventTimezoneOptions,
+  isOrganizerEventMarketFormDirty,
   localDateTimeToEpochSeconds,
   prepareOrganizerEventMarketForm,
   slugifyEventMarketTitle,
@@ -167,6 +169,33 @@ describe("merchant organizer event form", () => {
         "2026-08-15T12:31"
       )
     ).toBe("2026-08-15T12:32")
+  })
+
+  it("offers a bounded client timezone list that includes Chicago", () => {
+    const options = getOrganizerEventTimezoneOptions(
+      "Pacific/Auckland",
+      "Not/A_Timezone"
+    )
+
+    expect(options[0]).toBe("Pacific/Auckland")
+    expect(options).toContain("America/Chicago")
+    expect(options).not.toContain("Not/A_Timezone")
+    expect(new Set(options).size).toBe(options.length)
+    expect(options.length).toBeLessThanOrEqual(16)
+  })
+
+  it("marks an update dirty only while a form value differs", () => {
+    const initial = validForm()
+    const changed = { ...initial, title: "Updated community market" }
+
+    expect(isOrganizerEventMarketFormDirty(initial, initial)).toBe(false)
+    expect(isOrganizerEventMarketFormDirty(changed, initial)).toBe(true)
+    expect(
+      isOrganizerEventMarketFormDirty(
+        { ...changed, title: initial.title },
+        initial
+      )
+    ).toBe(false)
   })
 
   it("generates stable public coordinate slugs without location coupling", () => {

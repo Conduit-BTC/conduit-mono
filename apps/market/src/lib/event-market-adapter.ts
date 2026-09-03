@@ -2,16 +2,25 @@ import {
   decodeEventMarketReference,
   encodeEventMarketNaddr,
   getEventMarket,
+  getProductEventMarketFulfillmentClaims,
   getProductsByIds,
+  hasExactLiveProductAvailabilityEvidence,
+  hasMarketVisibleListingImage,
+  isMerchantHiddenOnlyListingSafetyAllowed,
   normalizeCommercePrice,
+  prepareProductCatalog,
+  reconcileContextualListingSafety,
   resolveEventMarketProductFulfillment,
   resolveEventMarketProductParticipation,
   type EventMarketResolution,
   type EventMarketResolutionState,
   type CommerceProductRecord,
+  type ProductEventMarketFulfillmentClaim,
+  type ListingSafetyContext,
   type PreparedProductFamily,
   type PricingRateInput,
   type Product,
+  type ProductsByIdsResult,
 } from "@conduit/core"
 import type {
   CartItem,
@@ -24,6 +33,7 @@ const EVENT_COLLECTION_KIND = 30405
 export type EventCatalogProduct = {
   product: Product
   family?: PreparedProductFamily<CommerceProductRecord>
+  evidenceState: "live" | "retained"
   participation: ReturnType<typeof resolveEventMarketProductParticipation>
   pickupFulfillment: CartPickupFulfillment | null
   /** Exact child snapshots only; parent acceptance never authorizes a child. */
@@ -40,6 +50,10 @@ export type EventCatalog = {
   pickup?: EventMarketResolution["pickup"]
   pickups: EventMarketResolution["pickups"]
   products: EventCatalogProduct[]
+  /** Organizer-accepted coordinates after stronger known negative evidence. */
+  acceptedProductCount: number
+  /** Accepted coordinates with neither safe retained nor current product data. */
+  unresolvedProductCoordinates: string[]
   productReadState: "not_requested" | "ready" | "partial" | "unavailable"
   purchaseReady: boolean
 }
@@ -51,11 +65,8 @@ export type PickupFreshnessResult =
       reason: string
     }
 
-export type ProductEventMarketCandidate = {
-  collectionCoordinate: string
+export type ProductEventMarketCandidate = ProductEventMarketFulfillmentClaim & {
   canonicalNaddr: string
-  collectionReferencedForFulfillment: boolean
-  directPickupCoordinates: string[]
 }
 
 export type ProductCartFulfillmentResolution =
@@ -94,6 +105,8 @@ function unavailableCatalog(
     state,
     reference,
     products: [],
+    acceptedProductCount: 0,
+    unresolvedProductCoordinates: [],
     pickups: [],
     productReadState: "not_requested",
     purchaseReady: false,
@@ -221,18 +234,240 @@ export function buildEventCatalogFamilyPickupFulfillments(
 }
 
 function productReadIsLive(
-  result: Awaited<ReturnType<typeof getProductsByIds>>,
+  result: Pick<ProductsByIdsResult, "diagnostics">,
   productCoordinate: string
 ): boolean {
   const diagnostic = result.diagnostics.find(
     (entry) => entry.productId === productCoordinate
   )
-  return (
-    result.meta.source !== "local_cache" &&
-    !result.meta.stale &&
-    diagnostic?.issue === null &&
-    diagnostic.coverage?.listing !== "unavailable"
+  return hasExactLiveProductAvailabilityEvidence(diagnostic, productCoordinate)
+}
+
+function acceptedEvidenceFor(
+  resolution: EventMarketResolution,
+  productCoordinate: string
+) {
+  return resolution.acceptedProductEvidence.find(
+    (evidence) => evidence.productCoordinate === productCoordinate
   )
+}
+
+/**
+ * Compare a selected product revision with the exact merchant revision that
+ * established two-sided acceptance. Positive means the selected record wins
+ * NIP-01 replacement ordering; negative means it predates that evidence.
+ */
+function compareRecordToAcceptedEvidence(
+  record: CommerceProductRecord,
+  resolution: EventMarketResolution
+): number | null {
+  const acceptedEvidence = acceptedEvidenceFor(resolution, record.product.id)
+  if (!acceptedEvidence) return null
+
+  const recordCreatedAt = record.eventCreatedAt * 1_000
+  if (recordCreatedAt !== acceptedEvidence.createdAt) {
+    return recordCreatedAt > acceptedEvidence.createdAt ? 1 : -1
+  }
+
+  const recordEventId = record.eventId.toLowerCase()
+  const acceptedEventId = acceptedEvidence.eventId.toLowerCase()
+  if (recordEventId === acceptedEventId) return 0
+
+  // NIP-01 retains the lexicographically lowest id at equal timestamps.
+  return recordEventId < acceptedEventId ? 1 : -1
+}
+
+function productRecordIsKnownWithdrawal(
+  record: CommerceProductRecord,
+  resolution: EventMarketResolution,
+  participation: ReturnType<typeof resolveEventMarketProductParticipation>,
+  live: boolean
+): boolean {
+  if (participation.requested) return false
+
+  const comparison = compareRecordToAcceptedEvidence(record, resolution)
+  // Without comparable two-sided evidence, only current live product evidence
+  // is strong enough to call the participation request withdrawn.
+  if (comparison === null) return live
+  return comparison > 0
+}
+
+function productRecordCanRepresentAcceptedEvidence(
+  record: CommerceProductRecord,
+  resolution: EventMarketResolution
+): boolean {
+  const participation = resolveEventMarketProductParticipation(
+    record.product,
+    resolution
+  )
+  const comparison = compareRecordToAcceptedEvidence(record, resolution)
+  return (
+    participation.requested &&
+    participation.accepted &&
+    comparison !== null &&
+    comparison >= 0
+  )
+}
+
+function hasExactEventCatalogClaim(
+  product: Product,
+  resolution: EventMarketResolution
+): boolean {
+  const participation = resolveEventMarketProductParticipation(
+    product,
+    resolution
+  )
+  return (
+    participation.requested &&
+    participation.accepted &&
+    resolveEventMarketProductFulfillment(product, resolution).status ===
+      "resolved"
+  )
+}
+
+function getEventCatalogSafety(
+  record: CommerceProductRecord,
+  context?: ListingSafetyContext
+) {
+  return reconcileContextualListingSafety(
+    record.product,
+    record.safety,
+    context
+  )
+}
+
+function isEventCatalogRecordSafetyAllowed(
+  record: CommerceProductRecord,
+  resolution: EventMarketResolution,
+  context?: ListingSafetyContext,
+  allowUnacceptedMerchantHidden = false
+): boolean {
+  const safety = getEventCatalogSafety(record, context)
+  if (
+    safety.source === "external_decision" ||
+    safety.reasons.some(
+      (reason) =>
+        reason.code === "external_decision" || reason.code === "pending_review"
+    )
+  ) {
+    return false
+  }
+
+  if (safety.state === "active" || safety.state === "flagged") return true
+  if (
+    safety.state !== "hidden" ||
+    (safety.source !== "client_rules" &&
+      safety.source !== "merchant_visibility") ||
+    (!allowUnacceptedMerchantHidden &&
+      !hasExactEventCatalogClaim(record.product, resolution))
+  ) {
+    return false
+  }
+
+  return isMerchantHiddenOnlyListingSafetyAllowed(safety)
+}
+
+function prepareEventCatalogFamily(
+  record: CommerceProductRecord,
+  resolution: EventMarketResolution,
+  liveCoordinates: ReadonlySet<string>
+): CommerceProductRecord | null {
+  if (record.product.type !== "variable" || record.family?.state !== "ready") {
+    return null
+  }
+
+  const structuralParentContext: ListingSafetyContext = {
+    variationGroupRole: "parent",
+    // Image eligibility is derived below. This pass only establishes that the
+    // parent is otherwise safe enough to provide family structure.
+    hasGroupImage: true,
+  }
+  if (
+    !isEventCatalogRecordSafetyAllowed(
+      record,
+      resolution,
+      structuralParentContext,
+      true
+    )
+  ) {
+    return null
+  }
+
+  const ownImageChildContext: ListingSafetyContext = {
+    variationGroupRole: "variation",
+    hasGroupImage: true,
+  }
+  const acceptedChildren = record.family.children.filter(
+    (child) =>
+      hasExactEventCatalogClaim(child.product, resolution) &&
+      productRecordCanRepresentAcceptedEvidence(child, resolution)
+  )
+  const hasEligibleChildImage = acceptedChildren.some(
+    (child) =>
+      liveCoordinates.has(child.product.id) &&
+      hasMarketVisibleListingImage(child.product) &&
+      isEventCatalogRecordSafetyAllowed(child, resolution, ownImageChildContext)
+  )
+  const hasGroupImage =
+    (liveCoordinates.has(record.product.id) &&
+      hasMarketVisibleListingImage(record.product)) ||
+    hasEligibleChildImage
+  const parentContext: ListingSafetyContext = {
+    variationGroupRole: "parent",
+    hasGroupImage,
+  }
+  if (
+    !isEventCatalogRecordSafetyAllowed(record, resolution, parentContext, true)
+  ) {
+    return null
+  }
+
+  const childContext: ListingSafetyContext = {
+    variationGroupRole: "variation",
+    hasGroupImage,
+  }
+  const eligibleChildren = acceptedChildren
+    .filter((child) =>
+      isEventCatalogRecordSafetyAllowed(child, resolution, childContext)
+    )
+    .map((child) => ({
+      ...child,
+      safety: getEventCatalogSafety(child, childContext),
+    }))
+  const prepared = prepareProductCatalog(
+    [
+      {
+        ...record,
+        family: undefined,
+        safety: getEventCatalogSafety(record, parentContext),
+      },
+      ...eligibleChildren,
+    ],
+    record.family.readEvidence
+  ).items[0]
+  if (prepared?.kind !== "family" || prepared.family.state !== "ready") {
+    return null
+  }
+  return {
+    ...prepared.family.parent,
+    family: prepared.family,
+  }
+}
+
+/**
+ * Exact event reads may intentionally recover merchant-hidden event products,
+ * but they must not bypass the rest of Market's listing-safety decisions.
+ */
+export function isEventCatalogRecordRenderable(
+  record: CommerceProductRecord,
+  resolution: EventMarketResolution,
+  preparedVariation = false
+): boolean {
+  if (record.product.type === "variation" && !preparedVariation) return false
+  if (record.product.type === "variable" && record.family?.state !== "ready") {
+    return false
+  }
+  return isEventCatalogRecordSafetyAllowed(record, resolution)
 }
 
 export function projectEventCatalogProducts({
@@ -248,9 +483,60 @@ export function projectEventCatalogProducts({
   resolution: EventMarketResolution
   rateInput?: PricingRateInput
 }): EventCatalogProduct[] {
-  const recordsByCoordinate = new Map(
-    records.map((record) => [record.product.id, record])
+  const recordsByCoordinate = new Map<string, CommerceProductRecord>()
+  const familyChildCoordinates = new Set(
+    records.flatMap(
+      (record) => record.family?.children.map((child) => child.product.id) ?? []
+    )
   )
+  for (const record of records) {
+    if (record.product.type === "simple") {
+      if (
+        productRecordCanRepresentAcceptedEvidence(record, resolution) &&
+        isEventCatalogRecordRenderable(record, resolution)
+      ) {
+        recordsByCoordinate.set(record.product.id, record)
+      }
+      continue
+    }
+    if (record.product.type === "variation") {
+      // When family context is available, only the family projection may
+      // authorize a child. Raw child records can carry safety contextualized
+      // by cache-only siblings that are removed from the exact-live view.
+      if (familyChildCoordinates.has(record.product.id)) continue
+      // Buyer-scoped exact reads may return an accepted child without its
+      // unaccepted parent. Core has already contextualized family safety for
+      // this atomic record; keep the exact child instead of requiring the
+      // parent coordinate to be accepted too.
+      if (
+        productRecordCanRepresentAcceptedEvidence(record, resolution) &&
+        isEventCatalogRecordRenderable(record, resolution, true)
+      ) {
+        recordsByCoordinate.set(record.product.id, record)
+      }
+      continue
+    }
+    const prepared = prepareEventCatalogFamily(
+      record,
+      resolution,
+      liveCoordinates
+    )
+    if (!prepared?.family) continue
+    if (
+      productRecordCanRepresentAcceptedEvidence(prepared, resolution) &&
+      isEventCatalogRecordRenderable(prepared, resolution)
+    ) {
+      recordsByCoordinate.set(prepared.product.id, prepared)
+    }
+    for (const child of prepared.family.children) {
+      if (
+        productRecordCanRepresentAcceptedEvidence(child, resolution) &&
+        isEventCatalogRecordRenderable(child, resolution, true)
+      ) {
+        recordsByCoordinate.set(child.product.id, child)
+      }
+    }
+  }
   const familyPickupFulfillmentsByParent = new Map<
     string,
     Record<string, CartPickupFulfillment | null>
@@ -259,19 +545,23 @@ export function projectEventCatalogProducts({
 
   for (const coordinate of requested) {
     const record = recordsByCoordinate.get(coordinate)
-    if (!record?.family || !liveCoordinates.has(coordinate)) continue
+    if (!record?.family) continue
 
-    const familyPickupFulfillments = buildEventCatalogFamilyPickupFulfillments(
-      record.family,
-      resolution,
-      rateInput
+    const familyPickupFulfillments = Object.fromEntries(
+      Object.entries(
+        buildEventCatalogFamilyPickupFulfillments(
+          record.family,
+          resolution,
+          rateInput
+        )
+      ).map(([childCoordinate, fulfillment]) => [
+        childCoordinate,
+        liveCoordinates.has(childCoordinate) ? fulfillment : null,
+      ])
     )
     familyPickupFulfillmentsByParent.set(coordinate, familyPickupFulfillments)
     for (const child of record.family.children) {
-      if (
-        liveCoordinates.has(child.product.id) &&
-        familyPickupFulfillments[child.product.id]
-      ) {
+      if (requested.includes(child.product.id)) {
         foldedChildCoordinates.add(child.product.id)
       }
     }
@@ -279,29 +569,39 @@ export function projectEventCatalogProducts({
 
   return requested.flatMap<EventCatalogProduct>((coordinate) => {
     const record = recordsByCoordinate.get(coordinate)
-    if (
-      !record ||
-      !liveCoordinates.has(coordinate) ||
-      foldedChildCoordinates.has(coordinate)
-    ) {
+    if (!record || foldedChildCoordinates.has(coordinate)) {
       return []
     }
 
     const { product } = record
+    const live = liveCoordinates.has(coordinate)
+    const participation = resolveEventMarketProductParticipation(
+      product,
+      resolution
+    )
+    // A selected signed listing revision that no longer requests this
+    // collection is stronger negative evidence than older organizer-retained
+    // acceptance, even when the latest relay read could not reconfirm it.
+    if (
+      productRecordIsKnownWithdrawal(record, resolution, participation, live)
+    ) {
+      return []
+    }
+
     return [
       {
         product,
         family: record.family,
-        participation: resolveEventMarketProductParticipation(
-          product,
-          resolution
-        ),
-        pickupFulfillment: buildPickupFulfillmentSnapshot(
-          product,
-          resolution,
-          record,
-          rateInput
-        ),
+        evidenceState: live ? "live" : "retained",
+        participation,
+        pickupFulfillment: live
+          ? buildPickupFulfillmentSnapshot(
+              product,
+              resolution,
+              record,
+              rateInput
+            )
+          : null,
         familyPickupFulfillments:
           familyPickupFulfillmentsByParent.get(coordinate),
       },
@@ -309,16 +609,41 @@ export function projectEventCatalogProducts({
   })
 }
 
-async function hydrateAcceptedProducts(
-  resolution: EventMarketResolution,
-  rateInput: PricingRateInput
-): Promise<Pick<EventCatalog, "products" | "productReadState">> {
+function productReadIsDefinitivelyAbsent(
+  result: ProductsByIdsResult,
+  productCoordinate: string
+): boolean {
+  const issue = result.diagnostics.find(
+    (entry) => entry.productId === productCoordinate
+  )?.issue
+  return issue === "invalid_product_reference" || issue === "listing_filtered"
+}
+
+export function projectEventCatalogHydration({
+  resolution,
+  result,
+  rateInput = null,
+}: {
+  resolution: EventMarketResolution
+  result: ProductsByIdsResult
+  rateInput?: PricingRateInput
+}): Pick<
+  EventCatalog,
+  | "products"
+  | "acceptedProductCount"
+  | "unresolvedProductCoordinates"
+  | "productReadState"
+> {
   const requested = resolution.acceptedProductCoordinates
   if (requested.length === 0) {
-    return { products: [], productReadState: "ready" }
+    return {
+      products: [],
+      acceptedProductCount: 0,
+      unresolvedProductCoordinates: [],
+      productReadState: "ready",
+    }
   }
 
-  const result = await getProductsByIds(requested)
   const recordsByCoordinate = new Map(
     result.data.map((record) => [record.product.id, record])
   )
@@ -328,23 +653,91 @@ async function hydrateAcceptedProducts(
       return !!record && productReadIsLive(result, coordinate)
     })
   )
+  const omittedCoordinates = new Set(
+    requested.filter((coordinate) => {
+      if (productReadIsDefinitivelyAbsent(result, coordinate)) return true
+      const record = recordsByCoordinate.get(coordinate)
+      if (!record) return false
+      const participation = resolveEventMarketProductParticipation(
+        record.product,
+        resolution
+      )
+      return productRecordIsKnownWithdrawal(
+        record,
+        resolution,
+        participation,
+        liveCoordinates.has(coordinate)
+      )
+    })
+  )
+  const displayCoordinates = requested.filter(
+    (coordinate) => !omittedCoordinates.has(coordinate)
+  )
   const products = projectEventCatalogProducts({
-    requested,
+    requested: displayCoordinates,
     records: result.data,
     liveCoordinates,
     resolution,
     rateInput,
   })
+  const representedCoordinates = new Set(
+    products.flatMap((entry) => [
+      entry.product.id,
+      ...(entry.family?.children.map((child) => child.product.id) ?? []),
+    ])
+  )
+  const unresolvedProductCoordinates = displayCoordinates.filter(
+    (coordinate) => !representedCoordinates.has(coordinate)
+  )
+  const uncertainCoordinates = displayCoordinates.filter(
+    (coordinate) => !liveCoordinates.has(coordinate)
+  )
 
   return {
     products,
+    acceptedProductCount: displayCoordinates.length,
+    unresolvedProductCoordinates,
     productReadState:
-      liveCoordinates.size === requested.length
+      uncertainCoordinates.length === 0 &&
+      unresolvedProductCoordinates.length === 0
         ? "ready"
-        : result.meta.source === "local_cache" || result.meta.stale
+        : liveCoordinates.size === 0 &&
+            (result.meta.source === "local_cache" || result.meta.stale)
           ? "unavailable"
           : "partial",
   }
+}
+
+async function hydrateAcceptedProducts(
+  resolution: EventMarketResolution,
+  rateInput: PricingRateInput
+): Promise<
+  Pick<
+    EventCatalog,
+    | "products"
+    | "acceptedProductCount"
+    | "unresolvedProductCoordinates"
+    | "productReadState"
+  >
+> {
+  const requested = resolution.acceptedProductCoordinates
+  if (requested.length === 0) {
+    return {
+      products: [],
+      acceptedProductCount: 0,
+      unresolvedProductCoordinates: [],
+      productReadState: "ready",
+    }
+  }
+
+  const result = await getProductsByIds(requested, {
+    includeMerchantHiddenProductIds: requested,
+  })
+  return projectEventCatalogHydration({
+    resolution,
+    result,
+    rateInput,
+  })
 }
 
 export async function loadEventCatalog(
@@ -369,6 +762,8 @@ export async function loadEventCatalog(
     pickup: resolution.pickup,
     pickups: resolution.pickups,
     products: [],
+    acceptedProductCount: resolution.acceptedProductCoordinates.length,
+    unresolvedProductCoordinates: [],
     productReadState: "not_requested",
     purchaseReady: false,
   }
@@ -394,10 +789,6 @@ export async function loadEventCatalog(
   }
 }
 
-function uniqueCoordinates(values: readonly string[]): string[] {
-  return Array.from(new Set(values))
-}
-
 /**
  * Find only references that could express the event-market extension. An
  * ordinary kind-30406 option owned by a different author is regular shipping,
@@ -406,62 +797,10 @@ function uniqueCoordinates(values: readonly string[]): string[] {
 export function getProductEventMarketCandidates(
   product: Product
 ): ProductEventMarketCandidate[] {
-  if (product.format !== "physical") return []
-
-  const collections = uniqueCoordinates(product.collectionRefs ?? [])
-    .map((reference) =>
-      decodeEventMarketReference(reference, [EVENT_COLLECTION_KIND])
-    )
-    .filter((reference): reference is NonNullable<typeof reference> => {
-      return reference !== null
-    })
-  if (collections.length === 0) return []
-
-  const shippingReferences = uniqueCoordinates([
-    ...(product.shippingOptionRefs?.map((reference) => reference.coordinate) ??
-      []),
-    ...(product.shippingOptionId ? [product.shippingOptionId] : []),
-  ])
-
-  return collections.flatMap((collection) => {
-    let collectionReferencedForFulfillment = false
-    const directPickupCoordinates: string[] = []
-    for (const reference of shippingReferences) {
-      const collectionReference = decodeEventMarketReference(reference, [
-        EVENT_COLLECTION_KIND,
-      ])
-      if (collectionReference?.coordinate === collection.coordinate) {
-        collectionReferencedForFulfillment = true
-        continue
-      }
-
-      const pickupReference = decodeEventMarketReference(reference, [30406])
-      if (
-        pickupReference &&
-        (pickupReference.authorPubkey === collection.authorPubkey ||
-          pickupReference.authorPubkey === product.pubkey.toLowerCase()) &&
-        pickupReference.coordinate !== collection.coordinate
-      ) {
-        directPickupCoordinates.push(pickupReference.coordinate)
-      }
-    }
-
-    if (
-      !collectionReferencedForFulfillment &&
-      directPickupCoordinates.length === 0
-    ) {
-      return []
-    }
-
-    return [
-      {
-        collectionCoordinate: collection.coordinate,
-        canonicalNaddr: encodeEventMarketNaddr(collection.coordinate),
-        collectionReferencedForFulfillment,
-        directPickupCoordinates: uniqueCoordinates(directPickupCoordinates),
-      },
-    ]
-  })
+  return getProductEventMarketFulfillmentClaims(product).map((claim) => ({
+    ...claim,
+    canonicalNaddr: encodeEventMarketNaddr(claim.collectionCoordinate),
+  }))
 }
 
 function directPickupClaimMatchesCollection(
@@ -475,8 +814,6 @@ function directPickupClaimMatchesCollection(
     )
   }
 
-  if (candidate.collectionReferencedForFulfillment) return true
-
   // A current ordinary collection with no NIP-52 event link is not an
   // event-market claim, even when it declares a same-author shipping option.
   // Preserve standard Gamma collection shipping instead of forcing it through
@@ -489,6 +826,14 @@ function directPickupClaimMatchesCollection(
     return false
   }
 
+  if (candidate.collectionReferencedForFulfillment) {
+    // A resolved collection with event-shaped references is positive evidence.
+    // Without collection evidence, only the explicit hidden visibility emitted
+    // by Conduit event authoring is strong enough to fail closed; public
+    // collection-level shipping remains ordinary shipping until proved eventful.
+    return !!catalog.collection || product.visibility !== "public"
+  }
+
   const declaredPickupCoordinates = catalog.collection?.pickupCoordinates ?? []
   if (declaredPickupCoordinates.length > 0) {
     return candidate.directPickupCoordinates.some((coordinate) =>
@@ -496,10 +841,11 @@ function directPickupClaimMatchesCollection(
     )
   }
 
-  // Missing/deleted/degraded collection evidence cannot prove that a
-  // same-author direct pickup claim is ordinary shipping. Keep it closed until
-  // the signed collection can be resolved.
-  return true
+  // A same-author kind-30406 reference is also a normal shipping shape. When
+  // the collection cannot be resolved, do not convert a public listing into an
+  // event listing from absence alone. Newly authored event products are hidden
+  // explicitly and remain fail-closed while their graph is unavailable.
+  return product.visibility !== "public"
 }
 
 function blockedProductResolution(
@@ -782,7 +1128,9 @@ export async function verifyPickupFulfillmentFreshness(
     }
   }
 
-  const productResult = await getProductsByIds([item.productId])
+  const productResult = await getProductsByIds([item.productId], {
+    includeMerchantHiddenProductIds: [item.productId],
+  })
   const freshRecord = productResult.data.find(
     (record) => record.product.id === item.productId
   )

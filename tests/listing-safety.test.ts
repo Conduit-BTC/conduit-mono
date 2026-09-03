@@ -3,8 +3,10 @@ import {
   evaluateListingSafety,
   getListingSafetyDisplay,
   hasMarketVisibleListingImage,
+  isMerchantHiddenOnlyListingSafetyAllowed,
   isListingMarketVisible,
   isListingPurchasable,
+  reconcileContextualListingSafety,
   type Product,
 } from "@conduit/core"
 
@@ -221,6 +223,60 @@ describe("listing safety", () => {
     expect(variable.marketVisible).toBe(true)
     expect(variation.state).toBe("active")
     expect(variation.purchasable).toBe(true)
+  })
+
+  it("reconciles retained client safety with prepared family context", () => {
+    const listing = product({ type: "variable", images: [] })
+    const retained = evaluateListingSafety(listing)
+    const contextual = reconcileContextualListingSafety(listing, retained, {
+      variationGroupRole: "parent",
+      hasGroupImage: true,
+    })
+
+    expect(retained.reasons.map((reason) => reason.code)).toEqual([
+      "missing_market_image",
+      "unsupported_product_type",
+    ])
+    expect(contextual.state).toBe("active")
+    expect(contextual.reasons).toEqual([])
+  })
+
+  it("retains unrelated safety gates during contextual reconciliation", () => {
+    const listing = product({
+      title: "Counterfeit goods display sample",
+      type: "variable",
+      images: [],
+    })
+    const retained = evaluateListingSafety(listing)
+    const contextual = reconcileContextualListingSafety(listing, retained, {
+      variationGroupRole: "parent",
+      hasGroupImage: true,
+    })
+
+    expect(contextual.state).toBe("blocked")
+    expect(contextual.reasons.map((reason) => reason.code)).toEqual([
+      "blocked_term",
+    ])
+  })
+
+  it("limits exact-read recovery to merchant-hidden-only listings", () => {
+    const hidden = evaluateListingSafety(product({ visibility: "hidden" }))
+    const hiddenWarning = evaluateListingSafety(
+      product({ visibility: "hidden", tags: ["adult"] })
+    )
+    const hiddenWithoutImage = evaluateListingSafety(
+      product({ visibility: "hidden", images: [] })
+    )
+    const hiddenBlocked = evaluateListingSafety(
+      product({ visibility: "hidden", title: "Counterfeit goods" })
+    )
+
+    expect(isMerchantHiddenOnlyListingSafetyAllowed(hidden)).toBe(true)
+    expect(isMerchantHiddenOnlyListingSafetyAllowed(hiddenWarning)).toBe(true)
+    expect(isMerchantHiddenOnlyListingSafetyAllowed(hiddenWithoutImage)).toBe(
+      false
+    )
+    expect(isMerchantHiddenOnlyListingSafetyAllowed(hiddenBlocked)).toBe(false)
   })
 
   it("validates market image URLs", () => {

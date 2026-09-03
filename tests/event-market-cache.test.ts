@@ -14,6 +14,7 @@ import {
   EVENT_KINDS,
   getEventMarket,
   getOrganizerEventMarkets,
+  getOrganizerEventMarketsDetailed,
   resolveEventMarketProductFulfillment,
   type CachedEventMarketEvidence,
   type SignedPublicNostrEvent,
@@ -536,6 +537,32 @@ function saturatedCollectionDiscoveryHarness(input: {
 afterEach(() => __resetEventMarketTestOverrides())
 
 describe("event-market retained evidence", () => {
+  it("keeps a large valid event visible in the discovery-card projection", async () => {
+    const productCoordinates = Array.from(
+      { length: 65 },
+      (_, index) => `${EVENT_KINDS.PRODUCT}:${MERCHANT}:product-${index}`
+    )
+    const harness = cacheHarness()
+    harness.setFetch(graph(productCoordinates), "success")
+
+    const result = await getOrganizerEventMarketsDetailed({
+      organizerPubkey: ORGANIZER,
+      nowMs: 1_750_000_000_000,
+      projection: "discovery",
+    })
+
+    expect(result.state).toBe("complete")
+    expect(result.markets).toHaveLength(1)
+    expect(result.markets[0]).toMatchObject({
+      state: "active",
+      collection: { coordinate: COLLECTION },
+      calendar: { coordinate: CALENDAR },
+      pickup: { coordinate: PICKUP },
+      organizerProductCoordinates: [],
+      participationBudget: { state: "within_budget", targetCount: 0 },
+    })
+  })
+
   it("discovers an older active catalog behind 500 newer organizer records", async () => {
     const [calendar, pickup, collection] = graph()
     const observedFilters: TagFilter[] = []
