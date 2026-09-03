@@ -459,6 +459,42 @@ describe("checkout authorization refresh", () => {
     expect(handlerAuthorizationCount).toBe(1)
   })
 
+  it("blocks a filtered non-pickup item in a mixed pickup cart", async () => {
+    const refreshedPickupProduct = pickupProduct()
+    const fulfillment = pickupFulfillment()
+    const pickupCartItem = createCartItemFromProduct(
+      refreshedPickupProduct,
+      fulfillment
+    )
+    const digitalProduct = product({
+      id: `30402:${MERCHANT}:digital-notes`,
+      format: "digital",
+      shippingOptionId: undefined,
+      shippingOptionDTag: undefined,
+    })
+    const digitalCartItem = createCartItemFromProduct(digitalProduct, {
+      type: "digital",
+    })
+    const items = [pickupCartItem, digitalCartItem]
+
+    const result = await authorizeCurrentCheckoutItems({
+      mode: "direct_payment",
+      reviewedItems: items,
+      rawItems: items,
+      // The regular item was filtered by the exact buyer read; the presence of
+      // a valid pickup item must not let checkout silently drop or revive it.
+      refreshedProducts: [refreshedPickupProduct],
+      readShippingOptions: async () => [],
+      resolveProductFulfillment: async () => ({
+        status: "pickup",
+        product: refreshedPickupProduct,
+        fulfillment,
+      }),
+    })
+
+    expect(result).toEqual({ status: "changed" })
+  })
+
   it("blocks a changed pickup graph before handler authorization", async () => {
     const refreshedProduct = pickupProduct()
     const reviewedFulfillment = pickupFulfillment()

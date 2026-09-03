@@ -912,7 +912,7 @@ async function publishProduct(
     format: isDigital ? "digital" : "physical",
     ...shippingCost,
     ...shippingMetadata,
-    visibility: "public",
+    visibility: localPickup ? "private" : "public",
     stock: parseProductStockInput(form.stock),
     images: [{ url: imageUrl }],
     tags,

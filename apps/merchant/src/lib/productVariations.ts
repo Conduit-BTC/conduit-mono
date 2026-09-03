@@ -1349,6 +1349,7 @@ function buildVariationProduct(
     stock: row.inheritStock ? parent.stock : parseProductStockInput(row.stock),
     images: buildVariationImages(row, existing, parent),
     format: row.format === "inherit" ? parent.format : row.format,
+    visibility: parent.visibility,
     createdAt: existing?.product.createdAt ?? now,
     updatedAt: now,
   }
