@@ -24,8 +24,10 @@ const commonProps = {
   onConnectRemote: () => undefined,
   onCancelConnect: () => undefined,
 }
-const nostrConnectUri =
-  "nostrconnect://client-pubkey?relay=wss%3A%2F%2Frelay.example&secret=temporary"
+const nostrConnectUrl = new URL("nostrconnect://client-pubkey")
+nostrConnectUrl.searchParams.set("relay", "wss://relay.example")
+nostrConnectUrl.searchParams.set("secret", crypto.randomUUID())
+const nostrConnectUri = nostrConnectUrl.toString()
 const claveConnectPrefix = "https://clave.casa/connect/?uri="
 
 describe("remote signer UI", () => {
