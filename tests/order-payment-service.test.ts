@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import { finalizeEvent, getPublicKey } from "nostr-tools"
+import type { ParsedOrderMessage } from "@conduit/core"
 
 import { db } from "../packages/core/src/db"
 import {
@@ -28,6 +29,7 @@ import {
   bytesToBolt11Words,
   makeBolt11Fixture,
 } from "./support/bolt11-fixture"
+import { makeMerchantInvoiceReopenEvidence } from "./support/merchant-invoice-reopen-fixture"
 
 const ANON_SIGNER_SECRET = Uint8Array.from([...new Uint8Array(31), 13])
 const ANON_SIGNER_PUBKEY = getPublicKey(ANON_SIGNER_SECRET)
@@ -499,6 +501,65 @@ describe("runOrderPayment", () => {
       })
     ).toMatchObject({ ok: false })
 
+    const cancelledOrder = { ...order, phase: "cancelled" as const }
+    const reopenEvidence = makeMerchantInvoiceReopenEvidence(cancelledOrder)
+    expect(
+      validateMerchantInvoicePaymentAction(cancelledOrder, action, {
+        nowSeconds: 1_800_000_001,
+      })
+    ).toMatchObject({ ok: false })
+    expect(
+      validateMerchantInvoicePaymentAction(cancelledOrder, action, {
+        nowSeconds: 1_800_000_001,
+        reopenEvidence,
+      })
+    ).toMatchObject({ ok: true })
+    expect(
+      validateMerchantInvoicePaymentAction(cancelledOrder, action, {
+        nowSeconds: 1_800_000_001,
+        reopenEvidence: makeMerchantInvoiceReopenEvidence(cancelledOrder, {
+          laterCancellation: true,
+        }),
+      })
+    ).toMatchObject({ ok: false })
+    for (const merchantPaymentEvidence of [
+      "paid_then_processing",
+      "shipping_update",
+    ] as const) {
+      expect(
+        validateMerchantInvoicePaymentAction(cancelledOrder, action, {
+          nowSeconds: 1_800_000_001,
+          reopenEvidence: makeMerchantInvoiceReopenEvidence(cancelledOrder, {
+            merchantPaymentEvidence,
+          }),
+        })
+      ).toMatchObject({ ok: false })
+    }
+    const paidAfterReopen = makeMerchantInvoiceReopenEvidence(cancelledOrder)
+    paidAfterReopen.messages.push({
+      id: "e".repeat(64),
+      orderId: cancelledOrder.orderId,
+      type: "status_update",
+      createdAt: 5,
+      senderPubkey: cancelledOrder.merchantPubkey,
+      recipientPubkey: cancelledOrder.buyerPubkey,
+      rawContent: "{}",
+      payload: { status: "paid" },
+    } as ParsedOrderMessage)
+    expect(
+      validateMerchantInvoicePaymentAction(cancelledOrder, action, {
+        nowSeconds: 1_800_000_001,
+        reopenEvidence: paidAfterReopen,
+      })
+    ).toMatchObject({ ok: false })
+    expect(
+      validateMerchantInvoicePaymentAction(
+        { ...cancelledOrder, phase: "completed" },
+        action,
+        { nowSeconds: 1_800_000_001, reopenEvidence }
+      )
+    ).toMatchObject({ ok: false })
+
     expect(isMerchantInvoicePaymentActionBound(order, action)).toBe(false)
     expect(
       isMerchantInvoicePaymentActionBound(
@@ -512,6 +573,22 @@ describe("runOrderPayment", () => {
           invoiceExpiresAt: 1_800_003_600,
         }),
         action
+      )
+    ).toBe(true)
+    expect(
+      isMerchantInvoicePaymentActionBound(
+        lifecycle({
+          checkoutMode: "pay_later",
+          publicZapSigner: undefined,
+          invoiceStatus: "manual_required",
+          paymentStatus: "manual_required",
+          invoice,
+          paymentHash: "07".repeat(32),
+          invoiceExpiresAt: 1_800_003_600,
+          phase: "cancelled",
+        }),
+        action,
+        reopenEvidence
       )
     ).toBe(true)
   })

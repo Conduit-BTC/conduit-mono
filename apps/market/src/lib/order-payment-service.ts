@@ -12,6 +12,7 @@ import {
   fetchLnurlPayMetadata,
   fetchZapInvoice,
   generateId,
+  hasEffectiveMerchantInvoiceReopenEvidence,
   getAnonZapDraftTag,
   getOrderPublicZapSigner,
   getNdk,
@@ -34,6 +35,7 @@ import {
   validateLightningInvoiceForPayment,
   waitForZapReceipt,
   type OrderLifecycle,
+  type MerchantInvoiceReopenEvidence,
   type OrderPaymentClaimResult,
   type OrderPaymentWalletSuccessRecoveryInput,
   type SignedPublicNostrEvent,
@@ -469,12 +471,24 @@ export type MerchantInvoicePaymentValidation =
     }
   | { ok: false; reason: string }
 
+type MerchantInvoicePaymentValidationOptions = {
+  nowSeconds?: number
+  allowExpired?: boolean
+  reopenEvidence?: MerchantInvoiceReopenEvidence
+}
+
 /** Revalidate a projected merchant invoice at the Orders payment boundary. */
 export function validateMerchantInvoicePaymentAction(
   lifecycle: OrderLifecycle | null | undefined,
   action: MerchantInvoicePaymentAction,
-  options: { nowSeconds?: number; allowExpired?: boolean } = {}
+  options: MerchantInvoicePaymentValidationOptions = {}
 ): MerchantInvoicePaymentValidation {
+  const hasReopenEvidence = lifecycle
+    ? hasEffectiveMerchantInvoiceReopenEvidence(
+        lifecycle,
+        options.reopenEvidence
+      )
+    : false
   if (
     !lifecycle ||
     lifecycle.orderId !== action.orderId ||
@@ -483,7 +497,8 @@ export function validateMerchantInvoicePaymentAction(
     lifecycle.checkoutMode !== "pay_later" ||
     lifecycle.orderDeliveryStatus !== "sent" ||
     lifecycle.phase === "completed" ||
-    lifecycle.phase === "cancelled" ||
+    (lifecycle.phase === "cancelled" && !hasReopenEvidence) ||
+    (options.reopenEvidence !== undefined && !hasReopenEvidence) ||
     lifecycle.proofDeliveryStatus !== "not_started"
   ) {
     return {
@@ -536,7 +551,8 @@ export function validateMerchantInvoicePaymentAction(
 
 export function isMerchantInvoicePaymentActionBound(
   lifecycle: OrderLifecycle | null | undefined,
-  action: MerchantInvoicePaymentAction
+  action: MerchantInvoicePaymentAction,
+  reopenEvidence?: MerchantInvoiceReopenEvidence
 ): boolean {
   if (
     !lifecycle ||
@@ -551,6 +567,7 @@ export function isMerchantInvoicePaymentActionBound(
 
   const validation = validateMerchantInvoicePaymentAction(lifecycle, action, {
     allowExpired: true,
+    reopenEvidence,
   })
   return (
     validation.ok &&
@@ -563,10 +580,13 @@ export function isMerchantInvoicePaymentActionBound(
 
 /** Bind the exact projected invoice before exposing it to an external wallet. */
 export async function prepareMerchantInvoicePaymentAction(
-  action: MerchantInvoicePaymentAction
+  action: MerchantInvoicePaymentAction,
+  reopenEvidence?: MerchantInvoiceReopenEvidence
 ): Promise<OrderLifecycle> {
   const lifecycle = await getOrderLifecycle(action.orderId)
-  const validation = validateMerchantInvoicePaymentAction(lifecycle, action)
+  const validation = validateMerchantInvoicePaymentAction(lifecycle, action, {
+    reopenEvidence,
+  })
   if (!validation.ok) throw new Error(validation.reason)
   if (!lifecycle) throw new Error("Order payment state is unavailable.")
 
@@ -577,6 +597,7 @@ export async function prepareMerchantInvoicePaymentAction(
     invoice: validation.invoice,
     paymentHash: validation.paymentHash,
     expiresAt: validation.expiresAt,
+    ...(reopenEvidence ? { reopenEvidence } : {}),
   })
   emit(action.orderId, { lifecycle: binding.lifecycle })
   if (binding.status !== "bound") {
@@ -1791,7 +1812,8 @@ export async function resendOrderProof(
 export async function submitExternalPaymentProof(
   orderId: string,
   buyerIdentity?: BuyerOrderSigningIdentity,
-  merchantInvoiceAction?: MerchantInvoicePaymentAction
+  merchantInvoiceAction?: MerchantInvoicePaymentAction,
+  reopenEvidence?: MerchantInvoiceReopenEvidence
 ): Promise<OrderPaymentRuntimeState | undefined> {
   if (inFlight.has(orderId)) return runtimeStates.get(orderId)
   inFlight.add(orderId)
@@ -1804,6 +1826,7 @@ export async function submitExternalPaymentProof(
     const merchantInvoiceValidation = merchantInvoiceAction
       ? validateMerchantInvoicePaymentAction(lifecycle, merchantInvoiceAction, {
           allowExpired: true,
+          reopenEvidence,
         })
       : null
     if (merchantInvoiceValidation && !merchantInvoiceValidation.ok) {
@@ -1826,6 +1849,7 @@ export async function submitExternalPaymentProof(
               invoice: merchantInvoiceValidation.invoice,
               paymentHash: merchantInvoiceValidation.paymentHash,
               expiresAt: merchantInvoiceValidation.expiresAt,
+              ...(reopenEvidence ? { reopenEvidence } : {}),
             },
           }
         : undefined

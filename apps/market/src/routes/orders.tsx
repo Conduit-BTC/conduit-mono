@@ -1088,8 +1088,17 @@ function OrderDetail({
 
   const boundMerchantInvoiceAccess = deriveBoundMerchantInvoiceAccess(
     row.lifecycle,
-    vm.merchantStatus
+    vm.merchantStatus,
+    vm.phase,
+    vm.paymentStatus === "paid"
   )
+  const merchantInvoiceReopenEvidence =
+    vm.reopenedCancellationId && row.conversation?.messages
+      ? {
+          cancellationEventId: vm.reopenedCancellationId,
+          messages: row.conversation.messages,
+        }
+      : undefined
 
   function beginMerchantInvoicePayment(): boolean {
     if (
@@ -1103,7 +1112,8 @@ function OrderDetail({
     if (!action) return true
     const validation = validateMerchantInvoicePaymentAction(
       row.lifecycle,
-      action
+      action,
+      { reopenEvidence: merchantInvoiceReopenEvidence }
     )
     if (!validation.ok) {
       setRecoveryError(validation.reason)
@@ -1119,7 +1129,10 @@ function OrderDetail({
     if (!action || action.status !== "payable") {
       throw new Error("This merchant invoice is no longer payable.")
     }
-    await prepareMerchantInvoicePaymentAction(action)
+    await prepareMerchantInvoicePaymentAction(
+      action,
+      merchantInvoiceReopenEvidence
+    )
   }
 
   async function reportExternalPayment(): Promise<void> {
@@ -1132,14 +1145,19 @@ function OrderDetail({
     await submitExternalPaymentProof(
       vm.orderId,
       guestIdentity ?? undefined,
-      unboundPaidInvoice
+      unboundPaidInvoice,
+      merchantInvoiceReopenEvidence
     )
   }
 
   const merchantInvoicePrepared =
     !!vm.merchantInvoiceAction &&
     vm.merchantInvoiceAction.status === "payable" &&
-    isMerchantInvoicePaymentActionBound(row.lifecycle, vm.merchantInvoiceAction)
+    isMerchantInvoicePaymentActionBound(
+      row.lifecycle,
+      vm.merchantInvoiceAction,
+      merchantInvoiceReopenEvidence
+    )
   const boundMerchantInvoiceExpiresAt =
     row.lifecycle?.checkoutMode === "pay_later" &&
     row.lifecycle.invoiceStatus === "manual_required" &&

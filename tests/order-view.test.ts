@@ -21,6 +21,7 @@ import {
   bolt11PlainDescriptionField,
   makeBolt11Fixture,
 } from "./support/bolt11-fixture"
+import { makeMerchantInvoiceReopenEvidence } from "./support/merchant-invoice-reopen-fixture"
 
 function merchantInvoice({
   paymentHashByte = 7,
@@ -60,6 +61,24 @@ function paymentRequest(
     rawContent: "{}",
     type: "payment_request",
     payload: { invoice, amount: 111, currency: "SATS" },
+  } as never
+}
+
+function merchantStatusMessage(
+  id: string,
+  status: string,
+  createdAt: number,
+  reopens?: string
+) {
+  return {
+    id,
+    orderId: "order-1",
+    createdAt,
+    senderPubkey: "merchant",
+    recipientPubkey: "buyer",
+    rawContent: "{}",
+    type: "status_update",
+    payload: { status, ...(reopens ? { reopens } : {}) },
   } as never
 }
 
@@ -338,6 +357,138 @@ describe("buildOrderViewModel", () => {
     expect(vm.items[0].displayTitle).toBe("Sticker Pack")
   })
 
+  it("keeps the latest known merchant status when a newer status is unknown", () => {
+    const vm = buildOrderViewModel({
+      orderId: "order-1",
+      lifecycle: baseLifecycle({
+        checkoutMode: "pay_later",
+        invoiceStatus: "not_requested",
+        paymentStatus: "not_started",
+        proofDeliveryStatus: "not_started",
+      }),
+      messages: [
+        merchantStatusMessage("known", "paid", 1),
+        merchantStatusMessage("unknown", "future_merchant_status", 2),
+      ],
+    })
+
+    expect(vm.merchantStatus).toBe("paid")
+    expect(vm.phase).toBe("in_progress")
+  })
+
+  it("requires a positive reopen before a cancelled pay-later order can use a valid invoice", () => {
+    const previousNetwork = config.lightningNetwork
+    config.lightningNetwork = "mainnet"
+    try {
+      const invoice = merchantInvoice()
+      const cancellationId = "c".repeat(64)
+      const lifecycle = baseLifecycle({
+        checkoutMode: "pay_later",
+        invoiceStatus: "not_requested",
+        paymentStatus: "not_started",
+        proofDeliveryStatus: "not_started",
+        phase: "cancelled",
+      })
+      const beforeReopen = [
+        paymentRequest(invoice, { createdAt: 1 }),
+        merchantStatusMessage("accepted", "accepted", 2),
+        merchantStatusMessage(cancellationId, "cancelled", 3),
+      ]
+
+      const cancelled = buildOrderViewModel({
+        orderId: "order-1",
+        lifecycle,
+        messages: beforeReopen,
+        nowSeconds: 1_800_000_001,
+      })
+      expect(cancelled.merchantStatus).toBe("cancelled")
+      expect(cancelled.phase).toBe("cancelled")
+      expect(cancelled.merchantInvoiceAction).toBeNull()
+
+      const reopened = buildOrderViewModel({
+        orderId: "order-1",
+        lifecycle,
+        messages: [
+          ...beforeReopen,
+          merchantStatusMessage("reopened", "accepted", 5, cancellationId),
+        ],
+        nowSeconds: 1_800_000_001,
+      })
+      expect(reopened.merchantStatus).toBe("accepted")
+      expect(reopened.phase).toBe("in_progress")
+      expect(reopened.merchantInvoiceAction).toMatchObject({
+        status: "payable",
+        invoice,
+      })
+      expect(reopened.reopenedCancellationId).toBe(cancellationId)
+      expect(reopened.invoiceStatus).toBe("manual_required")
+      expect(reopened.paymentStatus).toBe("manual_required")
+
+      const invalidInvoice = makeBolt11Fixture({
+        hrp: "lnbc1110n",
+        createdAt: 1_800_000_000,
+        fields: [bolt11PlainDescriptionField()],
+      })
+      const reopenedWithInvalidInvoice = buildOrderViewModel({
+        orderId: "order-1",
+        lifecycle,
+        messages: [
+          paymentRequest(invalidInvoice, { createdAt: 1 }),
+          ...beforeReopen.slice(1),
+          merchantStatusMessage("reopened", "accepted", 5, cancellationId),
+        ],
+        nowSeconds: 1_800_000_001,
+      })
+      expect(reopenedWithInvalidInvoice.merchantInvoiceAction).toMatchObject({
+        status: "blocked",
+        canReport: false,
+      })
+      expect(reopenedWithInvalidInvoice.reopenedCancellationId).toBe(
+        cancellationId
+      )
+      expect(reopenedWithInvalidInvoice.paymentStatus).toBe("not_started")
+    } finally {
+      config.lightningNetwork = previousNetwork
+    }
+  })
+
+  it("keeps merchant-confirmed payment closed across a reopen", () => {
+    const previousNetwork = config.lightningNetwork
+    config.lightningNetwork = "mainnet"
+    try {
+      const invoice = merchantInvoice()
+      const lifecycle = baseLifecycle({
+        checkoutMode: "pay_later",
+        invoiceStatus: "not_requested",
+        paymentStatus: "not_started",
+        proofDeliveryStatus: "not_started",
+        phase: "cancelled",
+      })
+
+      for (const merchantPaymentEvidence of [
+        "paid_then_processing",
+        "shipping_update",
+      ] as const) {
+        const reopenEvidence = makeMerchantInvoiceReopenEvidence(lifecycle, {
+          merchantPaymentEvidence,
+        })
+        const vm = buildOrderViewModel({
+          orderId: lifecycle.orderId,
+          lifecycle,
+          messages: [paymentRequest(invoice), ...reopenEvidence.messages],
+          nowSeconds: 1_800_000_001,
+        })
+
+        expect(vm.phase).toBe("in_progress")
+        expect(vm.paymentStatus).toBe("paid")
+        expect(vm.merchantInvoiceAction).toBeNull()
+        expect(vm.actionNeeded).toBe(false)
+      }
+    } finally {
+      config.lightningNetwork = previousNetwork
+    }
+  })
+
   it("projects the latest merchant invoice for a known pay-later order", () => {
     const previousNetwork = config.lightningNetwork
     config.lightningNetwork = "mainnet"
@@ -436,6 +587,22 @@ describe("buildOrderViewModel", () => {
     ] as const) {
       expect(deriveBoundMerchantInvoiceAccess(lifecycle, status)).toBe(access)
     }
+
+    expect(
+      deriveBoundMerchantInvoiceAccess(
+        { ...lifecycle, phase: "cancelled" },
+        "accepted",
+        "in_progress"
+      )
+    ).toBe("pay")
+    expect(
+      deriveBoundMerchantInvoiceAccess(
+        { ...lifecycle, phase: "cancelled" },
+        "processing",
+        "in_progress",
+        true
+      )
+    ).toBe("closed")
   })
 
   it("keeps invalid and expired message invoices blocked", () => {

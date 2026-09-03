@@ -44,6 +44,7 @@ import {
   type InboxReadSource,
 } from "./private-message-routing"
 import { extractOrderSummary } from "./order-summary"
+import { getEffectiveMerchantOrderStatus } from "./order-status"
 import {
   parseOrderMessageRumorEvent,
   type ParsedEventMarketPrivateMessage,
@@ -6334,14 +6335,10 @@ function buildBuyerConversationSummaries(
     if (!principal || principal.role !== "buyer") continue
     const merchantPubkey = principal.counterpartyPubkey
 
-    const latestStatus = [...bucket]
-      .reverse()
-      .find(
-        (message) =>
-          message.type === "status_update" &&
-          message.senderPubkey === merchantPubkey &&
-          message.recipientPubkey === buyerPubkey
-      )
+    const effectiveStatus = getEffectiveMerchantOrderStatus(bucket, {
+      buyerPubkey,
+      merchantPubkey,
+    })
     const summary = extractOrderSummary(bucket, {
       buyerPubkey,
       merchantPubkey,
@@ -6353,10 +6350,7 @@ function buildBuyerConversationSummaries(
       merchantPubkey,
       latestAt: latest.createdAt,
       latestType: latest.type,
-      status:
-        latestStatus?.type === "status_update"
-          ? latestStatus.payload.status
-          : null,
+      status: effectiveStatus.status,
       totalSummary:
         summary.items.length > 0
           ? `${summary.subtotal} ${summary.currency}`
@@ -6396,14 +6390,10 @@ function buildMerchantConversationSummaries(
     if (!principal || principal.role !== "merchant") continue
     const buyerPubkey = principal.counterpartyPubkey
 
-    const latestStatus = [...bucket]
-      .reverse()
-      .find(
-        (message) =>
-          message.type === "status_update" &&
-          message.senderPubkey === merchantPubkey &&
-          message.recipientPubkey === buyerPubkey
-      )
+    const effectiveStatus = getEffectiveMerchantOrderStatus(bucket, {
+      buyerPubkey,
+      merchantPubkey,
+    })
     const summary = extractOrderSummary(bucket, {
       buyerPubkey,
       merchantPubkey,
@@ -6416,10 +6406,7 @@ function buildMerchantConversationSummaries(
       merchantPubkey,
       latestAt: latest.createdAt,
       latestType: latest.type,
-      status:
-        latestStatus?.type === "status_update"
-          ? latestStatus.payload.status
-          : null,
+      status: effectiveStatus.status,
       totalSummary:
         summary.items.length > 0
           ? `${summary.subtotal} ${summary.currency}`
