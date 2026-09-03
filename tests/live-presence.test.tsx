@@ -6,6 +6,7 @@ import {
   getLivePresenceLabel,
 } from "../apps/market/src/components/LivePresenceIndicator"
 import {
+  DEFAULT_LIVE_PRESENCE_WEBSOCKET_URL,
   LIVE_PRESENCE_MAX_RECONNECT_ATTEMPTS,
   LIVE_PRESENCE_MAX_COUNT,
   buildLivePresenceWebSocketUrl,
@@ -139,6 +140,9 @@ describe("live presence privacy boundary", () => {
 
     expect(resolveLivePresenceWebSocketUrl("wss://presence.example.com/")).toBe(
       ENDPOINT
+    )
+    expect(resolveLivePresenceWebSocketUrl("")).toBe(
+      DEFAULT_LIVE_PRESENCE_WEBSOCKET_URL
     )
     expect(
       resolveLivePresenceWebSocketUrl("ws://presence.example.com")
