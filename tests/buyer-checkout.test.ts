@@ -33,6 +33,7 @@ import {
   buildZapRequestContent,
   CHECKOUT_QUOTE_MAX_AGE_MS,
   getCheckoutPublicZapSigner,
+  getCheckoutZapTargetAddress,
   getCheckoutZapVisibility,
   getLnurlReadyForCheckoutPayment,
   getCheckoutShippingCost,
@@ -40,6 +41,7 @@ import {
   doesAuthorizedAnonZapPricingMatchOrder,
   hasAuthorizedAnonZapPricingChanged,
   requestCheckoutLnurlInvoice,
+  recoverCheckoutZapTargetAddress,
   getCheckoutRecoveryPlan,
   getPaymentTrackerHeadline,
   getPaymentTrackerOutcome,
@@ -68,6 +70,7 @@ import {
   parseShippingOptionEvent,
 } from "../packages/core/src/protocol/shipping"
 import { parseProductEvent } from "../packages/core/src/protocol/products"
+import { encodeProductNaddr } from "../packages/core/src/protocol/product-reference"
 import {
   orderSchema,
   paymentProofMessageSchema,
@@ -76,6 +79,7 @@ import { makeBoundBolt11Fixture } from "./support/bolt11-fixture"
 
 const FAKE_PUBKEY = "a".repeat(64)
 const FAKE_SECRET = "b".repeat(64)
+const PRODUCT_ADDRESS = `30402:${FAKE_PUBKEY}:coffee-mug`
 const SHIPPING_OPTION_ID = `30406:${FAKE_PUBKEY}:standard`
 const VALID_NWC_URI = `nostr+walletconnect://${FAKE_PUBKEY}?relay=wss%3A%2F%2Frelay.example.com&secret=${FAKE_SECRET}`
 
@@ -1755,8 +1759,104 @@ describe("checkout payment helpers", () => {
     expect(isPublicZapContentEditable("private_checkout", "custom")).toBe(false)
   })
 
-  it("uses empty zap content for private checkout", () => {
-    expect(buildZapRequestContent("private_checkout", "hello public")).toBe("")
+  it("targets only an explicit custom note for one merchant-owned product", () => {
+    const eligible = {
+      productAddresses: [PRODUCT_ADDRESS, PRODUCT_ADDRESS],
+      recipientPubkey: FAKE_PUBKEY,
+      mode: "public_zap_as_shopper" as const,
+      policy: "custom" as const,
+      contentEdited: true,
+      content: "sick shirt 🔥",
+    }
+
+    expect(getCheckoutZapTargetAddress(eligible)).toBe(PRODUCT_ADDRESS)
+    expect(
+      getCheckoutZapTargetAddress({ ...eligible, contentEdited: false })
+    ).toBeUndefined()
+    expect(
+      getCheckoutZapTargetAddress({ ...eligible, content: "  \n\t " })
+    ).toBeUndefined()
+    expect(
+      getCheckoutZapTargetAddress({
+        ...eligible,
+        mode: "anonymous_public_zap",
+      })
+    ).toBeUndefined()
+    expect(
+      getCheckoutZapTargetAddress({
+        ...eligible,
+        mode: "private_checkout",
+      })
+    ).toBeUndefined()
+    expect(
+      getCheckoutZapTargetAddress({ ...eligible, policy: "generic_only" })
+    ).toBeUndefined()
+    expect(
+      getCheckoutZapTargetAddress({
+        ...eligible,
+        productAddresses: [PRODUCT_ADDRESS, `${PRODUCT_ADDRESS}-other`],
+      })
+    ).toBeUndefined()
+    expect(
+      getCheckoutZapTargetAddress({
+        ...eligible,
+        productAddresses: ["not-a-product-address"],
+      })
+    ).toBeUndefined()
+    expect(
+      getCheckoutZapTargetAddress({
+        ...eligible,
+        productAddresses: [`30402:${"b".repeat(64)}:coffee-mug`],
+      })
+    ).toBeUndefined()
+  })
+
+  it("builds one deterministic product link and recovers its target", () => {
+    const productUri = `nostr:${encodeProductNaddr(PRODUCT_ADDRESS)}`
+    const content = buildZapRequestContent(
+      "public_zap",
+      "sick\nshirt 🔥",
+      PRODUCT_ADDRESS
+    )
+
+    expect(content).toBe(`sick shirt 🔥\n\n${productUri}`)
+    expect(buildZapRequestContent("public_zap", content, PRODUCT_ADDRESS)).toBe(
+      content
+    )
+    expect(
+      recoverCheckoutZapTargetAddress({
+        productAddresses: [PRODUCT_ADDRESS],
+        recipientPubkey: FAKE_PUBKEY,
+        mode: "public_zap_as_shopper",
+        content,
+      })
+    ).toBe(PRODUCT_ADDRESS)
+    expect(
+      recoverCheckoutZapTargetAddress({
+        productAddresses: [PRODUCT_ADDRESS],
+        recipientPubkey: FAKE_PUBKEY,
+        mode: "anonymous_public_zap",
+        content,
+      })
+    ).toBeUndefined()
+    expect(
+      recoverCheckoutZapTargetAddress({
+        productAddresses: [PRODUCT_ADDRESS, `${PRODUCT_ADDRESS}-other`],
+        recipientPubkey: FAKE_PUBKEY,
+        mode: "public_zap_as_shopper",
+        content,
+      })
+    ).toBeUndefined()
+  })
+
+  it("keeps private and untargeted public zap content unchanged", () => {
+    expect(
+      buildZapRequestContent(
+        "private_checkout",
+        "hello public",
+        PRODUCT_ADDRESS
+      )
+    ).toBe("")
     expect(buildZapRequestContent("public_zap", "hello\npublic")).toBe(
       "hello public"
     )
@@ -1827,6 +1927,7 @@ describe("checkout payment helpers", () => {
         lnurlNostrPubkey: "d".repeat(64),
         recipientPubkey: FAKE_PUBKEY,
         zapContent: "hello\npublic",
+        zapTargetAddress: PRODUCT_ADDRESS,
         explicitRelayUrls: ["wss://relay.example", "wss://dup.example"],
         zapRelayUrls: ["wss://dup.example", "wss://public.example"],
         nowSeconds: 123,
@@ -1855,7 +1956,7 @@ describe("checkout payment helpers", () => {
     expect(signZapRequest.mock.calls[0]?.[0]).toMatchObject({
       kind: 9734,
       createdAt: 123,
-      content: "hello public",
+      content: `hello public\n\nnostr:${encodeProductNaddr(PRODUCT_ADDRESS)}`,
       tags: [
         ["p", FAKE_PUBKEY],
         ["amount", "50000"],
@@ -1866,6 +1967,8 @@ describe("checkout payment helpers", () => {
           "wss://dup.example",
           "wss://public.example",
         ],
+        ["a", PRODUCT_ADDRESS],
+        ["k", "30402"],
         [...OMF_ZAPOUT_MARKER_TAG],
       ],
     })
@@ -1875,6 +1978,41 @@ describe("checkout payment helpers", () => {
       expect.stringContaining('"kind":9734'),
       "lnurl1test"
     )
+    expect(fetchLnurl).toHaveBeenCalledTimes(0)
+  })
+
+  it("rejects a product target owned by another recipient before signing", async () => {
+    const fetchLnurl = mock(async () => ({ invoice: "lnbc1private" }))
+    const fetchZap = mock(async () => ({ invoice: "lnbc1public" }))
+    const signZapRequest = mock(async () => ({
+      id: "zap-request-id",
+      rawEvent: {},
+    }))
+
+    await expect(
+      requestCheckoutLnurlInvoice(
+        {
+          visibility: "public_zap",
+          lnurlCallback: "https://wallet.conduit.market/cb",
+          amountMsats: 50_000,
+          lnurl: "lnurl1test",
+          recipientPubkey: FAKE_PUBKEY,
+          zapContent: "public note",
+          zapTargetAddress: `30402:${"b".repeat(64)}:coffee-mug`,
+          explicitRelayUrls: [],
+          zapRelayUrls: ["wss://public.example"],
+        },
+        {
+          fetchLnurlInvoice: fetchLnurl as never,
+          fetchZapInvoice: fetchZap as never,
+          signZapRequest: signZapRequest as never,
+        }
+      )
+    ).rejects.toThrow(
+      "Product zap target does not belong to the payment recipient. No invoice was requested."
+    )
+    expect(signZapRequest).toHaveBeenCalledTimes(0)
+    expect(fetchZap).toHaveBeenCalledTimes(0)
     expect(fetchLnurl).toHaveBeenCalledTimes(0)
   })
 
