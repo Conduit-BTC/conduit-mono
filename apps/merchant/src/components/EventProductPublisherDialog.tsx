@@ -116,6 +116,7 @@ export function EventProductPublisherDialog({
       setSignerProgress(null)
       setActionState("success")
       await onPublished(result.productCoordinate)
+      onOpenChange(false)
     },
     onError: (error) => {
       setSignerProgress(null)

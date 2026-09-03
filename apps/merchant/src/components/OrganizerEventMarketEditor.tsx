@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useMemo, useState, type ReactNode } from "react"
 import {
   Button,
   Checkbox,
@@ -24,6 +24,8 @@ import {
   createEmptyOrganizerEventMarketForm,
   getOrganizerEventEndMinimum,
   getOrganizerEventStartMinimum,
+  getOrganizerEventTimezoneOptions,
+  isOrganizerEventMarketFormDirty,
   validateOrganizerEventMarketForm,
   type OrganizerEventMarketFormField,
   type OrganizerEventMarketFormValues,
@@ -46,6 +48,30 @@ function FieldError({
       {message}
     </p>
   ) : null
+}
+
+function RequiredFieldLabel({
+  htmlFor,
+  children,
+}: {
+  htmlFor: string
+  children: ReactNode
+}) {
+  return (
+    <Label htmlFor={htmlFor} className="flex items-center gap-2">
+      <span>{children}</span>
+      <span className="text-xs font-normal text-[var(--text-muted)]">
+        Required
+      </span>
+    </Label>
+  )
+}
+
+function describedBy(
+  ...ids: Array<string | false | undefined>
+): string | undefined {
+  const value = ids.filter(Boolean).join(" ")
+  return value || undefined
 }
 
 export function OrganizerEventMarketEditor({
@@ -81,6 +107,19 @@ export function OrganizerEventMarketEditor({
   const pending =
     actionState === "awaiting_signature" || actionState === "publishing"
   const dateBased = form.calendarType === "date"
+  const isDirty = initialForm
+    ? isOrganizerEventMarketFormDirty(form, initialForm)
+    : true
+  const displayedActionState =
+    actionState === "idle" || actionState === "dirty"
+      ? initialForm && !isDirty
+        ? "idle"
+        : "dirty"
+      : actionState
+  const timezoneOptions = useMemo(
+    () => getOrganizerEventTimezoneOptions(form.timezone),
+    [form.timezone]
+  )
   const startMinimum = getOrganizerEventStartMinimum(
     form.calendarType,
     minimumReferenceMs
@@ -120,7 +159,13 @@ export function OrganizerEventMarketEditor({
           onSubmit={(event) => {
             event.preventDefault()
             setSubmitted(true)
-            if (validation.canPublish && !pending) onSubmit(form)
+            if (
+              validation.canPublish &&
+              !pending &&
+              (!initialForm || isDirty)
+            ) {
+              onSubmit(form)
+            }
           }}
         >
           <section className="space-y-4">
@@ -130,15 +175,19 @@ export function OrganizerEventMarketEditor({
               </h3>
               <p className="mt-1 text-xs leading-5 text-[var(--text-muted)]">
                 Everything here is published publicly. Keep private handoff and
-                attendee details out of these fields.
+                attendee details out of these fields. Fields marked Required
+                must be completed before publishing.
               </p>
             </div>
 
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="grid gap-1.5 sm:col-span-2">
-                <Label htmlFor="event-market-title">Title</Label>
+                <RequiredFieldLabel htmlFor="event-market-title">
+                  Title
+                </RequiredFieldLabel>
                 <Input
                   id="event-market-title"
+                  required
                   value={form.title}
                   onChange={(event) => update("title", event.target.value)}
                   aria-invalid={!!errors.title}
@@ -149,50 +198,79 @@ export function OrganizerEventMarketEditor({
                 <FieldError field="title" errors={errors} />
               </div>
               <div className="grid gap-1.5 sm:col-span-2">
-                <Label htmlFor="event-market-summary">Public summary</Label>
+                <RequiredFieldLabel htmlFor="event-market-summary">
+                  Public summary
+                </RequiredFieldLabel>
                 <Textarea
                   id="event-market-summary"
                   className="min-h-24"
+                  required
                   value={form.summary}
                   onChange={(event) => update("summary", event.target.value)}
                   aria-invalid={!!errors.summary}
-                  aria-describedby={
-                    errors.summary ? "event-market-summary-error" : undefined
-                  }
+                  aria-describedby={describedBy(
+                    "event-market-summary-help",
+                    errors.summary && "event-market-summary-error"
+                  )}
                 />
+                <p
+                  id="event-market-summary-help"
+                  className="text-xs leading-5 text-[var(--text-muted)]"
+                >
+                  Brief public description shown with the event.
+                </p>
                 <FieldError field="summary" errors={errors} />
               </div>
               <div className="grid gap-1.5 sm:col-span-2">
-                <Label htmlFor="event-market-image">Image URL</Label>
+                <RequiredFieldLabel htmlFor="event-market-image">
+                  Image URL
+                </RequiredFieldLabel>
                 <Input
                   id="event-market-image"
                   type="url"
                   inputMode="url"
                   placeholder="https://"
+                  required
                   value={form.imageUrl}
                   onChange={(event) => update("imageUrl", event.target.value)}
                   aria-invalid={!!errors.imageUrl}
-                  aria-describedby={
-                    errors.imageUrl ? "event-market-imageUrl-error" : undefined
-                  }
+                  aria-describedby={describedBy(
+                    "event-market-image-help",
+                    errors.imageUrl && "event-market-imageUrl-error"
+                  )}
                 />
+                <p
+                  id="event-market-image-help"
+                  className="text-xs leading-5 text-[var(--text-muted)]"
+                >
+                  Paste a direct HTTPS image URL. Image upload is not available
+                  in this form yet.
+                </p>
                 <FieldError field="imageUrl" errors={errors} />
               </div>
               <div className="grid gap-1.5 sm:col-span-2">
-                <Label htmlFor="event-market-location">Public location</Label>
+                <RequiredFieldLabel htmlFor="event-market-location">
+                  Public location
+                </RequiredFieldLabel>
                 <Input
                   id="event-market-location"
+                  required
                   value={form.eventLocation}
                   onChange={(event) =>
                     update("eventLocation", event.target.value)
                   }
                   aria-invalid={!!errors.eventLocation}
-                  aria-describedby={
-                    errors.eventLocation
-                      ? "event-market-eventLocation-error"
-                      : undefined
-                  }
+                  aria-describedby={describedBy(
+                    "event-market-location-help",
+                    errors.eventLocation && "event-market-eventLocation-error"
+                  )}
                 />
+                <p
+                  id="event-market-location-help"
+                  className="text-xs leading-5 text-[var(--text-muted)]"
+                >
+                  Venue, public address, or meeting point attendees can find.
+                </p>
                 <FieldError field="eventLocation" errors={errors} />
               </div>
               <div className="grid gap-1.5">
@@ -228,11 +306,14 @@ export function OrganizerEventMarketEditor({
                 </Select>
               </div>
               <div className="grid gap-1.5">
-                <Label htmlFor="event-market-start">Start</Label>
+                <RequiredFieldLabel htmlFor="event-market-start">
+                  Start
+                </RequiredFieldLabel>
                 <Input
                   id="event-market-start"
                   type={dateBased ? "date" : "datetime-local"}
                   min={initialForm ? undefined : startMinimum}
+                  required
                   value={form.start}
                   onChange={(event) => update("start", event.target.value)}
                   aria-invalid={!!errors.start}
@@ -259,19 +340,39 @@ export function OrganizerEventMarketEditor({
               </div>
               {!dateBased && (
                 <div className="grid gap-1.5 sm:col-span-2">
-                  <Label htmlFor="event-market-timezone">IANA timezone</Label>
-                  <Input
-                    id="event-market-timezone"
-                    placeholder="America/New_York"
+                  <RequiredFieldLabel htmlFor="event-market-timezone">
+                    Event timezone
+                  </RequiredFieldLabel>
+                  <Select
                     value={form.timezone}
-                    onChange={(event) => update("timezone", event.target.value)}
-                    aria-invalid={!!errors.timezone}
-                    aria-describedby={
-                      errors.timezone
-                        ? "event-market-timezone-error"
-                        : undefined
-                    }
-                  />
+                    onValueChange={(value) => update("timezone", value)}
+                  >
+                    <SelectTrigger
+                      id="event-market-timezone"
+                      aria-required="true"
+                      aria-invalid={!!errors.timezone}
+                      aria-describedby={describedBy(
+                        "event-market-timezone-help",
+                        errors.timezone && "event-market-timezone-error"
+                      )}
+                    >
+                      <SelectValue placeholder="Choose an IANA timezone" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {timezoneOptions.map((timezone) => (
+                        <SelectItem key={timezone} value={timezone}>
+                          {timezone}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p
+                    id="event-market-timezone-help"
+                    className="text-xs leading-5 text-[var(--text-muted)]"
+                  >
+                    Detected from this browser. Choose the timezone local to the
+                    event.
+                  </p>
                   <FieldError field="timezone" errors={errors} />
                 </div>
               )}
@@ -332,13 +433,14 @@ export function OrganizerEventMarketEditor({
                   <FieldError field="pickupLocation" errors={errors} />
                 </div>
                 <div className="grid gap-1.5 sm:max-w-40">
-                  <Label htmlFor="event-market-pickup-country">
+                  <RequiredFieldLabel htmlFor="event-market-pickup-country">
                     Event country
-                  </Label>
+                  </RequiredFieldLabel>
                   <Input
                     id="event-market-pickup-country"
                     maxLength={2}
                     className="uppercase"
+                    required
                     value={form.pickupCountry}
                     onChange={(event) =>
                       update("pickupCountry", event.target.value.toUpperCase())
@@ -359,13 +461,18 @@ export function OrganizerEventMarketEditor({
           <div
             className={cn(
               "rounded-xl border px-4 py-3 text-xs leading-5",
-              actionState === "error"
+              displayedActionState === "error"
                 ? "border-error/30 bg-error/10 text-error"
                 : "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-secondary)]"
             )}
           >
             <SignedActionStatus
-              state={actionState}
+              state={displayedActionState}
+              message={
+                displayedActionState === "idle"
+                  ? "No changes to publish."
+                  : undefined
+              }
               dirtyMessage={
                 form.organizerHandoffEnabled
                   ? "Publish the event, organizer pickup, and catalog from your signer."
@@ -391,7 +498,10 @@ export function OrganizerEventMarketEditor({
             >
               Cancel
             </Button>
-            <Button type="submit" disabled={pending}>
+            <Button
+              type="submit"
+              disabled={pending || (!!initialForm && !isDirty)}
+            >
               {pending
                 ? "Waiting for signer…"
                 : initialForm

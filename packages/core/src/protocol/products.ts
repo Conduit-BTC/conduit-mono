@@ -14,7 +14,10 @@ import { normalizePublicMediaUrl } from "../network-target-safety"
 import { EVENT_KINDS } from "./kinds"
 import { parseLegacyConduitInlineShippingTags } from "./compat/conduit-inline-shipping"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
-import { parseAddressableCoordinate } from "./event-market"
+import {
+  decodeEventMarketReference,
+  parseAddressableCoordinate,
+} from "./event-market"
 import {
   parseSignedProductPriceTag as parsePriceTag,
   parseSignedProductShippingOptionTags as parseShippingOptionTags,
@@ -289,6 +292,10 @@ export function buildProductListingEventDraft({
     [PRODUCT_ZAP_MESSAGE_POLICY_TAG, emittedZapMessagePolicy],
   ]
 
+  if (product.visibility === "private") {
+    tags.push(["visibility", "hidden"])
+  }
+
   if (parentProductId) tags.push(["a", parentProductId])
   for (const specification of specifications) {
     tags.push(["spec", specification.key, specification.value])
@@ -423,6 +430,92 @@ function uniqueNonEmptyStrings(values: readonly string[]): string[] {
     result.push(trimmed)
   }
   return result
+}
+
+export interface ProductEventMarketFulfillmentClaim {
+  collectionCoordinate: string
+  collectionReferencedForFulfillment: boolean
+  directPickupCoordinates: string[]
+}
+
+/**
+ * Identify the signed product-reference shape that explicitly opts a physical
+ * listing into possible event-market fulfillment. Collection membership alone
+ * remains ordinary catalog metadata. These references are candidates only:
+ * callers must resolve the signed collection/calendar/pickup graph before
+ * treating the product as event-only or authorizing pickup.
+ */
+export function getProductEventMarketFulfillmentClaims(
+  product: Pick<
+    ProductSchema,
+    | "pubkey"
+    | "format"
+    | "collectionRefs"
+    | "shippingOptionRefs"
+    | "shippingOptionId"
+  >
+): ProductEventMarketFulfillmentClaim[] {
+  if (product.format !== "physical") return []
+
+  const collections = uniqueNonEmptyStrings(product.collectionRefs ?? [])
+    .map((reference) =>
+      decodeEventMarketReference(reference, [EVENT_KINDS.PRODUCT_COLLECTION])
+    )
+    .filter((reference): reference is NonNullable<typeof reference> => {
+      return reference !== null
+    })
+  if (collections.length === 0) return []
+
+  const shippingReferences = uniqueNonEmptyStrings([
+    ...(product.shippingOptionRefs?.map((reference) => reference.coordinate) ??
+      []),
+    ...(product.shippingOptionId ? [product.shippingOptionId] : []),
+  ])
+  const merchantPubkey = product.pubkey.toLowerCase()
+
+  return collections.flatMap((collection) => {
+    let collectionReferencedForFulfillment = false
+    const directPickupCoordinates: string[] = []
+
+    for (const reference of shippingReferences) {
+      const collectionReference = decodeEventMarketReference(reference, [
+        EVENT_KINDS.PRODUCT_COLLECTION,
+      ])
+      if (collectionReference?.coordinate === collection.coordinate) {
+        collectionReferencedForFulfillment = true
+        continue
+      }
+
+      const pickupReference = decodeEventMarketReference(reference, [
+        EVENT_KINDS.SHIPPING_OPTION,
+      ])
+      if (
+        pickupReference &&
+        (pickupReference.authorPubkey === collection.authorPubkey ||
+          pickupReference.authorPubkey === merchantPubkey)
+      ) {
+        directPickupCoordinates.push(pickupReference.coordinate)
+      }
+    }
+
+    const uniquePickupCoordinates = uniqueNonEmptyStrings(
+      directPickupCoordinates
+    )
+    if (
+      !collectionReferencedForFulfillment &&
+      uniquePickupCoordinates.length === 0
+    ) {
+      return []
+    }
+
+    return [
+      {
+        collectionCoordinate: collection.coordinate,
+        collectionReferencedForFulfillment,
+        directPickupCoordinates: uniquePickupCoordinates,
+      },
+    ]
+  })
 }
 
 type ProductPriceEvidence = {

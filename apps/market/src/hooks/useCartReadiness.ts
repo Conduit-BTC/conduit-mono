@@ -69,16 +69,35 @@ const lnurlPreflightLimiter = createBoundedLimiter(
 
 export function merchantCartAvailabilityQueryKey(
   merchantPubkey: string,
-  productIds: readonly string[]
+  productIds: readonly string[],
+  merchantHiddenProductIds: readonly string[] = []
 ): readonly unknown[] {
-  return ["merchant-cart-availability", merchantPubkey, productIds]
+  return [
+    "merchant-cart-availability",
+    merchantPubkey,
+    productIds,
+    merchantHiddenProductIds,
+  ]
+}
+
+export function getCartMerchantHiddenProductIds(
+  items: readonly CartItem[]
+): string[] {
+  return Array.from(
+    new Set(
+      items
+        .filter((item) => item.fulfillment?.type === "pickup")
+        .map((item) => item.productId)
+    )
+  ).sort()
 }
 
 /**
  * Per-merchant prepared cart readiness.
  *
- * The network fetch is keyed by merchant pubkey plus the sorted full product
- * coordinates only. Quantities, shipping, totals, wallet state, and
+ * The network fetch is keyed by merchant pubkey, the sorted full product
+ * coordinates, and the exact event-pickup coordinates allowed to use the
+ * merchant-hidden exception. Quantities, shipping, totals, wallet state, and
  * authorization fingerprints never invalidate the fetch; they are evaluated
  * locally against the prepared stock in the derived layer. Each merchant
  * resolves independently: a slow merchant/relay stays `checking` or
@@ -91,12 +110,21 @@ export function useCartReadiness(items: CartItem[]): CartReadiness {
       const productIds = Array.from(
         new Set(group.items.map((item) => item.productId))
       ).sort()
+      const merchantHiddenProductIds = getCartMerchantHiddenProductIds(
+        group.items
+      )
       return {
         queryKey: merchantCartAvailabilityQueryKey(
           group.merchantPubkey,
-          productIds
+          productIds,
+          merchantHiddenProductIds
         ),
-        queryFn: () => readinessReadLimiter(() => getProductsByIds(productIds)),
+        queryFn: () =>
+          readinessReadLimiter(() =>
+            getProductsByIds(productIds, {
+              includeMerchantHiddenProductIds: merchantHiddenProductIds,
+            })
+          ),
         enabled: productIds.length > 0,
         staleTime: CART_READINESS_LEASE_MS,
         gcTime: 5 * 60_000,

@@ -1,4 +1,4 @@
-import { pubkeyToNpub } from "@conduit/core"
+import { encodeEventMarketNaddr, pubkeyToNpub } from "@conduit/core"
 import {
   getEventMarketUrl,
   getProfileUrl,
@@ -14,6 +14,7 @@ declare function expect(actual: unknown): {
 
 const pubkey = "0".repeat(64)
 const npub = pubkeyToNpub(pubkey)
+const eventNaddr = encodeEventMarketNaddr(`30405:${pubkey}:event-catalog`)
 
 test("uses the Market app as the canonical production origin", () => {
   expect(inferMarketOrigin()).toBe("https://shop.conduit.market")
@@ -27,8 +28,8 @@ test("builds storefront and profile links on the Market app", () => {
 })
 
 test("builds canonical event catalog links on the Market app", () => {
-  expect(getEventMarketUrl("naddr1eventcatalog")).toBe(
-    "https://shop.conduit.market/events/naddr1eventcatalog"
+  expect(getEventMarketUrl(eventNaddr)).toBe(
+    `https://shop.conduit.market/events/${eventNaddr}`
   )
 })
 

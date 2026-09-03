@@ -19,7 +19,12 @@ import {
   projectSignedProductFulfillmentEvidence,
   projectSignedProductPreviewEvidence,
 } from "./product-event-evidence"
-import { getRelayLists } from "./relay-list"
+import {
+  getRelayLists,
+  getRelayListsDetailed,
+  type RelayList,
+  type RelayListResolutionState,
+} from "./relay-list"
 import {
   publishWithPlanner,
   type PublishWithPlannerResult,
@@ -1084,6 +1089,12 @@ export interface ResolveEventMarketEvidenceInput {
   nowMs?: number
   maxEvidenceAgeMs?: number
   expectedOrganizerPubkey?: string
+  /**
+   * A followed-organizer card only needs the organizer-authored collection,
+   * calendar, and pickup graph. Exact event reads keep the default and resolve
+   * the complete participant frontier before any selling action is exposed.
+   */
+  includeParticipation?: boolean
 }
 
 export type EventMarketProductParticipationStatus =
@@ -1332,6 +1343,23 @@ function coverageState(
   return coverage.partialRelayCount > 0 || coverage.failedRelayCount > 0
     ? "partial"
     : "complete"
+}
+
+function organizerMarketsReadState(
+  coverage: EventMarketRelayCoverage,
+  plan: Pick<EventMarketReadPlan, "relayListState" | "relayHintTruncated">
+): OrganizerEventMarketsReadState {
+  const networkState = coverageState(coverage)
+  if (networkState === "unavailable") return "unavailable"
+  const relayListComplete =
+    plan.relayListState === "network" ||
+    plan.relayListState === "fresh-cache" ||
+    plan.relayListState === "missing"
+  return networkState === "complete" &&
+    relayListComplete &&
+    !plan.relayHintTruncated
+    ? "complete"
+    : "partial"
 }
 
 function parsedWithSources<T extends { eventId: string }>(
@@ -1634,13 +1662,16 @@ export function resolveEventMarketEvidence(
   }
 
   const collection = collectionResult.value
-  const participationBudget = participationBudgetForEvidence({
-    organizerProductCoordinates: collection.productCoordinates,
-    productRequestEvents: input.productRequestEvents ?? [],
-    networkBudget: input.participationBudget,
-  })
+  const includeParticipation = input.includeParticipation !== false
+  const participationBudget = includeParticipation
+    ? participationBudgetForEvidence({
+        organizerProductCoordinates: collection.productCoordinates,
+        productRequestEvents: input.productRequestEvents ?? [],
+        networkBudget: input.participationBudget,
+      })
+    : EMPTY_PARTICIPATION_BUDGET
   const directMerchantPickupCoordinates =
-    participationBudget.state === "within_budget"
+    includeParticipation && participationBudget.state === "within_budget"
       ? directMerchantPickupCoordinatesFromProductEvidence({
           events: input.productRequestEvents ?? [],
           collectionCoordinate: collection.coordinate,
@@ -1674,7 +1705,9 @@ export function resolveEventMarketEvidence(
     reference: decoded.coordinate,
     organizerPubkey: decoded.authorPubkey,
     collectionCoordinate: collection.coordinate,
-    organizerProductCoordinates: [...collection.productCoordinates],
+    organizerProductCoordinates: includeParticipation
+      ? [...collection.productCoordinates]
+      : [],
     acceptedProductCoordinates: [] as string[],
     acceptedProductEvidence: [] as EventMarketAcceptedProductEvidence[],
     organizerOnlyProductCoordinates: [] as string[],
@@ -1804,14 +1837,21 @@ export function resolveEventMarketEvidence(
       participationRequests: [],
     }
   }
-  const participation = getCurrentParticipation(
-    input.productRequestEvents ?? [],
-    decoded.authorPubkey,
-    collection,
-    pickups,
-    collection.coordinate,
-    collection.productCoordinates
-  )
+  const participation = includeParticipation
+    ? getCurrentParticipation(
+        input.productRequestEvents ?? [],
+        decoded.authorPubkey,
+        collection,
+        pickups,
+        collection.coordinate,
+        collection.productCoordinates
+      )
+    : {
+        acceptedProductCoordinates: [],
+        acceptedProductEvidence: [],
+        organizerOnlyProductCoordinates: [],
+        participationRequests: [],
+      }
   const resolved = {
     ...graphBase,
     calendar: calendarResult.value,
@@ -1897,12 +1937,39 @@ export interface GetOrganizerEventMarketsInput {
   nowMs?: number
   maxEvidenceAgeMs?: number
   authenticatedPubkey?: string | null
+  /**
+   * Discovery cards only need the organizer collection, calendar, and
+   * organizer-authored pickup graph. The exact selected-event read hydrates
+   * participant products and merchant-authored pickup frontiers.
+   */
+  projection?: "full" | "discovery"
   signal?: AbortSignal
+}
+
+export type OrganizerEventMarketsReadState =
+  "complete" | "partial" | "unavailable"
+
+export interface OrganizerEventMarketsReadResult {
+  markets: EventMarketResolution[]
+  state: OrganizerEventMarketsReadState
+  coverage: EventMarketRelayCoverage
+  relayListState: RelayListResolutionState
+  relayHintTruncated: boolean
+}
+
+export class EventMarketDiscoveryBoundError extends Error {
+  readonly code = "event_market_discovery_bound"
+
+  constructor(message: string) {
+    super(message)
+    this.name = "EventMarketDiscoveryBoundError"
+  }
 }
 
 interface EventMarketTestOverrides {
   fetchEventsFanoutDetailed?: typeof fetchEventsFanoutDetailed
   getRelayLists?: typeof getRelayLists
+  getRelayListsDetailed?: typeof getRelayListsDetailed
   getNdk?: () => ReturnType<typeof getNdk> | Promise<ReturnType<typeof getNdk>>
   publishWithPlanner?: typeof publishWithPlanner
   signDraft?: (input: {
@@ -1946,17 +2013,61 @@ function mergeRelayUrls(...groups: readonly (readonly string[])[]): string[] {
   return Array.from(result)
 }
 
-async function eventMarketReadPlan(input: {
+interface EventMarketReadPlan {
+  relayUrls: string[]
+  relayListState: RelayListResolutionState
+  relayHintTruncated: boolean
+}
+
+function relayListStateFromLegacyLookup(
+  relayLists: ReadonlyMap<string, RelayList>,
+  organizerPubkey: string
+): RelayListResolutionState {
+  const list = relayLists.get(organizerPubkey)
+  if (!list) return "missing"
+  return list.lookupState ?? "fresh-cache"
+}
+
+async function eventMarketReadPlanDetailed(input: {
   organizerPubkey: string
   relayHints?: readonly string[]
   authenticatedPubkey?: string | null
   signal?: AbortSignal
-}): Promise<string[]> {
-  const lookup = eventMarketTestOverrides.getRelayLists ?? getRelayLists
-  const relayLists = await lookup([input.organizerPubkey], {
+}): Promise<EventMarketReadPlan> {
+  const lookupOptions = {
     signal: input.signal,
     allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
-  })
+  }
+  let relayLists: Map<string, RelayList>
+  let relayListState: RelayListResolutionState
+  if (eventMarketTestOverrides.getRelayListsDetailed) {
+    const detailed = await eventMarketTestOverrides.getRelayListsDetailed(
+      [input.organizerPubkey],
+      lookupOptions
+    )
+    relayLists = detailed.relayLists
+    relayListState =
+      detailed.resolutionStates.get(input.organizerPubkey) ??
+      "lookup-unavailable"
+  } else if (eventMarketTestOverrides.getRelayLists) {
+    relayLists = await eventMarketTestOverrides.getRelayLists(
+      [input.organizerPubkey],
+      lookupOptions
+    )
+    relayListState = relayListStateFromLegacyLookup(
+      relayLists,
+      input.organizerPubkey
+    )
+  } else {
+    const detailed = await getRelayListsDetailed(
+      [input.organizerPubkey],
+      lookupOptions
+    )
+    relayLists = detailed.relayLists
+    relayListState =
+      detailed.resolutionStates.get(input.organizerPubkey) ??
+      "lookup-unavailable"
+  }
   const plan = planRelayReads({
     intent: "author_products",
     authors: [input.organizerPubkey],
@@ -1964,7 +2075,16 @@ async function eventMarketReadPlan(input: {
     authenticatedPubkey: input.authenticatedPubkey,
     maxRelays: EVENT_MARKET_MAX_RELAY_HINTS,
   })
-  return mergeRelayUrls(input.relayHints ?? [], plan.relayUrls)
+  const selectedRelays = new Set(
+    plan.relayUrls.map((relayUrl) => relayUrl.toLowerCase())
+  )
+  return {
+    relayUrls: mergeRelayUrls(input.relayHints ?? [], plan.relayUrls),
+    relayListState,
+    relayHintTruncated: plan.hintRelayUrls.some(
+      (relayUrl) => !selectedRelays.has(relayUrl.toLowerCase())
+    ),
+  }
 }
 
 async function fetchEventMarketRecords(input: {
@@ -3237,12 +3357,14 @@ export async function getEventMarket(
     }
   }
 
-  const relayUrls = await eventMarketReadPlan({
-    organizerPubkey: decoded.authorPubkey,
-    relayHints: decoded.relayHints,
-    authenticatedPubkey: input.authenticatedPubkey,
-    signal: input.signal,
-  })
+  const relayUrls = (
+    await eventMarketReadPlanDetailed({
+      organizerPubkey: decoded.authorPubkey,
+      relayHints: decoded.relayHints,
+      authenticatedPubkey: input.authenticatedPubkey,
+      signal: input.signal,
+    })
+  ).relayUrls
   const observedAt = input.nowMs ?? Date.now()
   const [recordResult, cachedRecords] = await Promise.all([
     fetchEventMarketRecords({
@@ -3504,16 +3626,26 @@ function collectionCoordinatesFromEvidence(
   return Array.from(coordinates).sort()
 }
 
-export async function getOrganizerEventMarkets(
+export async function getOrganizerEventMarketsDetailed(
   input: GetOrganizerEventMarketsInput
-): Promise<EventMarketResolution[]> {
+): Promise<OrganizerEventMarketsReadResult> {
   const organizerPubkey = normalizePubkey(input.organizerPubkey)
-  if (!organizerPubkey) return []
-  const relayUrls = await eventMarketReadPlan({
+  if (!organizerPubkey) {
+    const coverage = coverageForNetworkRead([], 0)
+    return {
+      markets: [],
+      state: "unavailable",
+      coverage,
+      relayListState: "lookup-unavailable",
+      relayHintTruncated: false,
+    }
+  }
+  const readPlan = await eventMarketReadPlanDetailed({
     organizerPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
     signal: input.signal,
   })
+  const { relayUrls } = readPlan
   const observedAt = input.nowMs ?? Date.now()
   const [recordResult, cachedRecords] = await Promise.all([
     fetchEventMarketRecords({
@@ -3540,7 +3672,7 @@ export async function getOrganizerEventMarkets(
         capped: false,
       }
   if (collectionDiscoveryResult.capped) {
-    throw new Error(
+    throw new EventMarketDiscoveryBoundError(
       "Organizer event-market discovery exceeded its bounded collection scan."
     )
   }
@@ -3572,7 +3704,7 @@ export async function getOrganizerEventMarkets(
     collectionDiscoveryIsIncomplete &&
     preliminaryCollectionCoordinates.length === 0
   ) {
-    throw new Error(
+    throw new EventMarketDiscoveryBoundError(
       "Organizer event-market collection discovery did not complete."
     )
   }
@@ -3581,7 +3713,7 @@ export async function getOrganizerEventMarkets(
     preliminaryCollectionCoordinates.length >
       EVENT_MARKET_COLLECTION_DISCOVERY_TARGET_LIMIT
   ) {
-    throw new Error(
+    throw new EventMarketDiscoveryBoundError(
       "Organizer event-market discovery exceeded its bounded collection frontier."
     )
   }
@@ -3617,7 +3749,7 @@ export async function getOrganizerEventMarkets(
     authorReadReachedCap &&
     calendarCoordinates.length > EVENT_MARKET_COLLECTION_DISCOVERY_TARGET_LIMIT
   ) {
-    throw new Error(
+    throw new EventMarketDiscoveryBoundError(
       "Organizer event-market discovery exceeded its bounded calendar frontier."
     )
   }
@@ -3663,15 +3795,22 @@ export async function getOrganizerEventMarkets(
     events: organizerRecords.events,
     collectionCoordinates,
   })
+  const discoveryProjection = input.projection === "discovery"
   const [requestResult, organizerPickupResult] = await Promise.all([
-    fetchEventMarketProductRequests({
-      collectionCoordinates,
-      relayUrls: relayUrlsWithoutObservedFailures(
-        relayUrls,
-        organizerRecordRelays
-      ),
-      signal: input.signal,
-    }),
+    discoveryProjection
+      ? Promise.resolve({
+          events: [],
+          relays: [],
+          eventsVerified: true,
+        } satisfies FetchEventsFanoutResult)
+      : fetchEventMarketProductRequests({
+          collectionCoordinates,
+          relayUrls: relayUrlsWithoutObservedFailures(
+            relayUrls,
+            organizerRecordRelays
+          ),
+          signal: input.signal,
+        }),
     fetchEventMarketPickupFrontiers({
       coordinates: organizerPickupCoordinates,
       candidateEvents: organizerRecords.events,
@@ -3686,22 +3825,31 @@ export async function getOrganizerEventMarkets(
   ])
   const rawOrganizerPickupFrontiers = rawSignedEvents(organizerPickupResult)
   const rawRequestCandidates = rawSignedEvents(requestResult)
-  const organizerProductCoordinates = organizerProductCoordinatesFromEvidence(
-    organizerRecords.events,
-    collectionCoordinates
-  )
-  const requestFrontierResult = await fetchEventMarketProductRequestFrontiers({
-    candidateEvents: rawRequestCandidates.events,
-    candidateCoordinates: organizerProductCoordinates,
-    candidateSourceRelayUrlsById: rawRequestCandidates.sourceRelayUrlsById,
-    relayUrls: relayUrlsWithoutObservedFailures(
-      relayUrls,
-      organizerRecordRelays,
-      requestResult.relays
-    ),
-    authenticatedPubkey: input.authenticatedPubkey,
-    signal: input.signal,
-  })
+  const organizerProductCoordinates = discoveryProjection
+    ? []
+    : organizerProductCoordinatesFromEvidence(
+        organizerRecords.events,
+        collectionCoordinates
+      )
+  const requestFrontierResult = discoveryProjection
+    ? {
+        events: [],
+        relays: [],
+        eventsVerified: true,
+        participationBudget: EMPTY_PARTICIPATION_BUDGET,
+      }
+    : await fetchEventMarketProductRequestFrontiers({
+        candidateEvents: rawRequestCandidates.events,
+        candidateCoordinates: organizerProductCoordinates,
+        candidateSourceRelayUrlsById: rawRequestCandidates.sourceRelayUrlsById,
+        relayUrls: relayUrlsWithoutObservedFailures(
+          relayUrls,
+          organizerRecordRelays,
+          requestResult.relays
+        ),
+        authenticatedPubkey: input.authenticatedPubkey,
+        signal: input.signal,
+      })
   const rawRequestFrontiers = rawSignedEvents(requestFrontierResult)
   const participantCoordinates =
     requestFrontierResult.participationBudget.state === "within_budget"
@@ -3797,13 +3945,15 @@ export async function getOrganizerEventMarkets(
     cached: cachedRecords,
     live: mergeRawSignedEventGroups(liveRecords, rawPickupFrontiers),
   })
-  await persistEventMarketEvidence({
-    organizerPubkey,
-    events: rawRequestFrontiers.events,
-    sourceRelayUrlsById: rawRequestFrontiers.sourceRelayUrlsById,
-    participantCoordinates,
-    cachedAt: observedAt,
-  })
+  if (!discoveryProjection) {
+    await persistEventMarketEvidence({
+      organizerPubkey,
+      events: rawRequestFrontiers.events,
+      sourceRelayUrlsById: rawRequestFrontiers.sourceRelayUrlsById,
+      participantCoordinates,
+      cachedAt: observedAt,
+    })
+  }
   await persistEventMarketEvidence({
     organizerPubkey,
     events: rawPickupFrontiers.events,
@@ -3823,7 +3973,7 @@ export async function getOrganizerEventMarkets(
     ),
     relayUrls.length
   )
-  return collectionCoordinates.map((reference) => {
+  const markets = collectionCoordinates.map((reference) => {
     const productRequestEvents =
       productRequestEventsByCollection.get(reference) ?? []
     return downgradeCachedOnlyResolution(
@@ -3843,12 +3993,26 @@ export async function getOrganizerEventMarkets(
             rawPickupFrontiers.events.length > 0
               ? observedAt
               : records.cachedObservedAt,
+          includeParticipation: !discoveryProjection,
         }),
         records.sourceRelayUrlsById
       ),
       records.liveEventIds
     )
   })
+  return {
+    markets,
+    state: organizerMarketsReadState(coverage, readPlan),
+    coverage,
+    relayListState: readPlan.relayListState,
+    relayHintTruncated: readPlan.relayHintTruncated,
+  }
+}
+
+export async function getOrganizerEventMarkets(
+  input: GetOrganizerEventMarketsInput
+): Promise<EventMarketResolution[]> {
+  return (await getOrganizerEventMarketsDetailed(input)).markets
 }
 
 export type OrganizerEventMarketRecord = "calendar" | "pickup" | "collection"
