@@ -442,6 +442,19 @@ function createInboxDeclaration(
   })
 }
 
+function createFollowList(
+  identity: SyntheticIdentity,
+  followedPubkeys: readonly string[],
+  createdAt: number
+): SignedEvent {
+  return signEvent(identitySecret(identity), {
+    kind: 3,
+    created_at: createdAt,
+    tags: followedPubkeys.map((pubkey) => ["p", pubkey]),
+    content: "",
+  })
+}
+
 function createCappedInboxNoise(
   recipientPubkey: string,
   count: number
@@ -576,6 +589,7 @@ type PublishedOrganizerMarket = {
   pickupCoordinate?: string
   collectionCoordinate: string
   canonicalNaddr: string
+  merchantParticipationPath: string
 }
 
 async function publishOrganizerMarket(
@@ -598,21 +612,26 @@ async function publishOrganizerMarket(
   const editor = page.getByRole("dialog", { name: "Create event market" })
   await expect(editor).toBeVisible()
 
-  await editor.getByRole("button", { name: "Publish event" }).click()
-  await expect(editor.getByText("Add an event title.")).toBeVisible()
-  await editor.getByLabel("Title", { exact: true }).fill(options.title)
+  const titleInput = editor.getByRole("textbox", {
+    name: "Title Required",
+    exact: true,
+  })
+  await expect(titleInput).toHaveAttribute("required", "")
+  await titleInput.fill(options.title)
   await editor
-    .getByLabel("Public summary")
+    .getByRole("textbox", { name: "Public summary Required", exact: true })
     .fill("Synthetic browser-only organizer catalog.")
   await editor
-    .getByLabel("Image URL")
+    .getByRole("textbox", { name: "Image URL Required", exact: true })
     .fill("https://cdn.conduit.market/conduit-test/synthetic-event-market.svg")
   await editor
-    .getByLabel("Public location", { exact: true })
+    .getByRole("textbox", { name: "Public location Required", exact: true })
     .fill("Synthetic Fixture Hall")
   await editor.locator("#event-market-calendar-type").click()
   await page.getByRole("option", { name: "All day" }).click()
-  await editor.getByLabel("Start").fill("2099-08-10")
+  await editor
+    .getByRole("textbox", { name: "Start Required", exact: true })
+    .fill("2099-08-10")
   await editor.getByLabel("End (optional)").fill("2099-08-11")
 
   const organizerOffer = editor.getByRole("checkbox", {
@@ -624,7 +643,9 @@ async function publishOrganizerMarket(
     await editor
       .getByLabel("Pickup point or area (optional)")
       .fill("Synthetic main entrance")
-    await editor.getByLabel("Event country").fill("US")
+    await editor
+      .getByRole("textbox", { name: "Event country Required", exact: true })
+      .fill("US")
   } else {
     await expect(
       editor.getByLabel("Pickup point or area (optional)")
@@ -636,7 +657,7 @@ async function publishOrganizerMarket(
   await expect(editor).toBeHidden({ timeout: 30_000 })
   await expect(page.getByText("Active", { exact: true })).toBeVisible()
   await expect(
-    page.getByRole("heading", { name: "Share event catalog" })
+    page.getByRole("heading", { name: "Share this event" })
   ).toBeVisible()
   await expect(
     page.getByText(
@@ -689,11 +710,20 @@ async function publishOrganizerMarket(
   }
 
   const catalogUrl = await page
-    .getByRole("link", { name: "Open catalog" })
+    .getByRole("link", { name: "Open shopper catalog" })
     .getAttribute("href")
   const canonicalCatalogUrl = new URL(catalogUrl!)
+  expect(canonicalCatalogUrl.origin).toBe(marketUrl)
   expect(canonicalCatalogUrl.pathname).toMatch(/^\/events\/naddr1/)
   const canonicalNaddr = canonicalCatalogUrl.pathname.split("/").at(-1)!
+  const participationUrl = new URL(
+    (await page
+      .getByRole("link", { name: "Open merchant participation" })
+      .getAttribute("href"))!
+  )
+  expect(participationUrl.origin).toBe(merchantUrl)
+  expect(participationUrl.pathname).toBe("/events")
+  expect(participationUrl.searchParams.get("event")).toBe(canonicalNaddr)
 
   return {
     calendarEvent,
@@ -703,8 +733,50 @@ async function publishOrganizerMarket(
     pickupCoordinate: pickupEvent ? eventCoordinate(pickupEvent) : undefined,
     collectionCoordinate: eventCoordinate(initialCollection),
     canonicalNaddr,
+    merchantParticipationPath: `${participationUrl.pathname}${participationUrl.search}`,
   }
 }
+
+test("signed-out merchant participation preserves the exact event through auth @merchant", async ({
+  page,
+}) => {
+  page.setDefaultTimeout(20_000)
+  page.setDefaultNavigationTimeout(30_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const eventNaddr = nip19.naddrEncode({
+    kind: 30405,
+    pubkey: ORGANIZER_PUBKEY,
+    identifier: "signed-out-participation",
+  })
+
+  await page.goto(
+    `${merchantUrl}/events?event=${encodeURIComponent(eventNaddr)}`
+  )
+  await expect
+    .poll(() => {
+      const url = new URL(page.url())
+      return {
+        pathname: url.pathname,
+        authRequired: url.searchParams.get("authRequired"),
+        event: url.searchParams.get("event"),
+      }
+    })
+    .toEqual({ pathname: "/", authRequired: "true", event: eventNaddr })
+
+  const connectUrl = new URL(page.url())
+  connectUrl.searchParams.set(SYNTHETIC_IDENTITY_SEARCH_KEY, "merchant")
+  await page.goto(connectUrl.toString())
+  await expect
+    .poll(() => {
+      const url = new URL(page.url())
+      return { pathname: url.pathname, event: url.searchParams.get("event") }
+    })
+    .toEqual({ pathname: "/events", event: eventNaddr })
+  await expect(
+    page.getByRole("heading", { name: "Events", exact: true })
+  ).toBeVisible()
+})
 
 async function publishMerchantProductFromEvent(
   page: Page,
@@ -715,9 +787,15 @@ async function publishMerchantProductFromEvent(
     productTitle: string
     handoffMode: "merchant" | "organizer"
     templateTitle?: string
+    discoveryMode?: "direct" | "followed"
   }
 ): Promise<SignedEvent> {
-  await gotoAs(page, merchantUrl, "/events", "merchant")
+  await gotoAs(
+    page,
+    merchantUrl,
+    options.discoveryMode ? "/events" : market.merchantParticipationPath,
+    "merchant"
+  )
   await expect(
     page.getByRole("heading", { name: "Events", exact: true })
   ).toBeVisible()
@@ -725,10 +803,22 @@ async function publishMerchantProductFromEvent(
     page.getByRole("tab", { name: "Find events", exact: true })
   ).toHaveAttribute("data-state", "active")
 
-  await page.getByLabel("Event naddr or link").fill(market.canonicalNaddr)
-  await page.getByRole("button", { name: "Open", exact: true }).click()
+  if (options.discoveryMode === "followed") {
+    await expect(
+      page.getByRole("heading", {
+        name: "Events from organizers you follow",
+        exact: true,
+      })
+    ).toBeVisible({ timeout: 30_000 })
+    await page
+      .getByRole("button", { name: `View ${options.eventTitle}`, exact: true })
+      .click()
+  } else if (options.discoveryMode === "direct") {
+    await page.getByLabel("Event naddr or link").fill(market.canonicalNaddr)
+    await page.getByRole("button", { name: "Open", exact: true }).click()
+  }
   await expect(
-    page.getByRole("heading", { name: options.eventTitle, exact: true })
+    page.getByRole("button", { name: "Publish product", exact: true })
   ).toBeVisible({ timeout: 30_000 })
 
   await page.getByRole("button", { name: "Publish product" }).click()
@@ -774,8 +864,9 @@ async function publishMerchantProductFromEvent(
   await editor
     .getByRole("button", { name: "Publish product", exact: true })
     .click()
+  await expect(editor).toBeHidden({ timeout: 30_000 })
   await expect(
-    editor.getByText("Product published. Organizer acceptance is pending.", {
+    page.getByText("Product published. Organizer acceptance is pending.", {
       exact: true,
     })
   ).toBeVisible({ timeout: 30_000 })
@@ -799,8 +890,6 @@ async function publishMerchantProductFromEvent(
         : undefined
   )
 
-  await editor.getByRole("button", { name: "Done", exact: true }).click()
-  await expect(editor).toBeHidden()
   return productEvent!
 }
 
@@ -933,7 +1022,7 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
   ).toBeVisible()
   await expect(
     page.getByText(
-      "The organizer has not accepted any currently verifiable products for this event.",
+      "The organizer has not accepted any products for this event.",
       { exact: true }
     )
   ).toBeVisible()
@@ -945,7 +1034,23 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
     market.initialCollection.created_at + 1
   )
   expect(eventCoordinate(merchantTemplate)).toBe(MERCHANT_TEMPLATE_COORDINATE)
-  relay.seed(merchantTemplate)
+  relay.seed(
+    merchantTemplate,
+    createFollowList(
+      "merchant",
+      [ORGANIZER_PUBKEY],
+      market.initialCollection.created_at + 2
+    )
+  )
+
+  // Keep the explicit naddr fallback covered alongside the new followed feed.
+  await gotoAs(page, merchantUrl, "/events", "merchant")
+  await page.getByLabel("Event naddr or link").fill(market.canonicalNaddr)
+  await page.getByRole("button", { name: "Open", exact: true }).click()
+  await expect(
+    page.getByRole("button", { name: "Publish product", exact: true })
+  ).toBeVisible({ timeout: 30_000 })
+
   const merchantProduct = await publishMerchantProductFromEvent(
     page,
     relay,
@@ -955,6 +1060,7 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
       productTitle: MERCHANT_PRODUCT_TITLE,
       handoffMode: "merchant",
       templateTitle: MERCHANT_TEMPLATE_TITLE,
+      discoveryMode: "followed",
     }
   )
   expect(eventCoordinate(merchantProduct)).not.toBe(

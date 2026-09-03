@@ -3,6 +3,7 @@ import type { ProductSchema } from "@conduit/core"
 import type { MerchantOrganizerEventMarket } from "../apps/merchant/src/lib/event-market"
 import {
   createEmptyEventProductForm,
+  createFreshEventProductDTag,
   eventProductFormFromTemplate,
   validateEventProductPublishForm,
 } from "../apps/merchant/src/lib/event-product-publishing"
@@ -41,6 +42,19 @@ const PRODUCT = {
 } as ProductSchema
 
 describe("merchant event-led product publishing", () => {
+  it("publishes dedicated event products as hidden ordinary-market listings", async () => {
+    const source = await Bun.file(
+      "apps/merchant/src/lib/event-product-publishing.ts"
+    ).text()
+    const publish = source.slice(
+      source.indexOf("export async function publishEventProduct("),
+      source.indexOf("export async function retryEventProductDelivery(")
+    )
+
+    expect(publish).toContain('visibility: "private"')
+    expect(publish).not.toContain('visibility: "public"')
+  })
+
   it("starts blank at the event venue without mutating a source product", () => {
     expect(createEmptyEventProductForm(MARKET)).toMatchObject({
       templateCoordinate: "",
@@ -52,6 +66,7 @@ describe("merchant event-led product publishing", () => {
   })
 
   it("copies product fields into a new event draft", () => {
+    const sourceSnapshot = structuredClone(PRODUCT)
     const form = eventProductFormFromTemplate(
       { coordinate: PRODUCT.id, product: PRODUCT },
       MARKET
@@ -67,7 +82,43 @@ describe("merchant event-led product publishing", () => {
       imageUrl: "https://cdn.pixabay.com/photo/coffee.jpg",
       tags: "coffee, local, roasted",
     })
-    expect(PRODUCT.collectionRefs).toBeUndefined()
+    expect(PRODUCT).toEqual(sourceSnapshot)
+  })
+
+  it("always gives a copied event product a fresh coordinate", () => {
+    expect(
+      createFreshEventProductDTag(
+        "Coffee beans",
+        `30402:${MERCHANT}:coffee-beans-fixed`,
+        "fixed"
+      )
+    ).toBe("coffee-beans-fixed-event")
+    expect(
+      createFreshEventProductDTag("Coffee beans", PRODUCT.id, "fixed")
+    ).toBe("coffee-beans-fixed")
+  })
+
+  it("does not import a Markdown-wrapped image URL from a template", () => {
+    const malformedProduct = {
+      ...PRODUCT,
+      images: [
+        {
+          url: "![coffee](https://cdn.pixabay.com/photo/coffee.jpg)",
+        },
+      ],
+    } as ProductSchema
+    const sourceSnapshot = structuredClone(malformedProduct)
+
+    const form = eventProductFormFromTemplate(
+      { coordinate: malformedProduct.id, product: malformedProduct },
+      MARKET
+    )
+
+    expect(form.imageUrl).toBe("")
+    expect(validateEventProductPublishForm(form).product.errors.imageUrl).toBe(
+      "Image URL is required for Market-visible products."
+    )
+    expect(malformedProduct).toEqual(sourceSnapshot)
   })
 
   it("requires complete product fields and a merchant pickup point", () => {

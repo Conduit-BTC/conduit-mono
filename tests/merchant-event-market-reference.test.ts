@@ -20,6 +20,10 @@ import {
   parseOrganizerEventMarketReference,
   resolveOrganizerEventMarket,
 } from "../apps/merchant/src/lib/event-market"
+import {
+  parseMerchantAuthHandoffSearch,
+  parseMerchantEventsSearch,
+} from "../apps/merchant/src/lib/market-links"
 
 const ORGANIZER_SECRET = generateSecretKey()
 const ORGANIZER = getPublicKey(ORGANIZER_SECRET)
@@ -46,6 +50,49 @@ function signedEvent(
 }
 
 describe("merchant organizer event-market references", () => {
+  it("accepts only an exact collection naddr from the Merchant route query", () => {
+    const imported = encodeEventMarketNaddr(COLLECTION, [HINT_RELAY])
+
+    expect(parseMerchantEventsSearch({ event: imported })).toEqual({
+      event: imported,
+    })
+    expect(parseMerchantEventsSearch({ event: COLLECTION })).toEqual({})
+    expect(
+      parseMerchantEventsSearch({
+        event: `https://attacker.example/redirect/${imported}`,
+      })
+    ).toEqual({})
+    expect(
+      parseMerchantEventsSearch({
+        event: encodeEventMarketNaddr(CALENDAR),
+      })
+    ).toEqual({})
+    expect(parseMerchantEventsSearch({ event: [imported] })).toEqual({})
+  })
+
+  it("preserves only a validated event through the signed-out auth handoff", () => {
+    const imported = encodeEventMarketNaddr(COLLECTION, [HINT_RELAY])
+
+    expect(
+      parseMerchantAuthHandoffSearch({
+        authRequired: "true",
+        event: imported,
+      })
+    ).toEqual({ authRequired: true, event: imported })
+    expect(
+      parseMerchantAuthHandoffSearch({
+        authRequired: true,
+        event: `https://attacker.example/redirect/${imported}`,
+      })
+    ).toEqual({ authRequired: true })
+    expect(
+      parseMerchantAuthHandoffSearch({
+        authRequired: "false",
+        event: encodeEventMarketNaddr(CALENDAR),
+      })
+    ).toEqual({})
+  })
+
   it("preserves imported naddr hints while comparing coordinate identity", () => {
     const imported = encodeEventMarketNaddr(COLLECTION, [HINT_RELAY])
     const parsed = parseOrganizerEventMarketReference(imported)

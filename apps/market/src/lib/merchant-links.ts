@@ -13,5 +13,9 @@ export function inferMerchantOrigin(
     ? undefined
     : window.location
 ): string {
-  return inferConduitAppOrigin("merchant", location)
+  return inferConduitAppOrigin(
+    "merchant",
+    location,
+    import.meta.env.VITE_BUILD_BRANCH
+  )
 }
