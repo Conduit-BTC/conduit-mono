@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc --noEmit && wrangler deploy --dry-run --env preview",
+    "build": "tsc --noEmit",
     "deploy:preview": "wrangler deploy --env preview",
     "typecheck": "tsc --noEmit",
     "lint": "eslint \"src/**/*.ts\""
