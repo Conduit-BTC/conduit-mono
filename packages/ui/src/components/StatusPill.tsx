@@ -32,10 +32,7 @@ const statusPillVariants = cva(
 function FilledWarningIcon({ size }: { size: number }) {
   return (
     <svg
-      className="shrink-0"
-      width={size}
-      height={size}
-      style={{ width: size, height: size }}
+      style={{ width: size, height: size, flexShrink: 0 }}
       viewBox="0 0 16 16"
       aria-hidden="true"
     >
@@ -58,10 +55,7 @@ function FilledWarningIcon({ size }: { size: number }) {
 function FilledSuccessIcon({ size }: { size: number }) {
   return (
     <svg
-      className="shrink-0"
-      width={size}
-      height={size}
-      style={{ width: size, height: size }}
+      style={{ width: size, height: size, flexShrink: 0 }}
       viewBox="0 0 16 16"
       fill="none"
       aria-hidden="true"
@@ -82,10 +76,7 @@ function FilledSuccessIcon({ size }: { size: number }) {
 function FilledInfoIcon({ size }: { size: number }) {
   return (
     <svg
-      className="shrink-0"
-      width={size}
-      height={size}
-      style={{ width: size, height: size }}
+      style={{ width: size, height: size, flexShrink: 0 }}
       viewBox="0 0 16 16"
       fill="none"
       aria-hidden="true"
@@ -102,10 +93,7 @@ function FilledInfoIcon({ size }: { size: number }) {
 function FilledErrorIcon({ size }: { size: number }) {
   return (
     <svg
-      className="shrink-0"
-      width={size}
-      height={size}
-      style={{ width: size, height: size }}
+      style={{ width: size, height: size, flexShrink: 0 }}
       viewBox="0 0 16 16"
       fill="none"
       aria-hidden="true"
