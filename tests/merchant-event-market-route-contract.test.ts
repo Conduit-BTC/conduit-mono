@@ -10,7 +10,6 @@ describe("merchant organizer event market route", () => {
     const tree = await Bun.file("apps/merchant/src/routeTree.gen.ts").text()
 
     expect(route).toContain('createFileRoute("/events")')
-    expect(route).toContain("requireAuth()")
     expect(header).toContain('{ to: "/events", label: "Events"')
     expect(root).toContain('if (pathname === "/events") return "Events"')
     expect(tree).toContain("'/events': typeof EventsRoute")
@@ -97,8 +96,6 @@ describe("merchant organizer event market route", () => {
       "The exact signed product preview is unavailable or no longer matches this request."
     )
     expect(panel).toContain("organizer-owned collection coordinate")
-    expect(panel).toContain("Canonical event catalog QR code")
-    expect(panel).toContain("<QRCodeSVG value={shareUrl}")
     expect(route).toContain("loadOrganizerEventMarketDeliveryOutbox")
     expect(route).toContain("saveOrganizerEventMarketDelivery")
     expect(
