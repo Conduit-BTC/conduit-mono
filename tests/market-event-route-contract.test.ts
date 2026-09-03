@@ -64,7 +64,10 @@ describe("Market event catalog route", () => {
       Bun.file("apps/market/src/lib/event-market-adapter.ts").text(),
     ])
 
-    expect(adapter).toContain("resolution.organizerProductCoordinates")
+    expect(adapter).toContain("resolution.acceptedProductCoordinates")
+    expect(adapter).not.toContain(
+      "const requested = resolution.organizerProductCoordinates"
+    )
     expect(adapter).toContain('evidenceState: live ? "live" : "retained"')
     expect(adapter).toContain("pickupFulfillment: live")
     expect(route).toContain("Previously verified accepted products")

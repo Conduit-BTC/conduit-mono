@@ -214,6 +214,62 @@ describe("product listing event drafts", () => {
     expectTag(draft.tags, ["checkout_zap_message_policy", "generic_only"])
   })
 
+  it("emits Open Markets visibility for parent and variation listings in both directions", () => {
+    const variationMerchant = "a".repeat(64)
+    const hiddenDraft = buildProductListingEventDraft({
+      product: baseProduct({ visibility: "private" }),
+      dTag: "event-only-product",
+    })
+    const publicDraft = buildProductListingEventDraft({
+      product: baseProduct({ visibility: "public" }),
+      dTag: "ordinary-product",
+    })
+    const hiddenVariationDraft = buildProductListingEventDraft({
+      product: baseProduct({
+        id: `30402:${variationMerchant}:event-only-product-small`,
+        pubkey: variationMerchant,
+        type: "variation",
+        parentProductId: `30402:${variationMerchant}:event-only-product`,
+        visibility: "private",
+      }),
+      dTag: "event-only-product-small",
+    })
+    const publicVariationDraft = buildProductListingEventDraft({
+      product: baseProduct({
+        id: `30402:${variationMerchant}:ordinary-product-small`,
+        pubkey: variationMerchant,
+        type: "variation",
+        parentProductId: `30402:${variationMerchant}:ordinary-product`,
+        visibility: "public",
+      }),
+      dTag: "ordinary-product-small",
+    })
+
+    expectTag(hiddenDraft.tags, ["visibility", "hidden"])
+    expect(publicDraft.tags.some((tag) => tag[0] === "visibility")).toBe(false)
+    expectTag(hiddenVariationDraft.tags, ["visibility", "hidden"])
+    expectTag(hiddenVariationDraft.tags, [
+      "a",
+      `30402:${variationMerchant}:event-only-product`,
+    ])
+    expect(
+      publicVariationDraft.tags.some((tag) => tag[0] === "visibility")
+    ).toBe(false)
+    expectTag(publicVariationDraft.tags, [
+      "a",
+      `30402:${variationMerchant}:ordinary-product`,
+    ])
+
+    const parsed = parseProductEvent({
+      id: "event-only-product-event",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: hiddenDraft.content,
+      tags: hiddenDraft.tags,
+    })
+    expect(parsed.visibility).toBe("private")
+  })
+
   it("emits empty content and no summary tag when summary is blank", () => {
     const draft = buildProductListingEventDraft({
       product: baseProduct({ summary: "   " }),
