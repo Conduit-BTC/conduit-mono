@@ -293,6 +293,21 @@ describe("Merchant pickup order authorization", () => {
     ).toEqual({ status: "verified" })
   })
 
+  it("preserves an exact live product when the aggregate read is partial", async () => {
+    expect(
+      await verify(
+        dependencies(
+          market("partial"),
+          products({
+            stale: true,
+            listing: "partial",
+            deletion: "partial",
+          })
+        )
+      )
+    ).toEqual({ status: "verified" })
+  })
+
   it("verifies a direct merchant booth handoff outside the organizer collection", async () => {
     const boothCoordinate = `30406:${merchant}:summer-market-booth`
     const merchantPickup = {
