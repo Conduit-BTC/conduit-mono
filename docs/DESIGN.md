@@ -63,6 +63,8 @@ Named theme values live in `packages/ui/src/styles/theme.css` under the root `da
 
 The header control always performs a direct preference change. Its initial cycle is System, Day Market, and Night Market, then back to System. The icon shows the current preference: SunMoon for System, Sun for Day Market, and Moon for Night Market. System is the default and remains selectable so the app can resume following live device changes. Additional preference UI may later configure which preferences participate in the direct cycle without replacing the header interaction.
 
+Direct activation briefly shows the selected preference name beneath the icon. This non-interactive confirmation lasts one second, fades over 150ms, and updates in place on repeated clicks. It does not move focus or appear for automatic system or cross-tab updates; reduced-motion users receive it without a fade.
+
 The current named themes vary color and elevation values only. Typography, spacing, radii, and layout remain shared product-family foundations. Broader custom-theme authoring, scoped previews, and user-authored theme assets remain future work.
 
 ### Night Market

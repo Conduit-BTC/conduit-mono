@@ -126,6 +126,142 @@ async function captureScreenshot(page: Page, fileName: string): Promise<void> {
   })
 }
 
+async function expectSilentThemeFeedback(page: Page): Promise<void> {
+  await expect(page.locator("[data-theme-toggle-feedback]")).toHaveAttribute(
+    "data-state",
+    "hidden"
+  )
+  await expect(page.locator("[data-theme-toggle-status]")).toBeEmpty()
+}
+
+async function expectThemeFeedbackWithinViewport(page: Page): Promise<void> {
+  const feedbackBox = await page
+    .locator("[data-theme-toggle-feedback]")
+    .boundingBox()
+  const buttonBox = await page
+    .locator("[data-theme-toggle-preference]")
+    .boundingBox()
+  expect(feedbackBox).not.toBeNull()
+  expect(buttonBox).not.toBeNull()
+  expect(feedbackBox!.x).toBeGreaterThanOrEqual(0)
+  expect(feedbackBox!.x + feedbackBox!.width).toBeLessThanOrEqual(
+    page.viewportSize()!.width
+  )
+  expect(feedbackBox!.y).toBeGreaterThanOrEqual(
+    buttonBox!.y + buttonBox!.height
+  )
+}
+
+for (const surface of [
+  {
+    name: "Market",
+    url: `${marketUrl}/products`,
+    width: 1440,
+    area: "@market",
+  },
+  { name: "Merchant", url: merchantUrl, width: 390, area: "@merchant" },
+]) {
+  test(`${surface.name} theme toggle briefly confirms direct changes ${surface.area}`, async ({
+    page,
+  }) => {
+    const clockStart = Date.now()
+    await page.clock.install({ time: clockStart })
+    await page.setViewportSize({ width: surface.width, height: 900 })
+    await page.emulateMedia({
+      colorScheme: "dark",
+      reducedMotion: "no-preference",
+    })
+    await page.goto(surface.url)
+    const button = await expectThemeToggle(
+      page,
+      "system",
+      "day-market",
+      "sun-moon"
+    )
+    await expectSilentThemeFeedback(page)
+    await page.clock.pauseAt(clockStart + 60_000)
+
+    const feedback = page.locator("[data-theme-toggle-feedback]")
+    const status = page.locator("[data-theme-toggle-status]")
+    await button.click()
+    await expect(feedback).toHaveText("Day Market")
+    await expect(feedback).toHaveAttribute("data-state", "visible")
+    await expect(status).toHaveText("Appearance set to Day Market.")
+    await expect(status).toHaveAttribute("role", "status")
+    await expect(feedback).toHaveCSS("transition-duration", "0.15s")
+    await expect(feedback).toHaveCSS("pointer-events", "none")
+    await page.clock.runFor(800)
+    await expect(feedback).toHaveCSS("opacity", "1")
+    await captureScreenshot(
+      page,
+      `${surface.name.toLowerCase()}-day-theme-feedback.png`
+    )
+
+    const nightButton = await expectThemeToggle(
+      page,
+      "day-market",
+      "night-market",
+      "sun"
+    )
+    await nightButton.click()
+    await expect(feedback).toHaveCount(1)
+    await expect(feedback).toHaveText("Night Market")
+    await expect(status).toHaveText("Appearance set to Night Market.")
+    await page.clock.runFor(300)
+    await expect(feedback).toHaveAttribute("data-state", "visible")
+    await expect(feedback).toHaveCSS("opacity", "1")
+    for (const width of [320, 1440]) {
+      await page.setViewportSize({ width, height: 900 })
+      await expectThemeFeedbackWithinViewport(page)
+      await captureScreenshot(
+        page,
+        `${surface.name.toLowerCase()}-${width}-night-theme-feedback.png`
+      )
+    }
+    await page.setViewportSize({ width: surface.width, height: 900 })
+    await page.clock.runFor(700)
+    await expect(feedback).toHaveAttribute("data-state", "hidden")
+    await page.clock.runFor(150)
+    await expect(feedback).toHaveCSS("opacity", "0")
+
+    const systemButton = await expectThemeToggle(
+      page,
+      "night-market",
+      "system",
+      "moon"
+    )
+    await systemButton.focus()
+    await page.keyboard.press("Enter")
+    await expect(feedback).toHaveText("System")
+    await expect(status).toHaveText("Appearance set to System.")
+    await expect(
+      page.getByRole("button", {
+        name: "Appearance: System. Switch to Day Market",
+      })
+    ).toBeFocused()
+    await page.clock.runFor(150)
+    await expectThemeFeedbackWithinViewport(page)
+    await captureScreenshot(
+      page,
+      `${surface.name.toLowerCase()}-system-theme-feedback.png`
+    )
+
+    await page.clock.runFor(1_000)
+    await expect(feedback).toHaveCSS("opacity", "0")
+    await page.emulateMedia({ colorScheme: "light", reducedMotion: "reduce" })
+    await expectResolvedTheme(page, "day-market", "light")
+    await expect(feedback).toHaveAttribute("data-state", "hidden")
+    await expect(status).toHaveText("Appearance set to System.")
+    await expect(feedback).toHaveCSS("transition-property", "none")
+
+    await page.keyboard.press("Space")
+    await expect(feedback).toHaveText("Day Market")
+    await expect(feedback).toHaveCSS("opacity", "1")
+    await page.clock.runFor(1_000)
+    await expect(feedback).toHaveCSS("opacity", "0")
+  })
+}
+
 test("Market direct theme toggle cycles System, Day, and Night while signed out @market", async ({
   page,
 }) => {
@@ -162,6 +298,7 @@ test("Market direct theme toggle cycles System, Day, and Night while signed out 
   await syncedPage.goto(`${marketUrl}/products`)
   await expectResolvedTheme(syncedPage, "day-market", "light")
   await expectThemeToggle(syncedPage, "system", "day-market", "sun-moon")
+  await expectSilentThemeFeedback(syncedPage)
 
   await systemToggle.focus()
   await page.keyboard.press("Enter")
@@ -179,6 +316,7 @@ test("Market direct theme toggle cycles System, Day, and Night while signed out 
     "sun"
   )
   await expectThemeToggle(syncedPage, "day-market", "night-market", "sun")
+  await expectSilentThemeFeedback(syncedPage)
 
   await page.emulateMedia({ colorScheme: "dark" })
   await expectResolvedTheme(page, "day-market", "light")
@@ -204,6 +342,7 @@ test("Market direct theme toggle cycles System, Day, and Night while signed out 
   await expectResolvedTheme(syncedPage, "day-market", "light")
   await expectThemeToggle(page, "system", "day-market", "sun-moon")
   await expectThemeToggle(syncedPage, "system", "day-market", "sun-moon")
+  await expectSilentThemeFeedback(syncedPage)
 
   await page.emulateMedia({ colorScheme: "light" })
   await expectResolvedTheme(page, "day-market", "light")
@@ -214,6 +353,7 @@ test("Market direct theme toggle cycles System, Day, and Night while signed out 
   await expectResolvedTheme(page, "night-market", "dark")
   await expectFirstFrameTheme(page, "night-market")
   await expectThemeToggle(page, "system", "day-market", "sun-moon")
+  await expectSilentThemeFeedback(page)
   await captureScreenshot(page, "market-system-direct-toggle.png")
   await syncedPage.close()
 })
