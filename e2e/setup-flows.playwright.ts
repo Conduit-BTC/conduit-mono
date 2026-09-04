@@ -1453,7 +1453,11 @@ test("market shopper preferences remove legacy plaintext and render the complete
 
   await page.goto(`${marketUrl}/preferences`)
   await expect(page.getByRole("heading", { name: "Preferences" })).toBeVisible()
-  await expect(page.getByRole("status")).toContainText(
+  const preferencesStatus = page
+    .locator("header")
+    .filter({ has: page.getByRole("heading", { name: "Preferences" }) })
+    .getByRole("status")
+  await expect(preferencesStatus).toContainText(
     /Encrypted on relays|Relay ready/,
     { timeout: 20_000 }
   )
@@ -1540,7 +1544,7 @@ test("market shopper preferences remove legacy plaintext and render the complete
     page.getByText("Preset encrypted and saved on your relays.")
   ).toBeVisible({ timeout: 40_000 })
   await expect(
-    page.getByRole("status").filter({ hasText: "Encrypted on relays" })
+    preferencesStatus.filter({ hasText: "Encrypted on relays" })
   ).toBeVisible()
 
   await recipientName.fill("Sensitive unsaved recipient")
