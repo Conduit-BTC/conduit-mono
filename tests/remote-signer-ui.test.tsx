@@ -382,14 +382,11 @@ describe("remote signer UI", () => {
     expect(markup.includes('role="status"')).toBe(true)
   })
 
-  it("uses accessible icons with concise remote pairing labels", () => {
+  it("uses visible remote pairing labels with decorative icons", () => {
     const markup = renderToStaticMarkup(
       <SignerConnectPanel {...commonProps} platform="desktop" />
     )
 
-    expect(markup.includes('aria-label="QR code"')).toBe(true)
-    expect(markup.includes('aria-label="Connection URL"')).toBe(true)
-    expect(markup.includes('aria-label="Bunker URL"')).toBe(true)
     expect(markup.includes("Scan QR")).toBe(true)
     expect(markup.includes("Copy link")).toBe(true)
     expect(markup.includes("Paste bunker")).toBe(true)

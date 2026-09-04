@@ -204,7 +204,7 @@ async function connectRemoteSigner(
   page: Page,
   remoteSignerPubkey: string
 ): Promise<void> {
-  await page.getByRole("tab", { name: "Bunker URL" }).click()
+  await page.getByRole("tab", { name: "Paste bunker", exact: true }).click()
   await page
     .getByRole("textbox", { name: "Remote signer bunker URL" })
     .fill(
