@@ -5,10 +5,24 @@ import {
   type Page,
   type Request,
 } from "@playwright/test"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+  type EventTemplate,
+} from "nostr-tools/pure"
 
 const marketLocalOrigin = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const merchantLocalOrigin = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
-const savedPubkey = "a".repeat(64)
+// Keep the production hostnames visible to the app while matching the local
+// Vite servers' HTTP protocol for Playwright's same-protocol URL override.
+const marketTestOrigin = "http://shop.conduit.market"
+const merchantTestOrigin = "http://sell.conduit.market"
+// Auth restoration now validates signed events, so the signed-in navigation
+// fixture must use a real ephemeral key instead of racing an invalid stub.
+const signerSecretKey = generateSecretKey()
+const savedPubkey = getPublicKey(signerSecretKey)
+const signEventBinding = "__conduitSignLegalTestEvent"
 
 type AuthFixture = "signed_out" | "restoring" | "signed_in"
 
@@ -22,31 +36,20 @@ type LegalProbe = {
   xhrRequests: string[]
 }
 
-async function mapOfficialOriginToLocal(
+async function mapTestOriginToLocal(
   context: BrowserContext,
-  officialOrigin: string,
+  testOrigin: string,
   localOrigin: string,
   onDocumentRequest?: (request: Request) => void
 ): Promise<void> {
-  await context.route(`${officialOrigin}/**`, async (route) => {
-    try {
-      const request = route.request()
-      if (request.resourceType() === "document") onDocumentRequest?.(request)
+  await context.route(`${testOrigin}/**`, async (route) => {
+    const request = route.request()
+    if (request.resourceType() === "document") onDocumentRequest?.(request)
 
-      const officialUrl = new URL(request.url())
-      const response = await route.fetch({
-        url: `${localOrigin}${officialUrl.pathname}${officialUrl.search}`,
-        method: request.method(),
-        headers: {
-          accept: request.headers().accept ?? "*/*",
-        },
-      })
-      await route.fulfill({ response })
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      if (/disposed|closed|Test ended/i.test(message)) return
-      throw error
-    }
+    const testUrl = new URL(request.url())
+    await route.continue({
+      url: `${localOrigin}${testUrl.pathname}${testUrl.search}`,
+    })
   })
 }
 
@@ -54,8 +57,11 @@ async function installLegalIsolationProbe(
   page: Page,
   authFixture: AuthFixture
 ): Promise<void> {
+  await page.exposeFunction(signEventBinding, (event: EventTemplate) =>
+    finalizeEvent(event, signerSecretKey)
+  )
   await page.addInitScript(
-    ([fixture, pubkey]) => {
+    ([fixture, pubkey, signerBinding]) => {
       if (fixture !== "signed_out") {
         localStorage.setItem("conduit:auth", pubkey)
       }
@@ -144,12 +150,17 @@ async function installLegalIsolationProbe(
             return { "wss://relay.conduit.market": { read: true, write: true } }
           },
           async signEvent(event: Record<string, unknown>) {
-            return event
+            return (
+              window as unknown as Record<
+                string,
+                (event: Record<string, unknown>) => Promise<unknown>
+              >
+            )[signerBinding]!(event)
           },
         },
       })
     },
-    [authFixture, savedPubkey] as const
+    [authFixture, savedPubkey, signEventBinding] as const
   )
 }
 
@@ -234,7 +245,7 @@ async function assertIsolatedLegalLoad(
 const legalCases = [
   {
     app: "market",
-    officialOrigin: "https://shop.conduit.market",
+    testOrigin: marketTestOrigin,
     localOrigin: marketLocalOrigin,
     path: "/privacy-policy",
     title: "Product Privacy Policy",
@@ -242,7 +253,7 @@ const legalCases = [
   },
   {
     app: "market",
-    officialOrigin: "https://shop.conduit.market",
+    testOrigin: marketTestOrigin,
     localOrigin: marketLocalOrigin,
     path: "/terms-of-service",
     title: "Product Terms of Service",
@@ -250,7 +261,7 @@ const legalCases = [
   },
   {
     app: "merchant",
-    officialOrigin: "https://sell.conduit.market",
+    testOrigin: merchantTestOrigin,
     localOrigin: merchantLocalOrigin,
     path: "/privacy-policy",
     title: "Product Privacy Policy",
@@ -258,7 +269,7 @@ const legalCases = [
   },
   {
     app: "merchant",
-    officialOrigin: "https://sell.conduit.market",
+    testOrigin: merchantTestOrigin,
     localOrigin: merchantLocalOrigin,
     path: "/terms-of-service",
     title: "Product Terms of Service",
@@ -275,7 +286,7 @@ for (const legalCase of legalCases) {
     page.on("websocket", (socket) => {
       const socketUrl = new URL(socket.url())
       const allowedHmrHosts = new Set([
-        new URL(legalCase.officialOrigin).hostname,
+        new URL(legalCase.testOrigin).hostname,
         new URL(legalCase.localOrigin).hostname,
       ])
       if (!allowedHmrHosts.has(socketUrl.hostname)) {
@@ -283,13 +294,13 @@ for (const legalCase of legalCases) {
       }
     })
     await installLegalIsolationProbe(page, "signed_out")
-    await mapOfficialOriginToLocal(
+    await mapTestOriginToLocal(
       context,
-      legalCase.officialOrigin,
+      legalCase.testOrigin,
       legalCase.localOrigin
     )
 
-    await page.goto(`${legalCase.officialOrigin}${legalCase.path}`)
+    await page.goto(`${legalCase.testOrigin}${legalCase.path}`)
     await assertIsolatedLegalLoad(
       page,
       legalCase.title,
@@ -308,7 +319,7 @@ for (const legalCase of legalCases) {
     page.on("websocket", (socket) => {
       const socketUrl = new URL(socket.url())
       const allowedHmrHosts = new Set([
-        new URL(legalCase.officialOrigin).hostname,
+        new URL(legalCase.testOrigin).hostname,
         new URL(legalCase.localOrigin).hostname,
       ])
       if (!allowedHmrHosts.has(socketUrl.hostname)) {
@@ -316,13 +327,13 @@ for (const legalCase of legalCases) {
       }
     })
     await installLegalIsolationProbe(page, "signed_out")
-    await mapOfficialOriginToLocal(
+    await mapTestOriginToLocal(
       context,
-      legalCase.officialOrigin,
+      legalCase.testOrigin,
       legalCase.localOrigin
     )
 
-    await page.goto(`${legalCase.officialOrigin}${legalCase.path}/`)
+    await page.goto(`${legalCase.testOrigin}${legalCase.path}/`)
     await assertIsolatedLegalLoad(
       page,
       legalCase.title,
@@ -349,13 +360,13 @@ for (const authFixture of ["restoring", "signed_in"] as const) {
         }
       })
       await installLegalIsolationProbe(page, authFixture)
-      await mapOfficialOriginToLocal(
+      await mapTestOriginToLocal(
         context,
-        "https://sell.conduit.market",
+        merchantTestOrigin,
         merchantLocalOrigin
       )
 
-      await page.goto(`https://sell.conduit.market${path}`)
+      await page.goto(`${merchantTestOrigin}${path}`)
       await assertIsolatedLegalLoad(
         page,
         path === "/privacy-policy"
@@ -375,13 +386,13 @@ for (const legalCase of legalCases) {
   }) => {
     await page.setViewportSize({ width: 390, height: 844 })
     await installLegalIsolationProbe(page, "signed_out")
-    await mapOfficialOriginToLocal(
+    await mapTestOriginToLocal(
       context,
-      legalCase.officialOrigin,
+      legalCase.testOrigin,
       legalCase.localOrigin
     )
 
-    await page.goto(`${legalCase.officialOrigin}${legalCase.path}`)
+    await page.goto(`${legalCase.testOrigin}${legalCase.path}`)
     await expect(
       page.getByRole("heading", { name: legalCase.title })
     ).toBeVisible()
@@ -397,9 +408,9 @@ test("market Product legal links use full navigation and suppress cross-origin r
   let termsDocumentRequests = 0
   let websiteReferer: string | undefined
   await installLegalIsolationProbe(page, "signed_out")
-  await mapOfficialOriginToLocal(
+  await mapTestOriginToLocal(
     context,
-    "https://shop.conduit.market",
+    marketTestOrigin,
     marketLocalOrigin,
     (request) => {
       if (new URL(request.url()).pathname === "/terms-of-service") {
@@ -415,11 +426,11 @@ test("market Product legal links use full navigation and suppress cross-origin r
     })
   })
 
-  await page.goto("https://shop.conduit.market/privacy-policy")
+  await page.goto(`${marketTestOrigin}/privacy-policy`)
   await page
     .getByRole("link", { name: "Read the Product Terms of Service" })
     .click()
-  await expect(page).toHaveURL("https://shop.conduit.market/terms-of-service")
+  await expect(page).toHaveURL(`${marketTestOrigin}/terms-of-service`)
   expect(termsDocumentRequests).toBe(1)
 
   const websitePrivacy = page.getByRole("link", {
@@ -442,9 +453,9 @@ test("market footer opens the host-local Product Terms with full navigation @mar
 }) => {
   let termsDocumentRequests = 0
   await installLegalIsolationProbe(page, "signed_out")
-  await mapOfficialOriginToLocal(
+  await mapTestOriginToLocal(
     context,
-    "https://shop.conduit.market",
+    marketTestOrigin,
     marketLocalOrigin,
     (request) => {
       if (new URL(request.url()).pathname === "/terms-of-service") {
@@ -453,7 +464,7 @@ test("market footer opens the host-local Product Terms with full navigation @mar
     }
   )
 
-  await page.goto("https://shop.conduit.market/about")
+  await page.goto(`${marketTestOrigin}/about`)
   const termsLink = page
     .getByRole("contentinfo")
     .getByRole("link", { name: "Terms" })
@@ -461,7 +472,7 @@ test("market footer opens the host-local Product Terms with full navigation @mar
   await expect(termsLink).not.toHaveAttribute("target", "_blank")
   await termsLink.click()
 
-  await expect(page).toHaveURL("https://shop.conduit.market/terms-of-service")
+  await expect(page).toHaveURL(`${marketTestOrigin}/terms-of-service`)
   expect(termsDocumentRequests).toBe(1)
 })
 
@@ -471,9 +482,9 @@ test("merchant ConnectGate opens the host-local Product Privacy Policy with full
 }) => {
   let privacyDocumentRequests = 0
   await installLegalIsolationProbe(page, "signed_out")
-  await mapOfficialOriginToLocal(
+  await mapTestOriginToLocal(
     context,
-    "https://sell.conduit.market",
+    merchantTestOrigin,
     merchantLocalOrigin,
     (request) => {
       if (new URL(request.url()).pathname === "/privacy-policy") {
@@ -482,7 +493,7 @@ test("merchant ConnectGate opens the host-local Product Privacy Policy with full
     }
   )
 
-  await page.goto("https://sell.conduit.market/")
+  await page.goto(`${merchantTestOrigin}/`)
   await expect(
     page.getByRole("heading", { name: "Sign in to Conduit" })
   ).toBeVisible()
@@ -491,7 +502,7 @@ test("merchant ConnectGate opens the host-local Product Privacy Policy with full
   await expect(privacyLink).not.toHaveAttribute("target", "_blank")
   await privacyLink.click()
 
-  await expect(page).toHaveURL("https://sell.conduit.market/privacy-policy")
+  await expect(page).toHaveURL(`${merchantTestOrigin}/privacy-policy`)
   expect(privacyDocumentRequests).toBe(1)
 })
 
@@ -501,9 +512,9 @@ test("merchant signed menu opens the host-local Product Terms with full navigati
 }) => {
   let termsDocumentRequests = 0
   await installLegalIsolationProbe(page, "signed_in")
-  await mapOfficialOriginToLocal(
+  await mapTestOriginToLocal(
     context,
-    "https://sell.conduit.market",
+    merchantTestOrigin,
     merchantLocalOrigin,
     (request) => {
       if (new URL(request.url()).pathname === "/terms-of-service") {
@@ -512,7 +523,7 @@ test("merchant signed menu opens the host-local Product Terms with full navigati
     }
   )
 
-  await page.goto("https://sell.conduit.market/")
+  await page.goto(`${merchantTestOrigin}/`)
   await page.getByRole("button", { name: "Open merchant account menu" }).click()
   const termsLink = page.getByRole("menu").getByRole("menuitem", {
     name: "Terms",
@@ -521,6 +532,6 @@ test("merchant signed menu opens the host-local Product Terms with full navigati
   await expect(termsLink).not.toHaveAttribute("target", "_blank")
   await termsLink.click()
 
-  await expect(page).toHaveURL("https://sell.conduit.market/terms-of-service")
+  await expect(page).toHaveURL(`${merchantTestOrigin}/terms-of-service`)
   expect(termsDocumentRequests).toBe(1)
 })
