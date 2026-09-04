@@ -36,13 +36,21 @@ StrictMode cleanup and late promise settlement cannot cancel a replacement
 attempt. Authentication state confirms success: a canceled core promise may
 resolve and must not close a reopened dialog.
 
-"Open again" reuses the current pending connection. Expiration or cancellation
-requires an explicit new attempt; no automatic retry loop or persisted pending
-credentials are introduced. Existing timeout, identity checks, encrypted session
-storage, authentication locks, and revocation rules remain in `@conduit/core`.
-The installed NIP-46 implementation listens for live responses; background
-suspension can still miss an approval. Do not describe reopening alone as proven
-recovery from a lost response.
+"Open again" reuses the current pending connection. Within its original two-minute
+deadline, `@conduit/core` restores a closed listener after a short delay and renews
+listening on foreground return, retaining the same client key, secret, and URI.
+Superseded listeners and their sockets close before replacement. Cancellation,
+expiration, and successful pairing remove the return listener; cancellation and
+expiration require an explicit new attempt. Pending credentials remain in memory
+only. Existing identity checks, encrypted established-session storage,
+authentication locks, and revocation rules remain unchanged.
+
+NIP-46 approvals are ephemeral events, so recovery does not query relay history or
+assume a missed approval can be replayed. If returning alone does not finish
+sign-in, "Open Clave again" asks Clave to acknowledge the same pairing again.
+The client still validates the matching secret and requests the user's public
+key before accepting the session. This covers an active page's bounded attempt,
+not a discarded tab, page reload, or expired connection.
 
 Primal Android's connection screen requires an account whose key it holds.
 Watch-only and external-signer accounts should use the app that holds their keys.
@@ -55,6 +63,10 @@ Automated coverage checks platform selection, handoff construction, touch target
 manual options, cancellation, StrictMode, and delayed settlement. App launches are
 intercepted. These checks cannot prove actual signer approval, universal-link
 association, Android intent resolution, or OS suspension/return behavior.
+Transport regression tests exercise the installed NIP-46 implementation with
+in-memory sockets and real synthetic signatures/encryption, including a lost
+approval followed by same-attempt reapproval. They do not prove physical-device
+handoff or public-relay delivery.
 
 Run the signer cases in [the mobile QA baseline](mobile-safari-qa-baseline.md) on
 physical iPhone/Safari with Clave and Android/Chrome with Amber and Primal.

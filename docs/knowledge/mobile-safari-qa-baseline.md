@@ -181,6 +181,13 @@ bunx playwright test e2e/mobile-safari-baseline.playwright.ts \
 - [ ] Exercise "Other ways to connect": QR for another device, copied connection
       link, and a pasted bunker link. Switching to bunker must cancel the pending
       generated connection. NIP-46 behavior follows [NIP-46][nip-46].
+- [ ] Approve in Clave after Safari has been backgrounded for 30–60 seconds, then
+      return within the original two-minute pairing window. If sign-in has not
+      completed, tap "Open Clave again" and return. Confirm the same pairing
+      completes without an additional client entry in Clave. Repeat with the
+      browser connection interrupted. Cancel or let the attempt expire, then
+      confirm returning cannot revive it. Record only pass/fail and device/app
+      versions; never capture connection values, QR codes, or account details.
 - [ ] Load the preconfigured zap-out booth fixture, then initiate zap-out and invoke
       confirm/handoff. Count every Conduit tap after the fixture is loaded;
       wallet-app confirmation steps are outside the two-tap budget. Cancel once and
