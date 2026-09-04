@@ -213,7 +213,7 @@ async function connectRemoteSigner(
         "?relay=" +
         encodeURIComponent(signerRelayAlias)
     )
-  await page.getByRole("button", { name: "Connect Signer (NIP-46)" }).click()
+  await page.getByRole("button", { name: "Connect with bunker link" }).click()
 }
 
 test("remote signer timeout keeps the product draft recoverable and requires an explicit retry @merchant", async ({
@@ -391,7 +391,7 @@ test("a malformed restored identity retires the saved session across reloads @me
     harness.returnMalformedIdentity()
 
     await page.reload()
-    const connectGate = page.locator('main[aria-label="Connect a signer"]')
+    const connectGate = page.locator('main[aria-label="Sign in to Conduit"]')
     await expect(connectGate).toBeFocused({ timeout: 15_000 })
     await expect
       .poll(() => page.evaluate(() => localStorage.getItem("conduit:auth")))
@@ -400,7 +400,7 @@ test("a malformed restored identity retires the saved session across reloads @me
       .poll(() => isRemoteSignerKeyRemoved(page, clientKeyId))
       .toBe(true)
     await expect(
-      page.getByRole("button", { name: "Reconnect NIP-46 signer" })
+      page.getByRole("button", { name: "Reconnect your account" })
     ).toHaveCount(0)
     expect(harness.identityRequestCount()).toBe(
       identityRequestsBeforeRestore + 1
@@ -480,14 +480,14 @@ test("an authority-only revision keeps exact remote signer reconnect available @
     expect(Number.isFinite(retained.updatedAt)).toBe(true)
 
     await expect(
-      page.locator('main[aria-label="Connect a signer"]')
+      page.locator('main[aria-label="Sign in to Conduit"]')
     ).toBeVisible()
     expect(
       await page.evaluate(() => localStorage.getItem("conduit:auth"))
     ).toBe(retained.rawSession)
 
     const reconnect = page.getByRole("button", {
-      name: "Reconnect NIP-46 signer",
+      name: "Reconnect your account",
     })
     await expect(reconnect).toBeVisible({ timeout: 5_000 })
     await reconnect.click()
@@ -606,7 +606,7 @@ test("a different signer starts a fresh merchant workspace after verified recove
       .getByRole("button", { name: "Use a different signer" })
       .click()
 
-    const connectGate = page.locator('main[aria-label="Connect a signer"]')
+    const connectGate = page.locator('main[aria-label="Sign in to Conduit"]')
     await expect(connectGate).toBeFocused({ timeout: 15_000 })
     await expect(productDialog).toBeHidden()
     expect(

@@ -1,5 +1,8 @@
 import { Button } from "./Button"
-import type { SignerEnvironmentInput } from "./SignerSwitch"
+import {
+  getSignerPlatform,
+  type SignerEnvironmentInput,
+} from "./signer-platform"
 import { cn } from "../utils"
 
 const CLAVE_CONNECT_URL = "https://clave.casa/connect/?uri="
@@ -23,46 +26,42 @@ export function claveConnectUrl(nostrConnectUri: string): string {
 export function isIosSignerEnvironment(
   input?: SignerEnvironmentInput
 ): boolean {
-  const environment =
-    input ??
-    (typeof navigator === "undefined"
-      ? { userAgent: "" }
-      : {
-          userAgent: navigator.userAgent,
-          platform: navigator.platform,
-          maxTouchPoints: navigator.maxTouchPoints,
-        })
-  return (
-    /iphone|ipad|ipod/i.test(environment.userAgent) ||
-    (environment.platform === "MacIntel" &&
-      (environment.maxTouchPoints ?? 0) > 1)
-  )
+  return getSignerPlatform(input) === "ios"
 }
 
 export interface ClaveConnectButtonProps {
   nostrConnectUri: string
   className?: string
+  label?: string
+  onClick?: () => void
 }
 
 export function ClaveConnectButton({
   nostrConnectUri,
   className,
+  label = "Connect with Clave",
+  onClick,
 }: ClaveConnectButtonProps) {
   return (
     <Button
       asChild
-      variant="outline"
+      variant="primary"
       size="sm"
       className={cn("h-11 w-full", className)}
     >
-      <a href={claveConnectUrl(nostrConnectUri)} target="_self" rel="noopener">
+      <a
+        href={claveConnectUrl(nostrConnectUri)}
+        target="_self"
+        rel="noopener"
+        onClick={onClick}
+      >
         <img
           src={CLAVE_MARK}
           alt=""
           aria-hidden="true"
           className="h-5 w-5 rounded-full"
         />
-        Connect with Clave
+        {label}
       </a>
     </Button>
   )
