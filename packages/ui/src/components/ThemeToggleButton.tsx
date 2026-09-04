@@ -14,6 +14,12 @@ export type ThemeToggleButtonProps = {
   cycle?: readonly ThemePreference[]
 }
 
+const compactPreferenceLabels: Record<ThemePreference, string> = {
+  system: "System",
+  "day-market": "Day",
+  "night-market": "Night",
+}
+
 function getThemePreferenceLabel(preference: ThemePreference): string {
   if (preference === "system") return "System"
   return (
@@ -37,7 +43,7 @@ export function ThemeToggleButton({
       setFeedback((current) =>
         current === feedback ? { ...current, visible: false } : current
       )
-    }, 1_000)
+    }, 320)
     return () => window.clearTimeout(timeout)
   }, [feedback])
 
@@ -52,15 +58,14 @@ export function ThemeToggleButton({
     preference === "system" ? SunMoon : preference === "day-market" ? Sun : Moon
 
   return (
-    <span className="relative inline-flex shrink-0">
+    <>
       <button
         type="button"
         aria-label={label}
-        title={label}
         data-theme-toggle-preference={preference}
         data-theme-toggle-target={nextPreference}
         className={cn(
-          "inline-flex size-11 shrink-0 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)] shadow-sm transition-colors hover:bg-[var(--surface-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)]",
+          "relative inline-flex size-11 shrink-0 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)] shadow-sm transition-colors hover:bg-[var(--surface-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)]",
           className
         )}
         onClick={() => {
@@ -68,19 +73,30 @@ export function ThemeToggleButton({
           setFeedback({ preference: nextPreference, visible: true })
         }}
       >
-        <Icon className="size-5" aria-hidden="true" />
+        <span
+          aria-hidden="true"
+          data-theme-toggle-icon=""
+          className={cn(
+            "inline-flex size-5 transition-[opacity,transform] duration-[80ms] ease-out motion-reduce:transform-none motion-reduce:transition-none",
+            feedbackVisible ? "scale-90 opacity-0" : "scale-100 opacity-100"
+          )}
+        >
+          <Icon className="size-5" />
+        </span>
+        <span
+          aria-hidden="true"
+          data-theme-toggle-feedback=""
+          data-state={feedbackVisible ? "visible" : "hidden"}
+          className={cn(
+            "pointer-events-none absolute inset-0 flex items-center justify-center whitespace-nowrap text-[11px] font-medium leading-none transition-[opacity,transform] duration-[80ms] ease-out motion-reduce:transform-none motion-reduce:transition-none",
+            feedbackVisible
+              ? "translate-y-0 opacity-100"
+              : "translate-y-0.5 opacity-0"
+          )}
+        >
+          {feedback ? compactPreferenceLabels[feedback.preference] : ""}
+        </span>
       </button>
-      <span
-        aria-hidden="true"
-        data-theme-toggle-feedback=""
-        data-state={feedbackVisible ? "visible" : "hidden"}
-        className={cn(
-          "pointer-events-none absolute right-0 top-full z-50 mt-1.5 whitespace-nowrap rounded-md border border-[var(--border)] bg-[var(--surface-overlay)] px-2.5 py-1.5 text-xs font-medium leading-4 text-[var(--text-primary)] shadow-sm transition-opacity duration-150 motion-reduce:transition-none",
-          feedbackVisible ? "opacity-100" : "opacity-0"
-        )}
-      >
-        {feedbackLabel}
-      </span>
       <span
         data-theme-toggle-status=""
         role="status"
@@ -90,6 +106,6 @@ export function ThemeToggleButton({
       >
         {feedbackLabel ? `Appearance set to ${feedbackLabel}.` : ""}
       </span>
-    </span>
+    </>
   )
 }
