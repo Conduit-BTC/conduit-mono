@@ -12,6 +12,10 @@ import { useEffect, useId, useMemo, useRef, useState, type Ref } from "react"
 import { Badge } from "./Badge"
 import { Button } from "./Button"
 import {
+  ClaveConnectButton,
+  isIosSignerEnvironment,
+} from "./ClaveConnectButton"
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -65,6 +69,8 @@ export interface SignerConnectPanelProps {
   pendingSwitch?: boolean
   extensionNotice?: string | null
   mobile?: boolean
+  /** Offer the Clave Universal Link handoff; defaults to iOS detection. */
+  ios?: boolean
   extensionAvailable: boolean
   connectPending?: boolean
   connectDisabled?: boolean
@@ -182,6 +188,7 @@ function ExtensionConnectButton({
 function RemoteSignerConnect({
   connectPending,
   connectDisabled,
+  ios,
   nostrConnectUri,
   onConnectNostrConnect,
   onConnectBunker,
@@ -189,6 +196,7 @@ function RemoteSignerConnect({
 }: {
   connectPending: boolean
   connectDisabled: boolean
+  ios: boolean
   nostrConnectUri?: string | null
   onConnectNostrConnect: () => Promise<void> | void
   onConnectBunker: (bunkerUri: string) => Promise<void> | void
@@ -339,6 +347,7 @@ function RemoteSignerConnect({
               <p className="text-sm leading-5 text-[var(--text-secondary)]">
                 Scan with your remote signer to connect.
               </p>
+              {ios && <ClaveConnectButton nostrConnectUri={nostrConnectUri} />}
             </div>
           ) : (
             <NostrConnectStartButton
@@ -361,6 +370,12 @@ function RemoteSignerConnect({
                 className="min-h-24 resize-none break-all font-mono"
               />
               <div className="grid gap-2 sm:grid-cols-2">
+                {ios && (
+                  <ClaveConnectButton
+                    nostrConnectUri={nostrConnectUri}
+                    className="sm:col-span-2"
+                  />
+                )}
                 <Button asChild className="w-full">
                   <a href={nostrConnectUri}>
                     <ExternalLink className="h-4 w-4" aria-hidden="true" />
@@ -602,6 +617,7 @@ function SignerDisconnectedContent({
   pendingSwitch = false,
   extensionNotice,
   mobile = false,
+  ios = isIosSignerEnvironment(),
   extensionAvailable,
   connectPending = false,
   connectDisabled = false,
@@ -663,6 +679,7 @@ function SignerDisconnectedContent({
         <RemoteSignerConnect
           connectPending={connectPending && connectingMethod === "nip46"}
           connectDisabled={connectDisabled}
+          ios={ios}
           nostrConnectUri={nostrConnectUri}
           onConnectNostrConnect={onConnectNostrConnect}
           onConnectBunker={onConnectRemote}
@@ -749,6 +766,7 @@ export function SignerConnectPanel({
   pendingSwitch,
   extensionNotice,
   mobile,
+  ios,
   extensionAvailable,
   connectPending,
   connectDisabled,
@@ -797,6 +815,7 @@ export function SignerConnectPanel({
           pendingSwitch={pendingSwitch}
           extensionNotice={extensionNotice}
           mobile={mobile}
+          ios={ios}
           extensionAvailable={extensionAvailable}
           connectPending={connectPending}
           connectDisabled={connectDisabled}

@@ -145,6 +145,12 @@ export {
   type ProductCartActionProps,
 } from "./ProductCard"
 export {
+  ClaveConnectButton,
+  claveConnectUrl,
+  isIosSignerEnvironment,
+  type ClaveConnectButtonProps,
+} from "./ClaveConnectButton"
+export {
   NoSignerSetupGuide,
   SignerConnectPanel,
   SignerSwitch,

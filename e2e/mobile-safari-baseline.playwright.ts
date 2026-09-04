@@ -358,8 +358,8 @@ test.describe("CND-162 mobile browser baseline", () => {
       await expect(
         dialog.getByRole("button", { name: /Connect Extension \(NIP-07\)/ })
       ).toHaveCount(0)
-      const amberLink = dialog.getByRole("link", { name: "Amber" })
-      const claveLink = dialog.getByRole("link", { name: "Clave" })
+      const amberLink = dialog.getByRole("link", { name: "Amber", exact: true })
+      const claveLink = dialog.getByRole("link", { name: "Clave", exact: true })
       await expect(amberLink).toHaveAttribute("href", /Amber/)
       await expect(claveLink).toHaveAttribute("href", /clave/)
       await expectMobileTouchTarget(amberLink)
@@ -381,7 +381,8 @@ test.describe("CND-162 mobile browser baseline", () => {
         content: `
         [aria-label="Nostr Connect connection QR code"],
         [aria-label="Nostr Connect connection URL"],
-        a[href^="nostrconnect:"] {
+        a[href^="nostrconnect:"],
+        a[href^="https://clave.casa/connect/"] {
           visibility: hidden !important;
         }
       `,
@@ -407,6 +408,23 @@ test.describe("CND-162 mobile browser baseline", () => {
         )
       ).toBeGreaterThanOrEqual(16)
       await expect(dialog.locator('a[href^="nostrconnect:"]')).toHaveCount(1)
+
+      // The Clave Universal Link handoff is offered only on iOS; the Pixel
+      // shard keeps the plain nostrconnect: link as its native handoff.
+      const iosHandoffExpected = await page.evaluate(() =>
+        /iphone|ipad|ipod/i.test(navigator.userAgent)
+      )
+      const claveHandoff = dialog.locator(
+        'a[href^="https://clave.casa/connect/"]'
+      )
+      await expect(claveHandoff).toHaveCount(iosHandoffExpected ? 1 : 0)
+      if (iosHandoffExpected) {
+        await expect(claveHandoff).toHaveAttribute(
+          "href",
+          /^https:\/\/clave\.casa\/connect\/\?uri=nostrconnect%3A%2F%2F/
+        )
+        await expect(claveHandoff).toHaveAttribute("target", "_self")
+      }
 
       const cancelPairing = dialog.getByRole("button", {
         name: "Cancel pairing",
@@ -620,8 +638,12 @@ test.describe("CND-162 mobile browser baseline", () => {
     await expect(
       page.getByRole("button", { name: /Connect Extension \(NIP-07\)/ })
     ).toHaveCount(0)
-    await expect(page.getByRole("link", { name: "Amber" })).toBeVisible()
-    await expect(page.getByRole("link", { name: "Clave" })).toBeVisible()
+    await expect(
+      page.getByRole("link", { name: "Amber", exact: true })
+    ).toBeVisible()
+    await expect(
+      page.getByRole("link", { name: "Clave", exact: true })
+    ).toBeVisible()
 
     await page.getByRole("tab", { name: "Bunker URL" }).click()
     const bunker = page.getByRole("textbox", {

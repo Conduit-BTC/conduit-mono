@@ -6,6 +6,11 @@ import {
   SignerConnectPanel,
   isMobileSignerEnvironment,
 } from "../packages/ui/src/components/SignerSwitch"
+import {
+  ClaveConnectButton,
+  claveConnectUrl,
+  isIosSignerEnvironment,
+} from "../packages/ui/src/components/ClaveConnectButton"
 import { SignerAuthUrlNotice } from "../packages/ui/src/components/SignerAuthUrlNotice"
 import { ProductSignerRecoveryNotice } from "../apps/merchant/src/components/ProductSignerRecoveryNotice"
 
@@ -19,6 +24,11 @@ const commonProps = {
   onConnectRemote: () => undefined,
   onCancelConnect: () => undefined,
 }
+const nostrConnectUrl = new URL("nostrconnect://client-pubkey")
+nostrConnectUrl.searchParams.set("relay", "wss://relay.example")
+nostrConnectUrl.searchParams.set("secret", crypto.randomUUID())
+const nostrConnectUri = nostrConnectUrl.toString()
+const claveConnectPrefix = "https://clave.casa/connect/?uri="
 
 describe("remote signer UI", () => {
   it("detects phone and touch-first iPad environments", () => {
@@ -82,6 +92,159 @@ describe("remote signer UI", () => {
     expect(markup).toContain('aria-label="Nostr Connect connection QR code"')
     expect(markup).toContain("<svg")
     expect(markup).not.toContain("Create connection")
+  })
+
+  it("detects iPhone, iPad, and touch-first Mac environments as iOS", () => {
+    expect(
+      isIosSignerEnvironment({
+        userAgent:
+          "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile",
+      })
+    ).toBe(true)
+    expect(
+      isIosSignerEnvironment({
+        userAgent: "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X)",
+      })
+    ).toBe(true)
+    expect(
+      isIosSignerEnvironment({
+        userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+        platform: "MacIntel",
+        maxTouchPoints: 5,
+      })
+    ).toBe(true)
+    expect(
+      isIosSignerEnvironment({
+        userAgent: "Mozilla/5.0 (Linux; Android 14; Pixel 7) Mobile",
+        platform: "Linux armv8l",
+        maxTouchPoints: 5,
+      })
+    ).toBe(false)
+    expect(
+      isIosSignerEnvironment({
+        userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+        platform: "MacIntel",
+        maxTouchPoints: 0,
+      })
+    ).toBe(false)
+    expect(
+      isIosSignerEnvironment({
+        userAgent: "Mozilla/5.0 (X11; Linux x86_64)",
+        platform: "Linux x86_64",
+        maxTouchPoints: 0,
+      })
+    ).toBe(false)
+  })
+
+  it("wraps the Nostr Connect URI in the Clave Universal Link exactly once", () => {
+    const url = claveConnectUrl(nostrConnectUri)
+
+    expect(url.startsWith(claveConnectPrefix)).toBe(true)
+    expect(nostrConnectUri).toContain("%3A%2F%2F")
+    expect(url).toContain("%253A%252F%252F")
+    expect(decodeURIComponent(url.slice(claveConnectPrefix.length))).toBe(
+      nostrConnectUri
+    )
+    expect(new URL(url).searchParams.get("uri")).toBe(nostrConnectUri)
+  })
+
+  it("renders the Connect with Clave handoff as a same-tab link", () => {
+    const markup = renderToStaticMarkup(
+      <ClaveConnectButton nostrConnectUri={nostrConnectUri} />
+    )
+
+    expect(markup).toContain(`href="${claveConnectUrl(nostrConnectUri)}"`)
+    expect(markup).toContain('target="_self"')
+    expect(markup).toContain("Connect with Clave")
+    expect(markup).toContain('alt=""')
+    expect(markup).toContain('src="data:image/png;base64,')
+    expect(markup).not.toContain("clave.casa/brand")
+  })
+
+  it("offers the Clave handoff on iOS once a Nostr Connect URI exists", () => {
+    const markup = renderToStaticMarkup(
+      <SignerConnectPanel
+        {...commonProps}
+        mobile
+        ios
+        nostrConnectUri={nostrConnectUri}
+      />
+    )
+
+    expect(markup).toContain('aria-label="Nostr Connect connection QR code"')
+    expect(markup).toContain("Connect with Clave")
+    expect(markup).toContain(`href="${claveConnectUrl(nostrConnectUri)}"`)
+    expect(markup).toContain('target="_self"')
+    expect(markup.indexOf("Connect with Clave")).toBeGreaterThan(
+      markup.indexOf("Nostr Connect connection QR code")
+    )
+  })
+
+  it("keeps the Clave handoff off non-iOS and idle signer panels", () => {
+    const android = renderToStaticMarkup(
+      <SignerConnectPanel
+        {...commonProps}
+        mobile
+        ios={false}
+        nostrConnectUri={nostrConnectUri}
+      />
+    )
+    const desktop = renderToStaticMarkup(
+      <SignerConnectPanel
+        {...commonProps}
+        mobile={false}
+        ios={false}
+        nostrConnectUri={nostrConnectUri}
+      />
+    )
+    const idle = renderToStaticMarkup(
+      <SignerConnectPanel {...commonProps} mobile ios />
+    )
+    const iosWithoutMobileLayout = renderToStaticMarkup(
+      <SignerConnectPanel
+        {...commonProps}
+        mobile={false}
+        ios
+        nostrConnectUri={nostrConnectUri}
+      />
+    )
+
+    for (const markup of [android, desktop, idle]) {
+      expect(markup).not.toContain("Connect with Clave")
+      expect(markup).not.toContain("clave.casa/connect")
+    }
+    expect(iosWithoutMobileLayout).toContain("Connect with Clave")
+  })
+
+  it("places the Clave handoff under the QR code and ahead of Open in signer", async () => {
+    const source = await readFile(
+      "packages/ui/src/components/SignerSwitch.tsx",
+      "utf8"
+    )
+    const start = source.indexOf("function RemoteSignerConnect(")
+    const remote = source.slice(
+      start,
+      source.indexOf("function NostrConnectStartButton", start)
+    )
+    const qrTab = remote.slice(
+      remote.indexOf('<TabsContent value="qr"'),
+      remote.indexOf('<TabsContent value="url"')
+    )
+    const urlTab = remote.slice(
+      remote.indexOf('<TabsContent value="url"'),
+      remote.indexOf('<TabsContent value="bunker"')
+    )
+
+    expect(qrTab.indexOf("<QRCodeSVG")).toBeGreaterThan(-1)
+    expect(qrTab.indexOf("<ClaveConnectButton")).toBeGreaterThan(
+      qrTab.indexOf("<QRCodeSVG")
+    )
+    expect(urlTab.indexOf("<ClaveConnectButton")).toBeGreaterThan(-1)
+    expect(urlTab.indexOf("<ClaveConnectButton")).toBeLessThan(
+      urlTab.indexOf("Open in signer")
+    )
+    expect(urlTab).toContain("<a href={nostrConnectUri}>")
+    expect(remote).not.toContain("mobile &&")
   })
 
   it("provides readonly URL copy semantics without persisting pairing data", async () => {
