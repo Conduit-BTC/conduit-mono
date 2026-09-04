@@ -328,75 +328,7 @@ describe("Playwright smoke area validation", () => {
       )
     ).toThrow("did not pass cleanly on its first attempt")
 
-    const flaky: PlaywrightJsonReport = {
-      ...reportWithSpecs([
-        {
-          file: "e2e/market.playwright.ts",
-          ok: true,
-          tags: ["market"],
-          tests: [
-            {
-              expectedStatus: "passed",
-              status: "flaky",
-              results: [{ status: "failed" }, { status: "passed" }],
-            },
-          ],
-          title: "buyer checkout completes",
-        },
-      ]),
-      config: { metadata: { smokeEvidence } },
-      stats: { flaky: 1, skipped: 0, unexpected: 0 },
-    }
-    const flakyManifest = buildPlaywrightSmokeManifest(
-      flaky,
-      ["market"],
-      smokeEvidence
-    )
-    expect(() =>
-      validatePlaywrightSmokeExecution(
-        flaky,
-        flakyManifest,
-        ["market"],
-        smokeEvidence
-      )
-    ).toThrow("retry-dependent smoke tests as flaky")
-
-    const expectedDifferentTest = {
-      ...skippedManifest,
-      tests: skippedManifest.tests.map((test) => ({
-        ...test,
-        name: "different discovered test",
-      })),
-    }
-    expect(() =>
-      validatePlaywrightSmokeExecution(
-        skipped,
-        expectedDifferentTest,
-        ["market"],
-        smokeEvidence
-      )
-    ).toThrow("does not match the discovered manifest")
-
-    const wrongEvidenceReport: PlaywrightJsonReport = {
-      ...skipped,
-      config: {
-        metadata: {
-          smokeEvidence: { ...smokeEvidence, testedSha: "d".repeat(40) },
-        },
-      },
-    }
-    expect(() =>
-      validatePlaywrightSmokeExecution(
-        wrongEvidenceReport,
-        skippedManifest,
-        ["market"],
-        smokeEvidence
-      )
-    ).toThrow("does not bind the expected source, base, and tested SHAs")
-  })
-
-  it("reports bounded first-attempt diagnostics without raw failure content", () => {
-    const retryDependent = {
+    const flaky = {
       ...reportWithSpecs([
         {
           file: "/home/runner/work/conduit/e2e/market.playwright.ts",
@@ -431,17 +363,16 @@ describe("Playwright smoke area validation", () => {
       config: { metadata: { smokeEvidence } },
       stats: { flaky: 1, skipped: 0, unexpected: 0 },
     } as unknown as PlaywrightJsonReport
-    const manifest = buildPlaywrightSmokeManifest(
-      retryDependent,
+    const flakyManifest = buildPlaywrightSmokeManifest(
+      flaky,
       ["market"],
       smokeEvidence
     )
-
     let errorMessage = ""
     try {
       validatePlaywrightSmokeExecution(
-        retryDependent,
-        manifest,
+        flaky,
+        flakyManifest,
         ["market"],
         smokeEvidence
       )
@@ -449,10 +380,44 @@ describe("Playwright smoke area validation", () => {
       errorMessage = error instanceof Error ? error.message : String(error)
     }
 
+    expect(errorMessage).toContain("retry-dependent smoke tests as flaky")
     expect(errorMessage).toContain(
       "First attempt: retry=0 status=failed duration=1234ms error=e2e/market.playwright.ts:42:7."
     )
     expect(errorMessage).not.toContain("/home/runner")
     expect(errorMessage).not.toContain("sensitive browser output")
+
+    const expectedDifferentTest = {
+      ...skippedManifest,
+      tests: skippedManifest.tests.map((test) => ({
+        ...test,
+        name: "different discovered test",
+      })),
+    }
+    expect(() =>
+      validatePlaywrightSmokeExecution(
+        skipped,
+        expectedDifferentTest,
+        ["market"],
+        smokeEvidence
+      )
+    ).toThrow("does not match the discovered manifest")
+
+    const wrongEvidenceReport: PlaywrightJsonReport = {
+      ...skipped,
+      config: {
+        metadata: {
+          smokeEvidence: { ...smokeEvidence, testedSha: "d".repeat(40) },
+        },
+      },
+    }
+    expect(() =>
+      validatePlaywrightSmokeExecution(
+        wrongEvidenceReport,
+        skippedManifest,
+        ["market"],
+        smokeEvidence
+      )
+    ).toThrow("does not bind the expected source, base, and tested SHAs")
   })
 })
