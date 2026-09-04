@@ -272,7 +272,6 @@ function productDiagnosticIsCurrent(
   )
   return (
     result.meta.source !== "local_cache" &&
-    !result.meta.stale &&
     diagnostic?.issue === null &&
     // A live selected revision is positive evidence. Incomplete deletion
     // discovery cannot invent a tombstone or give one failed relay veto power;
@@ -290,7 +289,6 @@ function productReadWasUnavailable(
   )
   return (
     result.meta.source === "local_cache" ||
-    result.meta.stale ||
     diagnostic?.issue === "lookup_partial" ||
     diagnostic?.issue === "lookup_unavailable" ||
     diagnostic?.issue === "cached_only" ||
