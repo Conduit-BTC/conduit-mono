@@ -1,5 +1,5 @@
 export type MerchantProfileState =
-  "available" | "loading" | "missing" | "unavailable"
+  "available" | "loading" | "unresolved" | "unavailable"
 
 export function getMerchantProfileState(input: {
   hasProfile: boolean
@@ -8,5 +8,5 @@ export function getMerchantProfileState(input: {
 }): MerchantProfileState {
   if (input.hasProfile) return "available"
   if (!input.lookupSettled) return "loading"
-  return input.error ? "unavailable" : "missing"
+  return input.error ? "unavailable" : "unresolved"
 }

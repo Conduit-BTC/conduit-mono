@@ -474,8 +474,8 @@ function MerchantIdentity({
       ? "Loading merchant profile..."
       : state === "unavailable"
         ? "Profile lookup unavailable"
-        : state === "missing"
-          ? "No public profile found"
+        : state === "unresolved"
+          ? "Profile not loaded"
           : "Public profile")
   const fullNpub = pubkeyToNpub(pubkey)
 
@@ -590,7 +590,7 @@ export function OrganizerEventMarketPanel({
   function merchantProfileState(
     pubkey: string | undefined
   ): MerchantProfileState {
-    if (!pubkey) return "missing"
+    if (!pubkey) return "unresolved"
     return getMerchantProfileState({
       hasProfile: merchantProfilesQuery.hasProfile(pubkey),
       lookupSettled: merchantProfilesQuery.lookupSettled,

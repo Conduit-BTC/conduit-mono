@@ -139,6 +139,8 @@ describe("merchant organizer event market route", () => {
     expect(panel).toContain("maxUnresolvedRefetches: 1")
     expect(panel).toContain('data-testid="participation-merchant-identity"')
     expect(panel).toContain("data-profile-state={state}")
+    expect(panel).toContain('"Profile not loaded"')
+    expect(panel).not.toContain("No public profile found")
     expect(panel).toContain("getProfileName(profile)")
     expect(panel).toContain("Copy npub")
     expect(panel).toContain("getStorefrontUrl(pubkey)")
