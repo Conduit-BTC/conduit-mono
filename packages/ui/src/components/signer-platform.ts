@@ -8,7 +8,6 @@ export type SignerPlatform = "ios" | "android" | "desktop" | "unknown-mobile"
 export type AndroidSigner = "amber" | "primal"
 
 export const CLAVE_APP_STORE_URL = "https://apps.apple.com/app/id6762104155"
-export const CLAVE_TESTFLIGHT_URL = "https://testflight.apple.com/join/5Mx5AZx7"
 export const AMBER_INSTALL_URL =
   "https://f-droid.org/en/packages/com.greenart7c3.nostrsigner/"
 export const PRIMAL_INSTALL_URL =

@@ -1,8 +1,4 @@
 import { Button } from "./Button"
-import {
-  getSignerPlatform,
-  type SignerEnvironmentInput,
-} from "./signer-platform"
 import { cn } from "../utils"
 
 const CLAVE_CONNECT_URL = "https://clave.casa/connect/?uri="
@@ -21,12 +17,6 @@ const CLAVE_MARK =
  */
 export function claveConnectUrl(nostrConnectUri: string): string {
   return `${CLAVE_CONNECT_URL}${encodeURIComponent(nostrConnectUri)}`
-}
-
-export function isIosSignerEnvironment(
-  input?: SignerEnvironmentInput
-): boolean {
-  return getSignerPlatform(input) === "ios"
 }
 
 export interface ClaveConnectButtonProps {

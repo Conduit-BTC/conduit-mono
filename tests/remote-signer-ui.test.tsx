@@ -9,7 +9,6 @@ import {
 import {
   ClaveConnectButton,
   claveConnectUrl,
-  isIosSignerEnvironment,
 } from "../packages/ui/src/components/ClaveConnectButton"
 import { SignerAuthUrlNotice } from "../packages/ui/src/components/SignerAuthUrlNotice"
 import { ProductSignerRecoveryNotice } from "../apps/merchant/src/components/ProductSignerRecoveryNotice"
@@ -257,48 +256,6 @@ describe("remote signer UI", () => {
     ).toBe(true)
     expect(markup.includes("Start new connection")).toBe(false)
     expect(markup.includes('href="nostrconnect:')).toBe(false)
-  })
-
-  it("detects iPhone, iPad, and touch-first Mac environments as iOS", () => {
-    expect(
-      isIosSignerEnvironment({
-        userAgent:
-          "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile",
-      })
-    ).toBe(true)
-    expect(
-      isIosSignerEnvironment({
-        userAgent: "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X)",
-      })
-    ).toBe(true)
-    expect(
-      isIosSignerEnvironment({
-        userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
-        platform: "MacIntel",
-        maxTouchPoints: 5,
-      })
-    ).toBe(true)
-    expect(
-      isIosSignerEnvironment({
-        userAgent: "Mozilla/5.0 (Linux; Android 14; Pixel 7) Mobile",
-        platform: "Linux armv8l",
-        maxTouchPoints: 5,
-      })
-    ).toBe(false)
-    expect(
-      isIosSignerEnvironment({
-        userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
-        platform: "MacIntel",
-        maxTouchPoints: 0,
-      })
-    ).toBe(false)
-    expect(
-      isIosSignerEnvironment({
-        userAgent: "Mozilla/5.0 (X11; Linux x86_64)",
-        platform: "Linux x86_64",
-        maxTouchPoints: 0,
-      })
-    ).toBe(false)
   })
 
   it("wraps the Nostr Connect URI in the Clave Universal Link exactly once", () => {

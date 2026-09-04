@@ -147,7 +147,6 @@ export {
 export {
   ClaveConnectButton,
   claveConnectUrl,
-  isIosSignerEnvironment,
   type ClaveConnectButtonProps,
 } from "./ClaveConnectButton"
 export {

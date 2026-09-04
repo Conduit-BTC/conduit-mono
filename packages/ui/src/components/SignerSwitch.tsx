@@ -70,8 +70,6 @@ export interface SignerConnectPanelProps {
   extensionNotice?: string | null
   mobile?: boolean
   platform?: SignerPlatform
-  /** Offer the Clave Universal Link handoff; defaults to iOS detection. */
-  ios?: boolean
   extensionAvailable: boolean
   connectPending?: boolean
   connectDisabled?: boolean
@@ -283,7 +281,6 @@ function SignerDisconnectedContent({
   pendingSwitch = false,
   extensionNotice,
   mobile,
-  ios,
   platform: requestedPlatform,
   extensionAvailable,
   connectPending = false,
@@ -299,8 +296,7 @@ function SignerDisconnectedContent({
 }: Omit<SignerConnectPanelProps, "title" | "description" | "className">) {
   const errorId = useId()
   const platform =
-    requestedPlatform ??
-    (ios ? "ios" : mobile === false ? "desktop" : getSignerPlatform())
+    requestedPlatform ?? (mobile === false ? "desktop" : getSignerPlatform())
   const isMobile = mobile ?? platform !== "desktop"
   const pairing = useSignerPairing({
     autoPrepare: platform === "ios" || platform === "android",
@@ -453,7 +449,6 @@ export function SignerConnectPanel({
   pendingSwitch,
   extensionNotice,
   mobile,
-  ios,
   platform,
   extensionAvailable,
   connectPending,
@@ -503,7 +498,6 @@ export function SignerConnectPanel({
           pendingSwitch={pendingSwitch}
           extensionNotice={extensionNotice}
           mobile={mobile}
-          ios={ios}
           platform={platform}
           extensionAvailable={extensionAvailable}
           connectPending={connectPending}
