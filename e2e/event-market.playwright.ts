@@ -1626,7 +1626,9 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
     name: "Retry verification",
     exact: true,
   })
-  await expect(complete.or(retryVerification)).toBeVisible({ timeout: 30_000 })
+  // Retry is visible but disabled while pickup verification is still running.
+  // Wait for a settled action before deciding whether recovery is needed.
+  await expect(complete.or(retryVerification)).toBeEnabled({ timeout: 30_000 })
   if (await retryVerification.isVisible()) {
     await expect(pickupUnverified).toContainText(
       "Current signed pickup evidence could not be verified from relays. Try again when relay access recovers."
