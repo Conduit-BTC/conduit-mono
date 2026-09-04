@@ -54,23 +54,15 @@ export function ManualSignerConnection({
           className="grid h-auto w-full grid-cols-3 rounded-xl p-1"
           aria-label="Remote signer connection method"
         >
-          <TabsTrigger value="qr" aria-label="QR code" className={tabClassName}>
+          <TabsTrigger value="qr" className={tabClassName}>
             <QrCode className="h-4 w-4 shrink-0" aria-hidden="true" />
             Scan QR
           </TabsTrigger>
-          <TabsTrigger
-            value="url"
-            aria-label="Connection URL"
-            className={tabClassName}
-          >
+          <TabsTrigger value="url" className={tabClassName}>
             <Link2 className="h-4 w-4 shrink-0" aria-hidden="true" />
             Copy link
           </TabsTrigger>
-          <TabsTrigger
-            value="bunker"
-            aria-label="Bunker URL"
-            className={tabClassName}
-          >
+          <TabsTrigger value="bunker" className={tabClassName}>
             <KeyRound className="h-4 w-4 shrink-0" aria-hidden="true" />
             Paste bunker
           </TabsTrigger>

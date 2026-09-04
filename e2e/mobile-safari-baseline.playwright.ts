@@ -573,7 +573,7 @@ test.describe("CND-162 mobile browser baseline", () => {
         .getByRole("button", { name: "Other ways to connect", exact: true })
         .tap()
       await expect(dialog.getByRole("tab")).toHaveCount(3)
-      await dialog.getByRole("tab", { name: "Bunker URL" }).tap()
+      await dialog.getByRole("tab", { name: "Paste bunker", exact: true }).tap()
       const bunker = dialog.getByRole("textbox", {
         name: "Remote signer bunker URL",
       })
@@ -586,7 +586,7 @@ test.describe("CND-162 mobile browser baseline", () => {
       ).toHaveCount(0)
       await expect(dialog).toBeVisible()
 
-      await dialog.getByRole("tab", { name: "QR code" }).tap()
+      await dialog.getByRole("tab", { name: "Scan QR", exact: true }).tap()
       const closeButton = dialog.getByRole("button", { name: "Close" })
       await expectMobileTouchTarget(closeButton)
       await dialog
@@ -597,7 +597,7 @@ test.describe("CND-162 mobile browser baseline", () => {
         dialog.locator('[aria-label="Nostr Connect connection QR code"]')
       ).toHaveCount(1)
 
-      await dialog.getByRole("tab", { name: "Connection URL" }).tap()
+      await dialog.getByRole("tab", { name: "Copy link", exact: true }).tap()
       const connectionUrl = dialog.locator(
         '[aria-label="Nostr Connect connection URL"]'
       )
@@ -845,7 +845,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     await gate
       .getByRole("button", { name: "Other ways to connect", exact: true })
       .tap()
-    await gate.getByRole("tab", { name: "Bunker URL" }).tap()
+    await gate.getByRole("tab", { name: "Paste bunker", exact: true }).tap()
     const bunker = page.getByRole("textbox", {
       name: "Remote signer bunker URL",
     })
