@@ -203,7 +203,18 @@ for (const surface of [
       "sun-moon"
     )
     await expectSilentThemeFeedback(page)
+    await button.hover()
+    await expect(button).toHaveCSS(
+      "background-color",
+      await button.evaluate((element) =>
+        getComputedStyle(element).getPropertyValue("--surface-elevated").trim()
+      )
+    )
     await page.clock.pauseAt(clockStart + 60_000)
+    const nightColors = await button.evaluate((element) => {
+      const style = getComputedStyle(element)
+      return { background: style.backgroundColor, text: style.color }
+    })
 
     const feedback = page.locator("[data-theme-toggle-feedback]")
     const status = page.locator("[data-theme-toggle-status]")
@@ -231,14 +242,26 @@ for (const surface of [
       "sun"
     )
     await nightButton.click()
+    const selectedNightColors = await page
+      .locator("[data-theme-toggle-preference]")
+      .evaluate((element) => {
+        const style = getComputedStyle(element)
+        return { background: style.backgroundColor, text: style.color }
+      })
+    expect(selectedNightColors).toEqual(nightColors)
     await expect(feedback).toHaveCount(1)
     await expect(feedback).toHaveText("Night")
     await expect(status).toHaveText("Appearance set to Night Market.")
+    await expect(feedback).toHaveCSS("color", nightColors.text)
     await page.clock.runFor(160)
     await expect(feedback).toHaveAttribute("data-state", "visible")
     await expect(feedback).toHaveCSS("opacity", "1")
     await expect(icon).toHaveCSS("opacity", "0")
     await expectThemeFeedbackInsideButton(page)
+    await captureScreenshot(
+      page,
+      `${surface.name.toLowerCase()}-night-theme-feedback.png`
+    )
     await page.clock.runFor(159)
     await expect(feedback).toHaveAttribute("data-state", "visible")
     await page.clock.runFor(1)
