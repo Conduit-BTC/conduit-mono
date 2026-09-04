@@ -35,7 +35,7 @@ export function SignerSwitch(props: SignerSwitchProps = {}) {
       rememberedMethod={rememberedMethod}
       extensionAvailable={extensionAvailable}
       connectedDescription="Orders, zap out, and follow-up are ready."
-      connectDescription="Use your Nostr signer to continue with Conduit."
+      connectDescription="Use your Nostr account to shop and stay in touch."
       connectedUseDescription="This signer will be used for buyer actions in Conduit."
       unlockItems={[
         "Send orders tied to your pubkey.",

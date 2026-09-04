@@ -35,11 +35,167 @@ async function expectMobileSafeFont(control: Locator): Promise<void> {
   expect(fontSize).toBeGreaterThanOrEqual(16)
 }
 
-async function expectMobileTouchTarget(control: Locator): Promise<void> {
-  await expect(control).toBeVisible()
-  const box = await control.boundingBox()
+async function expectMobileTouchTarget(
+  control: Locator,
+  masked = false
+): Promise<void> {
+  if (masked) await expect(control).toHaveCount(1)
+  else await expect(control).toBeVisible()
+  const box = masked
+    ? await control.evaluate((element) => {
+        const { width, height } = element.getBoundingClientRect()
+        return { width, height }
+      })
+    : await control.boundingBox()
   expect(box?.width).toBeGreaterThanOrEqual(44)
   expect(box?.height).toBeGreaterThanOrEqual(44)
+}
+
+async function installInertMobilePairing(page: Page): Promise<void> {
+  await page.routeWebSocket(/.*/, () => {})
+  await page.addInitScript(() => {
+    // Mask before the sign-in surface can automatically prepare a connection.
+    // Hidden controls retain their layout and stay out of failure snapshots.
+    const mask = document.createElement("style")
+    mask.textContent = `
+      [aria-label="Nostr Connect connection QR code"],
+      [aria-label="Nostr Connect connection URL"],
+      a[href^="nostrconnect:"],
+      a[href^="intent://"],
+      a[href^="https://clave.casa/connect/"] {
+        visibility: hidden !important;
+      }
+    `
+    const installMask = () => {
+      if (!document.documentElement) return false
+      document.documentElement.append(mask)
+      return true
+    }
+    if (!installMask()) {
+      const observer = new MutationObserver(() => {
+        if (installMask()) observer.disconnect()
+      })
+      observer.observe(document, { childList: true })
+    }
+
+    // Never launch external apps or retain generated connection values in this
+    // browser-only test. Real app approval and return require device QA.
+    document.addEventListener(
+      "click",
+      (event) => {
+        const target = event.target
+        if (!(target instanceof Element)) return
+        if (
+          target.closest(
+            'a[href^="intent://"], a[href^="nostrconnect:"], a[href^="https://clave.casa/connect/"]'
+          )
+        ) {
+          event.preventDefault()
+        }
+      },
+      true
+    )
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: async () => undefined },
+    })
+    // These fixtures never represent a user or reusable signer connection;
+    // all relay traffic is intercepted before opening the sign-in surface.
+    Object.defineProperty(window.crypto, "getRandomValues", {
+      configurable: true,
+      value: (array: Uint8Array) => {
+        array.fill(7)
+        return array
+      },
+    })
+  })
+}
+
+async function expectMobileSignerChoices(
+  page: Page,
+  surface: Locator
+): Promise<"Clave" | "Amber"> {
+  const ios = await page.evaluate(() =>
+    /iphone|ipad|ipod/i.test(navigator.userAgent)
+  )
+  await expect(surface.getByRole("tab")).toHaveCount(0)
+  await expect(surface.locator('a[href*="github.com"]')).toHaveCount(0)
+  await expect(surface.locator('a[href^="nostrconnect:"]')).toHaveCount(0)
+  await expect(
+    surface.getByRole("button", { name: "Other ways to connect", exact: true })
+  ).toBeVisible()
+
+  if (ios) {
+    const clave = surface.getByRole("link", {
+      name: "Connect with Clave",
+      exact: true,
+      includeHidden: true,
+    })
+    await expectMobileTouchTarget(clave, true)
+    expect(
+      await clave.evaluate((element) => {
+        const link = element as HTMLAnchorElement
+        const url = new URL(link.href)
+        return (
+          url.origin === "https://clave.casa" &&
+          url.pathname === "/connect/" &&
+          url.searchParams.get("uri")?.startsWith("nostrconnect://") &&
+          link.target === "_self"
+        )
+      })
+    ).toBe(true)
+    await expect(surface.getByText(/Primal|Amber/)).toHaveCount(0)
+    await expect(surface.locator('a[href^="intent://"]')).toHaveCount(0)
+    await expect(
+      surface.locator('a[href^="https://apps.apple.com/"]')
+    ).toBeVisible()
+    return "Clave"
+  }
+
+  const choices = [
+    ["Use Amber", "com.greenart7c3.nostrsigner"],
+    ["Use Primal", "net.primal.android"],
+  ] as const
+  for (const [name, packageName] of choices) {
+    const control = surface.getByRole("link", {
+      name,
+      exact: true,
+      includeHidden: true,
+    })
+    await expectMobileTouchTarget(control, true)
+    expect(
+      await control.evaluate((element, expectedPackage) => {
+        const href = (element as HTMLAnchorElement).href
+        return (
+          href.startsWith("intent://") &&
+          href.includes(";scheme=nostrconnect;") &&
+          href.includes(`;package=${expectedPackage};`)
+        )
+      }, packageName)
+    ).toBe(true)
+  }
+  const amberBox = await surface
+    .getByRole("link", { name: "Use Amber", exact: true, includeHidden: true })
+    .evaluate((element) => ({
+      width: element.getBoundingClientRect().width,
+      height: element.getBoundingClientRect().height,
+    }))
+  const primalBox = await surface
+    .getByRole("link", { name: "Use Primal", exact: true, includeHidden: true })
+    .evaluate((element) => ({
+      width: element.getBoundingClientRect().width,
+      height: element.getBoundingClientRect().height,
+    }))
+  expect(amberBox?.width).toBe(primalBox?.width)
+  expect(amberBox?.height).toBe(primalBox?.height)
+  await expect(
+    surface.locator('a[href^="https://clave.casa/connect/"]')
+  ).toHaveCount(0)
+  await expect(surface.locator('a[href^="https://f-droid.org/"]')).toBeVisible()
+  await expect(
+    surface.locator('a[href^="https://play.google.com/store/apps/details"]')
+  ).toBeVisible()
+  return "Amber"
 }
 
 async function seedInterruptedPayment(
@@ -332,21 +488,10 @@ test.describe("CND-162 mobile browser baseline", () => {
   })
 
   test.describe("signer handoff without retained connection artifacts", () => {
-    test("market mobile signer exposes NIP-46 handoff and cancel recovery @market", async ({
+    test("market mobile signer starts with platform apps and preserves manual recovery @market", async ({
       page,
     }) => {
-      await page.routeWebSocket(/.*/, () => {})
-      await page.addInitScript(() => {
-        // Keep any failure artifact inert and reproducible: this known fixture
-        // material never represents a user or reusable signer connection.
-        Object.defineProperty(window.crypto, "getRandomValues", {
-          configurable: true,
-          value: (array: Uint8Array) => {
-            array.fill(7)
-            return array
-          },
-        })
-      })
+      await installInertMobilePairing(page)
       await page.goto(`${marketUrl}/products`)
       await page
         .getByRole("button", { name: /^Connect$/ })
@@ -358,41 +503,101 @@ test.describe("CND-162 mobile browser baseline", () => {
       await expect(
         dialog.getByRole("button", { name: /Connect Extension \(NIP-07\)/ })
       ).toHaveCount(0)
-      const amberLink = dialog.getByRole("link", { name: "Amber", exact: true })
-      const claveLink = dialog.getByRole("link", { name: "Clave", exact: true })
-      await expect(amberLink).toHaveAttribute("href", /Amber/)
-      await expect(claveLink).toHaveAttribute("href", /clave/)
-      await expectMobileTouchTarget(amberLink)
-      await expectMobileTouchTarget(claveLink)
+      const primaryApp = await expectMobileSignerChoices(page, dialog)
+      await assertMobileViewport(page)
+      const firstClick = dialog.getByRole("link", {
+        name: primaryApp === "Clave" ? "Connect with Clave" : "Use Amber",
+        exact: true,
+        includeHidden: true,
+      })
+      await firstClick.dispatchEvent("click")
+      await expect(
+        dialog.getByRole("link", {
+          name: `Open ${primaryApp} again`,
+          exact: true,
+          includeHidden: true,
+        })
+      ).toHaveCount(1)
+      await dialog
+        .getByRole("button", { name: "Copy connection link", exact: true })
+        .tap()
+      await expect(
+        dialog.getByRole("button", {
+          name: "Connection link copied",
+          exact: true,
+        })
+      ).toBeVisible()
 
-      await dialog.getByRole("tab", { name: "Bunker URL" }).click()
+      if (primaryApp === "Amber") {
+        await expect(
+          dialog.getByRole("link", {
+            name: "Use Primal",
+            exact: true,
+            includeHidden: true,
+          })
+        ).toHaveCount(0)
+        await dialog
+          .getByRole("button", { name: "Choose another app", exact: true })
+          .tap()
+        await expect(dialog.locator('a[href^="intent://"]')).toHaveCount(0)
+        await expect(
+          dialog.getByRole("button", { name: "Use Primal", exact: true })
+        ).toBeDisabled()
+        await dialog
+          .getByRole("button", { name: "Start new connection", exact: true })
+          .tap()
+        await dialog
+          .getByRole("link", {
+            name: "Use Primal",
+            exact: true,
+            includeHidden: true,
+          })
+          .dispatchEvent("click")
+        await expect(
+          dialog.getByRole("link", {
+            name: "Open Primal again",
+            exact: true,
+            includeHidden: true,
+          })
+        ).toHaveCount(1)
+        await expect(
+          dialog.getByRole("link", {
+            name: "Use Amber",
+            exact: true,
+            includeHidden: true,
+          })
+        ).toHaveCount(0)
+      }
+
+      await dialog
+        .getByRole("button", { name: "Other ways to connect", exact: true })
+        .tap()
+      await expect(dialog.getByRole("tab")).toHaveCount(3)
+      await dialog.getByRole("tab", { name: "Bunker URL" }).tap()
       const bunker = dialog.getByRole("textbox", {
         name: "Remote signer bunker URL",
       })
       await expectMobileSafeFont(bunker)
       await bunker.tap()
       await expect(bunker).toBeFocused()
+      await expect(dialog.locator('a[href^="intent://"]')).toHaveCount(0)
+      await expect(
+        dialog.locator('a[href^="https://clave.casa/connect/"]')
+      ).toHaveCount(0)
+      await expect(dialog).toBeVisible()
 
-      await dialog.getByRole("tab", { name: "QR code" }).click()
+      await dialog.getByRole("tab", { name: "QR code" }).tap()
       const closeButton = dialog.getByRole("button", { name: "Close" })
       await expectMobileTouchTarget(closeButton)
-
-      await page.addStyleTag({
-        content: `
-        [aria-label="Nostr Connect connection QR code"],
-        [aria-label="Nostr Connect connection URL"],
-        a[href^="nostrconnect:"],
-        a[href^="https://clave.casa/connect/"] {
-          visibility: hidden !important;
-        }
-      `,
-      })
-      await dialog.getByRole("button", { name: "Create connection" }).tap()
+      await dialog
+        .getByRole("button", { name: "Start new connection", exact: true })
+        .first()
+        .tap()
       await expect(
         dialog.locator('[aria-label="Nostr Connect connection QR code"]')
       ).toHaveCount(1)
 
-      await dialog.getByRole("tab", { name: "Connection URL" }).click()
+      await dialog.getByRole("tab", { name: "Connection URL" }).tap()
       const connectionUrl = dialog.locator(
         '[aria-label="Nostr Connect connection URL"]'
       )
@@ -407,39 +612,34 @@ test.describe("CND-162 mobile browser baseline", () => {
           Number.parseFloat(getComputedStyle(element).fontSize)
         )
       ).toBeGreaterThanOrEqual(16)
-      await expect(dialog.locator('a[href^="nostrconnect:"]')).toHaveCount(1)
-
-      // The Clave Universal Link handoff is offered only on iOS; the Pixel
-      // shard keeps the plain nostrconnect: link as its native handoff.
-      const iosHandoffExpected = await page.evaluate(() =>
-        /iphone|ipad|ipod/i.test(navigator.userAgent)
-      )
-      const claveHandoff = dialog.locator(
-        'a[href^="https://clave.casa/connect/"]'
-      )
-      await expect(claveHandoff).toHaveCount(iosHandoffExpected ? 1 : 0)
-      if (iosHandoffExpected) {
-        await expect(claveHandoff).toHaveAttribute(
-          "href",
-          /^https:\/\/clave\.casa\/connect\/\?uri=nostrconnect%3A%2F%2F/
-        )
-        await expect(claveHandoff).toHaveAttribute("target", "_self")
-      }
+      await expect(dialog.locator('a[href^="nostrconnect:"]')).toHaveCount(0)
 
       const cancelPairing = dialog.getByRole("button", {
         name: "Cancel pairing",
       })
       await expect(cancelPairing).toBeVisible()
-      await cancelPairing.tap({ force: true })
+      await cancelPairing.tap()
+      await expect(dialog).toBeVisible()
+      await expect(connectionUrl).toHaveCount(0)
+      await expect(
+        dialog
+          .getByRole("button", { name: "Start new connection", exact: true })
+          .first()
+      ).toBeVisible()
+      await expect(
+        dialog.getByRole("button", {
+          name: primaryApp === "Clave" ? "Connect with Clave" : "Use Amber",
+          exact: true,
+        })
+      ).toBeDisabled()
+      await closeButton.tap()
       await expect(dialog).not.toBeVisible()
 
       await page
         .getByRole("button", { name: /^Connect$/ })
         .first()
         .tap()
-      await expect(
-        dialog.getByRole("button", { name: "Create connection" })
-      ).toBeVisible()
+      await expectMobileSignerChoices(page, dialog)
       await dialog.getByRole("button", { name: "Close" }).tap()
       await expect(dialog).not.toBeVisible()
     })
@@ -601,7 +801,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     await installTestSigner(page, TEST_BUYER_PUBKEY, { rememberAuth: false })
     await page.goto(`${merchantUrl}/`)
     await expect(
-      page.getByRole("heading", { name: "Connect a signer" })
+      page.getByRole("heading", { name: "Sign in to Conduit" })
     ).toBeVisible()
 
     await page.evaluate((pubkey) => {
@@ -633,24 +833,31 @@ test.describe("CND-162 mobile browser baseline", () => {
   test("merchant mobile signer gate remains touch-safe without NIP-07 @merchant", async ({
     page,
   }) => {
+    await installInertMobilePairing(page)
     await page.goto(`${merchantUrl}/`)
     await assertMobileViewport(page)
     await expect(
       page.getByRole("button", { name: /Connect Extension \(NIP-07\)/ })
     ).toHaveCount(0)
-    await expect(
-      page.getByRole("link", { name: "Amber", exact: true })
-    ).toBeVisible()
-    await expect(
-      page.getByRole("link", { name: "Clave", exact: true })
-    ).toBeVisible()
+    const gate = page.getByRole("region", { name: "Sign in to Conduit" })
+    await expectMobileSignerChoices(page, gate)
 
-    await page.getByRole("tab", { name: "Bunker URL" }).click()
+    await gate
+      .getByRole("button", { name: "Other ways to connect", exact: true })
+      .tap()
+    await gate.getByRole("tab", { name: "Bunker URL" }).tap()
     const bunker = page.getByRole("textbox", {
       name: "Remote signer bunker URL",
     })
     await expectMobileSafeFont(bunker)
     await bunker.tap()
     await expect(bunker).toBeFocused()
+    await expect(gate.locator('a[href^="intent://"]')).toHaveCount(0)
+    await expect(
+      gate.locator('a[href^="https://clave.casa/connect/"]')
+    ).toHaveCount(0)
+    await expect(
+      page.getByRole("heading", { name: "Sign in to Conduit" })
+    ).toBeVisible()
   })
 })

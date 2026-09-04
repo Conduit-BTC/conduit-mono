@@ -484,7 +484,7 @@ test("merchant ConnectGate opens the host-local Product Privacy Policy with full
 
   await page.goto("https://sell.conduit.market/")
   await expect(
-    page.getByRole("heading", { name: "Connect a signer" })
+    page.getByRole("heading", { name: "Sign in to Conduit" })
   ).toBeVisible()
   const privacyLink = page.getByRole("link", { name: "Privacy" })
   await expect(privacyLink).toHaveAttribute("href", "/privacy-policy")
