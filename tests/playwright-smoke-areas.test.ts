@@ -328,17 +328,33 @@ describe("Playwright smoke area validation", () => {
       )
     ).toThrow("did not pass cleanly on its first attempt")
 
-    const flaky: PlaywrightJsonReport = {
+    const flaky = {
       ...reportWithSpecs([
         {
-          file: "e2e/market.playwright.ts",
+          file: "/home/runner/work/conduit/e2e/market.playwright.ts",
+          line: 8,
           ok: true,
           tags: ["market"],
           tests: [
             {
               expectedStatus: "passed",
               status: "flaky",
-              results: [{ status: "failed" }, { status: "passed" }],
+              results: [
+                {
+                  duration: 1_234,
+                  error: {
+                    location: {
+                      column: 7,
+                      file: "/home/runner/work/conduit/e2e/market.playwright.ts",
+                      line: 42,
+                    },
+                    message: "sensitive browser output must not survive",
+                  },
+                  retry: 0,
+                  status: "failed",
+                },
+                { duration: 250, retry: 1, status: "passed" },
+              ],
             },
           ],
           title: "buyer checkout completes",
@@ -346,20 +362,30 @@ describe("Playwright smoke area validation", () => {
       ]),
       config: { metadata: { smokeEvidence } },
       stats: { flaky: 1, skipped: 0, unexpected: 0 },
-    }
+    } as unknown as PlaywrightJsonReport
     const flakyManifest = buildPlaywrightSmokeManifest(
       flaky,
       ["market"],
       smokeEvidence
     )
-    expect(() =>
+    let errorMessage = ""
+    try {
       validatePlaywrightSmokeExecution(
         flaky,
         flakyManifest,
         ["market"],
         smokeEvidence
       )
-    ).toThrow("retry-dependent smoke tests as flaky")
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error)
+    }
+
+    expect(errorMessage).toContain("retry-dependent smoke tests as flaky")
+    expect(errorMessage).toContain(
+      "First attempt: retry=0 status=failed duration=1234ms error=e2e/market.playwright.ts:42:7."
+    )
+    expect(errorMessage).not.toContain("/home/runner")
+    expect(errorMessage).not.toContain("sensitive browser output")
 
     const expectedDifferentTest = {
       ...skippedManifest,
