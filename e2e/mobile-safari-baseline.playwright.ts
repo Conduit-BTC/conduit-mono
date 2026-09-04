@@ -226,6 +226,69 @@ test.describe("CND-162 mobile browser baseline", () => {
     await expectMobileTouchTarget(page.locator('button[title="Cart"]'))
   })
 
+  test("network status pills stay compact in stacked mobile headers @market", async ({
+    page,
+  }) => {
+    const secretKey = generateSecretKey()
+    const pubkey = getPublicKey(secretKey)
+    await seedTestRelayIdentity(secretKey)
+    await installTestSigner(page, pubkey, { secretKey })
+
+    await page.goto(`${marketUrl}/products`)
+    await expect(
+      page.getByRole("button", { name: "Open account menu" })
+    ).toBeVisible({ timeout: 15_000 })
+
+    await page.goto(`${marketUrl}/preferences`)
+    await expect(
+      page.getByRole("heading", { name: "Preferences" })
+    ).toBeVisible()
+    await assertMobileViewport(page)
+
+    const preferencesHeader = page.locator("header").filter({
+      has: page.getByRole("heading", { name: "Preferences" }),
+    })
+    const preferencesStatusPill = preferencesHeader.getByRole("status")
+    await expect(preferencesStatusPill).toHaveText(
+      /Encrypted on relays|Relay ready/,
+      { timeout: 20_000 }
+    )
+    const [headerBox, preferencesPillBox, iconBox] = await Promise.all([
+      preferencesHeader.boundingBox(),
+      preferencesStatusPill.boundingBox(),
+      preferencesStatusPill.locator("svg").boundingBox(),
+    ])
+    expect(headerBox).not.toBeNull()
+    expect(preferencesPillBox).not.toBeNull()
+    expect(iconBox).not.toBeNull()
+    expect(preferencesPillBox!.width).toBeLessThan(headerBox!.width * 0.75)
+    expect(preferencesPillBox!.height).toBeLessThanOrEqual(32)
+    expect(iconBox!.width).toBeGreaterThanOrEqual(11)
+    expect(iconBox!.width).toBeLessThanOrEqual(13)
+    expect(iconBox!.height).toBeGreaterThanOrEqual(11)
+    expect(iconBox!.height).toBeLessThanOrEqual(13)
+
+    await page.goto(`${marketUrl}/network`)
+    await expect(
+      page.getByRole("heading", { name: "Network Settings" })
+    ).toBeVisible()
+
+    const mediaServers = page.getByRole("region", { name: "Media servers" })
+    const mediaStatusPill = mediaServers.getByText("No list observed", {
+      exact: true,
+    })
+    await expect(mediaStatusPill).toBeVisible({ timeout: 20_000 })
+
+    const [sectionBox, mediaPillBox] = await Promise.all([
+      mediaServers.boundingBox(),
+      mediaStatusPill.boundingBox(),
+    ])
+    expect(sectionBox).not.toBeNull()
+    expect(mediaPillBox).not.toBeNull()
+    expect(mediaPillBox!.width).toBeLessThan(sectionBox!.width * 0.75)
+    expect(mediaPillBox!.height).toBeLessThanOrEqual(32)
+  })
+
   test("market checkout keeps form semantics and draft values after refresh @market", async ({
     page,
   }) => {
