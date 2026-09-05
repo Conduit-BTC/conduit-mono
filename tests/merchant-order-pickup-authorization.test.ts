@@ -351,6 +351,44 @@ describe("Merchant pickup order authorization", () => {
     ).toEqual({ status: "verified" })
   })
 
+  it("verifies a historical own-organizer snapshot without a receipt handoff", async () => {
+    const ownProductCoordinate = `30402:${organizer}:own-coffee`
+    const ownMarket = market()
+    ownMarket.collection = {
+      ...ownMarket.collection!,
+      productCoordinates: [ownProductCoordinate],
+    }
+    ownMarket.organizerProductCoordinates = [ownProductCoordinate]
+    ownMarket.acceptedProductCoordinates = [ownProductCoordinate]
+    ownMarket.acceptedProductEvidence = [
+      {
+        ...ownMarket.acceptedProductEvidence[0]!,
+        productCoordinate: ownProductCoordinate,
+        merchantPubkey: organizer,
+      },
+    ]
+    ownMarket.participationRequests = [
+      { productCoordinate: ownProductCoordinate, merchantPubkey: organizer },
+    ]
+    const ownProduct = product({
+      id: ownProductCoordinate,
+      pubkey: organizer,
+    })
+    const ownProducts = products({ product: ownProduct })
+    ownProducts.data[0]!.addressId = ownProductCoordinate
+    ownProducts.diagnostics[0]!.productId = ownProductCoordinate
+    ownProducts.diagnostics[0]!.addressId = ownProductCoordinate
+    const historical = cloneSnapshot()
+    historical.product.coordinate = ownProductCoordinate
+    historical.product.merchantPubkey = organizer
+    const items = orderItems(historical)
+    items[0]!.productId = ownProductCoordinate
+
+    expect(
+      await verify(dependencies(ownMarket, ownProducts), items, organizer)
+    ).toEqual({ status: "verified" })
+  })
+
   it("allows an existing pickup order to complete after the signed event ends", async () => {
     const ended = market("ended")
     ended.calendar = { ...ended.calendar!, end: 500 }

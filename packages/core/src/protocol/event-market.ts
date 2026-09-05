@@ -1440,7 +1440,6 @@ function directMerchantPickupCoordinatesFromProductEvidence(input: {
   events: readonly SignedPublicNostrEvent[]
   collectionCoordinate: string
   organizerProducts: readonly string[]
-  organizerPubkey: string
 }): AddressableEventCoordinate[] {
   const coordinates = new Map<string, AddressableEventCoordinate>()
   const currentRequests = currentEventMarketProductRequests(input)
@@ -1448,7 +1447,7 @@ function directMerchantPickupCoordinatesFromProductEvidence(input: {
     const product = parseAddressableCoordinate(productCoordinate, [
       EVENT_KINDS.PRODUCT,
     ])
-    if (!product || product.authorPubkey === input.organizerPubkey) continue
+    if (!product) continue
     const projection = projectSignedProductFulfillmentEvidence(event)
     for (const reference of projection.shippingOptionRefs ?? []) {
       const pickup = parseAddressableCoordinate(reference.coordinate, [
@@ -1676,7 +1675,6 @@ export function resolveEventMarketEvidence(
           events: input.productRequestEvents ?? [],
           collectionCoordinate: collection.coordinate,
           organizerProducts: collection.productCoordinates,
-          organizerPubkey: decoded.authorPubkey,
         })
       : []
   const collectionPickupCoordinates = collection.pickupCoordinates.map(
@@ -3490,7 +3488,6 @@ export async function getEventMarket(
           events: productRequestEvents,
           collectionCoordinate: decoded.coordinate,
           organizerProducts: organizerProductCoordinates,
-          organizerPubkey: decoded.authorPubkey,
         })
       : []
   const pickupCoordinatesByIdentity = new Map(
@@ -3883,7 +3880,6 @@ export async function getOrganizerEventMarketsDetailed(
             organizerRecords.events,
             [reference]
           ),
-          organizerPubkey,
         }
       )) {
         directMerchantPickupCoordinatesByIdentity.set(

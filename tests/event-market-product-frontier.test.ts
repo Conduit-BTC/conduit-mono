@@ -261,6 +261,76 @@ async function resolveDeletionStarvationCase(tagName: "a" | "e") {
 afterEach(() => __resetEventMarketTestOverrides())
 
 describe("event-market exact product request frontiers", () => {
+  it.each(["own-booth", "pickup"])(
+    "resolves an organizer's own product as merchant handoff through %s",
+    async (pickupDTag) => {
+      const productCoordinate = `${EVENT_KINDS.PRODUCT}:${ORGANIZER}:own-product`
+      const pickupCoordinate = `${EVENT_KINDS.SHIPPING_OPTION}:${ORGANIZER}:${pickupDTag}`
+      const product = sign(
+        ORGANIZER_SECRET,
+        {
+          kind: EVENT_KINDS.PRODUCT,
+          tags: [
+            ["d", "own-product"],
+            ["title", "Organizer coffee"],
+            ["price", "10", "SATS"],
+            ["a", COLLECTION],
+            ["shipping_option", pickupCoordinate],
+          ],
+        },
+        103
+      )
+      const booth = sign(
+        ORGANIZER_SECRET,
+        buildEventMarketPickupDraft({
+          dTag: "own-booth",
+          title: "My booth",
+          price: 0,
+          currency: "SATS",
+          countries: ["US"],
+          location: "Coffee table",
+        }),
+        104
+      )
+      const events = [...graph([productCoordinate]), product, booth]
+      const requestedPickupDTags: string[] = []
+      installReadHarness((filter) => {
+        if (filter.kinds?.includes(EVENT_KINDS.SHIPPING_OPTION)) {
+          requestedPickupDTags.push(...(filter["#d"] ?? []))
+        }
+        return {
+          events: events.filter(
+            (event) =>
+              (!filter.kinds || filter.kinds.includes(event.kind)) &&
+              (!filter.authors || filter.authors.includes(event.pubkey)) &&
+              ["a", "d", "e"].every((tag) => {
+                const values = filter[`#${tag}` as "#a" | "#d" | "#e"]
+                return (
+                  !values ||
+                  event.tags.some(
+                    (entry) => entry[0] === tag && values.includes(entry[1]!)
+                  )
+                )
+              })
+          ),
+          relayBStatus: "failed",
+        }
+      })
+      const market = await getEventMarket({
+        reference: COLLECTION,
+        nowMs: NOW_MS,
+      })
+      expect(market.acceptedProductEvidence).toHaveLength(1)
+      expect(market.acceptedProductEvidence[0]).toMatchObject({
+        productCoordinate,
+        pickupCoordinate,
+        handoffMode: "merchant_handoff",
+        handoffPubkey: ORGANIZER,
+      })
+      expect(requestedPickupDTags).toContain(pickupDTag)
+    }
+  )
+
   it("projects preview data only from the exact current frontier revision", async () => {
     const discovered = productRevision("coffee", 100, true)
     const current = sign(

@@ -12,6 +12,7 @@ import {
   reconcileContextualListingSafety,
   resolveEventMarketProductFulfillment,
   resolveEventMarketProductParticipation,
+  resolveOrderPickupHandoffAuthority,
   type EventMarketResolution,
   type EventMarketResolutionState,
   type CommerceProductRecord,
@@ -1009,11 +1010,12 @@ function pickupSnapshotMatches(
   snapshot: CartPickupFulfillment,
   current: PickupFulfillmentTerms
 ): boolean {
+  const snapshotAuthority = resolveOrderPickupHandoffAuthority(snapshot)
   return (
     snapshot.type === current.type &&
     snapshot.organizerPubkey === current.organizerPubkey &&
-    snapshot.handoffMode === current.handoffMode &&
-    snapshot.handlerPubkey === current.handlerPubkey &&
+    snapshotAuthority.mode === current.handoffMode &&
+    snapshotAuthority.handlerPubkey === current.handlerPubkey &&
     snapshot.product.coordinate === current.product.coordinate &&
     snapshot.product.merchantPubkey === current.product.merchantPubkey &&
     snapshot.product.eventId === current.product.eventId &&
