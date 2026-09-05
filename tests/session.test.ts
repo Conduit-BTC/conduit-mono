@@ -5,6 +5,7 @@ import {
   loadRelaySettings,
   resolveConduitSession,
   saveRelaySettings,
+  shouldCloseProtectedConnectionsForScopeTransition,
 } from "@conduit/core"
 
 class MemoryStorage {
@@ -55,7 +56,7 @@ describe("Conduit session scopes", () => {
         appId: "market",
         mode: "signed_in",
         pubkey: "alice",
-        relayScope: "market:alice",
+        relayScope: "account:alice",
       }
     )
   })
@@ -79,8 +80,35 @@ describe("Conduit session scopes", () => {
       appId: "merchant",
       mode: "signed_in",
       pubkey: "merchant-pubkey",
-      relayScope: "merchant:merchant-pubkey",
+      relayScope: "account:merchant-pubkey",
     })
+  })
+
+  it("closes protected connections whenever an active identity scope changes", () => {
+    expect(
+      shouldCloseProtectedConnectionsForScopeTransition(
+        "account:alice",
+        "market:guest"
+      )
+    ).toBe(true)
+    expect(
+      shouldCloseProtectedConnectionsForScopeTransition(
+        "account:alice",
+        "account:bob"
+      )
+    ).toBe(true)
+    expect(
+      shouldCloseProtectedConnectionsForScopeTransition("account:alice", null)
+    ).toBe(true)
+    expect(
+      shouldCloseProtectedConnectionsForScopeTransition(
+        "account:alice",
+        "account:alice"
+      )
+    ).toBe(false)
+    expect(
+      shouldCloseProtectedConnectionsForScopeTransition(null, "market:guest")
+    ).toBe(false)
   })
 
   it("keeps guest Market relay settings out of Merchant identity scope", () => {
@@ -99,10 +127,10 @@ describe("Conduit session scopes", () => {
     )
     saveRelaySettings(guestSettings, "market:guest")
 
-    const merchantSettings = loadRelaySettings("merchant:alice")
+    const merchantSettings = loadRelaySettings("account:alice")
 
     expect(getRelaySettingsStorageKey("market:guest")).not.toBe(
-      getRelaySettingsStorageKey("merchant:alice")
+      getRelaySettingsStorageKey("account:alice")
     )
     expect(merchantSettings.entries.map((entry) => entry.url)).not.toContain(
       "wss://guest.example"

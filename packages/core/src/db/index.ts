@@ -273,6 +273,55 @@ export interface CachedRelayList {
   cachedAt: number
 }
 
+/** A validated, lowercase 32-byte Nostr public key for owner relay evidence. */
+declare const normalizedOwnerRelayListPubkeyBrand: unique symbol
+export type NormalizedOwnerRelayListPubkey = string & {
+  readonly [normalizedOwnerRelayListPubkeyBrand]: true
+}
+
+export type OwnerRelayListEvidenceState =
+  "declared" | "signed_empty" | "malformed"
+
+export type OwnerRelayListLookupCoverage =
+  "complete" | "partial" | "unavailable"
+
+export interface OwnerRelayListLookupEvidence {
+  observedAt: number
+  coverage: OwnerRelayListLookupCoverage
+  /** True only when this lookup returned a valid, owner-authored kind-10002. */
+  hadEvent: boolean
+  eventId?: string
+}
+
+/**
+ * Exact signed NIP-65 frontier for the authenticated owner.
+ *
+ * This is deliberately separate from `CachedRelayList`: arbitrary-author
+ * routing hints are prunable, while an owner's signed preference frontier is
+ * account state and must survive cache-scope changes and pruning.
+ */
+export interface OwnerRelayListEventEvidence {
+  state: OwnerRelayListEvidenceState
+  signedEvent: SignedPublicNostrEvent
+  preferences: Array<{
+    url: string
+    readEnabled: boolean
+    writeEnabled: boolean
+  }>
+  sourceRelayUrls: string[]
+  observedAt: number
+  completeObservedAt?: number
+  invalidRelayTagCount: number
+  duplicateRelayTagCount: number
+}
+
+export interface OwnerRelayListEvidenceRecord {
+  pubkey: NormalizedOwnerRelayListPubkey
+  current?: OwnerRelayListEventEvidence
+  latestLookup: OwnerRelayListLookupEvidence
+  cachedAt: number
+}
+
 /** A validated, lowercase 32-byte Nostr public key. */
 declare const normalizedInboxDeclarationPubkeyBrand: unique symbol
 export type NormalizedInboxDeclarationPubkey = string & {
@@ -782,6 +831,7 @@ class ConduitDB extends Dexie {
   profiles!: EntityTable<CachedProfile, "pubkey">
   orderMessages!: EntityTable<CachedOrderMessage, "id">
   relayLists!: EntityTable<CachedRelayList, "pubkey">
+  ownerRelayListEvidence!: EntityTable<OwnerRelayListEvidenceRecord, "pubkey">
   productSocialSummaries!: EntityTable<CachedProductSocialSummary, "key">
   nip05Verifications!: EntityTable<CachedNip05Verification, "id">
   shopperTrustSnapshots!: EntityTable<CachedShopperTrustSnapshot, "id">
@@ -967,6 +1017,12 @@ class ConduitDB extends Dexie {
       merchantPendingInvoices:
         "id, merchantPubkey, orderId, deliveryState, invoiceExpiresAt, updatedAt",
       eventMarketEvidence: "id, organizerPubkey, kind, addressId, cachedAt",
+    })
+
+    this.version(17).stores({
+      // Owner kind-10002 frontiers are durable account evidence, not the
+      // prunable arbitrary-author relay hint cache in `relayLists`.
+      ownerRelayListEvidence: "pubkey, cachedAt",
     })
   }
 }
