@@ -32,6 +32,7 @@ import {
   prepareProtectedReadRefreshState,
   selectProtectedReadRows,
   type MerchantConversationSummary,
+  type CommerceProductRecord,
   type MerchantOrderDelivery,
   type MerchantOrderAction,
   type MerchantOrderReopenTransition,
@@ -138,6 +139,7 @@ import {
 } from "../lib/product-publishing"
 import {
   getOrderStockPickupFulfillment,
+  rebaseOrderStockAdjustmentOnProduct,
   resolveStockUpdateFulfillmentIntent,
 } from "../lib/order-stock-fulfillment"
 import {
@@ -1633,6 +1635,7 @@ function OrdersPage() {
         return {
           delivery,
           signedEvent: payload.signedEvent,
+          adjustment: payload.adjustment,
         }
       }
 
@@ -1670,17 +1673,42 @@ function OrdersPage() {
         items: payload.orderItems,
         productAddressId: payload.adjustment.addressId,
       })
+      let publicationRecord = record
+      let effectiveAdjustment = payload.adjustment
       if (pickupFulfillment) {
+        const verifiedProductRef: {
+          current: CommerceProductRecord | null
+        } = { current: null }
         const verification = await verifyMerchantPickupOrderAuthorization({
           items: payload.orderItems,
           merchantPubkey: pubkey,
+          onVerifiedProduct: (candidate) => {
+            if (candidate.addressId === payload.adjustment.addressId) {
+              verifiedProductRef.current = candidate
+            }
+          },
         })
-        if (verification.status !== "verified") {
+        const verifiedProduct = verifiedProductRef.current
+        if (
+          verification.status !== "verified" ||
+          !verifiedProduct ||
+          !verifiedProduct.dTag
+        ) {
           throw new Error("Current signed pickup evidence is unavailable.")
         }
+        publicationRecord = verifiedProduct
+        effectiveAdjustment = rebaseOrderStockAdjustmentOnProduct({
+          adjustment: payload.adjustment,
+          record: verifiedProduct,
+        })
+      }
+      if (!publicationRecord.dTag) {
+        throw new Error(
+          "The current listing revision cannot be used for this stock update. Refresh the order and try again."
+        )
       }
       const fulfillmentIntent = await resolveStockUpdateFulfillmentIntent({
-        product: record.product,
+        product: publicationRecord.product,
         productAddressId: payload.adjustment.addressId,
         orderHasPickupClaim: hasPickupClaim,
         ...(pickupFulfillment ? { verifiedPickup: pickupFulfillment } : {}),
@@ -1689,29 +1717,29 @@ function OrdersPage() {
       const delivery = await signAndPublishProductListing({
         merchantPubkey: pubkey,
         product: {
-          ...record.product,
-          stock: payload.adjustment.nextStock,
+          ...publicationRecord.product,
+          stock: effectiveAdjustment.nextStock,
           updatedAt: Date.now(),
         },
-        dTag: record.dTag,
-        previousEventCreatedAt: record.eventCreatedAt,
+        dTag: publicationRecord.dTag,
+        previousEventCreatedAt: publicationRecord.eventCreatedAt,
         fulfillmentIntent,
         onSignedLocal: async (event) => {
           const rawEvent = event.rawEvent() as SignedPublicNostrEvent
           signedEvent = rawEvent
           pendingStockDeliveryStoreRef.current.set(pubkey, {
             orderId: payload.orderId,
-            adjustment: payload.adjustment,
+            adjustment: effectiveAdjustment,
             signedEvent: rawEvent,
           })
           setSessionStockDecisionKeys((current) => {
             const next = new Set(current)
-            next.add(`${pubkey}:${payload.adjustment.key}`)
+            next.add(`${pubkey}:${effectiveAdjustment.key}`)
             return next
           })
           setStockDelivery({
             orderId: payload.orderId,
-            adjustment: payload.adjustment,
+            adjustment: effectiveAdjustment,
             notice: buildLocalProductDeliveryNotice("publish"),
             signedEvent: rawEvent,
           })
@@ -1721,7 +1749,7 @@ function OrdersPage() {
       if (!signedEvent) {
         throw new Error("The signed stock update was not saved locally")
       }
-      return { delivery, signedEvent }
+      return { delivery, signedEvent, adjustment: effectiveAdjustment }
     },
     onMutate: (payload) => {
       if (payload.action === "update") setStockDelivery(null)
@@ -1737,7 +1765,7 @@ function OrdersPage() {
       const merchantPubkey = result.signedEvent.pubkey
       setStockDelivery({
         orderId: payload.orderId,
-        adjustment: payload.adjustment,
+        adjustment: result.adjustment,
         notice,
         signedEvent: result.signedEvent,
       })
@@ -1745,18 +1773,18 @@ function OrdersPage() {
         const decisionPersisted = stockDecisionStoreRef.current.set(
           merchantPubkey,
           payload.orderId,
-          payload.adjustment.addressId,
+          result.adjustment.addressId,
           "applied",
-          payload.adjustment
+          result.adjustment
         )
         pendingStockDeliveryStoreRef.current.delete(
           merchantPubkey,
           payload.orderId,
-          payload.adjustment.addressId
+          result.adjustment.addressId
         )
         setSessionStockDecisionKeys((current) => {
           const next = new Set(current)
-          next.delete(`${merchantPubkey}:${payload.adjustment.key}`)
+          next.delete(`${merchantPubkey}:${result.adjustment.key}`)
           return next
         })
         const nextPendingDelivery =
@@ -1774,22 +1802,22 @@ function OrdersPage() {
         }
         flash(
           decisionPersisted
-            ? `Stock updated for ${payload.adjustment.title}`
-            : `Stock updated for ${payload.adjustment.title}, but this device could not remember the order decision after reload.`
+            ? `Stock updated for ${result.adjustment.title}`
+            : `Stock updated for ${result.adjustment.title}, but this device could not remember the order decision after reload.`
         )
       } else {
         const retryPersisted = pendingStockDeliveryStoreRef.current.set(
           merchantPubkey,
           {
             orderId: payload.orderId,
-            adjustment: payload.adjustment,
+            adjustment: result.adjustment,
             signedEvent: result.signedEvent,
           }
         )
         flash(
           retryPersisted
-            ? `Stock update saved locally for ${payload.adjustment.title}; relay delivery still needs attention.`
-            : `Stock update saved locally for ${payload.adjustment.title}, but this device could not remember the relay retry after reload.`
+            ? `Stock update saved locally for ${result.adjustment.title}; relay delivery still needs attention.`
+            : `Stock update saved locally for ${result.adjustment.title}, but this device could not remember the relay retry after reload.`
         )
       }
       await invalidateProductQueries()

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import {
+  type CommerceProductRecord,
   type OrderPickupFulfillmentSchema,
   type OrderSummary,
   type ParsedShippingOption,
@@ -7,8 +8,10 @@ import {
 } from "@conduit/core"
 import {
   getOrderStockPickupFulfillment,
+  rebaseOrderStockAdjustmentOnProduct,
   resolveStockUpdateFulfillmentIntent,
 } from "../apps/merchant/src/lib/order-stock-fulfillment"
+import type { OrderStockAdjustment } from "../apps/merchant/src/lib/productStock"
 
 const MERCHANT = "a".repeat(64)
 const ORGANIZER = "b".repeat(64)
@@ -103,6 +106,75 @@ function standardShippingOption(coordinate: string): ParsedShippingOption {
 }
 
 describe("merchant stock update fulfillment", () => {
+  it("rebases a calculated update onto the exact verified product revision", () => {
+    const adjustment: OrderStockAdjustment = {
+      key: "order:item",
+      addressId: PRODUCT_COORDINATE,
+      sourceEventId: "1".repeat(64),
+      title: "Stale title",
+      quantity: 3,
+      currentStock: 10,
+      nextStock: 7,
+      shortfall: 0,
+    }
+    const currentRecord: CommerceProductRecord = {
+      product: product({ title: "Current title", stock: 5 }),
+      eventId: "9".repeat(64),
+      addressId: PRODUCT_COORDINATE,
+      dTag: "event-item",
+      eventCreatedAt: 3_000,
+    }
+
+    expect(
+      rebaseOrderStockAdjustmentOnProduct({
+        adjustment,
+        record: currentRecord,
+      })
+    ).toEqual({
+      ...adjustment,
+      sourceEventId: currentRecord.eventId,
+      title: "Current title",
+      currentStock: 5,
+      nextStock: 2,
+      shortfall: 0,
+    })
+    expect(currentRecord.product.stock).toBe(5)
+  })
+
+  it("keeps an explicit target while preserving the current product revision", () => {
+    const adjustment: OrderStockAdjustment = {
+      key: "order:item",
+      addressId: PRODUCT_COORDINATE,
+      sourceEventId: "1".repeat(64),
+      title: "Stale title",
+      quantity: 3,
+      currentStock: 10,
+      nextStock: 12,
+      shortfall: 0,
+      targetMode: "custom",
+    }
+    const currentRecord: CommerceProductRecord = {
+      product: product({ title: "Current title", stock: 5 }),
+      eventId: "9".repeat(64),
+      addressId: PRODUCT_COORDINATE,
+      dTag: "event-item",
+      eventCreatedAt: 3_000,
+    }
+
+    expect(
+      rebaseOrderStockAdjustmentOnProduct({
+        adjustment,
+        record: currentRecord,
+      })
+    ).toMatchObject({
+      sourceEventId: currentRecord.eventId,
+      title: "Current title",
+      currentStock: 5,
+      nextStock: 12,
+      targetMode: "custom",
+    })
+  })
+
   it("preserves exact currently verified event pickup references", async () => {
     const fulfillment = pickup()
     const eventProduct = product({

@@ -271,7 +271,20 @@ function cloneSnapshot(): OrderPickupFulfillmentSchema {
 
 describe("Merchant pickup order authorization", () => {
   it("verifies exact current organizer, merchant product, and two-sided participation evidence", async () => {
-    expect(await verify()).toEqual({ status: "verified" })
+    let verifiedProductEventId: string | null = null
+    expect(
+      await verifyMerchantPickupOrderAuthorization(
+        {
+          items: orderItems(),
+          merchantPubkey: merchant,
+          onVerifiedProduct: (record) => {
+            verifiedProductEventId = record.eventId
+          },
+        },
+        dependencies()
+      )
+    ).toEqual({ status: "verified" })
+    expect(verifiedProductEventId).toBe("4".repeat(64))
     expect(
       await verify(
         dependencies(

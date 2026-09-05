@@ -7,6 +7,7 @@ import {
   resolveEventMarketProductFulfillment,
   resolveEventMarketProductParticipation,
   resolveOrderPickupHandoffAuthority,
+  type CommerceProductRecord,
   type EventMarketResolution,
   type OrderPickupFulfillmentSchema,
   type OrderSummary,
@@ -44,6 +45,8 @@ export interface MerchantPickupAuthorizationInput {
   nowMs?: number
   /** Receives the exact verified graph for a same-action Core authorization. */
   onVerifiedMarket?: (market: EventMarketResolution) => void
+  /** Receives each exact live product revision used by the authorization. */
+  onVerifiedProduct?: (record: CommerceProductRecord) => void
 }
 
 export interface MerchantPickupAuthorizationDependencies {
@@ -382,6 +385,7 @@ export async function verifyMerchantPickupOrderAuthorization(
     return { status: "unverified", reason: "network_unavailable" }
   }
 
+  const verifiedProducts: CommerceProductRecord[] = []
   for (const item of pickupItems) {
     const coordinate = canonicalCoordinate(item.productId, [30402])
     if (!coordinate) {
@@ -463,8 +467,10 @@ export async function verifyMerchantPickupOrderAuthorization(
     ) {
       return { status: "unverified", reason: "cost_mismatch" }
     }
+    verifiedProducts.push(record)
   }
 
+  verifiedProducts.forEach((record) => input.onVerifiedProduct?.(record))
   input.onVerifiedMarket?.(resolution)
   return { status: "verified" }
 }

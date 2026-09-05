@@ -4,12 +4,44 @@ import {
   getShippingOptionsByCoordinates,
   hasSamePickupFulfillmentGraph,
   resolveProductFulfillment,
+  type CommerceProductRecord,
   type OrderPickupFulfillmentSchema,
   type OrderSummary,
   type ParsedShippingOption,
   type ProductFulfillmentIntent,
   type ProductSchema,
 } from "@conduit/core"
+import type { OrderStockAdjustment } from "./productStock"
+
+export function rebaseOrderStockAdjustmentOnProduct(input: {
+  adjustment: OrderStockAdjustment
+  record: CommerceProductRecord
+}): OrderStockAdjustment {
+  const { adjustment, record } = input
+  const currentStock = record.product.stock
+  if (
+    record.addressId !== adjustment.addressId ||
+    typeof currentStock !== "number" ||
+    !Number.isSafeInteger(currentStock) ||
+    currentStock < 0
+  ) {
+    throw new Error(
+      "The current listing revision cannot be used for this stock update. Refresh the order and try again."
+    )
+  }
+
+  return {
+    ...adjustment,
+    sourceEventId: record.eventId,
+    title: record.product.title,
+    currentStock,
+    nextStock:
+      adjustment.targetMode === "custom"
+        ? adjustment.nextStock
+        : Math.max(0, currentStock - adjustment.quantity),
+    shortfall: Math.max(0, adjustment.quantity - currentStock),
+  }
+}
 
 export function getOrderStockPickupFulfillment(input: {
   items: OrderSummary["items"]

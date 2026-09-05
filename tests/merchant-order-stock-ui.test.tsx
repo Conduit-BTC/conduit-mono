@@ -153,7 +153,7 @@ describe("merchant order stock UI", () => {
     expect(source).toContain(
       "(candidate) => candidate.addressId === payload.adjustment.addressId"
     )
-    expect(source).toContain("stock: payload.adjustment.nextStock")
+    expect(source).toContain("stock: effectiveAdjustment.nextStock")
     expect(source).not.toContain("stock: payload.stock")
   })
 
@@ -172,7 +172,7 @@ describe("merchant order stock UI", () => {
     const source = await Bun.file("apps/merchant/src/routes/orders.tsx").text()
 
     expect(source).toContain(
-      "next.delete(`${merchantPubkey}:${payload.adjustment.key}`)"
+      "next.delete(`${merchantPubkey}:${result.adjustment.key}`)"
     )
     expect(source).toContain("hasSessionDecision: sessionStockDecisionKeys.has")
     expect(source).toContain('stockDelivery.notice.state !== "delivered"')
