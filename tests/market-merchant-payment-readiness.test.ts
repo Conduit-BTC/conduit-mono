@@ -22,6 +22,7 @@ describe("shopper merchant payment readiness", () => {
       'merchantProfileUnavailable: merchantTrust.profileState === "limited"'
     )
     expect(source).toContain("getMerchantPaymentLud16({")
+    expect(source).toContain("lud16: merchantTrust.profileEvidenceLud16")
     expect(source).toContain(
       'merchantTrust.profileEvidenceState !== "available"'
     )

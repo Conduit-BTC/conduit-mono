@@ -65,7 +65,7 @@ export function mountMerchantTrustHarness(
     const trust = useMerchantTrustContext(trustInput)
     const merchantPaymentLud16 = getMerchantPaymentLud16({
       profileState: trust.profileEvidenceState,
-      lud16: trust.profile?.lud16,
+      lud16: trust.profileEvidenceLud16,
     })
     const fastCheckoutReason = getFastCheckoutUnavailableReasons({
       walletPayCapable: true,

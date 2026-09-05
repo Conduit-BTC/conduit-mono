@@ -4382,7 +4382,10 @@ describe("commerce gateway", () => {
             id: "profile-rich-older",
             pubkey: "merchant",
             created_at: 10,
-            content: JSON.stringify({ name: "ZALGEBAR" }),
+            content: JSON.stringify({
+              name: "ZALGEBAR",
+              lud16: "obsolete@example.com",
+            }),
             tags: [],
           } as never,
         ]
@@ -4400,6 +4403,8 @@ describe("commerce gateway", () => {
 
     expect(firstResult.data.merchant?.name).toBe("ZALGEBAR")
     expect(secondResult.data.merchant?.name).toBe("ZALGEBAR")
+    expect(firstResult.data.merchant?.lud16).toBeUndefined()
+    expect(secondResult.data.merchant?.lud16).toBeUndefined()
     expect(firstResult.meta).toMatchObject({
       source: "public",
       stale: false,
@@ -4415,6 +4420,7 @@ describe("commerce gateway", () => {
       rawContent: "{}",
       eventId: "profile-blank-newer",
       eventCreatedAt: 20,
+      lud16: undefined,
     })
   })
 

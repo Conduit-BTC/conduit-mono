@@ -22,7 +22,7 @@ describe("merchant product payment setup guidance", () => {
     expect(
       getProductPaymentSetupState({
         lookupSettled: true,
-        lud16: undefined,
+        lud16: "cached@example.com",
         evidenceIncomplete: true,
       })
     ).toBe("unavailable")
@@ -62,6 +62,7 @@ describe("merchant product payment setup guidance", () => {
     expect(notice).toContain(
       "You can still publish and arrange payment manually"
     )
+    expect(notice).toContain("profileQuery.evidenceData?.lud16")
     expect(notice).toContain('<Link to="/payments">Set up payments</Link>')
     expect(notice).not.toContain("disabled")
   })

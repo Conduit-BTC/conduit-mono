@@ -52,6 +52,8 @@ export function getProfileSingletonQueryKey(
 export interface UseProfilesResult {
   data: ProfileMap
   profiles: ProfileMap
+  /** Exact latest query projection before richer display-cache enrichment. */
+  evidenceProfiles: ProfileMap
   unresolvedPubkeys: string[]
   isLoading: boolean
   isFetching: boolean
@@ -261,6 +263,10 @@ export function useProfiles(
       ),
     [query.data, resolvedProfiles, unique]
   )
+  const evidenceProfiles = useMemo(
+    () => withBareProfiles(unique, query.data?.data ?? EMPTY_PROFILE_MAP),
+    [query.data, unique]
+  )
   const unresolvedPubkeys = useMemo(
     () => unique.filter((pubkey) => !hasProfileContent(profiles[pubkey])),
     [profiles, unique]
@@ -292,6 +298,7 @@ export function useProfiles(
   return {
     data: profiles,
     profiles,
+    evidenceProfiles,
     unresolvedPubkeys,
     isLoading: query.isLoading,
     isFetching: query.isFetching,

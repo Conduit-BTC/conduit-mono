@@ -30,6 +30,7 @@ type SocialState =
 export type MerchantTrustContext = MerchantTrustSocialSummary & {
   merchantPubkey: string | null
   profile: Profile | undefined
+  profileEvidenceLud16: string | undefined
   profileState: ProfileState
   profileEvidenceState: MerchantPaymentProfileState
   socialState: SocialState
@@ -184,6 +185,7 @@ export function useMerchantTrustContext({
   return {
     merchantPubkey: merchantPubkey ?? null,
     profile,
+    profileEvidenceLud16: profileQuery.evidenceData?.lud16,
     profileState,
     profileEvidenceState,
     socialState,

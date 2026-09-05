@@ -20,7 +20,7 @@ export function ProductPaymentSetupNotice({
     requireCompleteEvidence: true,
   })
   const state = getProductPaymentSetupState({
-    lud16: profileQuery.data?.lud16,
+    lud16: profileQuery.evidenceData?.lud16,
     lookupSettled: profileQuery.lookupSettled,
     evidenceIncomplete: isCommerceReadIncomplete(profileQuery.meta),
     error: profileQuery.error,

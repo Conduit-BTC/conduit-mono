@@ -1457,7 +1457,7 @@ function CheckoutPage() {
   const merchantProfile = merchantTrust.profile
   const merchantLud16 = getMerchantPaymentLud16({
     profileState: merchantTrust.profileEvidenceState,
-    lud16: merchantProfile?.lud16,
+    lud16: merchantTrust.profileEvidenceLud16,
   })
   // Shared LNURL-pay metadata preflight: the same cached read the HUD and
   // cart warmed while this merchant had items in the cart. The lease and

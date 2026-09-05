@@ -9,7 +9,7 @@ export function getProductPaymentSetupState(input: {
   evidenceIncomplete?: boolean
   error?: unknown
 }): ProductPaymentSetupState {
-  if (isValidLud16Address(input.lud16?.trim() ?? "")) return "ready"
+  if (!input.lookupSettled) return "checking"
   if (input.error || input.evidenceIncomplete) return "unavailable"
-  return input.lookupSettled ? "missing" : "checking"
+  return isValidLud16Address(input.lud16?.trim() ?? "") ? "ready" : "missing"
 }

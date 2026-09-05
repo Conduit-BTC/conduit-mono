@@ -2471,7 +2471,7 @@ function mergeProfileEvents(
     ) {
       hasInvalidLatestProfile = true
     }
-    const profile = exactCurrentFrontierObserved
+    const richProfile = exactCurrentFrontierObserved
       ? mergeRicherProfile(
           undefined,
           event ? parseProfileEvent(event) : { pubkey }
@@ -2484,6 +2484,21 @@ function mergeProfileEvents(
               ? parseProfileEvent(event)
               : { pubkey }
         )
+    // Display identity may retain richer older fields, but a Lightning
+    // destination is action authority and must reflect the exact effective
+    // kind-0 frontier. A newer valid profile that removes lud16 must never
+    // inherit the obsolete address from display/cache enrichment.
+    const profile =
+      effectiveFrontierContent !== undefined &&
+      hasValidProfileEventContent(effectiveFrontierContent)
+        ? {
+            ...(richProfile ?? { pubkey }),
+            lud16: parseProfileEvent({
+              pubkey,
+              content: effectiveFrontierContent,
+            }).lud16,
+          }
+        : richProfile
     const sourceRelayUrls = uniqueStrings([
       ...(currentRow?.sourceRelayUrls ?? []),
       ...(event ? getEventSourceRelayUrls(event) : []),

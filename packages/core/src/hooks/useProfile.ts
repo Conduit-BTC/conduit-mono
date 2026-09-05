@@ -18,10 +18,14 @@ export function useProfile(
       pubkey && relayHints ? { [pubkey]: relayHints } : undefined,
   })
   const data = pubkey ? (profilesQuery.data[pubkey] ?? { pubkey }) : undefined
+  const evidenceData = pubkey
+    ? (profilesQuery.evidenceProfiles[pubkey] ?? { pubkey })
+    : undefined
 
   return {
     ...profilesQuery,
     data,
+    evidenceData,
     isPlaceholderData: !!pubkey && !hasProfileContent(data),
   }
 }
@@ -38,6 +42,7 @@ export type UseProfileResult = Omit<
   "data" | "profiles" | "getProfile" | "hasProfile"
 > & {
   data: Profile | undefined
+  evidenceData: Profile | undefined
   profiles: UseProfilesResult["profiles"]
   getProfile: UseProfilesResult["getProfile"]
   hasProfile: UseProfilesResult["hasProfile"]
