@@ -138,6 +138,7 @@ import {
 import {
   deliverSignedProductEvent,
   getRelayPublishDiagnosticsError,
+  resolvePublishedProductFulfillmentIntentForTarget,
   signAndPublishProductListing,
   SignedProductDeliveryError,
 } from "../lib/product-publishing"
@@ -194,6 +195,16 @@ async function resolveStockUpdateFulfillmentIntent(
   product: ProductSchema
 ): Promise<ProductFulfillmentIntent> {
   if (product.format === "digital") return { kind: "digital" }
+
+  const publishedIntent =
+    resolvePublishedProductFulfillmentIntentForTarget(product)
+  if (
+    publishedIntent?.kind === "coordinate_after_order" &&
+    (product.collectionRefs?.length ?? 0) > 0 &&
+    (product.shippingOptionRefs?.length ?? 0) > 0
+  ) {
+    return publishedIntent
+  }
 
   const legacyShippingAmount =
     product.sourceShippingCost?.amount ?? product.shippingCostSats

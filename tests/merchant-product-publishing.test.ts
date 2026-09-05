@@ -1358,6 +1358,73 @@ describe("canonical product publication ordering", () => {
     })
   })
 
+  it("preserves signed event pickup references while publishing a stock update", () => {
+    const collectionCoordinate = `30405:${MERCHANT_PUBKEY}:event`
+    const pickupCoordinate = `30406:${MERCHANT_PUBKEY}:event-pickup`
+    const product = {
+      ...makeProduct("event-listing"),
+      stock: 1,
+      collectionRefs: [collectionCoordinate],
+      shippingOptionId: pickupCoordinate,
+      shippingOptionRefs: [
+        {
+          coordinate: pickupCoordinate,
+          relayHints: ["wss://relay.example"],
+        },
+      ],
+      canonicalShippingResolved: false,
+    }
+
+    const intent = resolvePublishedProductFulfillmentIntentForTarget(product)
+    expect(intent).toEqual({ kind: "coordinate_after_order" })
+
+    const prepared = applyProductFulfillmentIntentForPublication({
+      product: { ...product, stock: 0 },
+      merchantPubkey: MERCHANT_PUBKEY,
+      productDTag: "event-listing",
+      intent: intent!,
+    })
+    expect(prepared).toMatchObject({
+      stock: 0,
+      collectionRefs: [collectionCoordinate],
+      shippingOptionId: pickupCoordinate,
+      shippingOptionRefs: [
+        {
+          coordinate: pickupCoordinate,
+          relayHints: ["wss://relay.example"],
+        },
+      ],
+      canonicalShippingResolved: false,
+    })
+
+    const draft = buildProductListingEventDraft({
+      product: prepared,
+      dTag: "event-listing",
+      clientAppId: "merchant",
+    })
+    const signed = finalizeEvent(
+      {
+        kind: draft.kind,
+        created_at: Math.floor(NOW / 1000),
+        content: draft.content,
+        tags: draft.tags,
+      },
+      MERCHANT_SECRET
+    )
+    expect(signed.sig).toHaveLength(128)
+    expect(parseProductEvent(signed)).toMatchObject({
+      stock: 0,
+      collectionRefs: [collectionCoordinate],
+      shippingOptionId: pickupCoordinate,
+      shippingOptionRefs: [
+        {
+          coordinate: pickupCoordinate,
+          dTag: "event-pickup",
+        },
+      ],
+    })
+  })
+
   it("uses a variation's fixed shipping override under an order-first root", () => {
     expect(
       resolveProductFulfillmentIntentForTarget({
