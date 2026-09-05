@@ -184,6 +184,20 @@ function parseOwnerRelayPreferences(
   }
 }
 
+/**
+ * Project the same signed kind-10002 role semantics used by durable owner
+ * evidence. Signed-empty and wholly malformed lists are authoritative empty
+ * projections; usable valid tags remain available when sibling tags are bad.
+ */
+export function projectOwnerRelayPreferencesFromSignedTags(
+  tags: readonly string[][]
+): RelayPreference[] {
+  const parsed = parseOwnerRelayPreferences(tags)
+  return parsed.preferences.length > 0
+    ? structuredClone(parsed.preferences)
+    : []
+}
+
 function assertOwnerRelayListEvent(
   pubkey: NormalizedOwnerRelayListPubkey,
   event: SignedPublicNostrEvent
@@ -226,12 +240,6 @@ function eventEvidenceFromObservation(
           observation.completeObservedAt,
           "Owner relay-list completeObservedAt"
         )
-  if (completeObservedAt !== undefined && completeObservedAt > observedAt) {
-    throw new Error(
-      "Owner relay-list completeObservedAt cannot exceed observedAt"
-    )
-  }
-
   return {
     state:
       parsed.preferences.length > 0

@@ -322,6 +322,83 @@ export interface OwnerRelayListEvidenceRecord {
   cachedAt: number
 }
 
+export type AccountNetworkPreferenceEventKind = 10002 | 10050
+
+export type AccountNetworkPreferencePublishStatus =
+  "pending" | "acked" | "rejected" | "timed_out"
+
+export type AccountNetworkPreferenceReadbackStatus =
+  "pending" | "observed" | "absent" | "timed_out"
+
+export interface AccountNetworkPreferenceRelayOutcome {
+  relayUrl: string
+  publishStatus: AccountNetworkPreferencePublishStatus
+  publishAttemptCount: number
+  publishAttemptedAt?: number
+  readbackStatus: AccountNetworkPreferenceReadbackStatus
+  readbackAttemptCount: number
+  readbackAttemptedAt?: number
+  observedAt?: number
+}
+
+/**
+ * One exact signed replaceable event inside an account Network update.
+ *
+ * `relayPlan` is immutable. A checkpoint may be superseded independently of
+ * the other event kind when a stronger durable frontier appears.
+ */
+export interface AccountNetworkPreferenceEventCheckpoint {
+  kind: AccountNetworkPreferenceEventKind
+  signedEvent: SignedPublicNostrEvent
+  /** First atomic staging time for these exact bytes and immutable plan. */
+  stagedAt: number
+  relayPlan: string[]
+  relayOutcomes: AccountNetworkPreferenceRelayOutcome[]
+  state: "active" | "superseded"
+  supersededAt?: number
+}
+
+export interface AccountNetworkPreferenceReviewFrontier {
+  eventId: string | null
+  createdAt: number | null
+  state: string
+}
+
+export interface AccountNetworkPreferenceRelayRole {
+  url: string
+  readEnabled: boolean
+  writeEnabled: boolean
+}
+
+/**
+ * Atomic, account-scoped checkpoint for a reviewed Network mutation.
+ *
+ * The row contains only public signed declarations, content-free relay
+ * outcomes, and the minimum local cutover policy needed to recover after a
+ * restart. It is not a second settings authority: newer validated signed
+ * frontiers supersede the applicable checkpoint independently per kind.
+ */
+export interface AccountNetworkPreferenceUpdateRecord {
+  pubkey: string
+  updateId: string
+  action: "ordinary" | "whole_relay_removal"
+  removedRelayUrl?: string
+  baseRelayList: AccountNetworkPreferenceReviewFrontier
+  baseInboxDeclaration: AccountNetworkPreferenceReviewFrontier
+  nip65Preferences: AccountNetworkPreferenceRelayRole[]
+  inboxRelayUrls: string[]
+  previousInboxRelayUrls: string[]
+  /** Migration-only URLs explicitly removed from recovery by the user. */
+  legacyRecoveryRemovedRelayUrls: string[]
+  /** A usable fully staged kind-10050 makes legacy recovery unnecessary. */
+  legacyRecoveryDiscarded: boolean
+  cutoverPolicyVersion: number
+  cutoverGraceMs: number
+  checkpoints: AccountNetworkPreferenceEventCheckpoint[]
+  stagedAt: number
+  updatedAt: number
+}
+
 /** A validated, lowercase 32-byte Nostr public key. */
 declare const normalizedInboxDeclarationPubkeyBrand: unique symbol
 export type NormalizedInboxDeclarationPubkey = string & {
@@ -398,6 +475,21 @@ export interface PendingInboxDeclarationDistribution {
   signedEvent: SignedPublicNostrEvent
   publishRelayUrls: string[]
   stagedAt: number
+  /** Present only when atomically staged with the coordinated Network row. */
+  coordinatedUpdateId?: string
+}
+
+/**
+ * Hidden read-only relays retained while stale senders adopt a replacement
+ * declaration. ACK does not start the grace period; exact shared readback does.
+ */
+export interface InboxDeclarationCutoverRecovery {
+  policyVersion: number
+  replacementEventId: string
+  relayUrls: string[]
+  graceMs: number
+  readbackObservedAt?: number
+  expiresAt?: number
 }
 
 /**
@@ -413,6 +505,7 @@ export interface InboxDeclarationEvidenceRecord {
   current: InboxDeclarationEventEvidence
   lastUsable?: DeclaredInboxDeclarationEventEvidence
   pendingDistribution?: PendingInboxDeclarationDistribution
+  cutoverRecovery?: InboxDeclarationCutoverRecovery
   latestLookup?: InboxDeclarationLookupEvidence
   cachedAt: number
 }
@@ -832,6 +925,10 @@ class ConduitDB extends Dexie {
   orderMessages!: EntityTable<CachedOrderMessage, "id">
   relayLists!: EntityTable<CachedRelayList, "pubkey">
   ownerRelayListEvidence!: EntityTable<OwnerRelayListEvidenceRecord, "pubkey">
+  networkPreferenceUpdates!: EntityTable<
+    AccountNetworkPreferenceUpdateRecord,
+    "pubkey"
+  >
   productSocialSummaries!: EntityTable<CachedProductSocialSummary, "key">
   nip05Verifications!: EntityTable<CachedNip05Verification, "id">
   shopperTrustSnapshots!: EntityTable<CachedShopperTrustSnapshot, "id">
@@ -1023,6 +1120,12 @@ class ConduitDB extends Dexie {
       // Owner kind-10002 frontiers are durable account evidence, not the
       // prunable arbitrary-author relay hint cache in `relayLists`.
       ownerRelayListEvidence: "pubkey, cachedAt",
+    })
+
+    this.version(18).stores({
+      // Both signed Network objects and their immutable relay plans must land
+      // in one transaction before either event can reach the network.
+      networkPreferenceUpdates: "pubkey, updateId, stagedAt, updatedAt",
     })
   }
 }
