@@ -23,6 +23,7 @@ import {
   ShareLinkButton,
 } from "@conduit/ui"
 import { CopyButton } from "../../components/CopyButton"
+import { LivePresenceIndicator } from "../../components/LivePresenceIndicator"
 import {
   MerchantAvatarFallback,
   Nip05TrustIndicator,
@@ -35,6 +36,7 @@ import { ResolvedProductGridCard } from "../../components/ResolvedProductGridCar
 import { ProductVariationSelector } from "../../components/ProductVariationSelector"
 import { useShopperPricing } from "../../hooks/useShopperPricing"
 import { useCart } from "../../hooks/useCart"
+import { useLivePresenceCount } from "../../hooks/useLivePresenceCount"
 import { useProductCartFulfillment } from "../../hooks/useProductCartFulfillment"
 import {
   useProgressiveProductDetail,
@@ -233,6 +235,10 @@ function ProductPage() {
   const productShareUrl = selectedProduct
     ? getMarketProductShareUrl(selectedProduct.id)
     : null
+  const productPresenceCount = useLivePresenceCount({
+    canonicalId: selectedProduct?.id,
+    pageType: "product",
+  })
 
   const visibleTags = useMemo(() => {
     if (!product) return []
@@ -655,6 +661,11 @@ function ProductPage() {
                     </div>
                   ) : null}
                 </div>
+
+                <LivePresenceIndicator
+                  count={productPresenceCount}
+                  pageType="product"
+                />
 
                 {family && selectedProduct ? (
                   <ProductVariationSelector

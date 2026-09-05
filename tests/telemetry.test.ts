@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test"
+import { nip19 } from "@nostr-dev-kit/ndk"
 
 import {
   applyPlausibleInitOptions,
@@ -10,6 +11,7 @@ import {
   buildTelemetryEventPageContext,
   buildTelemetryPageUrl,
   constrainOfficialBrowserTelemetryConfig,
+  encodeProductNaddr,
   getConduitPostHogConfig,
   getTelemetryAmountBucket,
   getTelemetryCountBucket,
@@ -29,6 +31,12 @@ describe("browser telemetry", () => {
   const storePubkey =
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   const storeNpub = pubkeyToNpub(storePubkey)
+  const secondStorePubkey = "f".repeat(64)
+  const secondStoreNpub = pubkeyToNpub(secondStorePubkey)
+  const productAddress = `30402:${storePubkey}:testing-digital-jxwwl7`
+  const productNaddr = encodeProductNaddr(productAddress)
+  const secondProductAddress = `30402:${storePubkey}:second-product`
+  const secondProductNaddr = encodeProductNaddr(secondProductAddress)
 
   it("is disabled by default", () => {
     const config = resolveBrowserTelemetryConfig("market", {})
@@ -166,7 +174,22 @@ describe("browser telemetry", () => {
     }
   })
 
-  it("redacts dynamic route identifiers from pageview paths", () => {
+  it("keeps only canonical public commerce identifiers in pageview paths", () => {
+    expect(
+      sanitizeTelemetryPath(`/products/${encodeURIComponent(productAddress)}`)
+    ).toBe(`/products/${productNaddr}`)
+    expect(sanitizeTelemetryPath(`/products/${productNaddr}?order=abc`)).toBe(
+      `/products/${productNaddr}`
+    )
+    const hintedProductNaddr = nip19.naddrEncode({
+      identifier: "testing-digital-jxwwl7",
+      kind: 30402,
+      pubkey: storePubkey,
+      relays: ["wss://relay.example"],
+    })
+    expect(sanitizeTelemetryPath(`/products/${hintedProductNaddr}`)).toBe(
+      `/products/${productNaddr}`
+    )
     expect(
       sanitizeTelemetryPath(
         "/products/30402%3Amerchant%3Atesting-digital-jxwwl7?order=abc"
@@ -183,9 +206,30 @@ describe("browser telemetry", () => {
     expect(sanitizeTelemetryPath("/orders?order=local-secret")).toBe("/orders")
     expect(sanitizeTelemetryPath("/npub1example")).toBe("/:param")
     expect(sanitizeTelemetryPath("/lnbc123")).toBe("/:param")
+    expect(
+      sanitizeTelemetryPath(`/products/${productNaddr}/unexpected-segment`)
+    ).toBe("/products/:productId")
   })
 
   it("builds sanitized pageview urls for providers", () => {
+    expect(
+      buildTelemetryPageUrl({
+        origin: "https://shop.conduit.market/",
+        pathname: `/products/${encodeURIComponent(productAddress)}`,
+      })
+    ).toBe(`https://shop.conduit.market/products/${productNaddr}`)
+    expect(
+      buildTelemetryPageUrl({
+        origin: "https://shop.conduit.market/",
+        pathname: `/store/${storePubkey}`,
+      })
+    ).toBe(`https://shop.conduit.market/store/${storeNpub}`)
+    expect(
+      buildTelemetryPageUrl({
+        origin: "https://shop.conduit.market/",
+        pathname: `/store/${secondStorePubkey}`,
+      })
+    ).toBe(`https://shop.conduit.market/store/${secondStoreNpub}`)
     expect(
       buildTelemetryPageUrl({
         origin: "https://shop.conduit.market/",
@@ -533,7 +577,7 @@ describe("browser telemetry", () => {
       location: {
         hostname: "preview.example",
         origin: "https://preview.example",
-        pathname: "/products/first",
+        pathname: `/products/${encodeURIComponent(productAddress)}`,
       },
       plausible,
     } as unknown as Window
@@ -549,20 +593,20 @@ describe("browser telemetry", () => {
 
       recordBrowserTelemetryPageView({
         app: "market",
-        pathname: "/products/first",
+        pathname: `/products/${encodeURIComponent(productAddress)}`,
       })
       recordBrowserTelemetryPageView({
         app: "market",
-        pathname: "/products/first",
+        pathname: `/products/${encodeURIComponent(productAddress)}`,
       })
       recordBrowserTelemetryPageView({
         app: "market",
-        pathname: "/products/second",
+        pathname: `/products/${encodeURIComponent(secondProductAddress)}`,
       })
 
       expect(pageUrls).toEqual([
-        "https://preview.example/products/:productId",
-        "https://preview.example/products/:productId",
+        `https://preview.example/products/${productNaddr}`,
+        `https://preview.example/products/${secondProductNaddr}`,
       ])
     } finally {
       restoreProcessEnvValue("VITE_ENABLE_TELEMETRY", previousEnableTelemetry)

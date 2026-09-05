@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test"
+import { nip19 } from "@nostr-dev-kit/ndk"
 
 import {
   type AllowedOriginContext,
@@ -11,6 +12,7 @@ import {
   browserTelemetryEventPropertyContracts,
   type BrowserTelemetryEventName,
 } from "../packages/core/src/telemetry-contract"
+import { encodeProductNaddr } from "../packages/core/src/protocol/product-reference"
 import { sanitizeTelemetryPath } from "../packages/core/src/telemetry"
 import { pubkeyToNpub } from "../packages/core/src/utils"
 
@@ -23,6 +25,20 @@ const MERCHANT_ORIGIN_CONTEXT = {
   app: "merchant",
   origin: "https://sell.conduit.market",
 } as const satisfies AllowedOriginContext
+const PRODUCT_NADDR = encodeProductNaddr(
+  `30402:${"f".repeat(64)}:nostr-mug-blue`
+)
+const PRODUCT_PATH = `/products/${PRODUCT_NADDR}`
+const MAX_PRODUCT_NADDR = encodeProductNaddr(
+  `30402:${"f".repeat(64)}:${"x".repeat(255)}`
+)
+const MAX_PRODUCT_PATH = `/products/${MAX_PRODUCT_NADDR}`
+const RELAY_HINT_PRODUCT_PATH = `/products/${nip19.naddrEncode({
+  identifier: "nostr-mug-blue",
+  kind: 30402,
+  pubkey: "f".repeat(64),
+  relays: ["wss://relay.example"],
+})}`
 
 function makeEvent(
   overrides: Record<string, unknown> = {},
@@ -834,10 +850,41 @@ describe("PostHog reverse proxy", () => {
     const storefrontPath = sanitizeTelemetryPath(`/store/${merchantNpub}`)
     expect(storefrontPath).toBe(`/store/${merchantNpub}`)
     expect(isSanitizedTelemetryRoutePath(storefrontPath)).toBe(true)
+    expect(isSanitizedTelemetryRoutePath(PRODUCT_PATH)).toBe(true)
+    expect(isSanitizedTelemetryRoutePath(MAX_PRODUCT_PATH)).toBe(true)
     expect(isSanitizedTelemetryRoutePath("/")).toBe(true)
     expect(isSanitizedTelemetryRoutePath("/:param")).toBe(true)
     expect(isSanitizedTelemetryRoutePath("/wallet/:param")).toBe(true)
     expect(isSanitizedTelemetryRoutePath("/orders/:param")).toBe(false)
+
+    for (const noncanonicalProductPath of [
+      `/products/${PRODUCT_NADDR.toUpperCase()}`,
+      "/products/naddr1qshort",
+      `${PRODUCT_PATH}b`,
+      `${PRODUCT_PATH.slice(0, -1)}${PRODUCT_PATH.endsWith("q") ? "p" : "q"}`,
+      `/products/naddr1q${"q".repeat(74)}`,
+      RELAY_HINT_PRODUCT_PATH,
+    ]) {
+      expect(isSanitizedTelemetryRoutePath(noncanonicalProductPath)).toBe(false)
+    }
+
+    for (const canonicalProductPath of [PRODUCT_PATH, MAX_PRODUCT_PATH]) {
+      const canonicalProductEvent = rebuildPostHogIngestPayload(
+        encode(
+          makeEvent(
+            {},
+            {
+              page_path: canonicalProductPath,
+              page_url: `https://shop.conduit.market${canonicalProductPath}`,
+            }
+          )
+        )
+      )
+      expect(canonicalProductEvent.ok).toBe(true)
+      if (canonicalProductEvent.ok) {
+        expect(canonicalProductEvent.events).toHaveLength(1)
+      }
+    }
 
     for (const noncanonicalUrl of [
       "https://shop.conduit.market/private-order/../products",
