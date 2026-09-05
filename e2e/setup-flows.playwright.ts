@@ -493,6 +493,41 @@ test("Merchant Network repairs a signed-empty private inbox through the isolated
   await exerciseNetworkInboxDeclaration(page, merchantUrl, "empty")
 })
 
+test("merchant product authoring warns about missing Lightning setup without blocking publication @merchant", async ({
+  page,
+}) => {
+  const secretKey = generateSecretKey()
+  const merchantPubkey = getPublicKey(secretKey)
+  await seedTestRelayIdentity(secretKey)
+  await installTestSigner(page, merchantPubkey, { secretKey })
+  await page.goto(`${merchantUrl}/products`)
+  await page.getByRole("button", { name: "Add product" }).first().click()
+
+  const dialog = page.getByRole("dialog", { name: "Add product" })
+  await expect(
+    dialog.getByText("Lightning payments are not set up", { exact: true })
+  ).toBeVisible({ timeout: 15_000 })
+  await expect(
+    dialog.getByRole("link", { name: "Set up payments", exact: true })
+  ).toHaveAttribute("href", "/payments")
+
+  await dialog.getByLabel("Title").fill("Manual payment product")
+  await dialog.getByLabel("Price").fill("1")
+  await dialog.locator("#product-fulfillment").click()
+  await page.getByRole("option", { name: "Digital", exact: true }).click()
+  await dialog
+    .getByLabel("Image URL")
+    .fill("https://media.conduit.market/manual-payment-product.png")
+  const tags = dialog.getByRole("combobox", { name: "Tags" })
+  for (const tag of ["manual", "payment", "demo"]) {
+    await tags.fill(tag)
+    await tags.press("Enter")
+  }
+  await expect(
+    dialog.getByRole("button", { name: "Publish product", exact: true })
+  ).toBeEnabled()
+})
+
 test("merchant product tags suggest the loaded catalog without blocking freeform entry @merchant", async ({
   browser,
 }) => {

@@ -37,6 +37,7 @@ import {
   getProductSignerRequestMessage,
   type ProductSignerRequestProgress,
 } from "../lib/product-publishing"
+import { ProductPaymentSetupNotice } from "./ProductPaymentSetupNotice"
 
 const BLANK_TEMPLATE = "__blank__"
 
@@ -180,6 +181,11 @@ export function EventProductPublisherDialog({
             existing products. The original listing is never changed.
           </DialogDescription>
         </DialogHeader>
+
+        <ProductPaymentSetupNotice
+          merchantPubkey={merchantPubkey}
+          enabled={open}
+        />
 
         <form
           className="grid gap-4"
