@@ -109,6 +109,9 @@ export function createConduitBuildContract(appDir: string): {
         ? "true"
         : "false"
     ),
+    "import.meta.env.VITE_CONDUIT_RELAY_PROMPT": JSON.stringify(
+      profile.publicFeatures.conduitRelayPromptEnabled ? "true" : "false"
+    ),
     "import.meta.env.VITE_LIGHTNING_NETWORK": JSON.stringify(
       profile.lightningNetwork
     ),

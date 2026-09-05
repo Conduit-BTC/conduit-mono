@@ -6,6 +6,7 @@ export type DeploymentProfileName = "preview" | "production" | "staging"
 
 export interface PublicDeploymentFeatures {
   dmCompatibilityOrderRoutingEnabled: boolean
+  conduitRelayPromptEnabled: boolean
 }
 
 export interface PublicDeploymentProfile {
@@ -86,6 +87,11 @@ function assertProfile(
       `Deployment profile ${name} must explicitly set dmCompatibilityOrderRoutingEnabled.`
     )
   }
+  if (typeof value.publicFeatures.conduitRelayPromptEnabled !== "boolean") {
+    throw new Error(
+      `Deployment profile ${name} must explicitly set conduitRelayPromptEnabled.`
+    )
+  }
 }
 
 export function parsePagesProfiles(value: unknown): PagesProfilesFile {
@@ -147,6 +153,9 @@ export function resolveDeploymentProfile(
       publicFeatures: {
         dmCompatibilityOrderRoutingEnabled: ["1", "true", "on"].includes(
           env.VITE_DM_BOOTSTRAP_WRITES?.trim().toLowerCase() ?? ""
+        ),
+        conduitRelayPromptEnabled: ["1", "true", "on"].includes(
+          env.VITE_CONDUIT_RELAY_PROMPT?.trim().toLowerCase() ?? ""
         ),
       },
     }

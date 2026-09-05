@@ -940,6 +940,96 @@ function NetworkHeader() {
   )
 }
 
+function ConduitRelayPrompt({
+  controller,
+  review,
+}: {
+  controller: AccountNetworkSettingsController
+  review: RelaySettingsReview
+}) {
+  const [dismissed, setDismissed] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const recommendation = controller.view.conduitRelayPrompt
+  const hasUnpublishedCandidate = review.rows.some(
+    (row) => !controller.view.rows.some((current) => current.url === row.url)
+  )
+  if (!recommendation || dismissed || review.dirty || hasUnpublishedCandidate) {
+    return null
+  }
+  const busy = operationIsBusy(controller.operation.phase)
+  const missingRoleLabels = recommendation.missingRoles.map(roleLabel)
+  const missingRoles =
+    missingRoleLabels.length === 1
+      ? missingRoleLabels[0]
+      : missingRoleLabels.length === 2
+        ? `${missingRoleLabels[0]} and ${missingRoleLabels[1]}`
+        : `${missingRoleLabels.slice(0, -1).join(", ")}, and ${missingRoleLabels.at(-1)}`
+
+  async function accept(): Promise<void> {
+    setError(null)
+    try {
+      await controller.addConduitRelay()
+      setDismissed(true)
+    } catch (nextError) {
+      setError(
+        nextError instanceof Error
+          ? nextError.message
+          : "The Conduit relay could not be added."
+      )
+    }
+  }
+
+  return (
+    <section
+      aria-labelledby="conduit-relay-prompt-heading"
+      className="rounded-2xl border border-primary-500/50 bg-[var(--surface)] p-4"
+    >
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2
+            id="conduit-relay-prompt-heading"
+            className="text-balance text-lg font-semibold text-[var(--text-primary)]"
+          >
+            Add the Conduit relay?
+          </h2>
+          <p className="mt-1 max-w-2xl text-pretty text-sm leading-6 text-[var(--text-secondary)]">
+            Add{" "}
+            <span className="break-all font-mono">
+              {recommendation.relayUrl}
+            </span>{" "}
+            for {missingRoles}. Your existing relays and their order stay
+            unchanged. This requires {recommendation.changedKindCount} signer{" "}
+            {recommendation.changedKindCount === 1 ? "request" : "requests"}.
+          </p>
+        </div>
+        <div className="flex shrink-0 flex-wrap gap-2">
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={busy}
+            onClick={() => {
+              setDismissed(true)
+              setError(null)
+              controller.clearOperation()
+            }}
+          >
+            Dismiss
+          </Button>
+          <Button type="button" disabled={busy} onClick={() => void accept()}>
+            <Plus className="size-4" aria-hidden="true" />
+            Add the Conduit relay
+          </Button>
+        </div>
+      </div>
+      {error ? (
+        <p role="alert" className="mt-3 text-pretty text-sm text-error">
+          {error}
+        </p>
+      ) : null}
+    </section>
+  )
+}
+
 function LegacyInboxRecoverySection({
   controller,
   busy,
@@ -1211,6 +1301,7 @@ function RelaySettingsPanelContent({
       <div className="space-y-6">
         <NetworkHeader />
         <ReconciliationSummary controller={controller} />
+        <ConduitRelayPrompt controller={controller} review={review} />
         <PendingUpdateSummary controller={controller} />
         <LegacyInboxRecoverySection
           controller={controller}

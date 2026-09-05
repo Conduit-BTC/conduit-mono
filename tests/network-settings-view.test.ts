@@ -1,10 +1,12 @@
 import { describe, expect, it } from "bun:test"
 import {
   buildAccountNetworkSettingsView,
+  CANONICAL_CONDUIT_RELAY_URL,
   countAccountNetworkChangedKinds,
   getAccountNetworkRemovalInstruction,
   orderAccountNetworkRelayRows,
   prepareAccountNetworkSetRolesAction,
+  prepareConduitRelayRecommendation,
   validateAccountNetworkDesiredRoles,
   type AccountNetworkPreferenceUpdateRecord,
   type AccountNetworkPreferencesReconciliation,
@@ -140,11 +142,29 @@ function reconciliation(
     ownerRelayList: {
       state: "declared",
       stale: false,
+      preferences: [
+        {
+          url: "wss://removed.example",
+          readEnabled: true,
+          writeEnabled: true,
+        },
+        {
+          url: "wss://first.example",
+          readEnabled: true,
+          writeEnabled: true,
+        },
+        {
+          url: "wss://second.example",
+          readEnabled: true,
+          writeEnabled: true,
+        },
+      ],
       lookup: { coverage: "complete" },
     },
     inboxDeclaration: {
       state: "declared",
       stale: false,
+      relayUrls: ["wss://removed.example", "wss://first.example"],
       observation: { coverage: "complete" },
     },
     legacyMigration: "not_applicable",
@@ -663,5 +683,173 @@ describe("account Network settings view", () => {
     const preparedBoth = prepareAccountNetworkSetRolesAction(exact, both)
     expect(preparedBoth.changedKindCount).toBe(2)
     expect(countAccountNetworkChangedKinds(baseline, both)).toBe(2)
+  })
+
+  it("keeps the Conduit recommendation off by default", () => {
+    const view = buildAccountNetworkSettingsView({
+      accountPubkey: "a".repeat(64),
+      status: "ready",
+      reconciliation: reconciliation(null),
+      error: null,
+    })
+
+    expect(view.conduitRelayPrompt).toBeNull()
+  })
+
+  it("adds only missing Conduit roles while preserving both signed orders", () => {
+    const exact = reconciliation(null)
+    exact.ownerRelayList.preferences = [
+      {
+        url: "wss://second.example",
+        readEnabled: true,
+        writeEnabled: false,
+      },
+      {
+        url: CANONICAL_CONDUIT_RELAY_URL,
+        readEnabled: true,
+        writeEnabled: false,
+      },
+      {
+        url: "wss://first.example",
+        readEnabled: true,
+        writeEnabled: true,
+      },
+    ]
+    exact.inboxDeclaration.relayUrls = [
+      "wss://first.example",
+      "wss://second.example",
+    ]
+
+    const prepared = prepareConduitRelayRecommendation(exact)
+
+    expect(prepared?.missingRoles).toEqual(["publish", "private_inbox"])
+    expect(prepared?.changedKindCount).toBe(2)
+    expect(prepared?.action.nip65Preferences).toEqual([
+      {
+        url: "wss://second.example",
+        readEnabled: true,
+        writeEnabled: false,
+      },
+      {
+        url: CANONICAL_CONDUIT_RELAY_URL,
+        readEnabled: true,
+        writeEnabled: true,
+      },
+      {
+        url: "wss://first.example",
+        readEnabled: true,
+        writeEnabled: true,
+      },
+    ])
+    expect(prepared?.action.inboxRelayUrls).toEqual([
+      "wss://first.example",
+      "wss://second.example",
+      CANONICAL_CONDUIT_RELAY_URL,
+    ])
+
+    const view = buildAccountNetworkSettingsView({
+      accountPubkey: "a".repeat(64),
+      status: "ready",
+      reconciliation: exact,
+      error: null,
+      conduitRelayPromptEnabled: true,
+    })
+    expect(view.conduitRelayPrompt).toEqual({
+      relayUrl: CANONICAL_CONDUIT_RELAY_URL,
+      missingRoles: ["publish", "private_inbox"],
+      changedKindCount: 2,
+    })
+  })
+
+  it("uses one changed signed object when Conduit is already an inbox relay", () => {
+    const exact = reconciliation(null)
+    exact.ownerRelayList.preferences = [
+      {
+        url: "wss://first.example",
+        readEnabled: true,
+        writeEnabled: true,
+      },
+      {
+        url: "wss://second.example",
+        readEnabled: true,
+        writeEnabled: false,
+      },
+    ]
+    exact.inboxDeclaration.relayUrls = [
+      "wss://first.example",
+      CANONICAL_CONDUIT_RELAY_URL,
+    ]
+
+    const prepared = prepareConduitRelayRecommendation(exact)
+
+    expect(prepared?.missingRoles).toEqual(["read", "publish"])
+    expect(prepared?.changedKindCount).toBe(1)
+    expect(prepared?.action.inboxRelayUrls).toEqual([
+      "wss://first.example",
+      CANONICAL_CONDUIT_RELAY_URL,
+    ])
+    expect(prepared?.action.nip65Preferences.at(-1)).toEqual({
+      url: CANONICAL_CONDUIT_RELAY_URL,
+      readEnabled: true,
+      writeEnabled: true,
+    })
+  })
+
+  it("does not recommend a fully configured relay or evict a full inbox", () => {
+    const fullyConfigured = reconciliation(null)
+    fullyConfigured.ownerRelayList.preferences.push({
+      url: CANONICAL_CONDUIT_RELAY_URL,
+      readEnabled: true,
+      writeEnabled: true,
+    })
+    fullyConfigured.inboxDeclaration.relayUrls.push(CANONICAL_CONDUIT_RELAY_URL)
+    expect(prepareConduitRelayRecommendation(fullyConfigured)).toBeNull()
+
+    const fullInbox = reconciliation(null)
+    fullInbox.inboxDeclaration.relayUrls = [
+      "wss://one.example",
+      "wss://two.example",
+      "wss://three.example",
+    ]
+    expect(prepareConduitRelayRecommendation(fullInbox)).toBeNull()
+    const view = buildAccountNetworkSettingsView({
+      accountPubkey: "a".repeat(64),
+      status: "ready",
+      reconciliation: fullInbox,
+      error: null,
+      conduitRelayPromptEnabled: true,
+    })
+    expect(view.conduitRelayPrompt).toBeNull()
+  })
+
+  it("waits for complete fresh reconciliation before offering the prompt", () => {
+    const partial = reconciliation(null)
+    partial.ownerRelayList.lookup.coverage = "partial"
+    partial.ownerRelayList.stale = true
+
+    const view = buildAccountNetworkSettingsView({
+      accountPubkey: "a".repeat(64),
+      status: "ready",
+      reconciliation: partial,
+      error: null,
+      conduitRelayPromptEnabled: true,
+    })
+
+    expect(view.conduitRelayPrompt).toBeNull()
+
+    const distributing = reconciliation(null)
+    distributing.inboxDeclaration.state = "distribution_pending"
+    distributing.inboxDeclaration.pendingRelayUrls = ["wss://first.example"]
+    distributing.inboxDeclaration.relayUrls = []
+
+    const distributingView = buildAccountNetworkSettingsView({
+      accountPubkey: "a".repeat(64),
+      status: "ready",
+      reconciliation: distributing,
+      error: null,
+      conduitRelayPromptEnabled: true,
+    })
+
+    expect(distributingView.conduitRelayPrompt).toBeNull()
   })
 })

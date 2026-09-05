@@ -8,7 +8,7 @@ import {
 } from "../scripts/vite/deployment_profile"
 
 describe("deployment profiles", () => {
-  it("enables compatibility order routing in preview only", () => {
+  it("enables compatibility order routing in preview and keeps the relay prompt off", () => {
     const preview = resolveDeploymentProfile({
       CONDUIT_DEPLOYMENT_PROFILE: "preview",
     })
@@ -26,6 +26,14 @@ describe("deployment profiles", () => {
     expect(staging.publicFeatures.dmCompatibilityOrderRoutingEnabled).toBe(
       false
     )
+    expect(preview.publicFeatures.conduitRelayPromptEnabled).toBe(false)
+    expect(production.publicFeatures.conduitRelayPromptEnabled).toBe(false)
+    expect(staging.publicFeatures.conduitRelayPromptEnabled).toBe(false)
+
+    const explicitLocal = resolveDeploymentProfile({
+      VITE_CONDUIT_RELAY_PROMPT: "true",
+    })
+    expect(explicitLocal.publicFeatures.conduitRelayPromptEnabled).toBe(true)
   })
 
   it("selects Cloudflare preview and production without dashboard feature vars", () => {
@@ -63,6 +71,15 @@ describe("deployment profiles", () => {
       "must explicitly set dmCompatibilityOrderRoutingEnabled"
     )
 
+    const missingPrompt = structuredClone(profiles) as unknown as {
+      profiles: { preview: { publicFeatures: Record<string, unknown> } }
+    }
+    delete missingPrompt.profiles.preview.publicFeatures
+      .conduitRelayPromptEnabled
+    expect(() => parsePagesProfiles(missingPrompt)).toThrow(
+      "must explicitly set conduitRelayPromptEnabled"
+    )
+
     const explicitFalse = structuredClone(profiles)
     explicitFalse.profiles.preview.publicFeatures.dmCompatibilityOrderRoutingEnabled = false
     expect(
@@ -88,6 +105,7 @@ describe("deployment profiles", () => {
     expect(manifest.publicFeatures.dmCompatibilityOrderRoutingEnabled).toBe(
       true
     )
+    expect(manifest.publicFeatures.conduitRelayPromptEnabled).toBe(false)
     expect(manifest.publicConfigDigest).toBe(profile.configDigest)
     expect(Object.keys(manifest).sort()).toEqual([
       "app",
@@ -118,6 +136,9 @@ describe("deployment profiles", () => {
     )
     expect(workflow).toContain(
       "manifest.publicFeatures?.dmCompatibilityOrderRoutingEnabled !== true"
+    )
+    expect(workflow).toContain(
+      "manifest.publicFeatures?.conduitRelayPromptEnabled !== false"
     )
     expect(workflow).toContain("throw new Error(")
   })

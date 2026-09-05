@@ -17,6 +17,7 @@ import {
   buildAccountNetworkSettingsView,
   createCandidateNetworkRelayRow,
   prepareAccountNetworkSetRolesAction,
+  prepareConduitRelayRecommendation,
   validateAccountNetworkDesiredRoles,
   type AccountNetworkDesiredRelayRoles,
   type AccountNetworkRelayRowView,
@@ -62,7 +63,7 @@ export type AccountNetworkSettingsOperationPhase =
   | "error"
 
 export type AccountNetworkSettingsOperationKind =
-  "save" | "remove" | "retry" | "redistribute" | null
+  "save" | "remove" | "conduit_relay" | "retry" | "redistribute" | null
 
 export interface AccountNetworkSettingsOperationView {
   kind: AccountNetworkSettingsOperationKind
@@ -90,6 +91,7 @@ export interface AccountNetworkSettingsController {
     row: AccountNetworkRelayRowView
   ) => Promise<AccountNetworkRelayRowView>
   save: (rows: readonly AccountNetworkDesiredRelayRoles[]) => Promise<void>
+  addConduitRelay: () => Promise<void>
   removeRelay: (relayUrl: string) => Promise<void>
   retryPendingUpdate: () => Promise<void>
   redistributeExactInboxDeclaration: () => Promise<void>
@@ -299,7 +301,7 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
 
   const runUpdate = useCallback(
     async (
-      kind: "save" | "remove",
+      kind: "save" | "remove" | "conduit_relay",
       action: Parameters<
         typeof publishAccountNetworkPreferenceUpdate
       >[0]["action"]
@@ -379,6 +381,20 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
     },
     [runUpdate]
   )
+
+  const addConduitRelay = useCallback(async () => {
+    const reconciliation = accountPreferences.reconciliation
+    if (!view.conduitRelayPrompt || !reconciliation) {
+      throw new Error("The Conduit relay prompt is not currently available.")
+    }
+    const prepared = prepareConduitRelayRecommendation(reconciliation)
+    if (!prepared) {
+      throw new Error(
+        "The current signed preferences no longer need this recommendation."
+      )
+    }
+    await runUpdate("conduit_relay", prepared.action)
+  }, [accountPreferences.reconciliation, runUpdate, view.conduitRelayPrompt])
 
   const retryPendingUpdate = useCallback(async () => {
     const snapshot = captureAuth()
@@ -559,6 +575,7 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
     addRelay,
     refreshRelay,
     save,
+    addConduitRelay,
     removeRelay,
     retryPendingUpdate,
     redistributeExactInboxDeclaration,
