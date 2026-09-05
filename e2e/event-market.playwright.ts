@@ -826,6 +826,9 @@ async function publishMerchantProductFromEvent(
     name: `Publish a product to ${options.eventTitle}`,
   })
   await expect(editor).toBeVisible()
+  await expect(
+    editor.getByText("Lightning payments are not set up", { exact: true })
+  ).toBeVisible({ timeout: 15_000 })
   const templateSelector = editor.getByLabel("Start from")
   if (options.templateTitle) {
     await templateSelector.click()

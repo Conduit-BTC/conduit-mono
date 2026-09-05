@@ -5,6 +5,7 @@ import {
   fetchMerchantTrustSocialSummary,
   formatNpub,
   getProfileDisplayLabel,
+  isCommerceReadIncomplete,
   normalizePubkey,
   subscribeRelaySettingsChanges,
   useConduitSession,
@@ -12,6 +13,10 @@ import {
   type MerchantTrustSocialSummary,
   type Profile,
 } from "@conduit/core"
+import {
+  getMerchantPaymentProfileState,
+  type MerchantPaymentProfileState,
+} from "../lib/merchant-payment-readiness"
 
 type ProfileState = "idle" | "loading" | "available" | "limited"
 type SocialState =
@@ -25,7 +30,9 @@ type SocialState =
 export type MerchantTrustContext = MerchantTrustSocialSummary & {
   merchantPubkey: string | null
   profile: Profile | undefined
+  profileEvidenceLud16: string | undefined
   profileState: ProfileState
+  profileEvidenceState: MerchantPaymentProfileState
   socialState: SocialState
   /** Desired state of an exact signed update awaiting an unambiguous ACK. */
   pendingViewerFollowsMerchant: boolean | null
@@ -49,10 +56,12 @@ export function useMerchantTrustContext({
   merchantPubkey,
   listingCount,
   profileRelayHints,
+  requireCompleteProfileEvidence = false,
 }: {
   merchantPubkey: string | null | undefined
   listingCount?: number
   profileRelayHints?: string[]
+  requireCompleteProfileEvidence?: boolean
 }): MerchantTrustContext {
   const session = useConduitSession()
   const queryClient = useQueryClient()
@@ -63,6 +72,7 @@ export function useMerchantTrustContext({
       viewerPubkey
     ),
     relayHints: profileRelayHints,
+    requireCompleteEvidence: requireCompleteProfileEvidence,
     refetchUnresolvedMs: 2_000,
     maxUnresolvedRefetches: 2,
   })
@@ -137,6 +147,16 @@ export function useMerchantTrustContext({
         ? "loading"
         : "limited"
 
+  const profileEvidenceState = merchantPubkey
+    ? getMerchantPaymentProfileState({
+        isLoading: profileQuery.isLoading,
+        isFetching: profileQuery.isFetching,
+        lookupSettled: profileQuery.lookupSettled,
+        evidenceIncomplete: isCommerceReadIncomplete(profileQuery.meta),
+        error: profileQuery.error,
+      })
+    : "unavailable"
+
   const socialState: SocialState = !merchantPubkey
     ? "unavailable"
     : !viewerPubkey
@@ -165,7 +185,9 @@ export function useMerchantTrustContext({
   return {
     merchantPubkey: merchantPubkey ?? null,
     profile,
+    profileEvidenceLud16: profileQuery.evidenceData?.lud16,
     profileState,
+    profileEvidenceState,
     socialState,
     merchantName,
     merchantNamePending,

@@ -26,9 +26,11 @@ import {
   getWalletDisplayLabels,
   getWalletNetworkFromLightningConfig,
   getAuthSignerReadiness,
+  getProfiles,
   getTelemetryAmountBucket,
   getTelemetryCountBucket,
   hasWebLN,
+  isCommerceReadIncomplete,
   getNdk,
   getShippingOptionsByCoordinates,
   normalizePubkey,
@@ -83,6 +85,7 @@ import {
   PaymentTargetSelectValue,
 } from "../components/PaymentTargetSelectContent"
 import { CheckoutAvailabilityNotice } from "../components/CheckoutAvailabilityNotice"
+import { CheckoutMerchantPaymentNotice } from "../components/CheckoutMerchantPaymentNotice"
 import { SignerSwitch } from "../components/SignerSwitch"
 import { type CartItem, useCart } from "../hooks/useCart"
 import {
@@ -134,6 +137,7 @@ import {
   getFastCheckoutUnavailableReasons,
   getShippingCheckoutState,
   getShippingStepBlockingMessage,
+  getCheckoutEvidenceCheckingLabel,
   getShippingPhoneDescribedBy,
   getShippingRegionRequirement,
   getValidationErrorFields,
@@ -152,6 +156,11 @@ import {
   type ShippingCheckoutState,
   type ShippingValidationError,
 } from "../lib/checkout-validation"
+import {
+  getMerchantPaymentLud16,
+  getMerchantPaymentProfileState,
+  getMerchantPaymentReadiness,
+} from "../lib/merchant-payment-readiness"
 import {
   clearCheckoutShippingSession,
   DEFAULT_CHECKOUT_SHIPPING,
@@ -1357,11 +1366,14 @@ function CheckoutPage() {
   }
   const checkoutAvailabilityMessage =
     selectedMerchantReadiness?.blockingMessage ?? null
-  const checkoutEvidenceIsChecking =
-    checkoutAvailability.isChecking ||
-    checkoutEventFulfillment.isChecking ||
-    (pickupHandoff?.mode === "organizer_handoff" &&
-      (organizerInboxQuery.isLoading || organizerInboxQuery.isFetching))
+  const checkoutEvidenceCheckingLabel = getCheckoutEvidenceCheckingLabel({
+    availabilityChecking: checkoutAvailability.isChecking,
+    eventPickupChecking: checkoutEventFulfillment.isChecking,
+    organizerInboxChecking:
+      pickupHandoff?.mode === "organizer_handoff" &&
+      (organizerInboxQuery.isLoading || organizerInboxQuery.isFetching),
+  })
+  const checkoutEvidenceIsChecking = checkoutEvidenceCheckingLabel !== null
   const hasUnavailableCheckoutItems = checkoutAvailabilityMessage !== null
   const checkoutAvailabilityVerified =
     checkoutAvailability.readDecision.status === "verified_at_read"
@@ -1443,9 +1455,13 @@ function CheckoutPage() {
   const hasUnpricedCheckoutItems = pricingPreview.status !== "ok"
   const merchantTrust = useMerchantTrustContext({
     merchantPubkey: selectedMerchant ?? null,
+    requireCompleteProfileEvidence: true,
   })
   const merchantProfile = merchantTrust.profile
-  const merchantLud16 = merchantProfile?.lud16
+  const merchantLud16 = getMerchantPaymentLud16({
+    profileState: merchantTrust.profileEvidenceState,
+    lud16: merchantTrust.profileEvidenceLud16,
+  })
   // Shared LNURL-pay metadata preflight: the same cached read the HUD and
   // cart warmed while this merchant had items in the cart. The lease and
   // Lightning-address key control refresh; no invoice is requested here.
@@ -1455,6 +1471,12 @@ function CheckoutPage() {
   const lnurlPayAvailable = lnurlPreflight.status === "ready"
   const lnurlPayMetadata = lnurlPreflight.metadata
   const lnurlAllowsNostr = lnurlPayMetadata?.allowsNostr === true
+  const merchantPaymentReadiness = getMerchantPaymentReadiness({
+    paymentRequired,
+    profileState: merchantTrust.profileEvidenceState,
+    lud16: merchantLud16,
+    lnurlStatus: lnurlPreflight.status,
+  })
   const guestZapMode: CheckoutZapMode =
     !isPickupCheckout &&
     anonZapSignerAvailable &&
@@ -1712,7 +1734,9 @@ function CheckoutPage() {
   const fastEligibilityInput = {
     walletPayCapable: !isGuestCheckout && canAttemptLightningPayment,
     merchantLud16,
-    merchantProfileUnavailable: merchantTrust.profileState === "limited",
+    merchantProfileLoading: merchantTrust.profileEvidenceState === "loading",
+    merchantProfileUnavailable:
+      merchantTrust.profileEvidenceState === "unavailable",
     lnurlAllowsNostr: lnurlReadyForSelectedPayment,
     lnurlAmountWithinRange: lnurlAmountReady,
     requiresNostrZap: requiresPublicZap,
@@ -2586,6 +2610,26 @@ function CheckoutPage() {
     const webLnAvailableNow = hasWebLN()
     if (webLnAvailableNow !== weblnAvailable)
       setWeblnAvailable(webLnAvailableNow)
+    if (merchantTrust.profileEvidenceState !== "available") {
+      recordCheckoutStepResult({
+        checkoutMode: requestedCheckoutMode,
+        rail: "lightning",
+        status: "blocked",
+        stepName: "direct_payment",
+      })
+      recordCheckoutResult({
+        amountSats: total,
+        checkoutMode: requestedCheckoutMode,
+        rail: "lightning",
+        status: "blocked",
+      })
+      setError(
+        merchantTrust.profileEvidenceState === "loading"
+          ? "Wait while Conduit checks the merchant payment profile. You can still send the order first."
+          : "The merchant payment profile could not be confirmed from relays. You can still send the order first."
+      )
+      return
+    }
     if (!merchantLud16) {
       recordCheckoutStepResult({
         checkoutMode: requestedCheckoutMode,
@@ -2648,7 +2692,40 @@ function CheckoutPage() {
 
       const checkoutMode = requestedCheckoutMode
       const requiresPublicZap = isCheckoutPublicZapMode(checkoutMode)
-      const currentLnurlMetadata = await getFreshLnurlMetadata(merchantLud16)
+      const refreshedProfileResult = await getProfiles({
+        pubkeys: [selectedMerchant],
+        authenticatedPubkey:
+          selectedMerchant === signedBuyerPubkey
+            ? signedBuyerPubkey
+            : undefined,
+        skipCache: true,
+        requireCompleteEvidence: true,
+        priority: "visible",
+      })
+      const refreshedProfileState = getMerchantPaymentProfileState({
+        isLoading: false,
+        isFetching: false,
+        lookupSettled: true,
+        evidenceIncomplete: isCommerceReadIncomplete(
+          refreshedProfileResult.meta
+        ),
+      })
+      const currentMerchantLud16 = getMerchantPaymentLud16({
+        profileState: refreshedProfileState,
+        lud16: refreshedProfileResult.data[selectedMerchant]?.lud16,
+      })
+      if (refreshedProfileState !== "available") {
+        throw new Error(
+          "The merchant payment profile could not be confirmed from relays. You can still send the order first."
+        )
+      }
+      if (!currentMerchantLud16) {
+        throw new Error(
+          "The merchant's current profile does not include a Lightning address. You can still send the order first."
+        )
+      }
+      const currentLnurlMetadata =
+        await getFreshLnurlMetadata(currentMerchantLud16)
       const freshPricingRate = await getFreshPricingRateInput(checkoutItems)
       const authoritativeCheckoutItems = await assertCheckoutItemsAvailable(
         requestedCheckoutMode,
@@ -2840,7 +2917,7 @@ function CheckoutPage() {
             ? checkoutMode
             : "external_wallet",
         publicZapSigner: getCheckoutPublicZapSigner(checkoutMode) ?? undefined,
-        merchantLightningAddress: merchantLud16,
+        merchantLightningAddress: currentMerchantLud16,
         paymentTarget: storedPaymentTarget,
         items: buildLifecycleItems(checkoutPricing.items),
         itemSubtotalSats: checkoutPricing.itemSubtotalSats,
@@ -2900,7 +2977,7 @@ function CheckoutPage() {
         buyerPubkey,
         buyerIdentity: guestIdentity ?? undefined,
         merchantPubkey: selectedMerchant,
-        merchantLud16,
+        merchantLud16: currentMerchantLud16,
         zapMode: checkoutMode,
         zapContent: effectiveZapContent,
         totalSats: checkoutPricing.totalSats,
@@ -3019,7 +3096,7 @@ function CheckoutPage() {
   const autoZapInputsResolving = isFastCheckoutInputPending({
     authPending,
     walletConnecting: wallets.loading || wallet.status === "connecting",
-    merchantProfileLoading: merchantTrust.profileState === "loading",
+    merchantProfileLoading: merchantTrust.profileEvidenceState === "loading",
     lnurlProbing,
     privateZapFallbackPending:
       !isGuestCheckout &&
@@ -3865,6 +3942,11 @@ function CheckoutPage() {
                     </div>
                   ) : null}
 
+                  <CheckoutMerchantPaymentNotice
+                    state={merchantPaymentReadiness}
+                    isGuestCheckout={isGuestCheckout}
+                  />
+
                   <Button
                     className="mt-2 h-11 w-full text-sm"
                     disabled={
@@ -3874,8 +3956,8 @@ function CheckoutPage() {
                     }
                     onClick={continueToPayment}
                   >
-                    {checkoutEvidenceIsChecking
-                      ? "Checking fulfillment"
+                    {checkoutEvidenceCheckingLabel
+                      ? checkoutEvidenceCheckingLabel
                       : fulfillmentBlockingMessage
                         ? "Review cart fulfillment"
                         : hasUnavailableCheckoutItems
@@ -4121,14 +4203,10 @@ function CheckoutPage() {
 
               <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
                 {/* Zap out banner */}
-                {paymentRequired && lnurlProbing && (
-                  <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-5">
-                    <div className="flex items-center gap-2 text-sm text-[var(--text-muted)]">
-                      <SpinnerIcon className="h-4 w-4 animate-spin" />
-                      Checking merchant payment capabilities...
-                    </div>
-                  </div>
-                )}
+                <CheckoutMerchantPaymentNotice
+                  state={merchantPaymentReadiness}
+                  isGuestCheckout={isGuestCheckout}
+                />
 
                 {paymentRequired &&
                   !lnurlProbing &&
@@ -4466,8 +4544,8 @@ function CheckoutPage() {
                         onClick={placeOrder}
                       >
                         <OrderIcon className="h-4 w-4" />
-                        {checkoutEvidenceIsChecking
-                          ? "Checking fulfillment"
+                        {checkoutEvidenceCheckingLabel
+                          ? checkoutEvidenceCheckingLabel
                           : "Send order"}
                       </Button>
                     ) : !guestManualInvoiceEligible ? (
@@ -4505,8 +4583,8 @@ function CheckoutPage() {
                       onClick={placeOrder}
                     >
                       <OrderIcon className="h-4 w-4" />
-                      {checkoutEvidenceIsChecking
-                        ? "Checking fulfillment"
+                      {checkoutEvidenceCheckingLabel
+                        ? checkoutEvidenceCheckingLabel
                         : hasUnavailableCheckoutItems
                           ? "Update cart quantities"
                           : hasUnpricedCheckoutItems

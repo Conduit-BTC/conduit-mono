@@ -577,6 +577,14 @@ describe("isFastCheckoutEligible", () => {
       getFastCheckoutUnavailableReasons({
         walletPayCapable: true,
         merchantLud16: undefined,
+        merchantProfileLoading: true,
+        lnurlAllowsNostr: false,
+      })
+    ).toEqual(["Checking merchant payment setup."])
+    expect(
+      getFastCheckoutUnavailableReasons({
+        walletPayCapable: true,
+        merchantLud16: undefined,
         merchantProfileUnavailable: true,
         lnurlAllowsNostr: false,
       })

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import {
   AlertCircle,
   Check,
@@ -10,8 +10,10 @@ import {
 } from "lucide-react"
 import { createFileRoute } from "@tanstack/react-router"
 import {
+  isCommerceReadIncomplete,
   normalizePublicMediaUrl,
   pubkeyToNpub,
+  reconcileProfileFormDraft,
   useAuth,
   useProfile,
   useUpdateProfile,
@@ -62,19 +64,42 @@ function RequiredMark() {
 
 function ProfilePage() {
   const { pubkey } = useAuth()
-  const profileQuery = useProfile(pubkey, { authenticatedPubkey: pubkey })
+  const profileQuery = useProfile(pubkey, {
+    authenticatedPubkey: pubkey,
+    requireCompleteEvidence: true,
+    maxUnresolvedRefetches: 2,
+  })
   const updateMutation = useUpdateProfile("merchant")
-  const [editing, setEditing] = useState(false)
+  const [editingPubkey, setEditingPubkey] = useState<string | null>(null)
   const [form, setForm] = useState<ProfileFormValues>(EMPTY_PROFILE_FORM)
+  const editBaselineRef = useRef<ProfileFormValues | null>(null)
   const [copiedPubkey, setCopiedPubkey] = useState(false)
   const [copiedStoreLink, setCopiedStoreLink] = useState(false)
   const [profileSaveSucceeded, setProfileSaveSucceeded] = useState(false)
+  const editing = !!pubkey && editingPubkey === pubkey
 
   useEffect(() => {
-    if (profileQuery.data) {
-      setForm(profileToFormValues(profileQuery.data))
-    }
-  }, [profileQuery.data])
+    if (editingPubkey === null || editingPubkey === pubkey) return
+    setEditingPubkey(null)
+    editBaselineRef.current = null
+    setForm(EMPTY_PROFILE_FORM)
+    setProfileSaveSucceeded(false)
+  }, [editingPubkey, pubkey])
+
+  useEffect(() => {
+    if (editing || !profileQuery.data) return
+    setForm(profileToFormValues(profileQuery.data))
+  }, [editing, profileQuery.data])
+
+  useEffect(() => {
+    if (!editing || !profileQuery.data) return
+    const latest = profileToFormValues(profileQuery.data)
+    const baseline = editBaselineRef.current
+    setForm((draft) =>
+      baseline ? reconcileProfileFormDraft(draft, baseline, latest) : latest
+    )
+    editBaselineRef.current = latest
+  }, [editing, profileQuery.data])
 
   const profileData = profileQuery.data
   const profileBannerUrl = normalizePublicMediaUrl(profileData?.banner)
@@ -88,10 +113,28 @@ function ProfilePage() {
     () => (profileData ? profileToFormValues(profileData) : EMPTY_PROFILE_FORM),
     [profileData]
   )
-  const hasProfileChanges = useMemo(
-    () => JSON.stringify(form) !== JSON.stringify(savedProfileForm),
+  const reconciledProfileForm = useMemo(
+    () =>
+      editBaselineRef.current
+        ? reconcileProfileFormDraft(
+            form,
+            editBaselineRef.current,
+            savedProfileForm
+          )
+        : form,
     [form, savedProfileForm]
   )
+  const hasProfileChanges = useMemo(
+    () =>
+      JSON.stringify(reconciledProfileForm) !==
+      JSON.stringify(savedProfileForm),
+    [reconciledProfileForm, savedProfileForm]
+  )
+  const canEditProfile =
+    !profileQuery.isLoading &&
+    !profileQuery.isFetching &&
+    profileQuery.meta !== null &&
+    !isCommerceReadIncomplete(profileQuery.meta)
   const profileSaveStatus = updateMutation.isPending
     ? "awaiting_signature"
     : updateMutation.error
@@ -108,14 +151,27 @@ function ProfilePage() {
 
   function handleSave(e: React.FormEvent) {
     e.preventDefault()
-    if (!hasProfileChanges || updateMutation.isPending) return
+    if (!editing || !hasProfileChanges || updateMutation.isPending) return
     setProfileSaveSucceeded(false)
-    updateMutation.mutate(profileFormToUpdatePayload(form, profileData), {
-      onSuccess: () => {
-        setProfileSaveSucceeded(true)
-        setEditing(false)
-      },
-    })
+    updateMutation.mutate(
+      profileFormToUpdatePayload(reconciledProfileForm, profileData),
+      {
+        onSuccess: () => {
+          setProfileSaveSucceeded(true)
+          setEditingPubkey(null)
+          editBaselineRef.current = null
+        },
+      }
+    )
+  }
+
+  function startEditing(): void {
+    if (!canEditProfile || !profileData || !pubkey) return
+    const baseline = profileToFormValues(profileData)
+    editBaselineRef.current = baseline
+    setForm(baseline)
+    setEditingPubkey(pubkey)
+    setProfileSaveSucceeded(false)
   }
 
   async function copyNpub() {
@@ -166,25 +222,29 @@ function ProfilePage() {
             </div>
 
             {/* Needs-completion banner */}
-            {!complete && profileQuery.data && !editing && (
-              <div className="flex items-start gap-3 rounded-2xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] px-4 py-3.5">
-                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--warning)]" />
-                <div className="text-sm text-[var(--warning)]">
-                  <span className="font-semibold">
-                    Profile needs completion.
-                  </span>{" "}
-                  Add a display name, photo, and bio so buyers can find and
-                  trust your store.{" "}
-                  <button
-                    type="button"
-                    className="underline underline-offset-2 hover:opacity-80"
-                    onClick={() => setEditing(true)}
-                  >
-                    Edit profile
-                  </button>
+            {!profileQuery.isLoading &&
+              !complete &&
+              profileQuery.data &&
+              !editing && (
+                <div className="flex items-start gap-3 rounded-2xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] px-4 py-3.5">
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--warning)]" />
+                  <div className="text-sm text-[var(--warning)]">
+                    <span className="font-semibold">
+                      Profile needs completion.
+                    </span>{" "}
+                    Add a display name, photo, and bio so buyers can find and
+                    trust your store.{" "}
+                    <button
+                      type="button"
+                      className="underline underline-offset-2 hover:opacity-80"
+                      onClick={startEditing}
+                      disabled={!canEditProfile}
+                    >
+                      Edit profile
+                    </button>
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
 
             {profileQuery.isLoading && (
               <div className="text-sm text-[var(--text-secondary)]">
@@ -262,12 +322,10 @@ function ProfilePage() {
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={() => {
-                            setEditing(true)
-                            setProfileSaveSucceeded(false)
-                          }}
+                          onClick={startEditing}
+                          disabled={!canEditProfile}
                         >
-                          Edit
+                          Edit profile
                         </Button>
                       </div>
                     </div>
@@ -422,7 +480,8 @@ function ProfilePage() {
                       variant="outline"
                       size="sm"
                       onClick={() => {
-                        setEditing(false)
+                        setEditingPubkey(null)
+                        editBaselineRef.current = null
                         setProfileSaveSucceeded(false)
                         if (profileQuery.data) {
                           setForm(profileToFormValues(profileQuery.data))

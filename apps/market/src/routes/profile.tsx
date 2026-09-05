@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { createFileRoute } from "@tanstack/react-router"
 import {
   buildProfileUpdatePayload,
   formatNpub,
+  isCommerceReadIncomplete,
   pubkeyToNpub,
+  reconcileProfileFormDraft,
   useAuth,
   useProfile,
   useUpdateProfile,
@@ -85,17 +87,41 @@ function Field({
 
 function ProfilePage() {
   const { pubkey } = useAuth()
-  const profileQuery = useProfile(pubkey, { authenticatedPubkey: pubkey })
+  const profileQuery = useProfile(pubkey, {
+    authenticatedPubkey: pubkey,
+    requireCompleteEvidence: true,
+    maxUnresolvedRefetches: 2,
+  })
   const updateMutation = useUpdateProfile("market")
-  const [editing, setEditing] = useState(false)
+  const [editingPubkey, setEditingPubkey] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [form, setForm] = useState<ProfileFormValues>(EMPTY_FORM)
+  const editBaselineRef = useRef<ProfileFormValues | null>(null)
   const [profileSaveSucceeded, setProfileSaveSucceeded] = useState(false)
+  const editing = !!pubkey && editingPubkey === pubkey
 
   useEffect(() => {
-    if (!profileQuery.data) return
+    if (editingPubkey === null || editingPubkey === pubkey) return
+    setEditingPubkey(null)
+    editBaselineRef.current = null
+    setForm(EMPTY_FORM)
+    setProfileSaveSucceeded(false)
+  }, [editingPubkey, pubkey])
+
+  useEffect(() => {
+    if (editing || !profileQuery.data) return
     setForm(profileToForm(profileQuery.data))
-  }, [profileQuery.data])
+  }, [editing, profileQuery.data])
+
+  useEffect(() => {
+    if (!editing || !profileQuery.data) return
+    const latest = profileToForm(profileQuery.data)
+    const baseline = editBaselineRef.current
+    setForm((draft) =>
+      baseline ? reconcileProfileFormDraft(draft, baseline, latest) : latest
+    )
+    editBaselineRef.current = latest
+  }, [editing, profileQuery.data])
 
   const displayName =
     profileQuery.data?.displayName?.trim() ||
@@ -109,10 +135,28 @@ function ProfilePage() {
     () => profileToForm(profileQuery.data),
     [profileQuery.data]
   )
-  const hasProfileChanges = useMemo(
-    () => JSON.stringify(form) !== JSON.stringify(savedProfileForm),
+  const reconciledProfileForm = useMemo(
+    () =>
+      editBaselineRef.current
+        ? reconcileProfileFormDraft(
+            form,
+            editBaselineRef.current,
+            savedProfileForm
+          )
+        : form,
     [form, savedProfileForm]
   )
+  const hasProfileChanges = useMemo(
+    () =>
+      JSON.stringify(reconciledProfileForm) !==
+      JSON.stringify(savedProfileForm),
+    [reconciledProfileForm, savedProfileForm]
+  )
+  const canEditProfile =
+    !profileQuery.isLoading &&
+    !profileQuery.isFetching &&
+    profileQuery.meta !== null &&
+    !isCommerceReadIncomplete(profileQuery.meta)
   const profileSaveStatus = updateMutation.isPending
     ? "awaiting_signature"
     : updateMutation.error
@@ -128,13 +172,23 @@ function ProfilePage() {
   }, [hasProfileChanges])
 
   function resetForm(): void {
-    setEditing(false)
+    setEditingPubkey(null)
+    editBaselineRef.current = null
     setProfileSaveSucceeded(false)
     if (!profileQuery.data) {
       setForm(EMPTY_FORM)
       return
     }
     setForm(profileToForm(profileQuery.data))
+  }
+
+  function startEditing(): void {
+    if (!canEditProfile || !profileQuery.data || !pubkey) return
+    const baseline = profileToForm(profileQuery.data)
+    editBaselineRef.current = baseline
+    setForm(baseline)
+    setEditingPubkey(pubkey)
+    setProfileSaveSucceeded(false)
   }
 
   async function copyPubkey(): Promise<void> {
@@ -150,14 +204,18 @@ function ProfilePage() {
 
   function handleSave(event: React.FormEvent): void {
     event.preventDefault()
-    if (!hasProfileChanges || updateMutation.isPending) return
+    if (!editing || !hasProfileChanges || updateMutation.isPending) return
     setProfileSaveSucceeded(false)
-    updateMutation.mutate(buildProfileUpdatePayload(form, profileQuery.data), {
-      onSuccess: () => {
-        setProfileSaveSucceeded(true)
-        setEditing(false)
-      },
-    })
+    updateMutation.mutate(
+      buildProfileUpdatePayload(reconciledProfileForm, profileQuery.data),
+      {
+        onSuccess: () => {
+          setProfileSaveSucceeded(true)
+          setEditingPubkey(null)
+          editBaselineRef.current = null
+        },
+      }
+    )
   }
 
   return (
@@ -278,10 +336,8 @@ function ProfilePage() {
                   <>
                     <Button
                       className="h-11 px-4 text-sm"
-                      onClick={() => {
-                        setEditing(true)
-                        setProfileSaveSucceeded(false)
-                      }}
+                      onClick={startEditing}
+                      disabled={!canEditProfile}
                     >
                       <PencilLine className="h-4 w-4" />
                       Edit profile
