@@ -19,6 +19,7 @@ import {
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
+const SECOND_NETWORK_RELAY_URL = "wss://network-backup.example"
 const MERCHANT_TAG_CATALOG = [
   {
     dTag: "catalog-hardware-one",
@@ -46,6 +47,7 @@ async function exerciseNetworkInboxDeclaration(
   const pubkey = getPublicKey(secretKey)
   await seedTestRelayIdentity(secretKey, {
     inboxDeclaration: initialDeclaration,
+    relayListUrls: [TEST_RELAY_URL, SECOND_NETWORK_RELAY_URL],
   })
   const seededDeclarations = await readTestRelayEvents({
     kinds: [10_050],
@@ -70,34 +72,22 @@ async function exerciseNetworkInboxDeclaration(
   await page.goto(`${appUrl}/network`)
 
   await expect(
-    page.getByRole("heading", { name: "Network Settings" })
+    page.getByRole("heading", { name: "Network", exact: true })
   ).toBeVisible()
-  await expect(
-    page.getByText(
-      initialDeclaration === "empty"
-        ? "Restore your private inbox"
-        : "Finish private inbox setup",
-      { exact: true }
-    )
-  ).toBeVisible()
-  await expect(
-    page.getByRole("checkbox", { name: TEST_RELAY_URL })
-  ).toBeChecked()
-
-  const publishButton = page.getByRole("button", {
-    name: "Publish inbox declaration",
+  const privateInboxRole = page.getByRole("button", {
+    name: `Enable Private inbox for ${TEST_RELAY_URL}`,
   })
-  await expect(publishButton).toBeEnabled()
-  await publishButton.click()
+  await expect(privateInboxRole).toBeEnabled({ timeout: 20_000 })
+  await privateInboxRole.click()
 
-  await expect(
-    page.getByText("Private inbox ready", { exact: true })
-  ).toBeVisible({ timeout: 15_000 })
-  await expect(
-    page.getByText("Inbox declaration published and confirmed.", {
-      exact: true,
-    })
-  ).toBeVisible()
+  const saveButton = page.getByRole("button", {
+    name: "Save Network changes",
+  })
+  await expect(saveButton).toBeEnabled()
+  await saveButton.click()
+  await expect(page.getByText("Exact event confirmed")).toBeVisible({
+    timeout: 20_000,
+  })
 
   const declarations = await readTestRelayEvents({
     kinds: [10_050],

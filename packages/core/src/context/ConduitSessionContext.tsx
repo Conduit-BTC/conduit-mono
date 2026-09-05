@@ -7,6 +7,10 @@ import {
   useState,
   type ReactNode,
 } from "react"
+import {
+  useAccountNetworkPreferences,
+  type UseAccountNetworkPreferencesResult,
+} from "../hooks/useAccountNetworkPreferences"
 import type { ConduitAppId } from "../protocol/nip89"
 import { disconnectNdk, refreshNdkRelaySettings } from "../protocol/ndk"
 import {
@@ -22,13 +26,13 @@ import {
   type ConduitSession,
 } from "../protocol/session"
 import type { Profile } from "../types"
-import { useAccountNetworkPreferences } from "../hooks/useAccountNetworkPreferences"
 import { useProfile } from "../hooks/useProfile"
 import { useAuth } from "./AuthContext"
 
 export interface ConduitSessionContextValue extends ConduitSession {
   identityReady: boolean
   relaySettingsReady: boolean
+  accountNetworkPreferences: UseAccountNetworkPreferencesResult
 }
 
 export interface ConduitSessionProviderProps {
@@ -181,8 +185,13 @@ export function ConduitSessionProvider({
   }, [refetchProfile])
 
   const value = useMemo<ConduitSessionContextValue>(
-    () => ({ ...session, identityReady, relaySettingsReady }),
-    [identityReady, relaySettingsReady, session]
+    () => ({
+      ...session,
+      identityReady,
+      relaySettingsReady,
+      accountNetworkPreferences,
+    }),
+    [accountNetworkPreferences, identityReady, relaySettingsReady, session]
   )
 
   return (
