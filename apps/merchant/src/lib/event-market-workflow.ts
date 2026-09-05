@@ -323,9 +323,20 @@ export function shouldResolveOrganizerEventMarketReference(
   listMarket: { state: string; collectionCreatedAt?: number } | undefined,
   savedReference: SavedOrganizerEventMarketReference | undefined
 ): boolean {
+  if (listMarket?.state === "deleted") return false
   if (!isPreferredOrganizerEventMarketListResolution(listMarket)) return true
   const expectedCollectionCreatedAt =
     savedReference?.expectedCollectionCreatedAt
+  const importedRelayHints = decodeEventMarketReference(
+    savedReference?.reference ?? "",
+    [30405]
+  )?.relayHints
+  if (
+    expectedCollectionCreatedAt === undefined &&
+    (importedRelayHints?.length ?? 0) > 0
+  ) {
+    return true
+  }
   return (
     expectedCollectionCreatedAt !== undefined &&
     (listMarket?.collectionCreatedAt ?? 0) < expectedCollectionCreatedAt
@@ -336,15 +347,33 @@ function reconcileOrganizerEventMarketNaddr(
   coordinate: string,
   references: readonly (string | undefined)[]
 ): string {
-  const relayHints = Array.from(
-    new Set(
-      references.flatMap(
-        (reference) =>
-          decodeEventMarketReference(reference ?? "", [30405])?.relayHints ?? []
-      )
-    )
-  ).slice(0, SAVED_EVENT_MARKET_RELAY_HINT_LIMIT)
+  const hintGroups = references.map(
+    (reference) =>
+      decodeEventMarketReference(reference ?? "", [30405])?.relayHints ?? []
+  )
+  const mergedRelayHints = Array.from(new Set(hintGroups.flat()))
+  const completeExplicitHints = hintGroups.find((relayHints) =>
+    mergedRelayHints.every((relayUrl) => relayHints.includes(relayUrl))
+  )
+  const relayHints = completeExplicitHints
+    ? completeExplicitHints
+    : mergedRelayHints.slice(0, SAVED_EVENT_MARKET_RELAY_HINT_LIMIT)
   return encodeEventMarketNaddr(coordinate, relayHints)
+}
+
+function compareOrganizerEventMarketFrontier(
+  left: { collectionCreatedAt?: number; collectionEventId?: string },
+  right: { collectionCreatedAt?: number; collectionEventId?: string }
+): number {
+  const createdAtDifference =
+    (left.collectionCreatedAt ?? 0) - (right.collectionCreatedAt ?? 0)
+  if (createdAtDifference !== 0) return createdAtDifference
+
+  const leftId = left.collectionEventId
+  const rightId = right.collectionEventId
+  if (!leftId || !rightId || leftId === rightId) return 0
+  // NIP-01 retains the lexicographically lowest id at equal timestamps.
+  return leftId < rightId ? 1 : -1
 }
 
 export function selectOrganizerEventMarketResolution<
@@ -352,6 +381,7 @@ export function selectOrganizerEventMarketResolution<
     state: string
     collectionCoordinate: string
     collectionCreatedAt?: number
+    collectionEventId?: string
     naddr: string
   },
 >(
@@ -364,19 +394,32 @@ export function selectOrganizerEventMarketResolution<
   const hintedReachesExpectedFrontier =
     !!hintedMarket &&
     (hintedMarket.collectionCreatedAt ?? 0) >= expectedCollectionCreatedAt
-  const selected = isPreferredOrganizerEventMarketListResolution(listMarket)
-    ? hintedReachesExpectedFrontier &&
-      (hintedMarket?.collectionCreatedAt ?? 0) >
-        (listMarket?.collectionCreatedAt ?? 0)
-      ? hintedMarket
-      : listMarket
-    : (hintedMarket ?? listMarket)
+  const hintedIsPreferred =
+    isPreferredOrganizerEventMarketListResolution(hintedMarket)
+  const preferredListMarket =
+    isPreferredOrganizerEventMarketListResolution(listMarket) && listMarket
+      ? listMarket
+      : undefined
+  const selected =
+    listMarket?.state === "deleted"
+      ? listMarket
+      : hintedMarket?.state === "deleted"
+        ? hintedMarket
+        : preferredListMarket
+          ? hintedReachesExpectedFrontier &&
+            hintedIsPreferred &&
+            !!hintedMarket &&
+            compareOrganizerEventMarketFrontier(
+              hintedMarket,
+              preferredListMarket
+            ) > 0
+            ? hintedMarket
+            : preferredListMarket
+          : (hintedMarket ?? listMarket)
   if (!selected) return undefined
   const selectedReferenceIsNewerThanList =
     expectedCollectionCreatedAt >
-    (isPreferredOrganizerEventMarketListResolution(listMarket)
-      ? (listMarket?.collectionCreatedAt ?? 0)
-      : 0)
+    (preferredListMarket?.collectionCreatedAt ?? 0)
   const reconciledNaddr = reconcileOrganizerEventMarketNaddr(
     selected.collectionCoordinate,
     selectedReferenceIsNewerThanList
@@ -384,17 +427,13 @@ export function selectOrganizerEventMarketResolution<
           savedReference?.reference,
           selected.naddr,
           hintedMarket?.naddr,
-          isPreferredOrganizerEventMarketListResolution(listMarket)
-            ? listMarket?.naddr
-            : undefined,
+          preferredListMarket?.naddr,
         ]
       : [
           selected.naddr,
           savedReference?.reference,
           hintedMarket?.naddr,
-          isPreferredOrganizerEventMarketListResolution(listMarket)
-            ? listMarket?.naddr
-            : undefined,
+          preferredListMarket?.naddr,
         ]
   )
   if (reconciledNaddr === selected.naddr) return selected

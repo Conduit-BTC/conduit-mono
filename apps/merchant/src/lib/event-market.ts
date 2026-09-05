@@ -88,6 +88,7 @@ export interface MerchantOrganizerEventMarket {
   calendarCreatedAt?: number
   pickupCreatedAt?: number
   collectionCreatedAt?: number
+  collectionEventId?: string
   productCoordinates: string[]
   participation: MerchantOrganizerParticipation[]
   source: EventMarketResolution
@@ -584,6 +585,7 @@ function projectEventMarket(
     calendarCreatedAt: calendar.createdAt,
     pickupCreatedAt: pickup?.createdAt,
     collectionCreatedAt: collection?.createdAt,
+    collectionEventId: collection?.eventId,
     productCoordinates,
     participation: [...pending, ...accepted, ...organizerOnly],
     source: resolution,

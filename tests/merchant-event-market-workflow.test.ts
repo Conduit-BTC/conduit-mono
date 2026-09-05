@@ -302,6 +302,119 @@ describe("merchant organizer event workflow", () => {
     ).toEqual([hintedRelay])
   })
 
+  it("reconciles an imported hint with an older active organizer-list frontier", () => {
+    const listRelay = "wss://planner.example/events"
+    const importedRelay = "wss://imported.example/events"
+    const importedReference = {
+      reference: encodeEventMarketNaddr(COLLECTION, [importedRelay]),
+      savedAt: 20,
+    }
+    const olderListMarket = {
+      collectionCoordinate: COLLECTION,
+      collectionCreatedAt: 1_000,
+      collectionEventId: "b".repeat(64),
+      naddr: encodeEventMarketNaddr(COLLECTION, [listRelay]),
+      state: "active",
+    }
+    const newerHintedMarket = {
+      ...olderListMarket,
+      collectionCreatedAt: 2_000,
+      collectionEventId: "a".repeat(64),
+      naddr: encodeEventMarketNaddr(COLLECTION, [importedRelay]),
+    }
+
+    expect(
+      shouldResolveOrganizerEventMarketReference(
+        olderListMarket,
+        importedReference
+      )
+    ).toBe(true)
+    const selected = selectOrganizerEventMarketResolution(
+      olderListMarket,
+      newerHintedMarket,
+      importedReference
+    )
+    expect(selected?.collectionCreatedAt).toBe(2_000)
+    expect(selected?.collectionEventId).toBe("a".repeat(64))
+    expect(
+      decodeEventMarketReference(selected!.naddr, [30405])?.relayHints
+    ).toEqual([importedRelay, listRelay])
+  })
+
+  it("keeps newer list and known deletion frontiers over an imported hint", () => {
+    const importedReference = {
+      reference: encodeEventMarketNaddr(COLLECTION, [
+        "wss://imported.example/events",
+      ]),
+      savedAt: 20,
+    }
+    const hintedMarket = {
+      collectionCoordinate: COLLECTION,
+      collectionCreatedAt: 2_000,
+      collectionEventId: "b".repeat(64),
+      naddr: importedReference.reference,
+      state: "active",
+    }
+    const newerListMarket = {
+      ...hintedMarket,
+      collectionCreatedAt: 3_000,
+      collectionEventId: "a".repeat(64),
+      naddr: encodeEventMarketNaddr(COLLECTION, [
+        "wss://planner.example/events",
+      ]),
+    }
+
+    expect(
+      selectOrganizerEventMarketResolution(
+        newerListMarket,
+        hintedMarket,
+        importedReference
+      )?.collectionCreatedAt
+    ).toBe(3_000)
+    expect(
+      shouldResolveOrganizerEventMarketReference(
+        { ...newerListMarket, state: "deleted" },
+        importedReference
+      )
+    ).toBe(false)
+    expect(
+      selectOrganizerEventMarketResolution(
+        { ...newerListMarket, state: "deleted" },
+        { ...hintedMarket, collectionCreatedAt: 4_000 },
+        importedReference
+      )?.state
+    ).toBe("deleted")
+  })
+
+  it("uses the NIP-01 lowest-id tie break when reconciling views", () => {
+    const common = {
+      collectionCoordinate: COLLECTION,
+      collectionCreatedAt: 2_000,
+      state: "active",
+    }
+    const listMarket = {
+      ...common,
+      collectionEventId: "b".repeat(64),
+      naddr: encodeEventMarketNaddr(COLLECTION, [
+        "wss://planner.example/events",
+      ]),
+    }
+    const hintedMarket = {
+      ...common,
+      collectionEventId: "a".repeat(64),
+      naddr: encodeEventMarketNaddr(COLLECTION, [
+        "wss://imported.example/events",
+      ]),
+    }
+
+    expect(
+      selectOrganizerEventMarketResolution(listMarket, hintedMarket, {
+        reference: hintedMarket.naddr,
+        savedAt: 20,
+      })?.collectionEventId
+    ).toBe("a".repeat(64))
+  })
+
   it("keeps an updated acknowledgement hint until the signed collection frontier is observed", () => {
     const listRelay = "wss://list.example/events"
     const acknowledgementRelay = "wss://ack.example/events"
