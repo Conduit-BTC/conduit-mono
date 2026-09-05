@@ -1117,9 +1117,25 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
   ).toBeVisible()
 
   const checkoutReadStart = relay.requests.length
+  const cartHud = page.getByRole("region", {
+    name: "Cart inventory",
+    exact: true,
+  })
+  for (const width of [1280, 390]) {
+    await page.setViewportSize({ width, height: 900 })
+    await expect(cartHud).toBeVisible()
+    await expect(
+      cartHud.getByRole("link", { name: MERCHANT_PRODUCT_TITLE, exact: true })
+    ).toBeVisible()
+    await expect(
+      cartHud.getByRole("link", { name: "View cart", exact: true })
+    ).toBeVisible()
+  }
+  await page.setViewportSize({ width: 1280, height: 900 })
   await gotoAs(page, marketUrl, "/checkout", "buyer", {
     merchant: nip19.npubEncode(MERCHANT_PUBKEY),
   })
+  await expect(cartHud).toBeHidden()
   await expect(
     page.getByRole("heading", { name: "Send Order", exact: true })
   ).toBeVisible({ timeout: 30_000 })
