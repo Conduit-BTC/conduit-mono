@@ -57,7 +57,10 @@ const record = {
   },
 } as MerchantOrganizerRecordDelivery
 
-function harness(current = market) {
+function harness(
+  current = market,
+  savedCollection: MerchantOrganizerRecordDelivery | null = null
+) {
   const published: unknown[] = []
   const retried: unknown[] = []
   const saved: unknown[] = []
@@ -84,6 +87,7 @@ function harness(current = market) {
     save: (...input: unknown[]) => {
       saved.push(input)
     },
+    load: () => (savedCollection ? { [COLLECTION]: [savedCollection] } : {}),
   }
   return { deps, published, retried, saved, reads: () => reads }
 }
@@ -166,7 +170,61 @@ describe("organizer own-product acceptance", () => {
     expect(h.retried).toEqual([{ organizerPubkey: OWNER, record }])
   })
   it("does not overwrite a newer collection decision with an old retry", async () => {
-    const h = harness({ ...market, collectionCreatedAt: 13_000 })
+    const h = harness({
+      ...market,
+      collectionCreatedAt: 13_000,
+      source: {
+        collection: { eventId: "current", createdAt: 13_000 },
+      },
+    } as MerchantOrganizerEventMarket)
+    await expect(
+      acceptOwnEventProduct({ ...input, signedAcceptance: record }, h.deps)
+    ).rejects.toThrow("changed")
+    expect(h.retried).toHaveLength(0)
+    expect(h.published).toHaveLength(0)
+  })
+  it("retries a prior zero-ACK collection instead of signing over it", async () => {
+    const pending = { ...record, acknowledgedCount: 0 }
+    const h = harness(market, pending)
+    expect(await acceptOwnEventProduct(input, h.deps)).toBe(true)
+    expect(h.published).toHaveLength(0)
+    expect(h.retried).toEqual([{ organizerPubkey: OWNER, record: pending }])
+  })
+  it("does not supersede a NIP-01-newer same-second collection", async () => {
+    const currentId = "0".repeat(64)
+    const pending = {
+      ...record,
+      acknowledgedCount: 0,
+      signedEvent: { ...record.signedEvent!, id: "f".repeat(64) },
+    }
+    const h = harness(
+      {
+        ...market,
+        collectionCreatedAt: 12_000,
+        source: {
+          collection: { eventId: currentId, createdAt: 12_000 },
+        },
+      } as MerchantOrganizerEventMarket,
+      pending
+    )
+    await expect(acceptOwnEventProduct(input, h.deps)).rejects.toThrow(
+      "changed"
+    )
+    expect(h.retried).toHaveLength(0)
+    expect(h.published).toHaveLength(0)
+  })
+  it("does not ignore a newer unresolved saved collection", async () => {
+    const pending = {
+      ...record,
+      acknowledgedCount: 0,
+      signedEvent: {
+        ...record.signedEvent!,
+        created_at: 13,
+        id: "newer-pending",
+        tags: [["d", "event"]],
+      },
+    }
+    const h = harness(market, pending)
     await expect(
       acceptOwnEventProduct({ ...input, signedAcceptance: record }, h.deps)
     ).rejects.toThrow("changed")

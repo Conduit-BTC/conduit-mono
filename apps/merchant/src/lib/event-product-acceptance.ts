@@ -2,6 +2,7 @@ import { decodeProductReference } from "@conduit/core"
 import {
   isParticipationHandoffVerified,
   isParticipationProductPreviewVerified,
+  loadOrganizerEventMarketDeliveryOutbox,
   parseOrganizerEventMarketReference,
   publishMerchantOrganizerMembership,
   resolveOrganizerEventMarket,
@@ -15,6 +16,42 @@ const acceptanceDependencies = {
   publish: publishMerchantOrganizerMembership,
   retry: retryMerchantOrganizerRecord,
   save: saveOrganizerEventMarketDelivery,
+  load: loadOrganizerEventMarketDeliveryOutbox,
+}
+
+function needsExactRetry(record: MerchantOrganizerRecordDelivery): boolean {
+  return (
+    record.acknowledgedCount === 0 ||
+    record.rejectedCount + record.timedOutCount > 0
+  )
+}
+
+function compareAddressableRevision(
+  left: NonNullable<MerchantOrganizerRecordDelivery["signedEvent"]>,
+  right: { createdAt: number; eventId: string }
+): number {
+  const rightCreatedAt = Math.floor(right.createdAt / 1_000)
+  if (left.created_at !== rightCreatedAt) {
+    return left.created_at - rightCreatedAt
+  }
+  // NIP-01 selects the lowest event id when timestamps tie.
+  return right.eventId.localeCompare(left.id)
+}
+
+function newerSignedDelivery(
+  left: MerchantOrganizerRecordDelivery,
+  right: MerchantOrganizerRecordDelivery
+): MerchantOrganizerRecordDelivery {
+  const leftEvent = left.signedEvent
+  const rightEvent = right.signedEvent
+  if (!leftEvent) return right
+  if (!rightEvent) return left
+  return compareAddressableRevision(leftEvent, {
+    createdAt: rightEvent.created_at * 1_000,
+    eventId: rightEvent.id,
+  }) >= 0
+    ? left
+    : right
 }
 
 /** A product signature requests participation; only a collection signature accepts it. */
@@ -56,14 +93,24 @@ export async function acceptOwnEventProduct(
   }
   if (item.status === "accepted") return true
 
+  const savedDeliveries = dependencies.load(organizer)
+  const savedCollection = savedDeliveries[reference.coordinate]?.find(
+    (record) => record.record === "collection" && needsExactRetry(record)
+  )
+  const signedAcceptance =
+    input.signedAcceptance && savedCollection
+      ? newerSignedDelivery(input.signedAcceptance, savedCollection)
+      : (input.signedAcceptance ?? savedCollection ?? null)
+
   const save = (record: MerchantOrganizerRecordDelivery) => {
     // Persist before delivery so retry can reuse the exact signed collection.
     dependencies.save(organizer, reference.coordinate, record)
     input.onSignedAcceptance?.(record)
   }
   let delivery: MerchantOrganizerRecordDelivery
-  if (input.signedAcceptance) {
-    const event = input.signedAcceptance.signedEvent
+  if (signedAcceptance) {
+    const event = signedAcceptance.signedEvent
+    const currentCollection = market.source?.collection
     if (
       !event ||
       event.kind !== 30405 ||
@@ -76,7 +123,9 @@ export async function acceptOwnEventProduct(
       !event.tags.some(
         (tag) => tag[0] === "a" && tag[1] === input.productCoordinate
       ) ||
-      (market.collectionCreatedAt ?? 0) > event.created_at * 1_000
+      (currentCollection &&
+        currentCollection.eventId !== event.id &&
+        compareAddressableRevision(event, currentCollection) < 0)
     ) {
       throw new Error(
         "The event collection changed. Review this product in My events before accepting again."
@@ -84,7 +133,7 @@ export async function acceptOwnEventProduct(
     }
     delivery = await dependencies.retry({
       organizerPubkey: organizer,
-      record: input.signedAcceptance,
+      record: signedAcceptance,
     })
   } else {
     delivery = await dependencies.publish({
