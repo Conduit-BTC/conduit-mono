@@ -93,9 +93,9 @@ function ProfilePage() {
   const [profileSaveSucceeded, setProfileSaveSucceeded] = useState(false)
 
   useEffect(() => {
-    if (!profileQuery.data) return
+    if (editing || !profileQuery.data) return
     setForm(profileToForm(profileQuery.data))
-  }, [profileQuery.data])
+  }, [editing, profileQuery.data])
 
   const displayName =
     profileQuery.data?.displayName?.trim() ||

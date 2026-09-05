@@ -40,4 +40,21 @@ describe("profile query cache", () => {
       updateProfileQueryCache(undefined, { pubkey: PUBKEY })
     ).toBeUndefined()
   })
+
+  it("keeps background profile refreshes from overwriting an active edit", async () => {
+    const merchantRoute = await Bun.file(
+      "apps/merchant/src/routes/profile.tsx"
+    ).text()
+    const marketRoute = await Bun.file(
+      "apps/market/src/routes/profile.tsx"
+    ).text()
+
+    for (const route of [merchantRoute, marketRoute]) {
+      expect(route).toContain("if (editing || !profileQuery.data) return")
+      expect(route).toContain("[editing, profileQuery.data]")
+    }
+    expect(merchantRoute).toContain(
+      "!profileQuery.isLoading &&\n              !complete"
+    )
+  })
 })

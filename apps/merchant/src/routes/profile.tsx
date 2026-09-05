@@ -71,10 +71,9 @@ function ProfilePage() {
   const [profileSaveSucceeded, setProfileSaveSucceeded] = useState(false)
 
   useEffect(() => {
-    if (profileQuery.data) {
-      setForm(profileToFormValues(profileQuery.data))
-    }
-  }, [profileQuery.data])
+    if (editing || !profileQuery.data) return
+    setForm(profileToFormValues(profileQuery.data))
+  }, [editing, profileQuery.data])
 
   const profileData = profileQuery.data
   const profileBannerUrl = normalizePublicMediaUrl(profileData?.banner)
@@ -166,25 +165,28 @@ function ProfilePage() {
             </div>
 
             {/* Needs-completion banner */}
-            {!complete && profileQuery.data && !editing && (
-              <div className="flex items-start gap-3 rounded-2xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] px-4 py-3.5">
-                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--warning)]" />
-                <div className="text-sm text-[var(--warning)]">
-                  <span className="font-semibold">
-                    Profile needs completion.
-                  </span>{" "}
-                  Add a display name, photo, and bio so buyers can find and
-                  trust your store.{" "}
-                  <button
-                    type="button"
-                    className="underline underline-offset-2 hover:opacity-80"
-                    onClick={() => setEditing(true)}
-                  >
-                    Edit profile
-                  </button>
+            {!profileQuery.isLoading &&
+              !complete &&
+              profileQuery.data &&
+              !editing && (
+                <div className="flex items-start gap-3 rounded-2xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] px-4 py-3.5">
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--warning)]" />
+                  <div className="text-sm text-[var(--warning)]">
+                    <span className="font-semibold">
+                      Profile needs completion.
+                    </span>{" "}
+                    Add a display name, photo, and bio so buyers can find and
+                    trust your store.{" "}
+                    <button
+                      type="button"
+                      className="underline underline-offset-2 hover:opacity-80"
+                      onClick={() => setEditing(true)}
+                    >
+                      Edit profile
+                    </button>
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
 
             {profileQuery.isLoading && (
               <div className="text-sm text-[var(--text-secondary)]">
@@ -267,7 +269,7 @@ function ProfilePage() {
                             setProfileSaveSucceeded(false)
                           }}
                         >
-                          Edit
+                          Edit profile
                         </Button>
                       </div>
                     </div>

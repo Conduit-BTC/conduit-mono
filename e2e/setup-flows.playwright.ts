@@ -350,6 +350,9 @@ async function exerciseProfileSave(
   await installTestSigner(page, pubkey, { secretKey })
   await page.goto(`${appUrl}/profile`)
 
+  await expect(
+    page.getByText(`Before ${profileName}`, { exact: true }).first()
+  ).toBeVisible({ timeout: 30_000 })
   await page
     .getByRole("button", { name: "Edit profile", exact: true })
     .first()
