@@ -183,9 +183,7 @@ describe("merchant organizer event market route", () => {
       publisher.indexOf("async function finishPublication("),
       publisher.indexOf("const publishMutation = useMutation(")
     )
-    expect(publishSuccess).toContain(
-      "await onPublished(result.productCoordinate, result.accepted)"
-    )
+    expect(publishSuccess).toContain("await onPublished(result.accepted)")
     expect(publishSuccess).toContain("onOpenChange(false)")
     expect(publishSuccess.indexOf("onOpenChange(false)")).toBeGreaterThan(
       publishSuccess.indexOf("await onPublished(")
