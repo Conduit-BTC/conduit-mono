@@ -281,6 +281,18 @@ describe("merchant organizer event-market references", () => {
     for (const relayUrls of readPlans) {
       expect(relayUrls).toEqual(importedHints)
     }
+    expect(
+      decodeEventMarketReference(market.naddr, [30405])?.relayHints
+    ).toEqual(importedHints)
+
+    readPlans.length = 0
+    const guestCatalog = await loadEventCatalog(market.naddr)
+
+    expect(guestCatalog.state).toBe("active")
+    expect(readPlans.length).toBeGreaterThan(0)
+    for (const relayUrls of readPlans) {
+      expect(relayUrls).toEqual(importedHints)
+    }
   })
 
   it("adds observed relay sources to a share link opened without hints", async () => {

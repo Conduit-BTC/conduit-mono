@@ -86,7 +86,9 @@ export interface MerchantOrganizerEventMarket {
   pickupPrice?: string
   pickupCurrency?: string
   calendarCreatedAt?: number
+  calendarEventId?: string
   pickupCreatedAt?: number
+  pickupEventId?: string
   collectionCreatedAt?: number
   collectionEventId?: string
   productCoordinates: string[]
@@ -583,7 +585,9 @@ function projectEventMarket(
     pickupPrice: pickup ? String(pickup.price) : undefined,
     pickupCurrency: pickup?.currency,
     calendarCreatedAt: calendar.createdAt,
+    calendarEventId: calendar.eventId,
     pickupCreatedAt: pickup?.createdAt,
+    pickupEventId: pickup?.eventId,
     collectionCreatedAt: collection?.createdAt,
     collectionEventId: collection?.eventId,
     productCoordinates,
@@ -723,15 +727,24 @@ export async function resolveOrganizerEventMarket(
   }
   const projectedHints =
     decodeEventMarketReference(normalized.naddr, [30405])?.relayHints ?? []
+  const parsedHintKeys = new Set(
+    parsedReference.relayHints.map((relayUrl) => relayUrl.trim().toLowerCase())
+  )
+  const parsedReferenceContainsResolvedHints = projectedHints.every(
+    (relayUrl) => parsedHintKeys.has(relayUrl.trim().toLowerCase())
+  )
   return {
     ...normalized,
     naddr: encodeEventMarketNaddr(
       parsedReference.coordinate,
-      boundedEventMarketShareRelayHints([
-        parsedReference.relayHints.slice(0, 1),
-        projectedHints,
-        parsedReference.relayHints.slice(1),
-      ])
+      parsedReferenceContainsResolvedHints &&
+        parsedReference.relayHints.length > 0
+        ? parsedReference.relayHints
+        : boundedEventMarketShareRelayHints([
+            parsedReference.relayHints.slice(0, 1),
+            projectedHints,
+            parsedReference.relayHints.slice(1),
+          ])
     ),
   }
 }

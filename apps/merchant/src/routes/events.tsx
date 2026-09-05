@@ -110,6 +110,36 @@ function referenceLabel(
   )
 }
 
+function expectedEventMarketFrontier(
+  record: MerchantOrganizerRecordDelivery
+): Partial<SavedOrganizerEventMarketReference> {
+  const signedEvent = record.signedEvent
+  if (!signedEvent) return {}
+  const createdAt = signedEvent.created_at * 1_000
+  if (record.record === "calendar") {
+    return {
+      expectedCalendarCreatedAt: createdAt,
+      expectedCalendarEventId: signedEvent.id,
+    }
+  }
+  if (record.record === "pickup") {
+    return {
+      expectedPickupCreatedAt: createdAt,
+      expectedPickupEventId: signedEvent.id,
+    }
+  }
+  return {
+    expectedCollectionCreatedAt: createdAt,
+    expectedCollectionEventId: signedEvent.id,
+  }
+}
+
+function expectedEventMarketFrontiers(
+  records: readonly MerchantOrganizerRecordDelivery[]
+): Partial<SavedOrganizerEventMarketReference> {
+  return Object.assign({}, ...records.map(expectedEventMarketFrontier))
+}
+
 function EventsPage() {
   const { pubkey } = useAuth()
   const { event } = Route.useSearch()
@@ -771,12 +801,7 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
             reference,
             title: input.form.title,
             savedAt: Date.now(),
-            ...(record.record === "collection" && record.signedEvent
-              ? {
-                  expectedCollectionCreatedAt:
-                    record.signedEvent.created_at * 1_000,
-                }
-              : {}),
+            ...expectedEventMarketFrontier(record),
           })
           setSavedReferences(saved)
           setSelectedReference(
@@ -800,7 +825,8 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
         reference,
         title: editingMarket?.title,
         savedAt: Date.now(),
-        expectedCollectionCreatedAt: result.collectionCreatedAt,
+        ...expectedEventMarketFrontiers(result.records),
+        replaceExpectedRecordFrontiers: true,
       })
       setSavedReferences(saved)
       for (const record of result.records) {
@@ -838,6 +864,17 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
         item: input.item,
         action: input.action,
         onSignedEvent: (record, reference) => {
+          const saved = rememberOrganizerEventMarket(organizerPubkey, {
+            reference,
+            title: selectedMarket.title,
+            savedAt: Date.now(),
+            ...expectedEventMarketFrontier(record),
+          })
+          setSavedReferences(saved)
+          setSelectedReference(
+            findSavedOrganizerEventMarketReference(saved, reference)
+              ?.reference ?? reference
+          )
           rememberDelivery(reference, record)
         },
       })

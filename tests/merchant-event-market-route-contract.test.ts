@@ -149,8 +149,15 @@ describe("merchant organizer event market route", () => {
 
     expect(publishSuccess).toContain("const reference = result.naddr")
     expect(publishSuccess).toContain(
-      "expectedCollectionCreatedAt: result.collectionCreatedAt"
+      "...expectedEventMarketFrontiers(result.records)"
     )
+    expect(publishSuccess).toContain("replaceExpectedRecordFrontiers: true")
+    expect(route).toContain("expectedCalendarCreatedAt: createdAt")
+    expect(route).toContain("expectedCalendarEventId: signedEvent.id")
+    expect(route).toContain("expectedPickupCreatedAt: createdAt")
+    expect(route).toContain("expectedPickupEventId: signedEvent.id")
+    expect(route).toContain("expectedCollectionCreatedAt: createdAt")
+    expect(route).toContain("expectedCollectionEventId: signedEvent.id")
     expect(publishSuccess).toContain(
       "rememberDelivery(result.collectionCoordinate, record)"
     )

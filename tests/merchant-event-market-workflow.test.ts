@@ -468,6 +468,132 @@ describe("merchant organizer event workflow", () => {
     ).toBe(false)
   })
 
+  it("keeps the hinted read until every published event-record frontier is observed", () => {
+    const listRelay = "wss://list.example/events"
+    const acknowledgementRelay = "wss://ack.example/events"
+    const selectedReference = {
+      reference: encodeEventMarketNaddr(COLLECTION, [acknowledgementRelay]),
+      savedAt: 20,
+      expectedCollectionCreatedAt: 2_000,
+      expectedCollectionEventId: "a".repeat(64),
+      expectedCalendarCreatedAt: 3_000,
+      expectedCalendarEventId: "b".repeat(64),
+      expectedPickupCreatedAt: 4_000,
+      expectedPickupEventId: "c".repeat(64),
+    }
+    const incompleteListMarket = {
+      collectionCoordinate: COLLECTION,
+      collectionCreatedAt: 2_000,
+      collectionEventId: "a".repeat(64),
+      calendarCreatedAt: 2_000,
+      calendarEventId: "d".repeat(64),
+      pickupCreatedAt: 3_000,
+      pickupEventId: "e".repeat(64),
+      naddr: encodeEventMarketNaddr(COLLECTION, [listRelay]),
+      state: "active",
+    }
+    const completeHintedMarket = {
+      ...incompleteListMarket,
+      calendarCreatedAt: 3_000,
+      calendarEventId: "b".repeat(64),
+      pickupCreatedAt: 4_000,
+      pickupEventId: "c".repeat(64),
+      naddr: selectedReference.reference,
+    }
+
+    expect(
+      shouldResolveOrganizerEventMarketReference(
+        incompleteListMarket,
+        selectedReference
+      )
+    ).toBe(true)
+    const selected = selectOrganizerEventMarketResolution(
+      incompleteListMarket,
+      completeHintedMarket,
+      selectedReference
+    )
+    expect(selected?.calendarCreatedAt).toBe(3_000)
+    expect(selected?.pickupCreatedAt).toBe(4_000)
+    expect(
+      decodeEventMarketReference(selected!.naddr, [30405])?.relayHints
+    ).toEqual([acknowledgementRelay, listRelay])
+    expect(
+      shouldResolveOrganizerEventMarketReference(
+        completeHintedMarket,
+        selectedReference
+      )
+    ).toBe(false)
+  })
+
+  it("merges signed calendar, pickup, and collection frontiers for one saved event", () => {
+    const storage = new MemoryStorage()
+    const reference = encodeEventMarketNaddr(COLLECTION, [
+      "wss://ack.example/events",
+    ])
+
+    rememberOrganizerEventMarket(
+      ORGANIZER,
+      {
+        reference,
+        savedAt: 10,
+        expectedCalendarCreatedAt: 2_000,
+        expectedCalendarEventId: "b".repeat(64),
+      },
+      storage
+    )
+    rememberOrganizerEventMarket(
+      ORGANIZER,
+      {
+        reference,
+        savedAt: 20,
+        expectedPickupCreatedAt: 3_000,
+        expectedPickupEventId: "c".repeat(64),
+      },
+      storage
+    )
+    const saved = rememberOrganizerEventMarket(
+      ORGANIZER,
+      {
+        reference,
+        savedAt: 30,
+        expectedCollectionCreatedAt: 4_000,
+        expectedCollectionEventId: "a".repeat(64),
+      },
+      storage
+    )
+
+    expect(saved[0]).toMatchObject({
+      expectedCalendarCreatedAt: 2_000,
+      expectedCalendarEventId: "b".repeat(64),
+      expectedPickupCreatedAt: 3_000,
+      expectedPickupEventId: "c".repeat(64),
+      expectedCollectionCreatedAt: 4_000,
+      expectedCollectionEventId: "a".repeat(64),
+    })
+
+    const withoutPickup = rememberOrganizerEventMarket(
+      ORGANIZER,
+      {
+        reference,
+        savedAt: 40,
+        expectedCalendarCreatedAt: 5_000,
+        expectedCalendarEventId: "d".repeat(64),
+        expectedCollectionCreatedAt: 6_000,
+        expectedCollectionEventId: "e".repeat(64),
+        replaceExpectedRecordFrontiers: true,
+      },
+      storage
+    )
+
+    expect(withoutPickup[0]).toMatchObject({
+      expectedCalendarCreatedAt: 5_000,
+      expectedCollectionCreatedAt: 6_000,
+      replaceExpectedRecordFrontiers: true,
+    })
+    expect(withoutPickup[0]?.expectedPickupCreatedAt).toBeUndefined()
+    expect(withoutPickup[0]?.expectedPickupEventId).toBeUndefined()
+  })
+
   it("keeps a hinted selection through bare edit and publish references for sharing", () => {
     const storage = new MemoryStorage()
     const imported = encodeEventMarketNaddr(COLLECTION, [
