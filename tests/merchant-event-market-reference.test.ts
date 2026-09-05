@@ -22,6 +22,7 @@ import {
   parseOrganizerEventMarketReference,
   resolveOrganizerEventMarket,
 } from "../apps/merchant/src/lib/event-market"
+import { rememberOrganizerEventMarket } from "../apps/merchant/src/lib/event-market-workflow"
 import { loadEventCatalog } from "../apps/market/src/lib/event-market-adapter"
 import {
   parseMerchantAuthHandoffSearch,
@@ -373,13 +374,41 @@ describe("merchant organizer event-market references", () => {
     })
 
     const market = await resolveOrganizerEventMarket(COLLECTION, ORGANIZER)
+    const publishHints = [OBSERVED_RELAY, ...SUPPORT_ONLY_RELAYS.slice(0, 6)]
     expect(
       decodeEventMarketReference(market.naddr, [30405])?.relayHints
-    ).toEqual([OBSERVED_RELAY, ...SUPPORT_ONLY_RELAYS.slice(0, 6)])
+    ).toEqual(publishHints)
+
+    let savedValue: string | null = null
+    const storage = {
+      getItem: () => savedValue,
+      setItem: (_key: string, value: string) => {
+        savedValue = value
+      },
+    }
+    rememberOrganizerEventMarket(
+      ORGANIZER,
+      {
+        reference: encodeEventMarketNaddr(COLLECTION, [
+          "wss://stale.example/events",
+        ]),
+        savedAt: 1,
+      },
+      storage
+    )
+    const saved = rememberOrganizerEventMarket(
+      ORGANIZER,
+      { reference: market.naddr, savedAt: 2 },
+      storage
+    )
+    const portableReference = saved[0]!.reference
+    expect(
+      decodeEventMarketReference(portableReference, [30405])?.relayHints
+    ).toEqual(publishHints)
 
     requireFallback = true
     readPlans.length = 0
-    const guestCatalog = await loadEventCatalog(market.naddr)
+    const guestCatalog = await loadEventCatalog(portableReference)
 
     expect(readPlans).not.toHaveLength(0)
     for (const relayUrls of readPlans) {

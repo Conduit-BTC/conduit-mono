@@ -15,6 +15,9 @@ const EVENT_MARKET_STORAGE_PREFIX = "conduit:merchant:event-markets:v1"
 const DISCOVERED_EVENT_MARKET_STORAGE_PREFIX =
   "conduit:merchant:discovered-event-markets:v1"
 const PRODUCT_COORDINATE_PATTERN = /^30402:[0-9a-f]{64}:.+$/i
+// Core reads at most eight relays. Keep one slot available for the normal
+// organizer/default fallback when a saved naddr is opened in a fresh session.
+const SAVED_EVENT_MARKET_RELAY_HINT_LIMIT = 7
 
 type NormalizedSavedOrganizerEventMarketReference =
   SavedOrganizerEventMarketReference & {
@@ -81,7 +84,7 @@ function mergeSavedReferences(
   const newest = sorted[0]!
   const relayHints = Array.from(
     new Set(sorted.flatMap((reference) => reference.relayHints))
-  )
+  ).slice(0, SAVED_EVENT_MARKET_RELAY_HINT_LIMIT)
   return {
     reference:
       relayHints.length > 0
