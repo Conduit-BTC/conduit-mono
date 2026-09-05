@@ -24,6 +24,11 @@ import {
   type RelaySettingsState,
 } from "./relay-settings"
 import { getAccountRelayScope, getLegacySignedInRelayScopes } from "./session"
+import {
+  resumeAccountNetworkPreferenceUpdate,
+  type AccountNetworkPreferenceUpdateRecord,
+  type AccountNetworkPreferenceUpdateRepository,
+} from "./network-preference-update-state"
 
 const LEGACY_MIGRATION_KEY_PREFIX = "conduit:network-legacy-migration:v1"
 const LEGACY_READ_RECOVERY_KEY_PREFIX =
@@ -84,6 +89,9 @@ export interface AccountNetworkPreferencesReconciliation {
   ownerRelayList: OwnerRelayListResolution
   inboxDeclaration: InboxDeclarationResolution
   legacyMigration: LegacyRelaySettingsMigrationStatus
+  pendingUpdate: AccountNetworkPreferenceUpdateRecord | null
+  /** Content-free durable checkpoint load status for retry/recovery UX. */
+  pendingUpdateStatus: "none" | "ready" | "unavailable"
 }
 
 export interface LegacyRelaySettingsStorage {
@@ -100,6 +108,7 @@ export interface ReconcileAccountNetworkPreferencesOptions {
   storage?: LegacyRelaySettingsStorage
   resolveOwner?: typeof resolveOwnerRelayList
   resolveInbox?: typeof resolveInboxDeclaration
+  networkPreferenceUpdateRepository?: AccountNetworkPreferenceUpdateRepository
 }
 
 function migrationMarkerKey(pubkey: string): string {
@@ -786,19 +795,55 @@ export async function reconcileAccountNetworkPreferences(
     inboxDeclaration,
     draft,
   })
-  setInboxMigrationRecoveryRelayUrls(
-    normalizedPubkey,
-    legacyReadRecovery?.readRelayUrls ?? []
-  )
   setAccountRelaySettingsProjection(
     accountScope,
     projection.runtimeRelaySettings,
     { signedRelayListAuthoritative: Boolean(ownerRelayList.current) }
+  )
+  let pendingUpdate: AccountNetworkPreferenceUpdateRecord | null = null
+  let pendingUpdateStatus: AccountNetworkPreferencesReconciliation["pendingUpdateStatus"] =
+    "none"
+  try {
+    pendingUpdate = await resumeAccountNetworkPreferenceUpdate(
+      normalizedPubkey,
+      options.networkPreferenceUpdateRepository
+    )
+    pendingUpdateStatus = pendingUpdate ? "ready" : "none"
+  } catch {
+    // Network reconciliation remains usable if IndexedDB is unavailable. A
+    // durable checkpoint is never reconstructed from partial process state.
+    pendingUpdateStatus = "unavailable"
+  }
+  if (pendingUpdate?.legacyRecoveryDiscarded) {
+    legacyReadRecovery = null
+    if (storage) {
+      clearLegacyRelayReadRecovery({
+        pubkey: normalizedPubkey,
+        accountScope,
+        storage,
+      })
+    }
+  } else if (pendingUpdate?.legacyRecoveryRemovedRelayUrls.length) {
+    const removed = new Set(pendingUpdate.legacyRecoveryRemovedRelayUrls)
+    legacyReadRecovery = legacyReadRecovery
+      ? {
+          ...legacyReadRecovery,
+          readRelayUrls: legacyReadRecovery.readRelayUrls.filter(
+            (relayUrl) => !removed.has(relayUrl)
+          ),
+        }
+      : null
+  }
+  setInboxMigrationRecoveryRelayUrls(
+    normalizedPubkey,
+    legacyReadRecovery?.readRelayUrls ?? []
   )
   return {
     projection,
     ownerRelayList,
     inboxDeclaration,
     legacyMigration,
+    pendingUpdate,
+    pendingUpdateStatus,
   }
 }

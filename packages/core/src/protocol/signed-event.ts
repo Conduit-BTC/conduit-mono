@@ -64,3 +64,20 @@ export function isValidSignedPublicNostrEvent(
     return false
   }
 }
+
+export function areSameSignedPublicNostrEvent(
+  left: SignedPublicNostrEvent | undefined,
+  right: SignedPublicNostrEvent | undefined
+): boolean {
+  return Boolean(
+    left &&
+    right &&
+    left.id === right.id &&
+    left.pubkey === right.pubkey &&
+    left.created_at === right.created_at &&
+    left.kind === right.kind &&
+    left.content === right.content &&
+    left.sig === right.sig &&
+    JSON.stringify(left.tags) === JSON.stringify(right.tags)
+  )
+}
