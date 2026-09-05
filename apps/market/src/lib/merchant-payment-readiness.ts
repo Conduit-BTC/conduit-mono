@@ -39,15 +39,22 @@ export function getMerchantPaymentReadiness(input: {
 }): MerchantPaymentReadiness {
   if (!input.paymentRequired) return "not_required"
 
+  if (input.profileState === "loading") return "checking_profile"
+  if (input.profileState === "unavailable") return "profile_unavailable"
+
   const hasValidAddress = isValidLud16Address(input.lud16?.trim() ?? "")
-  if (!hasValidAddress) {
-    if (input.profileState === "loading") return "checking_profile"
-    return input.profileState === "unavailable"
-      ? "profile_unavailable"
-      : "missing_address"
-  }
+  if (!hasValidAddress) return "missing_address"
 
   if (input.lnurlStatus === "pending") return "checking_endpoint"
   if (input.lnurlStatus === "ready") return "ready"
   return "endpoint_unavailable"
+}
+
+export function getMerchantPaymentLud16(input: {
+  profileState: MerchantPaymentProfileState
+  lud16: string | null | undefined
+}): string | undefined {
+  if (input.profileState !== "available") return undefined
+  const lud16 = input.lud16?.trim() ?? ""
+  return isValidLud16Address(lud16) ? lud16 : undefined
 }

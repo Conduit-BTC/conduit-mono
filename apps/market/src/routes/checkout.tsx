@@ -154,7 +154,10 @@ import {
   type ShippingCheckoutState,
   type ShippingValidationError,
 } from "../lib/checkout-validation"
-import { getMerchantPaymentReadiness } from "../lib/merchant-payment-readiness"
+import {
+  getMerchantPaymentLud16,
+  getMerchantPaymentReadiness,
+} from "../lib/merchant-payment-readiness"
 import {
   clearCheckoutShippingSession,
   DEFAULT_CHECKOUT_SHIPPING,
@@ -1452,7 +1455,10 @@ function CheckoutPage() {
     requireCompleteProfileEvidence: true,
   })
   const merchantProfile = merchantTrust.profile
-  const merchantLud16 = merchantProfile?.lud16
+  const merchantLud16 = getMerchantPaymentLud16({
+    profileState: merchantTrust.profileEvidenceState,
+    lud16: merchantProfile?.lud16,
+  })
   // Shared LNURL-pay metadata preflight: the same cached read the HUD and
   // cart warmed while this merchant had items in the cart. The lease and
   // Lightning-address key control refresh; no invoice is requested here.
@@ -2601,6 +2607,26 @@ function CheckoutPage() {
     const webLnAvailableNow = hasWebLN()
     if (webLnAvailableNow !== weblnAvailable)
       setWeblnAvailable(webLnAvailableNow)
+    if (merchantTrust.profileEvidenceState !== "available") {
+      recordCheckoutStepResult({
+        checkoutMode: requestedCheckoutMode,
+        rail: "lightning",
+        status: "blocked",
+        stepName: "direct_payment",
+      })
+      recordCheckoutResult({
+        amountSats: total,
+        checkoutMode: requestedCheckoutMode,
+        rail: "lightning",
+        status: "blocked",
+      })
+      setError(
+        merchantTrust.profileEvidenceState === "loading"
+          ? "Wait while Conduit checks the merchant payment profile. You can still send the order first."
+          : "The merchant payment profile could not be confirmed from relays. You can still send the order first."
+      )
+      return
+    }
     if (!merchantLud16) {
       recordCheckoutStepResult({
         checkoutMode: requestedCheckoutMode,

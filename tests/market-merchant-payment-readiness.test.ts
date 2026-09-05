@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import {
+  getMerchantPaymentLud16,
   getMerchantPaymentProfileState,
   getMerchantPaymentReadiness,
 } from "../apps/market/src/lib/merchant-payment-readiness"
@@ -19,6 +20,10 @@ describe("shopper merchant payment readiness", () => {
     )
     expect(source).not.toContain(
       'merchantProfileUnavailable: merchantTrust.profileState === "limited"'
+    )
+    expect(source).toContain("getMerchantPaymentLud16({")
+    expect(source).toContain(
+      'merchantTrust.profileEvidenceState !== "available"'
     )
   })
 
@@ -73,10 +78,31 @@ describe("shopper merchant payment readiness", () => {
       getMerchantPaymentReadiness({
         paymentRequired: true,
         profileState: "unavailable",
-        lud16: undefined,
-        lnurlStatus: "no_address",
+        lud16: "cached@wallet.example",
+        lnurlStatus: "ready",
       })
     ).toBe("profile_unavailable")
+  })
+
+  it("exposes a payment destination only from complete current profile evidence", () => {
+    expect(
+      getMerchantPaymentLud16({
+        profileState: "unavailable",
+        lud16: "cached@wallet.example",
+      })
+    ).toBeUndefined()
+    expect(
+      getMerchantPaymentLud16({
+        profileState: "loading",
+        lud16: "cached@wallet.example",
+      })
+    ).toBeUndefined()
+    expect(
+      getMerchantPaymentLud16({
+        profileState: "available",
+        lud16: " current@wallet.example ",
+      })
+    ).toBe("current@wallet.example")
   })
 
   it("requires endpoint evidence after a Lightning Address is present", () => {

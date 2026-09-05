@@ -257,12 +257,14 @@ test("market checkout evidence does not mistake cached display data for a comple
           merchantPubkey: string,
           options?: {
             publicProfileName?: string
+            publicProfileLud16?: string
             strictProfileEvidenceUnavailable?: boolean
           }
         ) => void
       }
       mountMerchantTrustHarness(container, merchantPubkey, merchantPubkey, {
         publicProfileName: "Cached merchant display",
+        publicProfileLud16: "stale@wallet.example",
         strictProfileEvidenceUnavailable: true,
       })
     },

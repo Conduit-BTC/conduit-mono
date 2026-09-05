@@ -11,6 +11,7 @@ import {
 
 import { useMerchantTrustContext } from "../hooks/useMerchantTrustContext"
 import { getFastCheckoutUnavailableReasons } from "../lib/checkout-validation"
+import { getMerchantPaymentLud16 } from "../lib/merchant-payment-readiness"
 
 export function mountMerchantTrustHarness(
   container: HTMLElement,
@@ -18,6 +19,7 @@ export function mountMerchantTrustHarness(
   merchantPubkey: string,
   options: {
     publicProfileName?: string
+    publicProfileLud16?: string
     strictProfileEvidenceUnavailable?: boolean
   } = {}
 ): () => void {
@@ -30,6 +32,7 @@ export function mountMerchantTrustHarness(
       {
         pubkey: merchantPubkey,
         displayName: options.publicProfileName,
+        lud16: options.publicProfileLud16,
       }
     )
   }
@@ -60,9 +63,13 @@ export function mountMerchantTrustHarness(
   function TrustProbe() {
     const auth = useAuth()
     const trust = useMerchantTrustContext(trustInput)
+    const merchantPaymentLud16 = getMerchantPaymentLud16({
+      profileState: trust.profileEvidenceState,
+      lud16: trust.profile?.lud16,
+    })
     const fastCheckoutReason = getFastCheckoutUnavailableReasons({
       walletPayCapable: true,
-      merchantLud16: trust.profile?.lud16,
+      merchantLud16: merchantPaymentLud16,
       merchantProfileLoading: trust.profileEvidenceState === "loading",
       merchantProfileUnavailable: trust.profileEvidenceState === "unavailable",
       lnurlAllowsNostr: false,
