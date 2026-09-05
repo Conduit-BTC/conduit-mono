@@ -164,6 +164,10 @@ import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { useMerchantPaymentAutomation } from "../hooks/useMerchantPaymentAutomation"
 import { OrderStockPanel } from "../components/OrderStockPanel"
 import {
+  confirmMerchantPayment,
+  type MerchantPaymentConfirmationInput,
+} from "../lib/order-payment-release"
+import {
   eventMarketHandoffDeliveryNeedsRetry,
   eventMarketHandoffRecipientAcknowledged,
   issueOrganizerReadyReceipt,
@@ -736,6 +740,7 @@ function OrdersPage() {
   >(null)
   const [paymentConfirmationTarget, setPaymentConfirmationTarget] =
     useState<MerchantPaymentConfirmationTarget | null>(null)
+  const [releaseWithPayment, setReleaseWithPayment] = useState(false)
   const [confirmingOrganizerFallback, setConfirmingOrganizerFallback] =
     useState(false)
   const [confirmingOrganizerRelease, setConfirmingOrganizerRelease] =
@@ -1226,6 +1231,7 @@ function OrdersPage() {
     setReopenConfirmation(null)
     setReopenConfirmationError(null)
     setPaymentConfirmationTarget(null)
+    setReleaseWithPayment(false)
     setConfirmingOrganizerFallback(false)
     setConfirmingOrganizerRelease(false)
     setOrganizerReleaseConfirmed(false)
@@ -2023,6 +2029,29 @@ function OrdersPage() {
     },
   })
 
+  const confirmPaymentMutation = useMutation({
+    mutationFn: (input: MerchantPaymentConfirmationInput) =>
+      runExclusiveOrderAction(orderActionLockRef, () =>
+        confirmMerchantPayment(input)
+      ),
+    onSuccess: async (result, input) => {
+      setHandoffDeliveryRevision((revision) => revision + 1)
+      if (selected?.orderId === input.orderId) {
+        flash(
+          result.release === "needs_attention"
+            ? "Payment confirmed. Organizer release needs attention; review or retry the release below. Do not request another payment."
+            : result.release === "delivered"
+              ? "Payment confirmed and organizer release authorization delivered"
+              : "Payment confirmed. Prepare the order before authorizing pickup."
+        )
+        if (result.release !== "not_requested") {
+          await handoffAcksQuery.refetch()
+        }
+      }
+      await invalidateOrderQueries()
+    },
+  })
+
   const coordinatedFallbackMutation = useMutation({
     mutationFn: () =>
       runExclusiveOrderAction(orderActionLockRef, async () => {
@@ -2327,6 +2356,7 @@ function OrdersPage() {
 
   const orderActionPending =
     stockUpdateMutation.isPending ||
+    confirmPaymentMutation.isPending ||
     organizerReceiptMutation.isPending ||
     coordinatedFallbackMutation.isPending ||
     reopenOrderMutation.isPending ||
@@ -2643,6 +2673,49 @@ function OrdersPage() {
                             </h4>
                           )}
 
+                          {confirmPaymentMutation.error &&
+                            confirmPaymentMutation.variables?.orderId ===
+                              selected?.orderId && (
+                              <p role="alert" className="text-sm text-error">
+                                Payment confirmation could not be recorded.
+                                Review the order status before retrying. No new
+                                organizer release was authorized by this
+                                attempt.
+                              </p>
+                            )}
+
+                          {selectedUsesOrganizerHandoff &&
+                            (merchantPaid || selectedOrderIsZeroCost) &&
+                            !selectedReadyDelivery &&
+                            !selectedRevocationDelivery &&
+                            !exactHandoffAck && (
+                              <div className="rounded-md border border-[var(--border-default)] p-3">
+                                <h4 className="text-sm font-semibold">
+                                  Ready for organizer pickup?
+                                </h4>
+                                <p className="mt-1 text-sm text-[var(--text-secondary)]">
+                                  Confirm the order is prepared, then share its
+                                  pickup authorization with the organizer.
+                                  Payment confirmation alone does not release
+                                  the order.
+                                </p>
+                                <Button
+                                  className="mt-3"
+                                  size="sm"
+                                  disabled={
+                                    orderActionPending ||
+                                    !pickupAuthorizationVerified
+                                  }
+                                  onClick={() => {
+                                    setOrganizerReleaseConfirmed(false)
+                                    setConfirmingOrganizerRelease(true)
+                                  }}
+                                >
+                                  Prepare organizer release
+                                </Button>
+                              </div>
+                            )}
+
                           {canRequestPaymentOutOfBand && (
                             <div className="rounded-md border border-warning/30 bg-warning/10 p-3 text-sm leading-6 text-warning">
                               <div className="font-semibold">
@@ -2674,6 +2747,8 @@ function OrdersPage() {
                                     onClick={() => {
                                       if (action.action === "confirm_payment") {
                                         if (!selected) return
+                                        setReleaseWithPayment(false)
+                                        confirmPaymentMutation.reset()
                                         setPaymentConfirmationTarget(
                                           captureMerchantPaymentConfirmationTarget(
                                             selected
@@ -3923,7 +3998,10 @@ function OrdersPage() {
                 <AlertDialog
                   open={paymentConfirmationSelection !== null}
                   onOpenChange={(open) => {
-                    if (!open) setPaymentConfirmationTarget(null)
+                    if (!open) {
+                      setPaymentConfirmationTarget(null)
+                      setReleaseWithPayment(false)
+                    }
                   }}
                 >
                   <AlertDialogContent>
@@ -3937,11 +4015,41 @@ function OrdersPage() {
                           : "Continue only after independently verifying this order's payment settled. This records payment as confirmed in your encrypted order history and unlocks fulfillment."}
                       </AlertDialogDescription>
                     </AlertDialogHeader>
+                    {selectedUsesOrganizerHandoff &&
+                      !selectedReadyDelivery &&
+                      !selectedRevocationDelivery && (
+                        <div className="space-y-2">
+                          <div className="flex items-start gap-2">
+                            <Checkbox
+                              id="release-with-payment"
+                              checked={releaseWithPayment}
+                              onCheckedChange={(checked) =>
+                                setReleaseWithPayment(checked === true)
+                              }
+                            />
+                            <Label
+                              htmlFor="release-with-payment"
+                              className="text-sm leading-5"
+                            >
+                              The order is ready. Also authorize the organizer
+                              to release it for pickup.
+                            </Label>
+                          </div>
+                          <p className="text-xs text-[var(--text-secondary)]">
+                            Shares only the pickup code, exact event/product
+                            evidence and quantity. Buyer contact, address,
+                            notes, invoices and payment details stay private.
+                          </p>
+                        </div>
+                      )}
                     <AlertDialogFooter>
                       <Button
                         type="button"
                         variant="outline"
-                        onClick={() => setPaymentConfirmationTarget(null)}
+                        onClick={() => {
+                          setPaymentConfirmationTarget(null)
+                          setReleaseWithPayment(false)
+                        }}
                       >
                         Keep unpaid
                       </Button>
@@ -3951,24 +4059,36 @@ function OrdersPage() {
                           orderActionPending || !paymentConfirmationSelection
                         }
                         onClick={() => {
-                          if (!paymentConfirmationSelection) {
+                          if (!paymentConfirmationSelection || !pubkey) {
                             setPaymentConfirmationTarget(null)
                             return
                           }
-                          advanceStatusMutation.mutate({
-                            nextStatus: "paid",
-                            conversation: paymentConfirmationSelection,
+                          confirmPaymentMutation.mutate({
+                            merchantPubkey: pubkey,
+                            buyerPubkey:
+                              paymentConfirmationSelection.buyerPubkey,
+                            orderId: paymentConfirmationSelection.orderId,
+                            delivery: operationalDelivery,
+                            order: selectedOrder,
+                            authorizeOrganizerRelease:
+                              releaseWithPayment &&
+                              selectedUsesOrganizerHandoff &&
+                              !selectedReadyDelivery &&
+                              !selectedRevocationDelivery,
                           })
                           setPaymentConfirmationTarget(null)
+                          setReleaseWithPayment(false)
                         }}
                       >
-                        {advanceStatusMutation.isPending
+                        {confirmPaymentMutation.isPending
                           ? buyerInboxKnown
                             ? "Sending…"
                             : "Recording…"
-                          : buyerInboxKnown
-                            ? "Confirm payment"
-                            : "Record payment received"}
+                          : releaseWithPayment
+                            ? "Confirm payment and authorize pickup"
+                            : buyerInboxKnown
+                              ? "Confirm payment"
+                              : "Record payment received"}
                       </Button>
                     </AlertDialogFooter>
                   </AlertDialogContent>

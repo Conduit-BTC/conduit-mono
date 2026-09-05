@@ -1398,8 +1398,14 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
   })!
   const receiptPanel = page.getByTestId("merchant-organizer-handoff-receipt")
   await expect(receiptPanel).toBeVisible({ timeout: 30_000 })
-  const shareReceipt = receiptPanel.getByRole("button", {
-    name: "Review release authorization",
+  await expect(
+    page.getByRole("heading", {
+      name: "Ready for organizer pickup?",
+      exact: true,
+    })
+  ).toBeVisible()
+  const shareReceipt = page.getByRole("button", {
+    name: "Prepare organizer release",
     exact: true,
   })
   await expect(shareReceipt).toBeEnabled({ timeout: 30_000 })
