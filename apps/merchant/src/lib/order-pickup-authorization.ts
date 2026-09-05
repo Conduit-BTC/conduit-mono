@@ -7,6 +7,7 @@ import {
   resolveEventMarketProductFulfillment,
   resolveEventMarketProductParticipation,
   resolveOrderPickupHandoffAuthority,
+  type CommerceProductRecord,
   type EventMarketResolution,
   type OrderPickupFulfillmentSchema,
   type OrderSummary,
@@ -32,7 +33,11 @@ export type MerchantPickupAuthorizationFailure =
 
 export type MerchantPickupAuthorizationResult =
   | { status: "not_required" }
-  | { status: "verified" }
+  | {
+      status: "verified"
+      market: EventMarketResolution
+      products: CommerceProductRecord[]
+    }
   | {
       status: "unverified"
       reason: MerchantPickupAuthorizationFailure
@@ -42,7 +47,6 @@ export interface MerchantPickupAuthorizationInput {
   items: OrderSummary["items"]
   merchantPubkey: string
   nowMs?: number
-  /** Receives the exact verified graph for a same-action Core authorization. */
   onVerifiedMarket?: (market: EventMarketResolution) => void
 }
 
@@ -382,6 +386,7 @@ export async function verifyMerchantPickupOrderAuthorization(
     return { status: "unverified", reason: "network_unavailable" }
   }
 
+  const verifiedProducts: CommerceProductRecord[] = []
   for (const item of pickupItems) {
     const coordinate = canonicalCoordinate(item.productId, [30402])
     if (!coordinate) {
@@ -463,10 +468,11 @@ export async function verifyMerchantPickupOrderAuthorization(
     ) {
       return { status: "unverified", reason: "cost_mismatch" }
     }
+    verifiedProducts.push(record)
   }
 
   input.onVerifiedMarket?.(resolution)
-  return { status: "verified" }
+  return { status: "verified", market: resolution, products: verifiedProducts }
 }
 
 export function getMerchantPickupAuthorizationMessage(
