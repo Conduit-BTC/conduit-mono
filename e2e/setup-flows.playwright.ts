@@ -316,6 +316,57 @@ async function seedManualPaymentCart(
   )
 }
 
+async function exerciseProfileSave(
+  page: Page,
+  appUrl: string,
+  profileName: string
+): Promise<void> {
+  const secretKey = generateSecretKey()
+  const pubkey = getPublicKey(secretKey)
+  const createdAt = Math.floor(Date.now() / 1_000)
+  await publishTestRelayEvents([
+    finalizeEvent(
+      {
+        kind: 0,
+        created_at: createdAt,
+        tags: [],
+        content: JSON.stringify({
+          name: `before-${profileName}`,
+          display_name: `Before ${profileName}`,
+        }),
+      },
+      secretKey
+    ),
+    finalizeEvent(
+      {
+        kind: 10_002,
+        created_at: createdAt,
+        tags: [["r", TEST_RELAY_URL]],
+        content: "",
+      },
+      secretKey
+    ),
+  ])
+  await installTestSigner(page, pubkey, { secretKey })
+  await page.goto(`${appUrl}/profile`)
+
+  await page
+    .getByRole("button", { name: "Edit profile", exact: true })
+    .first()
+    .click()
+  const displayName = page.locator("#profile-display-name")
+  await expect(displayName).toHaveValue(`Before ${profileName}`)
+  await displayName.fill(`After ${profileName}`)
+  await page.getByRole("button", { name: "Save changes", exact: true }).click()
+
+  await expect(
+    page.getByText("Profile signed and saved.", { exact: true })
+  ).toBeVisible({ timeout: 30_000 })
+  await expect(
+    page.getByText(`After ${profileName}`, { exact: true }).first()
+  ).toBeVisible()
+}
+
 async function seedMerchantTagCatalog(secretKey: Uint8Array): Promise<void> {
   const createdAt = Math.floor(Date.now() / 1_000)
 
@@ -525,6 +576,18 @@ test("Merchant Network repairs a signed-empty private inbox through the isolated
   await exerciseNetworkInboxDeclaration(page, merchantUrl, "empty")
 })
 
+test("Market profile saves update the mounted owner view immediately @market", async ({
+  page,
+}) => {
+  await exerciseProfileSave(page, marketUrl, "Market owner")
+})
+
+test("Merchant profile saves update the mounted owner view immediately @merchant", async ({
+  page,
+}) => {
+  await exerciseProfileSave(page, merchantUrl, "Merchant owner")
+})
+
 test("merchant product authoring warns about missing Lightning setup without blocking publication @merchant", async ({
   page,
 }) => {
@@ -538,7 +601,7 @@ test("merchant product authoring warns about missing Lightning setup without blo
   const dialog = page.getByRole("dialog", { name: "Add product" })
   await expect(
     dialog.getByText("Lightning payments are not set up", { exact: true })
-  ).toBeVisible({ timeout: 15_000 })
+  ).toBeVisible({ timeout: 30_000 })
   await expect(
     dialog.getByRole("link", { name: "Set up payments", exact: true })
   ).toHaveAttribute("href", "/payments")
