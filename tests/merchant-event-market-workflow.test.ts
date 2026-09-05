@@ -10,10 +10,12 @@ import {
   getDiscoveredEventMarketStorageKey,
   getOrganizerEventMarketDisplayState,
   getOrganizerEventMarketStorageKey,
+  isPreferredOrganizerEventMarketListResolution,
   loadSavedDiscoveredEventMarkets,
   loadSavedOrganizerEventMarkets,
   rememberDiscoveredEventMarket,
   rememberOrganizerEventMarket,
+  selectOrganizerEventMarketResolution,
   updateOrganizerCollectionProducts,
 } from "../apps/merchant/src/lib/event-market-workflow"
 import {
@@ -205,6 +207,54 @@ describe("merchant organizer event workflow", () => {
         port: "7001",
       })
     ).toContain(selected!.naddr)
+  })
+
+  it("uses an exact hinted read when the organizer list only has stale evidence", () => {
+    const hintedRelay = "wss://current-hint.example/events"
+    const hintedReference = encodeEventMarketNaddr(COLLECTION, [hintedRelay])
+    const staleListMarket = {
+      collectionCoordinate: COLLECTION,
+      naddr: encodeEventMarketNaddr(COLLECTION, [
+        "wss://stale-cache.example/events",
+      ]),
+      state: "stale",
+    }
+    const currentHintedMarket = {
+      collectionCoordinate: COLLECTION,
+      naddr: hintedReference,
+      state: "active",
+    }
+
+    const selectedListMarket = findOrganizerEventMarketByReference(
+      [staleListMarket],
+      hintedReference
+    )
+
+    expect(selectedListMarket).toBe(staleListMarket)
+    expect(
+      isPreferredOrganizerEventMarketListResolution(selectedListMarket)
+    ).toBe(false)
+    expect(
+      isPreferredOrganizerEventMarketListResolution({ state: "active" })
+    ).toBe(true)
+    expect(
+      isPreferredOrganizerEventMarketListResolution({ state: "deleted" })
+    ).toBe(true)
+    const selected = selectOrganizerEventMarketResolution(
+      selectedListMarket,
+      currentHintedMarket
+    )
+    expect(selected).toBe(currentHintedMarket)
+    expect(
+      getEventMarketUrl(selected!.naddr, {
+        hostname: "127.0.0.1",
+        protocol: "http:",
+        port: "7001",
+      })
+    ).toContain(selected!.naddr)
+    expect(
+      decodeEventMarketReference(selected!.naddr, [30405])?.relayHints
+    ).toEqual([hintedRelay])
   })
 
   it("keeps a hinted selection through bare edit and publish references for sharing", () => {

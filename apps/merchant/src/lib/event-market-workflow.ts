@@ -286,6 +286,25 @@ export function findOrganizerEventMarketByReference<
   )
 }
 
+export function isPreferredOrganizerEventMarketListResolution(
+  market: { state: string } | undefined
+): boolean {
+  return (
+    market !== undefined &&
+    market.state !== "missing" &&
+    market.state !== "unavailable" &&
+    market.state !== "stale"
+  )
+}
+
+export function selectOrganizerEventMarketResolution<
+  T extends { state: string },
+>(listMarket: T | undefined, hintedMarket: T | undefined): T | undefined {
+  return isPreferredOrganizerEventMarketListResolution(listMarket)
+    ? listMarket
+    : (hintedMarket ?? listMarket)
+}
+
 export function updateOrganizerCollectionProducts(
   currentProductCoordinates: readonly string[],
   productCoordinate: string,

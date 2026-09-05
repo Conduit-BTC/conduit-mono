@@ -61,10 +61,12 @@ import type { OrganizerEventMarketFormValues } from "../lib/event-market-form"
 import {
   findOrganizerEventMarketByReference,
   findSavedOrganizerEventMarketReference,
+  isPreferredOrganizerEventMarketListResolution,
   loadSavedDiscoveredEventMarkets,
   loadSavedOrganizerEventMarkets,
   rememberDiscoveredEventMarket,
   rememberOrganizerEventMarket,
+  selectOrganizerEventMarketResolution,
   type OrganizerCollectionMembershipAction,
   type SavedOrganizerEventMarketReference,
 } from "../lib/event-market-workflow"
@@ -606,8 +608,13 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
       return null
     }
   }, [selectedReference])
-  const selectedFromList = selectedReference
+  const selectedListMarket = selectedReference
     ? findOrganizerEventMarketByReference(markets, selectedReference)
+    : undefined
+  const selectedFromList = isPreferredOrganizerEventMarketListResolution(
+    selectedListMarket
+  )
+    ? selectedListMarket
     : undefined
   const selectedMarketQuery = useQuery({
     queryKey: [
@@ -620,7 +627,11 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
       resolveOrganizerEventMarket(selectedReference, organizerPubkey),
     retry: false,
   })
-  const selectedMarket = selectedFromList ?? selectedMarketQuery.data ?? null
+  const selectedMarket =
+    selectOrganizerEventMarketResolution(
+      selectedListMarket,
+      selectedMarketQuery.data
+    ) ?? null
   const handoffReceiptsQuery = useQuery({
     queryKey: [
       "merchant-organizer-handoff-receipts",
