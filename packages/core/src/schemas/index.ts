@@ -377,13 +377,34 @@ export interface OrderPickupHandoffAuthority {
 export function resolveOrderPickupHandoffAuthority(
   fulfillment: Pick<
     OrderPickupFulfillmentSchema,
-    "handoffMode" | "handlerPubkey" | "product"
+    "handoffMode" | "handlerPubkey" | "product" | "organizerPubkey" | "option"
   >
 ): OrderPickupHandoffAuthority {
   if (fulfillment.handoffMode && fulfillment.handlerPubkey) {
+    const merchantPubkey = fulfillment.product.merchantPubkey.toLowerCase()
+    const organizerPubkey = fulfillment.organizerPubkey.toLowerCase()
+    const handlerPubkey = fulfillment.handlerPubkey.toLowerCase()
+    const pickupAuthorPubkey =
+      fulfillment.option.coordinate.split(":")[1]?.toLowerCase() ?? ""
+    // Early own-product snapshots called this organizer handoff even though
+    // the merchant, organizer, pickup author, and handler are one account.
+    // Normalize only that exact historical case so no organizer receipt is
+    // created and current merchant-only evidence remains compatible.
+    if (
+      fulfillment.handoffMode === "organizer_handoff" &&
+      merchantPubkey === organizerPubkey &&
+      handlerPubkey === organizerPubkey &&
+      pickupAuthorPubkey === organizerPubkey
+    ) {
+      return {
+        mode: "merchant_handoff",
+        handlerPubkey: merchantPubkey,
+        legacySafeDefault: false,
+      }
+    }
     return {
       mode: fulfillment.handoffMode,
-      handlerPubkey: fulfillment.handlerPubkey.toLowerCase(),
+      handlerPubkey,
       legacySafeDefault: false,
     }
   }

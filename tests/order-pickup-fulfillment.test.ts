@@ -131,6 +131,16 @@ describe("pickup order fulfillment evidence", () => {
     expect(resolveOrderPickupHandoffAuthority(ownPickup).mode).toBe(
       "merchant_handoff"
     )
+    expect(
+      resolveOrderPickupHandoffAuthority({
+        ...ownPickup,
+        handoffMode: "organizer_handoff",
+      })
+    ).toEqual({
+      mode: "merchant_handoff",
+      handlerPubkey: ORGANIZER,
+      legacySafeDefault: false,
+    })
   })
   it("derives explicit handoff authority and keeps legacy snapshots merchant-only", () => {
     const legacy = pickupFulfillment()
