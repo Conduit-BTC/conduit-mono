@@ -8,20 +8,6 @@ import {
 } from "../apps/market/src/lib/cart-hud"
 
 describe("Market cart HUD policy", () => {
-  it("shows the cart while browsing event catalogs", () => {
-    for (const pathname of ["/events", "/events/", "/events/naddr1example"]) {
-      expect(getCartHudRouteMode(pathname)).toBe("expanded")
-    }
-    for (const pathname of [
-      "/eventsettings",
-      "/checkout",
-      "/cart",
-      "/orders",
-    ]) {
-      expect(getCartHudRouteMode(pathname)).toBe("suppressed")
-    }
-  })
-
   it("matches the Merchant navigation selected and hover palette", () => {
     const source = readFileSync(
       new URL(
@@ -129,8 +115,12 @@ describe("Market cart HUD policy", () => {
   it("expands on browse surfaces, compacts product detail, and suppresses workflows", () => {
     expect(getCartHudRouteMode("/products")).toBe("expanded")
     expect(getCartHudRouteMode("/store/merchant")).toBe("expanded")
+    expect(getCartHudRouteMode("/events")).toBe("expanded")
+    expect(getCartHudRouteMode("/events/")).toBe("expanded")
+    expect(getCartHudRouteMode("/events/naddr1example")).toBe("expanded")
     expect(getCartHudRouteMode("/products/30402:merchant:item")).toBe("compact")
     for (const pathname of [
+      "/eventsettings",
       "/cart",
       "/checkout",
       "/orders",
