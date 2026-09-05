@@ -454,7 +454,7 @@ function getPublishErrorMessage(
     ) ||
     error.message.includes("no primary relay accepted")
   ) {
-    return `${fallback}. No relay accepted the signed event. Open Network Settings, reset to defaults or enable OUT on another relay, then try again.`
+    return `${fallback}. No relay accepted the signed event. Open Network, add another relay or enable Publish on one, then try again.`
   }
 
   return error.message

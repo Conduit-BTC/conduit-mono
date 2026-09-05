@@ -32,6 +32,7 @@ export async function publishTestRelayEvents(events: Event[]): Promise<void> {
 
 type SeedTestRelayIdentityOptions = {
   inboxDeclaration?: "ready" | "empty" | "omit"
+  relayListUrls?: readonly string[]
 }
 
 export async function seedTestRelayIdentity(
@@ -48,7 +49,10 @@ export async function seedTestRelayIdentity(
       {
         kind: 10_002,
         created_at: createdAt,
-        tags: [["r", TEST_RELAY_URL]],
+        tags: (options.relayListUrls ?? [TEST_RELAY_URL]).map((url) => [
+          "r",
+          url,
+        ]),
         content: "",
       },
       secretKey

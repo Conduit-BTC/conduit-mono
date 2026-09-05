@@ -37,7 +37,7 @@ async function openNetwork(
   ).toBeVisible({ timeout: 15_000 })
   await page.goto(`${appUrl}/network`)
   await expect(
-    page.getByRole("heading", { name: "Network Settings" })
+    page.getByRole("heading", { name: "Network", exact: true })
   ).toBeVisible()
   const section = page.getByRole("region", { name: "Media servers" })
   await expect(section).toBeVisible()

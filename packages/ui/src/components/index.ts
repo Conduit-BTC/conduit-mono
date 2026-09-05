@@ -121,16 +121,8 @@ export { Switch } from "./Switch"
 export { Tabs, TabsList, TabsTrigger, TabsContent } from "./Tabs"
 export {
   RelaySettingsPanel,
-  type RelaySettingsPanelEntry,
   type RelaySettingsPanelProps,
-  type RelaySettingsPanelState,
 } from "./RelaySettingsPanel"
-export {
-  MAX_INBOX_RELAY_SELECTION,
-  PrivateInboxSection,
-  type PrivateInboxSectionProps,
-  type PrivateInboxStatus,
-} from "./PrivateInboxSection"
 export {
   MediaServerPreferencesSection,
   type MediaServerPreferencesSectionProps,

@@ -1,13 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import {
-  getInboxRelayCandidates,
-  useAuth,
-  useConduitSession,
-  useInboxDeclaration,
-  useMediaServerPreferences,
-  useRelaySettings,
-} from "@conduit/core"
+import { useAccountNetworkSettings, useAuth } from "@conduit/core"
 import { Button, RelaySettingsPanel } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
 import { loadProductDraft } from "../lib/productDraft"
@@ -25,29 +18,14 @@ export const Route = createFileRoute("/network")({
 })
 
 function NetworkPage() {
-  const { pubkey, signer, method, authGeneration } = useAuth()
-  const session = useConduitSession()
+  const { pubkey } = useAuth()
+  const networkSettings = useAccountNetworkSettings()
   const navigate = useNavigate()
   const autoReturnStartedRef = useRef(false)
   const [hasProductDraftReturn, setHasProductDraftReturn] = useState(false)
   const [productDraftReturnError, setProductDraftReturnError] = useState<
     string | null
   >(null)
-  const relaySettings = useRelaySettings(session.relayScope, {
-    pubkey,
-    bootstrapRelayList: false,
-  })
-  const inboxDeclaration = useInboxDeclaration(pubkey, {
-    enabled: session.relaySettingsReady,
-    relayScope: session.relayScope,
-  })
-  const mediaServerPreferences = useMediaServerPreferences(pubkey, {
-    enabled: session.relaySettingsReady,
-    signer,
-    authMethod: method,
-    authGeneration,
-    relayScope: session.relayScope,
-  })
 
   useEffect(() => {
     autoReturnStartedRef.current = false
@@ -81,17 +59,22 @@ function NetworkPage() {
 
   useEffect(() => {
     const setupConfirmed =
-      inboxDeclaration.status === "ready" ||
-      (inboxDeclaration.publishSuccess &&
-        !inboxDeclaration.publishConfirmationPending)
+      (networkSettings.view.inbox.state === "declared" &&
+        networkSettings.view.inbox.coverage === "complete" &&
+        !networkSettings.view.inbox.stale) ||
+      networkSettings.view.pendingCheckpoints.some(
+        (checkpoint) =>
+          checkpoint.kind === 10050 && checkpoint.state === "confirmed"
+      )
     if (!hasProductDraftReturn || !setupConfirmed) return
 
     returnToProductDraft()
   }, [
     hasProductDraftReturn,
-    inboxDeclaration.publishConfirmationPending,
-    inboxDeclaration.publishSuccess,
-    inboxDeclaration.status,
+    networkSettings.view.inbox.coverage,
+    networkSettings.view.inbox.stale,
+    networkSettings.view.inbox.state,
+    networkSettings.view.pendingCheckpoints,
     returnToProductDraft,
   ])
 
@@ -127,66 +110,7 @@ function NetworkPage() {
             )}
           </section>
         )}
-        <RelaySettingsPanel
-          settings={relaySettings.settings}
-          authEvidenceByUrl={relaySettings.authEvidenceByUrl}
-          scanningUrls={relaySettings.scanningUrls}
-          error={relaySettings.error}
-          isLoadingPublishedRelayList={
-            relaySettings.isLoadingPublishedRelayList
-          }
-          publishedRelayListUpdatedAt={
-            relaySettings.publishedRelayListUpdatedAt
-          }
-          publishingRelayList={relaySettings.publishingRelayList}
-          publishError={relaySettings.publishError}
-          onAddRelay={relaySettings.addRelay}
-          onRefreshRelay={relaySettings.refreshRelay}
-          onRemoveRelay={relaySettings.removeRelay}
-          onToggleRead={relaySettings.toggleRelayRead}
-          onToggleWrite={relaySettings.toggleRelayWrite}
-          onReorderCommerceRelay={relaySettings.reorderRelay}
-          onReset={relaySettings.resetRelaySettings}
-          onPublishRelayList={
-            pubkey ? relaySettings.publishRelayList : undefined
-          }
-          privateInbox={
-            pubkey
-              ? {
-                  status: inboxDeclaration.status,
-                  stale: inboxDeclaration.stale,
-                  distributionRepairable:
-                    inboxDeclaration.distributionRepairable,
-                  candidateRelays: getInboxRelayCandidates(
-                    relaySettings.settings.entries,
-                    inboxDeclaration.declaredRelayUrls,
-                    inboxDeclaration.retainedRelayUrls
-                  ),
-                  lookupError: inboxDeclaration.error,
-                  publishing: inboxDeclaration.publishing,
-                  publishError: inboxDeclaration.publishError,
-                  publishSuccess: inboxDeclaration.publishSuccess,
-                  publishConfirmationPending:
-                    inboxDeclaration.publishConfirmationPending,
-                  onPublish: inboxDeclaration.publishDeclaration,
-                  onRetryLookup: inboxDeclaration.refetch,
-                }
-              : undefined
-          }
-          mediaServers={
-            pubkey
-              ? {
-                  view: mediaServerPreferences.view,
-                  onAddServer: mediaServerPreferences.addServer,
-                  onRemoveServer: mediaServerPreferences.removeServer,
-                  onMoveServer: mediaServerPreferences.moveServer,
-                  onPublish: mediaServerPreferences.publish,
-                  onRetryPublish: mediaServerPreferences.retryPublish,
-                  onRetryLookup: mediaServerPreferences.refetch,
-                }
-              : undefined
-          }
-        />
+        <RelaySettingsPanel controller={networkSettings} />
       </div>
     </div>
   )
