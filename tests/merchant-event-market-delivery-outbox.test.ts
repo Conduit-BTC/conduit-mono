@@ -8,6 +8,7 @@ import {
 import {
   __resetEventMarketTestOverrides,
   __setEventMarketTestOverrides,
+  decodeEventMarketReference,
   encodeEventMarketNaddr,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
@@ -25,6 +26,7 @@ const SECRET = generateSecretKey()
 const ORGANIZER = getPublicKey(SECRET)
 const OTHER_ORGANIZER = "f".repeat(64)
 const REFERENCE = `30405:${ORGANIZER}:public-market`
+const PUBLISH_RELAY = "wss://publish.example/events"
 
 class MemoryStorage {
   constructor(private readonly values = new Map<string, string>()) {}
@@ -68,6 +70,61 @@ function expectExactSignedEvent(
 }
 
 describe("merchant organizer delivery outbox", () => {
+  it("includes acknowledged publish relays in the organizer share link", async () => {
+    const start = new Date(Date.now() + 7 * 24 * 60 * 60 * 1_000)
+      .toISOString()
+      .slice(0, 16)
+    const end = new Date(
+      Date.now() + 7 * 24 * 60 * 60 * 1_000 + 5 * 60 * 60 * 1_000
+    )
+      .toISOString()
+      .slice(0, 16)
+    __setEventMarketTestOverrides({
+      getNdk: async () => new NDK(),
+      signDraft: async ({ draft, createdAt }) =>
+        finalizeEvent(
+          {
+            kind: draft.kind,
+            created_at: createdAt,
+            content: draft.content,
+            tags: draft.tags,
+          },
+          SECRET
+        ),
+      publishWithPlanner: async () => ({
+        plan: {
+          intent: "author_event",
+          primaryRelayUrls: [PUBLISH_RELAY],
+          broadcastRelayUrls: [],
+          parkedRelayUrls: [],
+        },
+        attemptedRelayUrls: [PUBLISH_RELAY],
+        successfulRelayUrls: [PUBLISH_RELAY],
+        failedRelayUrls: [],
+        relayFailureMessages: {},
+      }),
+    })
+
+    const result = await publishMerchantOrganizerEventMarket({
+      organizerPubkey: ORGANIZER,
+      form: {
+        ...createEmptyOrganizerEventMarketForm(),
+        title: "Public market",
+        summary: "Public organizer event",
+        imageUrl: "https://images.example/public-market.jpg",
+        eventLocation: "Public Hall",
+        start,
+        end,
+        timezone: "America/New_York",
+        pickupLocation: "Public Hall",
+      },
+    })
+
+    expect(
+      decodeEventMarketReference(result.naddr, [30405])?.relayHints
+    ).toEqual([PUBLISH_RELAY])
+  })
+
   it("retains an exact signed event before relay acknowledgement", () => {
     const storage = new MemoryStorage()
     const signedEvent = signedCollection()

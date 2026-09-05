@@ -447,6 +447,37 @@ export function isParticipationProductPreviewVerified(
   )
 }
 
+function mergeEventMarketRelayHints(
+  ...groups: ReadonlyArray<readonly string[] | undefined>
+): string[] {
+  const relayHints = new Set<string>()
+  for (const group of groups) {
+    for (const relayUrl of group ?? []) relayHints.add(relayUrl)
+  }
+  return Array.from(relayHints)
+}
+
+function resolvedEventMarketRelayHints(
+  resolution: EventMarketResolution
+): string[] {
+  return mergeEventMarketRelayHints(
+    resolution.collection?.sourceRelayUrls,
+    resolution.calendar?.sourceRelayUrls,
+    resolution.pickup?.sourceRelayUrls,
+    ...resolution.pickups.map((pickup) => pickup.sourceRelayUrls)
+  )
+}
+
+function publishedEventMarketRelayHints(
+  value: OrganizerEventMarketPublishResult
+): string[] {
+  return mergeEventMarketRelayHints(
+    value.collection.delivery.acknowledgedRelayUrls,
+    value.calendar.delivery.acknowledgedRelayUrls,
+    value.pickup?.delivery.acknowledgedRelayUrls
+  )
+}
+
 function projectEventMarket(
   resolution: EventMarketResolution
 ): MerchantOrganizerEventMarket | null {
@@ -489,7 +520,10 @@ function projectEventMarket(
       status: "organizer_only",
     })
   )
-  const naddr = encodeEventMarketNaddr(collectionCoordinate)
+  const naddr = encodeEventMarketNaddr(
+    collectionCoordinate,
+    resolvedEventMarketRelayHints(resolution)
+  )
   const calendarKind = calendar.kind === 31922 ? 31922 : 31923
   const start =
     calendarKind === 31922
@@ -580,7 +614,10 @@ function projectPublishResult(
   return {
     records,
     collectionCoordinate,
-    naddr: encodeEventMarketNaddr(collectionCoordinate),
+    naddr: encodeEventMarketNaddr(
+      collectionCoordinate,
+      publishedEventMarketRelayHints(value)
+    ),
   }
 }
 
@@ -662,7 +699,15 @@ export async function resolveOrganizerEventMarket(
   ) {
     throw new Error("The organizer event records could not be resolved.")
   }
-  return { ...normalized, naddr: parsedReference.naddr }
+  const projectedHints =
+    decodeEventMarketReference(normalized.naddr, [30405])?.relayHints ?? []
+  return {
+    ...normalized,
+    naddr: encodeEventMarketNaddr(parsedReference.coordinate, [
+      ...parsedReference.relayHints,
+      ...projectedHints,
+    ]),
+  }
 }
 
 function randomDTagSuffix(): string {

@@ -15,11 +15,13 @@ import {
   EVENT_KINDS,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
+import { attachEventSourceRelayUrl } from "@conduit/core/protocol/ndk"
 import {
   organizerEventMarketReferencesMatch,
   parseOrganizerEventMarketReference,
   resolveOrganizerEventMarket,
 } from "../apps/merchant/src/lib/event-market"
+import { loadEventCatalog } from "../apps/market/src/lib/event-market-adapter"
 import {
   parseMerchantAuthHandoffSearch,
   parseMerchantEventsSearch,
@@ -31,6 +33,7 @@ const COLLECTION = `30405:${ORGANIZER}:public-market`
 const CALENDAR = `31923:${ORGANIZER}:public-market-day`
 const HINT_RELAY = "wss://hint.example/events"
 const DISCOVERY_RELAY = "wss://discovery.example/read"
+const OBSERVED_RELAY = "wss://observed.example/events"
 
 afterEach(() => __resetEventMarketTestOverrides())
 
@@ -165,7 +168,11 @@ describe("merchant organizer event-market references", () => {
           )
         })
         return {
-          events: events.map((event) => new NDKEvent(undefined, event)),
+          events: events.map((event) => {
+            const ndkEvent = new NDKEvent(undefined, event)
+            attachEventSourceRelayUrl(ndkEvent, OBSERVED_RELAY)
+            return ndkEvent
+          }),
           relays: (options.relayUrls ?? []).map((relayUrl) => ({
             relayUrl,
             status: "success" as const,
@@ -186,9 +193,91 @@ describe("merchant organizer event-market references", () => {
       expect(relayUrls.some((relayUrl) => relayUrl !== HINT_RELAY)).toBe(true)
     }
     expect(market.collectionCoordinate).toBe(COLLECTION)
-    expect(market.naddr).toBe(imported)
+    expect(market.naddr).toBe(
+      encodeEventMarketNaddr(COLLECTION, [HINT_RELAY, OBSERVED_RELAY])
+    )
     expect(
       decodeEventMarketReference(market.naddr, [30405])?.relayHints
-    ).toEqual([HINT_RELAY])
+    ).toEqual([HINT_RELAY, OBSERVED_RELAY])
+  })
+
+  it("adds observed relay sources to a share link opened without hints", async () => {
+    const now = Math.floor(Date.now() / 1_000)
+    const readPlans: string[][] = []
+    const graph = [
+      signedEvent(
+        buildEventMarketCalendarDraft({
+          kind: EVENT_KINDS.CALENDAR_TIME,
+          dTag: "public-market-day",
+          title: "Public market day",
+          start: now + 86_400,
+          end: now + 90_000,
+          startTzid: "UTC",
+          endTzid: "UTC",
+        }),
+        now
+      ),
+      signedEvent(
+        buildEventMarketCollectionDraft({
+          dTag: "public-market",
+          title: "Public market",
+          eventCoordinate: CALENDAR,
+          productCoordinates: [],
+        }),
+        now + 1
+      ),
+    ]
+    __setEventMarketTestOverrides({
+      getRelayLists: async () => new Map(),
+      fetchEventsFanoutDetailed: async (rawFilter, options) => {
+        readPlans.push([...(options.relayUrls ?? [])])
+        const filter = rawFilter as NDKFilter
+        const events = graph
+          .filter((event) => {
+            if (filter.kinds && !filter.kinds.includes(event.kind as never)) {
+              return false
+            }
+            if (filter.authors && !filter.authors.includes(event.pubkey)) {
+              return false
+            }
+            const dTags = filter["#d"]
+            return (
+              !dTags ||
+              event.tags.some(
+                (tag) => tag[0] === "d" && dTags.includes(tag[1] ?? "")
+              )
+            )
+          })
+          .map((event) => {
+            const ndkEvent = new NDKEvent(undefined, event)
+            attachEventSourceRelayUrl(ndkEvent, OBSERVED_RELAY)
+            return ndkEvent
+          })
+        return {
+          events,
+          relays: (options.relayUrls ?? []).map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: events.length,
+          })),
+          eventsVerified: true,
+        }
+      },
+      loadCachedEvidence: async () => [],
+      persistCachedEvidence: async () => undefined,
+    })
+
+    const market = await resolveOrganizerEventMarket(COLLECTION, ORGANIZER)
+
+    expect(
+      decodeEventMarketReference(market.naddr, [30405])?.relayHints
+    ).toEqual([OBSERVED_RELAY])
+
+    readPlans.length = 0
+    const guestCatalog = await loadEventCatalog(market.naddr)
+
+    expect(guestCatalog.state).toBe("active")
+    expect(readPlans.length).toBeGreaterThan(0)
+    for (const relayUrls of readPlans) expect(relayUrls[0]).toBe(OBSERVED_RELAY)
   })
 })
