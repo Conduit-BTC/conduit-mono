@@ -83,6 +83,7 @@ import {
   PaymentTargetSelectValue,
 } from "../components/PaymentTargetSelectContent"
 import { CheckoutAvailabilityNotice } from "../components/CheckoutAvailabilityNotice"
+import { CheckoutMerchantPaymentNotice } from "../components/CheckoutMerchantPaymentNotice"
 import { SignerSwitch } from "../components/SignerSwitch"
 import { type CartItem, useCart } from "../hooks/useCart"
 import {
@@ -134,6 +135,7 @@ import {
   getFastCheckoutUnavailableReasons,
   getShippingCheckoutState,
   getShippingStepBlockingMessage,
+  getCheckoutEvidenceCheckingLabel,
   getShippingPhoneDescribedBy,
   getShippingRegionRequirement,
   getValidationErrorFields,
@@ -152,6 +154,7 @@ import {
   type ShippingCheckoutState,
   type ShippingValidationError,
 } from "../lib/checkout-validation"
+import { getMerchantPaymentReadiness } from "../lib/merchant-payment-readiness"
 import {
   clearCheckoutShippingSession,
   DEFAULT_CHECKOUT_SHIPPING,
@@ -1357,11 +1360,14 @@ function CheckoutPage() {
   }
   const checkoutAvailabilityMessage =
     selectedMerchantReadiness?.blockingMessage ?? null
-  const checkoutEvidenceIsChecking =
-    checkoutAvailability.isChecking ||
-    checkoutEventFulfillment.isChecking ||
-    (pickupHandoff?.mode === "organizer_handoff" &&
-      (organizerInboxQuery.isLoading || organizerInboxQuery.isFetching))
+  const checkoutEvidenceCheckingLabel = getCheckoutEvidenceCheckingLabel({
+    availabilityChecking: checkoutAvailability.isChecking,
+    eventPickupChecking: checkoutEventFulfillment.isChecking,
+    organizerInboxChecking:
+      pickupHandoff?.mode === "organizer_handoff" &&
+      (organizerInboxQuery.isLoading || organizerInboxQuery.isFetching),
+  })
+  const checkoutEvidenceIsChecking = checkoutEvidenceCheckingLabel !== null
   const hasUnavailableCheckoutItems = checkoutAvailabilityMessage !== null
   const checkoutAvailabilityVerified =
     checkoutAvailability.readDecision.status === "verified_at_read"
@@ -1455,6 +1461,17 @@ function CheckoutPage() {
   const lnurlPayAvailable = lnurlPreflight.status === "ready"
   const lnurlPayMetadata = lnurlPreflight.metadata
   const lnurlAllowsNostr = lnurlPayMetadata?.allowsNostr === true
+  const merchantPaymentReadiness = getMerchantPaymentReadiness({
+    paymentRequired,
+    profileState:
+      merchantTrust.profileState === "loading"
+        ? "loading"
+        : merchantTrust.profileState === "available"
+          ? "available"
+          : "unavailable",
+    lud16: merchantLud16,
+    lnurlStatus: lnurlPreflight.status,
+  })
   const guestZapMode: CheckoutZapMode =
     !isPickupCheckout &&
     anonZapSignerAvailable &&
@@ -1712,6 +1729,7 @@ function CheckoutPage() {
   const fastEligibilityInput = {
     walletPayCapable: !isGuestCheckout && canAttemptLightningPayment,
     merchantLud16,
+    merchantProfileLoading: merchantTrust.profileState === "loading",
     merchantProfileUnavailable: merchantTrust.profileState === "limited",
     lnurlAllowsNostr: lnurlReadyForSelectedPayment,
     lnurlAmountWithinRange: lnurlAmountReady,
@@ -3865,6 +3883,11 @@ function CheckoutPage() {
                     </div>
                   ) : null}
 
+                  <CheckoutMerchantPaymentNotice
+                    state={merchantPaymentReadiness}
+                    isGuestCheckout={isGuestCheckout}
+                  />
+
                   <Button
                     className="mt-2 h-11 w-full text-sm"
                     disabled={
@@ -3874,8 +3897,8 @@ function CheckoutPage() {
                     }
                     onClick={continueToPayment}
                   >
-                    {checkoutEvidenceIsChecking
-                      ? "Checking fulfillment"
+                    {checkoutEvidenceCheckingLabel
+                      ? checkoutEvidenceCheckingLabel
                       : fulfillmentBlockingMessage
                         ? "Review cart fulfillment"
                         : hasUnavailableCheckoutItems
@@ -4121,14 +4144,10 @@ function CheckoutPage() {
 
               <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
                 {/* Zap out banner */}
-                {paymentRequired && lnurlProbing && (
-                  <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-5">
-                    <div className="flex items-center gap-2 text-sm text-[var(--text-muted)]">
-                      <SpinnerIcon className="h-4 w-4 animate-spin" />
-                      Checking merchant payment capabilities...
-                    </div>
-                  </div>
-                )}
+                <CheckoutMerchantPaymentNotice
+                  state={merchantPaymentReadiness}
+                  isGuestCheckout={isGuestCheckout}
+                />
 
                 {paymentRequired &&
                   !lnurlProbing &&
@@ -4466,8 +4485,8 @@ function CheckoutPage() {
                         onClick={placeOrder}
                       >
                         <OrderIcon className="h-4 w-4" />
-                        {checkoutEvidenceIsChecking
-                          ? "Checking fulfillment"
+                        {checkoutEvidenceCheckingLabel
+                          ? checkoutEvidenceCheckingLabel
                           : "Send order"}
                       </Button>
                     ) : !guestManualInvoiceEligible ? (
@@ -4505,8 +4524,8 @@ function CheckoutPage() {
                       onClick={placeOrder}
                     >
                       <OrderIcon className="h-4 w-4" />
-                      {checkoutEvidenceIsChecking
-                        ? "Checking fulfillment"
+                      {checkoutEvidenceCheckingLabel
+                        ? checkoutEvidenceCheckingLabel
                         : hasUnavailableCheckoutItems
                           ? "Update cart quantities"
                           : hasUnpricedCheckoutItems

@@ -284,6 +284,38 @@ async function seedCachedMerchantProduct(page: Page): Promise<void> {
   }, TEST_MERCHANT_PUBKEY)
 }
 
+async function seedManualPaymentCart(
+  page: Page,
+  fixture: { productCoordinate: string; merchantPubkey: string }
+): Promise<void> {
+  await page.addInitScript(
+    ({ coordinate, pubkey }) => {
+      localStorage.setItem(
+        "conduit:cart",
+        JSON.stringify({
+          version: 2,
+          items: [
+            {
+              productId: coordinate,
+              merchantPubkey: pubkey,
+              title: "Manual payment checkout product",
+              price: 1_000,
+              currency: "SATS",
+              priceSats: 1_000,
+              format: "digital",
+              quantity: 1,
+            },
+          ],
+        })
+      )
+    },
+    {
+      coordinate: fixture.productCoordinate,
+      pubkey: fixture.merchantPubkey,
+    }
+  )
+}
+
 async function seedMerchantTagCatalog(secretKey: Uint8Array): Promise<void> {
   const createdAt = Math.floor(Date.now() / 1_000)
 
@@ -526,6 +558,98 @@ test("merchant product authoring warns about missing Lightning setup without blo
   await expect(
     dialog.getByRole("button", { name: "Publish product", exact: true })
   ).toBeEnabled()
+})
+
+test("market checkout explains missing merchant Lightning setup without blocking signed order-first @market", async ({
+  browser,
+  page,
+}) => {
+  const merchantSecret = generateSecretKey()
+  const merchantPubkey = getPublicKey(merchantSecret)
+  const createdAt = Math.floor(Date.now() / 1_000)
+  const productCoordinate = `30402:${merchantPubkey}:manual-payment-checkout`
+  await publishTestRelayEvents([
+    finalizeEvent(
+      {
+        kind: 0,
+        created_at: createdAt,
+        tags: [],
+        content: JSON.stringify({ name: "Manual Payment Merchant" }),
+      },
+      merchantSecret
+    ),
+    finalizeEvent(
+      {
+        kind: 10_002,
+        created_at: createdAt,
+        tags: [["r", TEST_RELAY_URL]],
+        content: "",
+      },
+      merchantSecret
+    ),
+    finalizeEvent(
+      {
+        kind: 30_402,
+        created_at: createdAt,
+        tags: [
+          ["d", "manual-payment-checkout"],
+          ["title", "Manual payment checkout product"],
+          ["summary", "Paid product without a profile Lightning Address."],
+          ["price", "1000", "SATS"],
+          ["type", "simple", "digital"],
+          ["stock", "3"],
+          ["image", "https://media.conduit.market/manual-payment-checkout.png"],
+        ],
+        content: "Paid product without a profile Lightning Address.",
+      },
+      merchantSecret
+    ),
+  ])
+  await installTestSigner(page, TEST_BUYER_PUBKEY)
+  await seedManualPaymentCart(page, { productCoordinate, merchantPubkey })
+
+  await page.goto(`${marketUrl}/checkout?merchant=${merchantPubkey}`)
+  await expect(
+    page.getByRole("heading", { name: "Send Order", exact: true })
+  ).toBeVisible({ timeout: 30_000 })
+  await expect(
+    page.getByText("Merchant Lightning payments are not set up", {
+      exact: true,
+    })
+  ).toBeVisible({ timeout: 30_000 })
+  await expect(
+    page.getByText(
+      "You can still send the order first and arrange payment with the merchant.",
+      { exact: true }
+    )
+  ).toBeVisible()
+  await expect(
+    page.getByText("Checking fulfillment", { exact: true })
+  ).toHaveCount(0)
+  await expect(
+    page.getByRole("button", { name: "Send order", exact: true })
+  ).toBeEnabled({
+    timeout: 30_000,
+  })
+
+  const guestPage = await browser.newPage()
+  await seedManualPaymentCart(guestPage, { productCoordinate, merchantPubkey })
+  await guestPage.goto(`${marketUrl}/checkout?merchant=${merchantPubkey}`)
+  await expect(
+    guestPage.getByText("Merchant Lightning payments are not set up", {
+      exact: true,
+    })
+  ).toBeVisible({ timeout: 30_000 })
+  await expect(
+    guestPage.getByText(
+      "Connect a signer to send the order and arrange payment with the merchant.",
+      { exact: true }
+    )
+  ).toBeVisible()
+  await expect(
+    guestPage.getByText("Checking fulfillment", { exact: true })
+  ).toHaveCount(0)
+  await guestPage.close()
 })
 
 test("merchant product tags suggest the loaded catalog without blocking freeform entry @merchant", async ({

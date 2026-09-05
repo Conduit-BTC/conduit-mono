@@ -1,0 +1,40 @@
+import { isValidLud16Address } from "@conduit/core"
+import type { MerchantLnurlPreflightStatus } from "./cart-readiness"
+
+export type MerchantPaymentProfileState =
+  "loading" | "available" | "unavailable"
+
+export type MerchantPaymentReadiness =
+  | "not_required"
+  | "checking_profile"
+  | "missing_address"
+  | "profile_unavailable"
+  | "checking_endpoint"
+  | "endpoint_unavailable"
+  | "ready"
+
+/**
+ * Shopper-facing payment readiness stays separate from product and pickup
+ * evidence. A profile address is only a candidate payment destination; the
+ * LNURL endpoint must still resolve before direct payment is considered ready.
+ */
+export function getMerchantPaymentReadiness(input: {
+  paymentRequired: boolean
+  profileState: MerchantPaymentProfileState
+  lud16: string | null | undefined
+  lnurlStatus: MerchantLnurlPreflightStatus
+}): MerchantPaymentReadiness {
+  if (!input.paymentRequired) return "not_required"
+
+  const hasValidAddress = isValidLud16Address(input.lud16?.trim() ?? "")
+  if (!hasValidAddress) {
+    if (input.profileState === "loading") return "checking_profile"
+    return input.profileState === "unavailable"
+      ? "profile_unavailable"
+      : "missing_address"
+  }
+
+  if (input.lnurlStatus === "pending") return "checking_endpoint"
+  if (input.lnurlStatus === "ready") return "ready"
+  return "endpoint_unavailable"
+}
