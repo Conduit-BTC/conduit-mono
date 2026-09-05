@@ -3836,6 +3836,114 @@ describe("commerce gateway", () => {
     })
   })
 
+  it("keeps profile absence degraded when an author relay is parked", async () => {
+    const parkedRelayUrl = "wss://parked-profile-hint.conduit.market"
+    const healthNow = Date.now()
+    recordRelayFailure(parkedRelayUrl, healthNow)
+    recordRelayFailure(parkedRelayUrl, healthNow)
+    __setRelayListTestOverrides({
+      now: () => FIXED_NOW,
+      loadCached: async (pubkey) =>
+        pubkey === "merchant"
+          ? {
+              pubkey,
+              readRelayUrls: [],
+              writeRelayUrls: [parkedRelayUrl],
+              eventCreatedAt: 1,
+              cachedAt: FIXED_NOW,
+            }
+          : undefined,
+    })
+    __setCommerceTestOverrides({
+      fetchEventsFanoutWithDiagnostics: async (_filter, options) => {
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        expect(relayUrls).not.toContain(parkedRelayUrl)
+        expect(options?.skipHealthFilter).toBe(true)
+        return {
+          events: [],
+          attemptedRelayUrls: relayUrls,
+          successfulRelayUrls: relayUrls,
+          failedRelayUrls: [],
+          cappedRelayUrls: [],
+        }
+      },
+    })
+
+    const result = await getProfiles({
+      pubkeys: ["merchant"],
+      skipCache: true,
+      requireCompleteEvidence: true,
+    })
+
+    expect(result.data.merchant).toMatchObject({ pubkey: "merchant" })
+    expect(result.meta).toMatchObject({
+      source: "public",
+      stale: false,
+      degraded: true,
+      capped: false,
+    })
+  })
+
+  it("treats a malformed latest kind-0 as unavailable profile evidence", async () => {
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () =>
+        [
+          {
+            id: "profile-valid-older",
+            pubkey: "merchant",
+            created_at: 10,
+            content: JSON.stringify({ display_name: "Older Merchant" }),
+            tags: [],
+          },
+          {
+            id: "profile-malformed-latest",
+            pubkey: "merchant",
+            created_at: 20,
+            content: "[]",
+            tags: [],
+          },
+        ] as never,
+    })
+
+    const result = await getProfiles({
+      pubkeys: ["merchant"],
+      skipCache: true,
+      requireCompleteEvidence: true,
+    })
+
+    expect(result.data.merchant?.displayName).toBe("Older Merchant")
+    expect(result.meta.degraded).toBe(true)
+  })
+
+  it("certifies a valid signed empty kind-0 after complete coverage", async () => {
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () =>
+        [
+          {
+            id: "profile-valid-empty",
+            pubkey: "merchant",
+            created_at: 20,
+            content: "{}",
+            tags: [],
+          },
+        ] as never,
+    })
+
+    const result = await getProfiles({
+      pubkeys: ["merchant"],
+      skipCache: true,
+      requireCompleteEvidence: true,
+    })
+
+    expect(result.data.merchant).toEqual({ pubkey: "merchant" })
+    expect(result.meta).toMatchObject({
+      source: "public",
+      stale: false,
+      degraded: false,
+      capped: false,
+    })
+  })
+
   it("revalidates a fresh public cache row from the authenticated owner's relay perspective", async () => {
     const localRelayUrl = "wss://127.0.0.1:7447"
     cachedProfiles.set("merchant", {

@@ -5,7 +5,23 @@ import {
 } from "../apps/market/src/lib/merchant-payment-readiness"
 import { getCheckoutEvidenceCheckingLabel } from "../apps/market/src/lib/checkout-validation"
 
+const checkoutSource = Bun.file("apps/market/src/routes/checkout.tsx").text()
+
 describe("shopper merchant payment readiness", () => {
+  it("uses strict profile evidence for checkout blockers despite richer cached display data", async () => {
+    const source = await checkoutSource
+
+    expect(source).toMatch(
+      /merchantProfileLoading:\s*merchantTrust\.profileEvidenceState === "loading"/
+    )
+    expect(source).toMatch(
+      /merchantProfileUnavailable:\s*merchantTrust\.profileEvidenceState === "unavailable"/
+    )
+    expect(source).not.toContain(
+      'merchantProfileUnavailable: merchantTrust.profileState === "limited"'
+    )
+  })
+
   it("requires complete current profile evidence before reporting absence", () => {
     expect(
       getMerchantPaymentProfileState({

@@ -1725,8 +1725,9 @@ function CheckoutPage() {
   const fastEligibilityInput = {
     walletPayCapable: !isGuestCheckout && canAttemptLightningPayment,
     merchantLud16,
-    merchantProfileLoading: merchantTrust.profileState === "loading",
-    merchantProfileUnavailable: merchantTrust.profileState === "limited",
+    merchantProfileLoading: merchantTrust.profileEvidenceState === "loading",
+    merchantProfileUnavailable:
+      merchantTrust.profileEvidenceState === "unavailable",
     lnurlAllowsNostr: lnurlReadyForSelectedPayment,
     lnurlAmountWithinRange: lnurlAmountReady,
     requiresNostrZap: requiresPublicZap,
@@ -3033,7 +3034,7 @@ function CheckoutPage() {
   const autoZapInputsResolving = isFastCheckoutInputPending({
     authPending,
     walletConnecting: wallets.loading || wallet.status === "connecting",
-    merchantProfileLoading: merchantTrust.profileState === "loading",
+    merchantProfileLoading: merchantTrust.profileEvidenceState === "loading",
     lnurlProbing,
     privateZapFallbackPending:
       !isGuestCheckout &&

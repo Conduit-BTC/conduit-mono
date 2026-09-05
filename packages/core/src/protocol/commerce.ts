@@ -2396,6 +2396,18 @@ function pickLatestProfileEvent(
     .sort(compareReplaceableProfileEvents)[0]
 }
 
+function hasValidProfileEventContent(
+  content: string | null | undefined
+): boolean {
+  if (typeof content !== "string") return false
+  try {
+    const parsed = JSON.parse(content) as unknown
+    return !!parsed && typeof parsed === "object" && !Array.isArray(parsed)
+  } catch {
+    return false
+  }
+}
+
 function pickLatestProfileEventWithContent(
   events: readonly NDKEvent[],
   pubkey: string
@@ -2415,10 +2427,12 @@ function mergeProfileEvents(
   profiles: Record<string, Profile>
   rowsToCache: CachedProfile[]
   hasResolvedProfile: boolean
+  hasInvalidLatestProfile: boolean
 } {
   const profiles = { ...currentProfiles }
   const rowsToCache: CachedProfile[] = []
   let hasResolvedProfile = false
+  let hasInvalidLatestProfile = false
 
   for (const pubkey of pubkeys) {
     const event = pickLatestProfileEventWithContent(events, pubkey)
@@ -2445,6 +2459,18 @@ function mergeProfileEvents(
         latestEventCreatedAt < currentFrontier ||
         (latestEventCreatedAt === currentFrontier &&
           (currentRow.eventId || "\uffff") <= (latestEvent.id || "\uffff")))
+    const effectiveFrontierContent =
+      latestEventWins || exactCurrentFrontierObserved
+        ? latestEvent?.content
+        : currentFrontierWins
+          ? currentRow?.rawContent
+          : undefined
+    if (
+      effectiveFrontierContent !== undefined &&
+      !hasValidProfileEventContent(effectiveFrontierContent)
+    ) {
+      hasInvalidLatestProfile = true
+    }
     const profile = exactCurrentFrontierObserved
       ? mergeRicherProfile(
           undefined,
@@ -2490,7 +2516,12 @@ function mergeProfileEvents(
     }
   }
 
-  return { profiles, rowsToCache, hasResolvedProfile }
+  return {
+    profiles,
+    rowsToCache,
+    hasResolvedProfile,
+    hasInvalidLatestProfile,
+  }
 }
 
 async function loadCachedOrderMessages(
@@ -4673,7 +4704,7 @@ export async function getProfiles(
       getProfileQueryRelayHints({ ...query, pubkeys: missing }),
       await loadProductSourceRelayHints(missing, query.authenticatedPubkey)
     )
-    const relayUrls = await planCommerceReadRelays({
+    const relayPlan = await planCommerceReadRelayPlan({
       intent: "profiles",
       authors: missing,
       authenticatedPubkey: query.authenticatedPubkey,
@@ -4688,11 +4719,15 @@ export async function getProfiles(
       limit: Math.max(10, missing.length * 3),
     }
     const fanoutOptions = {
-      relayUrls,
+      relayUrls: relayPlan.relayUrls,
       connectTimeoutMs:
         query.readPolicy?.connectTimeoutMs ?? (visible ? 1_500 : 3_000),
       fetchTimeoutMs:
         query.readPolicy?.fetchTimeoutMs ?? (visible ? 3_000 : 6_000),
+      // The planner already applied relay health. Strict evidence reads must
+      // execute that exact surviving set rather than silently filtering it a
+      // second time at the transport boundary.
+      skipHealthFilter: query.requireCompleteEvidence ? true : undefined,
     }
     const emitProgress = (events: readonly NDKEvent[]) => {
       if (!query.onProgress) return
@@ -4710,7 +4745,8 @@ export async function getProfiles(
         meta: createMeta("profile_batch", "public", PROFILE_CAPABILITIES),
       })
     }
-    let evidenceDegraded = false
+    let evidenceDegraded =
+      query.requireCompleteEvidence && relayPlan.parkedRelayUrls.length > 0
     let evidenceCapped = false
     let events: NDKEvent[]
     if (query.requireCompleteEvidence) {
@@ -4719,7 +4755,7 @@ export async function getProfiles(
         fanoutOptions
       )
       events = evidence.events
-      evidenceDegraded = evidence.degraded
+      evidenceDegraded = evidenceDegraded || evidence.degraded
       evidenceCapped = evidence.capped
       emitProgress(events)
     } else {
@@ -4737,12 +4773,9 @@ export async function getProfiles(
       }
     }
 
-    const { profiles, rowsToCache } = mergeProfileEvents(
-      missing,
-      result,
-      events,
-      cachedRowsByPubkey
-    )
+    const { profiles, rowsToCache, hasInvalidLatestProfile } =
+      mergeProfileEvents(missing, result, events, cachedRowsByPubkey)
+    evidenceDegraded = evidenceDegraded || hasInvalidLatestProfile
     const liveRowsByPubkey = new Map(
       mergeProfileEvents(missing, {}, events).rowsToCache.map((row) => [
         row.pubkey,
