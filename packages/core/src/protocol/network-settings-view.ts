@@ -1,4 +1,4 @@
-import { config } from "../config"
+import { CANONICAL_CONDUIT_RELAY_URL, config } from "../config"
 import type {
   AccountNetworkPreferenceEventCheckpoint,
   AccountNetworkPreferenceRelayRole,
@@ -58,6 +58,12 @@ export interface AccountNetworkPendingCheckpointView {
   retryAvailable: boolean
 }
 
+export interface AccountNetworkConduitRelayPromptView {
+  relayUrl: typeof CANONICAL_CONDUIT_RELAY_URL
+  missingRoles: AccountNetworkRole[]
+  changedKindCount: number
+}
+
 export interface AccountNetworkSettingsView {
   status: AccountNetworkPreferencesStatus
   error: string | null
@@ -68,6 +74,7 @@ export interface AccountNetworkSettingsView {
   pendingStatus: "none" | "ready" | "unavailable"
   pendingCheckpoints: AccountNetworkPendingCheckpointView[]
   activeUpdateId: string | null
+  conduitRelayPrompt: AccountNetworkConduitRelayPromptView | null
   revision: string
 }
 
@@ -246,6 +253,7 @@ export function buildAccountNetworkSettingsView(input: {
     Record<string, RelayAuthEvidenceState | undefined>
   >
   transientUpdate?: AccountNetworkPreferenceUpdateRecord | null
+  conduitRelayPromptEnabled?: boolean
 }): AccountNetworkSettingsView {
   const reconciliation = input.reconciliation
   const accountPubkey = input.accountPubkey?.trim().toLowerCase() || null
@@ -418,6 +426,13 @@ export function buildAccountNetworkSettingsView(input: {
   )
   const activeUpdateId =
     activeKinds.size > 0 ? (pending?.updateId ?? null) : null
+  const conduitRelayPrompt = getConduitRelayRecommendation({
+    enabled:
+      input.conduitRelayPromptEnabled ?? config.conduitRelayPromptEnabled,
+    status: input.status,
+    reconciliation,
+    activeUpdateId,
+  })
   const revision = JSON.stringify({
     accountPubkey,
     relayList: {
@@ -473,6 +488,7 @@ export function buildAccountNetworkSettingsView(input: {
       projectPendingCheckpoint
     ),
     activeUpdateId,
+    conduitRelayPrompt,
     revision,
   }
 }
@@ -547,6 +563,13 @@ export interface PreparedAccountNetworkSetRolesAction {
   changedKindCount: number
 }
 
+export interface PreparedConduitRelayRecommendation {
+  action: PreparedAccountNetworkSetRolesAction["action"]
+  relayUrl: typeof CANONICAL_CONDUIT_RELAY_URL
+  missingRoles: AccountNetworkRole[]
+  changedKindCount: number
+}
+
 function normalizedUrlForAction(url: string): string {
   const normalized = tryNormalizeRelayUrl(url)
   return normalized.ok ? normalized.url : url.trim()
@@ -589,6 +612,115 @@ function reconciliationInboxRelayUrls(
     return [...(inbox.pendingRelayUrls ?? [])]
   }
   return inbox.state === "declared" ? [...inbox.relayUrls] : []
+}
+
+/**
+ * Prepare the one-click recommendation without reordering or replacing any
+ * existing membership. The canonical relay is enabled in place when already
+ * present and appended independently to each changed signed object otherwise.
+ */
+export function prepareConduitRelayRecommendation(
+  reconciliation: AccountNetworkPreferencesReconciliation
+): PreparedConduitRelayRecommendation | null {
+  const currentNip65 = reconciliation.ownerRelayList.preferences.map(
+    (preference) => ({ ...preference })
+  )
+  const currentInbox = reconciliationInboxRelayUrls(reconciliation)
+  const canonical = CANONICAL_CONDUIT_RELAY_URL
+  const conduitPreferenceIndex = currentNip65.findIndex(
+    (preference) => normalizedUrlForAction(preference.url) === canonical
+  )
+  const conduitInboxIndex = currentInbox.findIndex(
+    (url) => normalizedUrlForAction(url) === canonical
+  )
+  const existingPreference = currentNip65[conduitPreferenceIndex]
+  const missingRoles: AccountNetworkRole[] = []
+  if (!existingPreference?.readEnabled) missingRoles.push("read")
+  if (!existingPreference?.writeEnabled) missingRoles.push("publish")
+  if (conduitInboxIndex < 0) missingRoles.push("private_inbox")
+  if (missingRoles.length === 0) return null
+  if (conduitInboxIndex < 0 && currentInbox.length >= 3) return null
+
+  const nip65Preferences = currentNip65.map((preference, index) =>
+    index === conduitPreferenceIndex
+      ? { ...preference, readEnabled: true, writeEnabled: true }
+      : preference
+  )
+  if (conduitPreferenceIndex < 0) {
+    nip65Preferences.push({
+      url: canonical,
+      readEnabled: true,
+      writeEnabled: true,
+    })
+  }
+  const inboxRelayUrls =
+    conduitInboxIndex >= 0 ? currentInbox : [...currentInbox, canonical]
+  const desiredByUrl = new Map<string, AccountNetworkDesiredRelayRoles>()
+  for (const preference of nip65Preferences) {
+    desiredByUrl.set(preference.url, {
+      url: preference.url,
+      readEnabled: preference.readEnabled,
+      publishEnabled: preference.writeEnabled,
+      privateInboxEnabled: false,
+    })
+  }
+  for (const url of inboxRelayUrls) {
+    const existing = desiredByUrl.get(url)
+    desiredByUrl.set(url, {
+      url,
+      readEnabled: existing?.readEnabled ?? false,
+      publishEnabled: existing?.publishEnabled ?? false,
+      privateInboxEnabled: true,
+    })
+  }
+  if (validateAccountNetworkDesiredRoles([...desiredByUrl.values()])) {
+    return null
+  }
+
+  const nip65Changed =
+    !existingPreference?.readEnabled || !existingPreference?.writeEnabled
+  const inboxChanged = conduitInboxIndex < 0
+  return {
+    relayUrl: canonical,
+    missingRoles,
+    changedKindCount: Number(nip65Changed) + Number(inboxChanged),
+    action: {
+      type: "set_roles",
+      nip65Preferences,
+      inboxRelayUrls,
+    },
+  }
+}
+
+export function getConduitRelayRecommendation(input: {
+  enabled: boolean
+  status: AccountNetworkPreferencesStatus
+  reconciliation: AccountNetworkPreferencesReconciliation | null
+  activeUpdateId: string | null
+}): AccountNetworkConduitRelayPromptView | null {
+  const reconciliation = input.reconciliation
+  if (
+    !input.enabled ||
+    input.status !== "ready" ||
+    !reconciliation ||
+    input.activeUpdateId ||
+    reconciliation.pendingUpdateStatus === "unavailable" ||
+    reconciliation.ownerRelayList.lookup.coverage !== "complete" ||
+    reconciliation.ownerRelayList.stale ||
+    reconciliation.inboxDeclaration.observation?.coverage !== "complete" ||
+    reconciliation.inboxDeclaration.state === "distribution_pending" ||
+    reconciliation.inboxDeclaration.stale
+  ) {
+    return null
+  }
+  const prepared = prepareConduitRelayRecommendation(reconciliation)
+  return prepared
+    ? {
+        relayUrl: prepared.relayUrl,
+        missingRoles: prepared.missingRoles,
+        changedKindCount: prepared.changedKindCount,
+      }
+    : null
 }
 
 export function prepareAccountNetworkSetRolesAction(

@@ -128,6 +128,7 @@ bun run dev:merchant:mainnet
 | `VITE_SOURCE_URL`              | GitHub repository URL      | Source repository link surfaced on About pages           |
 | `VITE_RELEASE_CHANNEL`         | local/preview/prod         | Release channel surfaced on About pages                  |
 | `VITE_DM_BOOTSTRAP_WRITES`     | profile-controlled         | Legacy compiled input for validated-order compatibility  |
+| `VITE_CONDUIT_RELAY_PROMPT`    | profile-controlled         | Compiled input for the reviewed Conduit relay prompt     |
 
 When telemetry is enabled, `VITE_TELEMETRY_ALLOWED_HOSTS` must list every
 permitted hostname. A `*.` prefix allows exactly one preview subdomain label;
@@ -152,7 +153,9 @@ Cloudflare Pages selects `preview` for non-`main` branches and `production` for
 `main`; CI selects the same profile explicitly. Preview enables validated-order
 compatibility routing so the feature is reviewable. Production and the signet
 `staging` profile remain independently disabled by default. Dashboard values
-cannot override that managed flag. Every app emits
+cannot override that managed flag. The Conduit relay prompt remains disabled in
+every checked-in profile until an operator intentionally changes the public
+profile after verifying the relay behavior. Every app emits
 `/.well-known/conduit-deployment.json` with its profile, source commit, build
 time, public feature flags, and public-config digest; the manifest is a strict
 non-secret allowlist.

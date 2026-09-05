@@ -62,6 +62,7 @@ function networkView(
     pendingStatus: "none",
     pendingCheckpoints: [],
     activeUpdateId: null,
+    conduitRelayPrompt: null,
     revision: JSON.stringify(rows),
     ...overrides,
   }
@@ -78,6 +79,7 @@ function controller(
     addRelay: async (url) => relayRow(url, { candidate: true }),
     refreshRelay: async (row) => row,
     save: async () => undefined,
+    addConduitRelay: async () => undefined,
     removeRelay: async () => undefined,
     retryPendingUpdate: async () => undefined,
     redistributeExactInboxDeclaration: async () => undefined,
@@ -274,6 +276,37 @@ describe("RelaySettingsPanel", () => {
     expect(markup).not.toContain("Publish NIP-65")
     expect(markup).not.toContain("Publish inbox")
     expect(markup).not.toContain("Clear local")
+  })
+
+  it("shows the gated Conduit relay prompt only when Core marks it eligible", () => {
+    const hidden = renderToStaticMarkup(
+      <RelaySettingsPanel controller={controller()} />
+    )
+    const visible = renderToStaticMarkup(
+      <RelaySettingsPanel
+        controller={controller({
+          view: networkView({
+            conduitRelayPrompt: {
+              relayUrl: "wss://relay.conduit.market",
+              missingRoles: ["publish", "private_inbox"],
+              changedKindCount: 2,
+            },
+          }),
+        })}
+      />
+    )
+
+    expect(hidden).not.toContain("Add the Conduit relay?")
+    expect(visible).toContain("Add the Conduit relay?")
+    expect(visible).toContain("for Publish and Private inbox")
+    expect(visible).toContain("existing relays and their order stay unchanged")
+    expect(visible).toContain("This requires 2 signer requests")
+    expect(visible).toContain(">Dismiss<")
+    expect(visible).toContain(">Add the Conduit relay<")
+    expect(visible).toContain('aria-labelledby="conduit-relay-prompt-heading"')
+    expect(visible.indexOf("Add the Conduit relay?")).toBeLessThan(
+      visible.indexOf("Add Relay")
+    )
   })
 
   it("treats a retained draft role as an explicit unsaved signed change", () => {

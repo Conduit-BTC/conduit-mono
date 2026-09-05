@@ -74,6 +74,20 @@ async function exerciseNetworkInboxDeclaration(
   await expect(
     page.getByRole("heading", { name: "Network", exact: true })
   ).toBeVisible()
+  const conduitPrompt = page.getByRole("heading", {
+    name: "Add the Conduit relay?",
+    exact: true,
+  })
+  await expect(conduitPrompt).toBeVisible()
+  await page.getByRole("button", { name: "Dismiss", exact: true }).click()
+  await expect(conduitPrompt).toBeHidden()
+  const declarationsAfterDismiss = await readTestRelayEvents({
+    kinds: [10_050],
+    authors: [pubkey],
+  })
+  expect(declarationsAfterDismiss).toHaveLength(
+    initialDeclaration === "empty" ? 1 : 0
+  )
   const privateInboxRole = page.getByRole("button", {
     name: `Enable Private inbox for ${TEST_RELAY_URL}`,
   })

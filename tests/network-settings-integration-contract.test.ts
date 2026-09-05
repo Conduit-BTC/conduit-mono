@@ -57,6 +57,38 @@ describe("shared account Network integration contract", () => {
     expect(controllerSource).not.toContain("allowSignedEmptyInbox")
   })
 
+  it("routes the shared Conduit prompt through one coordinated update", () => {
+    const normalizedController = controllerSource.replace(/\s+/g, " ")
+    const normalizedPanel = panelSource.replace(/\s+/g, " ")
+    const promptStart = normalizedPanel.indexOf("function ConduitRelayPrompt(")
+    const promptEnd = normalizedPanel.indexOf(
+      "function LegacyInboxRecoverySection",
+      promptStart
+    )
+    const promptSource = normalizedPanel.slice(promptStart, promptEnd)
+
+    expect(normalizedController).toContain(
+      "const prepared = prepareConduitRelayRecommendation(reconciliation)"
+    )
+    expect(normalizedController).toContain(
+      'await runUpdate("conduit_relay", prepared.action)'
+    )
+    expect(promptSource).toContain("await controller.addConduitRelay()")
+    expect(promptSource).toContain("setDismissed(true) setError(null)")
+    const dismissStart = promptSource.indexOf('variant="ghost"')
+    const acceptStart = promptSource.indexOf(
+      '<Button type="button" disabled={busy}',
+      dismissStart
+    )
+    expect(promptSource.slice(dismissStart, acceptStart)).not.toContain(
+      "addConduitRelay"
+    )
+    for (const source of [marketRoute, merchantRoute]) {
+      expect(source).not.toContain("Add the Conduit relay?")
+      expect(source).not.toContain("conduitRelayPrompt")
+    }
+  })
+
   it("retries coordinated and legacy work with exact signed bytes", () => {
     expect(controllerSource).toContain("retryAccountNetworkPreferenceUpdate({")
     expect(controllerSource).toContain(
