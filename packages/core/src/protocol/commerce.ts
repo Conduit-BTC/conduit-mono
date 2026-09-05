@@ -5547,9 +5547,10 @@ type InboxWrapFetchResult = {
 }
 
 /**
- * Permissive inbox read (CND-208): union of declared inbox relays, locally
- * enabled secure IN relays, and the bounded compatibility read set. All-failed
- * reads surface as coverage "unavailable" instead of a healthy empty inbox.
+ * Permissive inbox read (CND-208): union of declared/cached inbox relays,
+ * account-scoped migration recovery, and the bounded compatibility read set.
+ * General NIP-65 reads are not inbox routes. All-failed reads surface as
+ * coverage "unavailable" instead of a healthy empty inbox.
  */
 async function fetchNewInboxWraps(
   principalPubkey: string,

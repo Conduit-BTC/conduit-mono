@@ -159,13 +159,14 @@ function createCache(
 }
 
 describe("shopper trust evidence", () => {
-  it("registers the combined cache, deletion, declaration, wallet, shipping, event-market, and invoice stores", () => {
-    expect(db.verno).toBe(16)
+  it("registers the combined cache, deletion, signed-network, wallet, shipping, event-market, and invoice stores", () => {
+    expect(db.verno).toBe(17)
     expect(db.tables.map(({ name }) => name)).toEqual(
       expect.arrayContaining([
         "shopperTrustSnapshots",
         "productDeletionOutbox",
         "inboxDeclarationEvidence",
+        "ownerRelayListEvidence",
         "ownContactListSnapshots",
         "eventMarketEvidence",
         "wallets",
@@ -175,6 +176,7 @@ describe("shopper trust evidence", () => {
       ])
     )
     expect(db.inboxDeclarationEvidence.schema.primKey.name).toBe("pubkey")
+    expect(db.ownerRelayListEvidence.schema.primKey.name).toBe("pubkey")
     expect(db.ownContactListSnapshots.schema.primKey.name).toBe("pubkey")
     expect(db.eventMarketEvidence.schema.primKey.name).toBe("id")
     expect(db.wallets.schema.primKey.name).toBe("id")

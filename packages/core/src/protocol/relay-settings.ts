@@ -127,7 +127,16 @@ export interface RelayPlanOptions {
   storageKey?: string
   fallbackRelayUrls?: readonly string[]
   includePublicFallback?: boolean
+  /** Exact signed kind-10002 evidence makes an empty Read set authoritative. */
+  signedRelayListAuthoritative?: boolean
 }
+
+export interface RelaySettingsPlanningSnapshot {
+  settings: RelaySettingsState
+  signedRelayListAuthoritative: boolean
+}
+
+export type RelaySettingsChangeSource = "local_draft" | "signed_projection"
 
 export type InboxRelayInfoProbeStatus = "succeeded" | "failed" | "unknown"
 export type InboxRelayProtectedMessageCapabilityEvidence =
@@ -184,7 +193,18 @@ const EMPTY_WARNINGS: RelayWarnings = {
 }
 
 let activeRelaySettingsScope: string | null = null
-const relaySettingsListeners = new Set<(scope: string | null) => void>()
+const relaySettingsListeners = new Set<
+  (scope: string | null, source: RelaySettingsChangeSource) => void
+>()
+interface AccountRelaySettingsProjectionRecord {
+  settings: RelaySettingsState
+  signedRelayListAuthoritative: boolean
+}
+
+const accountRelaySettingsProjections = new Map<
+  string,
+  AccountRelaySettingsProjectionRecord
+>()
 
 function now(): number {
   return Date.now()
@@ -436,13 +456,43 @@ function normalizeUserManagedRelaySettingsState(
   })
 }
 
+function getPlanningSnapshot(
+  options: RelayPlanOptions
+): RelaySettingsPlanningSnapshot {
+  if (options.settings) {
+    return {
+      settings: options.settings,
+      signedRelayListAuthoritative:
+        options.signedRelayListAuthoritative === true,
+    }
+  }
+  const scope = options.scope ?? options.storageKey ?? activeRelaySettingsScope
+  const accountProjection = scope
+    ? accountRelaySettingsProjections.get(scope)
+    : undefined
+  if (accountProjection) {
+    return {
+      settings: normalizeRelaySettingsState(accountProjection.settings),
+      signedRelayListAuthoritative:
+        accountProjection.signedRelayListAuthoritative,
+    }
+  }
+  // An unsigned account draft must never govern active reads or writes. Empty
+  // settings let each planner apply its explicit app fallback policy.
+  if (isAccountRelaySettingsScope(scope)) {
+    return {
+      settings: createEmptyRelaySettingsState(),
+      signedRelayListAuthoritative: false,
+    }
+  }
+  return {
+    settings: loadRelaySettings(scope),
+    signedRelayListAuthoritative: false,
+  }
+}
+
 function getSettingsForPlan(options: RelayPlanOptions): RelaySettingsState {
-  return (
-    options.settings ??
-    loadRelaySettings(
-      options.scope ?? options.storageKey ?? activeRelaySettingsScope
-    )
-  )
+  return getPlanningSnapshot(options).settings
 }
 
 function hasFreshOrSeededRead(entry: RelaySettingsEntry): boolean {
@@ -1081,6 +1131,50 @@ export function getRelaySettingsStorageKey(scope?: string | null): string {
     : `${RELAY_SETTINGS_STORAGE_KEY}:default`
 }
 
+export function isAccountRelaySettingsScope(scope?: string | null): boolean {
+  return scope?.trim().startsWith("account:") === true
+}
+
+/**
+ * Account-scoped local settings are an unpublished presentation draft. Only
+ * an installed signed projection may reconfigure live account connections.
+ */
+export function canRelaySettingsChangeControlRuntime(
+  scope: string | null | undefined,
+  source: RelaySettingsChangeSource
+): boolean {
+  return !isAccountRelaySettingsScope(scope) || source === "signed_projection"
+}
+
+export function hasRelaySettingsDraft(scope?: string | null): boolean {
+  if (typeof window === "undefined") return false
+  try {
+    const raw = window.localStorage.getItem(getRelaySettingsStorageKey(scope))
+    if (raw === null) return false
+    const parsed = JSON.parse(raw) as unknown
+    if (!isRecord(parsed) || !Array.isArray(parsed.entries)) return false
+    if (
+      !parsed.entries.every(
+        (entry) =>
+          isRecord(entry) &&
+          typeof entry.url === "string" &&
+          typeof entry.readEnabled === "boolean" &&
+          typeof entry.writeEnabled === "boolean"
+      )
+    ) {
+      return false
+    }
+    const normalized = normalizeUserManagedRelaySettingsState({
+      version: Number(parsed.version) || RELAY_SETTINGS_STORAGE_VERSION,
+      updatedAt: Number(parsed.updatedAt) || now(),
+      entries: parsed.entries as unknown as RelaySettingsEntry[],
+    })
+    return normalized.entries.length === parsed.entries.length
+  } catch {
+    return false
+  }
+}
+
 export function getActiveRelaySettingsScope(): string | null {
   return activeRelaySettingsScope
 }
@@ -1089,16 +1183,68 @@ export function setActiveRelaySettingsScope(scope?: string | null): void {
   activeRelaySettingsScope = scope?.trim() || null
 }
 
+/**
+ * Install the runtime projection derived from account reconciliation.
+ *
+ * It is intentionally process-only. The authority flag records whether an
+ * exact signed kind-10002 frontier governs an empty Read set; durable authority
+ * remains the retained signed event, and localStorage remains a draft.
+ */
+export function setAccountRelaySettingsProjection(
+  scope: string,
+  state: RelaySettingsState,
+  options: { signedRelayListAuthoritative?: boolean } = {}
+): void {
+  const normalizedScope = scope.trim()
+  if (!normalizedScope || !isAccountRelaySettingsScope(normalizedScope)) {
+    throw new Error("Signed relay projections require an account scope")
+  }
+  const normalized = normalizeRelaySettingsState(state)
+  const existing = accountRelaySettingsProjections.get(normalizedScope)
+  const signedRelayListAuthoritative =
+    options.signedRelayListAuthoritative ?? true
+  accountRelaySettingsProjections.set(normalizedScope, {
+    settings: normalized,
+    signedRelayListAuthoritative,
+  })
+  // Observation time may advance when the exact signed frontier is seen
+  // again. Reconfigure live connections only when the ordered, planner-facing
+  // relay projection itself changes.
+  if (
+    JSON.stringify(existing?.settings.entries) !==
+      JSON.stringify(normalized.entries) ||
+    existing?.signedRelayListAuthoritative !== signedRelayListAuthoritative
+  ) {
+    notifyRelaySettingsChanged(normalizedScope, "signed_projection")
+  }
+}
+
+export function getAccountRelaySettingsProjection(
+  scope: string
+): RelaySettingsState | null {
+  const projection = accountRelaySettingsProjections.get(scope.trim())
+  return projection ? structuredClone(projection.settings) : null
+}
+
+export function __resetAccountRelaySettingsProjectionsForTests(): void {
+  accountRelaySettingsProjections.clear()
+}
+
 export function subscribeRelaySettingsChanges(
-  listener: (scope: string | null) => void
+  listener: (scope: string | null, source: RelaySettingsChangeSource) => void
 ): () => void {
   relaySettingsListeners.add(listener)
   return () => relaySettingsListeners.delete(listener)
 }
 
-function notifyRelaySettingsChanged(scope?: string | null): void {
+function notifyRelaySettingsChanged(
+  scope: string | null | undefined,
+  source: RelaySettingsChangeSource
+): void {
   const normalizedScope = scope?.trim() || null
-  relaySettingsListeners.forEach((listener) => listener(normalizedScope))
+  relaySettingsListeners.forEach((listener) =>
+    listener(normalizedScope, source)
+  )
 }
 
 export function normalizeRelaySettingsState(
@@ -1182,6 +1328,47 @@ export function loadRelaySettings(scope?: string | null): RelaySettingsState {
   }
 }
 
+/**
+ * Transitional presentation bridge for the existing Network routes.
+ *
+ * A stored account draft is a complete explicit draft snapshot. Without one,
+ * the page renders the signed runtime projection directly, without copying it
+ * into localStorage or making local state authoritative for planners.
+ */
+export function loadRelaySettingsPresentation(
+  scope?: string | null
+): RelaySettingsState {
+  const normalizedScope = scope?.trim() || null
+  if (!normalizedScope || !isAccountRelaySettingsScope(normalizedScope)) {
+    return loadRelaySettings(normalizedScope)
+  }
+  if (hasRelaySettingsDraft(normalizedScope)) {
+    return loadRelaySettings(normalizedScope)
+  }
+  const projection = accountRelaySettingsProjections.get(normalizedScope)
+  return projection
+    ? normalizeRelaySettingsState(projection.settings)
+    : createEmptyRelaySettingsState()
+}
+
+/** Load the signed runtime projection when available, otherwise local state. */
+export function loadRelaySettingsForPlan(
+  scope?: string | null
+): RelaySettingsState {
+  return getSettingsForPlan({ scope })
+}
+
+/** Preserve signed empty-vs-missing semantics when binding a planner snapshot. */
+export function loadRelaySettingsPlanningSnapshot(
+  scope?: string | null
+): RelaySettingsPlanningSnapshot {
+  const snapshot = getPlanningSnapshot({ scope })
+  return {
+    settings: structuredClone(snapshot.settings),
+    signedRelayListAuthoritative: snapshot.signedRelayListAuthoritative,
+  }
+}
+
 export function saveRelaySettings(
   state: RelaySettingsState,
   scope?: string | null
@@ -1198,7 +1385,7 @@ export function saveRelaySettings(
     )
   }
 
-  notifyRelaySettingsChanged(scope)
+  notifyRelaySettingsChanged(scope, "local_draft")
 
   return normalized
 }
@@ -1389,10 +1576,14 @@ export async function readNip07RelayPreferences(): Promise<RelayPreference[]> {
 export function getGeneralReadRelayUrls(
   options: RelayPlanOptions = {}
 ): string[] {
-  const settings = getSettingsForPlan(options)
-  const relayUrls = settings.entries
-    .filter((entry) => hasFreshOrSeededRead(entry))
-    .map((entry) => entry.url)
+  const snapshot = getPlanningSnapshot(options)
+  const relayUrls: string[] = []
+  for (const entry of snapshot.settings.entries) {
+    if (hasFreshOrSeededRead(entry)) relayUrls.push(entry.url)
+  }
+  if (snapshot.signedRelayListAuthoritative) {
+    return uniqueRelayUrls(relayUrls)
+  }
   return withRelayFallback(relayUrls, options.fallbackRelayUrls)
 }
 
@@ -1542,20 +1733,24 @@ export function getGeneralWriteRelayUrls(
 export function getCommerceReadRelayUrls(
   options: RelayPlanOptions = {}
 ): string[] {
-  const settings = getSettingsForPlan(options)
-  const commerceUrls = sortCommerceRelayUrls(settings.entries, (entry) =>
-    hasFreshOrSeededRead(entry)
+  const snapshot = getPlanningSnapshot(options)
+  const commerceUrls = sortCommerceRelayUrls(
+    snapshot.settings.entries,
+    (entry) => hasFreshOrSeededRead(entry)
   )
 
-  const publicUrls =
-    options.includePublicFallback === false
-      ? []
-      : settings.entries
-          .filter(
-            (entry) => entry.section === "public" && hasFreshOrSeededRead(entry)
-          )
-          .map((entry) => entry.url)
+  const publicUrls: string[] = []
+  if (options.includePublicFallback !== false) {
+    for (const entry of snapshot.settings.entries) {
+      if (entry.section === "public" && hasFreshOrSeededRead(entry)) {
+        publicUrls.push(entry.url)
+      }
+    }
+  }
 
+  if (snapshot.signedRelayListAuthoritative) {
+    return uniqueRelayUrls([...commerceUrls, ...publicUrls])
+  }
   return withRelayFallback(
     [...commerceUrls, ...publicUrls],
     options.fallbackRelayUrls

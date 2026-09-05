@@ -15,11 +15,28 @@ export interface ResolveConduitSessionInput {
   allowGuest?: boolean
 }
 
+export function getAccountRelayScope(pubkey: string): string {
+  return `account:${pubkey.trim().toLowerCase()}`
+}
+
+export function shouldCloseProtectedConnectionsForScopeTransition(
+  activeScope: string | null,
+  nextScope: string | null
+): boolean {
+  return activeScope !== null && activeScope !== nextScope
+}
+
 export function getSignedInRelayScope(
-  appId: ConduitAppId,
+  _appId: ConduitAppId,
   pubkey: string
 ): string {
-  return `${appId}:${pubkey}`
+  return getAccountRelayScope(pubkey)
+}
+
+/** App-scoped keys used before signed Network preferences became account-wide. */
+export function getLegacySignedInRelayScopes(pubkey: string): string[] {
+  const normalized = pubkey.trim().toLowerCase()
+  return [`market:${normalized}`, `merchant:${normalized}`]
 }
 
 export function getGuestRelayScope(appId: ConduitAppId): string | null {
