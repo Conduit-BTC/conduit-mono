@@ -1,9 +1,12 @@
+import { mkdir } from "node:fs/promises"
+import { join } from "node:path"
 import { expect, test, type Locator, type Page } from "@playwright/test"
 import { generateSecretKey, getPublicKey } from "nostr-tools/pure"
 
 import {
   TEST_BUYER_PUBKEY,
   TEST_MERCHANT_PUBKEY,
+  TEST_RELAY_URL,
   installTestSigner,
   seedTestRelayIdentity,
   seedMarketCart,
@@ -14,6 +17,17 @@ const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? 
 
 test.setTimeout(60_000)
 test.use({ trace: "off", screenshot: "off", video: "off" })
+
+async function captureNetworkEvidence(page: Page, name: string): Promise<void> {
+  const outputDirectory = process.env.PLAYWRIGHT_NETWORK_SCREENSHOT_DIR
+  if (!outputDirectory) return
+  await mkdir(outputDirectory, { recursive: true })
+  await page.screenshot({
+    animations: "disabled",
+    fullPage: true,
+    path: join(outputDirectory, `${name}.png`),
+  })
+}
 
 async function assertMobileViewport(page: Page): Promise<void> {
   await expect(page.locator('meta[name="viewport"]')).toHaveAttribute(
@@ -382,9 +396,9 @@ test.describe("CND-162 mobile browser baseline", () => {
     await expectMobileTouchTarget(page.locator('button[title="Cart"]'))
   })
 
-  test("network status pills stay compact in stacked mobile headers @market", async ({
+  test("network controls and status stay accessible at mobile widths @market", async ({
     page,
-  }) => {
+  }, testInfo) => {
     const secretKey = generateSecretKey()
     const pubkey = getPublicKey(secretKey)
     await seedTestRelayIdentity(secretKey)
@@ -426,8 +440,41 @@ test.describe("CND-162 mobile browser baseline", () => {
 
     await page.goto(`${marketUrl}/network`)
     await expect(
-      page.getByRole("heading", { name: "Network Settings" })
+      page.getByRole("heading", { name: "Network", exact: true })
     ).toBeVisible()
+    await assertMobileViewport(page)
+
+    const readRole = page.getByRole("button", {
+      name: new RegExp(`^(Disable|Enable) Read for ${TEST_RELAY_URL}`),
+    })
+    await expect(readRole).toBeEnabled({ timeout: 20_000 })
+    await expect(readRole).toHaveAttribute("aria-pressed", "true")
+    await readRole.focus()
+    await expect(readRole).toBeFocused()
+    await page.keyboard.press("Space")
+    await expect(readRole).toHaveAttribute("aria-pressed", "false")
+    await page.keyboard.press("Space")
+    await expect(readRole).toHaveAttribute("aria-pressed", "true")
+
+    const removeRelay = page.getByRole("button", {
+      name: `Remove ${TEST_RELAY_URL} from my whole setup`,
+    })
+    await removeRelay.click()
+    const removalDialog = page.getByRole("alertdialog")
+    await expect(
+      removalDialog.getByRole("heading", {
+        name: "Remove this relay from your whole setup?",
+      })
+    ).toBeVisible()
+    await expect(
+      removalDialog.getByRole("button", { name: "Cancel" })
+    ).toBeFocused()
+    await expect(
+      removalDialog.getByRole("button", { name: "Proceed" })
+    ).toBeDisabled()
+    await page.keyboard.press("Escape")
+    await expect(removalDialog).toBeHidden()
+    await expect(removeRelay).toBeFocused()
 
     const mediaServers = page.getByRole("region", { name: "Media servers" })
     const mediaStatusPill = mediaServers.getByText("No list observed", {
@@ -443,6 +490,10 @@ test.describe("CND-162 mobile browser baseline", () => {
     expect(mediaPillBox).not.toBeNull()
     expect(mediaPillBox!.width).toBeLessThan(sectionBox!.width * 0.75)
     expect(mediaPillBox!.height).toBeLessThanOrEqual(32)
+    await captureNetworkEvidence(
+      page,
+      `market-network-${testInfo.project.name}`
+    )
   })
 
   test("market checkout keeps form semantics and draft values after refresh @market", async ({

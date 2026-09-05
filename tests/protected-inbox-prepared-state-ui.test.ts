@@ -192,16 +192,20 @@ describe("protected inbox prepared state", () => {
   })
 
   it("passes current-session authentication evidence in both network routes", async () => {
-    const [market, merchant] = await Promise.all([
+    const [market, merchant, controller] = await Promise.all([
       source("apps/market/src/routes/network.tsx"),
       source("apps/merchant/src/routes/network.tsx"),
+      source("packages/core/src/hooks/useAccountNetworkSettings.ts"),
     ])
 
-    expect(market).toContain(
-      "authEvidenceByUrl={relaySettings.authEvidenceByUrl}"
+    expect(market).toContain("useAccountNetworkSettings()")
+    expect(merchant).toContain("useAccountNetworkSettings()")
+    expect(controller).toContain("subscribeRelayAuthenticationEvidence")
+    expect(controller).toContain(
+      "getRelayAuthenticationEvidence(url, auth.pubkey!)"
     )
-    expect(merchant).toContain(
-      "authEvidenceByUrl={relaySettings.authEvidenceByUrl}"
+    expect(controller).toContain(
+      "[auth.pubkey, auth.authGeneration, session.relayScope]"
     )
   })
 })

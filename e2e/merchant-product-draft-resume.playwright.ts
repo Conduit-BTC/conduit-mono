@@ -3,6 +3,7 @@ import { join } from "node:path"
 import { expect, test, type Locator, type Page } from "@playwright/test"
 import { generateSecretKey, getPublicKey } from "nostr-tools/pure"
 import {
+  TEST_RELAY_URL,
   installTestSigner,
   readTestRelayEvents,
   seedTestRelayIdentity,
@@ -12,6 +13,7 @@ const merchantUrl =
   "http://127.0.0.1:" + (process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001")
 const PRODUCT_KIND = 30_402
 const INBOX_DECLARATION_KIND = 10_050
+const SECOND_NETWORK_RELAY_URL = "wss://network-backup.example"
 
 const draftFixture = {
   title: "Browser-local relay kit",
@@ -117,13 +119,35 @@ async function choosePrivateInboxSetup(page: Page): Promise<void> {
   await expect(page).toHaveURL(`${merchantUrl}/network`)
 }
 
+async function savePrivateInboxRole(page: Page): Promise<void> {
+  const privateInboxRole = page.getByRole("button", {
+    name: new RegExp(
+      `^(Enable|Disable) Private inbox for ${TEST_RELAY_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`
+    ),
+  })
+  await expect(privateInboxRole).toBeEnabled({ timeout: 20_000 })
+  await expect(privateInboxRole).toHaveAttribute("aria-pressed", "false")
+  await privateInboxRole.focus()
+  await expect(privateInboxRole).toBeFocused()
+  await page.keyboard.press("Space")
+  await expect(privateInboxRole).toHaveAttribute("aria-pressed", "true")
+  const saveButton = page.getByRole("button", {
+    name: "Save Network changes",
+  })
+  await expect(saveButton).toBeEnabled()
+  await saveButton.click()
+}
+
 async function runCompleteJourney(
   page: Page,
   viewportName: "desktop" | "mobile"
 ): Promise<void> {
   const secretKey = generateSecretKey()
   const pubkey = getPublicKey(secretKey)
-  await seedTestRelayIdentity(secretKey, { inboxDeclaration: "omit" })
+  await seedTestRelayIdentity(secretKey, {
+    inboxDeclaration: "omit",
+    relayListUrls: [TEST_RELAY_URL, SECOND_NETWORK_RELAY_URL],
+  })
   await installTestSigner(page, pubkey, { secretKey })
 
   await page.goto(merchantUrl)
@@ -206,8 +230,19 @@ async function runCompleteJourney(
   await expect(
     page.getByRole("button", { name: "Return to product draft" })
   ).toBeVisible()
+  await captureEvidence(
+    page.locator("main").first(),
+    `${viewportName}-network-settings`
+  )
+  if (viewportName === "mobile") {
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth
+      )
+    ).toBe(true)
+  }
 
-  await page.getByRole("button", { name: "Publish inbox declaration" }).click()
+  await savePrivateInboxRole(page)
   await expect(page).toHaveURL(`${merchantUrl}/products`, { timeout: 20_000 })
 
   const reopenedDialog = await expectProductDraft(page)
@@ -281,7 +316,10 @@ test("cancelled or failed inbox setup keeps the exact local draft @merchant", as
   const secretKey = generateSecretKey()
   const pubkey = getPublicKey(secretKey)
   const title = "Inbox setup recovery draft"
-  await seedTestRelayIdentity(secretKey, { inboxDeclaration: "omit" })
+  await seedTestRelayIdentity(secretKey, {
+    inboxDeclaration: "omit",
+    relayListUrls: [TEST_RELAY_URL, SECOND_NETWORK_RELAY_URL],
+  })
   await installTestSigner(page, pubkey, { secretKey })
   await page.goto(`${merchantUrl}/products`)
 
@@ -311,9 +349,9 @@ test("cancelled or failed inbox setup keeps the exact local draft @merchant", as
   })
 
   await choosePrivateInboxSetup(page)
-  await page.getByRole("button", { name: "Publish inbox declaration" }).click()
+  await savePrivateInboxRole(page)
   await expect(
-    page.getByText("Test private inbox signing failure", { exact: true })
+    page.getByText("Nostr signer failed: unavailable", { exact: true })
   ).toBeVisible({ timeout: 15_000 })
   await expect(
     page.getByRole("button", { name: "Return to product draft" })
@@ -348,7 +386,10 @@ test("publish choices keep editing or enter the signer path exactly once @mercha
   const secretKey = generateSecretKey()
   const pubkey = getPublicKey(secretKey)
   const title = "Publish anyway once"
-  await seedTestRelayIdentity(secretKey, { inboxDeclaration: "omit" })
+  await seedTestRelayIdentity(secretKey, {
+    inboxDeclaration: "omit",
+    relayListUrls: [TEST_RELAY_URL, SECOND_NETWORK_RELAY_URL],
+  })
   await installTestSigner(page, pubkey, { secretKey })
   await page.goto(`${merchantUrl}/products`)
   await page.evaluate(() => {

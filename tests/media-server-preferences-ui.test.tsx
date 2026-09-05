@@ -4,7 +4,10 @@ import {
   MediaServerPreferencesSection,
   RelaySettingsPanel,
 } from "../packages/ui/src"
-import type { MediaServerPreferencesView } from "../packages/core/src"
+import type {
+  AccountNetworkSettingsController,
+  MediaServerPreferencesView,
+} from "../packages/core/src"
 
 function view(
   overrides: Partial<MediaServerPreferencesView> = {}
@@ -142,19 +145,49 @@ describe("shared media server preference UI", () => {
   })
 
   it("is composed once through the shared Network settings panel", () => {
+    const networkController: AccountNetworkSettingsController = {
+      view: {
+        status: "ready",
+        error: null,
+        rows: [],
+        capabilityByUrl: {},
+        relayList: {
+          state: "not_observed",
+          stale: false,
+          coverage: "complete",
+        },
+        inbox: {
+          state: "not_observed",
+          stale: false,
+          coverage: "complete",
+        },
+        pendingStatus: "none",
+        pendingCheckpoints: [],
+        activeUpdateId: null,
+        revision: "empty",
+      },
+      operation: { kind: null, phase: "idle", message: null },
+      exactInboxRedistributionAvailable: false,
+      addRelay: async () => {
+        throw new Error("not used")
+      },
+      refreshRelay: async (row) => row,
+      save: async () => undefined,
+      removeRelay: async () => undefined,
+      retryPendingUpdate: async () => undefined,
+      redistributeExactInboxDeclaration: async () => undefined,
+      retryReconciliation: () => undefined,
+      clearOperation: () => undefined,
+      mediaServers: { view: view(), ...actions },
+    }
     const html = renderToStaticMarkup(
-      <RelaySettingsPanel
-        settings={{ entries: [] }}
-        onAddRelay={() => undefined}
-        onRefreshRelay={() => undefined}
-        onRemoveRelay={() => undefined}
-        onToggleRead={() => undefined}
-        onToggleWrite={() => undefined}
-        mediaServers={{ view: view(), ...actions }}
-      />
+      <RelaySettingsPanel controller={networkController} />
     )
     expect(html.match(/Media servers/g)?.length).toBe(1)
     expect(html).toContain("Add media server root")
     expect(html).toContain("Add Relay")
+    expect(html.indexOf("Add Relay")).toBeLessThan(
+      html.indexOf("Media servers")
+    )
   })
 })

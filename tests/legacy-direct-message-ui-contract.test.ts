@@ -69,24 +69,42 @@ describe("legacy direct-message UI contract", () => {
       "apps/merchant/src/routes/network.tsx",
     ]) {
       const source = await Bun.file(routePath).text()
-      expect(source).toContain("useInboxDeclaration")
-      expect(source).toContain("privateInbox")
-      expect(source).toContain("getInboxRelayCandidates")
+      expect(source).toContain("useAccountNetworkSettings")
+      expect(source).toContain(
+        "<RelaySettingsPanel controller={networkSettings} />"
+      )
+      expect(source).not.toContain("useInboxDeclaration")
     }
+
+    const controller = await Bun.file(
+      "packages/core/src/hooks/useAccountNetworkSettings.ts"
+    ).text()
+    expect(controller).toContain("publishAccountNetworkPreferenceUpdate")
+    expect(controller).toContain("prepareAccountNetworkSetRolesAction")
+
+    const networkSettingsView = await Bun.file(
+      "packages/core/src/protocol/network-settings-view.ts"
+    ).text()
+    expect(networkSettingsView).toContain('type: "set_roles"')
+    expect(networkSettingsView).toContain("inboxRelayUrls")
   })
 
   it("waits for first-login relay import before deciding inbox readiness", async () => {
     for (const routePath of [
       "apps/market/src/routes/messages.tsx",
-      "apps/market/src/routes/network.tsx",
       "apps/merchant/src/routes/messages.tsx",
-      "apps/merchant/src/routes/network.tsx",
       "apps/merchant/src/routes/orders.tsx",
     ]) {
       const source = await Bun.file(routePath).text()
       expect(source).toContain("session.relaySettingsReady")
       expect(source).toContain("relayScope: session.relayScope")
     }
+
+    const networkController = await Bun.file(
+      "packages/core/src/hooks/useAccountNetworkSettings.ts"
+    ).text()
+    expect(networkController).toContain("enabled: session.relaySettingsReady")
+    expect(networkController).toContain("relayScope: session.relayScope")
 
     const hookSource = await Bun.file(
       "packages/core/src/hooks/useInboxDeclaration.ts"
