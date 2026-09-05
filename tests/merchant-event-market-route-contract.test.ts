@@ -180,19 +180,17 @@ describe("merchant organizer event market route", () => {
     expect(openEdit).toContain('setPublishState("idle")')
 
     const publishSuccess = publisher.slice(
-      publisher.indexOf("onSuccess: async (result) =>"),
-      publisher.indexOf(
-        "onError:",
-        publisher.indexOf("onSuccess: async (result) =>")
-      )
+      publisher.indexOf("async function finishPublication("),
+      publisher.indexOf("const publishMutation = useMutation(")
     )
     expect(publishSuccess).toContain(
-      "await onPublished(result.productCoordinate)"
+      "await onPublished(result.productCoordinate, result.accepted)"
     )
     expect(publishSuccess).toContain("onOpenChange(false)")
     expect(publishSuccess.indexOf("onOpenChange(false)")).toBeGreaterThan(
-      publishSuccess.indexOf("await onPublished(result.productCoordinate)")
+      publishSuccess.indexOf("await onPublished(")
     )
+    expect(publisher.match(/onSuccess: finishPublication/g)).toHaveLength(2)
   })
 
   it("keeps merchant booth pickup evidence on the merchant product graph", async () => {
