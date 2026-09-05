@@ -32,12 +32,10 @@ import {
   prepareProtectedReadRefreshState,
   selectProtectedReadRows,
   type MerchantConversationSummary,
-  type CommerceProductRecord,
   type MerchantOrderDelivery,
   type MerchantOrderAction,
   type MerchantOrderReopenTransition,
   type MerchantOrderState,
-  type EventMarketResolution,
   type KnownOrderStatus,
   type Profile,
   type OrderSummary,
@@ -1410,13 +1408,9 @@ function OrdersPage() {
     if (!pubkey || !orderSummary) {
       throw new Error("Current signed pickup evidence is unavailable.")
     }
-    let verifiedMarket: EventMarketResolution | null = null
     const result = await verifyMerchantPickupOrderAuthorization({
       items: orderSummary.items,
       merchantPubkey: pubkey,
-      onVerifiedMarket: (market) => {
-        verifiedMarket = market
-      },
     })
     queryClient.setQueriesData(
       {
@@ -1430,10 +1424,7 @@ function OrdersPage() {
     if (result.status !== "verified") {
       throw new Error(getMerchantPickupAuthorizationMessage(result))
     }
-    if (!verifiedMarket) {
-      throw new Error("Current signed pickup evidence is unavailable.")
-    }
-    return verifiedMarket
+    return result.market
   }, [
     orderSummary,
     pubkey,
@@ -1676,19 +1667,17 @@ function OrdersPage() {
       let publicationRecord = record
       let effectiveAdjustment = payload.adjustment
       if (pickupFulfillment) {
-        const verifiedProductRef: {
-          current: CommerceProductRecord | null
-        } = { current: null }
         const verification = await verifyMerchantPickupOrderAuthorization({
           items: payload.orderItems,
           merchantPubkey: pubkey,
-          onVerifiedProduct: (candidate) => {
-            if (candidate.addressId === payload.adjustment.addressId) {
-              verifiedProductRef.current = candidate
-            }
-          },
         })
-        const verifiedProduct = verifiedProductRef.current
+        const verifiedProduct =
+          verification.status === "verified"
+            ? verification.products.find(
+                (candidate) =>
+                  candidate.addressId === payload.adjustment.addressId
+              )
+            : undefined
         if (
           verification.status !== "verified" ||
           !verifiedProduct ||

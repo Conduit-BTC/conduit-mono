@@ -40,6 +40,34 @@ function product(overrides: Partial<ProductSchema> = {}): ProductSchema {
   }
 }
 
+function stockAdjustment(
+  overrides: Partial<OrderStockAdjustment> = {}
+): OrderStockAdjustment {
+  return {
+    key: "order:item",
+    addressId: PRODUCT_COORDINATE,
+    sourceEventId: "1".repeat(64),
+    title: "Stale title",
+    quantity: 3,
+    currentStock: 10,
+    nextStock: 7,
+    shortfall: 0,
+    ...overrides,
+  }
+}
+
+function productRecord(
+  productOverrides: Partial<ProductSchema> = {}
+): CommerceProductRecord {
+  return {
+    product: product({ title: "Current title", stock: 5, ...productOverrides }),
+    eventId: "9".repeat(64),
+    addressId: PRODUCT_COORDINATE,
+    dTag: "event-item",
+    eventCreatedAt: 3_000,
+  }
+}
+
 function pickup(
   overrides: Partial<OrderPickupFulfillmentSchema> = {}
 ): OrderPickupFulfillmentSchema {
@@ -107,23 +135,8 @@ function standardShippingOption(coordinate: string): ParsedShippingOption {
 
 describe("merchant stock update fulfillment", () => {
   it("rebases a calculated update onto the exact verified product revision", () => {
-    const adjustment: OrderStockAdjustment = {
-      key: "order:item",
-      addressId: PRODUCT_COORDINATE,
-      sourceEventId: "1".repeat(64),
-      title: "Stale title",
-      quantity: 3,
-      currentStock: 10,
-      nextStock: 7,
-      shortfall: 0,
-    }
-    const currentRecord: CommerceProductRecord = {
-      product: product({ title: "Current title", stock: 5 }),
-      eventId: "9".repeat(64),
-      addressId: PRODUCT_COORDINATE,
-      dTag: "event-item",
-      eventCreatedAt: 3_000,
-    }
+    const adjustment = stockAdjustment()
+    const currentRecord = productRecord()
 
     expect(
       rebaseOrderStockAdjustmentOnProduct({
@@ -142,24 +155,11 @@ describe("merchant stock update fulfillment", () => {
   })
 
   it("keeps an explicit target while preserving the current product revision", () => {
-    const adjustment: OrderStockAdjustment = {
-      key: "order:item",
-      addressId: PRODUCT_COORDINATE,
-      sourceEventId: "1".repeat(64),
-      title: "Stale title",
-      quantity: 3,
-      currentStock: 10,
+    const adjustment = stockAdjustment({
       nextStock: 12,
-      shortfall: 0,
       targetMode: "custom",
-    }
-    const currentRecord: CommerceProductRecord = {
-      product: product({ title: "Current title", stock: 5 }),
-      eventId: "9".repeat(64),
-      addressId: PRODUCT_COORDINATE,
-      dTag: "event-item",
-      eventCreatedAt: 3_000,
-    }
+    })
+    const currentRecord = productRecord()
 
     expect(
       rebaseOrderStockAdjustmentOnProduct({
@@ -176,23 +176,12 @@ describe("merchant stock update fulfillment", () => {
   })
 
   it("rejects a stale simple product whose verified revision is variable", () => {
-    const adjustment: OrderStockAdjustment = {
-      key: "order:item",
-      addressId: PRODUCT_COORDINATE,
-      sourceEventId: "1".repeat(64),
+    const adjustment = stockAdjustment({
       title: "Stale simple product",
       quantity: 1,
-      currentStock: 10,
       nextStock: 9,
-      shortfall: 0,
-    }
-    const variableRecord: CommerceProductRecord = {
-      product: product({ type: "variable", stock: 10 }),
-      eventId: "9".repeat(64),
-      addressId: PRODUCT_COORDINATE,
-      dTag: "event-item",
-      eventCreatedAt: 3_000,
-    }
+    })
+    const variableRecord = productRecord({ type: "variable", stock: 10 })
 
     expect(() =>
       rebaseOrderStockAdjustmentOnProduct({
@@ -203,23 +192,13 @@ describe("merchant stock update fulfillment", () => {
   })
 
   it("still rebases a verified variation revision", () => {
-    const adjustment: OrderStockAdjustment = {
-      key: "order:item",
-      addressId: PRODUCT_COORDINATE,
-      sourceEventId: "1".repeat(64),
+    const adjustment = stockAdjustment({
       title: "Variation",
       quantity: 2,
       currentStock: 8,
       nextStock: 6,
-      shortfall: 0,
-    }
-    const variationRecord: CommerceProductRecord = {
-      product: product({ type: "variation", stock: 5 }),
-      eventId: "9".repeat(64),
-      addressId: PRODUCT_COORDINATE,
-      dTag: "event-item",
-      eventCreatedAt: 3_000,
-    }
+    })
+    const variationRecord = productRecord({ type: "variation" })
 
     expect(
       rebaseOrderStockAdjustmentOnProduct({

@@ -69,10 +69,6 @@ function matchesVerifiedEventPickup(input: {
   productAddressId: string
   verifiedPickup: OrderPickupFulfillmentSchema
 }): boolean {
-  const fulfillmentCoordinates = new Set([
-    input.verifiedPickup.collection.coordinate,
-    input.verifiedPickup.option.coordinate,
-  ])
   const shippingOptionId = input.product.shippingOptionId
   return (
     input.verifiedPickup.product.coordinate === input.productAddressId &&
@@ -82,7 +78,8 @@ function matchesVerifiedEventPickup(input: {
       input.verifiedPickup.collection.coordinate
     ) === true &&
     !!shippingOptionId &&
-    fulfillmentCoordinates.has(shippingOptionId) &&
+    (shippingOptionId === input.verifiedPickup.collection.coordinate ||
+      shippingOptionId === input.verifiedPickup.option.coordinate) &&
     input.product.shippingOptionRefs?.some(
       (reference) => reference.coordinate === shippingOptionId
     ) === true

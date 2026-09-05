@@ -33,7 +33,11 @@ export type MerchantPickupAuthorizationFailure =
 
 export type MerchantPickupAuthorizationResult =
   | { status: "not_required" }
-  | { status: "verified" }
+  | {
+      status: "verified"
+      market: EventMarketResolution
+      products: CommerceProductRecord[]
+    }
   | {
       status: "unverified"
       reason: MerchantPickupAuthorizationFailure
@@ -43,10 +47,6 @@ export interface MerchantPickupAuthorizationInput {
   items: OrderSummary["items"]
   merchantPubkey: string
   nowMs?: number
-  /** Receives the exact verified graph for a same-action Core authorization. */
-  onVerifiedMarket?: (market: EventMarketResolution) => void
-  /** Receives each exact live product revision used by the authorization. */
-  onVerifiedProduct?: (record: CommerceProductRecord) => void
 }
 
 export interface MerchantPickupAuthorizationDependencies {
@@ -470,9 +470,7 @@ export async function verifyMerchantPickupOrderAuthorization(
     verifiedProducts.push(record)
   }
 
-  verifiedProducts.forEach((record) => input.onVerifiedProduct?.(record))
-  input.onVerifiedMarket?.(resolution)
-  return { status: "verified" }
+  return { status: "verified", market: resolution, products: verifiedProducts }
 }
 
 export function getMerchantPickupAuthorizationMessage(

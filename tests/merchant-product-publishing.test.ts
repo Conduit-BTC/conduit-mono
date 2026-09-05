@@ -55,6 +55,37 @@ const OTHER_MERCHANT_SECRET = new Uint8Array(32).fill(5)
 const MERCHANT_PUBKEY = getPublicKey(MERCHANT_SECRET)
 const NOW = 1_700_000_100_000
 
+function publishAndParse(
+  product: ProductSchema,
+  dTag: string,
+  intent: NonNullable<
+    ReturnType<typeof resolvePublishedProductFulfillmentIntentForTarget>
+  >
+) {
+  const prepared = applyProductFulfillmentIntentForPublication({
+    product,
+    merchantPubkey: MERCHANT_PUBKEY,
+    productDTag: dTag,
+    intent,
+  })
+  const draft = buildProductListingEventDraft({
+    product: prepared,
+    dTag,
+    clientAppId: "merchant",
+  })
+  const signed = finalizeEvent(
+    {
+      kind: draft.kind,
+      created_at: Math.floor(NOW / 1000),
+      content: draft.content,
+      tags: draft.tags,
+    },
+    MERCHANT_SECRET
+  )
+  expect(signed.sig).toHaveLength(128)
+  return { prepared, parsed: parseProductEvent(signed) }
+}
+
 let cachedProducts: CachedProduct[] = []
 
 function cloneDeletionJob(
@@ -1378,12 +1409,11 @@ describe("canonical product publication ordering", () => {
     const intent = resolvePublishedProductFulfillmentIntentForTarget(product)
     expect(intent).toEqual({ kind: "coordinate_after_order" })
 
-    const prepared = applyProductFulfillmentIntentForPublication({
-      product: { ...product, stock: 0 },
-      merchantPubkey: MERCHANT_PUBKEY,
-      productDTag: "event-listing",
-      intent: intent!,
-    })
+    const { prepared, parsed } = publishAndParse(
+      { ...product, stock: 0 },
+      "event-listing",
+      intent!
+    )
     expect(prepared).toMatchObject({
       stock: 0,
       collectionRefs: [collectionCoordinate],
@@ -1397,22 +1427,7 @@ describe("canonical product publication ordering", () => {
       canonicalShippingResolved: false,
     })
 
-    const draft = buildProductListingEventDraft({
-      product: prepared,
-      dTag: "event-listing",
-      clientAppId: "merchant",
-    })
-    const signed = finalizeEvent(
-      {
-        kind: draft.kind,
-        created_at: Math.floor(NOW / 1000),
-        content: draft.content,
-        tags: draft.tags,
-      },
-      MERCHANT_SECRET
-    )
-    expect(signed.sig).toHaveLength(128)
-    expect(parseProductEvent(signed)).toMatchObject({
+    expect(parsed).toMatchObject({
       stock: 0,
       collectionRefs: [collectionCoordinate],
       shippingOptionId: pickupCoordinate,
@@ -1435,28 +1450,11 @@ describe("canonical product publication ordering", () => {
       shippingOptionRefs: [{ coordinate: collectionCoordinate }],
       canonicalShippingResolved: false,
     }
-    const prepared = applyProductFulfillmentIntentForPublication({
-      product,
-      merchantPubkey: MERCHANT_PUBKEY,
-      productDTag: "collection-pickup-listing",
-      intent: { kind: "coordinate_after_order" },
+    const { parsed } = publishAndParse(product, "collection-pickup-listing", {
+      kind: "coordinate_after_order",
     })
-    const draft = buildProductListingEventDraft({
-      product: prepared,
-      dTag: "collection-pickup-listing",
-      clientAppId: "merchant",
-    })
-    const signed = finalizeEvent(
-      {
-        kind: draft.kind,
-        created_at: Math.floor(NOW / 1000),
-        content: draft.content,
-        tags: draft.tags,
-      },
-      MERCHANT_SECRET
-    )
 
-    expect(parseProductEvent(signed)).toMatchObject({
+    expect(parsed).toMatchObject({
       stock: 0,
       collectionRefs: [collectionCoordinate],
       shippingOptionId: collectionCoordinate,
