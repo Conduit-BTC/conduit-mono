@@ -251,7 +251,7 @@ describe("Market cart HUD policy", () => {
     expect(wallets).toContain("getBuyerNwcSessionSnapshots(nextNwcWalletIds)")
     // Checkout reuses the shared preflight cache entry and requests again only
     // when it is absent, expired, or the address changed.
-    expect(checkout).toContain("getFreshLnurlMetadata(merchantLud16)")
+    expect(checkout).toContain("getFreshLnurlMetadata(currentMerchantLud16)")
     expect(checkout).toContain("useMerchantLnurlPreflight(merchantLud16)")
     expect(checkout).toContain("queryClient.fetchQuery(")
     expect(checkout).toContain(
