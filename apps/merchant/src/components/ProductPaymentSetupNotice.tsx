@@ -16,7 +16,7 @@ export function ProductPaymentSetupNotice({
     enabled,
     // Product authoring must eventually settle when the merchant has no
     // profile metadata; the default visible-profile query retries forever.
-    maxUnresolvedRefetches: 1,
+    maxUnresolvedRefetches: 2,
     requireCompleteEvidence: true,
   })
   const state = getProductPaymentSetupState({

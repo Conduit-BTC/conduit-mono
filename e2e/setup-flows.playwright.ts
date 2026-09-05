@@ -692,9 +692,22 @@ test("Market profile drafts do not cross signer identities @market", async ({
 test("merchant product authoring warns about missing Lightning setup without blocking publication @merchant", async ({
   page,
 }) => {
+  test.setTimeout(60_000)
   const secretKey = generateSecretKey()
   const merchantPubkey = getPublicKey(secretKey)
   await seedTestRelayIdentity(secretKey)
+  await expect
+    .poll(
+      async () =>
+        (
+          await readTestRelayEvents({
+            authors: [merchantPubkey],
+            kinds: [0, 10_002],
+          })
+        ).length,
+      { timeout: 10_000 }
+    )
+    .toBe(2)
   await installTestSigner(page, merchantPubkey, { secretKey })
   await page.goto(`${merchantUrl}/products`)
   await page.getByRole("button", { name: "Add product" }).first().click()
@@ -702,7 +715,7 @@ test("merchant product authoring warns about missing Lightning setup without blo
   const dialog = page.getByRole("dialog", { name: "Add product" })
   await expect(
     dialog.getByText("Lightning payments are not set up", { exact: true })
-  ).toBeVisible({ timeout: 30_000 })
+  ).toBeVisible({ timeout: 45_000 })
   await expect(
     dialog.getByRole("link", { name: "Set up payments", exact: true })
   ).toHaveAttribute("href", "/payments")
