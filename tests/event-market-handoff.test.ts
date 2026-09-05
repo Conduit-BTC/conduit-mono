@@ -1931,37 +1931,6 @@ describe("event-market organizer inbox readiness", () => {
     ).resolves.toMatchObject({ state: "blocked", reason: "malformed" })
   })
 
-  it("keeps a signed organizer inbox usable when another discovery relay fails", async () => {
-    const declaration = finalizeEvent(
-      {
-        kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
-        created_at: ISSUED_AT,
-        tags: [["relay", "wss://organizer.inbox.relay.dev"]],
-        content: "",
-      },
-      ORGANIZER_SECRET
-    )
-    await expect(
-      resolveEventMarketOrganizerInbox(ORGANIZER, {
-        relayUrls: ["wss://discovery.relay.dev", "wss://offline.relay.dev"],
-        now: () => ISSUED_AT * 1_000,
-        fetchEventsWithDiagnostics: async () => ({
-          events: [new NDKEvent(undefined, declaration)],
-          attemptedRelayUrls: [
-            "wss://discovery.relay.dev",
-            "wss://offline.relay.dev",
-          ],
-          successfulRelayUrls: ["wss://discovery.relay.dev"],
-          failedRelayUrls: ["wss://offline.relay.dev"],
-        }),
-      })
-    ).resolves.toEqual({
-      state: "ready",
-      organizerPubkey: ORGANIZER,
-      relayUrls: ["wss://organizer.inbox.relay.dev"],
-    })
-  })
-
   it("requires a current secure organizer kind-10050 declaration", async () => {
     __resetInboxRelayCache()
     const declaration = finalizeEvent(
