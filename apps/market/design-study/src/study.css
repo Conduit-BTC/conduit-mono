@@ -1,0 +1,137 @@
+@import "tailwindcss" source(none);
+@config "../../tailwind.config.js";
+@source ".";
+@source "../../../../packages/ui/src/components";
+
+/* EDIT HERE: study-only layout controls. Shared production themes stay untouched. */
+:root {
+  --study-content-width: 76rem;
+  --study-card-radius: var(--radius-xl);
+  --study-card-gap: 1rem;
+  --study-card-background: var(--surface);
+}
+
+/* To explore theme-specific values, add overrides inside these selectors.
+   :root[data-theme="day-market"] { --study-card-background: var(--surface); }
+   :root[data-theme="night-market"] { --study-card-background: var(--surface); }
+   These files are loaded only by this study, never the production app. */
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+}
+
+button,
+a,
+summary {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:not(:disabled),
+summary {
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
+
+.study-page {
+  min-height: 100dvh;
+}
+.study-shell {
+  width: min(100% - 2rem, var(--study-content-width));
+  margin-inline: auto;
+}
+.study-header {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 1rem;
+  align-items: center;
+  padding-block: 1rem;
+}
+.study-search {
+  grid-column: 1 / -1;
+  grid-row: 2;
+}
+.study-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--study-card-gap);
+  list-style: none;
+  padding: 0;
+}
+.study-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--study-card-radius);
+  background: var(--study-card-background);
+  box-shadow: var(--shadow-sm);
+}
+.study-product-link {
+  width: 100%;
+  text-align: left;
+}
+.study-product-link:focus-visible {
+  outline-offset: -3px;
+}
+.study-artwork {
+  display: flex;
+  aspect-ratio: 4 / 3;
+  width: 100%;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  background: var(--surface-elevated);
+  color: var(--text-secondary);
+}
+.study-artwork[data-artwork="shirt"],
+.study-artwork[data-artwork="bag"] {
+  background: color-mix(in srgb, var(--primary-500) 12%, var(--background));
+}
+.study-artwork[data-artwork="coffee"],
+.study-artwork[data-artwork="mug"] {
+  background: color-mix(in srgb, var(--secondary-500) 12%, var(--background));
+}
+.study-artwork[data-artwork="print"],
+.study-artwork[data-artwork="notebook"] {
+  background: color-mix(in srgb, var(--accent-500) 12%, var(--background));
+}
+.study-skip-link {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.5rem;
+  z-index: 60;
+  transform: translateY(-200%);
+  border-radius: var(--radius-md);
+  padding: 0.75rem;
+  background: var(--surface-dialog);
+}
+.study-skip-link:focus {
+  transform: translateY(0);
+}
+
+@media (min-width: 48rem) {
+  .study-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .study-header {
+    grid-template-columns: auto minmax(12rem, 32rem) 1fr;
+  }
+  .study-search {
+    grid-column: auto;
+    grid-row: auto;
+  }
+}
+@media (min-width: 64rem) {
+  .study-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
