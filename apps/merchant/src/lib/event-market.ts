@@ -832,9 +832,7 @@ export async function publishMerchantOrganizerMembership(input: {
     location: input.market.eventLocation,
     geohash: input.market.eventGeohash,
     eventCoordinate: input.market.calendarCoordinate,
-    pickupCoordinates: input.market.pickupCoordinate
-      ? [input.market.pickupCoordinate]
-      : [],
+    pickupCoordinates: input.market.pickupCoordinates,
     productCoordinates,
   }
   const result = await publishOrganizerCollectionUpdate({

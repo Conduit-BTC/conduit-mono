@@ -320,9 +320,18 @@ export const orderPickupFulfillmentSchema = z
     }
     if (!hasExplicitMode || !hasExplicitHandler) return
     const expectedMode =
-      pickupAuthor === organizer ? "organizer_handoff" : "merchant_handoff"
+      pickupAuthor === merchant ? "merchant_handoff" : "organizer_handoff"
     const expectedHandler = pickupAuthor === organizer ? organizer : merchant
-    if (fulfillment.handoffMode !== expectedMode) {
+    // Older own-product snapshots used organizer_handoff. Keep them readable;
+    // new same-account pickups resolve as merchant handoff, with no third party.
+    const historicalOwnOrganizerMode =
+      pickupAuthor === merchant &&
+      merchant === organizer &&
+      fulfillment.handoffMode === "organizer_handoff"
+    if (
+      fulfillment.handoffMode !== expectedMode &&
+      !historicalOwnOrganizerMode
+    ) {
       context.addIssue({
         code: "custom",
         path: ["handoffMode"],

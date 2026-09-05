@@ -68,6 +68,8 @@ export function MerchantEventMarketPanel({
 }) {
   const [publisherOpen, setPublisherOpen] = useState(false)
   const [publishedProduct, setPublishedProduct] = useState<string | null>(null)
+  const [publishedAccepted, setPublishedAccepted] = useState(false)
+  const ownsMarket = merchantPubkey === market.organizerPubkey
   const publishable = market.state === "active" || market.state === "partial"
 
   return (
@@ -177,15 +179,19 @@ export function MerchantEventMarketPanel({
               </h3>
               <p className="mt-1 max-w-2xl text-pretty text-sm leading-6 text-[var(--text-secondary)]">
                 Publish a new product from scratch or copy one of your existing
-                products. The organizer reviews it before it appears in the
-                event collection.
+                products.{" "}
+                {ownsMarket
+                  ? "Your own product is accepted into this event when you approve its collection signature."
+                  : "The organizer reviews it before it appears in the event collection."}
               </p>
               {publishedProduct && (
                 <p
                   className="mt-2 text-xs font-medium text-success"
                   role="status"
                 >
-                  Product published. Organizer acceptance is pending.
+                  {publishedAccepted
+                    ? "Product published and accepted into your event."
+                    : "Product published. Organizer acceptance is pending."}
                 </p>
               )}
             </div>
@@ -219,8 +225,9 @@ export function MerchantEventMarketPanel({
         merchantPubkey={merchantPubkey}
         market={market}
         onOpenChange={setPublisherOpen}
-        onPublished={async (productCoordinate) => {
+        onPublished={async (productCoordinate, accepted) => {
           setPublishedProduct(productCoordinate)
+          setPublishedAccepted(accepted)
           await onRefresh()
         }}
       />

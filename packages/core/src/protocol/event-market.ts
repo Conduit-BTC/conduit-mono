@@ -1448,7 +1448,7 @@ function directMerchantPickupCoordinatesFromProductEvidence(input: {
     const product = parseAddressableCoordinate(productCoordinate, [
       EVENT_KINDS.PRODUCT,
     ])
-    if (!product || product.authorPubkey === input.organizerPubkey) continue
+    if (!product) continue
     const projection = projectSignedProductFulfillmentEvidence(event)
     for (const reference of projection.shippingOptionRefs ?? []) {
       const pickup = parseAddressableCoordinate(reference.coordinate, [

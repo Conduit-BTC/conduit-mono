@@ -168,7 +168,9 @@ export function resolveEventMarketProductFulfillment(
     (coordinate) => {
       const identity = coordinateIdentity(coordinate)
       return (
-        identity?.authorPubkey === organizerPubkey &&
+        !!identity &&
+        identity.authorPubkey === organizerPubkey &&
+        identity.authorPubkey !== productIdentity?.authorPubkey &&
         !collectionPickupCoordinates.has(coordinate)
       )
     }
@@ -254,15 +256,17 @@ export function resolveEventMarketProductFulfillment(
   const pickupAuthorPubkey = pickup.authorPubkey.toLowerCase()
   let handoffMode: EventMarketHandoffMode
   let handoffPubkey: string
-  if (organizerPubkey && pickupAuthorPubkey === organizerPubkey) {
-    handoffMode = "organizer_handoff"
-    handoffPubkey = organizerPubkey
-  } else if (
+  // An organizer selling their own product still performs merchant handoff;
+  // there is no third-party receipt or private order disclosure to themselves.
+  if (
     productIdentity?.kind === 30402 &&
     pickupAuthorPubkey === productIdentity.authorPubkey
   ) {
     handoffMode = "merchant_handoff"
     handoffPubkey = productIdentity.authorPubkey
+  } else if (organizerPubkey && pickupAuthorPubkey === organizerPubkey) {
+    handoffMode = "organizer_handoff"
+    handoffPubkey = organizerPubkey
   } else if (!productIdentity) {
     return ambiguousDecision(
       "missing_product_identity",
