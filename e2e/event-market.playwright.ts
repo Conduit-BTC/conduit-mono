@@ -954,14 +954,18 @@ async function acceptMerchantProduct(
     timeout: 30_000,
   })
   const productTitle = productEvent.tags.find((tag) => tag[0] === "title")?.[1]
+  const productSummary = productEvent.tags.find(
+    (tag) => tag[0] === "summary"
+  )?.[1]
   expect(productTitle).toBeTruthy()
+  expect(productSummary).toBeTruthy()
   const productPreview = page.getByTestId("organizer-product-preview")
   await expect(productPreview).toHaveAttribute("data-preview-state", "verified")
   await expect(
     productPreview.getByText(productTitle!, { exact: true })
   ).toBeVisible()
   await expect(
-    productPreview.getByText("Synthetic accepted product fixture.", {
+    productPreview.getByText(productSummary!, {
       exact: true,
     })
   ).toBeVisible()
