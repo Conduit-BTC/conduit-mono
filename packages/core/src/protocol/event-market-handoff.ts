@@ -37,6 +37,7 @@ import type {
   ParsedOrderMessage,
 } from "./orders"
 import {
+  MAX_DECLARED_INBOX_WRITE_RELAYS,
   resolveInboxDeclaration,
   type ResolveInboxDeclarationOptions,
 } from "./private-message-routing"
@@ -1211,7 +1212,14 @@ async function strictInboxRelays(
   if (inbox.state !== "ready") {
     throw new Error("Private-message recipient inbox is not currently usable.")
   }
-  return inbox.relayUrls
+  return declaredInboxWriteRelayUrls(inbox.relayUrls)
+}
+
+function declaredInboxWriteRelayUrls(relayUrls: readonly string[]): string[] {
+  return normalizeSecureOrIsolatedE2eRelayUrls(relayUrls).slice(
+    0,
+    MAX_DECLARED_INBOX_WRITE_RELAYS
+  )
 }
 
 function pendingRelayUrls(
@@ -1298,7 +1306,7 @@ export async function retryEventMarketPrivateDelivery(input: {
       )
     : createEventMarketPrivateDeliveryProgress(input.record)
   const recipientRelayUrls = input.recipientInboxRelays
-    ? normalizeSecureOrIsolatedE2eRelayUrls(input.recipientInboxRelays)
+    ? declaredInboxWriteRelayUrls(input.recipientInboxRelays)
     : await strictInboxRelays(
         input.record.recipientPubkey,
         input.inboxDeclarationOptions
@@ -1351,7 +1359,7 @@ export async function retryEventMarketPrivateDelivery(input: {
   if (input.record.signedSelfWrap) {
     try {
       const senderRelayUrls = input.senderInboxRelays
-        ? normalizeSecureOrIsolatedE2eRelayUrls(input.senderInboxRelays)
+        ? declaredInboxWriteRelayUrls(input.senderInboxRelays)
         : await strictInboxRelays(
             input.record.senderPubkey,
             input.inboxDeclarationOptions

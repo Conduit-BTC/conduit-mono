@@ -1838,6 +1838,49 @@ describe("event-market organizer inbox readiness", () => {
     expect(calls).toHaveLength(2)
   })
 
+  it("caps partial-discovery retry delivery to the first three declared relays", async () => {
+    const recipientRelays = [
+      "wss://organizer-a.inbox.relay.dev",
+      "wss://organizer-b.inbox.relay.dev",
+      "wss://organizer-c.inbox.relay.dev",
+      "wss://organizer-d.inbox.relay.dev",
+    ]
+    const senderRelays = [
+      "wss://merchant-a.inbox.relay.dev",
+      "wss://merchant-b.inbox.relay.dev",
+      "wss://merchant-c.inbox.relay.dev",
+      "wss://merchant-d.inbox.relay.dev",
+    ]
+    const record = readyDeliveryRecord()
+    const calls: Array<{ id: string; relays: string[] }> = []
+    const delivered = await retryEventMarketPrivateDelivery({
+      record,
+      inboxDeclarationOptions: partialDeclarationRead([
+        inboxDeclaration(ORGANIZER_SECRET, recipientRelays),
+        inboxDeclaration(MERCHANT_SECRET, senderRelays),
+      ]),
+      publishFn: (async (event, options) => {
+        const relays = [...(options.exclusiveRelayUrls ?? [])]
+        calls.push({ id: event.id, relays })
+        return successfulDelivery(relays)
+      }) as typeof import("@conduit/core").publishWithPlanner,
+    })
+
+    expect(calls).toEqual([
+      {
+        id: record.signedRecipientWrap.id,
+        relays: recipientRelays.slice(0, 3),
+      },
+      { id: record.signedSelfWrap!.id, relays: senderRelays.slice(0, 3) },
+    ])
+    expect(delivered.recipientStatus).toBe("full_success")
+    expect(delivered.selfDeliveryStatus).toBe("full_success")
+    expect(
+      delivered.deliveryProgress.recipientAcknowledgedRelayRefs
+    ).toHaveLength(3)
+    expect(delivered.deliveryProgress.selfAcknowledgedRelayRefs).toHaveLength(3)
+  })
+
   it.each([
     { relays: [], reason: "signed_empty" },
     { relays: ["https://not-an-inbox.example"], reason: "malformed" },
