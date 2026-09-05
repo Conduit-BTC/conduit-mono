@@ -93,11 +93,20 @@ function ProfilePage() {
     maxUnresolvedRefetches: 2,
   })
   const updateMutation = useUpdateProfile("market")
-  const [editing, setEditing] = useState(false)
+  const [editingPubkey, setEditingPubkey] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [form, setForm] = useState<ProfileFormValues>(EMPTY_FORM)
   const editBaselineRef = useRef<ProfileFormValues | null>(null)
   const [profileSaveSucceeded, setProfileSaveSucceeded] = useState(false)
+  const editing = !!pubkey && editingPubkey === pubkey
+
+  useEffect(() => {
+    if (editingPubkey === null || editingPubkey === pubkey) return
+    setEditingPubkey(null)
+    editBaselineRef.current = null
+    setForm(EMPTY_FORM)
+    setProfileSaveSucceeded(false)
+  }, [editingPubkey, pubkey])
 
   useEffect(() => {
     if (editing || !profileQuery.data) return
@@ -163,7 +172,7 @@ function ProfilePage() {
   }, [hasProfileChanges])
 
   function resetForm(): void {
-    setEditing(false)
+    setEditingPubkey(null)
     editBaselineRef.current = null
     setProfileSaveSucceeded(false)
     if (!profileQuery.data) {
@@ -174,11 +183,11 @@ function ProfilePage() {
   }
 
   function startEditing(): void {
-    if (!canEditProfile || !profileQuery.data) return
+    if (!canEditProfile || !profileQuery.data || !pubkey) return
     const baseline = profileToForm(profileQuery.data)
     editBaselineRef.current = baseline
     setForm(baseline)
-    setEditing(true)
+    setEditingPubkey(pubkey)
     setProfileSaveSucceeded(false)
   }
 
@@ -195,14 +204,14 @@ function ProfilePage() {
 
   function handleSave(event: React.FormEvent): void {
     event.preventDefault()
-    if (!hasProfileChanges || updateMutation.isPending) return
+    if (!editing || !hasProfileChanges || updateMutation.isPending) return
     setProfileSaveSucceeded(false)
     updateMutation.mutate(
       buildProfileUpdatePayload(reconciledProfileForm, profileQuery.data),
       {
         onSuccess: () => {
           setProfileSaveSucceeded(true)
-          setEditing(false)
+          setEditingPubkey(null)
           editBaselineRef.current = null
         },
       }

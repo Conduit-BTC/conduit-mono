@@ -370,6 +370,98 @@ async function exerciseProfileSave(
   ).toBeVisible()
 }
 
+async function exerciseProfileDraftSignerSwitch(page: Page): Promise<void> {
+  const firstSecretKey = generateSecretKey()
+  const firstPubkey = getPublicKey(firstSecretKey)
+  const secondSecretKey = generateSecretKey()
+  const secondPubkey = getPublicKey(secondSecretKey)
+  const createdAt = Math.floor(Date.now() / 1_000)
+
+  await publishTestRelayEvents(
+    [
+      [firstSecretKey, "First account"],
+      [secondSecretKey, "Second account"],
+    ].flatMap(([secretKey, displayName]) => [
+      finalizeEvent(
+        {
+          kind: 0,
+          created_at: createdAt,
+          tags: [],
+          content: JSON.stringify({ display_name: displayName }),
+        },
+        secretKey as Uint8Array
+      ),
+      finalizeEvent(
+        {
+          kind: 10_002,
+          created_at: createdAt,
+          tags: [["r", TEST_RELAY_URL]],
+          content: "",
+        },
+        secretKey as Uint8Array
+      ),
+    ])
+  )
+
+  await installTestSigner(page, firstPubkey, { secretKey: firstSecretKey })
+  await page.goto(`${marketUrl}/profile`)
+  await expect(
+    page.getByText("First account", { exact: true }).first()
+  ).toBeVisible({
+    timeout: 30_000,
+  })
+  await page
+    .getByRole("button", { name: "Edit profile", exact: true })
+    .first()
+    .click()
+  await page.locator("#profile-display-name").fill("First account draft")
+
+  await page.getByRole("button", { name: "Open account menu" }).click()
+  await page.getByRole("menuitem", { name: "Disconnect" }).click()
+  await expect(
+    page.getByRole("button", { name: "Connect", exact: true })
+  ).toBeVisible()
+
+  await page.evaluate((signerPubkey) => {
+    Object.defineProperty(window, "nostr", {
+      configurable: true,
+      value: {
+        async getPublicKey() {
+          return signerPubkey
+        },
+        async getRelays() {
+          return { "ws://127.0.0.1:7777": { read: true, write: true } }
+        },
+        async signEvent(event: Record<string, unknown>) {
+          return {
+            ...event,
+            pubkey: signerPubkey,
+            id: "0".repeat(64),
+            sig: "1".repeat(128),
+          }
+        },
+      },
+    })
+  }, secondPubkey)
+
+  await page.getByRole("button", { name: "Connect", exact: true }).click()
+  await page.getByRole("button", { name: "Connect Extension (NIP-07)" }).click()
+  await expect(
+    page.getByText("Second account", { exact: true }).first()
+  ).toBeVisible({
+    timeout: 30_000,
+  })
+  await expect(page.locator("#profile-display-name")).toBeHidden()
+
+  await page
+    .getByRole("button", { name: "Edit profile", exact: true })
+    .first()
+    .click()
+  await expect(page.locator("#profile-display-name")).toHaveValue(
+    "Second account"
+  )
+}
+
 async function seedMerchantTagCatalog(secretKey: Uint8Array): Promise<void> {
   const createdAt = Math.floor(Date.now() / 1_000)
 
@@ -589,6 +681,12 @@ test("Merchant profile saves update the mounted owner view immediately @merchant
   page,
 }) => {
   await exerciseProfileSave(page, merchantUrl, "Merchant owner")
+})
+
+test("Market profile drafts do not cross signer identities @market", async ({
+  page,
+}) => {
+  await exerciseProfileDraftSignerSwitch(page)
 })
 
 test("merchant product authoring warns about missing Lightning setup without blocking publication @merchant", async ({

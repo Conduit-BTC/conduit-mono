@@ -70,12 +70,21 @@ function ProfilePage() {
     maxUnresolvedRefetches: 2,
   })
   const updateMutation = useUpdateProfile("merchant")
-  const [editing, setEditing] = useState(false)
+  const [editingPubkey, setEditingPubkey] = useState<string | null>(null)
   const [form, setForm] = useState<ProfileFormValues>(EMPTY_PROFILE_FORM)
   const editBaselineRef = useRef<ProfileFormValues | null>(null)
   const [copiedPubkey, setCopiedPubkey] = useState(false)
   const [copiedStoreLink, setCopiedStoreLink] = useState(false)
   const [profileSaveSucceeded, setProfileSaveSucceeded] = useState(false)
+  const editing = !!pubkey && editingPubkey === pubkey
+
+  useEffect(() => {
+    if (editingPubkey === null || editingPubkey === pubkey) return
+    setEditingPubkey(null)
+    editBaselineRef.current = null
+    setForm(EMPTY_PROFILE_FORM)
+    setProfileSaveSucceeded(false)
+  }, [editingPubkey, pubkey])
 
   useEffect(() => {
     if (editing || !profileQuery.data) return
@@ -142,14 +151,14 @@ function ProfilePage() {
 
   function handleSave(e: React.FormEvent) {
     e.preventDefault()
-    if (!hasProfileChanges || updateMutation.isPending) return
+    if (!editing || !hasProfileChanges || updateMutation.isPending) return
     setProfileSaveSucceeded(false)
     updateMutation.mutate(
       profileFormToUpdatePayload(reconciledProfileForm, profileData),
       {
         onSuccess: () => {
           setProfileSaveSucceeded(true)
-          setEditing(false)
+          setEditingPubkey(null)
           editBaselineRef.current = null
         },
       }
@@ -157,11 +166,11 @@ function ProfilePage() {
   }
 
   function startEditing(): void {
-    if (!canEditProfile || !profileData) return
+    if (!canEditProfile || !profileData || !pubkey) return
     const baseline = profileToFormValues(profileData)
     editBaselineRef.current = baseline
     setForm(baseline)
-    setEditing(true)
+    setEditingPubkey(pubkey)
     setProfileSaveSucceeded(false)
   }
 
@@ -471,7 +480,7 @@ function ProfilePage() {
                       variant="outline"
                       size="sm"
                       onClick={() => {
-                        setEditing(false)
+                        setEditingPubkey(null)
                         editBaselineRef.current = null
                         setProfileSaveSucceeded(false)
                         if (profileQuery.data) {

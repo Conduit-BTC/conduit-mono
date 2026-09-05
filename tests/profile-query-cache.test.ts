@@ -68,17 +68,22 @@ describe("profile query cache", () => {
   })
 
   it("waits for profile evidence and reconciles active edits", async () => {
-    const merchantRoute = await Bun.file(
-      "apps/merchant/src/routes/profile.tsx"
-    ).text()
-    const marketRoute = await Bun.file(
-      "apps/market/src/routes/profile.tsx"
-    ).text()
+    const merchantRoute = (
+      await Bun.file("apps/merchant/src/routes/profile.tsx").text()
+    ).replaceAll("\r\n", "\n")
+    const marketRoute = (
+      await Bun.file("apps/market/src/routes/profile.tsx").text()
+    ).replaceAll("\r\n", "\n")
 
     for (const route of [merchantRoute, marketRoute]) {
       expect(route).toContain("reconcileProfileFormDraft(")
       expect(route).toContain("canEditProfile")
       expect(route).toContain("isCommerceReadIncomplete(profileQuery.meta)")
+      expect(route).toContain("editingPubkey === pubkey")
+      expect(route).toContain(
+        "editingPubkey === null || editingPubkey === pubkey"
+      )
+      expect(route).toContain("if (!editing || !hasProfileChanges")
     }
     expect(merchantRoute).toContain(
       "!profileQuery.isLoading &&\n              !complete"
