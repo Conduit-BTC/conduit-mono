@@ -276,6 +276,16 @@ export function findSavedOrganizerEventMarketReference(
   )
 }
 
+export function findOrganizerEventMarketByReference<
+  T extends { collectionCoordinate: string },
+>(markets: readonly T[], reference: string): T | undefined {
+  const target = decodeEventMarketReference(reference, [30405])
+  if (!target) return undefined
+  return markets.find(
+    (market) => market.collectionCoordinate === target.coordinate
+  )
+}
+
 export function updateOrganizerCollectionProducts(
   currentProductCoordinates: readonly string[],
   productCoordinate: string,

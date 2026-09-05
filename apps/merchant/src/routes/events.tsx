@@ -59,6 +59,7 @@ import {
 } from "../lib/event-market"
 import type { OrganizerEventMarketFormValues } from "../lib/event-market-form"
 import {
+  findOrganizerEventMarketByReference,
   findSavedOrganizerEventMarketReference,
   loadSavedDiscoveredEventMarkets,
   loadSavedOrganizerEventMarkets,
@@ -605,13 +606,9 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
       return null
     }
   }, [selectedReference])
-  const selectedFromList =
-    selectedIdentity?.relayHints.length === 0
-      ? markets.find(
-          (market) =>
-            market.collectionCoordinate === selectedIdentity.coordinate
-        )
-      : undefined
+  const selectedFromList = selectedReference
+    ? findOrganizerEventMarketByReference(markets, selectedReference)
+    : undefined
   const selectedMarketQuery = useQuery({
     queryKey: [
       "merchant-organizer-event-market",

@@ -4,6 +4,7 @@ import {
   encodeEventMarketNaddr,
 } from "@conduit/core"
 import {
+  findOrganizerEventMarketByReference,
   findSavedOrganizerEventMarketReference,
   forgetOrganizerEventMarket,
   getDiscoveredEventMarketStorageKey,
@@ -171,6 +172,39 @@ describe("merchant organizer event workflow", () => {
       decodeEventMarketReference(saved[0]!.reference, [30405])?.relayHints
     ).toEqual(publishHints)
     expect(saved[0]).toMatchObject({ title: "Published", savedAt: 20 })
+  })
+
+  it("prefers a current organizer-list market over a stale hinted selection", () => {
+    const staleReference = encodeEventMarketNaddr(
+      COLLECTION,
+      Array.from(
+        { length: 7 },
+        (_, index) => `wss://stale-${index + 1}.example/events`
+      )
+    )
+    const currentRelay = "wss://planner-two.example/events"
+    const currentMarket = {
+      collectionCoordinate: COLLECTION,
+      naddr: encodeEventMarketNaddr(COLLECTION, [currentRelay]),
+      state: "active",
+    }
+
+    const selected = findOrganizerEventMarketByReference(
+      [currentMarket],
+      staleReference
+    )
+
+    expect(selected).toBe(currentMarket)
+    expect(
+      decodeEventMarketReference(selected!.naddr, [30405])?.relayHints
+    ).toEqual([currentRelay])
+    expect(
+      getEventMarketUrl(selected!.naddr, {
+        hostname: "127.0.0.1",
+        protocol: "http:",
+        port: "7001",
+      })
+    ).toContain(selected!.naddr)
   })
 
   it("keeps a hinted selection through bare edit and publish references for sharing", () => {

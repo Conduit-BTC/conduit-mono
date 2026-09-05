@@ -153,6 +153,10 @@ describe("merchant organizer event market route", () => {
     )
     expect(publishSuccess).toContain("refreshMarketQueries(reference)")
     expect(publishSuccess).not.toContain("selectedMarketQuery.data")
+    expect(route).toContain(
+      "findOrganizerEventMarketByReference(markets, selectedReference)"
+    )
+    expect(route).not.toContain("selectedIdentity?.relayHints.length === 0")
     expect(panel).toContain("getEventMarketUrl(market.naddr)")
   })
 
