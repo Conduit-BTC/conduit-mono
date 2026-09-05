@@ -447,35 +447,16 @@ export function isParticipationProductPreviewVerified(
   )
 }
 
-function mergeEventMarketRelayHints(
-  ...groups: ReadonlyArray<readonly string[] | undefined>
-): string[] {
-  const relayHints = new Set<string>()
-  for (const group of groups) {
-    for (const relayUrl of group ?? []) relayHints.add(relayUrl)
-  }
-  return Array.from(relayHints)
-}
-
 function resolvedEventMarketRelayHints(
   resolution: EventMarketResolution
 ): string[] {
-  return mergeEventMarketRelayHints(
-    resolution.collection?.sourceRelayUrls,
-    resolution.calendar?.sourceRelayUrls,
-    resolution.pickup?.sourceRelayUrls,
-    ...resolution.pickups.map((pickup) => pickup.sourceRelayUrls)
-  )
+  return [...(resolution.collection?.sourceRelayUrls ?? [])]
 }
 
 function publishedEventMarketRelayHints(
   value: OrganizerEventMarketPublishResult
 ): string[] {
-  return mergeEventMarketRelayHints(
-    value.collection.delivery.acknowledgedRelayUrls,
-    value.calendar.delivery.acknowledgedRelayUrls,
-    value.pickup?.delivery.acknowledgedRelayUrls
-  )
+  return [...value.collection.delivery.acknowledgedRelayUrls]
 }
 
 function projectEventMarket(

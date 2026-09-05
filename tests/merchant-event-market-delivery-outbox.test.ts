@@ -10,6 +10,7 @@ import {
   __setEventMarketTestOverrides,
   decodeEventMarketReference,
   encodeEventMarketNaddr,
+  EVENT_KINDS,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
 import {
@@ -27,6 +28,8 @@ const ORGANIZER = getPublicKey(SECRET)
 const OTHER_ORGANIZER = "f".repeat(64)
 const REFERENCE = `30405:${ORGANIZER}:public-market`
 const PUBLISH_RELAY = "wss://publish.example/events"
+const CALENDAR_RELAY = "wss://calendar-only.example/events"
+const PICKUP_RELAY = "wss://pickup-only.example/events"
 
 class MemoryStorage {
   constructor(private readonly values = new Map<string, string>()) {}
@@ -70,7 +73,7 @@ function expectExactSignedEvent(
 }
 
 describe("merchant organizer delivery outbox", () => {
-  it("includes acknowledged publish relays in the organizer share link", async () => {
+  it("includes only collection acknowledgements in the organizer share link", async () => {
     const start = new Date(Date.now() + 7 * 24 * 60 * 60 * 1_000)
       .toISOString()
       .slice(0, 16)
@@ -91,18 +94,26 @@ describe("merchant organizer delivery outbox", () => {
           },
           SECRET
         ),
-      publishWithPlanner: async () => ({
-        plan: {
-          intent: "author_event",
-          primaryRelayUrls: [PUBLISH_RELAY],
-          broadcastRelayUrls: [],
-          parkedRelayUrls: [],
-        },
-        attemptedRelayUrls: [PUBLISH_RELAY],
-        successfulRelayUrls: [PUBLISH_RELAY],
-        failedRelayUrls: [],
-        relayFailureMessages: {},
-      }),
+      publishWithPlanner: async (event) => {
+        const relayUrl =
+          event.kind === EVENT_KINDS.PRODUCT_COLLECTION
+            ? PUBLISH_RELAY
+            : event.kind === EVENT_KINDS.CALENDAR_TIME
+              ? CALENDAR_RELAY
+              : PICKUP_RELAY
+        return {
+          plan: {
+            intent: "author_event",
+            primaryRelayUrls: [relayUrl],
+            broadcastRelayUrls: [],
+            parkedRelayUrls: [],
+          },
+          attemptedRelayUrls: [relayUrl],
+          successfulRelayUrls: [relayUrl],
+          failedRelayUrls: [],
+          relayFailureMessages: {},
+        }
+      },
     })
 
     const result = await publishMerchantOrganizerEventMarket({

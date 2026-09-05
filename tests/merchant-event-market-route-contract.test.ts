@@ -82,7 +82,7 @@ describe("merchant organizer event market route", () => {
     expect(route).toContain("no global event absence is inferred")
     expect(route).toContain("aria-label={`View ${market.title}`}")
     expect(route).toContain("resolveOrganizerEventMarket(")
-    expect(route).toContain("merchantPubkey,\n        signal")
+    expect(route).toMatch(/merchantPubkey,\r?\n\s+signal/)
     expect(route).not.toContain("selectedFromDiscovery")
   })
 
