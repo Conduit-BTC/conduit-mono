@@ -272,6 +272,7 @@ describe("relay settings protocol helpers", () => {
       )
     ).toBe(true)
     expect(config.dmCompatibilityOrderRoutingEnabled).toBe(false)
+    expect(config.conduitRelayPromptEnabled).toBe(false)
     expect(getRelayBucketConfigs().map((bucket) => bucket.id)).toEqual([
       "app_backplane",
       "core_public_fallback",

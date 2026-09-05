@@ -30,6 +30,7 @@ interface ImportMetaEnv {
   readonly VITE_DEPLOYMENT_PROFILE?: string
   readonly VITE_PUBLIC_CONFIG_DIGEST?: string
   readonly VITE_DM_BOOTSTRAP_WRITES?: string
+  readonly VITE_CONDUIT_RELAY_PROMPT?: string
   readonly [key: string]: string | undefined
 }
 

@@ -14,6 +14,7 @@ const relayPort = process.env.PLAYWRIGHT_RELAY_PORT ?? "7777"
 const relayUrl = `ws://127.0.0.1:${relayPort}`
 const e2eEnv = [
   `VITE_E2E_RELAY_URL=${relayUrl}`,
+  "VITE_CONDUIT_RELAY_PROMPT=true",
   "VITE_DISABLE_DEVTOOLS=true",
   "VITE_ENABLE_TELEMETRY=true",
   "VITE_ENABLE_TELEMETRY_TEST_HOOKS=true",

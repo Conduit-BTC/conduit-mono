@@ -248,6 +248,7 @@ describe("shared media server preference UI", () => {
         pendingStatus: "none",
         pendingCheckpoints: [],
         activeUpdateId: null,
+        conduitRelayPrompt: null,
         revision: "empty",
       },
       operation: { kind: null, phase: "idle", message: null },
@@ -257,6 +258,7 @@ describe("shared media server preference UI", () => {
         throw new Error("not used")
       },
       save: async () => undefined,
+      addConduitRelay: async () => undefined,
       removeRelay: async () => undefined,
       retryPendingUpdate: async () => undefined,
       redistributeExactInboxDeclaration: async () => undefined,

@@ -405,6 +405,9 @@ jobs:
                     if (manifest.publicFeatures?.dmCompatibilityOrderRoutingEnabled !== true) {
                       failures.push("dmCompatibilityOrderRoutingEnabled");
                     }
+                    if (manifest.publicFeatures?.conduitRelayPromptEnabled !== false) {
+                      failures.push("conduitRelayPromptEnabled");
+                    }
                     if (failures.length === 0) {
                       return manifestUrl.toString();
                     }

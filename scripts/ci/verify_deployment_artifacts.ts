@@ -37,7 +37,9 @@ for (const [app, appConfig] of Object.entries(profiles.apps)) {
   }
   if (
     manifest.publicFeatures.dmCompatibilityOrderRoutingEnabled !==
-    resolvedProfile.publicFeatures.dmCompatibilityOrderRoutingEnabled
+      resolvedProfile.publicFeatures.dmCompatibilityOrderRoutingEnabled ||
+    manifest.publicFeatures.conduitRelayPromptEnabled !==
+      resolvedProfile.publicFeatures.conduitRelayPromptEnabled
   ) {
     throw new Error(`${manifestPath} has mismatched compiled feature flags.`)
   }
