@@ -16,6 +16,8 @@ const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? 
 const merchantTrustHarnessUrl = "/src/test-fixtures/merchant-trust-harness.tsx"
 const ndkModuleUrl = `/@fs${process.cwd()}/packages/core/src/protocol/ndk.ts`
 
+test.use({ trace: "off", screenshot: "off", video: "off" })
+
 async function hasActiveNdkSigner(page: Page): Promise<boolean> {
   return page.evaluate(async (url) => {
     const module = (await import(/* @vite-ignore */ url)) as {
@@ -56,6 +58,52 @@ async function storedAuthMatches(
     }
   }, expectedPubkey)
 }
+
+test.describe("Market sign-in controls", () => {
+  test("header sign-in stays closed after disconnect until explicitly reopened @market", async ({
+    page,
+  }) => {
+    await installTestSigner(page, TEST_BUYER_PUBKEY, { rememberAuth: false })
+    await openMarketSignerDialog(page)
+    await connectFromMarketDialog(page)
+
+    const accountMenu = page.getByRole("button", { name: "Open account menu" })
+    const dialog = page.getByRole("dialog")
+    await expect(accountMenu).toBeVisible()
+    await expect(dialog).toBeHidden()
+
+    await accountMenu.click()
+    await page
+      .getByRole("menuitem", { name: "Disconnect", exact: true })
+      .click()
+    const connect = page
+      .getByRole("button", { name: "Connect", exact: true })
+      .first()
+    await expect(connect).toBeVisible()
+    await expect(dialog).toBeHidden()
+
+    await connect.click()
+    await expect(dialog).toBeVisible()
+  })
+
+  test("manual signer tabs are accessible by their visible labels @market", async ({
+    page,
+  }) => {
+    await openMarketSignerDialog(page)
+    const dialog = page.getByRole("dialog")
+    for (const name of ["Scan QR", "Copy link", "Paste bunker"]) {
+      await expect(dialog.getByRole("tab", { name, exact: true })).toBeVisible()
+    }
+    await dialog.getByRole("tab", { name: "Copy link", exact: true }).click()
+    await expect(
+      dialog.getByRole("tab", { name: "Copy link", exact: true })
+    ).toHaveAttribute("aria-selected", "true")
+    await dialog.getByRole("tab", { name: "Paste bunker", exact: true }).click()
+    await expect(
+      dialog.getByRole("textbox", { name: "Remote signer bunker URL" })
+    ).toBeEditable()
+  })
+})
 
 test("market connect tolerates late NIP-07 signer injection @market", async ({
   page,

@@ -423,7 +423,7 @@ test("Merchant direct theme toggle stays available through sign-in and responsiv
   await page.goto(merchantUrl)
 
   await expect(
-    page.getByRole("main", { name: "Connect a signer" })
+    page.getByRole("main", { name: "Sign in to Conduit" })
   ).toBeVisible()
   await expectResolvedTheme(page, "night-market", "dark")
   await expectFirstFrameTheme(page, "night-market")

@@ -48,7 +48,7 @@ if (isPublicEntry) {
   root.render(
     <StrictMode>
       <QueryClientProvider client={queryClient}>
-        <AuthProvider>
+        <AuthProvider signerClientIcon="/merchant-icon-192.png">
           <ConduitSessionProvider appId="merchant" allowGuest={false}>
             <RouterProvider router={router} />
           </ConduitSessionProvider>

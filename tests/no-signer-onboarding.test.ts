@@ -28,15 +28,15 @@ describe("no-signer onboarding", () => {
     expect(sharedSigner).toContain("<NoSignerSetupGuide />")
     expect(merchantRoot).toContain("<SignerConnectPanel")
     expect(merchantRoot).toContain(
-      "Use your Nostr signer to open your merchant workspace."
+      "Use your Nostr account to open your merchant workspace."
     )
     expect(merchantRoot).toContain(
       "Choose a browser extension or remote signer."
     )
     expect(sharedSigner).toContain("Connect Extension (NIP-07)")
-    expect(sharedSigner).toContain("Connect Signer (NIP-46)")
-    expect(sharedSigner).toContain(
-      "Conduit does not custody or recover your durable Nostr account key."
+    expect(sharedSigner).toContain("<RemoteSignerConnect")
+    expect(sharedSigner.replace(/\s+/g, " ")).toContain(
+      "Your account keys stay in your signer app. Conduit cannot recover them."
     )
     expect(merchantRoot).toContain("UNLOCK YOUR COMMAND CENTER")
     expect(merchantRoot).toContain(
