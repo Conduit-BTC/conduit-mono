@@ -96,6 +96,17 @@ export interface MerchantOrganizerEventMarket {
   source: EventMarketResolution
 }
 
+export interface MerchantOrganizerEventMarketDeletion {
+  terminal: true
+  state: "deleted"
+  organizerPubkey: string
+  collectionCoordinate: string
+  naddr: string
+}
+
+export type MerchantOrganizerEventMarketRead =
+  MerchantOrganizerEventMarket | MerchantOrganizerEventMarketDeletion
+
 export interface MerchantOrganizerPublishResult {
   records: MerchantOrganizerRecordDelivery[]
   collectionCoordinate: string
@@ -705,12 +716,12 @@ export async function discoverFollowedEventMarkets(
   }
 }
 
-export async function resolveOrganizerEventMarket(
+export async function resolveOrganizerEventMarketRead(
   reference: string,
   organizerPubkey?: string,
   authenticatedPubkey: string | null = organizerPubkey ?? null,
   signal?: AbortSignal
-): Promise<MerchantOrganizerEventMarket> {
+): Promise<MerchantOrganizerEventMarketRead> {
   const parsedReference = parseOrganizerEventMarketReference(reference)
   const result = await getEventMarket({
     reference: parsedReference.naddr,
@@ -718,6 +729,19 @@ export async function resolveOrganizerEventMarket(
     authenticatedPubkey,
     ...(signal ? { signal } : {}),
   })
+  if (
+    result.state === "deleted" &&
+    result.organizerPubkey &&
+    result.collectionCoordinate === parsedReference.coordinate
+  ) {
+    return {
+      terminal: true,
+      state: "deleted",
+      organizerPubkey: result.organizerPubkey,
+      collectionCoordinate: result.collectionCoordinate,
+      naddr: parsedReference.naddr,
+    }
+  }
   const normalized = projectEventMarket(result)
   if (
     !normalized ||
@@ -747,6 +771,24 @@ export async function resolveOrganizerEventMarket(
           ])
     ),
   }
+}
+
+export async function resolveOrganizerEventMarket(
+  reference: string,
+  organizerPubkey?: string,
+  authenticatedPubkey: string | null = organizerPubkey ?? null,
+  signal?: AbortSignal
+): Promise<MerchantOrganizerEventMarket> {
+  const result = await resolveOrganizerEventMarketRead(
+    reference,
+    organizerPubkey,
+    authenticatedPubkey,
+    signal
+  )
+  if ("terminal" in result) {
+    throw new Error("The organizer event records were deleted.")
+  }
+  return result
 }
 
 function randomDTagSuffix(): string {

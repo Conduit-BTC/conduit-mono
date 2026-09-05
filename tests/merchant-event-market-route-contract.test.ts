@@ -169,13 +169,16 @@ describe("merchant organizer event market route", () => {
     expect(route).toContain("isPreferredOrganizerEventMarketListResolution(")
     expect(route).toContain("shouldResolveOrganizerEventMarketReference(")
     expect(route).toContain("selectOrganizerEventMarketResolution(")
+    expect(route).toContain("resolveOrganizerEventMarketRead(")
+    expect(route).toContain(
+      'const selectedReadDeleted = selectedResolution?.state === "deleted"'
+    )
+    expect(route).toContain("Signed deletion evidence was found")
     expect(route).toContain("shouldResolveSelectedReference,")
     expect(route).toMatch(
       /selectOrganizerEventMarketResolution\([\s\S]+selectedListMarket,[\s\S]+selectedMarketQuery\.data,[\s\S]+selectedSavedReference/
     )
-    expect(route).toContain(
-      "const selectedReadError = selectedMarket ? null : selectedMarketQuery.error"
-    )
+    expect(route).toContain("selectedMarket || selectedReadDeleted")
     expect(route).not.toContain("selectedIdentity?.relayHints.length === 0")
     expect(panel).toContain("getEventMarketUrl(market.naddr)")
   })

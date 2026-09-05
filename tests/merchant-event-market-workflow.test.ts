@@ -386,6 +386,42 @@ describe("merchant organizer event workflow", () => {
     ).toBe("deleted")
   })
 
+  it("lets an exact hinted deletion retire an older active list market", () => {
+    const listMarket = {
+      collectionCoordinate: COLLECTION,
+      collectionCreatedAt: 1_000,
+      collectionEventId: "b".repeat(64),
+      naddr: encodeEventMarketNaddr(COLLECTION, [
+        "wss://planner.example/events",
+      ]),
+      state: "active",
+    }
+    const hintedDeletion = {
+      terminal: true as const,
+      state: "deleted" as const,
+      collectionCoordinate: COLLECTION,
+      naddr: encodeEventMarketNaddr(COLLECTION, [
+        "wss://deletion.example/events",
+      ]),
+    }
+
+    const selectedDeletion = selectOrganizerEventMarketResolution(
+      listMarket,
+      hintedDeletion
+    )
+    expect(selectedDeletion).toMatchObject({
+      terminal: true,
+      state: "deleted",
+      collectionCoordinate: COLLECTION,
+    })
+    expect(
+      decodeEventMarketReference(selectedDeletion!.naddr, [30405])?.relayHints
+    ).toEqual(["wss://deletion.example/events", "wss://planner.example/events"])
+    expect(selectOrganizerEventMarketResolution(listMarket, undefined)).toBe(
+      listMarket
+    )
+  })
+
   it("uses the NIP-01 lowest-id tie break when reconciling views", () => {
     const common = {
       collectionCoordinate: COLLECTION,

@@ -50,6 +50,7 @@ import {
   publishMerchantOrganizerEventMarket,
   publishMerchantOrganizerMembership,
   resolveOrganizerEventMarket,
+  resolveOrganizerEventMarketRead,
   retryMerchantOrganizerRecord,
   saveOrganizerEventMarketDelivery,
   type MerchantOrganizerEventMarket,
@@ -666,15 +667,22 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
       !!selectedReference &&
       shouldResolveSelectedReference,
     queryFn: () =>
-      resolveOrganizerEventMarket(selectedReference, organizerPubkey),
+      resolveOrganizerEventMarketRead(selectedReference, organizerPubkey),
     retry: false,
   })
-  const selectedMarket =
+  const selectedResolution =
     selectOrganizerEventMarketResolution(
       selectedListMarket,
       selectedMarketQuery.data,
       selectedSavedReference
     ) ?? null
+  const selectedReadDeleted = selectedResolution?.state === "deleted"
+  const selectedMarket =
+    selectedResolution &&
+    !selectedReadDeleted &&
+    !("terminal" in selectedResolution)
+      ? selectedResolution
+      : null
   const handoffReceiptsQuery = useQuery({
     queryKey: [
       "merchant-organizer-handoff-receipts",
@@ -966,7 +974,8 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
 
   const selectedReadPending =
     !!selectedReference && !selectedFromList && selectedMarketQuery.isPending
-  const selectedReadError = selectedMarket ? null : selectedMarketQuery.error
+  const selectedReadError =
+    selectedMarket || selectedReadDeleted ? null : selectedMarketQuery.error
   const deliveries = selectedReference
     ? (deliveriesByReference[selectedIdentity?.coordinate ?? ""] ?? [])
     : []
@@ -1166,6 +1175,18 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
           <Loader2 className="h-4 w-4 animate-spin" />
           Resolving organizer evidence from relays...
         </div>
+      )}
+
+      {!selectedReadPending && selectedReadDeleted && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Event deleted</CardTitle>
+            <CardDescription>
+              Signed deletion evidence was found for this organizer event. Its
+              products and pickup actions are no longer available.
+            </CardDescription>
+          </CardHeader>
+        </Card>
       )}
 
       {!selectedReadPending && selectedReadError && (

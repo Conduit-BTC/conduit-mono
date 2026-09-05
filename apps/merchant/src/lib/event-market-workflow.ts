@@ -47,6 +47,13 @@ type EventMarketFrontierCarrier = {
   pickupEventId?: string
 }
 
+export interface OrganizerEventMarketTerminalResolution extends EventMarketFrontierCarrier {
+  terminal: true
+  state: "deleted"
+  collectionCoordinate: string
+  naddr: string
+}
+
 type EventMarketRecord = "collection" | "calendar" | "pickup"
 
 function normalizedCreatedAt(value: unknown): number | undefined {
@@ -603,7 +610,29 @@ export function selectOrganizerEventMarketResolution<
   listMarket: T | undefined,
   hintedMarket: T | undefined,
   savedReference?: SavedOrganizerEventMarketReference
-): T | undefined {
+): T | undefined
+export function selectOrganizerEventMarketResolution<
+  T extends {
+    state: string
+    collectionCoordinate: string
+    naddr: string
+  } & EventMarketFrontierCarrier,
+>(
+  listMarket: T | undefined,
+  hintedMarket: T | OrganizerEventMarketTerminalResolution | undefined,
+  savedReference?: SavedOrganizerEventMarketReference
+): T | OrganizerEventMarketTerminalResolution | undefined
+export function selectOrganizerEventMarketResolution<
+  T extends {
+    state: string
+    collectionCoordinate: string
+    naddr: string
+  } & EventMarketFrontierCarrier,
+>(
+  listMarket: T | undefined,
+  hintedMarket: T | OrganizerEventMarketTerminalResolution | undefined,
+  savedReference?: SavedOrganizerEventMarketReference
+): T | OrganizerEventMarketTerminalResolution | undefined {
   const expectedRecords = expectedEventMarketRecords(savedReference)
   const listReachesExpectedFrontiers = marketReachesExpectedFrontiers(
     listMarket,

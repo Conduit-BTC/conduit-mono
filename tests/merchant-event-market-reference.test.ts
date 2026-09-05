@@ -21,6 +21,7 @@ import {
   organizerEventMarketReferencesMatch,
   parseOrganizerEventMarketReference,
   resolveOrganizerEventMarket,
+  resolveOrganizerEventMarketRead,
 } from "../apps/merchant/src/lib/event-market"
 import { rememberOrganizerEventMarket } from "../apps/merchant/src/lib/event-market-workflow"
 import { loadEventCatalog } from "../apps/market/src/lib/event-market-adapter"
@@ -207,6 +208,56 @@ describe("merchant organizer event-market references", () => {
     expect(
       decodeEventMarketReference(market.naddr, [30405])?.relayHints
     ).toEqual([HINT_RELAY, OBSERVED_RELAY])
+  })
+
+  it("preserves a valid hinted collection deletion as a typed terminal read", async () => {
+    const imported = encodeEventMarketNaddr(COLLECTION, [HINT_RELAY])
+    const now = Math.floor(Date.now() / 1_000)
+    const collection = signedEvent(
+      buildEventMarketCollectionDraft({
+        dTag: "public-market",
+        title: "Public market",
+        eventCoordinate: CALENDAR,
+        productCoordinates: [],
+      }),
+      now
+    )
+    const deletion = signedEvent(
+      {
+        kind: EVENT_KINDS.DELETION,
+        content: "",
+        tags: [["a", COLLECTION]],
+      },
+      now + 1
+    )
+    __setEventMarketTestOverrides({
+      getRelayLists: async () => new Map(),
+      fetchEventsFanoutDetailed: async (_filter, options) => ({
+        events: [collection, deletion].map((event) => {
+          const ndkEvent = new NDKEvent(undefined, event)
+          attachEventSourceRelayUrl(ndkEvent, HINT_RELAY)
+          return ndkEvent
+        }),
+        relays: (options.relayUrls ?? []).map((relayUrl) => ({
+          relayUrl,
+          status: "success" as const,
+          eventCount: 2,
+        })),
+        eventsVerified: true,
+      }),
+      loadCachedEvidence: async () => [],
+      persistCachedEvidence: async () => undefined,
+    })
+
+    await expect(
+      resolveOrganizerEventMarketRead(imported, ORGANIZER)
+    ).resolves.toMatchObject({
+      terminal: true,
+      state: "deleted",
+      organizerPubkey: ORGANIZER,
+      collectionCoordinate: COLLECTION,
+      naddr: imported,
+    })
   })
 
   it("queries the eighth relay on an explicit imported reference", async () => {
