@@ -10,17 +10,20 @@ import {
 import type { ConduitAppId } from "../protocol/nip89"
 import { disconnectNdk, refreshNdkRelaySettings } from "../protocol/ndk"
 import {
+  canRelaySettingsChangeControlRuntime,
   getActiveRelaySettingsScope,
   subscribeRelaySettingsChanges,
   setActiveRelaySettingsScope,
 } from "../protocol/relay-settings"
+import { closeAllProtectedRelayConnections } from "../protocol/relay-executor"
 import {
   resolveConduitSession,
+  shouldCloseProtectedConnectionsForScopeTransition,
   type ConduitSession,
 } from "../protocol/session"
 import type { Profile } from "../types"
+import { useAccountNetworkPreferences } from "../hooks/useAccountNetworkPreferences"
 import { useProfile } from "../hooks/useProfile"
-import { useRelaySettings } from "../hooks/useRelaySettings"
 import { useAuth } from "./AuthContext"
 
 export interface ConduitSessionContextValue extends ConduitSession {
@@ -69,17 +72,20 @@ export function ConduitSessionProvider({
     hasProfileName(profileQuery.data) ||
     (!profileQuery.isLoading && !profileQuery.isFetching)
 
-  const relaySettings = useRelaySettings(session.relayScope, {
-    pubkey: session.pubkey,
-    enabled: session.mode === "signed_in" && !!session.relayScope,
-  })
+  const accountNetworkPreferences = useAccountNetworkPreferences(
+    session.pubkey,
+    session.mode === "signed_in" && !!session.relayScope
+  )
+  const networkPreferencesReady =
+    session.mode === "guest" || accountNetworkPreferences.status === "ready"
   const [activatedRelayScope, setActivatedRelayScope] = useState<string | null>(
     null
   )
   const relaySettingsReady =
     identityReady &&
+    networkPreferencesReady &&
     activatedRelayScope === session.relayScope &&
-    !relaySettings.isLoadingPublishedRelayList
+    !!(session.relayScope || session.mode === "guest")
 
   const activeScopeRef = useRef<string | null>(null)
   const profileRelayScopeRef = useRef<string | null>(null)
@@ -90,6 +96,14 @@ export function ConduitSessionProvider({
 
   useEffect(() => {
     if (!session.relayScope) {
+      if (
+        shouldCloseProtectedConnectionsForScopeTransition(
+          activeScopeRef.current,
+          null
+        )
+      ) {
+        closeAllProtectedRelayConnections()
+      }
       activeScopeRef.current = null
       setActivatedRelayScope(null)
       setActiveRelaySettingsScope(null)
@@ -97,10 +111,29 @@ export function ConduitSessionProvider({
       return
     }
 
-    if (!identityReady) {
+    if (!identityReady || !networkPreferencesReady) {
+      if (
+        shouldCloseProtectedConnectionsForScopeTransition(
+          activeScopeRef.current,
+          session.relayScope
+        )
+      ) {
+        setActiveRelaySettingsScope(null)
+        closeAllProtectedRelayConnections()
+        disconnectNdk()
+      }
       activeScopeRef.current = null
       setActivatedRelayScope(null)
       return
+    }
+
+    if (
+      shouldCloseProtectedConnectionsForScopeTransition(
+        activeScopeRef.current,
+        session.relayScope
+      )
+    ) {
+      closeAllProtectedRelayConnections()
     }
 
     if (getActiveRelaySettingsScope() !== session.relayScope) {
@@ -109,7 +142,7 @@ export function ConduitSessionProvider({
 
     activeScopeRef.current = session.relayScope
     setActivatedRelayScope(session.relayScope)
-  }, [identityReady, session.relayScope])
+  }, [identityReady, networkPreferencesReady, session.relayScope])
 
   useEffect(() => {
     const profileScope =
@@ -136,8 +169,12 @@ export function ConduitSessionProvider({
   ])
 
   useEffect(() => {
-    return subscribeRelaySettingsChanges((scope) => {
+    return subscribeRelaySettingsChanges((scope, source) => {
       if (!scope || scope !== activeScopeRef.current) return
+      if (!canRelaySettingsChangeControlRuntime(scope, source)) return
+      if (source === "signed_projection") {
+        closeAllProtectedRelayConnections()
+      }
       refreshNdkRelaySettings(scope)
       if (profileRefreshReadyRef.current) void refetchProfile()
     })

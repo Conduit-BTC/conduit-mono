@@ -29,7 +29,7 @@ import {
   getCommerceWriteRelayUrls,
   getGeneralReadRelayUrls,
   getGeneralWriteRelayUrls,
-  loadRelaySettings,
+  loadRelaySettingsPlanningSnapshot,
   type RelayPlanOptions,
   type RelaySettingsState,
 } from "./relay-settings"
@@ -86,6 +86,8 @@ export interface RelayReadPlanInput {
   skipHealthFilter?: boolean
   /** Override read settings (test seam). */
   settings?: RelaySettingsState
+  /** Preserve an exact signed kind-10002 empty Read set (bound snapshots). */
+  signedRelayListAuthoritative?: boolean
   /** Now in ms (test seam). */
   now?: number
 }
@@ -160,10 +162,12 @@ function dedupeOrdered(urls: readonly (string | undefined | null)[]): string[] {
 function settingsPlanOptions(input: {
   settings?: RelaySettingsState
   fallbackRelayUrls: readonly string[]
+  signedRelayListAuthoritative?: boolean
 }): RelayPlanOptions {
   return {
     settings: input.settings,
     fallbackRelayUrls: input.fallbackRelayUrls,
+    signedRelayListAuthoritative: input.signedRelayListAuthoritative,
   }
 }
 
@@ -296,6 +300,7 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
           settingsPlanOptions({
             settings: input.settings,
             fallbackRelayUrls: commerceReadFallbackRelayUrls(),
+            signedRelayListAuthoritative: input.signedRelayListAuthoritative,
           })
         )
       case "dm_inbox":
@@ -304,6 +309,7 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
           settingsPlanOptions({
             settings: input.settings,
             fallbackRelayUrls: config.commerceDmFallbackRelayUrls,
+            signedRelayListAuthoritative: input.signedRelayListAuthoritative,
           })
         )
       case "product_card_social_summary":
@@ -319,6 +325,7 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
           settingsPlanOptions({
             settings: input.settings,
             fallbackRelayUrls: corePublicReadFallbackRelayUrls(),
+            signedRelayListAuthoritative: input.signedRelayListAuthoritative,
           })
         )
     }
@@ -484,13 +491,21 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
  */
 export function planRelaysWithSnapshot(scope?: string | null): {
   settings: RelaySettingsState
-  planReads: (input: Omit<RelayReadPlanInput, "settings">) => RelayReadPlan
+  planReads: (
+    input: Omit<RelayReadPlanInput, "settings" | "signedRelayListAuthoritative">
+  ) => RelayReadPlan
   planWrites: (input: Omit<RelayWritePlanInput, "settings">) => RelayWritePlan
 } {
-  const settings = loadRelaySettings(scope)
+  const snapshot = loadRelaySettingsPlanningSnapshot(scope)
   return {
-    settings,
-    planReads: (input) => planRelayReads({ ...input, settings }),
-    planWrites: (input) => planRelayWrites({ ...input, settings }),
+    settings: snapshot.settings,
+    planReads: (input) =>
+      planRelayReads({
+        ...input,
+        settings: snapshot.settings,
+        signedRelayListAuthoritative: snapshot.signedRelayListAuthoritative,
+      }),
+    planWrites: (input) =>
+      planRelayWrites({ ...input, settings: snapshot.settings }),
   }
 }

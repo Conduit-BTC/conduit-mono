@@ -2,11 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   assertSafeNip65RelayList,
+  canRelaySettingsChangeControlRuntime,
   createRelaySettingsFromPreferences,
   getPublishableRelaySettingsEntries,
   getRelaySettingsStorageKey,
+  hasRelaySettingsDraft,
   hasManualRelaySettings,
+  isAccountRelaySettingsScope,
   loadRelaySettings,
+  loadRelaySettingsPresentation,
   mergeRelayPreferencesIntoSettings,
   mergeNip65RelayUrls,
   readNip07RelayPreferences,
@@ -124,7 +128,7 @@ export function useRelaySettings(
     relaySettingsContextKey
   )
   const [settings, setSettings] = useState<RelaySettingsState>(() =>
-    loadRelaySettings(scope)
+    loadRelaySettingsPresentation(scope)
   )
   const settingsRef = useRef(settings)
   const previousReadableRelayUrlsRef = useRef(
@@ -142,7 +146,7 @@ export function useRelaySettings(
       enabled &&
         bootstrapRelayList &&
         !!pubkey &&
-        hasNoRelaySettings(loadRelaySettings(scope))
+        hasNoRelaySettings(loadRelaySettingsPresentation(scope))
     )
   const [publishedRelayListUpdatedAt, setPublishedRelayListUpdatedAt] =
     useState<number | null>(null)
@@ -150,6 +154,10 @@ export function useRelaySettings(
   const [publishError, setPublishError] = useState<string | null>(null)
   const [authEvidenceRevision, setAuthEvidenceRevision] = useState(0)
   const contextReady = initializedContextKey === relaySettingsContextKey
+  const localSettingsControlConnections = canRelaySettingsChangeControlRuntime(
+    scope,
+    "local_draft"
+  )
 
   useEffect(
     () =>
@@ -185,13 +193,15 @@ export function useRelaySettings(
         .filter((entry) => entry.readEnabled)
         .map((entry) => entry.url)
     )
-    for (const relayUrl of previousReadableRelayUrlsRef.current) {
-      if (!nextReadable.has(relayUrl)) {
-        closeProtectedRelayConnectionsForRelay(relayUrl)
+    if (localSettingsControlConnections) {
+      for (const relayUrl of previousReadableRelayUrlsRef.current) {
+        if (!nextReadable.has(relayUrl)) {
+          closeProtectedRelayConnectionsForRelay(relayUrl)
+        }
       }
     }
     previousReadableRelayUrlsRef.current = nextReadable
-  }, [settings.entries])
+  }, [localSettingsControlConnections, settings.entries])
 
   useEffect(() => {
     if (previousContextKeyRef.current !== relaySettingsContextKey) {
@@ -207,7 +217,7 @@ export function useRelaySettings(
       return
     }
 
-    const loaded = loadRelaySettings(scope)
+    const loaded = loadRelaySettingsPresentation(scope)
     const next = loaded
     settingsRef.current = next
     setSettings(next)
@@ -225,7 +235,7 @@ export function useRelaySettings(
     const storageKey = getRelaySettingsStorageKey(scope)
     function handleStorage(event: StorageEvent): void {
       if (event.key !== storageKey) return
-      const next = loadRelaySettings(scope)
+      const next = loadRelaySettingsPresentation(scope)
       settingsRef.current = next
       setSettings(next)
     }
@@ -239,7 +249,7 @@ export function useRelaySettings(
     return subscribeRelaySettingsChanges((changedScope) => {
       const targetScope = scope?.trim() || null
       if (changedScope !== targetScope) return
-      const next = loadRelaySettings(scope)
+      const next = loadRelaySettingsPresentation(scope)
       settingsRef.current = next
       setSettings(next)
     })
@@ -314,6 +324,9 @@ export function useRelaySettings(
 
   useEffect(() => {
     if (!enabled || !contextReady) return
+    if (isAccountRelaySettingsScope(scope) && !hasRelaySettingsDraft(scope)) {
+      return
+    }
 
     const staleUrls = settings.entries
       .filter((entry) => entry.warnings.staleRelayInfo)
@@ -327,10 +340,17 @@ export function useRelaySettings(
     autoScannedStaleKeyRef.current = staleKey
 
     void scanImportedRelayUrls(staleUrls)
-  }, [contextReady, enabled, scanImportedRelayUrls, settings.entries])
+  }, [contextReady, enabled, scanImportedRelayUrls, scope, settings.entries])
 
   useEffect(() => {
     if (!enabled || !bootstrapRelayList || !contextReady) return
+    // Signed-in account reconciliation is owned by the session hook. This
+    // compatibility hook may present that projection, but must not copy it or
+    // signer preferences into an authoritative-looking local draft.
+    if (isAccountRelaySettingsScope(scope)) {
+      setIsLoadingPublishedRelayList(false)
+      return
+    }
     let cancelled = false
 
     async function loadPublishedRelayList(): Promise<void> {
@@ -473,13 +493,17 @@ export function useRelaySettings(
 
   function removeRelay(url: string): void {
     setError(null)
-    closeProtectedRelayConnectionsForRelay(url)
+    if (localSettingsControlConnections) {
+      closeProtectedRelayConnectionsForRelay(url)
+    }
     persist((current) => removeRelaySettingsEntry(current, url))
   }
 
   function toggleRelayRead(url: string, enabled: boolean): void {
     setError(null)
-    if (!enabled) closeProtectedRelayConnectionsForRelay(url)
+    if (!enabled && localSettingsControlConnections) {
+      closeProtectedRelayConnectionsForRelay(url)
+    }
     persist((current) =>
       updateRelaySettingsEntry(current, url, {
         readEnabled: enabled,
@@ -506,7 +530,9 @@ export function useRelaySettings(
   function resetRelaySettings(): void {
     setError(null)
     setPublishError(null)
-    closeAllProtectedRelayConnections()
+    if (localSettingsControlConnections) {
+      closeAllProtectedRelayConnections()
+    }
     const next = saveRelaySettings(createEmptyRelaySettings(), scope)
     settingsRef.current = next
     setSettings(next)
@@ -515,7 +541,9 @@ export function useRelaySettings(
   function restoreDefaultRelaySettings(): void {
     setError(null)
     setPublishError(null)
-    closeAllProtectedRelayConnections()
+    if (localSettingsControlConnections) {
+      closeAllProtectedRelayConnections()
+    }
     const next = saveRelaySettings(createEmptyRelaySettings(), scope)
     settingsRef.current = next
     setSettings(next)
