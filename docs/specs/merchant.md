@@ -348,24 +348,46 @@ Lightning address (`lud16`) and NWC/WebLN readiness can contribute to payment el
 
 ## Relay Settings
 
-Relay list events use kind `10002`. Product UI should expose:
+Merchant's `/network` route is a navigation shell around the same shared
+account-level Network experience used by Market. The state model, controls,
+ordering, mutation flow, and copy must not diverge between the two apps. The
+durable contract lives in
+[Conduit Relay Architecture](./relay/conduit_relay_architecture.md).
 
-- Commerce Enabled Relays
-- Other Public Relays
-- `IN` / `OUT` preferences
-- capability and warning indicators
-- commerce priority as a local app planning signal
+The screen presents one flat, automatically ordered relay list. Each relay may
+participate in:
 
-Example:
+- **Read** and **Publish**, expressed by NIP-65 `kind:10002`;
+- **Private inbox**, expressed by NIP-17 `kind:10050`;
+- configured, advertised, or observed capability badges with truthful evidence
+  labels.
+
+Signed events are account state. Merchant must not maintain a separate local
+relay preference or manual commerce-priority model. One reviewed change may
+produce one or both signed replacement events.
+
+NIP-65 uses no marker when a relay is both Read and Publish, and exactly one
+`read` or `write` marker for a single direction:
 
 ```typescript
 const relayListEvent = {
   kind: 10002,
   tags: [
-    ["r", "wss://relay.conduit.market", "read", "write"],
-    ["r", "wss://relay.plebeian.market", "read"],
+    ["r", "wss://relay.conduit.market"],
     ["r", "wss://nos.lol", "read"],
+    ["r", "wss://relay.example.com", "write"],
   ],
+  content: "",
+}
+```
+
+Private inbox routing remains a separate signed object even though the user
+manages it in the same list:
+
+```typescript
+const inboxRelayEvent = {
+  kind: 10050,
+  tags: [["relay", "wss://relay.conduit.market"]],
   content: "",
 }
 ```
@@ -424,6 +446,10 @@ VITE_CACHE_API_URL=
   telemetry
 - No message, order, address, invoice, signer, or wallet-secret content in
   telemetry, logs, or Conduit-operated Product servers
+- Shared acceleration, cache, index, and routing systems may derive only from
+  relay-visible state and must never expose hidden APIs for private messages,
+  orders, payments or invoices, signer or auth material, wallet credentials or
+  recovery material, or wallet balances
 - Operational metrics only, constrained by `docs/specs/privacy-observability.md`
 - Buyer data may be processed by buyer and merchant devices, counterparties,
   relays, signers, wallets, LNURL/payment providers, merchant-selected services,

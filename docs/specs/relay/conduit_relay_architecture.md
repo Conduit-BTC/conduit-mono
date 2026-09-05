@@ -2,96 +2,89 @@
 
 ## Executive Summary
 
-Conduit's relay architecture should follow Nostr conventions instead of inventing user-managed relay roles.
+Conduit presents relay configuration as one account-level Network experience.
+Market and Merchant use the same shared screen, state model, mutation workflow,
+and language. Their app routes are navigation shells only.
 
-Users configure relay preferences:
+The account configuration is projected from two independent signed Nostr
+objects:
 
-- `IN` for relays Conduit may read from
-- `OUT` for relays Conduit may publish to
-- commerce priority order for Conduit commerce flows only
+- NIP-65 `kind:10002` expresses general read and publish participation.
+- NIP-17 `kind:10050` expresses private inbox relays.
 
-Conduit detects relay capabilities:
+These events remain separate protocol objects, but users manage their combined
+meaning through one flat relay list. A row may participate in Read, Publish,
+Private inbox, or any combination. One reviewed action may therefore require
+one or two honest signer requests.
 
-- relay information availability
-- search/indexing support
-- private DM suitability
-- relay authentication support
-- commerce compatibility
+The latest validated signed frontier for each event kind is authoritative.
+Device-local relay settings are not an account preference or user-facing
+concept. Local persistence is limited to cached signed evidence, unpublished
+drafts, capability observations, exact signed-event retry checkpoints, bounded
+account-and-device-scoped legacy inbox-read recovery records, and durable
+migration discard tombstones that prevent discarded recovery from being
+resurrected.
 
-The relay settings product surface should expose two groups:
+Conduit automatically orders the flat list. Relays with current configured or
+scoped observed commerce compatibility appear first, with stable signed order
+as the tie-breaker. Advertised relay-protocol capabilities may support badges
+and order the remaining rows, but they do not establish commerce compatibility.
+Users do not sort commerce relays, and NIP-65 tag order is not presented as a
+cross-client protocol priority.
 
-1. **Commerce Enabled Relays**
-2. **Other Public Relays**
-
-Users should not manually categorize relays. Conduit categorizes relays from NIP-11 relay information documents, active probes, cached scan results, and a versioned commerce compatibility profile. Commerce priority is a Conduit-local app preference. It is not a Nostr-level preference and must not be described as a universal relay ranking.
-
-This document defines the current product and implementation contract for that model.
+Capability badges must name their evidence. Configuration and NIP-11 metadata
+can support badges in the current experience, but neither proves current relay
+health or successful application behavior. Active capability tests and relay
+recommendations belong to a separate, future **Optimize my relays** flow.
 
 ---
 
 ## References
 
-- [GammaMarkets market-spec](https://github.com/GammaMarkets/market-spec): interoperability baseline for NIP-99 commerce flows, including `kind:30402` product listings, `kind:30405` collections, merchant preferences, and NIP-17 order communication.
+- [NIP-01 Basic protocol flow](https://github.com/nostr-protocol/nips/blob/master/01.md): relay subscriptions, events, and publish outcomes.
 - [NIP-11 Relay Information Document](https://github.com/nostr-protocol/nips/blob/master/11.md): relay metadata, including `supported_nips` and relay limitations.
-- [NIP-17 Private Direct Messages](https://github.com/nostr-protocol/nips/blob/master/17.md): modern private DMs using NIP-44 encryption and NIP-59 seals/gift wraps.
+- [NIP-17 Private Direct Messages](https://github.com/nostr-protocol/nips/blob/master/17.md): modern private DMs, recipient routing through `kind:10050`, NIP-44 encryption, and NIP-59 seals and gift wraps.
 - [NIP-42 Authentication of clients to relays](https://github.com/nostr-protocol/nips/blob/master/42.md): relay authentication using signed ephemeral auth events.
 - [NIP-50 Search Capability](https://github.com/nostr-protocol/nips/blob/master/50.md): relay search support via the `search` filter field.
 - [NIP-65 Relay List Metadata](https://github.com/nostr-protocol/nips/blob/master/65.md): `kind:10002` relay list metadata with optional `read` and `write` markers.
+- [Open Markets working specification](https://github.com/OpenMarketsFoundation/specification/blob/main/README.md): current working reference for commerce flows, including `kind:30402` product listings, derived from the earlier GammaMarkets `market-spec` work.
 
 ---
 
 ## Product Principle
 
-Users configure preferences. Conduit detects capabilities.
+Users configure where Conduit participates. Conduit explains what it knows
+about each relay.
 
-The relay settings screen must not ask users to assign relays to custom Conduit roles. In Nostr, relays are network infrastructure. A user may advertise relays they generally read from or write to, but capability and suitability are properties Conduit should detect.
+### User-controlled membership
 
-### User-controlled preferences
+- **Read:** Conduit may read or subscribe through this relay.
+- **Publish:** Conduit may publish supported events to this relay.
+- **Private inbox:** Other NIP-17 clients may deliver the user's private
+  messages through this relay.
 
-- Read participation: `IN`
-- Write participation: `OUT`
-- Commerce priority order for Conduit only
+### Evidence-labelled capabilities
 
-### System-detected capabilities
+- **Configured:** supplied by Conduit's versioned compatibility configuration.
+- **Advertised:** claimed by current NIP-11 metadata.
+- **Observed:** demonstrated by a bounded operation, including its scope and
+  observation time.
 
-- NIP-11 availability
-- NIP-50 search support
-- NIP-17 DM support
-- NIP-42 auth support
-- Conduit commerce compatibility
-- warning states such as unreachable, stale relay information, or partial commerce support
+Configured and advertised evidence are useful but are not live health checks.
+An observation proves only the exact operation that ran; it does not establish
+universal relay availability or interoperability.
 
-### Product language
-
-Use these labels:
-
-- `Commerce Enabled Relays`
-- `Other Public Relays`
-- `Priority`
-- `Commerce priority`
-- `Relay order`
-- `Preferred order`
-
-Avoid these labels:
-
-- `Primary relay`
-- `Master relay`
-- `Source of truth relay`
-- user-facing relay roles such as merchant, acceleration, or general relay categories
+The Network screen must not use separate Commerce and Other sections, manual
+commerce ranking, or app-specific relay roles. Capability evidence informs
+automatic ordering and planner decisions without becoming another preference.
 
 ---
 
-## Relay Preference Model
+## Signed Account Configuration
 
-### IN and OUT
+### NIP-65 read and publish membership
 
-`IN` and `OUT` are the only major user-facing relay toggles.
-
-`OUT` means Conduit may publish supported events to this relay.
-
-`IN` means Conduit may read or subscribe to relevant events from this relay.
-
-These controls map to NIP-65 `kind:10002` relay list metadata:
+Read and Publish controls map to NIP-65 `kind:10002` relay list metadata:
 
 ```jsonc
 {
@@ -107,556 +100,587 @@ These controls map to NIP-65 `kind:10002` relay list metadata:
 
 Serialization rules:
 
-- `readEnabled: true` and `writeEnabled: true`: omit the marker.
-- `readEnabled: true` and `writeEnabled: false`: use the `read` marker.
-- `readEnabled: false` and `writeEnabled: true`: use the `write` marker.
-- `readEnabled: false` and `writeEnabled: false`: keep the relay in local settings only, not in the published NIP-65 relay list.
-
-Clients should keep published NIP-65 lists small and user-understandable. Conduit may track additional scanned relays locally without publishing all of them.
-
-### Commerce priority
-
-Commerce priority is an ordered local setting for relays that Conduit has categorized as commerce-compatible.
-
-Commerce priority affects how Conduit prefers relays for commerce behavior, including:
-
-- product and stock sync
-- product updates
-- order-related event delivery
-- buyer/merchant messages
-- selecting which compatible relays to query first
-- selecting where to prioritize publishing commerce events
-- fallback when otherwise valid relay results disagree
-
-Commerce priority does not change how other Nostr apps use a user's relays.
-
-Recommended UI copy:
-
-> Higher-ranked commerce relays are preferred by Conduit when syncing products, stock, orders, and messages. This does not change how other Nostr apps use your relays.
-
----
-
-## Capability Detection
-
-Relay capabilities are read-only facts in the UI. They are not manual toggles.
-
-### Detection order
-
-1. Normalize the relay URL.
-2. Attempt a bounded connection.
-3. Fetch the NIP-11 relay information document.
-4. Read `supported_nips` and relay limitations.
-5. Run active probes needed for Conduit commerce compatibility.
-6. Cache scan results with freshness metadata.
-7. Categorize the relay as `commerce` or `public`.
-8. Surface capability indicators and warning states.
-
-NIP-11 `supported_nips` is evidence, not proof. Some relays may advertise support incompletely, and some commerce requirements require active read/write probes or a registry/allowlist.
-
-### Scan performance
-
-Capability scans must be bounded and cacheable:
-
-- use per-relay timeouts for HTTP and WebSocket checks
-- scan relays concurrently with a global limit
-- cache NIP-11 responses and probe results with timestamps
-- mark old results as stale instead of blocking the settings screen
-- allow the UI to render with cached or partial capability data
-- avoid repeated active probes on every route load
-
-### Capability indicators
-
-#### Search / Index
-
-Meaning: the relay supports search or discovery functions useful for finding events.
-
-Primary detection:
-
-- NIP-11 `supported_nips` contains `50`
-
-Active tooltip:
-
-> Search supported
-
-Expanded tooltip:
-
-> This relay advertises search support, so Conduit can use it for discovery and lookup.
-
-Inactive tooltip:
-
-> Search not advertised
-
-#### DM
-
-Meaning: the relay appears suitable for modern private direct messages.
-
-Primary detection:
-
-- NIP-11 `supported_nips` contains `17`
-
-Active tooltip:
-
-> DM support detected
-
-Expanded tooltip:
-
-> This relay advertises support for modern encrypted direct messages.
-
-#### Auth / Security
-
-Meaning: the relay supports or requires client authentication.
-
-Primary detection:
-
-- NIP-11 `supported_nips` contains `42`
-- NIP-11 `limitation.auth_required` may add supporting evidence
-- relay `AUTH` challenges during connection may add supporting evidence
-
-Advertised tooltip:
-
-> Auth advertised
-
-Expanded tooltip:
-
-> This relay advertises client authentication. Conduit has not yet proved that authentication succeeds for a protected request.
-
-Evidence must be displayed without collapsing these states:
-
-- untested;
-- advertised by NIP-11 or relay limitations;
-- challenge observed at runtime;
-- succeeded after a matching positive auth `OK` on the current connection;
-- rejected or unavailable after a bounded attempt.
-
-Use literal status copy such as `Auth untested`, `Auth advertised`,
-`Auth challenge observed`, `Auth succeeded`, and `Auth rejected` or
-`Auth unavailable`. Do not use `Verified` for NIP-11 reachability or
-advertisement.
-
-NIP-11 is advertised evidence only. It is not proof of successful auth,
-recipient-scoped enforcement, or privacy. A generic relay scan must not prompt a
-NIP-07 or NIP-46 signer merely to improve this indicator.
-
-#### DM without auth warning
-
-If a relay appears DM-capable but does not advertise or demonstrate NIP-42 auth support, show a warning state.
-
-Tooltip:
-
-> DM relay without auth
-
-Expanded tooltip:
-
-> This relay appears to support DMs but does not advertise relay authentication. Conduit may limit DM use here because access controls may be weaker.
-
-This warning must not say the relay is categorically unsafe. It only explains that Conduit may limit DM usage because access control signals are weaker.
-
----
-
-## Commerce Compatibility
-
-Commerce compatibility is Conduit-detected. The user does not choose whether a relay is a commerce relay.
-
-Conduit should use a versioned commerce compatibility profile so requirements can evolve without turning the UI into a manual role picker.
-
-### Baseline commerce event set
-
-The commerce profile should align with the GammaMarkets market-spec and Conduit's current protocol contracts.
-
-Baseline requirements:
-
-- `kind:30402` product listings
-- `kind:30405` product collections where collections are used
-- merchant preferences, including relevant NIP-89 and kind `0` preference data
-- NIP-17 order communication and buyer/merchant messages
-
-Optional or extended requirements:
-
-- `kind:30406` shipping options
-- product reviews
-- Conduit-specific commerce probes or registry checks
-
-### Minimum compatibility checks
-
-A relay should appear under **Commerce Enabled Relays** only when Conduit determines it is suitable for commerce activity.
-
-Minimum checks:
-
-- NIP-11 is responsive or an equivalent probe succeeds.
-- The relay can perform normal Nostr reads for Conduit's commerce event set.
-- The relay accepts writes for supported commerce event kinds when `OUT` is enabled and user policy allows publishing there.
-- The relay handles replaceable or parameterized replaceable commerce state needed for product and inventory updates.
-- The relay meets baseline reliability expectations for commerce flows.
-- If used for DMs, the relay is suitable for NIP-17 delivery and warning states are surfaced when auth support is absent.
-
-Compatibility may be determined by:
-
-- NIP-11 `supported_nips`
-- active read probes
-- active write probes using safe test events where appropriate
-- relay compatibility registry
-- allowlist for known commerce relays
-- recent success/failure telemetry stored locally or in an operator-managed registry
-
-### Partial support
-
-If a relay supports some but not all commerce requirements, keep it under **Other Public Relays** and show a `commercePartialSupport` warning or detail state where useful.
-
-Partial support should not create a third user-facing section.
-
----
-
-## Internal Status Model
-
-This model is implementation guidance for Conduit clients. It is not a Nostr protocol event schema.
-
-```typescript
-interface RelaySettingsEntry {
-  url: string
-  readEnabled: boolean
-  writeEnabled: boolean
-  section: "commerce" | "public"
-  commercePriority?: number
-  capabilities: {
-    nip11: boolean
-    search: boolean
-    dm: boolean
-    auth: boolean
-    commerce: boolean
-  }
-  warnings: {
-    dmWithoutAuth: boolean
-    staleRelayInfo: boolean
-    unreachable: boolean
-    commercePartialSupport: boolean
-  }
+- Read and Publish enabled: omit the marker.
+- Read enabled and Publish disabled: use the `read` marker.
+- Read disabled and Publish enabled: use the `write` marker.
+- Both disabled: omit the relay from `kind:10002`.
+
+An unpublished candidate may remain in an unsigned draft while the screen is
+open, but it is not an account setting and must not affect runtime planning.
+After every requested event is signed and its exact bytes and immutable target
+plan are durably staged, the local runtime may honor the resulting pending
+projection immediately while showing that network confirmation is pending.
+
+### NIP-17 private inbox membership
+
+Private inbox controls map to `kind:10050` relay tags:
+
+```jsonc
+{
+  "kind": 10050,
+  "tags": [
+    ["relay", "wss://inbox-one.example.com"],
+    ["relay", "wss://inbox-two.example.com"],
+  ],
+  "content": "",
 }
 ```
 
-Implementation notes:
+Conduit follows NIP-17's recommendation to publish one to three inbox relays.
+Private inbox membership is recipient routing, not a claim that NIP-11 proves
+NIP-17 client behavior.
 
-- `section` is derived from scan results.
-- `commercePriority` is present only for commerce-compatible relays.
-- `readEnabled` and `writeEnabled` are user preferences.
-- `capabilities` and `warnings` are scan outputs.
-- URL normalization must be stable before deduplication.
+### Unified projection
+
+The shared screen joins the latest validated `kind:10002` and `kind:10050`
+frontiers by normalized relay URL. It does not merge the two events into a new
+wire format.
+
+Each frontier retains:
+
+- signed event id and author;
+- creation time and replaceable-event ordering evidence;
+- discovery sources;
+- freshness and cache provenance;
+- bounded coverage and failures;
+- parse and validation outcomes.
+
+The two frontiers advance independently. A current `kind:10002` result does not
+make an unavailable `kind:10050` result current, or vice versa.
+
+Both kinds use the canonical NIP-01 replaceable-event order after event id,
+signature, kind, and author validation: greater `created_at` wins; when
+timestamps tie, the lexicographically lowest event id wins. Re-observing the
+same event unions source provenance. Two valid equal-timestamp candidates are
+therefore ordered, not conflicting or implementation-defined.
+
+### Reconciliation on fresh connections
+
+Every fresh NIP-07 or NIP-46 signer connection in Market or Merchant starts the
+same reconciliation workflow. Discovery uses a bounded shared relay plan that
+does not depend on legacy local preferences.
+
+The state model distinguishes:
+
+- **Current:** fresh bounded discovery establishes the valid signed winner:
+  greater `created_at`, then lexicographically lowest event id.
+- **Stale:** prior valid signed evidence is usable but lacks fresh confirmation.
+- **Partial:** some planned discovery sources completed and others did not.
+- **Unavailable:** bounded discovery could not establish sufficient current
+  evidence.
+- **Scoped absence:** every source in a completed bounded plan returned no
+  matching event.
+- **Signed empty:** the latest valid event intentionally contains no usable
+  relay tags.
+- **Malformed:** a candidate signed event cannot be interpreted as the required
+  declaration.
+- **Reserved conflict:** not emitted by the current resolver. It is a
+  fail-closed placeholder only if a future richer evidence model can validate
+  an internal inconsistency that remains after canonical ordering.
+
+NIP-01 totally orders every valid replaceable event available to the current
+resolver. Equal timestamps, source disagreement, and incomplete coverage do not
+produce a conflict state; they resolve by event id or remain partial or
+unavailable.
+
+Scoped absence is a statement about the completed plan, not proof of global
+Nostr absence. Partial or unavailable discovery is unknown and must never be
+collapsed into absence. Cached signed evidence remains visible with honest
+stale or degraded status when a fresh attempt is incomplete.
+
+### Legacy migration
+
+Valid signed state always wins. Legacy app-scoped relay data must never
+override, merge into, or silently republish a signed frontier.
+
+Legacy NIP-65 draft import and legacy inbox-read recovery are independent:
+
+- **NIP-65 draft import:** only complete bounded reconciliation that establishes
+  scoped absence for `kind:10002` may seed a one-time unpublished draft. Any
+  valid signed `kind:10002` suppresses this import; legacy values never merge
+  into signed NIP-65 state.
+- **Inbox-read recovery:** normalized legacy secure-IN relays are captured in a
+  bounded read-only recovery record whether or not signed `kind:10002` exists.
+  A signed NIP-65 frontier does not cancel that recovery lane.
+
+Cleanup uses a failure-safe sequence. Migration first persists and verifies the
+recovery record and, only when eligible, the unpublished NIP-65 draft. Only then
+may it retire the legacy key. An incomplete migration retains or recovers legacy
+reads and remains retryable; a partial new record is neither account authority
+nor an active replacement.
+
+The inbox-recovery record is not signed account truth. It is limited to the
+captured secure read relays, never authorizes writes or publication, and is not
+shown as current membership. It ends only after a usable `kind:10050`
+replacement with one to three secure relays is fully signed and durably staged,
+or after the user explicitly discards it and a durable local migration tombstone
+records that choice. A signed or staged `kind:10002`, an unusable
+`kind:10050`, signer refusal, or cancellation does not end it. Whole-setup
+removal of a captured URL records the equivalent explicit tombstone for that
+URL after all required signatures are staged.
+
+The recovery record and tombstone are account-and-device-scoped and survive
+restart for their bounded migration lifecycle. The tombstone remains for the
+lifetime of the legacy migration reader so retained or reappearing legacy data
+cannot resurrect privacy-sensitive recovery after explicit discard. Neither
+record becomes signed account authority or membership, defines a write target,
+or supplies publication input.
+
+Malformed, partial, unavailable, stale, or a future reserved fail-closed
+conflict cannot trigger NIP-65 draft import. No compatibility release keeps a
+second authoritative settings system alive.
 
 ---
 
-## Settings UI Contract
+## Capability Evidence
 
-### Header
+### Current Add Relay behavior
+
+There is one **Add Relay** action next to the flat list. It:
+
+1. Normalizes and validates the relay URL.
+2. Deduplicates against the current projection and draft.
+3. Performs bounded NIP-11 metadata discovery.
+4. Shows evidence-labelled capability badges and lets the user choose
+   membership.
+
+Adding a candidate does not silently publish, run signed probes, or declare it
+healthy. A missing or unreachable NIP-11 document may be shown as unavailable
+metadata without inventing a successful capability result.
+
+### NIP-11 limits
+
+NIP-11 describes relay-visible protocol and policy claims. Its
+`supported_nips` list may support advertised badges for relay protocol
+capabilities such as NIP-42 authentication or NIP-50 search.
+
+It must not be used to prove client/application/event semantics such as
+NIP-17, NIP-33, NIP-65, NIP-99, or Open Markets product behavior. In
+particular:
+
+- NIP-42 advertisement is not a successful authenticated request.
+- An observed AUTH challenge is not a positive auth `OK`.
+- One successful authenticated connection does not prove recipient isolation
+  for every filter.
+- Metadata reachability is not relay read or publish health.
+
+Literal evidence copy should be used where detail matters, such as
+`Auth advertised`, `Auth challenge observed`, `Auth succeeded`,
+`Auth rejected`, or `Auth unavailable`.
+
+### Automatic ordering
+
+The flat list uses deterministic presentation and planning order:
+
+1. Active relays with current configured commerce evidence.
+2. Active relays with scoped observed commerce compatibility.
+3. Other active relays with applicable advertised relay-protocol evidence.
+4. Remaining active relays.
+5. Unpublished candidates or drafts.
+
+Only the first two tiers claim commerce compatibility. Advertised protocol
+evidence is a weaker supporting tier or badge and must not be labelled as
+advertised commerce compatibility.
+
+Within a tier, the stable order from the signed declarations is the
+tie-breaker, followed by normalized URL when no signed order exists. There is
+no drag-to-rank interaction.
+
+This order is a Conduit convention. NIP-65 does not define relay tag order as a
+cross-client priority signal, and Conduit must not describe it that way.
+
+### Future Optimize my relays flow
+
+Active relay checks and recommendation policy belong to a separate,
+user-triggered **Optimize my relays** wizard. That flow may define bounded
+connection, read, write, and protected-auth tests; scan capability evidence;
+and recommend good defaults.
+
+Opening, scanning, cancelling, or reviewing the wizard is non-mutating. A
+signed or publishable test requires explicit user context and must disclose
+what it will do. Proposed configuration changes use the normal reviewed update
+workflow only after acceptance. The optimizer must not silently remove relays
+or convert incomplete evidence into a health verdict.
+
+---
+
+## Shared Network UI Contract
+
+### One experience
+
+Market and Merchant render the same shared Network screen and controller.
+App-specific routes may supply navigation context, such as a return target,
+but may not alter relay state, controls, wording, ordering, reconciliation, or
+mutation behavior.
 
 Title:
 
-> Relay Settings
+> Network
 
 Header sentence:
 
-> Relays store and deliver data across the Nostr network.
+> Choose where Conduit reads, publishes, and receives private messages on
+> Nostr.
 
-Footer sentence:
+The UI does not mention device-local settings. Cached or degraded signed
+evidence is described by freshness and coverage, not as a second preference
+source.
 
-> Conduit automatically categorizes relays based on supported NIPs.
+### Flat relay list
 
-### Commerce Enabled Relays
+Each normalized relay appears once. A row may show:
 
-Commerce relays are shown first because they are operationally important for:
+- Read membership;
+- Publish membership;
+- Private inbox membership;
+- configured, advertised, or observed capability badges;
+- freshness, partial-result, or availability warnings when supported by
+  evidence.
 
-- merchant listings
-- inventory and stock updates
-- product updates
-- order-related events
-- buyer/merchant communications
-- Conduit commerce flows
+Media-server preferences remain a separate section because Blossom servers
+are not Nostr relays and are outside `kind:10002` and `kind:10050`.
 
-This section allows drag-to-rank commerce priority.
+### One reviewed update
 
-Section tooltip:
+The user reviews one desired account configuration and selects one update
+action. The signer may then show one or two requests because Nostr requires
+separate signed events. The UI may explain this plainly, but it must not
+pretend the signer requests or network publications are atomic.
 
-> Relays that Conduit can use for commerce events like products, stock updates, orders, and merchant messages.
+### Removing a relay
 
-Expanded tooltip:
+The explicit **Remove from my whole setup** action removes the normalized URL
+from every applicable role in the desired account configuration. It always
+prepares, signs, and durably stages replacement `kind:10002` and `kind:10050`
+events, even when the URL appears in only one current frontier. This deliberate
+exception to minimal changed-event selection records the user's complete-removal
+intent in both signed account objects.
 
-> These relays meet Conduit's commerce requirements. Drag to set Conduit's preferred order for syncing and publishing commerce data. This priority only affects Conduit.
+The confirmation is one concise proceed/cancel warning:
 
-Ranking tooltip:
+> Remove this relay from your whole setup? After you complete every signer
+> request, Conduit will stop reading, publishing, and checking it for private
+> messages immediately. Stale clients may still send messages there, and those
+> messages can be missed.
 
-> Drag to change Conduit's commerce priority.
+There is no multi-step impact-review workflow. Cancel, signer refusal, or any
+missing required signature changes no runtime route and deletes no working
+recovery lane.
 
-Expanded ranking tooltip:
+Acceptance is explicit: one-kind membership still produces two replacement
+events; Cancel or any missing signature produces neither publication nor runtime
+cutover.
 
-> Higher-ranked commerce relays are preferred by Conduit when reading, publishing, and resolving commerce data. This does not change relay behavior in other Nostr apps.
+If the result would violate the current minimum usable Network configuration,
+the UI gives one direct instruction to add a replacement rather than exposing
+an elaborate dependency analysis. In particular, private inbox declarations
+retain NIP-17's one-to-three relay guidance.
 
-### Other Public Relays
+### Private inbox cutover
 
-Public relays may be useful for general Nostr reads, writes, discovery, or visibility, but they do not currently meet Conduit's full commerce requirements.
+An ordinary Private inbox role change is distinct from explicit whole-setup
+removal. After every event required by the reviewed action is signed and durably
+staged:
 
-They should not be rankable for commerce priority.
+- new gift-wrap writes target the pending `kind:10050` declaration;
+- the previous valid inboxes remain a hidden read-only recovery lane;
+- those previous inboxes are not current membership and never authorize a new
+  write;
+- an exact readback of the pending event from the bounded shared discovery set
+  starts a bounded, versioned stale-sender grace period;
+- the recovery lane closes after that grace period expires.
 
-Section tooltip:
+The grace-policy version, readback evidence, and expiry are stored with the
+pending cutover. A relay explicitly removed from the user's whole setup is
+excluded immediately from this recovery lane after all signatures are staged,
+even before ACK or readback. This privacy cutoff intentionally accepts that
+messages from stale clients can be missed.
 
-> General Nostr relays used for broader network reading, publishing, and discovery.
+### Add the Conduit relay
 
-Expanded tooltip:
+After authoritative reconciliation, an eligible account may see:
 
-> These relays may be useful across Nostr, but they do not currently meet Conduit's full commerce requirements.
+> Add the Conduit relay?
 
-### IN / OUT toggle copy
+Acceptance adds the canonical Conduit relay to NIP-65 Read and Publish
+membership and to the `kind:10050` private inbox declaration. If it is already
+present in some roles, only the missing roles and changed event kinds are
+updated.
 
-`OUT` tooltip:
+This prompt activates only after a separate relay-operator gate verifies the
+deployed protected-read and public relay behavior. It is not proof that every
+future relay operation will succeed. If the account already declares three
+private inbox relays, the prompt does not evict one automatically and should
+not offer a misleading one-click result.
 
-> Publish events to this relay.
-
-Expanded:
-
-> When enabled, Conduit can publish supported events to this relay.
-
-`IN` tooltip:
-
-> Read events from this relay.
-
-Expanded:
-
-> When enabled, Conduit can read relevant events from this relay.
-
-### Add Relay behavior
-
-There should be one **Add Relay** action.
-
-When a user adds a relay:
-
-1. Normalize the relay URL.
-2. Attempt connection.
-3. Fetch NIP-11 relay information.
-4. Read `supported_nips`.
-5. Probe Conduit-required commerce behavior.
-6. Categorize automatically as commerce or public.
-7. Show capability indicators.
-8. Apply safe default IN/OUT settings.
-
-The UI must not ask whether the user is adding a commerce relay or a public relay.
-
-### Safe defaults
-
-Default IN/OUT behavior should be conservative:
-
-- If a relay is reachable and public, default `IN` to enabled.
-- Default `OUT` to enabled only when the relay is known to accept relevant writes or the user explicitly chooses to publish there.
-- For commerce-compatible relays, default `IN` to enabled and place the relay at the end of the commerce priority list.
-- If a relay is unreachable, add it disabled with a warning rather than silently discarding it.
+Dismissing the prompt changes no signed preference.
 
 ---
 
-## Read and Write Planning
+## Mutation and Distribution Contract
 
-Conduit should use relay preferences and capability scans to build route-aware read and write plans.
+An account update is one user action over two independently replaceable event
+frontiers. Before any relay write, the coordinator must:
 
-### General Nostr reads
+1. Reconcile both frontiers again at action time.
+2. Reject or pause destructive replacement when current safe frontiers cannot
+   be established.
+3. Derive the minimal changed event set for ordinary edits, or require both
+   replacement kinds for explicit whole-setup removal.
+4. Prepare every changed event draft.
+5. Obtain every required signature.
+6. Persist the exact signed bytes and immutable target relay plans.
 
-For general reads, Conduit should prefer relays where:
+Only after all required signatures and retry checkpoints exist may publication
+begin or the runtime change. At that point, the runtime applies the role-specific
+pending cutover above while the UI shows that network confirmation is pending.
+If the second signer request is cancelled or fails, neither event is published,
+no pending projection is activated, and existing recovery behavior remains
+unchanged.
 
-- `readEnabled` is true
-- the relay is reachable or has fresh cached capability data
-- the route's requested capability is available
+Each signed event is then published and read back independently. Outcomes must
+distinguish at least:
 
-### General Nostr writes
+- accepted;
+- rejected;
+- timeout or unavailable;
+- accepted but readback pending;
+- exact event confirmed by readback.
 
-For general writes, Conduit should publish to relays where:
+One event may confirm while the other remains retryable. The UI reports that
+partial state without calling the combined action complete. Retries reuse the
+exact signed bytes and immutable target plan; they do not reconstruct or
+silently re-sign a newer event.
 
-- `writeEnabled` is true
-- the relay is reachable
-- the relay accepts the event kind
-- user policy allows publishing there
+If reconciliation later establishes a newer valid signed frontier for an event
+kind, that evidence supersedes the pending event for that kind. Its obsolete
+retry is cancelled and the runtime projection is recomputed from the remaining
+current and pending frontiers.
 
-### Commerce reads
+Nostr offers no cross-event or cross-relay transaction. The user action is
+unified, but network distribution remains independently observable and
+recoverable.
 
-For commerce reads, Conduit should:
+---
 
-1. Prefer commerce-compatible relays in commerce priority order.
-2. Use public relays as fallback or discovery sources when commerce relays are unavailable or incomplete.
-3. Use NIP-50 search capability only when the route needs search behavior.
-4. Use cached local data only as a performance fallback with stale-state awareness.
+## Read, Publish, and Messaging Planning
 
-### Commerce writes
+### General reads and publishes
 
-For commerce writes, Conduit should:
+Runtime planners consume the latest usable validated signed projection, with
+explicit stale or degraded provenance when only cached evidence is available.
+An unsigned draft does not change runtime behavior. A fully signed and durably
+staged pending projection may do so before network confirmation, with that
+pending status kept visible and subject to supersession by newer reconciled
+signed evidence.
 
-1. Prefer commerce-compatible relays in commerce priority order where `writeEnabled` is true.
-2. Publish to additional user-enabled write relays when appropriate for reach and interoperability.
-3. Surface partial publish failures when they materially affect commerce behavior.
-4. Avoid treating a Conduit-local priority list as a universal relay preference.
+General reads prefer signed Read members that satisfy the route's actual
+requirements. General publishes target signed Publish members and retain
+per-relay acceptance, rejection, and timeout outcomes. Code-owned fallbacks may
+provide bounded bootstrap or recovery when no usable signed evidence exists,
+but they do not become hidden user settings.
 
-### Messaging
+### Commerce behavior
 
-For NIP-17 buyer/merchant communication, Conduit should:
+Commerce planners may use the automatic capability order as a bounded planning
+bias. Valid signatures, replaceable/addressable semantics, deletion events,
+timestamps, source coverage, and cross-relay evidence remain the basis for
+event truth.
 
-- prefer relays that advertise or demonstrate DM suitability
-- prefer auth-capable relays for protected or restricted access patterns
-- warn when DM support exists without auth support
-- limit DM usage on weaker relays when policy requires stronger access control
+A commerce-evidence tier cannot redefine event validity. When sources disagree
+or fail, Conduit preserves source, freshness, and coverage instead of treating
+the first preferred relay as network authority.
+
+### NIP-17 messaging
+
+NIP-17 delivery uses the recipient's valid `kind:10050` declaration. Protected
+inbox reads may require NIP-42 authentication, but public declarations and
+relay lists do not.
+
+During an ordinary fully signed and staged inbox change, new writes use the
+pending declaration. Reads temporarily include the previous valid inboxes as a
+hidden recovery lane through exact shared-set readback and the versioned
+stale-sender grace period. A whole-setup removal excludes its URL from reads and
+writes immediately after staging; general NIP-65 membership never substitutes
+for this narrowly defined cutover lane.
+
+Conduit follows the declared one-to-three inbox relays when available. An empty,
+malformed, stale, partial, or unavailable declaration remains a distinct state;
+the runtime must not silently treat all of them as the same fallback case.
 
 #### Temporary validated-order compatibility role (CND-208)
 
-While users migrate to valid kind `10050` declarations, a bounded set of
+While users migrate to valid `kind:10050` declarations, a bounded set of
 private-inbox-compatible relays serves two roles:
 
-- **Compatibility reads.** It is part of the bounded compatibility read set
-  that clients union with declared inboxes and locally enabled secure IN
-  relays when reading their own gift wraps.
-- **Compatibility order writes.** Behind an independent deployment-profile
+- **Compatibility reads:** clients union the bounded compatibility read set
+  with declared inboxes when reading their own gift wraps.
+- **Compatibility order writes:** behind an independent deployment-profile
   flag, validated kind-16 order gift wraps may be written to at most three
   relays from the operator-approved registry when the recipient has no usable
   declaration.
 
-Both roles preserve NIP-44/NIP-59 encryption. A selected relay can observe every
-request filter sent to it—including the recipient `#p` filter—plus the encrypted
-gift wrap, its outer recipient tag, event size, timing, traffic volume,
-connection behavior, and direct-connection IP address. When NIP-42 is used, the
-relay additionally receives the authentication pubkey and signed kind `22242`
-auth event. No fixed retention, automatic deletion, no-logging behavior, or
-complete metadata privacy is assumed. This is a migration exception, not
-NIP-17 routing, and its removal gate lives in
+Both roles preserve NIP-44/NIP-59 encryption. A selected relay can observe the
+request filters sent to it, including the recipient `#p` filter, plus the
+encrypted gift wrap, outer recipient tag, event size, timing, traffic volume,
+connection behavior, and direct-connection IP address. When NIP-42 is used,
+the relay additionally receives the authentication pubkey and signed
+`kind:22242` auth event.
+
+No fixed retention, automatic deletion, no-logging behavior, or complete
+metadata privacy is assumed. This is a migration exception, not NIP-17 routing,
+and its removal gate lives in
 `docs/knowledge/nip17-inbox-bootstrap-migration.md`. Eligibility is the secure
-intersection of the write registry and the compatibility read set.
-Recipient NIP-65 read evidence may only reorder that intersection; it never
-widens it to arbitrary NIP-65, local IN/OUT, commerce-priority, source, hint,
-or other public relays. One ACK succeeds; other failures remain retryable.
+intersection of the write registry and the compatibility read set. Recipient
+NIP-65 read evidence may only reorder that intersection; it never widens it to
+arbitrary NIP-65, legacy local settings, commerce evidence, source hints, or
+other public relays. One ACK succeeds; other failures remain retryable.
 
 ---
 
-## Conflict and Fallback Rules
+## Privacy and Protected Inbox Requirements
 
-When multiple relays return competing commerce state, Conduit should resolve results in this order:
+NIP-17 protects message content and hides much of the direct message structure
+inside seals and gift wraps. Relay choice still affects metadata exposure and
+access policy. Encryption does not hide request filters, outer recipient tags,
+timing, traffic volume, or ordinary connection metadata from the relay.
 
-1. Prefer valid signed events.
-2. Prefer newer replaceable or parameterized replaceable events when applicable.
-3. If otherwise valid events still disagree or some relays return stale data, prefer the result from the higher-ranked commerce relay.
-4. If the highest-ranked commerce relay is unavailable, fall back to the next ranked valid commerce relay.
-5. If no commerce relay returns a usable result, fall back to user-enabled public relays and clearly mark stale or degraded states when user decisions depend on freshness.
+For the Conduit-operated protected inbox contract:
 
-Commerce priority is only a Conduit fallback and planning signal. It does not redefine event validity.
+- Public product, profile, declaration, relay-list, and other public reads stay
+  available without NIP-42 prompts.
+- A protected inbox `REQ` contains only `kind:1059` filters and exactly one
+  `#p` recipient equal to the authenticated client pubkey.
+- Mixed-kind, missing-recipient, malformed, or cross-recipient filters are
+  rejected with a stable `CLOSED` reason such as `restricted:`.
+- The relay sends a connection-bound challenge and validates `kind:22242`, its
+  id and signature, current timestamp, empty content, exact current
+  `challenge` tag, and exact normalized `relay` tag.
+- The relay returns an `OK` whose event id matches the auth event and serves
+  protected events only after a positive result.
+- Authentication is discarded on reconnect and cannot transfer between
+  connections or accounts.
+- `auth-required:` is used when authentication can satisfy the request;
+  `restricted:` is used when the authenticated identity or filter is not
+  allowed.
+- Legitimate encrypted order and message writes, including guest-order
+  ephemeral senders, remain accepted without the merchant's read
+  authorization.
+- Auth-failure rate limits are isolated from public reads and legitimate
+  commerce writes.
 
----
+Authentication failure is a typed authorization or availability outcome, not
+EOSE and not an empty inbox. One successful relay plus one failed relay is
+partial; cached messages remain visible as stale or degraded. Only NIP-07 and
+NIP-46 account sessions are eligible for protected reads. Guest or unsigned
+sessions have no protected-read fallback.
 
-## Privacy and Security Requirements
-
-### DM privacy
-
-NIP-17 protects message content and hides much of the direct message structure inside seals and gift wraps. Relay choice still matters because relay access policy can affect message metadata exposure.
-
-Conduit should prefer auth-capable relays for private or restricted messaging behavior and should avoid overclaiming privacy guarantees in UI copy.
-
-### Authentication
-
-NIP-42 support is a capability signal and is the authorization mechanism for
-the target Conduit-controlled protected inbox relay contract. The first
-protected operation is a signed-in principal reading only `kind:1059` filters
-whose `#p` equals their active account pubkey. An enforcing relay must validate
-a fresh connection-bound kind `22242` event and return a matching positive `OK`
-before serving that request. During client-first rollout, the current
-`when_challenged` client may issue and complete an initial protected request
-without NIP-42 when a relay does not challenge. Client support, NIP-11
-advertising, or a prior successful auth does not prove current recipient
-enforcement. Mixed-kind, missing-recipient, malformed, or cross-recipient
-filters are rejected by the client.
-
-This authorization is explicit and narrow. Public products, profiles,
-declarations, relay lists, and other public reads carry no NIP-42 account proof
-and must not prompt a signer. This is not network anonymity: queried relays still
-see request filters, and relays, hosts, and transport providers may observe
-ordinary connection metadata. Only NIP-07 and NIP-46 account sessions are
-eligible. Guest or unsigned sessions have no protected-read fallback.
-
-Authentication failure is a typed availability/authorization outcome, not EOSE
-and not an empty inbox. One successful relay plus one failed relay is partial;
-cached messages remain visible as stale/degraded. The detailed state machine
-and operator rollout are in
+The client remains challenge-capable before each relay enables enforcement.
+Operator rollout and rollback details live in
 `docs/knowledge/nip42-protected-read-rollout.md`.
 
-### Derived data
+Capability evidence, UI state, diagnostics, logs, and telemetry must remain
+content-free. They must not include signed events or signatures, message
+contents, ciphertext, protected filters, invoices, addresses, signer secrets,
+NWC URIs, authentication challenges, auth events, or stable account-derived
+session identifiers.
 
-Any internal acceleration, cache, index, or relay routing system must remain derived from relay-visible state and must not become a hidden private-data API.
+This prohibition does not prevent caching a validated signed public frontier.
+Exact signed public declarations retained to resume publication are permitted
+only inside the bounded retry checkpoint; they must not be copied into
+capability evidence, UI state, diagnostics, logs, or telemetry.
 
-Derived systems may improve performance, hydration, search, or routing, but they must not be presented in the selector as user-managed relay roles.
+### Derived systems
+
+Any shared acceleration, cache, index, or routing system may derive only from
+relay-visible state and must remain rebuildable rather than becoming hidden
+network authority. It must never become a hidden API for private message
+content or ciphertext, order contents, payment or invoice data, signer or auth
+material, wallet credentials or recovery material, or wallet balances.
+
+Device-local user caches that legitimately hold decrypted user data remain
+inside their existing account and device boundary. They do not authorize moving
+that material into shared derived infrastructure.
 
 ---
 
 ## Implementation Guidance
 
-### Keep shared relay logic centralized
+### Shared ownership
 
-Relay normalization, NIP-65 serialization, capability scanning, commerce categorization, and route-aware read/write planning should live in shared code rather than being reconstructed in each route.
+Relay normalization, signed-frontier resolution, NIP-65 and NIP-17
+serialization, unified mutations, capability evidence, automatic ordering, and
+route-aware planning live in shared code. Market and Merchant routes compose
+the same shared feature rather than rebuilding it or supplying behavior flags.
 
-### NDK-neutral protected executor
+### Protected executor boundary
 
-Protected-read transport is the first vertical slice of a Conduit-owned relay
-executor. It accepts and returns plain clone-safe Nostr filters/events and owns
-WebSocket lifecycle, subscription ids, NIP-42 challenge/OK state, bounded
-retries, reconnect auth, validation, source provenance, and typed outcomes.
-This executor must not import NDK.
+Protected-read transport is a Conduit-owned relay executor. It accepts and
+returns plain clone-safe Nostr filters and events and owns WebSocket lifecycle,
+subscription ids, NIP-42 challenge and `OK` state, bounded retries, reconnect
+authentication, validation, source provenance, and typed outcomes. It does not
+import NDK.
 
-NDK is retained only at named edges that still adapt the active external signer
-or unwrap gift wraps. An authenticated connection is keyed by normalized relay
-URL plus a random process-local account-session scope, never shared with public
-read connections or another account, and closed on logout/switch, signer
-changes, relay removal/read disable, settings-scope change, auth failure, lease
-replacement, and reconnect.
-Residual NDK public-read and cryptography debt is migrated only in later
-bounded strangler slices; this slice must not add NDK relay ownership.
+NDK remains only at named edges that adapt the active external signer or unwrap
+gift wraps. An authenticated connection is keyed by normalized relay URL plus
+a random process-local account-session scope, never shared with public read
+connections or another account, and closed on logout or account switch, signer
+changes, relay removal or Read disable, auth failure, lease replacement, and
+reconnect.
 
-### Keep UI simple
+### Local persistence boundary
 
-The settings screen should communicate:
+Permitted local records are implementation evidence, not settings:
 
-- relays are Nostr infrastructure
-- Conduit automatically detects capabilities
-- users control read/write participation and commerce priority
-- commerce priority only affects Conduit
-- capability icons are informational
-- warning states explain risk without creating fear
+- cached exact signed events with provenance and freshness;
+- unpublished in-progress drafts;
+- capability observations with timestamps and scope;
+- exact signed-event retry checkpoints with immutable target plans;
+- bounded account-and-device-scoped legacy inbox-read recovery records that
+  survive incomplete migration and restart until a usable `kind:10050` is fully
+  signed and durably staged or the user explicitly discards recovery;
+- durable account-and-device-scoped migration discard tombstones that survive
+  restart for the legacy migration reader's lifetime and prevent discarded
+  recovery from being reconstructed.
 
-### Keep implementation extensible
-
-The model should support implementation improvements without changing the user contract:
-
-- compatibility registry
-- active relay probes
-- operator-managed relay recommendations
-- improved stale-state handling
-- additional commerce event kinds
-- optional Conduit acceleration paths
+No local record may outrank a newer validated signed frontier. The migration
+records are not signed account authority or membership and never define write
+targets or publication input. Cross-app convergence comes from Nostr, not from
+attempting to share browser storage.
 
 ---
 
 ## Open Implementation Decisions
 
-These decisions are intentionally left for the implementation spec or code PR:
+The product contract is settled. Bounded implementation choices remain:
 
-- exact URL normalization function and accepted input formats
-- scan cache TTLs and stale thresholds
-- active write-probe strategy and safety constraints
-- compatibility profile version naming
-- default curated relay list
-- whether commerce priority is stored per app, per identity, or shared across Conduit apps
-- whether Conduit later defines a publishable event for commerce priority
+- exact URL normalization and accepted input formats;
+- discovery coverage plan, timeouts, and stale thresholds;
+- cache and capability-observation TTLs;
+- retry checkpoint retention and expiry;
+- future optimizer probe safety, disclosure, and policy versioning.
 
-Until a publishable event is defined, commerce priority remains local/app-specific.
+These decisions may not reintroduce app-local authority, separate Market and
+Merchant behavior, manual commerce ranking, silent probes, or automatic relay
+removal.
 
 ---
 
 ## Summary
 
-The relay architecture should be Nostr-native:
+The Network experience is a shared projection over signed Nostr state:
 
-- NIP-65 expresses user read/write relay preferences.
-- NIP-11 and active probes detect relay capabilities.
-- GammaMarkets market-spec anchors the commerce event set.
-- Conduit categorizes relays automatically.
-- Users rank only commerce-compatible relays for Conduit-local commerce priority.
-- Capability icons are read-only.
-- Internal acceleration remains an implementation detail, not a user-facing relay role.
+- `kind:10002` expresses Read and Publish membership.
+- `kind:10050` expresses Private inbox membership.
+- Both frontiers reconcile on every fresh signer connection.
+- One flat list presents their combined meaning.
+- Evidence-labelled capabilities drive automatic ordering without claiming
+  health.
+- One reviewed action may create two separately signed and recoverable events.
+- Active capability testing and recommendations remain a future, explicit
+  optimizer flow.
 
 Core rule:
 
-> Users configure preferences. Conduit detects capabilities. The app orchestrates relay usage without pretending the network has fixed relay roles.
+> Signed account state defines relay participation. Conduit presents and
+> updates that state as one coherent Network experience.
