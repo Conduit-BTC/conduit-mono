@@ -3836,6 +3836,33 @@ describe("commerce gateway", () => {
     })
   })
 
+  it("keeps profile absence incomplete when rejected events saturate the relay limit", async () => {
+    __setCommerceTestOverrides({
+      fetchEventsFanoutDetailed: async (_filter, options) => ({
+        events: [],
+        relays: [...(options?.relayUrls ?? [])].map((relayUrl, index) => ({
+          relayUrl,
+          status: "success" as const,
+          eventCount: 0,
+          rejectedEventCount: index === 0 ? 10 : 0,
+        })),
+      }),
+    })
+
+    const result = await getProfiles({
+      pubkeys: ["merchant"],
+      skipCache: true,
+      requireCompleteEvidence: true,
+    })
+
+    expect(result.data.merchant).toMatchObject({ pubkey: "merchant" })
+    expect(result.meta).toMatchObject({
+      source: "public",
+      degraded: false,
+      capped: true,
+    })
+  })
+
   it("keeps profile absence degraded when an author relay is parked", async () => {
     const parkedRelayUrl = "wss://parked-profile-hint.conduit.market"
     const healthNow = Date.now()

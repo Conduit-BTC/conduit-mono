@@ -823,7 +823,9 @@ async function runFetchEventsFanoutDetailed(
       capped: isBoundedFanoutSaturated(
         filter,
         result.events,
-        result.relays.map((relay) => relay.eventCount)
+        result.relays.map(
+          (relay) => relay.eventCount + (relay.rejectedEventCount ?? 0)
+        )
       ),
     }
   }
@@ -865,7 +867,9 @@ async function runFetchEventsFanoutDetailed(
     capped: isBoundedFanoutSaturated(
       filter,
       result.events,
-      result.relays.map((relay) => relay.eventCount)
+      result.relays.map(
+        (relay) => relay.eventCount + (relay.rejectedEventCount ?? 0)
+      )
     ),
   }
 }

@@ -26,9 +26,11 @@ import {
   getWalletDisplayLabels,
   getWalletNetworkFromLightningConfig,
   getAuthSignerReadiness,
+  getProfiles,
   getTelemetryAmountBucket,
   getTelemetryCountBucket,
   hasWebLN,
+  isCommerceReadIncomplete,
   getNdk,
   getShippingOptionsByCoordinates,
   normalizePubkey,
@@ -156,6 +158,7 @@ import {
 } from "../lib/checkout-validation"
 import {
   getMerchantPaymentLud16,
+  getMerchantPaymentProfileState,
   getMerchantPaymentReadiness,
 } from "../lib/merchant-payment-readiness"
 import {
@@ -2689,7 +2692,40 @@ function CheckoutPage() {
 
       const checkoutMode = requestedCheckoutMode
       const requiresPublicZap = isCheckoutPublicZapMode(checkoutMode)
-      const currentLnurlMetadata = await getFreshLnurlMetadata(merchantLud16)
+      const refreshedProfileResult = await getProfiles({
+        pubkeys: [selectedMerchant],
+        authenticatedPubkey:
+          selectedMerchant === signedBuyerPubkey
+            ? signedBuyerPubkey
+            : undefined,
+        skipCache: true,
+        requireCompleteEvidence: true,
+        priority: "visible",
+      })
+      const refreshedProfileState = getMerchantPaymentProfileState({
+        isLoading: false,
+        isFetching: false,
+        lookupSettled: true,
+        evidenceIncomplete: isCommerceReadIncomplete(
+          refreshedProfileResult.meta
+        ),
+      })
+      const currentMerchantLud16 = getMerchantPaymentLud16({
+        profileState: refreshedProfileState,
+        lud16: refreshedProfileResult.data[selectedMerchant]?.lud16,
+      })
+      if (refreshedProfileState !== "available") {
+        throw new Error(
+          "The merchant payment profile could not be confirmed from relays. You can still send the order first."
+        )
+      }
+      if (!currentMerchantLud16) {
+        throw new Error(
+          "The merchant's current profile does not include a Lightning address. You can still send the order first."
+        )
+      }
+      const currentLnurlMetadata =
+        await getFreshLnurlMetadata(currentMerchantLud16)
       const freshPricingRate = await getFreshPricingRateInput(checkoutItems)
       const authoritativeCheckoutItems = await assertCheckoutItemsAvailable(
         requestedCheckoutMode,
@@ -2881,7 +2917,7 @@ function CheckoutPage() {
             ? checkoutMode
             : "external_wallet",
         publicZapSigner: getCheckoutPublicZapSigner(checkoutMode) ?? undefined,
-        merchantLightningAddress: merchantLud16,
+        merchantLightningAddress: currentMerchantLud16,
         paymentTarget: storedPaymentTarget,
         items: buildLifecycleItems(checkoutPricing.items),
         itemSubtotalSats: checkoutPricing.itemSubtotalSats,
@@ -2941,7 +2977,7 @@ function CheckoutPage() {
         buyerPubkey,
         buyerIdentity: guestIdentity ?? undefined,
         merchantPubkey: selectedMerchant,
-        merchantLud16,
+        merchantLud16: currentMerchantLud16,
         zapMode: checkoutMode,
         zapContent: effectiveZapContent,
         totalSats: checkoutPricing.totalSats,

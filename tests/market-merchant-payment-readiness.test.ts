@@ -28,6 +28,26 @@ describe("shopper merchant payment readiness", () => {
     )
   })
 
+  it("revalidates the signed payment destination immediately before invoice work", async () => {
+    const source = await checkoutSource
+
+    expect(source).toContain(
+      "const refreshedProfileResult = await getProfiles({"
+    )
+    expect(source).toContain("skipCache: true")
+    expect(source).toContain("requireCompleteEvidence: true")
+    expect(source).toContain(
+      "lud16: refreshedProfileResult.data[selectedMerchant]?.lud16"
+    )
+    expect(source).toMatch(
+      /getFreshLnurlMetadata\(\s*currentMerchantLud16\s*\)/
+    )
+    expect(source).toContain("merchantLightningAddress: currentMerchantLud16")
+    expect(source).toContain("merchantLud16: currentMerchantLud16")
+    expect(source).not.toContain("getFreshLnurlMetadata(merchantLud16)")
+    expect(source).not.toContain("merchantLightningAddress: merchantLud16")
+  })
+
   it("requires complete current profile evidence before reporting absence", () => {
     expect(
       getMerchantPaymentProfileState({

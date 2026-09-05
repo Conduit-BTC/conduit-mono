@@ -4,7 +4,9 @@ import type {
   CommerceResult,
   Profile,
   ProfileMap,
+  ProfileFormValues,
 } from "@conduit/core"
+import { reconcileProfileFormDraft } from "../packages/core/src/protocol/profiles"
 import { updateProfileQueryCache } from "../packages/core/src/hooks/useUpdateProfile"
 
 const PUBKEY = "a".repeat(64)
@@ -41,7 +43,31 @@ describe("profile query cache", () => {
     ).toBeUndefined()
   })
 
-  it("keeps background profile refreshes from overwriting an active edit", async () => {
+  it("rebases untouched draft fields onto the latest signed profile", () => {
+    const baseline: ProfileFormValues = {
+      name: "before",
+      displayName: "Before",
+      about: "Before about",
+      picture: "",
+      banner: "",
+      nip05: "",
+      lud16: "before@wallet.example",
+      website: "",
+    }
+    const draft = { ...baseline, displayName: "Local display edit" }
+    const latest = {
+      ...baseline,
+      about: "Remote about update",
+      lud16: "current@wallet.example",
+    }
+
+    expect(reconcileProfileFormDraft(draft, baseline, latest)).toEqual({
+      ...latest,
+      displayName: "Local display edit",
+    })
+  })
+
+  it("waits for profile evidence and reconciles active edits", async () => {
     const merchantRoute = await Bun.file(
       "apps/merchant/src/routes/profile.tsx"
     ).text()
@@ -50,8 +76,9 @@ describe("profile query cache", () => {
     ).text()
 
     for (const route of [merchantRoute, marketRoute]) {
-      expect(route).toContain("if (editing || !profileQuery.data) return")
-      expect(route).toContain("[editing, profileQuery.data]")
+      expect(route).toContain("reconcileProfileFormDraft(")
+      expect(route).toContain("canEditProfile")
+      expect(route).toContain("isCommerceReadIncomplete(profileQuery.meta)")
     }
     expect(merchantRoute).toContain(
       "!profileQuery.isLoading &&\n              !complete"

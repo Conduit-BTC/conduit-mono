@@ -1,5 +1,6 @@
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import type { Profile } from "../types"
+import type { ProfileFormValues } from "../schemas"
 import { db, type CachedProfile } from "../db"
 import { normalizePublicMediaUrl } from "../network-target-safety"
 import { EVENT_KINDS } from "./kinds"
@@ -172,6 +173,24 @@ export function buildProfileUpdatePayload(
       return nextValue === latestValue ? [] : [[profileField, nextValue]]
     })
   ) as Omit<Profile, "pubkey">
+}
+
+/**
+ * Rebase an active profile draft onto the latest signed profile projection.
+ * Fields unchanged from the edit baseline follow the remote revision; fields
+ * the user changed locally keep the user's draft value.
+ */
+export function reconcileProfileFormDraft(
+  draft: ProfileFormValues,
+  editBaseline: ProfileFormValues,
+  latest: ProfileFormValues
+): ProfileFormValues {
+  return Object.fromEntries(
+    PROFILE_CONTENT_FIELDS.map(([field]) => [
+      field,
+      draft[field] === editBaseline[field] ? latest[field] : draft[field],
+    ])
+  ) as ProfileFormValues
 }
 
 export function buildNip01ProfilePublishContent({

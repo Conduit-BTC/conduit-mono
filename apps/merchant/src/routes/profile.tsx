@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import {
   AlertCircle,
   Check,
@@ -10,8 +10,10 @@ import {
 } from "lucide-react"
 import { createFileRoute } from "@tanstack/react-router"
 import {
+  isCommerceReadIncomplete,
   normalizePublicMediaUrl,
   pubkeyToNpub,
+  reconcileProfileFormDraft,
   useAuth,
   useProfile,
   useUpdateProfile,
@@ -62,10 +64,15 @@ function RequiredMark() {
 
 function ProfilePage() {
   const { pubkey } = useAuth()
-  const profileQuery = useProfile(pubkey, { authenticatedPubkey: pubkey })
+  const profileQuery = useProfile(pubkey, {
+    authenticatedPubkey: pubkey,
+    requireCompleteEvidence: true,
+    maxUnresolvedRefetches: 2,
+  })
   const updateMutation = useUpdateProfile("merchant")
   const [editing, setEditing] = useState(false)
   const [form, setForm] = useState<ProfileFormValues>(EMPTY_PROFILE_FORM)
+  const editBaselineRef = useRef<ProfileFormValues | null>(null)
   const [copiedPubkey, setCopiedPubkey] = useState(false)
   const [copiedStoreLink, setCopiedStoreLink] = useState(false)
   const [profileSaveSucceeded, setProfileSaveSucceeded] = useState(false)
@@ -73,6 +80,16 @@ function ProfilePage() {
   useEffect(() => {
     if (editing || !profileQuery.data) return
     setForm(profileToFormValues(profileQuery.data))
+  }, [editing, profileQuery.data])
+
+  useEffect(() => {
+    if (!editing || !profileQuery.data) return
+    const latest = profileToFormValues(profileQuery.data)
+    const baseline = editBaselineRef.current
+    setForm((draft) =>
+      baseline ? reconcileProfileFormDraft(draft, baseline, latest) : latest
+    )
+    editBaselineRef.current = latest
   }, [editing, profileQuery.data])
 
   const profileData = profileQuery.data
@@ -87,10 +104,28 @@ function ProfilePage() {
     () => (profileData ? profileToFormValues(profileData) : EMPTY_PROFILE_FORM),
     [profileData]
   )
-  const hasProfileChanges = useMemo(
-    () => JSON.stringify(form) !== JSON.stringify(savedProfileForm),
+  const reconciledProfileForm = useMemo(
+    () =>
+      editBaselineRef.current
+        ? reconcileProfileFormDraft(
+            form,
+            editBaselineRef.current,
+            savedProfileForm
+          )
+        : form,
     [form, savedProfileForm]
   )
+  const hasProfileChanges = useMemo(
+    () =>
+      JSON.stringify(reconciledProfileForm) !==
+      JSON.stringify(savedProfileForm),
+    [reconciledProfileForm, savedProfileForm]
+  )
+  const canEditProfile =
+    !profileQuery.isLoading &&
+    !profileQuery.isFetching &&
+    profileQuery.meta !== null &&
+    !isCommerceReadIncomplete(profileQuery.meta)
   const profileSaveStatus = updateMutation.isPending
     ? "awaiting_signature"
     : updateMutation.error
@@ -109,12 +144,25 @@ function ProfilePage() {
     e.preventDefault()
     if (!hasProfileChanges || updateMutation.isPending) return
     setProfileSaveSucceeded(false)
-    updateMutation.mutate(profileFormToUpdatePayload(form, profileData), {
-      onSuccess: () => {
-        setProfileSaveSucceeded(true)
-        setEditing(false)
-      },
-    })
+    updateMutation.mutate(
+      profileFormToUpdatePayload(reconciledProfileForm, profileData),
+      {
+        onSuccess: () => {
+          setProfileSaveSucceeded(true)
+          setEditing(false)
+          editBaselineRef.current = null
+        },
+      }
+    )
+  }
+
+  function startEditing(): void {
+    if (!canEditProfile || !profileData) return
+    const baseline = profileToFormValues(profileData)
+    editBaselineRef.current = baseline
+    setForm(baseline)
+    setEditing(true)
+    setProfileSaveSucceeded(false)
   }
 
   async function copyNpub() {
@@ -180,7 +228,8 @@ function ProfilePage() {
                     <button
                       type="button"
                       className="underline underline-offset-2 hover:opacity-80"
-                      onClick={() => setEditing(true)}
+                      onClick={startEditing}
+                      disabled={!canEditProfile}
                     >
                       Edit profile
                     </button>
@@ -264,10 +313,8 @@ function ProfilePage() {
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={() => {
-                            setEditing(true)
-                            setProfileSaveSucceeded(false)
-                          }}
+                          onClick={startEditing}
+                          disabled={!canEditProfile}
                         >
                           Edit profile
                         </Button>
@@ -425,6 +472,7 @@ function ProfilePage() {
                       size="sm"
                       onClick={() => {
                         setEditing(false)
+                        editBaselineRef.current = null
                         setProfileSaveSucceeded(false)
                         if (profileQuery.data) {
                           setForm(profileToFormValues(profileQuery.data))
