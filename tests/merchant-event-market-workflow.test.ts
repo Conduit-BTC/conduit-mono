@@ -19,6 +19,7 @@ import {
   isParticipationHandoffVerified,
   isParticipationProductPreviewVerified,
 } from "../apps/merchant/src/lib/event-market"
+import { getEventMarketUrl } from "../apps/merchant/src/lib/market-links"
 
 const ORGANIZER = "a".repeat(64)
 const OTHER_ORGANIZER = "b".repeat(64)
@@ -171,6 +172,34 @@ describe("merchant organizer event workflow", () => {
     ).toBe(selected!.reference)
 
     expect(forgetOrganizerEventMarket(ORGANIZER, imported, storage)).toEqual([])
+  })
+
+  it("keeps an acknowledgement-hinted publish shareable before relay readback", () => {
+    const storage = new MemoryStorage()
+    const acknowledgementRelay = "wss://publish-only.example/events"
+    const published = encodeEventMarketNaddr(COLLECTION, [acknowledgementRelay])
+
+    const saved = rememberOrganizerEventMarket(
+      ORGANIZER,
+      { reference: published, title: "Published", savedAt: 30 },
+      storage
+    )
+    const selected = findSavedOrganizerEventMarketReference(saved, COLLECTION)
+
+    expect(selected?.reference).toBe(published)
+    expect(
+      decodeEventMarketReference(selected!.reference, [30405])
+    ).toMatchObject({
+      coordinate: COLLECTION,
+      relayHints: [acknowledgementRelay],
+    })
+    expect(
+      getEventMarketUrl(selected!.reference, {
+        hostname: "127.0.0.1",
+        protocol: "http:",
+        port: "7001",
+      })
+    ).toBe(`http://127.0.0.1:7000/events/${published}`)
   })
 
   it("accepts and removes exact products without changing other membership", () => {

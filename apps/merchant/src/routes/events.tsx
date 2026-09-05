@@ -768,14 +768,16 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
       setPublishState("awaiting_signature")
     },
     onSuccess: async (result: MerchantOrganizerPublishResult) => {
-      const reference = result.collectionCoordinate
+      const reference = result.naddr
       const saved = rememberOrganizerEventMarket(organizerPubkey, {
         reference,
         title: editingMarket?.title,
         savedAt: Date.now(),
       })
       setSavedReferences(saved)
-      for (const record of result.records) rememberDelivery(reference, record)
+      for (const record of result.records) {
+        rememberDelivery(result.collectionCoordinate, record)
+      }
       setSelectedReference(
         findSavedOrganizerEventMarketReference(saved, reference)?.reference ??
           reference

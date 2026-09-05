@@ -130,6 +130,32 @@ describe("merchant organizer event market route", () => {
     expect(route).not.toContain("setSelectedReference(reference)")
   })
 
+  it("keeps publish acknowledgement relay hints through selection and sharing", async () => {
+    const route = await Bun.file("apps/merchant/src/routes/events.tsx").text()
+    const panel = await Bun.file(
+      "apps/merchant/src/components/OrganizerEventMarketPanel.tsx"
+    ).text()
+    const publishSuccess = route.slice(
+      route.indexOf(
+        "onSuccess: async (result: MerchantOrganizerPublishResult) =>"
+      ),
+      route.indexOf(
+        "onError: (error) =>",
+        route.indexOf(
+          "onSuccess: async (result: MerchantOrganizerPublishResult) =>"
+        )
+      )
+    )
+
+    expect(publishSuccess).toContain("const reference = result.naddr")
+    expect(publishSuccess).toContain(
+      "rememberDelivery(result.collectionCoordinate, record)"
+    )
+    expect(publishSuccess).toContain("refreshMarketQueries(reference)")
+    expect(publishSuccess).not.toContain("selectedMarketQuery.data")
+    expect(panel).toContain("getEventMarketUrl(market.naddr)")
+  })
+
   it("hydrates merchant identity without changing organizer acceptance authority", async () => {
     const panel = await Bun.file(
       "apps/merchant/src/components/OrganizerEventMarketPanel.tsx"
