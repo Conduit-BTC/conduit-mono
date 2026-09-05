@@ -50,6 +50,7 @@ import {
   publishMerchantOrganizerEventMarket,
   publishMerchantOrganizerMembership,
   resolveOrganizerEventMarket,
+  resolveOrganizerEventMarketRead,
   retryMerchantOrganizerRecord,
   saveOrganizerEventMarketDelivery,
   type MerchantOrganizerEventMarket,
@@ -59,11 +60,15 @@ import {
 } from "../lib/event-market"
 import type { OrganizerEventMarketFormValues } from "../lib/event-market-form"
 import {
+  findOrganizerEventMarketByReference,
   findSavedOrganizerEventMarketReference,
+  isPreferredOrganizerEventMarketListResolution,
   loadSavedDiscoveredEventMarkets,
   loadSavedOrganizerEventMarkets,
   rememberDiscoveredEventMarket,
   rememberOrganizerEventMarket,
+  selectOrganizerEventMarketResolution,
+  shouldResolveOrganizerEventMarketReference,
   type OrganizerCollectionMembershipAction,
   type SavedOrganizerEventMarketReference,
 } from "../lib/event-market-workflow"
@@ -104,6 +109,36 @@ function referenceLabel(
     reference.title ??
     "Saved event market"
   )
+}
+
+function expectedEventMarketFrontier(
+  record: MerchantOrganizerRecordDelivery
+): Partial<SavedOrganizerEventMarketReference> {
+  const signedEvent = record.signedEvent
+  if (!signedEvent) return {}
+  const createdAt = signedEvent.created_at * 1_000
+  if (record.record === "calendar") {
+    return {
+      expectedCalendarCreatedAt: createdAt,
+      expectedCalendarEventId: signedEvent.id,
+    }
+  }
+  if (record.record === "pickup") {
+    return {
+      expectedPickupCreatedAt: createdAt,
+      expectedPickupEventId: signedEvent.id,
+    }
+  }
+  return {
+    expectedCollectionCreatedAt: createdAt,
+    expectedCollectionEventId: signedEvent.id,
+  }
+}
+
+function expectedEventMarketFrontiers(
+  records: readonly MerchantOrganizerRecordDelivery[]
+): Partial<SavedOrganizerEventMarketReference> {
+  return Object.assign({}, ...records.map(expectedEventMarketFrontier))
 }
 
 function EventsPage() {
@@ -605,25 +640,49 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
       return null
     }
   }, [selectedReference])
-  const selectedFromList =
-    selectedIdentity?.relayHints.length === 0
-      ? markets.find(
-          (market) =>
-            market.collectionCoordinate === selectedIdentity.coordinate
-        )
-      : undefined
+  const selectedListMarket = selectedReference
+    ? findOrganizerEventMarketByReference(markets, selectedReference)
+    : undefined
+  const selectedSavedReference = selectedReference
+    ? findSavedOrganizerEventMarketReference(savedReferences, selectedReference)
+    : undefined
+  const selectedFromList = isPreferredOrganizerEventMarketListResolution(
+    selectedListMarket
+  )
+    ? selectedListMarket
+    : undefined
+  const shouldResolveSelectedReference =
+    shouldResolveOrganizerEventMarketReference(
+      selectedListMarket,
+      selectedSavedReference
+    )
   const selectedMarketQuery = useQuery({
     queryKey: [
       "merchant-organizer-event-market",
       organizerPubkey || "none",
       selectedReference || "none",
     ],
-    enabled: !!organizerPubkey && !!selectedReference && !selectedFromList,
+    enabled:
+      !!organizerPubkey &&
+      !!selectedReference &&
+      shouldResolveSelectedReference,
     queryFn: () =>
-      resolveOrganizerEventMarket(selectedReference, organizerPubkey),
+      resolveOrganizerEventMarketRead(selectedReference, organizerPubkey),
     retry: false,
   })
-  const selectedMarket = selectedFromList ?? selectedMarketQuery.data ?? null
+  const selectedResolution =
+    selectOrganizerEventMarketResolution(
+      selectedListMarket,
+      selectedMarketQuery.data,
+      selectedSavedReference
+    ) ?? null
+  const selectedReadDeleted = selectedResolution?.state === "deleted"
+  const selectedMarket =
+    selectedResolution &&
+    !selectedReadDeleted &&
+    !("terminal" in selectedResolution)
+      ? selectedResolution
+      : null
   const handoffReceiptsQuery = useQuery({
     queryKey: [
       "merchant-organizer-handoff-receipts",
@@ -750,6 +809,7 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
             reference,
             title: input.form.title,
             savedAt: Date.now(),
+            ...expectedEventMarketFrontier(record),
           })
           setSavedReferences(saved)
           setSelectedReference(
@@ -768,14 +828,18 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
       setPublishState("awaiting_signature")
     },
     onSuccess: async (result: MerchantOrganizerPublishResult) => {
-      const reference = result.collectionCoordinate
+      const reference = result.naddr
       const saved = rememberOrganizerEventMarket(organizerPubkey, {
         reference,
         title: editingMarket?.title,
         savedAt: Date.now(),
+        ...expectedEventMarketFrontiers(result.records),
+        replaceExpectedRecordFrontiers: true,
       })
       setSavedReferences(saved)
-      for (const record of result.records) rememberDelivery(reference, record)
+      for (const record of result.records) {
+        rememberDelivery(result.collectionCoordinate, record)
+      }
       setSelectedReference(
         findSavedOrganizerEventMarketReference(saved, reference)?.reference ??
           reference
@@ -808,6 +872,17 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
         item: input.item,
         action: input.action,
         onSignedEvent: (record, reference) => {
+          const saved = rememberOrganizerEventMarket(organizerPubkey, {
+            reference,
+            title: selectedMarket.title,
+            savedAt: Date.now(),
+            ...expectedEventMarketFrontier(record),
+          })
+          setSavedReferences(saved)
+          setSelectedReference(
+            findSavedOrganizerEventMarketReference(saved, reference)
+              ?.reference ?? reference
+          )
           rememberDelivery(reference, record)
         },
       })
@@ -899,7 +974,8 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
 
   const selectedReadPending =
     !!selectedReference && !selectedFromList && selectedMarketQuery.isPending
-  const selectedReadError = selectedMarketQuery.error
+  const selectedReadError =
+    selectedMarket || selectedReadDeleted ? null : selectedMarketQuery.error
   const deliveries = selectedReference
     ? (deliveriesByReference[selectedIdentity?.coordinate ?? ""] ?? [])
     : []
@@ -1099,6 +1175,18 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
           <Loader2 className="h-4 w-4 animate-spin" />
           Resolving organizer evidence from relays...
         </div>
+      )}
+
+      {!selectedReadPending && selectedReadDeleted && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Event deleted</CardTitle>
+            <CardDescription>
+              Signed deletion evidence was found for this organizer event. Its
+              products and pickup actions are no longer available.
+            </CardDescription>
+          </CardHeader>
+        </Card>
       )}
 
       {!selectedReadPending && selectedReadError && (

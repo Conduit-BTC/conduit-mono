@@ -86,16 +86,31 @@ export interface MerchantOrganizerEventMarket {
   pickupPrice?: string
   pickupCurrency?: string
   calendarCreatedAt?: number
+  calendarEventId?: string
   pickupCreatedAt?: number
+  pickupEventId?: string
   collectionCreatedAt?: number
+  collectionEventId?: string
   productCoordinates: string[]
   participation: MerchantOrganizerParticipation[]
   source: EventMarketResolution
 }
 
+export interface MerchantOrganizerEventMarketDeletion {
+  terminal: true
+  state: "deleted"
+  organizerPubkey: string
+  collectionCoordinate: string
+  naddr: string
+}
+
+export type MerchantOrganizerEventMarketRead =
+  MerchantOrganizerEventMarket | MerchantOrganizerEventMarketDeletion
+
 export interface MerchantOrganizerPublishResult {
   records: MerchantOrganizerRecordDelivery[]
   collectionCoordinate: string
+  collectionCreatedAt: number
   naddr: string
 }
 
@@ -447,6 +462,55 @@ export function isParticipationProductPreviewVerified(
   )
 }
 
+function resolvedEventMarketRelayHints(
+  resolution: EventMarketResolution
+): string[] {
+  return boundedEventMarketShareRelayHints([
+    resolution.collection?.sourceRelayUrls,
+    resolution.calendar?.sourceRelayUrls,
+    ...resolution.pickups.map((pickup) => pickup.sourceRelayUrls),
+  ])
+}
+
+function publishedEventMarketRelayHints(
+  value: OrganizerEventMarketPublishResult
+): string[] {
+  return boundedEventMarketShareRelayHints([
+    value.collection.delivery.acknowledgedRelayUrls,
+    value.calendar.delivery.acknowledgedRelayUrls,
+    value.pickup?.delivery.acknowledgedRelayUrls,
+  ])
+}
+
+// Event-market reads currently allow eight relays. Keep one slot available for
+// the organizer/default read plan so imported or observed hints cannot replace
+// every normal fallback. Take one relay from every required record before
+// adding secondary observations so disjoint collection/calendar/pickup
+// delivery remains reachable from the portable link.
+const EVENT_MARKET_SHARE_RELAY_HINT_LIMIT = 7
+
+function boundedEventMarketShareRelayHints(
+  groups: readonly (readonly string[] | undefined)[]
+): string[] {
+  const normalizedGroups = groups
+    .map((group) => [...(group ?? [])])
+    .filter((group) => group.length > 0)
+  const prioritized = [
+    ...normalizedGroups.flatMap((group) => group.slice(0, 1)),
+    ...normalizedGroups.flatMap((group) => group.slice(1)),
+  ]
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const relayUrl of prioritized) {
+    const key = relayUrl.trim().toLowerCase()
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    result.push(relayUrl)
+    if (result.length >= EVENT_MARKET_SHARE_RELAY_HINT_LIMIT) break
+  }
+  return result
+}
+
 function projectEventMarket(
   resolution: EventMarketResolution
 ): MerchantOrganizerEventMarket | null {
@@ -489,7 +553,10 @@ function projectEventMarket(
       status: "organizer_only",
     })
   )
-  const naddr = encodeEventMarketNaddr(collectionCoordinate)
+  const naddr = encodeEventMarketNaddr(
+    collectionCoordinate,
+    resolvedEventMarketRelayHints(resolution)
+  )
   const calendarKind = calendar.kind === 31922 ? 31922 : 31923
   const start =
     calendarKind === 31922
@@ -529,8 +596,11 @@ function projectEventMarket(
     pickupPrice: pickup ? String(pickup.price) : undefined,
     pickupCurrency: pickup?.currency,
     calendarCreatedAt: calendar.createdAt,
+    calendarEventId: calendar.eventId,
     pickupCreatedAt: pickup?.createdAt,
+    pickupEventId: pickup?.eventId,
     collectionCreatedAt: collection?.createdAt,
+    collectionEventId: collection?.eventId,
     productCoordinates,
     participation: [...pending, ...accepted, ...organizerOnly],
     source: resolution,
@@ -580,7 +650,11 @@ function projectPublishResult(
   return {
     records,
     collectionCoordinate,
-    naddr: encodeEventMarketNaddr(collectionCoordinate),
+    collectionCreatedAt: value.collection.signedEvent.created_at * 1_000,
+    naddr: encodeEventMarketNaddr(
+      collectionCoordinate,
+      publishedEventMarketRelayHints(value)
+    ),
   }
 }
 
@@ -642,12 +716,12 @@ export async function discoverFollowedEventMarkets(
   }
 }
 
-export async function resolveOrganizerEventMarket(
+export async function resolveOrganizerEventMarketRead(
   reference: string,
   organizerPubkey?: string,
   authenticatedPubkey: string | null = organizerPubkey ?? null,
   signal?: AbortSignal
-): Promise<MerchantOrganizerEventMarket> {
+): Promise<MerchantOrganizerEventMarketRead> {
   const parsedReference = parseOrganizerEventMarketReference(reference)
   const result = await getEventMarket({
     reference: parsedReference.naddr,
@@ -655,6 +729,19 @@ export async function resolveOrganizerEventMarket(
     authenticatedPubkey,
     ...(signal ? { signal } : {}),
   })
+  if (
+    result.state === "deleted" &&
+    result.organizerPubkey &&
+    result.collectionCoordinate === parsedReference.coordinate
+  ) {
+    return {
+      terminal: true,
+      state: "deleted",
+      organizerPubkey: result.organizerPubkey,
+      collectionCoordinate: result.collectionCoordinate,
+      naddr: parsedReference.naddr,
+    }
+  }
   const normalized = projectEventMarket(result)
   if (
     !normalized ||
@@ -662,7 +749,46 @@ export async function resolveOrganizerEventMarket(
   ) {
     throw new Error("The organizer event records could not be resolved.")
   }
-  return { ...normalized, naddr: parsedReference.naddr }
+  const projectedHints =
+    decodeEventMarketReference(normalized.naddr, [30405])?.relayHints ?? []
+  const parsedHintKeys = new Set(
+    parsedReference.relayHints.map((relayUrl) => relayUrl.trim().toLowerCase())
+  )
+  const parsedReferenceContainsResolvedHints = projectedHints.every(
+    (relayUrl) => parsedHintKeys.has(relayUrl.trim().toLowerCase())
+  )
+  return {
+    ...normalized,
+    naddr: encodeEventMarketNaddr(
+      parsedReference.coordinate,
+      parsedReferenceContainsResolvedHints &&
+        parsedReference.relayHints.length > 0
+        ? parsedReference.relayHints
+        : boundedEventMarketShareRelayHints([
+            parsedReference.relayHints.slice(0, 1),
+            projectedHints,
+            parsedReference.relayHints.slice(1),
+          ])
+    ),
+  }
+}
+
+export async function resolveOrganizerEventMarket(
+  reference: string,
+  organizerPubkey?: string,
+  authenticatedPubkey: string | null = organizerPubkey ?? null,
+  signal?: AbortSignal
+): Promise<MerchantOrganizerEventMarket> {
+  const result = await resolveOrganizerEventMarketRead(
+    reference,
+    organizerPubkey,
+    authenticatedPubkey,
+    signal
+  )
+  if ("terminal" in result) {
+    throw new Error("The organizer event records were deleted.")
+  }
+  return result
 }
 
 function randomDTagSuffix(): string {

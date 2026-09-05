@@ -82,7 +82,7 @@ describe("merchant organizer event market route", () => {
     expect(route).toContain("no global event absence is inferred")
     expect(route).toContain("aria-label={`View ${market.title}`}")
     expect(route).toContain("resolveOrganizerEventMarket(")
-    expect(route).toContain("merchantPubkey,\n        signal")
+    expect(route).toMatch(/merchantPubkey,\r?\n\s+signal/)
     expect(route).not.toContain("selectedFromDiscovery")
   })
 
@@ -128,6 +128,59 @@ describe("merchant organizer event market route", () => {
       route.match(/findSavedOrganizerEventMarketReference/g)?.length
     ).toBeGreaterThanOrEqual(4)
     expect(route).not.toContain("setSelectedReference(reference)")
+  })
+
+  it("keeps publish acknowledgement relay hints through selection and sharing", async () => {
+    const route = await Bun.file("apps/merchant/src/routes/events.tsx").text()
+    const panel = await Bun.file(
+      "apps/merchant/src/components/OrganizerEventMarketPanel.tsx"
+    ).text()
+    const publishSuccess = route.slice(
+      route.indexOf(
+        "onSuccess: async (result: MerchantOrganizerPublishResult) =>"
+      ),
+      route.indexOf(
+        "onError: (error) =>",
+        route.indexOf(
+          "onSuccess: async (result: MerchantOrganizerPublishResult) =>"
+        )
+      )
+    )
+
+    expect(publishSuccess).toContain("const reference = result.naddr")
+    expect(publishSuccess).toContain(
+      "...expectedEventMarketFrontiers(result.records)"
+    )
+    expect(publishSuccess).toContain("replaceExpectedRecordFrontiers: true")
+    expect(route).toContain("expectedCalendarCreatedAt: createdAt")
+    expect(route).toContain("expectedCalendarEventId: signedEvent.id")
+    expect(route).toContain("expectedPickupCreatedAt: createdAt")
+    expect(route).toContain("expectedPickupEventId: signedEvent.id")
+    expect(route).toContain("expectedCollectionCreatedAt: createdAt")
+    expect(route).toContain("expectedCollectionEventId: signedEvent.id")
+    expect(publishSuccess).toContain(
+      "rememberDelivery(result.collectionCoordinate, record)"
+    )
+    expect(publishSuccess).toContain("refreshMarketQueries(reference)")
+    expect(publishSuccess).not.toContain("selectedMarketQuery.data")
+    expect(route).toContain(
+      "findOrganizerEventMarketByReference(markets, selectedReference)"
+    )
+    expect(route).toContain("isPreferredOrganizerEventMarketListResolution(")
+    expect(route).toContain("shouldResolveOrganizerEventMarketReference(")
+    expect(route).toContain("selectOrganizerEventMarketResolution(")
+    expect(route).toContain("resolveOrganizerEventMarketRead(")
+    expect(route).toContain(
+      'const selectedReadDeleted = selectedResolution?.state === "deleted"'
+    )
+    expect(route).toContain("Signed deletion evidence was found")
+    expect(route).toContain("shouldResolveSelectedReference,")
+    expect(route).toMatch(
+      /selectOrganizerEventMarketResolution\([\s\S]+selectedListMarket,[\s\S]+selectedMarketQuery\.data,[\s\S]+selectedSavedReference/
+    )
+    expect(route).toContain("selectedMarket || selectedReadDeleted")
+    expect(route).not.toContain("selectedIdentity?.relayHints.length === 0")
+    expect(panel).toContain("getEventMarketUrl(market.naddr)")
   })
 
   it("hydrates merchant identity without changing organizer acceptance authority", async () => {
