@@ -3124,8 +3124,8 @@ async function persistEventMarketEvidence(input: {
         rows.map((row, index) => ({
           ...row,
           sourceRelayUrls: mergeRelayUrls(
-            existing[index]?.sourceRelayUrls ?? [],
-            row.sourceRelayUrls
+            row.sourceRelayUrls,
+            existing[index]?.sourceRelayUrls ?? []
           ),
         }))
       )
@@ -3186,8 +3186,8 @@ function mergeCachedAndLiveEvidence(input: {
     sourceRelayUrlsById.set(
       id,
       mergeRelayUrls(
-        sourceRelayUrlsById.get(id) ?? [],
-        input.live.sourceRelayUrlsById.get(id) ?? []
+        input.live.sourceRelayUrlsById.get(id) ?? [],
+        sourceRelayUrlsById.get(id) ?? []
       )
     )
   }

@@ -450,13 +450,50 @@ export function isParticipationProductPreviewVerified(
 function resolvedEventMarketRelayHints(
   resolution: EventMarketResolution
 ): string[] {
-  return [...(resolution.collection?.sourceRelayUrls ?? [])]
+  return boundedEventMarketShareRelayHints([
+    resolution.collection?.sourceRelayUrls,
+    resolution.calendar?.sourceRelayUrls,
+    ...resolution.pickups.map((pickup) => pickup.sourceRelayUrls),
+  ])
 }
 
 function publishedEventMarketRelayHints(
   value: OrganizerEventMarketPublishResult
 ): string[] {
-  return [...value.collection.delivery.acknowledgedRelayUrls]
+  return boundedEventMarketShareRelayHints([
+    value.collection.delivery.acknowledgedRelayUrls,
+    value.calendar.delivery.acknowledgedRelayUrls,
+    value.pickup?.delivery.acknowledgedRelayUrls,
+  ])
+}
+
+// Event-market reads currently allow eight relays. Keep one slot available for
+// the organizer/default read plan so imported or observed hints cannot replace
+// every normal fallback. Take one relay from every required record before
+// adding secondary observations so disjoint collection/calendar/pickup
+// delivery remains reachable from the portable link.
+const EVENT_MARKET_SHARE_RELAY_HINT_LIMIT = 7
+
+function boundedEventMarketShareRelayHints(
+  groups: readonly (readonly string[] | undefined)[]
+): string[] {
+  const normalizedGroups = groups
+    .map((group) => [...(group ?? [])])
+    .filter((group) => group.length > 0)
+  const prioritized = [
+    ...normalizedGroups.flatMap((group) => group.slice(0, 1)),
+    ...normalizedGroups.flatMap((group) => group.slice(1)),
+  ]
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const relayUrl of prioritized) {
+    const key = relayUrl.trim().toLowerCase()
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    result.push(relayUrl)
+    if (result.length >= EVENT_MARKET_SHARE_RELAY_HINT_LIMIT) break
+  }
+  return result
 }
 
 function projectEventMarket(
@@ -684,10 +721,14 @@ export async function resolveOrganizerEventMarket(
     decodeEventMarketReference(normalized.naddr, [30405])?.relayHints ?? []
   return {
     ...normalized,
-    naddr: encodeEventMarketNaddr(parsedReference.coordinate, [
-      ...parsedReference.relayHints,
-      ...projectedHints,
-    ]),
+    naddr: encodeEventMarketNaddr(
+      parsedReference.coordinate,
+      boundedEventMarketShareRelayHints([
+        parsedReference.relayHints.slice(0, 1),
+        projectedHints,
+        parsedReference.relayHints.slice(1),
+      ])
+    ),
   }
 }
 

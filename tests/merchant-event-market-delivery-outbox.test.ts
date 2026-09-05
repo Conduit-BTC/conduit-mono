@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test"
-import NDK from "@nostr-dev-kit/ndk"
+import NDK, { NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -13,6 +13,7 @@ import {
   EVENT_KINDS,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
+import { attachEventSourceRelayUrl } from "@conduit/core/protocol/ndk"
 import {
   loadOrganizerEventMarketDeliveryOutbox,
   mergeOrganizerEventMarketDeliveryState,
@@ -22,6 +23,7 @@ import {
   type MerchantOrganizerRecordDelivery,
 } from "../apps/merchant/src/lib/event-market"
 import { createEmptyOrganizerEventMarketForm } from "../apps/merchant/src/lib/event-market-form"
+import { loadEventCatalog } from "../apps/market/src/lib/event-market-adapter"
 
 const SECRET = generateSecretKey()
 const ORGANIZER = getPublicKey(SECRET)
@@ -73,7 +75,7 @@ function expectExactSignedEvent(
 }
 
 describe("merchant organizer delivery outbox", () => {
-  it("includes only collection acknowledgements in the organizer share link", async () => {
+  it("includes disjoint required-record acknowledgements in a guest-readable share link", async () => {
     const start = new Date(Date.now() + 7 * 24 * 60 * 60 * 1_000)
       .toISOString()
       .slice(0, 16)
@@ -127,13 +129,73 @@ describe("merchant organizer delivery outbox", () => {
         start,
         end,
         timezone: "America/New_York",
+        organizerHandoffEnabled: true,
         pickupLocation: "Public Hall",
       },
     })
 
     expect(
       decodeEventMarketReference(result.naddr, [30405])?.relayHints
-    ).toEqual([PUBLISH_RELAY])
+    ).toEqual([PUBLISH_RELAY, CALENDAR_RELAY, PICKUP_RELAY])
+
+    const signedRecords = result.records.flatMap((record) =>
+      record.signedEvent ? [record.signedEvent] : []
+    )
+    const relayByKind = new Map<number, string>([
+      [EVENT_KINDS.PRODUCT_COLLECTION, PUBLISH_RELAY],
+      [EVENT_KINDS.CALENDAR_TIME, CALENDAR_RELAY],
+      [EVENT_KINDS.SHIPPING_OPTION, PICKUP_RELAY],
+    ])
+    __setEventMarketTestOverrides({
+      getRelayLists: async () => new Map(),
+      fetchEventsFanoutDetailed: async (rawFilter, options) => {
+        const relayUrls = [...(options.relayUrls ?? [])]
+        const filter = rawFilter as NDKFilter
+        const events = signedRecords
+          .filter((event) => {
+            const requiredRelay = relayByKind.get(event.kind)
+            if (!requiredRelay || !relayUrls.includes(requiredRelay)) {
+              return false
+            }
+            if (filter.kinds && !filter.kinds.includes(event.kind as never)) {
+              return false
+            }
+            if (filter.authors && !filter.authors.includes(event.pubkey)) {
+              return false
+            }
+            const dTags = filter["#d"]
+            return (
+              !dTags ||
+              event.tags.some(
+                (tag) => tag[0] === "d" && dTags.includes(tag[1] ?? "")
+              )
+            )
+          })
+          .map((event) => {
+            const ndkEvent = new NDKEvent(undefined, event)
+            attachEventSourceRelayUrl(ndkEvent, relayByKind.get(event.kind)!)
+            return ndkEvent
+          })
+        return {
+          events,
+          relays: relayUrls.map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: events.length,
+          })),
+          eventsVerified: true,
+        }
+      },
+      loadCachedEvidence: async () => [],
+      persistCachedEvidence: async () => undefined,
+    })
+
+    await expect(loadEventCatalog(result.naddr)).resolves.toMatchObject({
+      state: "active",
+      calendar: { coordinate: expect.any(String) },
+      pickup: { coordinate: expect.any(String) },
+      collection: { coordinate: expect.any(String) },
+    })
   })
 
   it("retains an exact signed event before relay acknowledgement", () => {
