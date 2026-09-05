@@ -1425,6 +1425,45 @@ describe("canonical product publication ordering", () => {
     })
   })
 
+  it("preserves a collection-level pickup reference while publishing stock", () => {
+    const collectionCoordinate = `30405:${MERCHANT_PUBKEY}:event`
+    const product = {
+      ...makeProduct("collection-pickup-listing"),
+      stock: 0,
+      collectionRefs: [collectionCoordinate],
+      shippingOptionId: collectionCoordinate,
+      shippingOptionRefs: [{ coordinate: collectionCoordinate }],
+      canonicalShippingResolved: false,
+    }
+    const prepared = applyProductFulfillmentIntentForPublication({
+      product,
+      merchantPubkey: MERCHANT_PUBKEY,
+      productDTag: "collection-pickup-listing",
+      intent: { kind: "coordinate_after_order" },
+    })
+    const draft = buildProductListingEventDraft({
+      product: prepared,
+      dTag: "collection-pickup-listing",
+      clientAppId: "merchant",
+    })
+    const signed = finalizeEvent(
+      {
+        kind: draft.kind,
+        created_at: Math.floor(NOW / 1000),
+        content: draft.content,
+        tags: draft.tags,
+      },
+      MERCHANT_SECRET
+    )
+
+    expect(parseProductEvent(signed)).toMatchObject({
+      stock: 0,
+      collectionRefs: [collectionCoordinate],
+      shippingOptionId: collectionCoordinate,
+      shippingOptionRefs: [{ coordinate: collectionCoordinate, dTag: "event" }],
+    })
+  })
+
   it("uses a variation's fixed shipping override under an order-first root", () => {
     expect(
       resolveProductFulfillmentIntentForTarget({

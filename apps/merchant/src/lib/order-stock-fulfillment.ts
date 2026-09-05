@@ -36,6 +36,11 @@ function matchesVerifiedEventPickup(input: {
   productAddressId: string
   verifiedPickup: OrderPickupFulfillmentSchema
 }): boolean {
+  const fulfillmentCoordinates = new Set([
+    input.verifiedPickup.collection.coordinate,
+    input.verifiedPickup.option.coordinate,
+  ])
+  const shippingOptionId = input.product.shippingOptionId
   return (
     input.verifiedPickup.product.coordinate === input.productAddressId &&
     input.verifiedPickup.product.merchantPubkey.toLowerCase() ===
@@ -43,10 +48,10 @@ function matchesVerifiedEventPickup(input: {
     input.product.collectionRefs?.includes(
       input.verifiedPickup.collection.coordinate
     ) === true &&
-    input.product.shippingOptionId === input.verifiedPickup.option.coordinate &&
+    !!shippingOptionId &&
+    fulfillmentCoordinates.has(shippingOptionId) &&
     input.product.shippingOptionRefs?.some(
-      (reference) =>
-        reference.coordinate === input.verifiedPickup.option.coordinate
+      (reference) => reference.coordinate === shippingOptionId
     ) === true
   )
 }
@@ -55,6 +60,7 @@ export async function resolveStockUpdateFulfillmentIntent(
   input: {
     product: ProductSchema
     productAddressId: string
+    orderHasPickupClaim?: boolean
     verifiedPickup?: OrderPickupFulfillmentSchema
   },
   dependencies: {
@@ -65,6 +71,12 @@ export async function resolveStockUpdateFulfillmentIntent(
 ): Promise<ProductFulfillmentIntent> {
   const { product } = input
   if (product.format === "digital") return { kind: "digital" }
+
+  if (input.orderHasPickupClaim && !input.verifiedPickup) {
+    throw new Error(
+      "This stock target does not match the order's event pickup evidence. Refresh the order and try again."
+    )
+  }
 
   if (input.verifiedPickup) {
     if (

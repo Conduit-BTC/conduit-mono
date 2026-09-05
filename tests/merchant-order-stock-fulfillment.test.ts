@@ -130,6 +130,29 @@ describe("merchant stock update fulfillment", () => {
     ).toEqual({ kind: "coordinate_after_order" })
   })
 
+  it("preserves a collection-level event pickup reference", async () => {
+    const fulfillment = pickup()
+    const eventProduct = product({
+      collectionRefs: [COLLECTION_COORDINATE],
+      shippingOptionId: COLLECTION_COORDINATE,
+      shippingOptionRefs: [{ coordinate: COLLECTION_COORDINATE }],
+      canonicalShippingResolved: false,
+    })
+
+    expect(
+      await resolveStockUpdateFulfillmentIntent({
+        product: eventProduct,
+        productAddressId: PRODUCT_COORDINATE,
+        orderHasPickupClaim: true,
+        verifiedPickup: fulfillment,
+      })
+    ).toEqual({ kind: "coordinate_after_order" })
+    expect(eventProduct.shippingOptionId).toBe(COLLECTION_COORDINATE)
+    expect(eventProduct.shippingOptionRefs).toEqual([
+      { coordinate: COLLECTION_COORDINATE },
+    ])
+  })
+
   it("keeps an ordinary standard option fixed despite collection membership", async () => {
     const shippingCoordinate = `30406:${MERCHANT}:standard`
     const ordinaryProduct = product({
@@ -210,5 +233,25 @@ describe("merchant stock update fulfillment", () => {
         productAddressId: `30402:${MERCHANT}:other-item`,
       })
     ).toBeNull()
+  })
+
+  it("allows digital stock updates in an order that also has pickup", async () => {
+    expect(
+      await resolveStockUpdateFulfillmentIntent({
+        product: product({ format: "digital" }),
+        productAddressId: `30402:${MERCHANT}:digital-item`,
+        orderHasPickupClaim: true,
+      })
+    ).toEqual({ kind: "digital" })
+  })
+
+  it("rejects an unmatched physical target in a pickup order", async () => {
+    await expect(
+      resolveStockUpdateFulfillmentIntent({
+        product: product(),
+        productAddressId: `30402:${MERCHANT}:other-item`,
+        orderHasPickupClaim: true,
+      })
+    ).rejects.toThrow("does not match")
   })
 })

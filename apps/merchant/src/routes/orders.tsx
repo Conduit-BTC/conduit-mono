@@ -1670,11 +1670,6 @@ function OrdersPage() {
         items: payload.orderItems,
         productAddressId: payload.adjustment.addressId,
       })
-      if (hasPickupClaim && !pickupFulfillment) {
-        throw new Error(
-          "This stock target does not match the order's event pickup evidence. Refresh the order and try again."
-        )
-      }
       if (pickupFulfillment) {
         const verification = await verifyMerchantPickupOrderAuthorization({
           items: payload.orderItems,
@@ -1687,6 +1682,7 @@ function OrdersPage() {
       const fulfillmentIntent = await resolveStockUpdateFulfillmentIntent({
         product: record.product,
         productAddressId: payload.adjustment.addressId,
+        orderHasPickupClaim: hasPickupClaim,
         ...(pickupFulfillment ? { verifiedPickup: pickupFulfillment } : {}),
       })
       let signedEvent: SignedPublicNostrEvent | null = null
