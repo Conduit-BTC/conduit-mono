@@ -67,8 +67,9 @@ export function MerchantEventMarketPanel({
   onRefresh: () => void | Promise<void>
 }) {
   const [publisherOpen, setPublisherOpen] = useState(false)
-  const [publishedProduct, setPublishedProduct] = useState<string | null>(null)
-  const [publishedAccepted, setPublishedAccepted] = useState(false)
+  const [publishedAccepted, setPublishedAccepted] = useState<boolean | null>(
+    null
+  )
   const ownsMarket = merchantPubkey === market.organizerPubkey
   const publishable = market.state === "active" || market.state === "partial"
 
@@ -184,7 +185,7 @@ export function MerchantEventMarketPanel({
                   ? "Your own product is accepted into this event when you approve its collection signature."
                   : "The organizer reviews it before it appears in the event collection."}
               </p>
-              {publishedProduct && (
+              {publishedAccepted !== null && (
                 <p
                   className="mt-2 text-xs font-medium text-success"
                   role="status"
@@ -225,8 +226,7 @@ export function MerchantEventMarketPanel({
         merchantPubkey={merchantPubkey}
         market={market}
         onOpenChange={setPublisherOpen}
-        onPublished={async (productCoordinate, accepted) => {
-          setPublishedProduct(productCoordinate)
+        onPublished={async (accepted) => {
           setPublishedAccepted(accepted)
           await onRefresh()
         }}

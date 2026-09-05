@@ -69,10 +69,7 @@ export function EventProductPublisherDialog({
   merchantPubkey: string
   market: MerchantOrganizerEventMarket
   onOpenChange: (open: boolean) => void
-  onPublished: (
-    productCoordinate: string,
-    accepted: boolean
-  ) => void | Promise<void>
+  onPublished: (accepted: boolean) => void | Promise<void>
 }) {
   const [form, setForm] = useState<EventProductPublishFormValues>(() =>
     createEmptyEventProductForm(market)
@@ -135,7 +132,7 @@ export function EventProductPublisherDialog({
     setAccepting(false)
     setSignerProgress(null)
     setActionState("success")
-    await onPublished(result.productCoordinate, result.accepted)
+    await onPublished(result.accepted)
     onOpenChange(false)
   }
 
