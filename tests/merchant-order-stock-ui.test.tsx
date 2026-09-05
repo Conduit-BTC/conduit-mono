@@ -157,22 +157,15 @@ describe("merchant order stock UI", () => {
     expect(source).not.toContain("stock: payload.stock")
   })
 
-  it("preserves event pickup before resolving ordinary shipping for stock updates", async () => {
+  it("preserves only verified order pickup before resolving ordinary shipping for stock updates", async () => {
     const source = await Bun.file("apps/merchant/src/routes/orders.tsx").text()
-    const resolverStart = source.indexOf(
-      "async function resolveStockUpdateFulfillmentIntent"
-    )
-    const resolverEnd = source.indexOf("type StockDeliveryState", resolverStart)
-    const resolver = source.slice(resolverStart, resolverEnd)
 
-    expect(resolver).toContain(
+    expect(source).toContain("getOrderStockPickupFulfillment({")
+    expect(source).toContain("verifyMerchantPickupOrderAuthorization({")
+    expect(source).toContain("verifiedPickup: pickupFulfillment")
+    expect(source).not.toContain(
       "resolvePublishedProductFulfillmentIntentForTarget(product)"
     )
-    expect(
-      resolver.indexOf(
-        "resolvePublishedProductFulfillmentIntentForTarget(product)"
-      )
-    ).toBeLessThan(resolver.indexOf("if (product.shippingOptionId)"))
   })
 
   it("clears transient blockers only after a stock decision is durable", async () => {

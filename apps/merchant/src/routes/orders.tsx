@@ -4,8 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   buildOrderStatusTimeline,
   clearProtectedReadAuthenticationSuppression,
-  compileProductFulfillmentIntent,
-  CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG,
   convertCommerceAmountToSats,
   decodeLightningInvoiceAmount,
   deriveProtectedReadPresentationState,
@@ -21,7 +19,6 @@ import {
   getMerchantOrderReopenTransition,
   getProductImageCandidates,
   getProductsByIds,
-  getShippingOptionsByCoordinates,
   hasWebLN,
   isInvoiceCompatibleWithCurrentNetwork,
   isValidLud16Address,
@@ -34,7 +31,6 @@ import {
   pubkeyToNpub,
   prepareProtectedReadRefreshState,
   selectProtectedReadRows,
-  resolveProductFulfillment,
   type MerchantConversationSummary,
   type MerchantOrderDelivery,
   type MerchantOrderAction,
@@ -43,8 +39,7 @@ import {
   type EventMarketResolution,
   type KnownOrderStatus,
   type Profile,
-  type ProductFulfillmentIntent,
-  type ProductSchema,
+  type OrderSummary,
   type SignedPublicNostrEvent,
   useAuth,
   useConduitSession,
@@ -138,10 +133,13 @@ import {
 import {
   deliverSignedProductEvent,
   getRelayPublishDiagnosticsError,
-  resolvePublishedProductFulfillmentIntentForTarget,
   signAndPublishProductListing,
   SignedProductDeliveryError,
 } from "../lib/product-publishing"
+import {
+  getOrderStockPickupFulfillment,
+  resolveStockUpdateFulfillmentIntent,
+} from "../lib/order-stock-fulfillment"
 import {
   applyOrderStockTarget,
   buildOrderStockAdjustments,
@@ -191,73 +189,6 @@ type ReopenOrderMutationInput = {
   transition: MerchantOrderReopenTransition
 }
 
-async function resolveStockUpdateFulfillmentIntent(
-  product: ProductSchema
-): Promise<ProductFulfillmentIntent> {
-  if (product.format === "digital") return { kind: "digital" }
-
-  const publishedIntent =
-    resolvePublishedProductFulfillmentIntentForTarget(product)
-  if (
-    publishedIntent?.kind === "coordinate_after_order" &&
-    (product.collectionRefs?.length ?? 0) > 0 &&
-    (product.shippingOptionRefs?.length ?? 0) > 0
-  ) {
-    return publishedIntent
-  }
-
-  const legacyShippingAmount =
-    product.sourceShippingCost?.amount ?? product.shippingCostSats
-  if (
-    typeof legacyShippingAmount === "number" &&
-    (!product.shippingOptionId ||
-      product.shippingOptionDTag === CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG)
-  ) {
-    const destinations = product.shippingCountryRules?.length
-      ? product.shippingCountryRules
-      : (product.shippingCountries ?? []).map((code) => ({
-          code,
-          name: code,
-          restrictTo: [],
-          exclude: [],
-        }))
-    return compileProductFulfillmentIntent({
-      format: "physical",
-      shippingPricingMode: "fixed",
-      amount: legacyShippingAmount,
-      currency:
-        product.sourceShippingCost?.normalizedCurrency ??
-        product.sourceShippingCost?.currency ??
-        "SATS",
-      destinations,
-    })
-  }
-
-  if (product.shippingOptionId) {
-    const shippingOptions = await getShippingOptionsByCoordinates([
-      product.shippingOptionId,
-    ])
-    const prepared = resolveProductFulfillment(product, shippingOptions)
-    if (
-      prepared.intent !== "fixed_standard" ||
-      prepared.status !== "ready" ||
-      !prepared.option
-    ) {
-      throw new Error(
-        "Could not verify this listing's fixed shipping option. Review the listing before updating stock."
-      )
-    }
-    return {
-      kind: "fixed_standard",
-      amount: prepared.option.price,
-      currency: prepared.option.currency,
-      countries: [...prepared.option.countries],
-    }
-  }
-
-  return { kind: "coordinate_after_order" }
-}
-
 type StockDeliveryState = {
   orderId: string
   adjustment: OrderStockAdjustment
@@ -270,6 +201,7 @@ type StockUpdateMutationPayload =
       action: "update"
       orderId: string
       adjustment: OrderStockAdjustment
+      orderItems: OrderSummary["items"]
     }
   | {
       action: "retry"
@@ -1731,9 +1663,32 @@ function OrdersPage() {
         throw new Error("Stock must be a non-negative safe integer.")
       }
 
-      const fulfillmentIntent = await resolveStockUpdateFulfillmentIntent(
-        record.product
+      const hasPickupClaim = payload.orderItems.some(
+        (item) => item.fulfillment?.type === "pickup"
       )
+      const pickupFulfillment = getOrderStockPickupFulfillment({
+        items: payload.orderItems,
+        productAddressId: payload.adjustment.addressId,
+      })
+      if (hasPickupClaim && !pickupFulfillment) {
+        throw new Error(
+          "This stock target does not match the order's event pickup evidence. Refresh the order and try again."
+        )
+      }
+      if (pickupFulfillment) {
+        const verification = await verifyMerchantPickupOrderAuthorization({
+          items: payload.orderItems,
+          merchantPubkey: pubkey,
+        })
+        if (verification.status !== "verified") {
+          throw new Error("Current signed pickup evidence is unavailable.")
+        }
+      }
+      const fulfillmentIntent = await resolveStockUpdateFulfillmentIntent({
+        product: record.product,
+        productAddressId: payload.adjustment.addressId,
+        ...(pickupFulfillment ? { verifiedPickup: pickupFulfillment } : {}),
+      })
       let signedEvent: SignedPublicNostrEvent | null = null
       const delivery = await signAndPublishProductListing({
         merchantPubkey: pubkey,
@@ -2360,11 +2315,12 @@ function OrdersPage() {
     stock: number,
     targetMode: OrderStockTargetMode
   ): void {
-    if (!selected) return
+    if (!selected || !orderSummary) return
     stockUpdateMutation.mutate({
       action: "update",
       orderId: selected.orderId,
       adjustment: applyOrderStockTarget(adjustment, stock, targetMode),
+      orderItems: orderSummary.items,
     })
   }
 
