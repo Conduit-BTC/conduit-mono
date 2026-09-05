@@ -47,6 +47,7 @@ export interface MerchantPickupAuthorizationInput {
   items: OrderSummary["items"]
   merchantPubkey: string
   nowMs?: number
+  onVerifiedMarket?: (market: EventMarketResolution) => void
 }
 
 export interface MerchantPickupAuthorizationDependencies {
@@ -470,6 +471,7 @@ export async function verifyMerchantPickupOrderAuthorization(
     verifiedProducts.push(record)
   }
 
+  input.onVerifiedMarket?.(resolution)
   return { status: "verified", market: resolution, products: verifiedProducts }
 }
 

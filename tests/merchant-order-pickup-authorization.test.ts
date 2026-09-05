@@ -271,14 +271,21 @@ function cloneSnapshot(): OrderPickupFulfillmentSchema {
 
 describe("Merchant pickup order authorization", () => {
   it("verifies exact current organizer, merchant product, and two-sided participation evidence", async () => {
+    let verifiedMarket: EventMarketResolution | undefined
     const result = await verifyMerchantPickupOrderAuthorization(
       {
         items: orderItems(),
         merchantPubkey: merchant,
+        onVerifiedMarket: (currentMarket) => {
+          verifiedMarket = currentMarket
+        },
       },
       dependencies()
     )
     expect(result.status).toBe("verified")
+    expect(verifiedMarket).toBe(
+      result.status === "verified" ? result.market : undefined
+    )
     expect(
       result.status === "verified" ? result.products[0]?.eventId : null
     ).toBe("4".repeat(64))
