@@ -3775,6 +3775,67 @@ describe("commerce gateway", () => {
     expect(secondResult.data.alice?.displayName).toBe("Alice")
   })
 
+  it("keeps cached profile absence degraded when a required relay view is partial", async () => {
+    cachedProfiles.set("merchant", {
+      pubkey: "merchant",
+      displayName: "Cached Merchant",
+      cachedAt: FIXED_NOW - 1_000,
+    })
+    __setCommerceTestOverrides({
+      fetchEventsFanoutWithDiagnostics: async (_filter, options) => {
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        return {
+          events: [],
+          attemptedRelayUrls: [...relayUrls, "wss://offline.profile.relay.dev"],
+          successfulRelayUrls: relayUrls.slice(0, 1),
+          failedRelayUrls: ["wss://offline.profile.relay.dev"],
+          cappedRelayUrls: [],
+        }
+      },
+    })
+
+    const result = await getProfiles({
+      pubkeys: ["merchant"],
+      requireCompleteEvidence: true,
+    })
+
+    expect(result.data.merchant?.displayName).toBe("Cached Merchant")
+    expect(result.meta).toMatchObject({
+      source: "local_cache",
+      stale: true,
+      degraded: true,
+    })
+  })
+
+  it("certifies bounded profile absence only after every planned relay completes", async () => {
+    __setCommerceTestOverrides({
+      fetchEventsFanoutWithDiagnostics: async (_filter, options) => {
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        return {
+          events: [],
+          attemptedRelayUrls: relayUrls,
+          successfulRelayUrls: relayUrls,
+          failedRelayUrls: [],
+          cappedRelayUrls: [],
+        }
+      },
+    })
+
+    const result = await getProfiles({
+      pubkeys: ["merchant"],
+      skipCache: true,
+      requireCompleteEvidence: true,
+    })
+
+    expect(result.data.merchant).toMatchObject({ pubkey: "merchant" })
+    expect(result.meta).toMatchObject({
+      source: "public",
+      stale: false,
+      degraded: false,
+      capped: false,
+    })
+  })
+
   it("revalidates a fresh public cache row from the authenticated owner's relay perspective", async () => {
     const localRelayUrl = "wss://127.0.0.1:7447"
     cachedProfiles.set("merchant", {

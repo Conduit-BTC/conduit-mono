@@ -13,6 +13,19 @@ export type MerchantPaymentReadiness =
   | "endpoint_unavailable"
   | "ready"
 
+export function getMerchantPaymentProfileState(input: {
+  isLoading: boolean
+  isFetching: boolean
+  lookupSettled: boolean
+  evidenceIncomplete: boolean
+  error?: unknown
+}): MerchantPaymentProfileState {
+  if (input.isLoading || input.isFetching || !input.lookupSettled) {
+    return "loading"
+  }
+  return input.error || input.evidenceIncomplete ? "unavailable" : "available"
+}
+
 /**
  * Shopper-facing payment readiness stays separate from product and pickup
  * evidence. A profile address is only a candidate payment destination; the

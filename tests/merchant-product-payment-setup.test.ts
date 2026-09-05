@@ -18,6 +18,16 @@ describe("merchant product payment setup guidance", () => {
     ).toBe("unavailable")
   })
 
+  it("does not infer missing setup from stale or partial profile evidence", () => {
+    expect(
+      getProductPaymentSetupState({
+        lookupSettled: true,
+        lud16: undefined,
+        evidenceIncomplete: true,
+      })
+    ).toBe("unavailable")
+  })
+
   it("warns after a settled lookup has no valid Lightning Address", () => {
     expect(
       getProductPaymentSetupState({ lookupSettled: true, lud16: undefined })

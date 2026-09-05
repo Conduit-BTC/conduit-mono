@@ -1449,6 +1449,7 @@ function CheckoutPage() {
   const hasUnpricedCheckoutItems = pricingPreview.status !== "ok"
   const merchantTrust = useMerchantTrustContext({
     merchantPubkey: selectedMerchant ?? null,
+    requireCompleteProfileEvidence: true,
   })
   const merchantProfile = merchantTrust.profile
   const merchantLud16 = merchantProfile?.lud16
@@ -1463,12 +1464,7 @@ function CheckoutPage() {
   const lnurlAllowsNostr = lnurlPayMetadata?.allowsNostr === true
   const merchantPaymentReadiness = getMerchantPaymentReadiness({
     paymentRequired,
-    profileState:
-      merchantTrust.profileState === "loading"
-        ? "loading"
-        : merchantTrust.profileState === "available"
-          ? "available"
-          : "unavailable",
+    profileState: merchantTrust.profileEvidenceState,
     lud16: merchantLud16,
     lnurlStatus: lnurlPreflight.status,
   })

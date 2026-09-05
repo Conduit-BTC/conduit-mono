@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router"
 import { AlertTriangle } from "lucide-react"
-import { useProfile } from "@conduit/core"
+import { isCommerceReadIncomplete, useProfile } from "@conduit/core"
 import { Button } from "@conduit/ui"
 import { getProductPaymentSetupState } from "../lib/product-payment-setup"
 
@@ -17,10 +17,12 @@ export function ProductPaymentSetupNotice({
     // Product authoring must eventually settle when the merchant has no
     // profile metadata; the default visible-profile query retries forever.
     maxUnresolvedRefetches: 1,
+    requireCompleteEvidence: true,
   })
   const state = getProductPaymentSetupState({
     lud16: profileQuery.data?.lud16,
     lookupSettled: profileQuery.lookupSettled,
+    evidenceIncomplete: isCommerceReadIncomplete(profileQuery.meta),
     error: profileQuery.error,
   })
 

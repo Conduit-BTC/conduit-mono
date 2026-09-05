@@ -292,6 +292,8 @@ export interface ProfileBatchQuery {
   pubkeys: string[]
   authenticatedPubkey?: string | null
   skipCache?: boolean
+  /** Require relay-coverage diagnostics before absence is treated as current. */
+  requireCompleteEvidence?: boolean
   priority?: "visible" | "background"
   readPolicy?: CommerceReadPolicy
   relayHintsByPubkey?: Record<string, string[] | undefined>
@@ -4632,6 +4634,7 @@ export async function getProfiles(
       cached &&
       hasProfileContent(cached) &&
       !isAuthenticatedOwner &&
+      !query.requireCompleteEvidence &&
       now() - cached.cachedAt < PROFILE_CACHE_TTL_MS
     ) {
       result[pubkey] = projectCachedProfile(cached)
@@ -4707,17 +4710,31 @@ export async function getProfiles(
         meta: createMeta("profile_batch", "public", PROFILE_CAPABILITIES),
       })
     }
-    const events =
-      query.onProgress && !testOverrides.fetchEventsFanout
-        ? await fetchEventsFanoutProgressive(
-            profileFilter,
-            fanoutOptions,
-            ({ mergedEvents }) => emitProgress(mergedEvents)
-          )
-        : await runFetchEventsFanout(profileFilter, fanoutOptions)
-
-    if (query.onProgress && testOverrides.fetchEventsFanout) {
+    let evidenceDegraded = false
+    let evidenceCapped = false
+    let events: NDKEvent[]
+    if (query.requireCompleteEvidence) {
+      const evidence = await runFetchEventsFanoutDetailed(
+        profileFilter,
+        fanoutOptions
+      )
+      events = evidence.events
+      evidenceDegraded = evidence.degraded
+      evidenceCapped = evidence.capped
       emitProgress(events)
+    } else {
+      events =
+        query.onProgress && !testOverrides.fetchEventsFanout
+          ? await fetchEventsFanoutProgressive(
+              profileFilter,
+              fanoutOptions,
+              ({ mergedEvents }) => emitProgress(mergedEvents)
+            )
+          : await runFetchEventsFanout(profileFilter, fanoutOptions)
+
+      if (query.onProgress && testOverrides.fetchEventsFanout) {
+        emitProgress(events)
+      }
     }
 
     const { profiles, rowsToCache } = mergeProfileEvents(
@@ -4773,7 +4790,8 @@ export async function getProfiles(
         PROFILE_CAPABILITIES,
         {
           stale,
-          degraded: stale,
+          degraded: stale || evidenceDegraded,
+          capped: evidenceCapped,
         }
       ),
     }

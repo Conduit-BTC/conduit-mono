@@ -1,8 +1,38 @@
 import { describe, expect, it } from "bun:test"
-import { getMerchantPaymentReadiness } from "../apps/market/src/lib/merchant-payment-readiness"
+import {
+  getMerchantPaymentProfileState,
+  getMerchantPaymentReadiness,
+} from "../apps/market/src/lib/merchant-payment-readiness"
 import { getCheckoutEvidenceCheckingLabel } from "../apps/market/src/lib/checkout-validation"
 
 describe("shopper merchant payment readiness", () => {
+  it("requires complete current profile evidence before reporting absence", () => {
+    expect(
+      getMerchantPaymentProfileState({
+        isLoading: false,
+        isFetching: true,
+        lookupSettled: false,
+        evidenceIncomplete: true,
+      })
+    ).toBe("loading")
+    expect(
+      getMerchantPaymentProfileState({
+        isLoading: false,
+        isFetching: false,
+        lookupSettled: true,
+        evidenceIncomplete: true,
+      })
+    ).toBe("unavailable")
+    expect(
+      getMerchantPaymentProfileState({
+        isLoading: false,
+        isFetching: false,
+        lookupSettled: true,
+        evidenceIncomplete: false,
+      })
+    ).toBe("available")
+  })
+
   it("does not infer missing setup while the profile is loading", () => {
     expect(
       getMerchantPaymentReadiness({

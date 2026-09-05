@@ -4,7 +4,12 @@ import {
   useQueryClient,
   type UseQueryResult,
 } from "@tanstack/react-query"
-import { getProfiles, type CommerceReadPolicy } from "../protocol/commerce"
+import {
+  getProfiles,
+  type CommerceQueryMeta,
+  type CommerceReadPolicy,
+  type CommerceResult,
+} from "../protocol/commerce"
 import {
   hasProfileContent,
   mergeRicherProfile,
@@ -26,6 +31,7 @@ export interface UseProfilesOptions {
   readPolicy?: CommerceReadPolicy
   relayHintsByPubkey?: Record<string, string[] | undefined>
   refetchUnresolvedMs?: number
+  requireCompleteEvidence?: boolean
   skipCache?: boolean
   staleTime?: number
 }
@@ -52,8 +58,9 @@ export interface UseProfilesResult {
   isHydrating: boolean
   lookupSettled: boolean
   unresolvedRefetchLimitReached: boolean
+  meta: CommerceQueryMeta | null
   error: unknown
-  refetch: UseQueryResult<ProfileMap>["refetch"]
+  refetch: UseQueryResult<CommerceResult<ProfileMap>>["refetch"]
   getProfile: (pubkey: string) => Profile | undefined
   hasProfile: (pubkey: string) => boolean
 }
@@ -165,6 +172,7 @@ export function useProfiles(
   }, [
     authenticatedPerspective,
     options.skipCache,
+    options.requireCompleteEvidence,
     priority,
     pubkeyKey,
     relayHintKey,
@@ -198,6 +206,7 @@ export function useProfiles(
       priority,
       relayHintKey,
       options.skipCache,
+      options.requireCompleteEvidence,
     ],
     enabled,
     queryFn: async () => {
@@ -206,11 +215,12 @@ export function useProfiles(
         authenticatedPubkey: options.authenticatedPubkey,
         priority,
         skipCache: options.skipCache,
+        requireCompleteEvidence: options.requireCompleteEvidence,
         readPolicy: defaultReadPolicy(priority, options.readPolicy),
         relayHintsByPubkey: options.relayHintsByPubkey,
         onProgress: (progress) => cacheResolvedProfiles(progress.data),
       })
-      return result.data
+      return result
     },
     placeholderData: (previousData, previousQuery) =>
       previousQuery?.queryKey[1] === authenticatedPerspective
@@ -221,7 +231,7 @@ export function useProfiles(
     refetchOnWindowFocus: true,
     refetchIntervalInBackground: true,
     refetchInterval: (state) => {
-      const data = state.state.data
+      const data = state.state.data?.data
       if (!data) return false
       const hasUnresolved = unique.some(
         (pubkey) => !hasProfileContent(data[pubkey])
@@ -240,14 +250,14 @@ export function useProfiles(
   })
 
   useEffect(() => {
-    cacheResolvedProfiles(query.data)
+    cacheResolvedProfiles(query.data?.data)
   }, [cacheResolvedProfiles, query.data])
 
   const profiles = useMemo(
     () =>
       withBareProfiles(
         unique,
-        mergeRicherProfiles(resolvedProfiles, query.data)
+        mergeRicherProfiles(resolvedProfiles, query.data?.data)
       ),
     [query.data, resolvedProfiles, unique]
   )
@@ -262,7 +272,7 @@ export function useProfiles(
   useEffect(() => {
     if (!query.data || query.isFetching) return
     const hasUnresolved = unique.some(
-      (pubkey) => !hasProfileContent(query.data?.[pubkey])
+      (pubkey) => !hasProfileContent(query.data?.data[pubkey])
     )
     if (!hasUnresolved) {
       setUnresolvedRefetchCount(0)
@@ -290,6 +300,7 @@ export function useProfiles(
       (unresolvedPubkeys.length > 0 && !unresolvedRefetchLimitReached),
     lookupSettled,
     unresolvedRefetchLimitReached,
+    meta: query.data?.meta ?? null,
     error: query.error,
     refetch: query.refetch,
     getProfile: (pubkey) => profiles[pubkey],
