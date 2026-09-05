@@ -137,6 +137,10 @@ describe("merchant organizer delivery outbox", () => {
     expect(
       decodeEventMarketReference(result.naddr, [30405])?.relayHints
     ).toEqual([PUBLISH_RELAY, CALENDAR_RELAY, PICKUP_RELAY])
+    expect(result.collectionCreatedAt).toBe(
+      result.records.find((record) => record.record === "collection")!
+        .signedEvent!.created_at * 1_000
+    )
 
     const signedRecords = result.records.flatMap((record) =>
       record.signedEvent ? [record.signedEvent] : []

@@ -96,6 +96,7 @@ export interface MerchantOrganizerEventMarket {
 export interface MerchantOrganizerPublishResult {
   records: MerchantOrganizerRecordDelivery[]
   collectionCoordinate: string
+  collectionCreatedAt: number
   naddr: string
 }
 
@@ -632,6 +633,7 @@ function projectPublishResult(
   return {
     records,
     collectionCoordinate,
+    collectionCreatedAt: value.collection.signedEvent.created_at * 1_000,
     naddr: encodeEventMarketNaddr(
       collectionCoordinate,
       publishedEventMarketRelayHints(value)

@@ -16,6 +16,7 @@ import {
   rememberDiscoveredEventMarket,
   rememberOrganizerEventMarket,
   selectOrganizerEventMarketResolution,
+  shouldResolveOrganizerEventMarketReference,
   updateOrganizerCollectionProducts,
 } from "../apps/merchant/src/lib/event-market-workflow"
 import {
@@ -122,18 +123,32 @@ describe("merchant organizer event workflow", () => {
 
     rememberOrganizerEventMarket(
       ORGANIZER,
-      { reference: first, title: "First", savedAt: 10 },
+      {
+        reference: first,
+        title: "First",
+        savedAt: 10,
+        expectedCollectionCreatedAt: 1_000,
+      },
       storage
     )
     rememberOrganizerEventMarket(
       ORGANIZER,
-      { reference: second, title: "Second", savedAt: 20 },
+      {
+        reference: second,
+        title: "Second",
+        savedAt: 20,
+        expectedCollectionCreatedAt: 2_000,
+      },
       storage
     )
 
     const reloaded = loadSavedOrganizerEventMarkets(ORGANIZER, storage)
     expect(reloaded).toHaveLength(1)
-    expect(reloaded[0]).toMatchObject({ title: "Second", savedAt: 20 })
+    expect(reloaded[0]).toMatchObject({
+      title: "Second",
+      savedAt: 20,
+      expectedCollectionCreatedAt: 2_000,
+    })
     expect(
       decodeEventMarketReference(reloaded[0]!.reference, [30405])?.relayHints
     ).toEqual(["wss://two.example", "wss://one.example"])
@@ -255,6 +270,59 @@ describe("merchant organizer event workflow", () => {
     expect(
       decodeEventMarketReference(selected!.naddr, [30405])?.relayHints
     ).toEqual([hintedRelay])
+  })
+
+  it("keeps an updated acknowledgement hint until the signed collection frontier is observed", () => {
+    const listRelay = "wss://list.example/events"
+    const acknowledgementRelay = "wss://ack.example/events"
+    const selectedReference = {
+      reference: encodeEventMarketNaddr(COLLECTION, [acknowledgementRelay]),
+      savedAt: 20,
+      expectedCollectionCreatedAt: 2_000,
+    }
+    const olderListMarket = {
+      collectionCoordinate: COLLECTION,
+      collectionCreatedAt: 1_000,
+      naddr: encodeEventMarketNaddr(COLLECTION, [listRelay]),
+      state: "active",
+    }
+
+    expect(
+      shouldResolveOrganizerEventMarketReference(
+        olderListMarket,
+        selectedReference
+      )
+    ).toBe(true)
+    const pendingRead = selectOrganizerEventMarketResolution(
+      olderListMarket,
+      undefined,
+      selectedReference
+    )
+    expect(pendingRead?.state).toBe("active")
+    expect(
+      decodeEventMarketReference(pendingRead!.naddr, [30405])?.relayHints
+    ).toEqual([acknowledgementRelay, listRelay])
+
+    const updatedHintedMarket = {
+      ...olderListMarket,
+      collectionCreatedAt: 2_000,
+      naddr: encodeEventMarketNaddr(COLLECTION, [acknowledgementRelay]),
+    }
+    const observedUpdate = selectOrganizerEventMarketResolution(
+      olderListMarket,
+      updatedHintedMarket,
+      selectedReference
+    )
+    expect(observedUpdate?.collectionCreatedAt).toBe(2_000)
+    expect(
+      decodeEventMarketReference(observedUpdate!.naddr, [30405])?.relayHints
+    ).toEqual([acknowledgementRelay, listRelay])
+    expect(
+      shouldResolveOrganizerEventMarketReference(
+        updatedHintedMarket,
+        selectedReference
+      )
+    ).toBe(false)
   })
 
   it("keeps a hinted selection through bare edit and publish references for sharing", () => {

@@ -9,6 +9,7 @@ export interface SavedOrganizerEventMarketReference {
   reference: string
   title?: string
   savedAt: number
+  expectedCollectionCreatedAt?: number
 }
 
 const EVENT_MARKET_STORAGE_PREFIX = "conduit:merchant:event-markets:v1"
@@ -46,6 +47,7 @@ function normalizeSavedReference(
     reference?: unknown
     title?: unknown
     savedAt?: unknown
+    expectedCollectionCreatedAt?: unknown
   }
   const rawReference =
     typeof candidate.reference === "string" ? candidate.reference.trim() : ""
@@ -62,6 +64,11 @@ function normalizeSavedReference(
     typeof candidate.title === "string" && candidate.title.trim()
       ? candidate.title.trim()
       : undefined
+  const expectedCollectionCreatedAt =
+    typeof candidate.expectedCollectionCreatedAt === "number" &&
+    Number.isFinite(candidate.expectedCollectionCreatedAt)
+      ? candidate.expectedCollectionCreatedAt
+      : undefined
   return {
     reference:
       decoded.relayHints.length > 0
@@ -69,6 +76,9 @@ function normalizeSavedReference(
         : decoded.coordinate,
     title,
     savedAt: candidate.savedAt,
+    ...(expectedCollectionCreatedAt !== undefined
+      ? { expectedCollectionCreatedAt }
+      : {}),
     coordinate: decoded.coordinate,
     organizerPubkey: decoded.authorPubkey,
     relayHints: decoded.relayHints,
@@ -85,6 +95,9 @@ function mergeSavedReferences(
   const relayHints = Array.from(
     new Set(sorted.flatMap((reference) => reference.relayHints))
   ).slice(0, SAVED_EVENT_MARKET_RELAY_HINT_LIMIT)
+  const expectedCollectionCreatedAt = Math.max(
+    ...sorted.map((reference) => reference.expectedCollectionCreatedAt ?? 0)
+  )
   return {
     reference:
       relayHints.length > 0
@@ -92,6 +105,7 @@ function mergeSavedReferences(
         : newest.coordinate,
     title: newest.title ?? sorted.find((reference) => reference.title)?.title,
     savedAt: newest.savedAt,
+    ...(expectedCollectionCreatedAt > 0 ? { expectedCollectionCreatedAt } : {}),
   }
 }
 
@@ -297,12 +311,89 @@ export function isPreferredOrganizerEventMarketListResolution(
   )
 }
 
+export function shouldResolveOrganizerEventMarketReference(
+  listMarket: { state: string; collectionCreatedAt?: number } | undefined,
+  savedReference: SavedOrganizerEventMarketReference | undefined
+): boolean {
+  if (!isPreferredOrganizerEventMarketListResolution(listMarket)) return true
+  const expectedCollectionCreatedAt =
+    savedReference?.expectedCollectionCreatedAt
+  return (
+    expectedCollectionCreatedAt !== undefined &&
+    (listMarket?.collectionCreatedAt ?? 0) < expectedCollectionCreatedAt
+  )
+}
+
+function reconcileOrganizerEventMarketNaddr(
+  coordinate: string,
+  references: readonly (string | undefined)[]
+): string {
+  const relayHints = Array.from(
+    new Set(
+      references.flatMap(
+        (reference) =>
+          decodeEventMarketReference(reference ?? "", [30405])?.relayHints ?? []
+      )
+    )
+  ).slice(0, SAVED_EVENT_MARKET_RELAY_HINT_LIMIT)
+  return encodeEventMarketNaddr(coordinate, relayHints)
+}
+
 export function selectOrganizerEventMarketResolution<
-  T extends { state: string },
->(listMarket: T | undefined, hintedMarket: T | undefined): T | undefined {
-  return isPreferredOrganizerEventMarketListResolution(listMarket)
-    ? listMarket
+  T extends {
+    state: string
+    collectionCoordinate: string
+    collectionCreatedAt?: number
+    naddr: string
+  },
+>(
+  listMarket: T | undefined,
+  hintedMarket: T | undefined,
+  savedReference?: SavedOrganizerEventMarketReference
+): T | undefined {
+  const expectedCollectionCreatedAt =
+    savedReference?.expectedCollectionCreatedAt ?? 0
+  const hintedReachesExpectedFrontier =
+    !!hintedMarket &&
+    (hintedMarket.collectionCreatedAt ?? 0) >= expectedCollectionCreatedAt
+  const selected = isPreferredOrganizerEventMarketListResolution(listMarket)
+    ? hintedReachesExpectedFrontier &&
+      (hintedMarket?.collectionCreatedAt ?? 0) >
+        (listMarket?.collectionCreatedAt ?? 0)
+      ? hintedMarket
+      : listMarket
     : (hintedMarket ?? listMarket)
+  if (!selected) return undefined
+  const selectedReferenceIsNewerThanList =
+    expectedCollectionCreatedAt >
+    (isPreferredOrganizerEventMarketListResolution(listMarket)
+      ? (listMarket?.collectionCreatedAt ?? 0)
+      : 0)
+  const reconciledNaddr = reconcileOrganizerEventMarketNaddr(
+    selected.collectionCoordinate,
+    selectedReferenceIsNewerThanList
+      ? [
+          savedReference?.reference,
+          selected.naddr,
+          hintedMarket?.naddr,
+          isPreferredOrganizerEventMarketListResolution(listMarket)
+            ? listMarket?.naddr
+            : undefined,
+        ]
+      : [
+          selected.naddr,
+          savedReference?.reference,
+          hintedMarket?.naddr,
+          isPreferredOrganizerEventMarketListResolution(listMarket)
+            ? listMarket?.naddr
+            : undefined,
+        ]
+  )
+  if (reconciledNaddr === selected.naddr) return selected
+  return {
+    ...selected,
+    naddr: reconciledNaddr,
+  }
 }
 
 export function updateOrganizerCollectionProducts(

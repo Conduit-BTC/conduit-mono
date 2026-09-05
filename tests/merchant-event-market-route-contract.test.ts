@@ -149,6 +149,9 @@ describe("merchant organizer event market route", () => {
 
     expect(publishSuccess).toContain("const reference = result.naddr")
     expect(publishSuccess).toContain(
+      "expectedCollectionCreatedAt: result.collectionCreatedAt"
+    )
+    expect(publishSuccess).toContain(
       "rememberDelivery(result.collectionCoordinate, record)"
     )
     expect(publishSuccess).toContain("refreshMarketQueries(reference)")
@@ -157,9 +160,14 @@ describe("merchant organizer event market route", () => {
       "findOrganizerEventMarketByReference(markets, selectedReference)"
     )
     expect(route).toContain("isPreferredOrganizerEventMarketListResolution(")
+    expect(route).toContain("shouldResolveOrganizerEventMarketReference(")
     expect(route).toContain("selectOrganizerEventMarketResolution(")
+    expect(route).toContain("shouldResolveSelectedReference,")
     expect(route).toMatch(
-      /enabled:[^\n]+!selectedFromList,[\s\S]+selectOrganizerEventMarketResolution\([\s\S]+selectedListMarket,[\s\S]+selectedMarketQuery\.data/
+      /selectOrganizerEventMarketResolution\([\s\S]+selectedListMarket,[\s\S]+selectedMarketQuery\.data,[\s\S]+selectedSavedReference/
+    )
+    expect(route).toContain(
+      "const selectedReadError = selectedMarket ? null : selectedMarketQuery.error"
     )
     expect(route).not.toContain("selectedIdentity?.relayHints.length === 0")
     expect(panel).toContain("getEventMarketUrl(market.naddr)")
