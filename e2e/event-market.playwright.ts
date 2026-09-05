@@ -919,6 +919,7 @@ function createMerchantProductEvent(input: {
   collectionCoordinate: string
   pickupCoordinate: string
   createdAt: number
+  priceSats?: number
 }): SignedEvent {
   return signEvent(MERCHANT_SECRET, {
     kind: 30402,
@@ -927,8 +928,8 @@ function createMerchantProductEvent(input: {
     tags: [
       ["d", input.dTag],
       ["title", input.title],
-      ["summary", "Synthetic accepted zero-cost product fixture."],
-      ["price", "0", "SAT"],
+      ["summary", "Synthetic accepted product fixture."],
+      ["price", String(input.priceSats ?? 0), "SAT"],
       ["type", "simple", "physical"],
       ["stock", "3"],
       [
@@ -960,7 +961,7 @@ async function acceptMerchantProduct(
     productPreview.getByText(productTitle!, { exact: true })
   ).toBeVisible()
   await expect(
-    productPreview.getByText("Synthetic accepted zero-cost product fixture.", {
+    productPreview.getByText("Synthetic accepted product fixture.", {
       exact: true,
     })
   ).toBeVisible()
@@ -988,6 +989,77 @@ test.use({
   video: "off",
   trace: "off",
   screenshot: "off",
+})
+
+test("paid organizer pickup uses ordinary checkout even after inbox withdrawal @market @merchant", async ({
+  page,
+}) => {
+  const relay = createRelayHarness()
+  const declarationTime = Math.floor(Date.now() / 1000)
+  relay.seed(
+    createInboxDeclaration("organizer", declarationTime),
+    createInboxDeclaration("merchant", declarationTime + 1),
+    createInboxDeclaration("buyer", declarationTime + 2)
+  )
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic Paid Pickup Review",
+    organizerHandoffEnabled: true,
+  })
+  const product = createMerchantProductEvent({
+    dTag: "paid-pickup-review",
+    title: "Synthetic Paid Pickup Product",
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: market.pickupCoordinate!,
+    createdAt: market.initialCollection.created_at + 1,
+    priceSats: 10,
+  })
+  await acceptMerchantProduct(page, relay, product, market.collectionCoordinate)
+  await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
+  await page
+    .getByRole("listitem")
+    .filter({ hasText: "Synthetic Paid Pickup Product" })
+    .getByRole("button", { name: "Add", exact: true })
+    .click()
+
+  const hud = page.getByRole("region", { name: "Cart inventory", exact: true })
+  const checkout = hud.getByRole("link", {
+    name: "Continue to checkout",
+    exact: true,
+  })
+  await expect(hud).toBeVisible()
+  await expect(checkout).toHaveAttribute("href", /\/checkout\?merchant=/)
+  await expect(checkout).not.toHaveAttribute("href", /intent=zap/)
+  await expect(hud.getByRole("button", { name: /zap out/i })).toHaveCount(0)
+  await expect(
+    hud.getByText(
+      "Checkout is needed to review event pickup and confirm who handles it."
+    )
+  ).toBeVisible()
+
+  // A newer withdrawal must not turn a cached paid pickup into automatic intent.
+  relay.seed(
+    signEvent(ORGANIZER_SECRET, {
+      kind: 10050,
+      created_at: declarationTime + 30,
+      content: "",
+      tags: [],
+    })
+  )
+  await page.reload()
+  await expect(checkout).toBeVisible()
+  await expect(checkout).not.toHaveAttribute("href", /intent=zap/)
+  await expect(hud.getByRole("button", { name: /zap out/i })).toHaveCount(0)
+  const orderPublishStart = relay.publications.length
+  await checkout.click()
+  await expect(page).toHaveURL(/\/checkout\?merchant=/)
+  expect(new URL(page.url()).searchParams.has("intent")).toBe(false)
+  await expect(hud).toBeHidden()
+  expect(
+    relay.publications
+      .slice(orderPublishStart)
+      .some((event) => event.kind === 1059)
+  ).toBe(false)
 })
 
 test("organizer offer off publishes an empty catalog and permits booth handoff @market @merchant", async ({

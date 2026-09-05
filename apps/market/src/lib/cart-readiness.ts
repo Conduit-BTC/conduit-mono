@@ -75,6 +75,7 @@ export function deriveMerchantCartReadinessState(
 
 /** Named reasons Zap Out is unavailable while ordinary checkout remains open. */
 export type MerchantZapBlocker =
+  | "pickup_review_required"
   | "listing_freshness_unavailable"
   | "shopper_preset_unavailable"
   | "wallet_unavailable"
@@ -96,6 +97,8 @@ export type MerchantLnurlPreflight = {
 }
 
 export type MerchantCheckoutCapabilityInput = {
+  /** Catalog/cart surfaces do not hold checkout's pickup disclosure/evidence. */
+  pickupReviewRequired?: boolean
   readiness: MerchantCartReadinessState
   /** Concrete stock/deletion message when availability blocks checkout. */
   blockingMessage: string | null
@@ -135,6 +138,13 @@ export function deriveMerchantCheckoutCapability(
       blockedReason:
         input.blockingMessage ??
         "An item in this cart is unavailable. Review the cart before checkout.",
+    }
+  }
+  if (input.pickupReviewRequired) {
+    return {
+      outcome: "checkout_required",
+      blockers: ["pickup_review_required"],
+      blockedReason: null,
     }
   }
   if (
@@ -190,6 +200,9 @@ export function getMerchantCapabilityFallbackMessage(
   }
   if (capability.outcome === "zap_candidate") {
     return "Ready to zap out. Checkout confirms the merchant payment endpoint before paying."
+  }
+  if (capability.blockers.includes("pickup_review_required")) {
+    return "Checkout is needed to review event pickup and confirm who handles it."
   }
   if (capability.blockers.includes("price_unavailable")) {
     return "Checkout is needed to refresh the cart total."
