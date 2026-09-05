@@ -21,6 +21,7 @@ export function rebaseOrderStockAdjustmentOnProduct(input: {
   const currentStock = record.product.stock
   if (
     record.addressId !== adjustment.addressId ||
+    (record.product.type !== "simple" && record.product.type !== "variation") ||
     typeof currentStock !== "number" ||
     !Number.isSafeInteger(currentStock) ||
     currentStock < 0

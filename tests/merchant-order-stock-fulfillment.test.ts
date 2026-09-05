@@ -175,6 +175,60 @@ describe("merchant stock update fulfillment", () => {
     })
   })
 
+  it("rejects a stale simple product whose verified revision is variable", () => {
+    const adjustment: OrderStockAdjustment = {
+      key: "order:item",
+      addressId: PRODUCT_COORDINATE,
+      sourceEventId: "1".repeat(64),
+      title: "Stale simple product",
+      quantity: 1,
+      currentStock: 10,
+      nextStock: 9,
+      shortfall: 0,
+    }
+    const variableRecord: CommerceProductRecord = {
+      product: product({ type: "variable", stock: 10 }),
+      eventId: "9".repeat(64),
+      addressId: PRODUCT_COORDINATE,
+      dTag: "event-item",
+      eventCreatedAt: 3_000,
+    }
+
+    expect(() =>
+      rebaseOrderStockAdjustmentOnProduct({
+        adjustment,
+        record: variableRecord,
+      })
+    ).toThrow("cannot be used for this stock update")
+  })
+
+  it("still rebases a verified variation revision", () => {
+    const adjustment: OrderStockAdjustment = {
+      key: "order:item",
+      addressId: PRODUCT_COORDINATE,
+      sourceEventId: "1".repeat(64),
+      title: "Variation",
+      quantity: 2,
+      currentStock: 8,
+      nextStock: 6,
+      shortfall: 0,
+    }
+    const variationRecord: CommerceProductRecord = {
+      product: product({ type: "variation", stock: 5 }),
+      eventId: "9".repeat(64),
+      addressId: PRODUCT_COORDINATE,
+      dTag: "event-item",
+      eventCreatedAt: 3_000,
+    }
+
+    expect(
+      rebaseOrderStockAdjustmentOnProduct({
+        adjustment,
+        record: variationRecord,
+      }).nextStock
+    ).toBe(3)
+  })
+
   it("preserves exact currently verified event pickup references", async () => {
     const fulfillment = pickup()
     const eventProduct = product({
