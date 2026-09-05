@@ -157,6 +157,36 @@ describe("merchant organizer event workflow", () => {
     ).toBe(reloaded[0]!.reference)
   })
 
+  it("preserves all eight hints on a directly imported reference", () => {
+    const storage = new MemoryStorage()
+    const importedHints = Array.from(
+      { length: 8 },
+      (_, index) => `wss://import-${index + 1}.example/events`
+    )
+    const imported = encodeEventMarketNaddr(COLLECTION, importedHints)
+
+    rememberOrganizerEventMarket(
+      ORGANIZER,
+      { reference: imported, title: "Imported", savedAt: 10 },
+      storage
+    )
+    const savedAgain = rememberOrganizerEventMarket(
+      ORGANIZER,
+      { reference: imported, title: "Imported again", savedAt: 20 },
+      storage
+    )
+
+    expect(
+      decodeEventMarketReference(savedAgain[0]!.reference, [30405])?.relayHints
+    ).toEqual(importedHints)
+    expect(
+      decodeEventMarketReference(
+        loadSavedOrganizerEventMarkets(ORGANIZER, storage)[0]!.reference,
+        [30405]
+      )?.relayHints
+    ).toEqual(importedHints)
+  })
+
   it("keeps the guest fallback slot when merging a seven-hint publish result", () => {
     const storage = new MemoryStorage()
     const staleHint = "wss://stale.example/events"

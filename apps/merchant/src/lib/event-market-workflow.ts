@@ -92,9 +92,17 @@ function mergeSavedReferences(
     (left, right) => right.savedAt - left.savedAt
   )
   const newest = sorted[0]!
-  const relayHints = Array.from(
+  const mergedRelayHints = Array.from(
     new Set(sorted.flatMap((reference) => reference.relayHints))
-  ).slice(0, SAVED_EVENT_MARKET_RELAY_HINT_LIMIT)
+  )
+  const completeExplicitReference = sorted.find((reference) =>
+    mergedRelayHints.every((relayUrl) =>
+      reference.relayHints.includes(relayUrl)
+    )
+  )
+  const relayHints = completeExplicitReference
+    ? completeExplicitReference.relayHints
+    : mergedRelayHints.slice(0, SAVED_EVENT_MARKET_RELAY_HINT_LIMIT)
   const expectedCollectionCreatedAt = Math.max(
     ...sorted.map((reference) => reference.expectedCollectionCreatedAt ?? 0)
   )

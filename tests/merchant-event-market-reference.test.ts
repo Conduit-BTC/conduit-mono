@@ -209,6 +209,80 @@ describe("merchant organizer event-market references", () => {
     ).toEqual([HINT_RELAY, OBSERVED_RELAY])
   })
 
+  it("queries the eighth relay on an explicit imported reference", async () => {
+    const importedHints = Array.from(
+      { length: 8 },
+      (_, index) => `wss://import-${index + 1}.example/events`
+    )
+    const imported = encodeEventMarketNaddr(COLLECTION, importedHints)
+    const readPlans: string[][] = []
+    const now = Math.floor(Date.now() / 1_000)
+    const graph = [
+      signedEvent(
+        buildEventMarketCalendarDraft({
+          kind: EVENT_KINDS.CALENDAR_TIME,
+          dTag: "public-market-day",
+          title: "Public market day",
+          start: now + 86_400,
+          end: now + 90_000,
+          startTzid: "UTC",
+          endTzid: "UTC",
+        }),
+        now
+      ),
+      signedEvent(
+        buildEventMarketCollectionDraft({
+          dTag: "public-market",
+          title: "Public market",
+          eventCoordinate: CALENDAR,
+          productCoordinates: [],
+        }),
+        now + 1
+      ),
+    ]
+    __setEventMarketTestOverrides({
+      getRelayLists: async () => new Map(),
+      fetchEventsFanoutDetailed: async (rawFilter, options) => {
+        const relayUrls = [...(options.relayUrls ?? [])]
+        readPlans.push(relayUrls)
+        const events = relayUrls.includes(importedHints[7]!)
+          ? graph.filter((event) => {
+              const filter = rawFilter as NDKFilter
+              if (filter.kinds && !filter.kinds.includes(event.kind as never)) {
+                return false
+              }
+              const dTags = filter["#d"]
+              return (
+                !dTags ||
+                event.tags.some(
+                  (tag) => tag[0] === "d" && dTags.includes(tag[1] ?? "")
+                )
+              )
+            })
+          : []
+        return {
+          events: events.map((event) => new NDKEvent(undefined, event)),
+          relays: relayUrls.map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: events.length,
+          })),
+          eventsVerified: true,
+        }
+      },
+      loadCachedEvidence: async () => [],
+      persistCachedEvidence: async () => undefined,
+    })
+
+    const market = await resolveOrganizerEventMarket(imported, ORGANIZER)
+
+    expect(market.collectionCoordinate).toBe(COLLECTION)
+    expect(readPlans.length).toBeGreaterThan(0)
+    for (const relayUrls of readPlans) {
+      expect(relayUrls).toEqual(importedHints)
+    }
+  })
+
   it("adds observed relay sources to a share link opened without hints", async () => {
     const now = Math.floor(Date.now() / 1_000)
     const readPlans: string[][] = []
