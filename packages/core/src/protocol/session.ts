@@ -15,6 +15,28 @@ export interface ResolveConduitSessionInput {
   allowGuest?: boolean
 }
 
+export interface ConduitRelaySettingsReadinessInput {
+  mode: ConduitSessionMode
+  identityReady: boolean
+  relayScope: string | null
+  activatedRelayScope: string | null
+}
+
+/**
+ * Fresh signed Network reconciliation is a background refresh, not an app
+ * readiness gate. The active scope can safely start on its bounded fallback or
+ * retained projection and refresh when stronger signed evidence arrives.
+ */
+export function isConduitRelaySettingsReady(
+  input: ConduitRelaySettingsReadinessInput
+): boolean {
+  return (
+    input.identityReady &&
+    input.activatedRelayScope === input.relayScope &&
+    !!(input.relayScope || input.mode === "guest")
+  )
+}
+
 export function getAccountRelayScope(pubkey: string): string {
   return `account:${pubkey.trim().toLowerCase()}`
 }

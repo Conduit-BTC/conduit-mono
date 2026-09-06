@@ -211,6 +211,117 @@ describe("owner kind-10002 evidence", () => {
     })
   })
 
+  it("retains the last usable declaration across a newer malformed frontier and restart", async () => {
+    const declared = relayEvent({
+      createdAt: 100,
+      tags: [["r", "wss://usable.example"]],
+    })
+    const malformed = relayEvent({
+      createdAt: 101,
+      tags: [["r", "not a relay"]],
+    })
+    await reconcileOwnerRelayListEvidence(
+      {
+        pubkey: OWNER,
+        observations: [{ signedEvent: declared, observedAt: 1_000 }],
+        lookup: lookup({ observedAt: 1_000, event: declared }),
+      },
+      repository
+    )
+    const replaced = await reconcileOwnerRelayListEvidence(
+      {
+        pubkey: OWNER,
+        observations: [{ signedEvent: malformed, observedAt: 2_000 }],
+        lookup: lookup({ observedAt: 2_000, event: malformed }),
+      },
+      repository
+    )
+
+    expect(replaced.current?.signedEvent.id).toBe(malformed.id)
+    expect(replaced.current?.state).toBe("malformed")
+    expect(replaced.lastUsable?.signedEvent.id).toBe(declared.id)
+    expect(replaced.lastUsable?.preferences).toEqual([
+      {
+        url: "wss://usable.example",
+        readEnabled: true,
+        writeEnabled: true,
+      },
+    ])
+
+    __resetOwnerRelayListEvidenceForTests()
+    const afterRestart = await resolveOwnerRelayList(OWNER, {
+      relayUrls: ["wss://discovery.example"],
+      evidenceRepository: repository,
+      now: () => 3_000,
+      fetchEventsWithDiagnostics: async () => ({
+        events: [],
+        attemptedRelayUrls: ["wss://discovery.example"],
+        successfulRelayUrls: [],
+        failedRelayUrls: ["wss://discovery.example"],
+      }),
+    })
+
+    expect(afterRestart.state).toBe("malformed")
+    expect(afterRestart.current?.signedEvent.id).toBe(malformed.id)
+    expect(afterRestart.lastUsable?.signedEvent.id).toBe(declared.id)
+    expect(afterRestart.preferences).toEqual([
+      {
+        url: "wss://usable.example",
+        readEnabled: true,
+        writeEnabled: true,
+      },
+    ])
+    expect(afterRestart.stale).toBe(true)
+  })
+
+  it("does not resurrect relays cleared by signed-empty when a newer event is malformed", async () => {
+    const declared = relayEvent({
+      createdAt: 100,
+      tags: [["r", "wss://cleared.example"]],
+    })
+    const signedEmpty = relayEvent({ createdAt: 101, tags: [] })
+    const malformed = relayEvent({
+      createdAt: 102,
+      tags: [["r", "not a relay"]],
+    })
+
+    for (const [index, event] of [declared, signedEmpty, malformed].entries()) {
+      await reconcileOwnerRelayListEvidence(
+        {
+          pubkey: OWNER,
+          observations: [{ signedEvent: event, observedAt: 1_000 + index }],
+          lookup: lookup({ observedAt: 1_000 + index, event }),
+        },
+        repository
+      )
+    }
+
+    const retained = await getOwnerRelayListEvidence(OWNER, repository)
+    expect(retained?.current?.signedEvent.id).toBe(malformed.id)
+    expect(retained?.current?.state).toBe("malformed")
+    expect(retained?.lastUsable?.signedEvent.id).toBe(signedEmpty.id)
+    expect(retained?.lastUsable?.state).toBe("signed_empty")
+    expect(retained?.lastUsable?.preferences).toEqual([])
+
+    __resetOwnerRelayListEvidenceForTests()
+    const afterRestart = await resolveOwnerRelayList(OWNER, {
+      relayUrls: ["wss://discovery.example"],
+      evidenceRepository: repository,
+      now: () => 3_000,
+      fetchEventsWithDiagnostics: async () => ({
+        events: [],
+        attemptedRelayUrls: ["wss://discovery.example"],
+        successfulRelayUrls: [],
+        failedRelayUrls: ["wss://discovery.example"],
+      }),
+    })
+
+    expect(afterRestart.state).toBe("malformed")
+    expect(afterRestart.lastUsable?.signedEvent.id).toBe(signedEmpty.id)
+    expect(afterRestart.preferences).toEqual([])
+    expect(afterRestart.stale).toBe(true)
+  })
+
   it("distinguishes complete absence, partial lookup, and unavailable lookup", async () => {
     const relays = ["wss://nos.lol", "wss://relay.ditto.pub"]
     const complete = await resolveOwnerRelayList(OWNER, {

@@ -450,6 +450,37 @@ describe("planRelayWrites", () => {
     ])
   })
 
+  it("does not let stale self-cache hints displace a reconciled owner projection", () => {
+    const currentRelayUrl = "wss://current-owner.example"
+    const state = settings([
+      entry(currentRelayUrl, {
+        section: "public",
+        writeEnabled: true,
+      }),
+    ])
+    const staleRelayUrls = Array.from(
+      { length: 4 },
+      (_, index) => `wss://stale-owner-${index}.example`
+    )
+    const lists = new Map<string, RelayList>([
+      ["alice", relayList("alice", [], staleRelayUrls)],
+    ])
+
+    const plan = planRelayWrites({
+      intent: "author_event",
+      authorPubkey: "alice",
+      authenticatedPubkey: "alice",
+      relayLists: lists,
+      settings: state,
+      signedRelayListAuthoritative: true,
+    })
+
+    expect(plan.primaryRelayUrls).toEqual([currentRelayUrl])
+    for (const staleRelayUrl of staleRelayUrls) {
+      expect(plan.primaryRelayUrls).not.toContain(staleRelayUrl)
+    }
+  })
+
   it("recipient_event prefers recipient read relays as primary and seeds broadcast on user outbox", () => {
     const state = settings([
       entry("wss://outbox.conduit.market", {

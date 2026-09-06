@@ -17,6 +17,7 @@ import {
 } from "../protocol/relay-settings"
 import { closeAllProtectedRelayConnections } from "../protocol/relay-executor"
 import {
+  isConduitRelaySettingsReady,
   resolveConduitSession,
   shouldCloseProtectedConnectionsForScopeTransition,
   type ConduitSession,
@@ -72,20 +73,19 @@ export function ConduitSessionProvider({
     hasProfileName(profileQuery.data) ||
     (!profileQuery.isLoading && !profileQuery.isFetching)
 
-  const accountNetworkPreferences = useAccountNetworkPreferences(
+  useAccountNetworkPreferences(
     session.pubkey,
     session.mode === "signed_in" && !!session.relayScope
   )
-  const networkPreferencesReady =
-    session.mode === "guest" || accountNetworkPreferences.status === "ready"
   const [activatedRelayScope, setActivatedRelayScope] = useState<string | null>(
     null
   )
-  const relaySettingsReady =
-    identityReady &&
-    networkPreferencesReady &&
-    activatedRelayScope === session.relayScope &&
-    !!(session.relayScope || session.mode === "guest")
+  const relaySettingsReady = isConduitRelaySettingsReady({
+    mode: session.mode,
+    identityReady,
+    relayScope: session.relayScope,
+    activatedRelayScope,
+  })
 
   const activeScopeRef = useRef<string | null>(null)
   const profileRelayScopeRef = useRef<string | null>(null)
@@ -111,7 +111,7 @@ export function ConduitSessionProvider({
       return
     }
 
-    if (!identityReady || !networkPreferencesReady) {
+    if (!identityReady) {
       if (
         shouldCloseProtectedConnectionsForScopeTransition(
           activeScopeRef.current,
@@ -142,7 +142,7 @@ export function ConduitSessionProvider({
 
     activeScopeRef.current = session.relayScope
     setActivatedRelayScope(session.relayScope)
-  }, [identityReady, networkPreferencesReady, session.relayScope])
+  }, [identityReady, session.relayScope])
 
   useEffect(() => {
     const profileScope =

@@ -120,6 +120,8 @@ export interface RelayWritePlanInput {
   skipHealthFilter?: boolean
   /** Override write settings (test seam). */
   settings?: RelaySettingsState
+  /** A reconciled signed owner projection supersedes the arbitrary-author cache. */
+  signedRelayListAuthoritative?: boolean
   /** Now in ms (test seam). */
   now?: number
 }
@@ -296,11 +298,14 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
     switch (input.intent) {
       case "commerce_products":
       case "author_products":
+        // NIP-65 membership describes the account's preferred read relays. It
+        // is not a global offline switch for code-owned public commerce
+        // discovery, which remains a separate bounded capability.
         return getCommerceReadRelayUrls(
           settingsPlanOptions({
             settings: input.settings,
             fallbackRelayUrls: commerceReadFallbackRelayUrls(),
-            signedRelayListAuthoritative: input.signedRelayListAuthoritative,
+            signedRelayListAuthoritative: false,
           })
         )
       case "dm_inbox":
@@ -406,12 +411,25 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
         )
 
   if (input.intent === "author_event") {
-    const authorWriteHints = hintReadRelaysForAuthors(
-      input.authorPubkey ? [input.authorPubkey] : [],
-      input.relayLists,
-      input.authenticatedPubkey
+    const authorPubkey = input.authorPubkey?.trim().toLowerCase()
+    const authenticatedPubkey = input.authenticatedPubkey?.trim().toLowerCase()
+    const hasReconciledOwnerProjection = Boolean(
+      input.signedRelayListAuthoritative &&
+      authorPubkey &&
+      authorPubkey === authenticatedPubkey
     )
-    const ordered = dedupeOrdered([...authorWriteHints, ...userWriteRelays])
+    const authorWriteHints = hasReconciledOwnerProjection
+      ? []
+      : hintReadRelaysForAuthors(
+          input.authorPubkey ? [input.authorPubkey] : [],
+          input.relayLists,
+          input.authenticatedPubkey
+        )
+    const ordered = dedupeOrdered(
+      hasReconciledOwnerProjection
+        ? userWriteRelays
+        : [...authorWriteHints, ...userWriteRelays]
+    )
     const { kept, parked } = applyHealthFilter(
       ordered,
       input.skipHealthFilter,
@@ -494,7 +512,12 @@ export function planRelaysWithSnapshot(scope?: string | null): {
   planReads: (
     input: Omit<RelayReadPlanInput, "settings" | "signedRelayListAuthoritative">
   ) => RelayReadPlan
-  planWrites: (input: Omit<RelayWritePlanInput, "settings">) => RelayWritePlan
+  planWrites: (
+    input: Omit<
+      RelayWritePlanInput,
+      "settings" | "signedRelayListAuthoritative"
+    >
+  ) => RelayWritePlan
 } {
   const snapshot = loadRelaySettingsPlanningSnapshot(scope)
   return {
@@ -506,6 +529,10 @@ export function planRelaysWithSnapshot(scope?: string | null): {
         signedRelayListAuthoritative: snapshot.signedRelayListAuthoritative,
       }),
     planWrites: (input) =>
-      planRelayWrites({ ...input, settings: snapshot.settings }),
+      planRelayWrites({
+        ...input,
+        settings: snapshot.settings,
+        signedRelayListAuthoritative: snapshot.signedRelayListAuthoritative,
+      }),
   }
 }

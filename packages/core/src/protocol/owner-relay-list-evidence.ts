@@ -86,9 +86,11 @@ export interface OwnerRelayListObservation {
 export interface OwnerRelayListResolution {
   pubkey: NormalizedOwnerRelayListPubkey
   state: OwnerRelayListResolutionState
+  /** Current preferences, or the retained non-malformed projection when malformed. */
   preferences: RelayPreference[]
   stale: boolean
   current?: OwnerRelayListEventEvidence
+  lastUsable?: OwnerRelayListEventEvidence
   lookup: OwnerRelayListLookupEvidence
   observation: OwnerRelayListObservation
 }
@@ -297,6 +299,16 @@ function mergeEventEvidence(
   return structuredClone(candidate)
 }
 
+function mergeLastUsableEvidence(
+  current: OwnerRelayListEventEvidence | undefined,
+  candidate: OwnerRelayListEventEvidence
+): OwnerRelayListEventEvidence | undefined {
+  if (candidate.state === "malformed") {
+    return current ? structuredClone(current) : undefined
+  }
+  return mergeEventEvidence(current, candidate)
+}
+
 function createLookupEvidence(
   input: ReconcileOwnerRelayListEvidenceInput["lookup"]
 ): OwnerRelayListLookupEvidence {
@@ -373,9 +385,35 @@ function validateRetainedRecord(
         now
       )
     : undefined
+  let lastUsable = record.lastUsable
+    ? eventEvidenceFromObservation(
+        pubkey,
+        {
+          signedEvent: record.lastUsable.signedEvent,
+          sourceRelayUrls: record.lastUsable.sourceRelayUrls,
+          observedAt: record.lastUsable.observedAt,
+          completeObservedAt: record.lastUsable.completeObservedAt,
+        },
+        now
+      )
+    : undefined
+  if (lastUsable?.state === "malformed") {
+    throw new Error("Owner relay-list last usable evidence cannot be malformed")
+  }
+  if (
+    current &&
+    lastUsable &&
+    compareReplaceableFrontier(lastUsable.signedEvent, current.signedEvent) > 0
+  ) {
+    throw new Error("Owner relay-list last usable evidence cannot be newer")
+  }
+  if (current && current.state !== "malformed") {
+    lastUsable = mergeLastUsableEvidence(lastUsable, current)
+  }
   return {
     pubkey,
     current,
+    lastUsable,
     latestLookup: createLookupEvidence(record.latestLookup),
     cachedAt: assertTimestamp(record.cachedAt, "Owner relay-list cachedAt"),
   }
@@ -397,11 +435,13 @@ export function applyOwnerRelayListEvidenceReconciliation(
   let current = retained?.current
     ? structuredClone(retained.current)
     : undefined
+  let lastUsable = retained?.lastUsable
+    ? structuredClone(retained.lastUsable)
+    : undefined
   for (const observation of input.observations ?? []) {
-    current = mergeEventEvidence(
-      current,
-      eventEvidenceFromObservation(pubkey, observation, now)
-    )
+    const candidate = eventEvidenceFromObservation(pubkey, observation, now)
+    current = mergeEventEvidence(current, candidate)
+    lastUsable = mergeLastUsableEvidence(lastUsable, candidate)
   }
   const latestLookup = mergeLookupEvidence(
     retained?.latestLookup,
@@ -411,6 +451,7 @@ export function applyOwnerRelayListEvidenceReconciliation(
   return {
     pubkey,
     current,
+    lastUsable,
     latestLookup,
     cachedAt: Math.max(
       retained?.cachedAt ?? 0,
@@ -506,18 +547,24 @@ async function withReconciliationLock<T>(
   }
 }
 
-function recordObservation(
+function recordObservations(
   record: OwnerRelayListEvidenceRecord | undefined
 ): OwnerRelayListEventObservation[] {
   if (!record?.current) return []
-  return [
-    {
-      signedEvent: record.current.signedEvent,
-      sourceRelayUrls: record.current.sourceRelayUrls,
-      observedAt: record.current.observedAt,
-      completeObservedAt: record.current.completeObservedAt,
-    },
-  ]
+  const evidence = []
+  if (
+    record.lastUsable &&
+    record.lastUsable.signedEvent.id !== record.current.signedEvent.id
+  ) {
+    evidence.push(record.lastUsable)
+  }
+  evidence.push(record.current)
+  return evidence.map((entry) => ({
+    signedEvent: entry.signedEvent,
+    sourceRelayUrls: entry.sourceRelayUrls,
+    observedAt: entry.observedAt,
+    completeObservedAt: entry.completeObservedAt,
+  }))
 }
 
 function mergeEvidenceRecords(
@@ -526,7 +573,7 @@ function mergeEvidenceRecords(
 ): OwnerRelayListEvidenceRecord {
   return applyOwnerRelayListEvidenceReconciliation(current, {
     pubkey: candidate.pubkey,
-    observations: recordObservation(candidate),
+    observations: recordObservations(candidate),
     lookup: candidate.latestLookup,
     cachedAt: candidate.cachedAt,
   })
@@ -585,7 +632,7 @@ export async function reconcileOwnerRelayListEvidence(
       ...input,
       pubkey: normalized,
       observations: [
-        ...recordObservation(baseline),
+        ...recordObservations(baseline),
         ...(input.observations ?? []),
       ],
     }
@@ -726,13 +773,23 @@ function resolutionFromRecord(
       : record.latestLookup.coverage === "partial"
         ? "lookup_partial"
         : "lookup_unavailable"
+  const usable =
+    current?.state === "declared"
+      ? current
+      : current?.state === "malformed"
+        ? record.lastUsable
+        : undefined
   return {
     pubkey: record.pubkey,
     state,
-    preferences:
-      current?.state === "declared" ? structuredClone(current.preferences) : [],
-    stale: Boolean(current && !confirmsCurrent),
+    preferences: usable ? structuredClone(usable.preferences) : [],
+    stale: Boolean(
+      current && (!confirmsCurrent || current.state === "malformed")
+    ),
     current: current ? structuredClone(current) : undefined,
+    lastUsable: record.lastUsable
+      ? structuredClone(record.lastUsable)
+      : undefined,
     lookup: { ...record.latestLookup },
     observation,
   }

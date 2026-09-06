@@ -4,17 +4,21 @@ import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
   __resetRelayListTestOverrides,
   __resetRelayPublishTestOverrides,
+  __resetAccountRelaySettingsProjectionsForTests,
   __setRelayListTestOverrides,
   __setRelayPublishTestOverrides,
   applyE2eRelayIsolation,
   CANONICAL_APP_WRITE_RELAYS,
   CANONICAL_COMMERCE_DISCOVERY_RELAYS,
   config,
+  createRelaySettingsFromPreferences,
   deriveRelayOutcomes,
   EVENT_KINDS,
   planPublishRelays,
   publishSignedEventToRelay,
   publishWithPlanner,
+  setAccountRelaySettingsProjection,
+  setActiveRelaySettingsScope,
   type RelayList,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
@@ -209,6 +213,8 @@ describe("planPublishRelays", () => {
     Object.assign(config, structuredClone(originalConfig))
     __resetRelayListTestOverrides()
     __resetRelayPublishTestOverrides()
+    __resetAccountRelaySettingsProjectionsForTests()
+    setActiveRelaySettingsScope(null)
     __resetNdkTestState()
   })
 
@@ -221,6 +227,45 @@ describe("planPublishRelays", () => {
     expect(plan.broadcastRelayUrls).toEqual([])
     // primary may be empty when user has no configured write relays.
     expect(Array.isArray(plan.primaryRelayUrls)).toBe(true)
+  })
+
+  it("prefers the reconciled owner projection over stale self-cache hints", async () => {
+    const relayScope = `account:${AUTHOR_PUBKEY}`
+    const currentRelayUrl = "wss://current-owner.example"
+    const staleRelayUrls = Array.from(
+      { length: 4 },
+      (_, index) => `wss://stale-owner-${index}.example`
+    )
+    setAccountRelaySettingsProjection(
+      relayScope,
+      createRelaySettingsFromPreferences(
+        [
+          {
+            url: currentRelayUrl,
+            readEnabled: true,
+            writeEnabled: true,
+          },
+        ],
+        "published"
+      ),
+      { signedRelayListAuthoritative: true }
+    )
+    setActiveRelaySettingsScope(`account:${"f".repeat(64)}`)
+    __setRelayListTestOverrides({
+      now: () => NOW,
+      loadCached: async (pubkey) =>
+        pubkey === AUTHOR_PUBKEY
+          ? relayList(AUTHOR_PUBKEY, { writeRelayUrls: staleRelayUrls })
+          : undefined,
+    })
+
+    const plan = await planPublishRelays({
+      intent: "author_event",
+      authorPubkey: AUTHOR_PUBKEY,
+      authenticatedPubkey: AUTHOR_PUBKEY,
+    })
+
+    expect(plan.primaryRelayUrls).toEqual([currentRelayUrl])
   })
 
   it("merges recipient read relays into a recipient_event primary set", async () => {

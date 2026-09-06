@@ -17,6 +17,7 @@ import {
   createRelaySettingsFromPreferences,
   getRelaySettingsStorageKey,
   loadRelaySettings,
+  normalizeSecureOrIsolatedE2eRelayUrls,
   normalizeRelaySettingsState,
   setAccountRelaySettingsProjection,
   tryNormalizeRelayUrl,
@@ -224,7 +225,8 @@ function readLegacyRelaySettingsSnapshot(
   for (const entry of byUrl.values()) {
     if (entry.readEnabled) readRelayUrls.push(entry.url)
   }
-  readRelayUrls.sort()
+  const eligibleReadRelayUrls =
+    normalizeSecureOrIsolatedE2eRelayUrls(readRelayUrls).sort()
   return {
     legacyKeys: candidates.map((candidate) => candidate.key),
     draft: normalizeRelaySettingsState({
@@ -232,7 +234,7 @@ function readLegacyRelaySettingsSnapshot(
       entries: Array.from(byUrl.values()),
       updatedAt,
     }),
-    readRelayUrls: readRelayUrls.slice(
+    readRelayUrls: eligibleReadRelayUrls.slice(
       0,
       MAX_LEGACY_INBOX_READ_RECOVERY_RELAYS
     ),
@@ -240,12 +242,14 @@ function readLegacyRelaySettingsSnapshot(
 }
 
 function serializeLegacyReadRecovery(readRelayUrls: readonly string[]): string {
+  const eligibleReadRelayUrls = normalizeSecureOrIsolatedE2eRelayUrls(
+    readRelayUrls
+  )
+    .sort()
+    .slice(0, MAX_LEGACY_INBOX_READ_RECOVERY_RELAYS)
   const record: LegacyRelayReadRecoveryRecord = {
     version: LEGACY_RELAY_READ_RECOVERY_VERSION,
-    readRelayUrls: [...readRelayUrls].slice(
-      0,
-      MAX_LEGACY_INBOX_READ_RECOVERY_RELAYS
-    ),
+    readRelayUrls: eligibleReadRelayUrls,
   }
   return JSON.stringify(record)
 }
@@ -266,15 +270,12 @@ function parseLegacyReadRecovery(
       return null
     }
     const readRelayUrls = parsed.readRelayUrls as string[]
-    const normalized = readRelayUrls.map((url) => tryNormalizeRelayUrl(url))
+    const normalized = normalizeSecureOrIsolatedE2eRelayUrls(readRelayUrls)
     if (
-      normalized.some((result) => !result.ok) ||
-      normalized.some(
-        (result, index) => result.ok && result.url !== readRelayUrls[index]
-      )
-    ) {
+      normalized.length !== readRelayUrls.length ||
+      normalized.some((url, index) => url !== readRelayUrls[index])
+    )
       return null
-    }
     if (new Set(readRelayUrls).size !== readRelayUrls.length) return null
     const sortedReadRelayUrls = [...readRelayUrls].sort()
     if (
@@ -406,6 +407,17 @@ function isCompleteOwnerRelayListAbsence(
   )
 }
 
+function hasEligibleSignedOwnerProjection(
+  resolution: OwnerRelayListResolution
+): boolean {
+  return Boolean(
+    resolution.current &&
+    (resolution.current.state === "declared" ||
+      resolution.current.state === "signed_empty" ||
+      (resolution.current.state === "malformed" && resolution.lastUsable))
+  )
+}
+
 function retireLegacyRelaySettingsKeys(
   pubkey: string,
   storage: LegacyRelaySettingsStorage
@@ -504,7 +516,9 @@ export function migrateLegacyRelaySettingsDraft(input: {
   }
 
   try {
-    const hasSignedRelayList = Boolean(input.ownerRelayList.current)
+    const hasSignedRelayList = hasEligibleSignedOwnerProjection(
+      input.ownerRelayList
+    )
     const markerKey = migrationMarkerKey(pubkey)
     const recoveryKey = legacyReadRecoveryKey(pubkey)
     const markerRaw = storage.getItem(markerKey)
@@ -793,7 +807,10 @@ export async function reconcileAccountNetworkPreferences(
   setAccountRelaySettingsProjection(
     accountScope,
     projection.runtimeRelaySettings,
-    { signedRelayListAuthoritative: Boolean(ownerRelayList.current) }
+    {
+      signedRelayListAuthoritative:
+        hasEligibleSignedOwnerProjection(ownerRelayList),
+    }
   )
   return {
     projection,

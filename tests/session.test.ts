@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test"
 import {
   createRelaySettingsFromPreferences,
   getRelaySettingsStorageKey,
+  isConduitRelaySettingsReady,
   loadRelaySettings,
   resolveConduitSession,
   saveRelaySettings,
@@ -41,6 +42,25 @@ afterEach(() => {
 })
 
 describe("Conduit session scopes", () => {
+  it("does not gate an activated relay scope on fresh Network reconciliation", () => {
+    expect(
+      isConduitRelaySettingsReady({
+        mode: "signed_in",
+        identityReady: true,
+        relayScope: "account:alice",
+        activatedRelayScope: "account:alice",
+      })
+    ).toBe(true)
+    expect(
+      isConduitRelaySettingsReady({
+        mode: "signed_in",
+        identityReady: false,
+        relayScope: "account:alice",
+        activatedRelayScope: "account:alice",
+      })
+    ).toBe(false)
+  })
+
   it("resolves Market guest and signed-in relay scopes", () => {
     expect(
       resolveConduitSession({ appId: "market", allowGuest: true })

@@ -9,6 +9,7 @@ import {
   __resetInboxDeclarationCache,
   canRelaySettingsChangeControlRuntime,
   clearLegacyRelayReadRecovery,
+  config,
   createRelaySettingsFromPreferences,
   DEFAULT_READ_FANOUT,
   getAccountRelayScope,
@@ -28,6 +29,7 @@ import {
   migrateLegacyRelaySettingsDraft,
   normalizeOwnerRelayListPubkey,
   planInboxReadRelays,
+  planRelayReads,
   planRelaysWithSnapshot,
   prepareAccountNetworkPreferencesPresentation,
   projectAccountNetworkPreferences,
@@ -364,7 +366,7 @@ describe("account Network preferences", () => {
     ])
   })
 
-  it("notifies when an empty account projection gains signed authority", () => {
+  it("keeps an initial fallback-equivalent projection silent and notifies when it gains signed authority", () => {
     const changes: string[] = []
     const unsubscribe = subscribeRelaySettingsChanges((_scope, source) => {
       changes.push(source)
@@ -389,7 +391,7 @@ describe("account Network preferences", () => {
       unsubscribe()
     }
 
-    expect(changes).toEqual(["signed_projection", "signed_projection"])
+    expect(changes).toEqual(["signed_projection"])
   })
 
   it("defers legacy cleanup on partial evidence, then seeds one account draft after complete absence", () => {
@@ -610,6 +612,78 @@ describe("account Network preferences", () => {
       legacyReadRelayUrls[1],
     ])
     expect(plan.relaySources[required]).toBe("compatibility")
+  })
+
+  it("filters insecure legacy reads before capping and retires them only after verified recovery", () => {
+    const storage = new FaultInjectingStorage()
+    const legacyKey = getRelaySettingsStorageKey(`market:${OWNER}`)
+    const insecureRelayUrls = Array.from(
+      { length: MAX_LEGACY_INBOX_READ_RECOVERY_RELAYS },
+      (_, index) => `ws://legacy-${String(index).padStart(2, "0")}.example`
+    )
+    const secureRelayUrl = "wss://legacy-secure.example"
+    storage.setItem(
+      legacyKey,
+      JSON.stringify({
+        ...createRelaySettingsFromPreferences(
+          [...insecureRelayUrls, secureRelayUrl].map((url) => ({
+            url,
+            readEnabled: true,
+            writeEnabled: false,
+          })),
+          "manual"
+        ),
+        updatedAt: 42,
+      })
+    )
+    storage.arm({ operation: "set", call: 2 })
+
+    expect(
+      migrateLegacyRelaySettingsDraft({
+        pubkey: OWNER,
+        accountScope: ACCOUNT_SCOPE,
+        ownerRelayList: ownerResolution(),
+        storage,
+      })
+    ).toBe("retryable")
+    expect(storage.getItem(legacyKey)).not.toBeNull()
+    expect(getCommittedLegacyRelayReadRecovery(OWNER, storage)).toBeNull()
+
+    storage.clearFault()
+    expect(
+      migrateLegacyRelaySettingsDraft({
+        pubkey: OWNER,
+        accountScope: ACCOUNT_SCOPE,
+        ownerRelayList: ownerResolution(),
+        storage,
+      })
+    ).toBe("seeded_draft")
+    expect(getCommittedLegacyRelayReadRecovery(OWNER, storage)).toEqual({
+      version: 1,
+      readRelayUrls: [secureRelayUrl],
+    })
+    expect(storage.getItem(legacyKey)).toBeNull()
+  })
+
+  it("does not retire legacy settings for a malformed frontier without usable signed evidence", () => {
+    const storage = new MemoryStorage()
+    const legacyKey = seedLegacyRelaySettings(storage)
+    const malformed = signedRelayListResolution({
+      state: "malformed",
+      tags: [["r", "not a relay"]],
+      preferences: [],
+    })
+
+    expect(
+      migrateLegacyRelaySettingsDraft({
+        pubkey: OWNER,
+        accountScope: ACCOUNT_SCOPE,
+        ownerRelayList: malformed,
+        storage,
+      })
+    ).toBe("deferred")
+    expect(storage.getItem(legacyKey)).not.toBeNull()
+    expect(getCommittedLegacyRelayReadRecovery(OWNER, storage)).toBeNull()
   })
 
   it("retires legacy keys without letting unsigned state override signed evidence", () => {
@@ -1032,7 +1106,7 @@ describe("account Network preferences", () => {
     })
   })
 
-  it("keeps a signed-empty relay list authoritative for generic read planning", async () => {
+  it("keeps signed-empty account reads empty while public commerce discovery remains available", async () => {
     const storage = new MemoryStorage()
     await reconcileAccountNetworkPreferences(OWNER, {
       relayUrls: ["wss://shared.example"],
@@ -1065,6 +1139,18 @@ describe("account Network preferences", () => {
         skipHealthFilter: true,
       }).relayUrls
     ).toEqual([])
+    expect(
+      planRelaysWithSnapshot(ACCOUNT_SCOPE).planReads({
+        intent: "commerce_products",
+        skipHealthFilter: true,
+      }).relayUrls
+    ).toContain(config.commerceDiscoveryRelayUrls[0])
+    expect(
+      planRelayReads({
+        intent: "commerce_products",
+        skipHealthFilter: true,
+      }).relayUrls
+    ).toContain(config.commerceDiscoveryRelayUrls[0])
   })
 
   it("keeps a signed Write-only relay list empty for generic reads", async () => {
@@ -1100,12 +1186,20 @@ describe("account Network preferences", () => {
         fallbackRelayUrls: [],
       })
     ).toEqual([writeOnlyUrl])
-    expect(
-      planRelaysWithSnapshot(ACCOUNT_SCOPE).planReads({
-        intent: "commerce_products",
-        skipHealthFilter: true,
-      }).relayUrls
-    ).toEqual([])
+    const commerceRelayUrls = planRelaysWithSnapshot(ACCOUNT_SCOPE).planReads({
+      intent: "commerce_products",
+      skipHealthFilter: true,
+    }).relayUrls
+    expect(commerceRelayUrls).toContain(config.commerceDiscoveryRelayUrls[0])
+    expect(commerceRelayUrls).not.toContain(writeOnlyUrl)
+    const activeCommerceRelayUrls = planRelayReads({
+      intent: "commerce_products",
+      skipHealthFilter: true,
+    }).relayUrls
+    expect(activeCommerceRelayUrls).toContain(
+      config.commerceDiscoveryRelayUrls[0]
+    )
+    expect(activeCommerceRelayUrls).not.toContain(writeOnlyUrl)
   })
 
   it("uses bounded bootstrap reads when no signed relay-list evidence exists", async () => {
@@ -1129,6 +1223,74 @@ describe("account Network preferences", () => {
     })
     expect(plan.relayUrls.length).toBeGreaterThan(0)
     expect(plan.relayUrls.length).toBeLessThanOrEqual(DEFAULT_READ_FANOUT)
+  })
+
+  it("projects a malformed frontier from its retained last-usable signed preferences", async () => {
+    const storage = new MemoryStorage()
+    const declared = signedOwnerResolution()
+    const malformedEvent = relayEvent(101, [["r", "not a relay"]])
+    const malformed = ownerResolution({
+      state: "malformed",
+      preferences: declared.preferences,
+      stale: true,
+      current: {
+        state: "malformed",
+        signedEvent: malformedEvent,
+        preferences: [],
+        sourceRelayUrls: ["wss://discovery.example"],
+        observedAt: 2_000,
+        completeObservedAt: 2_000,
+        invalidRelayTagCount: 1,
+        duplicateRelayTagCount: 0,
+      },
+      lastUsable: declared.current,
+      lookup: {
+        observedAt: 2_000,
+        coverage: "complete",
+        hadEvent: true,
+        eventId: malformedEvent.id,
+      },
+    })
+    const reconciliation = await reconcileAccountNetworkPreferences(OWNER, {
+      relayUrls: ["wss://discovery.example"],
+      storage,
+      resolveOwner: async () => malformed,
+      resolveInbox: async () => inboxResolution(),
+    })
+
+    expect(reconciliation.projection.relayListState).toBe("malformed")
+    expect(reconciliation.projection.relayListStale).toBe(true)
+    expect(
+      reconciliation.projection.runtimeRelaySettings.entries.map(
+        (entry) => entry.url
+      )
+    ).toEqual(["wss://signed.example"])
+    expect(
+      getGeneralReadRelayUrls({
+        scope: ACCOUNT_SCOPE,
+        fallbackRelayUrls: ["wss://bootstrap.example"],
+      })
+    ).toEqual(["wss://signed.example"])
+    expect(
+      planRelaysWithSnapshot(ACCOUNT_SCOPE).planWrites({
+        intent: "author_event",
+        authorPubkey: OWNER,
+        authenticatedPubkey: OWNER,
+        relayLists: new Map([
+          [
+            OWNER,
+            {
+              pubkey: OWNER,
+              readRelayUrls: [],
+              writeRelayUrls: ["wss://stale-cache.example"],
+              eventCreatedAt: 1,
+              cachedAt: 1,
+            },
+          ],
+        ]),
+        skipHealthFilter: true,
+      }).primaryRelayUrls
+    ).toEqual(["wss://signed.example"])
   })
 
   it("clears recovery idempotently and preserves a user-edited draft unless explicitly discarded", () => {

@@ -317,7 +317,10 @@ export interface OwnerRelayListEventEvidence {
 
 export interface OwnerRelayListEvidenceRecord {
   pubkey: NormalizedOwnerRelayListPubkey
+  /** Canonical NIP-01 frontier, including signed-empty or malformed events. */
   current?: OwnerRelayListEventEvidence
+  /** Latest non-malformed signed projection retained when `current` is malformed. */
+  lastUsable?: OwnerRelayListEventEvidence
   latestLookup: OwnerRelayListLookupEvidence
   cachedAt: number
 }

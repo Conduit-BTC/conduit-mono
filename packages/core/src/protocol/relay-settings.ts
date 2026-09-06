@@ -474,6 +474,7 @@ function getPlanningSnapshot(
     return {
       settings: normalizeRelaySettingsState(accountProjection.settings),
       signedRelayListAuthoritative:
+        options.signedRelayListAuthoritative ??
         accountProjection.signedRelayListAuthoritative,
     }
   }
@@ -1211,9 +1212,10 @@ export function setAccountRelaySettingsProjection(
   // again. Reconfigure live connections only when the ordered, planner-facing
   // relay projection itself changes.
   if (
-    JSON.stringify(existing?.settings.entries) !==
+    JSON.stringify(existing?.settings.entries ?? []) !==
       JSON.stringify(normalized.entries) ||
-    existing?.signedRelayListAuthoritative !== signedRelayListAuthoritative
+    (existing?.signedRelayListAuthoritative ?? false) !==
+      signedRelayListAuthoritative
   ) {
     notifyRelaySettingsChanged(normalizedScope, "signed_projection")
   }
