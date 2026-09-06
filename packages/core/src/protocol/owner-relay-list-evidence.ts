@@ -102,6 +102,10 @@ export interface ResolveOwnerRelayListOptions {
   now?: () => number
 }
 
+export interface ReadRetainedOwnerRelayListOptions {
+  evidenceRepository?: OwnerRelayListEvidenceRepository
+}
+
 interface ParsedRelayPreferences {
   preferences: RelayPreference[]
   relayTagCount: number
@@ -792,6 +796,36 @@ function resolutionFromRecord(
       : undefined,
     lookup: { ...record.latestLookup },
     observation,
+  }
+}
+
+/** Read and validate retained owner evidence without performing relay I/O. */
+export async function readRetainedOwnerRelayList(
+  pubkey: string,
+  options: ReadRetainedOwnerRelayListOptions = {}
+): Promise<OwnerRelayListResolution | null> {
+  const normalized = normalizeOwnerRelayListPubkey(pubkey)
+  if (!normalized) return null
+  const record = await getOwnerRelayListEvidence(
+    normalized,
+    options.evidenceRepository
+  )
+  // A prior scoped absence is not durable positive authority for a new
+  // session. Only a validated signed frontier is useful before fresh lookup.
+  if (!record?.current) return null
+  const resolution = resolutionFromRecord(record, {
+    coverage: "unavailable",
+    attemptedRelayUrls: [],
+    successfulRelayUrls: [],
+    failedRelayUrls: [],
+    cappedRelayUrls: [],
+    eventSourceRelayUrls: [],
+  })
+  return {
+    ...resolution,
+    // A durable frontier is safe to use, but a fresh connection has not yet
+    // confirmed it against this session's bounded relay plan.
+    stale: Boolean(resolution.current),
   }
 }
 

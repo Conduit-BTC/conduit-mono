@@ -8,14 +8,21 @@ import {
   type ReactNode,
 } from "react"
 import type { ConduitAppId } from "../protocol/nip89"
-import { disconnectNdk, refreshNdkRelaySettings } from "../protocol/ndk"
+import {
+  disconnectNdk,
+  refreshNdkRelaySettings,
+  refreshNdkRelaySettingsWhenIdle,
+} from "../protocol/ndk"
 import {
   canRelaySettingsChangeControlRuntime,
   getActiveRelaySettingsScope,
   subscribeRelaySettingsChanges,
   setActiveRelaySettingsScope,
 } from "../protocol/relay-settings"
-import { closeAllProtectedRelayConnections } from "../protocol/relay-executor"
+import {
+  closeAllProtectedRelayConnections,
+  closeProtectedRelayConnectionsWhenIdle,
+} from "../protocol/relay-executor"
 import {
   isConduitRelaySettingsReady,
   resolveConduitSession,
@@ -73,16 +80,23 @@ export function ConduitSessionProvider({
     hasProfileName(profileQuery.data) ||
     (!profileQuery.isLoading && !profileQuery.isFetching)
 
-  useAccountNetworkPreferences(
-    session.pubkey,
-    session.mode === "signed_in" && !!session.relayScope
-  )
   const [activatedRelayScope, setActivatedRelayScope] = useState<string | null>(
     null
   )
+  const accountNetworkPreferencesEnabled =
+    session.mode === "signed_in" && !!session.relayScope
+  const accountNetworkPreferences = useAccountNetworkPreferences(
+    session.pubkey,
+    accountNetworkPreferencesEnabled,
+    accountNetworkPreferencesEnabled &&
+      activatedRelayScope === session.relayScope
+  )
+  const localRelayAuthorityReady =
+    session.mode === "guest" || accountNetworkPreferences.localReady
   const relaySettingsReady = isConduitRelaySettingsReady({
     mode: session.mode,
     identityReady,
+    localAuthorityReady: localRelayAuthorityReady,
     relayScope: session.relayScope,
     activatedRelayScope,
   })
@@ -111,7 +125,7 @@ export function ConduitSessionProvider({
       return
     }
 
-    if (!identityReady) {
+    if (!identityReady || !localRelayAuthorityReady) {
       if (
         shouldCloseProtectedConnectionsForScopeTransition(
           activeScopeRef.current,
@@ -136,13 +150,22 @@ export function ConduitSessionProvider({
       closeAllProtectedRelayConnections()
     }
 
-    if (getActiveRelaySettingsScope() !== session.relayScope) {
-      refreshNdkRelaySettings(session.relayScope)
+    const runtimeScope = getActiveRelaySettingsScope()
+    if (runtimeScope !== session.relayScope) {
+      // Child route effects can begin their first read before this parent
+      // activation effect runs. With no prior runtime scope to revoke, defer
+      // connection retirement so cold-start hydration cannot interrupt that
+      // otherwise valid work. Real identity transitions were revoked above.
+      if (activeScopeRef.current === null && runtimeScope === null) {
+        refreshNdkRelaySettingsWhenIdle(session.relayScope)
+      } else {
+        refreshNdkRelaySettings(session.relayScope)
+      }
     }
 
     activeScopeRef.current = session.relayScope
     setActivatedRelayScope(session.relayScope)
-  }, [identityReady, session.relayScope])
+  }, [identityReady, localRelayAuthorityReady, session.relayScope])
 
   useEffect(() => {
     const profileScope =
@@ -173,9 +196,11 @@ export function ConduitSessionProvider({
       if (!scope || scope !== activeScopeRef.current) return
       if (!canRelaySettingsChangeControlRuntime(scope, source)) return
       if (source === "signed_projection") {
-        closeAllProtectedRelayConnections()
+        closeProtectedRelayConnectionsWhenIdle()
+        refreshNdkRelaySettingsWhenIdle(scope)
+      } else {
+        refreshNdkRelaySettings(scope)
       }
-      refreshNdkRelaySettings(scope)
       if (profileRefreshReadyRef.current) void refetchProfile()
     })
   }, [refetchProfile])

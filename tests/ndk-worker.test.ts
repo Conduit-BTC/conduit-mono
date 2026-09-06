@@ -15,6 +15,7 @@ import {
   fetchEventsFanout,
   fetchEventsFanoutDetailed,
   getRelayHealth,
+  refreshNdkRelaySettingsWhenIdle,
   verifySignedPublicNostrEvents,
 } from "@conduit/core"
 
@@ -204,6 +205,99 @@ describe("NDK relay worker verification fallback", () => {
     )
 
     expect(openedRelayUrls).toEqual([isolatedRelayUrl])
+  })
+
+  it("lets an active relay read finish before a settings refresh closes its socket", async () => {
+    const validEvent = finalizeEvent(
+      {
+        kind: EVENT_KINDS.PROFILE,
+        created_at: 10,
+        tags: [],
+        content: JSON.stringify({ name: "retained read" }),
+      },
+      generateSecretKey()
+    )
+    let requestSubscriptionId: string | null = null
+    let requestStarted!: () => void
+    const request = new Promise<void>((resolve) => {
+      requestStarted = resolve
+    })
+
+    class DeferredWebSocket {
+      static CONNECTING = 0
+      static OPEN = 1
+      static CLOSING = 2
+      static CLOSED = 3
+
+      readyState = DeferredWebSocket.CONNECTING
+      onopen: ((event: Event) => void) | null = null
+      onmessage: ((event: MessageEvent<string>) => void) | null = null
+      onerror: ((event: Event) => void) | null = null
+      onclose: ((event: Event) => void) | null = null
+      closed = false
+
+      constructor() {
+        queueMicrotask(() => {
+          this.readyState = DeferredWebSocket.OPEN
+          this.onopen?.(new Event("open"))
+        })
+      }
+
+      send(payload: string): void {
+        const frame = JSON.parse(payload) as [string, string]
+        if (frame[0] !== "REQ") return
+        requestSubscriptionId = frame[1]
+        requestStarted()
+      }
+
+      finish(): void {
+        const subscriptionId = requestSubscriptionId
+        if (!subscriptionId) throw new Error("Expected an active relay request")
+        this.onmessage?.({
+          data: JSON.stringify(["EVENT", subscriptionId, validEvent]),
+        } as MessageEvent<string>)
+        this.onmessage?.({
+          data: JSON.stringify(["EOSE", subscriptionId]),
+        } as MessageEvent<string>)
+      }
+
+      close(): void {
+        if (this.closed) return
+        this.closed = true
+        this.readyState = DeferredWebSocket.CLOSED
+        this.onclose?.(new Event("close"))
+      }
+    }
+
+    let socket: DeferredWebSocket | null = null
+    Object.defineProperty(globalThis, "WebSocket", {
+      configurable: true,
+      writable: true,
+      value: class extends DeferredWebSocket {
+        constructor() {
+          super()
+          socket = this
+        }
+      },
+    })
+
+    const read = fetchEventsFanoutDetailed(
+      { kinds: [EVENT_KINDS.PROFILE], limit: 1 },
+      {
+        relayUrls: ["wss://relay.example"],
+        skipHealthFilter: true,
+      }
+    )
+    await request
+
+    refreshNdkRelaySettingsWhenIdle("account:test")
+    expect(socket?.closed).toBe(false)
+    socket?.finish()
+
+    const result = await read
+    expect(result.relays[0]?.status).toBe("success")
+    expect(result.events.map((event) => event.id)).toEqual([validEvent.id])
+    expect(socket?.closed).toBe(true)
   })
 
   it("fails closed when the verification worker errors after postMessage", async () => {

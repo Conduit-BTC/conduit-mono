@@ -1,6 +1,7 @@
 import {
   accountNetworkDiscoveryRelayUrls,
   normalizeOwnerRelayListPubkey,
+  readRetainedOwnerRelayList,
   resolveOwnerRelayList,
   type OwnerRelayListResolution,
   type ResolveOwnerRelayListOptions,
@@ -8,6 +9,7 @@ import {
 import {
   clearInboxMigrationRecoveryRelayUrls,
   MAX_LEGACY_INBOX_READ_RECOVERY_RELAYS,
+  readRetainedInboxDeclaration,
   resolveInboxDeclaration,
   setInboxMigrationRecoveryRelayUrls,
   type InboxDeclarationResolution,
@@ -101,6 +103,18 @@ export interface ReconcileAccountNetworkPreferencesOptions {
   storage?: LegacyRelaySettingsStorage
   resolveOwner?: typeof resolveOwnerRelayList
   resolveInbox?: typeof resolveInboxDeclaration
+}
+
+export interface HydrateAccountNetworkPreferencesOptions {
+  ownerRelayList?: Pick<
+    ResolveOwnerRelayListOptions,
+    "evidenceRepository" | "now"
+  >
+  inboxDeclaration?: Pick<
+    ResolveInboxDeclarationOptions,
+    "evidenceRepository" | "now"
+  >
+  storage?: LegacyRelaySettingsStorage
 }
 
 function migrationMarkerKey(pubkey: string): string {
@@ -393,6 +407,27 @@ export function getCommittedLegacyRelayReadRecovery(
   try {
     return getCommittedLegacyRelayReadRecoveryStrict(normalized, storage)
   } catch {
+    return null
+  }
+}
+
+function loadAvailableLegacyRelayReadRecovery(
+  pubkey: string,
+  storage: LegacyRelaySettingsStorage
+): LegacyRelayReadRecoveryRecord | null {
+  const committed = getCommittedLegacyRelayReadRecovery(pubkey, storage)
+  if (committed || hasMigrationTombstone(pubkey, storage)) return committed
+  try {
+    const legacy = readLegacyRelaySettingsSnapshot(pubkey, storage)
+    return legacy.legacyKeys.length > 0
+      ? {
+          version: LEGACY_RELAY_READ_RECOVERY_VERSION,
+          readRelayUrls: legacy.readRelayUrls,
+        }
+      : null
+  } catch {
+    // The caller can continue without claiming that unreadable local state is
+    // absent. A later fresh reconciliation will retry the same storage path.
     return null
   }
 }
@@ -726,6 +761,108 @@ export function projectAccountNetworkPreferences(input: {
   }
 }
 
+function unavailableOwnerRelayList(
+  pubkey: NonNullable<ReturnType<typeof normalizeOwnerRelayListPubkey>>,
+  observedAt: number
+): OwnerRelayListResolution {
+  return {
+    pubkey,
+    state: "lookup_unavailable",
+    preferences: [],
+    stale: false,
+    lookup: {
+      observedAt,
+      coverage: "unavailable",
+      hadEvent: false,
+    },
+    observation: {
+      coverage: "unavailable",
+      attemptedRelayUrls: [],
+      successfulRelayUrls: [],
+      failedRelayUrls: [],
+      cappedRelayUrls: [],
+      eventSourceRelayUrls: [],
+    },
+  }
+}
+
+function unavailableInboxDeclaration(
+  pubkey: string,
+  fetchedAt: number
+): InboxDeclarationResolution {
+  return {
+    pubkey,
+    state: "lookup_unavailable",
+    relayUrls: [],
+    stale: false,
+    fetchedAt,
+  }
+}
+
+/**
+ * Install validated process authority from durable/local state before a
+ * signed-in relay scope becomes ready. This performs no relay I/O; the fresh
+ * reconciliation remains a separate background step.
+ */
+export async function hydrateAccountNetworkPreferences(
+  pubkey: string,
+  options: HydrateAccountNetworkPreferencesOptions = {}
+): Promise<AccountNetworkPreferencesReconciliation> {
+  const normalizedPubkey = normalizeOwnerRelayListPubkey(pubkey)
+  if (!normalizedPubkey) {
+    throw new Error("Account Network hydration requires a valid hex pubkey")
+  }
+  const accountScope = getAccountRelayScope(normalizedPubkey)
+  const observedAt = options.ownerRelayList?.now?.() ?? Date.now()
+  const [retainedOwnerRelayList, retainedInboxDeclaration] = await Promise.all([
+    readRetainedOwnerRelayList(normalizedPubkey, {
+      evidenceRepository: options.ownerRelayList?.evidenceRepository,
+    }).catch(() => null),
+    readRetainedInboxDeclaration(normalizedPubkey, {
+      evidenceRepository: options.inboxDeclaration?.evidenceRepository,
+      now: options.inboxDeclaration?.now,
+    }).catch(() => null),
+  ])
+  const ownerRelayList =
+    retainedOwnerRelayList ??
+    unavailableOwnerRelayList(normalizedPubkey, observedAt)
+  const inboxDeclaration =
+    retainedInboxDeclaration ??
+    unavailableInboxDeclaration(normalizedPubkey, observedAt)
+  const storage = options.storage ?? browserStorage()
+  const legacyReadRecovery = storage
+    ? loadAvailableLegacyRelayReadRecovery(normalizedPubkey, storage)
+    : null
+  const draft = storage
+    ? readRelaySettingsFromStorage(accountScope, storage)
+    : loadRelaySettings(accountScope)
+  const projection = projectAccountNetworkPreferences({
+    pubkey: normalizedPubkey,
+    relayScope: accountScope,
+    ownerRelayList,
+    inboxDeclaration,
+    draft,
+  })
+  setInboxMigrationRecoveryRelayUrls(
+    normalizedPubkey,
+    legacyReadRecovery?.readRelayUrls ?? []
+  )
+  setAccountRelaySettingsProjection(
+    accountScope,
+    projection.runtimeRelaySettings,
+    {
+      signedRelayListAuthoritative:
+        hasEligibleSignedOwnerProjection(ownerRelayList),
+    }
+  )
+  return {
+    projection,
+    ownerRelayList,
+    inboxDeclaration,
+    legacyMigration: "not_applicable",
+  }
+}
+
 export async function reconcileAccountNetworkPreferences(
   pubkey: string,
   options: ReconcileAccountNetworkPreferencesOptions = {}
@@ -764,31 +901,10 @@ export async function reconcileAccountNetworkPreferences(
   }
   let legacyReadRecovery: LegacyRelayReadRecoveryRecord | null = null
   if (storage) {
-    legacyReadRecovery = getCommittedLegacyRelayReadRecovery(
+    legacyReadRecovery = loadAvailableLegacyRelayReadRecovery(
       normalizedPubkey,
       storage
     )
-    if (
-      !legacyReadRecovery &&
-      !hasMigrationTombstone(normalizedPubkey, storage) &&
-      (legacyMigration === "deferred" || legacyMigration === "retryable")
-    ) {
-      try {
-        const legacy = readLegacyRelaySettingsSnapshot(
-          normalizedPubkey,
-          storage
-        )
-        if (legacy.legacyKeys.length > 0) {
-          legacyReadRecovery = {
-            version: LEGACY_RELAY_READ_RECOVERY_VERSION,
-            readRelayUrls: legacy.readRelayUrls,
-          }
-        }
-      } catch {
-        // The old keys remain the durable fallback. A storage read failure is
-        // not converted into absence or a partially committed recovery lane.
-      }
-    }
   }
   const draft = storage
     ? readRelaySettingsFromStorage(accountScope, storage)

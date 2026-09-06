@@ -42,11 +42,12 @@ afterEach(() => {
 })
 
 describe("Conduit session scopes", () => {
-  it("does not gate an activated relay scope on fresh Network reconciliation", () => {
+  it("waits for local authority without gating on fresh relay reconciliation", () => {
     expect(
       isConduitRelaySettingsReady({
         mode: "signed_in",
         identityReady: true,
+        localAuthorityReady: true,
         relayScope: "account:alice",
         activatedRelayScope: "account:alice",
       })
@@ -54,7 +55,17 @@ describe("Conduit session scopes", () => {
     expect(
       isConduitRelaySettingsReady({
         mode: "signed_in",
+        identityReady: true,
+        localAuthorityReady: false,
+        relayScope: "account:alice",
+        activatedRelayScope: "account:alice",
+      })
+    ).toBe(false)
+    expect(
+      isConduitRelaySettingsReady({
+        mode: "signed_in",
         identityReady: false,
+        localAuthorityReady: true,
         relayScope: "account:alice",
         activatedRelayScope: "account:alice",
       })

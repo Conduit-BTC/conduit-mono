@@ -75,6 +75,7 @@ export {
   verifySignedPublicNostrEvents,
   disconnectNdk,
   refreshNdkRelaySettings,
+  refreshNdkRelaySettingsWhenIdle,
   setSigner,
   removeSigner,
   __resetNdkTestState,

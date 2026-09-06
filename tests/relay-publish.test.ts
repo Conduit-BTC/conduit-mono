@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { NDKEvent } from "@nostr-dev-kit/ndk"
+import { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk"
 import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
   __resetRelayListTestOverrides,
@@ -24,7 +24,11 @@ import {
 } from "@conduit/core"
 import {
   __resetNdkTestState,
+  getNdk,
+  refreshNdkRelaySettingsWhenIdle,
   refreshNdkRelaySettings,
+  removeSigner,
+  setSigner,
 } from "../packages/core/src/protocol/ndk"
 
 const NOW = 1_700_000_000_000
@@ -868,6 +872,65 @@ describe("planPublishRelays", () => {
       expect(fakeWebSocket.counters).toEqual({ opened: 1, closed: 1 })
     } finally {
       fakeWebSocket.restore()
+    }
+  })
+
+  it("preserves the shared signer and NDK during a same-session publish refresh", async () => {
+    const relayUrl = "wss://same-session-publish.example"
+    let markPublishStarted!: () => void
+    let releasePublish = () => undefined
+    const publishStarted = new Promise<void>((resolve) => {
+      markPublishStarted = resolve
+    })
+    const publishBlocked = new Promise<void>((resolve) => {
+      releasePublish = resolve
+    })
+    const event = signedTestEvent({
+      publish: async (relaySet: unknown) => {
+        markPublishStarted()
+        await publishBlocked
+        const relayUrls = [
+          ...((relaySet as { relayUrls?: Set<string> | string[] }).relayUrls ??
+            []),
+        ]
+        return new Set(relayUrls.map((url) => ({ url })))
+      },
+    })
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "author_event",
+        primaryRelayUrls: [relayUrl],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+    const ndk = getNdk()
+    const signer = {
+      user: async () => ndk.getUser({ pubkey: AUTHOR_PUBKEY }),
+    } as NDKSigner
+    const signerLease = setSigner(signer)
+
+    try {
+      const publishing = publishWithPlanner(event, {
+        intent: "author_event",
+        authorPubkey: AUTHOR_PUBKEY,
+        authenticatedPubkey: AUTHOR_PUBKEY,
+      })
+      await publishStarted
+
+      expect(event.ndk).toBe(ndk)
+      refreshNdkRelaySettingsWhenIdle(`account:${AUTHOR_PUBKEY}`)
+      expect(getNdk()).toBe(ndk)
+      expect(ndk.signer).toBe(signer)
+
+      releasePublish()
+      await expect(publishing).resolves.toMatchObject({
+        attemptedRelayUrls: [relayUrl],
+        successfulRelayUrls: [relayUrl],
+      })
+    } finally {
+      releasePublish()
+      removeSigner(signerLease)
     }
   })
 

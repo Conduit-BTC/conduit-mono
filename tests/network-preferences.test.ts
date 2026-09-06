@@ -7,9 +7,12 @@ import {
 import {
   __resetAccountRelaySettingsProjectionsForTests,
   __resetInboxDeclarationCache,
+  __resetOwnerRelayListEvidenceForTests,
   canRelaySettingsChangeControlRuntime,
   clearLegacyRelayReadRecovery,
   config,
+  createInMemoryInboxDeclarationEvidenceRepository,
+  createInMemoryOwnerRelayListEvidenceRepository,
   createRelaySettingsFromPreferences,
   DEFAULT_READ_FANOUT,
   getAccountRelayScope,
@@ -21,6 +24,7 @@ import {
   getInboxMigrationRecoveryRelayUrls,
   getPublishableRelaySettingsEntries,
   hasRelaySettingsDraft,
+  hydrateAccountNetworkPreferences,
   getRelaySettingsStorageKey,
   getSignedInRelayScope,
   loadRelaySettingsForPlan,
@@ -34,6 +38,7 @@ import {
   prepareAccountNetworkPreferencesPresentation,
   projectAccountNetworkPreferences,
   reconcileAccountNetworkPreferences,
+  reconcileOwnerRelayListEvidence,
   resolveConduitSession,
   saveRelaySettings,
   serializeNip65RelayTags,
@@ -242,6 +247,7 @@ const originalWindow = globalThis.window
 beforeEach(() => {
   __resetAccountRelaySettingsProjectionsForTests()
   __resetInboxDeclarationCache()
+  __resetOwnerRelayListEvidenceForTests()
   setActiveRelaySettingsScope(null)
 })
 
@@ -252,6 +258,7 @@ afterEach(() => {
   })
   __resetAccountRelaySettingsProjectionsForTests()
   __resetInboxDeclarationCache()
+  __resetOwnerRelayListEvidenceForTests()
   setActiveRelaySettingsScope(null)
 })
 
@@ -1106,6 +1113,92 @@ describe("account Network preferences", () => {
     })
   })
 
+  for (const scenario of [
+    {
+      label: "signed-empty",
+      tags: [] as string[][],
+      state: "signed_empty" as const,
+      writeRelayUrls: [] as string[],
+    },
+    {
+      label: "Write-only",
+      tags: [["r", "wss://retained-write.example", "write"]],
+      state: "declared" as const,
+      writeRelayUrls: ["wss://retained-write.example"],
+    },
+  ]) {
+    it(`hydrates retained ${scenario.label} authority and legacy inbox recovery before fresh relay I/O`, async () => {
+      const ownerRepository = createInMemoryOwnerRelayListEvidenceRepository()
+      const inboxRepository = createInMemoryInboxDeclarationEvidenceRepository()
+      const signedEvent = relayEvent(100, scenario.tags)
+      await reconcileOwnerRelayListEvidence(
+        {
+          pubkey: OWNER,
+          observations: [
+            {
+              signedEvent,
+              sourceRelayUrls: ["wss://discovery.example"],
+              observedAt: 1_000,
+              completeObservedAt: 1_000,
+            },
+          ],
+          lookup: {
+            observedAt: 1_000,
+            coverage: "complete",
+            hadEvent: true,
+            eventId: signedEvent.id,
+          },
+        },
+        ownerRepository
+      )
+      __resetOwnerRelayListEvidenceForTests()
+      const storage = new MemoryStorage()
+      const legacyKey = seedLegacyRelaySettings(storage)
+
+      const hydration = await hydrateAccountNetworkPreferences(OWNER, {
+        ownerRelayList: {
+          evidenceRepository: ownerRepository,
+          now: () => 2_000,
+        },
+        inboxDeclaration: {
+          evidenceRepository: inboxRepository,
+          now: () => 2_000,
+        },
+        storage,
+      })
+      setActiveRelaySettingsScope(ACCOUNT_SCOPE)
+
+      expect(hydration.ownerRelayList.state).toBe(scenario.state)
+      expect(hydration.ownerRelayList.stale).toBe(true)
+      expect(
+        getGeneralReadRelayUrls({
+          scope: ACCOUNT_SCOPE,
+          fallbackRelayUrls: ["wss://generic-default.example"],
+        })
+      ).toEqual([])
+      expect(
+        getGeneralWriteRelayUrls({
+          scope: ACCOUNT_SCOPE,
+          fallbackRelayUrls: ["wss://generic-default.example"],
+        })
+      ).toEqual(scenario.writeRelayUrls)
+      expect(
+        planInboxReadRelays({
+          declaration: hydration.inboxDeclaration,
+          authenticatedPubkey: OWNER,
+          compatibilityRelayUrls: [],
+        })
+      ).toMatchObject({
+        relayUrls: ["wss://legacy-read.example"],
+        relaySources: {
+          "wss://legacy-read.example": "migration_recovery",
+        },
+      })
+      expect(storage.getItem(legacyKey)).not.toBeNull()
+      expect(getCommittedLegacyRelayReadRecovery(OWNER, storage)).toBeNull()
+    })
+  }
+
   it("keeps signed-empty account reads empty while public commerce discovery remains available", async () => {
     const storage = new MemoryStorage()
     await reconcileAccountNetworkPreferences(OWNER, {
@@ -1642,6 +1735,7 @@ describe("account Network preferences", () => {
     const accountAState = {
       contextKey: OWNER,
       status: "ready" as const,
+      localReady: true,
       reconciliation: {} as never,
       error: null,
     }
@@ -1652,11 +1746,17 @@ describe("account Network preferences", () => {
       )
     ).toEqual({
       status: "reconciling",
+      localReady: false,
       reconciliation: null,
       error: null,
     })
     expect(
       prepareAccountNetworkPreferencesPresentation(null, accountAState)
-    ).toEqual({ status: "idle", reconciliation: null, error: null })
+    ).toEqual({
+      status: "idle",
+      localReady: false,
+      reconciliation: null,
+      error: null,
+    })
   })
 })
