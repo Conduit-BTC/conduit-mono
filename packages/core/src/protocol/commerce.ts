@@ -106,6 +106,7 @@ import {
 import {
   getCommerceReadRelayUrls,
   getGeneralReadRelayUrls,
+  loadRelaySettingsPlanningSnapshot,
   normalizePublicOrIsolatedE2eRelayHints,
   normalizePublicRelayHints,
   normalizeSecureOrIsolatedE2eRelayUrls,
@@ -113,6 +114,7 @@ import {
 } from "./relay-settings"
 import { getRelayLists } from "./relay-list"
 import { planRelayReads, type RelayReadIntent } from "./relay-planner"
+import { getAccountRelayScope } from "./session"
 import {
   readProtectedInbox,
   type ProtectedInboxAuthSummary,
@@ -604,7 +606,8 @@ function hasCommerceFetchTestOverride(): boolean {
  * Resolve a planner-driven relay URL list for a commerce read intent.
  * Pulls cached NIP-65 relay lists for any author/recipient hints so
  * fanout includes the author's write/read relays alongside user settings.
- * Falls back to the legacy URL accessors if planning yields nothing.
+ * Public commerce discovery keeps its bounded app fallback; authoritative
+ * signed account state leaves generic reads empty when no relay is enabled.
  */
 type CommerceReadRelayPlan = {
   relayUrls: string[]
@@ -623,6 +626,11 @@ async function planCommerceReadRelayPlan(input: {
   /** Hints belonging to the exact authenticated author. */
   authenticatedAuthorRelayUrls?: readonly string[]
 }): Promise<CommerceReadRelayPlan> {
+  const settingsSnapshot = loadRelaySettingsPlanningSnapshot(
+    input.authenticatedPubkey
+      ? getAccountRelayScope(input.authenticatedPubkey)
+      : undefined
+  )
   const hintPubkeys = Array.from(
     new Set(
       [...(input.authors ?? []), ...(input.recipients ?? [])]
@@ -636,6 +644,11 @@ async function planCommerceReadRelayPlan(input: {
     (input.relayHintMode === "force" ||
       (input.relayHintMode !== "skip" &&
         hintPubkeys.length <= BROAD_AUTHOR_HINT_LIMIT))
+  const relayListLookupRelayUrls = getGeneralReadRelayUrls({
+    settings: settingsSnapshot.settings,
+    fallbackRelayUrls: config.defaultRelays,
+    signedRelayListAuthoritative: settingsSnapshot.signedRelayListAuthoritative,
+  })
   const relayLists = shouldFetchRelayHints
     ? await getRelayLists(
         hintPubkeys,
@@ -645,6 +658,7 @@ async function planCommerceReadRelayPlan(input: {
               allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
             }
           : {
+              relayUrls: relayListLookupRelayUrls,
               allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
             }
       )
@@ -657,18 +671,18 @@ async function planCommerceReadRelayPlan(input: {
     relayLists,
     authenticatedPubkey: input.authenticatedPubkey,
     maxRelays: input.maxRelays,
+    settings: settingsSnapshot.settings,
+    signedRelayListAuthoritative: settingsSnapshot.signedRelayListAuthoritative,
   })
 
+  const preservesPublicCommerceDiscovery =
+    input.intent === "commerce_products" || input.intent === "author_products"
   const fallbackRelayUrls = (() => {
-    switch (input.intent) {
-      case "commerce_products":
-      case "author_products":
-        return commerceFallbackRelayUrls()
-      default:
-        return config.corePublicFallbackRelayUrls.length > 0
-          ? config.corePublicFallbackRelayUrls
-          : config.defaultRelays
-    }
+    if (preservesPublicCommerceDiscovery) return commerceFallbackRelayUrls()
+    if (settingsSnapshot.signedRelayListAuthoritative) return []
+    return config.corePublicFallbackRelayUrls.length > 0
+      ? config.corePublicFallbackRelayUrls
+      : config.defaultRelays
   })()
   const preferFallbackFirst =
     input.relayHintMode !== "force" &&
@@ -706,7 +720,12 @@ async function planCommerceReadRelayPlan(input: {
     : expandedRelayUrls
   const executableRelayUrlSet = new Set(executableRelayUrls)
 
-  if (config.e2eRelayIsolationEnabled || executableRelayUrls.length > 0) {
+  if (
+    config.e2eRelayIsolationEnabled ||
+    executableRelayUrls.length > 0 ||
+    (settingsSnapshot.signedRelayListAuthoritative &&
+      !preservesPublicCommerceDiscovery)
+  ) {
     return {
       relayUrls: executableRelayUrls,
       parkedRelayUrls: plan.parkedRelayUrls.filter(
@@ -5547,9 +5566,10 @@ type InboxWrapFetchResult = {
 }
 
 /**
- * Permissive inbox read (CND-208): union of declared inbox relays, locally
- * enabled secure IN relays, and the bounded compatibility read set. All-failed
- * reads surface as coverage "unavailable" instead of a healthy empty inbox.
+ * Permissive inbox read (CND-208): union of declared/cached inbox relays,
+ * account-scoped migration recovery, and the bounded compatibility read set.
+ * General NIP-65 reads are not inbox routes. All-failed reads surface as
+ * coverage "unavailable" instead of a healthy empty inbox.
  */
 async function fetchNewInboxWraps(
   principalPubkey: string,

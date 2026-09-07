@@ -211,6 +211,32 @@ describe("planRelayReads", () => {
     ])
   })
 
+  it("uses current signed Publish relays for authenticated self-author reads", () => {
+    const readRelayUrl = "wss://current-owner-read.example"
+    const writeRelayUrl = "wss://current-owner-write.example"
+    const staleRelayUrl = "wss://stale-owner-write.example"
+    const state = settings([
+      entry(readRelayUrl, { readEnabled: true, writeEnabled: false }),
+      entry(writeRelayUrl, { readEnabled: false, writeEnabled: true }),
+    ])
+    const lists = new Map<string, RelayList>([
+      ["alice", relayList("alice", [], [staleRelayUrl])],
+    ])
+
+    const plan = planRelayReads({
+      intent: "profiles",
+      authors: ["alice"],
+      authenticatedPubkey: "alice",
+      relayLists: lists,
+      settings: state,
+      signedRelayListAuthoritative: true,
+    })
+
+    expect(plan.hintRelayUrls).toEqual([writeRelayUrl])
+    expect(plan.relayUrls).toEqual([writeRelayUrl, readRelayUrl])
+    expect(plan.relayUrls).not.toContain(staleRelayUrl)
+  })
+
   it("uses recipient read relays as hints for dm_inbox", () => {
     const state = settings([entry("wss://general.conduit.market")])
     const lists = new Map<string, RelayList>([
@@ -448,6 +474,37 @@ describe("planRelayWrites", () => {
       "wss://alice-write.conduit.market",
       "wss://configured.conduit.market",
     ])
+  })
+
+  it("does not let stale self-cache hints displace a reconciled owner projection", () => {
+    const currentRelayUrl = "wss://current-owner.example"
+    const state = settings([
+      entry(currentRelayUrl, {
+        section: "public",
+        writeEnabled: true,
+      }),
+    ])
+    const staleRelayUrls = Array.from(
+      { length: 4 },
+      (_, index) => `wss://stale-owner-${index}.example`
+    )
+    const lists = new Map<string, RelayList>([
+      ["alice", relayList("alice", [], staleRelayUrls)],
+    ])
+
+    const plan = planRelayWrites({
+      intent: "author_event",
+      authorPubkey: "alice",
+      authenticatedPubkey: "alice",
+      relayLists: lists,
+      settings: state,
+      signedRelayListAuthoritative: true,
+    })
+
+    expect(plan.primaryRelayUrls).toEqual([currentRelayUrl])
+    for (const staleRelayUrl of staleRelayUrls) {
+      expect(plan.primaryRelayUrls).not.toContain(staleRelayUrl)
+    }
   })
 
   it("recipient_event prefers recipient read relays as primary and seeds broadcast on user outbox", () => {

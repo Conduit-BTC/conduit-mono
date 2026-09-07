@@ -25,6 +25,8 @@ export * from "./lightning"
 export * from "./commerce"
 export * from "./follows"
 export * from "./inbox-declaration-evidence"
+export * from "./owner-relay-list-evidence"
+export * from "./network-preferences"
 export * from "./interactive-signer"
 export * from "./nip89"
 export * from "./nip07-signer"
@@ -73,6 +75,7 @@ export {
   verifySignedPublicNostrEvents,
   disconnectNdk,
   refreshNdkRelaySettings,
+  refreshNdkRelaySettingsWhenIdle,
   setSigner,
   removeSigner,
   __resetNdkTestState,

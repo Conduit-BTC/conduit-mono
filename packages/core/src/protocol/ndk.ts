@@ -23,6 +23,7 @@ import {
 import type { SignedPublicNostrEvent } from "./signed-event"
 
 export interface FetchEventsFanoutOptions {
+  /** Omit for configured defaults; pass an empty array for no relay traffic. */
   relayUrls?: string[]
   connectTimeoutMs?: number
   fetchTimeoutMs?: number
@@ -167,6 +168,7 @@ const MAX_CONCURRENT_RELAY_READS = 8
 const MAX_PENDING_VERIFY_WORKER_BATCHES = MAX_CONCURRENT_RELAY_READS - 1
 const MAX_QUEUED_RELAY_READS = 128
 let activeRelayReads = 0
+let relaySettingsRefreshPending = false
 type RelayReadWaiter = {
   resolve: () => void
   reject: (reason: unknown) => void
@@ -237,6 +239,10 @@ function releaseRelayReadSlot(): void {
     return
   }
   activeRelayReads = Math.max(0, activeRelayReads - 1)
+  if (activeRelayReads === 0 && relaySettingsRefreshPending) {
+    relaySettingsRefreshPending = false
+    closeRelayConnections(relayConnections)
+  }
 }
 
 type RawNostrEvent = {
@@ -821,7 +827,16 @@ function closeRelayConnections(
 }
 
 function closeAllRelayConnections(): void {
+  relaySettingsRefreshPending = false
   closeRelayConnections(relayConnections)
+}
+
+function refreshRelayConnectionsWhenIdle(): void {
+  if (activeRelayReads > 0 || relayReadWaiters.length > 0) {
+    relaySettingsRefreshPending = true
+    return
+  }
+  closeAllRelayConnections()
 }
 
 function readRelayEvents(
@@ -1073,15 +1088,16 @@ async function fetchEventsFromRelay(
 }
 
 function resolveFanoutRelayUrls(options: FetchEventsFanoutOptions): string[] {
+  if (options.relayUrls?.length === 0) return []
+
   if (config.e2eRelayIsolationEnabled) {
     const isolatedRelayUrl = getConfiguredIsolatedE2eRelayUrl()
     return isolatedRelayUrl ? [isolatedRelayUrl] : []
   }
 
   const dedupedUrls = (
-    options.relayUrls && options.relayUrls.length > 0
-      ? options.relayUrls
-      : getGeneralReadRelayUrls({ fallbackRelayUrls: config.defaultRelays })
+    options.relayUrls ??
+    getGeneralReadRelayUrls({ fallbackRelayUrls: config.defaultRelays })
   )
     .map((url) => url.trim())
     .filter(Boolean)
@@ -1303,4 +1319,18 @@ export function refreshNdkRelaySettings(scope?: string | null): void {
   closeAllRelayConnections()
 
   ndkInstance = null
+}
+
+/** Apply same-session relay settings without disturbing active NDK work. */
+export function refreshNdkRelaySettingsWhenIdle(scope?: string | null): void {
+  if (scope !== undefined) {
+    setActiveRelaySettingsScope(scope)
+  }
+
+  // A same-session signed projection can arrive while normal app reads are
+  // already using the locally hydrated plan. Future NDK publishes resolve an
+  // explicit plan at call time, so rebuilding this offline compatibility
+  // instance is unnecessary and could interrupt a signer or publish already
+  // using it. Identity transitions still revoke it through disconnectNdk().
+  refreshRelayConnectionsWhenIdle()
 }
