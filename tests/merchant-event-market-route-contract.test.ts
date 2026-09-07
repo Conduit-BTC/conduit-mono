@@ -172,12 +172,23 @@ describe("merchant organizer event market route", () => {
     expect(route).toContain(
       'const selectedReadDeleted = selectedResolution?.state === "deleted"'
     )
+    expect(route).toContain('selectedResolution?.state === "pending"')
     expect(route).toContain("Signed deletion evidence was found")
+    expect(route).toContain(
+      'data-testid="organizer-event-reconciliation-pending"'
+    )
+    expect(route).toContain("Latest event records still need verification")
+    expect(route).toContain(
+      "The available relay views disagree on the newest signed event"
+    )
     expect(route).toContain("shouldResolveSelectedReference,")
     expect(route).toMatch(
       /selectOrganizerEventMarketResolution\([\s\S]+selectedListMarket,[\s\S]+selectedMarketQuery\.data,[\s\S]+selectedSavedReference/
     )
-    expect(route).toContain("selectedMarket || selectedReadDeleted")
+    expect(route).toContain("selectedMarket ||")
+    expect(route).toContain("selectedReadDeleted ||")
+    expect(route).toContain("selectedReadReconciliationPending")
+    expect(route).toContain("!selectedReadReconciliationPending")
     expect(route).toContain("organizerEventMarketReachesExpectedFrontiers(")
     expect(route).toContain("const selectedActionableMarket =")
     expect(route).toContain("selectedMarketBehindExpectedFrontier")

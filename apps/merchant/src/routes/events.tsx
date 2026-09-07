@@ -674,9 +674,12 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
       selectedSavedReference
     ) ?? null
   const selectedReadDeleted = selectedResolution?.state === "deleted"
+  const selectedReadReconciliationPending =
+    selectedResolution?.state === "pending"
   const selectedMarket =
     selectedResolution &&
     !selectedReadDeleted &&
+    !selectedReadReconciliationPending &&
     !("terminal" in selectedResolution)
       ? selectedResolution
       : null
@@ -1018,7 +1021,9 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
   const selectedReadPending =
     !!selectedReference && !selectedMarket && selectedMarketQuery.isPending
   const selectedReadError =
-    selectedMarket || selectedReadDeleted ? null : selectedMarketQuery.error
+    selectedMarket || selectedReadDeleted || selectedReadReconciliationPending
+      ? null
+      : selectedMarketQuery.error
   const selectedMarketBehindExpectedFrontier =
     !!selectedMarket && !selectedActionableMarket
   const deliveries = selectedReference
@@ -1231,6 +1236,29 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
               products and pickup actions are no longer available.
             </CardDescription>
           </CardHeader>
+        </Card>
+      )}
+
+      {!selectedReadPending && selectedReadReconciliationPending && (
+        <Card data-testid="organizer-event-reconciliation-pending">
+          <CardHeader>
+            <CardTitle>Latest event records still need verification</CardTitle>
+            <CardDescription>
+              The available relay views disagree on the newest signed event
+              records. Updating the event and changing product acceptance stay
+              disabled until one complete current graph is verified.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={selectedMarketQuery.isFetching}
+              onClick={() => selectedMarketQuery.refetch()}
+            >
+              Retry latest event records
+            </Button>
+          </CardContent>
         </Card>
       )}
 

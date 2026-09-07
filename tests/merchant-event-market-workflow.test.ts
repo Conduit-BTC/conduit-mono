@@ -32,6 +32,8 @@ const OTHER_ORGANIZER = "b".repeat(64)
 const PRODUCT_ONE = `30402:${"c".repeat(64)}:bread`
 const PRODUCT_TWO = `30402:${"d".repeat(64)}:coffee`
 const COLLECTION = `30405:${ORGANIZER}:market`
+const CALENDAR = `31923:${ORGANIZER}:market-calendar`
+const ORGANIZER_PICKUP = `30406:${ORGANIZER}:organizer-desk`
 const OTHER_COLLECTION = `30405:${OTHER_ORGANIZER}:meetup`
 const MERCHANT = "c".repeat(64)
 const MERCHANT_PICKUP = `30406:${MERCHANT}:market-booth`
@@ -388,6 +390,52 @@ describe("merchant organizer event workflow", () => {
     ).toBe("active")
   })
 
+  it("keeps crossed relay frontiers non-actionable until one graph wins", () => {
+    const listMarket = {
+      collectionCoordinate: COLLECTION,
+      calendarCoordinate: CALENDAR,
+      pickupCoordinate: ORGANIZER_PICKUP,
+      collectionCreatedAt: 4_000,
+      collectionEventId: "a".repeat(64),
+      calendarCreatedAt: 1_000,
+      calendarEventId: "d".repeat(64),
+      pickupCreatedAt: 1_000,
+      pickupEventId: "f".repeat(64),
+      naddr: encodeEventMarketNaddr(COLLECTION, ["wss://list.example/events"]),
+      state: "active",
+    }
+    const hintedMarket = {
+      ...listMarket,
+      collectionCreatedAt: 3_000,
+      collectionEventId: "b".repeat(64),
+      calendarCreatedAt: 5_000,
+      calendarEventId: "c".repeat(64),
+      pickupCreatedAt: 5_000,
+      pickupEventId: "e".repeat(64),
+      naddr: encodeEventMarketNaddr(COLLECTION, ["wss://hint.example/events"]),
+    }
+
+    const selected = selectOrganizerEventMarketResolution(
+      listMarket,
+      hintedMarket,
+      {
+        reference: listMarket.naddr,
+        savedAt: 20,
+        expectedCollectionCreatedAt: 4_000,
+        expectedCollectionEventId: "a".repeat(64),
+      }
+    )
+
+    expect(selected).toMatchObject({
+      terminal: true,
+      state: "pending",
+      reason: "crossed_frontiers",
+      collectionCoordinate: COLLECTION,
+    })
+    expect(selected).not.toBe(listMarket)
+    expect(selected).not.toBe(hintedMarket)
+  })
+
   it("lets an exact hinted deletion retire an older active list market", () => {
     const listMarket = {
       collectionCoordinate: COLLECTION,
@@ -576,7 +624,12 @@ describe("merchant organizer event workflow", () => {
         standaloneDeletion,
         savedReference
       )
-    ).toBeUndefined()
+    ).toMatchObject({
+      terminal: true,
+      state: "pending",
+      reason: "saved_frontier_ahead",
+      collectionCoordinate: COLLECTION,
+    })
     expect(
       selectOrganizerEventMarketResolution(
         undefined,
