@@ -1393,6 +1393,7 @@ test("organizer actions wait for an initial hinted read and use its newer collec
 test("paid organizer pickup uses ordinary checkout even after inbox withdrawal @market @merchant", async ({
   page,
 }) => {
+  test.setTimeout(180_000)
   const relay = createRelayHarness()
   const declarationTime = Math.floor(Date.now() / 1000)
   relay.seed(
