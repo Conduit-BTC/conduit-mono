@@ -5,6 +5,7 @@ import {
   loadOrganizerEventMarketDeliveryOutbox,
   parseOrganizerEventMarketReference,
   publishMerchantOrganizerMembership,
+  reconcileMerchantOrganizerCollectionEvidence,
   resolveOrganizerEventMarket,
   retryMerchantOrganizerRecord,
   saveOrganizerEventMarketDelivery,
@@ -92,12 +93,15 @@ export async function acceptOwnEventProduct(
 
   const savedDeliveries = dependencies.load(organizer)
   const savedCollection = savedDeliveries[reference.coordinate]?.find(
-    (record) => record.record === "collection" && needsExactRetry(record)
+    (record) => record.record === "collection"
   )
   const signedAcceptance =
     input.signedAcceptance && savedCollection
       ? newerSignedDelivery(input.signedAcceptance, savedCollection)
-      : (input.signedAcceptance ?? savedCollection ?? null)
+      : (input.signedAcceptance ??
+        (savedCollection && needsExactRetry(savedCollection)
+          ? savedCollection
+          : null))
 
   const save = (record: MerchantOrganizerRecordDelivery) => {
     // Persist before delivery so retry can reuse the exact signed collection.
@@ -133,11 +137,16 @@ export async function acceptOwnEventProduct(
       record: signedAcceptance,
     })
   } else {
+    const reconciledMarket = reconcileMerchantOrganizerCollectionEvidence(
+      market,
+      savedCollection
+    )
     delivery = await dependencies.publish({
       organizerPubkey: organizer,
-      market,
+      market: reconciledMarket,
       item,
       action: "accept",
+      retainedCollection: savedCollection,
       onSignedEvent: save,
     })
   }

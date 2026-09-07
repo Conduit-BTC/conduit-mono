@@ -7,6 +7,7 @@ import {
   isValidSignedPublicNostrEvent,
   publishOrganizerCollectionUpdate,
   publishOrganizerEventMarket,
+  parseEventMarketCollectionEvent,
   retryOrganizerEventMarketRecord,
   type FollowedEventMarketDiscoveryResult,
   type OrganizerEventMarketCalendarPublishInput,
@@ -795,54 +796,135 @@ export async function publishMerchantOrganizerEventMarket(input: {
   return projectPublishResult(result, collectionCoordinate)
 }
 
+function compareParsedCollectionRevisions(
+  left: NonNullable<EventMarketResolution["collection"]>,
+  right: NonNullable<EventMarketResolution["collection"]>
+): number {
+  if (left.createdAt !== right.createdAt) {
+    return left.createdAt - right.createdAt
+  }
+  // NIP-01 selects the lowest event id when timestamps tie.
+  return right.eventId.localeCompare(left.eventId)
+}
+
+export function reconcileMerchantOrganizerCollectionEvidence(
+  market: MerchantOrganizerEventMarket,
+  retainedDelivery: MerchantOrganizerRecordDelivery | null | undefined
+): MerchantOrganizerEventMarket {
+  if (!retainedDelivery) return market
+  const retainedEvent = retainedDelivery.signedEvent
+  const retainedCollection = retainedEvent
+    ? parseEventMarketCollectionEvent(retainedEvent)
+    : null
+  if (
+    retainedDelivery.record !== "collection" ||
+    !retainedCollection ||
+    retainedCollection.coordinate !== market.collectionCoordinate ||
+    retainedCollection.authorPubkey !== market.organizerPubkey ||
+    retainedCollection.eventCoordinates.length !== 1
+  ) {
+    throw new Error(
+      "The retained event collection is invalid. Refresh this event before changing its products."
+    )
+  }
+  const relayCollection = market.source.collection
+  if (
+    relayCollection &&
+    compareParsedCollectionRevisions(retainedCollection, relayCollection) <= 0
+  ) {
+    return market
+  }
+
+  return {
+    ...market,
+    title: retainedCollection.title,
+    summary: retainedCollection.summary,
+    imageUrl: retainedCollection.image,
+    eventLocation: retainedCollection.location,
+    eventGeohash: retainedCollection.geohash,
+    calendarCoordinate: retainedCollection.eventCoordinates[0]!,
+    pickupCoordinate:
+      retainedCollection.pickupCoordinates.length === 1
+        ? retainedCollection.pickupCoordinates[0]
+        : undefined,
+    pickupCoordinates: retainedCollection.pickupCoordinates,
+    collectionCreatedAt: retainedCollection.createdAt,
+    productCoordinates: retainedCollection.productCoordinates,
+    source: {
+      ...market.source,
+      collection: retainedCollection,
+      collectionCoordinate: retainedCollection.coordinate,
+      calendarCoordinate: retainedCollection.eventCoordinates[0]!,
+      pickupCoordinate:
+        retainedCollection.pickupCoordinates.length === 1
+          ? retainedCollection.pickupCoordinates[0]
+          : undefined,
+      organizerProductCoordinates: retainedCollection.productCoordinates,
+    },
+  }
+}
+
 export async function publishMerchantOrganizerMembership(input: {
   organizerPubkey: string
   market: MerchantOrganizerEventMarket
   item: MerchantOrganizerParticipation
   action: OrganizerCollectionMembershipAction
+  retainedCollection?: MerchantOrganizerRecordDelivery | null
   onSignedEvent?: (
     record: MerchantOrganizerRecordDelivery,
     collectionCoordinate: string
   ) => void | Promise<void>
 }): Promise<MerchantOrganizerRecordDelivery> {
+  const retainedCollection =
+    input.retainedCollection ??
+    loadOrganizerEventMarketDeliveryOutbox(input.organizerPubkey)[
+      input.market.collectionCoordinate
+    ]?.find((record) => record.record === "collection") ??
+    null
+  if (retainedCollection?.acknowledgedCount === 0) {
+    throw new Error(
+      "The latest signed event collection still needs exact delivery retry."
+    )
+  }
+  const market = reconcileMerchantOrganizerCollectionEvidence(
+    input.market,
+    retainedCollection
+  )
   const productCoordinates = updateOrganizerCollectionProducts(
-    input.market.productCoordinates,
+    market.productCoordinates,
     input.item.productCoordinate,
     input.action
   )
   if (
     input.action === "accept" &&
-    (!isParticipationHandoffVerified(
-      input.item,
-      input.market.organizerPubkey
-    ) ||
+    (!isParticipationHandoffVerified(input.item, market.organizerPubkey) ||
       !isParticipationProductPreviewVerified(input.item))
   ) {
     throw new Error(
       "Current signed product preview or handoff evidence is unavailable or unsupported."
     )
   }
-  const sourceCollection = input.market.source.collection
+  const sourceCollection = market.source.collection
   const collection: OrganizerEventMarketCollectionPublishInput = {
-    dTag: coordinateDTag(input.market.collectionCoordinate),
-    title: input.market.title,
+    dTag: coordinateDTag(market.collectionCoordinate),
+    title: market.title,
     content: sourceCollection?.content ?? "",
-    summary: input.market.summary,
-    image: input.market.imageUrl,
-    location: input.market.eventLocation,
-    geohash: input.market.eventGeohash,
-    eventCoordinate: input.market.calendarCoordinate,
-    pickupCoordinates: input.market.pickupCoordinates,
+    summary: market.summary,
+    image: market.imageUrl,
+    location: market.eventLocation,
+    geohash: market.eventGeohash,
+    eventCoordinate: market.calendarCoordinate,
+    pickupCoordinates: market.pickupCoordinates,
     productCoordinates,
   }
   const result = await publishOrganizerCollectionUpdate({
     organizerPubkey: input.organizerPubkey,
     collection,
-    previousCreatedAt: input.market.collectionCreatedAt,
+    previousCreatedAt: market.collectionCreatedAt,
     onSignedEvent: async (record) => {
       await input.onSignedEvent?.(
         projectDeliveryRecord(record),
-        input.market.collectionCoordinate
+        market.collectionCoordinate
       )
     },
   })

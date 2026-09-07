@@ -1,16 +1,42 @@
 import { describe, expect, it } from "bun:test"
+import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools"
 import { acceptOwnEventProduct } from "../apps/merchant/src/lib/event-product-acceptance"
 import type {
   MerchantOrganizerEventMarket,
   MerchantOrganizerRecordDelivery,
 } from "../apps/merchant/src/lib/event-market"
 
-const OWNER = "a".repeat(64)
+const OWNER_SECRET = generateSecretKey()
+const OWNER = getPublicKey(OWNER_SECRET)
 const OTHER = "b".repeat(64)
 const COLLECTION = `30405:${OWNER}:event`
 const PRODUCT = `30402:${OWNER}:own-product`
 const PRIOR_PRODUCT = `30402:${OWNER}:prior-product`
+const OTHER_PRIOR_PRODUCT = `30402:${OWNER}:other-prior-product`
 const PICKUP = `30406:${OWNER}:booth`
+const CALENDAR = `31923:${OWNER}:calendar`
+
+function signedCollection(
+  productCoordinates: string[],
+  createdAt = 12,
+  title = "Test event"
+) {
+  return finalizeEvent(
+    {
+      kind: 30405,
+      created_at: createdAt,
+      content: "Retained collection content",
+      tags: [
+        ["d", "event"],
+        ["title", title],
+        ["a", CALENDAR],
+        ["shipping_option", PICKUP],
+        ...productCoordinates.map((coordinate) => ["a", coordinate]),
+      ],
+    },
+    OWNER_SECRET
+  )
+}
 const market = {
   state: "partial",
   organizerPubkey: OWNER,
@@ -46,16 +72,7 @@ const record = {
   acknowledgedCount: 1,
   rejectedCount: 0,
   timedOutCount: 0,
-  signedEvent: {
-    kind: 30405,
-    pubkey: OWNER,
-    created_at: 12,
-    tags: [
-      ["d", "event"],
-      ["a", PRODUCT],
-    ],
-    id: "same-signed-acceptance",
-  },
+  signedEvent: signedCollection([PRODUCT]),
 } as MerchantOrganizerRecordDelivery
 
 function harness(
@@ -192,16 +209,11 @@ describe("organizer own-product acceptance", () => {
     expect(h.retried).toEqual([{ organizerPubkey: OWNER, record: pending }])
   })
   it("publishes the next own product over a partially acknowledged current collection", async () => {
+    const partialEvent = signedCollection([PRIOR_PRODUCT])
     const partial = {
       ...record,
       rejectedCount: 1,
-      signedEvent: {
-        ...record.signedEvent!,
-        tags: [
-          ["d", "event"],
-          ["a", PRIOR_PRODUCT],
-        ],
-      },
+      signedEvent: partialEvent,
     }
     const h = harness(
       {
@@ -224,6 +236,51 @@ describe("organizer own-product acceptance", () => {
       (h.published[0] as { market: MerchantOrganizerEventMarket }).market
         .productCoordinates
     ).toEqual([PRIOR_PRODUCT])
+  })
+  it("preserves a newer acknowledged retained collection over an older partial relay read", async () => {
+    const relayEvent = signedCollection([PRIOR_PRODUCT], 12, "Relay event")
+    const retainedEvent = signedCollection(
+      [PRIOR_PRODUCT, OTHER_PRIOR_PRODUCT],
+      13,
+      "Retained event"
+    )
+    const retained = {
+      ...record,
+      rejectedCount: 1,
+      signedEvent: retainedEvent,
+    }
+    const h = harness(
+      {
+        ...market,
+        title: "Relay event",
+        productCoordinates: [PRIOR_PRODUCT],
+        collectionCreatedAt: relayEvent.created_at * 1_000,
+        source: {
+          collection: {
+            eventId: relayEvent.id,
+            createdAt: relayEvent.created_at * 1_000,
+          },
+        },
+      } as MerchantOrganizerEventMarket,
+      retained
+    )
+
+    expect(await acceptOwnEventProduct(input, h.deps)).toBe(true)
+    expect(h.retried).toHaveLength(0)
+    expect(h.published).toHaveLength(1)
+    const publishInput = h.published[0] as {
+      market: MerchantOrganizerEventMarket
+      retainedCollection: MerchantOrganizerRecordDelivery
+    }
+    expect(publishInput.market.productCoordinates).toEqual([
+      PRIOR_PRODUCT,
+      OTHER_PRIOR_PRODUCT,
+    ])
+    expect(publishInput.market.pickupCoordinates).toEqual([PICKUP])
+    expect(publishInput.market.calendarCoordinate).toBe(CALENDAR)
+    expect(publishInput.market.title).toBe("Retained event")
+    expect(publishInput.market.collectionCreatedAt).toBe(13_000)
+    expect(publishInput.retainedCollection).toBe(retained)
   })
   it("does not supersede a NIP-01-newer same-second collection", async () => {
     const currentId = "0".repeat(64)

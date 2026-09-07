@@ -199,9 +199,7 @@ describe("merchant organizer event market route", () => {
     expect(adapter).toContain(
       "pickupCoordinates: pickupCoordinate ? [pickupCoordinate] : []"
     )
-    expect(adapter).toContain(
-      "pickupCoordinates: input.market.pickupCoordinate"
-    )
+    expect(adapter).toContain("pickupCoordinates: market.pickupCoordinates")
     expect(adapter).not.toContain("getOrganizerEventUpdatePickupCoordinates")
     expect(adapter).not.toContain("...input.market.pickupCoordinates")
     expect(adapter).not.toContain("acceptedPickupCoordinate")
