@@ -1,26 +1,34 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { NDKEvent } from "@nostr-dev-kit/ndk"
+import { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk"
 import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
   __resetRelayListTestOverrides,
   __resetRelayPublishTestOverrides,
+  __resetAccountRelaySettingsProjectionsForTests,
   __setRelayListTestOverrides,
   __setRelayPublishTestOverrides,
   applyE2eRelayIsolation,
   CANONICAL_APP_WRITE_RELAYS,
   CANONICAL_COMMERCE_DISCOVERY_RELAYS,
   config,
+  createRelaySettingsFromPreferences,
   deriveRelayOutcomes,
   EVENT_KINDS,
   planPublishRelays,
   publishSignedEventToRelay,
   publishWithPlanner,
+  setAccountRelaySettingsProjection,
+  setActiveRelaySettingsScope,
   type RelayList,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
 import {
   __resetNdkTestState,
+  getNdk,
+  refreshNdkRelaySettingsWhenIdle,
   refreshNdkRelaySettings,
+  removeSigner,
+  setSigner,
 } from "../packages/core/src/protocol/ndk"
 
 const NOW = 1_700_000_000_000
@@ -209,6 +217,8 @@ describe("planPublishRelays", () => {
     Object.assign(config, structuredClone(originalConfig))
     __resetRelayListTestOverrides()
     __resetRelayPublishTestOverrides()
+    __resetAccountRelaySettingsProjectionsForTests()
+    setActiveRelaySettingsScope(null)
     __resetNdkTestState()
   })
 
@@ -221,6 +231,85 @@ describe("planPublishRelays", () => {
     expect(plan.broadcastRelayUrls).toEqual([])
     // primary may be empty when user has no configured write relays.
     expect(Array.isArray(plan.primaryRelayUrls)).toBe(true)
+  })
+
+  it("prefers the reconciled owner projection over stale self-cache hints", async () => {
+    const relayScope = `account:${AUTHOR_PUBKEY}`
+    const currentRelayUrl = "wss://current-owner.example"
+    const staleRelayUrls = Array.from(
+      { length: 4 },
+      (_, index) => `wss://stale-owner-${index}.example`
+    )
+    setAccountRelaySettingsProjection(
+      relayScope,
+      createRelaySettingsFromPreferences(
+        [
+          {
+            url: currentRelayUrl,
+            readEnabled: true,
+            writeEnabled: true,
+          },
+        ],
+        "published"
+      ),
+      { signedRelayListAuthoritative: true }
+    )
+    setActiveRelaySettingsScope(`account:${"f".repeat(64)}`)
+    __setRelayListTestOverrides({
+      now: () => NOW,
+      loadCached: async (pubkey) =>
+        pubkey === AUTHOR_PUBKEY
+          ? relayList(AUTHOR_PUBKEY, { writeRelayUrls: staleRelayUrls })
+          : undefined,
+    })
+
+    const plan = await planPublishRelays({
+      intent: "author_event",
+      authorPubkey: AUTHOR_PUBKEY,
+      authenticatedPubkey: AUTHOR_PUBKEY,
+    })
+
+    expect(plan.primaryRelayUrls).toEqual([currentRelayUrl])
+    expect(plan.signedRelayListAuthoritative).toBe(true)
+  })
+
+  it("does not broaden signed owner authority when no Publish relay is declared", async () => {
+    const relayScope = `account:${AUTHOR_PUBKEY}`
+    const projections = [
+      createRelaySettingsFromPreferences([], "published"),
+      createRelaySettingsFromPreferences(
+        [
+          {
+            url: "wss://read-only-owner.example",
+            readEnabled: true,
+            writeEnabled: false,
+          },
+        ],
+        "published"
+      ),
+    ]
+
+    for (const projection of projections) {
+      setAccountRelaySettingsProjection(relayScope, projection, {
+        signedRelayListAuthoritative: true,
+      })
+      let publishCalls = 0
+      const event = signedTestEvent({
+        publish: async () => {
+          publishCalls += 1
+          return new Set()
+        },
+      })
+
+      await expect(
+        publishWithPlanner(event, {
+          intent: "author_event",
+          authorPubkey: AUTHOR_PUBKEY,
+          authenticatedPubkey: AUTHOR_PUBKEY,
+        })
+      ).rejects.toThrow("signed Network settings have no usable Publish relay")
+      expect(publishCalls).toBe(0)
+    }
   })
 
   it("merges recipient read relays into a recipient_event primary set", async () => {
@@ -826,6 +915,65 @@ describe("planPublishRelays", () => {
     }
   })
 
+  it("preserves the shared signer and NDK during a same-session publish refresh", async () => {
+    const relayUrl = "wss://same-session-publish.example"
+    let markPublishStarted!: () => void
+    let releasePublish = () => undefined
+    const publishStarted = new Promise<void>((resolve) => {
+      markPublishStarted = resolve
+    })
+    const publishBlocked = new Promise<void>((resolve) => {
+      releasePublish = resolve
+    })
+    const event = signedTestEvent({
+      publish: async (relaySet: unknown) => {
+        markPublishStarted()
+        await publishBlocked
+        const relayUrls = [
+          ...((relaySet as { relayUrls?: Set<string> | string[] }).relayUrls ??
+            []),
+        ]
+        return new Set(relayUrls.map((url) => ({ url })))
+      },
+    })
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "author_event",
+        primaryRelayUrls: [relayUrl],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+    const ndk = getNdk()
+    const signer = {
+      user: async () => ndk.getUser({ pubkey: AUTHOR_PUBKEY }),
+    } as NDKSigner
+    const signerLease = setSigner(signer)
+
+    try {
+      const publishing = publishWithPlanner(event, {
+        intent: "author_event",
+        authorPubkey: AUTHOR_PUBKEY,
+        authenticatedPubkey: AUTHOR_PUBKEY,
+      })
+      await publishStarted
+
+      expect(event.ndk).toBe(ndk)
+      refreshNdkRelaySettingsWhenIdle(`account:${AUTHOR_PUBKEY}`)
+      expect(getNdk()).toBe(ndk)
+      expect(ndk.signer).toBe(signer)
+
+      releasePublish()
+      await expect(publishing).resolves.toMatchObject({
+        attemptedRelayUrls: [relayUrl],
+        successfulRelayUrls: [relayUrl],
+      })
+    } finally {
+      releasePublish()
+      removeSigner(signerLease)
+    }
+  })
+
   it("closes the isolated socket after a failed attempt", async () => {
     const fakeWebSocket = installRelayPublishWebSocket({
       closeBeforeResponse: true,
@@ -1152,6 +1300,42 @@ describe("planPublishRelays", () => {
     }
     expect(result.successfulRelayUrls.length).toBe(1)
     expect(result.failedRelayUrls).toContain(primaryRelay)
+  })
+
+  it("does not broaden an authoritative author plan after its relay fails", async () => {
+    const primaryRelay = "wss://authoritative-write.conduit.market"
+    const normalizedPrimaryRelay = `${primaryRelay}/`
+    const attempts: string[][] = []
+    const fakeEvent = signedTestEvent({
+      kind: EVENT_KINDS.PRODUCT,
+      publish: async (relaySet: unknown) => {
+        const relayUrls = [
+          ...((relaySet as { relayUrls?: Set<string> | string[] }).relayUrls ??
+            []),
+        ]
+        attempts.push(relayUrls)
+        throw new Error("authoritative write relay failed")
+      },
+    })
+
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "author_event",
+        signedRelayListAuthoritative: true,
+        primaryRelayUrls: [primaryRelay],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+
+    await expect(
+      publishWithPlanner(fakeEvent, {
+        intent: "author_event",
+        authorPubkey: AUTHOR_PUBKEY,
+        authenticatedPubkey: AUTHOR_PUBKEY,
+      })
+    ).rejects.toThrow("no primary relay accepted")
+    expect(attempts).toEqual([[normalizedPrimaryRelay]])
   })
 
   it("falls back to the app write relay for NIP-65 after configured writes fail", async () => {
