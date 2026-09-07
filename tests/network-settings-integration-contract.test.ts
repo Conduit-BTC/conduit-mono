@@ -34,9 +34,13 @@ describe("shared account Network integration contract", () => {
       expect(source).toContain(
         "const networkSettings = useAccountNetworkSettings()"
       )
-      expect(source).toContain(
-        "<RelaySettingsPanel controller={networkSettings} />"
-      )
+      expect(source).toContain("<RelaySettingsPanel")
+      expect(source).toContain("controller={networkSettings}")
+      expect(source).toContain("onUnpublishedRelayChangesChange={")
+      expect(source).toContain("useBlocker({")
+      expect(source).toContain("enableBeforeUnload: hasUnpublishedRelayChanges")
+      expect(source).toContain("withResolver: true")
+      expect(source).toContain("<UnpublishedRelayChangesDialog")
       expect(source).not.toContain("useRelaySettings(")
       expect(source).not.toContain("useInboxDeclaration(")
       expect(source).not.toContain("useMediaServerPreferences(")
@@ -45,7 +49,7 @@ describe("shared account Network integration contract", () => {
     }
   })
 
-  it("routes one Save through the coordinated action and whole removal through remove_relay", () => {
+  it("routes one reviewed publish through the coordinated action and whole removal through remove_relay", () => {
     expect(
       controllerSource.match(/publishAccountNetworkPreferenceUpdate\(/g)
     ).toHaveLength(1)
@@ -176,15 +180,25 @@ describe("shared account Network integration contract", () => {
       "controller.clearOperation() removalTriggerRef.current = trigger setRelayPendingRemoval(row.url)"
     )
     expect(normalizedPanelSource).toContain(
-      "function discardReview(): void { setRows(discardReviewRows(controller.view.rows)) setLocalActionError(null) controller.clearOperation()"
+      "function discardReview(): void { setPublishDialogOpen(false) setRows(discardReviewRows(controller.view.rows)) setLocalActionError(null) controller.clearOperation()"
     )
   })
 
   it("keeps Media preferences separate after the relay review", () => {
     expect(panelSource.match(/<MediaServerPreferencesSection/g)).toHaveLength(1)
-    expect(panelSource.indexOf("Save Network changes")).toBeLessThan(
+    expect(panelSource.indexOf("Review and publish")).toBeLessThan(
       panelSource.indexOf("<MediaServerPreferencesSection")
     )
+  })
+
+  it("warns before route navigation discards unpublished relay edits", () => {
+    expect(panelSource).toContain("Leave with unpublished relay changes?")
+    expect(panelSource).toContain(
+      "Leaving this page will discard your relay edits. Conduit and other Nostr apps will keep using your last published preferences."
+    )
+    expect(panelSource).toContain("Leave and discard")
+    expect(panelSource).toContain("Network update in progress")
+    expect(panelSource).toContain("Stay on this page")
   })
 
   it("keeps Merchant publishing recovery aligned with the unified roles", () => {

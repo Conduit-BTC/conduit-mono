@@ -70,9 +70,8 @@ describe("legacy direct-message UI contract", () => {
     ]) {
       const source = await Bun.file(routePath).text()
       expect(source).toContain("useAccountNetworkSettings")
-      expect(source).toContain(
-        "<RelaySettingsPanel controller={networkSettings} />"
-      )
+      expect(source).toContain("<RelaySettingsPanel")
+      expect(source).toContain("controller={networkSettings}")
       expect(source).not.toContain("useInboxDeclaration")
     }
 

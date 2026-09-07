@@ -49,7 +49,7 @@ async function openNetwork(
 
 async function addServer(page: Page, serverUrl: string): Promise<void> {
   const section = page.getByRole("region", { name: "Media servers" })
-  const input = section.getByLabel("Add media server root")
+  const input = section.getByLabel("Add media server")
   await input.fill(serverUrl)
   await section.getByRole("button", { name: "Add server" }).click()
   await expect(input).toHaveValue("")
@@ -64,7 +64,7 @@ async function exerciseSharedSurface(
   const secretKey = generateSecretKey()
   const pubkey = await openNetwork(page, app, secretKey)
   const section = page.getByRole("region", { name: "Media servers" })
-  const input = section.getByLabel("Add media server root")
+  const input = section.getByLabel("Add media server")
 
   await input.fill("http://unsafe.conduit.market")
   await section.getByRole("button", { name: "Add server" }).click()
@@ -77,7 +77,9 @@ async function exerciseSharedSurface(
   await addServer(page, FIRST_SERVER)
   await addServer(page, SECOND_SERVER)
   await expect(
-    section.getByText("Unpublished local edits", { exact: true })
+    section.getByText("Draft saved on this device; not published.", {
+      exact: true,
+    })
   ).toBeVisible()
 
   const orderedList = section.getByRole("list", {
@@ -146,8 +148,8 @@ async function exerciseSharedSurface(
       )
     ).toBeVisible()
     await expect(
-      section.getByText("Unpublished local edits", { exact: true })
-    ).toBeVisible()
+      section.getByRole("button", { name: "Review and publish" })
+    ).toBeEnabled()
     expect(
       await readTestRelayEvents({ kinds: [10_063], authors: [pubkey] })
     ).toHaveLength(0)

@@ -1,4 +1,5 @@
 import {
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -7,12 +8,14 @@ import {
 } from "react"
 import {
   AlertCircle,
+  AlertTriangle,
   CheckCircle2,
   Info,
   Plus,
   RefreshCw,
   RotateCcw,
   Trash2,
+  Upload,
 } from "lucide-react"
 import {
   countAccountNetworkChangedKinds,
@@ -21,6 +24,7 @@ import {
   tryNormalizeRelayUrl,
   validateAccountNetworkDesiredRoles,
   type AccountNetworkDesiredRelayRoles,
+  type AccountNetworkFrontierView,
   type AccountNetworkRelayRowView,
   type AccountNetworkRole,
   type AccountNetworkSettingsController,
@@ -39,11 +43,18 @@ import {
 } from "./Dialog"
 import { Input } from "./Input"
 import { MediaServerPreferencesSection } from "./MediaServerPreferencesSection"
+import {
+  PreferenceSectionBody,
+  PreferenceSectionCard,
+  PreferenceSectionDivider,
+  PreferenceSectionFooter,
+} from "./PreferenceSectionCard"
 import { StatusPill } from "./StatusPill"
 
 export interface RelaySettingsPanelProps {
   controller: AccountNetworkSettingsController
   className?: string
+  onUnpublishedRelayChangesChange?: (hasUnpublishedChanges: boolean) => void
 }
 
 function desiredRolesFromRows(
@@ -91,6 +102,56 @@ function discardReviewRows(
     publishEnabled: baseline.get(row.url)?.publishEnabled ?? false,
     privateInboxEnabled: baseline.get(row.url)?.privateInboxEnabled ?? false,
   }))
+}
+
+function rolesDiffer(
+  baselineRoles: readonly AccountNetworkDesiredRelayRoles[],
+  desiredRoles: readonly AccountNetworkDesiredRelayRoles[],
+  select: (roles: AccountNetworkDesiredRelayRoles) => readonly boolean[]
+): boolean {
+  const baselineByUrl = new Map(
+    baselineRoles.flatMap((roles) => {
+      const selected = select(roles)
+      return selected.some(Boolean) ? [[roles.url, selected] as const] : []
+    })
+  )
+  const desiredByUrl = new Map(
+    desiredRoles.flatMap((roles) => {
+      const selected = select(roles)
+      return selected.some(Boolean) ? [[roles.url, selected] as const] : []
+    })
+  )
+  const urls = new Set([...baselineByUrl.keys(), ...desiredByUrl.keys()])
+  for (const url of urls) {
+    const baseline = baselineByUrl.get(url) ?? []
+    const desired = desiredByUrl.get(url) ?? []
+    if (baseline.length !== desired.length) return true
+    if (baseline.some((value, index) => value !== desired[index])) return true
+  }
+  return false
+}
+
+const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
+  dateStyle: "medium",
+  timeStyle: "short",
+})
+
+function formatEventTime(seconds: number | null): string {
+  if (seconds === null || !Number.isFinite(seconds)) return "Not observed"
+  const date = new Date(seconds * 1_000)
+  return Number.isFinite(date.getTime())
+    ? dateTimeFormatter.format(date)
+    : "Not observed"
+}
+
+function formatObservationTime(milliseconds: number | null): string {
+  if (milliseconds === null || !Number.isFinite(milliseconds)) {
+    return "Not recorded"
+  }
+  const date = new Date(milliseconds)
+  return Number.isFinite(date.getTime())
+    ? dateTimeFormatter.format(date)
+    : "Not recorded"
 }
 
 function roleEnabled(
@@ -248,6 +309,7 @@ function CapabilityBadges({ row }: { row: AccountNetworkRelayRowView }) {
 
 function RelayRow({
   row,
+  edited,
   mutationDisabled,
   operationBusy,
   metadataDisabled,
@@ -259,6 +321,7 @@ function RelayRow({
   onRemove,
 }: {
   row: AccountNetworkRelayRowView
+  edited: boolean
   mutationDisabled: boolean
   operationBusy: boolean
   metadataDisabled: boolean
@@ -276,7 +339,7 @@ function RelayRow({
   const draft =
     row.candidate || row.readState === "draft" || row.publishState === "draft"
   return (
-    <li className="border-b border-[var(--border)] py-4 last:border-b-0">
+    <li className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -293,6 +356,10 @@ function RelayRow({
             ) : draft ? (
               <StatusPill variant="neutral" noIcon>
                 Unpublished candidate
+              </StatusPill>
+            ) : edited ? (
+              <StatusPill variant="warning" noIcon>
+                Edited
               </StatusPill>
             ) : (
               <StatusPill variant="success" noIcon>
@@ -329,13 +396,16 @@ function RelayRow({
             type="button"
             variant="outline"
             size="icon"
-            aria-label={`Refresh advertised metadata for ${row.url}`}
-            title="Refresh advertised metadata"
+            aria-label={`Refresh relay info for ${row.url}`}
+            title="Refresh relay info"
             disabled={metadataDisabled || refreshing}
             onClick={onRefresh}
           >
             <RefreshCw
-              className={cn("size-4", refreshing && "animate-spin")}
+              className={cn(
+                "size-4",
+                refreshing && "animate-spin motion-reduce:animate-none"
+              )}
               aria-hidden="true"
             />
           </Button>
@@ -392,75 +462,107 @@ function stateLabel(state: string): string {
   }
 }
 
-function ReconciliationSummary({
+function PublishedRelayPreference({
+  label,
+  frontier,
+}: {
+  label: string
+  frontier: AccountNetworkFrontierView
+}) {
+  return (
+    <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+          {label}
+        </h3>
+        <span
+          className={cn(
+            "text-xs",
+            frontier.stale ||
+              frontier.coverage === "partial" ||
+              frontier.coverage === "unavailable"
+              ? "text-warning"
+              : "text-[var(--text-secondary)]"
+          )}
+        >
+          {stateLabel(frontier.state)}
+        </span>
+      </div>
+      <dl className="mt-3 grid gap-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
+        <div>
+          <dt className="text-[var(--text-muted)]">Signed revision</dt>
+          <dd className="mt-0.5 tabular-nums text-[var(--text-primary)]">
+            {formatEventTime(frontier.eventCreatedAt)}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-[var(--text-muted)]">Last observed</dt>
+          <dd className="mt-0.5 tabular-nums text-[var(--text-primary)]">
+            {formatObservationTime(frontier.observedAt)}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-[var(--text-muted)]">Observed sources</dt>
+          <dd className="mt-0.5 tabular-nums text-[var(--text-primary)]">
+            {frontier.sourceRelayCount} relay
+            {frontier.sourceRelayCount === 1 ? "" : "s"}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-[var(--text-muted)]">Lookup coverage</dt>
+          <dd className="mt-0.5 text-[var(--text-primary)]">
+            {coverageLabel(frontier.coverage)}
+          </dd>
+        </div>
+      </dl>
+      {frontier.stale ? (
+        <p className="mt-3 text-pretty text-xs leading-5 text-warning">
+          Retained signed evidence is stale. A fresh bounded check has not
+          confirmed this preference.
+        </p>
+      ) : frontier.completeObservedAt ? (
+        <p className="mt-3 text-pretty text-xs leading-5 text-[var(--text-muted)]">
+          Last completely observed{" "}
+          <span className="tabular-nums">
+            {formatObservationTime(frontier.completeObservedAt)}
+          </span>
+          .
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
+function PublishedRelayPreferences({
   controller,
 }: {
   controller: AccountNetworkSettingsController
 }) {
   const { view } = controller
-  const checking = view.status === "reconciling"
-  const operationBusy = operationIsBusy(controller.operation.phase)
   const failed = view.status === "error"
   return (
-    <section
-      aria-labelledby="network-check-heading"
-      aria-busy={checking}
-      className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"
-    >
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <h2
-            id="network-check-heading"
-            className="text-balance text-sm font-semibold text-[var(--text-primary)]"
-          >
-            Signed preference check
-          </h2>
-          <p className="mt-1 max-w-2xl text-pretty text-sm leading-6 text-[var(--text-secondary)]">
-            Each fresh signer connection checks both signed preference objects
-            across the same bounded relay set. Partial results are not treated
-            as absence.
+    <div>
+      <details className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 sm:p-4">
+        <summary className="cursor-pointer text-sm font-semibold text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500">
+          Last observed published preferences
+        </summary>
+        <div className="mt-3">
+          <p className="text-pretty text-sm leading-6 text-[var(--text-secondary)]">
+            Read and Publish and Private inbox are separate signed preferences.
+            Partial results are not treated as absence.
           </p>
+          <div className="mt-3 grid gap-3">
+            <PublishedRelayPreference
+              label="Read and Publish"
+              frontier={view.relayList}
+            />
+            <PublishedRelayPreference
+              label="Private inbox"
+              frontier={view.inbox}
+            />
+          </div>
         </div>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={checking || operationBusy}
-          onClick={controller.retryReconciliation}
-        >
-          <RefreshCw
-            className={cn("size-4", checking && "animate-spin")}
-            aria-hidden="true"
-          />
-          {checking ? "Checking" : "Check again"}
-        </Button>
-      </div>
-      <dl className="mt-4 grid gap-3 sm:grid-cols-2">
-        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2.5">
-          <dt className="text-xs font-medium text-[var(--text-muted)]">
-            Read and Publish
-          </dt>
-          <dd className="mt-1 text-sm text-[var(--text-primary)]">
-            {stateLabel(view.relayList.state)}
-          </dd>
-          <dd className="mt-1 text-xs text-[var(--text-secondary)]">
-            {coverageLabel(view.relayList.coverage)}
-            {view.relayList.stale ? " · retained signed evidence is stale" : ""}
-          </dd>
-        </div>
-        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2.5">
-          <dt className="text-xs font-medium text-[var(--text-muted)]">
-            Private inbox
-          </dt>
-          <dd className="mt-1 text-sm text-[var(--text-primary)]">
-            {stateLabel(view.inbox.state)}
-          </dd>
-          <dd className="mt-1 text-xs text-[var(--text-secondary)]">
-            {coverageLabel(view.inbox.coverage)}
-            {view.inbox.stale ? " · retained signed evidence is stale" : ""}
-          </dd>
-        </div>
-      </dl>
+      </details>
       {failed && view.error ? (
         <p role="alert" className="mt-3 text-pretty text-sm text-error">
           {view.error}
@@ -470,17 +572,19 @@ function ReconciliationSummary({
         <p role="alert" className="mt-3 text-pretty text-sm text-warning">
           Signed retry storage is unavailable. Existing signed preferences are
           still shown, but this device cannot safely stage or resume an update
-          until the check succeeds.
+          until Refresh succeeds.
         </p>
       ) : null}
-    </section>
+    </div>
   )
 }
 
 function PendingUpdateSummary({
   controller,
+  relayDraftDirty,
 }: {
   controller: AccountNetworkSettingsController
+  relayDraftDirty: boolean
 }) {
   const checkpoints = controller.view.pendingCheckpoints
   if (checkpoints.length === 0) return null
@@ -488,18 +592,18 @@ function PendingUpdateSummary({
     (checkpoint) => checkpoint.retryAvailable
   )
   return (
-    <section
+    <div
       aria-labelledby="pending-network-update-heading"
-      className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"
+      className="mt-3 rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-4"
     >
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h2
+          <h3
             id="pending-network-update-heading"
             className="text-balance text-sm font-semibold text-[var(--text-primary)]"
           >
             Signed update status
-          </h2>
+          </h3>
           <p className="mt-1 text-pretty text-sm leading-6 text-[var(--text-secondary)]">
             The signed objects publish and confirm independently. Relay
             acceptance does not mean another client has observed them.
@@ -510,7 +614,14 @@ function PendingUpdateSummary({
             type="button"
             variant="outline"
             size="sm"
-            disabled={operationIsBusy(controller.operation.phase)}
+            disabled={
+              relayDraftDirty || operationIsBusy(controller.operation.phase)
+            }
+            title={
+              relayDraftDirty
+                ? "Publish or discard your relay edits before retrying signed preferences."
+                : undefined
+            }
             onClick={() =>
               void controller.retryPendingUpdate().catch(() => undefined)
             }
@@ -558,7 +669,7 @@ function PendingUpdateSummary({
           </li>
         ))}
       </ul>
-    </section>
+    </div>
   )
 }
 
@@ -665,6 +776,78 @@ export function RelayRemovalDialog({
   )
 }
 
+export interface UnpublishedRelayChangesDialogProps {
+  open: boolean
+  operationInProgress: boolean
+  onKeepEditing: () => void
+  onLeave: () => void
+}
+
+export function UnpublishedRelayChangesDialog({
+  open,
+  operationInProgress,
+  onKeepEditing,
+  onLeave,
+}: UnpublishedRelayChangesDialogProps) {
+  const returnFocusRef = useRef<HTMLElement | null>(null)
+
+  return (
+    <AlertDialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) onKeepEditing()
+      }}
+    >
+      <AlertDialogContent
+        onOpenAutoFocus={() => {
+          const activeElement = document.activeElement
+          returnFocusRef.current =
+            activeElement instanceof HTMLElement &&
+            activeElement !== document.body
+              ? activeElement
+              : null
+        }}
+        onCloseAutoFocus={(event) => {
+          if (!returnFocusRef.current?.isConnected) return
+          event.preventDefault()
+          returnFocusRef.current.focus()
+          returnFocusRef.current = null
+        }}
+      >
+        <AlertDialogHeader>
+          <AlertDialogTitle className="text-balance">
+            {operationInProgress
+              ? "Network update in progress"
+              : "Leave with unpublished relay changes?"}
+          </AlertDialogTitle>
+          <AlertDialogDescription className="text-pretty leading-6">
+            {operationInProgress
+              ? "Stay on this page while Conduit finishes staging and publishing the signed preferences."
+              : "Leaving this page will discard your relay edits. Conduit and other Nostr apps will keep using your last published preferences."}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <Button type="button" variant="outline" onClick={onKeepEditing}>
+            {operationInProgress ? "Stay on this page" : "Keep editing"}
+          </Button>
+          {!operationInProgress ? (
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={() => {
+                returnFocusRef.current = null
+                onLeave()
+              }}
+            >
+              Leave and discard
+            </Button>
+          ) : null}
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  )
+}
+
 function removalInstructionForReview(
   relayUrl: string | null,
   dirty: boolean,
@@ -677,8 +860,10 @@ function removalInstructionForReview(
   return getAccountNetworkRemovalInstruction(baselineRoles, relayUrl)
 }
 
-function useRelaySettingsReview(controller: AccountNetworkSettingsController) {
-  // RelaySettingsPanel keys this editable draft by the signed-frontier revision.
+function useRelaySettingsReview(
+  controller: AccountNetworkSettingsController,
+  onUnpublishedRelayChangesChange?: (hasUnpublishedChanges: boolean) => void
+) {
   const [rows, setRows] = useState<AccountNetworkRelayRowView[]>(
     () => controller.view.rows
   )
@@ -690,7 +875,9 @@ function useRelaySettingsReview(controller: AccountNetworkSettingsController) {
     null
   )
   const removalTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const publishButtonRef = useRef<HTMLButtonElement | null>(null)
   const [localActionError, setLocalActionError] = useState<string | null>(null)
+  const [publishDialogOpen, setPublishDialogOpen] = useState(false)
 
   const baselineRoles = useMemo(
     () => baselineRolesFromRows(controller.view.rows),
@@ -718,6 +905,22 @@ function useRelaySettingsReview(controller: AccountNetworkSettingsController) {
     () => desiredRolesFromRows(presentationRows),
     [presentationRows]
   )
+  const editedRelayUrls = useMemo(() => {
+    const baselineByUrl = new Map(
+      baselineRoles.map((roles) => [roles.url, roles])
+    )
+    return new Set(
+      desiredRoles.flatMap((roles) => {
+        const baseline = baselineByUrl.get(roles.url)
+        if (!baseline) return []
+        return baseline.readEnabled !== roles.readEnabled ||
+          baseline.publishEnabled !== roles.publishEnabled ||
+          baseline.privateInboxEnabled !== roles.privateInboxEnabled
+          ? [roles.url]
+          : []
+      })
+    )
+  }, [baselineRoles, desiredRoles])
   const wholeSetupRelayUrls = useMemo(() => {
     const relayUrls = new Set<string>()
     for (const row of controller.view.rows) {
@@ -730,7 +933,29 @@ function useRelaySettingsReview(controller: AccountNetworkSettingsController) {
     desiredRoles
   )
   const dirty = changedKindCount > 0
-  const validationError = validateAccountNetworkDesiredRoles(desiredRoles)
+  const controllerRowUrls = new Set(controller.view.rows.map((row) => row.url))
+  const hasLocalCandidate = rows.some(
+    (row) => row.candidate && !controllerRowUrls.has(row.url)
+  )
+  const hasUnconfiguredLocalCandidate = rows.some(
+    (row) =>
+      row.candidate &&
+      !controllerRowUrls.has(row.url) &&
+      !row.readEnabled &&
+      !row.publishEnabled &&
+      !row.privateInboxEnabled
+  )
+  const hasUnpublishedChanges = dirty || hasLocalCandidate
+  const relayListChanged = rolesDiffer(baselineRoles, desiredRoles, (roles) => [
+    roles.readEnabled,
+    roles.publishEnabled,
+  ])
+  const inboxChanged = rolesDiffer(baselineRoles, desiredRoles, (roles) => [
+    roles.privateInboxEnabled,
+  ])
+  const validationError = hasUnconfiguredLocalCandidate
+    ? "Choose at least one role for each added relay or discard it."
+    : validateAccountNetworkDesiredRoles(desiredRoles)
   const pendingRetry = controller.view.pendingCheckpoints.some(
     (checkpoint) => checkpoint.retryAvailable
   )
@@ -749,6 +974,15 @@ function useRelaySettingsReview(controller: AccountNetworkSettingsController) {
   const operationText = operationMessage(
     controller.operation.phase,
     controller.operation.message
+  )
+
+  useEffect(() => {
+    onUnpublishedRelayChangesChange?.(hasUnpublishedChanges)
+  }, [hasUnpublishedChanges, onUnpublishedRelayChangesChange])
+
+  useEffect(
+    () => () => onUnpublishedRelayChangesChange?.(false),
+    [onUnpublishedRelayChangesChange]
   )
 
   function toggleRole(
@@ -860,7 +1094,25 @@ function useRelaySettingsReview(controller: AccountNetworkSettingsController) {
     setRelayPendingRemoval(row.url)
   }
 
-  async function saveReview(): Promise<void> {
+  function requestPublish(): void {
+    setLocalActionError(null)
+    if (validationError) {
+      setLocalActionError(validationError)
+      return
+    }
+    if (changedKindCount === 0) return
+    setPublishDialogOpen(true)
+  }
+
+  function closePublishDialog(): void {
+    setPublishDialogOpen(false)
+    requestAnimationFrame(() =>
+      publishButtonRef.current?.focus({ preventScroll: true })
+    )
+  }
+
+  async function confirmPublish(): Promise<void> {
+    setPublishDialogOpen(false)
     setLocalActionError(null)
     if (validationError) {
       setLocalActionError(validationError)
@@ -874,6 +1126,7 @@ function useRelaySettingsReview(controller: AccountNetworkSettingsController) {
   }
 
   function discardReview(): void {
+    setPublishDialogOpen(false)
     setRows(discardReviewRows(controller.view.rows))
     setLocalActionError(null)
     controller.clearOperation()
@@ -902,9 +1155,15 @@ function useRelaySettingsReview(controller: AccountNetworkSettingsController) {
     refreshingUrl,
     relayPendingRemoval,
     removalTriggerRef,
+    publishButtonRef,
+    publishDialogOpen,
+    editedRelayUrls,
     wholeSetupRelayUrls,
     changedKindCount,
     dirty,
+    hasUnpublishedChanges,
+    relayListChanged,
+    inboxChanged,
     validationError,
     busy,
     metadataReady,
@@ -917,7 +1176,9 @@ function useRelaySettingsReview(controller: AccountNetworkSettingsController) {
     addRelay,
     refreshRelay,
     requestRelayRemoval,
-    saveReview,
+    requestPublish,
+    closePublishDialog,
+    confirmPublish,
     discardReview,
     cancelRemoval,
     proceedRemoval,
@@ -943,18 +1204,20 @@ function NetworkHeader() {
 function LegacyInboxRecoverySection({
   controller,
   busy,
+  relayDraftDirty,
 }: {
   controller: AccountNetworkSettingsController
   busy: boolean
+  relayDraftDirty: boolean
 }) {
   if (!controller.exactInboxRedistributionAvailable) return null
   return (
-    <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
+    <div className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-balance text-sm font-semibold text-[var(--text-primary)]">
+          <h3 className="text-balance text-sm font-semibold text-[var(--text-primary)]">
             Finish private inbox distribution
-          </h2>
+          </h3>
           <p className="mt-1 text-pretty text-sm leading-6 text-[var(--text-secondary)]">
             Retry the exact signed declaration already retained on this device.
             This does not create a new event or ask your signer.
@@ -963,7 +1226,12 @@ function LegacyInboxRecoverySection({
         <Button
           type="button"
           variant="outline"
-          disabled={busy}
+          disabled={busy || relayDraftDirty}
+          title={
+            relayDraftDirty
+              ? "Publish or discard your relay edits before retrying the signed declaration."
+              : undefined
+          }
           onClick={() =>
             void controller
               .redistributeExactInboxDeclaration()
@@ -974,23 +1242,20 @@ function LegacyInboxRecoverySection({
           Retry exact declaration
         </Button>
       </div>
-    </section>
+    </div>
   )
 }
 
 function AddRelaySection({ review }: { review: RelaySettingsReview }) {
   return (
-    <form
-      onSubmit={(event) => void review.addRelay(event)}
-      className="rounded-2xl border border-dashed border-[var(--border)] bg-[var(--surface)] p-4"
-    >
+    <form onSubmit={(event) => void review.addRelay(event)}>
       <label
         htmlFor="account-network-relay-url"
         className="text-sm font-medium text-[var(--text-primary)]"
       >
-        Add Relay
+        Add relay
       </label>
-      <div className="mt-3 flex flex-col gap-3 sm:flex-row">
+      <div className="mt-2 flex flex-col gap-2 sm:flex-row">
         <Input
           id="account-network-relay-url"
           aria-describedby={
@@ -1002,27 +1267,28 @@ function AddRelaySection({ review }: { review: RelaySettingsReview }) {
           value={review.newRelayUrl}
           onChange={(event) => review.setNewRelayUrl(event.target.value)}
           placeholder="wss://relay.example.com"
-          className="h-12 rounded-2xl bg-[var(--surface-elevated)] font-mono"
+          className="h-11 rounded-xl bg-[var(--surface-elevated)] font-mono"
         />
         <Button
           type="submit"
+          variant="outline"
           disabled={
             !review.metadataReady ||
             review.isAdding ||
             !review.newRelayUrl.trim()
           }
-          className="h-12 rounded-2xl px-5"
+          className="h-11 shrink-0"
         >
           <Plus className="size-4" aria-hidden="true" />
-          {review.isAdding ? "Reading metadata" : "Add Relay"}
+          {review.isAdding ? "Reading metadata" : "Add relay"}
         </Button>
       </div>
       <p
         id="account-network-relay-help"
-        className="mt-3 text-pretty text-sm leading-6 text-[var(--text-muted)]"
+        className="mt-2 text-pretty text-xs leading-5 text-[var(--text-muted)]"
       >
         Adding a relay only reads its advertised metadata. It remains an
-        unpublished candidate until you choose roles and save.
+        unpublished candidate until you choose roles and publish the change.
       </p>
       {review.addError ? (
         <p
@@ -1039,50 +1305,36 @@ function AddRelaySection({ review }: { review: RelaySettingsReview }) {
 
 function RelayListSection({ review }: { review: RelaySettingsReview }) {
   return (
-    <section aria-labelledby="relay-list-heading">
-      <div>
-        <h2
-          id="relay-list-heading"
-          className="text-balance text-lg font-semibold text-[var(--text-primary)]"
-        >
-          Relays
-        </h2>
-        <p className="mt-1 max-w-2xl text-pretty text-sm leading-6 text-[var(--text-secondary)]">
-          Each relay appears once. Conduit orders this list automatically from
-          configured, observed, and advertised evidence; signed order is the
-          stable tie-breaker.
-        </p>
-      </div>
-      <div className="mt-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-4">
-        {review.rows.length > 0 ? (
-          <ul>
-            {review.rows.map((row) => (
-              <RelayRow
-                key={row.url}
-                row={row}
-                mutationDisabled={!review.mutationReady}
-                operationBusy={review.busy}
-                metadataDisabled={!review.metadataReady}
-                wholeSetupRemoval={review.wholeSetupRelayUrls.has(row.url)}
-                inboxCount={review.inboxCount}
-                refreshing={review.refreshingUrl === row.url}
-                onToggle={(role, trigger) =>
-                  review.toggleRole(row.url, role, trigger)
-                }
-                onRefresh={() => void review.refreshRelay(row)}
-                onRemove={(trigger) => review.requestRelayRemoval(row, trigger)}
-              />
-            ))}
-          </ul>
-        ) : (
-          <div className="py-8 text-pretty text-sm leading-6 text-[var(--text-secondary)]">
-            No signed relay membership was observed in this bounded check. Add
-            at least two relays, including one Private inbox, to prepare a safe
-            account setup.
-          </div>
-        )}
-      </div>
-    </section>
+    <div>
+      {review.rows.length > 0 ? (
+        <ul className="space-y-2" aria-label="Relays">
+          {review.rows.map((row) => (
+            <RelayRow
+              key={row.url}
+              row={row}
+              edited={review.editedRelayUrls.has(row.url)}
+              mutationDisabled={!review.mutationReady}
+              operationBusy={review.busy}
+              metadataDisabled={!review.metadataReady}
+              wholeSetupRemoval={review.wholeSetupRelayUrls.has(row.url)}
+              inboxCount={review.inboxCount}
+              refreshing={review.refreshingUrl === row.url}
+              onToggle={(role, trigger) =>
+                review.toggleRole(row.url, role, trigger)
+              }
+              onRefresh={() => void review.refreshRelay(row)}
+              onRemove={(trigger) => review.requestRelayRemoval(row, trigger)}
+            />
+          ))}
+        </ul>
+      ) : (
+        <div className="py-4 text-pretty text-sm leading-6 text-[var(--text-secondary)]">
+          No signed relay membership was observed in this bounded check. Add at
+          least two relays, including one Private inbox, to prepare a safe
+          account setup.
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -1129,100 +1381,224 @@ function NetworkReviewSection({
   controller: AccountNetworkSettingsController
   review: RelaySettingsReview
 }) {
-  const validationVisible = Boolean(review.validationError && review.dirty)
+  const validationVisible = Boolean(
+    review.validationError && review.hasUnpublishedChanges
+  )
   return (
-    <section
-      aria-labelledby="network-review-heading"
-      className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"
-    >
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <h2
-            id="network-review-heading"
-            className="text-balance text-sm font-semibold text-[var(--text-primary)]"
-          >
-            Review Network changes
-          </h2>
-          <p className="mt-1 max-w-2xl text-pretty text-sm leading-6 text-[var(--text-secondary)]">
-            One update may require {review.changedKindCount || "one or two"}{" "}
-            signer {review.changedKindCount === 1 ? "request" : "requests"}. The
-            two signed preferences still publish and confirm independently.
-          </p>
-        </div>
-        <div className="flex flex-col gap-2 sm:items-end">
-          <div className="flex flex-wrap gap-2">
-            {review.dirty ? (
-              <Button
-                type="button"
-                variant="ghost"
-                disabled={review.busy}
-                onClick={review.discardReview}
-              >
-                Discard edits
-              </Button>
+    <>
+      <PreferenceSectionFooter attention={review.hasUnpublishedChanges}>
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex min-w-0 items-start gap-2">
+            {review.hasUnpublishedChanges ? (
+              <AlertTriangle
+                className="mt-0.5 size-4 shrink-0 text-[var(--warning)]"
+                aria-hidden="true"
+              />
             ) : null}
+            <div>
+              <p
+                className={cn(
+                  "text-sm font-semibold",
+                  review.hasUnpublishedChanges
+                    ? "text-[var(--warning)]"
+                    : "text-[var(--text-secondary)]"
+                )}
+              >
+                {review.hasUnpublishedChanges
+                  ? "Unpublished changes"
+                  : "No unpublished changes"}
+              </p>
+              <p className="mt-1 max-w-xl text-pretty text-xs leading-5 text-[var(--text-muted)]">
+                {review.hasUnpublishedChanges
+                  ? "Publish or discard these relay edits before refreshing signed preferences or leaving this page."
+                  : "Edit a relay role or add a relay to prepare an update."}
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-col gap-2 sm:items-end">
+            <div className="flex flex-wrap justify-end gap-2">
+              {review.hasUnpublishedChanges ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  disabled={review.busy}
+                  onClick={review.discardReview}
+                >
+                  Discard changes
+                </Button>
+              ) : null}
+              <Button
+                ref={review.publishButtonRef}
+                type="button"
+                variant={review.hasUnpublishedChanges ? "primary" : "outline"}
+                aria-describedby={
+                  validationVisible ? "network-review-validation" : undefined
+                }
+                disabled={
+                  !review.mutationReady ||
+                  review.changedKindCount === 0 ||
+                  Boolean(review.validationError)
+                }
+                onClick={review.requestPublish}
+              >
+                <Upload className="size-4" aria-hidden="true" />
+                Review and publish
+              </Button>
+            </div>
+            {validationVisible ? (
+              <p
+                id="network-review-validation"
+                className="max-w-sm text-pretty text-right text-xs text-warning"
+              >
+                {review.validationError}
+              </p>
+            ) : null}
+          </div>
+        </div>
+        {review.localActionError ? (
+          <p role="alert" className="mt-3 text-pretty text-sm text-error">
+            {review.localActionError}
+          </p>
+        ) : null}
+        <OperationNotice
+          controller={controller}
+          message={review.operationText}
+        />
+      </PreferenceSectionFooter>
+
+      <AlertDialog
+        open={review.publishDialogOpen}
+        onOpenChange={(open) => {
+          if (!open) review.closePublishDialog()
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-balance">
+              Publish these Network changes?
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-pretty leading-6">
+              Your external signer will show {review.changedKindCount}{" "}
+              {review.changedKindCount === 1 ? "request" : "requests"}. The
+              signed preferences publish and confirm independently.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <ul className="space-y-2 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-sm text-[var(--text-primary)]">
+            {review.relayListChanged ? (
+              <li>
+                <span className="font-semibold">Read and Publish</span>
+                <span className="text-[var(--text-secondary)]">
+                  {" "}
+                  relay preferences
+                </span>
+              </li>
+            ) : null}
+            {review.inboxChanged ? (
+              <li>
+                <span className="font-semibold">Private inbox</span>
+                <span className="text-[var(--text-secondary)]">
+                  {" "}
+                  relay preferences
+                </span>
+              </li>
+            ) : null}
+          </ul>
+          <AlertDialogFooter>
             <Button
               type="button"
-              aria-describedby={
-                validationVisible ? "network-review-validation" : undefined
-              }
-              disabled={
-                !review.mutationReady ||
-                !review.dirty ||
-                Boolean(review.validationError)
-              }
-              onClick={() => void review.saveReview()}
+              variant="outline"
+              onClick={review.closePublishDialog}
             >
-              Save Network changes
+              Keep editing
             </Button>
-          </div>
-          {validationVisible ? (
-            <p
-              id="network-review-validation"
-              className="max-w-sm text-pretty text-right text-xs text-warning"
-            >
-              {review.validationError}
-            </p>
-          ) : null}
-        </div>
-      </div>
-      {review.localActionError ? (
-        <p role="alert" className="mt-3 text-pretty text-sm text-error">
-          {review.localActionError}
-        </p>
-      ) : null}
-      <OperationNotice controller={controller} message={review.operationText} />
-    </section>
+            <Button type="button" onClick={() => void review.confirmPublish()}>
+              <Upload className="size-4" aria-hidden="true" />
+              Sign and publish
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   )
 }
 
-function RelaySettingsPanelContent({
+function RelayPreferencesSection({
   controller,
-  className,
-}: RelaySettingsPanelProps) {
-  const review = useRelaySettingsReview(controller)
+  review,
+}: {
+  controller: AccountNetworkSettingsController
+  review: RelaySettingsReview
+}) {
+  const checking = controller.view.status === "reconciling"
+  const refreshDisabled =
+    checking || review.busy || review.hasUnpublishedChanges
   return (
-    <section
-      className={cn(
-        "rounded-[2rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 shadow-lg sm:p-7",
-        className
-      )}
+    <PreferenceSectionCard
+      headingId="relay-list-heading"
+      title="Relays"
+      description="Each relay appears once. Conduit orders the list automatically from configured, observed, and advertised evidence."
+      aria-busy={checking || undefined}
+      headerAction={
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={refreshDisabled}
+          title={
+            review.hasUnpublishedChanges
+              ? "Publish or discard your relay edits before refreshing signed preferences."
+              : undefined
+          }
+          onClick={controller.retryReconciliation}
+        >
+          <RefreshCw
+            className={cn(
+              "size-4",
+              checking && "animate-spin motion-reduce:animate-none"
+            )}
+            aria-hidden="true"
+          />
+          {checking ? "Refreshing" : "Refresh"}
+        </Button>
+      }
     >
-      <div className="space-y-6">
-        <NetworkHeader />
-        <ReconciliationSummary controller={controller} />
-        <PendingUpdateSummary controller={controller} />
+      <PreferenceSectionBody className="pt-0 sm:pt-0">
+        <PublishedRelayPreferences controller={controller} />
+        <PendingUpdateSummary
+          controller={controller}
+          relayDraftDirty={review.hasUnpublishedChanges}
+        />
         <LegacyInboxRecoverySection
           controller={controller}
           busy={review.busy}
+          relayDraftDirty={review.hasUnpublishedChanges}
         />
-        <AddRelaySection review={review} />
+      </PreferenceSectionBody>
+      <PreferenceSectionDivider />
+      <PreferenceSectionBody>
         <RelayListSection review={review} />
-        <NetworkReviewSection controller={controller} review={review} />
-        {controller.mediaServers ? (
-          <MediaServerPreferencesSection {...controller.mediaServers} />
-        ) : null}
-      </div>
+      </PreferenceSectionBody>
+      <PreferenceSectionDivider />
+      <PreferenceSectionBody>
+        <AddRelaySection review={review} />
+      </PreferenceSectionBody>
+      <PreferenceSectionDivider />
+      <NetworkReviewSection controller={controller} review={review} />
+    </PreferenceSectionCard>
+  )
+}
+
+function RelayPreferencesEditor({
+  controller,
+  onUnpublishedRelayChangesChange,
+}: RelaySettingsPanelProps) {
+  const review = useRelaySettingsReview(
+    controller,
+    onUnpublishedRelayChangesChange
+  )
+  return (
+    <>
+      <RelayPreferencesSection controller={controller} review={review} />
       <RelayRemovalDialog
         relayUrl={review.relayPendingRemoval}
         instruction={review.removalInstruction}
@@ -1238,15 +1614,33 @@ function RelaySettingsPanelContent({
         onCancel={review.cancelRemoval}
         onProceed={() => void review.proceedRemoval()}
       />
-    </section>
+    </>
   )
 }
 
-export function RelaySettingsPanel(props: RelaySettingsPanelProps) {
+export function RelaySettingsPanel({
+  controller,
+  className,
+  onUnpublishedRelayChangesChange,
+}: RelaySettingsPanelProps) {
   return (
-    <RelaySettingsPanelContent
-      key={props.controller.view.revision}
-      {...props}
-    />
+    <section
+      className={cn(
+        "rounded-[2rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 shadow-lg sm:p-7",
+        className
+      )}
+    >
+      <div className="space-y-6">
+        <NetworkHeader />
+        <RelayPreferencesEditor
+          key={controller.view.revision}
+          controller={controller}
+          onUnpublishedRelayChangesChange={onUnpublishedRelayChangesChange}
+        />
+        {controller.mediaServers ? (
+          <MediaServerPreferencesSection {...controller.mediaServers} />
+        ) : null}
+      </div>
+    </section>
   )
 }

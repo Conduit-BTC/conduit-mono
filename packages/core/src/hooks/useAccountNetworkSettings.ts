@@ -310,7 +310,7 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
       }
       if (reconciliation.pendingUpdateStatus === "unavailable") {
         throw new Error(
-          "Signed retry storage is unavailable. Check again before staging a Network update."
+          "Signed retry storage is unavailable. Refresh before staging a Network update."
         )
       }
       const snapshot = captureAuth()

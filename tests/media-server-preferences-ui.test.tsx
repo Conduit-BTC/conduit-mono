@@ -80,19 +80,69 @@ describe("shared media server preference UI", () => {
         {...actions}
       />
     )
-    expect(html.indexOf("https://two.conduit.market")).toBeLessThan(
-      html.indexOf("https://one.conduit.market")
+    const orderedListStart = html.indexOf('aria-label="Ordered media servers"')
+    const orderedListEnd = html.indexOf("</ol>", orderedListStart)
+    const orderedList = html.slice(orderedListStart, orderedListEnd)
+    expect(orderedList.indexOf("https://two.conduit.market")).toBeLessThan(
+      orderedList.indexOf("https://one.conduit.market")
     )
     expect(html).toContain(
       'aria-label="Move https://two.conduit.market earlier"'
     )
     expect(html).toContain('aria-label="Move https://two.conduit.market later"')
     expect(html).toContain('aria-label="Remove https://one.conduit.market"')
-    expect(html).toContain("Unpublished local edits")
+    expect(html).toContain("Draft saved on this device; not published.")
     expect(html).toContain(
       'aria-describedby="media-server-url-help media-server-url-error"'
     )
     expect(html).not.toContain("draggable=")
+  })
+
+  it("uses one calm section flow without redundant happy-state pills", () => {
+    const html = renderToStaticMarkup(
+      <MediaServerPreferencesSection
+        view={view({
+          status: "published",
+          localServerUrls: ["https://media.conduit.market"],
+          publishedServerUrls: ["https://media.conduit.market"],
+          sourceRelayCount: 2,
+          publishedCreatedAt: 1_700_000_000,
+        })}
+        {...actions}
+      />
+    )
+
+    expect(html).toContain(">Refresh</button>")
+    expect(html).not.toContain("Published list observed")
+    expect(html).not.toContain("Matches observed list")
+    expect(html.indexOf("Last observed published event")).toBeLessThan(
+      html.indexOf('aria-label="Ordered media servers"')
+    )
+    expect(html.indexOf('aria-label="Ordered media servers"')).toBeLessThan(
+      html.indexOf("Add media server")
+    )
+    expect(html.indexOf("Add media server")).toBeLessThan(
+      html.indexOf("Review and publish")
+    )
+  })
+
+  it("keeps incomplete lookup evidence visible in the published-event disclosure", () => {
+    const html = renderToStaticMarkup(
+      <MediaServerPreferencesSection
+        view={view({
+          status: "lookup_partial",
+          coverage: "partial",
+          publishedServerUrls: ["https://media.conduit.market"],
+          sourceRelayCount: 1,
+        })}
+        {...actions}
+      />
+    )
+
+    expect(html).toContain("Lookup incomplete")
+    expect(html).toContain("Some planned relay reads did not complete")
+    expect(html).toContain("Lookup coverage")
+    expect(html).toContain(">partial<")
   })
 
   it("reports partial delivery, pending confirmation, retry, and cancellation distinctly", () => {
@@ -155,11 +205,19 @@ describe("shared media server preference UI", () => {
           state: "not_observed",
           stale: false,
           coverage: "complete",
+          eventCreatedAt: null,
+          observedAt: null,
+          completeObservedAt: null,
+          sourceRelayCount: 0,
         },
         inbox: {
           state: "not_observed",
           stale: false,
           coverage: "complete",
+          eventCreatedAt: null,
+          observedAt: null,
+          completeObservedAt: null,
+          sourceRelayCount: 0,
         },
         pendingStatus: "none",
         pendingCheckpoints: [],
@@ -183,10 +241,10 @@ describe("shared media server preference UI", () => {
     const html = renderToStaticMarkup(
       <RelaySettingsPanel controller={networkController} />
     )
-    expect(html.match(/Media servers/g)?.length).toBe(1)
-    expect(html).toContain("Add media server root")
-    expect(html).toContain("Add Relay")
-    expect(html.indexOf("Add Relay")).toBeLessThan(
+    expect(html.match(/id="media-server-preferences-heading"/g)?.length).toBe(1)
+    expect(html).toContain("Add media server")
+    expect(html).toContain("Add relay")
+    expect(html.indexOf("Add relay")).toBeLessThan(
       html.indexOf("Media servers")
     )
   })

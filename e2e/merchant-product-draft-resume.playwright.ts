@@ -131,11 +131,17 @@ async function savePrivateInboxRole(page: Page): Promise<void> {
   await expect(privateInboxRole).toBeFocused()
   await page.keyboard.press("Space")
   await expect(privateInboxRole).toHaveAttribute("aria-pressed", "true")
-  const saveButton = page.getByRole("button", {
-    name: "Save Network changes",
-  })
-  await expect(saveButton).toBeEnabled()
-  await saveButton.click()
+  const reviewButton = page
+    .getByRole("region", { name: "Relays" })
+    .getByRole("button", {
+      name: "Review and publish",
+    })
+  await expect(reviewButton).toBeEnabled()
+  await reviewButton.click()
+  await page
+    .getByRole("alertdialog")
+    .getByRole("button", { name: "Sign and publish" })
+    .click()
 }
 
 async function runCompleteJourney(
@@ -357,6 +363,13 @@ test("cancelled or failed inbox setup keeps the exact local draft @merchant", as
     page.getByRole("button", { name: "Return to product draft" })
   ).toBeVisible()
   await page.getByRole("button", { name: "Return to product draft" }).click()
+  const leaveDialog = page.getByRole("alertdialog")
+  await expect(
+    leaveDialog.getByRole("heading", {
+      name: "Leave with unpublished relay changes?",
+    })
+  ).toBeVisible()
+  await leaveDialog.getByRole("button", { name: "Leave and discard" }).click()
   await expectProductDraft(page, title)
 
   page.once("dialog", (dialog) => dialog.accept())

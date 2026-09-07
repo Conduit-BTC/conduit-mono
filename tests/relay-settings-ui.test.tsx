@@ -53,11 +53,19 @@ function networkView(
       state: "declared",
       stale: false,
       coverage: "complete",
+      eventCreatedAt: 1_700_000_000,
+      observedAt: 1_700_000_100_000,
+      completeObservedAt: 1_700_000_100_000,
+      sourceRelayCount: 2,
     },
     inbox: {
       state: "declared",
       stale: false,
       coverage: "complete",
+      eventCreatedAt: 1_700_000_010,
+      observedAt: 1_700_000_110_000,
+      completeObservedAt: 1_700_000_110_000,
+      sourceRelayCount: 2,
     },
     pendingStatus: "none",
     pendingCheckpoints: [],
@@ -114,15 +122,22 @@ describe("RelaySettingsPanel", () => {
     expect(markup).not.toContain(">OUT<")
   })
 
-  it("keeps Add Relay before the relay list and explains candidates as unpublished", () => {
+  it("keeps the relay list, Add relay, and review action in one ordered card", () => {
     const markup = renderToStaticMarkup(
       <RelaySettingsPanel controller={controller()} />
     )
 
-    expect(markup.indexOf("Add Relay")).toBeLessThan(markup.indexOf(">Relays<"))
+    expect(markup.indexOf("wss://first.example")).toBeLessThan(
+      markup.indexOf("Add relay")
+    )
+    expect(markup.indexOf("Add relay")).toBeLessThan(
+      markup.indexOf("Review and publish")
+    )
     expect(markup).toContain("only reads its advertised metadata")
     expect(markup).toContain("unpublished candidate")
     expect(markup).toContain('aria-describedby="account-network-relay-help"')
+    expect(markup).not.toContain("Signed preference check")
+    expect(markup).not.toContain("Check again")
   })
 
   it("labels NIP-11 and authentication evidence without claiming health or delivery", () => {
@@ -199,6 +214,46 @@ describe("RelaySettingsPanel", () => {
     expect(markup.indexOf(auth.url)).toBeLessThan(markup.indexOf(plain.url))
   })
 
+  it("shows both signed relay preference frontiers in one published disclosure", () => {
+    const markup = renderToStaticMarkup(
+      <RelaySettingsPanel controller={controller()} />
+    )
+
+    expect(markup).toContain("Last observed published preferences")
+    expect(markup).toContain("Signed revision")
+    expect(markup).toContain("Last observed")
+    expect(markup).toContain("Observed sources")
+    expect(markup).toContain("Complete bounded check")
+    expect(markup.match(/Read and Publish/g)?.length).toBeGreaterThan(0)
+    expect(markup.match(/Private inbox/g)?.length).toBeGreaterThan(0)
+  })
+
+  it("marks an edited signed relay as Edited instead of Signed", () => {
+    const edited = relayRow("wss://edited.example", {
+      readEnabled: false,
+      readState: "published",
+      publishEnabled: true,
+      publishState: "published",
+    })
+    const markup = renderToStaticMarkup(
+      <RelaySettingsPanel
+        controller={controller({
+          view: networkView({
+            rows: [edited],
+            capabilityByUrl: { [edited.url]: edited.capability },
+            revision: "edited-relay",
+          }),
+        })}
+      />
+    )
+    const rowStart = markup.indexOf(edited.url)
+    const rowEnd = markup.indexOf("</li>", rowStart)
+    const rowMarkup = markup.slice(rowStart, rowEnd)
+
+    expect(rowMarkup).toContain("Edited")
+    expect(rowMarkup).not.toContain(">Signed<")
+  })
+
   it("shows independent two-object pending outcomes and exact-byte retry", () => {
     const markup = renderToStaticMarkup(
       <RelaySettingsPanel
@@ -263,14 +318,14 @@ describe("RelaySettingsPanel", () => {
     expect(markup).not.toContain("Publish inbox declaration")
   })
 
-  it("uses one coordinated Save action and describes the two signer requests", () => {
+  it("uses one coordinated Review and publish action", () => {
     const markup = renderToStaticMarkup(
       <RelaySettingsPanel controller={controller()} />
     )
 
-    expect(markup).toContain("Save Network changes")
-    expect(markup).toContain("one or two signer requests")
-    expect(markup.match(/Save Network changes/g)?.length).toBe(1)
+    expect(markup).toContain("Review and publish")
+    expect(markup.match(/Review and publish/g)?.length).toBe(1)
+    expect(markup).not.toContain("Save Network changes")
     expect(markup).not.toContain("Publish NIP-65")
     expect(markup).not.toContain("Publish inbox")
     expect(markup).not.toContain("Clear local")
@@ -303,8 +358,8 @@ describe("RelaySettingsPanel", () => {
     )
 
     expect(markup).toContain("Unpublished candidate")
-    expect(markup).toContain("Discard edits")
-    expect(buttonOpeningTag(markup, "Save Network changes")).not.toContain(
+    expect(markup).toContain("Discard changes")
+    expect(buttonOpeningTag(markup, "Review and publish")).not.toContain(
       'disabled=""'
     )
   })
@@ -319,14 +374,11 @@ describe("RelaySettingsPanel", () => {
     )
 
     expect(markup).toContain("cannot safely stage or resume an update")
-    expect(buttonOpeningTag(markup, "Save Network changes")).toContain(
+    expect(buttonOpeningTag(markup, "Review and publish")).toContain(
       'disabled=""'
     )
     expect(
-      buttonOpeningTag(
-        markup,
-        "Refresh advertised metadata for wss://first.example"
-      )
+      buttonOpeningTag(markup, "Refresh relay info for wss://first.example")
     ).not.toContain('disabled=""')
   })
 
@@ -383,9 +435,7 @@ describe("RelaySettingsPanel", () => {
       />
     )
 
-    expect(buttonOpeningTag(idleMarkup, "Check again")).not.toContain(
-      'disabled=""'
-    )
-    expect(buttonOpeningTag(busyMarkup, "Check again")).toContain('disabled=""')
+    expect(buttonOpeningTag(idleMarkup, "Refresh")).not.toContain('disabled=""')
+    expect(buttonOpeningTag(busyMarkup, "Refresh")).toContain('disabled=""')
   })
 })

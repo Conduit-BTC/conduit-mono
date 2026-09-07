@@ -121,12 +121,22 @@ export { Switch } from "./Switch"
 export { Tabs, TabsList, TabsTrigger, TabsContent } from "./Tabs"
 export {
   RelaySettingsPanel,
+  UnpublishedRelayChangesDialog,
   type RelaySettingsPanelProps,
+  type UnpublishedRelayChangesDialogProps,
 } from "./RelaySettingsPanel"
 export {
   MediaServerPreferencesSection,
   type MediaServerPreferencesSectionProps,
 } from "./MediaServerPreferencesSection"
+export {
+  PreferenceSectionBody,
+  PreferenceSectionCard,
+  PreferenceSectionDivider,
+  PreferenceSectionFooter,
+  type PreferenceSectionCardProps,
+  type PreferenceSectionFooterProps,
+} from "./PreferenceSectionCard"
 export { Checkbox, type CheckboxProps } from "./Checkbox"
 export {
   ProductCard,

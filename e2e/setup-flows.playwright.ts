@@ -80,11 +80,14 @@ async function exerciseNetworkInboxDeclaration(
   await expect(privateInboxRole).toBeEnabled({ timeout: 20_000 })
   await privateInboxRole.click()
 
-  const saveButton = page.getByRole("button", {
-    name: "Save Network changes",
+  const relaySection = page.getByRole("region", { name: "Relays" })
+  const reviewButton = relaySection.getByRole("button", {
+    name: "Review and publish",
   })
-  await expect(saveButton).toBeEnabled()
-  await saveButton.click()
+  await expect(reviewButton).toBeEnabled()
+  await reviewButton.click()
+  const publishDialog = page.getByRole("alertdialog")
+  await publishDialog.getByRole("button", { name: "Sign and publish" }).click()
   await expect(page.getByText("Exact event confirmed")).toBeVisible({
     timeout: 20_000,
   })

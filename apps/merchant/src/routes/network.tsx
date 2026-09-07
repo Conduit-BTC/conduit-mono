@@ -1,7 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import { createFileRoute, useNavigate } from "@tanstack/react-router"
+import {
+  createFileRoute,
+  type ShouldBlockFn,
+  useBlocker,
+  useNavigate,
+} from "@tanstack/react-router"
 import { useAccountNetworkSettings, useAuth } from "@conduit/core"
-import { Button, RelaySettingsPanel } from "@conduit/ui"
+import {
+  Button,
+  RelaySettingsPanel,
+  UnpublishedRelayChangesDialog,
+} from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
 import { loadProductDraft } from "../lib/productDraft"
 import {
@@ -26,6 +35,22 @@ function NetworkPage() {
   const [productDraftReturnError, setProductDraftReturnError] = useState<
     string | null
   >(null)
+  const [hasUnpublishedRelayChanges, setHasUnpublishedRelayChanges] =
+    useState(false)
+  const shouldBlockNavigation = useCallback<ShouldBlockFn>(
+    ({ current, next }) =>
+      hasUnpublishedRelayChanges && current.routeId !== next.routeId,
+    [hasUnpublishedRelayChanges]
+  )
+  const blocker = useBlocker({
+    shouldBlockFn: shouldBlockNavigation,
+    enableBeforeUnload: hasUnpublishedRelayChanges,
+    disabled: !hasUnpublishedRelayChanges,
+    withResolver: true,
+  })
+  const networkOperationInProgress = !["idle", "complete", "error"].includes(
+    networkSettings.operation.phase
+  )
 
   useEffect(() => {
     autoReturnStartedRef.current = false
@@ -66,11 +91,20 @@ function NetworkPage() {
         (checkpoint) =>
           checkpoint.kind === 10050 && checkpoint.state === "confirmed"
       )
-    if (!hasProductDraftReturn || !setupConfirmed) return
+    if (
+      !hasProductDraftReturn ||
+      !setupConfirmed ||
+      hasUnpublishedRelayChanges ||
+      networkOperationInProgress
+    ) {
+      return
+    }
 
     returnToProductDraft()
   }, [
     hasProductDraftReturn,
+    hasUnpublishedRelayChanges,
+    networkOperationInProgress,
     networkSettings.view.inbox.coverage,
     networkSettings.view.inbox.stale,
     networkSettings.view.inbox.state,
@@ -79,39 +113,54 @@ function NetworkPage() {
   ])
 
   return (
-    <div className="mx-auto max-w-[54rem] py-2 sm:py-6">
-      <div className="mx-auto max-w-[50rem]">
-        {hasProductDraftReturn && (
-          <section className="mb-4 rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface)] p-4 shadow-[var(--shadow-glass-inset)]">
-            <div className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
-              <div>
-                <h2 className="text-lg font-semibold text-[var(--text-primary)]">
-                  Your product draft is safe
-                </h2>
-                <p className="mt-1 max-w-2xl text-pretty text-sm leading-6 text-[var(--text-secondary)]">
-                  It is saved only in this browser on this device and is not a
-                  public listing. You can return at any time if setup is
-                  cancelled or cannot be completed.
-                </p>
+    <>
+      <div className="mx-auto max-w-[54rem] py-2 sm:py-6">
+        <div className="mx-auto max-w-[50rem]">
+          {hasProductDraftReturn && (
+            <section className="mb-4 rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface)] p-4 shadow-[var(--shadow-glass-inset)]">
+              <div className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
+                <div>
+                  <h2 className="text-lg font-semibold text-[var(--text-primary)]">
+                    Your product draft is safe
+                  </h2>
+                  <p className="mt-1 max-w-2xl text-pretty text-sm leading-6 text-[var(--text-secondary)]">
+                    It is saved only in this browser on this device and is not a
+                    public listing. You can return at any time if setup is
+                    cancelled or cannot be completed.
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full shrink-0 sm:w-auto"
+                  onClick={returnToProductDraft}
+                >
+                  Return to product draft
+                </Button>
               </div>
-              <Button
-                type="button"
-                variant="outline"
-                className="w-full shrink-0 sm:w-auto"
-                onClick={returnToProductDraft}
-              >
-                Return to product draft
-              </Button>
-            </div>
-            {productDraftReturnError && (
-              <p role="alert" className="mt-3 text-sm text-error">
-                {productDraftReturnError}
-              </p>
-            )}
-          </section>
-        )}
-        <RelaySettingsPanel controller={networkSettings} />
+              {productDraftReturnError && (
+                <p role="alert" className="mt-3 text-sm text-error">
+                  {productDraftReturnError}
+                </p>
+              )}
+            </section>
+          )}
+          <RelaySettingsPanel
+            controller={networkSettings}
+            onUnpublishedRelayChangesChange={setHasUnpublishedRelayChanges}
+          />
+        </div>
       </div>
-    </div>
+      <UnpublishedRelayChangesDialog
+        open={blocker.status === "blocked"}
+        operationInProgress={networkOperationInProgress}
+        onKeepEditing={() => {
+          if (blocker.status === "blocked") blocker.reset()
+        }}
+        onLeave={() => {
+          if (blocker.status === "blocked") blocker.proceed()
+        }}
+      />
+    </>
   )
 }

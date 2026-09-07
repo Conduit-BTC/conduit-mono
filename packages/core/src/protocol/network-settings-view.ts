@@ -44,6 +44,10 @@ export interface AccountNetworkFrontierView {
   state: string
   stale: boolean
   coverage: "complete" | "partial" | "unavailable" | "not_checked"
+  eventCreatedAt: number | null
+  observedAt: number | null
+  completeObservedAt: number | null
+  sourceRelayCount: number
 }
 
 export interface AccountNetworkPendingCheckpointView {
@@ -236,6 +240,41 @@ function coverageFromInbox(
   return reconciliation?.inboxDeclaration.observation?.coverage ?? "not_checked"
 }
 
+function sourceRelayCount(urls: readonly string[] | undefined): number {
+  return new Set(urls ?? []).size
+}
+
+function inboxObservationTimes(
+  reconciliation: AccountNetworkPreferencesReconciliation | null
+): Pick<AccountNetworkFrontierView, "observedAt" | "completeObservedAt"> {
+  const inbox = reconciliation?.inboxDeclaration
+  if (!inbox?.eventId) {
+    return { observedAt: null, completeObservedAt: null }
+  }
+
+  const observationMatchesFrontier =
+    inbox.observation?.eventId === inbox.eventId
+  if (observationMatchesFrontier) {
+    return {
+      observedAt: inbox.fetchedAt,
+      completeObservedAt:
+        inbox.observation?.coverage === "complete" ? inbox.fetchedAt : null,
+    }
+  }
+
+  // A non-stale retained resolution means the bounded complete lookup still
+  // confirms this exact signed frontier. A failed later lookup also updates
+  // fetchedAt, so never present that timestamp as an event observation.
+  if (!inbox.observation && !inbox.stale && inbox.sourceRelayUrls?.length) {
+    return {
+      observedAt: inbox.fetchedAt,
+      completeObservedAt: inbox.fetchedAt,
+    }
+  }
+
+  return { observedAt: null, completeObservedAt: null }
+}
+
 export function buildAccountNetworkSettingsView(input: {
   accountPubkey: string | null
   status: AccountNetworkPreferencesStatus
@@ -418,6 +457,7 @@ export function buildAccountNetworkSettingsView(input: {
   )
   const activeUpdateId =
     activeKinds.size > 0 ? (pending?.updateId ?? null) : null
+  const inboxObservation = inboxObservationTimes(reconciliation)
   const revision = JSON.stringify({
     accountPubkey,
     relayList: {
@@ -459,11 +499,24 @@ export function buildAccountNetworkSettingsView(input: {
       state: reconciliation?.ownerRelayList.state ?? "not_checked",
       stale: reconciliation?.ownerRelayList.stale ?? false,
       coverage: reconciliation?.ownerRelayList.lookup.coverage ?? "not_checked",
+      eventCreatedAt:
+        reconciliation?.ownerRelayList.current?.signedEvent.created_at ?? null,
+      observedAt: reconciliation?.ownerRelayList.current?.observedAt ?? null,
+      completeObservedAt:
+        reconciliation?.ownerRelayList.current?.completeObservedAt ?? null,
+      sourceRelayCount: sourceRelayCount(
+        reconciliation?.ownerRelayList.current?.sourceRelayUrls
+      ),
     },
     inbox: {
       state: reconciliation?.inboxDeclaration.state ?? "not_checked",
       stale: reconciliation?.inboxDeclaration.stale ?? false,
       coverage: coverageFromInbox(reconciliation),
+      eventCreatedAt: reconciliation?.inboxDeclaration.eventCreatedAt ?? null,
+      ...inboxObservation,
+      sourceRelayCount: sourceRelayCount(
+        reconciliation?.inboxDeclaration.sourceRelayUrls
+      ),
     },
     pendingStatus:
       pending && pending === input.transientUpdate

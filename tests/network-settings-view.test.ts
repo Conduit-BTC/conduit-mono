@@ -291,6 +291,132 @@ describe("account Network settings view", () => {
     )
   })
 
+  it("projects presentation-safe signed frontier evidence for both relay preference events", () => {
+    const base = reconciliation(null)
+    const withEvidence = {
+      ...base,
+      ownerRelayList: {
+        ...base.ownerRelayList,
+        stale: true,
+        current: {
+          signedEvent: { created_at: 101 },
+          observedAt: 202_000,
+          completeObservedAt: 201_000,
+          sourceRelayUrls: [
+            "wss://source-a.example",
+            "wss://source-b.example",
+            "wss://source-a.example",
+          ],
+        },
+        lookup: { coverage: "partial" },
+      },
+      inboxDeclaration: {
+        ...base.inboxDeclaration,
+        stale: true,
+        eventId: "inbox-frontier",
+        eventCreatedAt: 303,
+        fetchedAt: 404_000,
+        sourceRelayUrls: [
+          "wss://source-a.example",
+          "wss://source-c.example",
+          "wss://source-c.example",
+        ],
+        observation: {
+          coverage: "partial",
+          eventId: "inbox-frontier",
+        },
+      },
+    } as unknown as AccountNetworkPreferencesReconciliation
+
+    const view = buildAccountNetworkSettingsView({
+      accountPubkey: "a".repeat(64),
+      status: "ready",
+      reconciliation: withEvidence,
+      error: null,
+    })
+
+    expect(view.relayList).toEqual({
+      state: "declared",
+      stale: true,
+      coverage: "partial",
+      eventCreatedAt: 101,
+      observedAt: 202_000,
+      completeObservedAt: 201_000,
+      sourceRelayCount: 2,
+    })
+    expect(view.inbox).toEqual({
+      state: "declared",
+      stale: true,
+      coverage: "partial",
+      eventCreatedAt: 303,
+      observedAt: 404_000,
+      completeObservedAt: null,
+      sourceRelayCount: 2,
+    })
+  })
+
+  it("does not mislabel a degraded inbox lookup time as an event observation", () => {
+    const base = reconciliation(null)
+    const withRetainedEvidence = {
+      ...base,
+      inboxDeclaration: {
+        ...base.inboxDeclaration,
+        stale: true,
+        eventId: "retained-inbox-frontier",
+        eventCreatedAt: 505,
+        fetchedAt: 606_000,
+        sourceRelayUrls: ["wss://source-a.example"],
+        observation: {
+          coverage: "partial",
+        },
+      },
+    } as unknown as AccountNetworkPreferencesReconciliation
+
+    const view = buildAccountNetworkSettingsView({
+      accountPubkey: "a".repeat(64),
+      status: "ready",
+      reconciliation: withRetainedEvidence,
+      error: null,
+    })
+
+    expect(view.inbox).toMatchObject({
+      eventCreatedAt: 505,
+      observedAt: null,
+      completeObservedAt: null,
+      sourceRelayCount: 1,
+    })
+  })
+
+  it("projects complete retained inbox evidence without a new lookup observation", () => {
+    const base = reconciliation(null)
+    const withRetainedEvidence = {
+      ...base,
+      inboxDeclaration: {
+        ...base.inboxDeclaration,
+        stale: false,
+        eventId: "retained-inbox-frontier",
+        eventCreatedAt: 707,
+        fetchedAt: 808_000,
+        sourceRelayUrls: ["wss://source-a.example"],
+        observation: undefined,
+      },
+    } as unknown as AccountNetworkPreferencesReconciliation
+
+    const view = buildAccountNetworkSettingsView({
+      accountPubkey: "a".repeat(64),
+      status: "ready",
+      reconciliation: withRetainedEvidence,
+      error: null,
+    })
+
+    expect(view.inbox).toMatchObject({
+      eventCreatedAt: 707,
+      observedAt: 808_000,
+      completeObservedAt: 808_000,
+      sourceRelayCount: 1,
+    })
+  })
+
   it("projects the durable pending desired frontier and drops a whole-setup removal immediately", () => {
     const view = buildAccountNetworkSettingsView({
       accountPubkey: "a".repeat(64),
