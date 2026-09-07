@@ -895,9 +895,14 @@ export async function publishMerchantOrganizerMembership(input: {
     input.item.productCoordinate,
     input.action
   )
+  const organizerHandoffStillAdvertised =
+    input.item.handoffMode !== "organizer_handoff" ||
+    (!!input.item.pickupCoordinate &&
+      market.pickupCoordinates.includes(input.item.pickupCoordinate))
   if (
     input.action === "accept" &&
     (!isParticipationHandoffVerified(input.item, market.organizerPubkey) ||
+      !organizerHandoffStillAdvertised ||
       !isParticipationProductPreviewVerified(input.item))
   ) {
     throw new Error(
