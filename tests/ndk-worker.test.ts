@@ -207,6 +207,27 @@ describe("NDK relay worker verification fallback", () => {
     expect(openedRelayUrls).toEqual([isolatedRelayUrl])
   })
 
+  it("does not reinterpret an explicit empty fanout plan as default relays", async () => {
+    let openedRelayCount = 0
+    Object.defineProperty(globalThis, "WebSocket", {
+      configurable: true,
+      writable: true,
+      value: class {
+        constructor() {
+          openedRelayCount += 1
+        }
+      },
+    })
+
+    const result = await fetchEventsFanoutDetailed(
+      { kinds: [EVENT_KINDS.PROFILE] },
+      { relayUrls: [], skipHealthFilter: true }
+    )
+
+    expect(result).toEqual({ events: [], relays: [], eventsVerified: true })
+    expect(openedRelayCount).toBe(0)
+  })
+
   it("lets an active relay read finish before a settings refresh closes its socket", async () => {
     const validEvent = finalizeEvent(
       {

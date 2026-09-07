@@ -23,6 +23,7 @@ import {
 import type { SignedPublicNostrEvent } from "./signed-event"
 
 export interface FetchEventsFanoutOptions {
+  /** Omit for configured defaults; pass an empty array for no relay traffic. */
   relayUrls?: string[]
   connectTimeoutMs?: number
   fetchTimeoutMs?: number
@@ -1087,15 +1088,16 @@ async function fetchEventsFromRelay(
 }
 
 function resolveFanoutRelayUrls(options: FetchEventsFanoutOptions): string[] {
+  if (options.relayUrls?.length === 0) return []
+
   if (config.e2eRelayIsolationEnabled) {
     const isolatedRelayUrl = getConfiguredIsolatedE2eRelayUrl()
     return isolatedRelayUrl ? [isolatedRelayUrl] : []
   }
 
   const dedupedUrls = (
-    options.relayUrls && options.relayUrls.length > 0
-      ? options.relayUrls
-      : getGeneralReadRelayUrls({ fallbackRelayUrls: config.defaultRelays })
+    options.relayUrls ??
+    getGeneralReadRelayUrls({ fallbackRelayUrls: config.defaultRelays })
   )
     .map((url) => url.trim())
     .filter(Boolean)

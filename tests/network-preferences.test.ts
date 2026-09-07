@@ -30,6 +30,7 @@ import {
   loadRelaySettingsForPlan,
   loadRelaySettingsPresentation,
   MAX_LEGACY_INBOX_READ_RECOVERY_RELAYS,
+  mergeInboxDeclarationEvidenceDurably,
   migrateLegacyRelaySettingsDraft,
   normalizeOwnerRelayListPubkey,
   planInboxReadRelays,
@@ -152,6 +153,22 @@ function relayEvent(
   const event = finalizeEvent(
     {
       kind: 10002,
+      created_at: createdAt,
+      tags,
+      content: "",
+    },
+    OWNER_SECRET
+  )
+  return { ...event, tags: event.tags.map((tag) => [...tag]) }
+}
+
+function inboxEvent(
+  createdAt = 100,
+  tags: string[][] = [["relay", "wss://signed-inbox.example"]]
+): SignedPublicNostrEvent {
+  const event = finalizeEvent(
+    {
+      kind: 10050,
       created_at: createdAt,
       tags,
       content: "",
@@ -1198,6 +1215,214 @@ describe("account Network preferences", () => {
       expect(getCommittedLegacyRelayReadRecovery(OWNER, storage)).toBeNull()
     })
   }
+
+  it("retires committed legacy inbox recovery after a durable usable replacement", async () => {
+    const storage = new MemoryStorage()
+    seedLegacyRelaySettings(storage)
+    expect(
+      migrateLegacyRelaySettingsDraft({
+        pubkey: OWNER,
+        accountScope: ACCOUNT_SCOPE,
+        ownerRelayList: ownerResolution(),
+        storage,
+      })
+    ).toBe("seeded_draft")
+    const draftKey = getRelaySettingsStorageKey(ACCOUNT_SCOPE)
+    const migratedDraftRaw = storage.getItem(draftKey)
+    expect(migratedDraftRaw).not.toBeNull()
+    expect(getCommittedLegacyRelayReadRecovery(OWNER, storage)).not.toBeNull()
+
+    const inboxRepository = createInMemoryInboxDeclarationEvidenceRepository()
+    const signedInbox = inboxEvent()
+    await mergeInboxDeclarationEvidenceDurably(
+      {
+        pubkey: OWNER,
+        signedEvent: signedInbox,
+        sourceRelayUrls: ["wss://discovery.example"],
+        sharedSourceRelayUrls: ["wss://discovery.example"],
+        observedAt: 1_000,
+        completeObservedAt: 1_000,
+        lookup: {
+          observedAt: 1_000,
+          coverage: "complete",
+          hadEvent: true,
+          eventId: signedInbox.id,
+        },
+      },
+      inboxRepository,
+      () => 1_000
+    )
+
+    __resetInboxDeclarationCache()
+    const hydration = await hydrateAccountNetworkPreferences(OWNER, {
+      ownerRelayList: {
+        evidenceRepository: createInMemoryOwnerRelayListEvidenceRepository(),
+        now: () => 2_000,
+      },
+      inboxDeclaration: {
+        evidenceRepository: inboxRepository,
+        now: () => 2_000,
+      },
+      storage,
+    })
+
+    expect(hydration.inboxDeclaration.state).toBe("declared")
+    expect(getCommittedLegacyRelayReadRecovery(OWNER, storage)).toBeNull()
+    expect(getInboxMigrationRecoveryRelayUrls(OWNER)).toEqual([])
+    expect(storage.getItem(draftKey)).toBe(migratedDraftRaw)
+    expect(
+      planInboxReadRelays({
+        declaration: hydration.inboxDeclaration,
+        authenticatedPubkey: OWNER,
+        compatibilityRelayUrls: [],
+      })
+    ).toMatchObject({
+      relayUrls: ["wss://signed-inbox.example"],
+      relaySources: {
+        "wss://signed-inbox.example": "declared",
+      },
+    })
+
+    expect(
+      migrateLegacyRelaySettingsDraft({
+        pubkey: OWNER,
+        accountScope: ACCOUNT_SCOPE,
+        ownerRelayList: signedOwnerResolution(),
+        storage,
+      })
+    ).toBe("retired_signed_wins")
+    expect(storage.getItem(draftKey)).toBeNull()
+  })
+
+  it("retires committed legacy inbox recovery after fresh durable reconciliation", async () => {
+    const storage = new MemoryStorage()
+    seedLegacyRelaySettings(storage)
+    expect(
+      migrateLegacyRelaySettingsDraft({
+        pubkey: OWNER,
+        accountScope: ACCOUNT_SCOPE,
+        ownerRelayList: ownerResolution(),
+        storage,
+      })
+    ).toBe("seeded_draft")
+    const draftKey = getRelaySettingsStorageKey(ACCOUNT_SCOPE)
+    const migratedDraftRaw = storage.getItem(draftKey)
+    const inboxRepository = createInMemoryInboxDeclarationEvidenceRepository()
+    const signedInbox = inboxEvent()
+    await mergeInboxDeclarationEvidenceDurably(
+      {
+        pubkey: OWNER,
+        signedEvent: signedInbox,
+        sourceRelayUrls: ["wss://discovery.example"],
+        sharedSourceRelayUrls: ["wss://discovery.example"],
+        observedAt: 1_000,
+        completeObservedAt: 1_000,
+        lookup: {
+          observedAt: 1_000,
+          coverage: "complete",
+          hadEvent: true,
+          eventId: signedInbox.id,
+        },
+      },
+      inboxRepository,
+      () => 1_000
+    )
+
+    await reconcileAccountNetworkPreferences(OWNER, {
+      relayUrls: ["wss://discovery.example"],
+      storage,
+      inboxDeclaration: { evidenceRepository: inboxRepository },
+      resolveOwner: async () => ownerResolution(),
+      resolveInbox: async () =>
+        inboxResolution({
+          state: "declared",
+          relayUrls: ["wss://signed-inbox.example"],
+          eventId: signedInbox.id,
+        }),
+    })
+
+    expect(getCommittedLegacyRelayReadRecovery(OWNER, storage)).toBeNull()
+    expect(getInboxMigrationRecoveryRelayUrls(OWNER)).toEqual([])
+    expect(storage.getItem(draftKey)).toBe(migratedDraftRaw)
+  })
+
+  it("preserves legacy inbox recovery until the usable replacement is durable", async () => {
+    const signedInbox = inboxEvent()
+    const scenarios: Array<{
+      label: string
+      resolution: InboxDeclarationResolution
+    }> = [
+      {
+        label: "process-only declaration",
+        resolution: inboxResolution({
+          state: "declared",
+          relayUrls: ["wss://signed-inbox.example"],
+          eventId: signedInbox.id,
+        }),
+      },
+      {
+        label: "signed-empty declaration",
+        resolution: inboxResolution({
+          state: "signed_empty",
+          eventId: signedInbox.id,
+        }),
+      },
+      {
+        label: "malformed declaration",
+        resolution: inboxResolution({
+          state: "malformed",
+          eventId: signedInbox.id,
+        }),
+      },
+      {
+        label: "partial lookup",
+        resolution: inboxResolution({ state: "lookup_partial" }),
+      },
+      {
+        label: "unavailable lookup",
+        resolution: inboxResolution({ state: "lookup_unavailable" }),
+      },
+    ]
+
+    for (const scenario of scenarios) {
+      __resetInboxDeclarationCache()
+      const storage = new MemoryStorage()
+      seedLegacyRelaySettings(storage)
+      expect(
+        migrateLegacyRelaySettingsDraft({
+          pubkey: OWNER,
+          accountScope: ACCOUNT_SCOPE,
+          ownerRelayList: ownerResolution(),
+          storage,
+        })
+      ).toBe("seeded_draft")
+      const draftKey = getRelaySettingsStorageKey(ACCOUNT_SCOPE)
+      const migratedDraftRaw = storage.getItem(draftKey)
+
+      await reconcileAccountNetworkPreferences(OWNER, {
+        relayUrls: ["wss://discovery.example"],
+        storage,
+        ownerRelayList: {
+          evidenceRepository: createInMemoryOwnerRelayListEvidenceRepository(),
+        },
+        inboxDeclaration: {
+          evidenceRepository:
+            createInMemoryInboxDeclarationEvidenceRepository(),
+        },
+        resolveOwner: async () => ownerResolution(),
+        resolveInbox: async () => scenario.resolution,
+      })
+
+      expect(
+        getCommittedLegacyRelayReadRecovery(OWNER, storage),
+        scenario.label
+      ).not.toBeNull()
+      expect(getInboxMigrationRecoveryRelayUrls(OWNER), scenario.label).toEqual(
+        ["wss://legacy-read.example"]
+      )
+      expect(storage.getItem(draftKey), scenario.label).toBe(migratedDraftRaw)
+    }
+  })
 
   it("keeps signed-empty account reads empty while public commerce discovery remains available", async () => {
     const storage = new MemoryStorage()

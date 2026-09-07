@@ -8,6 +8,7 @@ import {
 } from "./owner-relay-list-evidence"
 import {
   clearInboxMigrationRecoveryRelayUrls,
+  MAX_DECLARED_INBOX_WRITE_RELAYS,
   MAX_LEGACY_INBOX_READ_RECOVERY_RELAYS,
   readRetainedInboxDeclaration,
   resolveInboxDeclaration,
@@ -350,14 +351,15 @@ function isMigrationTombstone(
   )
 }
 
-function hasMigrationTombstone(
+function hasLegacyReadRecoveryTombstone(
   pubkey: string,
   storage: LegacyRelaySettingsStorage
 ): boolean {
   try {
-    return isMigrationTombstone(
-      parseMigrationMarker(storage.getItem(migrationMarkerKey(pubkey)))
+    const marker = parseMigrationMarker(
+      storage.getItem(migrationMarkerKey(pubkey))
     )
+    return Boolean(marker?.phase === "complete" && !marker.recoveryFingerprint)
   } catch {
     return false
   }
@@ -416,7 +418,9 @@ function loadAvailableLegacyRelayReadRecovery(
   storage: LegacyRelaySettingsStorage
 ): LegacyRelayReadRecoveryRecord | null {
   const committed = getCommittedLegacyRelayReadRecovery(pubkey, storage)
-  if (committed || hasMigrationTombstone(pubkey, storage)) return committed
+  if (committed || hasLegacyReadRecoveryTombstone(pubkey, storage)) {
+    return committed
+  }
   try {
     const legacy = readLegacyRelaySettingsSnapshot(pubkey, storage)
     return legacy.legacyKeys.length > 0
@@ -475,6 +479,8 @@ export function clearLegacyRelayReadRecovery(input: {
   accountScope?: string
   storage?: LegacyRelaySettingsStorage
   discardMigratedDraft?: boolean
+  /** Keep the independent NIP-65 draft when only inbox recovery is replaced. */
+  preserveMigratedDraft?: boolean
 }): LegacyRelayReadRecoveryClearStatus {
   const pubkey = normalizeOwnerRelayListPubkey(input.pubkey)
   const storage = input.storage ?? browserStorage()
@@ -496,7 +502,9 @@ export function clearLegacyRelayReadRecovery(input: {
       storageValueFingerprint(draftRaw) === marker.draftFingerprint
     )
     const discardDraft = Boolean(
-      draftRaw !== null && (input.discardMigratedDraft || ownsCurrentDraft)
+      draftRaw !== null &&
+      (input.discardMigratedDraft ||
+        (!input.preserveMigratedDraft && ownsCurrentDraft))
     )
     const hadLegacyState = getLegacySignedInRelayScopes(pubkey).some(
       (scope) => storage.getItem(getRelaySettingsStorageKey(scope)) !== null
@@ -508,13 +516,18 @@ export function clearLegacyRelayReadRecovery(input: {
       hadLegacyState
 
     if (discardDraft && !removeAndVerify(storage, draftKey)) return "retryable"
-    const tombstoneRaw = serializeMigrationMarker({
+    const settledMarkerRaw = serializeMigrationMarker({
       version: LEGACY_RELAY_READ_RECOVERY_VERSION,
       phase: "complete",
-      draftFingerprint: null,
+      draftFingerprint:
+        input.preserveMigratedDraft && ownsCurrentDraft
+          ? (marker?.draftFingerprint ?? null)
+          : null,
       recoveryFingerprint: null,
     })
-    if (!persistAndVerify(storage, markerKey, tombstoneRaw)) return "retryable"
+    if (!persistAndVerify(storage, markerKey, settledMarkerRaw)) {
+      return "retryable"
+    }
     clearInboxMigrationRecoveryRelayUrls(pubkey)
     if (recoveryRaw !== null && !removeAndVerify(storage, recoveryKey)) {
       return "retryable"
@@ -526,6 +539,44 @@ export function clearLegacyRelayReadRecovery(input: {
   } catch {
     return "retryable"
   }
+}
+
+function isMatchingDurableInboxReplacement(
+  current: InboxDeclarationResolution,
+  durable: InboxDeclarationResolution | null
+): boolean {
+  return Boolean(
+    current.state === "declared" &&
+    current.relayUrls.length >= 1 &&
+    current.relayUrls.length <= MAX_DECLARED_INBOX_WRITE_RELAYS &&
+    current.eventId &&
+    durable?.state === "declared" &&
+    durable.eventId === current.eventId
+  )
+}
+
+function retireVerifiedLegacyInboxRecovery(input: {
+  pubkey: string
+  accountScope: string
+  storage: LegacyRelaySettingsStorage
+  currentInboxDeclaration: InboxDeclarationResolution
+  durableInboxDeclaration: InboxDeclarationResolution | null
+}): LegacyRelayReadRecoveryClearStatus | null {
+  if (
+    !isMatchingDurableInboxReplacement(
+      input.currentInboxDeclaration,
+      input.durableInboxDeclaration
+    ) ||
+    !getCommittedLegacyRelayReadRecovery(input.pubkey, input.storage)
+  ) {
+    return null
+  }
+  return clearLegacyRelayReadRecovery({
+    pubkey: input.pubkey,
+    accountScope: input.accountScope,
+    storage: input.storage,
+    preserveMigratedDraft: true,
+  })
 }
 
 /**
@@ -830,6 +881,15 @@ export async function hydrateAccountNetworkPreferences(
     retainedInboxDeclaration ??
     unavailableInboxDeclaration(normalizedPubkey, observedAt)
   const storage = options.storage ?? browserStorage()
+  if (storage) {
+    retireVerifiedLegacyInboxRecovery({
+      pubkey: normalizedPubkey,
+      accountScope,
+      storage,
+      currentInboxDeclaration: inboxDeclaration,
+      durableInboxDeclaration: retainedInboxDeclaration,
+    })
+  }
   const legacyReadRecovery = storage
     ? loadAvailableLegacyRelayReadRecovery(normalizedPubkey, storage)
     : null
@@ -898,6 +958,23 @@ export async function reconcileAccountNetworkPreferences(
       ownerRelayList,
       storage,
     })
+  }
+  const durableInboxDeclaration =
+    inboxDeclaration.state === "declared"
+      ? await readRetainedInboxDeclaration(normalizedPubkey, {
+          evidenceRepository: options.inboxDeclaration?.evidenceRepository,
+          now: options.inboxDeclaration?.now,
+        }).catch(() => null)
+      : null
+  if (storage) {
+    const clearStatus = retireVerifiedLegacyInboxRecovery({
+      pubkey: normalizedPubkey,
+      accountScope,
+      storage,
+      currentInboxDeclaration: inboxDeclaration,
+      durableInboxDeclaration,
+    })
+    if (clearStatus === "retryable") legacyMigration = "retryable"
   }
   let legacyReadRecovery: LegacyRelayReadRecoveryRecord | null = null
   if (storage) {

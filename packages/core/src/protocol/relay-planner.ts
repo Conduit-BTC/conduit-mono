@@ -341,8 +341,14 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
     }
   })()
 
+  const authenticatedOwner = input.authenticatedPubkey?.trim().toLowerCase()
+  const authorHintPubkeys = input.signedRelayListAuthoritative
+    ? (input.authors ?? []).filter(
+        (pubkey) => pubkey.trim().toLowerCase() !== authenticatedOwner
+      )
+    : (input.authors ?? [])
   const authorHints = hintReadRelaysForAuthors(
-    input.authors ?? [],
+    authorHintPubkeys,
     input.relayLists,
     input.authenticatedPubkey
   )

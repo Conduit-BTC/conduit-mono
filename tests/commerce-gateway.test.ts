@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { NDKEvent, nip19 } from "@nostr-dev-kit/ndk"
 import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
+  __resetAccountRelaySettingsProjectionsForTests,
   __resetCommerceTestOverrides,
   __setCommerceTestOverrides,
   cacheParsedOrderMessage,
@@ -28,7 +29,10 @@ import {
   __resetRelayListTestOverrides,
   __setRelayListTestOverrides,
   applyE2eRelayIsolation,
+  createRelaySettingsFromPreferences,
+  getAccountRelayScope,
   recordRelayFailure,
+  setAccountRelaySettingsProjection,
 } from "@conduit/core"
 import { config, EVENT_KINDS } from "@conduit/core"
 import type {
@@ -325,6 +329,7 @@ function makeSignedDeletionEvent(params: {
 }
 
 beforeEach(async () => {
+  __resetAccountRelaySettingsProjectionsForTests()
   __resetCommerceTestOverrides()
   __resetRelayHealth()
   __resetRelayListTestOverrides()
@@ -401,6 +406,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   Object.assign(config, structuredClone(originalConfig))
+  __resetAccountRelaySettingsProjectionsForTests()
   __resetCommerceTestOverrides()
   __resetRelayHealth()
   __resetRelayListTestOverrides()
@@ -3817,6 +3823,70 @@ describe("commerce gateway", () => {
     expect(seenRelayUrls?.[0]).toBe(localRelayUrl)
     expect(seenRelayUrls).toContain(localRelayUrl)
     expect(result.data.merchant?.displayName).toBe("Owner Relay")
+  })
+
+  it("preserves signed owner authority through generic reads while keeping commerce discovery", async () => {
+    const staleSelfRelayUrl = "wss://stale-self-cache.example"
+    const writeOnlyRelayUrl = "wss://write-only-owner.example"
+    const accountScope = getAccountRelayScope(MERCHANT_A_PUBKEY)
+    const genericReadRelayPlans: string[][] = []
+    let productReadRelayPlan: string[] = []
+
+    __setRelayListTestOverrides({
+      loadCached: async (pubkey) => ({
+        pubkey,
+        readRelayUrls: [staleSelfRelayUrl],
+        writeRelayUrls: [staleSelfRelayUrl],
+        eventCreatedAt: 1,
+        cachedAt: FIXED_NOW,
+      }),
+    })
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter, options) => {
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        if (filter.kinds?.includes(EVENT_KINDS.PROFILE)) {
+          genericReadRelayPlans.push(relayUrls)
+        }
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          productReadRelayPlan = relayUrls
+        }
+        return []
+      },
+    })
+
+    const authoritativeSettings = [
+      createRelaySettingsFromPreferences([], "published"),
+      createRelaySettingsFromPreferences(
+        [
+          {
+            url: writeOnlyRelayUrl,
+            readEnabled: false,
+            writeEnabled: true,
+          },
+        ],
+        "published"
+      ),
+    ]
+    for (const settings of authoritativeSettings) {
+      setAccountRelaySettingsProjection(accountScope, settings, {
+        signedRelayListAuthoritative: true,
+      })
+      await getProfiles({
+        pubkeys: [MERCHANT_A_PUBKEY],
+        authenticatedPubkey: MERCHANT_A_PUBKEY,
+        skipCache: true,
+      })
+    }
+
+    expect(genericReadRelayPlans).toEqual([[], []])
+
+    setAccountRelaySettingsProjection(
+      accountScope,
+      createRelaySettingsFromPreferences([], "published"),
+      { signedRelayListAuthoritative: true }
+    )
+    await getMarketplaceProducts({ sort: "newest" })
+    expect(productReadRelayPlan).toContain(config.commerceDiscoveryRelayUrls[0])
   })
 
   it("reads visible profiles through explicit planned relay fanout", async () => {
