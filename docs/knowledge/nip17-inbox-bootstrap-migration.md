@@ -38,15 +38,17 @@ validated kind-16 order-lifecycle traffic during migration. It is not
 NIP-17-conformant routing and must not be presented as an extension of NIP-17.
 NIP-44/NIP-59 encrypted gift wraps are preserved end to end.
 
-| State                                                          | Reads                                                                   | Writes                                 |
-| -------------------------------------------------------------- | ----------------------------------------------------------------------- | -------------------------------------- |
-| `declared` current frontier                                    | Declared inboxes + local secure IN + bounded compatibility overlap      | Declared inboxes only                  |
-| `not_observed`, validated kind 16 order                        | Local secure IN + configured compatibility relays                       | Bounded compatibility order plan       |
-| Retained `declared`; latest observation partial or unavailable | Retained last-usable inboxes + compatibility reads; show degraded state | Retained declared inboxes only         |
-| `signed_empty` current frontier                                | Retained last-usable inboxes may support recovery reads                 | Block; do not override signed state    |
-| `malformed` current frontier                                   | Retained last-usable inboxes may support recovery reads; show ambiguity | Block; never infer user opt-out        |
-| General kind 14 DM without a current declaration               | Permissive own-inbox reads; sends stay blocked                          | Block                                  |
-| Guest checkout                                                 | Merchant order leg may use compatibility                                | No guest inbox/self-copy/reply promise |
+| State                                                            | Reads                                                                                   | Writes                                 |
+| ---------------------------------------------------------------- | --------------------------------------------------------------------------------------- | -------------------------------------- |
+| `declared` current frontier                                      | Declared inboxes + bounded compatibility reads                                          | Declared inboxes only                  |
+| Fully signed/staged ordinary pending declaration                 | Pending inboxes + hidden previous inboxes through exact readback and stale-sender grace | Pending inboxes only                   |
+| Fully signed/staged pending declaration with whole-setup removal | Pending inboxes; removed URL excluded immediately                                       | Pending inboxes; removed URL excluded  |
+| `not_observed`, validated kind 16 order                          | Active bounded legacy migration recovery + configured compatibility relays              | Bounded compatibility order plan       |
+| Retained `declared`; latest observation partial or unavailable   | Retained last-usable inboxes + compatibility reads; show degraded state                 | Retained declared inboxes only         |
+| `signed_empty` current frontier                                  | Retained last-usable inboxes may support recovery reads                                 | Block; do not override signed state    |
+| `malformed` current frontier                                     | Retained last-usable inboxes may support recovery reads; show ambiguity                 | Block; never infer user opt-out        |
+| General kind 14 DM without a current declaration                 | Permissive own-inbox reads; sends stay blocked                                          | Block                                  |
+| Guest checkout                                                   | Merchant order leg may use compatibility                                                | No guest inbox/self-copy/reply promise |
 
 Invariants:
 
@@ -55,7 +57,7 @@ Invariants:
   observations are stored durably per account. Invalid signature, id, kind, or
   author evidence is rejected before merge.
 - The NIP-01 frontier is deterministic: greater `created_at` wins; when
-  timestamps tie, the lexicographically smaller event id wins. Observing the
+  timestamps tie, the lexicographically lowest event id wins. Observing the
   same event from another source unions provenance without changing its
   identity.
 - `declared`, `signed_empty`, and `malformed` are distinct signed frontier
@@ -70,13 +72,36 @@ Invariants:
 - A current `declared` frontier outranks compatibility. A newer `signed_empty`
   or `malformed` frontier blocks writes and compatibility, while the prior
   last-usable relays remain read-only recovery evidence.
+- An unsigned draft, cancelled signer sequence, or missing required signature
+  changes no route and removes no existing recovery behavior. After all events
+  required by an ordinary Network update are signed and durably staged, new
+  gift-wrap writes use the pending declaration. Previous valid inboxes remain a
+  hidden read-only recovery lane until exact pending-event readback from the
+  bounded shared discovery set and expiry of a bounded, versioned stale-sender
+  grace period. They are not current membership and never authorize writes.
+- A relay explicitly removed from the user's whole setup is excluded from every
+  active read and write immediately after all required signatures are staged,
+  before ACK or readback. The proceed/cancel warning states that stale clients
+  may still send there and those messages can be missed.
+- Legacy NIP-65 draft import begins only after complete bounded discovery
+  establishes scoped absence for `kind:10002`; valid signed NIP-65 suppresses
+  that import. Capturing bounded read-only secure-IN recovery is independent and
+  occurs even when signed `kind:10002` exists. Migration persists and verifies
+  every eligible replacement record before retiring legacy keys. Incomplete
+  migration retains or recovers the prior read path and remains retryable;
+  partial new records are not authority. The recovery lane never writes or
+  publishes and ends only after a usable `kind:10050` replacement with one to
+  three secure relays is fully signed and durably staged, or after explicit
+  discard recorded by a durable local migration tombstone.
 - Relay-settings changes expire evidence freshness and trigger rediscovery; they
   do not delete the account-scoped frontier or its last-usable relay set.
 - Only an exact-event observation from a completed bounded relay plan advances
   durable complete-plan freshness. Partial or unavailable fanout remains
   degraded after restart even when one relay returned the current event. The
-  latest empty, incomplete, unavailable, or conflicting lookup is retained
-  separately from the signed frontier.
+  latest empty, incomplete, or unavailable lookup is retained separately from
+  the signed frontier. Current valid inputs cannot produce a conflict; that
+  outcome is reserved to fail closed only if a future richer evidence model can
+  validate an internal inconsistency after canonical ordering.
 - The compatibility lane is recipient-only: the non-critical sender self-copy leg
   stays strict and fails soft when the sender has no usable declaration.
 - Gift-wrap reads are permissive at the transport layer (inner kinds are not
@@ -94,8 +119,8 @@ Invariants:
 - Recipient signed NIP-65 read relays may move matching eligible relays to the
   front. They never add a relay. Remaining entries keep registry order; URLs
   are normalized/deduplicated and the result is capped at three.
-- Arbitrary NIP-65, local IN/OUT, product source/provenance, NIP-89 and `p`-tag
-  hints, wrapper sources, commerce-priority, and other public relays are
+- Arbitrary NIP-65, legacy local settings, product source/provenance, NIP-89 and
+  `p`-tag hints, wrapper sources, commerce evidence, and other public relays are
   explicitly ineligible.
 - Kind `10002` never becomes a declared gift-wrap write fallback. Within the
   compatibility exception it may only rank relays already present in the
@@ -113,6 +138,10 @@ Invariants:
   signed-in protected inbox read may answer a relay challenge through the
   active NIP-07 or NIP-46 signer. There is no guest auth and no NIP-04 sending.
 - Diagnostics and telemetry stay identifier-free and content-free.
+- Shared acceleration, cache, index, and routing systems derive only from
+  relay-visible state. They never expose hidden APIs for private message content
+  or ciphertext, order contents, payment or invoice data, signer or auth
+  material, wallet credentials or recovery material, or wallet balances.
 - A successful relay result plus an auth/transport failure is partial. All
   failures are unavailable, not empty. Cached messages remain visible as
   stale/degraded; only successful EOSE from every required relay in the bounded
@@ -133,13 +162,15 @@ the same set only when that retained current frontier is `declared`.
 Redistribution republishes the exact signed bytes and never mints a newer
 replaceable event; a bounded empty view cannot prove that a newer frontier does
 not exist elsewhere. Retained `signed_empty` or `malformed` evidence, plus any
-partial, unavailable, or conflicting lookup, remains retry-only because it
-cannot establish which frontier the omitted sources hold.
+partial or unavailable lookup, remains retry-only because it cannot establish
+which frontier the omitted sources hold. A future reserved fail-closed conflict
+has the same retry-only behavior if richer validated evidence can establish an
+internal inconsistency after canonical ordering.
 
 This convergence work does not widen compatibility to general DMs, arbitrary
 relays, plaintext delivery, or unvalidated sender/recipient relationships. The
-removal metrics below remain unimplemented and keep the compatibility lane out
-of production.
+compatibility-lane removal metrics below remain unimplemented and keep that lane
+out of production.
 
 Relay-side recipient auth enforcement remains client-first rollout work and is
 not implied by this document. NIP-11 advertisement alone is not proof that a
@@ -160,8 +191,10 @@ relay has challenged, accepted auth, or enforced `#p` authorization.
   `packages/core/src/protocol/` (the NDK-neutral executor and explicit
   protected-inbox composition boundary). NDK remains only at named signer and
   gift-unwrap edges; exact file names follow the implementation slice.
-- Network-owned readiness/repair: `packages/core/src/hooks/useInboxDeclaration.ts`,
-  `packages/ui/src/components/PrivateInboxSection.tsx`, both `network.tsx` routes
+- Network-owned readiness, repair, pending cutover, and migration recovery: one
+  shared core/UI Network feature rendered by thin Market and Merchant
+  `network.tsx` route shells. The existing declaration hook and separate inbox
+  section are adapted or retired as that shared feature lands.
 - Order provenance: `orderLifecycles.orderDeliveryRoute`
   (`declared_inbox` | `compatibility_order`), with the exact encrypted wrap and
   per-relay outcomes in `orderLifecycles.orderRelayDelivery`
@@ -177,6 +210,18 @@ relay has challenged, accepted auth, or enforced `#p` authorization.
 
 - Valid kind `10050`: `declared_inbox -> [declared-a, declared-b]`. No
   compatibility relay is added.
+- Ordinary signed/staged update from `[declared-a]` to `[declared-b]`: writes use
+  `declared-b`; reads retain `declared-a` invisibly until exact shared-set
+  readback and stale-sender grace expiry.
+- Whole-setup removal of `declared-a`: after every required signature is staged,
+  no read or write uses `declared-a`, even while ACK/readback is pending. The
+  warning explains that stale-client sends there can be missed.
+- Legacy local migration when signed NIP-65 already exists: suppress draft
+  import, persist and verify the bounded read-only inbox-recovery record, then
+  retire the old key. Signer cancellation or an unrelated NIP-65 update keeps
+  recovery reads; no legacy relay becomes a write target. Only a usable, fully
+  signed and durably staged kind `10050` replacement or explicit discard with a
+  durable migration tombstone ends that recovery.
 - Complete-empty or partial rediscovery after a valid declaration: the retained
   frontier becomes stale/degraded but remains the declared route; it is not
   deleted.
@@ -186,8 +231,9 @@ relay has challenged, accepted auth, or enforced `#p` authorization.
   shared discovery set and is not shown as cross-client confirmed until one of
   those shared sources returns that event.
 - Shared complete-empty repair: a retained declaration may be redistributed
-  as the exact same signed event to the shared set; a partial, unavailable, or
-  conflicting view only offers retry.
+  as the exact same signed event to the shared set; a partial or unavailable
+  view only offers retry. Any future reserved fail-closed conflict also offers
+  retry only.
 - No declaration, recipient NIP-65 reads one approved relay:
   `compatibility_order -> [approved-recipient-match, conduit, approved-inbox]`
   (maximum three). An arbitrary NIP-65 relay is ignored.
