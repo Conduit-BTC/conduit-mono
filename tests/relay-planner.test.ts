@@ -211,6 +211,32 @@ describe("planRelayReads", () => {
     ])
   })
 
+  it("uses current signed Publish relays for authenticated self-author reads", () => {
+    const readRelayUrl = "wss://current-owner-read.example"
+    const writeRelayUrl = "wss://current-owner-write.example"
+    const staleRelayUrl = "wss://stale-owner-write.example"
+    const state = settings([
+      entry(readRelayUrl, { readEnabled: true, writeEnabled: false }),
+      entry(writeRelayUrl, { readEnabled: false, writeEnabled: true }),
+    ])
+    const lists = new Map<string, RelayList>([
+      ["alice", relayList("alice", [], [staleRelayUrl])],
+    ])
+
+    const plan = planRelayReads({
+      intent: "profiles",
+      authors: ["alice"],
+      authenticatedPubkey: "alice",
+      relayLists: lists,
+      settings: state,
+      signedRelayListAuthoritative: true,
+    })
+
+    expect(plan.hintRelayUrls).toEqual([writeRelayUrl])
+    expect(plan.relayUrls).toEqual([writeRelayUrl, readRelayUrl])
+    expect(plan.relayUrls).not.toContain(staleRelayUrl)
+  })
+
   it("uses recipient read relays as hints for dm_inbox", () => {
     const state = settings([entry("wss://general.conduit.market")])
     const lists = new Map<string, RelayList>([

@@ -3828,6 +3828,7 @@ describe("commerce gateway", () => {
 
   it("preserves signed owner authority through generic reads while keeping commerce discovery", async () => {
     const staleSelfRelayUrl = "wss://stale-self-cache.example"
+    const readOnlyRelayUrl = "wss://read-only-owner.example"
     const writeOnlyRelayUrl = "wss://write-only-owner.example"
     const accountScope = getAccountRelayScope(MERCHANT_A_PUBKEY)
     const genericReadRelayPlans: string[][] = []
@@ -3860,6 +3861,11 @@ describe("commerce gateway", () => {
       createRelaySettingsFromPreferences(
         [
           {
+            url: readOnlyRelayUrl,
+            readEnabled: true,
+            writeEnabled: false,
+          },
+          {
             url: writeOnlyRelayUrl,
             readEnabled: false,
             writeEnabled: true,
@@ -3879,7 +3885,11 @@ describe("commerce gateway", () => {
       })
     }
 
-    expect(genericReadRelayPlans).toEqual([[], []])
+    expect(genericReadRelayPlans).toEqual([
+      [],
+      [writeOnlyRelayUrl, readOnlyRelayUrl],
+    ])
+    expect(genericReadRelayPlans.flat()).not.toContain(staleSelfRelayUrl)
 
     setAccountRelaySettingsProjection(
       accountScope,

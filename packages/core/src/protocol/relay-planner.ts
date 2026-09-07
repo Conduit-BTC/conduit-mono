@@ -342,6 +342,21 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
   })()
 
   const authenticatedOwner = input.authenticatedPubkey?.trim().toLowerCase()
+  const includesAuthenticatedOwner = Boolean(
+    authenticatedOwner &&
+    (input.authors ?? []).some(
+      (pubkey) => pubkey.trim().toLowerCase() === authenticatedOwner
+    )
+  )
+  const authenticatedOwnerAuthorHints =
+    input.signedRelayListAuthoritative && includesAuthenticatedOwner
+      ? getGeneralWriteRelayUrls(
+          settingsPlanOptions({
+            settings: input.settings,
+            fallbackRelayUrls: [],
+          })
+        )
+      : []
   const authorHintPubkeys = input.signedRelayListAuthoritative
     ? (input.authors ?? []).filter(
         (pubkey) => pubkey.trim().toLowerCase() !== authenticatedOwner
@@ -357,7 +372,11 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
     input.relayLists,
     input.authenticatedPubkey
   )
-  const hintRelayUrls = dedupeOrdered([...authorHints, ...recipientHints])
+  const hintRelayUrls = dedupeOrdered([
+    ...authenticatedOwnerAuthorHints,
+    ...authorHints,
+    ...recipientHints,
+  ])
 
   const ordered = dedupeOrdered([...hintRelayUrls, ...baseRelays])
   const { kept, parked } = applyHealthFilter(
