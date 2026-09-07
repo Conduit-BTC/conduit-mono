@@ -9,6 +9,7 @@ const OWNER = "a".repeat(64)
 const OTHER = "b".repeat(64)
 const COLLECTION = `30405:${OWNER}:event`
 const PRODUCT = `30402:${OWNER}:own-product`
+const PRIOR_PRODUCT = `30402:${OWNER}:prior-product`
 const PICKUP = `30406:${OWNER}:booth`
 const market = {
   state: "partial",
@@ -189,6 +190,40 @@ describe("organizer own-product acceptance", () => {
     expect(await acceptOwnEventProduct(input, h.deps)).toBe(true)
     expect(h.published).toHaveLength(0)
     expect(h.retried).toEqual([{ organizerPubkey: OWNER, record: pending }])
+  })
+  it("publishes the next own product over a partially acknowledged current collection", async () => {
+    const partial = {
+      ...record,
+      rejectedCount: 1,
+      signedEvent: {
+        ...record.signedEvent!,
+        tags: [
+          ["d", "event"],
+          ["a", PRIOR_PRODUCT],
+        ],
+      },
+    }
+    const h = harness(
+      {
+        ...market,
+        productCoordinates: [PRIOR_PRODUCT],
+        source: {
+          collection: {
+            eventId: partial.signedEvent.id,
+            createdAt: partial.signedEvent.created_at * 1_000,
+          },
+        },
+      } as MerchantOrganizerEventMarket,
+      partial
+    )
+
+    expect(await acceptOwnEventProduct(input, h.deps)).toBe(true)
+    expect(h.retried).toHaveLength(0)
+    expect(h.published).toHaveLength(1)
+    expect(
+      (h.published[0] as { market: MerchantOrganizerEventMarket }).market
+        .productCoordinates
+    ).toEqual([PRIOR_PRODUCT])
   })
   it("does not supersede a NIP-01-newer same-second collection", async () => {
     const currentId = "0".repeat(64)

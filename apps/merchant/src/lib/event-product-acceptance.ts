@@ -20,10 +20,7 @@ const acceptanceDependencies = {
 }
 
 function needsExactRetry(record: MerchantOrganizerRecordDelivery): boolean {
-  return (
-    record.acknowledgedCount === 0 ||
-    record.rejectedCount + record.timedOutCount > 0
-  )
+  return record.acknowledgedCount === 0
 }
 
 function compareAddressableRevision(
