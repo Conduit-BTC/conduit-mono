@@ -24,6 +24,7 @@ import {
 import {
   cartItemsMatchCurrentProducts,
   getCartCostSummary,
+  isPickupCartItem,
   type CartItem,
 } from "../lib/cart-model"
 import { buildCheckoutPricingIntent } from "../lib/checkout-payment"
@@ -203,6 +204,7 @@ export function useMerchantCheckoutCapability(input: {
     }) === "ready"
 
   const capability = deriveMerchantCheckoutCapability({
+    pickupReviewRequired: items.some(isPickupCartItem),
     readiness: enabled
       ? (input.readiness?.state ?? "not_started")
       : "not_started",
