@@ -354,10 +354,22 @@ Kind `10050` declarations are authoritative for NIP-17 transport routing.
 Gift-wrap writes, including a sender self-copy, target that wrap recipient's
 declared secure-message relays unless the validated kind-16 compatibility
 exception below is enabled by the deployment profile. Kind `14` never uses that
-exception. NIP-65, configured relay lists, commerce priority, and general relay
-defaults are not secure-message write fallback routes. In particular, a
-recipient's kind `10002` event may inform bounded discovery or rank an already
-eligible compatibility target, but it never supplies a gift-wrap write target.
+exception. NIP-65, configured relay lists, commerce capability order, and
+general relay defaults are not secure-message write fallback routes. In
+particular, a recipient's kind `10002` event may inform bounded discovery or
+rank an already eligible compatibility target, but it never supplies a
+gift-wrap write target.
+
+After every event required by an ordinary Network update is signed and durably
+staged, gift-wrap writes use the pending `kind:10050` declaration immediately.
+The previous valid inbox set becomes a hidden read-only recovery lane until the
+exact pending event is read back from the bounded shared discovery set and a
+bounded, versioned stale-sender grace period expires. That prior set is not
+current membership and never authorizes writes. An explicit whole-setup relay
+removal instead cuts that URL out of all reads and writes immediately after all
+required signatures are staged, even before ACK or readback. An unsigned draft,
+cancelled signer flow, or missing signature changes no route and removes no
+recovery behavior.
 
 Declaration evidence is durable, account-scoped, and monotonic. The shared
 protocol boundary retains the exact validated signed kind `10050` event, its
@@ -366,13 +378,16 @@ most recent observation time. A separate complete-plan observation time is
 advanced only when every relay in the bounded lookup plan completes; partial or
 unavailable fanout never makes the frontier fresh after restart. The latest
 bounded lookup time, coverage, and whether it returned the current event are
-stored separately; a later empty, incomplete, or conflicting lookup remains
-degraded across process restart. Bounded lookup coverage does not overwrite the
-signed frontier. Invalid signatures, event ids, kinds, or authorship are
-rejected before the evidence frontier is updated. As a NIP-01 replaceable
-event, the winning frontier has the greatest `created_at`; when timestamps tie,
-the lexicographically smaller event id wins. Re-observing the same event unions
-its source-relay provenance instead of creating a new version.
+stored separately; a later empty or incomplete lookup remains degraded across
+process restart. Bounded lookup coverage does not overwrite the signed frontier.
+Invalid signatures, event ids, kinds, or authorship are rejected before the
+evidence frontier is updated. As a NIP-01 replaceable event, the winning frontier
+has the greatest `created_at`; when timestamps tie, the lexicographically lowest
+event id wins. Re-observing the same event unions its source-relay provenance
+instead of creating a new version. The current resolver therefore has no
+reachable conflict state for valid events. A conflict outcome is reserved for a
+future richer evidence model that can validate a post-ordering internal
+inconsistency, and it fails closed.
 
 The current frontier and the last usable declared relay set are retained
 separately. Declaration resolution exposes signed frontier states and bounded
@@ -411,14 +426,34 @@ redistribute that exact signed event to the same relay set. A retained
 directly; the client cannot safely mint a replacement from an empty bounded
 view. Redistribution never signs a new replacement or advances its
 `created_at`; a bounded empty view cannot prove that another client has not
-published a newer event elsewhere. Partial, unavailable, or conflicting
-observations are also retry-only and never authorize that repair.
+published a newer event elsewhere. Partial and unavailable observations, plus
+any future reserved fail-closed conflict, are retry-only and never authorize
+that repair.
 
 Gift-wrap reads are permissive: the principal reads the union of their valid
-declared or retained last-usable inboxes, their locally enabled secure IN relays,
-and a bounded Conduit-operated compatibility read set. Read results carry
-coverage (`complete | partial | unavailable`) and source provenance; an
-all-failed read must never be reported as an authoritative empty inbox.
+current or pending declared inboxes, eligible hidden cutover-recovery inboxes,
+an active bounded legacy migration-recovery record, and the bounded
+Conduit-operated compatibility read set. Whole-setup removals are excluded as
+soon as all required signatures are staged. General NIP-65 membership never
+adds an inbox read target. Read results carry coverage
+(`complete | partial | unavailable`) and source provenance; an all-failed read
+must never be reported as an authoritative empty inbox.
+
+Legacy inbox-read recovery is independent of NIP-65 draft import. A signed
+`kind:10002` suppresses legacy NIP-65 draft import but does not remove the
+bounded read-only secure-IN recovery record. That record never authorizes writes
+and ends only after a usable `kind:10050` replacement with one to three secure
+relays is fully signed and durably staged, or after explicit discard recorded by
+a durable local migration tombstone.
+
+Shared acceleration, cache, index, and routing systems may derive only from
+relay-visible state and must remain rebuildable rather than becoming hidden
+network authority. They must never expose a hidden API for private message
+content or ciphertext, order contents, payment or invoice data, signer or auth
+material, wallet credentials or recovery material, or wallet balances.
+Device-local user caches remain within their existing account and device
+boundary and do not authorize copying private material into shared derived
+infrastructure.
 
 ### Temporary exception: validated-order compatibility routing (CND-208)
 
@@ -433,8 +468,8 @@ presented as an extension of NIP-17. NIP-44/NIP-59 encryption is preserved.
   registry and relays Conduit inbox readers poll. Recipient NIP-65 read relays
   may reorder matching eligible entries but can never add a relay. The stable
   result is normalized, deduplicated, and capped at three.
-- Arbitrary NIP-65, local IN/OUT, product provenance, NIP-89 hints,
-  commerce-priority, wrapper sources, and other public relays are never
+- Arbitrary NIP-65, legacy local settings, product provenance, NIP-89 hints,
+  commerce evidence, wrapper sources, and other public relays are never
   compatibility write targets.
 - A current `declared` kind `10050` frontier always outranks the compatibility
   lane; a newly observed declared frontier returns subsequent writes to the
