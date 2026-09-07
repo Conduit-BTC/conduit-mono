@@ -17,6 +17,7 @@ import { attachEventSourceRelayUrl } from "@conduit/core/protocol/ndk"
 import {
   loadOrganizerEventMarketDeliveryOutbox,
   mergeOrganizerEventMarketDeliveryState,
+  organizerEventMarketReferenceWithDeliveryRelayHints,
   publishMerchantOrganizerEventMarket,
   retryMerchantOrganizerRecord,
   saveOrganizerEventMarketDelivery,
@@ -137,6 +138,18 @@ describe("merchant organizer delivery outbox", () => {
     expect(
       decodeEventMarketReference(result.naddr, [30405])?.relayHints
     ).toEqual([PUBLISH_RELAY, CALENDAR_RELAY, PICKUP_RELAY])
+    expect(
+      Object.fromEntries(
+        result.records.map((record) => [
+          record.record,
+          record.acknowledgedRelayUrls,
+        ])
+      )
+    ).toEqual({
+      calendar: [CALENDAR_RELAY],
+      pickup: [PICKUP_RELAY],
+      collection: [PUBLISH_RELAY],
+    })
     expect(result.collectionCreatedAt).toBe(
       result.records.find((record) => record.record === "collection")!
         .signedEvent!.created_at * 1_000
@@ -211,6 +224,7 @@ describe("merchant organizer delivery outbox", () => {
       REFERENCE,
       {
         record: "collection",
+        acknowledgedRelayUrls: ["wss://ack.example/events"],
         acknowledgedCount: 0,
         rejectedCount: 0,
         timedOutCount: 0,
@@ -223,6 +237,7 @@ describe("merchant organizer delivery outbox", () => {
       [REFERENCE]: [
         expect.objectContaining({
           record: "collection",
+          acknowledgedRelayUrls: ["wss://ack.example/events"],
           acknowledgedCount: 0,
           signedEvent: expect.objectContaining({ id: signedEvent.id }),
         }),
@@ -321,6 +336,35 @@ describe("merchant organizer delivery outbox", () => {
 
     expect(Object.keys(updated)).toEqual([REFERENCE])
     expect(updated[REFERENCE]).toEqual([delivered])
+  })
+
+  it("adds an exact retry acknowledgement relay to the portable reference", () => {
+    const existingHints = Array.from(
+      { length: 7 },
+      (_, index) => `wss://existing-${index + 1}.example/events`
+    )
+    const acknowledgementRelay = "wss://out-only.example/events"
+    const updated = organizerEventMarketReferenceWithDeliveryRelayHints(
+      encodeEventMarketNaddr(REFERENCE, existingHints),
+      {
+        record: "collection",
+        acknowledgedRelayUrls: [acknowledgementRelay],
+        acknowledgedCount: 1,
+        rejectedCount: 0,
+        timedOutCount: 0,
+        signedEvent: signedCollection(),
+      }
+    )
+    const updatedHints = decodeEventMarketReference(
+      updated,
+      [30405]
+    )?.relayHints
+
+    expect(updatedHints).toContain(acknowledgementRelay)
+    expect(updatedHints).toEqual(
+      expect.arrayContaining(existingHints.slice(0, 3))
+    )
+    expect(updatedHints).toHaveLength(7)
   })
 
   it("stops before relay I/O when the signed event cannot be stored durably", async () => {
@@ -541,6 +585,7 @@ describe("merchant organizer delivery outbox", () => {
 
     expectExactSignedEvent(reloaded.signedEvent, signedEvent)
     expectExactSignedEvent(retried.signedEvent, signedEvent)
+    expect(retried.acknowledgedRelayUrls).toEqual(["wss://relay.example"])
     expect(published).toHaveLength(1)
     expectExactSignedEvent(published[0] ?? null, signedEvent)
   })

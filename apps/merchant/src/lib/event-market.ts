@@ -5,6 +5,7 @@ import {
   getEventMarket,
   getOrganizerEventMarkets,
   isValidSignedPublicNostrEvent,
+  normalizeSecureOrIsolatedE2eRelayUrls,
   publishOrganizerCollectionUpdate,
   publishOrganizerEventMarket,
   retryOrganizerEventMarketRecord,
@@ -41,6 +42,8 @@ export type MerchantOrganizerEventRecord = "calendar" | "pickup" | "collection"
 
 export interface MerchantOrganizerRecordDelivery {
   record: MerchantOrganizerEventRecord
+  /** Normalized relays that accepted this exact signed record. */
+  acknowledgedRelayUrls?: string[]
   acknowledgedCount: number
   rejectedCount: number
   timedOutCount: number
@@ -205,6 +208,13 @@ function validStoredDelivery(
     reference: decodedReference.coordinate,
     delivery: {
       record: record as MerchantOrganizerEventRecord,
+      acknowledgedRelayUrls: normalizeSecureOrIsolatedE2eRelayUrls(
+        Array.isArray(delivery?.acknowledgedRelayUrls)
+          ? delivery.acknowledgedRelayUrls.filter(
+              (relayUrl): relayUrl is string => typeof relayUrl === "string"
+            )
+          : []
+      ),
       acknowledgedCount: count("acknowledgedCount"),
       rejectedCount: count("rejectedCount"),
       timedOutCount: count("timedOutCount"),
@@ -638,14 +648,34 @@ function projectDeliveryRecord(
   const rejected = delivery?.rejectedRelayUrls ?? []
   const timedOut = delivery?.timedOutRelayUrls ?? []
   const failed = delivery?.failedRelayUrls ?? []
+  const acknowledgedRelayUrls = normalizeSecureOrIsolatedE2eRelayUrls([
+    ...acknowledged,
+    ...successful,
+  ])
   return {
     record: value.record,
+    acknowledgedRelayUrls,
     acknowledgedCount: acknowledged.length || successful.length,
     rejectedCount: rejected.length,
     timedOutCount:
       timedOut.length || Math.max(0, failed.length - rejected.length),
     signedEvent: value.signedEvent,
   }
+}
+
+export function organizerEventMarketReferenceWithDeliveryRelayHints(
+  reference: string,
+  delivery: MerchantOrganizerRecordDelivery
+): string {
+  const parsed = parseOrganizerEventMarketReference(reference)
+  return encodeEventMarketNaddr(
+    parsed.coordinate,
+    boundedEventMarketShareRelayHints([
+      parsed.relayHints.slice(0, 3),
+      delivery.acknowledgedRelayUrls,
+      parsed.relayHints.slice(3),
+    ])
+  )
 }
 
 function projectPublishResult(
@@ -762,7 +792,9 @@ export async function resolveOrganizerEventMarketRead(
             collectionCreatedAt: result.collection.createdAt,
             collectionEventId: result.collection.eventId,
           }
-        : deletion.record === "collection"
+        : deletion.record === "collection" &&
+            deletion.createdAt !== undefined &&
+            deletion.eventId
           ? {
               collectionCreatedAt: deletion.createdAt,
               collectionEventId: deletion.eventId,
@@ -773,7 +805,9 @@ export async function resolveOrganizerEventMarketRead(
             calendarCreatedAt: result.calendar.createdAt,
             calendarEventId: result.calendar.eventId,
           }
-        : deletion.record === "calendar"
+        : deletion.record === "calendar" &&
+            deletion.createdAt !== undefined &&
+            deletion.eventId
           ? {
               calendarCreatedAt: deletion.createdAt,
               calendarEventId: deletion.eventId,
@@ -784,7 +818,9 @@ export async function resolveOrganizerEventMarketRead(
             pickupCreatedAt: result.pickup.createdAt,
             pickupEventId: result.pickup.eventId,
           }
-        : deletion.record === "pickup"
+        : deletion.record === "pickup" &&
+            deletion.createdAt !== undefined &&
+            deletion.eventId
           ? {
               pickupCreatedAt: deletion.createdAt,
               pickupEventId: deletion.eventId,

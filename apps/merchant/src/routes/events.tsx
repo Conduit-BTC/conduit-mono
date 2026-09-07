@@ -44,6 +44,7 @@ import {
   discoverFollowedEventMarkets,
   loadOrganizerEventMarketDeliveryOutbox,
   mergeOrganizerEventMarketDeliveryState,
+  organizerEventMarketReferenceWithDeliveryRelayHints,
   organizerEventMarketReferencesMatch,
   organizerEventMarketToForm,
   parseOrganizerEventMarketReference,
@@ -62,6 +63,7 @@ import type { OrganizerEventMarketFormValues } from "../lib/event-market-form"
 import {
   findOrganizerEventMarketByReference,
   findSavedOrganizerEventMarketReference,
+  expectedOrganizerEventMarketFrontiersAfterRetry,
   loadSavedDiscoveredEventMarkets,
   loadSavedOrganizerEventMarkets,
   organizerEventMarketReachesExpectedFrontiers,
@@ -896,8 +898,23 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
     },
     onSuccess: async (delivery) => {
       if (!selectedReference) return
-      rememberDelivery(selectedReference, delivery)
-      await refreshMarketQueries(selectedReference)
+      const reference = organizerEventMarketReferenceWithDeliveryRelayHints(
+        selectedReference,
+        delivery
+      )
+      const saved = rememberOrganizerEventMarket(organizerPubkey, {
+        reference,
+        title: selectedActionableMarket?.title,
+        savedAt: Date.now(),
+        ...expectedEventMarketFrontier(delivery),
+      })
+      setSavedReferences(saved)
+      const selected =
+        findSavedOrganizerEventMarketReference(saved, reference)?.reference ??
+        reference
+      setSelectedReference(selected)
+      rememberDelivery(reference, delivery)
+      await refreshMarketQueries(selected)
     },
   })
 
@@ -907,9 +924,28 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
         organizerPubkey,
         record: delivery,
       }),
-    onSuccess: (delivery) => {
+    onSuccess: async (delivery) => {
       if (!selectedReference) return
-      rememberDelivery(selectedReference, delivery)
+      const reference = organizerEventMarketReferenceWithDeliveryRelayHints(
+        selectedReference,
+        delivery
+      )
+      const saved = rememberOrganizerEventMarket(organizerPubkey, {
+        reference,
+        title: selectedMarket?.title ?? selectedSavedReference?.title,
+        savedAt: Date.now(),
+        ...expectedOrganizerEventMarketFrontiersAfterRetry(
+          delivery,
+          selectedSavedReference
+        ),
+      })
+      setSavedReferences(saved)
+      const selected =
+        findSavedOrganizerEventMarketReference(saved, reference)?.reference ??
+        reference
+      setSelectedReference(selected)
+      rememberDelivery(reference, delivery)
+      await refreshMarketQueries(selected)
     },
   })
 

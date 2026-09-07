@@ -1058,9 +1058,9 @@ export interface EventMarketDeletionEvidence {
 export interface EventMarketDeletedRecordEvidence {
   record: "collection" | "calendar" | "pickup"
   coordinate: string
-  /** Latest observed revision removed in the bounded read. */
-  eventId: string
-  createdAt: number
+  /** Latest observed revision removed in the bounded read, when retained. */
+  eventId?: string
+  createdAt?: number
   deletions: EventMarketDeletionEvidence[]
 }
 
@@ -1200,12 +1200,12 @@ function validDeletionEvents(
 }
 
 function deletionEvidenceForAddressableEvent(
-  event: SignedPublicNostrEvent,
+  event: SignedPublicNostrEvent | undefined,
   coordinate: AddressableEventCoordinate,
   deletions: readonly SignedPublicNostrEvent[]
 ): EventMarketDeletionEvidence[] {
   const evidenceById = new Map<string, EventMarketDeletionEvidence>()
-  for (const deletion of deletions) {
+  for (const deletion of validDeletionEvents(deletions)) {
     if (deletion.pubkey.toLowerCase() !== coordinate.authorPubkey) continue
 
     const eventTargets = Array.from(
@@ -1226,10 +1226,12 @@ function deletionEvidenceForAddressableEvent(
         })
       )
     )
-    const exactEventDeletion = eventTargets.includes(event.id.toLowerCase())
+    const exactEventDeletion = event
+      ? eventTargets.includes(event.id.toLowerCase())
+      : false
     const addressableDeletion =
-      deletion.created_at >= event.created_at &&
-      addressableTargets.includes(coordinate.coordinate)
+      addressableTargets.includes(coordinate.coordinate) &&
+      (!event || deletion.created_at >= event.created_at)
     if (!exactEventDeletion && !addressableDeletion) continue
 
     const deletionEventId = deletion.id.toLowerCase()
@@ -1248,7 +1250,7 @@ type AddressableRecordResult<T> =
   | { state: "current"; value: T; event: SignedPublicNostrEvent }
   | {
       state: "deleted"
-      event: SignedPublicNostrEvent
+      event?: SignedPublicNostrEvent
       deletionEvidence: EventMarketDeletionEvidence[]
     }
   | { state: "missing" | "malformed" }
@@ -1266,7 +1268,16 @@ function resolveAddressableRecord<T>(input: {
         isValidSignedPublicNostrEvent(event)
     )
     .sort(compareAddressableEvents)
-  if (candidates.length === 0) return { state: "missing" }
+  if (candidates.length === 0) {
+    const deletionEvidence = deletionEvidenceForAddressableEvent(
+      undefined,
+      input.coordinate,
+      input.deletions
+    )
+    return deletionEvidence.length > 0
+      ? { state: "deleted", deletionEvidence }
+      : { state: "missing" }
+  }
 
   let latestDeletedRevision: SignedPublicNostrEvent | undefined
   const deletionEvidenceById = new Map<string, EventMarketDeletionEvidence>()
@@ -1305,8 +1316,12 @@ function deletedRecordEvidence(
   return {
     record,
     coordinate: coordinate.coordinate,
-    eventId: result.event.id.toLowerCase(),
-    createdAt: result.event.created_at * 1_000,
+    ...(result.event
+      ? {
+          eventId: result.event.id.toLowerCase(),
+          createdAt: result.event.created_at * 1_000,
+        }
+      : {}),
     deletions: result.deletionEvidence,
   }
 }

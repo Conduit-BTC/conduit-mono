@@ -2,6 +2,7 @@ import {
   decodeEventMarketReference,
   encodeEventMarketNaddr,
   type EventMarketDeletedRecordEvidence,
+  type SignedPublicNostrEvent,
 } from "@conduit/core"
 
 export type OrganizerCollectionMembershipAction = "accept" | "remove"
@@ -17,6 +18,61 @@ export interface SavedOrganizerEventMarketReference {
   expectedPickupCreatedAt?: number
   expectedPickupEventId?: string
   replaceExpectedRecordFrontiers?: true
+}
+
+export function expectedOrganizerEventMarketFrontiersAfterRetry(
+  delivery: {
+    record: "calendar" | "pickup" | "collection"
+    signedEvent: SignedPublicNostrEvent | null
+  },
+  savedReference: SavedOrganizerEventMarketReference | undefined
+): Partial<SavedOrganizerEventMarketReference> {
+  const signedEvent = delivery.signedEvent
+  if (!signedEvent) return {}
+  const createdAt = signedEvent.created_at * 1_000
+  const frontier =
+    delivery.record === "calendar"
+      ? {
+          expectedCalendarCreatedAt: createdAt,
+          expectedCalendarEventId: signedEvent.id,
+        }
+      : delivery.record === "pickup"
+        ? {
+            expectedPickupCreatedAt: createdAt,
+            expectedPickupEventId: signedEvent.id,
+          }
+        : {
+            expectedCollectionCreatedAt: createdAt,
+            expectedCollectionEventId: signedEvent.id,
+          }
+  if (delivery.record !== "collection" || !savedReference) return frontier
+
+  const collectionRetainsPickup = signedEvent.tags.some(
+    (tag) => tag[0] === "a" && tag[1]?.startsWith("30406:")
+  )
+  return {
+    ...frontier,
+    ...(savedReference.expectedCalendarCreatedAt !== undefined
+      ? {
+          expectedCalendarCreatedAt: savedReference.expectedCalendarCreatedAt,
+          ...(savedReference.expectedCalendarEventId
+            ? {
+                expectedCalendarEventId: savedReference.expectedCalendarEventId,
+              }
+            : {}),
+        }
+      : {}),
+    ...(collectionRetainsPickup &&
+    savedReference.expectedPickupCreatedAt !== undefined
+      ? {
+          expectedPickupCreatedAt: savedReference.expectedPickupCreatedAt,
+          ...(savedReference.expectedPickupEventId
+            ? { expectedPickupEventId: savedReference.expectedPickupEventId }
+            : {}),
+        }
+      : {}),
+    replaceExpectedRecordFrontiers: true,
+  }
 }
 
 const EVENT_MARKET_STORAGE_PREFIX = "conduit:merchant:event-markets:v1"
@@ -604,34 +660,59 @@ type OrganizerEventMarketCandidate = EventMarketFrontierCarrier & {
 
 function terminalDeletionRemovesMarket(
   terminal: OrganizerEventMarketTerminalResolution,
-  market: OrganizerEventMarketCandidate
+  market: OrganizerEventMarketCandidate | undefined,
+  savedReference: SavedOrganizerEventMarketReference | undefined
 ): boolean {
   const record = terminal.deletion.record
   const coordinate =
     record === "collection"
-      ? market.collectionCoordinate
+      ? terminal.collectionCoordinate
       : record === "calendar"
-        ? market.calendarCoordinate
-        : market.pickupCoordinate
+        ? terminal.calendarCoordinate
+        : terminal.pickupCoordinate
   if (!coordinate || coordinate !== terminal.deletion.coordinate) return false
 
-  const frontier = carrierFrontier(market, record)
-  return terminal.deletion.deletions.some((deletion) => {
-    if (deletion.authorPubkey !== coordinate.split(":")[1]?.toLowerCase()) {
-      return false
-    }
-    if (
-      frontier?.eventId &&
-      deletion.eventTargets.includes(frontier.eventId.toLowerCase())
-    ) {
-      return true
-    }
-    return (
-      frontier !== undefined &&
-      deletion.addressableTargets.includes(coordinate) &&
-      deletion.deletionCreatedAt >= frontier.createdAt
-    )
-  })
+  const deletionAppliesToFrontier = (
+    frontier: EventMarketRecordFrontier | undefined
+  ): boolean =>
+    terminal.deletion.deletions.some((deletion) => {
+      if (deletion.authorPubkey !== coordinate.split(":")[1]?.toLowerCase()) {
+        return false
+      }
+      if (
+        frontier?.eventId &&
+        deletion.eventTargets.includes(frontier.eventId.toLowerCase())
+      ) {
+        return true
+      }
+      return (
+        frontier !== undefined &&
+        deletion.addressableTargets.includes(coordinate) &&
+        deletion.deletionCreatedAt >= frontier.createdAt
+      )
+    })
+
+  const knownFrontiers = [
+    carrierFrontier(terminal, record),
+    carrierFrontier(market, record),
+    savedExpectedFrontier(savedReference, record),
+  ].filter(
+    (frontier, index, values): frontier is EventMarketRecordFrontier =>
+      !!frontier &&
+      values.findIndex(
+        (candidate) =>
+          candidate?.createdAt === frontier.createdAt &&
+          candidate?.eventId === frontier.eventId
+      ) === index
+  )
+  if (knownFrontiers.length > 0) {
+    return knownFrontiers.every(deletionAppliesToFrontier)
+  }
+  return terminal.deletion.deletions.some(
+    (deletion) =>
+      deletion.authorPubkey === coordinate.split(":")[1]?.toLowerCase() &&
+      deletion.addressableTargets.includes(coordinate)
+  )
 }
 
 function compareOrganizerEventMarketGraphFrontier(
@@ -691,10 +772,13 @@ export function selectOrganizerEventMarketResolution<
       : undefined
   const selected =
     hintedMarket?.state === "deleted" && "terminal" in hintedMarket
-      ? preferredListMarket &&
-        !terminalDeletionRemovesMarket(hintedMarket, preferredListMarket)
-        ? preferredListMarket
-        : hintedMarket
+      ? terminalDeletionRemovesMarket(
+          hintedMarket,
+          preferredListMarket,
+          savedReference
+        )
+        ? hintedMarket
+        : preferredListMarket
       : preferredListMarket
         ? hintedIsPreferred && hintedMarket
           ? expectedRecords.length > 0 &&

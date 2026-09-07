@@ -6,6 +6,7 @@ import {
 import {
   findOrganizerEventMarketByReference,
   findSavedOrganizerEventMarketReference,
+  expectedOrganizerEventMarketFrontiersAfterRetry,
   forgetOrganizerEventMarket,
   getDiscoveredEventMarketStorageKey,
   getOrganizerEventMarketDisplayState,
@@ -538,6 +539,64 @@ describe("merchant organizer event workflow", () => {
     ).toBe("deleted")
   })
 
+  it("compares a standalone coordinate tombstone with the saved frontier", () => {
+    const savedReference = {
+      reference: encodeEventMarketNaddr(COLLECTION, [
+        "wss://saved.example/events",
+      ]),
+      savedAt: 20,
+      expectedCollectionCreatedAt: 3_000,
+      expectedCollectionEventId: "a".repeat(64),
+    }
+    const standaloneDeletion = {
+      terminal: true as const,
+      state: "deleted" as const,
+      collectionCoordinate: COLLECTION,
+      deletion: {
+        record: "collection" as const,
+        coordinate: COLLECTION,
+        deletions: [
+          {
+            deletionEventId: "d".repeat(64),
+            deletionCreatedAt: 2_000,
+            authorPubkey: ORGANIZER,
+            eventTargets: [],
+            addressableTargets: [COLLECTION],
+          },
+        ],
+      },
+      naddr: encodeEventMarketNaddr(COLLECTION, [
+        "wss://deletion.example/events",
+      ]),
+    }
+
+    expect(
+      selectOrganizerEventMarketResolution(
+        undefined,
+        standaloneDeletion,
+        savedReference
+      )
+    ).toBeUndefined()
+    expect(
+      selectOrganizerEventMarketResolution(
+        undefined,
+        {
+          ...standaloneDeletion,
+          deletion: {
+            ...standaloneDeletion.deletion,
+            deletions: [
+              {
+                ...standaloneDeletion.deletion.deletions[0]!,
+                deletionCreatedAt: 4_000,
+              },
+            ],
+          },
+        },
+        savedReference
+      )?.state
+    ).toBe("deleted")
+  })
+
   it("uses the NIP-01 lowest-id tie break when reconciling views", () => {
     const common = {
       collectionCoordinate: COLLECTION,
@@ -756,6 +815,39 @@ describe("merchant organizer event workflow", () => {
     })
     expect(withoutPickup[0]?.expectedPickupCreatedAt).toBeUndefined()
     expect(withoutPickup[0]?.expectedPickupEventId).toBeUndefined()
+  })
+
+  it("clears an obsolete pickup frontier after retrying a collection without pickup", () => {
+    const savedReference = {
+      reference: COLLECTION,
+      savedAt: 10,
+      expectedCalendarCreatedAt: 2_000,
+      expectedCalendarEventId: "b".repeat(64),
+      expectedPickupCreatedAt: 3_000,
+      expectedPickupEventId: "c".repeat(64),
+    }
+    const retriedCollection = {
+      id: "d".repeat(64),
+      pubkey: ORGANIZER,
+      created_at: 4,
+      kind: 30405,
+      content: "",
+      tags: [["d", "market"]],
+      sig: "e".repeat(128),
+    }
+
+    expect(
+      expectedOrganizerEventMarketFrontiersAfterRetry(
+        { record: "collection", signedEvent: retriedCollection },
+        savedReference
+      )
+    ).toEqual({
+      expectedCollectionCreatedAt: 4_000,
+      expectedCollectionEventId: retriedCollection.id,
+      expectedCalendarCreatedAt: 2_000,
+      expectedCalendarEventId: "b".repeat(64),
+      replaceExpectedRecordFrontiers: true,
+    })
   })
 
   it("keeps a hinted selection through bare edit and publish references for sharing", () => {

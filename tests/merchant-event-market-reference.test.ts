@@ -277,6 +277,64 @@ describe("merchant organizer event-market references", () => {
     })
   })
 
+  it("preserves a standalone collection-coordinate tombstone as terminal evidence", async () => {
+    const imported = encodeEventMarketNaddr(COLLECTION, [HINT_RELAY])
+    const now = Math.floor(Date.now() / 1_000)
+    const deletion = signedEvent(
+      {
+        kind: EVENT_KINDS.DELETION,
+        content: "",
+        tags: [["a", COLLECTION]],
+      },
+      now
+    )
+    __setEventMarketTestOverrides({
+      getRelayLists: async () => new Map(),
+      fetchEventsFanoutDetailed: async (_filter, options) => ({
+        events: [deletion].map((event) => {
+          const ndkEvent = new NDKEvent(undefined, event)
+          attachEventSourceRelayUrl(ndkEvent, HINT_RELAY)
+          return ndkEvent
+        }),
+        relays: (options.relayUrls ?? []).map((relayUrl) => ({
+          relayUrl,
+          status: "success" as const,
+          eventCount: 1,
+        })),
+        eventsVerified: true,
+      }),
+      loadCachedEvidence: async () => [],
+      persistCachedEvidence: async () => undefined,
+    })
+
+    const market = await resolveOrganizerEventMarketRead(imported, ORGANIZER)
+
+    expect(market).toMatchObject({
+      terminal: true,
+      state: "deleted",
+      organizerPubkey: ORGANIZER,
+      collectionCoordinate: COLLECTION,
+      deletion: {
+        record: "collection",
+        coordinate: COLLECTION,
+        deletions: [
+          {
+            deletionEventId: deletion.id,
+            deletionCreatedAt: now * 1_000,
+            authorPubkey: ORGANIZER,
+            eventTargets: [],
+            addressableTargets: [COLLECTION],
+          },
+        ],
+      },
+      naddr: imported,
+    })
+    expect(market.deletion.eventId).toBeUndefined()
+    expect(market.deletion.createdAt).toBeUndefined()
+    expect(market.collectionEventId).toBeUndefined()
+    expect(market.collectionCreatedAt).toBeUndefined()
+  })
+
   it("keeps a newer collection revision active after an older coordinate tombstone", async () => {
     const imported = encodeEventMarketNaddr(COLLECTION, [HINT_RELAY])
     const now = Math.floor(Date.now() / 1_000)
