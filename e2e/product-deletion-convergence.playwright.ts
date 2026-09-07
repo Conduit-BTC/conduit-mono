@@ -270,9 +270,11 @@ async function makeDeletionImmediatelyRetryableAndRemoveLocalEvidence(
   )
 }
 
-async function seedVersionEightDatabase(page: Page): Promise<{
+async function seedVersionSixteenDatabase(page: Page): Promise<{
   product: Record<string, unknown>
   tombstone: Record<string, unknown>
+  eventMarketEvidence: Record<string, unknown>
+  merchantPendingInvoice: Record<string, unknown>
 }> {
   return await page.evaluate(
     ({ merchantPubkey, eventId, dTag, addressId }) =>
@@ -280,7 +282,7 @@ async function seedVersionEightDatabase(page: Page): Promise<{
         const product = {
           id: addressId,
           pubkey: merchantPubkey,
-          title: "Preserved v8 product",
+          title: "Preserved v16 product",
           summary: "Schema migration fixture",
           price: 1,
           currency: "SATS",
@@ -289,7 +291,7 @@ async function seedVersionEightDatabase(page: Page): Promise<{
           format: "digital",
           visibility: "public",
           stock: 1,
-          images: [{ url: "https://example.com/v8-product.png" }],
+          images: [{ url: "https://example.com/v16-product.png" }],
           tags: ["migration"],
           eventId,
           eventCreatedAt: 100,
@@ -306,7 +308,22 @@ async function seedVersionEightDatabase(page: Page): Promise<{
           deletionEventId: "7".repeat(64),
           cachedAt: 110_000,
         }
-        const request = indexedDB.open("conduit", 80)
+        const eventMarketEvidence = {
+          id: `31990:${merchantPubkey}:migration-market`,
+          organizerPubkey: merchantPubkey,
+          kind: 31990,
+          addressId: `31990:${merchantPubkey}:migration-market`,
+          cachedAt: 120_000,
+        }
+        const merchantPendingInvoice = {
+          id: "migration-pending-invoice",
+          merchantPubkey,
+          orderId: "migration-order",
+          deliveryState: "pending",
+          invoiceExpiresAt: 130_000,
+          updatedAt: 120_000,
+        }
+        const request = indexedDB.open("conduit", 160)
         request.onerror = () => reject(request.error)
         request.onupgradeneeded = () => {
           const database = request.result
@@ -411,6 +428,69 @@ async function seedVersionEightDatabase(page: Page): Promise<{
                 ["createdAt"],
               ],
             },
+            {
+              name: "shopperTrustSnapshots",
+              keyPath: "id",
+              indexes: [["merchantPubkey"], ["shopperPubkey"], ["cachedAt"]],
+            },
+            {
+              name: "productDeletionOutbox",
+              keyPath: "id",
+              indexes: [
+                ["state"],
+                ["nextRetryAt"],
+                ["deliveryLeaseExpiresAt"],
+                ["updatedAt"],
+                ["createdAt"],
+              ],
+            },
+            {
+              name: "inboxDeclarationEvidence",
+              keyPath: "pubkey",
+              indexes: [["cachedAt"]],
+            },
+            {
+              name: "ownContactListSnapshots",
+              keyPath: "pubkey",
+              indexes: [["state"], ["cachedAt"]],
+            },
+            { name: "wallets", keyPath: "id", indexes: [] },
+            {
+              name: "walletCredentials",
+              keyPath: "walletId",
+              indexes: [],
+            },
+            {
+              name: "shippingOptionFrontiers",
+              keyPath: "coordinate",
+              indexes: [
+                ["pubkey"],
+                ["dTag"],
+                ["strongestCreatedAt"],
+                ["cachedAt"],
+              ],
+            },
+            {
+              name: "merchantPendingInvoices",
+              keyPath: "id",
+              indexes: [
+                ["merchantPubkey"],
+                ["orderId"],
+                ["deliveryState"],
+                ["invoiceExpiresAt"],
+                ["updatedAt"],
+              ],
+            },
+            {
+              name: "eventMarketEvidence",
+              keyPath: "id",
+              indexes: [
+                ["organizerPubkey"],
+                ["kind"],
+                ["addressId"],
+                ["cachedAt"],
+              ],
+            },
           ]
           for (const definition of stores) {
             const store = database.createObjectStore(definition.name, {
@@ -424,14 +504,30 @@ async function seedVersionEightDatabase(page: Page): Promise<{
         request.onsuccess = () => {
           const database = request.result
           const transaction = database.transaction(
-            ["products", "productTombstones"],
+            [
+              "products",
+              "productTombstones",
+              "eventMarketEvidence",
+              "merchantPendingInvoices",
+            ],
             "readwrite"
           )
           transaction.objectStore("products").put(product)
           transaction.objectStore("productTombstones").put(tombstone)
+          transaction
+            .objectStore("eventMarketEvidence")
+            .put(eventMarketEvidence)
+          transaction
+            .objectStore("merchantPendingInvoices")
+            .put(merchantPendingInvoice)
           transaction.oncomplete = () => {
             database.close()
-            resolve({ product, tombstone })
+            resolve({
+              product,
+              tombstone,
+              eventMarketEvidence,
+              merchantPendingInvoice,
+            })
           }
           transaction.onerror = () => reject(transaction.error)
           transaction.onabort = () => reject(transaction.error)
@@ -452,9 +548,13 @@ async function readDatabaseMigrationState(page: Page): Promise<{
   outboxIndexes: string[]
   productIndexes: string[]
   tombstoneIndexes: string[]
+  ownerEvidenceIndexes: string[]
   product: Record<string, unknown> | undefined
   tombstone: Record<string, unknown> | undefined
+  eventMarketEvidence: Record<string, unknown> | undefined
+  merchantPendingInvoice: Record<string, unknown> | undefined
   outboxCount: number
+  ownerEvidenceCount: number
 }> {
   return await page.evaluate(
     ({ addressId, merchantPubkey, eventId }) =>
@@ -464,7 +564,10 @@ async function readDatabaseMigrationState(page: Page): Promise<{
         request.onsuccess = () => {
           const database = request.result
           const stores = Array.from(database.objectStoreNames)
-          if (!stores.includes("productDeletionOutbox")) {
+          if (
+            !stores.includes("productDeletionOutbox") ||
+            !stores.includes("ownerRelayListEvidence")
+          ) {
             database.close()
             resolve({
               nativeVersion: database.version,
@@ -472,24 +575,49 @@ async function readDatabaseMigrationState(page: Page): Promise<{
               outboxIndexes: [],
               productIndexes: [],
               tombstoneIndexes: [],
+              ownerEvidenceIndexes: [],
               product: undefined,
               tombstone: undefined,
+              eventMarketEvidence: undefined,
+              merchantPendingInvoice: undefined,
               outboxCount: -1,
+              ownerEvidenceCount: -1,
             })
             return
           }
           const transaction = database.transaction(
-            ["products", "productTombstones", "productDeletionOutbox"],
+            [
+              "products",
+              "productTombstones",
+              "productDeletionOutbox",
+              "ownerRelayListEvidence",
+              "eventMarketEvidence",
+              "merchantPendingInvoices",
+            ],
             "readonly"
           )
           const products = transaction.objectStore("products")
           const tombstones = transaction.objectStore("productTombstones")
           const outbox = transaction.objectStore("productDeletionOutbox")
+          const ownerEvidence = transaction.objectStore(
+            "ownerRelayListEvidence"
+          )
+          const eventMarkets = transaction.objectStore("eventMarketEvidence")
+          const pendingInvoices = transaction.objectStore(
+            "merchantPendingInvoices"
+          )
           const productRequest = products.get(addressId)
           const tombstoneRequest = tombstones.get(
             `e:${merchantPubkey}:${eventId}`
           )
           const outboxCountRequest = outbox.count()
+          const ownerEvidenceCountRequest = ownerEvidence.count()
+          const eventMarketRequest = eventMarkets.get(
+            `31990:${merchantPubkey}:migration-market`
+          )
+          const pendingInvoiceRequest = pendingInvoices.get(
+            "migration-pending-invoice"
+          )
           transaction.oncomplete = () => {
             const state = {
               nativeVersion: database.version,
@@ -497,9 +625,13 @@ async function readDatabaseMigrationState(page: Page): Promise<{
               outboxIndexes: Array.from(outbox.indexNames).sort(),
               productIndexes: Array.from(products.indexNames).sort(),
               tombstoneIndexes: Array.from(tombstones.indexNames).sort(),
+              ownerEvidenceIndexes: Array.from(ownerEvidence.indexNames).sort(),
               product: productRequest.result,
               tombstone: tombstoneRequest.result,
+              eventMarketEvidence: eventMarketRequest.result,
+              merchantPendingInvoice: pendingInvoiceRequest.result,
               outboxCount: outboxCountRequest.result,
+              ownerEvidenceCount: ownerEvidenceCountRequest.result,
             }
             database.close()
             resolve(state)
@@ -516,20 +648,20 @@ async function readDatabaseMigrationState(page: Page): Promise<{
   )
 }
 
-test("Merchant upgrades v8 cache data to the durable v16 cache stores @merchant", async ({
+test("Merchant upgrades v16 data to the v17 owner-evidence store @merchant", async ({
   page,
 }) => {
   await page.route(
-    `${merchantUrl}/__product-deletion-v8-fixture`,
+    `${merchantUrl}/__product-deletion-v16-fixture`,
     async (route) => {
       await route.fulfill({
         contentType: "text/html",
-        body: "<!doctype html><title>Product deletion v8 fixture</title>",
+        body: "<!doctype html><title>Product deletion v16 fixture</title>",
       })
     }
   )
-  await page.goto(`${merchantUrl}/__product-deletion-v8-fixture`)
-  const fixture = await seedVersionEightDatabase(page)
+  await page.goto(`${merchantUrl}/__product-deletion-v16-fixture`)
+  const fixture = await seedVersionSixteenDatabase(page)
 
   await page.goto(`${merchantUrl}/`)
   await expect
@@ -555,12 +687,15 @@ test("Merchant upgrades v8 cache data to the durable v16 cache stores @merchant"
           hasMerchantPendingInvoices: state.stores.includes(
             "merchantPendingInvoices"
           ),
+          hasOwnerRelayListEvidence: state.stores.includes(
+            "ownerRelayListEvidence"
+          ),
         }
       },
       { timeout: 20_000 }
     )
     .toEqual({
-      nativeVersion: 160,
+      nativeVersion: 170,
       hasOutbox: true,
       hasShopperTrust: true,
       hasInboxDeclarationEvidence: true,
@@ -570,6 +705,7 @@ test("Merchant upgrades v8 cache data to the durable v16 cache stores @merchant"
       hasWalletCredentials: true,
       hasShippingOptionFrontiers: true,
       hasMerchantPendingInvoices: true,
+      hasOwnerRelayListEvidence: true,
     })
 
   const migrated = await readDatabaseMigrationState(page)
@@ -577,7 +713,21 @@ test("Merchant upgrades v8 cache data to the durable v16 cache stores @merchant"
   expect(hasSameSerializedValue(migrated.tombstone, fixture.tombstone)).toBe(
     true
   )
+  expect(
+    hasSameSerializedValue(
+      migrated.eventMarketEvidence,
+      fixture.eventMarketEvidence
+    )
+  ).toBe(true)
+  expect(
+    hasSameSerializedValue(
+      migrated.merchantPendingInvoice,
+      fixture.merchantPendingInvoice
+    )
+  ).toBe(true)
   expect(migrated.outboxCount).toBe(0)
+  expect(migrated.ownerEvidenceCount).toBe(0)
+  expect(migrated.ownerEvidenceIndexes).toEqual(["cachedAt"])
   expect(migrated.outboxIndexes).toEqual([
     "createdAt",
     "deliveryLeaseExpiresAt",

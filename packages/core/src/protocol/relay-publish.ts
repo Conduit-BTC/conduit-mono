@@ -24,6 +24,7 @@ import { EVENT_KINDS } from "./kinds"
 import {
   assertSafeNip65RelayTags,
   getConfiguredIsolatedE2eRelayUrl,
+  loadRelaySettingsPlanningSnapshot,
   normalizeSecureOrIsolatedE2eRelayUrls,
   normalizeUntrustedRelayHintsForContext,
   tryNormalizeRelayUrl,
@@ -37,6 +38,7 @@ import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
 } from "./signed-event"
+import { getAccountRelayScope } from "./session"
 import {
   publishSignedEventFrameToRelay,
   type ExactRelayWriteStatus,
@@ -632,6 +634,11 @@ export async function planPublishRelays(
           allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
         })
       : undefined
+  const settingsSnapshot = loadRelaySettingsPlanningSnapshot(
+    input.authenticatedPubkey
+      ? getAccountRelayScope(input.authenticatedPubkey)
+      : undefined
+  )
 
   return planRelayWrites({
     intent: input.intent,
@@ -639,6 +646,8 @@ export async function planPublishRelays(
     recipientPubkeys: input.recipientPubkeys,
     relayLists,
     authenticatedPubkey: input.authenticatedPubkey,
+    settings: settingsSnapshot.settings,
+    signedRelayListAuthoritative: settingsSnapshot.signedRelayListAuthoritative,
     maxPrimaryRelays: input.deliveryMode === "critical" ? 0 : undefined,
     maxBroadcastRelays: input.deliveryMode === "critical" ? 0 : undefined,
     skipHealthFilter:
@@ -726,11 +735,19 @@ export async function publishWithPlanner(
     new Set([...plan.primaryRelayUrls, ...plan.broadcastRelayUrls])
   )
   let attemptedRelayUrls = [...plannedRelayUrls]
+  const authorFallbackAllowed =
+    input.intent !== "author_event" ||
+    plan.signedRelayListAuthoritative !== true
 
   if (plannedRelayUrls.length === 0) {
     if (input.exclusiveRelayUrls) {
       throw new Error(
         "Refusing to publish without a valid exclusive relay target."
+      )
+    }
+    if (!authorFallbackAllowed) {
+      throw new Error(
+        "Refusing to publish because signed Network settings have no usable Publish relay."
       )
     }
     const fallbackRelayUrls = getAuthorEventFallbackRelayUrls({
@@ -823,11 +840,13 @@ export async function publishWithPlanner(
       }
     }
 
-    const fallbackRelayUrls = getAuthorEventFallbackRelayUrls({
-      eventKind: event.kind,
-      intent: input.intent,
-      attemptedRelayUrls,
-    })
+    const fallbackRelayUrls = authorFallbackAllowed
+      ? getAuthorEventFallbackRelayUrls({
+          eventKind: event.kind,
+          intent: input.intent,
+          attemptedRelayUrls,
+        })
+      : []
     const criticalRecipientFallbackRelayUrls =
       input.deliveryMode === "critical"
         ? getCriticalRecipientFallbackRelayUrls({
