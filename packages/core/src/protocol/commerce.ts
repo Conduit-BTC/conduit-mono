@@ -644,6 +644,11 @@ async function planCommerceReadRelayPlan(input: {
     (input.relayHintMode === "force" ||
       (input.relayHintMode !== "skip" &&
         hintPubkeys.length <= BROAD_AUTHOR_HINT_LIMIT))
+  const relayListLookupRelayUrls = getGeneralReadRelayUrls({
+    settings: settingsSnapshot.settings,
+    fallbackRelayUrls: config.defaultRelays,
+    signedRelayListAuthoritative: settingsSnapshot.signedRelayListAuthoritative,
+  })
   const relayLists = shouldFetchRelayHints
     ? await getRelayLists(
         hintPubkeys,
@@ -653,6 +658,7 @@ async function planCommerceReadRelayPlan(input: {
               allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
             }
           : {
+              relayUrls: relayListLookupRelayUrls,
               allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
             }
       )

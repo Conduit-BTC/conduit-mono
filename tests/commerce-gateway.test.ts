@@ -33,6 +33,7 @@ import {
   getAccountRelayScope,
   recordRelayFailure,
   setAccountRelaySettingsProjection,
+  setActiveRelaySettingsScope,
 } from "@conduit/core"
 import { config, EVENT_KINDS } from "@conduit/core"
 import type {
@@ -3887,6 +3888,43 @@ describe("commerce gateway", () => {
     )
     await getMarketplaceProducts({ sort: "newest" })
     expect(productReadRelayPlan).toContain(config.commerceDiscoveryRelayUrls[0])
+  })
+
+  it("does not use ambient defaults to refresh self relay hints before scope activation", async () => {
+    let relayListFanoutCount = 0
+    setActiveRelaySettingsScope(null)
+    __resetCommerceTestOverrides()
+    __setCommerceTestOverrides({
+      getCachedProducts: async () => [],
+      getCachedProfiles: async () => [],
+      putCachedProfiles: async () => {},
+    })
+    __setRelayListTestOverrides({
+      loadCached: async (pubkey) => ({
+        pubkey,
+        readRelayUrls: ["wss://stale-self-cache.example"],
+        writeRelayUrls: ["wss://stale-self-cache.example"],
+        eventCreatedAt: 1,
+        cachedAt: 1,
+      }),
+      fetchEventsFanoutDetailed: async () => {
+        relayListFanoutCount += 1
+        return { events: [], relays: [], eventsVerified: true }
+      },
+    })
+    setAccountRelaySettingsProjection(
+      getAccountRelayScope(MERCHANT_A_PUBKEY),
+      createRelaySettingsFromPreferences([], "published"),
+      { signedRelayListAuthoritative: true }
+    )
+
+    await getProfiles({
+      pubkeys: [MERCHANT_A_PUBKEY],
+      authenticatedPubkey: MERCHANT_A_PUBKEY,
+      skipCache: true,
+    })
+
+    expect(relayListFanoutCount).toBe(0)
   })
 
   it("reads visible profiles through explicit planned relay fanout", async () => {
