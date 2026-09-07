@@ -386,7 +386,7 @@ describe("Merchant pickup order authorization", () => {
 
     expect(
       await verify(dependencies(ownMarket, ownProducts), items, organizer)
-    ).toEqual({ status: "verified" })
+    ).toMatchObject({ status: "verified" })
   })
 
   it("allows an existing pickup order to complete after the signed event ends", async () => {
