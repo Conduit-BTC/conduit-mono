@@ -1069,6 +1069,8 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
   private readonly connectionWaiters = new Map<RelayConnection, number>()
   private readonly unsubscribeRevocation: () => void
   private subscriptionSequence = 0
+  private activeExecutions = 0
+  private authenticatedRefreshPending = false
 
   constructor(options: WebSocketRelayExecutorOptions = {}) {
     this.createWebSocket =
@@ -1140,6 +1142,7 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
   }
 
   closeAllAuthenticated(): void {
+    this.authenticatedRefreshPending = false
     const scopes = new Set([
       ...this.authenticatedConnections.keys(),
       ...this.evidence.keys(),
@@ -1148,6 +1151,14 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
     for (const scope of scopes) {
       this.closeSession(scope)
     }
+  }
+
+  closeAuthenticatedWhenIdle(): void {
+    if (this.activeExecutions > 0) {
+      this.authenticatedRefreshPending = true
+      return
+    }
+    this.closeAllAuthenticated()
   }
 
   closeAll(): void {
@@ -1175,6 +1186,22 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
   }
 
   private async execute(
+    request: RelayRequest,
+    options: RelayExecutionOptions,
+    observe: (observation: RelayObservation) => void
+  ): Promise<Omit<RelayQueryResult, "observations">> {
+    this.activeExecutions += 1
+    try {
+      return await this.executeActive(request, options, observe)
+    } finally {
+      this.activeExecutions = Math.max(0, this.activeExecutions - 1)
+      if (this.activeExecutions === 0 && this.authenticatedRefreshPending) {
+        this.closeAllAuthenticated()
+      }
+    }
+  }
+
+  private async executeActive(
     request: RelayRequest,
     options: RelayExecutionOptions,
     observe: (observation: RelayObservation) => void
@@ -1924,6 +1951,11 @@ export function closeProtectedRelayConnectionsForRelay(relayUrl: string): void {
 
 export function closeAllProtectedRelayConnections(): void {
   commerceRelayExecutor.closeAllAuthenticated()
+}
+
+/** Retire authenticated pools after their active bounded reads settle. */
+export function closeProtectedRelayConnectionsWhenIdle(): void {
+  commerceRelayExecutor.closeAuthenticatedWhenIdle()
 }
 
 export function getRelayAuthenticationEvidence(
