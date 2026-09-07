@@ -3558,34 +3558,26 @@ function OrdersPage() {
                           </p>
                         )}
 
-                        {!exactHandoffAck && !selectedRevocationDelivery && (
-                          <Button
-                            type="button"
-                            size="sm"
-                            className="mt-3"
-                            disabled={
-                              orderActionPending ||
-                              !pickupAuthorizationVerified ||
-                              (!selectedReadyDelivery &&
-                                !merchantPaid &&
-                                !selectedOrderIsZeroCost)
-                            }
-                            onClick={() => {
-                              if (selectedReadyDelivery) {
-                                organizerReceiptMutation.mutate(false)
-                                return
+                        {selectedReadyDelivery &&
+                          !exactHandoffAck &&
+                          !selectedRevocationDelivery && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              className="mt-3"
+                              disabled={
+                                orderActionPending ||
+                                !pickupAuthorizationVerified
                               }
-                              setOrganizerReleaseConfirmed(false)
-                              setConfirmingOrganizerRelease(true)
-                            }}
-                          >
-                            {organizerReceiptMutation.isPending
-                              ? "Sending exact receipt..."
-                              : selectedReadyDelivery
-                                ? "Retry exact receipt"
-                                : "Review release authorization"}
-                          </Button>
-                        )}
+                              onClick={() =>
+                                organizerReceiptMutation.mutate(false)
+                              }
+                            >
+                              {organizerReceiptMutation.isPending
+                                ? "Sending exact receipt..."
+                                : "Retry exact receipt"}
+                            </Button>
+                          )}
                       </section>
                     )}
 
