@@ -4502,7 +4502,76 @@ describe("commerce gateway", () => {
       eventId: "profile-current",
       eventCreatedAt: 20,
     })
+    expect(result.meta).toMatchObject({
+      source: "local_cache",
+      stale: true,
+      degraded: true,
+    })
   })
+
+  for (const currentLud16 of ["current@example.com", undefined]) {
+    it(`keeps ${currentLud16 ? "current payment" : "current payment absence"} authoritative across display enrichment`, async () => {
+      cachedProfiles.set("merchant", {
+        pubkey: "merchant",
+        displayName: "Cached Merchant",
+        about: "Cached biography",
+        picture: "https://cdn.conduit.market/cached-avatar.png",
+        lud16: "obsolete@example.com",
+        rawContent: JSON.stringify({
+          display_name: "Cached Merchant",
+          about: "Cached biography",
+          picture: "https://cdn.conduit.market/cached-avatar.png",
+          lud16: "obsolete@example.com",
+        }),
+        eventId: "profile-cached",
+        eventCreatedAt: 10,
+        cachedAt: FIXED_NOW - 1_000,
+      })
+      const currentContent = JSON.stringify({
+        display_name: "Current Merchant",
+        ...(currentLud16 ? { lud16: currentLud16 } : {}),
+      })
+      __setCommerceTestOverrides({
+        fetchEventsFanoutWithDiagnostics: async (_filter, options) => {
+          const relayUrls = [...(options?.relayUrls ?? [])]
+          return {
+            events: [
+              {
+                id: "profile-current",
+                pubkey: "merchant",
+                created_at: 20,
+                content: currentContent,
+                tags: [],
+              } as never,
+            ],
+            attemptedRelayUrls: relayUrls,
+            successfulRelayUrls: relayUrls,
+            failedRelayUrls: [],
+            cappedRelayUrls: [],
+          }
+        },
+      })
+
+      const result = await getProfiles({
+        pubkeys: ["merchant"],
+        skipCache: true,
+        requireCompleteEvidence: true,
+        evidenceScope: "payment",
+      })
+
+      expect(result.data.merchant).toMatchObject({
+        displayName: "Current Merchant",
+        about: "Cached biography",
+        picture: "https://cdn.conduit.market/cached-avatar.png",
+      })
+      expect(result.data.merchant?.lud16).toBe(currentLud16)
+      expect(result.meta).toMatchObject({
+        source: "public",
+        stale: false,
+        degraded: false,
+      })
+    })
+  }
 
   it("does not regress raw profile publish context during a forced narrower refresh", async () => {
     cachedProfiles.set("merchant", {

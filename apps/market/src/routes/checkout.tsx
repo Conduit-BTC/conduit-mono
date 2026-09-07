@@ -2700,6 +2700,7 @@ function CheckoutPage() {
             : undefined,
         skipCache: true,
         requireCompleteEvidence: true,
+        evidenceScope: "payment",
         priority: "visible",
       })
       const refreshedProfileState = getMerchantPaymentProfileState({

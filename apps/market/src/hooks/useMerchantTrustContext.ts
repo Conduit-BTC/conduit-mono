@@ -73,6 +73,7 @@ export function useMerchantTrustContext({
     ),
     relayHints: profileRelayHints,
     requireCompleteEvidence: requireCompleteProfileEvidence,
+    evidenceScope: requireCompleteProfileEvidence ? "payment" : undefined,
     refetchUnresolvedMs: 2_000,
     maxUnresolvedRefetches: 2,
   })

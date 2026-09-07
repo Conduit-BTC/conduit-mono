@@ -36,6 +36,7 @@ describe("shopper merchant payment readiness", () => {
     )
     expect(source).toContain("skipCache: true")
     expect(source).toContain("requireCompleteEvidence: true")
+    expect(source).toContain('evidenceScope: "payment"')
     expect(source).toContain(
       "lud16: refreshedProfileResult.data[selectedMerchant]?.lud16"
     )

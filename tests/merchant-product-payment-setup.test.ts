@@ -63,6 +63,7 @@ describe("merchant product payment setup guidance", () => {
       "You can still publish and arrange payment manually"
     )
     expect(notice).toContain("profileQuery.evidenceData?.lud16")
+    expect(notice).toContain('evidenceScope: "payment"')
     expect(notice).toContain('<Link to="/payments">Set up payments</Link>')
     expect(notice).not.toContain("disabled")
   })

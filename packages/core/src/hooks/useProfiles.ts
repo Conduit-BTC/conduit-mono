@@ -25,6 +25,7 @@ type ProfilePriority = "visible" | "background"
 
 export interface UseProfilesOptions {
   authenticatedPubkey?: string | null
+  evidenceScope?: "full_profile" | "payment"
   enabled?: boolean
   maxUnresolvedRefetches?: number
   priority?: ProfilePriority
@@ -173,6 +174,7 @@ export function useProfiles(
     setUnresolvedRefetchCount(0)
   }, [
     authenticatedPerspective,
+    options.evidenceScope,
     options.skipCache,
     options.requireCompleteEvidence,
     priority,
@@ -209,6 +211,7 @@ export function useProfiles(
       relayHintKey,
       options.skipCache,
       options.requireCompleteEvidence,
+      options.evidenceScope,
     ],
     enabled,
     queryFn: async () => {
@@ -218,6 +221,7 @@ export function useProfiles(
         priority,
         skipCache: options.skipCache,
         requireCompleteEvidence: options.requireCompleteEvidence,
+        evidenceScope: options.evidenceScope,
         readPolicy: defaultReadPolicy(priority, options.readPolicy),
         relayHintsByPubkey: options.relayHintsByPubkey,
         onProgress: (progress) => cacheResolvedProfiles(progress.data),

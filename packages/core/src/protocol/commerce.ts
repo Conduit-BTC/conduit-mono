@@ -294,6 +294,8 @@ export interface ProfileBatchQuery {
   skipCache?: boolean
   /** Require relay-coverage diagnostics before absence is treated as current. */
   requireCompleteEvidence?: boolean
+  /** Limit cache comparison to fields authoritative for the current action. */
+  evidenceScope?: "full_profile" | "payment"
   priority?: "visible" | "background"
   readPolicy?: CommerceReadPolicy
   relayHintsByPubkey?: Record<string, string[] | undefined>
@@ -4825,10 +4827,12 @@ export async function getProfiles(
           !liveRow ||
           row.eventId !== liveRow.eventId ||
           row.eventCreatedAt !== liveRow.eventCreatedAt ||
-          !areProfileProjectionsEqual(
-            projectCachedProfile(row),
-            projectCachedProfile(liveRow)
-          )
+          (query.evidenceScope === "payment"
+            ? row.lud16 !== liveRow.lud16
+            : !areProfileProjectionsEqual(
+                projectCachedProfile(row),
+                projectCachedProfile(liveRow)
+              ))
         )
       }) ?? false
     const dependsOnCache = usesFreshCachedResult || usesUnconfirmedCachedResult

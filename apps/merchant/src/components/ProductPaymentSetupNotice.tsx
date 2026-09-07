@@ -18,6 +18,7 @@ export function ProductPaymentSetupNotice({
     // profile metadata; the default visible-profile query retries forever.
     maxUnresolvedRefetches: 2,
     requireCompleteEvidence: true,
+    evidenceScope: "payment",
   })
   const state = getProductPaymentSetupState({
     lud16: profileQuery.evidenceData?.lud16,
