@@ -1,6 +1,7 @@
 import {
   decodeEventMarketReference,
   encodeEventMarketNaddr,
+  parseAddressableCoordinate,
   type EventMarketDeletedRecordEvidence,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
@@ -48,7 +49,9 @@ export function expectedOrganizerEventMarketFrontiersAfterRetry(
   if (delivery.record !== "collection" || !savedReference) return frontier
 
   const collectionRetainsPickup = signedEvent.tags.some(
-    (tag) => tag[0] === "a" && tag[1]?.startsWith("30406:")
+    (tag) =>
+      tag[0] === "shipping_option" &&
+      parseAddressableCoordinate(tag[1] ?? "")?.kind === 30406
   )
   return {
     ...frontier,

@@ -832,7 +832,10 @@ describe("merchant organizer event workflow", () => {
       created_at: 4,
       kind: 30405,
       content: "",
-      tags: [["d", "market"]],
+      tags: [
+        ["d", "market"],
+        ["a", `30406:${ORGANIZER}:not-a-collection-pickup-link`],
+      ],
       sig: "e".repeat(128),
     }
 
@@ -846,6 +849,44 @@ describe("merchant organizer event workflow", () => {
       expectedCollectionEventId: retriedCollection.id,
       expectedCalendarCreatedAt: 2_000,
       expectedCalendarEventId: "b".repeat(64),
+      replaceExpectedRecordFrontiers: true,
+    })
+  })
+
+  it("retains the pickup frontier after retrying a collection that still advertises pickup", () => {
+    const savedReference = {
+      reference: COLLECTION,
+      savedAt: 10,
+      expectedCalendarCreatedAt: 2_000,
+      expectedCalendarEventId: "b".repeat(64),
+      expectedPickupCreatedAt: 3_000,
+      expectedPickupEventId: "c".repeat(64),
+    }
+    const retriedCollection = {
+      id: "d".repeat(64),
+      pubkey: ORGANIZER,
+      created_at: 4,
+      kind: 30405,
+      content: "",
+      tags: [
+        ["d", "market"],
+        ["shipping_option", `30406:${ORGANIZER}:event-pickup`],
+      ],
+      sig: "e".repeat(128),
+    }
+
+    expect(
+      expectedOrganizerEventMarketFrontiersAfterRetry(
+        { record: "collection", signedEvent: retriedCollection },
+        savedReference
+      )
+    ).toEqual({
+      expectedCollectionCreatedAt: 4_000,
+      expectedCollectionEventId: retriedCollection.id,
+      expectedCalendarCreatedAt: 2_000,
+      expectedCalendarEventId: "b".repeat(64),
+      expectedPickupCreatedAt: 3_000,
+      expectedPickupEventId: "c".repeat(64),
       replaceExpectedRecordFrontiers: true,
     })
   })
