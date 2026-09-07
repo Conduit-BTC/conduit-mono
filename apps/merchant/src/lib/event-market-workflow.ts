@@ -1,6 +1,7 @@
 import {
   decodeEventMarketReference,
   encodeEventMarketNaddr,
+  EVENT_KINDS,
   parseAddressableCoordinate,
   type EventMarketDeletedRecordEvidence,
   type SignedPublicNostrEvent,
@@ -12,10 +13,13 @@ export interface SavedOrganizerEventMarketReference {
   reference: string
   title?: string
   savedAt: number
+  expectedCollectionCoordinate?: string
   expectedCollectionCreatedAt?: number
   expectedCollectionEventId?: string
+  expectedCalendarCoordinate?: string
   expectedCalendarCreatedAt?: number
   expectedCalendarEventId?: string
+  expectedPickupCoordinate?: string
   expectedPickupCreatedAt?: number
   expectedPickupEventId?: string
   replaceExpectedRecordFrontiers?: true
@@ -31,18 +35,25 @@ export function expectedOrganizerEventMarketFrontiersAfterRetry(
   const signedEvent = delivery.signedEvent
   if (!signedEvent) return {}
   const createdAt = signedEvent.created_at * 1_000
+  const coordinate = organizerEventMarketSignedRecordCoordinate(
+    delivery.record,
+    signedEvent
+  )
   const frontier =
     delivery.record === "calendar"
       ? {
+          ...(coordinate ? { expectedCalendarCoordinate: coordinate } : {}),
           expectedCalendarCreatedAt: createdAt,
           expectedCalendarEventId: signedEvent.id,
         }
       : delivery.record === "pickup"
         ? {
+            ...(coordinate ? { expectedPickupCoordinate: coordinate } : {}),
             expectedPickupCreatedAt: createdAt,
             expectedPickupEventId: signedEvent.id,
           }
         : {
+            ...(coordinate ? { expectedCollectionCoordinate: coordinate } : {}),
             expectedCollectionCreatedAt: createdAt,
             expectedCollectionEventId: signedEvent.id,
           }
@@ -57,6 +68,12 @@ export function expectedOrganizerEventMarketFrontiersAfterRetry(
     ...frontier,
     ...(savedReference.expectedCalendarCreatedAt !== undefined
       ? {
+          ...(savedReference.expectedCalendarCoordinate
+            ? {
+                expectedCalendarCoordinate:
+                  savedReference.expectedCalendarCoordinate,
+              }
+            : {}),
           expectedCalendarCreatedAt: savedReference.expectedCalendarCreatedAt,
           ...(savedReference.expectedCalendarEventId
             ? {
@@ -68,6 +85,12 @@ export function expectedOrganizerEventMarketFrontiersAfterRetry(
     ...(collectionRetainsPickup &&
     savedReference.expectedPickupCreatedAt !== undefined
       ? {
+          ...(savedReference.expectedPickupCoordinate
+            ? {
+                expectedPickupCoordinate:
+                  savedReference.expectedPickupCoordinate,
+              }
+            : {}),
           expectedPickupCreatedAt: savedReference.expectedPickupCreatedAt,
           ...(savedReference.expectedPickupEventId
             ? { expectedPickupEventId: savedReference.expectedPickupEventId }
@@ -96,13 +119,17 @@ type NormalizedSavedOrganizerEventMarketReference =
 type EventMarketRecordFrontier = {
   createdAt: number
   eventId?: string
+  coordinate?: string
 }
 
 type EventMarketFrontierCarrier = {
+  collectionCoordinate?: string
   collectionCreatedAt?: number
   collectionEventId?: string
+  calendarCoordinate?: string
   calendarCreatedAt?: number
   calendarEventId?: string
+  pickupCoordinate?: string
   pickupCreatedAt?: number
   pickupEventId?: string
 }
@@ -127,7 +154,38 @@ export interface OrganizerEventMarketPendingResolution extends EventMarketFronti
   naddr: string
 }
 
-type EventMarketRecord = "collection" | "calendar" | "pickup"
+export type EventMarketRecord = "collection" | "calendar" | "pickup"
+
+function eventMarketRecordKinds(record: EventMarketRecord): readonly number[] {
+  return record === "collection"
+    ? [EVENT_KINDS.PRODUCT_COLLECTION]
+    : record === "calendar"
+      ? [EVENT_KINDS.CALENDAR_DATE, EVENT_KINDS.CALENDAR_TIME]
+      : [EVENT_KINDS.SHIPPING_OPTION]
+}
+
+export function organizerEventMarketSignedRecordCoordinate(
+  record: EventMarketRecord,
+  signedEvent: SignedPublicNostrEvent | null | undefined
+): string | undefined {
+  if (!signedEvent) return undefined
+  const dTag = signedEvent.tags.find((tag) => tag[0] === "d")?.[1]
+  if (!dTag) return undefined
+  return parseAddressableCoordinate(
+    `${signedEvent.kind}:${signedEvent.pubkey}:${dTag}`,
+    eventMarketRecordKinds(record)
+  )?.coordinate
+}
+
+function normalizedRecordCoordinate(
+  value: unknown,
+  record: EventMarketRecord
+): string | undefined {
+  return typeof value === "string"
+    ? parseAddressableCoordinate(value, eventMarketRecordKinds(record))
+        ?.coordinate
+    : undefined
+}
 
 function normalizedCreatedAt(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined
@@ -171,9 +229,16 @@ function carrierFrontier(
       : record === "calendar"
         ? value?.calendarEventId
         : value?.pickupEventId
+  const coordinate =
+    record === "collection"
+      ? value?.collectionCoordinate
+      : record === "calendar"
+        ? value?.calendarCoordinate
+        : value?.pickupCoordinate
   return {
     createdAt,
     ...(eventId ? { eventId } : {}),
+    ...(coordinate ? { coordinate } : {}),
   }
 }
 
@@ -194,9 +259,17 @@ function savedExpectedFrontier(
       : record === "calendar"
         ? value?.expectedCalendarEventId
         : value?.expectedPickupEventId
+  const expectedCoordinate =
+    record === "collection"
+      ? (value?.expectedCollectionCoordinate ??
+        decodeEventMarketReference(value?.reference ?? "", [30405])?.coordinate)
+      : record === "calendar"
+        ? value?.expectedCalendarCoordinate
+        : value?.expectedPickupCoordinate
   return {
     createdAt: expectedCreatedAt,
     ...(expectedEventId ? { eventId: expectedEventId } : {}),
+    ...(expectedCoordinate ? { coordinate: expectedCoordinate } : {}),
   }
 }
 
@@ -222,6 +295,9 @@ function expectedFrontierFields(
   if (!frontier) return {}
   if (record === "collection") {
     return {
+      ...(frontier.coordinate
+        ? { expectedCollectionCoordinate: frontier.coordinate }
+        : {}),
       expectedCollectionCreatedAt: frontier.createdAt,
       ...(frontier.eventId
         ? { expectedCollectionEventId: frontier.eventId }
@@ -230,6 +306,9 @@ function expectedFrontierFields(
   }
   if (record === "calendar") {
     return {
+      ...(frontier.coordinate
+        ? { expectedCalendarCoordinate: frontier.coordinate }
+        : {}),
       expectedCalendarCreatedAt: frontier.createdAt,
       ...(frontier.eventId
         ? { expectedCalendarEventId: frontier.eventId }
@@ -237,6 +316,9 @@ function expectedFrontierFields(
     }
   }
   return {
+    ...(frontier.coordinate
+      ? { expectedPickupCoordinate: frontier.coordinate }
+      : {}),
     expectedPickupCreatedAt: frontier.createdAt,
     ...(frontier.eventId ? { expectedPickupEventId: frontier.eventId } : {}),
   }
@@ -264,10 +346,13 @@ function normalizeSavedReference(
     savedAt?: unknown
     expectedCollectionCreatedAt?: unknown
     expectedCollectionEventId?: unknown
+    expectedCollectionCoordinate?: unknown
     expectedCalendarCreatedAt?: unknown
     expectedCalendarEventId?: unknown
+    expectedCalendarCoordinate?: unknown
     expectedPickupCreatedAt?: unknown
     expectedPickupEventId?: unknown
+    expectedPickupCoordinate?: unknown
     replaceExpectedRecordFrontiers?: unknown
   }
   const rawReference =
@@ -291,17 +376,29 @@ function normalizeSavedReference(
   const expectedCollectionEventId = normalizedEventId(
     candidate.expectedCollectionEventId
   )
+  const expectedCollectionCoordinate = normalizedRecordCoordinate(
+    candidate.expectedCollectionCoordinate,
+    "collection"
+  )
   const expectedCalendarCreatedAt = normalizedCreatedAt(
     candidate.expectedCalendarCreatedAt
   )
   const expectedCalendarEventId = normalizedEventId(
     candidate.expectedCalendarEventId
   )
+  const expectedCalendarCoordinate = normalizedRecordCoordinate(
+    candidate.expectedCalendarCoordinate,
+    "calendar"
+  )
   const expectedPickupCreatedAt = normalizedCreatedAt(
     candidate.expectedPickupCreatedAt
   )
   const expectedPickupEventId = normalizedEventId(
     candidate.expectedPickupEventId
+  )
+  const expectedPickupCoordinate = normalizedRecordCoordinate(
+    candidate.expectedPickupCoordinate,
+    "pickup"
   )
   return {
     reference:
@@ -311,21 +408,32 @@ function normalizeSavedReference(
     title,
     savedAt: candidate.savedAt,
     ...(expectedCollectionCreatedAt !== undefined
-      ? { expectedCollectionCreatedAt }
+      ? {
+          expectedCollectionCreatedAt,
+          ...(expectedCollectionCoordinate
+            ? { expectedCollectionCoordinate }
+            : {}),
+        }
       : {}),
     ...(expectedCollectionCreatedAt !== undefined &&
     expectedCollectionEventId !== undefined
       ? { expectedCollectionEventId }
       : {}),
     ...(expectedCalendarCreatedAt !== undefined
-      ? { expectedCalendarCreatedAt }
+      ? {
+          expectedCalendarCreatedAt,
+          ...(expectedCalendarCoordinate ? { expectedCalendarCoordinate } : {}),
+        }
       : {}),
     ...(expectedCalendarCreatedAt !== undefined &&
     expectedCalendarEventId !== undefined
       ? { expectedCalendarEventId }
       : {}),
     ...(expectedPickupCreatedAt !== undefined
-      ? { expectedPickupCreatedAt }
+      ? {
+          expectedPickupCreatedAt,
+          ...(expectedPickupCoordinate ? { expectedPickupCoordinate } : {}),
+        }
       : {}),
     ...(expectedPickupCreatedAt !== undefined &&
     expectedPickupEventId !== undefined
@@ -700,6 +808,7 @@ function terminalDeletionRemovesMarket(
       }
       return (
         frontier !== undefined &&
+        frontier.coordinate === coordinate &&
         deletion.addressableTargets.includes(coordinate) &&
         deletion.deletionCreatedAt >= frontier.createdAt
       )
@@ -826,6 +935,19 @@ export function selectOrganizerEventMarketResolution<
           preferredListMarket
         )
       : undefined
+  const expectedFrontierWinner =
+    expectedRecords.length > 0 &&
+    hintedReachesExpectedFrontiers !== listReachesExpectedFrontiers
+      ? hintedReachesExpectedFrontiers
+        ? comparableHintedMarket
+        : preferredListMarket
+      : undefined
+  const expectedFrontierWinnerIsCompletePickupRemoval =
+    !!expectedFrontierWinner &&
+    !expectedFrontierWinner.pickupCoordinate &&
+    expectedRecords.includes("collection") &&
+    expectedRecords.includes("calendar") &&
+    !expectedRecords.includes("pickup")
   const selected =
     hintedMarket?.state === "deleted" && "terminal" in hintedMarket
       ? terminalDeletionRemovesMarket(
@@ -843,17 +965,14 @@ export function selectOrganizerEventMarketResolution<
             : undefined))
       : preferredListMarket
         ? comparableHintedMarket
-          ? graphFrontierComparison === null
-            ? pendingOrganizerEventMarketResolution(
-                "crossed_frontiers",
-                comparableHintedMarket,
-                preferredListMarket
-              )
-            : expectedRecords.length > 0 &&
-                hintedReachesExpectedFrontiers !== listReachesExpectedFrontiers
-              ? hintedReachesExpectedFrontiers
-                ? comparableHintedMarket
-                : preferredListMarket
+          ? expectedFrontierWinnerIsCompletePickupRemoval
+            ? expectedFrontierWinner
+            : graphFrontierComparison === null
+              ? pendingOrganizerEventMarketResolution(
+                  "crossed_frontiers",
+                  comparableHintedMarket,
+                  preferredListMarket
+                )
               : (graphFrontierComparison ?? 0) > 0
                 ? comparableHintedMarket
                 : preferredListMarket

@@ -67,6 +67,7 @@ import {
   loadSavedDiscoveredEventMarkets,
   loadSavedOrganizerEventMarkets,
   organizerEventMarketReachesExpectedFrontiers,
+  organizerEventMarketSignedRecordCoordinate,
   rememberDiscoveredEventMarket,
   rememberOrganizerEventMarket,
   selectOrganizerEventMarketResolution,
@@ -119,19 +120,26 @@ function expectedEventMarketFrontier(
   const signedEvent = record.signedEvent
   if (!signedEvent) return {}
   const createdAt = signedEvent.created_at * 1_000
+  const coordinate = organizerEventMarketSignedRecordCoordinate(
+    record.record,
+    signedEvent
+  )
   if (record.record === "calendar") {
     return {
+      ...(coordinate ? { expectedCalendarCoordinate: coordinate } : {}),
       expectedCalendarCreatedAt: createdAt,
       expectedCalendarEventId: signedEvent.id,
     }
   }
   if (record.record === "pickup") {
     return {
+      ...(coordinate ? { expectedPickupCoordinate: coordinate } : {}),
       expectedPickupCreatedAt: createdAt,
       expectedPickupEventId: signedEvent.id,
     }
   }
   return {
+    ...(coordinate ? { expectedCollectionCoordinate: coordinate } : {}),
     expectedCollectionCreatedAt: createdAt,
     expectedCollectionEventId: signedEvent.id,
   }

@@ -18,6 +18,7 @@ import {
 } from "@conduit/core"
 import { attachEventSourceRelayUrl } from "@conduit/core/protocol/ndk"
 import {
+  organizerEventMarketReferenceWithDeliveryRelayHints,
   organizerEventMarketReferencesMatch,
   parseOrganizerEventMarketReference,
   resolveOrganizerEventMarket,
@@ -407,12 +408,26 @@ describe("merchant organizer event-market references", () => {
     })
   })
 
-  it("queries the eighth relay on an explicit imported reference", async () => {
+  it("keeps and queries the eighth imported relay when an ACK is already present", async () => {
     const importedHints = Array.from(
       { length: 8 },
       (_, index) => `wss://import-${index + 1}.example/events`
     )
     const imported = encodeEventMarketNaddr(COLLECTION, importedHints)
+    const acknowledged = organizerEventMarketReferenceWithDeliveryRelayHints(
+      imported,
+      {
+        record: "collection",
+        acknowledgedRelayUrls: [importedHints[0]!],
+        acknowledgedCount: 1,
+        rejectedCount: 0,
+        timedOutCount: 0,
+        signedEvent: null,
+      }
+    )
+    expect(
+      decodeEventMarketReference(acknowledged, [30405])?.relayHints
+    ).toEqual(importedHints)
     const readPlans: string[][] = []
     const now = Math.floor(Date.now() / 1_000)
     const graph = [
@@ -472,7 +487,7 @@ describe("merchant organizer event-market references", () => {
       persistCachedEvidence: async () => undefined,
     })
 
-    const market = await resolveOrganizerEventMarket(imported, ORGANIZER)
+    const market = await resolveOrganizerEventMarket(acknowledged, ORGANIZER)
 
     expect(market.collectionCoordinate).toBe(COLLECTION)
     expect(readPlans.length).toBeGreaterThan(0)

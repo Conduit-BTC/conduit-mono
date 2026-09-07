@@ -436,6 +436,61 @@ describe("merchant organizer event workflow", () => {
     expect(selected).not.toBe(hintedMarket)
   })
 
+  it("selects a complete pickup-removal graph before the crossed-frontier fallback", () => {
+    const olderMarket = {
+      collectionCoordinate: COLLECTION,
+      calendarCoordinate: CALENDAR,
+      pickupCoordinate: ORGANIZER_PICKUP,
+      collectionCreatedAt: 1_000,
+      collectionEventId: "d".repeat(64),
+      calendarCreatedAt: 1_000,
+      calendarEventId: "e".repeat(64),
+      pickupCreatedAt: 5_000,
+      pickupEventId: "f".repeat(64),
+      naddr: encodeEventMarketNaddr(COLLECTION, ["wss://older.example/events"]),
+      state: "active",
+    }
+    const pickupRemoved = {
+      collectionCoordinate: COLLECTION,
+      calendarCoordinate: CALENDAR,
+      collectionCreatedAt: 2_000,
+      collectionEventId: "a".repeat(64),
+      calendarCreatedAt: 2_000,
+      calendarEventId: "b".repeat(64),
+      naddr: encodeEventMarketNaddr(COLLECTION, [
+        "wss://current.example/events",
+      ]),
+      state: "active",
+    }
+    const savedReference = {
+      reference: pickupRemoved.naddr,
+      savedAt: 20,
+      expectedCollectionCoordinate: COLLECTION,
+      expectedCollectionCreatedAt: 2_000,
+      expectedCollectionEventId: "a".repeat(64),
+      expectedCalendarCoordinate: CALENDAR,
+      expectedCalendarCreatedAt: 2_000,
+      expectedCalendarEventId: "b".repeat(64),
+    }
+
+    for (const [listMarket, hintedMarket] of [
+      [olderMarket, pickupRemoved],
+      [pickupRemoved, olderMarket],
+    ] as const) {
+      expect(
+        selectOrganizerEventMarketResolution(
+          listMarket,
+          hintedMarket,
+          savedReference
+        )
+      ).toMatchObject({
+        state: "active",
+        collectionEventId: "a".repeat(64),
+        calendarEventId: "b".repeat(64),
+      })
+    }
+  })
+
   it("lets an exact hinted deletion retire an older active list market", () => {
     const listMarket = {
       collectionCoordinate: COLLECTION,
@@ -529,6 +584,73 @@ describe("merchant organizer event workflow", () => {
       selectOrganizerEventMarketResolution(listMarket, hintedDeletion)
         ?.collectionEventId
     ).toBe("a".repeat(64))
+  })
+
+  it("does not apply a calendar tombstone to a replacement coordinate", () => {
+    const replacementCalendar = `31923:${ORGANIZER}:replacement-calendar`
+    const replacementMarket = {
+      collectionCoordinate: COLLECTION,
+      collectionCreatedAt: 3_000,
+      collectionEventId: "a".repeat(64),
+      calendarCoordinate: replacementCalendar,
+      calendarCreatedAt: 3_000,
+      calendarEventId: "b".repeat(64),
+      naddr: encodeEventMarketNaddr(COLLECTION, [
+        "wss://planner.example/events",
+      ]),
+      state: "active",
+    }
+    const oldCalendarDeletion = {
+      terminal: true as const,
+      state: "deleted" as const,
+      collectionCoordinate: COLLECTION,
+      calendarCoordinate: CALENDAR,
+      calendarCreatedAt: 2_000,
+      calendarEventId: "c".repeat(64),
+      deletion: {
+        record: "calendar" as const,
+        coordinate: CALENDAR,
+        eventId: "c".repeat(64),
+        createdAt: 2_000,
+        deletions: [
+          {
+            deletionEventId: "d".repeat(64),
+            deletionCreatedAt: 4_000,
+            authorPubkey: ORGANIZER,
+            eventTargets: [],
+            addressableTargets: [CALENDAR],
+          },
+        ],
+      },
+      naddr: encodeEventMarketNaddr(COLLECTION, [
+        "wss://deletion.example/events",
+      ]),
+    }
+    const savedReference = {
+      reference: replacementMarket.naddr,
+      savedAt: 20,
+      expectedCalendarCoordinate: replacementCalendar,
+      expectedCalendarCreatedAt: 3_000,
+      expectedCalendarEventId: "b".repeat(64),
+    }
+
+    expect(
+      selectOrganizerEventMarketResolution(
+        replacementMarket,
+        oldCalendarDeletion,
+        savedReference
+      )
+    ).toMatchObject({
+      state: "active",
+      calendarCoordinate: replacementCalendar,
+      calendarEventId: "b".repeat(64),
+    })
+    expect(
+      selectOrganizerEventMarketResolution(
+        { ...replacementMarket, calendarCoordinate: CALENDAR },
+        oldCalendarDeletion
+      )?.state
+    ).toBe("deleted")
   })
 
   it("lets a newer revision survive an older addressable tombstone", () => {
@@ -812,6 +934,7 @@ describe("merchant organizer event workflow", () => {
       {
         reference,
         savedAt: 10,
+        expectedCalendarCoordinate: CALENDAR,
         expectedCalendarCreatedAt: 2_000,
         expectedCalendarEventId: "b".repeat(64),
       },
@@ -822,6 +945,7 @@ describe("merchant organizer event workflow", () => {
       {
         reference,
         savedAt: 20,
+        expectedPickupCoordinate: ORGANIZER_PICKUP,
         expectedPickupCreatedAt: 3_000,
         expectedPickupEventId: "c".repeat(64),
       },
@@ -832,6 +956,7 @@ describe("merchant organizer event workflow", () => {
       {
         reference,
         savedAt: 30,
+        expectedCollectionCoordinate: COLLECTION,
         expectedCollectionCreatedAt: 4_000,
         expectedCollectionEventId: "a".repeat(64),
       },
@@ -839,10 +964,13 @@ describe("merchant organizer event workflow", () => {
     )
 
     expect(saved[0]).toMatchObject({
+      expectedCalendarCoordinate: CALENDAR,
       expectedCalendarCreatedAt: 2_000,
       expectedCalendarEventId: "b".repeat(64),
+      expectedPickupCoordinate: ORGANIZER_PICKUP,
       expectedPickupCreatedAt: 3_000,
       expectedPickupEventId: "c".repeat(64),
+      expectedCollectionCoordinate: COLLECTION,
       expectedCollectionCreatedAt: 4_000,
       expectedCollectionEventId: "a".repeat(64),
     })
@@ -852,8 +980,10 @@ describe("merchant organizer event workflow", () => {
       {
         reference,
         savedAt: 40,
+        expectedCalendarCoordinate: CALENDAR,
         expectedCalendarCreatedAt: 5_000,
         expectedCalendarEventId: "d".repeat(64),
+        expectedCollectionCoordinate: COLLECTION,
         expectedCollectionCreatedAt: 6_000,
         expectedCollectionEventId: "e".repeat(64),
         replaceExpectedRecordFrontiers: true,
@@ -862,20 +992,25 @@ describe("merchant organizer event workflow", () => {
     )
 
     expect(withoutPickup[0]).toMatchObject({
+      expectedCalendarCoordinate: CALENDAR,
       expectedCalendarCreatedAt: 5_000,
+      expectedCollectionCoordinate: COLLECTION,
       expectedCollectionCreatedAt: 6_000,
       replaceExpectedRecordFrontiers: true,
     })
     expect(withoutPickup[0]?.expectedPickupCreatedAt).toBeUndefined()
     expect(withoutPickup[0]?.expectedPickupEventId).toBeUndefined()
+    expect(withoutPickup[0]?.expectedPickupCoordinate).toBeUndefined()
   })
 
   it("clears an obsolete pickup frontier after retrying a collection without pickup", () => {
     const savedReference = {
       reference: COLLECTION,
       savedAt: 10,
+      expectedCalendarCoordinate: CALENDAR,
       expectedCalendarCreatedAt: 2_000,
       expectedCalendarEventId: "b".repeat(64),
+      expectedPickupCoordinate: ORGANIZER_PICKUP,
       expectedPickupCreatedAt: 3_000,
       expectedPickupEventId: "c".repeat(64),
     }
@@ -898,8 +1033,10 @@ describe("merchant organizer event workflow", () => {
         savedReference
       )
     ).toEqual({
+      expectedCollectionCoordinate: COLLECTION,
       expectedCollectionCreatedAt: 4_000,
       expectedCollectionEventId: retriedCollection.id,
+      expectedCalendarCoordinate: CALENDAR,
       expectedCalendarCreatedAt: 2_000,
       expectedCalendarEventId: "b".repeat(64),
       replaceExpectedRecordFrontiers: true,
@@ -910,8 +1047,10 @@ describe("merchant organizer event workflow", () => {
     const savedReference = {
       reference: COLLECTION,
       savedAt: 10,
+      expectedCalendarCoordinate: CALENDAR,
       expectedCalendarCreatedAt: 2_000,
       expectedCalendarEventId: "b".repeat(64),
+      expectedPickupCoordinate: ORGANIZER_PICKUP,
       expectedPickupCreatedAt: 3_000,
       expectedPickupEventId: "c".repeat(64),
     }
@@ -934,10 +1073,13 @@ describe("merchant organizer event workflow", () => {
         savedReference
       )
     ).toEqual({
+      expectedCollectionCoordinate: COLLECTION,
       expectedCollectionCreatedAt: 4_000,
       expectedCollectionEventId: retriedCollection.id,
+      expectedCalendarCoordinate: CALENDAR,
       expectedCalendarCreatedAt: 2_000,
       expectedCalendarEventId: "b".repeat(64),
+      expectedPickupCoordinate: ORGANIZER_PICKUP,
       expectedPickupCreatedAt: 3_000,
       expectedPickupEventId: "c".repeat(64),
       replaceExpectedRecordFrontiers: true,

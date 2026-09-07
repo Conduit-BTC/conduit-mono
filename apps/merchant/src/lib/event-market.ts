@@ -668,13 +668,24 @@ export function organizerEventMarketReferenceWithDeliveryRelayHints(
   delivery: MerchantOrganizerRecordDelivery
 ): string {
   const parsed = parseOrganizerEventMarketReference(reference)
+  const acknowledgedRelayUrls = normalizeSecureOrIsolatedE2eRelayUrls(
+    delivery.acknowledgedRelayUrls ?? []
+  )
+  const existingRelayKeys = new Set(
+    parsed.relayHints.map((relayUrl) => relayUrl.trim().toLowerCase())
+  )
+  const expandsRelayHints = acknowledgedRelayUrls.some(
+    (relayUrl) => !existingRelayKeys.has(relayUrl.trim().toLowerCase())
+  )
   return encodeEventMarketNaddr(
     parsed.coordinate,
-    boundedEventMarketShareRelayHints([
-      parsed.relayHints.slice(0, 3),
-      delivery.acknowledgedRelayUrls,
-      parsed.relayHints.slice(3),
-    ])
+    expandsRelayHints
+      ? boundedEventMarketShareRelayHints([
+          parsed.relayHints.slice(0, 3),
+          acknowledgedRelayUrls,
+          parsed.relayHints.slice(3),
+        ])
+      : parsed.relayHints
   )
 }
 
