@@ -42,6 +42,7 @@ import {
   resolveWalletPaymentInstance,
   validateAddressConsistency,
   useAuth,
+  useConduitSession,
   useProfile,
   type AddressValidityResult,
   type CommercePriceLike,
@@ -988,6 +989,7 @@ function OrderSummary({
 // ─── Checkout page ────────────────────────────────────────────────────────────
 
 function CheckoutPage() {
+  const session = useConduitSession()
   const {
     pubkey,
     restorePendingPubkey,
@@ -1319,13 +1321,15 @@ function CheckoutPage() {
   const organizerInboxQuery = useQuery({
     queryKey: [
       "event-market-organizer-inbox",
+      session.relayScope ?? "no-relay-scope",
       pickupHandoff?.mode === "organizer_handoff"
         ? pickupHandoff.handlerPubkey
         : "not-required",
     ],
     queryFn: () =>
       resolveEventMarketOrganizerInbox(pickupHandoff!.handlerPubkey),
-    enabled: pickupHandoff?.mode === "organizer_handoff",
+    enabled:
+      session.relaySettingsReady && pickupHandoff?.mode === "organizer_handoff",
     staleTime: 0,
     refetchOnMount: "always",
     retry: false,
@@ -1371,7 +1375,9 @@ function CheckoutPage() {
     eventPickupChecking: checkoutEventFulfillment.isChecking,
     organizerInboxChecking:
       pickupHandoff?.mode === "organizer_handoff" &&
-      (organizerInboxQuery.isLoading || organizerInboxQuery.isFetching),
+      (!session.relaySettingsReady ||
+        organizerInboxQuery.isLoading ||
+        organizerInboxQuery.isFetching),
   })
   const checkoutEvidenceIsChecking = checkoutEvidenceCheckingLabel !== null
   const hasUnavailableCheckoutItems = checkoutAvailabilityMessage !== null

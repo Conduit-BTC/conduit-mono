@@ -15,11 +15,52 @@ export interface ResolveConduitSessionInput {
   allowGuest?: boolean
 }
 
+export interface ConduitRelaySettingsReadinessInput {
+  mode: ConduitSessionMode
+  identityReady: boolean
+  localAuthorityReady: boolean
+  relayScope: string | null
+  activatedRelayScope: string | null
+}
+
+/**
+ * Local retained authority must be installed before a signed-in scope becomes
+ * ready. Fresh relay reconciliation is then a background refresh rather than
+ * an app-readiness gate.
+ */
+export function isConduitRelaySettingsReady(
+  input: ConduitRelaySettingsReadinessInput
+): boolean {
+  return (
+    input.identityReady &&
+    (input.mode === "guest" || input.localAuthorityReady) &&
+    input.activatedRelayScope === input.relayScope &&
+    !!(input.relayScope || input.mode === "guest")
+  )
+}
+
+export function getAccountRelayScope(pubkey: string): string {
+  return `account:${pubkey.trim().toLowerCase()}`
+}
+
+export function shouldCloseProtectedConnectionsForScopeTransition(
+  activeScope: string | null,
+  nextScope: string | null
+): boolean {
+  return activeScope !== null && activeScope !== nextScope
+}
+
 export function getSignedInRelayScope(
-  appId: ConduitAppId,
+  _appId: ConduitAppId,
   pubkey: string
 ): string {
-  return `${appId}:${pubkey}`
+  return getAccountRelayScope(pubkey)
+}
+
+/** App-scoped keys used before signed Network preferences became account-wide. */
+export function getLegacySignedInRelayScopes(pubkey: string): string[] {
+  const normalized = pubkey.trim().toLowerCase()
+  return [`market:${normalized}`, `merchant:${normalized}`]
 }
 
 export function getGuestRelayScope(appId: ConduitAppId): string | null {
