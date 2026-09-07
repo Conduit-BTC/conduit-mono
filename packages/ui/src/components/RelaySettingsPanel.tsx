@@ -14,6 +14,7 @@ import {
   Plus,
   RefreshCw,
   RotateCcw,
+  Store,
   Trash2,
   Upload,
 } from "lucide-react"
@@ -31,7 +32,6 @@ import {
   type AccountNetworkSettingsOperationPhase,
 } from "@conduit/core"
 import { cn } from "../utils"
-import { Badge } from "./Badge"
 import { Button } from "./Button"
 import {
   AlertDialog,
@@ -210,100 +210,148 @@ function RoleToggle({
   )
 }
 
-type CapabilityBadgeVariant =
-  "secondary" | "success" | "outline" | "warning" | "destructive"
-
-interface CapabilityBadgeDescriptor {
-  label: string
-  variant: CapabilityBadgeVariant
-  title?: string
+function reachabilityLabel(
+  reachability: AccountNetworkRelayRowView["reachability"]
+): string {
+  if (reachability === "responded") return "Responded on the latest refresh"
+  if (reachability === "issue") return "Recent connection issue"
+  return "Not checked on the latest refresh"
 }
 
-function capabilityBadgeDescriptors(
-  row: AccountNetworkRelayRowView
-): CapabilityBadgeDescriptor[] {
-  const capability = row.capability
-  const badges: CapabilityBadgeDescriptor[] = []
-  if (capability.configuredCommerce) {
-    badges.push({
-      label: "Commerce configured",
-      variant: "secondary",
-      title:
-        "Conduit's versioned configuration identifies this relay for commerce. This is not a live check.",
-    })
-  }
-  if (capability.observedCommerce) {
-    badges.push({
-      label: "Commerce observed",
-      variant: "success",
-      title:
-        "A scoped prior commerce operation recorded supporting evidence. It does not prove universal availability.",
-    })
-  }
-  if (capability.nip11 === "advertised") {
-    badges.push({
-      label: "NIP-11 metadata observed",
-      variant: "outline",
-      title:
-        "A NIP-11 relay information document was observed. Metadata is not a health check.",
-    })
-  } else if (capability.nip11 === "unavailable") {
-    badges.push({
-      label: "NIP-11 metadata unavailable",
-      variant: "warning",
-      title:
-        "The latest bounded metadata request did not return usable NIP-11 information. Relay health was not tested.",
-    })
-  } else {
-    badges.push({
-      label: "Metadata not checked",
-      variant: "outline",
-      title: "No NIP-11 metadata request is recorded.",
-    })
-  }
-  if (capability.searchAdvertised) {
-    badges.push({
-      label: "Search advertised",
-      variant: "outline",
-      title: "The relay information document advertises NIP-50 search support.",
-    })
-  }
-  const authBadge: Record<
-    AccountNetworkRelayRowView["capability"]["authEvidence"],
-    CapabilityBadgeDescriptor
-  > = {
-    advertised: {
-      label: "Auth advertised",
-      variant: "outline",
-      title:
-        "NIP-11 metadata advertises authentication. No successful authentication is implied.",
-    },
-    challenge_observed: {
-      label: "Auth challenge observed",
-      variant: "outline",
-    },
-    succeeded: { label: "Auth succeeded", variant: "success" },
-    rejected: { label: "Auth rejected", variant: "destructive" },
-    unavailable: { label: "Auth unavailable", variant: "warning" },
-    untested: { label: "Auth untested", variant: "outline" },
-  }
-  badges.push(authBadge[capability.authEvidence])
-  return badges
+function reachabilityDotClassName(
+  reachability: AccountNetworkRelayRowView["reachability"]
+): string {
+  if (reachability === "responded") return "bg-success"
+  if (reachability === "issue") return "bg-warning"
+  return "bg-[var(--text-muted)]"
 }
 
-function CapabilityBadges({ row }: { row: AccountNetworkRelayRowView }) {
-  const badges = capabilityBadgeDescriptors(row)
+function RelayIndicator({ row }: { row: AccountNetworkRelayRowView }) {
+  const commerce =
+    row.capability.configuredCommerce || row.capability.observedCommerce
+  const status = reachabilityLabel(row.reachability)
   return (
-    <div
-      className="flex flex-wrap gap-1.5"
-      aria-label={`Evidence for ${row.url}`}
+    <span
+      role="img"
+      aria-label={commerce ? `Commerce relay. ${status}.` : `${status}.`}
+      title={commerce ? `Commerce relay · ${status}` : status}
+      className={cn(
+        "relative flex size-8 shrink-0 items-center justify-center rounded-full",
+        commerce &&
+          "bg-[color-mix(in_srgb,var(--primary-500)_12%,transparent)] text-[var(--primary-500)]"
+      )}
     >
-      {badges.map((badge) => (
-        <Badge key={badge.label} variant={badge.variant} title={badge.title}>
-          {badge.label}
-        </Badge>
-      ))}
-    </div>
+      {commerce ? (
+        <>
+          <Store className="size-4" aria-hidden="true" />
+          <span
+            aria-hidden="true"
+            className={cn(
+              "absolute bottom-0 right-0 size-2.5 rounded-full border-2 border-[var(--surface)]",
+              reachabilityDotClassName(row.reachability)
+            )}
+          />
+        </>
+      ) : (
+        <span
+          aria-hidden="true"
+          className={cn(
+            "size-3 rounded-full",
+            reachabilityDotClassName(row.reachability)
+          )}
+        />
+      )}
+    </span>
+  )
+}
+
+function authEvidenceLabel(
+  evidence: AccountNetworkRelayRowView["capability"]["authEvidence"]
+): string {
+  switch (evidence) {
+    case "advertised":
+      return "Advertised"
+    case "challenge_observed":
+      return "Challenge observed"
+    case "succeeded":
+      return "Succeeded"
+    case "rejected":
+      return "Rejected"
+    case "unavailable":
+      return "Unavailable"
+    default:
+      return "Not tested"
+  }
+}
+
+function commerceEvidenceLabel(row: AccountNetworkRelayRowView): string {
+  if (row.capability.configuredCommerce) return "Conduit commerce relay"
+  if (row.capability.observedCommerce) return "Commerce support observed"
+  return "No commerce evidence recorded"
+}
+
+function relayInformationLabel(row: AccountNetworkRelayRowView): string {
+  if (row.capability.nip11 === "advertised") {
+    return row.capability.observedAt
+      ? `Observed ${formatObservationTime(row.capability.observedAt)}`
+      : "Observed"
+  }
+  if (row.capability.nip11 === "unavailable") {
+    return "Unavailable on the last check"
+  }
+  return "Not checked"
+}
+
+function RelayDetails({ row }: { row: AccountNetworkRelayRowView }) {
+  return (
+    <details className="ml-10 mt-3 border-t border-[var(--border)] pt-2">
+      <summary className="w-fit cursor-pointer text-sm font-medium text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500">
+        Relay details
+        <span className="sr-only"> for {row.url}</span>
+      </summary>
+      <dl className="mt-3 grid gap-x-6 gap-y-3 text-xs sm:grid-cols-2 lg:grid-cols-3">
+        <div>
+          <dt className="text-[var(--text-muted)]">Latest refresh</dt>
+          <dd className="mt-0.5 text-[var(--text-primary)]">
+            {reachabilityLabel(row.reachability)}
+          </dd>
+        </div>
+        {row.capability.relayName ? (
+          <div>
+            <dt className="text-[var(--text-muted)]">Relay name</dt>
+            <dd className="mt-0.5 text-[var(--text-primary)]">
+              {row.capability.relayName}
+            </dd>
+          </div>
+        ) : null}
+        <div>
+          <dt className="text-[var(--text-muted)]">Commerce</dt>
+          <dd className="mt-0.5 text-[var(--text-primary)]">
+            {commerceEvidenceLabel(row)}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-[var(--text-muted)]">Authentication</dt>
+          <dd className="mt-0.5 text-[var(--text-primary)]">
+            {authEvidenceLabel(row.capability.authEvidence)}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-[var(--text-muted)]">Search</dt>
+          <dd className="mt-0.5 text-[var(--text-primary)]">
+            {row.capability.searchAdvertised
+              ? "Advertised"
+              : "No support observed"}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-[var(--text-muted)]">Relay information</dt>
+          <dd className="mt-0.5 text-[var(--text-primary)]">
+            {relayInformationLabel(row)}
+          </dd>
+        </div>
+      </dl>
+    </details>
   )
 }
 
@@ -312,24 +360,18 @@ function RelayRow({
   edited,
   mutationDisabled,
   operationBusy,
-  metadataDisabled,
   wholeSetupRemoval,
   inboxCount,
-  refreshing,
   onToggle,
-  onRefresh,
   onRemove,
 }: {
   row: AccountNetworkRelayRowView
   edited: boolean
   mutationDisabled: boolean
   operationBusy: boolean
-  metadataDisabled: boolean
   wholeSetupRemoval: boolean
   inboxCount: number
-  refreshing: boolean
   onToggle: (role: AccountNetworkRole, trigger: HTMLButtonElement) => void
-  onRefresh: () => void
   onRemove: (trigger: HTMLButtonElement) => void
 }) {
   const pending =
@@ -338,42 +380,39 @@ function RelayRow({
     row.privateInboxState === "pending"
   const draft =
     row.candidate || row.readState === "draft" || row.publishState === "draft"
+  const stateLabel = pending
+    ? "Publishing"
+    : draft
+      ? "New"
+      : edited
+        ? "Edited"
+        : null
   return (
     <li className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
-        <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <span
-              className="min-w-0 truncate font-mono text-sm text-[var(--text-primary)]"
-              title={row.url}
-            >
-              {row.url}
-            </span>
-            {pending ? (
-              <StatusPill variant="warning" noIcon>
-                Pending confirmation
-              </StatusPill>
-            ) : draft ? (
-              <StatusPill variant="neutral" noIcon>
-                Unpublished candidate
-              </StatusPill>
-            ) : edited ? (
-              <StatusPill variant="warning" noIcon>
-                Edited
-              </StatusPill>
-            ) : (
-              <StatusPill variant="success" noIcon>
-                Signed
-              </StatusPill>
-            )}
-          </div>
-          {row.capability.relayName ? (
-            <p className="mt-1 truncate text-xs text-[var(--text-muted)]">
-              {row.capability.relayName}
-            </p>
-          ) : null}
-          <div className="mt-2">
-            <CapabilityBadges row={row} />
+        <div className="flex min-w-0 flex-1 items-start gap-2">
+          <RelayIndicator row={row} />
+          <div className="min-w-0 pt-1.5">
+            <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
+              <span
+                className="min-w-0 truncate font-mono text-sm text-[var(--text-primary)]"
+                title={row.url}
+              >
+                {row.url}
+              </span>
+              {stateLabel ? (
+                <span
+                  className={cn(
+                    "text-xs font-medium",
+                    pending || edited
+                      ? "text-warning"
+                      : "text-[var(--text-muted)]"
+                  )}
+                >
+                  {stateLabel}
+                </span>
+              ) : null}
+            </div>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2 lg:max-w-[23rem] lg:justify-end">
@@ -396,23 +435,6 @@ function RelayRow({
             type="button"
             variant="outline"
             size="icon"
-            aria-label={`Refresh relay info for ${row.url}`}
-            title="Refresh relay info"
-            disabled={metadataDisabled || refreshing}
-            onClick={onRefresh}
-          >
-            <RefreshCw
-              className={cn(
-                "size-4",
-                refreshing && "animate-spin motion-reduce:animate-none"
-              )}
-              aria-hidden="true"
-            />
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="icon"
             aria-label={
               wholeSetupRemoval
                 ? `Remove ${row.url} from my whole setup`
@@ -430,36 +452,39 @@ function RelayRow({
           </Button>
         </div>
       </div>
+      <RelayDetails row={row} />
     </li>
   )
 }
 
-function coverageLabel(coverage: string): string {
-  if (coverage === "complete") return "Complete bounded check"
-  if (coverage === "partial") return "Partial check"
-  if (coverage === "unavailable") return "Check unavailable"
-  return "Not checked"
+function frontierExceptionMessage(
+  frontier: AccountNetworkFrontierView
+): string | null {
+  if (frontier.state === "distribution_pending") {
+    return "Publishing is still in progress."
+  }
+  if (frontier.state === "signed_empty") {
+    return "The published preference is empty."
+  }
+  if (frontier.state === "malformed") {
+    return "The published preference needs repair."
+  }
+  if (frontier.eventCreatedAt !== null) return null
+  if (frontier.state === "lookup_unavailable") {
+    return "This preference could not be refreshed."
+  }
+  if (frontier.state === "lookup_partial") {
+    return "No preference was found in the relay responses received."
+  }
+  if (frontier.state === "not_observed") {
+    return "No published preference found."
+  }
+  return "Not checked yet."
 }
 
-function stateLabel(state: string): string {
-  switch (state) {
-    case "declared":
-      return "Signed preferences found"
-    case "distribution_pending":
-      return "Signed update pending"
-    case "signed_empty":
-      return "Signed empty preference"
-    case "malformed":
-      return "Signed preference unusable"
-    case "not_observed":
-      return "Not observed in this bounded check"
-    case "lookup_partial":
-      return "Partial check"
-    case "lookup_unavailable":
-      return "Check unavailable"
-    default:
-      return "Not checked"
-  }
+function observedSourceLabel(sourceRelayCount: number): string {
+  if (sourceRelayCount === 0) return "Source not recorded"
+  return `Seen on ${sourceRelayCount} relay${sourceRelayCount === 1 ? "" : "s"}`
 }
 
 function PublishedRelayPreference({
@@ -469,64 +494,30 @@ function PublishedRelayPreference({
   label: string
   frontier: AccountNetworkFrontierView
 }) {
+  const exceptionMessage = frontierExceptionMessage(frontier)
   return (
     <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-3">
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h3 className="text-sm font-semibold text-[var(--text-primary)]">
-          {label}
-        </h3>
-        <span
-          className={cn(
-            "text-xs",
-            frontier.stale ||
-              frontier.coverage === "partial" ||
-              frontier.coverage === "unavailable"
-              ? "text-warning"
-              : "text-[var(--text-secondary)]"
-          )}
-        >
-          {stateLabel(frontier.state)}
-        </span>
-      </div>
-      <dl className="mt-3 grid gap-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
-        <div>
-          <dt className="text-[var(--text-muted)]">Signed revision</dt>
-          <dd className="mt-0.5 tabular-nums text-[var(--text-primary)]">
-            {formatEventTime(frontier.eventCreatedAt)}
-          </dd>
-        </div>
-        <div>
-          <dt className="text-[var(--text-muted)]">Last observed</dt>
-          <dd className="mt-0.5 tabular-nums text-[var(--text-primary)]">
-            {formatObservationTime(frontier.observedAt)}
-          </dd>
-        </div>
-        <div>
-          <dt className="text-[var(--text-muted)]">Observed sources</dt>
-          <dd className="mt-0.5 tabular-nums text-[var(--text-primary)]">
-            {frontier.sourceRelayCount} relay
-            {frontier.sourceRelayCount === 1 ? "" : "s"}
-          </dd>
-        </div>
-        <div>
-          <dt className="text-[var(--text-muted)]">Lookup coverage</dt>
-          <dd className="mt-0.5 text-[var(--text-primary)]">
-            {coverageLabel(frontier.coverage)}
-          </dd>
-        </div>
-      </dl>
-      {frontier.stale ? (
-        <p className="mt-3 text-pretty text-xs leading-5 text-warning">
-          Retained signed evidence is stale. A fresh bounded check has not
-          confirmed this preference.
-        </p>
-      ) : frontier.completeObservedAt ? (
-        <p className="mt-3 text-pretty text-xs leading-5 text-[var(--text-muted)]">
-          Last completely observed{" "}
+      <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+        {label}
+      </h3>
+      {frontier.eventCreatedAt !== null ? (
+        <p className="mt-1 flex flex-wrap gap-x-2 text-pretty text-xs leading-5 text-[var(--text-secondary)]">
           <span className="tabular-nums">
-            {formatObservationTime(frontier.completeObservedAt)}
+            Published {formatEventTime(frontier.eventCreatedAt)}
           </span>
-          .
+          {frontier.observedAt !== null ? (
+            <span className="tabular-nums">
+              Last seen {formatObservationTime(frontier.observedAt)}
+            </span>
+          ) : null}
+          <span className="tabular-nums">
+            {observedSourceLabel(frontier.sourceRelayCount)}
+          </span>
+        </p>
+      ) : null}
+      {exceptionMessage ? (
+        <p className="mt-1 text-pretty text-xs leading-5 text-[var(--text-secondary)]">
+          {exceptionMessage}
         </p>
       ) : null}
     </div>
@@ -544,14 +535,10 @@ function PublishedRelayPreferences({
     <div>
       <details className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 sm:p-4">
         <summary className="cursor-pointer text-sm font-semibold text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500">
-          Last observed published preferences
+          Published preferences
         </summary>
         <div className="mt-3">
-          <p className="text-pretty text-sm leading-6 text-[var(--text-secondary)]">
-            Read and Publish and Private inbox are separate signed preferences.
-            Partial results are not treated as absence.
-          </p>
-          <div className="mt-3 grid gap-3">
+          <div className="grid gap-3">
             <PublishedRelayPreference
               label="Read and Publish"
               frontier={view.relayList}
@@ -870,7 +857,6 @@ function useRelaySettingsReview(
   const [newRelayUrl, setNewRelayUrl] = useState("")
   const [addError, setAddError] = useState<string | null>(null)
   const [isAdding, setIsAdding] = useState(false)
-  const [refreshingUrl, setRefreshingUrl] = useState<string | null>(null)
   const [relayPendingRemoval, setRelayPendingRemoval] = useState<string | null>(
     null
   )
@@ -895,6 +881,7 @@ function useRelaySettingsReview(
           ? {
               ...row,
               signedPosition: current?.signedPosition ?? row.signedPosition,
+              reachability: current?.reachability ?? row.reachability,
               capability: capability ?? current?.capability ?? row.capability,
             }
           : row
@@ -1054,29 +1041,6 @@ function useRelaySettingsReview(
     }
   }
 
-  async function refreshRelay(row: AccountNetworkRelayRowView): Promise<void> {
-    setRefreshingUrl(row.url)
-    setLocalActionError(null)
-    try {
-      const refreshed = await controller.refreshRelay(row)
-      setRows((current) =>
-        orderAccountNetworkRelayRows(
-          current.map((candidate) =>
-            candidate.url === row.url ? refreshed : candidate
-          )
-        )
-      )
-    } catch (error) {
-      setLocalActionError(
-        error instanceof Error
-          ? error.message
-          : "Unable to refresh advertised metadata."
-      )
-    } finally {
-      setRefreshingUrl(null)
-    }
-  }
-
   function requestRelayRemoval(
     row: AccountNetworkRelayRowView,
     trigger: HTMLButtonElement
@@ -1152,7 +1116,6 @@ function useRelaySettingsReview(
     addError,
     localActionError,
     isAdding,
-    refreshingUrl,
     relayPendingRemoval,
     removalTriggerRef,
     publishButtonRef,
@@ -1174,7 +1137,6 @@ function useRelaySettingsReview(
     setNewRelayUrl,
     toggleRole,
     addRelay,
-    refreshRelay,
     requestRelayRemoval,
     requestPublish,
     closePublishDialog,
@@ -1259,9 +1221,7 @@ function AddRelaySection({ review }: { review: RelaySettingsReview }) {
         <Input
           id="account-network-relay-url"
           aria-describedby={
-            review.addError
-              ? "account-network-relay-help account-network-relay-error"
-              : "account-network-relay-help"
+            review.addError ? "account-network-relay-error" : undefined
           }
           aria-invalid={review.addError ? true : undefined}
           value={review.newRelayUrl}
@@ -1280,16 +1240,9 @@ function AddRelaySection({ review }: { review: RelaySettingsReview }) {
           className="h-11 shrink-0"
         >
           <Plus className="size-4" aria-hidden="true" />
-          {review.isAdding ? "Reading metadata" : "Add relay"}
+          {review.isAdding ? "Adding" : "Add relay"}
         </Button>
       </div>
-      <p
-        id="account-network-relay-help"
-        className="mt-2 text-pretty text-xs leading-5 text-[var(--text-muted)]"
-      >
-        Adding a relay only reads its advertised metadata. It remains an
-        unpublished candidate until you choose roles and publish the change.
-      </p>
       {review.addError ? (
         <p
           id="account-network-relay-error"
@@ -1315,23 +1268,19 @@ function RelayListSection({ review }: { review: RelaySettingsReview }) {
               edited={review.editedRelayUrls.has(row.url)}
               mutationDisabled={!review.mutationReady}
               operationBusy={review.busy}
-              metadataDisabled={!review.metadataReady}
               wholeSetupRemoval={review.wholeSetupRelayUrls.has(row.url)}
               inboxCount={review.inboxCount}
-              refreshing={review.refreshingUrl === row.url}
               onToggle={(role, trigger) =>
                 review.toggleRole(row.url, role, trigger)
               }
-              onRefresh={() => void review.refreshRelay(row)}
               onRemove={(trigger) => review.requestRelayRemoval(row, trigger)}
             />
           ))}
         </ul>
       ) : (
         <div className="py-4 text-pretty text-sm leading-6 text-[var(--text-secondary)]">
-          No signed relay membership was observed in this bounded check. Add at
-          least two relays, including one Private inbox, to prepare a safe
-          account setup.
+          No relay preferences were found. Add at least two relays, including
+          one Private inbox, to prepare your account setup.
         </div>
       )}
     </div>
@@ -1410,7 +1359,7 @@ function NetworkReviewSection({
               </p>
               <p className="mt-1 max-w-xl text-pretty text-xs leading-5 text-[var(--text-muted)]">
                 {review.hasUnpublishedChanges
-                  ? "Publish or discard these relay edits before refreshing signed preferences or leaving this page."
+                  ? "Publish or discard these relay edits before refreshing or leaving this page."
                   : "Edit a relay role or add a relay to prepare an update."}
               </p>
             </div>
@@ -1536,7 +1485,7 @@ function RelayPreferencesSection({
     <PreferenceSectionCard
       headingId="relay-list-heading"
       title="Relays"
-      description="Each relay appears once. Conduit orders the list automatically from configured, observed, and advertised evidence."
+      description="Choose which relays Conduit uses to read, publish, and receive private messages."
       aria-busy={checking || undefined}
       headerAction={
         <Button
@@ -1546,7 +1495,7 @@ function RelayPreferencesSection({
           disabled={refreshDisabled}
           title={
             review.hasUnpublishedChanges
-              ? "Publish or discard your relay edits before refreshing signed preferences."
+              ? "Publish or discard your relay edits before refreshing."
               : undefined
           }
           onClick={controller.retryReconciliation}

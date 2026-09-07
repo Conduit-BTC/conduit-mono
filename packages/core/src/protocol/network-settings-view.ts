@@ -16,6 +16,8 @@ import type { RelayAuthEvidenceState } from "./relay-executor"
 import { EVENT_KINDS } from "./kinds"
 
 export type AccountNetworkRole = "read" | "publish" | "private_inbox"
+export type AccountNetworkRelayReachability =
+  "responded" | "issue" | "not_checked"
 
 export interface AccountNetworkRelayCapabilityView {
   configuredCommerce: boolean
@@ -37,6 +39,7 @@ export interface AccountNetworkRelayRowView {
   privateInboxState: "published" | "pending" | "draft" | null
   signedPosition: number | null
   candidate: boolean
+  reachability: AccountNetworkRelayReachability
   capability: AccountNetworkRelayCapabilityView
 }
 
@@ -46,7 +49,6 @@ export interface AccountNetworkFrontierView {
   coverage: "complete" | "partial" | "unavailable" | "not_checked"
   eventCreatedAt: number | null
   observedAt: number | null
-  completeObservedAt: number | null
   sourceRelayCount: number
 }
 
@@ -244,35 +246,52 @@ function sourceRelayCount(urls: readonly string[] | undefined): number {
   return new Set(urls ?? []).size
 }
 
-function inboxObservationTimes(
+function inboxObservedAt(
   reconciliation: AccountNetworkPreferencesReconciliation | null
-): Pick<AccountNetworkFrontierView, "observedAt" | "completeObservedAt"> {
+): number | null {
   const inbox = reconciliation?.inboxDeclaration
-  if (!inbox?.eventId) {
-    return { observedAt: null, completeObservedAt: null }
-  }
+  if (!inbox?.eventId) return null
 
   const observationMatchesFrontier =
     inbox.observation?.eventId === inbox.eventId
-  if (observationMatchesFrontier) {
-    return {
-      observedAt: inbox.fetchedAt,
-      completeObservedAt:
-        inbox.observation?.coverage === "complete" ? inbox.fetchedAt : null,
-    }
-  }
+  if (observationMatchesFrontier) return inbox.fetchedAt
 
   // A non-stale retained resolution means the bounded complete lookup still
   // confirms this exact signed frontier. A failed later lookup also updates
   // fetchedAt, so never present that timestamp as an event observation.
   if (!inbox.observation && !inbox.stale && inbox.sourceRelayUrls?.length) {
-    return {
-      observedAt: inbox.fetchedAt,
-      completeObservedAt: inbox.fetchedAt,
-    }
+    return inbox.fetchedAt
   }
 
-  return { observedAt: null, completeObservedAt: null }
+  return null
+}
+
+function relayReachabilityByUrl(
+  reconciliation: AccountNetworkPreferencesReconciliation | null
+): ReadonlyMap<string, AccountNetworkRelayReachability> {
+  const reachability = new Map<string, AccountNetworkRelayReachability>()
+  const ownerObservation = reconciliation?.ownerRelayList.observation
+  const inboxObservation = reconciliation?.inboxDeclaration.observation
+  const failedRelayUrls = [
+    ...(ownerObservation?.failedRelayUrls ?? []),
+    ...(inboxObservation?.failedRelayUrls ?? []),
+  ]
+  const successfulRelayUrls = [
+    ...(ownerObservation?.successfulRelayUrls ?? []),
+    ...(inboxObservation?.successfulRelayUrls ?? []),
+  ]
+
+  for (const url of failedRelayUrls) {
+    const normalized = tryNormalizeRelayUrl(url)
+    if (normalized.ok) reachability.set(normalized.url, "issue")
+  }
+  // A response from either preference lookup is enough to establish recent
+  // reachability even when the other lookup timed out.
+  for (const url of successfulRelayUrls) {
+    const normalized = tryNormalizeRelayUrl(url)
+    if (normalized.ok) reachability.set(normalized.url, "responded")
+  }
+  return reachability
 }
 
 export function buildAccountNetworkSettingsView(input: {
@@ -309,6 +328,7 @@ export function buildAccountNetworkSettingsView(input: {
     (input.capabilityEntries ?? []).map((entry) => [entry.url, entry])
   )
   const configuredCommerceRelayUrls = normalizedConfiguredCommerceRelayUrls()
+  const relayReachability = relayReachabilityByUrl(reconciliation)
   const rows = new Map<string, AccountNetworkRelayRowView>()
   const ensureRow = (url: string): AccountNetworkRelayRowView => {
     const existing = rows.get(url)
@@ -327,6 +347,7 @@ export function buildAccountNetworkSettingsView(input: {
       privateInboxState: null,
       signedPosition: projected?.position ?? null,
       candidate: true,
+      reachability: relayReachability.get(url) ?? "not_checked",
       capability: capabilityFromEntry(
         url,
         entry,
@@ -457,7 +478,6 @@ export function buildAccountNetworkSettingsView(input: {
   )
   const activeUpdateId =
     activeKinds.size > 0 ? (pending?.updateId ?? null) : null
-  const inboxObservation = inboxObservationTimes(reconciliation)
   const revision = JSON.stringify({
     accountPubkey,
     relayList: {
@@ -502,8 +522,6 @@ export function buildAccountNetworkSettingsView(input: {
       eventCreatedAt:
         reconciliation?.ownerRelayList.current?.signedEvent.created_at ?? null,
       observedAt: reconciliation?.ownerRelayList.current?.observedAt ?? null,
-      completeObservedAt:
-        reconciliation?.ownerRelayList.current?.completeObservedAt ?? null,
       sourceRelayCount: sourceRelayCount(
         reconciliation?.ownerRelayList.current?.sourceRelayUrls
       ),
@@ -513,7 +531,7 @@ export function buildAccountNetworkSettingsView(input: {
       stale: reconciliation?.inboxDeclaration.stale ?? false,
       coverage: coverageFromInbox(reconciliation),
       eventCreatedAt: reconciliation?.inboxDeclaration.eventCreatedAt ?? null,
-      ...inboxObservation,
+      observedAt: inboxObservedAt(reconciliation),
       sourceRelayCount: sourceRelayCount(
         reconciliation?.inboxDeclaration.sourceRelayUrls
       ),
@@ -545,6 +563,7 @@ export function createCandidateNetworkRelayRow(
     privateInboxState: null,
     signedPosition: null,
     candidate: true,
+    reachability: "not_checked",
     capability: capabilityFromEntry(
       entry.url,
       entry,

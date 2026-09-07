@@ -456,6 +456,21 @@ test.describe("CND-162 mobile browser baseline", () => {
     await page.keyboard.press("Space")
     await expect(readRole).toHaveAttribute("aria-pressed", "true")
 
+    await expect(
+      page.getByRole("img", { name: /Commerce relay\./ })
+    ).toBeVisible()
+    await expect(
+      page.getByRole("button", { name: /Refresh relay info/ })
+    ).toHaveCount(0)
+    await page
+      .locator("summary")
+      .filter({ hasText: "Relay details" })
+      .first()
+      .click()
+    await expect(
+      page.getByText("Latest refresh", { exact: true })
+    ).toBeVisible()
+
     const removeRelay = page.getByRole("button", {
       name: `Remove ${TEST_RELAY_URL} from my whole setup`,
     })
@@ -477,19 +492,23 @@ test.describe("CND-162 mobile browser baseline", () => {
     await expect(removeRelay).toBeFocused()
 
     const mediaServers = page.getByRole("region", { name: "Media servers" })
-    const mediaStatusPill = mediaServers.getByText("No list observed", {
+    const publishedPreference = mediaServers.getByText("Published preference", {
       exact: true,
     })
-    await expect(mediaStatusPill).toBeVisible({ timeout: 20_000 })
+    await expect(publishedPreference).toBeVisible({ timeout: 20_000 })
+    await publishedPreference.click()
+    await expect(
+      mediaServers.getByText("No published preference found.", { exact: true })
+    ).toBeVisible({ timeout: 20_000 })
 
-    const [sectionBox, mediaPillBox] = await Promise.all([
+    const [sectionBox, publishedPreferenceBox] = await Promise.all([
       mediaServers.boundingBox(),
-      mediaStatusPill.boundingBox(),
+      publishedPreference.boundingBox(),
     ])
     expect(sectionBox).not.toBeNull()
-    expect(mediaPillBox).not.toBeNull()
-    expect(mediaPillBox!.width).toBeLessThan(sectionBox!.width * 0.75)
-    expect(mediaPillBox!.height).toBeLessThanOrEqual(32)
+    expect(publishedPreferenceBox).not.toBeNull()
+    expect(publishedPreferenceBox!.width).toBeLessThan(sectionBox!.width * 0.75)
+    expect(publishedPreferenceBox!.height).toBeLessThanOrEqual(32)
     await captureNetworkEvidence(
       page,
       `market-network-${testInfo.project.name}`

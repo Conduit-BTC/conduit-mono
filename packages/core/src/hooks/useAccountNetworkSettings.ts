@@ -86,9 +86,6 @@ export interface AccountNetworkSettingsController {
   exactInboxRedistributionAvailable: boolean
   mediaServers: AccountNetworkMediaServerController | null
   addRelay: (url: string) => Promise<AccountNetworkRelayRowView>
-  refreshRelay: (
-    row: AccountNetworkRelayRowView
-  ) => Promise<AccountNetworkRelayRowView>
   save: (rows: readonly AccountNetworkDesiredRelayRoles[]) => Promise<void>
   removeRelay: (relayUrl: string) => Promise<void>
   retryPendingUpdate: () => Promise<void>
@@ -514,30 +511,6 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
     [auth.pubkey, session.relayScope, view.rows]
   )
 
-  const refreshRelay = useCallback(
-    async (
-      row: AccountNetworkRelayRowView
-    ): Promise<AccountNetworkRelayRowView> => {
-      const existing = capabilityEntries[row.url]
-      const entry = await scanRelaySettingsEntry(row.url, {}, existing)
-      setCapabilityEvidence((current) =>
-        current.scope === session.relayScope
-          ? { ...current, entries: { ...current.entries, [entry.url]: entry } }
-          : current
-      )
-      return {
-        ...row,
-        capability: createCandidateNetworkRelayRow(
-          entry,
-          auth.pubkey
-            ? getRelayAuthenticationEvidence(entry.url, auth.pubkey)
-            : undefined
-        ).capability,
-      }
-    },
-    [auth.pubkey, capabilityEntries, session.relayScope]
-  )
-
   return {
     view,
     operation,
@@ -557,7 +530,6 @@ export function useAccountNetworkSettings(): AccountNetworkSettingsController {
         }
       : null,
     addRelay,
-    refreshRelay,
     save,
     removeRelay,
     retryPendingUpdate,

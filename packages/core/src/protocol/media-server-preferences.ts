@@ -1,5 +1,8 @@
 import { kinds, type Filter } from "nostr-tools"
-import { normalizePublicHttpsUrl } from "../network-target-safety"
+import {
+  isPublicNetworkHostname,
+  normalizePublicHttpsUrl,
+} from "../network-target-safety"
 import { getRelayLists } from "./relay-list"
 import {
   fetchSignedEventsFanoutDetailed,
@@ -273,6 +276,90 @@ export function normalizeMediaServerPreferenceOwner(owner: string): string {
   return normalized
 }
 
+export type BlossomServerRootValidationError =
+  | "empty"
+  | "invalid"
+  | "whitespace"
+  | "https_required"
+  | "credentials"
+  | "origin_only"
+  | "public_required"
+
+export type BlossomServerRootValidationResult =
+  | { ok: true; url: string }
+  | {
+      ok: false
+      error: BlossomServerRootValidationError
+      message: string
+    }
+
+/** Validate one user-entered Blossom root and return a useful form error. */
+export function validateBlossomServerRoot(
+  raw: unknown
+): BlossomServerRootValidationResult {
+  if (typeof raw !== "string" || !raw) {
+    return {
+      ok: false,
+      error: "empty",
+      message: "Enter a media server address.",
+    }
+  }
+  if (raw !== raw.trim()) {
+    return {
+      ok: false,
+      error: "whitespace",
+      message: "Remove spaces before or after the address.",
+    }
+  }
+
+  try {
+    const url = new URL(raw)
+    if (url.protocol !== "https:") {
+      return {
+        ok: false,
+        error: "https_required",
+        message: "Use an https:// address.",
+      }
+    }
+    if (url.username || url.password) {
+      return {
+        ok: false,
+        error: "credentials",
+        message: "Remove the username or password from this address.",
+      }
+    }
+    if (url.pathname !== "/" || url.search || url.hash) {
+      return {
+        ok: false,
+        error: "origin_only",
+        message:
+          "Enter the server's base address, such as https://media.your-domain.com.",
+      }
+    }
+    if (!isPublicNetworkHostname(url.hostname)) {
+      return {
+        ok: false,
+        error: "public_required",
+        message: "Use a publicly reachable media server.",
+      }
+    }
+    const normalized = normalizeBlossomServerRoot(raw)
+    return normalized
+      ? { ok: true, url: normalized }
+      : {
+          ok: false,
+          error: "invalid",
+          message: "Enter a valid media server address.",
+        }
+  } catch {
+    return {
+      ok: false,
+      error: "invalid",
+      message: "Enter a valid media server address.",
+    }
+  }
+}
+
 /** Return one canonical public HTTPS origin, without a trailing slash. */
 export function normalizeBlossomServerRoot(raw: unknown): string | null {
   const safe = normalizePublicHttpsUrl(raw)
@@ -343,9 +430,10 @@ export function normalizeMediaServerPreferenceList(
   for (const raw of serverUrls) {
     const serverUrl = normalizeBlossomServerRoot(raw)
     if (!serverUrl) {
+      const result = validateBlossomServerRoot(raw)
       throw new MediaServerPreferencesError(
         "invalid_server",
-        "Enter a public HTTPS server root without credentials, a path, query parameters, or a fragment."
+        result.ok ? "Enter a valid media server address." : result.message
       )
     }
     if (seen.has(serverUrl)) {
@@ -697,13 +785,11 @@ export function addMediaServerPreference(
   current: readonly string[],
   raw: string
 ): string[] {
-  const serverUrl = normalizeBlossomServerRoot(raw)
-  if (!serverUrl) {
-    throw new MediaServerPreferencesError(
-      "invalid_server",
-      "Enter a public HTTPS server root without credentials, a path, query parameters, or a fragment."
-    )
+  const result = validateBlossomServerRoot(raw)
+  if (!result.ok) {
+    throw new MediaServerPreferencesError("invalid_server", result.message)
   }
+  const serverUrl = result.url
   if (current.includes(serverUrl)) {
     throw new MediaServerPreferencesError(
       "duplicate_server",

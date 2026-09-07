@@ -25,6 +25,7 @@ function row(
     privateInboxState: null,
     signedPosition: 0,
     candidate: false,
+    reachability: "not_checked",
     capability: {
       configuredCommerce: false,
       observedCommerce: false,
@@ -341,7 +342,6 @@ describe("account Network settings view", () => {
       coverage: "partial",
       eventCreatedAt: 101,
       observedAt: 202_000,
-      completeObservedAt: 201_000,
       sourceRelayCount: 2,
     })
     expect(view.inbox).toEqual({
@@ -350,7 +350,6 @@ describe("account Network settings view", () => {
       coverage: "partial",
       eventCreatedAt: 303,
       observedAt: 404_000,
-      completeObservedAt: null,
       sourceRelayCount: 2,
     })
   })
@@ -382,7 +381,6 @@ describe("account Network settings view", () => {
     expect(view.inbox).toMatchObject({
       eventCreatedAt: 505,
       observedAt: null,
-      completeObservedAt: null,
       sourceRelayCount: 1,
     })
   })
@@ -412,8 +410,51 @@ describe("account Network settings view", () => {
     expect(view.inbox).toMatchObject({
       eventCreatedAt: 707,
       observedAt: 808_000,
-      completeObservedAt: 808_000,
       sourceRelayCount: 1,
+    })
+  })
+
+  it("projects passive reachability from the latest preference refresh", () => {
+    const base = reconciliation(null)
+    const withRelayOutcomes = {
+      ...base,
+      ownerRelayList: {
+        ...base.ownerRelayList,
+        observation: {
+          coverage: "partial",
+          attemptedRelayUrls: ["wss://removed.example", "wss://first.example"],
+          successfulRelayUrls: ["wss://first.example"],
+          failedRelayUrls: ["wss://removed.example"],
+          cappedRelayUrls: [],
+          eventSourceRelayUrls: [],
+        },
+      },
+      inboxDeclaration: {
+        ...base.inboxDeclaration,
+        observation: {
+          coverage: "partial",
+          attemptedRelayUrls: ["wss://first.example", "wss://second.example"],
+          successfulRelayUrls: ["wss://second.example"],
+          failedRelayUrls: ["wss://first.example"],
+          eventSourceRelayUrls: [],
+        },
+      },
+    } as unknown as AccountNetworkPreferencesReconciliation
+
+    const view = buildAccountNetworkSettingsView({
+      accountPubkey: "a".repeat(64),
+      status: "ready",
+      reconciliation: withRelayOutcomes,
+      error: null,
+    })
+    const reachability = Object.fromEntries(
+      view.rows.map((entry) => [entry.url, entry.reachability])
+    )
+
+    expect(reachability).toEqual({
+      "wss://first.example": "responded",
+      "wss://removed.example": "issue",
+      "wss://second.example": "responded",
     })
   })
 
@@ -574,6 +615,20 @@ describe("account Network settings view", () => {
         current: { signedEvent: { id: "frontier-b" } },
       },
     } as AccountNetworkPreferencesReconciliation
+    const refreshedEvidence = {
+      ...firstFrontier,
+      ownerRelayList: {
+        ...firstFrontier.ownerRelayList,
+        observation: {
+          coverage: "complete",
+          attemptedRelayUrls: ["wss://first.example"],
+          successfulRelayUrls: ["wss://first.example"],
+          failedRelayUrls: [],
+          cappedRelayUrls: [],
+          eventSourceRelayUrls: [],
+        },
+      },
+    } as AccountNetworkPreferencesReconciliation
     const capabilityEntry = {
       url: "wss://second.example",
       readEnabled: false,
@@ -645,9 +700,20 @@ describe("account Network settings view", () => {
       error: null,
       capabilityEntries: [capabilityEntry],
     })
+    const refreshed = buildAccountNetworkSettingsView({
+      accountPubkey: "a".repeat(64),
+      status: "ready",
+      reconciliation: refreshedEvidence,
+      error: null,
+    })
 
     expect(reordered.rows[0]?.url).toBe("wss://second.example")
     expect(reordered.revision).toBe(before.revision)
+    expect(
+      refreshed.rows.find((entry) => entry.url === "wss://first.example")
+        ?.reachability
+    ).toBe("responded")
+    expect(refreshed.revision).toBe(before.revision)
     expect(advanced.revision).not.toBe(reordered.revision)
   })
 

@@ -17,6 +17,7 @@ import {
   removeMediaServerPreference,
   selectLatestValidBlossomServerListEvent,
   serializeBlossomServerListTags,
+  validateBlossomServerRoot,
   type MediaServerPreferencesStorage,
 } from "../packages/core/src/protocol/media-server-preferences"
 import type { SignedPublicNostrEvent } from "../packages/core/src/protocol/signed-event"
@@ -98,7 +99,6 @@ describe("BUD-03 media server preference parsing", () => {
     expect(
       normalizeBlossomServerRoot("https://media.conduit.market:8443")
     ).toBe("https://media.conduit.market:8443")
-
     for (const unsafe of [
       "http://media.conduit.market",
       credentialUrl.toString(),
@@ -117,6 +117,38 @@ describe("BUD-03 media server preference parsing", () => {
     expect(() => normalizeMediaServerPreferenceOwner("not-a-pubkey")).toThrow(
       "valid connected account"
     )
+  })
+
+  it("returns a specific, helpful error for each rejected server address", () => {
+    const credentialUrl = new URL("https://media.conduit.market")
+    credentialUrl.username = ["us", "er"].join("")
+    credentialUrl.password = ["sec", "ret"].join("")
+    const expectations = [
+      ["", "Enter a media server address."],
+      [
+        " https://media.conduit.market",
+        "Remove spaces before or after the address.",
+      ],
+      ["http://media.conduit.market", "Use an https:// address."],
+      [
+        credentialUrl.toString(),
+        "Remove the username or password from this address.",
+      ],
+      [
+        "https://media.conduit.market/uploads",
+        "Enter the server's base address, such as https://media.your-domain.com.",
+      ],
+      ["https://127.0.0.1", "Use a publicly reachable media server."],
+      ["not a URL", "Enter a valid media server address."],
+    ] as const
+
+    for (const [input, message] of expectations) {
+      expect(validateBlossomServerRoot(input)).toMatchObject({
+        ok: false,
+        message,
+      })
+      expect(() => addMediaServerPreference([], input)).toThrow(message)
+    }
   })
 
   it("preserves signed order and serializes the displayed list exactly", () => {

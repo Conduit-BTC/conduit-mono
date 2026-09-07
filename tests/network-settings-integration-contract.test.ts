@@ -150,7 +150,7 @@ describe("shared account Network integration contract", () => {
       "async function addRelay(event: FormEvent<HTMLFormElement>)"
     )
     const addEnd = normalizedPanelSource.indexOf(
-      "async function refreshRelay",
+      "function requestRelayRemoval",
       addStart
     )
     const addSource = normalizedPanelSource.slice(addStart, addEnd)

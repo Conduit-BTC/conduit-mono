@@ -21,6 +21,7 @@ function relayRow(
     privateInboxState: null,
     signedPosition: 0,
     candidate: false,
+    reachability: "not_checked",
     capability: {
       configuredCommerce: false,
       observedCommerce: false,
@@ -55,7 +56,6 @@ function networkView(
       coverage: "complete",
       eventCreatedAt: 1_700_000_000,
       observedAt: 1_700_000_100_000,
-      completeObservedAt: 1_700_000_100_000,
       sourceRelayCount: 2,
     },
     inbox: {
@@ -64,7 +64,6 @@ function networkView(
       coverage: "complete",
       eventCreatedAt: 1_700_000_010,
       observedAt: 1_700_000_110_000,
-      completeObservedAt: 1_700_000_110_000,
       sourceRelayCount: 2,
     },
     pendingStatus: "none",
@@ -84,7 +83,6 @@ function controller(
     exactInboxRedistributionAvailable: false,
     mediaServers: null,
     addRelay: async (url) => relayRow(url, { candidate: true }),
-    refreshRelay: async (row) => row,
     save: async () => undefined,
     removeRelay: async () => undefined,
     retryPendingUpdate: async () => undefined,
@@ -133,17 +131,19 @@ describe("RelaySettingsPanel", () => {
     expect(markup.indexOf("Add relay")).toBeLessThan(
       markup.indexOf("Review and publish")
     )
-    expect(markup).toContain("only reads its advertised metadata")
-    expect(markup).toContain("unpublished candidate")
-    expect(markup).toContain('aria-describedby="account-network-relay-help"')
+    expect(markup).toContain(
+      "Choose which relays Conduit uses to read, publish, and receive private messages."
+    )
+    expect(markup).not.toContain("account-network-relay-help")
     expect(markup).not.toContain("Signed preference check")
     expect(markup).not.toContain("Check again")
   })
 
-  it("labels NIP-11 and authentication evidence without claiming health or delivery", () => {
+  it("moves relay evidence into details and uses a passive status indicator", () => {
     const rows = [
       relayRow("wss://metadata.example", {
         privateInboxEnabled: true,
+        reachability: "responded",
         capability: {
           configuredCommerce: true,
           observedCommerce: false,
@@ -155,6 +155,7 @@ describe("RelaySettingsPanel", () => {
       }),
       relayRow("wss://unavailable.example", {
         signedPosition: 1,
+        reachability: "issue",
         capability: {
           configuredCommerce: false,
           observedCommerce: false,
@@ -172,13 +173,14 @@ describe("RelaySettingsPanel", () => {
       />
     )
 
-    expect(markup).toContain("Commerce configured")
-    expect(markup).toContain("NIP-11 metadata observed")
-    expect(markup).toContain("NIP-11 metadata unavailable")
-    expect(markup).toContain("Search advertised")
-    expect(markup).toContain("Auth advertised")
-    expect(markup).toContain("Auth unavailable")
-    expect(markup).toContain("Metadata is not a health check")
+    expect(markup).toContain("Relay details")
+    expect(markup).toContain("Conduit commerce relay")
+    expect(markup).toContain("Relay information")
+    expect(markup).toContain("Authentication")
+    expect(markup).toContain("Commerce relay. Responded on the latest refresh")
+    expect(markup).toContain("Recent connection issue")
+    expect(markup).not.toContain("Refresh relay info")
+    expect(markup).not.toContain(">Signed<")
     expect(markup).not.toContain("Delivery confirmed")
     expect(markup).not.toContain("NIP-17 supported")
     expect(markup).not.toContain("NIP-65 supported")
@@ -209,21 +211,38 @@ describe("RelaySettingsPanel", () => {
       <RelaySettingsPanel controller={controller({ view })} />
     )
 
-    expect(markup).toContain("Auth succeeded")
+    expect(markup).toContain("Succeeded")
     expect(markup).not.toContain("Auth advertised")
     expect(markup.indexOf(auth.url)).toBeLessThan(markup.indexOf(plain.url))
   })
 
-  it("shows both signed relay preference frontiers in one published disclosure", () => {
+  it("shows both published events without lookup-coverage jargon", () => {
+    const base = networkView()
+    const view = networkView({
+      relayList: {
+        ...base.relayList,
+        stale: true,
+        coverage: "partial",
+      },
+      inbox: {
+        ...base.inbox,
+        stale: true,
+        coverage: "partial",
+      },
+    })
     const markup = renderToStaticMarkup(
-      <RelaySettingsPanel controller={controller()} />
+      <RelaySettingsPanel controller={controller({ view })} />
     )
 
-    expect(markup).toContain("Last observed published preferences")
-    expect(markup).toContain("Signed revision")
-    expect(markup).toContain("Last observed")
-    expect(markup).toContain("Observed sources")
-    expect(markup).toContain("Complete bounded check")
+    expect(markup).toContain("Published preferences")
+    expect(markup).toContain("Published")
+    expect(markup).toContain("Last seen")
+    expect(markup).toContain("Seen on 2 relays")
+    expect(markup).not.toContain("Signed revision")
+    expect(markup).not.toContain("Lookup coverage")
+    expect(markup).not.toContain("Complete bounded check")
+    expect(markup).not.toContain("Partial check")
+    expect(markup).not.toContain("Retained signed evidence is stale")
     expect(markup.match(/Read and Publish/g)?.length).toBeGreaterThan(0)
     expect(markup.match(/Private inbox/g)?.length).toBeGreaterThan(0)
   })
@@ -357,7 +376,9 @@ describe("RelaySettingsPanel", () => {
       />
     )
 
-    expect(markup).toContain("Unpublished candidate")
+    const rowStart = markup.indexOf("wss://draft.example")
+    const rowEnd = markup.indexOf("</li>", rowStart)
+    expect(markup.slice(rowStart, rowEnd)).toContain("New")
     expect(markup).toContain("Discard changes")
     expect(buttonOpeningTag(markup, "Review and publish")).not.toContain(
       'disabled=""'
@@ -377,9 +398,8 @@ describe("RelaySettingsPanel", () => {
     expect(buttonOpeningTag(markup, "Review and publish")).toContain(
       'disabled=""'
     )
-    expect(
-      buttonOpeningTag(markup, "Refresh relay info for wss://first.example")
-    ).not.toContain('disabled=""')
+    expect(buttonOpeningTag(markup, "Refresh")).not.toContain('disabled=""')
+    expect(markup).not.toContain("Refresh relay info")
   })
 
   it("blocks candidate discard only while a Network operation is active", () => {

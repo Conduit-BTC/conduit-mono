@@ -33,7 +33,6 @@ import {
   SignedActionStatus,
   type SignedActionStatusState,
 } from "./SignedActionStatus"
-import { StatusPill } from "./StatusPill"
 
 export interface MediaServerPreferencesSectionProps {
   view: MediaServerPreferencesView
@@ -63,69 +62,38 @@ function formatObservedTime(milliseconds: number | null): string | null {
   return Number.isFinite(date.getTime()) ? dateTimeFormatter.format(date) : null
 }
 
-function getStatusMeta(view: MediaServerPreferencesView): {
-  label: string
-  variant: "success" | "warning" | "error" | "info" | "neutral"
-  description: string
-} {
+function publishedPreferenceMessage(
+  view: MediaServerPreferencesView
+): string | null {
+  const hasPublishedPreference =
+    view.publishedCreatedAt !== null || view.publishedServerUrls.length > 0
+
   switch (view.status) {
     case "loading":
-      return {
-        label: "Checking",
-        variant: "info",
-        description: "Conduit is running a bounded signed-event lookup.",
-      }
+      return hasPublishedPreference ? null : "Refreshing published preference."
     case "published":
-      return view.stale
-        ? {
-            label: "Published evidence retained",
-            variant: "warning",
-            description:
-              "A signed list is retained, but the latest lookup did not freshly confirm the same replacement frontier.",
-          }
-        : {
-            label: "Published",
-            variant: "success",
-            description:
-              "The latest valid owner-authored list was observed during a complete bounded lookup.",
-          }
+      return hasPublishedPreference ? null : "No published preference found."
     case "not_observed":
-      return {
-        label: "No list observed",
-        variant: "neutral",
-        description:
-          "The completed bounded lookup did not observe a kind 10063 preference. This is not proof of global absence.",
-      }
+      return hasPublishedPreference ? null : "No published preference found."
     case "empty":
-      return {
-        label: "Signed list is empty",
-        variant: "error",
-        description:
-          "The newest observed replacement has no usable server tags and can be repaired explicitly.",
-      }
+      return "The published preference is empty. Add a media server to replace it."
     case "malformed":
-      return {
-        label: "Signed list needs repair",
-        variant: "error",
-        description:
-          "The newest observed replacement contains unsafe or malformed server tags.",
-      }
+      return "The published preference needs repair. Add a valid media server to replace it."
     case "lookup_partial":
-      return {
-        label: "Lookup incomplete",
-        variant: "warning",
-        description:
-          "Some planned relay reads did not complete. Retained evidence and partial coverage remain visible before an explicit publish.",
-      }
+      return hasPublishedPreference
+        ? null
+        : "No published preference was found in the relay responses received."
     case "lookup_unavailable":
     default:
-      return {
-        label: "Lookup unavailable",
-        variant: "warning",
-        description:
-          "No planned relay read completed. Local edits remain available, but signing is blocked.",
-      }
+      return hasPublishedPreference
+        ? null
+        : "Published preference could not be refreshed."
   }
+}
+
+function observedSourceLabel(sourceRelayCount: number): string {
+  if (sourceRelayCount === 0) return "Source not recorded"
+  return `Seen on ${sourceRelayCount} relay${sourceRelayCount === 1 ? "" : "s"}`
 }
 
 function getActionStatusState(
@@ -170,11 +138,10 @@ export function MediaServerPreferencesSection({
   const addInputRef = useRef<HTMLInputElement>(null)
   const publishButtonRef = useRef<HTMLButtonElement>(null)
   const rowRefs = useRef(new Map<string, HTMLLIElement>())
-  const statusMeta = getStatusMeta(view)
+  const publishedMessage = publishedPreferenceMessage(view)
   const publishedAt = formatEventTime(view.publishedCreatedAt)
   const observedAt = formatObservedTime(view.observedAt)
   const actionStatus = getActionStatusState(view)
-  const showLookupStatus = view.status !== "published" || view.stale
   const checking = view.isLoading || view.isRefetching
 
   function focusRowOrInput(serverUrl?: string): void {
@@ -235,14 +202,7 @@ export function MediaServerPreferencesSection({
     <PreferenceSectionCard
       headingId="media-server-preferences-heading"
       title="Media servers"
-      description={
-        <>
-          Keep an ordered list of Blossom HTTP media servers. Media servers are
-          separate from Nostr relays, and earlier entries have higher
-          preference. Changes stay on this device until you review, sign, and
-          publish them.
-        </>
-      }
+      description="Choose the preferred order for Blossom media servers."
       headerAction={
         <Button
           type="button"
@@ -267,20 +227,21 @@ export function MediaServerPreferencesSection({
       <PreferenceSectionBody className="pt-0 sm:pt-0">
         <details className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2.5 sm:px-4">
           <summary className="cursor-pointer text-sm font-semibold text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500">
-            <span className="ml-1 inline-flex flex-wrap items-center gap-2">
-              Last observed published event
-              {showLookupStatus ? (
-                <StatusPill
-                  variant={statusMeta.variant}
-                  title={statusMeta.description}
-                >
-                  {statusMeta.label}
-                </StatusPill>
-              ) : null}
-            </span>
+            <span className="ml-1">Published preference</span>
           </summary>
           <div className="mt-3 text-pretty text-sm leading-6 text-[var(--text-secondary)]">
-            <p>{statusMeta.description}</p>
+            {publishedAt ? (
+              <p className="flex flex-wrap gap-x-2 text-xs leading-5">
+                <span className="tabular-nums">Published {publishedAt}</span>
+                {observedAt ? (
+                  <span className="tabular-nums">Last seen {observedAt}</span>
+                ) : null}
+                <span className="tabular-nums">
+                  {observedSourceLabel(view.sourceRelayCount)}
+                </span>
+              </p>
+            ) : null}
+            {publishedMessage ? <p>{publishedMessage}</p> : null}
             {view.publishedServerUrls.length > 0 ? (
               <ol className="mt-3 list-decimal space-y-1 pl-5 font-mono text-xs text-[var(--text-primary)]">
                 {view.publishedServerUrls.map((serverUrl) => (
@@ -289,38 +250,7 @@ export function MediaServerPreferencesSection({
                   </li>
                 ))}
               </ol>
-            ) : (
-              <p className="mt-2 text-[var(--text-muted)]">
-                No usable owner-authored server list is currently available.
-              </p>
-            )}
-            <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4">
-              <div>
-                <dt className="text-[var(--text-muted)]">Signed revision</dt>
-                <dd className="mt-0.5 text-[var(--text-primary)]">
-                  {publishedAt ?? "Not observed"}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-[var(--text-muted)]">Last checked</dt>
-                <dd className="mt-0.5 text-[var(--text-primary)]">
-                  {observedAt ?? "Not observed"}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-[var(--text-muted)]">Observed sources</dt>
-                <dd className="mt-0.5 tabular-nums text-[var(--text-primary)]">
-                  {view.sourceRelayCount} relay
-                  {view.sourceRelayCount === 1 ? "" : "s"}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-[var(--text-muted)]">Lookup coverage</dt>
-                <dd className="mt-0.5 capitalize text-[var(--text-primary)]">
-                  {view.coverage}
-                </dd>
-              </div>
-            </dl>
+            ) : null}
           </div>
         </details>
       </PreferenceSectionBody>
@@ -419,12 +349,14 @@ export function MediaServerPreferencesSection({
                 setNewServerUrl(event.target.value)
                 if (validationError) setValidationError(null)
               }}
-              placeholder="https://media.example.com"
+              placeholder="https://media.your-domain.com"
               autoCapitalize="none"
               autoCorrect="off"
               spellCheck={false}
               aria-invalid={validationError ? true : undefined}
-              aria-describedby="media-server-url-help media-server-url-error"
+              aria-describedby={
+                validationError ? "media-server-url-error" : undefined
+              }
               className="h-11 rounded-xl bg-[var(--surface-elevated)] font-mono"
             />
             <Button
@@ -437,15 +369,6 @@ export function MediaServerPreferencesSection({
               Add server
             </Button>
           </div>
-          <p
-            id="media-server-url-help"
-            className="mt-2 text-pretty text-xs leading-5 text-[var(--text-muted)]"
-          >
-            Enter a public HTTPS origin only. Credentials, paths, query
-            parameters, fragments, loopback, private, and special-use targets
-            are rejected. Access-controlled public roots may be entered; the
-            server decides admission later.
-          </p>
           {validationError ? (
             <p
               id="media-server-url-error"
@@ -454,9 +377,7 @@ export function MediaServerPreferencesSection({
             >
               {validationError}
             </p>
-          ) : (
-            <span id="media-server-url-error" />
-          )}
+          ) : null}
         </form>
       </PreferenceSectionBody>
 

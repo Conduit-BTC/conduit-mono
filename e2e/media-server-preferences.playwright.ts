@@ -41,8 +41,9 @@ async function openNetwork(
   ).toBeVisible()
   const section = page.getByRole("region", { name: "Media servers" })
   await expect(section).toBeVisible()
+  await section.getByText("Published preference", { exact: true }).click()
   await expect(
-    section.getByText("No list observed", { exact: true })
+    section.getByText("No published preference found.", { exact: true })
   ).toBeVisible({ timeout: 20_000 })
   return pubkey
 }
@@ -69,7 +70,7 @@ async function exerciseSharedSurface(
   await input.fill("http://unsafe.conduit.market")
   await section.getByRole("button", { name: "Add server" }).click()
   await expect(section.getByRole("alert")).toContainText(
-    "public HTTPS server root"
+    "Use an https:// address."
   )
   await expect(input).toHaveValue("http://unsafe.conduit.market")
   await input.fill("")
