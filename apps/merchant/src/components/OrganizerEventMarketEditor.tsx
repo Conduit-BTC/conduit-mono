@@ -223,7 +223,7 @@ export function OrganizerEventMarketEditor({
               </div>
               <div className="grid gap-1.5 sm:col-span-2">
                 <RequiredFieldLabel htmlFor="event-market-image">
-                  Image URL
+                  Event photo URL
                 </RequiredFieldLabel>
                 <Input
                   id="event-market-image"
@@ -243,8 +243,17 @@ export function OrganizerEventMarketEditor({
                   id="event-market-image-help"
                   className="text-xs leading-5 text-[var(--text-muted)]"
                 >
-                  Paste a direct HTTPS image URL. Image upload is not available
-                  in this form yet.
+                  Need an image link?{" "}
+                  <a
+                    href="https://blossom.band/"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="font-medium text-[var(--accent)] underline-offset-2 hover:underline"
+                  >
+                    Upload your photo with Blossom
+                  </a>
+                  , copy the direct HTTPS image URL it returns, then paste it
+                  here. Blossom is an external Nostr media host.
                 </p>
                 <FieldError field="imageUrl" errors={errors} />
               </div>

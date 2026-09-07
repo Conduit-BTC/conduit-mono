@@ -166,7 +166,11 @@ describe("merchant organizer event market route", () => {
 
     expect(editor).toContain("Fields marked Required")
     expect(editor).toContain("RequiredFieldLabel")
-    expect(editor).toContain("Paste a direct HTTPS image URL")
+    expect(editor).toContain("Event photo URL")
+    expect(editor).toContain("https://blossom.band/")
+    expect(editor).toContain("Upload your photo with Blossom")
+    expect(editor).toContain("copy the direct HTTPS image URL it returns")
+    expect(editor).toContain('rel="noopener noreferrer"')
     expect(editor).toContain("getOrganizerEventTimezoneOptions")
     expect(editor).toContain("No changes to publish")
     expect(editor).toContain("isOrganizerEventMarketFormDirty")
