@@ -735,11 +735,19 @@ export async function publishWithPlanner(
     new Set([...plan.primaryRelayUrls, ...plan.broadcastRelayUrls])
   )
   let attemptedRelayUrls = [...plannedRelayUrls]
+  const authorFallbackAllowed =
+    input.intent !== "author_event" ||
+    plan.signedRelayListAuthoritative !== true
 
   if (plannedRelayUrls.length === 0) {
     if (input.exclusiveRelayUrls) {
       throw new Error(
         "Refusing to publish without a valid exclusive relay target."
+      )
+    }
+    if (!authorFallbackAllowed) {
+      throw new Error(
+        "Refusing to publish because signed Network settings have no usable Publish relay."
       )
     }
     const fallbackRelayUrls = getAuthorEventFallbackRelayUrls({
@@ -832,11 +840,13 @@ export async function publishWithPlanner(
       }
     }
 
-    const fallbackRelayUrls = getAuthorEventFallbackRelayUrls({
-      eventKind: event.kind,
-      intent: input.intent,
-      attemptedRelayUrls,
-    })
+    const fallbackRelayUrls = authorFallbackAllowed
+      ? getAuthorEventFallbackRelayUrls({
+          eventKind: event.kind,
+          intent: input.intent,
+          attemptedRelayUrls,
+        })
+      : []
     const criticalRecipientFallbackRelayUrls =
       input.deliveryMode === "critical"
         ? getCriticalRecipientFallbackRelayUrls({

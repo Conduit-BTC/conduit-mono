@@ -270,6 +270,46 @@ describe("planPublishRelays", () => {
     })
 
     expect(plan.primaryRelayUrls).toEqual([currentRelayUrl])
+    expect(plan.signedRelayListAuthoritative).toBe(true)
+  })
+
+  it("does not broaden signed owner authority when no Publish relay is declared", async () => {
+    const relayScope = `account:${AUTHOR_PUBKEY}`
+    const projections = [
+      createRelaySettingsFromPreferences([], "published"),
+      createRelaySettingsFromPreferences(
+        [
+          {
+            url: "wss://read-only-owner.example",
+            readEnabled: true,
+            writeEnabled: false,
+          },
+        ],
+        "published"
+      ),
+    ]
+
+    for (const projection of projections) {
+      setAccountRelaySettingsProjection(relayScope, projection, {
+        signedRelayListAuthoritative: true,
+      })
+      let publishCalls = 0
+      const event = signedTestEvent({
+        publish: async () => {
+          publishCalls += 1
+          return new Set()
+        },
+      })
+
+      await expect(
+        publishWithPlanner(event, {
+          intent: "author_event",
+          authorPubkey: AUTHOR_PUBKEY,
+          authenticatedPubkey: AUTHOR_PUBKEY,
+        })
+      ).rejects.toThrow("signed Network settings have no usable Publish relay")
+      expect(publishCalls).toBe(0)
+    }
   })
 
   it("merges recipient read relays into a recipient_event primary set", async () => {
@@ -1260,6 +1300,42 @@ describe("planPublishRelays", () => {
     }
     expect(result.successfulRelayUrls.length).toBe(1)
     expect(result.failedRelayUrls).toContain(primaryRelay)
+  })
+
+  it("does not broaden an authoritative author plan after its relay fails", async () => {
+    const primaryRelay = "wss://authoritative-write.conduit.market"
+    const normalizedPrimaryRelay = `${primaryRelay}/`
+    const attempts: string[][] = []
+    const fakeEvent = signedTestEvent({
+      kind: EVENT_KINDS.PRODUCT,
+      publish: async (relaySet: unknown) => {
+        const relayUrls = [
+          ...((relaySet as { relayUrls?: Set<string> | string[] }).relayUrls ??
+            []),
+        ]
+        attempts.push(relayUrls)
+        throw new Error("authoritative write relay failed")
+      },
+    })
+
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "author_event",
+        signedRelayListAuthoritative: true,
+        primaryRelayUrls: [primaryRelay],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+
+    await expect(
+      publishWithPlanner(fakeEvent, {
+        intent: "author_event",
+        authorPubkey: AUTHOR_PUBKEY,
+        authenticatedPubkey: AUTHOR_PUBKEY,
+      })
+    ).rejects.toThrow("no primary relay accepted")
+    expect(attempts).toEqual([[normalizedPrimaryRelay]])
   })
 
   it("falls back to the app write relay for NIP-65 after configured writes fail", async () => {

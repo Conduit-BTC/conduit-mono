@@ -129,6 +129,11 @@ export interface RelayWritePlanInput {
 export interface RelayWritePlan {
   intent: RelayWriteIntent
   /**
+   * True when the authenticated author's usable signed NIP-65 projection
+   * governs this plan. Code-owned author fallbacks must not broaden it.
+   */
+  signedRelayListAuthoritative?: boolean
+  /**
    * Relays where the event MUST be accepted for the write to be considered
    * successful. For `recipient_event`, these are the union of recipients'
    * read relays. For `author_event`, these are the user's write relays
@@ -437,6 +442,7 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
     )
     return {
       intent: input.intent,
+      signedRelayListAuthoritative: hasReconciledOwnerProjection,
       primaryRelayUrls: clampFanout(
         kept,
         input.maxPrimaryRelays ?? DEFAULT_PRIMARY_FANOUT
