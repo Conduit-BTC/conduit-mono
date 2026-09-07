@@ -163,6 +163,16 @@ describe("merchant organizer event market route", () => {
     )
     expect(publishSuccess).toContain("refreshMarketQueries(reference)")
     expect(publishSuccess).not.toContain("selectedMarketQuery.data")
+    expect(route).toContain("type OrganizerMembershipMutationInput")
+    expect(route).toContain("type OrganizerRetryMutationInput")
+    expect(route).toContain("onSuccess: async (delivery, input) =>")
+    expect(route).toContain(
+      "updateInitiatingEventSelection(input.reference, nextReference)"
+    )
+    expect(route).toContain("await refreshMarketQueries(input.reference)")
+    expect(route).not.toMatch(
+      /organizerEventMarketReferenceWithDeliveryRelayHints\(\s*selectedReference/
+    )
     expect(route).toContain(
       "findOrganizerEventMarketByReference(markets, selectedReference)"
     )

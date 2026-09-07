@@ -98,6 +98,20 @@ function errorMessage(error: unknown, fallback: string): string {
     : fallback
 }
 
+type OrganizerMembershipMutationInput = {
+  item: MerchantOrganizerParticipation
+  action: OrganizerCollectionMembershipAction
+  market: MerchantOrganizerEventMarket
+  reference: string
+}
+
+type OrganizerRetryMutationInput = {
+  record: MerchantOrganizerRecordDelivery
+  reference: string
+  title?: string
+  savedReference?: SavedOrganizerEventMarketReference
+}
+
 function referenceLabel(
   reference: SavedOrganizerEventMarketReference,
   markets: readonly MerchantOrganizerEventMarket[]
@@ -810,6 +824,18 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
     )
   }
 
+  function updateInitiatingEventSelection(
+    initiatingReference: string,
+    nextReference: string
+  ): void {
+    setSelectedReference((current) =>
+      current &&
+      organizerEventMarketReferencesMatch(current, initiatingReference)
+        ? nextReference
+        : current
+    )
+  }
+
   const publishMutation = useMutation({
     mutationFn: (input: {
       form: OrganizerEventMarketFormValues
@@ -877,88 +903,88 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
   })
 
   const membershipMutation = useMutation({
-    mutationFn: (input: {
-      item: MerchantOrganizerParticipation
-      action: OrganizerCollectionMembershipAction
-    }) => {
-      if (!selectedActionableMarket) {
-        throw new Error(
-          "Wait for the latest signed event records before changing products."
-        )
-      }
-      return publishMerchantOrganizerMembership({
+    mutationFn: (input: OrganizerMembershipMutationInput) =>
+      publishMerchantOrganizerMembership({
         organizerPubkey,
-        market: selectedActionableMarket,
+        market: input.market,
         item: input.item,
         action: input.action,
         onSignedEvent: (record, reference) => {
           const saved = rememberOrganizerEventMarket(organizerPubkey, {
             reference,
-            title: selectedActionableMarket.title,
+            title: input.market.title,
             savedAt: Date.now(),
             ...expectedEventMarketFrontier(record),
           })
           setSavedReferences(saved)
-          setSelectedReference(
+          updateInitiatingEventSelection(
+            input.reference,
             findSavedOrganizerEventMarketReference(saved, reference)
               ?.reference ?? reference
           )
           rememberDelivery(reference, record)
         },
-      })
-    },
-    onSuccess: async (delivery) => {
-      if (!selectedReference) return
+      }),
+    onSuccess: async (delivery, input) => {
       const reference = organizerEventMarketReferenceWithDeliveryRelayHints(
-        selectedReference,
+        input.reference,
         delivery
       )
       const saved = rememberOrganizerEventMarket(organizerPubkey, {
         reference,
-        title: selectedActionableMarket?.title,
+        title: input.market.title,
         savedAt: Date.now(),
         ...expectedEventMarketFrontier(delivery),
       })
       setSavedReferences(saved)
-      const selected =
+      const nextReference =
         findSavedOrganizerEventMarketReference(saved, reference)?.reference ??
         reference
-      setSelectedReference(selected)
+      updateInitiatingEventSelection(input.reference, nextReference)
       rememberDelivery(reference, delivery)
-      await refreshMarketQueries(selected)
+      await refreshMarketQueries(input.reference)
     },
   })
 
   const retryMutation = useMutation({
-    mutationFn: (delivery: MerchantOrganizerRecordDelivery) =>
+    mutationFn: (input: OrganizerRetryMutationInput) =>
       retryMerchantOrganizerRecord({
         organizerPubkey,
-        record: delivery,
+        record: input.record,
       }),
-    onSuccess: async (delivery) => {
-      if (!selectedReference) return
+    onSuccess: async (delivery, input) => {
       const reference = organizerEventMarketReferenceWithDeliveryRelayHints(
-        selectedReference,
+        input.reference,
         delivery
       )
       const saved = rememberOrganizerEventMarket(organizerPubkey, {
         reference,
-        title: selectedMarket?.title ?? selectedSavedReference?.title,
+        title: input.title,
         savedAt: Date.now(),
         ...expectedOrganizerEventMarketFrontiersAfterRetry(
           delivery,
-          selectedSavedReference
+          input.savedReference
         ),
       })
       setSavedReferences(saved)
-      const selected =
+      const nextReference =
         findSavedOrganizerEventMarketReference(saved, reference)?.reference ??
         reference
-      setSelectedReference(selected)
+      updateInitiatingEventSelection(input.reference, nextReference)
       rememberDelivery(reference, delivery)
-      await refreshMarketQueries(selected)
+      await refreshMarketQueries(input.reference)
     },
   })
+
+  function retryDelivery(record: MerchantOrganizerRecordDelivery): void {
+    if (!selectedReference) return
+    retryMutation.mutate({
+      record,
+      reference: selectedReference,
+      title: selectedMarket?.title ?? selectedSavedReference?.title,
+      savedReference: selectedSavedReference,
+    })
+  }
 
   const handoffAckMutation = useMutation({
     mutationFn: async (claim: EventMarketOrganizerClaim) => {
@@ -1193,10 +1219,10 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
           deliveries={deliveries}
           retryingRecord={
             retryMutation.isPending
-              ? (retryMutation.variables?.record ?? null)
+              ? (retryMutation.variables?.record.record ?? null)
               : null
           }
-          onRetryDelivery={(delivery) => retryMutation.mutate(delivery)}
+          onRetryDelivery={retryDelivery}
         />
       )}
 
@@ -1331,7 +1357,7 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
             actionsDisabled={!selectedActionableMarket}
             retryingRecord={
               retryMutation.isPending
-                ? (retryMutation.variables?.record ?? null)
+                ? (retryMutation.variables?.record.record ?? null)
                 : null
             }
             onCopy={(url) => void copyShareLink(url)}
@@ -1340,9 +1366,15 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
               void refreshMarketQueries(selectedReference)
             }}
             onMembership={(item, action) => {
-              membershipMutation.mutate({ item, action })
+              if (!selectedActionableMarket || !selectedReference) return
+              membershipMutation.mutate({
+                item,
+                action,
+                market: selectedActionableMarket,
+                reference: selectedReference,
+              })
             }}
-            onRetryDelivery={(delivery) => retryMutation.mutate(delivery)}
+            onRetryDelivery={retryDelivery}
           />
           {selectedActionableMarket && (
             <OrganizerHandoffReceiptQueue

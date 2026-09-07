@@ -95,6 +95,11 @@ type PublishedEvent = {
   event: SignedEvent
 }
 
+type HeldPublicationAck = {
+  captured: Promise<SignedEvent>
+  release: () => void
+}
+
 type RelayRequest = {
   relayUrl: string
   subscriptionId: string
@@ -110,6 +115,17 @@ function eventCoordinate(event: SignedEvent): string {
   const dTag = event.tags.find((tag) => tag[0] === "d")?.[1]
   if (!dTag) throw new Error(`Signed kind-${event.kind} fixture has no d tag.`)
   return `${event.kind}:${event.pubkey}:${dTag}`
+}
+
+function eventCollectionReferenceCoordinate(reference: string): string | null {
+  if (reference.startsWith("30405:")) return reference
+  try {
+    const decoded = nip19.decode(reference)
+    if (decoded.type !== "naddr" || decoded.data.kind !== 30405) return null
+    return `${decoded.data.kind}:${decoded.data.pubkey}:${decoded.data.identifier}`
+  } catch {
+    return null
+  }
 }
 
 function eventMatchesFilter(event: SignedEvent, filter: RelayFilter): boolean {
@@ -179,10 +195,32 @@ function createRelayHarness() {
   const eventsById = new Map<string, SignedEvent>()
   const publications: PublishedEvent[] = []
   const requests: RelayRequest[] = []
+  let heldPublicationAck: {
+    predicate: (event: SignedEvent) => boolean
+    capture: (event: SignedEvent) => void
+    released: Promise<void>
+  } | null = null
 
   return {
     publications,
     requests,
+    holdNextPublicationAck(
+      predicate: (event: SignedEvent) => boolean
+    ): HeldPublicationAck {
+      if (heldPublicationAck) {
+        throw new Error("A synthetic relay publication ACK is already held.")
+      }
+      let capture!: (event: SignedEvent) => void
+      let release!: () => void
+      const captured = new Promise<SignedEvent>((resolve) => {
+        capture = resolve
+      })
+      const released = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      heldPublicationAck = { predicate, capture, released }
+      return { captured, release }
+    },
     seed(...events: SignedEvent[]) {
       for (const event of events) {
         if (!verifyEvent(event)) {
@@ -243,6 +281,15 @@ function createRelayHarness() {
             const event = structuredClone(frame[1])
             eventsById.set(event.id, event)
             publications.push({ relayUrl: socket.url(), event })
+            const heldAck = heldPublicationAck
+            if (heldAck?.predicate(event)) {
+              heldPublicationAck = null
+              heldAck.capture(event)
+              void heldAck.released.then(() => {
+                socket.send(JSON.stringify(["OK", event.id, true, "saved"]))
+              })
+              return
+            }
             socket.send(JSON.stringify(["OK", event.id, true, "saved"]))
           }
         })
@@ -988,11 +1035,208 @@ async function acceptMerchantProduct(
   return acceptedCollection!
 }
 
+async function selectOrganizerMarket(page: Page, title: string): Promise<void> {
+  const selector = page.locator("#event-market-selector")
+  await selector.click()
+  await page.getByRole("option", { name: title, exact: true }).click()
+  await expect(selector).toContainText(title)
+  await expect(page.getByText(title, { exact: true }).first()).toBeVisible()
+}
+
 test.use({
   viewport: { width: 1440, height: 1000 },
   video: "off",
   trace: "off",
   screenshot: "off",
+})
+
+test("event membership and retry completions stay bound to their initiating event @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  page.setDefaultTimeout(25_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const eventA = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic Race Event A",
+    organizerHandoffEnabled: true,
+  })
+  const eventB = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic Race Event B",
+    organizerHandoffEnabled: false,
+  })
+  const product = createMerchantProductEvent({
+    dTag: "event-selection-race-product",
+    title: "Synthetic Event A Race Product",
+    collectionCoordinate: eventA.collectionCoordinate,
+    pickupCoordinate: eventA.pickupCoordinate!,
+    createdAt: eventA.initialCollection.created_at + 1,
+  })
+  relay.seed(product)
+
+  await selectOrganizerMarket(page, "Synthetic Race Event A")
+  await page.getByRole("button", { name: "Refresh evidence" }).click()
+  await expect(page.getByText("Pending request", { exact: true })).toBeVisible()
+
+  const membershipAck = relay.holdNextPublicationAck(
+    (event) =>
+      event.kind === 30405 &&
+      eventCoordinate(event) === eventA.collectionCoordinate &&
+      event.tags.some(
+        (tag) => tag[0] === "a" && tag[1] === eventCoordinate(product)
+      )
+  )
+  await page.getByRole("button", { name: "Accept", exact: true }).click()
+  const acceptedCollection = await membershipAck.captured
+  await selectOrganizerMarket(page, "Synthetic Race Event B")
+  membershipAck.release()
+
+  const savedStorageKey = `conduit:merchant:event-markets:v1:${ORGANIZER_PUBKEY}`
+  const deliveryStorageKey = `conduit:merchant:event-market-delivery:v1:${ORGANIZER_PUBKEY}`
+  await expect
+    .poll(() =>
+      page.evaluate(
+        ({ key, eventATitle, eventBTitle }) => {
+          const saved = JSON.parse(localStorage.getItem(key) ?? "[]") as Array<{
+            title?: string
+            expectedCollectionEventId?: string
+          }>
+          return {
+            eventA: saved.find((entry) => entry.title === eventATitle)
+              ?.expectedCollectionEventId,
+            eventB: saved.find((entry) => entry.title === eventBTitle)
+              ?.expectedCollectionEventId,
+          }
+        },
+        {
+          key: savedStorageKey,
+          eventATitle: "Synthetic Race Event A",
+          eventBTitle: "Synthetic Race Event B",
+        }
+      )
+    )
+    .toEqual({
+      eventA: acceptedCollection.id,
+      eventB: eventB.initialCollection.id,
+    })
+  await expect(page.locator("#event-market-selector")).toContainText(
+    "Synthetic Race Event B"
+  )
+
+  const membershipDeliveryReference = await page.evaluate(
+    ({ key, eventId }) => {
+      const saved = JSON.parse(localStorage.getItem(key) ?? "[]") as Array<{
+        reference?: string
+        delivery?: { signedEvent?: { id?: string } }
+      }>
+      return saved.find((entry) => entry.delivery?.signedEvent?.id === eventId)
+        ?.reference
+    },
+    { key: deliveryStorageKey, eventId: acceptedCollection.id }
+  )
+  expect(membershipDeliveryReference).toBeTruthy()
+  expect(eventCollectionReferenceCoordinate(membershipDeliveryReference!)).toBe(
+    eventA.collectionCoordinate
+  )
+
+  const markedForRetry = await page.evaluate(
+    ({ key, eventId }) => {
+      const saved = JSON.parse(localStorage.getItem(key) ?? "[]") as Array<{
+        delivery?: {
+          acknowledgedCount?: number
+          rejectedCount?: number
+          timedOutCount?: number
+          signedEvent?: { id?: string }
+        }
+      }>
+      const entry = saved.find(
+        (candidate) => candidate.delivery?.signedEvent?.id === eventId
+      )
+      if (!entry?.delivery) return false
+      entry.delivery.acknowledgedCount = 0
+      entry.delivery.rejectedCount = 0
+      entry.delivery.timedOutCount = 1
+      localStorage.setItem(key, JSON.stringify(saved))
+      return true
+    },
+    { key: deliveryStorageKey, eventId: acceptedCollection.id }
+  )
+  expect(markedForRetry).toBe(true)
+
+  await page.reload()
+  await page.getByRole("tab", { name: "My events", exact: true }).click()
+  await selectOrganizerMarket(page, "Synthetic Race Event A")
+  const retryAck = relay.holdNextPublicationAck(
+    (event) => event.id === acceptedCollection.id
+  )
+  await page.getByRole("button", { name: "Retry delivery" }).click()
+  await retryAck.captured
+  await selectOrganizerMarket(page, "Synthetic Race Event B")
+  retryAck.release()
+
+  await expect
+    .poll(() =>
+      page.evaluate(
+        ({ savedKey, deliveryKey, eventATitle, eventBTitle, eventId }) => {
+          const references = JSON.parse(
+            localStorage.getItem(savedKey) ?? "[]"
+          ) as Array<{ title?: string; expectedCollectionEventId?: string }>
+          const deliveries = JSON.parse(
+            localStorage.getItem(deliveryKey) ?? "[]"
+          ) as Array<{
+            reference?: string
+            delivery?: {
+              acknowledgedCount?: number
+              signedEvent?: { id?: string }
+            }
+          }>
+          const retried = deliveries.find(
+            (entry) => entry.delivery?.signedEvent?.id === eventId
+          )
+          return {
+            eventA: references.find((entry) => entry.title === eventATitle)
+              ?.expectedCollectionEventId,
+            eventB: references.find((entry) => entry.title === eventBTitle)
+              ?.expectedCollectionEventId,
+            acknowledgedCount: retried?.delivery?.acknowledgedCount,
+            deliveryReference: retried?.reference,
+          }
+        },
+        {
+          savedKey: savedStorageKey,
+          deliveryKey: deliveryStorageKey,
+          eventATitle: "Synthetic Race Event A",
+          eventBTitle: "Synthetic Race Event B",
+          eventId: acceptedCollection.id,
+        }
+      )
+    )
+    .toMatchObject({
+      eventA: acceptedCollection.id,
+      eventB: eventB.initialCollection.id,
+      acknowledgedCount: 1,
+    })
+  const retryDeliveryReference = await page.evaluate(
+    ({ key, eventId }) => {
+      const deliveries = JSON.parse(
+        localStorage.getItem(key) ?? "[]"
+      ) as Array<{
+        reference?: string
+        delivery?: { signedEvent?: { id?: string } }
+      }>
+      return deliveries.find(
+        (entry) => entry.delivery?.signedEvent?.id === eventId
+      )?.reference
+    },
+    { key: deliveryStorageKey, eventId: acceptedCollection.id }
+  )
+  expect(retryDeliveryReference).toBeTruthy()
+  expect(eventCollectionReferenceCoordinate(retryDeliveryReference!)).toBe(
+    eventA.collectionCoordinate
+  )
+  await expect(page.locator("#event-market-selector")).toContainText(
+    "Synthetic Race Event B"
+  )
 })
 
 test("paid organizer pickup uses ordinary checkout even after inbox withdrawal @market @merchant", async ({
