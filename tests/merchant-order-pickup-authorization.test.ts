@@ -436,6 +436,74 @@ describe("Merchant pickup order authorization", () => {
     })
   })
 
+  it("scopes a stock authorization read to the selected pickup product", async () => {
+    const siblingCoordinate = `30402:${merchant}:stale-sibling`
+    const siblingFulfillment = cloneSnapshot()
+    siblingFulfillment.product = {
+      ...siblingFulfillment.product,
+      coordinate: siblingCoordinate,
+      eventId: "9".repeat(64),
+    }
+    const siblingItem = {
+      ...orderItems(siblingFulfillment)[0]!,
+      productId: siblingCoordinate,
+      title: "Changed sibling",
+      priceAtPurchase: 9_999,
+      sourcePrice: {
+        amount: 9_999,
+        currency: "SATS",
+        normalizedCurrency: "SATS",
+      },
+    }
+    let requestedProducts: string[] = []
+    const scopedDependencies: MerchantPickupAuthorizationDependencies = {
+      getEventMarket: async () => market(),
+      getProductsByIds: async (productCoordinates) => {
+        requestedProducts = [...productCoordinates]
+        return products()
+      },
+    }
+
+    const result = await verifyMerchantPickupOrderAuthorization(
+      {
+        items: [...orderItems(), siblingItem],
+        merchantPubkey: merchant,
+        targetProductCoordinate: productCoordinate,
+      },
+      scopedDependencies
+    )
+
+    expect(result).toMatchObject({ status: "verified" })
+    expect(requestedProducts).toEqual([productCoordinate])
+    expect(result.status === "verified" ? result.products : []).toHaveLength(1)
+  })
+
+  it("keeps invalid or unavailable scoped pickup targets unverified", async () => {
+    expect(
+      await verifyMerchantPickupOrderAuthorization(
+        {
+          items: orderItems(),
+          merchantPubkey: merchant,
+          targetProductCoordinate: `30402:${merchant}:missing`,
+        },
+        dependencies()
+      )
+    ).toEqual({ status: "unverified", reason: "invalid_snapshot" })
+    expect(
+      await verifyMerchantPickupOrderAuthorization(
+        {
+          items: orderItems(),
+          merchantPubkey: merchant,
+          targetProductCoordinate: productCoordinate,
+        },
+        dependencies(
+          market(),
+          products({ issue: "lookup_unavailable", includeRecord: false })
+        )
+      )
+    ).toEqual({ status: "unverified", reason: "network_unavailable" })
+  })
+
   it("fails closed for stale, unavailable, or cache-only evidence", async () => {
     expect(await verify(dependencies(market("stale")))).toEqual({
       status: "unverified",

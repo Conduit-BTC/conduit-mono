@@ -1670,6 +1670,7 @@ function OrdersPage() {
         const verification = await verifyMerchantPickupOrderAuthorization({
           items: payload.orderItems,
           merchantPubkey: pubkey,
+          targetProductCoordinate: payload.adjustment.addressId,
         })
         const verifiedProduct =
           verification.status === "verified"

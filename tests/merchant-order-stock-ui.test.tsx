@@ -162,6 +162,9 @@ describe("merchant order stock UI", () => {
 
     expect(source).toContain("getOrderStockPickupFulfillment({")
     expect(source).toContain("verifyMerchantPickupOrderAuthorization({")
+    expect(source).toContain(
+      "targetProductCoordinate: payload.adjustment.addressId"
+    )
     expect(source).toContain("verifiedPickup: pickupFulfillment")
     expect(source).not.toContain(
       "resolvePublishedProductFulfillmentIntentForTarget(product)"

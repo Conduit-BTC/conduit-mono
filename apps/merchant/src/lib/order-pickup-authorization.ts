@@ -46,6 +46,8 @@ export type MerchantPickupAuthorizationResult =
 export interface MerchantPickupAuthorizationInput {
   items: OrderSummary["items"]
   merchantPubkey: string
+  /** Limit verification to coherent order lines for one stock mutation. */
+  targetProductCoordinate?: string
   nowMs?: number
   onVerifiedMarket?: (market: EventMarketResolution) => void
 }
@@ -310,7 +312,21 @@ export async function verifyMerchantPickupOrderAuthorization(
   input: MerchantPickupAuthorizationInput,
   dependencies: MerchantPickupAuthorizationDependencies = DEFAULT_DEPENDENCIES
 ): Promise<MerchantPickupAuthorizationResult> {
-  const pickupItems = pickupItemsFromOrder(input.items)
+  const targetProductCoordinate = input.targetProductCoordinate
+    ? canonicalCoordinate(input.targetProductCoordinate, [30402])
+    : null
+  if (input.targetProductCoordinate && !targetProductCoordinate) {
+    return { status: "unverified", reason: "invalid_snapshot" }
+  }
+  const relevantItems = targetProductCoordinate
+    ? input.items.filter((item) =>
+        sameCoordinate(item.productId, targetProductCoordinate, [30402])
+      )
+    : input.items
+  if (targetProductCoordinate && relevantItems.length === 0) {
+    return { status: "unverified", reason: "invalid_snapshot" }
+  }
+  const pickupItems = pickupItemsFromOrder(relevantItems)
   if (pickupItems === null) {
     return { status: "unverified", reason: "invalid_snapshot" }
   }
