@@ -89,19 +89,33 @@ export async function acceptOwnEventProduct(
       "Product published. Acceptance needs current signed product and pickup evidence; retry acceptance or open My events."
     )
   }
-  if (item.status === "accepted") return true
-
   const savedDeliveries = dependencies.load(organizer)
   const savedCollection = savedDeliveries[reference.coordinate]?.find(
     (record) => record.record === "collection"
   )
-  const signedAcceptance =
+  const retainedCollection =
     input.signedAcceptance && savedCollection
       ? newerSignedDelivery(input.signedAcceptance, savedCollection)
-      : (input.signedAcceptance ??
-        (savedCollection && needsExactRetry(savedCollection)
-          ? savedCollection
-          : null))
+      : (input.signedAcceptance ?? savedCollection ?? null)
+  const reconciledMarket = reconcileMerchantOrganizerCollectionEvidence(
+    market,
+    retainedCollection
+  )
+  const retainedEvent = retainedCollection?.signedEvent
+  const currentCollection = market.source?.collection
+  const retainedComparison = retainedEvent
+    ? currentCollection
+      ? compareAddressableRevision(retainedEvent, currentCollection)
+      : 1
+    : -1
+  const retainedIsCurrent = retainedComparison >= 0
+  const retryAcceptance =
+    retainedCollection &&
+    retainedIsCurrent &&
+    (retainedCollection === input.signedAcceptance ||
+      needsExactRetry(retainedCollection))
+      ? retainedCollection
+      : null
 
   const save = (record: MerchantOrganizerRecordDelivery) => {
     // Persist before delivery so retry can reuse the exact signed collection.
@@ -109,9 +123,8 @@ export async function acceptOwnEventProduct(
     input.onSignedAcceptance?.(record)
   }
   let delivery: MerchantOrganizerRecordDelivery
-  if (signedAcceptance) {
-    const event = signedAcceptance.signedEvent
-    const currentCollection = market.source?.collection
+  if (retryAcceptance) {
+    const event = retryAcceptance.signedEvent
     if (
       !event ||
       event.kind !== 30405 ||
@@ -124,9 +137,7 @@ export async function acceptOwnEventProduct(
       !event.tags.some(
         (tag) => tag[0] === "a" && tag[1] === input.productCoordinate
       ) ||
-      (currentCollection &&
-        currentCollection.eventId !== event.id &&
-        compareAddressableRevision(event, currentCollection) < 0)
+      !reconciledMarket.productCoordinates.includes(input.productCoordinate)
     ) {
       throw new Error(
         "The event collection changed. Review this product in My events before accepting again."
@@ -134,19 +145,19 @@ export async function acceptOwnEventProduct(
     }
     delivery = await dependencies.retry({
       organizerPubkey: organizer,
-      record: signedAcceptance,
+      record: retryAcceptance,
     })
+  } else if (
+    reconciledMarket.productCoordinates.includes(input.productCoordinate)
+  ) {
+    return true
   } else {
-    const reconciledMarket = reconcileMerchantOrganizerCollectionEvidence(
-      market,
-      savedCollection
-    )
     delivery = await dependencies.publish({
       organizerPubkey: organizer,
       market: reconciledMarket,
       item,
       action: "accept",
-      retainedCollection: savedCollection,
+      retainedCollection,
       onSignedEvent: save,
     })
   }

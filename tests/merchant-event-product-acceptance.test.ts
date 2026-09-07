@@ -187,7 +187,7 @@ describe("organizer own-product acceptance", () => {
     expect(h.published).toHaveLength(0)
     expect(h.retried).toEqual([{ organizerPubkey: OWNER, record }])
   })
-  it("does not overwrite a newer collection decision with an old retry", async () => {
+  it("publishes from a newer collection instead of retrying an old acceptance", async () => {
     const h = harness({
       ...market,
       collectionCreatedAt: 13_000,
@@ -195,11 +195,19 @@ describe("organizer own-product acceptance", () => {
         collection: { eventId: "current", createdAt: 13_000 },
       },
     } as MerchantOrganizerEventMarket)
-    await expect(
-      acceptOwnEventProduct({ ...input, signedAcceptance: record }, h.deps)
-    ).rejects.toThrow("changed")
+    expect(
+      await acceptOwnEventProduct(
+        { ...input, signedAcceptance: record },
+        h.deps
+      )
+    ).toBe(true)
     expect(h.retried).toHaveLength(0)
-    expect(h.published).toHaveLength(0)
+    expect(h.published).toHaveLength(1)
+    const publishInput = h.published[0] as {
+      market: MerchantOrganizerEventMarket
+    }
+    expect(publishInput.market.productCoordinates).toEqual([])
+    expect(publishInput.market.collectionCreatedAt).toBe(13_000)
   })
   it("retries a prior zero-ACK collection instead of signing over it", async () => {
     const pending = { ...record, acknowledgedCount: 0 }
@@ -282,12 +290,84 @@ describe("organizer own-product acceptance", () => {
     expect(publishInput.market.collectionCreatedAt).toBe(13_000)
     expect(publishInput.retainedCollection).toBe(retained)
   })
+  it("does not report an older relay acceptance after a newer retained removal", async () => {
+    const relayEvent = signedCollection([PRODUCT], 12, "Relay event")
+    const retainedRemoval = {
+      ...record,
+      signedEvent: signedCollection([], 13, "Retained removal"),
+    }
+    const h = harness(
+      {
+        ...market,
+        productCoordinates: [PRODUCT],
+        collectionCreatedAt: relayEvent.created_at * 1_000,
+        participation: [{ ...market.participation[0]!, status: "accepted" }],
+        source: {
+          collection: {
+            eventId: relayEvent.id,
+            createdAt: relayEvent.created_at * 1_000,
+          },
+        },
+      } as MerchantOrganizerEventMarket,
+      retainedRemoval
+    )
+
+    expect(await acceptOwnEventProduct(input, h.deps)).toBe(true)
+    expect(h.retried).toHaveLength(0)
+    expect(h.published).toHaveLength(1)
+    const publishInput = h.published[0] as {
+      market: MerchantOrganizerEventMarket
+      retainedCollection: MerchantOrganizerRecordDelivery
+    }
+    expect(publishInput.market.productCoordinates).toEqual([])
+    expect(publishInput.market.collectionCreatedAt).toBe(13_000)
+    expect(publishInput.retainedCollection).toBe(retainedRemoval)
+  })
+  it("ignores an older zero-ACK collection once a newer relay frontier is known", async () => {
+    const retained = {
+      ...record,
+      acknowledgedCount: 0,
+      signedEvent: signedCollection([PRIOR_PRODUCT], 12, "Old retained event"),
+    }
+    const relayEvent = signedCollection(
+      [OTHER_PRIOR_PRODUCT],
+      13,
+      "Current relay event"
+    )
+    const h = harness(
+      {
+        ...market,
+        title: "Current relay event",
+        productCoordinates: [OTHER_PRIOR_PRODUCT],
+        collectionCreatedAt: relayEvent.created_at * 1_000,
+        source: {
+          collection: {
+            eventId: relayEvent.id,
+            createdAt: relayEvent.created_at * 1_000,
+          },
+        },
+      } as MerchantOrganizerEventMarket,
+      retained
+    )
+
+    expect(await acceptOwnEventProduct(input, h.deps)).toBe(true)
+    expect(h.retried).toHaveLength(0)
+    expect(h.published).toHaveLength(1)
+    const publishInput = h.published[0] as {
+      market: MerchantOrganizerEventMarket
+      retainedCollection: MerchantOrganizerRecordDelivery
+    }
+    expect(publishInput.market.productCoordinates).toEqual([
+      OTHER_PRIOR_PRODUCT,
+    ])
+    expect(publishInput.market.collectionCreatedAt).toBe(13_000)
+    expect(publishInput.retainedCollection).toBe(retained)
+  })
   it("does not supersede a NIP-01-newer same-second collection", async () => {
     const currentId = "0".repeat(64)
     const pending = {
       ...record,
       acknowledgedCount: 0,
-      signedEvent: { ...record.signedEvent!, id: "f".repeat(64) },
     }
     const h = harness(
       {
@@ -299,22 +379,19 @@ describe("organizer own-product acceptance", () => {
       } as MerchantOrganizerEventMarket,
       pending
     )
-    await expect(acceptOwnEventProduct(input, h.deps)).rejects.toThrow(
-      "changed"
-    )
+    expect(await acceptOwnEventProduct(input, h.deps)).toBe(true)
     expect(h.retried).toHaveLength(0)
-    expect(h.published).toHaveLength(0)
+    expect(h.published).toHaveLength(1)
+    expect(
+      (h.published[0] as { market: MerchantOrganizerEventMarket }).market
+        .collectionCreatedAt
+    ).toBe(12_000)
   })
   it("does not ignore a newer unresolved saved collection", async () => {
     const pending = {
       ...record,
       acknowledgedCount: 0,
-      signedEvent: {
-        ...record.signedEvent!,
-        created_at: 13,
-        id: "newer-pending",
-        tags: [["d", "event"]],
-      },
+      signedEvent: signedCollection([], 13, "Newer pending"),
     }
     const h = harness(market, pending)
     await expect(
@@ -326,6 +403,7 @@ describe("organizer own-product acceptance", () => {
   it("does not sign again when current verified membership already includes it", async () => {
     const h = harness({
       ...market,
+      productCoordinates: [PRODUCT],
       participation: [{ ...market.participation[0]!, status: "accepted" }],
     })
     expect(await acceptOwnEventProduct(input, h.deps)).toBe(true)

@@ -827,7 +827,7 @@ export function reconcileMerchantOrganizerCollectionEvidence(
       "The retained event collection is invalid. Refresh this event before changing its products."
     )
   }
-  const relayCollection = market.source.collection
+  const relayCollection = market.source?.collection
   if (
     relayCollection &&
     compareParsedCollectionRevisions(retainedCollection, relayCollection) <= 0
@@ -881,15 +881,21 @@ export async function publishMerchantOrganizerMembership(input: {
       input.market.collectionCoordinate
     ]?.find((record) => record.record === "collection") ??
     null
-  if (retainedCollection?.acknowledgedCount === 0) {
-    throw new Error(
-      "The latest signed event collection still needs exact delivery retry."
-    )
-  }
   const market = reconcileMerchantOrganizerCollectionEvidence(
     input.market,
     retainedCollection
   )
+  const retainedEvent = retainedCollection?.signedEvent
+  const retainedCollectionIsUnrepresented =
+    retainedCollection?.acknowledgedCount === 0 &&
+    !!retainedEvent &&
+    market.source.collection?.eventId === retainedEvent.id &&
+    input.market.source.collection?.eventId !== retainedEvent.id
+  if (retainedCollectionIsUnrepresented) {
+    throw new Error(
+      "The latest signed event collection still needs exact delivery retry."
+    )
+  }
   const productCoordinates = updateOrganizerCollectionProducts(
     market.productCoordinates,
     input.item.productCoordinate,
