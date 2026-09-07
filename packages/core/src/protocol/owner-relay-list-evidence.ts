@@ -104,6 +104,8 @@ export interface ResolveOwnerRelayListOptions {
 
 export interface ReadRetainedOwnerRelayListOptions {
   evidenceRepository?: OwnerRelayListEvidenceRepository
+  /** Bypass process fallback when the caller needs destructive-state proof. */
+  durableOnly?: boolean
 }
 
 interface ParsedRelayPreferences {
@@ -806,10 +808,14 @@ export async function readRetainedOwnerRelayList(
 ): Promise<OwnerRelayListResolution | null> {
   const normalized = normalizeOwnerRelayListPubkey(pubkey)
   if (!normalized) return null
-  const record = await getOwnerRelayListEvidence(
-    normalized,
-    options.evidenceRepository
-  )
+  const repository =
+    options.evidenceRepository ?? dexieOwnerRelayListEvidenceRepository
+  const retained = options.durableOnly
+    ? await repository.get(normalized)
+    : await getOwnerRelayListEvidence(normalized, repository)
+  const record = retained
+    ? validateRetainedRecord(retained, normalized, Date.now)
+    : undefined
   // A prior scoped absence is not durable positive authority for a new
   // session. Only a validated signed frontier is useful before fresh lookup.
   if (!record?.current) return null

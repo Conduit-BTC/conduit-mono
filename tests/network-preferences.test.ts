@@ -48,6 +48,7 @@ import {
   setInboxMigrationRecoveryRelayUrls,
   subscribeRelaySettingsChanges,
   type InboxDeclarationResolution,
+  type OwnerRelayListEvidenceRepository,
   type OwnerRelayListResolution,
 } from "@conduit/core"
 import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
@@ -712,6 +713,7 @@ describe("account Network preferences", () => {
 
   it("retires legacy keys without letting unsigned state override signed evidence", () => {
     const storage = new MemoryStorage()
+    const signedOwner = signedOwnerResolution()
     const legacyKey = getRelaySettingsStorageKey(`market:${OWNER}`)
     storage.setItem(
       legacyKey,
@@ -732,7 +734,8 @@ describe("account Network preferences", () => {
       migrateLegacyRelaySettingsDraft({
         pubkey: OWNER,
         accountScope: ACCOUNT_SCOPE,
-        ownerRelayList: signedOwnerResolution(),
+        ownerRelayList: signedOwner,
+        durableOwnerRelayList: signedOwner,
         storage,
       })
     ).toBe("retired_signed_wins")
@@ -989,10 +992,28 @@ describe("account Network preferences", () => {
     expect(first.legacyMigration).toBe("seeded_draft")
     expect(getCommittedLegacyRelayReadRecovery(OWNER, storage)).not.toBeNull()
 
+    const signedOwner = signedOwnerResolution()
+    const ownerRepository = createInMemoryOwnerRelayListEvidenceRepository()
+    await reconcileOwnerRelayListEvidence(
+      {
+        pubkey: OWNER,
+        observations: [
+          {
+            signedEvent: signedOwner.current!.signedEvent,
+            sourceRelayUrls: signedOwner.current!.sourceRelayUrls,
+            observedAt: signedOwner.current!.observedAt,
+            completeObservedAt: signedOwner.current!.completeObservedAt,
+          },
+        ],
+        lookup: signedOwner.lookup,
+      },
+      ownerRepository
+    )
     const signed = await reconcileAccountNetworkPreferences(OWNER, {
       relayUrls: ["wss://shared.example"],
       storage,
-      resolveOwner: async () => signedOwnerResolution(),
+      ownerRelayList: { evidenceRepository: ownerRepository },
+      resolveOwner: async () => signedOwner,
       resolveInbox: async () => inboxResolution(),
     })
     expect(signed.legacyMigration).toBe("retired_signed_wins")
@@ -1019,6 +1040,81 @@ describe("account Network preferences", () => {
         compatibilityRelayUrls: [],
       }).relaySources
     ).toEqual({ "wss://legacy-read.example": "migration_recovery" })
+  })
+
+  it("keeps legacy relay state until fresh owner evidence survives a durable reread", async () => {
+    const storage = new MemoryStorage()
+    const legacyKey = seedLegacyRelaySettings(storage)
+    const discoveryRelayUrl = "wss://nos.lol"
+    const signedEvent = relayEvent(200, [["r", "wss://signed-b.example"]])
+    const writeFailingRepository: OwnerRelayListEvidenceRepository = {
+      get: async () => undefined,
+      reconcile: async () => {
+        throw new Error("owner evidence storage unavailable")
+      },
+    }
+    const signedRead = {
+      events: [signedEvent as never],
+      attemptedRelayUrls: [discoveryRelayUrl],
+      successfulRelayUrls: [discoveryRelayUrl],
+      failedRelayUrls: [],
+    }
+
+    const processOnly = await reconcileAccountNetworkPreferences(OWNER, {
+      relayUrls: [discoveryRelayUrl],
+      storage,
+      ownerRelayList: {
+        evidenceRepository: writeFailingRepository,
+        now: () => 2_000,
+        fetchEventsWithDiagnostics: async () => signedRead,
+      },
+      resolveInbox: async () => inboxResolution(),
+    })
+
+    expect(processOnly.ownerRelayList.preferences).toEqual([
+      {
+        url: "wss://signed-b.example",
+        readEnabled: true,
+        writeEnabled: true,
+      },
+    ])
+    expect(processOnly.legacyMigration).toBe("deferred")
+    expect(storage.getItem(legacyKey)).not.toBeNull()
+
+    __resetOwnerRelayListEvidenceForTests()
+    const afterRestart = await reconcileAccountNetworkPreferences(OWNER, {
+      relayUrls: [discoveryRelayUrl],
+      storage,
+      ownerRelayList: {
+        evidenceRepository: writeFailingRepository,
+        now: () => 3_000,
+        fetchEventsWithDiagnostics: async () => ({
+          events: [],
+          attemptedRelayUrls: [discoveryRelayUrl],
+          successfulRelayUrls: [],
+          failedRelayUrls: [discoveryRelayUrl],
+        }),
+      },
+      resolveInbox: async () => inboxResolution(),
+    })
+
+    expect(afterRestart.ownerRelayList.state).toBe("lookup_unavailable")
+    expect(storage.getItem(legacyKey)).not.toBeNull()
+
+    const durableRepository = createInMemoryOwnerRelayListEvidenceRepository()
+    const durable = await reconcileAccountNetworkPreferences(OWNER, {
+      relayUrls: [discoveryRelayUrl],
+      storage,
+      ownerRelayList: {
+        evidenceRepository: durableRepository,
+        now: () => 4_000,
+        fetchEventsWithDiagnostics: async () => signedRead,
+      },
+      resolveInbox: async () => inboxResolution(),
+    })
+
+    expect(durable.legacyMigration).toBe("retired_signed_wins")
+    expect(storage.getItem(legacyKey)).toBeNull()
   })
 
   it("keeps a signed Write-only overlap visible while inbox recovery adds only private Read", () => {
@@ -1288,6 +1384,7 @@ describe("account Network preferences", () => {
         pubkey: OWNER,
         accountScope: ACCOUNT_SCOPE,
         ownerRelayList: signedOwnerResolution(),
+        durableOwnerRelayList: signedOwnerResolution(),
         storage,
       })
     ).toBe("retired_signed_wins")

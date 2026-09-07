@@ -457,6 +457,20 @@ function hasEligibleSignedOwnerProjection(
   )
 }
 
+function hasMatchingDurableOwnerReplacement(
+  current: OwnerRelayListResolution,
+  durable: OwnerRelayListResolution | null | undefined
+): boolean {
+  const currentEventId = current.current?.signedEvent.id
+  return Boolean(
+    currentEventId &&
+    hasEligibleSignedOwnerProjection(current) &&
+    durable &&
+    hasEligibleSignedOwnerProjection(durable) &&
+    durable.current?.signedEvent.id === currentEventId
+  )
+}
+
 function retireLegacyRelaySettingsKeys(
   pubkey: string,
   storage: LegacyRelaySettingsStorage
@@ -589,6 +603,8 @@ export function migrateLegacyRelaySettingsDraft(input: {
   pubkey: string
   accountScope: string
   ownerRelayList: OwnerRelayListResolution
+  /** Exact durable reread required before signed evidence can retire legacy state. */
+  durableOwnerRelayList?: OwnerRelayListResolution | null
   storage?: LegacyRelaySettingsStorage
 }): LegacyRelaySettingsMigrationStatus {
   const storage = input.storage ?? browserStorage()
@@ -602,8 +618,9 @@ export function migrateLegacyRelaySettingsDraft(input: {
   }
 
   try {
-    const hasSignedRelayList = hasEligibleSignedOwnerProjection(
-      input.ownerRelayList
+    const hasSignedRelayList = hasMatchingDurableOwnerReplacement(
+      input.ownerRelayList,
+      input.durableOwnerRelayList
     )
     const markerKey = migrationMarkerKey(pubkey)
     const recoveryKey = legacyReadRecoveryKey(pubkey)
@@ -950,22 +967,30 @@ export async function reconcileAccountNetworkPreferences(
     }),
   ])
   const storage = options.storage ?? browserStorage()
+  const [durableOwnerRelayList, durableInboxDeclaration] = await Promise.all([
+    ownerRelayList.current
+      ? readRetainedOwnerRelayList(normalizedPubkey, {
+          evidenceRepository: options.ownerRelayList?.evidenceRepository,
+          durableOnly: true,
+        }).catch(() => null)
+      : null,
+    inboxDeclaration.state === "declared"
+      ? readRetainedInboxDeclaration(normalizedPubkey, {
+          evidenceRepository: options.inboxDeclaration?.evidenceRepository,
+          now: options.inboxDeclaration?.now,
+        }).catch(() => null)
+      : null,
+  ])
   let legacyMigration: LegacyRelaySettingsMigrationStatus = "not_applicable"
   if (storage) {
     legacyMigration = migrateLegacyRelaySettingsDraft({
       pubkey: normalizedPubkey,
       accountScope,
       ownerRelayList,
+      durableOwnerRelayList,
       storage,
     })
   }
-  const durableInboxDeclaration =
-    inboxDeclaration.state === "declared"
-      ? await readRetainedInboxDeclaration(normalizedPubkey, {
-          evidenceRepository: options.inboxDeclaration?.evidenceRepository,
-          now: options.inboxDeclaration?.now,
-        }).catch(() => null)
-      : null
   if (storage) {
     const clearStatus = retireVerifiedLegacyInboxRecovery({
       pubkey: normalizedPubkey,
