@@ -545,7 +545,7 @@ function EventCatalogPage() {
           <img
             src={calendar.image ?? collection.image}
             alt=""
-            className="h-48 w-full border-b border-[var(--border)] object-cover sm:h-64"
+            className="h-48 w-full border-b border-[var(--border)] bg-[var(--surface-elevated)] object-contain sm:h-64"
           />
         ) : null}
         <div className="grid gap-8 p-6 sm:p-8 lg:grid-cols-[minmax(0,1fr)_20rem]">
