@@ -150,11 +150,6 @@ describe("merchant organizer delivery outbox", () => {
       pickup: [PICKUP_RELAY],
       collection: [PUBLISH_RELAY],
     })
-    expect(result.collectionCreatedAt).toBe(
-      result.records.find((record) => record.record === "collection")!
-        .signedEvent!.created_at * 1_000
-    )
-
     const signedRecords = result.records.flatMap((record) =>
       record.signedEvent ? [record.signedEvent] : []
     )

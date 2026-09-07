@@ -61,13 +61,12 @@ import {
 } from "../lib/event-market"
 import type { OrganizerEventMarketFormValues } from "../lib/event-market-form"
 import {
-  findOrganizerEventMarketByReference,
   findSavedOrganizerEventMarketReference,
+  expectedOrganizerEventMarketFrontier,
   expectedOrganizerEventMarketFrontiersAfterRetry,
   loadSavedDiscoveredEventMarkets,
   loadSavedOrganizerEventMarkets,
   organizerEventMarketReachesExpectedFrontiers,
-  organizerEventMarketSignedRecordCoordinate,
   rememberDiscoveredEventMarket,
   rememberOrganizerEventMarket,
   selectOrganizerEventMarketResolution,
@@ -128,41 +127,10 @@ function referenceLabel(
   )
 }
 
-function expectedEventMarketFrontier(
-  record: MerchantOrganizerRecordDelivery
-): Partial<SavedOrganizerEventMarketReference> {
-  const signedEvent = record.signedEvent
-  if (!signedEvent) return {}
-  const createdAt = signedEvent.created_at * 1_000
-  const coordinate = organizerEventMarketSignedRecordCoordinate(
-    record.record,
-    signedEvent
-  )
-  if (record.record === "calendar") {
-    return {
-      ...(coordinate ? { expectedCalendarCoordinate: coordinate } : {}),
-      expectedCalendarCreatedAt: createdAt,
-      expectedCalendarEventId: signedEvent.id,
-    }
-  }
-  if (record.record === "pickup") {
-    return {
-      ...(coordinate ? { expectedPickupCoordinate: coordinate } : {}),
-      expectedPickupCreatedAt: createdAt,
-      expectedPickupEventId: signedEvent.id,
-    }
-  }
-  return {
-    ...(coordinate ? { expectedCollectionCoordinate: coordinate } : {}),
-    expectedCollectionCreatedAt: createdAt,
-    expectedCollectionEventId: signedEvent.id,
-  }
-}
-
 function expectedEventMarketFrontiers(
   records: readonly MerchantOrganizerRecordDelivery[]
 ): Partial<SavedOrganizerEventMarketReference> {
-  return Object.assign({}, ...records.map(expectedEventMarketFrontier))
+  return Object.assign({}, ...records.map(expectedOrganizerEventMarketFrontier))
 }
 
 function EventsPage() {
@@ -664,8 +632,10 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
       return null
     }
   }, [selectedReference])
-  const selectedListMarket = selectedReference
-    ? findOrganizerEventMarketByReference(markets, selectedReference)
+  const selectedListMarket = selectedIdentity
+    ? markets.find(
+        (market) => market.collectionCoordinate === selectedIdentity.coordinate
+      )
     : undefined
   const selectedSavedReference = selectedReference
     ? findSavedOrganizerEventMarketReference(savedReferences, selectedReference)
@@ -854,7 +824,7 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
             reference,
             title: input.form.title,
             savedAt: Date.now(),
-            ...expectedEventMarketFrontier(record),
+            ...expectedOrganizerEventMarketFrontier(record),
           })
           setSavedReferences(saved)
           setSelectedReference(
@@ -917,7 +887,7 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
             reference,
             title: input.market.title,
             savedAt: Date.now(),
-            ...expectedEventMarketFrontier(record),
+            ...expectedOrganizerEventMarketFrontier(record),
           })
           setSavedReferences(saved)
           updateInitiatingEventSelection(
@@ -937,7 +907,7 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
         reference,
         title: input.market.title,
         savedAt: Date.now(),
-        ...expectedEventMarketFrontier(delivery),
+        ...expectedOrganizerEventMarketFrontier(delivery),
       })
       setSavedReferences(saved)
       const nextReference =

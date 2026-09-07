@@ -4,7 +4,6 @@ import {
   encodeEventMarketNaddr,
 } from "@conduit/core"
 import {
-  findOrganizerEventMarketByReference,
   findSavedOrganizerEventMarketReference,
   expectedOrganizerEventMarketFrontiersAfterRetry,
   forgetOrganizerEventMarket,
@@ -240,9 +239,9 @@ describe("merchant organizer event workflow", () => {
       state: "active",
     }
 
-    const selected = findOrganizerEventMarketByReference(
-      [currentMarket],
-      staleReference
+    const selectedIdentity = decodeEventMarketReference(staleReference, [30405])
+    const selected = [currentMarket].find(
+      (market) => market.collectionCoordinate === selectedIdentity?.coordinate
     )
 
     expect(selected).toBe(currentMarket)
@@ -274,9 +273,12 @@ describe("merchant organizer event workflow", () => {
       state: "active",
     }
 
-    const selectedListMarket = findOrganizerEventMarketByReference(
-      [staleListMarket],
-      hintedReference
+    const selectedIdentity = decodeEventMarketReference(
+      hintedReference,
+      [30405]
+    )
+    const selectedListMarket = [staleListMarket].find(
+      (market) => market.collectionCoordinate === selectedIdentity?.coordinate
     )
 
     expect(selectedListMarket).toBe(staleListMarket)

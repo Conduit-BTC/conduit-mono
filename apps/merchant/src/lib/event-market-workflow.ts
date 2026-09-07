@@ -25,6 +25,36 @@ export interface SavedOrganizerEventMarketReference {
   replaceExpectedRecordFrontiers?: true
 }
 
+export function expectedOrganizerEventMarketFrontier(delivery: {
+  record: "calendar" | "pickup" | "collection"
+  signedEvent: SignedPublicNostrEvent | null
+}): Partial<SavedOrganizerEventMarketReference> {
+  const signedEvent = delivery.signedEvent
+  if (!signedEvent) return {}
+  const createdAt = signedEvent.created_at * 1_000
+  const coordinate = organizerEventMarketSignedRecordCoordinate(
+    delivery.record,
+    signedEvent
+  )
+  return delivery.record === "calendar"
+    ? {
+        ...(coordinate ? { expectedCalendarCoordinate: coordinate } : {}),
+        expectedCalendarCreatedAt: createdAt,
+        expectedCalendarEventId: signedEvent.id,
+      }
+    : delivery.record === "pickup"
+      ? {
+          ...(coordinate ? { expectedPickupCoordinate: coordinate } : {}),
+          expectedPickupCreatedAt: createdAt,
+          expectedPickupEventId: signedEvent.id,
+        }
+      : {
+          ...(coordinate ? { expectedCollectionCoordinate: coordinate } : {}),
+          expectedCollectionCreatedAt: createdAt,
+          expectedCollectionEventId: signedEvent.id,
+        }
+}
+
 export function expectedOrganizerEventMarketFrontiersAfterRetry(
   delivery: {
     record: "calendar" | "pickup" | "collection"
@@ -33,30 +63,8 @@ export function expectedOrganizerEventMarketFrontiersAfterRetry(
   savedReference: SavedOrganizerEventMarketReference | undefined
 ): Partial<SavedOrganizerEventMarketReference> {
   const signedEvent = delivery.signedEvent
-  if (!signedEvent) return {}
-  const createdAt = signedEvent.created_at * 1_000
-  const coordinate = organizerEventMarketSignedRecordCoordinate(
-    delivery.record,
-    signedEvent
-  )
-  const frontier =
-    delivery.record === "calendar"
-      ? {
-          ...(coordinate ? { expectedCalendarCoordinate: coordinate } : {}),
-          expectedCalendarCreatedAt: createdAt,
-          expectedCalendarEventId: signedEvent.id,
-        }
-      : delivery.record === "pickup"
-        ? {
-            ...(coordinate ? { expectedPickupCoordinate: coordinate } : {}),
-            expectedPickupCreatedAt: createdAt,
-            expectedPickupEventId: signedEvent.id,
-          }
-        : {
-            ...(coordinate ? { expectedCollectionCoordinate: coordinate } : {}),
-            expectedCollectionCreatedAt: createdAt,
-            expectedCollectionEventId: signedEvent.id,
-          }
+  const frontier = expectedOrganizerEventMarketFrontier(delivery)
+  if (!signedEvent) return frontier
   if (delivery.record !== "collection" || !savedReference) return frontier
 
   const collectionRetainsPickup = signedEvent.tags.some(
@@ -671,16 +679,6 @@ export function findSavedOrganizerEventMarketReference(
     (item) =>
       decodeEventMarketReference(item.reference, [30405])?.coordinate ===
       target.coordinate
-  )
-}
-
-export function findOrganizerEventMarketByReference<
-  T extends { collectionCoordinate: string },
->(markets: readonly T[], reference: string): T | undefined {
-  const target = decodeEventMarketReference(reference, [30405])
-  if (!target) return undefined
-  return markets.find(
-    (market) => market.collectionCoordinate === target.coordinate
   )
 }
 
