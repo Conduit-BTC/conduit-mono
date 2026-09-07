@@ -30,7 +30,13 @@ export function getCartHudRouteMode(pathname: string): CartHudRouteMode {
   ) {
     return "expanded"
   }
-  if (pathname.startsWith("/store/")) return "expanded"
+  if (
+    pathname.startsWith("/store/") ||
+    pathname === "/events" ||
+    pathname.startsWith("/events/")
+  ) {
+    return "expanded"
+  }
   if (pathname.startsWith("/products/")) return "compact"
   return "suppressed"
 }

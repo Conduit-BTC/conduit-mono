@@ -37,6 +37,7 @@ import type {
   ParsedOrderMessage,
 } from "./orders"
 import {
+  MAX_DECLARED_INBOX_WRITE_RELAYS,
   resolveInboxDeclaration,
   type ResolveInboxDeclarationOptions,
 } from "./private-message-routing"
@@ -151,13 +152,9 @@ export async function resolveEventMarketOrganizerInbox(
           : declaration.state,
     }
   }
-  if (declaration.stale) {
-    return {
-      state: "blocked",
-      organizerPubkey: normalized,
-      reason: "stale",
-    }
-  }
+  // A failed discovery relay cannot revoke a known signed kind-10050 inbox.
+  // The shared resolver preserves newer withdrawals/malformed declarations;
+  // its stale flag describes lookup freshness/coverage, not delivery authority.
   const relayUrls = normalizeSecureOrIsolatedE2eRelayUrls(declaration.relayUrls)
   return relayUrls.length > 0
     ? { state: "ready", organizerPubkey: normalized, relayUrls }
@@ -1207,16 +1204,22 @@ export interface RetryEventMarketPrivateDeliveryResult {
   deliveryProgress: EventMarketPrivateDeliveryProgress
 }
 
-async function strictInboxRelays(pubkey: string): Promise<string[]> {
-  const declaration = await resolveInboxDeclaration(pubkey)
-  if (
-    declaration.state !== "declared" ||
-    declaration.stale ||
-    normalizeSecureOrIsolatedE2eRelayUrls(declaration.relayUrls).length === 0
-  ) {
+async function strictInboxRelays(
+  pubkey: string,
+  options?: ResolveInboxDeclarationOptions
+): Promise<string[]> {
+  const inbox = await resolveEventMarketOrganizerInbox(pubkey, options)
+  if (inbox.state !== "ready") {
     throw new Error("Private-message recipient inbox is not currently usable.")
   }
-  return normalizeSecureOrIsolatedE2eRelayUrls(declaration.relayUrls)
+  return declaredInboxWriteRelayUrls(inbox.relayUrls)
+}
+
+function declaredInboxWriteRelayUrls(relayUrls: readonly string[]): string[] {
+  return normalizeSecureOrIsolatedE2eRelayUrls(relayUrls).slice(
+    0,
+    MAX_DECLARED_INBOX_WRITE_RELAYS
+  )
 }
 
 function pendingRelayUrls(
@@ -1291,6 +1294,8 @@ export async function retryEventMarketPrivateDelivery(input: {
   deliveryProgress?: EventMarketPrivateDeliveryProgress
   recipientInboxRelays?: readonly string[]
   senderInboxRelays?: readonly string[]
+  /** Shared declaration read seam for deterministic delivery tests/adapters. */
+  inboxDeclarationOptions?: ResolveInboxDeclarationOptions
   publishFn?: typeof publishWithPlanner
 }): Promise<RetryEventMarketPrivateDeliveryResult> {
   assertValidEventMarketPrivateDeliveryRecord(input.record)
@@ -1301,8 +1306,11 @@ export async function retryEventMarketPrivateDelivery(input: {
       )
     : createEventMarketPrivateDeliveryProgress(input.record)
   const recipientRelayUrls = input.recipientInboxRelays
-    ? normalizeSecureOrIsolatedE2eRelayUrls(input.recipientInboxRelays)
-    : await strictInboxRelays(input.record.recipientPubkey)
+    ? declaredInboxWriteRelayUrls(input.recipientInboxRelays)
+    : await strictInboxRelays(
+        input.record.recipientPubkey,
+        input.inboxDeclarationOptions
+      )
   if (recipientRelayUrls.length === 0) {
     throw new Error("Private-message recipient inbox is not currently usable.")
   }
@@ -1351,8 +1359,11 @@ export async function retryEventMarketPrivateDelivery(input: {
   if (input.record.signedSelfWrap) {
     try {
       const senderRelayUrls = input.senderInboxRelays
-        ? normalizeSecureOrIsolatedE2eRelayUrls(input.senderInboxRelays)
-        : await strictInboxRelays(input.record.senderPubkey)
+        ? declaredInboxWriteRelayUrls(input.senderInboxRelays)
+        : await strictInboxRelays(
+            input.record.senderPubkey,
+            input.inboxDeclarationOptions
+          )
       if (senderRelayUrls.length === 0) {
         throw new Error("Sender inbox is not currently usable.")
       }

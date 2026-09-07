@@ -97,6 +97,21 @@ const readyCapabilityInput: MerchantCheckoutCapabilityInput = {
 }
 
 describe("shared merchant checkout capability", () => {
+  it("requires pickup review even with every automatic-payment input ready", () => {
+    const capability = deriveMerchantCheckoutCapability({
+      ...readyCapabilityInput,
+      pickupReviewRequired: true,
+    })
+    expect(capability).toEqual({
+      outcome: "checkout_required",
+      blockers: ["pickup_review_required"],
+      blockedReason: null,
+    })
+    expect(getMerchantCapabilityFallbackMessage(capability)).toBe(
+      "Checkout is needed to review event pickup and confirm who handles it."
+    )
+  })
+
   it("derives zap_candidate from an empty blocker list", () => {
     const capability = deriveMerchantCheckoutCapability(readyCapabilityInput)
     expect(capability).toEqual({
@@ -104,6 +119,17 @@ describe("shared merchant checkout capability", () => {
       blockers: [],
       blockedReason: null,
     })
+  })
+
+  it("does not let pickup review override a known availability blocker", () => {
+    const capability = deriveMerchantCheckoutCapability({
+      ...readyCapabilityInput,
+      pickupReviewRequired: true,
+      readiness: "blocked",
+      blockingMessage: "Sold out",
+    })
+    expect(capability.outcome).toBe("blocked")
+    expect(capability.blockedReason).toBe("Sold out")
   })
 
   it("keeps incomplete listing evidence checkout-only during a refetch", () => {
