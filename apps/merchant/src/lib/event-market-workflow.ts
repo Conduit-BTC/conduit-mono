@@ -1,6 +1,7 @@
 import {
   decodeEventMarketReference,
   encodeEventMarketNaddr,
+  type EventMarketDeletedRecordEvidence,
 } from "@conduit/core"
 
 export type OrganizerCollectionMembershipAction = "accept" | "remove"
@@ -51,6 +52,9 @@ export interface OrganizerEventMarketTerminalResolution extends EventMarketFront
   terminal: true
   state: "deleted"
   collectionCoordinate: string
+  calendarCoordinate?: string
+  pickupCoordinate?: string
+  deletion: EventMarketDeletedRecordEvidence
   naddr: string
 }
 
@@ -510,7 +514,8 @@ export function isPreferredOrganizerEventMarketListResolution(
     market !== undefined &&
     market.state !== "missing" &&
     market.state !== "unavailable" &&
-    market.state !== "stale"
+    market.state !== "stale" &&
+    market.state !== "deleted"
   )
 }
 
@@ -518,7 +523,6 @@ export function shouldResolveOrganizerEventMarketReference(
   listMarket: ({ state: string } & EventMarketFrontierCarrier) | undefined,
   savedReference: SavedOrganizerEventMarketReference | undefined
 ): boolean {
-  if (listMarket?.state === "deleted") return false
   if (!isPreferredOrganizerEventMarketListResolution(listMarket)) return true
   const expectedRecords = expectedEventMarketRecords(savedReference)
   const importedRelayHints = decodeEventMarketReference(
@@ -583,6 +587,53 @@ function marketReachesExpectedFrontiers(
   })
 }
 
+export function organizerEventMarketReachesExpectedFrontiers(
+  market: EventMarketFrontierCarrier | undefined,
+  savedReference: SavedOrganizerEventMarketReference | undefined
+): boolean {
+  return marketReachesExpectedFrontiers(market, savedReference)
+}
+
+type OrganizerEventMarketCandidate = EventMarketFrontierCarrier & {
+  state: string
+  collectionCoordinate: string
+  calendarCoordinate?: string
+  pickupCoordinate?: string
+  naddr: string
+}
+
+function terminalDeletionRemovesMarket(
+  terminal: OrganizerEventMarketTerminalResolution,
+  market: OrganizerEventMarketCandidate
+): boolean {
+  const record = terminal.deletion.record
+  const coordinate =
+    record === "collection"
+      ? market.collectionCoordinate
+      : record === "calendar"
+        ? market.calendarCoordinate
+        : market.pickupCoordinate
+  if (!coordinate || coordinate !== terminal.deletion.coordinate) return false
+
+  const frontier = carrierFrontier(market, record)
+  return terminal.deletion.deletions.some((deletion) => {
+    if (deletion.authorPubkey !== coordinate.split(":")[1]?.toLowerCase()) {
+      return false
+    }
+    if (
+      frontier?.eventId &&
+      deletion.eventTargets.includes(frontier.eventId.toLowerCase())
+    ) {
+      return true
+    }
+    return (
+      frontier !== undefined &&
+      deletion.addressableTargets.includes(coordinate) &&
+      deletion.deletionCreatedAt >= frontier.createdAt
+    )
+  })
+}
+
 function compareOrganizerEventMarketGraphFrontier(
   left: EventMarketFrontierCarrier,
   right: EventMarketFrontierCarrier
@@ -601,33 +652,21 @@ function compareOrganizerEventMarketGraphFrontier(
 }
 
 export function selectOrganizerEventMarketResolution<
-  T extends {
-    state: string
-    collectionCoordinate: string
-    naddr: string
-  } & EventMarketFrontierCarrier,
+  T extends OrganizerEventMarketCandidate,
 >(
   listMarket: T | undefined,
   hintedMarket: T | undefined,
   savedReference?: SavedOrganizerEventMarketReference
 ): T | undefined
 export function selectOrganizerEventMarketResolution<
-  T extends {
-    state: string
-    collectionCoordinate: string
-    naddr: string
-  } & EventMarketFrontierCarrier,
+  T extends OrganizerEventMarketCandidate,
 >(
   listMarket: T | undefined,
   hintedMarket: T | OrganizerEventMarketTerminalResolution | undefined,
   savedReference?: SavedOrganizerEventMarketReference
 ): T | OrganizerEventMarketTerminalResolution | undefined
 export function selectOrganizerEventMarketResolution<
-  T extends {
-    state: string
-    collectionCoordinate: string
-    naddr: string
-  } & EventMarketFrontierCarrier,
+  T extends OrganizerEventMarketCandidate,
 >(
   listMarket: T | undefined,
   hintedMarket: T | OrganizerEventMarketTerminalResolution | undefined,
@@ -651,25 +690,26 @@ export function selectOrganizerEventMarketResolution<
       ? listMarket
       : undefined
   const selected =
-    listMarket?.state === "deleted"
-      ? listMarket
-      : hintedMarket?.state === "deleted"
-        ? hintedMarket
-        : preferredListMarket
-          ? hintedIsPreferred && hintedMarket
-            ? expectedRecords.length > 0 &&
-              hintedReachesExpectedFrontiers !== listReachesExpectedFrontiers
-              ? hintedReachesExpectedFrontiers
-                ? hintedMarket
-                : preferredListMarket
-              : compareOrganizerEventMarketGraphFrontier(
-                    hintedMarket,
-                    preferredListMarket
-                  ) > 0
-                ? hintedMarket
-                : preferredListMarket
-            : preferredListMarket
-          : (hintedMarket ?? listMarket)
+    hintedMarket?.state === "deleted" && "terminal" in hintedMarket
+      ? preferredListMarket &&
+        !terminalDeletionRemovesMarket(hintedMarket, preferredListMarket)
+        ? preferredListMarket
+        : hintedMarket
+      : preferredListMarket
+        ? hintedIsPreferred && hintedMarket
+          ? expectedRecords.length > 0 &&
+            hintedReachesExpectedFrontiers !== listReachesExpectedFrontiers
+            ? hintedReachesExpectedFrontiers
+              ? hintedMarket
+              : preferredListMarket
+            : compareOrganizerEventMarketGraphFrontier(
+                  hintedMarket,
+                  preferredListMarket
+                ) > 0
+              ? hintedMarket
+              : preferredListMarket
+          : preferredListMarket
+        : (hintedMarket ?? listMarket)
   if (!selected) return undefined
   const selectedReferenceIsAheadOfList =
     expectedRecords.length > 0 && !listReachesExpectedFrontiers

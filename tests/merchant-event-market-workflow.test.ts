@@ -13,6 +13,7 @@ import {
   isPreferredOrganizerEventMarketListResolution,
   loadSavedDiscoveredEventMarkets,
   loadSavedOrganizerEventMarkets,
+  organizerEventMarketReachesExpectedFrontiers,
   rememberDiscoveredEventMarket,
   rememberOrganizerEventMarket,
   selectOrganizerEventMarketResolution,
@@ -284,7 +285,7 @@ describe("merchant organizer event workflow", () => {
     ).toBe(true)
     expect(
       isPreferredOrganizerEventMarketListResolution({ state: "deleted" })
-    ).toBe(true)
+    ).toBe(false)
     const selected = selectOrganizerEventMarketResolution(
       selectedListMarket,
       currentHintedMarket
@@ -341,7 +342,7 @@ describe("merchant organizer event workflow", () => {
     ).toEqual([importedRelay, listRelay])
   })
 
-  it("keeps newer list and known deletion frontiers over an imported hint", () => {
+  it("keeps a newer list frontier over an imported hint", () => {
     const importedReference = {
       reference: encodeEventMarketNaddr(COLLECTION, [
         "wss://imported.example/events",
@@ -376,14 +377,14 @@ describe("merchant organizer event workflow", () => {
         { ...newerListMarket, state: "deleted" },
         importedReference
       )
-    ).toBe(false)
+    ).toBe(true)
     expect(
       selectOrganizerEventMarketResolution(
         { ...newerListMarket, state: "deleted" },
         { ...hintedMarket, collectionCreatedAt: 4_000 },
         importedReference
       )?.state
-    ).toBe("deleted")
+    ).toBe("active")
   })
 
   it("lets an exact hinted deletion retire an older active list market", () => {
@@ -400,6 +401,23 @@ describe("merchant organizer event workflow", () => {
       terminal: true as const,
       state: "deleted" as const,
       collectionCoordinate: COLLECTION,
+      collectionCreatedAt: 1_000,
+      collectionEventId: "b".repeat(64),
+      deletion: {
+        record: "collection" as const,
+        coordinate: COLLECTION,
+        eventId: "b".repeat(64),
+        createdAt: 1_000,
+        deletions: [
+          {
+            deletionEventId: "d".repeat(64),
+            deletionCreatedAt: 2_000,
+            authorPubkey: ORGANIZER,
+            eventTargets: ["b".repeat(64)],
+            addressableTargets: [],
+          },
+        ],
+      },
       naddr: encodeEventMarketNaddr(COLLECTION, [
         "wss://deletion.example/events",
       ]),
@@ -420,6 +438,104 @@ describe("merchant organizer event workflow", () => {
     expect(selectOrganizerEventMarketResolution(listMarket, undefined)).toBe(
       listMarket
     )
+  })
+
+  it("does not let an exact deletion hide a different active revision", () => {
+    const listMarket = {
+      collectionCoordinate: COLLECTION,
+      collectionCreatedAt: 3_000,
+      collectionEventId: "a".repeat(64),
+      naddr: encodeEventMarketNaddr(COLLECTION, [
+        "wss://planner.example/events",
+      ]),
+      state: "active",
+    }
+    const hintedDeletion = {
+      terminal: true as const,
+      state: "deleted" as const,
+      collectionCoordinate: COLLECTION,
+      collectionCreatedAt: 2_000,
+      collectionEventId: "b".repeat(64),
+      deletion: {
+        record: "collection" as const,
+        coordinate: COLLECTION,
+        eventId: "b".repeat(64),
+        createdAt: 2_000,
+        deletions: [
+          {
+            deletionEventId: "d".repeat(64),
+            deletionCreatedAt: 4_000,
+            authorPubkey: ORGANIZER,
+            eventTargets: ["b".repeat(64)],
+            addressableTargets: [],
+          },
+        ],
+      },
+      naddr: encodeEventMarketNaddr(COLLECTION, [
+        "wss://deletion.example/events",
+      ]),
+    }
+
+    expect(
+      selectOrganizerEventMarketResolution(listMarket, hintedDeletion)
+        ?.collectionEventId
+    ).toBe("a".repeat(64))
+  })
+
+  it("lets a newer revision survive an older addressable tombstone", () => {
+    const listMarket = {
+      collectionCoordinate: COLLECTION,
+      collectionCreatedAt: 3_000,
+      collectionEventId: "a".repeat(64),
+      naddr: encodeEventMarketNaddr(COLLECTION, [
+        "wss://planner.example/events",
+      ]),
+      state: "active",
+    }
+    const hintedDeletion = {
+      terminal: true as const,
+      state: "deleted" as const,
+      collectionCoordinate: COLLECTION,
+      collectionCreatedAt: 1_000,
+      collectionEventId: "b".repeat(64),
+      deletion: {
+        record: "collection" as const,
+        coordinate: COLLECTION,
+        eventId: "b".repeat(64),
+        createdAt: 1_000,
+        deletions: [
+          {
+            deletionEventId: "d".repeat(64),
+            deletionCreatedAt: 2_000,
+            authorPubkey: ORGANIZER,
+            eventTargets: [],
+            addressableTargets: [COLLECTION],
+          },
+        ],
+      },
+      naddr: encodeEventMarketNaddr(COLLECTION, [
+        "wss://deletion.example/events",
+      ]),
+    }
+
+    expect(
+      selectOrganizerEventMarketResolution(listMarket, hintedDeletion)
+        ?.collectionEventId
+    ).toBe("a".repeat(64))
+    expect(
+      selectOrganizerEventMarketResolution(listMarket, {
+        ...hintedDeletion,
+        deletion: {
+          ...hintedDeletion.deletion,
+          deletions: [
+            {
+              ...hintedDeletion.deletion.deletions[0]!,
+              deletionCreatedAt: 4_000,
+            },
+          ],
+        },
+      })?.state
+    ).toBe("deleted")
   })
 
   it("uses the NIP-01 lowest-id tie break when reconciling views", () => {
@@ -472,6 +588,12 @@ describe("merchant organizer event workflow", () => {
         selectedReference
       )
     ).toBe(true)
+    expect(
+      organizerEventMarketReachesExpectedFrontiers(
+        olderListMarket,
+        selectedReference
+      )
+    ).toBe(false)
     const pendingRead = selectOrganizerEventMarketResolution(
       olderListMarket,
       undefined,
@@ -502,6 +624,12 @@ describe("merchant organizer event workflow", () => {
         selectedReference
       )
     ).toBe(false)
+    expect(
+      organizerEventMarketReachesExpectedFrontiers(
+        updatedHintedMarket,
+        selectedReference
+      )
+    ).toBe(true)
   })
 
   it("keeps the hinted read until every published event-record frontier is observed", () => {

@@ -17,6 +17,7 @@ import {
   type OrganizerEventMarketSignedRecord,
   type SignedPublicNostrEvent,
   type EventMarketAcceptedProductEvidence,
+  type EventMarketDeletedRecordEvidence,
   type EventMarketProductPreview,
   type EventMarketHandoffMode,
   type EventMarketParticipationRequest,
@@ -101,6 +102,15 @@ export interface MerchantOrganizerEventMarketDeletion {
   state: "deleted"
   organizerPubkey: string
   collectionCoordinate: string
+  calendarCoordinate?: string
+  pickupCoordinate?: string
+  collectionCreatedAt?: number
+  collectionEventId?: string
+  calendarCreatedAt?: number
+  calendarEventId?: string
+  pickupCreatedAt?: number
+  pickupEventId?: string
+  deletion: EventMarketDeletedRecordEvidence
   naddr: string
 }
 
@@ -731,14 +741,56 @@ export async function resolveOrganizerEventMarketRead(
   })
   if (
     result.state === "deleted" &&
+    result.deletion &&
     result.organizerPubkey &&
     result.collectionCoordinate === parsedReference.coordinate
   ) {
+    const deletion = result.deletion
     return {
       terminal: true,
       state: "deleted",
       organizerPubkey: result.organizerPubkey,
       collectionCoordinate: result.collectionCoordinate,
+      ...(result.calendarCoordinate
+        ? { calendarCoordinate: result.calendarCoordinate }
+        : {}),
+      ...(result.pickupCoordinate
+        ? { pickupCoordinate: result.pickupCoordinate }
+        : {}),
+      ...(result.collection
+        ? {
+            collectionCreatedAt: result.collection.createdAt,
+            collectionEventId: result.collection.eventId,
+          }
+        : deletion.record === "collection"
+          ? {
+              collectionCreatedAt: deletion.createdAt,
+              collectionEventId: deletion.eventId,
+            }
+          : {}),
+      ...(result.calendar
+        ? {
+            calendarCreatedAt: result.calendar.createdAt,
+            calendarEventId: result.calendar.eventId,
+          }
+        : deletion.record === "calendar"
+          ? {
+              calendarCreatedAt: deletion.createdAt,
+              calendarEventId: deletion.eventId,
+            }
+          : {}),
+      ...(result.pickup
+        ? {
+            pickupCreatedAt: result.pickup.createdAt,
+            pickupEventId: result.pickup.eventId,
+          }
+        : deletion.record === "pickup"
+          ? {
+              pickupCreatedAt: deletion.createdAt,
+              pickupEventId: deletion.eventId,
+            }
+          : {}),
+      deletion,
       naddr: parsedReference.naddr,
     }
   }

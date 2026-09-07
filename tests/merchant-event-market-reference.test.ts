@@ -256,7 +256,96 @@ describe("merchant organizer event-market references", () => {
       state: "deleted",
       organizerPubkey: ORGANIZER,
       collectionCoordinate: COLLECTION,
+      collectionCreatedAt: now * 1_000,
+      collectionEventId: collection.id,
+      deletion: {
+        record: "collection",
+        coordinate: COLLECTION,
+        eventId: collection.id,
+        createdAt: now * 1_000,
+        deletions: [
+          {
+            deletionEventId: deletion.id,
+            deletionCreatedAt: (now + 1) * 1_000,
+            authorPubkey: ORGANIZER,
+            eventTargets: [],
+            addressableTargets: [COLLECTION],
+          },
+        ],
+      },
       naddr: imported,
+    })
+  })
+
+  it("keeps a newer collection revision active after an older coordinate tombstone", async () => {
+    const imported = encodeEventMarketNaddr(COLLECTION, [HINT_RELAY])
+    const now = Math.floor(Date.now() / 1_000)
+    const calendar = signedEvent(
+      buildEventMarketCalendarDraft({
+        kind: EVENT_KINDS.CALENDAR_TIME,
+        dTag: "public-market-day",
+        title: "Public market day",
+        start: now + 86_400,
+        end: now + 90_000,
+        startTzid: "UTC",
+        endTzid: "UTC",
+      }),
+      now
+    )
+    const oldCollection = signedEvent(
+      buildEventMarketCollectionDraft({
+        dTag: "public-market",
+        title: "Old public market",
+        eventCoordinate: CALENDAR,
+        productCoordinates: [],
+      }),
+      now
+    )
+    const tombstone = signedEvent(
+      {
+        kind: EVENT_KINDS.DELETION,
+        content: "",
+        tags: [["a", COLLECTION]],
+      },
+      now + 1
+    )
+    const newCollection = signedEvent(
+      buildEventMarketCollectionDraft({
+        dTag: "public-market",
+        title: "Recreated public market",
+        eventCoordinate: CALENDAR,
+        productCoordinates: [],
+      }),
+      now + 2
+    )
+    const graph = [calendar, oldCollection, tombstone, newCollection]
+    __setEventMarketTestOverrides({
+      getRelayLists: async () => new Map(),
+      fetchEventsFanoutDetailed: async (_filter, options) => ({
+        events: graph.map((event) => {
+          const ndkEvent = new NDKEvent(undefined, event)
+          attachEventSourceRelayUrl(ndkEvent, HINT_RELAY)
+          return ndkEvent
+        }),
+        relays: (options.relayUrls ?? []).map((relayUrl) => ({
+          relayUrl,
+          status: "success" as const,
+          eventCount: graph.length,
+        })),
+        eventsVerified: true,
+      }),
+      loadCachedEvidence: async () => [],
+      persistCachedEvidence: async () => undefined,
+    })
+
+    const market = await resolveOrganizerEventMarketRead(imported, ORGANIZER)
+
+    expect("terminal" in market).toBe(false)
+    expect(market).toMatchObject({
+      state: "active",
+      collectionCoordinate: COLLECTION,
+      collectionCreatedAt: (now + 2) * 1_000,
+      collectionEventId: newCollection.id,
     })
   })
 

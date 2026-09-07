@@ -1232,14 +1232,30 @@ describe("event-market revisions and deletions", () => {
       createdAt: 100,
       tags: [["e", calendar.id]],
     })
-    expect(
-      resolveEventMarketEvidence({
-        reference: COLLECTION_COORDINATE,
-        events: [collectionEvent(), calendar, pickupEvent()],
-        deletionEvents: [sameAuthorDeletion],
-        nowMs: ACTIVE_NOW_MS,
-      }).state
-    ).toBe("deleted")
+    const deleted = resolveEventMarketEvidence({
+      reference: COLLECTION_COORDINATE,
+      events: [collectionEvent(), calendar, pickupEvent()],
+      deletionEvents: [sameAuthorDeletion],
+      nowMs: ACTIVE_NOW_MS,
+    })
+    expect(deleted).toMatchObject({
+      state: "deleted",
+      deletion: {
+        record: "calendar",
+        coordinate: CALENDAR_COORDINATE,
+        eventId: calendar.id,
+        createdAt: 200_000,
+        deletions: [
+          {
+            deletionEventId: sameAuthorDeletion.id,
+            deletionCreatedAt: 100_000,
+            authorPubkey: ORGANIZER_PUBKEY,
+            eventTargets: [calendar.id],
+            addressableTargets: [],
+          },
+        ],
+      },
+    })
 
     const crossAuthorDeletion = signRaw({
       secret: ATTACKER_SECRET,
@@ -1297,5 +1313,6 @@ describe("event-market revisions and deletions", () => {
     expect(result.state).toBe("active")
     expect(result.pickup?.title).toBe("New pickup")
     expect(result.pickup?.eventId).toBe(newPickup.id)
+    expect(result.deletion).toBeUndefined()
   })
 })

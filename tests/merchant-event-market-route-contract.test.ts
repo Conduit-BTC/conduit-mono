@@ -166,7 +166,6 @@ describe("merchant organizer event market route", () => {
     expect(route).toContain(
       "findOrganizerEventMarketByReference(markets, selectedReference)"
     )
-    expect(route).toContain("isPreferredOrganizerEventMarketListResolution(")
     expect(route).toContain("shouldResolveOrganizerEventMarketReference(")
     expect(route).toContain("selectOrganizerEventMarketResolution(")
     expect(route).toContain("resolveOrganizerEventMarketRead(")
@@ -179,6 +178,19 @@ describe("merchant organizer event market route", () => {
       /selectOrganizerEventMarketResolution\([\s\S]+selectedListMarket,[\s\S]+selectedMarketQuery\.data,[\s\S]+selectedSavedReference/
     )
     expect(route).toContain("selectedMarket || selectedReadDeleted")
+    expect(route).toContain("organizerEventMarketReachesExpectedFrontiers(")
+    expect(route).toContain("const selectedActionableMarket =")
+    expect(route).toContain("selectedMarketBehindExpectedFrontier")
+    expect(route).toContain("Showing earlier signed event evidence")
+    expect(route).toContain("actionsDisabled={!selectedActionableMarket}")
+    expect(route).toContain("market: selectedActionableMarket")
+    expect(route).toContain("setEditingMarket(selectedActionableMarket)")
+    expect(route).not.toContain("market: selectedMarket,")
+    expect(panel).toContain("actionsDisabled: boolean")
+    expect(panel).toContain("disabled={actionsDisabled}")
+    expect(panel).toContain(
+      'const canChangeMembership = market.state === "active" && !actionsDisabled'
+    )
     expect(route).not.toContain("selectedIdentity?.relayHints.length === 0")
     expect(panel).toContain("getEventMarketUrl(market.naddr)")
   })
