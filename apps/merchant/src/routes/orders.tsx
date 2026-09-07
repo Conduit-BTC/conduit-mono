@@ -2042,7 +2042,7 @@ function OrdersPage() {
             ? "Payment confirmed. Organizer release needs attention; review or retry the release below. Do not request another payment."
             : result.release === "delivered"
               ? "Payment confirmed and organizer release authorization delivered"
-              : "Payment confirmed. Prepare the order before authorizing pickup."
+              : "Payment confirmed."
         )
         if (result.release !== "not_requested") {
           await handoffAcksQuery.refetch()
