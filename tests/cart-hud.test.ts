@@ -115,8 +115,12 @@ describe("Market cart HUD policy", () => {
   it("expands on browse surfaces, compacts product detail, and suppresses workflows", () => {
     expect(getCartHudRouteMode("/products")).toBe("expanded")
     expect(getCartHudRouteMode("/store/merchant")).toBe("expanded")
+    expect(getCartHudRouteMode("/events")).toBe("expanded")
+    expect(getCartHudRouteMode("/events/")).toBe("expanded")
+    expect(getCartHudRouteMode("/events/naddr1example")).toBe("expanded")
     expect(getCartHudRouteMode("/products/30402:merchant:item")).toBe("compact")
     for (const pathname of [
+      "/eventsettings",
       "/cart",
       "/checkout",
       "/orders",
