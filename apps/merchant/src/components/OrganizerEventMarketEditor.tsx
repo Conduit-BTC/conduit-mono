@@ -245,15 +245,17 @@ export function OrganizerEventMarketEditor({
                 >
                   Need an image link?{" "}
                   <a
-                    href="https://blossom.band/"
+                    href="https://nostrmedia.com/"
                     target="_blank"
                     rel="noopener noreferrer"
                     className="font-medium text-[var(--accent)] underline-offset-2 hover:underline"
                   >
-                    Upload your photo with Blossom
+                    Open the Nostr Media uploader
                   </a>
-                  , copy the direct HTTPS image URL it returns, then paste it
-                  here. Blossom is an external Nostr media host.
+                  , sign in with your Nostr extension, and upload a public
+                  photo. Copy its direct HTTPS image URL from the file manager,
+                  then paste it here. Nostr Media is an external host that
+                  supports Blossom.
                 </p>
                 <FieldError field="imageUrl" errors={errors} />
               </div>
