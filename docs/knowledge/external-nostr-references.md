@@ -62,7 +62,7 @@ Source boundary:
 ### Core relay and event model
 
 - NIP-01 defines event shape, tags, filters, client/relay messages, replaceable/addressable kind ranges, and WebSocket semantics.
-- Relays are not a database authority. They store, forward, reject, or omit events, and clients must model partial reads, `OK`/`CLOSED` failures, `EOSE`, relay lag, and conflicting relay views.
+- Relays are not a database authority. They store, forward, reject, or omit events, and clients must model partial reads, `OK`/`CLOSED` failures, `EOSE`, relay lag, and source disagreement.
 - Addressable product events use the full coordinate `30402:<merchant_pubkey>:<d_tag>`. Do not dedupe only by `d` tag.
 
 ### Products and commerce listings
@@ -79,8 +79,14 @@ Source boundary:
   - use an author's write relays when downloading that author's events
   - use a tagged user's read relays when downloading events about that user
   - keep published relay lists small and understandable
-- Conduit-local commerce priority is an app setting, not a Nostr protocol role.
+- Commerce-first ordering is a Conduit planning convention derived from
+  configured or scoped observed compatibility evidence. It is not a manual
+  app-local preference or a Nostr protocol priority.
 - Route-aware read/write plans belong in shared code, not reconstructed in app routes.
+- Shared acceleration, cache, index, and routing systems may derive only from
+  relay-visible state and must never expose hidden APIs for private messages,
+  orders, payments or invoices, signer or auth material, wallet credentials or
+  recovery material, or wallet balances.
 
 ### Private messages and commerce conversations
 

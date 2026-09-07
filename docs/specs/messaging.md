@@ -103,7 +103,8 @@ The boundary provides:
 - **Secure-message relays (kind `10050`).** Each gift-wrap write uses only the
   wrap recipient's declared kind-10050 relays, except the bounded validated
   order compatibility lane below. NIP-65, configured relay lists, commerce
-  priority, and general relay defaults are not secure-message write fallbacks.
+  capability order, and general relay defaults are not secure-message write
+  fallbacks.
   Kind `10002` never supplies a gift-wrap write target. A `signed_empty` or
   `malformed` declaration is an explicit blocking state that the client never
   overrides with retained relay tags.
@@ -119,19 +120,32 @@ The boundary provides:
   state.
 - **Monotonic declaration frontier.** The durable record stores the exact
   validated signed event and source-relay observations. Frontier selection
-  follows NIP-01: greater `created_at` wins and a lexicographically smaller id
+  follows NIP-01: greater `created_at` wins and the lexicographically lowest id
   wins a timestamp tie. Re-observation unions provenance. Only a complete
   bounded-plan observation advances the durable freshness used after restart;
   partial or unavailable fanout cannot turn retained evidence fresh.
   The latest lookup outcome is stored separately, so a later complete-empty,
-  partial, unavailable, or conflicting read remains stale after restart but
-  never erases the signed frontier. Relay-settings changes expire freshness
-  rather than deleting evidence.
+  partial, or unavailable read remains stale after restart but never erases the
+  signed frontier. The current resolver totally orders valid events and does not
+  emit a conflict state. Conflict is reserved as a fail-closed outcome only if a
+  future richer evidence model validates an internal inconsistency after
+  canonical ordering. Relay-settings changes expire freshness rather than
+  deleting evidence.
 - **Current versus last usable.** A newer `signed_empty` or `malformed` event
   becomes the current frontier and blocks every declaration-based write. The
   last usable declared relay set remains available only for permissive inbox
   reads and recovery. Without retained signed evidence, only a completed empty
   bounded read resolves to `not_observed`.
+- **Pending declaration cutover.** An unsigned draft, cancelled signer flow, or
+  missing required signature changes no route and removes no recovery behavior.
+  After every required event is signed and durably staged, new writes use the
+  pending declaration. For an ordinary Private inbox role change, previous valid
+  inboxes remain a hidden read-only lane until exact pending-event readback from
+  the bounded shared discovery set and expiry of a bounded, versioned
+  stale-sender grace period. They are not current membership and never authorize
+  writes. Explicit whole-setup removal excludes its URL from reads and writes
+  immediately after staging, before ACK or readback, accepting the warned risk
+  of missing stale-client sends.
 - **Cross-client declaration discovery.** Declaration publish and repair use a
   bounded shared discovery set that unrelated Conduit clients query. Repair is
   confirmed only after the exact signed event is observed from that shared set;
@@ -140,16 +154,25 @@ The boundary provides:
   no declaration may expose explicit same-set redistribution only for a retained
   current `declared` event. Redistribution republishes that exact signed event
   without asking the signer to mint a newer replacement. Retained
-  `signed_empty`/`malformed`, partial, unavailable, and conflicting observations
-  remain retry-only.
+  `signed_empty`/`malformed`, partial, and unavailable observations, plus any
+  future reserved fail-closed conflict, remain retry-only.
 - **Permissive inbox reads.** The principal's gift-wrap read plan is the union
-  of their current declared or retained last-usable inboxes, their locally
-  enabled secure IN relays, and the bounded Conduit compatibility read set.
-  Nonempty local settings do not suppress compatibility reads. Wraps are
-  deduplicated by outer wrapper and inner rumor ids, and found or cached
-  messages stay visible under partial failure. Reads report `complete`,
-  `partial`, or `unavailable` coverage and `declared`, `local_in`,
-  `compatibility`, `mixed`, or `cache` source.
+  of their current or pending declared inboxes, eligible retained last-usable or
+  cutover-recovery inboxes, an active bounded legacy migration-recovery record,
+  and the bounded Conduit compatibility read set. A fully staged whole-setup
+  removal is excluded immediately. General NIP-65 membership never adds an
+  inbox read target. Wraps are deduplicated by outer wrapper and inner rumor ids,
+  and found or cached messages stay visible under partial failure. Reads report
+  `complete`, `partial`, or `unavailable` coverage and an explicit source such as
+  `declared`, `pending_declared`, `cutover_recovery`, `migration_recovery`,
+  `compatibility`, `mixed`, or `cache`.
+- **Legacy inbox-read recovery.** Capturing the bounded read-only secure-IN
+  recovery record is independent of NIP-65 draft import. A valid signed
+  `kind:10002` suppresses the draft but does not end recovery. The record is not
+  current membership and never authorizes writes. It ends only after a usable
+  `kind:10050` replacement with one to three secure relays is fully signed and
+  durably staged, or after explicit discard recorded by a durable local
+  migration tombstone.
 - **Protected inbox execution.** The shared inbox path executes the principal's
   own `kind:1059`, `#p`-scoped filters through the NDK-neutral protected relay
   executor. The explicit account/session authorization boundary accepts only
@@ -214,8 +237,10 @@ Messaging surfaces must render explicit states, never silent gaps:
   Setup and repair are owned by the Network surface, and Messages/Orders link
   there instead of publishing declarations. A stale retained signed state shows
   a retry affordance; retained last-usable relays are labeled as historical
-  evidence rather than current write targets. Only complete shared-empty
-  discovery exposes explicit redistribution of an unchanged declaration.
+  evidence rather than current write targets. Hidden cutover and migration
+  recovery lanes never appear as current membership or authorize writes. Only
+  complete shared-empty discovery exposes explicit redistribution of an
+  unchanged declaration.
 - **Decrypt failed** when one or more gift wraps could not be unwrapped: show a
   visible, retryable degraded affordance that reports how many messages need
   retry. Retry re-attempts only the failed wrap ids (transient signer/timeout
@@ -248,6 +273,11 @@ distinguish untested, NIP-11-advertised, challenge-observed, succeeded, and
 rejected/unavailable evidence. NIP-11 advertisement is not proof of successful
 authentication or recipient enforcement.
 
+Shared acceleration, cache, index, and routing infrastructure may derive only
+from relay-visible state and must never expose a hidden API for private message
+content or ciphertext, order contents, payment or invoice data, signer or auth
+material, wallet credentials or recovery material, or wallet balances.
+
 ## Validation / testing
 
 - Classify kind-14 general vs kind-16 order-linked from unwrapped rumors.
@@ -270,8 +300,9 @@ authentication or recipient enforcement.
 - Partial and unavailable declaration observations do not advance durable
   complete-plan freshness across restart, and later degraded lookup evidence is
   retained. Complete shared-empty discovery may permit exact-event same-set
-  redistribution; it never signs a new replacement, and conflicting
-  observations do not authorize it.
+  redistribution; it never signs a new replacement. Partial or unavailable
+  observations and any future reserved fail-closed conflict do not authorize
+  it.
 - Capability detection reports v2 as default and keeps v3 gated off.
 - Send helper emits the correct rumor kind and tags for each conversation type.
 - Legacy kind-4 events are read-only, never published, and remain in
