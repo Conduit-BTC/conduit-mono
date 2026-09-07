@@ -200,7 +200,14 @@ describe("merchant organizer event market route", () => {
     expect(route).toContain("selectedReadReconciliationPending")
     expect(route).toContain("!selectedReadReconciliationPending")
     expect(route).toContain("organizerEventMarketReachesExpectedFrontiers(")
+    expect(route).toContain("const selectedReferenceResolutionPending =")
+    expect(route).toMatch(
+      /shouldResolveSelectedReference\s*&&\s*selectedMarketQuery\.isPending/
+    )
     expect(route).toContain("const selectedActionableMarket =")
+    expect(route).toMatch(
+      /const selectedActionableMarket =\s*!selectedReferenceResolutionPending\s*&&/
+    )
     expect(route).toContain("selectedMarketBehindExpectedFrontier")
     expect(route).toContain("Showing earlier signed event evidence")
     expect(route).toContain("actionsDisabled={!selectedActionableMarket}")

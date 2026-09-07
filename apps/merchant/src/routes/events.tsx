@@ -705,7 +705,10 @@ function MyEventsPanel({ organizerPubkey }: { organizerPubkey: string }) {
     !("terminal" in selectedResolution)
       ? selectedResolution
       : null
+  const selectedReferenceResolutionPending =
+    shouldResolveSelectedReference && selectedMarketQuery.isPending
   const selectedActionableMarket =
+    !selectedReferenceResolutionPending &&
     selectedMarket &&
     organizerEventMarketReachesExpectedFrontiers(
       selectedMarket,

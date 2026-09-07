@@ -100,6 +100,11 @@ type HeldPublicationAck = {
   release: () => void
 }
 
+type HeldRelayRequest = {
+  captured: Promise<RelayRequest>
+  release: () => void
+}
+
 type RelayRequest = {
   relayUrl: string
   subscriptionId: string
@@ -200,6 +205,11 @@ function createRelayHarness() {
     capture: (event: SignedEvent) => void
     released: Promise<void>
   } | null = null
+  let heldRelayRequest: {
+    predicate: (request: RelayRequest) => boolean
+    capture: (request: RelayRequest) => void
+    released: Promise<void>
+  } | null = null
 
   return {
     publications,
@@ -219,6 +229,23 @@ function createRelayHarness() {
         release = resolve
       })
       heldPublicationAck = { predicate, capture, released }
+      return { captured, release }
+    },
+    holdNextRelayRequest(
+      predicate: (request: RelayRequest) => boolean
+    ): HeldRelayRequest {
+      if (heldRelayRequest) {
+        throw new Error("A synthetic relay request is already held.")
+      }
+      let capture!: (request: RelayRequest) => void
+      let release!: () => void
+      const captured = new Promise<RelayRequest>((resolve) => {
+        capture = resolve
+      })
+      const released = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      heldRelayRequest = { predicate, capture, released }
       return { captured, release }
     },
     seed(...events: SignedEvent[]) {
@@ -242,34 +269,46 @@ function createRelayHarness() {
           if (frame[0] === "REQ" && typeof frame[1] === "string") {
             const subscriptionId = frame[1]
             const filters = frame.slice(2).filter(isRelayFilter)
-            const limitedMatchesById = new Map<string, SignedEvent>()
-            for (const filter of filters) {
-              const filterMatches = Array.from(eventsById.values())
-                .filter((event) => eventMatchesFilter(event, filter))
-                .sort(
-                  (left, right) =>
-                    right.created_at - left.created_at ||
-                    left.id.localeCompare(right.id)
-                )
-              const limit =
-                typeof filter.limit === "number"
-                  ? Math.max(0, Math.floor(filter.limit))
-                  : filterMatches.length
-              for (const event of filterMatches.slice(0, limit)) {
-                limitedMatchesById.set(event.id, event)
-              }
-            }
-            const limitedMatches = Array.from(limitedMatchesById.values())
-            requests.push({
+            const request: RelayRequest = {
               relayUrl: socket.url(),
               subscriptionId,
               filters: structuredClone(filters),
-              matchedEventIds: limitedMatches.map((event) => event.id),
-            })
-            for (const event of limitedMatches) {
-              socket.send(JSON.stringify(["EVENT", subscriptionId, event]))
+              matchedEventIds: [],
             }
-            socket.send(JSON.stringify(["EOSE", subscriptionId]))
+            requests.push(request)
+            const respond = () => {
+              const limitedMatchesById = new Map<string, SignedEvent>()
+              for (const filter of filters) {
+                const filterMatches = Array.from(eventsById.values())
+                  .filter((event) => eventMatchesFilter(event, filter))
+                  .sort(
+                    (left, right) =>
+                      right.created_at - left.created_at ||
+                      left.id.localeCompare(right.id)
+                  )
+                const limit =
+                  typeof filter.limit === "number"
+                    ? Math.max(0, Math.floor(filter.limit))
+                    : filterMatches.length
+                for (const event of filterMatches.slice(0, limit)) {
+                  limitedMatchesById.set(event.id, event)
+                }
+              }
+              const limitedMatches = Array.from(limitedMatchesById.values())
+              request.matchedEventIds = limitedMatches.map((event) => event.id)
+              for (const event of limitedMatches) {
+                socket.send(JSON.stringify(["EVENT", subscriptionId, event]))
+              }
+              socket.send(JSON.stringify(["EOSE", subscriptionId]))
+            }
+            const heldRequest = heldRelayRequest
+            if (heldRequest?.predicate(request)) {
+              heldRelayRequest = null
+              heldRequest.capture(structuredClone(request))
+              void heldRequest.released.then(respond)
+              return
+            }
+            respond()
             return
           }
 
@@ -1237,6 +1276,118 @@ test("event membership and retry completions stay bound to their initiating even
   await expect(page.locator("#event-market-selector")).toContainText(
     "Synthetic Race Event B"
   )
+})
+
+test("organizer actions wait for an initial hinted read and use its newer collection @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  page.setDefaultTimeout(25_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic Hinted Resolution Market",
+    organizerHandoffEnabled: true,
+  })
+  const requestedProduct = createMerchantProductEvent({
+    dTag: "hinted-resolution-request",
+    title: "Synthetic hinted resolution request",
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: market.pickupCoordinate!,
+    createdAt: market.initialCollection.created_at + 1,
+  })
+
+  const identifier = market.initialCollection.tags.find(
+    (tag) => tag[0] === "d"
+  )?.[1]
+  expect(identifier).toBeTruthy()
+  const hintedReference = nip19.naddrEncode({
+    kind: 30405,
+    pubkey: ORGANIZER_PUBKEY,
+    identifier: identifier!,
+    relays: [FIXTURE_RELAY],
+  })
+  const savedStorageKey = `conduit:merchant:event-markets:v1:${ORGANIZER_PUBKEY}`
+  await page.evaluate((key) => localStorage.removeItem(key), savedStorageKey)
+  await page.reload()
+  await page.getByRole("tab", { name: "My events", exact: true }).click()
+  const updateEvent = page.getByRole("button", {
+    name: "Update event",
+    exact: true,
+  })
+  await expect(updateEvent).toBeEnabled({ timeout: 30_000 })
+
+  relay.seed(requestedProduct)
+  await page.getByRole("button", { name: "Refresh evidence" }).click()
+  const acceptRequest = page.getByRole("button", {
+    name: "Accept",
+    exact: true,
+  })
+  await expect(acceptRequest).toBeEnabled({ timeout: 30_000 })
+
+  const hintedRead = relay.holdNextRelayRequest(
+    (request) =>
+      request.relayUrl.startsWith(FIXTURE_RELAY) &&
+      request.filters.some(
+        (filter) =>
+          filter.authors?.includes(ORGANIZER_PUBKEY) &&
+          filter.kinds?.includes(30405)
+      )
+  )
+  await page.getByLabel("Catalog naddr or link").fill(hintedReference)
+  await page.getByRole("button", { name: "Open", exact: true }).click()
+  await hintedRead.captured
+
+  await expect(updateEvent).toBeVisible()
+  await expect(updateEvent).toBeDisabled()
+  await expect(acceptRequest).toBeVisible({ timeout: 30_000 })
+  await expect(acceptRequest).toBeDisabled()
+
+  const alreadyAcceptedProduct = createMerchantProductEvent({
+    dTag: "hinted-resolution-existing",
+    title: "Synthetic product already accepted by newer collection",
+    collectionCoordinate: market.collectionCoordinate,
+    pickupCoordinate: market.pickupCoordinate!,
+    createdAt: market.initialCollection.created_at + 2,
+  })
+  const newerCollection = signEvent(ORGANIZER_SECRET, {
+    kind: 30405,
+    created_at: market.initialCollection.created_at + 3,
+    tags: [
+      ...market.initialCollection.tags,
+      ["a", eventCoordinate(alreadyAcceptedProduct)],
+    ],
+    content: market.initialCollection.content,
+  })
+  relay.seed(alreadyAcceptedProduct, newerCollection)
+  hintedRead.release()
+
+  await expect(updateEvent).toBeEnabled({ timeout: 30_000 })
+  await expect(acceptRequest).toBeEnabled({ timeout: 30_000 })
+  const membershipAck = relay.holdNextPublicationAck(
+    (event) =>
+      event.kind === 30405 &&
+      eventCoordinate(event) === market.collectionCoordinate &&
+      event.tags.some(
+        (tag) => tag[0] === "a" && tag[1] === eventCoordinate(requestedProduct)
+      )
+  )
+  await acceptRequest.click()
+  const acceptedCollection = await membershipAck.captured
+  membershipAck.release()
+  await expect(page.getByText("Accepted", { exact: true }).first()).toBeVisible(
+    {
+      timeout: 30_000,
+    }
+  )
+  expect(acceptedCollection.tags).toContainEqual([
+    "a",
+    eventCoordinate(alreadyAcceptedProduct),
+  ])
+  expect(acceptedCollection.tags).toContainEqual([
+    "a",
+    eventCoordinate(requestedProduct),
+  ])
 })
 
 test("paid organizer pickup uses ordinary checkout even after inbox withdrawal @market @merchant", async ({
