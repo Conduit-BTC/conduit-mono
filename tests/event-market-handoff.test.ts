@@ -51,6 +51,7 @@ import {
   type ParsedEventMarketPrivateMessage,
 } from "@conduit/core"
 import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
+import type { ResolveInboxDeclarationOptions } from "@conduit/core/protocol/private-message-routing"
 import {
   __resetProtectedReadSigner,
   installProtectedReadSigner,
@@ -1568,16 +1569,6 @@ describe("event-market organizer claim reduction", () => {
       organizerPubkey: ORGANIZER,
       messages: [parsedMessage(readyRumor, readyPayload())],
     })[0]!
-    const partialRead = {
-      data: [claim],
-      stale: false,
-      decryptFailureCount: 0,
-      inbox: {
-        declarationState: "declared" as const,
-        coverage: "partial" as const,
-        readSource: "declared" as const,
-      },
-    }
     expect(claim.state).toBe("ready_for_pickup")
     expect(
       resolveEventMarketHandoffAckGate({
@@ -1777,6 +1768,174 @@ describe("event-market organizer claim reduction", () => {
 })
 
 describe("event-market organizer inbox readiness", () => {
+  function partialDeclarationRead(
+    declarations: readonly SignedPublicNostrEvent[]
+  ): ResolveInboxDeclarationOptions {
+    return {
+      relayUrls: ["wss://discovery.relay.dev", "wss://offline.relay.dev"],
+      now: () => (ISSUED_AT + 10) * 1_000,
+      freshnessMs: 0,
+      fetchEventsWithDiagnostics: async (filter) => ({
+        events: declarations
+          .filter((event) => filter.authors?.includes(event.pubkey))
+          .map((event) => new NDKEvent(undefined, event)),
+        attemptedRelayUrls: [
+          "wss://discovery.relay.dev",
+          "wss://offline.relay.dev",
+        ],
+        successfulRelayUrls: ["wss://discovery.relay.dev"],
+        failedRelayUrls: ["wss://offline.relay.dev"],
+      }),
+    }
+  }
+
+  function inboxDeclaration(
+    secret: Uint8Array,
+    relays: string[],
+    createdAt = ISSUED_AT
+  ) {
+    return finalizeEvent(
+      {
+        kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
+        created_at: createdAt,
+        tags: relays.map((relay) => ["relay", relay]),
+        content: "",
+      },
+      secret
+    )
+  }
+
+  it("retries the exact organizer and sender wraps using signed inboxes from partial discovery", async () => {
+    const recipientRelay = "wss://organizer.inbox.relay.dev"
+    const senderRelay = "wss://merchant.inbox.relay.dev"
+    const record = readyDeliveryRecord()
+    const calls: Array<{ id: string; relays: string[] }> = []
+    const input = {
+      record,
+      inboxDeclarationOptions: partialDeclarationRead([
+        inboxDeclaration(ORGANIZER_SECRET, [recipientRelay]),
+        inboxDeclaration(MERCHANT_SECRET, [senderRelay]),
+      ]),
+      publishFn: (async (event, options) => {
+        const relays = [...(options.exclusiveRelayUrls ?? [])]
+        calls.push({ id: event.id, relays })
+        return successfulDelivery(relays)
+      }) as typeof import("@conduit/core").publishWithPlanner,
+    }
+    const delivered = await retryEventMarketPrivateDelivery(input)
+    expect(calls).toEqual([
+      { id: record.signedRecipientWrap.id, relays: [recipientRelay] },
+      { id: record.signedSelfWrap!.id, relays: [senderRelay] },
+    ])
+    expect(delivered.recipientStatus).toBe("full_success")
+    expect(delivered.selfDeliveryStatus).toBe("full_success")
+    expect(delivered.selfCopyError).toBeNull()
+
+    await retryEventMarketPrivateDelivery({
+      ...input,
+      deliveryProgress: delivered.deliveryProgress,
+    })
+    expect(calls).toHaveLength(2)
+  })
+
+  it("caps partial-discovery retry delivery to the first three declared relays", async () => {
+    const recipientRelays = [
+      "wss://organizer-a.inbox.relay.dev",
+      "wss://organizer-b.inbox.relay.dev",
+      "wss://organizer-c.inbox.relay.dev",
+      "wss://organizer-d.inbox.relay.dev",
+    ]
+    const senderRelays = [
+      "wss://merchant-a.inbox.relay.dev",
+      "wss://merchant-b.inbox.relay.dev",
+      "wss://merchant-c.inbox.relay.dev",
+      "wss://merchant-d.inbox.relay.dev",
+    ]
+    const record = readyDeliveryRecord()
+    const calls: Array<{ id: string; relays: string[] }> = []
+    const delivered = await retryEventMarketPrivateDelivery({
+      record,
+      inboxDeclarationOptions: partialDeclarationRead([
+        inboxDeclaration(ORGANIZER_SECRET, recipientRelays),
+        inboxDeclaration(MERCHANT_SECRET, senderRelays),
+      ]),
+      publishFn: (async (event, options) => {
+        const relays = [...(options.exclusiveRelayUrls ?? [])]
+        calls.push({ id: event.id, relays })
+        return successfulDelivery(relays)
+      }) as typeof import("@conduit/core").publishWithPlanner,
+    })
+
+    expect(calls).toEqual([
+      {
+        id: record.signedRecipientWrap.id,
+        relays: recipientRelays.slice(0, 3),
+      },
+      { id: record.signedSelfWrap!.id, relays: senderRelays.slice(0, 3) },
+    ])
+    expect(delivered.recipientStatus).toBe("full_success")
+    expect(delivered.selfDeliveryStatus).toBe("full_success")
+    expect(
+      delivered.deliveryProgress.recipientAcknowledgedRelayRefs
+    ).toHaveLength(3)
+    expect(delivered.deliveryProgress.selfAcknowledgedRelayRefs).toHaveLength(3)
+  })
+
+  it.each([
+    { relays: [], reason: "signed_empty" },
+    { relays: ["https://not-an-inbox.example"], reason: "malformed" },
+  ])(
+    "blocks a newer signed $reason inbox even when older usable evidence remains",
+    async ({ relays, reason }) => {
+      const previous = inboxDeclaration(ORGANIZER_SECRET, [
+        "wss://organizer.inbox.relay.dev",
+      ])
+      await expect(
+        resolveEventMarketOrganizerInbox(
+          ORGANIZER,
+          partialDeclarationRead([previous])
+        )
+      ).resolves.toMatchObject({ state: "ready" })
+      const current = inboxDeclaration(ORGANIZER_SECRET, relays, ISSUED_AT + 1)
+      const options = partialDeclarationRead([previous, current])
+      await expect(
+        resolveEventMarketOrganizerInbox(ORGANIZER, options)
+      ).resolves.toMatchObject({ state: "blocked", reason })
+      let publishes = 0
+      await expect(
+        retryEventMarketPrivateDelivery({
+          record: readyDeliveryRecord(),
+          inboxDeclarationOptions: options,
+          publishFn: (async () => {
+            publishes += 1
+            return successfulDelivery([])
+          }) as never,
+        })
+      ).rejects.toThrow("recipient inbox is not currently usable")
+      expect(publishes).toBe(0)
+    }
+  )
+
+  it("keeps organizer delivery distinct from an unavailable sender self-copy", async () => {
+    const recipientRelay = "wss://organizer.inbox.relay.dev"
+    const calls: string[][] = []
+    const delivered = await retryEventMarketPrivateDelivery({
+      record: readyDeliveryRecord(),
+      inboxDeclarationOptions: partialDeclarationRead([
+        inboxDeclaration(ORGANIZER_SECRET, [recipientRelay]),
+      ]),
+      publishFn: (async (_event, options) => {
+        const relays = [...(options.exclusiveRelayUrls ?? [])]
+        calls.push(relays)
+        return successfulDelivery(relays)
+      }) as typeof import("@conduit/core").publishWithPlanner,
+    })
+    expect(calls).toEqual([[recipientRelay]])
+    expect(delivered.recipientStatus).toBe("full_success")
+    expect(delivered.selfDeliveryStatus).toBeNull()
+    expect(delivered.selfCopyError).toContain("inbox is not currently usable")
+  })
+
   it("accepts only the exact configured E2E loopback declaration", async () => {
     const isolatedRelayUrl = "ws://127.0.0.1:7777"
     const otherLoopbackRelayUrl = "ws://127.0.0.1:7788"
