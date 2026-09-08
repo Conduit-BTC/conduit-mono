@@ -7,6 +7,7 @@ import {
   resolveEventMarketProductFulfillment,
   resolveEventMarketProductParticipation,
   resolveOrderPickupHandoffAuthority,
+  type CommerceProductRecord,
   type EventMarketResolution,
   type OrderPickupFulfillmentSchema,
   type OrderSummary,
@@ -32,7 +33,11 @@ export type MerchantPickupAuthorizationFailure =
 
 export type MerchantPickupAuthorizationResult =
   | { status: "not_required" }
-  | { status: "verified" }
+  | {
+      status: "verified"
+      market: EventMarketResolution
+      products: CommerceProductRecord[]
+    }
   | {
       status: "unverified"
       reason: MerchantPickupAuthorizationFailure
@@ -41,8 +46,9 @@ export type MerchantPickupAuthorizationResult =
 export interface MerchantPickupAuthorizationInput {
   items: OrderSummary["items"]
   merchantPubkey: string
+  /** Limit verification to coherent order lines for one stock mutation. */
+  targetProductCoordinate?: string
   nowMs?: number
-  /** Receives the exact verified graph for a same-action Core authorization. */
   onVerifiedMarket?: (market: EventMarketResolution) => void
 }
 
@@ -306,7 +312,21 @@ export async function verifyMerchantPickupOrderAuthorization(
   input: MerchantPickupAuthorizationInput,
   dependencies: MerchantPickupAuthorizationDependencies = DEFAULT_DEPENDENCIES
 ): Promise<MerchantPickupAuthorizationResult> {
-  const pickupItems = pickupItemsFromOrder(input.items)
+  const targetProductCoordinate = input.targetProductCoordinate
+    ? canonicalCoordinate(input.targetProductCoordinate, [30402])
+    : null
+  if (input.targetProductCoordinate && !targetProductCoordinate) {
+    return { status: "unverified", reason: "invalid_snapshot" }
+  }
+  const relevantItems = targetProductCoordinate
+    ? input.items.filter((item) =>
+        sameCoordinate(item.productId, targetProductCoordinate, [30402])
+      )
+    : input.items
+  if (targetProductCoordinate && relevantItems.length === 0) {
+    return { status: "unverified", reason: "invalid_snapshot" }
+  }
+  const pickupItems = pickupItemsFromOrder(relevantItems)
   if (pickupItems === null) {
     return { status: "unverified", reason: "invalid_snapshot" }
   }
@@ -382,6 +402,7 @@ export async function verifyMerchantPickupOrderAuthorization(
     return { status: "unverified", reason: "network_unavailable" }
   }
 
+  const verifiedProducts: CommerceProductRecord[] = []
   for (const item of pickupItems) {
     const coordinate = canonicalCoordinate(item.productId, [30402])
     if (!coordinate) {
@@ -463,10 +484,11 @@ export async function verifyMerchantPickupOrderAuthorization(
     ) {
       return { status: "unverified", reason: "cost_mismatch" }
     }
+    verifiedProducts.push(record)
   }
 
   input.onVerifiedMarket?.(resolution)
-  return { status: "verified" }
+  return { status: "verified", market: resolution, products: verifiedProducts }
 }
 
 export function getMerchantPickupAuthorizationMessage(

@@ -14,6 +14,9 @@ const ORGANIZER = "b".repeat(64)
 const COLLECTION_ID = `30405:${ORGANIZER}:chicago-market`
 const CALENDAR_ID = `31923:${ORGANIZER}:chicago-market`
 const PICKUP_ID = `30406:${ORGANIZER}:chicago-market-pickup`
+const OWN_COLLECTION_ID = `30405:${MERCHANT}:merchant-market`
+const OWN_CALENDAR_ID = `31923:${MERCHANT}:merchant-market`
+const OWN_PICKUP_ID = `30406:${MERCHANT}:merchant-market-pickup`
 
 function rawItem(overrides: Partial<CartItem> = {}): CartItem {
   return {
@@ -137,6 +140,44 @@ function pickupProduct(): Product {
     collectionRefs: [COLLECTION_ID],
     canonicalShippingResolved: false,
   })
+}
+
+function ownPickupProduct(): Product {
+  return product({
+    shippingOptionId: OWN_PICKUP_ID,
+    shippingOptionDTag: "merchant-market-pickup",
+    shippingOptionRefs: [{ coordinate: OWN_PICKUP_ID }],
+    collectionRefs: [OWN_COLLECTION_ID],
+    canonicalShippingResolved: false,
+  })
+}
+
+function ownPickupFulfillment(
+  handoffMode: "merchant_handoff" | "organizer_handoff"
+): CartPickupFulfillment {
+  return {
+    ...pickupFulfillment(),
+    organizerPubkey: MERCHANT,
+    calendar: {
+      coordinate: OWN_CALENDAR_ID,
+      eventId: "6".repeat(64),
+      createdAt: 6,
+    },
+    collection: {
+      coordinate: OWN_COLLECTION_ID,
+      eventId: "7".repeat(64),
+      createdAt: 7,
+    },
+    option: {
+      coordinate: OWN_PICKUP_ID,
+      eventId: "8".repeat(64),
+      createdAt: 8,
+      title: "Merchant pickup",
+      location: "Merchant booth",
+    },
+    handoffMode,
+    handlerPubkey: MERCHANT,
+  }
 }
 
 describe("checkout authorization refresh", () => {
@@ -457,6 +498,58 @@ describe("checkout authorization refresh", () => {
     expect(result).toEqual({ status: "ok", items: [item] })
     expect(shippingRead).toBe(false)
     expect(handlerAuthorizationCount).toBe(1)
+  })
+
+  it("normalizes the bounded historical own-product handoff during checkout", async () => {
+    const refreshedProduct = ownPickupProduct()
+    const historical = ownPickupFulfillment("organizer_handoff")
+    const current = ownPickupFulfillment("merchant_handoff")
+    const item = createCartItemFromProduct(refreshedProduct, historical)
+
+    const result = await authorizeCurrentCheckoutItems({
+      mode: "direct_payment",
+      reviewedItems: [item],
+      rawItems: [item],
+      refreshedProducts: [refreshedProduct],
+      readShippingOptions: async () => [],
+      resolveProductFulfillment: async () => ({
+        status: "pickup",
+        product: refreshedProduct,
+        fulfillment: current,
+      }),
+      authorizePickupHandlers: async (items) => {
+        expect(items[0]?.fulfillment).toEqual(current)
+      },
+    })
+
+    expect(result).toEqual({
+      status: "ok",
+      items: [createCartItemFromProduct(refreshedProduct, current)],
+    })
+  })
+
+  it("still blocks a real pickup authority change between distinct parties", async () => {
+    const refreshedProduct = pickupProduct()
+    const historical = pickupFulfillment()
+    const item = createCartItemFromProduct(refreshedProduct, historical)
+
+    const result = await authorizeCurrentCheckoutItems({
+      mode: "direct_payment",
+      reviewedItems: [item],
+      rawItems: [item],
+      refreshedProducts: [refreshedProduct],
+      readShippingOptions: async () => [],
+      resolveProductFulfillment: async () => ({
+        status: "pickup",
+        product: refreshedProduct,
+        fulfillment: pickupFulfillment({
+          handoffMode: "merchant_handoff",
+          handlerPubkey: MERCHANT,
+        }),
+      }),
+    })
+
+    expect(result).toEqual({ status: "changed" })
   })
 
   it("blocks a filtered non-pickup item in a mixed pickup cart", async () => {
