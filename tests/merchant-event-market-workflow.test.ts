@@ -968,6 +968,59 @@ describe("merchant organizer event workflow", () => {
     ).toBe("deleted")
   })
 
+  it("applies equal-timestamp addressable tombstones regardless of deletion id", () => {
+    const listMarket = {
+      collectionCoordinate: COLLECTION,
+      collectionCreatedAt: 3_000,
+      collectionEventId: "b".repeat(64),
+      naddr: encodeEventMarketNaddr(COLLECTION, [
+        "wss://planner.example/events",
+      ]),
+      state: "active",
+    }
+    const deletion = {
+      terminal: true as const,
+      state: "deleted" as const,
+      collectionCoordinate: COLLECTION,
+      collectionCreatedAt: 1_000,
+      collectionEventId: "b".repeat(64),
+      deletion: {
+        record: "collection" as const,
+        coordinate: COLLECTION,
+        deletions: [
+          {
+            deletionEventId: "0".repeat(64),
+            deletionCreatedAt: 3_000,
+            authorPubkey: ORGANIZER,
+            eventTargets: [],
+            addressableTargets: [COLLECTION],
+          },
+        ],
+      },
+      naddr: encodeEventMarketNaddr(COLLECTION, [
+        "wss://deletion.example/events",
+      ]),
+    }
+
+    expect(
+      selectOrganizerEventMarketResolution(listMarket, deletion)?.state
+    ).toBe("deleted")
+    expect(
+      selectOrganizerEventMarketResolution(listMarket, {
+        ...deletion,
+        deletion: {
+          ...deletion.deletion,
+          deletions: [
+            {
+              ...deletion.deletion.deletions[0]!,
+              deletionEventId: "f".repeat(64),
+            },
+          ],
+        },
+      })?.state
+    ).toBe("deleted")
+  })
+
   it("compares a standalone coordinate tombstone with the saved frontier", () => {
     const savedReference = {
       reference: encodeEventMarketNaddr(COLLECTION, [
@@ -1469,7 +1522,7 @@ describe("merchant organizer event workflow", () => {
       )
     ).toBe(true)
 
-    const equalTimestampWinner = {
+    const equalTimestampDeletion = {
       ...terminalDeletion,
       deletion: {
         ...terminalDeletion.deletion,
@@ -1483,7 +1536,7 @@ describe("merchant organizer event workflow", () => {
       },
     }
     expect(
-      organizerEventMarketDeletionRetiresDelivery(equalTimestampWinner, {
+      organizerEventMarketDeletionRetiresDelivery(equalTimestampDeletion, {
         record: "collection",
         signedEvent: signedCollection,
       })
@@ -1491,12 +1544,12 @@ describe("merchant organizer event workflow", () => {
     expect(
       organizerEventMarketDeletionRetiresDelivery(
         {
-          ...equalTimestampWinner,
+          ...equalTimestampDeletion,
           deletion: {
-            ...equalTimestampWinner.deletion,
+            ...equalTimestampDeletion.deletion,
             deletions: [
               {
-                ...equalTimestampWinner.deletion.deletions[0]!,
+                ...equalTimestampDeletion.deletion.deletions[0]!,
                 deletionEventId: "f".repeat(64),
               },
             ],
@@ -1504,7 +1557,7 @@ describe("merchant organizer event workflow", () => {
         },
         { record: "collection", signedEvent: signedCollection }
       )
-    ).toBe(false)
+    ).toBe(true)
   })
 
   it("keeps a hinted selection through bare edit and publish references for sharing", () => {

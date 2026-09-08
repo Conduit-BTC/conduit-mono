@@ -323,16 +323,11 @@ function eventMarketDeletionAppliesToFrontier(
   ) {
     return false
   }
-  return (
-    compareEventMarketRecordFrontier(
-      {
-        createdAt: deletion.deletionCreatedAt,
-        eventId: deletion.deletionEventId.toLowerCase(),
-        coordinate,
-      },
-      frontier
-    ) >= 0
-  )
+  // NIP-09 applies an addressable deletion to every matching revision whose
+  // created_at is at or before the deletion timestamp. The NIP-01 event-id
+  // tie-break only chooses between competing replaceable records; a kind-5
+  // deletion is not part of that replacement chain.
+  return deletion.deletionCreatedAt >= frontier.createdAt
 }
 
 export function organizerEventMarketDeletionRetiresDelivery(
