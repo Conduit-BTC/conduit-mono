@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test"
+import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools"
 import {
   decodeEventMarketReference,
   encodeEventMarketNaddr,
@@ -26,6 +27,9 @@ import {
 import {
   isParticipationHandoffVerified,
   isParticipationProductPreviewVerified,
+  publishMerchantOrganizerMembership,
+  type MerchantOrganizerEventMarket,
+  type MerchantOrganizerRecordDelivery,
 } from "../apps/merchant/src/lib/event-market"
 import { getEventMarketUrl } from "../apps/merchant/src/lib/market-links"
 
@@ -1781,6 +1785,90 @@ describe("merchant organizer event workflow", () => {
         ORGANIZER
       )
     ).toBe(false)
+  })
+
+  it("rejects an organizer handoff removed by a newer retained collection", async () => {
+    const secret = generateSecretKey()
+    const organizer = getPublicKey(secret)
+    const collectionCoordinate = `30405:${organizer}:market`
+    const calendarCoordinate = `31923:${organizer}:market`
+    const oldPickup = `30406:${organizer}:old-booth`
+    const currentPickup = `30406:${organizer}:current-booth`
+    const productCoordinate = `30402:${MERCHANT}:bread`
+    const retainedEvent = finalizeEvent(
+      {
+        kind: 30405,
+        created_at: 2,
+        content: "Current collection",
+        tags: [
+          ["d", "market"],
+          ["title", "Current market"],
+          ["a", calendarCoordinate],
+          ["shipping_option", currentPickup],
+        ],
+      },
+      secret
+    )
+    const retainedCollection = {
+      record: "collection",
+      acknowledgedCount: 1,
+      rejectedCount: 0,
+      timedOutCount: 0,
+      signedEvent: retainedEvent,
+    } satisfies MerchantOrganizerRecordDelivery
+    const market = {
+      state: "partial",
+      organizerPubkey: organizer,
+      collectionCoordinate,
+      calendarCoordinate,
+      pickupCoordinate: oldPickup,
+      pickupCoordinates: [oldPickup],
+      naddr: "naddr-test",
+      title: "Older relay market",
+      calendarKind: 31923,
+      start: 1,
+      collectionCreatedAt: 1_000,
+      productCoordinates: [],
+      participation: [],
+      source: {
+        collection: {
+          eventId: "f".repeat(64),
+          createdAt: 1_000,
+          content: "Older relay collection",
+        },
+      },
+    } as MerchantOrganizerEventMarket
+    const item = {
+      productCoordinate,
+      eventId: "e".repeat(64),
+      createdAt: 1_000,
+      merchantPubkey: MERCHANT,
+      fulfillmentStatus: "resolved" as const,
+      pickupCoordinate: oldPickup,
+      pickupAuthorPubkey: organizer,
+      handoffMode: "organizer_handoff" as const,
+      handlerPubkey: organizer,
+      productPreview: {
+        coordinate: productCoordinate,
+        eventId: "e".repeat(64),
+        createdAt: 1_000,
+        title: "Fresh bread",
+        priceStatus: "resolved" as const,
+        price: 25,
+        currency: "SAT",
+      },
+      status: "pending" as const,
+    }
+
+    await expect(
+      publishMerchantOrganizerMembership({
+        organizerPubkey: organizer,
+        market,
+        item,
+        action: "accept",
+        retainedCollection,
+      })
+    ).rejects.toThrow("Current signed product preview or handoff evidence")
   })
 
   it("accepts only a revision-bound Core product preview with usable canonical price evidence", () => {

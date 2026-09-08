@@ -210,6 +210,7 @@ function createRelayHarness() {
     capture: (request: RelayRequest) => void
     released: Promise<void>
   } | null = null
+  const rejectedKinds = new Set<number>()
 
   return {
     publications,
@@ -247,6 +248,10 @@ function createRelayHarness() {
       })
       heldRelayRequest = { predicate, capture, released }
       return { captured, release }
+    },
+    rejectKind(kind: number, reject: boolean) {
+      if (reject) rejectedKinds.add(kind)
+      else rejectedKinds.delete(kind)
     },
     seed(...events: SignedEvent[]) {
       for (const event of events) {
@@ -321,8 +326,19 @@ function createRelayHarness() {
             verifyEvent(frame[1])
           ) {
             const event = structuredClone(frame[1])
-            eventsById.set(event.id, event)
             publications.push({ relayUrl: socket.url(), event })
+            if (rejectedKinds.has(event.kind)) {
+              socket.send(
+                JSON.stringify([
+                  "OK",
+                  event.id,
+                  false,
+                  "error: synthetic temporary rejection",
+                ])
+              )
+              return
+            }
+            eventsById.set(event.id, event)
             const heldAck = heldPublicationAck
             if (heldAck?.predicate(event)) {
               heldPublicationAck = null
@@ -877,13 +893,15 @@ async function publishMerchantProductFromEvent(
     handoffMode: "merchant" | "organizer"
     templateTitle?: string
     discoveryMode?: "direct" | "followed"
+    identity?: "merchant" | "organizer"
+    rejectAcceptanceOnce?: boolean
   }
 ): Promise<SignedEvent> {
   await gotoAs(
     page,
     merchantUrl,
     options.discoveryMode ? "/events" : market.merchantParticipationPath,
-    "merchant"
+    options.identity ?? "merchant"
   )
   await expect(
     page.getByRole("heading", { name: "Events", exact: true })
@@ -906,15 +924,21 @@ async function publishMerchantProductFromEvent(
     await page.getByLabel("Event naddr or link").fill(market.canonicalNaddr)
     await page.getByRole("button", { name: "Open", exact: true }).click()
   }
-  await expect(
-    page.getByRole("button", { name: "Publish product", exact: true })
-  ).toBeVisible({ timeout: 30_000 })
+  const publishProductButton = page.getByRole("button", {
+    name: "Publish product",
+    exact: true,
+  })
+  await expect(publishProductButton).toBeVisible({ timeout: 30_000 })
+  await expect(publishProductButton).toBeEnabled({ timeout: 30_000 })
 
-  await page.getByRole("button", { name: "Publish product" }).click()
+  await publishProductButton.click()
   const editor = page.getByRole("dialog", {
     name: `Publish a product to ${options.eventTitle}`,
   })
   await expect(editor).toBeVisible()
+  await expect(
+    editor.getByText("Lightning payments are not set up", { exact: true })
+  ).toBeVisible({ timeout: 15_000 })
   const templateSelector = editor.getByLabel("Start from")
   if (options.templateTitle) {
     await templateSelector.click()
@@ -950,14 +974,46 @@ async function publishMerchantProductFromEvent(
   }
 
   const publishStart = relay.publications.length
+  if (options.rejectAcceptanceOnce) relay.rejectKind(30405, true)
   await editor
-    .getByRole("button", { name: "Publish product", exact: true })
-    .click()
-  await expect(editor).toBeHidden({ timeout: 30_000 })
-  await expect(
-    page.getByText("Product published. Organizer acceptance is pending.", {
+    .getByRole("button", {
+      name:
+        options.identity === "organizer"
+          ? "Publish and accept product"
+          : "Publish product",
       exact: true,
     })
+    .click()
+  if (options.rejectAcceptanceOnce) {
+    await expect(
+      editor.getByRole("button", { name: "Retry acceptance", exact: true })
+    ).toBeVisible({ timeout: 30_000 })
+    await expect(
+      editor.getByRole("button", {
+        name: "Publish and accept product",
+        exact: true,
+      })
+    ).toHaveCount(0)
+    expect(
+      uniquePublishedEvents(relay.publications.slice(publishStart)).filter(
+        (event) => event.kind === 30402
+      )
+    ).toHaveLength(1)
+    relay.rejectKind(30405, false)
+    await editor
+      .getByRole("button", { name: "Retry acceptance", exact: true })
+      .click()
+  }
+  await expect(editor).toBeHidden({ timeout: 30_000 })
+  await expect(
+    page.getByText(
+      options.identity === "organizer"
+        ? "Product published and accepted into your event."
+        : "Product published. Organizer acceptance is pending.",
+      {
+        exact: true,
+      }
+    )
   ).toBeVisible({ timeout: 30_000 })
 
   const published = uniquePublishedEvents(
@@ -965,7 +1021,9 @@ async function publishMerchantProductFromEvent(
   )
   const productEvent = published.find((event) => event.kind === 30402)
   expect(productEvent).toBeTruthy()
-  expect(productEvent!.pubkey).toBe(MERCHANT_PUBKEY)
+  expect(productEvent!.pubkey).toBe(
+    options.identity === "organizer" ? ORGANIZER_PUBKEY : MERCHANT_PUBKEY
+  )
   expect(productEvent!.tags).toContainEqual(["a", market.collectionCoordinate])
   expect(productEvent!.tags).toContainEqual(["price", "0", "SATS"])
   const pickupCoordinate = productEvent!.tags.find(
@@ -1903,6 +1961,63 @@ test("membership updates retain externally replaced children and retire removed 
   expect(savedReference?.expectedPickupCoordinate).toBeUndefined()
 })
 
+test("organizer publishes and accepts their own product as merchant pickup @market @merchant", async ({
+  page,
+}) => {
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic Owner Product Event",
+    organizerHandoffEnabled: true,
+  })
+  const product = await publishMerchantProductFromEvent(page, relay, market, {
+    eventTitle: "Synthetic Owner Product Event",
+    productTitle: "Synthetic Owner Product",
+    handoffMode: "merchant",
+    identity: "organizer",
+    rejectAcceptanceOnce: true,
+  })
+  const accepted = uniquePublishedEvents(relay.publications).filter(
+    (event) =>
+      event.kind === 30405 &&
+      event.tags.some(
+        (tag) => tag[0] === "a" && tag[1] === eventCoordinate(product)
+      )
+  )
+  expect(accepted).toHaveLength(1)
+  expect(accepted[0]!.pubkey).toBe(ORGANIZER_PUBKEY)
+  expect(accepted[0]!.tags).toContainEqual([
+    "shipping_option",
+    market.pickupCoordinate!,
+  ])
+  expect(product.tags).toContainEqual(["visibility", "hidden"])
+
+  await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
+  const productCard = page
+    .getByRole("listitem")
+    .filter({ hasText: "Synthetic Owner Product" })
+  await expect(
+    productCard.getByText("Pickup from merchant booth", { exact: true })
+  ).toBeVisible({ timeout: 30_000 })
+  await productCard.getByRole("button", { name: "Add", exact: true }).click()
+  await expect(
+    page.getByText(
+      "Synthetic Owner Product was added for pickup from merchant booth.",
+      { exact: true }
+    )
+  ).toBeVisible()
+  await gotoAs(page, marketUrl, "/checkout", "buyer", {
+    merchant: nip19.npubEncode(ORGANIZER_PUBKEY),
+  })
+  await expect(
+    page.getByText("Pickup from merchant booth", { exact: true }).first()
+  ).toBeVisible()
+  await expect(page.getByRole("button", { name: /^Send order$/i })).toBeEnabled(
+    { timeout: 30_000 }
+  )
+  await expect(page.getByText(/Organizer release authorization/)).toHaveCount(0)
+})
+
 test("paid organizer pickup uses ordinary checkout even after inbox withdrawal @market @merchant", async ({
   page,
 }) => {
@@ -2399,8 +2514,14 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
   })!
   const receiptPanel = page.getByTestId("merchant-organizer-handoff-receipt")
   await expect(receiptPanel).toBeVisible({ timeout: 30_000 })
-  const shareReceipt = receiptPanel.getByRole("button", {
-    name: "Review release authorization",
+  await expect(
+    page.getByRole("heading", {
+      name: "Ready for organizer pickup?",
+      exact: true,
+    })
+  ).toBeVisible()
+  const shareReceipt = page.getByRole("button", {
+    name: "Prepare organizer release",
     exact: true,
   })
   await expect(shareReceipt).toBeEnabled({ timeout: 30_000 })
