@@ -55,6 +55,37 @@ const OTHER_MERCHANT_SECRET = new Uint8Array(32).fill(5)
 const MERCHANT_PUBKEY = getPublicKey(MERCHANT_SECRET)
 const NOW = 1_700_000_100_000
 
+function publishAndParse(
+  product: ProductSchema,
+  dTag: string,
+  intent: NonNullable<
+    ReturnType<typeof resolvePublishedProductFulfillmentIntentForTarget>
+  >
+) {
+  const prepared = applyProductFulfillmentIntentForPublication({
+    product,
+    merchantPubkey: MERCHANT_PUBKEY,
+    productDTag: dTag,
+    intent,
+  })
+  const draft = buildProductListingEventDraft({
+    product: prepared,
+    dTag,
+    clientAppId: "merchant",
+  })
+  const signed = finalizeEvent(
+    {
+      kind: draft.kind,
+      created_at: Math.floor(NOW / 1000),
+      content: draft.content,
+      tags: draft.tags,
+    },
+    MERCHANT_SECRET
+  )
+  expect(signed.sig).toHaveLength(128)
+  return { prepared, parsed: parseProductEvent(signed) }
+}
+
 let cachedProducts: CachedProduct[] = []
 
 function cloneDeletionJob(
@@ -1355,6 +1386,79 @@ describe("canonical product publication ordering", () => {
       shippingOptionId: undefined,
       shippingCountries: undefined,
       canonicalShippingResolved: false,
+    })
+  })
+
+  it("preserves signed event pickup references while publishing a stock update", () => {
+    const collectionCoordinate = `30405:${MERCHANT_PUBKEY}:event`
+    const pickupCoordinate = `30406:${MERCHANT_PUBKEY}:event-pickup`
+    const product = {
+      ...makeProduct("event-listing"),
+      stock: 1,
+      collectionRefs: [collectionCoordinate],
+      shippingOptionId: pickupCoordinate,
+      shippingOptionRefs: [
+        {
+          coordinate: pickupCoordinate,
+          relayHints: ["wss://relay.example"],
+        },
+      ],
+      canonicalShippingResolved: false,
+    }
+
+    const intent = resolvePublishedProductFulfillmentIntentForTarget(product)
+    expect(intent).toEqual({ kind: "coordinate_after_order" })
+
+    const { prepared, parsed } = publishAndParse(
+      { ...product, stock: 0 },
+      "event-listing",
+      intent!
+    )
+    expect(prepared).toMatchObject({
+      stock: 0,
+      collectionRefs: [collectionCoordinate],
+      shippingOptionId: pickupCoordinate,
+      shippingOptionRefs: [
+        {
+          coordinate: pickupCoordinate,
+          relayHints: ["wss://relay.example"],
+        },
+      ],
+      canonicalShippingResolved: false,
+    })
+
+    expect(parsed).toMatchObject({
+      stock: 0,
+      collectionRefs: [collectionCoordinate],
+      shippingOptionId: pickupCoordinate,
+      shippingOptionRefs: [
+        {
+          coordinate: pickupCoordinate,
+          dTag: "event-pickup",
+        },
+      ],
+    })
+  })
+
+  it("preserves a collection-level pickup reference while publishing stock", () => {
+    const collectionCoordinate = `30405:${MERCHANT_PUBKEY}:event`
+    const product = {
+      ...makeProduct("collection-pickup-listing"),
+      stock: 0,
+      collectionRefs: [collectionCoordinate],
+      shippingOptionId: collectionCoordinate,
+      shippingOptionRefs: [{ coordinate: collectionCoordinate }],
+      canonicalShippingResolved: false,
+    }
+    const { parsed } = publishAndParse(product, "collection-pickup-listing", {
+      kind: "coordinate_after_order",
+    })
+
+    expect(parsed).toMatchObject({
+      stock: 0,
+      collectionRefs: [collectionCoordinate],
+      shippingOptionId: collectionCoordinate,
+      shippingOptionRefs: [{ coordinate: collectionCoordinate, dTag: "event" }],
     })
   })
 
