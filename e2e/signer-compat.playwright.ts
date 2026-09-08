@@ -240,6 +240,57 @@ test("market owner profile drops the public placeholder after connect @market", 
   )
 })
 
+test("market checkout evidence does not mistake cached display data for a complete profile @market", async ({
+  page,
+}) => {
+  await page.goto(`${marketUrl}/products`)
+
+  await page.evaluate(
+    async ({ harnessUrl, merchantPubkey }) => {
+      const container = document.createElement("div")
+      container.id = "merchant-trust-evidence-harness"
+      document.body.append(container)
+      const { mountMerchantTrustHarness } = (await import(harnessUrl)) as {
+        mountMerchantTrustHarness: (
+          element: HTMLElement,
+          staleViewerPubkey: string,
+          merchantPubkey: string,
+          options?: {
+            publicProfileName?: string
+            publicProfileLud16?: string
+            strictProfileEvidenceUnavailable?: boolean
+          }
+        ) => void
+      }
+      mountMerchantTrustHarness(container, merchantPubkey, merchantPubkey, {
+        publicProfileName: "Cached merchant display",
+        publicProfileLud16: "stale@wallet.example",
+        strictProfileEvidenceUnavailable: true,
+      })
+    },
+    {
+      harnessUrl: merchantTrustHarnessUrl,
+      merchantPubkey: TEST_MERCHANT_PUBKEY,
+    }
+  )
+
+  const probe = page.getByTestId("merchant-trust-probe")
+  await expect(probe).toHaveAttribute(
+    "data-profile-name",
+    "Cached merchant display"
+  )
+  await expect(probe).toHaveAttribute("data-profile-state", "available")
+  await expect(probe).toHaveAttribute(
+    "data-profile-evidence-state",
+    "unavailable",
+    { timeout: 15_000 }
+  )
+  await expect(probe).toHaveAttribute(
+    "data-fast-checkout-reason",
+    "Merchant profile could not be loaded from relays."
+  )
+})
+
 test("market signer authority storage failure remains retryable @market", async ({
   page,
 }) => {

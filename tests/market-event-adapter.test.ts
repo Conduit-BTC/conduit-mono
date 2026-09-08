@@ -1590,6 +1590,31 @@ describe("Market event adapter", () => {
     })
   })
 
+  it("keeps a historical own-organizer snapshot fresh as merchant-only", async () => {
+    const resolution = merchantOwnedMarket()
+    const listing = product({
+      collectionRefs: [resolution.collectionCoordinate!],
+      shippingOptionRefs: [{ coordinate: resolution.pickupCoordinate! }],
+      shippingOptionId: resolution.pickupCoordinate,
+    })
+    const current = await resolveProductCartFulfillment(
+      listing,
+      null,
+      async () => catalog(listing, {}, resolution)
+    )
+    if (current.status !== "pickup") throw new Error("Expected pickup")
+    const historical = structuredClone(current.fulfillment)
+    historical.handoffMode = "organizer_handoff"
+    historical.handlerPubkey = merchant
+    const stored = pickupItem(historical)
+    stored.shippingOptionId = historical.option.coordinate
+    stored.shippingOptionDTag = historical.option.coordinate.split(":")[2]
+
+    expect(
+      pickupItemMatchesCanonicalSnapshot(stored, current.fulfillment, merchant)
+    ).toBe(true)
+  })
+
   it("blocks event pickup combined with ordinary shipping on generic surfaces", async () => {
     const ordinaryShipping = `30406:${merchant}:postal-shipping`
     const listing = product({

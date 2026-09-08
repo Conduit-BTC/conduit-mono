@@ -6,6 +6,7 @@ import {
   hasExactLiveProductAvailabilityEvidence,
   normalizeProductCoordinate,
   orderItemFulfillmentSchema,
+  resolveOrderPickupHandoffAuthority,
   resolveCartShippingCost,
   type CommerceQueryMeta,
   type ProductAvailabilityDiagnostic,
@@ -747,6 +748,17 @@ export function selectMerchantCartItems(
   return items.filter((item) => item.merchantPubkey === merchantPubkey)
 }
 
+function getCartPickupHandoffFingerprint(fulfillment: CartPickupFulfillment): {
+  handoffMode: string
+  handlerPubkey: string
+} {
+  const authority = resolveOrderPickupHandoffAuthority(fulfillment)
+  return {
+    handoffMode: authority.mode,
+    handlerPubkey: authority.handlerPubkey,
+  }
+}
+
 export function getCartCommerceFingerprint(items: readonly CartItem[]): string {
   return JSON.stringify(
     items
@@ -794,8 +806,7 @@ export function getCartCommerceFingerprint(items: readonly CartItem[]): string {
                   location: item.fulfillment.option.location ?? null,
                   geohash: item.fulfillment.option.geohash ?? null,
                 },
-                handoffMode: item.fulfillment.handoffMode ?? null,
-                handlerPubkey: item.fulfillment.handlerPubkey ?? null,
+                ...getCartPickupHandoffFingerprint(item.fulfillment),
                 costSats: item.fulfillment.costSats,
                 sourceCost: {
                   amount: item.fulfillment.sourceCost.amount,
