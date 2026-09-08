@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 import {
   extractOrderSummary,
   orderSchema,
+  orderPickupFulfillmentSchema,
   resolveOrderPickupHandoffAuthority,
   type OrderPickupFulfillmentSchema,
   type ParsedOrderMessage,
@@ -108,6 +109,39 @@ function additionalPickupItem(
 }
 
 describe("pickup order fulfillment evidence", () => {
+  it("preserves an organizer's own merchant-pickup snapshot across cart/order parsing", () => {
+    const fulfillment = pickupFulfillment()
+    const ownPickup = {
+      ...fulfillment,
+      product: {
+        ...fulfillment.product,
+        merchantPubkey: ORGANIZER,
+        coordinate: `30402:${ORGANIZER}:own-coffee`,
+      },
+      handoffMode: "merchant_handoff" as const,
+      handlerPubkey: ORGANIZER,
+    }
+    expect(orderPickupFulfillmentSchema.safeParse(ownPickup).success).toBe(true)
+    expect(
+      orderPickupFulfillmentSchema.safeParse({
+        ...ownPickup,
+        handoffMode: "organizer_handoff",
+      }).success
+    ).toBe(true)
+    expect(resolveOrderPickupHandoffAuthority(ownPickup).mode).toBe(
+      "merchant_handoff"
+    )
+    expect(
+      resolveOrderPickupHandoffAuthority({
+        ...ownPickup,
+        handoffMode: "organizer_handoff",
+      })
+    ).toEqual({
+      mode: "merchant_handoff",
+      handlerPubkey: ORGANIZER,
+      legacySafeDefault: false,
+    })
+  })
   it("derives explicit handoff authority and keeps legacy snapshots merchant-only", () => {
     const legacy = pickupFulfillment()
     expect(resolveOrderPickupHandoffAuthority(legacy)).toEqual({
