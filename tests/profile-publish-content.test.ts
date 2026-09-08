@@ -191,6 +191,44 @@ describe("profile publish content", () => {
     expect(shouldEnforceNip01ProfileMinimumFields({ content })).toBe(false)
   })
 
+  it("rebuilds malformed profile context from the visible repair projection", () => {
+    const content = buildNip01ProfilePublishContent({
+      profile: {
+        displayName: "Repaired Shop",
+      },
+      latestProfile: {
+        pubkey: "a".repeat(64),
+        displayName: "Last readable shop",
+        about: "Last readable biography",
+        lud16: undefined,
+      },
+      latestContent: "[]",
+    })
+
+    expect(content).toEqual({
+      display_name: "Repaired Shop",
+      about: "Last readable biography",
+    })
+    expect(shouldEnforceNip01ProfileMinimumFields({ content })).toBe(false)
+  })
+
+  it("does not revive older fields after a valid signed empty profile", () => {
+    const content = buildNip01ProfilePublishContent({
+      profile: {
+        displayName: "Repaired Shop",
+      },
+      latestProfile: {
+        pubkey: "a".repeat(64),
+        displayName: "Last readable shop",
+        about: "Last readable biography",
+      },
+      latestContent: "{}",
+    })
+
+    expect(content).toEqual({ display_name: "Repaired Shop" })
+    expect(shouldEnforceNip01ProfileMinimumFields({ content })).toBe(true)
+  })
+
   it("uses explicit undefined fields to clear loaded NIP-01 profile content", () => {
     expect(
       buildNip01ProfilePublishContent({

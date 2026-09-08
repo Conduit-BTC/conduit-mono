@@ -3959,39 +3959,99 @@ describe("commerce gateway", () => {
     })
   })
 
-  it("treats a malformed latest kind-0 as unavailable profile evidence", async () => {
+  it("allows complete owner repair while malformed kind-0 stays unavailable for payment", async () => {
+    const events = [
+      {
+        id: "profile-valid-older",
+        pubkey: "merchant",
+        created_at: 10,
+        content: JSON.stringify({
+          display_name: "Older Merchant",
+          lud16: "obsolete@wallet.example",
+        }),
+        tags: [],
+      },
+      {
+        id: "profile-malformed-latest",
+        pubkey: "merchant",
+        created_at: 20,
+        content: "[]",
+        tags: [],
+      },
+    ] as never
     __setCommerceTestOverrides({
-      fetchEventsFanout: async () =>
-        [
-          {
-            id: "profile-valid-older",
-            pubkey: "merchant",
-            created_at: 10,
-            content: JSON.stringify({
-              display_name: "Older Merchant",
-              lud16: "obsolete@wallet.example",
-            }),
-            tags: [],
-          },
-          {
-            id: "profile-malformed-latest",
-            pubkey: "merchant",
-            created_at: 20,
-            content: "[]",
-            tags: [],
-          },
-        ] as never,
+      fetchEventsFanoutWithDiagnostics: async (_filter, options) => {
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        return {
+          events,
+          attemptedRelayUrls: relayUrls,
+          successfulRelayUrls: relayUrls,
+          failedRelayUrls: [],
+          cappedRelayUrls: [],
+        }
+      },
     })
 
-    const result = await getProfiles({
+    const editResult = await getProfiles({
+      pubkeys: ["merchant"],
+      authenticatedPubkey: "merchant",
+      skipCache: true,
+      requireCompleteEvidence: true,
+      evidenceScope: "profile_edit",
+    })
+
+    expect(editResult.data.merchant?.displayName).toBe("Older Merchant")
+    expect(editResult.data.merchant?.lud16).toBeUndefined()
+    expect(editResult.meta).toMatchObject({
+      source: "public",
+      stale: false,
+      degraded: false,
+      capped: false,
+    })
+
+    const paymentResult = await getProfiles({
       pubkeys: ["merchant"],
       skipCache: true,
       requireCompleteEvidence: true,
+      evidenceScope: "payment",
     })
 
-    expect(result.data.merchant?.displayName).toBe("Older Merchant")
-    expect(result.data.merchant?.lud16).toBeUndefined()
-    expect(result.meta.degraded).toBe(true)
+    expect(paymentResult.data.merchant?.displayName).toBe("Older Merchant")
+    expect(paymentResult.data.merchant?.lud16).toBeUndefined()
+    expect(paymentResult.meta).toMatchObject({
+      source: "public",
+      stale: false,
+      degraded: true,
+      capped: false,
+    })
+
+    __setCommerceTestOverrides({
+      fetchEventsFanoutWithDiagnostics: async (_filter, options) => {
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        return {
+          events,
+          attemptedRelayUrls: relayUrls,
+          successfulRelayUrls: relayUrls.slice(0, -1),
+          failedRelayUrls: relayUrls.slice(-1),
+          cappedRelayUrls: [],
+        }
+      },
+    })
+
+    const partialEditResult = await getProfiles({
+      pubkeys: ["merchant"],
+      authenticatedPubkey: "merchant",
+      skipCache: true,
+      requireCompleteEvidence: true,
+      evidenceScope: "profile_edit",
+    })
+
+    expect(partialEditResult.meta).toMatchObject({
+      source: "public",
+      stale: false,
+      degraded: true,
+      capped: false,
+    })
   })
 
   it("certifies a valid signed empty kind-0 after complete coverage", async () => {

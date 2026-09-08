@@ -4819,7 +4819,15 @@ export async function getProfiles(
 
     const { profiles, rowsToCache, hasInvalidLatestProfile } =
       mergeProfileEvents(missing, result, events, cachedRowsByPubkey)
-    evidenceDegraded = evidenceDegraded || hasInvalidLatestProfile
+    // A fully observed malformed kind-0 must stay unusable as payment or
+    // display authority, but it cannot permanently lock its owner out of the
+    // repair surface. Only an explicitly complete profile-edit read may
+    // ignore that malformed frontier; partial reads remain degraded.
+    const canRepairMalformedProfile =
+      query.evidenceScope === "profile_edit" && query.requireCompleteEvidence
+    if (!canRepairMalformedProfile) {
+      evidenceDegraded = evidenceDegraded || hasInvalidLatestProfile
+    }
     const liveRowsByPubkey = new Map(
       mergeProfileEvents(missing, {}, events).rowsToCache.map((row) => [
         row.pubkey,

@@ -471,6 +471,97 @@ async function exerciseProfileEditAfterDisplayEnrichment(
   )
 }
 
+async function exerciseProfileRepairAfterMalformedFrontier(
+  page: Page,
+  appUrl: string,
+  profileName: string
+): Promise<void> {
+  test.setTimeout(60_000)
+  const secretKey = generateSecretKey()
+  const pubkey = getPublicKey(secretKey)
+  const createdAt = Math.floor(Date.now() / 1_000) - 10
+  await publishTestRelayEvents([
+    finalizeEvent(
+      {
+        kind: 0,
+        created_at: createdAt,
+        tags: [],
+        content: JSON.stringify({
+          display_name: `Readable ${profileName}`,
+          about: `Readable ${profileName} bio`,
+          lud16: "obsolete@wallet.example",
+        }),
+      },
+      secretKey
+    ),
+    finalizeEvent(
+      {
+        kind: 0,
+        created_at: createdAt + 1,
+        tags: [],
+        content: "[]",
+      },
+      secretKey
+    ),
+    finalizeEvent(
+      {
+        kind: 10_002,
+        created_at: createdAt,
+        tags: [["r", TEST_RELAY_URL]],
+        content: "",
+      },
+      secretKey
+    ),
+  ])
+  await installTestSigner(page, pubkey, { secretKey })
+  await page.goto(`${appUrl}/profile`)
+
+  const editButton = page
+    .getByRole("button", { name: "Edit profile", exact: true })
+    .first()
+  await expect(editButton).toBeEnabled({ timeout: 30_000 })
+  await editButton.click()
+  await page.locator("#profile-display-name").fill(`Repaired ${profileName}`)
+  await page.locator("#profile-about").fill(`Repaired ${profileName} biography`)
+  await page
+    .locator("#profile-picture")
+    .fill(
+      `https://cdn.conduit.market/repaired-${profileName.toLowerCase()}.png`
+    )
+  await page.getByRole("button", { name: "Save changes", exact: true }).click()
+
+  await expect(
+    page.getByText("Profile signed and saved.", { exact: true })
+  ).toBeVisible({ timeout: 30_000 })
+  await expect(
+    page.getByText(`Repaired ${profileName}`, { exact: true }).first()
+  ).toBeVisible()
+  await expect
+    .poll(async () => {
+      const profiles = await readTestRelayEvents({
+        authors: [pubkey],
+        kinds: [0],
+      })
+      const latest = profiles.sort((left, right) => {
+        if (left.created_at !== right.created_at) {
+          return right.created_at - left.created_at
+        }
+        return left.id.localeCompare(right.id)
+      })[0]
+      if (!latest) return null
+      try {
+        return JSON.parse(latest.content) as Record<string, unknown>
+      } catch {
+        return null
+      }
+    })
+    .toMatchObject({
+      display_name: `Repaired ${profileName}`,
+      about: `Repaired ${profileName} biography`,
+      picture: `https://cdn.conduit.market/repaired-${profileName.toLowerCase()}.png`,
+    })
+}
+
 async function exerciseProfileDraftSignerSwitch(page: Page): Promise<void> {
   const firstSecretKey = generateSecretKey()
   const firstPubkey = getPublicKey(firstSecretKey)
@@ -794,6 +885,22 @@ test("Merchant profile editing uses the complete signed frontier despite richer 
   page,
 }) => {
   await exerciseProfileEditAfterDisplayEnrichment(page, merchantUrl, "Merchant")
+})
+
+test("Market owners can repair a completely observed malformed profile @market", async ({
+  page,
+}) => {
+  await exerciseProfileRepairAfterMalformedFrontier(page, marketUrl, "Market")
+})
+
+test("Merchant owners can repair a completely observed malformed profile @merchant", async ({
+  page,
+}) => {
+  await exerciseProfileRepairAfterMalformedFrontier(
+    page,
+    merchantUrl,
+    "Merchant"
+  )
 })
 
 test("Market profile drafts do not cross signer identities @market", async ({
